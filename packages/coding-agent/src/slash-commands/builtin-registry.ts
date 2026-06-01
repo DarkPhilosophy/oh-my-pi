@@ -1713,6 +1713,7 @@ export async function executeBuiltinSlashCommand(
 				clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
 				await ctx.refreshSlashCommandState();
 				await ctx.session.refreshSshTool({ activateIfAvailable: true });
+				await ctx.initHooksAndCustomTools();
 			},
 		};
 		const result = await command.handle(parsed, adapted);

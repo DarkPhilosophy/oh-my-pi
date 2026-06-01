@@ -72,6 +72,7 @@ const initializeRunnerForTest = (runner: ExtensionRunner | undefined): void => {
 			getContextUsage: () => undefined,
 			compact: async () => {},
 			getSystemPrompt: () => [],
+			fetchUsageReports: async () => null,
 		},
 	);
 };
@@ -531,6 +532,7 @@ describe("createAgentSession credential_disabled subscription", () => {
 					getContextUsage: () => undefined,
 					compact: async () => {},
 					getSystemPrompt: () => [],
+					fetchUsageReports: async () => null,
 				},
 				undefined,
 				undefined,

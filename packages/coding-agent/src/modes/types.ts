@@ -77,6 +77,8 @@ export interface InteractiveModeContext {
 	hookWidgetContainerAbove: Container;
 	hookWidgetContainerBelow: Container;
 	statusLine: StatusLineComponent;
+	/** Set the right-side info panel lines (composited into negative space). */
+	setRightInfo(lines: string[] | undefined): void;
 
 	// Session access
 	session: AgentSession;

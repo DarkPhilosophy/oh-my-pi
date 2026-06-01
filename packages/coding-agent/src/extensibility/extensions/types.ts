@@ -21,6 +21,7 @@ import type {
 	Static,
 	TextContent,
 	TSchema,
+	UsageReport,
 } from "@oh-my-pi/pi-ai";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/utils/oauth/types";
 import type * as piCodingAgent from "@oh-my-pi/pi-coding-agent";
@@ -115,7 +116,7 @@ export interface ExtensionUIDialogOptions {
 /** Raw terminal input listener for extensions. */
 export type TerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined;
 
-export type WidgetPlacement = "aboveEditor" | "belowEditor";
+export type WidgetPlacement = "aboveEditor" | "belowEditor" | "rightEditor";
 
 export interface ExtensionWidgetOptions {
 	placement?: WidgetPlacement;
@@ -283,6 +284,8 @@ export interface ExtensionContext {
 	shutdown(): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string[];
+	/** Fetch provider usage/limit reports (5h / 7d windows). Null when unavailable. */
+	fetchUsageReports(): Promise<UsageReport[] | null>;
 }
 
 /**
@@ -1205,6 +1208,7 @@ export interface ExtensionContextActions {
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
 	getSystemPrompt: () => string[];
+	fetchUsageReports: () => Promise<UsageReport[] | null>;
 }
 
 /** Actions for ExtensionCommandContext (ctx.* in command handlers). */

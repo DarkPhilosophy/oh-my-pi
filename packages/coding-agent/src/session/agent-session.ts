@@ -4444,6 +4444,7 @@ export class AgentSession {
 				process.exit(0);
 			},
 			getContextUsage: () => this.getContextUsage(),
+			fetchUsageReports: () => this.fetchUsageReports(),
 			waitForIdle: () => this.waitForIdle(),
 			newSession: async options => {
 				const success = await this.newSession({ parentSession: options?.parentSession });

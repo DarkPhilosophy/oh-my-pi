@@ -152,11 +152,11 @@ Handlers and tool `execute` receive `ctx` with:
 - `sessionManager` (read-only)
 - `modelRegistry`, `model`
 - `getContextUsage()`
+- `fetchUsageReports()` for provider quota/window reports when available
 - `compact(...)`
 - `isIdle()`, `hasPendingMessages()`, `abort()`
 - `shutdown()`
 - `getSystemPrompt()`
-
 ## 3) Command context (`ExtensionCommandContext`)
 
 Command handlers additionally get:
@@ -292,14 +292,12 @@ Supported:
 - notifications/status/editor text/terminal input/custom overlays
 - theme listing/loading by name (`setTheme` supports string names)
 - tools expanded toggle
+- `setWidget(key, lines, { placement })` for persistent widgets:
+  - `aboveEditor` renders above the editor
+  - `belowEditor` renders below the editor
+  - `rightEditor` floats in the visible right-side whitespace beside the conversation, never over text or the editor/status line
 
 Current no-op methods in this controller:
-
-- `setFooter`
-- `setHeader`
-- `setEditorComponent`
-
-Also note: `setWidget` currently routes to status-line text via `setHookWidget(...)`.
 
 ### RPC mode (`rpc-mode.ts`)
 

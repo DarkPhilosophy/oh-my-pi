@@ -27,9 +27,11 @@ import {
 	Loader,
 	Markdown,
 	ProcessTerminal,
+	padding,
 	Spacer,
 	Text,
 	TUI,
+	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { APP_NAME, adjustHsv, getProjectDir, hsvToRgb, isEnoent, logger, postmortem, prompt } from "@oh-my-pi/pi-utils";
@@ -224,6 +226,83 @@ export interface InteractiveModeOptions {
 	initialMessages?: string[];
 }
 
+/**
+ * Wraps the conversation/response area and composites a right-side info panel
+ * into the negative space (trailing whitespace) of the rendered lines. Never
+ * overwrites visible text: it only places the panel on rows whose content does
+ * not reach the panel column, and hides entirely when no such run exists.
+ * This is the jcode-style "floats in the gap, moves up/down, disappears when
+ * there is no room" behaviour — not an overlay, so it never steals focus or
+ * forces a separate redraw.
+ */
+function trimRightPadding(line: string): string {
+	return line.replace(/[ \t]+((?:\x1b\[[0-9;]*m)*)$/u, "$1");
+}
+
+class RightInfoCompositor extends Container {
+	constructor(
+		private readonly inner: Container,
+		private readonly getLines: () => string[],
+	) {
+		super();
+		this.addChild(inner);
+	}
+
+	render(width: number): string[] {
+		const baseLines = this.inner.render(width).map(trimRightPadding);
+		const widget = this.getLines();
+		if (widget.length === 0 || baseLines.length === 0) return baseLines;
+
+		let panelWidth = 0;
+		for (const line of widget) panelWidth = Math.max(panelWidth, visibleWidth(line));
+		const col = width - panelWidth - 1; // 1-col gap from the panel
+		if (col < 30) return baseLines; // terminal genuinely too narrow — hide
+		const viewportHeight = Math.max(6, (process.stdout.rows || 40) - 4);
+		const searchStart = Math.max(0, baseLines.length - viewportHeight);
+
+		let bestStart = -1;
+		let bestLen = 0;
+		for (let start = searchStart; start < baseLines.length; ) {
+			if (visibleWidth(baseLines[start] ?? "") > col) {
+				start += 1;
+				continue;
+			}
+			let end = start + 1;
+			while (end < baseLines.length && visibleWidth(baseLines[end] ?? "") <= col) {
+				end += 1;
+			}
+			const len = end - start;
+			if (len >= widget.length) {
+				bestStart = start;
+				bestLen = widget.length;
+				break;
+			}
+			if (len > bestLen) {
+				bestStart = start;
+				bestLen = len;
+			}
+			start = end;
+		}
+
+		// Never append a new bottom block above the statusline. If there is not
+		// enough negative-space height, shrink the panel in-place; if even that
+		// would be useless, hide it.
+		if (bestStart < 0 || bestLen < 6) return baseLines;
+		const panel =
+			bestLen >= widget.length
+				? widget
+				: [widget[0] ?? "", ...widget.slice(1, bestLen - 1), widget[widget.length - 1] ?? ""];
+
+		const out = baseLines.slice();
+		for (let k = 0; k < panel.length; k++) {
+			const base = out[bestStart + k] ?? "";
+			const padded = truncateToWidth(base, col) + padding(Math.max(0, col - visibleWidth(base)));
+			out[bestStart + k] = padded + panel[k];
+		}
+		return out;
+	}
+}
+
 export class InteractiveMode implements InteractiveModeContext {
 	session: AgentSession;
 	sessionManager: SessionManager;
@@ -290,6 +369,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	lastEscapeTime = 0;
 	shutdownRequested = false;
 	#isShuttingDown = false;
+	#rightInfoLines: string[] = [];
 	hookSelector: HookSelectorComponent | undefined = undefined;
 	hookInput: HookInputComponent | undefined = undefined;
 	hookEditor: HookEditorComponent | undefined = undefined;
@@ -447,6 +527,14 @@ export class InteractiveMode implements InteractiveModeContext {
 	playWelcomeIntro(): void {
 		this.#welcomeComponent?.playIntro(() => this.ui.requestRender());
 	}
+
+	setRightInfo(lines: string[] | undefined): void {
+		const next = lines ?? [];
+		const changed = next.length !== this.#rightInfoLines.length || next.some((l, i) => l !== this.#rightInfoLines[i]);
+		if (!changed) return;
+		this.#rightInfoLines = next;
+		this.ui.requestRender();
+	}
 	async init(options: InteractiveModeInitOptions = {}): Promise<void> {
 		if (this.isInitialized) return;
 
@@ -486,9 +574,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		const startupQuiet = settings.get("startup.quiet");
 		this.#welcomeComponent = undefined;
 
+		// Everything above the input/status block lives in one container so the
+		// right-side usage panel can anchor at the very top (beside the welcome /
+		// most-recent text), never as a separate section lower down.
+		const mainContent = new Container();
+
 		for (const warning of this.session.configWarnings) {
-			this.ui.addChild(new Text(theme.fg("warning", `Warning: ${warning}`), 1, 0));
-			this.ui.addChild(new Spacer(1));
+			mainContent.addChild(new Text(theme.fg("warning", `Warning: ${warning}`), 1, 0));
+			mainContent.addChild(new Spacer(1));
 		}
 
 		if (!startupQuiet) {
@@ -502,37 +595,38 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 
 			// Setup UI layout
-			this.ui.addChild(new Spacer(1));
-			this.ui.addChild(this.#welcomeComponent);
-			this.ui.addChild(new Spacer(1));
+			mainContent.addChild(new Spacer(1));
+			mainContent.addChild(this.#welcomeComponent);
+			mainContent.addChild(new Spacer(1));
 			if (!options.suppressWelcomeIntro) {
 				this.playWelcomeIntro();
 			}
 
 			// Add changelog if provided
 			if (this.#changelogMarkdown) {
-				this.ui.addChild(new DynamicBorder());
+				mainContent.addChild(new DynamicBorder());
 				if (settings.get("collapseChangelog")) {
 					const versionMatch = this.#changelogMarkdown.match(/##\s+\[?(\d+\.\d+\.\d+)\]?/);
 					const latestVersion = versionMatch ? versionMatch[1] : this.#version;
 					const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
-					this.ui.addChild(new Text(condensedText, 1, 0));
+					mainContent.addChild(new Text(condensedText, 1, 0));
 				} else {
-					this.ui.addChild(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0));
-					this.ui.addChild(new Spacer(1));
-					this.ui.addChild(new Markdown(this.#changelogMarkdown.trim(), 1, 0, getMarkdownTheme()));
-					this.ui.addChild(new Spacer(1));
+					mainContent.addChild(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0));
+					mainContent.addChild(new Spacer(1));
+					mainContent.addChild(new Markdown(this.#changelogMarkdown.trim(), 1, 0, getMarkdownTheme()));
+					mainContent.addChild(new Spacer(1));
 				}
-				this.ui.addChild(new DynamicBorder());
+				mainContent.addChild(new DynamicBorder());
 			}
 		}
 
-		this.ui.addChild(this.chatContainer);
-		this.ui.addChild(this.pendingMessagesContainer);
-		this.ui.addChild(this.statusContainer);
-		this.ui.addChild(this.todoContainer);
-		this.ui.addChild(this.btwContainer);
-		this.ui.addChild(this.omfgContainer);
+		mainContent.addChild(this.chatContainer);
+		mainContent.addChild(this.pendingMessagesContainer);
+		mainContent.addChild(this.statusContainer);
+		mainContent.addChild(this.todoContainer);
+		mainContent.addChild(this.btwContainer);
+		mainContent.addChild(this.omfgContainer);
+		this.ui.addChild(new RightInfoCompositor(mainContent, () => this.#rightInfoLines));
 		this.ui.addChild(this.statusLine); // Only renders hook statuses (main status in editor border)
 		this.ui.addChild(this.hookWidgetContainerAbove);
 		this.ui.addChild(this.editorContainer);

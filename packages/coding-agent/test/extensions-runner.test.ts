@@ -728,6 +728,7 @@ describe("ExtensionRunner", () => {
 					getContextUsage: () => undefined,
 					compact: async () => {},
 					getSystemPrompt: () => [],
+					fetchUsageReports: async () => null,
 				},
 			);
 
@@ -940,6 +941,7 @@ describe("ExtensionRunner", () => {
 					getContextUsage: () => undefined,
 					compact: async () => {},
 					getSystemPrompt: () => [],
+					fetchUsageReports: async () => null,
 				},
 			);
 

@@ -41,6 +41,7 @@ cp permission-gate.ts ~/.omp/agent/extensions/
 | `handoff.ts`     | Transfer context to a new focused session via `/handoff <goal>`                |
 | `qna.ts`         | Extracts questions from last response into editor via `ctx.ui.setEditorText()` |
 | `status-line.ts` | Shows turn progress in footer via `ctx.ui.setStatus()` with themed colors      |
+| `usage-right-widget.ts` | Floating right-side usage panel using `ctx.ui.setWidget(..., { placement: "rightEditor" })` |
 | `snake.ts`       | Snake game with custom UI, keyboard handling, and session persistence          |
 
 ### Git Integration
@@ -64,6 +65,12 @@ cp permission-gate.ts ~/.omp/agent/extensions/
 | `chalk-logger.ts` | Uses chalk from parent node_modules (demonstrates jiti module resolution) |
 | `with-deps/`      | Extension with its own package.json and dependencies                      |
 | `file-trigger.ts` | Watches a trigger file and injects contents into conversation             |
+
+### Right-side usage panel
+
+`usage-right-widget.ts` shows how an extension can keep quota and context usage visible without taking over the footer or editor:
+
+![usage-right-widget example](./usage-right-widget.png)
 
 ## Writing Extensions
 

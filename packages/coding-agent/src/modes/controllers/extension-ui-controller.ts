@@ -30,6 +30,8 @@ export class ExtensionUiController {
 	#extensionTerminalInputUnsubscribers = new Set<() => void>();
 	#hookWidgetsAbove = new Map<string, ExtensionUiComponent>();
 	#hookWidgetsBelow = new Map<string, ExtensionUiComponent>();
+	#rightWidgets = new Map<string, string[]>();
+	#extensionErrorsSubscribed = false;
 	constructor(private ctx: InteractiveModeContext) {}
 
 	/**
@@ -128,6 +130,7 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			fetchUsageReports: () => this.ctx.session.fetchUsageReports(),
 		};
 		const commandActions: ExtensionCommandContextActions = {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
@@ -233,10 +236,12 @@ export class ExtensionUiController {
 
 		extensionRunner.initialize(actions, contextActions, commandActions, uiContext);
 
-		// Subscribe to extension errors
-		extensionRunner.onError((error: ExtensionError) => {
-			this.showExtensionError(error.extensionPath, error.error);
-		});
+		if (!this.#extensionErrorsSubscribed) {
+			this.#extensionErrorsSubscribed = true;
+			extensionRunner.onError((error: ExtensionError) => {
+				this.showExtensionError(error.extensionPath, error.error);
+			});
+		}
 
 		// Emit session_start event
 		await extensionRunner.emit({
@@ -248,9 +253,17 @@ export class ExtensionUiController {
 		const placement = options?.placement ?? "aboveEditor";
 		this.#removeHookWidget(this.#hookWidgetsAbove, key);
 		this.#removeHookWidget(this.#hookWidgetsBelow, key);
+		this.#rightWidgets.delete(key);
 
 		if (content === undefined) {
+			this.#flushRightWidgets();
 			this.#rebuildHookWidgets();
+			return;
+		}
+
+		if (placement === "rightEditor") {
+			this.#rightWidgets.set(key, this.#contentToRightLines(content));
+			this.#flushRightWidgets();
 			return;
 		}
 
@@ -263,6 +276,31 @@ export class ExtensionUiController {
 		const existing = widgets.get(key);
 		existing?.dispose?.();
 		widgets.delete(key);
+	}
+	#contentToRightLines(content: ExtensionWidgetContent): string[] {
+		if (Array.isArray(content)) return content.map(line => String(line));
+		// Function-style content renders to a component; sample it at a nominal width.
+		const comp = this.#createHookWidget(content);
+		try {
+			return comp.render(48);
+		} finally {
+			comp.dispose?.();
+		}
+	}
+
+	#flushRightWidgets(): void {
+		if (this.#rightWidgets.size === 0) {
+			this.ctx.setRightInfo(undefined);
+			return;
+		}
+		const merged: string[] = [];
+		let first = true;
+		for (const lines of this.#rightWidgets.values()) {
+			if (!first) merged.push("");
+			first = false;
+			merged.push(...lines);
+		}
+		this.ctx.setRightInfo(merged);
 	}
 
 	#createHookWidget(content: ExtensionWidgetContent): ExtensionUiComponent {
@@ -368,6 +406,7 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			fetchUsageReports: () => this.ctx.session.fetchUsageReports(),
 		};
 		const commandActions: ExtensionCommandContextActions = {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
@@ -544,6 +583,7 @@ export class ExtensionUiController {
 							// Signal shutdown request
 						},
 						getSystemPrompt: () => this.ctx.session.systemPrompt,
+						fetchUsageReports: () => this.ctx.session.fetchUsageReports(),
 					});
 				} catch (err) {
 					this.showToolError(registeredTool.definition.name, err instanceof Error ? err.message : String(err));
@@ -843,6 +883,8 @@ export class ExtensionUiController {
 		}
 		this.#hookWidgetsAbove.clear();
 		this.#hookWidgetsBelow.clear();
+		this.#rightWidgets.clear();
+		this.#flushRightWidgets();
 		this.#rebuildHookWidgets();
 	}
 
