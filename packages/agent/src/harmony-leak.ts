@@ -109,8 +109,13 @@ export interface HarmonyRecoveredToolCall {
  * gpt-5.6 (or whatever) doesn't silently bypass the mitigation. Detection
  * itself is cheap; the cost of missing a leak on a new model is not.
  */
-export function isHarmonyLeakMitigationTarget(model: Model): boolean {
-	return model.provider === "openai-codex";
+export function isHarmonyLeakMitigationTarget(_model: Model): boolean {
+	// Local hardening branch: harmony-style tool-call leakage ("to=functions.X"
+	// emitted as plain text) has been observed outside openai-codex in this
+	// install. Detection still requires a marker plus a corroborating signal, so
+	// enabling it for every provider is cheap and avoids missing cross-provider
+	// leaks.
+	return true;
 }
 
 export function signalListLabel(signals: readonly HarmonySignal[]): string {
