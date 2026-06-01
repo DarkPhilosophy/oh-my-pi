@@ -255,6 +255,7 @@ export class ExtensionUiController {
 		this.#removeHookWidget(this.#hookWidgetsAbove, key);
 		this.#removeHookWidget(this.#hookWidgetsBelow, key);
 		this.#rightWidgets.delete(key);
+		this.#flushRightWidgets();
 
 		if (content === undefined) {
 			this.#flushRightWidgets();
