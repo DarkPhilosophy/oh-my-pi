@@ -28,8 +28,15 @@ function statusColor(fraction: number | undefined): number {
 function statusTag(
 	limit: UsageReport["limits"][number],
 	fraction: number | undefined,
+	blockedByOtherWindow: boolean,
 ): { text: string; width: number } {
-	if (limit.status === "exhausted") return { text: color(31, "[x]"), width: 3 };
+	if (limit.status === "exhausted") {
+		if (Number.isFinite(fraction) && fraction > 0.01) return { text: color(33, "[!]"), width: 3 };
+		return { text: color(31, "[x]"), width: 3 };
+	}
+	if (blockedByOtherWindow && Number.isFinite(fraction) && fraction > 0.01) {
+		return { text: color(33, "[!]"), width: 3 };
+	}
 	if (limit.status === "warning") return { text: color(33, "[!]"), width: 3 };
 	if (limit.status === "ok") return { text: color(32, "[ok]"), width: 4 };
 	if (Number.isFinite(fraction))
@@ -47,6 +54,13 @@ function shortDuration(ms: number): string {
 	const days = Math.floor(hours / 24);
 	const hour = hours % 24;
 	return hour ? `${days}d${hour}h` : `${days}d`;
+}
+
+function resetLabel(resetsAt: number): string {
+	const duration = shortDuration(resetsAt - Date.now());
+	if (!duration) return "";
+	const time = new Date(resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+	return `${duration} at ${time}`;
 }
 
 function providerLabel(provider: string): string {
@@ -122,11 +136,14 @@ function buildLines(ctx: ExtensionContext, reports: UsageReport[] | null): strin
 		rows.push(row(""));
 		rows.push(row(` ${providerLabel(report.provider)}`));
 		const account = accountLabel(report, report.limits[0]);
+		const blockedByOtherWindow = report.limits.some(
+			limit => limit.status === "exhausted" && (remainingFraction(limit.amount) ?? 0) <= 0.01,
+		);
 		for (const limit of report.limits) {
 			const fraction = remainingFraction(limit.amount);
-			const reset = limit.window?.resetsAt ? shortDuration(limit.window.resetsAt - Date.now()) : "";
+			const reset = limit.window?.resetsAt ? resetLabel(limit.window.resetsAt) : "";
 			const windowLabel = limit.window?.label ?? limit.scope?.windowId ?? "";
-			const tag = statusTag(limit, fraction);
+			const tag = statusTag(limit, fraction, blockedByOtherWindow);
 			const head = windowLabel && !limit.label.includes(windowLabel) ? `${limit.label} ${windowLabel}` : limit.label;
 			const headText = clip(head, INNER - tag.width - 2);
 			rows.push(coloredRow(` ${tag.text} ${headText}`, 1 + tag.width + 1 + headText.length));
@@ -138,7 +155,7 @@ function buildLines(ctx: ExtensionContext, reports: UsageReport[] | null): strin
 }
 
 export default function usageRightWidget(pi: ExtensionAPI): void {
-	let timer: ReturnType<typeof setInterval> | undefined;
+	let timer: Timer | undefined;
 	let latestCtx: ExtensionContext | undefined;
 	let latestReports: UsageReport[] | null = null;
 	let busy = false;
