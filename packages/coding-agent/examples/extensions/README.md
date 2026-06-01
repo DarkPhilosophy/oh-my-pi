@@ -42,6 +42,7 @@ cp permission-gate.ts ~/.omp/agent/extensions/
 | `qna.ts`         | Extracts questions from last response into editor via `ctx.ui.setEditorText()` |
 | `status-line.ts` | Shows turn progress in footer via `ctx.ui.setStatus()` with themed colors      |
 | `usage-right-widget.ts` | Floating right-side usage panel using `ctx.ui.setWidget(..., { placement: "rightEditor" })` |
+| `thinking-note.ts` | Adds display-only supplemental UI below assistant thinking blocks              |
 | `snake.ts`       | Snake game with custom UI, keyboard handling, and session persistence          |
 
 ### Git Integration

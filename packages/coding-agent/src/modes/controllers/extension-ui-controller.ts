@@ -10,6 +10,7 @@ import type {
 	ExtensionError,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
+	ExtensionUISelectItem,
 	ExtensionUiComponent,
 	ExtensionWidgetContent,
 	ExtensionWidgetOptions,
@@ -523,7 +524,7 @@ export class ExtensionUiController {
 
 	createBackgroundUiContext(): ExtensionUIContext {
 		return {
-			select: async (_title: string, _options: string[], _dialogOptions) => undefined,
+			select: async (_title: string, _options: ExtensionUISelectItem[], _dialogOptions) => undefined,
 			confirm: async (_title: string, _message: string, _dialogOptions) => false,
 			input: async (_title: string, _placeholder?: string, _dialogOptions?: unknown) => undefined,
 			notify: () => {},
@@ -622,7 +623,7 @@ export class ExtensionUiController {
 	 */
 	showHookSelector(
 		title: string,
-		options: string[],
+		options: ExtensionUISelectItem[],
 		dialogOptions?: ExtensionUIDialogOptions,
 		extra?: { slider?: HookSelectorSlider },
 	): Promise<string | undefined> {
