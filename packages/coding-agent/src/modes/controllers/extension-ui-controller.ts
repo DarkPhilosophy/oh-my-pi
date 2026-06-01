@@ -39,6 +39,9 @@ export class ExtensionUiController {
 	 * Initialize the hook system with TUI-based UI context.
 	 */
 	async initHooksAndCustomTools(): Promise<void> {
+		this.clearExtensionTerminalInputListeners();
+		this.clearHookWidgets();
+
 		// Create and set hook & tool UI context
 		const uiContext: ExtensionUIContext = {
 			select: (title, options, dialogOptions) => this.showHookSelector(title, options, dialogOptions),
