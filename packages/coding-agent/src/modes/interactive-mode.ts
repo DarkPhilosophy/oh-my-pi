@@ -269,7 +269,8 @@ export function compositeRightPanel(
 	for (const line of widget) panelWidth = Math.max(panelWidth, visibleWidth(line));
 	const col = width - panelWidth - 1; // 1-col gap from the panel
 	if (col < 30) return baseLines; // terminal genuinely too narrow — hide
-	const searchStart = Math.max(0, baseLines.length - Math.max(6, viewportHeight));
+	if (viewportHeight < 6) return baseLines; // not enough visible rows for a useful panel
+	const searchStart = Math.max(0, baseLines.length - viewportHeight);
 	// Terminal image components render as (rows-1) blank placeholder lines followed
 	// by a raw protocol escape line. Those blanks look free to visibleWidth() but are
 	// visually covered by the image, so mark the whole block occupied and never splice

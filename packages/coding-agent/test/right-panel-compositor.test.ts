@@ -37,6 +37,12 @@ describe("compositeRightPanel", () => {
 		expect(out).toEqual(base);
 	});
 
+	it("hides when the visible viewport is below the minimum panel height", () => {
+		const base = Array.from({ length: 20 }, () => "");
+		const out = compositeRightPanel(base, panel(8), WIDTH, 5);
+		expect(out).toEqual(base);
+	});
+
 	it("places the panel on a free run without overwriting visible text", () => {
 		const base = Array.from({ length: 12 }, () => "hi"); // all width 2 <= col
 		const widget = panel(8);
