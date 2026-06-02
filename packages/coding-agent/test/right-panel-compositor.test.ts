@@ -75,4 +75,21 @@ describe("compositeRightPanel", () => {
 		const placed = out.findIndex(line => line.endsWith(widget[0]));
 		expect(placed).toBeGreaterThanOrEqual(base.length - 10);
 	});
+
+	it("never composites over a terminal image block", () => {
+		const widget = panel(8);
+		const isImage = (l: string) => l === "IMG";
+		// 5 blank placeholder rows + the raw image escape line, then free rows.
+		const base = ["", "", "", "", "", "IMG", ...Array.from({ length: 12 }, () => "hi")];
+
+		// Without image awareness the run swallows the image block (the bug).
+		const naive = compositeRightPanel(base, widget, WIDTH, 40);
+		expect(naive.some((line, i) => i <= 5 && line.endsWith(widget[0]))).toBe(true);
+
+		// With image awareness the panel lands strictly below the image block.
+		const safe = compositeRightPanel(base, widget, WIDTH, 40, isImage);
+		expect(safe[5]).toBe("IMG"); // image escape line untouched
+		for (let i = 0; i <= 5; i++) expect(safe[i].endsWith(widget[0])).toBe(false);
+		expect(safe.findIndex(line => line.endsWith(widget[0]))).toBeGreaterThan(5);
+	});
 });

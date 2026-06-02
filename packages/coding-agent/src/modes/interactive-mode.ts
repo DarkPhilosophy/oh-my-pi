@@ -29,6 +29,7 @@ import {
 	ProcessTerminal,
 	padding,
 	Spacer,
+	TERMINAL,
 	Text,
 	TUI,
 	truncateToWidth,
@@ -260,6 +261,7 @@ export function compositeRightPanel(
 	widget: string[],
 	width: number,
 	viewportHeight: number,
+	isImageLine: (line: string) => boolean = () => false,
 ): string[] {
 	if (widget.length === 0 || baseLines.length === 0) return baseLines;
 
@@ -268,16 +270,28 @@ export function compositeRightPanel(
 	const col = width - panelWidth - 1; // 1-col gap from the panel
 	if (col < 30) return baseLines; // terminal genuinely too narrow — hide
 	const searchStart = Math.max(0, baseLines.length - Math.max(6, viewportHeight));
+	// Terminal image components render as (rows-1) blank placeholder lines followed
+	// by a raw protocol escape line. Those blanks look free to visibleWidth() but are
+	// visually covered by the image, so mark the whole block occupied and never splice
+	// the panel into it.
+	const occupied = new Array<boolean>(baseLines.length).fill(false);
+	for (let i = 0; i < baseLines.length; i++) {
+		if (isImageLine(baseLines[i] ?? "")) {
+			occupied[i] = true;
+			for (let j = i - 1; j >= 0 && visibleWidth(baseLines[j] ?? "") === 0; j--) occupied[j] = true;
+		}
+	}
+	const fits = (i: number): boolean => !occupied[i] && visibleWidth(baseLines[i] ?? "") <= col;
 
 	let bestStart = -1;
 	let bestLen = 0;
 	for (let start = searchStart; start < baseLines.length; ) {
-		if (visibleWidth(baseLines[start] ?? "") > col) {
+		if (!fits(start)) {
 			start += 1;
 			continue;
 		}
 		let end = start + 1;
-		while (end < baseLines.length && visibleWidth(baseLines[end] ?? "") <= col) {
+		while (end < baseLines.length && fits(end)) {
 			end += 1;
 		}
 		const len = end - start;
@@ -330,7 +344,7 @@ class RightInfoCompositor extends Container {
 		// on-screen viewport, not in scrolled-off history.
 		const reserved = Math.max(0, Math.floor(this.getReservedRows(width)));
 		const viewport = (process.stdout.rows || 40) - reserved;
-		return compositeRightPanel(baseLines, this.getLines(), width, viewport);
+		return compositeRightPanel(baseLines, this.getLines(), width, viewport, line => TERMINAL.isImageLine(line));
 	}
 }
 
