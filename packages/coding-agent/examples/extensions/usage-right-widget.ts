@@ -59,8 +59,15 @@ function shortDuration(ms: number): string {
 function resetLabel(resetsAt: number): string {
 	const duration = shortDuration(resetsAt - Date.now());
 	if (!duration) return "";
-	const time = new Date(resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-	return `${duration} at ${time}`;
+	const at = new Date(resetsAt);
+	const now = new Date();
+	const time = at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+	const sameDay =
+		at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
+	if (sameDay) return `${duration} at ${time}`;
+	// Beyond today: show the concrete date so a far-off time isn't mistaken for now.
+	const date = at.toLocaleDateString([], { month: "short", day: "numeric" });
+	return `${duration} at ${date} ${time}`;
 }
 
 function providerLabel(provider: string): string {
