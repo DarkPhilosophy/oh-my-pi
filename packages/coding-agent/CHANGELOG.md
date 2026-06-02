@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor" })`): the panel is composited into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, shrinks in place when the negative space is short, and hides when there is no room. Also added `ctx.fetchUsageReports()` so usage/quota widgets can read provider reports without reaching into private APIs.
+
+### Changed
+
+- `/reload-plugins` now reinitializes extension UI hooks, and `initHooksAndCustomTools()` clears existing extension terminal-input listeners and hook widgets before re-emitting `session_start`. Reloading plugins no longer stacks duplicate input listeners or leaves stale widgets behind.
+
 ### Fixed
 
 - Fixed a module-load crash (`ReferenceError: Cannot access 'evalToolRenderer' before initialization`) triggered whenever `tools/eval` was imported before `tools/renderers`. The eval JS backend statically pulls the agent/task/sdk/extension chain, which re-enters the root barrel → `modes/components` → `tool-execution` → `renderers` while `eval.ts` was still initializing, so `renderers.ts` read `evalToolRenderer` in its TDZ. The eval TUI renderer is now split into a dependency-light `tools/eval-render.ts` that `renderers.ts` imports directly (decoupling pure rendering from the eval runtime); `eval.ts` re-exports `evalToolRenderer`/`EVAL_DEFAULT_PREVIEW_LINES` for compatibility.

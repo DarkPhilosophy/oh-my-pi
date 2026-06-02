@@ -297,7 +297,10 @@ Supported:
   - `belowEditor` renders below the editor
   - `rightEditor` floats in the visible right-side whitespace beside the conversation, never over text or the editor/status line
 
-Current no-op methods in this controller:
+Current no-op methods in this controller (still `() => {}`):
+
+- `setFooter`
+- `setHeader`
 
 ### RPC mode (`rpc-mode.ts`)
 

@@ -236,14 +236,88 @@ export interface InteractiveModeOptions {
  * there is no room" behaviour — not an overlay, so it never steals focus or
  * forces a separate redraw.
  */
+const TRAILING_PADDING_RE = /[ \t]+((?:\x1b\[[0-9;]*m)*)$/u;
+
 function trimRightPadding(line: string): string {
-	return line.replace(/[ \t]+((?:\x1b\[[0-9;]*m)*)$/u, "$1");
+	// Hot path: runs on every rendered line each frame. A trailing-padding match
+	// always ends in a space, tab, or the `m` that terminates an SGR sequence —
+	// bail cheaply otherwise.
+	const last = line.charCodeAt(line.length - 1);
+	if (last !== 0x20 && last !== 0x09 && last !== 0x6d) return line;
+	return line.replace(TRAILING_PADDING_RE, "$1");
+}
+
+/**
+ * Composite a right-side panel into the trailing whitespace of `baseLines`.
+ * Pure and deterministic: returns the merged lines, or `baseLines` unchanged
+ * when the panel does not fit. Never overwrites visible text — the panel only
+ * lands on a run of rows whose content stays left of the panel column, shrinks
+ * in place when that run is shorter than the panel, and is dropped entirely
+ * when no usable run exists within the bottom `viewportHeight` rows.
+ */
+export function compositeRightPanel(
+	baseLines: string[],
+	widget: string[],
+	width: number,
+	viewportHeight: number,
+): string[] {
+	if (widget.length === 0 || baseLines.length === 0) return baseLines;
+
+	let panelWidth = 0;
+	for (const line of widget) panelWidth = Math.max(panelWidth, visibleWidth(line));
+	const col = width - panelWidth - 1; // 1-col gap from the panel
+	if (col < 30) return baseLines; // terminal genuinely too narrow — hide
+	const searchStart = Math.max(0, baseLines.length - Math.max(6, viewportHeight));
+
+	let bestStart = -1;
+	let bestLen = 0;
+	for (let start = searchStart; start < baseLines.length; ) {
+		if (visibleWidth(baseLines[start] ?? "") > col) {
+			start += 1;
+			continue;
+		}
+		let end = start + 1;
+		while (end < baseLines.length && visibleWidth(baseLines[end] ?? "") <= col) {
+			end += 1;
+		}
+		const len = end - start;
+		if (len >= widget.length) {
+			bestStart = start;
+			bestLen = widget.length;
+			break;
+		}
+		if (len > bestLen) {
+			bestStart = start;
+			bestLen = len;
+		}
+		start = end;
+	}
+
+	// Never append a new bottom block above the statusline. If there is not enough
+	// negative-space height, shrink the panel in place; if even that is useless, hide.
+	if (bestStart < 0 || bestLen < 6) return baseLines;
+	const panel =
+		bestLen >= widget.length
+			? widget
+			: [widget[0] ?? "", ...widget.slice(1, bestLen - 1), widget[widget.length - 1] ?? ""];
+
+	const out = baseLines.slice();
+	for (let k = 0; k < panel.length; k++) {
+		const base = out[bestStart + k] ?? "";
+		const truncatedBase = truncateToWidth(base, col);
+		// If the base row carries color state, terminate it so the gap padding and
+		// the panel do not inherit an unclosed SGR sequence.
+		const reset = truncatedBase.includes("\x1b[") ? "\x1b[0m" : "";
+		out[bestStart + k] = truncatedBase + reset + padding(Math.max(0, col - visibleWidth(base))) + panel[k];
+	}
+	return out;
 }
 
 class RightInfoCompositor extends Container {
 	constructor(
 		private readonly inner: Container,
 		private readonly getLines: () => string[],
+		private readonly getReservedRows: (width: number) => number,
 	) {
 		super();
 		this.addChild(inner);
@@ -251,56 +325,12 @@ class RightInfoCompositor extends Container {
 
 	render(width: number): string[] {
 		const baseLines = this.inner.render(width).map(trimRightPadding);
-		const widget = this.getLines();
-		if (widget.length === 0 || baseLines.length === 0) return baseLines;
-
-		let panelWidth = 0;
-		for (const line of widget) panelWidth = Math.max(panelWidth, visibleWidth(line));
-		const col = width - panelWidth - 1; // 1-col gap from the panel
-		if (col < 30) return baseLines; // terminal genuinely too narrow — hide
-		const viewportHeight = Math.max(6, (process.stdout.rows || 40) - 4);
-		const searchStart = Math.max(0, baseLines.length - viewportHeight);
-
-		let bestStart = -1;
-		let bestLen = 0;
-		for (let start = searchStart; start < baseLines.length; ) {
-			if (visibleWidth(baseLines[start] ?? "") > col) {
-				start += 1;
-				continue;
-			}
-			let end = start + 1;
-			while (end < baseLines.length && visibleWidth(baseLines[end] ?? "") <= col) {
-				end += 1;
-			}
-			const len = end - start;
-			if (len >= widget.length) {
-				bestStart = start;
-				bestLen = widget.length;
-				break;
-			}
-			if (len > bestLen) {
-				bestStart = start;
-				bestLen = len;
-			}
-			start = end;
-		}
-
-		// Never append a new bottom block above the statusline. If there is not
-		// enough negative-space height, shrink the panel in-place; if even that
-		// would be useless, hide it.
-		if (bestStart < 0 || bestLen < 6) return baseLines;
-		const panel =
-			bestLen >= widget.length
-				? widget
-				: [widget[0] ?? "", ...widget.slice(1, bestLen - 1), widget[widget.length - 1] ?? ""];
-
-		const out = baseLines.slice();
-		for (let k = 0; k < panel.length; k++) {
-			const base = out[bestStart + k] ?? "";
-			const padded = truncateToWidth(base, col) + padding(Math.max(0, col - visibleWidth(base)));
-			out[bestStart + k] = padded + panel[k];
-		}
-		return out;
+		// Reserve the rows occupied by the chrome below the conversation (status
+		// line, hook widgets, editor) so the panel is searched only within the
+		// on-screen viewport, not in scrolled-off history.
+		const reserved = Math.max(0, Math.floor(this.getReservedRows(width)));
+		const viewport = (process.stdout.rows || 40) - reserved;
+		return compositeRightPanel(baseLines, this.getLines(), width, viewport);
 	}
 }
 
@@ -627,7 +657,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		mainContent.addChild(this.todoContainer);
 		mainContent.addChild(this.btwContainer);
 		mainContent.addChild(this.omfgContainer);
-		this.ui.addChild(new RightInfoCompositor(mainContent, () => this.#rightInfoLines));
+		this.ui.addChild(
+			new RightInfoCompositor(
+				mainContent,
+				() => this.#rightInfoLines,
+				width =>
+					this.statusLine.render(width).length +
+					this.hookWidgetContainerAbove.render(width).length +
+					this.editorContainer.render(width).length +
+					this.hookWidgetContainerBelow.render(width).length,
+			),
+		);
 		this.ui.addChild(this.statusLine); // Only renders hook statuses (main status in editor border)
 		this.ui.addChild(this.hookWidgetContainerAbove);
 		this.ui.addChild(this.editorContainer);
