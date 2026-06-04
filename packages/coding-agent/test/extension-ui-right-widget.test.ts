@@ -29,6 +29,17 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		expect(rightInfo.at(-1)).toEqual(["a1", "a2", "", "b1"]);
 	});
 
+	it("preserves right widget order when an existing key updates", () => {
+		const { ctx, rightInfo } = makeCtx();
+		const c = new ExtensionUiController(ctx);
+
+		c.setHookWidget("a", ["a1"], { placement: "rightEditor" });
+		c.setHookWidget("b", ["b1"], { placement: "rightEditor" });
+		c.setHookWidget("a", ["a2"], { placement: "rightEditor" });
+
+		expect(rightInfo.at(-1)).toEqual(["a2", "", "b1"]);
+	});
+
 	it("caps right widget content at MAX_WIDGET_LINES", () => {
 		const { ctx, rightInfo } = makeCtx();
 		const c = new ExtensionUiController(ctx);

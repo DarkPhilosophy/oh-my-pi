@@ -257,15 +257,20 @@ export class ExtensionUiController {
 		const placement = options?.placement ?? "aboveEditor";
 		this.#removeHookWidget(this.#hookWidgetsAbove, key);
 		this.#removeHookWidget(this.#hookWidgetsBelow, key);
-		const wasRight = this.#rightWidgets.delete(key);
+		const wasRight = this.#rightWidgets.has(key);
 
 		if (content === undefined) {
-			if (wasRight) this.#flushRightWidgets();
+			if (wasRight) {
+				this.#rightWidgets.delete(key);
+				this.#flushRightWidgets();
+			}
 			this.#rebuildHookWidgets();
 			return;
 		}
 
 		if (placement === "rightEditor") {
+			// Updating an existing Map key preserves insertion order; deleting first
+			// would make animated/right-side widgets jump below siblings on refresh.
 			this.#rightWidgets.set(key, this.#contentToRightLines(content));
 			this.#flushRightWidgets();
 			this.#rebuildHookWidgets();
@@ -273,7 +278,10 @@ export class ExtensionUiController {
 		}
 
 		// Moving a previously right-side key back inline must clear its stale lines.
-		if (wasRight) this.#flushRightWidgets();
+		if (wasRight) {
+			this.#rightWidgets.delete(key);
+			this.#flushRightWidgets();
+		}
 		const target = placement === "belowEditor" ? this.#hookWidgetsBelow : this.#hookWidgetsAbove;
 		target.set(key, this.#createHookWidget(content));
 		this.#rebuildHookWidgets();
