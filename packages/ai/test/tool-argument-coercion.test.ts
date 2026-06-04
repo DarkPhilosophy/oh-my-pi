@@ -60,6 +60,24 @@ describe("Tool argument coercion", () => {
 		expect(result.items).toEqual([1, 2, 3]);
 	});
 
+	it("wraps a plain string in a singleton array when schema expects string array", () => {
+		const tool: Tool = {
+			name: "t3b",
+			description: "",
+			parameters: z.object({ paths: z.array(z.string()) }),
+		};
+
+		const toolCall: ToolCall = {
+			type: "toolCall",
+			id: "call-3b",
+			name: "t3b",
+			arguments: { paths: "src/**/*.ts" },
+		};
+
+		const result = validateToolArguments(tool, toolCall) as { paths: string[] };
+		expect(result.paths).toEqual(["src/**/*.ts"]);
+	});
+
 	it("parses JSON objects in string values when schema expects object", () => {
 		const tool: Tool = {
 			name: "t4",
@@ -725,7 +743,7 @@ describe("Tool argument coercion", () => {
 	});
 	it("parses JSON-stringified array containing raw newlines inside string values", () => {
 		const tool: Tool = {
-			name: "todo_write_like",
+			name: "todo_like",
 			description: "",
 			parameters: z.object({
 				phases: z.array(
@@ -751,7 +769,7 @@ describe("Tool argument coercion", () => {
 		const toolCall: ToolCall = {
 			type: "toolCall",
 			id: "call-rawnl",
-			name: "todo_write_like",
+			name: "todo_like",
 			arguments: { phases: stringifiedPhases },
 		};
 

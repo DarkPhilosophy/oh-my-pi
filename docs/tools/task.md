@@ -114,7 +114,7 @@ Artifacts and side channels:
    - auto-add `task` when the agent has `spawns` and recursion depth allows it
    - remove `task` at or past `task.maxRecursionDepth`
    - expand `exec` to `eval` and `bash`
-   - strip parent-owned `todo_write` after session creation
+   - strip parent-owned `todo` after session creation
 17. `runSubprocess(...)` subscribes to child agent events, coalesces progress updates every 150 ms, forwards lifecycle/progress events on the parent event bus, and extracts tool data through `subprocessToolRegistry`.
 18. The child must finish through the hidden `yield` tool. If it does not, `runSubprocess(...)` sends up to 3 reminder prompts; the last reminder forces `toolChoice = yield` when supported.
 19. Finalization uses `finalizeSubprocessOutput(...)` to reconcile raw assistant text, `yield` payloads, structured schemas, `report_finding` data, and abort states. Output is truncated with `MAX_OUTPUT_BYTES` / `MAX_OUTPUT_LINES` before returning to the parent, but the full raw output is still written to `<id>.md`.
@@ -222,4 +222,4 @@ Artifacts and side channels:
 - Branch-mode merge temporarily stashes the parent repo before cherry-picking task branches. A stash-pop conflict is treated as merge failure and leaves recovery state behind.
 - Patch-mode only applies combined root patches if every successful task produced a patch and `git.patch.canApplyText(...)` succeeds.
 - Nested git repos are handled separately from the root repo. They are copied into isolated worktrees, diffed independently, and merged later with `applyNestedPatches(...)` because parent git cannot track their file-level changes.
-- `agent://` ids are numeric-prefixed (`0-Task`, `1-Task`, nested like `0-Parent.0-Child`) by `AgentOutputManager`; this is what prevents artifact collisions across repeated or nested task invocations.
+- `agent://` ids are name-based (`Task` first, `Task-2`/`Task-3` only when the name repeats, nested like `Parent.Child`) by `AgentOutputManager`; this is what prevents artifact collisions across repeated or nested task invocations.

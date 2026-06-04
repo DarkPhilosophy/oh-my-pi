@@ -32,6 +32,12 @@ export interface ExaSearchParams {
 	start_published_date?: string;
 	end_published_date?: string;
 	signal?: AbortSignal;
+	/**
+	 * Credential source. Resolved before falling back to `EXA_API_KEY` so
+	 * Exa works when the key is stored via the broker/auth pipeline.
+	 */
+	authStorage?: AuthStorage;
+	sessionId?: string;
 }
 
 interface ExaSearchResult {
@@ -51,7 +57,6 @@ interface ExaSearchResponse {
 	costDollars?: { total: number };
 	searchTime?: number;
 }
-
 function asRecord(value: unknown): Record<string, unknown> | null {
 	if (typeof value !== "object" || value === null) return null;
 	return value as Record<string, unknown>;
@@ -194,9 +199,21 @@ async function callExaSearch(apiKey: string, params: ExaSearchParams): Promise<E
 
 	return response.json() as Promise<ExaSearchResponse>;
 }
+function buildExaMcpArgs(params: ExaSearchParams): Record<string, unknown> {
+	const args: Record<string, unknown> = { query: params.query };
+	if (params.num_results !== undefined) args.num_results = params.num_results;
+	if (params.type !== undefined) args.type = params.type;
+	if (params.include_domains !== undefined) args.include_domains = params.include_domains;
+	if (params.exclude_domains !== undefined) args.exclude_domains = params.exclude_domains;
+	if (params.start_published_date !== undefined) args.start_published_date = params.start_published_date;
+	if (params.end_published_date !== undefined) args.end_published_date = params.end_published_date;
+	return args;
+}
 
 async function callExaMcpSearch(params: ExaSearchParams): Promise<ExaSearchResponse> {
-	const response = await callExaTool("web_search_exa", { ...params }, findApiKey());
+	const response = await callExaTool("web_search_exa", buildExaMcpArgs(params), findApiKey(), {
+		signal: withHardTimeout(params.signal),
+	});
 	if (isSearchResponse(response)) {
 		return response as ExaSearchResponse;
 	}
@@ -211,7 +228,10 @@ async function callExaMcpSearch(params: ExaSearchParams): Promise<ExaSearchRespo
 
 /** Execute Exa web search */
 export async function searchExa(params: ExaSearchParams): Promise<SearchResponse> {
-	const apiKey = getEnvApiKey("exa");
+	const storedKey = params.authStorage
+		? await params.authStorage.getApiKey("exa", params.sessionId, { signal: params.signal })
+		: undefined;
+	const apiKey = storedKey ?? getEnvApiKey("exa");
 	const response = apiKey ? await callExaSearch(apiKey, params) : await callExaMcpSearch(params);
 
 	// Convert to unified SearchResponse
@@ -250,13 +270,29 @@ export class ExaProvider extends SearchProvider {
 	readonly id = "exa";
 	readonly label = "Exa";
 
-	isAvailable(_authStorage: AuthStorage): boolean {
+	isAvailable(authStorage: AuthStorage): boolean {
+		if (!this.#settingsAllowSearch()) return false;
+		return !!getEnvApiKey("exa") || authStorage.hasAuth("exa");
+	}
+
+	/**
+	 * Exa ships an unauthenticated public MCP fallback, so an explicit
+	 * selection (programmatic or via `providers.webSearch: exa`) routes
+	 * through MCP even when no credential is configured. The auto chain
+	 * still uses {@link isAvailable} so an unrelated configured provider
+	 * keeps priority over the public fallback.
+	 */
+	isExplicitlyAvailable(_authStorage: AuthStorage): boolean {
+		return this.#settingsAllowSearch();
+	}
+
+	#settingsAllowSearch(): boolean {
 		try {
 			if (settings.get("exa.enabled") === false || settings.get("exa.enableSearch") === false) {
 				return false;
 			}
 		} catch {
-			// Settings not initialized; fall through to public MCP availability
+			// Settings may be unavailable before CLI initialization; assume not disabled.
 		}
 		return true;
 	}
@@ -266,6 +302,8 @@ export class ExaProvider extends SearchProvider {
 			query: params.query,
 			num_results: params.numSearchResults ?? params.limit,
 			signal: params.signal,
+			authStorage: params.authStorage,
+			sessionId: params.sessionId,
 		});
 	}
 }

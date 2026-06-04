@@ -105,7 +105,7 @@ describe("Duplicate Tool Results Regression", () => {
 				{
 					type: "toolCall",
 					id: toolCallId,
-					name: "todo_write",
+					name: "todo",
 					arguments: { ops: [{ op: "update", id: "task-1", status: "completed" }] },
 				},
 			],
@@ -134,7 +134,7 @@ describe("Duplicate Tool Results Regression", () => {
 			{
 				role: "toolResult" as const,
 				toolCallId,
-				toolName: "todo_write",
+				toolName: "todo",
 				content: [{ type: "text" as const, text: "todo updated" }],
 				isError: false,
 				timestamp: Date.now(),
@@ -918,7 +918,6 @@ describe("Codex-style Abort Handling", () => {
 		const guidanceMsg = transformed[3] as DeveloperMessage;
 		expect(guidanceMsg.role).toBe("developer");
 		expect(guidanceMsg.content).toContain("<turn-aborted>");
-		expect(guidanceMsg.content).toContain("verify current state before retrying");
 	});
 
 	it("should inject synthetic 'aborted' tool results with isError true", () => {

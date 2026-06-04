@@ -254,6 +254,44 @@ export interface SessionContext {
 	modeData?: Record<string, unknown>;
 }
 
+export const EPHEMERAL_MODEL_CHANGE_ROLE = "fallback";
+
+/** Lists session model strings to try when restoring, in fallback order. */
+export function getRestorableSessionModels(
+	models: Readonly<Record<string, string>>,
+	lastModelChangeRole: string | undefined,
+): string[] {
+	const defaultModel = models.default;
+	if (
+		!lastModelChangeRole ||
+		lastModelChangeRole === "default" ||
+		lastModelChangeRole === EPHEMERAL_MODEL_CHANGE_ROLE
+	) {
+		return defaultModel ? [defaultModel] : [];
+	}
+
+	const roleModel = models[lastModelChangeRole];
+	if (!roleModel) return defaultModel ? [defaultModel] : [];
+	if (!defaultModel || roleModel === defaultModel) return [roleModel];
+	return [roleModel, defaultModel];
+}
+
+/**
+ * Coarse lifecycle status of a session, derived from its last persisted message.
+ *
+ * - `complete` — the last assistant turn ended with no unanswered tool calls, i.e.
+ *   the agent yielded control back to the user.
+ * - `interrupted` — work was cut off mid-flight: a trailing assistant turn with
+ *   pending tool calls, a trailing tool result the agent never continued from, or
+ *   a length-truncated turn.
+ * - `aborted` — the last assistant turn was cancelled by the user.
+ * - `error` — the last assistant turn ended in an error.
+ * - `pending` — a trailing user message with no assistant reply persisted after it.
+ * - `unknown` — status could not be determined (empty/header-only session, or the
+ *   final message was larger than the tail window that was read).
+ */
+export type SessionStatus = "complete" | "interrupted" | "aborted" | "error" | "pending" | "unknown";
+
 export interface SessionInfo {
 	path: string;
 	id: string;
@@ -269,6 +307,11 @@ export interface SessionInfo {
 	size: number;
 	firstMessage: string;
 	allMessagesText: string;
+	/**
+	 * Coarse lifecycle status from the session's last persisted message. Optional:
+	 * synthesized {@link SessionInfo}s (cross-project stubs, tests) leave it unset.
+	 */
+	status?: SessionStatus;
 }
 
 export type ReadonlySessionManager = Pick<
@@ -1060,7 +1103,7 @@ async function getSortedSessions(sessionDir: string, storage: SessionStorage): P
 		await Promise.all(
 			files.map(async (path: string) => {
 				try {
-					const content = await storage.readTextPrefix(path, 4096);
+					const [content] = await storage.readTextSlices(path, 4096, 0);
 					const entries = parseJsonlLenient<Record<string, unknown>>(content);
 					if (entries.length === 0) return;
 					const header = entries[0] as Record<string, unknown>;
@@ -1512,21 +1555,79 @@ function extractTextFromContent(content: Message["content"]): string {
 }
 
 const SESSION_LIST_PREFIX_BYTES = 4096;
+/**
+ * Tail window read to derive {@link SessionStatus}. Large enough to capture a
+ * typical final assistant turn (thinking + text); when the final message exceeds
+ * it the status falls back to `unknown` rather than misreporting.
+ */
+const SESSION_LIST_SUFFIX_BYTES = 32_768;
 const SESSION_LIST_PARALLEL_THRESHOLD = 64;
 const SESSION_LIST_MAX_WORKERS = 16;
-const sessionListPrefixDecoder = new TextDecoder("utf-8", { fatal: false });
 
-async function readSessionListPrefix(file: string, storage: SessionStorage, buffer: Buffer): Promise<string> {
-	if (!(storage instanceof FileSessionStorage)) {
-		return storage.readTextPrefix(file, buffer.byteLength);
+/**
+ * Derive a {@link SessionStatus} from a tail window of a session file. Entries are
+ * newline-terminated on write, so within the window only the first line can be a
+ * partial fragment — it simply fails to parse and is skipped. We walk backwards to
+ * the last `message` entry and classify by its role / stop reason.
+ */
+function deriveSessionStatus(suffix: string): SessionStatus {
+	if (!suffix) return "unknown";
+	const lines = suffix.split("\n");
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const line = lines[i];
+		// Every persisted entry is `JSON.stringify(obj)` → starts with `{`. This
+		// cheaply rejects blank lines and the leading partial fragment without
+		// attempting to parse a multi-KB tail of a truncated line.
+		if (line.charCodeAt(0) !== 123) continue;
+		let entry: { type?: string; message?: TailMessage };
+		try {
+			entry = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		if (entry.type === "message" && entry.message) {
+			return statusFromTailMessage(entry.message);
+		}
 	}
+	return "unknown";
+}
 
-	const handle = await fs.promises.open(file, "r");
-	try {
-		const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
-		return sessionListPrefixDecoder.decode(buffer.subarray(0, bytesRead));
-	} finally {
-		await handle.close();
+interface TailMessage {
+	role?: string;
+	stopReason?: string;
+	content?: unknown;
+}
+
+function isToolCallBlock(block: unknown): boolean {
+	return typeof block === "object" && block !== null && (block as { type?: unknown }).type === "toolCall";
+}
+
+function statusFromTailMessage(message: TailMessage): SessionStatus {
+	switch (message.role) {
+		case "assistant": {
+			switch (message.stopReason) {
+				case "error":
+					return "error";
+				case "aborted":
+					return "aborted";
+				case "length":
+					return "interrupted";
+			}
+			// A turn that ends without unanswered tool calls means the agent yielded
+			// control back to the user — complete. Trailing tool calls (no tool
+			// results after) mean the loop was cut off before running them.
+			const content = message.content;
+			if (Array.isArray(content) && content.some(isToolCallBlock)) return "interrupted";
+			return "complete";
+		}
+		case "toolResult":
+			// Tools ran but the agent never produced the following assistant turn.
+			return "interrupted";
+		case "user":
+			// User message with no assistant reply persisted after it.
+			return "pending";
+		default:
+			return "unknown";
 	}
 }
 
@@ -1661,13 +1762,15 @@ function getSessionListWorkerCount(fileCount: number): number {
 	);
 }
 
-async function collectSessionFromFile(
-	file: string,
-	storage: SessionStorage,
-	buffer: Buffer,
-): Promise<SessionInfo | undefined> {
+async function collectSessionFromFile(file: string, storage: SessionStorage): Promise<SessionInfo | undefined> {
 	try {
-		const content = await readSessionListPrefix(file, storage, buffer);
+		const stat = storage.statSync(file);
+		const [content, suffix] = await storage.readTextSlices(
+			file,
+			SESSION_LIST_PREFIX_BYTES,
+			SESSION_LIST_SUFFIX_BYTES,
+		);
+		const { size, mtime } = stat;
 		const entries = parseJsonlLenient<Record<string, unknown>>(content);
 		const header = parseSessionListHeader(content, entries);
 		if (!header) return undefined;
@@ -1703,7 +1806,6 @@ async function collectSessionFromFile(
 
 		firstMessage ||= extractFirstUserMessageFromPrefix(content) ?? "";
 		const messageCount = Math.max(parsedMessageCount, countMessageMarkers(content));
-		const stats = storage.statSync(file);
 		return {
 			path: file,
 			id: header.id,
@@ -1711,11 +1813,12 @@ async function collectSessionFromFile(
 			title: header.title ?? shortSummary,
 			parentSessionPath: header.parentSession,
 			created: new Date(header.timestamp ?? ""),
-			modified: stats.mtime,
+			modified: mtime,
 			messageCount,
-			size: stats.size,
+			size,
 			firstMessage: firstMessage || "(no messages)",
 			allMessagesText: allMessages.length > 0 ? allMessages.join(" ") : firstMessage,
+			status: deriveSessionStatus(suffix),
 		};
 	} catch {
 		return undefined;
@@ -1729,10 +1832,9 @@ async function collectSessionsFromFileStride(
 	stride: number,
 ): Promise<SessionInfo[]> {
 	const sessions: SessionInfo[] = [];
-	const buffer = Buffer.allocUnsafe(SESSION_LIST_PREFIX_BYTES);
 
 	for (let i = startIndex; i < files.length; i += stride) {
-		const session = await collectSessionFromFile(files[i], storage, buffer);
+		const session = await collectSessionFromFile(files[i], storage);
 		if (session) sessions.push(session);
 	}
 
@@ -1808,6 +1910,8 @@ export async function resolveResumableSession(
 	return { session: globalMatch, scope: "global" };
 }
 interface SessionManagerStateSnapshot {
+	cwd: string;
+	sessionDir: string;
 	sessionId: string;
 	sessionName: string | undefined;
 	titleSource: "auto" | "user" | undefined;
@@ -1880,6 +1984,8 @@ export class SessionManager {
 
 	captureState(): SessionManagerStateSnapshot {
 		return {
+			cwd: this.cwd,
+			sessionDir: this.sessionDir,
 			sessionId: this.#sessionId,
 			sessionName: this.#sessionName,
 			titleSource: this.#titleSource,
@@ -1893,6 +1999,8 @@ export class SessionManager {
 	}
 
 	restoreState(snapshot: SessionManagerStateSnapshot): void {
+		this.cwd = snapshot.cwd;
+		this.sessionDir = snapshot.sessionDir;
 		this.#sessionId = snapshot.sessionId;
 		this.#sessionName = snapshot.sessionName;
 		this.#titleSource = snapshot.titleSource;
@@ -1937,6 +2045,18 @@ export class SessionManager {
 			this.#sessionId = header?.id ?? createSessionId();
 			this.#sessionName = header?.title;
 			this.#titleSource = header?.titleSource;
+
+			// Adopt the loaded session's own working directory. Sessions are stored in
+			// a directory keyed by their cwd, so resuming a session from another
+			// project (e.g. global review in the picker) must re-point cwd/sessionDir
+			// at that project. Same-cwd resumes and in-place reloads are a no-op; old
+			// sessions with no recorded cwd keep the current cwd.
+			const headerCwd = header?.cwd ? path.resolve(header.cwd) : undefined;
+			if (headerCwd && headerCwd !== this.cwd) {
+				this.cwd = headerCwd;
+				this.sessionDir = path.resolve(this.#sessionFile, "..");
+				writeTerminalBreadcrumb(this.cwd, this.#sessionFile);
+			}
 
 			this.#needsFullRewriteOnNextPersist = migrateToCurrentVersion(this.#fileEntries);
 

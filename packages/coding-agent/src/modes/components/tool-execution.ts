@@ -32,7 +32,7 @@ import {
 } from "../../tools/json-tree";
 import { formatExpandHint, replaceTabs, resolveImageOptions, truncateToWidth } from "../../tools/render-utils";
 import { toolRenderers } from "../../tools/renderers";
-import { TODO_WRITE_STRIKE_TOTAL_FRAMES } from "../../tools/todo-write";
+import { TODO_STRIKE_TOTAL_FRAMES } from "../../tools/todo";
 import { renderStatusLine } from "../../tui";
 import { sanitizeWithOptionalSixelPassthrough } from "../../utils/sixel";
 import { renderDiff } from "./diff";
@@ -149,6 +149,10 @@ const SPINNER_RENDER_INTERVAL_MS = 16;
  * 60fps render cadence (mirrors `Loader`). */
 const SPINNER_GLYPH_ADVANCE_MS = 80;
 
+// Stable per-instance counter so each tool execution's inline images get a
+// graphics id that survives child re-creation (the image budget keys off it).
+let toolExecutionInstanceSeq = 0;
+
 /**
  * Component that renders a tool call with its result (updateable)
  */
@@ -158,6 +162,7 @@ export class ToolExecutionComponent extends Container {
 	#multiFileBoxes: (Box | Spacer)[] = []; // Extra boxes for multi-file edit results
 	#imageComponents: Image[] = [];
 	#imageSpacers: Spacer[] = [];
+	readonly #instanceId = ++toolExecutionInstanceSeq;
 	#toolName: string;
 	#toolLabel: string;
 	#args: any;
@@ -180,6 +185,8 @@ export class ToolExecutionComponent extends Container {
 	#editDiffPreview?: PerFileDiffPreview[];
 	#editDiffAbort?: AbortController;
 	#editDiffLastArgsKey?: string;
+	// Latest in-flight streaming diff recompute, captured so it can be awaited.
+	#editDiffInFlight?: Promise<void>;
 	// Cached converted images for Kitty protocol (which requires PNG), keyed by index
 	#convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
 	// Spinner animation for partial task results
@@ -239,7 +246,7 @@ export class ToolExecutionComponent extends Container {
 		this.#editMode = resolveEditModeForTool(toolName, tool);
 
 		this.#updateDisplay();
-		void this.#runPreviewDiff();
+		this.#editDiffInFlight = this.#runPreviewDiff();
 	}
 
 	updateArgs(args: any, _toolCallId?: string): void {
@@ -250,7 +257,7 @@ export class ToolExecutionComponent extends Container {
 		if (args === this.#args) return;
 		this.#args = args;
 		this.#updateSpinnerAnimation();
-		void this.#runPreviewDiff();
+		this.#editDiffInFlight = this.#runPreviewDiff();
 		this.#updateDisplay();
 	}
 
@@ -261,7 +268,18 @@ export class ToolExecutionComponent extends Container {
 	setArgsComplete(_toolCallId?: string): void {
 		this.#argsComplete = true;
 		this.#updateSpinnerAnimation();
-		void this.#runPreviewDiff();
+		this.#editDiffInFlight = this.#runPreviewDiff();
+	}
+
+	/**
+	 * Await the streaming diff recompute kicked off by the most recent
+	 * `updateArgs`/`setArgsComplete`. The recompute reads the file and re-runs the
+	 * whole-file Myers diff off the render path, signalling completion only via a
+	 * throttled `requestRender`. Tests await this to sample a *settled* preview
+	 * deterministically instead of racing the spinner's render ticks.
+	 */
+	async whenPreviewSettled(): Promise<void> {
+		await this.#editDiffInFlight;
 	}
 
 	async #runPreviewDiff(): Promise<void> {
@@ -434,7 +452,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	#updateTodoStrikeAnimation(): void {
-		if (this.#toolName !== "todo_write" || this.#isPartial || this.#result?.isError) {
+		if (this.#toolName !== "todo" || this.#isPartial || this.#result?.isError) {
 			this.#stopTodoStrikeAnimation();
 			return;
 		}
@@ -449,7 +467,7 @@ export class ToolExecutionComponent extends Container {
 		this.#renderState.spinnerFrame = 0;
 		this.#todoStrikeInterval = setInterval(() => {
 			const nextFrame = (this.#spinnerFrame ?? 0) + 1;
-			if (nextFrame > TODO_WRITE_STRIKE_TOTAL_FRAMES) {
+			if (nextFrame > TODO_STRIKE_TOTAL_FRAMES) {
 				this.#stopTodoStrikeAnimation();
 			} else {
 				this.#spinnerFrame = nextFrame;
@@ -741,7 +759,7 @@ export class ToolExecutionComponent extends Container {
 						imageData,
 						imageMimeType,
 						{ fallbackColor: (s: string) => theme.fg("toolOutput", s) },
-						resolveImageOptions(),
+						{ ...resolveImageOptions(), budget: this.#ui.imageBudget, imageKey: `te${this.#instanceId}:${i}` },
 					);
 					this.#imageComponents.push(imageComponent);
 					this.addChild(imageComponent);

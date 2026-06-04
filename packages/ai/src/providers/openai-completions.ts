@@ -72,7 +72,11 @@ import {
 import { detectOpenAICompat, type ResolvedOpenAICompat, resolveOpenAICompat } from "./openai-completions-compat";
 import { createInitialResponsesAssistantMessage } from "./openai-responses-shared";
 import { transformMessages } from "./transform-messages";
-import { joinTextWithImagePlaceholder, NON_VISION_IMAGE_PLACEHOLDER } from "./vision-guard";
+import {
+	isDashscopeCompatibleModeTextOnlyQwen,
+	joinTextWithImagePlaceholder,
+	NON_VISION_IMAGE_PLACEHOLDER,
+} from "./vision-guard";
 
 /**
  * Normalize tool call ID for Mistral.
@@ -255,7 +259,7 @@ type OpenAICompletionsParams = OpenAI.Chat.Completions.ChatCompletionCreateParam
 	top_k?: number;
 	min_p?: number;
 	repetition_penalty?: number;
-	thinking?: { type: "enabled" | "disabled" };
+	thinking?: { type: "enabled" | "disabled"; keep?: "all" };
 	enable_thinking?: boolean;
 	chat_template_kwargs?: { enable_thinking: boolean };
 	reasoning?: { effort?: string } | { enabled: false };
@@ -539,7 +543,11 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 			// so users don't see raw `<｜...｜>` tokens.
 			const stripDeepseekChatTemplateTokens =
 				/deepseek/i.test(model.id) && (model.provider === "nvidia" || model.provider === "deepseek");
-			type ToolCallStreamBlock = ToolCall & { partialArgs?: string; streamIndex?: number; lastParseLen?: number };
+			type ToolCallStreamBlock = ToolCall & {
+				partialArgs?: string | Record<string, unknown>;
+				streamIndex?: number;
+				lastParseLen?: number;
+			};
 			type OpenAIStreamBlock = TextContent | ThinkingContent | ToolCallStreamBlock;
 			const pendingToolCallBlocks: ToolCallStreamBlock[] = [];
 			const toolCallBlockByIndex = new Map<number, ToolCallStreamBlock>();
@@ -552,7 +560,8 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 				if (block.partialArgs === undefined) return;
 				const contentIndex = blockIndex(block);
 				if (contentIndex < 0) return;
-				block.arguments = parseStreamingJson(block.partialArgs);
+				block.arguments =
+					typeof block.partialArgs === "string" ? parseStreamingJson(block.partialArgs) : block.partialArgs;
 				delete block.partialArgs;
 				delete block.lastParseLen;
 				if (block.streamIndex !== undefined) {
@@ -846,14 +855,29 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 							if (toolCall.id) block.id = toolCall.id;
 							if (toolCall.function?.name) block.name = toolCall.function.name;
 							let delta = "";
-							if (toolCall.function?.arguments) {
-								delta = toolCall.function.arguments;
-								block.partialArgs = (block.partialArgs ?? "") + toolCall.function.arguments;
-								const throttled = parseStreamingJsonThrottled(block.partialArgs, block.lastParseLen ?? 0);
-								if (throttled) {
-									block.arguments = throttled.value;
-									block.lastParseLen = throttled.parsedLen;
+							// The OpenAI SDK types `function.arguments` as a JSON string, but MiniMax-compatible
+							// hosts stream a fully-formed object instead. Model both shapes so the branches below
+							// narrow honestly rather than widening through `unknown`.
+							const rawArgs = toolCall.function?.arguments as string | Record<string, unknown> | undefined;
+							if (typeof rawArgs === "string") {
+								if (rawArgs.length > 0) {
+									delta = rawArgs;
+									const prev = typeof block.partialArgs === "string" ? block.partialArgs : "";
+									block.partialArgs = prev + rawArgs;
+									const throttled = parseStreamingJsonThrottled(block.partialArgs, block.lastParseLen ?? 0);
+									if (throttled) {
+										block.arguments = throttled.value;
+										block.lastParseLen = throttled.parsedLen;
+									}
 								}
+							} else if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)) {
+								// MiniMax-compatible hosts stream `function.arguments` as a complete object in a
+								// single delta instead of the OpenAI JSON-string contract. Hold the object directly
+								// — no `[object Object]` round-trip through the string buffer — and serialize once for
+								// the wire delta that proxy servers forward verbatim as `input_json_delta`.
+								block.partialArgs = rawArgs;
+								block.arguments = rawArgs;
+								delta = JSON.stringify(rawArgs);
 							}
 							stream.push({
 								type: "toolcall_delta",
@@ -1127,7 +1151,7 @@ function buildParams(
 	}
 	const isKimiModelId = model.id.includes("moonshotai/kimi") || /(^|\/)kimi[-.]/i.test(model.id);
 	const messages = convertMessages(model, context, compat);
-	maybeAddOpenRouterAnthropicCacheControl(model, messages);
+	maybeAddAnthropicCacheControl(compat, messages);
 	const supportsReasoningParams = model.provider !== "github-copilot";
 
 	// Kimi (including via OpenRouter and Fireworks router-form IDs such as
@@ -1232,6 +1256,9 @@ function buildParams(
 		// Must explicitly disable since z.ai defaults to thinking enabled.
 		const enabled = options?.reasoning && !options?.disableReasoning;
 		params.thinking = { type: enabled ? "enabled" : "disabled" };
+		if (enabled && compat.thinkingKeep) {
+			params.thinking.keep = compat.thinkingKeep;
+		}
 	} else if (supportsReasoningParams && compat.thinkingFormat === "qwen" && model.reasoning) {
 		// Qwen uses top-level enable_thinking: boolean
 		params.enable_thinking = !!options?.reasoning && !options?.disableReasoning;
@@ -1410,12 +1437,8 @@ function mapReasoningEffort(
 	return reasoningEffortMap[effort] ?? effort;
 }
 
-function maybeAddOpenRouterAnthropicCacheControl(
-	model: Model<"openai-completions">,
-	messages: ChatCompletionMessageParam[],
-): void {
-	if (model.provider !== "openrouter" || !model.id.startsWith("anthropic/")) return;
-
+function maybeAddAnthropicCacheControl(compat: ResolvedOpenAICompat, messages: ChatCompletionMessageParam[]): void {
+	if (compat.cacheControlFormat !== "anthropic") return;
 	// Anthropic-style caching requires cache_control on a text part. Add a breakpoint
 	// on the last user/assistant message (walking backwards until we find text content).
 	for (let i = messages.length - 1; i >= 0; i--) {
@@ -1547,7 +1570,7 @@ export function convertMessages(
 					content: text,
 				});
 			} else {
-				const supportsImages = model.input.includes("image");
+				const supportsImages = model.input.includes("image") && !isDashscopeCompatibleModeTextOnlyQwen(model);
 				const content: ChatCompletionContentPart[] = [];
 				let omittedImages = false;
 				for (const item of msg.content) {
@@ -1790,7 +1813,7 @@ export function convertMessages(
 					.filter(c => c.type === "text")
 					.map(c => (c as TextContent).text)
 					.join("\n");
-				const supportsImages = model.input.includes("image");
+				const supportsImages = model.input.includes("image") && !isDashscopeCompatibleModeTextOnlyQwen(model);
 				const hasImages = toolMsg.content.some(c => c.type === "image");
 				const omittedImages = hasImages && !supportsImages;
 

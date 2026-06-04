@@ -14,6 +14,45 @@ import { theme } from "../modes/theme/theme";
 
 const REPO = "can1357/oh-my-pi";
 const PACKAGE = "@oh-my-pi/pi-coding-agent";
+/**
+ * Official npm registry origin.
+ *
+ * Pinned across both the version check and the bun install step so the two
+ * agree on which catalog they are talking to. A user's bun may be pointed at
+ * an unofficial mirror (corporate proxy, Taobao, etc.) that lags the upstream
+ * registry by minutes-to-hours, in which case `getLatestRelease` would resolve
+ * a version the mirror has not yet replicated and the install would fail with
+ * `No version matching "X" found for specifier "<pkg>" (but package exists)`.
+ * See #1686.
+ */
+const NPM_REGISTRY = "https://registry.npmjs.org/";
+
+/**
+ * Core native addon package. Bumped in lock-step with {@link PACKAGE} so the
+ * version sentinel the loader looks up at runtime matches the `.node` on
+ * disk; see {@link buildBunInstallArgs} for why this must be installed
+ * explicitly rather than inherited as a transitive dependency.
+ */
+const NATIVES_PACKAGE = "@oh-my-pi/pi-natives";
+
+/**
+ * Platform tags the release pipeline publishes as
+ * `@oh-my-pi/pi-natives-<tag>` leaves. Mirrors `SUPPORTED_PLATFORMS` in
+ * `packages/natives/native/loader-state.js` and `LEAF_TARGETS` in
+ * `packages/natives/scripts/gen-npm-packages.ts`; kept here as the local
+ * source of truth so the update path stays free of cross-package imports.
+ */
+const SUPPORTED_NATIVE_TAGS: ReadonlySet<string> = new Set([
+	"linux-x64",
+	"linux-arm64",
+	"darwin-x64",
+	"darwin-arm64",
+	"win32-x64",
+]);
+
+function currentNativeTag(): string {
+	return `${process.platform}-${process.arch}`;
+}
 
 interface ReleaseInfo {
 	tag: string;
@@ -130,7 +169,7 @@ async function resolveUpdateTarget(): Promise<UpdateTarget> {
  * Uses npm instead of GitHub API to avoid unauthenticated rate limiting.
  */
 async function getLatestRelease(): Promise<ReleaseInfo> {
-	const response = await fetch(`https://registry.npmjs.org/${PACKAGE}/latest`);
+	const response = await fetch(`${NPM_REGISTRY}${PACKAGE}/latest`);
 	if (!response.ok) {
 		throw new Error(`Failed to fetch release info: ${response.statusText}`);
 	}
@@ -293,11 +332,57 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
 }
 
 /**
+ * Build the bun argv used to globally install a specific omp version.
+ *
+ * The version is selected by hitting {@link NPM_REGISTRY} directly in
+ * {@link getLatestRelease}, so the install MUST observe the same catalog:
+ *
+ * - `--registry=${NPM_REGISTRY}` pins the install to the official registry
+ *   regardless of the user's bunfig/`.npmrc`. A mirror (corporate proxy,
+ *   Taobao, …) that hasn't yet replicated the release would otherwise reject
+ *   a version the upstream registry already advertises.
+ * - `--no-cache` tells bun to ignore its on-disk manifest snapshot so it
+ *   re-fetches metadata from that registry on every invocation.
+ *
+ * Together these two flags make `omp update` produce exactly the registry
+ * lookup the version check just performed. See #1686.
+ *
+ * Also pins {@link NATIVES_PACKAGE} and the platform-specific
+ * `@oh-my-pi/pi-natives-<tag>` leaf to `expectedVersion`. `bun install -g`
+ * does not reliably refresh transitive `optionalDependencies` when the
+ * top-level package is the only one bumped, so the native addon and its
+ * version sentinel can drift out of sync with the freshly installed
+ * `@oh-my-pi/pi-coding-agent` and the loader aborts at
+ * `validateLoadedBindings` on the next launch
+ * (`The .node file on disk is from a different release than this loader`).
+ * Listing the natives explicitly forces bun to replace them in lock-step.
+ * The leaf is added only on tags the release pipeline actually publishes
+ * ({@link SUPPORTED_NATIVE_TAGS}) so unsupported platforms still fail with
+ * the original "no matching version" message instead of `EBADPLATFORM`.
+ * See #1824.
+ */
+export function buildBunInstallArgs(expectedVersion: string, nativeTag: string = currentNativeTag()): string[] {
+	const args = [
+		"install",
+		"-g",
+		"--no-cache",
+		`--registry=${NPM_REGISTRY}`,
+		`${PACKAGE}@${expectedVersion}`,
+		`${NATIVES_PACKAGE}@${expectedVersion}`,
+	];
+	if (SUPPORTED_NATIVE_TAGS.has(nativeTag)) {
+		args.push(`${NATIVES_PACKAGE}-${nativeTag}@${expectedVersion}`);
+	}
+	return args;
+}
+
+/**
  * Update via bun package manager.
  */
 async function updateViaBun(expectedVersion: string): Promise<void> {
 	console.log(chalk.dim("Updating via bun..."));
-	const result = await $`bun install -g ${PACKAGE}@${expectedVersion}`.nothrow();
+	const args = buildBunInstallArgs(expectedVersion);
+	const result = await $`bun ${args}`.nothrow();
 	if (result.exitCode !== 0) {
 		throw new Error(`bun install failed with exit code ${result.exitCode}`);
 	}

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import type Anthropic from "@anthropic-ai/sdk";
 import { streamAnthropic } from "../src/providers/anthropic";
+import type { AnthropicMessagesClientLike } from "../src/providers/anthropic-client";
 import type { Context, Model } from "../src/types";
 import { waitForDelayOrAbort } from "./helpers";
 
@@ -155,8 +155,8 @@ describe("anthropic first-event timeout retries", () => {
 				signal: requestOptions?.signal,
 				events: attempt === 1 ? undefined : createSuccessfulAnthropicEvents("retry recovered"),
 			}) as never;
-		}) as unknown as Anthropic["messages"]["create"];
-		const client = { messages: { create } } as Anthropic;
+		}) as unknown as AnthropicMessagesClientLike["messages"]["create"];
+		const client = { messages: { create } } as AnthropicMessagesClientLike;
 		const providerRetryWait = vi.fn(async () => {});
 
 		const result = await streamAnthropic(model, context, {
@@ -188,8 +188,8 @@ describe("anthropic first-event timeout retries", () => {
 				connectDelayMs: 2,
 				events: createSuccessfulAnthropicEvents("delayed connect"),
 			}) as never;
-		}) as unknown as Anthropic["messages"]["create"];
-		const client = { messages: { create } } as Anthropic;
+		}) as unknown as AnthropicMessagesClientLike["messages"]["create"];
+		const client = { messages: { create } } as AnthropicMessagesClientLike;
 
 		const result = await streamAnthropic(model, context, {
 			client,
@@ -218,8 +218,8 @@ describe("anthropic first-event timeout retries", () => {
 				connectDelayMs: 20,
 				events: createSuccessfulAnthropicEvents("too late"),
 			}) as never;
-		}) as unknown as Anthropic["messages"]["create"];
-		const client = { messages: { create } } as Anthropic;
+		}) as unknown as AnthropicMessagesClientLike["messages"]["create"];
+		const client = { messages: { create } } as AnthropicMessagesClientLike;
 		const providerRetryWait = vi.fn(async () => {});
 
 		const result = await streamAnthropic(model, context, {
@@ -240,8 +240,8 @@ describe("anthropic first-event timeout retries", () => {
 		const create = ((_body: unknown, requestOptions?: { signal?: AbortSignal }) => {
 			attempt += 1;
 			return createAnthropicMockStream({ signal: requestOptions?.signal }) as never;
-		}) as unknown as Anthropic["messages"]["create"];
-		const client = { messages: { create } } as Anthropic;
+		}) as unknown as AnthropicMessagesClientLike["messages"]["create"];
+		const client = { messages: { create } } as AnthropicMessagesClientLike;
 
 		const controller = new AbortController();
 		setTimeout(() => controller.abort(), 1);
@@ -282,15 +282,15 @@ describe("anthropic first-event timeout retries", () => {
 						content_block: {
 							type: "tool_use",
 							id: "toolu_stalled_todo",
-							name: "todo_write",
+							name: "todo",
 							input: {},
 						},
 					},
 				],
 				hangAfterEvents: true,
 			}) as never;
-		}) as unknown as Anthropic["messages"]["create"];
-		const client = { messages: { create } } as Anthropic;
+		}) as unknown as AnthropicMessagesClientLike["messages"]["create"];
+		const client = { messages: { create } } as AnthropicMessagesClientLike;
 		const providerRetryWait = vi.fn(async () => {});
 
 		const result = await streamAnthropic(model, context, {
@@ -308,7 +308,7 @@ describe("anthropic first-event timeout retries", () => {
 			{
 				type: "toolCall",
 				id: "toolu_stalled_todo",
-				name: "todo_write",
+				name: "todo",
 				arguments: {},
 			},
 		]);
