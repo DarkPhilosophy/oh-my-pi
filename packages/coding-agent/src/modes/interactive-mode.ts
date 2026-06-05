@@ -331,13 +331,12 @@ export function compositeRightPanel(
 		start = end;
 	}
 
-	// Never append a new bottom block above the statusline. If there is not enough
-	// negative-space height, shrink the panel in place; if even that is useless, hide.
-	if (bestStart < 0 || bestLen < 6) return baseLines;
-	const panel =
-		bestLen >= widget.length
-			? widget
-			: [widget[0] ?? "", ...widget.slice(1, bestLen - 1), widget[widget.length - 1] ?? ""];
+	// Do not cut semantic widget blocks. Right-side widgets are already allowed
+	// to be as tall as the current viewport; if the available negative-space run
+	// cannot fit the full widget, hide it instead of splicing a top/bottom shell
+	// around a partially truncated middle.
+	if (bestStart < 0 || bestLen < widget.length) return baseLines;
+	const panel = widget;
 
 	const out = baseLines.slice();
 	for (let k = 0; k < panel.length; k++) {

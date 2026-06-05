@@ -136,6 +136,7 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			fetchUsageReports: () => this.ctx.session.fetchUsageReports(),
 		};
 		const commandActions: ExtensionCommandContextActions = {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
@@ -303,21 +304,26 @@ export class ExtensionUiController {
 		return content(this.ctx.ui, theme);
 	}
 	#flushRightWidgets(): void {
+		if (this.#rightWidgets.size === 0) {
+			this.ctx.setRightInfo(undefined);
+			return;
+		}
 		const lines: string[] = [];
 		for (const widgetLines of this.#rightWidgets.values()) {
 			if (lines.length > 0) lines.push("");
-			lines.push(...widgetLines.slice(0, MAX_WIDGET_LINES));
+			lines.push(...widgetLines);
 		}
-		this.ctx.setRightInfo(lines.length > 0 ? lines : undefined);
+		this.ctx.setRightInfo(lines);
 	}
 	#contentToRightLines(content: ExtensionWidgetContent): string[] {
-		if (Array.isArray(content)) {
-			return content.slice(0, MAX_WIDGET_LINES);
+		if (Array.isArray(content)) return content.map(line => String(line));
+		if (content === undefined) return [];
+		const component = this.#createHookWidget(content);
+		try {
+			return component.render(process.stdout.columns || 80);
+		} finally {
+			component.dispose?.();
 		}
-		if (content === undefined) {
-			return [];
-		}
-		return [];
 	}
 
 	#rebuildHookWidgets(): void {
@@ -411,6 +417,7 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			fetchUsageReports: () => this.ctx.session.fetchUsageReports(),
 		};
 		const commandActions: ExtensionCommandContextActions = {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
@@ -587,6 +594,7 @@ export class ExtensionUiController {
 							// Signal shutdown request
 						},
 						getSystemPrompt: () => this.ctx.session.systemPrompt,
+						fetchUsageReports: () => this.ctx.session.fetchUsageReports(),
 					});
 				} catch (err) {
 					this.showToolError(registeredTool.definition.name, err instanceof Error ? err.message : String(err));
@@ -890,6 +898,8 @@ export class ExtensionUiController {
 		}
 		this.#hookWidgetsAbove.clear();
 		this.#hookWidgetsBelow.clear();
+		this.#rightWidgets.clear();
+		this.#flushRightWidgets();
 		this.#rebuildHookWidgets();
 	}
 
