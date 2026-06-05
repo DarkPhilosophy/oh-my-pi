@@ -56,11 +56,32 @@ function shortDuration(ms: number): string {
 	return hour ? `${days}d${hour}h` : `${days}d`;
 }
 
+function ordinalDay(n: number): string {
+	const mod100 = n % 100;
+	if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
+	switch (n % 10) {
+		case 1:
+			return `${n}st`;
+		case 2:
+			return `${n}nd`;
+		case 3:
+			return `${n}rd`;
+		default:
+			return `${n}th`;
+	}
+}
+
 function resetLabel(resetsAt: number): string {
 	const duration = shortDuration(resetsAt - Date.now());
 	if (!duration) return "";
-	const time = new Date(resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-	return `${duration} at ${time}`;
+	const at = new Date(resetsAt);
+	const now = new Date();
+	const time = at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+	const sameDay =
+		at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
+	if (sameDay) return `${duration} at ${time}`;
+	// Beyond today: day-of-month is enough because reset time only moves forward.
+	return `${duration} at ${ordinalDay(at.getDate())} ${time}`;
 }
 
 function providerLabel(provider: string): string {

@@ -32,13 +32,16 @@ export class ExtensionUiController {
 	#hookWidgetsAbove = new Map<string, ExtensionUiComponent>();
 	#hookWidgetsBelow = new Map<string, ExtensionUiComponent>();
 	#rightWidgets = new Map<string, string[]>();
-	#extensionErrorsSubscribed = false;
+	#errorSubscribedRunners = new WeakSet<object>();
 	constructor(private ctx: InteractiveModeContext) {}
 
 	/**
 	 * Initialize the hook system with TUI-based UI context.
 	 */
 	async initHooksAndCustomTools(): Promise<void> {
+		this.clearExtensionTerminalInputListeners();
+		this.clearHookWidgets();
+
 		// Create and set hook & tool UI context
 		const uiContext: ExtensionUIContext = {
 			select: (title, options, dialogOptions) => this.showHookSelector(title, options, dialogOptions),
@@ -237,8 +240,8 @@ export class ExtensionUiController {
 
 		extensionRunner.initialize(actions, contextActions, commandActions, uiContext);
 
-		if (!this.#extensionErrorsSubscribed) {
-			this.#extensionErrorsSubscribed = true;
+		if (!this.#errorSubscribedRunners.has(extensionRunner)) {
+			this.#errorSubscribedRunners.add(extensionRunner);
 			extensionRunner.onError((error: ExtensionError) => {
 				this.showExtensionError(error.extensionPath, error.error);
 			});
@@ -254,22 +257,31 @@ export class ExtensionUiController {
 		const placement = options?.placement ?? "aboveEditor";
 		this.#removeHookWidget(this.#hookWidgetsAbove, key);
 		this.#removeHookWidget(this.#hookWidgetsBelow, key);
-		this.#rightWidgets.delete(key);
-		this.#flushRightWidgets();
+		const wasRight = this.#rightWidgets.has(key);
 
 		if (content === undefined) {
-			this.#flushRightWidgets();
+			if (wasRight) {
+				this.#rightWidgets.delete(key);
+				this.#flushRightWidgets();
+			}
 			this.#rebuildHookWidgets();
 			return;
 		}
 
 		if (placement === "rightEditor") {
+			// Updating an existing Map key preserves insertion order; deleting first
+			// would make animated/right-side widgets jump below siblings on refresh.
 			this.#rightWidgets.set(key, this.#contentToRightLines(content));
 			this.#flushRightWidgets();
 			this.#rebuildHookWidgets();
 			return;
 		}
 
+		// Moving a previously right-side key back inline must clear its stale lines.
+		if (wasRight) {
+			this.#rightWidgets.delete(key);
+			this.#flushRightWidgets();
+		}
 		const target = placement === "belowEditor" ? this.#hookWidgetsBelow : this.#hookWidgetsAbove;
 		target.set(key, this.#createHookWidget(content));
 		this.#rebuildHookWidgets();
@@ -281,11 +293,11 @@ export class ExtensionUiController {
 		widgets.delete(key);
 	}
 	#contentToRightLines(content: ExtensionWidgetContent): string[] {
-		if (Array.isArray(content)) return content.map(line => String(line));
+		if (Array.isArray(content)) return content.slice(0, MAX_WIDGET_LINES).map(line => String(line));
 		// Function-style content renders to a component; sample it at a nominal width.
 		const comp = this.#createHookWidget(content);
 		try {
-			return comp.render(48);
+			return comp.render(48).slice(0, MAX_WIDGET_LINES);
 		} finally {
 			comp.dispose?.();
 		}

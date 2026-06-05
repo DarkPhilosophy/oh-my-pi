@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor" })`): the panel is composited into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, shrinks in place when the negative space is short, and hides when there is no room. Also added `ctx.fetchUsageReports()` so usage/quota widgets can read provider reports without reaching into private APIs.
+
+### Changed
+
+- `/reload-plugins` now reinitializes extension UI hooks, and `initHooksAndCustomTools()` clears existing extension terminal-input listeners and hook widgets before re-emitting `session_start`. Reloading plugins no longer stacks duplicate input listeners or leaves stale widgets behind.
 ## [15.9.1] - 2026-06-04
 
 ### Added
