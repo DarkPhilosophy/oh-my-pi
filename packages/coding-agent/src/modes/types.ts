@@ -40,6 +40,7 @@ export type CompactionQueuedMessage = {
 export type SubmittedUserInput = {
 	text: string;
 	images?: ImageContent[];
+	imageLinks?: (string | undefined)[];
 	customType?: string;
 	display?: boolean;
 	cancelled: boolean;
@@ -75,6 +76,7 @@ export interface InteractiveModeContext {
 	todoContainer: Container;
 	btwContainer: Container;
 	omfgContainer: Container;
+	errorBannerContainer: Container;
 	editor: CustomEditor;
 	editorContainer: Container;
 	hookWidgetContainerAbove: Container;
@@ -108,6 +110,7 @@ export interface InteractiveModeContext {
 	planModePlanFilePath?: string;
 	hideThinkingBlock: boolean;
 	pendingImages: ImageContent[];
+	pendingImageLinks: (string | undefined)[];
 	compactionQueuedMessages: CompactionQueuedMessage[];
 	pendingTools: Map<string, ToolExecutionHandle>;
 	pendingBashComponents: BashExecutionComponent[];
@@ -159,6 +162,8 @@ export interface InteractiveModeContext {
 	// UI helpers
 	showStatus(message: string, options?: { dim?: boolean }): void;
 	showError(message: string): void;
+	showPinnedError(message: string): void;
+	clearPinnedError(): void;
 	showWarning(message: string): void;
 	showNewVersionNotification(newVersion: string): void;
 	clearEditor(): void;
@@ -173,6 +178,7 @@ export interface InteractiveModeContext {
 	startPendingSubmission(input: {
 		text: string;
 		images?: ImageContent[];
+		imageLinks?: (string | undefined)[];
 		customType?: string;
 		display?: boolean;
 	}): SubmittedUserInput;
@@ -193,7 +199,10 @@ export interface InteractiveModeContext {
 	 */
 	withLocalSubmission<T>(text: string, fn: () => Promise<T>, options?: { imageCount?: number }): Promise<T>;
 	isKnownSlashCommand(text: string): boolean;
-	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): Component[];
+	addMessageToChat(
+		message: AgentMessage,
+		options?: { populateHistory?: boolean; imageLinks?: readonly (string | undefined)[] },
+	): Component[];
 	renderSessionContext(
 		sessionContext: SessionContext,
 		options?: { updateFooter?: boolean; populateHistory?: boolean },
