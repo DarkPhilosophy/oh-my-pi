@@ -332,10 +332,9 @@ export function compositeRightPanel(
 		start = end;
 	}
 
-	// Do not cut semantic widget blocks. Right-side widgets are already allowed
-	// to be as tall as the current viewport; if the available negative-space run
-	// cannot fit the full widget, hide it instead of splicing a top/bottom shell
-	// around a partially truncated middle.
+	// Right-side widgets are semantic blocks. Do not splice a top/bottom shell
+	// around a truncated middle; if the available negative-space run cannot fit
+	// the full widget, hide it and let a later render place it when space exists.
 	if (bestStart < 0 || bestLen < widget.length) return baseLines;
 	const panel = widget;
 
