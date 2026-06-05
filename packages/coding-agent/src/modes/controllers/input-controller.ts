@@ -1,5 +1,4 @@
 import * as fs from "node:fs/promises";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AutocompleteProvider, SlashCommand } from "@oh-my-pi/pi-tui";
 import { $env, sanitizeText } from "@oh-my-pi/pi-utils";
 import { getRoleInfo } from "../../config/model-registry";
@@ -13,9 +12,10 @@ import type { AgentSessionEvent } from "../../session/agent-session";
 import { SKILL_PROMPT_MESSAGE_TYPE, type SkillPromptDetails } from "../../session/messages";
 import { executeBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
 import { isTinyTitleLocalModelKey } from "../../tiny/models";
+import { isLowSignalTitleInput } from "../../tiny/text";
 import { tinyTitleClient } from "../../tiny/title-client";
 import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
-import { copyToClipboard, readImageFromClipboard } from "../../utils/clipboard";
+import { copyToClipboard, readImageFromClipboard, readTextFromClipboard } from "../../utils/clipboard";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { ensureSupportedImageInput } from "../../utils/image-loading";
 import { resizeImage } from "../../utils/image-resize";
@@ -173,6 +173,11 @@ export class InputController {
 			this.ctx.keybindings.getKeys("app.clipboard.pasteImage"),
 		);
 		this.ctx.editor.onPasteImage = () => this.handleImagePaste();
+		this.ctx.editor.setActionKeys(
+			"app.clipboard.pasteTextRaw",
+			this.ctx.keybindings.getKeys("app.clipboard.pasteTextRaw"),
+		);
+		this.ctx.editor.onPasteTextRaw = () => void this.handleClipboardTextRawPaste();
 		this.ctx.editor.setActionKeys(
 			"app.clipboard.copyPrompt",
 			this.ctx.keybindings.getKeys("app.clipboard.copyPrompt"),
@@ -371,9 +376,12 @@ export class InputController {
 			// First, move any pending bash components to chat
 			this.ctx.flushPendingBashComponents();
 
-			// Generate session title on first message
-			const hasUserMessages = this.ctx.session.messages.some((m: AgentMessage) => m.role === "user");
-			if (!hasUserMessages && !this.ctx.sessionManager.getSessionName() && !$env.PI_NO_TITLE) {
+			// Auto-generate a session title while the session is still unnamed.
+			// Greetings / acknowledgements / empty input carry no task, so they are
+			// skipped deterministically (no model invoked, no download-progress UI)
+			// and the session stays unnamed — the next user message gets a fresh
+			// chance, so titling defers past "hi" instead of latching onto it.
+			if (!this.ctx.sessionManager.getSessionName() && !$env.PI_NO_TITLE && !isLowSignalTitleInput(text)) {
 				this.#showTinyTitleDownloadProgress(this.ctx.settings.get("providers.tinyModel"));
 				const registry = this.ctx.session.modelRegistry;
 				generateSessionTitle(
@@ -385,7 +393,9 @@ export class InputController {
 					provider => this.ctx.session.agent.metadataForProvider(provider),
 				)
 					.then(async title => {
-						if (title) {
+						// Re-check: a concurrent attempt for an earlier message may have
+						// already named the session. Don't clobber it.
+						if (title && !this.ctx.sessionManager.getSessionName()) {
 							const applied = await this.ctx.sessionManager.setSessionName(title, "auto");
 							if (applied) {
 								setSessionTerminalTitle(
@@ -687,6 +697,19 @@ export class InputController {
 		} catch {
 			this.ctx.showStatus("Failed to read clipboard");
 			return false;
+		}
+	}
+
+	async handleClipboardTextRawPaste(): Promise<void> {
+		try {
+			const text = await readTextFromClipboard();
+			if (text) {
+				this.ctx.editor.insertText(text);
+				this.ctx.ui.requestRender();
+				this.ctx.showStatus("No text in clipboard to paste raw");
+			}
+		} catch {
+			this.ctx.showStatus("Failed to paste raw text from clipboard");
 		}
 	}
 

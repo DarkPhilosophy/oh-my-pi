@@ -1,7 +1,7 @@
 import type { ModelManagerOptions } from "../model-manager";
 import { Effort } from "../model-thinking";
 import { getBundledModels } from "../models";
-import type { Api, Model, ThinkingConfig } from "../types";
+import type { Api, Model, Provider, ThinkingConfig } from "../types";
 import { isAnthropicOAuthToken, isRecord, toBoolean, toNumber, toPositiveNumber } from "../utils";
 import {
 	fetchOpenAICompatibleModels,
@@ -15,7 +15,7 @@ import { createBundledReferenceMap, createReferenceResolver } from "./bundled-re
 const MODELS_DEV_URL = "https://models.dev/api.json";
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
 const ANTHROPIC_OAUTH_BETA =
-	"claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05";
+	"claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11";
 
 export interface ModelsDevModel {
 	id?: string;
@@ -925,6 +925,36 @@ const ZHIPU_VISION_PATTERN = /^glm-[45](?:\.\d+)?v(?:-|$)/;
 // 7.5 Fireworks
 // ---------------------------------------------------------------------------
 
+/**
+ * Fireworks-published cap for the Kimi K2 family. Fireworks' `/v1/models`
+ * envelope generically reports `max_completion_tokens: 65536` for every Kimi
+ * deployment, but Kimi K2 (instruct / thinking / turbo) on Fireworks is
+ * documented to ship long reasoning traces that should be bounded — capping
+ * at 32,768 prevents handing callers a budget the router cannot honor.
+ * See https://github.com/can1357/oh-my-pi/issues/1849.
+ */
+export const FIREWORKS_KIMI_MAX_TOKENS = 32_768;
+
+/**
+ * Returns true for any Kimi K2.x public model id served by Fireworks-backed
+ * providers (`fireworks` direct, `firepass` router). Matches both the public
+ * catalog id (`kimi-k2.5`, `kimi-k2.6`, `kimi-k2.6-turbo`) and the canonical
+ * Fireworks wire id (`accounts/fireworks/{models,routers}/kimi-k2…`).
+ */
+export function isFireworksKimiK2ModelId(modelId: string): boolean {
+	const trimmed = modelId.toLowerCase();
+	if (trimmed.startsWith("kimi-k2")) return true;
+	return /\/kimi-k2(?:p\d+)?(?:[._-]|$)/.test(trimmed);
+}
+
+/**
+ * Clamp the Kimi K2 family's `maxTokens` to {@link FIREWORKS_KIMI_MAX_TOKENS}
+ * on Fireworks-backed providers, leaving every other model untouched.
+ */
+export function clampFireworksKimiMaxTokens(modelId: string, candidate: number): number {
+	return isFireworksKimiK2ModelId(modelId) ? Math.min(candidate, FIREWORKS_KIMI_MAX_TOKENS) : candidate;
+}
+
 export interface FireworksModelManagerConfig {
 	apiKey?: string;
 	baseUrl?: string;
@@ -1004,7 +1034,10 @@ export function fireworksModelManagerOptions(
 							name: toFireworksModelName(entry, model.name),
 							input: toBoolean(entry.supports_image_input) === true ? ["text", "image"] : ["text"],
 							contextWindow: toPositiveNumber(entry.context_length, model.contextWindow),
-							maxTokens: toPositiveNumber(entry.max_completion_tokens, model.maxTokens),
+							maxTokens: clampFireworksKimiMaxTokens(
+								publicModelId,
+								toPositiveNumber(entry.max_completion_tokens, model.maxTokens),
+							),
 						};
 					},
 				});
@@ -1905,33 +1938,49 @@ export function cloudflareAiGatewayModelManagerOptions(
 // 20. Xiaomi
 // ---------------------------------------------------------------------------
 
+/** Region codes for Xiaomi Token Plan clusters exposed as separate login providers. */
+export type XiaomiTokenPlanRegion = "sgp" | "ams" | "cn";
+
+/** Configures Xiaomi standard or regional Token Plan OpenAI-compatible model discovery. */
 export interface XiaomiModelManagerConfig {
 	apiKey?: string;
 	baseUrl?: string;
+	providerId?: Provider;
+	tokenPlanRegion?: XiaomiTokenPlanRegion;
 }
 
+const XIAOMI_TOKEN_PLAN_BASE_URLS: Record<XiaomiTokenPlanRegion, string> = {
+	sgp: "https://token-plan-sgp.xiaomimimo.com/v1",
+	ams: "https://token-plan-ams.xiaomimimo.com/v1",
+	cn: "https://token-plan-cn.xiaomimimo.com/v1",
+};
+
+const XIAOMI_TOKEN_PLAN_FALLBACK_BASE_URLS = [
+	XIAOMI_TOKEN_PLAN_BASE_URLS.sgp,
+	XIAOMI_TOKEN_PLAN_BASE_URLS.ams,
+	XIAOMI_TOKEN_PLAN_BASE_URLS.cn,
+];
+
+/** Builds a Xiaomi model manager, preserving Token Plan region provider ids during discovery. */
 export function xiaomiModelManagerOptions(
 	config?: XiaomiModelManagerConfig,
 ): ModelManagerOptions<"openai-completions"> {
 	const apiKey = config?.apiKey;
-	// Xiaomi splits API keys across two backends: standard `sk-` keys hit
-	// api.xiaomimimo.com; "token plan" `tp-` keys are scoped to a regional
-	// cluster and are tried in order until discovery succeeds.
-	const TOKEN_PLAN_BASE_URLS = [
-		"https://token-plan-sgp.xiaomimimo.com/v1",
-		"https://token-plan-ams.xiaomimimo.com/v1",
-		"https://token-plan-cn.xiaomimimo.com/v1",
-	] as const;
-	const STANDARD_BASE_URL = "https://api.xiaomimimo.com/v1";
-	const isTokenPlanKey = apiKey?.startsWith("tp-");
+	const providerId = config?.providerId ?? "xiaomi";
+	const tokenPlanBaseUrls = config?.tokenPlanRegion
+		? [XIAOMI_TOKEN_PLAN_BASE_URLS[config.tokenPlanRegion]]
+		: XIAOMI_TOKEN_PLAN_FALLBACK_BASE_URLS;
+	const XIAOMI_STANDARD_BASE_URL = "https://api.xiaomimimo.com/v1";
+	const isTokenPlanProvider = config?.tokenPlanRegion !== undefined || providerId.startsWith("xiaomi-token-plan-");
+	const isTokenPlanKey = isTokenPlanProvider || apiKey?.startsWith("tp-");
 	// Token-plan keys always use a TP cluster; config?.baseUrl (from catalog)
 	// would incorrectly pin to the standard endpoint (api.xiaomimimo.com).
-	const baseUrl = isTokenPlanKey ? TOKEN_PLAN_BASE_URLS[0] : (config?.baseUrl ?? STANDARD_BASE_URL);
+	const baseUrl = isTokenPlanKey ? tokenPlanBaseUrls[0] : (config?.baseUrl ?? XIAOMI_STANDARD_BASE_URL);
 	const references = createBundledReferenceMap<"openai-completions">("xiaomi");
 	const fetchModels = (url: string) =>
 		fetchOpenAICompatibleModels({
 			api: "openai-completions",
-			provider: "xiaomi",
+			provider: providerId,
 			baseUrl: url,
 			apiKey,
 			filterModel: (_entry, model) => !model.id.includes("-tts"),
@@ -1940,18 +1989,21 @@ export function xiaomiModelManagerOptions(
 				const model = mapWithBundledReference(entry, defaults, reference);
 				return {
 					...model,
+					api: "openai-completions",
+					provider: providerId,
+					baseUrl: defaults.baseUrl,
 					name: toModelName(entry.display_name, model.name),
 				};
 			},
 		});
 	return {
-		providerId: "xiaomi",
+		providerId,
 		...(apiKey && {
 			fetchDynamicModels: async () => {
 				if (!isTokenPlanKey) {
 					return fetchModels(baseUrl);
 				}
-				for (const url of TOKEN_PLAN_BASE_URLS) {
+				for (const url of tokenPlanBaseUrls) {
 					const result = await fetchModels(url);
 					if (result) return result;
 				}
@@ -1974,20 +2026,24 @@ export function litellmModelManagerOptions(
 ): ModelManagerOptions<"openai-completions"> {
 	const apiKey = config?.apiKey;
 	const baseUrl = config?.baseUrl ?? "http://localhost:4000/v1";
-	const references = createBundledReferenceMap<"openai-completions">("litellm");
 	return {
 		providerId: "litellm",
-		fetchDynamicModels: () =>
-			fetchOpenAICompatibleModels({
+		// litellm is a local-only proxy whose /v1/models returns bare ids with no
+		// metadata, and it is never bundled in models.json (that would leak the
+		// machine's localhost catalog). It proxies known upstream models, so we
+		// enrich discovered ids against models.dev — the same reference source the
+		// gateway providers (fireworks et al.) use — instead of a bundled map.
+		fetchDynamicModels: async () => {
+			const modelsDevReferences = await loadModelsDevReferences<"openai-completions">();
+			return fetchOpenAICompatibleModels({
 				api: "openai-completions",
 				provider: "litellm",
 				baseUrl,
 				apiKey,
-				mapModel: (entry, defaults) => {
-					const reference = references.get(defaults.id);
-					return mapWithBundledReference(entry, defaults, reference);
-				},
-			}),
+				mapModel: (entry, defaults) =>
+					mapWithBundledReference(entry, defaults, modelsDevReferences.get(defaults.id)),
+			});
+		},
 	};
 }
 
@@ -2471,19 +2527,32 @@ function createOpenCodeApiResolution(
 	};
 }
 
-const OPENCODE_ZEN_API_RESOLUTION = createOpenCodeApiResolution("https://opencode.ai/zen");
+// OpenCode Zen: models.dev declares minimax-m3-free (and forward-compat
+// minimax-m3) with `provider.npm = "@ai-sdk/anthropic"`, but the Zen gateway
+// only serves them at https://opencode.ai/zen/v1/chat/completions (verified
+// against the live /v1/models response — minimax-m3-free is listed there, and
+// the gateway has no /v1/messages route for it). Without this override the
+// resolver POSTs anthropic-shaped requests to /v1/messages and the UI surfaces
+// raw <invoke>/<|minimax|>/<tool_call> markup (#1617).
+const OPENCODE_ZEN_API_RESOLUTION = createOpenCodeApiResolution("https://opencode.ai/zen", {
+	"minimax-m3": "openai-completions",
+	"minimax-m3-free": "openai-completions",
+});
 // OpenCode Go: models.dev declares minimax-m2.7 / qwen3.5-plus / qwen3.6-plus
-// with `provider.npm = "@ai-sdk/anthropic"`, but the OpenCode Go gateway only
-// serves them at `https://opencode.ai/zen/go/v1/chat/completions` (verified
-// against https://opencode.ai/zen/go/v1/models and the upstream endpoint
-// table at https://opencode.ai/docs/go/#endpoints — minimax-m2.5 works the
-// same way and lacks an `npm` field on models.dev so it already falls through
-// to the openai-completions default). Without this override the resolver
-// would POST anthropic-style requests to /v1/messages and the gateway would
-// return its `Page Not Found` HTML (issue #887). Override the resolver so
-// regenerating models.json keeps the correct routing.
+// (and now also minimax-m3) with `provider.npm = "@ai-sdk/anthropic"`, but
+// the OpenCode Go gateway only serves them at
+// `https://opencode.ai/zen/go/v1/chat/completions` (verified against
+// https://opencode.ai/zen/go/v1/models and the upstream endpoint table at
+// https://opencode.ai/docs/go/#endpoints — minimax-m2.5 works the same way
+// and lacks an `npm` field on models.dev so it already falls through to the
+// openai-completions default). Without this override the resolver would POST
+// anthropic-style requests to /v1/messages and the gateway would return its
+// `Page Not Found` HTML (issue #887 for the qwen/m2.7 entries; minimax-m3
+// and minimax-m3-free added under #1617 for the same root cause).
 const OPENCODE_GO_API_RESOLUTION = createOpenCodeApiResolution("https://opencode.ai/zen/go", {
 	"minimax-m2.7": "openai-completions",
+	"minimax-m3": "openai-completions",
+	"minimax-m3-free": "openai-completions",
 	"qwen3.5-plus": "openai-completions",
 	"qwen3.6-plus": "openai-completions",
 });

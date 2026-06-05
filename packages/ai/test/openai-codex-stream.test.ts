@@ -106,7 +106,7 @@ function createNoProgressCodexSse(signal: AbortSignal | undefined): Response {
 						type: "function_call",
 						id: "fc_stalled",
 						call_id: "call_stalled",
-						name: "todo_write",
+						name: "todo",
 						arguments: "",
 					},
 				}),
@@ -280,6 +280,35 @@ describe("openai-codex streaming", () => {
 		]);
 	});
 
+	it("sends an async onPayload replacement body", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		const token = createCodexTestToken();
+		const context = createCodexTestContext();
+		const model = { ...createCodexTestModel("https://chatgpt.com/backend-api"), preferWebsockets: false };
+		let capturedBody: Record<string, unknown> | undefined;
+		global.fetch = vi.fn(async (_input: string | URL, init?: RequestInit) => {
+			capturedBody = typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
+			return new Response(createCompletedCodexSse("Hello"), {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			});
+		}) as unknown as typeof fetch;
+
+		const result = await streamOpenAICodexResponses(model, context, {
+			apiKey: token,
+			onPayload: async payload => ({
+				...(payload as Record<string, unknown>),
+				input: [{ role: "user", content: [{ type: "input_text", text: "replacement" }] }],
+				prompt_cache_key: "replacement-cache-key",
+			}),
+		}).result();
+
+		expect(result.stopReason).toBe("stop");
+		expect(capturedBody?.input).toEqual([{ role: "user", content: [{ type: "input_text", text: "replacement" }] }]);
+		expect(capturedBody?.prompt_cache_key).toBe("replacement-cache-key");
+	});
+
 	it("persists final tool-call args when SSE finalizes via output_item.done without an args.done event", async () => {
 		const tempDir = TempDir.createSync("@pi-codex-stream-");
 		setAgentDir(tempDir.path());
@@ -333,7 +362,7 @@ describe("openai-codex streaming", () => {
 			{
 				type: "toolCall",
 				id: "call_stalled|fc_stalled",
-				name: "todo_write",
+				name: "todo",
 				arguments: {},
 				partialJson: "",
 			},
@@ -2045,7 +2074,7 @@ describe("openai-codex streaming", () => {
 						type: "function_call",
 						id: "fc_ws_stalled",
 						call_id: "call_ws_stalled",
-						name: "todo_write",
+						name: "todo",
 						arguments: "",
 					},
 				});
@@ -2055,7 +2084,7 @@ describe("openai-codex streaming", () => {
 						type: "function_call",
 						id: "fc_ws_stalled",
 						call_id: "call_ws_stalled",
-						name: "todo_write",
+						name: "todo",
 						arguments: "{}",
 					},
 				});
@@ -2090,7 +2119,7 @@ describe("openai-codex streaming", () => {
 			expect.objectContaining({
 				type: "toolCall",
 				id: "call_ws_stalled|fc_ws_stalled",
-				name: "todo_write",
+				name: "todo",
 				arguments: {},
 			}),
 		]);

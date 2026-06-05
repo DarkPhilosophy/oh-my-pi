@@ -56,6 +56,76 @@ describe("agentLoop with AgentMessage", () => {
 		expect(eventTypes).toContain("agent_end");
 	});
 
+	it("retries when harmony leakage reaches the committed assistant message (openai-codex)", async () => {
+		const context: AgentContext = {
+			systemPrompt: ["You are helpful."],
+			messages: [],
+			tools: [],
+		};
+		// First response leaks a harmony payload as visible assistant text; the
+		// retry is clean. Mitigation only engages for openai-codex.
+		const leak = "Some prose. analysis to=functions.edit code 大发官网";
+		const mock = createMockModel({
+			provider: "openai-codex",
+			responses: [{ content: [leak] }, { content: ["clean retry response"] }],
+		});
+		const config: AgentLoopConfig = { model: mock.model, convertToLlm: identityConverter };
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("Hello")], context, config, undefined, mock.stream);
+		for await (const event of stream) {
+			events.push(event);
+		}
+		const messages = await stream.result();
+
+		// The leaked attempt was retried, not committed.
+		expect(mock.calls).toHaveLength(2);
+		expect(messages).toHaveLength(2);
+		const final = messages[1];
+		if (final.role !== "assistant") throw new Error("expected assistant message");
+		expect(final.content).toEqual([{ type: "text", text: "clean retry response" }]);
+		expect(JSON.stringify(messages)).not.toContain("to=functions.");
+	});
+
+	it("does not hard-abort a codex tool call whose argument legitimately carries the marker", async () => {
+		// A legit edit of a file (e.g. these harmony fixtures) whose content carries
+		// `to=functions.*` next to a channel word + non-Latin script. tool_arg is
+		// gated on the trailing-garbage `T` co-signal, and the loop supplies no parse
+		// boundary, so the call commits + executes once instead of being detected as
+		// a leak and retried/escalated.
+		const toolSchema = z.object({ input: z.string() });
+		const executed: string[] = [];
+		const tool: AgentTool<typeof toolSchema, { input: string }> = {
+			name: "edit",
+			label: "Edit",
+			description: "Edit tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				executed.push(params.input);
+				return { content: [{ type: "text", text: "ok" }], details: { input: params.input } };
+			},
+		};
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [tool] };
+		const leakyArg = "@fixtures/corpus.json\n+\tanalysis to=functions.edit code 大发官网\n";
+		const mock = createMockModel({
+			provider: "openai-codex",
+			responses: [
+				{ content: [{ type: "toolCall", id: "tool-1", name: "edit", arguments: { input: leakyArg } }] },
+				{ content: ["done"] },
+			],
+		});
+		const config: AgentLoopConfig = { model: mock.model, convertToLlm: identityConverter };
+		const stream = agentLoop([createUserMessage("edit a fixture")], context, config, undefined, mock.stream);
+		for await (const _event of stream) {
+			// drain
+		}
+		// The tool ran on the original (unmodified) argument and the turn was not
+		// retried — a hard-abort would have left `executed` empty and consumed the
+		// "done" response as a clean retry instead.
+		expect(executed).toEqual([leakyArg]);
+		expect(mock.calls).toHaveLength(2);
+	});
+
 	it("emits an aborted assistant message when cancellation happens before provider events", async () => {
 		const context: AgentContext = {
 			systemPrompt: ["You are helpful."],
@@ -1064,5 +1134,74 @@ describe("agentLoopContinue with AgentMessage", () => {
 		expect(hookCalls).toBe(2);
 		expect(messages.map(message => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
 		expect(messages[2]).toMatchObject({ role: "user", content: "follow-up" });
+	});
+
+	it("skips tool calls when the assistant turn was truncated by max_tokens (stop_reason: length) and tells the model to chunk", async () => {
+		// Regression for issue #1785 (`write` tool crash on >1020-line content).
+		// When a model emits a `write` call whose `content` argument exceeds the
+		// model's `max_tokens` output cap, the provider cuts the stream off mid-
+		// arguments and reports `stop_reason: length`. The agent must NOT execute
+		// the truncated call (its `content` is a partial string), AND the synthetic
+		// tool result must guide the model towards a chunked retry — otherwise the
+		// auto-continue loop re-emits the same oversized payload and the file never
+		// gets written ("write tool crash" from the reporter's POV).
+		const writeSchema = z.object({ path: z.string(), content: z.string() });
+		const executed: { path: string; content: string }[] = [];
+		const writeTool: AgentTool<typeof writeSchema, { path: string }> = {
+			name: "write",
+			label: "Write",
+			description: "Write tool",
+			parameters: writeSchema,
+			async execute(_id, params) {
+				executed.push({ path: params.path, content: params.content });
+				return { content: [{ type: "text", text: "ok" }], details: { path: params.path } };
+			},
+		};
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [writeTool] };
+
+		// The model emits one write tool call, then the stream ends with
+		// stop_reason: "length". The arguments field carries a truncated content
+		// payload — exactly what the streaming JSON parser produces when the
+		// closing quote/brace never arrive.
+		const truncatedContent = "line 1\nline 2\n... (cut off mid-string"; // no closing quote
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{
+							type: "toolCall",
+							id: "tc-write-1",
+							name: "write",
+							arguments: { path: "/tmp/huge.ts", content: truncatedContent },
+						},
+					],
+					stopReason: "length",
+				},
+			],
+		});
+		const config: AgentLoopConfig = { model: mock.model, convertToLlm: identityConverter };
+		const stream = agentLoop([createUserMessage("write huge file")], context, config, undefined, mock.stream);
+		for await (const _event of stream) {
+			// drain
+		}
+		const messages = await stream.result();
+
+		// The tool MUST NOT have been executed — the arguments are mid-string and
+		// running them would persist a half-written file.
+		expect(executed).toEqual([]);
+
+		// The synthetic tool result must surface the truncation cause so the model
+		// can recover by chunking instead of re-emitting the same payload.
+		const toolResult = messages.find(m => m.role === "toolResult");
+		expect(toolResult).toBeDefined();
+		if (toolResult?.role !== "toolResult") throw new Error("expected tool result");
+		expect(toolResult.toolCallId).toBe("tc-write-1");
+		expect(toolResult.isError).toBe(true);
+		const text = toolResult.content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map(c => c.text)
+			.join("\n");
+		expect(text).toContain("stop_reason: length");
+		expect(text).toMatch(/split|chunk/i);
 	});
 });
