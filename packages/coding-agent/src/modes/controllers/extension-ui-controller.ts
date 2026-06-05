@@ -18,6 +18,7 @@ import type {
 	TerminalInputHandler,
 } from "../../extensibility/extensions";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
+import { createSessionMemoryRuntimeContext } from "../../memory-backend/runtime";
 import { HookEditorComponent } from "../../modes/components/hook-editor";
 import { HookInputComponent } from "../../modes/components/hook-input";
 import { HookSelectorComponent, type HookSelectorSlider } from "../../modes/components/hook-selector";
@@ -31,17 +32,12 @@ export class ExtensionUiController {
 	#extensionTerminalInputUnsubscribers = new Set<() => void>();
 	#hookWidgetsAbove = new Map<string, ExtensionUiComponent>();
 	#hookWidgetsBelow = new Map<string, ExtensionUiComponent>();
-	#rightWidgets = new Map<string, string[]>();
-	#errorSubscribedRunners = new WeakSet<object>();
 	constructor(private ctx: InteractiveModeContext) {}
 
 	/**
 	 * Initialize the hook system with TUI-based UI context.
 	 */
 	async initHooksAndCustomTools(): Promise<void> {
-		this.clearExtensionTerminalInputListeners();
-		this.clearHookWidgets();
-
 		// Create and set hook & tool UI context
 		const uiContext: ExtensionUIContext = {
 			select: (title, options, dialogOptions) => this.showHookSelector(title, options, dialogOptions),
@@ -121,6 +117,11 @@ export class ExtensionUiController {
 			setSessionName: name => this.#updateSessionName(name),
 		};
 		const contextActions: ExtensionContextActions = {
+			memory: createSessionMemoryRuntimeContext(
+				this.ctx.session,
+				this.ctx.settings.getAgentDir(),
+				this.ctx.sessionManager.getCwd(),
+			),
 			getModel: () => this.ctx.session.model,
 			isIdle: () => !this.ctx.session.isStreaming,
 			abort: () => this.ctx.session.abort(),
@@ -134,7 +135,6 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
-			fetchUsageReports: () => this.ctx.session.fetchUsageReports(),
 		};
 		const commandActions: ExtensionCommandContextActions = {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
@@ -240,12 +240,10 @@ export class ExtensionUiController {
 
 		extensionRunner.initialize(actions, contextActions, commandActions, uiContext);
 
-		if (!this.#errorSubscribedRunners.has(extensionRunner)) {
-			this.#errorSubscribedRunners.add(extensionRunner);
-			extensionRunner.onError((error: ExtensionError) => {
-				this.showExtensionError(error.extensionPath, error.error);
-			});
-		}
+		// Subscribe to extension errors
+		extensionRunner.onError((error: ExtensionError) => {
+			this.showExtensionError(error.extensionPath, error.error);
+		});
 
 		// Emit session_start event
 		await extensionRunner.emit({
@@ -257,31 +255,12 @@ export class ExtensionUiController {
 		const placement = options?.placement ?? "aboveEditor";
 		this.#removeHookWidget(this.#hookWidgetsAbove, key);
 		this.#removeHookWidget(this.#hookWidgetsBelow, key);
-		const wasRight = this.#rightWidgets.has(key);
 
 		if (content === undefined) {
-			if (wasRight) {
-				this.#rightWidgets.delete(key);
-				this.#flushRightWidgets();
-			}
 			this.#rebuildHookWidgets();
 			return;
 		}
 
-		if (placement === "rightEditor") {
-			// Updating an existing Map key preserves insertion order; deleting first
-			// would make animated/right-side widgets jump below siblings on refresh.
-			this.#rightWidgets.set(key, this.#contentToRightLines(content));
-			this.#flushRightWidgets();
-			this.#rebuildHookWidgets();
-			return;
-		}
-
-		// Moving a previously right-side key back inline must clear its stale lines.
-		if (wasRight) {
-			this.#rightWidgets.delete(key);
-			this.#flushRightWidgets();
-		}
 		const target = placement === "belowEditor" ? this.#hookWidgetsBelow : this.#hookWidgetsAbove;
 		target.set(key, this.#createHookWidget(content));
 		this.#rebuildHookWidgets();
@@ -291,31 +270,6 @@ export class ExtensionUiController {
 		const existing = widgets.get(key);
 		existing?.dispose?.();
 		widgets.delete(key);
-	}
-	#contentToRightLines(content: ExtensionWidgetContent): string[] {
-		if (Array.isArray(content)) return content.slice(0, MAX_WIDGET_LINES).map(line => String(line));
-		// Function-style content renders to a component; sample it at a nominal width.
-		const comp = this.#createHookWidget(content);
-		try {
-			return comp.render(48).slice(0, MAX_WIDGET_LINES);
-		} finally {
-			comp.dispose?.();
-		}
-	}
-
-	#flushRightWidgets(): void {
-		if (this.#rightWidgets.size === 0) {
-			this.ctx.setRightInfo(undefined);
-			return;
-		}
-		const merged: string[] = [];
-		let first = true;
-		for (const lines of this.#rightWidgets.values()) {
-			if (!first) merged.push("");
-			first = false;
-			merged.push(...lines);
-		}
-		this.ctx.setRightInfo(merged);
 	}
 
 	#createHookWidget(content: ExtensionWidgetContent): ExtensionUiComponent {
@@ -408,6 +362,11 @@ export class ExtensionUiController {
 			setSessionName: name => this.#updateSessionName(name),
 		};
 		const contextActions: ExtensionContextActions = {
+			memory: createSessionMemoryRuntimeContext(
+				this.ctx.session,
+				this.ctx.settings.getAgentDir(),
+				this.ctx.sessionManager.getCwd(),
+			),
 			getModel: () => this.ctx.session.model,
 			isIdle: () => !this.ctx.session.isStreaming,
 			abort: () => this.ctx.session.abort(),
@@ -421,7 +380,6 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
-			fetchUsageReports: () => this.ctx.session.fetchUsageReports(),
 		};
 		const commandActions: ExtensionCommandContextActions = {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
@@ -598,7 +556,6 @@ export class ExtensionUiController {
 							// Signal shutdown request
 						},
 						getSystemPrompt: () => this.ctx.session.systemPrompt,
-						fetchUsageReports: () => this.ctx.session.fetchUsageReports(),
 					});
 				} catch (err) {
 					this.showToolError(registeredTool.definition.name, err instanceof Error ? err.message : String(err));
@@ -902,8 +859,6 @@ export class ExtensionUiController {
 		}
 		this.#hookWidgetsAbove.clear();
 		this.#hookWidgetsBelow.clear();
-		this.#rightWidgets.clear();
-		this.#flushRightWidgets();
 		this.#rebuildHookWidgets();
 	}
 

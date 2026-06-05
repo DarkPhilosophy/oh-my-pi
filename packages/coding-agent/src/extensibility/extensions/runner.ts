@@ -2,16 +2,11 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type {
-	CredentialDisabledEvent,
-	ImageContent,
-	Model,
-	ProviderResponseMetadata,
-	UsageReport,
-} from "@oh-my-pi/pi-ai";
+import type { CredentialDisabledEvent, ImageContent, Model, ProviderResponseMetadata } from "@oh-my-pi/pi-ai";
 import type { KeyId } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../config/model-registry";
+import type { MemoryRuntimeContext } from "../../memory-backend/types";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { SessionManager } from "../../session/session-manager";
 import type {
@@ -176,8 +171,27 @@ const noOpUIContext: ExtensionUIContext = {
 	setToolsExpanded: () => {},
 };
 
+const noOpMemoryContext: MemoryRuntimeContext = {
+	async status() {
+		return {
+			backend: "off",
+			active: false,
+			writable: false,
+			searchable: false,
+			message: "No active memory context.",
+		};
+	},
+	async search(query: string) {
+		return { backend: "off", query, count: 0, items: [], message: "No active memory context." };
+	},
+	async save() {
+		return { backend: "off", stored: 0, message: "No active memory context." };
+	},
+};
+
 export class ExtensionRunner {
 	#uiContext: ExtensionUIContext;
+	#memoryContext: MemoryRuntimeContext = noOpMemoryContext;
 	#errorListeners: Set<ExtensionErrorListener> = new Set();
 	#getModel: () => Model | undefined = () => undefined;
 	#isIdleFn: () => boolean = () => true;
@@ -185,7 +199,6 @@ export class ExtensionRunner {
 	#abortFn: () => void = () => {};
 	#hasPendingMessagesFn: () => boolean = () => false;
 	#getContextUsageFn: () => ContextUsage | undefined = () => undefined;
-	#fetchUsageReportsFn: () => Promise<UsageReport[] | null> = async () => null;
 	#compactFn: (instructionsOrOptions?: string | CompactOptions) => Promise<void> = async () => {};
 	#getSystemPromptFn: () => string[] = () => [];
 	#newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
@@ -241,8 +254,8 @@ export class ExtensionRunner {
 		this.#abortFn = contextActions.abort;
 		this.#hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.#shutdownHandler = contextActions.shutdown;
-		this.#fetchUsageReportsFn = contextActions.fetchUsageReports;
 		this.#getSystemPromptFn = contextActions.getSystemPrompt;
+		this.#memoryContext = contextActions.memory ?? noOpMemoryContext;
 
 		// Command context actions (optional, only for interactive mode)
 		if (commandContextActions) {
@@ -471,6 +484,7 @@ export class ExtensionRunner {
 		const getModel = this.#getModel;
 		return {
 			ui: this.#uiContext,
+			memory: this.#memoryContext,
 			getContextUsage: () => this.#getContextUsageFn(),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
 			hasUI: this.hasUI(),
@@ -483,7 +497,6 @@ export class ExtensionRunner {
 			isIdle: () => this.#isIdleFn(),
 			abort: () => this.#abortFn(),
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
-			fetchUsageReports: () => this.#fetchUsageReportsFn(),
 			shutdown: () => this.#shutdownHandler(),
 			getSystemPrompt: () => this.#getSystemPromptFn(),
 		};

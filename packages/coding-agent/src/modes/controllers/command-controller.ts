@@ -25,7 +25,12 @@ import {
 	resolveSeedsForScope,
 	summarizeMentalModel,
 } from "../../hindsight";
-import { resolveMemoryBackend } from "../../memory-backend";
+import {
+	type MemoryBackendSaveResult,
+	type MemoryBackendSearchResult,
+	type MemoryBackendStatus,
+	resolveMemoryBackend,
+} from "../../memory-backend";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
 import { BorderedLoader } from "../../modes/components/bordered-loader";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
@@ -55,6 +60,55 @@ function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown:
 	ctx.chatContainer.addChild(new Markdown(markdown.trim(), 1, 1, getMarkdownTheme()));
 	ctx.chatContainer.addChild(new DynamicBorder());
 	ctx.ui.requestRender();
+}
+
+function renderMemoryStatusMarkdown(status: MemoryBackendStatus): string {
+	const lines = [
+		"# Memory Status",
+		"",
+		`- Backend: ${status.backend}`,
+		`- Active: ${status.active ? "yes" : "no"}`,
+		`- Searchable: ${status.searchable ? "yes" : "no"}`,
+		`- Writable: ${status.writable ? "yes" : "no"}`,
+	];
+	if (status.scope) lines.push(`- Scope: ${status.scope}`);
+	if (status.retainBank) lines.push(`- Retain bank: ${status.retainBank}`);
+	if (status.recallBanks?.length) lines.push(`- Recall banks: ${status.recallBanks.join(", ")}`);
+	if (status.workingCount !== undefined) lines.push(`- Working memories: ${status.workingCount}`);
+	if (status.episodicCount !== undefined) lines.push(`- Episodic memories: ${status.episodicCount}`);
+	if (status.tripleCount !== undefined) lines.push(`- Triples: ${status.tripleCount}`);
+	if (status.lastMemory) lines.push(`- Last memory: ${status.lastMemory}`);
+	if (status.lastRecall !== undefined) lines.push(`- Last recall injected: ${status.lastRecall ? "yes" : "no"}`);
+	if (status.database) lines.push(`- Database: ${status.database}`);
+	if (status.message) lines.push("", status.message);
+	if (status.error) lines.push("", `Error: ${status.error}`);
+	return lines.join("\n");
+}
+
+function renderMemorySearchMarkdown(result: MemoryBackendSearchResult): string {
+	if (result.message) return result.message;
+	if (result.items.length === 0) return `No memories found for: ${result.query}`;
+	const lines = [
+		`# Memory Search`,
+		"",
+		`Found ${result.count} ${result.count === 1 ? "memory" : "memories"} for: ${result.query}`,
+		"",
+	];
+	for (const item of result.items) {
+		const id = item.id ? ` (id: ${item.id})` : "";
+		const source = item.source ? ` [${item.source}]` : "";
+		const timestamp = item.timestamp ? ` (${item.timestamp.slice(0, 10)})` : "";
+		const score = typeof item.score === "number" ? ` score=${item.score.toFixed(3)}` : "";
+		lines.push(`- ${item.content}${id}${source}${timestamp}${score}`);
+	}
+	return lines.join("\n");
+}
+
+function renderMemorySaveMarkdown(result: MemoryBackendSaveResult): string {
+	if (result.stored <= 0) return result.message ?? "No memory stored.";
+	const queued = result.queued ? " queued" : " stored";
+	const ids = result.ids?.length ? ` (${result.ids.join(", ")})` : "";
+	return `${result.stored} ${result.stored === 1 ? "memory" : "memories"}${queued}${ids}.${result.message ? ` ${result.message}` : ""}`;
 }
 
 export class CommandController {
@@ -579,9 +633,12 @@ export class CommandController {
 
 	async handleMemoryCommand(text: string): Promise<void> {
 		const argumentText = text.slice(7).trim();
-		const action = argumentText.split(/\s+/, 1)[0]?.toLowerCase() || "view";
+		const [verb = "view", ...rest] = argumentText.split(/\s+/);
+		const action = verb.toLowerCase();
+		const argument = rest.join(" ").trim();
 		const agentDir = this.ctx.settings.getAgentDir();
 		const backend = resolveMemoryBackend(this.ctx.settings);
+		const memoryContext = { agentDir, cwd: this.ctx.sessionManager.getCwd(), session: this.ctx.session };
 
 		if (action === "view") {
 			const payload = await backend.buildDeveloperInstructions(agentDir, this.ctx.settings, this.ctx.session);
@@ -596,6 +653,60 @@ export class CommandController {
 			this.ctx.chatContainer.addChild(new Markdown(payload, 1, 1, getMarkdownTheme()));
 			this.ctx.chatContainer.addChild(new DynamicBorder());
 			this.ctx.ui.requestRender();
+			return;
+		}
+
+		if (action === "status") {
+			try {
+				const status = await backend.status?.(memoryContext);
+				if (!status) {
+					this.ctx.showWarning(`Memory status is not available for the ${backend.id} backend.`);
+					return;
+				}
+				showMarkdownPanel(this.ctx, "Memory Status", renderMemoryStatusMarkdown(status));
+			} catch (error) {
+				this.ctx.showError(`Memory status failed: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			return;
+		}
+
+		if (action === "search") {
+			if (!argument) {
+				this.ctx.showError("Usage: /memory search <query>");
+				return;
+			}
+			try {
+				const result = await backend.search?.(memoryContext, argument, { limit: 10 });
+				if (!result) {
+					this.ctx.showWarning(`Memory search is not available for the ${backend.id} backend.`);
+					return;
+				}
+				showMarkdownPanel(this.ctx, "Memory Search", renderMemorySearchMarkdown(result));
+			} catch (error) {
+				this.ctx.showError(`Memory search failed: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			return;
+		}
+
+		if (action === "save" || action === "parse") {
+			if (!argument) {
+				this.ctx.showError(`Usage: /memory ${action} <memory text>`);
+				return;
+			}
+			try {
+				const result = await backend.save?.(memoryContext, {
+					content: argument,
+					source: `slash-memory-${action}`,
+					context: `/memory ${action}`,
+				});
+				if (!result) {
+					this.ctx.showWarning(`Memory save is not available for the ${backend.id} backend.`);
+					return;
+				}
+				this.ctx.showStatus(renderMemorySaveMarkdown(result));
+			} catch (error) {
+				this.ctx.showError(`Memory save failed: ${error instanceof Error ? error.message : String(error)}`);
+			}
 			return;
 		}
 
@@ -640,7 +751,9 @@ export class CommandController {
 			return;
 		}
 
-		this.ctx.showError("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|mm ...>");
+		this.ctx.showError(
+			"Usage: /memory <view|status|search|save|parse|stats|diagnose|clear|reset|enqueue|rebuild|mm ...>",
+		);
 	}
 
 	async #handleMentalModelsSubcommand(argumentText: string): Promise<void> {

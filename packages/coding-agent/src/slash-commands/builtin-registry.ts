@@ -19,7 +19,12 @@ import {
 	getPluginsCacheDir,
 	MarketplaceManager,
 } from "../extensibility/plugins/marketplace";
-import { resolveMemoryBackend } from "../memory-backend";
+import {
+	type MemoryBackendSaveResult,
+	type MemoryBackendSearchResult,
+	type MemoryBackendStatus,
+	resolveMemoryBackend,
+} from "../memory-backend";
 import type { InteractiveModeContext } from "../modes/types";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
@@ -922,6 +927,10 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		acpInputHint: "<subcommand>",
 		subcommands: [
 			{ name: "view", description: "Show current memory injection payload" },
+			{ name: "status", description: "Show structured memory backend status" },
+			{ name: "search", description: "Search memory explicitly" },
+			{ name: "save", description: "Save a memory from command text" },
+			{ name: "parse", description: "Save text and ask the backend to extract durable facts" },
 			{ name: "stats", description: "Show memory backend statistics" },
 			{ name: "diagnose", description: "Run memory backend diagnostics" },
 			{ name: "clear", description: "Clear persisted memory data and artifacts" },
@@ -941,9 +950,12 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
-			const verb = (command.args.trim().split(/\s+/)[0] ?? "").toLowerCase() || "view";
+			const [verb = "view", ...rest] = command.args.trim().split(/\s+/);
+			const action = verb.toLowerCase();
+			const argument = rest.join(" ").trim();
 			const backend = resolveMemoryBackend(runtime.settings);
-			switch (verb) {
+			const context = { agentDir: runtime.settings.getAgentDir(), cwd: runtime.cwd, session: runtime.session };
+			switch (action) {
 				case "view": {
 					const payload = await backend.buildDeveloperInstructions(
 						runtime.settings.getAgentDir(),
@@ -951,6 +963,40 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 						runtime.session,
 					);
 					await runtime.output(payload || "Memory payload is empty.");
+					return commandConsumed();
+				}
+				case "status": {
+					const status = await backend.status?.(context);
+					await runtime.output(
+						status
+							? renderMemoryStatusMarkdown(status)
+							: `Memory status is not available for the ${backend.id} backend.`,
+					);
+					return commandConsumed();
+				}
+				case "search": {
+					if (!argument) return usage("Usage: /memory search <query>", runtime);
+					const result = await backend.search?.(context, argument, { limit: 10 });
+					await runtime.output(
+						result
+							? renderMemorySearchMarkdown(result)
+							: `Memory search is not available for the ${backend.id} backend.`,
+					);
+					return commandConsumed();
+				}
+				case "save":
+				case "parse": {
+					if (!argument) return usage(`Usage: /memory ${action} <memory text>`, runtime);
+					const result = await backend.save?.(context, {
+						content: argument,
+						source: `slash-memory-${action}`,
+						context: `/${command.name} ${action}`,
+					});
+					await runtime.output(
+						result
+							? renderMemorySaveMarkdown(result)
+							: `Memory save is not available for the ${backend.id} backend.`,
+					);
 					return commandConsumed();
 				}
 				case "clear":
@@ -968,9 +1014,9 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				}
 				case "stats":
 				case "diagnose": {
-					const hook = verb === "stats" ? backend.stats : backend.diagnose;
+					const hook = action === "stats" ? backend.stats : backend.diagnose;
 					const payload = await hook?.(runtime.settings.getAgentDir(), runtime.cwd, runtime.session);
-					await runtime.output(payload ?? `Memory ${verb} is not available for the ${backend.id} backend.`);
+					await runtime.output(payload ?? `Memory ${action} is not available for the ${backend.id} backend.`);
 					return commandConsumed();
 				}
 				case "mm":
@@ -979,7 +1025,10 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 						runtime,
 					);
 				default:
-					return usage("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild>", runtime);
+					return usage(
+						"Usage: /memory <view|status|search|save|parse|stats|diagnose|clear|reset|enqueue|rebuild>",
+						runtime,
+					);
 			}
 		},
 		handleTui: async (command, runtime) => {
@@ -1586,7 +1635,6 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
 			await runtime.ctx.refreshSlashCommandState();
 			await runtime.ctx.session.refreshSshTool({ activateIfAvailable: true });
-			await runtime.ctx.initHooksAndCustomTools();
 			runtime.ctx.showStatus("Plugins reloaded.");
 			runtime.ctx.editor.setText("");
 		},
@@ -1714,7 +1762,6 @@ export async function executeBuiltinSlashCommand(
 				clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
 				await ctx.refreshSlashCommandState();
 				await ctx.session.refreshSshTool({ activateIfAvailable: true });
-				await ctx.initHooksAndCustomTools();
 			},
 		};
 		const result = await command.handle(parsed, adapted);
@@ -1723,6 +1770,55 @@ export async function executeBuiltinSlashCommand(
 		return true;
 	}
 	return false;
+}
+
+function renderMemoryStatusMarkdown(status: MemoryBackendStatus): string {
+	const lines = [
+		"# Memory Status",
+		"",
+		`- Backend: ${status.backend}`,
+		`- Active: ${status.active ? "yes" : "no"}`,
+		`- Searchable: ${status.searchable ? "yes" : "no"}`,
+		`- Writable: ${status.writable ? "yes" : "no"}`,
+	];
+	if (status.scope) lines.push(`- Scope: ${status.scope}`);
+	if (status.retainBank) lines.push(`- Retain bank: ${status.retainBank}`);
+	if (status.recallBanks?.length) lines.push(`- Recall banks: ${status.recallBanks.join(", ")}`);
+	if (status.workingCount !== undefined) lines.push(`- Working memories: ${status.workingCount}`);
+	if (status.episodicCount !== undefined) lines.push(`- Episodic memories: ${status.episodicCount}`);
+	if (status.tripleCount !== undefined) lines.push(`- Triples: ${status.tripleCount}`);
+	if (status.lastMemory) lines.push(`- Last memory: ${status.lastMemory}`);
+	if (status.lastRecall !== undefined) lines.push(`- Last recall injected: ${status.lastRecall ? "yes" : "no"}`);
+	if (status.database) lines.push(`- Database: ${status.database}`);
+	if (status.message) lines.push("", status.message);
+	if (status.error) lines.push("", `Error: ${status.error}`);
+	return lines.join("\n");
+}
+
+function renderMemorySearchMarkdown(result: MemoryBackendSearchResult): string {
+	if (result.message) return result.message;
+	if (result.items.length === 0) return `No memories found for: ${result.query}`;
+	const lines = [
+		`# Memory Search`,
+		"",
+		`Found ${result.count} ${result.count === 1 ? "memory" : "memories"} for: ${result.query}`,
+		"",
+	];
+	for (const item of result.items) {
+		const id = item.id ? ` (id: ${item.id})` : "";
+		const source = item.source ? ` [${item.source}]` : "";
+		const timestamp = item.timestamp ? ` (${item.timestamp.slice(0, 10)})` : "";
+		const score = typeof item.score === "number" ? ` score=${item.score.toFixed(3)}` : "";
+		lines.push(`- ${item.content}${id}${source}${timestamp}${score}`);
+	}
+	return lines.join("\n");
+}
+
+function renderMemorySaveMarkdown(result: MemoryBackendSaveResult): string {
+	if (result.stored <= 0) return result.message ?? "No memory stored.";
+	const queued = result.queued ? " queued" : " stored";
+	const ids = result.ids?.length ? ` (${result.ids.join(", ")})` : "";
+	return `${result.stored} ${result.stored === 1 ? "memory" : "memories"}${queued}${ids}.${result.message ? ` ${result.message}` : ""}`;
 }
 
 /** Look up a unified spec by name or alias. Used by the ACP dispatcher. */

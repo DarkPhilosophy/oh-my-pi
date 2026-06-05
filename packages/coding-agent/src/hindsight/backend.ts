@@ -10,7 +10,13 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
-import type { MemoryBackend, MemoryBackendStartOptions } from "../memory-backend/types";
+import type {
+	MemoryBackend,
+	MemoryBackendSaveInput,
+	MemoryBackendSearchItem,
+	MemoryBackendStartOptions,
+	MemoryBackendStatus,
+} from "../memory-backend/types";
 import type { AgentSession } from "../session/agent-session";
 import { computeBankScope } from "./bank";
 import { createHindsightClient } from "./client";
@@ -158,6 +164,83 @@ export const hindsightBackend: MemoryBackend = {
 		await primary.forceRetainCurrentSession();
 	},
 
+	async status({ session }): Promise<MemoryBackendStatus> {
+		const state = session?.getHindsightSessionState();
+		const primary = state?.aliasOf ?? state;
+		if (!primary) {
+			return {
+				backend: "hindsight",
+				active: false,
+				writable: false,
+				searchable: false,
+				message: "Hindsight backend is configured but not initialised for this session.",
+			};
+		}
+		return {
+			backend: "hindsight",
+			active: true,
+			writable: true,
+			searchable: true,
+			scope: primary.config.scoping,
+			retainBank: primary.bankId,
+			recallBanks: [primary.bankId],
+			lastRecall: Boolean(primary.lastRecallSnippet),
+		};
+	},
+
+	async search({ session }, query, options) {
+		const state = session?.getHindsightSessionState();
+		const primary = state?.aliasOf ?? state;
+		if (!primary) {
+			return {
+				backend: "hindsight",
+				query,
+				count: 0,
+				items: [],
+				message: "Hindsight backend is not initialised for this session.",
+			};
+		}
+		if (options?.signal?.aborted) {
+			return { backend: "hindsight", query, count: 0, items: [], message: "Search aborted." };
+		}
+		const response = await primary.client.recall(primary.bankId, query, {
+			budget: primary.config.recallBudget,
+			maxTokens: primary.config.recallMaxTokens,
+			types: primary.config.recallTypes.length > 0 ? primary.config.recallTypes : undefined,
+			tags: primary.recallTags,
+			tagsMatch: primary.recallTagsMatch,
+		});
+		const limit = clampLimit(options?.limit);
+		const items: MemoryBackendSearchItem[] = (response.results ?? []).slice(0, limit).map(result => ({
+			id: result.id,
+			content: result.text,
+			bank: primary.bankId,
+			source: typeof result.type === "string" ? result.type : undefined,
+			timestamp: typeof result.mentioned_at === "string" ? result.mentioned_at : undefined,
+		}));
+		return { backend: "hindsight", query, count: items.length, items };
+	},
+
+	async save({ session }, input: MemoryBackendSaveInput) {
+		const state = session?.getHindsightSessionState();
+		const primary = state?.aliasOf ?? state;
+		if (!primary) {
+			return {
+				backend: "hindsight",
+				stored: 0,
+				message: "Hindsight backend is not initialised for this session.",
+			};
+		}
+		const content = input.content.trim();
+		if (!content) return { backend: "hindsight", stored: 0, message: "Memory content is empty." };
+		primary.enqueueRetain(content, input.context ?? input.source ?? "memory.save");
+		return {
+			backend: "hindsight",
+			stored: 1,
+			queued: true,
+			message: "Memory queued for Hindsight retention.",
+		};
+	},
 	async preCompactionContext(
 		messages: AgentMessage[],
 		settings: Settings,
@@ -173,6 +256,11 @@ export const hindsightBackend: MemoryBackend = {
 		return await state.recallForCompaction(flat);
 	},
 };
+
+function clampLimit(limit: number | undefined): number {
+	if (!Number.isFinite(limit)) return 10;
+	return Math.max(1, Math.min(50, Math.trunc(limit ?? 10)));
+}
 
 /** Reduce arbitrary AgentMessages into the Hindsight flat-text shape. */
 function flattenMessagesForRecall(messages: AgentMessage[]): HindsightMessage[] {
