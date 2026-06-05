@@ -700,7 +700,7 @@ describe("ExtensionRunner", () => {
 
 	describe("context actions", () => {
 		it("exposes usage reports to extension event contexts", async () => {
-			const usageReports = [{ provider: "kimi-code", limits: [], metadata: {} }];
+			const usageReports = [{ provider: "kimi-code", limits: [], metadata: {}, fetchedAt: Date.now() }];
 			const runner = new ExtensionRunner([], {} as any, tempDir.path(), sessionManager, modelRegistry);
 
 			runner.initialize(
