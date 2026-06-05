@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Container } from "@oh-my-pi/pi-tui";
 import type {
 	ExtensionActions,
 	ExtensionCommandContextActions,
@@ -79,9 +80,13 @@ describe("issue #1020 - ctx.shutdown() in interactive mode", () => {
 				getText: () => "",
 			},
 			setWorkingMessage: () => {},
+			setRightInfo: () => {},
 			setEditorComponent: () => {},
 			toolOutputExpanded: false,
 			setToolsExpanded: () => {},
+			hookWidgetContainerAbove: new Container(),
+			hookWidgetContainerBelow: new Container(),
+			ui: { requestRender: () => {} },
 		} as unknown as InteractiveModeContext;
 
 		const controller = new ExtensionUiController(ctxStub);
