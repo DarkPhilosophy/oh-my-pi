@@ -32,6 +32,7 @@ export class ExtensionUiController {
 	#extensionTerminalInputUnsubscribers = new Set<() => void>();
 	#hookWidgetsAbove = new Map<string, ExtensionUiComponent>();
 	#hookWidgetsBelow = new Map<string, ExtensionUiComponent>();
+	#rightWidgets = new Map<string, string[]>();
 	constructor(private ctx: InteractiveModeContext) {}
 
 	/**
@@ -255,12 +256,25 @@ export class ExtensionUiController {
 		const placement = options?.placement ?? "aboveEditor";
 		this.#removeHookWidget(this.#hookWidgetsAbove, key);
 		this.#removeHookWidget(this.#hookWidgetsBelow, key);
-
+		const wasRight = this.#rightWidgets.has(key);
 		if (content === undefined) {
+			if (wasRight) {
+				this.#rightWidgets.delete(key);
+				this.#flushRightWidgets();
+			}
 			this.#rebuildHookWidgets();
 			return;
 		}
-
+		if (placement === "rightEditor") {
+			this.#rightWidgets.set(key, this.#contentToRightLines(content));
+			this.#flushRightWidgets();
+			this.#rebuildHookWidgets();
+			return;
+		}
+		if (wasRight) {
+			this.#rightWidgets.delete(key);
+			this.#flushRightWidgets();
+		}
 		const target = placement === "belowEditor" ? this.#hookWidgetsBelow : this.#hookWidgetsAbove;
 		target.set(key, this.#createHookWidget(content));
 		this.#rebuildHookWidgets();
@@ -287,6 +301,23 @@ export class ExtensionUiController {
 			throw new Error("Widget content missing");
 		}
 		return content(this.ctx.ui, theme);
+	}
+	#flushRightWidgets(): void {
+		const lines: string[] = [];
+		for (const widgetLines of this.#rightWidgets.values()) {
+			if (lines.length > 0) lines.push("");
+			lines.push(...widgetLines.slice(0, MAX_WIDGET_LINES));
+		}
+		this.ctx.setRightInfo(lines.length > 0 ? lines : undefined);
+	}
+	#contentToRightLines(content: ExtensionWidgetContent): string[] {
+		if (Array.isArray(content)) {
+			return content.slice(0, MAX_WIDGET_LINES);
+		}
+		if (content === undefined) {
+			return [];
+		}
+		return [];
 	}
 
 	#rebuildHookWidgets(): void {
