@@ -126,7 +126,11 @@ function boxFromCells(cells: Cell[]): string[] {
 	}, 0);
 	const resolved = cells.map(cell => ("kind" in cell ? barText(cell.fraction, inner) : cell.text));
 	const finalInner = resolved.reduce((max, text) => Math.max(max, visibleWidth(text)), inner);
-	return [`┌${"─".repeat(finalInner)}┐`, ...resolved.map(text => row(text, finalInner)), `└${"─".repeat(finalInner)}┘`];
+	return [
+		`┌${"─".repeat(finalInner)}┐`,
+		...resolved.map(text => row(text, finalInner)),
+		`└${"─".repeat(finalInner)}┘`,
+	];
 }
 
 function buildLines(ctx: ExtensionContext, reports: UsageReport[] | null): string[] {
