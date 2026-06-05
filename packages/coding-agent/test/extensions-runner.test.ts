@@ -698,6 +698,44 @@ describe("ExtensionRunner", () => {
 		});
 	});
 
+	describe("context actions", () => {
+		it("exposes usage reports to extension event contexts", async () => {
+			const usageReports = [{ provider: "kimi-code", limits: [], metadata: {} }];
+			const runner = new ExtensionRunner([], {} as any, tempDir.path(), sessionManager, modelRegistry);
+
+			runner.initialize(
+				{
+					sendMessage: () => {},
+					sendUserMessage: () => {},
+					appendEntry: () => {},
+					setLabel: () => {},
+					getActiveTools: () => [],
+					getAllTools: () => [],
+					setActiveTools: async () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => undefined,
+					setThinkingLevel: () => {},
+					getSessionName: () => undefined,
+					setSessionName: async () => {},
+				},
+				{
+					getModel: () => undefined,
+					isIdle: () => true,
+					abort: () => {},
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: async () => {},
+					getSystemPrompt: () => [],
+					fetchUsageReports: async () => usageReports as any,
+				},
+			);
+
+			expect(await runner.createContext().fetchUsageReports?.()).toBe(usageReports);
+		});
+	});
+
 	describe("session name API", () => {
 		it("lets extensions read and set the session name after initialization", async () => {
 			const extCode = `

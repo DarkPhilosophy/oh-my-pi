@@ -293,11 +293,10 @@ export class ExtensionUiController {
 		widgets.delete(key);
 	}
 	#contentToRightLines(content: ExtensionWidgetContent): string[] {
-		if (Array.isArray(content)) return content.slice(0, MAX_WIDGET_LINES).map(line => String(line));
-		// Function-style content renders to a component; sample it at a nominal width.
+		if (Array.isArray(content)) return content.map(line => String(line));
 		const comp = this.#createHookWidget(content);
 		try {
-			return comp.render(48).slice(0, MAX_WIDGET_LINES);
+			return comp.render(process.stdout.columns || 80);
 		} finally {
 			comp.dispose?.();
 		}

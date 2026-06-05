@@ -58,17 +58,13 @@ describe("compositeRightPanel", () => {
 		expect(out[widget.length]).toBe("hi");
 	});
 
-	it("shrinks the panel in place when the run is shorter than the panel", () => {
+	it("hides instead of cutting a widget when the free run is shorter than the panel", () => {
 		// A run of exactly 8 short rows, then a long row; widget wants 12 rows.
 		const base = [...Array.from({ length: 8 }, () => ""), "x".repeat(COL + 1), "", ""];
 		const widget = panel(12);
 		const out = compositeRightPanel(base, widget, WIDTH, 40);
 
-		// Placed into the 8-row run: first row = panel top, last placed row = panel bottom.
-		expect(out[0].endsWith(widget[0])).toBe(true);
-		expect(out[7].endsWith(widget[widget.length - 1])).toBe(true);
-		// The wide row that broke the run is never spliced.
-		expect(out[8]).toBe("x".repeat(COL + 1));
+		expect(out).toEqual(base);
 	});
 
 	it("searches only the visible viewport, not scrolled-off history", () => {

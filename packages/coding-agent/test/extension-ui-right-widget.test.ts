@@ -40,15 +40,14 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		expect(rightInfo.at(-1)).toEqual(["a2", "", "b1"]);
 	});
 
-	it("caps right widget content at MAX_WIDGET_LINES", () => {
+	it("does not cap right widget content before the compositor can place it", () => {
 		const { ctx, rightInfo } = makeCtx();
 		const c = new ExtensionUiController(ctx);
 
 		const lines = Array.from({ length: 15 }, (_, i) => `l${i}`);
 		c.setHookWidget("big", lines, { placement: "rightEditor" });
 
-		expect(rightInfo.at(-1)).toHaveLength(10);
-		expect(rightInfo.at(-1)).toEqual(lines.slice(0, 10));
+		expect(rightInfo.at(-1)).toEqual(lines);
 	});
 
 	it("clears right-side state when a key moves back to an inline placement", () => {
