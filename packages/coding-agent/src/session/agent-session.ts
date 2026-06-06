@@ -6469,9 +6469,13 @@ export class AgentSession {
 				this.#retryAttempt = 0;
 			}
 			this.#resolveRetry();
+			// Tool-use orphans corrupt Anthropic message history (tool_result without
+			// matching tool_use). Always remove them even when the retry cap is hit.
+			if (assistantMessage.stopReason === "toolUse") {
+				this.#removeEmptyStopFromActiveContext(assistantMessage);
+			}
 			return true;
 		}
-
 		this.#removeEmptyStopFromActiveContext(assistantMessage);
 		this.agent.appendMessage({
 			role: "developer",
@@ -6484,12 +6488,25 @@ export class AgentSession {
 	}
 
 	#isEmptyAssistantStop(assistantMessage: AssistantMessage): boolean {
-		if (assistantMessage.stopReason !== "stop") return false;
-		return !assistantMessage.content.some(content => {
-			if (content.type === "text") return content.text.trim().length > 0;
-			if (content.type === "thinking") return content.thinking.trim().length > 0;
-			return content.type === "toolCall";
-		});
+		const { stopReason } = assistantMessage;
+		if (stopReason !== "stop" && stopReason !== "toolUse") return false;
+
+		// Single pass over content; the three flags cover every emptiness rule below.
+		let hasText = false;
+		let hasThinking = false;
+		let hasToolCall = false;
+		for (const content of assistantMessage.content) {
+			if (content.type === "text") hasText ||= content.text.trim().length > 0;
+			else if (content.type === "thinking") hasThinking ||= content.thinking.trim().length > 0;
+			else if (content.type === "toolCall") hasToolCall = true;
+		}
+
+		// An orphaned toolUse stop (no tool_use block) corrupts Anthropic history:
+		// a later tool_result has nothing to anchor to. Thinking alone cannot anchor
+		// a tool_result, so it does not rescue a toolUse stop here.
+		if (stopReason === "toolUse") return !hasText && !hasToolCall;
+		// A plain stop is empty only when it carries no usable content at all.
+		return !hasText && !hasThinking && !hasToolCall;
 	}
 
 	#emptyStopRetryReminder(): string {
