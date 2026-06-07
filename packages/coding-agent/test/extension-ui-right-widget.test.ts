@@ -108,4 +108,20 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		c.clearHookWidgets();
 		expect(rightInfo.at(-1)).toBeUndefined();
 	});
+
+	it("strips terminal-width padding from component-factory right widgets", () => {
+		const { ctx, rightInfo } = makeCtx();
+		const c = new ExtensionUiController(ctx);
+
+		// A width-aware component (like Text) pads its line to the full render width.
+		// The stored block must reflect the real content width, not the terminal,
+		// or compositeRightPanels would drop it as "too narrow".
+		const factory = (() => ({
+			render: (width: number) => [`hi${" ".repeat(Math.max(0, width - 2))}`],
+			dispose() {},
+		})) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		c.setHookWidget("comp", factory, { placement: "rightEditor" });
+
+		expect(rightInfo.at(-1)).toEqual([["hi"]]);
+	});
 });
