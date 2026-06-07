@@ -274,9 +274,9 @@ function trimRightPadding(line: string): string {
  * Composite a right-side panel into the trailing whitespace of `baseLines`.
  * Pure and deterministic: returns the merged lines, or `baseLines` unchanged
  * when the panel does not fit. Never overwrites visible text — the panel only
- * lands on a run of rows whose content stays left of the panel column, shrinks
- * in place when that run is shorter than the panel, and is dropped entirely
- * when no usable run exists within the bottom `viewportHeight` rows.
+ * lands on a run of rows whose content stays left of the panel column, and is
+ * dropped entirely (not cut) when no run within the bottom `viewportHeight` rows
+ * is tall enough to hold the whole panel.
  */
 export function compositeRightPanel(
 	baseLines: string[],

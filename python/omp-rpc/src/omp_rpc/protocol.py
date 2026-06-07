@@ -17,7 +17,7 @@ SteeringMode: TypeAlias = Literal["all", "one-at-a-time"]
 InterruptMode: TypeAlias = Literal["immediate", "wait"]
 StopReason: TypeAlias = Literal["stop", "length", "toolUse", "error", "aborted"]
 NotifyType: TypeAlias = Literal["info", "warning", "error"]
-WidgetPlacement: TypeAlias = Literal["aboveEditor", "belowEditor"]
+WidgetPlacement: TypeAlias = Literal["aboveEditor", "belowEditor", "rightEditor"]
 TodoStatus: TypeAlias = Literal["pending", "in_progress", "completed", "abandoned"]
 ExtensionUiMethod: TypeAlias = Literal[
     "select",
@@ -58,7 +58,7 @@ _STOP_REASON_VALUES: Final[frozenset[str]] = frozenset(
 )
 _NOTIFY_TYPE_VALUES: Final[frozenset[str]] = frozenset({"info", "warning", "error"})
 _WIDGET_PLACEMENT_VALUES: Final[frozenset[str]] = frozenset(
-    {"aboveEditor", "belowEditor"}
+    {"aboveEditor", "belowEditor", "rightEditor"}
 )
 _TODO_STATUS_VALUES: Final[frozenset[str]] = frozenset(
     {"pending", "in_progress", "completed", "abandoned"}
