@@ -125,6 +125,7 @@ import {
 	parseLoopLimitArgs,
 } from "./loop-limit";
 import { OAuthManualInputManager } from "./oauth-manual-input";
+import { trimRightPadding } from "./right-panel-padding";
 import { SessionObserverRegistry } from "./session-observer-registry";
 import { interruptHint } from "./shared";
 import { type ShimmerPalette, shimmerSegments, shimmerText } from "./theme/shimmer";
@@ -259,16 +260,6 @@ export interface InteractiveModeOptions {
  * there is no room" behaviour — not an overlay, so it never steals focus or
  * forces a separate redraw.
  */
-const TRAILING_PADDING_RE = /[ \t]+((?:\x1b\[[0-9;]*m)*)$/u;
-
-function trimRightPadding(line: string): string {
-	// Hot path: runs on every rendered line each frame. A trailing-padding match
-	// always ends in a space, tab, or the `m` that terminates an SGR sequence —
-	// bail cheaply otherwise.
-	const last = line.charCodeAt(line.length - 1);
-	if (last !== 0x20 && last !== 0x09 && last !== 0x6d) return line;
-	return line.replace(TRAILING_PADDING_RE, "$1");
-}
 
 /**
  * Composite a right-side panel into the trailing whitespace of `baseLines`.

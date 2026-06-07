@@ -23,6 +23,7 @@ import { HookSelectorComponent, type HookSelectorSlider } from "../../modes/comp
 import { getAvailableThemesWithPaths, getThemeByName, setTheme, type Theme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext, InteractiveSelectorDialogOptions } from "../../modes/types";
 import { setSessionTerminalTitle, setTerminalTitle } from "../../utils/title-generator";
+import { trimRightPadding } from "../right-panel-padding";
 
 const MAX_WIDGET_LINES = 10;
 
@@ -296,11 +297,10 @@ export class ExtensionUiController {
 		if (content === undefined) return [];
 		const comp = this.#createHookWidget(content);
 		try {
-			// Render at full width so the component has room, then strip the trailing
-			// padding that width-aware components (e.g. Text) add. Otherwise the stored
-			// right-panel block is terminal-wide and compositeRightPanels drops it as
-			// "too narrow", making component-factory rightEditor widgets disappear.
-			return comp.render(process.stdout.columns || 80).map(line => line.replace(/[ \t]+$/, ""));
+			// Render at full width so the component has room, then strip trailing
+			// padding that width-aware components (e.g. Text) add. Keep trailing SGR
+			// resets intact when the padding sits before the reset.
+			return comp.render(process.stdout.columns || 80).map(trimRightPadding);
 		} finally {
 			comp.dispose?.();
 		}

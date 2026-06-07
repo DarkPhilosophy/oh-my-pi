@@ -121,4 +121,17 @@ describe("ExtensionUiController rightEditor widgets", () => {
 
 		expect(rightInfo.at(-1)).toEqual([["hi"]]);
 	});
+
+	it("strips component right-widget padding before trailing SGR resets", () => {
+		const { ctx, rightInfo } = makeCtx();
+		const c = new ExtensionUiController(ctx);
+
+		const factory = (() => ({
+			render: (width: number) => [`\x1b[31mhi${" ".repeat(Math.max(0, width - 2))}\x1b[0m`],
+			dispose() {},
+		})) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		c.setHookWidget("styled", factory, { placement: "rightEditor" });
+
+		expect(rightInfo.at(-1)).toEqual([["\x1b[31mhi\x1b[0m"]]);
+	});
 });
