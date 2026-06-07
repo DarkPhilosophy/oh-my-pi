@@ -140,6 +140,29 @@ class ProtocolParsingTests(unittest.TestCase):
         self.assertTrue(notification.requires_response())
         self.assertFalse(notification.is_passive())
 
+
+    def test_parse_extension_ui_set_widget_request_with_right_editor_priority(self) -> None:
+        notification = parse_notification(
+            {
+                "type": "extension_ui_request",
+                "id": "ui-widget",
+                "method": "setWidget",
+                "widgetKey": "usage",
+                "widgetLines": ["usage"],
+                "widgetPlacement": "rightEditor",
+                "widgetPriority": 1,
+            }
+        )
+
+        self.assertIsInstance(notification, ExtensionUiRequest)
+        self.assertEqual(notification.method, "setWidget")
+        self.assertEqual(notification.widget_key, "usage")
+        self.assertEqual(notification.widget_lines, ("usage",))
+        self.assertEqual(notification.widget_placement, "rightEditor")
+        self.assertEqual(notification.widget_priority, 1)
+        self.assertTrue(notification.is_passive())
+        self.assertFalse(notification.requires_response())
+
     def test_parse_todo_reminder_notification(self) -> None:
         notification = parse_notification(
             {

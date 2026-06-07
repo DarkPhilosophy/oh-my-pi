@@ -863,6 +863,7 @@ class ExtensionUiRequest:
     widget_key: str | None = None
     widget_lines: tuple[str, ...] | None = None
     widget_placement: WidgetPlacement | None = None
+    widget_priority: int | None = None
     text: str | None = None
     type: Literal["extension_ui_request"] = "extension_ui_request"
 
@@ -1445,6 +1446,7 @@ def parse_extension_ui_request(payload: JsonObject) -> ExtensionUiRequest:
                 field="extension_ui_request.widgetPlacement",
             ),
         ),
+        widget_priority=_optional_int(payload, "widgetPriority"),
         text=_optional_str(payload, "text"),
     )
 

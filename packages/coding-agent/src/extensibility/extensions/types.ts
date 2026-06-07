@@ -142,7 +142,6 @@ export interface ExtensionUIDialogOptions {
 export type TerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined;
 
 export type WidgetPlacement = "aboveEditor" | "belowEditor" | "rightEditor";
-
 export interface ExtensionWidgetOptions {
 	placement?: WidgetPlacement;
 	/**
