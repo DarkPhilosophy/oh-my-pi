@@ -344,7 +344,6 @@ export class ExtensionUiController {
 		return content(this.ctx.ui, theme);
 	}
 
-
 	#rebuildHookWidgets(): void {
 		this.#renderHookWidgetContainer(this.ctx.hookWidgetContainerAbove, this.#hookWidgetsAbove, true, true);
 		this.#renderHookWidgetContainer(this.ctx.hookWidgetContainerBelow, this.#hookWidgetsBelow, false, false);
