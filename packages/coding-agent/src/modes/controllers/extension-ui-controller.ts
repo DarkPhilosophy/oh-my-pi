@@ -286,7 +286,6 @@ export class ExtensionUiController {
 		widgets.delete(key);
 	}
 
-
 	#createHookWidget(content: ExtensionWidgetContent): ExtensionUiComponent {
 		if (Array.isArray(content)) {
 			const container = new Container();

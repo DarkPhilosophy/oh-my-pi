@@ -51,10 +51,7 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		c.setHookWidget("tall", ["t1", "t2", "t3"], { placement: "rightEditor", priority: 0 });
 		c.setHookWidget("short", ["s1"], { placement: "rightEditor", priority: 1 });
 
-		expect(rightInfo.at(-1)).toEqual([
-			["t1", "t2", "t3"],
-			["s1"],
-		]);
+		expect(rightInfo.at(-1)).toEqual([["t1", "t2", "t3"], ["s1"]]);
 	});
 
 	it("preserves right widget insertion order when an existing key updates", () => {
