@@ -9,7 +9,10 @@
 ### Changed
 
 - `/reload-plugins` now reinitializes extension UI hooks, and `initHooksAndCustomTools()` clears existing extension terminal-input listeners and hook widgets before re-emitting `session_start`. Reloading plugins no longer stacks duplicate input listeners or leaves stale widgets behind.
+
 ### Fixed
+
+- Fixed the `--cwd` launch flag so it is parsed and can override the startup directory instead of always falling back to the current process directory or home auto-switch target.
 
 - Fixed Anthropic empty `toolUse` stops without tool calls corrupting session history by retrying them and removing orphaned turns even at the retry cap.
 
