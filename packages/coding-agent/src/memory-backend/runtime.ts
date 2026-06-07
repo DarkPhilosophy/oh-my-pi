@@ -20,7 +20,7 @@ export function createMemoryRuntimeContext(context: MemoryBackendOperationContex
 					message: "No active agent session.",
 				};
 			}
-			const backend = resolveMemoryBackend(settings);
+			const backend = await resolveMemoryBackend(settings);
 			return backend.status
 				? await backend.status(context)
 				: {
@@ -33,14 +33,14 @@ export function createMemoryRuntimeContext(context: MemoryBackendOperationContex
 		},
 		async search(query: string, options?: MemoryBackendSearchOptions) {
 			if (!settings) return unavailableSearch("off", query, "No active agent session.");
-			const backend = resolveMemoryBackend(settings);
+			const backend = await resolveMemoryBackend(settings);
 			return backend.search
 				? await backend.search(context, query, options)
 				: unavailableSearch(backend.id, query, `Memory search is not available for the ${backend.id} backend.`);
 		},
 		async save(input: string | MemoryBackendSaveInput) {
 			if (!settings) return unavailableSave("off", "No active agent session.");
-			const backend = resolveMemoryBackend(settings);
+			const backend = await resolveMemoryBackend(settings);
 			const normalized = typeof input === "string" ? { content: input } : input;
 			return backend.save
 				? await backend.save(context, normalized)
