@@ -2,7 +2,13 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { CredentialDisabledEvent, ImageContent, Model, ProviderResponseMetadata, UsageReport } from "@oh-my-pi/pi-ai";
+import type {
+	CredentialDisabledEvent,
+	ImageContent,
+	Model,
+	ProviderResponseMetadata,
+	UsageReport,
+} from "@oh-my-pi/pi-ai";
 import type { KeyId } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../config/model-registry";
