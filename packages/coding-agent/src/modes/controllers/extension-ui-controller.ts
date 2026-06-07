@@ -32,7 +32,7 @@ export class ExtensionUiController {
 	#extensionTerminalInputUnsubscribers = new Set<() => void>();
 	#hookWidgetsAbove = new Map<string, ExtensionUiComponent>();
 	#hookWidgetsBelow = new Map<string, ExtensionUiComponent>();
-	#rightWidgets = new Map<string, string[]>();
+	#rightWidgets = new Map<string, { lines: string[]; priority?: number }>();
 	constructor(private ctx: InteractiveModeContext) {}
 
 	/**
@@ -267,7 +267,7 @@ export class ExtensionUiController {
 			return;
 		}
 		if (placement === "rightEditor") {
-			this.#rightWidgets.set(key, this.#contentToRightLines(content));
+			this.#rightWidgets.set(key, { lines: this.#contentToRightLines(content), priority: options?.priority });
 			this.#flushRightWidgets();
 			this.#rebuildHookWidgets();
 			return;
@@ -309,12 +309,20 @@ export class ExtensionUiController {
 			this.ctx.setRightInfo(undefined);
 			return;
 		}
-		const lines: string[] = [];
-		for (const widgetLines of this.#rightWidgets.values()) {
-			if (lines.length > 0) lines.push("");
-			lines.push(...widgetLines);
-		}
-		this.ctx.setRightInfo(lines);
+		// Each rightEditor widget is composited as its own block so they hide
+		// independently when the negative space is short. Placement order: explicit
+		// priority first (ascending), then ascending height (shortest first) so the
+		// smallest, always-present panels stay visible and the tallest hide first.
+		// Insertion order (preserved by Map, even on key update) breaks ties.
+		const entries = [...this.#rightWidgets.values()].map((entry, index) => ({ entry, index }));
+		entries.sort((a, b) => {
+			const pa = a.entry.priority ?? Number.POSITIVE_INFINITY;
+			const pb = b.entry.priority ?? Number.POSITIVE_INFINITY;
+			if (pa !== pb) return pa - pb;
+			if (a.entry.lines.length !== b.entry.lines.length) return a.entry.lines.length - b.entry.lines.length;
+			return a.index - b.index;
+		});
+		this.ctx.setRightInfo(entries.map(e => e.entry.lines));
 	}
 	#contentToRightLines(content: ExtensionWidgetContent): string[] {
 		if (Array.isArray(content)) return content.map(line => String(line));

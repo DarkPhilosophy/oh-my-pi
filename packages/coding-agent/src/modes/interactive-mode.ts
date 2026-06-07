@@ -287,18 +287,32 @@ export function compositeRightPanel(
 	viewportHeight: number,
 	isImageLine: (line: string) => boolean = () => false,
 ): string[] {
-	if (widget.length === 0 || baseLines.length === 0) return baseLines;
+	return compositeRightPanels(baseLines, widget.length > 0 ? [widget] : [], width, viewportHeight, isImageLine);
+}
 
-	let panelWidth = 0;
-	for (const line of widget) panelWidth = Math.max(panelWidth, visibleWidth(line));
-	const col = width - panelWidth - 1; // 1-col gap from the panel
-	if (col < 30) return baseLines; // terminal genuinely too narrow — hide
+/**
+ * Composite multiple right-side panel blocks into the trailing whitespace of
+ * `baseLines`, each one independently. Blocks are placed in the given order (the
+ * controller pre-sorts by priority, then ascending height): each block claims
+ * the first free run of negative space tall enough for it, those rows are then
+ * marked occupied, and a block that finds no run is dropped on its own — the
+ * others still render. Pure: returns merged lines, or `baseLines` unchanged when
+ * nothing fits. Never overwrites visible text or a terminal image block.
+ */
+export function compositeRightPanels(
+	baseLines: string[],
+	blocks: string[][],
+	width: number,
+	viewportHeight: number,
+	isImageLine: (line: string) => boolean = () => false,
+): string[] {
+	if (blocks.length === 0 || baseLines.length === 0) return baseLines;
 	if (viewportHeight < 6) return baseLines; // not enough visible rows for a useful panel
 	const searchStart = Math.max(0, baseLines.length - viewportHeight);
 	// Terminal image components render as (rows-1) blank placeholder lines followed
 	// by a raw protocol escape line. Those blanks look free to visibleWidth() but are
 	// visually covered by the image, so mark the whole block occupied and never splice
-	// the panel into it.
+	// a panel into it.
 	const occupied = new Array<boolean>(baseLines.length).fill(false);
 	for (let i = 0; i < baseLines.length; i++) {
 		if (isImageLine(baseLines[i] ?? "")) {
@@ -306,46 +320,45 @@ export function compositeRightPanel(
 			for (let j = i - 1; j >= 0 && visibleWidth(baseLines[j] ?? "") === 0; j--) occupied[j] = true;
 		}
 	}
-	const fits = (i: number): boolean => !occupied[i] && visibleWidth(baseLines[i] ?? "") <= col;
 
-	let bestStart = -1;
-	let bestLen = 0;
-	for (let start = searchStart; start < baseLines.length; ) {
-		if (!fits(start)) {
-			start += 1;
-			continue;
+	const placements: { start: number; block: string[]; col: number }[] = [];
+	for (const block of blocks) {
+		if (block.length === 0) continue;
+		let panelWidth = 0;
+		for (const line of block) panelWidth = Math.max(panelWidth, visibleWidth(line));
+		const col = width - panelWidth - 1; // 1-col gap from the panel
+		if (col < 30) continue; // too narrow for this block — hide just this one
+		let placed = -1;
+		for (let start = searchStart; start + block.length <= baseLines.length; start++) {
+			let ok = true;
+			for (let k = 0; k < block.length; k++) {
+				if (occupied[start + k] || visibleWidth(baseLines[start + k] ?? "") > col) {
+					ok = false;
+					break;
+				}
+			}
+			if (ok) {
+				placed = start;
+				break;
+			}
 		}
-		let end = start + 1;
-		while (end < baseLines.length && fits(end)) {
-			end += 1;
-		}
-		const len = end - start;
-		if (len >= widget.length) {
-			bestStart = start;
-			bestLen = widget.length;
-			break;
-		}
-		if (len > bestLen) {
-			bestStart = start;
-			bestLen = len;
-		}
-		start = end;
+		if (placed < 0) continue; // no run tall enough — drop this block alone
+		for (let k = 0; k < block.length; k++) occupied[placed + k] = true;
+		placements.push({ start: placed, block, col });
 	}
 
-	// Right-side widgets are semantic blocks. Do not splice a top/bottom shell
-	// around a truncated middle; if the available negative-space run cannot fit
-	// the full widget, hide it and let a later render place it when space exists.
-	if (bestStart < 0 || bestLen < widget.length) return baseLines;
-	const panel = widget;
+	if (placements.length === 0) return baseLines;
 
 	const out = baseLines.slice();
-	for (let k = 0; k < panel.length; k++) {
-		const base = out[bestStart + k] ?? "";
-		const truncatedBase = truncateToWidth(base, col);
-		// If the base row carries color state, terminate it so the gap padding and
-		// the panel do not inherit an unclosed SGR sequence.
-		const reset = truncatedBase.includes("\x1b[") ? "\x1b[0m" : "";
-		out[bestStart + k] = truncatedBase + reset + padding(Math.max(0, col - visibleWidth(base))) + panel[k];
+	for (const { start, block, col } of placements) {
+		for (let k = 0; k < block.length; k++) {
+			const base = out[start + k] ?? "";
+			const truncatedBase = truncateToWidth(base, col);
+			// If the base row carries color state, terminate it so the gap padding and
+			// the panel do not inherit an unclosed SGR sequence.
+			const reset = truncatedBase.includes("\x1b[") ? "\x1b[0m" : "";
+			out[start + k] = truncatedBase + reset + padding(Math.max(0, col - visibleWidth(base))) + block[k];
+		}
 	}
 	return out;
 }
@@ -353,7 +366,7 @@ export function compositeRightPanel(
 class RightInfoCompositor extends Container {
 	constructor(
 		private readonly inner: Container,
-		private readonly getLines: () => string[],
+		private readonly getBlocks: () => string[][],
 		private readonly getReservedRows: (width: number) => number,
 	) {
 		super();
@@ -367,7 +380,7 @@ class RightInfoCompositor extends Container {
 		// on-screen viewport, not in scrolled-off history.
 		const reserved = Math.max(0, Math.floor(this.getReservedRows(width)));
 		const viewport = (process.stdout.rows || 40) - reserved;
-		return compositeRightPanel(baseLines, this.getLines(), width, viewport, line => TERMINAL.isImageLine(line));
+		return compositeRightPanels(baseLines, this.getBlocks(), width, viewport, line => TERMINAL.isImageLine(line));
 	}
 }
 
@@ -440,7 +453,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	lastEscapeTime = 0;
 	shutdownRequested = false;
 	#isShuttingDown = false;
-	#rightInfoLines: string[] = [];
+	#rightInfoBlocks: string[][] = [];
 	hookSelector: HookSelectorComponent | undefined = undefined;
 	hookInput: HookInputComponent | undefined = undefined;
 	hookEditor: HookEditorComponent | undefined = undefined;
@@ -606,11 +619,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#welcomeComponent?.playIntro(() => this.ui.requestRender());
 	}
 
-	setRightInfo(lines: string[] | undefined): void {
-		const next = lines ?? [];
-		const changed = next.length !== this.#rightInfoLines.length || next.some((l, i) => l !== this.#rightInfoLines[i]);
+	setRightInfo(blocks: string[][] | undefined): void {
+		const next = blocks ?? [];
+		const changed =
+			next.length !== this.#rightInfoBlocks.length ||
+			next.some((block, i) => {
+				const prev = this.#rightInfoBlocks[i];
+				return !prev || block.length !== prev.length || block.some((l, j) => l !== prev[j]);
+			});
 		if (!changed) return;
-		this.#rightInfoLines = next;
+		this.#rightInfoBlocks = next;
 		this.ui.requestRender();
 	}
 	async init(options: InteractiveModeInitOptions = {}): Promise<void> {
@@ -707,7 +725,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.addChild(
 			new RightInfoCompositor(
 				mainContent,
-				() => this.#rightInfoLines,
+				() => this.#rightInfoBlocks,
 				width =>
 					this.statusLine.render(width).length +
 					this.errorBannerContainer.render(width).length +
