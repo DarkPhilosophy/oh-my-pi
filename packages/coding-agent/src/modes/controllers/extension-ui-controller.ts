@@ -293,9 +293,14 @@ export class ExtensionUiController {
 	}
 	#contentToRightLines(content: ExtensionWidgetContent): string[] {
 		if (Array.isArray(content)) return content.map(line => String(line));
+		if (content === undefined) return [];
 		const comp = this.#createHookWidget(content);
 		try {
-			return comp.render(process.stdout.columns || 80);
+			// Render at full width so the component has room, then strip the trailing
+			// padding that width-aware components (e.g. Text) add. Otherwise the stored
+			// right-panel block is terminal-wide and compositeRightPanels drops it as
+			// "too narrow", making component-factory rightEditor widgets disappear.
+			return comp.render(process.stdout.columns || 80).map(line => line.replace(/[ \t]+$/, ""));
 		} finally {
 			comp.dispose?.();
 		}
