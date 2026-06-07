@@ -145,6 +145,13 @@ export type WidgetPlacement = "aboveEditor" | "belowEditor" | "rightEditor";
 
 export interface ExtensionWidgetOptions {
 	placement?: WidgetPlacement;
+	/**
+	 * Placement priority for `rightEditor` widgets when the negative space cannot
+	 * fit every panel. Lower numbers are placed first (claim space first). Widgets
+	 * without a priority fall back to ascending height (shortest first), so the
+	 * smallest, always-present panels stay visible and the tallest hide first.
+	 */
+	priority?: number;
 }
 
 export type ExtensionUiComponent = Component & { dispose?(): void };

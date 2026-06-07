@@ -5,31 +5,59 @@ import type { InteractiveModeContext } from "../src/modes/types";
 
 // Minimal context: setHookWidget / clearHookWidgets only touch the two hook
 // containers, ui.requestRender, and setRightInfo.
-function makeCtx(): { ctx: InteractiveModeContext; rightInfo: (string[] | undefined)[] } {
-	const rightInfo: (string[] | undefined)[] = [];
+function makeCtx(): { ctx: InteractiveModeContext; rightInfo: (string[][] | undefined)[] } {
+	const rightInfo: (string[][] | undefined)[] = [];
 	const ctx = {
 		hookWidgetContainerAbove: new Container(),
 		hookWidgetContainerBelow: new Container(),
 		ui: { requestRender: () => {} },
-		setRightInfo: (lines: string[] | undefined) => {
-			rightInfo.push(lines);
+		setRightInfo: (blocks: string[][] | undefined) => {
+			rightInfo.push(blocks);
 		},
 	} as unknown as InteractiveModeContext;
 	return { ctx, rightInfo };
 }
 
 describe("ExtensionUiController rightEditor widgets", () => {
-	it("merges multiple right widget keys with a blank separator", () => {
+	it("exposes each right widget as its own block (no merge)", () => {
 		const { ctx, rightInfo } = makeCtx();
 		const c = new ExtensionUiController(ctx);
 
+		// Equal height keeps insertion order, so the block split is unambiguous.
 		c.setHookWidget("a", ["a1", "a2"], { placement: "rightEditor" });
-		c.setHookWidget("b", ["b1"], { placement: "rightEditor" });
+		c.setHookWidget("b", ["b1", "b2"], { placement: "rightEditor" });
 
-		expect(rightInfo.at(-1)).toEqual(["a1", "a2", "", "b1"]);
+		expect(rightInfo.at(-1)).toEqual([
+			["a1", "a2"],
+			["b1", "b2"],
+		]);
 	});
 
-	it("preserves right widget order when an existing key updates", () => {
+	it("orders blocks by ascending height when no priority is set", () => {
+		const { ctx, rightInfo } = makeCtx();
+		const c = new ExtensionUiController(ctx);
+
+		c.setHookWidget("tall", ["t1", "t2", "t3"], { placement: "rightEditor" });
+		c.setHookWidget("short", ["s1"], { placement: "rightEditor" });
+
+		// Shortest first so the small, always-present panels stay visible.
+		expect(rightInfo.at(-1)).toEqual([["s1"], ["t1", "t2", "t3"]]);
+	});
+
+	it("places lower priority numbers first, overriding height", () => {
+		const { ctx, rightInfo } = makeCtx();
+		const c = new ExtensionUiController(ctx);
+
+		c.setHookWidget("tall", ["t1", "t2", "t3"], { placement: "rightEditor", priority: 0 });
+		c.setHookWidget("short", ["s1"], { placement: "rightEditor", priority: 1 });
+
+		expect(rightInfo.at(-1)).toEqual([
+			["t1", "t2", "t3"],
+			["s1"],
+		]);
+	});
+
+	it("preserves right widget insertion order when an existing key updates", () => {
 		const { ctx, rightInfo } = makeCtx();
 		const c = new ExtensionUiController(ctx);
 
@@ -37,7 +65,8 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		c.setHookWidget("b", ["b1"], { placement: "rightEditor" });
 		c.setHookWidget("a", ["a2"], { placement: "rightEditor" });
 
-		expect(rightInfo.at(-1)).toEqual(["a2", "", "b1"]);
+		// Equal height -> insertion order (a before b) is preserved across update.
+		expect(rightInfo.at(-1)).toEqual([["a2"], ["b1"]]);
 	});
 
 	it("does not cap right widget content before the compositor can place it", () => {
@@ -47,7 +76,7 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		const lines = Array.from({ length: 15 }, (_, i) => `l${i}`);
 		c.setHookWidget("big", lines, { placement: "rightEditor" });
 
-		expect(rightInfo.at(-1)).toEqual(lines);
+		expect(rightInfo.at(-1)).toEqual([lines]);
 	});
 
 	it("clears right-side state when a key moves back to an inline placement", () => {
@@ -55,9 +84,9 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		const c = new ExtensionUiController(ctx);
 
 		c.setHookWidget("a", ["a1"], { placement: "rightEditor" });
-		expect(rightInfo.at(-1)).toEqual(["a1"]);
+		expect(rightInfo.at(-1)).toEqual([["a1"]]);
 
-		// Same key, now aboveEditor → the stale right-side lines must be cleared.
+		// Same key, now aboveEditor → the stale right-side block must be cleared.
 		c.setHookWidget("a", ["a1"], { placement: "aboveEditor" });
 		expect(rightInfo.at(-1)).toBeUndefined();
 	});
@@ -71,7 +100,7 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		expect(rightInfo.at(-1)).toBeUndefined();
 	});
 
-	it("clearHookWidgets drops all right-side lines", () => {
+	it("clearHookWidgets drops all right-side blocks", () => {
 		const { ctx, rightInfo } = makeCtx();
 		const c = new ExtensionUiController(ctx);
 
