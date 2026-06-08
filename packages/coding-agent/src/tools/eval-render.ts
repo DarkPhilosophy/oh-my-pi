@@ -172,7 +172,7 @@ function renderAgentProgressEvents(events: EvalStatusEvent[], theme: Theme, spin
 		const status = agentEventStatus(event.status);
 		const iconStatus =
 			status === "completed"
-				? "success"
+				? "done"
 				: status === "failed"
 					? "error"
 					: status === "aborted"
@@ -182,10 +182,13 @@ function renderAgentProgressEvents(events: EvalStatusEvent[], theme: Theme, spin
 							: "running";
 		const iconColor =
 			status === "completed" ? "success" : status === "failed" || status === "aborted" ? "error" : "accent";
-		const icon = formatStatusIcon(iconStatus, theme, status === "running" ? spinnerFrame : undefined);
+		const icon =
+			status === "completed"
+				? theme.styledSymbol("tool.eval", "accent")
+				: theme.fg(iconColor, formatStatusIcon(iconStatus, theme, status === "running" ? spinnerFrame : undefined));
 
 		const id = eventString(event.id) ?? "agent";
-		let line = `${prefix} ${theme.fg(iconColor, icon)} ${theme.fg("accent", theme.bold(id))}`;
+		let line = `${prefix} ${icon} ${theme.fg("accent", theme.bold(id))}`;
 
 		if (status === "failed" || status === "aborted") {
 			line += ` ${formatBadge(status, iconColor, theme)}`;
@@ -246,7 +249,7 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 		sh: "icon.package",
 		env: "icon.package",
 		batch: "icon.package",
-		llm: "icon.package",
+		completion: "icon.package",
 		log: "icon.package",
 		phase: "icon.package",
 	};
@@ -315,7 +318,7 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 		case "batch":
 			parts.push(`${data.files} file${(data.files as number) !== 1 ? "s" : ""} processed`);
 			break;
-		case "llm":
+		case "completion":
 			if (data.model) parts.push(String(data.model));
 			if (data.tier && data.tier !== data.model) parts.push(`(${data.tier})`);
 			parts.push(`${data.chars ?? 0} chars`);

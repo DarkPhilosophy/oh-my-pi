@@ -54,6 +54,10 @@ type ReadToolResultDetails = {
 	};
 	conflictCount?: number;
 	displayReadTargets?: unknown;
+	displayContent?: {
+		text?: string;
+		startLine?: number;
+	};
 	meta?: {
 		source?: {
 			type?: string;
@@ -291,6 +295,9 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	// (see TranscriptContainer / NativeScrollbackLiveRegion). The controller calls
 	// `finalize()` once the run breaks so the block can commit to native scrollback.
 	#finalized = false;
+	// Forced terminal even with a still-pending entry: the turn ended (abort or
+	// completion) so no late result is coming. Set via `seal()`.
+	#sealed = false;
 
 	constructor(options: ReadToolGroupOptions = {}) {
 		super();
@@ -301,11 +308,34 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	}
 
 	isTranscriptBlockFinalized(): boolean {
-		return this.#finalized;
+		if (this.#sealed) return true;
+		if (!this.#finalized) return false;
+		// Closed to new entries, but a still-pending entry means its result is in
+		// flight — parallel reads can finalize the group (a sibling tool starts and
+		// breaks the run) before a read's `tool_execution_end` lands. Stay live so
+		// the late result repaints instead of freezing the pending preview into
+		// native scrollback on ED3-risk terminals (#issue: stuck "Read <path>").
+		return !this.#hasPendingEntries();
+	}
+
+	#hasPendingEntries(): boolean {
+		for (const entry of this.#entries.values()) {
+			if (entry.status === "pending") return true;
+		}
+		return false;
 	}
 
 	finalize(): void {
 		this.#finalized = true;
+	}
+
+	/**
+	 * Force the group terminal even if an entry never received its result (the
+	 * turn aborted or ended). Lets it freeze and stop pinning the transcript live
+	 * region instead of lingering on a pending preview until the next thaw.
+	 */
+	seal(): void {
+		this.#sealed = true;
 	}
 
 	updateArgs(args: ReadRenderArgs, toolCallId?: string): void {
@@ -347,10 +377,13 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			typeof details?.conflictCount === "number" && details.conflictCount > 0 ? details.conflictCount : undefined;
 		entry.conflictCount = conflictCount;
 		entry.status = result.isError ? "error" : suffixResolution ? "warning" : "success";
-		// Store the text content for preview/expanded display
+		// Store clean display content for preview/expanded display when the read
+		// tool provides it; fall back to model-facing text for legacy results.
+		const displayContent =
+			typeof details?.displayContent?.text === "string" ? details.displayContent.text : undefined;
 		const textContent = result.content?.find(c => c.type === "text")?.text;
-		if (textContent !== undefined) {
-			entry.contentText = textContent;
+		if (displayContent !== undefined || textContent !== undefined) {
+			entry.contentText = displayContent ?? textContent;
 		}
 		this.#updateDisplay();
 	}

@@ -30,6 +30,7 @@ interface WorkerHandle {
 	mode: "worker" | "inline";
 	send(msg: WorkerInbound): void;
 	onMessage(handler: (msg: WorkerOutbound) => void): () => void;
+	close(): Promise<boolean>;
 	terminate(): Promise<void>;
 }
 
@@ -60,12 +61,14 @@ const resettingSessions = new Map<string, Promise<void>>();
 // avoiding `vm.runInContext` (see shared/indirect-eval.ts), here surfacing as a
 // SIGILL/SIGSEGV. Callers that pass a larger per-cell budget still dominate.
 const WORKER_INIT_TIMEOUT_MS = 15_000;
+const WORKER_CLOSE_TIMEOUT_MS = 1_000;
 
 export async function executeInVmContext(options: {
 	sessionKey: string;
 	sessionId: string;
 	cwd: string;
 	session: ToolSession;
+	localRoots?: Record<string, string>;
 	reset?: boolean;
 	code: string;
 	filename: string;
@@ -98,7 +101,7 @@ export async function executeInVmContext(options: {
 	}
 	const session = await acquireSession(
 		options.sessionKey,
-		{ cwd: options.cwd, sessionId: options.sessionId },
+		{ cwd: options.cwd, sessionId: options.sessionId, localRoots: options.localRoots },
 		options.timeoutMs,
 	);
 	return await runOnce(session, options);
@@ -108,7 +111,7 @@ export async function resetVmContext(sessionKey: string): Promise<void> {
 	const session = sessions.get(sessionKey) ?? (await startingSessions.get(sessionKey)?.catch(() => undefined));
 	if (!session) return;
 	sessions.delete(sessionKey);
-	await killSession(session, new ToolError("JS context reset"));
+	await killSession(session, new ToolError("JS context reset"), { force: false });
 }
 
 export async function disposeAllVmContexts(): Promise<void> {
@@ -121,7 +124,7 @@ export async function disposeAllVmContexts(): Promise<void> {
 		if (!all.includes(result.value)) all.push(result.value);
 	}
 	sessions.clear();
-	await Promise.all(all.map(session => killSession(session, new ToolError("JS context disposed"))));
+	await Promise.all(all.map(session => killSession(session, new ToolError("JS context disposed"), { force: false })));
 }
 
 async function runOnce(
@@ -130,6 +133,7 @@ async function runOnce(
 		sessionId: string;
 		cwd: string;
 		session: ToolSession;
+		localRoots?: Record<string, string>;
 		code: string;
 		filename: string;
 		runState: VmRunState;
@@ -154,7 +158,7 @@ async function runOnce(
 		// Cancel any in-flight tool calls first.
 		for (const ctrl of pending.toolCalls.values()) ctrl.abort(abortError);
 		// Hard-kill the worker — only way to interrupt synchronous user code.
-		void killSessionFor(session, abortError);
+		void killSessionFor(session, abortError, { force: true });
 	};
 
 	if (options.runState.signal?.aborted) {
@@ -169,7 +173,7 @@ async function runOnce(
 			runId,
 			code: options.code,
 			filename: options.filename,
-			snapshot: { cwd: options.cwd, sessionId: options.sessionId },
+			snapshot: { cwd: options.cwd, sessionId: options.sessionId, localRoots: options.localRoots },
 		});
 		return await promise;
 	} finally {
@@ -294,14 +298,14 @@ function settlePending(session: JsSession, msg: Extract<WorkerOutbound, { type: 
 	pending.reject(errorFromPayload(msg.error));
 }
 
-async function killSessionFor(session: JsSession, error: Error): Promise<void> {
+async function killSessionFor(session: JsSession, error: Error, options: { force: boolean }): Promise<void> {
 	if (sessions.get(session.sessionKey) === session) {
 		sessions.delete(session.sessionKey);
 	}
-	await killSession(session, error);
+	await killSession(session, error, options);
 }
 
-async function killSession(session: JsSession, error: Error): Promise<void> {
+async function killSession(session: JsSession, error: Error, options: { force: boolean }): Promise<void> {
 	if (session.state === "dead") return;
 	session.state = "dead";
 	for (const pending of session.pending.values()) {
@@ -311,6 +315,11 @@ async function killSession(session: JsSession, error: Error): Promise<void> {
 		pending.reject(error);
 	}
 	session.pending.clear();
+	if (options.force) {
+		await session.worker.terminate().catch(() => undefined);
+		return;
+	}
+	if (await session.worker.close().catch(() => false)) return;
 	await session.worker.terminate().catch(() => undefined);
 }
 
@@ -398,6 +407,38 @@ function wrapBunWorker(worker: Worker): WorkerHandle {
 			worker.addEventListener("message", wrap);
 			return () => worker.removeEventListener("message", wrap);
 		},
+		async close() {
+			const { promise: closed, resolve } = Promise.withResolvers<boolean>();
+			let settled = false;
+			let sawClosedAck = false;
+			let sawWorkerExit = false;
+			let timeout: NodeJS.Timeout | undefined;
+			let unsubscribe = (): void => {};
+			const finish = (value: boolean): void => {
+				if (settled) return;
+				settled = true;
+				if (timeout) clearTimeout(timeout);
+				unsubscribe();
+				worker.removeEventListener("close", onClose);
+				resolve(value);
+			};
+			const finishIfClosed = (): void => {
+				if (sawClosedAck && sawWorkerExit) finish(true);
+			};
+			const onClose = (): void => {
+				sawWorkerExit = true;
+				finishIfClosed();
+			};
+			unsubscribe = this.onMessage(msg => {
+				if (msg.type !== "closed") return;
+				sawClosedAck = true;
+				finishIfClosed();
+			});
+			worker.addEventListener("close", onClose);
+			timeout = setTimeout(() => finish(false), WORKER_CLOSE_TIMEOUT_MS);
+			worker.postMessage({ type: "close" } satisfies WorkerInbound);
+			return await closed;
+		},
 		async terminate() {
 			worker.terminate();
 		},
@@ -433,6 +474,27 @@ function spawnInlineWorker(): WorkerHandle {
 		onMessage: handler => {
 			hostListeners.add(handler);
 			return () => hostListeners.delete(handler);
+		},
+		async close() {
+			const { promise: closed, resolve } = Promise.withResolvers<boolean>();
+			let settled = false;
+			let timeout: NodeJS.Timeout | undefined;
+			let unsubscribe = (): void => {};
+			const finish = (value: boolean): void => {
+				if (settled) return;
+				settled = true;
+				if (timeout) clearTimeout(timeout);
+				unsubscribe();
+				hostListeners.clear();
+				workerListeners.clear();
+				resolve(value);
+			};
+			unsubscribe = this.onMessage(msg => {
+				if (msg.type === "closed") finish(true);
+			});
+			this.send({ type: "close" });
+			timeout = setTimeout(() => finish(false), WORKER_CLOSE_TIMEOUT_MS);
+			return await closed;
 		},
 		async terminate() {
 			hostListeners.clear();

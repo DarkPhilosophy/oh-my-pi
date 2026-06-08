@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import { buildAnthropicAuthConfig, buildAnthropicSearchHeaders, buildAnthropicUrl } from "../src/utils/anthropic-auth";
-import { AnthropicOAuthFlow, refreshAnthropicToken } from "../src/utils/oauth/anthropic";
+import { AnthropicOAuthFlow, refreshAnthropicToken } from "@oh-my-pi/pi-ai/registry/oauth/anthropic";
+import {
+	buildAnthropicAuthConfig,
+	buildAnthropicSearchHeaders,
+	buildAnthropicUrl,
+} from "@oh-my-pi/pi-ai/utils/anthropic-auth";
 import { withEnv } from "./helpers";
 
 const originalFetch = global.fetch;
@@ -388,6 +392,6 @@ describe("buildAnthropicSearchHeaders", () => {
 	it("includes the web-search beta in Anthropic-Beta", () => {
 		const auth = buildAnthropicAuthConfig("sk-ant-api-key");
 		const headers = buildAnthropicSearchHeaders(auth);
-		expect(headers["Anthropic-Beta"]).toContain("web-search-2025-03-05");
+		expect(headers["anthropic-beta"]).toContain("web-search-2025-03-05");
 	});
 });

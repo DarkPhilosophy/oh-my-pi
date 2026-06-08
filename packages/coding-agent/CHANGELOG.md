@@ -1,6 +1,81 @@
 # Changelog
 
 ## [Unreleased]
+
+## [15.10.5] - 2026-06-08
+
+### Added
+
+- Added Homebrew and mise package-manager update paths to the self-update command so installations launched from those tools are updated through their native workflows
+- Added detection of Homebrew and mise install locations so self-update chooses the manager-specific updater when the active `omp` binary comes from a package-manager-managed path
+- Added `astCondition` to TTSR rule frontmatter as a syntax-aware alternative to regex `condition`, enabling AST-based matching for edit/write tool snapshots
+- Added a built-in `ts-redundant-clear-guard` rule that flags redundant guards around `clearTimeout`, `clearInterval`, and `clearImmediate` calls
+- Added a built-in `ts-no-test-timers` rule that flags real timers (`Bun.sleep`, `setTimeout`, `setInterval`) in `*.test.ts` files, steering toward fake timers (`vi.useFakeTimers()` / `vi.advanceTimersByTime()`)
+- Added support for paste marker highlighting with accent styling (`[Paste #N, +X lines]`/`[Paste #N, Y chars]`) in the prompt editor, matching the visual treatment of image references
+- Added pixel dimensions to pasted/loaded image placeholders in the prompt — the marker now reads `[Image #N, WxH]` (falling back to `[Image #N]` when the header can't be decoded).
+- The bundled shell now treats `nohup` as a builtin: `nohup … &` runs the command without masking `SIGHUP` or detaching it, so agent-started daemons stay tied to this agent's lifetime instead of leaking as orphans when the agent exits. Updated the bash tool prompt's daemon guidance to match (dropped the `nohup … & / setsid … & / disown` detach recommendation in favor of a large `timeout` plus the persistent session).
+- Added per-tool `tool.*` theme symbol keys (nerd/unicode/ascii presets) plus a quiet `status.done` glyph, so each tool's result header can carry a signature icon instead of a generic status mark
+
+### Changed
+
+- Updated pi-ai OAuth imports to the renamed `@oh-my-pi/pi-ai/oauth` subpath (was `@oh-my-pi/pi-ai/utils/oauth`) across the login UI, MCP OAuth flow, model registry, setup wizard, and web-search Codex auth. The legacy-plugin specifier shim drops its `pi-ai/oauth` → `pi-ai/utils/oauth` subpath rewrite, since the canonical `@oh-my-pi/pi-ai/oauth` export now resolves directly.
+- Changed forced self-updates for Homebrew installs to run `brew reinstall` and for mise installs to run `mise install --force` after `mise upgrade` when `--force` is requested
+- Changed TTSR rule bucketing and matching so rules with only `astCondition` are treated as TTSR rules and evaluated in the interrupt flow using reconstructed edit/write source snapshots
+- Normalized image content before it enters model context so attached images are downscaled and preprocessed for prompts, steering messages, follow-ups, and custom agent messages
+- Changed image marker format to include pixel dimensions when available (`[Image #N, WxH]`), falling back to bare `[Image #N]` when header cannot be decoded
+- Changed the prompt editor to highlight large-paste placeholders (`[Paste #N, +X lines]`/`[Paste #N, Y chars]`) with the same accent styling as image references (bold, no hyperlink), and to delete image/paste markers atomically: a single backspace or forward-delete removes the whole marker instead of leaving a broken `[Paste #N, +X lines` behind.
+- Browser tool helpers (`tab.*`) are now individually tracked and time-bounded: when a `run` cell hits its budget, the timeout error names the still-running helper(s) and how long each has been stalled (e.g. `... (stalled on tab.screenshot({ selector: ".x" }) (29.9s))`) instead of the opaque `Browser code execution timed out after 30000ms`. Page-coupled helpers that should resolve quickly (`observe`, `screenshot`, `extract`) also fail fast with a named per-op error at `min(cellBudget, 20s)`, leaving budget for the rest of the cell, rather than silently consuming the whole budget.
+- Derived the auth-broker OAuth callback ports (`CALLBACK_PORTS`) and the paste-code login-provider set from the `@oh-my-pi/pi-ai` provider registry, removing the duplicated `CALLBACK_SERVER_PROVIDERS` tables in the model selector and the setup-wizard sign-in scene.
+- Raised the `eval` tool's per-cell `timeout` ceiling from 600s to 3600s (matching `bash`), in both the Zod schema and the `TOOL_TIMEOUTS.eval` runtime clamp, so heavy local-compute cells can request budgets above 10 minutes.
+- Derived the auth-broker OAuth callback ports (`CALLBACK_PORTS`) and the paste-code login-provider set from the `@oh-my-pi/pi-ai` provider registry, removing the duplicated `CALLBACK_SERVER_PROVIDERS` tables in the model selector and the setup-wizard sign-in scene.
+- Reworked tool result-header glyphs to cut the overused success checkmark/dot: each tool now shows its own signature icon on success (terminal for bash, pencil for edit, magnifier/globe for search, plug for MCP, etc.; read keeps the read-group status dot), tools without a custom renderer fall back to a quiet `status.done` dot, and error/warning/pending states keep the universal cross/warning/spinner
+- Changed steady-state health indicators (LSP server ready, OAuth logged-in, plugin-doctor checks) from a success checkmark to a colored `status.enabled` dot, so failures stand out instead of every line reading as a check
+- Changed one-shot MCP/SSH/debug confirmation messages from a generic checkmark to contextual action glyphs (add/remove, connect/enable/disable toggles, reload, job-completed), reflecting what happened rather than just "success"
+- Derived the auth-broker OAuth callback ports (`CALLBACK_PORTS`) and the paste-code login-provider set from the `@oh-my-pi/pi-ai` provider registry, removing the duplicated `CALLBACK_SERVER_PROVIDERS` tables in the model selector and the setup-wizard sign-in scene.
+
+### Fixed
+
+- Fixed package subpath exports for status-line, setup-wizard, tool-discovery, and gallery fixture modules so rewritten test imports resolve through `@oh-my-pi/pi-coding-agent`.
+- Fixed runtime model provider discovery so extension-registered providers are now refreshed after extension load and extension-supplied models appear without restarting
+- Fixed task-row shimmer timing so every running description starts its highlight on the first character together and reaches the last character together, regardless of text length.
+- Fixed the `eval` tool's `read`/`write`/`append` helpers (both Python and JS backends) treating `local://` (and other internal-URL) paths as plain filesystem paths. `pathlib.Path`/`path.resolve` collapse `local://x.md` to `local:/x.md`, so `write("local://x.md", …)` created a junk `local:` directory under the cwd instead of writing where `read local://x.md` resolves. The helpers now substitute injected on-disk roots for known schemes (currently `local://`, pinned to the session's own `local://` root), reject path traversal and unknown `scheme://` paths, and leave plain paths resolving against the cwd.
+- Fixed read and edit previews to surface the enclosing syntactic block's off-window boundary line (behind an ellipsis) when a shown line opens or closes a block whose other end falls outside the displayed range. Powered by a new tree-sitter `enclosingBlockBoundaries` native, so it covers brace languages and indentation languages (Python) using real syntactic spans, with a lexical bracket scan as fallback for unparseable sources.
+- Fixed `tab.screenshot({ selector })` hanging for the entire cell budget on continuously-animating pages (WebGL / `backdrop-filter` "glass" effects). The element-screenshot path no longer routes through puppeteer's `scrollIntoViewIfNeeded()`, whose `IntersectionObserver` promise can stall indefinitely under heavy rendering; it now does a single instant `scrollIntoView` and captures with `scrollIntoView: false` (relying on `captureBeyondViewport`), so off-screen elements are still captured without the stall.
+- Fixed follow-up message submissions to forward pending clipboard-pasted images to `session.prompt` in both streaming and non-streaming flows
+- Fixed follow-up handling to clear consumed clipboard image state after submission so pasted images are not silently carried into later messages
+- Fixed clipboard-pasted images being rejected when steering or following up during compaction. Instead of bailing with "Retry after it completes to send images", the message and its images are now queued via `queueCompactionMessage` and forwarded to the session (steer/follow-up/prompt) when the compaction queue flushes.
+- Fixed edit tool result previews to show only current-file lines and collapse long inserted blocks instead of echoing removed content.
+- Fixed `generateDiffString` to omit the mid-skip `...` placeholder between two nearby edits, conveying the elided gap via the jump in line numbers instead (consistent with how leading/trailing context skips already render). The placeholder row was indistinguishable from a genuine `...` context line and wasted a row in compact previews.
+- Fixed concurrent interactive dialogs clobbering each other on the shared editor surface. `ExtensionUiController` presents the selector / input / editor modals by swapping a component into the single `editorContainer` and stealing focus, with no serialization — so a second `select`/`input`/`editor` request (from a hook, extension, the `ask` tool, or an internal flow) opened while one was already up would clear the container and re-focus, orphaning the first dialog. Its promise then hung until the caller's signal aborted (surfacing a stray `Ask input was cancelled` on top of the answered call). These modals are now serialized through `#presentDialog`: at most one shows at a time and the rest queue (FIFO); a queued request whose signal aborts before its turn resolves `undefined` and is never shown. The first dialog is still presented synchronously, so single-dialog timing is unchanged.
+- Fixed the `ask` tool potentially hanging when the model emitted two `ask` calls in one tool batch. `ask` now declares `concurrency: "exclusive"`, so the agent loop serializes the batch and each question's selector runs to completion before the next starts, instead of racing for the shared selector surface.
+- Expanded `@path/to/file` import references in CLAUDE.md / AGENTS.md / GEMINI.md (and the other discovered context-file flavors) when loading them into the system prompt, matching the convention used by Claude Code, Goose, and other agents. Imports resolve relative to the importing file's directory, support `~/...`, recurse up to 5 hops, and are skipped inside fenced code blocks and inline code spans so technical examples like `npm install @types/node` survive intact ([#2111](https://github.com/can1357/oh-my-pi/issues/2111)).
+
+### Removed
+
+- Removed the special Anthropic `claude-opus-4-8` tool-call batch cap; sessions no longer abort an in-flight provider stream after a fixed number of completed tool calls.
+
+## [15.10.4] - 2026-06-08
+
+### Added
+
+- macOS release binaries are now signed with a Developer ID Application identity (hardened runtime + secure timestamp + JIT/library-validation entitlements) and notarized in CI when the `APPLE_*` signing secrets are configured; releases auto-fall back to ad-hoc signing until then. This makes the shipped binaries Gatekeeper-acceptable, unblocking an official Homebrew submission ([#776](https://github.com/can1357/oh-my-pi/issues/776)). See `docs/macos-signing-notarization.md`.
+- Added a Homebrew install path: `brew install can1357/tap/omp`. The [can1357/homebrew-tap](https://github.com/can1357/homebrew-tap) formula installs the prebuilt release binary, and a `release_brew` CI job regenerates it (version + per-asset sha256) from each published release via `scripts/ci-update-brew-formula.ts` ([#776](https://github.com/can1357/oh-my-pi/issues/776)).
+
+### Changed
+
+- Adjusted `completion()` model resolution so the `default` tier now prefers the session’s active model and falls back to the configured default role when needed
+- Rewrote the session auto-title prompt (`prompts/system/title-system.md`) and the `set_title` tool description to ask for a concise, sentence-case title (3-7 words) that captures the session's topic/goal, with good/bad examples and explicit guidance to treat the first message as data (no following embedded links/instructions, no refusals, describe URL/reference asks). The local on-device title prompt (`tiny-title-system.md`) was aligned to the same 3-7 word, sentence-case convention. The deterministic greeting/low-signal filter and the `none` deferral sentinel are unchanged.
+- Renamed the eval oneshot helper from `llm()` to `completion()` in both JavaScript and Python preludes, including status events, prompt docs, and runtime tests.
+
+### Fixed
+
+- Fixed `completion()` to always send a non-empty default system prompt when `system` is omitted so providers that require instructions no longer reject requests
+- Fixed structured `completion()` mode to return parsed JSON from plain text output when the model skips the forced `respond` tool call
+- Fixed slow-tier `completion()` reasoning requests to avoid unsupported effort settings by only enabling reasoning on reasoning-capable models and capping effort to supported levels
+- Fixed JS eval worker reset/dispose to close workers gracefully before forced termination, avoiding Bun 1.3.14 N-API teardown crashes with native modules such as `canvas`.
+
+## [15.10.3] - 2026-06-08
+
 ### Added
 
 - Added clickable file path hyperlinks to read tool outputs (read-call rows, grouped summaries, and inline previews) using resolved or absolute file targets with selector-based line anchors for quick navigation
@@ -16,11 +91,6 @@
 - Changed delayed diagnostics delivery to batch late results in one message per flush instead of a raw hidden custom payload
 - Changed hidden custom messages and file-mention context to reach providers as `developer` messages instead of user-authored turns, so system reminders no longer pollute compacted user history.
 - Rewrote the plan-mode active prompt (`prompts/system/plan-mode-active.md`) from scratch to stop producing shallow plans. Reframed the artifact as an **execution spec** a fresh agent runs after the planning conversation is cleared/compacted (zero design decisions for the implementer) rather than a brevity-capped summary. Folded high-consensus requirements into the existing sections as inline, conditional rules — no new boilerplate sections: ordered Approach steps that keep the build/tests green after each step (sequencing); exact signatures/literals for new or load-bearing symbols (contracts); full callsite list + clean cutover for renames/signature-changes/removals; Verification that must exercise the new behavior (input → observable output) with run preconditions, not just build/typecheck; Assumptions restricted to user-overridable choices plus pre-decided fallbacks for load-bearing assumptions; a provenance rule (plan facts must come from a read this session; unverified claims flagged inline); and bans on conversation back-references and decision-free sections (Non-Goals/Alternatives/Risks/Future Work). Kept the decision-complete self-check and the brevity-vs-completeness tiebreak (completeness wins). Render contract (Handlebars vars/conditionals) unchanged; verified across all `planExists`/`reentry`/`iterative` branch combinations.
-
-### Removed
-
-- Removed the animated pending border ("shimmer") on running `bash`, `eval`, and `ssh` execution blocks. While pending, a block now shows a static accent border instead of sweeping a dark segment around its bottom edge; `display.shimmer` still governs the working-status line and `task` row animations.
-- Removed the tool-level `nonAbortable` bypass so `write` and `edit` honor the active turn `AbortSignal`. `read` is abortable for everything that is slow or non-deterministic (URL/internal-URL reads, archive, sqlite, document conversion, image decode, structural summary, conflict scan, suffix glob); only the deterministic plain-file line/range reads and directory listings run to completion.
 
 ### Fixed
 
@@ -38,11 +108,19 @@
 - Fixed read-group summaries for multi-path `read` results to use result-provided display targets so each resolved path is shown as its own row
 - Fixed read-group range summaries to abbreviate long merged selectors with ellipsis to keep repeated-file range rows readable
 - Fixed read-group TUI summaries so a single delimited `read` call renders as separate read rows, and repeated reads of the same file collapse under one file with full-file/range children.
+- Fixed grouped `read` rows freezing on their pending "⏳ Read <path>" preview on ED3-risk terminals (ghostty/kitty/iTerm2/…) when a parallel sibling tool closed the read run and appended a block below the group before the read's result arrived. The read-group block now stays in the repaintable live region until its entries settle, so the late success result repaints instead of being stranded; a `seal()` escape hatch (turn end / transcript rebuild) still lets a never-delivered read freeze rather than pinning the live region.
 - Fixed session search to return all sessions unchanged when the query is blank
 - Fixed duplicate session suggestions by deduplicating history matches by session path when merging metadata and prompt-history results
 - Fixed `/resume` search ranking so sessions whose prompts or metadata match the query now prefer prompt recency and recent literal matches instead of letting older earlier-title fuzzy matches outrank a just-used session.
+- Fixed `omp --resume <id>` / `--fork <id>` crashing with `[Uncaught Exception]` when the id did not match a known session. `createSessionManager` now throws a dedicated `SessionResolutionError`, which `runRootCommand` catches to print `Error: Session "..." not found.` plus a hint to stderr and exit with code 1. The same path covers `--fork` combined with `--no-session` and the non-interactive cross-project / moved-cwd prompts that previously surfaced raw stack traces ([#2084](https://github.com/can1357/oh-my-pi/issues/2084)).
+
+### Removed
+
+- Removed the animated pending border ("shimmer") on running `bash`, `eval`, and `ssh` execution blocks. While pending, a block now shows a static accent border instead of sweeping a dark segment around its bottom edge; `display.shimmer` still governs the working-status line and `task` row animations.
+- Removed the tool-level `nonAbortable` bypass so `write` and `edit` honor the active turn `AbortSignal`. `read` is abortable for everything that is slow or non-deterministic (URL/internal-URL reads, archive, sqlite, document conversion, image decode, structural summary, conflict scan, suffix glob); only the deterministic plain-file line/range reads and directory listings run to completion.
 
 ## [15.10.2] - 2026-06-08
+
 ### Added
 
 - Added `raw-sse.txt` to debug report bundles, exporting recent raw provider SSE diagnostics when captured

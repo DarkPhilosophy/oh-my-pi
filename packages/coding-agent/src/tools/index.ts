@@ -133,8 +133,9 @@ export interface DeferredDiagnosticsEntry {
 	/** True when any message is error severity. */
 	errored: boolean;
 	/**
-	 * Evaluated at flush time: drop the entry when a newer edit to the same file
-	 * has superseded it, so the model never sees diagnostics for stale content.
+	 * Evaluated at injection time (in the dispatcher's stale check): drop the entry
+	 * when a newer mutation to the same file has superseded it, so the model never
+	 * sees diagnostics for stale content.
 	 */
 	isStale(): boolean;
 }
@@ -310,6 +311,11 @@ export interface ToolSession {
 	 *  in the transcript and delivered to the model at the next yield, like background
 	 *  job results. */
 	queueDeferredDiagnostics?(entry: DeferredDiagnosticsEntry): void;
+	/** Bump and return the session-global mutation counter for `path`. Edit/write
+	 *  tools call this on every file mutation so stale late-diagnostics can be dropped. */
+	bumpFileMutationVersion?(path: string): number;
+	/** Read the current session-global mutation counter for `path` (0 if never mutated). */
+	getFileMutationVersion?(path: string): number;
 	/** Get the active OpenTelemetry config so subagent dispatch can forward
 	 *  the parent's tracer/hooks with the subagent's own identity stamped. */
 	getTelemetry?: () => AgentTelemetryConfig | undefined;
@@ -334,6 +340,38 @@ export function computeEssentialBuiltinNames(settings: Settings): string[] {
 		return cleaned.filter(name => name in BUILTIN_TOOLS);
 	}
 	return [...DEFAULT_ESSENTIAL_TOOL_NAMES];
+}
+
+/**
+ * Filter the initial active tool set when `tools.discoveryMode === "all"`.
+ *
+ * Non-essential discoverable built-ins are hidden — the model rediscovers them
+ * via `search_tool_bm25` and activates them on demand. A tool survives hiding
+ * when it is essential, explicitly requested, restored from a prior selection,
+ * or required by a forced tool_choice feature (`forceActive`). The last case is
+ * load-bearing: a named tool_choice (e.g. the eager `todo` prelude) must
+ * reference a tool present in the request, or the provider rejects it with 400.
+ */
+export function filterInitialToolsForDiscoveryAll(
+	initialToolNames: string[],
+	opts: {
+		loadModeOf: (name: string) => BuiltinToolLoadMode | undefined;
+		essentialNames: ReadonlySet<string>;
+		explicitlyRequested: ReadonlySet<string>;
+		restored: ReadonlySet<string>;
+		forceActive: ReadonlySet<string>;
+	},
+): string[] {
+	return initialToolNames.filter(name => {
+		const loadMode = opts.loadModeOf(name);
+		if (!loadMode) return true; // not a built-in — leave MCP/custom/extension to existing logic
+		if (loadMode === "essential") return true;
+		if (opts.essentialNames.has(name)) return true;
+		if (opts.explicitlyRequested.has(name)) return true;
+		if (opts.restored.has(name)) return true;
+		if (opts.forceActive.has(name)) return true;
+		return false;
+	});
 }
 
 /**
