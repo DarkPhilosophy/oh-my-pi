@@ -35,6 +35,7 @@ import type { Theme } from "./theme/theme";
 export type CompactionQueuedMessage = {
 	text: string;
 	mode: "steer" | "followUp";
+	images?: ImageContent[];
 };
 
 export type SubmittedUserInput = {
@@ -182,7 +183,7 @@ export interface InteractiveModeContext {
 	showNewVersionNotification(newVersion: string): void;
 	clearEditor(): void;
 	updatePendingMessagesDisplay(): void;
-	queueCompactionMessage(text: string, mode: "steer" | "followUp"): void;
+	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void;
 	flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void>;
 	flushPendingBashComponents(): void;
 	flushPendingModelSwitch(): Promise<void>;
