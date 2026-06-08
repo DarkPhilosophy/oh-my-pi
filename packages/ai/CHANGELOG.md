@@ -5,6 +5,19 @@
 ### Fixed
 
 - Fixed OpenAI Responses, Azure OpenAI Responses, and Codex Responses providers ignoring async `onPayload` replacement bodies. Provider payload hooks can now transform the actual request body sent upstream, matching the Anthropic/Gemini replacement contract.
+## [15.10.4] - 2026-06-08
+### Added
+
+- Added `anthropic-client-platform` (`desktop_app`) and `anthropic-client-version` (`1.11187.4`) headers to the Anthropic request fingerprint for OAuth sessions
+
+### Changed
+
+- Changed non-built-in tool names sent to Anthropic from `proxy_` prefixing to `_` prefixing (for example `bash` to `_bash`) while built-in tool names remain unchanged
+- Updated the Anthropic OAuth stealth fingerprint to track Claude Code 2.1.165: `claudeCodeVersion` bumped to `2.1.165` (flows into both the `cc_version` billing header and the `claude-cli/<version>` user-agent), `claudeCodeSystemInstruction` changed to `"You are a Claude agent, built on Anthropic's Claude Agent SDK."`, and the billing-header `cc_entrypoint` changed from `cli` to `local-agent`.
+- Clamped the Anthropic request `max_tokens` to `Math.min(CLAUDE_CODE_MAX_OUTPUT_TOKENS, options.maxTokens || model.maxTokens)` (64k) so OAuth requests match Claude Code's requested output cap instead of sending the model's full ceiling (e.g. 128k for Opus 4.8).
+
+## [15.10.3] - 2026-06-08
+
 ### Removed
 
 - Removed the synthetic `<turn-aborted>` developer guidance note that `transformMessages` injected after an aborted/errored assistant turn (and its `turn-aborted-guidance.md` prompt). The per-call synthetic `"aborted"` tool results already tell the model the turn's tools were terminated, so the extra "verify current state before retrying" note was redundant — and it biased the model toward second-guessing a deliberate user interrupt when the turn was resumed.

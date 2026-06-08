@@ -133,8 +133,9 @@ export interface DeferredDiagnosticsEntry {
 	/** True when any message is error severity. */
 	errored: boolean;
 	/**
-	 * Evaluated at flush time: drop the entry when a newer edit to the same file
-	 * has superseded it, so the model never sees diagnostics for stale content.
+	 * Evaluated at injection time (in the dispatcher's stale check): drop the entry
+	 * when a newer mutation to the same file has superseded it, so the model never
+	 * sees diagnostics for stale content.
 	 */
 	isStale(): boolean;
 }
@@ -310,6 +311,11 @@ export interface ToolSession {
 	 *  in the transcript and delivered to the model at the next yield, like background
 	 *  job results. */
 	queueDeferredDiagnostics?(entry: DeferredDiagnosticsEntry): void;
+	/** Bump and return the session-global mutation counter for `path`. Edit/write
+	 *  tools call this on every file mutation so stale late-diagnostics can be dropped. */
+	bumpFileMutationVersion?(path: string): number;
+	/** Read the current session-global mutation counter for `path` (0 if never mutated). */
+	getFileMutationVersion?(path: string): number;
 	/** Get the active OpenTelemetry config so subagent dispatch can forward
 	 *  the parent's tracer/hooks with the subagent's own identity stamped. */
 	getTelemetry?: () => AgentTelemetryConfig | undefined;
