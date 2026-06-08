@@ -240,6 +240,25 @@ def _tuple_of_strings(values: object, *, field: str) -> tuple[str, ...] | None:
         result.append(item)
     return tuple(result) or None
 
+def _tuple_of_widget_blocks(values: object, *, field: str) -> tuple[ExtensionWidgetBlock, ...] | None:
+    if values is None:
+        return None
+    if not isinstance(values, list):
+        raise ValueError(f"{field} must be a list")
+
+    result: list[ExtensionWidgetBlock] = []
+    for index, item in enumerate(values):
+        item_field = f"{field}[{index}]"
+        if not isinstance(item, dict):
+            raise ValueError(f"{item_field} must be an object")
+        lines = _tuple_of_strings(item.get("lines"), field=f"{item_field}.lines")
+        if lines is None:
+            raise ValueError(f"{item_field}.lines must contain at least one string")
+        priority = _optional_int(item, "priority")
+        result.append(ExtensionWidgetBlock(lines=lines, priority=priority))
+    return tuple(result) or None
+
+
 
 def _parse_agent_message(payload: JsonObject, *, field: str) -> AgentMessage:
     _require_literal(
@@ -846,6 +865,12 @@ class ReadyEvent:
 
 
 @dataclass(slots=True, frozen=True)
+class ExtensionWidgetBlock:
+    lines: tuple[str, ...]
+    priority: int | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class ExtensionUiRequest:
     id: str
     method: ExtensionUiMethod
@@ -862,6 +887,7 @@ class ExtensionUiRequest:
     status_text: str | None = None
     widget_key: str | None = None
     widget_lines: tuple[str, ...] | None = None
+    widget_blocks: tuple[ExtensionWidgetBlock, ...] | None = None
     widget_placement: WidgetPlacement | None = None
     widget_priority: int | None = None
     text: str | None = None
@@ -1437,6 +1463,9 @@ def parse_extension_ui_request(payload: JsonObject) -> ExtensionUiRequest:
         widget_key=_optional_str(payload, "widgetKey"),
         widget_lines=_tuple_of_strings(
             payload.get("widgetLines"), field="extension_ui_request.widgetLines"
+        ),
+        widget_blocks=_tuple_of_widget_blocks(
+            payload.get("widgetBlocks"), field="extension_ui_request.widgetBlocks"
         ),
         widget_placement=cast(
             WidgetPlacement | None,

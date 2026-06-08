@@ -33,6 +33,36 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		]);
 	});
 
+	it("exposes sub-blocks from one right widget independently", () => {
+		const { ctx, rightInfo } = makeCtx();
+		const c = new ExtensionUiController(ctx);
+
+		c.setHookWidget(
+			"usage",
+			[{ lines: ["summary"] }, { lines: ["account1", "bar1"] }, { lines: ["account2", "bar2"] }],
+			{ placement: "rightEditor" },
+		);
+
+		expect(rightInfo.at(-1)).toEqual([["summary"], ["account1", "bar1"], ["account2", "bar2"]]);
+	});
+
+	it("uses sub-block priority before widget priority", () => {
+		const { ctx, rightInfo } = makeCtx();
+		const c = new ExtensionUiController(ctx);
+
+		c.setHookWidget(
+			"usage",
+			[
+				{ lines: ["low"], priority: 5 },
+				{ lines: ["high"], priority: -5 },
+			],
+			{ placement: "rightEditor", priority: 0 },
+		);
+		c.setHookWidget("memory", ["mem"], { placement: "rightEditor", priority: -1 });
+
+		expect(rightInfo.at(-1)).toEqual([["high"], ["mem"], ["low"]]);
+	});
+
 	it("orders blocks by ascending height when no priority is set", () => {
 		const { ctx, rightInfo } = makeCtx();
 		const c = new ExtensionUiController(ctx);

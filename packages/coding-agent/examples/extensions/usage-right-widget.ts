@@ -1,5 +1,5 @@
 import type { UsageReport } from "@oh-my-pi/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionWidgetBlock } from "@oh-my-pi/pi-coding-agent";
 
 const WIDGET_KEY = "usage-right-widget";
 const REFRESH_MS = Number.parseInt(process.env.OMP_USAGE_WIDGET_REFRESH_MS || "5000", 10) || 5000;
@@ -133,8 +133,8 @@ function boxFromCells(cells: Cell[]): string[] {
 	];
 }
 
-function buildLines(ctx: ExtensionContext, reports: UsageReport[] | null): string[] {
-	const rows: Cell[] = [{ text: " Usage" }];
+function buildBlocks(ctx: ExtensionContext, reports: UsageReport[] | null): ExtensionWidgetBlock[] {
+	const summaryRows: Cell[] = [{ text: " Usage" }];
 	const usage = ctx.getContextUsage?.();
 	if (usage) {
 		const percent = Number.isFinite(usage.percent)
@@ -142,20 +142,21 @@ function buildLines(ctx: ExtensionContext, reports: UsageReport[] | null): strin
 				? usage.percent
 				: usage.percent * 100
 			: undefined;
-		rows.push({
+		summaryRows.push({
 			text: ` ctx ${formatInt(usage.tokens ?? undefined)}/${formatInt(usage.contextWindow)}${percent != null ? ` ${percent.toFixed(0)}%` : ""}${costText(ctx)}`,
 		});
 	}
 
+	const blocks: ExtensionWidgetBlock[] = [{ lines: boxFromCells(summaryRows), priority: -1000 }];
 	const provider = ctx.model?.provider;
 	const filtered = provider ? (reports ?? []).filter(report => report.provider === provider) : (reports ?? []);
 	if (filtered.length === 0) {
-		rows.push({ text: "" }, { text: color(90, " provider usage: n/a") });
-		return boxFromCells(rows);
+		blocks.push({ lines: boxFromCells([{ text: color(90, " provider usage: n/a") }]), priority: 0 });
+		return blocks;
 	}
 
-	for (const report of filtered) {
-		rows.push({ text: "" }, { text: ` ${providerLabel(report.provider)}` });
+	for (const [index, report] of filtered.entries()) {
+		const rows: Cell[] = [{ text: ` ${providerLabel(report.provider)}` }];
 		const account = accountLabel(report, report.limits[0]);
 		const blockedByOtherWindow = report.limits.some(
 			limit => limit.status === "exhausted" && (remainingFraction(limit.amount) ?? 0) <= 0.01,
@@ -165,13 +166,15 @@ function buildLines(ctx: ExtensionContext, reports: UsageReport[] | null): strin
 			const reset = limit.window?.resetsAt ? resetLabel(limit.window.resetsAt) : "";
 			const windowLabel = limit.window?.label ?? limit.scope?.windowId ?? "";
 			const tag = statusTag(limit, fraction, blockedByOtherWindow);
-			const head = windowLabel && !limit.label.includes(windowLabel) ? `${limit.label} ${windowLabel}` : limit.label;
+			const label = limit.label || windowLabel || "limit";
+			const head = windowLabel && !label.includes(windowLabel) ? `${label} ${windowLabel}` : label;
 			rows.push({ text: ` ${tag} ${head}` });
 			rows.push({ text: `   ${account}${reset ? ` (${reset})` : ""}` });
 			rows.push({ kind: "bar", fraction });
 		}
+		blocks.push({ lines: boxFromCells(rows), priority: index });
 	}
-	return boxFromCells(rows);
+	return blocks;
 }
 
 export default function usageRightWidget(pi: ExtensionAPI): void {
@@ -195,7 +198,7 @@ export default function usageRightWidget(pi: ExtensionAPI): void {
 	}
 
 	function paint(ctx: ExtensionContext, reports: UsageReport[] | null = latestReports): void {
-		ctx.ui.setWidget(WIDGET_KEY, buildLines(ctx, reports), { placement: "rightEditor" });
+		ctx.ui.setWidget(WIDGET_KEY, buildBlocks(ctx, reports), { placement: "rightEditor" });
 	}
 
 	async function refresh(ctxArg?: ExtensionContext, options: { network?: boolean } = {}): Promise<void> {
