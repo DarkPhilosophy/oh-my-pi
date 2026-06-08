@@ -18,6 +18,7 @@ import type {
 	TerminalInputHandler,
 } from "../../extensibility/extensions";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
+import { emitSessionShutdownEvent } from "../../extensibility/extensions/runner";
 import { createSessionMemoryRuntimeContext } from "../../memory-backend/runtime";
 import { HookEditorComponent } from "../../modes/components/hook-editor";
 import { HookInputComponent } from "../../modes/components/hook-input";
@@ -258,15 +259,22 @@ export class ExtensionUiController {
 
 		extensionRunner.initialize(actions, contextActions, commandActions, uiContext);
 
-		// Subscribe to extension errors
-		extensionRunner.onError((error: ExtensionError) => {
-			this.showExtensionError(error.extensionPath, error.error);
-		});
+		if (!this.#errorSubscribedRunners.has(extensionRunner)) {
+			this.#errorSubscribedRunners.add(extensionRunner);
+			extensionRunner.onError((error: ExtensionError) => {
+				this.showExtensionError(error.extensionPath, error.error);
+			});
+		}
 
 		// Emit session_start event
 		await extensionRunner.emit({
 			type: "session_start",
 		});
+	}
+
+	async reloadHooksAndCustomTools(): Promise<void> {
+		await emitSessionShutdownEvent(this.ctx.session.extensionRunner);
+		await this.initHooksAndCustomTools();
 	}
 
 	setHookWidget(key: string, content: ExtensionWidgetContent, options?: ExtensionWidgetOptions): void {
