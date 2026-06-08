@@ -777,7 +777,6 @@ describe("ExtensionRunner", () => {
 		it("exposes usage reports to extension event contexts", async () => {
 			const usageReports = [{ provider: "kimi-code", limits: [], metadata: {}, fetchedAt: Date.now() }];
 			const runner = new ExtensionRunner([], {} as any, tempDir.path(), sessionManager, modelRegistry);
-
 			runner.initialize(
 				{
 					sendMessage: () => {},
@@ -808,6 +807,75 @@ describe("ExtensionRunner", () => {
 			);
 
 			expect(await runner.createContext().fetchUsageReports?.()).toBe(usageReports);
+		});
+
+		it("exposes the lazy memory runtime after initialization", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.on("session_start", async (_event, ctx) => {
+						globalThis.__ompMemoryStatus = await ctx.memory.status();
+					});
+				}
+			`;
+			const explicitExtensionPath = path.join(tempDir.path(), "memory-context.ts");
+			fs.writeFileSync(explicitExtensionPath, extCode);
+			const globalState = globalThis as typeof globalThis & { __ompMemoryStatus?: unknown };
+			delete globalState.__ompMemoryStatus;
+
+			const result = await loadTestExtensions([explicitExtensionPath]);
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			runner.initialize(
+				{
+					sendMessage: () => {},
+					sendUserMessage: () => {},
+					appendEntry: () => {},
+					setLabel: () => {},
+					getActiveTools: () => [],
+					getAllTools: () => [],
+					setActiveTools: async () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => undefined,
+					setThinkingLevel: () => {},
+					getSessionName: () => undefined,
+					setSessionName: async () => {},
+				},
+				{
+					getModel: () => undefined,
+					isIdle: () => true,
+					abort: () => {},
+					memory: {
+						status: async () => ({
+							backend: "mnemopi",
+							active: true,
+							writable: true,
+							searchable: true,
+						}),
+						search: async query => ({ backend: "mnemopi", query, count: 0, items: [] }),
+						save: async () => ({ backend: "mnemopi", stored: 1 }),
+					},
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: async () => {},
+					getSystemPrompt: () => [],
+				},
+			);
+
+			await runner.emit({ type: "session_start" });
+
+			expect(globalState.__ompMemoryStatus).toMatchObject({
+				backend: "mnemopi",
+				active: true,
+				searchable: true,
+			});
+			delete globalState.__ompMemoryStatus;
 		});
 	});
 
