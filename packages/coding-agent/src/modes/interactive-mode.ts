@@ -3404,6 +3404,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#extensionUiController.initHooksAndCustomTools();
 	}
 
+	reloadHooksAndCustomTools(): Promise<void> {
+		return this.#extensionUiController.reloadHooksAndCustomTools();
+	}
+
 	emitCustomToolSessionEvent(
 		reason: "start" | "switch" | "branch" | "tree" | "shutdown",
 		previousSessionFile?: string,

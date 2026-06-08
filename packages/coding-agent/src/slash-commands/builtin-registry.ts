@@ -1605,7 +1605,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
 			await runtime.ctx.refreshSlashCommandState();
 			await runtime.ctx.session.refreshSshTool({ activateIfAvailable: true });
-			await runtime.ctx.initHooksAndCustomTools();
+			await runtime.ctx.reloadHooksAndCustomTools();
 			runtime.ctx.showStatus("Plugins reloaded.");
 			runtime.ctx.editor.setText("");
 		},
@@ -1733,7 +1733,7 @@ export async function executeBuiltinSlashCommand(
 				clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
 				await ctx.refreshSlashCommandState();
 				await ctx.session.refreshSshTool({ activateIfAvailable: true });
-				await ctx.initHooksAndCustomTools();
+				await ctx.reloadHooksAndCustomTools();
 			},
 		};
 		const result = await command.handle(parsed, adapted);

@@ -18,6 +18,7 @@ import type {
 	TerminalInputHandler,
 } from "../../extensibility/extensions";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
+import { emitSessionShutdownEvent } from "../../extensibility/extensions/runner";
 import { HookEditorComponent } from "../../modes/components/hook-editor";
 import { HookInputComponent } from "../../modes/components/hook-input";
 import { HookSelectorComponent, type HookSelectorSlider } from "../../modes/components/hook-selector";
@@ -266,6 +267,11 @@ export class ExtensionUiController {
 		await extensionRunner.emit({
 			type: "session_start",
 		});
+	}
+
+	async reloadHooksAndCustomTools(): Promise<void> {
+		await emitSessionShutdownEvent(this.ctx.session.extensionRunner);
+		await this.initHooksAndCustomTools();
 	}
 
 	setHookWidget(key: string, content: ExtensionWidgetContent, options?: ExtensionWidgetOptions): void {
