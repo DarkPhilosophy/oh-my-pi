@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { Container } from "@oh-my-pi/pi-tui";
 import type {
 	ExtensionActions,
 	ExtensionCommandContextActions,
@@ -8,6 +7,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { ExtensionUiController } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { Container } from "@oh-my-pi/pi-tui";
 
 /**
  * Issue #1020: `ctx.shutdown()` is a no-op in interactive mode.
