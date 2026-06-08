@@ -11,6 +11,7 @@ import type {
 	ExtensionUIDialogOptions,
 	ExtensionUISelectItem,
 	ExtensionUiComponent,
+	ExtensionWidgetBlock,
 	ExtensionWidgetContent,
 	ExtensionWidgetOptions,
 	SendUserMessageHandler,
@@ -28,11 +29,20 @@ import { trimRightPadding } from "../right-panel-padding";
 
 const MAX_WIDGET_LINES = 10;
 
+interface RightWidgetPanelBlock {
+	lines: string[];
+	priority?: number;
+}
+
+function isWidgetBlock(value: unknown): value is ExtensionWidgetBlock {
+	return typeof value === "object" && value !== null && Array.isArray((value as { lines?: unknown }).lines);
+}
+
 export class ExtensionUiController {
 	#extensionTerminalInputUnsubscribers = new Set<() => void>();
 	#hookWidgetsAbove = new Map<string, ExtensionUiComponent>();
 	#hookWidgetsBelow = new Map<string, ExtensionUiComponent>();
-	#rightWidgets = new Map<string, { lines: string[]; priority?: number }>();
+	#rightWidgets = new Map<string, { blocks: RightWidgetPanelBlock[]; priority?: number }>();
 	constructor(private ctx: InteractiveModeContext) {}
 
 	/**
@@ -267,7 +277,9 @@ export class ExtensionUiController {
 			return;
 		}
 		if (placement === "rightEditor") {
-			this.#rightWidgets.set(key, { lines: this.#contentToRightLines(content), priority: options?.priority });
+			// Updating an existing Map key preserves insertion order; deleting first
+			// would make animated/right-side widgets jump below siblings on refresh.
+			this.#rightWidgets.set(key, { blocks: this.#contentToRightBlocks(content), priority: options?.priority });
 			this.#flushRightWidgets();
 			this.#rebuildHookWidgets();
 			return;
@@ -286,14 +298,39 @@ export class ExtensionUiController {
 		existing?.dispose?.();
 		widgets.delete(key);
 	}
+	#contentToRightBlocks(content: ExtensionWidgetContent): RightWidgetPanelBlock[] {
+		if (Array.isArray(content)) {
+			if (content.length > 0 && content.every(isWidgetBlock)) {
+				return content
+					.map(block => ({
+						lines: block.lines.map(line => String(line)),
+						priority: block.priority,
+					}))
+					.filter(block => block.lines.length > 0);
+			}
+			return [{ lines: content.map(line => String(line)) }];
+		}
+		if (content === undefined) return [];
+		const comp = this.#createHookWidget(content);
+		try {
+			// Render at full width so the component has room, then strip trailing
+			// padding that width-aware components (e.g. Text) add. Keep trailing SGR
+			// resets intact when the padding sits before the reset.
+			return [{ lines: comp.render(process.stdout.columns || 80).map(trimRightPadding) }];
+		} finally {
+			comp.dispose?.();
+		}
+	}
 
 	#createHookWidget(content: ExtensionWidgetContent): ExtensionUiComponent {
 		if (Array.isArray(content)) {
+			const lines =
+				content.length > 0 && content.every(isWidgetBlock) ? content.flatMap(block => block.lines) : content;
 			const container = new Container();
-			for (const line of content.slice(0, MAX_WIDGET_LINES)) {
-				container.addChild(new Text(line, 1, 0));
+			for (const line of lines.slice(0, MAX_WIDGET_LINES)) {
+				container.addChild(new Text(String(line), 1, 0));
 			}
-			if (content.length > MAX_WIDGET_LINES) {
+			if (lines.length > MAX_WIDGET_LINES) {
 				container.addChild(new Text(theme.fg("muted", "... (widget truncated)"), 1, 0));
 			}
 			return container;
@@ -308,33 +345,27 @@ export class ExtensionUiController {
 			this.ctx.setRightInfo(undefined);
 			return;
 		}
-		// Each rightEditor widget is composited as its own block so they hide
-		// independently when the negative space is short. Placement order: explicit
-		// priority first (ascending), then ascending height (shortest first) so the
-		// smallest, always-present panels stay visible and the tallest hide first.
-		// Insertion order (preserved by Map, even on key update) breaks ties.
-		const entries = [...this.#rightWidgets.values()].map((entry, index) => ({ entry, index }));
-		entries.sort((a, b) => {
-			const pa = a.entry.priority ?? Number.POSITIVE_INFINITY;
-			const pb = b.entry.priority ?? Number.POSITIVE_INFINITY;
+		// Each rightEditor block is composited independently so multi-section
+		// widgets can degrade contextually when the negative space is short.
+		// Placement order: explicit block priority, then widget priority, then
+		// ascending height (shortest first), then stable widget/block order.
+		const blocks = [...this.#rightWidgets.values()].flatMap((entry, widgetIndex) =>
+			entry.blocks.map((block, blockIndex) => ({
+				lines: block.lines,
+				priority: block.priority ?? entry.priority,
+				widgetIndex,
+				blockIndex,
+			})),
+		);
+		blocks.sort((a, b) => {
+			const pa = a.priority ?? Number.POSITIVE_INFINITY;
+			const pb = b.priority ?? Number.POSITIVE_INFINITY;
 			if (pa !== pb) return pa - pb;
-			if (a.entry.lines.length !== b.entry.lines.length) return a.entry.lines.length - b.entry.lines.length;
-			return a.index - b.index;
+			if (a.lines.length !== b.lines.length) return a.lines.length - b.lines.length;
+			if (a.widgetIndex !== b.widgetIndex) return a.widgetIndex - b.widgetIndex;
+			return a.blockIndex - b.blockIndex;
 		});
-		this.ctx.setRightInfo(entries.map(e => e.entry.lines));
-	}
-	#contentToRightLines(content: ExtensionWidgetContent): string[] {
-		if (Array.isArray(content)) return content.map(line => String(line));
-		if (content === undefined) return [];
-		const component = this.#createHookWidget(content);
-		try {
-			// Render at full width so the component has room, then strip trailing
-			// padding that width-aware components (e.g. Text) add. Keep trailing SGR
-			// resets intact when the padding sits before the reset.
-			return component.render(process.stdout.columns || 80).map(trimRightPadding);
-		} finally {
-			component.dispose?.();
-		}
+		this.ctx.setRightInfo(blocks.map(block => block.lines));
 	}
 
 	#rebuildHookWidgets(): void {

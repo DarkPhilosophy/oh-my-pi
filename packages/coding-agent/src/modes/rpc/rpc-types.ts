@@ -215,6 +215,10 @@ export type RpcResponse =
 // ============================================================================
 // Extension UI Events (stdout)
 // ============================================================================
+export interface RpcExtensionWidgetBlock {
+	lines: string[];
+	priority?: number;
+}
 
 /** Emitted when an extension needs user input */
 export type RpcExtensionUIRequest =
@@ -256,7 +260,8 @@ export type RpcExtensionUIRequest =
 			id: string;
 			method: "setWidget";
 			widgetKey: string;
-			widgetLines: string[] | undefined;
+			widgetLines?: string[] | undefined;
+			widgetBlocks?: RpcExtensionWidgetBlock[] | undefined;
 			widgetPlacement?: "aboveEditor" | "belowEditor" | "rightEditor";
 			widgetPriority?: number;
 	  }

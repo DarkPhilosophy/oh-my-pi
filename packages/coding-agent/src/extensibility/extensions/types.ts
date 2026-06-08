@@ -159,9 +159,19 @@ export interface ExtensionWidgetOptions {
 	priority?: number;
 }
 
+/**
+ * Optional independently placeable sub-block for `rightEditor` widgets.
+ * Each block is hidden or shown as a unit when the negative space is tight.
+ */
+export interface ExtensionWidgetBlock {
+	id?: string;
+	lines: string[];
+	priority?: number;
+}
+
 export type ExtensionUiComponent = Component & { dispose?(): void };
 export type ExtensionUiComponentFactory = (tui: TUI, theme: Theme) => ExtensionUiComponent;
-export type ExtensionWidgetContent = string[] | ExtensionUiComponentFactory | undefined;
+export type ExtensionWidgetContent = string[] | ExtensionWidgetBlock[] | ExtensionUiComponentFactory | undefined;
 
 /**
  * UI context for extensions to request interactive UI.
@@ -198,7 +208,7 @@ export interface ExtensionUIContext {
 	/** Set the working/loading message shown during streaming. Call with no argument to restore default. */
 	setWorkingMessage(message?: string): void;
 
-	/** Set a widget to display above or below the editor. Accepts string array or component factory. */
+	/** Set a widget. `rightEditor` also accepts sub-block arrays that can hide independently. */
 	setWidget(key: string, content: ExtensionWidgetContent, options?: ExtensionWidgetOptions): void;
 
 	/** Set a custom footer component, or undefined to restore the built-in footer. */

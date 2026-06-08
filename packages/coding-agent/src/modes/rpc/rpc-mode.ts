@@ -16,6 +16,7 @@ import {
 	type ExtensionUIContext,
 	type ExtensionUIDialogOptions,
 	type ExtensionUISelectItem,
+	type ExtensionWidgetBlock,
 	type ExtensionWidgetOptions,
 	getExtensionUISelectOptionLabel,
 } from "../../extensibility/extensions";
@@ -36,6 +37,26 @@ import type {
 	RpcResponse,
 	RpcSessionState,
 } from "./rpc-types";
+
+function isExtensionWidgetBlock(value: unknown): value is ExtensionWidgetBlock {
+	return typeof value === "object" && value !== null && Array.isArray((value as { lines?: unknown }).lines);
+}
+
+function widgetBlocksForRpc(
+	content: unknown,
+): { widgetLines?: string[]; widgetBlocks?: ExtensionWidgetBlock[] } | undefined {
+	if (content === undefined) return {};
+	if (!Array.isArray(content)) return undefined;
+	if (content.length > 0 && content.every(isExtensionWidgetBlock)) {
+		return {
+			widgetBlocks: content.map(block => ({
+				lines: block.lines.map(line => String(line)),
+				priority: block.priority,
+			})),
+		};
+	}
+	return { widgetLines: content.map(line => String(line)) };
+}
 
 // Re-export types for consumers
 export type * from "./rpc-types";
@@ -337,19 +358,18 @@ export async function runRpcMode(
 		}
 
 		setWidget(key: string, content: unknown, options?: ExtensionWidgetOptions): void {
-			// Only support string arrays in RPC mode - factory functions are ignored
-			if (content === undefined || Array.isArray(content)) {
-				this.output({
-					type: "extension_ui_request",
-					id: Snowflake.next() as string,
-					method: "setWidget",
-					widgetKey: key,
-					widgetLines: content as string[] | undefined,
-					widgetPlacement: options?.placement,
-					widgetPriority: options?.priority,
-				} as RpcExtensionUIRequest);
-			}
-			// Component factories are not supported in RPC mode - would need TUI access
+			const widgetContent = widgetBlocksForRpc(content);
+			// Component factories are not supported in RPC mode - would need TUI access.
+			if (!widgetContent) return;
+			this.output({
+				type: "extension_ui_request",
+				id: Snowflake.next() as string,
+				method: "setWidget",
+				widgetKey: key,
+				...widgetContent,
+				widgetPlacement: options?.placement,
+				widgetPriority: options?.priority,
+			} as RpcExtensionUIRequest);
 		}
 
 		setFooter(_factory: unknown): void {

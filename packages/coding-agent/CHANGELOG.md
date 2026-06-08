@@ -9,6 +9,7 @@
 ### Changed
 
 - Changed the `find` tool to process each explicit multi-path target separately before merging results so searches stay scoped to the requested paths
+- Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
 - Changed multi-path `find` handling so invalid extra targets no longer fail the whole query and now return matches from valid targets only
 - Changed background-job completion and late LSP diagnostic delivery to inject at the next agent step boundary (mid-run), via the new non-interrupting "aside" channel, instead of only when the agent reaches a yield/follow-up point. The model now sees these notifications between its own requests without the turn having to end first, and in-flight tools are never interrupted; `job`-poll acknowledgement still suppresses results the agent already saw.
 - Changed late LSP diagnostics after edit or write to surface in the chat transcript as `Late diagnostics` entries rendered through the same grouped tree renderer the `edit`/`write` tools use (per-file nodes, severity icons, `:line:col` locations), and to honor the global tool-output expand toggle (collapsed entries cap at 5 diagnostics with a `… N more` hint)
