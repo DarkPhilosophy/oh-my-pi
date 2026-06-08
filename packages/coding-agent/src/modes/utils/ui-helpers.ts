@@ -11,6 +11,10 @@ import { CustomMessageComponent } from "../../modes/components/custom-message";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
 import { EvalExecutionComponent } from "../../modes/components/eval-execution";
 import {
+	type LateDiagnosticsFile,
+	LateDiagnosticsMessageComponent,
+} from "../../modes/components/late-diagnostics-message";
+import {
 	ReadToolGroupComponent,
 	readArgsHaveTarget,
 	readArgsTargetInternalUrl,
@@ -25,6 +29,7 @@ import type { CompactionQueuedMessage, InteractiveModeContext } from "../../mode
 import {
 	type CustomMessage,
 	isSilentAbort,
+	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
 	resolveAbortLabel,
 	SKILL_PROMPT_MESSAGE_TYPE,
 	type SkillPromptDetails,
@@ -166,6 +171,17 @@ export class UiHelpers {
 							block.addChild(new Text(line, 1, 0));
 						}
 						this.ctx.chatContainer.addChild(block);
+						break;
+					}
+					if (message.customType === LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE) {
+						const details = (
+							message as CustomMessage<{
+								files?: LateDiagnosticsFile[];
+							}>
+						).details;
+						const component = new LateDiagnosticsMessageComponent(details?.files ?? []);
+						component.setExpanded(this.ctx.toolOutputExpanded);
+						this.ctx.chatContainer.addChild(component);
 						break;
 					}
 					if (message.customType === SKILL_PROMPT_MESSAGE_TYPE) {

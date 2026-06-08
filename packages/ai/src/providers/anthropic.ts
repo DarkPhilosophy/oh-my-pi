@@ -18,6 +18,7 @@ import {
 	supportsMidConversationSystemMessages,
 } from "../model-thinking";
 import { calculateCost } from "../models";
+import { isUsageLimitError } from "../rate-limit-utils";
 import { getEnvApiKey, OUTPUT_FALLBACK_BUFFER } from "../stream";
 import type {
 	Api,
@@ -29,6 +30,7 @@ import type {
 	Message,
 	Model,
 	ProviderSessionState,
+	RawSseEvent,
 	RedactedThinkingContent,
 	ServiceTier,
 	SimpleStreamOptions,
@@ -62,7 +64,7 @@ import { isCopilotTransientModelError } from "../utils/retry";
 import { COMBINATOR_KEYS, NO_STRICT, toolWireSchema } from "../utils/schema";
 import { spillToDescription } from "../utils/schema/spill";
 import { createSdkStreamRequestOptions } from "../utils/sdk-stream-timeout";
-import { notifyRawSseEvent, wrapFetchForSseDebug } from "../utils/sse-debug";
+import { notifyRawSseEvent } from "../utils/sse-debug";
 import {
 	AnthropicConnectionTimeoutError,
 	type AnthropicFetchOptions,
@@ -863,7 +865,6 @@ export type AnthropicClientOptionsArgs = {
 	hasTools?: boolean;
 	thinkingEnabled?: boolean;
 	thinkingDisplay?: AnthropicThinkingDisplay;
-	onSseEvent?: AnthropicOptions["onSseEvent"];
 	fetch?: FetchImpl;
 	claudeCodeSessionId?: string;
 };
@@ -1036,11 +1037,25 @@ const ANTHROPIC_MESSAGE_EVENTS: ReadonlySet<string> = new Set([
 	"content_block_stop",
 ]);
 
+/**
+ * Anthropic keepalive `ping` events carry no message content, but they prove the
+ * upstream connection is alive during long server-side gaps (extended thinking,
+ * slow tool execution). They are normally dropped before reaching the consumer;
+ * we instead surface them as lightweight markers so the idle watchdog
+ * (`iterateWithIdleTimeout`) resets its deadline on every ping. Without this, a
+ * connection that is demonstrably still streaming pings still trips
+ * "Anthropic stream stalled while waiting for the next event". The message-event
+ * branches in `streamAnthropic` match none of these markers, so they are ignored.
+ */
+type RawMessagePingEvent = { type: "ping" };
+type AnthropicStreamEvent = RawMessageStreamEvent | RawMessagePingEvent;
+const ANTHROPIC_PING_EVENT: RawMessagePingEvent = { type: "ping" };
+
 async function* iterateAnthropicEvents(
 	response: Response,
 	signal?: AbortSignal,
 	onSseEvent?: AnthropicOptions["onSseEvent"],
-): AsyncGenerator<RawMessageStreamEvent> {
+): AsyncGenerator<AnthropicStreamEvent> {
 	if (!response.body) {
 		throw new Error("Attempted to iterate over an Anthropic response with no body");
 	}
@@ -1052,6 +1067,12 @@ async function* iterateAnthropicEvents(
 		notifyRawSseEvent(onSseEvent, sse);
 		if (sse.event === "error") {
 			throw new Error(sse.data);
+		}
+
+		if (sse.event === "ping") {
+			// Surface keepalives so the idle watchdog treats them as liveness.
+			yield ANTHROPIC_PING_EVENT;
+			continue;
 		}
 
 		if (!ANTHROPIC_MESSAGE_EVENTS.has(sse.event ?? "")) {
@@ -1103,20 +1124,38 @@ async function getAnthropicStreamResponse(
 	request: unknown,
 	signal?: AbortSignal,
 	onSseEvent?: AnthropicOptions["onSseEvent"],
-): Promise<{ events: AsyncIterable<RawMessageStreamEvent>; response: Response; requestId: string | null }> {
+): Promise<{
+	events: AsyncIterable<AnthropicStreamEvent>;
+	response: Response;
+	requestId: string | null;
+	recordsRawSseEvents: boolean;
+}> {
 	if (hasAnthropicRawResponseRequest(request)) {
 		const response = await request.asResponse();
 		return {
 			events: iterateAnthropicEvents(response, signal, onSseEvent),
 			response,
 			requestId: response.headers.get("request-id"),
+			recordsRawSseEvents: true,
 		};
 	}
 	if (hasAnthropicStreamWithResponseRequest(request)) {
 		const { data, response, request_id } = await request.withResponse();
-		return { events: data, response, requestId: request_id };
+		return { events: data, response, requestId: request_id, recordsRawSseEvents: false };
 	}
 	throw new Error("Anthropic SDK request did not expose a stream response");
+}
+
+async function* observeDecodedAnthropicSdkEvents(
+	events: AsyncIterable<AnthropicStreamEvent>,
+	observer: (event: RawSseEvent) => void,
+): AsyncGenerator<AnthropicStreamEvent> {
+	for await (const event of events) {
+		const data = JSON.stringify(event);
+		// Reconstructed from decoded SDK event; not literal wire bytes.
+		notifyRawSseEvent(observer, { event: event.type, data, raw: [`event: ${event.type}`, `data: ${data}`] });
+		yield event;
+	}
 }
 
 function getAnthropicCompat(
@@ -1189,6 +1228,14 @@ function isProviderRetryableStreamEnvelopeError(error: unknown): boolean {
 export function isProviderRetryableError(error: unknown, provider?: string): boolean {
 	if (!(error instanceof Error)) return false;
 	if (provider === "github-copilot" && isCopilotTransientModelError(error)) return true;
+	// Account-level usage/quota limits ("usage_limit_reached", "exceed your
+	// account's rate limit", "quota exceeded") are persistent — the server
+	// parks the credential for minutes-to-hours (see the long `retry-after`).
+	// Retrying the same key with the provider's seconds-scale backoff never
+	// helps; these are owned by the credential-rotation layer (auth-gateway /
+	// `streamSimple` a/b/c policy), so surface them immediately instead of
+	// burning the retry budget here.
+	if (isUsageLimitError(error.message)) return false;
 	const msg = error.message.toLowerCase();
 	if (
 		isUnexpectedSocketCloseMessage(msg) ||
@@ -1285,6 +1332,9 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 		let rawRequestDump: RawHttpRequestDump | undefined;
 		let activeAbortTracker = createAbortSourceTracker(options?.signal);
 
+		const onSseEvent = options?.onSseEvent;
+		const rawSseObserver = onSseEvent ? (event: RawSseEvent) => onSseEvent(event, model) : undefined;
+
 		try {
 			let client: AnthropicMessagesClientLike;
 			let isOAuthToken: boolean;
@@ -1319,7 +1369,6 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 					hasTools: !!context.tools?.length,
 					thinkingEnabled: options?.thinkingEnabled,
 					thinkingDisplay: options?.thinkingDisplay,
-					onSseEvent: options?.onSseEvent,
 					fetch: options?.fetch,
 					claudeCodeSessionId: options?.sessionId ?? extractClaudeMetadataSessionId(options?.metadata?.user_id),
 				});
@@ -1395,19 +1444,17 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 							requestTimeoutMs,
 						);
 					}
-					let anthropicStream: AsyncIterable<RawMessageStreamEvent>;
+					let anthropicStream: AsyncIterable<AnthropicStreamEvent>;
 					let response: Response;
 					let requestId: string | null;
+					let recordsRawSseEvents: boolean;
 					try {
 						({
 							events: anthropicStream,
 							response,
 							requestId,
-						} = await getAnthropicStreamResponse(
-							anthropicRequest,
-							requestSignal,
-							options?.client ? event => options?.onSseEvent?.(event, model) : undefined,
-						));
+							recordsRawSseEvents,
+						} = await getAnthropicStreamResponse(anthropicRequest, requestSignal, rawSseObserver));
 					} catch (error) {
 						if (error instanceof AnthropicConnectionTimeoutError && !activeAbortTracker.wasCallerAbort()) {
 							throw firstEventTimeoutAbortError;
@@ -1421,7 +1468,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 					let sawMessageStart = false;
 					let sawTerminalEnvelope = false;
 
-					for await (const event of iterateWithIdleTimeout(anthropicStream, {
+					const timedAnthropicStream = iterateWithIdleTimeout(anthropicStream, {
 						idleTimeoutMs,
 						firstItemTimeoutMs: firstEventTimeoutMs,
 						errorMessage: idleTimeoutAbortError.message,
@@ -1429,7 +1476,12 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 						onIdle: () => activeAbortTracker.abortLocally(idleTimeoutAbortError),
 						onFirstItemTimeout: () => activeAbortTracker.abortLocally(firstEventTimeoutAbortError),
 						abortSignal: options?.signal,
-					})) {
+					});
+					const observedAnthropicStream =
+						rawSseObserver && !recordsRawSseEvents
+							? observeDecodedAnthropicSdkEvents(timedAnthropicStream, rawSseObserver)
+							: timedAnthropicStream;
+					for await (const event of observedAnthropicStream) {
 						sawEvent = true;
 
 						if (event.type === "message_start") {
@@ -1848,7 +1900,6 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		thinkingEnabled = false,
 		thinkingDisplay,
 		isOAuth,
-		onSseEvent,
 		claudeCodeSessionId,
 	} = args;
 	const compat = getAnthropicCompat(model);
@@ -1862,7 +1913,6 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 	// Only OAuth requests inject the CC billing header; no API-key request can ever
 	// contain it, so there is no need to install the rewriter for those.
 	const cchFetch = oauthToken ? wrapFetchForCch(baseFetch) : baseFetch;
-	const debugFetch = onSseEvent ? wrapFetchForSseDebug(cchFetch, event => onSseEvent(event, model)) : cchFetch;
 	if (model.provider === "github-copilot") {
 		const copilotApiKey = parseGitHubCopilotApiKey(apiKey).accessToken;
 		const betaFeatures = [...extraBetas];
@@ -1888,7 +1938,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 			baseURL: baseUrl,
 			maxRetries: 5,
 			defaultHeaders,
-			fetch: debugFetch,
+			fetch: cchFetch,
 			...(tlsFetchOptions ? { fetchOptions: tlsFetchOptions } : {}),
 		};
 	}
@@ -1923,7 +1973,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 			baseURL: baseUrl,
 			maxRetries: 5,
 			defaultHeaders,
-			fetch: debugFetch,
+			fetch: cchFetch,
 		};
 	}
 
@@ -1939,7 +1989,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 			baseURL: baseUrl,
 			maxRetries: 5,
 			defaultHeaders,
-			...(debugFetch ? { fetch: debugFetch } : {}),
+			fetch: cchFetch,
 			...(tlsFetchOptions ? { fetchOptions: tlsFetchOptions } : {}),
 		};
 	}
@@ -1954,7 +2004,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 			baseURL: baseUrl,
 			maxRetries: 5,
 			defaultHeaders,
-			...(debugFetch ? { fetch: debugFetch } : {}),
+			fetch: cchFetch,
 			...(tlsFetchOptions ? { fetchOptions: tlsFetchOptions } : {}),
 		};
 	}
@@ -1966,7 +2016,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		baseURL: baseUrl,
 		maxRetries: 5,
 		defaultHeaders,
-		fetch: debugFetch,
+		fetch: cchFetch,
 		...(tlsFetchOptions ? { fetchOptions: tlsFetchOptions } : {}),
 	};
 }
@@ -2221,33 +2271,16 @@ function resolveAnthropicAdaptiveEffort(
 	return mapEffortToAnthropicAdaptiveEffort(model, requestedEffort);
 }
 
-function startsWithAfterAsciiWhitespace(value: string, prefix: string): boolean {
-	let index = 0;
-	while (index < value.length) {
-		const code = value.charCodeAt(index);
-		if (code !== 9 && code !== 10 && code !== 13 && code !== 32) break;
-		index++;
-	}
-	return value.startsWith(prefix, index);
-}
-
-function isClaudeSyntheticUserText(value: string): boolean {
-	return startsWithAfterAsciiWhitespace(value, "<system-reminder>");
-}
-
 function extractClaudeCodeFirstUserMessageText(messages: readonly Message[]): string {
 	for (const message of messages) {
 		if (message.role !== "user") continue;
 		const { content } = message;
 		if (typeof content === "string") return content;
 		if (!Array.isArray(content)) return "";
-		let fallback: string | undefined;
 		for (const block of content) {
-			if (block.type !== "text") continue;
-			fallback ??= block.text;
-			if (!isClaudeSyntheticUserText(block.text)) return block.text;
+			if (block.type === "text") return block.text;
 		}
-		return fallback ?? "";
+		return "";
 	}
 	return "";
 }
