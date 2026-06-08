@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Reworked the in-memory fallback vector search to build a normalized exact vector index per query, reducing repeated cosine-normalization work and matching the shape needed for future quantized index backends.
+
 ## [15.9.1] - 2026-06-04
 
 ### Breaking Changes

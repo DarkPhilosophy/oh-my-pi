@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a structured memory runtime surface for extensions and UI integrations to query backend status, search memories, and save explicit memories across the configured memory backend.
+
 ## [15.10.4] - 2026-06-08
 
 ### Added
