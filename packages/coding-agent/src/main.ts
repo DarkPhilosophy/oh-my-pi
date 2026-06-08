@@ -4,7 +4,7 @@
  * This file handles CLI argument parsing and translates them into
  * createAgentSession() options. The SDK does the heavy lifting.
  */
-
+import * as fsSync from "node:fs";
 import * as os from "node:os";
 import { createInterface } from "node:readline/promises";
 import { EventLoopKeepalive } from "@oh-my-pi/pi-agent-core";
@@ -29,7 +29,13 @@ import { selectSession } from "./cli/session-picker";
 import { applyStartupCwd } from "./cli/startup-cwd";
 import { findConfigFile } from "./config";
 import { ModelRegistry, ModelsConfigFile } from "./config/model-registry";
-import { resolveCliModel, resolveModelRoleValue, resolveModelScope, type ScopedModel } from "./config/model-resolver";
+import {
+	getModelMatchPreferences,
+	resolveCliModel,
+	resolveModelRoleValue,
+	resolveModelScope,
+	type ScopedModel,
+} from "./config/model-resolver";
 import { getDefault, type SettingPath, Settings, settings } from "./config/settings";
 import { initializeWithSettings } from "./discovery";
 import {
@@ -165,7 +171,8 @@ export async function submitInteractiveInput(
 
 	try {
 		using _keepalive = new EventLoopKeepalive();
-		// Continue shortcuts submit an already-started empty prompt with no optimistic user message.
+		// Continue shortcuts submit an already-started synthetic developer prompt with
+		// no optimistic user message.
 		if (!input.started && !mode.markPendingSubmissionStarted(input)) {
 			return;
 		}
@@ -176,6 +183,8 @@ export async function submitInteractiveInput(
 				display: input.display ?? false,
 				attribution: "agent",
 			});
+		} else if (input.synthetic) {
+			await session.prompt(input.text, { synthetic: true, expandPromptTemplates: false });
 		} else {
 			await session.prompt(input.text, { images: input.images });
 		}
@@ -343,11 +352,11 @@ async function runInteractiveMode(
 	}
 }
 
-type ForkSessionPromptResult = "accepted" | "declined" | "unavailable";
+type SessionPromptResult = "accepted" | "declined" | "unavailable";
 
-type ForkSessionPrompt = (session: SessionInfo) => Promise<ForkSessionPromptResult>;
+type SessionPrompt = (session: SessionInfo) => Promise<SessionPromptResult>;
 
-async function promptForkSession(session: SessionInfo): Promise<ForkSessionPromptResult> {
+async function promptForkSession(session: SessionInfo): Promise<SessionPromptResult> {
 	if (!process.stdin.isTTY) {
 		return "unavailable";
 	}
@@ -359,6 +368,52 @@ async function promptForkSession(session: SessionInfo): Promise<ForkSessionPromp
 	} finally {
 		rl.close();
 	}
+}
+
+async function promptMoveSession(session: SessionInfo): Promise<SessionPromptResult> {
+	if (!process.stdin.isTTY) {
+		return "unavailable";
+	}
+	const message = `Session's directory no longer exists (${session.cwd}). Move (re-root) it into the current directory? [Y/n] `;
+	const rl = createInterface({ input: process.stdin, output: process.stdout });
+	try {
+		const answer = (await rl.question(message)).trim().toLowerCase();
+		return answer === "" || answer === "y" || answer === "yes" ? "accepted" : "declined";
+	} finally {
+		rl.close();
+	}
+}
+
+type MissingCwdMoveResult =
+	| { status: "not-needed" }
+	| { status: "declined" }
+	| { status: "moved"; manager: SessionManager };
+
+async function moveMissingCwdSessionIfNeeded(
+	sessionArg: string,
+	session: SessionInfo,
+	cwd: string,
+	sessionDir: string | undefined,
+	askToMoveSession: SessionPrompt,
+): Promise<MissingCwdMoveResult> {
+	const sourceCwd = session.cwd;
+	if (!sourceCwd || fsSync.existsSync(sourceCwd)) {
+		return { status: "not-needed" };
+	}
+
+	const movePromptResult = await askToMoveSession(session);
+	if (movePromptResult === "unavailable") {
+		throw new Error(
+			`Session "${sessionArg}" belongs to a directory that no longer exists (${sourceCwd}); run interactively to move it into the current project.`,
+		);
+	}
+	if (movePromptResult === "declined") {
+		return { status: "declined" };
+	}
+
+	const manager = await SessionManager.open(session.path, sessionDir);
+	await manager.moveTo(cwd, sessionDir);
+	return { status: "moved", manager };
 }
 
 async function getChangelogForDisplay(parsed: Args): Promise<string | undefined> {
@@ -406,7 +461,8 @@ export async function createSessionManager(
 	parsed: Args,
 	cwd: string,
 	activeSettings: Settings = settings,
-	askToForkSession: ForkSessionPrompt = promptForkSession,
+	askToForkSession: SessionPrompt = promptForkSession,
+	askToMoveSession: SessionPrompt = promptMoveSession,
 ): Promise<SessionManager | undefined> {
 	if (parsed.fork) {
 		if (parsed.noSession) {
@@ -435,10 +491,38 @@ export async function createSessionManager(
 		if (!match) {
 			throw new Error(`Session "${sessionArg}" not found.`);
 		}
+		if (match.scope === "local") {
+			const moveResult = await moveMissingCwdSessionIfNeeded(
+				sessionArg,
+				match.session,
+				cwd,
+				parsed.sessionDir,
+				askToMoveSession,
+			);
+			if (moveResult.status === "moved") {
+				return moveResult.manager;
+			}
+			if (moveResult.status === "declined") {
+				return undefined;
+			}
+		}
 		if (match.scope === "global") {
 			const normalizedCwd = normalizePathForComparison(cwd);
 			const normalizedMatchCwd = normalizePathForComparison(match.session.cwd || cwd);
 			if (normalizedCwd !== normalizedMatchCwd) {
+				const moveResult = await moveMissingCwdSessionIfNeeded(
+					sessionArg,
+					match.session,
+					cwd,
+					parsed.sessionDir,
+					askToMoveSession,
+				);
+				if (moveResult.status === "moved") {
+					return moveResult.manager;
+				}
+				if (moveResult.status === "declined") {
+					return undefined;
+				}
 				const forkPromptResult = await askToForkSession(match.session);
 				if (forkPromptResult === "unavailable") {
 					throw new Error(
@@ -535,9 +619,7 @@ async function buildSessionOptions(
 	// Model from CLI
 	// - supports --provider <name> --model <pattern>
 	// - supports --model <provider>/<pattern>
-	const modelMatchPreferences = {
-		usageOrder: activeSettings.getStorage()?.getModelUsageOrder(),
-	};
+	const modelMatchPreferences = getModelMatchPreferences(activeSettings);
 	if (parsed.model) {
 		const resolved = resolveCliModel({
 			cliProvider: parsed.provider,
@@ -829,9 +911,7 @@ export async function runRootCommand(
 
 	let scopedModels: ScopedModel[] = [];
 	const modelPatterns = parsedArgs.models ?? settingsInstance.get("enabledModels");
-	const modelMatchPreferences = {
-		usageOrder: settingsInstance.getStorage()?.getModelUsageOrder(),
-	};
+	const modelMatchPreferences = getModelMatchPreferences(settingsInstance);
 	if (modelPatterns && modelPatterns.length > 0) {
 		scopedModels = await logger.time(
 			"resolveModelScope",

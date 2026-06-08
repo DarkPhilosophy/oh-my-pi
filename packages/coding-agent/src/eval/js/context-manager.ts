@@ -52,8 +52,14 @@ interface JsSession {
 
 const sessions = new Map<string, JsSession>();
 const startingSessions = new Map<string, Promise<JsSession>>();
-const resettingSessions = new Set<string>();
-const READY_TIMEOUT_MS_DEFAULT = 5_000;
+const resettingSessions = new Map<string, Promise<void>>();
+// Worker startup (module-graph import + WorkerCore construction) is infrastructure
+// cost, not user compute. Floor it independently of Bun's 5s default per-test timeout
+// so a slow cold-start under load isn't aborted mid-init — terminating a still-
+// initializing Bun worker triggers the same kind of terminate-race that motivates
+// avoiding `vm.runInContext` (see shared/indirect-eval.ts), here surfacing as a
+// SIGILL/SIGSEGV. Callers that pass a larger per-cell budget still dominate.
+const WORKER_INIT_TIMEOUT_MS = 15_000;
 
 export async function executeInVmContext(options: {
 	sessionKey: string;
@@ -67,17 +73,28 @@ export async function executeInVmContext(options: {
 	runState: VmRunState;
 }): Promise<{ value: unknown }> {
 	if (options.reset) {
-		if (resettingSessions.has(options.sessionKey)) {
-			throw new ToolError("JS context reset already in progress");
+		// Coalesce concurrent resets: an existing in-flight reset already
+		// produces a fresh context, so a follow-up `reset: true` cell should
+		// just wait for it rather than failing the user-visible call.
+		const inFlight = resettingSessions.get(options.sessionKey);
+		if (inFlight) await inFlight.catch(() => undefined);
+		else {
+			const resetPromise = resetVmContext(options.sessionKey);
+			resettingSessions.set(
+				options.sessionKey,
+				resetPromise.then(() => undefined),
+			);
+			try {
+				await resetPromise;
+			} finally {
+				resettingSessions.delete(options.sessionKey);
+			}
 		}
-		resettingSessions.add(options.sessionKey);
-		try {
-			await resetVmContext(options.sessionKey);
-		} finally {
-			resettingSessions.delete(options.sessionKey);
-		}
-	} else if (resettingSessions.has(options.sessionKey)) {
-		throw new ToolError("JS context reset in progress");
+	} else {
+		// Internal coordination: wait for any in-flight reset to settle and
+		// then run on the freshly-rebuilt context.
+		const inFlight = resettingSessions.get(options.sessionKey);
+		if (inFlight) await inFlight.catch(() => undefined);
 	}
 	const session = await acquireSession(
 		options.sessionKey,
@@ -191,9 +208,9 @@ async function acquireSession(sessionKey: string, snapshot: SessionSnapshot, tim
 			handleSessionMessage(session, msg);
 		});
 		try {
-			// Cold-start can exceed 5s on slow hosts. Let the caller's per-cell timeout dominate so
-			// users can grant more headroom when they raise `timeout` on a cell.
-			const readyTimeoutMs = Math.max(READY_TIMEOUT_MS_DEFAULT, timeoutMs ?? 0);
+			// Init headroom is the fixed infrastructure floor; the caller's per-cell timeout
+			// dominates when larger so users can grant more by raising `timeout` on a cell.
+			const readyTimeoutMs = Math.max(WORKER_INIT_TIMEOUT_MS, timeoutMs ?? 0);
 			await raceWithTimeout(readyPromise, readyTimeoutMs, "Timed out initializing JS eval worker");
 			worker.send({ type: "init", snapshot });
 			sessions.set(sessionKey, session);

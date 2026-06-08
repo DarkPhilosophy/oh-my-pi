@@ -647,15 +647,18 @@ async function runLoopBody(
 
 			stream.push({ type: "turn_end", message, toolResults });
 
-			pendingMessages = steeringMessagesFromExecution ?? ((await config.getSteeringMessages?.()) || []);
+			const steering = steeringMessagesFromExecution ?? ((await config.getSteeringMessages?.()) || []);
+			const asides = (await config.getAsideMessages?.()) || [];
+			pendingMessages = asides.length > 0 ? [...steering, ...asides] : steering;
 		}
 
-		// Agent would stop here. Check for follow-up messages.
+		// Agent would stop here. Drain non-interrupting asides + follow-up messages.
 		await config.onBeforeYield?.();
+		const asideMessages = (await config.getAsideMessages?.()) || [];
 		const followUpMessages = (await config.getFollowUpMessages?.()) || [];
-		if (followUpMessages.length > 0) {
-			// Set as pending so inner loop processes them
-			pendingMessages = followUpMessages;
+		if (asideMessages.length > 0 || followUpMessages.length > 0) {
+			// Set as pending so the inner loop processes them before stopping.
+			pendingMessages = [...asideMessages, ...followUpMessages];
 			continue;
 		}
 
@@ -1282,7 +1285,7 @@ async function executeToolCalls(
 				const rawResult = await tool.execute(
 					toolCall.id,
 					transformToolCallArguments ? transformToolCallArguments(effectiveArgs, toolCall.name) : effectiveArgs,
-					tool.nonAbortable ? undefined : toolSignal,
+					toolSignal,
 					partialResult => {
 						stream.push({
 							type: "tool_execution_update",

@@ -16,7 +16,12 @@ import { type Api, Effort, getSupportedEfforts, type Model, type Tool } from "@o
 import * as z from "zod/v4";
 import { extractTextContent, extractToolCall, parseJsonPayload } from "../commit/utils";
 
-import { expandRoleAlias, formatModelString, resolveModelFromString } from "../config/model-resolver";
+import {
+	expandRoleAlias,
+	formatModelString,
+	getModelMatchPreferences,
+	resolveModelFromString,
+} from "../config/model-resolver";
 import type { ToolSession } from "../tools";
 import { ToolError } from "../tools/tool-errors";
 import { withBridgeTimeoutPause } from "./bridge-timeout";
@@ -65,7 +70,7 @@ function resolveTierModel(tier: LlmTier, session: ToolSession): Model<Api> | und
 	const available = modelRegistry.getAvailable();
 	if (available.length === 0) return undefined;
 
-	const matchPreferences = { usageOrder: session.settings.getStorage()?.getModelUsageOrder() };
+	const matchPreferences = getModelMatchPreferences(session.settings);
 	const resolve = (pattern: string | undefined): Model<Api> | undefined => {
 		if (!pattern) return undefined;
 		const expanded = expandRoleAlias(pattern, session.settings);
@@ -134,13 +139,19 @@ export async function runEvalLlm(args: unknown, options: EvalLlmBridgeOptions): 
 
 	const telemetry = resolveTelemetry(options.session.getTelemetry?.(), options.session.getSessionId?.() ?? undefined);
 
+	// Some providers (notably openai-codex) require a non-empty `instructions`
+	// field on every Responses request and 400 with "Instructions are required"
+	// when it is missing. Fall back to a minimal default so `llm(prompt)` works
+	// without forcing every caller to pass a `system` prompt.
+	const systemPrompt = system ? [system] : ["You are a helpful assistant."];
+
 	// Suspend eval timeout accounting while the model request owns control. The
 	// timeout clock restarts once the bridge returns to the cell runtime.
 	const response = await withBridgeTimeoutPause(options.emitStatus, () =>
 		instrumentedCompleteSimple(
 			model,
 			{
-				systemPrompt: system ? [system] : undefined,
+				systemPrompt,
 				messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
 				tools,
 			},

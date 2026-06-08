@@ -10,6 +10,58 @@ const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
 const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
 
 /**
+ * Maximum bytes per `process.stdout.write` call on Windows.
+ *
+ * Windows ConPTY ties viewport tracking to per-`WriteFile` boundaries: when a
+ * single write exceeds ~32-64 KB, the pseudo-console stops following the
+ * cursor and the host UI's viewport stays parked at whatever scroll position
+ * the write started from. The visible symptom is that a full-paint of a long
+ * session (resume, history rebuild, large permission dialog) shows only the
+ * first ~30 lines until any focus event forces the host to re-query the
+ * cursor. The data is delivered correctly — it's purely a viewport-sync bug.
+ *
+ * 8 KiB is well below the 32 KiB threshold reported on Windows Terminal and
+ * leaves headroom for the other ConPTY hosts (Tabby, Hyper, VS Code) where
+ * the exact limit is undocumented. The cost is a handful of extra syscalls
+ * per full paint — invisible compared to the cost of the paint itself.
+ */
+const MAX_CONPTY_WRITE_CHUNK = 8 * 1024;
+
+/**
+ * Split `data` into chunks no larger than `maxChunkSize`, preferring a line
+ * boundary (`\n`) as the cut point so escape sequences (which never contain
+ * `\n`) stay intact. The TUI's full-paint buffers are line-structured
+ * (`buffer += "\r\n"` between rows), so a newline almost always exists within
+ * the window. The fallback for a buffer with no newline in range is a hard
+ * cut at `maxChunkSize`: the ConPTY viewport bug from a single oversized
+ * write is strictly worse than a one-frame escape-sequence glitch on a buffer
+ * the renderer effectively never produces.
+ *
+ * Exported for unit testing of the chunking contract; `#safeWrite` is the
+ * sole production caller.
+ */
+export function chunkForConPTY(data: string, maxChunkSize: number = MAX_CONPTY_WRITE_CHUNK): string[] {
+	if (data.length <= maxChunkSize) return [data];
+	const chunks: string[] = [];
+	let pos = 0;
+	while (pos < data.length) {
+		const remaining = data.length - pos;
+		if (remaining <= maxChunkSize) {
+			chunks.push(data.slice(pos));
+			break;
+		}
+		const windowEnd = pos + maxChunkSize;
+		// Prefer the last newline inside the window so escape sequences stay
+		// intact within their chunk; hard-cut at `windowEnd` otherwise.
+		const nl = data.lastIndexOf("\n", windowEnd - 1);
+		const cut = nl >= pos ? nl + 1 : windowEnd;
+		chunks.push(data.slice(pos, cut));
+		pos = cut;
+	}
+	return chunks;
+}
+
+/**
  * Minimal terminal interface for TUI
  */
 
@@ -203,6 +255,8 @@ export class ProcessTerminal implements Terminal {
 	#privateModeCallbacks: Array<(mode: number, supported: boolean) => void> = [];
 	/** Whether DEC 2048 in-band resize notifications are currently enabled. */
 	#inBandResizeActive = false;
+	/** Reassembly buffer for a DEC 2048 in-band resize report split across stdin reads. */
+	#inBandResizeBuffer = "";
 	#reportedColumns?: number;
 	#reportedRows?: number;
 	#osc11PollTimer?: Timer;
@@ -436,6 +490,46 @@ export class ProcessTerminal implements Terminal {
 				}
 			}
 
+			// In-band resize report (DEC 2048) split across stdin reads. The report
+			// is `\x1b[48;rows;cols;yPx;xPx t`; when the StdinBuffer flush timeout
+			// elapses mid-sequence — common during a rapid resize that keeps the
+			// event loop busy — the `\x1b[48;…` prefix arrives as one event and the
+			// tail (`…;xPx t`) arrives as bare character events that would otherwise
+			// leak into the prompt as literal keystrokes. Reassemble until the
+			// terminator, then fall through to the resize handler below. A
+			// reassembled sequence that turns out not to be a resize report (e.g. a
+			// split kitty `\x1b[48;…u` for a digit key) is forwarded to the input
+			// handler rather than dropped.
+			const inBandResizePartialPattern = /^\x1b\[4[\d;]*$/;
+			const isInBandResizePartial = this.#inBandResizeActive && inBandResizePartialPattern.test(sequence);
+			if (this.#inBandResizeBuffer && sequence.startsWith("\x1b")) {
+				// A new escape interrupted the partial; the stale partial is
+				// unrecoverable. If the new escape is itself an in-band prefix,
+				// restart reassembly with it; otherwise let it flow through below.
+				this.#inBandResizeBuffer = isInBandResizePartial ? sequence : "";
+				if (isInBandResizePartial) return;
+			} else if (this.#inBandResizeBuffer || isInBandResizePartial) {
+				this.#inBandResizeBuffer += sequence;
+				if (this.#inBandResizeBuffer.length > 256) {
+					this.#inBandResizeBuffer = "";
+					return;
+				}
+				const lastCode = this.#inBandResizeBuffer.charCodeAt(this.#inBandResizeBuffer.length - 1);
+				if (lastCode >= 0x40 && lastCode <= 0x7e) {
+					// Terminator arrived: let the resize handler below claim it, or
+					// fall through to the input handler if it is not a resize report.
+					sequence = this.#inBandResizeBuffer;
+					this.#inBandResizeBuffer = "";
+				} else if (!inBandResizePartialPattern.test(this.#inBandResizeBuffer)) {
+					// Diverged from a valid in-band prefix — drop the garbled report.
+					this.#inBandResizeBuffer = "";
+					return;
+				} else {
+					// Still accumulating the report.
+					return;
+				}
+			}
+
 			// In-band resize report (DEC mode 2048). Unsolicited and not tied to a
 			// sentinel: update reported geometry + cell size, then drive the resize
 			// handler so the renderer reflows.
@@ -504,10 +598,19 @@ export class ProcessTerminal implements Terminal {
 			}
 
 			const match = sequence.match(kittyResponsePattern);
-			if (match && !this.#modifyOtherKeysActive) {
+			if (match) {
 				if (this.#modifyOtherKeysTimeout) {
 					clearTimeout(this.#modifyOtherKeysTimeout);
 					this.#modifyOtherKeysTimeout = undefined;
+				}
+				// A DA1 sentinel that beat the kitty reply may have already
+				// engaged the modifyOtherKeys fallback (terminals such as
+				// Superset/xterm-on-Electron answer DA1 before `\x1b[?u`).
+				// Kitty is strictly preferred — undo the fallback so the two
+				// modes do not stack. See #2042.
+				if (this.#modifyOtherKeysActive) {
+					this.#safeWrite("\x1b[>4;0m");
+					this.#modifyOtherKeysActive = false;
 				}
 				// Any reply to `\x1b[?u` means the terminal speaks the kitty keyboard
 				// protocol. The reported flag value is the *current* stack-top — fresh
@@ -909,6 +1012,7 @@ export class ProcessTerminal implements Terminal {
 		this.#osc99Capabilities.clear();
 		setOsc99Supported(false);
 		this.#privateCsiResponseBuffer = "";
+		this.#inBandResizeBuffer = "";
 		this.#da1SentinelOwners.length = 0;
 		this.#privateModeCallbacks = [];
 		this.#privateModeSupport.clear();
@@ -978,7 +1082,23 @@ export class ProcessTerminal implements Terminal {
 		// files). They serve no purpose there and would surface as visible noise.
 		if (!process.stdout.isTTY) return;
 		try {
-			process.stdout.write(data);
+			// Windows ConPTY drops viewport tracking when a single write exceeds
+			// ~32-64 KB: the host UI's scroll position stays parked at wherever
+			// the write began, even though every byte landed in scrollback. Split
+			// large paints into newline-aligned chunks so each underlying
+			// `WriteFile` stays well below the threshold. The gate also covers
+			// WSL — `process.platform === "linux"` there, but stdout still
+			// crosses into ConPTY at the `wslhost` boundary, so the same per-
+			// WriteFile cap applies. Non-ConPTY PTYs keep the single-write fast
+			// path. See #2034.
+			const conptyHosted = process.platform === "win32" || isWindowsSubsystemForLinux();
+			if (conptyHosted && data.length > MAX_CONPTY_WRITE_CHUNK) {
+				for (const chunk of chunkForConPTY(data, MAX_CONPTY_WRITE_CHUNK)) {
+					process.stdout.write(chunk);
+				}
+			} else {
+				process.stdout.write(data);
+			}
 		} catch (err) {
 			// Any write failure means terminal is dead - no recovery possible
 			this.#dead = true;
