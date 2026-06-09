@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor", priority? })`): each panel is composited independently into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, and hides per-block (not cut) when no run is tall enough to hold it. Panels are ordered by optional `priority` then ascending height, so the smallest always-present panels stay visible and the tallest hide first. Also added `ctx.fetchUsageReports()` so usage/quota widgets can read provider reports without reaching into private APIs.
+
+### Changed
+
+- Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
+- Changed `/reload-plugins` to tear down extension hooks with `session_shutdown` before replaying `session_start`, so plugin reloads do not stack duplicate timers, terminal-input listeners, or stale widgets.
+
 ## [15.10.8] - 2026-06-09
 
 ### Added
@@ -126,7 +135,6 @@
 ### Changed
 
 - Changed the `find` tool to process each explicit multi-path target separately before merging results so searches stay scoped to the requested paths
-- Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
 - Changed multi-path `find` handling so invalid extra targets no longer fail the whole query and now return matches from valid targets only
 - Changed background-job completion and late LSP diagnostic delivery to inject at the next agent step boundary (mid-run), via the new non-interrupting "aside" channel, instead of only when the agent reaches a yield/follow-up point. The model now sees these notifications between its own requests without the turn having to end first, and in-flight tools are never interrupted; `job`-poll acknowledgement still suppresses results the agent already saw.
 - Changed late LSP diagnostics after edit or write to surface in the chat transcript as `Late diagnostics` entries rendered through the same grouped tree renderer the `edit`/`write` tools use (per-file nodes, severity icons, `:line:col` locations), and to honor the global tool-output expand toggle (collapsed entries cap at 5 diagnostics with a `… N more` hint)
@@ -229,13 +237,6 @@
 - Fixed `lsp request` error path swallowing the params that were sent, making shape/coercion bugs on raw LSP calls impossible to diagnose in one round-trip; the error now echoes a truncated copy of the request params.
 - Fixed `find` with a single-star segment like `dir/*` recursing into subdirectories and returning nested matches. `parseFindPattern` already prepends `**/` for top-level globs (`*.ts` → `**/*.ts`), so anything reaching native without `**/` was deliberately scoped by the user; `recursive: false` is now passed to `natives.glob` to honor that scope.
 
-### Added
-
-- Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor", priority? })`): each panel is composited independently into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, and hides per-block (not cut) when no run is tall enough to hold it. Panels are ordered by optional `priority` then ascending height, so the smallest always-present panels stay visible and the tallest hide first. Also added `ctx.fetchUsageReports()` so usage/quota widgets can read provider reports without reaching into private APIs.
-
-### Changed
-
-- `/reload-plugins` now reinitializes extension UI hooks, and `initHooksAndCustomTools()` clears existing extension terminal-input listeners and hook widgets before re-emitting `session_start`. Reloading plugins no longer stacks duplicate input listeners or leaves stale widgets behind.
 
 ## [15.10.1] - 2026-06-07
 
