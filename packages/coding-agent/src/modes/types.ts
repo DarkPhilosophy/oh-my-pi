@@ -320,6 +320,7 @@ export interface InteractiveModeContext {
 	disableLoopMode(): void;
 	pauseLoop(): void;
 	handlePlanApproval(details: PlanApprovalDetails): Promise<void>;
+	openPlanReview(): Promise<void>;
 
 	// Hook UI methods
 	initHooksAndCustomTools(): Promise<void>;
