@@ -336,6 +336,33 @@ export class ExtensionUiController {
 		}
 	}
 
+	#flushRightWidgets(): void {
+		if (this.#rightWidgets.size === 0) {
+			this.ctx.setRightInfo(undefined);
+			return;
+		}
+		// Each rightEditor block is composited independently so multi-section
+		// widgets can degrade contextually when the negative space is short.
+		// Placement order: explicit block priority, then widget priority, then
+		// ascending height (shortest first), then stable widget/block order.
+		const blocks = [...this.#rightWidgets.values()].flatMap((entry, widgetIndex) =>
+			entry.blocks.map((block, blockIndex) => ({
+				lines: block.lines,
+				priority: block.priority ?? entry.priority,
+				widgetIndex,
+				blockIndex,
+			})),
+		);
+		blocks.sort((a, b) => {
+			const pa = a.priority ?? Number.POSITIVE_INFINITY;
+			const pb = b.priority ?? Number.POSITIVE_INFINITY;
+			if (pa !== pb) return pa - pb;
+			if (a.lines.length !== b.lines.length) return a.lines.length - b.lines.length;
+			if (a.widgetIndex !== b.widgetIndex) return a.widgetIndex - b.widgetIndex;
+			return a.blockIndex - b.blockIndex;
+		});
+		this.ctx.setRightInfo(blocks.map(block => block.lines));
+	}
 	#createHookWidget(content: ExtensionWidgetContent): ExtensionUiComponent {
 		if (Array.isArray(content)) {
 			const lines =
