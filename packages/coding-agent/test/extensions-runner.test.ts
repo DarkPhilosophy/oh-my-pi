@@ -808,7 +808,6 @@ describe("ExtensionRunner", () => {
 
 			expect(await runner.createContext().fetchUsageReports?.()).toBe(usageReports);
 		});
-
 		it("exposes the lazy memory runtime after initialization", async () => {
 			const extCode = `
 				export default function(pi) {
@@ -829,6 +828,16 @@ describe("ExtensionRunner", () => {
 				tempDir.path(),
 				sessionManager,
 				modelRegistry,
+				() => ({
+					status: async () => ({
+						backend: "mnemopi",
+						active: true,
+						writable: true,
+						searchable: true,
+					}),
+					search: async query => ({ backend: "mnemopi", query, count: 0, items: [] }),
+					save: async () => ({ backend: "mnemopi", stored: 1 }),
+				}),
 			);
 			runner.initialize(
 				{
@@ -850,16 +859,7 @@ describe("ExtensionRunner", () => {
 					getModel: () => undefined,
 					isIdle: () => true,
 					abort: () => {},
-					memory: {
-						status: async () => ({
-							backend: "mnemopi",
-							active: true,
-							writable: true,
-							searchable: true,
-						}),
-						search: async query => ({ backend: "mnemopi", query, count: 0, items: [] }),
-						save: async () => ({ backend: "mnemopi", stored: 1 }),
-					},
+
 					hasPendingMessages: () => false,
 					shutdown: () => {},
 					getContextUsage: () => undefined,
