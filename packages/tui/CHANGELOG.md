@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `TUI.setRightPanel(provider, targets?)`: registers right-side info panel blocks composited into the visible window at the emit stage, restricted to rows rendered by the target root children. Compositing happens after the window/commit math on the window copy only, so panels never overlap bottom chrome, never enter native scrollback, and do not disturb component-scoped render reuse or the live-region/stable-prefix protocol.
+- Added the `right-panel` module (`compositeRightPanel`, `compositeRightPanels`, `compositeRightPanelsInRange`, `trimRightPadding`): pure negative-space compositing helpers. Trailing padding is ignored when measuring free space but only rows that actually receive panel text are rewritten, so full-width styled backgrounds stay byte-exact.
+
 ## [15.11.2] - 2026-06-11
 
 ### Fixed

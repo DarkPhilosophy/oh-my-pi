@@ -29,6 +29,8 @@ export * from "./keybindings";
 export * from "./keys";
 // Kitty graphics: Unicode placeholders
 export * from "./kitty-graphics";
+// Right-side info panel compositing
+export * from "./right-panel";
 // Mermaid diagram support
 // Input buffering for batch splitting
 export * from "./stdin-buffer";

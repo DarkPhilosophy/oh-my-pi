@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { compositeRightPanel, compositeRightPanels } from "../src/modes/interactive-mode";
+import { type Component, TUI } from "@oh-my-pi/pi-tui";
+import { compositeRightPanel, compositeRightPanels } from "../src/right-panel";
+import { VirtualTerminal } from "./virtual-terminal";
 
 // A 20-column panel: ┌──┐ / body / └──┘. Plain ASCII so visibleWidth === length.
 function panel(lines: number): string[] {
@@ -144,5 +146,99 @@ describe("compositeRightPanels", () => {
 	it("returns base unchanged when there are no blocks", () => {
 		const base = ["a", "b", "c"];
 		expect(compositeRightPanels(base, [], WIDTH, 40)).toBe(base);
+	});
+});
+
+// Engine integration: the panel is composited into the visible window only,
+// restricted to rows owned by the target roots — the transcript stays a
+// directly reusable root child and committed scrollback rows never carry
+// panel text.
+class Lines implements Component {
+	constructor(public lines: string[]) {}
+	invalidate(): void {}
+	render(): string[] {
+		return [...this.lines];
+	}
+}
+
+async function settle(term: VirtualTerminal): Promise<void> {
+	const nextTick = Promise.withResolvers<void>();
+	process.nextTick(nextTick.resolve);
+	await nextTick.promise;
+	await Bun.sleep(1);
+	await term.flush();
+}
+
+// Synchronous, throttle-free scheduler: every request renders immediately,
+// so streaming scenarios stay deterministic without real-time sleeps.
+function immediateScheduler() {
+	let now = 0;
+	return {
+		now: () => (now += 40),
+		scheduleImmediate: (callback: () => void) => callback(),
+		scheduleRender: (callback: () => void, _delayMs: number) => {
+			callback();
+			return { cancel: () => {} };
+		},
+	};
+}
+describe("TUI.setRightPanel", () => {
+	it("composites into chat rows of the visible window, never into chrome rows", async () => {
+		const term = new VirtualTerminal(80, 12);
+		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
+		const chat = new Lines(Array.from({ length: 6 }, (_, i) => `msg-${i}`));
+		const chrome = new Lines(["[status]", "[editor]"]);
+		tui.addChild(chat);
+		tui.addChild(chrome);
+		tui.setRightPanel(() => [["<W0>", "<W1>", "<W2>"]], [chat]);
+		tui.start();
+		await settle(term);
+		try {
+			const viewport = term.getViewport();
+			// Chat content is visible.
+			expect(viewport.some(line => line.includes("msg-0"))).toBeTrue();
+			// The widget landed on chat rows (0..5), right-aligned.
+			const widgetRows = viewport.flatMap((line, i) => (line.includes("<W") ? [i] : []));
+			expect(widgetRows.length).toBe(3);
+			for (const row of widgetRows) expect(row).toBeLessThan(6);
+			// Chrome rows stay clean.
+			expect(viewport[6]).not.toContain("<W");
+			expect(viewport[7]).not.toContain("<W");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("keeps scrolled-off rows free of panel text when content exceeds the viewport", async () => {
+		const term = new VirtualTerminal(80, 12, 1000);
+		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
+		const chat = new Lines(Array.from({ length: 30 }, (_, i) => `msg-${i}`));
+		const chrome = new Lines(["[editor]"]);
+		tui.addChild(chat);
+		tui.addChild(chrome);
+		tui.setRightPanel(() => [["<W0>", "<W1>", "<W2>"]], [chat]);
+		tui.start();
+		await settle(term);
+		try {
+			const tape = term.getScrollBuffer();
+			// Every transcript row is present exactly once: compositing happens on
+			// the window copy, never on the composed frame the engine commits.
+			for (let i = 0; i < 30; i++) {
+				const exact = new RegExp(`^msg-${i}(\\s|$)`);
+				expect(tape.filter(line => exact.test(line)).length, `msg-${i}`).toBe(1);
+			}
+			// Panel text exists only in the on-screen window, never in the
+			// scrolled-off (committed) region.
+			const scrolledOff = tape.slice(0, Math.max(0, tape.length - 12));
+			expect(scrolledOff.some(line => line.includes("<W"))).toBeFalse();
+			// The live viewport shows the chat tail, the widget on chat rows, and
+			// an untouched chrome row.
+			const viewport = term.getViewport();
+			expect(viewport.some(line => line.includes("msg-29"))).toBeTrue();
+			expect(viewport.some(line => line.includes("<W0>"))).toBeTrue();
+			expect(viewport.find(line => line.startsWith("[editor]"))).not.toContain("<W");
+		} finally {
+			tui.stop();
+		}
 	});
 });

@@ -11,6 +11,10 @@
 - Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
 - Changed `/reload-plugins` to tear down extension hooks with `session_shutdown` before replaying `session_start`, so plugin reloads do not stack duplicate timers, terminal-input listeners, or stale widgets.
 
+### Fixed
+
+- Fixed the conversation becoming invisible when a right-side widget was active: wrapping the transcript in a compositor container hid the `TranscriptContainer` native-scrollback protocol (live region, committed rows, stable prefix) from the TUI engine, which then committed live rows (streaming messages, editor) into scrollback and anchored the window past the content. Right-panel compositing now happens inside the TUI engine at the window stage (`TUI.setRightPanel`), the transcript stays a directly reusable root child, and the reserved-row estimation heuristic is gone.
+
 ## [15.11.2] - 2026-06-11
 
 ### Added

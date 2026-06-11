@@ -16,6 +16,7 @@ import { $flag, getDebugLogPath } from "@oh-my-pi/pi-utils";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
+import { compositeRightPanelsInRange } from "./right-panel";
 import { isConPTYHosted, setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteImage,
@@ -769,6 +770,12 @@ export class TUI extends Container {
 		hidden: boolean;
 	}[] = [];
 
+	// Right-panel provider: composited into the visible window at the emit
+	// stage, after the window/commit math — never into rows that enter native
+	// scrollback, and only into rows owned by the registered target roots.
+	#rightPanelProvider: (() => readonly (readonly string[])[]) | null = null;
+	#rightPanelTargets: Set<Component> | null = null;
+
 	constructor(terminal: Terminal, showHardwareCursor?: boolean, options?: TUIOptions) {
 		super();
 		this.terminal = terminal;
@@ -1406,6 +1413,56 @@ export class TUI extends Container {
 		this.#renderRequested = false;
 		this.#lastRenderAt = this.#renderScheduler.now();
 		this.#doRender();
+	}
+
+	/**
+	 * Register a provider of right-side info panel blocks. Each frame the
+	 * engine composites the blocks into the trailing whitespace of the visible
+	 * window — only into rows rendered by `targets` (direct root children), so
+	 * the panel never overlaps bottom chrome (editor, status line) or rows
+	 * committed to native scrollback. `targets` must render contiguously in
+	 * the frame (their row ranges are unioned). Pass `null` to remove.
+	 */
+	setRightPanel(provider: (() => readonly (readonly string[])[]) | null, targets?: readonly Component[]): void {
+		this.#rightPanelProvider = provider;
+		this.#rightPanelTargets =
+			provider !== null && targets !== undefined && targets.length > 0 ? new Set(targets) : null;
+		this.requestRender();
+	}
+
+	/**
+	 * Composite the registered right panel into the visible window slice.
+	 * Runs after the window/commit math: these rows are exactly the on-screen
+	 * grid, never committed history, so compositing cannot perturb the native
+	 * scrollback protocol (live region, committed-prefix audit, stable
+	 * prefixes) and needs no viewport estimation.
+	 */
+	#compositeRightPanelIntoWindow(window: string[], width: number, windowTop: number): string[] {
+		const provider = this.#rightPanelProvider;
+		if (provider === null) return window;
+		const blocks = provider();
+		if (blocks.length === 0) return window;
+		// Restrict placement to window rows rendered by the target roots.
+		let lo = 0;
+		let hi = window.length;
+		const targets = this.#rightPanelTargets;
+		if (targets !== null) {
+			let frameLo = Infinity;
+			let frameHi = -Infinity;
+			for (const segment of this.#frameSegments) {
+				if (!targets.has(segment.component)) continue;
+				if (segment.start < frameLo) frameLo = segment.start;
+				const end = segment.start + segment.rowCount;
+				if (end > frameHi) frameHi = end;
+			}
+			if (frameHi <= frameLo) return window;
+			lo = Math.max(0, frameLo - windowTop);
+			hi = Math.min(window.length, frameHi - windowTop);
+			if (hi <= lo) return window;
+		}
+		const composited = compositeRightPanelsInRange(window, blocks, width, lo, hi, line => TERMINAL.isImageLine(line));
+		if (composited === window) return window;
+		return this.#prepareLinesArray(composited, width);
 	}
 
 	requestRender(force = false, options?: RenderRequestOptions): void {
@@ -2236,6 +2293,7 @@ export class TUI extends Container {
 		const frame = this.#prepareFrame(rawFrame, width);
 		let window: string[] = new Array(height);
 		for (let r = 0; r < height; r++) window[r] = frame[windowTop + r] ?? "";
+		window = this.#compositeRightPanelIntoWindow(window, width, windowTop);
 		if (hasVisibleOverlay) {
 			window = this.#compositeOverlaysIntoWindow(window, width, height);
 			const overlayMarkers = this.#extractCursorMarkers(window);
