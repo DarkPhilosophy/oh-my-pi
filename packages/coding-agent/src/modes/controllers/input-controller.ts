@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type { AutocompleteProvider, SlashCommand } from "@oh-my-pi/pi-tui";
 import { $env, logger, sanitizeText } from "@oh-my-pi/pi-utils";
-import { getRoleInfo } from "../../config/model-registry";
+import { getRoleInfo } from "../../config/model-roles";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { renderSegmentTrack } from "../../modes/components/segment-track";
 import { TinyTitleDownloadProgressComponent } from "../../modes/components/tiny-title-download-progress";
@@ -191,7 +191,7 @@ export class InputController {
 			this.ctx.keybindings.getKeys("app.clipboard.pasteImage"),
 		);
 		this.ctx.editor.onPasteImage = () => this.handleImagePaste();
-		this.ctx.editor.onPasteImagePath = path => void this.handleImagePathPaste(path);
+		this.ctx.editor.onPasteImagePath = path => this.handleImagePathPaste(path);
 		this.ctx.editor.setActionKeys(
 			"app.clipboard.pasteTextRaw",
 			this.ctx.keybindings.getKeys("app.clipboard.pasteTextRaw"),
@@ -235,9 +235,25 @@ export class InputController {
 		for (const key of this.ctx.keybindings.getKeys("app.clipboard.copyLine")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.handleCopyCurrentLine());
 		}
-		for (const key of this.ctx.keybindings.getKeys("app.session.observe")) {
-			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showSessionObserver());
+		const hubKeys = new Set([
+			...this.ctx.keybindings.getKeys("app.agents.hub"),
+			...this.ctx.keybindings.getKeys("app.session.observe"),
+		]);
+		for (const key of hubKeys) {
+			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showAgentHub());
 		}
+
+		// Double-tap left arrow on an empty editor opens the agent hub — same
+		// 500ms window as the double-escape state machine above.
+		this.ctx.editor.onLeftAtStart = () => {
+			const now = Date.now();
+			if (now - this.ctx.lastLeftTapTime < 500) {
+				this.ctx.lastLeftTapTime = 0;
+				this.ctx.showAgentHub();
+			} else {
+				this.ctx.lastLeftTapTime = now;
+			}
+		};
 
 		this.#setupEnhancedPaste();
 
@@ -267,7 +283,7 @@ export class InputController {
 				const focused = this.ctx.ui.getFocused();
 				const target = focused && focused !== this.ctx.editor && hasPasteText(focused) ? focused : this.ctx.editor;
 				target.pasteText(text);
-				this.ctx.ui.requestRender(false, { allowUnknownViewportMutation: true });
+				this.ctx.ui.requestRender();
 			},
 			pasteImage: async image => {
 				// Images can only land in the main editor — when a modal Input is
@@ -467,6 +483,7 @@ export class InputController {
 					this.ctx.session.sessionId,
 					this.ctx.session.model,
 					provider => this.ctx.session.agent.metadataForProvider(provider),
+					this.ctx.titleSystemPrompt,
 				)
 					.then(async title => {
 						// Re-check: a concurrent attempt for an earlier message may have
@@ -755,7 +772,7 @@ export class InputController {
 		const dims = await this.#imageDimensions(imageData);
 		const label = dims ? `[Image #${imageNum}, ${dims.width}x${dims.height}]` : `[Image #${imageNum}]`;
 		this.ctx.editor.insertText(`${label} `);
-		this.ctx.ui.requestRender(false, { allowUnknownViewportMutation: true });
+		this.ctx.ui.requestRender();
 	}
 
 	/** Probe pixel dimensions for the marker label (`[Image #N, WxH]`). Returns undefined when the
@@ -801,7 +818,7 @@ export class InputController {
 			});
 			if (!image) {
 				this.ctx.editor.pasteText(path);
-				this.ctx.ui.requestRender(false, { allowUnknownViewportMutation: true });
+				this.ctx.ui.requestRender();
 				this.ctx.showStatus("Pasted path is not a supported image");
 				return;
 			}
@@ -811,7 +828,7 @@ export class InputController {
 			);
 		} catch (error) {
 			this.ctx.editor.pasteText(path);
-			this.ctx.ui.requestRender(false, { allowUnknownViewportMutation: true });
+			this.ctx.ui.requestRender();
 			this.ctx.showStatus(
 				error instanceof ImageInputTooLargeError ? error.message : "Failed to read pasted image path",
 			);

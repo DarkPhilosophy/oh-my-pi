@@ -808,6 +808,9 @@ describe("ExtensionRunner", () => {
 
 			expect(await runner.createContext().fetchUsageReports?.()).toBe(usageReports);
 		});
+	});
+
+	describe("memory context", () => {
 		it("exposes the lazy memory runtime after initialization", async () => {
 			const extCode = `
 				export default function(pi) {
@@ -859,7 +862,7 @@ describe("ExtensionRunner", () => {
 					getModel: () => undefined,
 					isIdle: () => true,
 					abort: () => {},
-
+					fetchUsageReports: async () => null,
 					hasPendingMessages: () => false,
 					shutdown: () => {},
 					getContextUsage: () => undefined,

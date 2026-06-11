@@ -7,7 +7,6 @@ import type { FetchImpl, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { htmlToMarkdown } from "@oh-my-pi/pi-natives";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { $which, ptree, truncate } from "@oh-my-pi/pi-utils";
-import { parseHTML } from "linkedom";
 import { LRUCache } from "lru-cache/raw";
 import type { Settings } from "../config/settings";
 import { readEditableNotebookText } from "../edit/notebook";
@@ -23,7 +22,7 @@ import { ensureTool } from "../utils/tools-manager";
 import { extractWithParallel, findParallelApiKey, getParallelExtractContent } from "../web/parallel";
 import { specialHandlers } from "../web/scrapers";
 import type { RenderResult } from "../web/scrapers/types";
-import { finalizeOutput, loadPage, looksLikeHtml, MAX_OUTPUT_CHARS } from "../web/scrapers/types";
+import { finalizeOutput, loadPage, looksLikeHtml, MAX_BYTES, MAX_OUTPUT_CHARS } from "../web/scrapers/types";
 import { convertWithMarkit, fetchBinary } from "../web/scrapers/utils";
 import { type ArchiveFormat, listArchiveRoot, sniffArchiveFormat } from "./archive-reader";
 import { applyListLimit } from "./list-limit";
@@ -191,7 +190,7 @@ export interface ParsedReadUrlTarget {
 
 /** Recognize a single selector token (`raw` or one/many line ranges). */
 function isUrlSelectorToken(token: string): boolean {
-	if (token === "raw") return true;
+	if (token.toLowerCase() === "raw") return true;
 	try {
 		return parseLineRanges(token) !== null;
 	} catch {
@@ -213,7 +212,7 @@ export function parseReadUrlTarget(readPath: string): ParsedReadUrlTarget | null
 	let raw = false;
 	let ranges: readonly LineRange[] | undefined;
 	for (const sel of embedded?.sels ?? []) {
-		if (sel === "raw") {
+		if (sel.toLowerCase() === "raw") {
 			raw = true;
 			continue;
 		}
@@ -549,7 +548,8 @@ function cleanFeedText(text: string): string {
 /**
  * Parse RSS/Atom feed to markdown
  */
-function parseFeedToMarkdown(content: string, maxItems = 10): string {
+async function parseFeedToMarkdown(content: string, maxItems = 10): Promise<string> {
+	const { parseHTML } = await import("linkedom");
 	try {
 		const doc = parseHTML(content).document;
 
@@ -805,6 +805,21 @@ function isArchiveHint(mime: string, extensionHint: string): boolean {
 	return ARCHIVE_MIMES.has(mime) || ARCHIVE_EXTENSIONS.has(extensionHint);
 }
 
+/**
+ * Content types whose payload renderUrl always re-fetches via fetchBinary.
+ * Skipping the initial body read for them avoids downloading and
+ * string-decoding huge binaries (PDFs, archives, images) twice.
+ */
+function shouldSkipBodyDownload(contentType: string): boolean {
+	return (
+		CONVERTIBLE_MIMES.has(contentType) ||
+		NOTEBOOK_MIMES.has(contentType) ||
+		SQLITE_MIMES.has(contentType) ||
+		ARCHIVE_MIMES.has(contentType) ||
+		SUPPORTED_INLINE_IMAGE_MIME_TYPES.has(contentType)
+	);
+}
+
 function getArchiveFormatHint(mime: string, extensionHint: string): ArchiveFormat | undefined {
 	if (extensionHint === ".zip" || mime === "application/zip" || mime === "application/x-zip-compressed") {
 		return "zip";
@@ -901,6 +916,7 @@ async function tryRenderBinaryPayload(
 	mime: string,
 	extHint: string,
 	rawContent: string,
+	bodySkipped: boolean,
 	timeout: number,
 	signal: AbortSignal | undefined,
 	fetchedAt: string,
@@ -909,7 +925,7 @@ async function tryRenderBinaryPayload(
 	const hasNotebookHint = isNotebookHint(mime, extHint);
 	const hasSqliteHint = isSqliteHint(mime, extHint);
 	const hasArchiveHint = isArchiveHint(mime, extHint);
-	const rawLooksBinary = sampleLooksBinary(rawContent);
+	const rawLooksBinary = bodySkipped || sampleLooksBinary(rawContent);
 	if (!hasNotebookHint && !hasSqliteHint && !hasArchiveHint && !rawLooksBinary) {
 		return null;
 	}
@@ -1092,7 +1108,7 @@ async function renderUrl(
 	}
 
 	// Step 2: Fetch page
-	const response = await loadPage(url, { timeout, signal });
+	const response = await loadPage(url, { timeout, signal, skipBodyForContentType: shouldSkipBodyDownload });
 	if (signal?.aborted) {
 		throw new ToolAbortError();
 	}
@@ -1105,11 +1121,17 @@ async function renderUrl(
 			content: "",
 			fetchedAt,
 			truncated: false,
-			notes: [response.status ? `Failed to fetch URL (HTTP ${response.status})` : "Failed to fetch URL"],
+			notes: [
+				response.status ? `Failed to fetch URL (HTTP ${response.status})` : "Failed to fetch URL",
+				...(response.error ? [`Cause: ${response.error}`] : []),
+			],
 		};
 	}
 
 	const { finalUrl, content: rawContent } = response;
+	if (response.truncated) {
+		notes.push(`Response body exceeded ${formatBytes(MAX_BYTES)} and was cut mid-stream; content is incomplete`);
+	}
 	const mime = normalizeMime(response.contentType);
 	const extHint = getExtensionHint(finalUrl);
 
@@ -1276,6 +1298,7 @@ async function renderUrl(
 		mime,
 		extHint,
 		rawContent,
+		response.bodySkipped === true,
 		timeout,
 		signal,
 		fetchedAt,
@@ -1321,7 +1344,7 @@ async function renderUrl(
 	}
 
 	if (isFeed || (isXml && (rawContent.includes("<rss") || rawContent.includes("<feed")))) {
-		const parsed = parseFeedToMarkdown(rawContent);
+		const parsed = await parseFeedToMarkdown(rawContent);
 		const output = finalizeOutput(parsed);
 		return {
 			url,
@@ -1414,7 +1437,7 @@ async function renderUrl(
 			const altResult = await loadPage(resolved, { timeout, signal });
 			if (altResult.ok && altResult.content.trim().length > 200) {
 				notes.push(`Used feed alternate: ${resolved}`);
-				const parsed = parseFeedToMarkdown(altResult.content);
+				const parsed = await parseFeedToMarkdown(altResult.content);
 				const output = finalizeOutput(parsed);
 				return {
 					url,

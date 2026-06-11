@@ -22,6 +22,7 @@ import type {
 	Context,
 	ImageContent,
 	Model,
+	ModelSpec,
 	ProviderResponseMetadata,
 	SimpleStreamOptions,
 	Static,
@@ -1101,7 +1102,7 @@ export interface ExtensionAPI {
 	 *       id: "claude-sonnet-4@20250514",
 	 *       name: "Claude Sonnet 4 (Vertex)",
 	 *       reasoning: true,
-	 *       thinking: { mode: "anthropic-adaptive", minLevel: "minimal", maxLevel: "high" },
+	 *       thinking: { mode: "anthropic-adaptive", efforts: ["minimal", "low", "medium", "high"] },
 	 *       input: ["text", "image"],
 	 *       cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
 	 *       contextWindow: 200000,
@@ -1188,7 +1189,7 @@ export interface ProviderModelConfig {
 	/** Custom headers for this model. */
 	headers?: Record<string, string>;
 	/** OpenAI compatibility settings. */
-	compat?: Model<Api>["compat"];
+	compat?: ModelSpec<Api>["compat"];
 }
 
 /** Extension factory function type. Supports both sync and async initialization. */

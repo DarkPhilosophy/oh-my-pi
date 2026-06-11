@@ -1,7 +1,7 @@
 /**
  * CLI argument parsing and help display
  */
-import { type Effort, THINKING_EFFORTS } from "@oh-my-pi/pi-ai/effort";
+import { type Effort, THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import { APP_NAME, CONFIG_DIR_NAME, logger } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import { parseEffort } from "../thinking";
@@ -14,6 +14,7 @@ export interface Args {
 	allowHome?: boolean;
 	provider?: string;
 	model?: string;
+	config?: string[];
 	smol?: string;
 	slow?: string;
 	plan?: string;
@@ -111,6 +112,8 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.allowHome = true;
 		} else if (arg === "--cwd" && i + 1 < args.length) {
 			result.cwd = args[++i];
+		} else if (arg === "--config" && i + 1 < args.length) {
+			result.config = [...(result.config ?? []), args[++i]];
 		} else if (arg === "--mode" && i + 1 < args.length) {
 			const mode = args[++i];
 			if (mode === "text" || mode === "json" || mode === "rpc" || mode === "acp" || mode === "rpc-ui") {

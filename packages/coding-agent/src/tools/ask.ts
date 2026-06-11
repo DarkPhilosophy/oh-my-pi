@@ -59,6 +59,8 @@ export interface QuestionResult {
 	multi: boolean;
 	selectedOptions: string[];
 	customInput?: string;
+	/** True when the answer was auto-selected because the dialog timed out. */
+	timedOut?: boolean;
 }
 
 export interface AskToolDetails {
@@ -67,6 +69,8 @@ export interface AskToolDetails {
 	multi?: boolean;
 	selectedOptions?: string[];
 	customInput?: string;
+	/** True when the answer was auto-selected because the dialog timed out. */
+	timedOut?: boolean;
 	/** Multi-part question mode */
 	results?: QuestionResult[];
 }
@@ -94,9 +98,13 @@ function toSelectOption(option: AskOption, label = option.label): ExtensionUISel
 
 const OTHER_OPTION = "Other (type your own)";
 const RECOMMENDED_SUFFIX = " (Recommended)";
+// Window after the timeout deadline within which an `undefined` selection is
+// attributed to a UI-enforced timeout (for surfaces that close the dialog at
+// the deadline but never invoke `onTimeout`). Cancels beyond it are user Esc.
+const TIMEOUT_DETECTION_TOLERANCE_MS = 1_000;
 
 function getDoneOptionLabel(): string {
-	return `${theme.symbol("tool.ask")} Done selecting`;
+	return `${theme.status.success} Done selecting`;
 }
 
 /** Add "(Recommended)" suffix to the option at the given index if not already present */
@@ -230,7 +238,12 @@ async function askSingleQuestion(
 			? await untilAborted(signal, () => ui.select(prompt, optionsToShow, dialogOptions))
 			: await ui.select(prompt, optionsToShow, dialogOptions);
 		if (!timeoutTriggered && choice === undefined && typeof timeout === "number") {
-			timeoutTriggered = Date.now() - startMs >= timeout;
+			// Fallback for UI surfaces that enforce `timeout` without invoking
+			// `onTimeout`: their auto-cancel resolves right at the deadline. A
+			// cancel arriving well past the deadline is a deliberate user Esc on
+			// a surface that kept the dialog open — keep treating it as a cancel.
+			const elapsed = Date.now() - startMs;
+			timeoutTriggered = elapsed >= timeout && elapsed <= timeout + TIMEOUT_DETECTION_TOLERANCE_MS;
 		}
 		return { choice, timedOut: timeoutTriggered, navigation: navigationAction };
 	};
@@ -380,9 +393,10 @@ function formatQuestionResult(result: QuestionResult): string {
 		return `${result.id}: "${result.customInput}"`;
 	}
 	if (result.selectedOptions.length > 0) {
+		const suffix = result.timedOut ? " (auto-selected after timeout)" : "";
 		return result.multi
-			? `${result.id}: [${result.selectedOptions.join(", ")}]`
-			: `${result.id}: ${result.selectedOptions[0]}`;
+			? `${result.id}: [${result.selectedOptions.join(", ")}]${suffix}`
+			: `${result.id}: ${result.selectedOptions[0]}${suffix}`;
 	}
 	return `${result.id}: (cancelled)`;
 }
@@ -519,13 +533,15 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				multi: q.multi ?? false,
 				selectedOptions,
 				customInput,
+				timedOut: timedOut || undefined,
 			};
 
 			const responseParts: string[] = [];
 			if (selectedOptions.length > 0) {
-				responseParts.push(
-					q.multi ? `User selected: ${selectedOptions.join(", ")}` : `User selected: ${selectedOptions[0]}`,
-				);
+				const selectedText = q.multi
+					? `User selected: ${selectedOptions.join(", ")}`
+					: `User selected: ${selectedOptions[0]}`;
+				responseParts.push(timedOut ? `${selectedText} (auto-selected after timeout)` : selectedText);
 			}
 			if (customInput !== undefined) {
 				responseParts.push(
@@ -573,6 +589,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				multi: q.multi ?? false,
 				selectedOptions,
 				customInput,
+				timedOut: timedOut || undefined,
 			};
 
 			if (navAction === "back") {
@@ -624,10 +641,62 @@ interface AskRenderArgs {
 	}>;
 }
 
+/**
+ * Coerce an untrusted option list (streamed or model-mangled call args) into
+ * well-formed render options. Bare strings become labels; entries without a
+ * string label are dropped.
+ */
+function normalizeRenderOptions(raw: unknown): AskRenderOption[] | undefined {
+	if (!Array.isArray(raw)) return undefined;
+	const out: AskRenderOption[] = [];
+	for (const entry of raw) {
+		if (typeof entry === "string") {
+			out.push({ label: entry });
+			continue;
+		}
+		if (!entry || typeof entry !== "object") continue;
+		const { label, description } = entry as Partial<AskRenderOption>;
+		if (typeof label !== "string") continue;
+		out.push(typeof description === "string" ? { label, description } : { label });
+	}
+	return out;
+}
+
+/**
+ * Coerce untrusted `questions` call args into a renderable array. Models
+ * occasionally double-encode the array as a JSON string — a bare string passes
+ * a truthy `.length` check but has no `.map`, which used to crash the TUI
+ * render loop. Partially streamed args can also be missing fields.
+ */
+function normalizeRenderQuestions(raw: unknown): NonNullable<AskRenderArgs["questions"]> | undefined {
+	if (typeof raw === "string") {
+		try {
+			raw = JSON.parse(raw);
+		} catch {
+			return undefined;
+		}
+	}
+	if (!Array.isArray(raw)) return undefined;
+	const out: NonNullable<AskRenderArgs["questions"]> = [];
+	for (const entry of raw) {
+		if (!entry || typeof entry !== "object") continue;
+		const q = entry as Partial<NonNullable<AskRenderArgs["questions"]>[number]>;
+		out.push({
+			id: typeof q.id === "string" ? q.id : "?",
+			question: typeof q.question === "string" ? q.question : "",
+			options: normalizeRenderOptions(q.options) ?? [],
+			multi: q.multi === true,
+		});
+	}
+	return out;
+}
+
 /** Render a custom free-text answer as a status line plus indented continuation rows. */
 function renderCustomInputLines(uiTheme: Theme, customInput: string): string[] {
 	const lines = customInput.split("\n");
-	const out: string[] = [` ${uiTheme.styledSymbol("tool.ask", "accent")} ${uiTheme.fg("toolOutput", lines[0] ?? "")}`];
+	const out: string[] = [
+		` ${uiTheme.styledSymbol("status.success", "success")} ${uiTheme.fg("toolOutput", lines[0] ?? "")}`,
+	];
 	for (let i = 1; i < lines.length; i++) out.push(`   ${uiTheme.fg("toolOutput", lines[i])}`);
 	return out;
 }
@@ -707,8 +776,10 @@ export const askToolRenderer = {
 			new Markdown(text, 1, 0, mdTheme, accentStyle).render(Math.max(1, width - 3 + 1));
 
 		// Multi-part questions: one divider-labelled section per question.
-		if (args.questions && args.questions.length > 0) {
-			const questions = args.questions;
+		// Call args are untrusted (partially streamed or model-mangled) and a
+		// throw here takes down the whole TUI render loop — normalize first.
+		const questions = normalizeRenderQuestions(args.questions);
+		if (questions && questions.length > 0) {
 			const header = `${label} ${uiTheme.fg("muted", `${questions.length} questions`)}`;
 			return framedBlock(uiTheme, width => {
 				const sections = questions.map(q => {
@@ -716,8 +787,11 @@ export const askToolRenderer = {
 					if (q.multi) meta.push("multi");
 					if (q.options?.length) meta.push(`options:${q.options.length}`);
 					const metaStr = meta.length > 0 ? uiTheme.fg("dim", ` · ${meta.join(" · ")}`) : "";
-					const lines = md(q.question, width);
-					if (q.options?.length) lines.push(...renderQuestionOptionLines(uiTheme, mdTheme, q.options, q.multi));
+					// md() returns a shared cached array (module-level Markdown LRU) — copy before appending.
+					const mdLines = md(q.question, width);
+					const lines = q.options?.length
+						? [...mdLines, ...renderQuestionOptionLines(uiTheme, mdTheme, q.options, q.multi)]
+						: mdLines;
 					return { label: `${uiTheme.fg("dim", `[${q.id}]`)}${metaStr}`, lines };
 				});
 				return { header, sections, state: "pending", borderColor: "borderMuted", width };
@@ -725,7 +799,7 @@ export const askToolRenderer = {
 		}
 
 		// Single question
-		if (!args.question) {
+		if (typeof args.question !== "string" || !args.question) {
 			const errorLine = formatErrorMessage("No question provided", uiTheme);
 			return framedBlock(uiTheme, width => ({
 				header: errorLine,
@@ -739,14 +813,16 @@ export const askToolRenderer = {
 		const question = args.question;
 		const meta: string[] = [];
 		if (args.multi) meta.push("multi");
-		if (args.options?.length) meta.push(`options:${args.options.length}`);
+		const questionOptions = normalizeRenderOptions(args.options);
+		if (questionOptions?.length) meta.push(`options:${questionOptions.length}`);
 		const header = `${label}${formatMeta(meta, uiTheme)}`;
-		const questionOptions = args.options;
 		const multi = args.multi;
 		return framedBlock(uiTheme, width => {
-			const bodyLines = md(question, width);
-			if (questionOptions?.length)
-				bodyLines.push(...renderQuestionOptionLines(uiTheme, mdTheme, questionOptions, multi));
+			// md() returns a shared cached array (module-level Markdown LRU) — copy before appending.
+			const mdLines = md(question, width);
+			const bodyLines = questionOptions?.length
+				? [...mdLines, ...renderQuestionOptionLines(uiTheme, mdTheme, questionOptions, multi)]
+				: mdLines;
 			return {
 				header,
 				sections: bodyLines.length > 0 ? [{ lines: bodyLines }] : [],
@@ -792,10 +868,11 @@ export const askToolRenderer = {
 			);
 			return framedBlock(uiTheme, width => {
 				const sections = results.map(r => {
-					const lines = md(r.question, width);
-					lines.push(
+					// md() returns a shared cached array (module-level Markdown LRU) — copy before appending.
+					const lines = [
+						...md(r.question, width),
 						...renderAnswerOptionLines(uiTheme, mdTheme, r.options, r.selectedOptions, r.multi, r.customInput),
-					);
+					];
 					return { label: uiTheme.fg("dim", `[${r.id}]`), lines };
 				});
 				return {
@@ -828,9 +905,17 @@ export const askToolRenderer = {
 		const dSelected = details.selectedOptions;
 		const dMulti = details.multi;
 		const dCustom = details.customInput;
+		const dTimedOut = details.timedOut;
 		return framedBlock(uiTheme, width => {
-			const bodyLines = md(question, width);
-			bodyLines.push(...renderAnswerOptionLines(uiTheme, mdTheme, dOptions, dSelected, dMulti, dCustom));
+			// md() returns a shared cached array (module-level Markdown LRU) — copy before appending.
+			const bodyLines = [
+				...md(question, width),
+				...renderAnswerOptionLines(uiTheme, mdTheme, dOptions, dSelected, dMulti, dCustom),
+			];
+			if (dTimedOut) {
+				// Distinguish auto-selection from a real user choice in the transcript.
+				bodyLines.push(uiTheme.fg("dim", "auto-selected after timeout — not a user choice"));
+			}
 			return {
 				header,
 				sections: bodyLines.length > 0 ? [{ lines: bodyLines }] : [],

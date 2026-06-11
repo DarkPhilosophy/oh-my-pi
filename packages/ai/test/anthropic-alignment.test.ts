@@ -22,11 +22,20 @@ import {
 	stripClaudeToolPrefix,
 } from "@oh-my-pi/pi-ai/providers/anthropic";
 import { getEnvApiKey } from "@oh-my-pi/pi-ai/stream";
-import type { Context, Model, TJsonSchema, TokenTaskBudget, Tool } from "@oh-my-pi/pi-ai/types";
+import type {
+	AssistantMessage,
+	Context,
+	Model,
+	ModelSpec,
+	TJsonSchema,
+	TokenTaskBudget,
+	Tool,
+} from "@oh-my-pi/pi-ai/types";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import * as z from "zod/v4";
 import { withEnv } from "./helpers";
 
-const ANTHROPIC_MODEL: Model<"anthropic-messages"> = {
+const ANTHROPIC_MODEL_SPEC: ModelSpec<"anthropic-messages"> = {
 	id: "claude-sonnet-4-5",
 	name: "Claude Sonnet 4.5",
 	api: "anthropic-messages",
@@ -39,13 +48,15 @@ const ANTHROPIC_MODEL: Model<"anthropic-messages"> = {
 	maxTokens: 8_192,
 };
 
-const CLOUDFLARE_ANTHROPIC_MODEL: Model<"anthropic-messages"> = {
-	...ANTHROPIC_MODEL,
+const ANTHROPIC_MODEL: Model<"anthropic-messages"> = buildModel(ANTHROPIC_MODEL_SPEC);
+
+const CLOUDFLARE_ANTHROPIC_MODEL: Model<"anthropic-messages"> = buildModel({
+	...ANTHROPIC_MODEL_SPEC,
 	id: "anthropic/claude-sonnet-4-5",
 	name: "Claude Sonnet 4.5 via Cloudflare",
 	provider: "cloudflare-ai-gateway",
 	baseUrl: "https://gateway.ai.cloudflare.com/v1/account/gateway/anthropic",
-};
+});
 
 function createAbortedSignal(): AbortSignal {
 	const controller = new AbortController();
@@ -284,7 +295,7 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("clamps requested max_tokens to Claude Code's 64k cap when the model ceiling is higher", async () => {
 		const payload = (await captureAnthropicPayload(
-			{ ...ANTHROPIC_MODEL, id: "claude-opus-4-8", name: "Claude Opus 4.8", maxTokens: 128_000 },
+			buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-opus-4-8", name: "Claude Opus 4.8", maxTokens: 128_000 }),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -299,6 +310,89 @@ describe("Anthropic request fingerprint alignment", () => {
 			messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
 		})) as { max_tokens?: number };
 		expect(payload.max_tokens).toBe(8_192);
+	});
+
+	it("keeps the full model output ceiling for API-key requests", async () => {
+		const payload = (await captureAnthropicPayload(
+			buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-opus-4-8", name: "Claude Opus 4.8", maxTokens: 128_000 }),
+			{
+				systemPrompt: ["Stay concise."],
+				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+			},
+			{ isOAuth: false },
+		)) as { max_tokens?: number };
+		expect(payload.max_tokens).toBe(128_000);
+	});
+
+	it("does not place cache_control on thinking blocks in the trailing cache window", async () => {
+		const thinkingOnlyAssistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "thinking", thinking: "long deliberation", thinkingSignature: "sig-1" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: ANTHROPIC_MODEL.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["Stay concise."],
+				messages: [{ role: "user", content: "Think about it", timestamp: Date.now() }, thinkingOnlyAssistant],
+			},
+			{ isOAuth: false },
+		)) as { messages?: Array<{ role: string; content: string | Array<{ type: string; cache_control?: unknown }> }> };
+
+		// The thinking-only assistant turn sits inside the trailing two-message
+		// cache window (the Continue. pad is appended after it) but must not get
+		// a breakpoint — Anthropic rejects cache_control on thinking blocks.
+		const assistant = payload.messages?.find(message => message.role === "assistant");
+		expect(Array.isArray(assistant?.content)).toBe(true);
+		for (const block of assistant?.content as Array<{ type: string; cache_control?: unknown }>) {
+			expect(block.cache_control).toBeUndefined();
+		}
+		const last = payload.messages?.at(-1);
+		expect((last?.content as Array<{ cache_control?: unknown }>)[0]?.cache_control).toBeDefined();
+	});
+
+	it("adds effort and mid-conversation betas to API-key requests that use those features", async () => {
+		let capturedBeta: string | undefined;
+		const fetchMock = (async (_input: string | URL | Request, init?: RequestInit) => {
+			capturedBeta = (init?.headers as Record<string, string> | undefined)?.["anthropic-beta"];
+			return new Response(
+				JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "captured" } }),
+				{ status: 400, headers: { "Content-Type": "application/json" } },
+			);
+		}) as typeof fetch;
+		const adaptiveModel: Model<"anthropic-messages"> = buildModel({
+			...ANTHROPIC_MODEL_SPEC,
+			id: "claude-opus-4-8-20260528",
+			name: "Claude Opus 4.8",
+			thinking: {
+				mode: "anthropic-adaptive",
+				efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+			},
+		});
+
+		await streamAnthropic(
+			adaptiveModel,
+			{ systemPrompt: ["Stay concise."], messages: [{ role: "user", content: "Hi", timestamp: Date.now() }] },
+			{ apiKey: "sk-ant-api-test", thinkingEnabled: false, fetch: fetchMock },
+		).result();
+
+		// thinking-off on an adaptive-only model still pins output_config.effort,
+		// and the converter may emit mid-conversation system turns on Opus 4.8 —
+		// both fields need their betas on API-key requests too.
+		expect(capturedBeta).toContain("effort-2025-11-24");
+		expect(capturedBeta).toContain("mid-conversation-system-2026-04-07");
 	});
 
 	it("billing-header fingerprint uses first user message, not leading developer message", async () => {
@@ -397,9 +491,48 @@ describe("Anthropic request fingerprint alignment", () => {
 		);
 	});
 
+	it("forwards model-supplied User-Agent on API-key requests", () => {
+		// Direct Anthropic API (X-Api-Key branch).
+		const directHeaders = buildAnthropicHeaders({
+			apiKey: "sk-ant-api-test",
+			isOAuth: false,
+			stream: true,
+			modelHeaders: { "User-Agent": "corp-gateway-client/2.0" },
+		});
+		expect(directHeaders["User-Agent"]).toBe("corp-gateway-client/2.0");
+
+		// Non-Anthropic gateway (Bearer branch).
+		const gatewayHeaders = buildAnthropicHeaders({
+			apiKey: "gateway-token",
+			isOAuth: false,
+			stream: true,
+			baseUrl: "https://gateway.example.com/anthropic",
+			modelHeaders: { "User-Agent": "corp-gateway-client/2.0" },
+		});
+		expect(gatewayHeaders["User-Agent"]).toBe("corp-gateway-client/2.0");
+	});
+
+	it("omits Claude Code betas on API-key requests by default", () => {
+		const headers = buildAnthropicHeaders({
+			apiKey: "sk-ant-api-test",
+			isOAuth: false,
+			stream: true,
+			extraBetas: ["web-search-2025-03-05"],
+		});
+		expect(headers["anthropic-beta"]).toBe("web-search-2025-03-05");
+
+		// And no empty anthropic-beta header when there are no betas at all.
+		const bare = buildAnthropicHeaders({
+			apiKey: "sk-ant-api-test",
+			isOAuth: false,
+			stream: true,
+		});
+		expect(bare["anthropic-beta"]).toBeUndefined();
+	});
+
 	it("skips Claude Code instruction injection for claude-3-5-haiku models", async () => {
 		const payload = (await captureAnthropicPayload(
-			{ ...ANTHROPIC_MODEL, id: "claude-3-5-haiku", name: "Claude 3.5 Haiku" },
+			buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-3-5-haiku", name: "Claude 3.5 Haiku" }),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -1095,11 +1228,81 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(strictNames).toEqual(["python"]);
 	});
 
+	it("demotes allowlisted tools with strict-incompatible schema keywords to non-strict", async () => {
+		const tools: Tool[] = [
+			{
+				name: "edit",
+				description: "Edit a value",
+				parameters: {
+					type: "object",
+					properties: { q: { oneOf: [{ type: "string" }, { type: "integer" }] } },
+					required: ["q"],
+				} as TJsonSchema,
+			},
+			{
+				name: "python",
+				description: "python tool",
+				parameters: {
+					type: "object",
+					properties: { tagged: { type: "object", patternProperties: { "^x-": { type: "string" } } } },
+					required: ["tagged"],
+				} as TJsonSchema,
+			},
+			{
+				name: "find",
+				description: "find tool",
+				parameters: {
+					type: "object",
+					properties: { pattern: { type: "string" } },
+					required: ["pattern"],
+				} as TJsonSchema,
+			},
+		];
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["Stay concise."],
+				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+				tools,
+			},
+			{ isOAuth: false },
+		)) as { tools?: Array<{ name?: string; strict?: boolean }> };
+
+		// oneOf/allOf/$ref compile unpredictably under the strict grammar and
+		// patternProperties contradicts the injected additionalProperties:false;
+		// such tools must stay non-strict while clean allowlisted tools keep it.
+		const strictNames = (payload.tools ?? []).filter(tool => tool.strict === true).map(tool => tool.name);
+		expect(strictNames).toEqual(["find"]);
+	});
+
+	it("keeps the interleaved-thinking beta for dated Opus 4.0 ids", () => {
+		const legacy = buildAnthropicClientOptions({
+			model: buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-opus-4-20250514", name: "Claude Opus 4" }),
+			apiKey: "sk-ant-api-test",
+			extraBetas: [],
+			stream: true,
+			interleavedThinking: true,
+			hasTools: false,
+		});
+		// The date suffix must not parse as minor=20250514 (>= 4.7 display support).
+		expect(legacy.defaultHeaders["anthropic-beta"]).toContain("interleaved-thinking-2025-05-14");
+
+		const modern = buildAnthropicClientOptions({
+			model: buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-opus-4-7", name: "Claude Opus 4.7" }),
+			apiKey: "sk-ant-api-test",
+			extraBetas: [],
+			stream: true,
+			interleavedThinking: true,
+			hasTools: false,
+		});
+		expect(modern.defaultHeaders["anthropic-beta"] ?? "").not.toContain("interleaved-thinking-2025-05-14");
+	});
+
 	it("adds legacy fine-grained tool-streaming beta only for tool requests on incompatible models", () => {
-		const incompatibleModel: Model<"anthropic-messages"> = {
-			...ANTHROPIC_MODEL,
+		const incompatibleModel: Model<"anthropic-messages"> = buildModel({
+			...ANTHROPIC_MODEL_SPEC,
 			compat: { supportsEagerToolInputStreaming: false },
-		};
+		});
 
 		const withoutTools = buildAnthropicClientOptions({
 			model: incompatibleModel,
@@ -1126,10 +1329,9 @@ describe("Anthropic request fingerprint alignment", () => {
 			hasTools: true,
 		});
 
-		expect(withoutTools.defaultHeaders["anthropic-beta"]).not.toContain("fine-grained-tool-streaming-2025-05-14");
-		expect(withCompatibleTools.defaultHeaders["anthropic-beta"]).not.toContain(
-			"fine-grained-tool-streaming-2025-05-14",
-		);
+		// No betas at all → the header is omitted entirely on API-key requests.
+		expect(withoutTools.defaultHeaders["anthropic-beta"]).toBeUndefined();
+		expect(withCompatibleTools.defaultHeaders["anthropic-beta"]).toBeUndefined();
 		expect(withIncompatibleTools.defaultHeaders["anthropic-beta"]).toContain(
 			"fine-grained-tool-streaming-2025-05-14",
 		);
@@ -1229,10 +1431,10 @@ describe("Anthropic request fingerprint alignment", () => {
 	});
 
 	it("forwards ANTHROPIC_CUSTOM_HEADERS to an enterprise gateway base URL without Foundry mode", async () => {
-		const gatewayModel: Model<"anthropic-messages"> = {
-			...ANTHROPIC_MODEL,
+		const gatewayModel: Model<"anthropic-messages"> = buildModel({
+			...ANTHROPIC_MODEL_SPEC,
 			baseUrl: "https://gateway.example.com",
-		};
+		});
 		await withEnv(
 			{
 				CLAUDE_CODE_USE_FOUNDRY: undefined,
@@ -1416,7 +1618,7 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("drops temperature and sampling params for Opus 4.7 without enabled thinking", async () => {
 		const payload = (await captureAnthropicPayload(
-			{ ...ANTHROPIC_MODEL, id: "claude-opus-4-7", name: "Claude Opus 4.7" },
+			buildModel({ ...ANTHROPIC_MODEL_SPEC, id: "claude-opus-4-7", name: "Claude Opus 4.7" }),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -1439,18 +1641,48 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.thinking).toBeUndefined();
 	});
 
+	it("drops sampling params for Claude Fable/Mythos 5 without enabled thinking", async () => {
+		for (const id of ["claude-fable-5", "claude-mythos-5"] as const) {
+			const payload = (await captureAnthropicPayload(
+				buildModel({
+					...ANTHROPIC_MODEL_SPEC,
+					id,
+					name: id === "claude-fable-5" ? "Claude Fable 5" : "Claude Mythos 5",
+				}),
+				{
+					systemPrompt: ["Stay concise."],
+					messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+				},
+				{
+					temperature: 0.2,
+					topP: 0.3,
+					topK: 4,
+				},
+			)) as {
+				temperature?: number;
+				top_p?: number;
+				top_k?: number;
+				thinking?: { type?: string };
+			};
+
+			expect(payload.temperature).toBeUndefined();
+			expect(payload.top_p).toBeUndefined();
+			expect(payload.top_k).toBeUndefined();
+			expect(payload.thinking).toBeUndefined();
+		}
+	});
+
 	it("drops sampling params and keeps summarized adaptive thinking for OAuth Opus 4.7+", async () => {
 		const payload = (await captureAnthropicPayload(
-			{
-				...ANTHROPIC_MODEL,
+			buildModel({
+				...ANTHROPIC_MODEL_SPEC,
 				id: "claude-opus-4-7",
 				name: "Claude Opus 4.7",
 				thinking: {
 					mode: "anthropic-adaptive",
-					minLevel: Effort.Minimal,
-					maxLevel: Effort.XHigh,
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 				},
-			},
+			}),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -1481,16 +1713,15 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.output_config).toEqual({ effort: "xhigh" });
 
 		const maxPayload = (await captureAnthropicPayload(
-			{
-				...ANTHROPIC_MODEL,
+			buildModel({
+				...ANTHROPIC_MODEL_SPEC,
 				id: "claude-opus-4-7",
 				name: "Claude Opus 4.7",
 				thinking: {
 					mode: "anthropic-adaptive",
-					minLevel: Effort.Minimal,
-					maxLevel: Effort.XHigh,
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 				},
-			},
+			}),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -1509,16 +1740,15 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("keeps summarized adaptive thinking by default for API-key Opus 4.7+ requests", async () => {
 		const payload = (await captureAnthropicPayload(
-			{
-				...ANTHROPIC_MODEL,
+			buildModel({
+				...ANTHROPIC_MODEL_SPEC,
 				id: "claude-opus-4-7",
 				name: "Claude Opus 4.7",
 				thinking: {
 					mode: "anthropic-adaptive",
-					minLevel: Effort.Minimal,
-					maxLevel: Effort.XHigh,
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 				},
-			},
+			}),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
@@ -1541,16 +1771,15 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("sends task budgets through Anthropic output_config without dropping adaptive effort", async () => {
 		const payload = (await captureAnthropicPayload(
-			{
-				...ANTHROPIC_MODEL,
+			buildModel({
+				...ANTHROPIC_MODEL_SPEC,
 				id: "claude-opus-4-7",
 				name: "Claude Opus 4.7",
 				thinking: {
 					mode: "anthropic-adaptive",
-					minLevel: Effort.Minimal,
-					maxLevel: Effort.XHigh,
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 				},
-			},
+			}),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Review this repo", timestamp: Date.now() }],
@@ -1575,16 +1804,15 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("preserves task budget when forced tool choice disables thinking", async () => {
 		const payload = (await captureAnthropicPayload(
-			{
-				...ANTHROPIC_MODEL,
+			buildModel({
+				...ANTHROPIC_MODEL_SPEC,
 				id: "claude-opus-4-7",
 				name: "Claude Opus 4.7",
 				thinking: {
 					mode: "anthropic-adaptive",
-					minLevel: Effort.Minimal,
-					maxLevel: Effort.XHigh,
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 				},
-			},
+			}),
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Use the tool", timestamp: Date.now() }],
@@ -1614,6 +1842,48 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.output_config).toEqual({
 			task_budget: { type: "tokens", total: 64_000 },
 		});
+	});
+
+	it("downgrades forced tool choice for Claude Fable/Mythos without deleting adaptive thinking", async () => {
+		for (const id of ["claude-fable-5", "claude-mythos-5"] as const) {
+			const payload = (await captureAnthropicPayload(
+				buildModel({
+					...ANTHROPIC_MODEL_SPEC,
+					id,
+					name: id === "claude-fable-5" ? "Claude Fable 5" : "Claude Mythos 5",
+					contextWindow: 1_000_000,
+					maxTokens: 128_000,
+					thinking: {
+						mode: "anthropic-adaptive",
+						efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+					},
+				}),
+				{
+					systemPrompt: ["Stay concise."],
+					messages: [{ role: "user", content: "Use the tool", timestamp: Date.now() }],
+					tools: [
+						{
+							name: "lookup",
+							description: "Lookup a value",
+							parameters: { type: "object", properties: {}, additionalProperties: false },
+						},
+					],
+				},
+				{
+					thinkingEnabled: true,
+					reasoning: Effort.High,
+					toolChoice: "any",
+				},
+			)) as {
+				thinking?: { type?: string; display?: string };
+				tool_choice?: { type?: string };
+				output_config?: { effort?: string };
+			};
+
+			expect(payload.tool_choice).toEqual({ type: "auto" });
+			expect(payload.thinking).toEqual({ type: "adaptive", display: "summarized" });
+			expect(payload.output_config).toEqual({ effort: "xhigh" });
+		}
 	});
 
 	it("treats tool prefix helpers as no-ops when prefix is empty string", () => {

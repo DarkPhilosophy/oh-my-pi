@@ -19,13 +19,17 @@ function readSetting<T>(session: ToolSession, key: string): T | undefined {
 	return settings?.get?.(key);
 }
 
+function readInterpreterSetting(session: ToolSession): string | undefined {
+	return readSetting<string>(session, "python.interpreter")?.trim() || undefined;
+}
+
 export default {
 	id: "python",
 	label: "Python",
 	highlightLang: "python",
 
 	async isAvailable(session: ToolSession): Promise<boolean> {
-		const availability = await checkPythonKernelAvailability(session.cwd);
+		const availability = await checkPythonKernelAvailability(session.cwd, readInterpreterSetting(session));
 		return availability.ok;
 	},
 
@@ -37,13 +41,12 @@ export default {
 			signal: opts.signal,
 			sessionId: namespaceSessionId(opts.sessionId),
 			kernelMode,
+			interpreter: readInterpreterSetting(opts.session),
 			sessionFile: opts.sessionFile,
 			artifactsDir: opts.session.getArtifactsDir?.() ?? undefined,
 			localRoots: resolveEvalUrlRoots(opts.session),
 			kernelOwnerId: opts.kernelOwnerId,
 			reset: opts.reset,
-			artifactPath: opts.artifactPath,
-			artifactId: opts.artifactId,
 			onChunk: opts.onChunk,
 			onStatus: opts.onStatus,
 			toolSession: opts.session,

@@ -1,7 +1,8 @@
 /**
  * List available models with optional fuzzy search
  */
-import { type Api, getSupportedEfforts, type Model } from "@oh-my-pi/pi-ai";
+import type { Api, Model } from "@oh-my-pi/pi-ai";
+import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { fuzzyFilter } from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
@@ -64,22 +65,16 @@ export async function listModels(modelRegistry: ModelRegistry, searchPattern?: s
 	}
 
 	const filteredCanonical = modelRegistry
-		.getCanonicalModels({ availableOnly: true, candidates: filteredModels })
-		.map(record => {
-			const selected = modelRegistry.resolveCanonicalModel(record.id, {
-				availableOnly: true,
-				candidates: filteredModels,
-			});
-			if (!selected) return undefined;
-			return {
+		.getCanonicalModelSelections({ availableOnly: true, candidates: filteredModels })
+		.map(
+			({ record, model: selected }): CanonicalRow => ({
 				canonical: record.id,
 				selected: `${selected.provider}/${selected.id}`,
 				variants: String(record.variants.length),
 				context: formatNumber(selected.contextWindow),
 				maxOut: formatNumber(selected.maxTokens),
-			} satisfies CanonicalRow;
-		})
-		.filter((row): row is CanonicalRow => row !== undefined)
+			}),
+		)
 		.sort((left, right) => left.canonical.localeCompare(right.canonical));
 
 	if (filteredModels.length === 0 && filteredCanonical.length === 0) {

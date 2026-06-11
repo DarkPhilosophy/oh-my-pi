@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import type { Api, AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import * as ai from "@oh-my-pi/pi-ai";
-import { type Api, type AssistantMessage, getBundledModel, type Model } from "@oh-my-pi/pi-ai";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { isSubcommand } from "@oh-my-pi/pi-coding-agent/cli-commands";
 import { getDefault, getEnumValues, getUi } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import { TinyTitleDownloadProgressComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tiny-title-download-progress";
@@ -20,12 +21,13 @@ import {
 	TINY_TITLE_MODEL_OPTIONS,
 	TINY_TITLE_MODEL_VALUES,
 } from "@oh-my-pi/pi-coding-agent/tiny/models";
-import { tinyTitleClient } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
+import { createTinyTitleSubprocess, tinyTitleClient } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
 import {
 	generateSessionTitle,
 	raceFirstNonNull,
 	TITLE_LOCAL_FALLBACK_DELAY_MS,
 } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
+import type { Subprocess } from "bun";
 
 async function flushMicrotasks(turns = 4): Promise<void> {
 	for (let i = 0; i < turns; i += 1) await Promise.resolve();
@@ -58,6 +60,33 @@ function createRegistry(model: Model<Api>) {
 		getApiKey: async () => "test-key",
 		resolver: vi.fn(() => async () => "test-key"),
 	} as never;
+}
+
+type TinyWorkerSpawnOptions = Bun.SpawnOptions.SpawnOptions<"ignore", "ignore", "ignore">;
+
+type TinyWorkerSpawnCall = {
+	options: TinyWorkerSpawnOptions & { cmd: string[] };
+};
+
+function createTinyWorkerSpawnMock(calls: TinyWorkerSpawnCall[]) {
+	function mockSpawn(options: TinyWorkerSpawnOptions & { cmd: string[] }): Subprocess<"ignore", "ignore", "ignore">;
+	function mockSpawn(cmd: string[], options?: TinyWorkerSpawnOptions): Subprocess<"ignore", "ignore", "ignore">;
+	function mockSpawn(
+		first: string[] | (TinyWorkerSpawnOptions & { cmd: string[] }),
+		second?: TinyWorkerSpawnOptions,
+	): Subprocess<"ignore", "ignore", "ignore"> {
+		const options = Array.isArray(first) ? { ...(second ?? {}), cmd: first } : first;
+		calls.push({ options });
+		return {
+			pid: 12345,
+			send: () => undefined,
+			kill: () => true,
+			unref: () => undefined,
+			exited: Promise.resolve(0),
+		} as unknown as Subprocess<"ignore", "ignore", "ignore">;
+	}
+
+	return mockSpawn;
 }
 
 function mockOnlineTitle(title: string | null) {
@@ -214,6 +243,27 @@ describe("tiny title generator routing", () => {
 		expect(online).not.toHaveBeenCalled();
 	});
 
+	it("passes the resolved TITLE_SYSTEM.md prompt to the local client", async () => {
+		const model = getModelOrThrow("claude-sonnet-4-5");
+		const customPrompt = "Generate lowercase colon-delimited session names.";
+		const local = vi.spyOn(tinyTitleClient, "generate").mockResolvedValue("Local Title");
+		const online = mockOnlineTitle("Online Title");
+
+		const title = await generateSessionTitle(
+			"Investigate routing",
+			createRegistry(model),
+			createSettings(model, "lfm2-350m"),
+			undefined,
+			undefined,
+			undefined,
+			customPrompt,
+		);
+
+		expect(title).toBe("Local Title");
+		expect(local).toHaveBeenCalledWith("lfm2-350m", "Investigate routing", { systemPrompt: customPrompt });
+		expect(online).not.toHaveBeenCalled();
+	});
+
 	it("starts online fallback immediately when local returns null", async () => {
 		const model = getModelOrThrow("claude-sonnet-4-5");
 		vi.spyOn(tinyTitleClient, "generate").mockResolvedValue(null);
@@ -282,6 +332,20 @@ describe("tiny title generator routing", () => {
 		local.resolve("Late Local Title");
 		await flushMicrotasks();
 		expect(localSettled).toBe(true);
+	});
+});
+
+describe("tiny title subprocess", () => {
+	it("does not inherit worker output into the interactive terminal", async () => {
+		const calls: TinyWorkerSpawnCall[] = [];
+		vi.spyOn(Bun, "spawn").mockImplementation(createTinyWorkerSpawnMock(calls));
+
+		const worker = createTinyTitleSubprocess();
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.options.stdout).toBe("ignore");
+		expect(calls[0]?.options.stderr).toBe("ignore");
+		await worker.proc.exited;
 	});
 });
 

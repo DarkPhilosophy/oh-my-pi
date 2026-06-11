@@ -12,14 +12,8 @@ import {
 	ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
-import {
-	type AssistantMessage,
-	type ImageContent,
-	type Message,
-	type Model,
-	modelsAreEqual,
-	type UsageReport,
-} from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, Message, Model, UsageReport } from "@oh-my-pi/pi-ai";
+import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import type { Component, EditorTheme, LoaderMessageColorFn, OverlayHandle, SlashCommand } from "@oh-my-pi/pi-tui";
 import {
 	Container,
@@ -51,7 +45,7 @@ import {
 import chalk from "chalk";
 import { reset as resetCapabilities } from "../capability";
 import { KeybindingsManager } from "../config/keybindings";
-import { MODEL_ROLES, type ModelRole } from "../config/model-registry";
+import { MODEL_ROLES, type ModelRole } from "../config/model-roles";
 import { isSettingsInitialized, onStatusLineSessionAccentChanged, Settings, settings } from "../config/settings";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {
@@ -67,6 +61,7 @@ import { BUILTIN_SLASH_COMMANDS, loadSlashCommands } from "../extensibility/slas
 import type { Goal, GoalModeState } from "../goals/state";
 import { resolveLocalUrlToPath } from "../internal-urls";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
+import type { MCPManager } from "../mcp";
 import {
 	humanizePlanTitle,
 	type PlanApprovalDetails,
@@ -82,8 +77,10 @@ import { HistoryStorage } from "../session/history-storage";
 import type { SessionContext, SessionManager } from "../session/session-manager";
 import { getRecentSessions } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
+import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES } from "../slash-commands/builtin-registry";
 import { formatDuration } from "../slash-commands/helpers/format";
 import { STTController, type SttState } from "../stt";
+import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import type { LspStartupServerInfo } from "../tools";
 import { normalizeLocalScheme } from "../tools/path-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
@@ -132,6 +129,7 @@ import {
 import { OAuthManualInputManager } from "./oauth-manual-input";
 import { trimRightPadding } from "./right-panel-padding";
 import { SessionObserverRegistry } from "./session-observer-registry";
+import { runProviderSetupWizard } from "./setup-wizard/lazy";
 import { interruptHint } from "./shared";
 import { type ShimmerPalette, shimmerEnabled, shimmerSegments, shimmerText } from "./theme/shimmer";
 import type { Theme } from "./theme/theme";
@@ -391,6 +389,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	keybindings: KeybindingsManager;
 	agent: Agent;
 	historyStorage?: HistoryStorage;
+	titleSystemPrompt?: string;
 
 	ui: TUI;
 	chatContainer: TranscriptContainer;
@@ -453,6 +452,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#pendingSubmissionDispose: (() => void) | undefined;
 	lastSigintTime = 0;
 	lastEscapeTime = 0;
+	lastLeftTapTime = 0;
 	shutdownRequested = false;
 	#isShuttingDown = false;
 	#rightInfoBlocks: string[][] = [];
@@ -481,7 +481,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#planReviewOverlay: PlanReviewOverlay | undefined;
 	#planReviewOverlayHandle: OverlayHandle | undefined;
 	readonly lspServers: LspStartupServerInfo[] | undefined = undefined;
-	mcpManager?: import("../mcp").MCPManager;
+	mcpManager?: MCPManager;
 	readonly #toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
 
 	readonly #btwController: BtwController;
@@ -512,8 +512,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		changelogMarkdown: string | undefined = undefined,
 		setToolUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void = () => {},
 		lspServers: LspStartupServerInfo[] | undefined = undefined,
-		mcpManager?: import("../mcp").MCPManager,
+		mcpManager?: MCPManager,
 		eventBus?: EventBus,
+		titleSystemPrompt?: string,
 	) {
 		this.session = session;
 		this.sessionManager = session.sessionManager;
@@ -526,6 +527,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.lspServers = lspServers;
 		this.mcpManager = mcpManager;
 		this.#eventBus = eventBus;
+		this.titleSystemPrompt = titleSystemPrompt;
 		if (eventBus) {
 			this.#eventBusUnsubscribers.push(
 				eventBus.on(LSP_STARTUP_EVENT_CHANNEL, data => {
@@ -535,7 +537,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 
 		this.ui = new TUI(new ProcessTerminal(), settings.get("showHardwareCursor"));
-		this.ui.setClearOnShrink(settings.get("clearOnShrink"));
 		this.ui.setMaxInlineImages(settings.get("tui.maxInlineImages"));
 		// OSC 66 text-sizing is Kitty-only; resolve the setting against the terminal's
 		// capability (`TERMINAL.textSizing` defaults on for Kitty) so it stays off
@@ -555,7 +556,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender(true);
 		};
 		this.editor.onAutocompleteUpdate = () => {
-			this.ui.requestRender(false, { allowUnknownViewportMutation: true });
+			this.ui.requestRender();
 		};
 		this.#syncEditorMaxHeight();
 		this.#resizeHandler = () => {
@@ -580,9 +581,8 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		this.hideThinkingBlock = settings.get("hideThinkingBlock");
 
-		const builtinCommandNames = new Set(BUILTIN_SLASH_COMMANDS.map(c => c.name));
 		const hookCommands: SlashCommand[] = (
-			this.session.extensionRunner?.getRegisteredCommands(builtinCommandNames) ?? []
+			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
 		).map(cmd => ({
 			name: cmd.name,
 			description: cmd.description ?? "(hook command)",
@@ -622,7 +622,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	playWelcomeIntro(): void {
-		this.#welcomeComponent?.playIntro(() => this.ui.requestRender());
+		const welcome = this.#welcomeComponent;
+		// Component-scoped: the intro only mutates the welcome box's own rows,
+		// so a resumed long transcript is not re-walked per animation frame.
+		welcome?.playIntro(() => this.ui.requestComponentRender(welcome));
 	}
 
 	setRightInfo(blocks: string[][] | undefined): void {
@@ -842,6 +845,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.updateEditorTopBorder();
 	}
 
+	/** Reload the title-generation system prompt override for the provided working directory. */
+	async refreshTitleSystemPrompt(cwd?: string): Promise<void> {
+		const basePath = cwd ?? this.sessionManager.getCwd();
+		const titleSystemPromptSource = discoverTitleSystemPromptFile(basePath);
+		this.titleSystemPrompt = await resolvePromptInput(titleSystemPromptSource, "title system prompt");
+	}
+
 	/** Reload slash commands and autocomplete for the provided working directory. */
 	async refreshSlashCommandState(cwd?: string): Promise<void> {
 		const basePath = cwd ?? this.sessionManager.getCwd();
@@ -876,6 +886,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Re-warm plugin roots, capabilities, slash commands, and the ssh tool so
 		// the next prompt sees everything scoped to the new project directory.
 		clearClaudePluginRootsCache();
+		await this.refreshTitleSystemPrompt(newCwd);
 		resetCapabilities();
 		await this.refreshSlashCommandState(newCwd);
 		await this.session.refreshSshTool({ activateIfAvailable: true });
@@ -1115,13 +1126,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.editor.setText("");
 		this.editor.imageLinks = undefined;
-		// Reconciliation checkpoint: only retire frozen block snapshots after TUI
-		// proves the native viewport is at the tail and replays scrollback safely.
-		// Unknown host viewports stay frozen; thawing them would expose live rows
-		// over stale native history and can yank or duplicate when ED3 is unsafe.
-		if (this.ui.refreshNativeScrollbackIfDirty()) {
-			this.chatContainer.thaw();
-		}
 		this.ensureLoadingAnimation();
 		this.ui.requestRender();
 		return submission;
@@ -1205,6 +1209,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			separator: settings.get("statusLine.separator"),
 			showHookStatus: settings.get("statusLine.showHookStatus"),
 			sessionAccent: settings.get("statusLine.sessionAccent"),
+			transparent: settings.get("statusLine.transparent"),
 			segmentOptions: settings.get("statusLine.segmentOptions"),
 		});
 	}
@@ -1244,7 +1249,9 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	rebuildChatFromMessages(): void {
 		this.chatContainer.clear();
-		const context = this.session.buildDisplaySessionContext();
+		// Full-history transcript: compactions render as inline dividers instead
+		// of restarting the visible conversation (the LLM context still resets).
+		const context = this.session.buildTranscriptSessionContext();
 		this.renderSessionContext(context);
 	}
 
@@ -1864,6 +1871,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
+	async #hasPlanModeDraftContent(planFilePath: string): Promise<boolean> {
+		const candidates = new Set<string>([planFilePath, ...(await this.#listLocalPlanFiles())]);
+		for (const candidate of candidates) {
+			const content = await this.#readPlanFile(candidate);
+			if (content !== null && content.trim().length > 0) return true;
+		}
+		return false;
+	}
+
 	/** `local://` URLs of plan files in the session-local root, newest first.
 	 *  A fallback for `resolveApprovedPlan` when the agent dropped `extra.title`,
 	 *  so the plan it wrote is still found by scanning recent `*-plan.md` files. */
@@ -2168,11 +2184,14 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		if (this.planModeEnabled) {
-			const confirmed = await this.showHookConfirm(
-				"Exit plan mode?",
-				"This exits plan mode without approving a plan.",
-			);
-			if (!confirmed) return;
+			const planFilePath = this.planModePlanFilePath ?? (await this.#getPlanFilePath());
+			if (await this.#hasPlanModeDraftContent(planFilePath)) {
+				const confirmed = await this.showHookConfirm(
+					"Exit plan mode?",
+					"This exits plan mode without approving a plan.",
+				);
+				if (!confirmed) return;
+			}
 			await this.#exitPlanMode({ paused: true });
 			return;
 		}
@@ -2743,7 +2762,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender(true);
 		};
 		nextEditor.onAutocompleteUpdate = () => {
-			this.ui.requestRender(false, { allowUnknownViewportMutation: true });
+			this.ui.requestRender();
 		};
 		nextEditor.setMaxHeight(this.#computeEditorMaxHeight());
 		if (this.historyStorage) {
@@ -3024,11 +3043,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#uiHelpers.renderSessionContext(sessionContext, options);
 	}
 
-	renderInitialMessages(
-		prebuiltContext?: SessionContext,
-		options?: { preserveExistingChat?: boolean; clearTerminalHistory?: boolean },
-	): void {
-		this.#uiHelpers.renderInitialMessages(prebuiltContext, options);
+	renderInitialMessages(options?: { preserveExistingChat?: boolean; clearTerminalHistory?: boolean }): void {
+		this.#uiHelpers.renderInitialMessages(options);
 	}
 
 	getUserMessageText(message: Message): string {
@@ -3180,7 +3196,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#voiceAnimationInterval = setInterval(() => {
 			this.#voiceHue = (this.#voiceHue + 8) % 360;
 			this.#updateMicIcon();
-			this.ui.requestRender();
+			// Component-scoped: the hue sweep only recolors the editor's cursor
+			// glyph, so the transcript subtree is reused per animation frame.
+			this.ui.requestComponentRender(this.editor);
 		}, 60);
 	}
 
@@ -3212,13 +3230,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.#selectorController.showDebugSelector();
 	}
 
-	showSessionObserver(): void {
-		const sessions = this.#observerRegistry.getSessions();
-		if (sessions.length <= 1) {
-			this.showStatus("No active subagent sessions");
-			return;
-		}
-		this.#selectorController.showSessionObserver(this.#observerRegistry);
+	showAgentHub(): void {
+		this.#selectorController.showAgentHub(this.#observerRegistry);
 	}
 
 	resetObserverRegistry(): void {
@@ -3321,6 +3334,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showOAuthSelector(mode: "login" | "logout", providerId?: string): Promise<void> {
 		return this.#selectorController.showOAuthSelector(mode, providerId);
+	}
+
+	showProviderSetup(): Promise<void> {
+		return runProviderSetupWizard(this);
 	}
 
 	showHookConfirm(title: string, message: string): Promise<boolean> {

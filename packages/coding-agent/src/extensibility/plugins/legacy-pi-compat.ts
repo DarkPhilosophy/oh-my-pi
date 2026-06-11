@@ -1,4 +1,4 @@
-import * as fs from "node:fs/promises";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as url from "node:url";
 import { isCompiledBinary } from "@oh-my-pi/pi-utils";
@@ -110,9 +110,26 @@ function bunfsPath(...segments: string[]): string {
 	return path.join(BUNFS_PACKAGE_ROOT, ...segments);
 }
 
+function resolveBundledSelfPackageRoot(): string | undefined {
+	if (!process.env.PI_BUNDLED) return undefined;
+	try {
+		return path.dirname(Bun.resolveSync("@oh-my-pi/pi-coding-agent/package.json", import.meta.dir));
+	} catch {
+		return undefined;
+	}
+}
+
+const BUNDLED_SELF_PACKAGE_ROOT = resolveBundledSelfPackageRoot();
+
+function sourceShimPath(file: string): string {
+	return BUNDLED_SELF_PACKAGE_ROOT
+		? path.join(BUNDLED_SELF_PACKAGE_ROOT, "src", "extensibility", file)
+		: path.resolve(import.meta.dir, "..", file);
+}
+
 const TYPEBOX_SHIM_PATH = BUNFS_PACKAGE_ROOT
 	? bunfsPath("coding-agent", "src", "extensibility", "typebox.js")
-	: path.resolve(import.meta.dir, "../typebox.ts");
+	: sourceShimPath("typebox.ts");
 
 // Legacy extensions historically imported `Type` (and `Static`/`TSchema`) from
 // the package root of `@(scope)/pi-ai`. pi-ai 15.1.0 removed the runtime `Type`
@@ -124,7 +141,7 @@ const TYPEBOX_SHIM_PATH = BUNFS_PACKAGE_ROOT
 // against the bundled pi-ai package.
 const LEGACY_PI_AI_SHIM_PATH = BUNFS_PACKAGE_ROOT
 	? bunfsPath("coding-agent", "src", "extensibility", "legacy-pi-ai-shim.js")
-	: path.resolve(import.meta.dir, "../legacy-pi-ai-shim.ts");
+	: sourceShimPath("legacy-pi-ai-shim.ts");
 
 // The coding-agent's own `./src/index.ts` cannot be listed as an extra
 // `bun --compile` entrypoint alongside the CLI entry without breaking binary
@@ -133,7 +150,7 @@ const LEGACY_PI_AI_SHIM_PATH = BUNFS_PACKAGE_ROOT
 // avoids that collision while re-exporting the canonical package surface.
 const LEGACY_PI_CODING_AGENT_SHIM_PATH = BUNFS_PACKAGE_ROOT
 	? bunfsPath("coding-agent", "src", "extensibility", "legacy-pi-coding-agent-shim.js")
-	: path.resolve(import.meta.dir, "../legacy-pi-coding-agent-shim.ts");
+	: sourceShimPath("legacy-pi-coding-agent-shim.ts");
 
 // Package-root overrides. Shim entries are always applied because they replace
 // (or augment) the canonical surface even in non-compiled installs. The bunfs
@@ -142,7 +159,31 @@ const LEGACY_PI_CODING_AGENT_SHIM_PATH = BUNFS_PACKAGE_ROOT
 // `Bun.resolveSync`, and hardcoding a relative source-tree path would break
 // installs where the bundled packages live at `node_modules/@oh-my-pi/pi-*`
 // rather than `packages/*`.
-const LEGACY_PI_PACKAGE_ROOT_OVERRIDES: Record<string, string> = {
+//
+// Every override target is validated against the on-disk filesystem at module
+// init: any entry whose file is missing (e.g. a compiled binary where Bun's
+// `--compile` quietly dropped an additional entrypoint — issue #2168) is left
+// out so `resolveCanonicalPiSpecifier` falls through to `getResolvedSpecifier`,
+// which throws under bunfs and triggers the catch in `rewriteLegacyPiImports`.
+// That catch leaves the specifier untouched so Bun resolves the canonical
+// `@oh-my-pi/pi-*` import from the extension's own `node_modules` instead of
+// emitting a bunfs `file://` URL to a module that isn't actually present.
+
+/**
+ * Drop overrides whose targets are missing on disk so they can fall through to
+ * the canonical-resolution path. Exported for the test seam in #2168.
+ *
+ * `pathExistsSync` defaults to `fs.existsSync`; the tests inject a stub to
+ * simulate the missing-entrypoint failure mode without touching the real FS.
+ */
+export function __validateLegacyPiPackageRootOverrides(
+	candidates: Record<string, string>,
+	pathExistsSync: (p: string) => boolean = fs.existsSync,
+): Record<string, string> {
+	return Object.fromEntries(Object.entries(candidates).filter(([, candidate]) => pathExistsSync(candidate)));
+}
+
+const LEGACY_PI_PACKAGE_ROOT_OVERRIDES = __validateLegacyPiPackageRootOverrides({
 	[`${CANONICAL_PI_SCOPE}/pi-ai`]: LEGACY_PI_AI_SHIM_PATH,
 	[`${CANONICAL_PI_SCOPE}/pi-coding-agent`]: LEGACY_PI_CODING_AGENT_SHIM_PATH,
 	...(BUNFS_PACKAGE_ROOT
@@ -153,7 +194,7 @@ const LEGACY_PI_PACKAGE_ROOT_OVERRIDES: Record<string, string> = {
 				[`${CANONICAL_PI_SCOPE}/pi-utils`]: bunfsPath("utils", "src", "index.js"),
 			}
 		: {}),
-};
+});
 
 let isLegacyPiSpecifierShimInstalled = false;
 
@@ -253,7 +294,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 async function pathExists(p: string): Promise<boolean> {
 	try {
-		await fs.stat(p);
+		await fs.promises.stat(p);
 		return true;
 	} catch {
 		return false;
@@ -267,7 +308,7 @@ function hasSourceModuleExtension(p: string): boolean {
 
 async function resolveSourceModuleFile(basePath: string): Promise<string | null> {
 	try {
-		const stats = await fs.stat(basePath);
+		const stats = await fs.promises.stat(basePath);
 		if (stats.isFile()) {
 			// Non-source files (JSON, WASM, text assets, etc.) bypass the on-load
 			// rewrite hook so Bun's native loaders handle them; our hook would
@@ -475,7 +516,7 @@ const hookedExtensionEntries = new Set<string>();
 /** Resolve symlinks in a path, falling back to the input if realpath fails. */
 async function realpathOrSelf(p: string): Promise<string> {
 	try {
-		return await fs.realpath(p);
+		return await fs.promises.realpath(p);
 	} catch {
 		return p;
 	}

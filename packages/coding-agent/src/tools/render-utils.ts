@@ -521,7 +521,7 @@ function parseDiffSegments(lines: string[]): DiffSegment[] {
 
 	for (const line of lines) {
 		const isChange = line.startsWith("+") || line.startsWith("-");
-		const isEllipsis = line.trimStart().startsWith("...");
+		const isEllipsis = line.trimStart().startsWith("...") || line.trim().length === 0;
 
 		if (isEllipsis) {
 			if (current) segments.push(current);
@@ -628,7 +628,7 @@ export function truncateDiffByHunk(
 					const half = Math.ceil(allowedLines / 2);
 					if (seg.lines.length > allowedLines) {
 						kept.push(...seg.lines.slice(0, half));
-						kept.push(seg.lines[0].replace(/^(\s*\d*\s*).*/, "$1..."));
+						kept.push("");
 						kept.push(...seg.lines.slice(-half));
 					} else {
 						kept.push(...seg.lines);
@@ -761,7 +761,7 @@ export function createCachedComponent(
 ): Component {
 	let cached: { key: bigint; lines: string[] } | undefined;
 	return {
-		render(width: number): string[] {
+		render(width: number): readonly string[] {
 			const expanded = getExpanded();
 			const key = new Hasher().bool(expanded).u32(width).digest();
 			if (cached?.key === key) return cached.lines;
@@ -777,6 +777,62 @@ export function createCachedComponent(
 			cached = undefined;
 		},
 	};
+}
+
+/**
+ * Single-slot memo for an expensive rendered string (syntax highlighting, diff
+ * coloring) keyed by the exact inputs that shape the bytes: theme instance,
+ * expanded state, a caller-chosen salt (path/language), and the source content.
+ * Field-wise comparison instead of a concatenated key string: a cache hit costs
+ * one string value-compare (engines short-circuit on length) and a miss never
+ * allocates a key. Comparing the {@link Theme} by reference is sound because
+ * theme switches replace the instance wholesale (`setTheme`/`previewTheme`/
+ * `setSymbolPreset` in modes/theme/theme.ts) — themes are never mutated in
+ * place.
+ */
+export interface RenderedStringCache {
+	theme: Theme | null;
+	expanded: boolean;
+	salt: string;
+	content: string;
+	value: string;
+}
+
+export function createRenderedStringCache(): RenderedStringCache {
+	return { theme: null, expanded: false, salt: "", content: "", value: "" };
+}
+
+/** Drop the memo so the next lookup re-renders (e.g. the render function identity changed). */
+export function invalidateRenderedStringCache(cache: RenderedStringCache): void {
+	cache.theme = null;
+}
+
+export function cachedRenderedString(
+	cache: RenderedStringCache | undefined,
+	theme: Theme,
+	expanded: boolean,
+	salt: string,
+	content: string,
+	render: () => string,
+): string {
+	if (
+		cache !== undefined &&
+		cache.theme === theme &&
+		cache.expanded === expanded &&
+		cache.salt === salt &&
+		cache.content === content
+	) {
+		return cache.value;
+	}
+	const value = render();
+	if (cache !== undefined) {
+		cache.theme = theme;
+		cache.expanded = expanded;
+		cache.salt = salt;
+		cache.content = content;
+		cache.value = value;
+	}
+	return value;
 }
 
 /**

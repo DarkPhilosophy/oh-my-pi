@@ -25,6 +25,8 @@ import { parseArchivePathCandidates } from "./archive-reader";
 import { assertEditableFile } from "./auto-generated-guard";
 import {
 	type ConflictEntry,
+	conflictRegionPresent,
+	conflictRegionsEqual,
 	expandContentTokens,
 	getConflictHistory,
 	parseConflictUri,
@@ -35,11 +37,15 @@ import { type OutputMeta, outputMeta } from "./output-meta";
 import { formatPathRelativeToCwd, isInternalUrlPath } from "./path-utils";
 import { enforcePlanModeWrite, resolvePlanPath } from "./plan-mode-guard";
 import {
+	cachedRenderedString,
+	createRenderedStringCache,
 	formatDiagnostics,
 	formatErrorDetail,
 	formatExpandHint,
 	formatMoreItems,
+	formatStatusIcon,
 	getLspBatchRequest,
+	type RenderedStringCache,
 	replaceTabs,
 	shortenPath,
 } from "./render-utils";
@@ -266,7 +272,14 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 	readonly name = "write";
 	readonly approval = (args: unknown) => {
 		const rawPath = (args as Partial<WriteParams>).path;
-		return typeof rawPath === "string" && isInternalUrlPath(rawPath) ? "read" : "write";
+		if (typeof rawPath !== "string" || !isInternalUrlPath(rawPath)) return "write";
+		// Internal URLs are usually session-local artifacts (read tier), but a
+		// scheme whose handler exposes a `write` hook mutates handler-owned
+		// user data (e.g. vault:// notes, host-owned mcp:// URIs) and must take
+		// the write tier so always-ask mode actually prompts.
+		const match = /^([a-z][a-z0-9+.-]*):\/\//i.exec(rawPath.trim());
+		const handler = match ? InternalUrlRouter.instance().getHandler(match[1]!.toLowerCase()) : undefined;
+		return handler?.write ? "write" : "read";
 	};
 	readonly formatApprovalDetails = (args: unknown): string[] => {
 		const params = args as Partial<WriteParams>;
@@ -349,7 +362,18 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		content: string,
 		resolvedArchivePath: ResolvedArchiveWritePath,
 	): Promise<AgentToolResult<WriteToolDetails>> {
-		const isZip = resolvedArchivePath.absolutePath.toLowerCase().endsWith(".zip");
+		// Resolve symlinks before the tmp+rename swap: renaming over a symlink
+		// replaces the link itself with a regular file instead of writing
+		// through to its target.
+		const finalPath = resolvedArchivePath.exists
+			? await fs.realpath(resolvedArchivePath.absolutePath).catch(() => resolvedArchivePath.absolutePath)
+			: resolvedArchivePath.absolutePath;
+		const lowerPath = finalPath.toLowerCase();
+		const isZip = lowerPath.endsWith(".zip");
+		const isGzip = lowerPath.endsWith(".tar.gz") || lowerPath.endsWith(".tgz");
+		// Rewrites are whole-archive: write to a temp file and rename so a
+		// crash/disk-full mid-write can't destroy the original archive.
+		const tmpPath = `${finalPath}.tmp-${process.pid}`;
 
 		const parentDir = path.dirname(resolvedArchivePath.absolutePath);
 		if (parentDir && parentDir !== ".") {
@@ -377,8 +401,10 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			try {
 				const { zipSync } = await loadFflate();
 				const zipBuffer = zipSync(zipEntries);
-				await Bun.write(resolvedArchivePath.absolutePath, zipBuffer);
+				await Bun.write(tmpPath, zipBuffer);
+				await fs.rename(tmpPath, finalPath);
 			} catch (error) {
+				await fs.rm(tmpPath, { force: true }).catch(() => {});
 				throw new ToolError(error instanceof Error ? error.message : String(error));
 			}
 		} else {
@@ -406,8 +432,12 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			archiveEntries[resolvedArchivePath.archiveSubPath] = content;
 
 			try {
-				await Bun.Archive.write(resolvedArchivePath.absolutePath, archiveEntries);
+				// `Bun.Archive.write` never infers compression from the extension;
+				// request gzip explicitly so `.tar.gz`/`.tgz` stay compressed.
+				await Bun.Archive.write(tmpPath, archiveEntries, isGzip ? { compress: "gzip" } : undefined);
+				await fs.rename(tmpPath, finalPath);
 			} catch (error) {
+				await fs.rm(tmpPath, { force: true }).catch(() => {});
 				throw new ToolError(error instanceof Error ? error.message : String(error));
 			}
 		}
@@ -583,7 +613,24 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		invalidateFsScanAfterWrite(absolutePath);
 		this.session.bumpFileMutationVersion?.(absolutePath);
 		this.session.fileSnapshotStore?.invalidate(absolutePath);
-		this.session.conflictHistory?.invalidate(entry.id);
+		const history = this.session.conflictHistory;
+		history?.invalidate(entry.id);
+		if (history) {
+			// Drop stale duplicate registrations of the same region: a re-read
+			// after an out-of-band shift registers a fresh id at the new
+			// startLine while the stale twin persists at the old one. A DISTINCT
+			// conflict block that is merely byte-identical still occurs in the
+			// post-splice content and must stay addressable.
+			for (const other of history.entries()) {
+				if (
+					other.absolutePath === absolutePath &&
+					conflictRegionsEqual(other, entry) &&
+					!conflictRegionPresent(newContent, other)
+				) {
+					history.invalidate(other.id);
+				}
+			}
+		}
 
 		const header = maybeWriteSnapshotHeader(this.session, absolutePath, newContent);
 		const range =
@@ -690,12 +737,11 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			fileEntries.sort((a, b) => b.startLine - a.startLine);
 
 			let text: string;
+			const resolvedEntries: ConflictEntry[] = [];
+			const staleEntries: ConflictEntry[] = [];
+			let failure: string | undefined;
 			try {
 				text = await Bun.file(absolutePath).text();
-				for (const entry of fileEntries) {
-					const expanded = expandContentTokens(replacementContent, entry);
-					text = spliceConflict(text, entry, expanded);
-				}
 			} catch (error) {
 				failedFiles.push({
 					displayPath: sample.displayPath,
@@ -704,15 +750,41 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				});
 				continue;
 			}
+			for (const entry of fileEntries) {
+				try {
+					const expanded = expandContentTokens(replacementContent, entry);
+					text = spliceConflict(text, entry, expanded);
+					resolvedEntries.push(entry);
+				} catch (error) {
+					// A locate-miss for a region an earlier entry already spliced
+					// in this pass is a stale duplicate registration (re-read after
+					// an out-of-band shift) — treat it as already resolved.
+					if (resolvedEntries.some(done => conflictRegionsEqual(done, entry))) {
+						staleEntries.push(entry);
+						continue;
+					}
+					failure = error instanceof Error ? error.message : String(error);
+					break;
+				}
+			}
+			if (failure !== undefined) {
+				failedFiles.push({
+					displayPath: sample.displayPath,
+					count: fileEntries.length,
+					error: failure,
+				});
+				continue;
+			}
 
 			const diagnostics = await this.#writethrough(absolutePath, text, signal, undefined, batchRequest);
 			invalidateFsScanAfterWrite(absolutePath);
 			this.session.bumpFileMutationVersion?.(absolutePath);
 			this.session.fileSnapshotStore?.invalidate(absolutePath);
-			for (const entry of fileEntries) history.invalidate(entry.id);
+			for (const entry of resolvedEntries) history.invalidate(entry.id);
+			for (const entry of staleEntries) history.invalidate(entry.id);
 			const header = maybeWriteSnapshotHeader(this.session, absolutePath, text);
-			succeededFiles.push({ displayPath: sample.displayPath, count: fileEntries.length, header });
-			totalResolvedIds += fileEntries.length;
+			succeededFiles.push({ displayPath: sample.displayPath, count: resolvedEntries.length, header });
+			totalResolvedIds += resolvedEntries.length;
 			if (diagnostics) allDiagnostics.push(diagnostics);
 		}
 
@@ -751,7 +823,11 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			if (failedFiles.length > 0 && succeededFiles.length === 0) {
 				throw new ToolError(resultText);
 			}
-			return { content: [{ type: "text", text: resultText }], details: {} };
+			return {
+				content: [{ type: "text", text: resultText }],
+				details: {},
+				isError: failedFiles.length > 0 ? true : undefined,
+			};
 		}
 		const mergedSummary = allDiagnostics.map(d => d.summary).join("\n");
 		const mergedMessages = allDiagnostics.flatMap(d => d.messages ?? []);
@@ -760,6 +836,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			details: {
 				meta: outputMeta().diagnostics(mergedSummary, mergedMessages).get(),
 			},
+			isError: failedFiles.length > 0 ? true : undefined,
 		};
 	}
 
@@ -784,6 +861,9 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
 				const handler = internalRouter.getHandler(scheme);
 				if (handler?.write) {
+					// Handler-owned writes (vault:// notes, host URIs) mutate user
+					// data outside the local sandbox — plan mode must reject them.
+					enforcePlanModeWrite(this.session, path, { op: "update" });
 					await handler.write(parsed, cleanContent, { cwd: this.session.cwd, signal });
 					let resultText = `Successfully wrote ${cleanContent.length} bytes to ${path}`;
 					if (stripped) {
@@ -872,6 +952,8 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					throw new ToolError(error instanceof Error ? error.message : String(error));
 				}
 				invalidateFsScanAfterWrite(absolutePath);
+				this.session.bumpFileMutationVersion?.(absolutePath);
+				const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, cleanContent);
 				const displayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
 				const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent);
 				const writeLine = `Successfully wrote ${cleanContent.length} bytes to ${displayPath}`;
@@ -881,7 +963,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				}
 				return {
 					content: [{ type: "text", text: resultText }],
-					details: { resolvedPath: absolutePath },
+					details: { resolvedPath: absolutePath, madeExecutable: madeExecutable || undefined },
 				};
 			}
 
@@ -946,37 +1028,57 @@ function normalizeDisplayText(text: string): string {
 	return text.replace(/\r/g, "");
 }
 
+/**
+ * Minimum line-number gutter width for write previews. The streaming preview's
+ * gutter must stay byte-stable as the line count grows: a width derived purely
+ * from `String(totalLines).length` widens at the 10/100/1000-line crossings,
+ * rewriting every already-rendered row — which forces the transcript's commit
+ * audit to recommit the block's committed prefix (a full duplicate in native
+ * scrollback). Reserving 3 digits keeps the gutter constant through 999 lines
+ * and keeps the streamed rows byte-identical to the final result render.
+ */
+const WRITE_GUTTER_MIN_WIDTH = 3;
+
 function formatStreamingContent(
 	content: string,
 	expanded: boolean,
 	language: string | undefined,
 	uiTheme: Theme,
+	spinnerFrame?: number,
+	cache?: RenderedStringCache,
 ): string {
 	if (!content) return "";
-	const lines = normalizeDisplayText(content).split("\n");
-	const totalLines = lines.length;
-	// Collapsed: follow the streaming edge with a bounded tail window so the box
-	// stays short enough not to strand its scrolled-off head above the viewport
-	// while the block is volatile. `Ctrl+O` (expanded) lifts the cap for a
-	// deliberate full view — matching the eval streaming preview.
-	const startIndex = expanded ? 0 : Math.max(0, totalLines - WRITE_STREAMING_PREVIEW_LINES);
-	const visibleLines = lines.slice(startIndex);
-	const hidden = startIndex;
-	const highlighted = highlightCode(visibleLines.join("\n"), language);
-	const lineNumberWidth = String(totalLines).length;
+	const bodyText = cachedRenderedString(cache, uiTheme, expanded, language ?? "", content, () => {
+		const lines = normalizeDisplayText(content).split("\n");
+		const totalLines = lines.length;
+		// Collapsed: follow the streaming edge with a bounded tail window so the box
+		// stays short enough not to strand its scrolled-off head above the viewport
+		// while the block is volatile. `Ctrl+O` (expanded) lifts the cap for a
+		// deliberate full view — matching the eval streaming preview.
+		const startIndex = expanded ? 0 : Math.max(0, totalLines - WRITE_STREAMING_PREVIEW_LINES);
+		const visibleLines = lines.slice(startIndex);
+		const hidden = startIndex;
+		const highlighted = highlightCode(visibleLines.join("\n"), language);
+		const lineNumberWidth = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length);
 
-	let text = "\n\n";
-	if (hidden > 0) {
-		text += `${uiTheme.fg("dim", `… (${hidden} earlier line${hidden === 1 ? "" : "s"})`)}\n`;
-	}
-	for (let i = 0; i < highlighted.length; i++) {
-		const lineNum = startIndex + i + 1;
-		const gutter = uiTheme.fg("dim", `${String(lineNum).padStart(lineNumberWidth, " ")} `);
-		const body = replaceTabs(highlighted[i] ?? "");
-		text += `${gutter}${body}\n`;
-	}
-	text += uiTheme.fg("dim", `… (streaming)`);
-	return text;
+		let text = "\n\n";
+		if (hidden > 0) {
+			text += `${uiTheme.fg("dim", `… (${hidden} earlier line${hidden === 1 ? "" : "s"})`)}\n`;
+		}
+		for (let i = 0; i < highlighted.length; i++) {
+			const lineNum = startIndex + i + 1;
+			const gutter = uiTheme.fg("dim", `${String(lineNum).padStart(lineNumberWidth, " ")} `);
+			const body = replaceTabs(highlighted[i] ?? "");
+			text += `${gutter}${body}\n`;
+		}
+		return text;
+	});
+	// The animated glyph lives on this trailing line — inside the transcript's
+	// volatile-tail holdback — never in the header: an animating head row pins
+	// the native-scrollback commit boundary at the top of the block, so a long
+	// expanded preview could never scroll-append mid-stream.
+	const spinner = spinnerFrame !== undefined ? `${formatStatusIcon("running", uiTheme, spinnerFrame)} ` : "";
+	return `${bodyText}${spinner}${uiTheme.fg("dim", `… (streaming)`)}`;
 }
 
 function renderContentPreview(
@@ -984,29 +1086,32 @@ function renderContentPreview(
 	expanded: boolean,
 	language: string | undefined,
 	uiTheme: Theme,
+	cache?: RenderedStringCache,
 ): string {
 	if (!content) return "";
-	const rawLines = normalizeDisplayText(content).split("\n");
-	const totalLines = rawLines.length;
-	const maxLines = expanded ? totalLines : Math.min(totalLines, WRITE_PREVIEW_LINES);
-	const visibleLines = rawLines.slice(0, maxLines);
-	const highlighted = highlightCode(visibleLines.join("\n"), language);
-	const lineNumberWidth = String(maxLines).length;
-	const hidden = totalLines - maxLines;
+	return cachedRenderedString(cache, uiTheme, expanded, language ?? "", content, () => {
+		const rawLines = normalizeDisplayText(content).split("\n");
+		const totalLines = rawLines.length;
+		const maxLines = expanded ? totalLines : Math.min(totalLines, WRITE_PREVIEW_LINES);
+		const visibleLines = rawLines.slice(0, maxLines);
+		const highlighted = highlightCode(visibleLines.join("\n"), language);
+		const lineNumberWidth = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length);
+		const hidden = totalLines - maxLines;
 
-	let text = "\n\n";
-	for (let i = 0; i < highlighted.length; i++) {
-		const lineNum = i + 1;
-		const gutter = uiTheme.fg("dim", `${String(lineNum).padStart(lineNumberWidth, " ")} `);
-		const body = replaceTabs(highlighted[i] ?? "");
-		text += `${gutter}${body}\n`;
-	}
-	if (!expanded && hidden > 0) {
-		const hint = formatExpandHint(uiTheme, expanded, hidden > 0);
-		const moreLine = `${formatMoreItems(hidden, "line")}${hint ? ` ${hint}` : ""}`;
-		text += uiTheme.fg("dim", moreLine);
-	}
-	return text.trimEnd();
+		let text = "\n\n";
+		for (let i = 0; i < highlighted.length; i++) {
+			const lineNum = i + 1;
+			const gutter = uiTheme.fg("dim", `${String(lineNum).padStart(lineNumberWidth, " ")} `);
+			const body = replaceTabs(highlighted[i] ?? "");
+			text += `${gutter}${body}\n`;
+		}
+		if (!expanded && hidden > 0) {
+			const hint = formatExpandHint(uiTheme, expanded, hidden > 0);
+			const moreLine = `${formatMoreItems(hidden, "line")}${hint ? ` ${hint}` : ""}`;
+			text += uiTheme.fg("dim", moreLine);
+		}
+		return text.trimEnd();
+	});
 }
 
 export const writeToolRenderer = {
@@ -1016,18 +1121,30 @@ export const writeToolRenderer = {
 		const lang = getLanguageFromPath(rawPath) ?? "text";
 		const langIcon = uiTheme.fg("muted", uiTheme.getLangIcon(lang));
 		const pathDisplay = filePath ? uiTheme.fg("accent", filePath) : uiTheme.fg("toolOutput", "…");
+		// Static pending icon, never the animated glyph: the header is the head
+		// row of the framed block, and native-scrollback commits are prefix-only
+		// — an animating head row would pin the commit boundary at the top and
+		// keep a tall expanded preview from scroll-appending mid-stream. The
+		// liveness cue rides the trailing "(streaming)" line instead.
 		const header = renderStatusLine(
 			{
 				icon: "pending",
-				spinnerFrame: options?.spinnerFrame,
 				title: "Write",
 				description: `${langIcon} ${pathDisplay}`,
 			},
 			uiTheme,
 		);
+		const streamingCache = createRenderedStringCache();
 		return framedBlock(uiTheme, width => {
 			const body = args.content
-				? formatStreamingContent(args.content, Boolean(options?.expanded), lang, uiTheme)
+				? formatStreamingContent(
+						args.content,
+						Boolean(options?.expanded),
+						lang,
+						uiTheme,
+						options?.spinnerFrame,
+						streamingCache,
+					)
 				: "";
 			const bodyLines = body ? body.split("\n") : [];
 			while (bodyLines.length > 0 && bodyLines[0].trim() === "") bodyLines.shift();
@@ -1089,9 +1206,10 @@ export const writeToolRenderer = {
 		);
 		const diagnostics = result.details?.diagnostics;
 
+		const previewCache = createRenderedStringCache();
 		return framedBlock(uiTheme, width => {
 			const { expanded } = options;
-			let body = renderContentPreview(fileContent, expanded, lang, uiTheme);
+			let body = renderContentPreview(fileContent, expanded, lang, uiTheme, previewCache);
 			if (diagnostics) {
 				const diagText = formatDiagnostics(diagnostics, expanded, uiTheme, fp =>
 					uiTheme.getLangIcon(getLanguageFromPath(fp)),

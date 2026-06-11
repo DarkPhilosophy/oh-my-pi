@@ -22,9 +22,11 @@ import {
 } from "../../extensibility/extensions";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
+import type { EventBus } from "../../utils/event-bus";
 import { initializeExtensions } from "../runtime-init";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./host-tools";
 import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
+import { RpcSubagentRegistry, readRpcSubagentTranscript } from "./rpc-subagents";
 import type {
 	RpcCommand,
 	RpcExtensionUIRequest,
@@ -36,6 +38,7 @@ import type {
 	RpcHostUriRequest,
 	RpcResponse,
 	RpcSessionState,
+	RpcSubagentSubscriptionLevel,
 } from "./rpc-types";
 
 function isExtensionWidgetBlock(value: unknown): value is ExtensionWidgetBlock {
@@ -76,6 +79,47 @@ type RpcOutput = (
 		| RpcHostUriCancelRequest
 		| object,
 ) => void;
+
+export type RpcSessionChangeCommand = Extract<
+	RpcCommand,
+	{ type: "new_session" } | { type: "switch_session" } | { type: "branch" }
+>;
+
+export type RpcSessionChangeResult =
+	| { type: "new_session"; data: { cancelled: boolean } }
+	| { type: "switch_session"; data: { cancelled: boolean } }
+	| { type: "branch"; data: { text: string; cancelled: boolean } };
+
+export type RpcSessionChangeSession = Pick<AgentSession, "newSession" | "switchSession" | "branch">;
+export type RpcSubagentResetRegistry = Pick<RpcSubagentRegistry, "clear">;
+
+export async function handleRpcSessionChange(
+	session: RpcSessionChangeSession,
+	command: RpcSessionChangeCommand,
+	subagentRegistry?: RpcSubagentResetRegistry,
+): Promise<RpcSessionChangeResult> {
+	switch (command.type) {
+		case "new_session": {
+			const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
+			const cancelled = !(await session.newSession(options));
+			if (!cancelled) subagentRegistry?.clear();
+			return { type: "new_session", data: { cancelled } };
+		}
+
+		case "switch_session": {
+			const cancelled = !(await session.switchSession(command.sessionPath));
+			if (!cancelled) subagentRegistry?.clear();
+			return { type: "switch_session", data: { cancelled } };
+		}
+
+		case "branch": {
+			const result = await session.branch(command.entryId);
+			if (!result.cancelled) subagentRegistry?.clear();
+			return { type: "branch", data: { text: result.selectedText, cancelled: result.cancelled } };
+		}
+	}
+	throw new Error("Unsupported RPC session change command");
+}
 
 function normalizeHostToolDefinitions(tools: RpcHostToolDefinition[]): RpcHostToolDefinition[] {
 	return tools.map((tool, index) => {
@@ -118,6 +162,10 @@ function shouldEmitRpcTitles(): boolean {
 	if (!raw) return false;
 	const normalized = raw.trim().toLowerCase();
 	return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function isSubagentSubscriptionLevel(value: unknown): value is RpcSubagentSubscriptionLevel {
+	return value === "off" || value === "progress" || value === "events";
 }
 
 export function requestRpcEditor(
@@ -190,6 +238,7 @@ export function requestRpcEditor(
 export async function runRpcMode(
 	session: AgentSession,
 	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
+	eventBus?: EventBus,
 ): Promise<never> {
 	// Signal to RPC clients that the server is ready to accept commands
 	// Suppress terminal notifications: they write \x07 (BEL) or OSC sequences directly to
@@ -222,6 +271,7 @@ export async function runRpcMode(
 	const pendingExtensionRequests = new Map<string, PendingExtensionRequest>();
 	const hostToolBridge = new RpcHostToolBridge(output);
 	const hostUriBridge = new RpcHostUriBridge(output);
+	const subagentRegistry = eventBus ? new RpcSubagentRegistry(eventBus, output) : undefined;
 
 	// Shutdown request flag (wrapped in object to allow mutation with const)
 	const shutdownState = { requested: false };
@@ -528,9 +578,8 @@ export async function runRpcMode(
 			}
 
 			case "new_session": {
-				const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
-				const cancelled = !(await session.newSession(options));
-				return success(id, "new_session", { cancelled });
+				const result = await handleRpcSessionChange(session, command, subagentRegistry);
+				return success(id, result.type, result.data);
 			}
 
 			// =================================================================
@@ -582,6 +631,44 @@ export async function runRpcMode(
 					return success(id, "set_host_uri_schemes", { schemes });
 				} catch (err) {
 					return error(id, "set_host_uri_schemes", err instanceof Error ? err.message : String(err));
+				}
+			}
+
+			case "set_subagent_subscription": {
+				if (!subagentRegistry) {
+					return error(id, "set_subagent_subscription", "Subagent event bus is unavailable");
+				}
+				if (!isSubagentSubscriptionLevel(command.level)) {
+					return error(
+						id,
+						"set_subagent_subscription",
+						`Invalid subagent subscription level: ${String(command.level)}`,
+					);
+				}
+				subagentRegistry.setSubscriptionLevel(command.level);
+				return success(id, "set_subagent_subscription", { level: subagentRegistry.getSubscriptionLevel() });
+			}
+
+			case "get_subagents": {
+				if (!subagentRegistry) {
+					return error(id, "get_subagents", "Subagent event bus is unavailable");
+				}
+				return success(id, "get_subagents", { subagents: subagentRegistry.getSubagents() });
+			}
+
+			case "get_subagent_messages": {
+				if (!subagentRegistry) {
+					return error(id, "get_subagent_messages", "Subagent event bus is unavailable");
+				}
+				try {
+					if (command.fromByte !== undefined && !Number.isFinite(command.fromByte)) {
+						return error(id, "get_subagent_messages", "fromByte must be a finite number");
+					}
+					const sessionFile = subagentRegistry.resolveSessionFile(command);
+					const transcript = await readRpcSubagentTranscript(sessionFile, command.fromByte);
+					return success(id, "get_subagent_messages", transcript);
+				} catch (err) {
+					return error(id, "get_subagent_messages", err instanceof Error ? err.message : String(err));
 				}
 			}
 
@@ -704,14 +791,10 @@ export async function runRpcMode(
 				return success(id, "export_html", { path });
 			}
 
-			case "switch_session": {
-				const cancelled = !(await session.switchSession(command.sessionPath));
-				return success(id, "switch_session", { cancelled });
-			}
-
+			case "switch_session":
 			case "branch": {
-				const result = await session.branch(command.entryId);
-				return success(id, "branch", { text: result.selectedText, cancelled: result.cancelled });
+				const result = await handleRpcSessionChange(session, command, subagentRegistry);
+				return success(id, result.type, result.data);
 			}
 
 			case "get_branch_messages": {
@@ -871,13 +954,15 @@ export async function runRpcMode(
 
 			// Check for deferred shutdown request (idle between commands)
 			await checkShutdownRequested();
-		} catch (e: any) {
-			output(error(undefined, "parse", `Failed to parse command: ${e.message}`));
+		} catch (e: unknown) {
+			const message = e instanceof Error ? e.message : String(e);
+			output(error(undefined, "parse", `Failed to parse command: ${message}`));
 		}
 	}
 
 	// stdin closed — RPC client is gone, exit cleanly
 	hostToolBridge.rejectAllPending("RPC client disconnected before host tool execution completed");
 	hostUriBridge.clear("RPC client disconnected before host URI request completed");
+	subagentRegistry?.dispose();
 	process.exit(0);
 }
