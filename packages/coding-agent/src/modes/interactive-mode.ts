@@ -726,16 +726,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 
 		mainContent.addChild(this.chatContainer);
-		mainContent.addChild(this.pendingMessagesContainer);
-		mainContent.addChild(this.statusContainer);
-		mainContent.addChild(this.todoContainer);
-		mainContent.addChild(this.btwContainer);
-		mainContent.addChild(this.omfgContainer);
 		this.ui.addChild(
 			new RightInfoCompositor(
 				mainContent,
 				() => this.#rightInfoBlocks,
 				width =>
+					this.pendingMessagesContainer.render(width).length +
+					this.statusContainer.render(width).length +
+					this.todoContainer.render(width).length +
+					this.btwContainer.render(width).length +
+					this.omfgContainer.render(width).length +
 					this.statusLine.render(width).length +
 					this.errorBannerContainer.render(width).length +
 					this.hookWidgetContainerAbove.render(width).length +
@@ -743,6 +743,11 @@ export class InteractiveMode implements InteractiveModeContext {
 					this.hookWidgetContainerBelow.render(width).length,
 			),
 		);
+		this.ui.addChild(this.pendingMessagesContainer);
+		this.ui.addChild(this.statusContainer);
+		this.ui.addChild(this.todoContainer);
+		this.ui.addChild(this.btwContainer);
+		this.ui.addChild(this.omfgContainer);
 		this.ui.addChild(this.errorBannerContainer);
 		this.ui.addChild(this.statusLine); // Only renders hook statuses (main status in editor border)
 		this.ui.addChild(this.hookWidgetContainerAbove);
