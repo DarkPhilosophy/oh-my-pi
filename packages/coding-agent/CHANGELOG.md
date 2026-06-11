@@ -1,15 +1,19 @@
 # Changelog
 
 ## [Unreleased]
+
 ### Added
 
 - Added the `statusLine.transparent` appearance setting (default off): when enabled, the status line skips the theme's `statusLineBg` fill and powerline end caps so the bar inherits the terminal's default background — useful in Ghostty and other terminals whose theme background does not match the theme's hardcoded status-line color ([#2306](https://github.com/can1357/oh-my-pi/issues/2306))
+- Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor", priority? })`): each panel is composited independently into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, and hides per-block (not cut) when no run is tall enough to hold it. Panels are ordered by optional `priority` then ascending height, so the smallest always-present panels stay visible and the tallest hide first. Also added `ctx.fetchUsageReports()` so usage/quota widgets can read provider reports without reaching into private APIs.
 
 ### Changed
 
 - Changed `display.smoothStreaming` to animate streamed tool-call arguments (including write/edit/bash previews) at the smooth streaming cadence so partial tool input now appears progressively instead of in large jumps
 - Changed streamed updates for custom wire tools to render incremental raw input as `{ input }` prefixes for preview
 - `async.enabled` now defaults to `true`, keeping background task execution and async bash available out of the box; disable it to force blocking subtasks ([#2301](https://github.com/can1357/oh-my-pi/issues/2301)).
+- Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
+- Changed `/reload-plugins` to tear down extension hooks with `session_shutdown` before replaying `session_start`, so plugin reloads do not stack duplicate timers, terminal-input listeners, or stale widgets.
 
 ### Fixed
 
@@ -258,15 +262,6 @@
 - Fixed SSH tool cancellation hanging behind OpenSSH ControlMaster streams that stayed open after an Esc/user interrupt ([#2180](https://github.com/can1357/oh-my-pi/issues/2180)).
 - Fixed Windows stdio MCP servers launched through PATH shims such as `codegraph.cmd` so bare commands like `codegraph` resolve via `PATHEXT` before spawn ([#2174](https://github.com/can1357/oh-my-pi/issues/2174)).
 - Fixed compiled-binary extensions failing to load `@oh-my-pi/pi-*` packages when `bun --compile` quietly dropped one of the extra entrypoints (observed on macOS arm64 release builds): the legacy-pi compat shim's package-root override branch returned the bunfs path without checking the target was present, so the rewrite emitted a `file://` URL to a missing module and the #1216 fallback (scoped to the throwing `getResolvedSpecifier` path) never ran. Override targets are now validated against the on-disk filesystem at module init, missing entries are dropped, and resolution falls through to canonical lookup so Bun resolves the import from the extension's own `node_modules` ([#2168](https://github.com/can1357/oh-my-pi/issues/2168)).
-
-### Added
-
-- Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor", priority? })`): each panel is composited independently into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, and hides per-block (not cut) when no run is tall enough to hold it. Panels are ordered by optional `priority` then ascending height, so the smallest always-present panels stay visible and the tallest hide first. Also added `ctx.fetchUsageReports()` so usage/quota widgets can read provider reports without reaching into private APIs.
-
-### Changed
-
-- Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
-- Changed `/reload-plugins` to tear down extension hooks with `session_shutdown` before replaying `session_start`, so plugin reloads do not stack duplicate timers, terminal-input listeners, or stale widgets.
 
 ## [15.10.8] - 2026-06-09
 
