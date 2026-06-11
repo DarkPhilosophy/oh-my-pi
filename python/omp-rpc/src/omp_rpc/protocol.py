@@ -227,6 +227,15 @@ def _optional_int(payload: JsonObject, field: str) -> int | None:
     return value
 
 
+def _optional_number(payload: JsonObject, field: str) -> float | None:
+    value = payload.get(field)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a number")
+    return value
+
+
 def _tuple_of_strings(values: object, *, field: str) -> tuple[str, ...] | None:
     if values is None:
         return None
@@ -254,7 +263,7 @@ def _tuple_of_widget_blocks(values: object, *, field: str) -> tuple[ExtensionWid
         lines = _tuple_of_strings(item.get("lines"), field=f"{item_field}.lines")
         if lines is None:
             raise ValueError(f"{item_field}.lines must contain at least one string")
-        priority = _optional_int(item, "priority")
+        priority = _optional_number(item, "priority")
         result.append(ExtensionWidgetBlock(lines=lines, priority=priority))
     return tuple(result) or None
 
@@ -867,7 +876,7 @@ class ReadyEvent:
 @dataclass(slots=True, frozen=True)
 class ExtensionWidgetBlock:
     lines: tuple[str, ...]
-    priority: int | None = None
+    priority: float | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -889,7 +898,7 @@ class ExtensionUiRequest:
     widget_lines: tuple[str, ...] | None = None
     widget_blocks: tuple[ExtensionWidgetBlock, ...] | None = None
     widget_placement: WidgetPlacement | None = None
-    widget_priority: int | None = None
+    widget_priority: float | None = None
     text: str | None = None
     type: Literal["extension_ui_request"] = "extension_ui_request"
 
@@ -1475,7 +1484,7 @@ def parse_extension_ui_request(payload: JsonObject) -> ExtensionUiRequest:
                 field="extension_ui_request.widgetPlacement",
             ),
         ),
-        widget_priority=_optional_int(payload, "widgetPriority"),
+        widget_priority=_optional_number(payload, "widgetPriority"),
         text=_optional_str(payload, "text"),
     )
 

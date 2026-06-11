@@ -1,5 +1,5 @@
 import type { Component, OverlayHandle, TUI } from "@oh-my-pi/pi-tui";
-import { Container, Spacer, Text } from "@oh-my-pi/pi-tui";
+import { Container, Spacer, Text, trimRightPadding } from "@oh-my-pi/pi-tui";
 import { KeybindingsManager } from "../../config/keybindings";
 import type {
 	CompactOptions,
@@ -26,7 +26,6 @@ import { HookSelectorComponent, type HookSelectorSlider } from "../../modes/comp
 import { getAvailableThemesWithPaths, getThemeByName, setTheme, type Theme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext, InteractiveSelectorDialogOptions } from "../../modes/types";
 import { setSessionTerminalTitle, setTerminalTitle } from "../../utils/title-generator";
-import { trimRightPadding } from "../right-panel-padding";
 
 const MAX_WIDGET_LINES = 10;
 

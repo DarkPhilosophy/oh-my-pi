@@ -14,20 +14,25 @@ import {
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, Message, Model, UsageReport } from "@oh-my-pi/pi-ai";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import type { Component, EditorTheme, LoaderMessageColorFn, OverlayHandle, SlashCommand } from "@oh-my-pi/pi-tui";
+import type {
+	Component,
+	EditorTheme,
+	LoaderMessageColorFn,
+	NativeScrollbackLiveRegion,
+	OverlayHandle,
+	SlashCommand,
+} from "@oh-my-pi/pi-tui";
 import {
 	Container,
 	clearRenderCache,
 	Loader,
 	Markdown,
 	ProcessTerminal,
-	padding,
 	Spacer,
 	setTerminalTextSizing,
 	TERMINAL,
 	Text,
 	TUI,
-	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import {
@@ -127,7 +132,6 @@ import {
 	parseLoopLimitArgs,
 } from "./loop-limit";
 import { OAuthManualInputManager } from "./oauth-manual-input";
-import { trimRightPadding } from "./right-panel-padding";
 import { SessionObserverRegistry } from "./session-observer-registry";
 import { runProviderSetupWizard } from "./setup-wizard/lazy";
 import { interruptHint } from "./shared";
@@ -261,124 +265,15 @@ export interface InteractiveModeOptions {
 }
 
 /**
- * Wraps the conversation/response area and composites a right-side info panel
- * into the negative space (trailing whitespace) of the rendered lines. Never
- * overwrites visible text: it only places the panel on rows whose content does
- * not reach the panel column, and hides entirely when no such run exists.
- * This is the jcode-style "floats in the gap, moves up/down, disappears when
- * there is no room" behaviour — not an overlay, so it never steals focus or
- * forces a separate redraw.
+ * Hosts the working loader and transient status rows. While anything is
+ * mounted, every row is live: report a seam at 0 so the engine never commits
+ * a still-animating loader to native scrollback (stale `Working…` rows would
+ * otherwise pile up above the live one). The transcript's own seam, when
+ * present, sits higher and wins (topmost-seam merge in TUI.render).
  */
-
-/**
- * Composite a right-side panel into the trailing whitespace of `baseLines`.
- * Pure and deterministic: returns the merged lines, or `baseLines` unchanged
- * when the panel does not fit. Never overwrites visible text — the panel only
- * lands on a run of rows whose content stays left of the panel column, and is
- * dropped entirely (not cut) when no run within the bottom `viewportHeight` rows
- * is tall enough to hold the whole panel.
- */
-export function compositeRightPanel(
-	baseLines: string[],
-	widget: string[],
-	width: number,
-	viewportHeight: number,
-	isImageLine: (line: string) => boolean = () => false,
-): string[] {
-	return compositeRightPanels(baseLines, widget.length > 0 ? [widget] : [], width, viewportHeight, isImageLine);
-}
-
-/**
- * Composite multiple right-side panel blocks into the trailing whitespace of
- * `baseLines`, each one independently. Blocks are placed in the given order (the
- * controller pre-sorts by priority, then ascending height): each block claims
- * the first free run of negative space tall enough for it, those rows are then
- * marked occupied, and a block that finds no run is dropped on its own — the
- * others still render. Pure: returns merged lines, or `baseLines` unchanged when
- * nothing fits. Never overwrites visible text or a terminal image block.
- */
-export function compositeRightPanels(
-	baseLines: string[],
-	blocks: string[][],
-	width: number,
-	viewportHeight: number,
-	isImageLine: (line: string) => boolean = () => false,
-): string[] {
-	if (blocks.length === 0 || baseLines.length === 0) return baseLines;
-	if (viewportHeight < 6) return baseLines; // not enough visible rows for a useful panel
-	const searchStart = Math.max(0, baseLines.length - viewportHeight);
-	// Terminal image components render as (rows-1) blank placeholder lines followed
-	// by a raw protocol escape line. Those blanks look free to visibleWidth() but are
-	// visually covered by the image, so mark the whole block occupied and never splice
-	// a panel into it.
-	const occupied = new Array<boolean>(baseLines.length).fill(false);
-	for (let i = 0; i < baseLines.length; i++) {
-		if (isImageLine(baseLines[i] ?? "")) {
-			occupied[i] = true;
-			for (let j = i - 1; j >= 0 && visibleWidth(baseLines[j] ?? "") === 0; j--) occupied[j] = true;
-		}
-	}
-
-	const placements: { start: number; block: string[]; col: number }[] = [];
-	for (const block of blocks) {
-		if (block.length === 0) continue;
-		let panelWidth = 0;
-		for (const line of block) panelWidth = Math.max(panelWidth, visibleWidth(line));
-		const col = width - panelWidth - 1; // 1-col gap from the panel
-		if (col < 30) continue; // too narrow for this block — hide just this one
-		let placed = -1;
-		for (let start = searchStart; start + block.length <= baseLines.length; start++) {
-			let ok = true;
-			for (let k = 0; k < block.length; k++) {
-				if (occupied[start + k] || visibleWidth(baseLines[start + k] ?? "") > col) {
-					ok = false;
-					break;
-				}
-			}
-			if (ok) {
-				placed = start;
-				break;
-			}
-		}
-		if (placed < 0) continue; // no run tall enough — drop this block alone
-		for (let k = 0; k < block.length; k++) occupied[placed + k] = true;
-		placements.push({ start: placed, block, col });
-	}
-
-	if (placements.length === 0) return baseLines;
-
-	const out = baseLines.slice();
-	for (const { start, block, col } of placements) {
-		for (let k = 0; k < block.length; k++) {
-			const base = out[start + k] ?? "";
-			const truncatedBase = truncateToWidth(base, col);
-			// If the base row carries color state, terminate it so the gap padding and
-			// the panel do not inherit an unclosed SGR sequence.
-			const reset = truncatedBase.includes("\x1b[") ? "\x1b[0m" : "";
-			out[start + k] = truncatedBase + reset + padding(Math.max(0, col - visibleWidth(base))) + block[k];
-		}
-	}
-	return out;
-}
-
-class RightInfoCompositor extends Container {
-	constructor(
-		private readonly inner: Container,
-		private readonly getBlocks: () => string[][],
-		private readonly getReservedRows: (width: number) => number,
-	) {
-		super();
-		this.addChild(inner);
-	}
-
-	render(width: number): string[] {
-		const baseLines = this.inner.render(width).map(trimRightPadding);
-		// Reserve the rows occupied by the chrome below the conversation (status
-		// line, hook widgets, editor) so the panel is searched only within the
-		// on-screen viewport, not in scrolled-off history.
-		const reserved = Math.max(0, Math.floor(this.getReservedRows(width)));
-		const viewport = (process.stdout.rows || 40) - reserved;
-		return compositeRightPanels(baseLines, this.getBlocks(), width, viewport, line => TERMINAL.isImageLine(line));
+class StatusContainer extends Container implements NativeScrollbackLiveRegion {
+	getNativeScrollbackLiveRegionStart(): number | undefined {
+		return this.children.length > 0 ? 0 : undefined;
 	}
 }
 
@@ -544,7 +439,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		setTerminalTextSizing(settings.get("tui.textSizing") && TERMINAL.textSizing);
 		this.chatContainer = new TranscriptContainer();
 		this.pendingMessagesContainer = new Container();
-		this.statusContainer = new Container();
+		this.statusContainer = new StatusContainer();
 		this.todoContainer = new Container();
 		this.btwContainer = new Container();
 		this.omfgContainer = new Container();
@@ -679,9 +574,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		const startupQuiet = settings.get("startup.quiet");
 		this.#welcomeComponent = undefined;
 
-		// Everything above the input/status block lives in one container so the
-		// right-side usage panel can anchor at the very top (beside the welcome /
-		// most-recent text), never as a separate section lower down.
+		// Static startup content (warnings, welcome, changelog) lives in one
+		// container so the right-side panel row range can include it: the panel
+		// anchors at the very top, beside the welcome text.
 		const mainContent = new Container();
 
 		for (const warning of this.session.configWarnings) {
@@ -725,24 +620,14 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 		}
 
-		mainContent.addChild(this.chatContainer);
-		this.ui.addChild(
-			new RightInfoCompositor(
-				mainContent,
-				() => this.#rightInfoBlocks,
-				width =>
-					this.pendingMessagesContainer.render(width).length +
-					this.statusContainer.render(width).length +
-					this.todoContainer.render(width).length +
-					this.btwContainer.render(width).length +
-					this.omfgContainer.render(width).length +
-					this.statusLine.render(width).length +
-					this.errorBannerContainer.render(width).length +
-					this.hookWidgetContainerAbove.render(width).length +
-					this.editorContainer.render(width).length +
-					this.hookWidgetContainerBelow.render(width).length,
-			),
-		);
+		this.ui.addChild(mainContent);
+		this.ui.addChild(this.chatContainer);
+		// Right-side widget blocks are composited by the TUI engine into the
+		// visible window, restricted to rows owned by these two roots: the
+		// transcript stays a directly reusable root child (scoped renders and the
+		// native scrollback protocol keep working), and the panel can never
+		// overlap the bottom chrome or rows committed to scrollback.
+		this.ui.setRightPanel(() => this.#rightInfoBlocks, [mainContent, this.chatContainer]);
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(this.todoContainer);
