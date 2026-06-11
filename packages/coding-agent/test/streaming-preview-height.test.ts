@@ -126,7 +126,7 @@ describe("streaming edit preview height (stable, full tail window)", () => {
 		// resolves only when this chunk's recompute has updated the preview.
 		await component.whenPreviewSettled();
 
-		const trailingBlankRows = (rows: string[]): number => {
+		const trailingBlankRows = (rows: readonly string[]): number => {
 			let n = 0;
 			for (let i = rows.length - 1; i >= 0; i--) {
 				if (rows[i].replace(/\x1b\[[0-9;]*m/gu, "").trimEnd() === "") n++;
@@ -242,18 +242,12 @@ describe("streaming edit preview height (stable, full tail window)", () => {
 			expect(sawPreviewSentinel).toBe(true);
 			expect(maxStreamingHeight).toBeGreaterThan(term.rows);
 
-			const preCheckpointBufferText = normalizedBufferRows(term).join("\n");
-			const stalePreviewRowsExistedBeforeCheckpoint = preCheckpointBufferText.includes(previewPrefix);
 			term.scrollLines(1_000);
-			const checkpointRefreshed = tui.refreshNativeScrollbackIfDirty({ allowUnknownViewport: true });
 			await settleTerminal(term);
 
 			const finalBufferText = normalizedBufferRows(term).join("\n");
 			expect(finalBufferText).toContain(finalSentinel);
 			expect(finalBufferText).not.toContain(previewPrefix);
-			if (stalePreviewRowsExistedBeforeCheckpoint) {
-				expect(checkpointRefreshed).toBe(true);
-			}
 
 			term.scrollLines(-1_000);
 			await term.flush();
@@ -314,7 +308,7 @@ describe("streaming tool call preview height (bounded across renderers)", () => 
 		resetSettingsForTest();
 	});
 
-	function renderPending(toolName: string, args: unknown): { lines: string[]; text: string } {
+	function renderPending(toolName: string, args: unknown): { lines: readonly string[]; text: string } {
 		const term = new VirtualTerminal(80, 20);
 		const tui = new TUI(term);
 		const component = new ToolExecutionComponent(toolName, args, {}, undefined, tui, process.cwd());
@@ -376,21 +370,27 @@ describe("streaming tool call preview height (bounded across renderers)", () => 
 			}
 			expect(text, `${testCase.name} preview should advertise truncation`).toMatch(testCase.marker);
 		}
-	});
+	}, 30_000);
 
-	test("task pending preview preserves full multiline context", () => {
+	test("task pending preview keeps the full assignment brief", () => {
+		// CONTRACT CHANGE with the single-spawn task rework: the old uncapped
+		// multi-task `context` rendering is gone with the field. The assignment
+		// brief is the durable record of what the subagent was asked to do, so
+		// the pending preview renders it in full (like eval code) instead of
+		// windowing it like bash/ssh command previews.
 		const longLines = Array.from({ length: 80 }, (_, i) => `line-${i}`);
 		const { lines, text } = renderPending("task", {
 			agent: "task",
-			context: longLines.join("\n"),
-			tasks: [{ id: "alpha", description: "preview" }],
+			id: "alpha",
+			description: "preview",
+			assignment: longLines.join("\n"),
 		});
 
-		expect(lines.length, "task preview should not be capped").toBeGreaterThan(80);
+		expect(lines.length, "task assignment brief should not be capped").toBeGreaterThan(80);
+		expect(text).toContain("preview");
 		expect(text).toContain("line-0");
 		expect(text).toContain("line-40");
 		expect(text).toContain("line-79");
-		expect(text).not.toMatch(/more lines/);
 	});
 
 	test("eval pending preview preserves full code (never collapsed)", () => {

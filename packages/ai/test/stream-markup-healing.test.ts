@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { getBundledModel } from "@oh-my-pi/pi-ai/models";
 import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
 import { stream } from "@oh-my-pi/pi-ai/stream";
 import type { Context, FetchImpl, Model, Tool, ToolCall } from "@oh-my-pi/pi-ai/types";
 import { getStreamMarkupHealingPattern, StreamMarkupHealing } from "@oh-my-pi/pi-ai/utils/stream-markup-healing";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 
 interface SseToolCallDelta {
 	index: number;
@@ -102,7 +103,7 @@ const readTool: Tool = {
 		additionalProperties: false,
 	},
 };
-const deepseekCloudModel: Model<"ollama-chat"> = {
+const deepseekCloudModel: Model<"ollama-chat"> = buildModel({
 	id: "deepseek-v4-pro",
 	name: "DeepSeek V4 Pro",
 	api: "ollama-chat",
@@ -113,7 +114,7 @@ const deepseekCloudModel: Model<"ollama-chat"> = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 131_072,
 	maxTokens: 8_192,
-};
+});
 
 function ndjsonResponse(lines: ReadonlyArray<unknown>): Response {
 	const body = `${lines.map(line => JSON.stringify(line)).join("\n")}\n`;
@@ -217,6 +218,25 @@ describe("StreamMarkupHealing DSML envelope pattern", () => {
 		expect(calls).toHaveLength(1);
 		expect(calls[0].name).toBe("bash");
 		expect(JSON.parse(calls[0].arguments)).toEqual({ cmd: "ls -la" });
+	});
+
+	it("passes a bare '<' in idle prose through without holding it back", () => {
+		const healing = new StreamMarkupHealing({ pattern: "dsml" });
+		// No '>' anywhere in the tail — the old any-'<' hold-back froze display here.
+		expect(healing.feed("if a < b:\n    return a")).toBe("if a < b:\n    return a");
+	});
+
+	it("still holds back a tail that is a partial DSML section-open tag", () => {
+		const healing = new StreamMarkupHealing({ pattern: "dsml" });
+		expect(healing.feed("run ")).toBe("run ");
+		expect(healing.feed("<｜DSML｜tool")).toBe("");
+		expect(healing.feed("_calls>")).toBe("");
+		expect(
+			healing.feed(
+				'<｜DSML｜invoke name="bash"><｜DSML｜parameter name="cmd">ls</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>',
+			),
+		).toBe("");
+		expect(healing.drainCompleted()).toHaveLength(1);
 	});
 });
 
@@ -583,7 +603,7 @@ describe("Ollama provider DSML envelope healing", () => {
 
 describe("OpenAI completions MiniMax thinking healing", () => {
 	it("parses OpenCode Zen MiniMax think tags into a thinking block", async () => {
-		const model: Model<"openai-completions"> = {
+		const model: Model<"openai-completions"> = buildModel({
 			id: "minimax-m3",
 			name: "MiniMax M3",
 			api: "openai-completions",
@@ -594,7 +614,7 @@ describe("OpenAI completions MiniMax thinking healing", () => {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 200_000,
 			maxTokens: 8_192,
-		};
+		});
 		const fetchMock = mockFetch([
 			chunk(model.id, { content: "visible <thin" }),
 			chunk(model.id, { content: "k>hidden reasoning</think" }),
@@ -619,7 +639,7 @@ describe("OpenAI completions MiniMax thinking healing", () => {
 
 describe("OpenAI completions provider DSML envelope healing", () => {
 	it("heals the envelope into a structured tool call and suppresses leaked text", async () => {
-		const model: Model<"openai-completions"> = {
+		const model: Model<"openai-completions"> = buildModel({
 			id: "deepseek-v4-pro",
 			name: "DeepSeek V4 Pro",
 			api: "openai-completions",
@@ -630,7 +650,7 @@ describe("OpenAI completions provider DSML envelope healing", () => {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 131_072,
 			maxTokens: 8_192,
-		};
+		});
 		const fetchMock = mockFetch([
 			chunk(model.id, { content: "I'll check.\n" }),
 			chunk(model.id, { content: `${REPORTED_DSML_LEAK}\nThat should give us the package list.` }),

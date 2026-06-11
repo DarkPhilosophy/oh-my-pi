@@ -2,9 +2,10 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import { scheduler } from "node:timers/promises";
 import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
 import { AnthropicMessages } from "@oh-my-pi/pi-ai/providers/anthropic-client";
-import type { AssistantMessageEvent, Context, Model, ProviderSessionState } from "@oh-my-pi/pi-ai/types";
+import type { AssistantMessageEvent, Context, Model, ModelSpec, ProviderSessionState } from "@oh-my-pi/pi-ai/types";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
-const model: Model<"anthropic-messages"> = {
+const model: Model<"anthropic-messages"> = buildModel({
 	id: "claude-sonnet-4-5",
 	name: "Claude Sonnet 4.5",
 	api: "anthropic-messages",
@@ -15,7 +16,7 @@ const model: Model<"anthropic-messages"> = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 200_000,
 	maxTokens: 8_192,
-};
+});
 
 const context: Context = {
 	messages: [{ role: "user", content: "Say hi", timestamp: Date.now() }],
@@ -136,7 +137,7 @@ function getStrictFlags(params: unknown): boolean[] {
 
 function createTextSuccessEvents(
 	text: string,
-	options: { duplicateMessageStart?: boolean } = {},
+	options: { duplicateMessageStart?: boolean; stopReason?: string } = {},
 ): MockAnthropicEvent[] {
 	const events: MockAnthropicEvent[] = [
 		{
@@ -156,7 +157,7 @@ function createTextSuccessEvents(
 		{ type: "content_block_stop", index: 0 },
 		{
 			type: "message_delta",
-			delta: { stop_reason: "end_turn" },
+			delta: { stop_reason: options.stopReason ?? "end_turn" },
 			usage: {
 				input_tokens: 12,
 				output_tokens: 4,
@@ -278,6 +279,45 @@ describe("anthropic stream envelope handling", () => {
 		expect(result.content).toEqual([{ type: "text", text: "hello" }]);
 	});
 
+	it("drops replayed closed blocks after a duplicate message_start instead of duplicating content", async () => {
+		const events: MockAnthropicEvent[] = [
+			{
+				type: "message_start",
+				message: { id: "msg_first", usage: { input_tokens: 12, output_tokens: 0 } },
+			},
+			{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+			{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } },
+			{ type: "content_block_stop", index: 0 },
+			// A replaying proxy splices the same envelope again before the
+			// terminal message_delta arrives.
+			{ type: "message_start", message: { id: "msg_replay", usage: { input_tokens: 12, output_tokens: 0 } } },
+			{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+			{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } },
+			{ type: "content_block_stop", index: 0 },
+			{
+				type: "message_delta",
+				delta: { stop_reason: "end_turn" },
+				usage: { input_tokens: 12, output_tokens: 4 },
+			},
+			{ type: "message_stop" },
+		];
+		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(() => createMockRequest(events) as never);
+
+		const stream = streamAnthropic(model, context, { apiKey: "sk-ant-test" });
+		const collected: AssistantMessageEvent[] = [];
+		for await (const event of stream) {
+			collected.push(event);
+		}
+		const result = await stream.result();
+
+		expect(countEvents(collected, "text_start")).toBe(1);
+		expect(countEvents(collected, "text_end")).toBe(1);
+		expect(countEvents(collected, "error")).toBe(0);
+		expect(result.stopReason).toBe("stop");
+		expect(result.responseId).toBe("msg_first");
+		expect(result.content).toEqual([{ type: "text", text: "hello" }]);
+	});
+
 	it("ignores ping before message_start and streams the response once", async () => {
 		let attempt = 0;
 		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(() => {
@@ -301,6 +341,107 @@ describe("anthropic stream envelope handling", () => {
 		expect(result.stopReason).toBe("stop");
 		expect(result.responseId).toBe("msg_text_success");
 		expect(result.content).toEqual([{ type: "text", text: "hello" }]);
+	});
+
+	it("maps model_context_window_exceeded to a length stop", async () => {
+		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(
+			() =>
+				createMockRequest(
+					createTextSuccessEvents("hello", { stopReason: "model_context_window_exceeded" }),
+				) as never,
+		);
+
+		const stream = streamAnthropic(model, context, { apiKey: "sk-ant-test" });
+		const events: AssistantMessageEvent[] = [];
+		for await (const event of stream) {
+			events.push(event);
+		}
+		const result = await stream.result();
+
+		expect(countEvents(events, "error")).toBe(0);
+		expect(countEvents(events, "done")).toBe(1);
+		expect(result.stopReason).toBe("length");
+		expect(result.content).toEqual([{ type: "text", text: "hello" }]);
+	});
+
+	it("completes the turn instead of failing when the API sends an unknown stop reason", async () => {
+		let attempt = 0;
+		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(() => {
+			attempt += 1;
+			return createMockRequest(createTextSuccessEvents("hello", { stopReason: "weird_new_reason" })) as never;
+		});
+
+		const stream = streamAnthropic(model, context, { apiKey: "sk-ant-test" });
+		const events: AssistantMessageEvent[] = [];
+		for await (const event of stream) {
+			events.push(event);
+		}
+		const result = await stream.result();
+
+		// The unknown reason arrives after all content streamed; it must not burn
+		// a retry or surface as an error.
+		expect(attempt).toBe(1);
+		expect(countEvents(events, "error")).toBe(0);
+		expect(countEvents(events, "done")).toBe(1);
+		expect(result.stopReason).toBe("stop");
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.content).toEqual([{ type: "text", text: "hello" }]);
+	});
+
+	it("ignores a spliced second envelope's message_delta after the terminal stop", async () => {
+		const events: MockAnthropicEvent[] = [
+			...createTextSuccessEvents("hello"),
+			// Transparent reconnect splices a fresh envelope onto the same stream.
+			{ type: "message_start", message: { id: "msg_second", usage: { input_tokens: 99, output_tokens: 99 } } },
+			{ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { input_tokens: 99, output_tokens: 99 } },
+			{ type: "message_stop" },
+		];
+		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(() => createMockRequest(events) as never);
+
+		const stream = streamAnthropic(model, context, { apiKey: "sk-ant-test" });
+		const collected: AssistantMessageEvent[] = [];
+		for await (const event of stream) {
+			collected.push(event);
+		}
+		const result = await stream.result();
+
+		// The completed first envelope owns the stop reason and usage; the splice
+		// must not relabel a finished turn or overwrite its counters.
+		expect(countEvents(collected, "error")).toBe(0);
+		expect(countEvents(collected, "done")).toBe(1);
+		expect(result.stopReason).toBe("stop");
+		expect(result.usage.output).toBe(4);
+		expect(result.responseId).toBe("msg_text_success");
+		expect(result.content).toEqual([{ type: "text", text: "hello" }]);
+	});
+
+	it("tolerates envelopes missing usage and delta payloads", async () => {
+		const events: MockAnthropicEvent[] = [
+			{ type: "message_start", message: { id: "msg_lenient" } },
+			{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+			{ type: "content_block_delta", index: 0 },
+			{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } },
+			{ type: "content_block_stop", index: 0 },
+			{ type: "message_delta" },
+			{ type: "message_delta", delta: { stop_reason: "end_turn" } },
+			{ type: "message_stop" },
+		];
+		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(() => createMockRequest(events) as never);
+
+		const stream = streamAnthropic(model, context, { apiKey: "sk-ant-test" });
+		const collected: AssistantMessageEvent[] = [];
+		for await (const event of stream) {
+			collected.push(event);
+		}
+		const result = await stream.result();
+
+		// Proxies that omit usage/delta objects must degrade to anomaly logs, not
+		// TypeErrors that fail the turn.
+		expect(countEvents(collected, "error")).toBe(0);
+		expect(countEvents(collected, "done")).toBe(1);
+		expect(result.stopReason).toBe("stop");
+		expect(result.responseId).toBe("msg_lenient");
+		expect(result.content).toEqual([{ type: "text", text: "hi" }]);
 	});
 
 	it("ignores unknown preamble events before message_start and streams the response once", async () => {
@@ -444,7 +585,7 @@ describe("anthropic stream envelope handling", () => {
 		const result = await stream.result();
 
 		expect(result.stopReason).toBe("stop");
-		expect(result.errorMessage).toContain("compiled grammar is too large");
+		expect(result.errorMessage).toBeUndefined();
 		expect(result.content).toEqual([{ type: "text", text: "recovered" }]);
 		expect(countEvents(events, "done")).toBe(1);
 		expect(countEvents(events, "error")).toBe(0);
@@ -669,6 +810,7 @@ describe("anthropic stream envelope handling", () => {
 		const result = await stream.result();
 
 		expect(result.stopReason).toBe("error");
+		expect(result.stopDetails).toEqual({ type: "refusal" });
 		expect(result.errorMessage).toContain("Refusal (no details provided)");
 		expect(result.errorMessage).not.toContain("An unknown error occurred");
 		expect(countEvents(events, "error")).toBe(1);
@@ -699,7 +841,10 @@ describe("anthropic stream envelope handling", () => {
 		await eagerStream.result();
 
 		const disabledStream = streamAnthropic(
-			{ ...model, compat: { supportsEagerToolInputStreaming: false } },
+			buildModel({
+				...model,
+				compat: { ...model.compatConfig, supportsEagerToolInputStreaming: false },
+			} as ModelSpec<"anthropic-messages">),
 			toolContext,
 			{ apiKey: "sk-ant-test" },
 		);
@@ -723,8 +868,15 @@ describe("anthropic stream envelope handling", () => {
 
 		for (const testModel of [
 			model,
-			{ ...model, compat: { supportsLongCacheRetention: false } },
-			{ ...model, baseUrl: "https://proxy.example.com/anthropic" },
+			buildModel({
+				...model,
+				compat: { ...model.compatConfig, supportsLongCacheRetention: false },
+			} as ModelSpec<"anthropic-messages">),
+			buildModel({
+				...model,
+				baseUrl: "https://proxy.example.com/anthropic",
+				compat: model.compatConfig,
+			} as ModelSpec<"anthropic-messages">),
 		]) {
 			const stream = streamAnthropic(testModel, context, {
 				apiKey: "sk-ant-test",

@@ -1,15 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { buildAnthropicClientOptions, streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
-import { OPENCODE_HEADERS } from "@oh-my-pi/pi-ai/registry/oauth/github-copilot";
 import type { Context, Model } from "@oh-my-pi/pi-ai/types";
 import { buildAnthropicUrl } from "@oh-my-pi/pi-ai/utils/anthropic-auth";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { OPENCODE_HEADERS } from "@oh-my-pi/pi-catalog/wire/github-copilot";
 
 afterEach(() => {
 	vi.restoreAllMocks();
 });
 
 function makeCopilotClaudeModel(): Model<"anthropic-messages"> {
-	return {
+	return buildModel({
 		id: "claude-sonnet-4",
 		name: "Claude Sonnet 4",
 		api: "anthropic-messages",
@@ -21,10 +22,10 @@ function makeCopilotClaudeModel(): Model<"anthropic-messages"> {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 128000,
 		maxTokens: 16000,
-	};
+	});
 }
 function makeOpenCodeGoQwen37Model(): Model<"anthropic-messages"> {
-	return {
+	return buildModel({
 		id: "qwen3.7-max",
 		name: "Qwen3.7 Max",
 		api: "anthropic-messages",
@@ -35,7 +36,7 @@ function makeOpenCodeGoQwen37Model(): Model<"anthropic-messages"> {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 1_000_000,
 		maxTokens: 65_536,
-	};
+	});
 }
 
 const testContext: Context = {
@@ -222,6 +223,38 @@ describe("Anthropic Copilot auth config", () => {
 		});
 
 		expect(result.baseURL).toBe("http://127.0.0.1:8317");
+	});
+
+	it("sends Content-Type and anthropic-version on Copilot anthropic requests", () => {
+		const result = buildAnthropicClientOptions({
+			model: makeCopilotClaudeModel(),
+			apiKey: "ghu_test",
+			extraBetas: [],
+			stream: true,
+			dynamicHeaders: {},
+		});
+
+		// The client posts JSON.stringify(params); without these the request goes
+		// out with no Content-Type at all (Bun does not default it for string
+		// bodies when a plain headers object is supplied).
+		expect(result.defaultHeaders["Content-Type"]).toBe("application/json");
+		expect(result.defaultHeaders["anthropic-version"]).toBe("2023-06-01");
+	});
+
+	it("merges Copilot headers case-insensitively so auth headers cannot duplicate", () => {
+		const result = buildAnthropicClientOptions({
+			model: { ...makeCopilotClaudeModel(), headers: { ...OPENCODE_HEADERS, authorization: "Bearer override" } },
+			apiKey: "ghu_test",
+			extraBetas: [],
+			stream: true,
+			dynamicHeaders: {},
+		});
+
+		// A miscased duplicate would survive Object.assign and the Headers
+		// constructor then joins both values comma-separated on the wire.
+		const authKeys = Object.keys(result.defaultHeaders).filter(key => key.toLowerCase() === "authorization");
+		expect(authKeys).toHaveLength(1);
+		expect(result.defaultHeaders[authKeys[0]]).toBe("Bearer override");
 	});
 
 	it("builds anthropic auth URLs from the normalized service root", () => {

@@ -438,7 +438,7 @@ class TreeList implements Component {
 		}
 	}
 
-	render(width: number): string[] {
+	render(width: number): readonly string[] {
 		const lines: string[] = [];
 
 		if (this.#filteredNodes.length === 0) {
@@ -518,6 +518,7 @@ class TreeList implements Component {
 			const renderedIndent = Math.min(displayIndent, maxIndentLevels);
 			const scrollOffset = displayIndent - renderedIndent;
 			const connectorPositionDisplay = hasConnector ? renderedIndent - 1 : -1;
+			const chainGutter = !hasConnector ? flatNode.gutters[flatNode.gutters.length - 1] : undefined;
 
 			// Build prefix char by char, placing gutters and connector at their positions
 			const totalChars = renderedIndent * 3;
@@ -530,8 +531,12 @@ class TreeList implements Component {
 				// Check if there's a gutter at this level (translated to original tree depth)
 				const gutter = flatNode.gutters.find(g => g.position === originalLevel);
 				if (gutter) {
+					// Chain rows (no connector of their own) extend only their
+					// nearest connector gutter so the flattened conversation flow
+					// stays anchored without reviving unrelated `└─` ancestors (#2298).
+					const showVertical = gutter.show || gutter === chainGutter;
 					if (posInLevel === 0) {
-						prefixChars.push(gutter.show ? theme.tree.vertical : " ");
+						prefixChars.push(showVertical ? theme.tree.vertical : " ");
 					} else {
 						prefixChars.push(" ");
 					}
@@ -835,7 +840,7 @@ class SearchLine implements Component {
 
 	invalidate(): void {}
 
-	render(width: number): string[] {
+	render(width: number): readonly string[] {
 		const query = this.treeList.getSearchQuery();
 		if (query) {
 			return [truncateToWidth(`  ${theme.fg("muted", "Search:")} ${theme.fg("accent", query)}`, width)];
@@ -864,7 +869,7 @@ class LabelInput implements Component {
 
 	invalidate(): void {}
 
-	render(width: number): string[] {
+	render(width: number): readonly string[] {
 		const lines: string[] = [];
 		const indent = "  ";
 		const availableWidth = width - indent.length;

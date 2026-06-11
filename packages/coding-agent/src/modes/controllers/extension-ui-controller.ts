@@ -158,7 +158,7 @@ export class ExtensionUiController {
 			reload: async () => {
 				await this.ctx.session.reload();
 				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages(undefined, { clearTerminalHistory: true });
+				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.showStatus("Reloaded session");
 			},
@@ -215,7 +215,7 @@ export class ExtensionUiController {
 
 				// Update UI
 				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages(undefined, { clearTerminalHistory: true });
+				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.editor.setText(result.selectedText);
 				this.ctx.showStatus("Branched to new session");
@@ -230,7 +230,7 @@ export class ExtensionUiController {
 
 				// Update UI
 				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages(undefined, { clearTerminalHistory: true });
+				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setText(result.editorText);
@@ -248,7 +248,7 @@ export class ExtensionUiController {
 				}
 				setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
 				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages(undefined, { clearTerminalHistory: true });
+				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				return { cancelled: false };
 			},
@@ -474,7 +474,7 @@ export class ExtensionUiController {
 			reload: async () => {
 				await this.ctx.session.reload();
 				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages(undefined, { clearTerminalHistory: true });
+				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.showStatus("Reloaded session");
 			},
@@ -524,7 +524,7 @@ export class ExtensionUiController {
 
 				// Update UI
 				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages(undefined, { clearTerminalHistory: true });
+				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.editor.setText(result.selectedText);
 				this.ctx.showStatus("Branched to new session");
@@ -539,7 +539,7 @@ export class ExtensionUiController {
 
 				// Update UI
 				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages(undefined, { clearTerminalHistory: true });
+				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setText(result.editorText);
@@ -556,7 +556,7 @@ export class ExtensionUiController {
 					return { cancelled: true };
 				}
 				this.ctx.chatContainer.clear();
-				this.ctx.renderInitialMessages(undefined, { clearTerminalHistory: true });
+				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				return { cancelled: false };
 			},

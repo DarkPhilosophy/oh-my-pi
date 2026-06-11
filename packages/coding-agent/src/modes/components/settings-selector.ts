@@ -196,6 +196,7 @@ export interface StatusLinePreviewSettings {
 	rightSegments?: StatusLineSegmentId[];
 	separator?: StatusLineSeparatorStyle;
 	sessionAccent?: boolean;
+	transparent?: boolean;
 }
 
 export interface SettingsCallbacks {
@@ -590,6 +591,7 @@ export class SettingsSelectorComponent extends Container {
 			rightSegments: settings.get("statusLine.rightSegments"),
 			separator: settings.get("statusLine.separator"),
 			sessionAccent: settings.get("statusLine.sessionAccent"),
+			transparent: settings.get("statusLine.transparent"),
 		};
 		this.callbacks.onStatusLinePreview?.(statusLineSettings);
 		this.#updateStatusPreview();
@@ -631,8 +633,12 @@ export class SettingsSelectorComponent extends Container {
 			return;
 		}
 
-		// Escape at top level cancels
+		// Escape clears an active settings search before closing the panel.
 		if (matchesAppInterrupt(data) && !this.#currentSubmenu) {
+			if (this.#currentList?.hasSearchQuery()) {
+				this.#currentList.clearSearch();
+				return;
+			}
 			this.callbacks.onCancel();
 			return;
 		}
