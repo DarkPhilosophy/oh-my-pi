@@ -16,7 +16,7 @@ import { $flag, getDebugLogPath } from "@oh-my-pi/pi-utils";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
-import { isConPTYHosted, type Terminal } from "./terminal";
+import { isConPTYHosted, setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteImage,
 	ImageProtocol,
@@ -1326,6 +1326,7 @@ export class TUI extends Container {
 		// the restored normal screen (which #previousLines still describes).
 		if (this.#altActive) {
 			this.terminal.write(`${MOUSE_TRACKING_OFF}\x1b[?1049l`);
+			setAltScreenActive(false);
 			this.#altActive = false;
 			this.#altPreviousLines = [];
 		}
@@ -2049,6 +2050,7 @@ export class TUI extends Container {
 		const wantAlt = this.#wantsAltScreen();
 		if (wantAlt && !this.#altActive) {
 			this.terminal.write(`\x1b[?1049h${MOUSE_TRACKING_ON}`);
+			setAltScreenActive(true);
 			this.terminal.hideCursor();
 			this.#forgetHardwareCursorState();
 			this.#recordHardwareCursorHidden();
@@ -2058,6 +2060,7 @@ export class TUI extends Container {
 			this.#altEnterHeight = height;
 		} else if (!wantAlt && this.#altActive) {
 			this.terminal.write(`${MOUSE_TRACKING_OFF}\x1b[?1049l`);
+			setAltScreenActive(false);
 			this.#forgetHardwareCursorState();
 			this.#altActive = false;
 			this.#altPreviousLines = [];
@@ -2137,13 +2140,16 @@ export class TUI extends Container {
 		// composed frame's stable prefix covers every committed row — bytes
 		// that provably did not change since the last (aligned) frame cannot
 		// have diverged.
+		let committedRowsResynced = false;
 		if (
 			this.#hasEverRendered &&
 			!geometryChanged &&
 			!this.#clearScrollbackOnNextRender &&
 			this.#renderStablePrefixRows < this.#committedRows
 		) {
+			const committedRowsBeforeAudit = this.#committedRows;
 			this.#auditCommittedPrefix(rawFrame);
+			committedRowsResynced = this.#committedRows !== committedRowsBeforeAudit;
 		}
 
 		// 3. Window and commit math (lengths only; content prepared below).
@@ -2174,14 +2180,22 @@ export class TUI extends Container {
 		if (fullPaint) {
 			windowTop = Math.max(0, frameLength - height);
 			chunkTo = Math.min(commitBoundary, windowTop);
-		} else if (frameLength <= this.#committedRows) {
-			// The frame shrank into (or below) the committed prefix: the app
-			// replaced content it had already let scroll into history without
-			// requesting a session replace. History is immutable without a
-			// gesture, so the stale committed copy stays in scrollback;
-			// re-anchor the window at the tail and restart commit bookkeeping
-			// there so the live grid shows the real content instead of a blank
-			// pinned window.
+		} else if (
+			frameLength <= this.#committedRows ||
+			(committedRowsResynced &&
+				frameLength - this.#committedRows < height &&
+				cursorMarkers.some(marker => marker.row >= this.#committedRows))
+		) {
+			// Either the frame shrank into the committed prefix, or a
+			// committed-prefix resync left a focused cursor tail shorter than the
+			// viewport. The latter happens when a streaming/live block had an
+			// append-only prefix committed, then collapses on abort/finalize:
+			// the audit re-anchors #committedRows at the first divergent row, but
+			// flooring windowTop there would pin the editor near the top and
+			// leave blank rows underneath. Re-show the frame tail instead. The
+			// stale committed copy stays in native history; duplicating a few rows
+			// is preferable to a live editor gap and matches the existing
+			// "duplication, never loss" resync contract.
 			windowTop = Math.max(0, frameLength - height);
 			chunkTo = Math.min(commitBoundary, windowTop);
 			this.#committedRows = chunkTo;
