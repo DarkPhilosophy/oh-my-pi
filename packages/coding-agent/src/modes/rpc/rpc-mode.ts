@@ -52,10 +52,12 @@ function widgetBlocksForRpc(
 	if (!Array.isArray(content)) return undefined;
 	if (content.length > 0 && content.every(isExtensionWidgetBlock)) {
 		return {
-			widgetBlocks: content.map(block => ({
-				lines: block.lines.map(line => String(line)),
-				priority: block.priority,
-			})),
+			widgetBlocks: content
+				.map(block => ({
+					lines: block.lines.map(line => String(line)),
+					priority: block.priority,
+				}))
+				.filter(block => block.lines.length > 0),
 		};
 	}
 	return { widgetLines: content.map(line => String(line)) };

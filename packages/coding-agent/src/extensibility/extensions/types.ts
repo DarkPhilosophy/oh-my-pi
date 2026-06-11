@@ -330,13 +330,14 @@ export interface ExtensionContext {
 	/** Abort the current agent operation */
 	abort(): void;
 	/** Fetch provider usage/limit reports (5h / 7d windows). Null when unavailable. */
-	fetchUsageReports?(): Promise<UsageReport[] | null>;
+	fetchUsageReports(): Promise<UsageReport[] | null>;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
 	/** Gracefully shutdown and exit. */
 	shutdown(): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string[];
+
 	/** Structured memory runtime for status/search/save across the configured backend. */
 	memory?: MemoryRuntimeContext;
 }
