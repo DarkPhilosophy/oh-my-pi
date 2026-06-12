@@ -29,6 +29,8 @@ export * from "./keybindings";
 export * from "./keys";
 // Kitty graphics: Unicode placeholders
 export * from "./kitty-graphics";
+// SGR mouse report parsing
+export * from "./mouse";
 // Right-side info panel compositing
 export * from "./right-panel";
 // Mermaid diagram support

@@ -1,11 +1,13 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message } from "@oh-my-pi/pi-ai";
 import { type Component, Spacer, Text, TruncatedText } from "@oh-my-pi/pi-tui";
+import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
 import { BranchSummaryMessageComponent } from "../../modes/components/branch-summary-message";
+import { CollabPromptMessageComponent } from "../../modes/components/collab-prompt-message";
 import { CompactionSummaryMessageComponent } from "../../modes/components/compaction-summary-message";
 import { CustomMessageComponent } from "../../modes/components/custom-message";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
@@ -185,6 +187,11 @@ export class UiHelpers {
 						this.ctx.chatContainer.addChild(component);
 						break;
 					}
+					if (message.customType === COLLAB_PROMPT_MESSAGE_TYPE) {
+						const component = new CollabPromptMessageComponent(message as CustomMessage<CollabPromptDetails>);
+						this.ctx.chatContainer.addChild(component);
+						break;
+					}
 					if (message.customType === SKILL_PROMPT_MESSAGE_TYPE) {
 						const component = new SkillMessageComponent(message as CustomMessage<SkillPromptDetails>);
 						component.setExpanded(this.ctx.toolOutputExpanded);
@@ -226,7 +233,7 @@ export class UiHelpers {
 						this.ctx.chatContainer.addChild(card);
 						return [card];
 					}
-					const renderer = this.ctx.session.extensionRunner?.getMessageRenderer(message.customType);
+					const renderer = this.ctx.viewSession.extensionRunner?.getMessageRenderer(message.customType);
 					// Both HookMessage and CustomMessage have the same structure, cast for compatibility
 					const component = new CustomMessageComponent(message as CustomMessage<unknown>, renderer);
 					component.setExpanded(this.ctx.toolOutputExpanded);
@@ -277,7 +284,10 @@ export class UiHelpers {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
 					const imageLinks =
 						options?.imageLinks ??
-						imageLinksForMessage(message, this.ctx.sessionManager.putBlobSync.bind(this.ctx.sessionManager));
+						imageLinksForMessage(
+							message,
+							this.ctx.viewSession.sessionManager.putBlobSync.bind(this.ctx.viewSession.sessionManager),
+						);
 					const userComponent = new UserMessageComponent(textContent, isSynthetic, imageLinks);
 					this.ctx.chatContainer.addChild(userComponent);
 					if (options?.populateHistory && message.role === "user" && !isSynthetic) {
@@ -291,7 +301,7 @@ export class UiHelpers {
 					message,
 					this.ctx.hideThinkingBlock,
 					() => this.ctx.ui.requestRender(),
-					this.ctx.session.extensionRunner?.getAssistantThinkingRenderers(),
+					this.ctx.viewSession.extensionRunner?.getAssistantThinkingRenderers(),
 					this.ctx.ui.imageBudget,
 				);
 				this.ctx.chatContainer.addChild(assistantComponent);
@@ -372,7 +382,7 @@ export class UiHelpers {
 					!isAbortedSilently && (message.stopReason === "aborted" || message.stopReason === "error");
 				const errorMessage = hasErrorStop
 					? message.stopReason === "aborted"
-						? resolveAbortLabel(message.errorMessage, this.ctx.session.retryAttempt)
+						? resolveAbortLabel(message.errorMessage, this.ctx.viewSession.retryAttempt)
 						: message.errorMessage || "Error"
 					: null;
 
@@ -417,7 +427,7 @@ export class UiHelpers {
 
 					readGroup?.seal();
 					readGroup = null;
-					const tool = this.ctx.session.getToolByName(content.name);
+					const tool = this.ctx.viewSession.getToolByName(content.name);
 					const renderArgs =
 						"partialJson" in content
 							? { ...content.arguments, __partialJson: content.partialJson }
@@ -426,14 +436,15 @@ export class UiHelpers {
 						content.name,
 						renderArgs,
 						{
-							snapshots: getFileSnapshotStore(this.ctx.session),
+							snapshots: getFileSnapshotStore(this.ctx.viewSession),
 							showImages: settings.get("terminal.showImages"),
 							editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 							editAllowFuzzy: settings.get("edit.fuzzyMatch"),
+							liveRegion: this.ctx.chatContainer,
 						},
 						tool,
 						this.ctx.ui,
-						this.ctx.sessionManager.getCwd(),
+						this.ctx.viewSession.sessionManager.getCwd(),
 						content.id,
 					);
 					component.setExpanded(this.ctx.toolOutputExpanded);
@@ -542,14 +553,14 @@ export class UiHelpers {
 
 		// Display always uses the full-history transcript: compactions show as
 		// inline dividers instead of restarting the visible conversation.
-		const context = this.ctx.session.buildTranscriptSessionContext();
+		const context = this.ctx.viewSession.buildTranscriptSessionContext();
 		this.ctx.renderSessionContext(context, {
 			updateFooter: true,
-			populateHistory: true,
+			populateHistory: !this.ctx.focusedAgentId,
 		});
 
 		// Show compaction info if session was compacted
-		const allEntries = this.ctx.sessionManager.getEntries();
+		const allEntries = this.ctx.viewSession.sessionManager.getEntries();
 		let compactionCount = 0;
 		for (const entry of allEntries) {
 			if (entry.type === "compaction") {
@@ -606,7 +617,7 @@ export class UiHelpers {
 
 	updatePendingMessagesDisplay(): void {
 		this.ctx.pendingMessagesContainer.clear();
-		const queuedMessages = this.ctx.session.getQueuedMessages() as QueuedMessages;
+		const queuedMessages = this.ctx.viewSession.getQueuedMessages() as QueuedMessages;
 
 		const steeringMessages: Array<{ message: string; label: string }> = [];
 		for (const message of queuedMessages.steering) {
@@ -660,10 +671,13 @@ export class UiHelpers {
 			await this.ctx.session.prompt(message.text);
 			return;
 		}
-		await this.ctx.withLocalSubmission(message.text, () =>
-			message.mode === "followUp"
-				? this.ctx.session.followUp(message.text, message.images)
-				: this.ctx.session.steer(message.text, message.images),
+		await this.ctx.withLocalSubmission(
+			message.text,
+			() =>
+				message.mode === "followUp"
+					? this.ctx.session.followUp(message.text, message.images)
+					: this.ctx.session.steer(message.text, message.images),
+			{ imageCount: message.images?.length ?? 0 },
 		);
 	}
 
@@ -753,7 +767,7 @@ export class UiHelpers {
 			// firstPrompt is fire-and-forget — its rejection is funneled through
 			// `restoreQueue` rather than rethrown, so we use the primitive
 			// recordLocalSubmission and dispose manually in the catch.
-			const disposeFirstPrompt = this.ctx.recordLocalSubmission(firstPrompt.text);
+			const disposeFirstPrompt = this.ctx.recordLocalSubmission(firstPrompt.text, firstPrompt.images?.length ?? 0);
 			const promptPromise = this.ctx.session
 				.prompt(firstPrompt.text, {
 					streamingBehavior: firstPrompt.mode === "followUp" ? "followUp" : "steer",
@@ -789,8 +803,8 @@ export class UiHelpers {
 	}
 
 	findLastAssistantMessage(): AssistantMessage | undefined {
-		for (let i = this.ctx.session.messages.length - 1; i >= 0; i--) {
-			const message = this.ctx.session.messages[i];
+		for (let i = this.ctx.viewSession.messages.length - 1; i >= 0; i--) {
+			const message = this.ctx.viewSession.messages[i];
 			if (message?.role === "assistant") {
 				return message as AssistantMessage;
 			}

@@ -73,6 +73,9 @@ import type {
 	Model,
 	ProviderResponseMetadata,
 	ProviderSessionState,
+	ResetCreditAccountStatus,
+	ResetCreditRedeemOutcome,
+	ResetCreditTarget,
 	ServiceTier,
 	SimpleStreamOptions,
 	TextContent,
@@ -97,6 +100,7 @@ import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { countTokens, MacOSPowerAssertion } from "@oh-my-pi/pi-natives";
 import {
 	extractRetryHint,
+	formatDuration,
 	getAgentDbPath,
 	getInstallId,
 	isBunTestRuntime,
@@ -107,7 +111,7 @@ import {
 	relativePathWithinRoot,
 	Snowflake,
 } from "@oh-my-pi/pi-utils";
-import { snapcompactCompact } from "@oh-my-pi/snapcompact";
+import * as snapcompact from "@oh-my-pi/snapcompact";
 import { type AsyncJob, type AsyncJobDeliveryState, AsyncJobManager } from "../async";
 import { classifyDifficulty } from "../auto-thinking/classifier";
 import { reset as resetCapabilities } from "../capability";
@@ -237,6 +241,13 @@ import { normalizeModelContextImages } from "../utils/image-loading";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { AuthStorage } from "./auth-storage";
 import type { ClientBridge, ClientBridgePermissionOption, ClientBridgePermissionOutcome } from "./client-bridge";
+import {
+	type CodexAutoRedeemRedeemDecision,
+	defaultCodexAutoRedeemCoordinator,
+	evaluateCodexAutoRedeem,
+	shouldEvaluateCodexAutoRedeem,
+	shouldPromptCodexAutoRedeem,
+} from "./codex-auto-reset";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
@@ -855,8 +866,13 @@ function extractPermissionLocations(
  *  `tag` is set only by `enqueueCustomMessageDisplay` (used for skill-prompt
  *  custom messages queued during streaming) and is matched by the custom-role
  *  `message_start` dequeue branch; user-message pushes leave it undefined and
- *  rely on the existing text-equality match. */
-type QueuedDisplayEntry = { text: string; tag?: string };
+ *  rely on the existing text-equality match. `images` carries the original
+ *  (pre-normalization) image blocks so queue restoration (Esc / Alt+Up) can
+ *  hand them back to the editor instead of dropping them. */
+type QueuedDisplayEntry = { text: string; tag?: string; images?: ImageContent[] };
+
+/** Entry returned by {@link AgentSession.clearQueue} / {@link AgentSession.popLastQueuedMessage}. */
+export type RestoredQueuedMessage = { text: string; images?: ImageContent[] };
 
 export class AgentSession {
 	readonly agent: Agent;
@@ -1123,7 +1139,22 @@ export class AgentSession {
 		if (this.#promptInFlightCount === 0) {
 			this.#releasePowerAssertion();
 			this.#flushPendingAgentEnd();
+			this.#drainStrandedQueuedMessages();
 		}
+	}
+
+	/** A steer/follow-up can land after the agent loop's final queue poll but
+	 *  before the prompt unwinds: #promptInFlightCount keeps isStreaming true
+	 *  through post-prompt recovery, so senders (collab guests, skills) still
+	 *  queue via agent.steer()/followUp() instead of starting a fresh prompt.
+	 *  Without a drain those messages strand invisibly until the next manual
+	 *  prompt. Runs when the session settles; the guard makes it a no-op when
+	 *  the queue was consumed normally or a new turn already started. */
+	#drainStrandedQueuedMessages(): void {
+		if (!this.agent.hasQueuedMessages()) return;
+		this.#scheduleAgentContinue({
+			shouldContinue: () => this.#canAutoContinueForFollowUp() && this.agent.hasQueuedMessages(),
+		});
 	}
 
 	#resetInFlight(): void {
@@ -1407,6 +1438,11 @@ export class AgentSession {
 	/** TTSR manager for time-traveling stream rules */
 	get ttsrManager(): TtsrManager | undefined {
 		return this.#ttsrManager;
+	}
+
+	/** Secret obfuscator, when secrets are configured; /share redaction reuses it. */
+	get obfuscator(): SecretObfuscator | undefined {
+		return this.#obfuscator;
 	}
 
 	/** Whether a TTSR abort is pending (stream was aborted to inject rules) */
@@ -3131,6 +3167,12 @@ export class AgentSession {
 		state.resetConversationTracking();
 	}
 
+	/** True once dispose() has begun; deferred background work (e.g. the deferred
+	 *  MCP discovery task in sdk.ts) must not touch the session past this point. */
+	get isDisposed(): boolean {
+		return this.#isDisposed;
+	}
+
 	/**
 	 * Synchronously mark the session as disposing so new work is rejected
 	 * immediately: Python/eval starts throw, queued asides are dropped, and the
@@ -3462,6 +3504,17 @@ export class AgentSession {
 
 	isMCPDiscoveryEnabled(): boolean {
 		return this.#mcpDiscoveryEnabled;
+	}
+
+	/**
+	 * Flip MCP discovery on after deferred discovery learns the real tool count.
+	 * UI sessions resolve `tools.discoveryMode: "auto"` before MCP servers
+	 * connect, so a large MCP toolset discovered later must be able to upgrade
+	 * the session from the force-activate path to the discovery path. One-way:
+	 * discovery is never downgraded mid-session.
+	 */
+	enableMCPDiscovery(): void {
+		this.#mcpDiscoveryEnabled = true;
 	}
 
 	getSelectedMCPToolNames(): string[] {
@@ -5029,7 +5082,7 @@ export class AgentSession {
 	async #queueSteer(text: string, images?: ImageContent[]): Promise<void> {
 		const normalizedImages = await normalizeModelContextImages(images);
 		const displayText = text || (images && images.length > 0 ? "[Image]" : "");
-		this.#steeringMessages.push({ text: displayText });
+		this.#steeringMessages.push({ text: displayText, images });
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (normalizedImages && normalizedImages.length > 0) {
 			content.push(...normalizedImages);
@@ -5041,6 +5094,16 @@ export class AgentSession {
 			attribution: "user",
 			timestamp: Date.now(),
 		});
+		// A steer can land on an idle session: the caller checked isStreaming
+		// before the (potentially slow) image normalization above, so the turn
+		// may have ended in between. Without a drain the message would strand in
+		// the queue until the next manual prompt — schedule an immediate continue,
+		// mirroring #queueFollowUp's idle-path delivery.
+		if (this.#canAutoContinueForFollowUp()) {
+			this.#scheduleAgentContinue({
+				shouldContinue: () => this.#canAutoContinueForFollowUp() && this.agent.hasQueuedMessages(),
+			});
+		}
 	}
 
 	/**
@@ -5049,7 +5112,7 @@ export class AgentSession {
 	async #queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
 		const normalizedImages = await normalizeModelContextImages(images);
 		const displayText = text || (images && images.length > 0 ? "[Image]" : "");
-		this.#followUpMessages.push({ text: displayText });
+		this.#followUpMessages.push({ text: displayText, images });
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (normalizedImages && normalizedImages.length > 0) {
 			content.push(...normalizedImages);
@@ -5208,6 +5271,14 @@ export class AgentSession {
 			} else {
 				this.agent.steer(normalizedAppMessage);
 			}
+			// The isStreaming check above can be stale: image normalization is
+			// awaited, so the turn may have ended in between, leaving the message
+			// queued on an idle agent. Mirror #queueSteer's idle-path delivery.
+			if (this.#canAutoContinueForFollowUp()) {
+				this.#scheduleAgentContinue({
+					shouldContinue: () => this.#canAutoContinueForFollowUp() && this.agent.hasQueuedMessages(),
+				});
+			}
 			return;
 		}
 
@@ -5298,12 +5369,14 @@ export class AgentSession {
 	}
 
 	/**
-	 * Clear queued messages and return them.
-	 * Useful for restoring to editor when user aborts.
+	 * Clear queued messages and return them (text plus any attached images).
+	 * Useful for restoring to editor when user aborts. The internal entry
+	 * arrays are handed out as-is — a `tag` (if any) is inert once the record
+	 * leaves the queue.
 	 */
-	clearQueue(): { steering: string[]; followUp: string[] } {
-		const steering = this.#steeringMessages.map(e => e.text);
-		const followUp = this.#followUpMessages.map(e => e.text);
+	clearQueue(): { steering: RestoredQueuedMessage[]; followUp: RestoredQueuedMessage[] } {
+		const steering = this.#steeringMessages;
+		const followUp = this.#followUpMessages;
 		this.#steeringMessages = [];
 		this.#followUpMessages = [];
 		this.agent.clearAllQueues();
@@ -5329,21 +5402,21 @@ export class AgentSession {
 	/**
 	 * Pop the last queued message (steering first, then follow-up).
 	 * Used by dequeue keybinding to restore messages to editor one at a time.
-	 * Returns the popped entry's `.text`; the tag (if any) dies with the
-	 * record — no orphan state can outlive the queue entry.
+	 * Returns the popped entry's text and images; the tag (if any) dies with
+	 * the record — no orphan state can outlive the queue entry.
 	 */
-	popLastQueuedMessage(): string | undefined {
+	popLastQueuedMessage(): RestoredQueuedMessage | undefined {
 		// Pop from steering first (LIFO)
 		if (this.#steeringMessages.length > 0) {
 			const entry = this.#steeringMessages.pop();
 			this.agent.popLastSteer();
-			return entry?.text;
+			return entry;
 		}
 		// Then from follow-up
 		if (this.#followUpMessages.length > 0) {
 			const entry = this.#followUpMessages.pop();
 			this.agent.popLastFollowUp();
-			return entry?.text;
+			return entry;
 		}
 		return undefined;
 	}
@@ -5383,11 +5456,7 @@ export class AgentSession {
 	#cloneTodoPhases(phases: TodoPhase[]): TodoPhase[] {
 		return phases.map(phase => ({
 			name: phase.name,
-			tasks: phase.tasks.map(task => {
-				const out: TodoItem = { content: task.content, status: task.status };
-				if (task.notes && task.notes.length > 0) out.notes = [...task.notes];
-				return out;
-			}),
+			tasks: phase.tasks.map(task => ({ content: task.content, status: task.status })),
 		}));
 	}
 
@@ -6110,7 +6179,13 @@ export class AgentSession {
 
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const branchEntries = this.sessionManager.getBranch();
-		const result = pruneToolOutputs(branchEntries, this.#withPlanProtection(DEFAULT_PRUNE_CONFIG));
+		const result = pruneToolOutputs(
+			branchEntries,
+			this.#withPlanProtection({
+				...DEFAULT_PRUNE_CONFIG,
+				pruneUseless: this.settings.getGroup("compaction").dropUseless,
+			}),
+		);
 		if (result.prunedCount === 0) {
 			return undefined;
 		}
@@ -6124,19 +6199,22 @@ export class AgentSession {
 	}
 
 	/**
-	 * Per-turn supersede pass: prune older `read` results that a newer read of
-	 * the same file has made stale. Cache-aware (only fires when the suffix
-	 * after a candidate is small or the session has been idle long enough that
-	 * the provider prompt cache is cold), so it is cheap to run every turn.
-	 * Gated on the `compaction.supersedeReads` setting.
+	 * Per-turn stale-result pass: prune older `read` results that a newer read
+	 * of the same file has made stale, plus results their tool flagged
+	 * contextually useless. Cache-aware (only fires when the suffix after a
+	 * candidate is small or the session has been idle long enough that the
+	 * provider prompt cache is cold), so it is cheap to run every turn. Gated
+	 * on the `compaction.supersedeReads` and `compaction.dropUseless` settings.
 	 */
-	async #pruneSupersededReads(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
-		if (!this.settings.getGroup("compaction").supersedeReads) return undefined;
+	async #pruneStaleToolResults(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
+		const { supersedeReads, dropUseless } = this.settings.getGroup("compaction");
+		if (!supersedeReads && !dropUseless) return undefined;
 		const branchEntries = this.sessionManager.getBranch();
 		const result = pruneSupersededToolResults(
 			branchEntries,
 			this.#withPlanProtection({
-				supersedeKey: readToolSupersedeKey,
+				supersedeKey: supersedeReads ? readToolSupersedeKey : undefined,
+				pruneUseless: dropUseless,
 				protectedTools: [...DEFAULT_PRUNE_CONFIG.protectedTools],
 			}),
 		);
@@ -6369,7 +6447,14 @@ export class AgentSession {
 				details = compactionPrep.details;
 				preserveData = compactionPrep.preserveData;
 			} else if (snapcompactReady) {
-				const snapcompactResult = await snapcompactCompact(preparation, { convertToLlm, model: this.model });
+				const snapcompactResult = await snapcompact.compact(preparation, {
+					convertToLlm,
+					model: this.model,
+					shape: snapcompact.resolveShape(this.model, this.settings.get("snapcompact.shape")),
+					// Providers with hard image caps (OpenRouter: 8) silently drop
+					// frames past the cap — keep the archive within budget.
+					maxFrames: snapcompact.providerFrameBudget(this.model.provider),
+				});
 				summary = snapcompactResult.summary;
 				shortSummary = snapcompactResult.shortSummary;
 				firstKeptEntryId = snapcompactResult.firstKeptEntryId;
@@ -6583,7 +6668,7 @@ export class AgentSession {
 			const rawHandoffText = await generateHandoff(
 				this.agent.state.messages,
 				model,
-				apiKey,
+				this.#modelRegistry.resolver(model, this.sessionId),
 				{
 					systemPrompt: this.#obfuscateForProvider(this.#baseSystemPrompt),
 					tools: obfuscateProviderTools(this.#obfuscator, this.agent.state.tools),
@@ -6809,9 +6894,10 @@ export class AgentSession {
 			return false;
 		}
 
-		// Supersede pass runs every turn, before any threshold gating: it is cheap
-		// (bails when no candidate) and independent of the compaction setting.
-		const supersedeResult = await this.#pruneSupersededReads();
+		// Stale-result pass runs every turn, before any threshold gating: it is
+		// cheap (bails when no candidate) and independent of the compaction
+		// setting.
+		const supersedeResult = await this.#pruneStaleToolResults();
 
 		const compactionSettings = this.settings.getGroup("compaction");
 		if (!compactionSettings.enabled || compactionSettings.strategy === "off") return false;
@@ -7253,6 +7339,22 @@ export class AgentSession {
 		this.#closeProviderSessionsForModelSwitch(currentModel, currentModel);
 	}
 
+	#resetCurrentResponsesProviderSession(reason: string): void {
+		const currentModel = this.model;
+		if (currentModel?.api !== "openai-responses" && currentModel?.api !== "openai-codex-responses") {
+			return;
+		}
+
+		this.#closeProviderSessionsForModelSwitch(currentModel, currentModel);
+		this.agent.appendOnlyContext?.invalidateForModelChange();
+		logger.debug("Reset Responses provider session after stale replay error", {
+			provider: currentModel.provider,
+			model: currentModel.id,
+			api: currentModel.api,
+			reason,
+		});
+	}
+
 	/**
 	 * Re-evaluate append-only context mode, creating or destroying the
 	 * manager as needed. Called on model switch AND setting change.
@@ -7578,7 +7680,7 @@ export class AgentSession {
 				return await compact(
 					this.#obfuscatePreparationForProvider(preparation),
 					candidate,
-					apiKey,
+					this.#modelRegistry.resolver(candidate, this.sessionId),
 					this.#obfuscateTextForProvider(customInstructions),
 					signal,
 					{
@@ -7883,7 +7985,11 @@ export class AgentSession {
 			} else if (action === "snapcompact") {
 				// Local, deterministic: render discarded history onto PNG frames.
 				// No model candidates, no API key, no retry loop.
-				const snapcompactResult = await snapcompactCompact(preparation, { convertToLlm, model: this.model });
+				const snapcompactResult = await snapcompact.compact(preparation, {
+					convertToLlm,
+					model: this.model,
+					maxFrames: snapcompact.providerFrameBudget(this.model?.provider),
+				});
 				summary = snapcompactResult.summary;
 				shortSummary = snapcompactResult.shortSummary;
 				firstKeptEntryId = snapcompactResult.firstKeptEntryId;
@@ -7907,7 +8013,7 @@ export class AgentSession {
 							compactResult = await compact(
 								this.#obfuscatePreparationForProvider(preparation),
 								candidate,
-								apiKey,
+								this.#modelRegistry.resolver(candidate, this.sessionId),
 								undefined,
 								autoCompactionSignal,
 								{
@@ -8294,9 +8400,31 @@ export class AgentSession {
 		if (isContextOverflow(message, contextWindow)) return false;
 
 		if (this.#isClassifierRefusal(message)) return true;
+		if (this.#isStaleOpenAIResponsesReplayError(message)) return true;
 
 		const err = message.errorMessage;
 		return this.#isTransientErrorMessage(err) || isUsageLimitError(err);
+	}
+
+	#isStaleOpenAIResponsesReplayError(message: AssistantMessage): boolean {
+		const currentApi = this.model?.api;
+		if (
+			message.api !== "openai-responses" &&
+			message.api !== "openai-codex-responses" &&
+			currentApi !== "openai-responses" &&
+			currentApi !== "openai-codex-responses"
+		) {
+			return false;
+		}
+
+		const errorMessage = message.errorMessage;
+		if (!errorMessage) return false;
+
+		return (
+			/\bItem with id ['"][^'"]+['"] not found\.?/i.test(errorMessage) ||
+			(/previous[ _]?response/i.test(errorMessage) &&
+				/not[ _]?found|invalid|expired|stale|zero[ _-]?data[ _-]?retention/i.test(errorMessage))
+		);
 	}
 
 	#isClassifierRefusal(message: AssistantMessage): boolean {
@@ -8632,15 +8760,22 @@ export class AgentSession {
 		}
 
 		const errorMessage = message.errorMessage || "Unknown error";
+		const staleOpenAIResponsesReplayError = this.#isStaleOpenAIResponsesReplayError(message);
 		const parsedRetryAfterMs = this.#parseRetryAfterMsFromError(errorMessage);
-		let delayMs = calculateRetryBackoffDelayMs(retrySettings.baseDelayMs, this.#retryAttempt);
+		let delayMs = staleOpenAIResponsesReplayError
+			? 0
+			: calculateRetryBackoffDelayMs(retrySettings.baseDelayMs, this.#retryAttempt);
 		let switchedCredential = false;
 		let switchedModel = false;
 		// Set when a usage-limit error pinned the wait to credential
 		// availability — suppresses the generic retry-after bump below.
 		let usageLimitWaitMs: number | undefined;
 
-		if (this.model && isUsageLimitError(errorMessage)) {
+		if (staleOpenAIResponsesReplayError) {
+			this.#resetCurrentResponsesProviderSession("stale replay error");
+		}
+
+		if (this.model && !staleOpenAIResponsesReplayError && isUsageLimitError(errorMessage)) {
 			const retryAfterMs = parsedRetryAfterMs ?? calculateRateLimitBackoffMs(parseRateLimitReason(errorMessage));
 			const outcome = await this.#modelRegistry.authStorage.markUsageLimitReached(
 				this.model.provider,
@@ -8652,6 +8787,13 @@ export class AgentSession {
 				},
 			);
 			if (outcome.switched) {
+				switchedCredential = true;
+				delayMs = 0;
+			} else if (await this.#maybeAutoRedeemCodexReset()) {
+				// A live usage-limit 429 on the active Codex account, with a banked
+				// reset and the opt-in setting on: spend the reset and retry
+				// immediately instead of waiting out the window. Runs after the
+				// free sibling-switch above and before model fallback below.
 				switchedCredential = true;
 				delayMs = 0;
 			} else {
@@ -8677,7 +8819,7 @@ export class AgentSession {
 		}
 
 		const currentSelector = this.model ? formatRetryFallbackSelector(this.model, this.thinkingLevel) : undefined;
-		if (!switchedCredential && currentSelector) {
+		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
 			if (retrySettings.modelFallback) {
 				if (!classifierRefusal) {
 					this.#noteRetryFallbackCooldown(currentSelector, parsedRetryAfterMs, errorMessage);
@@ -9814,7 +9956,7 @@ export class AgentSession {
 			const branchSummarySettings = this.settings.getGroup("branchSummary");
 			const result = await generateBranchSummary(entriesToSummarize, {
 				model,
-				apiKey,
+				apiKey: this.#modelRegistry.resolver(model, this.sessionId),
 				signal: this.#branchSummaryAbortController.signal,
 				customInstructions: this.#obfuscateTextForProvider(options.customInstructions),
 				reserveTokens: branchSummarySettings.reserveTokens,
@@ -10069,6 +10211,169 @@ export class AgentSession {
 			baseUrlResolver: provider => this.#modelRegistry.getProviderBaseUrl?.(provider),
 			signal,
 		});
+	}
+
+	/**
+	 * Redeem one saved Codex rate-limit reset for a specific account, injecting
+	 * the provider base URL like {@link AgentSession.fetchUsageReports}. Powers
+	 * the `/usage reset` command and auto-redeem. Never throws for business
+	 * outcomes — inspect the returned `code`.
+	 */
+	async redeemResetCredit(target: ResetCreditTarget, signal?: AbortSignal): Promise<ResetCreditRedeemOutcome> {
+		return this.#modelRegistry.authStorage.redeemResetCredit({
+			target,
+			baseUrlResolver: provider => this.#modelRegistry.getProviderBaseUrl?.(provider),
+			signal,
+		});
+	}
+
+	/**
+	 * List saved Codex rate-limit resets per stored account, fetched live from
+	 * the dedicated credits endpoint (bypasses the usage cache). Powers the
+	 * `/usage reset` account selector.
+	 */
+	async listResetCredits(signal?: AbortSignal): Promise<ResetCreditAccountStatus[]> {
+		return this.#modelRegistry.authStorage.listResetCredits({
+			sessionId: this.sessionId,
+			baseUrlResolver: provider => this.#modelRegistry.getProviderBaseUrl?.(provider),
+			signal,
+		});
+	}
+	async #confirmCodexAutoRedeem(decision: CodexAutoRedeemRedeemDecision): Promise<boolean> {
+		const runner = this.#extensionRunner;
+		if (!runner?.hasUI()) {
+			this.emitNotice(
+				"warning",
+				"Codex saved reset is eligible, but auto-redeem is unset and no prompt UI is available. Run `/usage reset` or set codexResets.autoRedeem.",
+				"codex-auto-reset",
+			);
+			return false;
+		}
+
+		const who = decision.target.email ?? decision.target.accountId ?? "the active account";
+		const resetLabel = decision.availableCount === 1 ? "reset" : "resets";
+		try {
+			const choice = await runner
+				.getUIContext()
+				.select(
+					`Do you wanna redeem your reset?\n${who} is blocked by the weekly Codex limit for about ${formatDuration(decision.remainingMs)}. Spend 1 of ${decision.availableCount} saved ${resetLabel}?`,
+					[
+						{
+							label: "Yes",
+							description: "Redeem now and remember yes for future eligible Codex weekly blocks.",
+						},
+						{
+							label: "No",
+							description: "Do not auto-redeem saved Codex resets.",
+						},
+					],
+				);
+			if (choice === "Yes") {
+				this.settings.set("codexResets.autoRedeem", "yes");
+				return true;
+			}
+			if (choice === "No") {
+				this.settings.set("codexResets.autoRedeem", "no");
+			}
+		} catch (error) {
+			logger.warn("codex-auto-reset prompt failed", { error: String(error) });
+		}
+		return false;
+	}
+
+	/**
+	 * Auto-redeem hook for {@link AgentSession.#handleRetryableError}'s
+	 * usage-limit branch. Returns `true` only when a saved Codex reset was
+	 * actually spent (so the caller retries immediately). The "unset" mode is
+	 * reactive but asks before spending; "yes" skips that prompt, and "no" avoids
+	 * the eligibility IO entirely. The decision remains heavily gated — see
+	 * `./codex-auto-reset` and the design in `local://autoreset-spec.md`.
+	 * Per-account in-flight dedup lets concurrent sessions adopt one redeem
+	 * instead of double-spending.
+	 */
+	async #maybeAutoRedeemCodexReset(coordinator = defaultCodexAutoRedeemCoordinator): Promise<boolean> {
+		const cfg = this.settings.getGroup("codexResets");
+		const model = this.model;
+		// Cheap exits before any IO.
+		if (!shouldEvaluateCodexAutoRedeem(cfg.autoRedeem) || !model || model.provider !== "openai-codex") return false;
+		const authStorage = this.#modelRegistry.authStorage;
+		// Capture identity BEFORE awaits: markUsageLimitReached leaves the
+		// usage-limit session credential sticky, so this names the blocked account.
+		const identity = authStorage.getOAuthAccountIdentity("openai-codex", this.sessionId);
+		const accountKey = (identity?.accountId ?? identity?.email)?.trim().toLowerCase();
+		if (!accountKey) return false;
+		const existing = coordinator.inFlightByAccount.get(accountKey);
+		if (existing) return existing;
+
+		const run = (async (): Promise<boolean> => {
+			const reports = await this.fetchUsageReports();
+			const decision = evaluateCodexAutoRedeem({
+				nowMs: Date.now(),
+				provider: model.provider,
+				modelId: model.id,
+				settings: {
+					autoRedeem: true,
+					minBlockedMinutes: Math.max(0, cfg.minBlockedMinutes),
+					keepCredits: Math.max(0, Math.trunc(cfg.keepCredits)),
+				},
+				identity,
+				reports,
+				attemptedBlockKeys: coordinator.attemptedBlockKeys,
+				lastAttemptAtByAccount: coordinator.lastAttemptAtByAccount,
+			});
+			if (!decision.redeem) {
+				logger.debug("codex-auto-reset: skipped", { reason: decision.reason });
+				return false;
+			}
+			if (shouldPromptCodexAutoRedeem(cfg.autoRedeem) && !(await this.#confirmCodexAutoRedeem(decision))) {
+				return false;
+			}
+			// Commit the attempt BEFORE acting so this block can never re-enter.
+			coordinator.attemptedBlockKeys.add(decision.blockKey);
+			coordinator.lastAttemptAtByAccount.set(decision.accountKey, Date.now());
+			const who = decision.target.email ?? decision.target.accountId ?? "the active account";
+			const outcome = await authStorage.redeemResetCredit({
+				target: decision.target,
+				baseUrlResolver: provider => this.#modelRegistry.getProviderBaseUrl?.(provider),
+				// Not tied to the retry abort controller: aborting a consume
+				// mid-flight leaves credit state unknown.
+				signal: AbortSignal.timeout(15_000),
+			});
+			switch (outcome.code) {
+				case "reset": {
+					const left = Math.max(0, decision.availableCount - 1);
+					this.emitNotice(
+						"info",
+						`Auto-redeemed a saved Codex rate-limit reset for ${who} (${left} left); retrying now.`,
+						"codex-auto-reset",
+					);
+					void this.fetchUsageReports();
+					return true;
+				}
+				case "already_redeemed":
+					this.emitNotice(
+						"warning",
+						"A saved Codex reset was already redeemed elsewhere; waiting for the window.",
+						"codex-auto-reset",
+					);
+					return false;
+				case "no_credit":
+					logger.debug("codex-auto-reset: no_credit (snapshot/live mismatch)", { account: accountKey });
+					return false;
+				case "nothing_to_reset":
+					this.emitNotice(
+						"warning",
+						"Codex reset reported nothing to reset; auto-redeem suppressed for this window.",
+						"codex-auto-reset",
+					);
+					return false;
+				default:
+					this.emitNotice("warning", `Codex auto-redeem failed (${outcome.code}).`, "codex-auto-reset");
+					return false;
+			}
+		})().finally(() => coordinator.inFlightByAccount.delete(accountKey));
+		coordinator.inFlightByAccount.set(accountKey, run);
+		return run;
 	}
 
 	/**

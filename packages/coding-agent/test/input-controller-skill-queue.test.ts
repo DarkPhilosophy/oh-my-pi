@@ -91,6 +91,9 @@ function createStubInputControllerContext(opts: { skillCommands: Map<string, str
 			prompt,
 			promptCustomMessage,
 		},
+		get viewSession() {
+			return (this as typeof ctx).session;
+		},
 		showError,
 		handleGoalModeCommand,
 		goalModeEnabled: false,
@@ -337,7 +340,7 @@ describe("AgentSession custom-role tag dequeue (E4-E7)", () => {
 		const { session } = fixture;
 		const firstTag = session.enqueueCustomMessageDisplay("/skill:foo bar", "steer");
 		const popped = session.popLastQueuedMessage();
-		expect(popped).toBe("/skill:foo bar");
+		expect(popped?.text).toBe("/skill:foo bar");
 		expect(session.getQueuedMessages().steering).toEqual([]);
 
 		// Push a NEW tagged entry with the same text. Emitting `message_start` for the
@@ -384,6 +387,7 @@ function createStubInteractiveModeContextForUiHelpers(session: AgentSession) {
 		ui: { requestRender },
 		pendingMessagesContainer,
 		session,
+		viewSession: session,
 		compactionQueuedMessages: [],
 		keybindings: {
 			getDisplayString: (_action: string) => "Alt+Up",
@@ -490,6 +494,9 @@ function createEventControllerFixtureForE10() {
 		updatePendingMessagesDisplay,
 		pendingTools: new Map(),
 		session: {},
+		get viewSession() {
+			return (this as typeof ctx).session;
+		},
 	} as unknown as InteractiveModeContext;
 
 	const controller = new EventController(ctx);
