@@ -58,6 +58,14 @@ import { yieldIfDue } from "./utils/yield";
 /** Sentinel returned by the abort race in `streamAssistantResponse`. */
 const ABORTED: unique symbol = Symbol("agent-loop-aborted");
 
+/**
+ * Cap on consecutive re-samples triggered by a non-terminal stop
+ * (`stopDetails.type === "pause_turn"`) without an intervening tool call. Each
+ * continuation is a full model request, so a backend that never stops pausing
+ * must not spin the loop forever. Resets whenever a turn carries tool calls.
+ */
+const MAX_PAUSED_TURN_CONTINUATIONS = 8;
+
 class HarmonyLeakInterruption extends Error {
 	constructor(
 		readonly detection: HarmonyDetection,
@@ -166,6 +174,9 @@ function coerceToolResult(raw: unknown): { result: AgentToolResult<unknown>; mal
 	// aggregator that catches per-entry errors and synthesizes a combined
 	// result). Preserve the flag so agent-loop can surface it on the wire.
 	const explicitError = Boolean(rawObj && "isError" in rawObj && rawObj.isError);
+	// Tools may flag the result contextually useless (zero matches, elapsed
+	// wait) so compaction can elide it once consumed. Errors are never useless.
+	const useless = Boolean(rawObj && "useless" in rawObj && rawObj.useless);
 
 	if (!Array.isArray(rawContent)) {
 		return {
@@ -210,7 +221,12 @@ function coerceToolResult(raw: unknown): { result: AgentToolResult<unknown>; mal
 		content.push({ type: "text", text: EMPTY_ERROR_TOOL_RESULT_TEXT });
 	}
 	return {
-		result: { content, details, ...(isError ? { isError: true } : {}) },
+		result: {
+			content,
+			details,
+			...(isError ? { isError: true } : {}),
+			...(useless && !isError ? { useless: true } : {}),
+		},
 		malformed: invalidBlocks > 0,
 	};
 }
@@ -586,6 +602,7 @@ async function runLoopBody(
 	let pendingMessages: AgentMessage[] = signal?.aborted ? [] : (await config.getSteeringMessages?.()) || [];
 	let harmonyRetryAttempt = 0;
 	let harmonyTruncateResumeCount = 0;
+	let pausedTurnContinuations = 0;
 
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
 	while (true) {
@@ -667,7 +684,6 @@ async function runLoopBody(
 				stream.push({ type: "message_end", message: snapshotAssistantMessage(message) });
 			}
 			newMessages.push(message);
-			let steeringMessagesFromExecution: AgentMessage[] | undefined;
 
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
 				// Create placeholder tool results for any tool calls in the aborted message
@@ -728,7 +744,6 @@ async function runLoopBody(
 				);
 
 				toolResults.push(...executionResult.toolResults);
-				steeringMessagesFromExecution = executionResult.steeringMessages;
 
 				for (const result of toolResults) {
 					currentContext.messages.push(result);
@@ -759,14 +774,32 @@ async function runLoopBody(
 				}
 			}
 
+			if (toolCalls.length > 0) {
+				pausedTurnContinuations = 0;
+			} else if (
+				!hasMoreToolCalls &&
+				message.stopReason === "stop" &&
+				message.stopDetails?.type === "pause_turn" &&
+				pausedTurnContinuations < MAX_PAUSED_TURN_CONTINUATIONS
+			) {
+				// Non-terminal stop: the provider ended the response but not the turn
+				// (e.g. Codex `end_turn: false` on a commentary-only progress update).
+				// Re-sample with the assistant message replayed so the model keeps
+				// working; the next round folds steering/asides in like any other
+				// mid-work turn.
+				pausedTurnContinuations++;
+				hasMoreToolCalls = true;
+			}
+
 			stream.push({ type: "turn_end", message, toolResults });
 
 			// On external abort (user interrupt), leave the steering queue intact: the
 			// session aborts then continues, delivering the queue into a fresh run.
 			// Draining it here would inject the messages right before a model call that
-			// instantly aborts — message lands in history, agent never responds.
-			const steering =
-				steeringMessagesFromExecution ?? (signal?.aborted ? [] : (await config.getSteeringMessages?.()) || []);
+			// instantly aborts — message lands in history, agent never responds. The
+			// mid-batch interrupt poll only peeks (hasSteeringMessages), so the queue
+			// still owns every message until this dequeue.
+			const steering = signal?.aborted ? [] : (await config.getSteeringMessages?.()) || [];
 			if (hasMoreToolCalls) {
 				// Mid-work: fold any non-interrupting asides into the next turn alongside steering.
 				const asides = resolveAsides(await config.getAsideMessages?.());
@@ -782,11 +815,15 @@ async function runLoopBody(
 		// Agent would stop here. Drain non-interrupting asides + follow-up messages.
 		await config.onBeforeYield?.();
 		// Skip queue drains when externally aborted (same stranding hazard as above).
+		// Re-poll steering too: a steer can land between the stop-boundary dequeue
+		// above and this yield point (e.g. queued while onBeforeYield ran). Without
+		// this poll it would strand in the queue until the next manual prompt.
+		const lateSteering = signal?.aborted ? [] : (await config.getSteeringMessages?.()) || [];
 		const asideMessages = signal?.aborted ? [] : resolveAsides(await config.getAsideMessages?.());
 		const followUpMessages = signal?.aborted ? [] : (await config.getFollowUpMessages?.()) || [];
-		if (asideMessages.length > 0 || followUpMessages.length > 0) {
+		if (lateSteering.length > 0 || asideMessages.length > 0 || followUpMessages.length > 0) {
 			// Set as pending so the inner loop processes them before stopping.
-			pendingMessages = [...asideMessages, ...followUpMessages];
+			pendingMessages = [...lateSteering, ...asideMessages, ...followUpMessages];
 			continue;
 		}
 
@@ -854,7 +891,7 @@ async function streamAssistantResponse(
 		};
 	}
 	if (config.transformProviderContext) {
-		llmContext = config.transformProviderContext(llmContext);
+		llmContext = config.transformProviderContext(llmContext, config.model);
 	}
 
 	const streamFunction = streamFn || streamSimple;
@@ -1233,9 +1270,10 @@ async function executeToolCalls(
 	config: AgentLoopConfig,
 	telemetry: AgentTelemetry | undefined,
 	invokeAgentSpan: Span | undefined,
-): Promise<{ toolResults: ToolResultMessage[]; steeringMessages?: AgentMessage[] }> {
+): Promise<{ toolResults: ToolResultMessage[] }> {
 	const tools = currentContext.tools;
 	const {
+		hasSteeringMessages,
 		getSteeringMessages,
 		interruptMode = "immediate",
 		getToolContext,
@@ -1255,8 +1293,6 @@ async function executeToolCalls(
 		? AbortSignal.any([signal, steeringAbortController.signal])
 		: steeringAbortController.signal;
 	const interruptState = { triggered: false };
-	let steeringMessages: AgentMessage[] | undefined;
-	let steeringCheckTail: Promise<void> = Promise.resolve();
 
 	const records = toolCalls.map(toolCall => ({
 		toolCall,
@@ -1279,23 +1315,29 @@ async function executeToolCalls(
 	const checkSteering = async (): Promise<void> => {
 		// `signal` (external/user abort) is checked separately from the internal
 		// steeringAbortController: once the run is externally aborted it is
-		// unwinding, and draining the steering queue here would strand the
-		// messages in the dying run instead of leaving them for the post-abort
-		// continue (interruptAndFlushQueuedMessages → Agent.continue()).
-		if (!shouldInterruptImmediately || !getSteeringMessages || interruptState.triggered || signal?.aborted) {
+		// unwinding and the interrupt would be redundant.
+		if (!shouldInterruptImmediately || interruptState.triggered || signal?.aborted) {
 			return;
 		}
-		const check = steeringCheckTail.then(async () => {
+		// Prefer the non-consuming peek (`hasSteeringMessages`) when available.
+		// Fall back to calling `getSteeringMessages` directly when only it is
+		// provided (e.g. in tests or minimal integrations without a separate
+		// peek function). In that case the message is consumed here rather than
+		// at the outer injection boundary, but the interrupt still fires.
+		let hasMessages: boolean;
+		if (hasSteeringMessages) {
+			hasMessages = await hasSteeringMessages();
+		} else if (getSteeringMessages) {
+			const msgs = await getSteeringMessages();
+			hasMessages = (msgs?.length ?? 0) > 0;
+		} else {
+			return;
+		}
+		if (hasMessages) {
 			if (interruptState.triggered || signal?.aborted) return;
-			const steering = await getSteeringMessages();
-			if (steering.length > 0) {
-				steeringMessages = steering;
-				interruptState.triggered = true;
-				steeringAbortController.abort();
-			}
-		});
-		steeringCheckTail = check.catch(() => {});
-		await check;
+			interruptState.triggered = true;
+			steeringAbortController.abort();
+		}
 	};
 
 	const emitToolResult = (record: (typeof records)[number], result: AgentToolResult<any>, isError: boolean): void => {
@@ -1325,6 +1367,7 @@ async function executeToolCalls(
 			content: result.content,
 			details: result.details,
 			isError,
+			...(result.useless && !isError ? { useless: true } : {}),
 			timestamp: Date.now(),
 		};
 		record.result = result;
@@ -1504,6 +1547,7 @@ async function executeToolCalls(
 							content: after.content ?? result.content,
 							details: after.details ?? result.details,
 							isError: after.isError ?? result.isError,
+							useless: after.useless ?? result.useless,
 						});
 						result = coerced.result;
 						isError = coerced.malformed || (after.isError ?? isError);
@@ -1604,7 +1648,7 @@ async function executeToolCalls(
 		}
 	}
 
-	return { toolResults: emittedToolResults, steeringMessages };
+	return { toolResults: emittedToolResults };
 }
 
 /**

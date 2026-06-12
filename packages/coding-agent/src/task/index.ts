@@ -698,7 +698,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					buildDetails("running", ownJobId) as unknown as Record<string, unknown>,
 				);
 				try {
-					const result = await this.#executeSync(toolCallId, spawnParams, runSignal, undefined, agentId);
+					const result = await this.#executeSync(
+						toolCallId,
+						spawnParams,
+						runSignal,
+						undefined,
+						agentId,
+						progress.index,
+						true,
+					);
 					const finalText = result.content.find(part => part.type === "text")?.text ?? "(no output)";
 					const singleResult = result.details?.results[0];
 					// A missing result means the sync path failed at the tool level
@@ -781,7 +789,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		if (spawnItems.length === 1) {
 			await semaphore.acquire();
 			try {
-				return await this.#executeSync(toolCallId, spawnParamsFor(params, spawnItems[0]), signal, onUpdate);
+				return await this.#executeSync(
+					toolCallId,
+					spawnParamsFor(params, spawnItems[0]),
+					signal,
+					onUpdate,
+					undefined,
+					0,
+				);
 			} finally {
 				semaphore.release();
 			}
@@ -818,7 +833,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 								}
 							}
 						: undefined;
-					return await this.#executeSync(toolCallId, spawnParamsFor(params, item), workerSignal, itemOnUpdate);
+					return await this.#executeSync(
+						toolCallId,
+						spawnParamsFor(params, item),
+						workerSignal,
+						itemOnUpdate,
+						undefined,
+						index,
+					);
 				} finally {
 					semaphore.release();
 				}
@@ -875,8 +897,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
 		preAllocatedId?: string,
+		spawnIndex = 0,
+		detached = false,
 	): Promise<AgentToolResult<TaskToolDetails>> {
-		return this.#runSpawn(toolCallId, params, signal, onUpdate, preAllocatedId);
+		return this.#runSpawn(toolCallId, params, signal, onUpdate, preAllocatedId, spawnIndex, detached);
 	}
 
 	/** Spawn a fresh subagent and run it to completion. */
@@ -886,6 +910,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
 		preAllocatedId?: string,
+		spawnIndex = 0,
+		detached = false,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
 		const { agents, projectAgentsDir } = await discoverAgents(this.session.cwd);
@@ -1070,7 +1096,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 			// Progress tracking for the single agent
 			let latestProgress: AgentProgress = {
-				index: 0,
+				index: spawnIndex,
 				id: agentId,
 				agent: agentName,
 				agentSource: agent.source,
@@ -1120,8 +1146,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				context: sharedContext,
 				planReference,
 				description: params.description,
-				index: 0,
+				index: spawnIndex,
 				parentToolCallId: toolCallId,
+				detached,
 				id: agentId,
 				taskDepth,
 				modelOverride,
@@ -1226,7 +1253,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
 					return {
-						index: 0,
+						index: spawnIndex,
 						id: agentId,
 						agent: agent.name,
 						agentSource: agent.source,

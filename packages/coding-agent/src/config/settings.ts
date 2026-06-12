@@ -798,6 +798,15 @@ export class Settings {
 			raw["compaction.strategy"] = "shake";
 		}
 
+		// snapcompact.systemPrompt: boolean -> scoped enum.
+		const snapcompactObj = raw.snapcompact as Record<string, unknown> | undefined;
+		if (snapcompactObj && typeof snapcompactObj.systemPrompt === "boolean") {
+			snapcompactObj.systemPrompt = snapcompactObj.systemPrompt ? "all" : "none";
+		}
+		if (typeof raw["snapcompact.systemPrompt"] === "boolean") {
+			raw["snapcompact.systemPrompt"] = raw["snapcompact.systemPrompt"] ? "all" : "none";
+		}
+
 		// statusLine: rename "plan_mode" segment to "mode"
 		const statusLineObj = raw.statusLine as Record<string, unknown> | undefined;
 		if (statusLineObj) {
@@ -824,6 +833,18 @@ export class Settings {
 			delete providersObj.parallelFetch;
 		}
 		delete raw["providers.parallelFetch"];
+
+		// codexResets.autoRedeem: boolean -> tri-state enum.
+		// Existing explicit false keeps the old "do not run" behavior; missing
+		// config now falls through to the new "unset" default, which asks before
+		// the first eligible spend.
+		const codexResetsObj = raw.codexResets as Record<string, unknown> | undefined;
+		if (codexResetsObj && typeof codexResetsObj.autoRedeem === "boolean") {
+			codexResetsObj.autoRedeem = codexResetsObj.autoRedeem ? "yes" : "no";
+		}
+		if (typeof raw["codexResets.autoRedeem"] === "boolean") {
+			raw["codexResets.autoRedeem"] = raw["codexResets.autoRedeem"] ? "yes" : "no";
+		}
 
 		// Map legacy `memories.enabled` boolean to the explicit `memory.backend`
 		// enum if the latter hasn't been set yet. Idempotent: subsequent

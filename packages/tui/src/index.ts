@@ -31,6 +31,9 @@ export * from "./keys";
 export * from "./kitty-graphics";
 // Right-side info panel compositing
 export * from "./right-panel";
+
+// SGR mouse report parsing
+export * from "./mouse";
 // Mermaid diagram support
 // Input buffering for batch splitting
 export * from "./stdin-buffer";
