@@ -374,7 +374,6 @@ describe("openai-codex streaming", () => {
 		expect(toolUse.stopReason).toBe("toolUse");
 		expect(toolUse.stopDetails).toBeUndefined();
 	});
-	});
 
 	it("persists final tool-call args when SSE finalizes via output_item.done without an args.done event", async () => {
 		const tempDir = TempDir.createSync("@pi-codex-stream-");
