@@ -164,4 +164,34 @@ describe("ExtensionUiController rightEditor widgets", () => {
 
 		expect(rightInfo.at(-1)).toEqual([["\x1b[31mhi\x1b[0m"]]);
 	});
+
+	it("keeps component-factory right widgets alive for render requests", () => {
+		const { ctx, rightInfo } = makeCtx();
+		const c = new ExtensionUiController(ctx);
+		let text = "first";
+		let disposed = 0;
+		let requestRender!: () => void;
+		const factory = (tui => {
+			requestRender = () => tui.requestRender();
+			return {
+				render: (width: number) => [`${text}${" ".repeat(Math.max(0, width - text.length))}`],
+				dispose() {
+					disposed++;
+				},
+			};
+		}) as Parameters<ExtensionUiController["setHookWidget"]>[1];
+
+		c.setHookWidget("live", factory, { placement: "rightEditor" });
+		expect(rightInfo.at(-1)).toEqual([["first"]]);
+		expect(disposed).toBe(0);
+
+		text = "second";
+		requestRender();
+		expect(rightInfo.at(-1)).toEqual([["second"]]);
+		expect(disposed).toBe(0);
+
+		c.setHookWidget("live", undefined, { placement: "rightEditor" });
+		expect(rightInfo.at(-1)).toBeUndefined();
+		expect(disposed).toBe(1);
+	});
 });

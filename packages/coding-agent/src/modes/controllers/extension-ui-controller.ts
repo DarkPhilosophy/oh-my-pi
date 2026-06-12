@@ -11,6 +11,7 @@ import type {
 	ExtensionUIDialogOptions,
 	ExtensionUISelectItem,
 	ExtensionUiComponent,
+	ExtensionUiComponentFactory,
 	ExtensionWidgetBlock,
 	ExtensionWidgetContent,
 	ExtensionWidgetOptions,
@@ -33,6 +34,10 @@ interface RightWidgetPanelBlock {
 	priority?: number;
 }
 
+type RightWidgetEntry =
+	| { kind: "blocks"; blocks: RightWidgetPanelBlock[]; priority?: number }
+	| { kind: "component"; component: ExtensionUiComponent; priority?: number };
+
 function isWidgetBlock(value: unknown): value is ExtensionWidgetBlock {
 	return typeof value === "object" && value !== null && Array.isArray((value as { lines?: unknown }).lines);
 }
@@ -41,7 +46,7 @@ export class ExtensionUiController {
 	#extensionTerminalInputUnsubscribers = new Set<() => void>();
 	#hookWidgetsAbove = new Map<string, ExtensionUiComponent>();
 	#hookWidgetsBelow = new Map<string, ExtensionUiComponent>();
-	#rightWidgets = new Map<string, { blocks: RightWidgetPanelBlock[]; priority?: number }>();
+	#rightWidgets = new Map<string, RightWidgetEntry>();
 	#errorSubscribedRunners = new WeakSet<object>();
 	// Single-file dialog surface (`editorContainer` + focus) is shared by the
 	// selector / input / editor modals, so only one may be presented at a time;
@@ -281,6 +286,7 @@ export class ExtensionUiController {
 
 		if (content === undefined) {
 			if (wasRight) {
+				this.#disposeRightWidgetEntry(this.#rightWidgets.get(key));
 				this.#rightWidgets.delete(key);
 				this.#flushRightWidgets();
 			}
@@ -291,7 +297,8 @@ export class ExtensionUiController {
 		if (placement === "rightEditor") {
 			// Updating an existing Map key preserves insertion order; deleting first
 			// would make animated/right-side widgets jump below siblings on refresh.
-			this.#rightWidgets.set(key, { blocks: this.#contentToRightBlocks(content), priority: options?.priority });
+			this.#disposeRightWidgetEntry(this.#rightWidgets.get(key));
+			this.#rightWidgets.set(key, this.#contentToRightEntry(content, options?.priority));
 			this.#flushRightWidgets();
 			this.#rebuildHookWidgets();
 			return;
@@ -299,6 +306,7 @@ export class ExtensionUiController {
 
 		// Moving a previously right-side key back inline must clear its stale lines.
 		if (wasRight) {
+			this.#disposeRightWidgetEntry(this.#rightWidgets.get(key));
 			this.#rightWidgets.delete(key);
 			this.#flushRightWidgets();
 		}
@@ -312,28 +320,54 @@ export class ExtensionUiController {
 		existing?.dispose?.();
 		widgets.delete(key);
 	}
-	#contentToRightBlocks(content: ExtensionWidgetContent): RightWidgetPanelBlock[] {
+	#contentToRightEntry(content: ExtensionWidgetContent, priority: number | undefined): RightWidgetEntry {
 		if (Array.isArray(content)) {
 			if (content.length > 0 && content.every(isWidgetBlock)) {
-				return content
-					.map(block => ({
-						lines: block.lines.map(line => String(line)),
-						priority: block.priority,
-					}))
-					.filter(block => block.lines.length > 0);
+				return {
+					kind: "blocks",
+					blocks: content
+						.map(block => ({
+							lines: block.lines.map(line => String(line)),
+							priority: block.priority,
+						}))
+						.filter(block => block.lines.length > 0),
+					priority,
+				};
 			}
-			return [{ lines: content.map(line => String(line)) }];
+			return { kind: "blocks", blocks: [{ lines: content.map(line => String(line)) }], priority };
 		}
-		if (content === undefined) return [];
-		const comp = this.#createHookWidget(content);
-		try {
-			// Render at full width so the component has room, then strip trailing
-			// padding that width-aware components (e.g. Text) add. Keep trailing SGR
-			// resets intact when the padding sits before the reset.
-			return [{ lines: comp.render(process.stdout.columns || 80).map(trimRightPadding) }];
-		} finally {
-			comp.dispose?.();
+		if (content === undefined) return { kind: "blocks", blocks: [], priority };
+		return { kind: "component", component: this.#createRightWidgetComponent(content), priority };
+	}
+
+	#rightWidgetBlocks(entry: RightWidgetEntry): RightWidgetPanelBlock[] {
+		if (entry.kind === "blocks") return entry.blocks;
+		return [
+			{
+				lines: entry.component.render(process.stdout.columns || 80).map(trimRightPadding),
+			},
+		];
+	}
+
+	#disposeRightWidgetEntry(entry: RightWidgetEntry | undefined): void {
+		if (entry?.kind === "component") {
+			entry.component.dispose?.();
 		}
+	}
+
+	#createRightWidgetComponent(content: ExtensionUiComponentFactory): ExtensionUiComponent {
+		const requestRightWidgetRender = (force = false, options?: Parameters<TUI["requestRender"]>[1]): void => {
+			this.#flushRightWidgets();
+			this.ctx.ui.requestRender(force, options);
+		};
+		const ui = new Proxy(this.ctx.ui, {
+			get: (target, property, receiver) => {
+				if (property === "requestRender") return requestRightWidgetRender;
+				if (property === "requestComponentRender") return () => requestRightWidgetRender();
+				return Reflect.get(target, property, receiver);
+			},
+		}) as TUI;
+		return content(ui, theme);
 	}
 
 	#flushRightWidgets(): void {
@@ -346,7 +380,7 @@ export class ExtensionUiController {
 		// Placement order: explicit block priority, then widget priority, then
 		// ascending height (shortest first), then stable widget/block order.
 		const blocks = [...this.#rightWidgets.values()].flatMap((entry, widgetIndex) =>
-			entry.blocks.map((block, blockIndex) => ({
+			this.#rightWidgetBlocks(entry).map((block, blockIndex) => ({
 				lines: block.lines,
 				priority: block.priority ?? entry.priority,
 				widgetIndex,
@@ -863,6 +897,9 @@ export class ExtensionUiController {
 		}
 		this.#hookWidgetsAbove.clear();
 		this.#hookWidgetsBelow.clear();
+		for (const widget of this.#rightWidgets.values()) {
+			this.#disposeRightWidgetEntry(widget);
+		}
 		this.#rightWidgets.clear();
 		this.#flushRightWidgets();
 		this.#rebuildHookWidgets();
