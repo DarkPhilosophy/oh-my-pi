@@ -46,6 +46,7 @@ export class ExtensionUiController {
 	#extensionTerminalInputUnsubscribers = new Set<() => void>();
 	#hookWidgetsAbove = new Map<string, ExtensionUiComponent>();
 	#hookWidgetsBelow = new Map<string, ExtensionUiComponent>();
+	#rightInfoProvider = (): string[][] => this.#rightWidgetLines();
 	#rightWidgets = new Map<string, RightWidgetEntry>();
 	#errorSubscribedRunners = new WeakSet<object>();
 	// Single-file dialog surface (`editorContainer` + focus) is shared by the
@@ -357,7 +358,6 @@ export class ExtensionUiController {
 
 	#createRightWidgetComponent(content: ExtensionUiComponentFactory): ExtensionUiComponent {
 		const requestRightWidgetRender = (force = false, options?: Parameters<TUI["requestRender"]>[1]): void => {
-			this.#flushRightWidgets();
 			this.ctx.ui.requestRender(force, options);
 		};
 		const ui = new Proxy(this.ctx.ui, {
@@ -371,10 +371,10 @@ export class ExtensionUiController {
 	}
 
 	#flushRightWidgets(): void {
-		if (this.#rightWidgets.size === 0) {
-			this.ctx.setRightInfo(undefined);
-			return;
-		}
+		this.ctx.setRightInfo(this.#rightWidgets.size === 0 ? undefined : this.#rightInfoProvider);
+	}
+
+	#rightWidgetLines(): string[][] {
 		// Each rightEditor block is composited independently so multi-section
 		// widgets can degrade contextually when the negative space is short.
 		// Placement order: explicit block priority, then widget priority, then
@@ -395,7 +395,7 @@ export class ExtensionUiController {
 			if (a.widgetIndex !== b.widgetIndex) return a.widgetIndex - b.widgetIndex;
 			return a.blockIndex - b.blockIndex;
 		});
-		this.ctx.setRightInfo(blocks.map(block => block.lines));
+		return blocks.map(block => block.lines);
 	}
 
 	#createHookWidget(content: ExtensionWidgetContent): ExtensionUiComponent {
