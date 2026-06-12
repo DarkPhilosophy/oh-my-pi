@@ -397,6 +397,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	shutdownRequested = false;
 	#isShuttingDown = false;
 	#rightInfoBlocks: string[][] = [];
+	#staticRightInfoProvider = (): readonly (readonly string[])[] => this.#rightInfoBlocks;
+	#rightInfoProvider = this.#staticRightInfoProvider;
 	hookSelector: HookSelectorComponent | undefined = undefined;
 	hookInput: HookInputComponent | undefined = undefined;
 	hookEditor: HookEditorComponent | undefined = undefined;
@@ -607,9 +609,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		welcome?.playIntro(() => this.ui.requestComponentRender(welcome));
 	}
 
-	setRightInfo(blocks: string[][] | undefined): void {
+	setRightInfo(blocks: string[][] | (() => readonly (readonly string[])[]) | undefined): void {
+		if (typeof blocks === "function") {
+			this.#rightInfoProvider = blocks;
+			this.ui.requestRender();
+			return;
+		}
 		const next = blocks ?? [];
 		const changed =
+			this.#rightInfoProvider !== this.#staticRightInfoProvider ||
 			next.length !== this.#rightInfoBlocks.length ||
 			next.some((block, i) => {
 				const prev = this.#rightInfoBlocks[i];
@@ -617,8 +625,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			});
 		if (!changed) return;
 		this.#rightInfoBlocks = next;
+		this.#rightInfoProvider = this.#staticRightInfoProvider;
 		this.ui.requestRender();
 	}
+
 	async init(options: InteractiveModeInitOptions = {}): Promise<void> {
 		if (this.isInitialized) return;
 
@@ -711,7 +721,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// transcript stays a directly reusable root child (scoped renders and the
 		// native scrollback protocol keep working), and the panel can never
 		// overlap the bottom chrome or rows committed to scrollback.
-		this.ui.setRightPanel(() => this.#rightInfoBlocks, [mainContent, this.chatContainer]);
+		this.ui.setRightPanel(() => this.#rightInfoProvider(), [mainContent, this.chatContainer]);
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(this.todoContainer);

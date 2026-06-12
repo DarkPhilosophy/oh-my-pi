@@ -5,17 +5,24 @@ import type { InteractiveModeContext } from "../src/modes/types";
 
 // Minimal context: setHookWidget / clearHookWidgets only touch the two hook
 // containers, ui.requestRender, and setRightInfo.
-function makeCtx(): { ctx: InteractiveModeContext; rightInfo: (string[][] | undefined)[] } {
+function makeCtx(): {
+	ctx: InteractiveModeContext;
+	rightInfo: (string[][] | undefined)[];
+	currentRightInfo: () => string[][] | undefined;
+} {
 	const rightInfo: (string[][] | undefined)[] = [];
+	let provider: (() => readonly (readonly string[])[]) | undefined;
+	const snapshot = (): string[][] | undefined => provider?.().map(block => [...block]);
 	const ctx = {
 		hookWidgetContainerAbove: new Container(),
 		hookWidgetContainerBelow: new Container(),
 		ui: { requestRender: () => {} },
-		setRightInfo: (blocks: string[][] | undefined) => {
-			rightInfo.push(blocks);
+		setRightInfo: (blocks: string[][] | (() => readonly (readonly string[])[]) | undefined) => {
+			provider = typeof blocks === "function" ? blocks : blocks === undefined ? undefined : () => blocks;
+			rightInfo.push(snapshot());
 		},
 	} as unknown as InteractiveModeContext;
-	return { ctx, rightInfo };
+	return { ctx, rightInfo, currentRightInfo: snapshot };
 }
 
 describe("ExtensionUiController rightEditor widgets", () => {
@@ -163,5 +170,49 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		c.setHookWidget("styled", factory, { placement: "rightEditor" });
 
 		expect(rightInfo.at(-1)).toEqual([["\x1b[31mhi\x1b[0m"]]);
+	});
+
+	it("keeps component-factory right widgets alive for render requests", () => {
+		const { ctx, rightInfo, currentRightInfo } = makeCtx();
+		const c = new ExtensionUiController(ctx);
+		let text = "first";
+		let disposed = 0;
+		let requestRender!: () => void;
+		const factory = (tui => {
+			requestRender = () => tui.requestRender();
+			return {
+				render: (width: number) => [`${text}${" ".repeat(Math.max(0, width - text.length))}`],
+				dispose() {
+					disposed++;
+				},
+			};
+		}) as Parameters<ExtensionUiController["setHookWidget"]>[1];
+
+		c.setHookWidget("live", factory, { placement: "rightEditor" });
+		expect(rightInfo.at(-1)).toEqual([["first"]]);
+		expect(disposed).toBe(0);
+
+		text = "second";
+		requestRender();
+		expect(currentRightInfo()).toEqual([["second"]]);
+		expect(disposed).toBe(0);
+
+		c.setHookWidget("live", undefined, { placement: "rightEditor" });
+		expect(rightInfo.at(-1)).toBeUndefined();
+		expect(disposed).toBe(1);
+	});
+	it("re-renders component-factory right widgets when the right panel provider is read", () => {
+		const { ctx, currentRightInfo } = makeCtx();
+		const c = new ExtensionUiController(ctx);
+		let renderCount = 0;
+		const factory = (() => ({
+			render: () => [`render-${++renderCount}`],
+			dispose() {},
+		})) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+
+		c.setHookWidget("live", factory, { placement: "rightEditor" });
+
+		expect(currentRightInfo()).toEqual([["render-2"]]);
+		expect(currentRightInfo()).toEqual([["render-3"]]);
 	});
 });

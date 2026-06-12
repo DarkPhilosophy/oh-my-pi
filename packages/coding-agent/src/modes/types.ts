@@ -78,6 +78,8 @@ export interface InteractiveModeInitOptions {
 
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<HookSelectorOptions, "disabledIndices">;
 
+export type RightInfoProvider = () => readonly (readonly string[])[];
+
 export interface InteractiveModeContext {
 	// UI access
 	ui: TUI;
@@ -94,8 +96,8 @@ export interface InteractiveModeContext {
 	hookWidgetContainerAbove: Container;
 	hookWidgetContainerBelow: Container;
 	statusLine: StatusLineComponent;
-	/** Set the right-side info panel blocks (each composited independently into negative space). */
-	setRightInfo(blocks: string[][] | undefined): void;
+	/** Set the right-side info panel blocks/provider (each block composited independently into negative space). */
+	setRightInfo(blocks: string[][] | RightInfoProvider | undefined): void;
 
 	// Session access
 	session: AgentSession;
