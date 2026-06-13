@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [15.12.4] - 2026-06-13
+
 ### Added
 
 - Added `TUI.setRightPanel(provider, targets?)`: registers right-side info panel blocks composited into the visible window at the emit stage, restricted to rows rendered by the target root children. Compositing happens after the window/commit math on the window copy only, so panels never overlap bottom chrome, never enter native scrollback, and do not disturb component-scoped render reuse or the live-region/stable-prefix protocol.
