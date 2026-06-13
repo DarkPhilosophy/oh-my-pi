@@ -266,6 +266,100 @@ describe("beam recall free functions", () => {
 		expect(results[0]?.id).toBe("fact-name");
 	});
 
+	it("treats current-intent words as optional fact-query scaffolding", async () => {
+		const beam = makeBeam();
+		insertWorking(beam, "wm-current", "my current name profile is stale", { importance: 1.0 });
+		beam.db.run(
+			"INSERT INTO facts (fact_id, session_id, subject, predicate, object, timestamp, confidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			["fact-name", beam.sessionId, "name", "called", "Alice", "2026-05-30T00:00:00.000Z", 0.1],
+		);
+
+		const results = await recallEnhanced(beam, "what my current name", 1, {
+			includeFacts: true,
+			queryEmbedding: null,
+			useMmr: false,
+		});
+
+		expect(results[0]?.id).toBe("fact-name");
+	});
+
+	it("strips clitic fragments before scoring conversational fact queries", async () => {
+		const beam = makeBeam();
+		insertWorking(beam, "wm-clitic", "what s my name onboarding checklist", { importance: 1.0 });
+		beam.db.run(
+			"INSERT INTO facts (fact_id, session_id, subject, predicate, object, timestamp, confidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			["fact-name", beam.sessionId, "name", "called", "Eve", "2026-05-30T00:00:00.000Z", 0.1],
+		);
+
+		const results = await recallEnhanced(beam, "what's my name", 1, {
+			includeFacts: true,
+			queryEmbedding: null,
+			useMmr: false,
+		});
+
+		expect(results[0]?.id).toBe("fact-name");
+	});
+
+	it("preserves stop-word-looking entity tokens when scoring facts", async () => {
+		const beam = makeBeam();
+		beam.db.run(
+			"INSERT INTO facts (fact_id, session_id, subject, predicate, object, timestamp, confidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			["fact-may", beam.sessionId, "May", "birthday", "June 1", "2026-05-30T00:00:00.000Z", 0.1],
+		);
+		beam.db.run(
+			"INSERT INTO facts (fact_id, session_id, subject, predicate, object, timestamp, confidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			["fact-bob", beam.sessionId, "Bob", "birthday", "June 2", "2026-05-30T00:00:00.000Z", 1.0],
+		);
+
+		const results = await recallEnhanced(beam, "May birthday", 1, {
+			includeFacts: true,
+			queryEmbedding: null,
+			useMmr: false,
+		});
+
+		expect(results[0]?.id).toBe("fact-may");
+	});
+
+	it("preserves matching two-letter fact entities when scoring facts", async () => {
+		const beam = makeBeam();
+		beam.db.run(
+			"INSERT INTO facts (fact_id, session_id, subject, predicate, object, timestamp, confidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			["fact-us", beam.sessionId, "US", "timezone", "Eastern", "2026-05-30T00:00:00.000Z", 0.1],
+		);
+		beam.db.run(
+			"INSERT INTO facts (fact_id, session_id, subject, predicate, object, timestamp, confidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			["fact-eu", beam.sessionId, "EU", "timezone", "Central European", "2026-05-30T00:00:00.000Z", 1.0],
+		);
+
+		const results = await recallEnhanced(beam, "US timezone", 1, {
+			includeFacts: true,
+			queryEmbedding: null,
+			useMmr: false,
+		});
+
+		expect(results[0]?.id).toBe("fact-us");
+	});
+
+	it("does not preserve filler tokens through substring matches", async () => {
+		const beam = makeBeam();
+		beam.db.run(
+			"INSERT INTO facts (fact_id, session_id, subject, predicate, object, timestamp, confidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			["fact-my", beam.sessionId, "my", "birthday", "June 1", "2026-05-30T00:00:00.000Z", 0.1],
+		);
+		beam.db.run(
+			"INSERT INTO facts (fact_id, session_id, subject, predicate, object, timestamp, confidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			["fact-amy", beam.sessionId, "Amy", "birthday", "June 2", "2026-05-30T00:00:00.000Z", 1.0],
+		);
+
+		const results = await recallEnhanced(beam, "what is my birthday", 1, {
+			includeFacts: true,
+			queryEmbedding: null,
+			useMmr: false,
+		});
+
+		expect(results[0]?.id).toBe("fact-my");
+	});
+
 	it("keeps exact working-memory hits above weak matching facts in enhanced recall", async () => {
 		const beam = makeBeam();
 		insertWorking(
