@@ -6,6 +6,16 @@
 
 - Added `TUI.setRightPanel(provider, targets?)`: registers right-side info panel blocks composited into the visible window at the emit stage, restricted to rows rendered by the target root children. Compositing happens after the window/commit math on the window copy only, so panels never overlap bottom chrome, never enter native scrollback, and do not disturb component-scoped render reuse or the live-region/stable-prefix protocol.
 - Added the `right-panel` module (`compositeRightPanel`, `compositeRightPanels`, `compositeRightPanelsInRange`, `trimRightPadding`): pure negative-space compositing helpers. Trailing padding is ignored when measuring free space but only rows that actually receive panel text are rewritten, so full-width styled backgrounds stay byte-exact.
+## [15.12.4] - 2026-06-13
+
+### Added
+
+- `PI_FORCE_HYPERLINKS=1` / `PI_NO_HYPERLINKS=1` env overrides for the OSC 8 hyperlink capability, mirroring the `PI_FORCE_SYNC_OUTPUT`/`PI_NO_SYNC_OUTPUT` shape (opt-out beats force-on).
+
+### Changed
+
+- Auto-enable OSC 8 hyperlinks inside tmux when tmux self-reports >= 3.4 via `TERM_PROGRAM_VERSION`; tmux 3.4 stores OSC 8 as a cell attribute and forwards it to outer terminals whose `terminal-features` include `hyperlinks`. Older tmux, GNU screen, and tmux without a reported version still default off. Resolution is factored into `hyperlinksUserOverride()` and `shouldEnableHyperlinksByDefault()` mirroring the sync-output helpers ([#2403](https://github.com/can1357/oh-my-pi/issues/2403)).
+
 ## [15.11.8] - 2026-06-12
 
 ### Changed
