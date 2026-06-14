@@ -10,7 +10,7 @@
  * scrollback and does not interfere with the live-region / stable-prefix
  * protocol, because the composed frame itself is never mutated.
  */
-import { padding, truncateToWidth, visibleWidth } from "./utils";
+import { padding, replaceTabs, truncateToWidth, visibleWidth } from "./utils";
 
 const TRAILING_PADDING_RE = /[ \t]+((?:\x1b\[[0-9;]*m)*)$/u;
 
@@ -119,14 +119,15 @@ export function compositeRightPanelsInRange(
 	const placements: { start: number; block: readonly string[]; col: number }[] = [];
 	for (const block of blocks) {
 		if (block.length === 0) continue;
+		const normalizedBlock = normalizePanelBlock(block);
 		let panelWidth = 0;
-		for (const line of block) panelWidth = Math.max(panelWidth, visibleWidth(line));
+		for (const line of normalizedBlock) panelWidth = Math.max(panelWidth, visibleWidth(line));
 		const col = width - panelWidth - 1; // 1-col gap from the panel
 		if (col < RIGHT_PANEL_MIN_COL) continue; // too narrow for this block — hide just this one
 		let placed = -1;
-		for (let start = searchStart; start + block.length <= searchEnd; start++) {
+		for (let start = searchStart; start + normalizedBlock.length <= searchEnd; start++) {
 			let ok = true;
-			for (let k = 0; k < block.length; k++) {
+			for (let k = 0; k < normalizedBlock.length; k++) {
 				if (occupied[start + k] || contentWidth(start + k) > col) {
 					ok = false;
 					break;
@@ -138,8 +139,8 @@ export function compositeRightPanelsInRange(
 			}
 		}
 		if (placed < 0) continue; // no run tall enough — drop this block alone
-		for (let k = 0; k < block.length; k++) occupied[placed + k] = true;
-		placements.push({ start: placed, block, col });
+		for (let k = 0; k < normalizedBlock.length; k++) occupied[placed + k] = true;
+		placements.push({ start: placed, block: normalizedBlock, col });
 	}
 
 	if (placements.length === 0) return baseLines;
@@ -156,4 +157,11 @@ export function compositeRightPanelsInRange(
 		}
 	}
 	return out;
+}
+
+function normalizePanelBlock(block: readonly string[]): readonly string[] {
+	for (const line of block) {
+		if (line.includes("\t")) return block.map(panelLine => replaceTabs(panelLine));
+	}
+	return block;
 }
