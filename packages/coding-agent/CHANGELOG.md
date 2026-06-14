@@ -170,17 +170,6 @@
 
 ### Added
 
-- Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor", priority? })`): each panel is composited independently into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, and hides per-block (not cut) when no run is tall enough to hold it. Panels are ordered by optional `priority` then ascending height, so the smallest always-present panels stay visible and the tallest hide first. Also added `ctx.fetchUsageReports()` so usage/quota widgets can read provider reports without reaching into private APIs.
-
-### Changed
-
-- Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
-- Changed `/reload-plugins` to tear down extension hooks with `session_shutdown` before replaying `session_start`, so plugin reloads do not stack duplicate timers, terminal-input listeners, or stale widgets.
-
-### Fixed
-
-- Fixed the Python RPC parser rejecting fractional widget priorities: `widgetPriority` and per-block `priority` now accept any JSON number, matching the TypeScript API (`priority?: number`) and interactive-mode sorting.
-- Fixed the conversation becoming invisible when a right-side widget was active: wrapping the transcript in a compositor container hid the `TranscriptContainer` native-scrollback protocol (live region, committed rows, stable prefix) from the TUI engine, which then committed live rows (streaming messages, editor) into scrollback and anchored the window past the content. Right-panel compositing now happens inside the TUI engine at the window stage (`TUI.setRightPanel`), the transcript stays a directly reusable root child, and the reserved-row estimation heuristic is gone.
 - Added `omp models` command to list and manage models with `ls`, `find`, `canonical`, and `refresh` actions
 - Added `--json` output plus `-e/--extension`, `--no-extensions`, and `--config` controls to `omp models` listings
 - Added `skills.enableAgentsUser` and `skills.enableAgentsProject` settings (default on) so the canonical OMP-native `~/.agent[s]/skills` and project-walkup `.agent[s]/skills` are configurable independently from the third-party Claude/Codex/Pi toggles.
@@ -887,12 +876,6 @@
 ### Added
 
 - Added a structured memory runtime surface for extensions and UI integrations to query backend status, search memories, and save explicit memories across the configured memory backend.
-- Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor", priority? })`): each panel is composited independently into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, and hides per-block (not cut) when no run is tall enough to hold it. Panels are ordered by optional `priority` then ascending height, so the smallest always-present panels stay visible and the tallest hide first. Also added `ctx.fetchUsageReports()` so usage/quota widgets can read provider reports without reaching into private APIs.
-
-### Changed
-
-- Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
-- Changed `/reload-plugins` to tear down extension hooks with `session_shutdown` before replaying `session_start`, so plugin reloads do not stack duplicate timers, terminal-input listeners, or stale widgets.
 
 ## [15.10.8] - 2026-06-09
 
@@ -1017,7 +1000,6 @@
 ### Changed
 
 - Changed the `find` tool to process each explicit multi-path target separately before merging results so searches stay scoped to the requested paths
-- Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
 - Changed multi-path `find` handling so invalid extra targets no longer fail the whole query and now return matches from valid targets only
 - Changed background-job completion and late LSP diagnostic delivery to inject at the next agent step boundary (mid-run), via the new non-interrupting "aside" channel, instead of only when the agent reaches a yield/follow-up point. The model now sees these notifications between its own requests without the turn having to end first, and in-flight tools are never interrupted; `job`-poll acknowledgement still suppresses results the agent already saw.
 - Changed late LSP diagnostics after edit or write to surface in the chat transcript as `Late diagnostics` entries rendered through the same grouped tree renderer the `edit`/`write` tools use (per-file nodes, severity icons, `:line:col` locations), and to honor the global tool-output expand toggle (collapsed entries cap at 5 diagnostics with a `… N more` hint)
@@ -1119,14 +1101,6 @@
 - Fixed `lsp config` accepting `fileTypes` entries with or without a leading dot inconsistently across actions; both `.ts` and `ts` are now normalized so a missing-dot entry no longer silently excludes a server from extension-based routing.
 - Fixed `lsp request` error path swallowing the params that were sent, making shape/coercion bugs on raw LSP calls impossible to diagnose in one round-trip; the error now echoes a truncated copy of the request params.
 - Fixed `find` with a single-star segment like `dir/*` recursing into subdirectories and returning nested matches. `parseFindPattern` already prepends `**/` for top-level globs (`*.ts` → `**/*.ts`), so anything reaching native without `**/` was deliberately scoped by the user; `recursive: false` is now passed to `natives.glob` to honor that scope.
-
-### Added
-
-- Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor", priority? })`): each panel is composited independently into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, and hides per-block (not cut) when no run is tall enough to hold it. Panels are ordered by optional `priority` then ascending height, so the smallest always-present panels stay visible and the tallest hide first. Also added `ctx.fetchUsageReports()` so usage/quota widgets can read provider reports without reaching into private APIs.
-
-### Changed
-
-- `/reload-plugins` now reinitializes extension UI hooks, and `initHooksAndCustomTools()` clears existing extension terminal-input listeners and hook widgets before re-emitting `session_start`. Reloading plugins no longer stacks duplicate input listeners or leaves stale widgets behind.
 
 ### Fixed
 
