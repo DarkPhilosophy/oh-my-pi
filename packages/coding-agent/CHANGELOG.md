@@ -5,6 +5,9 @@
 ### Added
 
 - Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor", priority? })`): each panel is composited independently into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, and hides per-block (not cut) when no run is tall enough to hold it. Panels are ordered by optional `priority` then ascending height, so the smallest always-present panels stay visible and the tallest hide first. Also added `ctx.fetchUsageReports()` so usage/quota widgets can read provider reports without reaching into private APIs.
+- Fixed paste and image placeholders crashing when the editor renders before theme initialization.
+- Added `ModelRegistry.create(authStorage, modelsPath?)` async factory that runs the JSON → YAML migration step on `models.{yml,yaml}` asynchronously ahead of the sync constructor's bundled-model load. The sync `new ModelRegistry(...)` constructor still works (tests rely on it); production boot paths now use the factory so the migration's I/O lands off the event-loop hot path.
+- Added `ConfigFile.tryLoadAsync()`, `ConfigFile.loadAsync()`, `ConfigFile.loadOrDefaultAsync()`, `ConfigFile.getMtimeMsAsync()`, and `ConfigFile.warmup(file)` so the rest of the codebase can migrate config reads off the sync path.
 
 ### Changed
 
@@ -15,12 +18,6 @@
 
 - Fixed the Python RPC parser rejecting fractional widget priorities: `widgetPriority` and per-block `priority` now accept any JSON number, matching the TypeScript API (`priority?: number`) and interactive-mode sorting.
 - Fixed the conversation becoming invisible when a right-side widget was active: wrapping the transcript in a compositor container hid the `TranscriptContainer` native-scrollback protocol (live region, committed rows, stable prefix) from the TUI engine, which then committed live rows (streaming messages, editor) into scrollback and anchored the window past the content. Right-panel compositing now happens inside the TUI engine at the window stage (`TUI.setRightPanel`), the transcript stays a directly reusable root child, and the reserved-row estimation heuristic is gone.
-- Fixed paste and image placeholders crashing when the editor renders before theme initialization.
-- Added `ModelRegistry.create(authStorage, modelsPath?)` async factory that runs the JSON → YAML migration step on `models.{yml,yaml}` asynchronously ahead of the sync constructor's bundled-model load. The sync `new ModelRegistry(...)` constructor still works (tests rely on it); production boot paths now use the factory so the migration's I/O lands off the event-loop hot path.
-- Added `ConfigFile.tryLoadAsync()`, `ConfigFile.loadAsync()`, `ConfigFile.loadOrDefaultAsync()`, `ConfigFile.getMtimeMsAsync()`, and `ConfigFile.warmup(file)` so the rest of the codebase can migrate config reads off the sync path.
-
-### Fixed
-
 - Fixed `Test & smoke (TS)` CI timeouts caused by parallel test files racing on the process-global Settings singleton. `CustomEditor` now accepts a `magicKeywordsEnabledOverride` injection point so the shimmer-gate test can assert behaviour without calling `resetSettingsForTest()` / `Settings.init()`; the "streaming tool call preview height" describe drops its gratuitous Settings reset+init. Production wiring is unchanged ([#2582](https://github.com/can1357/oh-my-pi/issues/2582))
 - Fixed MCP OAuth fallback rendering to show a short terminal hyperlink and keep the raw authorization URL on one unwrapped copy line ([#2121](https://github.com/can1357/oh-my-pi/issues/2121)).
 - Fixed `omp dry-balance --bench` to recover from 401 token failures by re-minting the failing OAuth credential in place before switching accounts
