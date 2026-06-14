@@ -60,6 +60,17 @@ describe("compositeRightPanel", () => {
 		expect(out[widget.length]).toBe("hi");
 	});
 
+	it("normalizes tabs in panel lines before measuring and appending", () => {
+		const base = Array.from({ length: 8 }, () => "hi");
+		const widget = ["A\tB", "C\tD"];
+		const out = compositeRightPanel(base, widget, WIDTH, 40);
+
+		expect(out[0]).toContain("A   B");
+		expect(out[1]).toContain("C   D");
+		expect(out[0]).not.toContain("\t");
+		expect(out[1]).not.toContain("\t");
+	});
+
 	it("hides instead of cutting a widget when the free run is shorter than the panel", () => {
 		// A run of exactly 8 short rows, then a long row; widget wants 12 rows.
 		const base = [...Array.from({ length: 8 }, () => ""), "x".repeat(COL + 1), "", ""];
