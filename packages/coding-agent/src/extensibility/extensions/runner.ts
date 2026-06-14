@@ -916,7 +916,8 @@ export class ExtensionRunner {
 						messages.push(result.message);
 					}
 					if (result.systemPrompt !== undefined) {
-						currentSystemPrompt = result.systemPrompt;
+						currentSystemPrompt =
+							typeof result.systemPrompt === "string" ? [result.systemPrompt] : result.systemPrompt;
 						systemPromptModified = true;
 					}
 				}
