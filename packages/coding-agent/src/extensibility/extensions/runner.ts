@@ -12,9 +12,11 @@ import type {
 import type { KeyId } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../config/model-registry";
+import type { Settings } from "../../config/settings";
 import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { SessionManager } from "../../session/session-manager";
+import { createExtensionModelQuery } from "./model-api";
 import type {
 	AfterProviderResponseEvent,
 	AssistantThinkingRenderer,
@@ -233,6 +235,7 @@ export class ExtensionRunner {
 		private readonly sessionManager: SessionManager,
 		private readonly modelRegistry: ModelRegistry,
 		getMemory?: () => MemoryRuntimeContext | undefined,
+		private readonly settings?: Settings,
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
@@ -508,6 +511,7 @@ export class ExtensionRunner {
 			get model() {
 				return getModel();
 			},
+			models: createExtensionModelQuery(this.modelRegistry, this.settings, getModel),
 			isIdle: () => this.#isIdleFn(),
 			abort: () => this.#abortFn(),
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
