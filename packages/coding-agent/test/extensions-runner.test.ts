@@ -990,6 +990,7 @@ describe("ExtensionRunner", () => {
 					getContextUsage: () => undefined,
 					compact: async () => {},
 					getSystemPrompt: () => [],
+					fetchUsageReports: async () => null,
 				},
 				undefined,
 				{
