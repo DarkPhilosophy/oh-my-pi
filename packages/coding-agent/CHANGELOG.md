@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor", priority? })`): each panel is composited independently into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, and hides per-block (not cut) when no run is tall enough to hold it. Panels are ordered by optional `priority` then ascending height, so the smallest always-present panels stay visible and the tallest hide first. Also added `ctx.fetchUsageReports()` so usage/quota widgets can read provider reports without reaching into private APIs.
+
+### Changed
+
+- Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
+- Changed `/reload-plugins` to tear down extension hooks with `session_shutdown` before replaying `session_start`, so plugin reloads do not stack duplicate timers, terminal-input listeners, or stale widgets.
+
 ## [15.13.3] - 2026-06-15
 
 ### Added
@@ -53,18 +62,12 @@
 
 ### Added
 
-- Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor", priority? })`): each panel is composited independently into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, and hides per-block (not cut) when no run is tall enough to hold it. Panels are ordered by optional `priority` then ascending height, so the smallest always-present panels stay visible and the tallest hide first. Also added `ctx.fetchUsageReports()` so usage/quota widgets can read provider reports without reaching into private APIs.
 - Added isolated profile support via `--profile <name>` / `OMP_PROFILE` and shell alias bootstrap via `--alias <command>`, including launch/ACP bootstrap handling, extension-flag-safe parsing, profile-scoped user config discovery, and symlinked extension-directory discovery.
 - Fixed paste and image placeholders crashing when the editor renders before theme initialization.
 
 ### Changed
 
 - Replaced the `omp bench` default prompt with a concrete query-planning trace that requires deriving selectivities, cardinalities, and I/O/CPU costs from given schema and data. The old prompt was open-ended prose recall, which rewarded not-thinking: adaptive-thinking models (Opus 4.6+/Sonnet 4.6+) minimized reasoning on the trivial task and streamed faster, skewing throughput comparisons. The new task forces multi-step reasoning so adaptive thinking engages and the benchmark measures generation under real cognitive load. The prompt also demands explicit upfront deliberation and exhaustive enumeration/costing of every join order, so adaptive-thinking models cannot short-circuit to a quick answer and each model is measured over a sustained generation up to the token cap.
-
-### Changed
-
-- Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
-- Changed `/reload-plugins` to tear down extension hooks with `session_shutdown` before replaying `session_start`, so plugin reloads do not stack duplicate timers, terminal-input listeners, or stale widgets.
 
 ### Fixed
 
