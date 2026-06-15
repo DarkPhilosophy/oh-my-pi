@@ -423,6 +423,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	lastLeftTapTime = 0;
 	shutdownRequested = false;
 	#isShuttingDown = false;
+	/** True once `shutdown()` has begun teardown. Surfaced to the input
+	 *  controller so a Ctrl+C arriving while teardown is in flight can hard-
+	 *  abort the remaining work instead of stacking another no-op call. */
+	get isShuttingDown(): boolean {
+		return this.#isShuttingDown;
+	}
 	#rightInfoBlocks: string[][] = [];
 	#staticRightInfoProvider = (): readonly (readonly string[])[] => this.#rightInfoBlocks;
 	#rightInfoProvider = this.#staticRightInfoProvider;
