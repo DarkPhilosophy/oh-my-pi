@@ -71,6 +71,10 @@ const PAINT_BEGIN = `${HIDE_CURSOR}${SYNC_OUTPUT_BEGIN}${DISABLE_AUTOWRAP}`;
 const PAINT_END = `${ENABLE_AUTOWRAP}${SYNC_OUTPUT_END}`;
 const PAINT_BEGIN_NO_SYNC = `${HIDE_CURSOR}${DISABLE_AUTOWRAP}`;
 const PAINT_END_NO_SYNC = ENABLE_AUTOWRAP;
+const OSC66_LINE_PREFIX = "\x1b]66;";
+function isOsc66Line(line: string): boolean {
+	return line.includes(OSC66_LINE_PREFIX);
+}
 const CURSOR_BEGIN = `${HIDE_CURSOR}${SYNC_OUTPUT_BEGIN}`;
 const CURSOR_BEGIN_NO_SYNC = HIDE_CURSOR;
 const CURSOR_END = SYNC_OUTPUT_END;
@@ -1634,7 +1638,30 @@ export class TUI extends Container {
 			hi = Math.min(window.length, frameHi - windowTop);
 			if (hi <= lo) return window;
 		}
-		const composited = compositeRightPanelsInRange(window, blocks, width, lo, hi, line => TERMINAL.isImageLine(line));
+		// Mark visually occupied rows before the generic compositor runs.
+		// Image lines keep their existing backward placeholder scan inside
+		// compositeRightPanelsInRange. OSC 66 sized headings occupy their own
+		// row and the immediately following visible-width-zero structural row
+		// that reserves lower cells for multicell glyphs.
+		const occupied = new Array<boolean>(window.length).fill(false);
+		for (let i = 0; i < window.length; i++) {
+			const line = window[i] ?? "";
+			if (isOsc66Line(line)) {
+				occupied[i] = true;
+				const next = window[i + 1];
+				if (next !== undefined && visibleWidth(next) === 0) {
+					occupied[i + 1] = true;
+				}
+			}
+		}
+		const composited = compositeRightPanelsInRange(
+			window,
+			blocks,
+			width,
+			lo,
+			hi,
+			(line, i) => TERMINAL.isImageLine(line) || (occupied[i] ?? false),
+		);
 		if (composited === window) return window;
 		return this.#prepareLinesArray(composited, width);
 	}
