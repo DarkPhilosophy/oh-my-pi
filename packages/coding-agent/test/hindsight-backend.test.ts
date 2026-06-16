@@ -911,3 +911,124 @@ describe("hindsightBackend retain queue flush on session teardown", () => {
 		expect(retainBatchSpy).not.toHaveBeenCalled();
 	});
 });
+
+describe("hindsightBackend status/search/save", () => {
+	beforeEach(() => {
+		resetSettingsForTest();
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("status reports inactive when the session has no Hindsight state", async () => {
+		const session = makeFakeSession({ sessionId: "s-status-uninit" });
+		const result = await hindsightBackend.status!({ agentDir: "/tmp", cwd: "/tmp", session: session as never });
+		expect(result).toEqual({
+			backend: "hindsight",
+			active: false,
+			writable: false,
+			searchable: false,
+			message: "Hindsight backend is configured but not initialised for this session.",
+		});
+	});
+
+	it("status reflects the active bank after start", async () => {
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const session = makeFakeSession({ sessionId: "s-status-active", settings });
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+
+		const result = await hindsightBackend.status!({ agentDir: "/tmp", cwd: "/tmp", session: session as never });
+		expect(result).toMatchObject({
+			backend: "hindsight",
+			active: true,
+			writable: true,
+			searchable: true,
+			scope: settings.get("hindsight.scoping"),
+			retainBank: expect.any(String),
+			recallBanks: [expect.any(String)],
+		});
+	});
+
+	it("save queues content and reports it as queued", async () => {
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const session = makeFakeSession({ sessionId: "s-save", settings });
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+
+		const result = await hindsightBackend.save!(
+			{ agentDir: "/tmp", cwd: "/tmp", session: session as never },
+			{ content: "user prefers dark mode", context: "preferences" },
+		);
+		expect(result).toEqual({
+			backend: "hindsight",
+			stored: 1,
+			queued: true,
+			message: "Memory queued for Hindsight retention.",
+		});
+	});
+
+	it("search maps recall results without inventing extra fields", async () => {
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+			results: [
+				{
+					id: "m1",
+					text: "user prefers dark mode",
+					type: "fact",
+					mentioned_at: "2026-01-15T00:00:00Z",
+				},
+			],
+		} as never);
+		const session = makeFakeSession({ sessionId: "s-search", settings });
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+
+		const result = await hindsightBackend.search!(
+			{ agentDir: "/tmp", cwd: "/tmp", session: session as never },
+			"dark mode",
+		);
+		expect(result).toMatchObject({
+			backend: "hindsight",
+			query: "dark mode",
+			count: 1,
+		});
+		expect(result.items[0]).toEqual({
+			id: "m1",
+			content: "user prefers dark mode",
+			source: "fact",
+			timestamp: "2026-01-15T00:00:00Z",
+		});
+	});
+});

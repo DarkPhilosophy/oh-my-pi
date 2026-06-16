@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { createMemoryRuntimeContext, resolveMemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend";
+import { getMemoryRoot } from "@oh-my-pi/pi-coding-agent/memories";
+import {
+	createMemoryRuntimeContext,
+	createSessionMemoryRuntimeContext,
+	resolveMemoryBackend,
+} from "@oh-my-pi/pi-coding-agent/memory-backend";
 
 describe("resolveMemoryBackend", () => {
 	beforeEach(() => {
@@ -47,5 +55,27 @@ describe("resolveMemoryBackend", () => {
 			backend: "local",
 			count: 0,
 		});
+	});
+
+	it("recomputes session cwd for each runtime memory operation", async () => {
+		const settings = Settings.isolated({ "memory.backend": "local" });
+		const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-memory-runtime-"));
+		let cwd = "/tmp/project-a";
+		const memory = createSessionMemoryRuntimeContext({ settings } as never, agentDir, () => cwd);
+
+		try {
+			await memory.save("first lesson");
+			cwd = "/tmp/project-b";
+			await memory.save("second lesson");
+
+			const first = await Bun.file(path.join(getMemoryRoot(agentDir, "/tmp/project-a"), "learned.md")).text();
+			const second = await Bun.file(path.join(getMemoryRoot(agentDir, "/tmp/project-b"), "learned.md")).text();
+			expect(first).toContain("first lesson");
+			expect(first).not.toContain("second lesson");
+			expect(second).toContain("second lesson");
+			expect(second).not.toContain("first lesson");
+		} finally {
+			await fs.rm(agentDir, { recursive: true, force: true });
+		}
 	});
 });

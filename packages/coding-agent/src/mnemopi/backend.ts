@@ -180,7 +180,6 @@ export const mnemopiBackend: MemoryBackend = {
 				message: "Mnemopi backend is not initialised for this session.",
 			};
 		}
-
 		const { targets, owned } = createStatsTargets(agentDir, session);
 		try {
 			if (targets.length === 0) {

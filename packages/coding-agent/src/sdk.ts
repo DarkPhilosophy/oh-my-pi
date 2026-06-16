@@ -1988,7 +1988,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			cwd,
 			sessionManager,
 			modelRegistry,
-			() => (hasSession ? createSessionMemoryRuntimeContext(session, agentDir, cwd) : undefined),
+			() =>
+				hasSession
+					? createSessionMemoryRuntimeContext(session, agentDir, () => sessionManager.getCwd())
+					: undefined,
 			settings,
 		);
 

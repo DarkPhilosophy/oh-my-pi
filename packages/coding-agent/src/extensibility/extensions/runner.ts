@@ -195,8 +195,27 @@ const noOpUIContext: ExtensionUIContext = {
 	setToolsExpanded: () => {},
 };
 
+export const noOpMemoryContext: MemoryRuntimeContext = {
+	async status() {
+		return {
+			backend: "off",
+			active: false,
+			writable: false,
+			searchable: false,
+			message: "No active memory context.",
+		};
+	},
+	async search(query: string) {
+		return { backend: "off", query, count: 0, items: [], message: "No active memory context." };
+	},
+	async save() {
+		return { backend: "off", stored: 0, message: "No active memory context." };
+	},
+};
+
 export class ExtensionRunner {
 	#uiContext: ExtensionUIContext;
+	#memoryContext: MemoryRuntimeContext = noOpMemoryContext;
 	#errorListeners: Set<ExtensionErrorListener> = new Set();
 	#getModel: () => Model | undefined = () => undefined;
 	#isIdleFn: () => boolean = () => true;
@@ -264,6 +283,7 @@ export class ExtensionRunner {
 		this.#hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.#shutdownHandler = contextActions.shutdown;
 		this.#getSystemPromptFn = contextActions.getSystemPrompt;
+		this.#memoryContext = contextActions.memory ?? noOpMemoryContext;
 
 		// Command context actions (optional, only for interactive mode)
 		if (commandContextActions) {
@@ -495,6 +515,7 @@ export class ExtensionRunner {
 		const getModel = this.#getModel;
 		return {
 			ui: this.#uiContext,
+			memory: this.#getMemoryFn?.() ?? this.#memoryContext,
 			getContextUsage: () => this.#getContextUsageFn(),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
 			hasUI: this.hasUI(),
@@ -510,7 +531,6 @@ export class ExtensionRunner {
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
 			shutdown: () => this.#shutdownHandler(),
 			getSystemPrompt: () => this.#getSystemPromptFn(),
-			memory: this.#getMemoryFn?.(),
 		};
 	}
 

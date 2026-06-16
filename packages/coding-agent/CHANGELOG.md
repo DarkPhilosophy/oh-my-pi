@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `/memory status`, `/memory search <query>`, and `/memory save <text>` plus complete `ctx.memory` runtime wiring for extension contexts, so users and extensions can inspect, search, and explicitly retain memories through the configured backend.
+
 ## [16.0.1] - 2026-06-15
 
 ### Breaking Changes

@@ -18,6 +18,7 @@ import type {
 } from "../../extensibility/extensions";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
 import { createExtensionModelQuery } from "../../extensibility/extensions/model-api";
+import { createSessionMemoryRuntimeContext } from "../../memory-backend/runtime";
 import { HookEditorComponent } from "../../modes/components/hook-editor";
 import { HookInputComponent } from "../../modes/components/hook-input";
 import { HookSelectorComponent, type HookSelectorSlider } from "../../modes/components/hook-selector";
@@ -122,6 +123,11 @@ export class ExtensionUiController {
 			setSessionName: name => this.#updateSessionName(name),
 		};
 		const contextActions: ExtensionContextActions = {
+			memory: createSessionMemoryRuntimeContext(
+				this.ctx.session,
+				this.ctx.settings.getAgentDir(),
+				this.ctx.sessionManager.getCwd(),
+			),
 			getModel: () => this.ctx.session.model,
 			isIdle: () => !this.ctx.session.isStreaming,
 			abort: () => this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL }),
@@ -358,6 +364,11 @@ export class ExtensionUiController {
 			setSessionName: name => this.#updateSessionName(name),
 		};
 		const contextActions: ExtensionContextActions = {
+			memory: createSessionMemoryRuntimeContext(
+				this.ctx.session,
+				this.ctx.settings.getAgentDir(),
+				this.ctx.sessionManager.getCwd(),
+			),
 			getModel: () => this.ctx.session.model,
 			isIdle: () => !this.ctx.session.isStreaming,
 			abort: () => this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL }),
@@ -486,6 +497,11 @@ export class ExtensionUiController {
 				try {
 					await registeredTool.definition.onSession(event, {
 						ui: uiContext,
+						memory: createSessionMemoryRuntimeContext(
+							this.ctx.session,
+							this.ctx.settings.getAgentDir(),
+							this.ctx.sessionManager.getCwd(),
+						),
 						getContextUsage: () => this.ctx.session.getContextUsage(),
 						compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 						hasUI: true,

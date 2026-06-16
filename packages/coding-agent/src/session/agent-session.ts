@@ -184,6 +184,7 @@ import type {
 	TurnStartEvent,
 } from "../extensibility/extensions";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
+import { noOpMemoryContext } from "../extensibility/extensions/runner";
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import type { HookCommandContext } from "../extensibility/hooks/types";
@@ -5435,6 +5436,7 @@ export class AgentSession {
 		return {
 			ui: noOpUIContext,
 			hasUI: false,
+			memory: noOpMemoryContext,
 			cwd: this.sessionManager.getCwd(),
 			sessionManager: this.sessionManager,
 			modelRegistry: this.#modelRegistry,

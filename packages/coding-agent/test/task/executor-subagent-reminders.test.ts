@@ -49,6 +49,8 @@ function createMockSession(
 		for (const listener of listeners) listener(event);
 	};
 
+	const settings = Settings.isolated();
+
 	const session = {
 		state,
 		agent: { state: { systemPrompt: ["test"] } },
@@ -56,7 +58,10 @@ function createMockSession(
 		extensionRunner: undefined,
 		sessionManager: {
 			appendSessionInit: () => {},
+			getCwd: () => "/tmp/project",
+			getSessionName: () => undefined,
 		},
+		settings,
 		getActiveToolNames: () => ["read", "yield"],
 		setActiveToolsByName: async (_toolNames: string[]) => {},
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {

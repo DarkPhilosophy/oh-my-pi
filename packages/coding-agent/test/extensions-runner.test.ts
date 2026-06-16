@@ -843,6 +843,85 @@ describe("ExtensionRunner", () => {
 			});
 			delete globalState.__ompMemoryStatus;
 		});
+
+		it("falls back to a no-op memory runtime when no memory source is wired", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.on("session_start", async (_event, ctx) => {
+						globalThis.__ompMemoryFallback = {
+							status: await ctx.memory.status(),
+							search: await ctx.memory.search("test"),
+							save: await ctx.memory.save("hello"),
+						};
+					});
+				}
+			`;
+			const explicitExtensionPath = path.join(tempDir.path(), "memory-fallback.ts");
+			fs.writeFileSync(explicitExtensionPath, extCode);
+			const globalState = globalThis as typeof globalThis & { __ompMemoryFallback?: unknown };
+			delete globalState.__ompMemoryFallback;
+
+			const result = await loadTestExtensions([explicitExtensionPath]);
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			runner.initialize(
+				{
+					sendMessage: () => {},
+					sendUserMessage: () => {},
+					appendEntry: () => {},
+					setLabel: () => {},
+					getActiveTools: () => [],
+					getAllTools: () => [],
+					setActiveTools: async () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => undefined,
+					setThinkingLevel: () => {},
+					getSessionName: () => undefined,
+					setSessionName: async () => {},
+				},
+				{
+					getModel: () => undefined,
+					isIdle: () => true,
+					abort: () => {},
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: async () => {},
+					getSystemPrompt: () => [],
+				},
+			);
+
+			await runner.emit({ type: "session_start" });
+
+			expect(globalState.__ompMemoryFallback).toEqual({
+				status: {
+					backend: "off",
+					active: false,
+					writable: false,
+					searchable: false,
+					message: "No active memory context.",
+				},
+				search: {
+					backend: "off",
+					query: "test",
+					count: 0,
+					items: [],
+					message: "No active memory context.",
+				},
+				save: {
+					backend: "off",
+					stored: 0,
+					message: "No active memory context.",
+				},
+			});
+			delete globalState.__ompMemoryFallback;
+		});
 	});
 
 	describe("session name API", () => {

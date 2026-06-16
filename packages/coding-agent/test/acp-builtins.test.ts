@@ -574,6 +574,13 @@ describe("wave 3 commands", () => {
 	});
 
 	// /memory
+	it("/memory with no args defaults to view", async () => {
+		const { output, runtime } = createRuntime();
+		const result = await executeAcpBuiltinSlashCommand("/memory", runtime);
+		expect(result).toEqual({ consumed: true });
+		expect(output[0]).toBe("Memory payload is empty.");
+	});
+
 	it("/memory unknown: returns usage message", async () => {
 		const { output, runtime } = createRuntime();
 		const result = await executeAcpBuiltinSlashCommand("/memory unknownverb", runtime);

@@ -52,9 +52,15 @@ export function createMemoryRuntimeContext(context: MemoryBackendOperationContex
 export function createSessionMemoryRuntimeContext(
 	session: AgentSession,
 	agentDir: string,
-	cwd: string,
+	cwd: string | (() => string),
 ): MemoryRuntimeContext {
-	return createMemoryRuntimeContext({ agentDir, cwd, session });
+	const createForCurrentCwd = () =>
+		createMemoryRuntimeContext({ agentDir, cwd: typeof cwd === "function" ? cwd() : cwd, session });
+	return {
+		status: () => createForCurrentCwd().status(),
+		search: (query, options) => createForCurrentCwd().search(query, options),
+		save: input => createForCurrentCwd().save(input),
+	};
 }
 
 function unavailableSearch(backend: MemoryBackendId, query: string, message: string) {

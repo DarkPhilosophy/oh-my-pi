@@ -150,7 +150,6 @@ export interface ExtensionUIDialogOptions {
 export type TerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined;
 
 export type WidgetPlacement = "aboveEditor" | "belowEditor";
-
 export interface ExtensionWidgetOptions {
 	placement?: WidgetPlacement;
 }
@@ -349,6 +348,7 @@ export interface ExtensionContext {
 	shutdown(): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string[];
+
 	/** Structured memory runtime for status/search/save across the configured backend. */
 	memory?: MemoryRuntimeContext;
 }
@@ -1310,9 +1310,9 @@ export interface ExtensionActions {
 	setSessionName: (name: string) => Promise<void>;
 }
 
-/** Actions for ExtensionContext (ctx.* in event handlers). */
 export interface ExtensionContextActions {
 	getModel: () => Model | undefined;
+	memory?: MemoryRuntimeContext;
 	isIdle: () => boolean;
 	abort: () => void;
 	hasPendingMessages: () => boolean;
@@ -1322,7 +1322,6 @@ export interface ExtensionContextActions {
 	getSystemPrompt: () => string[];
 }
 
-/** Actions for ExtensionCommandContext (ctx.* in command handlers). */
 export interface ExtensionCommandContextActions {
 	getContextUsage: () => ContextUsage | undefined;
 	waitForIdle: () => Promise<void>;
@@ -1336,7 +1335,6 @@ export interface ExtensionCommandContextActions {
 	switchSession: (sessionPath: string) => Promise<{ cancelled: boolean }>;
 	reload: () => Promise<void>;
 }
-
 /** Full runtime = state + actions. */
 export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionActions {}
 
