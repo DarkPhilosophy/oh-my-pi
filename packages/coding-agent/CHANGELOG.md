@@ -244,8 +244,6 @@
 
 ### Fixed
 
-- Fixed the Python RPC parser rejecting fractional widget priorities: `widgetPriority` and per-block `priority` now accept any JSON number, matching the TypeScript API (`priority?: number`) and interactive-mode sorting.
-- Fixed the conversation becoming invisible when a right-side widget was active: wrapping the transcript in a compositor container hid the `TranscriptContainer` native-scrollback protocol (live region, committed rows, stable prefix) from the TUI engine, which then committed live rows (streaming messages, editor) into scrollback and anchored the window past the content. Right-panel compositing now happens inside the TUI engine at the window stage (`TUI.setRightPanel`), the transcript stays a directly reusable root child, and the reserved-row estimation heuristic is gone.
 - Fixed hashline edits from `read`, `search`, and `ast-grep` so replacements are rejected when they target lines not shown in the tool output
 - Fixed `/tan` refusing to launch while the main response was still streaming. The command exists to fork tangential work *alongside* an active session, so it now dispatches mid-stream and queues its handoff breadcrumb for the next turn instead of steering the in-flight one.
 - Fixed `/tan` background agents never staying in the Agent Hub. The forked clone now uses an `<agentId>.jsonl` session file (so the persisted-subagent scan keys it by the same id the live ref uses) and is parked rather than unregistered on completion, so it stays listed and its transcript stays readable.
