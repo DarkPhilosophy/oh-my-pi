@@ -102,7 +102,7 @@ describe("compositeRightPanel", () => {
 		expect(naive.some((line, i) => i <= 5 && line.endsWith(widget[0]))).toBe(true);
 
 		// With image awareness the panel lands strictly below the image block.
-		const safe = compositeRightPanel(base, widget, WIDTH, 40, isImage);
+		const safe = compositeRightPanel(base, widget, WIDTH, 40, isImage, isImage);
 		expect(safe[5]).toBe("IMG"); // image escape line untouched
 		for (let i = 0; i <= 5; i++) expect(safe[i].endsWith(widget[0])).toBe(false);
 		expect(safe.findIndex(line => line.endsWith(widget[0]))).toBeGreaterThan(5);
@@ -122,6 +122,20 @@ describe("compositeRightPanel", () => {
 		expect(out[0]).toBe(heading); // heading row untouched
 		expect(out[1]).toBe(""); // structural reservation row untouched
 		expect(out.findIndex(line => line.endsWith(widget[0]))).toBe(2); // lands below both
+	});
+
+	it("keeps zero-width spacer rows before OSC 66 headings eligible for panels", () => {
+		const heading = "\x1b]66;s=2;Hello\x1b\\";
+		const base = [...Array.from({ length: 6 }, () => ""), heading, "", "x".repeat(COL + 1)];
+		const widget = panel(6);
+		const isOccupiedLine = (line: string, index: number) =>
+			line.includes("\x1b]66;") || (index > 0 && line === "" && base[index - 1]?.includes("\x1b]66;"));
+
+		const out = compositeRightPanel(base, widget, WIDTH, 40, isOccupiedLine);
+
+		expect(out.findIndex(line => line.endsWith(widget[0]))).toBe(0);
+		expect(out[6]).toBe(heading);
+		expect(out[7]).toBe("");
 	});
 });
 

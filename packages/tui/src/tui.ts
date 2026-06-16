@@ -1671,11 +1671,11 @@ export class TUI extends Container {
 			hi = Math.min(window.length, frameHi - windowTop);
 			if (hi <= lo) return window;
 		}
-		// Mark visually occupied rows before the generic compositor runs.
-		// Image lines keep their existing backward placeholder scan inside
-		// compositeRightPanelsInRange. OSC 66 sized headings occupy their own
-		// row and the immediately following visible-width-zero structural row
-		// that reserves lower cells for multicell glyphs.
+		// Mark visually occupied rows before the generic compositor runs. Image
+		// lines keep their backward placeholder scan through the dedicated
+		// backfill predicate. OSC 66 sized headings occupy only their own row and
+		// the immediately following visible-width-zero structural row that
+		// reserves lower cells for multicell glyphs.
 		const occupied = new Array<boolean>(window.length).fill(false);
 		for (let i = 0; i < window.length; i++) {
 			const line = window[i] ?? "";
@@ -1694,6 +1694,7 @@ export class TUI extends Container {
 			lo,
 			hi,
 			(line, i) => TERMINAL.isImageLine(line) || (occupied[i] ?? false),
+			line => TERMINAL.isImageLine(line),
 		);
 		if (composited === window) return window;
 		return this.#prepareLinesArray(composited, width);

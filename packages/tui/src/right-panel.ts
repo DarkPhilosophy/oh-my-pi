@@ -40,8 +40,16 @@ export function compositeRightPanel(
 	width: number,
 	viewportHeight: number,
 	isOccupiedLine: (line: string, index: number) => boolean = () => false,
+	isBackfilledOccupiedLine: (line: string, index: number) => boolean = () => false,
 ): string[] {
-	return compositeRightPanels(baseLines, widget.length > 0 ? [widget] : [], width, viewportHeight, isOccupiedLine);
+	return compositeRightPanels(
+		baseLines,
+		widget.length > 0 ? [widget] : [],
+		width,
+		viewportHeight,
+		isOccupiedLine,
+		isBackfilledOccupiedLine,
+	);
 }
 
 /**
@@ -60,6 +68,7 @@ export function compositeRightPanels(
 	width: number,
 	viewportHeight: number,
 	isOccupiedLine: (line: string, index: number) => boolean = () => false,
+	isBackfilledOccupiedLine: (line: string, index: number) => boolean = () => false,
 ): string[] {
 	return compositeRightPanelsInRange(
 		baseLines,
@@ -68,6 +77,7 @@ export function compositeRightPanels(
 		Math.max(0, baseLines.length - viewportHeight),
 		baseLines.length,
 		isOccupiedLine,
+		isBackfilledOccupiedLine,
 	);
 }
 
@@ -87,6 +97,7 @@ export function compositeRightPanelsInRange(
 	searchStart: number,
 	searchEnd: number,
 	isOccupiedLine: (line: string, index: number) => boolean = () => false,
+	isBackfilledOccupiedLine: (line: string, index: number) => boolean = () => false,
 ): string[] {
 	if (blocks.length === 0 || baseLines.length === 0) return baseLines;
 	searchStart = Math.max(0, searchStart);
@@ -94,11 +105,14 @@ export function compositeRightPanelsInRange(
 	if (searchEnd - searchStart < RIGHT_PANEL_MIN_ROWS) return baseLines;
 
 	// Visually occupied rows (image protocol escapes, OSC 66 sized headings,
-	// etc.) and the contiguous blank placeholder rows that precede them must
-	// not receive panel text. The caller decides which rows are occupied.
+	// etc.) must not receive panel text. Image escape rows additionally
+	// backfill contiguous zero-width placeholders before them, because image
+	// components reserve cells with blank rows above the raw protocol line.
 	const occupied = new Array<boolean>(baseLines.length).fill(false);
 	for (let i = 0; i < baseLines.length; i++) {
-		if (isOccupiedLine(baseLines[i] ?? "", i)) {
+		const line = baseLines[i] ?? "";
+		if (isOccupiedLine(line, i)) occupied[i] = true;
+		if (isBackfilledOccupiedLine(line, i)) {
 			occupied[i] = true;
 			for (let j = i - 1; j >= 0 && visibleWidth(baseLines[j] ?? "") === 0; j--) occupied[j] = true;
 		}
