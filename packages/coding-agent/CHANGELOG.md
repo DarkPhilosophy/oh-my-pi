@@ -219,13 +219,6 @@
 
 ### Fixed
 
-### Changed
-
-- Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
-- Changed `/reload-plugins` to tear down extension hooks with `session_shutdown` before replaying `session_start`, so plugin reloads do not stack duplicate timers, terminal-input listeners, or stale widgets.
-
-### Fixed
-
 - Fixed the Python RPC parser rejecting fractional widget priorities: `widgetPriority` and per-block `priority` now accept any JSON number, matching the TypeScript API (`priority?: number`) and interactive-mode sorting.
 - Fixed the conversation becoming invisible when a right-side widget was active: wrapping the transcript in a compositor container hid the `TranscriptContainer` native-scrollback protocol (live region, committed rows, stable prefix) from the TUI engine, which then committed live rows (streaming messages, editor) into scrollback and anchored the window past the content. Right-panel compositing now happens inside the TUI engine at the window stage (`TUI.setRightPanel`), the transcript stays a directly reusable root child, and the reserved-row estimation heuristic is gone.
 - Fixed hashline edits from `read`, `search`, and `ast-grep` so replacements are rejected when they target lines not shown in the tool output
@@ -961,10 +954,6 @@
 - Fixed Windows stdio MCP servers launched through PATH shims such as `codegraph.cmd` so bare commands like `codegraph` resolve via `PATHEXT` before spawn ([#2174](https://github.com/can1357/oh-my-pi/issues/2174)).
 - Fixed compiled-binary extensions failing to load `@oh-my-pi/pi-*` packages when `bun --compile` quietly dropped one of the extra entrypoints (observed on macOS arm64 release builds): the legacy-pi compat shim's package-root override branch returned the bunfs path without checking the target was present, so the rewrite emitted a `file://` URL to a missing module and the #1216 fallback (scoped to the throwing `getResolvedSpecifier` path) never ran. Override targets are now validated against the on-disk filesystem at module init, missing entries are dropped, and resolution falls through to canonical lookup so Bun resolves the import from the extension's own `node_modules` ([#2168](https://github.com/can1357/oh-my-pi/issues/2168)).
 
-### Added
-
-- Added a structured memory runtime surface for extensions and UI integrations to query backend status, search memories, and save explicit memories across the configured memory backend.
-
 ## [15.10.8] - 2026-06-09
 
 ### Added
@@ -1190,12 +1179,6 @@
 - Fixed `lsp config` accepting `fileTypes` entries with or without a leading dot inconsistently across actions; both `.ts` and `ts` are now normalized so a missing-dot entry no longer silently excludes a server from extension-based routing.
 - Fixed `lsp request` error path swallowing the params that were sent, making shape/coercion bugs on raw LSP calls impossible to diagnose in one round-trip; the error now echoes a truncated copy of the request params.
 - Fixed `find` with a single-star segment like `dir/*` recursing into subdirectories and returning nested matches. `parseFindPattern` already prepends `**/` for top-level globs (`*.ts` → `**/*.ts`), so anything reaching native without `**/` was deliberately scoped by the user; `recursive: false` is now passed to `natives.glob` to honor that scope.
-
-### Fixed
-
-- Fixed the `--cwd` launch flag so it is parsed and can override the startup directory instead of always falling back to the current process directory or home auto-switch target.
-
-- Fixed Anthropic empty `toolUse` stops without tool calls corrupting session history by retrying them and removing orphaned turns even at the retry cap.
 
 ## [15.10.1] - 2026-06-07
 

@@ -21,7 +21,6 @@ import type {
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
 import { createExtensionModelQuery } from "../../extensibility/extensions/model-api";
 import { emitSessionShutdownEvent } from "../../extensibility/extensions/runner";
-import { createSessionMemoryRuntimeContext } from "../../memory-backend/runtime";
 import { HookEditorComponent } from "../../modes/components/hook-editor";
 import { HookInputComponent } from "../../modes/components/hook-input";
 import { HookSelectorComponent, type HookSelectorSlider } from "../../modes/components/hook-selector";
@@ -63,6 +62,9 @@ export class ExtensionUiController {
 	 * Initialize the hook system with TUI-based UI context.
 	 */
 	async initHooksAndCustomTools(): Promise<void> {
+		this.clearExtensionTerminalInputListeners();
+		this.clearHookWidgets();
+
 		// Create and set hook & tool UI context
 		const uiContext: ExtensionUIContext = {
 			select: (title, options, dialogOptions) => this.showHookSelector(title, options, dialogOptions),
@@ -142,11 +144,6 @@ export class ExtensionUiController {
 			setSessionName: name => this.#updateSessionName(name),
 		};
 		const contextActions: ExtensionContextActions = {
-			memory: createSessionMemoryRuntimeContext(
-				this.ctx.session,
-				this.ctx.settings.getAgentDir(),
-				this.ctx.sessionManager.getCwd(),
-			),
 			getModel: () => this.ctx.session.model,
 			isIdle: () => !this.ctx.session.isStreaming,
 			abort: () => this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL }),
@@ -289,6 +286,7 @@ export class ExtensionUiController {
 		this.#removeHookWidget(this.#hookWidgetsAbove, key);
 		this.#removeHookWidget(this.#hookWidgetsBelow, key);
 		const wasRight = this.#rightWidgets.has(key);
+
 		if (content === undefined) {
 			if (wasRight) {
 				this.#disposeRightWidgetEntry(this.#rightWidgets.get(key));
@@ -298,6 +296,7 @@ export class ExtensionUiController {
 			this.#rebuildHookWidgets();
 			return;
 		}
+
 		if (placement === "rightEditor") {
 			// Updating an existing Map key preserves insertion order; deleting first
 			// would make animated/right-side widgets jump below siblings on refresh.
@@ -307,6 +306,8 @@ export class ExtensionUiController {
 			this.#rebuildHookWidgets();
 			return;
 		}
+
+		// Moving a previously right-side key back inline must clear its stale lines.
 		if (wasRight) {
 			this.#disposeRightWidgetEntry(this.#rightWidgets.get(key));
 			this.#rightWidgets.delete(key);
@@ -398,6 +399,7 @@ export class ExtensionUiController {
 		});
 		return blocks.map(block => block.lines);
 	}
+
 	#createHookWidget(content: ExtensionWidgetContent): ExtensionUiComponent {
 		if (Array.isArray(content)) {
 			const lines =
@@ -486,11 +488,6 @@ export class ExtensionUiController {
 			setSessionName: name => this.#updateSessionName(name),
 		};
 		const contextActions: ExtensionContextActions = {
-			memory: createSessionMemoryRuntimeContext(
-				this.ctx.session,
-				this.ctx.settings.getAgentDir(),
-				this.ctx.sessionManager.getCwd(),
-			),
 			getModel: () => this.ctx.session.model,
 			isIdle: () => !this.ctx.session.isStreaming,
 			abort: () => this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL }),

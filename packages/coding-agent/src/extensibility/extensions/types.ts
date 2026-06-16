@@ -147,8 +147,10 @@ export interface ExtensionUIDialogOptions {
 	markableCount?: number;
 }
 
-export type WidgetPlacement = "aboveEditor" | "belowEditor" | "rightEditor";
+/** Raw terminal input listener for extensions. */
 export type TerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined;
+
+export type WidgetPlacement = "aboveEditor" | "belowEditor" | "rightEditor";
 export interface ExtensionWidgetOptions {
 	placement?: WidgetPlacement;
 	/**
@@ -358,15 +360,14 @@ export interface ExtensionContext {
 	isIdle(): boolean;
 	/** Abort the current agent operation */
 	abort(): void;
-	/** Fetch provider usage/limit reports (5h / 7d windows). Null when unavailable. */
-	fetchUsageReports(): Promise<UsageReport[] | null>;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
 	/** Gracefully shutdown and exit. */
 	shutdown(): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string[];
-
+	/** Fetch provider usage/limit reports (5h / 7d windows). Null when unavailable. */
+	fetchUsageReports(): Promise<UsageReport[] | null>;
 	/** Structured memory runtime for status/search/save across the configured backend. */
 	memory?: MemoryRuntimeContext;
 }
@@ -1328,9 +1329,9 @@ export interface ExtensionActions {
 	setSessionName: (name: string) => Promise<void>;
 }
 
+/** Actions for ExtensionContext (ctx.* in event handlers). */
 export interface ExtensionContextActions {
 	getModel: () => Model | undefined;
-	memory?: MemoryRuntimeContext;
 	isIdle: () => boolean;
 	abort: () => void;
 	hasPendingMessages: () => boolean;
@@ -1338,9 +1339,10 @@ export interface ExtensionContextActions {
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
 	getSystemPrompt: () => string[];
-	fetchUsageReports?: () => Promise<UsageReport[] | null>;
+	fetchUsageReports: () => Promise<UsageReport[] | null>;
 }
 
+/** Actions for ExtensionCommandContext (ctx.* in command handlers). */
 export interface ExtensionCommandContextActions {
 	getContextUsage: () => ContextUsage | undefined;
 	waitForIdle: () => Promise<void>;
@@ -1353,8 +1355,8 @@ export interface ExtensionCommandContextActions {
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
 	switchSession: (sessionPath: string) => Promise<{ cancelled: boolean }>;
 	reload: () => Promise<void>;
-	fetchUsageReports?: () => Promise<UsageReport[] | null>;
 }
+
 /** Full runtime = state + actions. */
 export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionActions {}
 

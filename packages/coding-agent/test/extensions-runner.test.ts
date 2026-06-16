@@ -863,12 +863,12 @@ describe("ExtensionRunner", () => {
 					getModel: () => undefined,
 					isIdle: () => true,
 					abort: () => {},
-					fetchUsageReports: async () => null,
 					hasPendingMessages: () => false,
 					shutdown: () => {},
 					getContextUsage: () => undefined,
 					compact: async () => {},
 					getSystemPrompt: () => [],
+					fetchUsageReports: async () => null,
 				},
 			);
 

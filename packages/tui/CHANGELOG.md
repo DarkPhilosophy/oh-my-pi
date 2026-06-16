@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `TUI.setRightPanel(provider, targets?)`: registers right-side info panel blocks composited into the visible window at the emit stage, restricted to rows rendered by the target root children. Compositing happens after the window/commit math on the window copy only, so panels never overlap bottom chrome, never enter native scrollback, and do not disturb component-scoped render reuse or the live-region/stable-prefix protocol.
+- Added the `right-panel` module (`compositeRightPanel`, `compositeRightPanels`, `compositeRightPanelsInRange`, `trimRightPadding`): pure negative-space compositing helpers. Trailing padding is ignored when measuring free space but only rows that actually receive panel text are rewritten, so full-width styled backgrounds stay byte-exact.
+## [15.12.4] - 2026-06-13
+### Breaking Changes
+
+- Removed Kitty temp-file image transmission, its startup support probe, the `PI_KITTY_IMAGE_TRANSMISSION` override, and the temp-file helper exports. Kitty/Ghostty image payloads now stay on in-band base64 before placeholder/direct placement, avoiding blank first renders from temp-file load races.
+- Renamed `RenderRequestOptions.allowUnknownViewportMutation` → `allowUnknownViewportTransientRepaint`. The option only permits a transient live-viewport repaint (autocomplete/IME/focused-editor chrome) on hosts that cannot report viewport position; it never authorizes a settled transcript commit. The old name implied any offscreen mutation was safe to push into native scrollback, which led callers to emit duplicate transcript copies.
 ## [16.0.1] - 2026-06-15
 
 ### Added
@@ -16,8 +25,6 @@
 
 ### Added
 
-- Added `TUI.setRightPanel(provider, targets?)`: registers right-side info panel blocks composited into the visible window at the emit stage, restricted to rows rendered by the target root children. Compositing happens after the window/commit math on the window copy only, so panels never overlap bottom chrome, never enter native scrollback, and do not disturb component-scoped render reuse or the live-region/stable-prefix protocol.
-- Added the `right-panel` module (`compositeRightPanel`, `compositeRightPanels`, `compositeRightPanelsInRange`, `trimRightPadding`): pure negative-space compositing helpers. Trailing padding is ignored when measuring free space but only rows that actually receive panel text are rewritten, so full-width styled backgrounds stay byte-exact.
 - Added volatile speech-to-text preview support to `Editor` with `setVolatileText(text)`, `clearVolatileText()`, and `commitVolatileText(text)` so hosts can replace, discard, or commit live dictated text at the cursor without appending
 - Added an always-on `LoopWatchdog` armed in `TUI.start()`/`TUI.stop()` that logs `ui.loop-blocked` (rising-edge deduped, with `blockedMs` and the phase active during the elapsed interval) when a self-scheduled probe tick runs late, plus a `ui.select-filter` breadcrumb around the `SelectList` fuzzy filter. The phase is read via `takeRecentLoopPhase`, so a synchronous block whose breadcrumb was pushed and popped before the delayed tick runs is still attributed to its phase instead of "unknown". `stop()` cancels the armed timer (via `clearTimeout` on the default handle) so repeated start/stop cycles leave no pending probe, with the generation guard as a fallback ([#2485](https://github.com/can1357/oh-my-pi/issues/2485))
 - Added `ctrl+j` as a second default binding for the `tui.input.newLine` action alongside `shift+enter`, so terminals that cannot emit `shift+enter` still have a newline key. On terminals with Kitty-protocol / `modifyOtherKeys` disambiguation `ctrl+j` inserts a newline while `Enter` still submits; on legacy terminals where `ctrl+j` and `Enter` are both byte-identical `LF` it submits (documented limitation). User keybinding overrides still take precedence ([#2473](https://github.com/can1357/oh-my-pi/issues/2473))

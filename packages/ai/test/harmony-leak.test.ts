@@ -80,8 +80,8 @@ describe("isHarmonyLeakMitigationTarget", () => {
 		expect(isHarmonyLeakMitigationTarget(codexModel)).toBe(true);
 	});
 
-	it("also targets Anthropic models on the local hardening branch", () => {
-		expect(isHarmonyLeakMitigationTarget(anthropicModel)).toBe(true);
+	it("does not target Anthropic models", () => {
+		expect(isHarmonyLeakMitigationTarget(anthropicModel)).toBe(false);
 	});
 });
 

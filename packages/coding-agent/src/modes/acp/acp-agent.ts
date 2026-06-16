@@ -58,7 +58,6 @@ import { loadSlashCommands } from "../../extensibility/slash-commands";
 import { resolveLocalUrlToPath } from "../../internal-urls";
 import { MCPManager } from "../../mcp/manager";
 import type { MCPServerConfig } from "../../mcp/types";
-import { createSessionMemoryRuntimeContext } from "../../memory-backend/runtime";
 import { loadAllExtensions } from "../../modes/components/extensions/state-manager";
 import { theme } from "../../modes/theme/theme";
 import { type PlanApprovalDetails, resolveApprovedPlan } from "../../plan-mode/approved-plan";
@@ -2096,11 +2095,6 @@ export class AcpAgent implements Agent {
 				},
 			},
 			{
-				memory: createSessionMemoryRuntimeContext(
-					record.session,
-					record.session.settings.getAgentDir(),
-					record.session.sessionManager.getCwd(),
-				),
 				getModel: () => record.session.model,
 				isIdle: () => !record.session.isStreaming,
 				abort: () => {
@@ -2110,6 +2104,7 @@ export class AcpAgent implements Agent {
 				shutdown: () => {},
 				getContextUsage: () => record.session.getContextUsage(),
 				getSystemPrompt: () => record.session.systemPrompt,
+				fetchUsageReports: () => record.session.fetchUsageReports(),
 				compact: instructionsOrOptions => runExtensionCompact(record.session, instructionsOrOptions),
 			},
 			{

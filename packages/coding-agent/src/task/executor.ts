@@ -24,7 +24,6 @@ import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { callTool } from "../mcp/client";
 import type { MCPManager } from "../mcp/manager";
-import { createSessionMemoryRuntimeContext } from "../memory-backend/runtime";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prompt.md" with { type: "text" };
 import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md" with { type: "text" };
@@ -2047,11 +2046,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						},
 					},
 					{
-						memory: createSessionMemoryRuntimeContext(
-							session,
-							session.settings.getAgentDir(),
-							session.sessionManager.getCwd(),
-						),
 						getModel: () => session.model,
 						isIdle: () => !session.isStreaming,
 						abort: () => session.abort({ reason: USER_INTERRUPT_LABEL }),
@@ -2059,6 +2053,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						shutdown: () => {},
 						getContextUsage: () => session.getContextUsage(),
 						getSystemPrompt: () => session.systemPrompt,
+						fetchUsageReports: () => session.fetchUsageReports(),
 						compact: instructionsOrOptions => runExtensionCompact(session, instructionsOrOptions),
 					},
 				);
