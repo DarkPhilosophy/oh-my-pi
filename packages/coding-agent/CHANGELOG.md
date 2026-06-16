@@ -10,6 +10,31 @@
 
 - Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
 - Changed `/reload-plugins` to tear down extension hooks with `session_shutdown` before replaying `session_start`, so plugin reloads do not stack duplicate timers, terminal-input listeners, or stale widgets.
+## [16.0.2] - 2026-06-16
+
+### Added
+
+- Added the `UMANS_WEBSEARCH_PROVIDER` environment variable to CLI help for Umans gateway web search backend selection.
+
+### Changed
+
+- The eager `task` (`task.eager: always`) and eager `todo` (`todo.eager: preferred`/`always`) hidden reminders now re-fire on the auto-continuation turn after a compaction (context-full / snapcompact / handoff / shake). Compaction summarizes away the first-message prelude, so the agent would otherwise silently lose the delegate-via-tasks / phased-todo guidance mid-work; the post-compaction todo nudge is reminder-only and never forces the `todo` tool onto the resumed turn.
+
+### Fixed
+
+- Fixed edit-tool block operations on Emacs Lisp files: `.el` and `.emacs` paths now resolve top-level forms for `SWAP.BLK`, `DEL.BLK`, and `INS.BLK.POST` instead of reporting an unsupported-language block-resolution error.
+- Fixed PDF reads leaking recoverable MuPDF WASM warnings into the terminal TUI by routing MuPDF output through the file logger before `markit-ai` loads it ([#2766](https://github.com/can1357/oh-my-pi/issues/2766)).
+- Fixed `/exit` and `/quit` waiting one shutdown timeout per hanging extension by running `session_shutdown` handlers within a shared shutdown window ([#2736](https://github.com/can1357/oh-my-pi/issues/2736)).
+- Fixed GitHub Copilot `.github/instructions/*.instructions.md` discovery by loading those files as rules that honor `applyTo` scoping, including always-apply `**` files and `rule://<name>` access for glob-scoped entries ([#2731](https://github.com/can1357/oh-my-pi/issues/2731)).
+- Fixed Windows bash-tool child processes defaulting interpreter pipe I/O to the ANSI codepage by adding UTF-8 encoding defaults when the inherited environment is unset ([#2701](https://github.com/can1357/oh-my-pi/issues/2701)).
+- Fixed `/advisor dump raw` so Opus 4.5 thinking content that already includes literal `<thinking>` tags is not rendered with nested thinking tags ([#2700](https://github.com/can1357/oh-my-pi/issues/2700)).
+- The `plugin-extensions-discovery` test suite no longer writes fixtures into — and `rm -rf`s the `node_modules` of — the developer's real `~/.omp/plugins`. Its `XDG_DATA_HOME` isolation was a no-op on Windows (XDG is gated to Linux/macOS) and was bypassed in XDG-migrated Linux/macOS environments, so a local run could delete installed plugins. The suite now isolates the whole config root via an `os.homedir()` mock plus cleared `XDG_*` vars, with a pre-write guard that fails if resolution escapes the temp home ([#2721](https://github.com/can1357/oh-my-pi/issues/2721)).
+- Installed plugins whose `extensions` manifest entry points at a directory of sub-extensions (the standard pi `extensions/<name>/index.ts` layout, e.g. `pi.extensions: ["./extensions"]`) are no longer rejected at install (`declared extension entry not found on disk`) or silently dropped at load. The plugin manifest resolver now resolves a directory the same way as the configured-directory (`-e`) extension loader: the directory's own `package.json` `omp`/`pi` `extensions` (authoritative — a missing declared entry is reported instead of falling back to a decoy `index`), then a direct `index.{ts,js,mjs,cjs}`, then a one-level scan of sub-extensions ([#2713](https://github.com/can1357/oh-my-pi/issues/2713)).
+- Fixed OpenRouter `@upstream` routing selectors whose upstream slug also appears in the model id, so `openrouter/...@deepseek:high` keeps `openRouterRouting.only` instead of being consumed by provider-scoped fuzzy matching ([#2708](https://github.com/can1357/oh-my-pi/issues/2708)).
+- Fixed `omp plugin list --json` omitting locally linked plugins that exist only in `omp-plugins.lock.json` and `node_modules` symlinks. ([#2742](https://github.com/can1357/oh-my-pi/issues/2742))
+- Fixed task subagents to install their configured ordered model candidates as child-session retry fallback chains, so retryable provider failures can advance to the next subagent model instead of failing the worker ([#2750](https://github.com/can1357/oh-my-pi/issues/2750)).
+- Fixed empty reasonless aborted assistant turns to auto-retry without switching model fallback, so transient provider-side aborts after tool results do not end headless sessions ([#2685](https://github.com/can1357/oh-my-pi/issues/2685)).
+
 ## [16.0.1] - 2026-06-15
 
 ### Breaking Changes

@@ -92,6 +92,33 @@ export function formatModelString(model: Model<Api>): string {
 	return `${model.provider}/${model.id}`;
 }
 
+function getSingleRoutingOnly(routing: unknown): string | undefined {
+	if (!routing || typeof routing !== "object" || !("only" in routing) || !Array.isArray(routing.only)) {
+		return undefined;
+	}
+	if (routing.only.length !== 1) return undefined;
+	const upstream = routing.only[0];
+	return typeof upstream === "string" && upstream ? upstream : undefined;
+}
+
+function getSingleUpstreamRoute(model: Model<Api>): string | undefined {
+	const compat = model.compat;
+	if (!compat || typeof compat !== "object") return undefined;
+	if (modelMatchesHost(model, "vercelAIGateway") && "vercelGatewayRouting" in compat) {
+		return getSingleRoutingOnly(compat.vercelGatewayRouting);
+	}
+	if (modelMatchesHost(model, "openrouter") && "openRouterRouting" in compat) {
+		return getSingleRoutingOnly(compat.openRouterRouting);
+	}
+	return undefined;
+}
+
+export function formatModelStringWithRouting(model: Model<Api>): string {
+	const selector = formatModelString(model);
+	const upstream = getSingleUpstreamRoute(model);
+	return upstream ? `${selector}@${upstream}` : selector;
+}
+
 export function formatModelSelectorValue(selector: string, thinkingLevel: ThinkingLevel | undefined): string {
 	return thinkingLevel && thinkingLevel !== ThinkingLevel.Inherit ? `${selector}:${thinkingLevel}` : selector;
 }
@@ -161,7 +188,7 @@ const UPSTREAM_ROUTING_SLUG = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i;
  * `@` or the suffix is not a bare provider slug, so model ids that legitimately
  * contain `@` (`claude-opus-4-8@default`, `workers-ai/@cf/...`) are never split.
  */
-function splitUpstreamRouting(pattern: string): { base: string; upstream: string } | undefined {
+export function splitUpstreamRouting(pattern: string): { base: string; upstream: string } | undefined {
 	const at = pattern.lastIndexOf("@");
 	if (at <= 0) return undefined;
 	const rest = pattern.slice(at + 1);
@@ -481,6 +508,13 @@ function matchModel(
 			// The prefix is not a known provider in this candidate set, so treat the
 			// slash as part of the raw model ID and continue with generic matching.
 		} else {
+			// Let the routing fallback apply `@upstream` before fuzzy matching can consume the
+			// slug — but only for aggregator providers (OpenRouter / Vercel Gateway). Other
+			// providers have ids that legitimately end in `@` (Vertex `claude-opus-4-8@default`),
+			// and the fallback never routes them, so they must keep fuzzy matching.
+			if (splitUpstreamRouting(modelId) && providerModels.some(supportsUpstreamRouting)) {
+				return undefined;
+			}
 			const scored = providerModels
 				.map(model => ({ model, match: fuzzyMatch(modelId, model.id) }))
 				.filter(entry => entry.match.matches);

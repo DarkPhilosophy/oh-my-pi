@@ -375,13 +375,46 @@ function parseSizeValue(value: SizeValue | undefined, referenceSize: number): nu
 
 /** Detect terminal multiplexers where scrollback clearing and height-change redraws are hostile. */
 function isMultiplexerSession(): boolean {
-	// TMUX/STY/ZELLIJ are the authoritative signals, but they can be stripped while
-	// TERM survives (`sudo` without -E, `su`, env-sanitizing launchers/ssh). Fall back to
-	// the TERM prefix like every sibling multiplexer check (terminal-capabilities.ts) so a
-	// resize never emits ED3 into a tmux/screen pane and wipes its scrollback history.
+	// TMUX/STY/ZELLIJ/CMUX workspace+surface ids are authoritative session
+	// signals. TERM can also survive when those are stripped (`sudo` without -E,
+	// `su`, env-sanitizing launchers/ssh), so keep the TERM prefix fallback aligned
+	// with sibling multiplexer checks (terminal-capabilities.ts). Misclassifying a
+	// multiplexer as a direct terminal lets resize/reset paths emit ED3 (`CSI 3 J`)
+	// and wipe pane scrollback. Do not use CMUX_SOCKET_PATH here: it is a CLI socket
+	// override and can be set outside a CMUX terminal.
 	if (Bun.env.TMUX || Bun.env.STY || Bun.env.ZELLIJ) return true;
+	if (Bun.env.CMUX_WORKSPACE_ID || Bun.env.CMUX_SURFACE_ID) return true;
 	const term = Bun.env.TERM?.toLowerCase() ?? "";
 	return term.startsWith("tmux") || term.startsWith("screen");
+}
+
+/**
+ * Terminals that re-report their size whenever the alternate screen buffer is
+ * toggled. The non-multiplexer resize fast path ({@link TUI.#beginResizeViewport})
+ * borrows the alternate screen for throwaway drag frames; on these terminals
+ * entering/leaving the alt buffer emits a fresh SIGWINCH (Warp reports a height
+ * one row different for the alt buffer), which re-enters the fast path — a
+ * self-sustaining resize loop that floods ED3 full repaints even though the
+ * geometry never actually changes. Routing them through the in-place
+ * (multiplexer) resize path never touches the alt buffer, breaking the loop.
+ *
+ * `PI_TUI_RESIZE_IN_PLACE=1|0` forces this on/off for any terminal.
+ */
+function reportsSizeOnAltScreenToggle(): boolean {
+	const override = Bun.env.PI_TUI_RESIZE_IN_PLACE;
+	if (override === "0" || override === "false") return false;
+	if (override === "1" || override === "true") return true;
+	return Bun.env.TERM_PROGRAM?.toLowerCase() === "warpterminal";
+}
+
+/**
+ * Resize should repaint the visible window in place — no alternate-screen
+ * borrow, no ED3 scrollback rewrap — for multiplexer panes and for terminals
+ * that loop on alt-screen toggles. The tradeoff is identical to a multiplexer:
+ * scrollback above the window keeps its old wrap instead of being re-flowed.
+ */
+function resizeRepaintsInPlace(): boolean {
+	return isMultiplexerSession() || reportsSizeOnAltScreenToggle();
 }
 
 /**
@@ -1304,7 +1337,7 @@ export class TUI extends Container {
 				// `#resizeEventPending` is set first so the eventual render still
 				// classifies as a resize.
 				this.#resizeEventPending = true;
-				if (!isMultiplexerSession()) {
+				if (!resizeRepaintsInPlace()) {
 					// Enter the viewport fast path and (re)arm the settle timer, then
 					// request the cheap viewport-only paint. The authoritative full
 					// replay fires from the settle timer once the drag goes quiet.
@@ -2461,13 +2494,15 @@ export class TUI extends Container {
 			Math.min(frameLength, snapshotSafeEnd ?? byteStableBoundary),
 		);
 
-		// 4. Classify. A resize is an explicit user gesture: outside a
-		// multiplexer it erases and replays so history rewraps at the new
-		// geometry (the reader snapped to the bottom just dragged the window);
-		// inside one the pane reflows its own history, so repaint in place.
+		// 4. Classify. A resize is an explicit user gesture: normally the engine
+		// erases and replays so history rewraps at the new geometry (the reader
+		// snapped to the bottom just dragged the window). Multiplexer panes — and
+		// terminals that re-report size on alt-screen toggles — instead repaint in
+		// place, because an ED3 rewrap is unsafe (pane scrollback / alt-screen
+		// feedback loop), so committed history keeps its old wrap.
 		const firstPaint = !this.#hasEverRendered;
 		const replaceRequested = this.#clearScrollbackOnNextRender;
-		const geometryRebuild = geometryChanged && !isMultiplexerSession();
+		const geometryRebuild = geometryChanged && !resizeRepaintsInPlace();
 		const fullPaint = firstPaint || replaceRequested || geometryRebuild;
 		let windowTop: number;
 		let chunkTo: number;
@@ -2589,7 +2624,7 @@ export class TUI extends Container {
 			windowTop,
 			prevWindowTop,
 			prevHardwareCursorRow,
-			forceWindowRewrite: this.#forceViewportRepaintOnNextRender || (geometryChanged && isMultiplexerSession()),
+			forceWindowRewrite: this.#forceViewportRepaintOnNextRender || (geometryChanged && resizeRepaintsInPlace()),
 		});
 		for (let i = this.#committedPrefix.length; i < chunkTo; i++) {
 			this.#committedPrefix.push(rawFrame[i] ?? "");
