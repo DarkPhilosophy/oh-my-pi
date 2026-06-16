@@ -33,7 +33,7 @@ import { type CreateAgentSessionOptions, createAgentSession, discoverAuthStorage
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import type { ArtifactManager } from "../session/artifacts";
 import type { AuthStorage } from "../session/auth-storage";
-import { SKILL_PROMPT_MESSAGE_TYPE } from "../session/messages";
+import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
 import { SessionManager } from "../session/session-manager";
 import { truncateTail } from "../session/streaming-output";
 import type { ContextFileEntry } from "../tools";
@@ -1829,9 +1829,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				? resolvedThinkingLevel
 				: (thinkingLevel ?? resolvedThinkingLevel);
 
+			const effectiveCwd = worktree ?? cwd;
 			const sessionManager = sessionFile
-				? await awaitAbortable(SessionManager.open(sessionFile))
-				: SessionManager.inMemory(worktree ?? cwd);
+				? await awaitAbortable(SessionManager.open(sessionFile, undefined, undefined, { initialCwd: effectiveCwd }))
+				: SessionManager.inMemory(effectiveCwd);
 			if (options.parentArtifactManager) {
 				sessionManager.adoptArtifactManager(options.parentArtifactManager);
 			}
@@ -2047,7 +2048,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					{
 						getModel: () => session.model,
 						isIdle: () => !session.isStreaming,
-						abort: () => session.abort(),
+						abort: () => session.abort({ reason: USER_INTERRUPT_LABEL }),
 						hasPendingMessages: () => session.queuedMessageCount > 0,
 						shutdown: () => {},
 						getContextUsage: () => session.getContextUsage(),

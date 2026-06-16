@@ -92,6 +92,7 @@ import { STTController, type SttState } from "../stt";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { formatTaskId } from "../task/render";
 import type { LspStartupServerInfo } from "../tools";
+import { isImageProviderPreference, setPreferredImageProvider } from "../tools/image-gen";
 import { normalizeLocalScheme } from "../tools/path-utils";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
@@ -103,6 +104,12 @@ import type { EventBus } from "../utils/event-bus";
 import { getEditorCommand, openInEditor } from "../utils/external-editor";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../utils/session-color";
 import { popTerminalTitle, pushTerminalTitle, setSessionTerminalTitle } from "../utils/title-generator";
+import {
+	isSearchProviderId,
+	isSearchProviderPreference,
+	setExcludedSearchProviders,
+	setPreferredSearchProvider,
+} from "../web/search";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import { ChatBlock, type ChatBlockHost } from "./components/chat-block";
@@ -545,6 +552,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (eventBus) {
 			this.#eventBusUnsubscribers.push(
 				eventBus.on(LSP_STARTUP_EVENT_CHANNEL, data => {
+					if (this.settings.get("startup.quiet")) return;
 					this.#handleLspStartupEvent(data as LspStartupEvent);
 				}),
 			);
@@ -554,6 +562,7 @@ export class InteractiveMode implements InteractiveModeContext {
 						logger.warn("Ignoring malformed mcp:connecting event", { data });
 						return;
 					}
+					if (this.settings.get("startup.quiet")) return;
 					this.showStatus(formatMCPConnectingMessage(data.serverNames));
 				}),
 			);
@@ -823,6 +832,30 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.session.setSessionSwitchReconciler?.(() => this.#reconcileModeFromSession());
 		await this.#reconcileModeFromSession();
 
+		// Brand-new sessions optionally start in plan mode when the user has made it
+		// the startup default. "Brand-new" means the resolved branch carries no
+		// conversation context (buildSessionContext().messages — covers messages,
+		// custom messages, branch summaries, and compaction summaries) and the user
+		// set no explicit `mode_change` (which #reconcileModeFromSession just
+		// restored). SDK startup metadata and extension `custom` state entries are
+		// ignored. This way `omp --continue` (or auto-resume) that finds no recent
+		// session and creates a fresh one still honors the default, while a session
+		// with restored context or an explicit mode keeps its reconciled mode. Scoped
+		// to launch (not the switch reconciler above) so /new and the plan-approval →
+		// execution handoff clear never get dragged back into plan mode. #enterPlanMode
+		// is idempotent and self-guards against an already-active plan/goal mode; it
+		// does not check plan.enabled itself.
+		const hasConversationContext = this.sessionManager.buildSessionContext().messages.length > 0;
+		const hasExplicitMode = this.sessionManager.getEntries().some(entry => entry.type === "mode_change");
+		const isFreshSession = !hasConversationContext && !hasExplicitMode;
+		if (
+			isFreshSession &&
+			this.session.settings.get("plan.defaultOnStartup") &&
+			this.session.settings.get("plan.enabled")
+		) {
+			await this.#enterPlanMode();
+		}
+
 		// Restore unsent editor draft from previous session shutdown (Ctrl+D).
 		// One-shot: consumeDraft removes the sidecar after read so the next
 		// resume does not re-restore the same text.
@@ -937,6 +970,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		// up the destination project's configuration.
 		if (isSettingsInitialized()) {
 			await settings.reloadForCwd(newCwd);
+			// Reapply provider preferences from the newly-loaded settings so the
+			// module-level search/image provider state reflects the destination
+			// project's configuration. Without this, the previous project's
+			// exclusions leak and newly-excluded providers are still used.
+			const excludedWebSearchProviders = settings.get("providers.webSearchExclude");
+			if (Array.isArray(excludedWebSearchProviders)) {
+				setExcludedSearchProviders(excludedWebSearchProviders.filter(isSearchProviderId));
+			}
+			const webSearchProvider = settings.get("providers.webSearch");
+			if (typeof webSearchProvider === "string" && isSearchProviderPreference(webSearchProvider)) {
+				setPreferredSearchProvider(webSearchProvider);
+			}
+			const imageProvider = settings.get("providers.image");
+			if (isImageProviderPreference(imageProvider)) {
+				setPreferredImageProvider(imageProvider);
+			}
 		}
 		// Re-warm plugin roots, capabilities, slash commands, and the ssh tool so
 		// the next prompt sees everything scoped to the new project directory.
@@ -3368,8 +3417,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleExportCommand(text);
 	}
 
-	handleDumpCommand() {
-		return this.#commandController.handleDumpCommand();
+	handleDumpCommand(isRaw?: boolean) {
+		return this.#commandController.handleDumpCommand(isRaw);
+	}
+
+	handleAdvisorDumpCommand(isRaw?: boolean) {
+		return this.#commandController.handleAdvisorDumpCommand(isRaw);
 	}
 
 	handleDebugTranscriptCommand(): Promise<void> {
@@ -3386,6 +3439,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleSessionCommand(): Promise<void> {
 		return this.#commandController.handleSessionCommand();
+	}
+
+	handleAdvisorStatusCommand(): Promise<void> {
+		return this.#commandController.handleAdvisorStatusCommand();
 	}
 
 	handleJobsCommand(): Promise<void> {

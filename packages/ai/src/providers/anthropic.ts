@@ -1462,6 +1462,17 @@ export function isProviderRetryableError(error: unknown, provider?: string): boo
 	return isRetryableError(error);
 }
 
+const THINKING_ENVELOPE_OPEN = "<thinking>";
+const THINKING_ENVELOPE_CLOSE = "</thinking>";
+
+function unwrapAnthropicThinkingEnvelope(text: string): string | undefined {
+	let current = text.trim();
+	while (current.startsWith(THINKING_ENVELOPE_OPEN) && current.endsWith(THINKING_ENVELOPE_CLOSE)) {
+		current = current.slice(THINKING_ENVELOPE_OPEN.length, current.length - THINKING_ENVELOPE_CLOSE.length).trim();
+	}
+	return current === text ? undefined : current;
+}
+
 function createEmptyUsage(premiumRequests?: number): Usage {
 	return {
 		input: 0,
@@ -1668,6 +1679,11 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 				if (block.type === "text") {
 					stream.push({ type: "text_end", contentIndex, content: block.text, partial: output });
 				} else if (block.type === "thinking") {
+					const unwrappedThinking = unwrapAnthropicThinkingEnvelope(block.thinking);
+					if (unwrappedThinking !== undefined) {
+						block.thinking = unwrappedThinking;
+						block.thinkingSignature = undefined;
+					}
 					stream.push({ type: "thinking_end", contentIndex, content: block.thinking, partial: output });
 				} else if (block.type === "toolCall") {
 					const finalJson =
@@ -2382,10 +2398,9 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		};
 	}
 
-	// OpenCode Go's Anthropic-compatible gateway validates API-key auth through
-	// `X-Api-Key`; bearer-only requests reach the endpoint but return
-	// `Missing API key` before token validation.
-	if (model.provider === "opencode-go") {
+	// OpenCode Go and Umans validate Anthropic-compatible API-key auth through
+	// `X-Api-Key`; bearer-only requests reach the endpoint but fail auth.
+	if (model.provider === "opencode-go" || model.provider === "umans") {
 		delete defaultHeaders.Authorization;
 		return {
 			isOAuthToken: false,

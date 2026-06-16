@@ -140,6 +140,10 @@ const HOST_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 	// memory should opt in explicitly through their own settings layer.
 	"memory.backend",
 	"memories.enabled",
+	// Advisor is interactive-session assistance. Protocol hosts opt in explicitly
+	// instead of inheriting a user's globally-enabled local preference.
+	"advisor.enabled",
+	"advisor.subagents",
 ];
 
 const RPC_BACKGROUND_DEFAULTED_SETTING_PATHS: SettingPath[] = [
@@ -307,7 +311,11 @@ export async function submitInteractiveInput(
 			// developer directive to a visible user message. A synthetic submit while
 			// streaming keeps its prior behavior (rejected as busy) rather than changing
 			// its role.
-			await session.prompt(input.text, { synthetic: true, expandPromptTemplates: false });
+			await session.prompt(input.text, {
+				synthetic: true,
+				expandPromptTemplates: false,
+				userInitiated: input.userInitiated,
+			});
 		} else {
 			await session.prompt(input.text, { images: input.images, streamingBehavior });
 		}
