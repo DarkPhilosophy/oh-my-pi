@@ -166,6 +166,7 @@ import type {
 	InteractiveModeContext,
 	InteractiveModeInitOptions,
 	InteractiveSelectorDialogOptions,
+	RightInfoProvider,
 	SubmittedUserInput,
 	TodoItem,
 	TodoPhase,
@@ -437,8 +438,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#isShuttingDown;
 	}
 	#rightInfoBlocks: string[][] = [];
-	#staticRightInfoProvider = (): readonly (readonly string[])[] => this.#rightInfoBlocks;
-	#rightInfoProvider = this.#staticRightInfoProvider;
+	#staticRightInfoProvider = (_width: number): readonly (readonly string[])[] => this.#rightInfoBlocks;
+	#rightInfoProvider: RightInfoProvider = this.#staticRightInfoProvider;
 	hookSelector: HookSelectorComponent | undefined = undefined;
 	hookInput: HookInputComponent | undefined = undefined;
 	hookEditor: HookEditorComponent | undefined = undefined;
@@ -664,7 +665,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		welcome?.playIntro(() => this.ui.requestComponentRender(welcome));
 	}
 
-	setRightInfo(blocks: string[][] | (() => readonly (readonly string[])[]) | undefined): void {
+	setRightInfo(blocks: string[][] | RightInfoProvider | undefined): void {
 		if (typeof blocks === "function") {
 			this.#rightInfoProvider = blocks;
 			this.ui.requestRender();
@@ -776,7 +777,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// transcript stays a directly reusable root child (scoped renders and the
 		// native scrollback protocol keep working), and the panel can never
 		// overlap the bottom chrome or rows committed to scrollback.
-		this.ui.setRightPanel(() => this.#rightInfoProvider(), [mainContent, this.chatContainer]);
+		this.ui.setRightPanel(width => this.#rightInfoProvider(width), [mainContent, this.chatContainer]);
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(this.todoContainer);

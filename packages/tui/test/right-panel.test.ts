@@ -60,6 +60,31 @@ describe("compositeRightPanel", () => {
 		expect(out[widget.length]).toBe("hi");
 	});
 
+	it("terminates an in-flight OSC 8 hyperlink before panel text", () => {
+		const openLink = "\x1b]8;;https://example.com\x07link";
+		const plain = "plain";
+		const base = [...Array.from({ length: 4 }, () => openLink), ...Array.from({ length: 4 }, () => plain)];
+		const widget = panel(6);
+		const out = compositeRightPanel(base, widget, WIDTH, 40);
+
+		for (let k = 0; k < widget.length; k++) {
+			expect(out[k].endsWith(widget[k])).toBe(true);
+			if (k < 4) {
+				// Hyperlink rows close OSC 8 before the gap and panel text.
+				const closeAt = out[k].indexOf("\x1b]8;;\x07");
+				const panelAt = out[k].indexOf(widget[k]);
+				expect(closeAt).toBeGreaterThan(out[k].indexOf("\x1b]8;;https://example.com\x07"));
+				expect(closeAt).toBeLessThan(panelAt);
+			} else {
+				// Plain rows receive the panel but no OSC 8 terminator.
+				expect(out[k]).not.toContain("\x1b]8;");
+			}
+		}
+		// Non-hyperlink rows past the panel are untouched.
+		expect(out[widget.length]).toBe(plain);
+		expect(out[widget.length + 1]).toBe(plain);
+	});
+
 	it("normalizes tabs in panel lines before measuring and appending", () => {
 		const base = Array.from({ length: 8 }, () => "hi");
 		const widget = ["A\tB", "C\tD"];

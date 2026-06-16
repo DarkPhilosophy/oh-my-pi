@@ -163,10 +163,11 @@ export function compositeRightPanelsInRange(
 		for (let k = 0; k < block.length; k++) {
 			const base = trimRightPadding(out[start + k] ?? "");
 			const truncatedBase = truncateToWidth(base, col);
-			// If the base row carries color state, terminate it so the gap padding and
-			// the panel do not inherit an unclosed SGR sequence.
+			// If the base row carries color state or an in-flight OSC 8 hyperlink,
+			// terminate it so the gap padding and the panel do not inherit them.
 			const reset = truncatedBase.includes("\x1b[") ? "\x1b[0m" : "";
-			out[start + k] = truncatedBase + reset + padding(Math.max(0, col - visibleWidth(base))) + block[k];
+			const osc8Close = base.includes("\x1b]8;") ? "\x1b]8;;\x07" : "";
+			out[start + k] = truncatedBase + reset + osc8Close + padding(Math.max(0, col - visibleWidth(base))) + block[k];
 		}
 	}
 	return out;

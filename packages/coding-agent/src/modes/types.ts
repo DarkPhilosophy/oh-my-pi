@@ -89,7 +89,7 @@ export interface InteractiveModeInitOptions {
 
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<HookSelectorOptions, "disabledIndices">;
 
-export type RightInfoProvider = () => readonly (readonly string[])[];
+export type RightInfoProvider = (width: number) => readonly (readonly string[])[];
 
 export interface InteractiveModeContext {
 	// UI access

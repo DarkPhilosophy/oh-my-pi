@@ -11,11 +11,6 @@
 
 - Fixed right-side panel compositing landing on Kitty OSC 66 text-sizing heading rows and the following blank structural reservation row. The compositor predicate is now generic (`isOccupiedLine`) and the TUI pre-marks OSC 66 headings plus their first visible-width-zero successor as occupied before placement.
 
-## [15.12.4] - 2026-06-13
-### Breaking Changes
-
-- Removed Kitty temp-file image transmission, its startup support probe, the `PI_KITTY_IMAGE_TRANSMISSION` override, and the temp-file helper exports. Kitty/Ghostty image payloads now stay on in-band base64 before placeholder/direct placement, avoiding blank first renders from temp-file load races.
-- Renamed `RenderRequestOptions.allowUnknownViewportMutation` → `allowUnknownViewportTransientRepaint`. The option only permits a transient live-viewport repaint (autocomplete/IME/focused-editor chrome) on hosts that cannot report viewport position; it never authorizes a settled transcript commit. The old name implied any offscreen mutation was safe to push into native scrollback, which led callers to emit duplicate transcript copies.
 ## [16.0.2] - 2026-06-16
 
 ### Fixed

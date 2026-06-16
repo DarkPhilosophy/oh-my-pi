@@ -931,7 +931,7 @@ export class TUI extends Container {
 	// Right-panel provider: composited into the visible window at the emit
 	// stage, after the window/commit math — never into rows that enter native
 	// scrollback, and only into rows owned by the registered target roots.
-	#rightPanelProvider: (() => readonly (readonly string[])[]) | null = null;
+	#rightPanelProvider: ((width: number) => readonly (readonly string[])[]) | null = null;
 	#rightPanelTargets: Set<Component> | null = null;
 
 	constructor(terminal: Terminal, showHardwareCursor?: boolean, options?: TUIOptions) {
@@ -1634,7 +1634,10 @@ export class TUI extends Container {
 	 * committed to native scrollback. `targets` must render contiguously in
 	 * the frame (their row ranges are unioned). Pass `null` to remove.
 	 */
-	setRightPanel(provider: (() => readonly (readonly string[])[]) | null, targets?: readonly Component[]): void {
+	setRightPanel(
+		provider: ((width: number) => readonly (readonly string[])[]) | null,
+		targets?: readonly Component[],
+	): void {
 		this.#rightPanelProvider = provider;
 		this.#rightPanelTargets =
 			provider !== null && targets !== undefined && targets.length > 0 ? new Set(targets) : null;
@@ -1651,7 +1654,7 @@ export class TUI extends Container {
 	#compositeRightPanelIntoWindow(window: string[], width: number, windowTop: number): string[] {
 		const provider = this.#rightPanelProvider;
 		if (provider === null) return window;
-		const blocks = provider();
+		const blocks = provider(width);
 		if (blocks.length === 0) return window;
 		// Restrict placement to window rows rendered by the target roots.
 		let lo = 0;
