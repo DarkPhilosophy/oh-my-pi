@@ -216,6 +216,27 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		expect(currentRightInfo()).toEqual([["render-3"]]);
 	});
 
+	it("keeps the old right widget when a replacement component factory throws", () => {
+		const { ctx, currentRightInfo } = makeCtx();
+		const c = new ExtensionUiController(ctx);
+		let disposed = 0;
+		const oldFactory = (() => ({
+			render: () => ["old"],
+			dispose() {
+				disposed++;
+			},
+		})) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		const throwingFactory = (() => {
+			throw new Error("boom");
+		}) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+
+		c.setHookWidget("live", oldFactory, { placement: "rightEditor" });
+
+		expect(() => c.setHookWidget("live", throwingFactory, { placement: "rightEditor" })).toThrow("boom");
+		expect(disposed).toBe(0);
+		expect(currentRightInfo()).toEqual([["old"]]);
+	});
+
 	it("passes the supplied width to component-factory right widgets", () => {
 		const { ctx, currentRightInfo } = makeCtx();
 		const c = new ExtensionUiController(ctx);

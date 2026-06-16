@@ -298,10 +298,13 @@ export class ExtensionUiController {
 		}
 
 		if (placement === "rightEditor") {
+			// Build the replacement before disposing the old entry: component
+			// factories may throw, and the existing widget must stay valid if they do.
+			const nextEntry = this.#contentToRightEntry(content, options?.priority);
 			// Updating an existing Map key preserves insertion order; deleting first
 			// would make animated/right-side widgets jump below siblings on refresh.
 			this.#disposeRightWidgetEntry(this.#rightWidgets.get(key));
-			this.#rightWidgets.set(key, this.#contentToRightEntry(content, options?.priority));
+			this.#rightWidgets.set(key, nextEntry);
 			this.#flushRightWidgets();
 			this.#rebuildHookWidgets();
 			return;
