@@ -48,7 +48,7 @@ export class ExtensionUiController {
 	#extensionTerminalInputUnsubscribers = new Set<() => void>();
 	#hookWidgetsAbove = new Map<string, ExtensionUiComponent>();
 	#hookWidgetsBelow = new Map<string, ExtensionUiComponent>();
-	#rightInfoProvider = (): string[][] => this.#rightWidgetLines();
+	#rightInfoProvider = (width: number): string[][] => this.#rightWidgetLines(width);
 	#rightWidgets = new Map<string, RightWidgetEntry>();
 	#errorSubscribedRunners = new WeakSet<object>();
 	// Single-file dialog surface (`editorContainer` + focus) is shared by the
@@ -298,10 +298,13 @@ export class ExtensionUiController {
 		}
 
 		if (placement === "rightEditor") {
+			// Build the replacement before disposing the old entry: component
+			// factories may throw, and the existing widget must stay valid if they do.
+			const nextEntry = this.#contentToRightEntry(content, options?.priority);
 			// Updating an existing Map key preserves insertion order; deleting first
 			// would make animated/right-side widgets jump below siblings on refresh.
 			this.#disposeRightWidgetEntry(this.#rightWidgets.get(key));
-			this.#rightWidgets.set(key, this.#contentToRightEntry(content, options?.priority));
+			this.#rightWidgets.set(key, nextEntry);
 			this.#flushRightWidgets();
 			this.#rebuildHookWidgets();
 			return;
@@ -343,11 +346,11 @@ export class ExtensionUiController {
 		return { kind: "component", component: this.#createRightWidgetComponent(content), priority };
 	}
 
-	#rightWidgetBlocks(entry: RightWidgetEntry): RightWidgetPanelBlock[] {
+	#rightWidgetBlocks(entry: RightWidgetEntry, width: number): RightWidgetPanelBlock[] {
 		if (entry.kind === "blocks") return entry.blocks;
 		return [
 			{
-				lines: entry.component.render(process.stdout.columns || 80).map(trimRightPadding),
+				lines: entry.component.render(width).map(trimRightPadding),
 			},
 		];
 	}
@@ -376,13 +379,13 @@ export class ExtensionUiController {
 		this.ctx.setRightInfo(this.#rightWidgets.size === 0 ? undefined : this.#rightInfoProvider);
 	}
 
-	#rightWidgetLines(): string[][] {
+	#rightWidgetLines(width: number): string[][] {
 		// Each rightEditor block is composited independently so multi-section
 		// widgets can degrade contextually when the negative space is short.
 		// Placement order: explicit block priority, then widget priority, then
 		// ascending height (shortest first), then stable widget/block order.
 		const blocks = [...this.#rightWidgets.values()].flatMap((entry, widgetIndex) =>
-			this.#rightWidgetBlocks(entry).map((block, blockIndex) => ({
+			this.#rightWidgetBlocks(entry, width).map((block, blockIndex) => ({
 				lines: block.lines,
 				priority: block.priority ?? entry.priority,
 				widgetIndex,

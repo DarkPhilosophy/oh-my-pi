@@ -8,16 +8,16 @@ import type { InteractiveModeContext } from "../src/modes/types";
 function makeCtx(): {
 	ctx: InteractiveModeContext;
 	rightInfo: (string[][] | undefined)[];
-	currentRightInfo: () => string[][] | undefined;
+	currentRightInfo: (width?: number) => string[][] | undefined;
 } {
 	const rightInfo: (string[][] | undefined)[] = [];
-	let provider: (() => readonly (readonly string[])[]) | undefined;
-	const snapshot = (): string[][] | undefined => provider?.().map(block => [...block]);
+	let provider: ((width: number) => readonly (readonly string[])[]) | undefined;
+	const snapshot = (width = 80): string[][] | undefined => provider?.(width).map(block => [...block]);
 	const ctx = {
 		hookWidgetContainerAbove: new Container(),
 		hookWidgetContainerBelow: new Container(),
 		ui: { requestRender: () => {} },
-		setRightInfo: (blocks: string[][] | (() => readonly (readonly string[])[]) | undefined) => {
+		setRightInfo: (blocks: string[][] | ((width: number) => readonly (readonly string[])[]) | undefined) => {
 			provider = typeof blocks === "function" ? blocks : blocks === undefined ? undefined : () => blocks;
 			rightInfo.push(snapshot());
 		},
@@ -214,5 +214,43 @@ describe("ExtensionUiController rightEditor widgets", () => {
 
 		expect(currentRightInfo()).toEqual([["render-2"]]);
 		expect(currentRightInfo()).toEqual([["render-3"]]);
+	});
+
+	it("keeps the old right widget when a replacement component factory throws", () => {
+		const { ctx, currentRightInfo } = makeCtx();
+		const c = new ExtensionUiController(ctx);
+		let disposed = 0;
+		const oldFactory = (() => ({
+			render: () => ["old"],
+			dispose() {
+				disposed++;
+			},
+		})) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		const throwingFactory = (() => {
+			throw new Error("boom");
+		}) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+
+		c.setHookWidget("live", oldFactory, { placement: "rightEditor" });
+
+		expect(() => c.setHookWidget("live", throwingFactory, { placement: "rightEditor" })).toThrow("boom");
+		expect(disposed).toBe(0);
+		expect(currentRightInfo()).toEqual([["old"]]);
+	});
+
+	it("passes the supplied width to component-factory right widgets", () => {
+		const { ctx, currentRightInfo } = makeCtx();
+		const c = new ExtensionUiController(ctx);
+		let receivedWidth = 0;
+		const factory = (() => ({
+			render: (width: number) => {
+				receivedWidth = width;
+				return [`w${width}${" ".repeat(Math.max(0, width - String(width).length - 1))}`];
+			},
+			dispose() {},
+		})) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+
+		c.setHookWidget("sized", factory, { placement: "rightEditor" });
+		expect(currentRightInfo(120)).toEqual([["w120"]]);
+		expect(receivedWidth).toBe(120);
 	});
 });

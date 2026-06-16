@@ -139,9 +139,11 @@ import {
 	filterAvailableModelsByEnabledPatterns,
 	formatModelSelectorValue,
 	formatModelString,
+	formatModelStringWithRouting,
 	getModelMatchPreferences,
 	parseModelString,
 	type ResolvedModelRoleValue,
+	resolveModelOverride,
 	resolveModelRoleValue,
 	resolveRoleSelection,
 } from "../config/model-resolver";
@@ -273,6 +275,7 @@ import {
 	type BashExecutionMessage,
 	type CustomMessage,
 	convertToLlm,
+	GENERIC_ABORT_SENTINEL,
 	type PythonExecutionMessage,
 	readQueueChipText,
 	SILENT_ABORT_MARKER,
@@ -640,8 +643,7 @@ function parseRetryFallbackSelector(selector: string): RetryFallbackSelector | u
 }
 
 function formatRetryFallbackSelector(model: Model, thinkingLevel: ThinkingLevel | undefined): string {
-	const selector = formatModelString(model);
-	return thinkingLevel ? `${selector}:${thinkingLevel}` : selector;
+	return formatModelSelectorValue(formatModelStringWithRouting(model), thinkingLevel);
 }
 
 function formatRetryFallbackBaseSelector(selector: RetryFallbackSelector): string {
@@ -2402,6 +2404,11 @@ export class AgentSession {
 				return;
 			}
 
+			if (this.#isRetryableReasonlessAbort(msg)) {
+				const didRetry = await this.#handleRetryableError(msg, { allowModelFallback: false });
+				if (didRetry) return;
+			}
+
 			// A deliberate abort should settle the current turn, not trigger queued continuations.
 			if (msg.stopReason === "aborted") {
 				this.#resolveRetry();
@@ -2566,6 +2573,11 @@ export class AgentSession {
 
 	#scheduleAutoContinuePrompt(generation: number): void {
 		const continuePrompt = async () => {
+			// Compaction summarizes away the first-message eager preludes, so re-assert the
+			// delegate-via-tasks / phased-todo reminders on this auto-resumed turn. This runs
+			// at invocation (past the abort check below), so an aborted continuation queues
+			// nothing; scoped to this request via prependMessages, never the shared queue.
+			const eagerNudges = this.#buildPostCompactionEagerNudges();
 			await this.#promptWithMessage(
 				{
 					role: "developer",
@@ -2574,7 +2586,10 @@ export class AgentSession {
 					timestamp: Date.now(),
 				},
 				autoContinuePrompt,
-				{ skipPostPromptRecoveryWait: true },
+				{
+					skipPostPromptRecoveryWait: true,
+					prependMessages: eagerNudges.length > 0 ? eagerNudges : undefined,
+				},
 			);
 		};
 		this.#schedulePostPromptTask(
@@ -7775,7 +7790,9 @@ export class AgentSession {
 		};
 	}
 
-	#createEagerTodoPrelude(promptText: string): { message: AgentMessage; toolChoice?: ToolChoice } | undefined {
+	#createEagerTodoPrelude(
+		promptText: string | undefined,
+	): { message: AgentMessage; toolChoice?: ToolChoice } | undefined {
 		const mode = this.settings.get("todo.eager");
 		const todosEnabled = this.settings.get("todo.enabled");
 		if (mode === "default" || !todosEnabled) {
@@ -7792,14 +7809,18 @@ export class AgentSession {
 		// Only inject on the first user message of the conversation. Subsequent user
 		// turns must not receive the eager todo reminder — they often correct, clarify,
 		// or redirect the prior task, and forcing a brand-new todo list there is wrong.
-		const hasPriorUserMessage = this.agent.state.messages.some(m => m.role === "user");
-		if (hasPriorUserMessage) {
-			return undefined;
-		}
+		// When `promptText` is undefined (post-compaction re-injection) there is no fresh
+		// user message to gate on, so skip the first-message and prompt-suffix checks.
+		if (promptText !== undefined) {
+			const hasPriorUserMessage = this.agent.state.messages.some(m => m.role === "user");
+			if (hasPriorUserMessage) {
+				return undefined;
+			}
 
-		const trimmedPromptText = promptText.trimEnd();
-		if (trimmedPromptText.endsWith("?") || trimmedPromptText.endsWith("!")) {
-			return undefined;
+			const trimmedPromptText = promptText.trimEnd();
+			if (trimmedPromptText.endsWith("?") || trimmedPromptText.endsWith("!")) {
+				return undefined;
+			}
 		}
 
 		// Must check the active tool set, not just the registry: tool discovery
@@ -7822,8 +7843,10 @@ export class AgentSession {
 			timestamp: Date.now(),
 		};
 		// `preferred` suggests a todo list (reminder only); `always` also forces the
-		// `todo` tool on the first turn — the previous boolean-on behavior.
-		if (mode === "preferred") {
+		// `todo` tool on the first turn — the previous boolean-on behavior. Post-compaction
+		// re-injection (`promptText === undefined`) is always reminder-only: forcing a tool
+		// onto the auto-resumed turn would override the agent's in-flight action.
+		if (promptText === undefined || mode === "preferred") {
 			return { message };
 		}
 		const todoToolChoice = buildNamedToolChoice("todo", this.model);
@@ -7841,7 +7864,7 @@ export class AgentSession {
 		return { message, toolChoice: todoToolChoice };
 	}
 
-	#createEagerTaskPrelude(promptText: string): AgentMessage | undefined {
+	#createEagerTaskPrelude(promptText: string | undefined): AgentMessage | undefined {
 		if (this.settings.get("task.eager") !== "always") return undefined;
 		// Main agent only: subagents keep `task` active (the parent only filters `todo`),
 		// so a salient delegate-reminder there would amplify nested fan-out. Gate on the
@@ -7849,9 +7872,13 @@ export class AgentSession {
 		// still gets the reminder.
 		if (this.#agentKind === "sub") return undefined;
 		if (this.#planModeState?.enabled) return undefined;
-		if (this.agent.state.messages.some(m => m.role === "user")) return undefined;
-		const trimmed = promptText.trimEnd();
-		if (trimmed.endsWith("?") || trimmed.endsWith("!")) return undefined;
+		// First-message-only gates are skipped post-compaction (`promptText === undefined`),
+		// where there is no fresh user message to suppress the reminder for.
+		if (promptText !== undefined) {
+			if (this.agent.state.messages.some(m => m.role === "user")) return undefined;
+			const trimmed = promptText.trimEnd();
+			if (trimmed.endsWith("?") || trimmed.endsWith("!")) return undefined;
+		}
 		if (!this.getActiveToolNames().includes("task")) return undefined;
 		return {
 			role: "custom",
@@ -7861,6 +7888,24 @@ export class AgentSession {
 			attribution: "agent",
 			timestamp: Date.now(),
 		};
+	}
+
+	/**
+	 * Build the eager task/todo reminders to re-inject on the auto-continuation turn that
+	 * follows a compaction. The first-message preludes are the oldest messages, so
+	 * compaction summarizes them away and the agent silently loses the delegate-via-tasks
+	 * and phased-todo guidance mid-work; this re-asserts them, reminder-only (the todo
+	 * builder drops its forced tool_choice when `promptText` is undefined). Each builder
+	 * still applies its own mode / agent-kind / plan-mode / tool-active / surviving-todo
+	 * gates, so an empty array means nothing currently warrants a nudge.
+	 */
+	#buildPostCompactionEagerNudges(): AgentMessage[] {
+		const nudges: AgentMessage[] = [];
+		const todo = this.#createEagerTodoPrelude(undefined);
+		if (todo) nudges.push(todo.message);
+		const task = this.#createEagerTaskPrelude(undefined);
+		if (task) nudges.push(task);
+		return nudges;
 	}
 	/**
 	 * Check if agent stopped with incomplete todos and prompt to continue.
@@ -9138,8 +9183,30 @@ export class AgentSession {
 	// =========================================================================
 
 	/**
+	 * Retry an empty, reason-less provider abort: a turn that ended `aborted`
+	 * with no content and the generic sentinel (bare `abort()`), but only while
+	 * the session is neither aborting nor tearing down. A user/lifecycle abort
+	 * (`#abortInProgress`), a dispose-driven abort (`#isDisposed`), or a
+	 * session-induced streaming-edit guard abort (`#streamingEditAbortTriggered` —
+	 * auto-generated-file guard or failed-patch preview) is deliberate and MUST
+	 * settle the turn instead: routing it through retry would orphan
+	 * `#retryPromise` on a continuation the guard skips (hanging the in-flight
+	 * `prompt()`) or silently undo the guard's intended abort.
+	 */
+	#isRetryableReasonlessAbort(message: AssistantMessage): boolean {
+		return (
+			message.stopReason === "aborted" &&
+			message.content.length === 0 &&
+			message.errorMessage === GENERIC_ABORT_SENTINEL &&
+			!this.#abortInProgress &&
+			!this.#isDisposed &&
+			!this.#streamingEditAbortTriggered
+		);
+	}
+
+	/**
 	 * Check if an error is retryable (transient errors or usage limits).
-	 * Context overflow errors are NOT retryable (handled by compaction instead).
+	 * Context overflow is NOT retryable (handled by compaction instead).
 	 * Usage-limit errors are retryable because the retry handler performs credential switching.
 	 */
 	#isRetryableError(message: AssistantMessage): boolean {
@@ -9296,11 +9363,25 @@ export class AgentSession {
 		const parsedCurrent = parseRetryFallbackSelector(currentSelector);
 		if (!parsedCurrent) return undefined;
 		const currentBaseSelector = formatRetryFallbackBaseSelector(parsedCurrent);
+		const currentPlainSelector = this.model
+			? formatModelSelectorValue(formatModelString(this.model), parsedCurrent.thinkingLevel)
+			: undefined;
+		const currentPlainBaseSelector =
+			currentPlainSelector && currentPlainSelector !== currentSelector
+				? formatRetryFallbackBaseSelector(parseRetryFallbackSelector(currentPlainSelector) ?? parsedCurrent)
+				: undefined;
+
+		for (const role of Object.keys(this.#getRetryFallbackChains())) {
+			const primarySelector = this.#getRetryFallbackPrimarySelector(role);
+			if (primarySelector?.raw === currentSelector) return role;
+		}
 		for (const role of Object.keys(this.#getRetryFallbackChains())) {
 			const primarySelector = this.#getRetryFallbackPrimarySelector(role);
 			if (!primarySelector) continue;
-			if (primarySelector.raw === currentSelector) return role;
-			if (formatRetryFallbackBaseSelector(primarySelector) === currentBaseSelector) return role;
+			if (currentPlainSelector && primarySelector.raw === currentPlainSelector) return role;
+			const primaryBaseSelector = formatRetryFallbackBaseSelector(primarySelector);
+			if (primaryBaseSelector === currentBaseSelector) return role;
+			if (currentPlainBaseSelector && primaryBaseSelector === currentPlainBaseSelector) return role;
 		}
 		return undefined;
 	}
@@ -9324,10 +9405,23 @@ export class AgentSession {
 		if (chain.length <= 1) return [];
 		const parsedCurrent = parseRetryFallbackSelector(currentSelector);
 		const currentBaseSelector = parsedCurrent ? formatRetryFallbackBaseSelector(parsedCurrent) : undefined;
-		const exactIndex = chain.findIndex(selector => selector.raw === currentSelector);
+		const currentPlainSelector =
+			this.model && parsedCurrent
+				? formatModelSelectorValue(formatModelString(this.model), parsedCurrent.thinkingLevel)
+				: undefined;
+		const currentPlainBaseSelector =
+			parsedCurrent && currentPlainSelector && currentPlainSelector !== currentSelector
+				? formatRetryFallbackBaseSelector(parseRetryFallbackSelector(currentPlainSelector) ?? parsedCurrent)
+				: undefined;
+		const exactIndex = chain.findIndex(
+			selector => selector.raw === currentSelector || selector.raw === currentPlainSelector,
+		);
 		if (exactIndex >= 0) return chain.slice(exactIndex + 1);
 		const baseIndex = currentBaseSelector
-			? chain.findIndex(selector => formatRetryFallbackBaseSelector(selector) === currentBaseSelector)
+			? chain.findIndex(selector => {
+					const selectorBase = formatRetryFallbackBaseSelector(selector);
+					return selectorBase === currentBaseSelector || selectorBase === currentPlainBaseSelector;
+				})
 			: -1;
 		if (baseIndex >= 0) return chain.slice(baseIndex + 1);
 		return chain.slice(1);
@@ -9339,7 +9433,8 @@ export class AgentSession {
 		currentSelector: string,
 		options?: { pinFallback?: boolean },
 	): Promise<void> {
-		const candidate = this.#modelRegistry.find(selector.provider, selector.id);
+		const resolved = resolveModelOverride([selector.raw], this.#modelRegistry, this.settings);
+		const candidate = resolved.model ?? this.#modelRegistry.find(selector.provider, selector.id);
 		if (!candidate) {
 			throw new Error(`Retry fallback model not found: ${selector.raw}`);
 		}
@@ -9352,10 +9447,10 @@ export class AgentSession {
 		// `auto` instead of collapsing it to the level it resolved to this turn.
 		const currentThinkingLevel = this.configuredThinkingLevel();
 		const nextThinkingLevel = selector.thinkingLevel ?? currentThinkingLevel;
-
+		const candidateSelector = formatModelStringWithRouting(candidate);
 		this.#setModelWithProviderSessionReset(candidate);
-		this.sessionManager.appendModelChange(`${candidate.provider}/${candidate.id}`, EPHEMERAL_MODEL_CHANGE_ROLE);
-		this.settings.getStorage()?.recordModelUsage(`${candidate.provider}/${candidate.id}`);
+		this.sessionManager.appendModelChange(candidateSelector, EPHEMERAL_MODEL_CHANGE_ROLE);
+		this.settings.getStorage()?.recordModelUsage(candidateSelector);
 		this.setThinkingLevel(nextThinkingLevel);
 		if (!this.#activeRetryFallback) {
 			this.#activeRetryFallback = {
@@ -9383,7 +9478,8 @@ export class AgentSession {
 
 		for (const selector of this.#findRetryFallbackCandidates(role, currentSelector)) {
 			if (this.#isRetryFallbackSelectorSuppressed(selector)) continue;
-			const candidate = this.#modelRegistry.find(selector.provider, selector.id);
+			const resolved = resolveModelOverride([selector.raw], this.#modelRegistry, this.settings);
+			const candidate = resolved.model ?? this.#modelRegistry.find(selector.provider, selector.id);
 			if (!candidate) continue;
 			const apiKey = await this.#modelRegistry.getApiKey(candidate, this.sessionId);
 			if (!apiKey) continue;
@@ -9421,7 +9517,9 @@ export class AgentSession {
 		}
 		if (this.#isRetryFallbackSelectorSuppressed(originalSelector)) return;
 
-		const primaryModel = this.#modelRegistry.find(originalSelector.provider, originalSelector.id);
+		const resolvedPrimary = resolveModelOverride([originalSelector.raw], this.#modelRegistry, this.settings);
+		const primaryModel =
+			resolvedPrimary.model ?? this.#modelRegistry.find(originalSelector.provider, originalSelector.id);
 		if (!primaryModel) return;
 		const apiKey = await this.#modelRegistry.getApiKey(primaryModel, this.sessionId);
 		if (!apiKey) return;
@@ -9429,9 +9527,10 @@ export class AgentSession {
 		const currentThinkingLevel = this.configuredThinkingLevel();
 		const thinkingToApply =
 			currentThinkingLevel === lastAppliedFallbackThinkingLevel ? originalThinkingLevel : currentThinkingLevel;
+		const primarySelector = formatModelStringWithRouting(primaryModel);
 		this.#setModelWithProviderSessionReset(primaryModel);
-		this.sessionManager.appendModelChange(`${primaryModel.provider}/${primaryModel.id}`, EPHEMERAL_MODEL_CHANGE_ROLE);
-		this.settings.getStorage()?.recordModelUsage(`${primaryModel.provider}/${primaryModel.id}`);
+		this.sessionManager.appendModelChange(primarySelector, EPHEMERAL_MODEL_CHANGE_ROLE);
+		this.settings.getStorage()?.recordModelUsage(primarySelector);
 		this.setThinkingLevel(thinkingToApply);
 		this.#clearActiveRetryFallback();
 	}
@@ -9491,7 +9590,10 @@ export class AgentSession {
 	 * Handle retryable errors with exponential backoff.
 	 * @returns true if retry was initiated, false if max retries exceeded or disabled
 	 */
-	async #handleRetryableError(message: AssistantMessage): Promise<boolean> {
+	async #handleRetryableError(
+		message: AssistantMessage,
+		options?: { allowModelFallback?: boolean },
+	): Promise<boolean> {
 		const retrySettings = this.settings.getGroup("retry");
 		if (!retrySettings.enabled) return false;
 		const classifierRefusal = this.#isClassifierRefusal(message);
@@ -9579,9 +9681,10 @@ export class AgentSession {
 			}
 		}
 
+		const allowModelFallback = options?.allowModelFallback !== false;
 		const currentSelector = this.model ? formatRetryFallbackSelector(this.model, this.thinkingLevel) : undefined;
 		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
-			if (retrySettings.modelFallback) {
+			if (allowModelFallback && retrySettings.modelFallback) {
 				if (!classifierRefusal) {
 					this.#noteRetryFallbackCooldown(currentSelector, parsedRetryAfterMs, errorMessage);
 				}

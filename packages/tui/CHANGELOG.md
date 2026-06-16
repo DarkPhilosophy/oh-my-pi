@@ -6,11 +6,20 @@
 
 - Added `TUI.setRightPanel(provider, targets?)`: registers right-side info panel blocks composited into the visible window at the emit stage, restricted to rows rendered by the target root children. Compositing happens after the window/commit math on the window copy only, so panels never overlap bottom chrome, never enter native scrollback, and do not disturb component-scoped render reuse or the live-region/stable-prefix protocol.
 - Added the `right-panel` module (`compositeRightPanel`, `compositeRightPanels`, `compositeRightPanelsInRange`, `trimRightPadding`): pure negative-space compositing helpers. Trailing padding is ignored when measuring free space but only rows that actually receive panel text are rewritten, so full-width styled backgrounds stay byte-exact.
-## [15.12.4] - 2026-06-13
-### Breaking Changes
 
-- Removed Kitty temp-file image transmission, its startup support probe, the `PI_KITTY_IMAGE_TRANSMISSION` override, and the temp-file helper exports. Kitty/Ghostty image payloads now stay on in-band base64 before placeholder/direct placement, avoiding blank first renders from temp-file load races.
-- Renamed `RenderRequestOptions.allowUnknownViewportMutation` → `allowUnknownViewportTransientRepaint`. The option only permits a transient live-viewport repaint (autocomplete/IME/focused-editor chrome) on hosts that cannot report viewport position; it never authorizes a settled transcript commit. The old name implied any offscreen mutation was safe to push into native scrollback, which led callers to emit duplicate transcript copies.
+### Fixed
+
+- Fixed right-side panel compositing landing on Kitty OSC 66 text-sizing heading rows and the following blank structural reservation row. The compositor predicate is now generic (`isOccupiedLine`) and the TUI pre-marks OSC 66 headings plus their first visible-width-zero successor as occupied before placement.
+
+## [16.0.2] - 2026-06-16
+
+### Fixed
+
+- Fixed VS Code integrated terminal keypad digit CSI-u input being handled as navigation instead of text.
+- Fixed xterm-compatible terminals scrolling the native viewport to the bottom on prompt-editor keypresses by disabling `?1010`/`?1011` while the TUI owns the TTY and restoring the prior set modes on exit ([#2732](https://github.com/can1357/oh-my-pi/issues/2732)).
+- Fixed CMUX sessions being treated as direct terminals during resize/reset because they do not set `TMUX`/`STY`/`ZELLIJ` and may run with `TERM=dumb`; the renderer now treats CMUX workspace/surface env markers as multiplexer signals and preserves pane scrollback instead of emitting ED3 (`CSI 3 J`).
+- Fixed a self-sustaining resize-redraw storm in Warp: the non-multiplexer resize fast path borrows the alternate screen, and Warp re-reports a one-row-different size whenever the alt buffer is toggled, so each drag frame fed back a fresh resize event and the TUI flooded ED3 full repaints with stable geometry. Resize now repaints in place (no alt-screen borrow, no ED3 rewrap) on terminals that re-report size on alt-screen toggles, matching the multiplexer path. Overridable with `PI_TUI_RESIZE_IN_PLACE=1|0`.
+
 ## [16.0.1] - 2026-06-15
 
 ### Added
@@ -186,29 +195,6 @@
 
 ### Fixed
 
-- Fixed right-panel compositing to normalize tabs in widget lines before width measurement and rendering, so tab expansion cannot push a `rightEditor` panel into nearby text.
-- Fixed overlays without an explicit `maxHeight` dropping their bottom rows off-screen when taller than the terminal: `#resolveOverlayLayout` now defaults the height cap to the available rows, so a tall overlay is sliced to fit (and re-clamps on resize) instead of overflowing the visible region.
-- Fixed `Editor.#decorate` rejecting keyword matches glued to the cursor: `CURSOR_MARKER` begins with ESC (non-whitespace), so decorators with a right-boundary lookahead (e.g. `/(?<!\S)ultrathink(?!\S)/`) failed at the seam and dropped highlighting until a trailing character was typed. The decorate hook now splits around the marker and decorates each user-text segment in isolation so word-boundary lookarounds resolve correctly on both sides ([#2475](https://github.com/can1357/oh-my-pi/issues/2475)).
-- Fixed non-multiplexer resize drags with width changes briefly showing terminal-reflowed wrapped fragments: transient resize frames now borrow the alternate screen and return to the normal screen for the settled authoritative replay.
-- Fixed `isMultiplexerSession()` only checking the `TMUX`/`STY`/`ZELLIJ` env vars and missing the `TERM=tmux-*`/`screen-*` fallback every sibling detector uses. When the multiplexer env was stripped but `TERM` survived (`sudo` without `-E`, `su`, env-sanitizing launchers/ssh), the renderer misclassified the pane as a direct terminal and emitted ED3 (`CSI 3 J`) on resize/replace/`resetDisplay`, which wipes tmux pane history — scrollback only reappeared after a full rerender (Ctrl+L). The check now aligns with `shouldEnableSynchronizedOutputByDefault`, `detectRectangularSgrSupport`, and `getFallbackImageProtocol` in `terminal-capabilities.ts` ([#2544](https://github.com/can1357/oh-my-pi/issues/2544)).
-- Fixed live transcript rows duplicating into native scrollback during a non-multiplexer resize drag: the viewport fast-path repaint now parks the hardware cursor at the real content bottom (mirroring the authoritative paint) instead of the padded viewport bottom, so a subsequent height shrink no longer scrolls live rows into history before the settle replay
-- Fixed inline images flipping to their text fallback during a non-multiplexer resize drag: the viewport fast path now drives the image budget as a stable partial pass that replays the committed per-image live/text split by id, instead of deriving it from the reversed, tail-only walk order
-- Fixed issue #2088 viewport flash and repeated full rewrites during rapid terminal drags outside multiplexers by replaying the full transcript only after the resize settle window
-- Fixed multi-word searches so `fuzzyMatch` no longer matches when query letters are only scattered across unrelated words
-- Fixed `StdinBuffer` handling of split SGR mouse reports so fragmented sequences are reassembled instead of leaking their tail bytes as literal input
-- Fixed Esc being unreliable (or seconds-slow) inside fullscreen overlays such as `/settings` on kitty-protocol terminals (Ghostty/kitty): the kitty keyboard mode stack is per-screen, so entering the alternate screen silently reverted keys to legacy encoding while the app still parsed them as kitty input. The TUI now re-pushes the active kitty flags right after `\x1b[?1049h` and pops them before `\x1b[?1049l`.
-- Fixed `StdinBuffer` tearing a buffered bare `ESC` followed by another escape sequence: the `\x1b\x1b` candidate was consumed as alt+esc before the CSI/SS3 continuation byte was ever inspected, swallowing the Esc keypress and leaking the follower's tail (`[B`, `[<35;22;17M`) as typed text into focused components. Meta-CSI chords (`\x1b\x1b[A`) now stay whole, and `ESC` + SGR mouse report is split into a real Esc keypress plus a parseable report.
-- Lowered `PARTIAL_HOLD_MAX_MS` from 500ms to 150ms so a dangling escape partial that never completes (e.g. a bare `ESC` arriving while the kitty-active flag is stale) is delivered after at most ~200ms instead of half a second.
-- Fixed deferred partial-flush behavior so pending incomplete escapes are not split across timer boundaries and can still complete when the next chunk arrives
-- Fixed kitty keyboard-mode handling of a dangling `ESC` so it can be joined with subsequent CSI mouse/kitty input instead of being emitted as a standalone sequence
-- Fixed `SettingsList` to clear section-focus state when filtering items, changing data, scrolling with the mouse wheel, or selecting by ID so stale heading focus does not persist across interactions
-- `SettingsList` now renders every state — list, open submenu, filtered results, empty — at one stable height, so interacting with a bottom-anchored settings panel no longer resizes the live terminal region on each keystroke (which forced re-anchoring and could strand stale scrollback rows).
-- Fixed the root compose letting a lower child's native-scrollback live seam overwrite a higher one: the topmost seam (and its commit-safe extension) now defines the commit boundary, so a status loader below a streaming transcript can no longer cause still-mutable transcript rows to be committed as stale history ([#2328](https://github.com/can1357/oh-my-pi/pull/2328)).
-- Fixed Ctrl+C/exit corrupting the parent shell on Windows: `emergencyTerminalRestore()` wrote `\x1b[?1049l` (leave alternate screen) unconditionally on every exit path, and conhost/Windows Terminal execute an unconditional cursor restore for it even when the alt buffer was never entered — with no prior save the cursor jumped to the viewport home, so the shell prompt landed on top of the dead frame. The leave sequence is now gated on tracked alt-screen state (set/cleared by the TUI's fullscreen-overlay enter/leave and stop paths).
-- Skipped native syntax highlighting for transient markdown streaming renders, including nested list code blocks, leaving code blocks plain until their content stabilizes to avoid main-thread highlighter spikes.
-- Fixed component-scoped renders to preserve prior live scrollback seam data for skipped root children, preventing duplicate or missing rows during spinner-only updates
-- Reported committed native scrollback row counts to interested child components so immutable history can be skipped without breaking live-region commit bookkeeping.
-- Fixed `ProcessTerminal` treating asynchronous stdout `EIO` errors as uncaught exceptions: stdout `error` events now mark the terminal dead, disable future renders, and keep the active session process alive ([#2284](https://github.com/can1357/oh-my-pi/issues/2284)).
 - Fixed Windows rendering degrading into CP437 mojibake (`Γöé`/`ΓöÇ` instead of box-drawing borders and Nerd Font glyphs) after a console-sharing child process changed the console codepage (e.g. PHP CLI's implicit `chcp`, php.net request #73716): the breakage stayed latent until the next full repaint such as ctrl+o expand. The terminal now re-asserts the UTF-8 codepage (output and input) before each stdout write
 - Fixed crash recovery leaving the shell unusable: `emergencyTerminalRestore` (and `terminal.stop()`) never left the alt screen nor disabled mouse tracking, so a crash during a fullscreen overlay stranded the user on the alternate buffer with any-motion mouse reporting spewing escape garbage until a manual `reset`
 - Fixed bracketed paste with a lost `ESC[201~` end marker (ssh/tmux truncation) silently eating all subsequent input forever while growing memory unboundedly — paste mode now has an inactivity watchdog (1s) and a byte cap (64 MiB) that exit paste mode and deliver the accumulated bytes through the paste event

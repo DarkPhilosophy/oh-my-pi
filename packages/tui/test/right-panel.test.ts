@@ -60,6 +60,31 @@ describe("compositeRightPanel", () => {
 		expect(out[widget.length]).toBe("hi");
 	});
 
+	it("terminates an in-flight OSC 8 hyperlink before panel text", () => {
+		const openLink = "\x1b]8;;https://example.com\x07link";
+		const plain = "plain";
+		const base = [...Array.from({ length: 4 }, () => openLink), ...Array.from({ length: 4 }, () => plain)];
+		const widget = panel(6);
+		const out = compositeRightPanel(base, widget, WIDTH, 40);
+
+		for (let k = 0; k < widget.length; k++) {
+			expect(out[k].endsWith(widget[k])).toBe(true);
+			if (k < 4) {
+				// Hyperlink rows close OSC 8 before the gap and panel text.
+				const closeAt = out[k].indexOf("\x1b]8;;\x07");
+				const panelAt = out[k].indexOf(widget[k]);
+				expect(closeAt).toBeGreaterThan(out[k].indexOf("\x1b]8;;https://example.com\x07"));
+				expect(closeAt).toBeLessThan(panelAt);
+			} else {
+				// Plain rows receive the panel but no OSC 8 terminator.
+				expect(out[k]).not.toContain("\x1b]8;");
+			}
+		}
+		// Non-hyperlink rows past the panel are untouched.
+		expect(out[widget.length]).toBe(plain);
+		expect(out[widget.length + 1]).toBe(plain);
+	});
+
 	it("normalizes tabs in panel lines before measuring and appending", () => {
 		const base = Array.from({ length: 8 }, () => "hi");
 		const widget = ["A\tB", "C\tD"];
@@ -102,10 +127,40 @@ describe("compositeRightPanel", () => {
 		expect(naive.some((line, i) => i <= 5 && line.endsWith(widget[0]))).toBe(true);
 
 		// With image awareness the panel lands strictly below the image block.
-		const safe = compositeRightPanel(base, widget, WIDTH, 40, isImage);
+		const safe = compositeRightPanel(base, widget, WIDTH, 40, isImage, isImage);
 		expect(safe[5]).toBe("IMG"); // image escape line untouched
 		for (let i = 0; i <= 5; i++) expect(safe[i].endsWith(widget[0])).toBe(false);
 		expect(safe.findIndex(line => line.endsWith(widget[0]))).toBeGreaterThan(5);
+	});
+
+	it("does not occupy a Kitty OSC 66 text-sizing heading row or its reserved blank row", () => {
+		// A scale-2 H1 is visually occupied itself and reserves the following
+		// blank row for the scaled glyph's lower cells.
+		const heading = "\x1b]66;s=2;Hello\x1b\\";
+		const base = [heading, "", ...Array.from({ length: 10 }, () => "")];
+		const widget = panel(8);
+		const isOccupiedLine = (line: string, index: number) =>
+			line.includes("\x1b]66;") || (index > 0 && line === "" && base[index - 1]?.includes("\x1b]66;"));
+
+		const out = compositeRightPanel(base, widget, WIDTH, 40, isOccupiedLine);
+
+		expect(out[0]).toBe(heading); // heading row untouched
+		expect(out[1]).toBe(""); // structural reservation row untouched
+		expect(out.findIndex(line => line.endsWith(widget[0]))).toBe(2); // lands below both
+	});
+
+	it("keeps zero-width spacer rows before OSC 66 headings eligible for panels", () => {
+		const heading = "\x1b]66;s=2;Hello\x1b\\";
+		const base = [...Array.from({ length: 6 }, () => ""), heading, "", "x".repeat(COL + 1)];
+		const widget = panel(6);
+		const isOccupiedLine = (line: string, index: number) =>
+			line.includes("\x1b]66;") || (index > 0 && line === "" && base[index - 1]?.includes("\x1b]66;"));
+
+		const out = compositeRightPanel(base, widget, WIDTH, 40, isOccupiedLine);
+
+		expect(out.findIndex(line => line.endsWith(widget[0]))).toBe(0);
+		expect(out[6]).toBe(heading);
+		expect(out[7]).toBe("");
 	});
 });
 
@@ -215,6 +270,23 @@ describe("TUI.setRightPanel", () => {
 			// Chrome rows stay clean.
 			expect(viewport[6]).not.toContain("<W");
 			expect(viewport[7]).not.toContain("<W");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("keeps right panel out of OSC 66 heading reservation rows", async () => {
+		const term = new VirtualTerminal(80, 12);
+		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
+		const heading = "\x1b]66;s=2;Hello\x1b\\";
+		const chat = new Lines([heading, "", ...Array.from({ length: 10 }, () => "")]);
+		tui.addChild(chat);
+		tui.setRightPanel(() => [panel(8)], [chat]);
+		tui.start();
+		await settle(term);
+		try {
+			const widgetRows = term.getViewport().flatMap((line, i) => (line.includes("┌") ? [i] : []));
+			expect(widgetRows[0]).toBe(2);
 		} finally {
 			tui.stop();
 		}

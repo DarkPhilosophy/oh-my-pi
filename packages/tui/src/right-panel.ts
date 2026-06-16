@@ -39,9 +39,17 @@ export function compositeRightPanel(
 	widget: readonly string[],
 	width: number,
 	viewportHeight: number,
-	isImageLine: (line: string) => boolean = () => false,
+	isOccupiedLine: (line: string, index: number) => boolean = () => false,
+	isBackfilledOccupiedLine: (line: string, index: number) => boolean = () => false,
 ): string[] {
-	return compositeRightPanels(baseLines, widget.length > 0 ? [widget] : [], width, viewportHeight, isImageLine);
+	return compositeRightPanels(
+		baseLines,
+		widget.length > 0 ? [widget] : [],
+		width,
+		viewportHeight,
+		isOccupiedLine,
+		isBackfilledOccupiedLine,
+	);
 }
 
 /**
@@ -52,14 +60,15 @@ export function compositeRightPanel(
  * enough for it, those rows are then marked occupied, and a block that finds
  * no run is dropped on its own — the others still render. Pure: returns
  * merged lines, or `baseLines` unchanged (same reference) when nothing fits.
- * Never overwrites visible text or a terminal image block.
+ * Never overwrites visible text or a visually occupied row.
  */
 export function compositeRightPanels(
 	baseLines: string[],
 	blocks: readonly (readonly string[])[],
 	width: number,
 	viewportHeight: number,
-	isImageLine: (line: string) => boolean = () => false,
+	isOccupiedLine: (line: string, index: number) => boolean = () => false,
+	isBackfilledOccupiedLine: (line: string, index: number) => boolean = () => false,
 ): string[] {
 	return compositeRightPanelsInRange(
 		baseLines,
@@ -67,7 +76,8 @@ export function compositeRightPanels(
 		width,
 		Math.max(0, baseLines.length - viewportHeight),
 		baseLines.length,
-		isImageLine,
+		isOccupiedLine,
+		isBackfilledOccupiedLine,
 	);
 }
 
@@ -86,20 +96,23 @@ export function compositeRightPanelsInRange(
 	width: number,
 	searchStart: number,
 	searchEnd: number,
-	isImageLine: (line: string) => boolean = () => false,
+	isOccupiedLine: (line: string, index: number) => boolean = () => false,
+	isBackfilledOccupiedLine: (line: string, index: number) => boolean = () => false,
 ): string[] {
 	if (blocks.length === 0 || baseLines.length === 0) return baseLines;
 	searchStart = Math.max(0, searchStart);
 	searchEnd = Math.min(baseLines.length, searchEnd);
 	if (searchEnd - searchStart < RIGHT_PANEL_MIN_ROWS) return baseLines;
 
-	// Terminal image components render as (rows-1) blank placeholder lines
-	// followed by a raw protocol escape line. Those blanks look free to
-	// visibleWidth() but are visually covered by the image, so mark the whole
-	// block occupied and never splice a panel into it.
+	// Visually occupied rows (image protocol escapes, OSC 66 sized headings,
+	// etc.) must not receive panel text. Image escape rows additionally
+	// backfill contiguous zero-width placeholders before them, because image
+	// components reserve cells with blank rows above the raw protocol line.
 	const occupied = new Array<boolean>(baseLines.length).fill(false);
 	for (let i = 0; i < baseLines.length; i++) {
-		if (isImageLine(baseLines[i] ?? "")) {
+		const line = baseLines[i] ?? "";
+		if (isOccupiedLine(line, i)) occupied[i] = true;
+		if (isBackfilledOccupiedLine(line, i)) {
 			occupied[i] = true;
 			for (let j = i - 1; j >= 0 && visibleWidth(baseLines[j] ?? "") === 0; j--) occupied[j] = true;
 		}
@@ -150,10 +163,11 @@ export function compositeRightPanelsInRange(
 		for (let k = 0; k < block.length; k++) {
 			const base = trimRightPadding(out[start + k] ?? "");
 			const truncatedBase = truncateToWidth(base, col);
-			// If the base row carries color state, terminate it so the gap padding and
-			// the panel do not inherit an unclosed SGR sequence.
+			// If the base row carries color state or an in-flight OSC 8 hyperlink,
+			// terminate it so the gap padding and the panel do not inherit them.
 			const reset = truncatedBase.includes("\x1b[") ? "\x1b[0m" : "";
-			out[start + k] = truncatedBase + reset + padding(Math.max(0, col - visibleWidth(base))) + block[k];
+			const osc8Close = base.includes("\x1b]8;") ? "\x1b]8;;\x07" : "";
+			out[start + k] = truncatedBase + reset + osc8Close + padding(Math.max(0, col - visibleWidth(base))) + block[k];
 		}
 	}
 	return out;
