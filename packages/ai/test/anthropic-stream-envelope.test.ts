@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { scheduler } from "node:timers/promises";
-import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
+import { convertAnthropicMessages, streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
 import { AnthropicMessages } from "@oh-my-pi/pi-ai/providers/anthropic-client";
 import type { AssistantMessageEvent, Context, Model, ModelSpec, ProviderSessionState } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -175,6 +175,37 @@ function createTextSuccessEvents(
 	}
 	return events;
 }
+function createThinkingSuccessEvents(thinking: string): MockAnthropicEvent[] {
+	return [
+		{
+			type: "message_start",
+			message: {
+				id: "msg_thinking_success",
+				usage: {
+					input_tokens: 12,
+					output_tokens: 0,
+					cache_read_input_tokens: 0,
+					cache_creation_input_tokens: 0,
+				},
+			},
+		},
+		{ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+		{ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking } },
+		{ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig_thinking" } },
+		{ type: "content_block_stop", index: 0 },
+		{
+			type: "message_delta",
+			delta: { stop_reason: "end_turn" },
+			usage: {
+				input_tokens: 12,
+				output_tokens: 4,
+				cache_read_input_tokens: 0,
+				cache_creation_input_tokens: 0,
+			},
+		},
+		{ type: "message_stop" },
+	];
+}
 
 function createTextSuccessEventsWithPreamble(text: string, preambleEvents: MockAnthropicEvent[]): MockAnthropicEvent[] {
 	return [...preambleEvents, ...createTextSuccessEvents(text)];
@@ -277,6 +308,46 @@ describe("anthropic stream envelope handling", () => {
 		expect(result.stopReason).toBe("stop");
 		expect(result.responseId).toBe("msg_text_success");
 		expect(result.content).toEqual([{ type: "text", text: "hello" }]);
+	});
+	it("unwraps thinking blocks that Anthropic streams with literal thinking tags", async () => {
+		const wrappedThinking =
+			"<thinking>\n<thinking>\nCheck logs before accepting container health.\n</thinking></thinking>";
+		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(
+			() => createMockRequest(createThinkingSuccessEvents(wrappedThinking)) as never,
+		);
+
+		const stream = streamAnthropic(model, context, { apiKey: "sk-ant-test" });
+		const events: AssistantMessageEvent[] = [];
+		for await (const event of stream) {
+			events.push(event);
+		}
+		const result = await stream.result();
+
+		expect(countEvents(events, "thinking_start")).toBe(1);
+		expect(countEvents(events, "thinking_end")).toBe(1);
+		expect(result.stopReason).toBe("stop");
+		expect(result.content).toHaveLength(1);
+		const block = result.content[0];
+		expect(block?.type).toBe("thinking");
+		if (block?.type !== "thinking") {
+			throw new Error("Expected thinking content after wrapped thinking stream");
+		}
+		expect(block.thinking).toBe("Check logs before accepting container health.");
+		expect(block.thinkingSignature).toBeUndefined();
+
+		const replayParams = convertAnthropicMessages(
+			[
+				{ role: "user", content: "Say hi", timestamp: 1 },
+				result,
+				{ role: "user", content: "follow up", timestamp: 2 },
+			],
+			model,
+			false,
+		);
+		const replayAssistant = replayParams.find(param => param.role === "assistant");
+		expect(replayAssistant?.content).toEqual([
+			{ type: "text", text: "Check logs before accepting container health." },
+		]);
 	});
 
 	it("drops replayed closed blocks after a duplicate message_start instead of duplicating content", async () => {
