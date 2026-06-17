@@ -5950,6 +5950,16 @@ export class AgentSession {
 		// while streaming) is a deliberate resume; re-enable advisor auto-resume that
 		// a user interrupt suppressed.
 		this.#advisorAutoResumeSuppressed = false;
+		// Coalesce consecutive plain-text user submissions on the same channel into
+		// one queued entry (newline-joined) so rapid `Line1<Enter> Line2<Enter>`
+		// reads as a single logical message — one pending chip, one delivery, and
+		// one editor-restore block on dequeue. Only a plain text-only user tail
+		// merges; image-bearing sends, skill/notice/advisor entries, and a non-user
+		// tail each break the run and keep their own identity.
+		if (!images?.length && this.#tryMergeQueuedUserMessage(text, mode)) {
+			this.#scheduleIdleQueueDrain();
+			return;
+		}
 		const normalizedImages = await this.#normalizeImagesForModel(images);
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (normalizedImages?.length) {
@@ -5979,6 +5989,41 @@ export class AgentSession {
 			});
 		}
 		this.#scheduleIdleQueueDrain();
+	}
+
+	/**
+	 * Merge a plain-text user submission into the still-pending tail of the target
+	 * queue when that tail is itself a plain text-only user message. Returns true
+	 * when merged (the caller must not also push a fresh entry). Image-bearing
+	 * messages never merge — positional `[Image #N]` markers and the text-only-model
+	 * description companion stay owned by their own entry — and only a `role:"user"`
+	 * tail qualifies, so skill invocations, magic-keyword notices, advisor cards and
+	 * hidden companions keep their own identity.
+	 */
+	#tryMergeQueuedUserMessage(text: string, mode: "steer" | "followUp"): boolean {
+		const steering = [...this.agent.peekSteeringQueue()];
+		const followUp = [...this.agent.peekFollowUpQueue()];
+		const target = mode === "followUp" ? followUp : steering;
+		const tail = target[target.length - 1];
+		if (tail?.role !== "user") return false;
+		if (queuedImageContent(tail)) return false;
+		// A user message whose hidden magic-keyword companion (ultrathink / orchestrate /
+		// workflow notice) sits immediately before it was a keyword send; absorbing later
+		// plain text would silently pull it under the wrong keyword scope. The image-
+		// description companion is already excluded above — its user message carries images.
+		const beforeTail = target[target.length - 2];
+		if (beforeTail && isHiddenUserCompanion(beforeTail)) return false;
+		const prevText = queuedTextContent(tail);
+		if (prevText === undefined) return false;
+		const mergedText = prevText ? `${prevText}\n${text}` : text;
+		const mergedContent: (TextContent | ImageContent)[] = [{ type: "text", text: mergedText }];
+		const merged: AgentMessage =
+			mode === "followUp"
+				? { role: "user", content: mergedContent, attribution: "user", timestamp: Date.now() }
+				: { role: "user", content: mergedContent, steering: true, attribution: "user", timestamp: Date.now() };
+		target[target.length - 1] = merged;
+		this.agent.replaceQueues(steering, followUp);
+		return true;
 	}
 
 	#scheduleIdleQueueDrain(): void {

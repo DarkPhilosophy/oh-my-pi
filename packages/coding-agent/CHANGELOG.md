@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Coalesced consecutive plain-text messages typed while the agent is streaming into a single queued steer/follow-up entry (newline-joined) instead of separate messages, so rapid `Line1`/`Line2`/`Line3` sends read as one logical message — one pending chip, one delivery, and one editor-restore block. Image-bearing sends, skill invocations, and magic-keyword sends keep their own entry.
+- Added Up-arrow on an empty editor as an "undo send": when messages are queued (steer/follow-up/compaction) it pulls them back into the editor for editing (the same restore as `Alt+Up`); with nothing queued, Up still walks input history.
+
 ## [16.0.5] - 2026-06-17
 
 ### Added

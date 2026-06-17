@@ -687,7 +687,12 @@ export class UiHelpers {
 		if (allMessages.length > 0) {
 			this.ctx.pendingMessagesContainer.addChild(new Spacer(1));
 			for (const entry of allMessages) {
-				const queuedText = theme.fg("dim", `${entry.label}: ${entry.message}`);
+				// A merged multi-line message collapses to its first line plus a `(+N)`
+				// line count so the pending bar stays one row per entry; Alt+Up / Up on an
+				// empty editor restores the full text.
+				const lines = entry.message.split("\n");
+				const summary = lines.length > 1 ? `${lines[0]} (+${lines.length - 1})` : entry.message;
+				const queuedText = theme.fg("dim", `${entry.label}: ${summary}`);
 				this.ctx.pendingMessagesContainer.addChild(new TruncatedText(queuedText, 1, 0));
 			}
 			const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";

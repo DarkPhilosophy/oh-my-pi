@@ -25,6 +25,7 @@ type FakeEditor = {
 	onToggleThinking?: () => void;
 	onExternalEditor?: () => void;
 	onDequeue?: () => void;
+	onUpWhenEmpty?: () => boolean;
 	onChange?: (text: string) => void;
 	setText(text: string): void;
 	getText(): string;
@@ -206,6 +207,7 @@ function createContext(): {
 		showSessionSelector: vi.fn(),
 		shutdown: vi.fn(async () => {}),
 		clearEditor: vi.fn(),
+		showStatus: vi.fn(),
 	} as unknown as InteractiveModeContext;
 
 	return {
@@ -601,5 +603,42 @@ describe("InputController double-tap ← gesture", () => {
 		tap();
 		expect(unfocusSession).toHaveBeenCalledTimes(1);
 		expect(showAgentHub).not.toHaveBeenCalled();
+	});
+});
+
+describe("InputController Up-on-empty undo-send wiring", () => {
+	it("leaves Up to input-history navigation when nothing is queued", () => {
+		const { ctx, editor, spies } = createContext();
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		expect(editor.onUpWhenEmpty).toBeDefined();
+		const consumed = editor.onUpWhenEmpty?.();
+		expect(consumed).toBe(false);
+		// No restore was attempted, so input-history navigation stays with the base editor.
+		expect(spies.clearQueue).not.toHaveBeenCalled();
+	});
+
+	it("restores queued user work and consumes Up", () => {
+		const { ctx, editor, spies } = createContext();
+		spies.getQueuedMessages.mockReturnValue({ steering: ["queued line"], followUp: [] });
+		spies.clearQueue.mockReturnValue({ steering: [{ text: "queued line" }], followUp: [] });
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		const consumed = editor.onUpWhenEmpty?.();
+		expect(consumed).toBe(true);
+		expect(spies.clearQueue).toHaveBeenCalledTimes(1);
+		expect(editor.getText()).toBe("queued line");
+	});
+
+	it("falls through to history when the display reports work the queue cannot drain", () => {
+		const { ctx, editor, spies } = createContext();
+		// Stale snapshot: the display reports a pending item but clearQueue drains nothing.
+		spies.getQueuedMessages.mockReturnValue({ steering: ["ghost"], followUp: [] });
+		spies.clearQueue.mockReturnValue({ steering: [], followUp: [] });
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		const consumed = editor.onUpWhenEmpty?.();
+		expect(consumed).toBe(false);
+		expect(editor.getText()).toBe("");
 	});
 });

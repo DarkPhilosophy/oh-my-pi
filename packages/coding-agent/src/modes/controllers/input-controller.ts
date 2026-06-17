@@ -304,6 +304,26 @@ export class InputController {
 		this.ctx.editor.onExpandTools = () => this.toggleToolOutputExpansion();
 		this.ctx.editor.setActionKeys("app.message.dequeue", this.ctx.keybindings.getKeys("app.message.dequeue"));
 		this.ctx.editor.onDequeue = () => this.handleDequeue();
+		// Up-arrow on an empty editor doubles as "undo send": pull pending queued
+		// messages back into the editor for editing (same restore as Alt+Up). A cheap
+		// pre-check leaves a genuinely empty queue to plain Up (input-history nav), so
+		// the common case has no restore side effects; the restore's actual drained
+		// count then makes the final call, so a display that reports items but drains
+		// nothing still falls through to history instead of swallowing the key.
+		this.ctx.editor.onUpWhenEmpty = () => {
+			const queued = this.ctx.session.getQueuedMessages();
+			if (
+				queued.steering.length === 0 &&
+				queued.followUp.length === 0 &&
+				this.ctx.compactionQueuedMessages.length === 0
+			) {
+				return false;
+			}
+			const restored = this.restoreQueuedMessagesToEditor();
+			if (restored === 0) return false;
+			this.ctx.showStatus(`Restored ${restored} queued message${restored > 1 ? "s" : ""} to editor`);
+			return true;
+		};
 		this.ctx.editor.clearCustomKeyHandlers();
 		// Wire up extension shortcuts
 		this.registerExtensionShortcuts();
