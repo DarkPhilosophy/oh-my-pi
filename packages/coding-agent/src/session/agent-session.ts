@@ -536,6 +536,11 @@ export interface PromptOptions {
 	attribution?: MessageAttribution;
 	/** Skip pre-send compaction checks for this prompt (internal use for maintenance flows). */
 	skipCompactionCheck?: boolean;
+	/** Invoked once with the FINAL queued user-message text (after any coalescing merge)
+	 *  and its image count, when a streaming prompt is queued rather than sent immediately.
+	 *  Lets the caller record the local-submit signature for the text that will actually be
+	 *  delivered, even when consecutive sends coalesce into one entry. */
+	onQueued?: (text: string, imageCount: number) => void;
 }
 
 /** Result from a handoff operation. */
@@ -5484,9 +5489,9 @@ export class AgentSession {
 				await this.sendCustomMessage(notice, { deliverAs: options.streamingBehavior });
 			}
 			if (options.streamingBehavior === "followUp") {
-				await this.#queueUserMessage(expandedText, options?.images, "followUp");
+				await this.#queueUserMessage(expandedText, options?.images, "followUp", options?.onQueued);
 			} else {
-				await this.#queueUserMessage(expandedText, options?.images, "steer");
+				await this.#queueUserMessage(expandedText, options?.images, "steer", options?.onQueued);
 			}
 			return true;
 		}
@@ -5945,6 +5950,7 @@ export class AgentSession {
 		text: string,
 		images: ImageContent[] | undefined,
 		mode: "steer" | "followUp",
+		onQueued?: (text: string, imageCount: number) => void,
 	): Promise<void> {
 		// A queued user message (RPC/SDK/collab steer or follow-up, or a typed message
 		// while streaming) is a deliberate resume; re-enable advisor auto-resume that
@@ -5956,9 +5962,13 @@ export class AgentSession {
 		// one editor-restore block on dequeue. Only a plain text-only user tail
 		// merges; image-bearing sends, skill/notice/advisor entries, and a non-user
 		// tail each break the run and keep their own identity.
-		if (!images?.length && this.#tryMergeQueuedUserMessage(text, mode)) {
-			this.#scheduleIdleQueueDrain();
-			return;
+		if (!images?.length) {
+			const mergedText = this.#tryMergeQueuedUserMessage(text, mode);
+			if (mergedText !== undefined) {
+				onQueued?.(mergedText, 0);
+				this.#scheduleIdleQueueDrain();
+				return;
+			}
 		}
 		const normalizedImages = await this.#normalizeImagesForModel(images);
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
@@ -5988,33 +5998,34 @@ export class AgentSession {
 				timestamp: Date.now(),
 			});
 		}
+		onQueued?.(text, normalizedImages?.length ?? 0);
 		this.#scheduleIdleQueueDrain();
 	}
 
 	/**
 	 * Merge a plain-text user submission into the still-pending tail of the target
-	 * queue when that tail is itself a plain text-only user message. Returns true
-	 * when merged (the caller must not also push a fresh entry). Image-bearing
-	 * messages never merge — positional `[Image #N]` markers and the text-only-model
-	 * description companion stay owned by their own entry — and only a `role:"user"`
-	 * tail qualifies, so skill invocations, magic-keyword notices, advisor cards and
-	 * hidden companions keep their own identity.
+	 * queue when that tail is itself a plain text-only user message. Returns the
+	 * combined text when it merged (and the caller must not push a fresh entry), or
+	 * undefined when nothing merged. Image-bearing messages never merge — positional
+	 * `[Image #N]` markers and the text-only-model description companion stay owned by
+	 * their own entry — and only a `role:"user"` tail qualifies, so skill invocations,
+	 * magic-keyword notices, advisor cards and hidden companions keep their identity.
 	 */
-	#tryMergeQueuedUserMessage(text: string, mode: "steer" | "followUp"): boolean {
+	#tryMergeQueuedUserMessage(text: string, mode: "steer" | "followUp"): string | undefined {
 		const steering = [...this.agent.peekSteeringQueue()];
 		const followUp = [...this.agent.peekFollowUpQueue()];
 		const target = mode === "followUp" ? followUp : steering;
 		const tail = target[target.length - 1];
-		if (tail?.role !== "user") return false;
-		if (queuedImageContent(tail)) return false;
+		if (tail?.role !== "user") return undefined;
+		if (queuedImageContent(tail)) return undefined;
 		// A user message whose hidden magic-keyword companion (ultrathink / orchestrate /
 		// workflow notice) sits immediately before it was a keyword send; absorbing later
 		// plain text would silently pull it under the wrong keyword scope. The image-
 		// description companion is already excluded above — its user message carries images.
 		const beforeTail = target[target.length - 2];
-		if (beforeTail && isHiddenUserCompanion(beforeTail)) return false;
+		if (beforeTail && isHiddenUserCompanion(beforeTail)) return undefined;
 		const prevText = queuedTextContent(tail);
-		if (prevText === undefined) return false;
+		if (prevText === undefined) return undefined;
 		const mergedText = prevText ? `${prevText}\n${text}` : text;
 		const mergedContent: (TextContent | ImageContent)[] = [{ type: "text", text: mergedText }];
 		const merged: AgentMessage =
@@ -6023,7 +6034,7 @@ export class AgentSession {
 				: { role: "user", content: mergedContent, steering: true, attribution: "user", timestamp: Date.now() };
 		target[target.length - 1] = merged;
 		this.agent.replaceQueues(steering, followUp);
-		return true;
+		return mergedText;
 	}
 
 	#scheduleIdleQueueDrain(): void {

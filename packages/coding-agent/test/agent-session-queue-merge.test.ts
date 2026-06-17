@@ -169,4 +169,19 @@ describe("AgentSession queue coalescing", () => {
 		expect(result.shapes).toEqual(["ultrathink-notice", "user", "user"]);
 		expect(result.chips).toEqual(["ultrathink go", "plain extra"]);
 	});
+
+	it("reports the coalesced text to prompt's onQueued callback for signature tracking", async () => {
+		const target = await createSession([{ content: ["ok"] }]);
+		const queuedTexts: string[] = [];
+		const onQueued = (text: string) => queuedTexts.push(text);
+		await duringStream(target, async () => {
+			await target.prompt("L1", { streamingBehavior: "steer", onQueued });
+			await target.prompt("L2", { streamingBehavior: "steer", onQueued });
+			await target.prompt("L3", { streamingBehavior: "steer", onQueued });
+			return null;
+		});
+		// Each send reports the FINAL queued text (the running merge), so the caller can
+		// register the local-submit signature of the message that actually delivers.
+		expect(queuedTexts).toEqual(["L1", "L1\nL2", "L1\nL2\nL3"]);
+	});
 });

@@ -651,7 +651,13 @@ export class InputController {
 				// the streaming/queue path.
 				await this.ctx.withLocalSubmission(
 					text,
-					() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
+					() =>
+						this.ctx.session.prompt(text, {
+							streamingBehavior: "steer",
+							images,
+							onQueued: (queuedText, queuedImageCount) =>
+								this.ctx.recordLocalSubmission(queuedText, queuedImageCount),
+						}),
 					{ imageCount: images?.length ?? 0 },
 				);
 				this.ctx.updatePendingMessagesDisplay();
@@ -787,9 +793,17 @@ export class InputController {
 		this.ctx.pendingImageLinks = [];
 		try {
 			// prompt() handles idle (new turn) and streaming (queues per streamingBehavior).
-			await this.ctx.withLocalSubmission(text, () => target.prompt(text, { streamingBehavior, images }), {
-				imageCount: images?.length ?? 0,
-			});
+			await this.ctx.withLocalSubmission(
+				text,
+				() =>
+					target.prompt(text, {
+						streamingBehavior,
+						images,
+						onQueued: (queuedText, queuedImageCount) =>
+							this.ctx.recordLocalSubmission(queuedText, queuedImageCount),
+					}),
+				{ imageCount: images?.length ?? 0 },
+			);
 		} catch (error) {
 			this.ctx.editor.setText(text); // hand the message back, mirroring the main submit error path
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
@@ -997,7 +1011,13 @@ export class InputController {
 			this.ctx.pendingImageLinks = [];
 			await this.ctx.withLocalSubmission(
 				text,
-				() => this.ctx.session.prompt(text, { streamingBehavior: "followUp", images }),
+				() =>
+					this.ctx.session.prompt(text, {
+						streamingBehavior: "followUp",
+						images,
+						onQueued: (queuedText, queuedImageCount) =>
+							this.ctx.recordLocalSubmission(queuedText, queuedImageCount),
+					}),
 				{ imageCount: images?.length ?? 0 },
 			);
 			this.ctx.updatePendingMessagesDisplay();
