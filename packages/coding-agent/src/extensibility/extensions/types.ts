@@ -83,6 +83,8 @@ import type {
 	SessionEvent,
 	SessionShutdownEvent,
 	SessionStartEvent,
+	SessionStopEvent,
+	SessionStopEventResult,
 	SessionSwitchEvent,
 	SessionTreeEvent,
 	TodoReminderEvent,
@@ -291,11 +293,11 @@ export interface ExtensionUIContext {
 // ============================================================================
 
 export interface ContextUsage {
-	/** Estimated context tokens, or null if unknown (e.g. right after compaction, before next LLM response). */
-	tokens: number | null;
+	/** Estimated context tokens. */
+	tokens: number;
 	contextWindow: number;
-	/** Context usage as percentage of context window, or null if tokens is unknown. */
-	percent: number | null;
+	/** Context usage as percentage of context window. */
+	percent: number;
 }
 
 export interface CompactOptions {
@@ -544,7 +546,14 @@ export interface BeforeAgentStartEvent {
 	systemPrompt: string[];
 }
 
-export type { AgentEndEvent, AgentStartEvent, TurnEndEvent, TurnStartEvent } from "../shared-events";
+export type {
+	AgentEndEvent,
+	AgentStartEvent,
+	SessionStopEvent,
+	SessionStopEventResult,
+	TurnEndEvent,
+	TurnStartEvent,
+} from "../shared-events";
 
 /** Fired when a message starts (user, assistant, or toolResult) */
 export interface MessageStartEvent {
@@ -821,6 +830,7 @@ export type ExtensionEvent =
 	| BeforeAgentStartEvent
 	| AgentStartEvent
 	| AgentEndEvent
+	| SessionStopEvent
 	| TurnStartEvent
 	| TurnEndEvent
 	| MessageStartEvent
@@ -997,6 +1007,7 @@ export interface ExtensionAPI {
 	on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): void;
+	on(event: "session_stop", handler: ExtensionHandler<SessionStopEvent, SessionStopEventResult>): void;
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): void;
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent>): void;
 	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): void;

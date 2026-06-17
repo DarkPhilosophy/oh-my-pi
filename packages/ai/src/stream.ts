@@ -64,6 +64,7 @@ import type {
 } from "./types";
 import { AssistantMessageEventStream } from "./utils/event-stream";
 import { withRequestDebugFetch } from "./utils/request-debug";
+import { withGeminiThinkingLoopGuard } from "./utils/thinking-loop";
 
 function isGoogleVertexAuthenticatedModel(model: Model<Api>): boolean {
 	return (
@@ -224,6 +225,14 @@ export function listProvidersWithEnvKey(): string[] {
 }
 
 export function stream<TApi extends Api>(
+	model: Model<TApi>,
+	context: Context,
+	options?: OptionsForApi<TApi>,
+): AssistantMessageEventStream {
+	return withGeminiThinkingLoopGuard(model, options, opts => streamDispatch(model, context, opts));
+}
+
+function streamDispatch<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
 	options?: OptionsForApi<TApi>,
@@ -489,13 +498,15 @@ export function streamSimple<TApi extends Api>(
 	// extension-registered APIs can't accidentally override a configured
 	// pi-native transport.
 	if (model.transport === "pi-native") {
-		return streamPiNative(model, context, requestOptions);
+		return withGeminiThinkingLoopGuard(model, requestOptions, opts => streamPiNative(model, context, opts));
 	}
 
 	// Check custom API registry (extension-provided APIs)
 	const customApiProvider = getCustomApi(model.api);
 	if (customApiProvider) {
-		return customApiProvider.streamSimple(model, context, requestOptions);
+		return withGeminiThinkingLoopGuard(model, requestOptions, opts =>
+			customApiProvider.streamSimple(model, context, opts),
+		);
 	}
 
 	// Vertex AI uses Application Default Credentials, not API keys
@@ -866,6 +877,7 @@ function mapOptionsForApi<TApi extends Api>(
 				toolChoice: mapOpenAiToolChoice(options?.toolChoice),
 				serviceTier: options?.serviceTier,
 				openrouterVariant: options?.openrouterVariant,
+				maxTokensExplicit: rawOptions?.maxTokens !== undefined,
 			});
 
 		case "openai-responses":
@@ -950,10 +962,12 @@ function mapOptionsForApi<TApi extends Api>(
 							level: mapEffortToGoogleThinkingLevel(effort),
 						},
 						toolChoice,
+						antigravityEndpointMode: options?.antigravityEndpointMode,
 					});
 				}
 
-				let thinkingBudget = options.thinkingBudgets?.[effort] ?? GOOGLE_THINKING[effort];
+				let thinkingBudget =
+					options.thinkingBudgets?.[effort] ?? model.thinking?.effortBudgets?.[effort] ?? GOOGLE_THINKING[effort];
 
 				// Caller's maxTokens is desired output, so add thinking budget on top. With no caller/model cap, use a finite total fallback.
 				const maxTokens = maxTokensWithThinkingBudget(base.maxTokens, model.maxTokens, thinkingBudget);
@@ -970,6 +984,7 @@ function mapOptionsForApi<TApi extends Api>(
 						requestModelId: resolveWireModelId(model, effort),
 						thinking: { enabled: true, budgetTokens: thinkingBudget },
 						toolChoice,
+						antigravityEndpointMode: options?.antigravityEndpointMode,
 					});
 				}
 				// Budget clamped to zero — fall through to the thinking-off path.
@@ -986,6 +1001,7 @@ function mapOptionsForApi<TApi extends Api>(
 				requestModelId: resolveWireModelId(model, undefined),
 				thinking,
 				toolChoice,
+				antigravityEndpointMode: options?.antigravityEndpointMode,
 			});
 		}
 

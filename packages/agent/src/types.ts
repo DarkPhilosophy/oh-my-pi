@@ -1,5 +1,5 @@
 import type {
-	ApiKeyResolveContext,
+	ApiKey,
 	AssistantMessage,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
@@ -54,6 +54,9 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * Used by providers that support session-based caching (e.g., OpenAI Codex).
 	 */
 	sessionId?: string;
+
+	/** Absolute wall-clock deadline in Unix epoch milliseconds. */
+	deadline?: number;
 
 	/**
 	 * Optional resolver called per LLM request to produce request metadata.
@@ -117,12 +120,12 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	transformProviderContext?: (context: Context, model: Model) => Context;
 
 	/**
-	 * Resolves an API key dynamically for each LLM call.
+	 * Resolves the API key or resolver for the current model before each LLM call.
 	 *
-	 * Useful for short-lived OAuth tokens (e.g., GitHub Copilot) that may expire
-	 * during long-running tool execution phases.
+	 * Returning an ApiKeyResolver lets the stream retry policy refresh or rotate
+	 * the model-scoped credential after auth/usage-limit errors.
 	 */
-	getApiKey?: (provider: string, ctx?: ApiKeyResolveContext) => Promise<string | undefined> | string | undefined;
+	getApiKey?: (model: Model) => Promise<ApiKey | undefined> | ApiKey | undefined;
 
 	/**
 	 * Returns steering messages to inject into the conversation mid-run.

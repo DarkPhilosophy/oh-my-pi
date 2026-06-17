@@ -191,6 +191,7 @@ export type CompletionProbeCredential =
 			projectId?: string;
 			email?: string;
 			enterpriseUrl?: string;
+			apiEndpoint?: string;
 	  };
 
 /**
@@ -638,6 +639,7 @@ export interface OAuthAccess {
 	email?: string;
 	projectId?: string;
 	enterpriseUrl?: string;
+	apiEndpoint?: string;
 }
 
 export interface OAuthAccessFailure {
@@ -646,6 +648,7 @@ export interface OAuthAccessFailure {
 	email?: string;
 	projectId?: string;
 	enterpriseUrl?: string;
+	apiEndpoint?: string;
 	error: string;
 }
 
@@ -1512,17 +1515,6 @@ export class AuthStorage {
 		this.#resetProviderAssignments(provider);
 	}
 
-	async #upsertOAuthCredential(provider: string, credential: OAuthCredential): Promise<void> {
-		const stored = this.#store.upsertAuthCredentialRemote
-			? await this.#store.upsertAuthCredentialRemote(provider, credential)
-			: this.#store.upsertAuthCredentialForProvider(provider, credential);
-		this.#setStoredCredentials(
-			provider,
-			stored.map(record => ({ id: record.id, credential: record.credential })),
-		);
-		this.#resetProviderAssignments(provider);
-	}
-
 	/**
 	 * List stored credential rows, optionally filtered by provider.
 	 */
@@ -1786,7 +1778,10 @@ export class AuthStorage {
 			return;
 		}
 		const newCredential: OAuthCredential = { type: "oauth", ...result };
-		await this.#upsertOAuthCredential(def.storeCredentialsAs ?? provider, newCredential);
+		// Use set() instead of #upsertOAuthCredential to replace ALL existing credentials
+		// (including legacy api_key rows from older versions) with the new OAuth credential.
+		// This ensures getApiKey() doesn't match an old api_key row before the new OAuth row.
+		await this.set(def.storeCredentialsAs ?? provider, newCredential);
 	}
 
 	/**
@@ -1811,6 +1806,7 @@ export class AuthStorage {
 			projectId: credential.projectId,
 			email: credential.email,
 			enterpriseUrl: credential.enterpriseUrl,
+			apiEndpoint: credential.apiEndpoint,
 		};
 	}
 
@@ -1889,6 +1885,7 @@ export class AuthStorage {
 			projectId: credential.projectId,
 			email: credential.email,
 			enterpriseUrl: credential.enterpriseUrl,
+			apiEndpoint: credential.apiEndpoint,
 		};
 	}
 
@@ -1912,6 +1909,7 @@ export class AuthStorage {
 			projectId: credential.projectId,
 			email: credential.email,
 			enterpriseUrl: credential.enterpriseUrl,
+			apiEndpoint: credential.apiEndpoint,
 		};
 	}
 
@@ -1925,6 +1923,7 @@ export class AuthStorage {
 			projectId: refreshed.projectId ?? credential.projectId,
 			email: refreshed.email ?? credential.email,
 			enterpriseUrl: refreshed.enterpriseUrl ?? credential.enterpriseUrl,
+			apiEndpoint: refreshed.apiEndpoint ?? credential.apiEndpoint,
 		};
 	}
 
@@ -1972,6 +1971,7 @@ export class AuthStorage {
 			projectId: next.projectId,
 			email: next.email,
 			enterpriseUrl: next.enterpriseUrl,
+			apiEndpoint: next.apiEndpoint,
 		});
 	}
 
@@ -3392,6 +3392,7 @@ export class AuthStorage {
 				email: result.newCredentials.email ?? selection.credential.email,
 				projectId: result.newCredentials.projectId ?? selection.credential.projectId,
 				enterpriseUrl: result.newCredentials.enterpriseUrl ?? selection.credential.enterpriseUrl,
+				apiEndpoint: result.newCredentials.apiEndpoint ?? selection.credential.apiEndpoint,
 			};
 			this.#replaceCredentialAt(provider, selection.index, updated);
 			if ((checkUsage && !allowBlocked) || requiresProModel) {
@@ -3518,6 +3519,7 @@ export class AuthStorage {
 					return JSON.stringify({
 						token: oauthSelection.credential.access,
 						enterpriseUrl: oauthSelection.credential.enterpriseUrl,
+						apiEndpoint: oauthSelection.credential.apiEndpoint,
 					});
 				}
 				return oauthSelection.credential.access;
@@ -3615,6 +3617,7 @@ export class AuthStorage {
 			email: credential.email,
 			projectId: credential.projectId,
 			enterpriseUrl: credential.enterpriseUrl,
+			apiEndpoint: credential.apiEndpoint,
 		};
 	}
 
@@ -4075,6 +4078,7 @@ export class AuthStorage {
 				email: refreshed.email ?? target.credential.email,
 				projectId: refreshed.projectId ?? target.credential.projectId,
 				enterpriseUrl: refreshed.enterpriseUrl ?? target.credential.enterpriseUrl,
+				apiEndpoint: refreshed.apiEndpoint ?? target.credential.apiEndpoint,
 			};
 			this.#replaceCredentialAt(provider, index, updated);
 			return {

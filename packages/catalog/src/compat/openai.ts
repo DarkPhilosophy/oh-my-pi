@@ -12,10 +12,12 @@ import {
 	isAnthropicNamespacedModelId,
 	isClaudeModelId,
 	isDeepseekModelIdOrName,
+	isGlm52ReasoningEffortModelId,
 	isKimiK26ModelId,
 	isKimiModelId,
 	isMimoModelIdOrName,
 	isQwenModelId,
+	modelFamilyToken,
 } from "../identity/family";
 import type { ModelSpec, OpenAICompat, ResolvedOpenAICompat, ResolvedOpenAIResponsesCompat } from "../types";
 import { applyCompatOverrides } from "./apply";
@@ -82,6 +84,7 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 	const isCerebras = modelMatchesHost(hostModel, "cerebras");
 	const isZai = modelMatchesHost(hostModel, "zai");
 	const isZhipu = modelMatchesHost(hostModel, "zhipu");
+	const supportsZaiReasoningEffort = (isZai || isZhipu) && isGlm52ReasoningEffortModelId(spec.id);
 	const isKilo = modelMatchesHost(hostModel, "kilo");
 	const isKimiModel = isKimiModelId(spec.id);
 	const isMoonshotNative = modelMatchesHost(hostModel, "moonshotNative");
@@ -136,6 +139,8 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 	const useMaxTokens =
 		isMistral ||
 		isMoonshotNative ||
+		isZai ||
+		isZhipu ||
 		hostMatchesUrl(baseUrl, "chutes") ||
 		hostMatchesUrl(baseUrl, "fireworks") ||
 		isDirectDeepseekApi;
@@ -202,11 +207,15 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		// OpenAI's reasoning-API surface.
 		supportsDeveloperRole: isOpenAIHost || isAzureHost,
 		supportsMultipleSystemMessages: supportsMultipleSystemMessagesDefault,
-		supportsReasoningEffort: !isGrok && !isZai && !isZhipu && !isXiaomiMimo,
+		supportsReasoningEffort: !isGrok && !isXiaomiMimo && (!(isZai || isZhipu) || supportsZaiReasoningEffort),
 		// GitHub Copilot's chat-completions endpoint rejects reasoning params wholesale.
 		supportsReasoningParams: provider !== "github-copilot",
 		reasoningEffortMap: {},
 		supportsUsageInStreaming: !isCerebras,
+		// pi-ai's thinking-loop guard is gemini-only; default the flag from the
+		// family classifier so OpenAI-compat proxies serving Gemini are covered.
+		// An opaque alias can opt in via `compat.enableGeminiThinkingLoopGuard`.
+		enableGeminiThinkingLoopGuard: modelFamilyToken(spec.id) === "gemini",
 		// Kimi (including via OpenRouter and Fireworks router-form IDs such as
 		// `accounts/fireworks/routers/kimi-*`) calculates TPM rate limits based on
 		// max_tokens, not actual output. The official Kimi K2 model guidance
@@ -291,6 +300,7 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 }
 
 interface OpenAIResponsesSpecLike {
+	id?: string;
 	provider: string;
 	name: string;
 	baseUrl: string;
@@ -325,6 +335,7 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 		strictResponsesPairing: isAzure || spec.provider === "github-copilot",
 		requiresJuiceZeroHack: spec.name.toLowerCase().startsWith("gpt-5"),
 		reasoningEffortMap: {},
+		enableGeminiThinkingLoopGuard: modelFamilyToken(spec.id ?? "") === "gemini",
 	};
 	applyCompatOverrides(compat, spec.compat);
 	return compat;

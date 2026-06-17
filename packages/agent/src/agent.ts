@@ -3,7 +3,7 @@
  */
 import { isPromise } from "node:util/types";
 import {
-	type ApiKeyResolveContext,
+	type ApiKey,
 	type AssistantMessage,
 	type AssistantMessageEvent,
 	type Context,
@@ -131,6 +131,8 @@ export interface AgentOptions {
 	 * Custom stream function (for proxy backends, etc.). Default uses streamSimple.
 	 */
 	streamFn?: StreamFn;
+	/** Absolute wall-clock deadline in Unix epoch milliseconds. */
+	deadline?: number;
 
 	/**
 	 * Optional session identifier forwarded to LLM providers.
@@ -148,10 +150,10 @@ export interface AgentOptions {
 	providerSessionState?: Map<string, ProviderSessionState>;
 
 	/**
-	 * Resolves an API key dynamically for each LLM call.
-	 * Useful for expiring tokens (e.g., GitHub Copilot OAuth).
+	 * Resolves an API key or resolver dynamically for each LLM call.
+	 * Useful for expiring tokens and model-scoped credential routing.
 	 */
-	getApiKey?: (provider: string, ctx?: ApiKeyResolveContext) => Promise<string | undefined> | string | undefined;
+	getApiKey?: (model: Model) => Promise<ApiKey | undefined> | ApiKey | undefined;
 
 	/**
 	 * Inspect or replace provider payloads before they are sent.
@@ -303,6 +305,7 @@ export class Agent {
 	#followUpMode: "all" | "one-at-a-time";
 	#interruptMode: "immediate" | "wait";
 	#sessionId?: string;
+	#deadline?: number;
 	#promptCacheKey?: string;
 	#metadata?: Record<string, unknown>;
 	#metadataResolver?: (provider: string) => Record<string, unknown> | undefined;
@@ -344,7 +347,7 @@ export class Agent {
 	#cursorToolResultBuffer: CursorToolResultEntry[] = [];
 
 	streamFn: StreamFn;
-	getApiKey?: (provider: string, ctx?: ApiKeyResolveContext) => Promise<string | undefined> | string | undefined;
+	getApiKey?: (model: Model) => Promise<ApiKey | undefined> | ApiKey | undefined;
 	/**
 	 * Hook invoked after tool arguments are validated and before execution.
 	 * Reassign at any time to swap the implementation (e.g. on extension reload).
@@ -368,6 +371,7 @@ export class Agent {
 		this.#interruptMode = opts.interruptMode || "immediate";
 		this.streamFn = opts.streamFn || streamSimple;
 		this.#sessionId = opts.sessionId;
+		this.#deadline = opts.deadline;
 		this.#promptCacheKey = opts.promptCacheKey;
 		this.#providerSessionState = opts.providerSessionState;
 		this.#thinkingBudgets = opts.thinkingBudgets;
@@ -1014,6 +1018,7 @@ export class Agent {
 			hideThinkingSummary: this.#hideThinkingSummary,
 			interruptMode: this.#interruptMode,
 			sessionId: this.#sessionId,
+			deadline: this.#deadline,
 			promptCacheKey: this.#promptCacheKey,
 			metadata: this.#metadataResolver ? undefined : this.#metadata,
 			metadataResolver: this.#metadataResolver,

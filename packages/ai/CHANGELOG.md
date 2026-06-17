@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+## [16.0.5] - 2026-06-17
+
+### Added
+
+- Added `antigravityEndpointMode` stream option with `auto`, `production`, and `sandbox` values to control Antigravity endpoint routing
+- Added `seedApiKeyResolver` for reusing a pre-resolved request key while preserving resolver-driven auth retry and credential rotation
+- Added optional `contextSnapshot` property to `AssistantMessage` with token usage metadata via new `ContextSnapshot` interface (`promptTokens`, `nonMessageTokens`, and optional `lastMessageTimestamp`)
+- Added `LITELLM_BASE_URL` guidance to the LiteLLM login prompt so non-default proxy endpoints are discoverable. ([#2726](https://github.com/can1357/oh-my-pi/issues/2726))
+- Added a Gemini thinking-loop guard that watches streamed `thinking` deltas for degenerate reasoning loops — verbatim tail repetition and near-duplicate paragraph cycling — and terminates the stream with a retryable, empty-content `error` message (worded as a transient stream stall) so the turn is discarded and re-sampled instead of committing a runaway transcript. Gated to Gemini models across every transport (OpenRouter, direct Google, Vertex) and disarmed once visible answer text or a tool call starts; disable with `PI_NO_THINKING_LOOP_GUARD=1`.
+
+### Changed
+
+- Changed the Antigravity (`google-antigravity`) request builder to mirror the captured `antigravity/hub` client: gemini-3.x send `thinkingConfig.thinkingBudget` per tier, a fixed per-model `maxOutputTokens`, a default `functionCallingConfig.mode: "VALIDATED"` tool mode (auto/unset tool choice only), a `role: "user"` system instruction, a structured `requestId` (`agent/<id>/<ts>/<trajectoryId>/<step>`), and `labels` (`model_enum`, `trajectory_id`, `last_step_index`, `last_execution_id`, `used_claude*`) tracked across the conversation via provider session state.
+
+### Fixed
+
+- Fixed Gemini usage-tier mapping so `gemini-3.5-flash` is treated as `Flash` and `gemini-3.1-pro` plus `gemini-pro-agent` are treated as `Pro` in usage accounting
+- Fixed Antigravity stream state handling so a request’s `last_execution_id` is committed only after a successful completion and cleared between retry attempts
+- Fixed `streamSimple()` Gemini streams to run through the thinking-loop guard for custom API and pi-native transports, so degenerate `thinking` loops now abort with the same retryable empty-content error path as other Gemini stream paths
+- Fixed Antigravity model streaming and usage fetch paths to retry on transient `429`/`5xx` errors by failing over to the alternate endpoint before surfacing an error
+- Fixed Antigravity endpoint tracking to prefer a previously successful endpoint in `auto` mode for subsequent requests
+- Fixed Antigravity and Gemini CLI model requests failing with an opaque error when Google requires account verification. Cloud Code Assist `403 VALIDATION_REQUIRED` responses now surface the `validation_url` and the signed-in account email when available, so users see an actionable account-verification message instead of the raw API error body.
+- Fixed MiniMax M3 in-band tool calls by adding a MiniMax dialect that parses `<minimax:tool_call>` wrappers instead of falling back to generic XML. ([#2759](https://github.com/can1357/oh-my-pi/issues/2759))
+- Fixed GitHub Copilot OAuth for Business seats by storing the login-discovered API endpoint and routing model enablement plus chat requests to that endpoint. ([#2876](https://github.com/can1357/oh-my-pi/issues/2876))
+
+## [16.0.4] - 2026-06-17
+
+### Fixed
+
+- Fixed tool argument coercion to parse double-encoded JSON strings, including quoted values like `"300"`, when schema expects a number
+- Fixed object-array coercion to parse JSON object and array strings into proper array arguments instead of wrapping raw strings
+- Fixed handling of malformed JSON container strings for array schema fields so validation now surfaces a top-level `expected array, received string` error rather than nested element errors
+- Fixed ChatGPT/Codex browser login missing connector OAuth scopes and rendering object-shaped token endpoint errors as `[object Object]`. ([#2825](https://github.com/can1357/oh-my-pi/issues/2825))
+- Fixed Zhipu/BigModel GLM-5.2 chat-completions requests so internal `xhigh` effort serializes as provider-native `reasoning_effort: "max"` and tool calls opt into `tool_stream`. ([#2833](https://github.com/can1357/oh-my-pi/issues/2833))
+- Fixed Google Gemini CLI and Antigravity tool calls with `toolChoice: "auto"` serializing an explicit `toolConfig` AUTO mode, which can cause Gemini-3 models to leak raw planning JSON instead of executing tools. ([#2830](https://github.com/can1357/oh-my-pi/issues/2830))
+
+## [16.0.3] - 2026-06-16
+
+### Added
+
+- Exported `renderDelimitedThinking` from the `@oh-my-pi/pi-ai/dialect` barrel so consumers can reuse the dialect's `<thinking>` envelope unwrap-and-rewrap logic (the only `./dialect/rendering` primitive re-exported; the rest stay dialect-internal).
+
+### Fixed
+
+- Fixed OpenAI Responses/Codex tool schema normalization stripping provider-rejected regex lookaround patterns from MCP tool parameter schemas. ([#2784](https://github.com/can1357/oh-my-pi/issues/2784))
+- Fixed OpenAI Responses parallel tool-call routing so late keyed argument deltas for a closed call are dropped instead of being appended to another open call.
+
 ## [16.0.2] - 2026-06-16
 
 ### Added
