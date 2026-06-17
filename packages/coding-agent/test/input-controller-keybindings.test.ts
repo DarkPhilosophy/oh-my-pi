@@ -53,7 +53,9 @@ async function createContext() {
 	const addInputListener = vi.fn();
 	const addStartListener = vi.fn();
 	const terminalWrite = vi.fn();
-	const prompt = vi.fn(async (_text?: string, _options?: { onQueued?: (text: string, imageCount: number) => void }) => {});
+	const prompt = vi.fn(
+		async (_text?: string, _options?: { onQueued?: (text: string, imageCount: number) => void }) => {},
+	);
 	const abort = vi.fn(async () => {});
 	const updatePendingMessagesDisplay = vi.fn();
 	const editor: FakeEditor = {
