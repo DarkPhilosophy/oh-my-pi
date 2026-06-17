@@ -166,6 +166,9 @@ function createContext(): {
 			abortCompaction: vi.fn(),
 			abortHandoff,
 			abortRetry: vi.fn(),
+			getQueuedMessages,
+			clearQueue,
+			abort,
 		} as unknown as InteractiveModeContext["viewSession"],
 		sessionManager: {
 			getSessionName: () => "existing session",
@@ -640,5 +643,25 @@ describe("InputController Up-on-empty undo-send wiring", () => {
 		const consumed = editor.onUpWhenEmpty?.();
 		expect(consumed).toBe(false);
 		expect(editor.getText()).toBe("");
+	});
+
+	it("restores the focused subagent's queue, not the main session's, when a subagent is focused", () => {
+		const { ctx, editor, spies } = createContext();
+		// Focused state: the pending bar (ui-helpers) renders from viewSession, so the
+		// restore must drain viewSession — never the untouched main session.
+		const viewClearQueue = vi.fn(() => ({ steering: [{ text: "focused line" }], followUp: [] }));
+		const viewGetQueuedMessages = vi.fn(() => ({ steering: ["focused line"], followUp: [] }));
+		(ctx as unknown as { viewSession: unknown }).viewSession = {
+			getQueuedMessages: viewGetQueuedMessages,
+			clearQueue: viewClearQueue,
+			abort: vi.fn(),
+		};
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		const consumed = editor.onUpWhenEmpty?.();
+		expect(consumed).toBe(true);
+		expect(viewClearQueue).toHaveBeenCalledTimes(1);
+		expect(spies.clearQueue).not.toHaveBeenCalled();
+		expect(editor.getText()).toBe("focused line");
 	});
 });

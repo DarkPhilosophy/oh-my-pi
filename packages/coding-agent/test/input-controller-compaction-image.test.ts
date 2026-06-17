@@ -61,6 +61,7 @@ function makeCtx(initialQueue: CompactionQueuedMessage[] = []) {
 
 	const ctx = {
 		session,
+		viewSession: session,
 		compactionQueuedMessages: [...initialQueue],
 		pendingImages: [] as ImageContent[],
 		pendingImageLinks: [] as (string | undefined)[],
@@ -200,6 +201,7 @@ describe("restoreQueuedMessagesToEditor image marker alignment", () => {
 		};
 		const ctx = {
 			session,
+			viewSession: session,
 			editor,
 			pendingImages: opts.draftImages ? [...opts.draftImages] : ([] as ImageContent[]),
 			pendingImageLinks: opts.draftImages ? opts.draftImages.map(() => undefined) : ([] as (string | undefined)[]),

@@ -311,7 +311,7 @@ export class InputController {
 		// count then makes the final call, so a display that reports items but drains
 		// nothing still falls through to history instead of swallowing the key.
 		this.ctx.editor.onUpWhenEmpty = () => {
-			const queued = this.ctx.session.getQueuedMessages();
+			const queued = this.ctx.viewSession.getQueuedMessages();
 			if (
 				queued.steering.length === 0 &&
 				queued.followUp.length === 0 &&
@@ -1020,7 +1020,10 @@ export class InputController {
 		this.ctx.locallySubmittedUserSignatures.clear();
 		// On Esc (abort) drop non-user internal steers so the post-abort drain can't
 		// auto-resume; plain Alt+Up dequeue preserves them for the continuing stream.
-		const { steering, followUp } = this.ctx.session.clearQueue({ forInterrupt: options?.abort });
+		// Drain the queue the pending bar reflects: ui-helpers renders from `viewSession`,
+		// which is the focused subagent when one is focused and the main session otherwise
+		// (the same object when nothing is focused, so this is a no-op in that common case).
+		const { steering, followUp } = this.ctx.viewSession.clearQueue({ forInterrupt: options?.abort });
 		// Messages typed while compacting live in `compactionQueuedMessages`, not the
 		// agent queue `clearQueue()` drains — but the pending bar shows the same
 		// "Alt+Up to edit" hint for them (ui-helpers `updatePendingMessagesDisplay`).
@@ -1038,7 +1041,7 @@ export class InputController {
 		if (allQueued.length === 0) {
 			this.ctx.updatePendingMessagesDisplay();
 			if (options?.abort) {
-				void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+				void this.ctx.viewSession.abort({ reason: USER_INTERRUPT_LABEL });
 			}
 			return 0;
 		}
