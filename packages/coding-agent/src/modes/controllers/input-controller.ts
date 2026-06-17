@@ -645,21 +645,10 @@ export class InputController {
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
 				this.ctx.pendingImages = [];
 				this.ctx.pendingImageLinks = [];
-				// Record the signature so the queued message's eventual delivery
-				// (a user-role `message_start` event) leaves any draft the user has
-				// typed since queuing intact. Same protection as #783, applied to
-				// the streaming/queue path.
-				await this.ctx.withLocalSubmission(
-					text,
-					() =>
-						this.ctx.session.prompt(text, {
-							streamingBehavior: "steer",
-							images,
-							onQueued: (queuedText, queuedImageCount) =>
-								this.ctx.recordLocalSubmission(queuedText, queuedImageCount),
-						}),
-					{ imageCount: images?.length ?? 0 },
-				);
+				// Record the local-submit signature so the queued message's eventual delivery
+				// (a user-role `message_start`) leaves any draft typed since queuing intact —
+				// accounting for coalescing into a pending tail (#783, streaming path).
+				await this.#submitCoalescingLocal(this.ctx.session, text, { streamingBehavior: "steer", images });
 				this.ctx.updatePendingMessagesDisplay();
 				this.ctx.ui.requestRender();
 				return;
@@ -793,23 +782,45 @@ export class InputController {
 		this.ctx.pendingImageLinks = [];
 		try {
 			// prompt() handles idle (new turn) and streaming (queues per streamingBehavior).
-			await this.ctx.withLocalSubmission(
-				text,
-				() =>
-					target.prompt(text, {
-						streamingBehavior,
-						images,
-						onQueued: (queuedText, queuedImageCount) =>
-							this.ctx.recordLocalSubmission(queuedText, queuedImageCount),
-					}),
-				{ imageCount: images?.length ?? 0 },
-			);
+			await this.#submitCoalescingLocal(target, text, { streamingBehavior, images });
 		} catch (error) {
 			this.ctx.editor.setText(text); // hand the message back, mirroring the main submit error path
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 		}
 		this.ctx.updatePendingMessagesDisplay();
 		this.ctx.ui.requestRender();
+	}
+
+	/**
+	 * Submit a streaming steer/follow-up that may coalesce into the pending tail while
+	 * keeping the local-submit signature accurate. The per-send signature is recorded
+	 * first; when {@link PromptOptions.onQueued} reports a different (merged) text, that
+	 * per-send signature is disposed — a coalesced line never delivers on its own — and
+	 * the merged text's signature is recorded instead, so only the signature of the
+	 * message that actually delivers lingers. The signature is disposed on prompt
+	 * failure (mirroring withLocalSubmission). Without the swap a stale per-line
+	 * signature could make a later identical submission look locally-submitted.
+	 */
+	async #submitCoalescingLocal(
+		session: InteractiveModeContext["session"],
+		text: string,
+		options: { streamingBehavior: "steer" | "followUp"; images: ImageContent[] | undefined },
+	): Promise<void> {
+		const dispose = this.ctx.recordLocalSubmission(text, options.images?.length ?? 0);
+		try {
+			await session.prompt(text, {
+				streamingBehavior: options.streamingBehavior,
+				images: options.images,
+				onQueued: (queuedText, queuedImageCount) => {
+					if (queuedText === text) return;
+					dispose();
+					this.ctx.recordLocalSubmission(queuedText, queuedImageCount);
+				},
+			});
+		} catch (err) {
+			dispose();
+			throw err;
+		}
 	}
 
 	handleCtrlC(): void {
@@ -1009,17 +1020,7 @@ export class InputController {
 			this.ctx.editor.imageLinks = undefined;
 			this.ctx.pendingImages = [];
 			this.ctx.pendingImageLinks = [];
-			await this.ctx.withLocalSubmission(
-				text,
-				() =>
-					this.ctx.session.prompt(text, {
-						streamingBehavior: "followUp",
-						images,
-						onQueued: (queuedText, queuedImageCount) =>
-							this.ctx.recordLocalSubmission(queuedText, queuedImageCount),
-					}),
-				{ imageCount: images?.length ?? 0 },
-			);
+			await this.#submitCoalescingLocal(this.ctx.session, text, { streamingBehavior: "followUp", images });
 			this.ctx.updatePendingMessagesDisplay();
 			this.ctx.ui.requestRender();
 			return;

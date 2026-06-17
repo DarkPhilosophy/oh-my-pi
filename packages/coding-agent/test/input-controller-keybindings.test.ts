@@ -53,7 +53,7 @@ async function createContext() {
 	const addInputListener = vi.fn();
 	const addStartListener = vi.fn();
 	const terminalWrite = vi.fn();
-	const prompt = vi.fn(async () => {});
+	const prompt = vi.fn(async (_text?: string, _options?: { onQueued?: (text: string, imageCount: number) => void }) => {});
 	const abort = vi.fn(async () => {});
 	const updatePendingMessagesDisplay = vi.fn();
 	const editor: FakeEditor = {
@@ -220,6 +220,26 @@ describe("InputController keybinding setup", () => {
 			onQueued: expect.any(Function),
 		});
 		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
+	});
+
+	it("swaps the per-send signature for the merged signature when a streaming submit coalesces", async () => {
+		const { InputController, ctx, editor, spies } = await createContext();
+		const session = ctx.session as unknown as { isStreaming: boolean };
+		session.isStreaming = true;
+		// Simulate the queue coalescing this send into a pending tail: prompt reports the
+		// combined text through onQueued (what #queueUserMessage does on a real merge).
+		spies.prompt.mockImplementationOnce(async (_text, options) => {
+			options?.onQueued?.("earlier line\nlatest line", 0);
+		});
+		editor.setText("latest line");
+		const controller = new InputController(ctx);
+
+		await controller.handleFollowUp();
+
+		// Only the merged message delivers: its signature must be present and the stale
+		// per-send signature gone, else a later identical line is falsely treated as local.
+		expect(ctx.locallySubmittedUserSignatures.has("earlier line\nlatest line\u00000")).toBe(true);
+		expect(ctx.locallySubmittedUserSignatures.has("latest line\u00000")).toBe(false);
 	});
 
 	it("marks idle follow-up submissions as local", async () => {

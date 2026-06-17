@@ -35,6 +35,7 @@ function createContext(opts: { isStreaming: boolean; pendingImages: ImageContent
 	const prompt = vi.fn(async (_text: string, _options?: PromptOptionsLike) => {});
 	const updatePendingMessagesDisplay = vi.fn();
 	const requestRender = vi.fn();
+	const locallySubmittedUserSignatures = new Set<string>();
 
 	const ctx = {
 		editor,
@@ -52,7 +53,12 @@ function createContext(opts: { isStreaming: boolean; pendingImages: ImageContent
 		pendingImageLinks: opts.pendingImages.map(() => undefined),
 		loopModeEnabled: false,
 		compactionQueuedMessages: [],
-		locallySubmittedUserSignatures: new Set<string>(),
+		locallySubmittedUserSignatures,
+		recordLocalSubmission: (text: string, imageCount = 0) => {
+			const sig = `${text}\u0000${imageCount}`;
+			locallySubmittedUserSignatures.add(sig);
+			return () => locallySubmittedUserSignatures.delete(sig);
+		},
 		updatePendingMessagesDisplay,
 		withLocalSubmission: async (_text: string, fn: () => unknown) => fn(),
 	} as unknown as InteractiveModeContext;
