@@ -217,6 +217,7 @@ describe("InputController keybinding setup", () => {
 		expect(ctx.locallySubmittedUserSignatures.has("follow up after current response\u00000")).toBe(true);
 		expect(spies.prompt).toHaveBeenCalledWith("follow up after current response", {
 			streamingBehavior: "followUp",
+			onQueued: expect.any(Function),
 		});
 		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
 	});
