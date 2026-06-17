@@ -170,18 +170,41 @@ describe("AgentSession queue coalescing", () => {
 		expect(result.chips).toEqual(["ultrathink go", "plain extra"]);
 	});
 
-	it("reports the coalesced text to prompt's onQueued callback for signature tracking", async () => {
+	it("reports the coalesced text and replaced tail to prompt's onQueued for signature tracking", async () => {
 		const target = await createSession([{ content: ["ok"] }]);
-		const queuedTexts: string[] = [];
-		const onQueued = (text: string) => queuedTexts.push(text);
+		const calls: Array<[string, number, string | undefined]> = [];
+		const onQueued = (text: string, imageCount: number, replacedText?: string) =>
+			calls.push([text, imageCount, replacedText]);
 		await duringStream(target, async () => {
 			await target.prompt("L1", { streamingBehavior: "steer", onQueued });
 			await target.prompt("L2", { streamingBehavior: "steer", onQueued });
 			await target.prompt("L3", { streamingBehavior: "steer", onQueued });
 			return null;
 		});
-		// Each send reports the FINAL queued text (the running merge), so the caller can
-		// register the local-submit signature of the message that actually delivers.
-		expect(queuedTexts).toEqual(["L1", "L1\nL2", "L1\nL2\nL3"]);
+		// Each send reports the FINAL queued text and the prior tail it replaced, so the
+		// caller can drop the replaced signature and record the merged one (no stale sigs).
+		expect(calls).toEqual([
+			["L1", 0, undefined],
+			["L1\nL2", 0, "L1"],
+			["L1\nL2\nL3", 0, "L1\nL2"],
+		]);
+	});
+
+	it("reports replacedText through session.steer's onQueued on a coalescing merge", async () => {
+		const target = await createSession([{ content: ["ok"] }]);
+		const calls: Array<[string, number, string | undefined]> = [];
+		const onQueued = (text: string, imageCount: number, replacedText?: string) =>
+			calls.push([text, imageCount, replacedText]);
+		await duringStream(target, async () => {
+			await target.steer("a", undefined, onQueued);
+			await target.steer("b", undefined, onQueued);
+			return null;
+		});
+		// session.steer (the compaction-delivery path) reports the merge the same way,
+		// so #deliverQueuedMessage keeps the local-submit signature set exact.
+		expect(calls).toEqual([
+			["a", 0, undefined],
+			["a\nb", 0, "a"],
+		]);
 	});
 });

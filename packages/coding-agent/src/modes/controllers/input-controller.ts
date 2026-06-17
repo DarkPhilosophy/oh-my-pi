@@ -793,13 +793,12 @@ export class InputController {
 
 	/**
 	 * Submit a streaming steer/follow-up that may coalesce into the pending tail while
-	 * keeping the local-submit signature accurate. The per-send signature is recorded
-	 * first; when {@link PromptOptions.onQueued} reports a different (merged) text, that
-	 * per-send signature is disposed — a coalesced line never delivers on its own — and
-	 * the merged text's signature is recorded instead, so only the signature of the
-	 * message that actually delivers lingers. The signature is disposed on prompt
-	 * failure (mirroring withLocalSubmission). Without the swap a stale per-line
-	 * signature could make a later identical submission look locally-submitted.
+	 * keeping the local-submit signature set exact. The per-send signature is recorded
+	 * first (so an immediately-delivered, non-queued submit is still marked local). When
+	 * {@link PromptOptions.onQueued} reports a merge, the replaced entry's signature and
+	 * this send's per-send signature are both dropped and the merged text's signature is
+	 * recorded instead, so only the message that actually delivers stays marked local —
+	 * no stale per-line or intermediate signatures linger. Disposed on prompt failure.
 	 */
 	async #submitCoalescingLocal(
 		session: InteractiveModeContext["session"],
@@ -811,10 +810,16 @@ export class InputController {
 			await session.prompt(text, {
 				streamingBehavior: options.streamingBehavior,
 				images: options.images,
-				onQueued: (queuedText, queuedImageCount) => {
-					if (queuedText === text) return;
-					dispose();
-					this.ctx.recordLocalSubmission(queuedText, queuedImageCount);
+				onQueued: (queuedText, queuedImageCount, replacedText) => {
+					// Coalesced into an existing entry: drop the replaced entry's now-stale signature.
+					if (replacedText !== undefined) {
+						this.ctx.locallySubmittedUserSignatures.delete(`${replacedText}\u0000${queuedImageCount}`);
+					}
+					// This send merged: its per-send signature never delivers on its own.
+					if (queuedText !== text) {
+						dispose();
+						this.ctx.recordLocalSubmission(queuedText, queuedImageCount);
+					}
 				},
 			});
 		} catch (err) {

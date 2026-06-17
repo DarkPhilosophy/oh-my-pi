@@ -536,11 +536,12 @@ export interface PromptOptions {
 	attribution?: MessageAttribution;
 	/** Skip pre-send compaction checks for this prompt (internal use for maintenance flows). */
 	skipCompactionCheck?: boolean;
-	/** Invoked once with the FINAL queued user-message text (after any coalescing merge)
-	 *  and its image count, when a streaming prompt is queued rather than sent immediately.
-	 *  Lets the caller record the local-submit signature for the text that will actually be
-	 *  delivered, even when consecutive sends coalesce into one entry. */
-	onQueued?: (text: string, imageCount: number) => void;
+	/** Invoked once with the FINAL queued user-message text (after any coalescing merge),
+	 *  its image count, and — when the send coalesced into an existing queued entry — the
+	 *  prior tail text it replaced. Lets the caller keep the local-submit signature set
+	 *  exact: drop the replaced entry's signature and record the merged one, so only the
+	 *  text that actually delivers stays marked local. Fired only on a successful queue. */
+	onQueued?: (text: string, imageCount: number, replacedText?: string) => void;
 }
 
 /** Result from a handoff operation. */
@@ -5925,32 +5926,40 @@ export class AgentSession {
 	/**
 	 * Queue a steering message to interrupt the agent mid-run.
 	 */
-	async steer(text: string, images?: ImageContent[]): Promise<void> {
+	async steer(
+		text: string,
+		images?: ImageContent[],
+		onQueued?: (text: string, imageCount: number, replacedText?: string) => void,
+	): Promise<void> {
 		if (text.startsWith("/")) {
 			this.#throwIfExtensionCommand(text);
 		}
 
 		const expandedText = expandPromptTemplate(text, [...this.#promptTemplates]);
-		await this.#queueUserMessage(expandedText, images, "steer");
+		await this.#queueUserMessage(expandedText, images, "steer", onQueued);
 	}
 
 	/**
 	 * Queue a follow-up message to process after the agent would otherwise stop.
 	 */
-	async followUp(text: string, images?: ImageContent[]): Promise<void> {
+	async followUp(
+		text: string,
+		images?: ImageContent[],
+		onQueued?: (text: string, imageCount: number, replacedText?: string) => void,
+	): Promise<void> {
 		if (text.startsWith("/")) {
 			this.#throwIfExtensionCommand(text);
 		}
 
 		const expandedText = expandPromptTemplate(text, [...this.#promptTemplates]);
-		await this.#queueUserMessage(expandedText, images, "followUp");
+		await this.#queueUserMessage(expandedText, images, "followUp", onQueued);
 	}
 
 	async #queueUserMessage(
 		text: string,
 		images: ImageContent[] | undefined,
 		mode: "steer" | "followUp",
-		onQueued?: (text: string, imageCount: number) => void,
+		onQueued?: (text: string, imageCount: number, replacedText?: string) => void,
 	): Promise<void> {
 		// A queued user message (RPC/SDK/collab steer or follow-up, or a typed message
 		// while streaming) is a deliberate resume; re-enable advisor auto-resume that
@@ -5963,9 +5972,9 @@ export class AgentSession {
 		// merges; image-bearing sends, skill/notice/advisor entries, and a non-user
 		// tail each break the run and keep their own identity.
 		if (!images?.length) {
-			const mergedText = this.#tryMergeQueuedUserMessage(text, mode);
-			if (mergedText !== undefined) {
-				onQueued?.(mergedText, 0);
+			const merge = this.#tryMergeQueuedUserMessage(text, mode);
+			if (merge !== undefined) {
+				onQueued?.(merge.merged, 0, merge.replaced);
 				this.#scheduleIdleQueueDrain();
 				return;
 			}
@@ -6004,14 +6013,17 @@ export class AgentSession {
 
 	/**
 	 * Merge a plain-text user submission into the still-pending tail of the target
-	 * queue when that tail is itself a plain text-only user message. Returns the
-	 * combined text when it merged (and the caller must not push a fresh entry), or
+	 * queue when that tail is itself a plain text-only user message. Returns the combined
+	 * text plus the prior tail text it replaced when it merged (caller must not push a fresh
 	 * undefined when nothing merged. Image-bearing messages never merge — positional
 	 * `[Image #N]` markers and the text-only-model description companion stay owned by
 	 * their own entry — and only a `role:"user"` tail qualifies, so skill invocations,
 	 * magic-keyword notices, advisor cards and hidden companions keep their identity.
 	 */
-	#tryMergeQueuedUserMessage(text: string, mode: "steer" | "followUp"): string | undefined {
+	#tryMergeQueuedUserMessage(
+		text: string,
+		mode: "steer" | "followUp",
+	): { merged: string; replaced: string } | undefined {
 		const steering = [...this.agent.peekSteeringQueue()];
 		const followUp = [...this.agent.peekFollowUpQueue()];
 		const target = mode === "followUp" ? followUp : steering;
@@ -6034,7 +6046,7 @@ export class AgentSession {
 				: { role: "user", content: mergedContent, steering: true, attribution: "user", timestamp: Date.now() };
 		target[target.length - 1] = merged;
 		this.agent.replaceQueues(steering, followUp);
-		return mergedText;
+		return { merged: mergedText, replaced: prevText };
 	}
 
 	#scheduleIdleQueueDrain(): void {

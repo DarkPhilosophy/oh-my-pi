@@ -280,3 +280,43 @@ describe("restoreQueuedMessagesToEditor image marker alignment", () => {
 		expect(ctx.pendingImages).toEqual([queuedImg]);
 	});
 });
+
+describe("compaction queue coalescing keeps local-submit signatures exact (VyEt)", () => {
+	type OnQueued = (text: string, imageCount: number, replacedText?: string) => void;
+
+	test("two plain compaction steers that coalesce leave only the merged signature", async () => {
+		const { ctx, session } = makeCtx([
+			{ text: "a", mode: "steer" } as CompactionQueuedMessage,
+			{ text: "b", mode: "steer" } as CompactionQueuedMessage,
+		]);
+		const sigs = ctx.locallySubmittedUserSignatures;
+		// Real signature bookkeeping (the production harness stub is a no-op).
+		(ctx as unknown as { recordLocalSubmission: (t: string, c?: number) => () => void }).recordLocalSubmission = (
+			text: string,
+			imageCount = 0,
+		) => {
+			const sig = `${text}\u0000${imageCount}`;
+			sigs.add(sig);
+			return () => sigs.delete(sig);
+		};
+		// Simulate the queue coalescing the second message into the first: prompt/steer
+		// report the running merge (and the prior tail it replaced) through onQueued, the
+		// way #queueUserMessage does on a real merge.
+		let tail: string | undefined;
+		session.prompt = mock(async (text: string, opts?: PromptOpts & { onQueued?: OnQueued }) => {
+			tail = text;
+			opts?.onQueued?.(text, 0, undefined);
+		}) as typeof session.prompt;
+		session.steer = mock(async (text: string, _images?: ImageContent[], onQueued?: OnQueued) => {
+			const replaced = tail;
+			tail = replaced === undefined ? text : `${replaced}\n${text}`;
+			onQueued?.(tail, 0, replaced);
+		}) as typeof session.steer;
+
+		await new UiHelpers(ctx).flushCompactionQueue({ willRetry: false });
+
+		// Only the delivered merged message stays marked local; the per-message "a"/"b"
+		// signatures are gone, so a later identical line is not falsely treated as local.
+		expect([...sigs]).toEqual(["a\nb\u00000"]);
+	});
+});

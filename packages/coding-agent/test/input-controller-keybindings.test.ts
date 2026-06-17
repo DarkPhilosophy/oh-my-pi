@@ -54,7 +54,10 @@ async function createContext() {
 	const addStartListener = vi.fn();
 	const terminalWrite = vi.fn();
 	const prompt = vi.fn(
-		async (_text?: string, _options?: { onQueued?: (text: string, imageCount: number) => void }) => {},
+		async (
+			_text?: string,
+			_options?: { onQueued?: (text: string, imageCount: number, replacedText?: string) => void },
+		) => {},
 	);
 	const abort = vi.fn(async () => {});
 	const updatePendingMessagesDisplay = vi.fn();
@@ -224,23 +227,26 @@ describe("InputController keybinding setup", () => {
 		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
 	});
 
-	it("swaps the per-send signature for the merged signature when a streaming submit coalesces", async () => {
+	it("swaps signatures cleanly when a streaming submit coalesces (no stale replaced or per-send sigs)", async () => {
 		const { InputController, ctx, editor, spies } = await createContext();
 		const session = ctx.session as unknown as { isStreaming: boolean };
 		session.isStreaming = true;
-		// Simulate the queue coalescing this send into a pending tail: prompt reports the
-		// combined text through onQueued (what #queueUserMessage does on a real merge).
+		// The prior queued entry's signature is already recorded.
+		ctx.locallySubmittedUserSignatures.add("earlier line\u00000");
+		// Simulate the queue coalescing this send into that entry: prompt reports the
+		// merged text plus the replaced prior tail through onQueued.
 		spies.prompt.mockImplementationOnce(async (_text, options) => {
-			options?.onQueued?.("earlier line\nlatest line", 0);
+			options?.onQueued?.("earlier line\nlatest line", 0, "earlier line");
 		});
 		editor.setText("latest line");
 		const controller = new InputController(ctx);
 
 		await controller.handleFollowUp();
 
-		// Only the merged message delivers: its signature must be present and the stale
-		// per-send signature gone, else a later identical line is falsely treated as local.
+		// Only the merged message delivers: its signature present; the replaced prior
+		// signature and this send's per-send signature are both gone.
 		expect(ctx.locallySubmittedUserSignatures.has("earlier line\nlatest line\u00000")).toBe(true);
+		expect(ctx.locallySubmittedUserSignatures.has("earlier line\u00000")).toBe(false);
 		expect(ctx.locallySubmittedUserSignatures.has("latest line\u00000")).toBe(false);
 	});
 
