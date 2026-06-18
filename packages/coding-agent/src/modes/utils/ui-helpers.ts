@@ -690,7 +690,7 @@ export class UiHelpers {
 			// Collapsed: show the first `pendingQueueCollapseLines` lines of each entry, with a
 			// `(+M)` count of the remaining lines on the last shown row. Expanded (Alt+O): show
 			// every line in full. Alt+Up / Up on an empty editor restores the full text either way.
-			const collapseLines = Math.max(1, this.ctx.settings.get("pendingQueueCollapseLines") ?? 5);
+			const collapseLines = Math.max(1, this.ctx.settings?.get("pendingQueueCollapseLines") ?? 5);
 			let anyTruncated = false;
 			for (const entry of allMessages) {
 				const lines = entry.message.split("\n");
