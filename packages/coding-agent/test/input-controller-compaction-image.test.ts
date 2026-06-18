@@ -346,8 +346,9 @@ describe("pending queue collapse/expand display", () => {
 	}
 
 	const sevenLine = Array.from({ length: 7 }, (_, i) => `line${i + 1}`).join("\n");
-	// Drop the leading Spacer's blank row and the trailing hint row, leaving message rows.
-	const bodyRows = (rows: string[]) => rows.filter(r => r.trim() !== "" && !r.includes("to edit"));
+	// Drop the leading Spacer's blank row and the trailing hint row (`Up to restore …`),
+	// leaving message rows.
+	const bodyRows = (rows: string[]) => rows.filter(r => r.trim() !== "" && !r.includes("to restore"));
 
 	test("collapsed shows a label row then N preview lines with a (+M) remainder", () => {
 		const rows = displayCtx({ collapseLines: 5, expanded: false, steering: [sevenLine] });
@@ -375,7 +376,11 @@ describe("pending queue collapse/expand display", () => {
 		const body = bodyRows(rows);
 		expect(body[0]).toContain("Steer:");
 		expect(body[1]).toContain("only one line");
-		expect(body).toHaveLength(2); // label row + single message line
+		// The base hint names the gesture that always works (Up on empty editor),
+		// not the terminal-dependent Alt+Up keybinding, and offers no Alt+O when nothing
+		// is truncatable.
+		const hintRow = rows.find(r => r.includes("to restore"));
+		expect(hintRow).toContain("Up to restore");
 		expect(rows.some(r => r.includes("Alt+O"))).toBe(false);
 	});
 });

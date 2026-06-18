@@ -43,25 +43,47 @@ describe("SteeringIndicator component", () => {
 		ind.dispose();
 	});
 
-	it("flows a pulse wave whose crests move across frames", () => {
+	it("sweeps a comet head left→right then bounces back right→left", () => {
 		vi.useFakeTimers();
 		const requestComponentRender = vi.fn();
 		const ui = { requestComponentRender } as unknown as TUI;
-		const ind = new SteeringIndicator(ui, styles, "Steering", 6, 1);
+		// Mark the bright (comet-head) cell so we can locate it whether it sits on a
+		// side particle (●) or on a word letter (which renders bright, not ●).
+		const marked = { dim: (s: string) => s, mid: (s: string) => s, bright: (s: string) => `<${s}>` };
+		// Small track so the sweep completes within a handful of frames.
+		const ind = new SteeringIndicator(ui, marked, "Go", 3, 1);
 		ind.setActive(true);
-		// Snapshot the crest columns (● = wave peak) over successive frames. A crest
-		// must be present each frame and the overall pattern must change frame-to-frame
-		// (the pulse travels — it does not blink in place).
-		const frames: string[] = [];
-		let everHasCrest = true;
-		for (let i = 0; i < 6; i++) {
-			const frame = ind.render(80).join("");
-			if (!frame.includes("●")) everHasCrest = false;
-			frames.push(frame);
+		// The comet head must be present every frame, and its column should advance
+		// rightward, then (after the bounce) move leftward — one clear direction at a
+		// time, never a static/symmetric pattern.
+		const cols: number[] = [];
+		for (let i = 0; i < 24; i++) {
+			const col = ind.render(80).join("").indexOf("<");
+			expect(col).toBeGreaterThanOrEqual(0); // a head is always present
+			cols.push(col);
 			vi.advanceTimersByTime(90);
 		}
-		expect(everHasCrest).toBe(true);
-		expect(new Set(frames).size).toBeGreaterThan(1); // the wave actually moves
+		// The head reaches a rightmost column then comes back: the max is strictly
+		// inside the sequence (not at either end), proving a bounce occurred.
+		const maxCol = Math.max(...cols);
+		const peakIndex = cols.indexOf(maxCol);
+		expect(peakIndex).toBeGreaterThan(0);
+		expect(peakIndex).toBeLessThan(cols.length - 1);
+		// One clear direction at a time: strictly rising up to the peak, strictly
+		// falling immediately after it (no static or symmetric blinking).
+		for (let i = 1; i <= peakIndex; i++) {
+			expect(cols[i]).toBeGreaterThan(cols[i - 1]);
+		}
+		// Falling after the peak: strictly decreasing for the right→left run. Stop at
+		// the first frame that is not lower than the previous one (the left bounce, where
+		// the comet turns around) so we only assert the single descending sweep.
+		let descendingSteps = 0;
+		for (let i = peakIndex + 1; i < cols.length; i++) {
+			if (cols[i] >= cols[i - 1]) break; // reached the left bounce → stop checking
+			expect(cols[i]).toBeLessThan(cols[i - 1]);
+			descendingSteps++;
+		}
+		expect(descendingSteps).toBeGreaterThanOrEqual(2); // a real right→left sweep, not a blip
 		ind.dispose();
 	});
 

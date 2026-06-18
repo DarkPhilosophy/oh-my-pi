@@ -715,7 +715,10 @@ export class UiHelpers {
 			// `(+M)` count of the remaining lines on the last shown row. Expanded (Alt+O): show
 			// every line in full. Alt+Up / Up on an empty editor restores the full text either way.
 			const collapseLines = Math.max(1, this.ctx.settings?.get("pendingQueueCollapseLines") ?? 5);
-			let anyTruncated = false;
+			// Whether the queue is expandable at all (some entry has more lines than the
+			// collapse threshold). Independent of the current expanded state, so the Alt+O
+			// hint stays correct while expanded (where nothing is currently truncated).
+			let canExpandQueue = false;
 			// Animate the first Steer label while the agent is streaming (those queued
 			// messages will actually steer the live turn). The indicator is a single
 			// persistent component reused across rebuilds — never re-created here, since
@@ -727,7 +730,7 @@ export class UiHelpers {
 				const lines = entry.message.split("\n");
 				const shown = expanded ? lines.length : Math.min(lines.length, collapseLines);
 				const hidden = lines.length - shown;
-				if (hidden > 0) anyTruncated = true;
+				if (lines.length > collapseLines) canExpandQueue = true;
 				// Label on its own row (`Steer:` / `Follow-up:`), then each message line on its
 				// own indented row below it — so multi-line messages read line-by-line instead
 				// of `Steer: Line1` with the rest folded under a bare indent.
@@ -753,14 +756,14 @@ export class UiHelpers {
 			}
 			// No animated label this pass (idle, or no steer entries) → halt any running timer.
 			if (!animatedSteerUsed) this.ctx.steeringIndicator?.setActive(false);
-			const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
 			const expandKey = this.ctx.keybindings.getDisplayString("app.message.expandQueue") || "Alt+O";
-			const expandHint = anyTruncated
-				? `, ${expandKey} to ${expanded ? "collapse" : "expand"}`
-				: expanded
-					? `, ${expandKey} to collapse`
-					: "";
-			const hintText = theme.fg("dim", `${theme.tree.hook} ${dequeueKey} to edit${expandHint}`);
+			// `Up` on an empty editor restores the queued text into the editor (undo-send) —
+			// that is the primary gesture, so the hint names `Up`, not the redundant Alt+Up
+			// keybinding. The expand/collapse affordance (Alt+O) is only shown when the queue
+			// is actually expandable (some entry exceeds the collapse threshold); the wording
+			// flips to `collapse` once expanded. A short, fully-visible queue shows neither.
+			const expandHint = canExpandQueue ? `, ${expandKey} to ${expanded ? "collapse" : "expand"}` : "";
+			const hintText = theme.fg("dim", `${theme.tree.hook} Up to restore${expandHint}`);
 			this.ctx.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
 		}
 	}
