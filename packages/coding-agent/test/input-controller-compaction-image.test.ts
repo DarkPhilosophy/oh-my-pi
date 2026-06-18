@@ -361,13 +361,16 @@ describe("pending queue collapse/expand display", () => {
 		expect(rows.some(r => r.includes("Alt+O to expand"))).toBe(true);
 	});
 
-	test("expanded shows the label row then every line in full with no (+M)", () => {
+	test("expanded frames the entry in a box with every line in full and no (+M)", () => {
 		const rows = displayCtx({ collapseLines: 5, expanded: true, steering: [sevenLine] });
-		const body = bodyRows(rows);
-		expect(body).toHaveLength(8); // `Steer:` label row + all 7 lines
-		expect(body[0]).toContain("Steer:");
-		expect(body[7]).toContain("line7");
-		expect(body.some(r => r.includes("(+"))).toBe(false);
+		// Expanded entries render as a bordered box: a titled top rule, one framed row per
+		// line, and a bottom rule — so a long message reads as one self-contained block.
+		expect(rows.some(r => r.includes("Steer") && r.includes("┌"))).toBe(true); // titled top border
+		expect(rows.some(r => r.includes("└"))).toBe(true); // bottom border
+		for (let i = 1; i <= 7; i++) {
+			expect(rows.some(r => r.includes("│") && r.includes(`line${i}`))).toBe(true);
+		}
+		expect(rows.some(r => r.includes("(+"))).toBe(false); // nothing hidden when expanded
 		expect(rows.some(r => r.includes("Alt+O to collapse"))).toBe(true);
 	});
 

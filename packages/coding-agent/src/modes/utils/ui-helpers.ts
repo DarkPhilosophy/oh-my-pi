@@ -23,6 +23,7 @@ import {
 	type LateDiagnosticsFile,
 	LateDiagnosticsMessageComponent,
 } from "../../modes/components/late-diagnostics-message";
+import { QueuedMessageBox } from "../../modes/components/queued-message-box";
 import {
 	ReadToolGroupComponent,
 	readArgsHaveTarget,
@@ -731,27 +732,35 @@ export class UiHelpers {
 				const shown = expanded ? lines.length : Math.min(lines.length, collapseLines);
 				const hidden = lines.length - shown;
 				if (lines.length > collapseLines) canExpandQueue = true;
-				// Label on its own row (`Steer:` / `Follow-up:`), then each message line on its
-				// own indented row below it — so multi-line messages read line-by-line instead
-				// of `Steer: Line1` with the rest folded under a bare indent.
-				if (entry.label === "Steer" && streaming && !animatedSteerUsed) {
+				// Sanitize each line: queued text can come from RPC/SDK steer/followUp (not just
+				// the editor), so it may carry tabs / control chars that would punch visual holes.
+				const safeLines = lines.slice(0, shown).map(line => replaceTabs(sanitizeText(line)));
+				const suffix = !expanded && hidden > 0 ? ` (+${hidden})` : "";
+				const isStreamingSteer = entry.label === "Steer" && streaming && !animatedSteerUsed;
+				// Frame the entry in a box when it is expanded (Alt+O on a long message — so a
+				// 10+ line entry reads as one self-contained block, not rows bleeding into the
+				// hint) or when it is the live streaming steer (the animated indicator sits in
+				// the box title rule). Collapsed short entries stay light: a `Label:` row with
+				// indented lines, no frame, to avoid chrome noise on a one-liner.
+				const boxed = expanded || isStreamingSteer;
+				if (isStreamingSteer) {
 					animatedSteerUsed = true;
 					const indicator = this.#getOrCreateSteeringIndicator();
 					indicator.setActive(true);
+					// Indicator above the framed message so the animation reads as the box's banner.
 					this.ctx.pendingMessagesContainer.addChild(indicator);
+					this.ctx.pendingMessagesContainer.addChild(new QueuedMessageBox("", safeLines, suffix));
+				} else if (boxed) {
+					this.ctx.pendingMessagesContainer.addChild(new QueuedMessageBox(entry.label, safeLines, suffix));
 				} else {
 					this.ctx.pendingMessagesContainer.addChild(new TruncatedText(theme.fg("dim", `${entry.label}:`), 1, 0));
-				}
-				for (let i = 0; i < shown; i++) {
-					const isLastShown = i === shown - 1;
-					const suffix = !expanded && isLastShown && hidden > 0 ? ` (+${hidden})` : "";
-					// Queued text may originate from RPC/SDK steer/followUp (not just the editor),
-					// so it can carry tabs / control chars. TruncatedText truncates but does not
-					// expand tabs or strip controls — sanitize the raw line before styling so it
-					// cannot punch visual holes or corrupt the pending bar (matches agent-hub).
-					const safeLine = replaceTabs(sanitizeText(lines[i]));
-					const queuedText = theme.fg("dim", `  ${safeLine}${suffix}`);
-					this.ctx.pendingMessagesContainer.addChild(new TruncatedText(queuedText, 1, 0));
+					for (let i = 0; i < safeLines.length; i++) {
+						const isLastShown = i === safeLines.length - 1;
+						const lineSuffix = isLastShown && suffix ? suffix : "";
+						this.ctx.pendingMessagesContainer.addChild(
+							new TruncatedText(theme.fg("dim", `  ${safeLines[i]}${lineSuffix}`), 1, 0),
+						);
+					}
 				}
 			}
 			// No animated label this pass (idle, or no steer entries) → halt any running timer.
