@@ -13,6 +13,7 @@ import {
 	getGeminiCliHeaders,
 } from "@oh-my-pi/pi-catalog/wire/gemini-headers";
 import { extractHttpStatusFromError, fetchWithRetry, readSseJson } from "@oh-my-pi/pi-utils";
+import { type } from "arktype";
 import { ProviderHttpError } from "../errors";
 import type {
 	Api,
@@ -30,7 +31,7 @@ import { normalizeSystemPrompts } from "../utils";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { extractGoogleValidationUrl, formatGoogleValidationRequiredMessage } from "../utils/google-validation";
 import { appendRawHttpRequestDumpFor400, type RawHttpRequestDump } from "../utils/http-inspector";
-import { getStreamFirstEventTimeoutMs } from "../utils/idle-iterator";
+import { armPreResponseTimeout, getStreamFirstEventTimeoutMs } from "../utils/idle-iterator";
 // Refresh is the sole responsibility of AuthStorage (broker-aware, single-flighted);
 // the stream provider trusts the access token threaded through `options.apiKey`.
 import { normalizeSchemaForCCA } from "../utils/schema";
@@ -185,16 +186,27 @@ function extractErrorMessage(errorText: string): string {
 	return errorText;
 }
 
-interface GeminiCliApiKeyPayload {
-	token?: unknown;
-	projectId?: unknown;
-	project_id?: unknown;
-	refreshToken?: unknown;
-	expiresAt?: unknown;
-	email?: unknown;
-	refresh?: unknown;
-	expires?: unknown;
-}
+const optionalCredentialString = type("unknown").pipe(raw => {
+	const out = type("string")(raw);
+	return out instanceof type.errors ? undefined : out;
+});
+
+const innerCredentialsSchema = type({
+	"token?": optionalCredentialString,
+	"projectId?": optionalCredentialString,
+	"project_id?": optionalCredentialString,
+	"refreshToken?": optionalCredentialString,
+	"refresh?": optionalCredentialString,
+	"email?": optionalCredentialString,
+	"expiresAt?": "unknown",
+	"expires?": "unknown",
+});
+
+const geminiCliCredentialsSchema = type("unknown").pipe(raw => {
+	const out = innerCredentialsSchema(raw);
+	return out instanceof type.errors ? {} : out;
+});
+
 interface ParsedGeminiCliCredentials {
 	accessToken: string;
 	projectId: string;
@@ -215,32 +227,25 @@ export function parseGeminiCliCredentials(apiKeyRaw: string): ParsedGeminiCliCre
 	const missingCredentialsMessage =
 		"Missing token or projectId in Google Cloud credentials. Use /login to re-authenticate.";
 
-	let parsed: GeminiCliApiKeyPayload;
+	let rawCredentials: unknown;
 	try {
-		parsed = JSON.parse(apiKeyRaw) as GeminiCliApiKeyPayload;
+		rawCredentials = JSON.parse(apiKeyRaw);
 	} catch {
 		throw new Error(invalidCredentialsMessage);
 	}
+	const parsed = geminiCliCredentialsSchema(rawCredentials);
+	if (parsed instanceof type.errors) {
+		throw new Error(invalidCredentialsMessage);
+	}
 
-	const projectId =
-		typeof parsed.projectId === "string"
-			? parsed.projectId
-			: typeof parsed.project_id === "string"
-				? parsed.project_id
-				: undefined;
-
-	if (typeof parsed.token !== "string" || typeof projectId !== "string") {
+	const projectId = parsed.projectId ?? parsed.project_id;
+	if (parsed.token === undefined || projectId === undefined) {
 		throw new Error(missingCredentialsMessage);
 	}
 
-	const refreshToken =
-		typeof parsed.refreshToken === "string"
-			? parsed.refreshToken
-			: typeof parsed.refresh === "string"
-				? parsed.refresh
-				: undefined;
+	const refreshToken = parsed.refreshToken ?? parsed.refresh;
 	const expiresAt = normalizeExpiryMs(parsed.expiresAt ?? parsed.expires);
-	const email = typeof parsed.email === "string" && parsed.email.length > 0 ? parsed.email : undefined;
+	const email = parsed.email && parsed.email.length > 0 ? parsed.email : undefined;
 
 	return {
 		accessToken: parsed.token,
@@ -457,16 +462,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 			// would hang forever. Floor matches the lazy wrapper's 5min default.
 			const firstEventTimeoutMs =
 				options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(undefined, 300_000);
-			const preResponseWatchdog =
-				firstEventTimeoutMs !== undefined && firstEventTimeoutMs > 0
-					? AbortSignal.timeout(firstEventTimeoutMs)
-					: undefined;
 			const callerSignal = options?.signal;
-			const fetchSignal = preResponseWatchdog
-				? callerSignal
-					? AbortSignal.any([callerSignal, preResponseWatchdog])
-					: preResponseWatchdog
-				: callerSignal;
 
 			let started = false;
 			let sawFinishReason = false;
@@ -665,17 +661,26 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					started = false;
 					resetOutput();
 
-					const response = await fetchWithRetry(() => `${endpoint}/v1internal:streamGenerateContent?alt=sse`, {
-						method: "POST",
-						headers: requestHeaders,
-						body: requestBodyJson,
-						signal: fetchSignal,
-						maxAttempts: isLastEndpoint ? MAX_RETRIES + 1 : 1,
-						defaultDelayMs: attempt => BASE_DELAY_MS * 2 ** attempt,
-						maxDelayMs: options?.maxRetryDelayMs ?? RATE_LIMIT_BUDGET_MS,
-						fetch: options?.fetch,
-						timeout: false,
-					});
+					// Per attempt: arm a pre-response (TTFT) timer, cleared the instant
+					// headers arrive so it never aborts the actively streaming body —
+					// an absolute `AbortSignal.timeout` would (issue #2422).
+					const watchdog = armPreResponseTimeout(callerSignal, firstEventTimeoutMs);
+					let response: Response;
+					try {
+						response = await fetchWithRetry(() => `${endpoint}/v1internal:streamGenerateContent?alt=sse`, {
+							method: "POST",
+							headers: requestHeaders,
+							body: requestBodyJson,
+							signal: watchdog.signal,
+							maxAttempts: isLastEndpoint ? MAX_RETRIES + 1 : 1,
+							defaultDelayMs: attempt => BASE_DELAY_MS * 2 ** attempt,
+							maxDelayMs: options?.maxRetryDelayMs ?? RATE_LIMIT_BUDGET_MS,
+							fetch: options?.fetch,
+							timeout: false,
+						});
+					} finally {
+						watchdog.clear();
+					}
 
 					if (!response.ok) {
 						if (response.status === 429 || (response.status >= 500 && response.status < 600)) {

@@ -897,6 +897,28 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"model.loopGuard.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Thinking",
+			label: "Loop Guard",
+			description: "Enable automatic stream loop detection for Gemini and DeepSeek models",
+		},
+	},
+
+	"model.loopGuard.checkAssistantContent": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Thinking",
+			label: "Loop Guard Scan Prose",
+			description: "Apply loop guard to assistant prose messages in addition to thinking logs",
+		},
+	},
+
 	repeatToolDescriptions: {
 		type: "boolean",
 		default: false,
@@ -1333,6 +1355,18 @@ export const SETTINGS_SCHEMA = {
 			group: "Startup & Updates",
 			label: "Quiet Startup",
 			description: "Skip welcome screen and startup status messages",
+		},
+	},
+
+	"startup.showSplash": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "interaction",
+			group: "Startup & Updates",
+			label: "Show Startup Splash",
+			description:
+				"Show the full animated setup splash on normal interactive startup without rerunning setup. Quiet Startup still suppresses it.",
 		},
 	},
 

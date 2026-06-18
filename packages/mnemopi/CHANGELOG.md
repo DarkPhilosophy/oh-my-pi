@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [16.0.6] - 2026-06-18
+
+### Fixed
+
+- Forced the on-demand fastembed runtime install to override fastembed's archived `onnxruntime-node@1.21.0` transitive pin with Mnemopi's `onnxruntime-node@1.26.0` pin, fixing local embedding startup on macOS ARM64. ([#2920](https://github.com/can1357/oh-my-pi/issues/2920))
+
+### Changed
+
+- Updated OpenRouter request headers to use standard shared headers from the pi-ai package
+
 ## [16.0.5] - 2026-06-17
 
 ### Fixed
