@@ -1870,7 +1870,7 @@ export class TUI extends Container {
 			lo,
 			hi,
 			(line, i) => TERMINAL.isImageLine(line) || (occupied[i] ?? false),
-			line => TERMINAL.isImageLine(line),
+			line => TERMINAL.isImageEscapeLine(line),
 		);
 		if (composited === window) return window;
 		return this.#prepareLinesArray(composited, width);
