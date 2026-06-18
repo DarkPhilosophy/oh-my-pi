@@ -9,6 +9,10 @@
 - Added `Alt+O` (`app.message.expandQueue`) to expand/collapse the queued-message preview in the pending bar, and the `pendingQueueCollapseLines` setting (default `5`) controlling how many leading lines of each queued message show before collapsing the rest to `(+N)`. Expand shows every queued message in full; pressing it again collapses back to the preview.
 - Added an animated `Steering` indicator on the pending bar's first steer label while the agent is streaming: a monochrome comet sweeps through the centered word with a fading particle trail (constant width, no color flashing). It stops and reverts to a static label when idle, and is disposed on teardown.
 
+### Fixed
+
+- Fixed a duplicated user message in the transcript when an idle queued-message drain coalesced a just-rendered send into the pending tail: the optimistic bubble for the swallowed send is now dropped so the merged `message_start` renders the full text once instead of leaving a stale single-line bubble plus an appended merged copy.
+
 ## [16.0.6] - 2026-06-18
 
 ### Added

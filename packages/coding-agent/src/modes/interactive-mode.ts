@@ -551,10 +551,24 @@ export class InteractiveMode implements InteractiveModeContext {
 		// then re-record the merged text only if either was actually a local submission.
 		session.onLocalQueueCoalesced = (perSendText, mergedText, replacedText, imageCount) => {
 			const sigs = this.locallySubmittedUserSignatures;
-			const perSendCleared = sigs.delete(`${perSendText}\u0000${imageCount}`);
-			const replacedCleared = sigs.delete(`${replacedText}\u0000${imageCount}`);
+			const perSendSig = `${perSendText}\u0000${imageCount}`;
+			const replacedSig = `${replacedText}\u0000${imageCount}`;
+			const perSendCleared = sigs.delete(perSendSig);
+			const replacedCleared = sigs.delete(replacedSig);
 			if (perSendCleared || replacedCleared) {
 				this.recordLocalSubmission(mergedText, imageCount);
+			}
+			// If an optimistic bubble was already rendered for a send that the merge just
+			// swallowed, the incoming message_start carries the *merged* text and no longer
+			// matches the stale per-send/replaced optimistic signature. Drop the stale bubble
+			// and pending-render state so EventController appends the correct merged message
+			// once (no duplicated line). The merged local signature recorded above keeps that
+			// append recognized as local, so it never clears the user's in-progress draft.
+			if (
+				this.optimisticUserMessageSignature === perSendSig ||
+				this.optimisticUserMessageSignature === replacedSig
+			) {
+				this.#dropOptimisticUserMessage();
 			}
 		};
 		this.sessionManager = session.sessionManager;
@@ -1387,6 +1401,26 @@ export class InteractiveMode implements InteractiveModeContext {
 			},
 			{ imageLinks: submission.imageLinks },
 		);
+	}
+
+	/**
+	 * Discard the optimistically-rendered user bubble and its pending-render state without
+	 * touching the in-flight submission's text (unlike {@link cancelPendingSubmission}, which
+	 * restores the text into the editor). Used when a queue coalesce swallows the just-rendered
+	 * send: the merged `message_start` will render the correct full text instead.
+	 */
+	#dropOptimisticUserMessage(): void {
+		// NB: do not mutate the SubmittedUserInput (e.g. set `cancelled`) — submitInteractiveInput
+		// and markPendingSubmissionStarted reject cancelled input, which would drop the in-flight
+		// send before it reaches the queue. Clearing the pending field is enough: future rebuilds'
+		// #replayOptimisticUserMessage early-returns when #pendingSubmittedInput is undefined.
+		this.#pendingSubmittedInput = undefined;
+		this.optimisticUserMessageSignature = undefined;
+		this.#pendingSubmissionDispose?.();
+		this.#pendingSubmissionDispose = undefined;
+		this.#pendingWorkingMessage = undefined;
+		this.rebuildChatFromMessages();
+		this.ui.requestRender();
 	}
 
 	#formatTodoLine(todo: TodoItem, prefix: string, matched: boolean): string {
