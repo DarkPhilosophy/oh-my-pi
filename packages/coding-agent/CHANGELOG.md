@@ -9,6 +9,7 @@
 - Added Up-arrow on an empty editor as an "undo send": when messages are queued (steer/follow-up/compaction) it pulls them back into the editor for editing (the same restore as `Alt+Up`); with nothing queued, Up still walks input history.
 - Added `Alt+O` (`app.message.expandQueue`) to expand/collapse the queued-message preview in the pending bar, and the `pendingQueueCollapseLines` setting (default `5`) controlling how many leading lines of each queued message show before collapsing the rest to `(+N)`. Expand shows every queued message in full; pressing it again collapses back to the preview.
 - Added an animated `Steering` indicator on the pending bar's first steer label while the agent is streaming: a monochrome comet sweeps the row in one direction (left→right, then bouncing back right→left) with a fading `● • ∙ ·` trail behind it, brightening each letter as it passes through the centered word (constant width, no color flashing). It stops and reverts to a static label when idle, and is disposed on teardown.
+- Added a bordered frame around queued messages when expanded (Alt+O) or while a steer is streaming: an expanded long message reads as one self-contained titled box (`Steer` / `Follow-up`) instead of indented rows bleeding into the hint, and the streaming-steer animation sits above its framed message. Collapsed short entries stay light (a `Label:` row with indented lines) to avoid chrome noise.
 
 ### Changed
 
