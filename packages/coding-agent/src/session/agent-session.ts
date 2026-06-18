@@ -2511,6 +2511,13 @@ export class AgentSession {
 					});
 					this.#retryAttempt = 0;
 				}
+				if (assistantMsg.provider === "opencode-go") {
+					this.#modelRegistry.authStorage.recordUsageCost(assistantMsg.provider, assistantMsg.usage.cost.total, {
+						sessionId: this.#activeProviderSessionId(),
+						recordedAt: assistantMsg.timestamp,
+						baseUrl: this.#modelRegistry.getProviderBaseUrl?.(assistantMsg.provider),
+					});
+				}
 			}
 			if (event.message.role === "toolResult") {
 				const { toolName, details, isError, content } = event.message as {
@@ -9764,6 +9771,7 @@ export class AgentSession {
 
 		if (this.#isClassifierRefusal(message)) return true;
 		if (this.#isProviderErrorFinishReasonBeforeToolUse(message)) return true;
+		if (this.#isMalformedFunctionCallError(message)) return true;
 		if (this.#streamInterruptedAfterObservableOutput(message)) return false;
 		if (this.#isStaleOpenAIResponsesReplayError(message)) return true;
 
@@ -9812,6 +9820,11 @@ export class AgentSession {
 		if (!message.errorMessage) return false;
 		if (message.content.some(block => block.type === "toolCall")) return false;
 		return /\bProvider (?:returned error finish_reason|finish_reason:\s*error)\b/i.test(message.errorMessage);
+	}
+
+	#isMalformedFunctionCallError(message: AssistantMessage): boolean {
+		if (!message.errorMessage) return false;
+		return /\bmalformed.?function.?call\b/i.test(message.errorMessage);
 	}
 
 	#isTransientErrorMessage(errorMessage: string): boolean {
