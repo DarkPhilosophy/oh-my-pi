@@ -13,12 +13,19 @@
 - Coalesced consecutive plain-text messages typed while the agent is streaming into a single queued steer/follow-up entry (newline-joined) instead of separate messages, so rapid `Line1`/`Line2`/`Line3` sends read as one logical message — one pending chip, one delivery, and one editor-restore block. Image-bearing sends, skill invocations, and magic-keyword sends keep their own entry.
 - Added Up-arrow on an empty editor as an "undo send": when messages are queued (steer/follow-up/compaction) it pulls them back into the editor for editing (the same restore as `Alt+Up`); with nothing queued, Up still walks input history.
 - Added `Alt+O` (`app.message.expandQueue`) to expand/collapse the queued-message preview in the pending bar, and the `pendingQueueCollapseLines` setting (default `5`) controlling how many leading lines of each queued message show before collapsing the rest to `(+N)`. Expand shows every queued message in full; pressing it again collapses back to the preview.
-- Added an animated `Steering` indicator on the pending bar's first steer label while the agent is streaming: a monochrome pulse wave flows inward from both sides through the centered word, each particle swelling `· ∙ • ●` and fading as the front passes (constant width, no color flashing). It stops and reverts to a static label when idle, and is disposed on teardown.
+- Added an animated `Steering` indicator on the pending bar's first steer label while the agent is streaming: a monochrome comet sweeps the row in one direction (left→right, then bouncing back right→left) with a fading `● • ∙ ·` trail behind it, brightening each letter as it passes through the centered word (constant width, no color flashing). It stops and reverts to a static label when idle, and is disposed on teardown.
 
 ### Fixed
 
 - Fixed a duplicated user message in the transcript when an idle queued-message drain coalesced a just-rendered send into the pending tail: the optimistic bubble for the swallowed send is now surgically removed (not via a full chat rebuild) so the merged `message_start` renders the full text once. Removing it surgically also keeps the active assistant block attached when the coalesce races an in-flight stream — a mid-stream rebuild would have detached the live block and sent later deltas into an orphaned, invisible component.
 - Fixed queued-message preview lines in the pending bar rendering raw tabs and control characters from RPC/SDK `steer`/`followUp` text: each line is now sanitized (ANSI/control strip + tab expansion) before styling, so it can no longer punch visual holes or corrupt the pending bar.
+
+## [16.0.7] - 2026-06-18
+
+### Fixed
+
+- Fixed `/model` in the TUI to open the model setup picker again, leaving `/switch` as the temporary session model switcher ([#2933](https://github.com/can1357/oh-my-pi/issues/2933)).
+- Fixed OpenCode Go sessions recording per-request cost history so `/usage` can show local cap utilization. ([#2942](https://github.com/can1357/oh-my-pi/issues/2942))
 
 ## [16.0.6] - 2026-06-18
 

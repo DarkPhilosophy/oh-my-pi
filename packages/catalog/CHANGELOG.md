@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [16.0.7] - 2026-06-18
+
+### Fixed
+
+- Fixed MiniMax Anthropic-compatible M2/M3 thinking metadata to expose the adaptive transport and keep M2 mandatory reasoning floored ([#2928](https://github.com/can1357/oh-my-pi/issues/2928)).
+
 ## [16.0.6] - 2026-06-18
 
 ### Added
