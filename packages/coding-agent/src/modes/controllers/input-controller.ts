@@ -1072,7 +1072,6 @@ export class InputController {
 	}
 
 	restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): number {
-		this.ctx.locallySubmittedUserSignatures.clear();
 		// On Esc (abort) drop non-user internal steers so the post-abort drain can't
 		// auto-resume; plain Alt+Up dequeue preserves them for the continuing stream.
 		// Drain the queue the pending bar reflects: ui-helpers renders from `viewSession`,
@@ -1093,6 +1092,14 @@ export class InputController {
 			...followUp,
 			...compactionQueued.filter(e => e.mode === "followUp").map(e => ({ text: e.text, images: e.images })),
 		];
+		// Restoring pulls these messages back into the editor as a draft, so they will not
+		// deliver under their queued signatures — drop exactly those, and no others. Clearing
+		// the whole set here would strand a main-session queued item's signature while only a
+		// focused subagent's queue was drained (its later message_start would look non-local
+		// and clobber the draft). #2890 KaPgI.
+		for (const entry of allQueued) {
+			this.ctx.locallySubmittedUserSignatures.delete(`${entry.text}\u0000${entry.images?.length ?? 0}`);
+		}
 		if (allQueued.length === 0) {
 			this.ctx.updatePendingMessagesDisplay();
 			if (options?.abort) {

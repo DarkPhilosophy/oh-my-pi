@@ -664,4 +664,22 @@ describe("InputController Up-on-empty undo-send wiring", () => {
 		expect(spies.clearQueue).not.toHaveBeenCalled();
 		expect(editor.getText()).toBe("focused line");
 	});
+
+	it("clears only the restored messages' signatures, preserving main-session queued signatures", () => {
+		const { ctx } = createContext();
+		// The main session has its own locally-queued steer whose signature must survive.
+		ctx.locallySubmittedUserSignatures.add("main queued steer\u00000");
+		ctx.locallySubmittedUserSignatures.add("focused line\u00000");
+		// Focused subagent: restore drains only viewSession's queued message.
+		(ctx as unknown as { viewSession: unknown }).viewSession = {
+			getQueuedMessages: vi.fn(() => ({ steering: ["focused line"], followUp: [] })),
+			clearQueue: vi.fn(() => ({ steering: [{ text: "focused line" }], followUp: [] })),
+			abort: vi.fn(),
+		};
+		const controller = new InputController(ctx);
+		controller.restoreQueuedMessagesToEditor();
+		// The restored (drained) signature is gone; the untouched main-session one survives.
+		expect(ctx.locallySubmittedUserSignatures.has("focused line\u00000")).toBe(false);
+		expect(ctx.locallySubmittedUserSignatures.has("main queued steer\u00000")).toBe(true);
+	});
 });
