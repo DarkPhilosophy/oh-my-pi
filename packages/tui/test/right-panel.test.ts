@@ -246,7 +246,10 @@ describe("compositeRightPanels", () => {
 // directly reusable root child and committed scrollback rows never carry
 // panel text.
 class Lines implements Component {
-	constructor(public lines: string[]) {}
+	lines: string[];
+	constructor(lines: string[]) {
+		this.lines = lines;
+	}
 	invalidate(): void {}
 	render(): string[] {
 		return [...this.lines];
