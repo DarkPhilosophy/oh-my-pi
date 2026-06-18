@@ -19,8 +19,6 @@
 
 - Fixed a duplicated user message in the transcript when an idle queued-message drain coalesced a just-rendered send into the pending tail: the optimistic bubble for the swallowed send is now surgically removed (not via a full chat rebuild) so the merged `message_start` renders the full text once. Removing it surgically also keeps the active assistant block attached when the coalesce races an in-flight stream — a mid-stream rebuild would have detached the live block and sent later deltas into an orphaned, invisible component.
 - Fixed queued-message preview lines in the pending bar rendering raw tabs and control characters from RPC/SDK `steer`/`followUp` text: each line is now sanitized (ANSI/control strip + tab expansion) before styling, so it can no longer punch visual holes or corrupt the pending bar.
-### Fixed
-
 - Fixed `omp update` reporting `EPERM: operation not permitted, unlink '<binary>.bak'` on Windows when self-replacing a standalone binary, even though the new binary had already been installed. The backed-up old executable is still the running process image and cannot be unlinked until the process exits, so the post-verify backup cleanup is now best-effort, backups use a unique per-attempt name, and stale backups are swept on the next update ([#845](https://github.com/can1357/oh-my-pi/issues/845)).
 - Fixed plan-mode `Refine plan` so the internal approval abort is hidden and the editor is ready for a follow-up prompt instead of showing `Operation aborted` ([#2971](https://github.com/can1357/oh-my-pi/issues/2971)).
 - Fixed TUI prompts beginning with shell-style variables such as `$HOME` being misrouted to Python eval; Python shortcuts now require `$ <code>` or `$$ <code>`. ([#2944](https://github.com/can1357/oh-my-pi/issues/2944))
