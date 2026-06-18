@@ -5,15 +5,15 @@
 ### Added
 
 - Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor", priority? })`): each panel is composited independently into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, and hides per-block (not cut) when no run is tall enough to hold it. Panels are ordered by optional `priority` then ascending height, so the smallest always-present panels stay visible and the tallest hide first. Also added `ctx.fetchUsageReports()` so usage/quota widgets can read provider reports without reaching into private APIs.
+- Coalesced consecutive plain-text messages typed while the agent is streaming into a single queued steer/follow-up entry (newline-joined) instead of separate messages, so rapid `Line1`/`Line2`/`Line3` sends read as one logical message — one pending chip, one delivery, and one editor-restore block. Image-bearing sends, skill invocations, and magic-keyword sends keep their own entry.
+- Added Up-arrow on an empty editor as an "undo send": when messages are queued (steer/follow-up/compaction) it pulls them back into the editor for editing (the same restore as `Alt+Up`); with nothing queued, Up still walks input history.
+- Added `Alt+O` (`app.message.expandQueue`) to expand/collapse the queued-message preview in the pending bar, and the `pendingQueueCollapseLines` setting (default `5`) controlling how many leading lines of each queued message show before collapsing the rest to `(+N)`. Expand shows every queued message in full; pressing it again collapses back to the preview.
+- Added an animated `Steering` indicator on the pending bar's first steer label while the agent is streaming: a monochrome comet sweeps the row in one direction (left→right, then bouncing back right→left) with a fading `● • ∙ ·` trail behind it, brightening each letter as it passes through the centered word (constant width, no color flashing). It stops and reverts to a static label when idle, and is disposed on teardown.
 
 ### Changed
 
 - Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
 - Changed `/reload-plugins` to tear down extension hooks with `session_shutdown` before replaying `session_start`, so plugin reloads do not stack duplicate timers, terminal-input listeners, or stale widgets.
-- Coalesced consecutive plain-text messages typed while the agent is streaming into a single queued steer/follow-up entry (newline-joined) instead of separate messages, so rapid `Line1`/`Line2`/`Line3` sends read as one logical message — one pending chip, one delivery, and one editor-restore block. Image-bearing sends, skill invocations, and magic-keyword sends keep their own entry.
-- Added Up-arrow on an empty editor as an "undo send": when messages are queued (steer/follow-up/compaction) it pulls them back into the editor for editing (the same restore as `Alt+Up`); with nothing queued, Up still walks input history.
-- Added `Alt+O` (`app.message.expandQueue`) to expand/collapse the queued-message preview in the pending bar, and the `pendingQueueCollapseLines` setting (default `5`) controlling how many leading lines of each queued message show before collapsing the rest to `(+N)`. Expand shows every queued message in full; pressing it again collapses back to the preview.
-- Added an animated `Steering` indicator on the pending bar's first steer label while the agent is streaming: a monochrome comet sweeps the row in one direction (left→right, then bouncing back right→left) with a fading `● • ∙ ·` trail behind it, brightening each letter as it passes through the centered word (constant width, no color flashing). It stops and reverts to a static label when idle, and is disposed on teardown.
 
 ### Fixed
 
