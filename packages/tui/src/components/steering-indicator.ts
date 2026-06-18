@@ -5,13 +5,14 @@ import { Text } from "./text";
  * Animated "Steering" indicator for the pending-queue bar.
  *
  * Visual: the word `Steering` sits centered on a fixed-width track flanked by
- * particles. A "comet" sweeps left→right→left in a loop; the cell it occupies
- * shows the large glyph, the trailing cells fade through smaller glyphs, and as
- * the comet passes under the word each letter briefly brightens — giving the
- * illusion of motion flowing *through* the text. Monochrome by design: only the
- * brightness (dim → normal → bold) and the glyph size vary, never the hue, and
- * the rendered string keeps a constant visible width every frame so the pending
- * layout never jitters.
+ * particles. A *pulse wave* flows continuously inward from both sides toward the
+ * word and through its letters: each cell swells small→large→small (`· ∙ • ●`)
+ * as the wave front passes it, so the dots visibly travel rather than blink in
+ * place, and each letter brightens in turn as the front sweeps under it. The
+ * wave is periodic (it loops, it does not bounce), giving a steady flowing
+ * pulse. Monochrome by design: only brightness (dim → normal → bold) and glyph
+ * size vary, never the hue, and the rendered string keeps a constant visible
+ * width every frame so the pending layout never jitters.
  *
  * Lifecycle: self-driving via `setInterval`; the owner MUST call {@link dispose}
  * (or {@link stop}) before dropping the instance — containers `clear()` without
@@ -19,16 +20,20 @@ import { Text } from "./text";
  */
 
 const FRAME_MS = 90;
-// Glyph sizes from faint to bold, used for the comet head + its fading trail.
-const TRAIL = ["·", "∙", "•", "●"] as const;
+// Glyph ramp from faint to bold. The wave front maps a cell's wave-phase to one
+// of these: 0 → blank-ish, rising to ● at the crest, then falling back.
+const GLYPHS = ["·", "∙", "•", "●"] as const;
+// Cells per full wave (crest-to-crest). A new front enters every WAVE_LEN frames,
+// so several fronts ride the track at once → a continuously flowing pulse.
+const WAVE_LEN = 6;
 const EMPTY = " ";
 
 type StyleFns = {
 	/** Dim/dark styling for idle track + faint particles. */
 	dim: (s: string) => string;
-	/** Mid styling for the word and near-comet particles. */
+	/** Mid styling for the word and the rising/falling shoulders of a wave crest. */
 	mid: (s: string) => string;
-	/** Bright/bold styling for the comet head + the letter it is passing under. */
+	/** Bright/bold styling for a wave crest (●) and the letter it is sweeping under. */
 	bright: (s: string) => string;
 };
 
@@ -39,8 +44,9 @@ export class SteeringIndicator extends Text {
 	#sideWidth: number;
 	#gap: number;
 	#trackWidth: number;
-	#pos = 0;
-	#dir = 1;
+	// Monotonic frame counter driving the flowing wave; only its value mod WAVE_LEN
+	// matters, so it never needs resetting.
+	#phase = 0;
 	#intervalId?: NodeJS.Timeout;
 
 	/**
@@ -57,7 +63,7 @@ export class SteeringIndicator extends Text {
 		this.#word = word;
 		this.#sideWidth = Math.max(1, sideWidth);
 		this.#gap = Math.max(0, gap);
-		// Full track: [side] gap [word] gap [side]. The comet travels the whole span.
+		// Full track: [side] gap [word] gap [side]. Pulse fronts flow inward across it.
 		this.#trackWidth = this.#sideWidth * 2 + this.#gap * 2 + this.#word.length;
 		this.#renderIdle();
 	}
@@ -68,15 +74,8 @@ export class SteeringIndicator extends Text {
 			if (this.#intervalId) return;
 			this.#render();
 			this.#intervalId = setInterval(() => {
-				// Bounce the comet across the full track.
-				this.#pos += this.#dir;
-				if (this.#pos >= this.#trackWidth - 1) {
-					this.#pos = this.#trackWidth - 1;
-					this.#dir = -1;
-				} else if (this.#pos <= 0) {
-					this.#pos = 0;
-					this.#dir = 1;
-				}
+				// Advance the flowing wave one cell; fronts loop continuously inward.
+				this.#phase = (this.#phase + 1) % WAVE_LEN;
 				this.#render();
 			}, FRAME_MS);
 		} else {
@@ -98,35 +97,52 @@ export class SteeringIndicator extends Text {
 	}
 
 	/**
-	 * Build one frame. The track is `[side] gap [word] gap [side]`. Each side cell
-	 * renders a particle whose size/brightness depends on its distance from the
-	 * comet head; the word region renders each letter, brightening the one the
-	 * comet is currently under. Constant visible width every frame.
+	 * Build one frame. The track is `[side] gap [word] gap [side]`. A pulse wave
+	 * flows inward from both edges toward the word: a cell's glyph size is a
+	 * triangular function of its phase to the nearest wave crest, and crests march
+	 * one cell per frame, so each dot swells `· → ∙ → • → ●` and shrinks back as
+	 * the front passes — the pulse visibly travels. The word's letters brighten in
+	 * turn as a crest sweeps under them. Constant visible width every frame.
 	 */
 	#render(): void {
 		const wordStart = this.#sideWidth + this.#gap;
 		const wordEnd = wordStart + this.#word.length; // exclusive
 		let out = "";
 		for (let col = 0; col < this.#trackWidth; col++) {
+			// flow = how far this cell is along the inward direction (0 at the outer
+			// edge of each side, increasing toward the word). The right side mirrors
+			// the left so both pulses travel inward, meeting at the word.
 			const inWord = col >= wordStart && col < wordEnd;
-			const dist = Math.abs(col - this.#pos);
+			const isLeftGap = col >= wordStart - this.#gap && col < wordStart;
+			const isRightGap = col >= wordEnd && col < wordEnd + this.#gap;
+			if (isLeftGap || isRightGap) {
+				out += EMPTY;
+				continue;
+			}
+			let flow: number;
+			if (col < wordStart) {
+				flow = col; // left side: 0..sideWidth-1, flowing rightward (inward)
+			} else if (col >= wordEnd) {
+				flow = this.#trackWidth - 1 - col; // right side: mirrored, flowing leftward
+			} else {
+				// Inside the word: continue the left side's flow coordinate across the
+				// gap so a crest leaving the side sweeps straight through the letters.
+				flow = this.#sideWidth + this.#gap + (col - wordStart);
+			}
+			// Triangular wave: 0 at the crest, rising with distance to it, folded so
+			// the ramp is symmetric. level 3 = crest (●), 0 = trough (faint/blank).
+			const tide = (((flow - this.#phase) % WAVE_LEN) + WAVE_LEN) % WAVE_LEN;
+			const folded = tide > WAVE_LEN / 2 ? WAVE_LEN - tide : tide; // 0..WAVE_LEN/2
+			const level = Math.max(0, GLYPHS.length - 1 - folded); // 0..3, peak at crest
 			if (inWord) {
 				const ch = this.#word[col - wordStart];
-				// Comet under this letter → bright; just beside it → mid; else dim.
-				out += dist === 0 ? this.#styles.bright(ch) : dist === 1 ? this.#styles.mid(ch) : this.#styles.dim(ch);
-			} else if (col >= wordStart - this.#gap && col < wordStart) {
-				out += EMPTY; // left gap
-			} else if (col >= wordEnd && col < wordEnd + this.#gap) {
-				out += EMPTY; // right gap
+				// Crest under the letter → bright; shoulder → mid; trough → dim.
+				out += level >= 3 ? this.#styles.bright(ch) : level >= 1 ? this.#styles.mid(ch) : this.#styles.dim(ch);
+			} else if (level <= 0) {
+				out += this.#styles.dim(EMPTY); // trough: blank cell, keeps width
 			} else {
-				// Side particle: size/brightness by proximity to the comet head.
-				if (dist === 0) {
-					out += this.#styles.bright(TRAIL[3]);
-				} else if (dist <= 3) {
-					out += this.#styles.mid(TRAIL[3 - dist]);
-				} else {
-					out += this.#styles.dim(EMPTY);
-				}
+				const glyph = GLYPHS[level];
+				out += level >= 3 ? this.#styles.bright(glyph) : this.#styles.mid(glyph);
 			}
 		}
 		if (this.setText(out) && this.#ui) {
