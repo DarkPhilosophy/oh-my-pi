@@ -34,7 +34,6 @@ import {
 	type CompactionSummaryMessage,
 	countTokens,
 	resolveTelemetry,
-	STREAM_INTERRUPTED_AFTER_CONTENT_STOP_DETAIL,
 	ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import {
@@ -1686,6 +1685,33 @@ export class AgentSession {
 	// start, so duplicate concern/blocker advice is also downgraded.
 	#recordAdvisorInterruptDelivered(): void {
 		this.#advisorInterruptImmuneTurnStart = this.#advisorPrimaryTurnsCompleted + 1;
+	}
+
+	/**
+	 * Re-prime the advisor across a conversation boundary: `/new`, `/branch`,
+	 * `/btw`, `/tree`, and session switch/resume. Beyond {@link AdvisorRuntime.reset}
+	 * (which only re-primes the advisor's transcript view and is also fired by
+	 * within-conversation rewrites like compaction/shake/rewind), this clears the
+	 * session-level interrupt latches so the prior conversation's cooldown cannot
+	 * leak into the new one: the post-interrupt immune-turn window
+	 * (`#advisorPrimaryTurnsCompleted`, `#advisorInterruptImmuneTurnStart`) and the
+	 * user-interrupt auto-resume suppression flag. It also drops advisor deliveries
+	 * still queued against the prior conversation — pending asides in the yield
+	 * queue (advisor entries use `skipIdleFlush`, so they linger until the next
+	 * `drainLazy` rather than self-flushing), interrupting cards parked in the
+	 * agent steer/follow-up queues, and preserved cards deferred to the next turn —
+	 * so none of them inject into the new conversation.
+	 */
+	#resetAdvisorSessionState(): void {
+		this.#advisorRuntime?.reset();
+		this.#advisorPrimaryTurnsCompleted = 0;
+		this.#advisorInterruptImmuneTurnStart = undefined;
+		this.#advisorAutoResumeSuppressed = false;
+		this.yieldQueue.clear("advisor");
+		this.#extractQueuedAdvisorCards();
+		if (this.#pendingNextTurnMessages.some(isAdvisorCard)) {
+			this.#pendingNextTurnMessages = this.#pendingNextTurnMessages.filter(m => !isAdvisorCard(m));
+		}
 	}
 
 	#buildAdvisorRuntime(seedToCurrent = false): boolean {
@@ -6630,7 +6656,7 @@ export class AgentSession {
 		this.#todoReminderAwaitingProgress = false;
 		this.#planReferenceSent = false;
 		this.#planReferencePath = "local://PLAN.md";
-		this.#advisorRuntime?.reset();
+		this.#resetAdvisorSessionState();
 		this.#reconnectToAgent();
 
 		// Emit session_switch event with reason "new" to hooks
@@ -9769,21 +9795,20 @@ export class AgentSession {
 		if (this.#isClassifierRefusal(message)) return true;
 		if (this.#isProviderErrorFinishReasonBeforeToolUse(message)) return true;
 		if (this.#isMalformedFunctionCallError(message)) return true;
-		if (this.#streamInterruptedAfterObservableOutput(message)) return false;
+		if (this.#hasReplayUnsafeToolOutput(message)) return false;
 		if (this.#isStaleOpenAIResponsesReplayError(message)) return true;
 
 		const err = message.errorMessage;
 		return this.#isTransientErrorMessage(err) || isUsageLimitError(err);
 	}
-	#streamInterruptedAfterObservableOutput(message: AssistantMessage): boolean {
-		if (message.stopDetails?.type === STREAM_INTERRUPTED_AFTER_CONTENT_STOP_DETAIL) return true;
-		for (const block of message.content) {
-			if (block.type === "toolCall") return true;
-			if (block.type === "text" && block.text.length > 0) return true;
-			if (block.type === "thinking" && block.thinking.length > 0) return true;
-			if (block.type === "redactedThinking" && block.data.length > 0) return true;
-		}
-		return false;
+	/**
+	 * Retried turns remove the failed assistant message from active context.
+	 * Text/thinking-only partials are safe to discard and replay. Retained
+	 * tool calls are not: a completed tool call may already have emitted its
+	 * tool result after this assistant message, so replaying can duplicate work.
+	 */
+	#hasReplayUnsafeToolOutput(message: AssistantMessage): boolean {
+		return message.content.some(block => block.type === "toolCall");
 	}
 
 	#isStaleOpenAIResponsesReplayError(message: AssistantMessage): boolean {
@@ -11075,6 +11100,7 @@ export class AgentSession {
 			}
 
 			this.agent.replaceMessages(sessionContext.messages);
+			this.#resetAdvisorSessionState();
 			this.#syncTodoPhasesFromBranch();
 			if (switchingToDifferentSession) {
 				this.#closeAllProviderSessions("session switch");
@@ -11280,7 +11306,7 @@ export class AgentSession {
 
 		if (!skipConversationRestore) {
 			this.agent.replaceMessages(sessionContext.messages);
-			this.#advisorRuntime?.reset();
+			this.#resetAdvisorSessionState();
 			this.#closeCodexProviderSessionsForHistoryRewrite();
 		}
 
@@ -11369,7 +11395,7 @@ export class AgentSession {
 		}
 
 		this.agent.replaceMessages(sessionContext.messages);
-		this.#advisorRuntime?.reset();
+		this.#resetAdvisorSessionState();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 
 		return { cancelled: false, sessionFile: this.sessionFile };
@@ -11535,7 +11561,7 @@ export class AgentSession {
 		const displayContext = deobfuscateSessionContext(stateContext, this.#obfuscator);
 		await this.#restoreMCPSelectionsForSessionContext(displayContext);
 		this.agent.replaceMessages(displayContext.messages);
-		this.#advisorRuntime?.reset();
+		this.#resetAdvisorSessionState();
 		this.#syncTodoPhasesFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 
