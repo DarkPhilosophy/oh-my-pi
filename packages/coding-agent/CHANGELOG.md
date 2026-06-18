@@ -7,6 +7,7 @@
 - Coalesced consecutive plain-text messages typed while the agent is streaming into a single queued steer/follow-up entry (newline-joined) instead of separate messages, so rapid `Line1`/`Line2`/`Line3` sends read as one logical message — one pending chip, one delivery, and one editor-restore block. Image-bearing sends, skill invocations, and magic-keyword sends keep their own entry.
 - Added Up-arrow on an empty editor as an "undo send": when messages are queued (steer/follow-up/compaction) it pulls them back into the editor for editing (the same restore as `Alt+Up`); with nothing queued, Up still walks input history.
 - Added `Alt+O` (`app.message.expandQueue`) to expand/collapse the queued-message preview in the pending bar, and the `pendingQueueCollapseLines` setting (default `5`) controlling how many leading lines of each queued message show before collapsing the rest to `(+N)`. Expand shows every queued message in full; pressing it again collapses back to the preview.
+- Added an animated `Steering` indicator on the pending bar's first steer label while the agent is streaming: a monochrome comet sweeps through the centered word with a fading particle trail (constant width, no color flashing). It stops and reverts to a static label when idle, and is disposed on teardown.
 
 ## [16.0.6] - 2026-06-18
 
