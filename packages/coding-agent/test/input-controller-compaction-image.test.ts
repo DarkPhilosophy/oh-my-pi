@@ -320,3 +320,57 @@ describe("compaction queue coalescing keeps local-submit signatures exact (VyEt)
 		expect([...sigs]).toEqual(["a\nb\u00000"]);
 	});
 });
+
+describe("pending queue collapse/expand display", () => {
+	function displayCtx(opts: { collapseLines: number; expanded: boolean; steering: string[] }) {
+		const rows: string[] = [];
+		const ctx = {
+			pendingMessagesContainer: {
+				clear: () => {},
+				addChild: (c: unknown) => {
+					// Components render their content; join the produced lines so assertions can
+					// match the visible text (TruncatedText keeps its text private). Spacer renders
+					// blank padding rows, which the body filter ignores.
+					const r = c as { render?: (w: number) => readonly string[] };
+					if (typeof r.render === "function") rows.push(r.render(120).join(""));
+				},
+			},
+			viewSession: { getQueuedMessages: () => ({ steering: opts.steering, followUp: [] }) },
+			compactionQueuedMessages: [],
+			pendingQueueExpanded: opts.expanded,
+			settings: { get: (k: string) => (k === "pendingQueueCollapseLines" ? opts.collapseLines : undefined) },
+			keybindings: { getDisplayString: (id: string) => (id === "app.message.expandQueue" ? "Alt+O" : "Alt+Up") },
+		} as unknown as InteractiveModeContext;
+		new UiHelpers(ctx).updatePendingMessagesDisplay();
+		return rows;
+	}
+
+	const sevenLine = Array.from({ length: 7 }, (_, i) => `line${i + 1}`).join("\n");
+	// Drop the leading Spacer's blank row and the trailing hint row, leaving message rows.
+	const bodyRows = (rows: string[]) => rows.filter(r => r.trim() !== "" && !r.includes("to edit"));
+
+	test("collapsed shows N preview lines with a (+M) remainder on the last shown row", () => {
+		const rows = displayCtx({ collapseLines: 5, expanded: false, steering: [sevenLine] });
+		const body = bodyRows(rows);
+		expect(body).toHaveLength(5); // 5 of 7 lines
+		expect(body[0]).toContain("Steer: line1");
+		expect(body[4]).toContain("line5 (+2)"); // remaining 2 lines folded onto the last row
+		expect(rows.some(r => r.includes("Alt+O to expand"))).toBe(true);
+	});
+
+	test("expanded shows every line in full with no (+M)", () => {
+		const rows = displayCtx({ collapseLines: 5, expanded: true, steering: [sevenLine] });
+		const body = bodyRows(rows);
+		expect(body).toHaveLength(7); // all 7 lines
+		expect(body[6]).toContain("line7");
+		expect(body.some(r => r.includes("(+"))).toBe(false);
+		expect(rows.some(r => r.includes("Alt+O to collapse"))).toBe(true);
+	});
+
+	test("an entry within the preview budget is not truncated and shows no expand hint", () => {
+		const rows = displayCtx({ collapseLines: 5, expanded: false, steering: ["only one line"] });
+		const body = bodyRows(rows);
+		expect(body).toEqual([expect.stringContaining("Steer: only one line")]);
+		expect(rows.some(r => r.includes("Alt+O"))).toBe(false);
+	});
+});

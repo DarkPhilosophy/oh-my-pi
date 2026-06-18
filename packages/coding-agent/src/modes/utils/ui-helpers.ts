@@ -686,17 +686,34 @@ export class UiHelpers {
 		const allMessages = [...steeringMessages, ...followUpMessages];
 		if (allMessages.length > 0) {
 			this.ctx.pendingMessagesContainer.addChild(new Spacer(1));
+			const expanded = this.ctx.pendingQueueExpanded;
+			// Collapsed: show the first `pendingQueueCollapseLines` lines of each entry, with a
+			// `(+M)` count of the remaining lines on the last shown row. Expanded (Alt+O): show
+			// every line in full. Alt+Up / Up on an empty editor restores the full text either way.
+			const collapseLines = Math.max(1, this.ctx.settings?.get("pendingQueueCollapseLines") ?? 5);
+			let anyTruncated = false;
 			for (const entry of allMessages) {
-				// A merged multi-line message collapses to its first line plus a `(+N)`
-				// line count so the pending bar stays one row per entry; Alt+Up / Up on an
-				// empty editor restores the full text.
 				const lines = entry.message.split("\n");
-				const summary = lines.length > 1 ? `${lines[0]} (+${lines.length - 1})` : entry.message;
-				const queuedText = theme.fg("dim", `${entry.label}: ${summary}`);
-				this.ctx.pendingMessagesContainer.addChild(new TruncatedText(queuedText, 1, 0));
+				const shown = expanded ? lines.length : Math.min(lines.length, collapseLines);
+				const hidden = lines.length - shown;
+				if (hidden > 0) anyTruncated = true;
+				for (let i = 0; i < shown; i++) {
+					const isLastShown = i === shown - 1;
+					const suffix = !expanded && isLastShown && hidden > 0 ? ` (+${hidden})` : "";
+					// First row carries the `Steer:`/`Follow-up:` label; continuation rows indent to align.
+					const prefix = i === 0 ? `${entry.label}: ` : "  ";
+					const queuedText = theme.fg("dim", `${prefix}${lines[i]}${suffix}`);
+					this.ctx.pendingMessagesContainer.addChild(new TruncatedText(queuedText, 1, 0));
+				}
 			}
 			const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
-			const hintText = theme.fg("dim", `${theme.tree.hook} ${dequeueKey} to edit`);
+			const expandKey = this.ctx.keybindings.getDisplayString("app.message.expandQueue") || "Alt+O";
+			const expandHint = anyTruncated
+				? `, ${expandKey} to ${expanded ? "collapse" : "expand"}`
+				: expanded
+					? `, ${expandKey} to collapse`
+					: "";
+			const hintText = theme.fg("dim", `${theme.tree.hook} ${dequeueKey} to edit${expandHint}`);
 			this.ctx.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
 		}
 	}

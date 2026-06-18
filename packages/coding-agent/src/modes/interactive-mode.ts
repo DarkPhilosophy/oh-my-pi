@@ -388,6 +388,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	isBashMode = false;
 	toolOutputExpanded = false;
 	todoExpanded = false;
+	pendingQueueExpanded = false;
 	planModeEnabled = false;
 	planModePaused = false;
 	goalModeEnabled = false;
