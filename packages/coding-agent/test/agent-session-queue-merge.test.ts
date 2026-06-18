@@ -207,4 +207,37 @@ describe("AgentSession queue coalescing", () => {
 			["a\nb", 0, "a"],
 		]);
 	});
+
+	it("routes callback-less coalescing through onLocalQueueCoalesced and clears stale local signatures", async () => {
+		const target = await createSession([{ content: ["ok"] }]);
+		const sigs = new Set<string>(["a\u00000", "b\u00000"]); // UI recorded each per-send signature
+		// Mirror the interactive-mode wiring: drop per-send + replaced (both), record merged if either was local.
+		target.onLocalQueueCoalesced = (perSend, merged, replaced, count) => {
+			const droppedPerSend = sigs.delete(`${perSend}\u0000${count}`);
+			const droppedReplaced = sigs.delete(`${replaced}\u0000${count}`);
+			if (droppedPerSend || droppedReplaced) sigs.add(`${merged}\u0000${count}`);
+		};
+		await duringStream(target, async () => {
+			await target.steer("a"); // no onQueued: pushes (no merge, no fire)
+			await target.steer("b"); // no onQueued: coalesces -> fires onLocalQueueCoalesced("b","a\nb","a",0)
+			return null;
+		});
+		expect([...sigs]).toEqual(["a\nb\u00000"]);
+	});
+
+	it("does not mark a callback-less merge local when neither side was locally submitted (RPC/collab)", async () => {
+		const target = await createSession([{ content: ["ok"] }]);
+		const sigs = new Set<string>(); // nothing was locally submitted
+		target.onLocalQueueCoalesced = (perSend, merged, replaced, count) => {
+			const droppedPerSend = sigs.delete(`${perSend}\u0000${count}`);
+			const droppedReplaced = sigs.delete(`${replaced}\u0000${count}`);
+			if (droppedPerSend || droppedReplaced) sigs.add(`${merged}\u0000${count}`);
+		};
+		await duringStream(target, async () => {
+			await target.steer("a");
+			await target.steer("b");
+			return null;
+		});
+		expect([...sigs]).toEqual([]);
+	});
 });

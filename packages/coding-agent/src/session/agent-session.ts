@@ -1058,6 +1058,12 @@ export class AgentSession {
 	readonly settings: Settings;
 	readonly yieldQueue: YieldQueue;
 	fileSnapshotStore?: InMemorySnapshotStore;
+	/** Fired when a queued user message coalesces into the pending tail and the caller did
+	 *  NOT supply a per-submit onQueued tracker — i.e. programmatic `steer()`/`followUp()`
+	 *  (RPC/SDK/collab) and idle-race submit fallbacks. Lets the host keep the local-submit
+	 *  signature set exact for those paths too. Args: (perSendText, mergedText, replacedText,
+	 *  imageCount). The interactive UI wires it; other embedders may ignore it. */
+	onLocalQueueCoalesced?: (perSendText: string, mergedText: string, replacedText: string, imageCount: number) => void;
 	#autoApprove: boolean;
 
 	#powerAssertion: MacOSPowerAssertion | undefined;
@@ -5974,7 +5980,14 @@ export class AgentSession {
 		if (!images?.length) {
 			const merge = this.#tryMergeQueuedUserMessage(text, mode);
 			if (merge !== undefined) {
-				onQueued?.(merge.merged, 0, merge.replaced);
+				if (onQueued) {
+					onQueued(merge.merged, 0, merge.replaced);
+				} else {
+					// Callback-less submit (programmatic steer/followUp, idle-race fallbacks): route
+					// the coalesce through the host tracker so the local-submit signature set stays
+					// exact for these paths too, not just the interactive submit/compaction paths.
+					this.onLocalQueueCoalesced?.(text, merge.merged, merge.replaced, 0);
+				}
 				this.#scheduleIdleQueueDrain();
 				return;
 			}
