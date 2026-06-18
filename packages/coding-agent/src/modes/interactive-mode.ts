@@ -569,14 +569,23 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 			// If an optimistic bubble was already rendered for a send that the merge just
 			// swallowed, the incoming message_start carries the *merged* text and no longer
-			// matches the stale per-send/replaced optimistic signature. Drop the stale bubble
-			// and pending-render state so EventController appends the correct merged message
-			// once (no duplicated line). The merged local signature recorded above keeps that
-			// append recognized as local, so it never clears the user's in-progress draft.
+			// matches the stale optimistic signature, so drop the stale bubble + pending-render
+			// state (EventController then appends the correct merged message once). Two ways the
+			// optimistic sig can be stale: it equals the per-send/replaced text, OR — for a slash
+			// prompt-template submit — the bubble was rendered from the *raw* editor text while
+			// the coalesce carries the *expanded* text, so the sig matches the still-pending
+			// submission's own raw text instead. Check both. The merged signature is recorded
+			// here too so the append stays recognized as local and never clears the draft.
+			const pendingRawSig =
+				this.#pendingSubmittedInput && !this.#pendingSubmittedInput.customType
+					? `${this.#pendingSubmittedInput.text}\u0000${imageCount}`
+					: undefined;
 			if (
 				this.optimisticUserMessageSignature === perSendSig ||
-				this.optimisticUserMessageSignature === replacedSig
+				this.optimisticUserMessageSignature === replacedSig ||
+				(pendingRawSig !== undefined && this.optimisticUserMessageSignature === pendingRawSig)
 			) {
+				if (!perSendCleared && !replacedCleared) this.recordLocalSubmission(mergedText, imageCount);
 				this.#dropOptimisticUserMessage();
 			}
 		};

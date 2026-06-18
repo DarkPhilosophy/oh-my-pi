@@ -189,4 +189,27 @@ describe("issue #2372 pre-streaming chat rebuild preserves optimistic submission
 		expect(mode.streamingComponent as unknown).toBe(streamingBlock);
 		expect(mode.optimisticUserMessageSignature).toBeUndefined();
 	});
+
+	it("drops the raw optimistic bubble when a prompt-template expansion coalesces", () => {
+		// Repro for the PR #2890 Codex P2 "Track raw text for coalesced template submits":
+		// startPendingSubmission renders the optimistic bubble from the RAW editor text
+		// ("/hi"), but session.prompt expands slash templates before queueing, so the
+		// coalesce callback carries the EXPANDED text ("hello there"). The per-send/replaced
+		// signatures then never equal the raw optimistic signature, so the drop must also
+		// recognize the still-pending submission's own raw text and remove its bubble.
+		mode.startPendingSubmission({ text: "/hi" });
+		expect(mode.optimisticUserMessageSignature).toBe("/hi\u00000");
+		expect(mode.chatContainer.children.length).toBeGreaterThan(0);
+
+		// The merge swallowed the expanded "hello there" into "prev\nhello there"; neither
+		// per-send ("hello there") nor replaced ("prev") matches the raw "/hi" optimistic sig.
+		session.onLocalQueueCoalesced?.("hello there", "prev\nhello there", "prev", 0);
+
+		// The raw optimistic bubble is gone and the merged expanded text is recorded local,
+		// so the incoming message_start appends it once without clobbering a draft.
+		expect(mode.optimisticUserMessageSignature).toBeUndefined();
+		expect(mode.chatContainer.children.length).toBe(0);
+		expect(mode.locallySubmittedUserSignatures.has("prev\nhello there\u00000")).toBe(true);
+		expect(mode.locallySubmittedUserSignatures.has("/hi\u00000")).toBe(false);
+	});
 });

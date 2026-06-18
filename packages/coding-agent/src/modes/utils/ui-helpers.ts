@@ -756,14 +756,16 @@ export class UiHelpers {
 			}
 			// No animated label this pass (idle, or no steer entries) → halt any running timer.
 			if (!animatedSteerUsed) this.ctx.steeringIndicator?.setActive(false);
+			const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
 			const expandKey = this.ctx.keybindings.getDisplayString("app.message.expandQueue") || "Alt+O";
-			// `Up` on an empty editor restores the queued text into the editor (undo-send) —
-			// that is the primary gesture, so the hint names `Up`, not the redundant Alt+Up
-			// keybinding. The expand/collapse affordance (Alt+O) is only shown when the queue
-			// is actually expandable (some entry exceeds the collapse threshold); the wording
-			// flips to `collapse` once expanded. A short, fully-visible queue shows neither.
+			// Keep the owner's configured dequeue keybinding (Alt+Up) as the named gesture,
+			// and surface our additional "or Up on an empty editor" affordance after it — the
+			// author decides post-merge whether plain Up becomes the documented default. The
+			// expand/collapse affordance (Alt+O) only appears when the queue is actually
+			// expandable (some entry exceeds the collapse threshold); the wording flips to
+			// `collapse` once expanded. A short, fully-visible queue shows neither.
 			const expandHint = canExpandQueue ? `, ${expandKey} to ${expanded ? "collapse" : "expand"}` : "";
-			const hintText = theme.fg("dim", `${theme.tree.hook} Up to restore${expandHint}`);
+			const hintText = theme.fg("dim", `${theme.tree.hook} ${dequeueKey} (or Up) to edit${expandHint}`);
 			this.ctx.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
 		}
 	}
