@@ -697,12 +697,14 @@ export class UiHelpers {
 				const shown = expanded ? lines.length : Math.min(lines.length, collapseLines);
 				const hidden = lines.length - shown;
 				if (hidden > 0) anyTruncated = true;
+				// Label on its own row (`Steer:` / `Follow-up:`), then each message line on its
+				// own indented row below it — so multi-line messages read line-by-line instead
+				// of `Steer: Line1` with the rest folded under a bare indent.
+				this.ctx.pendingMessagesContainer.addChild(new TruncatedText(theme.fg("dim", `${entry.label}:`), 1, 0));
 				for (let i = 0; i < shown; i++) {
 					const isLastShown = i === shown - 1;
 					const suffix = !expanded && isLastShown && hidden > 0 ? ` (+${hidden})` : "";
-					// First row carries the `Steer:`/`Follow-up:` label; continuation rows indent to align.
-					const prefix = i === 0 ? `${entry.label}: ` : "  ";
-					const queuedText = theme.fg("dim", `${prefix}${lines[i]}${suffix}`);
+					const queuedText = theme.fg("dim", `  ${lines[i]}${suffix}`);
 					this.ctx.pendingMessagesContainer.addChild(new TruncatedText(queuedText, 1, 0));
 				}
 			}
