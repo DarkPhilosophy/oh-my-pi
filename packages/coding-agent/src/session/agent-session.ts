@@ -536,6 +536,12 @@ export interface PromptOptions {
 	attribution?: MessageAttribution;
 	/** Skip pre-send compaction checks for this prompt (internal use for maintenance flows). */
 	skipCompactionCheck?: boolean;
+	/** Invoked once with the FINAL queued user-message text (after any coalescing merge),
+	 *  its image count, and — when the send coalesced into an existing queued entry — the
+	 *  prior tail text it replaced. Lets the caller keep the local-submit signature set
+	 *  exact: drop the replaced entry's signature and record the merged one, so only the
+	 *  text that actually delivers stays marked local. Fired only on a successful queue. */
+	onQueued?: (text: string, imageCount: number, replacedText?: string) => void;
 }
 
 /** Result from a handoff operation. */
@@ -1052,6 +1058,12 @@ export class AgentSession {
 	readonly settings: Settings;
 	readonly yieldQueue: YieldQueue;
 	fileSnapshotStore?: InMemorySnapshotStore;
+	/** Fired when a queued user message coalesces into the pending tail and the caller did
+	 *  NOT supply a per-submit onQueued tracker — i.e. programmatic `steer()`/`followUp()`
+	 *  (RPC/SDK/collab) and idle-race submit fallbacks. Lets the host keep the local-submit
+	 *  signature set exact for those paths too. Args: (perSendText, mergedText, replacedText,
+	 *  imageCount). The interactive UI wires it; other embedders may ignore it. */
+	onLocalQueueCoalesced?: (perSendText: string, mergedText: string, replacedText: string, imageCount: number) => void;
 	#autoApprove: boolean;
 
 	#powerAssertion: MacOSPowerAssertion | undefined;
@@ -5500,9 +5512,9 @@ export class AgentSession {
 				await this.sendCustomMessage(notice, { deliverAs: options.streamingBehavior });
 			}
 			if (options.streamingBehavior === "followUp") {
-				await this.#queueUserMessage(expandedText, options?.images, "followUp");
+				await this.#queueUserMessage(expandedText, options?.images, "followUp", options?.onQueued);
 			} else {
-				await this.#queueUserMessage(expandedText, options?.images, "steer");
+				await this.#queueUserMessage(expandedText, options?.images, "steer", options?.onQueued);
 			}
 			return true;
 		}
@@ -5937,36 +5949,66 @@ export class AgentSession {
 	/**
 	 * Queue a steering message to interrupt the agent mid-run.
 	 */
-	async steer(text: string, images?: ImageContent[]): Promise<void> {
+	async steer(
+		text: string,
+		images?: ImageContent[],
+		onQueued?: (text: string, imageCount: number, replacedText?: string) => void,
+	): Promise<void> {
 		if (text.startsWith("/")) {
 			this.#throwIfExtensionCommand(text);
 		}
 
 		const expandedText = expandPromptTemplate(text, [...this.#promptTemplates]);
-		await this.#queueUserMessage(expandedText, images, "steer");
+		await this.#queueUserMessage(expandedText, images, "steer", onQueued);
 	}
 
 	/**
 	 * Queue a follow-up message to process after the agent would otherwise stop.
 	 */
-	async followUp(text: string, images?: ImageContent[]): Promise<void> {
+	async followUp(
+		text: string,
+		images?: ImageContent[],
+		onQueued?: (text: string, imageCount: number, replacedText?: string) => void,
+	): Promise<void> {
 		if (text.startsWith("/")) {
 			this.#throwIfExtensionCommand(text);
 		}
 
 		const expandedText = expandPromptTemplate(text, [...this.#promptTemplates]);
-		await this.#queueUserMessage(expandedText, images, "followUp");
+		await this.#queueUserMessage(expandedText, images, "followUp", onQueued);
 	}
 
 	async #queueUserMessage(
 		text: string,
 		images: ImageContent[] | undefined,
 		mode: "steer" | "followUp",
+		onQueued?: (text: string, imageCount: number, replacedText?: string) => void,
 	): Promise<void> {
 		// A queued user message (RPC/SDK/collab steer or follow-up, or a typed message
 		// while streaming) is a deliberate resume; re-enable advisor auto-resume that
 		// a user interrupt suppressed.
 		this.#advisorAutoResumeSuppressed = false;
+		// Coalesce consecutive plain-text user submissions on the same channel into
+		// one queued entry (newline-joined) so rapid `Line1<Enter> Line2<Enter>`
+		// reads as a single logical message — one pending chip, one delivery, and
+		// one editor-restore block on dequeue. Only a plain text-only user tail
+		// merges; image-bearing sends, skill/notice/advisor entries, and a non-user
+		// tail each break the run and keep their own identity.
+		if (!images?.length) {
+			const merge = this.#tryMergeQueuedUserMessage(text, mode);
+			if (merge !== undefined) {
+				if (onQueued) {
+					onQueued(merge.merged, 0, merge.replaced);
+				} else {
+					// Callback-less submit (programmatic steer/followUp, idle-race fallbacks): route
+					// the coalesce through the host tracker so the local-submit signature set stays
+					// exact for these paths too, not just the interactive submit/compaction paths.
+					this.onLocalQueueCoalesced?.(text, merge.merged, merge.replaced, 0);
+				}
+				this.#scheduleIdleQueueDrain();
+				return;
+			}
+		}
 		const normalizedImages = await this.#normalizeImagesForModel(images);
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (normalizedImages?.length) {
@@ -5995,7 +6037,46 @@ export class AgentSession {
 				timestamp: Date.now(),
 			});
 		}
+		onQueued?.(text, normalizedImages?.length ?? 0);
 		this.#scheduleIdleQueueDrain();
+	}
+
+	/**
+	 * Merge a plain-text user submission into the still-pending tail of the target
+	 * queue when that tail is itself a plain text-only user message. Returns the combined
+	 * text plus the prior tail text it replaced when it merged (caller must not push a fresh
+	 * undefined when nothing merged. Image-bearing messages never merge — positional
+	 * `[Image #N]` markers and the text-only-model description companion stay owned by
+	 * their own entry — and only a `role:"user"` tail qualifies, so skill invocations,
+	 * magic-keyword notices, advisor cards and hidden companions keep their identity.
+	 */
+	#tryMergeQueuedUserMessage(
+		text: string,
+		mode: "steer" | "followUp",
+	): { merged: string; replaced: string } | undefined {
+		const steering = [...this.agent.peekSteeringQueue()];
+		const followUp = [...this.agent.peekFollowUpQueue()];
+		const target = mode === "followUp" ? followUp : steering;
+		const tail = target[target.length - 1];
+		if (tail?.role !== "user") return undefined;
+		if (queuedImageContent(tail)) return undefined;
+		// A user message whose hidden magic-keyword companion (ultrathink / orchestrate /
+		// workflow notice) sits immediately before it was a keyword send; absorbing later
+		// plain text would silently pull it under the wrong keyword scope. The image-
+		// description companion is already excluded above — its user message carries images.
+		const beforeTail = target[target.length - 2];
+		if (beforeTail && isHiddenUserCompanion(beforeTail)) return undefined;
+		const prevText = queuedTextContent(tail);
+		if (prevText === undefined) return undefined;
+		const mergedText = prevText ? `${prevText}\n${text}` : text;
+		const mergedContent: (TextContent | ImageContent)[] = [{ type: "text", text: mergedText }];
+		const merged: AgentMessage =
+			mode === "followUp"
+				? { role: "user", content: mergedContent, attribution: "user", timestamp: Date.now() }
+				: { role: "user", content: mergedContent, steering: true, attribution: "user", timestamp: Date.now() };
+		target[target.length - 1] = merged;
+		this.agent.replaceQueues(steering, followUp);
+		return { merged: mergedText, replaced: prevText };
 	}
 
 	#scheduleIdleQueueDrain(): void {

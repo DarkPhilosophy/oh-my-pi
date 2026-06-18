@@ -76,6 +76,9 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 		editor: editor as unknown as InteractiveModeContext["editor"],
 		ui: { requestRender } as unknown as InteractiveModeContext["ui"],
 		session,
+		// Non-focused: the focused-view session is the main session (same object), so the
+		// queue restore / pending display target it directly.
+		viewSession: session,
 		sessionManager: { getSessionName: () => "named-session" } as InteractiveModeContext["sessionManager"],
 		pendingImages: [] as InteractiveModeContext["pendingImages"],
 		pendingImageLinks: [] as InteractiveModeContext["pendingImageLinks"],

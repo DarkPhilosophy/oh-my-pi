@@ -315,6 +315,26 @@ export class InputController {
 		this.ctx.editor.onExpandTools = () => this.toggleToolOutputExpansion();
 		this.ctx.editor.setActionKeys("app.message.dequeue", this.ctx.keybindings.getKeys("app.message.dequeue"));
 		this.ctx.editor.onDequeue = () => this.handleDequeue();
+		// Up-arrow on an empty editor doubles as "undo send": pull pending queued
+		// messages back into the editor for editing (same restore as Alt+Up). A cheap
+		// pre-check leaves a genuinely empty queue to plain Up (input-history nav), so
+		// the common case has no restore side effects; the restore's actual drained
+		// count then makes the final call, so a display that reports items but drains
+		// nothing still falls through to history instead of swallowing the key.
+		this.ctx.editor.onUpWhenEmpty = () => {
+			const queued = this.ctx.viewSession.getQueuedMessages();
+			if (
+				queued.steering.length === 0 &&
+				queued.followUp.length === 0 &&
+				this.ctx.compactionQueuedMessages.length === 0
+			) {
+				return false;
+			}
+			const restored = this.restoreQueuedMessagesToEditor();
+			if (restored === 0) return false;
+			this.ctx.showStatus(`Restored ${restored} queued message${restored > 1 ? "s" : ""} to editor`);
+			return true;
+		};
 		this.ctx.editor.setActionKeys("app.retry", this.ctx.keybindings.getKeys("app.retry"));
 		this.ctx.editor.onRetry = () => void this.handleRetry();
 		this.ctx.editor.clearCustomKeyHandlers();
@@ -638,15 +658,10 @@ export class InputController {
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
 				this.ctx.pendingImages = [];
 				this.ctx.pendingImageLinks = [];
-				// Record the signature so the queued message's eventual delivery
-				// (a user-role `message_start` event) leaves any draft the user has
-				// typed since queuing intact. Same protection as #783, applied to
-				// the streaming/queue path.
-				await this.ctx.withLocalSubmission(
-					text,
-					() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
-					{ imageCount: images?.length ?? 0 },
-				);
+				// Record the local-submit signature so the queued message's eventual delivery
+				// (a user-role `message_start`) leaves any draft typed since queuing intact —
+				// accounting for coalescing into a pending tail (#783, streaming path).
+				await this.#submitCoalescingLocal(this.ctx.session, text, { streamingBehavior: "steer", images });
 				this.ctx.updatePendingMessagesDisplay();
 				this.ctx.ui.requestRender();
 				return;
@@ -780,15 +795,50 @@ export class InputController {
 		this.ctx.pendingImageLinks = [];
 		try {
 			// prompt() handles idle (new turn) and streaming (queues per streamingBehavior).
-			await this.ctx.withLocalSubmission(text, () => target.prompt(text, { streamingBehavior, images }), {
-				imageCount: images?.length ?? 0,
-			});
+			await this.#submitCoalescingLocal(target, text, { streamingBehavior, images });
 		} catch (error) {
 			this.ctx.editor.setText(text); // hand the message back, mirroring the main submit error path
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 		}
 		this.ctx.updatePendingMessagesDisplay();
 		this.ctx.ui.requestRender();
+	}
+
+	/**
+	 * Submit a streaming steer/follow-up that may coalesce into the pending tail while
+	 * keeping the local-submit signature set exact. The per-send signature is recorded
+	 * first (so an immediately-delivered, non-queued submit is still marked local). When
+	 * {@link PromptOptions.onQueued} reports a merge, the replaced entry's signature and
+	 * this send's per-send signature are both dropped and the merged text's signature is
+	 * recorded instead, so only the message that actually delivers stays marked local —
+	 * no stale per-line or intermediate signatures linger. Disposed on prompt failure.
+	 */
+	async #submitCoalescingLocal(
+		session: InteractiveModeContext["session"],
+		text: string,
+		options: { streamingBehavior: "steer" | "followUp"; images: ImageContent[] | undefined },
+	): Promise<void> {
+		const dispose = this.ctx.recordLocalSubmission(text, options.images?.length ?? 0);
+		try {
+			await session.prompt(text, {
+				streamingBehavior: options.streamingBehavior,
+				images: options.images,
+				onQueued: (queuedText, queuedImageCount, replacedText) => {
+					// Coalesced into an existing entry: drop the replaced entry's now-stale signature.
+					if (replacedText !== undefined) {
+						this.ctx.locallySubmittedUserSignatures.delete(`${replacedText}\u0000${queuedImageCount}`);
+					}
+					// This send merged: its per-send signature never delivers on its own.
+					if (queuedText !== text) {
+						dispose();
+						this.ctx.recordLocalSubmission(queuedText, queuedImageCount);
+					}
+				},
+			});
+		} catch (err) {
+			dispose();
+			throw err;
+		}
 	}
 
 	handleCtrlC(): void {
@@ -1004,11 +1054,7 @@ export class InputController {
 			this.ctx.editor.imageLinks = undefined;
 			this.ctx.pendingImages = [];
 			this.ctx.pendingImageLinks = [];
-			await this.ctx.withLocalSubmission(
-				text,
-				() => this.ctx.session.prompt(text, { streamingBehavior: "followUp", images }),
-				{ imageCount: images?.length ?? 0 },
-			);
+			await this.#submitCoalescingLocal(this.ctx.session, text, { streamingBehavior: "followUp", images });
 			this.ctx.updatePendingMessagesDisplay();
 			this.ctx.ui.requestRender();
 			return;
@@ -1026,10 +1072,12 @@ export class InputController {
 	}
 
 	restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): number {
-		this.ctx.locallySubmittedUserSignatures.clear();
 		// On Esc (abort) drop non-user internal steers so the post-abort drain can't
 		// auto-resume; plain Alt+Up dequeue preserves them for the continuing stream.
-		const { steering, followUp } = this.ctx.session.clearQueue({ forInterrupt: options?.abort });
+		// Drain the queue the pending bar reflects: ui-helpers renders from `viewSession`,
+		// which is the focused subagent when one is focused and the main session otherwise
+		// (the same object when nothing is focused, so this is a no-op in that common case).
+		const { steering, followUp } = this.ctx.viewSession.clearQueue({ forInterrupt: options?.abort });
 		// Messages typed while compacting live in `compactionQueuedMessages`, not the
 		// agent queue `clearQueue()` drains — but the pending bar shows the same
 		// "Alt+Up to edit" hint for them (ui-helpers `updatePendingMessagesDisplay`).
@@ -1044,10 +1092,18 @@ export class InputController {
 			...followUp,
 			...compactionQueued.filter(e => e.mode === "followUp").map(e => ({ text: e.text, images: e.images })),
 		];
+		// Restoring pulls these messages back into the editor as a draft, so they will not
+		// deliver under their queued signatures — drop exactly those, and no others. Clearing
+		// the whole set here would strand a main-session queued item's signature while only a
+		// focused subagent's queue was drained (its later message_start would look non-local
+		// and clobber the draft). #2890 KaPgI.
+		for (const entry of allQueued) {
+			this.ctx.locallySubmittedUserSignatures.delete(`${entry.text}\u0000${entry.images?.length ?? 0}`);
+		}
 		if (allQueued.length === 0) {
 			this.ctx.updatePendingMessagesDisplay();
 			if (options?.abort) {
-				void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+				void this.ctx.viewSession.abort({ reason: USER_INTERRUPT_LABEL });
 			}
 			return 0;
 		}

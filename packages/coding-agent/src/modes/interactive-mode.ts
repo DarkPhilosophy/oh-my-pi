@@ -541,6 +541,19 @@ export class InteractiveMode implements InteractiveModeContext {
 		titleSystemPrompt?: string,
 	) {
 		this.session = session;
+		// Programmatic / idle-race submits that coalesce into the pending queue cannot track
+		// the merged local-submit signature themselves (the interactive submit + compaction
+		// paths do, via onQueued). Keep the signature set exact for those paths here: drop the
+		// merged-away per-send and replaced signatures (evaluate both — never short-circuit),
+		// then re-record the merged text only if either was actually a local submission.
+		session.onLocalQueueCoalesced = (perSendText, mergedText, replacedText, imageCount) => {
+			const sigs = this.locallySubmittedUserSignatures;
+			const perSendCleared = sigs.delete(`${perSendText}\u0000${imageCount}`);
+			const replacedCleared = sigs.delete(`${replacedText}\u0000${imageCount}`);
+			if (perSendCleared || replacedCleared) {
+				this.recordLocalSubmission(mergedText, imageCount);
+			}
+		};
 		this.sessionManager = session.sessionManager;
 		this.settings = session.settings;
 		this.keybindings = KeybindingsManager.inMemory();

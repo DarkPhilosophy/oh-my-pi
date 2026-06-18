@@ -687,7 +687,12 @@ export class UiHelpers {
 		if (allMessages.length > 0) {
 			this.ctx.pendingMessagesContainer.addChild(new Spacer(1));
 			for (const entry of allMessages) {
-				const queuedText = theme.fg("dim", `${entry.label}: ${entry.message}`);
+				// A merged multi-line message collapses to its first line plus a `(+N)`
+				// line count so the pending bar stays one row per entry; Alt+Up / Up on an
+				// empty editor restores the full text.
+				const lines = entry.message.split("\n");
+				const summary = lines.length > 1 ? `${lines[0]} (+${lines.length - 1})` : entry.message;
+				const queuedText = theme.fg("dim", `${entry.label}: ${summary}`);
 				this.ctx.pendingMessagesContainer.addChild(new TruncatedText(queuedText, 1, 0));
 			}
 			const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
@@ -715,14 +720,31 @@ export class UiHelpers {
 			await this.ctx.session.prompt(message.text);
 			return;
 		}
-		await this.ctx.withLocalSubmission(
-			message.text,
-			() =>
-				message.mode === "followUp"
-					? this.ctx.session.followUp(message.text, message.images)
-					: this.ctx.session.steer(message.text, message.images),
-			{ imageCount: message.images?.length ?? 0 },
-		);
+		// Mirror #submitCoalescingLocal: record the per-message signature, then on a
+		// coalescing merge drop the replaced entry's signature and this message's own
+		// per-send signature, recording the merged text instead — so the combined
+		// message's eventual delivery is still recognized as local (no draft clobber)
+		// and no stale component signatures linger.
+		const dispose = this.ctx.recordLocalSubmission(message.text, message.images?.length ?? 0);
+		const onQueued = (queuedText: string, queuedImageCount: number, replacedText?: string): void => {
+			if (replacedText !== undefined) {
+				this.ctx.locallySubmittedUserSignatures.delete(`${replacedText}\u0000${queuedImageCount}`);
+			}
+			if (queuedText !== message.text) {
+				dispose();
+				this.ctx.recordLocalSubmission(queuedText, queuedImageCount);
+			}
+		};
+		try {
+			if (message.mode === "followUp") {
+				await this.ctx.session.followUp(message.text, message.images, onQueued);
+			} else {
+				await this.ctx.session.steer(message.text, message.images, onQueued);
+			}
+		} catch (err) {
+			dispose();
+			throw err;
+		}
 	}
 
 	isKnownSlashCommand(text: string): boolean {
@@ -811,11 +833,26 @@ export class UiHelpers {
 			// firstPrompt is fire-and-forget — its rejection is funneled through
 			// `restoreQueue` rather than rethrown, so we use the primitive
 			// recordLocalSubmission and dispose manually in the catch.
-			const disposeFirstPrompt = this.ctx.recordLocalSubmission(firstPrompt.text, firstPrompt.images?.length ?? 0);
+			// `disposeFirstPrompt` always points at the signature this prompt currently owns:
+			// firstPrompt.text initially, or the merged text after a coalescing merge. The catch
+			// then disposes whichever is live, leaving no stale signature on failure.
+			let disposeFirstPrompt = this.ctx.recordLocalSubmission(firstPrompt.text, firstPrompt.images?.length ?? 0);
 			const promptPromise = this.ctx.session
 				.prompt(firstPrompt.text, {
 					streamingBehavior: firstPrompt.mode === "followUp" ? "followUp" : "steer",
 					images: firstPrompt.images,
+					onQueued: (queuedText, queuedImageCount, replacedText) => {
+						// If firstPrompt coalesced into a pending tail, drop the replaced entry's
+						// signature; if it merged at all, swap its own owned signature for the
+						// merged text's so only the delivered message stays marked local.
+						if (replacedText !== undefined) {
+							this.ctx.locallySubmittedUserSignatures.delete(`${replacedText}\u0000${queuedImageCount}`);
+						}
+						if (queuedText !== firstPrompt.text) {
+							disposeFirstPrompt();
+							disposeFirstPrompt = this.ctx.recordLocalSubmission(queuedText, queuedImageCount);
+						}
+					},
 				})
 				.catch((error: unknown) => {
 					disposeFirstPrompt();

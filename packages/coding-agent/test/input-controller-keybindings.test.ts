@@ -56,7 +56,12 @@ async function createContext() {
 	const addInputListener = vi.fn();
 	const addStartListener = vi.fn();
 	const terminalWrite = vi.fn();
-	const prompt = vi.fn(async () => {});
+	const prompt = vi.fn(
+		async (
+			_text?: string,
+			_options?: { onQueued?: (text: string, imageCount: number, replacedText?: string) => void },
+		) => {},
+	);
 	const retry = vi.fn(async () => true);
 	const abort = vi.fn(async () => {});
 	const session = {
@@ -357,8 +362,32 @@ describe("InputController keybinding setup", () => {
 		expect(ctx.locallySubmittedUserSignatures.has("follow up after current response\u00000")).toBe(true);
 		expect(spies.prompt).toHaveBeenCalledWith("follow up after current response", {
 			streamingBehavior: "followUp",
+			onQueued: expect.any(Function),
 		});
 		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
+	});
+
+	it("swaps signatures cleanly when a streaming submit coalesces (no stale replaced or per-send sigs)", async () => {
+		const { InputController, ctx, editor, spies } = await createContext();
+		const session = ctx.session as unknown as { isStreaming: boolean };
+		session.isStreaming = true;
+		// The prior queued entry's signature is already recorded.
+		ctx.locallySubmittedUserSignatures.add("earlier line\u00000");
+		// Simulate the queue coalescing this send into that entry: prompt reports the
+		// merged text plus the replaced prior tail through onQueued.
+		spies.prompt.mockImplementationOnce(async (_text, options) => {
+			options?.onQueued?.("earlier line\nlatest line", 0, "earlier line");
+		});
+		editor.setText("latest line");
+		const controller = new InputController(ctx);
+
+		await controller.handleFollowUp();
+
+		// Only the merged message delivers: its signature present; the replaced prior
+		// signature and this send's per-send signature are both gone.
+		expect(ctx.locallySubmittedUserSignatures.has("earlier line\nlatest line\u00000")).toBe(true);
+		expect(ctx.locallySubmittedUserSignatures.has("earlier line\u00000")).toBe(false);
+		expect(ctx.locallySubmittedUserSignatures.has("latest line\u00000")).toBe(false);
 	});
 
 	it("marks idle follow-up submissions as local", async () => {

@@ -276,6 +276,10 @@ export class CustomEditor extends Editor {
 	onCapsLock?: () => void;
 	/** Called when left-arrow is pressed while the editor is empty (cursor necessarily at start). */
 	onLeftAtStart?: () => void;
+	/** Called when Up is pressed on an empty editor. Return true to consume the key
+	 *  (e.g. queued messages were pulled back into the editor); return false to fall
+	 *  through to normal input-history navigation. */
+	onUpWhenEmpty?: () => boolean;
 
 	/** Fired when a sustained space-bar hold is recognized — the push-to-talk STT start. The
 	 *  optimistically-typed spaces have already been deleted by the time this runs. */
@@ -470,6 +474,13 @@ export class CustomEditor extends Editor {
 		if (canonical === "left" && this.onLeftAtStart && this.getText().trim() === "") {
 			this.onLeftAtStart();
 			return;
+		}
+
+		// Up-arrow on an empty editor: offer it as "undo send" — let the host pull
+		// pending queued messages back into the editor for editing. The handler
+		// returns false when nothing is queued, so plain Up still walks input history.
+		if (canonical === "up" && this.onUpWhenEmpty && this.getText().trim() === "") {
+			if (this.onUpWhenEmpty()) return;
 		}
 
 		// Space-hold push-to-talk: a sustained space bar starts/stops STT instead of typing spaces.
