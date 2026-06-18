@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Usage } from "@oh-my-pi/pi-ai";
 import { type Component, Spacer, SteeringIndicator, Text, TruncatedText } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
@@ -46,7 +47,7 @@ import {
 } from "../../session/messages";
 import type { SessionContext } from "../../session/session-context";
 import { createIrcMessageCard } from "../../tools/irc";
-import { formatBytes, formatDuration } from "../../tools/render-utils";
+import { formatBytes, formatDuration, replaceTabs } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 
 type TextBlock = { type: "text"; text: string };
@@ -738,7 +739,12 @@ export class UiHelpers {
 				for (let i = 0; i < shown; i++) {
 					const isLastShown = i === shown - 1;
 					const suffix = !expanded && isLastShown && hidden > 0 ? ` (+${hidden})` : "";
-					const queuedText = theme.fg("dim", `  ${lines[i]}${suffix}`);
+					// Queued text may originate from RPC/SDK steer/followUp (not just the editor),
+					// so it can carry tabs / control chars. TruncatedText truncates but does not
+					// expand tabs or strip controls — sanitize the raw line before styling so it
+					// cannot punch visual holes or corrupt the pending bar (matches agent-hub).
+					const safeLine = replaceTabs(sanitizeText(lines[i]));
+					const queuedText = theme.fg("dim", `  ${safeLine}${suffix}`);
 					this.ctx.pendingMessagesContainer.addChild(new TruncatedText(queuedText, 1, 0));
 				}
 			}

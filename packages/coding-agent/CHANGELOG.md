@@ -18,6 +18,7 @@
 ### Fixed
 
 - Fixed a duplicated user message in the transcript when an idle queued-message drain coalesced a just-rendered send into the pending tail: the optimistic bubble for the swallowed send is now dropped so the merged `message_start` renders the full text once instead of leaving a stale single-line bubble plus an appended merged copy.
+- Fixed queued-message preview lines in the pending bar rendering raw tabs and control characters from RPC/SDK `steer`/`followUp` text: each line is now sanitized (ANSI/control strip + tab expansion) before styling, so it can no longer punch visual holes or corrupt the pending bar.
 
 ## [16.0.6] - 2026-06-18
 

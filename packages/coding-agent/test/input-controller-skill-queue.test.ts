@@ -505,6 +505,27 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		expect(plain).toContain("/skill:test-skill arg1 arg2");
 	});
 
+	it("sanitizes tabs and control characters in queued preview lines", async () => {
+		fixture = await createRealSession();
+		const { session } = fixture;
+		// A plain RPC/SDK steer can carry tabs / control chars that never pass through
+		// the editor. The pending preview must expand tabs and strip controls so it
+		// cannot punch holes in the TUI (PR #2890 Codex P2).
+		session.agent.steer({ role: "user", content: "col1\tcol2\x07\x1b[31mred" });
+
+		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session);
+		const uiHelpers = new UiHelpers(ctx);
+		uiHelpers.updatePendingMessagesDisplay();
+
+		const rendered = pendingMessagesContainer.render(120).join("\n");
+		expect(rendered).not.toContain("\t"); // tabs expanded to spaces
+		expect(rendered).not.toContain("\x07"); // BEL stripped
+		// The raw line's own SGR (\x1b[31m) is stripped; only the theme's styling remains.
+		expect(rendered).toContain("col1 ");
+		expect(rendered).toContain("col2");
+		expect(rendered).toContain("red");
+	});
+
 	it("restores the compact slash form into the editor and clears the queue", async () => {
 		fixture = await createRealSession();
 		const { session } = fixture;
