@@ -511,7 +511,7 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		// A plain RPC/SDK steer can carry tabs / control chars that never pass through
 		// the editor. The pending preview must expand tabs and strip controls so it
 		// cannot punch holes in the TUI (PR #2890 Codex P2).
-		session.agent.steer({ role: "user", content: "col1\tcol2\x07\x1b[31mred" });
+		session.agent.steer({ role: "user", content: "col1\tcol2\x07\x1b[31mred", timestamp: Date.now() });
 
 		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session);
 		const uiHelpers = new UiHelpers(ctx);
