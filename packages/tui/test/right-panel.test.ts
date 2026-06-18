@@ -162,6 +162,32 @@ describe("compositeRightPanel", () => {
 		expect(out[6]).toBe(heading);
 		expect(out[7]).toBe("");
 	});
+
+	it("backfills blank rows only above a raw image escape, not above a placeholder image", () => {
+		// PR #1632 Codex P2: the occupancy predicate matches every image line, but the
+		// backfill predicate must be narrower. A raw escape (IMGESC) reserves the blank
+		// rows printed above it, so those backfill as occupied; a Kitty-style placeholder
+		// row (IMGPH) reserves nothing above it, so Markdown-spacing blanks before it stay
+		// free for a right-side panel. Mirrors tui.ts passing isImageLine for occupancy and
+		// the narrower isImageEscapeLine for backfill.
+		const widget = panel(3);
+		const isOccupied = (l: string) => l === "IMGESC" || l === "IMGPH";
+		const isEscape = (l: string) => l === "IMGESC";
+
+		// Blank spacing rows above a placeholder image, then free rows below.
+		const base = ["", "", "", "IMGPH", ...Array.from({ length: 10 }, () => "")];
+		const out = compositeRightPanel(base, widget, WIDTH, 40, isOccupied, isEscape);
+		// The blanks above the placeholder are NOT backfilled → the panel can land at row 0.
+		expect(out.findIndex(line => line.endsWith(widget[0]))).toBe(0);
+		expect(out[3]).toBe("IMGPH"); // placeholder row itself untouched
+
+		// Contrast: the same blanks above a raw escape ARE backfilled (reserved cells),
+		// so the panel must land strictly below the escape line.
+		const baseEsc = ["", "", "", "IMGESC", ...Array.from({ length: 10 }, () => "")];
+		const outEsc = compositeRightPanel(baseEsc, widget, WIDTH, 40, isOccupied, isEscape);
+		for (let i = 0; i <= 3; i++) expect(outEsc[i].endsWith(widget[0])).toBe(false);
+		expect(outEsc.findIndex(line => line.endsWith(widget[0]))).toBeGreaterThan(3);
+	});
 });
 
 describe("compositeRightPanels", () => {
