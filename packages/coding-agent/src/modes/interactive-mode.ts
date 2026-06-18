@@ -430,6 +430,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	locallySubmittedUserSignatures: Set<string> = new Set();
 	#pendingSubmittedInput: SubmittedUserInput | undefined;
 	#pendingSubmissionDispose: (() => void) | undefined;
+	// Components rendered by the optimistic user bubble (startPendingSubmission), kept so a
+	// queue-coalesce drop can surgically remove just them without a full chatContainer rebuild
+	// (a rebuild mid-stream would detach the active streamingComponent — see #dropOptimisticUserMessage).
+	#pendingOptimisticComponents: Component[] | undefined;
 	lastSigintTime = 0;
 	lastEscapeTime = 0;
 	lastLeftTapTime = 0;
@@ -518,6 +522,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.compactionQueuedMessages = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
+		this.#pendingOptimisticComponents = undefined;
 		this.pendingTools.clear();
 	}
 	readonly #uiHelpers: UiHelpers;
@@ -1230,7 +1235,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			const imageCount = submission.images?.length ?? 0;
 			this.optimisticUserMessageSignature = `${submission.text}\u0000${imageCount}`;
 			this.#pendingSubmissionDispose = this.recordLocalSubmission(submission.text, imageCount);
-			this.addMessageToChat(
+			this.#pendingOptimisticComponents = this.addMessageToChat(
 				{
 					role: "user",
 					content: [{ type: "text", text: submission.text }, ...(submission.images ?? [])],
@@ -1242,6 +1247,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		} else {
 			this.optimisticUserMessageSignature = undefined;
 			this.#pendingSubmissionDispose = undefined;
+			this.#pendingOptimisticComponents = undefined;
 		}
 		this.editor.setText("");
 		this.editor.imageLinks = undefined;
@@ -1258,6 +1264,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		submission.cancelled = true;
 		this.#pendingSubmittedInput = undefined;
+		this.#pendingOptimisticComponents = undefined;
 		this.optimisticUserMessageSignature = undefined;
 		this.#pendingSubmissionDispose?.();
 		this.#pendingSubmissionDispose = undefined;
@@ -1301,6 +1308,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		if (wasPendingSubmission && !this.session.isStreaming && !this.streamingComponent) {
 			this.optimisticUserMessageSignature = undefined;
+			this.#pendingOptimisticComponents = undefined;
 			pendingSubmissionDispose?.();
 			this.#pendingWorkingMessage = undefined;
 			if (this.loadingAnimation) {
@@ -1392,7 +1400,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.optimisticUserMessageSignature) return;
 		const submission = this.#pendingSubmittedInput;
 		if (!submission || submission.cancelled || submission.customType) return;
-		this.addMessageToChat(
+		this.#pendingOptimisticComponents = this.addMessageToChat(
 			{
 				role: "user",
 				content: [{ type: "text", text: submission.text }, ...(submission.images ?? [])],
@@ -1419,7 +1427,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#pendingSubmissionDispose?.();
 		this.#pendingSubmissionDispose = undefined;
 		this.#pendingWorkingMessage = undefined;
-		this.rebuildChatFromMessages();
+		// Remove ONLY the optimistic bubble's own components — never rebuild the whole
+		// chatContainer here. A coalesce can fire mid-stream (an idle drain races the submit
+		// path), and a full rebuild renders from persisted transcript entries only; the active
+		// assistant block is not persisted until `message_end`, so a rebuild would detach the
+		// component `streamingComponent` still points at, sending later deltas into an orphaned
+		// block. Surgical removal leaves the live stream attached.
+		if (this.#pendingOptimisticComponents) {
+			for (const component of this.#pendingOptimisticComponents) {
+				this.chatContainer.removeChild(component);
+			}
+			this.#pendingOptimisticComponents = undefined;
+		}
 		this.ui.requestRender();
 	}
 
@@ -3199,6 +3218,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showError(message: string): void {
 		this.#pendingSubmittedInput = undefined;
+		this.#pendingOptimisticComponents = undefined;
 		this.optimisticUserMessageSignature = undefined;
 		this.#pendingSubmissionDispose?.();
 		this.#pendingSubmissionDispose = undefined;
