@@ -20,6 +20,7 @@
 
 - Fixed a duplicated user message in the transcript when an idle queued-message drain coalesced a just-rendered send into the pending tail: the optimistic bubble for the swallowed send is now surgically removed (not via a full chat rebuild) so the merged `message_start` renders the full text once. Removing it surgically also keeps the active assistant block attached when the coalesce races an in-flight stream — a mid-stream rebuild would have detached the live block and sent later deltas into an orphaned, invisible component.
 - Fixed queued-message preview lines in the pending bar rendering raw tabs and control characters from RPC/SDK `steer`/`followUp` text: each line is now sanitized (ANSI/control strip + tab expansion) before styling, so it can no longer punch visual holes or corrupt the pending bar.
+
 ## [16.0.8] - 2026-06-18
 
 ### Changed
