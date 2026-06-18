@@ -890,14 +890,16 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 		);
 		// Set up theme file watcher
-		onThemeChange(() => {
-			this.#clearWorkingMessageAccentCache();
-			clearRenderCache();
-			clearMermaidCache();
-			this.ui.invalidate();
-			this.updateEditorBorderColor();
-			this.ui.requestRender();
-		});
+		this.#eventBusUnsubscribers.push(
+			onThemeChange(() => {
+				this.#clearWorkingMessageAccentCache();
+				clearRenderCache();
+				clearMermaidCache();
+				this.ui.invalidate();
+				this.updateEditorBorderColor();
+				this.ui.requestRender();
+			}),
+		);
 
 		// Subscribe to terminal dark/light appearance changes.
 		// The terminal queries background color via OSC 11 at startup and on
@@ -3756,6 +3758,34 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleBtwEscape(): boolean {
 		return this.#btwController.handleEscape();
+	}
+
+	canBranchBtw(): boolean {
+		return this.#btwController.canBranch();
+	}
+
+	handleBtwBranchKey(): Promise<boolean> {
+		return this.#btwController.handleBranch();
+	}
+
+	async handleBtwBranch(question: string, assistantMessage: AssistantMessage): Promise<void> {
+		try {
+			const result = await this.session.branchFromBtw(question, assistantMessage);
+			if (result.cancelled) {
+				this.showStatus("/btw branch cancelled", { dim: true });
+				return;
+			}
+			this.#btwController.dispose();
+			this.#omfgController.dispose();
+			this.chatContainer.clear();
+			this.renderInitialMessages({ clearTerminalHistory: true });
+			this.updateEditorBorderColor();
+			this.showStatus(
+				result.sessionFile ? `Branched /btw to ${path.basename(result.sessionFile)}` : "Branched /btw",
+			);
+		} catch (error) {
+			this.showError(`Cannot branch /btw: ${error instanceof Error ? error.message : String(error)}`);
+		}
 	}
 
 	handleOmfgCommand(complaint: string): Promise<void> {

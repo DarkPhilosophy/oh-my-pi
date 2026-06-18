@@ -1,19 +1,23 @@
-import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type {
+	AgentIdentity,
+	AgentTelemetryConfig,
+	AgentTool,
+	AgentToolContext,
+	AgentToolResult,
+	AgentToolUpdateCallback,
+} from "@oh-my-pi/pi-agent-core";
 import { escapeXmlText } from "@oh-my-pi/pi-utils";
-import { z } from "zod/v4";
+import { type } from "arktype";
 import adviseDescription from "../prompts/advisor/advise-tool.md" with { type: "text" };
 
-const adviseSchema = z.object({
-	note: z
-		.string()
-		.describe("One concrete piece of advice for the agent you are watching. Terse, specific, actionable."),
-	severity: z
-		.enum(["nit", "concern", "blocker"])
-		.optional()
-		.describe("How strongly to weigh this. Omit for a plain nit."),
+const adviseSchema = type({
+	note: type("string").describe(
+		"One concrete piece of advice for the agent you are watching. Terse, specific, actionable.",
+	),
+	"severity?": type("'nit' | 'concern' | 'blocker'").describe("How strongly to weigh this. Omit for a plain nit."),
 });
 
-export type AdviseParams = z.infer<typeof adviseSchema>;
+export type AdviseParams = typeof adviseSchema.infer;
 
 export type AdvisorSeverity = "nit" | "concern" | "blocker";
 
@@ -107,6 +111,25 @@ export function resolveAdvisorDeliveryChannel(opts: {
 	if (opts.autoResumeSuppressed && (opts.aborting || !opts.streaming)) return "preserve";
 	if (opts.interruptImmuneTurnActive) return "aside";
 	return "steer";
+}
+
+/**
+ * Derive the advisor loop's telemetry from the primary session's config so the
+ * advisor model's GenAI spans and usage/cost hooks (onChatUsage, onCostDelta,
+ * costEstimator) fire under the same pipeline as every other model call —
+ * stamped with the advisor's own agent identity. `conversationId` is cleared so
+ * the advisor loop falls back to its own `-advisor` session id for
+ * `gen_ai.conversation.id` instead of inheriting the primary's conversation.
+ *
+ * Returns undefined when the primary has no telemetry (instrumentation off), so
+ * the advisor `Agent` stays a zero-overhead no-op as well.
+ */
+export function deriveAdvisorTelemetry(
+	primaryTelemetry: AgentTelemetryConfig | undefined,
+	identity: AgentIdentity,
+): AgentTelemetryConfig | undefined {
+	if (!primaryTelemetry) return undefined;
+	return { ...primaryTelemetry, agent: identity, conversationId: undefined };
 }
 
 /**

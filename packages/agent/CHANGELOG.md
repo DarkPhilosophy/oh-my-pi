@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [16.0.6] - 2026-06-18
+
+### Added
+
+- Added `transformAssistantMessage` hook to `AgentOptions` and `Agent` to allow mutating the finalized assistant message before UI emission, context appending, or tool dispatch
+
 ## [16.0.5] - 2026-06-17
 
 ### Breaking Changes

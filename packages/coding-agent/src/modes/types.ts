@@ -343,6 +343,9 @@ export interface InteractiveModeContext {
 	handleTanCommand(work: string): Promise<void>;
 	hasActiveBtw(): boolean;
 	handleBtwEscape(): boolean;
+	handleBtwBranchKey(): Promise<boolean>;
+	canBranchBtw(): boolean;
+	handleBtwBranch(question: string, assistantMessage: AssistantMessage): Promise<void>;
 	handleOmfgCommand(complaint: string): Promise<void>;
 	hasActiveOmfg(): boolean;
 	handleOmfgEscape(): boolean;
