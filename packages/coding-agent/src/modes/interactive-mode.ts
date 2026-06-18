@@ -29,6 +29,7 @@ import {
 	Markdown,
 	ProcessTerminal,
 	Spacer,
+	type SteeringIndicator,
 	setTerminalTextSizing,
 	setTuiTight,
 	TERMINAL,
@@ -414,6 +415,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	streamingComponent: AssistantMessageComponent | undefined = undefined;
 	streamingMessage: AssistantMessage | undefined = undefined;
 	loadingAnimation: Loader | undefined = undefined;
+	steeringIndicator: SteeringIndicator | undefined = undefined;
 	autoCompactionLoader: Loader | undefined = undefined;
 	retryLoader: Loader | undefined = undefined;
 	#pendingWorkingMessage: string | undefined;
@@ -508,6 +510,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.loadingAnimation) {
 			this.loadingAnimation.stop();
 			this.loadingAnimation = undefined;
+		}
+		if (this.steeringIndicator) {
+			this.steeringIndicator.dispose();
+			this.steeringIndicator = undefined;
 		}
 		this.statusContainer.clear();
 		this.pendingMessagesContainer.clear();
@@ -3031,6 +3037,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	stop(): void {
 		if (this.loadingAnimation) {
 			this.#stopLoadingAnimation(false);
+		}
+		if (this.steeringIndicator) {
+			this.steeringIndicator.dispose();
+			this.steeringIndicator = undefined;
 		}
 		this.#cleanupMicAnimation();
 		this.#cancelTodoAutoClearTimer();

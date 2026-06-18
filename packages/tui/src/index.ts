@@ -14,6 +14,7 @@ export * from "./components/scroll-view";
 export * from "./components/select-list";
 export * from "./components/settings-list";
 export * from "./components/spacer";
+export * from "./components/steering-indicator";
 export * from "./components/tab-bar";
 export * from "./components/text";
 export * from "./components/truncated-text";

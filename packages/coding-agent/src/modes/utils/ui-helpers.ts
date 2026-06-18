@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Usage } from "@oh-my-pi/pi-ai";
-import { type Component, Spacer, Text, TruncatedText } from "@oh-my-pi/pi-tui";
+import { type Component, Spacer, SteeringIndicator, Text, TruncatedText } from "@oh-my-pi/pi-tui";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
@@ -659,8 +659,28 @@ export class UiHelpers {
 		this.ctx.present(block);
 	}
 
+	/**
+	 * The persistent steering animation. Created once and reused across pending-bar
+	 * rebuilds — `pendingMessagesContainer.clear()` detaches children without disposing
+	 * their timers, so a fresh instance per rebuild would leak intervals. Stored on the
+	 * context so teardown (`clearTransientSessionUi`) can dispose it.
+	 */
+	#getOrCreateSteeringIndicator(): SteeringIndicator {
+		if (!this.ctx.steeringIndicator) {
+			this.ctx.steeringIndicator = new SteeringIndicator(this.ctx.ui, {
+				dim: s => theme.fg("dim", s),
+				mid: s => theme.fg("muted", s),
+				bright: s => theme.bold(theme.fg("accent", s)),
+			});
+		}
+		return this.ctx.steeringIndicator;
+	}
+
 	updatePendingMessagesDisplay(): void {
 		this.ctx.pendingMessagesContainer.clear();
+		// Start each rebuild with the animation halted; the render loop reactivates it
+		// only when a streaming steer entry is present. Covers the empty-queue case too.
+		this.ctx.steeringIndicator?.setActive(false);
 		const queuedMessages = this.ctx.viewSession.getQueuedMessages() as QueuedMessages;
 
 		const steeringMessages: Array<{ message: string; label: string }> = [];
@@ -692,6 +712,13 @@ export class UiHelpers {
 			// every line in full. Alt+Up / Up on an empty editor restores the full text either way.
 			const collapseLines = Math.max(1, this.ctx.settings?.get("pendingQueueCollapseLines") ?? 5);
 			let anyTruncated = false;
+			// Animate the first Steer label while the agent is streaming (those queued
+			// messages will actually steer the live turn). The indicator is a single
+			// persistent component reused across rebuilds — never re-created here, since
+			// `pendingMessagesContainer.clear()` drops children without disposing their
+			// timers. Other labels (extra steers, follow-ups, idle) stay static.
+			const streaming = this.ctx.viewSession.isStreaming;
+			let animatedSteerUsed = false;
 			for (const entry of allMessages) {
 				const lines = entry.message.split("\n");
 				const shown = expanded ? lines.length : Math.min(lines.length, collapseLines);
@@ -700,7 +727,14 @@ export class UiHelpers {
 				// Label on its own row (`Steer:` / `Follow-up:`), then each message line on its
 				// own indented row below it — so multi-line messages read line-by-line instead
 				// of `Steer: Line1` with the rest folded under a bare indent.
-				this.ctx.pendingMessagesContainer.addChild(new TruncatedText(theme.fg("dim", `${entry.label}:`), 1, 0));
+				if (entry.label === "Steer" && streaming && !animatedSteerUsed) {
+					animatedSteerUsed = true;
+					const indicator = this.#getOrCreateSteeringIndicator();
+					indicator.setActive(true);
+					this.ctx.pendingMessagesContainer.addChild(indicator);
+				} else {
+					this.ctx.pendingMessagesContainer.addChild(new TruncatedText(theme.fg("dim", `${entry.label}:`), 1, 0));
+				}
 				for (let i = 0; i < shown; i++) {
 					const isLastShown = i === shown - 1;
 					const suffix = !expanded && isLastShown && hidden > 0 ? ` (+${hidden})` : "";
@@ -708,6 +742,8 @@ export class UiHelpers {
 					this.ctx.pendingMessagesContainer.addChild(new TruncatedText(queuedText, 1, 0));
 				}
 			}
+			// No animated label this pass (idle, or no steer entries) → halt any running timer.
+			if (!animatedSteerUsed) this.ctx.steeringIndicator?.setActive(false);
 			const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
 			const expandKey = this.ctx.keybindings.getDisplayString("app.message.expandQueue") || "Alt+O";
 			const expandHint = anyTruncated

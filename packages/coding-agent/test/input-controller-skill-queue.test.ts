@@ -498,8 +498,11 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		const uiHelpers = new UiHelpers(ctx);
 		uiHelpers.updatePendingMessagesDisplay();
 
-		const rendered = pendingMessagesContainer.render(120).join("\n");
-		expect(rendered).toMatch(/Steer: \/skill:test-skill arg1 arg2/);
+		// Label on its own row, then the message indented on the next row (ANSI-styled).
+		const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+		const plain = pendingMessagesContainer.render(120).map(l => l.replace(ansi, "").trim());
+		expect(plain).toContain("Steer:");
+		expect(plain).toContain("/skill:test-skill arg1 arg2");
 	});
 
 	it("restores the compact slash form into the editor and clears the queue", async () => {
