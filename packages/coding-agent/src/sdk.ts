@@ -21,7 +21,7 @@ import {
 	getOpenAICodexTransportDetails,
 	prewarmOpenAICodexResponses,
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
-import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models";
+import { FALLBACK_DIALECT, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import type { Component } from "@oh-my-pi/pi-tui";
 import {
 	$env,
@@ -41,7 +41,6 @@ import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/con
 import { loadCapability } from "./capability";
 import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
-import { createApiKeyResolver } from "./config/api-key-resolver";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { ModelRegistry } from "./config/model-registry";
 import {
@@ -49,6 +48,7 @@ import {
 	getModelMatchPreferences,
 	parseModelPattern,
 	parseModelString,
+	pickDefaultAvailableModel,
 	resolveAllowedModels,
 	resolveModelRoleValue,
 } from "./config/model-resolver";
@@ -415,6 +415,8 @@ export interface CreateAgentSessionOptions {
 	providerSessionId?: string;
 	/** Optional provider-facing prompt cache key, distinct from request lineage. */
 	providerPromptCacheKey?: string;
+	/** Absolute wall-clock deadline in Unix epoch milliseconds. */
+	deadline?: number;
 
 	/** Custom tools to register (in addition to built-in tools). Accepts both CustomTool and ToolDefinition. */
 	customTools?: (CustomTool | ToolDefinition)[];
@@ -507,6 +509,14 @@ export interface CreateAgentSessionOptions {
 	agentRegistry?: AgentRegistry;
 	/** Parent task ID prefix for nested artifact naming (e.g., "Extensions") */
 	parentTaskPrefix?: string;
+	/**
+	 * Registry id of the spawning agent, recorded as this subagent's parent in
+	 * the agent registry. Distinct from `parentTaskPrefix`, which is this agent's
+	 * own artifact/output-id prefix (the executor passes the child's own id
+	 * there, so it must never double as the parent link). Undefined for the
+	 * top-level "Main" session, which has no parent.
+	 */
+	parentAgentId?: string;
 	/** Inherited eval executor session id for subagents sharing parent eval state. */
 	parentEvalSessionId?: string;
 
@@ -518,6 +528,11 @@ export interface CreateAgentSessionOptions {
 
 	/** Settings instance. Default: Settings.init({ cwd, agentDir }) */
 	settings?: Settings;
+	/**
+	 * Legacy alias for `settings`. Older Pi extensions pass SettingsManager.create(...)
+	 * through this field; accept it so their SDK calls keep the configured settings.
+	 */
+	settingsManager?: Settings | Promise<Settings>;
 
 	/** Whether UI is available (enables interactive tools like ask). Default: false */
 	hasUI?: boolean;
@@ -559,10 +574,15 @@ export type DialectFormat = "auto" | "native" | Dialect;
 
 export function resolveDialect(
 	format: DialectFormat,
-	model: Pick<Model, "supportsTools"> | undefined,
+	model: (Pick<Model, "supportsTools"> & Partial<Pick<Model, "id">>) | undefined,
 ): Dialect | undefined {
 	if (format === "native") return undefined;
-	if (format === "auto") return model?.supportsTools === false ? "glm" : undefined;
+	if (format === "auto") {
+		if (model?.supportsTools !== false) return undefined;
+		if (!model.id) return "glm";
+		const preferred = preferredDialect(model.id);
+		return preferred === FALLBACK_DIALECT ? "glm" : preferred;
+	}
 	return format;
 }
 
@@ -859,6 +879,10 @@ function isCustomTool(tool: CustomTool | ToolDefinition): tool is CustomTool {
 	return !(tool as any).__isToolDefinition;
 }
 
+function isLegacyBuiltinToolDefinition(tool: CustomTool | ToolDefinition): boolean {
+	return !isCustomTool(tool) && "__ompLegacyBuiltinTool" in tool && tool.__ompLegacyBuiltinTool === true;
+}
+
 const TOOL_DEFINITION_MARKER = Symbol("__isToolDefinition");
 
 /** Matches the truncation applied to per-server instructions inside `rebuildSystemPrompt`. */
@@ -1123,7 +1147,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			startupCredentialDisabledEvents.push(event);
 		}
 	});
-	const settings = options.settings ?? (await logger.time("settings", Settings.init, { cwd, agentDir }));
+	const settings = await (options.settings ??
+		options.settingsManager ??
+		logger.time("settings", Settings.init, { cwd, agentDir }));
 	logger.time("initializeWithSettings", initializeWithSettings, settings);
 	if (!options.modelRegistry) {
 		modelRegistry.refreshInBackground();
@@ -1928,29 +1954,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// Re-resolve the allowed set: extension factories above may have
 			// registered providers/models that weren't visible at startup.
 			const fallbackCandidates = await resolveAllowedModels(modelRegistry, settings, modelMatchPreferences);
-			// Prefer each provider's configured default model
-			// (DEFAULT_MODEL_PER_PROVIDER) over raw catalog order. Without this the
-			// first-run fallback picks whatever model sorts first in models.json for
-			// the winning provider (e.g. anthropic's claude-3-5-sonnet-20240620)
-			// instead of the intended provider default (claude-sonnet-4-6). Mirrors
-			// findInitialModel's precedence.
-			for (const [provider, defaultId] of Object.entries(DEFAULT_MODEL_PER_PROVIDER)) {
-				const preferred = fallbackCandidates.find(
-					candidate => candidate.provider === provider && candidate.id === defaultId,
-				);
-				if (preferred && hasModelAuth(preferred)) {
-					model = preferred;
-					break;
-				}
-			}
-			// Otherwise, first available model with a valid API key.
-			if (!model) {
-				for (const candidate of fallbackCandidates) {
-					if (hasModelAuth(candidate)) {
-						model = candidate;
-						break;
-					}
-				}
+			const defaultModel = pickDefaultAvailableModel(fallbackCandidates.filter(hasModelAuth));
+			if (defaultModel) {
+				model = defaultModel;
 			}
 			if (model) {
 				if (modelFallbackMessage) {
@@ -2013,14 +2019,21 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const toolContextStore = new ToolContextStore(getSessionContext);
 
 		const registeredTools = extensionRunner.getAllRegisteredTools();
+		const sdkCustomTools = options.customTools?.filter(tool => !isLegacyBuiltinToolDefinition(tool)) ?? [];
 		const allCustomTools = [
 			...registeredTools,
-			...(options.customTools?.map(tool => {
+			...sdkCustomTools.map(tool => {
 				const definition = isCustomTool(tool) ? customToolToDefinition(tool) : tool;
 				return { definition, extensionPath: "<sdk>" };
-			}) ?? []),
+			}),
 		];
-		const wrappedExtensionTools: Tool[] = wrapRegisteredTools(allCustomTools, extensionRunner);
+		// `wrapToolWithMetaNotice` runs the centralized large-output → artifact spill.
+		// Built-in tools get it in `createTools`; extension, SDK-custom, image-gen,
+		// TTS, and startup (non-deferred) MCP tools all funnel through here, so apply
+		// it once at this adapter boundary (idempotent — a no-op if already wrapped).
+		const wrappedExtensionTools: Tool[] = wrapRegisteredTools(allCustomTools, extensionRunner).map(
+			wrapToolWithMetaNotice,
+		);
 
 		// All built-in tools are active (conditional tools like git/ask return null from factory if disabled)
 		const toolRegistry = new Map<string, Tool>();
@@ -2290,7 +2303,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 		// Custom tools and extension-registered tools are always included regardless of toolNames filter
 		const alwaysInclude: string[] = [
-			...(options.customTools?.map(t => (isCustomTool(t) ? t.name : t.name)) ?? []),
+			...sdkCustomTools.map(t => (isCustomTool(t) ? t.name : t.name)),
 			...registeredTools.filter(t => !t.definition.defaultInactive).map(t => t.definition.name),
 		];
 		for (const name of alwaysInclude) {
@@ -2338,7 +2351,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			id: resolvedAgentId,
 			displayName: resolvedAgentDisplayName,
 			kind: agentKind,
-			parentId: options.parentTaskPrefix,
+			parentId: options.parentAgentId,
 			session: null,
 			sessionFile: sessionManager.getSessionFile() ?? null,
 			status: "running",
@@ -2464,6 +2477,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			onResponse,
 			sessionId: providerSessionId,
 			promptCacheKey: options.providerPromptCacheKey,
+			deadline: options.deadline,
 			transformContext,
 			transformProviderContext,
 			steeringMode: settings.get("steeringMode") ?? "one-at-a-time",
@@ -2481,28 +2495,21 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			kimiApiFormat: settings.get("providers.kimiApiFormat") ?? "anthropic",
 			preferWebsockets: preferOpenAICodexWebsockets,
 			getToolContext: tc => toolContextStore.getContext(tc),
-			getApiKey: async (provider, ctx) => {
-				// Read agent.sessionId at call time so credential selection stays aligned
-				// with metadataResolver after /new, fork, resume, or branch switches.
-				// Retry steps (ctx carries an auth error) drive the central a/b/c
-				// policy — force-refresh the same account, then rotate to a sibling —
-				// and may legitimately yield no key when every account is exhausted.
-				if (ctx?.error !== undefined) {
-					return createApiKeyResolver(modelRegistry, provider, { sessionId: agent.sessionId })(ctx);
-				}
-				const key = await modelRegistry.getApiKeyForProvider(provider, agent.sessionId);
-				if (!key) {
-					throw new Error(`No API key found for provider "${provider}"`);
-				}
-				return key;
-			},
+			getApiKey: requestModel => modelRegistry.resolver(requestModel, agent.sessionId),
 			streamFn: (streamModel, context, streamOptions) => {
 				const openrouterRoutingPreset = settings.get("providers.openrouterVariant");
 				const openrouterVariant =
 					openrouterRoutingPreset && openrouterRoutingPreset !== "default" ? openrouterRoutingPreset : undefined;
+				const antigravityEndpointMode = settings.get("providers.antigravityEndpoint");
 				return streamSimple(streamModel, context, {
 					...streamOptions,
 					openrouterVariant: streamOptions?.openrouterVariant ?? openrouterVariant,
+					antigravityEndpointMode: streamOptions?.antigravityEndpointMode ?? antigravityEndpointMode,
+					loopGuard: {
+						enabled: settings.get("model.loopGuard.enabled"),
+						checkAssistantContent: settings.get("model.loopGuard.checkAssistantContent"),
+						...streamOptions?.loopGuard,
+					},
 				});
 			},
 			cursorExecHandlers,

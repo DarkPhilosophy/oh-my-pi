@@ -240,13 +240,8 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
 			const hadArgs = !!command.args;
-			// Capture state BEFORE the call: when plan mode is already active,
-			// handlePlanModeCommand may exit it (on confirmed exit) or leave it on (on cancel
-			// or warning). In every "already active" case the typed args are NOT consumed,
-			// so preserve them in history regardless of the user's confirm/cancel choice.
-			const wasPlanModeEnabled = runtime.ctx.planModeEnabled;
 			await runtime.ctx.handlePlanModeCommand(command.args || undefined);
-			if (hadArgs && wasPlanModeEnabled) {
+			if (hadArgs) {
 				runtime.ctx.editor.addToHistory(command.text);
 			}
 			runtime.ctx.editor.setText("");
@@ -275,10 +270,8 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
 			const hadArgs = !!command.args;
-			// Capture state BEFORE the call (see /plan above for rationale).
-			const wasGoalModeEnabled = runtime.ctx.goalModeEnabled;
 			await runtime.ctx.handleGoalModeCommand(command.args || undefined);
-			if (hadArgs && wasGoalModeEnabled) {
+			if (hadArgs) {
 				runtime.ctx.editor.addToHistory(command.text);
 			}
 			runtime.ctx.editor.setText("");
@@ -308,7 +301,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "model",
 		aliases: ["models"],
-		description: "Select model (opens selector UI)",
+		description: "Switch model for this session",
 		acpDescription: "Show current model selection",
 		handle: async (command, runtime) => {
 			if (command.args) {
@@ -341,7 +334,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			return commandConsumed();
 		},
 		handleTui: (_command, runtime) => {
-			runtime.ctx.showModelSelector();
+			runtime.ctx.showModelSelector({ temporaryOnly: true });
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -547,17 +540,14 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		name: "dump",
 		description: "Copy session transcript to clipboard",
 		acpDescription: "Return full transcript as plain text",
-		inlineHint: "[raw]",
 		allowArgs: true,
-		handle: async (command, runtime) => {
-			const isRaw = command.args.trim().toLowerCase() === "raw";
-			const text = runtime.session.formatSessionAsText({ compact: !isRaw });
+		handle: async (_command, runtime) => {
+			const text = runtime.session.formatSessionAsText();
 			await runtime.output(text || "No messages to dump yet.");
 			return commandConsumed();
 		},
-		handleTui: (command, runtime) => {
-			const isRaw = command.args.trim().toLowerCase() === "raw";
-			runtime.ctx.handleDumpCommand(isRaw);
+		handleTui: (_command, runtime) => {
+			runtime.ctx.handleDumpCommand();
 			runtime.ctx.editor.setText("");
 		},
 	},

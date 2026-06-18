@@ -3,7 +3,7 @@ import { agentLoop } from "@oh-my-pi/pi-agent-core/agent-loop";
 import type { AgentContext, AgentLoopConfig, AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core/types";
 import type { AssistantMessage, Context, Message, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
-import { z } from "zod/v4";
+import { type } from "arktype";
 import { createUserMessage } from "./helpers";
 
 function identityConverter(messages: AgentMessage[]): Message[] {
@@ -20,7 +20,7 @@ function wireText(message: Message): string {
 describe("agentLoop with owned in-band tool calls", () => {
 	it("executes <tool_call> text, strips native tools from the wire, and re-encodes history as text", async () => {
 		const echoArgs: Array<{ msg: string }> = [];
-		const toolSchema = z.object({ msg: z.string().describe("message to echo") });
+		const toolSchema = type({ msg: "string" });
 		const echoTool: AgentTool<typeof toolSchema, { msg: string }> = {
 			name: "echo",
 			label: "Echo",
@@ -104,7 +104,7 @@ describe("agentLoop with owned in-band tool calls", () => {
 
 	it("executes Hermes/Qwen JSON tool calls when that dialect is selected", async () => {
 		const echoArgs: Array<{ msg: string }> = [];
-		const toolSchema = z.object({ msg: z.string().describe("message to echo") });
+		const toolSchema = type({ msg: "string" });
 		const echoTool: AgentTool<typeof toolSchema, { msg: string }> = {
 			name: "echo",
 			label: "Echo",
@@ -146,12 +146,12 @@ describe("agentLoop with owned in-band tool calls", () => {
 		expect(resultsText).toContain("echoed:hi");
 	});
 
-	it("uses PI_DIALECT when config.dialect is unset", async () => {
+	it("uses PI_DIALECT=minimax when config.dialect is unset", async () => {
 		const before = Bun.env.PI_DIALECT;
-		Bun.env.PI_DIALECT = "hermes";
+		Bun.env.PI_DIALECT = "minimax";
 		try {
 			const echoArgs: Array<{ msg: string }> = [];
-			const toolSchema = z.object({ msg: z.string().describe("message to echo") });
+			const toolSchema = type({ msg: "string" });
 			const echoTool: AgentTool<typeof toolSchema, { msg: string }> = {
 				name: "echo",
 				label: "Echo",
@@ -168,7 +168,11 @@ describe("agentLoop with owned in-band tool calls", () => {
 				responses: [
 					context => {
 						captured.push(context);
-						return { content: ['<tool_call>\n{"name":"echo","arguments":{"msg":"from env"}}\n</tool_call>'] };
+						return {
+							content: [
+								'<minimax:tool_call>\n<invoke name="echo"><parameter name="msg">from env</parameter></invoke>\n</minimax:tool_call>',
+							],
+						};
 					},
 					context => {
 						captured.push(context);
@@ -184,7 +188,7 @@ describe("agentLoop with owned in-band tool calls", () => {
 
 			expect(echoArgs).toEqual([{ msg: "from env" }]);
 			expect(captured[0].tools).toBeUndefined();
-			expect((captured[0].systemPrompt ?? []).join("\n")).toContain('"name":"function_name","arguments"');
+			expect((captured[0].systemPrompt ?? []).join("\n")).toContain("<minimax:tool_call>");
 		} finally {
 			if (before === undefined) delete Bun.env.PI_DIALECT;
 			else Bun.env.PI_DIALECT = before;

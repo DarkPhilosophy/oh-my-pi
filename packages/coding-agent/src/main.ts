@@ -55,6 +55,7 @@ import type { PrintModeOptions } from "./modes/print-mode";
 import { CURRENT_SETUP_VERSION } from "./modes/setup-version";
 import { initTheme, stopThemeWatcher } from "./modes/theme/theme";
 import type { SubmittedUserInput } from "./modes/types";
+import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import {
 	type CreateAgentSessionOptions,
 	type CreateAgentSessionResult,
@@ -67,7 +68,9 @@ import type { AuthStorage } from "./session/auth-storage";
 import { resolveResumableSession, type SessionInfo } from "./session/session-listing";
 import { SessionManager } from "./session/session-manager";
 import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
+import { shouldShowStartupSplash } from "./startup-splash";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prompt";
+import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { AUTO_THINKING } from "./thinking";
 import type { LspStartupServerInfo } from "./tools";
@@ -88,17 +91,8 @@ type RunRpcMode = (
 	eventBus?: EventBus,
 ) => Promise<never>;
 
-function maybeShowStartupSplash(options: {
-	isInteractive: boolean;
-	resuming: boolean;
-	quiet: boolean;
-	version: string;
-}): void {
-	if (!options.isInteractive) return;
-	if (options.resuming || options.quiet) return;
-	if ($env.PI_TIMING) return;
-	if (!process.stdin.isTTY || !process.stdout.isTTY) return;
-	//process.stdout.write(`${chalk.dim(`omp ${options.version}`)}\n${chalk.dim("Initializing session…")}\n`);
+export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string): void {
+	(parsedArgs.mode === "json" ? process.stderr : process.stdout).write(text);
 }
 
 async function checkForNewVersion(currentVersion: string): Promise<string | undefined> {
@@ -122,11 +116,9 @@ async function checkForNewVersion(currentVersion: string): Promise<string | unde
 	}
 }
 
+// Todo settings are caller-controlled in protocol modes. Do not host-default them:
+// embedders need project-level opt-outs for reminder/prelude prompt injection.
 const HOST_DEFAULTED_SETTING_PATHS: SettingPath[] = [
-	"todo.enabled",
-	"todo.reminders",
-	"todo.reminders.max",
-	"todo.eager",
 	"task.isolation.mode",
 	"task.isolation.merge",
 	"task.isolation.commits",
@@ -387,6 +379,7 @@ async function runInteractiveMode(
 	mcpManager: MCPManager | undefined,
 	resuming: boolean,
 	forceSetupWizard: boolean,
+	showStartupSplash: boolean,
 	eventBus?: EventBus,
 	initialMessage?: string,
 	initialImages?: ImageContent[],
@@ -407,10 +400,13 @@ async function runInteractiveMode(
 	// Cold-launch gate: the full setup wizard (every scene + the overlay and
 	// their TUI/OAuth/search/theme deps) is heavy, yet the common case only needs
 	// to know whether the stored setup version is current. Lazy-load the wizard
-	// barrel only when setup is stale or forced; otherwise skip it entirely.
+	// barrel only when setup is stale, forced, or the explicit startup splash
+	// setting needs the shared setup splash renderer.
 	const storedSetupVersion = settings.get("setupVersion");
 	const setupWizard =
-		forceSetupWizard || storedSetupVersion < CURRENT_SETUP_VERSION ? await import("./modes/setup-wizard") : undefined;
+		forceSetupWizard || storedSetupVersion < CURRENT_SETUP_VERSION || showStartupSplash
+			? await import("./modes/setup-wizard")
+			: undefined;
 	const setupScenes = setupWizard
 		? await setupWizard.selectSetupScenes(storedSetupVersion, setupWizard.ALL_SCENES, mode, {
 				resuming,
@@ -419,11 +415,16 @@ async function runInteractiveMode(
 				force: forceSetupWizard,
 			})
 		: [];
+	const playStartupSplash = showStartupSplash && setupScenes.length === 0;
 
 	await mode.init({
-		suppressWelcomeIntro: resuming || setupScenes.length > 0,
+		suppressWelcomeIntro: resuming || setupScenes.length > 0 || playStartupSplash,
 		clearInitialTerminalHistory: true,
 	});
+
+	if (setupWizard && playStartupSplash) {
+		await setupWizard.runStartupSplash(mode);
+	}
 
 	if (setupWizard && setupScenes.length > 0) {
 		await setupWizard.runSetupWizard(mode, setupScenes);
@@ -758,6 +759,9 @@ async function buildSessionOptions(
 		cwd: parsed.cwd ?? getProjectDir(),
 		autoApprove: parsed.autoApprove ?? false,
 	};
+	if (parsed.maxTime !== undefined) {
+		options.deadline = Date.now() + parsed.maxTime * 1000;
+	}
 
 	// Auto-discover SYSTEM.md if no CLI system prompt provided
 	const systemPromptSource = parsed.systemPrompt ?? discoverSystemPromptFile();
@@ -944,7 +948,7 @@ export async function runRootCommand(
 	const modelRegistry = logger.time("modelRegistry:init", () => new ModelRegistry(authStorage));
 
 	if (parsedArgs.version) {
-		process.stdout.write(`${VERSION}\n`);
+		writeStartupNotice(parsedArgs, `${VERSION}\n`);
 		process.exit(0);
 	}
 
@@ -959,7 +963,7 @@ export async function runRootCommand(
 			process.stderr.write(`${chalk.red(`Error: ${message}`)}\n`);
 			process.exit(1);
 		}
-		process.stdout.write(`Exported to: ${result}\n`);
+		writeStartupNotice(parsedArgs, `Exported to: ${result}\n`);
 		process.exit(0);
 	}
 
@@ -1039,6 +1043,10 @@ export async function runRootCommand(
 	if (parsedArgs.hideThinking) {
 		settingsInstance.override("hideThinkingBlock", true);
 	}
+	// Apply --advisor CLI flag (ephemeral, not persisted)
+	if (parsedArgs.advisor) {
+		settingsInstance.override("advisor.enabled", true);
+	}
 
 	await logger.time(
 		"initTheme:final",
@@ -1091,7 +1099,7 @@ export async function runRootCommand(
 	// message rather than letting the decline bubble up as an uncaught exception
 	// (see issue #1668).
 	if (typeof parsedArgs.resume === "string" && !sessionManager) {
-		process.stdout.write(`${chalk.dim("Resume cancelled: session is in another project.")}\n`);
+		writeStartupNotice(parsedArgs, `${chalk.dim("Resume cancelled: session is in another project.")}\n`);
 		return;
 	}
 
@@ -1105,7 +1113,7 @@ export async function runRootCommand(
 			// picker can still open in all-projects scope instead of dead-ending.
 			preloadedAllSessions = await logger.time("SessionManager.listAll", SessionManager.listAll);
 			if (preloadedAllSessions.length === 0) {
-				process.stdout.write(`${chalk.dim("No sessions found")}\n`);
+				writeStartupNotice(parsedArgs, `${chalk.dim("No sessions found")}\n`);
 				return;
 			}
 			startInAllScope = true;
@@ -1117,7 +1125,7 @@ export async function runRootCommand(
 		});
 		resumeStartupWatchdog();
 		if (!selected) {
-			process.stdout.write(`${chalk.dim("No session selected")}\n`);
+			writeStartupNotice(parsedArgs, `${chalk.dim("No session selected")}\n`);
 			return;
 		}
 		// Resuming a session from another project: switch the process into that
@@ -1250,11 +1258,14 @@ export async function runRootCommand(
 			stdinContent: pipedInput,
 		});
 
-		maybeShowStartupSplash({
+		const showStartupSplash = shouldShowStartupSplash({
+			configured: settingsInstance.get("startup.showSplash"),
 			isInteractive,
 			resuming: Boolean(parsedArgs.continue || parsedArgs.resume || parsedArgs.fork),
 			quiet: settingsInstance.get("startup.quiet"),
-			version: VERSION,
+			timing: Boolean($env.PI_TIMING),
+			stdinIsTTY: process.stdin.isTTY,
+			stdoutIsTTY: process.stdout.isTTY,
 		});
 
 		const { session, setToolUIContext, modelFallbackMessage, lspServers, mcpManager } = await createSession({
@@ -1262,6 +1273,24 @@ export async function runRootCommand(
 			eventBus,
 			preloadedExtensions: extensionsResult,
 		});
+
+		// Cold-revive support: a `parked` subagent ref restored from disk (Agent Hub
+		// scan, collab mirror, resumed process) has a sessionFile but no in-memory
+		// reviver, so `ensureLive` (IRC sends, hub focus) would refuse it. Install a
+		// factory — bound to THIS top-level session — that rebuilds the subagent from
+		// its persisted JSONL (see persisted-revive.ts). Scoped to the non-ACP
+		// bootstrap: ACP keeps several concurrent top-level sessions and a single
+		// process-global factory must not be clobbered by the most recent one.
+		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+			createPersistedSubagentReviverFactory({
+				session,
+				authStorage,
+				modelRegistry,
+				settings: settingsInstance,
+				enableLsp: sessionOptions.enableLsp ?? true,
+			}),
+			Math.trunc(Number(settingsInstance.get("task.agentIdleTtlMs") ?? 420_000) || 0),
+		);
 		if (parsedArgs.apiKey && !sessionOptions.model && session.model) {
 			authStorage.setRuntimeApiKey(session.model.provider, parsedArgs.apiKey);
 		}
@@ -1328,6 +1357,7 @@ export async function runRootCommand(
 				mcpManager,
 				Boolean(parsedArgs.continue || parsedArgs.resume || parsedArgs.fork),
 				deps.forceSetupWizard === true,
+				showStartupSplash,
 				eventBus,
 				initialMessage,
 				initialImages,

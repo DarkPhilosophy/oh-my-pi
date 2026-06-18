@@ -56,6 +56,19 @@ export function isMimoModelIdOrName(value: string): boolean {
 	return value.toLowerCase().includes("mimo");
 }
 
+const GROK_EFFORT_CAPABLE_PREFIXES = ["grok-3-mini", "grok-4.20-multi-agent", "grok-4.3"] as const;
+
+/**
+ * Grok SKUs that expose the wire `reasoning.effort` dial. Other Grok reasoners
+ * (e.g. `grok-build`, `grok-4.20-0309-reasoning`) think natively but reject the
+ * param, so callers must omit reasoning effort for them.
+ */
+export function isGrokReasoningEffortCapable(modelId: string): boolean {
+	const bare = bareModelId(modelId).trim().toLowerCase();
+	if (!bare) return false;
+	return GROK_EFFORT_CAPABLE_PREFIXES.some(prefix => bare.startsWith(prefix));
+}
+
 /**
  * MiniMax M2-generation family (M2, M2.1, M2.5, M2.7, including `-highspeed`/
  * `-lightning`/`-her`/`-turbo` variants, dotless aliases like `minimax-m21`,
@@ -71,6 +84,13 @@ export function isMinimaxM2FamilyModelId(modelId: string): boolean {
 	// Boundary-delimited `m2` token followed by zero or more digits (dotless
 	// variants like `m21`/`m25`/`m27`) and an optional dotted minor version.
 	return /(?:^|[/.-])m2\d*(?:[.-]\d+)?(?:[-.:_]|$)/i.test(lower);
+}
+
+/** MiniMax M3 family ids in bundled/default and aggregator namespace forms. */
+export function isMinimaxM3FamilyModelId(modelId: string): boolean {
+	const lower = modelId.toLowerCase();
+	if (!lower.includes("minimax")) return false;
+	return /(?:^|[/._-])(?:minimax[/._-])?m3(?:[-.:_]|$)/i.test(lower);
 }
 
 /**
@@ -105,6 +125,17 @@ export function isReasoningGlmModelId(modelId: string): boolean {
 	}
 	return semverGte(glm.version, "4.5");
 }
+/** GLM-5.2+ coding SKUs accept `reasoning_effort` in addition to binary thinking. */
+export function isGlm52ReasoningEffortModelId(modelId: string): boolean {
+	const glm = parseGlmModel(bareModelId(modelId));
+	if (!glm || glm.vision) {
+		return false;
+	}
+	if (glm.variant !== "base" && glm.variant !== "air" && glm.variant !== "turbo") {
+		return false;
+	}
+	return semverGte(glm.version, "5.2");
+}
 
 /** GLM vision SKUs — the `v` that attaches to the version (`glm-4v`, `glm-4.5v`). */
 export function isGlmVisionModelId(modelId: string): boolean {
@@ -128,7 +159,7 @@ export function modelFamilyToken(modelId: string): string {
 	if (isOpenAIModelId(modelId)) return "openai";
 	if (isKimiModelId(modelId)) return "kimi";
 	if (isQwenModelId(modelId)) return "qwen";
-	if (isMinimaxM2FamilyModelId(modelId)) return "minimax";
+	if (isMinimaxM2FamilyModelId(modelId) || isMinimaxM3FamilyModelId(modelId)) return "minimax";
 	if (isOpenAIGptOssModelId(modelId)) return "gpt-oss";
 	if (isDeepseekModelIdOrName(modelId)) return "deepseek";
 	if (isMimoModelIdOrName(modelId)) return "mimo";

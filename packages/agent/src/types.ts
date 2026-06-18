@@ -1,5 +1,5 @@
 import type {
-	ApiKeyResolveContext,
+	ApiKey,
 	AssistantMessage,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
@@ -54,6 +54,9 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * Used by providers that support session-based caching (e.g., OpenAI Codex).
 	 */
 	sessionId?: string;
+
+	/** Absolute wall-clock deadline in Unix epoch milliseconds. */
+	deadline?: number;
 
 	/**
 	 * Optional resolver called per LLM request to produce request metadata.
@@ -117,12 +120,12 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	transformProviderContext?: (context: Context, model: Model) => Context;
 
 	/**
-	 * Resolves an API key dynamically for each LLM call.
+	 * Resolves the API key or resolver for the current model before each LLM call.
 	 *
-	 * Useful for short-lived OAuth tokens (e.g., GitHub Copilot) that may expire
-	 * during long-running tool execution phases.
+	 * Returning an ApiKeyResolver lets the stream retry policy refresh or rotate
+	 * the model-scoped credential after auth/usage-limit errors.
 	 */
-	getApiKey?: (provider: string, ctx?: ApiKeyResolveContext) => Promise<string | undefined> | string | undefined;
+	getApiKey?: (model: Model) => Promise<ApiKey | undefined> | ApiKey | undefined;
 
 	/**
 	 * Returns steering messages to inject into the conversation mid-run.
@@ -289,6 +292,20 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * backlog so advice produced during the wait is injected as an aside).
 	 */
 	onTurnEnd?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<void> | void;
+
+	/**
+	 * Called once an assistant message is finalized from the model stream, before
+	 * it is appended to the context, emitted as `message_end`, or its tool calls
+	 * are validated and dispatched. The hook may mutate the message in place —
+	 * both its text content and its tool-call arguments — and those edits are seen
+	 * by the transcript, the UI, and tool execution alike (single source of truth).
+	 *
+	 * Used for inline macro expansion: rewriting `@[[runtime.name(args)]]` tokens
+	 * to host-computed values before anything downstream consumes the message.
+	 * Runs at most once per assistant message; must not throw (a throw would abort
+	 * the turn).
+	 */
+	transformAssistantMessage?: (message: AssistantMessage, signal?: AbortSignal) => Promise<void> | void;
 
 	/**
 	 * Called after a tool finishes executing, before `tool_execution_end` and the

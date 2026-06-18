@@ -30,6 +30,7 @@ import {
 	ProcessTerminal,
 	Spacer,
 	setTerminalTextSizing,
+	setTuiTight,
 	TERMINAL,
 	Text,
 	TUI,
@@ -151,6 +152,7 @@ import type { ObservableSession } from "./session-observer-registry";
 import { SessionObserverRegistry } from "./session-observer-registry";
 import { runProviderSetupWizard } from "./setup-wizard/lazy";
 import { interruptHint } from "./shared";
+import { clearMermaidCache } from "./theme/mermaid-cache";
 import { type ShimmerPalette, shimmerEnabled, shimmerSegments, shimmerText } from "./theme/shimmer";
 import type { Theme } from "./theme/theme";
 import {
@@ -569,6 +571,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 		}
 
+		setTuiTight(settings.get("tui.tight"));
 		this.ui = new TUI(new ProcessTerminal(), settings.get("showHardwareCursor"));
 		this.ui.setMaxInlineImages(settings.get("tui.maxInlineImages"));
 		// OSC 66 text-sizing is Kitty-only; resolve the setting against the terminal's
@@ -887,13 +890,16 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 		);
 		// Set up theme file watcher
-		onThemeChange(() => {
-			this.#clearWorkingMessageAccentCache();
-			clearRenderCache();
-			this.ui.invalidate();
-			this.updateEditorBorderColor();
-			this.ui.requestRender();
-		});
+		this.#eventBusUnsubscribers.push(
+			onThemeChange(() => {
+				this.#clearWorkingMessageAccentCache();
+				clearRenderCache();
+				clearMermaidCache();
+				this.ui.invalidate();
+				this.updateEditorBorderColor();
+				this.ui.requestRender();
+			}),
+		);
 
 		// Subscribe to terminal dark/light appearance changes.
 		// The terminal queries background color via OSC 11 at startup and on
@@ -2213,7 +2219,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#formatKeepContextLabel(contextUsage: ContextUsage | undefined): string {
-		if (contextUsage?.tokens == null) {
+		if (!contextUsage) {
 			return "Approve and keep context";
 		}
 		const tokens = formatContextTokenCount(contextUsage.tokens);
@@ -2222,7 +2228,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#isKeepContextDisabled(contextUsage: ContextUsage | undefined): boolean {
-		return contextUsage?.percent != null && contextUsage.percent > PLAN_KEEP_CONTEXT_DISABLE_THRESHOLD_PERCENT;
+		return contextUsage !== undefined && contextUsage.percent > PLAN_KEEP_CONTEXT_DISABLE_THRESHOLD_PERCENT;
 	}
 
 	async #openPlanInExternalEditor(planFilePath: string): Promise<void> {
@@ -3418,8 +3424,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleExportCommand(text);
 	}
 
-	handleDumpCommand(isRaw?: boolean) {
-		return this.#commandController.handleDumpCommand(isRaw);
+	handleDumpCommand() {
+		return this.#commandController.handleDumpCommand();
 	}
 
 	handleAdvisorDumpCommand(isRaw?: boolean) {
@@ -3752,6 +3758,34 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleBtwEscape(): boolean {
 		return this.#btwController.handleEscape();
+	}
+
+	canBranchBtw(): boolean {
+		return this.#btwController.canBranch();
+	}
+
+	handleBtwBranchKey(): Promise<boolean> {
+		return this.#btwController.handleBranch();
+	}
+
+	async handleBtwBranch(question: string, assistantMessage: AssistantMessage): Promise<void> {
+		try {
+			const result = await this.session.branchFromBtw(question, assistantMessage);
+			if (result.cancelled) {
+				this.showStatus("/btw branch cancelled", { dim: true });
+				return;
+			}
+			this.#btwController.dispose();
+			this.#omfgController.dispose();
+			this.chatContainer.clear();
+			this.renderInitialMessages({ clearTerminalHistory: true });
+			this.updateEditorBorderColor();
+			this.showStatus(
+				result.sessionFile ? `Branched /btw to ${path.basename(result.sessionFile)}` : "Branched /btw",
+			);
+		} catch (error) {
+			this.showError(`Cannot branch /btw: ${error instanceof Error ? error.message : String(error)}`);
+		}
 	}
 
 	handleOmfgCommand(complaint: string): Promise<void> {

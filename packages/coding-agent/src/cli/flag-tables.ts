@@ -120,6 +120,14 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	"--plan": (result, value) => {
 		result.plan = value;
 	},
+	"--max-time": (result, value, deps) => {
+		const seconds = Number(value);
+		if (Number.isFinite(seconds) && seconds > 0) {
+			result.maxTime = seconds;
+		} else {
+			deps.logger.warn("Invalid seconds passed to --max-time", { value });
+		}
+	},
 	"--api-key": (result, value) => {
 		result.apiKey = value;
 	},
@@ -260,6 +268,7 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--no-lsp",
 	"--no-pty",
 	"--hide-thinking",
+	"--advisor",
 	"--print",
 	"--no-extensions",
 	"--no-skills",

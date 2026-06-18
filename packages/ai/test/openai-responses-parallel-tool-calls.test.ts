@@ -13,8 +13,8 @@
 // `output_item.done` event must be routed by `output_index`/`item_id`, not by
 // arrival order.
 import { describe, expect, test } from "bun:test";
-import { processResponsesStream } from "@oh-my-pi/pi-ai/providers/openai-responses-shared";
 import type { ResponseStreamEvent } from "@oh-my-pi/pi-ai/providers/openai-responses-wire";
+import { processResponsesStream } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
@@ -150,6 +150,60 @@ describe("processResponsesStream: parallel function_call items", () => {
 		const deltaForB = deltas.find(d => d.delta === argsB);
 		expect(deltaForA?.contentIndex).toBe(0);
 		expect(deltaForB?.contentIndex).toBe(1);
+	});
+
+	test("drops stale keyed deltas after their item closes instead of routing to a sibling", async () => {
+		const output = makeOutput();
+		const emitted: EmittedEvent[] = [];
+		const stream = { push: (e: unknown) => emitted.push(e as EmittedEvent), end: () => {} } as never;
+
+		const argsA = JSON.stringify({ path: "a" });
+		const argsB = JSON.stringify({ path: "b" });
+
+		await processResponsesStream(
+			makeStream([
+				{
+					type: "response.output_item.added",
+					output_index: 0,
+					item: { type: "function_call", id: "fc_a", call_id: "call_a", name: "read", arguments: "" },
+				},
+				{
+					type: "response.output_item.added",
+					output_index: 1,
+					item: { type: "function_call", id: "fc_b", call_id: "call_b", name: "read", arguments: "" },
+				},
+				{
+					type: "response.output_item.done",
+					output_index: 0,
+					item: { type: "function_call", id: "fc_a", call_id: "call_a", name: "read", arguments: argsA },
+				},
+				{
+					type: "response.function_call_arguments.delta",
+					output_index: 0,
+					item_id: "fc_a",
+					delta: JSON.stringify({ late: true }),
+				},
+				{
+					type: "response.output_item.done",
+					output_index: 1,
+					item: { type: "function_call", id: "fc_b", call_id: "call_b", name: "read", arguments: argsB },
+				},
+				{
+					type: "response.completed",
+					response: { id: "resp_parallel_stale_delta", status: "completed" },
+				},
+			]),
+			output,
+			stream,
+			makeModel(),
+		);
+
+		const [, blockB] = output.content;
+		if (blockB?.type !== "toolCall") throw new Error("expected second toolCall");
+		expect(blockB.arguments).toEqual({ path: "b" });
+
+		const deltas = emitted.filter(e => e.type === "toolcall_delta");
+		expect(deltas).toEqual([]);
 	});
 
 	test("routes done-only finalization to the correct block when arguments stream as a single chunk on each item", async () => {
