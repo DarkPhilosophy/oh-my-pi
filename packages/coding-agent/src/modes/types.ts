@@ -139,6 +139,7 @@ export interface InteractiveModeContext {
 	isBashMode: boolean;
 	toolOutputExpanded: boolean;
 	todoExpanded: boolean;
+	pendingQueueExpanded: boolean;
 	planModeEnabled: boolean;
 	goalModeEnabled: boolean;
 	goalModePaused: boolean;

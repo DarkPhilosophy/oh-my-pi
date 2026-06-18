@@ -22,6 +22,7 @@ type ConfigurableEditorAction = Extract<
 	| "app.editor.external"
 	| "app.history.search"
 	| "app.message.dequeue"
+	| "app.message.expandQueue"
 	| "app.retry"
 	| "app.clipboard.pasteImage"
 	| "app.clipboard.pasteTextRaw"
@@ -44,6 +45,7 @@ const DEFAULT_ACTION_KEYS: Record<ConfigurableEditorAction, KeyId[]> = {
 	"app.editor.external": ["ctrl+g"],
 	"app.history.search": ["ctrl+r"],
 	"app.message.dequeue": ["alt+up"],
+	"app.message.expandQueue": ["alt+o"],
 	"app.retry": ["alt+r"],
 	"app.clipboard.pasteImage": ["ctrl+v"],
 	"app.clipboard.pasteTextRaw": ["ctrl+shift+v", "alt+shift+v"],
@@ -270,6 +272,8 @@ export class CustomEditor extends Editor {
 	onPasteTextRaw?: () => void;
 	/** Called when the configured dequeue shortcut is pressed. */
 	onDequeue?: () => void;
+	/** Called when the configured expand-queue shortcut is pressed (toggle queued-message preview). */
+	onExpandQueue?: () => void;
 	/** Called when the configured retry shortcut is pressed. */
 	onRetry?: () => void;
 	/** Called when Caps Lock is pressed. */
@@ -594,6 +598,11 @@ export class CustomEditor extends Editor {
 			// Intercept configured dequeue shortcut (restore queued message to editor)
 			if (this.#matchesAction(canonical, "app.message.dequeue") && this.onDequeue) {
 				this.onDequeue();
+				return;
+			}
+			// Intercept configured expand-queue shortcut (toggle queued-message preview)
+			if (this.#matchesAction(canonical, "app.message.expandQueue") && this.onExpandQueue) {
+				this.onExpandQueue();
 				return;
 			}
 

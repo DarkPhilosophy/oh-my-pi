@@ -315,6 +315,8 @@ export class InputController {
 		this.ctx.editor.onExpandTools = () => this.toggleToolOutputExpansion();
 		this.ctx.editor.setActionKeys("app.message.dequeue", this.ctx.keybindings.getKeys("app.message.dequeue"));
 		this.ctx.editor.onDequeue = () => this.handleDequeue();
+		this.ctx.editor.setActionKeys("app.message.expandQueue", this.ctx.keybindings.getKeys("app.message.expandQueue"));
+		this.ctx.editor.onExpandQueue = () => this.togglePendingQueueExpansion();
 		// Up-arrow on an empty editor doubles as "undo send": pull pending queued
 		// messages back into the editor for editing (same restore as Alt+Up). A cheap
 		// pre-check leaves a genuinely empty queue to plain Up (input-history nav), so
@@ -1536,6 +1538,15 @@ export class InputController {
 
 	toggleToolOutputExpansion(): void {
 		this.setToolsExpanded(!this.ctx.toolOutputExpanded);
+	}
+
+	/** Toggle the pending-queue bar between the collapsed per-message preview
+	 *  (`pendingQueueCollapseLines` lines + `(+N)`) and the fully-expanded text.
+	 *  A no-op visually when nothing is queued — the bar simply redraws empty. */
+	togglePendingQueueExpansion(): void {
+		this.ctx.pendingQueueExpanded = !this.ctx.pendingQueueExpanded;
+		this.ctx.updatePendingMessagesDisplay();
+		this.ctx.ui.requestRender();
 	}
 
 	setToolsExpanded(expanded: boolean): void {

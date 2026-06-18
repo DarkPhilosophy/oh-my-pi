@@ -1317,6 +1317,24 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	pendingQueueCollapseLines: {
+		type: "number",
+		default: 5,
+		ui: {
+			tab: "interaction",
+			group: "Input",
+			label: "Queued Message Preview Lines",
+			description:
+				"How many leading lines of each queued (steer/follow-up) message the pending bar shows before collapsing the rest to `(+N)`. Alt+O expands every entry to its full text and toggles back to this collapsed preview.",
+			options: [
+				{ value: "1", label: "1 line" },
+				{ value: "3", label: "3 lines" },
+				{ value: "5", label: "5 lines" },
+				{ value: "10", label: "10 lines" },
+			],
+		},
+	},
+
 	emojiAutocomplete: {
 		type: "boolean",
 		default: true,
