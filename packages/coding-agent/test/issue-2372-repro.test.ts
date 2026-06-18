@@ -123,4 +123,39 @@ describe("issue #2372 pre-streaming chat rebuild preserves optimistic submission
 		expect(addMessageSpy).toHaveBeenCalledTimes(callsAfterCancel);
 		expect(mode.optimisticUserMessageSignature).toBeUndefined();
 	});
+
+	it("drops the stale optimistic bubble when a queue coalesce swallows the rendered send", () => {
+		// Repro for the PR #2890 Codex P2: an idle queued-message drain can coalesce a
+		// just-rendered optimistic send ("Line2") into the pending tail ("Line1") before the
+		// submit path reaches prompt(). The incoming message_start then carries the merged
+		// "Line1\nLine2", which no longer matches the stale "Line2" optimistic signature — so
+		// without the fix EventController appends a second bubble and the line shows twice.
+		const addMessageSpy = vi.spyOn(mode, "addMessageToChat");
+
+		// "Line2" was optimistically rendered by the normal submit path.
+		mode.startPendingSubmission({ text: "Line2" });
+		expect(mode.optimisticUserMessageSignature).toBe("Line2\u00000");
+		expect(addMessageSpy).toHaveBeenCalledTimes(1);
+
+		// The merge swallowed "Line2" into "Line1\nLine2" (replacing the "Line1" tail).
+		session.onLocalQueueCoalesced?.("Line2", "Line1\nLine2", "Line1", 0);
+
+		// The already-rendered "Line2" bubble must be gone immediately (the helper rebuilds
+		// chat synchronously). The session has no committed entries pre-streaming, so chat is
+		// empty — proving the stale bubble was removed now, not merely on a future rebuild.
+		expect(mode.chatContainer.children.length).toBe(0);
+
+		// Optimistic state for the swallowed send is gone, so the merged message_start
+		// will be appended once (wasOptimistic === false) with the full correct text.
+		expect(mode.optimisticUserMessageSignature).toBeUndefined();
+		// The merged text is recorded as a local submission so message_start does not
+		// clobber an in-progress editor draft.
+		expect(mode.locallySubmittedUserSignatures.has("Line1\nLine2\u00000")).toBe(true);
+		expect(mode.locallySubmittedUserSignatures.has("Line2\u00000")).toBe(false);
+
+		// A later rebuild must not resurrect the stale "Line2" bubble.
+		const callsAfterDrop = addMessageSpy.mock.calls.length;
+		mode.rebuildChatFromMessages();
+		expect(addMessageSpy).toHaveBeenCalledTimes(callsAfterDrop);
+	});
 });
