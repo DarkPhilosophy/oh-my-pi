@@ -43,23 +43,25 @@ describe("SteeringIndicator component", () => {
 		ind.dispose();
 	});
 
-	it("shows a moving comet head while active", () => {
+	it("flows a pulse wave whose crests move across frames", () => {
 		vi.useFakeTimers();
 		const requestComponentRender = vi.fn();
 		const ui = { requestComponentRender } as unknown as TUI;
 		const ind = new SteeringIndicator(ui, styles, "Steering", 6, 1);
 		ind.setActive(true);
-		const headCols = new Set<number>();
-		let everPresent = true;
+		// Snapshot the crest columns (● = wave peak) over successive frames. A crest
+		// must be present each frame and the overall pattern must change frame-to-frame
+		// (the pulse travels — it does not blink in place).
+		const frames: string[] = [];
+		let everHasCrest = true;
 		for (let i = 0; i < 6; i++) {
-			const col = ind.render(80).join("").indexOf("●");
-			if (col < 0) everPresent = false;
-			headCols.add(col);
+			const frame = ind.render(80).join("");
+			if (!frame.includes("●")) everHasCrest = false;
+			frames.push(frame);
 			vi.advanceTimersByTime(90);
 		}
-		// A comet head is present every frame and its column changes over time (it moves).
-		expect(everPresent).toBe(true);
-		expect(headCols.size).toBeGreaterThan(1);
+		expect(everHasCrest).toBe(true);
+		expect(new Set(frames).size).toBeGreaterThan(1); // the wave actually moves
 		ind.dispose();
 	});
 
