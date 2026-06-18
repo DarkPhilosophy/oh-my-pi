@@ -349,20 +349,23 @@ describe("pending queue collapse/expand display", () => {
 	// Drop the leading Spacer's blank row and the trailing hint row, leaving message rows.
 	const bodyRows = (rows: string[]) => rows.filter(r => r.trim() !== "" && !r.includes("to edit"));
 
-	test("collapsed shows N preview lines with a (+M) remainder on the last shown row", () => {
+	test("collapsed shows a label row then N preview lines with a (+M) remainder", () => {
 		const rows = displayCtx({ collapseLines: 5, expanded: false, steering: [sevenLine] });
 		const body = bodyRows(rows);
-		expect(body).toHaveLength(5); // 5 of 7 lines
-		expect(body[0]).toContain("Steer: line1");
-		expect(body[4]).toContain("line5 (+2)"); // remaining 2 lines folded onto the last row
+		expect(body).toHaveLength(6); // `Steer:` label row + 5 of 7 lines
+		expect(body[0]).toContain("Steer:");
+		expect(body[0]).not.toContain("line1"); // label is on its own row
+		expect(body[1]).toContain("line1");
+		expect(body[5]).toContain("line5 (+2)"); // remaining 2 lines folded onto the last shown row
 		expect(rows.some(r => r.includes("Alt+O to expand"))).toBe(true);
 	});
 
-	test("expanded shows every line in full with no (+M)", () => {
+	test("expanded shows the label row then every line in full with no (+M)", () => {
 		const rows = displayCtx({ collapseLines: 5, expanded: true, steering: [sevenLine] });
 		const body = bodyRows(rows);
-		expect(body).toHaveLength(7); // all 7 lines
-		expect(body[6]).toContain("line7");
+		expect(body).toHaveLength(8); // `Steer:` label row + all 7 lines
+		expect(body[0]).toContain("Steer:");
+		expect(body[7]).toContain("line7");
 		expect(body.some(r => r.includes("(+"))).toBe(false);
 		expect(rows.some(r => r.includes("Alt+O to collapse"))).toBe(true);
 	});
@@ -370,7 +373,9 @@ describe("pending queue collapse/expand display", () => {
 	test("an entry within the preview budget is not truncated and shows no expand hint", () => {
 		const rows = displayCtx({ collapseLines: 5, expanded: false, steering: ["only one line"] });
 		const body = bodyRows(rows);
-		expect(body).toEqual([expect.stringContaining("Steer: only one line")]);
+		expect(body[0]).toContain("Steer:");
+		expect(body[1]).toContain("only one line");
+		expect(body).toHaveLength(2); // label row + single message line
 		expect(rows.some(r => r.includes("Alt+O"))).toBe(false);
 	});
 });
