@@ -140,9 +140,9 @@ describe("issue #2372 pre-streaming chat rebuild preserves optimistic submission
 		// The merge swallowed "Line2" into "Line1\nLine2" (replacing the "Line1" tail).
 		session.onLocalQueueCoalesced?.("Line2", "Line1\nLine2", "Line1", 0);
 
-		// The already-rendered "Line2" bubble must be gone immediately (the helper rebuilds
-		// chat synchronously). The session has no committed entries pre-streaming, so chat is
-		// empty — proving the stale bubble was removed now, not merely on a future rebuild.
+		// The already-rendered "Line2" bubble must be gone immediately: the helper surgically
+		// removes the optimistic bubble's own components from chatContainer (no full rebuild).
+		// Pre-streaming there is nothing else in chat, so it is empty.
 		expect(mode.chatContainer.children.length).toBe(0);
 
 		// Optimistic state for the swallowed send is gone, so the merged message_start
@@ -157,5 +157,36 @@ describe("issue #2372 pre-streaming chat rebuild preserves optimistic submission
 		const callsAfterDrop = addMessageSpy.mock.calls.length;
 		mode.rebuildChatFromMessages();
 		expect(addMessageSpy).toHaveBeenCalledTimes(callsAfterDrop);
+	});
+
+	it("keeps the active streaming block attached when dropping the optimistic bubble mid-stream", () => {
+		// Repro for the PR #2890 Codex P2 follow-up: a coalesce can fire while another turn is
+		// already streaming (an idle drain races the submit path). The active assistant block is
+		// not persisted until message_end, so a full chatContainer rebuild would detach the
+		// component streamingComponent points at, and later deltas would update an orphaned,
+		// invisible block. The drop must remove ONLY the optimistic bubble, leaving the live
+		// stream attached.
+		mode.startPendingSubmission({ text: "Line2" });
+		const optimisticCount = mode.chatContainer.children.length;
+		expect(optimisticCount).toBeGreaterThan(0);
+
+		// Simulate an assistant turn already streaming: a live block in chatContainer that
+		// streamingComponent points at (not yet persisted to session entries).
+		const streamingBlock = mode.addMessageToChat({
+			role: "assistant",
+			content: [{ type: "text", text: "partial answer" }],
+			timestamp: Date.now(),
+		} as unknown as Parameters<typeof mode.addMessageToChat>[0])[0];
+		mode.streamingComponent = streamingBlock as unknown as typeof mode.streamingComponent;
+		expect(mode.chatContainer.children).toContain(streamingBlock);
+
+		// Coalesce swallows the optimistic "Line2" while the stream is live.
+		session.onLocalQueueCoalesced?.("Line2", "Line1\nLine2", "Line1", 0);
+
+		// The live streaming block is still attached (would be detached by a rebuild),
+		// while the optimistic bubble's own components are gone.
+		expect(mode.chatContainer.children).toContain(streamingBlock);
+		expect(mode.streamingComponent as unknown).toBe(streamingBlock);
+		expect(mode.optimisticUserMessageSignature).toBeUndefined();
 	});
 });

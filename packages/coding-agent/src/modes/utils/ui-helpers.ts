@@ -116,6 +116,7 @@ export class UiHelpers {
 		message: AgentMessage,
 		options?: { populateHistory?: boolean; imageLinks?: readonly (string | undefined)[] },
 	): Component[] {
+		const added: Component[] = [];
 		switch (message.role) {
 			case "bashExecution": {
 				const component = new BashExecutionComponent(message.command, this.ctx.ui, message.excludeFromContext);
@@ -319,6 +320,7 @@ export class UiHelpers {
 						);
 					const userComponent = new UserMessageComponent(textContent, isSynthetic, imageLinks);
 					this.ctx.chatContainer.addChild(userComponent);
+					added.push(userComponent);
 					if (options?.populateHistory && message.role === "user" && !isSynthetic) {
 						this.ctx.editor.addToHistory(textContent);
 					}
@@ -334,6 +336,7 @@ export class UiHelpers {
 					this.ctx.ui.imageBudget,
 				);
 				this.ctx.chatContainer.addChild(assistantComponent);
+				added.push(assistantComponent);
 				break;
 			}
 			case "toolResult": {
@@ -344,7 +347,7 @@ export class UiHelpers {
 				message satisfies never;
 			}
 		}
-		return [];
+		return added;
 	}
 
 	/**
