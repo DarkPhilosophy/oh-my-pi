@@ -365,8 +365,8 @@ describe("pending queue collapse/expand display", () => {
 		const rows = displayCtx({ collapseLines: 5, expanded: true, steering: [sevenLine] });
 		// Expanded entries render as a bordered box: a titled top rule, one framed row per
 		// line, and a bottom rule — so a long message reads as one self-contained block.
-		expect(rows.some(r => r.includes("Steer") && r.includes("┌"))).toBe(true); // titled top border
-		expect(rows.some(r => r.includes("└"))).toBe(true); // bottom border
+		expect(rows.some(r => r.includes("Steer") && r.includes("╭"))).toBe(true); // titled top border
+		expect(rows.some(r => r.includes("╰"))).toBe(true); // bottom border
 		for (let i = 1; i <= 7; i++) {
 			expect(rows.some(r => r.includes("│") && r.includes(`line${i}`))).toBe(true);
 		}

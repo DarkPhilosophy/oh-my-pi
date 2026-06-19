@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
-import type { AssistantMessage, ImageContent, Message, UsageReport } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, Message, Usage, UsageReport } from "@oh-my-pi/pi-ai";
 import type { Component, Container, EditorTheme, Loader, Spacer, SteeringIndicator, Text, TUI } from "@oh-my-pi/pi-tui";
 import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
@@ -160,6 +160,12 @@ export interface InteractiveModeContext {
 	isPythonMode: boolean;
 	streamingComponent: AssistantMessageComponent | undefined;
 	streamingMessage: AssistantMessage | undefined;
+	/**
+	 * Usage of the most recently rendered assistant turn, used to detect a
+	 * prompt-cache invalidation on the next turn (cache footprint collapse).
+	 * Reseeded by `renderSessionContext` on every rebuild/session switch.
+	 */
+	lastAssistantUsage: Usage | undefined;
 	loadingAnimation: Loader | undefined;
 	steeringIndicator: SteeringIndicator | undefined;
 	autoCompactionLoader: Loader | undefined;
