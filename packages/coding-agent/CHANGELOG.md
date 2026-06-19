@@ -24,6 +24,11 @@
 - Fixed a `rightEditor` widget overwriting an OSC 66 (Kitty text-sizing) heading's reserved row when the heading scrolled one line above the visible window: the right-panel occupancy check now carries the frame row just above the window, so a heading at `windowTop - 1` still marks its reservation row (window row 0) occupied instead of leaving it eligible for panel placement.
 - Fixed local-submission signatures being tracked in a plain `Set`, so two sessions (the main session and a focused subagent) holding an identical queued message — e.g. `ok` with no images — shared one entry: restoring/consuming one session's copy unmarked the other's, and its later `message_start` was treated as non-local and could clear a draft typed while waiting. Signatures are now reference-counted (a `SignatureMultiset`), so identical signatures from different sessions are independent and a delete only consumes one occurrence.
 - Fixed a component-backed `rightEditor` widget crashing when it called any TUI method other than the two render hooks (e.g. `ui.addChild`, `ui.setFocus`, `ui.addInputListener`): the wrapping `Proxy` returned those methods bound to the proxy, so `TUI`/`Container` `#private` field access threw at runtime. The proxy now resolves against and binds methods back to the real TUI instance, staying API-compatible for right-side widget factories.
+## [16.1.5] - 2026-06-19
+
+### Changed
+
+- Removed the legacy `AgentSession.nextToolChoice()` method. The per-turn tool-choice directive now flows solely through `nextToolChoiceDirective()` (which folds in the hard-choice dequeue plus active-tool filtering as a private helper), eliminating the dual entry point that let callers consume the queue while bypassing the soft pending-preview lifecycle. The underlying `ToolChoiceQueue.nextToolChoice()` is unchanged.
 
 ## [16.1.4] - 2026-06-19
 
