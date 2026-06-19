@@ -690,11 +690,20 @@ export class UiHelpers {
 	 */
 	#getOrCreateSteeringIndicator(): SteeringIndicator {
 		if (!this.ctx.steeringIndicator) {
-			this.ctx.steeringIndicator = new SteeringIndicator(this.ctx.ui, {
-				dim: s => theme.fg("dim", s),
-				mid: s => theme.fg("muted", s),
-				bright: s => theme.bold(theme.fg("accent", s)),
-			});
+			this.ctx.steeringIndicator = new SteeringIndicator(
+				this.ctx.ui,
+				{
+					dim: s => theme.fg("dim", s),
+					mid: s => theme.fg("muted", s),
+					bright: s => theme.bold(theme.fg("accent", s)),
+				},
+				{
+					topLeft: theme.boxRound.topLeft,
+					topRight: theme.boxRound.topRight,
+					horizontal: theme.boxRound.horizontal,
+					paint: s => theme.fg("border", s),
+				},
+			);
 		}
 		return this.ctx.steeringIndicator;
 	}
@@ -757,17 +766,20 @@ export class UiHelpers {
 				const isStreamingSteer = entry.label === "Steer" && streaming && !animatedSteerUsed;
 				// Frame the entry in a box when it is expanded (Alt+O on a long message — so a
 				// 10+ line entry reads as one self-contained block, not rows bleeding into the
-				// hint) or when it is the live streaming steer (the animated indicator renders
-				// just above the framed message as its banner). Collapsed short entries stay
-				// light: a `Label:` row with indented lines, no frame, to avoid chrome noise.
+				// hint) or when it is the live streaming steer. For the live steer the animated
+				// indicator IS the box's top rule: it renders `╭─ Steering ─…─╮` with a comet
+				// sweeping the title, and the box below supplies the body + bottom border only,
+				// so the two stack into one framed block with an animated title. Collapsed short
+				// entries stay light: a `Label:` row with indented lines, no frame.
 				const boxed = expanded || isStreamingSteer;
 				if (isStreamingSteer) {
 					animatedSteerUsed = true;
 					const indicator = this.#getOrCreateSteeringIndicator();
 					indicator.setActive(true);
-					// Indicator above the framed message so the animation reads as the box's banner.
+					// Indicator = the animated top rule; the box renders body + bottom only and
+					// aligns column-for-column beneath it.
 					this.ctx.pendingMessagesContainer.addChild(indicator);
-					this.ctx.pendingMessagesContainer.addChild(new QueuedMessageBox("", safeLines, suffix));
+					this.ctx.pendingMessagesContainer.addChild(new QueuedMessageBox("", safeLines, suffix, false));
 				} else if (boxed) {
 					this.ctx.pendingMessagesContainer.addChild(new QueuedMessageBox(entry.label, safeLines, suffix));
 				} else {

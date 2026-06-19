@@ -19,6 +19,7 @@ export class QueuedMessageBox implements Component {
 	#title: string;
 	#lines: readonly string[];
 	#suffix: string;
+	#showTopBorder: boolean;
 	#cachedWidth = -1;
 	#cachedLines: string[] | undefined;
 
@@ -28,11 +29,16 @@ export class QueuedMessageBox implements Component {
 	 *               control chars stripped by the caller).
 	 * @param suffix Optional trailing marker for the last row (e.g. `(+3)` when
 	 *               collapsed with hidden lines); empty when expanded/short.
+	 * @param showTopBorder When false, the box omits its own top rule — the caller
+	 *               supplies it instead (the animated {@link SteeringIndicator}
+	 *               renders the live steer box's title rule). Body rows + bottom
+	 *               border still align column-for-column with that external rule.
 	 */
-	constructor(title: string, lines: readonly string[], suffix = "") {
+	constructor(title: string, lines: readonly string[], suffix = "", showTopBorder = true) {
 		this.#title = title;
 		this.#lines = lines;
 		this.#suffix = suffix;
+		this.#showTopBorder = showTopBorder;
 	}
 
 	invalidate(): void {
@@ -47,12 +53,16 @@ export class QueuedMessageBox implements Component {
 		// and fall back to plain indented rows so the pending bar never breaks on a
 		// very narrow terminal.
 		if (width < 8) {
-			const flat = [theme.fg("dim", `${this.#title}:`), ...this.#lines.map(l => theme.fg("dim", `  ${l}`))];
+			// Plain indented rows; keep the `Label:` lead only when there is a title
+			// (the streaming-steer box has none — its title rule lives on the indicator).
+			const flat = this.#title
+				? [theme.fg("dim", `${this.#title}:`), ...this.#lines.map(l => theme.fg("dim", `  ${l}`))]
+				: this.#lines.map(l => theme.fg("dim", `  ${l}`));
 			this.#cachedWidth = width;
 			this.#cachedLines = flat;
 			return flat;
 		}
-		const out: string[] = [topBorder(width, this.#title)];
+		const out: string[] = this.#showTopBorder ? [topBorder(width, this.#title)] : [];
 		const last = this.#lines.length - 1;
 		for (let i = 0; i < this.#lines.length; i++) {
 			const text = i === last && this.#suffix ? `${this.#lines[i]}${this.#suffix}` : this.#lines[i];

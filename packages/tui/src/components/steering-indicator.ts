@@ -2,16 +2,24 @@ import type { TUI } from "../tui";
 import { Text } from "./text";
 
 /**
- * Animated "Steering" indicator for the pending-queue bar.
+ * Animated "Steering" indicator rendered AS the top border of the pending
+ * streaming-steer box.
  *
- * Visual: the word `Steering` sits centered on a fixed-width track flanked by
- * particles. A single comet sweeps the whole row in one direction — left→right,
- * then bouncing back right→left — with a fading trail (`● • ∙ ·`) behind it and
- * nothing ahead, so the motion reads as one clear directional sweep rather than
- * scattered blinking. Each letter brightens as the comet passes under it.
- * Monochrome by design: only brightness (dim → normal → bold) and glyph size
- * vary, never the hue, and the rendered string keeps a constant visible width
- * every frame so the pending layout never jitters.
+ * Visual: a rounded box top rule — `╭─ Steering ──────────────╮` — where the
+ * word `Steering` is inset as the box title (exactly like every other titled
+ * surface) and a single comet sweeps the whole rule left→right, then bounces
+ * back right→left, leaving a fading trail (`● • ∙ ·`) behind it and nothing
+ * ahead. Plain rule cells stay `─`; the comet only overlays its trail glyphs as
+ * it passes, and the title letters brighten (muted → bold accent) under the
+ * comet glow. Monochrome by design: only brightness and glyph size vary, never
+ * the hue, and the line keeps a constant visible width every frame so the
+ * pending layout never jitters. The owning {@link QueuedMessageBox} renders its
+ * body + bottom border only, so the indicator + box read as one framed block
+ * with an animated title rule.
+ *
+ * Package boundary: this lives in `packages/tui` and stays theme-agnostic — the
+ * caller injects both the brightness stylers and the border glyphs/paint, so it
+ * never imports coding-agent chrome.
  *
  * Lifecycle: self-driving via `setInterval`; the owner MUST call {@link dispose}
  * (or {@link stop}) before dropping the instance — containers `clear()` without
@@ -22,61 +30,81 @@ const FRAME_MS = 90;
 // Glyph ramp from faint to bold: the comet head shows ●, and the trail behind it
 // fades • ∙ · as the distance from the head grows.
 const GLYPHS = ["·", "∙", "•", "●"] as const;
-const EMPTY = " ";
+const MAX_LEVEL = GLYPHS.length - 1;
+// Below this the titled rule has no room; fall back to the bare word so a very
+// narrow terminal still shows *something* without breaking layout width.
+const MIN_BORDER_WIDTH = 8;
 
 type StyleFns = {
-	/** Dim/dark styling for idle track + faint particles. */
+	/** Dim/dark styling for faint particles. */
 	dim: (s: string) => string;
-	/** Mid styling for the word and the comet's near trail. */
+	/** Mid styling for the resting title word and the comet's near trail. */
 	mid: (s: string) => string;
-	/** Bright/bold styling for the comet head (●) and the letter it is sweeping under. */
+	/** Bright/bold styling for the comet head (●) and the letter it sweeps under. */
 	bright: (s: string) => string;
+};
+
+type BorderStyle = {
+	/** Top-left corner glyph (e.g. `╭`). */
+	topLeft: string;
+	/** Top-right corner glyph (e.g. `╮`). */
+	topRight: string;
+	/** Horizontal rule glyph (e.g. `─`). */
+	horizontal: string;
+	/** Border color paint for the corners and resting rule cells. */
+	paint: (s: string) => string;
 };
 
 export class SteeringIndicator extends Text {
 	#ui: TUI | null = null;
 	#styles: StyleFns;
+	#border: BorderStyle;
 	#word: string;
-	#sideWidth: number;
-	#gap: number;
-	#trackWidth: number;
-	// The comet position on the track and its travel direction. The comet sweeps
-	// the whole row left→right, then bounces back right→left — one clear direction
-	// at a time (never two simultaneous waves), with a trail fading behind it.
+	// The comet position along the inner rule and its travel direction. It sweeps
+	// the whole rule left→right, then bounces back right→left — one clear sweep at
+	// a time (never two simultaneous waves), with a trail fading behind it.
 	#pos = 0;
 	#dir: 1 | -1 = 1;
 	#intervalId?: NodeJS.Timeout;
+	#active = false;
+	// Last layout width, captured in render(); the animation timer reads it to
+	// bounce the comet at the real rule ends.
+	#lastWidth = 0;
+	#cacheSig = "";
+	#cacheLine: readonly string[] | undefined;
 
 	/**
-	 * @param ui      TUI for component-scoped redraws.
-	 * @param styles  dim/mid/bright stylers (hue stays constant; only brightness varies).
-	 * @param word    the centered word (default `Steering`).
-	 * @param sideWidth particle columns on each side of the word (default 6).
-	 * @param gap     spaces between the side track and the word (default 1).
+	 * @param ui     TUI for component-scoped redraws.
+	 * @param styles dim/mid/bright stylers (hue stays constant; only brightness varies).
+	 * @param border box-drawing glyphs + border paint, injected so this stays theme-agnostic.
+	 * @param word   the inset title word (default `Steering`).
 	 */
-	constructor(ui: TUI, styles: StyleFns, word = "Steering", sideWidth = 6, gap = 1) {
-		super("", 1, 0);
+	constructor(ui: TUI, styles: StyleFns, border: BorderStyle, word = "Steering") {
+		super("", 0, 0);
 		this.#ui = ui;
 		this.#styles = styles;
+		this.#border = border;
 		this.#word = word;
-		this.#sideWidth = Math.max(1, sideWidth);
-		this.#gap = Math.max(0, gap);
-		// Full track: [side] gap [word] gap [side]. The comet sweeps the whole span.
-		this.#trackWidth = this.#sideWidth * 2 + this.#gap * 2 + this.#word.length;
-		this.#renderIdle();
 	}
 
-	/** Activate (animate) or deactivate (stop + show a static idle frame). Idempotent. */
+	/** Number of inner rule cells the comet sweeps (between the two corners). */
+	#span(): number {
+		return Math.max(1, this.#lastWidth - 2);
+	}
+
+	/** Activate (animate) or deactivate (stop + show a static idle rule). Idempotent. */
 	setActive(active: boolean): void {
 		if (active) {
 			if (this.#intervalId) return;
-			this.#render();
+			this.#active = true;
+			this.#invalidateFrame();
 			this.#intervalId = setInterval(() => {
 				// Sweep the comet one cell in the current direction; reverse at each end so
 				// it travels left→right then right→left (a single clear sweep each way).
+				const span = this.#span();
 				const next = this.#pos + this.#dir;
-				if (next >= this.#trackWidth - 1) {
-					this.#pos = this.#trackWidth - 1;
+				if (next >= span - 1) {
+					this.#pos = span - 1;
 					this.#dir = -1;
 				} else if (next <= 0) {
 					this.#pos = 0;
@@ -84,11 +112,16 @@ export class SteeringIndicator extends Text {
 				} else {
 					this.#pos = next;
 				}
-				this.#render();
+				this.#invalidateFrame();
+				this.#ui?.requestComponentRender(this);
 			}, FRAME_MS);
 		} else {
 			this.stop();
-			this.#renderIdle();
+			if (this.#active) {
+				this.#active = false;
+				this.#invalidateFrame();
+				this.#ui?.requestComponentRender(this);
+			}
 		}
 	}
 
@@ -104,62 +137,74 @@ export class SteeringIndicator extends Text {
 		this.stop();
 	}
 
-	/**
-	 * Build one frame. The track is `[side] gap [word] gap [side]`. A single comet
-	 * sits at `#pos`; the cell it occupies shows the largest glyph (`●` / a bright
-	 * letter), and the cells *behind* it (opposite its travel direction) fade
-	 * through `• ∙ ·` as a trail. Nothing renders ahead of the comet, so the motion
-	 * reads as one clear sweep — left→right, then right→left after the bounce. The
-	 * word's letters brighten as the comet passes under them. Constant visible width.
-	 */
-	#render(): void {
-		const wordStart = this.#sideWidth + this.#gap;
-		const wordEnd = wordStart + this.#word.length; // exclusive
-		const maxLevel = GLYPHS.length - 1; // index of the brightest glyph (●)
-		let out = "";
-		for (let col = 0; col < this.#trackWidth; col++) {
-			// Trail distance: how far this cell is *behind* the comet along its travel
-			// direction. 0 at the comet head; positive behind it; negative ahead (no
-			// glyph). #dir > 0 (moving right) → trail is to the left, and vice-versa.
-			const behind = this.#dir > 0 ? this.#pos - col : col - this.#pos;
-			const level = behind >= 0 && behind <= maxLevel ? maxLevel - behind : -1;
-			const inWord = col >= wordStart && col < wordEnd;
-			const isGap =
-				(col >= wordStart - this.#gap && col < wordStart) || (col >= wordEnd && col < wordEnd + this.#gap);
-			if (inWord) {
-				const ch = this.#word[col - wordStart];
-				// Comet on the letter → bright; just behind → mid; otherwise dim.
-				out +=
-					level >= maxLevel ? this.#styles.bright(ch) : level >= 1 ? this.#styles.mid(ch) : this.#styles.dim(ch);
-			} else if (level < 0) {
-				// Ahead of the comet (or fully past it): blank cell, keeps the width.
-				out += this.#styles.dim(EMPTY);
-			} else if (isGap && level < maxLevel) {
-				// Gap cell with only trail (not the head) stays blank so the word keeps a
-				// clean margin; the head itself still shows so the comet never vanishes.
-				out += this.#styles.dim(EMPTY);
-			} else {
-				const glyph = GLYPHS[level];
-				out += level >= maxLevel ? this.#styles.bright(glyph) : this.#styles.mid(glyph);
-			}
-		}
-		if (this.setText(out) && this.#ui) {
-			// Component-scoped: a frame changes only this node, so the TUI reuses
-			// every other subtree instead of re-walking the whole transcript.
-			this.#ui.requestComponentRender(this);
-		}
+	#invalidateFrame(): void {
+		this.#cacheSig = "";
+		this.#cacheLine = undefined;
+	}
+
+	invalidate(): void {
+		super.invalidate();
+		this.#invalidateFrame();
 	}
 
 	/**
-	 * Static idle frame: the word in mid styling on an otherwise blank track, same
-	 * visible width as an animated frame so toggling active never shifts layout.
+	 * Build the animated top-border line for the current frame. Overrides
+	 * {@link Text.render} so the rule spans the full layout width every frame —
+	 * the timer only advances the comet and asks the TUI to re-render this node.
 	 */
-	#renderIdle(): void {
-		const left = EMPTY.repeat(this.#sideWidth + this.#gap);
-		const right = EMPTY.repeat(this.#sideWidth + this.#gap);
-		const out = `${left}${this.#styles.mid(this.#word)}${right}`;
-		if (this.setText(out) && this.#ui) {
-			this.#ui.requestComponentRender(this);
+	render(width: number): readonly string[] {
+		this.#lastWidth = width;
+		const pos = Math.min(Math.max(0, this.#pos), this.#span() - 1);
+		const sig = `${width}|${pos}|${this.#dir}|${this.#active ? 1 : 0}`;
+		if (this.#cacheLine && this.#cacheSig === sig) return this.#cacheLine;
+		const line = this.#buildLine(width, pos);
+		this.#cacheLine = [line];
+		this.#cacheSig = sig;
+		return this.#cacheLine;
+	}
+
+	/**
+	 * One frame: `╭` + inner rule + `╮`. The inner cells carry the inset title
+	 * `␣Steering␣` (after a single leading rule cell, matching the shared
+	 * top-border layout) flanked by `─` rule. A comet at `pos` shows `●` and
+	 * fades `• ∙ ·` behind it along its travel direction; cells ahead stay plain.
+	 * Title letters brighten under the comet, rest in mid. Constant visible width.
+	 */
+	#buildLine(width: number, pos: number): string {
+		const { topLeft, topRight, horizontal, paint } = this.#border;
+		if (width < MIN_BORDER_WIDTH) {
+			return this.#active ? this.#styles.bright(this.#word) : this.#styles.mid(this.#word);
 		}
+		const inner = width - 2;
+		// Title inset one rule cell in from the left corner: `╭─ Steering ─…─╮`.
+		const titleStr = ` ${this.#word} `;
+		const titleStart = 1;
+		const titleEnd = Math.min(inner, titleStart + titleStr.length); // exclusive
+		let out = paint(topLeft);
+		for (let c = 0; c < inner; c++) {
+			// Trail distance: how far this cell sits *behind* the comet along its
+			// travel direction (0 at the head; positive behind; negative ahead).
+			const behind = this.#dir > 0 ? pos - c : c - pos;
+			const level = this.#active && behind >= 0 && behind <= MAX_LEVEL ? MAX_LEVEL - behind : -1;
+			if (c >= titleStart && c < titleEnd) {
+				const ch = titleStr[c - titleStart] ?? " ";
+				if (ch === " ") {
+					// Title margin stays clean; only the comet head crosses it visibly.
+					out += level >= MAX_LEVEL ? this.#styles.bright(GLYPHS[MAX_LEVEL]) : " ";
+				} else {
+					// Only the single letter directly under the comet head brightens; the
+					// rest of the word rests in mid, so exactly one cell glows per frame.
+					out += level >= MAX_LEVEL ? this.#styles.bright(ch) : this.#styles.mid(ch);
+				}
+			} else if (level >= MAX_LEVEL) {
+				out += this.#styles.bright(GLYPHS[MAX_LEVEL]);
+			} else if (level >= 0) {
+				out += this.#styles.mid(GLYPHS[level]);
+			} else {
+				out += paint(horizontal);
+			}
+		}
+		out += paint(topRight);
+		return out;
 	}
 }
