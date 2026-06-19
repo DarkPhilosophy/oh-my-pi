@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [16.1.3] - 2026-06-19
+
+### Fixed
+
+- Marked Ollama Cloud catalog models to omit on-the-wire output-token caps, preventing context-window-sized `num_predict` values from causing HTTP 400s for models whose true output cap is not discoverable. ([#2984](https://github.com/can1357/oh-my-pi/issues/2984))
+- Fixed `readModelCache`/`writeModelCache` using a process-global shared database even when a custom `dbPath` was provided. Custom-path cache operations now open and close a per-call database via `withModelCacheDb`, preventing leaked SQLite handles on Windows
+
 ## [16.1.2] - 2026-06-19
 
 ### Added

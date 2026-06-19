@@ -104,6 +104,7 @@ import {
 	streamSimple,
 } from "@oh-my-pi/pi-ai";
 import { stripToolDescriptions } from "@oh-my-pi/pi-ai/utils/schema";
+import { THINKING_LOOP_ERROR_MARKER } from "@oh-my-pi/pi-ai/utils/thinking-loop";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { MacOSPowerAssertion } from "@oh-my-pi/pi-natives";
@@ -205,6 +206,7 @@ import type { HindsightSessionState } from "../hindsight/state";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import { IrcBus, type IrcMessage } from "../irc/bus";
 import { resolveMemoryBackend } from "../memory-backend";
+import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
 import { containsOrchestrate, ORCHESTRATE_NOTICE } from "../modes/orchestrate";
 import { getCurrentThemeName, theme } from "../modes/theme/theme";
@@ -4208,6 +4210,11 @@ export class AgentSession {
 		hindsightState?.dispose();
 		const mnemopiState = setMnemopiSessionState(this, undefined);
 		await mnemopiState?.dispose();
+		// Tear down the embeddings subprocess AFTER mnemopi state.dispose:
+		// consolidate-on-dispose may still call `embed()` to store the final
+		// memories, and that round-trips through the worker we are about to
+		// hard-kill (issue #3031).
+		await shutdownMnemopiEmbedClient();
 		this.#disconnectFromAgent();
 		if (this.#unsubscribeAppendOnly) {
 			this.#unsubscribeAppendOnly();
@@ -9978,6 +9985,7 @@ export class AgentSession {
 		if (this.#isProviderErrorFinishReasonBeforeToolUse(message)) return true;
 		if (this.#isMalformedFunctionCallError(message)) return true;
 		if (this.#hasReplayUnsafeToolOutput(message)) return false;
+		if (message.errorMessage.includes(THINKING_LOOP_ERROR_MARKER)) return true;
 		if (this.#isStaleOpenAIResponsesReplayError(message)) return true;
 
 		const err = message.errorMessage;
