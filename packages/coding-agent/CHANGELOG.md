@@ -17,6 +17,12 @@
 - Fixed a raw slash/prompt-template message losing its local-submission marker when an orphan submit (Enter while the main loop has no input waiter) coalesced into an existing queued tail: that path now routes through the same coalescing submit helper as the rest, so `prompt()`'s template expansion swaps the raw signature for the expanded/merged one and the delivered message stays recognized as local (never clears a draft typed while waiting).
 - Fixed local-submission signatures being tracked in a plain `Set`, so two sessions (the main session and a focused subagent) holding an identical queued message — e.g. `ok` with no images — shared one entry: restoring/consuming one session's copy unmarked the other's, and its later `message_start` was treated as non-local and could clear a draft typed while waiting. Signatures are now reference-counted (a `SignatureMultiset`), so identical signatures from different sessions are independent and a delete only consumes one occurrence.
 
+## [16.1.5] - 2026-06-19
+
+### Changed
+
+- Removed the legacy `AgentSession.nextToolChoice()` method. The per-turn tool-choice directive now flows solely through `nextToolChoiceDirective()` (which folds in the hard-choice dequeue plus active-tool filtering as a private helper), eliminating the dual entry point that let callers consume the queue while bypassing the soft pending-preview lifecycle. The underlying `ToolChoiceQueue.nextToolChoice()` is unchanged.
+
 ## [16.1.4] - 2026-06-19
 
 ### Fixed
