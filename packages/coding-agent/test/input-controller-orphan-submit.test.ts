@@ -134,6 +134,9 @@ describe("InputController orphaned submit", () => {
 		expect(spies.prompt).toHaveBeenCalledWith("do not lose me", {
 			streamingBehavior: "steer",
 			images: undefined,
+			// Routed through #submitCoalescingLocal so a coalesce in the gap can swap the raw
+			// local signature for the expanded/merged one.
+			onQueued: expect.any(Function),
 		});
 		expect(spies.steer).not.toHaveBeenCalled();
 		// Delivery protection: the prompted message is marked as locally submitted.
@@ -141,6 +144,33 @@ describe("InputController orphaned submit", () => {
 		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalled();
 		expect(spies.requestRender).toHaveBeenCalled();
 		expect(spies.addToHistory).toHaveBeenCalledWith("do not lose me");
+	});
+
+	it("swaps the raw local signature for the expanded/merged one when an orphan submit coalesces", async () => {
+		// Codex #2890 P2 (r3438082767): the no-input-waiter fallback records the RAW editor
+		// text as a local signature, but prompt() expands a slash/prompt template before a
+		// coalesce merges it. Routed through #submitCoalescingLocal, the helper's onQueued must
+		// drop the raw signature and record the expanded/merged one, so the delivered
+		// message_start stays recognized as local and never clears a draft typed while waiting.
+		const { ctx, editor, spies } = createContext();
+		// Stub prompt to simulate template expansion + coalesce: the raw "/tpl" becomes the
+		// expanded "expanded body", merged into an existing "prev" tail.
+		spies.prompt.mockImplementation((async (
+			_text: string,
+			options?: { onQueued?: (t: string, n: number, r?: string) => void },
+		) => {
+			options?.onQueued?.("prev\nexpanded body", 0, "prev");
+		}) as unknown as () => Promise<void>);
+		const controller = new InputController(ctx);
+		controller.setupEditorSubmitHandler();
+
+		await editor.onSubmit?.("/tpl");
+
+		// Raw per-send signature is gone; the merged expanded signature is recorded local.
+		expect(ctx.locallySubmittedUserSignatures.has("/tpl\u00000")).toBe(false);
+		expect(ctx.locallySubmittedUserSignatures.has("prev\nexpanded body\u00000")).toBe(true);
+		// The replaced tail's stale signature is not left behind either.
+		expect(ctx.locallySubmittedUserSignatures.has("prev\u00000")).toBe(false);
 	});
 
 	it("starts a real idle session even when steer drain would be non-resumable", async () => {
@@ -193,7 +223,11 @@ describe("InputController orphaned submit", () => {
 
 		await editor.onSubmit?.("look at this");
 
-		expect(spies.prompt).toHaveBeenCalledWith("look at this", { streamingBehavior: "steer", images: [image] });
+		expect(spies.prompt).toHaveBeenCalledWith("look at this", {
+			streamingBehavior: "steer",
+			images: [image],
+			onQueued: expect.any(Function),
+		});
 		expect(ctx.locallySubmittedUserSignatures.has("look at this\u00001")).toBe(true);
 		expect(ctx.pendingImages.length).toBe(0);
 	});

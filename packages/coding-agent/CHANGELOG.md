@@ -14,6 +14,8 @@
 
 - Fixed a duplicated user message in the transcript when an idle queued-message drain coalesced a just-rendered send into the pending tail: the optimistic bubble for the swallowed send is now surgically removed (not via a full chat rebuild) so the merged `message_start` renders the full text once. Removing it surgically also keeps the active assistant block attached when the coalesce races an in-flight stream — a mid-stream rebuild would have detached the live block and sent later deltas into an orphaned, invisible component.
 - Fixed queued-message preview lines in the pending bar rendering raw tabs and control characters from RPC/SDK `steer`/`followUp` text: each line is now sanitized (ANSI/control strip + tab expansion) before styling, so it can no longer punch visual holes or corrupt the pending bar.
+- Fixed a raw slash/prompt-template message losing its local-submission marker when an orphan submit (Enter while the main loop has no input waiter) coalesced into an existing queued tail: that path now routes through the same coalescing submit helper as the rest, so `prompt()`'s template expansion swaps the raw signature for the expanded/merged one and the delivered message stays recognized as local (never clears a draft typed while waiting).
+
 ## [16.0.11] - 2026-06-19
 
 ### Added

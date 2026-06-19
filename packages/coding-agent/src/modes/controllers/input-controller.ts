@@ -768,13 +768,16 @@ export class InputController {
 				this.ctx.pendingImages = [];
 				this.ctx.pendingImageLinks = [];
 				try {
-					await this.ctx.withLocalSubmission(
-						text,
-						() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
-						{
-							imageCount: images?.length ?? 0,
-						},
-					);
+					// Route through #submitCoalescingLocal (not a bare withLocalSubmission): if a
+					// background turn starts in the gap and this raw send coalesces into an existing
+					// queued tail, prompt() may expand a slash/prompt template before merging — the
+					// helper's onQueued swaps the raw local signature for the expanded/merged one so
+					// the delivered message_start is still recognized as local and never clears a
+					// draft typed while waiting.
+					await this.#submitCoalescingLocal(this.ctx.session, text, {
+						streamingBehavior: "steer",
+						images,
+					});
 				} catch (error) {
 					// Don't lose the message: hand the text and images back to the
 					// editor so the user can retry (e.g. prompt dispatch rejecting an
@@ -1089,9 +1092,11 @@ export class InputController {
 		this.ctx.editor.imageLinks = undefined;
 		this.ctx.pendingImages = [];
 		this.ctx.pendingImageLinks = [];
-		await this.ctx.withLocalSubmission(text, () => this.ctx.session.prompt(text, { images }), {
-			imageCount: images?.length ?? 0,
-		});
+		// Route through #submitCoalescingLocal so that if a turn starts mid-dispatch and this
+		// raw send coalesces (and prompt() expands a template before merging), onQueued swaps
+		// the raw local signature for the expanded/merged one — the delivered message stays
+		// recognized as local and never clears a draft.
+		await this.#submitCoalescingLocal(this.ctx.session, text, { streamingBehavior: "followUp", images });
 	}
 
 	restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): number {
