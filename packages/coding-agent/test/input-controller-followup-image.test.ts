@@ -103,7 +103,9 @@ describe("InputController.handleFollowUp image forwarding", () => {
 		const call = prompt.mock.calls[0];
 		if (!call) throw new Error("expected session.prompt to be called");
 		expect(call[1]?.images).toEqual([image]);
-		expect(call[1]?.streamingBehavior).toBeUndefined();
+		// Idle follow-up routes through the coalescing submit helper, which threads
+		// streamingBehavior:"followUp" so a mid-dispatch race keeps follow-up semantics.
+		expect(call[1]?.streamingBehavior).toBe("followUp");
 		expect(ctx.pendingImages).toEqual([]);
 	});
 
