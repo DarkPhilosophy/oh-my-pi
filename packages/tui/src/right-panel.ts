@@ -10,6 +10,7 @@
  * scrollback and does not interfere with the live-region / stable-prefix
  * protocol, because the composed frame itself is never mutated.
  */
+import { RESERVED_IMAGE_ROW } from "./components/image";
 import { padding, replaceTabs, truncateToWidth, visibleWidth } from "./utils";
 
 const TRAILING_PADDING_RE = /[ \t]+((?:\x1b\[[0-9;]*m)*)$/u;
@@ -105,16 +106,19 @@ export function compositeRightPanelsInRange(
 	if (searchEnd - searchStart < RIGHT_PANEL_MIN_ROWS) return baseLines;
 
 	// Visually occupied rows (image protocol escapes, OSC 66 sized headings,
-	// etc.) must not receive panel text. Image escape rows additionally
-	// backfill contiguous zero-width placeholders before them, because image
-	// components reserve cells with blank rows above the raw protocol line.
+	// etc.) must not receive panel text. A raw image escape additionally backfills
+	// the renderer's own reserved rows printed above it — but ONLY those: the image
+	// component emits `RESERVED_IMAGE_ROW` (a non-plain zero-width sentinel) for the
+	// cells it reserves, whereas ordinary Markdown spacing is a plain "" row. Walking
+	// every zero-width row would wrongly mark an unrelated blank spacer above the
+	// image as occupied and hide a `rightEditor` block that fits there.
 	const occupied = new Array<boolean>(baseLines.length).fill(false);
 	for (let i = 0; i < baseLines.length; i++) {
 		const line = baseLines[i] ?? "";
 		if (isOccupiedLine(line, i)) occupied[i] = true;
 		if (isBackfilledOccupiedLine(line, i)) {
 			occupied[i] = true;
-			for (let j = i - 1; j >= 0 && visibleWidth(baseLines[j] ?? "") === 0; j--) occupied[j] = true;
+			for (let j = i - 1; j >= 0 && baseLines[j] === RESERVED_IMAGE_ROW; j--) occupied[j] = true;
 		}
 	}
 
