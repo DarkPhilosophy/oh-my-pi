@@ -22,9 +22,8 @@ import {
 	isEnoent,
 	logger,
 	procmgr,
-	setDefaultTabWidth,
 } from "@oh-my-pi/pi-utils";
-import { YAML } from "bun";
+import { JSONC, YAML } from "bun";
 import { type Settings as SettingsCapabilityItem, settingsCapability } from "../capability/settings";
 import type { ModelRole } from "../config/model-roles";
 import { loadCapability } from "../discovery";
@@ -668,9 +667,9 @@ export class Settings {
 		// 1. Migrate from settings.json
 		const settingsJsonPath = path.join(this.#agentDir, "settings.json");
 		try {
-			const parsed = JSON.parse(await Bun.file(settingsJsonPath).text());
+			const parsed: unknown = JSONC.parse(await Bun.file(settingsJsonPath).text());
 			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-				settings = this.#deepMerge(settings, this.#migrateRawSettings(parsed));
+				settings = this.#deepMerge(settings, this.#migrateRawSettings(parsed as RawSettings));
 				migrated = true;
 				try {
 					fs.renameSync(settingsJsonPath, `${settingsJsonPath}.bak`);
@@ -1101,11 +1100,6 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 			setColorBlindMode(value).catch(err => {
 				logger.warn("Settings: colorBlindMode hook failed", { enabled: value, error: String(err) });
 			});
-		}
-	},
-	"display.tabWidth": value => {
-		if (typeof value === "number") {
-			setDefaultTabWidth(value);
 		}
 	},
 	"provider.appendOnlyContext": value => {

@@ -200,6 +200,19 @@ describe("normalize", () => {
 			`x ${snapcompact.DIM_ON}y${snapcompact.DIM_OFF} z`,
 		);
 	});
+
+	it("folds compatibility characters to their ASCII skeleton via NFKD", () => {
+		expect(snapcompact.normalize("x⁵")).toBe("x5"); // superscript outside Latin-1
+		expect(snapcompact.normalize("ＨＥＬＬＯ")).toBe("HELLO"); // fullwidth forms
+		expect(snapcompact.normalize("ﬁle")).toBe("file"); // fi ligature
+		expect(snapcompact.normalize("step ① then ②")).toBe("step 1 then 2"); // circled digits
+		expect(snapcompact.normalize("section Ⅻ")).toBe("section XII"); // roman numeral
+		expect(snapcompact.normalize("⅓ cup")).toBe("1/3 cup"); // vulgar fraction
+		expect(snapcompact.normalize("𝐇𝐞𝐥𝐥𝐨")).toBe("Hello"); // math-styled alphanumerics
+		expect(snapcompact.normalize("™ ‹q› ′ ″ ⇐ ↑")).toBe(`TM <q> ' " <= ^`);
+		// No decomposition and no glyph still falls back to ? (unchanged contract).
+		expect(snapcompact.normalize("emoji 🎞")).toBe("emoji ?");
+	});
 });
 
 describe("shape resolution", () => {
@@ -476,7 +489,7 @@ describe("serializeConversation", () => {
 		// Default cap 2000 at 0.6 head ratio: 1200 head + 800 tail survive.
 		expect(out).toContain("<out>");
 		expect(out).toContain("HEAD-");
-		expect(out).toContain("[... 3010 chars elided ...]");
+		expect(out).toContain("[…3010ch elided…]");
 		expect(out.endsWith(`-TAIL${snapcompact.DIM_OFF}\n</out>`)).toBe(true);
 	});
 
@@ -486,7 +499,7 @@ describe("serializeConversation", () => {
 			toolResultMaxChars: 10,
 			truncateHeadRatio: 0.5,
 		});
-		expect(tight).toContain("[... 90 chars elided ...]");
+		expect(tight).toContain("[…90ch elided…]");
 		const off = snapcompact.serializeConversation([createToolResultMessage(text)], {
 			toolResultMaxChars: Number.POSITIVE_INFINITY,
 		});
@@ -501,7 +514,7 @@ describe("serializeConversation", () => {
 		]);
 		// JSON-encoded content is 3002 chars; per-value cap 500 elides 2502.
 		expect(out).toContain('write(path="a.ts", content=');
-		expect(out).toContain("[... 2502 chars elided ...]");
+		expect(out).toContain("[…2502ch elided…]");
 	});
 
 	it("caps the whole serialized argument list per call", () => {
@@ -511,7 +524,7 @@ describe("serializeConversation", () => {
 			createAssistantMessage([{ type: "toolCall", id: "c1", name: "tool", arguments: args }]),
 		]);
 		expect(out).toContain("arg0=");
-		expect(out).toContain("chars elided");
+		expect(out).toContain("ch elided");
 		// 10 values x ~400 chars collapse to the 2000-char call budget plus markers.
 		expect(out.length).toBeLessThan(2200);
 	});
@@ -609,6 +622,22 @@ describe("serializeConversation", () => {
 		expect(out).toBe("# Assistant ¶\nbefore\nafter");
 	});
 
+	it("drops blank text/thinking blocks instead of emitting an empty assistant heading", () => {
+		const out = snapcompact.serializeConversation(
+			[
+				createAssistantMessage([
+					{ type: "thinking", thinking: "   " },
+					{ type: "text", text: "" },
+					{ type: "toolCall", id: "c1", name: "read", arguments: { path: "a.ts" } },
+				]),
+				{ ...createToolResultMessage("body"), toolCallId: "c1" } as Message,
+			],
+			{ dimToolResults: false },
+		);
+		expect(out).toBe('# Tool call ¶\nread(path="a.ts")\n<out>\nbody\n</out>');
+		expect(out).not.toContain("# Assistant ¶");
+	});
+
 	it("wraps tool-result bodies in dim toggles by default and strips stray toggles from content", () => {
 		const out = snapcompact.serializeConversation([
 			createUserMessage(`hello ${snapcompact.DIM_ON}world`),
@@ -645,9 +674,8 @@ describe("compact", () => {
 		expect(result.firstKeptEntryId).toBe("kept-1");
 		expect(result.tokensBefore).toBe(99000);
 		// Reading instructions reflect the default (anthropic 11on16-bw) shape.
-		expect(result.summary).toContain("29 characters per row");
+		expect(result.summary).toContain("29 characters wide");
 		expect(result.summary).toContain("dim gray");
-		expect(result.summary).toContain("plain black ink");
 		expect(result.summary).toContain("snapcompact frame");
 		// File operations are upserted like every other compaction summary:
 		// one grouped <files> tree with per-file access markers.
@@ -687,7 +715,7 @@ describe("compact", () => {
 		// Conversation text outside the span stays in black bw ink (frame 1).
 		const first = decodePng(Buffer.from(archive?.frames[0].data ?? "", "base64"));
 		expect(new Set(first.pixels).has(7)).toBe(true);
-		expect(result.summary).toContain("dim gray ink");
+		expect(result.summary).toContain("archived tool output");
 	});
 
 	it("keeps frames free of dim ink when dimToolResults is false", async () => {
@@ -700,7 +728,7 @@ describe("compact", () => {
 		const archive = snapcompact.getPreservedArchive(result.preserveData);
 		const decoded = decodePng(Buffer.from(archive?.frames[0].data ?? "", "base64"));
 		expect(new Set(decoded.pixels).has(9)).toBe(false);
-		expect(result.summary).not.toContain("dim gray ink");
+		expect(result.summary).not.toContain("archived tool output");
 	});
 
 	it("keeps history past the frame budget as a text tail instead of dropping it", async () => {
@@ -758,7 +786,7 @@ describe("compact", () => {
 		);
 		const archive = snapcompact.getPreservedArchive(result.preserveData);
 		expect(archive?.frames.length).toBe(1);
-		expect(archive?.textTail).toContain("chars elided");
+		expect(archive?.textTail).toContain("ch elided");
 		expect(archive?.textTail?.length).toBeLessThan(capacity * 2.5);
 		expect(archive?.truncatedChars).toBeGreaterThan(0);
 	});
