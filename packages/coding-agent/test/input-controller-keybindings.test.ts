@@ -399,8 +399,14 @@ describe("InputController keybinding setup", () => {
 		await controller.handleFollowUp();
 
 		expect(ctx.locallySubmittedUserSignatures.has("plain idle submit\u00000")).toBe(true);
-		// Idle submit calls prompt() with no streamingBehavior (images forwarded, undefined here).
-		expect(spies.prompt).toHaveBeenCalledWith("plain idle submit", { images: undefined });
+		// Idle follow-up now routes through #submitCoalescingLocal so a coalesce in a
+		// mid-dispatch race can swap the raw local signature for the expanded/merged one;
+		// it threads streamingBehavior + onQueued through prompt().
+		expect(spies.prompt).toHaveBeenCalledWith("plain idle submit", {
+			streamingBehavior: "followUp",
+			images: undefined,
+			onQueued: expect.any(Function),
+		});
 	});
 
 	it("removes the signature when an idle follow-up submission rejects", async () => {
