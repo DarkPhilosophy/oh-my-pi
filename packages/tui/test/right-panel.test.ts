@@ -321,6 +321,28 @@ describe("TUI.setRightPanel", () => {
 		}
 	});
 
+	it("keeps right panel off an OSC 66 reservation row whose heading scrolled just above the window", async () => {
+		const term = new VirtualTerminal(80, 12, 1000);
+		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
+		const heading = "\x1b]66;s=2;Hello\x1b\\";
+		// 13 chat rows → windowTop = 13 - 12 = 1: the heading (frame row 0) scrolls one
+		// row above the visible window, so its reservation row (frame row 1) becomes
+		// window[0]. The forward-only occupancy scan can't see the off-screen heading;
+		// the boundary check must still mark window[0] occupied so the panel skips it.
+		const chat = new Lines([heading, "", ...Array.from({ length: 11 }, () => "")]);
+		tui.addChild(chat);
+		tui.setRightPanel(() => [panel(8)], [chat]);
+		tui.start();
+		await settle(term);
+		try {
+			const widgetRows = term.getViewport().flatMap((line, i) => (line.includes("┌") ? [i] : []));
+			expect(widgetRows.length).toBe(1); // panel placed
+			expect(widgetRows[0]).toBeGreaterThanOrEqual(1); // never on the reserved row 0
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("keeps scrolled-off rows free of panel text when content exceeds the viewport", async () => {
 		const term = new VirtualTerminal(80, 12, 1000);
 		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
