@@ -5,7 +5,6 @@ import {
 	type AgentTelemetryConfig,
 	type AgentTool,
 	AppendOnlyContextManager,
-	INTENT_FIELD,
 	type ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import {
@@ -35,6 +34,7 @@ import {
 	prompt,
 	Snowflake,
 } from "@oh-my-pi/pi-utils";
+import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { ADVISOR_READONLY_TOOL_NAMES, discoverWatchdogFiles } from "./advisor";
 import { type AsyncJob, AsyncJobManager } from "./async";
 import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
@@ -56,6 +56,10 @@ import { loadPromptTemplates as loadPromptTemplatesInternal, type PromptTemplate
 import { Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers } from "./cursor";
 import "./discovery";
+import { AuthBrokerClient } from "@oh-my-pi/pi-ai/auth-broker/client";
+import { RemoteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-broker/remote-store";
+import { readAuthBrokerSnapshotCache, writeAuthBrokerSnapshotCache } from "@oh-my-pi/pi-ai/auth-broker/snapshot-cache";
+import { DEFAULT_SNAPSHOT_CACHE_TTL_MS, type SnapshotResponse } from "@oh-my-pi/pi-ai/auth-broker/types";
 import { resolveConfigValue } from "./config/resolve-config-value";
 import { initializeWithSettings } from "./discovery";
 import { disposeAllKernelSessions, disposeKernelSessionsByOwner } from "./eval/py/executor";
@@ -116,15 +120,7 @@ import {
 } from "./secrets";
 import { AgentSession } from "./session/agent-session";
 import { resolveAuthBrokerConfig } from "./session/auth-broker-config";
-import {
-	AuthBrokerClient,
-	AuthStorage,
-	DEFAULT_SNAPSHOT_CACHE_TTL_MS,
-	RemoteAuthCredentialStore,
-	readAuthBrokerSnapshotCache,
-	type SnapshotResponse,
-	writeAuthBrokerSnapshotCache,
-} from "./session/auth-storage";
+import { AuthStorage } from "./session/auth-storage";
 import {
 	type CustomMessage,
 	convertToLlm,
@@ -148,6 +144,7 @@ import { AgentOutputManager } from "./task/output-manager";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
+	parseConfiguredThinkingLevel,
 	parseThinkingLevel,
 	resolveProvisionalAutoLevel,
 	resolveThinkingLevelForModel,
@@ -1270,12 +1267,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			? getRestorableSessionModels(existingSession.models, sessionManager.getLastModelChangeRole())
 			: [];
 	let restoredSessionModelIndex = -1;
+	let restoredSessionThinkingLevel: ThinkingLevel | undefined;
 	if (!hasExplicitModel && !model && sessionModelStrings.length > 0) {
 		logger.time("restoreSessionModel", () => {
 			let failedSessionModel: string | undefined;
 			for (let i = 0; i < sessionModelStrings.length; i++) {
 				const sessionModelStr = sessionModelStrings[i];
-				const parsedModel = parseModelString(sessionModelStr);
+				const parsedModel = parseModelString(sessionModelStr, {
+					allowMaxAlias: true,
+					isLiteralModelId: (provider, id) => modelRegistry.find(provider, id) !== undefined,
+				});
 				if (!parsedModel) {
 					failedSessionModel ??= sessionModelStr;
 					continue;
@@ -1285,6 +1286,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				if (restoredModel && hasModelAuth(restoredModel)) {
 					model = restoredModel;
 					restoredSessionModelIndex = i;
+					restoredSessionThinkingLevel = parsedModel.thinkingLevel;
 					break;
 				}
 				failedSessionModel ??= sessionModelStr;
@@ -1309,14 +1311,18 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const taskDepth = options.taskDepth ?? 0;
 
 	// Resolves the session/agent thinking level using the same precedence we
-	// apply at startup: explicit option → persisted session entry → default
-	// role's explicit selector → selected model's defaultLevel → global
-	// settings default. Run again after extension role reclaim so the final
-	// model's own defaults aren't masked by an earlier fallback model's.
+	// apply at startup: explicit option → persisted session entry → restored
+	// model selector suffix → default role's explicit selector → selected
+	// model's defaultLevel → global settings default. Run again after extension
+	// role reclaim so the final model's own defaults aren't masked by an earlier
+	// fallback model's.
 	const pickInitialThinkingLevel = (selectedModel: Model | undefined): ConfiguredThinkingLevel | undefined => {
 		let level = options.thinkingLevel;
 		if (level === undefined && hasExistingSession && hasThinkingEntry) {
 			level = parseThinkingLevel(existingSession.thinkingLevel);
+		}
+		if (level === undefined && !hasThinkingEntry && restoredSessionThinkingLevel !== undefined) {
+			level = restoredSessionThinkingLevel;
 		}
 		if (level === undefined && !hasExplicitModel && !hasThinkingEntry && defaultRoleSpec.explicitThinkingLevel) {
 			level = defaultRoleSpec.thinkingLevel;
@@ -1325,7 +1331,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			level = selectedModel.thinking.defaultLevel;
 		}
 		if (level === undefined) {
-			level = settings.get("defaultThinkingLevel");
+			level = parseConfiguredThinkingLevel(settings.get("defaultThinkingLevel"));
 		}
 		return level;
 	};
@@ -1537,6 +1543,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getModelString: () => (hasExplicitModel && model ? formatModelString(model) : undefined),
 			getActiveModelString,
 			getActiveModel: () => agent?.state.model ?? model,
+			getImageAttachments: () => session?.getImageAttachments() ?? [],
 			getPlanModeState: () => session?.getPlanModeState(),
 			getPlanReferencePath: () => session?.getPlanReferencePath() ?? "local://PLAN.md",
 			getGoalModeState: () => session?.getGoalModeState(),
@@ -1909,13 +1916,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		if (!hasExplicitModel && sessionRetryLimit > 0) {
 			for (let i = 0; i < sessionRetryLimit; i++) {
 				const sessionModelStr = sessionModelStrings[i];
-				const parsedModel = parseModelString(sessionModelStr);
+				const parsedModel = parseModelString(sessionModelStr, {
+					allowMaxAlias: true,
+					isLiteralModelId: (provider, id) => modelRegistry.find(provider, id) !== undefined,
+				});
 				if (!parsedModel) continue;
 				const restoredModel = modelRegistry.find(parsedModel.provider, parsedModel.id);
 				if (restoredModel && hasModelAuth(restoredModel)) {
 					model = restoredModel;
 					modelFallbackMessage = undefined;
 					restoredSessionModelIndex = i;
+					restoredSessionThinkingLevel = parsedModel.thinkingLevel;
 					// Recompute thinking-level from scratch against the reclaimed
 					// model: any value derived from the earlier fallback model's
 					// `thinking.defaultLevel` must not become sticky.
@@ -2589,6 +2600,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		if (watchdogFiles && watchdogFiles.length > 0) {
 			advisorWatchdogPrompt = watchdogFiles.join("\n\n");
 		}
+		// Owned only when this session created the manager; subagents receive a
+		// parent's manager via `options.mcpManager` and MUST NOT disconnect it.
+		const ownedMcpManager = options.mcpManager ? undefined : mcpManager;
 		session = new AgentSession({
 			advisorWatchdogPrompt,
 			agent,
@@ -2634,6 +2648,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						return out;
 					}
 				: undefined,
+			disconnectOwnedMcpManager: ownedMcpManager ? () => ownedMcpManager.disconnectAll() : undefined,
 			mcpDiscoveryEnabled,
 			initialSelectedMCPToolNames,
 			defaultSelectedMCPToolNames,

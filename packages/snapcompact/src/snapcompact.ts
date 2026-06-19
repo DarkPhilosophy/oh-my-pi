@@ -50,6 +50,7 @@
 import type { Api, ImageContent, Message, Model } from "@oh-my-pi/pi-ai";
 import { renderSnapcompactPng } from "@oh-my-pi/pi-natives";
 import { formatGroupedPaths, prompt } from "@oh-my-pi/pi-utils";
+import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import fileOperationsTemplate from "./prompts/file-operations.md" with { type: "text" };
 import snapcompactSummaryPrompt from "./prompts/snapcompact-summary.md" with { type: "text" };
 
@@ -551,10 +552,17 @@ export function createFileOps(): FileOperations {
 		edited: new Set(),
 	};
 }
+const URL_SCHEME_RE = /[a-z][a-z0-9+.-]*:\/\//i;
+
+const HEADING_MARKER = " ¶";
+
+export function isUrlSchemePath(path: string): boolean {
+	return URL_SCHEME_RE.test(path);
+}
 
 export function computeFileLists(fileOps: FileOperations): CompactionDetails {
-	const modified = new Set([...fileOps.edited, ...fileOps.written]);
-	const readFiles = [...fileOps.read].filter(file => !modified.has(file)).sort();
+	const modified = new Set([...fileOps.edited, ...fileOps.written].filter(file => !isUrlSchemePath(file)));
+	const readFiles = [...fileOps.read].filter(file => !isUrlSchemePath(file) && !modified.has(file)).sort();
 	const modifiedFiles = [...modified].sort();
 	return { readFiles, modifiedFiles };
 }
@@ -585,7 +593,7 @@ function formatFileOperations(readFiles: string[], modifiedFiles: string[], read
 	const all = [...mode.keys()].sort();
 	let files = formatGroupedPaths(all.slice(0, FILE_OPERATION_SUMMARY_LIMIT), path => ` (${mode.get(path)})`);
 	if (all.length > FILE_OPERATION_SUMMARY_LIMIT) {
-		files += `\n… (${all.length - FILE_OPERATION_SUMMARY_LIMIT} more files omitted)`;
+		files += `\n[…${all.length - FILE_OPERATION_SUMMARY_LIMIT} files elided…]`;
 	}
 	return prompt.render(fileOperationsTemplate, { files });
 }
@@ -650,7 +658,7 @@ function truncateForSummary(text: string, maxChars: number, headRatio: number): 
 	const tailChars = maxChars - headChars;
 	const elided = text.length - maxChars;
 	const tail = tailChars > 0 ? text.slice(-tailChars) : "";
-	return `${text.slice(0, headChars)} [... ${elided} chars elided ...] ${tail}`;
+	return `${text.slice(0, headChars)} […${elided}ch elided…] ${tail}`;
 }
 
 const DIM_MARKERS = /[\u000e\u000f]/g;
@@ -679,14 +687,32 @@ export function serializeConversation(messages: Message[], options?: SerializeOp
 	const dimToolResults = options?.dimToolResults !== false;
 	const parts: string[] = [];
 
-	// Tool results flagged contextually useless (and their paired calls) carry
-	// no information worth archiving — skip the whole pair.
+	// Tool results flagged contextually useless (and their paired calls) carry no
+	// information worth archiving — skip the whole pair. Surviving results are
+	// indexed by tool-call id so each merges into its originating `# Tool call`.
 	const uselessCallIds = new Set<string>();
+	const resultTextByCallId = new Map<string, string>();
 	for (const msg of messages) {
-		if (msg.role === "toolResult" && msg.useless === true && msg.isError !== true) {
+		if (msg.role !== "toolResult") continue;
+		if (msg.useless === true && msg.isError !== true) {
 			uselessCallIds.add(msg.toolCallId);
+			continue;
 		}
+		const text = msg.content
+			.filter((block): block is { type: "text"; text: string } => block.type === "text")
+			.map(block => block.text)
+			.join("");
+		if (text) resultTextByCallId.set(msg.toolCallId, text);
 	}
+
+	// Wrap a raw tool-result body in an `<out>` block, dimming only the body so
+	// the frame coloring keeps structure (headings, calls) loud.
+	const renderResultBlock = (rawText: string): string => {
+		const body = truncateForSummary(stripDimMarkers(rawText), toolResultMaxChars, headRatio);
+		return `<out>\n${dimToolResults ? `${DIM_ON}${body}${DIM_OFF}` : body}\n</out>`;
+	};
+
+	const mergedCallIds = new Set<string>();
 
 	for (const msg of messages) {
 		if (msg.role === "user") {
@@ -697,22 +723,45 @@ export function serializeConversation(messages: Message[], options?: SerializeOp
 							.filter((content): content is { type: "text"; text: string } => content.type === "text")
 							.map(content => content.text)
 							.join("");
-			if (content) parts.push(`[User]: ${stripDimMarkers(content)}`);
+			if (content) parts.push(`# User${HEADING_MARKER}\n${stripDimMarkers(content)}`);
 		} else if (msg.role === "assistant") {
-			const textParts: string[] = [];
-			const thinkingParts: string[] = [];
-			const toolCalls: string[] = [];
+			// Stream blocks in content order: buffer thinking/text, then flush a
+			// `# Assistant` block (thinking as italics above the text) right before
+			// each tool call, so text or thinking after a call stays after it.
+			let pendingThinking: string[] = [];
+			let pendingText: string[] = [];
+			const flushAssistant = () => {
+				const sections: string[] = [];
+				if (pendingThinking.length > 0) sections.push(`_${pendingThinking.join("\n")}_`);
+				if (pendingText.length > 0) sections.push(pendingText.join("\n"));
+				if (sections.length > 0) parts.push(`# Assistant${HEADING_MARKER}\n${sections.join("\n\n")}`);
+				pendingThinking = [];
+				pendingText = [];
+			};
 
 			for (const block of msg.content) {
 				if (block.type === "text") {
-					textParts.push(stripDimMarkers(block.text));
+					const text = stripDimMarkers(block.text);
+					if (text.trim()) pendingText.push(text);
 				} else if (block.type === "thinking") {
-					thinkingParts.push(stripDimMarkers(block.thinking));
+					const thinking = stripDimMarkers(block.thinking);
+					if (thinking.trim()) pendingThinking.push(thinking);
 				} else if (block.type === "toolCall") {
 					if (uselessCallIds.has(block.id)) continue;
+					flushAssistant();
 					const args = block.arguments as Record<string, unknown>;
+					// Prefer the harness-derived intent, else the raw `_i` arg; render it as
+					// a one-line `//comment` and drop `_i` from the args below.
+					const rawIntent =
+						typeof block.intent === "string"
+							? block.intent
+							: typeof args[INTENT_FIELD] === "string"
+								? (args[INTENT_FIELD] as string)
+								: "";
+					const intent = stripDimMarkers(rawIntent).replace(/\s+/g, " ").trim();
 					const argsStr = truncateForSummary(
 						Object.entries(args)
+							.filter(([key]) => key !== INTENT_FIELD)
 							.map(
 								([key, value]) =>
 									`${key}=${truncateForSummary(JSON.stringify(value) ?? "undefined", toolArgMaxChars, headRatio)}`,
@@ -721,30 +770,24 @@ export function serializeConversation(messages: Message[], options?: SerializeOp
 						toolCallMaxChars,
 						headRatio,
 					);
-					toolCalls.push(`${block.name}(${argsStr})`);
+					const lines = [`# Tool call${HEADING_MARKER}`];
+					if (intent) lines.push(`//${intent}`);
+					lines.push(`${block.name}(${argsStr})`);
+					const resultText = resultTextByCallId.get(block.id);
+					if (resultText !== undefined) {
+						mergedCallIds.add(block.id);
+						lines.push(renderResultBlock(resultText));
+					}
+					parts.push(lines.join("\n"));
 				}
 			}
-
-			if (thinkingParts.length > 0) {
-				parts.push(`[Think]: ${thinkingParts.join("\n")}`);
-			}
-			if (textParts.length > 0) {
-				parts.push(`[Assistant]: ${textParts.join("\n")}`);
-			}
-			if (toolCalls.length > 0) {
-				parts.push(`[Tool Call]: ${toolCalls.join("; ")}`);
-			}
+			flushAssistant();
 		} else if (msg.role === "toolResult") {
-			if (uselessCallIds.has(msg.toolCallId)) continue;
-			const content = msg.content
-				.filter((block): block is { type: "text"; text: string } => block.type === "text")
-				.map(block => block.text)
-				.join("");
-			if (content) {
-				// Args above are JSON-escaped, so only raw result text can carry toggles.
-				const body = truncateForSummary(stripDimMarkers(content), toolResultMaxChars, headRatio);
-				parts.push(dimToolResults ? `[Tool Result]: ${DIM_ON}${body}${DIM_OFF}` : `[Tool Result]: ${body}`);
-			}
+			// Paired results already merged into their `# Tool call` block above;
+			// only orphans (call archived outside this window) render standalone.
+			if (uselessCallIds.has(msg.toolCallId) || mergedCallIds.has(msg.toolCallId)) continue;
+			const resultText = resultTextByCallId.get(msg.toolCallId);
+			if (resultText !== undefined) parts.push(`# Tool call${HEADING_MARKER}\n${renderResultBlock(resultText)}`);
 		}
 	}
 
@@ -771,8 +814,11 @@ function stripOpenAiRemoteCompactionPreserveData(
 // Text normalization
 // ============================================================================
 
-/** Folds for common non-Latin-1 characters the bundled fonts cannot draw. */
+/** Punctuation and symbol folds applied before the NFKD fallback in
+ *  {@link normalize}: quotes, dashes, bullets, arrows, and dot leaders that
+ *  have no compatibility decomposition (or one that is itself non-ASCII). */
 const CHAR_FOLD: Record<string, string> = {
+	// Quotation marks and primes.
 	"\u2018": "'",
 	"\u2019": "'",
 	"\u201a": "'",
@@ -780,18 +826,44 @@ const CHAR_FOLD: Record<string, string> = {
 	"\u201c": '"',
 	"\u201d": '"',
 	"\u201e": '"',
+	"\u2032": "'",
+	"\u2033": '"',
+	"\u2035": "'",
+	"\u2036": '"',
+	"\u2039": "<",
+	"\u203a": ">",
+	// Dashes, hyphens, and the fraction slash NFKD leaves in vulgar fractions.
+	"\u2010": "-",
+	"\u2011": "-",
+	"\u2012": "-",
 	"\u2013": "-",
 	"\u2014": "-",
 	"\u2015": "-",
 	"\u2212": "-",
+	"\u2044": "/",
+	// Dot leaders and ellipses.
+	"\u2024": ".",
+	"\u2025": "..",
 	"\u2026": "...",
+	"\u22ef": "...",
+	// Bullets.
 	"\u2022": "*",
+	"\u2023": "*",
+	"\u2043": "-",
+	"\u2219": "*",
 	"\u25cf": "*",
 	"\u25a0": "*",
 	"\u25aa": "*",
+	// Arrows.
 	"\u2190": "<-",
+	"\u2191": "^",
 	"\u2192": "->",
+	"\u2193": "v",
+	"\u2194": "<->",
+	"\u21d0": "<=",
 	"\u21d2": "=>",
+	"\u21d4": "<=>",
+	// Check marks and crosses.
 	"\u2713": "v",
 	"\u2714": "v",
 	"\u2717": "x",
@@ -819,15 +891,48 @@ const EDGE_RUNS = /^[ \u2588]+|[ \u2588]+$/g;
  *  combining marks the fonts cannot compose, and lone surrogates. */
 const UNRENDERABLE = /[\p{Cc}\p{Mn}\p{Me}\p{Cs}]/u;
 
+/** Combining marks NFKD splits off accented letters; dropped so the base
+ *  letter prints without the diacritic the bundled fonts cannot compose. */
+const COMBINING_MARKS = /\p{M}+/gu;
+
+/**
+ * Aggressive single-code-point ASCII fold via Unicode NFKD: decompose the
+ * compatibility form (fullwidth, super/subscripts, ligatures, circled and
+ * math-styled alphanumerics, Roman numerals, vulgar fractions, …), strip the
+ * combining marks, and keep the ASCII/Latin-1 skeleton — routing any residual
+ * punctuation back through {@link CHAR_FOLD}. Returns `undefined` when the code
+ * point has no decomposition or still leaves an undrawable glyph, so the
+ * caller falls back to `?`.
+ */
+function foldToAscii(ch: string): string | undefined {
+	const decomposed = ch.normalize("NFKD").replace(COMBINING_MARKS, "");
+	if (decomposed === ch) return undefined;
+	let out = "";
+	for (const part of decomposed) {
+		const cp = part.codePointAt(0) as number;
+		if ((cp >= 0x20 && cp < 0x7f) || (cp >= 0xa0 && cp <= 0xff)) {
+			out += part;
+			continue;
+		}
+		const fold = CHAR_FOLD[part];
+		if (fold === undefined) return undefined;
+		out += fold;
+	}
+	return out;
+}
+
 /**
  * Prepare text for printing: strip ANSI escape sequences, collapse horizontal
  * whitespace runs to single spaces and newline-bearing runs to one
  * {@link NEWLINE_GLYPH} (drawn as a pitch-black cell), then fold everything
- * outside the fonts' ASCII + Latin-1 coverage to ASCII approximations.
- * Unrenderable control/format/combining characters are dropped without
- * occupying a cell; `?` remains the fallback for unsupported graphic
- * characters. The zero-width ink toggles {@link DIM_ON}/{@link DIM_OFF} pass
- * through untouched.
+ * outside the fonts' ASCII + Latin-1 coverage to ASCII approximations — first
+ * through the {@link CHAR_FOLD} punctuation table, then via an NFKD
+ * decomposition that recovers the ASCII skeleton of compatibility characters
+ * (fullwidth, super/subscripts, ligatures, circled/math-styled alphanumerics,
+ * Roman numerals, vulgar fractions). Unrenderable control/format/combining
+ * characters are dropped without occupying a cell; `?` remains the fallback
+ * for unsupported graphic characters. The zero-width ink toggles
+ * {@link DIM_ON}/{@link DIM_OFF} pass through untouched.
  */
 export function normalize(text: string): string {
 	const stripped = text.includes("\u001b") ? Bun.stripANSI(text) : text;
@@ -853,8 +958,10 @@ export function normalize(text: string): string {
 		} else if (cp >= 0x2500 && cp <= 0x257f) {
 			// Box drawing: keep table skeletons legible.
 			out += cp === 0x2502 || cp === 0x2503 ? "|" : cp === 0x2500 || cp === 0x2501 ? "-" : "+";
-		} else if (!UNRENDERABLE.test(ch)) {
-			out += "?";
+		} else {
+			const folded = foldToAscii(ch);
+			if (folded !== undefined) out += folded;
+			else if (!UNRENDERABLE.test(ch)) out += "?";
 		}
 	}
 	return out;

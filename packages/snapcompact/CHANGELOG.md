@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+## [16.0.11] - 2026-06-19
+
+### Changed
+
+- Refined elision markers for file operations and truncated text for better display consistency
+- Updated summary text for consistent descriptions of archived tool output
+- Folded a much wider range of Unicode to ASCII in `normalize()` before native rendering: added a per-character Unicode NFKD decomposition fallback (fullwidth forms, super/subscripts, ligatures, circled and math-styled alphanumerics, Roman numerals, vulgar fractions) and expanded the `CHAR_FOLD` punctuation table (more quotes/primes, hyphens, the fraction slash, dot leaders, bullets, and arrows) so undrawable glyphs land on close ASCII equivalents instead of `?`
+
+## [16.0.8] - 2026-06-18
+
+### Added
+
+- Added `<out>` block wrapping for tool results to improve document structure
+- Rendered thinking process as italicized blocks above assistant text
+- Displayed tool call intents as `//` comments in tool call headers
+- Changed conversation role markers to standard Markdown headings
+
+### Changed
+
+- Merged tool results into their corresponding tool call blocks
+- Preserved prose formatting around tool calls to maintain conversation flow
+- Hidden `_i` argument from tool call output when an intent is provided
+- Optimized assistant turn output to group thinking and text blocks efficiently
+
+### Fixed
+
+- Fixed improper splitting of assistant messages around useless tool calls
+
 ## [16.0.1] - 2026-06-15
 
 ### Added
