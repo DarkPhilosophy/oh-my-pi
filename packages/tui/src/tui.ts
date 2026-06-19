@@ -1819,7 +1819,12 @@ export class TUI extends Container {
 	 * scrollback protocol (live region, committed-prefix audit, stable
 	 * prefixes) and needs no viewport estimation.
 	 */
-	#compositeRightPanelIntoWindow(window: string[], width: number, windowTop: number, frame: readonly string[]): string[] {
+	#compositeRightPanelIntoWindow(
+		window: string[],
+		width: number,
+		windowTop: number,
+		frame: readonly string[],
+	): string[] {
 		const provider = this.#rightPanelProvider;
 		if (provider === null) return window;
 		const blocks = provider(width);
@@ -1865,7 +1870,11 @@ export class TUI extends Container {
 		// otherwise row 0 stays eligible and a right-panel block would be spliced
 		// into the occupied reservation row, overwriting its lower glyph cells.
 		const reservationRow = windowTop > 0 ? frame[windowTop] : undefined;
-		if (reservationRow !== undefined && visibleWidth(reservationRow) === 0 && isOsc66Line(frame[windowTop - 1] ?? "")) {
+		if (
+			reservationRow !== undefined &&
+			visibleWidth(reservationRow) === 0 &&
+			isOsc66Line(frame[windowTop - 1] ?? "")
+		) {
 			occupied[0] = true;
 		}
 		const composited = compositeRightPanelsInRange(
