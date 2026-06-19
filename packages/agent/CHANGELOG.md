@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [16.1.5] - 2026-06-19
+
+### Fixed
+
+- Wire-encoded `normalizeTools` parameters unconditionally so tools whose `intent` resolves to `"omit"` (function intent or `intent: "omit"`, e.g. builtin `eval` / `resolve`) no longer leak raw arktype/zod schema objects in `parameters` ([#3074](https://github.com/can1357/oh-my-pi/issues/3074))
+
 ## [16.1.2] - 2026-06-19
 
 ### Fixed
