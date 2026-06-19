@@ -83,6 +83,7 @@ import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compa
 	type: "text",
 };
 import type { AgentSession, AgentSessionEvent, ResolvedRoleModel } from "../session/agent-session";
+import type { CompactMode } from "../session/compact-modes";
 import { HistoryStorage } from "../session/history-storage";
 import type { SessionContext } from "../session/session-context";
 import { getRecentSessions } from "../session/session-listing";
@@ -881,7 +882,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.initHooksAndCustomTools();
 
 		// Restore mode from session (e.g. plan mode on resume)
-		this.session.setSessionSwitchReconciler?.(() => this.#reconcileModeFromSession());
+		this.session.setSessionSwitchReconciler?.(() => this.#reconcileModeFromSession({ preserveActiveGoal: true }));
 		await this.#reconcileModeFromSession();
 
 		// Brand-new sessions optionally start in plan mode when the user has made it
@@ -1901,11 +1902,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	/** Reconcile mode state from session entries on resume/switch. */
-	async #reconcileModeFromSession(): Promise<void> {
+	async #reconcileModeFromSession(options?: { preserveActiveGoal?: boolean }): Promise<void> {
 		await this.#clearTransientModeState();
 		const sessionContext = this.sessionManager.buildSessionContext();
 		const goalEnabled = this.session.settings.get("goal.enabled");
 		if (!goalEnabled && (sessionContext.mode === "goal" || sessionContext.mode === "goal_paused")) {
+			this.session.goalRuntime.clearAccounting();
 			this.sessionManager.appendModeChange("none");
 			return;
 		}
@@ -1920,7 +1922,9 @@ export class InteractiveMode implements InteractiveModeContext {
 				mode: "active",
 				goal,
 			});
-			const restored = await this.session.goalRuntime.onThreadResumed();
+			const restored = await this.session.goalRuntime.onThreadResumed({
+				preserveActiveGoal: options?.preserveActiveGoal,
+			});
 			this.goalModeEnabled = restored?.enabled === true;
 			this.goalModePaused = restored?.enabled !== true && restored?.goal.status === "paused";
 			// sdk.ts excludes "goal" from the initial active tool set unconditionally.
@@ -1933,6 +1937,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#updateGoalModeStatus();
 			return;
 		}
+		this.session.goalRuntime.clearAccounting();
 		if (!this.session.settings.get("plan.enabled")) {
 			// Clear stale plan/plan_paused mode so re-enabling the setting
 			// later doesn't unexpectedly restore an old plan session.
@@ -2464,7 +2469,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				// the try/finally is idempotent and kept for the !compactBeforeExecute
 				// branch.
 				this.session.setPlanReferencePath(options.planFilePath);
-				compactOutcome = await this.handleCompactCommand(compactionPrompt, outcome =>
+				compactOutcome = await this.handleCompactCommand(compactionPrompt, undefined, outcome =>
 					this.#applyDeferredPlanModelTransition(outcome, options.executionModel),
 				);
 			}
@@ -3735,9 +3740,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleCompactCommand(
 		customInstructions?: string,
+		mode?: CompactMode,
 		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
 	): Promise<CompactionOutcome> {
-		return this.#commandController.handleCompactCommand(customInstructions, beforeFlush);
+		return this.#commandController.handleCompactCommand(customInstructions, mode, beforeFlush);
 	}
 
 	handleHandoffCommand(customInstructions?: string): Promise<void> {
