@@ -49,6 +49,26 @@ describe("QueuedMessageBox", () => {
 		expect(rows[2]).toContain("╰");
 	});
 
+	it("omits its own top rule when showTopBorder is false (caller supplies it)", () => {
+		const box = new QueuedMessageBox("", ["alpha", "beta"], "", false);
+		const rows = plain(box.render(40));
+		expect(rows).toHaveLength(3); // body x2 + bottom, NO top rule
+		expect(rows[0]).toContain("│"); // first row is a body row, not a border
+		expect(rows[0]).not.toContain("╭");
+		expect(rows[0]).toContain("alpha");
+		expect(rows[1]).toContain("beta");
+		expect(rows[2]).toContain("╰"); // bottom rule still closes the frame
+		// Every row stays full width so it aligns under the external (indicator) rule.
+		for (const line of box.render(40)) expect(visibleWidth(line)).toBe(40);
+	});
+
+	it("drops the empty-title label in the narrow fallback (steer box has no title)", () => {
+		const box = new QueuedMessageBox("", ["x", "y"], "", false);
+		const rows = plain(box.render(4));
+		expect(rows.some(r => r.includes(":"))).toBe(false); // no bare `:` label line
+		expect(rows.some(r => r.trim() === "x")).toBe(true);
+	});
+
 	it("falls back to plain indented rows when the width is too narrow to frame", () => {
 		const box = new QueuedMessageBox("Steer", ["x", "y"]);
 		const rows = plain(box.render(4));
