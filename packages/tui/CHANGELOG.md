@@ -10,6 +10,12 @@
 ### Fixed
 
 - Fixed right-side panel compositing landing on Kitty OSC 66 text-sizing heading rows and the following blank structural reservation row. The compositor predicate is now generic (`isOccupiedLine`) and the TUI pre-marks OSC 66 headings plus their first visible-width-zero successor as occupied before placement.
+## [16.1.0] - 2026-06-19
+
+### Added
+
+- `Box` now accepts an optional `border` (box-drawing glyphs + colorizer) and exposes `setBorder()`, drawing a colored outline around its padded/background content. The border is automatically dropped at widths too narrow to frame so a bordered box never overflows its given width.
+
 ## [16.0.11] - 2026-06-19
 
 ### Breaking Changes
