@@ -1819,7 +1819,7 @@ export class TUI extends Container {
 	 * scrollback protocol (live region, committed-prefix audit, stable
 	 * prefixes) and needs no viewport estimation.
 	 */
-	#compositeRightPanelIntoWindow(window: string[], width: number, windowTop: number): string[] {
+	#compositeRightPanelIntoWindow(window: string[], width: number, windowTop: number, frame: readonly string[]): string[] {
 		const provider = this.#rightPanelProvider;
 		if (provider === null) return window;
 		const blocks = provider(width);
@@ -1857,6 +1857,16 @@ export class TUI extends Container {
 					occupied[i + 1] = true;
 				}
 			}
+		}
+		// Boundary case: the visible window can start ON the reservation row of an
+		// OSC 66 sized heading whose heading line sits just above the window (at
+		// windowTop - 1, scrolled out of view). The forward-only scan above never
+		// sees that heading, so carry the previous frame row in explicitly —
+		// otherwise row 0 stays eligible and a right-panel block would be spliced
+		// into the occupied reservation row, overwriting its lower glyph cells.
+		const reservationRow = windowTop > 0 ? frame[windowTop] : undefined;
+		if (reservationRow !== undefined && visibleWidth(reservationRow) === 0 && isOsc66Line(frame[windowTop - 1] ?? "")) {
+			occupied[0] = true;
 		}
 		const composited = compositeRightPanelsInRange(
 			window,
@@ -2759,7 +2769,7 @@ export class TUI extends Container {
 		const frame = this.#prepareFrame(rawFrame, width);
 		let window: string[] = new Array(height);
 		for (let r = 0; r < height; r++) window[r] = frame[windowTop + r] ?? "";
-		window = this.#compositeRightPanelIntoWindow(window, width, windowTop);
+		window = this.#compositeRightPanelIntoWindow(window, width, windowTop, frame);
 		if (hasVisibleOverlay) {
 			window = this.#compositeOverlaysIntoWindow(window, width, height);
 			const overlayMarkers = this.#extractCursorMarkers(window);
