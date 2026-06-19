@@ -16,12 +16,12 @@ describe("QueuedMessageBox", () => {
 		const box = new QueuedMessageBox("Steer", ["alpha", "beta"]);
 		const rows = plain(box.render(40));
 		expect(rows).toHaveLength(4); // top + 2 body + bottom
-		expect(rows[0]).toContain("┌");
+		expect(rows[0]).toContain("╭");
 		expect(rows[0]).toContain("Steer"); // title inset into the top rule
 		expect(rows[1]).toContain("│");
 		expect(rows[1]).toContain("alpha");
 		expect(rows[2]).toContain("beta");
-		expect(rows[3]).toContain("└");
+		expect(rows[3]).toContain("╰");
 	});
 
 	it("keeps every rendered row exactly the box width", () => {
@@ -45,15 +45,15 @@ describe("QueuedMessageBox", () => {
 		const box = new QueuedMessageBox("Steer", []);
 		const rows = plain(box.render(30));
 		expect(rows).toHaveLength(3); // top + one empty body row + bottom
-		expect(rows[0]).toContain("┌");
-		expect(rows[2]).toContain("└");
+		expect(rows[0]).toContain("╭");
+		expect(rows[2]).toContain("╰");
 	});
 
 	it("falls back to plain indented rows when the width is too narrow to frame", () => {
 		const box = new QueuedMessageBox("Steer", ["x", "y"]);
 		const rows = plain(box.render(4));
 		expect(rows[0]).toContain("Steer:");
-		expect(rows.some(r => r.includes("┌"))).toBe(false); // no frame at tiny width
+		expect(rows.some(r => r.includes("╭"))).toBe(false); // no frame at tiny width
 		expect(rows.some(r => r.trim() === "x")).toBe(true);
 	});
 
