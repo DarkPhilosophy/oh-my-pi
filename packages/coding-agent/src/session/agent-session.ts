@@ -35,6 +35,7 @@ import {
 	countTokens,
 	resolveTelemetry,
 	ThinkingLevel,
+	type ToolChoiceDirective,
 } from "@oh-my-pi/pi-agent-core";
 import {
 	AGGRESSIVE_SHAKE_CONFIG,
@@ -102,6 +103,7 @@ import {
 	resolveServiceTier,
 	streamSimple,
 } from "@oh-my-pi/pi-ai";
+import { stripToolDescriptions } from "@oh-my-pi/pi-ai/utils/schema";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { MacOSPowerAssertion } from "@oh-my-pi/pi-natives";
@@ -260,6 +262,7 @@ import type { CheckpointState } from "../tools/checkpoint";
 import { outputMeta, wrapToolWithMetaNotice } from "../tools/output-meta";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
 import { isAutoQaEnabled } from "../tools/report-tool-issue";
+import { buildResolveReminderMessage } from "../tools/resolve";
 import { getLatestTodoPhasesFromEntries, type TodoItem, type TodoPhase } from "../tools/todo";
 import { ToolAbortError, ToolError } from "../tools/tool-errors";
 import { clampTimeout } from "../tools/tool-timeouts";
@@ -367,6 +370,23 @@ const COMPACTION_CHECK_CONTINUATION: CompactionCheckResult = {
 	deferredHandoff: false,
 	continuationScheduled: true,
 };
+
+/**
+ * Per-turn prune cache window. A tool result whose all-message suffix exceeds
+ * this is in the warm, already-sent prompt-cache prefix: re-writing it costs the
+ * cacheWrite premium on the whole suffix. Per-turn passes only reclaim inside
+ * this tail (matches the supersede pass's default `suffixTokenLimit`); deeper
+ * stale/age victims are left to compaction/shake, which rebuild the cache anyway.
+ */
+const PRUNE_CACHE_WARM_SUFFIX_TOKENS = 8_000;
+
+/**
+ * Idle gap after which the supersede pass may flush the whole sent region (the
+ * provider cache is cold, so re-writing it is free). MUST exceed the maximum
+ * Anthropic prompt-cache TTL — "long" retention (the OAuth default) is 1h — or a
+ * still-warm prefix is busted by the flush. 90 min leaves margin over the 1h TTL.
+ */
+const PRUNE_IDLE_FLUSH_MS = 90 * 60_000;
 export type CommandMetadataChangedListener = () => void | Promise<void>;
 export type AsyncJobSnapshotItem = Pick<AsyncJob, "id" | "type" | "status" | "label" | "startTime">;
 
@@ -516,6 +536,12 @@ export interface AgentSessionConfig {
 	advisorReadOnlyTools?: AgentTool[];
 	/** Preloaded watchdog prompt content for the advisor. */
 	advisorWatchdogPrompt?: string;
+	/**
+	 * Strip tool descriptions from provider-bound tool specs on side requests
+	 * (handoff). Must match the session-start value used to build the system
+	 * prompt so inline descriptors are not also sent through provider schemas.
+	 */
+	pruneToolDescriptions?: boolean;
 	/**
 	 * Disconnect this session's OWNED MCP manager on dispose. Provided only when
 	 * the session created the manager (top-level sessions); subagents reuse a
@@ -1317,6 +1343,8 @@ export class AgentSession {
 	// unchanged — otherwise a mid-turn estimate would survive into idle.
 	#contextUsageRevision = 0;
 	#obfuscator: SecretObfuscator | undefined;
+	/** Session-start value of `inlineToolDescriptors`; drives handoff tool pruning. */
+	#pruneToolDescriptions = false;
 	#checkpointState: CheckpointState | undefined = undefined;
 	#pendingRewindReport: string | undefined = undefined;
 	#lastSuccessfulYieldToolCallId: string | undefined = undefined;
@@ -1328,19 +1356,15 @@ export class AgentSession {
 		if (process.platform !== "darwin") return;
 		if (isBunTestRuntime()) return;
 		if (this.#powerAssertion) return;
-		const idle = this.settings.get("power.preventIdleSleep");
-		const system = this.settings.get("power.preventSystemSleep");
-		const user = this.settings.get("power.declareUserActive");
-		const display = this.settings.get("power.preventDisplaySleep");
-		// All four off → user opted out; do nothing.
-		if (!idle && !system && !user && !display) return;
+		const mode = this.settings.get("power.sleepPrevention");
+		if (mode === "off") return;
 		try {
 			this.#powerAssertion = MacOSPowerAssertion.start({
 				reason: "Oh My Pi agent session",
-				idle,
-				system,
-				user,
-				display,
+				idle: true,
+				display: mode === "display" || mode === "system",
+				system: mode === "system",
+				user: mode === "system",
 			});
 		} catch (error) {
 			logger.warn("Failed to acquire macOS power assertion", { error: String(error) });
@@ -1525,6 +1549,7 @@ export class AgentSession {
 		this.#modelRegistry = config.modelRegistry;
 		this.#advisorReadOnlyTools = config.advisorReadOnlyTools;
 		this.#advisorWatchdogPrompt = config.advisorWatchdogPrompt;
+		this.#pruneToolDescriptions = config.pruneToolDescriptions === true;
 		this.#validateRetryFallbackChains();
 		this.#toolRegistry = config.toolRegistry ?? new Map();
 		this.#requestedToolNames = config.requestedToolNames;
@@ -2134,6 +2159,36 @@ export class AgentSession {
 		}
 		this.#toolChoiceQueue.reject("unavailable");
 		return undefined;
+	}
+
+	/**
+	 * The per-turn tool-choice directive for the agent loop's `getToolChoice`. Priority:
+	 *   1. a HARD forced choice from the queue (genuine forces: user-force, eager-todo, …) —
+	 *      consuming, unchanged from `nextToolChoice`;
+	 *   2. else, when a non-forcing preview is pending, a {@link SoftToolRequirement} — a
+	 *      PEEK (advances/pops nothing), so the agent-loop injects the reminder once per head
+	 *      and escalates to a forced `resolve` only if the model declines. A compliant turn
+	 *      pays ZERO tool_choice change (no prompt-cache messages-cache invalidation);
+	 *   3. else undefined.
+	 */
+	nextToolChoiceDirective(): ToolChoiceDirective | undefined {
+		const hard = this.nextToolChoice();
+		if (hard !== undefined) return hard;
+		const head = this.#toolChoiceQueue.peekPendingHead();
+		if (head !== undefined) {
+			return {
+				soft: true,
+				id: head.id,
+				toolName: "resolve",
+				reminder: [buildResolveReminderMessage(head.sourceToolName)],
+			};
+		}
+		return undefined;
+	}
+
+	/** Peek the head non-forcing pending preview invoker, for the `resolve` tool's dispatch. */
+	peekPendingInvoker(): ((input: unknown) => Promise<unknown> | unknown) | undefined {
+		return this.#toolChoiceQueue.peekPendingInvoker();
 	}
 
 	/**
@@ -3817,7 +3872,11 @@ export class AgentSession {
 		if (event.type === "agent_start") {
 			this.#turnIndex = 0;
 			await this.#extensionRunner.emit({ type: "agent_start" });
-		} else if (event.type === "agent_end") {
+			return;
+		}
+
+		if (!this.#extensionRunner.hasHandlers(event.type)) return;
+		if (event.type === "agent_end") {
 			// `agent_end` extension notification is emitted from the settled
 			// agent_end maintenance path so `session_stop` control hooks are not
 			// blocked by unrelated notification-only work.
@@ -4863,7 +4922,7 @@ export class AgentSession {
 	 * cache per-tool strings without preserving this property.
 	 *
 	 * Inputs NOT covered: tool input schemas; memory instructions read from disk;
-	 * and SDK-init-time closure constants in `sdk.ts` (`repeatToolDescriptions`,
+	 * and SDK-init-time closure constants in `sdk.ts` (`inlineToolDescriptors`,
 	 * `eagerTasks`, `intentField`, `mcpDiscoveryEnabled`, `secretsEnabled`). The
 	 * closure-captured ones cannot change at runtime regardless of skip behavior.
 	 * For everything else, callers must explicitly call `refreshBaseSystemPrompt()`
@@ -7381,11 +7440,16 @@ export class AgentSession {
 
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const branchEntries = this.sessionManager.getBranch();
+		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
 		const result = pruneToolOutputs(
 			branchEntries,
 			this.#withPlanProtection({
 				...DEFAULT_PRUNE_CONFIG,
 				pruneUseless: this.settings.getGroup("compaction").dropUseless,
+				// Cache-stable boundary: never re-write the warm, already-sent prefix
+				// (deep stale/age victims) or summarized-away entries every turn.
+				keepBoundaryId,
+				cacheWarmSuffixTokens: PRUNE_CACHE_WARM_SUFFIX_TOKENS,
 			}),
 		);
 		if (result.prunedCount === 0) {
@@ -7413,12 +7477,17 @@ export class AgentSession {
 		const { supersedeReads, dropUseless } = this.settings.getGroup("compaction");
 		if (!supersedeReads && !dropUseless) return undefined;
 		const branchEntries = this.sessionManager.getBranch();
+		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
 		const result = pruneSupersededToolResults(
 			branchEntries,
 			this.#withPlanProtection({
 				supersedeKey: supersedeReads ? readToolSupersedeKey : undefined,
 				pruneUseless: dropUseless,
 				protectedTools: [...DEFAULT_PRUNE_CONFIG.protectedTools],
+				// Never re-write summarized-away entries; only flush the whole sent
+				// region once the cache is genuinely cold (idle exceeds the 1h TTL).
+				keepBoundaryId,
+				idleFlushMs: PRUNE_IDLE_FLUSH_MS,
 			}),
 		);
 		if (result.prunedCount === 0) {
@@ -7502,8 +7571,14 @@ export class AgentSession {
 			return { mode, toolResultsDropped: 0, blocksDropped: 0, imagesDropped: removed, tokensFreed: 0 };
 		}
 
-		const config = this.#withPlanProtection(opts.config ?? AGGRESSIVE_SHAKE_CONFIG);
-		const regions = collectShakeRegions(this.sessionManager.getBranch(), config);
+		const branchEntries = this.sessionManager.getBranch();
+		const config = this.#withPlanProtection({
+			...(opts.config ?? AGGRESSIVE_SHAKE_CONFIG),
+			// Skip entries summarized away by the latest compaction — shaking them
+			// only churns persisted history with no prompt/cache effect.
+			keepBoundaryId: getLatestCompactionEntry(branchEntries)?.firstKeptEntryId,
+		});
+		const regions = collectShakeRegions(branchEntries, config);
 		if (regions.length === 0) {
 			return { mode, toolResultsDropped: 0, blocksDropped: 0, tokensFreed: 0 };
 		}
@@ -7656,13 +7731,24 @@ export class AgentSession {
 			// both take the summarizer path (the latter loudly).
 			const wantsSnapcompact =
 				compactionPrep.kind !== "fromHook" && effectiveSettings.strategy === "snapcompact" && !customInstructions;
-			const snapcompactReady = wantsSnapcompact && this.model.input.includes("image");
+			let snapcompactReady = wantsSnapcompact && this.model.input.includes("image");
 			if (wantsSnapcompact && !snapcompactReady) {
 				this.emitNotice(
 					"warning",
 					`snapcompact needs a vision-capable model (${this.model.id} is text-only) — using an LLM summary instead`,
 					"compaction",
 				);
+			} else if (snapcompactReady) {
+				const text = snapcompact.serializeConversation(convertToLlm(preparation.messagesToSummarize));
+				const renderScan = snapcompact.scanRenderability(text);
+				if (!renderScan.isSafe) {
+					this.emitNotice(
+						"warning",
+						`snapcompact disabled: high non-ASCII rate detected (${(renderScan.unrenderableRatio * 100).toFixed(1)}%). Falling back to an LLM summary to prevent data loss.`,
+						"compaction",
+					);
+					snapcompactReady = false;
+				}
 			}
 
 			let summary: string;
@@ -7680,9 +7766,6 @@ export class AgentSession {
 					convertToLlm,
 					model: this.model,
 					shape: snapcompact.resolveShape(this.model, this.settings.get("snapcompact.shape")),
-					// Providers with hard image caps (OpenRouter: 8) silently drop
-					// frames past the cap — keep the archive within budget.
-					maxFrames: snapcompact.providerFrameBudget(this.model?.provider),
 				});
 				const ctxWindow = this.model?.contextWindow ?? 0;
 				const budget =
@@ -7931,7 +8014,10 @@ export class AgentSession {
 				this.#modelRegistry.resolver(model, this.sessionId),
 				{
 					systemPrompt: this.#obfuscateForProvider(this.#baseSystemPrompt),
-					tools: obfuscateProviderTools(this.#obfuscator, this.agent.state.tools),
+					tools: obfuscateProviderTools(
+						this.#obfuscator,
+						this.#pruneToolDescriptions ? stripToolDescriptions(this.agent.state.tools) : this.agent.state.tools,
+					),
 					customInstructions: this.#obfuscateTextForProvider(customInstructions),
 					convertToLlm: messages => this.#convertToLlmForSideRequest(messages),
 					initiatorOverride: "agent",
@@ -9236,14 +9322,15 @@ export class AgentSession {
 	 */
 	#projectSnapcompactContextTokens(preparation: CompactionPreparation, result: snapcompact.CompactionResult): number {
 		const archive = snapcompact.getPreservedArchive(result.preserveData);
-		const frames = archive ? snapcompact.images(archive) : undefined;
+		const blocks = archive ? snapcompact.historyBlocks(archive) : undefined;
 		const summaryMessage = createCompactionSummaryMessage(
 			result.summary,
 			result.tokensBefore,
 			new Date().toISOString(),
 			result.shortSummary,
 			undefined,
-			frames,
+			undefined,
+			blocks,
 		);
 		let tokens = computeNonMessageTokens(this) + estimateTokens(summaryMessage);
 		for (const message of preparation.recentMessages) {
@@ -9471,15 +9558,15 @@ export class AgentSession {
 			let details: unknown;
 
 			// Snapcompact runs locally first; if its frame archive plus the kept
-			// history still overflows the model window (frames are capped by the
-			// image budget and cost ~FRAME_TOKEN_ESTIMATE each), an LLM summary is
-			// far cheaper — downgrade to context-full and take the summarizer path.
+			// history still overflows the model window (frames default to
+			// MAX_FRAMES_DEFAULT and cost ~FRAME_TOKEN_ESTIMATE each), an LLM
+			// summary is far cheaper — downgrade to context-full and take the
+			// summarizer path.
 			let snapcompactResult: snapcompact.CompactionResult | undefined;
 			if (action === "snapcompact" && compactionPrep.kind !== "fromHook") {
 				snapcompactResult = await snapcompact.compact(preparation, {
 					convertToLlm,
 					model: this.model,
-					maxFrames: snapcompact.providerFrameBudget(this.model?.provider),
 				});
 				const ctxWindow = this.model?.contextWindow ?? 0;
 				const budget =
@@ -12318,6 +12405,7 @@ export class AgentSession {
 			model: this.agent.state.model,
 			thinkingLevel: this.#thinkingLevel,
 			tools: this.agent.state.tools,
+			inlineToolDescriptors: this.#pruneToolDescriptions,
 		});
 	}
 

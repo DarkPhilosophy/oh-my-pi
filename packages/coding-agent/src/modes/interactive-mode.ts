@@ -12,7 +12,7 @@ import {
 	ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
-import type { AssistantMessage, ImageContent, Message, Model, UsageReport } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, Message, Model, Usage, UsageReport } from "@oh-my-pi/pi-ai";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import type {
 	Component,
@@ -415,6 +415,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	isPythonMode = false;
 	streamingComponent: AssistantMessageComponent | undefined = undefined;
 	streamingMessage: AssistantMessage | undefined = undefined;
+	lastAssistantUsage: Usage | undefined = undefined;
 	loadingAnimation: Loader | undefined = undefined;
 	steeringIndicator: SteeringIndicator | undefined = undefined;
 	autoCompactionLoader: Loader | undefined = undefined;
@@ -528,6 +529,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.#pendingOptimisticComponents = undefined;
+		this.lastAssistantUsage = undefined;
 		this.pendingTools.clear();
 	}
 	readonly #uiHelpers: UiHelpers;
@@ -1976,6 +1978,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#planModePreviousTools = previousTools;
 		this.planModePlanFilePath = planFilePath;
 		this.planModeEnabled = true;
+		// Suppress cache-miss marker on the next turn: plan mode changes the system
+		// prompt, which predictably invalidates the cache.
+		this.lastAssistantUsage = undefined;
 
 		await this.session.setActiveToolsByName(uniquePlanTools);
 		this.session.setPlanModeState({
@@ -2093,6 +2098,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.session.setStandingResolveHandler?.(null);
 		this.session.setPlanModeState(undefined);
 		this.planModeEnabled = false;
+		// Suppress cache-miss marker on the next turn: plan exit changes the system
+		// prompt, which predictably invalidates the cache.
+		this.lastAssistantUsage = undefined;
 		this.planModePaused = options?.paused ?? false;
 		this.planModePlanFilePath = undefined;
 		this.#planModePreviousTools = undefined;

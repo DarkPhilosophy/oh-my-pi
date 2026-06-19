@@ -36,9 +36,13 @@ import { createAdvisorMessageCard } from "./advisor-message";
 import { AssistantMessageComponent } from "./assistant-message";
 import { createBackgroundTanDispatchBlock } from "./background-tan-message";
 import { BashExecutionComponent } from "./bash-execution";
-import { BranchSummaryMessageComponent } from "./branch-summary-message";
+import { detectCacheInvalidation } from "./cache-invalidation-marker";
 import { CollabPromptMessageComponent } from "./collab-prompt-message";
-import { CompactionSummaryMessageComponent, createHandoffSummaryMessageComponent } from "./compaction-summary-message";
+import {
+	BranchSummaryMessageComponent,
+	CompactionSummaryMessageComponent,
+	createHandoffSummaryMessageComponent,
+} from "./compaction-summary-message";
 import { CustomMessageComponent } from "./custom-message";
 import { EvalExecutionComponent } from "./eval-execution";
 import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./late-diagnostics-message";
@@ -73,6 +77,7 @@ export class ChatTranscriptBuilder {
 	#readArgs = new Map<string, Record<string, unknown>>();
 	#readGroup: ReadToolGroupComponent | null = null;
 	#pendingUsage: Usage | undefined;
+	#lastAssistantUsage: Usage | undefined;
 	#waitingPoll: ToolExecutionComponent | null = null;
 	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
 	#expanded = false;
@@ -111,6 +116,7 @@ export class ChatTranscriptBuilder {
 		this.#readArgs.clear();
 		this.#readGroup = null;
 		this.#pendingUsage = undefined;
+		this.#lastAssistantUsage = undefined;
 		this.#waitingPoll = null;
 		this.#expandables = [];
 		this.container.dispose();
@@ -245,6 +251,14 @@ export class ChatTranscriptBuilder {
 			this.deps.requestRender(),
 		);
 		this.container.addChild(assistantComponent);
+
+		if (settings.get("display.cacheMissMarker")) {
+			const invalidation = detectCacheInvalidation(this.#lastAssistantUsage, message.usage);
+			if (invalidation) assistantComponent.setCacheInvalidation(invalidation);
+		}
+		if (message.usage.cacheRead + message.usage.cacheWrite + message.usage.input > 0) {
+			this.#lastAssistantUsage = message.usage;
+		}
 
 		const hasVisibleAssistantContent = message.content.some(
 			content =>
