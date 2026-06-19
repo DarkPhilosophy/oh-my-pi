@@ -366,10 +366,16 @@ export class ExtensionUiController {
 			this.ctx.ui.requestRender(force, options);
 		};
 		const ui = new Proxy(this.ctx.ui, {
-			get: (target, property, receiver) => {
+			get: (target, property) => {
 				if (property === "requestRender") return requestRightWidgetRender;
 				if (property === "requestComponentRender") return () => requestRightWidgetRender();
-				return Reflect.get(target, property, receiver);
+				// Resolve against the real TUI (not the proxy) and bind methods back to it:
+				// `TUI`/`Container` methods touch `#private` fields, so a method invoked with
+				// `this` bound to the proxy (e.g. `ui.addChild`, `ui.setFocus`,
+				// `ui.addInputListener` from a component-backed rightEditor widget) would throw
+				// at runtime. Getters likewise run with the real receiver.
+				const value = Reflect.get(target, property, target);
+				return typeof value === "function" ? value.bind(target) : value;
 			},
 		}) as TUI;
 		return content(ui, theme);

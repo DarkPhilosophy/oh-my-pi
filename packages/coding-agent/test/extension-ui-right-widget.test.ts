@@ -253,4 +253,40 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		expect(currentRightInfo(120)).toEqual([["w120"]]);
 		expect(receivedWidth).toBe(120);
 	});
+
+	it("binds non-overridden TUI methods to the real instance so #private access works", () => {
+		// A component-backed rightEditor widget may call any TUI API, not just the two
+		// overridden render methods. Those methods touch #private fields, so the proxy
+		// must invoke them with `this` bound to the real TUI — never the proxy itself.
+		class FakeTui {
+			#calls: string[] = [];
+			requestRender(): void {}
+			addChild(name: string): void {
+				this.#calls.push(name); // throws if `this` is the proxy, not this instance
+			}
+			getCalls(): string[] {
+				return this.#calls;
+			}
+		}
+		const fakeTui = new FakeTui();
+		const ctx = {
+			hookWidgetContainerAbove: new Container(),
+			hookWidgetContainerBelow: new Container(),
+			ui: fakeTui,
+			setRightInfo: () => {},
+		} as unknown as InteractiveModeContext;
+		const c = new ExtensionUiController(ctx);
+		let caught: unknown;
+		const factory = ((tui: { addChild: (name: string) => void }) => {
+			try {
+				tui.addChild("from-widget");
+			} catch (e) {
+				caught = e;
+			}
+			return { render: () => ["x"], dispose() {} };
+		}) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		c.setHookWidget("w", factory, { placement: "rightEditor" });
+		expect(caught).toBeUndefined(); // no #private-access crash
+		expect(fakeTui.getCalls()).toEqual(["from-widget"]); // ran on the real instance
+	});
 });
