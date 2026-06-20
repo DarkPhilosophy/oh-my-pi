@@ -831,6 +831,10 @@ export class CommandController {
 		this.ctx.updateEditorTopBorder();
 		this.ctx.updateEditorBorderColor();
 		this.ctx.chatContainer.clear();
+		// Stop the persistent steering animation before detaching it: clear() drops
+		// children without disposing their timers, so a still-active indicator would
+		// keep repainting a detached node.
+		this.ctx.steeringIndicator?.setActive(false);
 		this.ctx.pendingMessagesContainer.clear();
 		this.ctx.compactionQueuedMessages = [];
 		this.ctx.streamingComponent = undefined;

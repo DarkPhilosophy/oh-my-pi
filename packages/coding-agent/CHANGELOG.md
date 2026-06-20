@@ -34,6 +34,7 @@
 ### Fixed
 
 - Fixed auto-compaction being suppressed when a `before_provider_request` extension shrinks the outgoing request below the real stored conversation (e.g. a context-compression proxy such as Headroom, or an aggressive obfuscator). The provider then reports deflated prompt tokens, so the threshold check never fired and the stored history grew unbounded until it overflowed the context window and could no longer be compacted at all. The compaction decision (both the pre-prompt and post-response paths) now floors the provider-reported context tokens by the agent's own local estimate of the stored conversation, so on-wire compression can no longer hide a too-large history from the auto-compactor. Context display and cost accounting still use the exact provider usage; only the compaction trigger takes the floor.
+- Fixed the persistent steering animation timer leaking when a session-reset path cleared the pending bar directly: `command-controller` (`/clear`-style resets) and the extension UI controller call `pendingMessagesContainer.clear()`, which detaches children without disposing their timers, so an active `SteeringIndicator` kept repainting a detached node. Those paths now stop the indicator before clearing (full teardown via `clearTransientSessionUi` already disposed it).
 
 ## [16.1.7] - 2026-06-20
 
