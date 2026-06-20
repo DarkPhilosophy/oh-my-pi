@@ -16,6 +16,12 @@
 - Fixed a `rightEditor` widget overwriting an OSC 66 (Kitty text-sizing) heading's reserved row when the heading scrolled one line above the visible window: the right-panel occupancy check now carries the frame row just above the window, so a heading at `windowTop - 1` still marks its reservation row (window row 0) occupied instead of leaving it eligible for panel placement.
 - Fixed a component-backed `rightEditor` widget crashing when it called any TUI method other than the two render hooks (e.g. `ui.addChild`, `ui.setFocus`, `ui.addInputListener`): the wrapping `Proxy` returned those methods bound to the proxy, so `TUI`/`Container` `#private` field access threw at runtime. The proxy now resolves against and binds methods back to the real TUI instance, staying API-compatible for right-side widget factories.
 
+## [16.1.7] - 2026-06-20
+
+### Fixed
+
+- Fixed custom `models.yml` providers rejecting the `compat.supportsImageDetailOriginal` override, so Responses-compatible proxies that reject snapcompact's native-resolution image hint can clamp frames to `detail: "auto"`. ([#3092](https://github.com/can1357/oh-my-pi/issues/3092))
+
 ## [16.1.6] - 2026-06-20
 
 ### Added
