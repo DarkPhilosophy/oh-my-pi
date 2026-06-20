@@ -826,12 +826,6 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		this.ui.addChild(mainContent);
 		this.ui.addChild(this.chatContainer);
-		// Right-side widget blocks are composited by the TUI engine into the
-		// visible window, restricted to rows owned by these two roots: the
-		// transcript stays a directly reusable root child (scoped renders and the
-		// native scrollback protocol keep working), and the panel can never
-		// overlap the bottom chrome or rows committed to scrollback.
-		this.ui.setRightPanel(width => this.#rightInfoProvider(width), [mainContent, this.chatContainer]);
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(this.todoContainer);
@@ -873,6 +867,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Start the UI. Cold `omp` launch opts into clearing on the first paint so
 		// the initial welcome frame does not append over the previous run's scrollback.
 		this.ui.start({ clearScrollback: options.clearInitialTerminalHistory === true });
+		// Register the right-side widget compositor AFTER ui.start(): setRightPanel
+		// schedules a render, and #loadTodoList() above can yield, so registering it
+		// earlier risked a full frame painting before the terminal was started/cleared
+		// (a visible pre-start paint, and duplicate startup output on terminals that
+		// copy screen contents on the first paint). Targets are the two root children
+		// added above; the forced requestRender below composites the panel on frame 1.
+		this.ui.setRightPanel(width => this.#rightInfoProvider(width), [mainContent, this.chatContainer]);
 		pushTerminalTitle();
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
 		this.updateEditorBorderColor();
