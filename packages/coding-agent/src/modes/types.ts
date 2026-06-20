@@ -38,7 +38,6 @@ import type { EventController } from "./controllers/event-controller";
 import type { LoopLimitRuntime } from "./loop-limit";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
 import type { Theme } from "./theme/theme";
-import type { LocalSignatureTracker } from "./utils/signature-multiset";
 
 export type CompactionQueuedMessage = {
 	text: string;
@@ -174,7 +173,7 @@ export interface InteractiveModeContext {
 	unsubscribe?: () => void;
 	onInputCallback?: (input: SubmittedUserInput) => void;
 	optimisticUserMessageSignature: string | undefined;
-	locallySubmittedUserSignatures: LocalSignatureTracker;
+	locallySubmittedUserSignatures: Set<string>;
 	lastSigintTime: number;
 	lastEscapeTime: number;
 	lastLeftTapTime: number;

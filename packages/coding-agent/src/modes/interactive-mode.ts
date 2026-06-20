@@ -174,7 +174,6 @@ import type {
 	TodoItem,
 	TodoPhase,
 } from "./types";
-import { type LocalSignatureTracker, SignatureMultiset } from "./utils/signature-multiset";
 import { UiHelpers } from "./utils/ui-helpers";
 
 const HINT_SHIMMER_PALETTE: ShimmerPalette = {
@@ -430,7 +429,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	unsubscribe?: () => void;
 	onInputCallback?: (input: SubmittedUserInput) => void;
 	optimisticUserMessageSignature: string | undefined = undefined;
-	locallySubmittedUserSignatures: LocalSignatureTracker = new SignatureMultiset();
+	locallySubmittedUserSignatures: Set<string> = new Set();
 	#pendingSubmittedInput: SubmittedUserInput | undefined;
 	#pendingSubmissionDispose: (() => void) | undefined;
 	// Components rendered by the optimistic user bubble (startPendingSubmission), kept so a
