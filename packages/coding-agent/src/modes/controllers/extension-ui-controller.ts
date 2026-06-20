@@ -283,11 +283,11 @@ export class ExtensionUiController {
 
 	setHookWidget(key: string, content: ExtensionWidgetContent, options?: ExtensionWidgetOptions): void {
 		const placement = options?.placement ?? "aboveEditor";
-		this.#removeHookWidget(this.#hookWidgetsAbove, key);
-		this.#removeHookWidget(this.#hookWidgetsBelow, key);
 		const wasRight = this.#rightWidgets.has(key);
 
 		if (content === undefined) {
+			this.#removeHookWidget(this.#hookWidgetsAbove, key);
+			this.#removeHookWidget(this.#hookWidgetsBelow, key);
 			if (wasRight) {
 				this.#disposeRightWidgetEntry(this.#rightWidgets.get(key));
 				this.#rightWidgets.delete(key);
@@ -297,12 +297,18 @@ export class ExtensionUiController {
 			return;
 		}
 
+		// Build the replacement FIRST for every placement transition: component
+		// factories (and contentToRightEntry) may throw, and a failed refresh must
+		// never drop the existing widget. Only after a successful build do we dispose
+		// the old entries and install the new one.
 		if (placement === "rightEditor") {
-			// Build the replacement before disposing the old entry: component
-			// factories may throw, and the existing widget must stay valid if they do.
 			const nextEntry = this.#contentToRightEntry(content, options?.priority);
-			// Updating an existing Map key preserves insertion order; deleting first
-			// would make animated/right-side widgets jump below siblings on refresh.
+			// Drop a stale inline entry for this key (if it was above/below before) only
+			// now that the right replacement is built.
+			this.#removeHookWidget(this.#hookWidgetsAbove, key);
+			this.#removeHookWidget(this.#hookWidgetsBelow, key);
+			// Update (not delete+set) the existing right key so Map insertion order is
+			// preserved — deleting first would make right-side widgets jump below siblings.
 			this.#disposeRightWidgetEntry(this.#rightWidgets.get(key));
 			this.#rightWidgets.set(key, nextEntry);
 			this.#flushRightWidgets();
@@ -310,10 +316,9 @@ export class ExtensionUiController {
 			return;
 		}
 
-		// Build the inline replacement before dropping the old right-side entry: a
-		// component factory may throw, and a failed cross-placement refresh must not
-		// lose the still-valid right widget (mirrors the rightEditor path above).
 		const nextWidget = this.#createHookWidget(content);
+		this.#removeHookWidget(this.#hookWidgetsAbove, key);
+		this.#removeHookWidget(this.#hookWidgetsBelow, key);
 		// Moving a previously right-side key back inline must clear its stale lines.
 		if (wasRight) {
 			this.#disposeRightWidgetEntry(this.#rightWidgets.get(key));

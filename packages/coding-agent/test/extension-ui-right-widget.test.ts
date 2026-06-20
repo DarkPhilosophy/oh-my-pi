@@ -260,6 +260,29 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		expect(currentRightInfo()).toEqual([["old"]]);
 	});
 
+	it("keeps the old inline widget when a cross-placement (inline→right) factory throws", () => {
+		const { ctx, rightInfo } = makeCtx();
+		const c = new ExtensionUiController(ctx);
+		let disposed = 0;
+		const oldInline = (() => ({
+			render: () => ["old-inline"],
+			dispose() {
+				disposed++;
+			},
+		})) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		const throwingFactory = (() => {
+			throw new Error("boom");
+		}) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+
+		c.setHookWidget("live", oldInline, { placement: "aboveEditor" });
+
+		// Refresh inline → rightEditor with a throwing factory: the right replacement is
+		// built before the inline widget is dropped, so the inline widget must survive.
+		expect(() => c.setHookWidget("live", throwingFactory, { placement: "rightEditor" })).toThrow("boom");
+		expect(disposed).toBe(0);
+		expect(rightInfo.at(-1)).toBeUndefined(); // no right widget got installed on failure
+	});
+
 	it("passes the supplied width to component-factory right widgets", () => {
 		const { ctx, currentRightInfo } = makeCtx();
 		const c = new ExtensionUiController(ctx);
