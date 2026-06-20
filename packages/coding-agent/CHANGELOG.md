@@ -15,6 +15,7 @@
 
 - Fixed a `rightEditor` widget overwriting an OSC 66 (Kitty text-sizing) heading's reserved row when the heading scrolled one line above the visible window: the right-panel occupancy check now carries the frame row just above the window, so a heading at `windowTop - 1` still marks its reservation row (window row 0) occupied instead of leaving it eligible for panel placement.
 - Fixed a component-backed `rightEditor` widget crashing when it called any TUI method other than the two render hooks (e.g. `ui.addChild`, `ui.setFocus`, `ui.addInputListener`): the wrapping `Proxy` returned those methods bound to the proxy, so `TUI`/`Container` `#private` field access threw at runtime. The proxy now resolves against and binds methods back to the real TUI instance, staying API-compatible for right-side widget factories.
+- Fixed the `rightEditor` panel scheduling a render before the TUI was started: `setRightPanel()` was registered (which calls `requestRender()`) before `ui.start()`, and the intervening `await #loadTodoList()` could let that frame paint pre-start — a visible pre-start paint, and duplicate startup output on terminals that copy screen contents on the first paint. The panel is now registered after `ui.start()`, so the forced initial render composites it on the first real frame.
 
 ## [16.1.7] - 2026-06-20
 
