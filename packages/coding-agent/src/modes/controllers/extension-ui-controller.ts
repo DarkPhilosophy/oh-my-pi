@@ -311,6 +311,10 @@ export class ExtensionUiController {
 			return;
 		}
 
+		// Build the inline replacement before dropping the old right-side entry: a
+		// component factory may throw, and a failed cross-placement refresh must not
+		// lose the still-valid right widget (mirrors the rightEditor path above).
+		const nextWidget = this.#createHookWidget(content);
 		// Moving a previously right-side key back inline must clear its stale lines.
 		if (wasRight) {
 			this.#disposeRightWidgetEntry(this.#rightWidgets.get(key));
@@ -318,7 +322,7 @@ export class ExtensionUiController {
 			this.#flushRightWidgets();
 		}
 		const target = placement === "belowEditor" ? this.#hookWidgetsBelow : this.#hookWidgetsAbove;
-		target.set(key, this.#createHookWidget(content));
+		target.set(key, nextWidget);
 		this.#rebuildHookWidgets();
 	}
 
