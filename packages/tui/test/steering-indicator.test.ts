@@ -10,13 +10,17 @@ const styles = { dim: (s: string) => s, mid: (s: string) => s, bright: (s: strin
 // component stays theme-agnostic).
 const border = { topLeft: "╭", topRight: "╮", horizontal: "─", paint: (s: string) => s };
 
+const DOT = "●";
+const FRAME_MS = 110;
+const dotColumns = (line: string): number[] => [...line].flatMap((ch, idx) => (ch === DOT ? [idx] : []));
+
 describe("SteeringIndicator component", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 	});
 
-	it("renders an idle titled top rule (corners + word, no comet) until setActive(true)", () => {
+	it("renders an idle titled top rule (corners + word, no dots) until setActive(true)", () => {
 		vi.useFakeTimers();
 		const requestComponentRender = vi.fn();
 		const ui = { requestComponentRender } as unknown as TUI;
@@ -26,7 +30,7 @@ describe("SteeringIndicator component", () => {
 		expect(idle.startsWith("╭")).toBe(true); // top-left corner
 		expect(idle.endsWith("╮")).toBe(true); // top-right corner
 		expect(idle).toContain("─"); // resting rule
-		expect(idle).not.toContain("●"); // no comet head while idle
+		expect(idle).not.toContain(DOT); // no dots while idle
 		// No timer is running, so advancing time produces no further renders.
 		const before = requestComponentRender.mock.calls.length;
 		vi.advanceTimersByTime(500);
@@ -43,53 +47,48 @@ describe("SteeringIndicator component", () => {
 		const widths = new Set<number>();
 		for (let i = 0; i < 40; i++) {
 			widths.add(visibleWidth(ind.render(80).join("")));
-			vi.advanceTimersByTime(90);
+			vi.advanceTimersByTime(FRAME_MS);
 		}
 		expect(widths.size).toBe(1); // exactly one width seen across all frames
 		expect([...widths][0]).toBe(80); // and it fills the full box width
 		ind.dispose();
 	});
 
-	it("sweeps a comet head left→right along the rule then bounces back right→left", () => {
+	it("shows four equal dots clustered by the title and slides them without sweeping the rule", () => {
 		vi.useFakeTimers();
 		const requestComponentRender = vi.fn();
 		const ui = { requestComponentRender } as unknown as TUI;
-		// Mark the bright (comet-head) cell so we can locate it whether it sits on a
-		// rule cell (●) or on a title letter (which renders bright, not ●).
-		const marked = { dim: (s: string) => s, mid: (s: string) => s, bright: (s: string) => `<${s}>` };
-		// Narrow width so the sweep completes within a handful of frames.
-		const ind = new SteeringIndicator(ui, marked, border, "Go");
+		const ind = new SteeringIndicator(ui, styles, border, "Steering");
 		ind.setActive(true);
-		// The comet head must be present every frame, and its column should advance
-		// rightward, then (after the bounce) move leftward — one clear direction at a
-		// time, never a static/symmetric pattern.
-		const cols: number[] = [];
-		for (let i = 0; i < 24; i++) {
-			const col = ind.render(12).join("").indexOf("<");
-			expect(col).toBeGreaterThanOrEqual(0); // a head is always present
-			cols.push(col);
-			vi.advanceTimersByTime(90);
+		const width = 80;
+		const firsts: number[] = [];
+		const counts = new Set<number>();
+		const spans = new Set<number>();
+		let maxDotCol = 0;
+		for (let i = 0; i < 40; i++) {
+			const cols = dotColumns(ind.render(width).join(""));
+			counts.add(cols.length);
+			const first = cols[0] ?? -1;
+			const last = cols[cols.length - 1] ?? -1;
+			firsts.push(first);
+			spans.add(last - first);
+			maxDotCol = Math.max(maxDotCol, last);
+			vi.advanceTimersByTime(FRAME_MS);
 		}
-		// The head reaches a rightmost column then comes back: the max is strictly
-		// inside the sequence (not at either end), proving a bounce occurred.
-		const maxCol = Math.max(...cols);
-		const peakIndex = cols.indexOf(maxCol);
-		expect(peakIndex).toBeGreaterThan(0);
-		expect(peakIndex).toBeLessThan(cols.length - 1);
-		// One clear direction at a time: strictly rising up to the peak.
-		for (let i = 1; i <= peakIndex; i++) {
-			expect(cols[i]).toBeGreaterThan(cols[i - 1]);
-		}
-		// Falling after the peak: strictly decreasing for the right→left run. Stop at
-		// the first frame that is not lower than the previous one (the left bounce,
-		// where the comet turns around) so we only assert the single descending sweep.
-		let descendingSteps = 0;
-		for (let i = peakIndex + 1; i < cols.length; i++) {
-			if (cols[i] >= cols[i - 1]) break; // reached the left bounce → stop checking
-			expect(cols[i]).toBeLessThan(cols[i - 1]);
-			descendingSteps++;
-		}
-		expect(descendingSteps).toBeGreaterThanOrEqual(2); // a real right→left sweep, not a blip
+		// Always exactly four dots — no fading/growing comet that drops or adds dots.
+		expect([...counts]).toEqual([4]);
+		// The cluster keeps a constant span every frame: the dots never resize/spread.
+		expect(spans.size).toBe(1);
+		// Dots stay clustered near the title, never sweeping the whole rule.
+		expect(maxDotCol).toBeLessThan(width / 2);
+		// The cluster actually slides and bounces: it rises to a peak strictly inside
+		// the frame sequence, then comes back.
+		const maxFirst = Math.max(...firsts);
+		const minFirst = Math.min(...firsts);
+		expect(maxFirst).toBeGreaterThan(minFirst);
+		const peak = firsts.indexOf(maxFirst);
+		expect(peak).toBeGreaterThan(0);
+		expect(peak).toBeLessThan(firsts.length - 1);
 		ind.dispose();
 	});
 
@@ -103,7 +102,7 @@ describe("SteeringIndicator component", () => {
 		const after = requestComponentRender.mock.calls.length;
 		vi.advanceTimersByTime(500); // far longer than the frame interval
 		expect(requestComponentRender.mock.calls.length).toBe(after); // no further frames
-		expect(ind.render(80).join("")).not.toContain("●"); // back to idle
+		expect(ind.render(80).join("")).not.toContain(DOT); // back to idle
 		ind.dispose();
 	});
 

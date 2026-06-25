@@ -5,17 +5,17 @@ import { Text } from "./text";
  * Animated "Steering" indicator rendered AS the top border of the pending
  * streaming-steer box.
  *
- * Visual: a rounded box top rule — `╭─ Steering ──────────────╮` — where the
- * word `Steering` is inset as the box title (exactly like every other titled
- * surface) and a single comet sweeps the whole rule left→right, then bounces
- * back right→left, leaving a fading trail (`● • ∙ ·`) behind it and nothing
- * ahead. Plain rule cells stay `─`; the comet only overlays its trail glyphs as
- * it passes, and the title letters brighten (muted → bold accent) under the
- * comet glow. Monochrome by design: only brightness and glyph size vary, never
- * the hue, and the line keeps a constant visible width every frame so the
- * pending layout never jitters. The owning {@link QueuedMessageBox} renders its
- * body + bottom border only, so the indicator + box read as one framed block
- * with an animated title rule.
+ * Visual: a rounded box top rule — `╭─ Steering ─ ●─●─●─● ─────────╮` — where
+ * the word `Steering` is inset as the box title (exactly like every other titled
+ * surface) and a short cluster of four equal dots sits just after it. The four
+ * dots are always visible together and slide gently a few cells right→left→right
+ * near the title; they never sweep the whole rule, never fade, and never change
+ * size (no trailing comet, no grow). Plain rule cells stay `─`. Monochrome by
+ * design: the dots rest in one accent brightness and the title letters stay
+ * muted, and the line keeps a constant visible width every frame so the pending
+ * layout never jitters. The owning {@link QueuedMessageBox} renders its body +
+ * bottom border only, so the indicator + box read as one framed block with an
+ * animated title rule.
  *
  * Package boundary: this lives in `packages/tui` and stays theme-agnostic — the
  * caller injects both the brightness stylers and the border glyphs/paint, so it
@@ -26,11 +26,19 @@ import { Text } from "./text";
  * disposing children, so a leaked interval would repaint a detached node.
  */
 
-const FRAME_MS = 90;
-// Glyph ramp from faint to bold: the comet head shows ●, and the trail behind it
-// fades • ∙ · as the distance from the head grows.
-const GLYPHS = ["·", "∙", "•", "●"] as const;
-const MAX_LEVEL = GLYPHS.length - 1;
+const FRAME_MS = 110;
+// The dot cluster: four equal dots, all the same glyph — they read as four
+// distinct beads (separated by a rule cell), never a fading/growing comet.
+const DOT = "●";
+const DOT_COUNT = 4;
+// Rule cells between adjacent dots when there is room (`●─●─●─●`); drops to 0
+// (`●●●●`) on tight rules so all four dots still fit near the title.
+const DOT_GAP = 1;
+// One plain rule cell between the title word and the cluster.
+const GAP_AFTER_TITLE = 1;
+// How far the whole cluster slides from its resting position — kept short so the
+// dots stay "just past the text" rather than travelling the whole border.
+const TRAVEL_MAX = 6;
 // Below this the titled rule has no room; fall back to the bare word so a very
 // narrow terminal still shows *something* without breaking layout width.
 const MIN_BORDER_WIDTH = 8;
@@ -38,9 +46,9 @@ const MIN_BORDER_WIDTH = 8;
 type StyleFns = {
 	/** Dim/dark styling for faint particles. */
 	dim: (s: string) => string;
-	/** Mid styling for the resting title word and the comet's near trail. */
+	/** Mid styling for the resting title word. */
 	mid: (s: string) => string;
-	/** Bright/bold styling for the comet head (●) and the letter it sweeps under. */
+	/** Bright/bold styling for the dot cluster. */
 	bright: (s: string) => string;
 };
 
@@ -55,20 +63,33 @@ type BorderStyle = {
 	paint: (s: string) => string;
 };
 
+/** Geometry of one frame, derived from the layout width. */
+type Layout = {
+	inner: number;
+	titleStr: string;
+	titleStart: number;
+	titleEnd: number;
+	clusterStart: number;
+	clusterWidth: number;
+	step: number;
+	fits: boolean;
+	travel: number;
+};
+
 export class SteeringIndicator extends Text {
 	#ui: TUI | null = null;
 	#styles: StyleFns;
 	#border: BorderStyle;
 	#word: string;
-	// The comet position along the inner rule and its travel direction. It sweeps
-	// the whole rule left→right, then bounces back right→left — one clear sweep at
-	// a time (never two simultaneous waves), with a trail fading behind it.
-	#pos = 0;
+	// Cluster slide offset within its short travel window, and the travel
+	// direction. The four dots move together right→left→right by a few cells; they
+	// never leave the window next to the title.
+	#offset = 0;
 	#dir: 1 | -1 = 1;
 	#intervalId?: NodeJS.Timeout;
 	#active = false;
 	// Last layout width, captured in render(); the animation timer reads it to
-	// bounce the comet at the real rule ends.
+	// bounce the cluster at the real window ends.
 	#lastWidth = 0;
 	#cacheSig = "";
 	#cacheLine: readonly string[] | undefined;
@@ -87,9 +108,22 @@ export class SteeringIndicator extends Text {
 		this.#word = word;
 	}
 
-	/** Number of inner rule cells the comet sweeps (between the two corners). */
-	#span(): number {
-		return Math.max(1, this.#lastWidth - 2);
+	/** Frame geometry for a given layout width: title inset + dot-cluster window. */
+	#layout(width: number): Layout {
+		const inner = Math.max(0, width - 2);
+		const titleStr = ` ${this.#word} `;
+		const titleStart = 1;
+		const titleEnd = Math.min(inner, titleStart + titleStr.length); // exclusive
+		const clusterStart = titleEnd + GAP_AFTER_TITLE;
+		const room = inner - clusterStart; // cells available right of the title gap
+		// Prefer spaced dots (`●─●─●─●`); collapse the gap if the rule is tight.
+		const spacedWidth = DOT_COUNT + (DOT_COUNT - 1) * DOT_GAP;
+		const gap = room >= spacedWidth ? DOT_GAP : 0;
+		const clusterWidth = DOT_COUNT + (DOT_COUNT - 1) * gap;
+		const fits = room >= DOT_COUNT; // at least four adjacent dots
+		// Keep at least one plain rule cell before the right corner.
+		const travel = fits ? Math.max(0, Math.min(TRAVEL_MAX, room - clusterWidth)) : 0;
+		return { inner, titleStr, titleStart, titleEnd, clusterStart, clusterWidth, step: gap + 1, fits, travel };
 	}
 
 	/** Activate (animate) or deactivate (stop + show a static idle rule). Idempotent. */
@@ -99,18 +133,22 @@ export class SteeringIndicator extends Text {
 			this.#active = true;
 			this.#invalidateFrame();
 			this.#intervalId = setInterval(() => {
-				// Sweep the comet one cell in the current direction; reverse at each end so
-				// it travels left→right then right→left (a single clear sweep each way).
-				const span = this.#span();
-				const next = this.#pos + this.#dir;
-				if (next >= span - 1) {
-					this.#pos = span - 1;
-					this.#dir = -1;
-				} else if (next <= 0) {
-					this.#pos = 0;
-					this.#dir = 1;
+				// Slide the cluster one cell, bouncing at the short window's ends so the
+				// four dots drift right→left→right just past the title.
+				const travel = this.#layout(this.#lastWidth).travel;
+				if (travel <= 0) {
+					this.#offset = 0;
 				} else {
-					this.#pos = next;
+					const next = this.#offset + this.#dir;
+					if (next >= travel) {
+						this.#offset = travel;
+						this.#dir = -1;
+					} else if (next <= 0) {
+						this.#offset = 0;
+						this.#dir = 1;
+					} else {
+						this.#offset = next;
+					}
 				}
 				this.#invalidateFrame();
 				this.#ui?.requestComponentRender(this);
@@ -150,14 +188,15 @@ export class SteeringIndicator extends Text {
 	/**
 	 * Build the animated top-border line for the current frame. Overrides
 	 * {@link Text.render} so the rule spans the full layout width every frame —
-	 * the timer only advances the comet and asks the TUI to re-render this node.
+	 * the timer only advances the cluster and asks the TUI to re-render this node.
 	 */
 	render(width: number): readonly string[] {
 		this.#lastWidth = width;
-		const pos = Math.min(Math.max(0, this.#pos), this.#span() - 1);
-		const sig = `${width}|${pos}|${this.#dir}|${this.#active ? 1 : 0}`;
+		const travel = this.#layout(width).travel;
+		const offset = Math.min(Math.max(0, this.#offset), travel);
+		const sig = `${width}|${offset}|${this.#active ? 1 : 0}`;
 		if (this.#cacheLine && this.#cacheSig === sig) return this.#cacheLine;
-		const line = this.#buildLine(width, pos);
+		const line = this.#buildLine(width, offset);
 		this.#cacheLine = [line];
 		this.#cacheSig = sig;
 		return this.#cacheLine;
@@ -166,40 +205,29 @@ export class SteeringIndicator extends Text {
 	/**
 	 * One frame: `╭` + inner rule + `╮`. The inner cells carry the inset title
 	 * `␣Steering␣` (after a single leading rule cell, matching the shared
-	 * top-border layout) flanked by `─` rule. A comet at `pos` shows `●` and
-	 * fades `• ∙ ·` behind it along its travel direction; cells ahead stay plain.
-	 * Title letters brighten under the comet, rest in mid. Constant visible width.
+	 * top-border layout). A short cluster of four equal dots sits just past the
+	 * title and slides by `offset` within its window; every other cell stays a
+	 * plain `─` rule. Constant visible width, no fade, no size ramp.
 	 */
-	#buildLine(width: number, pos: number): string {
+	#buildLine(width: number, offset: number): string {
 		const { topLeft, topRight, horizontal, paint } = this.#border;
 		if (width < MIN_BORDER_WIDTH) {
 			return this.#active ? this.#styles.bright(this.#word) : this.#styles.mid(this.#word);
 		}
-		const inner = width - 2;
-		// Title inset one rule cell in from the left corner: `╭─ Steering ─…─╮`.
-		const titleStr = ` ${this.#word} `;
-		const titleStart = 1;
-		const titleEnd = Math.min(inner, titleStart + titleStr.length); // exclusive
+		const layout = this.#layout(width);
+		const { inner, titleStr, titleStart, titleEnd, clusterStart, clusterWidth, step, fits } = layout;
+		const clusterLeft = clusterStart + offset;
+		const clusterEnd = clusterLeft + clusterWidth; // exclusive
+		const showDots = this.#active && fits;
 		let out = paint(topLeft);
 		for (let c = 0; c < inner; c++) {
-			// Trail distance: how far this cell sits *behind* the comet along its
-			// travel direction (0 at the head; positive behind; negative ahead).
-			const behind = this.#dir > 0 ? pos - c : c - pos;
-			const level = this.#active && behind >= 0 && behind <= MAX_LEVEL ? MAX_LEVEL - behind : -1;
 			if (c >= titleStart && c < titleEnd) {
 				const ch = titleStr[c - titleStart] ?? " ";
-				if (ch === " ") {
-					// Title margin stays clean; only the comet head crosses it visibly.
-					out += level >= MAX_LEVEL ? this.#styles.bright(GLYPHS[MAX_LEVEL]) : " ";
-				} else {
-					// Only the single letter directly under the comet head brightens; the
-					// rest of the word rests in mid, so exactly one cell glows per frame.
-					out += level >= MAX_LEVEL ? this.#styles.bright(ch) : this.#styles.mid(ch);
-				}
-			} else if (level >= MAX_LEVEL) {
-				out += this.#styles.bright(GLYPHS[MAX_LEVEL]);
-			} else if (level >= 0) {
-				out += this.#styles.mid(GLYPHS[level]);
+				// Title rests muted; margins stay clean.
+				out += ch === " " ? " " : this.#styles.mid(ch);
+			} else if (showDots && c >= clusterLeft && c < clusterEnd && (c - clusterLeft) % step === 0) {
+				// One of the four equal dots — all the same brightness, every frame.
+				out += this.#styles.bright(DOT);
 			} else {
 				out += paint(horizontal);
 			}
