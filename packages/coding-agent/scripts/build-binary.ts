@@ -5,7 +5,15 @@ import * as path from "node:path";
 
 const packageDir = path.join(import.meta.dir, "..");
 const repoRoot = path.join(packageDir, "..", "..");
-const outputPath = path.join(packageDir, "dist", "omp");
+// Optional cross-compile target, e.g. CROSS_TARGET=linux-arm64 → bun build
+// --target=bun-linux-arm64, embeds the matching native, outputs dist/omp-<target>.
+const crossTarget = Bun.env.CROSS_TARGET || null;
+const [crossPlatform, crossArch] = crossTarget ? crossTarget.split("-") : [null, null];
+// x64 uses the baseline bun runtime so it runs under Rosetta / pre-AVX2 CPUs
+// (the modern bun-linux-x64 target SIGILLs under Apple-Silicon Rosetta).
+const bunTarget = crossTarget ? (crossTarget === "linux-x64" ? "bun-linux-x64-baseline" : `bun-${crossTarget}`) : null;
+const outName = crossTarget ? `omp-${crossTarget}` : "omp";
+const outputPath = path.join(packageDir, "dist", outName);
 
 // Transformers.js is an optional, native-heavy dependency that is never bundled
 // into the binary; the tiny-model worker `bun install`s it into a runtime cache
@@ -17,7 +25,7 @@ const transformersVersion = (
 ).version;
 
 function shouldAdhocSignDarwinBinary(): boolean {
-	return process.platform === "darwin";
+	return process.platform === "darwin" && !crossTarget;
 }
 
 async function runCommand(
@@ -43,7 +51,12 @@ async function main(): Promise<void> {
 	try {
 		await runCommand(["bun", "--cwd=../stats", "scripts/generate-client-bundle.ts", "--generate"]);
 		await runCommand(["bun", "scripts/generate-docs-index.ts", "--generate"]);
-		await runCommand(["bun", "--cwd=../natives", "run", "embed:native"]);
+		await runCommand(
+			["bun", "--cwd=../natives", "run", "embed:native"],
+			crossTarget
+				? { ...Bun.env, TARGET_PLATFORM: crossPlatform as string, TARGET_ARCH: crossArch as string }
+				: Bun.env,
+		);
 		await runCommand(["bun", "scripts/embed-mupdf-wasm.ts", "--generate"]);
 		try {
 			const buildEnv = shouldAdhocSignDarwinBinary() ? { ...Bun.env, BUN_NO_CODESIGN_MACHO_BINARY: "1" } : Bun.env;
@@ -52,6 +65,7 @@ async function main(): Promise<void> {
 					"bun",
 					"build",
 					"--compile",
+					...(bunTarget ? ["--target", bunTarget] : []),
 					"--no-compile-autoload-bunfig",
 					"--no-compile-autoload-dotenv",
 					"--no-compile-autoload-tsconfig",
@@ -68,24 +82,17 @@ async function main(): Promise<void> {
 					"--root",
 					".",
 					"./packages/coding-agent/src/cli.ts",
-					// Legacy pi-* extension compat entrypoints served by
-					// `legacy-pi-compat.ts`. These are reached via computed bunfs paths
-					// (which `--compile`'s static analyzer cannot trace), so each must be
-					// listed here to land in bunfs at
-					// `/$bunfs/root/packages/<pkg>/<entry>.js`. The coding-agent's own
-					// `./src/index.ts` is intentionally NOT listed: bun --compile silently
-					// breaks the CLI entry when the same package's barrel appears as an
-					// extra entrypoint (issue #1474), so legacy `pi-coding-agent` imports
-					// resolve through `legacy-pi-coding-agent-shim.ts` instead.
-					"./packages/agent/src/index.ts",
-					"./packages/natives/native/index.js",
-					"./packages/tui/src/index.ts",
-					"./packages/utils/src/index.ts",
-					"./packages/coding-agent/src/extensibility/typebox.ts",
-					"./packages/coding-agent/src/extensibility/legacy-pi-ai-shim.ts",
-					"./packages/coding-agent/src/extensibility/legacy-pi-coding-agent-shim.ts",
+					// Legacy pi-* extension compat surfaces (host packages + shims)
+					// were previously listed as explicit `--compile` entries so the
+					// rewrite path could emit `/$bunfs/root/...` URLs against them.
+					// Bun 1.3.14 made bunfs files unreachable at runtime (issue
+					// #3423), so `legacy-pi-compat.ts` now serves them through a
+					// virtual namespace backed by `legacy-pi-bundled-registry.ts`,
+					// which static-imports each surface — the bundler already
+					// includes them via the main module graph, so no `--compile`
+					// extras are required.
 					"--outfile",
-					"packages/coding-agent/dist/omp",
+					`packages/coding-agent/dist/${outName}`,
 				],
 				buildEnv,
 				repoRoot,

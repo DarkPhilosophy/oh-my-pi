@@ -32,7 +32,25 @@ type FakeEditor = {
 	clearCustomKeyHandlers(): void;
 	pasteText(text: string): void;
 	imageLinks?: (string | undefined)[];
+	pendingImages: ImageContent[];
+	pendingImageLinks: (string | undefined)[];
+	clearDraft(historyText?: string): void;
 };
+
+type InputListenerResult = { consume: boolean } | undefined;
+type InputListener = (data: string) => InputListenerResult;
+
+function dispatchInput(listeners: InputListener[], data: string): InputListenerResult {
+	for (const listener of listeners) {
+		const result = listener(data);
+		if (result) return result;
+	}
+	return undefined;
+}
+
+function registeredInputListeners(addInputListener: Mock<(listener: InputListener) => void>): InputListener[] {
+	return addInputListener.mock.calls.map(call => call[0]);
+}
 
 async function createContext() {
 	let editorText = "";
@@ -53,7 +71,10 @@ async function createContext() {
 	const resetDisplay = vi.fn();
 	const showModelSelector = vi.fn();
 	const requestRender = vi.fn();
-	const addInputListener = vi.fn();
+	let focused: unknown;
+	const addInputListener = vi.fn((listener: InputListener) => {
+		void listener;
+	});
 	const addStartListener = vi.fn();
 	const terminalWrite = vi.fn();
 	const prompt = vi.fn(async () => {});
@@ -73,7 +94,9 @@ async function createContext() {
 	};
 	const updatePendingMessagesDisplay = vi.fn();
 	const handleBtwBranchKey = vi.fn(async () => true);
+	const handleBtwCopyKey = vi.fn(async () => true);
 	const canBranchBtw = vi.fn(() => false);
+	const canCopyBtw = vi.fn(() => false);
 	const editor: FakeEditor = {
 		setText(text: string) {
 			editorText = text;
@@ -88,7 +111,17 @@ async function createContext() {
 		setActionKeys,
 		setCustomKeyHandler,
 		clearCustomKeyHandlers,
+		pendingImages: [],
+		pendingImageLinks: [],
+		clearDraft(historyText?: string) {
+			if (historyText !== undefined) this.addToHistory(historyText);
+			this.setText("");
+			this.imageLinks = undefined;
+			this.pendingImages = [];
+			this.pendingImageLinks = [];
+		},
 	};
+	focused = editor;
 	const ctx = {
 		editor: editor as unknown as InteractiveModeContext["editor"],
 		ui: {
@@ -96,6 +129,7 @@ async function createContext() {
 			resetDisplay,
 			addInputListener,
 			addStartListener,
+			getFocused: vi.fn(() => focused),
 			terminal: { write: terminalWrite },
 		} as unknown as InteractiveModeContext["ui"],
 		loadingAnimation: undefined,
@@ -110,7 +144,6 @@ async function createContext() {
 				return keyMap[action] ? [...keyMap[action]] : [];
 			},
 		} as InteractiveModeContext["keybindings"],
-		pendingImages: [],
 		locallySubmittedUserSignatures: new Set<string>(),
 		isKnownSlashCommand: () => false,
 		recordLocalSubmission(this: InteractiveModeContext, text: string, imageCount = 0) {
@@ -156,6 +189,8 @@ async function createContext() {
 		hasActiveBtw: vi.fn(() => false),
 		handleBtwBranchKey,
 		canBranchBtw,
+		canCopyBtw,
+		handleBtwCopyKey,
 		showError: vi.fn(),
 		showStatus: vi.fn(),
 	} as unknown as InteractiveModeContext;
@@ -165,6 +200,9 @@ async function createContext() {
 		ctx,
 		editor,
 		customHandlers,
+		setFocused(target: unknown) {
+			focused = target;
+		},
 		spies: {
 			setActionKeys,
 			showModelSelector,
@@ -177,6 +215,8 @@ async function createContext() {
 			handleBtwBranchKey,
 			addInputListener,
 			canBranchBtw,
+			handleBtwCopyKey,
+			canCopyBtw,
 		},
 	};
 }
@@ -275,15 +315,15 @@ describe("InputController keybinding setup", () => {
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
-		ctx.pendingImages = [image];
-		ctx.pendingImageLinks = ["local://draft.png"];
-		editor.imageLinks = ctx.pendingImageLinks;
+		ctx.editor.pendingImages = [image];
+		ctx.editor.pendingImageLinks = ["local://draft.png"];
+		editor.imageLinks = ctx.editor.pendingImageLinks;
 		editor.setText("draft with image");
 		editor.onRetry?.();
 		await Promise.resolve();
 
-		expect(ctx.pendingImages).toEqual([]);
-		expect(ctx.pendingImageLinks).toEqual([]);
+		expect(ctx.editor.pendingImages).toEqual([]);
+		expect(ctx.editor.pendingImageLinks).toEqual([]);
 		expect(editor.imageLinks).toBeUndefined();
 		expect(editor.getText()).toBe("");
 	});
@@ -329,6 +369,69 @@ describe("InputController keybinding setup", () => {
 		expect(result).toBeUndefined();
 		expect(spies.handleBtwBranchKey).not.toHaveBeenCalled();
 	});
+
+	it("lets b fall through while another input is focused", async () => {
+		const { InputController, ctx, setFocused, spies } = await createContext();
+		(ctx.canBranchBtw as unknown as { mockReturnValue(value: boolean): void }).mockReturnValue(true);
+		setFocused({ pasteText: vi.fn() });
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		const result = dispatchInput(registeredInputListeners(spies.addInputListener), "b");
+
+		expect(result).toBeUndefined();
+		expect(spies.handleBtwBranchKey).not.toHaveBeenCalled();
+	});
+
+	it("routes c to copy a copyable /btw panel when the editor is empty", async () => {
+		const { InputController, ctx, spies } = await createContext();
+		(ctx.canCopyBtw as unknown as { mockReturnValue(value: boolean): void }).mockReturnValue(true);
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		const result = dispatchInput(registeredInputListeners(spies.addInputListener), "c");
+
+		expect(result).toEqual({ consume: true });
+		expect(spies.handleBtwCopyKey).toHaveBeenCalledTimes(1);
+	});
+
+	it("lets c fall through while the editor has draft text", async () => {
+		const { InputController, ctx, editor, spies } = await createContext();
+		(ctx.canCopyBtw as unknown as { mockReturnValue(value: boolean): void }).mockReturnValue(true);
+		editor.setText("continue this draft");
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		const result = dispatchInput(registeredInputListeners(spies.addInputListener), "c");
+
+		expect(result).toBeUndefined();
+		expect(spies.handleBtwCopyKey).not.toHaveBeenCalled();
+	});
+
+	it("lets c fall through when /btw is not copyable", async () => {
+		const { InputController, ctx, spies } = await createContext();
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		const result = dispatchInput(registeredInputListeners(spies.addInputListener), "c");
+
+		expect(result).toBeUndefined();
+		expect(spies.handleBtwCopyKey).not.toHaveBeenCalled();
+	});
+
+	it("lets c fall through while another input is focused", async () => {
+		const { InputController, ctx, setFocused, spies } = await createContext();
+		(ctx.canCopyBtw as unknown as { mockReturnValue(value: boolean): void }).mockReturnValue(true);
+		setFocused({ pasteText: vi.fn() });
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		const result = dispatchInput(registeredInputListeners(spies.addInputListener), "c");
+
+		expect(result).toBeUndefined();
+		expect(spies.handleBtwCopyKey).not.toHaveBeenCalled();
+	});
+
 	it("empty Enter aborts the active stream when queued messages are pending", async () => {
 		const { InputController, ctx, editor, spies } = await createContext();
 		const session = ctx.session as unknown as { isStreaming: boolean; queuedMessageCount: number };

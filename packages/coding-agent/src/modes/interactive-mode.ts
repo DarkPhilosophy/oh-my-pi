@@ -70,7 +70,12 @@ import type { Goal, GoalModeState } from "../goals/state";
 import { resolveLocalUrlToPath } from "../internal-urls";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
 import type { MCPManager } from "../mcp";
-import { formatMCPConnectingMessage, isMcpConnectingEvent, MCP_CONNECTING_EVENT_CHANNEL } from "../mcp/startup-events";
+import {
+	formatMCPConnectionStatusMessage,
+	isMcpConnectionStatusEvent,
+	MCP_CONNECTION_STATUS_EVENT_CHANNEL,
+	type McpConnectionStatusEvent,
+} from "../mcp/startup-events";
 import {
 	humanizePlanTitle,
 	type PlanApprovalDetails,
@@ -88,7 +93,7 @@ import type { SessionContext } from "../session/session-context";
 import { getRecentSessions } from "../session/session-listing";
 import type { SessionManager } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
-import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES, BUILTIN_SLASH_COMMANDS } from "../slash-commands/builtin-registry";
+import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES, buildTuiBuiltinSlashCommands } from "../slash-commands/builtin-registry";
 import { formatDuration } from "../slash-commands/helpers/format";
 import { STTController, type SttState } from "../stt";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
@@ -386,6 +391,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	statusLine: StatusLineComponent;
 
 	isInitialized = false;
+	initialChatRendered = false;
 	isBashMode = false;
 	toolOutputExpanded = false;
 	todoExpanded = false;
@@ -402,8 +408,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#modelCycleClearTimer: NodeJS.Timeout | undefined;
 	todoPhases: TodoPhase[] = [];
 	hideThinkingBlock = false;
-	pendingImages: ImageContent[] = [];
-	pendingImageLinks: (string | undefined)[] = [];
+	proseOnlyThinking = true;
 	compactionQueuedMessages: CompactionQueuedMessage[] = [];
 	pendingTools = new Map<string, ToolExecutionHandle>();
 	pendingBashComponents: BashExecutionComponent[] = [];
@@ -430,6 +435,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	locallySubmittedUserSignatures: Set<string> = new Set();
 	#pendingSubmittedInput: SubmittedUserInput | undefined;
 	#pendingSubmissionDispose: (() => void) | undefined;
+	#optimisticUserMessageComponents: Component[] = [];
 	lastSigintTime = 0;
 	lastEscapeTime = 0;
 	lastLeftTapTime = 0;
@@ -510,6 +516,14 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.loadingAnimation.stop();
 			this.loadingAnimation = undefined;
 		}
+		if (this.autoCompactionLoader) {
+			this.autoCompactionLoader.stop();
+			this.autoCompactionLoader = undefined;
+		}
+		if (this.retryLoader) {
+			this.retryLoader.stop();
+			this.retryLoader = undefined;
+		}
 		this.statusContainer.clear();
 		this.pendingMessagesContainer.clear();
 		this.#cancelModelCycleClearTimer();
@@ -530,6 +544,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	#observerRegistry: SessionObserverRegistry;
 	#eventBus?: EventBus;
 	#eventBusUnsubscribers: Array<() => void> = [];
+	#mcpStatusOrder: string[] = [];
+	#mcpPendingServers = new Set<string>();
+	#mcpConnectedServers = new Set<string>();
+	#mcpFailedServers = new Map<string, string>();
 	#welcomeComponent?: WelcomeComponent;
 	readonly #chatHost: ChatBlockHost = { requestRender: () => this.ui.requestRender() };
 
@@ -563,13 +581,12 @@ export class InteractiveMode implements InteractiveModeContext {
 				}),
 			);
 			this.#eventBusUnsubscribers.push(
-				eventBus.on(MCP_CONNECTING_EVENT_CHANNEL, data => {
-					if (!isMcpConnectingEvent(data)) {
-						logger.warn("Ignoring malformed mcp:connecting event", { data });
+				eventBus.on(MCP_CONNECTION_STATUS_EVENT_CHANNEL, data => {
+					if (!isMcpConnectionStatusEvent(data)) {
+						logger.warn("Ignoring malformed mcp:connection-status event", { data });
 						return;
 					}
-					if (this.settings.get("startup.quiet")) return;
-					this.showStatus(formatMCPConnectingMessage(data.serverNames));
+					this.#handleMcpConnectionStatusEvent(data);
 				}),
 			);
 		}
@@ -622,6 +639,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.statusLine.setAutoCompactEnabled(session.autoCompactionEnabled);
 
 		this.hideThinkingBlock = settings.get("hideThinkingBlock");
+		this.proseOnlyThinking = settings.get("proseOnlyThinking");
 
 		const hookCommands: SlashCommand[] = (
 			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
@@ -647,8 +665,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 		}
 
+		const builtinCommands = buildTuiBuiltinSlashCommands({ ctx: this });
 		// Store pending commands for init() where file commands are loaded async
-		this.#pendingSlashCommands = [...BUILTIN_SLASH_COMMANDS, ...hookCommands, ...customCommands, ...skillCommandList];
+		this.#pendingSlashCommands = [...builtinCommands, ...hookCommands, ...customCommands, ...skillCommandList];
 
 		this.#uiHelpers = new UiHelpers(this);
 		this.#btwController = new BtwController(this);
@@ -662,6 +681,54 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#focusController = new SessionFocusController(this);
 		this.#inputController = new InputController(this);
 		this.#observerRegistry = new SessionObserverRegistry();
+	}
+
+	#handleMcpConnectionStatusEvent(event: McpConnectionStatusEvent): void {
+		if (this.settings.get("startup.quiet")) return;
+		if (event.type === "connecting") {
+			this.#mcpStatusOrder = [];
+			this.#mcpPendingServers.clear();
+			this.#mcpConnectedServers.clear();
+			this.#mcpFailedServers.clear();
+			for (const serverName of event.serverNames) {
+				this.#trackMcpStatusServer(serverName);
+				this.#mcpPendingServers.add(serverName);
+			}
+		} else if (event.type === "connected") {
+			this.#trackMcpStatusServer(event.serverName);
+			this.#mcpPendingServers.delete(event.serverName);
+			this.#mcpFailedServers.delete(event.serverName);
+			this.#mcpConnectedServers.add(event.serverName);
+		} else {
+			this.#trackMcpStatusServer(event.serverName);
+			this.#mcpPendingServers.delete(event.serverName);
+			this.#mcpConnectedServers.delete(event.serverName);
+			this.#mcpFailedServers.set(event.serverName, event.error);
+		}
+
+		const message = formatMCPConnectionStatusMessage({
+			pendingServers: this.#orderedMcpStatusServers(this.#mcpPendingServers),
+			connectedServers: this.#orderedMcpStatusServers(this.#mcpConnectedServers),
+			failedServers: this.#orderedMcpStatusFailures(),
+		});
+		if (message) this.showStatus(message);
+	}
+
+	#trackMcpStatusServer(serverName: string): void {
+		if (!this.#mcpStatusOrder.includes(serverName)) {
+			this.#mcpStatusOrder.push(serverName);
+		}
+	}
+
+	#orderedMcpStatusServers(servers: ReadonlySet<string>): string[] {
+		return this.#mcpStatusOrder.filter(serverName => servers.has(serverName));
+	}
+
+	#orderedMcpStatusFailures(): Array<{ serverName: string; error: string }> {
+		return this.#mcpStatusOrder.flatMap(serverName => {
+			const error = this.#mcpFailedServers.get(serverName);
+			return error === undefined ? [] : [{ serverName, error }];
+		});
 	}
 
 	playWelcomeIntro(): void {
@@ -1062,7 +1129,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.#goalSuppressNextContinuation) return;
 		if (this.#pendingSubmittedInput) return;
 		if (this.editor.getText().trim().length > 0) return;
-		if ((this.pendingImages?.length ?? 0) > 0) return;
+		if ((this.editor.pendingImages?.length ?? 0) > 0) return;
 		const state = this.session.getGoalModeState();
 		if (!state?.enabled || state.goal.status !== "active") return;
 		const prompt = this.session.goalRuntime.buildContinuationPrompt();
@@ -1081,7 +1148,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (this.#isAutoSubmitBlocked()) return;
 			if (this.#pendingSubmittedInput) return;
 			if (this.editor.getText().trim().length > 0) return;
-			if ((this.pendingImages?.length ?? 0) > 0) return;
+			if ((this.editor.pendingImages?.length ?? 0) > 0) return;
 			const latestState = this.session.getGoalModeState();
 			if (!latestState?.enabled || latestState.goal.status !== "active") return;
 			this.#goalContinuationTurnInFlight = true;
@@ -1217,6 +1284,32 @@ export class InteractiveMode implements InteractiveModeContext {
 			throw err;
 		}
 	}
+	#captureAddedChatComponents(render: () => void): Component[] {
+		const start = this.chatContainer.children.length;
+		render();
+		return this.chatContainer.children.slice(start);
+	}
+
+	clearOptimisticUserMessage(): void {
+		this.optimisticUserMessageSignature = undefined;
+		this.#pendingSubmissionDispose?.();
+		this.#pendingSubmissionDispose = undefined;
+		this.#optimisticUserMessageComponents = [];
+	}
+
+	replaceOptimisticUserMessage(
+		message: AgentMessage,
+		options?: { imageLinks?: readonly (string | undefined)[] },
+	): void {
+		this.optimisticUserMessageSignature = undefined;
+		this.#pendingSubmissionDispose?.();
+		this.#pendingSubmissionDispose = undefined;
+		for (const component of this.#optimisticUserMessageComponents) {
+			this.chatContainer.removeChild(component);
+		}
+		this.#optimisticUserMessageComponents = [];
+		this.addMessageToChat(message, options);
+	}
 
 	startPendingSubmission(input: {
 		text: string;
@@ -1242,18 +1335,19 @@ export class InteractiveMode implements InteractiveModeContext {
 			const imageCount = submission.images?.length ?? 0;
 			this.optimisticUserMessageSignature = `${submission.text}\u0000${imageCount}`;
 			this.#pendingSubmissionDispose = this.recordLocalSubmission(submission.text, imageCount);
-			this.addMessageToChat(
-				{
-					role: "user",
-					content: [{ type: "text", text: submission.text }, ...(submission.images ?? [])],
-					attribution: "user",
-					timestamp: Date.now(),
-				},
-				{ imageLinks: input.imageLinks },
-			);
+			this.#optimisticUserMessageComponents = this.#captureAddedChatComponents(() => {
+				this.addMessageToChat(
+					{
+						role: "user",
+						content: [{ type: "text", text: submission.text }, ...(submission.images ?? [])],
+						attribution: "user",
+						timestamp: Date.now(),
+					},
+					{ imageLinks: input.imageLinks },
+				);
+			});
 		} else {
-			this.optimisticUserMessageSignature = undefined;
-			this.#pendingSubmissionDispose = undefined;
+			this.clearOptimisticUserMessage();
 		}
 		this.editor.setText("");
 		this.editor.imageLinks = undefined;
@@ -1270,9 +1364,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		submission.cancelled = true;
 		this.#pendingSubmittedInput = undefined;
-		this.optimisticUserMessageSignature = undefined;
-		this.#pendingSubmissionDispose?.();
-		this.#pendingSubmissionDispose = undefined;
+		this.clearOptimisticUserMessage();
 		this.#pendingWorkingMessage = undefined;
 		if (submission.customType === "goal-continuation") {
 			this.#goalContinuationTurnInFlight = false;
@@ -1281,9 +1373,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#stopLoadingAnimation(true);
 		}
 		if (!submission.customType) {
-			this.pendingImages = submission.images ? [...submission.images] : [];
-			this.pendingImageLinks = submission.imageLinks ? [...submission.imageLinks] : [];
-			this.editor.imageLinks = this.pendingImageLinks;
+			this.editor.pendingImages = submission.images ? [...submission.images] : [];
+			this.editor.pendingImageLinks = submission.imageLinks ? [...submission.imageLinks] : [];
+			this.editor.imageLinks = this.editor.pendingImageLinks;
 			this.rebuildChatFromMessages();
 			this.editor.setText(submission.text);
 		}
@@ -1314,6 +1406,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (wasPendingSubmission && !this.session.isStreaming && !this.streamingComponent) {
 			this.optimisticUserMessageSignature = undefined;
 			pendingSubmissionDispose?.();
+			this.#optimisticUserMessageComponents = [];
 			this.#pendingWorkingMessage = undefined;
 			if (this.loadingAnimation) {
 				this.#stopLoadingAnimation(true);
@@ -1385,9 +1478,9 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	rebuildChatFromMessages(): void {
 		this.chatContainer.clear();
-		// Full-history transcript: compactions render as inline dividers instead
-		// of restarting the visible conversation (the LLM context still resets).
-		const context = this.viewSession.buildTranscriptSessionContext();
+		// Live display uses the compacted transcript tail; export/resume callers
+		// can still request the full inline compaction history.
+		const context = this.viewSession.buildTranscriptSessionContext({ collapseCompactedHistory: true });
 		this.renderSessionContext(context);
 		// During the pre-streaming window — after `startPendingSubmission` has
 		// optimistically rendered the user's message but before the user
@@ -1404,15 +1497,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.optimisticUserMessageSignature) return;
 		const submission = this.#pendingSubmittedInput;
 		if (!submission || submission.cancelled || submission.customType) return;
-		this.addMessageToChat(
-			{
-				role: "user",
-				content: [{ type: "text", text: submission.text }, ...(submission.images ?? [])],
-				attribution: "user",
-				timestamp: Date.now(),
-			},
-			{ imageLinks: submission.imageLinks },
-		);
+		this.#optimisticUserMessageComponents = this.#captureAddedChatComponents(() => {
+			this.addMessageToChat(
+				{
+					role: "user",
+					content: [{ type: "text", text: submission.text }, ...(submission.images ?? [])],
+					attribution: "user",
+					timestamp: Date.now(),
+				},
+				{ imageLinks: submission.imageLinks },
+			);
+		});
 	}
 
 	#formatTodoLine(todo: TodoItem, prefix: string, matched: boolean): string {
@@ -1896,9 +1991,21 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		const planFilePath = options?.planFilePath ?? (await this.#getPlanFilePath());
 		const previousTools = this.session.getActiveToolNames();
-		const hasResolveTool = this.session.getToolByName("resolve") !== undefined;
-		const planTools = hasResolveTool ? [...previousTools, "resolve"] : previousTools;
-		const uniquePlanTools = [...new Set(planTools)];
+		// `plan-mode-active.md` instructs the agent to draft the plan file with
+		// `write` and refine it with `edit`. Both must be in the active set or the
+		// agent falls back to `edit` on a non-existent file and stalls. `edit` is an
+		// essential built-in so it survives `tools.discoveryMode === "all"`, but
+		// `write` has `loadMode: "discoverable"` and is hidden behind
+		// `search_tool_bm25` — re-activate it here only when the current registry
+		// entry is the built-in write tool (issue #3165). A shadowing extension
+		// tool named `write` must stay inactive because plan mode's read-only
+		// guarantee relies on the built-in write/edit guard. `resolve` is hidden
+		// too; the standing handler below consumes plan-approval calls through it.
+		const planAugmentations = ["resolve"];
+		if (this.session.hasBuiltInTool("write")) {
+			planAugmentations.push("write");
+		}
+		const uniquePlanTools = [...new Set([...previousTools, ...planAugmentations])];
 
 		this.#planModePreviousTools = previousTools;
 		this.planModePlanFilePath = planFilePath;
@@ -3214,9 +3321,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showError(message: string): void {
 		this.#pendingSubmittedInput = undefined;
-		this.optimisticUserMessageSignature = undefined;
-		this.#pendingSubmissionDispose?.();
-		this.#pendingSubmissionDispose = undefined;
+		this.clearOptimisticUserMessage();
 		this.#pendingWorkingMessage = undefined;
 		if (this.loadingAnimation) {
 			this.#stopLoadingAnimation(true);
@@ -3461,7 +3566,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleExportCommand(text);
 	}
 
-	handleDumpCommand() {
+	async handleDumpCommand(): Promise<void> {
 		return this.#commandController.handleDumpCommand();
 	}
 
@@ -3804,6 +3909,14 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleBtwBranchKey(): Promise<boolean> {
 		return this.#btwController.handleBranch();
+	}
+
+	canCopyBtw(): boolean {
+		return this.#btwController.canCopy();
+	}
+
+	handleBtwCopyKey(): Promise<boolean> {
+		return this.#btwController.handleCopy();
 	}
 
 	async handleBtwBranch(question: string, assistantMessage: AssistantMessage): Promise<void> {

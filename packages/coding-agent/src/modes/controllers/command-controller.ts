@@ -10,7 +10,7 @@ import {
 	type UsageReport,
 } from "@oh-my-pi/pi-ai";
 import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
-import { formatDuration, Snowflake } from "@oh-my-pi/pi-utils";
+import { formatDuration, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type LoadedCustomShare, loadCustomShare } from "../../export/custom-share";
 import { shareSession } from "../../export/share";
@@ -44,7 +44,7 @@ import { formatShakeSummary, type ShakeMode, type ShakeResult } from "../../sess
 import { limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
-import { replaceTabs } from "../../tools/render-utils";
+import { replaceTabs, truncateToWidth } from "../../tools/render-utils";
 import { getChangelogPath, parseChangelog } from "../../utils/changelog";
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
@@ -85,15 +85,30 @@ export class CommandController {
 		}
 	}
 
-	handleDumpCommand() {
+	async handleDumpCommand(): Promise<void> {
 		try {
 			const formatted = this.ctx.session.formatSessionAsText();
 			if (!formatted) {
 				this.ctx.showError("No messages to dump yet.");
 				return;
 			}
-			copyToClipboard(formatted);
-			this.ctx.showStatus("Session copied to clipboard");
+			// Build the LLM request JSON sidecar first so its path (and a
+			// raw-context warning) can be appended to the copied transcript.
+			let sidecarPath: string | undefined;
+			let sidecarError: string | undefined;
+			try {
+				sidecarPath = await this.ctx.session.dumpLlmRequestToTmpDir();
+			} catch (error: unknown) {
+				sidecarError = error instanceof Error ? error.message : "Unknown error";
+			}
+			const doc = sidecarPath
+				? `${formatted}\n\n---\nLLM request JSON: ${sidecarPath}\nThis file persists on disk and may contain raw context/secrets — treat accordingly.`
+				: formatted;
+			await copyToClipboard(doc);
+			const statusParts = ["Session copied to clipboard"];
+			if (sidecarPath) statusParts.push(`LLM request JSON: ${sidecarPath}`);
+			if (sidecarError) statusParts.push(`LLM request JSON unavailable: ${sidecarError}`);
+			this.ctx.showStatus(statusParts.join("\n"));
 		} catch (error: unknown) {
 			this.ctx.showError(`Failed to copy session: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
@@ -202,6 +217,7 @@ export class CommandController {
 		try {
 			const result = await shareSession(this.ctx.session.sessionManager, {
 				serverUrl: this.ctx.settings.get("share.serverUrl"),
+				store: this.ctx.settings.get("share.store"),
 				state: this.ctx.session.state,
 				obfuscator: this.ctx.settings.get("share.redactSecrets") ? this.ctx.session.obfuscator : undefined,
 			});
@@ -1156,6 +1172,11 @@ export class CommandController {
 	}
 
 	async handleHandoffCommand(customInstructions?: string): Promise<void> {
+		if (this.ctx.session.isStreaming) {
+			this.ctx.showWarning("Wait for the current response to finish or abort it before handing off.");
+			return;
+		}
+
 		const entries = this.ctx.sessionManager.getEntries();
 		const messageCount = entries.filter(e => e.type === "message").length;
 
@@ -1502,7 +1523,7 @@ function resolveColumnWidth(count: number, available: number, trailing: number):
 	return ideal;
 }
 
-function renderUsageReports(
+export function renderUsageReports(
 	reports: UsageReport[],
 	uiTheme: typeof theme,
 	nowMs: number,
@@ -1560,6 +1581,15 @@ function renderUsageReports(
 		const activeAccountLabel = activeAccount?.email ?? activeAccount?.accountId ?? activeAccount?.projectId;
 		if (activeAccountLabel) {
 			lines.push(`  ${uiTheme.fg("accent", "in use by this session:")} ${activeAccountLabel}`);
+		}
+
+		// Provider-wide disclaimers (e.g. "OMP-observed spend only") render once
+		// above the per-account sections instead of duplicating onto every limit.
+		const providerNotes = [...new Set(providerReports.flatMap(report => report.notes ?? []))];
+		if (providerNotes.length > 0) {
+			lines.push(
+				`  ${uiTheme.fg("dim", replaceTabs(truncateToWidth(sanitizeText(providerNotes.map(n => n.replace(/[\r\n]+/g, " ")).join(" • ")), 110)))}`.trimEnd(),
+			);
 		}
 
 		const resetAccountLines: string[] = [];
@@ -1630,9 +1660,11 @@ function renderUsageReports(
 			if (resetText) {
 				lines.push(`  ${uiTheme.fg("dim", resetText)}`.trimEnd());
 			}
-			const notes = sortedLimits.flatMap(limit => limit.notes ?? []);
+			const notes = [...new Set(sortedLimits.flatMap(limit => limit.notes ?? []))];
 			if (notes.length > 0) {
-				lines.push(`  ${uiTheme.fg("dim", notes.join(" • "))}`.trimEnd());
+				lines.push(
+					`  ${uiTheme.fg("dim", replaceTabs(truncateToWidth(sanitizeText(notes.map(n => n.replace(/[\r\n]+/g, " ")).join(" • ")), 110)))}`.trimEnd(),
+				);
 			}
 		}
 

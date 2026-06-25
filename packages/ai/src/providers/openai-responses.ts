@@ -3,6 +3,7 @@ import { $flag, extractHttpStatusFromError, logger, structuredCloneJSON } from "
 import { getEnvApiKey } from "../stream";
 import type {
 	AssistantMessage,
+	CacheRetention,
 	Context,
 	Model,
 	OpenAICompat,
@@ -324,6 +325,8 @@ function markOpenAIResponsesChainZeroDataRetention(chain: OpenAIResponsesChainSt
 	});
 }
 
+type OpenRouterAnthropicCacheControl = { type: "ephemeral"; ttl?: "1h" };
+
 type OpenAIResponsesSamplingParams = ResponseCreateParamsStreaming & {
 	top_p?: number;
 	top_k?: number;
@@ -334,7 +337,18 @@ type OpenAIResponsesSamplingParams = ResponseCreateParamsStreaming & {
 	stream_options?: { include_obfuscation?: boolean };
 	provider?: OpenAICompat["openRouterRouting"];
 	reasoning?: { effort?: string } | { enabled: false };
+	cache_control?: OpenRouterAnthropicCacheControl;
 };
+
+function maybeAddOpenRouterAnthropicCacheControl(
+	params: OpenAIResponsesSamplingParams,
+	model: Model<"openai-responses">,
+	cacheRetention: CacheRetention,
+): void {
+	if (cacheRetention === "none" || !isOpenRouterAnthropicModel(model)) return;
+	if (params.cache_control != null) return;
+	params.cache_control = cacheRetention === "long" ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" };
+}
 
 /**
  * Generate function for OpenAI Responses API
@@ -436,7 +450,8 @@ const streamOpenAIResponsesOnce = (
 					? buildOpenAIResponsesChainedParams(params, trailingScaffoldingItems, chainState)
 					: { params };
 			sentPreviousResponseId = chained.previousResponseId;
-			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getOpenAIStreamIdleTimeoutMs();
+			const idleTimeoutMs =
+				options?.streamIdleTimeoutMs ?? getOpenAIStreamIdleTimeoutMs(model.compat.streamIdleTimeoutMs);
 			const firstEventTimeoutMs =
 				options?.streamFirstEventTimeoutMs ?? getOpenAIStreamFirstEventTimeoutMs(idleTimeoutMs);
 			const requestTimeoutMs =
@@ -776,7 +791,7 @@ export function buildParams(
 			replay: shouldReplayNativeHistory,
 			filterReasoning: policy.reasoning.filterReasoningHistory,
 		},
-		includeThinkingSignatures: shouldReplayNativeHistory,
+		includeThinkingSignatures: shouldReplayNativeHistory && !policy.reasoning.filterReasoningHistory,
 		repairOrphanOutputs: true,
 	});
 
@@ -822,6 +837,7 @@ export function buildParams(
 		store: false,
 		stream_options: model.compat.supportsObfuscationOptOut ? { include_obfuscation: false } : undefined,
 	};
+	maybeAddOpenRouterAnthropicCacheControl(params, model, cacheRetention);
 	const outputToken = resolveOpenAIOutputTokenParam({
 		field: "max_output_tokens",
 		maxTokens: options?.maxTokens,
@@ -861,15 +877,6 @@ export function buildParams(
 			if (toolChoice !== undefined && params.tools.length > 0) {
 				params.tool_choice = toolChoice;
 			}
-		}
-		// The apply_patch spec §1 marks only `apply_patch` itself as
-		// `supports_parallel_tool_calls = false`. OpenAI's Responses API
-		// exposes `parallel_tool_calls` as a request-scoped flag, not a
-		// per-tool one, so when a custom grammar tool is in the list we
-		// disable parallelism for the whole turn. Slightly coarser than
-		// the spec requires — but the platform API offers no finer knob.
-		if (params.tools.some(t => (t as { type?: string }).type === "custom")) {
-			params.parallel_tool_calls = false;
 		}
 	}
 

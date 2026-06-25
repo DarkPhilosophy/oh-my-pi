@@ -122,7 +122,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 	context: ["General", "Compaction", "Rules (TTSR)", "Experimental"],
 	memory: ["General", "Auto-Learn", "Mnemopi", "Hindsight"],
 	files: ["Editing", "Reading", "Read Summaries", "LSP"],
-	shell: ["Bash", "Eval & Python"],
+	shell: ["Bash", "Eval & Runtimes"],
 	tools: [
 		"Available Tools",
 		"Todos",
@@ -134,7 +134,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Developer",
 	],
 	tasks: ["Modes", "Subagents", "Isolation", "Commands & Skills"],
-	providers: ["Services", "Tiny Model", "Protocol", "Privacy"],
+	providers: ["Services", "Fireworks", "Tiny Model", "Protocol", "Privacy"],
 };
 
 /** Status line segment identifiers */
@@ -413,7 +413,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"advisor.immuneTurns": {
 		type: "number",
-		default: 1,
+		default: 3,
 		ui: {
 			tab: "model",
 			group: "Advisor",
@@ -422,9 +422,9 @@ export const SETTINGS_SCHEMA = {
 				"After an advisor concern or blocker interrupts, route further concerns/blockers non-interruptingly for this many primary turns.",
 			options: [
 				{ value: "0", label: "0 turns", description: "Allow every concern/blocker to interrupt." },
-				{ value: "1", label: "1 turn", description: "Default." },
+				{ value: "1", label: "1 turn" },
 				{ value: "2", label: "2 turns" },
-				{ value: "3", label: "3 turns" },
+				{ value: "3", label: "3 turns", description: "Default." },
 				{ value: "4", label: "4 turns" },
 				{ value: "5", label: "5 turns" },
 			],
@@ -899,6 +899,28 @@ export const SETTINGS_SCHEMA = {
 			description: "Hide thinking blocks in assistant responses",
 		},
 	},
+	proseOnlyThinking: {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Thinking",
+			label: "Prose Only Thinking",
+			description: "Omit code blocks from thinking summaries and replace them with an ellipsis",
+		},
+	},
+
+	omitThinking: {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "model",
+			group: "Thinking",
+			label: "Omit Thinking summaries",
+			description:
+				"Instruct upstream providers to completely omit thinking summaries from responses (where supported)",
+		},
+	},
 
 	"model.loopGuard.enabled": {
 		type: "boolean",
@@ -942,6 +964,18 @@ export const SETTINGS_SCHEMA = {
 			group: "Prompt",
 			label: "Include Model in Prompt",
 			description: "Surface the active model identifier in the system prompt so the agent knows which model it is",
+		},
+	},
+
+	includeWorkspaceTree: {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "model",
+			group: "Prompt",
+			label: "Include Workspace Tree",
+			description:
+				"Render the workspace directory tree in the system prompt. WARNING: This can bust prompt caching across sessions when files are modified.",
 		},
 	},
 
@@ -1558,6 +1592,30 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"share.store": {
+		type: "enum",
+		values: ["blob", "gist"] as const,
+		default: "blob",
+		ui: {
+			tab: "interaction",
+			group: "Collab",
+			label: "Share Store",
+			description: "Where /share uploads the encrypted session blob",
+			options: [
+				{
+					value: "blob",
+					label: "Encrypted Blob",
+					description: "Upload to the share server (no GitHub account needed; avoids gist API rate limits)",
+				},
+				{
+					value: "gist",
+					label: "GitHub Gist",
+					description: "Push to a secret gist (needs authenticated gh), falling back to the share server",
+				},
+			],
+		},
+	},
+
 	"share.redactSecrets": {
 		type: "boolean",
 		default: true,
@@ -1631,7 +1689,7 @@ export const SETTINGS_SCHEMA = {
 	"compaction.strategy": {
 		type: "enum",
 		values: ["context-full", "handoff", "shake", "snapcompact", "off"] as const,
-		default: "context-full",
+		default: "snapcompact",
 		ui: {
 			tab: "context",
 			group: "Compaction",
@@ -2235,6 +2293,18 @@ export const SETTINGS_SCHEMA = {
 			condition: "mnemopiActive",
 		},
 	},
+	"mnemopi.proactiveLinking": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "memory",
+			group: "Mnemopi",
+			label: "Mnemopi Proactive Linking",
+			description:
+				"Ingest new memories into the episodic graph as they are stored, linking them to related entities and memories",
+			condition: "mnemopiActive",
+		},
+	},
 	"mnemopi.noEmbeddings": {
 		type: "boolean",
 		default: false,
@@ -2657,18 +2727,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	readHashLines: {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "files",
-			group: "Reading",
-			label: "Hash Lines",
-			description:
-				"Include snapshot-tag headers and line numbers in read output for hashline edit mode ([PATH#TAG] plus LINE:content)",
-		},
-	},
-
 	"read.defaultLimit": {
 		type: "number",
 		default: 300,
@@ -2935,7 +2993,7 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "shell",
-			group: "Eval & Python",
+			group: "Eval & Runtimes",
 			label: "Python Eval Backend",
 			description: "Allow the eval tool to dispatch Python cells to the IPython kernel",
 		},
@@ -2946,20 +3004,42 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "shell",
-			group: "Eval & Python",
+			group: "Eval & Runtimes",
 			label: "JavaScript Eval Backend",
 			description: "Allow the eval tool to dispatch JavaScript cells to the in-process runtime",
 		},
 	},
 
-	// Python kernel knobs (consumed by the eval py backend and the /python slash command)
+	"eval.rb": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "shell",
+			group: "Eval & Runtimes",
+			label: "Ruby Eval Backend",
+			description: "Allow the eval tool to dispatch Ruby cells to the persistent Ruby kernel",
+		},
+	},
+
+	"eval.jl": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "shell",
+			group: "Eval & Runtimes",
+			label: "Julia Eval Backend",
+			description: "Allow the eval tool to dispatch Julia cells to the persistent Julia kernel",
+		},
+	},
+
+	// Runtime knobs (consumed by eval backends and the /python slash command)
 	"python.kernelMode": {
 		type: "enum",
 		values: ["session", "per-call"] as const,
 		default: "session",
 		ui: {
 			tab: "shell",
-			group: "Eval & Python",
+			group: "Eval & Runtimes",
 			label: "Python Kernel Mode",
 			description: "Keep the IPython kernel alive across eval calls or start fresh each time",
 		},
@@ -2969,10 +3049,32 @@ export const SETTINGS_SCHEMA = {
 		default: "",
 		ui: {
 			tab: "shell",
-			group: "Eval & Python",
+			group: "Eval & Runtimes",
 			label: "Python Interpreter",
 			description:
 				"Optional path to an exact Python executable. When set, automatic Python runtime discovery is skipped.",
+		},
+	},
+	"ruby.interpreter": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "shell",
+			group: "Eval & Runtimes",
+			label: "Ruby Interpreter",
+			description:
+				"Optional path to an exact Ruby executable. When set, automatic Ruby runtime discovery is skipped.",
+		},
+	},
+	"julia.interpreter": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "shell",
+			group: "Eval & Runtimes",
+			label: "Julia Interpreter",
+			description:
+				"Optional path to an exact Julia executable. When set, automatic Julia runtime discovery is skipped.",
 		},
 	},
 
@@ -3470,7 +3572,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Discovery & MCP",
 			label: "Essential Tools Override",
 			description:
-				"Override the always-loaded built-in tools (default: read, bash, edit). Leave empty to use defaults.",
+				"Override the always-loaded built-in tools (default: read, bash, edit, write, find, eval). Leave empty to use defaults.",
 		},
 	},
 
@@ -4020,6 +4122,26 @@ export const SETTINGS_SCHEMA = {
 			],
 		},
 	},
+	"providers.fireworksTier": {
+		type: "enum",
+		values: ["standard", "priority"] as const,
+		default: "standard",
+		ui: {
+			tab: "providers",
+			group: "Fireworks",
+			label: "Fireworks Tier",
+			description:
+				'Serving path for Fireworks requests. Priority sends `service_tier: "priority"` for higher reliability during peak traffic at a higher price; Standard omits it. Fast (`-fast`) models ignore this — Fast is its own serving path.',
+			options: [
+				{ value: "standard", label: "Standard", description: "Default serving path (no service_tier)" },
+				{
+					value: "priority",
+					label: "Priority",
+					description: "Priority serving path: higher reliability, premium per-token pricing",
+				},
+			],
+		},
+	},
 	"providers.tts": {
 		type: "enum",
 		values: ["auto", "local", "xai"] as const,
@@ -4357,6 +4479,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"exa.searchDelayMs": {
+		type: "number",
+		default: 1_000,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Exa Search Delay",
+			description: "Minimum delay between Exa web search requests in milliseconds; set 0 to disable pacing",
+		},
+	},
+
 	"exa.enableResearcher": {
 		type: "boolean",
 		default: false,
@@ -4663,6 +4796,7 @@ export interface TtsrSettings {
 export interface ExaSettings {
 	enabled: boolean;
 	enableSearch: boolean;
+	searchDelayMs: number;
 	enableResearcher: boolean;
 	enableWebsets: boolean;
 }

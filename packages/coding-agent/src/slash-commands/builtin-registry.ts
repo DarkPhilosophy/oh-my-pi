@@ -1,8 +1,6 @@
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
-import { setNextRequestDebugPath } from "@oh-my-pi/pi-ai/utils/request-debug";
 import { type AutocompleteItem, Spacer } from "@oh-my-pi/pi-tui";
 import { APP_NAME, setProjectDir } from "@oh-my-pi/pi-utils";
 import { COLLAB_GUEST_ALLOWED_COMMANDS, CollabGuestLink } from "../collab/guest";
@@ -24,6 +22,7 @@ import {
 	MarketplaceManager,
 } from "../extensibility/plugins/marketplace";
 import { resolveMemoryBackend } from "../memory-backend";
+import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import { theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession, FreshSessionResult } from "../session/agent-session";
@@ -58,6 +57,12 @@ export type { BuiltinSlashCommand, SubcommandDef } from "./types";
 /** TUI-specific runtime accepted by `executeBuiltinSlashCommand`. */
 export type BuiltinSlashCommandRuntime = TuiSlashCommandRuntime;
 
+export interface TuiBuiltinSlashCommand extends BuiltinSlashCommand {
+	getArgumentCompletions?: (prefix: string) => AutocompleteItem[] | null;
+	getInlineHint?: (argumentText: string) => string | null;
+	getAutocompleteDescription?: () => string | undefined;
+}
+
 function refreshStatusLine(ctx: InteractiveModeContext): void {
 	ctx.statusLine.invalidate();
 	ctx.updateEditorTopBorder();
@@ -75,6 +80,17 @@ function formatFastModeStatus(session: AgentSession): string {
 		default:
 			return "on";
 	}
+}
+
+const AUTOCOMPLETE_DETAIL_LIMIT = 48;
+
+function shortDetail(value: string, limit = AUTOCOMPLETE_DETAIL_LIMIT): string {
+	const singleLine = value.replace(/\s+/g, " ").trim();
+	return singleLine.length <= limit ? singleLine : `${singleLine.slice(0, limit - 1)}…`;
+}
+
+function formatTokenCount(value: number): string {
+	return value.toLocaleString();
 }
 
 /** Scheme-less display form of a browser deep link: accent + underline, OSC-8 linked to the full URL. */
@@ -174,46 +190,6 @@ async function handleUsageResetCommand(
 	await output(describeRedeemOutcome(outcome, target.label));
 }
 
-const DEBUG_DUMP_NEXT_REQUEST_USAGE = "Usage: /debug dump-next-request <path>";
-
-function resolveDebugRequestDumpPath(target: string, cwd: string): string {
-	const expanded =
-		target === "~"
-			? os.homedir()
-			: target.startsWith("~/") || target.startsWith("~\\")
-				? path.join(os.homedir(), target.slice(2))
-				: target;
-	return path.resolve(cwd, expanded);
-}
-
-async function handleDebugSubcommand(
-	args: string,
-	cwd: string,
-	output: (text: string) => Promise<void> | void,
-): Promise<SlashCommandResult> {
-	const { verb, rest } = parseSubcommand(args);
-	switch (verb) {
-		case "":
-			await output(DEBUG_DUMP_NEXT_REQUEST_USAGE);
-			return commandConsumed();
-		case "dump-next-request":
-		case "dump-request":
-		case "next-request": {
-			if (!rest) {
-				await output(DEBUG_DUMP_NEXT_REQUEST_USAGE);
-				return commandConsumed();
-			}
-			const requestPath = resolveDebugRequestDumpPath(rest, cwd);
-			setNextRequestDebugPath(requestPath);
-			await output(`Next AI provider request will be dumped to ${requestPath}`);
-			return commandConsumed();
-		}
-		default:
-			await output(`Unknown /debug subcommand "${verb}". ${DEBUG_DUMP_NEXT_REQUEST_USAGE}`);
-			return commandConsumed();
-	}
-}
-
 /** Parse the `/shake` subcommand into a {@link ShakeMode}; empty defaults to elide. */
 function parseShakeMode(args: string): ShakeMode | { error: string } {
 	const verb = args.trim().toLowerCase();
@@ -253,18 +229,25 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		description: "Toggle plan mode (agent plans before executing)",
 		inlineHint: "[prompt]",
 		allowArgs: true,
-		handleTui: async (command, runtime) => {
-			const hadArgs = !!command.args;
-			await runtime.ctx.handlePlanModeCommand(command.args || undefined);
-			if (hadArgs) {
-				runtime.ctx.editor.addToHistory(command.text);
+		getTuiAutocompleteDescription: runtime => {
+			if (!runtime.ctx.settings.get("plan.enabled" as SettingPath)) return "Plan: disabled in settings";
+			if (runtime.ctx.planModeEnabled) {
+				const planFile = runtime.ctx.planModePlanFilePath;
+				return `Plan: on${planFile ? ` (${path.basename(planFile)})` : ""}`;
 			}
+			if (runtime.ctx.goalModeEnabled) return "Plan: blocked by goal mode";
+			return "Plan: off";
+		},
+		handleTui: async (command, runtime) => {
+			await runtime.ctx.handlePlanModeCommand(command.args || undefined);
 			runtime.ctx.editor.setText("");
 		},
 	},
 	{
 		name: "plan-review",
 		description: "Re-open the plan review for the latest plan (plan mode only)",
+		getTuiAutocompleteDescription: runtime =>
+			runtime.ctx.planModeEnabled ? "Plan review: available" : "Plan review: plan mode inactive",
 		handleTui: async (_command, runtime) => {
 			await runtime.ctx.openPlanReview();
 			runtime.ctx.editor.setText("");
@@ -283,12 +266,14 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		],
 		inlineHint: "[objective]",
 		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			if (!runtime.ctx.settings.get("goal.enabled" as SettingPath)) return "Goal: disabled in settings";
+			if (runtime.ctx.planModeEnabled) return "Goal: blocked by plan mode";
+			const state = runtime.ctx.session.getGoalModeState();
+			return state ? `Goal: ${state.goal.status} (${shortDetail(state.goal.objective)})` : "Goal: off";
+		},
 		handleTui: async (command, runtime) => {
-			const hadArgs = !!command.args;
 			await runtime.ctx.handleGoalModeCommand(command.args || undefined);
-			if (hadArgs) {
-				runtime.ctx.editor.addToHistory(command.text);
-			}
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -308,6 +293,12 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. Esc cancels the current iteration; /loop again to disable.",
 		inlineHint: "[count|duration] [prompt]",
 		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			if (!runtime.ctx.loopModeEnabled) return "Loop: off";
+			if (runtime.ctx.loopLimit) return `Loop: on (${describeLoopLimitRuntime(runtime.ctx.loopLimit)})`;
+			if (runtime.ctx.loopPrompt) return "Loop: on (repeating prompt)";
+			return "Loop: on (waiting for next prompt)";
+		},
 		handleTui: async (command, runtime) => {
 			const prompt = await runtime.ctx.handleLoopCommand(command.args);
 			runtime.ctx.editor.setText("");
@@ -321,6 +312,10 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		aliases: ["models"],
 		description: "Switch model for this session",
 		acpDescription: "Show current model selection",
+		getTuiAutocompleteDescription: runtime => {
+			const model = runtime.ctx.session.model;
+			return model ? `Model: ${model.provider}/${model.id}` : "Model: none selected";
+		},
 		handle: async (command, runtime) => {
 			if (command.args) {
 				const modelId = command.args.trim();
@@ -359,6 +354,10 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "switch",
 		description: "Switch model for this session (same as alt+p)",
+		getTuiAutocompleteDescription: runtime => {
+			const model = runtime.ctx.session.model;
+			return model ? `Model: ${model.provider}/${model.id}` : "Model: none selected";
+		},
 		handleTui: (_command, runtime) => {
 			runtime.ctx.showModelSelector({ temporaryOnly: true });
 			runtime.ctx.editor.setText("");
@@ -375,6 +374,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			{ name: "status", description: "Show fast mode status" },
 		],
 		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => `Fast: ${formatFastModeStatus(runtime.ctx.session)}`,
 		handle: async (command, runtime) => {
 			const arg = command.args.toLowerCase();
 			if (!arg || arg === "toggle") {
@@ -442,6 +442,12 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			{ name: "dump", description: "Copy the advisor's transcript to clipboard", usage: "[raw]" },
 		],
 		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			const stats = runtime.ctx.session.getAdvisorStats();
+			if (stats.active && stats.model) return `Advisor: on (${stats.model.provider}/${stats.model.id})`;
+			if (stats.configured) return "Advisor: configured, no model";
+			return "Advisor: off";
+		},
 		handle: async (command, runtime) => {
 			const { verb, rest } = parseSubcommand(command.args);
 			if (!verb || verb === "toggle") {
@@ -556,26 +562,44 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "dump",
-		description: "Copy session transcript to clipboard",
-		acpDescription: "Return full transcript as plain text",
+		description: "Copy session transcript to clipboard (and write LLM request JSON to tmp)",
+		acpDescription: "Return full transcript as plain text, with LLM request JSON path",
 		allowArgs: true,
 		handle: async (_command, runtime) => {
 			const text = runtime.session.formatSessionAsText();
-			await runtime.output(text || "No messages to dump yet.");
+			if (!text) {
+				await runtime.output("No messages to dump yet.");
+				return commandConsumed();
+			}
+			let sidecarPath: string | undefined;
+			try {
+				sidecarPath = await runtime.session.dumpLlmRequestToTmpDir();
+			} catch {
+				// Sidecar is best-effort; the transcript is still output below.
+			}
+			const lines = [text];
+			if (sidecarPath)
+				lines.push(
+					"",
+					`LLM request JSON: ${sidecarPath}`,
+					"This file persists on disk and may contain raw context/secrets — treat accordingly.",
+				);
+			await runtime.output(lines.join("\n"));
 			return commandConsumed();
 		},
-		handleTui: (_command, runtime) => {
-			runtime.ctx.handleDumpCommand();
+		handleTui: async (_command, runtime) => {
+			await runtime.ctx.handleDumpCommand();
 			runtime.ctx.editor.setText("");
 		},
 	},
 	{
 		name: "share",
-		description: "Share session via an encrypted link (secret gist or share server)",
+		description: "Share session via an encrypted link (share server or secret gist)",
 		handle: async (_command, runtime) => {
 			try {
 				const result = await shareSession(runtime.sessionManager, {
 					serverUrl: runtime.settings.get("share.serverUrl"),
+					store: runtime.settings.get("share.store"),
 					state: runtime.session.state,
 					obfuscator: runtime.settings.get("share.redactSecrets") ? runtime.session.obfuscator : undefined,
 				});
@@ -603,6 +627,14 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			{ name: "stop", description: "Stop sharing" },
 		],
 		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			if (runtime.ctx.collabHost) {
+				return `Collab: hosting (${Math.max(0, runtime.ctx.collabHost.participants.length - 1)} guests)`;
+			}
+			if (runtime.ctx.collabGuest?.readOnly) return "Collab: read-only guest";
+			if (runtime.ctx.collabGuest) return "Collab: guest";
+			return "Collab: off";
+		},
 		handleTui: async (command, runtime) => {
 			const ctx = runtime.ctx;
 			ctx.editor.setText("");
@@ -702,6 +734,11 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "leave",
 		description: "Leave the collab session",
+		getTuiAutocompleteDescription: runtime => {
+			if (runtime.ctx.collabHost) return "Leave collab: hosting";
+			if (runtime.ctx.collabGuest) return "Leave collab: guest";
+			return "Leave collab: not in collab";
+		},
 		handleTui: async (_command, runtime) => {
 			const ctx = runtime.ctx;
 			ctx.editor.setText("");
@@ -726,6 +763,10 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			{ name: "visible", description: "Switch to visible mode" },
 		],
 		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			if (!runtime.ctx.settings.get("browser.enabled" as SettingPath)) return "Browser: disabled";
+			return runtime.ctx.settings.get("browser.headless" as SettingPath) ? "Browser: headless" : "Browser: visible";
+		},
 		handle: async (command, runtime) => {
 			const arg = command.args.toLowerCase();
 			const enabled = runtime.settings.get("browser.enabled" as SettingPath) as boolean;
@@ -817,6 +858,14 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			{ name: "rm", description: "Remove task/phase/all (fuzzy-matched)", usage: "[<task|phase>]" },
 		],
 		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			const tasks = runtime.ctx.todoPhases.flatMap(phase => phase.tasks);
+			if (tasks.length === 0) return "Todos: none";
+			const pending = tasks.filter(task => task.status === "pending").length;
+			const inProgress = tasks.filter(task => task.status === "in_progress").length;
+			const completed = tasks.filter(task => task.status === "completed").length;
+			return `Todos: ${pending + inProgress} open (${inProgress} in progress, ${completed} done)`;
+		},
 		handle: handleTodoAcp,
 		handleTui: async (command, runtime) => {
 			await runtime.ctx.handleTodoCommand(command.args);
@@ -881,6 +930,11 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		name: "jobs",
 		description: "Show async background jobs status",
 		acpDescription: "Show background jobs",
+		getTuiAutocompleteDescription: runtime => {
+			const snapshot = runtime.ctx.session.getAsyncJobSnapshot({ recentLimit: 5 });
+			if (!snapshot || (snapshot.running.length === 0 && snapshot.recent.length === 0)) return "Jobs: none";
+			return `Jobs: ${snapshot.running.length} running, ${snapshot.recent.length} recent`;
+		},
 		handle: async (_command, runtime) => {
 			const snapshot = runtime.session.getAsyncJobSnapshot({ recentLimit: 5 });
 			if (!snapshot || (snapshot.running.length === 0 && snapshot.recent.length === 0)) {
@@ -1016,6 +1070,11 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		name: "tools",
 		description: "Show tools currently visible to the agent",
 		acpDescription: "Show available tools",
+		getTuiAutocompleteDescription: runtime => {
+			const active = runtime.ctx.session.getActiveToolNames().length;
+			const all = runtime.ctx.session.getAllToolNames().length;
+			return all === 0 ? "Tools: none available" : `Tools: ${active} active / ${all} available`;
+		},
 		handle: async (_command, runtime) => {
 			const active = runtime.session.getActiveToolNames();
 			const all = runtime.session.getAllToolNames();
@@ -1035,6 +1094,11 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		name: "context",
 		description: "Show estimated context usage breakdown",
 		acpDescription: "Show context usage",
+		getTuiAutocompleteDescription: runtime => {
+			const usage = runtime.ctx.session.getContextUsage();
+			if (!usage) return "Context: unavailable";
+			return `Context: ${Math.round(usage.percent)}% (${formatTokenCount(usage.tokens)}/${formatTokenCount(usage.contextWindow)})`;
+		},
 		handle: async (_command, runtime) => {
 			await runtime.output(buildContextReportText(runtime));
 			return commandConsumed();
@@ -1094,6 +1158,10 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		description: "Login with OAuth provider",
 		inlineHint: "[provider|redirect URL]",
 		allowArgs: true,
+		getTuiAutocompleteDescription: runtime =>
+			runtime.ctx.oauthManualInput.hasPending()
+				? `Login: waiting for ${runtime.ctx.oauthManualInput.pendingProviderId ?? "OAuth"} callback`
+				: "Login: choose provider",
 		handleTui: (command, runtime) => {
 			const manualInput = runtime.ctx.oauthManualInput;
 			const args = command.args.trim();
@@ -1194,7 +1262,6 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		handle: handleMcpAcp,
 		handleTui: async (command, runtime) => {
-			runtime.ctx.editor.addToHistory(command.text);
 			runtime.ctx.editor.setText("");
 			await runtime.ctx.handleMCPCommand(command.text);
 		},
@@ -1217,7 +1284,6 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		handle: handleSshAcp,
 		handleTui: async (command, runtime) => {
-			runtime.ctx.editor.addToHistory(command.text);
 			runtime.ctx.editor.setText("");
 			await runtime.ctx.handleSSHCommand(command.text);
 		},
@@ -1233,6 +1299,8 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "fresh",
 		description: "Reset provider stream state without changing the local transcript",
+		getTuiAutocompleteDescription: runtime =>
+			runtime.ctx.session.isStreaming ? "Fresh: unavailable while streaming" : "Fresh: ready",
 		handle: async (_command, runtime) => {
 			const result = runtime.session.freshSession();
 			if (!result) {
@@ -1268,6 +1336,10 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		})),
 		acpInputHint: `[${COMPACT_MODES.map(mode => mode.name).join("|")}] [focus]`,
 		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			const usage = runtime.ctx.session.getContextUsage();
+			return usage ? `Compact: context ${Math.round(usage.percent)}% used` : "Compact: context unavailable";
+		},
 		handle: async (command, runtime) => {
 			const parsed = parseCompactArgs(command.args);
 			if ("error" in parsed) return usage(parsed.error, runtime);
@@ -1394,25 +1466,8 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "debug",
 		description: "Open debug tools selector",
-		allowArgs: true,
-		subcommands: [
-			{
-				name: "dump-next-request",
-				description: "Dump the next AI provider HTTP request as JSON",
-				usage: "<path>",
-			},
-		],
-		handle: async (command, runtime) =>
-			handleDebugSubcommand(command.args, runtime.cwd, text => runtime.output(text)),
-		handleTui: async (command, runtime) => {
-			const args = command.args.trim();
-			if (args.length === 0) {
-				runtime.ctx.showDebugSelector();
-			} else {
-				await handleDebugSubcommand(args, runtime.ctx.sessionManager.getCwd(), text =>
-					runtime.ctx.showStatus(text),
-				);
-			}
+		handleTui: async (_command, runtime) => {
+			await runtime.ctx.showDebugSelector();
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -2098,6 +2153,10 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		aliases: ["force:"],
 		inlineHint: "<tool-name> [prompt]",
 		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			const count = runtime.ctx.session.getActiveToolNames().length;
+			return count === 0 ? "Force: no active tools" : `Force: ${count} active tools`;
+		},
 		handle: async (command, runtime) => {
 			const spaceIdx = command.args.indexOf(" ");
 			const toolName = spaceIdx === -1 ? command.args : command.args.slice(0, spaceIdx);
@@ -2226,34 +2285,38 @@ export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BU
 		description: command.description,
 		subcommands: command.subcommands,
 		inlineHint: command.inlineHint,
+		getTuiAutocompleteDescription: command.getTuiAutocompleteDescription,
 	}),
 );
+
+function materializeTuiBuiltinSlashCommand(
+	cmd: BuiltinSlashCommand,
+	runtime?: TuiSlashCommandRuntime,
+): TuiBuiltinSlashCommand {
+	const materialized: TuiBuiltinSlashCommand = { ...cmd };
+	if (cmd.subcommands) {
+		materialized.getArgumentCompletions = buildArgumentCompletions(cmd.subcommands);
+		materialized.getInlineHint = buildSubcommandInlineHint(cmd.subcommands);
+	} else if (cmd.inlineHint) {
+		materialized.getInlineHint = buildStaticInlineHint(cmd.inlineHint);
+	}
+	if (runtime && cmd.getTuiAutocompleteDescription) {
+		materialized.getAutocompleteDescription = () => cmd.getTuiAutocompleteDescription?.(runtime);
+	}
+	return materialized;
+}
 
 /**
  * Materialized builtin slash commands with completion functions derived from
  * declarative subcommand/hint definitions.
  */
-export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<
-	BuiltinSlashCommand & {
-		getArgumentCompletions?: (prefix: string) => AutocompleteItem[] | null;
-		getInlineHint?: (argumentText: string) => string | null;
-	}
-> = BUILTIN_SLASH_COMMAND_DEFS.map(cmd => {
-	if (cmd.subcommands) {
-		return {
-			...cmd,
-			getArgumentCompletions: buildArgumentCompletions(cmd.subcommands),
-			getInlineHint: buildSubcommandInlineHint(cmd.subcommands),
-		};
-	}
-	if (cmd.inlineHint) {
-		return {
-			...cmd,
-			getInlineHint: buildStaticInlineHint(cmd.inlineHint),
-		};
-	}
-	return cmd;
-});
+export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<TuiBuiltinSlashCommand> = BUILTIN_SLASH_COMMAND_DEFS.map(cmd =>
+	materializeTuiBuiltinSlashCommand(cmd),
+);
+
+export function buildTuiBuiltinSlashCommands(runtime: TuiSlashCommandRuntime): ReadonlyArray<TuiBuiltinSlashCommand> {
+	return BUILTIN_SLASH_COMMAND_DEFS.map(cmd => materializeTuiBuiltinSlashCommand(cmd, runtime));
+}
 
 /**
  * Unified registry exposed for cross-mode tooling. Each spec carries at least

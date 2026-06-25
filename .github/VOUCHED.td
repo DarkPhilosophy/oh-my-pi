@@ -50,13 +50,16 @@ habibpro1999
 handlecusion
 haosenwang1018
 hezhiyang2000
+igasmi
 infernix
 inprealpha
 itertea
+jagravnaik
 jchristman
 jiwangyihao
 kamafozilov
 kamijotoma
+korri123
 kukkerem
 ldx
 lederniermagicien
@@ -75,6 +78,7 @@ nnk97
 ogrodev
 oldschoola
 parsifa1
+pgupta-git
 phanthh
 pidevxplay
 qfrtt
@@ -106,4 +110,3 @@ wodenjay
 wolfiesch
 zakhar-kogan
 zamorakpds
-korri123
