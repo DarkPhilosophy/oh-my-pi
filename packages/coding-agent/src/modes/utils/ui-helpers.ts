@@ -519,6 +519,11 @@ export class UiHelpers {
 		} else {
 			this.ctx.resetTranscript();
 		}
+		// Full transcript rebuild tears the pending bar down: stop the steering
+		// indicator's interval before detaching it (clear() does not dispose
+		// children), so a leaked timer can't keep repainting a detached node.
+		// updatePendingMessagesDisplay() re-activates it if steer entries remain.
+		this.ctx.steeringIndicator?.setActive(false);
 		this.ctx.pendingMessagesContainer.clear();
 		this.ctx.pendingBashComponents = [];
 		this.ctx.pendingPythonComponents = [];
