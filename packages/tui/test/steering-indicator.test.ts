@@ -10,9 +10,10 @@ const styles = { dim: (s: string) => s, mid: (s: string) => s, bright: (s: strin
 // component stays theme-agnostic).
 const border = { topLeft: "╭", topRight: "╮", horizontal: "─", paint: (s: string) => s };
 
-const DOT = "●";
-const FRAME_MS = 110;
-const dotColumns = (line: string): number[] => [...line].flatMap((ch, idx) => (ch === DOT ? [idx] : []));
+// Spotlight ramp, faint → bold.
+const RAMP = ["·", "∙", "•", "●"] as const;
+const HEAD = RAMP[RAMP.length - 1];
+const FRAME_MS = 100;
 
 describe("SteeringIndicator component", () => {
 	afterEach(() => {
@@ -20,18 +21,17 @@ describe("SteeringIndicator component", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("renders an idle titled top rule (corners + word, no dots) until setActive(true)", () => {
+	it("renders an idle titled top rule (corners + word, no spotlight) until setActive(true)", () => {
 		vi.useFakeTimers();
 		const requestComponentRender = vi.fn();
 		const ui = { requestComponentRender } as unknown as TUI;
 		const ind = new SteeringIndicator(ui, styles, border, "Steering");
 		const idle = ind.render(80).join("");
-		expect(idle).toContain("Steering"); // inset title
-		expect(idle.startsWith("╭")).toBe(true); // top-left corner
-		expect(idle.endsWith("╮")).toBe(true); // top-right corner
-		expect(idle).toContain("─"); // resting rule
-		expect(idle).not.toContain(DOT); // no dots while idle
-		// No timer is running, so advancing time produces no further renders.
+		expect(idle).toContain("Steering");
+		expect(idle.startsWith("╭")).toBe(true);
+		expect(idle.endsWith("╮")).toBe(true);
+		expect(idle).toContain("─");
+		expect(idle).not.toContain(HEAD);
 		const before = requestComponentRender.mock.calls.length;
 		vi.advanceTimersByTime(500);
 		expect(requestComponentRender.mock.calls.length).toBe(before);
@@ -49,46 +49,64 @@ describe("SteeringIndicator component", () => {
 			widths.add(visibleWidth(ind.render(80).join("")));
 			vi.advanceTimersByTime(FRAME_MS);
 		}
-		expect(widths.size).toBe(1); // exactly one width seen across all frames
-		expect([...widths][0]).toBe(80); // and it fills the full box width
+		expect(widths.size).toBe(1);
+		expect([...widths][0]).toBe(80);
 		ind.dispose();
 	});
 
-	it("shows four equal dots clustered by the title and slides them without sweeping the rule", () => {
+	it("sweeps the spotlight through the title without reaching the far border", () => {
 		vi.useFakeTimers();
 		const requestComponentRender = vi.fn();
 		const ui = { requestComponentRender } as unknown as TUI;
-		const ind = new SteeringIndicator(ui, styles, border, "Steering");
+		// Mark bright cells so the head is trackable whether it lands on a rule
+		// cell (`<●>`) or brightens a title letter (`<S>`).
+		const marked = { dim: (s: string) => s, mid: (s: string) => s, bright: (s: string) => `<${s}>` };
+		const ind = new SteeringIndicator(ui, marked, border, "Steering");
 		ind.setActive(true);
 		const width = 80;
-		const firsts: number[] = [];
-		const counts = new Set<number>();
-		const spans = new Set<number>();
-		let maxDotCol = 0;
+		const headCols: number[] = [];
+		let maxHeadCol = 0;
 		for (let i = 0; i < 40; i++) {
-			const cols = dotColumns(ind.render(width).join(""));
-			counts.add(cols.length);
-			const first = cols[0] ?? -1;
-			const last = cols[cols.length - 1] ?? -1;
-			firsts.push(first);
-			spans.add(last - first);
-			maxDotCol = Math.max(maxDotCol, last);
+			const line = ind.render(width).join("");
+			// Exactly one bright span per frame — the head, as a glyph or letter.
+			const matches = [...line.matchAll(/<([^>]*)>/g)];
+			expect(matches.length).toBe(1);
+			const before = line.slice(0, matches[0]?.index ?? 0);
+			const head = [...before].length;
+			headCols.push(head);
+			maxHeadCol = Math.max(maxHeadCol, head);
 			vi.advanceTimersByTime(FRAME_MS);
 		}
-		// Always exactly four dots — no fading/growing comet that drops or adds dots.
-		expect([...counts]).toEqual([4]);
-		// The cluster keeps a constant span every frame: the dots never resize/spread.
-		expect(spans.size).toBe(1);
-		// Dots stay clustered near the title, never sweeping the whole rule.
-		expect(maxDotCol).toBeLessThan(width / 2);
-		// The cluster actually slides and bounces: it rises to a peak strictly inside
-		// the frame sequence, then comes back.
-		const maxFirst = Math.max(...firsts);
-		const minFirst = Math.min(...firsts);
-		expect(maxFirst).toBeGreaterThan(minFirst);
-		const peak = firsts.indexOf(maxFirst);
+		expect(maxHeadCol).toBeLessThan(width / 2);
+		const maxHead = Math.max(...headCols);
+		const minHead = Math.min(...headCols);
+		expect(maxHead).toBeGreaterThan(minHead);
+		const peak = headCols.indexOf(maxHead);
 		expect(peak).toBeGreaterThan(0);
-		expect(peak).toBeLessThan(firsts.length - 1);
+		expect(peak).toBeLessThan(headCols.length - 1);
+		for (let i = 1; i <= peak; i++) expect(headCols[i]).toBeGreaterThanOrEqual(headCols[i - 1]);
+		let descending = 0;
+		for (let i = peak + 1; i < headCols.length; i++) {
+			if (headCols[i] >= headCols[i - 1]) break;
+			descending++;
+		}
+		expect(descending).toBeGreaterThanOrEqual(2);
+		ind.dispose();
+	});
+
+	it("shows the full ramp on rule cells", () => {
+		vi.useFakeTimers();
+		const requestComponentRender = vi.fn();
+		const ui = { requestComponentRender } as unknown as TUI;
+		const ind = new SteeringIndicator(ui, styles, border, "Steer");
+		ind.setActive(true);
+		let sawFullRamp = false;
+		for (let i = 0; i < 60; i++) {
+			const line = ind.render(40).join("");
+			if (RAMP.every(g => line.includes(g))) sawFullRamp = true;
+			vi.advanceTimersByTime(FRAME_MS);
+		}
+		expect(sawFullRamp).toBe(true);
 		ind.dispose();
 	});
 
@@ -100,9 +118,9 @@ describe("SteeringIndicator component", () => {
 		ind.setActive(true);
 		ind.setActive(false);
 		const after = requestComponentRender.mock.calls.length;
-		vi.advanceTimersByTime(500); // far longer than the frame interval
-		expect(requestComponentRender.mock.calls.length).toBe(after); // no further frames
-		expect(ind.render(80).join("")).not.toContain(DOT); // back to idle
+		vi.advanceTimersByTime(500);
+		expect(requestComponentRender.mock.calls.length).toBe(after);
+		expect(ind.render(80).join("")).not.toContain(HEAD);
 		ind.dispose();
 	});
 
@@ -116,6 +134,6 @@ describe("SteeringIndicator component", () => {
 		const after = requestComponentRender.mock.calls.length;
 		vi.advanceTimersByTime(500);
 		expect(requestComponentRender.mock.calls.length).toBe(after);
-		expect(() => ind.dispose()).not.toThrow(); // idempotent
+		expect(() => ind.dispose()).not.toThrow();
 	});
 });
