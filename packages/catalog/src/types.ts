@@ -14,7 +14,8 @@ export type KnownApi =
 	| "google-gemini-cli"
 	| "google-vertex"
 	| "ollama-chat"
-	| "cursor-agent";
+	| "cursor-agent"
+	| "devin-agent";
 export type Api = KnownApi | (string & {});
 
 /** Canonical thinking transport used by a model. */
@@ -533,6 +534,7 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 	supportsImageDetailOriginal: boolean;
 	requiresJuiceZeroHack: boolean;
 	supportsObfuscationOptOut: boolean;
+	streamIdleTimeoutMs?: number;
 }
 
 /**
@@ -553,6 +555,26 @@ export type ResolvedAnthropicCompat = Required<AnthropicCompat> & {
 	officialEndpoint: boolean;
 };
 
+/**
+ * Compatibility settings for the devin-agent (Codeium Cascade) API. Cascade
+ * selects reasoning effort only by routing to a sibling model id (the
+ * `thinking.effortRouting` baked by variant-collapse), never by a wire
+ * reasoning/effort field, so the model-thinking deriver must not invent an
+ * effort ladder from identity for these models.
+ */
+export interface DevinCompat {
+	/**
+	 * Trust only explicit `thinking` metadata; never derive a thinking surface
+	 * from model identity. A reasoning model with no explicit routed thinking
+	 * resolves to `thinking: undefined` (`reasoning: true`, no controllable
+	 * effort) instead of a fabricated minimal/low/medium/high ladder.
+	 */
+	trustExplicitThinkingOnly?: boolean;
+}
+
+/** Fully-resolved devin-agent compat view. */
+export type ResolvedDevinCompat = Required<DevinCompat>;
+
 /** Sparse, user-authored compat overrides for a given API (models.json / config vocabulary). */
 export type CompatConfigOf<TApi extends Api> = TApi extends
 	| "openai-completions"
@@ -563,7 +585,9 @@ export type CompatConfigOf<TApi extends Api> = TApi extends
 	? OpenAICompat
 	: TApi extends "anthropic-messages"
 		? AnthropicCompat
-		: undefined;
+		: TApi extends "devin-agent"
+			? DevinCompat
+			: undefined;
 
 /** Resolved compat for a given API: complete record, materialized once by `buildModel`. */
 export type CompatOf<TApi extends Api> = TApi extends "openrouter"
@@ -574,7 +598,9 @@ export type CompatOf<TApi extends Api> = TApi extends "openrouter"
 			? ResolvedOpenAIResponsesCompat
 			: TApi extends "anthropic-messages"
 				? ResolvedAnthropicCompat
-				: undefined;
+				: TApi extends "devin-agent"
+					? ResolvedDevinCompat
+					: undefined;
 
 // Model interface for the unified model system
 export interface Model<TApi extends Api = Api> {

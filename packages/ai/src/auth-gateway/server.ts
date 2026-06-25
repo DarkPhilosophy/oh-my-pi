@@ -19,16 +19,17 @@
  */
 
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { extractRetryHint, logger } from "@oh-my-pi/pi-utils";
+import { extractHttpStatusFromError, extractRetryHint, logger } from "@oh-my-pi/pi-utils";
 import type { ApiKeyResolver } from "../auth-retry";
 import type { AuthStorage } from "../auth-storage";
 import * as anthropicMessages from "../providers/anthropic-messages-server";
 import * as openaiChat from "../providers/openai-chat-server";
 import * as openaiResponses from "../providers/openai-responses-server";
 import * as piNative from "../providers/pi-native-server";
-import { isUsageLimitError } from "../rate-limit-utils";
+import { isUsageLimitError, isUsageLimitOutcome } from "../rate-limit-utils";
 import { streamSimple } from "../stream";
 import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "../types";
+import { deterministicUuid } from "../utils/deterministic-id";
 import { parseBind } from "../utils/parse-bind";
 import { captureRequestHeaders, corsHeaders, isAuthorized, json, resolvePeer, withCors } from "./http";
 import type {
@@ -110,30 +111,28 @@ function deriveSessionId(modelId: string, context: Context): string {
 		parts.push(JSON.stringify({ role: first.role, content: first.content }));
 	}
 	const seed = parts.join("\u0000");
-	const hex = new Bun.CryptoHasher("sha256").update(seed).digest("hex");
-	// Format the leading 128 bits as a v4-shape UUID (8-4-4-4-12). Codex's
-	// `normalizeOpenAIResponsesPromptCacheKey` accepts ≤64 chars verbatim, so
-	// the 36-char UUID flows through unchanged.
-	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+	// The 36-char UUID flows through unchanged: Codex's
+	// `normalizeOpenAIResponsesPromptCacheKey` accepts ≤64 chars verbatim.
+	return deterministicUuid(seed);
 }
 
 function buildStreamOptions(parsed: ParsedFormatRequest, api: Api, signal: AbortSignal): SimpleStreamOptions {
 	const opts: SimpleStreamOptions = { signal };
 	const { options } = parsed;
-	// Codex backend rejects `temperature` / `top_p` (per-model defaults only),
-	// so we drop them silently for that one provider. Every other unsupported
-	// option is just ignored by `streamSimple` if the underlying provider
-	// doesn't honour it.
+	// Codex backend rejects every sampling control with
+	// `Unsupported parameter: …` (#3117). Strip the full set for that one
+	// provider; everything else is harmless to forward — `streamSimple` ignores
+	// what the underlying provider doesn't honour.
 	const isCodex = api === "openai-codex-responses";
 	if (options.maxOutputTokens !== undefined) opts.maxTokens = options.maxOutputTokens;
 	if (options.temperature !== undefined && !isCodex) opts.temperature = options.temperature;
 	if (options.topP !== undefined && !isCodex) opts.topP = options.topP;
-	if (options.topK !== undefined) opts.topK = options.topK;
-	if (options.minP !== undefined) opts.minP = options.minP;
-	if (options.stopSequences !== undefined) opts.stopSequences = options.stopSequences;
-	if (options.presencePenalty !== undefined) opts.presencePenalty = options.presencePenalty;
-	if (options.frequencyPenalty !== undefined) opts.frequencyPenalty = options.frequencyPenalty;
-	if (options.repetitionPenalty !== undefined) opts.repetitionPenalty = options.repetitionPenalty;
+	if (options.topK !== undefined && !isCodex) opts.topK = options.topK;
+	if (options.minP !== undefined && !isCodex) opts.minP = options.minP;
+	if (options.stopSequences !== undefined && !isCodex) opts.stopSequences = options.stopSequences;
+	if (options.presencePenalty !== undefined && !isCodex) opts.presencePenalty = options.presencePenalty;
+	if (options.frequencyPenalty !== undefined && !isCodex) opts.frequencyPenalty = options.frequencyPenalty;
+	if (options.repetitionPenalty !== undefined && !isCodex) opts.repetitionPenalty = options.repetitionPenalty;
 	if (options.metadata !== undefined) opts.metadata = options.metadata;
 	if (options.headers !== undefined) opts.headers = { ...(opts.headers ?? {}), ...options.headers };
 	if (options.toolChoice !== undefined) {
@@ -229,11 +228,10 @@ export function classifyGatewayError(err: unknown): { status: number; type: stri
 	if (/\baborted\b|\babort signal\b/i.test(message)) {
 		return { status: 499, type: "request_aborted", message };
 	}
-	if (/\b(?:unauthorized|forbidden)\b/i.test(message)) {
-		return { status: 401, type: "authentication_error", message };
-	}
 	if (
-		// Match rate-limit phrasings without colliding with
+		// Match rate-limit phrasings before auth wording: some providers
+		// describe throttling as "unauthorized due to rate limit".
+		// Keep boundaries so this does not collide with
 		// `GenerateContentRequest`, `accelerate`, `iterate`, `deprecated`, etc.
 		/\brate[- _]?limit(?:s|ed|ing)?\b|\bquota(?:_exceeded| exceeded)?\b|\btoo[- _]many[- _]requests\b/i.test(
 			message,
@@ -248,6 +246,9 @@ export function classifyGatewayError(err: unknown): { status: number; type: stri
 		isUsageLimitError(message)
 	) {
 		return { status: 429, type: "rate_limit_error", message };
+	}
+	if (/\b(?:unauthorized|forbidden)\b/i.test(message)) {
+		return { status: 401, type: "authentication_error", message };
 	}
 	if (/\b(?:unsupported|invalid_request|invalid request|bad request|malformed)\b/i.test(message)) {
 		return { status: 400, type: "invalid_request_error", message };
@@ -314,7 +315,7 @@ async function refreshGatewayApiKeyAfterAuthError(
 	peer: string,
 ): Promise<string | undefined> {
 	const message = error instanceof Error ? error.message : String(error);
-	if (isUsageLimitError(message)) {
+	if (isUsageLimitOutcome(extractHttpStatusFromError(error), message)) {
 		const retryAfterMs = extractRetryHint(undefined, message);
 		const { switched, retryAtMs } = await storage.markUsageLimitReached(provider, sessionId, {
 			retryAfterMs,
@@ -662,8 +663,8 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 
 	// Build the SimpleStreamOptions actually handed to `streamSimple`. We
 	// trust the client's options (already allow-listed by `parseRequest`) and
-	// only inject server-controlled fields. The codex temperature/topP strip
-	// matches `buildStreamOptions` — Codex rejects them with a 400.
+	// only inject server-controlled fields. The codex sampling strip mirrors
+	// `buildStreamOptions` — Codex rejects every one with a 400 (#3117).
 	const streamOpts: SimpleStreamOptions = { ...parsed.options, apiKey, signal: controller.signal };
 	streamOpts.apiKey = buildGatewayApiKeyResolver(
 		bootOpts.storage,
@@ -677,6 +678,12 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 	if (model.api === "openai-codex-responses") {
 		delete streamOpts.temperature;
 		delete streamOpts.topP;
+		delete streamOpts.topK;
+		delete streamOpts.minP;
+		delete streamOpts.stopSequences;
+		delete streamOpts.presencePenalty;
+		delete streamOpts.frequencyPenalty;
+		delete streamOpts.repetitionPenalty;
 	}
 	// Merge gateway-captured passthrough headers under the client's own
 	// headers — the client's values win when they collide.

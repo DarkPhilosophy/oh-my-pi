@@ -19,7 +19,7 @@ import { DEFAULT_FILE_LIMIT, MULTI_FILE_PER_FILE_MATCHES, SearchTool } from "@oh
 import * as toolTimeouts from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import { unzip } from "@oh-my-pi/pi-coding-agent/utils/zip";
-import { $which, Snowflake } from "@oh-my-pi/pi-utils";
+import { $which, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
 // Helper to extract text from content blocks
 function getTextOutput(result: any): string {
@@ -302,7 +302,7 @@ describe("Coding Agent Tools", () => {
 		vi.restoreAllMocks();
 
 		// Clean up test directory
-		fs.rmSync(testDir, { recursive: true, force: true });
+		removeSyncWithRetries(testDir);
 
 		// Restore original edit variant
 		if (originalEditVariant === undefined) {
@@ -803,7 +803,12 @@ describe("Coding Agent Tools", () => {
 			fs.writeFileSync(testFile, pngBuffer);
 
 			const legacyReadTool = wrapToolWithMetaNotice(
-				new ReadTool(createTestToolSession(testDir, Settings.isolated({ "inspect_image.enabled": false }))),
+				new ReadTool(
+					createTestToolSession(
+						testDir,
+						Settings.isolated({ "inspect_image.enabled": false, "images.autoResize": false }),
+					),
+				),
 			);
 			const result = await legacyReadTool.execute("test-call-img-1", { path: testFile });
 
@@ -2134,7 +2139,7 @@ describe("edit tool CRLF handling", () => {
 	});
 
 	afterEach(() => {
-		fs.rmSync(testDir, { recursive: true, force: true });
+		removeSyncWithRetries(testDir);
 
 		// Restore original edit variant
 		if (originalEditVariant === undefined) {

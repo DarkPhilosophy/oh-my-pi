@@ -61,6 +61,7 @@ import {
 	type CodexRequestOptions,
 	type InputItem,
 	type RequestBody,
+	shouldUseCodexResponsesLite,
 	transformRequestBody,
 } from "./openai-codex/request-transformer";
 import { CodexApiError } from "./openai-codex/response-handler";
@@ -203,6 +204,17 @@ function isCodexStreamProgressEvent(event: unknown): boolean {
 	if (!event || typeof event !== "object") return false;
 	const type = (event as { type?: unknown }).type;
 	return typeof type === "string" && CODEX_ADDITIONAL_PROGRESS_EVENT_TYPES.has(type);
+}
+
+function extractCodexFrameResponseId(frame: Record<string, unknown>): string | undefined {
+	const response = (frame as { response?: { id?: unknown } }).response;
+	const id = response?.id;
+	return typeof id === "string" && id.length > 0 ? id : undefined;
+}
+
+function extractCodexFrameSequenceNumber(frame: Record<string, unknown>): number | undefined {
+	const raw = (frame as { sequence_number?: unknown }).sequence_number;
+	return typeof raw === "number" && Number.isFinite(raw) ? Math.trunc(raw) : undefined;
 }
 
 type CodexWebSocketTimeoutDetails = {
@@ -686,7 +698,7 @@ async function buildCodexRequestContext(
 	};
 
 	const providerSessionState = getCodexProviderSessionState(options?.providerSessionState);
-	const responsesLite = options?.responsesLite === true;
+	const responsesLite = shouldUseCodexResponsesLite(transformedBody, options?.responsesLite);
 	const sessionKey = getCodexWebSocketSessionKey(transportSessionId, model, accountId, baseUrl, responsesLite);
 	const publicSessionKey = transportSessionId ? `${baseUrl}:${model.id}:${transportSessionId}` : undefined;
 	if (sessionKey && publicSessionKey) {
@@ -714,7 +726,8 @@ async function buildCodexRequestContext(
 	};
 }
 
-async function buildTransformedCodexRequestBody(
+/** @internal Exported for tests. */
+export async function buildTransformedCodexRequestBody(
 	model: Model<"openai-codex-responses">,
 	context: Context,
 	options: OpenAICodexResponsesOptions | undefined,
@@ -729,25 +742,12 @@ async function buildTransformedCodexRequestBody(
 
 	// `maxTokens` is intentionally not forwarded: transformRequestBody strips
 	// `max_output_tokens`/`max_completion_tokens` (the Codex backend rejects
-	// caller-supplied output caps).
-	if (options?.temperature !== undefined) {
-		params.temperature = options.temperature;
-	}
-	if (options?.topP !== undefined) {
-		params.top_p = options.topP;
-	}
-	if (options?.topK !== undefined) {
-		params.top_k = options.topK;
-	}
-	if (options?.minP !== undefined) {
-		params.min_p = options.minP;
-	}
-	if (options?.presencePenalty !== undefined) {
-		params.presence_penalty = options.presencePenalty;
-	}
-	if (options?.repetitionPenalty !== undefined) {
-		params.repetition_penalty = options.repetitionPenalty;
-	}
+	// caller-supplied output caps). Sampling controls (`temperature`, `top_p`,
+	// `top_k`, `min_p`, `presence_penalty`, `repetition_penalty`,
+	// `frequency_penalty`, `stop`) are likewise refused with
+	// `{"detail":"Unsupported parameter: temperature"}` etc., so we drop
+	// everything from `StreamOptions` rather than forwarding any of them.
+	// (#3117 — codex-rs sends none of these either.)
 	applyOpenAIServiceTier(params, options?.serviceTier, model.provider);
 	if (context.tools && context.tools.length > 0) {
 		params.tools = convertOpenAICodexResponsesTools(context.tools, model);
@@ -756,16 +756,6 @@ async function buildTransformedCodexRequestBody(
 			if (toolChoice) {
 				params.tool_choice = toolChoice;
 			}
-		}
-		// When a custom-tool is active, force serial tool-calling. OpenAI's
-		// `parallel_tool_calls` is request-scoped — disabling it here affects
-		// every tool in the turn, not just the custom one. That's coarser
-		// than spec §1's "supports_parallel_tool_calls = false" (which
-		// strictly targets `apply_patch`), but the platform API offers no
-		// per-tool flag.
-		const emittedTools = params.tools as CodexToolPayload[];
-		if (emittedTools.some(t => t.type === "custom")) {
-			params.parallel_tool_calls = false;
 		}
 	}
 
@@ -2425,6 +2415,12 @@ class CodexWebSocketConnection {
 	#lastInboundAt = 0;
 	/** Wall-clock of the last heartbeat ping we issued; 0 if none yet. */
 	#lastPingAt = 0;
+	/**
+	 * Most recent `response.id` accepted on this socket, retained across
+	 * requests. Lets the next request drop a trailing/duplicate frame from the
+	 * previous (cleanly-completed) response that outlived the queue drain.
+	 */
+	#lastSeenResponseId?: string;
 
 	constructor(url: string, headers: Record<string, string>, options: CodexWebSocketConnectionOptions) {
 		this.#url = url;
@@ -2672,6 +2668,11 @@ class CodexWebSocketConnection {
 			let lastProgressEventType: string | undefined;
 			let lastEventAt = lastProgressAt;
 			let lastEventType: string | undefined;
+			// Cross-request frame guard: lock onto this response's id and reject
+			// frames belonging to another response interleaved on the reused socket.
+			let activeResponseId: string | undefined;
+			let lastSequence: number | undefined;
+			const priorResponseId = this.#lastSeenResponseId;
 			while (true) {
 				let timeoutMs: number | undefined;
 				let timeoutReason: string;
@@ -2713,8 +2714,51 @@ class CodexWebSocketConnection {
 				if (next === null) {
 					throw new CodexWebSocketTransportError(`websocket closed before response completion`);
 				}
-				sawFirstEvent = true;
 				const eventType = typeof next.type === "string" ? next.type : "";
+				// Cross-request frame guard. The socket is reused across turns. Upstream
+				// codex-rs leans on the protocol guarantee that nothing follows a
+				// response's terminal event, but our queue can still surface a trailing
+				// or duplicate frame from a cleanly-completed prior response after
+				// #dropStaleFrames() drained the queue at send time. Attaching such a
+				// frame to THIS turn misattributes an earlier turn's output (a stale
+				// `response.completed` ends the turn early; a stale item makes the model
+				// see an unrelated call). Only lifecycle events (created/completed/
+				// failed/incomplete) carry a `response.id` — exactly the harmful ones —
+				// so key the guard on it and let idless frames (deltas, the rate-limit/
+				// metadata preamble, created-less streams) pass through, matching
+				// upstream rather than gating on `response.created`.
+				const frameResponseId = extractCodexFrameResponseId(next);
+				const frameSequence = extractCodexFrameSequenceNumber(next);
+				if (frameResponseId !== undefined) {
+					if (activeResponseId === undefined) {
+						if (priorResponseId !== undefined && frameResponseId === priorResponseId) {
+							// Trailing/duplicate frame of the previous response that
+							// outlived the drain. Drop without locking or advancing the
+							// first-event clocks so our own response can still start.
+							continue;
+						}
+						activeResponseId = frameResponseId;
+					} else if (frameResponseId !== activeResponseId) {
+						// A different response is interleaving on the socket; the idless
+						// deltas that follow are indistinguishable, so fail closed
+						// (retryable) instead of risking misattribution.
+						this.close("stale-frame");
+						throw new CodexWebSocketTransportError(
+							`websocket frame for response ${frameResponseId} interleaved into active response ${activeResponseId}`,
+						);
+					}
+					this.#lastSeenResponseId = frameResponseId;
+				}
+				if (frameSequence !== undefined) {
+					if (activeResponseId !== undefined && lastSequence !== undefined && frameSequence < lastSequence) {
+						this.close("stale-frame");
+						throw new CodexWebSocketTransportError(
+							`websocket sequence_number ${frameSequence} regressed below ${lastSequence} within response ${activeResponseId}`,
+						);
+					}
+					lastSequence = frameSequence;
+				}
+				sawFirstEvent = true;
 				lastEventAt = Date.now();
 				lastEventType = eventType || undefined;
 				if (isCodexStreamProgressEvent(next)) {

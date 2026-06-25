@@ -1,10 +1,9 @@
 /**
  * CLI argument parsing and help display
  */
-import { type Effort, THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import { APP_NAME, CONFIG_DIR_NAME, logger } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
-import { parseEffort } from "../thinking";
+import { CLI_THINKING_LEVELS, type ConfiguredThinkingLevel, parseCliThinkingLevel } from "../thinking";
 import { BUILTIN_TOOL_NAMES } from "../tools/builtin-names";
 import {
 	OPTIONAL_FLAGS,
@@ -32,7 +31,7 @@ export interface Args {
 	apiKey?: string;
 	systemPrompt?: string;
 	appendSystemPrompt?: string;
-	thinking?: Effort;
+	thinking?: ConfiguredThinkingLevel;
 	hideThinking?: boolean;
 	advisor?: boolean;
 	continue?: boolean;
@@ -89,9 +88,9 @@ export interface Args {
  */
 const PARSE_DEPS: ParseDeps = {
 	logger,
-	parseEffort,
+	parseThinking: parseCliThinkingLevel,
 	builtinToolNames: BUILTIN_TOOL_NAMES,
-	thinkingEfforts: THINKING_EFFORTS,
+	thinkingEfforts: CLI_THINKING_LEVELS,
 };
 
 export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { type: "boolean" | "string" }>): Args {
@@ -298,7 +297,6 @@ export function getExtraHelpText(): string {
   OPENCODE_API_KEY           - OpenCode Zen/OpenCode Go models
   CURSOR_ACCESS_TOKEN        - Cursor AI models
   AI_GATEWAY_API_KEY         - Vercel AI Gateway
-  WAFER_PASS_API_KEY         - Wafer Pass (flat-rate subscription; GLM-5.1, Qwen3.5)
   WAFER_SERVERLESS_API_KEY   - Wafer Serverless (pay-as-you-go)
 
   ${chalk.dim("# Cloud Providers")}

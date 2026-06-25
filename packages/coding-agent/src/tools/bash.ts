@@ -19,7 +19,7 @@ import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
 import type { ClientBridgeTerminalExitStatus, ClientBridgeTerminalOutput } from "../session/client-bridge";
 import { DEFAULT_MAX_BYTES, enforceInlineByteCap, streamTailUpdates, TailBuffer } from "../session/streaming-output";
 import { renderStatusLine } from "../tui";
-import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
+import { CachedOutputBlock, markFramedBlockComponent, outputBlockContentWidth } from "../tui/output-block";
 import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
@@ -1132,9 +1132,9 @@ function getPartialJson<TArgs>(args: TArgs | undefined): string | undefined {
 }
 
 export function getBashEnvForDisplay(args: BashRenderArgs): Record<string, string> | undefined {
-	// During streaming, partial-json parsing often does not surface env values until the object closes.
-	// Recover them from the raw JSON buffer so the pending bash preview can show `NAME="..." cmd` immediately,
-	// instead of rendering only the command and making the env assignment appear at the very end.
+	// The parsed args don't always mirror the exact current stream prefix, so recover
+	// env from the raw JSON buffer to surface `NAME="..." cmd` in the preview as it
+	// streams rather than only once the args object finishes.
 	const partialEnv = extractPartialBashEnv(args.__partialJson);
 	if (partialEnv && args.env) return { ...partialEnv, ...args.env };
 	return args.env ?? partialEnv;
@@ -1334,7 +1334,14 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								.map(line => uiTheme.fg("toolOutput", replaceTabs(line)))
 								.join("\n");
 							const textContent = styledOutput;
-							const result = truncateToVisualLines(textContent, previewLines, width);
+							// Cap the collapsed/streaming output to a viewport-sized tail and
+							// measure it at the box's INNER width. Otherwise a growing tail
+							// window scrolls its (mutating) rows above the live-region window
+							// and the engine re-commits a fresh snapshot every frame —
+							// spraying duplicate "… ctrl+o to expand" banners into native
+							// scrollback (the box never overflows the viewport now).
+							const previewBudget = Math.min(previewLines, previewWindow);
+							const result = truncateToVisualLines(textContent, previewBudget, outputBlockContentWidth(width));
 							if (result.skippedCount > 0) {
 								outputLines.push(
 									uiTheme.fg(

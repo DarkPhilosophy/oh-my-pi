@@ -8,6 +8,7 @@ import { cerebrasProvider } from "./cerebras";
 import { cloudflareAiGatewayProvider } from "./cloudflare-ai-gateway";
 import { cursorProvider } from "./cursor";
 import { deepseekProvider } from "./deepseek";
+import { devinProvider } from "./devin";
 import { firepassProvider } from "./firepass";
 import { fireworksProvider } from "./fireworks";
 import { githubCopilotProvider } from "./github-copilot";
@@ -22,6 +23,7 @@ import { kagiProvider } from "./kagi";
 import { kiloProvider } from "./kilo";
 import { kimiCodeProvider } from "./kimi-code";
 import { litellmProvider } from "./litellm";
+import { llamaCppProvider } from "./llama-cpp";
 import { lmStudioProvider } from "./lm-studio";
 import { minimaxProvider } from "./minimax";
 import { minimaxCodeProvider } from "./minimax-code";
@@ -42,6 +44,7 @@ import { parallelProvider } from "./parallel";
 import { perplexityProvider } from "./perplexity";
 import { qianfanProvider } from "./qianfan";
 import { qwenPortalProvider } from "./qwen-portal";
+import { sakanaProvider } from "./sakana";
 import { syntheticProvider } from "./synthetic";
 import { tavilyProvider } from "./tavily";
 import { togetherProvider } from "./together";
@@ -50,7 +53,6 @@ import { umansProvider } from "./umans";
 import { veniceProvider } from "./venice";
 import { vercelAiGatewayProvider } from "./vercel-ai-gateway";
 import { vllmProvider } from "./vllm";
-import { waferPassProvider } from "./wafer-pass";
 import { waferServerlessProvider } from "./wafer-serverless";
 import { xaiProvider } from "./xai";
 import { xaiOauthProvider } from "./xai-oauth";
@@ -78,6 +80,7 @@ const ALL = [
 	openrouterProvider,
 	githubCopilotProvider,
 	cursorProvider,
+	devinProvider,
 	googleAntigravityProvider,
 	googleGeminiCliProvider,
 	openaiCodexDeviceProvider,
@@ -88,6 +91,7 @@ const ALL = [
 	zhipuCodingPlanProvider,
 	umansProvider,
 	qwenPortalProvider,
+	sakanaProvider,
 	minimaxCodeProvider,
 	minimaxCodeCnProvider,
 	xiaomiProvider,
@@ -95,7 +99,6 @@ const ALL = [
 	xiaomiTokenPlanAmsProvider,
 	xiaomiTokenPlanCnProvider,
 	firepassProvider,
-	waferPassProvider,
 	deepseekProvider,
 	moonshotProvider,
 	cerebrasProvider,
@@ -122,6 +125,7 @@ const ALL = [
 	ollamaProvider,
 	ollamaCloudProvider,
 	lmStudioProvider,
+	llamaCppProvider,
 	vllmProvider,
 	openaiProvider,
 	googleProvider,

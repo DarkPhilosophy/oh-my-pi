@@ -73,6 +73,7 @@ export interface SegmentContext {
 	};
 	/** Context usage percent, or null when unknown (e.g. right after compaction). */
 	contextPercent: number | null;
+	contextTokens: number;
 	contextWindow: number;
 	autoCompactEnabled: boolean;
 	subagentCount: number;
@@ -83,6 +84,7 @@ export interface SegmentContext {
 		pr: { number: number; url: string } | null;
 	};
 	usage: {
+		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };
 		sevenDay?: { percent: number; resetHours?: number };
 	} | null;

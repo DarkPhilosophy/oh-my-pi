@@ -84,6 +84,22 @@ export class SelectorController {
 			),
 		);
 	}
+
+	/**
+	 * Restore keyboard focus to whatever currently owns the editor slot. The
+	 * slot can hold the editor itself or a hook selector/input/editor pushed
+	 * in by `ExtensionUiController` — e.g. an approval prompt that fired while
+	 * a fullscreen overlay was up. `overlayHandle.hide()` restores focus to
+	 * the component focused when the overlay opened, which is stale in that
+	 * case (the editor was swapped out): keys land on a hidden editor and the
+	 * visible prompt receives nothing (issue #3349). Call this after the
+	 * overlay hides to re-target focus at the visible slot owner.
+	 */
+	focusActiveEditorArea(): void {
+		const visible = this.ctx.editorContainer.children[0] ?? this.ctx.editor;
+		this.ctx.ui.setFocus(visible);
+	}
+
 	/**
 	 * Shows a selector component in place of the editor.
 	 * @param create Factory that receives a `done` callback and returns the component and focus target
@@ -109,7 +125,7 @@ export class SelectorController {
 			let overlayHandle: OverlayHandle | undefined;
 			const done = () => {
 				overlayHandle?.hide();
-				this.ctx.ui.setFocus(this.ctx.editor);
+				this.focusActiveEditorArea();
 				this.ctx.ui.requestRender();
 			};
 			const selector = new SettingsSelectorComponent(
@@ -216,14 +232,19 @@ export class SelectorController {
 	 */
 	async showExtensionsDashboard(): Promise<void> {
 		const dashboard = await ExtensionDashboard.create(getProjectDir(), this.ctx.settings, this.ctx.ui.terminal.rows);
+		// Fullscreen dashboard on the alternate screen (the /settings idiom): the
+		// overlay borrows the terminal's alt buffer and enables mouse tracking for
+		// its lifetime, leaving the transcript untouched underneath.
 		const overlay = this.ctx.ui.showOverlay(dashboard, {
 			width: "100%",
 			maxHeight: "100%",
 			anchor: "top-left",
 			margin: 0,
+			fullscreen: true,
 		});
 		dashboard.onClose = () => {
 			overlay.hide();
+			this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
 		dashboard.onRequestRender = () => {
@@ -251,6 +272,7 @@ export class SelectorController {
 		});
 		dashboard.onClose = () => {
 			overlay.hide();
+			this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
 		dashboard.onRequestRender = () => {
@@ -314,9 +336,8 @@ export class SelectorController {
 					}
 				}
 				break;
-			case "hideThinking":
+			case "hideThinkingBlock":
 				this.ctx.hideThinkingBlock = value as boolean;
-				this.ctx.session.agent.hideThinkingSummary = value as boolean;
 				for (const child of this.ctx.chatContainer.children) {
 					if (child instanceof AssistantMessageComponent) {
 						child.setHideThinkingBlock(value as boolean);
@@ -326,6 +347,18 @@ export class SelectorController {
 				// ED3-risk terminals retire their stale snapshots too (see
 				// InputController.toggleThinkingBlockVisibility).
 				this.ctx.ui.resetDisplay();
+				break;
+			case "proseOnlyThinking":
+				this.ctx.proseOnlyThinking = value as boolean;
+				for (const child of this.ctx.chatContainer.children) {
+					if (child instanceof AssistantMessageComponent) {
+						child.setProseOnlyThinking(value as boolean);
+					}
+				}
+				this.ctx.ui.resetDisplay();
+				break;
+			case "omitThinking":
+				this.ctx.session.agent.hideThinkingSummary = value as boolean;
 				break;
 			case "display.cacheMissMarker":
 				// Rebuild re-runs the usage-based detection under the new setting so
@@ -483,7 +516,10 @@ export class SelectorController {
 							}
 							this.ctx.statusLine.invalidate();
 							this.ctx.updateEditorBorderColor();
-							this.ctx.showStatus(`Temporary model: ${selector ?? model.id}`);
+							const roleSelectorHint = this.ctx.keybindings.getKeys("app.model.select")[0] ?? "Alt+M";
+							this.ctx.showStatus(
+								`Session-only model: ${selector ?? model.id}. Use ${roleSelectorHint} or /model for roles.`,
+							);
 							done();
 							this.ctx.ui.requestRender();
 						} else if (role === "default") {
@@ -817,14 +853,9 @@ export class SelectorController {
 			this.ctx.sessionManager.getCwd(),
 			this.ctx.sessionManager.getSessionDir(),
 		);
-		// Current folder has no sessions: preload the global list so the picker
-		// can open straight into all-projects scope instead of dead-ending.
-		let allSessions: SessionInfo[] | undefined;
-		let startInAllScope = false;
-		if (sessions.length === 0) {
-			allSessions = await SessionManager.listAll();
-			startInAllScope = allSessions.length > 0;
-		}
+		// Always open in current-folder scope; the empty-state hint in SessionList
+		// invites the user to Tab into all-projects rather than silently surfacing
+		// every project's history when the cwd has nothing to resume. See #3099.
 		const historyStorage = this.ctx.historyStorage;
 		const historyMatcher = historyStorage ? (query: string) => historyStorage.matchingSessionIds(query) : undefined;
 		this.showSelector(done => {
@@ -858,8 +889,6 @@ export class SelectorController {
 					},
 					historyMatcher,
 					loadAllSessions: () => SessionManager.listAll(),
-					allSessions,
-					startInAllScope,
 					getTerminalRows: () => this.ctx.ui.terminal.rows,
 				},
 			);
@@ -1264,6 +1293,7 @@ export class SelectorController {
 			getMessageRenderer: type => this.ctx.session.extensionRunner?.getMessageRenderer(type),
 			cwd: this.ctx.sessionManager.getCwd(),
 			hideThinkingBlock: () => this.ctx.hideThinkingBlock,
+			proseOnlyThinking: () => this.ctx.proseOnlyThinking,
 			focusAgent: id => this.ctx.focusAgentSession(id),
 			sessionFile: this.ctx.sessionManager.getSessionFile() ?? null,
 		});

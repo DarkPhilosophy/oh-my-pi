@@ -4,13 +4,18 @@ import {
 	type OpenAICompatibleModelRecord,
 } from "../discovery/openai-compatible";
 import { Effort } from "../effort";
-import { toFireworksPublicModelId } from "../fireworks-model-id";
+import { FIREWORKS_FAST_SUFFIX, toFireworksPublicModelId } from "../fireworks-model-id";
 import { isGlmVisionModelId, isGrokReasoningEffortCapable, isReasoningGlmModelId } from "../identity/family";
 import type { ModelManagerOptions } from "../model-manager";
 import { getBundledModels } from "../models";
 import type { Api, FetchImpl, Model, ModelSpec, Provider, ThinkingConfig } from "../types";
 import { isAnthropicOAuthToken, isRecord, toBoolean, toNumber, toPositiveNumber } from "../utils";
-import { COPILOT_API_HEADERS, getGitHubCopilotBaseUrl, parseGitHubCopilotApiKey } from "../wire/github-copilot";
+import {
+	COPILOT_API_HEADERS,
+	getGitHubCopilotBaseUrl,
+	isPersonalGitHubCopilotBaseUrl,
+	parseGitHubCopilotApiKey,
+} from "../wire/github-copilot";
 import { createBundledReferenceMap, createReferenceResolver, toModelSpec } from "./bundled-references";
 
 const MODELS_DEV_URL = "https://models.dev/api.json";
@@ -197,6 +202,8 @@ function mapWithBundledReference<TApi extends Api>(
 		...reference,
 		id: defaults.id,
 		name,
+		api: defaults.api,
+		provider: defaults.provider,
 		baseUrl: defaults.baseUrl,
 		contextWindow: toPositiveNumber(entry.context_length, reference.contextWindow),
 		maxTokens: toPositiveNumber(entry.max_completion_tokens, reference.maxTokens),
@@ -564,8 +571,11 @@ const UMANS_REASONING_EFFORT_BY_LEVEL: Record<string, Effort> = {
 	medium: Effort.Medium,
 	high: Effort.High,
 	xhigh: Effort.XHigh,
+	max: Effort.XHigh,
 };
+const UMANS_MAX_REASONING_EFFORT_MAP = { [Effort.XHigh]: "max" } as const;
 const UMANS_DEFAULT_REASONING_EFFORTS = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh] as const;
+const UMANS_VIA_HANDOFF_MODEL_IDS = ["umans-glm-5.1", "umans-glm-5.2"] as const;
 
 export interface UmansModelManagerConfig {
 	apiKey?: string;
@@ -584,8 +594,18 @@ function normalizeUmansBaseUrl(baseUrl: string | undefined): string {
 	return normalized.endsWith("/v1") ? normalized.slice(0, -3) : normalized;
 }
 
+/**
+ * Umans `models/info` reports `supports_vision: true` for natively
+ * vision-capable models and a non-empty string sentinel (e.g.
+ * `"via-handoff"`) for models that route image inputs through a vision
+ * handoff pre-analysis step instead of accepting raw image blocks. Only
+ * `true` means the model accepts image content directly; sentinel values
+ * MUST map to text-only so the agent's vision-handoff path runs instead
+ * of triggering an upstream HTTP 400 (`This model does not support image
+ * inputs`).
+ */
 function umansSupportsVision(value: unknown): boolean {
-	return value === true || (typeof value === "string" && value.length > 0);
+	return value === true;
 }
 
 function umansReasoningSupported(value: unknown): boolean {
@@ -607,10 +627,20 @@ function mapUmansReasoningEfforts(value: unknown): readonly Effort[] {
 	return efforts.length > 0 ? efforts : UMANS_DEFAULT_REASONING_EFFORTS;
 }
 
+function umansHasMaxReasoningLevel(value: unknown): boolean {
+	return isRecord(value) && Array.isArray(value.levels) && value.levels.includes("max");
+}
+
 function mapUmansThinkingConfig(value: unknown): ThinkingConfig | undefined {
 	if (!umansReasoningSupported(value)) return undefined;
 	const efforts = mapUmansReasoningEfforts(value);
-	const thinking: ThinkingConfig = { mode: "budget", efforts };
+	const thinking: ThinkingConfig = {
+		mode: umansHasMaxReasoningLevel(value) ? "anthropic-budget-effort" : "budget",
+		efforts,
+	};
+	if (thinking.mode === "anthropic-budget-effort") {
+		thinking.effortMap = UMANS_MAX_REASONING_EFFORT_MAP;
+	}
 	if (isRecord(value)) {
 		if (value.can_disable === false) {
 			thinking.requiresEffort = true;
@@ -702,6 +732,7 @@ export function umansModelManagerOptions(config?: UmansModelManagerConfig): Mode
 	return {
 		providerId: "umans",
 		dynamicModelsAuthoritative: true,
+		dropCachedModelIdsOnStaticMismatch: UMANS_VIA_HANDOFF_MODEL_IDS,
 		fetchDynamicModels: () => fetchUmansModelsInfo({ baseUrl, apiKey, fetch: config?.fetch, references }),
 	};
 }
@@ -1259,6 +1290,51 @@ export function clampKimiK27CodeMaxTokens(modelId: string, candidate: number | n
 }
 
 /**
+ * Fireworks Fast variants we surface. Each inherits the base model's
+ * limits/modalities/thinking and overrides only the cost with the Standard-column
+ * Fast prices from the Serverless pricing table; `cacheWrite` stays 0 (Fireworks
+ * bills no cache-write). Derived from the bundled base entries so metadata stays
+ * in lockstep, and the runtime auto-falls back to the base id on a failed fast
+ * request. See https://docs.fireworks.ai/serverless/pricing.
+ */
+const FIREWORKS_FAST_VARIANT_SPECS: ReadonlyArray<{
+	base: string;
+	name: string;
+	cost: { input: number; output: number; cacheRead: number };
+}> = [
+	{ base: "kimi-k2.7-code", name: "Kimi K2.7 Code Fast", cost: { input: 1.9, output: 8, cacheRead: 0.38 } },
+	{ base: "kimi-k2.6", name: "Kimi K2.6 Fast", cost: { input: 2, output: 8, cacheRead: 0.3 } },
+	{ base: "glm-5.1", name: "GLM-5.1 Fast", cost: { input: 2.8, output: 8.8, cacheRead: 0.52 } },
+];
+
+/**
+ * Build the Fireworks Fast seed by projecting each base bundled spec into a
+ * `<id>-fast` variant. Pushed into the generated catalog (Fast routers never
+ * appear in the serverless control-plane list, so discovery cannot surface
+ * them) and deduped behind any identical previous-snapshot entry.
+ */
+export function buildFireworksFastSeed(): ModelSpec<"openai-completions">[] {
+	const bundled = createBundledReferenceMap<"openai-completions">("fireworks");
+	const seeds: ModelSpec<"openai-completions">[] = [];
+	for (const variant of FIREWORKS_FAST_VARIANT_SPECS) {
+		const base = bundled.get(variant.base);
+		if (!base) continue;
+		seeds.push({
+			...base,
+			id: `${variant.base}${FIREWORKS_FAST_SUFFIX}`,
+			name: variant.name,
+			cost: {
+				input: variant.cost.input,
+				output: variant.cost.output,
+				cacheRead: variant.cost.cacheRead,
+				cacheWrite: 0,
+			},
+		});
+	}
+	return seeds;
+}
+
+/**
  * Fireworks DeepSeek V4 accepts effort via `reasoning_effort` but rejects the
  * DeepSeek-native binary `thinking` toggle when both are present.
  */
@@ -1523,7 +1599,7 @@ export function firepassModelManagerOptions(
 }
 
 // ---------------------------------------------------------------------------
-// 7.7 Wafer (Pass + Serverless)
+// 7.7 Wafer Serverless
 // ---------------------------------------------------------------------------
 
 export interface WaferModelManagerConfig {
@@ -1536,13 +1612,14 @@ const WAFER_DEFAULT_BASE_URL = "https://pass.wafer.ai/v1";
 const WAFER_MAX_TOKENS_CAP = 65536;
 
 /**
- * Shared mapper for Wafer's `/v1/models` records.
+ * Mapper for Wafer Serverless `/v1/models` records.
  *
- * Wafer wraps each entry with a `wafer` envelope describing tier, capabilities,
- * and cents-per-million pricing. The mapper folds that metadata into the
- * canonical `ModelSpec<"openai-completions">` shape and applies zai-family thinking
- * compat when the entry advertises reasoning support (GLM-family on the Pass
- * SKU). Cents-per-million → dollars-per-million via /100.
+ * Wafer wraps each entry with a `wafer` envelope describing capabilities and
+ * pricing. The mapper folds that metadata into the canonical
+ * `ModelSpec<"openai-completions">` shape and applies upstream-specific thinking
+ * compat when the entry advertises reasoning support. Wafer pricing is exposed
+ * through internal wholesale units; the public Serverless rate equals
+ * `cents × 125 / 10000`.
  */
 interface WaferRecord {
 	context_length?: unknown;
@@ -1563,7 +1640,7 @@ function readWaferRecord(entry: OpenAICompatibleModelRecord): WaferRecord | unde
 }
 
 function mapWaferModel(
-	providerId: "wafer-pass" | "wafer-serverless",
+	providerId: "wafer-serverless",
 	baseUrl: string,
 	entry: OpenAICompatibleModelRecord,
 	defaults: ModelSpec<"openai-completions">,
@@ -1579,25 +1656,12 @@ function mapWaferModel(
 	);
 	const maxTokens = contextWindow !== null ? Math.min(contextWindow, WAFER_MAX_TOKENS_CAP) : null;
 	const pricing = wafer?.pricing ?? {};
-	// Wafer's `/v1/models` exposes pricing through `*_cents_per_million` fields,
-	// but the values are an internal wholesale unit, not literal cents — across
-	// every published Serverless model on wafer.ai the user-facing rate equals
-	// `cents × 125 / 10000` (i.e. wholesale × 1.25 / 100; GLM-5.1's `120` →
-	// $1.50/M, Kimi-K2.6's `88` → $1.10/M, etc.). The multiply-first form keeps
-	// the result a finite dyadic for every observed value.
-	// For the Pass SKU the per-token rate is bundled in the flat-rate
-	// subscription, so we follow the convention shared with
-	// `kimi-code`/`firepass`/`alibaba-coding-plan` and seed every Pass model with
-	// `cost: 0` regardless of what the upstream envelope says.
-	const isPassSku = providerId === "wafer-pass";
-	const cost = isPassSku
-		? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
-		: {
-				input: (toPositiveNumber(pricing.input_cents_per_million, 0) * 125) / 10000,
-				output: (toPositiveNumber(pricing.output_cents_per_million, 0) * 125) / 10000,
-				cacheRead: (toPositiveNumber(pricing.cache_read_cents_per_million, 0) * 125) / 10000,
-				cacheWrite: 0,
-			};
+	const cost = {
+		input: (toPositiveNumber(pricing.input_cents_per_million, 0) * 125) / 10000,
+		output: (toPositiveNumber(pricing.output_cents_per_million, 0) * 125) / 10000,
+		cacheRead: (toPositiveNumber(pricing.cache_read_cents_per_million, 0) * 125) / 10000,
+		cacheWrite: 0,
+	};
 	const name = toModelName(wafer?.display_name, defaults.name);
 	const base: ModelSpec<"openai-completions"> = {
 		...defaults,
@@ -1643,13 +1707,12 @@ function mapWaferModel(
 	};
 }
 
-function createWaferOptions(
-	providerId: "wafer-pass" | "wafer-serverless",
-	config: WaferModelManagerConfig | undefined,
+export function waferServerlessModelManagerOptions(
+	config?: WaferModelManagerConfig,
 ): ModelManagerOptions<"openai-completions"> {
 	const apiKey = config?.apiKey;
 	const baseUrl = config?.baseUrl ?? WAFER_DEFAULT_BASE_URL;
-	const passOnly = providerId === "wafer-pass";
+	const providerId = "wafer-serverless" as const;
 	return {
 		providerId,
 		...(apiKey && {
@@ -1659,28 +1722,11 @@ function createWaferOptions(
 					provider: providerId,
 					baseUrl,
 					apiKey,
-					filterModel: entry => {
-						if (!passOnly) return true;
-						const wafer = readWaferRecord(entry);
-						return wafer?.tier === "pass_included";
-					},
 					mapModel: (entry, defaults) => mapWaferModel(providerId, baseUrl, entry, defaults),
 					fetch: config?.fetch,
 				}),
 		}),
 	};
-}
-
-export function waferPassModelManagerOptions(
-	config?: WaferModelManagerConfig,
-): ModelManagerOptions<"openai-completions"> {
-	return createWaferOptions("wafer-pass", config);
-}
-
-export function waferServerlessModelManagerOptions(
-	config?: WaferModelManagerConfig,
-): ModelManagerOptions<"openai-completions"> {
-	return createWaferOptions("wafer-serverless", config);
 }
 
 // ---------------------------------------------------------------------------
@@ -2448,7 +2494,10 @@ export function moonshotModelManagerOptions(
 	config?: MoonshotModelManagerConfig,
 ): ModelManagerOptions<"openai-completions"> {
 	const apiKey = config?.apiKey;
-	const baseUrl = config?.baseUrl ?? "https://api.moonshot.ai/v1";
+	// `MOONSHOT_BASE_URL` redirects discovery (and the streaming request that
+	// inherits this baseUrl) at the Kimi China platform `api.moonshot.cn`; an
+	// explicit `config.baseUrl` still wins. Mirrors LITELLM_BASE_URL/LM_STUDIO_BASE_URL. (#2883)
+	const baseUrl = config?.baseUrl ?? Bun.env.MOONSHOT_BASE_URL ?? "https://api.moonshot.ai/v1";
 	const references = createBundledReferenceMap<"openai-completions">("moonshot");
 	return {
 		providerId: "moonshot",
@@ -2481,6 +2530,110 @@ export function moonshotModelManagerOptions(
 									? { mode: "effort", efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High] }
 									: undefined),
 						};
+					},
+					fetch: config?.fetch,
+				}),
+		}),
+	};
+}
+
+// ---------------------------------------------------------------------------
+// 16.5 Sakana AI
+// ---------------------------------------------------------------------------
+
+const SAKANA_DEFAULT_BASE_URL = "https://api.sakana.ai/v1";
+const SAKANA_FREE_ROUTER_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
+const SAKANA_FUGU_ULTRA_COST = { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 } as const;
+const SAKANA_FUGU_ULTRA_CONTEXT_WINDOW = 1_000_000;
+const SAKANA_FUGU_THINKING: ThinkingConfig = {
+	mode: "effort",
+	efforts: [Effort.High, Effort.XHigh],
+	effortMap: { [Effort.XHigh]: "max" },
+};
+const SAKANA_RESPONSES_COMPAT: ModelSpec<"openai-responses">["compat"] = {
+	includeEncryptedReasoning: false,
+	streamIdleTimeoutMs: 0,
+};
+
+function normalizeSakanaBaseUrl(baseUrl: string | undefined): string {
+	const value = baseUrl?.trim() || SAKANA_DEFAULT_BASE_URL;
+	const normalized = value.replace(/\/+$/, "");
+	return normalized.endsWith("/v1") ? normalized : `${normalized}/v1`;
+}
+
+function isSakanaFuguModelId(modelId: string): boolean {
+	return /^fugu(?:$|-)/i.test(modelId);
+}
+
+function createSakanaFuguStaticModel(
+	id: string,
+	name: string,
+	cost: ModelSpec<"openai-responses">["cost"],
+	contextWindow: number | null,
+): ModelSpec<"openai-responses"> {
+	return {
+		id,
+		name,
+		api: "openai-responses",
+		provider: "sakana",
+		baseUrl: SAKANA_DEFAULT_BASE_URL,
+		reasoning: true,
+		input: ["text"],
+		cost: { ...cost },
+		contextWindow,
+		maxTokens: null,
+		thinking: { ...SAKANA_FUGU_THINKING },
+		compat: { ...SAKANA_RESPONSES_COMPAT },
+	};
+}
+
+export const SAKANA_FUGU_STATIC_MODELS: readonly ModelSpec<"openai-responses">[] = [
+	createSakanaFuguStaticModel("fugu", "Fugu", SAKANA_FREE_ROUTER_COST, SAKANA_FUGU_ULTRA_CONTEXT_WINDOW),
+	createSakanaFuguStaticModel("fugu-ultra", "Fugu Ultra", SAKANA_FUGU_ULTRA_COST, SAKANA_FUGU_ULTRA_CONTEXT_WINDOW),
+	createSakanaFuguStaticModel(
+		"fugu-ultra-20260615",
+		"Fugu Ultra 20260615",
+		SAKANA_FUGU_ULTRA_COST,
+		SAKANA_FUGU_ULTRA_CONTEXT_WINDOW,
+	),
+];
+
+const SAKANA_FUGU_STATIC_MODEL_BY_ID = new Map(SAKANA_FUGU_STATIC_MODELS.map(model => [model.id, model] as const));
+const SAKANA_FUGU_STATIC_MODEL_IDS = SAKANA_FUGU_STATIC_MODELS.map(model => model.id);
+
+export interface SakanaModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+	fetch?: FetchImpl;
+}
+
+export function sakanaModelManagerOptions(config?: SakanaModelManagerConfig): ModelManagerOptions<"openai-responses"> {
+	const apiKey = config?.apiKey;
+	const baseUrl = normalizeSakanaBaseUrl(config?.baseUrl ?? Bun.env.SAKANA_BASE_URL ?? Bun.env.FUGU_BASE_URL);
+	const references = createBundledReferenceMap<"openai-responses">("sakana");
+	return {
+		providerId: "sakana",
+		dynamicModelsAuthoritative: true,
+		dropCachedModelIdsOnStaticMismatch: SAKANA_FUGU_STATIC_MODEL_IDS,
+		...(apiKey && {
+			fetchDynamicModels: () =>
+				fetchOpenAICompatibleModels({
+					api: "openai-responses",
+					provider: "sakana",
+					baseUrl,
+					apiKey,
+					mapModel: (entry, defaults) => {
+						const reference = references.get(defaults.id) ?? SAKANA_FUGU_STATIC_MODEL_BY_ID.get(defaults.id);
+						const model = mapWithBundledReference(entry, defaults, reference);
+						if (!reference && isSakanaFuguModelId(model.id)) {
+							return {
+								...model,
+								reasoning: true,
+								thinking: { ...SAKANA_FUGU_THINKING },
+								compat: { ...SAKANA_RESPONSES_COMPAT },
+							};
+						}
+						return model;
 					},
 					fetch: config?.fetch,
 				}),
@@ -2977,10 +3130,16 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 								? entry.name
 								: (reference?.name ?? defaults.name);
 						const api = inferCopilotApi(defaults.id);
+						// `supports.vision` reports the model's intrinsic capability, but
+						// the business/enterprise endpoints respond `400 vision is not
+						// supported` on image inputs. Only honour the flag for the
+						// canonical personal-Copilot host.
 						const supportsVision = extractCopilotSupportsVision(entry);
-						const input: ModelSpec<Api>["input"] = supportsVision
-							? ["text", "image"]
-							: (reference?.input ?? defaults.input);
+						const input: ModelSpec<Api>["input"] = isPersonalGitHubCopilotBaseUrl(baseUrl)
+							? supportsVision
+								? ["text", "image"]
+								: (reference?.input ?? defaults.input)
+							: ["text"];
 						// With COPILOT_API_HEADERS the served window is the long-context
 						// ceiling; the default tier ends at token_prices.default.context_max
 						// prompt tokens. Cap the base entry to the default tier — the long
