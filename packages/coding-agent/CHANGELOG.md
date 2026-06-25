@@ -17,6 +17,10 @@
 - Fixed a component-backed `rightEditor` widget crashing when it called any TUI method other than the two render hooks (e.g. `ui.addChild`, `ui.setFocus`, `ui.addInputListener`): the wrapping `Proxy` returned those methods bound to the proxy, so `TUI`/`Container` `#private` field access threw at runtime. The proxy now resolves against and binds methods back to the real TUI instance, staying API-compatible for right-side widget factories.
 - Fixed the `rightEditor` panel scheduling a render before the TUI was started: `setRightPanel()` was registered (which calls `requestRender()`) before `ui.start()`, and the intervening `await #loadTodoList()` could let that frame paint pre-start — a visible pre-start paint, and duplicate startup output on terminals that copy screen contents on the first paint. The panel is now registered after `ui.start()`, so the forced initial render composites it on the first real frame.
 - Fixed a failed widget refresh dropping the existing widget across any placement change: `setHookWidget` disposed the old entry (inline or right-side) before building the replacement, so a throwing component factory left the slot empty — whether moving `rightEditor`→inline or inline→`rightEditor`. The replacement is now constructed first for every transition and the old entry dropped only after a successful build, so a failed refresh always keeps the previous widget.
+### Fixed
+
+- Fixed `skill://` tool resolution losing loaded session skills when a tool runs outside the session-initialization module state. Internal URL resolution now prefers the caller's `session.skills` snapshot before falling back to the process-global skill list, so `read skill://<name>` works across tool execution boundaries. ([#3436](https://github.com/can1357/oh-my-pi/issues/3436))
+
 ## [16.1.18] - 2026-06-25
 
 ### Added

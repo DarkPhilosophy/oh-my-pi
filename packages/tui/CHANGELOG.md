@@ -10,6 +10,10 @@
 ### Fixed
 
 - Fixed right-side panel compositing landing on Kitty OSC 66 text-sizing heading rows and the following blank structural reservation row. The compositor predicate is now generic (`isOccupiedLine`) and the TUI pre-marks OSC 66 headings plus their first visible-width-zero successor as occupied before placement.
+### Fixed
+
+- Fixed bordered `Editor` rendering 1–2 cells past the terminal width when the end-of-line cursor glyph landed past a wide trailing grapheme (CJK comma `，`, emoji, etc.), wrapping the bottom-right corner (`╯`) to its own row. The right chrome (padding + `─` + corner) now shrinks by the exact cursor overflow cell count instead of a 1-cell boolean, so the box stays inside `width` for any `paddingX` ([#3431](https://github.com/can1357/oh-my-pi/issues/3431)).
+
 ## [16.1.17] - 2026-06-24
 
 ### Added
