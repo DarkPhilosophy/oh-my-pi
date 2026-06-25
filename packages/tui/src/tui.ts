@@ -1074,6 +1074,10 @@ export class TUI extends Container {
 	// pushing wrapped fragments into native scrollback.
 	#resizeAltActive = false;
 	#stopped = false;
+	// True once start() has run at least once. setRightPanel() (and any other
+	// pre-start registration) must NOT paint before the terminal is started, or
+	// it commits a frame into raw scrollback before the screen is cleared.
+	#hasStarted = false;
 	// Always-on event-loop lag probe. The high default threshold keeps it quiet;
 	// it only logs `ui.loop-blocked` (with the current loop phase) when a frame
 	// budget is genuinely starved. Armed in start(), disarmed in stop().
@@ -1521,6 +1525,7 @@ export class TUI extends Container {
 
 	start(options?: TUIStartOptions): void {
 		this.#stopped = false;
+		this.#hasStarted = true;
 		this.#watchdog.start();
 		this.#ghosttyInitialImageDelayDone = false;
 		this.#ghosttyImageReadyAtMs = this.#renderScheduler.now() + TUI.#GHOSTTY_INITIAL_IMAGE_DELAY_MS;
@@ -1859,7 +1864,11 @@ export class TUI extends Container {
 		this.#rightPanelProvider = provider;
 		this.#rightPanelTargets =
 			provider !== null && targets !== undefined && targets.length > 0 ? new Set(targets) : null;
-		this.requestRender();
+		// Defer painting until the terminal is started: a provider registered
+		// during setup (before start()) would otherwise commit a frame into raw
+		// scrollback before the screen is cleared. start() does the initial paint
+		// and picks up the stored provider; live updates render immediately.
+		if (this.#hasStarted) this.requestRender();
 	}
 
 	/**

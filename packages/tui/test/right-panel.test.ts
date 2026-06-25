@@ -304,6 +304,27 @@ describe("TUI.setRightPanel", () => {
 		}
 	});
 
+	it("does not paint when the panel is registered before start()", async () => {
+		const term = new VirtualTerminal(80, 12, 1000);
+		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
+		const chat = new Lines(Array.from({ length: 6 }, (_, i) => `msg-${i}`));
+		tui.addChild(chat);
+		// Registering during setup must NOT commit a frame: a pre-start paint
+		// would write the widget into raw scrollback before the screen is cleared.
+		tui.setRightPanel(() => [["<W0>", "<W1>", "<W2>"]], [chat]);
+		await settle(term);
+		expect(term.getScrollBuffer().join("\n")).not.toContain("<W");
+		expect(term.getViewport().join("\n")).not.toContain("<W");
+		// After start(), the stored provider is picked up by the initial paint.
+		tui.start();
+		await settle(term);
+		try {
+			expect(term.getViewport().some(line => line.includes("<W"))).toBeTrue();
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("keeps right panel out of OSC 66 heading reservation rows", async () => {
 		const term = new VirtualTerminal(80, 12);
 		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
