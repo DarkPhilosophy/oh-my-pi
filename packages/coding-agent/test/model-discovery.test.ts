@@ -60,8 +60,8 @@ describe("ModelRegistry runtime discovery", () => {
 		}
 	});
 
-	function writeCachedOllamaModels(models: Model<"openai-completions">[]) {
-		writeModelCache("ollama", Date.now(), models, true, "", cacheDbPath);
+	function writeCachedOllamaModels(models: Model<"openai-completions">[], updatedAt = Date.now()) {
+		writeModelCache("ollama", updatedAt, models, true, "", cacheDbPath);
 	}
 
 	function getModelsForProvider(registry: ModelRegistry, provider: string) {
@@ -304,6 +304,57 @@ describe("ModelRegistry runtime discovery", () => {
 		expect(ollama?.api).toBe("openai-responses");
 		expect(ollama?.baseUrl).toBe("http://127.0.0.1:11434/v1");
 		expect(registry.getProviderDiscoveryState("ollama")?.status).toBe("cached");
+	});
+
+	test("refreshes cached discovery when models config is newer than the cache", async () => {
+		writeRawModelsJson({
+			ollama: {
+				baseUrl: "http://127.0.0.1:11434/v1",
+				api: "openai-responses",
+				auth: "none",
+				discovery: { type: "ollama" },
+				modelOverrides: {
+					"phi3:3.8b": { contextWindow: 8192, maxTokens: 4096 },
+				},
+			},
+		});
+		const configMtime = fs.statSync(modelsJsonPath).mtimeMs;
+		writeCachedOllamaModels(
+			[
+				buildModel({
+					id: "phi3:3.8b",
+					name: "phi3:3.8b",
+					api: "openai-completions",
+					provider: "ollama",
+					baseUrl: "http://127.0.0.1:11434/v1",
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 128000,
+					maxTokens: 32768,
+				}),
+			],
+			Math.floor(configMtime) - 1,
+		);
+		let tagCalls = 0;
+		const fetchMock = mockOllamaDiscovery(["phi3:3.8b"], "http://127.0.0.1:11434", {
+			capabilities: ["completion"],
+			model_info: { "phi3.context_length": 8192 },
+		});
+		const countingFetch: FetchImpl = async (input, init) => {
+			if (String(input) === "http://127.0.0.1:11434/api/tags") {
+				tagCalls++;
+			}
+			return fetchMock(input, init);
+		};
+
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: countingFetch });
+		await registry.refresh("online-if-uncached");
+
+		const phi3 = registry.find("ollama", "phi3:3.8b");
+		expect(tagCalls).toBe(1);
+		expect(phi3?.contextWindow).toBe(8192);
+		expect(phi3?.maxTokens).toBe(4096);
 	});
 
 	test("discovers ollama thinking capabilities from show metadata", async () => {
@@ -614,6 +665,199 @@ describe("ModelRegistry runtime discovery", () => {
 		expect(llama?.contextWindow).toBe(262144);
 		expect(llama?.maxTokens).toBe(32_768);
 		expect(llama?.input).toEqual(["text", "image"]);
+	});
+	test("llama.cpp discovery prefers per-model meta n_ctx over props", async () => {
+		const fetchMock: FetchImpl = async input => {
+			const url = String(input);
+			if (url === "http://127.0.0.1:8080/models") {
+				return new Response(
+					JSON.stringify({
+						data: [
+							{ id: "ctx-88k", meta: { n_ctx: 88832, n_ctx_train: 131072 } },
+							{ id: "ctx-train", meta: { n_ctx_train: 65536 } },
+							{ id: "unloaded" },
+						],
+					}),
+					{
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
+			}
+			if (url === "http://127.0.0.1:8080/props") {
+				return new Response(JSON.stringify({ default_generation_settings: { n_ctx: 128000 } }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			throw new Error(`Unexpected URL: ${url}`);
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		await registry.refresh();
+		expect(registry.find("llama.cpp", "ctx-88k")?.contextWindow).toBe(88832);
+		expect(registry.find("llama.cpp", "ctx-train")?.contextWindow).toBe(65536);
+		expect(registry.find("llama.cpp", "unloaded")?.contextWindow).toBe(128000);
+	});
+
+	test("llama.cpp selected model refresh patches newly loaded meta n_ctx", async () => {
+		writeModelCache(
+			"llama.cpp",
+			Date.now(),
+			[
+				buildModel({
+					id: "sleeping-model",
+					name: "sleeping-model",
+					provider: "llama.cpp",
+					api: "openai-responses",
+					baseUrl: "http://127.0.0.1:8080",
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 128000,
+					maxTokens: 32768,
+				}),
+			],
+			true,
+			"",
+			cacheDbPath,
+		);
+		const fetchMock: FetchImpl = async input => {
+			const url = String(input);
+			if (url === "http://127.0.0.1:8080/models") {
+				return new Response(JSON.stringify({ data: [{ id: "sleeping-model", meta: { n_ctx: 239104 } }] }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			throw new Error(`Unexpected URL: ${url}`);
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		const stale = registry.find("llama.cpp", "sleeping-model");
+		if (!stale) throw new Error("cached llama.cpp model missing");
+		expect(stale.contextWindow).toBe(128000);
+		const refreshed = await registry.refreshSelectedModelMetadata(stale);
+		expect(refreshed.contextWindow).toBe(239104);
+		expect(refreshed.maxTokens).toBe(32768);
+		expect(registry.find("llama.cpp", "sleeping-model")?.contextWindow).toBe(239104);
+	});
+
+	test("llama.cpp selected model refresh does not resolve command api keys", async () => {
+		const commandLogPath = path.join(tempDir, "llama-cpp-key-command.log");
+		writeRawModelsJson({
+			"llama.cpp": {
+				baseUrl: "http://127.0.0.1:8080",
+				apiKey: `!"${process.execPath}" -e 'require("node:fs").appendFileSync(${JSON.stringify(commandLogPath)}, "x"); process.exit(1);'`,
+				api: "openai-responses",
+				discovery: { type: "llama.cpp" },
+				models: [{ id: "protected-model", reasoning: false, input: ["text"] }],
+			},
+		});
+		const fetchMock: FetchImpl = async (input, init) => {
+			const url = String(input);
+			if (url === "http://127.0.0.1:8080/models") {
+				const headers = init?.headers as Headers | Record<string, string> | undefined;
+				const authHeader = headers instanceof Headers ? headers.get("Authorization") : headers?.Authorization;
+				expect(authHeader).toBeUndefined();
+				return new Response(JSON.stringify({ data: [{ id: "protected-model", meta: { n_ctx: 239104 } }] }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			throw new Error(`Unexpected URL: ${url}`);
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		const commandOutputBeforeRefresh = fs.readFileSync(commandLogPath, "utf8");
+		const model = registry.find("llama.cpp", "protected-model");
+		if (!model) throw new Error("custom llama.cpp model missing");
+		const refreshed = await registry.refreshSelectedModelMetadata(model);
+		expect(refreshed.contextWindow).toBe(239104);
+		expect(fs.readFileSync(commandLogPath, "utf8")).toBe(commandOutputBeforeRefresh);
+	});
+
+	test("llama.cpp selected model refresh preserves same-id custom limits", async () => {
+		writeRawModelsJson({
+			"llama.cpp": {
+				baseUrl: "http://127.0.0.1:8080",
+				api: "openai-responses",
+				auth: "none",
+				discovery: { type: "llama.cpp" },
+				models: [
+					{
+						id: "pinned-model",
+						reasoning: false,
+						input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 88832,
+						maxTokens: 4096,
+					},
+				],
+			},
+		});
+		const fetchMock: FetchImpl = async input => {
+			const url = String(input);
+			if (url === "http://127.0.0.1:8080/models") {
+				return new Response(JSON.stringify({ data: [{ id: "pinned-model", meta: { n_ctx: 239104 } }] }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			throw new Error(`Unexpected URL: ${url}`);
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		const pinned = registry.find("llama.cpp", "pinned-model");
+		if (!pinned) throw new Error("custom llama.cpp model missing");
+		const refreshed = await registry.refreshSelectedModelMetadata(pinned);
+		expect(refreshed.contextWindow).toBe(88832);
+		expect(refreshed.maxTokens).toBe(4096);
+		const registryModel = registry.find("llama.cpp", "pinned-model");
+		expect(registryModel?.contextWindow).toBe(88832);
+		expect(registryModel?.maxTokens).toBe(4096);
+	});
+
+	test("llama.cpp refresh bypasses fresh cache so server restarts update n_ctx", async () => {
+		writeModelCache(
+			"llama.cpp",
+			Date.now(),
+			[
+				buildModel({
+					id: "restarted-model",
+					name: "restarted-model",
+					provider: "llama.cpp",
+					api: "openai-responses",
+					baseUrl: "http://127.0.0.1:8080",
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 128000,
+					maxTokens: 32768,
+				}),
+			],
+			true,
+			"",
+			cacheDbPath,
+		);
+		let modelListCalls = 0;
+		const fetchMock: FetchImpl = async input => {
+			const url = String(input);
+			if (url === "http://127.0.0.1:8080/models") {
+				modelListCalls++;
+				return new Response(JSON.stringify({ data: [{ id: "restarted-model", meta: { n_ctx: 88832 } }] }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			if (url === "http://127.0.0.1:8080/props") {
+				return new Response(JSON.stringify({ default_generation_settings: { n_ctx: 0 } }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			throw new Error(`Unexpected URL: ${url}`);
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		await registry.refresh();
+		expect(modelListCalls).toBe(1);
+		expect(registry.find("llama.cpp", "restarted-model")?.contextWindow).toBe(88832);
 	});
 	test("openai-models-list discovery honors API-reported context_length over fallback", async () => {
 		writeRawModelsJson({

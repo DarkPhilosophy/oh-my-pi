@@ -4,7 +4,7 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
 import { type ThemeColor, theme } from "../../../modes/theme/theme";
-import { shortenPath } from "../../../tools/render-utils";
+import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
 import { sanitizeStatusText } from "../../shared";
 import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "./context-thresholds";
@@ -375,7 +375,7 @@ const contextPctSegment: StatusLineSegment = {
 		const window = ctx.contextWindow;
 
 		const autoIcon = ctx.autoCompactEnabled && theme.icon.auto ? ` ${theme.icon.auto}` : "";
-		const text = `${formatContextUsage(pct, window)}${autoIcon}`;
+		const text = `${formatContextUsage(pct, window, ctx.contextTokens)}${autoIcon}`;
 
 		const color = getContextUsageThemeColor(getContextUsageLevel(pct ?? 0, window));
 		const content = withIcon(theme.icon.context, theme.fg(color, text));
@@ -551,6 +551,10 @@ const usageSegment: StatusLineSegment = {
 			return { content: "", visible: false };
 		}
 		const parts: string[] = [];
+		if (u.tier) {
+			const tier = truncateToWidth(sanitizeStatusText(u.tier), TRUNCATE_LENGTHS.SHORT);
+			if (tier) parts.push(theme.fg("accent", tier));
+		}
 		if (u.fiveHour) {
 			const pct = u.fiveHour.percent;
 			const pctText = theme.fg(pickUsageColor(pct), `${Math.round(pct)}%`);

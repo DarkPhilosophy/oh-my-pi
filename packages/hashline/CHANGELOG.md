@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [16.1.14] - 2026-06-22
+
+### Fixed
+
+- Improved delimiter-balance repair to correctly identify and spare deleted structural closers
+- Prevented premature deletion of structural closers when existing code below the range covers them
+- Accurate tracking of inserted lines to improve boundary repair logic for surrounding code blocks
+- Fixed delimiter-balance repair so deleted closer suffixes are kept only when the replacement prefix still has unmatched openers for them, avoiding duplicated trailing braces while preserving omitted outer closers.
+
+## [16.1.8] - 2026-06-20
+
+### Fixed
+
+- Fixed multi-hunk delimiter-balance repair so a `SWAP` that drops a structural closer no longer keeps it when another hunk already removed the matching opener (a deliberate wrapper removal); the missing-closer repair now weighs each group against the whole patch's residual delimiter balance — summed per hunk so quote/comment state never bleeds across non-contiguous hunks — and consumes that residual per repair so a genuine missing closer elsewhere still fires. ([#3142](https://github.com/can1357/oh-my-pi/issues/3142))
+
 ## [16.1.2] - 2026-06-19
 
 ### Changed

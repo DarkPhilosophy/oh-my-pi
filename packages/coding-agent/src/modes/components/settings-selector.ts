@@ -473,14 +473,16 @@ export class SettingsSelectorComponent implements Component {
 			return true;
 		}
 
-		if (event.wheel !== null) {
-			list?.handleWheel(event.wheel);
-			return true;
-		}
-
 		const tabLine = event.row - this.#tabRowStart;
 		const overTabs = tabLine >= 0 && tabLine < this.#tabRowCount;
 		const overContent = contentLine >= 0 && contentLine < this.#contentRowCount;
+
+		if (event.wheel !== null) {
+			if (overContent) {
+				list?.handleWheelAt(event.wheel, contentLine, innerCol);
+			}
+			return true;
+		}
 
 		if (event.motion) {
 			const hovered = overTabs ? this.#tabBar.tabAt(tabLine, innerCol) : undefined;
@@ -701,7 +703,7 @@ export class SettingsSelectorComponent implements Component {
 					id: def.path,
 					label: def.label,
 					description: def.description,
-					currentValue: currentValue as string,
+					currentValue: String(currentValue ?? ""),
 					values: [...def.values],
 					changed,
 				};
@@ -721,7 +723,7 @@ export class SettingsSelectorComponent implements Component {
 					id: def.path,
 					label: def.label,
 					description: def.description,
-					currentValue: (currentValue as string) ?? "",
+					currentValue: String(currentValue ?? ""),
 					submenu: (cv, done) => this.#createTextInput(def, cv, done),
 					changed,
 				};

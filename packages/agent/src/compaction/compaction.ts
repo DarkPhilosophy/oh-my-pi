@@ -8,12 +8,14 @@
 import {
 	type ApiKey,
 	type AssistantMessage,
+	type Context,
 	Effort,
 	type FetchImpl,
 	type Message,
 	type MessageAttribution,
 	type Model,
 	ProviderHttpError,
+	type SimpleStreamOptions,
 	type Tool,
 	type Usage,
 	withAuth,
@@ -228,6 +230,25 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
 	return contextTokens > thresholdTokens;
 }
 
+/**
+ * Context tokens to feed the compaction decision, floored by a local estimate of
+ * the stored conversation.
+ *
+ * The provider-reported usage is normally ground truth, but a
+ * `before_provider_request` payload transform — a compression extension (e.g.
+ * Headroom), an obfuscator, or inline snapcompact — can shrink the request below
+ * the real stored conversation. The provider then reports deflated prompt
+ * tokens, so anchoring compaction purely on that usage lets the real history
+ * grow unbounded until it overflows and native compaction can no longer run.
+ * Flooring by the agent's own estimate of the stored conversation keeps the
+ * compaction trigger honest regardless of on-wire compression. (Display/cost
+ * accounting still uses the exact provider usage; only the compaction decision
+ * takes the floor.)
+ */
+export function compactionContextTokens(providerContextTokens: number, storedConversationEstimate: number): number {
+	return Math.max(Math.max(0, providerContextTokens), Math.max(0, storedConversationEstimate));
+}
+
 export function resolveThresholdTokens(contextWindow: number, settings: CompactionSettings): number {
 	// Fixed token limit takes priority over percentage
 	const thresholdTokens = settings.thresholdTokens;
@@ -259,8 +280,15 @@ const IMAGE_TOKEN_ESTIMATE = 1200;
  * Estimate token count for a message using cl100k_base via the native
  * tokenizer. This is not Claude's first-party tokenizer (Anthropic doesn't
  * publish one) but is within ~5–10% across English/code text.
+ *
+ * `excludeEncryptedReasoning` drops opaque provider reasoning payloads
+ * (`thinkingSignature`, `redactedThinking`) from the estimate. Those are billed
+ * by the provider on replay, so the default counts them — but their *local*
+ * byte size can diverge wildly from what the provider charges, so the
+ * compaction floor (which only needs the reliably-countable, on-wire-compressible
+ * content) excludes them to avoid false triggers on thinking-heavy turns.
  */
-export function estimateTokens(message: AgentMessage): number {
+export function estimateTokens(message: AgentMessage, options?: { excludeEncryptedReasoning?: boolean }): number {
 	const fragments: string[] = [];
 	let extra = 0;
 	if ((message as { role?: string }).role === "bashExecution") {
@@ -296,14 +324,18 @@ export function estimateTokens(message: AgentMessage): number {
 					// reasoning items, Anthropic signed thinking blocks, etc.). Without
 					// counting it, this estimator can read ~half of the provider-reported
 					// usage on thinking-heavy turns — see #2275 for the resulting
-					// compaction-trigger / post-check metric divergence.
-					if (block.thinkingSignature) fragments.push(block.thinkingSignature);
+					// compaction-trigger / post-check metric divergence. The compaction
+					// floor excludes it (its local byte size diverges from provider billing).
+					if (block.thinkingSignature && !options?.excludeEncryptedReasoning) {
+						fragments.push(block.thinkingSignature);
+					}
 				} else if (block.type === "toolCall") {
 					fragments.push(block.name);
 					fragments.push(JSON.stringify(block.arguments));
 				} else if (block.type === "redactedThinking") {
-					// Encrypted reasoning blob the provider still bills for on replay.
-					fragments.push(block.data);
+					// Encrypted reasoning blob the provider still bills for on replay;
+					// excluded from the compaction floor for the same reason as above.
+					if (!options?.excludeEncryptedReasoning) fragments.push(block.data);
 				}
 			}
 			break;
@@ -741,6 +773,61 @@ export function renderHandoffPrompt(customInstructions?: string): string {
 	});
 }
 
+export interface HandoffFromContextOptions {
+	/**
+	 * Stream options mirrored from the live agent turn: `apiKey`, `signal`, the
+	 * `sessionId`/`promptCacheKey` cache-routing pair, `serviceTier`, and the
+	 * session's payload/response hooks. Sending the same routing + payload shape
+	 * the main loop uses is what lets the handoff oneshot READ the provider
+	 * prompt cache the live turn populated instead of cold-missing the whole
+	 * prefix. `reasoning` and `toolChoice` are set internally and override
+	 * anything provided here.
+	 */
+	streamOptions: SimpleStreamOptions;
+	/** See {@link HandoffOptions.telemetry}. */
+	telemetry?: AgentTelemetry;
+	/** See {@link HandoffOptions.thinkingLevel}. */
+	thinkingLevel?: ThinkingLevel;
+}
+
+/**
+ * Run the handoff oneshot against a fully-built provider {@link Context}.
+ *
+ * The caller assembles `context` exactly like a live agent turn — same system
+ * prompt, normalized tools, transformed + obfuscated message history, with the
+ * trailing handoff-prompt message already appended — and supplies
+ * `streamOptions` that mirror the live turn's cache routing. That keeps the
+ * cache-preserving context construction in the host (which owns the transform
+ * pipeline) while this function centralizes the handoff request contract:
+ * `toolChoice: "none"`, clamped reasoning effort, oneshot telemetry, text-only
+ * extraction, and provider-error mapping.
+ */
+export async function generateHandoffFromContext(
+	context: Context,
+	model: Model,
+	options: HandoffFromContextOptions,
+): Promise<string> {
+	const response = await instrumentedCompleteSimple(
+		model,
+		context,
+		{
+			...options.streamOptions,
+			reasoning: resolveCompactionEffort(model, options.thinkingLevel),
+			toolChoice: "none",
+		},
+		{ telemetry: options.telemetry, oneshotKind: "handoff" },
+	);
+
+	if (response.stopReason === "error") {
+		throw createSummarizationError("Handoff generation failed", response);
+	}
+
+	return response.content
+		.filter((c): c is { type: "text"; text: string } => c.type === "text")
+		.map(c => c.text)
+		.join("\n");
+}
+
 export async function generateHandoff(
 	messages: AgentMessage[],
 	model: Model,
@@ -759,32 +846,20 @@ export async function generateHandoff(
 		},
 	];
 
-	const response = await instrumentedCompleteSimple(
+	return generateHandoffFromContext(
+		{ systemPrompt: options.systemPrompt, messages: requestMessages, tools: options.tools },
 		model,
 		{
-			systemPrompt: options.systemPrompt,
-			messages: requestMessages,
-			tools: options.tools,
+			streamOptions: {
+				apiKey,
+				signal,
+				initiatorOverride: options.initiatorOverride,
+				metadata: options.metadata,
+			},
+			telemetry: options.telemetry,
+			thinkingLevel: options.thinkingLevel,
 		},
-		{
-			apiKey,
-			signal,
-			reasoning: resolveCompactionEffort(model, options.thinkingLevel),
-			toolChoice: "none",
-			initiatorOverride: options.initiatorOverride,
-			metadata: options.metadata,
-		},
-		{ telemetry: options.telemetry, oneshotKind: "handoff" },
 	);
-
-	if (response.stopReason === "error") {
-		throw createSummarizationError("Handoff generation failed", response);
-	}
-
-	return response.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map(c => c.text)
-		.join("\n");
 }
 
 async function generateShortSummary(

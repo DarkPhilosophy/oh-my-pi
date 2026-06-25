@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { type AutocompleteProvider, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
 import { $env, isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
@@ -19,6 +20,7 @@ import { isTinyTitleLocalModelKey } from "../../tiny/models";
 import { isLowSignalTitleInput } from "../../tiny/text";
 import { tinyTitleClient } from "../../tiny/title-client";
 import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
+import { resolveReadPath } from "../../tools/path-utils";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import { copyToClipboard, readImageFromClipboard, readTextFromClipboard } from "../../utils/clipboard";
 import { EnhancedPasteController } from "../../utils/enhanced-paste";
@@ -26,6 +28,39 @@ import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { ensureSupportedImageInput, ImageInputTooLargeError, loadImageInput } from "../../utils/image-loading";
 import { resizeImage } from "../../utils/image-resize";
 import { generateSessionTitle, setSessionTerminalTitle } from "../../utils/title-generator";
+
+/**
+ * Slash commands that may carry secrets in their arguments should never be
+ * persisted to history.
+ *
+ * - /login accepts three callback forms (redirect URL, query string, raw auth
+ *   code) — all can contain OAuth code=/state= params.
+ * - /join <link> carries a 32-byte room key and optional write token.
+ * - /mcp add --token <token> carries a bearer token.
+ *
+ * The command name is extracted the same way as parseSlashCommand() — splitting
+ * on the earliest whitespace or colon — so /login:?code=... is correctly matched.
+ */
+export function shouldSkipHistory(slashText: string): boolean {
+	if (!slashText.startsWith("/")) return false;
+	const body = slashText.slice(1);
+	// Match parseSlashCommand: split on earliest whitespace or colon.
+	const firstWs = body.search(/\s/);
+	const firstColon = body.indexOf(":");
+	const sep = firstWs === -1 ? firstColon : firstColon === -1 ? firstWs : Math.min(firstWs, firstColon);
+	const name = sep === -1 ? body : body.slice(0, sep);
+	const hasArgs = sep !== -1;
+	// /login <anything> — parseCallbackInput() accepts redirect URLs, query
+	// strings (?code=...), and raw auth codes, all of which carry secrets.
+	if (name === "login" && hasArgs) return true;
+	// /join <link> — the link carries the 32-byte room key and write token.
+	if (name === "join" && hasArgs) return true;
+	if (name === "mcp") {
+		const args = body.slice(sep + 1).trim();
+		return args.startsWith("add") && /--token\s/.test(args);
+	}
+	return false;
+}
 
 interface Expandable {
 	setExpanded(expanded: boolean): void;
@@ -69,6 +104,20 @@ function wrapPasteInAttachmentBlock(content: string): string {
 	return `<attachment>\n${content}\n</attachment>`;
 }
 
+const FILE_URI_REGEX = /^file:\/\//i;
+
+function pastedFileAttachmentExtension(sourcePath: string): string {
+	const ext = path.extname(sourcePath);
+	const bareExt = ext.slice(1);
+	if (!bareExt || bareExt.length > 32 || !/^[a-z0-9][a-z0-9._-]*$/i.test(bareExt)) return "";
+	return ext;
+}
+
+function resolvePastedFilePath(filePath: string, cwd: string): string {
+	if (FILE_URI_REGEX.test(filePath)) return fileURLToPath(filePath);
+	return resolveReadPath(filePath, cwd);
+}
+
 const TINY_TITLE_PROGRESS_DONE_TTL_MS = 3_000;
 // A cached model fires its file-load events in a short burst and then goes silent
 // while onnxruntime builds the session; a genuine download keeps streaming progress
@@ -99,12 +148,13 @@ export class InputController {
 	#enhancedPaste?: EnhancedPasteController;
 	#focusedLeftTapListenerInstalled = false;
 	#btwBranchListenerInstalled = false;
+	#btwCopyListenerInstalled = false;
 	// Tap counter for the double-← gesture; reset whenever a quiet gap
 	// (>= LEFT_DOUBLE_TAP_MAX_GAP_MS) starts a fresh sequence. See
 	// #detectLeftDoubleTap.
 	#leftTapCount = 0;
-	// Sequential index for `local://attachment-N` references created by the large-paste local-file
-	// action. Seeded from 0 and bumped past any existing attachment files in #attachPasteAsFile.
+	// Sequential index for `local://attachment-N` references created by large-paste and
+	// pasted-file attachments. Seeded from 0 and bumped past existing attachment files.
 	#attachmentCounter = 0;
 
 	#showTinyTitleDownloadProgress(modelKey: string): void {
@@ -169,8 +219,20 @@ export class InputController {
 			this.ctx.ui.addInputListener(data => {
 				if (!matchesKey(data, "b")) return undefined;
 				if (!this.ctx.canBranchBtw()) return undefined;
+				if (this.ctx.ui.getFocused() !== this.ctx.editor) return undefined;
 				if (this.ctx.editor.getText().trim()) return undefined;
 				void this.ctx.handleBtwBranchKey();
+				return { consume: true };
+			});
+		}
+		if (!this.#btwCopyListenerInstalled) {
+			this.#btwCopyListenerInstalled = true;
+			this.ctx.ui.addInputListener(data => {
+				if (!matchesKey(data, "c")) return undefined;
+				if (!this.ctx.canCopyBtw()) return undefined;
+				if (this.ctx.ui.getFocused() !== this.ctx.editor) return undefined;
+				if (this.ctx.editor.getText().trim()) return undefined;
+				void this.ctx.handleBtwCopyKey();
 				return { consume: true };
 			});
 		}
@@ -182,27 +244,37 @@ export class InputController {
 			// to clobber the single saved-handler slot (auto-compaction start
 			// → /compact → auto end → manual finally), leaving Esc wired to a
 			// stale no-op closure until restart.
-			const viewSession = this.ctx.viewSession;
-			let aborted = false;
-			if (viewSession.isCompacting) {
-				try {
-					viewSession.abortCompaction();
-				} catch {}
-				aborted = true;
+			//
+			// While a subagent is focused, Esc honors the advertised view action
+			// ("Esc returns to main") instead of cancelling maintenance —
+			// accidentally killing a focused subagent's compaction on the way out
+			// was #2819. The auto-maintenance loaders relabel their hint to match
+			// (see EventController). Main-session maintenance still owns Esc and
+			// stays cancellable from the main view (focused submit gates /compact
+			// and handoff, so manual maintenance is main-only anyway).
+			if (!this.ctx.focusedAgentId) {
+				const viewSession = this.ctx.viewSession;
+				let aborted = false;
+				if (viewSession.isCompacting) {
+					try {
+						viewSession.abortCompaction();
+					} catch {}
+					aborted = true;
+				}
+				if (viewSession.isGeneratingHandoff) {
+					try {
+						viewSession.abortHandoff();
+					} catch {}
+					aborted = true;
+				}
+				if (viewSession.isRetrying) {
+					try {
+						viewSession.abortRetry();
+					} catch {}
+					aborted = true;
+				}
+				if (aborted) return;
 			}
-			if (viewSession.isGeneratingHandoff) {
-				try {
-					viewSession.abortHandoff();
-				} catch {}
-				aborted = true;
-			}
-			if (viewSession.isRetrying) {
-				try {
-					viewSession.abortRetry();
-				} catch {}
-				aborted = true;
-			}
-			if (aborted) return;
 
 			if (this.ctx.loopModeEnabled) {
 				this.ctx.pauseLoop();
@@ -320,6 +392,7 @@ export class InputController {
 		);
 		this.ctx.editor.onPasteImage = () => this.handleImagePaste();
 		this.ctx.editor.onPasteImagePath = path => this.handleImagePathPaste(path);
+		this.ctx.editor.onPasteFilePath = path => this.handleFilePathPaste(path);
 		this.ctx.editor.setActionKeys(
 			"app.clipboard.pasteTextRaw",
 			this.ctx.keybindings.getKeys("app.clipboard.pasteTextRaw"),
@@ -529,10 +602,7 @@ export class InputController {
 			// model continues the prior intent rather than second-guessing the interrupt.
 			if (text === "." || text === "c") {
 				if (this.ctx.onInputCallback) {
-					this.ctx.editor.setText("");
-					this.ctx.pendingImages = [];
-					this.ctx.pendingImageLinks = [];
-					this.ctx.editor.imageLinks = undefined;
+					this.ctx.editor.clearDraft();
 					this.ctx.onInputCallback({
 						text: manualContinuePrompt,
 						cancelled: false,
@@ -545,16 +615,14 @@ export class InputController {
 			}
 
 			const runner = this.ctx.session.extensionRunner;
-			let inputImages = this.ctx.pendingImages.length > 0 ? [...this.ctx.pendingImages] : undefined;
-			let inputImageLinks = this.ctx.pendingImageLinks.length > 0 ? [...this.ctx.pendingImageLinks] : undefined;
+			let inputImages = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
+			let inputImageLinks =
+				this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
 
 			if (runner?.hasHandlers("input")) {
 				const result = await runner.emitInput(text, inputImages, "interactive");
 				if (result?.handled) {
-					this.ctx.editor.setText("");
-					this.ctx.pendingImages = [];
-					this.ctx.pendingImageLinks = [];
-					this.ctx.editor.imageLinks = undefined;
+					this.ctx.editor.clearDraft();
 					return;
 				}
 				if (result?.text !== undefined) {
@@ -576,10 +644,14 @@ export class InputController {
 				ctx: this.ctx,
 			});
 			if (slashResult === true) {
+				if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
 				return;
 			}
 			if (typeof slashResult === "string") {
-				// Command handled but returned remaining text to use as prompt
+				// Command handled but returned remaining text to use as prompt.
+				// Record the original slash command text so Up Arrow recalls
+				// "/loop 10 fix bug" rather than just "fix bug".
+				if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
 				text = slashResult;
 			}
 
@@ -602,12 +674,8 @@ export class InputController {
 					this.ctx.showStatus("This collab link is read-only — prompting is disabled");
 					return;
 				}
-				this.ctx.editor.addToHistory(text);
-				this.ctx.editor.setText("");
-				this.ctx.editor.imageLinks = undefined;
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
-				this.ctx.pendingImages = [];
-				this.ctx.pendingImageLinks = [];
+				this.ctx.editor.clearDraft(text);
 				// No local render: the prompt comes back from the host as a
 				// collab-prompt event/entry and renders with the author badge.
 				this.ctx.collabGuest.sendPrompt(text, images);
@@ -679,8 +747,8 @@ export class InputController {
 				this.ctx.editor.setText("");
 				this.ctx.editor.imageLinks = undefined;
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
-				this.ctx.pendingImages = [];
-				this.ctx.pendingImageLinks = [];
+				this.ctx.editor.pendingImages = [];
+				this.ctx.editor.pendingImageLinks = [];
 				// Record the local-submit signature so the queued message's eventual delivery
 				// (a user-role `message_start`) leaves any draft typed since queuing intact —
 				// accounting for coalescing into a pending tail (#783, streaming path).
@@ -738,8 +806,8 @@ export class InputController {
 				// Include any pending images from clipboard paste
 				this.ctx.editor.imageLinks = undefined;
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
-				this.ctx.pendingImages = [];
-				this.ctx.pendingImageLinks = [];
+				this.ctx.editor.pendingImages = [];
+				this.ctx.editor.pendingImageLinks = [];
 
 				// Render user message immediately, then let session events catch up.
 				// Tag the submission as "steer": this is a normal Enter the controller
@@ -765,8 +833,8 @@ export class InputController {
 				// semantics instead of throwing AgentBusyError.
 				this.ctx.editor.imageLinks = undefined;
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
-				this.ctx.pendingImages = [];
-				this.ctx.pendingImageLinks = [];
+				this.ctx.editor.pendingImages = [];
+				this.ctx.editor.pendingImageLinks = [];
 				try {
 					// Route through #submitCoalescingLocal (not a bare withLocalSubmission): if a
 					// background turn starts in the gap and this raw send coalesces into an existing
@@ -784,9 +852,11 @@ export class InputController {
 					// extension command).
 					this.ctx.editor.setText(text);
 					if (images && images.length > 0) {
-						this.ctx.pendingImages = [...images];
-						this.ctx.pendingImageLinks = inputImageLinks ? [...inputImageLinks] : images.map(() => undefined);
-						this.ctx.editor.imageLinks = this.ctx.pendingImageLinks;
+						this.ctx.editor.pendingImages = [...images];
+						this.ctx.editor.pendingImageLinks = inputImageLinks
+							? [...inputImageLinks]
+							: images.map(() => undefined);
+						this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
 					}
 					this.ctx.showError(error instanceof Error ? error.message : String(error));
 				}
@@ -813,12 +883,8 @@ export class InputController {
 			this.ctx.showStatus("Commands run in the main session — press ←← to return first");
 			return; // editor text not cleared: Editor does not auto-clear on submit
 		}
-		const images = this.ctx.pendingImages.length > 0 ? [...this.ctx.pendingImages] : undefined;
-		this.ctx.editor.addToHistory(text);
-		this.ctx.editor.setText("");
-		this.ctx.editor.imageLinks = undefined;
-		this.ctx.pendingImages = [];
-		this.ctx.pendingImageLinks = [];
+		const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
+		this.ctx.editor.clearDraft(text);
 		try {
 			// prompt() handles idle (new turn) and streaming (queues per streamingBehavior).
 			await this.#submitCoalescingLocal(target, text, { streamingBehavior, images });
@@ -1021,10 +1087,7 @@ export class InputController {
 		}
 		const didRetry = await this.ctx.viewSession.retry();
 		if (didRetry) {
-			this.ctx.editor.setText("");
-			this.ctx.pendingImages = [];
-			this.ctx.pendingImageLinks = [];
-			this.ctx.editor.imageLinks = undefined;
+			this.ctx.editor.clearDraft();
 		} else {
 			this.ctx.showStatus("Nothing to retry");
 		}
@@ -1048,7 +1111,7 @@ export class InputController {
 		// the queued entry is later re-parsed into a skill invocation is a
 		// separate concern owned by the compaction-resume path.
 		if (this.ctx.session.isCompacting) {
-			const images = this.ctx.pendingImages.length > 0 ? [...this.ctx.pendingImages] : undefined;
+			const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
 			this.ctx.queueCompactionMessage(text, "followUp", images);
 			return;
 		}
@@ -1057,9 +1120,13 @@ export class InputController {
 			ctx: this.ctx,
 		});
 		if (slashResult === true) {
+			if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
 			return;
 		}
 		if (typeof slashResult === "string") {
+			// Command handled but returned remaining text to use as prompt.
+			// Record the original slash command text so Up Arrow recalls it.
+			if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
 			text = slashResult;
 		}
 
@@ -1072,14 +1139,10 @@ export class InputController {
 
 		// Forward any pending clipboard-pasted images alongside the queued text;
 		// otherwise the follow-up would drop the image (mirrors the Enter/steer path).
-		const images = this.ctx.pendingImages.length > 0 ? [...this.ctx.pendingImages] : undefined;
+		const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
 
 		if (this.ctx.session.isStreaming) {
-			this.ctx.editor.addToHistory(text);
-			this.ctx.editor.setText("");
-			this.ctx.editor.imageLinks = undefined;
-			this.ctx.pendingImages = [];
-			this.ctx.pendingImageLinks = [];
+			this.ctx.editor.clearDraft(text);
 			await this.#submitCoalescingLocal(this.ctx.session, text, { streamingBehavior: "followUp", images });
 			this.ctx.updatePendingMessagesDisplay();
 			this.ctx.ui.requestRender();
@@ -1087,11 +1150,7 @@ export class InputController {
 		}
 
 		// Not streaming — just submit normally
-		this.ctx.editor.addToHistory(text);
-		this.ctx.editor.setText("");
-		this.ctx.editor.imageLinks = undefined;
-		this.ctx.pendingImages = [];
-		this.ctx.pendingImageLinks = [];
+		this.ctx.editor.clearDraft(text);
 		// Route through #submitCoalescingLocal so that if a turn starts mid-dispatch and this
 		// raw send coalesces (and prompt() expands a template before merging), onQueued swaps
 		// the raw local signature for the expanded/merged one — the delivered message stays
@@ -1148,7 +1207,7 @@ export class InputController {
 		let queuedText: string;
 		if (queuedImages.length > 0) {
 			const parts: string[] = [];
-			let imageOffset = this.ctx.pendingImages.length;
+			let imageOffset = this.ctx.editor.pendingImages.length;
 			for (const entry of allQueued) {
 				parts.push(shiftImageMarkers(entry.text, imageOffset));
 				if (entry.images && entry.images.length > 0) imageOffset += entry.images.length;
@@ -1164,9 +1223,9 @@ export class InputController {
 		// re-materialized lazily; the restored text already carries the
 		// renumbered `[Image #N, WxH]` markers).
 		if (queuedImages.length > 0) {
-			this.ctx.pendingImages.push(...queuedImages);
-			this.ctx.pendingImageLinks.push(...queuedImages.map(() => undefined));
-			this.ctx.editor.imageLinks = this.ctx.pendingImageLinks;
+			this.ctx.editor.pendingImages.push(...queuedImages);
+			this.ctx.editor.pendingImageLinks.push(...queuedImages.map(() => undefined));
+			this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
 		}
 		this.ctx.updatePendingMessagesDisplay();
 		if (options?.abort) {
@@ -1188,14 +1247,14 @@ export class InputController {
 				this.ctx.sessionManager.putBlob.bind(this.ctx.sessionManager),
 			)
 		)?.[0];
-		this.ctx.pendingImages.push({
+		this.ctx.editor.pendingImages.push({
 			type: "image",
 			data: imageData.data,
 			mimeType: imageData.mimeType,
 		});
-		this.ctx.pendingImageLinks.push(imageLink);
-		this.ctx.editor.imageLinks = this.ctx.pendingImageLinks;
-		const imageNum = this.ctx.pendingImages.length;
+		this.ctx.editor.pendingImageLinks.push(imageLink);
+		this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
+		const imageNum = this.ctx.editor.pendingImages.length;
 		const dims = await this.#imageDimensions(imageData);
 		const label = dims ? `[Image #${imageNum}, ${dims.width}x${dims.height}]` : `[Image #${imageNum}]`;
 		this.ctx.editor.insertText(`${label} `);
@@ -1262,6 +1321,37 @@ export class InputController {
 			return true;
 		} catch {
 			return false;
+		}
+	}
+
+	async handleFilePathPaste(filePath: string): Promise<void> {
+		try {
+			const resolvedPath = resolvePastedFilePath(filePath, this.ctx.sessionManager.getCwd());
+			const stat = await Bun.file(resolvedPath).stat();
+			if (!stat.isFile()) {
+				this.ctx.editor.pasteText(filePath);
+				this.ctx.ui.requestRender();
+				this.ctx.showStatus("Pasted path is not a file");
+				return;
+			}
+
+			const reference = await this.#attachExistingFileAsLocal(resolvedPath);
+			this.ctx.editor.insertText(`${reference} `);
+			this.ctx.ui.requestRender();
+			this.ctx.showStatus(`Attached file as ${reference}`);
+		} catch (error) {
+			if (isEnoent(error)) {
+				this.ctx.editor.pasteText(filePath);
+				this.ctx.ui.requestRender();
+				this.ctx.showStatus("Pasted file path was not found");
+				return;
+			}
+			logger.warn("failed to attach pasted file path", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			this.ctx.editor.pasteText(filePath);
+			this.ctx.ui.requestRender();
+			this.ctx.showError("Failed to attach pasted file path — pasted path inline instead");
 		}
 	}
 
@@ -1435,6 +1525,29 @@ export class InputController {
 		this.ctx.ui.requestRender();
 	}
 
+	async #attachExistingFileAsLocal(sourcePath: string): Promise<string> {
+		const localRoot = resolveLocalRoot({
+			getArtifactsDir: () => this.ctx.sessionManager.getArtifactsDir(),
+			getSessionId: () => this.ctx.sessionManager.getSessionId(),
+		});
+		await fs.mkdir(localRoot, { recursive: true });
+		const ext = pastedFileAttachmentExtension(sourcePath);
+		let name: string;
+		let filePath: string;
+		do {
+			this.#attachmentCounter++;
+			name = `attachment-${this.#attachmentCounter}${ext}`;
+			filePath = path.join(localRoot, name);
+		} while (await Bun.file(filePath).exists());
+
+		try {
+			await fs.link(sourcePath, filePath);
+		} catch {
+			await fs.copyFile(sourcePath, filePath);
+		}
+		return `local://${name}`;
+	}
+
 	/**
 	 * Save a large paste to the session's `local://` store and insert a clean `local://attachment-N`
 	 * reference into the editor so the agent can `read` it on demand — instead of inlining the text or
@@ -1596,7 +1709,6 @@ export class InputController {
 	toggleThinkingBlockVisibility(): void {
 		this.ctx.hideThinkingBlock = !this.ctx.hideThinkingBlock;
 		this.ctx.settings.set("hideThinkingBlock", this.ctx.hideThinkingBlock);
-		this.ctx.session.agent.hideThinkingSummary = this.ctx.hideThinkingBlock;
 
 		for (const child of this.ctx.chatContainer.children) {
 			if (child instanceof AssistantMessageComponent) {

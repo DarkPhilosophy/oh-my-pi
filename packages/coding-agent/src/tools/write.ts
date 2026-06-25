@@ -27,6 +27,7 @@ import {
 	readArchiveEntries,
 	writeArchive,
 } from "../utils/zip";
+import { routeWriteThroughBridge } from "./acp-bridge";
 import { truncateForPrompt } from "./approval";
 import { assertEditableFile } from "./auto-generated-guard";
 import {
@@ -141,15 +142,6 @@ function maybeWriteSnapshotHeader(session: ToolSession, absolutePath: string, co
 	const normalized = normalizeToLF(content);
 	const tag = getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalized);
 	return formatHashlineHeader(formatPathRelativeToCwd(absolutePath, session.cwd), tag);
-}
-
-function shouldRouteWriteThroughBridge(session: ToolSession, requestedPath: string, absolutePath: string): boolean {
-	if (isInternalUrlPath(requestedPath)) return false;
-
-	const state = session.getPlanModeState?.();
-	if (!state?.enabled || !isInternalUrlPath(state.planFilePath)) return true;
-
-	return absolutePath !== resolvePlanPath(session, state.planFilePath);
 }
 
 /**
@@ -293,8 +285,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 	readonly parameters = writeSchema;
 	readonly strict = true;
 	readonly concurrency = "exclusive";
-	readonly loadMode = "discoverable";
-	readonly summary = "Write content to a file (creates or overwrites)";
+	readonly loadMode = "essential";
 
 	/** Stream matchers should see the real file content, not its JSON-escaped argument encoding. */
 	matcherDigest(args: unknown): string | undefined {
@@ -772,11 +763,6 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		};
 	}
 
-	#routeWriteThroughBridge(absolutePath: string, content: string): Promise<void> | undefined {
-		const bridge = this.session.getClientBridge?.();
-		if (!bridge?.capabilities.writeTextFile || !bridge.writeTextFile) return undefined;
-		return bridge.writeTextFile({ path: absolutePath, content });
-	}
 	async execute(
 		_toolCallId: string,
 		{ path: rawPath, content }: WriteParams,
@@ -883,17 +869,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 			// Try ACP bridge first for editor-visible filesystem paths. Internal
 			// artifacts such as local:// plans are owned by OMP, not the editor.
-			const bridgePromise = shouldRouteWriteThroughBridge(this.session, path, absolutePath)
-				? this.#routeWriteThroughBridge(absolutePath, cleanContent)
-				: undefined;
-			if (bridgePromise !== undefined) {
-				try {
-					await bridgePromise;
-				} catch (error) {
-					throw new ToolError(error instanceof Error ? error.message : String(error));
-				}
-				invalidateFsScanAfterWrite(absolutePath);
-				this.session.bumpFileMutationVersion?.(absolutePath);
+			if (await routeWriteThroughBridge(this.session, path, absolutePath, cleanContent)) {
 				const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, cleanContent);
 				const displayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
 				const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent);
@@ -1068,14 +1044,12 @@ export const writeToolRenderer = {
 		const lang = getLanguageFromPath(rawPath) ?? "text";
 		const langIcon = uiTheme.fg("muted", uiTheme.getLangIcon(lang));
 		const pathDisplay = filePath ? uiTheme.fg("accent", filePath) : uiTheme.fg("toolOutput", "…");
-		// Static pending icon, never the animated glyph: the header is the head
-		// row of the framed block, and native-scrollback commits are prefix-only
-		// — an animating head row would pin the commit boundary at the top and
-		// keep a tall expanded preview from scroll-appending mid-stream. The
-		// liveness cue rides the trailing "(streaming)" line instead.
+		// No status icon on the head row: it's the head of the framed block, and
+		// native-scrollback commits are prefix-only — an animated glyph would pin
+		// the commit boundary at the top, and the pending hourglass just adds
+		// noise. The liveness cue rides the trailing "(streaming)" line instead.
 		const header = renderStatusLine(
 			{
-				icon: "pending",
 				title: "Write",
 				description: `${langIcon} ${pathDisplay}`,
 			},

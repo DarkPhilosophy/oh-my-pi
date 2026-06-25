@@ -174,6 +174,35 @@ impl Shell {
 	pub async fn abort(&self) {
 		self.abort_state.abort().await;
 	}
+
+	/// Number of live background jobs (running `&`/`nohup` children) tracked by
+	/// the persistent session. Completed jobs are reaped first via a silent
+	/// `JobManager::poll()` (no job-control notifications), so the count
+	/// reflects only processes still alive. Returns 0 when no session core is
+	/// materialized. The host uses this to decide whether to retain a per-call
+	/// shell whose background children are still running instead of dropping it
+	/// (which would SIGKILL them on kill-on-drop).
+	pub async fn live_background_job_count(&self) -> u32 {
+		let mut guard = self.session.lock().await;
+		let Some(core) = guard.as_mut() else {
+			return 0;
+		};
+		let jobs = core.shell.jobs_mut();
+		// Fail closed: a poll error leaves the job table in an unknown state, so
+		// report 0 (drop the shell) rather than pin a retained session forever on
+		// stale `representative_pid()` entries.
+		if jobs.poll().is_err() {
+			return 0;
+		}
+		u32::try_from(
+			jobs
+				.jobs
+				.iter()
+				.filter(|job| job.representative_pid().is_some())
+				.count(),
+		)
+		.unwrap_or(u32::MAX)
+	}
 }
 
 pub async fn execute_shell(
@@ -490,10 +519,6 @@ async fn create_session(config: &ShellConfig) -> Result<ShellSessionCore> {
 	}
 	shell.register_builtin("sleep", builtins::builtin::<SleepCommand, _>());
 	shell.register_builtin("timeout", builtins::builtin::<TimeoutCommand, _>());
-	shell.register_builtin(
-		"nohup",
-		builtins::builtin::<NohupCommand, _>().transparent_background_wrapper(),
-	);
 
 	let mut merged_path: Option<String> = None;
 	for (key, value) in std::env::vars() {
@@ -523,8 +548,8 @@ async fn create_session(config: &ShellConfig) -> Result<ShellSessionCore> {
 		merged_path = Some(value.to_string_lossy().into_owned());
 	}
 
-	if let Some(path_value) = merged_path {
-		let mut var = ShellVariable::new(ShellValue::String(path_value));
+	if let Some(path_value) = &merged_path {
+		let mut var = ShellVariable::new(ShellValue::String(path_value.clone()));
 		var.export();
 		shell
 			.env_mut()
@@ -547,6 +572,27 @@ async fn create_session(config: &ShellConfig) -> Result<ShellSessionCore> {
 		}
 	}
 	apply_env_fallback(&mut shell)?;
+	// The nohup builtin detaches its operand into a new session (see
+	// NohupCommand) so a backgrounded server survives this embedded shell's
+	// kill-on-drop teardown. It therefore shadows any system `nohup` (which does
+	// NOT escape the process-group kill) — unless explicitly opted out via
+	// PI_DISABLE_NOHUP_BUILTIN (session env or process env), in which case bare
+	// `nohup` resolves to the real coreutils binary.
+	let nohup_builtin_disabled = {
+		let raw = config
+			.session_env
+			.as_ref()
+			.and_then(|env| env.get("PI_DISABLE_NOHUP_BUILTIN").cloned())
+			.or_else(|| std::env::var("PI_DISABLE_NOHUP_BUILTIN").ok());
+		matches!(raw.as_deref(), Some(v) if !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
+	};
+	let should_register_nohup = !nohup_builtin_disabled;
+	if should_register_nohup {
+		shell.register_builtin(
+			"nohup",
+			builtins::builtin::<NohupCommand, _>().transparent_background_wrapper(),
+		);
+	}
 
 	#[cfg(windows)]
 	configure_windows_path(&mut shell)?;
@@ -1887,18 +1933,16 @@ impl builtins::Command for NohupCommand {
 				return Ok(ExecutionResult::new(125));
 			}
 
-			// Deliberately *not* nohup: we neither ignore SIGHUP nor detach the
-			// child into a new session. The command runs as an ordinary brush
-			// descendant so it is reaped together with the host instead of
-			// lingering as an orphan once the host process goes away. Agents
-			// reach for `nohup` assuming the shell is one-shot; in this
-			// persistent embedded shell that assumption is wrong and the only
-			// effect of real `nohup` would be to leak background processes.
-			//
-			// coreutils `nohup` additionally redirects stdin from /dev/null and
-			// stdout/stderr to `nohup.out`, but *only* when those streams are
-			// terminals. The embedded host always hands commands a pipe with a
-			// /dev/null stdin, so none of that redirection ever applies here.
+			// `nohup <cmd>` (foreground) runs the operand directly and surfaces its
+			// exit status — the contract pinned by
+			// `nohup_builtin_propagates_command_exit_code`. Persistence across the
+			// host's teardown is a *background* concern that never reaches this
+			// builtin: the agent writes `nohup <server> &`, and brush's
+			// `transparent_background_wrapper` unwraps that to spawn the operand
+			// directly with `detach_reparent`, double-forking it out of the shell's
+			// descendant tree (see `execute_external_command` / `detach_session_reparent`).
+			// Like coreutils, we run the operand here; we only differ by not masking
+			// SIGHUP (see `nohup_builtin_does_not_mask_sighup`).
 			let mut command_line = String::new();
 			for (idx, arg) in command.iter().enumerate() {
 				if idx > 0 {
@@ -1907,7 +1951,8 @@ impl builtins::Command for NohupCommand {
 				command_line.push_str(&quote_arg(arg));
 			}
 
-			let params = context.params.clone();
+			let mut params = context.params.clone();
+			params.process_group_policy = ProcessGroupPolicy::NewProcessGroup;
 			let source_info = SourceInfo::from("pi-natives:nohup");
 			context
 				.shell
@@ -2088,6 +2133,48 @@ replace = [{ pattern = "hello", replacement = "HI" }]
 			max_capture_bytes,
 			..Default::default()
 		}
+	}
+
+	/// `live_background_job_count` reports 0 when the session has no live
+	/// external background jobs and 1 while one is running. The host relies on
+	/// this to retain a per-call shell whose `&`/`nohup` child is still alive
+	/// instead of dropping it (which would SIGKILL the child via kill-on-drop).
+	/// Path-qualified `/bin/sleep` is used so it spawns a real external process
+	/// (the bare `sleep` builtin runs in-process and is intentionally not
+	/// counted).
+	#[cfg(unix)]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn live_background_job_count_tracks_external_background_jobs() {
+		let _guard = shell_test_lock().lock().await;
+		let shell = Shell::new(None);
+
+		// No session core materialized yet.
+		assert_eq!(shell.live_background_job_count().await, 0);
+
+		// A foreground-only command leaves nothing in the background.
+		shell
+			.run(
+				ShellRunOptions { command: "true".into(), ..Default::default() },
+				None,
+				CancelToken::default(),
+			)
+			.await
+			.expect("run true");
+		assert_eq!(shell.live_background_job_count().await, 0);
+
+		// An external background process is tracked while it runs.
+		shell
+			.run(
+				ShellRunOptions { command: "/bin/sleep 30 &".into(), ..Default::default() },
+				None,
+				CancelToken::default(),
+			)
+			.await
+			.expect("run sleep");
+		assert_eq!(shell.live_background_job_count().await, 1);
+
+		// Dropping the shell at scope end reaps the child via kill-on-drop.
+		shell.abort().await;
 	}
 
 	#[cfg(unix)]

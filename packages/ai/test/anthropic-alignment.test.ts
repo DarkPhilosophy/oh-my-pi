@@ -21,7 +21,7 @@ import {
 	streamAnthropic,
 	stripClaudeToolPrefix,
 } from "@oh-my-pi/pi-ai/providers/anthropic";
-import { getEnvApiKey } from "@oh-my-pi/pi-ai/stream";
+import { getEnvApiKey, streamSimple } from "@oh-my-pi/pi-ai/stream";
 import type {
 	AssistantMessage,
 	Context,
@@ -109,6 +109,21 @@ function captureAnthropicPayload(
 		thinkingDisplay: options?.thinkingDisplay,
 		sessionId: options?.sessionId,
 		headers: options?.headers,
+		onPayload: payload => resolve(payload),
+	});
+	return promise;
+}
+
+function captureSimpleAnthropicPayload(
+	model: Model<"anthropic-messages">,
+	context: Context,
+	reasoning: Effort,
+): Promise<unknown> {
+	const { promise, resolve } = Promise.withResolvers<unknown>();
+	streamSimple(model, context, {
+		apiKey: "sk-ant-oat-test",
+		signal: createAbortedSignal(),
+		reasoning,
 		onPayload: payload => resolve(payload),
 	});
 	return promise;
@@ -406,6 +421,41 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(capturedBeta).toContain("mid-conversation-system-2026-04-07");
 	});
 
+	it("adds the context-management beta to API-key thinking requests", async () => {
+		let capturedBeta: string | undefined;
+		const fetchMock = (async (_input: string | URL | Request, init?: RequestInit) => {
+			capturedBeta = (init?.headers as Record<string, string> | undefined)?.["anthropic-beta"];
+			return new Response(
+				JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "captured" } }),
+				{ status: 400, headers: { "Content-Type": "application/json" } },
+			);
+		}) as typeof fetch;
+
+		// `context_management.clear_thinking_20251015` is rejected without
+		// the `context-management-2025-06-27` beta. OAuth requests carry it
+		// via `claudeCodeAgentBetaDefaults`; API-key requests must add it
+		// explicitly whenever thinking is enabled so the field is honored
+		// instead of dropped on the floor (#3288).
+		await streamAnthropic(
+			ANTHROPIC_MODEL,
+			{ systemPrompt: ["Stay concise."], messages: [{ role: "user", content: "Hi", timestamp: Date.now() }] },
+			{ apiKey: "sk-ant-api-test", thinkingEnabled: true, fetch: fetchMock },
+		).result();
+
+		expect(capturedBeta).toContain("context-management-2025-06-27");
+
+		capturedBeta = undefined;
+		await streamAnthropic(
+			ANTHROPIC_MODEL,
+			{ systemPrompt: ["Stay concise."], messages: [{ role: "user", content: "Hi", timestamp: Date.now() }] },
+			{ apiKey: "sk-ant-api-test", thinkingEnabled: false, fetch: fetchMock },
+		).result();
+
+		// No context_management field is sent when thinking is disabled, so the
+		// beta MUST NOT be advertised either.
+		expect(capturedBeta ?? "").not.toContain("context-management-2025-06-27");
+	});
+
 	it("billing-header fingerprint uses first user message, not leading developer message", async () => {
 		const userText = "Hello from user with enough chars padding here";
 
@@ -461,6 +511,89 @@ describe("Anthropic request fingerprint alignment", () => {
 
 		expect(headers.Authorization).toBe("Bearer sk-ant-api-test");
 		expect(headers["X-Api-Key"]).toBeUndefined();
+	});
+
+	it("honors caller-supplied Authorization on non-official Anthropic endpoints (#3391)", () => {
+		const headers = buildAnthropicHeaders({
+			apiKey: "sk-ant-api-test",
+			baseUrl: "https://proxy.example.com/anthropic",
+			stream: true,
+			modelHeaders: { Authorization: "secret-proxy-key" },
+		});
+
+		expect(headers.Authorization).toBe("secret-proxy-key");
+		expect(headers["X-Api-Key"]).toBeUndefined();
+	});
+
+	it("honors lowercase `authorization` from caller without duplicating the header key", () => {
+		const headers = buildAnthropicHeaders({
+			apiKey: "sk-ant-api-test",
+			baseUrl: "https://proxy.example.com/anthropic",
+			stream: true,
+			modelHeaders: { authorization: "secret-proxy-key" },
+		});
+
+		const authKeys = Object.keys(headers).filter(key => key.toLowerCase() === "authorization");
+		expect(authKeys).toHaveLength(1);
+		expect(headers[authKeys[0]]).toBe("secret-proxy-key");
+	});
+
+	it("honors caller-supplied X-Api-Key on official Anthropic endpoints", () => {
+		const headers = buildAnthropicHeaders({
+			apiKey: "sk-ant-api-test",
+			baseUrl: "https://api.anthropic.com",
+			stream: true,
+			modelHeaders: { "X-Api-Key": "custom-api-key" },
+		});
+
+		expect(headers["X-Api-Key"]).toBe("custom-api-key");
+		expect(headers.Authorization).toBeUndefined();
+	});
+
+	it("honors caller-supplied Authorization alongside X-Api-Key on official endpoints", () => {
+		const headers = buildAnthropicHeaders({
+			apiKey: "sk-ant-api-test",
+			baseUrl: "https://api.anthropic.com",
+			stream: true,
+			modelHeaders: { Authorization: "Token tok-abc" },
+		});
+
+		// Official endpoint keeps X-Api-Key as the primary credential but also
+		// forwards the caller's custom Authorization so a fronting proxy/gateway
+		// can read it.
+		expect(headers.Authorization).toBe("Token tok-abc");
+		expect(headers["X-Api-Key"]).toBe("sk-ant-api-test");
+	});
+
+	it("forces OAuth bearer auth and ignores caller-supplied Authorization under OAuth", () => {
+		const headers = buildAnthropicHeaders({
+			apiKey: "sk-ant-oat-test",
+			isOAuth: true,
+			stream: true,
+			modelHeaders: { Authorization: "should-not-leak" },
+		});
+
+		expect(headers.Authorization).toBe("Bearer sk-ant-oat-test");
+	});
+
+	it("suppresses the client-level X-Api-Key when model.headers carries a custom Authorization (#3391)", () => {
+		const options = buildAnthropicClientOptions({
+			model: buildModel({
+				...ANTHROPIC_MODEL_SPEC,
+				id: "proxy-claude",
+				name: "Proxy Claude",
+				baseUrl: "https://proxy.example.com/anthropic",
+				headers: { Authorization: "secret-proxy-key" },
+			}),
+			apiKey: "sk-ant-api-test",
+			stream: true,
+		});
+
+		// `apiKey: null` keeps the lower-level client from adding an `X-Api-Key`
+		// header alongside the caller-supplied custom Authorization.
+		expect(options.apiKey).toBeNull();
+		expect(options.defaultHeaders.Authorization).toBe("secret-proxy-key");
+		expect(options.defaultHeaders["X-Api-Key"]).toBeUndefined();
 	});
 
 	it("keeps Umans Anthropic-compatible requests on X-Api-Key auth", () => {
@@ -1870,7 +2003,36 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(maxPayload.output_config).toEqual({ effort: "max" });
 	});
 
-	it("keeps summarized adaptive thinking by default for API-key Opus 4.7+ requests", async () => {
+	it("maps simple-stream budget-effort reasoning to Anthropic output_config effort", async () => {
+		const payload = (await captureSimpleAnthropicPayload(
+			buildModel({
+				...ANTHROPIC_MODEL_SPEC,
+				id: "umans-glm-5.2",
+				name: "Umans GLM 5.2",
+				provider: "umans",
+				baseUrl: "https://api.code.umans.ai",
+				thinking: {
+					mode: "anthropic-budget-effort",
+					efforts: [Effort.High, Effort.XHigh],
+					effortMap: { [Effort.XHigh]: "max" },
+				},
+			}),
+			{
+				systemPrompt: ["Stay concise."],
+				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+			},
+			Effort.XHigh,
+		)) as {
+			thinking?: { type?: string; budget_tokens?: number };
+			output_config?: { effort?: string };
+		};
+
+		expect(payload.thinking?.type).toBe("enabled");
+		expect(payload.thinking?.budget_tokens).toBeGreaterThan(0);
+		expect(payload.output_config).toEqual({ effort: "max" });
+	});
+
+	it("keeps summarized adaptive thinking and context management for API-key Opus 4.7+ requests", async () => {
 		const payload = (await captureAnthropicPayload(
 			buildModel({
 				...ANTHROPIC_MODEL_SPEC,
@@ -1892,12 +2054,14 @@ describe("Anthropic request fingerprint alignment", () => {
 			},
 		)) as {
 			thinking?: { type?: string; display?: string };
-			context_management?: unknown;
+			context_management?: { edits?: Array<{ type?: string; keep?: string | number }> };
 			output_config?: { effort?: string };
 		};
 
 		expect(payload.thinking).toEqual({ type: "adaptive", display: "summarized" });
-		expect(payload.context_management).toBeUndefined();
+		expect(payload.context_management).toEqual({
+			edits: [{ type: "clear_thinking_20251015", keep: "all" }],
+		});
 		expect(payload.output_config).toEqual({ effort: "xhigh" });
 	});
 
