@@ -554,6 +554,10 @@ export class CollabGuestLink {
 
 	#clearTransientUi(): void {
 		this.#ctx.statusContainer.clear();
+		// Stop the persistent steering indicator before detaching it: clear() drops
+		// children without disposing timers, so an active indicator would keep
+		// repainting a detached node after a collab join/reconnect/leave.
+		this.#ctx.steeringIndicator?.setActive(false);
 		this.#ctx.pendingMessagesContainer.clear();
 		this.#ctx.compactionQueuedMessages = [];
 		this.#ctx.streamingComponent = undefined;
