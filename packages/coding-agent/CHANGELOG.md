@@ -16,6 +16,10 @@
 - Fixed queued-message preview lines in the pending bar rendering raw tabs and control characters from RPC/SDK `steer`/`followUp` text: each line is now sanitized (ANSI/control strip + tab expansion) before styling, so it can no longer punch visual holes or corrupt the pending bar.
 - Fixed a raw slash/prompt-template message losing its local-submission marker when an orphan submit (Enter while the main loop has no input waiter) coalesced into an existing queued tail: that path now routes through the same coalescing submit helper as the rest, so `prompt()`'s template expansion swaps the raw signature for the expanded/merged one and the delivered message stays recognized as local (never clears a draft typed while waiting).
 - Fixed the persistent steering animation timer leaking when a session-reset path cleared the pending bar directly: `command-controller` (`/clear`-style resets) and the extension UI controller call `pendingMessagesContainer.clear()`, which detaches children without disposing their timers, so an active `SteeringIndicator` kept repainting a detached node. Those paths now stop the indicator before clearing (full teardown via `clearTransientSessionUi` already disposed it).
+### Fixed
+
+- Fixed `skill://` tool resolution losing loaded session skills when a tool runs outside the session-initialization module state. Internal URL resolution now prefers the caller's `session.skills` snapshot before falling back to the process-global skill list, so `read skill://<name>` works across tool execution boundaries. ([#3436](https://github.com/can1357/oh-my-pi/issues/3436))
+
 ## [16.1.18] - 2026-06-25
 
 ### Added
