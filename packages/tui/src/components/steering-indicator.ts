@@ -5,17 +5,18 @@ import { Text } from "./text";
  * Animated "Steering" indicator rendered AS the top border of the pending
  * streaming-steer box.
  *
- * Visual: a rounded box top rule — `╭─ Steering ─ ●─●─●─● ─────────╮` — where
- * the word `Steering` is inset as the box title (exactly like every other titled
- * surface) and a short cluster of four equal dots sits just after it. The four
- * dots are always visible together and slide gently a few cells right→left→right
- * near the title; they never sweep the whole rule, never fade, and never change
- * size (no trailing comet, no grow). Plain rule cells stay `─`. Monochrome by
- * design: the dots rest in one accent brightness and the title letters stay
- * muted, and the line keeps a constant visible width every frame so the pending
- * layout never jitters. The owning {@link QueuedMessageBox} renders its body +
- * bottom border only, so the indicator + box read as one framed block with an
- * animated title rule.
+ * Visual: a rounded box top rule — `╭─ Steering ──────────────╮` — where the
+ * word `Steering` is inset as the box title (exactly like every other titled
+ * surface) and a short spotlight sweeps a small window that **spans the title**.
+ * The spotlight is a 4-glyph ramp `· ∙ • ●` (faint → bold) that replaces the
+ * cells it covers: plain rule cells become the trail, and a title letter under
+ * the head (`●`) brightens to accent. The window is deliberately short and
+ * centered on the title, so the spotlight passes *through* `Steering` — lighting
+ * each letter as it goes — without ever travelling to the far corners. It sweeps
+ * left→right, bounces right→left, one direction at a time. Constant visible
+ * width every frame; monochrome (brightness varies, hue never does). The owning
+ * {@link QueuedMessageBox} renders body + bottom border only, so the indicator +
+ * box read as one framed block with an animated title rule.
  *
  * Package boundary: this lives in `packages/tui` and stays theme-agnostic — the
  * caller injects both the brightness stylers and the border glyphs/paint, so it
@@ -26,19 +27,20 @@ import { Text } from "./text";
  * disposing children, so a leaked interval would repaint a detached node.
  */
 
-const FRAME_MS = 110;
-// The dot cluster: four equal dots, all the same glyph — they read as four
-// distinct beads (separated by a rule cell), never a fading/growing comet.
-const DOT = "●";
-const DOT_COUNT = 4;
-// Rule cells between adjacent dots when there is room (`●─●─●─●`); drops to 0
-// (`●●●●`) on tight rules so all four dots still fit near the title.
-const DOT_GAP = 1;
-// One plain rule cell between the title word and the cluster.
-const GAP_AFTER_TITLE = 1;
-// How far the whole cluster slides from its resting position — kept short so the
-// dots stay "just past the text" rather than travelling the whole border.
-const TRAVEL_MAX = 6;
+const FRAME_MS = 100;
+// Spotlight ramp from faint to bold. The head cell shows `●`, the near trail
+// `• ∙ ·`, cells ahead of the head stay untouched. All four glyphs are part of
+// one moving spotlight — a size ramp, never equal dots.
+const GLYPHS = ["·", "∙", "•", "●"] as const;
+const MAX_LEVEL = GLYPHS.length - 1;
+// How far the spotlight extends to either side of its head position, in cells.
+// Keeping this equal to MAX_LEVEL means the full ramp `· ∙ • ●` is always
+// visible together as the spotlight travels.
+const TRAIL = MAX_LEVEL;
+// The spotlight window is anchored on the title and only extends a few cells
+// beyond it on each side, so the sweep passes *through* `Steering` but never
+// reaches the far border.
+const PADDING = 3;
 // Below this the titled rule has no room; fall back to the bare word so a very
 // narrow terminal still shows *something* without breaking layout width.
 const MIN_BORDER_WIDTH = 8;
@@ -46,9 +48,9 @@ const MIN_BORDER_WIDTH = 8;
 type StyleFns = {
 	/** Dim/dark styling for faint particles. */
 	dim: (s: string) => string;
-	/** Mid styling for the resting title word. */
+	/** Mid styling for the resting title word and the near trail. */
 	mid: (s: string) => string;
-	/** Bright/bold styling for the dot cluster. */
+	/** Bright/bold styling for the spotlight head (`●`) and the letter it crosses. */
 	bright: (s: string) => string;
 };
 
@@ -63,33 +65,20 @@ type BorderStyle = {
 	paint: (s: string) => string;
 };
 
-/** Geometry of one frame, derived from the layout width. */
-type Layout = {
-	inner: number;
-	titleStr: string;
-	titleStart: number;
-	titleEnd: number;
-	clusterStart: number;
-	clusterWidth: number;
-	step: number;
-	fits: boolean;
-	travel: number;
-};
-
 export class SteeringIndicator extends Text {
 	#ui: TUI | null = null;
 	#styles: StyleFns;
 	#border: BorderStyle;
 	#word: string;
-	// Cluster slide offset within its short travel window, and the travel
-	// direction. The four dots move together right→left→right by a few cells; they
-	// never leave the window next to the title.
-	#offset = 0;
+	// Spotlight head position along the inner rule, and its travel direction. It
+	// sweeps left→right, then bounces right→left — one clear sweep at a time, the
+	// full `· ∙ • ●` ramp visible together as it moves through the title.
+	#pos = 0;
 	#dir: 1 | -1 = 1;
 	#intervalId?: NodeJS.Timeout;
 	#active = false;
 	// Last layout width, captured in render(); the animation timer reads it to
-	// bounce the cluster at the real window ends.
+	// bound the spotlight's travel window.
 	#lastWidth = 0;
 	#cacheSig = "";
 	#cacheLine: readonly string[] | undefined;
@@ -108,22 +97,24 @@ export class SteeringIndicator extends Text {
 		this.#word = word;
 	}
 
-	/** Frame geometry for a given layout width: title inset + dot-cluster window. */
-	#layout(width: number): Layout {
+	/**
+	 * Travel window for the spotlight head, chosen so the ramp passes *through*
+	 * the title without reaching the far border. The head ranges from a few cells
+	 * before the title to a few cells after it; the trail extends `TRAIL` further
+	 * behind, so the full `· ∙ • ●` ramp is always visible together.
+	 */
+	#window(width: number): { inner: number; titleStart: number; titleEnd: number; min: number; max: number } {
 		const inner = Math.max(0, width - 2);
 		const titleStr = ` ${this.#word} `;
 		const titleStart = 1;
 		const titleEnd = Math.min(inner, titleStart + titleStr.length); // exclusive
-		const clusterStart = titleEnd + GAP_AFTER_TITLE;
-		const room = inner - clusterStart; // cells available right of the title gap
-		// Prefer spaced dots (`●─●─●─●`); collapse the gap if the rule is tight.
-		const spacedWidth = DOT_COUNT + (DOT_COUNT - 1) * DOT_GAP;
-		const gap = room >= spacedWidth ? DOT_GAP : 0;
-		const clusterWidth = DOT_COUNT + (DOT_COUNT - 1) * gap;
-		const fits = room >= DOT_COUNT; // at least four adjacent dots
-		// Keep at least one plain rule cell before the right corner.
-		const travel = fits ? Math.max(0, Math.min(TRAVEL_MAX, room - clusterWidth)) : 0;
-		return { inner, titleStr, titleStart, titleEnd, clusterStart, clusterWidth, step: gap + 1, fits, travel };
+		// The head must stay at least `TRAIL` cells from the left edge so the whole
+		// `· ∙ • ●` ramp (head + TRAIL cells behind it) stays on the rule every
+		// frame — never clipped at the left corner. Anchor the window on the title
+		// with a little padding on each side, then floor `min` by that guard.
+		const min = Math.max(TRAIL, titleStart - PADDING);
+		const max = Math.min(inner - 1, titleEnd + PADDING);
+		return { inner, titleStart, titleEnd, min, max };
 	}
 
 	/** Activate (animate) or deactivate (stop + show a static idle rule). Idempotent. */
@@ -133,21 +124,22 @@ export class SteeringIndicator extends Text {
 			this.#active = true;
 			this.#invalidateFrame();
 			this.#intervalId = setInterval(() => {
-				// Slide the cluster one cell, bouncing at the short window's ends so the
-				// four dots drift right→left→right just past the title.
-				const travel = this.#layout(this.#lastWidth).travel;
-				if (travel <= 0) {
-					this.#offset = 0;
+				// Advance the spotlight head one cell in the current direction; reverse
+				// at each end of the title window so it sweeps through `Steering`,
+				// then back — never out to the far border.
+				const { min, max } = this.#window(this.#lastWidth);
+				if (max <= min) {
+					this.#pos = min;
 				} else {
-					const next = this.#offset + this.#dir;
-					if (next >= travel) {
-						this.#offset = travel;
+					const next = this.#pos + this.#dir;
+					if (next >= max) {
+						this.#pos = max;
 						this.#dir = -1;
-					} else if (next <= 0) {
-						this.#offset = 0;
+					} else if (next <= min) {
+						this.#pos = min;
 						this.#dir = 1;
 					} else {
-						this.#offset = next;
+						this.#pos = next;
 					}
 				}
 				this.#invalidateFrame();
@@ -188,15 +180,15 @@ export class SteeringIndicator extends Text {
 	/**
 	 * Build the animated top-border line for the current frame. Overrides
 	 * {@link Text.render} so the rule spans the full layout width every frame —
-	 * the timer only advances the cluster and asks the TUI to re-render this node.
+	 * the timer only advances the head and asks the TUI to re-render this node.
 	 */
 	render(width: number): readonly string[] {
 		this.#lastWidth = width;
-		const travel = this.#layout(width).travel;
-		const offset = Math.min(Math.max(0, this.#offset), travel);
-		const sig = `${width}|${offset}|${this.#active ? 1 : 0}`;
+		const { min, max } = this.#window(width);
+		const pos = Math.min(Math.max(min, this.#pos), max);
+		const sig = `${width}|${pos}|${this.#dir}|${this.#active ? 1 : 0}`;
 		if (this.#cacheLine && this.#cacheSig === sig) return this.#cacheLine;
-		const line = this.#buildLine(width, offset);
+		const line = this.#buildLine(width, pos);
 		this.#cacheLine = [line];
 		this.#cacheSig = sig;
 		return this.#cacheLine;
@@ -204,30 +196,38 @@ export class SteeringIndicator extends Text {
 
 	/**
 	 * One frame: `╭` + inner rule + `╮`. The inner cells carry the inset title
-	 * `␣Steering␣` (after a single leading rule cell, matching the shared
-	 * top-border layout). A short cluster of four equal dots sits just past the
-	 * title and slides by `offset` within its window; every other cell stays a
-	 * plain `─` rule. Constant visible width, no fade, no size ramp.
+	 * `␣Steering␣` (after a single leading rule cell). A spotlight at `pos` shows
+	 * `●` and trails `• ∙ ·` *behind* it along its travel direction; cells ahead
+	 * of the head stay plain. A title letter directly under the head (`●`)
+	 * brightens to accent; the rest of the word rests in mid. Constant width.
 	 */
-	#buildLine(width: number, offset: number): string {
+	#buildLine(width: number, pos: number): string {
 		const { topLeft, topRight, horizontal, paint } = this.#border;
 		if (width < MIN_BORDER_WIDTH) {
 			return this.#active ? this.#styles.bright(this.#word) : this.#styles.mid(this.#word);
 		}
-		const layout = this.#layout(width);
-		const { inner, titleStr, titleStart, titleEnd, clusterStart, clusterWidth, step, fits } = layout;
-		const clusterLeft = clusterStart + offset;
-		const clusterEnd = clusterLeft + clusterWidth; // exclusive
-		const showDots = this.#active && fits;
+		const { inner, titleStart, titleEnd, min, max } = this.#window(width);
+		const titleStr = ` ${this.#word} `;
 		let out = paint(topLeft);
 		for (let c = 0; c < inner; c++) {
+			// Spotlight ramp `· ∙ • ●` (faint → bold). On rule cells each glyph of the
+			// ramp paints directly; on title cells the trail passes *under* the word
+			// (letters stay intact) and only the head `●` brightens the letter it
+			// crosses — a spotlight passing through `Steering`. Outside the window the
+			// rule and title rest untouched, so the sweep never reaches the far border.
+			const behind = this.#dir > 0 ? pos - c : c - pos;
+			const onRamp = this.#active && c >= min - TRAIL && c <= max + TRAIL && behind >= 0 && behind <= MAX_LEVEL;
+			const level = onRamp ? MAX_LEVEL - behind : -1;
 			if (c >= titleStart && c < titleEnd) {
 				const ch = titleStr[c - titleStart] ?? " ";
-				// Title rests muted; margins stay clean.
-				out += ch === " " ? " " : this.#styles.mid(ch);
-			} else if (showDots && c >= clusterLeft && c < clusterEnd && (c - clusterLeft) % step === 0) {
-				// One of the four equal dots — all the same brightness, every frame.
-				out += this.#styles.bright(DOT);
+				// Title cell: only the head illuminates the letter; the trail renders
+				// under the text (letter unchanged). Spaces in the title keep the head
+				// glyph visible so the sweep still reads across the margins.
+				if (level === MAX_LEVEL && ch !== " ") out += this.#styles.bright(ch);
+				else if (level === MAX_LEVEL && ch === " ") out += this.#styles.bright(GLYPHS[MAX_LEVEL]);
+				else out += ch === " " ? " " : this.#styles.mid(ch);
+			} else if (level >= 0) {
+				out += level === MAX_LEVEL ? this.#styles.bright(GLYPHS[MAX_LEVEL]) : this.#styles.mid(GLYPHS[level]);
 			} else {
 				out += paint(horizontal);
 			}
