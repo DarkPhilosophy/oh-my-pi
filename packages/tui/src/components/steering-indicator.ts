@@ -106,7 +106,9 @@ export class SteeringIndicator extends Text {
 	#window(width: number): { inner: number; titleStart: number; titleEnd: number; min: number; max: number } {
 		const inner = Math.max(0, width - 2);
 		const titleStr = ` ${this.#word} `;
-		const titleStart = 1;
+		// Center the title so the comet (head ● + trail ·∙•) sweeps *through* it,
+		// left→right→left — matching the approved comet-bounce design.
+		const titleStart = Math.max(1, Math.floor((inner - titleStr.length) / 2));
 		const titleEnd = Math.min(inner, titleStart + titleStr.length); // exclusive
 		// The head must stay at least `TRAIL` cells from the left edge so the whole
 		// `· ∙ • ●` ramp (head + TRAIL cells behind it) stays on the rule every
