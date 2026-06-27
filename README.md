@@ -151,7 +151,7 @@ _[Watch the capture ↗](https://omp.sh/clips/collab.mp4)_
 
 ### 08 · Read a pdf on arxiv, why not?
 
-web_search chains fourteen ranked providers and hands whatever URLs it finds straight to read. Arxiv PDFs, GitHub pages, Stack Overflow threads come back as structured markdown with anchors intact — the same tool surface you use on local files. Cite, follow, quote, never lose where you came from.
+web_search chains eighteen ranked providers and hands whatever URLs it finds straight to read. Arxiv PDFs, GitHub pages, Stack Overflow threads come back as structured markdown with anchors intact — the same tool surface you use on local files. Cite, follow, quote, never lose where you came from.
 
 ![omp TUI: web_search returns 10 ranked Perplexity sources for inference-time compute scaling, the agent picks an arxiv paper, calls read https://arxiv.org/pdf/2604.10739v1, and summarizes the paper's headline result with real numbers.](https://omp.sh/clips/web-poster.webp)
 
@@ -309,31 +309,35 @@ Ollama `local` · Ollama Cloud · LM Studio `local` · llama.cpp `local` · vLLM
 
 Full provider & routing reference at [omp.sh/docs/providers](https://omp.sh/docs/providers).
 
-## Fourteen backends. _One tool the agent already knows_.
+## Eighteen backends. _One tool the agent already knows_.
 
-`web_search` is built in, not bolted on. `auto` walks a fourteen-provider chain; pin one by name if you already pay for it. Behind every hit, site-aware extraction turns GitHub, registries, arXiv, Stack Overflow, and docs into structured markdown — anchors and link targets survive.
+`web_search` is built in, not bolted on. `auto` walks an eighteen-provider chain; pin one by name if you already pay for it. Behind every hit, site-aware extraction turns GitHub, registries, arXiv, Stack Overflow, and docs into structured markdown — anchors and link targets survive.
 
 ### Search providers
 
-Fourteen backends. Pin one, or let `auto` walk the chain in order.
+Eighteen backends. Pin one, or let `auto` walk the chain in order.
 
 | provider     | auth                   |
 | ------------ | ---------------------- |
 | `auto`       | chain                  |
-| `exa`        | `EXA_API_KEY` (or mcp) |
-| `brave`      | `BRAVE_API_KEY`        |
-| `jina`       | `JINA_API_KEY`         |
-| `kimi`       | `MOONSHOT_API_KEY`     |
-| `zai`        | `ZAI_API_KEY`          |
-| `anthropic`  | oauth                  |
 | `perplexity` | `PERPLEXITY_API_KEY`   |
 | `gemini`     | oauth                  |
+| `anthropic`  | oauth                  |
 | `codex`      | oauth                  |
-| `tavily`     | `TAVILY_API_KEY`       |
-| `parallel`   | `PARALLEL_API_KEY`     |
+| `xai`        | `XAI_API_KEY`          |
+| `zai`        | `ZAI_API_KEY`          |
+| `exa`        | `EXA_API_KEY` (or mcp) |
+| `tinyfish`   | `TINYFISH_API_KEY`     |
+| `jina`       | `JINA_API_KEY`         |
 | `kagi`       | `KAGI_API_KEY`         |
+| `tavily`     | `TAVILY_API_KEY`       |
+| `firecrawl`  | `FIRECRAWL_API_KEY`    |
+| `brave`      | `BRAVE_API_KEY`        |
+| `kimi`       | `MOONSHOT_API_KEY`     |
+| `parallel`   | `PARALLEL_API_KEY`     |
 | `synthetic`  | `SYNTHETIC_API_KEY`    |
 | `searxng`    | self-hosted            |
+| `duckduckgo` | no key                 |
 
 ### Specialised handlers
 
@@ -536,14 +540,14 @@ For architecture and contribution guidelines, see [packages/coding-agent/DEVELOP
 
 ### Rust Crates
 
-| Crate                                                         | Description                                                                                         |
-| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| **[pi-natives](crates/pi-natives)**                           | Core Rust native addon (N-API `cdylib`) used by `@oh-my-pi/pi-natives`; aggregates the crates below |
-| **[pi-shell](crates/pi-shell)**                               | Embedded shell / PTY / process management split out of `pi-natives` (wraps `brush-*`)               |
-| **[pi-ast](crates/pi-ast)**                                   | tree-sitter-based code summarizer and AST utilities (50+ language grammars)                         |
-| **[pi-iso](crates/pi-iso)**                                   | Task isolation backend resolver: APFS clones, btrfs/zfs reflinks, overlayfs, projfs, rcopy          |
-| **[brush-core-vendored](crates/brush-core-vendored)**         | Vendored fork of [brush-shell](https://github.com/reubeno/brush) for embedded bash execution        |
-| **[brush-builtins-vendored](crates/brush-builtins-vendored)** | Vendored bash builtins (cd, echo, test, printf, read, export, etc.)                                 |
+| Crate                                              | Description                                                                                         |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| **[pi-natives](crates/pi-natives)**                | Core Rust native addon (N-API `cdylib`) used by `@oh-my-pi/pi-natives`; aggregates the crates below |
+| **[pi-shell](crates/pi-shell)**                    | Embedded shell / PTY / process management split out of `pi-natives` (wraps `brush-*`)               |
+| **[pi-ast](crates/pi-ast)**                        | tree-sitter-based code summarizer and AST utilities (50+ language grammars)                         |
+| **[pi-iso](crates/pi-iso)**                        | Task isolation backend resolver: APFS clones, btrfs/zfs reflinks, overlayfs, projfs, rcopy          |
+| **[brush-core](crates/vendor/brush-core)**         | Vendored fork of [brush-shell](https://github.com/reubeno/brush) for embedded bash execution        |
+| **[brush-builtins](crates/vendor/brush-builtins)** | Vendored bash builtins (cd, echo, test, printf, read, export, etc.)                                 |
 
 ## Contributing
 

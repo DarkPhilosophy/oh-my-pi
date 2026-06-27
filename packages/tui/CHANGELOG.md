@@ -10,6 +10,26 @@
 ### Fixed
 
 - Fixed right-side panel compositing landing on Kitty OSC 66 text-sizing heading rows and the following blank structural reservation row. The compositor predicate is now generic (`isOccupiedLine`) and the TUI pre-marks OSC 66 headings plus their first visible-width-zero successor as occupied before placement.
+## [16.2.0] - 2026-06-27
+
+### Added
+
+- Added support for rendering HTML <code>, <hr>, and <blockquote> tags with proper theme styling, entity decoding, and layout consistency across Markdown transcripts, table cells, list items, and option labels.
+- Added first-class support for Warp terminal (TERM_PROGRAM=WarpTerminal), enabling true color, platform-specific Kitty graphics protocol negotiation for inline images, and safe defaults for OSC 8 hyperlinks and synchronized output.
+- Added SelectList.routeMouse() and shared SGR mouse input routing helpers to support fullscreen overlay hit-testing.
+
+### Fixed
+
+- Fixed issues where stray, unmatched, or raw HTML tags would leak into the rendered output.
+- Fixed render scheduling to yield behind queued terminal input, preventing delayed Escape key delivery during heavy streaming paints.
+
+## [16.1.20] - 2026-06-25
+
+### Fixed
+
+- Recognized Warp (`TERM_PROGRAM=WarpTerminal`) as a first-class terminal, enabling Kitty inline images on macOS/Linux while keeping Warp's unsafe OSC 8 hyperlinks and Windows Kitty graphics disabled ([#3471](https://github.com/can1357/oh-my-pi/issues/3471)).
+- Kept queued interrupt keys ahead of ordinary repaints so a slow long-transcript frame cannot consume the Ctrl+C/Esc double-press window before the second key is handled.
+
 ## [16.1.19] - 2026-06-25
 
 ### Fixed

@@ -25,6 +25,7 @@ import {
 	renderToolExamples,
 	wrapInbandToolStream,
 } from "@oh-my-pi/pi-ai/dialect";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import {
 	createHarmonyAuditEvent,
 	detectHarmonyLeakInAssistantMessage,
@@ -62,6 +63,7 @@ import type {
 	AgentMessage,
 	AgentTool,
 	AgentToolResult,
+	AgentTurnEndContext,
 	AsideMessage,
 	StreamFn,
 } from "./types";
@@ -133,7 +135,6 @@ export function resolveOwnedDialectFromEnv(value: string | undefined): Dialect |
 		case "anthropic":
 		case "deepseek":
 		case "harmony":
-		case "pi":
 		case "qwen3":
 		case "gemini":
 		case "gemma":
@@ -406,12 +407,13 @@ async function emitTurnEnd(
 	toolResults: ToolResultMessage[],
 	config: AgentLoopConfig,
 	signal?: AbortSignal,
+	context?: Omit<AgentTurnEndContext, "message" | "toolResults">,
 ): Promise<void> {
 	stream.push({ type: "turn_end", message, toolResults });
 	const isAbortedOrError =
 		message.role === "assistant" && (message.stopReason === "aborted" || message.stopReason === "error");
 	if (signal?.aborted || isAbortedOrError) return;
-	await config.onTurnEnd?.(currentContext.messages, signal);
+	await config.onTurnEnd?.(currentContext.messages, signal, { message, toolResults, willContinue: false, ...context });
 }
 
 /**
@@ -903,7 +905,7 @@ async function runLoopBody(
 							status: message.stopReason === "aborted" ? "aborted" : "error",
 						});
 					}
-					await emitTurnEnd(stream, currentContext, message, toolResults, config, signal);
+					await emitTurnEnd(stream, currentContext, message, toolResults, config, signal, { willContinue: false });
 
 					stream.push(buildAgentEndEvent(newMessages, telemetry, stepCounter.count));
 					stream.end(newMessages);
@@ -1032,7 +1034,9 @@ async function runLoopBody(
 					hasMoreToolCalls = true;
 				}
 
-				await emitTurnEnd(stream, currentContext, message, toolResults, config, signal);
+				await emitTurnEnd(stream, currentContext, message, toolResults, config, signal, {
+					willContinue: hasMoreToolCalls && !isDeadlineExceeded(config.deadline),
+				});
 
 				if (isDeadlineExceeded(config.deadline)) {
 					endAgentStream(stream, newMessages, telemetry, stepCounter.count);
@@ -1221,6 +1225,9 @@ async function streamAssistantResponse(
 	const effectiveToolChoice = ownedDialect ? undefined : (hostToolChoice ?? forcedToolChoice ?? config.toolChoice);
 	const effectiveReasoning = dynamicReasoning ?? config.reasoning;
 	const effectiveDisableReasoning = dynamicDisableReasoning ?? config.disableReasoning;
+	// `getCwd` is read once per LLM call so a mid-run session move (`/move`) reaches
+	// workspace-scoped provider discovery; falls back to the static `cwd` when unset.
+	const effectiveCwd = config.getCwd?.() ?? config.cwd;
 
 	const chatStepNumber = stepCounter.count;
 	stepCounter.count += 1;
@@ -1272,6 +1279,7 @@ async function streamAssistantResponse(
 				disableReasoning: effectiveDisableReasoning,
 				temperature: effectiveTemperature,
 				serviceTier: effectiveServiceTier,
+				cwd: effectiveCwd,
 				signal: finalRequestSignal,
 				onResponse: captureOnResponse,
 			});
@@ -1549,8 +1557,12 @@ function emitAbortedAssistantMessage(
 	requestSignal: AbortSignal | undefined,
 ): AssistantMessage {
 	const errorMessage = abortReasonText(requestSignal);
+	const errorId =
+		errorMessage === "Request was aborted"
+			? AIError.create(AIError.Flag.Abort)
+			: AIError.classify(requestSignal?.reason) || undefined;
 	const base: AssistantMessage = partialMessage
-		? { ...partialMessage, stopReason: "aborted", errorMessage }
+		? { ...partialMessage, stopReason: "aborted", errorMessage, errorId }
 		: {
 				role: "assistant",
 				content: [],
@@ -1567,6 +1579,7 @@ function emitAbortedAssistantMessage(
 				},
 				stopReason: "aborted",
 				errorMessage,
+				errorId,
 				timestamp: Date.now(),
 			};
 	// Only tool calls that reached `toolcall_end` survive abort/error replay. A

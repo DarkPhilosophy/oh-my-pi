@@ -72,7 +72,7 @@ function getTitleModel(registry: ModelRegistry, settings: Settings, currentModel
 	const availableModels = registry.getAvailable();
 	if (availableModels.length === 0) return undefined;
 
-	const titleModel = resolveRoleSelection(["title", "commit", "smol"], settings, availableModels, registry)?.model;
+	const titleModel = resolveRoleSelection(["tiny", "commit", "smol"], settings, availableModels, registry)?.model;
 	if (titleModel) return titleModel;
 
 	if (currentModel) return currentModel;
@@ -246,7 +246,7 @@ export async function generateTitleOnline(
 			return null;
 		}
 
-		const title = normalizeGeneratedTitle(extractGeneratedTitle(response.content));
+		const title = normalizeGeneratedTitle(extractGeneratedTitle(response.content), firstMessage);
 
 		if (!title) {
 			logger.debug("title-generator: no title returned", {

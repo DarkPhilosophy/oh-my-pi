@@ -34,6 +34,21 @@ describe("legacy pi compat compiled-mode subpath overrides (issue #3442)", () =>
 		expect(BUNDLED_PI_REGISTRY_KEYS.has("@oh-my-pi/pi-ai/oauth/openai-codex")).toBe(true);
 	});
 
+	it("expands web search provider wildcard exports for compiled plugin imports", () => {
+		const overrides = __buildLegacyPiPackageRootOverrides(true);
+		const providerKeys = [
+			"@oh-my-pi/pi-coding-agent/web/search/providers/xai",
+			"@oh-my-pi/pi-coding-agent/web/search/providers/tinyfish",
+			"@oh-my-pi/pi-coding-agent/web/search/providers/firecrawl",
+			"@oh-my-pi/pi-coding-agent/web/search/providers/duckduckgo",
+		] as const;
+
+		for (const key of providerKeys) {
+			expect(BUNDLED_PI_REGISTRY_KEYS.has(key)).toBe(true);
+			expect(overrides[key]).toBe(`omp-legacy-pi-bundled:${key}`);
+		}
+	});
+
 	it("does not enumerate root catch-all wildcards (./* / ./*.js)", () => {
 		// Root `./*` / `./*.js` patterns would static-import top-level files
 		// like the package's own `cli.ts` and explode the bundle through the
@@ -42,6 +57,14 @@ describe("legacy pi compat compiled-mode subpath overrides (issue #3442)", () =>
 		// Concrete check: `@oh-my-pi/pi-coding-agent/cli` is NOT bundled.
 		expect(BUNDLED_PI_REGISTRY_KEYS.has("@oh-my-pi/pi-coding-agent/cli")).toBe(false);
 		expect(BUNDLED_PI_REGISTRY_KEYS.has("@oh-my-pi/pi-coding-agent/main")).toBe(false);
+	});
+
+	it("does not bundle main-thread-unsafe worker entrypoints", () => {
+		// Worker entry modules throw at top level unless `parentPort` exists.
+		// The compiled legacy registry is imported on the main thread while
+		// validating plugin extensions, so enumerating these files recreates the
+		// `js worker-entry: missing parentPort` failure from #3508.
+		expect(BUNDLED_PI_REGISTRY_KEYS.has("@oh-my-pi/pi-coding-agent/eval/js/worker-entry")).toBe(false);
 	});
 
 	it("maps every bundled key (minus shimmed roots + typebox) to its virtual specifier in compiled mode", () => {
