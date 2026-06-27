@@ -57,7 +57,10 @@ const todoSchema = type({
 	"list?": InitListEntry.array().describe("phased task list (init)"),
 	"task?": type("string").describe("task content"),
 	"phase?": type("string").describe("phase name"),
-	"items?": type("string").describe("task content").array().atLeastLength(1).describe("tasks to append"),
+	// No `atLeastLength(1)` here: `items` is only meaningful for `init`/`append`,
+	// and both enforce non-empty with op-specific errors. A stray `items: []` on
+	// an op that ignores it (e.g. `view`) must not be a hard schema rejection.
+	"items?": type("string").describe("task content").array().describe("tasks to append"),
 }).describe("apply a single todo operation");
 
 type TodoParams = TodoSchema;
@@ -154,31 +157,6 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 	}
 
 	return [];
-}
-
-/**
- * Pick the actionable window of tasks to display in the sticky todo panel.
- *
- * Returns up to `maxVisible` open (pending / in_progress) tasks in their
- * original phase order, plus the count of remaining open tasks not shown so
- * the caller can render a `+N more` hint. When every task in `tasks` is
- * closed (completed or abandoned), returns the trailing `maxVisible` tasks
- * with `hiddenOpenCount = 0`, so the panel keeps useful context until the
- * active-phase pointer advances on the next `todo`.
- *
- * Task identity and order are preserved — this is a slice, never a sort.
- */
-export function selectStickyTodoWindow(
-	tasks: TodoItem[],
-	maxVisible = 5,
-): { visible: TodoItem[]; hiddenOpenCount: number } {
-	const openTasks = tasks.filter(t => t.status === "pending" || t.status === "in_progress");
-	if (openTasks.length > 0) {
-		const visible = openTasks.slice(0, maxVisible);
-		return { visible, hiddenOpenCount: openTasks.length - visible.length };
-	}
-	const start = Math.max(0, tasks.length - maxVisible);
-	return { visible: tasks.slice(start), hiddenOpenCount: 0 };
 }
 
 /** Minimum overlap (after normalization) required for a substring match.
@@ -534,21 +512,31 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 			lines.push(`  - ${task.content} [${task.status}] (${task.phase})`);
 		}
 	}
+	// Closed = completed + abandoned, mirroring the per-phase `done` count.
+	const closedAll = tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
+	// The active phase is the EARLIEST one still holding open work, so the
+	// in-progress pointer can sit in a phase whose successors already have
+	// completed tasks. Detect that "worked ahead" case to explain the
+	// otherwise-surprising backward pointer instead of letting it read as a
+	// completed task reverting to pending.
+	const workedAhead = phases.some(
+		(phase, idx) =>
+			idx > currentIdx && phase.tasks.some(task => task.status === "completed" || task.status === "abandoned"),
+	);
+	lines.push(`Overall: ${closedAll}/${tasks.length} done, ${remainingTasks.length} open.`);
 	lines.push(
-		`Phase ${currentIdx + 1}/${phases.length} "${current.name}" — ${done}/${current.tasks.length} tasks complete`,
+		`Active phase ${currentIdx + 1}/${phases.length} "${current.name}" (${done}/${current.tasks.length})${
+			workedAhead
+				? " — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed)."
+				: "."
+		}`,
 	);
 	for (const phase of phases) {
 		lines.push(`  ${phase.name}:`);
 		for (const task of phase.tasks) {
-			const sym =
-				task.status === "completed"
-					? "✓"
-					: task.status === "in_progress"
-						? "→"
-						: task.status === "abandoned"
-							? "✗"
-							: "○";
-			lines.push(`    ${sym} ${task.content}`);
+			const checkbox = task.status === "completed" ? "[X]" : "[ ]";
+			const tag = task.status === "in_progress" ? " (in progress)" : task.status === "abandoned" ? " (dropped)" : "";
+			lines.push(`    - ${checkbox} ${task.content}${tag}`);
 		}
 	}
 	return lines.join("\n");

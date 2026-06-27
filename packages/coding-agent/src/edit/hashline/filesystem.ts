@@ -16,8 +16,9 @@
  * (batch request, diagnostics) lives on the instance and isn't safe to
  * share across concurrent edit tools.
  */
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { Filesystem, NotFoundError, type WriteResult } from "@oh-my-pi/hashline";
+import { Filesystem, NotFoundError, type PreflightWriteOptions, type WriteResult } from "@oh-my-pi/hashline";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredHandle } from "../../lsp";
 import type { ToolSession } from "../../tools";
@@ -25,7 +26,7 @@ import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFileContent } from "../../tools/auto-generated-guard";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
 import { isInternalUrlPath } from "../../tools/path-utils";
-import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
+import { enforcePlanModeWrite, resolvePlanPath, targetsLocalSandbox } from "../../tools/plan-mode-guard";
 import { canonicalSnapshotKey } from "../file-snapshot-store";
 import { readEditFileText, serializeEditFileText } from "../read-file";
 import type { LspBatchRequest } from "../renderer";
@@ -92,12 +93,17 @@ export class HashlineFilesystem extends Filesystem {
 		// Internal-URL authored targets (`local://`, `vault://`, …) are approved
 		// at the lower "read" privilege; never let one redirect onto a "write".
 		if (isInternalUrlPath(authoredPath)) return false;
-		// Recovery only fixes a mistyped working-tree path: confine the resolved
-		// target to the working tree (realpath-normalized). A plain-path "write"
-		// approval must not redirect into the artifact sandbox, the secret vault,
-		// or any out-of-tree file the user never named.
+		// Recovery rebinds a bare/mis-typed authored path onto the file its
+		// snapshot tag uniquely names. Confine the redirect to locations a plain
+		// "write" may legitimately target:
+		//  1. the working tree (the model dropped the directory), or
+		//  2. the session `local://` sandbox where plan/scratch artifacts live —
+		//     the snapshot tag proves the model wrote/read that exact file this
+		//     session, so a bare `plan.md#tag` should land on `local://plan.md`.
+		// The secret vault and any other out-of-tree path stay refused.
 		const root = canonicalSnapshotKey(this.session.cwd);
-		return resolvedPath === root || resolvedPath.startsWith(`${root}${path.sep}`);
+		if (resolvedPath === root || resolvedPath.startsWith(`${root}${path.sep}`)) return true;
+		return targetsLocalSandbox(this.session, resolvedPath);
 	}
 
 	async readText(relativePath: string): Promise<string> {
@@ -117,8 +123,43 @@ export class HashlineFilesystem extends Filesystem {
 		return content;
 	}
 
-	async preflightWrite(relativePath: string): Promise<void> {
+	async preflightWrite(relativePath: string, options?: PreflightWriteOptions): Promise<void> {
+		const fileOp = options?.fileOp;
+		if (fileOp?.kind === "rem") {
+			enforcePlanModeWrite(this.session, relativePath, { op: "delete" });
+			return;
+		}
+		if (fileOp?.kind === "move") {
+			enforcePlanModeWrite(this.session, relativePath, { op: "update", move: fileOp.dest });
+			return;
+		}
 		enforcePlanModeWrite(this.session, relativePath, { op: "update" });
+	}
+
+	async delete(relativePath: string): Promise<void> {
+		enforcePlanModeWrite(this.session, relativePath, { op: "delete" });
+		const absolutePath = this.resolveAbsolute(relativePath);
+		try {
+			await fs.rm(absolutePath);
+		} catch (error) {
+			if (isEnoent(error)) throw new NotFoundError(relativePath, error);
+			throw error;
+		}
+		invalidateFsScanAfterWrite(absolutePath);
+	}
+
+	async move(fromRelative: string, toRelative: string, content?: string): Promise<void> {
+		enforcePlanModeWrite(this.session, fromRelative, { op: "update", move: toRelative });
+		const fromAbsolute = this.resolveAbsolute(fromRelative);
+		const toAbsolute = this.resolveAbsolute(toRelative);
+		if (content !== undefined) {
+			await Bun.write(toAbsolute, content);
+			await fs.rm(fromAbsolute);
+		} else {
+			await fs.rename(fromAbsolute, toAbsolute);
+		}
+		invalidateFsScanAfterWrite(fromAbsolute);
+		invalidateFsScanAfterWrite(toAbsolute);
 	}
 
 	async writeText(relativePath: string, content: string): Promise<WriteResult> {
