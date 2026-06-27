@@ -15,6 +15,7 @@ export type KnownApi =
 	| "google-vertex"
 	| "ollama-chat"
 	| "cursor-agent"
+	| "gitlab-duo-agent"
 	| "devin-agent";
 export type Api = KnownApi | (string & {});
 
@@ -222,6 +223,42 @@ export interface OpenAICompat {
 	requiresReasoningContentForAllAssistantTurns?: boolean;
 	/** Whether the provider accepts a synthetic placeholder (e.g. ".") for missing reasoning_content on tool-call turns. Default: true. Set to false for providers like DeepSeek that validate the exact reasoning_content value. */
 	allowsSyntheticReasoningContentForToolCalls?: boolean;
+	/**
+	 * Replay preserved thinking blocks as `reasoning_content` (or the configured
+	 * `reasoningContentField`) on EVERY assistant turn that carried reasoning,
+	 * regardless of whether the upstream provider validates the field. Local
+	 * llama.cpp-style servers (llama.cpp, LM Studio, vLLM, sglang, Ollama in
+	 * openai-completions mode) re-tokenize the full chat-template prompt every
+	 * request; Qwen3 / DeepSeek-R1 / GLM templates reconstruct the `<think>`
+	 * block from `reasoning_content`. Dropping the field re-renders the
+	 * assistant turn without `<think>`, diverging from the slot's KV cache state
+	 * and forcing full prompt re-processing (#3528). Default: auto-detected
+	 * (loopback/private baseUrl or local provider id with thinking-enabled
+	 * models).
+	 */
+	replayReasoningContent?: boolean;
+	/**
+	 * Send `preserve_thinking: true` so the Qwen3.6+ chat template renders
+	 * `<think>...</think>` markup for EVERY assistant turn (not just turns
+	 * after the last user message). Without it, the template strips the think
+	 * block from older assistant turns:
+	 *
+	 * ```jinja
+	 * {%- if (preserve_thinking is defined and preserve_thinking is true)
+	 *        or (loop.index0 > ns.last_query_index) %}
+	 *   <|im_start|>assistant\n<think>\n{rc}\n</think>\n\n{content}
+	 * {%- else %}
+	 *   <|im_start|>assistant\n{content}
+	 * ```
+	 *
+	 * The cache from the original generation has `<think>...</think>` tokens,
+	 * so once a new user message arrives the prior assistant turns become
+	 * "older" and the stripped re-render diverges — full prompt re-processing
+	 * on SWA models (#3541). Default: auto-detected (Qwen thinking format on
+	 * a local llama.cpp-style backend, paired with `replayReasoningContent`).
+	 * Non-Qwen templates ignore the flag, so the auto-detection is safe.
+	 */
+	qwenPreserveThinking?: boolean;
 	/** Whether assistant tool-call messages must include non-empty content. Default: false. */
 	requiresAssistantContentForToolCalls?: boolean;
 	/** Whether the provider supports the `tool_choice` parameter. Default: true. */
@@ -232,6 +269,14 @@ export interface OpenAICompat {
 	 * to provider-default auto selection. Default: true.
 	 */
 	supportsForcedToolChoice?: boolean;
+	/**
+	 * Whether the chat-completions endpoint accepts the object form that pins one
+	 * named function (`{ type: "function", function: { name } }`). Some
+	 * OpenAI-compatible hosts such as llama.cpp only accept string
+	 * `tool_choice` values; request builders downgrade a named force to
+	 * `"required"` when this is false. Default: true.
+	 */
+	supportsNamedToolChoice?: boolean;
 	/**
 	 * Drop reasoning fields (`reasoning_effort`, OpenRouter `reasoning`) for
 	 * the request when `tool_choice` forces a tool call. Mirrors the Anthropic
@@ -429,10 +474,13 @@ export interface ResolvedOpenAISharedCompat {
 	disableReasoningOnToolChoice: boolean;
 	supportsToolChoice: boolean;
 	supportsForcedToolChoice: boolean;
+	supportsNamedToolChoice: boolean;
 	reasoningContentField?: OpenAICompat["reasoningContentField"];
 	requiresReasoningContentForToolCalls: boolean;
 	requiresReasoningContentForAllAssistantTurns: boolean;
 	allowsSyntheticReasoningContentForToolCalls: boolean;
+	replayReasoningContent: boolean;
+	qwenPreserveThinking: boolean;
 	requiresThinkingAsText: boolean;
 	requiresMistralToolIds: boolean;
 	requiresToolResultName: boolean;
@@ -478,10 +526,13 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "disableReasoningOnToolChoice"
 			| "supportsToolChoice"
 			| "supportsForcedToolChoice"
+			| "supportsNamedToolChoice"
 			| "reasoningContentField"
 			| "requiresReasoningContentForToolCalls"
 			| "requiresReasoningContentForAllAssistantTurns"
 			| "allowsSyntheticReasoningContentForToolCalls"
+			| "replayReasoningContent"
+			| "qwenPreserveThinking"
 			| "requiresThinkingAsText"
 			| "requiresMistralToolIds"
 			| "requiresToolResultName"
@@ -602,6 +653,18 @@ export type CompatOf<TApi extends Api> = TApi extends "openrouter"
 					? ResolvedDevinCompat
 					: undefined;
 
+/** Provider-native compaction endpoint configuration for one model. */
+export interface RemoteCompactionConfig<TApi extends Api = Api> {
+	/** Enables provider-native compaction for providers not enabled by built-in policy. */
+	enabled?: boolean;
+	/** Adapter family used by the configured compaction endpoint. */
+	api?: TApi;
+	/** Absolute compact endpoint URL; when omitted, the adapter derives it from the model base URL. */
+	endpoint?: string;
+	/** Model id sent to the compaction endpoint when it differs from the active model id. */
+	model?: string;
+}
+
 // Model interface for the unified model system
 export interface Model<TApi extends Api = Api> {
 	id: string;
@@ -632,6 +695,8 @@ export interface Model<TApi extends Api = Api> {
 	 * reports that native tool calling is unsupported.
 	 */
 	supportsTools?: boolean;
+	/** GitLab Duo Workflow root namespace selected during catalog discovery. */
+	gitlabDuoWorkflowRootNamespaceId?: string;
 	cost: {
 		input: number; // $/million tokens
 		output: number; // $/million tokens
@@ -674,6 +739,10 @@ export interface Model<TApi extends Api = Api> {
 	preferWebsockets?: boolean;
 	/** Preferred model to switch to when context promotion is triggered (model id or provider/id). */
 	contextPromotionTarget?: string;
+	/** Preferred model to use only for compaction (model id or provider/id); the active session model is unchanged. */
+	compactionModel?: string;
+	/** Provider-native compaction endpoint configuration. */
+	remoteCompaction?: RemoteCompactionConfig<TApi>;
 	/** Provider-assigned priority value (lower = higher priority). */
 	priority?: number;
 	/** Canonical thinking capability metadata for this model. */

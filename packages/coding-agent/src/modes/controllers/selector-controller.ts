@@ -22,6 +22,7 @@ import {
 	getSymbolTheme,
 	previewTheme,
 	setColorBlindMode,
+	setMarkdownMermaidRendering,
 	setSymbolPreset,
 	setTheme,
 	theme,
@@ -133,6 +134,9 @@ export class SelectorController {
 					availableThinkingLevels: [...this.ctx.session.getAvailableThinkingLevels()],
 					thinkingLevel: this.ctx.session.thinkingLevel,
 					availableThemes,
+					providers: [...new Set(this.ctx.session.getAvailableModels().map(model => model.provider))].sort(
+						(a, b) => a.localeCompare(b),
+					),
 					cwd: getProjectDir(),
 					model: this.ctx.session.model,
 					imageBudget: this.ctx.ui.imageBudget,
@@ -340,7 +344,7 @@ export class SelectorController {
 				this.ctx.hideThinkingBlock = value as boolean;
 				for (const child of this.ctx.chatContainer.children) {
 					if (child instanceof AssistantMessageComponent) {
-						child.setHideThinkingBlock(value as boolean);
+						child.setHideThinkingBlock(this.ctx.effectiveHideThinkingBlock);
 					}
 				}
 				// Full clear + replay so blocks frozen in committed scrollback on
@@ -372,6 +376,15 @@ export class SelectorController {
 				this.ctx.ui.invalidate();
 				this.ctx.updateEditorTopBorder();
 				this.ctx.ui.requestRender();
+				break;
+
+			case "tui.renderMermaid":
+				setMarkdownMermaidRendering(value as boolean);
+				this.ctx.session.refreshBaseSystemPrompt().catch(err => {
+					this.ctx.showError(`Failed to apply Mermaid rendering setting: ${err}`);
+				});
+				this.ctx.rebuildChatFromMessages();
+				this.ctx.ui.resetDisplay();
 				break;
 
 			case "theme": {
@@ -1292,7 +1305,7 @@ export class SelectorController {
 			getTool: name => this.ctx.session.getToolByName(name),
 			getMessageRenderer: type => this.ctx.session.extensionRunner?.getMessageRenderer(type),
 			cwd: this.ctx.sessionManager.getCwd(),
-			hideThinkingBlock: () => this.ctx.hideThinkingBlock,
+			hideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
 			proseOnlyThinking: () => this.ctx.proseOnlyThinking,
 			focusAgent: id => this.ctx.focusAgentSession(id),
 			sessionFile: this.ctx.sessionManager.getSessionFile() ?? null,

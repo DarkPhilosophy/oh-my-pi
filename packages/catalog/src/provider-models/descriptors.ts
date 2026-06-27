@@ -14,6 +14,7 @@ import {
 	anthropicModelManagerOptions,
 	cerebrasModelManagerOptions,
 	cloudflareAiGatewayModelManagerOptions,
+	coreWeaveModelManagerOptions,
 	deepseekModelManagerOptions,
 	firepassModelManagerOptions,
 	fireworksModelManagerOptions,
@@ -49,7 +50,12 @@ import {
 	zenmuxModelManagerOptions,
 	zhipuCodingPlanModelManagerOptions,
 } from "./openai-compat";
-import { cursorModelManagerOptions, devinModelManagerOptions, zaiModelManagerOptions } from "./special";
+import {
+	cursorModelManagerOptions,
+	devinModelManagerOptions,
+	gitLabDuoWorkflowModelManagerOptions,
+	zaiModelManagerOptions,
+} from "./special";
 
 export const CATALOG_PROVIDERS = [
 	{
@@ -140,6 +146,13 @@ export const CATALOG_PROVIDERS = [
 		id: "gitlab-duo",
 		defaultModel: "duo-chat-opus-4-6",
 		envVars: ["GITLAB_TOKEN"],
+	},
+	{
+		id: "gitlab-duo-agent",
+		defaultModel: "claude_sonnet_4_6_vertex",
+		envVars: ["GITLAB_TOKEN"],
+		createModelManagerOptions: (config: ModelManagerConfig) => gitLabDuoWorkflowModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
 	},
 	{
 		id: "google",
@@ -374,6 +387,13 @@ export const CATALOG_PROVIDERS = [
 			label: "Wafer Serverless",
 			oauthProvider: "wafer-serverless",
 		},
+	},
+	{
+		id: "coreweave",
+		defaultModel: "openai/gpt-oss-120b",
+		envVars: ["COREWEAVE_API_KEY", "WANDB_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => coreWeaveModelManagerOptions(config),
+		catalogDiscovery: { label: "CoreWeave Serverless Inference" },
 	},
 	{
 		id: "xai",
