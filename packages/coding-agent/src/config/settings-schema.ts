@@ -600,6 +600,17 @@ export const SETTINGS_SCHEMA = {
 				"Use the terminal's default background for the status line instead of the theme's `statusLineBg`. Powerline end caps are dropped because they need a contrasting fill to bridge into the surrounding terminal.",
 		},
 	},
+	"statusLine.compactThinkingLevel": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Status Line",
+			label: "Compact Thinking Level",
+			description:
+				"Show the thinking level as a single icon on the model name instead of a separate ` · <level>` suffix.",
+		},
+	},
 	"tools.artifactSpillThreshold": {
 		type: "number",
 		default: 50,
@@ -1633,6 +1644,35 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"recap.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: "Notifications",
+			label: "Idle Recap",
+			description: "Generate a brief LLM recap of where things stand after the terminal has been idle",
+		},
+	},
+
+	"recap.idleSeconds": {
+		type: "number",
+		default: 240,
+		ui: {
+			tab: "interaction",
+			group: "Notifications",
+			label: "Idle Recap Delay",
+			description: "Seconds to wait while idle before showing the recap",
+			options: [
+				{ value: "60", label: "1 minute" },
+				{ value: "120", label: "2 minutes" },
+				{ value: "240", label: "4 minutes" },
+				{ value: "300", label: "5 minutes" },
+				{ value: "600", label: "10 minutes" },
+			],
+		},
+	},
+
 	// Collab
 	"collab.relayUrl": {
 		type: "string",
@@ -1889,6 +1929,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"compaction.remoteStreamingV2Enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			group: "Compaction",
+			label: "Remote Compaction V2",
+			description: "Use Responses streaming compaction for compatible remote compaction models",
+		},
+	},
+
 	"compaction.reserveTokens": { type: "number", default: 16384 },
 
 	"compaction.keepRecentTokens": { type: "number", default: 20000 },
@@ -1896,6 +1947,8 @@ export const SETTINGS_SCHEMA = {
 	"compaction.autoContinue": { type: "boolean", default: true },
 
 	"compaction.remoteEndpoint": { type: "string", default: undefined },
+
+	"compaction.v2RetainedMessageBudget": { type: "number", default: 64000 },
 
 	// Idle compaction
 	"compaction.idleEnabled": {
@@ -3796,6 +3849,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"title.refreshOnReplan": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tasks",
+			group: "Modes",
+			label: "Refresh Title on Replan",
+			description: "Refresh generated session titles after todo init replans unless the title was set by the user",
+		},
+	},
+
 	// Delegation
 	"task.isolation.mode": {
 		type: "enum",
@@ -4850,11 +4914,22 @@ export interface CompactionSettings {
 	autoContinue: boolean;
 	remoteEnabled: boolean;
 	remoteEndpoint: string | undefined;
+	remoteStreamingV2Enabled: boolean;
+	v2RetainedMessageBudget: number;
 	idleEnabled: boolean;
 	idleThresholdTokens: number;
 	idleTimeoutSeconds: number;
 	supersedeReads: boolean;
 	dropUseless: boolean;
+}
+
+export interface RecapSettings {
+	enabled: boolean;
+	idleSeconds: number;
+}
+
+export interface TitleSettings {
+	refreshOnReplan: boolean;
 }
 
 export interface ContextPromotionSettings {
@@ -5002,6 +5077,8 @@ export interface GcSettings {
 /** Map group prefix -> typed settings interface */
 export interface GroupTypeMap {
 	compaction: CompactionSettings;
+	recap: RecapSettings;
+	title: TitleSettings;
 	contextPromotion: ContextPromotionSettings;
 	retry: RetrySettings;
 	memories: MemoriesSettings;

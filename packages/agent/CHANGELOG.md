@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [16.2.3] - 2026-06-28
+
+### Changed
+
+- Enabled V2 streaming remote compaction by default for compatible AI and OpenAI-compatible models, which forwards full conversation history to the provider and supports session routing, prompt caching, provider-native tool history replay, transient error retries, and configurable timeouts.
+
+### Fixed
+
+- Fixed an issue where assistant responses and encrypted reasoning could be lost during local history trimming.
+- Added `title_change` session metadata to the compaction entry type union to maintain type compatibility for hosts with title audit entries.
+
 ## [16.2.2] - 2026-06-27
 
 ### Added

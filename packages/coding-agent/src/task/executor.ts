@@ -71,7 +71,11 @@ import {
 	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
 	type TaskToolDetails,
+	type YieldItem,
 } from "./types";
+import { arrayValuedLabels, assembleYieldResult } from "./yield-assembly";
+
+export type { YieldItem } from "./types";
 
 const MCP_CALL_TIMEOUT_MS = 60_000;
 
@@ -517,21 +521,6 @@ function resolveFallbackCompletion(rawOutput: string, outputSchema: unknown): { 
 	return { data: candidate };
 }
 
-export interface YieldItem {
-	data?: unknown;
-	status?: "success" | "aborted";
-	error?: string;
-	/**
-	 * Set by the in-tool yield validator when it exhausted its retry budget
-	 * (MAX_SCHEMA_RETRIES) and accepted a schema-invalid payload anyway.
-	 * `finalizeSubprocessOutput` honors this by serializing the payload and
-	 * surfacing a stderr warning, instead of re-emitting `schema_violation`
-	 * — which would silently swap the subagent's "accepted" view for a
-	 * different, opaque error blob in the parent's view of the result.
-	 */
-	schemaOverridden?: boolean;
-}
-
 interface FinalizeSubprocessOutputArgs {
 	rawOutput: string;
 	exitCode: number;
@@ -541,6 +530,7 @@ interface FinalizeSubprocessOutputArgs {
 	yieldItems?: YieldItem[];
 	reportFindings?: ReviewFinding[];
 	outputSchema: unknown;
+	lastAssistantText?: string;
 }
 
 interface FinalizeSubprocessOutputResult {
@@ -583,7 +573,7 @@ function buildSchemaViolationOutcome(
 
 export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): FinalizeSubprocessOutputResult {
 	let { rawOutput, exitCode, stderr } = args;
-	const { yieldItems, reportFindings, doneAborted, signalAborted, outputSchema } = args;
+	const { yieldItems, reportFindings, doneAborted, signalAborted, outputSchema, lastAssistantText } = args;
 	let abortedViaYield = false;
 	const hasYield = Array.isArray(yieldItems) && yieldItems.length > 0;
 	const hadFailureBeforeYield = exitCode !== 0 && stderr.trim().length > 0;
@@ -600,15 +590,16 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 				rawOutput = `{"aborted":true,"error":"${lastYield.error || "Unknown error"}"}`;
 			}
 		} else {
-			const submitData = lastYield?.data;
-			if (submitData === null || submitData === undefined) {
+			const assembled = assembleYieldResult(yieldItems, lastAssistantText, arrayValuedLabels(outputSchema));
+			if (!assembled || assembled.missingData) {
 				rawOutput = rawOutput ? `${SUBAGENT_WARNING_NULL_YIELD}\n\n${rawOutput}` : SUBAGENT_WARNING_NULL_YIELD;
 			} else {
 				const { validator, error: schemaError } = buildOutputValidator(outputSchema);
-				const overridden = lastYield?.schemaOverridden === true;
-				const completeData = normalizeCompleteData(submitData, reportFindings, validator);
+				const completeData = assembled.rawText
+					? assembled.data
+					: normalizeCompleteData(assembled.data, reportFindings, validator);
 				const result =
-					schemaError || overridden
+					schemaError || assembled.schemaOverridden
 						? { success: true as const }
 						: (validator?.validate(completeData) ?? { success: true as const });
 				if (!result.success) {
@@ -619,14 +610,17 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 					exitCode = outcome.exitCode;
 				} else {
 					try {
-						rawOutput = JSON.stringify(completeData, null, 2) ?? "null";
+						rawOutput =
+							assembled.rawText && typeof completeData === "string"
+								? completeData
+								: (JSON.stringify(completeData, null, 2) ?? "null");
 					} catch (err) {
 						const errorMessage = err instanceof Error ? err.message : String(err);
 						rawOutput = `{"error":"Failed to serialize yield data: ${errorMessage}"}`;
 					}
 					if (!hadFailureBeforeYield) {
 						exitCode = 0;
-						stderr = overridden
+						stderr = assembled.schemaOverridden
 							? SUBAGENT_WARNING_SCHEMA_OVERRIDDEN
 							: schemaError
 								? `invalid output schema: ${schemaError}`
@@ -925,6 +919,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		cacheRead: 0,
 		cacheWrite: 0,
 		totalTokens: 0,
+		reasoningTokens: 0,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
 	let hasUsage = false;
@@ -1315,6 +1310,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 						accumulatedUsage.cacheRead += getNumberField(usageRecord, "cacheRead") ?? 0;
 						accumulatedUsage.cacheWrite += getNumberField(usageRecord, "cacheWrite") ?? 0;
 						accumulatedUsage.totalTokens += getNumberField(usageRecord, "totalTokens") ?? 0;
+						accumulatedUsage.reasoningTokens =
+							(accumulatedUsage.reasoningTokens ?? 0) + (getNumberField(usageRecord, "reasoningTokens") ?? 0);
 						if (costRecord) {
 							accumulatedUsage.cost.input += getNumberField(costRecord, "input") ?? 0;
 							accumulatedUsage.cost.output += getNumberField(costRecord, "output") ?? 0;
@@ -1665,6 +1662,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 			yieldItems,
 			reportFindings,
 			outputSchema: args.outputSchema,
+			lastAssistantText: monitor.lastAssistantSalvageText(),
 		});
 	} finally {
 		popLoopPhase();

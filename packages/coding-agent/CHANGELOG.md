@@ -17,6 +17,55 @@
 - Fixed a component-backed `rightEditor` widget crashing when it called any TUI method other than the two render hooks (e.g. `ui.addChild`, `ui.setFocus`, `ui.addInputListener`): the wrapping `Proxy` returned those methods bound to the proxy, so `TUI`/`Container` `#private` field access threw at runtime. The proxy now resolves against and binds methods back to the real TUI instance, staying API-compatible for right-side widget factories.
 - Fixed the `rightEditor` panel scheduling a render before the TUI was started: `setRightPanel()` was registered (which calls `requestRender()`) before `ui.start()`, and the intervening `await #loadTodoList()` could let that frame paint pre-start — a visible pre-start paint, and duplicate startup output on terminals that copy screen contents on the first paint. The panel is now registered after `ui.start()`, so the forced initial render composites it on the first real frame.
 - Fixed a failed widget refresh dropping the existing widget across any placement change: `setHookWidget` disposed the old entry (inline or right-side) before building the replacement, so a throwing component factory left the slot empty — whether moving `rightEditor`→inline or inline→`rightEditor`. The replacement is now constructed first for every transition and the old entry dropped only after a successful build, so a failed refresh always keeps the previous widget.
+## [16.2.3] - 2026-06-28
+
+### Added
+
+- Added support for multiple configurable advisors via WATCHDOG.yml/WATCHDOG.yaml files, allowing per-advisor models, tool subsets, and instructions.
+- Added /advisor configure, a full-screen, mouse-driven TUI to easily manage the advisor roster, configure models, toggle tool permissions, and edit instructions.
+- Added full unified edit diffs to advisor transcripts, allowing advisors to see changes directly without re-reading files.
+- Added the statusLine.compactThinkingLevel setting to render the model segment's thinking level as a single leading glyph instead of a separate text suffix.
+- Added support for tracking reasoning tokens in session and advisor statistics.
+- Added Remote Compaction V2 streaming configuration settings (compaction.remoteStreamingV2Enabled and compaction.v2RetainedMessageBudget) to control token budgets and toggle V2 streaming for remote compaction.
+- Added the edit.citationTags setting to emit model-facing hashline section headers as OpenAI citation markers with opaque source IDs, along with citation-marker unwrapping for hashline edit parsing, diff previews, and streaming matching.
+- Added mutable session titles with automatic replan title refreshes and configurable idle recaps.
+- Added support for incremental yield submissions with typed sections and final results for subagents.
+
+### Changed
+
+- Reduced session file size by removing redundant thinking signatures already present in payloads
+- Advisors can now be granted any built-in agent tool (including edit, write, and bash), removing the previous read-only restriction.
+- Improved the debug log and raw SSE stream viewers with a wider, bordered overlay, clearer status indicators, dynamic layouts, and mouse support for scrolling and interaction.
+- Updated the idle recap feature to use an LLM-generated summary of where things stand (anchored by the live goal and active todo task) instead of a static status line.
+- Refined interrupted thinking system instructions to encourage smoother continuation.
+
+### Fixed
+
+- Fixed array-typed output schema validation by correctly assembling incremental yields into lists.
+- Fixed OpenAI/Codex compatibility by removing top-level schema combinators from tool parameters.
+- Fixed validation errors for untyped final yields in strict-mode providers by allowing null types.
+- Fixed Alt+M default-role model configuration being disabled by the current session's context size.
+- Fixed MCP type: "sse" servers by adding the legacy HTTP+SSE endpoint handshake and streaming JSON-RPC response path.
+- Fixed interrupted reasoning blocks being incorrectly stripped when they contained a valid signature.
+- Fixed interrupted thinking being lost in LLM provider requests after user interrupts by properly stripping trailing reasoning blocks from assistant turns while preserving them in the UI and session history.
+- Fixed the live todo HUD going stale during long tool-use loops by introducing a mid-run reconciliation reminder that prompts the agent to update incomplete items.
+- Fixed resumed OpenAI and OpenAI-Codex sessions losing encrypted reasoning and native assistant turns during rehydration.
+- Fixed the ask tool's custom answer editor dropping the original question and option list while typing.
+- Fixed auto-snapcompact failing the session on local blockers (such as text-only active models, high non-ASCII transcripts, or context budget overflows) by gracefully downgrading automatic maintenance to context-full compaction.
+- Fixed autoresearch's before_agent_start handler crashing when the system prompt was undefined.
+- Fixed OMP exiting silently during startup when encountering standalone Codex hook scripts in ~/.codex/hooks/.
+- Fixed unreachable keyboard shortcuts in HTML session exports by changing the "toggle thinking" and "toggle tools" shortcuts from Ctrl+T and Ctrl+O to bare T and O keys.
+- Fixed user-invoked /skill: prompts reaching model providers as developer turns instead of user turns, including during compaction.
+- Fixed reasoning streaming being locked off for OpenAI-compatible providers that stream reasoning content without advertising reasoning support in model metadata.
+- Fixed /shake and other mid-stream chat rebuilds erasing live LLM output by preserving the in-flight streaming components and pending tools.
+- Fixed the time_spent status-line segment ticking continuously during idle sessions by ensuring it only accumulates active agent execution windows and resets correctly across session switches.
+- Fixed expanded pending SSH previews committing provisional rows to native scrollback before the final result render.
+- Fixed ssh:// rejecting POSIX-capable remotes whose login-shell classification was ambiguous by verifying a working transfer shell directly and gating transfers on that capability.
+
+### Removed
+
+- Removed history URI support for reading agent transcripts
+
 ## [16.2.2] - 2026-06-27
 
 ### Added
