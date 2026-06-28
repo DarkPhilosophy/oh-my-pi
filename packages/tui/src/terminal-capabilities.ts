@@ -1,5 +1,6 @@
 import { encodeSixel } from "@oh-my-pi/pi-natives";
 import { $env, isBunTestRuntime, isTerminalHeadless } from "@oh-my-pi/pi-utils";
+import { sendDesktopNotification, shouldDeliverDesktopNotification } from "./desktop-notify";
 import {
 	detectKittyUnicodePlaceholdersSupport,
 	getKittyGraphics,
@@ -122,6 +123,15 @@ export class TerminalInfo {
 			return;
 		}
 		process.stdout.write(formatted);
+		// VTE-family terminals (Ptyxis, GNOME Terminal, Tilix, …) plus Alacritty
+		// and bare xterm-on-Wayland have no in-band escape that surfaces an
+		// arbitrary desktop toast (#3685). When the chosen `notifyProtocol` is
+		// BEL on a Linux session bus, also fan the notification out via
+		// libnotify so users see the toast and the BEL still fires for tmux
+		// `monitor-bell` / X11 urgency hints / audible bell.
+		if (this.notifyProtocol === NotifyProtocol.Bell && shouldDeliverDesktopNotification(this.id, true)) {
+			sendDesktopNotification(message);
+		}
 	}
 }
 
@@ -399,7 +409,7 @@ export function resolveWarpImageProtocol(
 }
 
 function getWarpTerminalInfo(platform: NodeJS.Platform, env: NodeJS.ProcessEnv = Bun.env): TerminalInfo {
-	return new TerminalInfo("warp", resolveWarpImageProtocol(platform, env), true, false, NotifyProtocol.Bell);
+	return new TerminalInfo("warp", resolveWarpImageProtocol(platform, env), true, false, NotifyProtocol.Osc9);
 }
 const KNOWN_TERMINALS = Object.freeze({
 	// Fallback terminals
@@ -415,8 +425,9 @@ const KNOWN_TERMINALS = Object.freeze({
 	// Warp identifies via TERM_PROGRAM=WarpTerminal and ships the Kitty graphics
 	// protocol on macOS/Linux (direct placement only — no Unicode placeholders, so
 	// detectKittyUnicodePlaceholdersSupport correctly excludes it). It does not
-	// honor OSC 8 yet (the escape renders as visible text), so hyperlinks stay off.
-	warp: new TerminalInfo("warp", ImageProtocol.Kitty, true, false, NotifyProtocol.Bell),
+	// honor OSC 8 yet (the escape renders as visible text), so hyperlinks stay off,
+	// but it does support OSC 9 notifications.
+	warp: new TerminalInfo("warp", ImageProtocol.Kitty, true, false, NotifyProtocol.Osc9),
 });
 
 /** Resolve terminal identity from environment markers used by common emulators. */

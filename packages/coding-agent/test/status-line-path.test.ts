@@ -21,6 +21,7 @@ function createPathContext(): SegmentContext {
 			sessionManager: undefined,
 		} as unknown as SegmentContext["session"],
 		width: 120,
+		compactThinkingLevel: false,
 		options: {
 			path: {
 				abbreviate: false,
@@ -46,7 +47,7 @@ function createPathContext(): SegmentContext {
 		contextWindow: 0,
 		autoCompactEnabled: false,
 		subagentCount: 0,
-		sessionStartTime: Date.now(),
+		activeMs: 0,
 		activeRepo: null,
 		git: {
 			branch: null,

@@ -15,6 +15,12 @@ describe("detectTerminalId", () => {
 	it("recognizes Warp before the true-color fallback", () => {
 		expect(detectTerminalId({ TERM_PROGRAM: "WarpTerminal", COLORTERM: "truecolor" })).toBe("warp");
 	});
+
+	it("falls back to trueColor on VTE/Ptyxis environments — VTE OSC 9 is ConEmu progress, not a notification protocol", () => {
+		const env = { TERM: "xterm-256color", TERM_PROGRAM: "", COLORTERM: "truecolor", VTE_VERSION: "8400" };
+
+		expect(detectTerminalId(env)).toBe("trueColor");
+	});
 });
 
 describe("synchronizedOutputUserOverride", () => {
@@ -160,7 +166,7 @@ console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProto
 		expect(warp.imageProtocol).toBe(ImageProtocol.Kitty);
 		expect(warp.trueColor).toBe(true);
 		expect(warp.hyperlinks).toBe(false);
-		expect(warp.notifyProtocol).toBe(NotifyProtocol.Bell);
+		expect(warp.notifyProtocol).toBe(NotifyProtocol.Osc9);
 		expect(warp.textSizing).toBe(false);
 	});
 

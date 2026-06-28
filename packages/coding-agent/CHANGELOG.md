@@ -16,6 +16,42 @@
 - Fixed queued-message preview lines in the pending bar rendering raw tabs and control characters from RPC/SDK `steer`/`followUp` text: each line is now sanitized (ANSI/control strip + tab expansion) before styling, so it can no longer punch visual holes or corrupt the pending bar.
 - Fixed a raw slash/prompt-template message losing its local-submission marker when an orphan submit (Enter while the main loop has no input waiter) coalesced into an existing queued tail: that path now routes through the same coalescing submit helper as the rest, so `prompt()`'s template expansion swaps the raw signature for the expanded/merged one and the delivered message stays recognized as local (never clears a draft typed while waiting).
 - Fixed the persistent steering animation timer leaking when a session-reset path cleared the pending bar directly: `command-controller` (`/clear`-style resets) and the extension UI controller call `pendingMessagesContainer.clear()`, which detaches children without disposing their timers, so an active `SteeringIndicator` kept repainting a detached node. Those paths now stop the indicator before clearing (full teardown via `clearTransientSessionUi` already disposed it).
+- Added mouse support for scrolling and interaction in the debug log and raw SSE stream viewers.
+- Added the `statusLine.compactThinkingLevel` setting to render the model segment's thinking level as a single leading glyph instead of a separate text suffix.
+- Added support for tracking reasoning tokens in session and advisor statistics.
+- Added Remote Compaction V2 streaming configuration settings (`compaction.remoteStreamingV2Enabled` and `compaction.v2RetainedMessageBudget`) to control token budgets and toggle V2 streaming for remote compaction.
+- Added the `edit.citationTags` setting to emit model-facing hashline section headers as OpenAI citation markers with opaque source IDs, along with citation-marker unwrapping for hashline edit parsing, diff previews, and streaming matching.
+- Added mutable session titles backed by a fixed JSONL title slot with append-only title-change audit entries, replan title refresh, and configurable idle recaps.
+- Added incremental `yield` submissions with typed sections and last-turn final results for subagents.
+
+### Changed
+
+- Refactored and improved the debug log and raw SSE stream viewers to use a standard, wider, bordered overlay component with clearer status indicators, controls, and dynamic layouts.
+- Updated the idle recap feature to use an LLM-generated summary of where things stand (anchored by the live goal and active todo task) instead of a static status line.
+- Refined interrupted thinking system instructions to encourage smoother continuation.
+
+### Fixed
+
+- Fixed array-typed output schema validation by correctly assembling incremental yields into lists
+- Fixed OpenAI/Codex compatibility by removing top-level schema combinators from tool parameters
+- Fixed validation errors for untyped final yields in strict-mode providers by allowing `null` types
+
+- Fixed Alt+M default-role model configuration being disabled by the current session's context size. ([#3708](https://github.com/can1357/oh-my-pi/issues/3708))
+- Fixed MCP `type: "sse"` servers by adding the legacy HTTP+SSE endpoint handshake and streaming JSON-RPC response path. ([#3710](https://github.com/can1357/oh-my-pi/issues/3710))
+- Fixed interrupted reasoning blocks being incorrectly stripped when they contained a valid signature
+- Fixed interrupted thinking being lost in LLM provider requests after user interrupts by properly stripping trailing reasoning blocks from assistant turns while preserving them in the UI and session history.
+- Fixed the live todo HUD going stale during long tool-use loops by introducing a mid-run reconciliation reminder that prompts the agent to update incomplete items.
+- Fixed resumed OpenAI and OpenAI-Codex sessions losing encrypted reasoning and native assistant turns during rehydration.
+- Fixed the ask tool's custom answer editor dropping the original question and option list while typing.
+- Fixed auto-snapcompact failing the session on local blockers (such as text-only active models, high non-ASCII transcripts, or context budget overflows) by gracefully downgrading automatic maintenance to context-full compaction.
+- Fixed autoresearch's `before_agent_start` handler crashing when the system prompt was undefined.
+- Fixed OMP exiting silently during startup when encountering standalone Codex hook scripts in `~/.codex/hooks/`.
+- Fixed unreachable keyboard shortcuts in HTML session exports by changing the "toggle thinking" and "toggle tools" shortcuts from `Ctrl+T` and `Ctrl+O` to bare `T` and `O` keys.
+- Fixed user-invoked `/skill:` prompts reaching model providers as developer turns instead of user turns, including during compaction.
+- Fixed reasoning streaming being locked off for OpenAI-compatible providers that stream reasoning content without advertising reasoning support in model metadata.
+- Fixed `/shake` and other mid-stream chat rebuilds erasing live LLM output by preserving the in-flight streaming components and pending tools.
+- Fixed the `time_spent` status-line segment ticking continuously during idle sessions by ensuring it only accumulates active agent execution windows and resets correctly across session switches.
+
 ## [16.2.2] - 2026-06-27
 
 ### Added
