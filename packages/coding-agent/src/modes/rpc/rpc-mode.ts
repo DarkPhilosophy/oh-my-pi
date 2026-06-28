@@ -64,6 +64,7 @@ function widgetBlocksForRpc(
 				.map(block => ({
 					lines: block.lines.map(line => String(line)),
 					priority: block.priority,
+					id: block.id,
 				}))
 				.filter(block => block.lines.length > 0),
 		};
@@ -1113,6 +1114,22 @@ export async function runRpcMode(
 				} catch (err: unknown) {
 					return error(id, "login", err instanceof Error ? err.message : String(err));
 				}
+			}
+
+			case "widget_layout": {
+				if (session.extensionRunner?.hasHandlers("widget_layout")) {
+					session.extensionRunner
+						.emit({
+							type: "widget_layout",
+							key: command.widgetKey,
+							visible: command.visible,
+							availableWidth: command.availableWidth,
+							visibleRows: command.visibleRows,
+							hiddenBlocks: command.hiddenBlocks,
+						})
+						.catch(() => {});
+				}
+				return success(id, "widget_layout");
 			}
 
 			default: {

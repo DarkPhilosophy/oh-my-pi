@@ -27,7 +27,7 @@ export function trimRightPadding(line: string): string {
 /** Fewer eligible rows than this hides the panel: too cramped to be useful. */
 export const RIGHT_PANEL_MIN_ROWS = 6;
 /** A panel column left of this hides the block: the terminal is too narrow. */
-const RIGHT_PANEL_MIN_COL = 30;
+export const RIGHT_PANEL_MIN_COL = 30;
 
 /**
  * Composite a single right-side panel into the trailing whitespace of
@@ -91,7 +91,7 @@ export interface PanelLayoutResult {
 	placedBlockIndices: readonly number[];
 	/** Indices of blocks that were hidden (too narrow or no eligible run). */
 	hiddenBlockIndices: readonly number[];
-	/** Panel content column width (terminal width minus panel). */
+	/** Maximum panel content width that can fit (terminal width minus min col gap). */
 	availableWidth: number;
 	/** Number of rows in the search range. */
 	searchRows: number;
@@ -118,7 +118,7 @@ export function compositeRightPanelsInRange(
 		onLayout?.({
 			placedBlockIndices: [],
 			hiddenBlockIndices: [],
-			availableWidth: width,
+			availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
 			searchRows: Math.max(0, searchEnd - searchStart),
 		});
 		return baseLines;
@@ -129,7 +129,7 @@ export function compositeRightPanelsInRange(
 		onLayout?.({
 			placedBlockIndices: [],
 			hiddenBlockIndices: blocks.map((_, i) => i),
-			availableWidth: width,
+			availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
 			searchRows: searchEnd - searchStart,
 		});
 		return baseLines;
@@ -195,7 +195,7 @@ export function compositeRightPanelsInRange(
 		onLayout?.({
 			placedBlockIndices: [],
 			hiddenBlockIndices: blocks.map((_, i) => i),
-			availableWidth: width,
+			availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
 			searchRows: searchEnd - searchStart,
 		});
 		return baseLines;
@@ -218,7 +218,7 @@ export function compositeRightPanelsInRange(
 	onLayout?.({
 		placedBlockIndices: [...placedSet],
 		hiddenBlockIndices: blocks.map((_, i) => i).filter(i => !placedSet.has(i)),
-		availableWidth: width,
+		availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
 		searchRows: searchEnd - searchStart,
 	});
 	return out;
