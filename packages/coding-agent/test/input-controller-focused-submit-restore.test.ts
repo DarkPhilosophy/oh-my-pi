@@ -51,6 +51,7 @@ function createContext(opts: { pendingImages: ImageContent[]; pendingImageLinks?
 		showError,
 		updatePendingMessagesDisplay,
 		withLocalSubmission: async <T>(_text: string, fn: () => Promise<T>) => fn(),
+		recordLocalSubmission: () => () => {},
 	} as unknown as InteractiveModeContext;
 
 	return { ctx, editor, prompt, showError };

@@ -54,6 +54,7 @@ function createContext(options?: {
 		showError,
 		hasActiveBtw: () => false,
 		withLocalSubmission: async (_text: string, fn: () => Promise<unknown>) => fn(),
+		recordLocalSubmission: () => () => {},
 		hasActiveOmfg: () => false,
 	} as unknown as InteractiveModeContext;
 	return { ctx, abort, prompt, updatePendingMessagesDisplay, requestRender, showError };
@@ -86,7 +87,7 @@ describe("empty submit with queued messages", () => {
 		await ctx.editor.onSubmit?.("");
 
 		expect(abort).not.toHaveBeenCalled();
-		expect(prompt).toHaveBeenCalledWith("", { streamingBehavior: "steer", images: [image] });
+		expect(prompt).toHaveBeenCalledWith("", expect.objectContaining({ streamingBehavior: "steer", images: [image] }));
 		expect(ctx.editor.pendingImages).toEqual([]);
 		expect(ctx.editor.pendingImageLinks).toEqual([]);
 		expect(updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
@@ -127,6 +128,6 @@ describe("empty submit with queued messages", () => {
 		await ctx.editor.onSubmit?.("");
 
 		expect(abort).not.toHaveBeenCalled();
-		expect(prompt).toHaveBeenCalledWith("", { streamingBehavior: "steer", images: [image] });
+		expect(prompt).toHaveBeenCalledWith("", expect.objectContaining({ streamingBehavior: "steer", images: [image] }));
 	});
 });

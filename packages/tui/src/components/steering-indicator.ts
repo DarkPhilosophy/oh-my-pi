@@ -5,16 +5,13 @@ import { Text } from "./text";
  * Animated "Steering" indicator rendered AS the top border of the pending
  * streaming-steer box.
  *
- * Visual: a rounded box top rule — `╭─ Steering ──────────────╮` — where the
- * word `Steering` is inset as the box title (exactly like every other titled
- * surface) and a short spotlight sweeps a small window that **spans the title**.
- * The spotlight is a 4-glyph ramp `· ∙ • ●` (faint → bold) that replaces the
- * cells it covers: plain rule cells become the trail, and a title letter under
- * the head (`●`) brightens to accent. The window is deliberately short and
- * centered on the title, so the spotlight passes *through* `Steering` — lighting
- * each letter as it goes — without ever travelling to the far corners. It sweeps
- * left→right, bounces right→left, one direction at a time. Constant visible
- * width every frame; monochrome (brightness varies, hue never does). The owning
+ * Visual: a dashed box top rule — `╭╌╌[   Steering   ]╌╌╌╮` — with the word
+ * `Steering` inset as the box title. A 4-glyph ramp `· ∙ • ●` (faint → bold)
+ * bounces *strictly inside* the bracketed title: the head `●` brightens the
+ * letter it crosses, the trail `· ∙ •` renders in the pad spaces, and the
+ * surrounding rule stays static — the comet never spills outside `[ … ]`. It
+ * sweeps left→right, bounces right→left. Constant visible width every frame;
+ * monochrome (brightness varies, hue never does). The owning
  * {@link QueuedMessageBox} renders body + bottom border only, so the indicator +
  * box read as one framed block with an animated title rule.
  *
@@ -37,10 +34,6 @@ const MAX_LEVEL = GLYPHS.length - 1;
 // Keeping this equal to MAX_LEVEL means the full ramp `· ∙ • ●` is always
 // visible together as the spotlight travels.
 const TRAIL = MAX_LEVEL;
-// The spotlight window is anchored on the title and only extends a few cells
-// beyond it on each side, so the sweep passes *through* `Steering` but never
-// reaches the far border.
-const PADDING = 3;
 // Below this the titled rule has no room; fall back to the bare word so a very
 // narrow terminal still shows *something* without breaking layout width.
 const MIN_BORDER_WIDTH = 8;
@@ -105,15 +98,16 @@ export class SteeringIndicator extends Text {
 	 */
 	#window(width: number): { inner: number; titleStart: number; titleEnd: number; min: number; max: number } {
 		const inner = Math.max(0, width - 2);
-		const titleStr = ` ${this.#word} `;
-		const titleStart = 1;
+		const titleStr = `[   ${this.#word}   ]`;
+		// Left-align the title with a small offset (not flush to the corner); clamp
+		// so a narrow rule never makes the bounce window invalid.
+		const titleStart = Math.max(0, Math.min(2, inner - titleStr.length));
 		const titleEnd = Math.min(inner, titleStart + titleStr.length); // exclusive
-		// The head must stay at least `TRAIL` cells from the left edge so the whole
-		// `· ∙ • ●` ramp (head + TRAIL cells behind it) stays on the rule every
-		// frame — never clipped at the left corner. Anchor the window on the title
-		// with a little padding on each side, then floor `min` by that guard.
-		const min = Math.max(TRAIL, titleStart - PADDING);
-		const max = Math.min(inner - 1, titleEnd + PADDING);
+		// The comet bounces strictly *within* the bracketed title (`[   Steering   ]`)
+		// so the head + trail never spill onto the surrounding rule — the head
+		// ranges across the title cells only, edge to edge.
+		const min = titleStart;
+		const max = Math.min(inner - 1, titleEnd - 1);
 		return { inner, titleStart, titleEnd, min, max };
 	}
 
@@ -207,27 +201,33 @@ export class SteeringIndicator extends Text {
 			return this.#active ? this.#styles.bright(this.#word) : this.#styles.mid(this.#word);
 		}
 		const { inner, titleStart, titleEnd, min, max } = this.#window(width);
-		const titleStr = ` ${this.#word} `;
+		const titleStr = `[   ${this.#word}   ]`;
 		let out = paint(topLeft);
 		for (let c = 0; c < inner; c++) {
-			// Spotlight ramp `· ∙ • ●` (faint → bold). On rule cells each glyph of the
-			// ramp paints directly; on title cells the trail passes *under* the word
-			// (letters stay intact) and only the head `●` brightens the letter it
-			// crosses — a spotlight passing through `Steering`. Outside the window the
-			// rule and title rest untouched, so the sweep never reaches the far border.
+			// Comet `· ∙ • ●` (faint → bold) confined to the bracketed title: the head
+			// bounces across the title cells and the trail renders in the pad spaces, so
+			// the sweep reads *through* `[   Steering   ]` without spilling onto the
+			// surrounding rule. Letters stay intact (trail passes under the word); only
+			// the head `●` brightens the letter it crosses.
 			const behind = this.#dir > 0 ? pos - c : c - pos;
-			const onRamp = this.#active && c >= min - TRAIL && c <= max + TRAIL && behind >= 0 && behind <= MAX_LEVEL;
+			const onRamp = this.#active && c >= titleStart && c < titleEnd && behind >= 0 && behind <= MAX_LEVEL;
 			const level = onRamp ? MAX_LEVEL - behind : -1;
 			if (c >= titleStart && c < titleEnd) {
 				const ch = titleStr[c - titleStart] ?? " ";
-				// Title cell: only the head illuminates the letter; the trail renders
-				// under the text (letter unchanged). Spaces in the title keep the head
-				// glyph visible so the sweep still reads across the margins.
-				if (level === MAX_LEVEL && ch !== " ") out += this.#styles.bright(ch);
-				else if (level === MAX_LEVEL && ch === " ") out += this.#styles.bright(GLYPHS[MAX_LEVEL]);
-				else out += ch === " " ? " " : this.#styles.mid(ch);
-			} else if (level >= 0) {
-				out += level === MAX_LEVEL ? this.#styles.bright(GLYPHS[MAX_LEVEL]) : this.#styles.mid(GLYPHS[level]);
+				if (ch === " ") {
+					// Pad space: the comet's `· ∙ • ●` ramp renders here as it travels.
+					if (level === MAX_LEVEL) out += this.#styles.bright(GLYPHS[MAX_LEVEL]);
+					else if (level >= 0) out += this.#styles.mid(GLYPHS[level]);
+					else out += " ";
+				} else {
+					// Letter: a glow that follows the head — bright core, mid halo, dim
+					// rest — so the comet reads as light spilling across the word, not a
+					// single brightened letter.
+					const d = Math.abs(c - pos);
+					if (d <= 1) out += this.#styles.bright(ch);
+					else if (d <= 2) out += this.#styles.mid(ch);
+					else out += this.#styles.dim(ch);
+				}
 			} else {
 				out += paint(horizontal);
 			}
