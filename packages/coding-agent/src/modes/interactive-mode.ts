@@ -632,7 +632,13 @@ export class InteractiveMode implements InteractiveModeContext {
 				(pendingRawSig !== undefined && this.optimisticUserMessageSignature === pendingRawSig)
 			) {
 				if (!perSendCleared && !replacedCleared) this.recordLocalSubmission(mergedText, imageCount);
-				this.#dropOptimisticUserMessage();
+				// When the optimistic bubble matches the per-send sig AND the merge
+				// didn't change the text (e.g. coalescing into an empty tail), the
+				// incoming message_start carries the same signature — EventController
+				// resolves the bubble naturally. Only drop when the text changed.
+				if (mergedText !== perSendText || this.optimisticUserMessageSignature !== perSendSig) {
+					this.#dropOptimisticUserMessage();
+				}
 			}
 		};
 		this.sessionManager = session.sessionManager;
