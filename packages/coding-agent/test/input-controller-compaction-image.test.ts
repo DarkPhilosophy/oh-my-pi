@@ -380,7 +380,7 @@ describe("pending queue collapse/expand display", () => {
 		expect(rows.some(r => r.includes("Steer") && r.includes("╭"))).toBe(true); // titled top border
 		expect(rows.some(r => r.includes("╰"))).toBe(true); // bottom border
 		for (let i = 1; i <= 7; i++) {
-			expect(rows.some(r => r.includes("│") && r.includes(`line${i}`))).toBe(true);
+			expect(rows.some(r => r.includes("╎") && r.includes(`line${i}`))).toBe(true);
 		}
 		expect(rows.some(r => r.includes("(+"))).toBe(false); // nothing hidden when expanded
 		expect(rows.some(r => r.includes("Alt+O to collapse"))).toBe(true);
