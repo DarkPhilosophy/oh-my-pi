@@ -1037,6 +1037,7 @@ export class CommandController {
 		await this.ctx.applyCwdChange(resolvedPath);
 
 		this.ctx.chatContainer.clear();
+		this.ctx.steeringIndicator?.setActive(false);
 		this.ctx.pendingMessagesContainer.clear();
 		this.ctx.compactionQueuedMessages = [];
 		this.ctx.streamingComponent = undefined;
