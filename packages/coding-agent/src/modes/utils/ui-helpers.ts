@@ -25,7 +25,7 @@ import {
 	type LateDiagnosticsFile,
 	LateDiagnosticsMessageComponent,
 } from "../../modes/components/late-diagnostics-message";
-import { QueuedMessageBox } from "../../modes/components/queued-message-box";
+import { QueuedMessageBox, QueueFooter } from "../../modes/components/queued-message-box";
 import {
 	ReadToolGroupComponent,
 	readArgsHaveTarget,
@@ -648,7 +648,7 @@ export class UiHelpers {
 				{
 					topLeft: theme.boxRound.topLeft,
 					topRight: theme.boxRound.topRight,
-					horizontal: theme.boxRound.horizontal,
+					horizontal: "╌",
 					paint: s => theme.fg("border", s),
 				},
 			);
@@ -694,42 +694,49 @@ export class UiHelpers {
 			// Whether the queue is expandable at all (some entry has more lines than the
 			// collapse threshold). Independent of the current expanded state, so the Alt+O
 			// hint stays correct while expanded (where nothing is currently truncated).
-			let canExpandQueue = false;
+			// Whether the queue is expandable (some entry has more logical lines than the
+			// collapse threshold) — computed up front so the hint is known before the loop.
+			const canExpandQueue = allMessages.some(e => e.message.split("\n").length > collapseLines);
 			// Animate the first Steer label while the agent is streaming (those queued
-			// messages will actually steer the live turn). The indicator is a single
-			// persistent component reused across rebuilds — never re-created here, since
-			// `pendingMessagesContainer.clear()` drops children without disposing their
-			// timers. Other labels (extra steers, follow-ups, idle) stay static.
+			// messages steer the live turn). The indicator is a single persistent component
+			// reused across rebuilds — never re-created here, since `clear()` drops children
+			// without disposing their timers.
 			const streaming = this.ctx.viewSession.isStreaming;
 			let animatedSteerUsed = false;
-			for (const entry of allMessages) {
+			// The queue hint (dequeue + optional expand) lives in the bottom border of the
+			// last boxed entry — never as a separate "thrown" line — so it reads as the
+			// frame's footer. Precompute it and which entry carries it.
+			const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
+			const expandKey = this.ctx.keybindings.getDisplayString("app.message.expandQueue") || "Alt+O";
+			const expandHint = canExpandQueue ? `, ${expandKey} to ${expanded ? "collapse" : "expand"}` : "";
+			const hint = `${dequeueKey} (or Up) to edit${expandHint}`;
+			// Every entry is boxed while streaming (or when expanded) so a multi-message
+			// queue never spills lightweight rows outside the frame; the footer hint folds
+			// into the final entry's bottom border. -1 only when the queue is idle.
+			const lastBoxedIndex = expanded || streaming ? allMessages.length - 1 : -1;
+			for (let idx = 0; idx < allMessages.length; idx++) {
+				const entry = allMessages[idx];
 				const lines = entry.message.split("\n");
 				const shown = expanded ? lines.length : Math.min(lines.length, collapseLines);
 				const hidden = lines.length - shown;
-				if (lines.length > collapseLines) canExpandQueue = true;
-				// Sanitize each line: queued text can come from RPC/SDK steer/followUp (not just
-				// the editor), so it may carry tabs / control chars that would punch visual holes.
-				const safeLines = lines.slice(0, shown).map(line => replaceTabs(sanitizeText(line)));
+				const safeAll = lines.map(line => replaceTabs(sanitizeText(line)));
+				const safeLines = safeAll.slice(0, shown);
 				const suffix = !expanded && hidden > 0 ? ` (+${hidden})` : "";
 				const isStreamingSteer = entry.label === "Steer" && streaming && !animatedSteerUsed;
-				// Frame the entry in a box when it is expanded (Alt+O on a long message — so a
-				// 10+ line entry reads as one self-contained block, not rows bleeding into the
-				// hint) or when it is the live streaming steer. For the live steer the animated
-				// indicator IS the box's top rule: it renders `╭─ Steering ─…─╮` with a comet
-				// sweeping the title, and the box below supplies the body + bottom border only,
-				// so the two stack into one framed block with an animated title. Collapsed short
-				// entries stay light: a `Label:` row with indented lines, no frame.
-				const boxed = expanded || isStreamingSteer;
+				const boxed = expanded || streaming;
+				const footerText = idx === lastBoxedIndex && lastBoxedIndex === allMessages.length - 1 ? hint : undefined;
 				if (isStreamingSteer) {
 					animatedSteerUsed = true;
 					const indicator = this.#getOrCreateSteeringIndicator();
 					indicator.setActive(true);
-					// Indicator = the animated top rule; the box renders body + bottom only and
-					// aligns column-for-column beneath it.
 					this.ctx.pendingMessagesContainer.addChild(indicator);
-					this.ctx.pendingMessagesContainer.addChild(new QueuedMessageBox("", safeLines, suffix, false));
+					this.ctx.pendingMessagesContainer.addChild(
+						new QueuedMessageBox("", safeAll, { collapseLines, expanded, showTopBorder: false, footerText }),
+					);
 				} else if (boxed) {
-					this.ctx.pendingMessagesContainer.addChild(new QueuedMessageBox(entry.label, safeLines, suffix));
+					this.ctx.pendingMessagesContainer.addChild(
+						new QueuedMessageBox(entry.label, safeAll, { collapseLines, expanded, footerText }),
+					);
 				} else {
 					this.ctx.pendingMessagesContainer.addChild(new TruncatedText(theme.fg("dim", `${entry.label}:`), 1, 0));
 					for (let i = 0; i < safeLines.length; i++) {
@@ -743,17 +750,12 @@ export class UiHelpers {
 			}
 			// No animated label this pass (idle, or no steer entries) → halt any running timer.
 			if (!animatedSteerUsed) this.ctx.steeringIndicator?.setActive(false);
-			const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
-			const expandKey = this.ctx.keybindings.getDisplayString("app.message.expandQueue") || "Alt+O";
-			// Keep the owner's configured dequeue keybinding (Alt+Up) as the named gesture,
-			// and surface our additional "or Up on an empty editor" affordance after it — the
-			// author decides post-merge whether plain Up becomes the documented default. The
-			// expand/collapse affordance (Alt+O) only appears when the queue is actually
-			// expandable (some entry exceeds the collapse threshold); the wording flips to
-			// `collapse` once expanded. A short, fully-visible queue shows neither.
-			const expandHint = canExpandQueue ? `, ${expandKey} to ${expanded ? "collapse" : "expand"}` : "";
-			const hintText = theme.fg("dim", `${theme.tree.hook} ${dequeueKey} (or Up) to edit${expandHint}`);
-			this.ctx.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
+			// The footer hint folds into the last box's bottom border when that box is the
+			// visual last entry; otherwise (lightweight tails after the box, or no box at
+			// all) render it as a dashed footer rule so it never reads as thrown.
+			if (lastBoxedIndex !== allMessages.length - 1) {
+				this.ctx.pendingMessagesContainer.addChild(new QueueFooter(hint));
+			}
 		}
 	}
 
