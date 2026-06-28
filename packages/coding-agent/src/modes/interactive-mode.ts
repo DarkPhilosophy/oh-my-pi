@@ -482,6 +482,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	get isShuttingDown(): boolean {
 		return this.#isShuttingDown;
 	}
+
 	hookSelector: HookSelectorComponent | undefined = undefined;
 	hookInput: HookInputComponent | undefined = undefined;
 	hookEditor: HookEditorComponent | undefined = undefined;
@@ -891,9 +892,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		const startupQuiet = settings.get("startup.quiet");
 		this.#welcomeComponent = undefined;
 
+		// Static startup content (warnings, welcome, changelog) lives in one
+		// container so the right-side panel row range can include it: the panel
+		// anchors at the very top, beside the welcome text.
+		const mainContent = new Container();
+
 		for (const warning of this.session.configWarnings) {
-			this.ui.addChild(new Text(theme.fg("warning", `Warning: ${warning}`), 1, 0));
-			this.ui.addChild(new Spacer(1));
+			mainContent.addChild(new Text(theme.fg("warning", `Warning: ${warning}`), 1, 0));
+			mainContent.addChild(new Spacer(1));
 		}
 
 		if (!startupQuiet) {
@@ -907,30 +913,32 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 
 			// Setup UI layout
-			this.ui.addChild(new Spacer(1));
-			this.ui.addChild(this.#welcomeComponent);
-			this.ui.addChild(new Spacer(1));
+			mainContent.addChild(new Spacer(1));
+			mainContent.addChild(this.#welcomeComponent);
+			mainContent.addChild(new Spacer(1));
 			if (!options.suppressWelcomeIntro) {
 				this.playWelcomeIntro();
 			}
 
 			// Add changelog if provided
 			if (this.#changelogMarkdown) {
-				this.ui.addChild(new DynamicBorder());
+				mainContent.addChild(new DynamicBorder());
 				if (settings.get("collapseChangelog")) {
 					const versionMatch = this.#changelogMarkdown.match(/##\s+\[?(\d+\.\d+\.\d+)\]?/);
 					const latestVersion = versionMatch ? versionMatch[1] : this.#version;
 					const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
-					this.ui.addChild(new Text(condensedText, 1, 0));
+					mainContent.addChild(new Text(condensedText, 1, 0));
 				} else {
-					this.ui.addChild(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0));
-					this.ui.addChild(new Spacer(1));
-					this.ui.addChild(new Markdown(this.#changelogMarkdown.trim(), 1, 0, getMarkdownTheme()));
-					this.ui.addChild(new Spacer(1));
+					mainContent.addChild(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0));
+					mainContent.addChild(new Spacer(1));
+					mainContent.addChild(new Markdown(this.#changelogMarkdown.trim(), 1, 0, getMarkdownTheme()));
+					mainContent.addChild(new Spacer(1));
 				}
-				this.ui.addChild(new DynamicBorder());
+				mainContent.addChild(new DynamicBorder());
 			}
 		}
+
+		this.ui.addChild(mainContent);
 
 		this.ui.addChild(this.chatContainer);
 		this.ui.addChild(this.pendingMessagesContainer);
@@ -979,12 +987,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		// the initial welcome frame does not append over the previous run's scrollback.
 		this.ui.start({ clearScrollback: options.clearInitialTerminalHistory === true });
 		// Register the right-side widget compositor AFTER ui.start(): setRightPanel
-		// schedules a render, and registering it earlier risked a full frame painting
-		// before the terminal was started/cleared. Targets are the chat container rows
-		// where the panel composites into trailing whitespace.
+		// schedules a render, and #loadTodoList() above can yield, so registering it
+		// earlier risked a full frame painting before the terminal was started/cleared
+		// (a visible pre-start paint, and duplicate startup output on terminals that
+		// copy screen contents on the first paint). Targets are the two root children
+		// added above; the forced requestRender below composites the panel on frame 1.
 		this.ui.setRightPanel(
 			width => this.#rightInfoProvider(width),
-			[this.chatContainer],
+			[mainContent, this.chatContainer],
 			result => this.#rightInfoLayoutCallback?.(result),
 		);
 		pushTerminalTitle();
