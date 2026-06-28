@@ -220,7 +220,7 @@ export class SteeringIndicator extends Text {
 					// rest — so the comet reads as light spilling across the word, not a
 					// single brightened letter.
 					const d = Math.abs(c - pos);
-					if (d <= 1) out += this.#styles.bright(ch);
+					if (d === 0) out += this.#styles.bright(ch);
 					else if (d <= 2) out += this.#styles.mid(ch);
 					else out += this.#styles.dim(ch);
 				}

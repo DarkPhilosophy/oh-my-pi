@@ -94,19 +94,21 @@ describe("SteeringIndicator component", () => {
 		ind.dispose();
 	});
 
-	it("shows the full ramp on rule cells", () => {
+	it("shows the comet head glyph within the bracketed title", () => {
 		vi.useFakeTimers();
 		const requestComponentRender = vi.fn();
 		const ui = { requestComponentRender } as unknown as TUI;
 		const ind = new SteeringIndicator(ui, styles, border, "Steer");
 		ind.setActive(true);
-		let sawFullRamp = false;
+		// The comet is confined to the bracketed title — the head glyph ● appears in
+		// the pad spaces (not on the surrounding rule cells).
+		let sawHeadGlyph = false;
 		for (let i = 0; i < 60; i++) {
 			const line = ind.render(40).join("");
-			if (RAMP.every(g => line.includes(g))) sawFullRamp = true;
+			if (line.includes(HEAD)) sawHeadGlyph = true;
 			vi.advanceTimersByTime(FRAME_MS);
 		}
-		expect(sawFullRamp).toBe(true);
+		expect(sawHeadGlyph).toBe(true);
 		ind.dispose();
 	});
 
