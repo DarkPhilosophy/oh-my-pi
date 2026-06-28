@@ -6,6 +6,18 @@
 
 - Added `compactionContextTokens(providerContextTokens, storedConversationEstimate)`: floors the provider-reported context tokens by a local estimate of the stored conversation for the compaction decision, so a `before_provider_request` payload transform (a compression extension, obfuscator, or inline snapcompact) that shrinks the request can no longer deflate provider usage below the true history size and suppress auto-compaction.
 - Added V2 streaming remote compaction for compatible AI and OpenAI-compatible models, featuring session routing, prompt-cache support, and provider-native tool history replay.
+## [16.2.4] - 2026-06-28
+
+### Changed
+
+- Improved the reliability of remote compaction by introducing transient error retries, configurable timeouts, and immediate termination upon user-initiated aborts.
+
+### Fixed
+
+- Fixed an issue where assistant responses and encrypted reasoning could be lost during local history trimming prior to remote compaction.
+- Fixed type compatibility for hosts with title audit entries by adding support for `title_change` session metadata.
+- Fixed an issue where transient stream read failures after a completed tool call were treated as terminal errors, allowing the agent to successfully execute the tool and continue the turn.
+
 ## [16.2.3] - 2026-06-28
 
 ### Changed

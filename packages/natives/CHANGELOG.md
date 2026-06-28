@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [16.2.4] - 2026-06-28
+
+### Fixed
+
+- Fixed a crash in the in-process `tail` builtin where the host process would abort with a `BrokenPipe` panic if the stdout consumer closed the pipe early.
+
 ## [16.1.23] - 2026-06-26
 
 ### Added

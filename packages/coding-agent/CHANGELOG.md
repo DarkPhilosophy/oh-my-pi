@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [16.2.4] - 2026-06-28
+
+### Fixed
+
+- Fixed todo-reminder HUD rendering outside durable chat history while preserving native collapsing and auto-clear behavior.
+- Fixed goal-mode continuations losing track of persisted todo progress, ensuring autonomous goal turns reconcile stale in-progress items before moving to subsequent tasks.
+- Fixed the /move <dir> command to correctly relocate the current session and its artifacts to the target directory, allowing /resume to work seamlessly from the new location.
+- Fixed omp update leaving behind stale Bun install-cache directories for globally installed packages.
+- Fixed a reconnection loop issue in /collab sessions caused by oversized entries (such as large tool outputs) by truncating replicated payloads that exceed 1 MB.
+- Fixed autolearn and local memory writes mutating Anthropic prompt-cache prefixes mid-session, ensuring prompt injections remain session-stable.
+
 ## [16.2.3] - 2026-06-28
 
 ### Added

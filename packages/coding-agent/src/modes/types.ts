@@ -108,6 +108,7 @@ export interface InteractiveModeContext {
 	chatContainer: TranscriptContainer;
 	pendingMessagesContainer: Container;
 	statusContainer: Container;
+	todoReminderContainer: Container;
 	todoContainer: Container;
 	subagentContainer: Container;
 	btwContainer: Container;
@@ -139,7 +140,7 @@ export interface InteractiveModeContext {
 	focusParentSession(): Promise<void>;
 	/** Return the view to the main session (delegates to SessionFocusController.unfocus). */
 	unfocusSession(): Promise<void>;
-	/** Clear loader, status/pending containers, streaming state, and pending tools. */
+	/** Clear loader, transient HUD/pending containers, streaming state, and pending tools. */
 	clearTransientSessionUi(): void;
 	settings: Settings;
 	keybindings: KeybindingsManager;

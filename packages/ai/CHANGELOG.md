@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [16.2.4] - 2026-06-28
+
+### Added
+
+- Enabled freeform tool patch support for Azure OpenAI and Codex models
+
+### Fixed
+
+- Fixed usage reporting for Antigravity and Z.AI to correctly surface and preserve distinct quota windows (daily, weekly, monthly) instead of collapsing or duplicating them
+- Fixed an issue where `/usage show` returned "No usage data available" when using a custom proxy base URL for Codex
+- Fixed OpenAI stream read errors being incorrectly classified as non-transient, enabling the coding agent to automatically retry after recoverable stream failures
+
 ## [16.2.3] - 2026-06-28
 
 ### Changed
