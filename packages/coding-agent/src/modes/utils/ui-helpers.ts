@@ -48,6 +48,7 @@ import {
 } from "../../session/messages";
 import type { SessionContext } from "../../session/session-context";
 import { replaceTabs } from "../../tools/render-utils";
+import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
 import { createAssistantMessageComponent } from "./interactive-context-helpers";
 import {
 	assistantHasVisibleContent,
@@ -770,6 +771,15 @@ export class UiHelpers {
 	}
 
 	async #deliverQueuedMessage(message: CompactionQueuedMessage): Promise<void> {
+		if (
+			await invokeSkillCommandFromText(this.ctx, message.text, message.mode, {
+				propagateErrors: true,
+				queueOnly: true,
+				images: message.images,
+			})
+		) {
+			return;
+		}
 		if (this.ctx.isKnownSlashCommand(message.text)) {
 			await this.ctx.session.prompt(message.text);
 			return;
@@ -874,44 +884,45 @@ export class UiHelpers {
 				await this.#deliverQueuedMessage(message);
 			}
 
-			// Pass streamingBehavior so that if the session is still streaming when
-			// compaction-end fires (race window between isStreaming flipping false and
-			// the event landing here), prompt() routes the message into the steer/
-			// follow-up queue instead of throwing AgentBusyError. When the session is
-			// genuinely idle, streamingBehavior is ignored and a fresh prompt runs as
-			// before. This keeps the steer preview honest: if delivery has to be
-			// deferred, the message lands in the same queue every other consumer
-			// (Alt+Up dequeue, post-stream drain) already drains, instead of being
-			// stranded in compactionQueuedMessages with no drainer.
-			//
-			// firstPrompt is fire-and-forget — its rejection is funneled through
-			// `restoreQueue` rather than rethrown, so we use the primitive
-			// recordLocalSubmission and dispose manually in the catch.
-			// `disposeFirstPrompt` always points at the signature this prompt currently owns:
-			// firstPrompt.text initially, or the merged text after a coalescing merge. The catch
-			// then disposes whichever is live, leaving no stale signature on failure.
-			let disposeFirstPrompt = this.ctx.recordLocalSubmission(firstPrompt.text, firstPrompt.images?.length ?? 0);
-			const promptPromise = this.ctx.session
-				.prompt(firstPrompt.text, {
-					streamingBehavior: firstPrompt.mode === "followUp" ? "followUp" : "steer",
-					images: firstPrompt.images,
-					onQueued: (queuedText, queuedImageCount, replacedText) => {
-						// If firstPrompt coalesced into a pending tail, drop the replaced entry's
-						// signature; if it merged at all, swap its own owned signature for the
-						// merged text's so only the delivered message stays marked local.
-						if (replacedText !== undefined) {
-							this.ctx.locallySubmittedUserSignatures.delete(`${replacedText}\u0000${queuedImageCount}`);
-						}
-						if (queuedText !== firstPrompt.text) {
-							disposeFirstPrompt();
-							disposeFirstPrompt = this.ctx.recordLocalSubmission(queuedText, queuedImageCount);
-						}
-					},
-				})
-				.catch((error: unknown) => {
-					disposeFirstPrompt();
-					restoreQueue(error);
-				});
+			// First prompt is fire-and-forget — its rejection is funneled through
+			// `restoreQueue` rather than rethrown. Skill prompts are rebuilt as
+			// user-attributed custom messages so queued `/skill:` text is not sent as
+			// a literal prompt after compaction. Plain prompts route through the
+			// coalescing submit (recordLocalSubmission + onQueued signature swap) and
+			// carry streamingBehavior so a race with compaction-end queues into the
+			// steer/follow-up queue instead of throwing AgentBusyError.
+			let promptPromise: Promise<unknown>;
+			if (isKnownSkillCommand(this.ctx, firstPrompt.text)) {
+				const built = await buildSkillCommandPrompt(
+					this.ctx,
+					firstPrompt.text,
+					firstPrompt.mode,
+					firstPrompt.images,
+				);
+				promptPromise = built
+					? this.ctx.session.promptCustomMessage(built.message, built.options).catch(restoreQueue)
+					: Promise.resolve();
+			} else {
+				let disposeFirstPrompt = this.ctx.recordLocalSubmission(firstPrompt.text, firstPrompt.images?.length ?? 0);
+				promptPromise = this.ctx.session
+					.prompt(firstPrompt.text, {
+						streamingBehavior: firstPrompt.mode === "followUp" ? "followUp" : "steer",
+						images: firstPrompt.images,
+						onQueued: (queuedText, queuedImageCount, replacedText) => {
+							if (replacedText !== undefined) {
+								this.ctx.locallySubmittedUserSignatures.delete(`${replacedText}\u0000${queuedImageCount}`);
+							}
+							if (queuedText !== firstPrompt.text) {
+								disposeFirstPrompt();
+								disposeFirstPrompt = this.ctx.recordLocalSubmission(queuedText, queuedImageCount);
+							}
+						},
+					})
+					.catch((error: unknown) => {
+						disposeFirstPrompt();
+						restoreQueue(error);
+					});
+			}
 
 			for (const message of rest) {
 				await this.#deliverQueuedMessage(message);
