@@ -155,7 +155,7 @@ export class LegacySseTransport implements MCPTransport {
 		} finally {
 			operation.clear();
 			if (endpointReceived) {
-				this.#rejectPending(new Error("Legacy SSE stream closed"));
+				this.#rejectPending(new Error("Transport closed: legacy SSE stream closed"));
 			}
 		}
 	}
@@ -204,6 +204,11 @@ export class LegacySseTransport implements MCPTransport {
 		const timeout = resolveMCPTimeoutMs(this.#config.timeout);
 		const operation = createMCPTimeout(timeout, options?.signal);
 		const deferred = Promise.withResolvers<unknown>();
+		// Observe the response promise synchronously so a stream-close rejection
+		// from `#rejectPending` that lands while `request()` is still awaiting the
+		// POST round-trip is never flagged as an unhandled rejection. The real
+		// `await deferred.promise` below still receives and propagates the error.
+		void deferred.promise.catch(() => undefined);
 		const pending: PendingLegacySseRequest = {
 			resolve: deferred.resolve,
 			reject: deferred.reject,

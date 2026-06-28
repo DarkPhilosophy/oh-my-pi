@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [16.2.3] - 2026-06-28
+
+### Added
+
+- Added `escapeXmlAttribute` utility function for safe XML attribute value encoding.
+
+### Fixed
+
+- Fixed a crash in `ptree.ChildProcess.bytes()` and the `ssh://` read path when handling large subprocess outputs (over 128 KB) under Bun by ensuring it consistently returns a `Uint8Array`.
+
 ## [16.2.0] - 2026-06-27
 
 ### Added

@@ -3979,6 +3979,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#selectorController.showSettingsSelector();
 	}
 
+	showAdvisorConfigure(): void {
+		this.#selectorController.showAdvisorConfigure();
+	}
+
 	showHistorySearch(): void {
 		this.#selectorController.showHistorySearch();
 	}

@@ -2,14 +2,18 @@
 
 ## [Unreleased]
 
+## [16.2.3] - 2026-06-28
+
 ### Changed
 
-- Defaulted reasoning context to all_turns for all Codex requests
+- Enabled automatic removal of leaked reasoning tags for all models
+- Prevented reasoning text duplication when models emit both structured and inline thinking
+- Defaulted reasoning context to all turns for all Codex requests.
 
 ### Fixed
 
-- Enabled freeform tool patch support for Azure OpenAI and Codex models
-- Fixed /usage show returning "No usage data available" when using a custom proxy base URL for Codex by routing usage and credit-reset requests to the canonical ChatGPT origin
+- Enabled freeform tool patch support for Azure OpenAI and Codex models.
+- Fixed an issue where the `/usage show` command returned "No usage data available" when using a custom proxy base URL for Codex.
 
 ## [16.2.2] - 2026-06-27
 
