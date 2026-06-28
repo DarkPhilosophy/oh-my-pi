@@ -101,7 +101,9 @@ export class QueuedMessageBox implements Component {
 		this.#lines.forEach((line, li) => {
 			const visual = wrapLine(line, contentW);
 			lineRowCount[li] = visual.length;
-			visual.forEach((v, vi) => allRows.push({ li, vi, text: v }));
+			visual.forEach((v, vi) => {
+				allRows.push({ li, vi, text: v });
+			});
 		});
 		let shown = allRows;
 		let hiddenRows = 0;
@@ -118,7 +120,8 @@ export class QueuedMessageBox implements Component {
 		const gp = (g: string) => theme.fg("muted", g);
 		const out: string[] = this.#showTopBorder ? [this.#topBorder(width)] : [];
 		for (const r of shown) {
-			const gutter = r.vi === 0 ? (r.li === lastLogical && !isTruncated && lineRowCount[r.li] === 1 ? "└─ " : "├─ ") : "│  ";
+			const gutter =
+				r.vi === 0 ? (r.li === lastLogical && !isTruncated && lineRowCount[r.li] === 1 ? "└─ " : "├─ ") : "│  ";
 			out.push(this.#bodyRow(gutter, r.text, width, gp));
 		}
 		if (allRows.length === 0) out.push(this.#bodyRow("│  ", "", width, gp));
@@ -141,7 +144,6 @@ export class QueuedMessageBox implements Component {
 	}
 
 	#bodyRow(gutter: string, text: string, width: number, gp: (s: string) => string): string {
-		const box = theme.boxRound;
 		const contentW = Math.max(0, width - 7);
 		return `${paint(VDASH)} ${gp(gutter)}${fit(text, contentW)} ${paint(VDASH)}`;
 	}
