@@ -992,7 +992,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// added above; the forced requestRender below composites the panel on frame 1.
 		this.ui.setRightPanel(
 			width => this.#rightInfoProvider(width),
-			[mainContent, this.chatContainer],
+			[mainContent, this.chatContainer, this.todoContainer],
 			result => this.#rightInfoLayoutCallback?.(result),
 		);
 		pushTerminalTitle();
