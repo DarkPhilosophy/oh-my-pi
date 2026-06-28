@@ -30,10 +30,6 @@ const FRAME_MS = 100;
 // one moving spotlight — a size ramp, never equal dots.
 const GLYPHS = ["·", "∙", "•", "●"] as const;
 const MAX_LEVEL = GLYPHS.length - 1;
-// How far the spotlight extends to either side of its head position, in cells.
-// Keeping this equal to MAX_LEVEL means the full ramp `· ∙ • ●` is always
-// visible together as the spotlight travels.
-const TRAIL = MAX_LEVEL;
 // Below this the titled rule has no room; fall back to the bare word so a very
 // narrow terminal still shows *something* without breaking layout width.
 const MIN_BORDER_WIDTH = 8;
@@ -200,7 +196,7 @@ export class SteeringIndicator extends Text {
 		if (width < MIN_BORDER_WIDTH) {
 			return this.#active ? this.#styles.bright(this.#word) : this.#styles.mid(this.#word);
 		}
-		const { inner, titleStart, titleEnd, min, max } = this.#window(width);
+		const { inner, titleStart, titleEnd } = this.#window(width);
 		const titleStr = `[   ${this.#word}   ]`;
 		let out = paint(topLeft);
 		for (let c = 0; c < inner; c++) {
