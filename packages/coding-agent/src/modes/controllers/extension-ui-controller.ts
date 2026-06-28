@@ -1019,6 +1019,7 @@ export class ExtensionUiController {
 			this.#disposeRightWidgetEntry(widget);
 		}
 		this.#rightWidgets.clear();
+		this.#widgetLayoutCache.clear();
 		this.#flushRightWidgets();
 		this.#rebuildHookWidgets();
 	}
