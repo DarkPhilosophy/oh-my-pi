@@ -20,6 +20,7 @@ import type {
 	LoaderMessageColorFn,
 	NativeScrollbackLiveRegion,
 	OverlayHandle,
+	PanelLayoutResult,
 	SlashCommand,
 } from "@oh-my-pi/pi-tui";
 import {
@@ -180,6 +181,7 @@ import type {
 	InteractiveModeContext,
 	InteractiveModeInitOptions,
 	InteractiveSelectorDialogOptions,
+	RightInfoProvider,
 	SubmittedUserInput,
 	TodoItem,
 	TodoPhase,
@@ -490,6 +492,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	oauthManualInput: OAuthManualInputManager = new OAuthManualInputManager();
 	collabHost?: CollabHost;
 	collabGuest?: CollabGuestLink;
+	#rightInfoBlocks: string[][] = [];
+	#staticRightInfoProvider = (_width: number): readonly (readonly string[])[] => this.#rightInfoBlocks;
+	#rightInfoProvider: RightInfoProvider = this.#staticRightInfoProvider;
+	#rightInfoLayoutCallback: ((result: PanelLayoutResult) => void) | null = null;
 
 	#pendingSlashCommands: SlashCommand[] = [];
 	#cleanupUnsubscribe?: () => void;
@@ -754,6 +760,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#tanCommandController = new TanCommandController(this);
 		this.#omfgController = new OmfgController(this);
 		this.#extensionUiController = new ExtensionUiController(this);
+		this.#extensionUiController.setWidgetLayoutEmitter(event => {
+			const runner = this.session.extensionRunner;
+			if (runner?.hasHandlers("widget_layout")) runner.emit(event).catch(() => {});
+		});
 		this.#eventController = new EventController(this);
 		this.#commandController = new CommandController(this);
 		this.#todoCommandController = new TodoCommandController(this);
@@ -809,6 +819,30 @@ export class InteractiveMode implements InteractiveModeContext {
 			const error = this.#mcpFailedServers.get(serverName);
 			return error === undefined ? [] : [{ serverName, error }];
 		});
+	}
+
+	setRightInfo(
+		blocks: string[][] | RightInfoProvider | undefined,
+		onLayout?: (result: PanelLayoutResult) => void,
+	): void {
+		if (onLayout !== undefined) this.#rightInfoLayoutCallback = onLayout;
+		if (typeof blocks === "function") {
+			this.#rightInfoProvider = blocks;
+			this.ui.requestRender();
+			return;
+		}
+		const next = blocks ?? [];
+		const changed =
+			this.#rightInfoProvider !== this.#staticRightInfoProvider ||
+			next.length !== this.#rightInfoBlocks.length ||
+			next.some((block, i) => {
+				const prev = this.#rightInfoBlocks[i];
+				return !prev || block.length !== prev.length || block.some((l, j) => l !== prev[j]);
+			});
+		if (!changed) return;
+		this.#rightInfoBlocks = next;
+		this.#rightInfoProvider = this.#staticRightInfoProvider;
+		this.ui.requestRender();
 	}
 
 	playWelcomeIntro(): void {
@@ -944,6 +978,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Start the UI. Cold `omp` launch opts into clearing on the first paint so
 		// the initial welcome frame does not append over the previous run's scrollback.
 		this.ui.start({ clearScrollback: options.clearInitialTerminalHistory === true });
+		// Register the right-side widget compositor AFTER ui.start(): setRightPanel
+		// schedules a render, and registering it earlier risked a full frame painting
+		// before the terminal was started/cleared. Targets are the chat container rows
+		// where the panel composites into trailing whitespace.
+		this.ui.setRightPanel(
+			width => this.#rightInfoProvider(width),
+			[this.chatContainer],
+			result => this.#rightInfoLayoutCallback?.(result),
+		);
 		pushTerminalTitle();
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
 		this.updateEditorBorderColor();
@@ -4195,6 +4238,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	// Hook UI methods
 	initHooksAndCustomTools(): Promise<void> {
 		return this.#extensionUiController.initHooksAndCustomTools();
+	}
+
+	reloadHooksAndCustomTools(): Promise<void> {
+		return this.#extensionUiController.reloadHooksAndCustomTools();
 	}
 
 	emitCustomToolSessionEvent(

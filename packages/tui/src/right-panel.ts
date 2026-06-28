@@ -83,13 +83,26 @@ export function compositeRightPanels(
 }
 
 /**
+ * Layout result reported by the compositor after deciding which blocks fit.
+ * Passed to the optional `onLayout` callback of {@link compositeRightPanelsInRange}.
+ */
+export interface PanelLayoutResult {
+	/** Indices of blocks that were placed on screen. */
+	placedBlockIndices: readonly number[];
+	/** Indices of blocks that were hidden (too narrow or no eligible run). */
+	hiddenBlockIndices: readonly number[];
+	/** Panel content column width (terminal width minus panel). */
+	availableWidth: number;
+	/** Number of rows in the search range. */
+	searchRows: number;
+}
+
+/**
  * Range form: composite blocks only into rows of `[searchStart, searchEnd)`.
- * The engine uses this with the window rows owned by the registered target
- * roots, so a panel can never land on bottom chrome (editor, status line).
  *
- * Trailing padding (full-width styled backgrounds) is ignored when measuring
- * free space, but only rows that actually receive panel text are re-written
- * with the padding stripped — untouched rows keep their styling byte-exact.
+ * When `onLayout` is provided, it is called once after compositing with the
+ * placement result — which blocks were placed vs hidden, and the dimensions.
+ * The compositor stays pure: the callback is the caller's responsibility.
  */
 export function compositeRightPanelsInRange(
 	baseLines: string[],
@@ -99,11 +112,28 @@ export function compositeRightPanelsInRange(
 	searchEnd: number,
 	isOccupiedLine: (line: string, index: number) => boolean = () => false,
 	isBackfilledOccupiedLine: (line: string, index: number) => boolean = () => false,
+	onLayout?: (result: PanelLayoutResult) => void,
 ): string[] {
-	if (blocks.length === 0 || baseLines.length === 0) return baseLines;
+	if (blocks.length === 0 || baseLines.length === 0) {
+		onLayout?.({
+			placedBlockIndices: [],
+			hiddenBlockIndices: [],
+			availableWidth: width,
+			searchRows: Math.max(0, searchEnd - searchStart),
+		});
+		return baseLines;
+	}
 	searchStart = Math.max(0, searchStart);
 	searchEnd = Math.min(baseLines.length, searchEnd);
-	if (searchEnd - searchStart < RIGHT_PANEL_MIN_ROWS) return baseLines;
+	if (searchEnd - searchStart < RIGHT_PANEL_MIN_ROWS) {
+		onLayout?.({
+			placedBlockIndices: [],
+			hiddenBlockIndices: blocks.map((_, i) => i),
+			availableWidth: width,
+			searchRows: searchEnd - searchStart,
+		});
+		return baseLines;
+	}
 
 	// Visually occupied rows (image protocol escapes, OSC 66 sized headings,
 	// etc.) must not receive panel text. A raw image escape additionally backfills
@@ -133,8 +163,9 @@ export function compositeRightPanelsInRange(
 		return w;
 	};
 
-	const placements: { start: number; block: readonly string[]; col: number }[] = [];
-	for (const block of blocks) {
+	const placements: { start: number; block: readonly string[]; col: number; originalIndex: number }[] = [];
+	for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
+		const block = blocks[blockIdx];
 		if (block.length === 0) continue;
 		const normalizedBlock = normalizePanelBlock(block);
 		let panelWidth = 0;
@@ -157,10 +188,18 @@ export function compositeRightPanelsInRange(
 		}
 		if (placed < 0) continue; // no run tall enough — drop this block alone
 		for (let k = 0; k < normalizedBlock.length; k++) occupied[placed + k] = true;
-		placements.push({ start: placed, block: normalizedBlock, col });
+		placements.push({ start: placed, block: normalizedBlock, col, originalIndex: blockIdx });
 	}
 
-	if (placements.length === 0) return baseLines;
+	if (placements.length === 0) {
+		onLayout?.({
+			placedBlockIndices: [],
+			hiddenBlockIndices: blocks.map((_, i) => i),
+			availableWidth: width,
+			searchRows: searchEnd - searchStart,
+		});
+		return baseLines;
+	}
 
 	const out = baseLines.slice();
 	for (const { start, block, col } of placements) {
@@ -174,6 +213,14 @@ export function compositeRightPanelsInRange(
 			out[start + k] = truncatedBase + reset + osc8Close + padding(Math.max(0, col - visibleWidth(base))) + block[k];
 		}
 	}
+
+	const placedSet = new Set(placements.map(p => p.originalIndex));
+	onLayout?.({
+		placedBlockIndices: [...placedSet],
+		hiddenBlockIndices: blocks.map((_, i) => i).filter(i => !placedSet.has(i)),
+		availableWidth: width,
+		searchRows: searchEnd - searchStart,
+	});
 	return out;
 }
 

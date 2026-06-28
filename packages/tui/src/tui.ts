@@ -17,7 +17,7 @@ import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
 import { LoopWatchdog } from "./loop-watchdog";
-import { compositeRightPanelsInRange } from "./right-panel";
+import { compositeRightPanelsInRange, type PanelLayoutResult } from "./right-panel";
 import { isConPTYHosted, setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteImage,
@@ -1148,6 +1148,7 @@ export class TUI extends Container {
 	// scrollback, and only into rows owned by the registered target roots.
 	#rightPanelProvider: ((width: number) => readonly (readonly string[])[]) | null = null;
 	#rightPanelTargets: Set<Component> | null = null;
+	#rightPanelLayoutCallback: ((result: PanelLayoutResult) => void) | null = null;
 
 	constructor(terminal: Terminal, showHardwareCursor?: boolean, options?: TUIOptions) {
 		super();
@@ -1862,10 +1863,12 @@ export class TUI extends Container {
 	setRightPanel(
 		provider: ((width: number) => readonly (readonly string[])[]) | null,
 		targets?: readonly Component[],
+		onLayout?: (result: PanelLayoutResult) => void,
 	): void {
 		this.#rightPanelProvider = provider;
 		this.#rightPanelTargets =
 			provider !== null && targets !== undefined && targets.length > 0 ? new Set(targets) : null;
+		this.#rightPanelLayoutCallback = onLayout ?? null;
 		// Defer painting until the terminal is started: a provider registered
 		// during setup (before start()) would otherwise commit a frame into raw
 		// scrollback before the screen is cleared. start() does the initial paint
@@ -1946,6 +1949,7 @@ export class TUI extends Container {
 			hi,
 			(line, i) => TERMINAL.isImageLine(line) || (occupied[i] ?? false),
 			line => TERMINAL.isImageEscapeLine(line),
+			this.#rightPanelLayoutCallback ?? undefined,
 		);
 		if (composited === window) return window;
 		return this.#prepareLinesArray(composited, width);
