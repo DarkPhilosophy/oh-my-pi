@@ -20,6 +20,7 @@ import type {
 	LoaderMessageColorFn,
 	NativeScrollbackLiveRegion,
 	OverlayHandle,
+	PanelLayoutResult,
 	SlashCommand,
 } from "@oh-my-pi/pi-tui";
 import {
@@ -481,6 +482,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#rightInfoBlocks: string[][] = [];
 	#staticRightInfoProvider = (_width: number): readonly (readonly string[])[] => this.#rightInfoBlocks;
 	#rightInfoProvider: RightInfoProvider = this.#staticRightInfoProvider;
+	#rightInfoLayoutCallback: ((result: PanelLayoutResult) => void) | null = null;
 	hookSelector: HookSelectorComponent | undefined = undefined;
 	hookInput: HookInputComponent | undefined = undefined;
 	hookEditor: HookEditorComponent | undefined = undefined;
@@ -708,6 +710,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#tanCommandController = new TanCommandController(this);
 		this.#omfgController = new OmfgController(this);
 		this.#extensionUiController = new ExtensionUiController(this);
+		this.#extensionUiController.setWidgetLayoutEmitter(event => {
+			const runner = this.session.extensionRunner;
+			if (runner?.hasHandlers("widget_layout")) runner.emit(event).catch(() => {});
+		});
 		this.#eventController = new EventController(this);
 		this.#commandController = new CommandController(this);
 		this.#todoCommandController = new TodoCommandController(this);
@@ -772,7 +778,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		welcome?.playIntro(() => this.ui.requestComponentRender(welcome));
 	}
 
-	setRightInfo(blocks: string[][] | RightInfoProvider | undefined): void {
+	setRightInfo(
+		blocks: string[][] | RightInfoProvider | undefined,
+		onLayout?: (result: PanelLayoutResult) => void,
+	): void {
+		if (onLayout !== undefined) this.#rightInfoLayoutCallback = onLayout;
 		if (typeof blocks === "function") {
 			this.#rightInfoProvider = blocks;
 			this.ui.requestRender();
@@ -930,7 +940,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		// (a visible pre-start paint, and duplicate startup output on terminals that
 		// copy screen contents on the first paint). Targets are the two root children
 		// added above; the forced requestRender below composites the panel on frame 1.
-		this.ui.setRightPanel(width => this.#rightInfoProvider(width), [mainContent, this.chatContainer]);
+		this.ui.setRightPanel(
+			width => this.#rightInfoProvider(width),
+			[mainContent, this.chatContainer],
+			result => this.#rightInfoLayoutCallback?.(result),
+		);
 		pushTerminalTitle();
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
 		this.updateEditorBorderColor();

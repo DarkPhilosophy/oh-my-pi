@@ -1,4 +1,4 @@
-import type { Component, OverlayHandle, TUI } from "@oh-my-pi/pi-tui";
+import type { Component, OverlayHandle, PanelLayoutResult, TUI } from "@oh-my-pi/pi-tui";
 import { Container, Spacer, Text, trimRightPadding } from "@oh-my-pi/pi-tui";
 import { KeybindingsManager } from "../../config/keybindings";
 import type {
@@ -17,6 +17,7 @@ import type {
 	ExtensionWidgetOptions,
 	SendUserMessageHandler,
 	TerminalInputHandler,
+	WidgetLayoutEvent,
 } from "../../extensibility/extensions";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
 import { createExtensionModelQuery } from "../../extensibility/extensions/model-api";
@@ -34,6 +35,7 @@ const MAX_WIDGET_LINES = 10;
 interface RightWidgetPanelBlock {
 	lines: string[];
 	priority?: number;
+	id?: string;
 }
 
 type RightWidgetEntry =
@@ -52,6 +54,20 @@ export class ExtensionUiController {
 	#rightWidgets = new Map<string, RightWidgetEntry>();
 	#errorSubscribedRunners = new WeakSet<object>();
 	// Single-file dialog surface (`editorContainer` + focus) is shared by the
+	// Block index → widget key / block id / block row count, refreshed each
+	// render by #rightWidgetLines so #handlePanelLayout can map compositor
+	// block indices back to per-widget visibility.
+	#lastBlockWidgetKeys: string[] = [];
+	#lastBlockIds: (string | undefined)[] = [];
+	#lastBlockSizes: number[] = [];
+	// Per-widget cached layout state — only emit widget_layout on change.
+	#widgetLayoutCache = new Map<
+		string,
+		{ visible: boolean; availableWidth: number; visibleRows: number; hiddenBlocks: string[] }
+	>();
+	// Emitter set by the mode (which owns the extension runner). Fire-and-forget;
+	// the mode catches handler errors.
+	#emitWidgetLayout: ((event: WidgetLayoutEvent) => void) | null = null;
 	// selector / input / editor modals, so only one may be presented at a time;
 	// the rest queue. See `#presentDialog`.
 	#dialogActive = false;
@@ -344,6 +360,7 @@ export class ExtensionUiController {
 						.map(block => ({
 							lines: block.lines.map(line => String(line)),
 							priority: block.priority,
+							id: block.id,
 						}))
 						.filter(block => block.lines.length > 0),
 					priority,
@@ -391,7 +408,11 @@ export class ExtensionUiController {
 	}
 
 	#flushRightWidgets(): void {
-		this.ctx.setRightInfo(this.#rightWidgets.size === 0 ? undefined : this.#rightInfoProvider);
+		if (this.#rightWidgets.size === 0) {
+			this.ctx.setRightInfo(undefined);
+			return;
+		}
+		this.ctx.setRightInfo(this.#rightInfoProvider, result => this.#handlePanelLayout(result));
 	}
 
 	#rightWidgetLines(width: number): string[][] {
@@ -399,12 +420,14 @@ export class ExtensionUiController {
 		// widgets can degrade contextually when the negative space is short.
 		// Placement order: explicit block priority, then widget priority, then
 		// ascending height (shortest first), then stable widget/block order.
-		const blocks = [...this.#rightWidgets.values()].flatMap((entry, widgetIndex) =>
+		const blocks = [...this.#rightWidgets.entries()].flatMap(([key, entry], widgetIndex) =>
 			this.#rightWidgetBlocks(entry, width).map((block, blockIndex) => ({
 				lines: block.lines,
 				priority: block.priority ?? entry.priority,
 				widgetIndex,
 				blockIndex,
+				widgetKey: key,
+				blockId: block.id,
 			})),
 		);
 		blocks.sort((a, b) => {
@@ -415,7 +438,77 @@ export class ExtensionUiController {
 			if (a.widgetIndex !== b.widgetIndex) return a.widgetIndex - b.widgetIndex;
 			return a.blockIndex - b.blockIndex;
 		});
+		// Track mapping for #handlePanelLayout to map compositor block indices
+		// back to per-widget visibility.
+		this.#lastBlockWidgetKeys = blocks.map(b => b.widgetKey);
+		this.#lastBlockIds = blocks.map(b => b.blockId);
+		this.#lastBlockSizes = blocks.map(b => b.lines.length);
 		return blocks.map(block => block.lines);
+	}
+
+	/**
+	 * Process compositor layout result: map block indices → widget keys, compute
+	 * per-widget visibility, and emit `widget_layout` events (deferred, cached —
+	 * only on state change, not every paint).
+	 */
+	#handlePanelLayout(result: PanelLayoutResult): void {
+		if (!this.#emitWidgetLayout || this.#lastBlockWidgetKeys.length === 0) return;
+
+		const placedSet = new Set(result.placedBlockIndices);
+		const widgetState = new Map<string, { visible: boolean; visibleRows: number; hiddenBlocks: string[] }>();
+
+		for (let i = 0; i < this.#lastBlockWidgetKeys.length; i++) {
+			const key = this.#lastBlockWidgetKeys[i];
+			const isPlaced = placedSet.has(i);
+			const state = widgetState.get(key) ?? { visible: false, visibleRows: 0, hiddenBlocks: [] };
+			if (isPlaced) {
+				state.visible = true;
+				state.visibleRows += this.#lastBlockSizes[i] ?? 0;
+			} else {
+				const blockId = this.#lastBlockIds[i];
+				if (blockId !== undefined) state.hiddenBlocks.push(blockId);
+			}
+			widgetState.set(key, state);
+		}
+
+		for (const [key, state] of widgetState) {
+			const hiddenBlocks = state.hiddenBlocks;
+			const cached = this.#widgetLayoutCache.get(key);
+			if (
+				cached &&
+				cached.visible === state.visible &&
+				cached.availableWidth === result.availableWidth &&
+				cached.visibleRows === state.visibleRows &&
+				cached.hiddenBlocks.length === hiddenBlocks.length &&
+				cached.hiddenBlocks.every((b, i) => b === hiddenBlocks[i])
+			)
+				continue;
+
+			this.#widgetLayoutCache.set(key, {
+				visible: state.visible,
+				availableWidth: result.availableWidth,
+				visibleRows: state.visibleRows,
+				hiddenBlocks: [...hiddenBlocks],
+			});
+
+			const event: WidgetLayoutEvent = {
+				type: "widget_layout",
+				key,
+				visible: state.visible,
+				availableWidth: result.availableWidth,
+				visibleRows: state.visibleRows,
+				hiddenBlocks: hiddenBlocks.length > 0 ? hiddenBlocks : undefined,
+			};
+			// Deferred emit: the paint stack is synchronous; queueMicrotask runs
+			// after it completes so handler calls (setWidget → requestRender)
+			// schedule the next frame instead of re-entering the current paint.
+			queueMicrotask(() => this.#emitWidgetLayout?.(event));
+		}
+	}
+
+	/** Set the callback used to emit widget_layout events. The mode owns the runner. */
+	setWidgetLayoutEmitter(emit: ((event: WidgetLayoutEvent) => void) | null): void {
+		this.#emitWidgetLayout = emit;
 	}
 
 	#createHookWidget(content: ExtensionWidgetContent): ExtensionUiComponent {
