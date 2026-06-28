@@ -17,7 +17,7 @@ import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
 import { LoopWatchdog } from "./loop-watchdog";
-import { compositeRightPanelsInRange, type PanelLayoutResult } from "./right-panel";
+import { compositeRightPanelsInRange, type PanelLayoutResult, RIGHT_PANEL_MIN_COL } from "./right-panel";
 import { isConPTYHosted, setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteImage,
@@ -1906,10 +1906,26 @@ export class TUI extends Container {
 				const end = segment.start + segment.rowCount;
 				if (end > frameHi) frameHi = end;
 			}
-			if (frameHi <= frameLo) return window;
+			if (frameHi <= frameLo) {
+				this.#rightPanelLayoutCallback?.({
+					placedBlockIndices: [],
+					hiddenBlockIndices: blocks.map((_, i) => i),
+					availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
+					searchRows: 0,
+				});
+				return window;
+			}
 			lo = Math.max(0, frameLo - windowTop);
 			hi = Math.min(window.length, frameHi - windowTop);
-			if (hi <= lo) return window;
+			if (hi <= lo) {
+				this.#rightPanelLayoutCallback?.({
+					placedBlockIndices: [],
+					hiddenBlockIndices: blocks.map((_, i) => i),
+					availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
+					searchRows: 0,
+				});
+				return window;
+			}
 		}
 		// Mark visually occupied rows before the generic compositor runs. Image
 		// lines keep their backward placeholder scan through the dedicated

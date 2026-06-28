@@ -84,7 +84,18 @@ export type RpcCommand =
 
 	// Login
 	| { id?: string; type: "get_login_providers" }
-	| { id?: string; type: "login"; providerId: string };
+	| { id?: string; type: "login"; providerId: string }
+
+	// Widget layout feedback (host → server)
+	| {
+			id?: string;
+			type: "widget_layout";
+			widgetKey: string;
+			visible: boolean;
+			availableWidth: number;
+			visibleRows: number;
+			hiddenBlocks?: string[];
+	  };
 
 // ============================================================================
 // RPC State
@@ -327,6 +338,7 @@ export type RpcSessionEventFrame = AgentSessionEvent | RpcSubagentFrame;
 export interface RpcExtensionWidgetBlock {
 	lines: string[];
 	priority?: number;
+	id?: string;
 }
 
 /** Emitted when an extension needs user input */
