@@ -374,4 +374,43 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		// With fix: cache was deleted on removal, so event fires again.
 		expect(layouts).toEqual(["w", "w"]);
 	});
+	it("clears layout cache on right-to-inline move so re-add emits widget_layout", async () => {
+		let provider: ((width: number) => string[][]) | undefined;
+		let layoutCb: ((result: { placedBlockIndices: number[]; availableWidth: number }) => void) | undefined;
+		const ctx = {
+			hookWidgetContainerAbove: new Container(),
+			hookWidgetContainerBelow: new Container(),
+			ui: { requestRender: () => {} },
+			setRightInfo: (
+				p: unknown,
+				onLayout?: (result: { placedBlockIndices: number[]; availableWidth: number }) => void,
+			) => {
+				provider = typeof p === "function" ? (p as (width: number) => string[][]) : undefined;
+				layoutCb = onLayout;
+			},
+		} as unknown as InteractiveModeContext;
+		const c = new ExtensionUiController(ctx);
+		const layouts: string[] = [];
+		c.setWidgetLayoutEmitter(event => layouts.push(event.key));
+
+		// Add as rightEditor → trigger layout
+		c.setHookWidget("w", ["line1"], { placement: "rightEditor" });
+		provider?.(80);
+		layoutCb?.({ placedBlockIndices: [0], availableWidth: 30 });
+		await Promise.resolve();
+		expect(layouts).toEqual(["w"]);
+
+		// Move to aboveEditor (inline) — should clear right cache
+		c.setHookWidget("w", ["line1"], { placement: "aboveEditor" });
+
+		// Move back to rightEditor with identical content → should emit again
+		c.setHookWidget("w", ["line1"], { placement: "rightEditor" });
+		provider?.(80);
+		layoutCb?.({ placedBlockIndices: [0], availableWidth: 30 });
+		await Promise.resolve();
+
+		// Without cache fix: second event suppressed (stale cache from first add).
+		// With fix: cache cleared on right-to-inline move, so event fires again.
+		expect(layouts).toEqual(["w", "w"]);
+	});
 });
