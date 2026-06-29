@@ -335,4 +335,43 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		expect(caught).toBeUndefined(); // no #private-access crash
 		expect(fakeTui.getCalls()).toEqual(["from-widget"]); // ran on the real instance
 	});
+	it("clears layout cache on widget removal so re-add emits widget_layout", async () => {
+		let provider: ((width: number) => string[][]) | undefined;
+		let layoutCb: ((result: { placedBlockIndices: number[]; availableWidth: number }) => void) | undefined;
+		const ctx = {
+			hookWidgetContainerAbove: new Container(),
+			hookWidgetContainerBelow: new Container(),
+			ui: { requestRender: () => {} },
+			setRightInfo: (
+				p: unknown,
+				onLayout?: (result: { placedBlockIndices: number[]; availableWidth: number }) => void,
+			) => {
+				provider = typeof p === "function" ? (p as (width: number) => string[][]) : undefined;
+				layoutCb = onLayout;
+			},
+		} as unknown as InteractiveModeContext;
+		const c = new ExtensionUiController(ctx);
+		const layouts: string[] = [];
+		c.setWidgetLayoutEmitter(event => layouts.push(event.key));
+
+		// Add widget → invoke provider (populates block tracking) + trigger layout
+		c.setHookWidget("w", ["line1", "line2"], { placement: "rightEditor" });
+		provider?.(80);
+		layoutCb?.({ placedBlockIndices: [0], availableWidth: 30 });
+		await Promise.resolve(); // flush queueMicrotask
+		expect(layouts).toEqual(["w"]);
+
+		// Remove widget
+		c.setHookWidget("w", undefined, { placement: "rightEditor" });
+
+		// Re-add with identical content → invoke provider + trigger layout again
+		c.setHookWidget("w", ["line1", "line2"], { placement: "rightEditor" });
+		provider?.(80);
+		layoutCb?.({ placedBlockIndices: [0], availableWidth: 30 });
+		await Promise.resolve();
+
+		// Without cache fix: second "w" event suppressed (cache matched).
+		// With fix: cache was deleted on removal, so event fires again.
+		expect(layouts).toEqual(["w", "w"]);
+	});
 });
