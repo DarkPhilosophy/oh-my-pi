@@ -30,6 +30,15 @@ function createMoveContext(sourceDir: string) {
 		updateEditorBorderColor: vi.fn(),
 		reloadTodos: vi.fn(async () => {}),
 		ui: { requestRender: vi.fn() },
+		chatContainer: { clear: vi.fn() },
+		steeringIndicator: { setActive: vi.fn() },
+		pendingMessagesContainer: { clear: vi.fn() },
+		compactionQueuedMessages: [],
+		streamingComponent: undefined,
+		streamingMessage: undefined,
+		pendingTools: new Map(),
+		statusLine: { invalidate: vi.fn(), resetActiveTime: vi.fn() },
+		updateEditorTopBorder: vi.fn(),
 		present,
 	} as unknown as InteractiveModeContext;
 	return { ctx, state, present };
