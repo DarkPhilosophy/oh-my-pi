@@ -340,6 +340,7 @@ export class ExtensionUiController {
 		if (wasRight) {
 			this.#disposeRightWidgetEntry(this.#rightWidgets.get(key));
 			this.#rightWidgets.delete(key);
+			this.#widgetLayoutCache.delete(key);
 			this.#flushRightWidgets();
 		}
 		const target = placement === "belowEditor" ? this.#hookWidgetsBelow : this.#hookWidgetsAbove;
