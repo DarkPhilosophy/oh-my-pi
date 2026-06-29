@@ -266,7 +266,8 @@ def _tuple_of_widget_blocks(values: object, *, field: str) -> tuple[ExtensionWid
         if lines is None:
             raise ValueError(f"{item_field}.lines must contain at least one string")
         priority = _optional_number(item, "priority")
-        result.append(ExtensionWidgetBlock(lines=lines, priority=priority))
+        block_id = _optional_str(item, "id")
+        result.append(ExtensionWidgetBlock(lines=lines, priority=priority, id=block_id))
     return tuple(result) or None
 
 
@@ -884,6 +885,7 @@ class ReadyEvent:
 class ExtensionWidgetBlock:
     lines: tuple[str, ...]
     priority: float | None = None
+    id: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
