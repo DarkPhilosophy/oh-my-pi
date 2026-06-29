@@ -189,9 +189,9 @@ export class QueueFooter implements Component {
 	render(width: number): readonly string[] {
 		if (this.#cached && this.#cachedWidth === width) return this.#cached;
 		const inner = Math.max(0, width);
-		const seg = truncateToWidth(` ${this.#text} `, inner);
-		const segW = visibleWidth(seg);
 		const left = 1;
+		const seg = truncateToWidth(` ${this.#text} `, Math.max(0, inner - left));
+		const segW = visibleWidth(seg);
 		const right = Math.max(0, inner - left - segW);
 		const line = paint(DASH.repeat(left)) + theme.fg("muted", seg) + paint(DASH.repeat(right));
 		this.#cached = [line];

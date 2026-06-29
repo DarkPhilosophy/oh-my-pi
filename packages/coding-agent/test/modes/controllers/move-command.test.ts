@@ -39,6 +39,7 @@ function createMoveContext(sourceDir: string) {
 		pendingTools: new Map(),
 		statusLine: { invalidate: vi.fn(), resetActiveTime: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
+		rebuildChatFromMessages: vi.fn(),
 		present,
 	} as unknown as InteractiveModeContext;
 	return { ctx, state, present };
