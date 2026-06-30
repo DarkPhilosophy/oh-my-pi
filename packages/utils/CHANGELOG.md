@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [16.2.7] - 2026-06-30
+
+### Added
+
+- Added a utility to detect binary files based on content sniffing.
+
 ## [16.2.6] - 2026-06-29
 
 ### Added

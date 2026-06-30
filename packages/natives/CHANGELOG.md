@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [16.2.7] - 2026-06-30
+
+### Added
+
+- Added embedded Silver TrueType font rendering support to `renderSnapcompactPng`, featuring automatic per-glyph fallback for missing bitmap characters and anti-aliased scaling for East Asian wide code points.
+- Added the `snapcompactSupportedChars` function to check font capability for specific characters.
+
 ## [16.2.5] - 2026-06-28
 
 ### Fixed
