@@ -296,8 +296,9 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		})) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
 
 		c.setHookWidget("sized", factory, { placement: "rightEditor" });
-		expect(currentRightInfo(120)).toEqual([["w120"]]);
-		expect(receivedWidth).toBe(120);
+		const panelWidth = 120 - 30 - 1; // RIGHT_PANEL_MIN_COL=30, 1-col gap
+		expect(currentRightInfo(120)).toEqual([[`w${panelWidth}`]]);
+		expect(receivedWidth).toBe(panelWidth);
 	});
 
 	it("binds non-overridden TUI methods to the real instance so #private access works", () => {

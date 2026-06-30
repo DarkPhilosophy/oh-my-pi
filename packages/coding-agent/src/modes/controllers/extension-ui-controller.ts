@@ -1,5 +1,5 @@
 import type { Component, OverlayHandle, PanelLayoutResult, TUI } from "@oh-my-pi/pi-tui";
-import { Container, Spacer, Text, trimRightPadding } from "@oh-my-pi/pi-tui";
+import { Container, RIGHT_PANEL_MIN_COL, Spacer, Text, trimRightPadding } from "@oh-my-pi/pi-tui";
 import { KeybindingsManager } from "../../config/keybindings";
 import type {
 	CompactOptions,
@@ -376,9 +376,10 @@ export class ExtensionUiController {
 
 	#rightWidgetBlocks(entry: RightWidgetEntry, width: number): RightWidgetPanelBlock[] {
 		if (entry.kind === "blocks") return entry.blocks;
+		const panelWidth = Math.max(1, width - RIGHT_PANEL_MIN_COL - 1);
 		return [
 			{
-				lines: entry.component.render(width).map(trimRightPadding),
+				lines: entry.component.render(panelWidth).map(trimRightPadding),
 			},
 		];
 	}
