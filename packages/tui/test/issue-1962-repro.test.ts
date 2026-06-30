@@ -133,3 +133,4 @@ describe("issue #1962: arrow navigation after dirty scrollback", () => {
 		}
 	});
 });
+// trigger CI rerun
