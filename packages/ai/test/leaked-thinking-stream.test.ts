@@ -10,6 +10,7 @@ import type {
 	ThinkingContent,
 	ToolCall,
 } from "@oh-my-pi/pi-ai/types";
+import { getStreamingPartialJson, setStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { wrapLeakedThinkingStream } from "@oh-my-pi/pi-ai/utils/leaked-thinking-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -60,7 +61,64 @@ function thinks(message: AssistantMessage): ThinkingContent[] {
 	return message.content.filter((b): b is ThinkingContent => b.type === "thinking");
 }
 
+type ToolSnapshot = {
+	type: "toolcall_start" | "toolcall_delta" | "toolcall_end";
+	id: string;
+	name: string;
+	arguments: Record<string, unknown>;
+	partialJson: string | undefined;
+	delta?: string;
+};
+
+async function nextToolSnapshot(iterator: AsyncIterator<AssistantMessageEvent>): Promise<ToolSnapshot> {
+	for (;;) {
+		const next = await iterator.next();
+		if (next.done) throw new Error("stream ended before a tool-call event");
+		const event = next.value;
+		if (event.type !== "toolcall_start" && event.type !== "toolcall_delta" && event.type !== "toolcall_end") {
+			continue;
+		}
+		const block = event.partial.content[event.contentIndex];
+		if (block?.type !== "toolCall") throw new Error("tool-call event did not point at a toolCall block");
+		return {
+			type: event.type,
+			id: block.id,
+			name: block.name,
+			arguments: JSON.parse(JSON.stringify(block.arguments)) as Record<string, unknown>,
+			partialJson: getStreamingPartialJson(block),
+			...(event.type === "toolcall_delta" ? { delta: event.delta } : {}),
+		};
+	}
+}
+
 describe("wrapLeakedThinkingStream", () => {
+	async function runLeakedText(chunks: readonly string[]): Promise<{
+		events: AssistantMessageEvent[];
+		result: AssistantMessage;
+	}> {
+		let text = "";
+		return runWrapper(inner => {
+			inner.push({ type: "start", partial: msg() });
+			inner.push({ type: "text_start", contentIndex: 0, partial: msg({ content: [{ type: "text", text: "" }] }) });
+			for (const chunk of chunks) {
+				text += chunk;
+				inner.push({
+					type: "text_delta",
+					contentIndex: 0,
+					delta: chunk,
+					partial: msg({ content: [{ type: "text", text }] }),
+				});
+			}
+			inner.push({
+				type: "text_end",
+				contentIndex: 0,
+				content: text,
+				partial: msg({ content: [{ type: "text", text }] }),
+			});
+			inner.push({ type: "done", reason: "stop", message: msg({ content: [{ type: "text", text }] }) });
+		});
+	}
+
 	it("splits a leaked fence into structured blocks live during streaming", async () => {
 		const leaked = "Visible before.```thinking\nplan\n```Visible after.";
 		const { events, result } = await runWrapper(inner => {
@@ -87,6 +145,44 @@ describe("wrapLeakedThinkingStream", () => {
 		// The split happened live, not only in the terminal message.
 		expect(events.some(e => e.type === "thinking_delta")).toBe(true);
 	});
+
+	for (const { name, chunks } of [
+		{
+			name: "whole chunk",
+			chunks: ["Intro.```thinking\nPlan:\n```rs\nfn main() {}\n```\nThen decide.\n```Visible after"],
+		},
+		{
+			name: "character stream",
+			chunks: [..."Intro.```thinking\nPlan:\n```rs\nfn main() {}\n```\nThen decide.\n```Visible after"],
+		},
+	]) {
+		it(`keeps nested Markdown fences inside leaked thinking in ${name}`, async () => {
+			const { events, result } = await runLeakedText(chunks);
+			expect(result.content.map(b => b.type)).toEqual(["text", "thinking", "text"]);
+			expect(texts(result)).toEqual(["Intro.", "Visible after"]);
+			expect(thinks(result).map(b => b.thinking)).toEqual(["Plan:\n```rs\nfn main() {}\n```\nThen decide.\n"]);
+			expect(texts(result).join("")).not.toContain("fn main");
+			expect(events.some(e => e.type === "thinking_delta")).toBe(true);
+		});
+	}
+
+	for (const { suffix, visible } of [
+		{ suffix: "Visible after", visible: "Visible after" },
+		{ suffix: " after", visible: " after" },
+		{ suffix: "Done", visible: "Done" },
+	]) {
+		for (const { name, chunks } of [
+			{ name: "whole chunk", chunks: [`\`\`\`thinking\nplan\n\`\`\`${suffix}`] },
+			{ name: "character stream", chunks: [...`\`\`\`thinking\nplan\n\`\`\`${suffix}`] },
+		]) {
+			it(`treats leaked inline close plus ${JSON.stringify(suffix)} as visible reply in ${name}`, async () => {
+				const { result } = await runLeakedText(chunks);
+				expect(result.content.map(b => b.type)).toEqual(["thinking", "text"]);
+				expect(thinks(result).map(b => b.thinking)).toEqual(["plan\n"]);
+				expect(texts(result)).toEqual([visible]);
+			});
+		}
+	}
 
 	it("preserves text, thinking, and tool-call signatures across the split", async () => {
 		const leaked = "before ```thinking\nhmm\n``` after";
@@ -126,6 +222,68 @@ describe("wrapLeakedThinkingStream", () => {
 		expect(thinks(result).every(b => b.thinkingSignature === undefined)).toBe(true);
 		const calls = result.content.filter((b): b is ToolCall => b.type === "toolCall");
 		expect(calls[0]?.thoughtSignature).toBe("tsig");
+	});
+
+	it("preserves native tool-call ids and streamed partial JSON while healing", async () => {
+		const inner = new AssistantMessageEventStream();
+		const out = wrapLeakedThinkingStream(inner);
+		const iterator = out[Symbol.asyncIterator]();
+		const call: ToolCall = {
+			type: "toolCall",
+			id: "toolu_real",
+			name: "Bash",
+			arguments: {},
+		};
+		setStreamingPartialJson(call, "");
+		const partial = msg({ content: [call], stopReason: "toolUse" });
+		inner.push({ type: "start", partial });
+
+		const startPromise = nextToolSnapshot(iterator);
+		inner.push({ type: "toolcall_start", contentIndex: 0, partial });
+		const start = await startPromise;
+
+		setStreamingPartialJson(call, '{"command":"echo hi');
+		const deltaPromise = nextToolSnapshot(iterator);
+		inner.push({
+			type: "toolcall_delta",
+			contentIndex: 0,
+			delta: '{"command":"echo hi',
+			partial,
+		});
+		const delta = await deltaPromise;
+
+		call.arguments = { command: "echo hi" };
+		setStreamingPartialJson(call, '{"command":"echo hi"}');
+		const endPromise = nextToolSnapshot(iterator);
+		inner.push({ type: "toolcall_end", contentIndex: 0, toolCall: call, partial });
+		const end = await endPromise;
+		inner.push({ type: "done", reason: "toolUse", message: partial });
+		await out.result();
+
+		expect([start, delta, end]).toEqual([
+			{
+				type: "toolcall_start",
+				id: "toolu_real",
+				name: "Bash",
+				arguments: {},
+				partialJson: "",
+			},
+			{
+				type: "toolcall_delta",
+				id: "toolu_real",
+				name: "Bash",
+				arguments: {},
+				partialJson: '{"command":"echo hi',
+				delta: '{"command":"echo hi',
+			},
+			{
+				type: "toolcall_end",
+				id: "toolu_real",
+				name: "Bash",
+				arguments: { command: "echo hi" },
+				partialJson: '{"command":"echo hi"}',
+			},
+		]);
 	});
 
 	it("heals a fence that only appears in the terminal message (no prior text deltas)", async () => {
@@ -253,10 +411,8 @@ describe("leaked thinking healing through stream()", () => {
 		return Object.assign(fn, { preconnect: fetch.preconnect });
 	}
 
-	it("splits a leaked fence from a provider with no own healer", async () => {
-		// Anthropic has no provider-local visible-text healer, so a split here
-		// proves the central wrapper is composed into stream().
-		const model: Model<"anthropic-messages"> = buildModel({
+	function anthropicModel(overrides: Partial<Model<"anthropic-messages">> = {}): Model<"anthropic-messages"> {
+		return buildModel({
 			id: "claude-sonnet-4-5",
 			name: "Claude Sonnet 4.5",
 			api: "anthropic-messages",
@@ -267,13 +423,37 @@ describe("leaked thinking healing through stream()", () => {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 200_000,
 			maxTokens: 8_192,
+			...overrides,
 		});
-		const leaked = "```thinking\nDeliberate.\n```\nFinal answer.";
-		const context: Context = { messages: [{ role: "user", content: "hi", timestamp: Date.now() }] };
-		const result = await stream(model, context, {
+	}
+
+	const leaked = "```thinking\nDeliberate.\n```\nFinal answer.";
+	const context: Context = { messages: [{ role: "user", content: "hi", timestamp: Date.now() }] };
+
+	it("leaves a leaked fence intact for the official Anthropic API", async () => {
+		// Official first-party endpoints return structured thinking and are exempt
+		// from the central healer, so a leaked fence must stay verbatim visible text.
+		const result = await stream(anthropicModel(), context, {
 			apiKey: "test",
 			fetch: anthropicLeakFetch(leaked),
 		}).result();
+
+		expect(result.content.map(b => b.type)).toEqual(["text"]);
+		expect(thinks(result)).toHaveLength(0);
+		expect(texts(result).join("")).toBe(leaked);
+	});
+
+	it("splits a leaked fence for a non-official anthropic-messages endpoint", async () => {
+		// A third-party gateway reusing the anthropic-messages wire format may leak,
+		// so the central wrapper still heals when the endpoint is not official.
+		const result = await stream(
+			anthropicModel({ provider: "zai", baseUrl: "https://api.z.ai/api/anthropic" }),
+			context,
+			{
+				apiKey: "test",
+				fetch: anthropicLeakFetch(leaked),
+			},
+		).result();
 
 		expect(result.content.map(b => b.type)).toEqual(["thinking", "text"]);
 		const thinking = thinks(result)

@@ -199,6 +199,8 @@ function applyPreviewEdits(args: {
 	if (!options.skipHashValidation && expected === undefined) {
 		throw new Error(missingSnapshotTagMessage(section.path));
 	}
+	// The 4-hex tag is content-derived: when the live text hashes to it, trust
+	// the match and preview directly (mirrors Patcher's apply-time behavior).
 	const liveMatches = expected !== undefined && computeFileHash(normalized) === expected;
 	const edits = parsePreviewEdits(section, options.streaming);
 	const resolved = resolvePreviewEdits({ section, absolutePath, normalized, snapshots, expected, liveMatches, edits });
