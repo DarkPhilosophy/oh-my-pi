@@ -12,6 +12,7 @@ import {
 	aimlApiModelManagerOptions,
 	alibabaCodingPlanModelManagerOptions,
 	anthropicModelManagerOptions,
+	basetenModelManagerOptions,
 	cerebrasModelManagerOptions,
 	cloudflareAiGatewayModelManagerOptions,
 	coreWeaveModelManagerOptions,
@@ -74,13 +75,23 @@ export const CATALOG_PROVIDERS = [
 		catalogDiscovery: { label: "Alibaba Coding Plan" },
 	},
 	{
+		id: "baseten",
+		defaultModel: "moonshotai/Kimi-K2.7-Code",
+		envVars: ["BASETEN_API_KEY"],
+		createModelManagerOptions: (config: ModelManagerConfig) => basetenModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
+		catalogDiscovery: { label: "Baseten" },
+	},
+	{
 		id: "amazon-bedrock",
 		defaultModel: "us.anthropic.claude-opus-4-8",
 	},
 	{
 		id: "anthropic",
 		defaultModel: "claude-opus-4-8",
+		envVars: ["ANTHROPIC_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => anthropicModelManagerOptions(config),
+		catalogDiscovery: { label: "Anthropic" },
 	},
 	{
 		id: "azure",
@@ -413,7 +424,7 @@ export const CATALOG_PROVIDERS = [
 	},
 	{
 		id: "xiaomi",
-		defaultModel: "mimo-v2-flash",
+		defaultModel: "mimo-v2.5",
 		envVars: ["XIAOMI_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => xiaomiModelManagerOptions(config),
 		catalogDiscovery: { label: "Xiaomi" },
@@ -451,13 +462,15 @@ export const CATALOG_PROVIDERS = [
 		defaultModel: "anthropic/claude-opus-4.8",
 		envVars: ["ZENMUX_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => zenmuxModelManagerOptions(config),
-		catalogDiscovery: { label: "ZenMux" },
+		allowUnauthenticated: true,
+		catalogDiscovery: { label: "ZenMux", allowUnauthenticated: true },
 	},
 	{
 		id: "zhipu-coding-plan",
-		defaultModel: "glm-5.2",
+		defaultModel: "glm-5.1",
 		envVars: ["ZHIPU_API_KEY"],
 		createModelManagerOptions: (config: ModelManagerConfig) => zhipuCodingPlanModelManagerOptions(config),
+		dynamicModelsAuthoritative: true,
 		catalogDiscovery: { label: "Zhipu Coding Plan" },
 	},
 ] as const satisfies readonly ProviderCatalogEntry[];

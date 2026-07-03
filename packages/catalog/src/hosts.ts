@@ -47,6 +47,7 @@ export const KNOWN_HOSTS = {
 	xai: { providers: ["xai"], urlMarkers: ["api.x.ai"] },
 	mistral: { providers: ["mistral"], urlMarkers: ["mistral.ai"] },
 	together: { providers: ["together"], urlMarkers: ["api.together.xyz"] },
+	baseten: { providers: ["baseten"], urlMarkers: ["baseten.co"] },
 	/** URL-only on purpose: the `fireworks`/`firepass` providers route per-model and not every model is Fireworks-shaped. */
 	fireworks: { urlMarkers: ["fireworks.ai"] },
 	groq: { providers: ["groq"], urlMarkers: ["api.groq.com"] },
@@ -59,6 +60,8 @@ export const KNOWN_HOSTS = {
 	nvidia: { providers: ["nvidia"], urlMarkers: ["integrate.api.nvidia.com"] },
 	moonshotNative: { providers: ["moonshot", "kimi-code"], urlMarkers: ["api.moonshot.ai", "api.kimi.com"] },
 	opencode: { providers: ["opencode-go", "opencode-zen"], urlMarkers: ["opencode.ai"] },
+	/** ZenMux's Anthropic-compatible proxy (`zenmux.ai/api/anthropic`) forwards to signature-enforcing Anthropic. */
+	zenmux: { providers: ["zenmux"], urlMarkers: ["zenmux.ai"] },
 	chutes: { urlMarkers: ["chutes.ai"] },
 } as const satisfies Record<string, HostClassSpec>;
 

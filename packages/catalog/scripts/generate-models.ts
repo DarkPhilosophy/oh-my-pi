@@ -41,7 +41,7 @@ import {
 	SAKANA_FUGU_STATIC_MODELS,
 	stripFireworksDeepSeekThinkingToggle,
 } from "../src/provider-models/openai-compat";
-import type { ModelSpec } from "../src/types";
+import type { Api, ModelSpec } from "../src/types";
 import { cleanModelName } from "../src/utils";
 import { collapseEffortVariantsAcrossProviders } from "../src/variant-collapse";
 import { JWT_CLAIM_PATH } from "../src/wire/codex";
@@ -187,7 +187,11 @@ function applyGlobalModelsDevFallback(
 	const providerScopedKeys = new Set(modelsDevModels.map(model => `${model.provider}/${model.id}`));
 	const globalReferences = createGlobalModelsDevReferenceMap(modelsDevModels);
 	return models.map(model => {
-		if (providerScopedKeys.has(`${model.provider}/${model.id}`) || model.provider === "devin") {
+		if (
+			providerScopedKeys.has(`${model.provider}/${model.id}`) ||
+			model.provider === "devin" ||
+			model.provider === "baseten"
+		) {
 			return model;
 		}
 		const reference = globalReferences.get(model.id);
@@ -591,6 +595,10 @@ async function generateModels() {
 	// reference. Runs last so canonical ids and explicit policy limits are final.
 	applyCanonicalLimitFallback(allModels);
 
+	for (const model of allModels) {
+		canonicalizeModelCompat(model);
+	}
+
 	// Group by provider and sort each provider's models
 	const providers: Record<string, Record<string, ModelSpec>> = {};
 	for (const model of allModels) {
@@ -634,6 +642,23 @@ Model Statistics:`);
 
 	for (const [provider, models] of Object.entries(MODELS)) {
 		console.log(`  ${provider}: ${Object.keys(models).length} models`);
+	}
+}
+
+function canonicalizeModelCompat(model: ModelSpec<Api>): void {
+	if (!model.compat) return;
+
+	if ("disableStrictTools" in model.compat && model.compat.disableStrictTools === false) {
+		delete model.compat.disableStrictTools;
+	}
+
+	let hasKeys = false;
+	for (const _ in model.compat) {
+		hasKeys = true;
+		break;
+	}
+	if (!hasKeys) {
+		delete model.compat;
 	}
 }
 

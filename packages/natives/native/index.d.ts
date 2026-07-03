@@ -126,21 +126,29 @@ export declare class Shell {
 }
 
 /**
- * Install the bounded Tokio runtime napi-rs adopts for async exports.
+ * Install the bounded Tokio runtime napi-rs adopts for async exports and the
+ * bounded Rayon global pool used by native parallel iterators.
  *
  * The JS loader calls this exactly once, synchronously, right *after* `dlopen`
- * returns and *before* any async native runs — never from `#[module_init]`.
- * Building a multi-thread runtime eagerly spawns worker threads, and doing
- * that during module init (while the dynamic-loader lock is held) deadlocks on
- * some hosts: a fresh worker blocks acquiring the loader lock that the init
- * thread still owns. napi-rs only materializes its runtime on the first async
- * call (`RT` is a `LazyLock`) and `create_custom_tokio_runtime` merely records
- * the runtime in a `OnceLock`, so installing it post-load is still honored.
- * Without it napi builds its own default (one worker per CPU, spawned eagerly)
- * which aborts the process (`os error 1455`) on a memory-constrained Windows
- * host before any JS error can surface; [`create_windows_napi_tokio_runtime`]
- * pre-flights the spawn instead. If no runtime can be built we leave napi-rs
- * to its default. Idempotent.
+ * returns and *before* any async native or parallel iterator runs — never from
+ * `#[module_init]`. Building a multi-thread runtime eagerly spawns worker
+ * threads, and doing that during module init (while the dynamic-loader lock is
+ * held) deadlocks on some hosts: a fresh worker blocks acquiring the loader
+ * lock that the init thread still owns. napi-rs only materializes its runtime
+ * on the first async call (`RT` is a `LazyLock`) and
+ * `create_custom_tokio_runtime` merely records the runtime in a `OnceLock`, so
+ * installing it post-load is still honored.
+ *
+ * Without the Tokio override napi builds its own default (one worker per CPU,
+ * spawned eagerly), which aborts the process (`os error 1455`) on a
+ * memory-constrained Windows host before any JS error can surface;
+ * [`create_windows_napi_tokio_runtime`] pre-flights the spawn instead. Rayon
+ * has the same one-thread-per-core lazy default, so [`configure_rayon_pool`]
+ * installs a probed global pool before `count_tokens` or vendored `sort` can
+ * trigger it across a N-API nounwind boundary. If no worker thread is
+ * spawnable, patched Rayon callsites stay sequential rather than registering a
+ * current-thread-only global pool that cannot steal work from later native
+ * calls. Idempotent.
  */
 export declare function __ompInstallTokioRuntime(): void
 
@@ -162,7 +170,7 @@ export declare function __ompInstallTokioRuntime(): void
  * `packages/natives/native/index.js` (which derives the name from
  * `package.json#version`).
  */
-export declare function __piNativesV16_2_8(): void
+export declare function __piNativesV16_3_4(): void
 
 /**
  * Apply conservative pre-execution rewrites to a bash command.
@@ -478,9 +486,9 @@ export declare function copyToClipboard(text: string): void
  * Count tokens in `input`.
  *
  * `input` may be a single string or an array of strings; an array returns
- * the sum across all elements (encoded in parallel via rayon). Always
- * returns a single token total — use this for any aggregate budget question
- * without paying a per-element napi crossing.
+ * the sum across all elements (encoded in parallel via rayon when the global
+ * pool is available). Always returns a single token total — use this for any
+ * aggregate budget question without paying a per-element napi crossing.
  *
  * Uses ordinary encoding (no special-token handling), which is the right
  * choice for measuring user/model content rather than wire-protocol tokens.
@@ -610,7 +618,7 @@ export interface FuzzyFindOptions {
   hidden?: boolean
   /** Respect .gitignore (default: true). */
   gitignore?: boolean
-  /** Enable shared filesystem scan cache (default: false). */
+  /** Enable walker scan caching (default: false). */
   cache?: boolean
   /** Maximum number of matches to return (default: 100). */
   maxResults?: number
@@ -645,9 +653,9 @@ export declare function getWorkProfile(lastSeconds: number): WorkProfile
  * Resolves the search root, scans entries, applies glob and optional file-type
  * filters, and optionally streams each accepted match through `on_match`.
  *
- * If `sortByMtime` is enabled with a finite `maxResults`, uncached scans keep
- * only the current top results while traversing instead of collecting the full
- * tree.
+ * When `sortByMtime` is enabled, the walker ranks matches by mtime before the
+ * native layer applies final symlink-aware file-type filtering and callback
+ * emission.
  *
  * # Errors
  * Returns an error when the search path cannot be resolved, the path is not a
@@ -662,10 +670,7 @@ export interface GlobMatch {
   path: string
   /** Resolved filesystem type for the match. */
   fileType: FileType
-  /**
-   * Modification time in milliseconds since Unix epoch (from
-   * `symlink_metadata`).
-   */
+  /** Modification time in milliseconds since Unix epoch. */
   mtime?: number
   /** File size in bytes for regular files. */
   size?: number
@@ -690,7 +695,7 @@ export interface GlobOptions {
   maxResults?: number
   /** Respect .gitignore files (default: true). */
   gitignore?: boolean
-  /** Enable shared filesystem scan cache (default: false). */
+  /** Enable walker scan caching (default: false). */
   cache?: boolean
   /** Sort results by mtime (most recent first) before applying limit. */
   sortByMtime?: boolean
@@ -890,13 +895,13 @@ export interface HtmlToMarkdownOptions {
 }
 
 /**
- * Invalidate the filesystem scan cache.
+ * Invalidate the walker scan cache.
  *
  * When called with a path, removes entries for roots containing that path.
  * When called without a path, clears the entire cache.
  *
- * Intended to be called after agent file mutations (write, edit, rename,
- * delete).
+ * Intended to be called after agent file mutations: write, edit, rename, or
+ * delete.
  */
 export declare function invalidateFsScanCache(path?: string | undefined | null): void
 
@@ -1440,6 +1445,8 @@ export interface ShellRunResult {
    * minimized text shown to the agent. `None` when nothing was rewritten.
    */
   minimized?: MinimizerResult
+  /** Shell working directory after command completion. */
+  workingDir?: string
 }
 
 /**

@@ -41,7 +41,7 @@ describe("advisor", () => {
 							type: "toolCall",
 							id: "search-timeout",
 							name: "grep",
-							arguments: { pattern: "needle", paths: ["packages/coding-agent/src"] },
+							arguments: { pattern: "needle", path: "packages/coding-agent/src" },
 						},
 					],
 					timestamp: 1,
@@ -1579,7 +1579,7 @@ describe("advisor", () => {
 
 	describe("AdvisorConfigOverlayComponent", () => {
 		const deps = {
-			modelRegistry: { getCanonicalModelSelections: () => [] } as unknown as ModelRegistry,
+			modelRegistry: {} as unknown as ModelRegistry,
 			settings: {} as unknown as Settings,
 			scopedModels: [],
 			availableToolNames: ["read", "grep", "glob", "lsp", "web_search"],

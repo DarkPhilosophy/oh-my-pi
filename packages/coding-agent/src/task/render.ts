@@ -12,13 +12,16 @@ import { settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { formatContextUsage } from "../modes/components/status-line/context-thresholds";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
+import { stripGeneratedOutputNotice, stripRawOutputArtifactNotice } from "../tools/output-meta";
 import {
+	capPreviewLines,
 	formatBadge,
 	formatDuration,
 	formatExpandHint,
 	formatMoreItems,
 	formatStatusIcon,
 	previewLine,
+	previewWindowRows,
 	replaceTabs,
 	type ToolUIStatus,
 	truncateToWidth,
@@ -148,9 +151,9 @@ function normalizeReportFindings(value: unknown): ReportFindingDetails[] {
 const REVIEWER_ARRAY_LABELS: ReadonlySet<string> = new Set(["findings"]);
 
 function extractIncrementalReviewResult(
-	value: unknown,
+	items: RenderYieldItem[],
 ): { summary: SubmitReviewDetails; findings: ReportFindingDetails[] } | undefined {
-	const yieldItems: YieldItem[] = normalizeYieldData(value).map(item => ({
+	const yieldItems: YieldItem[] = items.map(item => ({
 		data: item.data,
 		type: item.type,
 		status: item.status === "aborted" ? "aborted" : item.status === "success" ? "success" : undefined,
@@ -448,6 +451,41 @@ function renderJsonTreeLines(
 	renderRoot(value);
 
 	return { lines, truncated };
+}
+
+const BASH_WALL_TIME_NOTICE_RE = /^Wall time: \d+(?:\.\d+)? seconds$/u;
+const BASH_EXIT_CODE_NOTICE_RE = /^Command exited with code -?\d+$/u;
+
+function stripRecentOutputNoticeLine(text: string): string {
+	const trimmed = text.trimEnd();
+	const lineStart = trimmed.lastIndexOf("\n");
+	const candidateStart = lineStart === -1 ? 0 : lineStart + 1;
+	const line = trimmed.slice(candidateStart);
+	if (!BASH_WALL_TIME_NOTICE_RE.test(line) && !BASH_EXIT_CODE_NOTICE_RE.test(line)) return text;
+	return trimmed.slice(0, lineStart === -1 ? 0 : lineStart).trimEnd();
+}
+
+function sanitizeRecentOutput(output: string): string {
+	let text = output.trimEnd();
+	while (text) {
+		const withoutArtifactNotice = stripRawOutputArtifactNotice(text).text;
+		if (withoutArtifactNotice !== text) {
+			text = withoutArtifactNotice;
+			continue;
+		}
+		const withoutOutputNotice = stripGeneratedOutputNotice(text);
+		if (withoutOutputNotice !== text) {
+			text = withoutOutputNotice;
+			continue;
+		}
+		const withoutRuntimeNotice = stripRecentOutputNoticeLine(text);
+		if (withoutRuntimeNotice !== text) {
+			text = withoutRuntimeNotice;
+			continue;
+		}
+		break;
+	}
+	return text;
 }
 
 function renderOutputSection(
@@ -924,7 +962,7 @@ function renderAgentProgress(
 		// yield sections. Fall back to the legacy `report_finding` side-channel.
 		if (progress.status === "completed") {
 			const completeData = normalizeYieldData(progress.extractedToolData.yield);
-			const incrementalReview = extractIncrementalReviewResult(progress.extractedToolData.yield);
+			const incrementalReview = extractIncrementalReviewResult(completeData);
 			const reportFindingData = normalizeReportFindings(progress.extractedToolData.report_finding);
 			if (incrementalReview) {
 				lines.push(
@@ -1016,8 +1054,16 @@ function renderAgentProgress(
 
 	// Expanded view: recent output and tools
 	if (expanded && progress.status === "running") {
-		const output = progress.recentOutput.join("\n");
-		lines.push(...renderOutputSection(output, continuePrefix, true, theme, 2, 6));
+		const previewRows = previewWindowRows();
+		const output = capPreviewLines(
+			sanitizeRecentOutput([...progress.recentOutput].reverse().join("\n")).split("\n"),
+			theme,
+			{
+				max: previewRows,
+				expandHint: false,
+			},
+		).join("\n");
+		lines.push(...renderOutputSection(output, continuePrefix, expanded, theme, 2, previewRows));
 	}
 
 	return lines;
@@ -1207,7 +1253,7 @@ function renderAgentResult(
 	// is not a function` when the slot is a plain object (see issue #1987).
 	const completeData = normalizeYieldData(result.extractedToolData?.yield);
 	const reportFindingData = normalizeReportFindings(result.extractedToolData?.report_finding);
-	const incrementalReview = extractIncrementalReviewResult(result.extractedToolData?.yield);
+	const incrementalReview = extractIncrementalReviewResult(completeData);
 
 	if (incrementalReview) {
 		lines.push(
@@ -1445,9 +1491,27 @@ export function renderResult(
 	}
 
 	const hasResults = Boolean(details.results && details.results.length > 0);
-	const aborted = hasResults && details.results.some(r => r.aborted);
-	const failed = hasResults && details.results.some(r => !r.aborted && r.exitCode !== 0);
-	const mergeFailed = hasResults && details.results.some(r => !r.aborted && r.exitCode === 0 && Boolean(r.error));
+	// Single pass over details.results derives the header booleans AND the footer
+	// counts/totals. This block re-runs ~30×/sec via the 33ms spinner render; the
+	// previous form did 3× `.some()` here plus 3× `.filter()` + `.reduce()` again
+	// inside the frame below (7+ full passes per tick).
+	let abortedCount = 0;
+	let failCount = 0;
+	let mergeFailedCount = 0;
+	let successCount = 0;
+	let requestTotal = 0;
+	if (hasResults) {
+		for (const r of details.results) {
+			requestTotal += r.requests ?? 0;
+			if (r.aborted) abortedCount++;
+			else if (r.exitCode !== 0) failCount++;
+			else if (r.error) mergeFailedCount++;
+			else successCount++;
+		}
+	}
+	const aborted = abortedCount > 0;
+	const failed = failCount > 0;
+	const mergeFailed = mergeFailedCount > 0;
 	const isError = aborted || failed;
 	const agentCount = hasResults ? details.results.length : (details.progress?.length ?? 0);
 	const icon: ToolUIStatus = options.isPartial ? "running" : isError ? "error" : mergeFailed ? "warning" : "success";
@@ -1506,16 +1570,12 @@ export function renderResult(
 				);
 			}
 
-			const abortedCount = details.results.filter(r => r.aborted).length;
-			const mergeFailedCount = details.results.filter(r => !r.aborted && r.exitCode === 0 && r.error).length;
-			const successCount = details.results.filter(r => !r.aborted && r.exitCode === 0 && !r.error).length;
-			const failCount = details.results.length - successCount - mergeFailedCount - abortedCount;
 			const summaryParts: string[] = [];
 			if (abortedCount > 0) summaryParts.push(theme.fg("error", `${abortedCount} aborted`));
 			if (successCount > 0) summaryParts.push(theme.fg("success", `${successCount} succeeded`));
 			if (mergeFailedCount > 0) summaryParts.push(theme.fg("warning", `${mergeFailedCount} merge failed`));
 			if (failCount > 0) summaryParts.push(theme.fg("error", `${failCount} failed`));
-			const totalRequests = details.results.reduce((sum, r) => sum + (r.requests ?? 0), 0);
+			const totalRequests = requestTotal;
 			if (totalRequests > 0) summaryParts.push(theme.fg("dim", `${formatNumber(totalRequests)} req`));
 			summaryParts.push(theme.fg("dim", formatDuration(details.totalDurationMs)));
 			// Wrap the run summary in the theme's bracket glyphs (dim chrome, colored

@@ -11,6 +11,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { getRestorableSessionModels } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 describe("AgentSession model persistence", () => {
@@ -189,7 +190,7 @@ describe("AgentSession model persistence", () => {
 		expect(created.settings.getModelRole("default")).toBe(modelValue(nextModel));
 	});
 
-	it("persists the default role without switching the active model when over context", async () => {
+	it("switches the active model even when the live context is over the target window", async () => {
 		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
 		const nextModel = getAnthropicModelOrThrow("claude-sonnet-4-6");
 
@@ -207,8 +208,8 @@ describe("AgentSession model persistence", () => {
 			currentContextTokens: overflowTokens,
 		});
 
-		expect(result).toEqual({ switched: false });
-		expect(created.session.model?.id).toBe(defaultModel.id);
+		expect(result).toEqual({ switched: true });
+		expect(created.session.model?.id).toBe(nextModel.id);
 		expect(created.settings.getModelRole("default")).toBe(modelValue(nextModel));
 	});
 
@@ -406,6 +407,22 @@ describe("AgentSession model persistence", () => {
 		const result = await createStartupResumeSession(targetSessionFile, settings);
 
 		expect(result.session.model?.id).toBe(temporaryModel.id);
+	});
+
+	it("activates auto thinking on startup resume when modelRoles.default carries an explicit :auto suffix", async () => {
+		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
+		const targetSessionFile = await writeRoleModelSession(
+			modelValue(defaultModel),
+			modelValue(defaultModel),
+			"default",
+		);
+		const settings = Settings.isolated();
+		settings.setModelRole("default", `${modelValue(defaultModel)}:auto`);
+
+		const result = await createStartupResumeSession(targetSessionFile, settings);
+
+		expect(result.session.model?.id).toBe(defaultModel.id);
+		expect(result.session.configuredThinkingLevel()).toBe(AUTO_THINKING);
 	});
 
 	it("lists restorable temporary model before the default fallback", () => {
