@@ -1024,7 +1024,6 @@ export class CommandController {
 		this.ctx.pendingTools.clear();
 		this.ctx.statusLine.invalidate();
 		this.ctx.statusLine.resetActiveTime();
-		this.ctx.updateEditorTopBorder();
 		this.ctx.rebuildChatFromMessages();
 		this.ctx.updateEditorBorderColor();
 		await this.ctx.reloadTodos();
