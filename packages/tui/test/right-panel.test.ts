@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { type Component, TUI } from "@oh-my-pi/pi-tui";
+import { type Component, type PanelLayoutResult, TUI } from "@oh-my-pi/pi-tui";
 import { RESERVED_IMAGE_ROW } from "../src/components/image";
 import { compositeRightPanel, compositeRightPanels } from "../src/right-panel";
 import { VirtualTerminal } from "./virtual-terminal";
@@ -392,6 +392,41 @@ describe("TUI.setRightPanel", () => {
 			expect(viewport.some(line => line.includes("msg-29"))).toBeTrue();
 			expect(viewport.some(line => line.includes("<W0>"))).toBeTrue();
 			expect(viewport.find(line => line.startsWith("[editor]"))).not.toContain("<W");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("reports right-panel blocks hidden while overlay rows cover their placement", async () => {
+		const term = new VirtualTerminal(80, 12);
+		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
+		const chat = new Lines(Array.from({ length: 6 }, (_, i) => `msg-${i}`));
+		tui.addChild(chat);
+
+		const layouts: PanelLayoutResult[] = [];
+		tui.setRightPanel(
+			() => [["<W0>", "<W1>", "<W2>"]],
+			[chat],
+			result => layouts.push(result),
+		);
+		tui.start();
+		await settle(term);
+		try {
+			expect(term.getViewport().some(line => line.includes("<W0>"))).toBeTrue();
+			expect(layouts.at(-1)?.placedBlockIndices).toEqual([0]);
+			expect(layouts.at(-1)?.hiddenBlockIndices).toEqual([]);
+
+			const overlay = tui.showOverlay(new Lines(["overlay-0", "overlay-1", "overlay-2"]), {
+				anchor: "top-left",
+				width: 80,
+				maxHeight: 3,
+			});
+			await settle(term);
+			expect(term.getViewport().some(line => line.includes("<W0>"))).toBeFalse();
+			expect(layouts.at(-1)?.placedBlockIndices).toEqual([]);
+			expect(layouts.at(-1)?.hiddenBlockIndices).toEqual([0]);
+
+			overlay.hide();
 		} finally {
 			tui.stop();
 		}

@@ -282,6 +282,13 @@ export interface RenderRequestOptions {
  */
 export type ResizeScrollbackMode = "append" | "rebuild" | "preserve";
 
+
+type OverlayLayout = {
+	row: number;
+	col: number;
+	width: number;
+	lines: readonly string[];
+};
 /** Type guard to check if a component implements Focusable */
 export function isFocusable(component: Component | null): component is Component & Focusable {
 	return component !== null && "focused" in component;
@@ -1756,11 +1763,21 @@ export class TUI extends Container {
 		width: number,
 		windowTop: number,
 		frame: readonly string[],
+		overlayOccupiedRows?: readonly boolean[],
 	): string[] {
 		const provider = this.#rightPanelProvider;
 		if (provider === null) return window;
 		const blocks = provider(width);
 		if (blocks.length === 0) return window;
+		if (overlayOccupiedRows !== undefined) {
+			this.#rightPanelLayoutCallback?.({
+				placedBlockIndices: [],
+				hiddenBlockIndices: blocks.map((_, i) => i),
+				availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
+				searchRows: 0,
+			});
+			return window;
+		}
 		// Restrict placement to window rows rendered by the target roots.
 		let lo = 0;
 		let hi = window.length;
@@ -1795,12 +1812,13 @@ export class TUI extends Container {
 				return window;
 			}
 		}
-		// Mark visually occupied rows before the generic compositor runs. Image
-		// lines keep their backward placeholder scan through the dedicated
-		// backfill predicate. OSC 66 sized headings occupy only their own row and
-		// the immediately following visible-width-zero structural row that
-		// reserves lower cells for multicell glyphs.
-		const occupied = new Array<boolean>(window.length).fill(false);
+		// Mark visually occupied rows before the generic compositor runs. This is
+		// still used for non-modal row reservations such as image placeholders; modal
+		// overlays return above so the right-panel contract remains all-or-hidden.
+		const occupied = overlayOccupiedRows
+			? Array.from(overlayOccupiedRows)
+			: new Array<boolean>(window.length).fill(false);
+		// Image lines keep their backward placeholder scan through the dedicated
 		for (let i = 0; i < window.length; i++) {
 			const line = window[i] ?? "";
 			if (isOsc66Line(line)) {
@@ -1831,7 +1849,7 @@ export class TUI extends Container {
 			width,
 			lo,
 			hi,
-			(line, i) => TERMINAL.isImageLine(line) || (occupied[i] ?? false),
+			(line, i): boolean => occupied[i] === true || TERMINAL.isImageLine(line),
 			line => TERMINAL.isImageEscapeLine(line),
 			this.#rightPanelLayoutCallback ?? undefined,
 		);
@@ -2252,8 +2270,8 @@ export class TUI extends Container {
 	 * frozen while an overlay is visible, so overlay pixels can never enter
 	 * native scrollback.
 	 */
-	#compositeOverlaysIntoWindow(window: string[], termWidth: number, termHeight: number): string[] {
-		const result = [...window];
+	#overlayLayouts(termWidth: number, termHeight: number): OverlayLayout[] {
+		const layouts: OverlayLayout[] = [];
 		for (const entry of this.overlayStack) {
 			if (!this.#isOverlayVisible(entry)) continue;
 			const { component, options } = entry;
@@ -2269,15 +2287,39 @@ export class TUI extends Container {
 						: overlayLines.slice(0, maxHeight);
 			}
 			const { row, col } = this.#resolveOverlayLayout(options, overlayLines.length, termWidth, termHeight);
-			for (let i = 0; i < overlayLines.length; i++) {
+			layouts.push({ row, col, width, lines: overlayLines });
+		}
+		return layouts;
+	}
+
+	#compositeOverlaysIntoWindow(
+		window: string[],
+		termWidth: number,
+		termHeight: number,
+		layouts = this.#overlayLayouts(termWidth, termHeight),
+	): string[] {
+		const result = [...window];
+		for (const { row, col, width, lines } of layouts) {
+			for (let i = 0; i < lines.length; i++) {
 				const idx = row + i;
 				if (idx < 0 || idx >= result.length) continue;
-				const truncatedOverlayLine =
-					visibleWidth(overlayLines[i]) > width ? sliceByColumn(overlayLines[i], 0, width, true) : overlayLines[i];
+				const line = lines[i] ?? "";
+				const truncatedOverlayLine = visibleWidth(line) > width ? sliceByColumn(line, 0, width, true) : line;
 				result[idx] = this.#compositeLineAt(result[idx], truncatedOverlayLine, col, width, termWidth);
 			}
 		}
 		return result;
+	}
+
+	#overlayOccupiedRows(layouts: readonly OverlayLayout[], termHeight: number): boolean[] {
+		const occupied = new Array<boolean>(Math.max(0, termHeight)).fill(false);
+		for (const { row, lines } of layouts) {
+			for (let i = 0; i < lines.length; i++) {
+				const idx = row + i;
+				if (idx >= 0 && idx < occupied.length) occupied[idx] = true;
+			}
+		}
+		return occupied;
 	}
 
 	/** Splice overlay content into a base line at a specific column. Single-pass optimized. */

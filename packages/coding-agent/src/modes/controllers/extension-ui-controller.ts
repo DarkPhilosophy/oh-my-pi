@@ -1,4 +1,4 @@
-import type { Component, OverlayHandle, PanelLayoutResult, TUI } from "@oh-my-pi/pi-tui";
+import type { Component, OverlayHandle, PanelLayoutResult, RenderRequestOptions, TUI } from "@oh-my-pi/pi-tui";
 import { Container, RIGHT_PANEL_MIN_COL, Spacer, Text, trimRightPadding } from "@oh-my-pi/pi-tui";
 import type { CollabUiRequestDraft, CollabUiSelectItem } from "@oh-my-pi/pi-wire";
 import { KeybindingsManager } from "../../config/keybindings";
@@ -464,7 +464,7 @@ export class ExtensionUiController {
 	}
 
 	#createRightWidgetComponent(content: ExtensionUiComponentFactory): ExtensionUiComponent {
-		const requestRightWidgetRender = (force = false, options?: Parameters<TUI["requestRender"]>[1]): void => {
+		const requestRightWidgetRender = (force = false, options?: RenderRequestOptions): void => {
 			this.ctx.ui.requestRender(force, options);
 		};
 		const ui = new Proxy(this.ctx.ui, {

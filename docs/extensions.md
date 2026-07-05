@@ -563,24 +563,36 @@ Supported:
 - notifications/status/editor text/terminal input/custom overlays
 - theme listing/loading by name (`setTheme` supports string names)
 - tools expanded toggle
-- `setWidget(key, lines, { placement })` for persistent widgets:
-  - `aboveEditor` renders above the editor
-  - `belowEditor` renders below the editor
-  - `rightEditor` floats in the visible right-side whitespace beside the conversation, never over text or the editor/status line
+- `setWidget(key, content, options)` for persistent widgets:
+  - `content: string[]` renders one widget block from the provided lines
+  - `content: ExtensionWidgetBlock[]` renders independently placeable sub-blocks (`{ id?, lines, priority? }`)
+  - `content: ExtensionUiComponentFactory` is supported in interactive mode and receives the live TUI/theme
+  - `options.placement: "aboveEditor"` renders above the editor
+  - `options.placement: "belowEditor"` renders below the editor
+  - `options.placement: "rightEditor"` floats in visible right-side whitespace beside the conversation, never over text or the editor/status line
+  - `options.priority` orders `rightEditor` widgets when space is tight; lower numbers claim space first, otherwise shorter blocks are preferred
 
 Current no-op methods in this controller (still `() => {}`):
 
 - `setFooter`
 - `setHeader`
 
-`setEditorComponent` is wired to the live editor (`ctx.setEditorComponent(factory)`). `setWidget` renders real widget components above or below the editor via `setHookWidget(...)` (`placement: "aboveEditor" | "belowEditor"`; string-array content capped at 10 lines), or in visible right-side conversation whitespace via `rightEditor`. `setEditorText` and `pasteToEditor` schedule a repaint after mutating the editor so extension-driven changes are immediately apparent on screen.
+`setEditorComponent` is wired to the live editor (`ctx.setEditorComponent(factory)`). `setWidget` renders components above or below the editor (`placement: "aboveEditor" | "belowEditor"`) or in visible right-side conversation whitespace via `rightEditor`. Above/below string arrays are capped to a short inline preview; `rightEditor` widgets keep their full block content so the compositor can decide which blocks fit and report layout feedback. `setEditorText` and `pasteToEditor` schedule a repaint after mutating the editor so extension-driven changes are immediately apparent on screen.
 
 ### RPC mode (`rpc-mode.ts`)
 
 `ctx.ui` is backed by RPC `extension_ui_request` events:
 
 - dialog methods (`select`, `confirm`, `input`, `editor`) round-trip to client responses
-- fire-and-forget methods emit requests (`notify`, `setStatus`, `setWidget` for string arrays, `setEditorText`; `setTitle` emits only when `PI_RPC_EMIT_TITLE=1`)
+- fire-and-forget methods emit requests (`notify`, `setStatus`, `setWidget`, `setEditorText`; `setTitle` emits only when `PI_RPC_EMIT_TITLE=1`)
+- `setWidget` emits `method: "setWidget"` with:
+  - `widgetKey`
+  - `widgetLines?: string[]` for a single string-array widget
+  - `widgetBlocks?: { id?: string; lines: string[]; priority?: number }[]` for independently placeable right-side blocks
+  - `widgetPlacement?: "aboveEditor" | "belowEditor" | "rightEditor"`
+  - `widgetPriority?: number`
+- Component factories are interactive-only; RPC clients receive line/block data, not live TUI components.
+- RPC/Python clients can send a `widget_layout` command back with `widgetKey`, `visible`, `availableWidth`, `visibleRows`, and optional `hiddenBlocks`; OMP forwards it to extension `on("widget_layout", ...)` handlers so widgets can stop polling, resize content, or skip hidden blocks.
 
 Unsupported/no-op in RPC implementation:
 
