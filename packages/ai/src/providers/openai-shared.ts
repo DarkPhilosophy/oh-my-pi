@@ -22,6 +22,7 @@ import {
 import { parseGitHubCopilotApiKey } from "@oh-my-pi/pi-catalog/wire/github-copilot";
 import {
 	$env,
+	classifyJsonPrefix,
 	extractHttpStatusFromError,
 	logger,
 	parseStreamingJson,
@@ -39,7 +40,6 @@ import {
 	type MessageAttribution,
 	type Model,
 	OPENAI_MAX_OUTPUT_TOKENS,
-	type Provider,
 	type ServiceTier,
 	type StopReason,
 	type StreamOptions,
@@ -50,6 +50,7 @@ import {
 	type Tool,
 	type ToolCall,
 	type ToolResultMessage,
+	type Usage,
 } from "../types";
 import {
 	getOpenAIResponsesHistoryItems,
@@ -273,9 +274,9 @@ export function resolveOpenAIRequestSetup(
 export function applyOpenAIServiceTier(
 	params: { service_tier?: ServiceTier | null | undefined },
 	serviceTier: ServiceTier | null | undefined,
-	provider: Provider | undefined,
+	model: Pick<Model, "provider" | "api" | "id">,
 ): void {
-	if (!shouldSendServiceTier(serviceTier, provider)) return;
+	if (!shouldSendServiceTier(serviceTier, model)) return;
 	if (serviceTier === "flex" || serviceTier === "scale" || serviceTier === "priority") {
 		params.service_tier = serviceTier;
 	}
@@ -343,6 +344,7 @@ export interface OpenAIUsageAccounting {
 	cacheWrite: number;
 	totalTokens: number;
 	reasoningTokens?: number;
+	orchestration?: Usage["orchestration"];
 }
 
 export function calculateOpenAIUsageAccounting(accounting: OpenAIUsageAccountingInput): OpenAIUsageAccounting {
@@ -1888,6 +1890,58 @@ export async function processResponsesStream<TApi extends Api>(
 	};
 	const hasOpenItemKey = (event: { output_index?: number; item_id?: string }): boolean =>
 		typeof event.output_index === "number" || event.item_id !== undefined;
+	const startsJsonObjectDelta = (delta: unknown): boolean => {
+		if (typeof delta !== "string") return false;
+		for (let index = 0; index < delta.length; index++) {
+			const code = delta.charCodeAt(index);
+			if (code === 0x09 || code === 0x0a || code === 0x0d || code === 0x20) continue;
+			return code === 0x7b;
+		}
+		return false;
+	};
+	const shouldAdvanceIdentifierlessFunctionDelta = (
+		event: { output_index?: number; item_id?: string; delta?: unknown },
+		candidate: StreamingItem,
+	): boolean => {
+		const delta = event.delta;
+		if (
+			hasOpenItemKey(event) ||
+			typeof delta !== "string" ||
+			!startsJsonObjectDelta(delta) ||
+			candidate.item.type !== "function_call" ||
+			candidate.block.type !== "toolCall"
+		) {
+			return false;
+		}
+		const partial = candidate.block[kStreamingPartialJson];
+		if (partial.trim().length === 0) return false;
+		// A `{`-starting identifierless delta is ambiguous: the opening of a new
+		// sibling call, or continuation bytes inside the candidate's own argument
+		// JSON (`{"command":"echo ` + `{1..3}"}`). Advance only when the candidate
+		// cannot absorb the delta: its buffer is already one complete JSON value,
+		// already unsalvageable (lossy hosts abandon buffers mid-string, leaving
+		// raw control characters strict JSON forbids), or the concatenation would
+		// break it. Otherwise the delta is a legal continuation and must stay.
+		const state = classifyJsonPrefix(partial);
+		if (state !== "prefix") return true;
+		return classifyJsonPrefix(partial + delta) === "invalid";
+	};
+	const hasLaterUnfinishedFunctionCall = (start: number): boolean => {
+		for (let index = start + 1; index < openItemsInOrder.length; index++) {
+			const candidate = openItemsInOrder[index];
+			if (
+				candidate?.item.type === "function_call" &&
+				candidate.block.type === "toolCall" &&
+				!candidate.block[kStreamingArgumentsDone]
+			) {
+				return true;
+			}
+		}
+		return false;
+	};
+
+	let identifierlessFunctionDeltaTarget: StreamingItem | undefined;
+
 	const lookupOpenToolCallAlias = (
 		event: { output_index?: number; item_id?: string },
 		type: "function_call" | "custom_tool_call",
@@ -1916,17 +1970,42 @@ export async function processResponsesStream<TApi extends Api>(
 	const lookupOpenFunctionCallItem = (event: {
 		output_index?: number;
 		item_id?: string;
+		delta?: unknown;
 	}): StreamingItem | undefined => {
 		if (hasOpenItemKey(event)) return lookupOpenToolCallAlias(event, "function_call");
-		for (const candidate of openItemsInOrder) {
+		const canContinuePreviousIdentifierlessDelta = typeof event.delta === "string";
+		if (canContinuePreviousIdentifierlessDelta && identifierlessFunctionDeltaTarget) {
+			const targetIndex = openItemsInOrder.indexOf(identifierlessFunctionDeltaTarget);
+			const target = targetIndex >= 0 ? openItemsInOrder[targetIndex] : undefined;
+			if (
+				target?.item.type === "function_call" &&
+				target.block.type === "toolCall" &&
+				!target.block[kStreamingArgumentsDone]
+			) {
+				const shouldAdvanceFromTarget =
+					shouldAdvanceIdentifierlessFunctionDelta(event, target) && hasLaterUnfinishedFunctionCall(targetIndex);
+				if (!shouldAdvanceFromTarget) return target;
+			} else {
+				identifierlessFunctionDeltaTarget = undefined;
+			}
+		}
+		let skippedStartedCandidate = false;
+		for (let index = 0; index < openItemsInOrder.length; index++) {
+			const candidate = openItemsInOrder[index]!;
 			if (
 				candidate.item.type === "function_call" &&
 				candidate.block.type === "toolCall" &&
 				!candidate.block[kStreamingArgumentsDone]
 			) {
+				if (shouldAdvanceIdentifierlessFunctionDelta(event, candidate) && hasLaterUnfinishedFunctionCall(index)) {
+					skippedStartedCandidate = true;
+					continue;
+				}
+				if (canContinuePreviousIdentifierlessDelta) identifierlessFunctionDeltaTarget = candidate;
 				return candidate;
 			}
 		}
+		if (skippedStartedCandidate && startsJsonObjectDelta(event.delta)) return undefined;
 		return lastOpenItem?.item.type === "function_call" ? lastOpenItem : undefined;
 	};
 	const closeOpenItem = (
@@ -1951,6 +2030,7 @@ export async function processResponsesStream<TApi extends Api>(
 			const index = openItemsInOrder.indexOf(entry);
 			if (index >= 0) openItemsInOrder.splice(index, 1);
 		}
+		if (entry && identifierlessFunctionDeltaTarget === entry) identifierlessFunctionDeltaTarget = undefined;
 		if (entry && lastOpenItem === entry) lastOpenItem = null;
 	};
 	const contentIndexOf = (block: ThinkingContent | TextContent | StreamingToolCallBlock): number =>
@@ -2164,9 +2244,11 @@ export async function processResponsesStream<TApi extends Api>(
 				const block = entry?.block.type === "toolCall" ? entry.block : undefined;
 				const args = block?.[kStreamingArgumentsDone]
 					? block.arguments
-					: block?.[kStreamingPartialJson]
-						? parseStreamingJson(block[kStreamingPartialJson])
-						: parseStreamingJson(item.arguments || "{}");
+					: item.arguments
+						? parseStreamingJson(item.arguments)
+						: block?.[kStreamingPartialJson]
+							? parseStreamingJson(block[kStreamingPartialJson])
+							: parseStreamingJson("{}");
 				const toolCall: ToolCall = {
 					type: "toolCall",
 					id: encodeResponsesToolCallId(item.call_id, item.id),
@@ -2399,7 +2481,7 @@ type CommonSamplingOptions = Pick<
 export function applyCommonResponsesSamplingParams<P extends CommonResponsesParams>(
 	params: P,
 	options: CommonSamplingOptions | undefined,
-	model: Pick<Model, "provider" | "omitMaxOutputTokens" | "maxTokens">,
+	model: Pick<Model, "provider" | "api" | "id" | "omitMaxOutputTokens" | "maxTokens">,
 ): void {
 	if (options?.maxTokens && !model.omitMaxOutputTokens) {
 		params.max_output_tokens = Math.min(
@@ -2414,7 +2496,7 @@ export function applyCommonResponsesSamplingParams<P extends CommonResponsesPara
 	if (options?.minP !== undefined) params.min_p = options.minP;
 	if (options?.presencePenalty !== undefined) params.presence_penalty = options.presencePenalty;
 	if (options?.repetitionPenalty !== undefined) params.repetition_penalty = options.repetitionPenalty;
-	applyOpenAIServiceTier(params, options?.serviceTier, model.provider);
+	applyOpenAIServiceTier(params, options?.serviceTier, model);
 }
 
 type ReasoningOptions = {
@@ -2536,19 +2618,42 @@ export function populateResponsesUsageFromResponse(
 	if (!usage) return;
 	const details = usage.input_tokens_details;
 	const outputDetails = usage.output_tokens_details;
+	const reportedInputTokens = usage.input_tokens ?? 0;
+	const reportedOutputTokens = usage.output_tokens ?? 0;
+	const reportedCachedTokens = details?.cached_tokens ?? usage.prompt_cache_hit_tokens ?? 0;
 	const orchestrationInputTokens = details?.orchestration_input_tokens ?? 0;
 	const orchestrationInputCachedTokens = details?.orchestration_input_cached_tokens ?? 0;
 	const orchestrationOutputTokens = outputDetails?.orchestration_output_tokens ?? 0;
+	const reportedTotalTokens = typeof usage.total_tokens === "number" ? usage.total_tokens : undefined;
+	const reportedPrimaryTokens = reportedInputTokens + reportedOutputTokens;
+	const reportedWithSeparateOrchestration =
+		reportedPrimaryTokens + orchestrationInputTokens + orchestrationOutputTokens;
+	const primaryIncludesOrchestration =
+		reportedTotalTokens !== undefined &&
+		orchestrationInputTokens + orchestrationOutputTokens > 0 &&
+		Math.abs(reportedTotalTokens - reportedPrimaryTokens) <=
+			Math.abs(reportedTotalTokens - reportedWithSeparateOrchestration);
+	const orchestrationInputCached = Math.min(orchestrationInputTokens, orchestrationInputCachedTokens);
+	const orchestrationInput = Math.max(0, orchestrationInputTokens - orchestrationInputCached);
 	const accounting = calculateOpenAIUsageAccounting({
-		promptTokens: (usage.input_tokens ?? 0) + orchestrationInputTokens,
-		outputTokens: (usage.output_tokens ?? 0) + orchestrationOutputTokens,
-		cachedTokens: (details?.cached_tokens ?? usage.prompt_cache_hit_tokens ?? 0) + orchestrationInputCachedTokens,
+		promptTokens: Math.max(0, reportedInputTokens - (primaryIncludesOrchestration ? orchestrationInputTokens : 0)),
+		outputTokens: Math.max(0, reportedOutputTokens - (primaryIncludesOrchestration ? orchestrationOutputTokens : 0)),
+		cachedTokens: Math.max(0, reportedCachedTokens - (primaryIncludesOrchestration ? orchestrationInputCached : 0)),
 		reasoningTokens: outputDetails?.reasoning_tokens ?? 0,
 		cacheWriteOpenRouter: details?.cache_write_tokens ?? undefined,
 		cacheWriteDeepSeek: usage.prompt_cache_miss_tokens ?? undefined,
 		hasDeepSeekCacheHitAndMiss:
 			usage.prompt_cache_hit_tokens !== undefined && usage.prompt_cache_miss_tokens !== undefined,
 	});
+	const orchestrationTotal = orchestrationInput + orchestrationInputCached + orchestrationOutputTokens;
+	if (orchestrationTotal > 0) {
+		accounting.orchestration = {
+			...(orchestrationInput > 0 ? { input: orchestrationInput } : {}),
+			...(orchestrationInputCached > 0 ? { cacheRead: orchestrationInputCached } : {}),
+			...(orchestrationOutputTokens > 0 ? { output: orchestrationOutputTokens } : {}),
+		};
+		accounting.totalTokens = reportedTotalTokens ?? accounting.totalTokens + orchestrationTotal;
+	}
 
 	// Wholesale replacement must not drop provider-annotated extras (Copilot
 	// premium-request accounting): the failed/cancelled paths throw right after

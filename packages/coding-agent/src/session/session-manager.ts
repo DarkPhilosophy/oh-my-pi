@@ -24,6 +24,7 @@ import {
 	type CustomMessage,
 	type FileMentionMessage,
 	type HookMessage,
+	normalizeCustomMessagePayload,
 	type PythonExecutionMessage,
 	sanitizeRehydratedOpenAIResponsesAssistantMessage,
 	stripInternalDetailsFields,
@@ -115,7 +116,18 @@ function resolveBreadcrumbToInteractiveRoot(sessionFile: string): string {
 }
 
 function emptyUsageStatistics(): UsageStatistics {
-	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, premiumRequests: 0, cost: 0 };
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		orchestrationInput: 0,
+		orchestrationOutput: 0,
+		orchestrationCacheRead: 0,
+		premiumRequests: 0,
+		cost: 0,
+	};
 }
 
 function taskUsageFrom(details: unknown): Usage | undefined {
@@ -138,6 +150,10 @@ function addUsage(target: UsageStatistics, usage: Usage | undefined): void {
 	target.output += usage.output;
 	target.cacheRead += usage.cacheRead;
 	target.cacheWrite += usage.cacheWrite;
+	target.totalTokens += usage.totalTokens;
+	target.orchestrationInput += usage.orchestration?.input ?? 0;
+	target.orchestrationOutput += usage.orchestration?.output ?? 0;
+	target.orchestrationCacheRead += usage.orchestration?.cacheRead ?? 0;
 	target.premiumRequests += usage.premiumRequests ?? 0;
 	target.cost += usage.cost.total;
 }
@@ -1552,20 +1568,21 @@ export class SessionManager {
 	 * @param attribution Who initiated this message for billing/attribution semantics
 	 */
 	appendCustomMessageEntry<T = unknown>(
-		customType: string,
-		content: string | (TextContent | ImageContent)[],
-		display: boolean,
+		customType: string | undefined,
+		content: string | (TextContent | ImageContent)[] | undefined,
+		display: boolean | undefined,
 		details?: T,
-		attribution: MessageAttribution = "agent",
+		attribution: MessageAttribution | undefined = "agent",
 	): string {
+		const normalized = normalizeCustomMessagePayload<T>({ customType, content, display, details, attribution });
 		const entry: CustomMessageEntry<T> = {
 			type: "custom_message",
-			customType,
-			content,
-			display,
+			customType: normalized.customType,
+			content: normalized.content,
+			display: normalized.display,
 			// Drop AgentSession-internal transient fields before disk persistence.
-			details: stripInternalDetailsFields(details),
-			attribution,
+			details: stripInternalDetailsFields(normalized.details),
+			attribution: normalized.attribution,
 			...this.#freshEntryFields(),
 		};
 		this.#recordEntry(entry);
