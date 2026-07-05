@@ -34,7 +34,9 @@ const SAVE_CURSOR = "\x1b7";
 const RESTORE_CURSOR = "\x1b8";
 // Direct placements reserve height with leading zero-width rows. Keep them
 // non-plain so transcript blank-edge trimming does not collapse image-only blocks.
-const RESERVED_IMAGE_ROW = "\x1b[0m";
+// Exported so the right-panel compositor can distinguish a renderer-reserved row
+// (which an image's cells occupy) from an ordinary blank Markdown spacer.
+export const RESERVED_IMAGE_ROW = "\x1b[0m";
 
 /** Default count of inline images kept as live graphics before older ones fall back to text. */
 export const DEFAULT_MAX_INLINE_IMAGES = 8;

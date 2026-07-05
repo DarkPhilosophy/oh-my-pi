@@ -255,7 +255,6 @@ const contrasting = ctx.models
   .list()
   .find((m) => current && ctx.models.family(m) !== ctx.models.family(current));
 ```
-
 ## 3) Command context (`ExtensionCommandContext`)
 
 Command handlers additionally get:
@@ -564,13 +563,17 @@ Supported:
 - notifications/status/editor text/terminal input/custom overlays
 - theme listing/loading by name (`setTheme` supports string names)
 - tools expanded toggle
+- `setWidget(key, lines, { placement })` for persistent widgets:
+  - `aboveEditor` renders above the editor
+  - `belowEditor` renders below the editor
+  - `rightEditor` floats in the visible right-side whitespace beside the conversation, never over text or the editor/status line
 
-Current no-op methods in this controller:
+Current no-op methods in this controller (still `() => {}`):
 
 - `setFooter`
 - `setHeader`
 
-`setEditorComponent` is wired to the live editor (`ctx.setEditorComponent(factory)`). `setWidget` renders real widget components above or below the editor via `setHookWidget(...)` (`placement: "aboveEditor" | "belowEditor"`; string-array content capped at 10 lines). `setEditorText` and `pasteToEditor` schedule a repaint after mutating the editor, so prompt changes don't leave stale content on screen.
+`setEditorComponent` is wired to the live editor (`ctx.setEditorComponent(factory)`). `setWidget` renders real widget components above or below the editor via `setHookWidget(...)` (`placement: "aboveEditor" | "belowEditor"`; string-array content capped at 10 lines), or in visible right-side conversation whitespace via `rightEditor`. `setEditorText` and `pasteToEditor` schedule a repaint after mutating the editor so extension-driven changes are immediately apparent on screen.
 
 ### RPC mode (`rpc-mode.ts`)
 
