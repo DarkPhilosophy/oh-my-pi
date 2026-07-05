@@ -1732,8 +1732,8 @@ export class TUI extends Container {
 	 * engine composites the blocks into the trailing whitespace of the visible
 	 * window — only into rows rendered by `targets` (direct root children), so
 	 * the panel never overlaps bottom chrome (editor, status line) or rows
-	 * committed to native scrollback. `targets` must render contiguously in
-	 * the frame (their row ranges are unioned). Pass `null` to remove.
+	 * committed to native scrollback. Disjoint target roots stay isolated: rows
+	 * between targeted roots are not eligible for panel placement. Pass `null` to remove.
 	 */
 	setRightPanel(
 		provider: ((width: number) => readonly (readonly string[])[]) | null,
@@ -1781,17 +1781,25 @@ export class TUI extends Container {
 		// Restrict placement to window rows rendered by the target roots.
 		let lo = 0;
 		let hi = window.length;
+		let eligibleRows: boolean[] | undefined;
 		const targets = this.#rightPanelTargets;
 		if (targets !== null) {
-			let frameLo = Infinity;
-			let frameHi = -Infinity;
+			eligibleRows = new Array<boolean>(window.length).fill(false);
+			let firstEligible = -1;
+			let lastEligible = -1;
 			for (const segment of this.#frameSegments) {
 				if (!targets.has(segment.component)) continue;
-				if (segment.start < frameLo) frameLo = segment.start;
-				const end = segment.start + segment.rowCount;
-				if (end > frameHi) frameHi = end;
+				const frameStart = segment.start;
+				const frameEnd = segment.start + segment.rowCount;
+				const windowStart = Math.max(0, frameStart - windowTop);
+				const windowEnd = Math.min(window.length, frameEnd - windowTop);
+				for (let row = windowStart; row < windowEnd; row++) {
+					eligibleRows[row] = true;
+					if (firstEligible === -1) firstEligible = row;
+					lastEligible = row;
+				}
 			}
-			if (frameHi <= frameLo) {
+			if (firstEligible === -1) {
 				this.#rightPanelLayoutCallback?.({
 					placedBlockIndices: [],
 					hiddenBlockIndices: blocks.map((_, i) => i),
@@ -1800,17 +1808,8 @@ export class TUI extends Container {
 				});
 				return window;
 			}
-			lo = Math.max(0, frameLo - windowTop);
-			hi = Math.min(window.length, frameHi - windowTop);
-			if (hi <= lo) {
-				this.#rightPanelLayoutCallback?.({
-					placedBlockIndices: [],
-					hiddenBlockIndices: blocks.map((_, i) => i),
-					availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
-					searchRows: 0,
-				});
-				return window;
-			}
+			lo = firstEligible;
+			hi = lastEligible + 1;
 		}
 		// Mark visually occupied rows before the generic compositor runs. This is
 		// still used for non-modal row reservations such as image placeholders; modal
@@ -1818,6 +1817,11 @@ export class TUI extends Container {
 		const occupied = overlayOccupiedRows
 			? Array.from(overlayOccupiedRows)
 			: new Array<boolean>(window.length).fill(false);
+		if (eligibleRows !== undefined) {
+			for (let i = 0; i < eligibleRows.length; i++) {
+				if (!eligibleRows[i]) occupied[i] = true;
+			}
+		}
 		// Image lines keep their backward placeholder scan through the dedicated
 		for (let i = 0; i < window.length; i++) {
 			const line = window[i] ?? "";

@@ -592,7 +592,7 @@ Current no-op methods in this controller (still `() => {}`):
   - `widgetPlacement?: "aboveEditor" | "belowEditor" | "rightEditor"`
   - `widgetPriority?: number`
 - Component factories are interactive-only; RPC clients receive line/block data, not live TUI components.
-- RPC/Python clients can send a `widget_layout` command back with `widgetKey`, `visible`, `availableWidth`, `visibleRows`, and optional `hiddenBlocks`; OMP forwards it to extension `on("widget_layout", ...)` handlers so widgets can stop polling, resize content, or skip hidden blocks.
+- RPC clients can send a `widget_layout` command back with `widgetKey`, `visible`, `availableWidth`, `visibleRows`, and optional `hiddenBlocks`; the Python client exposes this as `send_widget_layout(...)`. OMP forwards the frame to extension `on("widget_layout", ...)` handlers so widgets can stop polling, resize content, or skip hidden blocks.
 
 Unsupported/no-op in RPC implementation:
 

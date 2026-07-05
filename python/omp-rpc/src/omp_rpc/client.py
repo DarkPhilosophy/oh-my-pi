@@ -914,6 +914,24 @@ class RpcClient:
             payload["timedOut"] = True
         self._send_notification(payload)
 
+    def send_widget_layout(
+        self,
+        widget_key: str,
+        *,
+        visible: bool,
+        available_width: int,
+        visible_rows: int,
+        hidden_blocks: Sequence[str] | None = None,
+    ) -> None:
+        self._request(
+            "widget_layout",
+            widgetKey=widget_key,
+            visible=visible,
+            availableWidth=available_width,
+            visibleRows=visible_rows,
+            hiddenBlocks=list(hidden_blocks) if hidden_blocks is not None else None,
+        )
+
     def get_state(self) -> SessionState:
         payload = self._request("get_state")
         return parse_session_state(payload)

@@ -304,6 +304,34 @@ describe("TUI.setRightPanel", () => {
 		}
 	});
 
+	it("does not use rows between disjoint target roots for right-panel placement", async () => {
+		const term = new VirtualTerminal(80, 12);
+		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
+		const chat = new Lines(["chat"]);
+		const pending = new Lines(["", "", "", ""]);
+		const todo = new Lines(["todo"]);
+		tui.addChild(chat);
+		tui.addChild(pending);
+		tui.addChild(todo);
+
+		const layouts: PanelLayoutResult[] = [];
+		tui.setRightPanel(
+			() => [["<W0>", "<W1>", "<W2>"]],
+			[chat, todo],
+			result => layouts.push(result),
+		);
+		tui.start();
+		await settle(term);
+		try {
+			const viewport = term.getViewport();
+			expect(viewport.some(line => line.includes("<W"))).toBeFalse();
+			expect(layouts.at(-1)?.placedBlockIndices).toEqual([]);
+			expect(layouts.at(-1)?.hiddenBlockIndices).toEqual([0]);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("does not paint when the panel is registered before start()", async () => {
 		const term = new VirtualTerminal(80, 12, 1000);
 		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
