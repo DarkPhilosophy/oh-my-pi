@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { Container } from "@oh-my-pi/pi-tui";
+import type { ExtensionUiComponentFactory } from "../src/extensibility/extensions";
 import { ExtensionUiController } from "../src/modes/controllers/extension-ui-controller";
 import type { InteractiveModeContext } from "../src/modes/types";
 
@@ -153,7 +154,7 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		const factory = (() => ({
 			render: (width: number) => [`hi${" ".repeat(Math.max(0, width - 2))}`],
 			dispose() {},
-		})) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		})) as unknown as ExtensionUiComponentFactory;
 		c.setHookWidget("comp", factory, { placement: "rightEditor" });
 
 		expect(rightInfo.at(-1)).toEqual([["hi"]]);
@@ -166,7 +167,7 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		const factory = (() => ({
 			render: (width: number) => [`\x1b[31mhi${" ".repeat(Math.max(0, width - 2))}\x1b[0m`],
 			dispose() {},
-		})) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		})) as unknown as ExtensionUiComponentFactory;
 		c.setHookWidget("styled", factory, { placement: "rightEditor" });
 
 		expect(rightInfo.at(-1)).toEqual([["\x1b[31mhi\x1b[0m"]]);
@@ -186,7 +187,7 @@ describe("ExtensionUiController rightEditor widgets", () => {
 					disposed++;
 				},
 			};
-		}) as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		}) as ExtensionUiComponentFactory;
 
 		c.setHookWidget("live", factory, { placement: "rightEditor" });
 		expect(rightInfo.at(-1)).toEqual([["first"]]);
@@ -208,7 +209,7 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		const factory = (() => ({
 			render: () => [`render-${++renderCount}`],
 			dispose() {},
-		})) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		})) as unknown as ExtensionUiComponentFactory;
 
 		c.setHookWidget("live", factory, { placement: "rightEditor" });
 
@@ -225,10 +226,10 @@ describe("ExtensionUiController rightEditor widgets", () => {
 			dispose() {
 				disposed++;
 			},
-		})) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		})) as unknown as ExtensionUiComponentFactory;
 		const throwingFactory = (() => {
 			throw new Error("boom");
-		}) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		}) as unknown as ExtensionUiComponentFactory;
 
 		c.setHookWidget("live", oldFactory, { placement: "rightEditor" });
 
@@ -246,10 +247,10 @@ describe("ExtensionUiController rightEditor widgets", () => {
 			dispose() {
 				disposed++;
 			},
-		})) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		})) as unknown as ExtensionUiComponentFactory;
 		const throwingFactory = (() => {
 			throw new Error("boom");
-		}) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		}) as unknown as ExtensionUiComponentFactory;
 
 		c.setHookWidget("live", oldFactory, { placement: "rightEditor" });
 
@@ -269,10 +270,10 @@ describe("ExtensionUiController rightEditor widgets", () => {
 			dispose() {
 				disposed++;
 			},
-		})) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		})) as unknown as ExtensionUiComponentFactory;
 		const throwingFactory = (() => {
 			throw new Error("boom");
-		}) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		}) as unknown as ExtensionUiComponentFactory;
 
 		c.setHookWidget("live", oldInline, { placement: "aboveEditor" });
 
@@ -293,7 +294,7 @@ describe("ExtensionUiController rightEditor widgets", () => {
 				return [`w${width}${" ".repeat(Math.max(0, width - String(width).length - 1))}`];
 			},
 			dispose() {},
-		})) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		})) as unknown as ExtensionUiComponentFactory;
 
 		c.setHookWidget("sized", factory, { placement: "rightEditor" });
 		const panelWidth = 120 - 30 - 1; // RIGHT_PANEL_MIN_COL=30, 1-col gap
@@ -331,7 +332,7 @@ describe("ExtensionUiController rightEditor widgets", () => {
 				caught = e;
 			}
 			return { render: () => ["x"], dispose() {} };
-		}) as unknown as Parameters<ExtensionUiController["setHookWidget"]>[1];
+		}) as unknown as ExtensionUiComponentFactory;
 		c.setHookWidget("w", factory, { placement: "rightEditor" });
 		expect(caught).toBeUndefined(); // no #private-access crash
 		expect(fakeTui.getCalls()).toEqual(["from-widget"]); // ran on the real instance
