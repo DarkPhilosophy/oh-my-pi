@@ -249,7 +249,6 @@ FAKE_SERVER = textwrap.dedent(
             if "hiddenBlocks" in command:
                 nonlocal_last["hiddenBlocks"] = command["hiddenBlocks"]
             last_widget_layout = nonlocal_last
-            respond(request_id, "widget_layout", {})
             continue
 
         if command_type == "get_widget_layout":
