@@ -150,6 +150,73 @@ class ProtocolParsingTests(unittest.TestCase):
         self.assertTrue(notification.requires_response())
         self.assertFalse(notification.is_passive())
 
+
+    def test_parse_extension_ui_set_widget_request_with_right_editor_priority(self) -> None:
+        notification = parse_notification(
+            {
+                "type": "extension_ui_request",
+                "id": "ui-widget",
+                "method": "setWidget",
+                "widgetKey": "usage",
+                "widgetLines": ["usage"],
+                "widgetPlacement": "rightEditor",
+                "widgetPriority": 1,
+            }
+        )
+
+        self.assertIsInstance(notification, ExtensionUiRequest)
+        self.assertEqual(notification.method, "setWidget")
+        self.assertEqual(notification.widget_key, "usage")
+        self.assertEqual(notification.widget_lines, ("usage",))
+        self.assertEqual(notification.widget_placement, "rightEditor")
+        self.assertEqual(notification.widget_priority, 1)
+        self.assertTrue(notification.is_passive())
+        self.assertFalse(notification.requires_response())
+
+    def test_parse_extension_ui_set_widget_request_with_blocks(self) -> None:
+        notification = parse_notification(
+            {
+                "type": "extension_ui_request",
+                "id": "ui-widget-blocks",
+                "method": "setWidget",
+                "widgetKey": "usage",
+                "widgetBlocks": [
+                    {"lines": ["summary"], "priority": -10},
+                    {"lines": ["account", "bar"]},
+                ],
+                "widgetPlacement": "rightEditor",
+            }
+        )
+
+        self.assertIsInstance(notification, ExtensionUiRequest)
+        self.assertEqual(notification.widget_key, "usage")
+        self.assertEqual(notification.widget_lines, None)
+        self.assertEqual(len(notification.widget_blocks or ()), 2)
+        self.assertEqual(notification.widget_blocks[0].lines, ("summary",))
+        self.assertEqual(notification.widget_blocks[0].priority, -10)
+        self.assertEqual(notification.widget_blocks[1].lines, ("account", "bar"))
+        self.assertFalse(notification.requires_response())
+        self.assertTrue(notification.is_passive())
+
+    def test_parse_extension_ui_set_widget_request_with_fractional_priority(self) -> None:
+        notification = parse_notification(
+            {
+                "type": "extension_ui_request",
+                "id": "ui-widget-frac",
+                "method": "setWidget",
+                "widgetKey": "usage",
+                "widgetBlocks": [
+                    {"lines": ["summary"], "priority": -2.5},
+                ],
+                "widgetPlacement": "rightEditor",
+                "widgetPriority": 0.5,
+            }
+        )
+
+        self.assertIsInstance(notification, ExtensionUiRequest)
+        self.assertEqual(notification.widget_priority, 0.5)
+        self.assertEqual(notification.widget_blocks[0].priority, -2.5)
+
     def test_parse_todo_reminder_notification(self) -> None:
         notification = parse_notification(
             {

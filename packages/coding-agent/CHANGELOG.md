@@ -14,6 +14,21 @@
 - Fixed legacy Pi extension reloads on POSIX so `loadLegacyPiModule` imports the entry through a cache-busting filesystem path, refreshes load-time graph hooks when reloads add new modules, and threads the current load's `?mtime` tag through the extension source graph — relative `./helper.ts` siblings, `#alias/*` package-imports, extension-local bare dependency entries, and their relative children all rekey per reload, so same-process re-imports pick up edits across the whole graph. ([#4565](https://github.com/can1357/oh-my-pi/issues/4565))
 - Fixed bash tool pipeline execution preserving stale upstream output when the final stage was a stripped `head`/`tail` limiter; the tool now runs the command as written so `seq 1 5 | head -n2` returns only `1` and `2`. ([#4562](https://github.com/can1357/oh-my-pi/issues/4562))
 - Fixed the status-line token-rate segment rendering as `<number>/s`, which Ghostty auto-detected as a hyperlink on Ctrl+hover. ([#4541](https://github.com/can1357/oh-my-pi/issues/4541))
+### Added
+
+- Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor", priority? })`): each panel is composited independently into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, and hides per-block (not cut) when no run is tall enough to hold it. Panels are ordered by optional `priority` then ascending height, so the smallest always-present panels stay visible and the tallest hide first.
+
+### Changed
+
+- Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
+- Changed `/reload-plugins` to tear down extension hooks with `session_shutdown` before replaying `session_start`, so plugin reloads do not stack duplicate timers, terminal-input listeners, or stale widgets.
+
+### Fixed
+
+- Fixed a `rightEditor` widget overwriting an OSC 66 (Kitty text-sizing) heading's reserved row when the heading scrolled one line above the visible window: the right-panel occupancy check now carries the frame row just above the window, so a heading at `windowTop - 1` still marks its reservation row (window row 0) occupied instead of leaving it eligible for panel placement.
+- Fixed a component-backed `rightEditor` widget crashing when it called any TUI method other than the two render hooks (e.g. `ui.addChild`, `ui.setFocus`, `ui.addInputListener`): the wrapping `Proxy` returned those methods bound to the proxy, so `TUI`/`Container` `#private` field access threw at runtime. The proxy now resolves against and binds methods back to the real TUI instance, staying API-compatible for right-side widget factories.
+- Fixed the `rightEditor` panel scheduling a render before the TUI was started: `setRightPanel()` was registered (which calls `requestRender()`) before `ui.start()`, and the intervening `await #loadTodoList()` could let that frame paint pre-start — a visible pre-start paint, and duplicate startup output on terminals that copy screen contents on the first paint. The panel is now registered after `ui.start()`, so the forced initial render composites it on the first real frame.
+- Fixed a failed widget refresh dropping the existing widget across any placement change: `setHookWidget` disposed the old entry (inline or right-side) before building the replacement, so a throwing component factory left the slot empty — whether moving `rightEditor`→inline or inline→`rightEditor`. The replacement is now constructed first for every transition and the old entry dropped only after a successful build, so a failed refresh always keeps the previous widget.
 
 ## [16.3.6] - 2026-07-04
 

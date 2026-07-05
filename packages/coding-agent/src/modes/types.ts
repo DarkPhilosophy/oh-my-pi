@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, Message, Usage, UsageReport } from "@oh-my-pi/pi-ai";
-import type { Component, Container, EditorTheme, Loader, Spacer, Text, TUI } from "@oh-my-pi/pi-tui";
+import type { Component, Container, EditorTheme, Loader, PanelLayoutResult, Spacer, Text, TUI } from "@oh-my-pi/pi-tui";
 import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
 import type { KeybindingsManager } from "../config/keybindings";
@@ -91,6 +91,8 @@ export interface InteractiveModeInitOptions {
 
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<HookSelectorOptions, "disabledIndices">;
 
+export type RightInfoProvider = (width: number) => readonly (readonly string[])[];
+
 export interface InteractiveModeContext {
 	// UI access
 	ui: TUI;
@@ -108,6 +110,12 @@ export interface InteractiveModeContext {
 	hookWidgetContainerAbove: Container;
 	hookWidgetContainerBelow: Container;
 	statusLine: StatusLineComponent;
+	/** Set the right-side info panel blocks/provider (each block composited independently into negative space).
+	 * When `onLayout` is provided, it is called after each composite with placement results. */
+	setRightInfo(
+		blocks: string[][] | RightInfoProvider | undefined,
+		onLayout?: (result: PanelLayoutResult) => void,
+	): void;
 
 	// Session access
 	session: AgentSession;
@@ -401,6 +409,7 @@ export interface InteractiveModeContext {
 
 	// Hook UI methods
 	initHooksAndCustomTools(): Promise<void>;
+	reloadHooksAndCustomTools(): Promise<void>;
 	emitCustomToolSessionEvent(
 		reason: "start" | "switch" | "branch" | "tree" | "shutdown",
 		previousSessionFile?: string,

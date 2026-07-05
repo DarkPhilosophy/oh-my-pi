@@ -18,7 +18,7 @@ SteeringMode: TypeAlias = Literal["all", "one-at-a-time"]
 InterruptMode: TypeAlias = Literal["immediate", "wait"]
 StopReason: TypeAlias = Literal["stop", "length", "toolUse", "error", "aborted"]
 NotifyType: TypeAlias = Literal["info", "warning", "error"]
-WidgetPlacement: TypeAlias = Literal["aboveEditor", "belowEditor"]
+WidgetPlacement: TypeAlias = Literal["aboveEditor", "belowEditor", "rightEditor"]
 TodoStatus: TypeAlias = Literal["pending", "in_progress", "completed", "abandoned"]
 ExtensionUiMethod: TypeAlias = Literal[
     "select",
@@ -60,7 +60,7 @@ _STOP_REASON_VALUES: Final[frozenset[str]] = frozenset(
 )
 _NOTIFY_TYPE_VALUES: Final[frozenset[str]] = frozenset({"info", "warning", "error"})
 _WIDGET_PLACEMENT_VALUES: Final[frozenset[str]] = frozenset(
-    {"aboveEditor", "belowEditor"}
+    {"aboveEditor", "belowEditor", "rightEditor"}
 )
 _TODO_STATUS_VALUES: Final[frozenset[str]] = frozenset(
     {"pending", "in_progress", "completed", "abandoned"}
@@ -229,6 +229,15 @@ def _optional_int(payload: JsonObject, field: str) -> int | None:
     return value
 
 
+def _optional_number(payload: JsonObject, field: str) -> float | None:
+    value = payload.get(field)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a number")
+    return value
+
+
 def _tuple_of_strings(values: object, *, field: str) -> tuple[str, ...] | None:
     if values is None:
         return None
@@ -241,6 +250,26 @@ def _tuple_of_strings(values: object, *, field: str) -> tuple[str, ...] | None:
             raise ValueError(f"{field} must contain only strings")
         result.append(item)
     return tuple(result) or None
+
+def _tuple_of_widget_blocks(values: object, *, field: str) -> tuple[ExtensionWidgetBlock, ...] | None:
+    if values is None:
+        return None
+    if not isinstance(values, list):
+        raise ValueError(f"{field} must be a list")
+
+    result: list[ExtensionWidgetBlock] = []
+    for index, item in enumerate(values):
+        item_field = f"{field}[{index}]"
+        if not isinstance(item, dict):
+            raise ValueError(f"{item_field} must be an object")
+        lines = _tuple_of_strings(item.get("lines"), field=f"{item_field}.lines")
+        if lines is None:
+            raise ValueError(f"{item_field}.lines must contain at least one string")
+        priority = _optional_number(item, "priority")
+        block_id = _optional_str(item, "id")
+        result.append(ExtensionWidgetBlock(lines=lines, priority=priority, id=block_id))
+    return tuple(result) or None
+
 
 
 def _parse_agent_message(payload: JsonObject, *, field: str) -> AgentMessage:
@@ -853,6 +882,13 @@ class ReadyEvent:
 
 
 @dataclass(slots=True, frozen=True)
+class ExtensionWidgetBlock:
+    lines: tuple[str, ...]
+    priority: float | None = None
+    id: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class ExtensionUiRequest:
     id: str
     method: ExtensionUiMethod
@@ -869,7 +905,9 @@ class ExtensionUiRequest:
     status_text: str | None = None
     widget_key: str | None = None
     widget_lines: tuple[str, ...] | None = None
+    widget_blocks: tuple[ExtensionWidgetBlock, ...] | None = None
     widget_placement: WidgetPlacement | None = None
+    widget_priority: float | None = None
     text: str | None = None
     type: Literal["extension_ui_request"] = "extension_ui_request"
 
@@ -1461,6 +1499,9 @@ def parse_extension_ui_request(payload: JsonObject) -> ExtensionUiRequest:
         widget_lines=_tuple_of_strings(
             payload.get("widgetLines"), field="extension_ui_request.widgetLines"
         ),
+        widget_blocks=_tuple_of_widget_blocks(
+            payload.get("widgetBlocks"), field="extension_ui_request.widgetBlocks"
+        ),
         widget_placement=cast(
             WidgetPlacement | None,
             _optional_literal(
@@ -1469,6 +1510,7 @@ def parse_extension_ui_request(payload: JsonObject) -> ExtensionUiRequest:
                 field="extension_ui_request.widgetPlacement",
             ),
         ),
+        widget_priority=_optional_number(payload, "widgetPriority"),
         text=_optional_str(payload, "text"),
     )
 
