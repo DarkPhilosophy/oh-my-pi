@@ -1370,7 +1370,9 @@ export type LocalQueueCoalescedListener = (
 	perSendText: string,
 	mergedText: string,
 	replacedText: string,
-	imageCount: number,
+	perSendImageCount: number,
+	mergedImageCount: number,
+	replacedImageCount: number,
 ) => void;
 
 function queuedTextContent(message: AgentMessage): string | undefined {
@@ -8042,9 +8044,20 @@ export class AgentSession {
 			mode === "steer" ? nextQueue : [...steering],
 			mode === "followUp" ? nextQueue : [...followUp],
 		);
-		const imageCount = mergedImages.length;
-		onQueued?.(mergedText, imageCount, replacedText);
-		if (!onQueued) this.onLocalQueueCoalesced?.(shiftedPerSendText, mergedText, replacedText, imageCount);
+		const perSendImageCount = images?.length ?? 0;
+		const replacedImageCount = tailImages?.length ?? 0;
+		const mergedImageCount = mergedImages.length;
+		onQueued?.(mergedText, mergedImageCount, replacedText);
+		if (!onQueued) {
+			this.onLocalQueueCoalesced?.(
+				perSendText,
+				mergedText,
+				replacedText,
+				perSendImageCount,
+				mergedImageCount,
+				replacedImageCount,
+			);
+		}
 		return true;
 	}
 
