@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed rapid queued steer/follow-up image submissions racing into split or dropped pending entries by serializing queue mutations; added opt-in `coalescing` queue mode to merge rapid consecutive queued user entries while preserving attachments, hidden magic-keyword companions, restore behavior, delivery, and `[Image #N]` marker numbering.
 ## [16.3.10] - 2026-07-06
 
 ### Changed

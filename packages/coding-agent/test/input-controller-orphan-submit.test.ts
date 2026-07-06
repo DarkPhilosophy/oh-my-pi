@@ -81,6 +81,7 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 		editor: editor as unknown as InteractiveModeContext["editor"],
 		ui: { requestRender } as unknown as InteractiveModeContext["ui"],
 		session,
+		viewSession: session,
 		sessionManager: { getSessionName: () => "named-session" } as InteractiveModeContext["sessionManager"],
 		compactionQueuedMessages: [] as InteractiveModeContext["compactionQueuedMessages"],
 		fileSlashCommands: new Set<string>(),

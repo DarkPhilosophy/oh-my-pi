@@ -466,6 +466,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.hideThinkingBlock || (thinkingOff && !this.hasDisplayableThinkingContent);
 	}
 	proseOnlyThinking = true;
+	pendingQueueExpanded = false;
 	compactionQueuedMessages: CompactionQueuedMessage[] = [];
 	pendingTools = new Map<string, ToolExecutionHandle>();
 	pendingBashComponents: BashExecutionComponent[] = [];
@@ -588,6 +589,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.streamingMessage = undefined;
 		this.lastAssistantUsage = undefined;
 		this.pendingTools.clear();
+		this.pendingQueueExpanded = false;
 	}
 	readonly #uiHelpers: UiHelpers;
 	#sttController: STTController | undefined;
@@ -630,6 +632,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.lspServers = lspServers;
 		this.mcpManager = mcpManager;
 		this.#eventBus = eventBus;
+		this.session.onLocalQueueCoalesced = (
+			perSendText,
+			mergedText,
+			replacedText,
+			perSendImageCount,
+			mergedImageCount,
+			replacedImageCount,
+		) => {
+			const droppedPerSend = this.locallySubmittedUserSignatures.delete(`${perSendText}\u0000${perSendImageCount}`);
+			const droppedReplaced = this.locallySubmittedUserSignatures.delete(
+				`${replacedText}\u0000${replacedImageCount}`,
+			);
+			if (droppedPerSend || droppedReplaced) {
+				this.locallySubmittedUserSignatures.add(`${mergedText}\u0000${mergedImageCount}`);
+			}
+		};
 		if (eventBus) {
 			this.#eventBusUnsubscribers.push(
 				eventBus.on(LSP_STARTUP_EVENT_CHANNEL, data => {
@@ -3372,6 +3390,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Clear the process-global consent handler so it doesn't outlive this
 		// InteractiveMode instance (e.g. test harnesses, headless re-init).
 		setAutoQaConsentHandler(null, null);
+		if (this.session.onLocalQueueCoalesced) {
+			this.session.onLocalQueueCoalesced = undefined;
+		}
 		if (this.isInitialized) {
 			this.ui.stop();
 			this.isInitialized = false;
