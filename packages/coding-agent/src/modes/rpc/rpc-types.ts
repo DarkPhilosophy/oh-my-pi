@@ -84,7 +84,18 @@ export type RpcCommand =
 
 	// Login
 	| { id?: string; type: "get_login_providers" }
-	| { id?: string; type: "login"; providerId: string };
+	| { id?: string; type: "login"; providerId: string }
+
+	// Widget layout feedback (host → server)
+	| {
+			id?: string;
+			type: "widget_layout";
+			widgetKey: string;
+			visible: boolean;
+			availableWidth: number;
+			visibleRows: number;
+			hiddenBlocks?: string[];
+	  };
 
 // ============================================================================
 // RPC State
@@ -294,6 +305,7 @@ export type RpcResponse =
 			data: { providers: Array<{ id: string; name: string; available: boolean; authenticated: boolean }> };
 	  }
 	| { id?: string; type: "response"; command: "login"; success: true; data: { providerId: string } }
+	| { id?: string; type: "response"; command: "widget_layout"; success: true }
 
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };
@@ -324,6 +336,11 @@ export type RpcSessionEventFrame = AgentSessionEvent | RpcSubagentFrame;
 // ============================================================================
 // Extension UI Events (stdout)
 // ============================================================================
+export interface RpcExtensionWidgetBlock {
+	lines: string[];
+	priority?: number;
+	id?: string;
+}
 
 /** Emitted when an extension needs user input */
 export type RpcExtensionUIRequest =
@@ -365,8 +382,10 @@ export type RpcExtensionUIRequest =
 			id: string;
 			method: "setWidget";
 			widgetKey: string;
-			widgetLines: string[] | undefined;
-			widgetPlacement?: "aboveEditor" | "belowEditor";
+			widgetLines?: string[] | undefined;
+			widgetBlocks?: RpcExtensionWidgetBlock[] | undefined;
+			widgetPlacement?: "aboveEditor" | "belowEditor" | "rightEditor";
+			widgetPriority?: number;
 	  }
 	| { type: "extension_ui_request"; id: string; method: "setTitle"; title: string }
 	| { type: "extension_ui_request"; id: string; method: "set_editor_text"; text: string }

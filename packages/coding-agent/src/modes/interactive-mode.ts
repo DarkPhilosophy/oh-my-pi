@@ -21,6 +21,7 @@ import type {
 	LoaderMessageColorFn,
 	NativeScrollbackLiveRegion,
 	OverlayHandle,
+	PanelLayoutResult,
 	SlashCommand,
 } from "@oh-my-pi/pi-tui";
 import {
@@ -186,6 +187,7 @@ import type {
 	InteractiveModeContext,
 	InteractiveModeInitOptions,
 	InteractiveSelectorDialogOptions,
+	RightInfoProvider,
 	SubmittedUserInput,
 	TodoItem,
 	TodoPhase,
@@ -505,6 +507,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	get isShuttingDown(): boolean {
 		return this.#isShuttingDown;
 	}
+	#rightInfoBlocks: string[][] = [];
+	#staticRightInfoProvider = (_width: number): readonly (readonly string[])[] => this.#rightInfoBlocks;
+	#rightInfoProvider: RightInfoProvider = this.#staticRightInfoProvider;
+	#rightInfoLayoutCallback: ((result: PanelLayoutResult) => void) | null = null;
 	hookSelector: HookSelectorComponent | undefined = undefined;
 	hookInput: HookInputComponent | undefined = undefined;
 	hookEditor: HookEditorComponent | undefined = undefined;
@@ -756,6 +762,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#tanCommandController = new TanCommandController(this);
 		this.#omfgController = new OmfgController(this);
 		this.#extensionUiController = new ExtensionUiController(this);
+		this.#extensionUiController.setWidgetLayoutEmitter(event => {
+			const runner = this.session.extensionRunner;
+			if (runner?.hasHandlers("widget_layout")) runner.emit(event).catch(() => {});
+		});
 		this.#eventController = new EventController(this);
 		this.#commandController = new CommandController(this);
 		this.#todoCommandController = new TodoCommandController(this);
@@ -820,6 +830,30 @@ export class InteractiveMode implements InteractiveModeContext {
 		welcome?.playIntro(() => this.ui.requestComponentRender(welcome));
 	}
 
+	setRightInfo(
+		blocks: string[][] | RightInfoProvider | undefined,
+		onLayout?: (result: PanelLayoutResult) => void,
+	): void {
+		if (onLayout !== undefined) this.#rightInfoLayoutCallback = onLayout;
+		if (typeof blocks === "function") {
+			this.#rightInfoProvider = blocks;
+			this.ui.requestRender();
+			return;
+		}
+		const next = blocks ?? [];
+		const changed =
+			this.#rightInfoProvider !== this.#staticRightInfoProvider ||
+			next.length !== this.#rightInfoBlocks.length ||
+			next.some((block, i) => {
+				const prev = this.#rightInfoBlocks[i];
+				return !prev || block.length !== prev.length || block.some((l, j) => l !== prev[j]);
+			});
+		if (!changed) return;
+		this.#rightInfoBlocks = next;
+		this.#rightInfoProvider = this.#staticRightInfoProvider;
+		this.ui.requestRender();
+	}
+
 	async init(options: InteractiveModeInitOptions = {}): Promise<void> {
 		if (this.isInitialized) return;
 
@@ -880,9 +914,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		const startupQuiet = settings.get("startup.quiet");
 		this.#welcomeComponent = undefined;
 
+		// Static startup content (warnings, welcome, changelog) lives in one
+		// container so the right-side panel row range can include it: the panel
+		// anchors at the very top, beside the welcome text.
+		const mainContent = new Container();
+
 		for (const warning of this.session.configWarnings) {
-			this.ui.addChild(new Text(theme.fg("warning", `Warning: ${warning}`), 1, 0));
-			this.ui.addChild(new Spacer(1));
+			mainContent.addChild(new Text(theme.fg("warning", `Warning: ${warning}`), 1, 0));
+			mainContent.addChild(new Spacer(1));
 		}
 
 		if (!startupQuiet) {
@@ -896,31 +935,32 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 
 			// Setup UI layout
-			this.ui.addChild(new Spacer(1));
-			this.ui.addChild(this.#welcomeComponent);
-			this.ui.addChild(new Spacer(1));
+			mainContent.addChild(new Spacer(1));
+			mainContent.addChild(this.#welcomeComponent);
+			mainContent.addChild(new Spacer(1));
 			if (!options.suppressWelcomeIntro) {
 				this.playWelcomeIntro();
 			}
 
 			// Add changelog if provided
 			if (this.#changelogMarkdown) {
-				this.ui.addChild(new DynamicBorder());
+				mainContent.addChild(new DynamicBorder());
 				if (settings.get("collapseChangelog")) {
 					const versionMatch = this.#changelogMarkdown.match(/##\s+\[?(\d+\.\d+\.\d+)\]?/);
 					const latestVersion = versionMatch ? versionMatch[1] : this.#version;
 					const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
-					this.ui.addChild(new Text(condensedText, 1, 0));
+					mainContent.addChild(new Text(condensedText, 1, 0));
 				} else {
-					this.ui.addChild(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0));
-					this.ui.addChild(new Spacer(1));
-					this.ui.addChild(new Markdown(this.#changelogMarkdown.trim(), 1, 0, getMarkdownTheme()));
-					this.ui.addChild(new Spacer(1));
+					mainContent.addChild(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0));
+					mainContent.addChild(new Spacer(1));
+					mainContent.addChild(new Markdown(this.#changelogMarkdown.trim(), 1, 0, getMarkdownTheme()));
+					mainContent.addChild(new Spacer(1));
 				}
-				this.ui.addChild(new DynamicBorder());
+				mainContent.addChild(new DynamicBorder());
 			}
 		}
 
+		this.ui.addChild(mainContent);
 		this.ui.addChild(this.chatContainer);
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.todoContainer);
@@ -958,6 +998,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Start the UI. Cold `omp` launch opts into clearing on the first paint so
 		// the initial welcome frame does not append over the previous run's scrollback.
 		this.ui.start({ clearScrollback: options.clearInitialTerminalHistory === true });
+		// Register the right-side widget compositor AFTER ui.start(): setRightPanel
+		// schedules a render, and #loadTodoList() above can yield, so registering it
+		// earlier risked a full frame painting before the terminal was started/cleared
+		// (a visible pre-start paint, and duplicate startup output on terminals that
+		// copy screen contents on the first paint). Targets include the shared
+		// main content root plus chat/todo leaves; the forced requestRender below
+		// composites the panel on frame 1.
+		this.ui.setRightPanel(
+			width => this.#rightInfoProvider(width),
+			[mainContent, this.chatContainer, this.todoContainer],
+			result => this.#rightInfoLayoutCallback?.(result),
+		);
 		pushTerminalTitle();
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
 		this.updateEditorBorderColor();
@@ -4225,6 +4277,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	// Hook UI methods
 	initHooksAndCustomTools(): Promise<void> {
 		return this.#extensionUiController.initHooksAndCustomTools();
+	}
+
+	reloadHooksAndCustomTools(): Promise<void> {
+		return this.#extensionUiController.reloadHooksAndCustomTools();
 	}
 
 	emitCustomToolSessionEvent(

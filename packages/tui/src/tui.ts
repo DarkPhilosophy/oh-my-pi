@@ -18,6 +18,7 @@ import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
 import { LoopWatchdog } from "./loop-watchdog";
+import { compositeRightPanelsInRange, type PanelLayoutResult, RIGHT_PANEL_MIN_COL } from "./right-panel";
 import { isConPTYHosted, setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteImage,
@@ -72,6 +73,10 @@ const PAINT_BEGIN = `${HIDE_CURSOR}${SYNC_OUTPUT_BEGIN}${DISABLE_AUTOWRAP}`;
 const PAINT_END = `${ENABLE_AUTOWRAP}${SYNC_OUTPUT_END}`;
 const PAINT_BEGIN_NO_SYNC = `${HIDE_CURSOR}${DISABLE_AUTOWRAP}`;
 const PAINT_END_NO_SYNC = ENABLE_AUTOWRAP;
+const OSC66_LINE_PREFIX = "\x1b]66;";
+function isOsc66Line(line: string): boolean {
+	return line.includes(OSC66_LINE_PREFIX);
+}
 const CURSOR_BEGIN = `${HIDE_CURSOR}${SYNC_OUTPUT_BEGIN}`;
 const CURSOR_BEGIN_NO_SYNC = HIDE_CURSOR;
 const CURSOR_END = SYNC_OUTPUT_END;
@@ -303,6 +308,13 @@ export interface RenderRequestOptions {
 	/** Clear terminal scrollback for intentional transcript replacement. */
 	clearScrollback?: boolean;
 }
+
+type OverlayLayout = {
+	row: number;
+	col: number;
+	width: number;
+	lines: readonly string[];
+};
 /** Type guard to check if a component implements Focusable */
 export function isFocusable(component: Component | null): component is Component & Focusable {
 	return component !== null && "focused" in component;
@@ -1029,6 +1041,10 @@ export class TUI extends Container {
 	// pushing wrapped fragments into native scrollback.
 	#resizeAltActive = false;
 	#stopped = false;
+	// True once start() has run at least once. setRightPanel() (and any other
+	// pre-start registration) must NOT paint before the terminal is started, or
+	// it commits a frame into raw scrollback before the screen is cleared.
+	#hasStarted = false;
 	// Always-on event-loop lag probe. The high default threshold keeps it quiet;
 	// it only logs `ui.loop-blocked` (with the current loop phase) when a frame
 	// budget is genuinely starved. Armed in start(), disarmed in stop().
@@ -1091,6 +1107,13 @@ export class TUI extends Container {
 		preFocus: Component | null;
 		hidden: boolean;
 	}[] = [];
+
+	// Right-panel provider: composited into the visible window at the emit
+	// stage, after the window/commit math — never into rows that enter native
+	// scrollback, and only into rows owned by the registered target roots.
+	#rightPanelProvider: ((width: number) => readonly (readonly string[])[]) | null = null;
+	#rightPanelTargets: Set<Component> | null = null;
+	#rightPanelLayoutCallback: ((result: PanelLayoutResult) => void) | null = null;
 
 	constructor(terminal: Terminal, showHardwareCursor?: boolean, options?: TUIOptions) {
 		super();
@@ -1440,6 +1463,7 @@ export class TUI extends Container {
 
 	start(options?: TUIStartOptions): void {
 		this.#stopped = false;
+		this.#hasStarted = true;
 		this.#watchdog.start();
 		this.#ghosttyInitialImageDelayDone = false;
 		this.#ghosttyImageReadyAtMs = this.#renderScheduler.now() + TUI.#GHOSTTY_INITIAL_IMAGE_DELAY_MS;
@@ -1760,6 +1784,140 @@ export class TUI extends Container {
 		this.#resizeEventPending = true;
 		this.#renderRequested = false;
 		this.#executeRender();
+	}
+
+	/**
+	 * Register a provider of right-side info panel blocks. Each frame the
+	 * engine composites the blocks into the trailing whitespace of the visible
+	 * window — only into rows rendered by `targets` (direct root children), so
+	 * the panel never overlaps bottom chrome (editor, status line) or rows
+	 * committed to native scrollback. Disjoint target roots stay isolated: rows
+	 * between targeted roots are not eligible for panel placement. Pass `null` to remove.
+	 */
+	setRightPanel(
+		provider: ((width: number) => readonly (readonly string[])[]) | null,
+		targets?: readonly Component[],
+		onLayout?: (result: PanelLayoutResult) => void,
+	): void {
+		this.#rightPanelProvider = provider;
+		this.#rightPanelTargets =
+			provider !== null && targets !== undefined && targets.length > 0 ? new Set(targets) : null;
+		this.#rightPanelLayoutCallback = onLayout ?? null;
+		// Defer painting until the terminal is started: a provider registered
+		// during setup (before start()) would otherwise commit a frame into raw
+		// scrollback before the screen is cleared. start() does the initial paint
+		// and picks up the stored provider; live updates render immediately.
+		if (this.#hasStarted) this.requestRender();
+	}
+
+	/**
+	 * Composite the registered right panel into the visible window slice.
+	 * Runs after the window/commit math: these rows are exactly the on-screen
+	 * grid, never committed history, so compositing cannot perturb the native
+	 * scrollback protocol (live region, committed-prefix audit, stable
+	 * prefixes) and needs no viewport estimation.
+	 */
+	#compositeRightPanelIntoWindow(
+		window: string[],
+		width: number,
+		windowTop: number,
+		frame: readonly string[],
+		overlayOccupiedRows?: readonly boolean[],
+	): string[] {
+		const provider = this.#rightPanelProvider;
+		if (provider === null) return window;
+		const blocks = provider(width);
+		if (blocks.length === 0) return window;
+		if (overlayOccupiedRows !== undefined) {
+			this.#rightPanelLayoutCallback?.({
+				placedBlockIndices: [],
+				hiddenBlockIndices: blocks.map((_, i) => i),
+				availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
+				searchRows: 0,
+			});
+			return window;
+		}
+		// Restrict placement to window rows rendered by the target roots.
+		let lo = 0;
+		let hi = window.length;
+		let eligibleRows: boolean[] | undefined;
+		const targets = this.#rightPanelTargets;
+		if (targets !== null) {
+			eligibleRows = new Array<boolean>(window.length).fill(false);
+			let firstEligible = -1;
+			let lastEligible = -1;
+			for (const segment of this.#frameSegments) {
+				if (!targets.has(segment.component)) continue;
+				const frameStart = segment.start;
+				const frameEnd = segment.start + segment.rowCount;
+				const windowStart = Math.max(0, frameStart - windowTop);
+				const windowEnd = Math.min(window.length, frameEnd - windowTop);
+				for (let row = windowStart; row < windowEnd; row++) {
+					eligibleRows[row] = true;
+					if (firstEligible === -1) firstEligible = row;
+					lastEligible = row;
+				}
+			}
+			if (firstEligible === -1) {
+				this.#rightPanelLayoutCallback?.({
+					placedBlockIndices: [],
+					hiddenBlockIndices: blocks.map((_, i) => i),
+					availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
+					searchRows: 0,
+				});
+				return window;
+			}
+			lo = firstEligible;
+			hi = lastEligible + 1;
+		}
+		// Mark visually occupied rows before the generic compositor runs. This is
+		// still used for non-modal row reservations such as image placeholders; modal
+		// overlays return above so the right-panel contract remains all-or-hidden.
+		const occupied = overlayOccupiedRows
+			? Array.from(overlayOccupiedRows)
+			: new Array<boolean>(window.length).fill(false);
+		if (eligibleRows !== undefined) {
+			for (let i = 0; i < eligibleRows.length; i++) {
+				if (!eligibleRows[i]) occupied[i] = true;
+			}
+		}
+		// Image lines keep their backward placeholder scan through the dedicated
+		for (let i = 0; i < window.length; i++) {
+			const line = window[i] ?? "";
+			if (isOsc66Line(line)) {
+				occupied[i] = true;
+				const next = window[i + 1];
+				if (next !== undefined && visibleWidth(next) === 0) {
+					occupied[i + 1] = true;
+				}
+			}
+		}
+		// Boundary case: the visible window can start ON the reservation row of an
+		// OSC 66 sized heading whose heading line sits just above the window (at
+		// windowTop - 1, scrolled out of view). The forward-only scan above never
+		// sees that heading, so carry the previous frame row in explicitly —
+		// otherwise row 0 stays eligible and a right-panel block would be spliced
+		// into the occupied reservation row, overwriting its lower glyph cells.
+		const reservationRow = windowTop > 0 ? frame[windowTop] : undefined;
+		if (
+			reservationRow !== undefined &&
+			visibleWidth(reservationRow) === 0 &&
+			isOsc66Line(frame[windowTop - 1] ?? "")
+		) {
+			occupied[0] = true;
+		}
+		const composited = compositeRightPanelsInRange(
+			window,
+			blocks,
+			width,
+			lo,
+			hi,
+			(line, i): boolean => occupied[i] === true || TERMINAL.isImageLine(line),
+			line => TERMINAL.isImageEscapeLine(line),
+			this.#rightPanelLayoutCallback ?? undefined,
+		);
+		if (composited === window) return window;
+		return this.#prepareLinesArray(composited, width);
 	}
 
 	requestRender(force = false, options?: RenderRequestOptions): void {
@@ -2298,8 +2456,8 @@ export class TUI extends Container {
 	 * frozen while an overlay is visible, so overlay pixels can never enter
 	 * native scrollback.
 	 */
-	#compositeOverlaysIntoWindow(window: string[], termWidth: number, termHeight: number): string[] {
-		const result = [...window];
+	#overlayLayouts(termWidth: number, termHeight: number): OverlayLayout[] {
+		const layouts: OverlayLayout[] = [];
 		for (const entry of this.overlayStack) {
 			if (!this.#isOverlayVisible(entry)) continue;
 			const { component, options } = entry;
@@ -2315,15 +2473,39 @@ export class TUI extends Container {
 						: overlayLines.slice(0, maxHeight);
 			}
 			const { row, col } = this.#resolveOverlayLayout(options, overlayLines.length, termWidth, termHeight);
-			for (let i = 0; i < overlayLines.length; i++) {
+			layouts.push({ row, col, width, lines: overlayLines });
+		}
+		return layouts;
+	}
+
+	#compositeOverlaysIntoWindow(
+		window: string[],
+		termWidth: number,
+		termHeight: number,
+		layouts = this.#overlayLayouts(termWidth, termHeight),
+	): string[] {
+		const result = [...window];
+		for (const { row, col, width, lines } of layouts) {
+			for (let i = 0; i < lines.length; i++) {
 				const idx = row + i;
 				if (idx < 0 || idx >= result.length) continue;
-				const truncatedOverlayLine =
-					visibleWidth(overlayLines[i]) > width ? sliceByColumn(overlayLines[i], 0, width, true) : overlayLines[i];
+				const line = lines[i] ?? "";
+				const truncatedOverlayLine = visibleWidth(line) > width ? sliceByColumn(line, 0, width, true) : line;
 				result[idx] = this.#compositeLineAt(result[idx], truncatedOverlayLine, col, width, termWidth);
 			}
 		}
 		return result;
+	}
+
+	#overlayOccupiedRows(layouts: readonly OverlayLayout[], termHeight: number): boolean[] {
+		const occupied = new Array<boolean>(Math.max(0, termHeight)).fill(false);
+		for (const { row, lines } of layouts) {
+			for (let i = 0; i < lines.length; i++) {
+				const idx = row + i;
+				if (idx >= 0 && idx < occupied.length) occupied[idx] = true;
+			}
+		}
+		return occupied;
 	}
 
 	/** Splice overlay content into a base line at a specific column. Single-pass optimized. */
@@ -2751,8 +2933,11 @@ export class TUI extends Container {
 		const frame = this.#prepareFrame(rawFrame, width);
 		let window: string[] = new Array(height);
 		for (let r = 0; r < height; r++) window[r] = frame[windowTop + r] ?? "";
+		const overlayLayouts = hasVisibleOverlay ? this.#overlayLayouts(width, height) : undefined;
+		const overlayOccupiedRows = overlayLayouts ? this.#overlayOccupiedRows(overlayLayouts, height) : undefined;
+		window = this.#compositeRightPanelIntoWindow(window, width, windowTop, frame, overlayOccupiedRows);
 		if (hasVisibleOverlay) {
-			window = this.#compositeOverlaysIntoWindow(window, width, height);
+			window = this.#compositeOverlaysIntoWindow(window, width, height, overlayLayouts);
 			const overlayMarkers = this.#extractCursorMarkers(window);
 			if (overlayMarkers.length > 0) {
 				cursorPos = { row: windowTop + overlayMarkers[0]!.row, col: overlayMarkers[0]!.col };
