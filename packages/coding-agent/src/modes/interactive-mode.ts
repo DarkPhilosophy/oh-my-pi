@@ -455,6 +455,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.hideThinkingBlock || (thinkingOff && !this.hasDisplayableThinkingContent);
 	}
 	proseOnlyThinking = true;
+	pendingQueueExpanded = false;
 	compactionQueuedMessages: CompactionQueuedMessage[] = [];
 	pendingTools = new Map<string, ToolExecutionHandle>();
 	pendingBashComponents: BashExecutionComponent[] = [];
@@ -577,6 +578,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.streamingMessage = undefined;
 		this.lastAssistantUsage = undefined;
 		this.pendingTools.clear();
+		this.pendingQueueExpanded = false;
 	}
 	readonly #uiHelpers: UiHelpers;
 	#sttController: STTController | undefined;
