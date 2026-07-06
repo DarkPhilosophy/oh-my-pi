@@ -20,6 +20,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as imageLoading from "@oh-my-pi/pi-coding-agent/utils/image-loading";
+import * as imageVisionFallback from "@oh-my-pi/pi-coding-agent/utils/image-vision-fallback";
 import { Snowflake } from "@oh-my-pi/pi-utils";
 
 describe("AgentSession queue coalescing", () => {
@@ -43,7 +44,10 @@ describe("AgentSession queue coalescing", () => {
 
 	async function createSession(
 		responses: MockResponse[],
-		modelRef: { api: "anthropic" | "openai"; id: string } = { api: "anthropic", id: "claude-sonnet-4-5" },
+		modelRef: { api: Parameters<typeof getBundledModel>[0]; id: string } = {
+			api: "anthropic",
+			id: "claude-sonnet-4-5",
+		},
 		options?: {
 			steeringMode?: "all" | "one-at-a-time" | "coalescing";
 			followUpMode?: "all" | "one-at-a-time" | "coalescing";
@@ -280,6 +284,50 @@ describe("AgentSession queue coalescing", () => {
 					{ type: "image", data: "QUJD", mimeType: "image/png" },
 					{ type: "image", data: "REVG", mimeType: "image/png" },
 					{ type: "image", data: "R0hJ", mimeType: "image/png" },
+				],
+			},
+		]);
+	});
+
+	it("keeps hidden image-description companions when coalescing image steers for text-only models", async () => {
+		vi.spyOn(imageVisionFallback, "describeAttachedImagesForTextModel")
+			.mockResolvedValueOnce([{ type: "text", text: '<image path="local://first.png">first description</image>' }])
+			.mockResolvedValueOnce([
+				{ type: "text", text: '<image path="local://second.png">second description</image>' },
+			]);
+		const target = await createSession(
+			[{ content: ["ok"] }],
+			{ api: "aimlapi", id: "alibaba/qwen3-coder-480b-a35b-instruct" },
+			{ steeringMode: "coalescing" },
+		);
+		const result = await duringStream(target, async () => {
+			await target.steer("[Image #1]", [{ type: "image", data: "QUJD", mimeType: "image/png" }]);
+			await target.steer("[Image #1]", [{ type: "image", data: "REVG", mimeType: "image/png" }]);
+			return {
+				shapes: steeringShapes(target),
+				companions: target.agent
+					.peekSteeringQueue()
+					.flatMap(message =>
+						message.role === "custom" && message.customType === "image-attachment-description"
+							? [message.content]
+							: [],
+					),
+				chips: target.getQueuedMessages().steering.slice(),
+				restored: target.clearQueue().steering,
+			};
+		});
+		expect(result.shapes).toEqual(["image-attachment-description", "image-attachment-description", "user"]);
+		expect(result.companions).toEqual([
+			[{ type: "text", text: '<image path="local://first.png">first description</image>' }],
+			[{ type: "text", text: '<image path="local://second.png">second description</image>' }],
+		]);
+		expect(result.chips).toEqual(["[Image #1]\n[Image #2]"]);
+		expect(result.restored).toEqual([
+			{
+				text: "[Image #1]\n[Image #2]",
+				images: [
+					{ type: "image", data: "QUJD", mimeType: "image/png" },
+					{ type: "image", data: "REVG", mimeType: "image/png" },
 				],
 			},
 		]);
