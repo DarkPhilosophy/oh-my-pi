@@ -2,7 +2,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Usage } from "@oh-my-pi/pi-ai";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, Spacer, Text, TruncatedText } from "@oh-my-pi/pi-tui";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
@@ -26,6 +26,7 @@ import {
 	type LateDiagnosticsFile,
 	LateDiagnosticsMessageComponent,
 } from "../../modes/components/late-diagnostics-message";
+import { QueuedMessageBox } from "../../modes/components/queued-message-box";
 import {
 	groupedReadUsageCallIds,
 	ReadToolGroupComponent,
@@ -1020,24 +1021,25 @@ export class UiHelpers {
 			if (entry.mode === "followUp") followUpMessages.push(entry.text);
 		}
 
-		const groups = [
-			{ label: "Steering", messages: steeringMessages },
-			{ label: "After yield", messages: followUpMessages },
-		].filter(group => group.messages.length > 0);
-		if (groups.length > 0) {
-			this.ctx.pendingMessagesContainer.addChild(new Spacer(1));
-			for (const group of groups) {
-				const heading = theme.fg("muted", `${group.label}${theme.sep.dot}${group.messages.length}`);
-				this.ctx.pendingMessagesContainer.addChild(new TruncatedText(heading, 1, 0));
-				for (let index = 0; index < group.messages.length; index++) {
-					const message = replaceTabs(group.messages[index] ?? "").replace(/\r?\n/g, " ↵ ");
-					const queuedText = theme.fg("dim", `  ${index + 1}. ${message}`);
-					this.ctx.pendingMessagesContainer.addChild(new TruncatedText(queuedText, 1, 0));
-				}
-			}
-			const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
-			const hintText = theme.fg("dim", `  ${theme.tree.hook} ${dequeueKey} to edit`);
-			this.ctx.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
+		const allMessages = [...steeringMessages, ...followUpMessages];
+		if (allMessages.length === 0) return;
+
+		this.ctx.pendingMessagesContainer.addChild(new Spacer(1));
+		const expanded = this.ctx.pendingQueueExpanded;
+		const collapseLines = Math.max(1, this.ctx.settings?.get("pendingQueueCollapseLines") ?? 5);
+		const canExpandQueue = allMessages.some(entry => entry.message.split("\n").length > collapseLines);
+		const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
+		const expandKey = this.ctx.keybindings.getDisplayString("app.message.expandQueue") || "Alt+O";
+		const expandHint = canExpandQueue ? `, ${expandKey} to ${expanded ? "collapse" : "expand"}` : "";
+		const hint = `${dequeueKey} (or Up) to edit${expandHint}`;
+
+		for (let idx = 0; idx < allMessages.length; idx++) {
+			const entry = allMessages[idx];
+			const safeAll = entry.message.split("\n").map(line => sanitizeText(line.replace(/\t/g, "    ")));
+			const footerText = idx === allMessages.length - 1 ? hint : undefined;
+			this.ctx.pendingMessagesContainer.addChild(
+				new QueuedMessageBox(entry.label, safeAll, { collapseLines, expanded, footerText }),
+			);
 		}
 		this.ctx.ui.requestComponentRender(this.ctx.pendingMessagesContainer);
 	}
