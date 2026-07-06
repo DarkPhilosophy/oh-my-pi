@@ -753,7 +753,7 @@ function createStubInteractiveModeContextForUiHelpers(session: AgentSession) {
 
 	const ctx = {
 		editor,
-		ui: { requestRender, requestComponentRender },
+		ui: { requestRender, requestComponentRender, terminal: { columns: 80 } },
 		pendingMessagesContainer,
 		session,
 		viewSession: session,
@@ -846,6 +846,19 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		expect(rendered).not.toContain("four");
 		expect(rendered).toContain("Alt+Up (or Up) to edit, Alt+O to expand");
 		expect(rendered).toContain("+1 rows · 4 chars");
+	});
+
+	it("shows the expand hint when a queued line wraps past the collapsed row limit", async () => {
+		fixture = await createRealSession();
+		const { session } = fixture;
+		queueCustomSteer(session, "wrapped ".repeat(80).trim());
+
+		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session);
+		const uiHelpers = new UiHelpers(ctx);
+		uiHelpers.updatePendingMessagesDisplay();
+
+		const rendered = stripAnsi(pendingMessagesContainer.render(80).join("\n"));
+		expect(rendered).toContain("Alt+Up (or Up) to edit, Alt+O to expand");
 	});
 
 	it("restores the compact slash form into the editor and clears the queue", async () => {

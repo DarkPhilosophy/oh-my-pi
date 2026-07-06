@@ -6462,6 +6462,7 @@ export class AgentSession {
 		text: string,
 		images: ImageContent[] | undefined,
 		mode: "steer" | "followUp",
+		companionMessages: readonly CustomMessage[],
 		onQueued: QueuedUserMessageListener | undefined,
 	): boolean {
 		const steering = [...this.agent.peekSteeringQueue()];
@@ -6494,6 +6495,7 @@ export class AgentSession {
 			...queue.slice(0, prefixCompanionStart),
 			...queue.slice(prefixCompanionStart, userIndex),
 			...queue.slice(userIndex + 1),
+			...companionMessages,
 			replacement,
 		];
 		this.agent.replaceQueues(
@@ -6533,16 +6535,20 @@ export class AgentSession {
 		if (normalizedImages?.length) {
 			content.push(...normalizedImages);
 		}
+		const imageDescriptionNotice = normalizedImages?.length
+			? await this.#buildImageDescriptionNotice(normalizedImages)
+			: undefined;
+		const companionMessages = imageDescriptionNotice ? [imageDescriptionNotice] : [];
 		const queueMode = mode === "followUp" ? this.settings.get("followUpMode") : this.settings.get("steeringMode");
-		if (queueMode === "coalescing" && this.#tryCoalesceQueuedUserMessage(text, normalizedImages, mode, onQueued)) {
+		if (
+			queueMode === "coalescing" &&
+			this.#tryCoalesceQueuedUserMessage(text, normalizedImages, mode, companionMessages, onQueued)
+		) {
 			this.#scheduleIdleQueueDrain();
 			return;
 		}
 		// Text-only model + image attachment: describe via a vision model and enqueue the
 		// description as a hidden companion immediately before the user message.
-		const imageDescriptionNotice = normalizedImages?.length
-			? await this.#buildImageDescriptionNotice(normalizedImages)
-			: undefined;
 		this.#allowQueuedMessageDrainRetry();
 		if (mode === "followUp") {
 			if (imageDescriptionNotice) this.agent.followUp(imageDescriptionNotice);

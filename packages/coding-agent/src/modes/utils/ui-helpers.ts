@@ -39,6 +39,7 @@ import { ToolExecutionComponent, type ToolExecutionHandle } from "../../modes/co
 import { TranscriptBlock, TranscriptContainer } from "../../modes/components/transcript-container";
 import { createUsageRowBlock, turnElapsedMs } from "../../modes/components/usage-row";
 import { UserMessageComponent } from "../../modes/components/user-message";
+
 import { decodeStreamedToolArgs, streamingStringKeysForTool } from "../../modes/controllers/tool-args-reveal";
 import { materializeImageReferenceLinksSync } from "../../modes/image-references";
 import { theme } from "../../modes/theme/theme";
@@ -67,6 +68,17 @@ import {
 	resolveAssistantErrorPresentation,
 	splitAssistantMessageToolTimeline,
 } from "./transcript-render-helpers";
+
+function queuedMessageVisualRowCount(message: string, boxWidth: number): number {
+	const contentWidth = Math.max(0, boxWidth - 7);
+	return message
+		.split("\n")
+		.map(line => sanitizeText(line.replace(/\t/g, "    ")))
+		.reduce((rows, line) => {
+			if (contentWidth <= 0 || line.length === 0) return rows + 1;
+			return rows + Bun.wrapAnsi(line, contentWidth, { wordWrap: true, hard: true }).split("\n").length;
+		}, 0);
+}
 
 type TextBlock = { type: "text"; text: string };
 interface RenderInitialMessagesOptions {
@@ -1027,7 +1039,10 @@ export class UiHelpers {
 		this.ctx.pendingMessagesContainer.addChild(new Spacer(1));
 		const expanded = this.ctx.pendingQueueExpanded;
 		const collapseLines = Math.max(1, this.ctx.settings?.get("pendingQueueCollapseLines") ?? 5);
-		const canExpandQueue = allMessages.some(entry => entry.message.split("\n").length > collapseLines);
+		const queueBoxWidth = Math.max(1, this.ctx.ui.terminal?.columns ?? 80);
+		const canExpandQueue = allMessages.some(
+			entry => queuedMessageVisualRowCount(entry.message, queueBoxWidth) > collapseLines,
+		);
 		const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
 		const expandKey = this.ctx.keybindings.getDisplayString("app.message.expandQueue") || "Alt+O";
 		const expandHint = canExpandQueue ? `, ${expandKey} to ${expanded ? "collapse" : "expand"}` : "";
