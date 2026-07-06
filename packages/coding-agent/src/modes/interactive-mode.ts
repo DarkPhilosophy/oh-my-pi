@@ -909,11 +909,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		);
 		this.#eventBus = eventBus;
 		this.#subagentEventBus = subagentEventBus;
-		this.session.onLocalQueueCoalesced = (perSendText, mergedText, replacedText, imageCount) => {
-			const droppedPerSend = this.locallySubmittedUserSignatures.delete(`${perSendText}\u0000${imageCount}`);
-			const droppedReplaced = this.locallySubmittedUserSignatures.delete(`${replacedText}\u0000${imageCount}`);
+		this.session.onLocalQueueCoalesced = (
+			perSendText,
+			mergedText,
+			replacedText,
+			perSendImageCount,
+			mergedImageCount,
+			replacedImageCount,
+		) => {
+			const droppedPerSend = this.locallySubmittedUserSignatures.delete(`${perSendText}\u0000${perSendImageCount}`);
+			const droppedReplaced = this.locallySubmittedUserSignatures.delete(
+				`${replacedText}\u0000${replacedImageCount}`,
+			);
 			if (droppedPerSend || droppedReplaced) {
-				this.locallySubmittedUserSignatures.add(`${mergedText}\u0000${imageCount}`);
+				this.locallySubmittedUserSignatures.add(`${mergedText}\u0000${mergedImageCount}`);
 			}
 		};
 		if (eventBus) {

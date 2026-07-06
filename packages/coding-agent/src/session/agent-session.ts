@@ -408,6 +408,135 @@ const noOpUIContext: ExtensionUIContext = {
 // AgentSession Class
 // ============================================================================
 
+/** Entry returned by {@link AgentSession.clearQueue} / {@link AgentSession.popLastQueuedMessage}. */
+export type RestoredQueuedMessage = { text: string; images?: ImageContent[] };
+type UserQueueMessage = Extract<AgentMessage, { role: "user" }>;
+type QueuedUserMessageListener = (text: string, imageCount: number, replacedText?: string) => void;
+export type QueueMode = "all" | "one-at-a-time" | "coalescing";
+
+function coreQueueMode(mode: QueueMode): "all" | "one-at-a-time" {
+	return mode === "all" ? "all" : "one-at-a-time";
+}
+export type LocalQueueCoalescedListener = (
+	perSendText: string,
+	mergedText: string,
+	replacedText: string,
+	perSendImageCount: number,
+	mergedImageCount: number,
+	replacedImageCount: number,
+) => void;
+
+function queuedTextContent(message: AgentMessage): string | undefined {
+	if (!("content" in message)) return undefined;
+	const content = message.content;
+	if (typeof content === "string") return content;
+	return content.find((part): part is TextContent => part.type === "text")?.text;
+}
+
+function queuedImageContent(message: AgentMessage): ImageContent[] | undefined {
+	if (!("content" in message) || typeof message.content === "string") return undefined;
+	const images = message.content.filter(
+		(part): part is ImageContent =>
+			part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string",
+	);
+	return images.length > 0 ? images : undefined;
+}
+
+function isDisplayableQueuedMessage(message: AgentMessage): boolean {
+	return !(message.role === "custom" && message.display === false);
+}
+
+function isAdvisorCard(message: AgentMessage): message is CustomMessage {
+	return message.role === "custom" && message.customType === "advisor";
+}
+
+/**
+ * A queued message the user can restore to the editor / pull back as a draft.
+ * Only genuinely user-authored messages qualify: plain user turns, or custom
+ * messages explicitly attributed to the user (e.g. `/skill` invocations).
+ * Agent-authored queued cards — advisor concern/blocker notes, IRC asides,
+ * extension notices, hidden goal/plan/budget steers — ride the same
+ * steer/follow-up queues but must never be dumped into the editor on Esc/Alt+Up.
+ */
+function isUserQueuedMessage(message: AgentMessage): boolean {
+	if (message.role === "user") return message.attribution !== "agent";
+	return message.role === "custom" && message.attribution === "user" && message.display !== false;
+}
+
+/** Custom-message types of the hidden magic-keyword notices that `#createMagicKeywordNotices`
+ *  enqueues alongside a user prompt. Keep in sync with that method. */
+const MAGIC_KEYWORD_NOTICE_TYPES: ReadonlySet<string> = new Set([
+	"ultrathink-notice",
+	"orchestrate-notice",
+	"workflow-notice",
+]);
+
+/** Custom-message type of the hidden companion carrying vision descriptions of image
+ *  attachments sent to a text-only model (see `#buildImageDescriptionNotice`). */
+const IMAGE_ATTACHMENT_DESCRIPTION_TYPE = "image-attachment-description";
+
+const IMAGE_MARKER_REGEX = /\[Image #([1-9]\d*)((?:,[^\]\n]*)?)\]/g;
+
+function shiftQueuedImageMarkers(text: string, offset: number): string {
+	if (offset === 0) return text;
+	return text.replace(
+		IMAGE_MARKER_REGEX,
+		(_match, idx: string, tail: string) => `[Image #${Number(idx) + offset}${tail}]`,
+	);
+}
+
+/**
+ * A hidden, user-attributed companion of a queued user prompt: the magic-keyword
+ * notices (`ultrathink`/`orchestrate`/`workflow`) enqueued alongside the user
+ * message. They are `attribution: "user"` but `display: false`, so they are not
+ * editor-restorable; when the user pulls their prompt back out of the queue these
+ * must leave with it rather than linger as stale, companion-less steering. Scoped to
+ * the known notice types so an unrelated hidden user custom is never silently dropped.
+ */
+function isHiddenUserCompanion(message: AgentMessage): boolean {
+	return (
+		message.role === "custom" &&
+		message.attribution === "user" &&
+		message.display === false &&
+		(MAGIC_KEYWORD_NOTICE_TYPES.has(message.customType) || message.customType === IMAGE_ATTACHMENT_DESCRIPTION_TYPE)
+	);
+}
+
+function queueChipText(message: AgentMessage): string {
+	if (message.role === "custom") {
+		return readQueueChipText(message.details) ?? queuedTextContent(message) ?? "";
+	}
+	const text = queuedTextContent(message) ?? "";
+	if (text) return text;
+	return queuedImageContent(message) ? "[Image]" : "";
+}
+
+function toRestoredQueuedMessage(message: AgentMessage): RestoredQueuedMessage {
+	return { text: queueChipText(message), images: queuedImageContent(message) };
+}
+
+function queuedUserDraftText(message: AgentMessage): string | undefined {
+	if (message.role !== "user" || message.attribution === "agent") return undefined;
+	if (!("content" in message)) return undefined;
+	if (typeof message.content === "string") return message.content;
+	const text = message.content.find((part): part is TextContent => part.type === "text")?.text ?? "";
+	if (text) return text;
+	return queuedImageContent(message) ? "[Image]" : "";
+}
+
+function withQueuedUserContent(message: UserQueueMessage, text: string, images?: ImageContent[]): AgentMessage {
+	const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
+	if (images?.length) content.push(...images);
+	return { ...message, content, timestamp: Date.now() };
+}
+
+function mergeLlmCompactionPreserveData(
+	hookPreserveData: Record<string, unknown> | undefined,
+	resultPreserveData: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+	const preserveData = { ...(hookPreserveData ?? {}), ...(resultPreserveData ?? {}) };
+	return snapcompact.stripPreservedArchive(Object.keys(preserveData).length > 0 ? preserveData : undefined);
+}
 
 type MessageEndPersistenceSlot = {
 	readonly promise: Promise<void>;
@@ -6502,9 +6631,20 @@ export class AgentSession {
 			mode === "steer" ? nextQueue : [...steering],
 			mode === "followUp" ? nextQueue : [...followUp],
 		);
-		const imageCount = mergedImages.length;
-		onQueued?.(mergedText, imageCount, replacedText);
-		if (!onQueued) this.onLocalQueueCoalesced?.(shiftedPerSendText, mergedText, replacedText, imageCount);
+		const perSendImageCount = images?.length ?? 0;
+		const replacedImageCount = tailImages?.length ?? 0;
+		const mergedImageCount = mergedImages.length;
+		onQueued?.(mergedText, mergedImageCount, replacedText);
+		if (!onQueued) {
+			this.onLocalQueueCoalesced?.(
+				perSendText,
+				mergedText,
+				replacedText,
+				perSendImageCount,
+				mergedImageCount,
+				replacedImageCount,
+			);
+		}
 		return true;
 	}
 	async #queueUserMessage(
