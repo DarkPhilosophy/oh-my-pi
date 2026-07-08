@@ -200,18 +200,12 @@ export class ExtensionUiController {
 			waitForIdle: () => this.ctx.session.agent.waitForIdle(),
 			reload: async () => {
 				await this.ctx.session.reload();
-				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.showStatus("Reloaded session");
 			},
 			newSession: async options => {
-				// Stop any loading animation
-				if (this.ctx.loadingAnimation) {
-					this.ctx.loadingAnimation.stop();
-					this.ctx.loadingAnimation = undefined;
-				}
-				this.ctx.statusContainer.clear();
+				this.ctx.clearTransientSessionUi();
 
 				// Create new session
 				this.clearExtensionTerminalInputListeners();
@@ -230,15 +224,8 @@ export class ExtensionUiController {
 				// Reset and update status line
 				this.ctx.statusLine.invalidate();
 				this.ctx.statusLine.resetActiveTime();
-				this.ctx.ui.requestRender();
-
-				// Clear UI state
-				this.ctx.chatContainer.clear();
-				this.ctx.pendingMessagesContainer.clear();
-				this.ctx.compactionQueuedMessages = [];
-				this.ctx.streamingComponent = undefined;
-				this.ctx.streamingMessage = undefined;
-				this.ctx.pendingTools.clear();
+				this.ctx.clearTransientSessionUi();
+				this.ctx.resetTranscript();
 
 				this.ctx.present([
 					new Spacer(1),
@@ -256,7 +243,6 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.editor.setText(result.selectedText);
@@ -271,7 +257,6 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
@@ -289,7 +274,6 @@ export class ExtensionUiController {
 					return { cancelled: true };
 				}
 				setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
-				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				return { cancelled: false };
@@ -641,18 +625,12 @@ export class ExtensionUiController {
 			waitForIdle: () => this.ctx.session.agent.waitForIdle(),
 			reload: async () => {
 				await this.ctx.session.reload();
-				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.showStatus("Reloaded session");
 			},
 			newSession: async options => {
-				// Stop any loading animation
-				if (this.ctx.loadingAnimation) {
-					this.ctx.loadingAnimation.stop();
-					this.ctx.loadingAnimation = undefined;
-				}
-				this.ctx.statusContainer.clear();
+				this.ctx.clearTransientSessionUi();
 
 				// Create new session
 				this.clearExtensionTerminalInputListeners();
@@ -668,12 +646,8 @@ export class ExtensionUiController {
 				}
 
 				// Clear UI state
-				this.ctx.chatContainer.clear();
-				this.ctx.pendingMessagesContainer.clear();
-				this.ctx.compactionQueuedMessages = [];
-				this.ctx.streamingComponent = undefined;
-				this.ctx.streamingMessage = undefined;
-				this.ctx.pendingTools.clear();
+				this.ctx.clearTransientSessionUi();
+				this.ctx.resetTranscript();
 
 				this.ctx.present([
 					new Spacer(1),
@@ -691,7 +665,6 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.editor.setText(result.selectedText);
@@ -706,7 +679,6 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
@@ -723,7 +695,6 @@ export class ExtensionUiController {
 				if (!result) {
 					return { cancelled: true };
 				}
-				this.ctx.chatContainer.clear();
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				return { cancelled: false };
