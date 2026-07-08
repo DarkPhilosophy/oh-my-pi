@@ -29,6 +29,137 @@
 - Fixed a component-backed `rightEditor` widget crashing when it called any TUI method other than the two render hooks (e.g. `ui.addChild`, `ui.setFocus`, `ui.addInputListener`): the wrapping `Proxy` returned those methods bound to the proxy, so `TUI`/`Container` `#private` field access threw at runtime. The proxy now resolves against and binds methods back to the real TUI instance, staying API-compatible for right-side widget factories.
 - Fixed the `rightEditor` panel scheduling a render before the TUI was started: `setRightPanel()` was registered (which calls `requestRender()`) before `ui.start()`, and the intervening `await #loadTodoList()` could let that frame paint pre-start — a visible pre-start paint, and duplicate startup output on terminals that copy screen contents on the first paint. The panel is now registered after `ui.start()`, so the forced initial render composites it on the first real frame.
 - Fixed a failed widget refresh dropping the existing widget across any placement change: `setHookWidget` disposed the old entry (inline or right-side) before building the replacement, so a throwing component factory left the slot empty — whether moving `rightEditor`→inline or inline→`rightEditor`. The replacement is now constructed first for every transition and the old entry dropped only after a successful build, so a failed refresh always keeps the previous widget.
+### Added
+
+- Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor", priority? })`): each panel is composited independently into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, and hides per-block (not cut) when no run is tall enough to hold it. Panels are ordered by optional `priority` then ascending height, so the smallest always-present panels stay visible and the tallest hide first.
+
+### Changed
+
+- Memoized non-message token totals (system prompt, tool schemas, skills) so the per-turn compaction and context-threshold paths recompute them at most once per input change instead of on every call. `getContextBreakdown` and `#estimateStoredContextTokens` previously re-tokenized the system prompt and every tool's wire schema (per-tool `JSON.stringify`) several times per turn over inputs that change at most once per turn.
+- Changed `rightEditor` extension widgets to accept independently placeable sub-blocks so large widgets can hide sections one at a time instead of disappearing as one panel.
+- Changed `/reload-plugins` to tear down extension hooks with `session_shutdown` before replaying `session_start`, so plugin reloads do not stack duplicate timers, terminal-input listeners, or stale widgets.
+
+### Fixed
+
+- Fixed a `rightEditor` widget overwriting an OSC 66 (Kitty text-sizing) heading's reserved row when the heading scrolled one line above the visible window: the right-panel occupancy check now carries the frame row just above the window, so a heading at `windowTop - 1` still marks its reservation row (window row 0) occupied instead of leaving it eligible for panel placement.
+- Fixed a component-backed `rightEditor` widget crashing when it called any TUI method other than the two render hooks (e.g. `ui.addChild`, `ui.setFocus`, `ui.addInputListener`): the wrapping `Proxy` returned those methods bound to the proxy, so `TUI`/`Container` `#private` field access threw at runtime. The proxy now resolves against and binds methods back to the real TUI instance, staying API-compatible for right-side widget factories.
+- Fixed the `rightEditor` panel scheduling a render before the TUI was started: `setRightPanel()` was registered (which calls `requestRender()`) before `ui.start()`, and the intervening `await #loadTodoList()` could let that frame paint pre-start — a visible pre-start paint, and duplicate startup output on terminals that copy screen contents on the first paint. The panel is now registered after `ui.start()`, so the forced initial render composites it on the first real frame.
+- Fixed a failed widget refresh dropping the existing widget across any placement change: `setHookWidget` disposed the old entry (inline or right-side) before building the replacement, so a throwing component factory left the slot empty — whether moving `rightEditor`→inline or inline→`rightEditor`. The replacement is now constructed first for every transition and the old entry dropped only after a successful build, so a failed refresh always keeps the previous widget.
+
+## [16.3.11] - 2026-07-06
+
+### Changed
+
+- Improved session title generation reliability by moving to marker-based parsing for all models
+
+### Fixed
+
+- Fixed session titles occasionally showing raw `{"title": "..."}` JSON. Online title generation now always uses the `<title>...</title>` marker prompt instead of a forced `set_title` tool call — hosts that ignored or rejected forced `tool_choice` echoed the prompt's JSON example verbatim as the title — and JSON-shaped responses (bare, code-fenced, marker-wrapped, or truncated) are unwrapped to the bare title.
+- Fixed Linux startup prompt construction to read the CPU model from `/proc/cpuinfo` instead of `os.cpus()`, avoiding per-core sysfs frequency probes on many-core hosts ([#4712](https://github.com/can1357/oh-my-pi/issues/4712)).
+- Fixed llama.cpp model discovery to honor per-model `architecture.input_modalities` from `/v1/models`, so router presets that advertise image input are no longer treated as text-only ([#4719](https://github.com/can1357/oh-my-pi/issues/4719)).
+
+## [16.3.10] - 2026-07-06
+
+### Changed
+
+- Limited subagent HUD display to 8 items with a summary for additional running subagents
+- Improved TUI performance by coalescing agent registry and observer UI updates
+
+### Fixed
+
+- Fixed high-subagent sessions overwhelming the TUI by bounding the running-subagent HUD and coalescing subagent progress repaint bursts.
+- Fixed browser run cleanup crashing or wedging the whole omp session: run-end and tab-close aborts could reject fire-and-forget `wait()`/facade/tab promises with no consumer, and the global unhandled-rejection handler then exited the process, killing every subagent sharing it. Run-scoped promises are now observed at creation and routine browser teardown aborts are downgraded to log lines ([#4499](https://github.com/can1357/oh-my-pi/issues/4499), [#4672](https://github.com/can1357/oh-my-pi/issues/4672)).
+- Reduced CPU use while many task subagents stream progress by disabling the obsolete task partial-result spinner repaint loop ([#4424](https://github.com/can1357/oh-my-pi/issues/4424)).
+- Capped collapsed nested subagent trees at the same per-level agent limit as top-level task rendering (failures prioritized, elided rows summarized), so deep many-subagent sessions no longer render unbounded progress trees on every repaint.
+- Fixed skill card headers to render a single space between the `skill` tag and skill name ([#4662](https://github.com/can1357/oh-my-pi/issues/4662)).
+- Fixed `get_session_stats` RPC responses to include context-window usage so RPC clients can render context meters.
+- Fixed startup of cached llama.cpp vision models so the initial default/restored model refreshes `/props` metadata before the session exposes it as text-only.
+- Fixed IRC-woken yielded subagents skipping empty-stop retry because stale yield-termination state carried into the wake turn ([#4658](https://github.com/can1357/oh-my-pi/issues/4658)).
+- Fixed `irc wait` skipping replies that arrived between wait calls by draining pending IRC asides before honoring queued-interrupt aborts ([#4657](https://github.com/can1357/oh-my-pi/issues/4657)).
+
+## [16.3.9] - 2026-07-06
+
+### Added
+
+- Added a `--file` flag to the `say` command to read input text directly from files.
+- Enabled streaming text synthesis in the `say` command for gapless, long-form audio generation.
+- Added voice selection validation to the `say` command.
+
+### Changed
+
+- Improved the `say` command to display the segment count and total duration upon completion.
+
+### Fixed
+
+- Fixed an issue where local llama.cpp vision models remained text-only after a model refresh, ensuring they are correctly recognized as image-capable when configured as the default or vision role.
+- Fixed `omp commit` split plans aborting when lock files (such as `bun.lockb`) were staged alongside their manifests by correctly pairing lock files with their corresponding commit groups and properly handling binary files during split execution.
+- Fixed skill loading to ensure that disabling a higher-priority provider does not drop same-named skills from enabled lower-priority providers.
+
+## [16.3.8] - 2026-07-05
+
+### Fixed
+
+- Fixed the browser tool silently launching without its Puppeteer stealth patch: the patch was keyed to `puppeteer-core@25.1.0` while the resolved dependency had drifted to `25.3.0`, so Bun skipped it and Chrome ran with the `Runtime.enable` automation tell re-enabled. Regenerated the stealth patch against 25.3.0 and pinned `puppeteer-core` so the exact-version patch cannot silently deactivate on future drift.
+
+## [16.3.7] - 2026-07-05
+
+### Added
+
+- Added support for reading full memory rows (working or episodic) via `read memory://<id>` under the mnemopi backend, returning a YAML-frontmatter header with metadata to prevent blind overwrites during edits.
+- Updated the URI grammar to support `memory://root[/…]` for file-backed summaries and `memory://<memory-id>` for specific mnemopi IDs.
+
+### Changed
+
+- Updated `recall` and `memory_edit` tool prompts to document truncation markers and require reading a memory ID before updating a truncated preview.
+- Parallelized resolution of system files (`SYSTEM.md`, `APPEND_SYSTEM.md`, and `TITLE_SYSTEM.md`) at startup to improve performance.
+- Optimized TUI performance and reduced CPU usage during streaming and live tool calls by scoping renders to changed subtrees, interning the working-message shimmer palette, and memoizing copy-selector preview highlights.
+- Loaded persisted Agent Hub subagents asynchronously to prevent blocking the TUI on directory walks.
+- Cached persisted message keys in `AgentSession` to avoid repeated branch walks on message completion.
+- Skipped TTSR delta buffering for text/thinking sources when no registered rules match.
+
+### Fixed
+
+- Fixed macOS Backspace behavior in the `/resume` picker for terminals delivering `\x7f` instead of `\e[3~`.
+- Fixed queued follow-up message rows leaking into native terminal scrollback during live repaints by anchoring the pending-messages container.
+- Fixed `/rename` title arguments treating `#` prompt-action tokens as autocomplete triggers instead of literal text.
+- Fixed empty session `.jsonl` files accumulating in the sessions directory after a draft-then-clear exit cycle.
+- Fixed advisor being disabled for the entire session when resolving to a reasoning model with no controllable effort surface (e.g., `devin/glm-5-2*`).
+- Fixed legacy extension plugin validation failures by re-exporting relocated catalog symbols (such as `calculateCost`, `modelsAreEqual`, and `getBundledProviders`) through the legacy `pi-ai` root shim.
+- Fixed legacy Pi extension imports of `DefaultResourceLoader` by adding a compatibility loader shim that translates `resourceLoader` into native session discovery options.
+- Fixed legacy Pi extension reloads on POSIX to ensure same-process re-imports pick up edits across the entire dependency graph.
+- Fixed bash tool pipeline execution preserving stale upstream output when the final stage was a stripped `head` or `tail` limiter.
+- Fixed the status-line token-rate segment rendering as a clickable hyperlink in Ghostty.
+- Fixed xAI `web_search` to prioritize `xai-oauth` credentials before falling back to `xai` API keys, and enforced result counts locally to avoid sending unsupported parameters.
+- Fixed token-usage badges disappearing on session resume for empty automated assistant turns.
+- Fixed `/model` search escaping the active provider tab and silently persisting a same-named model from a different provider as the default role.
+- Fixed Esc key behavior to immediately silence active TTS audio playback (such as Kokoro) once an assistant reply finishes streaming.
+- Fixed grep and bash tool guidance to instruct agents to use Rust-style patterns or `grep -E` instead of GNU BRE assumptions.
+- Fixed tool-call renderers crashing the TUI when providers send array/object `path` arguments before schema validation.
+- Fixed `glob` tool rejecting slash-only root searches (e.g., `path:"/"`) with a documented error instead of returning empty results.
+- Fixed `omp read` hanging on PDFs whose inline-image binary payloads contain delimiter-looking bytes.
+- Fixed `pi/<role>` model resolution crashing on YAML list-valued `modelRoles` entries.
+- Fixed the snapcompact settings UI to expose `silver16-bw` and improved renderability warnings to report unsupported glyphs.
+- Fixed session and status usage totals to preserve provider-reported orchestration tokens separately from input and cache-hit buckets.
+- Fixed published `.d.ts` declaration files to be consumable under `moduleResolution: "node16" | "nodenext"` by rewriting relative specifiers to explicit `.js` extensions.
+- Fixed `omitThinking` settings propagation so settings-aware streams request hidden thinking summaries when explicitly enabled.
+- Preserved isolated branch-mode task output as a patch artifact when `commitToBranch` fails, surfacing the captured patch path through the evaluation failure message.
+- Fixed task-class subagents dropping unresolved explicit model-role selectors before startup.
+- Fixed large legacy snapcompact archives causing crashes on resume due to oversized archived frame payloads.
+- Fixed LSP diagnostics staleness by sending watched-file change notifications to running language servers before reading edit-time diagnostics.
+- Documented the bash tool timeout clamp (capped at 3600 seconds for async jobs) in the model-facing schema and prompt.
+- Fixed `/fast on` for custom OpenAI-compatible providers serving OpenAI models, and reported unsupported models as unavailable.
+- Fixed extension `pasteToEditor` and `setEditorText` prompt mutations leaving the editor visually stale by scheduling a repaint after mutations.
+- Fixed session title generation, commit-message generation, speech-enhancer rewrites, and classifiers silently truncating on non-reasoning-flagged models that still emit thinking output.
+- Fixed plan-mode "Approve and compact context" discarding queued operator turns and leaking internal plan-distillation prompts to extension hooks.
+- Fixed malformed `pi.sendMessage` custom-message payloads persisting bare session entries that crashed subsequent resumes.
+- Hid internal `display: false` session-update reminders from compact history and advisor transcripts.
+- Fixed idle recap crashes caused by side-channel stream malformations.
+- Applied WebSocket send backpressure with ordered drain retries to prevent unbounded buffer growth.
+- Capped docs.rs gunzip decompressed size at 256 MB to prevent zip-bomb out-of-memory crashes.
+- Deleted pre-created shell snapshot files when snapshot creation fails.
+- Aborted underlying MCP calls when proxy tool timeouts fire.
+- Surfaced unexpected JS eval worker exits via close listeners to prevent silent hangs.
+- Cached failed `!command` config resolutions and timed out extension dynamic model fetches after 15 seconds.
 
 ## [16.3.6] - 2026-07-04
 
