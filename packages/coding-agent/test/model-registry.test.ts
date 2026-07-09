@@ -1498,12 +1498,13 @@ describe("ModelRegistry", () => {
 					},
 				]);
 
-				// Lazy discovery resolver calls getOAuthAccess at fetch time; a
-				// rejecting refresh must degrade (serve static / skip remote)
+				// Lazy discovery resolver calls getOAuthAccessAt at fetch time; a
+				// failed resolution must degrade (serve static / skip remote)
 				// without aborting the discovery batch.
-				const spy = spyOn(authStorage, "getOAuthAccess").mockImplementation(() =>
-					Promise.reject(new Error("Mocked refresh failure")),
-				);
+				const spy = spyOn(authStorage, "getOAuthAccessAt").mockImplementation(async () => ({
+					ok: false,
+					error: "mock-failure",
+				}));
 
 				try {
 					const registry = new ModelRegistry(authStorage, modelsJsonPath, {
@@ -1512,7 +1513,7 @@ describe("ModelRegistry", () => {
 						},
 					});
 					await expect(registry.refreshProvider("xai-oauth", "online")).resolves.toBeUndefined();
-					expect(spy).toHaveBeenCalledWith("xai-oauth");
+					expect(spy).toHaveBeenCalledWith("xai-oauth", 0);
 					// Static seed remains available even when the lazy refresh fails.
 					expect(getModelsForProvider(registry, "xai-oauth").length).toBeGreaterThan(0);
 				} finally {
@@ -1567,17 +1568,18 @@ describe("ModelRegistry", () => {
 				};
 
 				// Lazy path: expired peek admits the provider via hasOAuth, then
-				// getOAuthAccess runs once inside fetchDynamicModels.
-				const spy = spyOn(authStorage, "getOAuthAccess").mockImplementation(async providerId => {
+				// getOAuthAccessAt(0) runs once inside fetchDynamicModels.
+				const spy = spyOn(authStorage, "getOAuthAccessAt").mockImplementation(async (providerId, position) => {
 					expect(providerId).toBe("xai-oauth");
-					return { accessToken: "fresh-access" };
+					expect(position).toBe(0);
+					return { ok: true, accessToken: "fresh-access" };
 				});
 
 				try {
 					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
 					await registry.refreshProvider("xai-oauth", "online");
 
-					expect(spy).toHaveBeenCalledWith("xai-oauth");
+					expect(spy).toHaveBeenCalledWith("xai-oauth", 0);
 					expect(captured.authHeader).toBe("Bearer fresh-access");
 				} finally {
 					spy.mockRestore();
@@ -1607,9 +1609,10 @@ describe("ModelRegistry", () => {
 					throw new Error(`Should not fetch because discovery is skipped`);
 				};
 
-				const spy = spyOn(authStorage, "getOAuthAccess").mockImplementation(async () => {
-					return { accessToken: "fresh-access" };
-				});
+				const spy = spyOn(authStorage, "getOAuthAccessAt").mockImplementation(async () => ({
+					ok: true,
+					accessToken: "fresh-access",
+				}));
 
 				try {
 					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
@@ -1677,12 +1680,13 @@ describe("ModelRegistry", () => {
 				};
 
 				const refreshedProviders: string[] = [];
-				const spy = spyOn(authStorage, "getOAuthAccess").mockImplementation(async providerId => {
+				const spy = spyOn(authStorage, "getOAuthAccessAt").mockImplementation(async (providerId, position) => {
 					refreshedProviders.push(providerId);
 					if (providerId === "xai-oauth") {
-						return { accessToken: "fresh-xai-access" };
+						expect(position).toBe(0);
+						return { ok: true, accessToken: "fresh-xai-access" };
 					}
-					return undefined;
+					return { ok: false, error: "mock-failure" };
 				});
 
 				try {
@@ -1710,7 +1714,7 @@ describe("ModelRegistry", () => {
 
 		// #8 — no OAuth refresh when the manager will not fetch (offline is the
 		// deterministic proxy: strategy "offline" never hits remote sources).
-		test("offline discovery does not call getOAuthAccess for an expired OAuth provider", async () => {
+		test("offline discovery does not call getOAuthAccessAt for an expired OAuth provider", async () => {
 			const originalXaiOAuthToken = Bun.env.XAI_OAUTH_TOKEN;
 			const originalXaiApiKey = Bun.env.XAI_API_KEY;
 			delete Bun.env.XAI_OAUTH_TOKEN;
@@ -1730,7 +1734,7 @@ describe("ModelRegistry", () => {
 					throw new Error(`Unexpected network call in offline mode: ${String(input)}`);
 				};
 
-				const spy = spyOn(authStorage, "getOAuthAccess");
+				const spy = spyOn(authStorage, "getOAuthAccessAt");
 
 				try {
 					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
@@ -1753,9 +1757,9 @@ describe("ModelRegistry", () => {
 			}
 		});
 
-		// #9 — lazy resolver uses the single getOAuthAccess token as the discovery
+		// #9 — lazy resolver uses the single getOAuthAccessAt token as the discovery
 		// bearer; no second peek that could drift to another account.
-		test("lazy discovery Authorization bearer equals the single getOAuthAccess token", async () => {
+		test("lazy discovery Authorization bearer equals the single getOAuthAccessAt token", async () => {
 			const originalXaiOAuthToken = Bun.env.XAI_OAUTH_TOKEN;
 			const originalXaiApiKey = Bun.env.XAI_API_KEY;
 			delete Bun.env.XAI_OAUTH_TOKEN;
@@ -1790,18 +1794,22 @@ describe("ModelRegistry", () => {
 					throw new Error(`Unexpected URL: ${url}`);
 				};
 
-				const getOAuthAccessSpy = spyOn(authStorage, "getOAuthAccess").mockImplementation(async () => ({
-					accessToken: refreshedToken,
-				}));
+				const getOAuthAccessAtSpy = spyOn(authStorage, "getOAuthAccessAt").mockImplementation(
+					async (providerId, position) => {
+						expect(providerId).toBe("xai-oauth");
+						expect(position).toBe(0);
+						return { ok: true, accessToken: refreshedToken };
+					},
+				);
 				const peekApiKeySpy = spyOn(authStorage, "peekApiKey");
 
 				try {
 					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
 					await registry.refreshProvider("xai-oauth", "online");
 
-					// Exactly one refresh selection; bearer is that token, not a re-peek.
-					expect(getOAuthAccessSpy).toHaveBeenCalledTimes(1);
-					expect(getOAuthAccessSpy).toHaveBeenCalledWith("xai-oauth");
+					// Exactly one refresh selection at position 0; bearer is that token, not a re-peek.
+					expect(getOAuthAccessAtSpy).toHaveBeenCalledTimes(1);
+					expect(getOAuthAccessAtSpy).toHaveBeenCalledWith("xai-oauth", 0);
 					expect(captured.authHeader).toBe(`Bearer ${refreshedToken}`);
 					// peekApiKey may run for admission, but never after the refresh to
 					// re-select the bearer (call count stays at the admission peeks only).
@@ -1809,12 +1817,12 @@ describe("ModelRegistry", () => {
 						([provider]) => provider === "xai-oauth",
 					);
 					// Admission peeks only — if a post-refresh re-peek selected the
-					// bearer, the header would not be forced to the getOAuthAccess token
+					// bearer, the header would not be forced to the getOAuthAccessAt token
 					// above. Pin both sides of the contract.
 					expect(peekCallsAfterRefreshWouldSelectBearer.length).toBeGreaterThan(0);
 					expect(captured.authHeader).not.toBe("Bearer stale-peek-would-not-return");
 				} finally {
-					getOAuthAccessSpy.mockRestore();
+					getOAuthAccessAtSpy.mockRestore();
 					peekApiKeySpy.mockRestore();
 				}
 			} finally {
@@ -1852,13 +1860,95 @@ describe("ModelRegistry", () => {
 				};
 
 				const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
-				const spy = spyOn(authStorage, "getOAuthAccess");
+				const spy = spyOn(authStorage, "getOAuthAccessAt");
 
 				try {
 					await registry.refresh("offline");
 					expect(spy).not.toHaveBeenCalled();
 				} finally {
 					spy.mockRestore();
+				}
+			} finally {
+				if (originalXaiOAuthToken === undefined) {
+					delete Bun.env.XAI_OAUTH_TOKEN;
+				} else {
+					Bun.env.XAI_OAUTH_TOKEN = originalXaiOAuthToken;
+				}
+				if (originalXaiApiKey === undefined) {
+					delete Bun.env.XAI_API_KEY;
+				} else {
+					Bun.env.XAI_API_KEY = originalXaiApiKey;
+				}
+			}
+		});
+
+		// #10 — multi-account provider pins discovery bearer and cache key to the
+		// same OAuth row (position 0), so it cannot fetch under one account and
+		// serve/cache under another.
+		test("multi-account built-in discovery pins bearer to OAuth position 0", async () => {
+			const originalXaiOAuthToken = Bun.env.XAI_OAUTH_TOKEN;
+			const originalXaiApiKey = Bun.env.XAI_API_KEY;
+			delete Bun.env.XAI_OAUTH_TOKEN;
+			delete Bun.env.XAI_API_KEY;
+
+			try {
+				await authStorage.set("xai-oauth", [
+					{
+						type: "oauth",
+						access: "stale-account-0",
+						refresh: "r0",
+						expires: Date.now() - 60_000,
+					},
+					{
+						type: "oauth",
+						access: "stale-account-1",
+						refresh: "r1",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				const captured: { authHeader: string | null } = { authHeader: null };
+				const fetchMock: FetchImpl = async (input, init) => {
+					const url = input instanceof Request ? input.url : String(input);
+					if (url === "https://api.x.ai/v1/models") {
+						captured.authHeader =
+							input instanceof Request
+								? input.headers.get("Authorization")
+								: new Headers(init?.headers).get("Authorization");
+						return new Response(
+							JSON.stringify({
+								data: [{ id: "grok-4.5" }],
+							}),
+							{ status: 200, headers: { "Content-Type": "application/json" } },
+						);
+					}
+					throw new Error(`Unexpected URL: ${url}`);
+				};
+
+				const getOAuthAccessAtSpy = spyOn(authStorage, "getOAuthAccessAt").mockImplementation(
+					async (_provider, position) => {
+						if (position === 0) {
+							return { ok: true, accessToken: "tok-account-0" };
+						}
+						if (position === 1) {
+							return { ok: true, accessToken: "tok-account-1" };
+						}
+						return { ok: false, error: "mock-failure" };
+					},
+				);
+				const getOAuthAccessSpy = spyOn(authStorage, "getOAuthAccess");
+
+				try {
+					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+					await registry.refreshProvider("xai-oauth", "online");
+
+					expect(captured.authHeader).toBe("Bearer tok-account-0");
+					expect(getOAuthAccessAtSpy).toHaveBeenCalledWith("xai-oauth", 0);
+					expect(getOAuthAccessAtSpy.mock.calls.some(([, position]) => position === 1)).toBe(false);
+					expect(getOAuthAccessSpy).not.toHaveBeenCalled();
+				} finally {
+					getOAuthAccessAtSpy.mockRestore();
+					getOAuthAccessSpy.mockRestore();
 				}
 			} finally {
 				if (originalXaiOAuthToken === undefined) {

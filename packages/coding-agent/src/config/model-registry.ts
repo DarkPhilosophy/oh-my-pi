@@ -1555,8 +1555,13 @@ export class ModelRegistry {
 
 	async #resolveBuiltInDiscoveryOAuthAccess(providerId: string): Promise<BuiltInDiscoveryOAuthAccess | undefined> {
 		try {
-			const access = await this.authStorage.getOAuthAccess(providerId);
-			if (!access?.accessToken) {
+			// Pin to account position 0 so the fetched bearer references the SAME
+			// OAuth row that #resolveBuiltInDiscoveryCacheIdentity keys the cache on
+			// (listOAuthAccounts[0]). getOAuthAccess() round-robins across accounts
+			// and could diverge from the cache key on multi-account providers,
+			// caching one account's catalog under another's key.
+			const access = await this.authStorage.getOAuthAccessAt(providerId, 0);
+			if (!access?.ok || !access.accessToken) {
 				return undefined;
 			}
 			return access;
@@ -1567,15 +1572,19 @@ export class ModelRegistry {
 
 	async #resolveBuiltInDiscoveryApiKey(providerId: string): Promise<string | undefined> {
 		try {
-			const access = await this.authStorage.getOAuthAccess(providerId);
-			return this.#formatBuiltInOAuthDiscoveryApiKey(providerId, access);
+			const access = await this.authStorage.getOAuthAccessAt(providerId, 0);
+			return access?.ok ? this.#formatBuiltInOAuthDiscoveryApiKey(providerId, access) : undefined;
 		} catch {
 			return undefined;
 		}
 	}
 
 	#resolveBuiltInDiscoveryCacheIdentity(providerId: string): string | undefined {
-		return formatOAuthCacheIdentity(this.authStorage.getOAuthAccountIdentity(providerId));
+		// Position 0 keeps the cache key aligned with the bearer resolved by
+		// getOAuthAccessAt(providerId, 0); both index the same stable storage
+		// order, so a multi-account provider cannot cache one account's catalog
+		// under another account's key.
+		return formatOAuthCacheIdentity(this.authStorage.listOAuthAccounts(providerId)[0]);
 	}
 
 	#discoveryContext(): DiscoveryContext {
