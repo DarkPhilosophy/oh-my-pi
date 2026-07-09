@@ -17,6 +17,7 @@ import {
 	type ParsedModel,
 	parseAnthropicModel,
 	parseKnownModel,
+	parseOpenAIModel,
 	semverEqual,
 	semverGte,
 } from "./identity/classify";
@@ -24,7 +25,6 @@ import {
 	findThinkingVariantToken,
 	isDeepseekModelIdOrName,
 	isGlm52ReasoningEffortModelId,
-	isGrok45ReasoningModelId,
 	isMimoModelIdOrName,
 	isMinimaxM2FamilyModelId,
 	isMinimaxM3FamilyModelId,
@@ -102,12 +102,14 @@ const MIMO_REASONING_EFFORT_MAP: Readonly<EffortMap> = {
 };
 
 /**
- * Effort → wire-value map for the 5-tier adaptive scale (Opus 4.7+ and
- * Fable/Mythos 5 on the Messages API). User-facing efforts shift up one notch
- * so the top tier reaches the genuine "max" and "high" lands on Anthropic's
- * recommended "xhigh" coding/agentic default.
+ * Effort → wire-value map for a shifted five-tier scale (`low..max`):
+ * user-facing efforts shift up one notch so the top tier reaches the genuine
+ * "max" and "high" lands on the recommended "xhigh" coding/agentic default.
+ * Used by Anthropic adaptive models with a real xhigh tier (Opus 4.7+ and
+ * Fable/Mythos 5 on the Messages API) and by GPT-5.6+ wire-effort models,
+ * which expose the same genuine `max` tier above `xhigh`.
  */
-export const ANTHROPIC_ADAPTIVE_EFFORT_MAP_5_TIER: Readonly<Partial<Record<Effort, string>>> = {
+export const SHIFTED_FIVE_TIER_EFFORT_MAP: Readonly<Partial<Record<Effort, string>>> = {
 	[Effort.Minimal]: "low",
 	[Effort.Low]: "medium",
 	[Effort.Medium]: "high",
@@ -296,6 +298,27 @@ function isOpenAICompatReasoningApi(api: Api): boolean {
 	return api === "openai-completions" || api === "openrouter";
 }
 
+/**
+ * GPT-5.6+ addressed through a wire `reasoning.effort`/`reasoning_effort`
+ * field, where the shifted five-tier map applies. Devin (`devin-agent`)
+ * selects effort by routing to per-tier sibling model ids instead and must
+ * stay unmapped.
+ */
+function isGpt56PlusWireEffortModel<TApi extends Api>(spec: ModelSpec<TApi>): boolean {
+	switch (spec.api) {
+		case "openai-responses":
+		case "openai-codex-responses":
+		case "azure-openai-responses":
+		case "openai-completions":
+		case "openrouter":
+			break;
+		default:
+			return false;
+	}
+	const parsed = parseOpenAIModel(bareModelId(spec.id));
+	return parsed !== null && semverGte(parsed.version, "5.6");
+}
+
 function getModelDefinedEfforts<TApi extends Api>(
 	spec: ModelSpec<TApi>,
 	compat: CompatOf<TApi>,
@@ -314,15 +337,11 @@ function getModelDefinedEfforts<TApi extends Api>(
 	if (isSakanaFuguReasoningModel(spec)) {
 		return FUGU_REASONING_EFFORTS;
 	}
-	// grok-4.5 on any xAI host accepts only reasoning.effort low/medium/high
-	// (docs.x.ai/developers/model-capabilities/text/reasoning). Key on the xAI
-	// host (provider xai / baseUrl api.x.ai), not just the built-in provider
-	// ids: a custom OpenAI-compatible config pointed at api.x.ai already gets
-	// supportsReasoningEffort via host detection, and without this cap would
-	// expose/send unsupported values like `xhigh` (xAI 400s). xai-oauth is
-	// included by provider id (its baseUrl is also api.x.ai).
-	if ((modelMatchesHost(spec, "xai") || spec.provider === "xai-oauth") && isGrok45ReasoningModelId(spec.id)) {
-		return LOW_MEDIUM_HIGH_REASONING_EFFORTS;
+	if (isGpt56PlusWireEffortModel(spec)) {
+		// Normalize stale baked/discovered `low..xhigh` surfaces to the full
+		// five-tier ladder so the shifted map keeps the native `low` tier
+		// reachable (user `minimal`).
+		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
 	}
 	return isOpenAICompatReasoningApi(spec.api) &&
 		(isMinimaxM2FamilyModelId(spec.id) ||
@@ -384,7 +403,7 @@ function inferDetectedEffortMap<TApi extends Api>(
 			return MINIMAX_ANTHROPIC_ADAPTIVE_EFFORT_MAP;
 		}
 		return anthropicModelHasRealXHighEffort(spec, parsedModel)
-			? ANTHROPIC_ADAPTIVE_EFFORT_MAP_5_TIER
+			? SHIFTED_FIVE_TIER_EFFORT_MAP
 			: ANTHROPIC_ADAPTIVE_EFFORT_MAP_4_TIER;
 	}
 	// GLM-5.2 coding SKUs accept `reasoning_effort`, but the effort dialect is
@@ -407,6 +426,9 @@ function inferDetectedEffortMap<TApi extends Api>(
 	}
 	if (isSakanaFuguReasoningModel(spec)) {
 		return FUGU_REASONING_EFFORT_MAP;
+	}
+	if (isGpt56PlusWireEffortModel(spec)) {
+		return SHIFTED_FIVE_TIER_EFFORT_MAP;
 	}
 	if (!isOpenAICompatReasoningApi(spec.api)) {
 		return undefined;
@@ -457,7 +479,7 @@ function getOpenRouterAnthropicReasoningEffortMap(modelId: string): EffortMap | 
 	if (!isAnthropicAdaptiveGenAtLeast(parsed, "4.6")) return undefined;
 
 	const hasRealXHigh = isAnthropicAdaptiveGenAtLeast(parsed, "4.7");
-	return hasRealXHigh ? ANTHROPIC_ADAPTIVE_EFFORT_MAP_5_TIER : ANTHROPIC_ADAPTIVE_EFFORT_MAP_4_TIER;
+	return hasRealXHigh ? SHIFTED_FIVE_TIER_EFFORT_MAP : ANTHROPIC_ADAPTIVE_EFFORT_MAP_4_TIER;
 }
 
 function inferSupportedEfforts<TApi extends Api>(
@@ -485,6 +507,11 @@ function inferOpenAISupportedEfforts(model: OpenAIModel): readonly Effort[] {
 	if (model.variant === "codex-mini" && semverEqual(model.version, "5.1")) {
 		return GPT_5_1_CODEX_MINI_EFFORTS;
 	}
+	// 5.6+ exposes the full five-tier ladder: the shifted wire map spans
+	// low..max, with user `minimal` reaching the native `low` tier.
+	if (semverGte(model.version, "5.6")) {
+		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
+	}
 	if (semverGte(model.version, "5.2")) {
 		return GPT_5_2_PLUS_EFFORTS;
 	}
@@ -507,10 +534,6 @@ const OPENAI_O_SERIES_RE = /^o[134](?:$|[-:.])/i;
  * - Gemini 3.x exposes levels only; Gemini 2.5 Pro floors thinkingBudget at
  *   128 and rejects 0 (2.5 Flash/Flash-Lite keep the off switch).
  * - OpenAI o-series and MiniMax M2 are reasoning-first architectures.
- * - Grok 4.5 (xai / xai-oauth) documents reasoning as non-disableable
- *   (docs.x.ai/developers/model-capabilities/text/reasoning): an omitted
- *   effort defaults to high, so thinking-off must clamp to the lowest
- *   supported effort rather than silently run at the default high.
  * - Thinking-variant SKUs (`*-thinking`, `*-reasoner`, `*-reasoning`) ARE the
  *   thinking checkpoint; live bare twins pair-collapse away
  *   (variant-collapse) and the collapsed entry owns off — this floor protects
@@ -522,9 +545,6 @@ function impliesMandatoryReasoning(parsed: ParsedModel, modelId: string): boolea
 		if (parsed.kind === "pro" && semverGte(parsed.version, "2.5")) return true;
 	}
 	if (isMinimaxM2FamilyModelId(modelId)) return true;
-	// grok-4.5 reasoning cannot be disabled (see doc comment); clamp thinking-off
-	// to the lowest supported effort instead of omitting reasoning.
-	if (isGrok45ReasoningModelId(modelId)) return true;
 	if (OPENAI_O_SERIES_RE.test(bareModelId(modelId))) return true;
 	return findThinkingVariantToken(modelId) !== undefined;
 }

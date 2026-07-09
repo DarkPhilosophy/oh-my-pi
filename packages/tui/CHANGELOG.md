@@ -11,6 +11,12 @@
 
 - Fixed right-side panel compositing landing on Kitty OSC 66 text-sizing heading rows and the following blank structural reservation row. The compositor predicate is now generic (`isOccupiedLine`) and the TUI pre-marks OSC 66 headings plus their first visible-width-zero successor as occupied before placement.
 - Added optional right-border scrollbar to the `Editor` component (`setScrollbarVisible`): shows a thumb glyph on the right border when content overflows `maxHeight`, enabling scrollable multi-line editors (e.g. advisor instructions) without losing the submit hint off-screen.
+## [16.3.14] - 2026-07-09
+
+### Fixed
+
+- Fixed race condition where scrollback rows could be incorrectly retracted between render frames
+
 ## [16.3.13] - 2026-07-09
 
 ### Fixed

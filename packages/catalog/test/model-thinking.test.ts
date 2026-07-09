@@ -568,78 +568,88 @@ describe("model thinking derivation", () => {
 		expect(clampThinkingLevelForModel(model, Effort.High)).toBeUndefined();
 	});
 
-	it("caps grok-4.5 efforts and marks reasoning mandatory on xai and xai-oauth", () => {
-		const oauth = createModel({
-			id: "grok-4.5",
-			api: "openai-responses",
-			provider: "xai-oauth",
-			reasoning: true,
-		});
-		const direct = createModel({
-			id: "grok-4.5",
-			api: "openai-completions",
-			provider: "xai",
-			reasoning: true,
-		});
-		// custom OpenAI-compatible config pointed at api.x.ai must get the same
-		// low/medium/high cap — host detection already enables reasoning_effort,
-		// so without this the default ladder would expose xhigh (xAI 400s).
-		const customXai = createModel({
-			id: "grok-4.5",
-			api: "openai-completions",
-			provider: "custom",
-			baseUrl: "https://api.x.ai/v1",
-			reasoning: true,
-		});
-		// Documented alias (docs.x.ai/developers/models/grok-4.5) must inherit
-		// the Grok 4.5 effort/mandatory-reasoning contract, not discovery defaults.
-		const buildLatest = createModel({
-			id: "grok-build-latest",
-			api: "openai-completions",
-			provider: "xai",
-			reasoning: true,
+	it("bakes the GPT-5.6 shifted five-tier effort map on wire-effort APIs", () => {
+		const codex = createModel({
+			id: "gpt-5.6-sol",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
 		});
 
-		const expected = [Effort.Low, Effort.Medium, Effort.High];
-		expect(getSupportedEfforts(oauth)).toEqual(expected);
-		expect(getSupportedEfforts(direct)).toEqual(expected);
-		expect(getSupportedEfforts(customXai)).toEqual(expected);
-		expect(getSupportedEfforts(buildLatest)).toEqual(expected);
-		expect(getSupportedEfforts(oauth)).not.toContain(Effort.XHigh);
-		expect(getSupportedEfforts(oauth)).not.toContain(Effort.Minimal);
-		expect(getSupportedEfforts(direct)).not.toContain(Effort.XHigh);
-		expect(getSupportedEfforts(direct)).not.toContain(Effort.Minimal);
-		expect(getSupportedEfforts(customXai)).not.toContain(Effort.XHigh);
-		// grok-4.5 reasoning cannot be disabled: mandatory-reasoning flag is set and
-		// a thinking-off request clamps to the lowest supported effort (low), not omit.
-		expect(oauth.thinking?.requiresEffort).toBe(true);
-		expect(direct.thinking?.requiresEffort).toBe(true);
-		expect(customXai.thinking?.requiresEffort).toBe(true);
-		expect(buildLatest.thinking?.requiresEffort).toBe(true);
-		expect(minimumSupportedEffort(oauth)).toBe(Effort.Low);
-		expect(minimumSupportedEffort(direct)).toBe(Effort.Low);
-		// Direct xAI chat-completions must actually send reasoning_effort for
-		// grok-4.5 (docs.x.ai); the family-wide !isGrok gate is overridden for
-		// grok-4.5 so the mandatory-reasoning clamp reaches the wire instead of
-		// being silently omitted (which would run xAI's default high effort).
-		expect(oauth.compat.supportsReasoningEffort).toBe(true);
-		expect(direct.compat.supportsReasoningEffort).toBe(true);
-		expect(direct.compat.omitReasoningEffort).toBe(false);
-		expect(buildLatest.compat.supportsReasoningEffort).toBe(true);
-		expect(buildLatest.compat.omitReasoningEffort).toBe(false);
+		expect(codex.thinking).toEqual({
+			mode: "effort",
+			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+			effortMap: {
+				minimal: "low",
+				low: "medium",
+				medium: "high",
+				high: "xhigh",
+				xhigh: "max",
+			},
+		});
+
+		// Stale baked four-tier metadata (caches/discovery) normalizes back to
+		// the five-tier ladder with the map attached — the wire-defaults
+		// backfill path — and namespaced OpenRouter ids parse.
+		const staleOpenRouter = createModel({
+			id: "openai/gpt-5.6-terra",
+			api: "openrouter",
+			provider: "openrouter",
+			baseUrl: "https://openrouter.ai/api/v1",
+			thinking: {
+				mode: "effort",
+				efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+			},
+		});
+
+		expect(staleOpenRouter.thinking).toEqual({
+			mode: "effort",
+			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+			effortMap: {
+				minimal: "low",
+				low: "medium",
+				medium: "high",
+				high: "xhigh",
+				xhigh: "max",
+			},
+		});
 	});
 
-	it("keeps reasoning effort disabled for other direct xAI Grok models", () => {
-		// The direct-xAI reasoning-effort override is scoped to grok-4.5; the
-		// family-wide !isGrok gate still disables reasoning_effort for older Grok
-		// chat-completions models, so this stays false.
-		const grok43 = createModel({
-			id: "grok-4.3",
-			api: "openai-completions",
-			provider: "xai",
-			reasoning: true,
+	it("keeps pre-5.6 and Devin-routed GPT models off the shifted effort map", () => {
+		const gpt55 = createModel({
+			id: "gpt-5.5",
+			api: "openai-responses",
+			provider: "openai",
 		});
-		expect(grok43.compat.supportsReasoningEffort).toBe(false);
+
+		expect(gpt55.thinking).toEqual({
+			mode: "effort",
+			efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+		});
+		expect(gpt55.thinking?.effortMap).toBeUndefined();
+
+		// Devin selects effort by routing to per-tier sibling model ids, never
+		// via a wire reasoning.effort field — the shifted map must not attach.
+		const devin = createModel({
+			id: "gpt-5-6-sol",
+			api: "devin-agent",
+			provider: "devin",
+			baseUrl: "https://server.codeium.com",
+			thinking: {
+				mode: "effort",
+				efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+				effortRouting: {
+					off: "gpt-5-6-sol-none",
+					minimal: "gpt-5-6-sol-low",
+					low: "gpt-5-6-sol-medium",
+					medium: "gpt-5-6-sol-high",
+					high: "gpt-5-6-sol-xhigh",
+					xhigh: "gpt-5-6-sol-max",
+				},
+			},
+		});
+
+		expect(devin.thinking?.effortMap).toBeUndefined();
+		expect(devin.thinking?.efforts).toEqual([Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh]);
 	});
 });
 

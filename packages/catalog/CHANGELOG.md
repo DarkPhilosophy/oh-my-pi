@@ -8,6 +8,14 @@
 ### Added
 
 - Added Grok 4.5 to the xai and xai-oauth (SuperGrok) catalogs; grok-4.5 is now the xai-oauth default model. Its reasoning effort is constrained to xAI's supported low/medium/high tiers and marked mandatory, so a thinking-off request clamps to low instead of omitting reasoning (which xAI's grok-4.5 rejects, since reasoning cannot be disabled). The effort cap keys on the xAI host (provider `xai` or base URL `api.x.ai`), so a custom OpenAI-compatible config pointed at xAI gets the same ladder; the documented `grok-build-latest` alias inherits the Grok 4.5 effort/mandatory-reasoning contract (distinct from the separate `grok-build` / `grok-build-0.1` SKUs that reject `reasoning.effort`).
+## [16.3.14] - 2026-07-09
+
+### Added
+
+- Added support for GPT-5.6 (Luna, Sol, Terra) model variants
+- Enabled expanded five-tier reasoning effort scale (minimal to xhigh) for GPT-5.6 models
+- Added GPT-5.6 (Terra/Luna/Sol) support for the new `max` reasoning tier: on wire-effort APIs (OpenAI Responses, Codex, Azure, openai-compat/OpenRouter models that advertise reasoning) user efforts shift up one notch — `xhigh` sends `max`, `high` sends `xhigh` — mirroring the Claude Fable/Opus 4.7+ five-tier mapping, and the exposed ladder becomes `minimal..xhigh` with `minimal` reaching the native `low` tier. Devin's per-tier GPT-5.6 sibling rows now collapse into `gpt-5-6-{luna,sol,terra}` logical models with the same shifted routing (`xhigh` → `-max`), plus `-fast` families that keep the direct `low..xhigh` `-priority` scale since Devin serves no `-max-priority` tier.
+
 ## [16.3.13] - 2026-07-09
 
 ### Added
