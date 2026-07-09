@@ -8,6 +8,7 @@ import { createBundledReferenceMap, createReferenceResolver } from "./bundled-re
 
 export interface OllamaCloudModelManagerConfig {
 	apiKey?: string;
+	getApiKey?: () => Promise<string | undefined>;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 }
@@ -95,15 +96,16 @@ async function fetchShowMetadata(
 export function ollamaCloudModelManagerOptions(
 	config?: OllamaCloudModelManagerConfig,
 ): ModelManagerOptions<"ollama-chat"> {
-	const apiKey = config?.apiKey;
+	const configuredApiKey = config?.apiKey;
 	const baseUrl = normalizeOllamaCloudBaseUrl(config?.baseUrl);
 	const providerReferences = createBundledReferenceMap<"ollama-chat">("ollama-cloud");
 	const resolveReference = createReferenceResolver(providerReferences);
 	return {
 		providerId: "ollama-cloud",
 		fetchDynamicModels: async () => {
+			const apiKey = (config?.getApiKey ? await config.getApiKey() : undefined) ?? configuredApiKey;
 			if (!apiKey) {
-				return [];
+				return null;
 			}
 			const response = await fetchWithRetry(`${baseUrl}/api/tags`, {
 				method: "GET",

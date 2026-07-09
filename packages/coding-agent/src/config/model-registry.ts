@@ -61,7 +61,7 @@ import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oaut
 import { getBundledModelReferenceIndex, resolveModelReference } from "@oh-my-pi/pi-catalog/identity";
 import { isBunTestRuntime, isRecord, logger, wrapFetchForExtraCa } from "@oh-my-pi/pi-utils";
 import { parseModelString, resolveProviderModelReference } from "../config/model-resolver";
-import type { AuthStorage, OAuthCredential } from "../session/auth-storage";
+import type { AuthStorage, OAuthAccountIdentity, OAuthCredential } from "../session/auth-storage";
 import { type ApiKeyResolverModel, type ApiKeyResolverOptions, createApiKeyResolver } from "./api-key-resolver";
 import type { ConfigError, ConfigFile } from "./config-file";
 import {
@@ -238,6 +238,13 @@ function mergeByModelKey<T extends { provider: string; id: string }>(
 interface BuiltInDiscoveryResult {
 	models: Model<Api>[];
 	authoritativeProviders: Set<string>;
+}
+
+interface BuiltInDiscoveryOAuthAccess {
+	accessToken: string;
+	accountId?: string;
+	enterpriseUrl?: string;
+	apiEndpoint?: string;
 }
 
 export type ProviderDiscoveryStatus = "idle" | "ok" | "empty" | "cached" | "unavailable" | "unauthenticated";
@@ -429,6 +436,13 @@ function resolveOAuthAccountIdForAccessToken(
 	if (oauthCredentials.length === 1) {
 		return oauthCredentials[0].accountId;
 	}
+	return undefined;
+}
+
+function formatOAuthCacheIdentity(identity: OAuthAccountIdentity | undefined): string | undefined {
+	if (identity?.accountId) return `account:${identity.accountId}`;
+	if (identity?.email) return `email:${identity.email}`;
+	if (identity?.projectId) return `project:${identity.projectId}`;
 	return undefined;
 }
 
@@ -1521,6 +1535,48 @@ export class ModelRegistry {
 		);
 	}
 
+	#formatBuiltInOAuthDiscoveryApiKey(
+		providerId: string,
+		access: BuiltInDiscoveryOAuthAccess | undefined,
+	): string | undefined {
+		if (!access?.accessToken) {
+			return undefined;
+		}
+		if (providerId === "github-copilot") {
+			return JSON.stringify({
+				token: access.accessToken,
+				enterpriseUrl: access.enterpriseUrl,
+				apiEndpoint: access.apiEndpoint,
+			});
+		}
+		return access.accessToken;
+	}
+
+	async #resolveBuiltInDiscoveryOAuthAccess(providerId: string): Promise<BuiltInDiscoveryOAuthAccess | undefined> {
+		try {
+			const access = await this.authStorage.getOAuthAccess(providerId);
+			if (!access?.accessToken) {
+				return undefined;
+			}
+			return access;
+		} catch {
+			return undefined;
+		}
+	}
+
+	async #resolveBuiltInDiscoveryApiKey(providerId: string): Promise<string | undefined> {
+		try {
+			const access = await this.authStorage.getOAuthAccess(providerId);
+			return this.#formatBuiltInOAuthDiscoveryApiKey(providerId, access);
+		} catch {
+			return undefined;
+		}
+	}
+
+	#resolveBuiltInDiscoveryCacheIdentity(providerId: string): string | undefined {
+		return formatOAuthCacheIdentity(this.authStorage.getOAuthAccountIdentity(providerId));
+	}
+
 	#discoveryContext(): DiscoveryContext {
 		return {
 			fetch: this.#fetch,
@@ -1561,7 +1617,7 @@ export class ModelRegistry {
 		// Skip providers already handled by configured discovery (e.g. user-configured ollama with discovery.type)
 		const configuredDiscoveryProviders = new Set(this.#discoverableProviders.map(p => p.provider));
 		const managerOptions = (
-			await this.#collectBuiltInModelManagerOptions(strategy, configuredDiscoveryProviders, providerFilter)
+			await this.#collectBuiltInModelManagerOptions(configuredDiscoveryProviders, providerFilter)
 		).filter(opts => {
 			if (configuredDiscoveryProviders.has(opts.providerId)) {
 				return false;
@@ -1586,45 +1642,75 @@ export class ModelRegistry {
 	}
 
 	async #collectBuiltInModelManagerOptions(
-		strategy: ModelRefreshStrategy,
 		configuredDiscoveryProviders?: ReadonlySet<string>,
 		providerFilter?: ReadonlySet<string>,
 	): Promise<ModelManagerOptions<Api>[]> {
 		const specialProviderDescriptors: Array<{
 			providerId: string;
 			resolveKey: (value: string | undefined) => string | undefined;
-			createOptions: (key: string) => ModelManagerOptions<Api>;
+			createOptions: (
+				key: string | undefined,
+				getOAuthAccess: (() => Promise<BuiltInDiscoveryOAuthAccess | undefined>) | undefined,
+			) => ModelManagerOptions<Api>;
+			allowStoredOAuthAdmission?: boolean;
 		}> = [
 			{
 				providerId: "google-antigravity",
 				resolveKey: extractGoogleOAuthToken,
-				createOptions: oauthToken =>
-					googleAntigravityModelManagerOptions({
-						oauthToken,
-						endpoint: this.getProviderBaseUrl("google-antigravity"),
-						fetch: this.#fetch,
-					}),
+				allowStoredOAuthAdmission: true,
+				createOptions: (oauthToken, getOAuthAccess) => ({
+					providerId: "google-antigravity",
+					fetchDynamicModels: async () => {
+						const oauthAccess = getOAuthAccess ? await getOAuthAccess() : undefined;
+						const resolvedToken = oauthAccess?.accessToken ?? oauthToken;
+						if (!resolvedToken) return null;
+						const managerOptions = googleAntigravityModelManagerOptions({
+							oauthToken: resolvedToken,
+							endpoint: this.getProviderBaseUrl("google-antigravity"),
+							fetch: this.#fetch,
+						});
+						return managerOptions.fetchDynamicModels?.() ?? null;
+					},
+				}),
 			},
 			{
 				providerId: "google-gemini-cli",
 				resolveKey: extractGoogleOAuthToken,
-				createOptions: oauthToken =>
-					googleGeminiCliModelManagerOptions({
-						oauthToken,
-						endpoint: this.getProviderBaseUrl("google-gemini-cli"),
-						fetch: this.#fetch,
-					}),
+				allowStoredOAuthAdmission: true,
+				createOptions: (oauthToken, getOAuthAccess) => ({
+					providerId: "google-gemini-cli",
+					fetchDynamicModels: async () => {
+						const oauthAccess = getOAuthAccess ? await getOAuthAccess() : undefined;
+						const resolvedToken = oauthAccess?.accessToken ?? oauthToken;
+						if (!resolvedToken) return null;
+						const managerOptions = googleGeminiCliModelManagerOptions({
+							oauthToken: resolvedToken,
+							endpoint: this.getProviderBaseUrl("google-gemini-cli"),
+							fetch: this.#fetch,
+						});
+						return managerOptions.fetchDynamicModels?.() ?? null;
+					},
+				}),
 			},
 			{
 				providerId: "openai-codex",
 				resolveKey: value => value,
-				createOptions: accessToken => {
-					const accountId = resolveOAuthAccountIdForAccessToken(this.authStorage, "openai-codex", accessToken);
-					return openaiCodexModelManagerOptions({
-						accessToken,
-						accountId,
-					});
-				},
+				allowStoredOAuthAdmission: true,
+				createOptions: (accessToken, getOAuthAccess) => ({
+					providerId: "openai-codex",
+					fetchDynamicModels: async () => {
+						const oauthAccess = getOAuthAccess ? await getOAuthAccess() : undefined;
+						const resolvedAccessToken = oauthAccess?.accessToken ?? accessToken;
+						if (!resolvedAccessToken) return null;
+						const managerOptions = openaiCodexModelManagerOptions({
+							accessToken: resolvedAccessToken,
+							accountId:
+								oauthAccess?.accountId ??
+								resolveOAuthAccountIdForAccessToken(this.authStorage, "openai-codex", resolvedAccessToken),
+						});
+						return managerOptions.fetchDynamicModels?.() ?? null;
+					},
+				}),
 			},
 		];
 		const disabledProviders = getDisabledProviderIdsFromSettings();
@@ -1652,28 +1738,11 @@ export class ModelRegistry {
 			}
 			return true;
 		});
-		// Peek first to avoid OAuth refresh churn during discovery. When peek
-		// fails but a stored OAuth credential exists, the access token has
-		// expired: refresh once through getApiKeyForProvider (persists the
-		// rotated credential), then re-peek so provider-specific peek shapes
-		// (e.g. github-copilot's JSON envelope with enterpriseUrl/apiEndpoint)
-		// are preserved — getApiKey returns the bare token, peek re-wraps it.
-		const peekKey = async (descriptor: { providerId: string }): Promise<string | undefined> => {
-			const peeked = await this.#peekApiKeyForProvider(descriptor.providerId);
-			if (strategy === "offline" || isAuthenticated(peeked) || !this.authStorage.hasOAuth(descriptor.providerId)) {
-				return peeked;
-			}
-			let refreshed: string | undefined;
-			try {
-				refreshed = await this.getApiKeyForProvider(descriptor.providerId);
-			} catch {
-				return peeked;
-			}
-			if (!isAuthenticated(refreshed)) {
-				return peeked;
-			}
-			return this.#peekApiKeyForProvider(descriptor.providerId);
-		};
+		// Admission peeks must not refresh OAuth credentials: the model manager only
+		// invokes fetchDynamicModels when it will fetch remote sources, so refresh is
+		// deferred to the lazy resolver passed below.
+		const peekKey = async (descriptor: { providerId: string }): Promise<string | undefined> =>
+			this.#peekApiKeyForProvider(descriptor.providerId);
 		const [standardProviderKeys, specialKeys] = await Promise.all([
 			Promise.all(standardProviderDescriptors.map(peekKey)),
 			Promise.all(enabledSpecialProviderDescriptors.map(peekKey)),
@@ -1682,19 +1751,29 @@ export class ModelRegistry {
 		for (let i = 0; i < standardProviderDescriptors.length; i++) {
 			const descriptor = standardProviderDescriptors[i];
 			const apiKey = standardProviderKeys[i];
+			const hasStoredOAuth = this.authStorage.hasOAuth(descriptor.providerId);
 			const hasExplicitVllmConfig =
 				descriptor.providerId === "vllm" &&
 				(this.#runtimeProviderOverrides.has(descriptor.providerId) ||
 					this.#providerOverrides.has(descriptor.providerId) ||
 					this.#keylessProviders.has(descriptor.providerId));
-			if (isAuthenticated(apiKey) || descriptor.allowUnauthenticated || hasExplicitVllmConfig) {
+			if (isAuthenticated(apiKey) || hasStoredOAuth || descriptor.allowUnauthenticated || hasExplicitVllmConfig) {
 				const discoveryBaseUrl =
 					this.#runtimeProviderOverrides.get(descriptor.providerId)?.baseUrl ??
 					this.#providerOverrides.get(descriptor.providerId)?.baseUrl ??
 					this.getProviderBaseUrl(descriptor.providerId);
+				const discoveryApiKey = isDiscoveryBearerApiKey(apiKey) ? apiKey : undefined;
+				const cacheIdentity =
+					descriptor.providerId === "gitlab-duo-agent" && !discoveryApiKey && hasStoredOAuth
+						? this.#resolveBuiltInDiscoveryCacheIdentity(descriptor.providerId)
+						: undefined;
 				options.push(
 					descriptor.createModelManagerOptions({
-						apiKey: isDiscoveryBearerApiKey(apiKey) ? apiKey : undefined,
+						apiKey: discoveryApiKey,
+						...(hasStoredOAuth && {
+							getApiKey: () => this.#resolveBuiltInDiscoveryApiKey(descriptor.providerId),
+						}),
+						...(cacheIdentity && { cacheIdentity }),
 						baseUrl: discoveryBaseUrl,
 						fetch: this.#fetch,
 					}),
@@ -1705,10 +1784,16 @@ export class ModelRegistry {
 		for (let i = 0; i < enabledSpecialProviderDescriptors.length; i++) {
 			const descriptor = enabledSpecialProviderDescriptors[i];
 			const key = descriptor.resolveKey(specialKeys[i]);
-			if (!isAuthenticated(key)) {
+			const hasStoredOAuth = this.authStorage.hasOAuth(descriptor.providerId);
+			if (!isAuthenticated(key) && !(descriptor.allowStoredOAuthAdmission && hasStoredOAuth)) {
 				continue;
 			}
-			options.push(descriptor.createOptions(key));
+			options.push(
+				descriptor.createOptions(
+					key,
+					hasStoredOAuth ? () => this.#resolveBuiltInDiscoveryOAuthAccess(descriptor.providerId) : undefined,
+				),
+			);
 		}
 		// Append runtime model managers registered by extensions via fetchDynamicModels.
 		for (const { options: managerOpts } of this.#runtimeModelManagers.values()) {

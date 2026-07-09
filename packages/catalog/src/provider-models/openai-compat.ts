@@ -510,10 +510,19 @@ function isLikelyNanoGptTextModelId(id: string): boolean {
 type SimpleProviderDiscoveryHeaders = Record<string, string> | (() => Record<string, string> | undefined);
 type SimpleProviderConfig = {
 	apiKey?: string;
+	getApiKey?: () => Promise<string | undefined>;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 	headers?: SimpleProviderDiscoveryHeaders;
 };
+
+function hasSimpleProviderApiKey(config: SimpleProviderConfig | undefined): boolean {
+	return Boolean(config?.apiKey || config?.getApiKey);
+}
+
+async function resolveSimpleProviderApiKey(config: SimpleProviderConfig | undefined): Promise<string | undefined> {
+	return (config?.getApiKey ? await config.getApiKey() : undefined) ?? config?.apiKey;
+}
 
 function resolveSimpleProviderHeaders(
 	headers: SimpleProviderDiscoveryHeaders | undefined,
@@ -526,14 +535,15 @@ export function createSimpleOpenAICompletionsOptions(
 	defaultBaseUrl: string,
 	config?: SimpleProviderConfig,
 ): ModelManagerOptions<"openai-completions"> {
-	const apiKey = config?.apiKey;
 	const baseUrl = config?.baseUrl ?? defaultBaseUrl;
 	const references = createBundledReferenceMap<"openai-completions">(providerId);
 	return {
 		providerId,
-		...(apiKey && {
-			fetchDynamicModels: () =>
-				fetchOpenAICompatibleModels({
+		...(hasSimpleProviderApiKey(config) && {
+			fetchDynamicModels: async () => {
+				const apiKey = await resolveSimpleProviderApiKey(config);
+				if (!apiKey) return null;
+				return fetchOpenAICompatibleModels({
 					api: "openai-completions",
 					provider: providerId,
 					baseUrl,
@@ -544,7 +554,8 @@ export function createSimpleOpenAICompletionsOptions(
 						return mapWithBundledReference(entry, defaults, reference);
 					},
 					fetch: config?.fetch,
-				}),
+				});
+			},
 		}),
 	};
 }
@@ -554,14 +565,15 @@ function createSimpleOpenAIResponsesOptions(
 	defaultBaseUrl: string,
 	config?: SimpleProviderConfig,
 ): ModelManagerOptions<"openai-responses"> {
-	const apiKey = config?.apiKey;
 	const baseUrl = config?.baseUrl ?? defaultBaseUrl;
 	const references = createBundledReferenceMap<"openai-responses">(providerId);
 	return {
 		providerId,
-		...(apiKey && {
-			fetchDynamicModels: () =>
-				fetchOpenAICompatibleModels({
+		...(hasSimpleProviderApiKey(config) && {
+			fetchDynamicModels: async () => {
+				const apiKey = await resolveSimpleProviderApiKey(config);
+				if (!apiKey) return null;
+				return fetchOpenAICompatibleModels({
 					api: "openai-responses",
 					provider: providerId,
 					baseUrl,
@@ -572,7 +584,8 @@ function createSimpleOpenAIResponsesOptions(
 						return mapWithBundledReference(entry, defaults, reference);
 					},
 					fetch: config?.fetch,
-				}),
+				});
+			},
 		}),
 	};
 }
@@ -582,15 +595,16 @@ function createSimpleAnthropicProviderOptions(
 	defaultBaseUrlFallback: string,
 	config?: SimpleProviderConfig,
 ): ModelManagerOptions<"anthropic-messages"> {
-	const apiKey = config?.apiKey;
 	const baseUrl = normalizeAnthropicBaseUrl(config?.baseUrl, defaultBaseUrlFallback);
 	const discoveryBaseUrl = toAnthropicDiscoveryBaseUrl(baseUrl);
 	const references = createBundledReferenceMap<"anthropic-messages">(providerId);
 	return {
 		providerId,
-		...(apiKey && {
-			fetchDynamicModels: () =>
-				fetchOpenAICompatibleModels({
+		...(hasSimpleProviderApiKey(config) && {
+			fetchDynamicModels: async () => {
+				const apiKey = await resolveSimpleProviderApiKey(config);
+				if (!apiKey) return null;
+				return fetchOpenAICompatibleModels({
 					api: "anthropic-messages",
 					provider: providerId,
 					baseUrl: discoveryBaseUrl,
@@ -605,7 +619,8 @@ function createSimpleAnthropicProviderOptions(
 						};
 					},
 					fetch: config?.fetch,
-				}),
+				});
+			},
 		}),
 	};
 }
@@ -931,6 +946,7 @@ export function xaiModelManagerOptions(config?: XaiModelManagerConfig): ModelMan
 
 export interface XaiOAuthModelManagerConfig {
 	apiKey?: string;
+	getApiKey?: () => Promise<string | undefined>;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 }
@@ -1181,11 +1197,10 @@ export function xaiOAuthModelManagerOptions(
 		config,
 	);
 	// Static seed handed to the runtime model manager so the picker populates on
-	// a fresh login even before `fetchDynamicModels` fires (it is gated on
-	// `config.apiKey` at construction time, and OAuth tokens resolve later via
-	// AuthStorage). \`generate-models.ts\` calls the same builder so \`models.json\`
-	// carries these entries too — making the synchronous `#loadModels()` boot
-	// path honor `modelRoles.default = "xai-oauth/<id>"` without `await refresh()`.
+	// a fresh login even before `fetchDynamicModels` runs. `generate-models.ts`
+	// calls the same builder so `models.json` carries these entries too — making
+	// the synchronous `#loadModels()` boot path honor
+	// `modelRoles.default = "xai-oauth/<id>"` without `await refresh()`.
 	const staticModels = buildXaiOAuthStaticSeed(resolvedBaseUrl);
 	if (!base.fetchDynamicModels) {
 		return { ...base, staticModels };
@@ -1688,6 +1703,7 @@ export function firepassModelManagerOptions(
 
 export interface WaferModelManagerConfig {
 	apiKey?: string;
+	getApiKey?: () => Promise<string | undefined>;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 }
@@ -1822,21 +1838,25 @@ function mapWaferModel(
 export function waferServerlessModelManagerOptions(
 	config?: WaferModelManagerConfig,
 ): ModelManagerOptions<"openai-completions"> {
-	const apiKey = config?.apiKey;
+	const configuredApiKey = config?.apiKey;
 	const baseUrl = config?.baseUrl ?? WAFER_DEFAULT_BASE_URL;
 	const providerId = "wafer-serverless" as const;
+	const hasApiKey = Boolean(configuredApiKey || config?.getApiKey);
 	return {
 		providerId,
-		...(apiKey && {
-			fetchDynamicModels: () =>
-				fetchOpenAICompatibleModels({
+		...(hasApiKey && {
+			fetchDynamicModels: async () => {
+				const apiKey = (config?.getApiKey ? await config.getApiKey() : undefined) ?? configuredApiKey;
+				if (!apiKey) return null;
+				return fetchOpenAICompatibleModels({
 					api: "openai-completions",
 					provider: providerId,
 					baseUrl,
 					apiKey,
 					mapModel: (entry, defaults) => mapWaferModel(providerId, baseUrl, entry, defaults),
 					fetch: config?.fetch,
-				}),
+				});
+			},
 		}),
 	};
 }
@@ -2179,23 +2199,25 @@ export function zenmuxModelManagerOptions(config?: ZenMuxModelManagerConfig): Mo
 
 export interface KiloModelManagerConfig {
 	apiKey?: string;
+	getApiKey?: () => Promise<string | undefined>;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 }
 
 export function kiloModelManagerOptions(config?: KiloModelManagerConfig): ModelManagerOptions<"openai-completions"> {
-	const apiKey = config?.apiKey;
 	const baseUrl = config?.baseUrl ?? "https://api.kilo.ai/api/gateway";
 	return {
 		providerId: "kilo",
-		fetchDynamicModels: () =>
-			fetchOpenAICompatibleModels({
+		fetchDynamicModels: async () => {
+			const apiKey = (config?.getApiKey ? await config.getApiKey() : undefined) ?? config?.apiKey;
+			return fetchOpenAICompatibleModels({
 				api: "openai-completions",
 				provider: "kilo",
 				baseUrl,
 				apiKey,
 				fetch: config?.fetch,
-			}),
+			});
+		},
 	};
 }
 
@@ -2205,6 +2227,7 @@ export function kiloModelManagerOptions(config?: KiloModelManagerConfig): ModelM
 
 export interface AlibabaCodingPlanModelManagerConfig {
 	apiKey?: string;
+	getApiKey?: () => Promise<string | undefined>;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 }
@@ -2212,23 +2235,29 @@ export interface AlibabaCodingPlanModelManagerConfig {
 export function alibabaCodingPlanModelManagerOptions(
 	config?: AlibabaCodingPlanModelManagerConfig,
 ): ModelManagerOptions<"openai-completions"> {
-	const apiKey = config?.apiKey;
+	const configuredApiKey = config?.apiKey;
 	const baseUrl = config?.baseUrl ?? "https://coding-intl.dashscope.aliyuncs.com/v1";
 	const references = createBundledReferenceMap<"openai-completions">("alibaba-coding-plan");
+	const hasApiKey = Boolean(configuredApiKey || config?.getApiKey);
 	return {
 		providerId: "alibaba-coding-plan",
-		fetchDynamicModels: () =>
-			fetchOpenAICompatibleModels({
-				api: "openai-completions",
-				provider: "alibaba-coding-plan",
-				baseUrl,
-				apiKey,
-				mapModel: (entry, defaults) => {
-					const reference = references.get(defaults.id);
-					return mapWithBundledReference(entry, defaults, reference);
-				},
-				fetch: config?.fetch,
-			}),
+		...(hasApiKey && {
+			fetchDynamicModels: async () => {
+				const apiKey = (config?.getApiKey ? await config.getApiKey() : undefined) ?? configuredApiKey;
+				if (!apiKey) return null;
+				return fetchOpenAICompatibleModels({
+					api: "openai-completions",
+					provider: "alibaba-coding-plan",
+					baseUrl,
+					apiKey,
+					mapModel: (entry, defaults) => {
+						const reference = references.get(defaults.id);
+						return mapWithBundledReference(entry, defaults, reference);
+					},
+					fetch: config?.fetch,
+				});
+			},
+		}),
 	};
 }
 
@@ -2304,6 +2333,7 @@ export function vercelAiGatewayModelManagerOptions(
 
 export interface KimiCodeModelManagerConfig {
 	apiKey?: string;
+	getApiKey?: () => Promise<string | undefined>;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 }
@@ -2311,13 +2341,16 @@ export interface KimiCodeModelManagerConfig {
 export function kimiCodeModelManagerOptions(
 	config?: KimiCodeModelManagerConfig,
 ): ModelManagerOptions<"openai-completions"> {
-	const apiKey = config?.apiKey;
+	const configuredApiKey = config?.apiKey;
 	const baseUrl = config?.baseUrl ?? "https://api.kimi.com/coding/v1";
+	const hasApiKey = Boolean(configuredApiKey || config?.getApiKey);
 	return {
 		providerId: "kimi-code",
-		...(apiKey && {
-			fetchDynamicModels: () =>
-				fetchOpenAICompatibleModels({
+		...(hasApiKey && {
+			fetchDynamicModels: async () => {
+				const apiKey = (config?.getApiKey ? await config.getApiKey() : undefined) ?? configuredApiKey;
+				if (!apiKey) return null;
+				return fetchOpenAICompatibleModels({
 					api: "openai-completions",
 					provider: "kimi-code",
 					baseUrl,
@@ -2347,7 +2380,8 @@ export function kimiCodeModelManagerOptions(
 						};
 					},
 					fetch: config?.fetch,
-				}),
+				});
+			},
 		}),
 	};
 }
@@ -2883,6 +2917,7 @@ export function sakanaModelManagerOptions(config?: SakanaModelManagerConfig): Mo
 
 export interface QwenPortalModelManagerConfig {
 	apiKey?: string;
+	getApiKey?: () => Promise<string | undefined>;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 }
@@ -3552,6 +3587,7 @@ export function nanoGptModelManagerOptions(
 
 export interface GithubCopilotModelManagerConfig {
 	apiKey?: string;
+	getApiKey?: () => Promise<string | undefined>;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 }
@@ -3708,22 +3744,23 @@ function createCopilotLongContextVariant(
 }
 
 export function githubCopilotModelManagerOptions(config?: GithubCopilotModelManagerConfig): ModelManagerOptions<Api> {
-	const rawApiKey = config?.apiKey;
 	const configuredBaseUrl = config?.baseUrl ?? "https://api.githubcopilot.com";
-	const parsedApiKey = rawApiKey ? parseGitHubCopilotApiKey(rawApiKey) : undefined;
-	const apiKey = parsedApiKey?.accessToken;
-	const baseUrl =
-		parsedApiKey?.apiEndpoint && configuredBaseUrl.includes("githubcopilot.com")
-			? parsedApiKey.apiEndpoint
-			: parsedApiKey?.enterpriseUrl && configuredBaseUrl.includes("githubcopilot.com")
-				? getGitHubCopilotBaseUrl(parsedApiKey.enterpriseUrl)
-				: configuredBaseUrl;
 	const providerRefs = createBundledReferenceMap<Api>("github-copilot");
 	const resolveReference = createReferenceResolver(providerRefs);
 	return {
 		providerId: "github-copilot",
-		...(apiKey && {
+		...((config?.apiKey || config?.getApiKey) && {
 			fetchDynamicModels: async () => {
+				const rawApiKey = (config?.getApiKey ? await config.getApiKey() : undefined) ?? config?.apiKey;
+				if (!rawApiKey) return null;
+				const parsedApiKey = parseGitHubCopilotApiKey(rawApiKey);
+				const apiKey = parsedApiKey.accessToken;
+				const baseUrl =
+					parsedApiKey.apiEndpoint && configuredBaseUrl.includes("githubcopilot.com")
+						? parsedApiKey.apiEndpoint
+						: parsedApiKey.enterpriseUrl && configuredBaseUrl.includes("githubcopilot.com")
+							? getGitHubCopilotBaseUrl(parsedApiKey.enterpriseUrl)
+							: configuredBaseUrl;
 				const longContextVariants: ModelSpec<Api>[] = [];
 				const models = await fetchOpenAICompatibleModels<Api>({
 					api: "openai-completions",
@@ -3874,6 +3911,7 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 
 export interface AnthropicModelManagerConfig {
 	apiKey?: string;
+	getApiKey?: () => Promise<string | undefined>;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 }
@@ -3881,16 +3919,19 @@ export interface AnthropicModelManagerConfig {
 export function anthropicModelManagerOptions(
 	config?: AnthropicModelManagerConfig,
 ): ModelManagerOptions<"anthropic-messages"> {
-	const apiKey = config?.apiKey;
+	const configuredApiKey = config?.apiKey;
 	const baseUrl = config?.baseUrl ?? ANTHROPIC_BASE_URL;
+	const hasApiKey = Boolean(configuredApiKey || config?.getApiKey);
 	return {
 		providerId: "anthropic",
 		modelsDev: {
 			fetch: () => fetchModelsDevPayload(config?.fetch),
 			map: payload => mapAnthropicModelsDev(payload, baseUrl),
 		},
-		...(apiKey && {
+		...(hasApiKey && {
 			fetchDynamicModels: async () => {
+				const apiKey = (config?.getApiKey ? await config.getApiKey() : undefined) ?? configuredApiKey;
+				if (!apiKey) return null;
 				const modelsDevModels = await fetchModelsDevPayload(config?.fetch)
 					.then(payload => mapAnthropicModelsDev(payload, baseUrl))
 					.catch(() => []);
