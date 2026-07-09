@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Built-in provider model discovery now refreshes expired OAuth tokens instead of silently skipping the provider.
+- Built-in provider model discovery now refreshes expired OAuth tokens instead of silently skipping the provider, and for providers with multiple stored OAuth accounts it pins the discovery bearer and the per-account model cache to the same account (position 0) so one account's model list can no longer be fetched under one account and served from another account's cache.
 
 ## [16.3.12] - 2026-07-08
 
