@@ -1832,7 +1832,7 @@ export class ModelRegistry {
 		// Append runtime model managers registered by extensions via fetchDynamicModels.
 		for (const { options: managerOpts } of this.#runtimeModelManagers.values()) {
 			if (
-				!configuredDiscoveryProviders.has(managerOpts.providerId) &&
+				!configuredDiscoveryProviders?.has(managerOpts.providerId) &&
 				(!providerFilter || providerFilter.has(managerOpts.providerId))
 			) {
 				options.push(managerOpts);
