@@ -92,6 +92,19 @@ export const isGrokReasoningEffortCapable = memo((modelId: string): boolean => {
 });
 
 /**
+ * grok-4.5 and its `grok-4.5-latest` alias accept only reasoning.effort
+ * low/medium/high — there is no `minimal` or `xhigh` tier
+ * (docs.x.ai/developers/model-capabilities/text/reasoning; defaults high,
+ * reasoning cannot be disabled). Distinct from `grok-4.20-multi-agent`, whose
+ * `xhigh` selects agent count. Used to pin the effort dial on xAI surfaces.
+ */
+export const isGrok45ReasoningModelId = memo((modelId: string): boolean => {
+	const bare = bareModelId(modelId).trim().toLowerCase();
+	if (!bare) return false;
+	return bare.startsWith("grok-4.5");
+});
+
+/**
  * MiniMax M2-generation family (M2, M2.1, M2.5, M2.7, including `-highspeed`/
  * `-lightning`/`-her`/`-turbo` variants, dotless aliases like `minimax-m21`,
  * and short `minimax/m2-…` ids on aggregator hosts). Underlying model accepts

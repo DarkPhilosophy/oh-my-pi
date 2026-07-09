@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import MODELS_JSON from "@oh-my-pi/pi-catalog/models.json" with { type: "json" };
-import { buildXaiOAuthStaticSeed } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
+import { applyXAIOAuthCuration, buildXaiOAuthStaticSeed } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
 import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
 
 // Pins the invariant: bundled `models.json` carries every entry the runtime
@@ -83,5 +83,77 @@ describe("xai-oauth bundled catalog (regression)", () => {
 			expect(model.maxTokens, `seed ${model.id} maxTokens`).toBe(model.contextWindow);
 			expect(bundled[model.id]?.maxTokens, `bundled ${model.id} maxTokens`).toBe(model.contextWindow);
 		}
+	});
+
+	// Documented grok-4.5 aliases (docs.x.ai/developers/models/grok-4.5) may
+	// appear in /v1/models; dropping them keeps the curated grok-4.5 entry as
+	// the sole owner of vision/reasoning/context metadata.
+	it("drops grok-4.5-latest and grok-build-latest aliases during curation", () => {
+		const dynamic: ModelSpec<"openai-responses">[] = [
+			{
+				id: "grok-4.5-latest",
+				name: "Grok 4.5 Latest",
+				api: "openai-responses",
+				provider: "xai-oauth",
+				baseUrl: "https://api.x.ai/v1",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128_000,
+				maxTokens: 128_000,
+			},
+			{
+				id: "grok-build-latest",
+				name: "Grok Build Latest",
+				api: "openai-responses",
+				provider: "xai-oauth",
+				baseUrl: "https://api.x.ai/v1",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128_000,
+				maxTokens: 128_000,
+			},
+			{
+				id: "grok-4.5",
+				name: "Grok 4.5 (raw)",
+				api: "openai-responses",
+				provider: "xai-oauth",
+				baseUrl: "https://api.x.ai/v1",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128_000,
+				maxTokens: 128_000,
+			},
+			{
+				id: "grok-4.3",
+				name: "Grok 4.3 (raw)",
+				api: "openai-responses",
+				provider: "xai-oauth",
+				baseUrl: "https://api.x.ai/v1",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128_000,
+				maxTokens: 128_000,
+			},
+		];
+
+		const curated = applyXAIOAuthCuration(dynamic);
+		const ids = curated.map(model => model.id);
+		expect(ids).not.toContain("grok-4.5-latest");
+		expect(ids).not.toContain("grok-build-latest");
+		expect(ids).toContain("grok-4.5");
+		expect(ids).toContain("grok-4.3");
+
+		const grok45 = curated.find(model => model.id === "grok-4.5");
+		expect(grok45).toBeDefined();
+		if (!grok45) {
+			return;
+		}
+		expect(grok45.reasoning).toBe(true);
+		expect(grok45.input).toContain("image");
+		expect(grok45.contextWindow).toBe(500_000);
 	});
 });

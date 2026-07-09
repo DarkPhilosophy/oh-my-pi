@@ -567,6 +567,29 @@ describe("model thinking derivation", () => {
 		expect(getSupportedEfforts(model)).toEqual([]);
 		expect(clampThinkingLevelForModel(model, Effort.High)).toBeUndefined();
 	});
+
+	it("caps grok-4.5 efforts to low/medium/high on xai and xai-oauth", () => {
+		const oauth = createModel({
+			id: "grok-4.5",
+			api: "openai-responses",
+			provider: "xai-oauth",
+			reasoning: true,
+		});
+		const direct = createModel({
+			id: "grok-4.5",
+			api: "openai-completions",
+			provider: "xai",
+			reasoning: true,
+		});
+
+		const expected = [Effort.Low, Effort.Medium, Effort.High];
+		expect(getSupportedEfforts(oauth)).toEqual(expected);
+		expect(getSupportedEfforts(direct)).toEqual(expected);
+		expect(getSupportedEfforts(oauth)).not.toContain(Effort.XHigh);
+		expect(getSupportedEfforts(oauth)).not.toContain(Effort.Minimal);
+		expect(getSupportedEfforts(direct)).not.toContain(Effort.XHigh);
+		expect(getSupportedEfforts(direct)).not.toContain(Effort.Minimal);
+	});
 });
 
 describe("model thinking runtime helpers", () => {

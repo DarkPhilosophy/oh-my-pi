@@ -1021,6 +1021,16 @@ export const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
 // strings; the chat picker MUST exclude these prefixes or selecting them 400s.
 const XAI_NON_CHAT_PREFIXES = ["grok-imagine-", "grok-stt-", "grok-voice-"] as const;
 
+// Documented grok-4.5 aliases (docs.x.ai/developers/models/grok-4.5). xAI's
+// /v1/models may surface these instead of the canonical `grok-4.5`; they resolve
+// to the same model. Drop them so the curated/injected `grok-4.5` entry owns the
+// metadata rather than an alias falling through to discovery defaults
+// (reasoning:false, text-only, null limits).
+const XAI_OAUTH_CANONICALIZED_ALIAS_IDS: Record<string, true> = {
+	"grok-4.5-latest": true,
+	"grok-build-latest": true,
+};
+
 function withXaiOAuthCompatDefaults(model: ModelSpec<"openai-responses">): ModelSpec<"openai-responses"> {
 	const compat = {
 		...(model.compat ?? {}),
@@ -1101,8 +1111,14 @@ function mergeCuratedIntoModel(
  * Order: curated models first in declaration order; then dynamic remainder
  * in original order.
  */
-function applyXAIOAuthCuration(dynamic: readonly ModelSpec<"openai-responses">[]): ModelSpec<"openai-responses">[] {
-	const filtered = dynamic.filter(e => !XAI_NON_CHAT_PREFIXES.some(p => e.id.startsWith(p)));
+export function applyXAIOAuthCuration(
+	dynamic: readonly ModelSpec<"openai-responses">[],
+): ModelSpec<"openai-responses">[] {
+	const filtered = dynamic.filter(
+		e =>
+			!XAI_NON_CHAT_PREFIXES.some(p => e.id.startsWith(p)) &&
+			!Object.hasOwn(XAI_OAUTH_CANONICALIZED_ALIAS_IDS, e.id),
+	);
 
 	const byId = new Map<string, ModelSpec<"openai-responses">>(filtered.map(e => [e.id, e]));
 	for (const curated of XAI_OAUTH_CURATED_MODELS) {
