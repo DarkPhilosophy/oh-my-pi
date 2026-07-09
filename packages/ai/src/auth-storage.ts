@@ -689,6 +689,7 @@ export interface OAuthAccessFailure {
  * key usage on it (Gemini CLI / Antigravity).
  */
 export interface OAuthAccountIdentity {
+	credentialId?: number;
 	accountId?: string;
 	email?: string;
 	projectId?: string;
@@ -1953,7 +1954,13 @@ export class AuthStorage {
 		if (typeof preferred.projectId === "string" && preferred.projectId.length > 0) {
 			identity.projectId = preferred.projectId;
 		}
-		if (!identity.accountId && !identity.email && !identity.projectId) return undefined;
+		const credentialEntry = this.#getStoredCredentials(provider).find(entry => entry.credential === preferred);
+		if (credentialEntry) {
+			identity.credentialId = credentialEntry.id;
+		}
+		if (!identity.accountId && !identity.email && !identity.projectId && identity.credentialId === undefined) {
+			return undefined;
+		}
 		return identity;
 	}
 

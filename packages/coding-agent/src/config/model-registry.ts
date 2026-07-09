@@ -443,6 +443,7 @@ function formatOAuthCacheIdentity(identity: OAuthAccountIdentity | undefined): s
 	if (identity?.accountId) return `account:${identity.accountId}`;
 	if (identity?.email) return `email:${identity.email}`;
 	if (identity?.projectId) return `project:${identity.projectId}`;
+	if (identity?.credentialId !== undefined) return `cred:${identity.credentialId}`;
 	return undefined;
 }
 

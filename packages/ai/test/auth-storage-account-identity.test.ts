@@ -48,14 +48,36 @@ describe("AuthStorage.getOAuthAccountIdentity", () => {
 				projectId: "gcp-project-a",
 			},
 		]);
-		expect(authStorage.getOAuthAccountIdentity(PROVIDER)).toEqual({
-			accountId: "acc-a",
-			email: "a@example.com",
-			projectId: "gcp-project-a",
-		});
+		const identity = authStorage.getOAuthAccountIdentity(PROVIDER);
+		// accountId/email/projectId remain the primary identity surface.
+		expect(identity?.accountId).toBe("acc-a");
+		expect(identity?.email).toBe("a@example.com");
+		expect(identity?.projectId).toBe("gcp-project-a");
+		// Stable DB row id is also exposed for cache-key fallbacks.
+		expect(typeof identity?.credentialId).toBe("number");
 	});
 
-	test("drops empty-string fields and returns undefined when no field survives", async () => {
+	test("returns credentialId-only identity when OAuth has no account fields", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+		await authStorage.set(PROVIDER, [
+			{
+				type: "oauth",
+				access: "access-a",
+				refresh: "refresh-a",
+				expires: Date.now() + 60 * 60_000,
+			},
+		]);
+		const identity = authStorage.getOAuthAccountIdentity(PROVIDER);
+		// GitLab Duo-style OAuth often lacks accountId/email; the stable row id
+		// must still produce a non-colliding identity for discovery caches.
+		expect(identity).toBeDefined();
+		expect(typeof identity?.credentialId).toBe("number");
+		expect(identity?.accountId).toBeUndefined();
+		expect(identity?.email).toBeUndefined();
+		expect(identity?.projectId).toBeUndefined();
+	});
+
+	test("drops empty-string account fields but keeps credentialId", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 		await authStorage.set(PROVIDER, [
 			{
@@ -67,7 +89,54 @@ describe("AuthStorage.getOAuthAccountIdentity", () => {
 				email: "",
 			},
 		]);
-		expect(authStorage.getOAuthAccountIdentity(PROVIDER)).toBeUndefined();
+		const identity = authStorage.getOAuthAccountIdentity(PROVIDER);
+		expect(identity).toBeDefined();
+		expect(typeof identity?.credentialId).toBe("number");
+		expect(identity?.accountId).toBeUndefined();
+		expect(identity?.email).toBeUndefined();
+	});
+
+	test("distinct identity-less OAuth credentials get distinct credentialIds", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+		const storage = authStorage;
+		await storage.set(PROVIDER, [
+			{
+				type: "oauth",
+				access: "access-a",
+				refresh: "refresh-a",
+				expires: Date.now() + 60 * 60_000,
+			},
+			{
+				type: "oauth",
+				access: "access-b",
+				refresh: "refresh-b",
+				expires: Date.now() + 60 * 60_000,
+			},
+		]);
+		vi.spyOn(oauthUtils, "getOAuthApiKey").mockImplementation(async (provider, credentials) => {
+			const credential = credentials[provider];
+			if (!credential) return null;
+			return { newCredentials: credential, apiKey: credential.access };
+		});
+
+		// Pin each session to a different credential so both identity lookups are live.
+		const sessionA = "session-identity-a";
+		const sessionB = "session-identity-b";
+		const keyA = await storage.getApiKey(PROVIDER, sessionA);
+		// Invalidate the first key so the second session is forced onto the sibling credential.
+		const invalidated = await storage.invalidateCredentialMatching(PROVIDER, keyA ?? "", { sessionId: sessionB });
+		expect(invalidated).toBe(true);
+		const keyB = await storage.getApiKey(PROVIDER, sessionB);
+		expect(keyB).not.toBe(keyA);
+
+		const identityA = storage.getOAuthAccountIdentity(PROVIDER, sessionA);
+		const identityB = storage.getOAuthAccountIdentity(PROVIDER, sessionB);
+		// Cache keys must differ when accountId/email are absent; credentialId is the differentiator.
+		expect(typeof identityA?.credentialId).toBe("number");
+		expect(typeof identityB?.credentialId).toBe("number");
+		expect(identityA?.credentialId).not.toBe(identityB?.credentialId);
+		expect(identityA?.accountId).toBeUndefined();
+		expect(identityB?.accountId).toBeUndefined();
 	});
 
 	test("follows the session-sticky credential across rotation", async () => {
