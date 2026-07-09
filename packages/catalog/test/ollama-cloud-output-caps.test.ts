@@ -82,6 +82,15 @@ test("ollama-cloud discovery always omits max output tokens", async () => {
 	expect(model?.omitMaxOutputTokens).toBe(true);
 });
 
+test("ollama-cloud discovery returns null when no API key resolves", async () => {
+	// null (not []) means "degrade to cache/static" rather than writing an empty
+	// authoritative snapshot that would drop previously cached dynamic models.
+	await expect(ollamaCloudModelManagerOptions({}).fetchDynamicModels?.()).resolves.toBeNull();
+	await expect(
+		ollamaCloudModelManagerOptions({ getApiKey: async () => undefined }).fetchDynamicModels?.(),
+	).resolves.toBeNull();
+});
+
 test("ollama-chat omits num_predict when model opts out of max output tokens", async () => {
 	let requestBody: Record<string, unknown> | undefined;
 	const fetchMock: FetchImpl = vi.fn(async (_input, init) => {

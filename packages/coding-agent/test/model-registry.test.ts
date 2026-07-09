@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -1481,6 +1481,624 @@ describe("ModelRegistry", () => {
 		});
 	});
 
+	describe("built-in OAuth discovery auto-refresh", () => {
+		test("expired xai-oauth credentials whose refresh rejects does not crash built-in discovery", async () => {
+			const originalXaiOAuthToken = Bun.env.XAI_OAUTH_TOKEN;
+			const originalXaiApiKey = Bun.env.XAI_API_KEY;
+			delete Bun.env.XAI_OAUTH_TOKEN;
+			delete Bun.env.XAI_API_KEY;
+
+			try {
+				await authStorage.set("xai-oauth", [
+					{
+						type: "oauth",
+						access: "expired-access-token",
+						refresh: "expired-refresh-token",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				// Lazy discovery resolver calls getOAuthAccess at fetch time; a
+				// failed resolution must degrade (serve static / skip remote)
+				// without aborting the discovery batch.
+				const spy = spyOn(authStorage, "getOAuthAccess").mockImplementation(async () => {
+					throw new Error("mock-failure");
+				});
+
+				try {
+					const registry = new ModelRegistry(authStorage, modelsJsonPath, {
+						fetch: async input => {
+							throw new Error(`Unexpected network call after refresh failure: ${String(input)}`);
+						},
+					});
+					await expect(registry.refreshProvider("xai-oauth", "online")).resolves.toBeUndefined();
+					expect(spy).toHaveBeenCalledWith("xai-oauth");
+					// Static seed remains available even when the lazy refresh fails.
+					expect(getModelsForProvider(registry, "xai-oauth").length).toBeGreaterThan(0);
+				} finally {
+					spy.mockRestore();
+				}
+			} finally {
+				if (originalXaiOAuthToken === undefined) {
+					delete Bun.env.XAI_OAUTH_TOKEN;
+				} else {
+					Bun.env.XAI_OAUTH_TOKEN = originalXaiOAuthToken;
+				}
+				if (originalXaiApiKey === undefined) {
+					delete Bun.env.XAI_API_KEY;
+				} else {
+					Bun.env.XAI_API_KEY = originalXaiApiKey;
+				}
+			}
+		});
+
+		test("built-in discovery refreshes an expired OAuth credential instead of skipping the provider", async () => {
+			const originalXaiOAuthToken = Bun.env.XAI_OAUTH_TOKEN;
+			const originalXaiApiKey = Bun.env.XAI_API_KEY;
+			delete Bun.env.XAI_OAUTH_TOKEN;
+			delete Bun.env.XAI_API_KEY;
+
+			try {
+				await authStorage.set("xai-oauth", [
+					{
+						type: "oauth",
+						access: "stale-access",
+						refresh: "r",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				const captured: { authHeader: string | null } = { authHeader: null };
+				const fetchMock: FetchImpl = async (input, init) => {
+					const url = input instanceof Request ? input.url : String(input);
+					if (url === "https://api.x.ai/v1/models") {
+						captured.authHeader =
+							input instanceof Request
+								? input.headers.get("Authorization")
+								: new Headers(init?.headers).get("Authorization");
+						return new Response(
+							JSON.stringify({
+								data: [{ id: "grok-4.5" }],
+							}),
+							{ status: 200, headers: { "Content-Type": "application/json" } },
+						);
+					}
+					throw new Error(`Unexpected URL: ${url}`);
+				};
+
+				// Lazy path: expired peek admits the provider via hasOAuth, then
+				// getOAuthAccess runs once inside fetchDynamicModels.
+				const spy = spyOn(authStorage, "getOAuthAccess").mockImplementation(async providerId => {
+					expect(providerId).toBe("xai-oauth");
+					return { accessToken: "fresh-access" };
+				});
+
+				try {
+					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+					await registry.refreshProvider("xai-oauth", "online");
+
+					expect(spy).toHaveBeenCalledWith("xai-oauth");
+					expect(captured.authHeader).toBe("Bearer fresh-access");
+				} finally {
+					spy.mockRestore();
+				}
+			} finally {
+				if (originalXaiOAuthToken === undefined) {
+					delete Bun.env.XAI_OAUTH_TOKEN;
+				} else {
+					Bun.env.XAI_OAUTH_TOKEN = originalXaiOAuthToken;
+				}
+				if (originalXaiApiKey === undefined) {
+					delete Bun.env.XAI_API_KEY;
+				} else {
+					Bun.env.XAI_API_KEY = originalXaiApiKey;
+				}
+			}
+		});
+
+		test("built-in discovery does not attempt OAuth refresh if no stored credentials exist", async () => {
+			const originalXaiOAuthToken = Bun.env.XAI_OAUTH_TOKEN;
+			const originalXaiApiKey = Bun.env.XAI_API_KEY;
+			delete Bun.env.XAI_OAUTH_TOKEN;
+			delete Bun.env.XAI_API_KEY;
+
+			try {
+				const fetchMock: FetchImpl = async () => {
+					throw new Error(`Should not fetch because discovery is skipped`);
+				};
+
+				const spy = spyOn(authStorage, "getOAuthAccess").mockImplementation(async () => ({
+					accessToken: "fresh-access",
+				}));
+
+				try {
+					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+					await registry.refreshProvider("xai-oauth", "online");
+
+					expect(spy).not.toHaveBeenCalled();
+				} finally {
+					spy.mockRestore();
+				}
+			} finally {
+				if (originalXaiOAuthToken === undefined) {
+					delete Bun.env.XAI_OAUTH_TOKEN;
+				} else {
+					Bun.env.XAI_OAUTH_TOKEN = originalXaiOAuthToken;
+				}
+				if (originalXaiApiKey === undefined) {
+					delete Bun.env.XAI_API_KEY;
+				} else {
+					Bun.env.XAI_API_KEY = originalXaiApiKey;
+				}
+			}
+		});
+
+		test("refreshProvider for targeted built-in provider does not refresh unrelated expired OAuth credentials", async () => {
+			const originalXaiOAuthToken = Bun.env.XAI_OAUTH_TOKEN;
+			const originalXaiApiKey = Bun.env.XAI_API_KEY;
+			delete Bun.env.XAI_OAUTH_TOKEN;
+			delete Bun.env.XAI_API_KEY;
+
+			try {
+				await authStorage.set("xai-oauth", [
+					{
+						type: "oauth",
+						access: "stale-xai-access",
+						refresh: "r-xai",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				await authStorage.set("openai-codex", [
+					{
+						type: "oauth",
+						access: "stale-codex-access",
+						refresh: "r-codex",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				const captured: { authHeader: string | null } = { authHeader: null };
+				const fetchMock: FetchImpl = async (input, init) => {
+					const url = input instanceof Request ? input.url : String(input);
+					if (url === "https://api.x.ai/v1/models") {
+						captured.authHeader =
+							input instanceof Request
+								? input.headers.get("Authorization")
+								: new Headers(init?.headers).get("Authorization");
+						return new Response(
+							JSON.stringify({
+								data: [{ id: "grok-4.5" }],
+							}),
+							{ status: 200, headers: { "Content-Type": "application/json" } },
+						);
+					}
+					throw new Error(`Unexpected URL: ${url}`);
+				};
+
+				const refreshedProviders: string[] = [];
+				const spy = spyOn(authStorage, "getOAuthAccess").mockImplementation(async providerId => {
+					refreshedProviders.push(providerId);
+					if (providerId === "xai-oauth") {
+						return { accessToken: "fresh-xai-access" };
+					}
+					throw new Error("mock-failure");
+				});
+
+				try {
+					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+					await registry.refreshProvider("xai-oauth", "online");
+
+					expect(refreshedProviders).toEqual(["xai-oauth"]);
+					expect(captured.authHeader).toBe("Bearer fresh-xai-access");
+				} finally {
+					spy.mockRestore();
+				}
+			} finally {
+				if (originalXaiOAuthToken === undefined) {
+					delete Bun.env.XAI_OAUTH_TOKEN;
+				} else {
+					Bun.env.XAI_OAUTH_TOKEN = originalXaiOAuthToken;
+				}
+				if (originalXaiApiKey === undefined) {
+					delete Bun.env.XAI_API_KEY;
+				} else {
+					Bun.env.XAI_API_KEY = originalXaiApiKey;
+				}
+			}
+		});
+
+		test("offline discovery does not call getOAuthAccess for an expired OAuth provider", async () => {
+			const originalXaiOAuthToken = Bun.env.XAI_OAUTH_TOKEN;
+			const originalXaiApiKey = Bun.env.XAI_API_KEY;
+			delete Bun.env.XAI_OAUTH_TOKEN;
+			delete Bun.env.XAI_API_KEY;
+
+			try {
+				await authStorage.set("xai-oauth", [
+					{
+						type: "oauth",
+						access: "expired-access-token",
+						refresh: "expired-refresh-token",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				const fetchMock: FetchImpl = async input => {
+					throw new Error(`Unexpected network call in offline mode: ${String(input)}`);
+				};
+
+				const spy = spyOn(authStorage, "getOAuthAccess");
+
+				try {
+					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+					await expect(registry.refreshProvider("xai-oauth", "offline")).resolves.toBeUndefined();
+					expect(spy).not.toHaveBeenCalled();
+				} finally {
+					spy.mockRestore();
+				}
+			} finally {
+				if (originalXaiOAuthToken === undefined) {
+					delete Bun.env.XAI_OAUTH_TOKEN;
+				} else {
+					Bun.env.XAI_OAUTH_TOKEN = originalXaiOAuthToken;
+				}
+				if (originalXaiApiKey === undefined) {
+					delete Bun.env.XAI_API_KEY;
+				} else {
+					Bun.env.XAI_API_KEY = originalXaiApiKey;
+				}
+			}
+		});
+
+		test("lazy discovery Authorization bearer equals the single getOAuthAccess token", async () => {
+			const originalXaiOAuthToken = Bun.env.XAI_OAUTH_TOKEN;
+			const originalXaiApiKey = Bun.env.XAI_API_KEY;
+			delete Bun.env.XAI_OAUTH_TOKEN;
+			delete Bun.env.XAI_API_KEY;
+
+			try {
+				await authStorage.set("xai-oauth", [
+					{
+						type: "oauth",
+						access: "stale-peek-would-not-return",
+						refresh: "r",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				const refreshedToken = "refreshed-account-token-no-drift";
+				const captured: { authHeader: string | null } = { authHeader: null };
+				const fetchMock: FetchImpl = async (input, init) => {
+					const url = input instanceof Request ? input.url : String(input);
+					if (url === "https://api.x.ai/v1/models") {
+						captured.authHeader =
+							input instanceof Request
+								? input.headers.get("Authorization")
+								: new Headers(init?.headers).get("Authorization");
+						return new Response(
+							JSON.stringify({
+								data: [{ id: "grok-4.5" }],
+							}),
+							{ status: 200, headers: { "Content-Type": "application/json" } },
+						);
+					}
+					throw new Error(`Unexpected URL: ${url}`);
+				};
+
+				const getOAuthAccessSpy = spyOn(authStorage, "getOAuthAccess").mockImplementation(async () => ({
+					accessToken: refreshedToken,
+				}));
+				const peekApiKeySpy = spyOn(authStorage, "peekApiKey");
+
+				try {
+					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+					await registry.refreshProvider("xai-oauth", "online");
+
+					// Exactly one session-active refresh selection; bearer is that token, not a re-peek.
+					expect(getOAuthAccessSpy).toHaveBeenCalledTimes(1);
+					expect(getOAuthAccessSpy).toHaveBeenCalledWith("xai-oauth");
+					expect(captured.authHeader).toBe(`Bearer ${refreshedToken}`);
+					// peekApiKey may run for admission, but never after the refresh to
+					// re-select the bearer (call count stays at the admission peeks only).
+					const peekCallsAfterRefreshWouldSelectBearer = peekApiKeySpy.mock.calls.filter(
+						([provider]) => provider === "xai-oauth",
+					);
+					// Admission peeks only — if a post-refresh re-peek selected the
+					// bearer, the header would not be forced to the getOAuthAccess token
+					// above. Pin both sides of the contract.
+					expect(peekCallsAfterRefreshWouldSelectBearer.length).toBeGreaterThan(0);
+					expect(captured.authHeader).not.toBe("Bearer stale-peek-would-not-return");
+				} finally {
+					getOAuthAccessSpy.mockRestore();
+					peekApiKeySpy.mockRestore();
+				}
+			} finally {
+				if (originalXaiOAuthToken === undefined) {
+					delete Bun.env.XAI_OAUTH_TOKEN;
+				} else {
+					Bun.env.XAI_OAUTH_TOKEN = originalXaiOAuthToken;
+				}
+				if (originalXaiApiKey === undefined) {
+					delete Bun.env.XAI_API_KEY;
+				} else {
+					Bun.env.XAI_API_KEY = originalXaiApiKey;
+				}
+			}
+		});
+
+		test("refresh('offline') does not refresh expired OAuth credentials and does not hit the network", async () => {
+			const originalXaiOAuthToken = Bun.env.XAI_OAUTH_TOKEN;
+			const originalXaiApiKey = Bun.env.XAI_API_KEY;
+			delete Bun.env.XAI_OAUTH_TOKEN;
+			delete Bun.env.XAI_API_KEY;
+
+			try {
+				await authStorage.set("xai-oauth", [
+					{
+						type: "oauth",
+						access: "expired-access-token",
+						refresh: "expired-refresh-token",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				const fetchMock: FetchImpl = async input => {
+					throw new Error(`Unexpected network call in offline mode: ${String(input)}`);
+				};
+
+				const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+				const spy = spyOn(authStorage, "getOAuthAccess");
+
+				try {
+					await registry.refresh("offline");
+					expect(spy).not.toHaveBeenCalled();
+				} finally {
+					spy.mockRestore();
+				}
+			} finally {
+				if (originalXaiOAuthToken === undefined) {
+					delete Bun.env.XAI_OAUTH_TOKEN;
+				} else {
+					Bun.env.XAI_OAUTH_TOKEN = originalXaiOAuthToken;
+				}
+				if (originalXaiApiKey === undefined) {
+					delete Bun.env.XAI_API_KEY;
+				} else {
+					Bun.env.XAI_API_KEY = originalXaiApiKey;
+				}
+			}
+		});
+
+		test("multi-account built-in discovery pins bearer to OAuth position 0 for gitlab-duo-agent", async () => {
+			const originalGitlabToken = Bun.env.GITLAB_TOKEN;
+			const originalGitlabNamespaceId = Bun.env.GITLAB_DUO_NAMESPACE_ID;
+			delete Bun.env.GITLAB_TOKEN;
+			delete Bun.env.GITLAB_DUO_NAMESPACE_ID;
+			Bun.env.GITLAB_DUO_NAMESPACE_ID = "123";
+
+			try {
+				await authStorage.set("gitlab-duo-agent", [
+					{
+						type: "oauth",
+						access: "stale-account-0",
+						refresh: "r0",
+						expires: Date.now() - 60_000,
+					},
+					{
+						type: "oauth",
+						access: "stale-account-1",
+						refresh: "r1",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				const captured: { authHeader: string | null; graphqlUrl: string | null } = {
+					authHeader: null,
+					graphqlUrl: null,
+				};
+				const fetchMock: FetchImpl = async (input, init) => {
+					const url = input instanceof Request ? input.url : String(input);
+					if (url === "https://gitlab.com/api/graphql") {
+						captured.graphqlUrl = url;
+						captured.authHeader =
+							input instanceof Request
+								? input.headers.get("Authorization")
+								: new Headers(init?.headers).get("Authorization");
+						return new Response(
+							JSON.stringify({
+								data: {
+									aiChatAvailableModels: {
+										defaultModel: null,
+										selectableModels: [{ name: "Claude Sonnet 4.6", ref: "claude_sonnet_4_6_vertex" }],
+										pinnedModel: null,
+									},
+								},
+							}),
+							{ status: 200, headers: { "Content-Type": "application/json" } },
+						);
+					}
+					throw new Error(`Unexpected URL: ${url}`);
+				};
+
+				const getOAuthAccessAtSpy = spyOn(authStorage, "getOAuthAccessAt").mockImplementation(
+					async (_provider, position) => {
+						if (position === 0) {
+							return { ok: true, accessToken: "tok-account-0" };
+						}
+						if (position === 1) {
+							return { ok: true, accessToken: "tok-account-1" };
+						}
+						return { ok: false, error: "mock-failure" };
+					},
+				);
+				const getOAuthAccessSpy = spyOn(authStorage, "getOAuthAccess");
+
+				try {
+					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+					await registry.refreshProvider("gitlab-duo-agent", "online");
+
+					expect(captured.graphqlUrl).toBe("https://gitlab.com/api/graphql");
+					expect(captured.authHeader).toBe("Bearer tok-account-0");
+					expect(getOAuthAccessAtSpy).toHaveBeenCalledWith("gitlab-duo-agent", 0);
+					expect(getOAuthAccessAtSpy.mock.calls.some(([, position]) => position === 1)).toBe(false);
+					expect(getOAuthAccessSpy).not.toHaveBeenCalled();
+				} finally {
+					getOAuthAccessAtSpy.mockRestore();
+					getOAuthAccessSpy.mockRestore();
+				}
+			} finally {
+				if (originalGitlabToken === undefined) {
+					delete Bun.env.GITLAB_TOKEN;
+				} else {
+					Bun.env.GITLAB_TOKEN = originalGitlabToken;
+				}
+				if (originalGitlabNamespaceId === undefined) {
+					delete Bun.env.GITLAB_DUO_NAMESPACE_ID;
+				} else {
+					Bun.env.GITLAB_DUO_NAMESPACE_ID = originalGitlabNamespaceId;
+				}
+			}
+		});
+
+		test("gitlab-duo-agent mixed-auth: failed OAuth refresh does not fall back to the configured token", async () => {
+			const originalGitlabToken = Bun.env.GITLAB_TOKEN;
+			const originalGitlabNamespaceId = Bun.env.GITLAB_DUO_NAMESPACE_ID;
+			delete Bun.env.GITLAB_TOKEN;
+			delete Bun.env.GITLAB_DUO_NAMESPACE_ID;
+			Bun.env.GITLAB_TOKEN = "configured-gitlab-token";
+			Bun.env.GITLAB_DUO_NAMESPACE_ID = "123";
+
+			try {
+				await authStorage.set("gitlab-duo-agent", [
+					{
+						type: "oauth",
+						access: "expired-access-token",
+						refresh: "expired-refresh-token",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				const requestedUrls: string[] = [];
+				const fetchMock: FetchImpl = async (input, init) => {
+					const url = input instanceof Request ? input.url : String(input);
+					requestedUrls.push(url);
+					if (url === "https://gitlab.com/api/graphql") {
+						return new Response(
+							JSON.stringify({
+								data: {
+									aiChatAvailableModels: {
+										defaultModel: null,
+										selectableModels: [{ name: "Claude Sonnet 4.6", ref: "claude_sonnet_4_6_vertex" }],
+										pinnedModel: null,
+									},
+								},
+							}),
+							{ status: 200, headers: { "Content-Type": "application/json" } },
+						);
+					}
+					throw new Error(`Unexpected URL: ${url}`);
+				};
+
+				const getOAuthAccessAtSpy = spyOn(authStorage, "getOAuthAccessAt").mockImplementation(async () => {
+					return { ok: false, error: "mock-failure" };
+				});
+
+				try {
+					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+					await registry.refreshProvider("gitlab-duo-agent", "online");
+
+					expect(requestedUrls).not.toContain("https://gitlab.com/api/graphql");
+					expect(getOAuthAccessAtSpy).toHaveBeenCalledWith("gitlab-duo-agent", 0);
+				} finally {
+					getOAuthAccessAtSpy.mockRestore();
+				}
+			} finally {
+				if (originalGitlabToken === undefined) {
+					delete Bun.env.GITLAB_TOKEN;
+				} else {
+					Bun.env.GITLAB_TOKEN = originalGitlabToken;
+				}
+				if (originalGitlabNamespaceId === undefined) {
+					delete Bun.env.GITLAB_DUO_NAMESPACE_ID;
+				} else {
+					Bun.env.GITLAB_DUO_NAMESPACE_ID = originalGitlabNamespaceId;
+				}
+			}
+		});
+
+		test("github-copilot built-in discovery uses session-active getOAuthAccess and honors apiEndpoint", async () => {
+			const originalCopilotToken = Bun.env.COPILOT_GITHUB_TOKEN;
+			delete Bun.env.COPILOT_GITHUB_TOKEN;
+
+			try {
+				await authStorage.set("github-copilot", [
+					{
+						type: "oauth",
+						access: "stale-copilot-access",
+						refresh: "r",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				const activeAccess = {
+					accessToken: "copilot-token",
+					apiEndpoint: "https://api.business.githubcopilot.com",
+				};
+				const requestedUrls: string[] = [];
+				const fetchMock: FetchImpl = async input => {
+					const url = input instanceof Request ? input.url : String(input);
+					requestedUrls.push(url);
+					if (url === "https://api.business.githubcopilot.com/models") {
+						return new Response(
+							JSON.stringify({
+								data: [
+									{
+										id: "gpt-5.5",
+										name: "GPT 5.5",
+										capabilities: { type: "chat" },
+										context_length: 100_000,
+									},
+								],
+							}),
+							{ status: 200, headers: { "Content-Type": "application/json" } },
+						);
+					}
+					if (url === "https://api.githubcopilot.com/models") {
+						throw new Error(
+							"github-copilot discovery must target the active account apiEndpoint, not the default host",
+						);
+					}
+					throw new Error(`Unexpected URL: ${url}`);
+				};
+
+				const getOAuthAccessSpy = spyOn(authStorage, "getOAuthAccess").mockImplementation(async providerId => {
+					expect(providerId).toBe("github-copilot");
+					return activeAccess;
+				});
+
+				try {
+					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+					await registry.refreshProvider("github-copilot", "online");
+
+					expect(getOAuthAccessSpy).toHaveBeenCalledWith("github-copilot");
+					expect(requestedUrls).toContain("https://api.business.githubcopilot.com/models");
+					expect(requestedUrls).not.toContain("https://api.githubcopilot.com/models");
+					const discovered = getModelsForProvider(registry, "github-copilot").filter(m => m.id === "gpt-5.5");
+					expect(discovered.length).toBeGreaterThan(0);
+					expect(discovered[0]?.baseUrl).toBe("https://api.business.githubcopilot.com");
+				} finally {
+					getOAuthAccessSpy.mockRestore();
+				}
+			} finally {
+				if (originalCopilotToken === undefined) {
+					delete Bun.env.COPILOT_GITHUB_TOKEN;
+				} else {
+					Bun.env.COPILOT_GITHUB_TOKEN = originalCopilotToken;
+				}
+			}
+		});
+	});
 	describe("disabled provider filtering", () => {
 		test("getAvailable and getDiscoverableProviders exclude disabled providers from settings", async () => {
 			writeRawModelsJson({

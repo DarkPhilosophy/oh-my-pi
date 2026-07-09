@@ -2,7 +2,13 @@ import type { ModelManagerOptions } from "../model-manager";
 import type { Api, FetchImpl } from "../types";
 
 /** Config passed to a provider's runtime model-manager factory. */
-export type ModelManagerConfig = { apiKey?: string; baseUrl?: string; fetch?: FetchImpl };
+export type ModelManagerConfig = {
+	apiKey?: string;
+	getApiKey?: () => Promise<string | undefined>;
+	cacheIdentity?: string;
+	baseUrl?: string;
+	fetch?: FetchImpl;
+};
 
 /** Catalog discovery configuration for providers that support endpoint-based model listing. */
 export interface CatalogDiscoveryConfig {
