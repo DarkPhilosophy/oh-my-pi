@@ -171,6 +171,10 @@ describe("xAI-OAuth Responses reasoning-effort suppression", () => {
 		expect(buildOpenAIResponsesCompat(grokResponsesSpec("grok-4.3")).supportsReasoningEffort).toBe(true);
 	});
 
+	it("keeps the effort dial for a custom grok-4.5 spec (on the allowlist)", () => {
+		expect(buildOpenAIResponsesCompat(grokResponsesSpec("grok-4.5")).supportsReasoningEffort).toBe(true);
+	});
+
 	it("lets an explicit compat.supportsReasoningEffort override the allowlist default", () => {
 		const compat = buildOpenAIResponsesCompat({
 			...grokResponsesSpec("grok-build"),

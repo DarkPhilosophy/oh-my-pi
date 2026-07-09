@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Grok 4.5 to the xai and xai-oauth (SuperGrok) catalogs; grok-4.5 is now the xai-oauth default model.
+
 ## [16.3.12] - 2026-07-08
 
 ### Fixed

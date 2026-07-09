@@ -968,6 +968,11 @@ interface XAICuratedModel {
 // omit/include/history replay defaults live in catalog compat so every
 // OpenAI-family endpoint consumes the same constraint.
 export const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
+	// xAI's flagship (docs.x.ai/developers/models/grok-4.5): 500K context,
+	// text+image, reasoning with the wire effort dial (low/medium/high;
+	// rejects "none", unlike grok-4.3 — verified live 2026-07-08, matches
+	// models.dev). Aliases: grok-4.5-latest, grok-build-latest.
+	{ id: "grok-4.5", contextWindow: 500_000, name: "Grok 4.5", input: ["text", "image"] },
 	{
 		id: "grok-build",
 		contextWindow: 512_000,
