@@ -9,6 +9,7 @@ import { ExtensionUiController } from "./extension-ui-controller";
 function makeHarness() {
 	const editor = new CustomEditor(getEditorTheme());
 	const requestRender = vi.fn();
+	const addAutocompleteProvider = vi.fn();
 	let uiContext: ExtensionUIContext | undefined;
 	const ctx = {
 		editor,
@@ -25,11 +26,13 @@ function makeHarness() {
 		hookWidgetContainerAbove: new Container(),
 		hookWidgetContainerBelow: new Container(),
 		setRightInfo: vi.fn(),
+		addAutocompleteProvider,
 	} as unknown as InteractiveModeContext;
 
 	return {
 		editor,
 		requestRender,
+		addAutocompleteProvider,
 		async init(): Promise<ExtensionUIContext> {
 			await new ExtensionUiController(ctx).initHooksAndCustomTools();
 			requestRender.mockClear();
@@ -59,5 +62,18 @@ describe("ExtensionUiController editor UI", () => {
 
 		expect(harness.editor.getText()).toBe("hello");
 		expect(harness.requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("bridges addAutocompleteProvider factories to the interactive mode context (#4919)", async () => {
+		const harness = makeHarness();
+		const ui = await harness.init();
+
+		expect(typeof ui.addAutocompleteProvider).toBe("function");
+
+		const factory = (current: unknown) => current as never;
+		ui.addAutocompleteProvider(factory);
+
+		expect(harness.addAutocompleteProvider).toHaveBeenCalledTimes(1);
+		expect(harness.addAutocompleteProvider).toHaveBeenCalledWith(factory);
 	});
 });
