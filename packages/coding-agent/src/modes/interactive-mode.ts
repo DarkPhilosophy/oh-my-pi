@@ -4344,6 +4344,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	reloadHooksAndCustomTools(): Promise<void> {
+		// Clear extension-registered autocomplete factories before re-initializing.
+		// Without this, each /reload-plugins re-emits session_start and extensions
+		// call addAutocompleteProvider again, stacking duplicate providers (#4919).
+		this.#autocompleteProviderFactories.length = 0;
+		this.#applyAutocompleteProvider();
 		return this.#extensionUiController.reloadHooksAndCustomTools();
 	}
 
