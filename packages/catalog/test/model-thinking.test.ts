@@ -595,6 +595,26 @@ describe("model thinking derivation", () => {
 		expect(direct.thinking?.requiresEffort).toBe(true);
 		expect(minimumSupportedEffort(oauth)).toBe(Effort.Low);
 		expect(minimumSupportedEffort(direct)).toBe(Effort.Low);
+		// Direct xAI chat-completions must actually send reasoning_effort for
+		// grok-4.5 (docs.x.ai); the family-wide !isGrok gate is overridden for
+		// grok-4.5 so the mandatory-reasoning clamp reaches the wire instead of
+		// being silently omitted (which would run xAI's default high effort).
+		expect(oauth.compat.supportsReasoningEffort).toBe(true);
+		expect(direct.compat.supportsReasoningEffort).toBe(true);
+		expect(direct.compat.omitReasoningEffort).toBe(false);
+	});
+
+	it("keeps reasoning effort disabled for other direct xAI Grok models", () => {
+		// The direct-xAI reasoning-effort override is scoped to grok-4.5; the
+		// family-wide !isGrok gate still disables reasoning_effort for older Grok
+		// chat-completions models, so this stays false.
+		const grok43 = createModel({
+			id: "grok-4.3",
+			api: "openai-completions",
+			provider: "xai",
+			reasoning: true,
+		});
+		expect(grok43.compat.supportsReasoningEffort).toBe(false);
 	});
 });
 
