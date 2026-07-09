@@ -156,4 +156,51 @@ describe("xai-oauth bundled catalog (regression)", () => {
 		expect(grok45.input).toContain("image");
 		expect(grok45.contextWindow).toBe(500_000);
 	});
+
+	// Inject path must not leak the structural template's compat into the
+	// curated entry. When /v1/models returns only a non-effort model
+	// (grok-build with omitReasoningEffort:true) and omits grok-4.5, the
+	// inject pass clones that entry as a template — without resetting
+	// compat, grok-4.5 inherits omitReasoningEffort:true and silently
+	// drops the user's low/medium effort dial.
+	it("resets template compat when injecting missing curated models", () => {
+		const dynamic: ModelSpec<"openai-responses">[] = [
+			{
+				id: "grok-build",
+				name: "Grok Build (raw)",
+				api: "openai-responses",
+				provider: "xai-oauth",
+				baseUrl: "https://api.x.ai/v1",
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128_000,
+				maxTokens: 128_000,
+				compat: { omitReasoningEffort: true },
+			},
+		];
+
+		const curated = applyXAIOAuthCuration(dynamic);
+
+		const grok45 = curated.find(model => model.id === "grok-4.5");
+		expect(grok45).toBeDefined();
+		if (!grok45) {
+			return;
+		}
+		// Injected effort-capable model must recompute omitReasoningEffort
+		// from its own id, not inherit the template's true.
+		expect(grok45.compat?.omitReasoningEffort).toBe(false);
+		expect(grok45.reasoning).toBe(true);
+		expect(grok45.contextWindow).toBe(500_000);
+		expect(grok45.input).toContain("image");
+
+		// Overlay path still preserves the non-effort contract for the
+		// template model itself (curated supportsReasoningEffort:false).
+		const grokBuild = curated.find(model => model.id === "grok-build");
+		expect(grokBuild).toBeDefined();
+		if (!grokBuild) {
+			return;
+		}
+		expect(grokBuild.compat?.omitReasoningEffort).toBe(true);
+	});
 });

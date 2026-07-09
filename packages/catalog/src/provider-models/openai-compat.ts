@@ -1145,10 +1145,19 @@ export function applyXAIOAuthCuration(
 	if (template) {
 		for (const curated of XAI_OAUTH_CURATED_MODELS) {
 			if (!byId.has(curated.id)) {
-				// Reset id/name on the template before merging so the helper's
-				// `curated.name ?? base.name` clause falls back to curated.id
-				// (the inject contract), not to the unrelated template's label.
-				const base: ModelSpec<"openai-responses"> = { ...template, id: curated.id, name: curated.id };
+				// Reset id/name AND compat on the template before merging: the template
+				// is a structural donor (api/provider/baseUrl/cost) only. Its `compat`
+				// belongs to an unrelated model (e.g. grok-build's
+				// `omitReasoningEffort: true`) and must not leak into the injected
+				// curated entry — `mergeCuratedIntoModel` recomputes compat (including
+				// `omitReasoningEffort`) from the curated id, and `curated.name ??
+				// base.name` falls back to curated.id (the inject contract).
+				const base: ModelSpec<"openai-responses"> = {
+					...template,
+					id: curated.id,
+					name: curated.id,
+					compat: undefined,
+				};
 				byId.set(curated.id, mergeCuratedIntoModel(base, curated));
 			}
 		}
