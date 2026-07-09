@@ -83,7 +83,12 @@ export function gitLabDuoWorkflowModelManagerOptions(
 ): ModelManagerOptions<"gitlab-duo-agent"> {
 	const { apiKey: configuredApiKey, getApiKey, cacheIdentity } = config;
 	const hasApiKey = Boolean(configuredApiKey || getApiKey);
-	const cacheKeyIdentity = configuredApiKey ?? cacheIdentity;
+	// Prefer the OAuth cache identity over a configured token: fetchDynamicModels
+	// resolves the bearer as `getApiKey() ?? configuredApiKey` (OAuth-first), so
+	// the cache key must be OAuth-first too — otherwise a mixed-auth setup (expired
+	// OAuth + env/config token) fetches as the OAuth account but caches under the
+	// token, serving another account's namespace on a later token-only refresh.
+	const cacheKeyIdentity = cacheIdentity ?? configuredApiKey;
 	return {
 		providerId: "gitlab-duo-agent",
 		// GitLab Duo discovery is credential- and namespace-specific
@@ -94,9 +99,10 @@ export function gitLabDuoWorkflowModelManagerOptions(
 		// the exact inputs `fetchGitLabDuoWorkflowModels` resolves the namespace from
 		// (credential/cache identity + base URL + namespace/project config + the same
 		// env vars + the effective workspace cwd whose git remote drives
-		// auto-discovery). Built-in lazy-OAuth discovery passes cacheIdentity when the
-		// token is unavailable without refresh. Falls back to the bare provider id
-		// when no credential identity is present.
+		// auto-discovery). Built-in lazy-OAuth discovery passes the OAuth account's
+		// cacheIdentity, which takes precedence over a configured token so the cache
+		// key matches the OAuth bearer fetchDynamicModels prefers. Falls back to the
+		// bare provider id when no credential identity is present.
 		...(cacheKeyIdentity
 			? { cacheProviderId: gitLabDuoWorkflowModelCacheProviderId(cacheKeyIdentity, config) }
 			: undefined),

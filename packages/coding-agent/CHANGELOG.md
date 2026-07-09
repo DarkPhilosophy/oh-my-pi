@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Built-in provider model discovery now refreshes expired OAuth tokens instead of silently skipping the provider, and for providers with multiple stored OAuth accounts it pins the discovery bearer and the per-account model cache to the same account (position 0) so one account's model list can no longer be fetched under one account and served from another account's cache.
+- Built-in provider model discovery now refreshes expired OAuth tokens instead of silently skipping the provider. For GitLab Duo (whose model cache is keyed per credential) the discovery bearer and the cache key are pinned to the same OAuth account, so multiple stored accounts — or a mix of stored OAuth and a configured token — can no longer serve one account's namespace models from another account's cache; other OAuth providers follow the session-active account, preserving account-specific metadata such as GitHub Copilot's enterprise endpoint.
 
 ## [16.3.12] - 2026-07-08
 

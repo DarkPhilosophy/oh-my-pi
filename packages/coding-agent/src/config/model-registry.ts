@@ -1553,18 +1553,26 @@ export class ModelRegistry {
 		return access.accessToken;
 	}
 
+	// Built-in discovery resolves the OAuth bearer per provider. gitlab-duo-agent
+	// keys its model cache per credential (#resolveBuiltInDiscoveryCacheIdentity
+	// uses listOAuthAccounts[0]), so its bearer MUST come from that same row —
+	// getOAuthAccessAt(0) — to keep the fetched catalog and its cache key aligned
+	// across multiple accounts. Every other provider caches under the bare
+	// provider id (no per-account key) and should follow the session-active
+	// account via getOAuthAccess, which preserves account-specific metadata such
+	// as GitHub Copilot's enterprise apiEndpoint.
+	async #resolveBuiltInDiscoveryAccess(providerId: string): Promise<BuiltInDiscoveryOAuthAccess | undefined> {
+		if (providerId === "gitlab-duo-agent") {
+			const resolution = await this.authStorage.getOAuthAccessAt(providerId, 0);
+			return resolution?.ok ? resolution : undefined;
+		}
+		return this.authStorage.getOAuthAccess(providerId);
+	}
+
 	async #resolveBuiltInDiscoveryOAuthAccess(providerId: string): Promise<BuiltInDiscoveryOAuthAccess | undefined> {
 		try {
-			// Pin to account position 0 so the fetched bearer references the SAME
-			// OAuth row that #resolveBuiltInDiscoveryCacheIdentity keys the cache on
-			// (listOAuthAccounts[0]). getOAuthAccess() round-robins across accounts
-			// and could diverge from the cache key on multi-account providers,
-			// caching one account's catalog under another's key.
-			const access = await this.authStorage.getOAuthAccessAt(providerId, 0);
-			if (!access?.ok || !access.accessToken) {
-				return undefined;
-			}
-			return access;
+			const access = await this.#resolveBuiltInDiscoveryAccess(providerId);
+			return access?.accessToken ? access : undefined;
 		} catch {
 			return undefined;
 		}
@@ -1572,8 +1580,10 @@ export class ModelRegistry {
 
 	async #resolveBuiltInDiscoveryApiKey(providerId: string): Promise<string | undefined> {
 		try {
-			const access = await this.authStorage.getOAuthAccessAt(providerId, 0);
-			return access?.ok ? this.#formatBuiltInOAuthDiscoveryApiKey(providerId, access) : undefined;
+			return this.#formatBuiltInOAuthDiscoveryApiKey(
+				providerId,
+				await this.#resolveBuiltInDiscoveryAccess(providerId),
+			);
 		} catch {
 			return undefined;
 		}
@@ -1774,12 +1784,20 @@ export class ModelRegistry {
 					this.getProviderBaseUrl(descriptor.providerId);
 				const discoveryApiKey = isDiscoveryBearerApiKey(apiKey) ? apiKey : undefined;
 				const cacheIdentity =
-					descriptor.providerId === "gitlab-duo-agent" && !discoveryApiKey && hasStoredOAuth
+					descriptor.providerId === "gitlab-duo-agent" && hasStoredOAuth
 						? this.#resolveBuiltInDiscoveryCacheIdentity(descriptor.providerId)
 						: undefined;
+				// gitlab-duo keys its cache to the OAuth account (cacheIdentity). A
+				// configured/env token passed as apiKey would let fetchDynamicModels
+				// fall back to it when the OAuth refresh fails, caching the token
+				// account's namespace under the OAuth key. When the OAuth cache
+				// identity is in play OAuth is the sole discovery bearer, so drop the
+				// token: a failed refresh then serves cache/static, never a mis-keyed
+				// token catalog.
+				const discoveryApiKeyForOptions = cacheIdentity ? undefined : discoveryApiKey;
 				options.push(
 					descriptor.createModelManagerOptions({
-						apiKey: discoveryApiKey,
+						apiKey: discoveryApiKeyForOptions,
 						...(hasStoredOAuth && {
 							getApiKey: () => this.#resolveBuiltInDiscoveryApiKey(descriptor.providerId),
 						}),
