@@ -79,6 +79,8 @@ export const isMimoModelIdOrName = memo((value: string): boolean => {
 });
 
 const GROK_EFFORT_CAPABLE_PREFIXES = ["grok-3-mini", "grok-4.20-multi-agent", "grok-4.3", "grok-4.5"] as const;
+/** Documented grok-4.5 aliases that do not share the `grok-4.5` prefix (docs.x.ai/developers/models/grok-4.5). */
+const GROK_45_ALIAS_IDS = new Set(["grok-build-latest"]);
 
 /**
  * Grok SKUs that expose the wire `reasoning.effort` dial. Other Grok reasoners
@@ -88,20 +90,23 @@ const GROK_EFFORT_CAPABLE_PREFIXES = ["grok-3-mini", "grok-4.20-multi-agent", "g
 export const isGrokReasoningEffortCapable = memo((modelId: string): boolean => {
 	const bare = bareModelId(modelId).trim().toLowerCase();
 	if (!bare) return false;
+	if (GROK_45_ALIAS_IDS.has(bare)) return true;
 	return GROK_EFFORT_CAPABLE_PREFIXES.some(prefix => bare.startsWith(prefix));
 });
 
 /**
- * grok-4.5 and its `grok-4.5-latest` alias accept only reasoning.effort
- * low/medium/high — there is no `minimal` or `xhigh` tier
- * (docs.x.ai/developers/model-capabilities/text/reasoning; defaults high,
- * reasoning cannot be disabled). Distinct from `grok-4.20-multi-agent`, whose
- * `xhigh` selects agent count. Used to pin the effort dial on xAI surfaces.
+ * grok-4.5 and its documented aliases (`grok-4.5-latest`, `grok-build-latest`)
+ * accept only reasoning.effort low/medium/high — there is no `minimal` or
+ * `xhigh` tier (docs.x.ai/developers/model-capabilities/text/reasoning; defaults
+ * high, reasoning cannot be disabled). Distinct from the separate `grok-build`
+ * / `grok-build-0.1` SKUs (which reject the effort param) and from
+ * `grok-4.20-multi-agent` (whose `xhigh` selects agent count). Used to pin the
+ * effort dial on xAI surfaces.
  */
 export const isGrok45ReasoningModelId = memo((modelId: string): boolean => {
 	const bare = bareModelId(modelId).trim().toLowerCase();
 	if (!bare) return false;
-	return bare.startsWith("grok-4.5");
+	return bare.startsWith("grok-4.5") || GROK_45_ALIAS_IDS.has(bare);
 });
 
 /**

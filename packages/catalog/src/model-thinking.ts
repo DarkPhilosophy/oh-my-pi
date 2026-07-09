@@ -314,11 +314,14 @@ function getModelDefinedEfforts<TApi extends Api>(
 	if (isSakanaFuguReasoningModel(spec)) {
 		return FUGU_REASONING_EFFORTS;
 	}
-	// grok-4.5 (xai / xai-oauth) accepts only reasoning.effort low/medium/high
-	// (docs.x.ai/developers/model-capabilities/text/reasoning). The Responses
-	// and completions default ladders would expose `xhigh` and send it verbatim,
-	// which xAI 400s. Pin the xAI-native surfaces to low/medium/high.
-	if ((spec.provider === "xai" || spec.provider === "xai-oauth") && isGrok45ReasoningModelId(spec.id)) {
+	// grok-4.5 on any xAI host accepts only reasoning.effort low/medium/high
+	// (docs.x.ai/developers/model-capabilities/text/reasoning). Key on the xAI
+	// host (provider xai / baseUrl api.x.ai), not just the built-in provider
+	// ids: a custom OpenAI-compatible config pointed at api.x.ai already gets
+	// supportsReasoningEffort via host detection, and without this cap would
+	// expose/send unsupported values like `xhigh` (xAI 400s). xai-oauth is
+	// included by provider id (its baseUrl is also api.x.ai).
+	if ((modelMatchesHost(spec, "xai") || spec.provider === "xai-oauth") && isGrok45ReasoningModelId(spec.id)) {
 		return LOW_MEDIUM_HIGH_REASONING_EFFORTS;
 	}
 	return isOpenAICompatReasoningApi(spec.api) &&

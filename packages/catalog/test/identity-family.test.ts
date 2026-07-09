@@ -267,6 +267,7 @@ describe("isGrokReasoningEffortCapable", () => {
 		expect(isGrokReasoningEffortCapable("grok-4.20-multi-agent")).toBe(true);
 		expect(isGrokReasoningEffortCapable("grok-4.5")).toBe(true);
 		expect(isGrokReasoningEffortCapable("grok-4.5-latest")).toBe(true);
+		expect(isGrokReasoningEffortCapable("grok-build-latest")).toBe(true);
 		expect(isGrokReasoningEffortCapable("xai-oauth/grok-4.3")).toBe(true);
 		expect(isGrokReasoningEffortCapable("xai-oauth/grok-4.5")).toBe(true);
 		expect(isGrokReasoningEffortCapable("openrouter/xai/grok-3-mini")).toBe(true);
@@ -274,6 +275,7 @@ describe("isGrokReasoningEffortCapable", () => {
 
 	test("rejects effort-dial-less Grok SKUs and non-Grok ids", () => {
 		expect(isGrokReasoningEffortCapable("grok-build")).toBe(false);
+		expect(isGrokReasoningEffortCapable("grok-build-0.1")).toBe(false);
 		expect(isGrokReasoningEffortCapable("grok-4.20-0309-reasoning")).toBe(false);
 		expect(isGrokReasoningEffortCapable("gpt-5")).toBe(false);
 		expect(isGrokReasoningEffortCapable("")).toBe(false);
@@ -284,6 +286,7 @@ describe("isGrok45ReasoningModelId", () => {
 	test("matches grok-4.5 ids across namespaces and aliases", () => {
 		expect(isGrok45ReasoningModelId("grok-4.5")).toBe(true);
 		expect(isGrok45ReasoningModelId("grok-4.5-latest")).toBe(true);
+		expect(isGrok45ReasoningModelId("grok-build-latest")).toBe(true);
 		expect(isGrok45ReasoningModelId("xai-oauth/grok-4.5")).toBe(true);
 		expect(isGrok45ReasoningModelId("openrouter/xai/grok-4.5")).toBe(true);
 	});
@@ -294,6 +297,7 @@ describe("isGrok45ReasoningModelId", () => {
 		expect(isGrok45ReasoningModelId("grok-4")).toBe(false);
 		expect(isGrok45ReasoningModelId("grok-3-mini")).toBe(false);
 		expect(isGrok45ReasoningModelId("grok-build")).toBe(false);
+		expect(isGrok45ReasoningModelId("grok-build-0.1")).toBe(false);
 		expect(isGrok45ReasoningModelId("")).toBe(false);
 	});
 });

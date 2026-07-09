@@ -1,6 +1,7 @@
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { toFirepassWireModelId, toFireworksWireModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
-import { isGlm52ReasoningEffortModelId } from "@oh-my-pi/pi-catalog/identity";
+import { modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
+import { isGlm52ReasoningEffortModelId, isGrokReasoningEffortCapable } from "@oh-my-pi/pi-catalog/identity";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import type {
@@ -2491,11 +2492,17 @@ type CommonSamplingOptions = Pick<
  * proxies (notably Ollama) that forward to upstream APIs with an unknown output-token cap
  * can let the upstream apply its own default instead of 400-ing on `maxTokens` values that
  * reflect the model's context window rather than the upstream output limit.
+ *
+ * xAI reasoning models reject `presence_penalty` / `frequency_penalty` / `stop`
+ * (docs.x.ai/developers/model-capabilities/text/reasoning). This path has no
+ * frequency/stop fields; presence is dropped when the model is a Grok
+ * effort-capable reasoner on an xAI host so a configured presencePenalty does
+ * not 400 the default grok-4.5 request.
  */
 export function applyCommonResponsesSamplingParams<P extends CommonResponsesParams>(
 	params: P,
 	options: CommonSamplingOptions | undefined,
-	model: Pick<Model, "provider" | "api" | "id" | "omitMaxOutputTokens" | "maxTokens">,
+	model: Pick<Model, "provider" | "api" | "id" | "baseUrl" | "omitMaxOutputTokens" | "maxTokens">,
 ): void {
 	if (options?.maxTokens && !model.omitMaxOutputTokens) {
 		params.max_output_tokens = Math.min(
@@ -2508,7 +2515,13 @@ export function applyCommonResponsesSamplingParams<P extends CommonResponsesPara
 	if (options?.topP !== undefined) params.top_p = options.topP;
 	if (options?.topK !== undefined) params.top_k = options.topK;
 	if (options?.minP !== undefined) params.min_p = options.minP;
-	if (options?.presencePenalty !== undefined) params.presence_penalty = options.presencePenalty;
+	const dropXaiReasoningSampling =
+		isGrokReasoningEffortCapable(model.id) &&
+		(modelMatchesHost({ provider: model.provider, baseUrl: model.baseUrl ?? "" }, "xai") ||
+			model.provider === "xai-oauth");
+	if (options?.presencePenalty !== undefined && !dropXaiReasoningSampling) {
+		params.presence_penalty = options.presencePenalty;
+	}
 	if (options?.repetitionPenalty !== undefined) params.repetition_penalty = options.repetitionPenalty;
 	applyOpenAIServiceTier(params, options?.serviceTier, model);
 }

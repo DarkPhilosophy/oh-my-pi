@@ -581,18 +581,41 @@ describe("model thinking derivation", () => {
 			provider: "xai",
 			reasoning: true,
 		});
+		// custom OpenAI-compatible config pointed at api.x.ai must get the same
+		// low/medium/high cap — host detection already enables reasoning_effort,
+		// so without this the default ladder would expose xhigh (xAI 400s).
+		const customXai = createModel({
+			id: "grok-4.5",
+			api: "openai-completions",
+			provider: "custom",
+			baseUrl: "https://api.x.ai/v1",
+			reasoning: true,
+		});
+		// Documented alias (docs.x.ai/developers/models/grok-4.5) must inherit
+		// the Grok 4.5 effort/mandatory-reasoning contract, not discovery defaults.
+		const buildLatest = createModel({
+			id: "grok-build-latest",
+			api: "openai-completions",
+			provider: "xai",
+			reasoning: true,
+		});
 
 		const expected = [Effort.Low, Effort.Medium, Effort.High];
 		expect(getSupportedEfforts(oauth)).toEqual(expected);
 		expect(getSupportedEfforts(direct)).toEqual(expected);
+		expect(getSupportedEfforts(customXai)).toEqual(expected);
+		expect(getSupportedEfforts(buildLatest)).toEqual(expected);
 		expect(getSupportedEfforts(oauth)).not.toContain(Effort.XHigh);
 		expect(getSupportedEfforts(oauth)).not.toContain(Effort.Minimal);
 		expect(getSupportedEfforts(direct)).not.toContain(Effort.XHigh);
 		expect(getSupportedEfforts(direct)).not.toContain(Effort.Minimal);
+		expect(getSupportedEfforts(customXai)).not.toContain(Effort.XHigh);
 		// grok-4.5 reasoning cannot be disabled: mandatory-reasoning flag is set and
 		// a thinking-off request clamps to the lowest supported effort (low), not omit.
 		expect(oauth.thinking?.requiresEffort).toBe(true);
 		expect(direct.thinking?.requiresEffort).toBe(true);
+		expect(customXai.thinking?.requiresEffort).toBe(true);
+		expect(buildLatest.thinking?.requiresEffort).toBe(true);
 		expect(minimumSupportedEffort(oauth)).toBe(Effort.Low);
 		expect(minimumSupportedEffort(direct)).toBe(Effort.Low);
 		// Direct xAI chat-completions must actually send reasoning_effort for
@@ -602,6 +625,8 @@ describe("model thinking derivation", () => {
 		expect(oauth.compat.supportsReasoningEffort).toBe(true);
 		expect(direct.compat.supportsReasoningEffort).toBe(true);
 		expect(direct.compat.omitReasoningEffort).toBe(false);
+		expect(buildLatest.compat.supportsReasoningEffort).toBe(true);
+		expect(buildLatest.compat.omitReasoningEffort).toBe(false);
 	});
 
 	it("keeps reasoning effort disabled for other direct xAI Grok models", () => {
