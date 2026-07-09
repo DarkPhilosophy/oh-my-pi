@@ -8,6 +8,21 @@
 ### Added
 
 - Added Grok 4.5 to the xai and xai-oauth (SuperGrok) catalogs; grok-4.5 is now the xai-oauth default model. Its reasoning effort is constrained to xAI's supported low/medium/high tiers and marked mandatory, so a thinking-off request clamps to low instead of omitting reasoning (which xAI's grok-4.5 rejects, since reasoning cannot be disabled). The effort cap keys on the xAI host (provider `xai` or base URL `api.x.ai`), so a custom OpenAI-compatible config pointed at xAI gets the same ladder; the documented `grok-build-latest` alias inherits the Grok 4.5 effort/mandatory-reasoning contract (distinct from the separate `grok-build` / `grok-build-0.1` SKUs that reject `reasoning.effort`).
+## [16.3.13] - 2026-07-09
+
+### Added
+
+- Added support for Grok 4.5 across multiple providers
+- Added support for GPT-5.6 series models (Luna, Sol, Terra)
+- Added Aion 3.0 and 3.0 Mini models
+- Added Kuaishou KAT-Coder v2.5 models
+- Added Nex-N2-Mini and SWE-1.7 series models
+- Added Hy3 models and free variants
+
+### Changed
+
+- Updated cost and token configurations for various models across providers
+- Renamed several models for consistency (e.g., MiniMax M3, Gemma 4 31B, Qwen variants)
 
 ## [16.3.12] - 2026-07-08
 
