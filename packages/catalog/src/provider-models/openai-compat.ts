@@ -941,7 +941,21 @@ export interface XaiModelManagerConfig {
 }
 
 export function xaiModelManagerOptions(config?: XaiModelManagerConfig): ModelManagerOptions<"openai-completions"> {
-	return createSimpleOpenAICompletionsOptions("xai", "https://api.x.ai/v1", config);
+	const options = createSimpleOpenAICompletionsOptions("xai", "https://api.x.ai/v1", config);
+	const fetchDynamic = options.fetchDynamicModels;
+	if (!fetchDynamic) {
+		return options;
+	}
+	// Direct xAI /v1/models may return the grok-4.5 aliases (grok-4.5-latest /
+	// grok-build-latest); drop them so the bundled `xai/grok-4.5` entry owns the
+	// reasoning/vision/limit metadata instead of an alias with discovery defaults.
+	return {
+		...options,
+		fetchDynamicModels: async () => {
+			const models = await fetchDynamic();
+			return models === null ? null : models.filter(model => !Object.hasOwn(XAI_CANONICALIZED_ALIAS_IDS, model.id));
+		},
+	};
 }
 
 export interface XaiOAuthModelManagerConfig {
@@ -984,6 +998,11 @@ interface XAICuratedModel {
 // omit/include/history replay defaults live in catalog compat so every
 // OpenAI-family endpoint consumes the same constraint.
 export const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
+	// xAI's flagship (docs.x.ai/developers/models/grok-4.5): 500K context,
+	// text+image, reasoning with the wire effort dial (low/medium/high;
+	// rejects "none", unlike grok-4.3 — verified live 2026-07-08, matches
+	// models.dev). Aliases: grok-4.5-latest, grok-build-latest.
+	{ id: "grok-4.5", contextWindow: 500_000, name: "Grok 4.5", input: ["text", "image"] },
 	{
 		id: "grok-build",
 		contextWindow: 512_000,
@@ -1031,6 +1050,17 @@ export const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
 // route through dedicated tools (generate_image, tts) with their own model
 // strings; the chat picker MUST exclude these prefixes or selecting them 400s.
 const XAI_NON_CHAT_PREFIXES = ["grok-imagine-", "grok-stt-", "grok-voice-"] as const;
+
+// Documented grok-4.5 aliases (docs.x.ai/developers/models/grok-4.5). xAI's
+// /v1/models may surface these instead of the canonical `grok-4.5` on both the
+// direct `xai` and `xai-oauth` surfaces; they resolve to the same model. Drop
+// them so the curated/bundled `grok-4.5` entry owns the metadata rather than an
+// alias falling through to discovery defaults (reasoning:false, text-only,
+// null limits).
+const XAI_CANONICALIZED_ALIAS_IDS: Record<string, true> = {
+	"grok-4.5-latest": true,
+	"grok-build-latest": true,
+};
 
 function withXaiOAuthCompatDefaults(model: ModelSpec<"openai-responses">): ModelSpec<"openai-responses"> {
 	const compat = {
@@ -1112,8 +1142,12 @@ function mergeCuratedIntoModel(
  * Order: curated models first in declaration order; then dynamic remainder
  * in original order.
  */
-function applyXAIOAuthCuration(dynamic: readonly ModelSpec<"openai-responses">[]): ModelSpec<"openai-responses">[] {
-	const filtered = dynamic.filter(e => !XAI_NON_CHAT_PREFIXES.some(p => e.id.startsWith(p)));
+export function applyXAIOAuthCuration(
+	dynamic: readonly ModelSpec<"openai-responses">[],
+): ModelSpec<"openai-responses">[] {
+	const filtered = dynamic.filter(
+		e => !XAI_NON_CHAT_PREFIXES.some(p => e.id.startsWith(p)) && !Object.hasOwn(XAI_CANONICALIZED_ALIAS_IDS, e.id),
+	);
 
 	const byId = new Map<string, ModelSpec<"openai-responses">>(filtered.map(e => [e.id, e]));
 	for (const curated of XAI_OAUTH_CURATED_MODELS) {
@@ -1127,10 +1161,19 @@ function applyXAIOAuthCuration(dynamic: readonly ModelSpec<"openai-responses">[]
 	if (template) {
 		for (const curated of XAI_OAUTH_CURATED_MODELS) {
 			if (!byId.has(curated.id)) {
-				// Reset id/name on the template before merging so the helper's
-				// `curated.name ?? base.name` clause falls back to curated.id
-				// (the inject contract), not to the unrelated template's label.
-				const base: ModelSpec<"openai-responses"> = { ...template, id: curated.id, name: curated.id };
+				// Reset id/name AND compat on the template before merging: the template
+				// is a structural donor (api/provider/baseUrl/cost) only. Its `compat`
+				// belongs to an unrelated model (e.g. grok-build's
+				// `omitReasoningEffort: true`) and must not leak into the injected
+				// curated entry — `mergeCuratedIntoModel` recomputes compat (including
+				// `omitReasoningEffort`) from the curated id, and `curated.name ??
+				// base.name` falls back to curated.id (the inject contract).
+				const base: ModelSpec<"openai-responses"> = {
+					...template,
+					id: curated.id,
+					name: curated.id,
+					compat: undefined,
+				};
 				byId.set(curated.id, mergeCuratedIntoModel(base, curated));
 			}
 		}

@@ -1,5 +1,6 @@
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { isKimiModelId } from "@oh-my-pi/pi-catalog/identity";
+import { modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
+import { isGrokReasoningEffortCapable, isKimiModelId } from "@oh-my-pi/pi-catalog/identity";
 import { resolveWireModelId } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import type { ResolvedOpenAICompat } from "@oh-my-pi/pi-catalog/types";
@@ -1446,17 +1447,25 @@ function buildParams(
 	if (options?.minP !== undefined) {
 		params.min_p = options.minP;
 	}
-	if (options?.presencePenalty !== undefined) {
+	// xAI reasoning models reject presence_penalty / frequency_penalty / stop
+	// (docs.x.ai/developers/model-capabilities/text/reasoning). Drop them for
+	// Grok effort-capable SKUs on an xAI host so a configured presencePenalty
+	// (or stopSequences) does not 400 the default grok-4.5 request.
+	const dropXaiReasoningSampling =
+		isGrokReasoningEffortCapable(model.id) &&
+		(modelMatchesHost({ provider: model.provider, baseUrl: model.baseUrl ?? "" }, "xai") ||
+			model.provider === "xai-oauth");
+	if (options?.presencePenalty !== undefined && !dropXaiReasoningSampling) {
 		params.presence_penalty = options.presencePenalty;
 	}
 	if (options?.repetitionPenalty !== undefined) {
 		params.repetition_penalty = options.repetitionPenalty;
 	}
-	if (options?.stopSequences?.length) {
+	if (options?.stopSequences?.length && !dropXaiReasoningSampling) {
 		const seqs = options.stopSequences;
 		params.stop = seqs.length === 1 ? seqs[0] : seqs.slice(0, 4);
 	}
-	if (options?.frequencyPenalty !== undefined) {
+	if (options?.frequencyPenalty !== undefined && !dropXaiReasoningSampling) {
 		params.frequency_penalty = options.frequencyPenalty;
 	}
 	applyOpenAIServiceTier(params, options?.serviceTier, model);
