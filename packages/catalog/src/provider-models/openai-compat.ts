@@ -926,7 +926,21 @@ export interface XaiModelManagerConfig {
 }
 
 export function xaiModelManagerOptions(config?: XaiModelManagerConfig): ModelManagerOptions<"openai-completions"> {
-	return createSimpleOpenAICompletionsOptions("xai", "https://api.x.ai/v1", config);
+	const options = createSimpleOpenAICompletionsOptions("xai", "https://api.x.ai/v1", config);
+	const fetchDynamic = options.fetchDynamicModels;
+	if (!fetchDynamic) {
+		return options;
+	}
+	// Direct xAI /v1/models may return the grok-4.5 aliases (grok-4.5-latest /
+	// grok-build-latest); drop them so the bundled `xai/grok-4.5` entry owns the
+	// reasoning/vision/limit metadata instead of an alias with discovery defaults.
+	return {
+		...options,
+		fetchDynamicModels: async () => {
+			const models = await fetchDynamic();
+			return models === null ? null : models.filter(model => !Object.hasOwn(XAI_CANONICALIZED_ALIAS_IDS, model.id));
+		},
+	};
 }
 
 export interface XaiOAuthModelManagerConfig {
@@ -1022,11 +1036,12 @@ export const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
 const XAI_NON_CHAT_PREFIXES = ["grok-imagine-", "grok-stt-", "grok-voice-"] as const;
 
 // Documented grok-4.5 aliases (docs.x.ai/developers/models/grok-4.5). xAI's
-// /v1/models may surface these instead of the canonical `grok-4.5`; they resolve
-// to the same model. Drop them so the curated/injected `grok-4.5` entry owns the
-// metadata rather than an alias falling through to discovery defaults
-// (reasoning:false, text-only, null limits).
-const XAI_OAUTH_CANONICALIZED_ALIAS_IDS: Record<string, true> = {
+// /v1/models may surface these instead of the canonical `grok-4.5` on both the
+// direct `xai` and `xai-oauth` surfaces; they resolve to the same model. Drop
+// them so the curated/bundled `grok-4.5` entry owns the metadata rather than an
+// alias falling through to discovery defaults (reasoning:false, text-only,
+// null limits).
+const XAI_CANONICALIZED_ALIAS_IDS: Record<string, true> = {
 	"grok-4.5-latest": true,
 	"grok-build-latest": true,
 };
@@ -1115,9 +1130,7 @@ export function applyXAIOAuthCuration(
 	dynamic: readonly ModelSpec<"openai-responses">[],
 ): ModelSpec<"openai-responses">[] {
 	const filtered = dynamic.filter(
-		e =>
-			!XAI_NON_CHAT_PREFIXES.some(p => e.id.startsWith(p)) &&
-			!Object.hasOwn(XAI_OAUTH_CANONICALIZED_ALIAS_IDS, e.id),
+		e => !XAI_NON_CHAT_PREFIXES.some(p => e.id.startsWith(p)) && !Object.hasOwn(XAI_CANONICALIZED_ALIAS_IDS, e.id),
 	);
 
 	const byId = new Map<string, ModelSpec<"openai-responses">>(filtered.map(e => [e.id, e]));
