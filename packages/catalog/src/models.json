@@ -83119,7 +83119,8 @@
 					"low",
 					"medium",
 					"high"
-				]
+				],
+				"requiresEffort": true
 			}
 		},
 		"grok-beta": {
@@ -83383,7 +83384,8 @@
 					"low",
 					"medium",
 					"high"
-				]
+				],
+				"requiresEffort": true
 			},
 			"compat": {
 				"reasoningEffortMap": {

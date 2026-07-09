@@ -504,6 +504,10 @@ const OPENAI_O_SERIES_RE = /^o[134](?:$|[-:.])/i;
  * - Gemini 3.x exposes levels only; Gemini 2.5 Pro floors thinkingBudget at
  *   128 and rejects 0 (2.5 Flash/Flash-Lite keep the off switch).
  * - OpenAI o-series and MiniMax M2 are reasoning-first architectures.
+ * - Grok 4.5 (xai / xai-oauth) documents reasoning as non-disableable
+ *   (docs.x.ai/developers/model-capabilities/text/reasoning): an omitted
+ *   effort defaults to high, so thinking-off must clamp to the lowest
+ *   supported effort rather than silently run at the default high.
  * - Thinking-variant SKUs (`*-thinking`, `*-reasoner`, `*-reasoning`) ARE the
  *   thinking checkpoint; live bare twins pair-collapse away
  *   (variant-collapse) and the collapsed entry owns off — this floor protects
@@ -515,6 +519,9 @@ function impliesMandatoryReasoning(parsed: ParsedModel, modelId: string): boolea
 		if (parsed.kind === "pro" && semverGte(parsed.version, "2.5")) return true;
 	}
 	if (isMinimaxM2FamilyModelId(modelId)) return true;
+	// grok-4.5 reasoning cannot be disabled (see doc comment); clamp thinking-off
+	// to the lowest supported effort instead of omitting reasoning.
+	if (isGrok45ReasoningModelId(modelId)) return true;
 	if (OPENAI_O_SERIES_RE.test(bareModelId(modelId))) return true;
 	return findThinkingVariantToken(modelId) !== undefined;
 }

@@ -568,7 +568,7 @@ describe("model thinking derivation", () => {
 		expect(clampThinkingLevelForModel(model, Effort.High)).toBeUndefined();
 	});
 
-	it("caps grok-4.5 efforts to low/medium/high on xai and xai-oauth", () => {
+	it("caps grok-4.5 efforts and marks reasoning mandatory on xai and xai-oauth", () => {
 		const oauth = createModel({
 			id: "grok-4.5",
 			api: "openai-responses",
@@ -589,6 +589,12 @@ describe("model thinking derivation", () => {
 		expect(getSupportedEfforts(oauth)).not.toContain(Effort.Minimal);
 		expect(getSupportedEfforts(direct)).not.toContain(Effort.XHigh);
 		expect(getSupportedEfforts(direct)).not.toContain(Effort.Minimal);
+		// grok-4.5 reasoning cannot be disabled: mandatory-reasoning flag is set and
+		// a thinking-off request clamps to the lowest supported effort (low), not omit.
+		expect(oauth.thinking?.requiresEffort).toBe(true);
+		expect(direct.thinking?.requiresEffort).toBe(true);
+		expect(minimumSupportedEffort(oauth)).toBe(Effort.Low);
+		expect(minimumSupportedEffort(direct)).toBe(Effort.Low);
 	});
 });
 
