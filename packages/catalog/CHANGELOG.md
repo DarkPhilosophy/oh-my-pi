@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- GitLab Duo built-in discovery now keys its per-credential model cache to the OAuth account identity in preference to a configured token (`cacheIdentity ?? configuredApiKey`), matching the discovery fetch bearer precedence so a mixed stored-OAuth-plus-token setup no longer caches one account's namespace models under the other account's cache key.
+
 ## [16.3.12] - 2026-07-08
 
 ### Fixed
