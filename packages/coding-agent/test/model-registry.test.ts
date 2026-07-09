@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -1478,6 +1478,277 @@ describe("ModelRegistry", () => {
 			await registry.refreshProvider("github-copilot", "online");
 			expect(requestedUrls).toContain("https://copilot-api.ghe.example.com/models");
 			expect(requestedUrls).not.toContain("https://api.githubcopilot.com/models");
+		});
+	});
+
+	describe("built-in OAuth discovery auto-refresh", () => {
+		test("expired xai-oauth credentials whose refresh rejects does not crash built-in discovery", async () => {
+			const originalXaiOAuthToken = Bun.env.XAI_OAUTH_TOKEN;
+			const originalXaiApiKey = Bun.env.XAI_API_KEY;
+			delete Bun.env.XAI_OAUTH_TOKEN;
+			delete Bun.env.XAI_API_KEY;
+
+			try {
+				await authStorage.set("xai-oauth", [
+					{
+						type: "oauth",
+						access: "expired-access-token",
+						refresh: "expired-refresh-token",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				const registry = new ModelRegistry(authStorage, modelsJsonPath);
+				const spy = spyOn(registry, "getApiKeyForProvider").mockImplementation(() =>
+					Promise.reject(new Error("Mocked refresh failure")),
+				);
+
+				await registry.refreshProvider("xai-oauth", "online");
+				expect(spy).toHaveBeenCalledWith("xai-oauth");
+			} finally {
+				if (originalXaiOAuthToken === undefined) {
+					delete Bun.env.XAI_OAUTH_TOKEN;
+				} else {
+					Bun.env.XAI_OAUTH_TOKEN = originalXaiOAuthToken;
+				}
+				if (originalXaiApiKey === undefined) {
+					delete Bun.env.XAI_API_KEY;
+				} else {
+					Bun.env.XAI_API_KEY = originalXaiApiKey;
+				}
+			}
+		});
+
+		test("built-in discovery refreshes an expired OAuth credential instead of skipping the provider", async () => {
+			const originalXaiOAuthToken = Bun.env.XAI_OAUTH_TOKEN;
+			const originalXaiApiKey = Bun.env.XAI_API_KEY;
+			delete Bun.env.XAI_OAUTH_TOKEN;
+			delete Bun.env.XAI_API_KEY;
+
+			try {
+				await authStorage.set("xai-oauth", [
+					{
+						type: "oauth",
+						access: "stale-access",
+						refresh: "r",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				const captured: { authHeader: string | null } = { authHeader: null };
+				const fetchMock: FetchImpl = async (input, init) => {
+					const url = input instanceof Request ? input.url : String(input);
+					if (url === "https://api.x.ai/v1/models") {
+						captured.authHeader =
+							input instanceof Request
+								? input.headers.get("Authorization")
+								: new Headers(init?.headers).get("Authorization");
+						return new Response(
+							JSON.stringify({
+								data: [{ id: "grok-4.5" }],
+							}),
+							{ status: 200, headers: { "Content-Type": "application/json" } },
+						);
+					}
+					throw new Error(`Unexpected URL: ${url}`);
+				};
+
+				const spy = spyOn(authStorage, "getApiKey").mockImplementation(async () => {
+					await authStorage.set("xai-oauth", [
+						{
+							type: "oauth",
+							access: "fresh-access",
+							refresh: "r",
+							expires: Date.now() + 3_600_000,
+						},
+					]);
+					return "fresh-access";
+				});
+
+				try {
+					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+					await registry.refreshProvider("xai-oauth", "online");
+
+					expect(spy).toHaveBeenCalled();
+					expect(captured.authHeader).toBe("Bearer fresh-access");
+				} finally {
+					spy.mockRestore();
+				}
+			} finally {
+				if (originalXaiOAuthToken === undefined) {
+					delete Bun.env.XAI_OAUTH_TOKEN;
+				} else {
+					Bun.env.XAI_OAUTH_TOKEN = originalXaiOAuthToken;
+				}
+				if (originalXaiApiKey === undefined) {
+					delete Bun.env.XAI_API_KEY;
+				} else {
+					Bun.env.XAI_API_KEY = originalXaiApiKey;
+				}
+			}
+		});
+
+		test("built-in discovery does not attempt OAuth refresh if no stored credentials exist", async () => {
+			const originalXaiOAuthToken = Bun.env.XAI_OAUTH_TOKEN;
+			const originalXaiApiKey = Bun.env.XAI_API_KEY;
+			delete Bun.env.XAI_OAUTH_TOKEN;
+			delete Bun.env.XAI_API_KEY;
+
+			try {
+				const fetchMock: FetchImpl = async () => {
+					throw new Error(`Should not fetch because discovery is skipped`);
+				};
+
+				const spy = spyOn(authStorage, "getApiKey").mockImplementation(async () => {
+					return "fresh-access";
+				});
+
+				try {
+					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+					await registry.refreshProvider("xai-oauth", "online");
+
+					expect(spy).not.toHaveBeenCalled();
+				} finally {
+					spy.mockRestore();
+				}
+			} finally {
+				if (originalXaiOAuthToken === undefined) {
+					delete Bun.env.XAI_OAUTH_TOKEN;
+				} else {
+					Bun.env.XAI_OAUTH_TOKEN = originalXaiOAuthToken;
+				}
+				if (originalXaiApiKey === undefined) {
+					delete Bun.env.XAI_API_KEY;
+				} else {
+					Bun.env.XAI_API_KEY = originalXaiApiKey;
+				}
+			}
+		});
+
+		test("refreshProvider for targeted built-in provider does not refresh unrelated expired OAuth credentials", async () => {
+			const originalXaiOAuthToken = Bun.env.XAI_OAUTH_TOKEN;
+			const originalXaiApiKey = Bun.env.XAI_API_KEY;
+			delete Bun.env.XAI_OAUTH_TOKEN;
+			delete Bun.env.XAI_API_KEY;
+
+			try {
+				await authStorage.set("xai-oauth", [
+					{
+						type: "oauth",
+						access: "stale-xai-access",
+						refresh: "r-xai",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				await authStorage.set("openai-codex", [
+					{
+						type: "oauth",
+						access: "stale-codex-access",
+						refresh: "r-codex",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				const captured: { authHeader: string | null } = { authHeader: null };
+				const fetchMock: FetchImpl = async (input, init) => {
+					const url = input instanceof Request ? input.url : String(input);
+					if (url === "https://api.x.ai/v1/models") {
+						captured.authHeader =
+							input instanceof Request
+								? input.headers.get("Authorization")
+								: new Headers(init?.headers).get("Authorization");
+						return new Response(
+							JSON.stringify({
+								data: [{ id: "grok-4.5" }],
+							}),
+							{ status: 200, headers: { "Content-Type": "application/json" } },
+						);
+					}
+					throw new Error(`Unexpected URL: ${url}`);
+				};
+
+				const refreshedProviders: string[] = [];
+				const spy = spyOn(authStorage, "getApiKey").mockImplementation(async providerId => {
+					refreshedProviders.push(providerId);
+					if (providerId === "xai-oauth") {
+						await authStorage.set("xai-oauth", [
+							{
+								type: "oauth",
+								access: "fresh-xai-access",
+								refresh: "r-xai",
+								expires: Date.now() + 3_600_000,
+							},
+						]);
+						return "fresh-xai-access";
+					}
+					return undefined;
+				});
+
+				try {
+					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+					await registry.refreshProvider("xai-oauth", "online");
+
+					expect(refreshedProviders).toEqual(["xai-oauth"]);
+					expect(captured.authHeader).toBe("Bearer fresh-xai-access");
+				} finally {
+					spy.mockRestore();
+				}
+			} finally {
+				if (originalXaiOAuthToken === undefined) {
+					delete Bun.env.XAI_OAUTH_TOKEN;
+				} else {
+					Bun.env.XAI_OAUTH_TOKEN = originalXaiOAuthToken;
+				}
+				if (originalXaiApiKey === undefined) {
+					delete Bun.env.XAI_API_KEY;
+				} else {
+					Bun.env.XAI_API_KEY = originalXaiApiKey;
+				}
+			}
+		});
+
+		test("refresh('offline') does not refresh expired OAuth credentials and does not hit the network", async () => {
+			const originalXaiOAuthToken = Bun.env.XAI_OAUTH_TOKEN;
+			const originalXaiApiKey = Bun.env.XAI_API_KEY;
+			delete Bun.env.XAI_OAUTH_TOKEN;
+			delete Bun.env.XAI_API_KEY;
+
+			try {
+				await authStorage.set("xai-oauth", [
+					{
+						type: "oauth",
+						access: "expired-access-token",
+						refresh: "expired-refresh-token",
+						expires: Date.now() - 60_000,
+					},
+				]);
+
+				const fetchMock: FetchImpl = async input => {
+					throw new Error(`Unexpected network call in offline mode: ${String(input)}`);
+				};
+
+				const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+				const spy = spyOn(registry, "getApiKeyForProvider");
+
+				try {
+					await registry.refresh("offline");
+					expect(spy).not.toHaveBeenCalled();
+				} finally {
+					spy.mockRestore();
+				}
+			} finally {
+				if (originalXaiOAuthToken === undefined) {
+					delete Bun.env.XAI_OAUTH_TOKEN;
+				} else {
+					Bun.env.XAI_OAUTH_TOKEN = originalXaiOAuthToken;
+				}
+				if (originalXaiApiKey === undefined) {
+					delete Bun.env.XAI_API_KEY;
+				} else {
+					Bun.env.XAI_API_KEY = originalXaiApiKey;
+				}
+			}
 		});
 	});
 

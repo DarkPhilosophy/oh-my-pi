@@ -1560,7 +1560,9 @@ export class ModelRegistry {
 	): Promise<BuiltInDiscoveryResult> {
 		// Skip providers already handled by configured discovery (e.g. user-configured ollama with discovery.type)
 		const configuredDiscoveryProviders = new Set(this.#discoverableProviders.map(p => p.provider));
-		const managerOptions = (await this.#collectBuiltInModelManagerOptions()).filter(opts => {
+		const managerOptions = (
+			await this.#collectBuiltInModelManagerOptions(strategy, configuredDiscoveryProviders, providerFilter)
+		).filter(opts => {
 			if (configuredDiscoveryProviders.has(opts.providerId)) {
 				return false;
 			}
@@ -1583,7 +1585,11 @@ export class ModelRegistry {
 		return { models, authoritativeProviders };
 	}
 
-	async #collectBuiltInModelManagerOptions(): Promise<ModelManagerOptions<Api>[]> {
+	async #collectBuiltInModelManagerOptions(
+		strategy: ModelRefreshStrategy,
+		configuredDiscoveryProviders?: ReadonlySet<string>,
+		providerFilter?: ReadonlySet<string>,
+	): Promise<ModelManagerOptions<Api>[]> {
 		const specialProviderDescriptors: Array<{
 			providerId: string;
 			resolveKey: (value: string | undefined) => string | undefined;
@@ -1622,16 +1628,52 @@ export class ModelRegistry {
 			},
 		];
 		const disabledProviders = getDisabledProviderIdsFromSettings();
-		const standardProviderDescriptors = PROVIDER_DESCRIPTORS.filter(
-			descriptor => !disabledProviders.has(descriptor.providerId),
-		);
-		const enabledSpecialProviderDescriptors = specialProviderDescriptors.filter(
-			descriptor => !disabledProviders.has(descriptor.providerId),
-		);
-		// Use peekApiKey to avoid OAuth token refresh during discovery.
-		// The token is only needed if the dynamic fetch fires (cache miss),
-		// and failures there are handled gracefully.
-		const peekKey = (descriptor: { providerId: string }) => this.#peekApiKeyForProvider(descriptor.providerId);
+		const standardProviderDescriptors = PROVIDER_DESCRIPTORS.filter(descriptor => {
+			if (disabledProviders.has(descriptor.providerId)) {
+				return false;
+			}
+			if (configuredDiscoveryProviders?.has(descriptor.providerId)) {
+				return false;
+			}
+			if (providerFilter && !providerFilter.has(descriptor.providerId)) {
+				return false;
+			}
+			return true;
+		});
+		const enabledSpecialProviderDescriptors = specialProviderDescriptors.filter(descriptor => {
+			if (disabledProviders.has(descriptor.providerId)) {
+				return false;
+			}
+			if (configuredDiscoveryProviders?.has(descriptor.providerId)) {
+				return false;
+			}
+			if (providerFilter && !providerFilter.has(descriptor.providerId)) {
+				return false;
+			}
+			return true;
+		});
+		// Peek first to avoid OAuth refresh churn during discovery. When peek
+		// fails but a stored OAuth credential exists, the access token has
+		// expired: refresh once through getApiKeyForProvider (persists the
+		// rotated credential), then re-peek so provider-specific peek shapes
+		// (e.g. github-copilot's JSON envelope with enterpriseUrl/apiEndpoint)
+		// are preserved — getApiKey returns the bare token, peek re-wraps it.
+		const peekKey = async (descriptor: { providerId: string }): Promise<string | undefined> => {
+			const peeked = await this.#peekApiKeyForProvider(descriptor.providerId);
+			if (strategy === "offline" || isAuthenticated(peeked) || !this.authStorage.hasOAuth(descriptor.providerId)) {
+				return peeked;
+			}
+			let refreshed: string | undefined;
+			try {
+				refreshed = await this.getApiKeyForProvider(descriptor.providerId);
+			} catch {
+				return peeked;
+			}
+			if (!isAuthenticated(refreshed)) {
+				return peeked;
+			}
+			return this.#peekApiKeyForProvider(descriptor.providerId);
+		};
 		const [standardProviderKeys, specialKeys] = await Promise.all([
 			Promise.all(standardProviderDescriptors.map(peekKey)),
 			Promise.all(enabledSpecialProviderDescriptors.map(peekKey)),

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Built-in provider model discovery now refreshes expired OAuth tokens instead of silently skipping the provider.
+
 ## [16.3.12] - 2026-07-08
 
 ### Added
