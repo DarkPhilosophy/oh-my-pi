@@ -2031,6 +2031,13 @@ export class TUI extends Container {
 			this.requestComponentRender(component);
 			return;
 		}
+		// Direct writes bypass the right-panel compositor, so a non-empty
+		// provider would have its text overwritten by spinner ticks until the
+		// next full render.
+		if (this.#rightPanelProvider !== null) {
+			this.requestComponentRender(component);
+			return;
+		}
 
 		const children = this.children;
 		const segments = this.#frameSegments;
