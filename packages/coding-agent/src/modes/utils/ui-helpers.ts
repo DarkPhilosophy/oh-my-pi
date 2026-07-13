@@ -48,7 +48,8 @@ import {
 	SKILL_PROMPT_MESSAGE_TYPE,
 	type SkillPromptDetails,
 } from "../../session/messages";
-import type { SessionContext } from "../../session/session-context";
+import type { SessionContext, StrippedToolCallsMarker } from "../../session/session-context";
+import { replaceTabs } from "../../tools/render-utils";
 import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
 import { createAssistantMessageComponent } from "./interactive-context-helpers";
 import {
@@ -478,6 +479,26 @@ export class UiHelpers {
 						this.ctx.pendingTools.set(content.id, component);
 					}
 				}
+				// Dangling toolCalls (no result on the resolved path — failed or
+				// retried turns, results on sibling branches) were stripped by the
+				// context build; surface a placeholder so the turn's activity is
+				// visibly elided instead of silently vanishing (the "bare thinking
+				// lines" transcript trap).
+				const strippedToolCalls = (message as AgentMessage & StrippedToolCallsMarker).strippedToolCalls ?? 0;
+				if (strippedToolCalls > 0) {
+					this.ctx.chatContainer.addChild(
+						new Text(
+							theme.fg(
+								"dim",
+								theme.italic(
+									`${strippedToolCalls} tool call${strippedToolCalls === 1 ? "" : "s"} elided — no result on this branch`,
+								),
+							),
+							1,
+							0,
+						),
+					);
+				}
 				pendingUsage =
 					this.ctx.settings.get("display.showTokenUsage") && assistantUsageIsBilled(message.usage)
 						? message.usage
@@ -620,13 +641,14 @@ export class UiHelpers {
 		this.ctx.pendingBashComponents = [];
 		this.ctx.pendingPythonComponents = [];
 
-		// Live display uses the compacted transcript tail; export/resume callers
-		// can still request the full inline compaction history. Mid-turn rebuilds
+		// Live display collapses to the compacted transcript tail unless the
+		// user opted into the full inline history; export/resume callers can
+		// still request either mode. Mid-turn rebuilds
 		// (focus attach/unfocus while a tool executes) keep dangling toolCalls so
 		// the in-flight call re-renders as pending instead of vanishing;
 		// renderSessionContext then keeps it in `pendingTools` for live routing.
 		const context = this.ctx.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: true,
+			collapseCompactedHistory: settings.get("display.collapseCompacted"),
 			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 		});
 		this.ctx.renderSessionContext(context, {
@@ -691,24 +713,14 @@ export class UiHelpers {
 		this.ctx.pendingMessagesContainer.disposeChildren();
 		const queuedMessages = this.ctx.viewSession.getQueuedMessages() as QueuedMessages;
 
-		const steeringMessages: Array<{ message: string; label: string }> = [];
-		for (const message of queuedMessages.steering) {
-			steeringMessages.push({ message, label: "Steer" });
-		}
+		const steeringMessages = [...queuedMessages.steering];
 		for (const entry of this.ctx.compactionQueuedMessages as CompactionQueuedMessage[]) {
-			if (entry.mode === "steer") {
-				steeringMessages.push({ message: entry.text, label: "Steer" });
-			}
+			if (entry.mode === "steer") steeringMessages.push(entry.text);
 		}
 
-		const followUpMessages: Array<{ message: string; label: string }> = [];
-		for (const message of queuedMessages.followUp) {
-			followUpMessages.push({ message, label: "Follow-up" });
-		}
+		const followUpMessages = [...queuedMessages.followUp];
 		for (const entry of this.ctx.compactionQueuedMessages as CompactionQueuedMessage[]) {
-			if (entry.mode === "followUp") {
-				followUpMessages.push({ message: entry.text, label: "Follow-up" });
-			}
+			if (entry.mode === "followUp") followUpMessages.push(entry.text);
 		}
 
 		const allMessages = [...steeringMessages, ...followUpMessages];
