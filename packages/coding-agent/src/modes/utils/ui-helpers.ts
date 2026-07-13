@@ -54,7 +54,6 @@ import {
 	type SkillPromptDetails,
 } from "../../session/messages";
 import type { SessionContext, StrippedToolCallsMarker } from "../../session/session-context";
-import { replaceTabs } from "../../tools/render-utils";
 import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
 import { createAssistantMessageComponent } from "./interactive-context-helpers";
 import {
@@ -1023,14 +1022,20 @@ export class UiHelpers {
 		this.ctx.pendingMessagesContainer.disposeChildren();
 		const queuedMessages = this.ctx.viewSession.getQueuedMessages() as QueuedMessages;
 
-		const steeringMessages = [...queuedMessages.steering];
+		const steeringMessages: Array<{ message: string; label: string }> = [];
+		for (const message of queuedMessages.steering) {
+			steeringMessages.push({ message, label: "Steer" });
+		}
 		for (const entry of this.ctx.compactionQueuedMessages as CompactionQueuedMessage[]) {
-			if (entry.mode === "steer") steeringMessages.push(entry.text);
+			if (entry.mode === "steer") steeringMessages.push({ message: entry.text, label: "Steer" });
 		}
 
-		const followUpMessages = [...queuedMessages.followUp];
+		const followUpMessages: Array<{ message: string; label: string }> = [];
+		for (const message of queuedMessages.followUp) {
+			followUpMessages.push({ message, label: "Follow-up" });
+		}
 		for (const entry of this.ctx.compactionQueuedMessages as CompactionQueuedMessage[]) {
-			if (entry.mode === "followUp") followUpMessages.push(entry.text);
+			if (entry.mode === "followUp") followUpMessages.push({ message: entry.text, label: "Follow-up" });
 		}
 
 		const allMessages = [...steeringMessages, ...followUpMessages];
