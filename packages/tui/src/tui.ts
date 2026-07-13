@@ -1119,6 +1119,8 @@ export class TUI extends Container {
 	#rightPanelProvider: ((width: number) => readonly (readonly string[])[]) | null = null;
 	#rightPanelTargets: Set<Component> | null = null;
 	#rightPanelLayoutCallback: ((result: PanelLayoutResult) => void) | null = null;
+	/** Whether the right-panel provider had non-empty blocks on the last composite pass. */
+	#rightPanelHasBlocks = false;
 
 	constructor(terminal: Terminal, showHardwareCursor?: boolean, options?: TUIOptions) {
 		super();
@@ -1836,8 +1838,16 @@ export class TUI extends Container {
 		overlayOccupiedRows?: readonly boolean[],
 	): string[] {
 		const provider = this.#rightPanelProvider;
-		if (provider === null) return window;
+		if (provider === null) {
+			this.#rightPanelHasBlocks = false;
+			return window;
+		}
 		const blocks = provider(width);
+		// Conservatively track whether non-empty blocks are placed on screen.
+		// Only this compositor clears the flag, so a direct write between
+		// setRightPanel(null) and the next full render still falls back, protecting
+		// the stale painted panel text.
+		this.#rightPanelHasBlocks = blocks.length > 0;
 		if (blocks.length === 0) return window;
 		if (overlayOccupiedRows !== undefined) {
 			this.#rightPanelLayoutCallback?.({
@@ -2028,6 +2038,14 @@ export class TUI extends Container {
 			return;
 		}
 		if (this.overlayStack.length > 0 || this.#altActive || !this.#imageBudget.quiescent) {
+			this.requestComponentRender(component);
+			return;
+		}
+		// Direct writes bypass the right-panel compositor, so non-empty panel
+		// text would be overwritten by spinner ticks until the next full render.
+		// Only block when blocks are actually painted (#rightPanelHasBlocks),
+		// not merely when a provider is registered but returns empty blocks.
+		if (this.#rightPanelHasBlocks) {
 			this.requestComponentRender(component);
 			return;
 		}
