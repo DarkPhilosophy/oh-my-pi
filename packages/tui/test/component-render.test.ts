@@ -361,4 +361,67 @@ describe("TUI.requestDirectWrite", () => {
 			await term.flush();
 		}
 	});
+	it("falls back to a full render when a non-empty right panel is active", async () => {
+		// RIGHT_PANEL_MIN_COL=30 and RIGHT_PANEL_MIN_ROWS=6: terminal must be
+		// wide enough and the target root tall enough for the panel to place.
+		const term = new VirtualTerminal(80, 10, 1_000);
+		const scheduler = new StressRenderScheduler();
+		const tui = new RenderCountingTUI(term, undefined, { renderScheduler: scheduler });
+		const transcript = new CountingLines(["msg-0", "msg-1", "msg-2", "msg-3", "msg-4", "msg-5", "msg-6"]);
+		const spinner = new CountingLines(["spin-0"]);
+		tui.addChild(transcript);
+		tui.addChild(spinner);
+		tui.setRightPanel(() => [["PANEL-LINE"]], [transcript]);
+
+		try {
+			tui.start();
+			await scheduler.drain(term);
+			// Panel must be visible after initial composite.
+			const lines0 = strip(term.getViewport());
+			expect(lines0.some(l => l.includes("PANEL-LINE"))).toBe(true);
+			const tuiRenders = tui.renders;
+
+			// A spinner tick via requestDirectWrite must fall back to the
+			// full compositor so the panel is not erased.
+			spinner.set(["spin-1"]);
+			tui.requestDirectWrite(spinner);
+			await scheduler.drain(term);
+
+			const lines1 = strip(term.getViewport());
+			expect(lines1.some(l => l.includes("PANEL-LINE"))).toBe(true);
+			expect(lines1.some(l => l.includes("spin-1"))).toBe(true);
+			expect(tui.renders).toBeGreaterThan(tuiRenders);
+		} finally {
+			tui.stop();
+			await term.flush();
+		}
+	});
+
+	it("allows direct writes when the right-panel provider returns empty blocks", async () => {
+		const term = new VirtualTerminal(80, 10, 1_000);
+		const scheduler = new StressRenderScheduler();
+		const tui = new RenderCountingTUI(term, undefined, { renderScheduler: scheduler });
+		const transcriptLines = ["msg-0", "msg-1", "msg-2", "msg-3", "msg-4", "msg-5", "msg-6"];
+		const transcript = new CountingLines(transcriptLines);
+		const spinner = new CountingLines(["spin-0"]);
+		tui.addChild(transcript);
+		tui.addChild(spinner);
+		tui.setRightPanel(() => [], [transcript]);
+
+		try {
+			tui.start();
+			await scheduler.drain(term);
+			const tuiRenders = tui.renders;
+
+			spinner.set(["spin-1"]);
+			tui.requestDirectWrite(spinner);
+			await scheduler.drain(term);
+
+			expect(visible(term)).toEqual([...transcriptLines, "spin-1"]);
+			expect(tui.renders).toBe(tuiRenders);
+		} finally {
+			tui.stop();
+			await term.flush();
+		}
+	});
 });
