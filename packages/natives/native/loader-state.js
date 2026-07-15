@@ -583,18 +583,15 @@ function maybeStageNodeModulesAddon(ctx, errors) {
 	return stagedPath;
 }
 
-function validateLoadedBindings(ctx, bindings, candidate) {
-	// In workspace dev (running out of `packages/natives/native/` rather than a
-	// `node_modules` install or a compiled bundle) the local `.node` only gains
-	// the renamed sentinel after `bun --cwd=packages/natives run build`. Skip
-	// validation there so a stale post-pull dev tree boots while the rebuild
-	// completes; install and compiled-binary paths still validate.
-	if (ctx.isWorkspaceLoad) return;
+export function validateLoadedBindings(ctx, bindings, candidate) {
+	const recovery = ctx.isWorkspaceLoad
+		? "run `bun --cwd=packages/natives run build` to rebuild it"
+		: "reinstall to re-sync";
 	if (typeof bindings[ctx.versionSentinelExport] === "function") return;
 	throw new Error(
 		`Loaded ${candidate} but it does not expose the @oh-my-pi/pi-natives@${ctx.packageVersion} ` +
 			`version sentinel \`${ctx.versionSentinelExport}\`. The .node file on disk is from a different ` +
-			"release than this loader — reinstall to re-sync.",
+			`release than this loader — ${recovery}.`,
 	);
 }
 

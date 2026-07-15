@@ -28,6 +28,7 @@ import {
 	getAddonFilenames,
 	resolveLoaderCandidates,
 	shouldStageNodeModulesAddon,
+	validateLoadedBindings,
 } from "../native/loader-state.js";
 import packageJson from "../package.json" with { type: "json" };
 
@@ -152,6 +153,20 @@ describe("windows native addon staging", () => {
 });
 
 describe("pi-natives version sentinel", () => {
+	it("rejects stale workspace bindings before tool execution", () => {
+		expect(() =>
+			validateLoadedBindings(
+				{
+					isWorkspaceLoad: true,
+					versionSentinelExport: "__piNativesV16_5_2",
+					packageVersion: "16.5.2",
+				},
+				{},
+				"/workspace/pi_natives.node",
+			),
+		).toThrow("does not expose the @oh-my-pi/pi-natives@16.5.2 version sentinel");
+	});
+
 	it("Rust `js_name` matches the package version", async () => {
 		// The JS loader (`packages/natives/native/index.js`) computes its expected
 		// sentinel from `package.json#version`; if the Rust source falls out of
