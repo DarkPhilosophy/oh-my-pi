@@ -3,6 +3,8 @@ import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { DaemonConnectionSnapshot } from "@oh-my-pi/pi-coding-agent/daemon/status";
+import { HostedTerminal } from "@oh-my-pi/pi-coding-agent/daemon/terminal-bridge";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "@oh-my-pi/pi-coding-agent/lsp/startup-events";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -118,6 +120,64 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 		expect(showStatusSpy).not.toHaveBeenCalled();
 		expect(findServerLine()).toContain(theme.status.enabled);
 		expect(findServerLine()).not.toContain(theme.status.pending);
+	});
+
+	it("retains daemon status received before the welcome component is initialized", async () => {
+		const snapshot: DaemonConnectionSnapshot = {
+			state: "connected",
+			shard: { profile: "work", projectRoot: "/repo/daemon-project" },
+			daemonId: "2947c11e-ea0e-4b5f-86aa-2d9852e94448",
+			sessionId: "019f6362-7273-7ec0-afba-4c729add7c12",
+			serverVersion: "1.2.3",
+			protocolVersion: 1,
+			sessionCount: 2,
+		};
+		mode.setDaemonSnapshot(snapshot);
+
+		await mode.init({ suppressWelcomeIntro: true });
+
+		const rendered = Bun.stripANSI(mode.ui.render(120).join("\n"));
+		expect(rendered).toContain("daemon 2947c11e · v1.2");
+		expect(rendered).toContain(" 019f6362 · work/daemo");
+		expect(rendered).not.toContain("direct mode");
+	});
+
+	it("finishes graceful session teardown before closing a hosted terminal", async () => {
+		mode.stop();
+		const terminal = new HostedTerminal({
+			columns: 120,
+			rows: 40,
+			kittyProtocolActive: false,
+			kittyEnableSequence: null,
+		});
+		const output: string[] = [];
+		terminal.setOutput(data => output.push(data));
+		const detachReasons: string[] = [];
+		mode = new InteractiveMode(session, "test", undefined, () => {}, lspServers, undefined, eventBus, {
+			terminal,
+			onDetach: reason => detachReasons.push(reason),
+		});
+		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		await mode.init({ suppressWelcomeIntro: true });
+		const releaseDispose = Promise.withResolvers<void>();
+		const disposeStarted = Promise.withResolvers<void>();
+		const disposeSpy = vi.spyOn(session, "dispose").mockImplementation(async () => {
+			disposeStarted.resolve();
+			await releaseDispose.promise;
+		});
+		const showStatusSpy = vi.spyOn(mode, "showStatus");
+
+		const shutdown = mode.shutdown();
+		await disposeStarted.promise;
+
+		expect(showStatusSpy).toHaveBeenCalledWith("Closing session…");
+		expect(Bun.stripANSI(output.join(""))).toContain("Closing session…");
+		expect(disposeSpy).toHaveBeenCalledTimes(1);
+		expect(detachReasons).toEqual([]);
+
+		releaseDispose.resolve();
+		await shutdown;
+		expect(detachReasons).toEqual(["exit"]);
 	});
 
 	it("does not render LSP startup warnings when startup.quiet is enabled", () => {

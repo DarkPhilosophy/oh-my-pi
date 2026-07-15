@@ -14,6 +14,9 @@ try {
  * CLI entry point — registers all commands explicitly and delegates to the
  * lightweight CLI runner from pi-utils.
  */
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { parentPort } from "node:worker_threads";
 import type { CliConfig } from "@oh-my-pi/pi-utils/cli";
 import {
@@ -101,7 +104,51 @@ async function runSmokeTest(): Promise<void> {
 	await smokeTestTtsWorker();
 	await smokeTestMnemopiEmbedWorker();
 	await smokeTestDaemonBroker();
+	await smokeTestDaemonWorker();
 	process.stdout.write("smoke-test: ok\n");
+}
+async function smokeTestDaemonWorker(): Promise<void> {
+	const { createDaemonClient } = await import("./daemon/client");
+	const { resolveWorkerSpawnCmd, workerEnvFromParent } = await import("./subprocess/worker-client");
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-smoke-"));
+	const runtimeDir = path.join(root, "runtime");
+	const spawn = resolveWorkerSpawnCmd(DAEMON_SERVER_WORKER_ARG);
+	const child = Bun.spawn(spawn.cmd, {
+		cwd: spawn.cwd,
+		env: workerEnvFromParent({
+			OMP_PROFILE: "smoke",
+			OMP_DAEMON_PROJECT_ROOT: root,
+			OMP_DAEMON_RUNTIME_DIR: runtimeDir,
+		}),
+		stdin: "ignore",
+		stdout: "ignore",
+		stderr: "ignore",
+		detached: true,
+	});
+	child.unref();
+	const client = await createDaemonClient({ profile: "smoke", projectRoot: root, runtimeDir });
+	const deadline = Date.now() + 15_000;
+	let lastError: Error | undefined;
+	try {
+		while (Date.now() < deadline) {
+			try {
+				await client.connect();
+				lastError = undefined;
+				break;
+			} catch (error) {
+				lastError = error instanceof Error ? error : new Error(String(error));
+				await Bun.sleep(50);
+			}
+		}
+		if (lastError) throw new Error(`daemon worker smoke failed: ${lastError.message}`);
+		const status = await client.serverStatus();
+		if (status.shard.profile !== "smoke" || status.shard.projectRoot !== path.resolve(root))
+			throw new Error("daemon worker smoke failed: shard mismatch");
+		await client.request("shutdown");
+	} finally {
+		client.close();
+		await fs.rm(root, { recursive: true, force: true });
+	}
 }
 
 const TINY_WORKER_ARG = "__omp_worker_tiny_inference";
@@ -112,6 +159,7 @@ const JS_EVAL_PROCESS_ARG = "__omp_worker_js_eval_process";
 const STT_WORKER_ARG = "__omp_worker_stt";
 const TTS_WORKER_ARG = "__omp_worker_tts";
 const MNEMOPI_EMBED_WORKER_ARG = "__omp_worker_mnemopi_embed";
+const DAEMON_SERVER_WORKER_ARG = "__omp_worker_daemon_server";
 
 async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === TINY_WORKER_ARG) {
@@ -184,6 +232,12 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		// Worker selectors must dispatch before the normal command graph loads.
 		const { startDaemonBrokerFromEnvironment } = await import("./launch/broker");
 		await startDaemonBrokerFromEnvironment();
+		return true;
+	}
+	if (arg === DAEMON_SERVER_WORKER_ARG) {
+		// Keep daemon startup lazy so normal CLI imports do not initialize SDK/model state.
+		const { startDaemonServerFromEnvironment } = await import("./daemon/server");
+		await startDaemonServerFromEnvironment();
 		return true;
 	}
 	return false;
@@ -352,6 +406,24 @@ export async function runCli(argv: string[]): Promise<void> {
 	// poison `workerHostEntry()` for the whole test process, forcing eval/stats/
 	// browser workers onto the same-realm inline fallback.
 	if (isProcessEntry) declareWorkerHostEntry();
+	// The default interactive route is intentionally decided before loading the
+	// command registry or main graph. The bootstrap itself loads InteractiveMode
+	// only after the authenticated daemon connection is established.
+	if (resolvedArgv[0] !== "--smoke-test") {
+		// Dynamic import is required here: this is the cold-start boundary that
+		// keeps command/main modules out of the process until daemon bootstrap.
+		const { isDefaultInteractiveArgv, launchDaemonInteractive } = await import("./daemon/interactive-bootstrap");
+		if (isDefaultInteractiveArgv(resolvedArgv)) {
+			try {
+				await launchDaemonInteractive({ argv: resolvedArgv });
+			} catch (error: unknown) {
+				const message = error instanceof Error ? error.message : String(error);
+				process.stderr.write(`Error: daemon interactive startup failed: ${message}\n`);
+				process.exitCode = 1;
+			}
+			return;
+		}
+	}
 
 	if (resolvedArgv[0] === "--smoke-test") {
 		await runSmokeTest();

@@ -5,6 +5,7 @@ import type { AssistantMessage, UsageLimit, UsageReport } from "@oh-my-pi/pi-ai"
 import { type Component, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { settings } from "../../../config/settings";
+import { type DaemonConnectionSnapshot, formatDaemonWelcomeStatus } from "../../../daemon/status";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";
 import { limitMatchesActiveAccount } from "../../../slash-commands/helpers/active-oauth-account";
@@ -242,6 +243,7 @@ function hasGitBackedSegment(segments: readonly StatusLineSegmentId[]): boolean 
 // ═══════════════════════════════════════════════════════════════════════════
 
 export class StatusLineComponent implements Component {
+	session!: AgentSession;
 	#settings: StatusLineSettings = {};
 	#effectiveSettings: EffectiveStatusLineSettings | undefined;
 	#cachedBranch: string | null | undefined = undefined;
@@ -277,6 +279,7 @@ export class StatusLineComponent implements Component {
 	#goalModeStatus: { enabled: boolean; paused: boolean } | null = null;
 	#vibeModeStatus: { enabled: boolean } | null = null;
 	#collabStatus: CollabStatus | null = null;
+	#serverStatus: DaemonConnectionSnapshot = { state: "direct" };
 	#focusedAgentId: string | undefined;
 	#activeRepoCache: ActiveRepoCache | undefined;
 
@@ -312,7 +315,10 @@ export class StatusLineComponent implements Component {
 	// message list + model window yields a stable result we can return verbatim.
 	#contextUsageCache: ContextUsageMemo | undefined;
 
-	constructor(private session: AgentSession) {
+	constructor();
+	constructor(session: AgentSession);
+	constructor(session?: AgentSession) {
+		if (session) this.session = session;
 		this.#settings = {
 			preset: settings.get("statusLine.preset"),
 			leftSegments: settings.get("statusLine.leftSegments"),
@@ -510,6 +516,11 @@ export class StatusLineComponent implements Component {
 
 	setCollabStatus(status: CollabStatus | null): void {
 		this.#collabStatus = status;
+	}
+
+	setServerStatus(snapshot: DaemonConnectionSnapshot): void {
+		this.#serverStatus = snapshot;
+		this.invalidate();
 	}
 
 	setHookStatus(key: string, text: string | undefined): void {
@@ -1315,6 +1326,7 @@ export class StatusLineComponent implements Component {
 	}
 
 	getTopBorder(width: number): { content: string; width: number } {
+		if (!this.session) return { content: "", width: 0 };
 		let content = this.#buildStatusLine(width);
 		if (this.#focusedAgentId && content) {
 			// Dim the whole bar while focus-proxied. Group/cap terminators emit full
@@ -1328,16 +1340,18 @@ export class StatusLineComponent implements Component {
 	}
 
 	render(width: number): readonly string[] {
+		const lines: string[] = [];
+		if (this.#serverStatus.state !== "direct" && this.#serverStatus.state !== "connected") {
+			lines.push(formatDaemonWelcomeStatus(this.#serverStatus, width)[0] ?? "");
+		}
 		// Only render hook statuses - main status is in editor's top border
 		const showHooks = this.#settings.showHookStatus ?? true;
-		if (!showHooks || this.#hookStatuses.size === 0) {
-			return [];
+		if (showHooks && this.#hookStatuses.size > 0) {
+			const sortedStatuses = Array.from(this.#hookStatuses.entries())
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([, text]) => sanitizeStatusText(text));
+			lines.push(truncateToWidth(sortedStatuses.join(" "), width));
 		}
-
-		const sortedStatuses = Array.from(this.#hookStatuses.entries())
-			.sort(([a], [b]) => a.localeCompare(b))
-			.map(([, text]) => sanitizeStatusText(text));
-		const hookLine = sortedStatuses.join(" ");
-		return [truncateToWidth(hookLine, width)];
+		return lines;
 	}
 }

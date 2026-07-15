@@ -213,7 +213,7 @@ describe("createAgentSession deferred MCP auto discovery", () => {
 		}
 	}, 40_000);
 
-	it("does not disconnect a reused parent MCP manager when a child session disposes", async () => {
+	it("shares loaded tools without transferring MCP manager ownership", async () => {
 		writeMcpConfig();
 		const parent = await createAgentSession({
 			...baseOptions(),
@@ -223,6 +223,11 @@ describe("createAgentSession deferred MCP auto discovery", () => {
 		if (!parent.mcpManager) throw new Error("expected parent session to create an MCPManager");
 		const parentManager = parent.mcpManager;
 		try {
+			const deadline = Date.now() + 30_000;
+			while (parentManager.getTools().length === 0 && Date.now() < deadline) {
+				await Bun.sleep(50);
+			}
+			expect(parentManager.getTools().map(tool => tool.name)).toContain("mcp__many_tool_aa");
 			// A subagent-style session reuses the parent's manager via
 			// `mcpManager` and therefore does NOT own it.
 			const child = await createAgentSession({
@@ -231,6 +236,7 @@ describe("createAgentSession deferred MCP auto discovery", () => {
 				toolNames: ["read"],
 				mcpManager: parentManager,
 			});
+			expect(child.session.getAllToolNames()).toContain("mcp__many_tool_aa");
 			const disconnectSpy = spyOn(parentManager, "disconnectAll");
 			await child.session.dispose();
 			expect(disconnectSpy).not.toHaveBeenCalled();

@@ -89,6 +89,7 @@ import {
 	discoverAndLoadMCPTools,
 	type MCPLoadResult,
 	MCPManager,
+	type MCPManagerPool,
 	MCPToolCache,
 	type MCPToolsLoadResult,
 	parseMCPToolName,
@@ -504,6 +505,8 @@ export interface CreateAgentSessionOptions {
 	enableMCP?: boolean;
 	/** Existing MCP manager to reuse (skips discovery, propagates to toolSession). */
 	mcpManager?: MCPManager;
+	/** Shard-owned MCP transport pool. Sessions share transports but keep independent tool registries. */
+	mcpManagerPool?: MCPManagerPool;
 
 	/** Enable LSP integration (tool, formatting, diagnostics, warmup). Default: true */
 	enableLsp?: boolean;
@@ -1717,11 +1720,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		let mcpManager: MCPManager | undefined = options.mcpManager;
 		toolSession.mcpManager = mcpManager;
 		const enableMCP = options.enableMCP ?? true;
-		const deferMCPDiscoveryForUI = enableMCP && !mcpManager && options.hasUI === true;
+		const deferMCPDiscoveryForUI = enableMCP && !mcpManager && !options.mcpManagerPool && options.hasUI === true;
 		const customTools: CustomTool[] = [];
 		let startDeferredMCPDiscovery:
 			| ((liveSession: AgentSession, activation: DeferredMCPActivation) => void)
 			| undefined;
+		const mcpCleanup: Array<() => void> = [];
 		const startupQuiet = settings.get("startup.quiet");
 		const onMCPStatus = (event: McpConnectionStatusEvent) => {
 			if (!options.hasUI || startupQuiet) return;
@@ -1736,6 +1740,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// Filter browser MCP servers when builtin browser tool is active
 			filterBrowser: settings.get("browser.enabled") ?? false,
 		};
+		const mcpManagerPool = options.mcpManagerPool;
+		if (enableMCP && !mcpManager && mcpManagerPool) {
+			const mcpResult = await logger.time("acquirePooledMCPTools", () =>
+				mcpManagerPool.acquire(cwd, {
+					...mcpDiscoverOptions,
+					cacheStorage: settings.getStorage(),
+					authStorage,
+				}),
+			);
+			mcpManager = mcpResult.manager;
+			toolSession.mcpManager = mcpManager;
+			applyMCPEnvironment(mcpResult);
+			for (const { path, error } of mcpResult.errors) {
+				logger.error("MCP tool load failed", { path, error });
+			}
+		}
 		if (enableMCP && !mcpManager) {
 			if (deferMCPDiscoveryForUI) {
 				const cacheStorage = settings.getStorage();
@@ -1814,17 +1834,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				for (const { path, error } of mcpResult.errors) {
 					logger.error("MCP tool load failed", { path, error });
 				}
-
-				if (mcpResult.tools.length > 0) {
-					// MCP tools are LoadedCustomTool, extract the tool property
-					customTools.push(...mcpResult.tools.map(loaded => loaded.tool));
-				}
 			}
 		}
-		// Only top-level sessions own the global MCPManager. Subagents already
-		// receive the parent's manager via `options.mcpManager`, and reassigning
-		// the singleton to the same value is a no-op — keep the gate explicit
-		// to mirror the AsyncJobManager ownership rule.
+		if (mcpManager && settings.get("mcp.notifications")) {
+			mcpManager.setNotificationsEnabled(true);
+		}
+		if (enableMCP && mcpManager && !deferMCPDiscoveryForUI) {
+			customTools.push(...mcpManager.getTools());
+		}
+		// Top-level sessions publish the manager for process-wide MCP protocol
+		// handlers. A pooled manager is the shard singleton; injected subagents
+		// point to the same instance without taking ownership.
 		if (mcpManager && !options.parentTaskPrefix) MCPManager.setInstance(mcpManager);
 
 		// Add image tools when generation is enabled and either no explicit tool
@@ -2885,7 +2905,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const advisorContextPrompt = formatAdvisorContextPrompt(contextFiles);
 		// Owned only when this session created the manager; subagents receive a
 		// parent's manager via `options.mcpManager` and MUST NOT disconnect it.
-		const ownedMcpManager = options.mcpManager ? undefined : mcpManager;
+		const ownedMcpManager = options.mcpManager || options.mcpManagerPool ? undefined : mcpManager;
 		session = new AgentSession({
 			advisorWatchdogPrompt,
 			advisorContextPrompt,
@@ -2998,6 +3018,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						// must NOT touch the global lifecycle.
 						await AgentLifecycleManager.global().dispose();
 					}
+					for (const cleanup of mcpCleanup.splice(0)) cleanup();
 					await originalDispose();
 				} finally {
 					unregisterUnlessParked();
@@ -3119,53 +3140,59 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			void logger.time("startMemoryStartupTask", startMemoryBackend);
 		}
 
-		// Wire MCP manager callbacks to session for reactive tool updates.
-		// Skip when reusing a parent's manager — the parent owns the callbacks.
+		// Owned and shard-pooled managers notify this session reactively.
+		// Parent-injected managers keep callback ownership in the parent.
 		if (mcpManager && !options.mcpManager) {
-			mcpManager.setOnToolsChanged(tools => {
-				void (async () => {
-					try {
-						let activateAll = deferMCPDiscoveryForUI && !mcpDiscoveryEnabled;
-						if (activateAll && (await enableDeferredMCPDiscoveryForTools(session, tools))) {
-							activateAll = false;
+			mcpCleanup.push(
+				mcpManager.subscribeToolsChanged(tools => {
+					void (async () => {
+						try {
+							let activateAll = deferMCPDiscoveryForUI && !mcpDiscoveryEnabled;
+							if (activateAll && (await enableDeferredMCPDiscoveryForTools(session, tools))) {
+								activateAll = false;
+							}
+							await session.refreshMCPTools(tools, activateAll ? { activateAll: true } : undefined);
+						} catch (error) {
+							logger.warn("MCP tool refresh failed", {
+								error: error instanceof Error ? error.message : String(error),
+							});
 						}
-						await session.refreshMCPTools(tools, activateAll ? { activateAll: true } : undefined);
-					} catch (error) {
-						logger.warn("MCP tool refresh failed", {
-							error: error instanceof Error ? error.message : String(error),
-						});
-					}
-				})();
-			});
+					})();
+				}),
+			);
 			// Wire prompt refresh → rebuild MCP prompt slash commands
-			mcpManager.setOnPromptsChanged(serverName => {
-				const promptCommands = buildMCPPromptCommands(mcpManager);
-				session.setMCPPromptCommands(promptCommands);
-				logger.debug("MCP prompt commands refreshed", { path: `mcp:${serverName}` });
-			});
+			mcpCleanup.push(
+				mcpManager.subscribePromptsChanged(serverName => {
+					const promptCommands = buildMCPPromptCommands(mcpManager);
+					session.setMCPPromptCommands(promptCommands);
+					logger.debug("MCP prompt commands refreshed", { path: `mcp:${serverName}` });
+				}),
+			);
 			const notificationDebounceTimers = new Map<string, Timer>();
 			const clearDebounceTimers = () => {
 				for (const timer of notificationDebounceTimers.values()) clearTimeout(timer);
 				notificationDebounceTimers.clear();
 			};
 			postmortem.register("mcp-notification-cleanup", clearDebounceTimers);
-			mcpManager.setOnResourcesChanged((serverName, uri) => {
-				logger.debug("MCP resources changed", { path: `mcp:${serverName}`, uri });
-				if (!settings.get("mcp.notifications")) return;
-				const debounceMs = settings.get("mcp.notificationDebounceMs");
-				const key = `${serverName}:${uri}`;
-				const existing = notificationDebounceTimers.get(key);
-				if (existing) clearTimeout(existing);
-				notificationDebounceTimers.set(
-					key,
-					setTimeout(() => {
-						notificationDebounceTimers.delete(key);
-						// Re-check: user may have disabled notifications during the debounce window
-						if (!settings.get("mcp.notifications")) return;
-						session.yieldQueue.enqueue<McpNotificationEntry>("mcp-notification", { serverName, uri });
-					}, debounceMs),
-				);
-			});
+			mcpCleanup.push(
+				mcpManager.subscribeResourcesChanged((serverName, uri) => {
+					logger.debug("MCP resources changed", { path: `mcp:${serverName}`, uri });
+					if (!settings.get("mcp.notifications")) return;
+					const debounceMs = settings.get("mcp.notificationDebounceMs");
+					const key = `${serverName}:${uri}`;
+					const existing = notificationDebounceTimers.get(key);
+					if (existing) clearTimeout(existing);
+					notificationDebounceTimers.set(
+						key,
+						setTimeout(() => {
+							notificationDebounceTimers.delete(key);
+							// Re-check: user may have disabled notifications during the debounce window
+							if (!settings.get("mcp.notifications")) return;
+							session.yieldQueue.enqueue<McpNotificationEntry>("mcp-notification", { serverName, uri });
+						}, debounceMs),
+					);
+				}),
+			);
 		}
 
 		startDeferredMCPDiscovery?.(session, {

@@ -16,6 +16,8 @@ export interface InternalAvailableSlashCommand {
 	input?: { hint: string };
 	subcommands?: Array<{ name: string; description?: string; usage?: string }>;
 	source: AvailableSlashCommandSource;
+	/** Remote TUI dispatch owner; omitted for non-builtin dynamic commands. */
+	owner?: "client" | "daemon";
 }
 
 export interface AvailableCommandsSession {
@@ -27,10 +29,41 @@ export interface AvailableCommandsSession {
 	setSlashCommands(slashCommands: FileSlashCommand[]): void;
 	sessionManager: { getCwd(): string };
 }
+export interface BuildAvailableSlashCommandsOptions {
+	/**
+	 * Include builtins that only have a TUI handler. ACP/RPC callers leave this
+	 * disabled because those commands require client-owned UI state.
+	 */
+	includeClientOwnedBuiltins?: boolean;
+}
+
+/** Return client-owned builtin metadata for merging into a daemon palette. */
+export function getClientOwnedBuiltinSlashCommands(): InternalAvailableSlashCommand[] {
+	return BUILTIN_SLASH_COMMANDS_INTERNAL.filter(
+		command => (command.owner ?? (command.handle ? "daemon" : "client")) === "client",
+	).map(command => ({
+		name: command.name,
+		aliases: command.aliases,
+		description: command.description,
+		input: command.inlineHint ? { hint: command.inlineHint } : undefined,
+		subcommands: command.subcommands,
+		source: "builtin",
+		owner: "client",
+	}));
+}
+
+/** Build the complete local palette for a remote TUI (daemon + client-owned builtins). */
+export async function buildRemoteAvailableSlashCommands(
+	session: AvailableCommandsSession,
+	loadFileCommands: (cwd: string) => Promise<FileSlashCommand[]> = cwd => loadSlashCommands({ cwd }),
+): Promise<InternalAvailableSlashCommand[]> {
+	return buildAvailableSlashCommands(session, loadFileCommands, { includeClientOwnedBuiltins: true });
+}
 
 export async function buildAvailableSlashCommands(
 	session: AvailableCommandsSession,
 	loadFileCommands: (cwd: string) => Promise<FileSlashCommand[]> = cwd => loadSlashCommands({ cwd }),
+	options: BuildAvailableSlashCommandsOptions = {},
 ): Promise<InternalAvailableSlashCommand[]> {
 	const commands: InternalAvailableSlashCommand[] = [];
 	const seenNames = new Set<string>();
@@ -41,7 +74,7 @@ export async function buildAvailableSlashCommands(
 	};
 
 	for (const command of BUILTIN_SLASH_COMMANDS_INTERNAL) {
-		if (!command.handle) continue;
+		if (!command.handle && !options.includeClientOwnedBuiltins) continue;
 		const hint = command.acpInputHint ?? command.inlineHint;
 		appendCommand({
 			name: command.name,
@@ -50,6 +83,7 @@ export async function buildAvailableSlashCommands(
 			input: hint ? { hint } : undefined,
 			subcommands: command.subcommands,
 			source: "builtin",
+			owner: command.owner ?? (command.handle ? "daemon" : "client"),
 		});
 	}
 
@@ -60,6 +94,7 @@ export async function buildAvailableSlashCommands(
 				description: skill.description || `Run ${skill.name} skill`,
 				input: { hint: "arguments" },
 				source: "skill",
+				owner: "daemon",
 			});
 		}
 	}
@@ -71,6 +106,7 @@ export async function buildAvailableSlashCommands(
 			appendCommand({
 				name: command.name,
 				description: command.description ?? "(extension command)",
+				owner: "daemon",
 				input: { hint: "arguments" },
 				source: "extension",
 			});
@@ -84,13 +120,14 @@ export async function buildAvailableSlashCommands(
 			description: command.command.description,
 			input: { hint: "arguments" },
 			source,
+			owner: "daemon",
 		});
 	}
 
 	const fileCommands = await loadFileCommands(session.sessionManager.getCwd());
 	session.setSlashCommands(fileCommands);
 	for (const command of fileCommands) {
-		appendCommand({ name: command.name, description: command.description, source: "file" });
+		appendCommand({ name: command.name, description: command.description, source: "file", owner: "daemon" });
 	}
 
 	return commands;
