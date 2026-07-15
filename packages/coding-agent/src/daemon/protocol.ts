@@ -5,6 +5,12 @@ export type { DaemonShard } from "./status";
 
 export const DAEMON_PROTOCOL_MAJOR = 1;
 export const DAEMON_MAX_FRAME_BYTES = 1024 * 1024;
+const DAEMON_SNAPSHOT_CHUNK_BYTES = 512 * 1024;
+
+export type DaemonEncodedSnapshotChunk = Readonly<{
+	encoding: "base64-json";
+	data: string;
+}>;
 
 export type DaemonCapability = "snapshot" | "events" | "server_status" | (string & {});
 
@@ -609,6 +615,46 @@ export function decodeDaemonFrame(line: string): DaemonFrame {
 		);
 	}
 	return parseDaemonFrame(value);
+}
+
+/** Split an arbitrarily large snapshot into independently bounded wire payloads. */
+export function encodeDaemonSnapshotChunks(snapshot: unknown): readonly DaemonEncodedSnapshotChunk[] {
+	const serialized = Buffer.from(JSON.stringify(snapshot), "utf8");
+	const chunks: DaemonEncodedSnapshotChunk[] = [];
+	for (let offset = 0; offset < serialized.byteLength; offset += DAEMON_SNAPSHOT_CHUNK_BYTES) {
+		chunks.push({
+			encoding: "base64-json",
+			data: serialized.subarray(offset, offset + DAEMON_SNAPSHOT_CHUNK_BYTES).toString("base64"),
+		});
+	}
+	return chunks;
+}
+
+/** Reassemble encoded snapshot chunks while accepting legacy single-value snapshots. */
+export function decodeDaemonSnapshotChunks(chunks: readonly unknown[]): unknown {
+	const encoded = chunks.filter(
+		(chunk): chunk is DaemonEncodedSnapshotChunk =>
+			typeof chunk === "object" &&
+			chunk !== null &&
+			!Array.isArray(chunk) &&
+			"encoding" in chunk &&
+			chunk.encoding === "base64-json" &&
+			"data" in chunk &&
+			typeof chunk.data === "string",
+	);
+	if (encoded.length === 0) return chunks.at(-1);
+	if (encoded.length !== chunks.length)
+		throw new DaemonProtocolError("invalid_frame", "snapshot mixes encoded and legacy chunks");
+	try {
+		return JSON.parse(
+			Buffer.concat(encoded.map(chunk => Buffer.from(chunk.data, "base64"))).toString("utf8"),
+		) as unknown;
+	} catch (error) {
+		throw new DaemonProtocolError(
+			"invalid_frame",
+			`invalid snapshot JSON: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 }
 /** Parse one hello frame. */
 export function parseDaemonHello(value: unknown): DaemonHello {

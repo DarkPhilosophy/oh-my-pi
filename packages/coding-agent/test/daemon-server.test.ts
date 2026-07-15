@@ -4,7 +4,13 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DaemonClient } from "../src/daemon/client";
-import { DAEMON_PROTOCOL_MAJOR, type DaemonFrame, decodeDaemonFrame, encodeDaemonFrame } from "../src/daemon/protocol";
+import {
+	DAEMON_MAX_FRAME_BYTES,
+	DAEMON_PROTOCOL_MAJOR,
+	type DaemonFrame,
+	decodeDaemonFrame,
+	encodeDaemonFrame,
+} from "../src/daemon/protocol";
 import { DaemonServer } from "../src/daemon/server";
 import { DaemonSessionRegistry, RegistryError } from "../src/daemon/session-registry";
 import type {
@@ -581,6 +587,7 @@ describe("daemon server and registry", () => {
 		const runtimeDir = path.join(root, "runtime");
 		const model = { provider: "openai", id: "gpt-resumed", name: "gpt-resumed", api: "openai-responses" } as never;
 		const todoPhases = [{ name: "ship", tasks: [{ content: "test", status: "in_progress" }] }] as never;
+		const persistedTranscript = `${"x".repeat(DAEMON_MAX_FRAME_BYTES)}tail`;
 		const current = {
 			thinkingLevel: "high",
 			steeringMode: "one-at-a-time",
@@ -638,7 +645,7 @@ describe("daemon server and registry", () => {
 				snapshot: () => ({
 					state: state(),
 					cwd,
-					entries: [{ type: "message", text: "persisted transcript" }],
+					entries: [{ type: "message", text: persistedTranscript }],
 				}),
 				command: async command => {
 					const type =
@@ -704,6 +711,9 @@ describe("daemon server and registry", () => {
 		expect(handle.state.messageCount).toBe(7);
 		expect(handle.state.steeringMode).toBe("one-at-a-time");
 		expect(handle.state.todoPhases).toEqual(todoPhases);
+		const persistedEntry = handle.snapshot.entries[0] as { text?: string } | undefined;
+		expect(persistedEntry?.text?.length).toBe(persistedTranscript.length);
+		expect(persistedEntry?.text?.endsWith("tail")).toBe(true);
 		const seen: string[] = [];
 		handle.subscribe(event => seen.push(String((event as { type?: unknown }).type)));
 		await handle.prompt("hello");

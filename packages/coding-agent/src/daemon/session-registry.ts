@@ -1,6 +1,7 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import { AttachmentEventStream, type EventRecord, OrderedEventLog } from "./event-log";
 import { canonicalProjectRoot, isDaemonPathInScope } from "./paths";
+import { encodeDaemonSnapshotChunks } from "./protocol";
 import type {
 	DaemonSessionCreateOverrides,
 	DaemonSessionRuntime,
@@ -197,7 +198,7 @@ export class DaemonSessionRegistry {
 			chunkSize: 64,
 			maxBufferedEvents: 2048,
 			snapshot: () => record.runtime.snapshot(),
-			chunks: snapshot => [snapshot],
+			chunks: encodeDaemonSnapshotChunks,
 			sink: frame => sink(frame),
 			attachmentId,
 		});

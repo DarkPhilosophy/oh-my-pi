@@ -2,7 +2,7 @@ import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import type { DaemonClient } from "../daemon/client";
-import type { DaemonEvent, DaemonSnapshotFrame } from "../daemon/protocol";
+import { type DaemonEvent, type DaemonSnapshotFrame, decodeDaemonSnapshotChunks } from "../daemon/protocol";
 import type { BashResult } from "../exec/bash-executor";
 import type {
 	RpcAvailableSlashCommand,
@@ -798,11 +798,8 @@ export class RemoteSessionHandle implements SessionHandle {
 			return;
 		}
 		if (frame.tag === "snapshot_end" && frame.barrierSeq === this.#snapshotBarrier) {
-			const chunk = [...this.#snapshotChunks.entries()]
-				.sort((a, b) => a[0] - b[0])
-				.map(entry => entry[1])
-				.at(-1);
-			if (chunk !== undefined) this.#replaceSnapshot(this.#snapshotFromSnapshot(chunk));
+			const chunks = [...this.#snapshotChunks.entries()].sort((a, b) => a[0] - b[0]).map(entry => entry[1]);
+			if (chunks.length > 0) this.#replaceSnapshot(this.#snapshotFromSnapshot(decodeDaemonSnapshotChunks(chunks)));
 			this.#lastSeq = Math.max(this.#lastSeq, frame.nextSeq - 1);
 			void this.#ack(this.#lastSeq);
 		}

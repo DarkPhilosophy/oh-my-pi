@@ -1977,7 +1977,7 @@ describe("ModelRegistry", () => {
 				]);
 
 				const requestedUrls: string[] = [];
-				const fetchMock: FetchImpl = async (input, init) => {
+				const fetchMock: FetchImpl = async (input, _init) => {
 					const url = input instanceof Request ? input.url : String(input);
 					requestedUrls.push(url);
 					if (url === "https://gitlab.com/api/graphql") {

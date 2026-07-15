@@ -232,7 +232,7 @@ export class AttachmentEventStream<E, S> {
 		const barrierSeq = this.#log.latestSeq;
 		const snapshot = this.#options.snapshot();
 		if (snapshot instanceof Promise) throw new Error("async snapshot requires attachTo");
-		this.#beginSnapshot(snapshot, undefined, barrierSeq);
+		this.#beginSnapshot(snapshot, this.#syncChunks(snapshot), barrierSeq);
 		return [{ type: "snapshot_begin", barrierSeq: this.#state!.barrierSeq }];
 	}
 
@@ -337,6 +337,13 @@ export class AttachmentEventStream<E, S> {
 		return [snapshot];
 	}
 
+	#syncChunks(snapshot: S): readonly S[] {
+		if (!this.#options.chunks) return this.#defaultChunks(snapshot);
+		const chunks = this.#options.chunks(snapshot);
+		if (chunks instanceof Promise) throw new Error("async chunks require attachTo");
+		return chunks;
+	}
+
 	async #chunks(snapshot: S): Promise<readonly S[]> {
 		if (!this.#options.chunks) return this.#defaultChunks(snapshot);
 		return await this.#options.chunks(snapshot);
@@ -363,7 +370,7 @@ export class AttachmentEventStream<E, S> {
 		this.#state = undefined;
 		const snapshot = this.#options.snapshot();
 		if (snapshot instanceof Promise) throw new Error("async snapshot requires publishTo");
-		this.#beginSnapshot(snapshot, undefined, barrierSeq);
+		this.#beginSnapshot(snapshot, this.#syncChunks(snapshot), barrierSeq);
 		return [
 			{ type: "snapshot_restart", reason, previousBarrierSeq },
 			{ type: "snapshot_begin", barrierSeq: this.#state!.barrierSeq },
