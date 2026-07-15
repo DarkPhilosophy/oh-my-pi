@@ -2540,7 +2540,13 @@ export class AuthStorage {
 		if (typeof preferred.orgName === "string" && preferred.orgName.length > 0) {
 			identity.orgName = preferred.orgName;
 		}
-		if (!identity.accountId && !identity.email && !identity.projectId && !identity.orgId && identity.credentialId === undefined) {
+		if (
+			!identity.accountId &&
+			!identity.email &&
+			!identity.projectId &&
+			!identity.orgId &&
+			identity.credentialId === undefined
+		) {
 			return undefined;
 		}
 		return identity;
