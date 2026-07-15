@@ -6,6 +6,7 @@ export type { DaemonShard } from "./status";
 export const DAEMON_PROTOCOL_MAJOR = 1;
 export const DAEMON_MAX_FRAME_BYTES = 1024 * 1024;
 const DAEMON_SNAPSHOT_CHUNK_BYTES = 512 * 1024;
+const DAEMON_TERMINAL_OUTPUT_CHUNK_CODE_UNITS = 128 * 1024;
 
 export type DaemonEncodedSnapshotChunk = Readonly<{
 	encoding: "base64-json";
@@ -615,6 +616,26 @@ export function decodeDaemonFrame(line: string): DaemonFrame {
 		);
 	}
 	return parseDaemonFrame(value);
+}
+
+/** Split terminal writes without breaking UTF-16 surrogate pairs or the frame byte budget. */
+export function splitDaemonTerminalOutput(data: string): readonly string[] {
+	const chunks: string[] = [];
+	let start = 0;
+	while (start < data.length) {
+		let end = Math.min(start + DAEMON_TERMINAL_OUTPUT_CHUNK_CODE_UNITS, data.length);
+		if (
+			end < data.length &&
+			data.charCodeAt(end - 1) >= 0xd800 &&
+			data.charCodeAt(end - 1) <= 0xdbff &&
+			data.charCodeAt(end) >= 0xdc00 &&
+			data.charCodeAt(end) <= 0xdfff
+		)
+			end--;
+		chunks.push(data.slice(start, end));
+		start = end;
+	}
+	return chunks.length > 0 ? chunks : [data];
 }
 
 /** Split an arbitrarily large snapshot into independently bounded wire payloads. */

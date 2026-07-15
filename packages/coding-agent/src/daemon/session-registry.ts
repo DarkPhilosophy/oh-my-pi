@@ -1,7 +1,7 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import { AttachmentEventStream, type EventRecord, OrderedEventLog } from "./event-log";
 import { canonicalProjectRoot, isDaemonPathInScope } from "./paths";
-import { encodeDaemonSnapshotChunks } from "./protocol";
+import { encodeDaemonSnapshotChunks, splitDaemonTerminalOutput } from "./protocol";
 import type {
 	DaemonSessionCreateOverrides,
 	DaemonSessionRuntime,
@@ -59,6 +59,20 @@ function closesHostedSession(event: unknown): boolean {
 	if (typeof event !== "object" || event === null) return false;
 	const record = event as Record<string, unknown>;
 	return record.type === "terminal_closed" && (record.reason === "exit" || record.reason === "error");
+}
+
+function splitDaemonEvent(event: unknown): readonly unknown[] {
+	if (
+		typeof event !== "object" ||
+		event === null ||
+		Array.isArray(event) ||
+		!("type" in event) ||
+		event.type !== "terminal_output" ||
+		!("data" in event) ||
+		typeof event.data !== "string"
+	)
+		return [event];
+	return splitDaemonTerminalOutput(event.data).map(data => ({ ...event, data }));
 }
 
 /** Owns every daemon AgentSession and serializes all mutations to it. */
@@ -279,16 +293,18 @@ export class DaemonSessionRegistry {
 			closed: false,
 		};
 		record.unsubscribe = runtime.subscribe(event => {
-			const published = record.log.append(event);
-			for (const attachment of record.attachments.values()) {
-				if (attachment.attaching) {
-					attachment.pending.push(published);
-					continue;
+			for (const boundedEvent of splitDaemonEvent(event)) {
+				const published = record.log.append(boundedEvent);
+				for (const attachment of record.attachments.values()) {
+					if (attachment.attaching) {
+						attachment.pending.push(published);
+						continue;
+					}
+					const frames = attachment.stream.publish(published);
+					for (const frame of frames) void Promise.resolve(attachment.sink(frame)).catch(() => undefined);
 				}
-				const frames = attachment.stream.publish(published);
-				for (const frame of frames) void Promise.resolve(attachment.sink(frame)).catch(() => undefined);
+				if (closesHostedSession(boundedEvent)) void this.close(sessionId).catch(() => undefined);
 			}
-			if (closesHostedSession(event)) void this.close(sessionId).catch(() => undefined);
 		});
 		this.#sessions.set(sessionId, record);
 		return this.#summary(sessionId, record);

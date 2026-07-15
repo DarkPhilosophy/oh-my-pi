@@ -588,6 +588,7 @@ describe("daemon server and registry", () => {
 		const model = { provider: "openai", id: "gpt-resumed", name: "gpt-resumed", api: "openai-responses" } as never;
 		const todoPhases = [{ name: "ship", tasks: [{ content: "test", status: "in_progress" }] }] as never;
 		const persistedTranscript = `${"x".repeat(DAEMON_MAX_FRAME_BYTES)}tail`;
+		const terminalOutput = "\x1b".repeat(DAEMON_MAX_FRAME_BYTES);
 		const current = {
 			thinkingLevel: "high",
 			steeringMode: "one-at-a-time",
@@ -715,7 +716,17 @@ describe("daemon server and registry", () => {
 		expect(persistedEntry?.text?.length).toBe(persistedTranscript.length);
 		expect(persistedEntry?.text?.endsWith("tail")).toBe(true);
 		const seen: string[] = [];
-		handle.subscribe(event => seen.push(String((event as { type?: unknown }).type)));
+		const terminalChunks: string[] = [];
+		handle.subscribe(event => {
+			seen.push(event.type);
+			if (event.type === "terminal_output") terminalChunks.push(event.data);
+		});
+		emit({ type: "terminal_output", data: terminalOutput });
+		for (let attempt = 0; attempt < 20 && terminalChunks.join("").length < terminalOutput.length; attempt++)
+			await Bun.sleep(5);
+		const receivedTerminalOutput = terminalChunks.join("");
+		expect(receivedTerminalOutput.length).toBe(terminalOutput.length);
+		expect(Bun.hash(receivedTerminalOutput)).toBe(Bun.hash(terminalOutput));
 		await handle.prompt("hello");
 		await handle.setThinkingLevel("high" as never);
 		await handle.setSteeringMode("all");

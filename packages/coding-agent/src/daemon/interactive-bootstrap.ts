@@ -1,10 +1,12 @@
 import { ProcessTerminal } from "@oh-my-pi/pi-tui";
+import { normalizePathForComparison } from "@oh-my-pi/pi-utils";
 import { getActiveProfile, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import { type Args, parseArgs } from "../cli/args";
 import { selectSession } from "../cli/session-picker";
 import { applyStartupCwd } from "../cli/startup-cwd";
 import { initTheme, stopThemeWatcher } from "../modes/theme/theme";
 import { RemoteSessionHandle, type SessionHandleCommand } from "../session/session-handle";
+import { resolveResumableSession } from "../session/session-listing";
 import { SessionManager } from "../session/session-manager";
 import { resolveWorkerSpawnCmd, workerEnvFromParent } from "../subprocess/worker-client";
 import { createDaemonClient, type DaemonClient } from "./client";
@@ -91,13 +93,31 @@ export function isDefaultInteractiveArgv(argv: readonly string[]): boolean {
 	return true;
 }
 
-async function resolveBareResume(
+export async function resolveDaemonInteractiveResume(
 	options: DaemonInteractiveBootstrapOptions,
 ): Promise<DaemonInteractiveBootstrapOptions | undefined> {
 	const parsed = parseArgs(launchArgs(options.argv));
-	if (parsed.resume !== true) return options;
+	if (parsed.resume === undefined) return options;
 	await applyStartupCwd(parsed);
 	const cwd = options.projectRoot ?? getProjectDir();
+	if (typeof parsed.resume === "string") {
+		const match = await resolveResumableSession(parsed.resume, cwd, parsed.sessionDir);
+		if (
+			match?.scope !== "global" ||
+			normalizePathForComparison(match.session.cwd || cwd) === normalizePathForComparison(cwd)
+		)
+			return options;
+		const forked = await SessionManager.forkFrom(match.session.path, cwd, parsed.sessionDir);
+		const forkedPath = forked.getSessionFile();
+		if (!forkedPath) throw new Error(`Unable to fork session "${parsed.resume}" into ${cwd}`);
+		const argv = [...options.argv];
+		const resumeIndex = argv.findIndex(
+			argument => argument === "--resume" || argument === "-r" || argument === "--session",
+		);
+		if (resumeIndex < 0) throw new Error("Unable to locate resume argument");
+		argv.splice(resumeIndex, 2, "--resume", forkedPath);
+		return { ...options, argv, projectRoot: cwd };
+	}
 	const folderSessions = await SessionManager.list(cwd, parsed.sessionDir);
 	const allSessions = folderSessions.length === 0 ? await SessionManager.listAll() : undefined;
 	await initTheme();
@@ -268,7 +288,7 @@ export async function bootstrapDaemonInteractive(
 }
 /** Launch the complete existing OMP interactive mode hosted by the daemon. */
 export async function launchDaemonInteractive(options: DaemonInteractiveBootstrapOptions): Promise<void> {
-	const resolvedOptions = await resolveBareResume(options);
+	const resolvedOptions = await resolveDaemonInteractiveResume(options);
 	if (!resolvedOptions) return;
 	const session = await bootstrapDaemonInteractive(resolvedOptions);
 	const terminal = new ProcessTerminal();

@@ -1,18 +1,62 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test, vi } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { bootstrapDaemonInteractive, isDefaultInteractiveArgv } from "../src/daemon/interactive-bootstrap";
+import {
+	bootstrapDaemonInteractive,
+	isDefaultInteractiveArgv,
+	resolveDaemonInteractiveResume,
+} from "../src/daemon/interactive-bootstrap";
 import { DaemonServer } from "../src/daemon/server";
 import type { RpcSessionState } from "../src/modes/rpc/rpc-types";
+import * as sessionListing from "../src/session/session-listing";
+import { SessionManager } from "../src/session/session-manager";
 
 describe("daemon interactive bootstrap", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
 	test("routes normal interactive OMP through the server without an activation flag", () => {
 		expect(isDefaultInteractiveArgv([])).toBe(true);
 		expect(isDefaultInteractiveArgv(["hello"])).toBe(true);
 		expect(isDefaultInteractiveArgv(["launch", "hello"])).toBe(true);
 		expect(isDefaultInteractiveArgv(["grep", "needle"])).toBe(false);
 		expect(isDefaultInteractiveArgv(["--print", "hello"])).toBe(false);
+	});
+	test("forks an explicit cross-project resume into the daemon project", async () => {
+		const sourceCwd = "/other/project";
+		const targetCwd = "/current/project";
+		const sourcePath = `${sourceCwd}/source.jsonl`;
+		const forkedPath = `${targetCwd}/forked.jsonl`;
+		vi.spyOn(sessionListing, "resolveResumableSession").mockResolvedValue({
+			scope: "global",
+			session: {
+				path: sourcePath,
+				id: "source",
+				cwd: sourceCwd,
+				title: "source",
+				created: new Date(0),
+				modified: new Date(0),
+				messageCount: 1,
+				size: 1,
+				firstMessage: "source",
+				allMessagesText: "source",
+			},
+		});
+		const forkedManager = { getSessionFile: () => forkedPath } as unknown as SessionManager;
+		const forkFrom = vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(forkedManager);
+
+		const resolved = await resolveDaemonInteractiveResume({
+			argv: ["--resume", "source"],
+			projectRoot: targetCwd,
+		});
+
+		expect(forkFrom).toHaveBeenCalledWith(sourcePath, targetCwd, undefined);
+		expect(resolved).toMatchObject({
+			argv: ["--resume", forkedPath],
+			projectRoot: targetCwd,
+		});
 	});
 
 	test("authenticates, forwards the complete launch argv, and detaches without disposing the server runtime", async () => {
