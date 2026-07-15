@@ -23,6 +23,7 @@ import type {
 	NativeScrollbackLiveRegion,
 	OverlayHandle,
 	SlashCommand,
+	Terminal,
 } from "@oh-my-pi/pi-tui";
 import {
 	Container,
@@ -58,6 +59,7 @@ import type { CollabHost } from "../collab/host";
 import { KeybindingsManager } from "../config/keybindings";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { isSettingsInitialized, onStatusLineSessionAccentChanged, Settings, settings } from "../config/settings";
+import type { DaemonConnectionSnapshot } from "../daemon/status";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {
 	AutocompleteProviderFactory,
@@ -125,7 +127,12 @@ import type { EventBus } from "../utils/event-bus";
 import { getEditorCommand, openInEditor } from "../utils/external-editor";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../utils/session-color";
 import { messageHasDisplayableThinking } from "../utils/thinking-display";
-import { popTerminalTitle, pushTerminalTitle, setSessionTerminalTitle } from "../utils/title-generator";
+import {
+	formatSessionTerminalTitle,
+	popTerminalTitle,
+	pushTerminalTitle,
+	setSessionTerminalTitle,
+} from "../utils/title-generator";
 import { VibeSessionRegistry } from "../vibe/runtime";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
@@ -404,12 +411,14 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 }
 
 export class InteractiveMode implements InteractiveModeContext {
-	session: AgentSession;
-	sessionManager: SessionManager;
-	settings: Settings;
-	keybindings: KeybindingsManager;
-	agent: Agent;
+	session!: AgentSession;
+	sessionManager!: SessionManager;
+	settings!: Settings;
+	keybindings!: KeybindingsManager;
+	agent!: Agent;
 	historyStorage?: HistoryStorage;
+	readonly #hostedTerminal: Terminal | undefined;
+	readonly #hostedDetach: ((reason: "detach" | "exit" | "error", error?: string) => void) | undefined;
 
 	ui: TUI;
 	chatContainer: TranscriptContainer;
@@ -425,7 +434,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	editorContainer: Container;
 	hookWidgetContainerAbove: Container;
 	hookWidgetContainerBelow: Container;
-	statusLine: StatusLineComponent;
+	statusLine!: StatusLineComponent;
 
 	isInitialized = false;
 	initialChatRendered = false;
@@ -467,7 +476,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * toggle.
 	 */
 	get effectiveHideThinkingBlock(): boolean {
-		const thinkingOff = (this.viewSession?.thinkingLevel ?? ThinkingLevel.Off) === ThinkingLevel.Off;
+		const thinkingOff = (this.viewSession.thinkingLevel ?? ThinkingLevel.Off) === ThinkingLevel.Off;
 		return this.hideThinkingBlock || (thinkingOff && !this.hasDisplayableThinkingContent);
 	}
 	proseOnlyThinking = true;
@@ -621,6 +630,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#mcpConnectedServers = new Set<string>();
 	#mcpFailedServers = new Map<string, string>();
 	#welcomeComponent?: WelcomeComponent;
+	#daemonSnapshot: DaemonConnectionSnapshot = { state: "direct" };
 	readonly #chatHost: ChatBlockHost = { requestRender: () => this.ui.requestRender() };
 
 	constructor(
@@ -631,6 +641,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		lspServers: LspStartupServerInfo[] | undefined = undefined,
 		mcpManager?: MCPManager,
 		eventBus?: EventBus,
+		host?: {
+			terminal: Terminal;
+			onDetach(reason: "detach" | "exit" | "error", error?: string): void;
+		},
 	) {
 		this.session = session;
 		this.sessionManager = session.sessionManager;
@@ -643,6 +657,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.lspServers = lspServers;
 		this.mcpManager = mcpManager;
 		this.#eventBus = eventBus;
+		this.#hostedTerminal = host?.terminal;
+		this.#hostedDetach = host?.onDetach;
 		if (eventBus) {
 			this.#eventBusUnsubscribers.push(
 				eventBus.on(LSP_STARTUP_EVENT_CHANNEL, data => {
@@ -663,7 +679,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		setTuiTight(settings.get("tui.tight"));
 		setMarkdownMermaidRendering(settings.get("tui.renderMermaid"));
-		this.ui = new TUI(new ProcessTerminal(), settings.get("showHardwareCursor"));
+		this.ui = new TUI(host?.terminal ?? new ProcessTerminal(), settings.get("showHardwareCursor"));
 		this.ui.setMaxInlineImages(settings.get("tui.maxInlineImages"));
 		this.ui.setScrollbackRebuild(settings.get("tui.scrollbackRebuild"));
 		// OSC 66 text-sizing is Kitty-only; resolve the setting against the terminal's
@@ -690,11 +706,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		};
 		this.editor.setShimmerRepaintHandler(() => this.ui.requestComponentRender(this.editor));
 		this.#syncEditorMaxHeight();
-		this.#resizeHandler = () => {
-			this.#syncEditorMaxHeight();
-			this.ui.requestRender();
-		};
-		process.stdout.on("resize", this.#resizeHandler);
+		if (!host?.terminal) {
+			this.#resizeHandler = () => {
+				this.#syncEditorMaxHeight();
+				this.ui.requestRender();
+			};
+			process.stdout.on("resize", this.#resizeHandler);
+		}
 		try {
 			this.historyStorage = HistoryStorage.open();
 			this.editor.setHistoryStorage(this.historyStorage);
@@ -707,13 +725,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.hookWidgetContainerBelow = new Container();
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor);
-		this.statusLine = new StatusLineComponent(session);
-		this.statusLine.setAutoCompactEnabled(session.autoCompactionEnabled);
-		// Lazy provider — the top border rebuild coalesces to at most one
-		// invocation per painted frame instead of firing on every session event
-		// (#4145). The TUI throttles renders at ~30fps, so a long-running eval
-		// spraying events no longer runs `getTopBorder` synchronously in the
-		// hot path where the render never gets to paint the result.
+		this.statusLine = new StatusLineComponent(this.session);
+		this.statusLine.setAutoCompactEnabled(this.session.autoCompactionEnabled);
 		this.editor.setTopBorderProvider(availableWidth => this.statusLine.getTopBorder(availableWidth));
 
 		this.hideThinkingBlock = settings.get("hideThinkingBlock");
@@ -746,7 +759,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		const builtinCommands = buildTuiBuiltinSlashCommands({ ctx: this });
 		// Store pending commands for init() where file commands are loaded async
 		this.#pendingSlashCommands = [...builtinCommands, ...hookCommands, ...customCommands, ...skillCommandList];
-
 		this.#uiHelpers = new UiHelpers(this);
 		this.#btwController = new BtwController(this);
 		this.#tanCommandController = new TanCommandController(this);
@@ -815,12 +827,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		// so a resumed long transcript is not re-walked per animation frame.
 		welcome?.playIntro(() => this.ui.requestComponentRender(welcome));
 	}
+	setDaemonSnapshot(snapshot: DaemonConnectionSnapshot): void {
+		this.#daemonSnapshot = snapshot;
+		this.#welcomeComponent?.setServerStatus(snapshot);
+		this.statusLine.setServerStatus(snapshot);
+		this.ui.requestRender();
+	}
 
 	async init(options: InteractiveModeInitOptions = {}): Promise<void> {
 		if (this.isInitialized) return;
-
 		this.keybindings = logger.time("InteractiveMode.init:keybindings", () => KeybindingsManager.create());
-
 		// Route SIGINT/SIGTERM/SIGHUP/uncaughtException through the same teardown
 		// the TUI Ctrl+C keypress path performs: persist the in-progress editor
 		// draft for `--resume`, then dispose the session (which emits the extension
@@ -890,6 +906,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				recentSessions,
 				this.#getWelcomeLspServers(),
 			);
+			this.#welcomeComponent.setServerStatus(this.#daemonSnapshot);
 
 			// Setup UI layout
 			this.ui.addChild(new Spacer(1));
@@ -916,7 +933,6 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.ui.addChild(new DynamicBorder());
 			}
 		}
-
 		this.ui.addChild(this.chatContainer);
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.todoContainer);
@@ -950,12 +966,18 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		// Load initial todos
 		await this.#loadTodoList();
-
 		// Start the UI. Cold `omp` launch opts into clearing on the first paint so
 		// the initial welcome frame does not append over the previous run's scrollback.
 		this.ui.start({ clearScrollback: options.clearInitialTerminalHistory === true });
-		pushTerminalTitle();
-		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+		if (this.#hostedTerminal) {
+			this.#hostedTerminal.write("\x1b[22;2t");
+			this.#hostedTerminal.setTitle(
+				formatSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd()),
+			);
+		} else {
+			pushTerminalTitle();
+			setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+		}
 		this.updateEditorBorderColor();
 		// Single side-effect point for title changes: every setSessionName caller
 		// (first-input titling, /rename, extension renames, plan seeding, replan
@@ -964,14 +986,19 @@ export class InteractiveMode implements InteractiveModeContext {
 		// all of which can reach setSessionName during init.
 		this.#eventBusUnsubscribers.push(
 			this.sessionManager.onSessionNameChanged(() => {
-				setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+				if (this.#hostedTerminal) {
+					this.#hostedTerminal.setTitle(
+						formatSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd()),
+					);
+				} else {
+					setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+				}
 				this.#handleSessionAccentInputsChanged();
 			}),
 		);
 		this.#syncEditorMaxHeight();
 		this.isInitialized = true;
 		this.ui.requestRender(true);
-
 		// Initialize hooks with TUI-based UI context
 		await this.initHooksAndCustomTools();
 
@@ -1552,7 +1579,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.editor.borderColor = theme.getPythonModeBorderColor();
 		} else {
 			const accentEnabled = !isSettingsInitialized() || settings.get("statusLine.sessionAccent") !== false;
-			const sessionName = accentEnabled ? this.sessionManager.getSessionName() : undefined;
+			const sessionName = accentEnabled ? this.sessionName : undefined;
 			const hex = sessionName
 				? getSessionAccentHex(sessionName, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance)
 				: undefined;
@@ -3604,6 +3631,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
+	detachHosted(reason: "detach" | "error" = "detach", error?: string): void {
+		if (!this.#hostedDetach || this.#isShuttingDown) return;
+		this.#isShuttingDown = true;
+		const callback = this.onInputCallback;
+		this.onInputCallback = undefined;
+		callback?.({ text: "", cancelled: true, started: false });
+		this.stop();
+		this.#hostedDetach(reason, error);
+	}
+
 	async shutdown(): Promise<void> {
 		if (this.#isShuttingDown) return;
 		this.#isShuttingDown = true;
@@ -3613,11 +3650,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#focusController.dispose();
 
 		// Surface an explicit "Closing session…" line so the user sees a reason
-		// for the pause while `session.dispose()` flushes memory consolidate and
-		// other cleanups (issue #3641). The await on the next line yields the
-		// event loop, giving requestRender() a tick to paint the status before
-		// dispose blocks.
+		// for the pause while `session.dispose()` flushes memory consolidation and
+		// other cleanups (issue #3641). Forced renders use `setImmediate`; wait for
+		// that scheduler phase before disposal can complete and stop the hosted
+		// terminal, otherwise a fast teardown cancels the pending closing frame.
 		this.showStatus("Closing session…");
+		this.ui.requestRender(true);
+		const renderScheduled = Promise.withResolvers<void>();
+		setImmediate(renderScheduled.resolve);
+		await renderScheduled.promise;
 
 		// Persist the draft and dispose the session through the shared teardown
 		// so a signal that arrives mid-shutdown cannot fire a second dispose.
@@ -3638,6 +3679,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
 		await this.ui.terminal.drainInput(1000);
+		if (this.#hostedDetach) {
+			const callback = this.onInputCallback;
+			this.onInputCallback = undefined;
+			callback?.({ text: "", cancelled: true, started: false });
+			this.stop();
+			this.#hostedDetach("exit");
+			return;
+		}
 		popTerminalTitle();
 		this.stop();
 

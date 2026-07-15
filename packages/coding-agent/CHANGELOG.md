@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added transparent server-backed interactive OMP as the normal `omp` path, hosting the complete existing TUI, extensions, sessions, tools, MCP/LSP, and CLI launch options in an authenticated per-profile/project multi-session daemon; use `--no-daemon` only as a direct-mode recovery path.
+
+### Changed
+
+- Moved shard-safe model, authentication, and MCP runtime ownership into the interactive daemon so concurrent OMP clients reuse one heavyweight resource set instead of starting one per session.
+- Defined graceful daemon session teardown with visible closing state, automatic daemon replacement and session restoration after connection loss, and distinct daemon/session identifiers with profile/project scope in server status.
+
 ## [16.5.2] - 2026-07-14
 
 ### Breaking Changes

@@ -10,6 +10,7 @@ import { expandRoleAlias, getModelMatchPreferences, resolveCliModel } from "../c
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import type { SettingPath, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
+import type { DaemonConnectionSnapshot } from "../daemon/status";
 import {
 	clearPluginRootsAndCaches,
 	resolveActiveProjectRegistryPath,
@@ -50,6 +51,7 @@ import { createMarketplaceManager } from "./helpers/marketplace-manager";
 import { handleMcpAcp } from "./helpers/mcp";
 import { commandConsumed, errorMessage, parseSlashCommand, parseSubcommand, usage } from "./helpers/parse";
 import { describeRedeemOutcome, type ResetUsageAccount, toResetUsageAccounts } from "./helpers/reset-usage";
+import { handleServerCommand } from "./helpers/server";
 import { handleSshAcp } from "./helpers/ssh";
 import { launchStatsDashboard, parseStatsDashboardArgs } from "./helpers/stats-dashboard";
 import { handleTodoAcp } from "./helpers/todo";
@@ -57,6 +59,7 @@ import { buildUsageReportText } from "./helpers/usage-report";
 import { parseMarketplaceInstallArgs, parsePluginScopeArgs } from "./marketplace-install-parser";
 import type {
 	BuiltinSlashCommand,
+	BuiltinSlashCommandOwner,
 	ParsedSlashCommand,
 	SlashCommandResult,
 	SlashCommandRuntime,
@@ -65,11 +68,38 @@ import type {
 	TuiSlashCommandRuntime,
 } from "./types";
 
-export type { BuiltinSlashCommand, SubcommandDef } from "./types";
+export type {
+	BuiltinSlashCommand,
+	BuiltinSlashCommandOwner,
+	ParsedSlashCommand,
+	SlashCommandResult,
+	SlashCommandRuntime,
+	SlashCommandSpec,
+	SubcommandDef,
+	TuiSlashCommandRuntime,
+} from "./types";
 
 /** TUI-specific runtime accepted by `executeBuiltinSlashCommand`. */
 export type BuiltinSlashCommandRuntime = TuiSlashCommandRuntime;
 
+type InjectedServerControls = {
+	snapshot?: DaemonConnectionSnapshot;
+	getSnapshot?: () => DaemonConnectionSnapshot;
+	sessions?: () => Promise<string> | string;
+	reconnect?: () => Promise<void> | void;
+	stop?: () =>
+		| Promise<{ shutdown?: boolean; blockers?: string[] } | undefined>
+		| { shutdown?: boolean; blockers?: string[] }
+		| undefined;
+};
+
+function injectedServerControls(ctx: InteractiveModeContext): InjectedServerControls | undefined {
+	const candidate = ctx as InteractiveModeContext & {
+		server?: InjectedServerControls;
+		daemon?: InjectedServerControls;
+	};
+	return candidate.server ?? candidate.daemon;
+}
 export interface TuiBuiltinSlashCommand extends BuiltinSlashCommand {
 	getArgumentCompletions?: (prefix: string) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
 	getInlineHint?: (argumentText: string) => string | null;
@@ -1322,6 +1352,29 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "server",
+		description: "Show daemon connection status and controls",
+		inlineHint: "[status|sessions|reconnect|stop]",
+		allowArgs: true,
+		subcommands: [
+			{ name: "status", description: "Show daemon connection status" },
+			{ name: "sessions", description: "List daemon sessions" },
+			{ name: "reconnect", description: "Reconnect to the daemon" },
+			{ name: "stop", description: "Stop the daemon" },
+		],
+		handleTui: async (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			const controls = injectedServerControls(runtime.ctx);
+			await handleServerCommand(command.args, {
+				snapshot: controls?.getSnapshot?.() ?? controls?.snapshot ?? { state: "direct" },
+				output: text => runtime.ctx.showStatus(text),
+				sessions: controls?.sessions,
+				reconnect: controls?.reconnect,
+				stop: controls?.stop,
+			});
+		},
+	},
+	{
 		name: "mcp",
 		description: "Manage MCP servers (add, list, remove, test)",
 		acpDescription: "Manage MCP servers",
@@ -2500,6 +2553,7 @@ export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BU
 		aliases: command.aliases,
 		allowArgs: command.allowArgs === true,
 		description: command.description,
+		owner: command.owner,
 		subcommands: command.subcommands,
 		inlineHint: command.inlineHint,
 		getTuiAutocompleteDescription: command.getTuiAutocompleteDescription,
@@ -2613,4 +2667,9 @@ export function lookupBuiltinSlashCommand(name: string): SlashCommandSpec | unde
 	return BUILTIN_SLASH_COMMAND_LOOKUP.get(name);
 }
 
-export type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime, SlashCommandSpec, TuiSlashCommandRuntime };
+/** Return the deterministic owner for a builtin in a daemon-attached TUI. */
+export function getBuiltinSlashCommandOwnership(name: string): BuiltinSlashCommandOwner | undefined {
+	const command = lookupBuiltinSlashCommand(name.trim().toLowerCase());
+	if (!command) return undefined;
+	return command.owner ?? (command.handle ? "daemon" : "client");
+}

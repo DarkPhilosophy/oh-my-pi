@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { Settings } from "../../../config/settings";
+import type { DaemonConnectionSnapshot } from "../../../daemon/status";
 import type { AgentSession } from "../../../session/agent-session";
 import { getThemeByName, setThemeInstance } from "../../theme/theme";
 import { StatusLineComponent } from "./component";
@@ -80,4 +81,24 @@ describe("StatusLineComponent", () => {
 		const stripped = border.content.replace(/\x1b\[[0-9;]*m/g, "");
 		expect(stripped).toContain("Prewalk");
 	});
+	it("renders an empty top border before a remote session projection is attached", () => {
+		const statusLine = new StatusLineComponent();
+
+		expect(statusLine.getTopBorder(100)).toEqual({ content: "", width: 0 });
+	});
+});
+
+it("renders daemon degradation from the supplied snapshot", () => {
+	const statusLine = new StatusLineComponent(makeSessionWithLastMessage(null) as unknown as AgentSession);
+	const snapshot: DaemonConnectionSnapshot = {
+		state: "reconnecting",
+		shard: { profile: "default", projectRoot: "/repo/project" },
+		attempt: 2,
+	};
+	statusLine.setServerStatus(snapshot);
+	const rendered = statusLine
+		.render(100)
+		.join("\n")
+		.replace(/\x1b\[[0-9;]*m/g, "");
+	expect(rendered).toContain("server reconnecting");
 });

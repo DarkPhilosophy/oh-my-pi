@@ -8,6 +8,7 @@ import {
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
 import { APP_NAME } from "@oh-my-pi/pi-utils";
+import { type DaemonConnectionSnapshot, formatDaemonWelcomeStatus } from "../../daemon/status";
 import { theme } from "../../modes/theme/theme";
 import tipsText from "./tips.txt" with { type: "text" };
 
@@ -142,6 +143,7 @@ export class WelcomeComponent implements Component {
 	#animStart: number | null = null;
 	#animTimer: Timer | null = null;
 	#selectedTip: string | undefined;
+	#serverStatus: DaemonConnectionSnapshot = { state: "direct" };
 	// Render cache: the welcome box is the first transcript-area component, so
 	// returning a stable array reference keeps the whole frame prefix stable.
 	// Bypassed while the intro animation runs (every frame differs).
@@ -215,6 +217,10 @@ export class WelcomeComponent implements Component {
 		this.invalidate();
 	}
 
+	setServerStatus(snapshot: DaemonConnectionSnapshot): void {
+		this.#serverStatus = snapshot;
+		this.invalidate();
+	}
 	render(termWidth: number): readonly string[] {
 		const animating = this.#animStart != null;
 		if (!animating && this.#cachedLines && this.#cachedWidth === termWidth) {
@@ -270,6 +276,7 @@ export class WelcomeComponent implements Component {
 			"",
 			this.#centerText(theme.fg("muted", this.modelName), leftCol),
 			this.#centerText(theme.fg("borderMuted", this.providerName), leftCol),
+			...formatDaemonWelcomeStatus(this.#serverStatus, leftCol).map(line => this.#centerText(line, leftCol)),
 		];
 
 		// Right column separator
