@@ -685,7 +685,8 @@ export class AdvisorRuntime {
 							if (rePrime) this.onTurnEnd(rePrime);
 							continue;
 						}
-						// Epoch guard after the async error hook.
+						// The hook awaits; a reset during it invalidates this batch like the
+						// prompt await above — drop it instead of requeueing stale content.
 						if (this.#epoch !== epoch) continue;
 						this.#consecutiveFailures++;
 						if (this.#consecutiveFailures >= 3) {
