@@ -401,6 +401,9 @@ export class ExtensionUiController {
 			// preserved — deleting first would make right-side widgets jump below siblings.
 			this.#disposeRightWidgetEntry(this.#rightWidgets.get(key));
 			this.#rightWidgets.set(key, nextEntry);
+			if (nextEntry.kind === "blocks" && nextEntry.blocks.length === 0) {
+				this.#widgetLayoutCache.delete(key);
+			}
 			this.#flushRightWidgets();
 			this.#rebuildHookWidgets();
 			return;
