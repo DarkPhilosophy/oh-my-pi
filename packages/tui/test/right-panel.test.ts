@@ -370,7 +370,7 @@ describe("TUI.setRightPanel", () => {
 		}
 	});
 
-	it("keeps right panel off an OSC 66 reservation row whose heading scrolled just above the window", async () => {
+	it("keeps right panel off a scale-2 OSC 66 reservation row whose heading scrolled just above the window", async () => {
 		const term = new VirtualTerminal(80, 12, 1000);
 		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
 		const heading = "\x1b]66;s=2;Hello\x1b\\";
@@ -379,6 +379,27 @@ describe("TUI.setRightPanel", () => {
 		// window[0]. The forward-only occupancy scan can't see the off-screen heading;
 		// the boundary check must still mark window[0] occupied so the panel skips it.
 		const chat = new Lines([heading, "", ...Array.from({ length: 11 }, () => "")]);
+		tui.addChild(chat);
+		tui.setRightPanel(() => [panel(8)], [chat]);
+		tui.start();
+		await settle(term);
+		try {
+			const widgetRows = term.getViewport().flatMap((line, i) => (line.includes("┌") ? [i] : []));
+			expect(widgetRows.length).toBe(1); // panel placed
+			expect(widgetRows[0]).toBeGreaterThanOrEqual(1); // never on the reserved row 0
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("keeps right panel off a scale-3 OSC 66 reservation row whose heading scrolled just above the window", async () => {
+		const term = new VirtualTerminal(80, 12, 1000);
+		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
+		const heading = "\x1b]66;s=3;Hello\x1b\\";
+		// 14 chat rows → windowTop = 14 - 12 = 2: frame rows 1 and 2 are reserved below
+		// the heading, so row 0 in the viewport is the second reserved row. A 1-row
+		// lookback misses this and would incorrectly allow the panel to occupy row 0.
+		const chat = new Lines([heading, "", "", ...Array.from({ length: 11 }, () => "")]);
 		tui.addChild(chat);
 		tui.setRightPanel(() => [panel(8)], [chat]);
 		tui.start();

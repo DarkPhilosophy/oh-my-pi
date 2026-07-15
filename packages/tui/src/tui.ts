@@ -84,6 +84,24 @@ const OSC66_LINE_PREFIX = "\x1b]66;";
 function isOsc66Line(line: string): boolean {
 	return line.includes(OSC66_LINE_PREFIX);
 }
+const OSC66_SPAN_REGEX = /\x1b\]66;([^;]*);([\s\S]*?)(?:\x07|\x1b\\)/g;
+function getOsc66ReservedRows(line: string): number {
+	OSC66_SPAN_REGEX.lastIndex = 0;
+	let reservedRows = 0;
+	for (let m = OSC66_SPAN_REGEX.exec(line); m !== null; m = OSC66_SPAN_REGEX.exec(line)) {
+		let scale = 1;
+		for (const part of m[1].split(":")) {
+			if (part.indexOf("=") !== 1) continue;
+			const value = Number.parseInt(part.slice(2), 10);
+			if (!Number.isFinite(value)) continue;
+			if (part[0] === "s" && value >= 1 && value <= 7) {
+				scale = value;
+			}
+		}
+		reservedRows = Math.max(reservedRows, scale - 1);
+	}
+	return reservedRows;
+}
 const CURSOR_BEGIN = `${HIDE_CURSOR}${SYNC_OUTPUT_BEGIN}`;
 const CURSOR_BEGIN_NO_SYNC = HIDE_CURSOR;
 const CURSOR_END = SYNC_OUTPUT_END;
@@ -1823,29 +1841,45 @@ export class TUI extends Container {
 			}
 		}
 		// Image lines keep their backward placeholder scan through the dedicated
+		// placeholder channel. Kitty OSC66 headings reserve additional zero-width
+		// rows immediately after the heading.
 		for (let i = 0; i < window.length; i++) {
 			const line = window[i] ?? "";
-			if (isOsc66Line(line)) {
-				occupied[i] = true;
-				const next = window[i + 1];
-				if (next !== undefined && visibleWidth(next) === 0) {
-					occupied[i + 1] = true;
-				}
+			if (!isOsc66Line(line)) continue;
+
+			occupied[i] = true;
+			const reservedRows = getOsc66ReservedRows(line);
+			for (let offset = 1; offset <= reservedRows; offset++) {
+				if (i + offset >= window.length) break;
+				const reservedLine = window[i + offset] ?? "";
+				if (visibleWidth(reservedLine) !== 0) break;
+				occupied[i + offset] = true;
 			}
 		}
-		// Boundary case: the visible window can start ON the reservation row of an
-		// OSC 66 sized heading whose heading line sits just above the window (at
-		// windowTop - 1, scrolled out of view). The forward-only scan above never
-		// sees that heading, so carry the previous frame row in explicitly —
-		// otherwise row 0 stays eligible and a right-panel block would be spliced
-		// into the occupied reservation row, overwriting its lower glyph cells.
-		const reservationRow = windowTop > 0 ? frame[windowTop] : undefined;
-		if (
-			reservationRow !== undefined &&
-			visibleWidth(reservationRow) === 0 &&
-			isOsc66Line(frame[windowTop - 1] ?? "")
-		) {
-			occupied[0] = true;
+		// Boundary case: if the window top is inside a visible reserved region
+		// of an OSC66 heading on the previous frame, mark those rows explicitly.
+		if (windowTop > 0) {
+			for (let headingRow = windowTop - 1; headingRow >= 0; headingRow--) {
+				const headingLine = frame[headingRow];
+				if (headingLine === undefined) break;
+
+				const reservedRows = getOsc66ReservedRows(headingLine);
+				if (reservedRows === 0) {
+					if (visibleWidth(headingLine)) break;
+					continue;
+				}
+
+				for (let offset = 1; offset <= reservedRows; offset++) {
+					const reservedFrameRow = headingRow + offset;
+					const reservedLine = frame[reservedFrameRow];
+					if (reservedLine === undefined) break;
+					if (reservedFrameRow < windowTop) continue;
+					const reservedWindowRow = reservedFrameRow - windowTop;
+					if (reservedWindowRow < 0 || reservedWindowRow >= window.length) continue;
+					occupied[reservedWindowRow] = true;
+				}
+				break;
+			}
 		}
 		const composited = compositeRightPanelsInRange(
 			window,
