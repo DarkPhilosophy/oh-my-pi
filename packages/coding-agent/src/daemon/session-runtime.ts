@@ -407,7 +407,6 @@ export async function createAgentSessionRuntime(
 		clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
 		resetCapabilities();
 		result.session.setSlashCommands(await loadSlashCommands({ cwd }));
-		await result.session.refreshSshTool({ activateIfAvailable: true });
 		await emitAvailableCommands();
 	};
 	const unsubscribeCommandMetadata = result.session.subscribeCommandMetadataChanged(() => {
