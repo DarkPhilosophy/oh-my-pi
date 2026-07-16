@@ -12,6 +12,13 @@
 - Defined graceful daemon session teardown with visible closing state, automatic daemon replacement and session restoration after connection loss, and distinct daemon/session identifiers with profile/project scope in server status.
 
 - Fixed rapid queued steer/follow-up image submissions racing into split or dropped pending entries by serializing queue mutations; added opt-in `coalescing` queue mode to merge rapid consecutive queued user entries while preserving attachments, hidden magic-keyword companions, restore behavior, delivery, and `[Image #N]` marker numbering.
+- Added per-advisor on/off toggle (`enabled: false` in `WATCHDOG.yml`): advisors stay in the roster but their runtime is never built — they show `○` in the status line and `/advisor status` rather than disappearing. Existing configs are backward-compatible (defaults to `true` when absent).
+- Added per-advisor runtime status indicators in the status line (`●` running, `○` paused/no-model, `✕` error/quota-exhausted), truncated to 4 dots + `+` when the roster exceeds 4 advisors.
+- Added real provider quota display (usage percent, window, reset timer) to `/advisor status` and the `/advisor configure` preview.
+
+### Changed
+
+- Enriched `/advisor status` to show per-advisor status glyphs, model, spend breakdown, and quota window for every configured advisor (including disabled ones), replacing the previous single-advisor-only summary.
 ## [17.0.0] - 2026-07-15
 
 ### Breaking Changes
