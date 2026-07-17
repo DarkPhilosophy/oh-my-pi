@@ -56,37 +56,51 @@ function createModelContext(advisorActive: boolean): SegmentContext {
 	};
 }
 
-describe("status line model segment advisor badge", () => {
-	it("appends a success-colored ++ badge when all advisors run", () => {
+describe("status line model segment advisor glyphs", () => {
+	it("renders one success dot per running advisor", () => {
 		const rendered = renderSegment("model", createModelContext(true));
 		expect(rendered.content).toContain("Test Model");
-		expect(rendered.content).toContain(theme.fg("success", "++"));
+		expect(rendered.content).toContain(theme.fg("success", "●"));
+		expect(rendered.content).not.toContain("++");
 	});
 
-	it("colors the badge by the worst roster status", () => {
+	it("colors each glyph by ITS OWN advisor status, quota and error both red ✕", () => {
 		const ctx = createModelContext(true);
 		ctx.session.getAdvisorStatusOverview = () => ({
 			configured: true,
 			advisors: [
 				{ name: "a", status: "running" },
 				{ name: "b", status: "quota_exhausted" },
+				{ name: "c", status: "error" },
+				{ name: "d", status: "paused" },
 			],
 		});
-		expect(renderSegment("model", ctx).content).toContain(theme.fg("warning", "++"));
-		ctx.session.getAdvisorStatusOverview = () => ({
-			configured: true,
-			advisors: [
-				{ name: "a", status: "error" },
-				{ name: "b", status: "quota_exhausted" },
-			],
-		});
-		expect(renderSegment("model", ctx).content).toContain(theme.fg("error", "++"));
+		const content = renderSegment("model", ctx).content;
+		expect(content).toContain(theme.fg("success", "●"));
+		expect(content).toContain(theme.fg("error", "✕"));
+		expect(content).toContain(theme.fg("dim", "○"));
+		// Exactly one glyph per advisor: 4 advisors, no overflow marker.
+		const plain = Bun.stripANSI(content);
+		expect((plain.match(/[●○✕]/g) ?? []).length).toBe(4);
+		expect(plain).not.toContain("+");
 	});
 
-	it("omits the badge when the advisor is inactive", () => {
+	it("truncates rosters beyond four to 4 dots plus an overflow +", () => {
+		const ctx = createModelContext(true);
+		ctx.session.getAdvisorStatusOverview = () => ({
+			configured: true,
+			advisors: Array.from({ length: 6 }, (_, i) => ({ name: `a${i}`, status: "running" as const })),
+		});
+		const plain = Bun.stripANSI(renderSegment("model", ctx).content);
+		expect((plain.match(/●/g) ?? []).length).toBe(4);
+		expect(plain).toContain("●●●●+");
+	});
+
+	it("omits the glyphs when the advisor is inactive", () => {
 		const rendered = renderSegment("model", createModelContext(false));
 		expect(rendered.content).toContain("Test Model");
-		expect(rendered.content).not.toContain("++");
+		const plain = Bun.stripANSI(rendered.content);
+		expect(plain).not.toMatch(/[●○✕]/);
 	});
 });
 
