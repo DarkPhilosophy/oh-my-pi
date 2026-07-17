@@ -1024,6 +1024,58 @@ describe("advisor", () => {
 			expect(runtime.backlog).toBe(0);
 		});
 
+		it("defers and slices a large MULTIBYTE delta with secrets configured, delivering it intact", async () => {
+			// Pins the slice-bound contract for non-ASCII payloads: the size
+			// probe measures string length (UTF-16 code units) — the unit
+			// synchronous regex scanning and formatting actually cost in — so a
+			// CJK-heavy delta (~3 UTF-8 bytes per unit) still trips the deferred
+			// path, gets obfuscated and formatted in bounded slices, and arrives
+			// complete: first and last messages, secret redacted throughout.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			// 12 messages x ~40K CJK units ≈ 480K units total: > FAST_RENDER_MAX_CHARS
+			// while staying far under the 100-message count gate.
+			const cjk = "秘密のデータ漏洩防止テスト".repeat(3_400);
+			const messages: AgentMessage[] = Array.from(
+				{ length: 12 },
+				(_, i) =>
+					({
+						role: "user",
+						content: `multibyte-${i} sk-supersecret-token ${cjk}`,
+						timestamp: i + 1,
+					}) as AgentMessage,
+			);
+			const obfuscator = {
+				hasSecrets: () => true,
+				obfuscate: (text: string) => text.replaceAll("sk-supersecret-token", "[REDACTED]"),
+			} as unknown as NonNullable<AdvisorRuntimeHost["obfuscator"]>;
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				obfuscator,
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			// The deferred path renders in the drain loop; nothing prompts
+			// synchronously at this tick.
+			expect(promptInputs).toHaveLength(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("multibyte-0 ");
+			expect(promptInputs[0]).toContain("multibyte-11 ");
+			// Secrets redacted across every slice; raw token never leaks.
+			expect(promptInputs[0]).toContain("[REDACTED]");
+			expect(promptInputs[0]).not.toContain("sk-supersecret-token");
+			runtime.dispose();
+		}, 15_000);
+
 		it("caps maintainContext calls per drain cycle when arrivals never go stable", async () => {
 			// Regression guard for MAX_COALESCE_ROUNDS=3: during the first drain cycle,
 			// each maintainContext call pushes a new turn (queue never goes stable on its
