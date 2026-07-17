@@ -2,7 +2,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { estimateTokens } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils";
 import { obfuscateToolArguments, type SecretObfuscator } from "../secrets/obfuscator";
 import { formatSessionHistoryMarkdown, PRIMARY_CONTEXT_CUSTOM_TYPES } from "../session/session-history-format";
 
@@ -606,12 +606,19 @@ export class AdvisorRuntime {
 			.filter(message => !(message.role === "custom" && message.customType === "advisor"))
 			.map(message => this.#dedupContextMessage(message));
 		if (delta.length === 0) return null;
-		const obfuscator = this.host.obfuscator;
-		const formattedDelta = obfuscator?.hasSecrets() ? obfuscateAdvisorDelta(obfuscator, delta) : delta;
-		const md = formatSessionHistoryMarkdown(formattedDelta, ADVISOR_RENDER_OPTIONS);
-		if (!md.trim()) return null;
-		const heading = wip ? "### Session update [in progress — more steps follow]" : "### Session update";
-		return `${heading}\n\n${md}`;
+		// Phase breadcrumb: this is THE synchronous formatter (obfuscation +
+		// markdown in one stretch) — a watchdog block here must say so.
+		pushLoopPhase("advisor:render");
+		try {
+			const obfuscator = this.host.obfuscator;
+			const formattedDelta = obfuscator?.hasSecrets() ? obfuscateAdvisorDelta(obfuscator, delta) : delta;
+			const md = formatSessionHistoryMarkdown(formattedDelta, ADVISOR_RENDER_OPTIONS);
+			if (!md.trim()) return null;
+			const heading = wip ? "### Session update [in progress — more steps follow]" : "### Session update";
+			return `${heading}\n\n${md}`;
+		} finally {
+			popLoopPhase();
+		}
 	}
 
 	/**
@@ -678,7 +685,12 @@ export class AdvisorRuntime {
 					await Bun.sleep(0);
 					if (this.disposed || this.#epoch !== epoch) return false;
 				}
-				obfuscated.push(...obfuscateAdvisorDelta(obfuscator, delta.slice(start, end)));
+				pushLoopPhase("advisor:render-slice:obfuscate");
+				try {
+					obfuscated.push(...obfuscateAdvisorDelta(obfuscator, delta.slice(start, end)));
+				} finally {
+					popLoopPhase();
+				}
 				start = end;
 				count = 0;
 				chars = 0;
@@ -724,7 +736,12 @@ export class AdvisorRuntime {
 					await Bun.sleep(0);
 					if (this.disposed || this.#epoch !== epoch) return false;
 				}
-				parts.push(formatSessionHistoryMarkdown(formattedDelta.slice(start, end), chunkOptions));
+				pushLoopPhase("advisor:render-slice:format");
+				try {
+					parts.push(formatSessionHistoryMarkdown(formattedDelta.slice(start, end), chunkOptions));
+				} finally {
+					popLoopPhase();
+				}
 				start = end;
 				count = 0;
 				chars = 0;

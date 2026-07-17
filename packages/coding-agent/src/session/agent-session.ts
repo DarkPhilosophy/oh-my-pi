@@ -138,8 +138,10 @@ import {
 	isBunTestRuntime,
 	isEnoent,
 	logger,
+	popLoopPhase,
 	postmortem,
 	prompt,
+	pushLoopPhase,
 	relativePathWithinRoot,
 	Snowflake,
 	withTimeout,
@@ -2798,6 +2800,10 @@ export class AgentSession {
 			if (this.#advisors.length > 0) {
 				for (const a of this.#advisors) {
 					if (a.runtime.disposed) continue;
+					// Phase breadcrumb: onTurnEnd's synchronous stretch (size probe,
+					// small-delta render) runs on the primary's turn-end stack — a
+					// watchdog block here must name the advisor, not "unknown".
+					pushLoopPhase(`advisor:turn-end:${a.name}`);
 					try {
 						a.runtime.onTurnEnd(messages, { willContinue: context?.willContinue });
 					} catch (advisorErr) {
@@ -2808,6 +2814,8 @@ export class AgentSession {
 							advisor: a.name,
 							err: String(advisorErr),
 						});
+					} finally {
+						popLoopPhase();
 					}
 				}
 				const syncBacklog = this.settings.get("advisor.syncBacklog");

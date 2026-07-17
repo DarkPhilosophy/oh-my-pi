@@ -143,23 +143,31 @@ const modelSegment: StatusLineSegment = {
 		// `statusLineModel` is aliased to `accent` in many themes, so the badge
 		// uses status colors to stay visibly distinct from the model name color.
 		let content = theme.fg("statusLineModel", withIcon(modelIcon, modelName));
-		// Advisor "++" badge, colored by the worst status in the roster:
-		// success = all running, warning = quota-exhausted, error = failed,
-		// dim = everything paused/no-model. Per-advisor detail lives in
+		// Per-advisor status glyphs — one dot per advisor, colored by ITS OWN
+		// state (same mapping as /advisor status): ● running, ○ paused/no
+		// model, ✕ error/quota-exhausted. Rosters beyond 4 truncate to four
+		// dots plus a "+" overflow marker: ●●●●+. Per-advisor detail lives in
 		// `/advisor status`.
 		// Optional chaining: lightweight session doubles (test mocks) that don't
 		// implement getAdvisorStatusOverview skip the badge instead of crashing.
 		const advisorStats = ctx.session.getAdvisorStatusOverview?.();
 		if (advisorStats?.configured && advisorStats.advisors.length > 0) {
-			const statuses = advisorStats.advisors.map(a => a.status);
-			const badgeColor = statuses.includes("error")
-				? "error"
-				: statuses.includes("quota_exhausted")
-					? "warning"
-					: statuses.includes("running")
-						? "success"
-						: "dim";
-			content += theme.fg(badgeColor, "++");
+			const glyphs = advisorStats.advisors
+				.slice(0, 4)
+				.map(a => {
+					switch (a.status) {
+						case "running":
+							return theme.fg("success", "●");
+						case "error":
+						case "quota_exhausted":
+							return theme.fg("error", "✕");
+						default:
+							return theme.fg("dim", "○");
+					}
+				})
+				.join("");
+			const overflow = advisorStats.advisors.length > 4 ? theme.fg("dim", "+") : "";
+			content += glyphs + overflow;
 		}
 		if (tail) {
 			content += theme.fg("statusLineModel", tail);
