@@ -2095,6 +2095,9 @@ export class AgentSession {
 	#xdevRegistry: XdevRegistry | undefined;
 	/** Names of discoverable tools currently mounted under `xd://` (dynamic mounts only, not built-in devices). */
 	#mountedXdevToolNames = new Set<string>();
+	/** Coalesced xd:// mount delta not yet announced to the model; delivered as a
+	 *  hidden notice alongside the next prompt (see {@link #notifyXdevMountDelta}). */
+	#pendingXdevMountDelta: { added: Set<string>; removed: Set<string> } | undefined;
 
 	// TTSR manager for time-traveling stream rules
 	#ttsrManager: TtsrManager | undefined = undefined;
@@ -2242,6 +2245,17 @@ export class AgentSession {
 	 *  queue was consumed normally or a new turn already started. */
 	#drainStrandedQueuedMessages(): void {
 		if (this.#abortInProgress) return;
+		// Session transitions (newSession/`/new`, compact, model-switch, session-switch,
+		// dispose) call #disconnectFromAgent() BEFORE `await abort()`, so abort's own
+		// finally lands here with no listener attached. Auto-resuming now would snapshot
+		// the still-old context (the transition hasn't reached agent.reset() yet), start a
+		// stale provider turn that races the reset, and — once reconnected — append its
+		// output to the fresh session (issue #5800). A disconnected session never owns the
+		// queue: the transition does. newSession/switchSession drop the queue (reset /
+		// clearAllQueues), so nothing survives; compaction preserves it and re-drains itself
+		// after #reconnectToAgent (see compact()'s finally); an explicit prompt flushes it
+		// in every case.
+		if (this.#unsubscribeAgent === undefined) return;
 		// A concern steered into a resumed streaming run after a user interrupt can
 		// strand at the turn tail (steered past the loop's final boundary poll). While
 		// that interrupt's suppression is still in effect, reclaim such advisor steers
@@ -7307,35 +7321,62 @@ export class AgentSession {
 	}
 
 	/**
-	 * Announce a mid-session `xd://` mount delta to the model as a steered
-	 * system notice instead of rewriting the system prompt: the prompt (and
-	 * its provider cache prefix) stays byte-stable across MCP connects and
-	 * disconnects, and the model learns about new devices from the notice
-	 * (docs + schema stay one `read xd://<tool>` away). The full docs join
-	 * the system prompt opportunistically on the next unrelated rebuild.
+	 * Record a mid-session `xd://` mount delta for the model without rewriting
+	 * the system prompt: the prompt (and its provider cache prefix) stays
+	 * byte-stable across MCP connects and disconnects. The delta is NOT steered
+	 * immediately — a steered notice landing at a run's stop boundary (or while
+	 * the session is idle) forces an unsolicited extra assistant turn — it is
+	 * coalesced into {@link #pendingXdevMountDelta} and rides along with the
+	 * next prompt (docs + schema stay one `read xd://<tool>` away). The full
+	 * docs join the system prompt opportunistically on the next unrelated
+	 * rebuild.
 	 */
 	#notifyXdevMountDelta(previousMounted: ReadonlySet<string>): void {
 		const registry = this.#xdevRegistry;
 		if (!registry) return;
 		const current = this.#mountedXdevToolNames;
 		const addedNames = [...current].filter(name => !previousMounted.has(name));
-		const removed = [...previousMounted].filter(name => !current.has(name)).map(name => ({ name }));
-		if (addedNames.length === 0 && removed.length === 0) return;
-		const summaries = new Map(registry.entries().map(entry => [entry.name, entry.summary]));
-		const added = addedNames.map(name => ({ name, summary: summaries.get(name) ?? "" }));
-		this.agent.steer({
+		const removedNames = [...previousMounted].filter(name => !current.has(name));
+		if (addedNames.length === 0 && removedNames.length === 0) return;
+		// Coalesce against the unannounced delta: an unmount cancels a pending
+		// mount the model never learned about, and a remount cancels a pending
+		// unmount.
+		const pending = this.#pendingXdevMountDelta ?? { added: new Set<string>(), removed: new Set<string>() };
+		for (const name of addedNames) {
+			if (!pending.removed.delete(name)) pending.added.add(name);
+		}
+		for (const name of removedNames) {
+			if (!pending.added.delete(name)) pending.removed.add(name);
+		}
+		this.#pendingXdevMountDelta = pending.added.size > 0 || pending.removed.size > 0 ? pending : undefined;
+		if (this.settings.get("startup.quiet")) return;
+		const parts: string[] = [];
+		if (addedNames.length > 0) parts.push(`mounted ${addedNames.join(", ")}`);
+		if (removedNames.length > 0) parts.push(`unmounted ${removedNames.join(", ")}`);
+		this.emitNotice("info", `xd://: ${parts.join("; ")}`, "xdev");
+	}
+
+	/**
+	 * Render and consume the pending xd:// mount delta as a hidden notice, or
+	 * `undefined` when nothing unannounced is queued. Called from the prompt
+	 * paths so the notice rides along with user input instead of forcing its
+	 * own model turn.
+	 */
+	#takePendingXdevMountNotice(): CustomMessage | undefined {
+		const pending = this.#pendingXdevMountDelta;
+		if (!pending) return undefined;
+		this.#pendingXdevMountDelta = undefined;
+		const summaries = new Map(this.#xdevRegistry?.entries().map(entry => [entry.name, entry.summary]) ?? []);
+		const added = [...pending.added].map(name => ({ name, summary: summaries.get(name) ?? "" }));
+		const removed = [...pending.removed].map(name => ({ name }));
+		return {
 			role: "custom",
 			customType: XDEV_MOUNT_NOTICE_MESSAGE_TYPE,
 			content: prompt.render(xdevMountNoticePrompt, { added, removed }),
 			attribution: "agent",
 			display: false,
 			timestamp: Date.now(),
-		});
-		if (this.settings.get("startup.quiet")) return;
-		const parts: string[] = [];
-		if (added.length > 0) parts.push(`mounted ${added.map(entry => entry.name).join(", ")}`);
-		if (removed.length > 0) parts.push(`unmounted ${removed.map(entry => entry.name).join(", ")}`);
-		this.emitNotice("info", `xd://: ${parts.join("; ")}`, "xdev");
+		};
 	}
 
 	/**
@@ -8693,14 +8734,19 @@ export class AgentSession {
 				messages.push(...options.prependMessages);
 			}
 
-			messages.push(message);
-
 			// Early bail-out: if a newer abort/prompt cycle started during setup,
 			// return before mutating shared state (nextTurn messages, system prompt).
 			if (this.#promptGeneration !== generation) {
 				return;
 			}
 
+			// A pending xd:// delta accompanies the next user-authored prompt,
+			// never an agent-initiated continuation.
+			const xdevMountNotice = isUserQueuedMessage(message) ? this.#takePendingXdevMountNotice() : undefined;
+			if (xdevMountNotice) {
+				messages.push(xdevMountNotice);
+			}
+			messages.push(message);
 			// Inject any pending "nextTurn" messages as context alongside the user message
 			for (const msg of this.#pendingNextTurnMessages) {
 				messages.push(msg);
@@ -11014,6 +11060,13 @@ export class AgentSession {
 				this.#compactionAbortController = undefined;
 			}
 			this.#reconnectToAgent();
+			// Compaction disconnected before `await abort()`, so abort's finally drain
+			// (and any steer/follow-up that arrived mid-compaction — async IRC, an
+			// `xd://` mount notice, an SDK/RPC steer) was suppressed while disconnected
+			// (issue #5800). Unlike `/new`/switchSession, compaction preserves the agent
+			// queues, so nothing else resumes them: re-drain now that the listener is back
+			// and `isCompacting` is false, or the queued turn hangs until the next prompt.
+			this.#drainStrandedQueuedMessages();
 		}
 	}
 
@@ -11912,11 +11965,12 @@ export class AgentSession {
 	#isEmptyAssistantStop(assistantMessage: AssistantMessage): boolean {
 		switch (assistantMessage.stopReason) {
 			case "stop":
-				// Reasoning/thinking-only turns are not actionable: they do not
-				// answer the user and do not give the agent loop a tool call to run.
+				// Unsigned thinking alone is not actionable, but a signature is
+				// provider-authenticated content and makes the stop terminal.
 				for (const content of assistantMessage.content) {
 					if (content.type === "toolCall") return false;
 					if (content.type === "text" && hasNonWhitespace(content.text)) return false;
+					if (content.type === "thinking" && hasNonWhitespace(content.thinkingSignature ?? "")) return false;
 				}
 				return true;
 			case "toolUse":
