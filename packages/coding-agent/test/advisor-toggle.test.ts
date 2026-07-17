@@ -340,4 +340,51 @@ describe("AgentSession advisor toggle", () => {
 			vi.restoreAllMocks();
 		}
 	});
+	it("marks thrown usage limits classified only by canonical status (402/opaque)", async () => {
+		const mock = createMockModel({ responses: [{ content: ["primary complete"] }] });
+		const primaryAgent = new Agent({
+			initialState: {
+				model,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: mock.stream,
+		});
+		const settings = Settings.isolated({ "compaction.enabled": false });
+		settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+		const quotaSession = new AgentSession({
+			agent: primaryAgent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			advisorTools: [],
+		});
+
+		try {
+			expect(quotaSession.setAdvisorEnabled(true)).toBe(true);
+			const advisorAgent = quotaSession.getAdvisorAgent();
+			if (!advisorAgent) throw new Error("Expected advisor agent to exist");
+			// Isolate the canonical-outcome fallback: a string statusCode is
+			// invisible to AIError's structural classifier (numeric props only),
+			// and the empty message parses to nothing — only
+			// extractHttpStatusFromError + isUsageLimitOutcome (opaque 402 =
+			// out of credits) recognize this shape.
+			const thrown = Object.assign(new Error(""), { statusCode: "402" });
+			expect(AIError.isUsageLimit(thrown)).toBe(false);
+			vi.spyOn(advisorAgent, "prompt").mockRejectedValue(thrown);
+			const markUsageLimitReached = vi
+				.spyOn(authStorage, "markUsageLimitReached")
+				.mockResolvedValue({ switched: false });
+
+			await quotaSession.prompt("Trigger advisor");
+			await quotaSession.waitForIdle();
+
+			expect(markUsageLimitReached).toHaveBeenCalledTimes(1);
+			expect(markUsageLimitReached.mock.calls[0]?.[0]).toBe(model.provider);
+		} finally {
+			await quotaSession.dispose();
+			vi.restoreAllMocks();
+		}
+	});
 });

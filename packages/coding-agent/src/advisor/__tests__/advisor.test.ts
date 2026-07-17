@@ -964,6 +964,376 @@ describe("advisor", () => {
 			expect(maintainCalls).toBe(2);
 		});
 
+		it("renders a DEFERRED large late delta before coalescing it into the batch", async () => {
+			// Regression for the codex finding on the size-gated defer path: a
+			// large delta (>100 messages) arriving while an earlier batch awaits
+			// maintainContext ships with a stale renderRevision and EMPTY text.
+			// The coalescing merge used to concatenate that placeholder text
+			// verbatim — the advisor prompt silently omitted the whole turn while
+			// its turns were counted and drained. The late delta must be
+			// chunk-rendered from its raw messages before merging.
+			const promptInputs: string[] = [];
+			const { promise: firstMaintainStarted, resolve: startFirstMaintain } = Promise.withResolvers<void>();
+			const { promise: finishFirstMaintain, resolve: releaseFirstMaintain } = Promise.withResolvers<boolean>();
+			const { promise: promptStarted, resolve: startPrompt } = Promise.withResolvers<void>();
+			let maintainCalls = 0;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					startPrompt();
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "first", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				maintainContext: async () => {
+					maintainCalls++;
+					if (maintainCalls === 1) {
+						startFirstMaintain();
+						return await finishFirstMaintain;
+					}
+					return false;
+				},
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.onTurnEnd();
+			await firstMaintainStarted;
+
+			// A LARGE turn (count > RENDER_CHUNK_MESSAGES) arrives while the
+			// first maintainContext is still awaiting: it queues deferred.
+			for (let i = 0; i < 120; i++) {
+				messages.push({ role: "user", content: `late-large-${i}`, timestamp: 2 + i } as AgentMessage);
+			}
+			runtime.onTurnEnd();
+
+			releaseFirstMaintain(false);
+			await promptStarted;
+
+			// One coalesced prompt containing BOTH the first delta and the full
+			// content of the deferred large delta — nothing silently dropped.
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("first");
+			expect(promptInputs[0]).toContain("late-large-0");
+			expect(promptInputs[0]).toContain("late-large-119");
+			await settleUntil(() => runtime.backlog === 0);
+			expect(runtime.backlog).toBe(0);
+		});
+
+		it("defers and slices a large MULTIBYTE delta with secrets configured, delivering it intact", async () => {
+			// Pins the slice-bound contract for non-ASCII payloads: the size
+			// probe measures string length (UTF-16 code units) — the unit
+			// synchronous regex scanning and formatting actually cost in — so a
+			// CJK-heavy delta (~3 UTF-8 bytes per unit) still trips the deferred
+			// path, gets obfuscated and formatted in bounded slices, and arrives
+			// complete: first and last messages, secret redacted throughout.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			// 12 messages x ~40K CJK units ≈ 480K units total: > FAST_RENDER_MAX_CHARS
+			// while staying far under the 100-message count gate.
+			const cjk = "秘密のデータ漏洩防止テスト".repeat(3_400);
+			const messages: AgentMessage[] = Array.from(
+				{ length: 12 },
+				(_, i) =>
+					({
+						role: "user",
+						content: `multibyte-${i} sk-supersecret-token ${cjk}`,
+						timestamp: i + 1,
+					}) as AgentMessage,
+			);
+			const obfuscator = {
+				hasSecrets: () => true,
+				obfuscate: (text: string) => text.replaceAll("sk-supersecret-token", "[REDACTED]"),
+			} as unknown as NonNullable<AdvisorRuntimeHost["obfuscator"]>;
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				obfuscator,
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			// The deferred path renders in the drain loop; nothing prompts
+			// synchronously at this tick.
+			expect(promptInputs).toHaveLength(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("multibyte-0 ");
+			expect(promptInputs[0]).toContain("multibyte-11 ");
+			// Secrets redacted across every slice; raw token never leaks.
+			expect(promptInputs[0]).toContain("[REDACTED]");
+			expect(promptInputs[0]).not.toContain("sk-supersecret-token");
+			runtime.dispose();
+		}, 15_000);
+
+		it("defers a delta whose bulk hides in NESTED tool-call arguments", async () => {
+			// Regression: the size probe used a depth cutoff that skipped
+			// arrays/objects below `arguments`, so a batch-edit style call with
+			// multi-MB `arguments.edits[].newText` payloads was classified as
+			// small and serialized synchronously by the formatter's
+			// primaryArg() JSON.stringify fallback. The probe is now
+			// depth-unbounded (with a cycle guard): the nested payload must
+			// trip the deferred path and still arrive rendered.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const edits = Array.from({ length: 8 }, (_, i) => ({
+				path: `src/file-${i}.ts`,
+				newText: `nested-payload-${i} ${"x".repeat(64 * 1024)}`,
+			}));
+			const messages: AgentMessage[] = [
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "batch-1", name: "batch_edit", arguments: { edits } }],
+					timestamp: 1,
+				} as unknown as AgentMessage,
+			];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			// The nested bulk must be visible to the probe: no synchronous
+			// render at this tick.
+			expect(promptInputs).toHaveLength(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("batch_edit");
+			runtime.dispose();
+		}, 15_000);
+
+		it("defers a delta whose bulk is a NON-STRING numeric argument payload", async () => {
+			// Regression: the size probe charged zero for numbers/booleans/null,
+			// so a tool call like `{ values: [1, 2, ...] }` with a multi-MB
+			// numeric payload and no primary string arg was classified small —
+			// and primaryArg()'s JSON.stringify fallback serialized it
+			// synchronously on the turn-end path. Primitives now charge their
+			// conservative JSON width: the payload must defer (no synchronous
+			// render at the turn-end tick) and still deliver.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			// 40K numbers x 25 chars conservative width = ~1M estimated units.
+			const values = Array.from({ length: 40_000 }, (_, i) => i * 1_000_003);
+			const messages: AgentMessage[] = [
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "num-1", name: "bulk_ingest", arguments: { values } }],
+					timestamp: 1,
+				} as unknown as AgentMessage,
+			];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			expect(promptInputs).toHaveLength(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("bulk_ingest");
+			runtime.dispose();
+		}, 15_000);
+
+		it("defers a delta whose bulk is one SHARED object referenced by two arguments", async () => {
+			// Regression: the probe's visited-set skipped already-seen objects,
+			// but the formatter's JSON fallback serializes EVERY occurrence of
+			// a shared (acyclic) reference. A ~150K-unit object hung on two
+			// argument keys was estimated once (~150K < budget) while the sync
+			// format cost ~300K — over the stall gate. Shared refs now charge
+			// per occurrence (only true cycles are conservatively oversized),
+			// so this delta must defer and still deliver exactly once.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const shared = { blob: "s".repeat(150 * 1024) };
+			const messages: AgentMessage[] = [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "shared-1",
+							name: "dual_ref",
+							arguments: { first: shared, second: shared },
+						},
+					],
+					timestamp: 1,
+				} as unknown as AgentMessage,
+			];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			expect(promptInputs).toHaveLength(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("dual_ref");
+			runtime.dispose();
+		}, 15_000);
+
+		it("defers a delta whose bulk is a WIDE object of keys with empty values", async () => {
+			// Regression: the probe charged only values, but the JSON fallback
+			// serializes keys and syntax too — 30K keys mapping to empty
+			// strings cost ~0 in the old probe while stringifying well past
+			// the stall gate. Keys now charge `key.length + 4`; the delta must
+			// defer and still deliver.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const wide = Object.fromEntries(Array.from({ length: 30_000 }, (_, i) => [`config_key_${i}`, ""]));
+			const messages: AgentMessage[] = [
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "wide-1", name: "wide_config", arguments: { entries: wide } }],
+					timestamp: 1,
+				} as unknown as AgentMessage,
+			];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			expect(promptInputs).toHaveLength(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("wide_config");
+			runtime.dispose();
+		}, 15_000);
+
+		it("defers a delta whose bulk is a wide array of EMPTY strings", async () => {
+			// Regression: array elements paid no separator cost, so 200K empty
+			// strings estimated ~0 while join(', ')/JSON output several
+			// hundred KB on the sync path. Elements now charge a flat
+			// separator width; the delta must defer and still deliver.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const values = new Array(200_000).fill("");
+			const messages: AgentMessage[] = [
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "empties-1", name: "bulk_list", arguments: { values } }],
+					timestamp: 1,
+				} as unknown as AgentMessage,
+			];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			expect(promptInputs).toHaveLength(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("bulk_list");
+			runtime.dispose();
+		}, 15_000);
+
+		it("delivers a small prefix plus an oversized delayed EXPANDED EDIT DIFF exactly once", async () => {
+			// Regression for slice-budget accounting: a tiny edit toolCall
+			// inlines its (much later, multi-hundred-KB) toolResult via the
+			// shared cross-slice index. Only `details.diff` renders verbatim
+			// (under expandEditDiffs) — plain result content stays a summary
+			// line — so the payload rides the diff. The result's cost is
+			// charged to the calling slice and the accumulated prefix is
+			// flushed BEFORE the over-budget pair is admitted; the output must
+			// contain the prefix, the call line, and the diff payload exactly
+			// once (inlined at the call, consumed at its own position).
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const prefix: AgentMessage[] = Array.from(
+				{ length: 110 },
+				(_, i) => ({ role: "user", content: `prefix-${i}`, timestamp: i + 1 }) as AgentMessage,
+			);
+			const call = {
+				role: "assistant",
+				content: [{ type: "toolCall", id: "huge-1", name: "edit", arguments: { path: "big.ts" } }],
+				timestamp: 200,
+			} as unknown as AgentMessage;
+			// An edit result whose expanded diff (rendered verbatim under
+			// expandEditDiffs) carries the multi-hundred-KB payload.
+			const result = {
+				role: "toolResult",
+				toolCallId: "huge-1",
+				toolName: "edit",
+				content: [{ type: "text", text: "ok" }],
+				details: { diff: `RESULT-MARKER-ONCE\n+${"y".repeat(400 * 1024)}` },
+				isError: false,
+				timestamp: 201,
+			} as unknown as AgentMessage;
+			const messages: AgentMessage[] = [...prefix, call, result];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			expect(promptInputs).toHaveLength(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs).toHaveLength(1);
+			const rendered = promptInputs[0]!;
+			expect(rendered).toContain("prefix-0");
+			expect(rendered).toContain("prefix-109");
+			// The call renders as a tool line with the diff fenced beneath it.
+			expect(rendered).toContain("→ edit(");
+			expect(rendered).toContain("```diff");
+			const occurrences = rendered.split("RESULT-MARKER-ONCE").length - 1;
+			expect(occurrences).toBe(1);
+			runtime.dispose();
+		}, 15_000);
+
 		it("caps maintainContext calls per drain cycle when arrivals never go stable", async () => {
 			// Regression guard for MAX_COALESCE_ROUNDS=3: during the first drain cycle,
 			// each maintainContext call pushes a new turn (queue never goes stable on its
@@ -1806,6 +2176,204 @@ describe("advisor", () => {
 			expect(promptInputs[2]).not.toContain("ancient-primary-two");
 			expect(resetCount).toBe(1);
 		});
+
+		it("preserves an OVERSIZED batch intact across a provider-overflow recovery retry", async () => {
+			// The recovery branch re-renders the same bounded raw batch after a
+			// context reset; that batch can carry the same multi-hundred-KB
+			// payloads the chunked path exists for. This test pins the OUTPUT
+			// contract (retry delivered, payload exactly once, no seeded
+			// history replay); the recovery render routing through
+			// #formatRawDeltaChunked is a source-level guarantee — a sync
+			// re-render would produce identical output, just with a stall.
+			const overflowMessage = "context_length_exceeded: Your input exceeds the context window of this model.";
+			const promptInputs: string[] = [];
+			const state: { messages: AgentMessage[]; error?: string } = {
+				messages: [{ role: "user", content: "existing advisor context", timestamp: 1 } as AgentMessage],
+			};
+			let promptCalls = 0;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					promptCalls++;
+					state.error = promptCalls === 1 ? overflowMessage : undefined;
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "seeded-primary", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.seedTo(messages.length);
+
+			messages.push(
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "ov-1", name: "edit", arguments: { path: "big.ts" } }],
+					timestamp: 2,
+				} as unknown as AgentMessage,
+				{
+					role: "toolResult",
+					toolCallId: "ov-1",
+					toolName: "edit",
+					content: [{ type: "text", text: "ok" }],
+					details: { diff: `OVERSIZED-RECOVERY-MARKER\n+${"z".repeat(400 * 1024)}` },
+					isError: false,
+					timestamp: 3,
+				} as unknown as AgentMessage,
+			);
+			runtime.onTurnEnd(messages);
+			await settleUntil(() => promptInputs.length >= 2 && runtime.backlog === 0, 10_000);
+
+			expect(promptInputs).toHaveLength(2);
+			// The recovery retry re-rendered the same oversized batch: marker
+			// present exactly once in each attempt, seeded history absent.
+			for (const input of promptInputs) {
+				expect(input.split("OVERSIZED-RECOVERY-MARKER").length - 1).toBe(1);
+				expect(input).not.toContain("seeded-primary");
+			}
+		}, 15_000);
+
+		it("defers an oversized delta WITHOUT fingerprinting it on the turn-end path", async () => {
+			// Regression for eager prefix fingerprinting: every new message was
+			// JSON.stringify-hashed at push time — BEFORE the large-delta size
+			// gate — so a multi-MB payload stalled onTurnEnd in the fingerprint
+			// pass it was about to defer around. Fingerprints are now lazy
+			// (computed only when a prefix identity changes). JSON.stringify
+			// invokes toJSON, giving a direct observable: it must NOT run
+			// during onTurnEnd for freshly appended messages.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			let stringified = 0;
+			const bigContent = `oversized-turn ${"w".repeat(400 * 1024)}`;
+			const big = {
+				role: "user",
+				content: bigContent,
+				timestamp: 1,
+				toJSON(): unknown {
+					stringified++;
+					return { role: "user", content: bigContent, timestamp: 1 };
+				},
+			} as unknown as AgentMessage;
+			const messages: AgentMessage[] = [big];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			expect(stringified).toBe(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs[0]).toContain("oversized-turn");
+			expect(stringified).toBe(0);
+			runtime.dispose();
+		}, 15_000);
+
+		it("treats an equivalent CLONE of a delivered oversized prefix as unchanged", async () => {
+			// The lazy-fingerprint fallback: when the snapshot array is rebuilt
+			// with clones (new object identities, equal content), the prefix
+			// check computes both fingerprints AT COMPARISON TIME and must
+			// conclude "unchanged" — no epoch bump, no context reset, no replay
+			// of already-delivered history in the next delta.
+			const promptInputs: string[] = [];
+			let resetCount = 0;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {
+					resetCount++;
+				},
+				state: { messages: [] },
+			};
+			const oversized = {
+				role: "user",
+				content: `delivered-oversized ${"v".repeat(300 * 1024)}`,
+				timestamp: 1,
+			} as AgentMessage;
+			let messages: AgentMessage[] = [oversized];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			await settleUntil(() => promptInputs.length >= 1 && runtime.backlog === 0, 10_000);
+			expect(promptInputs).toHaveLength(1);
+
+			// Rebuild the snapshot with a CLONE of the delivered prefix.
+			messages = [
+				{ ...oversized } as AgentMessage,
+				{ role: "user", content: "appended-after-clone", timestamp: 2 } as AgentMessage,
+			];
+			runtime.onTurnEnd(messages);
+			await settleUntil(() => promptInputs.length >= 2 && runtime.backlog === 0, 10_000);
+			expect(promptInputs).toHaveLength(2);
+			expect(resetCount).toBe(0);
+			expect(promptInputs[1]).toContain("appended-after-clone");
+			expect(promptInputs[1]).not.toContain("delivered-oversized");
+			runtime.dispose();
+		}, 15_000);
+
+		it("never formats an oversized first slice on the synchronous turn-end stack", async () => {
+			// Regression for the first-slice yield: #drain is entered
+			// synchronously from onTurnEnd, and emit() used to skip the yield
+			// while start === 0 — a single over-budget first message formatted
+			// on the primary's turn-end stack. Discriminator: the size probe
+			// early-exits after the first over-budget block, so the SECOND
+			// content block's getter fires only when the formatter actually
+			// renders. With the pre-slice yield, that must happen strictly
+			// after onTurnEnd returns.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			let inTurnEnd = false;
+			let formattedDuringTurnEnd = false;
+			const blocks = [
+				{ type: "text", text: `oversized-head ${"u".repeat(300 * 1024)}` },
+				{
+					type: "text",
+					get text(): string {
+						if (inTurnEnd) formattedDuringTurnEnd = true;
+						return "tail-sentinel-block";
+					},
+				},
+			];
+			const messages: AgentMessage[] = [{ role: "user", content: blocks, timestamp: 1 } as unknown as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			inTurnEnd = true;
+			runtime.onTurnEnd(messages);
+			inTurnEnd = false;
+			expect(formattedDuringTurnEnd).toBe(false);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs[0]).toContain("tail-sentinel-block");
+			expect(formattedDuringTurnEnd).toBe(false);
+			runtime.dispose();
+		}, 15_000);
 
 		it("classifies structured overflow metadata before rolling back the failed turn", async () => {
 			const promptInputs: string[] = [];
