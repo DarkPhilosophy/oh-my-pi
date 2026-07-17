@@ -1158,6 +1158,51 @@ describe("advisor", () => {
 			runtime.dispose();
 		}, 15_000);
 
+		it("defers a delta whose bulk is one SHARED object referenced by two arguments", async () => {
+			// Regression: the probe's visited-set skipped already-seen objects,
+			// but the formatter's JSON fallback serializes EVERY occurrence of
+			// a shared (acyclic) reference. A ~150K-unit object hung on two
+			// argument keys was estimated once (~150K < budget) while the sync
+			// format cost ~300K — over the stall gate. Shared refs now charge
+			// per occurrence (only true cycles are conservatively oversized),
+			// so this delta must defer and still deliver exactly once.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const shared = { blob: "s".repeat(150 * 1024) };
+			const messages: AgentMessage[] = [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "shared-1",
+							name: "dual_ref",
+							arguments: { first: shared, second: shared },
+						},
+					],
+					timestamp: 1,
+				} as unknown as AgentMessage,
+			];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			expect(promptInputs).toHaveLength(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("dual_ref");
+			runtime.dispose();
+		}, 15_000);
+
 		it("delivers a small prefix plus an oversized delayed EXPANDED EDIT DIFF exactly once", async () => {
 			// Regression for slice-budget accounting: a tiny edit toolCall
 			// inlines its (much later, multi-hundred-KB) toolResult via the

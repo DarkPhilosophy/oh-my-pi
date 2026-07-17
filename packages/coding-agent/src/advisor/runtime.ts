@@ -248,21 +248,24 @@ function estimateMessageChars(message: AgentMessage, cap: number): number {
 			return total > cap;
 		}
 		if (!value || typeof value !== "object") return false;
-		// An already-visited object (shared reference or cycle) was counted
-		// once — skip it. Pathological depth is conservatively oversized.
-		if (seen.has(value)) return false;
-		if (depth >= 64) {
+		// On-path guard: a TRUE cycle is conservatively oversized (the JSON
+		// fallback would throw on it anyway). Acyclic shared references are
+		// deliberately re-counted per occurrence — JSON.stringify serializes
+		// each occurrence, so skipping repeats would undercount the real
+		// formatter cost. Pathological depth is likewise oversized.
+		if (seen.has(value) || depth >= 64) {
 			total = cap + 1;
 			return true;
 		}
 		seen.add(value);
 		if (Array.isArray(value)) {
 			for (const item of value) if (add(item, depth + 1)) return true;
-			return false;
+		} else {
+			for (const key of Object.keys(value)) {
+				if (add((value as Record<string, unknown>)[key], depth + 1)) return true;
+			}
 		}
-		for (const key of Object.keys(value)) {
-			if (add((value as Record<string, unknown>)[key], depth + 1)) return true;
-		}
+		seen.delete(value);
 		return false;
 	};
 	add(message, 0);
