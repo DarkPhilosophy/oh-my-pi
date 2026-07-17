@@ -17,7 +17,14 @@
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { getAgentDir, isEnoent, logger, tryParseJson } from "@oh-my-pi/pi-utils";
+import {
+	createProjectDirContextKey,
+	getAgentDir,
+	getProjectDirContextValue,
+	isEnoent,
+	logger,
+	tryParseJson,
+} from "@oh-my-pi/pi-utils";
 import { readDirEntries, readFile } from "../capability/fs";
 import type { LoadContext } from "../capability/types";
 import { getEnabledPlugins } from "../extensibility/plugins/loader";
@@ -39,7 +46,15 @@ interface InjectedRoot {
 	level: "user" | "project";
 }
 
-let injectedCliRoots: InjectedRoot[] = [];
+type InjectedRootState = {
+	roots: InjectedRoot[];
+};
+
+const injectedRootStateKey = createProjectDirContextKey<InjectedRootState>("omp-extension-cli-roots");
+
+function injectedRootState(): InjectedRootState {
+	return getProjectDirContextValue(injectedRootStateKey, () => ({ roots: [] }));
+}
 
 /**
  * Register CLI-provided extension package paths (e.g. from `--extension`/`-e`)
@@ -56,23 +71,24 @@ export function injectOmpExtensionCliRoots(paths: readonly string[], home: strin
 		const tilde = expandTilde(raw, home);
 		return path.isAbsolute(tilde) ? tilde : path.resolve(cwd, tilde);
 	});
+	const state = injectedRootState();
 	const merged = new Map<string, InjectedRoot>();
-	for (const root of injectedCliRoots) merged.set(root.path, root);
+	for (const root of state.roots) merged.set(root.path, root);
 	for (const resolved of expanded) {
 		// CLI scope mirrors how `--extension` is treated elsewhere — user-level overrides win.
 		if (!merged.has(resolved)) merged.set(resolved, { path: resolved, level: "user" });
 	}
-	injectedCliRoots = [...merged.values()];
+	state.roots = [...merged.values()];
 }
 
 /** Drop every CLI-injected root. Tests use this between cases. */
 export function clearOmpExtensionCliRoots(): void {
-	injectedCliRoots = [];
+	injectedRootState().roots = [];
 }
 
 /** Inspect currently-injected CLI roots (read-only). Exposed for diagnostics + tests. */
 export function getInjectedOmpExtensionCliRoots(): readonly OmpExtensionRoot[] {
-	return injectedCliRoots.map(({ path: p, level }) => ({ path: p, level, name: path.basename(p) }));
+	return injectedRootState().roots.map(({ path: p, level }) => ({ path: p, level, name: path.basename(p) }));
 }
 
 interface ScopeDirs {
@@ -142,7 +158,7 @@ export async function listOmpExtensionRoots(ctx: LoadContext): Promise<OmpExtens
 	]);
 
 	const candidates: InjectedRoot[] = [
-		...injectedCliRoots,
+		...injectedRootState().roots,
 		...projectExtensions.map((raw): InjectedRoot => ({ path: resolveAgainst(raw, ctx), level: "project" })),
 		...userExtensions.map((raw): InjectedRoot => ({ path: resolveAgainst(raw, ctx), level: "user" })),
 		...installedPlugins,

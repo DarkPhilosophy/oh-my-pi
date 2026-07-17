@@ -440,6 +440,14 @@ export interface ExtensionContext {
 	modelRegistry: ModelRegistry;
 	/** Calling session's `local://` root mapping for external tool bridges. */
 	localProtocolOptions?: LocalProtocolOptions;
+	/**
+	 * Terminal-identity env of the client attached to this session (hosted
+	 * daemon sessions only; refreshed when another terminal reattaches).
+	 * Undefined in direct mode — read `process.env` there. The daemon
+	 * process env belongs to whichever client spawned the daemon first and
+	 * must not be used for per-session terminal identity.
+	 */
+	clientEnv?: Record<string, string>;
 	/** Current model (may be undefined) */
 	model: Model | undefined;
 	/** Read-only model query facade: list / current / resolve / family. */

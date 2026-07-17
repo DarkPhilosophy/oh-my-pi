@@ -16,6 +16,7 @@ import {
 	resolveAutoQaConsent,
 	setAutoQaConsentHandler,
 } from "@oh-my-pi/pi-coding-agent/tools/report-tool-issue";
+import { createProjectDirScope } from "@oh-my-pi/pi-utils";
 
 afterEach(() => {
 	__resetAutoQaConsentForTests();
@@ -144,5 +145,33 @@ describe("resolveAutoQaConsent", () => {
 
 		expect(await resolveAutoQaConsent(subagentLocal)).toBe(true);
 		expect(calls).toBe(0);
+	});
+
+	it("keeps interactive consent handlers scoped to their daemon sessions", async () => {
+		const firstScope = createProjectDirScope(process.cwd());
+		const secondScope = createProjectDirScope(process.cwd());
+		let firstCalls = 0;
+		let secondCalls = 0;
+
+		firstScope.run(() =>
+			setAutoQaConsentHandler(async () => {
+				firstCalls += 1;
+				return null;
+			}),
+		);
+		secondScope.run(() =>
+			setAutoQaConsentHandler(async () => {
+				secondCalls += 1;
+				return null;
+			}),
+		);
+
+		expect(await firstScope.run(() => resolveAutoQaConsent(Settings.isolated()))).toBe(false);
+		expect(firstCalls).toBe(1);
+		expect(secondCalls).toBe(0);
+
+		expect(await secondScope.run(() => resolveAutoQaConsent(Settings.isolated()))).toBe(false);
+		expect(firstCalls).toBe(1);
+		expect(secondCalls).toBe(1);
 	});
 });

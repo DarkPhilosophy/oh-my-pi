@@ -537,9 +537,40 @@ export const openaiCodexUsageProvider: UsageProvider = {
 
 const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
 
+/** Backend quota family for Codex quota scoping and backoff blocks. */
+export type CodexQuotaFamily = "spark" | "shared";
+
+/**
+ * Backend quota family for one Codex model: Spark models meter on their own
+ * account window (`scope.tier === "spark"`); everything else draws from the
+ * shared account windows.
+ */
+export function codexQuotaFamily(modelId: string | undefined): CodexQuotaFamily {
+	if (!modelId) return "shared";
+	const separator = modelId.lastIndexOf("/");
+	const bare = (separator === -1 ? modelId : modelId.slice(separator + 1)).toLowerCase();
+	return bare.includes("-spark") || bare.includes("bengalfox") ? "spark" : "shared";
+}
+
+/** Limits that meter the given family: model-scoped windows must not exhaust unrelated models. */
+export function scopeCodexLimits(limits: UsageLimit[], family: CodexQuotaFamily): UsageLimit[] {
+	if (family === "spark") {
+		// Spark meters on its own windows when the account reports them;
+		// accounts without a Spark window fall back to the shared ones.
+		const spark = limits.filter(limit => limit.scope.tier === "spark");
+		if (spark.length > 0) return spark;
+	}
+	// A model-scoped window (e.g. Spark at 100%) must not mark the account
+	// exhausted for shared-window models whose own quota has headroom.
+	return limits.filter(limit => limit.scope.tier === undefined);
+}
+
 export const codexRankingStrategy: CredentialRankingStrategy = {
-	blockScope() {
-		return "shared";
+	blockScope(context) {
+		return codexQuotaFamily(context?.modelId);
+	},
+	scopeLimits(report, context) {
+		return scopeCodexLimits(report.limits, codexQuotaFamily(context?.modelId));
 	},
 	findWindowLimits(report) {
 		const findLimit = (key: "primary" | "secondary"): UsageLimit | undefined => {

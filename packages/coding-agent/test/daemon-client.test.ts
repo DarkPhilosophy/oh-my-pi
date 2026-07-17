@@ -4,6 +4,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DaemonClient, type DaemonConnectionSnapshot } from "../src/daemon/client";
+import { daemonRuntimeDir } from "../src/daemon/paths";
 import {
 	DAEMON_PROTOCOL_MAJOR,
 	type DaemonHelloOk,
@@ -12,7 +13,7 @@ import {
 	encodeDaemonFrame,
 } from "../src/daemon/protocol";
 
-const shard: DaemonShard = { profile: "work", projectRoot: "/tmp/project" };
+const shard: DaemonShard = { profile: "work" };
 
 async function socketServer(handler: (socket: net.Socket) => void): Promise<{ server: net.Server; endpoint: string }> {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-client-test-"));
@@ -38,6 +39,14 @@ function helloOk(): DaemonHelloOk {
 	};
 }
 
+describe("daemon profile scope", () => {
+	test("uses one runtime directory for the active profile regardless of cwd", () => {
+		const configRoot = path.join(os.tmpdir(), "omp-profile");
+
+		expect(daemonRuntimeDir(configRoot)).toBe(path.join(configRoot, "run", "daemon"));
+	});
+});
+
 describe("daemon client", () => {
 	test("authenticates and correlates out-of-order responses over a real socket", async () => {
 		let requests = 0;
@@ -58,7 +67,7 @@ describe("daemon client", () => {
 						socket.write(encodeDaemonFrame({ ...helloOk(), requestId: frame.requestId }));
 						socket.write(
 							encodeDaemonFrame({
-								v: 1,
+								v: DAEMON_PROTOCOL_MAJOR,
 								tag: "snapshot_begin",
 								sessionId: "s1",
 								attachmentId: "a1",
@@ -67,7 +76,7 @@ describe("daemon client", () => {
 						);
 						socket.write(
 							encodeDaemonFrame({
-								v: 1,
+								v: DAEMON_PROTOCOL_MAJOR,
 								tag: "snapshot_chunk",
 								sessionId: "s1",
 								attachmentId: "a1",
@@ -78,7 +87,7 @@ describe("daemon client", () => {
 						);
 						socket.write(
 							encodeDaemonFrame({
-								v: 1,
+								v: DAEMON_PROTOCOL_MAJOR,
 								tag: "event",
 								sessionId: "s1",
 								seq: 1,
@@ -87,7 +96,7 @@ describe("daemon client", () => {
 						);
 						socket.write(
 							encodeDaemonFrame({
-								v: 1,
+								v: DAEMON_PROTOCOL_MAJOR,
 								tag: "snapshot_end",
 								sessionId: "s1",
 								attachmentId: "a1",
@@ -98,7 +107,7 @@ describe("daemon client", () => {
 					} else {
 						requests++;
 						const response: DaemonResponse = {
-							v: 1,
+							v: DAEMON_PROTOCOL_MAJOR,
 							tag: "response",
 							requestId: frame.requestId,
 							ok: true,
@@ -109,12 +118,7 @@ describe("daemon client", () => {
 				}
 			});
 		});
-		const client = new DaemonClient({
-			profile: shard.profile,
-			projectRoot: shard.projectRoot,
-			endpoint,
-			token: "secret",
-		});
+		const client = new DaemonClient({ profile: shard.profile, endpoint, token: "secret" });
 		client.onSnapshotFrame(frame => snapshotTags.push(frame.tag));
 		client.onEvent(frame => eventSeqs.push(frame.seq));
 		try {
@@ -146,12 +150,7 @@ describe("daemon client", () => {
 				);
 			});
 		});
-		const client = new DaemonClient({
-			profile: shard.profile,
-			projectRoot: shard.projectRoot,
-			endpoint,
-			token: "secret",
-		});
+		const client = new DaemonClient({ profile: shard.profile, endpoint, token: "secret" });
 		try {
 			await expect(client.connect()).rejects.toThrow(/incompatible protocol/);
 			expect(client.snapshot.state).toBe("incompatible");
@@ -168,7 +167,7 @@ describe("daemon client", () => {
 				const frame = JSON.parse(String(chunk).trim()) as { requestId: string };
 				socket.write(
 					encodeDaemonFrame({
-						v: 1,
+						v: DAEMON_PROTOCOL_MAJOR,
 						tag: "response",
 						requestId: frame.requestId,
 						ok: false,
@@ -177,13 +176,7 @@ describe("daemon client", () => {
 				);
 			});
 		});
-		const client = new DaemonClient({
-			profile: shard.profile,
-			projectRoot: shard.projectRoot,
-			endpoint,
-			token: "wrong",
-			connectTimeoutMs: 100,
-		});
+		const client = new DaemonClient({ profile: shard.profile, endpoint, token: "wrong", connectTimeoutMs: 100 });
 		try {
 			await expect(client.connect()).rejects.toThrow(/authentication_failed: token rejected/);
 			expect(client.snapshot.state).toBe("unavailable");
@@ -212,13 +205,7 @@ describe("daemon client", () => {
 				}
 			});
 		});
-		const client = new DaemonClient({
-			profile: shard.profile,
-			projectRoot: shard.projectRoot,
-			endpoint,
-			token: "secret",
-			requestTimeoutMs: 20,
-		});
+		const client = new DaemonClient({ profile: shard.profile, endpoint, token: "secret", requestTimeoutMs: 20 });
 		try {
 			await expect(client.request("ping")).rejects.toThrow(/timed out/);
 			client.close();
@@ -241,12 +228,12 @@ describe("daemon client", () => {
 				socket.write(encodeDaemonFrame({ ...helloOk(), requestId: frame.requestId }));
 				socket.write(
 					encodeDaemonFrame({
-						v: 1,
+						v: DAEMON_PROTOCOL_MAJOR,
 						tag: "server_status",
 						status: {
 							daemonId: "daemon-1",
 							serverVersion: "0.1.0",
-							protocolVersion: 1,
+							protocolVersion: DAEMON_PROTOCOL_MAJOR,
 							shard,
 							sessionCount: 3,
 							attachmentCount: 1,
@@ -257,12 +244,7 @@ describe("daemon client", () => {
 				);
 			});
 		});
-		const client = new DaemonClient({
-			profile: shard.profile,
-			projectRoot: shard.projectRoot,
-			endpoint,
-			token: "secret",
-		});
+		const client = new DaemonClient({ profile: shard.profile, endpoint, token: "secret" });
 		try {
 			await client.connect();
 			eventSeen = client.snapshot;
@@ -277,7 +259,7 @@ describe("daemon client", () => {
 		const status = {
 			daemonId: "daemon-1",
 			serverVersion: "0.1.0",
-			protocolVersion: 1,
+			protocolVersion: DAEMON_PROTOCOL_MAJOR,
 			shard,
 			sessionCount: 8,
 			attachmentCount: 2,
@@ -298,17 +280,18 @@ describe("daemon client", () => {
 					);
 				} else if (frame.operation?.op === "server_status") {
 					socket.write(
-						encodeDaemonFrame({ v: 1, tag: "response", requestId: frame.requestId, ok: true, result: status }),
+						encodeDaemonFrame({
+							v: DAEMON_PROTOCOL_MAJOR,
+							tag: "response",
+							requestId: frame.requestId,
+							ok: true,
+							result: status,
+						}),
 					);
 				}
 			});
 		});
-		const client = new DaemonClient({
-			profile: shard.profile,
-			projectRoot: shard.projectRoot,
-			endpoint,
-			token: "secret",
-		});
+		const client = new DaemonClient({ profile: shard.profile, endpoint, token: "secret" });
 		try {
 			await client.connect();
 			const snapshot = client.snapshot;
@@ -330,12 +313,7 @@ describe("daemon client", () => {
 				if (frame.tag === "hello") socket.write(encodeDaemonFrame({ ...helloOk(), requestId: frame.requestId }));
 			});
 		});
-		const client = new DaemonClient({
-			profile: shard.profile,
-			projectRoot: shard.projectRoot,
-			endpoint,
-			token: "secret",
-		});
+		const client = new DaemonClient({ profile: shard.profile, endpoint, token: "secret" });
 		try {
 			await client.connect();
 			await client.reconnect();
@@ -359,7 +337,6 @@ describe("daemon client", () => {
 		let recoveryRequests = 0;
 		const client = new DaemonClient({
 			profile: shard.profile,
-			projectRoot: shard.projectRoot,
 			endpoint,
 			token: "secret",
 			connectTimeoutMs: 25,
@@ -394,13 +371,7 @@ describe("daemon client", () => {
 			acceptedResolve?.();
 			socket.resume();
 		});
-		const client = new DaemonClient({
-			profile: shard.profile,
-			projectRoot: shard.projectRoot,
-			endpoint,
-			token: "secret",
-			connectTimeoutMs: 100,
-		});
+		const client = new DaemonClient({ profile: shard.profile, endpoint, token: "secret", connectTimeoutMs: 100 });
 		try {
 			const connecting = client.connect();
 			await accepted;
@@ -427,13 +398,7 @@ describe("daemon client", () => {
 				}
 			});
 		});
-		const client = new DaemonClient({
-			profile: shard.profile,
-			projectRoot: shard.projectRoot,
-			endpoint,
-			token: "secret",
-			connectTimeoutMs: 50,
-		});
+		const client = new DaemonClient({ profile: shard.profile, endpoint, token: "secret", connectTimeoutMs: 50 });
 		try {
 			await expect(client.connect()).rejects.toThrow(/invalid JSON|invalid frame|connection closed/);
 			await client.connect();
@@ -460,12 +425,7 @@ describe("daemon client", () => {
 				if (connections === 1) socket.end();
 			});
 		});
-		const client = new DaemonClient({
-			profile: shard.profile,
-			projectRoot: shard.projectRoot,
-			endpoint,
-			token: "secret",
-		});
+		const client = new DaemonClient({ profile: shard.profile, endpoint, token: "secret" });
 		client.onSnapshot(snapshot => {
 			if (snapshot.state === "connected") {
 				connectedCount++;
@@ -498,7 +458,7 @@ describe("daemon client", () => {
 					} else {
 						socket.write(
 							encodeDaemonFrame({
-								v: 1,
+								v: DAEMON_PROTOCOL_MAJOR,
 								tag: "response",
 								requestId: frame.requestId,
 								ok: true,
@@ -522,12 +482,7 @@ describe("daemon client", () => {
 			return accepted;
 		};
 		Object.defineProperty(net.Socket.prototype, "write", { configurable: true, writable: true, value: patchedWrite });
-		const client = new DaemonClient({
-			profile: shard.profile,
-			projectRoot: shard.projectRoot,
-			endpoint,
-			token: "secret",
-		});
+		const client = new DaemonClient({ profile: shard.profile, endpoint, token: "secret" });
 		try {
 			await expect(client.request("ping")).resolves.toEqual({ accepted: true });
 			expect(forcedBackpressure).toBe(true);
@@ -565,7 +520,7 @@ describe("daemon client", () => {
 					} else {
 						socket.write(
 							encodeDaemonFrame({
-								v: 1,
+								v: DAEMON_PROTOCOL_MAJOR,
 								tag: "response",
 								requestId: frame.requestId,
 								ok: true,
@@ -576,13 +531,7 @@ describe("daemon client", () => {
 				}
 			});
 		});
-		const client = new DaemonClient({
-			profile: shard.profile,
-			projectRoot: shard.projectRoot,
-			endpoint,
-			token: "secret",
-			requestTimeoutMs: 5_000,
-		});
+		const client = new DaemonClient({ profile: shard.profile, endpoint, token: "secret", requestTimeoutMs: 5_000 });
 		try {
 			await client.connect();
 			const pending = client.request("ping");

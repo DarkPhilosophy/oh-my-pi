@@ -2,7 +2,7 @@ import * as os from "node:os";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { logger, setProjectDir, VERSION } from "@oh-my-pi/pi-utils";
-import { getActiveProfile } from "@oh-my-pi/pi-utils/dirs";
+import { createProjectDirScope, getActiveProfile, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import { reset as resetCapabilities } from "../capability";
 import { type Args, parseArgs } from "../cli/args";
 import { applyExtensionFlags } from "../cli/extension-flags";
@@ -10,7 +10,7 @@ import { processFileArguments } from "../cli/file-processor";
 import { buildInitialMessage } from "../cli/initial-message";
 import { ModelRegistry } from "../config/model-registry";
 import { getModelMatchPreferences, resolveModelScope, type ScopedModel } from "../config/model-resolver";
-import { Settings } from "../config/settings";
+import { bindSettingsToProjectContext, Settings } from "../config/settings";
 import {
 	clearPluginRootsAndCaches,
 	injectPluginDirRoots,
@@ -120,6 +120,8 @@ export type DaemonSessionCreateOverrides = {
 	steeringMode?: QueueMode;
 	followUpMode?: QueueMode;
 	argv?: string[];
+	/** Terminal-identity env of the creating client (never the full env). */
+	clientEnv?: Record<string, string>;
 };
 
 export type HostedServerControls = {
@@ -178,7 +180,12 @@ function sessionState(
 		followUpMode: session.followUpMode ?? "all",
 		interruptMode: session.interruptMode ?? "immediate",
 		sessionFile: session.sessionFile,
-		sessionId,
+		// The state describes the underlying SESSION, not the registry record:
+		// the registry id is a per-daemon transport handle (a random UUID that
+		// dies with the daemon), while consumers like the resume hint need the
+		// persisted session's own id — `--resume <registry-id>` can never match
+		// a session file.
+		sessionId: session.sessionId ?? sessionId,
 		sessionName: session.sessionName,
 		autoCompactionEnabled: session.autoCompactionEnabled ?? true,
 		messageCount: messages?.length ?? 0,
@@ -246,10 +253,11 @@ async function prepareCliLaunch(
 	if (parsed.pluginDirs && parsed.pluginDirs.length > 0) {
 		await injectPluginDirRoots(home, parsed.pluginDirs, cwd);
 	}
-	const activeSettings = await Settings.init({
+	const activeSettings = await Settings.loadIsolated({
 		cwd,
 		configFiles: parsed.config,
 	});
+	bindSettingsToProjectContext(activeSettings);
 	if (parsed.approvalMode) activeSettings.override("tools.approvalMode", parsed.approvalMode);
 	else if (parsed.autoApprove) activeSettings.override("tools.approvalMode", "yolo");
 	if (parsed.hideThinking) activeSettings.override("hideThinkingBlock", true);
@@ -300,7 +308,7 @@ async function prepareCliLaunch(
  * ACP. The factory option exists so tests and embedders can provide a narrow
  * runtime without starting the model/auth stack.
  */
-export async function createAgentSessionRuntime(
+async function createAgentSessionRuntimeInScope(
 	options: CreateAgentSessionRuntimeOptions,
 ): Promise<DaemonSessionRuntime> {
 	const create = options.createSession ?? createAgentSession;
@@ -341,11 +349,16 @@ export async function createAgentSessionRuntime(
 		await sessionManager.close().catch(() => undefined);
 		throw error;
 	}
+	bindSettingsToProjectContext(result.session.settings);
 	const session = result.session as unknown as DaemonSession;
 	const sessionId = options.sessionId ?? session.sessionId;
 	if (overrides?.steeringMode) session.setSteeringMode?.(overrides.steeringMode);
 	if (overrides?.followUpMode) session.setFollowUpMode?.(overrides.followUpMode);
 	if (thinkingLevel !== undefined) session.setThinkingLevel?.(thinkingLevel, true);
+	// Terminal-identity env of the creating client: extensions (e.g. herdr's
+	// pane status) must see the attached client's terminal, never the daemon
+	// process env, which belongs to whichever client spawned the daemon first.
+	if (overrides?.clientEnv) result.session.extensionRunner?.setClientEnv(overrides.clientEnv);
 	let initialMessage: string | undefined;
 	let initialImages: ImageContent[] | undefined;
 	let initialMessages: string[] = [];
@@ -559,6 +572,9 @@ export async function createAgentSessionRuntime(
 
 	const startHostedInteractive = async (attachmentId: string, descriptor: HostedTerminalDescriptor): Promise<void> => {
 		if (hosted) throw new Error("An interactive terminal is already attached");
+		// A reattach may come from a different terminal (pane/multiplexer);
+		// refresh the per-session client identity for extensions.
+		if (descriptor.clientEnv) result.session.extensionRunner?.setClientEnv(descriptor.clientEnv);
 		const terminal = new HostedTerminal(descriptor);
 		terminal.setOutput(data => emitBridgeEvent({ type: "terminal_output", data }));
 		const sessionSettings = result.session.settings;
@@ -594,8 +610,7 @@ export async function createAgentSessionRuntime(
 		const fallbackServerSnapshot: DaemonConnectionSnapshot = {
 			state: "connected",
 			shard: {
-				profile: getActiveProfile() ?? "default",
-				projectRoot: result.session.sessionManager.getCwd(),
+				profile: getActiveProfile() ?? null,
 			},
 			serverVersion: VERSION,
 			protocolVersion: DAEMON_PROTOCOL_MAJOR,
@@ -660,8 +675,9 @@ export async function createAgentSessionRuntime(
 		session,
 		protectedJobCount: () => 0,
 		snapshot: () => {
-			const snapshot = sessionSnapshot(session, options.cwd, sessionId, sessionManager);
-			snapshot.state = sessionState(session, sessionId, options.cwd, result);
+			const cwd = getProjectDir();
+			const snapshot = sessionSnapshot(session, cwd, sessionId, sessionManager);
+			snapshot.state = sessionState(session, sessionId, cwd, result);
 			return snapshot;
 		},
 		command: async (command, attachmentId) => {
@@ -686,10 +702,26 @@ export async function createAgentSessionRuntime(
 			switch (command.type) {
 				case "terminal_start": {
 					if (!attachmentId) throw new Error("Interactive terminal command requires an attachment");
-					const active = hosted;
+					let active = hosted;
+					if (active && (active.attachmentId !== attachmentId || active.mode.isShuttingDown)) {
+						// A terminal_start can land while a defunct hosted terminal
+						// lingers: either the registry replaced the interactive
+						// attachment (different id — its fire-and-forget terminal_detach
+						// has not finished), or the SAME attachment reconnected after a
+						// server-observed drop already put its hosted mode into
+						// shutdown. Both used to leave the client on a permanently
+						// blank screen (no-op or throw, and a failed terminal_start is
+						// never retried). Hand over WITHOUT awaiting the old task: an
+						// in-flight turn pins it for the turn's whole duration (the
+						// session owns that work, not the terminal), and its
+						// finally-guard only clears its own registration. A healthy
+						// same-id host stays untouched so an unnoticed transport blip
+						// resumes without resetting the TUI.
+						active.mode.detachHosted();
+						if (hosted === active) hosted = undefined;
+						active = undefined;
+					}
 					if (!active) await startHostedInteractive(attachmentId, command.terminal);
-					else if (active.attachmentId !== attachmentId)
-						throw new Error("Interactive terminal belongs to another attachment");
 					return {};
 				}
 				case "terminal_input":
@@ -925,4 +957,38 @@ export async function createAgentSessionRuntime(
 			return () => listeners.delete(listener);
 		},
 	};
+}
+
+/**
+ * Construct a daemon session inside a durable async working-directory scope.
+ * Every externally initiated operation re-enters that scope, while `/cd`
+ * updates only this session's context.
+ */
+export function createAgentSessionRuntime(options: CreateAgentSessionRuntimeOptions): Promise<DaemonSessionRuntime> {
+	const projectDirScope = createProjectDirScope(options.cwd);
+	return projectDirScope.run(async () => {
+		const runtime = await createAgentSessionRuntimeInScope(options);
+		return {
+			sessionId: runtime.sessionId,
+			get cwd() {
+				return projectDirScope.get();
+			},
+			session: runtime.session,
+			...(runtime.protectedJobCount
+				? {
+						protectedJobCount: () => projectDirScope.run(() => runtime.protectedJobCount?.() ?? 0),
+					}
+				: {}),
+			snapshot: () => projectDirScope.run(() => runtime.snapshot()),
+			command: (command: unknown, attachmentId?: string) =>
+				projectDirScope.run(() => runtime.command(command, attachmentId)),
+			dispose: () => projectDirScope.run(() => runtime.dispose()),
+			subscribe: (listener: AgentSessionEventListener) => {
+				const unsubscribe = projectDirScope.run(() =>
+					runtime.subscribe(event => projectDirScope.run(() => listener(event))),
+				);
+				return () => projectDirScope.run(unsubscribe);
+			},
+		};
+	});
 }

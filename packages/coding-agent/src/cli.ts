@@ -117,7 +117,6 @@ async function smokeTestDaemonWorker(): Promise<void> {
 		cwd: spawn.cwd,
 		env: workerEnvFromParent({
 			OMP_PROFILE: "smoke",
-			OMP_DAEMON_PROJECT_ROOT: root,
 			OMP_DAEMON_RUNTIME_DIR: runtimeDir,
 		}),
 		stdin: "ignore",
@@ -126,7 +125,7 @@ async function smokeTestDaemonWorker(): Promise<void> {
 		detached: true,
 	});
 	child.unref();
-	const client = await createDaemonClient({ profile: "smoke", projectRoot: root, runtimeDir });
+	const client = await createDaemonClient({ profile: "smoke", runtimeDir });
 	const deadline = Date.now() + 15_000;
 	let lastError: Error | undefined;
 	try {
@@ -142,8 +141,7 @@ async function smokeTestDaemonWorker(): Promise<void> {
 		}
 		if (lastError) throw new Error(`daemon worker smoke failed: ${lastError.message}`);
 		const status = await client.serverStatus();
-		if (status.shard.profile !== "smoke" || status.shard.projectRoot !== path.resolve(root))
-			throw new Error("daemon worker smoke failed: shard mismatch");
+		if (status.shard.profile !== "smoke") throw new Error("daemon worker smoke failed: profile mismatch");
 		await client.request("shutdown");
 	} finally {
 		client.close();
@@ -412,8 +410,14 @@ export async function runCli(argv: string[]): Promise<void> {
 	if (resolvedArgv[0] !== "--smoke-test") {
 		// Dynamic import is required here: this is the cold-start boundary that
 		// keeps command/main modules out of the process until daemon bootstrap.
-		const { isDefaultInteractiveArgv, launchDaemonInteractive } = await import("./daemon/interactive-bootstrap");
-		if (isDefaultInteractiveArgv(resolvedArgv)) {
+		const { isDaemonModeOptedIn, isDefaultInteractiveArgv, launchDaemonInteractive, readDaemonModeSetting } =
+			await import("./daemon/interactive-bootstrap");
+		// Daemon hosting is opt-in (`--daemon` or the `daemon.enabled` setting);
+		// the default interactive route stays the historical direct launch.
+		if (
+			isDefaultInteractiveArgv(resolvedArgv) &&
+			isDaemonModeOptedIn(resolvedArgv, resolvedArgv.includes("--daemon") ? true : await readDaemonModeSetting())
+		) {
 			try {
 				await launchDaemonInteractive({ argv: resolvedArgv });
 			} catch (error: unknown) {

@@ -5,7 +5,6 @@ import { type Component, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
-import { settings } from "../../config/settings";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
 import { createAdvisorMessageCard } from "../../modes/components/advisor-message";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
@@ -472,9 +471,9 @@ export class UiHelpers {
 						renderArgs,
 						{
 							snapshots: getFileSnapshotStore(this.ctx.viewSession),
-							showImages: settings.get("terminal.showImages"),
-							editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
-							editAllowFuzzy: settings.get("edit.fuzzyMatch"),
+							showImages: this.ctx.settings.get("terminal.showImages"),
+							editFuzzyThreshold: this.ctx.settings.get("edit.fuzzyThreshold"),
+							editAllowFuzzy: this.ctx.settings.get("edit.fuzzyMatch"),
 							liveRegion: this.ctx.chatContainer,
 						},
 						tool,
@@ -532,7 +531,7 @@ export class UiHelpers {
 					const images: ImageContent[] = message.content.filter(
 						(content): content is ImageContent => content.type === "image",
 					);
-					if (images.length > 0 && assistantComponent && settings.get("terminal.showImages")) {
+					if (images.length > 0 && assistantComponent && this.ctx.settings.get("terminal.showImages")) {
 						assistantComponent.setToolResultImages(message.toolCallId, images);
 						const hasText = message.content.some(c => c.type === "text");
 						if (!hasText) {
@@ -665,7 +664,7 @@ export class UiHelpers {
 		// the in-flight call re-renders as pending instead of vanishing;
 		// renderSessionContext then keeps it in `pendingTools` for live routing.
 		const context = this.ctx.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: settings.get("display.collapseCompacted"),
+			collapseCompactedHistory: this.ctx.settings.get("display.collapseCompacted"),
 			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 		});
 		this.ctx.renderSessionContext(context, {

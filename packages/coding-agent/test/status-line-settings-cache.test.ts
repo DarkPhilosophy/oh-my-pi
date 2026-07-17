@@ -48,7 +48,7 @@ function makeSession(sessionName = "Cache Session") {
 		isAdvisorActive: () => false,
 		getAdvisorStatusOverview: () => ({ configured: false, advisors: [] }),
 		getAsyncJobSnapshot: () => ({ running: [] }),
-		settings: { get: () => false },
+		settings: { get: () => false, getGroup: () => ({ segmentOptions: {} }) },
 		modelRegistry: { isUsingOAuth: () => false },
 		sessionManager: {
 			getSessionName: () => sessionName,

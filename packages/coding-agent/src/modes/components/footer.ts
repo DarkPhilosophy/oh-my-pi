@@ -29,6 +29,16 @@ export class FooterComponent implements Component {
 	}
 
 	/**
+	 * Session-owned working directory. Renders and git lookups can fire outside
+	 * the session's async project scope, where getProjectDir() falls back to the
+	 * daemon process global — another session's cwd. The SessionManager cwd is
+	 * the stable per-session truth.
+	 */
+	#projectDir(): string {
+		return this.session.sessionManager?.getCwd?.() ?? getProjectDir();
+	}
+
+	/**
 	 * Set extension status text to display in the footer.
 	 * Text is sanitized (newlines/tabs replaced with spaces) and truncated to terminal width.
 	 * ANSI escape codes for styling are preserved.
@@ -62,7 +72,7 @@ export class FooterComponent implements Component {
 		if (!settings.get("git.enabled")) return;
 
 		void git.head
-			.resolve(getProjectDir())
+			.resolve(this.#projectDir())
 			.then(head => {
 				if (!head) {
 					return;
@@ -110,7 +120,7 @@ export class FooterComponent implements Component {
 			return this.#cachedBranch;
 		}
 
-		const headState = git.head.resolveSync(getProjectDir());
+		const headState = git.head.resolveSync(this.#projectDir());
 		this.#cachedBranch =
 			headState === null ? null : headState.kind === "ref" ? (headState.branchName ?? headState.ref) : "detached";
 		return this.#cachedBranch;
@@ -146,7 +156,7 @@ export class FooterComponent implements Component {
 		const contextPercentValue = contextWindow > 0 ? (contextUsage?.percent ?? 0) : null;
 
 		// Replace home directory with ~
-		let pwd = shortenPath(getProjectDir());
+		let pwd = shortenPath(this.#projectDir());
 
 		// Add git branch if available
 		const branch = this.#getCurrentBranch();

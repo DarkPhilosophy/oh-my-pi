@@ -59,7 +59,7 @@ import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
 import { KeybindingsManager } from "../config/keybindings";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
-import { isSettingsInitialized, onStatusLineSessionAccentChanged, Settings, settings } from "../config/settings";
+import { onStatusLineSessionAccentChanged, type Settings } from "../config/settings";
 import type { DaemonConnectionSnapshot } from "../daemon/status";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {
@@ -700,15 +700,15 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 		}
 
-		setTuiTight(settings.get("tui.tight"));
-		setMarkdownMermaidRendering(settings.get("tui.renderMermaid"));
-		this.ui = new TUI(host?.terminal ?? new ProcessTerminal(), settings.get("showHardwareCursor"));
-		this.ui.setMaxInlineImages(settings.get("tui.maxInlineImages"));
-		this.ui.setScrollbackRebuild(settings.get("tui.scrollbackRebuild"));
+		setTuiTight(this.settings.get("tui.tight"));
+		setMarkdownMermaidRendering(this.settings.get("tui.renderMermaid"));
+		this.ui = new TUI(host?.terminal ?? new ProcessTerminal(), this.settings.get("showHardwareCursor"));
+		this.ui.setMaxInlineImages(this.settings.get("tui.maxInlineImages"));
+		this.ui.setScrollbackRebuild(this.settings.get("tui.scrollbackRebuild"));
 		// OSC 66 text-sizing is Kitty-only; resolve the setting against the terminal's
 		// capability (`TERMINAL.textSizing` defaults on for Kitty) so it stays off
 		// unless the user opts in, and never emits raw escapes on other terminals.
-		setTerminalTextSizing(settings.get("tui.textSizing") && TERMINAL.textSizing);
+		setTerminalTextSizing(this.settings.get("tui.textSizing") && TERMINAL.textSizing);
 		this.chatContainer = new TranscriptContainer();
 		this.pendingMessagesContainer = new AnchoredLiveContainer();
 		this.statusContainer = new AnchoredLiveContainer();
@@ -720,8 +720,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.modelCycleContainer = new AnchoredLiveContainer();
 		this.editor = new CustomEditor(getEditorTheme());
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
-		this.editor.setImeSafeCursorLayout(settings.get("tui.imeSafeCursor"));
-		this.editor.setAutocompleteMaxVisible(settings.get("autocompleteMaxVisible"));
+		this.editor.setImeSafeCursorLayout(this.settings.get("tui.imeSafeCursor"));
+		this.editor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
 		this.editor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
 		};
@@ -753,8 +753,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.statusLine.setAutoCompactEnabled(this.session.autoCompactionEnabled);
 		this.editor.setTopBorderProvider(availableWidth => this.statusLine.getTopBorder(availableWidth));
 
-		this.hideThinkingBlock = settings.get("hideThinkingBlock");
-		this.proseOnlyThinking = settings.get("proseOnlyThinking");
+		this.hideThinkingBlock = this.settings.get("hideThinkingBlock");
+		this.proseOnlyThinking = this.settings.get("proseOnlyThinking");
 
 		const hookCommands: SlashCommand[] = (
 			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
@@ -772,7 +772,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		// Build skill commands from session.skills (if enabled)
 		const skillCommandList: SlashCommand[] = [];
-		if (settings.get("skills.enableSkillCommands")) {
+		if (this.settings.get("skills.enableSkillCommands")) {
 			for (const skill of this.session.skills) {
 				const commandName = `skill:${skill.name}`;
 				this.skillCommands.set(commandName, skill);
@@ -916,10 +916,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Wire the report_tool_issue consent gate to the Yes/No dialog popup.
 		// The handler is process-global — subagent tools (which can't reach
 		// `showHookSelector` on their own) resolve through this exact closure.
-		// `Settings.instance` is the disk-backed singleton; passing it explicitly
-		// guarantees the decision persists even when the prompt is triggered
-		// from a subagent whose own `Settings` is an in-memory snapshot.
-		setAutoQaConsentHandler(() => this.#promptAutoQaConsent(), Settings.instance);
+		// The active session settings are disk-backed in normal interactive
+		// sessions and isolated per hosted daemon session.
+		setAutoQaConsentHandler(() => this.#promptAutoQaConsent(), this.settings);
 
 		await logger.time(
 			"InteractiveMode.init:slashCommands",
@@ -941,7 +940,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			),
 		);
 
-		const startupQuiet = settings.get("startup.quiet");
+		const startupQuiet = this.settings.get("startup.quiet");
 		this.#welcomeComponent = undefined;
 
 		// Static startup content (warnings, welcome, changelog) lives in one
@@ -976,7 +975,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			// Add changelog if provided
 			if (this.#changelogMarkdown) {
 				mainContent.addChild(new DynamicBorder());
-				if (settings.get("collapseChangelog")) {
+				if (this.settings.get("collapseChangelog")) {
 					const versionMatch = this.#changelogMarkdown.match(/##\s+\[?(\d+\.\d+\.\d+)\]?/);
 					const latestVersion = versionMatch ? versionMatch[1] : this.#version;
 					const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
@@ -1260,14 +1259,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Re-scope project settings (`.claude/settings.yml` etc.) to the new
 		// directory in place so the active session and every settings reader pick
 		// up the destination project's configuration.
-		if (isSettingsInitialized()) {
-			await settings.reloadForCwd(newCwd);
-			// Reapply provider preferences from the newly-loaded settings so the
-			// module-level search/image provider state reflects the destination
-			// project's configuration. Without this, the previous project's
-			// exclusions leak and newly-excluded providers are still used.
-			applyProviderGlobalsFromSettings(settings);
-		}
+		await this.settings.reloadForCwd(newCwd);
+		// Reapply provider preferences from the newly-loaded settings so the
+		// module-level search/image provider state reflects the destination
+		// project's configuration. Without this, the previous project's
+		// exclusions leak and newly-excluded providers are still used.
+		applyProviderGlobalsFromSettings(this.settings);
 		// Re-warm plugin roots, capabilities, slash commands, and the ssh tool so
 		// the next prompt sees everything scoped to the new project directory.
 		clearClaudePluginRootsCache();
@@ -1275,6 +1272,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		resetCapabilities();
 		await this.refreshSlashCommandState(newCwd);
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+		// The destination project may configure different status-line segments;
+		// re-snapshot them — updateSettings also rebuilds the HEAD watcher against
+		// the new cwd when a branch callback is registered, so the git-backed
+		// segment decision and the watcher both follow the new project.
+		this.#syncStatusLineSettings();
 		this.statusLine.invalidate();
 		this.ui.requestRender();
 	}
@@ -1299,7 +1301,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#cancelLoopAutoSubmit();
 		if (!this.loopModeEnabled || !this.loopPrompt) return;
 		const prompt = this.loopPrompt;
-		const loopAction = settings.get("loop.mode");
+		const loopAction = this.settings.get("loop.mode");
 		this.#deferLoopAutoSubmit(() => {
 			void this.#runLoopIteration(loopAction, prompt);
 		});
@@ -1624,15 +1626,15 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#syncStatusLineSettings(): void {
 		this.statusLine.updateSettings({
-			preset: settings.get("statusLine.preset"),
-			leftSegments: settings.get("statusLine.leftSegments"),
-			rightSegments: settings.get("statusLine.rightSegments"),
-			separator: settings.get("statusLine.separator"),
-			showHookStatus: settings.get("statusLine.showHookStatus"),
-			sessionAccent: settings.get("statusLine.sessionAccent"),
-			transparent: settings.get("statusLine.transparent"),
-			segmentOptions: settings.get("statusLine.segmentOptions"),
-			compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
+			preset: this.settings.get("statusLine.preset"),
+			leftSegments: this.settings.get("statusLine.leftSegments"),
+			rightSegments: this.settings.get("statusLine.rightSegments"),
+			separator: this.settings.get("statusLine.separator"),
+			showHookStatus: this.settings.get("statusLine.showHookStatus"),
+			sessionAccent: this.settings.get("statusLine.sessionAccent"),
+			transparent: this.settings.get("statusLine.transparent"),
+			segmentOptions: this.settings.get("statusLine.segmentOptions"),
+			compactThinkingLevel: this.settings.get("statusLine.compactThinkingLevel"),
 		});
 	}
 
@@ -1648,7 +1650,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		} else if (this.isPythonMode) {
 			this.editor.borderColor = theme.getPythonModeBorderColor();
 		} else {
-			const accentEnabled = !isSettingsInitialized() || settings.get("statusLine.sessionAccent") !== false;
+			const accentEnabled = this.settings.get("statusLine.sessionAccent") !== false;
 			const sessionName = accentEnabled ? this.sessionName : undefined;
 			const hex = sessionName
 				? getSessionAccentHex(sessionName, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance)
@@ -1716,7 +1718,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// user opted into the full inline history; export/resume callers choose
 		// their own mode.
 		const context = this.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: settings.get("display.collapseCompacted"),
+			collapseCompactedHistory: this.settings.get("display.collapseCompacted"),
 		});
 		this.renderSessionContext(context);
 		for (const child of liveComponents) {
@@ -3758,10 +3760,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		popTerminalTitle();
 		this.stop();
 
-		// Print resumption hint if this is a persisted session
+		// Print resumption hint only when the session actually persisted: the
+		// file materializes on the first assistant message, so a session whose
+		// only turn errored (e.g. quota) has an id that --resume cannot find.
 		const sessionId = this.sessionManager.getSessionId();
 		const sessionFile = this.sessionManager.getSessionFile();
-		if (sessionId && sessionFile) {
+		if (sessionId && sessionFile && (await Bun.file(sessionFile).exists())) {
 			process.stderr.write(`\n${chalk.dim(`Resume this session with ${APP_NAME} --resume ${sessionId}`)}\n`);
 		}
 
@@ -3923,7 +3927,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#buildWorkingMessageAccentCacheKey(): WorkingMessageAccentCacheKey {
-		const sessionAccentEnabled = !isSettingsInitialized() || settings.get("statusLine.sessionAccent") !== false;
+		const sessionAccentEnabled = this.settings.get("statusLine.sessionAccent") !== false;
 		return {
 			sessionAccentEnabled,
 			sessionName: sessionAccentEnabled ? this.sessionManager.getSessionName() : undefined,
@@ -4194,7 +4198,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async handleSTTToggle(): Promise<void> {
-		if (!settings.get("stt.enabled")) {
+		if (!this.settings.get("stt.enabled")) {
 			this.showWarning("Speech-to-text is disabled. Enable it in settings: stt.enabled");
 			return;
 		}

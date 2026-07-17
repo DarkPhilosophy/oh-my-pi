@@ -41,7 +41,7 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 
 		resetSettingsForTest();
 		tempDir = TempDir.createSync("@pi-interactive-mode-lsp-startup-");
-		await Settings.init({ inMemory: true, cwd: tempDir.path() });
+		const isolatedSettings = await Settings.loadIsolated({ inMemory: true, cwd: tempDir.path() });
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
 		const modelRegistry = new ModelRegistry(authStorage);
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
@@ -59,7 +59,7 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 				},
 			}),
 			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
-			settings: Settings.isolated(),
+			settings: isolatedSettings,
 			modelRegistry,
 		});
 		eventBus = new EventBus();
@@ -85,6 +85,17 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 		authStorage?.close();
 		tempDir?.removeSync();
 		resetSettingsForTest();
+	});
+
+	it("renders a hosted session without initializing global settings", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+
+		expect(() =>
+			mode.renderInitialMessages({
+				preserveExistingChat: true,
+				clearTerminalHistory: true,
+			}),
+		).not.toThrow();
 	});
 
 	it("updates the welcome banner when startup warmup completes", async () => {
@@ -125,7 +136,7 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 	it("retains daemon status received before the welcome component is initialized", async () => {
 		const snapshot: DaemonConnectionSnapshot = {
 			state: "connected",
-			shard: { profile: "work", projectRoot: "/repo/daemon-project" },
+			shard: { profile: "work" },
 			daemonId: "2947c11e-ea0e-4b5f-86aa-2d9852e94448",
 			sessionId: "019f6362-7273-7ec0-afba-4c729add7c12",
 			serverVersion: "1.2.3",
@@ -138,7 +149,7 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 
 		const rendered = Bun.stripANSI(mode.ui.render(120).join("\n"));
 		expect(rendered).toContain("daemon 2947c11e · v1.2");
-		expect(rendered).toContain(" 019f6362 · work/daemo");
+		expect(rendered).toContain(" 019f6362 · work");
 		expect(rendered).not.toContain("direct mode");
 	});
 

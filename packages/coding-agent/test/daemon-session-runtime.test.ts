@@ -1,11 +1,20 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, type Mock, test, vi } from "bun:test";
+import * as path from "node:path";
+import { getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import { createAgentSessionRuntime } from "../src/daemon/session-runtime";
+import type { HostedTerminalDescriptor } from "../src/daemon/terminal-bridge";
+import * as interactiveModeModule from "../src/modes/interactive-mode";
+import * as themeModule from "../src/modes/theme/theme";
 import type { CreateAgentSessionResult } from "../src/sdk";
 import {
 	type AgentSession,
 	type AgentSessionDisposeOptions,
 	SHUTDOWN_CONSOLIDATE_BUDGET_MS,
 } from "../src/session/agent-session";
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 describe("daemon session runtime", () => {
 	test("bounds memory consolidation while disposing a hosted session", async () => {
@@ -34,5 +43,159 @@ describe("daemon session runtime", () => {
 		await runtime.dispose();
 
 		expect(disposeOptions?.mnemopiConsolidateTimeoutMs).toBe(SHUTDOWN_CONSOLIDATE_BUDGET_MS);
+	});
+	test("keeps creation and commands inside each session working-directory context", async () => {
+		const root = process.cwd();
+		const firstCwd = path.join(root, "first-project");
+		const secondCwd = path.join(root, "second-project");
+		const creationCwds: string[] = [];
+		const createRuntime = (cwd: string, sessionId: string) =>
+			createAgentSessionRuntime({
+				cwd,
+				sessionId,
+				createSession: async options => {
+					creationCwds.push(getProjectDir());
+					const session = {
+						sessionId,
+						isStreaming: false,
+						subscribe: () => () => {},
+						subscribeCommandMetadataChanged: () => () => {},
+						getSessionStats: () => ({ cwd: getProjectDir() }),
+						dispose: async () => {
+							await options.sessionManager?.close();
+						},
+					} as unknown as AgentSession;
+					return {
+						session,
+						setToolUIContext: () => {},
+					} as unknown as CreateAgentSessionResult;
+				},
+			});
+
+		const [first, second] = await Promise.all([createRuntime(firstCwd, "first"), createRuntime(secondCwd, "second")]);
+		try {
+			expect(creationCwds).toEqual([firstCwd, secondCwd]);
+			expect(await first.command({ type: "get_session_stats" })).toEqual({ cwd: firstCwd });
+			expect(await second.command({ type: "get_session_stats" })).toEqual({ cwd: secondCwd });
+			expect(getProjectDir()).toBe(root);
+		} finally {
+			await Promise.all([first.dispose(), second.dispose()]);
+		}
+	});
+
+	test("reports the underlying session id in RPC state, not the registry handle", async () => {
+		// The registry id is a random per-daemon UUID; the resume hint (and any
+		// other state consumer) needs the persisted session's own id — resuming
+		// by registry id can never find a session file.
+		const runtime = await createAgentSessionRuntime({
+			cwd: process.cwd(),
+			sessionId: "registry-handle-id",
+			createSession: async options => {
+				const session = {
+					sessionId: "0197-real-session-id",
+					sessionFile: "/tmp/0197-real-session-id.jsonl",
+					isStreaming: false,
+					subscribe: () => () => {},
+					subscribeCommandMetadataChanged: () => () => {},
+					dispose: async () => {
+						await options.sessionManager?.close();
+					},
+				} as unknown as AgentSession;
+				return { session, setToolUIContext: () => {} } as unknown as CreateAgentSessionResult;
+			},
+		});
+		try {
+			const state = (await runtime.command({ type: "get_state" })) as { sessionId?: string; sessionFile?: string };
+			expect(state.sessionId).toBe("0197-real-session-id");
+			expect(state.sessionFile).toBe("/tmp/0197-real-session-id.jsonl");
+			// The registry keeps addressing the runtime by its own handle.
+			expect(runtime.sessionId).toBe("registry-handle-id");
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	test("terminal_start takes over a defunct hosted terminal without awaiting its pinned task", async () => {
+		type FakeMode = {
+			isShuttingDown: boolean;
+			detachHosted: Mock<() => void>;
+			init: () => Promise<void>;
+			renderInitialMessages: () => void;
+			setDaemonSnapshot: () => void;
+			getUserInput: () => Promise<unknown>;
+		};
+		const modes: FakeMode[] = [];
+		const makeFakeMode = (): FakeMode => {
+			const input = Promise.withResolvers<unknown>();
+			const mode: FakeMode = {
+				isShuttingDown: false,
+				detachHosted: vi.fn(() => {
+					mode.isShuttingDown = true;
+					// The first host simulates a mode pinned by an in-flight turn:
+					// its loop never settles even after detach. Later hosts settle
+					// cooperatively so dispose() can drain the active task.
+					if (modes[0] !== mode) input.resolve({ text: "", cancelled: true, started: false });
+				}),
+				init: async () => {},
+				renderInitialMessages: () => {},
+				setDaemonSnapshot: () => {},
+				getUserInput: () => input.promise,
+			};
+			modes.push(mode);
+			return mode;
+		};
+		vi.spyOn(themeModule, "initTheme").mockResolvedValue(undefined);
+		type ModeFactory = { InteractiveMode: () => interactiveModeModule.InteractiveMode };
+		const modeCtor = vi
+			.spyOn(interactiveModeModule as unknown as ModeFactory, "InteractiveMode")
+			.mockImplementation(function (this: unknown) {
+				return makeFakeMode() as unknown as interactiveModeModule.InteractiveMode;
+			});
+		const runtime = await createAgentSessionRuntime({
+			cwd: process.cwd(),
+			sessionId: "hosted",
+			createSession: async options => {
+				const session = {
+					sessionId: "hosted",
+					isStreaming: false,
+					subscribe: () => () => {},
+					subscribeCommandMetadataChanged: () => () => {},
+					settings: { get: () => undefined },
+					sessionManager: { getCwd: () => process.cwd() },
+					dispose: async () => {
+						await options.sessionManager?.close();
+					},
+				} as unknown as AgentSession;
+				return { session, setToolUIContext: () => {} } as unknown as CreateAgentSessionResult;
+			},
+		});
+		const descriptor = { columns: 80, rows: 24 } as HostedTerminalDescriptor;
+		try {
+			await runtime.command({ type: "terminal_start", terminal: descriptor }, "a1");
+			expect(modeCtor).toHaveBeenCalledTimes(1);
+
+			// Server-observed drop: the registry's fire-and-forget detach put the
+			// hosted mode into shutdown, but its task stays pinned (in-flight turn).
+			modes[0]!.isShuttingDown = true;
+			// Same attachment reconnects. Pre-fix this either no-oped (same id =>
+			// permanently blank screen) or awaited the pinned task (hang); now it
+			// must hand over promptly.
+			await runtime.command({ type: "terminal_start", terminal: descriptor }, "a1");
+			expect(modeCtor).toHaveBeenCalledTimes(2);
+			expect(modes[0]!.detachHosted).toHaveBeenCalled();
+
+			// A different attachment replaces the interactive terminal while the
+			// current host is healthy (registry already rebound the attachment).
+			await runtime.command({ type: "terminal_start", terminal: descriptor }, "a2");
+			expect(modeCtor).toHaveBeenCalledTimes(3);
+			expect(modes[1]!.detachHosted).toHaveBeenCalled();
+
+			// A healthy same-id restart stays a no-op so an unnoticed transport
+			// blip does not reset the TUI.
+			await runtime.command({ type: "terminal_start", terminal: descriptor }, "a2");
+			expect(modeCtor).toHaveBeenCalledTimes(3);
+		} finally {
+			await runtime.dispose();
+		}
 	});
 });

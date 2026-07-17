@@ -20,6 +20,9 @@ function createPathContext(): SegmentContext {
 			modelRegistry: { isUsingOAuth: () => false },
 			sessionManager: undefined,
 		} as unknown as SegmentContext["session"],
+		// Capture at build time — mirrors StatusLineComponent, which resolves the
+		// session-owned cwd once per render and never falls back mid-render.
+		projectDir: getProjectDir(),
 		width: 120,
 		compactThinkingLevel: false,
 		options: {

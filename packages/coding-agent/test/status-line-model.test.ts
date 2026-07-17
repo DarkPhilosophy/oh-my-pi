@@ -21,6 +21,7 @@ function createModelContext(advisorActive: boolean): SegmentContext {
 				advisors: advisorActive ? [{ name: "default", status: "running" }] : [],
 			}),
 		} as unknown as SegmentContext["session"],
+		projectDir: "/tmp/status-line-model-test",
 		width: 120,
 		compactThinkingLevel: false,
 		options: {},

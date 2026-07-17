@@ -345,6 +345,86 @@ describe("AuthStorage codex oauth ranking", () => {
 		expect(activeAccounts).toEqual(["acct-A", "acct-B"]);
 	});
 
+	test("a pinned Spark window neither exhausts nor blocks the account for shared-window models", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+
+		// The user-reported shape: the team account's shared 7d window is burned
+		// out, while the prolite sibling sits at 17% shared usage but reports a
+		// model-scoped Spark window pinned at 100%.
+		await authStorage.set("openai-codex", [
+			{ type: "oauth", ...createCredential("acct-team", "team@example.com") },
+			{ type: "oauth", ...createCredential("acct-lite", "lite@example.com") },
+		]);
+		usageByAccount.set(
+			"acct-team",
+			createCodexUsageReport({
+				accountId: "acct-team",
+				primary: { usedFraction: 1, resetInMs: 3 * 24 * HOUR_MS },
+				secondary: { usedFraction: 1, resetInMs: 3 * 24 * HOUR_MS },
+				metadata: { allowed: true, limitReached: true },
+			}),
+		);
+		const liteReport = createCodexUsageReport({
+			accountId: "acct-lite",
+			primary: { usedFraction: 0.1, resetInMs: HOUR_MS },
+			secondary: { usedFraction: 0.17, resetInMs: 6 * 24 * HOUR_MS },
+			metadata: { allowed: true, limitReached: false },
+		});
+		liteReport.limits.push({
+			id: "openai-codex:spark:secondary",
+			label: "7 Day (Spark)",
+			scope: {
+				provider: "openai-codex",
+				accountId: "acct-lite",
+				tier: "spark",
+				windowId: "7d",
+				shared: true,
+			},
+			window: { id: "7d", label: "7 Day", durationMs: WEEK_MS, resetsAt: Date.now() + 6 * 24 * HOUR_MS },
+			amount: {
+				unit: "percent",
+				used: 100,
+				limit: 100,
+				remaining: 0,
+				usedFraction: 1,
+				remainingFraction: 0,
+			},
+			status: "exhausted",
+		});
+		usageByAccount.set("acct-lite", liteReport);
+
+		// Resolve durable row ids: usage-limit marks target rows, and a bearer
+		// fingerprint only exists after a prior resolve.
+		const rows = store?.listAuthCredentials("openai-codex") ?? [];
+		const rowIdFor = (accountId: string): number => {
+			const row = rows.find(entry => entry.credential.type === "oauth" && entry.credential.accountId === accountId);
+			if (!row) throw new Error(`missing credential row for ${accountId}`);
+			return row.id;
+		};
+
+		// An advisor pinned to a Spark model exhausts the lite account's Spark
+		// window: the resulting block must stay scoped to the Spark family.
+		await authStorage.markUsageLimitReached("openai-codex", "session-spark-advisor", {
+			modelId: "gpt-5.3-codex-spark",
+			credentialId: rowIdFor("acct-lite"),
+		});
+
+		// The main agent then burns out the team account on a shared-window
+		// model. The lite sibling's shared quota has headroom, so the switch
+		// must succeed — this is exactly the fallback that used to report
+		// "no sibling" because the Spark block poisoned the shared family.
+		const markResult = await authStorage.markUsageLimitReached("openai-codex", "session-main-agent", {
+			modelId: "gpt-5.6-sol",
+			credentialId: rowIdFor("acct-team"),
+		});
+		expect(markResult.switched).toBe(true);
+
+		const selected = await authStorage.getApiKey("openai-codex", "session-main-agent-next", {
+			modelId: "gpt-5.6-sol",
+		});
+		expect(selected).toBe("api-acct-lite");
+	});
+
 	test("a healthy live Codex usage report clears a stale persisted block so the account is selectable again", async () => {
 		if (!authStorage || !store?.upsertCredentialBlock || !store.getCredentialBlock) {
 			throw new Error("test setup failed");

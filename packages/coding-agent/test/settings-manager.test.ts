@@ -7,6 +7,7 @@ import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock
 import { __providerInFlightForTesting, streamSimple } from "@oh-my-pi/pi-ai/stream";
 import type { Context } from "@oh-my-pi/pi-ai/types";
 import {
+	bindSettingsToProjectContext,
 	getDefault,
 	getEnumValues,
 	onAppendOnlyModeChanged,
@@ -14,9 +15,10 @@ import {
 	resetSettingsForTest,
 	type SettingPath,
 	Settings,
+	settings,
 } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
-import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
+import { createProjectDirScope, getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
@@ -112,6 +114,35 @@ describe("Settings", () => {
 			expect(await Bun.file(getConfigPath()).exists()).toBe(true);
 			expect(await Bun.file(yamlConfigPath).exists()).toBe(false);
 			expect((await readSettings()).setupVersion).toBe(1);
+		});
+	});
+
+	describe("session context", () => {
+		it("resolves the legacy proxy to concurrent session settings", async () => {
+			const firstScope = createProjectDirScope(projectDir);
+			const secondScope = createProjectDirScope(projectDir);
+			const firstSettings = Settings.isolated({ "tui.tight": true });
+			const secondSettings = Settings.isolated({ "tui.tight": false });
+			const firstReady = Promise.withResolvers<void>();
+			const secondReady = Promise.withResolvers<void>();
+
+			const first = firstScope.run(async () => {
+				bindSettingsToProjectContext(firstSettings);
+				firstReady.resolve();
+				await secondReady.promise;
+				expect(Settings.instance).toBe(firstSettings);
+				return settings.get("tui.tight");
+			});
+			const second = secondScope.run(async () => {
+				bindSettingsToProjectContext(secondSettings);
+				secondReady.resolve();
+				await firstReady.promise;
+				expect(Settings.instance).toBe(secondSettings);
+				return settings.get("tui.tight");
+			});
+
+			expect(await Promise.all([first, second])).toEqual([true, false]);
+			expect(() => settings.get("tui.tight")).toThrow("Settings not initialized");
 		});
 	});
 

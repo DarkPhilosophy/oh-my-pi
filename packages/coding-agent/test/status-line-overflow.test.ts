@@ -34,6 +34,8 @@ function createCtx(overrides?: { pathMaxLength?: number; branch?: string | null 
 			modelRegistry: { isUsingOAuth: () => false },
 			sessionManager: undefined,
 		} as unknown as SegmentContext["session"],
+		// Capture at build time — mirrors StatusLineComponent's per-render resolve.
+		projectDir: getProjectDir(),
 		width: 120,
 		compactThinkingLevel: false,
 		options: {

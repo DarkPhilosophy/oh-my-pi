@@ -3,18 +3,13 @@ import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as path from "node:path";
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
+import { getActiveProfile, logger, postmortem, VERSION } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../config/model-registry";
-import { Settings } from "../config/settings";
 import { MCPManagerPool } from "../mcp";
 import { type CreateAgentSessionOptions, discoverAuthStorage } from "../sdk";
 import { SessionManager } from "../session/session-manager";
-import {
-	canonicalProjectRoot,
-	daemonEndpoint,
-	daemonRuntimeDir,
-	ensureDaemonRuntimeDir,
-	readOrCreateDaemonToken,
-} from "./paths";
+import { daemonBuildStamp } from "./build-stamp";
+import { daemonEndpoint, daemonRuntimeDir, ensureDaemonRuntimeDir, readOrCreateDaemonToken } from "./paths";
 import {
 	DAEMON_MAX_FRAME_BYTES,
 	DAEMON_PROTOCOL_MAJOR,
@@ -34,10 +29,12 @@ import {
 	type DaemonSessionRuntimeFactory,
 	type HostedServerControls,
 } from "./session-runtime";
+import type { DaemonProfile } from "./status";
 
-const SERVER_VERSION = "1";
 const DEFAULT_MAX_CLIENTS = 64;
 const OWNER_FILE = "daemon.owner";
+/** How long a contender waits out a live-but-unbound owner (starting or draining). */
+const OWNER_LEASE_WAIT_MS = 10_000;
 const SKIP_DISPATCH = Symbol("skip daemon dispatch");
 
 type Connection = {
@@ -51,13 +48,16 @@ type Connection = {
 };
 
 export type DaemonServerOptions = {
-	profile: string;
-	projectRoot: string;
+	profile: DaemonProfile;
 	runtimeDir?: string;
 	endpoint?: string;
 	token?: string;
 	daemonId?: string;
 	serverVersion?: string;
+	/** Build pairing identity override (tests); defaults to daemonBuildStamp(). */
+	buildStamp?: string;
+	/** Lease patience override (tests); defaults to OWNER_LEASE_WAIT_MS. */
+	ownerLeaseWaitMs?: number;
 	runtimeFactory?: DaemonSessionRuntimeFactory;
 	registry?: DaemonSessionRegistry;
 	now?: () => number;
@@ -104,25 +104,36 @@ function frameSeq(value: unknown): number | undefined {
 	return typeof seq === "number" && Number.isInteger(seq) ? seq : undefined;
 }
 
-/** Authenticated per-profile/project Unix socket daemon. */
+/** Authenticated per-profile Unix socket daemon. */
 export class DaemonServer {
-	readonly profile: string;
-	readonly #configuredProjectRoot: string;
-	#canonicalProjectRoot: string | undefined;
+	readonly profile: DaemonProfile;
 	readonly #runtimeDirOverride: string | undefined;
 	readonly #endpointOverride: string | undefined;
 	readonly #tokenOverride: string | undefined;
 	readonly #daemonId: string;
 	readonly #serverVersion: string;
+	readonly #buildStampOverride: string | undefined;
+	#buildStamp: string | undefined;
 	readonly #runtimeFactory: DaemonSessionRuntimeFactory;
 	readonly #registryOverride: DaemonSessionRegistry | undefined;
+	readonly #ownerLeaseWaitMs: number;
 	readonly #now: () => number;
 	readonly #maxClients: number;
 	readonly #sessionDir: string | undefined;
 	readonly #usesDefaultRuntimeFactory: boolean;
 	readonly #startedAt: number;
 	readonly #connections = new Set<Connection>();
-	#requestQueue: Promise<void> = Promise.resolve();
+	/**
+	 * Every accepted kernel socket, including pre-handshake and half-closed
+	 * ones already released from #connections. net.Server.close() waits for
+	 * ALL of them; shutdown destroys the set so one lingering peer cannot
+	 * park the daemon exit forever.
+	 */
+	readonly #rawSockets = new Set<net.Socket>();
+	/** Per-session serialization chains for lifecycle ops (see {@link #serializationKey}). */
+	#lifecycleQueues = new Map<string, Promise<void>>();
+	/** Every in-flight lifecycle op; shutdown drains these before registry dispose. */
+	#inflightLifecycle = new Set<Promise<unknown>>();
 	#registry: DaemonSessionRegistry | undefined;
 	#server: net.Server | undefined;
 	#runtimeDir: string | undefined;
@@ -131,6 +142,7 @@ export class DaemonServer {
 	#closed = false;
 	#ownerHandle: fs.FileHandle | undefined;
 	#ownerPath: string | undefined;
+	#postmortemCancel: (() => void) | undefined;
 	#shutdownPromise: Promise<DaemonShutdownResult> | undefined;
 	#sharedAuthStorage: AuthStorage | undefined;
 	#sharedMcpManagerPool: MCPManagerPool | undefined;
@@ -138,12 +150,16 @@ export class DaemonServer {
 
 	constructor(options: DaemonServerOptions) {
 		this.profile = options.profile;
-		this.#configuredProjectRoot = options.projectRoot;
 		this.#runtimeDirOverride = options.runtimeDir;
 		this.#endpointOverride = options.endpoint;
 		this.#tokenOverride = options.token;
 		this.#daemonId = options.daemonId ?? crypto.randomUUID();
-		this.#serverVersion = options.serverVersion ?? SERVER_VERSION;
+		this.#serverVersion = options.serverVersion ?? VERSION;
+		this.#buildStampOverride = options.buildStamp;
+		this.#ownerLeaseWaitMs =
+			Number.isFinite(options.ownerLeaseWaitMs) && options.ownerLeaseWaitMs! >= 1
+				? Math.floor(options.ownerLeaseWaitMs!)
+				: OWNER_LEASE_WAIT_MS;
 		this.#runtimeFactory = options.runtimeFactory ?? createAgentSessionRuntime;
 		this.#usesDefaultRuntimeFactory = options.runtimeFactory === undefined;
 		this.#registryOverride = options.registry;
@@ -173,12 +189,11 @@ export class DaemonServer {
 	/** Start listening after runtime/token/socket permissions are established. */
 	async run(): Promise<this> {
 		if (this.#server) return this;
-		const projectRoot = await canonicalProjectRoot(this.#configuredProjectRoot);
-		this.#canonicalProjectRoot = projectRoot;
-		this.#runtimeDir = this.#runtimeDirOverride ?? daemonRuntimeDir(this.profile, projectRoot);
+		this.#runtimeDir = this.#runtimeDirOverride ?? daemonRuntimeDir();
 		this.#endpoint = this.#endpointOverride ?? daemonEndpoint(this.#runtimeDir);
 		await ensureDaemonRuntimeDir(this.#runtimeDir);
 		this.#token = this.#tokenOverride ?? (await readOrCreateDaemonToken(this.#runtimeDir));
+		this.#buildStamp = this.#buildStampOverride ?? (await daemonBuildStamp());
 		await fs.chmod(this.#runtimeDir, 0o700);
 		try {
 			await this.#acquireOwnerLease();
@@ -218,7 +233,6 @@ export class DaemonServer {
 			this.#registry =
 				this.#registryOverride ??
 				new DaemonSessionRegistry({
-					projectRoot,
 					runtimeFactory: options =>
 						this.#runtimeFactory({
 							...options,
@@ -226,7 +240,7 @@ export class DaemonServer {
 							serverControls,
 						}),
 					sessionDir: this.#sessionDir,
-					listSessions: async cwd => SessionManager.list(cwd),
+					listSessions: () => SessionManager.listAll(),
 				});
 			for (;;) {
 				const server = net.createServer(socket => this.#accept(socket));
@@ -255,6 +269,9 @@ export class DaemonServer {
 				}
 			}
 			await fs.chmod(this.#endpoint!, 0o600);
+			this.#postmortemCancel = postmortem.register("daemon-server", async () => {
+				await this.shutdown(true);
+			});
 			return this;
 		} catch (error) {
 			await this.#disposeSharedResources();
@@ -265,7 +282,14 @@ export class DaemonServer {
 	async #acquireOwnerLease(): Promise<void> {
 		const ownerPath = path.join(this.#runtimeDir!, OWNER_FILE);
 		this.#ownerPath = ownerPath;
-		for (let attempt = 0; attempt < 2; attempt++) {
+		// "Owner pid alive but no live listener" is a TRANSIENT state, not an
+		// error: either the owner is starting (it will bind shortly — the probe
+		// flips true and we lose legitimately) or it is draining after a
+		// takeover shutdown (the pid vanishes shortly and we reclaim). Failing
+		// instantly here made every replacement daemon racing a draining
+		// predecessor exit 1 and abort the whole client startup.
+		const deadline = Date.now() + this.#ownerLeaseWaitMs;
+		for (;;) {
 			try {
 				const handle = await fs.open(ownerPath, "wx", 0o600);
 				await handle.writeFile(
@@ -291,67 +315,70 @@ export class DaemonServer {
 							ownerAlive = probeCode !== "ESRCH";
 						}
 					}
-				} catch (readError) {
-					const readCode = readError instanceof Error && "code" in readError ? readError.code : undefined;
-					if (readCode !== "ENOENT") ownerAlive = true;
+				} catch {
+					// A malformed or unreadable owner file cannot identify a live owner.
+					ownerAlive = false;
 				}
-				if (ownerAlive) throw new Error(`daemon owner is still starting: ${this.#endpoint}`);
-				await fs.rm(ownerPath, { force: true });
+				if (!ownerAlive) {
+					await fs.rm(ownerPath, { force: true });
+					continue;
+				}
+				if (Date.now() >= deadline) {
+					throw new Error(`daemon owner is still starting: ${this.#endpoint}`);
+				}
+				await Bun.sleep(100);
 			}
 		}
-		throw new Error(`unable to acquire daemon owner lease: ${ownerPath}`);
 	}
 
 	async #probeEndpoint(): Promise<boolean> {
 		const endpoint = this.#endpoint;
 		const token = this.#token;
-		const projectRoot = this.#canonicalProjectRoot;
-		if (!endpoint || !token || !projectRoot) return false;
-		return new Promise(resolve => {
-			const socket = net.createConnection({ path: endpoint });
-			let buffer = "";
-			let settled = false;
-			const finish = (healthy: boolean): void => {
-				if (settled) return;
-				settled = true;
-				socket.destroy();
-				resolve(healthy);
-			};
-			const timer = setTimeout(() => finish(false), 250);
-			socket.setEncoding("utf8");
-			socket.on("connect", () => {
-				socket.write(
-					encodeDaemonFrame({
-						v: DAEMON_PROTOCOL_MAJOR,
-						tag: "hello",
-						requestId: `probe-${this.#daemonId}`,
-						profile: this.profile,
-						projectRoot,
-						token,
-					}),
-				);
-			});
-			socket.on("data", chunk => {
-				buffer += String(chunk);
-				const newline = buffer.indexOf("\n");
-				if (newline < 0) return;
-				clearTimeout(timer);
-				try {
-					const frame = decodeDaemonFrame(buffer.slice(0, newline));
-					finish(frame.tag === "hello_ok");
-				} catch {
-					finish(false);
-				}
-			});
-			socket.once("error", () => {
-				clearTimeout(timer);
-				finish(false);
-			});
-			socket.once("close", () => {
-				clearTimeout(timer);
-				finish(false);
-			});
+		if (!endpoint || !token) return false;
+		const { promise, resolve } = Promise.withResolvers<boolean>();
+		const socket = net.createConnection({ path: endpoint });
+		let buffer = "";
+		let settled = false;
+		const finish = (healthy: boolean): void => {
+			if (settled) return;
+			settled = true;
+			socket.destroy();
+			resolve(healthy);
+		};
+		const timer = setTimeout(() => finish(false), 250);
+		socket.setEncoding("utf8");
+		socket.on("connect", () => {
+			socket.write(
+				encodeDaemonFrame({
+					v: DAEMON_PROTOCOL_MAJOR,
+					tag: "hello",
+					requestId: `probe-${this.#daemonId}`,
+					profile: this.profile,
+					token,
+				}),
+			);
 		});
+		socket.on("data", chunk => {
+			buffer += String(chunk);
+			const newline = buffer.indexOf("\n");
+			if (newline < 0) return;
+			clearTimeout(timer);
+			try {
+				const frame = decodeDaemonFrame(buffer.slice(0, newline));
+				finish(frame.tag === "hello_ok");
+			} catch {
+				finish(false);
+			}
+		});
+		socket.once("error", () => {
+			clearTimeout(timer);
+			finish(false);
+		});
+		socket.once("close", () => {
+			clearTimeout(timer);
+			finish(false);
+		});
+		return promise;
 	}
 
 	async #releaseOwnerLease(): Promise<void> {
@@ -377,12 +404,12 @@ export class DaemonServer {
 			protocolVersion: DAEMON_PROTOCOL_MAJOR,
 			shard: {
 				profile: this.profile,
-				projectRoot: this.#canonicalProjectRoot ?? path.resolve(this.#configuredProjectRoot),
 			},
 			sessionCount: counts.sessionCount,
 			attachmentCount: counts.attachmentCount,
 			protectedJobCount: counts.protectedJobCount,
 			uptimeMs: Math.max(0, this.#now() - this.#startedAt),
+			...(this.#buildStamp === undefined ? {} : { buildStamp: this.#buildStamp }),
 		};
 	}
 
@@ -417,18 +444,52 @@ export class DaemonServer {
 				connection.socket.destroy();
 				this.#releaseConnection(connection);
 			}
+			// Half-closed or handshake-orphaned sockets may already be out of
+			// #connections while net.Server still counts them; a single lingering
+			// socket parks server.close() — and this shutdown — forever.
+			for (const socket of [...this.#rawSockets]) socket.destroy();
 			try {
+				// Drain in-flight lifecycle ops (bounded): a session_create whose
+				// runtime factory is mid-await would otherwise install into a
+				// disposed registry and leak the runtime.
+				if (this.#inflightLifecycle.size > 0) {
+					await Promise.race([Promise.allSettled([...this.#inflightLifecycle]), Bun.sleep(5_000)]);
+				}
 				await this.#registry?.dispose();
 				const server = this.#server;
 				this.#server = undefined;
-				if (server) await new Promise<void>(resolve => server.close(() => resolve()));
+				if (server) {
+					await new Promise<void>(resolve => {
+						let settled = false;
+						const finish = (): void => {
+							if (settled) return;
+							settled = true;
+							clearTimeout(timer);
+							resolve();
+						};
+						const timer = setTimeout(() => {
+							// Deterministic exit beats a perfect close: destroy
+							// whatever lingers and stop waiting. close() settles
+							// later on its own; nothing awaits it anymore.
+							for (const socket of [...this.#rawSockets]) socket.destroy();
+							finish();
+						}, 2_000);
+						server.close(() => finish());
+					});
+				}
 				if (this.#endpoint) await fs.rm(this.#endpoint, { force: true });
 				return { shutdown: true, blockers: [] };
 			} finally {
 				try {
 					await this.#disposeSharedResources();
 				} finally {
-					await this.#releaseOwnerLease();
+					try {
+						await this.#releaseOwnerLease();
+					} finally {
+						const cancel = this.#postmortemCancel;
+						this.#postmortemCancel = undefined;
+						cancel?.();
+					}
 				}
 			}
 		})();
@@ -438,12 +499,16 @@ export class DaemonServer {
 	#shutdownBlockers(excluded?: Connection): Array<"clients" | "sessions" | "protected_jobs"> {
 		const blockers: Array<"clients" | "sessions" | "protected_jobs"> = [];
 		if ([...this.#connections].some(connection => connection !== excluded)) blockers.push("clients");
-		if (this.#registry?.hasLiveSessions) blockers.push("sessions");
+		// In-flight lifecycle ops count as live sessions: a mid-create session
+		// is about to exist and must not be shut down out from under.
+		if (this.#registry?.hasLiveSessions || this.#inflightLifecycle.size > 0) blockers.push("sessions");
 		if ((this.#registry?.protectedJobCount ?? 0) > 0) blockers.push("protected_jobs");
 		return blockers;
 	}
 
 	#accept(socket: net.Socket): void {
+		this.#rawSockets.add(socket);
+		socket.on("close", () => this.#rawSockets.delete(socket));
 		if (this.#closed || this.#connections.size >= this.#maxClients) {
 			socket.destroy();
 			return;
@@ -469,6 +534,9 @@ export class DaemonServer {
 		if (connection.closed) return;
 		connection.closed = true;
 		connection.generation++;
+		// A half-close ('end') removes the connection from tracking while the
+		// kernel socket stays open; net.Server.close() would wait on it forever.
+		connection.socket.destroy();
 		for (const key of connection.attachments) {
 			const separator = key.indexOf("\0");
 			if (separator > 0) this.#registry?.disconnect(key.slice(0, separator), key.slice(separator + 1));
@@ -530,16 +598,10 @@ export class DaemonServer {
 	}
 
 	async #hello(connection: Connection, hello: DaemonHello): Promise<void> {
-		const expectedRoot = await canonicalProjectRoot(this.#configuredProjectRoot);
 		const profileMatches = hello.profile === this.profile;
-		const rootMatches = hello.projectRoot === expectedRoot;
 		const tokenMatches = typeof this.#token === "string" && constantTimeTokenEquals(this.#token, hello.token);
-		if (!profileMatches || !rootMatches || !tokenMatches) {
-			const reason = !profileMatches
-				? "profile mismatch"
-				: !rootMatches
-					? `project-root mismatch (${hello.projectRoot} != ${expectedRoot})`
-					: "token mismatch";
+		if (!profileMatches || !tokenMatches) {
+			const reason = !profileMatches ? "profile mismatch" : "token mismatch";
 			this.#sendError(
 				connection,
 				hello.requestId,
@@ -557,17 +619,71 @@ export class DaemonServer {
 			daemonId: this.#daemonId,
 			serverVersion: this.#serverVersion,
 			protocolVersion: DAEMON_PROTOCOL_MAJOR,
-			shard: { profile: this.profile, projectRoot: expectedRoot },
+			shard: { profile: this.profile },
 			capabilities: ["snapshot", "events", "server_status"],
+			...(this.#buildStamp === undefined ? {} : { buildStamp: this.#buildStamp }),
 		});
 	}
+	/**
+	 * Route an operation to its serialization domain. ONE global chain used to
+	 * order EVERY request, so one slow awaited task — a session_create doing
+	 * network I/O during runtime init, a long-running session command — stalled
+	 * ping/attach/commands for EVERY connected instance (observed live: all
+	 * instances frozen behind the first session's first web request).
+	 *
+	 * - Session lifecycle ops serialize PER SESSION ID: check-then-install
+	 *   windows in the registry span awaits, so same-id create/load/close must
+	 *   not interleave — but different sessions never wait on each other.
+	 * - An id-less create gets no key: its identity is decided by the runtime
+	 *   it builds, and `#install` is the atomic final guard.
+	 * - Everything else runs directly: commands are already serialized per
+	 *   session record by the registry, and reads are synchronous snapshots.
+	 */
+	#serializationKey(operation: DaemonOperation): string | undefined {
+		switch (operation.op) {
+			case "session_create":
+			case "session_load":
+			case "session_resume":
+			case "session_close":
+			case "attach":
+			case "detach":
+				return "sessionId" in operation && typeof operation.sessionId === "string"
+					? `session:${operation.sessionId}`
+					: undefined;
+			default:
+				return undefined;
+		}
+	}
+
+	/** Lifecycle ops mutate registry state across awaits; shutdown must drain them. */
+	#isLifecycleOp(operation: DaemonOperation): boolean {
+		switch (operation.op) {
+			case "session_create":
+			case "session_load":
+			case "session_resume":
+			case "session_close":
+			case "attach":
+			case "detach":
+				return true;
+			default:
+				return false;
+		}
+	}
+
 	async #dispatch(connection: Connection, request: DaemonRequest, generation: number): Promise<void> {
 		if (!this.#connectionActive(connection, generation)) return;
 		try {
-			const result = await this.#serializeRequest(() => {
+			const run = (): Promise<unknown | typeof SKIP_DISPATCH> => {
 				if (!this.#connectionActive(connection, generation)) return Promise.resolve(SKIP_DISPATCH);
 				return this.#execute(connection, request.operation, generation);
-			});
+			};
+			const key = this.#serializationKey(request.operation);
+			const pending = key === undefined ? run() : this.#serializeKeyed(key, run);
+			if (this.#isLifecycleOp(request.operation)) {
+				this.#inflightLifecycle.add(pending);
+				void pending.catch(() => undefined).finally(() => this.#inflightLifecycle.delete(pending));
+			}
+			const result = await pending;
 			if (result === SKIP_DISPATCH || !this.#connectionActive(connection, generation)) return;
 			this.#send(connection, {
 				v: DAEMON_PROTOCOL_MAJOR,
@@ -665,15 +781,19 @@ export class DaemonServer {
 			throw new RegistryError("not_found", `attachment ${attachmentId} is not owned by this connection`);
 	}
 
-	async #serializeRequest<T>(task: () => Promise<T>): Promise<T> {
-		const previous = this.#requestQueue;
+	async #serializeKeyed<T>(key: string, task: () => Promise<T>): Promise<T> {
+		const previous = this.#lifecycleQueues.get(key) ?? Promise.resolve();
 		const deferred = Promise.withResolvers<T>();
-		this.#requestQueue = previous.then(async () => {
+		const next = previous.then(async () => {
 			try {
 				deferred.resolve(await task());
 			} catch (error) {
 				deferred.reject(error);
 			}
+		});
+		this.#lifecycleQueues.set(key, next);
+		void next.finally(() => {
+			if (this.#lifecycleQueues.get(key) === next) this.#lifecycleQueues.delete(key);
 		});
 		return deferred.promise;
 	}
@@ -682,6 +802,31 @@ export class DaemonServer {
 		if (connection.socket.destroyed) return;
 		const type = frameType(frame);
 		if (!type) return;
+		try {
+			this.#sendAttachmentFrameInner(connection, sessionId, attachmentId, frame, type);
+		} catch (error) {
+			// A frame that cannot encode (oversized, unserializable) would throw
+			// SYNCHRONOUSLY through the session's subscribe listener and wedge the
+			// whole event pipeline. Registry-level bounding makes this unreachable
+			// for session events; if anything else slips through, surface it as an
+			// observable disconnect so the client reattaches and replays cleanly.
+			logger.warn("Dropping unencodable attachment frame; recycling connection", {
+				sessionId,
+				attachmentId,
+				frameType: type,
+				error: String(error),
+			});
+			connection.socket.destroy();
+		}
+	}
+
+	#sendAttachmentFrameInner(
+		connection: Connection,
+		sessionId: string,
+		attachmentId: string,
+		frame: unknown,
+		type: string,
+	): void {
 		if (type === "event") {
 			const seq = frameSeq(frame);
 			if (
@@ -771,24 +916,15 @@ export class DaemonServer {
 	}
 }
 
-export type StartDaemonServerOptions = Omit<DaemonServerOptions, "profile" | "projectRoot"> & {
-	profile?: string;
-	projectRoot?: string;
+export type StartDaemonServerOptions = Omit<DaemonServerOptions, "profile"> & {
+	profile?: DaemonProfile;
 };
 
 /** Hidden-worker entrypoint used by cli.ts. */
 export async function startDaemonServerFromEnvironment(options: StartDaemonServerOptions = {}): Promise<DaemonServer> {
-	const profile =
-		options.profile ??
-		process.env.OMP_DAEMON_PROFILE ??
-		process.env.OMP_PROFILE ??
-		process.env.PI_PROFILE ??
-		"default";
-	const projectRoot =
-		options.projectRoot ?? process.env.OMP_DAEMON_PROJECT_DIR ?? process.env.OMP_DAEMON_PROJECT_ROOT ?? process.cwd();
+	const profile = options.profile === undefined ? (getActiveProfile() ?? null) : options.profile;
 	const runtimeDir = options.runtimeDir ?? process.env.OMP_DAEMON_RUNTIME_DIR;
-	await Settings.init({ cwd: projectRoot });
-	const server = new DaemonServer({ ...options, profile, projectRoot, runtimeDir });
+	const server = new DaemonServer({ ...options, profile, runtimeDir });
 	await server.run();
 	return server;
 }

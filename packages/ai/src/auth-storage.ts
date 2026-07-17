@@ -49,7 +49,12 @@ import { githubCopilotUsageProvider } from "./usage/github-copilot";
 import { antigravityRankingStrategy, antigravityUsageProvider } from "./usage/google-antigravity";
 import { kimiUsageProvider } from "./usage/kimi";
 import { ollamaCloudUsageProvider, ollamaUsageProvider } from "./usage/ollama";
-import { codexRankingStrategy, openaiCodexUsageProvider } from "./usage/openai-codex";
+import {
+	type CodexQuotaFamily,
+	codexRankingStrategy,
+	openaiCodexUsageProvider,
+	scopeCodexLimits,
+} from "./usage/openai-codex";
 import {
 	type CodexResetConsumeCode,
 	type CodexResetCredit,
@@ -5153,46 +5158,55 @@ export class AuthStorage {
 
 	/**
 	 * Self-heal a stale Codex usage-limit block: when a fresh live usage report
-	 * says the account is allowed and below every reported limit, drop the
-	 * persisted and in-memory `openai-codex:oauth` blocks so credential selection
-	 * can re-include recovered seats before a stale block naturally expires.
+	 * says a quota family is allowed and below its scoped limits, drop the
+	 * credential's blocks so selection can re-include recovered seats before a
+	 * stale block naturally expires. Family-scoped evaluation matters: a Spark
+	 * window pinned at 100% must not keep a healthy shared-window block alive
+	 * forever (and vice versa). Clearing drops every scope, which is safe: the
+	 * next ranked resolve re-blocks any family the fresh report still shows
+	 * exhausted.
 	 */
-	#isHealthyCodexUsageReport(report: UsageReport): boolean {
+	#isHealthyCodexUsageReport(report: UsageReport, family: CodexQuotaFamily): boolean {
 		if (report.provider !== "openai-codex") return false;
 		const metadata = report.metadata;
-		if (metadata?.allowed !== true || metadata.limitReached !== false) return false;
-		return !this.#isUsageLimitReached(report.limits);
+		// `allowed`/`limitReached` describe the shared account windows; Spark
+		// sections carry their own flags folded into the scoped limits.
+		if (family === "shared" && (metadata?.allowed !== true || metadata.limitReached !== false)) return false;
+		return !this.#isUsageLimitReached(scopeCodexLimits(report.limits, family));
 	}
 
 	#reconcileCodexUsageBlockForCredential(provider: Provider, credentialId: number, report: UsageReport): void {
-		if (!this.#isHealthyCodexUsageReport(report)) return;
 		const providerKey = this.#getProviderTypeKey(provider, "oauth");
 		const credentialIndex = this.#getStoredCredentials(provider).findIndex(entry => entry.id === credentialId);
 		if (credentialIndex < 0) return;
-		// Mirror selection: consult the same strategy scope `markUsageLimitReached`
-		// persists under, else a scoped block is invisible here and never healed.
-		const blockScope = this.#rankingStrategyResolver?.(provider)?.blockScope?.({});
-		const blockedUntilMs = this.#getCredentialBlockedUntil(provider, providerKey, credentialIndex, blockScope);
-		if (blockedUntilMs === undefined) return;
-		// `/usage` can lag the request path that just returned 429. Fresh local or
-		// broker-sourced blocks get one usage-cache window before healthy reports may
-		// clear them.
 		const nowMs = Date.now();
-		const scopedBackoffKey = this.#toScopedBackoffKey(providerKey, blockScope);
-		const globalProbeAfterMs = this.#credentialBackoffProbeAfter.get(providerKey)?.get(credentialIndex) ?? 0;
-		const scopedProbeAfterMs = this.#credentialBackoffProbeAfter.get(scopedBackoffKey)?.get(credentialIndex) ?? 0;
 		const getStoreReconcileAfter = this.#store.getCredentialBlockReconcileAfter?.bind(this.#store);
-		const storeGlobalProbeAfterMs = getStoreReconcileAfter?.(credentialId, providerKey, "") ?? 0;
-		const storeScopedProbeAfterMs = getStoreReconcileAfter?.(credentialId, providerKey, blockScope ?? "") ?? 0;
-		if (Math.max(globalProbeAfterMs, scopedProbeAfterMs, storeGlobalProbeAfterMs, storeScopedProbeAfterMs) > nowMs) {
+		for (const family of ["shared", "spark"] as const) {
+			const blockedUntilMs = this.#getCredentialBlockedUntil(provider, providerKey, credentialIndex, family);
+			if (blockedUntilMs === undefined) continue;
+			if (!this.#isHealthyCodexUsageReport(report, family)) continue;
+			// `/usage` can lag the request path that just returned 429. Fresh local
+			// or broker-sourced blocks get one usage-cache window before healthy
+			// reports may clear them.
+			const scopedBackoffKey = this.#toScopedBackoffKey(providerKey, family);
+			const globalProbeAfterMs = this.#credentialBackoffProbeAfter.get(providerKey)?.get(credentialIndex) ?? 0;
+			const scopedProbeAfterMs = this.#credentialBackoffProbeAfter.get(scopedBackoffKey)?.get(credentialIndex) ?? 0;
+			const storeGlobalProbeAfterMs = getStoreReconcileAfter?.(credentialId, providerKey, "") ?? 0;
+			const storeScopedProbeAfterMs = getStoreReconcileAfter?.(credentialId, providerKey, family) ?? 0;
+			if (
+				Math.max(globalProbeAfterMs, scopedProbeAfterMs, storeGlobalProbeAfterMs, storeScopedProbeAfterMs) > nowMs
+			) {
+				continue;
+			}
+			this.#clearCredentialBlocks(provider, credentialId);
+			logger.info("Cleared stale Codex usage-limit block after healthy live usage report", {
+				credentialId,
+				provider,
+				family,
+				clearedBlockedUntilMs: blockedUntilMs,
+			});
 			return;
 		}
-		this.#clearCredentialBlocks(provider, credentialId);
-		logger.info("Cleared stale Codex usage-limit block after healthy live usage report", {
-			credentialId,
-			provider,
-			clearedBlockedUntilMs: blockedUntilMs,
-		});
 	}
 
 	#reconcileCodexUsageBlock(request: UsageRequestDescriptor, report: UsageReport): void {
@@ -5225,7 +5239,7 @@ export class AuthStorage {
 	#reconcileCodexUsageBlocksFromReports(reports: UsageReport[]): void {
 		const reconciled = new Set<number>();
 		for (const report of reports) {
-			if (!this.#isHealthyCodexUsageReport(report)) continue;
+			if (report.provider !== "openai-codex") continue;
 			for (const credentialId of this.#findStoredCredentialIdsForUsageReport(report)) {
 				if (reconciled.has(credentialId)) continue;
 				reconciled.add(credentialId);

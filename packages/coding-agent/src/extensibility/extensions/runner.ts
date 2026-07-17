@@ -239,6 +239,7 @@ export class ExtensionRunner {
 	#shutdownHandler: ShutdownHandler = () => {};
 	#getMemoryFn?: () => MemoryRuntimeContext | undefined;
 	#commandDiagnostics: Array<{ type: string; message: string; path: string }> = [];
+	#clientEnv: Record<string, string> | undefined;
 	#initialized = false;
 	/**
 	 * Buffer for `credential_disabled` events received via {@link emitCredentialDisabled}
@@ -542,7 +543,19 @@ export class ExtensionRunner {
 			getSystemPrompt: () => this.#getSystemPromptFn(),
 			localProtocolOptions: this.localProtocolOptions,
 			memory: this.#getMemoryFn?.(),
+			clientEnv: this.#clientEnv,
 		};
+	}
+
+	/**
+	 * Record the terminal-identity env of the client attached to this session
+	 * (hosted sessions only; a reattach from another terminal replaces it).
+	 * Extensions read it as `ctx.clientEnv` — the daemon process env belongs to
+	 * whichever client spawned the daemon first and must not be trusted for
+	 * per-session terminal identity.
+	 */
+	setClientEnv(clientEnv: Record<string, string> | undefined): void {
+		this.#clientEnv = clientEnv;
 	}
 
 	/**

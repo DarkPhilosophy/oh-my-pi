@@ -71,7 +71,7 @@ describe("daemon benchmark Linux parsing", () => {
 describe("daemon benchmark fixture parity", () => {
 	const base: BenchmarkFixture = {
 		cwd: "/tmp/project",
-		profile: "default",
+		profile: "none",
 		model: "fixture-model",
 		permissions: "read-only",
 		mcpEnabled: false,
@@ -98,7 +98,22 @@ describe("daemon benchmark CLI options", () => {
 		expect(parseBenchmarkArgs(["--n", "1,5,10", "--trials", "3"])).toEqual({
 			n: [1, 5, 10],
 			trials: 3,
+			fairness: false,
+			probes: 50,
 		});
+	});
+
+	it("enables fairness mode with a custom probe count", () => {
+		expect(parseBenchmarkArgs(["--fairness", "--n", "10", "--probes", "25"])).toEqual({
+			n: [10],
+			trials: 3,
+			fairness: true,
+			probes: 25,
+		});
+	});
+
+	it("rejects invalid probe counts", () => {
+		expect(() => parseBenchmarkArgs(["--probes", "0"])).toThrow(/--probes/);
 	});
 
 	it("rejects invalid trial counts instead of silently changing the workload", () => {

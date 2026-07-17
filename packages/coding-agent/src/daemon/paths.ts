@@ -1,7 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getConfigRootDir } from "@oh-my-pi/pi-utils";
-import type { DaemonShard } from "./protocol";
 
 export const DAEMON_TOKEN_FILE = "daemon.token";
 export const DAEMON_SOCKET_FILE = "daemon.sock";
@@ -17,33 +16,9 @@ export async function canonicalProjectRoot(projectRoot: string): Promise<string>
 	}
 }
 
-/** Canonical identity used to select one profile/project daemon shard. */
-export async function daemonShard(profile: string, projectRoot: string): Promise<DaemonShard> {
-	if (!profile) throw new Error("Daemon profile must not be empty");
-	return { profile, projectRoot: await canonicalProjectRoot(projectRoot) };
-}
-
-/** Return true when cwd is the canonical root or one of its descendants. */
-export function isDaemonPathInScope(projectRoot: string, cwd: string): boolean {
-	const root = path.resolve(projectRoot);
-	const candidate = path.resolve(cwd);
-	return candidate === root || candidate.startsWith(`${root}${path.sep}`);
-}
-
-/** Resolve the private runtime directory for one profile/project shard. */
-export function daemonRuntimeDir(
-	profile: string,
-	projectRoot: string,
-	configRoot: string = getConfigRootDir(),
-): string {
-	const identity = `${profile}\0${path.resolve(projectRoot)}`;
-	const key = Bun.hash.wyhash(identity).toString(16).padStart(16, "0");
-	return path.join(configRoot, "run", "daemons", key);
-}
-
-/** Resolve runtime directory from an already canonical shard. */
-export function daemonRuntimeDirForShard(shard: DaemonShard, configRoot: string = getConfigRootDir()): string {
-	return daemonRuntimeDir(shard.profile, shard.projectRoot, configRoot);
+/** Resolve the private runtime directory for the active profile daemon. */
+export function daemonRuntimeDir(configRoot: string = getConfigRootDir()): string {
+	return path.join(configRoot, "run", "daemon");
 }
 
 /** Resolve the Unix socket endpoint for a shard runtime directory. */

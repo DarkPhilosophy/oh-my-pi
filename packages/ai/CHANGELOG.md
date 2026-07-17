@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed OpenAI Codex multi-account fallback dying when a model-scoped window was pinned: a Spark 7-day meter at 100% marked the whole account exhausted and blocked it for shared-window models, so exhausting the sibling left the agent (and advisors/subagents) with "no usable credential" despite ample shared quota. Quota checks and backoff blocks are now scoped per quota family (Spark models meter on their own window; everything else uses the shared account windows), and the live-usage self-heal reconciles each family separately so a stale cross-family block clears instead of surviving until its natural expiry.
+
 ## [17.0.0] - 2026-07-15
 
 ### Changed

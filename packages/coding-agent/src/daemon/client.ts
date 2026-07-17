@@ -1,6 +1,5 @@
 import * as net from "node:net";
-import * as path from "node:path";
-import { canonicalProjectRoot, daemonEndpoint, daemonRuntimeDir, readOrCreateDaemonToken } from "./paths";
+import { daemonEndpoint, daemonRuntimeDir, readOrCreateDaemonToken } from "./paths";
 import {
 	DAEMON_MAX_FRAME_BYTES,
 	DAEMON_PROTOCOL_MAJOR,
@@ -15,7 +14,7 @@ import {
 	encodeDaemonFrame,
 	parseDaemonServerStatus,
 } from "./protocol";
-import type { DaemonConnectionSnapshot, DaemonShard } from "./status";
+import type { DaemonConnectionSnapshot, DaemonProfile, DaemonShard } from "./status";
 
 const CONNECT_TIMEOUT_MS = 10_000;
 const RECOVERY_COOLDOWN_MS = 5_000;
@@ -23,8 +22,7 @@ const RECOVERY_COOLDOWN_MS = 5_000;
 export type { DaemonConnectionSnapshot } from "./status";
 
 export type DaemonClientOptions = {
-	profile: string;
-	projectRoot: string;
+	profile: DaemonProfile;
 	runtimeDir?: string;
 	endpoint?: string;
 	token?: string;
@@ -71,10 +69,9 @@ function openSocket(endpoint: string, timeoutMs: number): Promise<net.Socket> {
 	return promise;
 }
 
-/** Persistent authenticated Unix-socket connection to one daemon shard. */
+/** Persistent authenticated Unix-socket connection to one profile daemon. */
 export class DaemonClient {
-	readonly profile: string;
-	readonly projectRoot: string;
+	readonly profile: DaemonProfile;
 	readonly #runtimeDir: string;
 	readonly #endpoint: string;
 	readonly #tokenOverride: string | undefined;
@@ -105,9 +102,8 @@ export class DaemonClient {
 
 	constructor(options: DaemonClientOptions) {
 		this.profile = options.profile;
-		this.projectRoot = path.resolve(options.projectRoot);
-		this.#shard = { profile: this.profile, projectRoot: this.projectRoot };
-		this.#runtimeDir = options.runtimeDir ?? daemonRuntimeDir(this.profile, this.projectRoot);
+		this.#shard = { profile: this.profile };
+		this.#runtimeDir = options.runtimeDir ?? daemonRuntimeDir();
 		this.#endpoint = options.endpoint ?? daemonEndpoint(this.#runtimeDir);
 		this.#tokenOverride = options.token;
 		this.#requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
@@ -126,6 +122,16 @@ export class DaemonClient {
 
 	get endpoint(): string {
 		return this.#endpoint;
+	}
+
+	/** Whether close() was called; a closed client never reconnects. */
+	get closed(): boolean {
+		return this.#closed;
+	}
+
+	/** Build pairing identity from the daemon's hello; undefined until connected or on pre-stamp daemons. */
+	get serverBuildStamp(): string | undefined {
+		return this.#hello?.buildStamp;
 	}
 
 	onSnapshot(listener: (snapshot: DaemonConnectionSnapshot) => void): () => void {
@@ -255,19 +261,26 @@ export class DaemonClient {
 		const { promise, resolve, reject } = Promise.withResolvers<DaemonHelloOk>();
 		const handshake = { requestId, resolve, reject };
 		this.#handshake = handshake;
-		let handshakeTimer: NodeJS.Timeout;
+		// The timer must cover the hello WRITE as well as the response wait: a
+		// connection accepted into a closing listener's backlog never gets read,
+		// erred, or closed by the peer, so an unguarded write parks forever
+		// (found via a daemon-replacement race). Timeout destroys the socket,
+		// which also unsticks a parked write via its close event.
+		const handshakeTimer = setTimeout(() => {
+			if (this.#handshake === handshake) handshake.reject(new Error("Timed out waiting for daemon hello"));
+			socket.destroy();
+		}, this.#connectTimeoutMs);
+		// The write path can throw before the hello response is awaited; keep an
+		// observer on the handshake promise so its rejection is never unhandled.
+		promise.catch(() => undefined);
 		try {
 			await this.#writeFrame(socket, {
 				v: DAEMON_PROTOCOL_MAJOR,
 				tag: "hello",
 				requestId,
 				profile: this.profile,
-				projectRoot: this.projectRoot,
 				token,
 			});
-			handshakeTimer = setTimeout(() => {
-				if (this.#handshake === handshake) handshake.reject(new Error("Timed out waiting for daemon hello"));
-			}, this.#connectTimeoutMs);
 			const hello = await promise;
 			clearTimeout(handshakeTimer);
 			if (this.#closed || generation !== this.#generation) throw new Error("Daemon client is closed");
@@ -282,8 +295,7 @@ export class DaemonClient {
 				});
 				throw new Error(`incompatible protocol: server major ${hello.protocolVersion}`);
 			}
-			if (hello.shard.profile !== this.profile || hello.shard.projectRoot !== this.projectRoot)
-				throw new Error("daemon shard scope mismatch");
+			if (hello.shard.profile !== this.profile) throw new Error("daemon profile scope mismatch");
 			this.#hello = hello;
 			if (hello.capabilities.includes("server_status")) {
 				this.#latestStatus = await this.serverStatus();
@@ -490,6 +502,5 @@ export class DaemonClient {
 export type CreateDaemonClientOptions = DaemonClientOptions;
 
 export async function createDaemonClient(options: CreateDaemonClientOptions): Promise<DaemonClient> {
-	const projectRoot = await canonicalProjectRoot(options.projectRoot);
-	return new DaemonClient({ ...options, projectRoot });
+	return new DaemonClient(options);
 }

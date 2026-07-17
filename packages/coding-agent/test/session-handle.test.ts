@@ -29,7 +29,7 @@ class Transport {
 	loadNotFound = false;
 	state: DaemonConnectionSnapshot = {
 		state: "connected",
-		shard: { profile: "test", projectRoot: "/tmp" },
+		shard: { profile: "test" },
 		serverVersion: "1",
 		protocolVersion: 1,
 		sessionCount: 1,
@@ -98,7 +98,7 @@ class Transport {
 	disconnect(): void {
 		this.state = {
 			state: "unavailable",
-			shard: { profile: "test", projectRoot: "/tmp" },
+			shard: { profile: "test" },
 		};
 		for (const listener of this.snapshotListeners) listener(this.state);
 	}
@@ -339,6 +339,72 @@ describe("RemoteSessionHandle", () => {
 		transport.emitFrame(snapshotFrame("snapshot_end", { barrierSeq: 4, nextSeq: 5 }));
 		expect(handle.state.messageCount).toBe(2);
 	});
+	test("bounds parked commands when the daemon never reconnects", async () => {
+		const transport = new Transport();
+		const handle = new RemoteSessionHandle(transport as unknown as DaemonClient, "s", {
+			attachmentId: "a",
+			reconnectWaitMs: 20,
+		});
+		await handle.whenReady();
+
+		// Attached handle observes an outage: the reconnect gate parks senders.
+		transport.emitSnapshot({ state: "reconnecting", shard: { profile: "test" }, attempt: 1 });
+
+		// The daemon never comes back: the parked command must fail at the
+		// bound — this is the "stuck forever, cannot even close" regression.
+		const started = performance.now();
+		await expect(handle.abort()).rejects.toThrow("did not reconnect within 20ms");
+		expect(performance.now() - started).toBeLessThan(1_000);
+	});
+
+	test("wakes parked commands immediately when the client closes", async () => {
+		const transport = new Transport();
+		let closed = false;
+		Object.defineProperty(transport, "closed", { get: () => closed });
+		const handle = new RemoteSessionHandle(transport as unknown as DaemonClient, "s", {
+			attachmentId: "a",
+			reconnectWaitMs: 60_000,
+		});
+		await handle.whenReady();
+
+		transport.emitSnapshot({ state: "reconnecting", shard: { profile: "test" }, attempt: 1 });
+		const parked = handle.abort();
+
+		// A closed client never reconnects: the unavailable snapshot must wake
+		// the parked sender instantly instead of waiting out the 60s bound.
+		closed = true;
+		transport.emitSnapshot({ state: "unavailable", shard: { profile: "test" } });
+
+		const started = performance.now();
+		await expect(parked).rejects.toThrow("disconnected");
+		expect(performance.now() - started).toBeLessThan(1_000);
+	});
+
+	test("dispose settles promptly during an outage and unblocks parked senders", async () => {
+		const transport = new Transport();
+		const handle = new RemoteSessionHandle(transport as unknown as DaemonClient, "s", {
+			attachmentId: "a",
+			reconnectWaitMs: 60_000,
+		});
+		await handle.whenReady();
+
+		transport.emitSnapshot({ state: "reconnecting", shard: { profile: "test" }, attempt: 1 });
+		// Attach the rejection probe immediately: the parked sender fails the
+		// moment dispose wakes the gate, before the final assertion runs.
+		let parkedError: Error | undefined;
+		const parked = handle.abort().catch((error: unknown) => {
+			parkedError = error instanceof Error ? error : new Error(String(error));
+		});
+
+		// Teardown must never wait out the reconnect bound: detach wakes the
+		// gate first, then fails fast on the disconnected transport.
+		const started = performance.now();
+		await expect(handle.dispose()).rejects.toThrow("disconnected");
+		expect(performance.now() - started).toBeLessThan(300);
+		await parked;
+		expect(parkedError?.message).toContain("disconnected");
+	});
+
 	test("fails commands while disconnected and preserves extension responses", async () => {
 		const transport = new Transport();
 		const handle = remote(transport);
@@ -347,7 +413,7 @@ describe("RemoteSessionHandle", () => {
 		await expect(handle.abort()).rejects.toThrow("disconnected");
 		transport.state = {
 			state: "connected",
-			shard: { profile: "test", projectRoot: "/tmp" },
+			shard: { profile: "test" },
 			serverVersion: "1",
 			protocolVersion: 1,
 			sessionCount: 1,

@@ -1,9 +1,9 @@
 /** Versioned, authenticated daemon wire protocol. */
-import type { DaemonShard } from "./status";
+import type { DaemonProfile, DaemonShard } from "./status";
 
-export type { DaemonShard } from "./status";
+export type { DaemonProfile, DaemonShard } from "./status";
 
-export const DAEMON_PROTOCOL_MAJOR = 1;
+export const DAEMON_PROTOCOL_MAJOR = 2;
 export const DAEMON_MAX_FRAME_BYTES = 1024 * 1024;
 const DAEMON_SNAPSHOT_CHUNK_BYTES = 512 * 1024;
 const DAEMON_TERMINAL_OUTPUT_CHUNK_CODE_UNITS = 128 * 1024;
@@ -23,7 +23,6 @@ export type DaemonErrorCode =
 	| "invalid_request"
 	| "not_found"
 	| "session_busy"
-	| "session_scope_error"
 	| "unavailable"
 	| "internal";
 
@@ -35,7 +34,6 @@ const DAEMON_ERROR_CODES: Record<DaemonErrorCode, true> = {
 	invalid_request: true,
 	not_found: true,
 	session_busy: true,
-	session_scope_error: true,
 	unavailable: true,
 	internal: true,
 };
@@ -54,8 +52,7 @@ export type DaemonHello = {
 	v: number;
 	tag: "hello";
 	requestId: string;
-	profile: string;
-	projectRoot: string;
+	profile: DaemonProfile;
 	token: string;
 };
 
@@ -68,6 +65,12 @@ export type DaemonHelloOk = {
 	protocolVersion: number;
 	shard: DaemonShard;
 	capabilities: DaemonCapability[];
+	/**
+	 * Client↔server build pairing identity (see build-stamp.ts). Optional on
+	 * the wire: a daemon predating the field parses as `undefined`, which
+	 * connecting clients treat as a mismatch (stale build).
+	 */
+	buildStamp?: string;
 };
 
 export type DaemonSessionCreateOverrides = {
@@ -77,6 +80,8 @@ export type DaemonSessionCreateOverrides = {
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
 	argv?: string[];
+	/** Terminal-identity env of the creating client (never the full env). */
+	clientEnv?: Record<string, string>;
 };
 export type DaemonOperation =
 	| { op: "ping" }
@@ -84,7 +89,7 @@ export type DaemonOperation =
 	| {
 			op: "session_create";
 			sessionId?: string;
-			cwd?: string;
+			cwd: string;
 			overrides?: DaemonSessionCreateOverrides;
 	  }
 	| { op: "session_list" }
@@ -125,6 +130,8 @@ export type DaemonServerStatus = {
 	attachmentCount: number;
 	protectedJobCount: number;
 	uptimeMs: number;
+	/** Build pairing identity; absent on daemons predating the field. */
+	buildStamp?: string;
 };
 
 export type DaemonServerStatusFrame = {
@@ -242,26 +249,33 @@ function version(source: Record<string, unknown>): number {
 	return value;
 }
 
+function profile(value: unknown, label: string): DaemonProfile {
+	if (value === null) return null;
+	const namedProfile = requiredString(value, label);
+	if (namedProfile === "default") {
+		throw new DaemonProtocolError("invalid_frame", `${label}: unnamed profile must be null`);
+	}
+	return namedProfile;
+}
+
 function shard(value: unknown, label: string): DaemonShard {
 	const source = record(value, label);
-	exact(source, ["profile", "projectRoot"], label);
+	exact(source, ["profile"], label);
 	return {
-		profile: requiredString(source.profile, `${label}.profile`),
-		projectRoot: requiredString(source.projectRoot, `${label}.projectRoot`),
+		profile: profile(source.profile, `${label}.profile`),
 	};
 }
 
 function hello(value: unknown): DaemonHello {
 	const source = record(value, "hello");
 	const v = version(source);
-	exact(source, ["v", "tag", "requestId", "profile", "projectRoot", "token"], "hello");
+	exact(source, ["v", "tag", "requestId", "profile", "token"], "hello");
 	if (source.tag !== "hello") throw new DaemonProtocolError("invalid_frame", "frame tag must be hello");
 	return {
 		v,
 		tag: "hello",
 		requestId: requiredString(source.requestId, "hello.requestId"),
-		profile: requiredString(source.profile, "hello.profile"),
-		projectRoot: requiredString(source.projectRoot, "hello.projectRoot"),
+		profile: profile(source.profile, "hello.profile"),
 		token: requiredString(source.token, "hello.token"),
 	};
 }
@@ -271,7 +285,7 @@ function helloOk(value: unknown): DaemonHelloOk {
 	const v = version(source);
 	exact(
 		source,
-		["v", "tag", "requestId", "daemonId", "serverVersion", "protocolVersion", "shard", "capabilities"],
+		["v", "tag", "requestId", "daemonId", "serverVersion", "protocolVersion", "shard", "capabilities", "buildStamp"],
 		"hello_ok",
 	);
 	if (source.tag !== "hello_ok") throw new DaemonProtocolError("invalid_frame", "frame tag must be hello_ok");
@@ -287,6 +301,9 @@ function helloOk(value: unknown): DaemonHelloOk {
 		protocolVersion: integer(source.protocolVersion, "hello_ok.protocolVersion"),
 		shard: shard(source.shard, "hello_ok.shard"),
 		capabilities: capabilities as DaemonCapability[],
+		...(source.buildStamp === undefined
+			? {}
+			: { buildStamp: requiredString(source.buildStamp, "hello_ok.buildStamp") }),
 	};
 }
 
@@ -300,9 +317,20 @@ function operation(value: unknown): DaemonOperation {
 			exact(source, ["op", "sessionId", "cwd", "overrides"], "operation");
 			exact(
 				overrideSource,
-				["provider", "model", "thinkingLevel", "steeringMode", "followUpMode", "argv"],
+				["provider", "model", "thinkingLevel", "steeringMode", "followUpMode", "argv", "clientEnv"],
 				"operation.overrides",
 			);
+			const clientEnvValue = overrideSource.clientEnv;
+			if (clientEnvValue !== undefined) {
+				const clientEnvSource = record(clientEnvValue, "operation.overrides.clientEnv");
+				for (const key in clientEnvSource) {
+					if (typeof clientEnvSource[key] !== "string")
+						throw new DaemonProtocolError(
+							"invalid_request",
+							"operation.overrides.clientEnv values must be strings",
+						);
+				}
+			}
 			const steeringMode = overrideSource.steeringMode;
 			const followUpMode = overrideSource.followUpMode;
 			if (steeringMode !== undefined && steeringMode !== "all" && steeringMode !== "one-at-a-time")
@@ -329,6 +357,9 @@ function operation(value: unknown): DaemonOperation {
 				...(steeringMode === undefined ? {} : { steeringMode }),
 				...(followUpMode === undefined ? {} : { followUpMode }),
 				...(argvValue === undefined ? {} : { argv: argvValue as string[] }),
+				...(overrideSource.clientEnv === undefined
+					? {}
+					: { clientEnv: overrideSource.clientEnv as Record<string, string> }),
 			};
 		}
 		return {
@@ -336,7 +367,7 @@ function operation(value: unknown): DaemonOperation {
 			...(source.sessionId === undefined
 				? {}
 				: { sessionId: requiredString(source.sessionId, "operation.sessionId") }),
-			...(source.cwd === undefined ? {} : { cwd: requiredString(source.cwd, "operation.cwd") }),
+			cwd: requiredString(source.cwd, "operation.cwd"),
 			...(overrides === undefined ? {} : { overrides }),
 		};
 	}
@@ -537,6 +568,7 @@ function status(value: unknown): DaemonServerStatus {
 			"attachmentCount",
 			"protectedJobCount",
 			"uptimeMs",
+			"buildStamp",
 		],
 		"server_status.status",
 	);
@@ -549,6 +581,9 @@ function status(value: unknown): DaemonServerStatus {
 		attachmentCount: integer(source.attachmentCount, "status.attachmentCount"),
 		protectedJobCount: integer(source.protectedJobCount, "status.protectedJobCount"),
 		uptimeMs: integer(source.uptimeMs, "status.uptimeMs"),
+		...(source.buildStamp === undefined
+			? {}
+			: { buildStamp: requiredString(source.buildStamp, "status.buildStamp") }),
 	};
 }
 

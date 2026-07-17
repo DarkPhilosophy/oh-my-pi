@@ -52,6 +52,8 @@ export interface SegmentContext {
 	/** Focused subagent id while the view is proxied at its session, undefined otherwise. */
 	focusedAgentId?: string | undefined;
 	activeRepo: ActiveRepoContext | null;
+	/** Session-owned working directory; never the process-global fallback. */
+	projectDir: string;
 	width: number;
 	options: StatusLineSegmentOptions;
 	/** Render the model segment's thinking level as a compact leading glyph. */

@@ -2,7 +2,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
-import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
+import { formatDuration, formatNumber, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
 import { type ThemeColor, theme } from "../../../modes/theme/theme";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
@@ -276,7 +276,7 @@ const pathSegment: StatusLineSegment = {
 			return { content: theme.fg("statusLinePath", content), visible: true };
 		}
 
-		const projectDir = ctx.activeRepo?.cwd ?? getProjectDir();
+		const projectDir = ctx.activeRepo?.cwd ?? ctx.projectDir;
 		const { scratch, relative } = classifyProjectDir(projectDir);
 		let pwd = projectDir;
 

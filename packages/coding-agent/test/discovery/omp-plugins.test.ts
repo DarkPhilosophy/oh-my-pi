@@ -28,11 +28,13 @@ import { toolCapability } from "@oh-my-pi/pi-coding-agent/capability/tool";
 import type { LoadContext, Provider } from "@oh-my-pi/pi-coding-agent/capability/types";
 // Register all discovery providers as a side effect.
 import "@oh-my-pi/pi-coding-agent/discovery";
+import { getPreloadedPluginRoots, injectPluginDirRoots } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import {
 	clearOmpExtensionCliRoots,
+	getInjectedOmpExtensionCliRoots,
 	injectOmpExtensionCliRoots,
 } from "@oh-my-pi/pi-coding-agent/discovery/omp-extension-roots";
-import { getConfigRootDir, removeSyncWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import { createProjectDirScope, getConfigRootDir, removeSyncWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 
 const PROVIDER_ID = "omp-plugins";
 
@@ -153,6 +155,29 @@ test("`--extension` CLI injection is wired through the same provider", async () 
 	const tools = await loadFromPlugin<{ name: string }>(toolCapability.id, ctx());
 	expect(skills.map(s => s.name)).toContain("my-skill");
 	expect(tools.map(t => t.name)).toEqual(expect.arrayContaining(["wcount", "deep-tool"]));
+});
+
+test("keeps CLI extension and plugin roots isolated between concurrent session contexts", async () => {
+	const otherProject = path.join(tempDir, "other-project");
+	const otherExtension = path.join(tempDir, "other-extension");
+	fs.mkdirSync(otherProject, { recursive: true });
+	buildExtensionPackage(otherExtension);
+
+	const firstScope = createProjectDirScope(project);
+	const secondScope = createProjectDirScope(otherProject);
+	await firstScope.run(async () => {
+		injectOmpExtensionCliRoots([ext], home, project);
+		await injectPluginDirRoots(home, [path.relative(project, ext)], project);
+	});
+	await secondScope.run(async () => {
+		injectOmpExtensionCliRoots([otherExtension], home, otherProject);
+		await injectPluginDirRoots(home, [path.relative(otherProject, otherExtension)], otherProject);
+	});
+
+	expect(firstScope.run(() => getInjectedOmpExtensionCliRoots().map(root => root.path))).toEqual([ext]);
+	expect(secondScope.run(() => getInjectedOmpExtensionCliRoots().map(root => root.path))).toEqual([otherExtension]);
+	expect(firstScope.run(() => getPreloadedPluginRoots().map(root => root.path))).toEqual([ext]);
+	expect(secondScope.run(() => getPreloadedPluginRoots().map(root => root.path))).toEqual([otherExtension]);
 });
 
 test("file-extension entrypoints contribute zero sub-surface (the file has no siblings to scan)", async () => {

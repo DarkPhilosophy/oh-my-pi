@@ -1,17 +1,21 @@
 import { ProcessTerminal } from "@oh-my-pi/pi-tui";
-import { normalizePathForComparison } from "@oh-my-pi/pi-utils";
+import { APP_NAME, logger, normalizePathForComparison } from "@oh-my-pi/pi-utils";
 import { getActiveProfile, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
+import chalk from "chalk";
 import { type Args, parseArgs } from "../cli/args";
 import { selectSession } from "../cli/session-picker";
 import { applyStartupCwd } from "../cli/startup-cwd";
+import { Settings } from "../config/settings";
 import { initTheme, stopThemeWatcher } from "../modes/theme/theme";
 import { RemoteSessionHandle, type SessionHandleCommand } from "../session/session-handle";
 import { resolveResumableSession } from "../session/session-listing";
 import { SessionManager } from "../session/session-manager";
 import { resolveWorkerSpawnCmd, workerEnvFromParent } from "../subprocess/worker-client";
+import { daemonBuildStamp } from "./build-stamp";
 import { createDaemonClient, type DaemonClient } from "./client";
-import type { DaemonConnectionSnapshot } from "./status";
-import { ClientTerminalBridge } from "./terminal-bridge";
+import { DAEMON_PROTOCOL_MAJOR } from "./protocol";
+import type { DaemonConnectionSnapshot, DaemonProfile } from "./status";
+import { ClientTerminalBridge, clientTerminalEnvSnapshot } from "./terminal-bridge";
 
 const DAEMON_SERVER_WORKER_ARG = "__omp_worker_daemon_server";
 const CONNECT_RETRY_MS = 50;
@@ -19,13 +23,15 @@ const DAEMON_START_TIMEOUT_MS = 15_000;
 
 export type DaemonInteractiveBootstrapOptions = {
 	argv: string[];
-	profile?: string;
-	projectRoot?: string;
+	profile?: DaemonProfile;
+	cwd?: string;
 	runtimeDir?: string;
 	endpoint?: string;
 	token?: string;
 	connectTimeoutMs?: number;
 	startTimeoutMs?: number;
+	/** Test seam: replaces the detached daemon worker spawn. */
+	spawnDaemon?: typeof spawnDaemonServer;
 };
 
 export type DaemonInteractiveSession = {
@@ -93,13 +99,33 @@ export function isDefaultInteractiveArgv(argv: readonly string[]): boolean {
 	return true;
 }
 
+/**
+ * Daemon hosting is opt-in: `--daemon` (or the `daemon.enabled` setting) turns
+ * it on, `--no-daemon` always wins, and the default stays the historical
+ * direct-mode launch.
+ */
+export function isDaemonModeOptedIn(argv: readonly string[], settingEnabled: boolean): boolean {
+	if (argv.includes("--no-daemon")) return false;
+	return argv.includes("--daemon") || settingEnabled;
+}
+
+/** Read `daemon.enabled` without touching global Settings state. */
+export async function readDaemonModeSetting(): Promise<boolean> {
+	try {
+		const settings = await Settings.loadIsolated();
+		return settings.get("daemon.enabled") === true;
+	} catch {
+		return false;
+	}
+}
+
 export async function resolveDaemonInteractiveResume(
 	options: DaemonInteractiveBootstrapOptions,
 ): Promise<DaemonInteractiveBootstrapOptions | undefined> {
 	const parsed = parseArgs(launchArgs(options.argv));
 	if (parsed.resume === undefined) return options;
 	await applyStartupCwd(parsed);
-	const cwd = options.projectRoot ?? getProjectDir();
+	const cwd = options.cwd ?? getProjectDir();
 	if (typeof parsed.resume === "string") {
 		const match = await resolveResumableSession(parsed.resume, cwd, parsed.sessionDir);
 		if (
@@ -116,7 +142,7 @@ export async function resolveDaemonInteractiveResume(
 		);
 		if (resumeIndex < 0) throw new Error("Unable to locate resume argument");
 		argv.splice(resumeIndex, 2, "--resume", forkedPath);
-		return { ...options, argv, projectRoot: cwd };
+		return { ...options, argv, cwd };
 	}
 	const folderSessions = await SessionManager.list(cwd, parsed.sessionDir);
 	const allSessions = folderSessions.length === 0 ? await SessionManager.listAll() : undefined;
@@ -132,12 +158,12 @@ export async function resolveDaemonInteractiveResume(
 	return {
 		...options,
 		argv,
-		projectRoot: selected.cwd ?? cwd,
+		cwd: selected.cwd ?? cwd,
 	};
 }
 
 function createSessionOverrides(argv: readonly string[]): Record<string, unknown> {
-	return { argv: [...argv] };
+	return { argv: [...argv], clientEnv: clientTerminalEnvSnapshot() };
 }
 
 type SpawnedDaemonServer = {
@@ -147,16 +173,13 @@ type SpawnedDaemonServer = {
 };
 
 function spawnDaemonServer(
-	profile: string,
-	projectRoot: string,
+	profile: DaemonProfile,
 	runtimeDir?: string,
 	stderr: "inherit" | "ignore" = "inherit",
 ): SpawnedDaemonServer {
 	const spawn = resolveWorkerSpawnCmd(DAEMON_SERVER_WORKER_ARG);
 	const env: Record<string, string> = {
-		OMP_PROFILE: profile,
-		OMP_DAEMON_PROJECT_ROOT: projectRoot,
-		OMP_DAEMON_PROJECT_DIR: projectRoot,
+		OMP_PROFILE: profile ?? "",
 	};
 	if (runtimeDir !== undefined) env.OMP_DAEMON_RUNTIME_DIR = runtimeDir;
 	return Bun.spawn(spawn.cmd, {
@@ -171,9 +194,16 @@ function spawnDaemonServer(
 
 function isTransportUnavailableError(error: unknown): boolean {
 	const code = error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : undefined;
-	if (code === "ENOENT" || code === "ECONNREFUSED") return true;
+	if (code === "ENOENT" || code === "ECONNREFUSED" || code === "ECONNRESET" || code === "EPIPE") return true;
 	const message = error instanceof Error ? error.message : String(error);
-	return /\b(?:ENOENT|ECONNREFUSED)\b|socket is unavailable/i.test(message);
+	// "Daemon connection closed" / reset / hang up: the socket was accepted by
+	// a daemon that is shutting down (e.g. another client just replaced a
+	// stale build, or several `--resume` launches raced the same takeover) and
+	// destroyed mid-handshake. That daemon is GONE — transport-level
+	// unavailability, not a terminal failure: the spawn/retry loop owns it.
+	return /\b(?:ENOENT|ECONNREFUSED|ECONNRESET|EPIPE)\b|socket is unavailable|connection closed|socket hang up/i.test(
+		message,
+	);
 }
 
 function isTerminalConnectionError(client: DaemonClient, error: unknown): boolean {
@@ -182,30 +212,92 @@ function isTerminalConnectionError(client: DaemonClient, error: unknown): boolea
 	return /auth|token|scope|shard|protocol|invalid|unsupported|incompatible/i.test(message);
 }
 
+/**
+ * Extract the server's protocol major from a handshake failure. Both mismatch
+ * shapes carry it: the envelope decoder rejects a foreign frame with
+ * `unsupported protocol major N` (protocol.ts version()), and a decoded
+ * hello_ok with a foreign major throws `incompatible protocol: server major N`
+ * (client.ts). Malformed frames surface as invalid_frame and never match.
+ */
+function protocolMismatchServerMajor(error: unknown): number | undefined {
+	const message = error instanceof Error ? error.message : String(error);
+	const match = /\b(?:unsupported|incompatible) protocol\b[^0-9]*(\d+)/i.exec(message);
+	if (!match) return undefined;
+	const major = Number(match[1]);
+	return Number.isInteger(major) ? major : undefined;
+}
+
+async function readDaemonOwnerPid(runtimeDir: string): Promise<number | undefined> {
+	try {
+		const owner = (await Bun.file(`${runtimeDir}/daemon.owner`).json()) as { pid?: unknown };
+		return typeof owner.pid === "number" && Number.isInteger(owner.pid) && owner.pid > 0 ? owner.pid : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * SIGTERM the owner of a daemon speaking an OLDER protocol major. It cannot
+ * serve this client and cannot be asked to shut down over the wire, so the
+ * polite build-pairing takeover (which checks blockers first) is unreachable
+ * by definition — a protocol bump always changes the build stamp too. Session
+ * transcripts persist on disk and rehydrate on the replacement daemon; the
+ * accepted tradeoff is that another live client of the old daemon loses its
+ * in-flight turn, which we take over the alternative of every new-build `omp`
+ * start staying dead until the user hand-kills the old daemon.
+ */
+async function signalOlderProtocolOwner(client: DaemonClient, serverMajor: number): Promise<boolean> {
+	const pid = await readDaemonOwnerPid(client.runtimeDir);
+	if (pid === undefined || pid === process.pid) return false;
+	try {
+		process.kill(pid, "SIGTERM");
+		logger.warn("Daemon speaks an older protocol; signaled it to make way for this build", {
+			pid,
+			serverMajor,
+			clientMajor: DAEMON_PROTOCOL_MAJOR,
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 async function connectWithSpawn(
 	client: DaemonClient,
-	profile: string,
-	projectRoot: string,
+	profile: DaemonProfile,
 	runtimeDir: string | undefined,
 	startTimeoutMs: number,
+	spawn: typeof spawnDaemonServer = spawnDaemonServer,
 ): Promise<void> {
 	try {
 		await client.connect();
 		return;
 	} catch (firstError) {
 		const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
-		if (isTerminalConnectionError(client, firstError)) {
+		const staleMajor = protocolMismatchServerMajor(firstError);
+		let signaledOlderProtocol = false;
+		if (staleMajor !== undefined && staleMajor < DAEMON_PROTOCOL_MAJOR) {
+			signaledOlderProtocol = await signalOlderProtocolOwner(client, staleMajor);
+		} else if (isTerminalConnectionError(client, firstError)) {
+			// Includes a NEWER server major: this client is the outdated build
+			// and must not kill a daemon it cannot replace.
 			throw new Error(`Daemon connection is terminal: ${firstMessage}`);
-		}
-		if (!isTransportUnavailableError(firstError)) {
+		} else if (!isTransportUnavailableError(firstError)) {
 			throw new Error(`Daemon connection failed before startup: ${firstMessage}`);
 		}
-		const child = spawnDaemonServer(profile, projectRoot, runtimeDir);
+		let child = spawn(profile, runtimeDir);
 		const deadline = Date.now() + startTimeoutMs;
 		let lastError = firstError instanceof Error ? firstError : new Error(String(firstError));
 		while (Date.now() < deadline) {
 			if (child.exitCode !== null) {
-				throw new Error(`Daemon server exited during startup with code ${child.exitCode}`);
+				// A contender losing the owner lease (or racing a draining
+				// predecessor) exits nonzero BY DESIGN; that must not abort the
+				// whole startup while the deadline still has budget. Remember
+				// the exit and try again.
+				lastError = new Error(`Daemon server exited during startup with code ${child.exitCode}`);
+				await Bun.sleep(CONNECT_RETRY_MS * 4);
+				child = spawn(profile, runtimeDir);
+				continue;
 			}
 			try {
 				await client.connect();
@@ -213,6 +305,13 @@ async function connectWithSpawn(
 				return;
 			} catch (error) {
 				lastError = error instanceof Error ? error : new Error(String(error));
+				const major = protocolMismatchServerMajor(lastError);
+				if (major !== undefined && major < DAEMON_PROTOCOL_MAJOR) {
+					// The older daemon is still draining; keep waiting it out.
+					if (!signaledOlderProtocol) signaledOlderProtocol = await signalOlderProtocolOwner(client, major);
+					await Bun.sleep(CONNECT_RETRY_MS);
+					continue;
+				}
 				if (isTerminalConnectionError(client, lastError))
 					throw new Error(`Daemon connection is terminal: ${lastError.message}`);
 				await Bun.sleep(CONNECT_RETRY_MS);
@@ -222,8 +321,146 @@ async function connectWithSpawn(
 	}
 }
 
+export type BuildPairingOutcome = "matched" | "replaced" | "kept-stale";
+
+export type BuildPairingEffects = {
+	localStamp: string;
+	/** Spawn a fresh daemon for this shard (detached; errors surface via reconnect). */
+	spawn: () => void;
+	/** Signal the stale daemon owner process; defaults to SIGTERM via process.kill. */
+	killOwner?: (pid: number) => void;
+	/** Read the daemon.owner pid for the client's runtime dir. */
+	readOwnerPid?: () => Promise<number | undefined>;
+	waitMs?: number;
+};
+
 /**
- * Connect to (or start) the authenticated per-project daemon and attach one
+ * Client↔server build pairing: a daemon left over from an older build keeps
+ * serving new clients forever — edits silently never take effect. After a
+ * successful handshake, compare build stamps and replace the stale daemon:
+ *
+ * - graceful first: the protocol `shutdown` op (refused while other clients
+ *   or protected jobs are alive — those are never killed);
+ * - `sessions`-only blockers are persisted/parked state that rehydrates on
+ *   the replacement daemon, so the stale owner gets a verified SIGTERM;
+ * - after the old owner exits, spawn a fresh daemon and reconnect.
+ *
+ * A daemon without a stamp (pre-pairing build) is by definition stale.
+ */
+export async function ensureDaemonBuildPairing(
+	client: DaemonClient,
+	effects: BuildPairingEffects,
+): Promise<BuildPairingOutcome> {
+	if (client.serverBuildStamp === effects.localStamp) return "matched";
+	const staleStamp = client.serverBuildStamp ?? "(pre-pairing daemon)";
+	const waitMs = effects.waitMs ?? DAEMON_START_TIMEOUT_MS;
+	let shutdown: { shutdown?: boolean; blockers?: string[] } | undefined;
+	try {
+		shutdown = (await client.request("shutdown")) as { shutdown?: boolean; blockers?: string[] };
+	} catch (error) {
+		if (!isTransportUnavailableError(error)) {
+			logger.warn("Stale daemon shutdown request failed; keeping the running build", {
+				staleStamp,
+				localStamp: effects.localStamp,
+				error: String(error),
+			});
+			return "kept-stale";
+		}
+		// The stale daemon died mid-request — a concurrent client's replacement
+		// won the race (several `--resume` launches hitting one stale daemon).
+		// That is the desired outcome, not a failure: fall through to wait out
+		// the old owner and reconnect to (or spawn) the fresh daemon.
+		logger.warn("Stale daemon vanished during shutdown request; proceeding to replacement", {
+			staleStamp,
+			localStamp: effects.localStamp,
+			error: String(error),
+		});
+	}
+	if (shutdown !== undefined && shutdown.shutdown !== true) {
+		const blockers = shutdown.blockers ?? [];
+		const sessionsOnly = blockers.length > 0 && blockers.every(blocker => blocker === "sessions");
+		if (!sessionsOnly) {
+			// Other live clients or protected jobs own that daemon; replacing it
+			// out from under them would kill their work.
+			logger.warn("Daemon build differs from this client but is busy; not replacing", {
+				staleStamp,
+				localStamp: effects.localStamp,
+				blockers,
+			});
+			return "kept-stale";
+		}
+		// Sessions persist on disk and rehydrate on the replacement daemon.
+		const pid = await effects.readOwnerPid?.();
+		if (pid === undefined) {
+			logger.warn("Stale daemon owner pid unavailable; keeping the running build", { staleStamp });
+			return "kept-stale";
+		}
+		try {
+			(effects.killOwner ?? (target => process.kill(target, "SIGTERM")))(pid);
+		} catch {
+			// Already exited between status and signal — proceed to respawn.
+		}
+	}
+	// Wait for the old owner to actually vanish before spawning: the fresh
+	// daemon races the owner lease and the stale socket otherwise.
+	const deadline = Date.now() + waitMs;
+	let ownerGone = false;
+	for (;;) {
+		const pid = await effects.readOwnerPid?.();
+		if (pid === undefined) {
+			ownerGone = true;
+			break;
+		}
+		try {
+			process.kill(pid, 0);
+		} catch {
+			ownerGone = true;
+			break;
+		}
+		if (Date.now() >= deadline) break;
+		await Bun.sleep(CONNECT_RETRY_MS);
+	}
+	if (!ownerGone) {
+		// The old daemon acknowledged shutdown but is still draining past our
+		// budget. Spawn anyway: the contender's server-side lease wait tolerates
+		// a live-but-unbound owner, so it parks until the drain finishes instead
+		// of exiting 1. A single reconnect here would just fail (the old
+		// listener is already closing) and abort bootstrap.
+		logger.warn("Stale daemon is still draining; spawning a patient replacement contender", {
+			staleStamp,
+			localStamp: effects.localStamp,
+		});
+	}
+	effects.spawn();
+	// Fresh budget for the bind: the owner wait may have consumed the first
+	// one, and a drain-timeout contender also waits out the lease server-side.
+	const reconnectDeadline = Date.now() + waitMs;
+	let lastError: Error | undefined;
+	while (Date.now() < reconnectDeadline) {
+		try {
+			await client.reconnect();
+			break;
+		} catch (error) {
+			lastError = error instanceof Error ? error : new Error(String(error));
+			await Bun.sleep(CONNECT_RETRY_MS);
+		}
+	}
+	if (client.snapshot.state !== "connected") {
+		throw new Error(`Unable to reconnect after replacing stale daemon: ${lastError?.message ?? "timeout"}`);
+	}
+	if (client.serverBuildStamp !== effects.localStamp) {
+		// A concurrent old client may have won the respawn race; do not loop.
+		logger.warn("Replacement daemon still reports a different build stamp", {
+			serverStamp: client.serverBuildStamp,
+			localStamp: effects.localStamp,
+		});
+		return "kept-stale";
+	}
+	return "replaced";
+}
+
+/**
+ * Connect to (or start) the authenticated per-profile daemon and attach one
  * interactive session. This module deliberately imports the interactive UI
  * only after the daemon handshake so the default route never loads main.ts or
  * the command graph before the connection is established.
@@ -233,40 +470,84 @@ export async function bootstrapDaemonInteractive(
 ): Promise<DaemonInteractiveSession> {
 	const parsed = parseArgs(launchArgs(options.argv));
 	await applyStartupCwd(parsed);
-	const profile = options.profile ?? getActiveProfile() ?? "default";
-	const projectRoot = options.projectRoot ?? getProjectDir();
+	const profile = options.profile === undefined ? (getActiveProfile() ?? null) : options.profile;
+	const cwd = options.cwd ?? getProjectDir();
 	let recoveryRuntimeDir = options.runtimeDir;
+	const spawnDaemon = options.spawnDaemon ?? spawnDaemonServer;
 	const client = await createDaemonClient({
 		profile,
-		projectRoot,
 		runtimeDir: options.runtimeDir,
 		endpoint: options.endpoint,
 		token: options.token,
 		connectTimeoutMs: options.connectTimeoutMs,
 		recoverUnavailable: () => {
-			spawnDaemonServer(profile, projectRoot, recoveryRuntimeDir, "ignore").unref();
+			spawnDaemon(profile, recoveryRuntimeDir, "ignore").unref();
 		},
 	});
 	recoveryRuntimeDir = client.runtimeDir;
 	await connectWithSpawn(
 		client,
 		profile,
-		client.projectRoot,
 		client.runtimeDir,
 		options.startTimeoutMs ?? DAEMON_START_TIMEOUT_MS,
+		spawnDaemon,
 	);
+	await ensureDaemonBuildPairing(client, {
+		localStamp: await daemonBuildStamp(),
+		spawn: () => {
+			spawnDaemon(profile, client.runtimeDir, "ignore").unref();
+		},
+		readOwnerPid: () => readDaemonOwnerPid(client.runtimeDir),
+		waitMs: options.startTimeoutMs ?? DAEMON_START_TIMEOUT_MS,
+	});
 
+	// A string `--resume` names a specific session that may ALREADY be hosted
+	// by this daemon (a client died and left it parked). Probe the live list
+	// first and attach to the existing runtime — a blind session_create would
+	// resume the same transcript into a duplicate runtime and fail with
+	// session_busy. Fresh (unhosted) resumes keep the plain create path so the
+	// runtime factory still processes the full launch argv.
+	const resumeSessionId =
+		typeof parsed.resume === "string"
+			? (await resolveResumableSession(parsed.resume, cwd, parsed.sessionDir))?.session.id
+			: undefined;
 	const createOperation = {
 		op: "session_create",
-		cwd: client.projectRoot,
+		cwd,
 		overrides: createSessionOverrides(launchArgs(options.argv)),
 	} as const;
-	const created = (await client.request(createOperation)) as { sessionId?: unknown };
-	if (typeof created.sessionId !== "string" || created.sessionId.length === 0) {
-		client.close();
-		throw new Error("Daemon did not return a session id");
+	let sessionId: string | undefined;
+	if (resumeSessionId !== undefined) {
+		try {
+			const listed = (await client.request("session_list")) as Array<{ sessionId?: unknown }>;
+			if (Array.isArray(listed) && listed.some(entry => entry.sessionId === resumeSessionId)) {
+				await client.request("session_load", { sessionId: resumeSessionId });
+				sessionId = resumeSessionId;
+			}
+		} catch (error) {
+			logger.debug("daemon resume probe failed; falling back to session_create", { err: String(error) });
+		}
 	}
-	const sessionId = created.sessionId;
+	if (sessionId === undefined) {
+		try {
+			const created = (await client.request(createOperation)) as { sessionId?: unknown };
+			if (typeof created.sessionId !== "string" || created.sessionId.length === 0) {
+				client.close();
+				throw new Error("Daemon did not return a session id");
+			}
+			sessionId = created.sessionId;
+		} catch (error) {
+			// Safety net for the probe/create race: another client hosted the
+			// resumed session between the probe and the create.
+			const busy = /\bsession_busy\b/.test(error instanceof Error ? error.message : String(error));
+			if (!busy || resumeSessionId === undefined) {
+				client.close();
+				throw error;
+			}
+			await client.request("session_load", { sessionId: resumeSessionId });
+			sessionId = resumeSessionId;
+		}
+	}
 	const handle = new RemoteSessionHandle(client, sessionId, {
 		recover: async () => {
 			await client.request({ ...createOperation, sessionId });
@@ -318,10 +599,13 @@ export async function launchDaemonInteractive(options: DaemonInteractiveBootstra
 			if (hostReady) enqueue({ type: "terminal_appearance", appearance });
 		},
 	});
+	let closedReason: "exit" | "error" | undefined;
 	const unsubscribeEvents = session.handle.subscribe(event => {
 		if (event.type === "terminal_output") bridge.output(event.data);
-		else if (event.type === "terminal_closed" && (event.reason === "exit" || event.reason === "error"))
+		else if (event.type === "terminal_closed" && (event.reason === "exit" || event.reason === "error")) {
+			closedReason = event.reason;
 			resolveClosed();
+		}
 	});
 	let startTask: Promise<void> | undefined;
 	const startHost = (): Promise<void> => {
@@ -338,6 +622,7 @@ export async function launchDaemonInteractive(options: DaemonInteractiveBootstra
 					keyboardEnhancementEnterSequence: terminal.keyboardEnhancementEnterSequence,
 					keyboardEnhancementExitSequence: terminal.keyboardEnhancementExitSequence,
 					appearance: terminal.appearance,
+					clientEnv: clientTerminalEnvSnapshot(),
 				},
 			});
 			hostReady = true;
@@ -353,8 +638,19 @@ export async function launchDaemonInteractive(options: DaemonInteractiveBootstra
 		});
 		return startTask;
 	};
+	let startRetryTimer: NodeJS.Timeout | undefined;
+	const scheduleStartHost = (attempt = 0): void => {
+		void startHost().catch(error => {
+			// No snapshot flip follows a failed terminal_start on a healthy
+			// connection, so a swallowed failure is a permanently blank screen.
+			logger.warn("Hosted terminal start failed", { attempt, error: String(error) });
+			if (attempt >= 4 || session.client.snapshot.state !== "connected") return;
+			clearTimeout(startRetryTimer);
+			startRetryTimer = setTimeout(() => scheduleStartHost(attempt + 1), 250 * 2 ** attempt);
+		});
+	};
 	const unsubscribeConnection = session.client.onSnapshot(snapshot => {
-		if (snapshot.state === "connected") void startHost().catch(() => undefined);
+		if (snapshot.state === "connected") scheduleStartHost();
 		else hostReady = false;
 	});
 	try {
@@ -364,6 +660,8 @@ export async function launchDaemonInteractive(options: DaemonInteractiveBootstra
 		await startHost();
 		await closed;
 	} finally {
+		clearTimeout(startRetryTimer);
+		startRetryTimer = undefined;
 		unsubscribeConnection();
 		unsubscribeEvents();
 		if (session.handle.connectionState === "connected") {
@@ -371,6 +669,23 @@ export async function launchDaemonInteractive(options: DaemonInteractiveBootstra
 		}
 		await bridge.stop();
 		if (session.handle.connectionState !== "detached") await session.handle.dispose().catch(() => undefined);
+		// Parity with direct-mode shutdown: the hosted InteractiveMode returns
+		// before its own resume hint (and would print to the DAEMON's stderr
+		// anyway), so the client prints it — after bridge.stop() so the TUI
+		// teardown cannot overwrite it. Only when the session actually
+		// persisted: the file materializes on the first assistant message, so a
+		// session whose only turn errored has an id --resume cannot find.
+		const finalState = session.handle.state;
+		if (
+			closedReason === "exit" &&
+			finalState.sessionId &&
+			finalState.sessionFile &&
+			(await Bun.file(finalState.sessionFile).exists())
+		) {
+			process.stderr.write(
+				`\n${chalk.dim(`Resume this session with ${APP_NAME} --resume ${finalState.sessionId}`)}\n`,
+			);
+		}
 		session.client.close();
 	}
 }

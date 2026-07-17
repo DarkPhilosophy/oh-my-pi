@@ -1,5 +1,48 @@
 import type { Terminal, TerminalAppearance } from "@oh-my-pi/pi-tui";
 
+/**
+ * Env that identifies the CLIENT terminal (multiplexer pane, terminal program,
+ * remote link). Hosted sessions run extensions in the daemon process, whose
+ * own env belongs to whichever client spawned it first — integrations like
+ * herdr need the env of the terminal actually attached to THIS session.
+ * Deliberately minimal: exact keys plus a few well-known multiplexer families;
+ * never forward the full client env (keys/secrets) to the daemon.
+ */
+const CLIENT_TERMINAL_ENV_KEYS: Record<string, true> = {
+	TERM: true,
+	COLORTERM: true,
+	TERM_PROGRAM: true,
+	TERM_PROGRAM_VERSION: true,
+	STY: true,
+	DISPLAY: true,
+	WAYLAND_DISPLAY: true,
+	SSH_TTY: true,
+	SSH_CONNECTION: true,
+	TMUX: true,
+	TMUX_PANE: true,
+	HERDR_ENV: true,
+	HERDR_SOCKET_PATH: true,
+	HERDR_PANE_ID: true,
+	HERDR_OMP_IDLE_DEBOUNCE_MS: true,
+	HERDR_OMP_RETRY_GRACE_MS: true,
+};
+const CLIENT_TERMINAL_ENV_PREFIXES = ["KITTY_", "WEZTERM_", "ZELLIJ", "VSCODE_"] as const;
+
+/** Snapshot the terminal-identity subset of an environment for a hosted session. */
+export function clientTerminalEnvSnapshot(
+	env: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+	const snapshot: Record<string, string> = {};
+	for (const key in env) {
+		const value = env[key];
+		if (typeof value !== "string") continue;
+		if (CLIENT_TERMINAL_ENV_KEYS[key] || CLIENT_TERMINAL_ENV_PREFIXES.some(prefix => key.startsWith(prefix))) {
+			snapshot[key] = value;
+		}
+	}
+	return snapshot;
+}
+
 export type HostedTerminalDescriptor = {
 	columns: number;
 	rows: number;
@@ -8,6 +51,8 @@ export type HostedTerminalDescriptor = {
 	keyboardEnhancementEnterSequence?: string | null;
 	keyboardEnhancementExitSequence?: string | null;
 	appearance?: TerminalAppearance;
+	/** Terminal-identity env of the attached client (see {@link clientTerminalEnvSnapshot}). */
+	clientEnv?: Record<string, string>;
 };
 
 export type HostedTerminalSize = Pick<HostedTerminalDescriptor, "columns" | "rows">;

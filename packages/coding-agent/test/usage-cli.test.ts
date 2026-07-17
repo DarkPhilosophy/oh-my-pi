@@ -76,12 +76,13 @@ describe("buildRedactionMap", () => {
 });
 
 describe("computeProviderWindowStats", () => {
-	it("buckets by window duration, binds each account to its worst meter, and reports remaining capacity", () => {
+	it("buckets by window duration, binds each account to its worst shared meter, and reports remaining capacity", () => {
 		const reports = [
 			makeReport("anthropic", "account-a@example.test", [
 				makeLimit({ id: "5h", usedFraction: 0.9, durationMs: FIVE_HOURS, windowId: "5h" }),
 				makeLimit({ id: "7d", usedFraction: 0.1, durationMs: SEVEN_DAYS, windowId: "7d" }),
-				// Tiered meter on the same window: higher burn must bind.
+				// Tier-scoped meter on the same window: it gates only its own
+				// model family and must NOT bind the shared capacity.
 				makeLimit({ id: "7d-opus", usedFraction: 0.4, durationMs: SEVEN_DAYS, windowId: "7d", tier: "opus" }),
 			]),
 			makeReport("anthropic", "account-b@example.test", [
@@ -98,8 +99,23 @@ describe("computeProviderWindowStats", () => {
 		expect(fiveHour.usedAccounts).toBeCloseTo(1.3);
 		expect(fiveHour.remainingAccounts).toBeCloseTo(0.7);
 		expect(sevenDay.window).toBe("7d");
-		expect(sevenDay.usedAccounts).toBeCloseTo(0.6); // 0.4 (opus binds) + 0.2
-		expect(sevenDay.remainingAccounts).toBeCloseTo(1.4);
+		expect(sevenDay.usedAccounts).toBeCloseTo(0.3); // 0.1 + 0.2 — opus meter excluded
+		expect(sevenDay.remainingAccounts).toBeCloseTo(1.7);
+	});
+
+	it("does not zero out an account whose model-scoped window is pinned while shared quota has headroom", () => {
+		// The user-reported Codex shape: Spark 7d at 100% with the account's own
+		// 7d window at 17% must contribute 0.17, not 1.0.
+		const reports = [
+			makeReport("openai-codex", "lite@example.test", [
+				makeLimit({ id: "7d", usedFraction: 0.17, durationMs: SEVEN_DAYS, windowId: "7d" }),
+				makeLimit({ id: "7d-spark", usedFraction: 1, durationMs: SEVEN_DAYS, windowId: "7d", tier: "spark" }),
+			]),
+		];
+		const stats = computeProviderWindowStats(reports);
+		expect(stats).toHaveLength(1);
+		expect(stats[0]!.usedAccounts).toBeCloseTo(0.17);
+		expect(stats[0]!.remainingAccounts).toBeCloseTo(0.83);
 	});
 
 	it("ignores limits without a resolvable fraction", () => {

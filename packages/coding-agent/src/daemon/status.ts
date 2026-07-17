@@ -1,10 +1,11 @@
 import { truncateToWidth } from "@oh-my-pi/pi-tui";
 import { sanitizeStatusText } from "../modes/shared";
 
-/** Project/profile identity shared by the daemon connection and its UI. */
+/** Profile identity shared by the daemon connection and its UI. */
+export type DaemonProfile = string | null;
+
 export interface DaemonShard {
-	readonly profile: string;
-	readonly projectRoot: string;
+	readonly profile: DaemonProfile;
 }
 
 /**
@@ -42,9 +43,9 @@ function clean(value: unknown): string {
 	return sanitizeStatusText(String(value ?? ""));
 }
 
-function projectName(projectRoot: string): string {
-	const normalized = clean(projectRoot).replace(/[\\/]+$/, "");
-	return normalized.split(/[\\/]/).filter(Boolean).at(-1) ?? "project";
+function profileName(profile: DaemonProfile): string {
+	if (profile === null) return "none";
+	return clean(profile).trim() || "none";
 }
 
 function shortId(value: string | undefined): string | undefined {
@@ -71,10 +72,10 @@ export function formatDaemonWelcomeStatus(snapshot: DaemonConnectionSnapshot, wi
 		case "connected": {
 			const daemonId = shortId(snapshot.daemonId);
 			const sessionId = shortId(snapshot.sessionId);
-			const scope = `${clean(snapshot.shard.profile)}/${projectName(snapshot.shard.projectRoot)}`;
+			const scope = profileName(snapshot.shard.profile);
 			rows = [
 				`● daemon${daemonId ? ` ${daemonId}` : ""} · v${clean(snapshot.serverVersion)}`,
-				sessionId ? `   ${sessionId} · ${scope}` : `  scope ${scope}`,
+				sessionId ? `   ${sessionId} · ${scope}` : `  profile ${scope}`,
 			];
 			break;
 		}
@@ -96,7 +97,7 @@ export function formatDaemonServerStatus(snapshot: DaemonConnectionSnapshot): st
 	if (snapshot.state === "direct") return "server direct mode";
 	const lines = [`server ${snapshot.state}`];
 	if ("shard" in snapshot) {
-		lines.push(`scope: ${clean(snapshot.shard.profile)}/${projectName(snapshot.shard.projectRoot)}`);
+		lines.push(`profile: ${profileName(snapshot.shard.profile)}`);
 	}
 	if (snapshot.state === "connected") {
 		if (snapshot.daemonId !== undefined) lines.push(`daemon id: ${clean(snapshot.daemonId)}`);

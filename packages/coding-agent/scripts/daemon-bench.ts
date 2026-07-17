@@ -6,6 +6,12 @@
  * by one real daemon worker. Both shapes use the same isolated HOME, project,
  * profile, arguments, and MCP/LSP-disabled workload; no model request or live
  * daemon state is involved.
+ *
+ * `--fairness` switches to the multi-session responsiveness benchmark: one
+ * real daemon worker hosts N sessions; one session serves a saturating
+ * command flood while the others measure command/status round-trip
+ * latencies (p50/p95/p99, failures, timeouts). Deterministic regression
+ * contracts for the same behavior live in `test/daemon-fairness.test.ts`.
  */
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -67,6 +73,8 @@ export interface LatencySummary {
 export interface BenchmarkOptions {
 	n: number[];
 	trials: number;
+	fairness: boolean;
+	probes: number;
 }
 
 export type BenchmarkMode = "direct" | "daemon";
@@ -110,7 +118,7 @@ export interface PlatformInfo {
 
 const CORE_FIXTURE: BenchmarkFixture = {
 	cwd: "<isolated-temp-project>",
-	profile: "default",
+	profile: "none",
 	model: "configured-no-request",
 	permissions: "no-tools",
 	mcpEnabled: false,
@@ -369,6 +377,8 @@ function parsePositiveList(raw: string, name: string): number[] {
 export function parseBenchmarkArgs(args: readonly string[]): BenchmarkOptions {
 	const n = [1, 2, 5, 10];
 	let trials = 3;
+	let fairness = false;
+	let probes = 50;
 	for (let index = 0; index < args.length; index += 1) {
 		const arg = args[index];
 		if (arg === "--n") {
@@ -381,11 +391,19 @@ export function parseBenchmarkArgs(args: readonly string[]): BenchmarkOptions {
 			if (!Number.isInteger(parsedTrials) || parsedTrials < 1)
 				throw new Error("--trials must be a positive integer");
 			trials = parsedTrials;
+		} else if (arg === "--fairness") {
+			fairness = true;
+		} else if (arg === "--probes") {
+			const value = args[++index];
+			const parsedProbes = value === undefined ? Number.NaN : Number(value);
+			if (!Number.isInteger(parsedProbes) || parsedProbes < 1)
+				throw new Error("--probes must be a positive integer");
+			probes = parsedProbes;
 		} else if (arg !== "--help" && arg !== "-h") {
 			throw new Error(`unknown argument: ${arg}`);
 		}
 	}
-	return { n, trials };
+	return { n, trials, fairness, probes };
 }
 
 async function platformInfo(): Promise<PlatformInfo> {
@@ -586,8 +604,7 @@ async function runDaemonSample(paths: TrialPaths, n: number, trial: number): Pro
 		env: workerEnvFromParent({
 			HOME: paths.home,
 			PI_CODING_AGENT_DIR: path.join(paths.home, ".omp", "agent"),
-			OMP_PROFILE: "default",
-			OMP_DAEMON_PROJECT_ROOT: paths.project,
+			OMP_PROFILE: "",
 			OMP_DAEMON_PROJECT_DIR: paths.project,
 			OMP_DAEMON_RUNTIME_DIR: paths.runtime,
 		}),
@@ -596,8 +613,7 @@ async function runDaemonSample(paths: TrialPaths, n: number, trial: number): Pro
 		stderr: "pipe",
 	});
 	const client = await createDaemonClient({
-		profile: "default",
-		projectRoot: paths.project,
+		profile: null,
 		runtimeDir: paths.runtime,
 	});
 	const sessionIds = Array.from({ length: n }, (_, index) => `daemon-${trial}-${index}`);
@@ -664,10 +680,161 @@ export async function runArchitectureBenchmark(options: BenchmarkOptions): Promi
 	};
 }
 
+export interface FairnessLaneResult {
+	sessionId: string;
+	latency: LatencySummary;
+	failures: number;
+}
+
+export interface FairnessBenchmarkResult {
+	schemaVersion: 1;
+	status: "ok";
+	phase: "daemon-fairness";
+	options: BenchmarkOptions;
+	platform: PlatformInfo;
+	sessions: number;
+	heavyOps: number;
+	heavyFailures: number;
+	victimLanes: FairnessLaneResult[];
+	statusLane: FairnessLaneResult;
+	combinedVictim: LatencySummary;
+}
+
+/**
+ * Multi-session responsiveness benchmark against ONE real daemon worker.
+ *
+ * Session 0 runs a saturating `get_state` command flood; every other session
+ * measures sequential command round-trips concurrently, and a status lane
+ * measures `server_status`+`session_list`. Reported percentiles answer the
+ * incident question directly: how long does an independent session's
+ * interaction take while a neighbor is hot?
+ */
+export async function runFairnessBenchmark(options: BenchmarkOptions): Promise<FairnessBenchmarkResult> {
+	if (process.platform !== "linux") throw new Error("daemon fairness benchmark requires Linux /proc");
+	const sessions = Math.max(2, options.n[options.n.length - 1] ?? 2);
+	const paths = await createTrialPaths(sessions, 0);
+	const spawn = resolveWorkerSpawnCmd(DAEMON_WORKER_ARG);
+	const proc: DaemonProcess = Bun.spawn(spawn.cmd, {
+		cwd: spawn.cwd,
+		env: workerEnvFromParent({
+			HOME: paths.home,
+			PI_CODING_AGENT_DIR: path.join(paths.home, ".omp", "agent"),
+			OMP_PROFILE: "",
+			OMP_DAEMON_PROJECT_DIR: paths.project,
+			OMP_DAEMON_RUNTIME_DIR: paths.runtime,
+		}),
+		stdin: "ignore",
+		stdout: "ignore",
+		stderr: "pipe",
+	});
+	const client = await createDaemonClient({ profile: null, runtimeDir: paths.runtime });
+	// The registry keys hosted sessions by the runtime's real session id (a
+	// SessionManager UUID), not the requested name — use the ids the daemon
+	// reports back.
+	const sessionIds: string[] = [];
+	const created: string[] = [];
+	try {
+		await connectDaemon(client, proc);
+		for (let index = 0; index < sessions; index++) {
+			const response = (await client.request({
+				op: "session_create",
+				sessionId: `fairness-${index}`,
+				cwd: paths.project,
+				overrides: { argv: [...BENCHMARK_ARGV] },
+			})) as { sessionId?: string };
+			const sessionId = response.sessionId ?? `fairness-${index}`;
+			sessionIds.push(sessionId);
+			created.push(sessionId);
+			await client.request({
+				op: "attach",
+				sessionId,
+				attachmentId: `att-${sessionId}`,
+				mode: "interactive",
+			});
+		}
+		const command = (sessionId: string): Promise<unknown> =>
+			client.request({
+				op: "session_command",
+				sessionId,
+				attachmentId: `att-${sessionId}`,
+				command: { type: "get_state", commandId: crypto.randomUUID() },
+			});
+
+		// Heavy lane: saturating command flood on session 0 until the probes end.
+		let heavyOps = 0;
+		let heavyFailures = 0;
+		let stopHeavy = false;
+		const heavy = (async () => {
+			while (!stopHeavy) {
+				try {
+					await command(sessionIds[0]!);
+					heavyOps++;
+				} catch {
+					heavyFailures++;
+				}
+			}
+		})();
+
+		const probeLane = async (sessionId: string): Promise<FairnessLaneResult> => {
+			const latencies: number[] = [];
+			let failures = 0;
+			for (let i = 0; i < options.probes; i++) {
+				const started = performance.now();
+				try {
+					await command(sessionId);
+					latencies.push(performance.now() - started);
+				} catch {
+					failures++;
+				}
+			}
+			return { sessionId, latency: summarizeLatencies(latencies), failures };
+		};
+		const statusLane = (async (): Promise<FairnessLaneResult> => {
+			const latencies: number[] = [];
+			let failures = 0;
+			for (let i = 0; i < options.probes; i++) {
+				const started = performance.now();
+				try {
+					await client.request("server_status");
+					await client.request("session_list");
+					latencies.push(performance.now() - started);
+				} catch {
+					failures++;
+				}
+			}
+			return { sessionId: "<status>", latency: summarizeLatencies(latencies), failures };
+		})();
+		const victimLanes = await Promise.all(sessionIds.slice(1).map(probeLane));
+		const statusResult = await statusLane;
+		stopHeavy = true;
+		await heavy;
+
+		return {
+			schemaVersion: 1,
+			status: "ok",
+			phase: "daemon-fairness",
+			options,
+			platform: await platformInfo(),
+			sessions,
+			heavyOps,
+			heavyFailures,
+			victimLanes,
+			statusLane: statusResult,
+			combinedVictim: summarizeLatencies(victimLanes.flatMap(lane => lane.latency.rawMs)),
+		};
+	} finally {
+		try {
+			await shutdownDaemonSample(client, proc, created);
+		} finally {
+			await fs.rm(paths.root, { recursive: true, force: true });
+		}
+	}
+}
+
 async function main(): Promise<number> {
 	try {
 		const options = parseBenchmarkArgs(process.argv.slice(2));
-		const result = await runArchitectureBenchmark(options);
+		const result = options.fairness ? await runFairnessBenchmark(options) : await runArchitectureBenchmark(options);
 		const serialized = `${JSON.stringify(result)}\n`;
 		const outputPath = process.env.OMP_DAEMON_BENCH_OUTPUT;
 		if (outputPath) await Bun.write(path.resolve(outputPath), serialized);

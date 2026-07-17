@@ -379,6 +379,12 @@ export type RemoteSessionHandleOptions = {
 	attachmentId?: string;
 	lastSeq?: number;
 	recover?: () => Promise<void>;
+	/**
+	 * Upper bound on how long a command issued during a connection outage waits
+	 * for reconnection before failing. Without a bound, a daemon that never
+	 * comes back parks every command — including detach/close — forever.
+	 */
+	reconnectWaitMs?: number;
 };
 
 /** Daemon-owned session adapter with ordered event replay and immutable state snapshots. */
@@ -404,6 +410,7 @@ export class RemoteSessionHandle implements SessionHandle {
 	#reattachTask: Promise<void> | undefined;
 	#connectionWait: Promise<void> | undefined;
 	#resolveConnectionWait: (() => void) | undefined;
+	readonly #reconnectWaitMs: number;
 	readonly #ready: Promise<void>;
 
 	constructor(client: DaemonClient, sessionId: string, options: RemoteSessionHandleOptions = {}) {
@@ -411,6 +418,7 @@ export class RemoteSessionHandle implements SessionHandle {
 		this.#sessionId = sessionId;
 		this.#attachmentId = options.attachmentId ?? crypto.randomUUID();
 		this.#recover = options.recover;
+		this.#reconnectWaitMs = Math.max(1, options.reconnectWaitMs ?? 15_000);
 		this.#state = freezeState(defaultState(sessionId));
 		this.#snapshot = freezeSnapshot(this.#state, null, []);
 		this.#lastSeq = options.lastSeq ?? 0;
@@ -429,15 +437,11 @@ export class RemoteSessionHandle implements SessionHandle {
 						.then(
 							() => {
 								this.#connectionState = "connected";
-								this.#resolveConnectionWait?.();
-								this.#resolveConnectionWait = undefined;
-								this.#connectionWait = undefined;
+								this.#wakeConnectionWait();
 							},
 							() => {
 								this.#connectionState = "disconnected";
-								this.#resolveConnectionWait?.();
-								this.#resolveConnectionWait = undefined;
-								this.#connectionWait = undefined;
+								this.#wakeConnectionWait();
 							},
 						)
 						.finally(() => {
@@ -452,6 +456,13 @@ export class RemoteSessionHandle implements SessionHandle {
 					}
 				} else if (snapshot.state === "unavailable" || snapshot.state === "incompatible") {
 					this.#connectionState = "disconnected";
+					// Incompatible is terminal and a closed client never reconnects:
+					// wake any parked senders so they fail fast in #ensureConnected
+					// instead of waiting out the reconnect bound.
+					if (snapshot.state === "incompatible" || this.#client.closed) {
+						this.#wakeConnectionWait();
+						return;
+					}
 					if (this.#attached && !this.#connectionWait) {
 						const gate = Promise.withResolvers<void>();
 						this.#connectionWait = gate.promise;
@@ -674,6 +685,7 @@ export class RemoteSessionHandle implements SessionHandle {
 	}
 	async detach(): Promise<void> {
 		if (this.#disposed) return;
+		this.#wakeConnectionWait();
 		await this.#ready;
 		if (this.#client.snapshot.state !== "connected") throw new Error("Cannot detach: daemon is disconnected");
 		await this.#client.request("detach", {
@@ -691,6 +703,7 @@ export class RemoteSessionHandle implements SessionHandle {
 		} catch (error) {
 			this.#disposed = true;
 			this.#connectionState = "detached";
+			this.#wakeConnectionWait();
 			for (const unsubscribe of this.#unsubscribeClient.splice(0)) unsubscribe();
 			throw errorFrom(error);
 		}
@@ -722,9 +735,33 @@ export class RemoteSessionHandle implements SessionHandle {
 			throw errorFrom(error);
 		}
 	}
+	/** Settle the reconnect gate so parked senders re-evaluate connection state. */
+	#wakeConnectionWait(): void {
+		this.#resolveConnectionWait?.();
+		this.#resolveConnectionWait = undefined;
+		this.#connectionWait = undefined;
+	}
 	async #sendRaw(payload: unknown): Promise<unknown> {
 		await this.#ready;
-		if (this.#connectionWait) await this.#connectionWait;
+		if (this.#connectionWait) {
+			// Bounded: a daemon that never comes back must fail this command with
+			// a clear error, not park it (and every teardown path behind it)
+			// forever. The deadline timer is cancelled when the gate wins — a
+			// dangling Bun.sleep would keep the event loop (and CLI exit) alive
+			// for the full bound.
+			const deadline = Promise.withResolvers<false>();
+			const timer = setTimeout(() => deadline.resolve(false), this.#reconnectWaitMs);
+			try {
+				const reconnected = await Promise.race([this.#connectionWait.then(() => true), deadline.promise]);
+				if (!reconnected && this.#connectionState !== "connected") {
+					throw new Error(
+						`Session handle is disconnected: daemon did not reconnect within ${this.#reconnectWaitMs}ms`,
+					);
+				}
+			} finally {
+				clearTimeout(timer);
+			}
+		}
 		if (this.#reattachTask) await this.#reattachTask;
 		this.#ensureConnected();
 		return this.#client.request("session_command", {

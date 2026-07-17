@@ -10,7 +10,7 @@ import {
 	parseDaemonFrame,
 } from "../src/daemon/protocol";
 
-const shard: DaemonShard = { profile: "work", projectRoot: "/tmp/project" };
+const shard: DaemonShard = { profile: "work" };
 
 function hello(overrides: Partial<DaemonHello> = {}): DaemonHello {
 	return {
@@ -18,13 +18,38 @@ function hello(overrides: Partial<DaemonHello> = {}): DaemonHello {
 		tag: "hello",
 		requestId: "hello-1",
 		profile: shard.profile,
-		projectRoot: shard.projectRoot,
 		token: "secret",
 		...overrides,
 	};
 }
 
 describe("daemon protocol", () => {
+	test("authenticates a profile shard without binding the daemon to a project root", () => {
+		const frame: DaemonHello = {
+			v: DAEMON_PROTOCOL_MAJOR,
+			tag: "hello",
+			requestId: "profile-hello",
+			profile: "work",
+			token: "secret",
+		};
+
+		expect(parseDaemonFrame(frame)).toEqual(frame);
+		expect(() => parseDaemonFrame({ ...frame, projectRoot: "/tmp/project" })).toThrow(/unknown field/);
+	});
+
+	test("represents the unnamed profile explicitly as null", () => {
+		const frame: DaemonHello = {
+			v: DAEMON_PROTOCOL_MAJOR,
+			tag: "hello",
+			requestId: "unnamed-profile",
+			profile: null,
+			token: "secret",
+		};
+
+		expect(parseDaemonFrame(frame)).toEqual(frame);
+		expect(() => parseDaemonFrame({ ...frame, profile: "default" })).toThrow(/unnamed profile.*null/i);
+	});
+
 	test("accepts numeric-major hello and preserves canonical shard", () => {
 		const frame = parseDaemonFrame(hello());
 		expect(frame).toEqual(hello());
@@ -38,8 +63,12 @@ describe("daemon protocol", () => {
 	});
 
 	test("rejects token-bearing response and malformed tags", () => {
-		expect(() => parseDaemonFrame({ v: 1, tag: "hello_ok", requestId: "x", token: "leak" })).toThrow(/unknown field/);
-		expect(() => parseDaemonFrame({ v: 1, tag: "unknown", requestId: "x" })).toThrow(/unknown frame tag/);
+		expect(() =>
+			parseDaemonFrame({ v: DAEMON_PROTOCOL_MAJOR, tag: "hello_ok", requestId: "x", token: "leak" }),
+		).toThrow(/unknown field/);
+		expect(() => parseDaemonFrame({ v: DAEMON_PROTOCOL_MAJOR, tag: "unknown", requestId: "x" })).toThrow(
+			/unknown frame tag/,
+		);
 	});
 
 	test("round-trips strict NDJSON frames and enforces byte limit", () => {
@@ -54,12 +83,12 @@ describe("daemon protocol", () => {
 
 	test("parses server status and stable errors", () => {
 		const frame = parseDaemonFrame({
-			v: 1,
+			v: DAEMON_PROTOCOL_MAJOR,
 			tag: "server_status",
 			status: {
 				daemonId: "d1",
 				serverVersion: "0.1.0",
-				protocolVersion: 1,
+				protocolVersion: DAEMON_PROTOCOL_MAJOR,
 				shard,
 				sessionCount: 2,
 				attachmentCount: 1,
@@ -70,7 +99,7 @@ describe("daemon protocol", () => {
 		expect(frame.tag).toBe("server_status");
 		expect(() =>
 			parseDaemonFrame({
-				v: 1,
+				v: DAEMON_PROTOCOL_MAJOR,
 				tag: "response",
 				requestId: "x",
 				ok: false,
@@ -81,28 +110,28 @@ describe("daemon protocol", () => {
 
 		expect(() =>
 			parseDaemonFrame({
-				v: 1,
+				v: DAEMON_PROTOCOL_MAJOR,
 				tag: "response",
 				requestId: "x",
 				ok: false,
 				error: { code: "bad_token", message: "no" },
 			}),
 		).toThrow(/unknown response error code/);
-		expect(() => parseDaemonFrame({ v: 1, tag: "event", sessionId: "s1", seq: 1 })).toThrow(
+		expect(() => parseDaemonFrame({ v: DAEMON_PROTOCOL_MAJOR, tag: "event", sessionId: "s1", seq: 1 })).toThrow(
 			/event.event is required/,
 		);
 	});
 
 	test("parses ordered snapshot frames and rejects incomplete chunks", () => {
 		const begin = parseDaemonFrame({
-			v: 1,
+			v: DAEMON_PROTOCOL_MAJOR,
 			tag: "snapshot_begin",
 			sessionId: "s1",
 			attachmentId: "a1",
 			barrierSeq: 4,
 		});
 		const chunk = parseDaemonFrame({
-			v: 1,
+			v: DAEMON_PROTOCOL_MAJOR,
 			tag: "snapshot_chunk",
 			sessionId: "s1",
 			attachmentId: "a1",
@@ -111,7 +140,7 @@ describe("daemon protocol", () => {
 			chunk: { messages: [] },
 		});
 		const end = parseDaemonFrame({
-			v: 1,
+			v: DAEMON_PROTOCOL_MAJOR,
 			tag: "snapshot_end",
 			sessionId: "s1",
 			attachmentId: "a1",
@@ -119,7 +148,7 @@ describe("daemon protocol", () => {
 			nextSeq: 5,
 		});
 		const restart = parseDaemonFrame({
-			v: 1,
+			v: DAEMON_PROTOCOL_MAJOR,
 			tag: "snapshot_restart",
 			sessionId: "s1",
 			attachmentId: "a1",
@@ -134,7 +163,7 @@ describe("daemon protocol", () => {
 		]);
 		expect(() =>
 			parseDaemonFrame({
-				v: 1,
+				v: DAEMON_PROTOCOL_MAJOR,
 				tag: "snapshot_chunk",
 				sessionId: "s1",
 				attachmentId: "a1",
@@ -147,7 +176,7 @@ describe("daemon protocol", () => {
 
 	test("parses serializable session creation cwd and CLI overrides", () => {
 		const frame = parseDaemonFrame({
-			v: 1,
+			v: DAEMON_PROTOCOL_MAJOR,
 			tag: "request",
 			requestId: "create-1",
 			operation: {
@@ -172,7 +201,7 @@ describe("daemon protocol", () => {
 		expect(frame.operation.overrides?.argv).toEqual(["--tools", "read", "@notes.md", "explain"]);
 		expect(() =>
 			parseDaemonFrame({
-				v: 1,
+				v: DAEMON_PROTOCOL_MAJOR,
 				tag: "request",
 				requestId: "create-invalid",
 				operation: { op: "session_create", overrides: { argv: ["--tools", 1] } },

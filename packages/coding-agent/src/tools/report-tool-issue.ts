@@ -10,11 +10,11 @@
  * Records grievances to a local SQLite database; never throws from the device
  * dispatch path.
  *
- * Before the first record lands, the user's consent is checked. If they've
- * never been asked (`dev.autoqaConsent === "unset"`) the process-global
- * consent handler — wired by `InteractiveMode` to a Yes/No popup — is invoked
- * exactly once and the decision is persisted. Subsequent calls (including from
- * subagents) read the cached decision without prompting.
+ * Before the first record lands, if consent has never been asked for
+ * (`dev.autoqaConsent === "unset"`), the active session's consent handler
+ * is invoked exactly once and the decision is persisted. Subsequent calls
+ * (including from subagents) read the profile-wide cached decision without
+ * prompting.
  *
  * When the user grants consent, push is automatically active against the
  * bundled endpoint (`dev.autoqaPush.endpoint`, default `qa.omp.sh`). Each
@@ -28,7 +28,16 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { FetchImpl } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import { $env, $flag, getAutoQaDbDir, getInstallId, logger, VERSION } from "@oh-my-pi/pi-utils";
+import {
+	$env,
+	$flag,
+	createProjectDirContextKey,
+	getAutoQaDbDir,
+	getInstallId,
+	getProjectDirContextValue,
+	logger,
+	VERSION,
+} from "@oh-my-pi/pi-utils";
 import type { Settings } from "..";
 import type { Theme } from "../modes/theme/theme";
 import { renderStatusLine, truncateToWidth } from "../tui";
@@ -115,14 +124,19 @@ export function isAutoQaEnabled(settings?: Settings): boolean {
  */
 export type AutoQaConsentHandler = () => Promise<boolean | null>;
 
-let consentHandler: AutoQaConsentHandler | null = null;
-/**
- * Persistent settings instance supplied by the consent-handler registrant.
- * Subagents have in-memory `Settings` snapshots that don't write to disk;
- * we persist the decision through this disk-backed reference so a grant
- * survives across runs even when triggered from a subagent device write.
- */
-let persistentConsentSettings: Settings | null = null;
+type ConsentRegistration = {
+	handler: AutoQaConsentHandler | null;
+	persistentSettings: Settings | null;
+};
+
+const consentRegistrationKey = createProjectDirContextKey<ConsentRegistration>("autoqa-consent");
+
+function consentRegistration(): ConsentRegistration {
+	return getProjectDirContextValue(consentRegistrationKey, () => ({
+		handler: null,
+		persistentSettings: null,
+	}));
+}
 /**
  * Process-global cache of the resolved consent decision. Survives across
  * subagent boundaries (subagents share this module instance), so a grant in
@@ -141,22 +155,24 @@ let cachedConsent: boolean | null = null;
 let consentInFlight: Promise<boolean> | null = null;
 
 /**
- * Register the consent handler and the persistent {@link Settings} instance
- * the decision should be written to. Passing `null` clears the handler
- * (e.g. on `InteractiveMode` teardown). Re-registration is authoritative.
+ * Register the active session's consent handler and persistent {@link Settings}
+ * instance. Passing `null` clears only that session's handler (for example,
+ * during `InteractiveMode` teardown).
  */
 export function setAutoQaConsentHandler(
 	handler: AutoQaConsentHandler | null,
 	persistentSettings: Settings | null = null,
 ): void {
-	consentHandler = handler;
-	persistentConsentSettings = persistentSettings;
+	const registration = consentRegistration();
+	registration.handler = handler;
+	registration.persistentSettings = persistentSettings;
 }
 
 /** Test-only: clear consent cache + handler. Never call from production code. */
 export function __resetAutoQaConsentForTests(): void {
-	consentHandler = null;
-	persistentConsentSettings = null;
+	const registration = consentRegistration();
+	registration.handler = null;
+	registration.persistentSettings = null;
 	cachedConsent = null;
 	consentInFlight = null;
 }
@@ -169,16 +185,19 @@ function readPersistedConsent(settings: Settings | undefined): boolean | null {
 	return null;
 }
 
-function persistConsent(localSettings: Settings | undefined, granted: boolean): void {
+function persistConsent(
+	localSettings: Settings | undefined,
+	persistentSettings: Settings | null,
+	granted: boolean,
+): void {
 	const value = granted ? "granted" : "denied";
-	try {
-		localSettings?.set("dev.autoqaConsent", value);
-	} catch (error) {
-		logger.warn("Failed to persist auto-QA consent to local settings snapshot", { error: String(error) });
-	}
-	if (persistentConsentSettings && persistentConsentSettings !== localSettings) {
+	// Write on every settings instance we know about. The local one keeps
+	// the in-memory snapshot consistent for the current subagent; the
+	// persistent one registered by its host is what actually lands on disk.
+	for (const target of [localSettings, persistentSettings]) {
+		if (!target) continue;
 		try {
-			persistentConsentSettings.set("dev.autoqaConsent", value);
+			target.set("dev.autoqaConsent", value);
 		} catch (error) {
 			logger.warn("Failed to persist auto-QA consent to persistent settings", { error: String(error) });
 		}
@@ -197,30 +216,31 @@ function persistConsent(localSettings: Settings | undefined, granted: boolean): 
  */
 export async function resolveAutoQaConsent(settings: Settings | undefined): Promise<boolean> {
 	if (cachedConsent !== null) return cachedConsent;
-	const localPersisted = readPersistedConsent(settings);
-	if (localPersisted !== null) {
-		cachedConsent = localPersisted;
-		return localPersisted;
+	const registration = consentRegistration();
+	const persisted =
+		readPersistedConsent(settings) ?? readPersistedConsent(registration.persistentSettings ?? undefined);
+	if (persisted !== null) {
+		cachedConsent = persisted;
+		return persisted;
 	}
-	const globalPersisted =
-		persistentConsentSettings && persistentConsentSettings !== settings
-			? readPersistedConsent(persistentConsentSettings)
-			: null;
-	if (globalPersisted !== null) {
-		cachedConsent = globalPersisted;
-		return globalPersisted;
-	}
-	if (!consentHandler) return false;
+	if (!registration.handler) return false;
 	if (consentInFlight) return consentInFlight;
+	const handler = registration.handler;
 	consentInFlight = (async () => {
 		try {
-			const result = await consentHandler!();
-			if (result === null) return false;
-			cachedConsent = result;
-			persistConsent(settings, result);
-			return result;
-		} catch {
-			// Transient failure (e.g. dialog crashed) — don't cache; allow re-prompt.
+			const granted = await handler();
+			if (granted === null) {
+				// User dismissed the dialog (ESC) without picking. Treat as
+				// "skip this call" but don't cache or persist — the next
+				// invocation gets to re-prompt so a stray ESC isn't a
+				// permanent opt-out.
+				return false;
+			}
+			cachedConsent = granted;
+			persistConsent(settings, registration.persistentSettings, granted);
+			return granted;
+		} catch (error) {
+			logger.warn("autoqa consent handler threw", { error: String(error) });
 			return false;
 		} finally {
 			consentInFlight = null;

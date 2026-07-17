@@ -461,14 +461,17 @@ export interface ProviderWindowStat {
  *
  * Limits are bucketed by window duration (5h, 7d, ...). Within a bucket each
  * account contributes its single highest used fraction — when an account has
- * several meters on the same window (tiered/metered limits), the most-burned
- * one is what binds.
+ * several meters on the same window, the most-burned one is what binds.
+ * Model/tier-scoped meters (`scope.tier`, e.g. Codex Spark) are excluded: they
+ * gate only their own model family, so a pinned Spark window must not zero out
+ * an account whose shared quota has headroom.
  */
 export function computeProviderWindowStats(reports: UsageReport[]): ProviderWindowStat[] {
 	const buckets = new Map<string, { window: string; durationMs?: number; fractions: number[] }>();
 	for (const report of reports) {
 		const accountMax = new Map<string, number>();
 		for (const limit of report.limits) {
+			if (limit.scope.tier !== undefined) continue;
 			const fraction = resolveUsedFraction(limit);
 			if (fraction === undefined) continue;
 			const durationMs = limit.window?.durationMs;
