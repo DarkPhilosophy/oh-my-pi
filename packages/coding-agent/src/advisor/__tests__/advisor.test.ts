@@ -2022,6 +2022,69 @@ describe("advisor", () => {
 			expect(resetCount).toBe(1);
 		});
 
+		it("preserves an OVERSIZED batch intact across a provider-overflow recovery retry", async () => {
+			// The recovery branch re-renders the same bounded raw batch after a
+			// context reset; that batch can carry the same multi-hundred-KB
+			// payloads the chunked path exists for. This test pins the OUTPUT
+			// contract (retry delivered, payload exactly once, no seeded
+			// history replay); the recovery render routing through
+			// #formatRawDeltaChunked is a source-level guarantee — a sync
+			// re-render would produce identical output, just with a stall.
+			const overflowMessage = "context_length_exceeded: Your input exceeds the context window of this model.";
+			const promptInputs: string[] = [];
+			const state: { messages: AgentMessage[]; error?: string } = {
+				messages: [{ role: "user", content: "existing advisor context", timestamp: 1 } as AgentMessage],
+			};
+			let promptCalls = 0;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					promptCalls++;
+					state.error = promptCalls === 1 ? overflowMessage : undefined;
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "seeded-primary", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.seedTo(messages.length);
+
+			messages.push(
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "ov-1", name: "edit", arguments: { path: "big.ts" } }],
+					timestamp: 2,
+				} as unknown as AgentMessage,
+				{
+					role: "toolResult",
+					toolCallId: "ov-1",
+					toolName: "edit",
+					content: [{ type: "text", text: "ok" }],
+					details: { diff: `OVERSIZED-RECOVERY-MARKER\n+${"z".repeat(400 * 1024)}` },
+					isError: false,
+					timestamp: 3,
+				} as unknown as AgentMessage,
+			);
+			runtime.onTurnEnd(messages);
+			await settleUntil(() => promptInputs.length >= 2 && runtime.backlog === 0, 10_000);
+
+			expect(promptInputs).toHaveLength(2);
+			// The recovery retry re-rendered the same oversized batch: marker
+			// present exactly once in each attempt, seeded history absent.
+			for (const input of promptInputs) {
+				expect(input.split("OVERSIZED-RECOVERY-MARKER").length - 1).toBe(1);
+				expect(input).not.toContain("seeded-primary");
+			}
+		}, 15_000);
+
 		it("classifies structured overflow metadata before rolling back the failed turn", async () => {
 			const promptInputs: string[] = [];
 			const state: { messages: AgentMessage[]; error?: string } = {

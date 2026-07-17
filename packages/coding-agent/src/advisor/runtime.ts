@@ -1195,16 +1195,26 @@ export class AdvisorRuntime {
 						} else {
 							// Retry once against the fresh advisor context, using only the same
 							// bounded raw batch. Pending updates remain queued behind it.
-							const recoveryBatch = this.#formatRawDelta(rawMessages, wip) ?? batch;
-							this.#pending.unshift({
-								text: recoveryBatch,
-								rawMessages,
-								renderRevision: this.#renderRevision,
-								turns: finalTurns,
-								wip,
-								overflowRecovery: true,
-							});
-							logger.debug("advisor context overflow recovered at current primary cursor");
+							// Re-render CHUNKED: the batch that overflowed can carry the same
+							// multi-MB payloads the chunked path exists for; the sync formatter
+							// here would reintroduce the event-loop stall it removed.
+							let recoveryBatch: string | null = null;
+							try {
+								recoveryBatch = await this.#formatRawDeltaChunked(rawMessages, wip, epoch);
+							} catch {
+								// Formatter failure falls back to the already-rendered batch text.
+							}
+							if (!this.disposed && this.#epoch === epoch) {
+								this.#pending.unshift({
+									text: recoveryBatch ?? batch,
+									rawMessages,
+									renderRevision: this.#renderRevision,
+									turns: finalTurns,
+									wip,
+									overflowRecovery: true,
+								});
+								logger.debug("advisor context overflow recovered at current primary cursor");
+							}
 						}
 					} else {
 						this.#consecutiveFailures++;
