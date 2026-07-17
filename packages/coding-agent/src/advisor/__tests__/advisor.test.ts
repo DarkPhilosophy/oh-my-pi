@@ -1239,6 +1239,41 @@ describe("advisor", () => {
 			runtime.dispose();
 		}, 15_000);
 
+		it("defers a delta whose bulk is a wide array of EMPTY strings", async () => {
+			// Regression: array elements paid no separator cost, so 200K empty
+			// strings estimated ~0 while join(', ')/JSON output several
+			// hundred KB on the sync path. Elements now charge a flat
+			// separator width; the delta must defer and still deliver.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const values = new Array(200_000).fill("");
+			const messages: AgentMessage[] = [
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "empties-1", name: "bulk_list", arguments: { values } }],
+					timestamp: 1,
+				} as unknown as AgentMessage,
+			];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			expect(promptInputs).toHaveLength(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("bulk_list");
+			runtime.dispose();
+		}, 15_000);
+
 		it("delivers a small prefix plus an oversized delayed EXPANDED EDIT DIFF exactly once", async () => {
 			// Regression for slice-budget accounting: a tiny edit toolCall
 			// inlines its (much later, multi-hundred-KB) toolResult via the

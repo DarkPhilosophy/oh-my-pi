@@ -222,6 +222,15 @@ const FAST_RENDER_MAX_CHARS = 256 * 1024;
  * carry real formatter cost via the `primaryArg()` JSON.stringify fallback —
  * with a cycle guard; pathologically deep structures are conservatively
  * treated as oversized (they defer to the chunked path, never the sync one).
+ *
+ * The gate is deliberately APPROXIMATE for string content: strings count raw
+ * length, not JSON-escaped width. Escaping inflates quotes/backslashes 2x and
+ * control characters up to 6x (`\uXXXX`), so an escape-heavy payload can
+ * serialize past the estimate by that bounded constant factor — accepted:
+ * charging escaped width would shrink the effective sync budget for ordinary
+ * escape-free text (the dominant shape) to buy headroom for a pathological
+ * corner. Structural JSON costs ARE charged: primitive widths, object keys,
+ * and per-element array separators.
  */
 function estimateMessageChars(message: AgentMessage, cap: number): number {
 	let total = 0;
@@ -259,7 +268,14 @@ function estimateMessageChars(message: AgentMessage, cap: number): number {
 		}
 		seen.add(value);
 		if (Array.isArray(value)) {
-			for (const item of value) if (add(item, depth + 1)) return true;
+			for (const item of value) {
+				// The JSON fallback and the string-array join(", ") pay a
+				// separator/quote per element — wide arrays of tiny values
+				// (200K empty strings) are real cost.
+				total += 4;
+				if (total > cap) return true;
+				if (add(item, depth + 1)) return true;
+			}
 		} else {
 			for (const key of Object.keys(value)) {
 				// The JSON fallback serializes keys too (`"key":` plus the
