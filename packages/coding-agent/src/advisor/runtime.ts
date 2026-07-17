@@ -595,13 +595,28 @@ export class AdvisorRuntime {
 		// cross-slice tool-result index below must hold obfuscated results
 		// (a call in slice 1 renders a result from slice 3).
 		if (hasSecrets && obfuscator) {
+			// Slices are bounded by BOTH message count and estimated payload
+			// size: a handful of multi-MB tool results would otherwise scan
+			// their entire byte payload before the first yield. A single
+			// oversized message remains an irreducible slice.
 			const obfuscated: AgentMessage[] = [];
-			for (let i = 0; i < delta.length; i += RENDER_CHUNK_MESSAGES) {
-				if (i > 0) {
+			let start = 0;
+			let count = 0;
+			let chars = 0;
+			for (let end = 0; end < delta.length; ) {
+				chars += estimateMessageChars(delta[end]!, FAST_RENDER_MAX_CHARS + 1);
+				count++;
+				end++;
+				const flush = end === delta.length || count >= RENDER_CHUNK_MESSAGES || chars > FAST_RENDER_MAX_CHARS;
+				if (!flush) continue;
+				if (start > 0) {
 					await Bun.sleep(0);
 					if (this.disposed || this.#epoch !== epoch) return null;
 				}
-				obfuscated.push(...obfuscateAdvisorDelta(obfuscator, delta.slice(i, i + RENDER_CHUNK_MESSAGES)));
+				obfuscated.push(...obfuscateAdvisorDelta(obfuscator, delta.slice(start, end)));
+				start = end;
+				count = 0;
+				chars = 0;
 			}
 			formattedDelta = obfuscated;
 		} else {
