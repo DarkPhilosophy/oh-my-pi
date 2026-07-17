@@ -283,7 +283,19 @@ interface CatchupWaiter {
 
 interface DeliveredMessage {
 	message: AgentMessage;
-	fingerprint: bigint | undefined;
+	/** Lazy: computed on first comparison, cached. `fingerprinted` separates
+	 *  "not yet computed" from "computed, unfingerprintable" — only the
+	 *  latter may report undefined to the prefix-change check. */
+	fingerprint?: bigint;
+	fingerprinted?: boolean;
+}
+
+function deliveredFingerprint(entry: DeliveredMessage): bigint | undefined {
+	if (!entry.fingerprinted) {
+		entry.fingerprint = fingerprintMessage(entry.message);
+		entry.fingerprinted = true;
+	}
+	return entry.fingerprint;
 }
 
 function fingerprintMessage(message: AgentMessage): bigint | undefined {
@@ -540,10 +552,7 @@ export class AdvisorRuntime {
 	seedTo(count: number): void {
 		const messages = this.host.snapshotMessages().slice(0, count);
 		this.#lastCount = messages.length;
-		this.#deliveredPrefix = messages.map(message => ({
-			message,
-			fingerprint: fingerprintMessage(message),
-		}));
+		this.#deliveredPrefix = messages.map(message => ({ message }));
 		this.#pending = [];
 		this.#backlog = 0;
 		this.#consecutiveFailures = 0;
@@ -602,6 +611,14 @@ export class AdvisorRuntime {
 			const heading = wip ? "### Session update [in progress — more steps follow]" : "### Session update";
 			return `${heading}\n\n${md}`;
 		}
+		// The large path must not run on the caller's stack: #drain is entered
+		// synchronously (`void this.#drain()`) from onTurnEnd, so without this
+		// yield the FIRST slice — including a single irreducible multi-MB
+		// message — would obfuscate/format before any yield, stalling the
+		// primary turn-end. The dedupe pass above stays pre-yield by contract
+		// (#seenContext mutations must order with competing sync renders).
+		await Bun.sleep(0);
+		if (this.disposed || this.#epoch !== epoch) return null;
 		// Obfuscation scans every string in the delta (O(bytes)); on a multi-MB
 		// replay that is its own event-loop stall, so it runs in yielding
 		// slices too. It happens UP FRONT — not per format slice — because the
@@ -717,12 +734,13 @@ export class AdvisorRuntime {
 				break;
 			}
 			if (delivered.message === current) continue;
+			// Lazy fingerprints: the exact hash is computed only here — when a
+			// prefix identity actually changed (a clone) — never on the
+			// append/push path, so an oversized delta defers to the chunked
+			// renderer without paying an O(bytes) stringify first.
 			const fingerprint = fingerprintMessage(current);
-			if (
-				delivered.fingerprint === undefined ||
-				fingerprint === undefined ||
-				delivered.fingerprint !== fingerprint
-			) {
+			const deliveredFp = deliveredFingerprint(delivered);
+			if (deliveredFp === undefined || fingerprint === undefined || deliveredFp !== fingerprint) {
 				prefixChanged = true;
 				break;
 			}
@@ -736,7 +754,7 @@ export class AdvisorRuntime {
 		for (let i = this.#lastCount; i < all.length; i++) {
 			const message = all[i];
 			if (message === undefined) continue;
-			this.#deliveredPrefix.push({ message, fingerprint: fingerprintMessage(message) });
+			this.#deliveredPrefix.push({ message });
 		}
 		this.#lastCount = all.length;
 		if (rawMessages.length === 0) return null;
@@ -969,39 +987,6 @@ export class AdvisorRuntime {
 			this.host.notifyFailure?.(error);
 		} catch (notifyErr) {
 			logger.warn("advisor failure notification failed", { err: String(notifyErr) });
-		}
-	}
-
-	/** Pause on exhausted quota: preserve the batch, wake the primary, notify. */
-	#enterQuotaPause(
-		batch: string,
-		rawMessages: AgentMessage[],
-		finalTurns: number,
-		wip: boolean,
-		recoveringOverflow: boolean,
-	): void {
-		this.#quotaExhausted = true;
-		this.#consecutiveFailures = 0;
-		this.#failureNotified = false;
-		// Drop the seen-state and stamp a stale revision: the retained batch
-		// re-renders from its raw messages on resume, re-expanding any
-		// primary-context bodies the advisor never actually received.
-		this.#clearSeenContext();
-		this.#pending.unshift({
-			text: batch,
-			rawMessages,
-			renderRevision: this.#renderRevision - 1,
-			turns: finalTurns,
-			wip,
-			overflowRecovery: recoveringOverflow || undefined,
-		});
-		// Release catchup waiters: a quota-paused advisor can't make
-		// progress, so waitForCatchup must not block the primary agent.
-		this.#wakeAllWaiters();
-		try {
-			this.host.notifyQuotaExhausted?.();
-		} catch (notifyErr) {
-			logger.warn("advisor quota notification failed", { err: String(notifyErr) });
 		}
 	}
 

@@ -2085,6 +2085,141 @@ describe("advisor", () => {
 			}
 		}, 15_000);
 
+		it("defers an oversized delta WITHOUT fingerprinting it on the turn-end path", async () => {
+			// Regression for eager prefix fingerprinting: every new message was
+			// JSON.stringify-hashed at push time — BEFORE the large-delta size
+			// gate — so a multi-MB payload stalled onTurnEnd in the fingerprint
+			// pass it was about to defer around. Fingerprints are now lazy
+			// (computed only when a prefix identity changes). JSON.stringify
+			// invokes toJSON, giving a direct observable: it must NOT run
+			// during onTurnEnd for freshly appended messages.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			let stringified = 0;
+			const bigContent = `oversized-turn ${"w".repeat(400 * 1024)}`;
+			const big = {
+				role: "user",
+				content: bigContent,
+				timestamp: 1,
+				toJSON(): unknown {
+					stringified++;
+					return { role: "user", content: bigContent, timestamp: 1 };
+				},
+			} as unknown as AgentMessage;
+			const messages: AgentMessage[] = [big];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			expect(stringified).toBe(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs[0]).toContain("oversized-turn");
+			expect(stringified).toBe(0);
+			runtime.dispose();
+		}, 15_000);
+
+		it("treats an equivalent CLONE of a delivered oversized prefix as unchanged", async () => {
+			// The lazy-fingerprint fallback: when the snapshot array is rebuilt
+			// with clones (new object identities, equal content), the prefix
+			// check computes both fingerprints AT COMPARISON TIME and must
+			// conclude "unchanged" — no epoch bump, no context reset, no replay
+			// of already-delivered history in the next delta.
+			const promptInputs: string[] = [];
+			let resetCount = 0;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {
+					resetCount++;
+				},
+				state: { messages: [] },
+			};
+			const oversized = {
+				role: "user",
+				content: `delivered-oversized ${"v".repeat(300 * 1024)}`,
+				timestamp: 1,
+			} as AgentMessage;
+			let messages: AgentMessage[] = [oversized];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			await settleUntil(() => promptInputs.length >= 1 && runtime.backlog === 0, 10_000);
+			expect(promptInputs).toHaveLength(1);
+
+			// Rebuild the snapshot with a CLONE of the delivered prefix.
+			messages = [
+				{ ...oversized } as AgentMessage,
+				{ role: "user", content: "appended-after-clone", timestamp: 2 } as AgentMessage,
+			];
+			runtime.onTurnEnd(messages);
+			await settleUntil(() => promptInputs.length >= 2 && runtime.backlog === 0, 10_000);
+			expect(promptInputs).toHaveLength(2);
+			expect(resetCount).toBe(0);
+			expect(promptInputs[1]).toContain("appended-after-clone");
+			expect(promptInputs[1]).not.toContain("delivered-oversized");
+			runtime.dispose();
+		}, 15_000);
+
+		it("never formats an oversized first slice on the synchronous turn-end stack", async () => {
+			// Regression for the first-slice yield: #drain is entered
+			// synchronously from onTurnEnd, and emit() used to skip the yield
+			// while start === 0 — a single over-budget first message formatted
+			// on the primary's turn-end stack. Discriminator: the size probe
+			// early-exits after the first over-budget block, so the SECOND
+			// content block's getter fires only when the formatter actually
+			// renders. With the pre-slice yield, that must happen strictly
+			// after onTurnEnd returns.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			let inTurnEnd = false;
+			let formattedDuringTurnEnd = false;
+			const blocks = [
+				{ type: "text", text: `oversized-head ${"u".repeat(300 * 1024)}` },
+				{
+					type: "text",
+					get text(): string {
+						if (inTurnEnd) formattedDuringTurnEnd = true;
+						return "tail-sentinel-block";
+					},
+				},
+			];
+			const messages: AgentMessage[] = [{ role: "user", content: blocks, timestamp: 1 } as unknown as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			inTurnEnd = true;
+			runtime.onTurnEnd(messages);
+			inTurnEnd = false;
+			expect(formattedDuringTurnEnd).toBe(false);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs[0]).toContain("tail-sentinel-block");
+			expect(formattedDuringTurnEnd).toBe(false);
+			runtime.dispose();
+		}, 15_000);
+
 		it("classifies structured overflow metadata before rolling back the failed turn", async () => {
 			const promptInputs: string[] = [];
 			const state: { messages: AgentMessage[]; error?: string } = {
