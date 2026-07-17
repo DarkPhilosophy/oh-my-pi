@@ -344,6 +344,25 @@ describe("openai-codex Responses Lite input shaping", () => {
 		expect(noTools.parallel_tool_calls).toBe(false);
 	});
 
+	it("falls back from forced hosted tool choices without weakening explicit tool-use constraints", async () => {
+		const model = createCodexModel("gpt-5.6-terra");
+		const tools = [{ type: "function", name: "handoff", parameters: { type: "object" } }];
+
+		const forced = await transformRequestBody(
+			{ model: model.id, tools, tool_choice: { type: "web_search" } },
+			model,
+			{ responsesLite: true },
+		);
+		expect(forced.tool_choice).toBe("auto");
+		expect(forced.tools).toBeUndefined();
+
+		const disabled = await transformRequestBody({ model: model.id, tools, tool_choice: "none" }, model, {
+			responsesLite: true,
+		});
+		expect(disabled.tool_choice).toBe("none");
+		expect(disabled.tools).toBeUndefined();
+	});
+
 	it("moves instructions and tools into input items under lite", async () => {
 		const model = createCodexModel("gpt-5.6-terra");
 		const tools = [{ type: "function", name: "shot", parameters: { type: "object" } }];
@@ -1184,5 +1203,36 @@ describe("openai-codex concurrent reasoning summaries", () => {
 		expect(JSON.parse(replayOnly?.thinkingSignature ?? "{}").id).toBe("rs_3");
 		const text = result.content.find(block => block.type === "text");
 		expect(text?.text).toBe("Hello");
+	});
+});
+
+describe("openai-codex native history redaction", () => {
+	it("redacts credentials from user provider history before replaying it", () => {
+		const model = createCodexModel("gpt-5.1-codex");
+		const credential = "sk-ABCdef1234567890ABCdef1234567890ABCdef1234567890ABCdef123456";
+		const context: Context = {
+			messages: [
+				{
+					role: "user",
+					content: "fallback",
+					timestamp: Date.now(),
+					providerPayload: {
+						type: "openaiResponsesHistory",
+						provider: model.provider,
+						items: [{ type: "message", role: "user", content: [{ type: "input_text", text: credential }] }],
+					},
+				} as Context["messages"][number],
+			],
+		};
+
+		const messages = convertCodexResponsesMessages(model, context);
+
+		expect(messages).toEqual([
+			{
+				type: "message",
+				role: "user",
+				content: [{ type: "input_text", text: "[openai_token_redacted]" }],
+			},
+		]);
 	});
 });

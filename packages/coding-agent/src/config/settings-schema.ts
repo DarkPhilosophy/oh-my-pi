@@ -67,6 +67,8 @@ import {
 // Schema Definition Types
 // ═══════════════════════════════════════════════════════════════════════════
 
+export type ModelRoleStorage = "global" | "project";
+
 export type SettingTab =
 	| "appearance"
 	| "model"
@@ -508,6 +510,30 @@ export const SETTINGS_SCHEMA = {
 	},
 
 	disabledExtensions: { type: "array", default: EMPTY_STRING_ARRAY },
+
+	modelRoleStorage: {
+		type: "enum",
+		values: ["global", "project"] as const,
+		default: "global",
+		ui: {
+			tab: "model",
+			group: "Prompt",
+			label: "Model Role Storage",
+			description: "Where model selector role assignments are saved",
+			options: [
+				{
+					value: "global",
+					label: "Global",
+					description: "Save role models in the active profile config (current behavior)",
+				},
+				{
+					value: "project",
+					label: "Per-project",
+					description: "Save project role models in .omp/config.yml; missing project roles use global defaults",
+				},
+			],
+		},
+	},
 
 	modelRoles: { type: "record", default: EMPTY_STRING_RECORD },
 
@@ -2466,7 +2492,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Auto-Learn",
 			label: "Auto-run capture at stop",
 			description:
-				"When on, auto-run one capture turn at stop (uses extra tokens). Off = passive reminder on your next turn.",
+				"When on, auto-run one private capture turn at stop (uses extra tokens). When off, only standing auto-learn guidance remains.",
 			condition: "autolearnActive",
 		},
 	},
@@ -3616,7 +3642,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"generate_image.enabled": {
 		type: "boolean",
-		default: true,
+		default: false,
 		ui: {
 			tab: "tools",
 			group: "Available Tools",
@@ -4468,7 +4494,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"providers.image": {
 		type: "enum",
-		values: ["auto", "openai", "antigravity", "xai", "gemini", "openrouter"] as const,
+		values: ["auto", "openai", "openai-codex", "antigravity", "xai", "gemini", "openrouter"] as const,
 		default: "auto",
 		ui: {
 			tab: "providers",
@@ -4480,9 +4506,19 @@ export const SETTINGS_SCHEMA = {
 					value: "auto",
 					label: "Auto",
 					description:
-						"Priority: active session provider > GPT model image tool > Antigravity > xAI > OpenRouter > Gemini",
+						"Priority: per-request provider > configured provider > active session provider > GPT model image tool > Codex subscription > Antigravity > xAI > OpenRouter > Gemini",
 				},
-				{ value: "openai", label: "OpenAI", description: "Uses the active GPT Responses/Codex model" },
+				{
+					value: "openai",
+					label: "OpenAI",
+					description:
+						"OPENAI_API_KEY (gpt-image-2) or active GPT model; falls back to a connected Codex subscription",
+				},
+				{
+					value: "openai-codex",
+					label: "OpenAI Codex (ChatGPT)",
+					description: "Uses a connected Codex / ChatGPT subscription — no OPENAI_API_KEY needed",
+				},
 				{
 					value: "antigravity",
 					label: "Antigravity",
