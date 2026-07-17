@@ -629,8 +629,11 @@ export class AdvisorRuntime {
 			// collapses into one long synchronous format call. A single
 			// oversized message is irreducible — it forms its own slice.
 			const toolResultIndex = new Map<string, ToolResultMessage>();
+			const toolResultChars = new Map<string, number>();
 			for (const message of formattedDelta) {
-				if (message.role === "toolResult") toolResultIndex.set(message.toolCallId, message);
+				if (message.role !== "toolResult") continue;
+				toolResultIndex.set(message.toolCallId, message);
+				toolResultChars.set(message.toolCallId, estimateMessageChars(message, FAST_RENDER_MAX_CHARS + 1));
 			}
 			const chunkOptions = {
 				...ADVISOR_RENDER_OPTIONS,
@@ -642,7 +645,19 @@ export class AdvisorRuntime {
 			let count = 0;
 			let chars = 0;
 			for (let end = 0; end < formattedDelta.length; ) {
-				chars += estimateMessageChars(formattedDelta[end]!, FAST_RENDER_MAX_CHARS + 1);
+				const message = formattedDelta[end]!;
+				chars += estimateMessageChars(message, FAST_RENDER_MAX_CHARS + 1);
+				// A toolCall inlines its (possibly much later) toolResult via the
+				// shared index AT THE CALL'S SLICE — charge that result's cost to
+				// THIS slice's budget, or a tiny call message could synchronously
+				// pull a multi-MB result past the ceiling. The result is counted
+				// again in its own slice (it formats as consumed/skipped there);
+				// double-counting only makes slices smaller, never larger.
+				if (message.role === "assistant") {
+					for (const block of (message as AssistantMessage).content) {
+						if (block.type === "toolCall") chars += toolResultChars.get(block.id) ?? 0;
+					}
+				}
 				count++;
 				end++;
 				const flush =
