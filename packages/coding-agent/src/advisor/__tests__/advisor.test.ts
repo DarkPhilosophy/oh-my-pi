@@ -1119,6 +1119,45 @@ describe("advisor", () => {
 			runtime.dispose();
 		}, 15_000);
 
+		it("defers a delta whose bulk is a NON-STRING numeric argument payload", async () => {
+			// Regression: the size probe charged zero for numbers/booleans/null,
+			// so a tool call like `{ values: [1, 2, ...] }` with a multi-MB
+			// numeric payload and no primary string arg was classified small —
+			// and primaryArg()'s JSON.stringify fallback serialized it
+			// synchronously on the turn-end path. Primitives now charge their
+			// conservative JSON width: the payload must defer (no synchronous
+			// render at the turn-end tick) and still deliver.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			// 40K numbers x 25 chars conservative width = ~1M estimated units.
+			const values = Array.from({ length: 40_000 }, (_, i) => i * 1_000_003);
+			const messages: AgentMessage[] = [
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "num-1", name: "bulk_ingest", arguments: { values } }],
+					timestamp: 1,
+				} as unknown as AgentMessage,
+			];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			expect(promptInputs).toHaveLength(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("bulk_ingest");
+			runtime.dispose();
+		}, 15_000);
+
 		it("delivers a small prefix plus an oversized delayed EXPANDED EDIT DIFF exactly once", async () => {
 			// Regression for slice-budget accounting: a tiny edit toolCall
 			// inlines its (much later, multi-hundred-KB) toolResult via the

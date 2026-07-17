@@ -232,6 +232,21 @@ function estimateMessageChars(message: AgentMessage, cap: number): number {
 			total += value.length;
 			return total > cap;
 		}
+		// Non-string JSON payloads carry real formatter cost too: a multi-MB
+		// numeric array (`{ values: [1, 2, ...] }`) JSON.stringifies in
+		// primaryArg()'s fallback just like a string does. Charge each
+		// primitive its conservative maximum JSON width (longest double
+		// representation is ~24 chars, +1 for the separator) — overcounting
+		// only defers to the chunked path, never the reverse, and element
+		// count bounds the probe the same way string length does.
+		if (typeof value === "number") {
+			total += 25;
+			return total > cap;
+		}
+		if (typeof value === "boolean" || value === null) {
+			total += 6;
+			return total > cap;
+		}
 		if (!value || typeof value !== "object") return false;
 		// An already-visited object (shared reference or cycle) was counted
 		// once — skip it. Pathological depth is conservatively oversized.
