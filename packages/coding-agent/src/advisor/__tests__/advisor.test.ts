@@ -1119,14 +1119,16 @@ describe("advisor", () => {
 			runtime.dispose();
 		}, 15_000);
 
-		it("delivers a small prefix plus an oversized delayed toolResult exactly once", async () => {
-			// Regression for slice-budget accounting: a tiny toolCall message
+		it("delivers a small prefix plus an oversized delayed EXPANDED EDIT DIFF exactly once", async () => {
+			// Regression for slice-budget accounting: a tiny edit toolCall
 			// inlines its (much later, multi-hundred-KB) toolResult via the
-			// shared cross-slice index. The result's cost is charged to the
-			// calling slice and the accumulated prefix is flushed BEFORE the
-			// over-budget pair is admitted — output must contain the prefix,
-			// the call, and the result content exactly once (inlined at the
-			// call, consumed at its own position).
+			// shared cross-slice index. Only `details.diff` renders verbatim
+			// (under expandEditDiffs) — plain result content stays a summary
+			// line — so the payload rides the diff. The result's cost is
+			// charged to the calling slice and the accumulated prefix is
+			// flushed BEFORE the over-budget pair is admitted; the output must
+			// contain the prefix, the call line, and the diff payload exactly
+			// once (inlined at the call, consumed at its own position).
 			const promptInputs: string[] = [];
 			const agent: AdvisorAgent = {
 				prompt: async input => {
@@ -1169,6 +1171,9 @@ describe("advisor", () => {
 			const rendered = promptInputs[0]!;
 			expect(rendered).toContain("prefix-0");
 			expect(rendered).toContain("prefix-109");
+			// The call renders as a tool line with the diff fenced beneath it.
+			expect(rendered).toContain("→ edit(");
+			expect(rendered).toContain("```diff");
 			const occurrences = rendered.split("RESULT-MARKER-ONCE").length - 1;
 			expect(occurrences).toBe(1);
 			runtime.dispose();
