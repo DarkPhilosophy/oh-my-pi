@@ -60,13 +60,7 @@ import type { CollabHost } from "../collab/host";
 import { KeybindingsManager } from "../config/keybindings";
 import type { ResolvedModelRoleValue } from "../config/model-resolver";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
-import {
-	isSettingsInitialized,
-	onModelRolesChanged,
-	onStatusLineSessionAccentChanged,
-	Settings,
-	settings,
-} from "../config/settings";
+import { onModelRolesChanged, onStatusLineSessionAccentChanged, type Settings } from "../config/settings";
 import type { DaemonConnectionSnapshot } from "../daemon/status";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {

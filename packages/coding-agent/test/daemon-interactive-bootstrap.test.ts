@@ -463,6 +463,9 @@ describe("daemon interactive bootstrap", () => {
 			first.client.close();
 			second.client.close();
 		} finally {
+			// Settle the replacement-start latch before teardown so a still-
+			// booting server cannot race the shutdown below.
+			await replacementStart?.catch(() => {});
 			await server?.shutdown(true);
 			await new Promise<void>(resolve => {
 				dying.close(() => resolve());

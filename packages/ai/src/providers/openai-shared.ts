@@ -1,7 +1,11 @@
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { toFirepassWireModelId, toFireworksWireModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
 import { modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
-import { isGlm52ReasoningEffortModelId, isGrokReasoningEffortCapable, isKimiK3ModelId } from "@oh-my-pi/pi-catalog/identity";
+import {
+	isGlm52ReasoningEffortModelId,
+	isGrokReasoningEffortCapable,
+	isKimiK3ModelId,
+} from "@oh-my-pi/pi-catalog/identity";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import type {
