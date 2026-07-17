@@ -1203,6 +1203,42 @@ describe("advisor", () => {
 			runtime.dispose();
 		}, 15_000);
 
+		it("defers a delta whose bulk is a WIDE object of keys with empty values", async () => {
+			// Regression: the probe charged only values, but the JSON fallback
+			// serializes keys and syntax too — 30K keys mapping to empty
+			// strings cost ~0 in the old probe while stringifying well past
+			// the stall gate. Keys now charge `key.length + 4`; the delta must
+			// defer and still deliver.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const wide = Object.fromEntries(Array.from({ length: 30_000 }, (_, i) => [`config_key_${i}`, ""]));
+			const messages: AgentMessage[] = [
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "wide-1", name: "wide_config", arguments: { entries: wide } }],
+					timestamp: 1,
+				} as unknown as AgentMessage,
+			];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			expect(promptInputs).toHaveLength(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("wide_config");
+			runtime.dispose();
+		}, 15_000);
+
 		it("delivers a small prefix plus an oversized delayed EXPANDED EDIT DIFF exactly once", async () => {
 			// Regression for slice-budget accounting: a tiny edit toolCall
 			// inlines its (much later, multi-hundred-KB) toolResult via the

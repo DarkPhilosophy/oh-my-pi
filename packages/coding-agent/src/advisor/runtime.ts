@@ -262,6 +262,10 @@ function estimateMessageChars(message: AgentMessage, cap: number): number {
 			for (const item of value) if (add(item, depth + 1)) return true;
 		} else {
 			for (const key of Object.keys(value)) {
+				// The JSON fallback serializes keys too (`"key":` plus the
+				// separator) — a wide object with tiny values is real cost.
+				total += key.length + 4;
+				if (total > cap) return true;
 				if (add((value as Record<string, unknown>)[key], depth + 1)) return true;
 			}
 		}
