@@ -365,10 +365,14 @@ describe("AgentSession advisor toggle", () => {
 			expect(quotaSession.setAdvisorEnabled(true)).toBe(true);
 			const advisorAgent = quotaSession.getAdvisorAgent();
 			if (!advisorAgent) throw new Error("Expected advisor agent to exist");
-			// No structured code, no flag, and an OPAQUE body: only the canonical
-			// status/message outcome classifier (opaque 402 = out of credits)
-			// recognizes this shape.
-			vi.spyOn(advisorAgent, "prompt").mockRejectedValue(new AIError.ProviderHttpError("402", 402, {}));
+			// Isolate the canonical-outcome fallback: a string statusCode is
+			// invisible to AIError's structural classifier (numeric props only),
+			// and the empty message parses to nothing — only
+			// extractHttpStatusFromError + isUsageLimitOutcome (opaque 402 =
+			// out of credits) recognize this shape.
+			const thrown = Object.assign(new Error(""), { statusCode: "402" });
+			expect(AIError.isUsageLimit(thrown)).toBe(false);
+			vi.spyOn(advisorAgent, "prompt").mockRejectedValue(thrown);
 			const markUsageLimitReached = vi
 				.spyOn(authStorage, "markUsageLimitReached")
 				.mockResolvedValue({ switched: false });
