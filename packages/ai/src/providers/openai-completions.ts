@@ -77,6 +77,7 @@ import {
 	applyOpenAIExtraBody,
 	applyOpenAIGatewayRouting,
 	applyOpenAIServiceTier,
+	applyOpenRouterReportedCost,
 	applyWireModelIdTransform,
 	calculateOpenAIUsageAccounting,
 	clearOpenAIStrictToolsState,
@@ -94,9 +95,9 @@ import {
 	type OpenAIStrictToolsState,
 	parseAzureDeploymentNameMap,
 	resolveOpenAICompatPolicy,
+	resolveOpenAICompletionsOutputClamp,
 	resolveOpenAIOutputTokenParam,
 	resolveOpenAIRequestSetup,
-	resolveZaiReasoningOutputClamp,
 	shouldRetryWithoutStrictTools,
 } from "./openai-shared";
 import { transformMessages } from "./transform-messages";
@@ -1461,39 +1462,44 @@ function buildParams(
 		params.store = false;
 	}
 
-	if (options?.temperature !== undefined) {
-		params.temperature = options.temperature;
-	}
-	if (options?.topP !== undefined) {
-		params.top_p = options.topP;
-	}
-	if (options?.topK !== undefined) {
-		params.top_k = options.topK;
-	}
-	if (options?.minP !== undefined) {
-		params.min_p = options.minP;
-	}
-	// xAI reasoning models reject presence_penalty / frequency_penalty / stop
-	// (docs.x.ai/developers/model-capabilities/text/reasoning). Drop them for
-	// Grok effort-capable SKUs on an xAI host so a configured presencePenalty
-	// (or stopSequences) does not 400 the default grok-4.5 request.
+	// OpenAI proprietary reasoning models (o-series, gpt-5+) reject explicit
+	// sampling params with a 400 on every serving host (#5606).
+	// xAI reasoning models likewise reject presence_penalty / frequency_penalty
+	// / stop (docs.x.ai/developers/model-capabilities/text/reasoning): drop
+	// them for Grok effort-capable SKUs on an xAI host so a configured
+	// presencePenalty (or stopSequences) does not 400 the default grok-4.5.
 	const dropXaiReasoningSampling =
 		isGrokReasoningEffortCapable(model.id) &&
 		(modelMatchesHost({ provider: model.provider, baseUrl: model.baseUrl ?? "" }, "xai") ||
 			model.provider === "xai-oauth");
-	if (options?.presencePenalty !== undefined && !dropXaiReasoningSampling) {
-		params.presence_penalty = options.presencePenalty;
-	}
-	if (options?.repetitionPenalty !== undefined) {
-		params.repetition_penalty = options.repetitionPenalty;
+	if (initialCompat.supportsSamplingParams) {
+		if (options?.temperature !== undefined) {
+			params.temperature = options.temperature;
+		}
+		if (options?.topP !== undefined) {
+			params.top_p = options.topP;
+		}
+		if (options?.topK !== undefined) {
+			params.top_k = options.topK;
+		}
+		if (options?.minP !== undefined) {
+			params.min_p = options.minP;
+		}
+		if (options?.presencePenalty !== undefined && !dropXaiReasoningSampling) {
+			params.presence_penalty = options.presencePenalty;
+		}
+		if (options?.repetitionPenalty !== undefined) {
+			params.repetition_penalty = options.repetitionPenalty;
+		}
+		if (options?.frequencyPenalty !== undefined && !dropXaiReasoningSampling) {
+			params.frequency_penalty = options.frequencyPenalty;
+		}
 	}
 	if (options?.stopSequences?.length && !dropXaiReasoningSampling) {
 		const seqs = options.stopSequences;
 		params.stop = seqs.length === 1 ? seqs[0] : seqs.slice(0, 4);
 	}
-	if (options?.frequencyPenalty !== undefined && !dropXaiReasoningSampling) {
-		params.frequency_penalty = options.frequencyPenalty;
-	}
+
 	applyOpenAIServiceTier(params, options?.serviceTier, model);
 
 	if (context.tools?.length) {
@@ -1575,7 +1581,7 @@ function buildParams(
 		omitMaxOutputTokens: model.omitMaxOutputTokens ?? false,
 		isOpenRouterHost: compat.isOpenRouterHost,
 		alwaysSendMaxTokens: compat.alwaysSendMaxTokens,
-		providerOutputClamp: resolveZaiReasoningOutputClamp(model, compat),
+		providerOutputClamp: resolveOpenAICompletionsOutputClamp(model, compat),
 	});
 	if (outputToken) {
 		if (outputToken.field === "max_tokens") {
@@ -1638,6 +1644,7 @@ export function parseChunkUsage(
 		...(premiumRequests !== undefined ? { premiumRequests } : {}),
 	};
 	calculateCost(model, usage);
+	applyOpenRouterReportedCost(model, usage, rawUsage);
 	return usage;
 }
 

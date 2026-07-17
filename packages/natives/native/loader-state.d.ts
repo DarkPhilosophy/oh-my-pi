@@ -88,8 +88,8 @@ export function selectCpuVariant(input: SelectCpuVariantInput): SelectCpuVariant
 
 export interface ValidateLoadedBindingsContext {
 	isWorkspaceLoad: boolean;
-	versionSentinelExport: string;
 	packageVersion: string;
+	versionSentinelExport: string;
 }
 
 export function validateLoadedBindings(

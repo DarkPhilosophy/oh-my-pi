@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "bun:test";
 import type { AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { type } from "arktype";
 import type { ModelRegistry } from "../../config/model-registry";
@@ -505,6 +506,19 @@ describe("advisor", () => {
 			expect(message.content).toBe(originalContent);
 		});
 
+		it("leaves an authorized Cursor native delete call intact", () => {
+			const message = {
+				role: "assistant",
+				content: [{ type: "toolCall", id: "tc-delete", name: "delete", arguments: { path: "obsolete.txt" } }],
+				stopReason: "toolUse",
+			} as unknown as AssistantMessage;
+			const originalContent = message.content;
+
+			expect(quarantineAdvisorUnsafeOutput(message, new Set(["advise", "write", "delete"]))).toBeUndefined();
+			expect(message.stopReason).toBe("toolUse");
+			expect(message.content).toBe(originalContent);
+		});
+
 		it("sanitizes destructive advise notes even when advise is an allowed tool", () => {
 			const message = {
 				role: "assistant",
@@ -849,6 +863,57 @@ describe("advisor", () => {
 			await secondPromptDone;
 			expect(promptInputs).toHaveLength(2);
 			expect(promptInputs[1]).toContain("second");
+		});
+
+		it("preserves the next user turn when an accepted empty stop is pruned", async () => {
+			const promptInputs: string[] = [];
+			const agent = makeAgent(promptInputs);
+			const messages: AgentMessage[] = [
+				{ role: "user", content: "synthetic capture", synthetic: true, timestamp: 1 } as AgentMessage,
+			];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.onTurnEnd(messages);
+			await runtime.waitForCatchup(1000, 1);
+
+			messages.push({
+				role: "assistant",
+				content: [],
+				api: "mock",
+				provider: "mock",
+				model: "mock-primary",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+				stopReason: "stop",
+				timestamp: 2,
+			} as unknown as AgentMessage);
+			runtime.onTurnEnd(messages);
+			await runtime.waitForCatchup(1000, 1);
+
+			messages.pop();
+			messages.push(
+				{ role: "user", content: "real user instruction", timestamp: 3 } as AgentMessage,
+				{
+					role: "assistant",
+					content: [{ type: "thinking", thinking: "checking files" }],
+					api: "mock",
+					provider: "mock",
+					model: "mock-primary",
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+					stopReason: "toolUse",
+					timestamp: 4,
+				} as unknown as AgentMessage,
+			);
+			runtime.onTurnEnd(messages);
+			await runtime.waitForCatchup(1000, 1);
+
+			const nextTurn = promptInputs.at(-1);
+			expect(nextTurn).toContain("real user instruction");
+			expect(nextTurn?.match(/real user instruction/g)).toHaveLength(1);
+			expect(nextTurn?.indexOf("real user instruction")).toBeLessThan(nextTurn?.indexOf("checking files") ?? -1);
 		});
 
 		it("coalesces late-arriving deltas into the batch after context maintenance", async () => {
@@ -1543,7 +1608,7 @@ describe("advisor", () => {
 			expect(promptInputs[1]).toContain("summary-bbb");
 		});
 
-		it("triggers a re-prime and full replay when maintainContext returns true", async () => {
+		it("clears advisor context without replaying primary history when maintenance requests recovery", async () => {
 			const promptInputs: string[] = [];
 			const { promise: firstPromptDone, resolve: finishFirst } = Promise.withResolvers<void>();
 			const { promise: secondPromptDone, resolve: finishSecond } = Promise.withResolvers<void>();
@@ -1563,35 +1628,324 @@ describe("advisor", () => {
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
-			let shouldRePrime = false;
+			let shouldResetContext = false;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
 				enqueueAdvice: () => {},
 				maintainContext: async tokens => {
 					expect(tokens).toBeGreaterThan(0);
-					return shouldRePrime;
+					return shouldResetContext;
 				},
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 
-			// First turn: normal incremental prompt.
 			runtime.onTurnEnd(messages);
 			await firstPromptDone;
 			expect(promptInputs).toHaveLength(1);
 			expect(promptInputs[0]).toContain("aaa");
 			expect(resetCount).toBe(0);
 
-			// Second turn: maintainContext returns true → re-prime.
-			shouldRePrime = true;
+			shouldResetContext = true;
 			messages.push({ role: "user", content: "bbb", timestamp: 2 } as AgentMessage);
 			runtime.onTurnEnd(messages);
 			await secondPromptDone;
 
-			// Full replay includes both aaa and bbb.
 			expect(promptInputs).toHaveLength(2);
-			expect(promptInputs[1]).toContain("aaa");
 			expect(promptInputs[1]).toContain("bbb");
+			expect(promptInputs[1]).not.toContain("aaa");
 			expect(resetCount).toBe(1);
+		});
+
+		it("preserves updates queued while async maintenance resets the advisor context", async () => {
+			const promptInputs: string[] = [];
+			let resetCount = 0;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {
+					resetCount++;
+				},
+				state: { messages: [] },
+			};
+			const maintenanceStarted = Promise.withResolvers<void>();
+			const maintenanceFinished = Promise.withResolvers<boolean>();
+			let maintenanceCalls = 0;
+			const messages: AgentMessage[] = [{ role: "user", content: "bbb", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				maintainContext: async () => {
+					maintenanceCalls++;
+					if (maintenanceCalls !== 1) return false;
+					maintenanceStarted.resolve();
+					return await maintenanceFinished.promise;
+				},
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.onTurnEnd(messages);
+			await maintenanceStarted.promise;
+			messages.push({ role: "user", content: "ccc", timestamp: 2 } as AgentMessage);
+			runtime.onTurnEnd(messages);
+			maintenanceFinished.resolve(true);
+			await runtime.waitForCatchup(1000, 1);
+
+			expect(promptInputs).toHaveLength(2);
+			expect(promptInputs[0]).toContain("bbb");
+			expect(promptInputs[0]).not.toContain("ccc");
+			expect(promptInputs[1]).toContain("ccc");
+			expect(promptInputs[1]).not.toContain("bbb");
+			expect(resetCount).toBe(1);
+		});
+
+		it("re-expands active primary context when maintenance clears advisor history", async () => {
+			const promptInputs: string[] = [];
+			const agent = makeAgent(promptInputs);
+			const planRule =
+				"Plan mode is active. You MUST remain read-only except for the approved plan file at local://PLAN.md.";
+			const messages: AgentMessage[] = [
+				{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage,
+				{
+					role: "custom",
+					customType: "plan-mode-context",
+					content: planRule,
+					display: false,
+					timestamp: 2,
+				} as AgentMessage,
+			];
+			let shouldResetContext = false;
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				maintainContext: async () => shouldResetContext,
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.onTurnEnd(messages);
+			await runtime.waitForCatchup(1000, 1);
+			expect(promptInputs[0]).toContain(planRule);
+
+			shouldResetContext = true;
+			messages.push({ role: "user", content: "bbb", timestamp: 3 } as AgentMessage);
+			messages.push({
+				role: "custom",
+				customType: "plan-mode-context",
+				content: planRule,
+				display: false,
+				timestamp: 4,
+			} as AgentMessage);
+			runtime.onTurnEnd(messages);
+			await runtime.waitForCatchup(1000, 1);
+
+			expect(promptInputs).toHaveLength(2);
+			expect(promptInputs[1]).toContain("bbb");
+			expect(promptInputs[1]).not.toContain("aaa");
+			expect(promptInputs[1]).toContain(planRule);
+			expect(promptInputs[1]).not.toContain("unchanged — still in effect");
+		});
+
+		it("recovers a provider overflow at the current cursor without replaying primary history", async () => {
+			const overflowMessage = "context_length_exceeded: Your input exceeds the context window of this model.";
+			const promptInputs: string[] = [];
+			const state: { messages: AgentMessage[]; error?: string } = {
+				messages: [{ role: "user", content: "existing advisor context", timestamp: 1 } as AgentMessage],
+			};
+			let promptCalls = 0;
+			let resetCount = 0;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					promptCalls++;
+					state.error = promptCalls === 1 ? overflowMessage : undefined;
+				},
+				abort: () => {},
+				reset: () => {
+					resetCount++;
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [
+				{ role: "user", content: "ancient-primary-one", timestamp: 1 } as AgentMessage,
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "ancient-primary-two" }],
+					timestamp: 2,
+				} as AgentMessage,
+			];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.seedTo(messages.length);
+
+			messages.push({ role: "user", content: "overflowing-current-update", timestamp: 3 } as AgentMessage);
+			runtime.onTurnEnd(messages);
+			await settleUntil(() => promptInputs.length >= 2 && runtime.backlog === 0);
+
+			expect(promptInputs).toHaveLength(2);
+			for (const input of promptInputs) {
+				expect(input).toContain("overflowing-current-update");
+				expect(input).not.toContain("ancient-primary-one");
+				expect(input).not.toContain("ancient-primary-two");
+			}
+			expect(resetCount).toBe(1);
+
+			messages.push({ role: "user", content: "post-recovery-update", timestamp: 4 } as AgentMessage);
+			runtime.onTurnEnd(messages);
+			await settleUntil(() => promptInputs.length >= 3 && runtime.backlog === 0);
+
+			expect(promptInputs).toHaveLength(3);
+			expect(promptInputs[2]).toContain("post-recovery-update");
+			expect(promptInputs[2]).not.toContain("overflowing-current-update");
+			expect(promptInputs[2]).not.toContain("ancient-primary-one");
+			expect(promptInputs[2]).not.toContain("ancient-primary-two");
+			expect(resetCount).toBe(1);
+		});
+
+		it("classifies structured overflow metadata before rolling back the failed turn", async () => {
+			const promptInputs: string[] = [];
+			const state: { messages: AgentMessage[]; error?: string } = {
+				messages: [{ role: "user", content: "existing advisor context", timestamp: 1 } as AgentMessage],
+			};
+			let promptCalls = 0;
+			let resetCount = 0;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					promptCalls++;
+					if (promptCalls !== 1) {
+						state.error = undefined;
+						return;
+					}
+					state.messages.push({ role: "user", content: input, timestamp: 2 } as AgentMessage);
+					const failure: AssistantMessage = {
+						role: "assistant",
+						content: [],
+						api: "openai-responses",
+						provider: "openai",
+						model: "structured-overflow-model",
+						usage: {
+							input: 1,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 1,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "error",
+						errorMessage: "opaque provider rejection",
+						errorStatus: 400,
+						errorId: AIError.create(AIError.Flag.ContextOverflow),
+						timestamp: 3,
+					};
+					state.messages.push(failure);
+					state.error = "opaque provider rejection";
+				},
+				abort: () => {},
+				reset: () => {
+					resetCount++;
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				rollbackTo: count => {
+					state.messages.length = Math.min(count, state.messages.length);
+					state.error = undefined;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "ancient-primary", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.seedTo(messages.length);
+
+			messages.push({ role: "user", content: "structured-current-update", timestamp: 2 } as AgentMessage);
+			runtime.onTurnEnd(messages);
+			await settleUntil(() => promptInputs.length >= 2 && runtime.backlog === 0);
+
+			expect(promptInputs).toHaveLength(2);
+			for (const input of promptInputs) {
+				expect(input).toContain("structured-current-update");
+				expect(input).not.toContain("ancient-primary");
+			}
+			expect(resetCount).toBe(1);
+		});
+
+		it("drops only a double-overflowing batch and continues queued and later updates", async () => {
+			const overflowMessage = "context_length_exceeded: Your input exceeds the context window of this model.";
+			const promptInputs: string[] = [];
+			const failures: unknown[] = [];
+			const secondAttemptStarted = Promise.withResolvers<void>();
+			const finishSecondAttempt = Promise.withResolvers<void>();
+			const state: { messages: AgentMessage[]; error?: string } = {
+				messages: [{ role: "user", content: "existing advisor context", timestamp: 1 } as AgentMessage],
+			};
+			let failingAttempts = 0;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					if (!input.includes("first-overflow")) {
+						state.error = undefined;
+						return;
+					}
+					failingAttempts++;
+					if (failingAttempts === 2) {
+						secondAttemptStarted.resolve();
+						await finishSecondAttempt.promise;
+					}
+					state.error = overflowMessage;
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "ancient-history", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				notifyFailure: error => failures.push(error),
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.seedTo(messages.length);
+
+			messages.push({ role: "user", content: "first-overflow", timestamp: 2 } as AgentMessage);
+			runtime.onTurnEnd(messages);
+			await secondAttemptStarted.promise;
+
+			messages.push({ role: "user", content: "queued-small-update", timestamp: 3 } as AgentMessage);
+			runtime.onTurnEnd(messages);
+			finishSecondAttempt.resolve();
+			await settleUntil(() => promptInputs.length >= 3 && runtime.backlog === 0);
+
+			expect(failingAttempts).toBe(2);
+			expect(promptInputs).toHaveLength(3);
+			for (const input of promptInputs.slice(0, 2)) {
+				expect(input).toContain("first-overflow");
+				expect(input).not.toContain("ancient-history");
+			}
+			expect(promptInputs[2]).toContain("queued-small-update");
+			expect(promptInputs[2]).not.toContain("first-overflow");
+			expect(promptInputs[2]).not.toContain("ancient-history");
+			expect(failures).toHaveLength(1);
+			expect(runtime.backlog).toBe(0);
+
+			messages.push({ role: "user", content: "later-small-update", timestamp: 4 } as AgentMessage);
+			runtime.onTurnEnd(messages);
+			await runtime.waitForCatchup(1000, 1);
+
+			expect(promptInputs).toHaveLength(4);
+			expect(promptInputs[3]).toContain("later-small-update");
+			expect(promptInputs[3]).not.toContain("first-overflow");
 		});
 		it("tracks backlog and blocks until caught up", async () => {
 			const promptInputs: string[] = [];
@@ -1993,11 +2347,10 @@ describe("advisor", () => {
 		}, 10_000);
 
 		// The live incident shape: ONE agent + ONE advisor froze the whole
-		// process. The advisor's delta render (formatSessionHistoryMarkdown over
-		// the transcript slice) ran synchronously on the event loop; a post-reset
-		// replay of a multi-MB transcript blocked it for 600ms+ per render. These
-		// tests pin the bounded-stall contract and the correctness of the
-		// deferred/chunked path.
+		// process when a post-reset replay rendered a multi-MB transcript. These
+		// tests pin the correctness contracts for large deltas: complete
+		// delivery, tool call/result pairing, ordering across interleaved
+		// turns, and full replay after a mid-render reset.
 		describe("large-transcript responsiveness", () => {
 			const bigMessage = (i: number, chars = 5_000): AgentMessage => {
 				const text = `msg-${i} ${"x".repeat(chars)}`;
@@ -2008,24 +2361,12 @@ describe("advisor", () => {
 				) as AgentMessage;
 			};
 
-			const stallSampler = () => {
-				let max = 0;
-				let last = performance.now();
-				const timer = setInterval(() => {
-					const now = performance.now();
-					const drift = now - last - 5;
-					if (drift > max) max = drift;
-					last = now;
-				}, 5);
-				return { stop: () => clearInterval(timer), max: () => max };
-			};
-
 			const waitForPrompts = async (prompts: string[], count: number, timeoutMs = 10_000): Promise<void> => {
 				const deadline = Date.now() + timeoutMs;
 				while (prompts.length < count && Date.now() < deadline) await Bun.sleep(5);
 			};
 
-			it("keeps the event loop responsive while replaying a multi-MB transcript", async () => {
+			it("delivers a multi-MB transcript replay completely", async () => {
 				const promptInputs: string[] = [];
 				const agent: AdvisorAgent = {
 					prompt: async input => {
@@ -2042,22 +2383,16 @@ describe("advisor", () => {
 					enqueueAdvice: () => {},
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
-				const sampler = stallSampler();
 				runtime.onTurnEnd(messages);
 				await waitForPrompts(promptInputs, 1);
-				sampler.stop();
 				expect(promptInputs).toHaveLength(1);
 				// Nothing dropped: first and last transcript messages both rendered.
 				expect(promptInputs[0]).toContain("msg-0 ");
 				expect(promptInputs[0]).toContain("msg-1999 ");
-				// Pre-chunking this replay blocked the loop ~600ms+ in one shot;
-				// chunked rendering keeps individual stalls bounded. Generous
-				// ceiling: still fails the pre-fix behavior, tolerates CI/GC noise.
-				expect(sampler.max()).toBeLessThan(500);
 				runtime.dispose();
 			}, 20_000);
 
-			it("never splits a toolCall from its non-adjacent toolResult across chunk boundaries", async () => {
+			it("pairs a toolCall with its non-adjacent toolResult inside one update", async () => {
 				const promptInputs: string[] = [];
 				const agent: AdvisorAgent = {
 					prompt: async input => {
@@ -2067,10 +2402,8 @@ describe("advisor", () => {
 					reset: () => {},
 					state: { messages: [] },
 				};
-				// 150 messages force the chunked path (count > 100). The toolCall
-				// sits at index 99 — exactly where the count boundary closes the
-				// first chunk — and its result arrives in the NEXT chunk (index
-				// 148), far past any adjacency window: only the shared
+				// The toolCall sits at index 99 and its result arrives 49 messages
+				// later (index 148), far past any adjacency window: only the
 				// whole-delta result index can pair them.
 				const messages: AgentMessage[] = Array.from({ length: 150 }, (_, i) => bigMessage(i, 64));
 				messages[99] = {
@@ -2099,14 +2432,14 @@ describe("advisor", () => {
 				await waitForPrompts(promptInputs, 1);
 				expect(promptInputs).toHaveLength(1);
 				expect(promptInputs[0]).toContain("read(");
-				// The call+result pair stayed in one chunk: rendered as completed,
-				// never as a spurious in-flight call.
+				// The call+result pair rendered as completed, never as a spurious
+				// in-flight call.
 				expect(promptInputs[0]).toContain("⇒ ok");
 				expect(promptInputs[0]).not.toContain("⇒ pending");
 				runtime.dispose();
 			}, 20_000);
 
-			it("defers a single turn carrying a multi-MB payload instead of formatting it inline", async () => {
+			it("delivers a single turn carrying a multi-MB payload", async () => {
 				const promptInputs: string[] = [];
 				const agent: AdvisorAgent = {
 					prompt: async input => {
@@ -2126,25 +2459,21 @@ describe("advisor", () => {
 				await waitForPrompts(promptInputs, 1);
 				expect(promptInputs).toHaveLength(1);
 
-				// One turn, one message, multi-MB body (an edit-diff-sized payload):
-				// the count gate alone would format it synchronously; the size gate
-				// must route it through the deferred renderer — and still deliver.
+				// One turn, one message, multi-MB body (an edit-diff-sized payload)
+				// must deliver completely.
 				messages.push({
 					role: "assistant",
 					content: [{ type: "text", text: `huge ${"y".repeat(3_000_000)}` }],
 					timestamp: 2,
 				} as AgentMessage);
 				runtime.onTurnEnd(messages);
-				// Synchronous fast path would have pushed the prompt already;
-				// the deferred path leaves the queue empty at this tick.
-				expect(promptInputs).toHaveLength(1);
 				await waitForPrompts(promptInputs, 2);
 				expect(promptInputs).toHaveLength(2);
 				expect(promptInputs[1]).toContain("huge ");
 				runtime.dispose();
 			}, 20_000);
 
-			it("replays the full transcript after a reset lands mid-chunked-render", async () => {
+			it("replays the full transcript after a reset lands between renders", async () => {
 				const promptInputs: string[] = [];
 				const agent: AdvisorAgent = {
 					prompt: async input => {
@@ -2161,8 +2490,6 @@ describe("advisor", () => {
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
 				runtime.onTurnEnd(messages);
-				// Land the reset inside the render's first chunk yield.
-				await Bun.sleep(0);
 				runtime.reset();
 				runtime.onTurnEnd(messages);
 				await waitForPrompts(promptInputs, 1);
@@ -2173,7 +2500,7 @@ describe("advisor", () => {
 				runtime.dispose();
 			}, 20_000);
 
-			it("delivers interleaved turns in order without loss while a chunked render is in flight", async () => {
+			it("delivers interleaved turns in order without loss", async () => {
 				const promptInputs: string[] = [];
 				const agent: AdvisorAgent = {
 					prompt: async input => {
@@ -2190,7 +2517,7 @@ describe("advisor", () => {
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
 				runtime.onTurnEnd(messages);
-				// Second turn arrives while the first render is still on the chain.
+				// Second turn arrives immediately behind the first.
 				messages.push({ role: "user", content: "late-arrival tail", timestamp: 300 } as AgentMessage);
 				runtime.onTurnEnd(messages);
 				const deadline = Date.now() + 10_000;
@@ -2602,6 +2929,74 @@ describe("advisor", () => {
 			expect(runtime.backlog).toBe(0);
 		});
 
+		it("drops a terminal non-retriable assistant failure without retrying", async () => {
+			const errorMessage = "Codex error event: Request blocked. (code=invalid_prompt)";
+			const promptInputs: string[] = [];
+			const rollbackCalls: number[] = [];
+			const turnErrors: unknown[] = [];
+			const failures: unknown[] = [];
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					state.messages.push({ role: "user", content: input, timestamp: 1 } as AgentMessage);
+					const failure: AssistantMessage = {
+						role: "assistant",
+						content: [],
+						api: "openai-codex-responses",
+						provider: "openai-codex",
+						model: "gpt-5.6-sol",
+						usage: {
+							input: 1,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 1,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "error",
+						errorMessage,
+						errorId: 0,
+						timestamp: 2,
+					};
+					state.messages.push(failure);
+					state.error = errorMessage;
+				},
+				abort: () => {},
+				reset: () => {
+					state.messages.length = 0;
+					state.error = undefined;
+				},
+				rollbackTo: count => {
+					rollbackCalls.push(count);
+					state.messages.length = Math.min(count, state.messages.length);
+					state.error = undefined;
+				},
+				state,
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				onTurnError: error => {
+					turnErrors.push(error);
+				},
+				notifyFailure: error => {
+					failures.push(error);
+				},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 1);
+
+			runtime.onTurnEnd(messages);
+			await settleUntil(() => failures.length >= 1 && runtime.backlog === 0);
+
+			expect(promptInputs).toHaveLength(1);
+			expect(rollbackCalls).toEqual([0]);
+			expect(turnErrors).toHaveLength(1);
+			expect(failures).toHaveLength(1);
+			expect(runtime.backlog).toBe(0);
+		});
+
 		it("rolls advisor state back after each failed prompt so retries don't replay duplicate turns", async () => {
 			// The real `Agent` appends the user batch + a synthetic `stopReason: "error"`
 			// assistant turn before `state.error` is read. Without rollback, the runtime's
@@ -2622,6 +3017,7 @@ describe("advisor", () => {
 							content: [{ type: "text", text: "" }],
 							stopReason: "error",
 							errorMessage: "404 No endpoints available",
+							errorId: AIError.create(AIError.Flag.Transient),
 							timestamp: Date.now(),
 						} as unknown as AgentMessage);
 						state.error = "404 No endpoints available";
@@ -3417,18 +3813,28 @@ describe("advisor", () => {
 			}
 		});
 
-		it("preserves a late interrupting note when the primary already ended with a terminal answer", () => {
-			for (const severity of ["concern", "blocker"] as const) {
-				expect(
-					resolveAdvisorDeliveryChannel({
-						severity,
-						autoResumeSuppressed: false,
-						streaming: false,
-						aborting: false,
-						terminalAnswerNoQueuedWork: true,
-					}),
-				).toBe("preserve");
-			}
+		it("preserves a late concern when the primary already ended with a terminal answer", () => {
+			expect(
+				resolveAdvisorDeliveryChannel({
+					severity: "concern",
+					autoResumeSuppressed: false,
+					streaming: false,
+					aborting: false,
+					terminalAnswerNoQueuedWork: true,
+				}),
+			).toBe("preserve");
+		});
+
+		it("steers a late blocker after a terminal answer so the primary continues and acknowledges it (#5628)", () => {
+			expect(
+				resolveAdvisorDeliveryChannel({
+					severity: "blocker",
+					autoResumeSuppressed: false,
+					streaming: false,
+					aborting: false,
+					terminalAnswerNoQueuedWork: true,
+				}),
+			).toBe("steer");
 		});
 
 		it("routes interrupting notes to the aside queue during immune turns without overriding preservation", () => {
