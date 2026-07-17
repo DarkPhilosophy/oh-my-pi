@@ -964,6 +964,66 @@ describe("advisor", () => {
 			expect(maintainCalls).toBe(2);
 		});
 
+		it("renders a DEFERRED large late delta before coalescing it into the batch", async () => {
+			// Regression for the codex finding on the size-gated defer path: a
+			// large delta (>100 messages) arriving while an earlier batch awaits
+			// maintainContext ships with a stale renderRevision and EMPTY text.
+			// The coalescing merge used to concatenate that placeholder text
+			// verbatim — the advisor prompt silently omitted the whole turn while
+			// its turns were counted and drained. The late delta must be
+			// chunk-rendered from its raw messages before merging.
+			const promptInputs: string[] = [];
+			const { promise: firstMaintainStarted, resolve: startFirstMaintain } = Promise.withResolvers<void>();
+			const { promise: finishFirstMaintain, resolve: releaseFirstMaintain } = Promise.withResolvers<boolean>();
+			const { promise: promptStarted, resolve: startPrompt } = Promise.withResolvers<void>();
+			let maintainCalls = 0;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					startPrompt();
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "first", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+				maintainContext: async () => {
+					maintainCalls++;
+					if (maintainCalls === 1) {
+						startFirstMaintain();
+						return await finishFirstMaintain;
+					}
+					return false;
+				},
+			};
+			const runtime = new AdvisorRuntime(agent, host);
+
+			runtime.onTurnEnd();
+			await firstMaintainStarted;
+
+			// A LARGE turn (count > RENDER_CHUNK_MESSAGES) arrives while the
+			// first maintainContext is still awaiting: it queues deferred.
+			for (let i = 0; i < 120; i++) {
+				messages.push({ role: "user", content: `late-large-${i}`, timestamp: 2 + i } as AgentMessage);
+			}
+			runtime.onTurnEnd();
+
+			releaseFirstMaintain(false);
+			await promptStarted;
+
+			// One coalesced prompt containing BOTH the first delta and the full
+			// content of the deferred large delta — nothing silently dropped.
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("first");
+			expect(promptInputs[0]).toContain("late-large-0");
+			expect(promptInputs[0]).toContain("late-large-119");
+			await settleUntil(() => runtime.backlog === 0);
+			expect(runtime.backlog).toBe(0);
+		});
+
 		it("caps maintainContext calls per drain cycle when arrivals never go stable", async () => {
 			// Regression guard for MAX_COALESCE_ROUNDS=3: during the first drain cycle,
 			// each maintainContext call pushes a new turn (queue never goes stable on its
