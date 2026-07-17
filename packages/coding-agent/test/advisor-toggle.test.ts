@@ -340,4 +340,47 @@ describe("AgentSession advisor toggle", () => {
 			vi.restoreAllMocks();
 		}
 	});
+	it("marks thrown usage limits classified only by canonical status (402/opaque)", async () => {
+		const mock = createMockModel({ responses: [{ content: ["primary complete"] }] });
+		const primaryAgent = new Agent({
+			initialState: {
+				model,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: mock.stream,
+		});
+		const settings = Settings.isolated({ "compaction.enabled": false });
+		settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+		const quotaSession = new AgentSession({
+			agent: primaryAgent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			advisorTools: [],
+		});
+
+		try {
+			expect(quotaSession.setAdvisorEnabled(true)).toBe(true);
+			const advisorAgent = quotaSession.getAdvisorAgent();
+			if (!advisorAgent) throw new Error("Expected advisor agent to exist");
+			// No structured code, no flag, and an OPAQUE body: only the canonical
+			// status/message outcome classifier (opaque 402 = out of credits)
+			// recognizes this shape.
+			vi.spyOn(advisorAgent, "prompt").mockRejectedValue(new AIError.ProviderHttpError("402", 402, {}));
+			const markUsageLimitReached = vi
+				.spyOn(authStorage, "markUsageLimitReached")
+				.mockResolvedValue({ switched: false });
+
+			await quotaSession.prompt("Trigger advisor");
+			await quotaSession.waitForIdle();
+
+			expect(markUsageLimitReached).toHaveBeenCalledTimes(1);
+			expect(markUsageLimitReached.mock.calls[0]?.[0]).toBe(model.provider);
+		} finally {
+			await quotaSession.dispose();
+			vi.restoreAllMocks();
+		}
+	});
 });

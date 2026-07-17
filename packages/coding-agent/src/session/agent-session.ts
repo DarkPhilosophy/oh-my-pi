@@ -3514,13 +3514,14 @@ export class AgentSession {
 		);
 		if (failedMessage?.stopReason !== "error") {
 			// A REJECTED prompt (no terminal assistant message) can still carry a
-			// structurally classified usage limit — e.g. a ProviderHttpError 429
-			// with code "insufficient_quota", or an error flagged UsageLimit.
-			// The credential must be marked so rotation/blocking works before the
+			// usage limit — a structurally classified error (ProviderHttpError
+			// 429 with code "insufficient_quota", the UsageLimit flag) or a
+			// canonical usage OUTCOME by status/message (402, opaque 429). The
+			// credential must be marked so rotation/blocking works before the
 			// runtime enters its quota pause.
-			if (AIError.isUsageLimit(error)) {
+			const thrownMessage = error instanceof Error ? error.message : String(error);
+			if (AIError.isUsageLimit(error) || isUsageLimitOutcome(extractHttpStatusFromError(error), thrownMessage)) {
 				const thrownModel = advisor.agent.state.model;
-				const thrownMessage = error instanceof Error ? error.message : String(error);
 				const outcome = await this.#modelRegistry.authStorage.markUsageLimitReached(
 					thrownModel.provider,
 					advisor.providerSessionId,
