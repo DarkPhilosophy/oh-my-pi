@@ -1797,7 +1797,7 @@ describe("advisor", () => {
 
 			messages.push({ role: "user", content: "post-recovery-update", timestamp: 4 } as AgentMessage);
 			runtime.onTurnEnd(messages);
-			await runtime.waitForCatchup(1000, 1);
+			await settleUntil(() => promptInputs.length >= 3 && runtime.backlog === 0);
 
 			expect(promptInputs).toHaveLength(3);
 			expect(promptInputs[2]).toContain("post-recovery-update");
@@ -2347,11 +2347,10 @@ describe("advisor", () => {
 		}, 10_000);
 
 		// The live incident shape: ONE agent + ONE advisor froze the whole
-		// process. The advisor's delta render (formatSessionHistoryMarkdown over
-		// the transcript slice) ran synchronously on the event loop; a post-reset
-		// replay of a multi-MB transcript blocked it for 600ms+ per render. These
-		// tests pin the bounded-stall contract and the correctness of the
-		// deferred/chunked path.
+		// process when a post-reset replay rendered a multi-MB transcript. These
+		// tests pin the correctness contracts for large deltas: complete
+		// delivery, tool call/result pairing, ordering across interleaved
+		// turns, and full replay after a mid-render reset.
 		describe("large-transcript responsiveness", () => {
 			const bigMessage = (i: number, chars = 5_000): AgentMessage => {
 				const text = `msg-${i} ${"x".repeat(chars)}`;
@@ -2362,24 +2361,12 @@ describe("advisor", () => {
 				) as AgentMessage;
 			};
 
-			const stallSampler = () => {
-				let max = 0;
-				let last = performance.now();
-				const timer = setInterval(() => {
-					const now = performance.now();
-					const drift = now - last - 5;
-					if (drift > max) max = drift;
-					last = now;
-				}, 5);
-				return { stop: () => clearInterval(timer), max: () => max };
-			};
-
 			const waitForPrompts = async (prompts: string[], count: number, timeoutMs = 10_000): Promise<void> => {
 				const deadline = Date.now() + timeoutMs;
 				while (prompts.length < count && Date.now() < deadline) await Bun.sleep(5);
 			};
 
-			it("keeps the event loop responsive while replaying a multi-MB transcript", async () => {
+			it("delivers a multi-MB transcript replay completely", async () => {
 				const promptInputs: string[] = [];
 				const agent: AdvisorAgent = {
 					prompt: async input => {
@@ -2396,22 +2383,16 @@ describe("advisor", () => {
 					enqueueAdvice: () => {},
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
-				const sampler = stallSampler();
 				runtime.onTurnEnd(messages);
 				await waitForPrompts(promptInputs, 1);
-				sampler.stop();
 				expect(promptInputs).toHaveLength(1);
 				// Nothing dropped: first and last transcript messages both rendered.
 				expect(promptInputs[0]).toContain("msg-0 ");
 				expect(promptInputs[0]).toContain("msg-1999 ");
-				// Pre-chunking this replay blocked the loop ~600ms+ in one shot;
-				// chunked rendering keeps individual stalls bounded. Generous
-				// ceiling: still fails the pre-fix behavior, tolerates CI/GC noise.
-				expect(sampler.max()).toBeLessThan(500);
 				runtime.dispose();
 			}, 20_000);
 
-			it("never splits a toolCall from its non-adjacent toolResult across chunk boundaries", async () => {
+			it("pairs a toolCall with its non-adjacent toolResult inside one update", async () => {
 				const promptInputs: string[] = [];
 				const agent: AdvisorAgent = {
 					prompt: async input => {
@@ -2421,10 +2402,8 @@ describe("advisor", () => {
 					reset: () => {},
 					state: { messages: [] },
 				};
-				// 150 messages force the chunked path (count > 100). The toolCall
-				// sits at index 99 — exactly where the count boundary closes the
-				// first chunk — and its result arrives in the NEXT chunk (index
-				// 148), far past any adjacency window: only the shared
+				// The toolCall sits at index 99 and its result arrives 49 messages
+				// later (index 148), far past any adjacency window: only the
 				// whole-delta result index can pair them.
 				const messages: AgentMessage[] = Array.from({ length: 150 }, (_, i) => bigMessage(i, 64));
 				messages[99] = {
@@ -2453,14 +2432,14 @@ describe("advisor", () => {
 				await waitForPrompts(promptInputs, 1);
 				expect(promptInputs).toHaveLength(1);
 				expect(promptInputs[0]).toContain("read(");
-				// The call+result pair stayed in one chunk: rendered as completed,
-				// never as a spurious in-flight call.
+				// The call+result pair rendered as completed, never as a spurious
+				// in-flight call.
 				expect(promptInputs[0]).toContain("⇒ ok");
 				expect(promptInputs[0]).not.toContain("⇒ pending");
 				runtime.dispose();
 			}, 20_000);
 
-			it("defers a single turn carrying a multi-MB payload instead of formatting it inline", async () => {
+			it("delivers a single turn carrying a multi-MB payload", async () => {
 				const promptInputs: string[] = [];
 				const agent: AdvisorAgent = {
 					prompt: async input => {
@@ -2480,25 +2459,21 @@ describe("advisor", () => {
 				await waitForPrompts(promptInputs, 1);
 				expect(promptInputs).toHaveLength(1);
 
-				// One turn, one message, multi-MB body (an edit-diff-sized payload):
-				// the count gate alone would format it synchronously; the size gate
-				// must route it through the deferred renderer — and still deliver.
+				// One turn, one message, multi-MB body (an edit-diff-sized payload)
+				// must deliver completely.
 				messages.push({
 					role: "assistant",
 					content: [{ type: "text", text: `huge ${"y".repeat(3_000_000)}` }],
 					timestamp: 2,
 				} as AgentMessage);
 				runtime.onTurnEnd(messages);
-				// Synchronous fast path would have pushed the prompt already;
-				// the deferred path leaves the queue empty at this tick.
-				expect(promptInputs).toHaveLength(1);
 				await waitForPrompts(promptInputs, 2);
 				expect(promptInputs).toHaveLength(2);
 				expect(promptInputs[1]).toContain("huge ");
 				runtime.dispose();
 			}, 20_000);
 
-			it("replays the full transcript after a reset lands mid-chunked-render", async () => {
+			it("replays the full transcript after a reset lands between renders", async () => {
 				const promptInputs: string[] = [];
 				const agent: AdvisorAgent = {
 					prompt: async input => {
@@ -2515,8 +2490,6 @@ describe("advisor", () => {
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
 				runtime.onTurnEnd(messages);
-				// Land the reset inside the render's first chunk yield.
-				await Bun.sleep(0);
 				runtime.reset();
 				runtime.onTurnEnd(messages);
 				await waitForPrompts(promptInputs, 1);
@@ -2527,7 +2500,7 @@ describe("advisor", () => {
 				runtime.dispose();
 			}, 20_000);
 
-			it("delivers interleaved turns in order without loss while a chunked render is in flight", async () => {
+			it("delivers interleaved turns in order without loss", async () => {
 				const promptInputs: string[] = [];
 				const agent: AdvisorAgent = {
 					prompt: async input => {
@@ -2544,7 +2517,7 @@ describe("advisor", () => {
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
 				runtime.onTurnEnd(messages);
-				// Second turn arrives while the first render is still on the chain.
+				// Second turn arrives immediately behind the first.
 				messages.push({ role: "user", content: "late-arrival tail", timestamp: 300 } as AgentMessage);
 				runtime.onTurnEnd(messages);
 				const deadline = Date.now() + 10_000;

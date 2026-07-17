@@ -2,39 +2,27 @@
 
 ## [Unreleased]
 
+## [17.0.2] - 2026-07-17
+
 ### Added
 
-- Added per-advisor on/off toggle (`enabled: false` in `WATCHDOG.yml`): advisors stay in the roster but their runtime is never built — they show `○` in the status line and `/advisor status` rather than disappearing. Existing configs are backward-compatible (defaults to `true` when absent).
-- Added per-advisor runtime status indicators in the status line (`●` running, `○` paused/no-model, `✕` error/quota-exhausted), truncated to 4 dots + `+` when the roster exceeds 4 advisors.
-- Added real provider quota display (usage percent, window, reset timer) to `/advisor status` and the `/advisor configure` preview.
-
-### Changed
-
-- Enriched `/advisor status` to show per-advisor status glyphs, model, spend breakdown, and quota window for every configured advisor (including disabled ones), replacing the previous single-advisor-only summary.
-### Fixed
-
-- Fixed a failing advisor stalling the primary agent: the per-turn catch-up gate parked the primary for up to its full 30s budget while a broken advisor (unsupported model, dead endpoint, render bug) retried — and an advisor exception could abort the primary's turn-end outright. A failing advisor now releases parked waiters the moment its turn fails (before any async hook), refuses new parks until a turn succeeds, and the turn-end boundary isolates advisor exceptions completely; a failed render restores the delta cursor so nothing is lost when the advisor recovers.
-- Fixed advisors retrying a permanently rejected request forever (e.g. `invalid_request_error: model not supported with this account`): unlike quota exhaustion — which already paused with a notice — this class notified once and silently kept re-attempting every turn, re-building heavy context in a shared daemon. The runtime now hard-stops after a permanent rejection or three consecutive backlog-drop cycles, with a visible notice; an explicit reset (`/new`, config rebuild, restart) re-enables it. `waitForCatchup` resolves immediately while halted so the primary agent is never parked on a runtime that cannot drain.
-- Fixed the advisor's delta render freezing the whole process on large transcripts (one agent + one advisor was enough): rendering the transcript slice for the advisor ran synchronously on the event loop, and a post-reset replay of a multi-MB session blocked it for 600ms+ per render. Large deltas now render in size- and count-bounded chunks that yield the event loop, with tool call/result pairing preserved across chunk boundaries via a shared whole-delta result index; small per-turn deltas keep the synchronous fast path.
-- `retry.fallbackChains` wildcards now support id-prefixed targets and keys: a chain entry like `"openrouter/google/*"` re-prefixes the failing model's bare id (`google-antigravity/gemini-x` → `openrouter/google/gemini-x`), a plain `"provider/*"` entry falling back *from* an aggregator strips the vendor prefix when the target provider only knows the bare id (`openrouter/google/x` → `google-vertex/x`), and an id-prefixed key (`"openrouter/google/*"`) scopes a chain to that provider's ids under the prefix.
-
-## [17.0.1] - 2026-07-16
 - Added native Warp CLI-agent events for rich session status, tool approvals, and completion notifications.
 - Added support for ChatGPT/Codex subscriptions in the `generate_image` tool, allowing image generation without a metered `OPENAI_API_KEY` even when using other active models.
 - Added an optional `provider` parameter to `generate_image` to override the global `providers.image` setting for a single request.
 - Added OpenTelemetry log and metric export support alongside existing trace exports, enabling forwarding of centralized-logger events and GenAI-semconv metrics when configured.
 - Enhanced `retry.fallbackChains` wildcards to support id-prefixed targets and keys, allowing more flexible model fallback routing across different providers.
 - Added an opt-in per-project model role storage mode with global fallback from the model selector.
+- Added per-advisor on/off toggle (`enabled: false` in `WATCHDOG.yml`): advisors stay in the roster but their runtime is never built — they show `○` in `/advisor status` rather than disappearing. Existing configs are backward-compatible (defaults to `true` when absent).
+- Colored the status line's advisor `++` badge by roster health (green all running, yellow quota-exhausted, red failed, dim paused); per-advisor glyphs (`●`/`○`/`✕`) show in `/advisor status`.
+- Added real provider quota display (usage percent, window, reset timer) to `/advisor status` and the `/advisor configure` preview.
 
 ### Changed
 
 - Changed Bash command timeouts to render with a warning (yellow) border instead of an error (red) border, while still indicating to the model that the command did not complete normally.
 - Made the hashline seen-line guard opt-in and off by default via `edit.enforceSeenLines`, and improved handling of column-clipped lines so single-line edits on long lines apply without a full-width re-read.
-- Changed the default `astGrep.enabled` setting to `false`.
-- Batched todo operations with real tool calls to prevent solo todo turns and extra round trips.
 - Changed bundled TTSR rules to warn without interrupting generation.
 - Renamed the system prompt's project-context section wrapper from `<context>` to `<repo-rules>` to prevent collisions with the `task` tool's `context` parameter.
-- Rendered `read xd://` calls in a compact grouped read view instead of a full tool-execution card.
+- Enriched `/advisor status` to show per-advisor status glyphs, model, spend breakdown, and quota window for every configured advisor (including disabled ones), replacing the previous single-advisor-only summary.
 
 ### Fixed
 
@@ -79,12 +67,12 @@
 - Fixed RPC mode (`--mode rpc`) crashing on non-JSON stdin lines; malformed lines are now reported as errors while the frame loop continues.
 - Fixed local llama.cpp Qwen-family models not honoring the `--thinking off` flag.
 - Documented the `ultrathink`, `orchestrate`, and `workflowz` magic keywords, including their effects, matching rules, and settings.
-- Fixed the Bash tool hanging when in-process commands read process substitution operands.
-- Fixed `/share` and `/export` web views rendering inline Markdown inside list items as literal text.
 - Fixed `/clear` autocomplete selecting `/autoresearch` and updated `/clear` to start a new session as an alias for `/new`.
 - Fixed `/review` aborting entirely when GitHub rejects a pull request's aggregate diff for exceeding the line limit by falling back to the paginated per-file endpoint.
 - Fixed `/q` + Enter running `/queue` instead of `/quit` by adding an explicit `q` alias to `/quit`.
 - Fixed Ctrl+L (`app.display.reset`) not refreshing the dark/light theme on certain terminals by issuing a background re-query before repainting.
+- Fixed a failing advisor stalling the primary agent: the per-turn catch-up gate parked the primary for up to its full 30s budget while a broken advisor (unsupported model, dead endpoint, render bug) retried — and an advisor exception could abort the primary's turn-end outright. A failing advisor now releases parked waiters the moment its turn fails (before any async hook), refuses new parks until a turn succeeds, and the turn-end boundary isolates advisor exceptions completely; a failed render restores the delta cursor so nothing is lost when the advisor recovers.
+- Fixed advisors retrying a permanently rejected request forever (e.g. `invalid_request_error: model not supported with this account`): unlike quota exhaustion — which pauses with a notice until an explicit reset — this class notified once and silently kept re-attempting every turn, re-building heavy context in a shared daemon. The runtime now hard-stops after a permanent rejection or three consecutive backlog-drop cycles, with a visible notice; an explicit reset (`/new`, config rebuild, restart) re-enables it. `waitForCatchup` resolves immediately while halted so the primary agent is never parked on a runtime that cannot drain.
 
 ## [17.0.1] - 2026-07-16
 

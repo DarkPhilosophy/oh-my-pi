@@ -3513,27 +3513,24 @@ export class AgentSession {
 			(message): message is AssistantMessage => message.role === "assistant",
 		);
 		if (failedMessage?.stopReason !== "error") {
-			// A REJECTED prompt (no terminal assistant message) can still carry a
-			// usage limit — a structurally classified error (ProviderHttpError
-			// 429 with code "insufficient_quota", the UsageLimit flag) or a
-			// canonical usage OUTCOME by status/message (402, opaque 429). The
-			// credential must be marked so rotation/blocking works before the
-			// runtime enters its quota pause.
-			const thrownMessage = error instanceof Error ? error.message : String(error);
-			if (AIError.isUsageLimit(error) || isUsageLimitOutcome(extractHttpStatusFromError(error), thrownMessage)) {
-				const thrownModel = advisor.agent.state.model;
-				const outcome = await this.#modelRegistry.authStorage.markUsageLimitReached(
-					thrownModel.provider,
-					advisor.providerSessionId,
-					{
-						retryAfterMs: extractRetryHint(undefined, thrownMessage),
-						baseUrl: thrownModel.baseUrl,
-						modelId: thrownModel.id,
-					},
-				);
-				return outcome.switched;
+			// Stream setup can reject before any assistant turn is recorded (e.g.
+			// an HTTP 429 thrown from prompt()); classify the raw error so a
+			// structural usage limit still marks the exhausted credential.
+			const message = error instanceof Error ? error.message : String(error);
+			if (!AIError.isUsageLimit(error) && !isUsageLimitOutcome(extractHttpStatusFromError(error), message)) {
+				return false;
 			}
-			return false;
+			const currentModel = advisor.agent.state.model;
+			const outcome = await this.#modelRegistry.authStorage.markUsageLimitReached(
+				currentModel.provider,
+				advisor.providerSessionId,
+				{
+					retryAfterMs: extractRetryHint(undefined, message),
+					baseUrl: currentModel.baseUrl,
+					modelId: currentModel.id,
+				},
+			);
+			return outcome.switched;
 		}
 		if (failedMessage.content.some(block => block.type === "toolCall")) return false;
 

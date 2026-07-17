@@ -57,17 +57,36 @@ function createModelContext(advisorActive: boolean): SegmentContext {
 }
 
 describe("status line model segment advisor badge", () => {
-	it("appends per-advisor status dots when the advisor is active", () => {
+	it("appends a success-colored ++ badge when all advisors run", () => {
 		const rendered = renderSegment("model", createModelContext(true));
 		expect(rendered.content).toContain("Test Model");
-		// Per-advisor dots: ● running, wrapped in parentheses after the model name.
-		expect(rendered.content).toContain(theme.fg("success", "●"));
+		expect(rendered.content).toContain(theme.fg("success", "++"));
 	});
 
-	it("omits the dots when the advisor is inactive", () => {
+	it("colors the badge by the worst roster status", () => {
+		const ctx = createModelContext(true);
+		ctx.session.getAdvisorStatusOverview = () => ({
+			configured: true,
+			advisors: [
+				{ name: "a", status: "running" },
+				{ name: "b", status: "quota_exhausted" },
+			],
+		});
+		expect(renderSegment("model", ctx).content).toContain(theme.fg("warning", "++"));
+		ctx.session.getAdvisorStatusOverview = () => ({
+			configured: true,
+			advisors: [
+				{ name: "a", status: "error" },
+				{ name: "b", status: "quota_exhausted" },
+			],
+		});
+		expect(renderSegment("model", ctx).content).toContain(theme.fg("error", "++"));
+	});
+
+	it("omits the badge when the advisor is inactive", () => {
 		const rendered = renderSegment("model", createModelContext(false));
 		expect(rendered.content).toContain("Test Model");
-		expect(rendered.content).not.toContain("●");
+		expect(rendered.content).not.toContain("++");
 	});
 });
 
