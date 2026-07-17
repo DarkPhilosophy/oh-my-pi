@@ -1076,6 +1076,104 @@ describe("advisor", () => {
 			runtime.dispose();
 		}, 15_000);
 
+		it("defers a delta whose bulk hides in NESTED tool-call arguments", async () => {
+			// Regression: the size probe used a depth cutoff that skipped
+			// arrays/objects below `arguments`, so a batch-edit style call with
+			// multi-MB `arguments.edits[].newText` payloads was classified as
+			// small and serialized synchronously by the formatter's
+			// primaryArg() JSON.stringify fallback. The probe is now
+			// depth-unbounded (with a cycle guard): the nested payload must
+			// trip the deferred path and still arrive rendered.
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const edits = Array.from({ length: 8 }, (_, i) => ({
+				path: `src/file-${i}.ts`,
+				newText: `nested-payload-${i} ${"x".repeat(64 * 1024)}`,
+			}));
+			const messages: AgentMessage[] = [
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "batch-1", name: "batch_edit", arguments: { edits } }],
+					timestamp: 1,
+				} as unknown as AgentMessage,
+			];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			// The nested bulk must be visible to the probe: no synchronous
+			// render at this tick.
+			expect(promptInputs).toHaveLength(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs).toHaveLength(1);
+			expect(promptInputs[0]).toContain("batch_edit");
+			runtime.dispose();
+		}, 15_000);
+
+		it("delivers a small prefix plus an oversized delayed toolResult exactly once", async () => {
+			// Regression for slice-budget accounting: a tiny toolCall message
+			// inlines its (much later, multi-hundred-KB) toolResult via the
+			// shared cross-slice index. The result's cost is charged to the
+			// calling slice and the accumulated prefix is flushed BEFORE the
+			// over-budget pair is admitted — output must contain the prefix,
+			// the call, and the result content exactly once (inlined at the
+			// call, consumed at its own position).
+			const promptInputs: string[] = [];
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const prefix: AgentMessage[] = Array.from(
+				{ length: 110 },
+				(_, i) => ({ role: "user", content: `prefix-${i}`, timestamp: i + 1 }) as AgentMessage,
+			);
+			const call = {
+				role: "assistant",
+				content: [{ type: "toolCall", id: "huge-1", name: "edit", arguments: { path: "big.ts" } }],
+				timestamp: 200,
+			} as unknown as AgentMessage;
+			// An edit result whose expanded diff (rendered verbatim under
+			// expandEditDiffs) carries the multi-hundred-KB payload.
+			const result = {
+				role: "toolResult",
+				toolCallId: "huge-1",
+				toolName: "edit",
+				content: [{ type: "text", text: "ok" }],
+				details: { diff: `RESULT-MARKER-ONCE\n+${"y".repeat(400 * 1024)}` },
+				isError: false,
+				timestamp: 201,
+			} as unknown as AgentMessage;
+			const messages: AgentMessage[] = [...prefix, call, result];
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+			runtime.onTurnEnd(messages);
+			expect(promptInputs).toHaveLength(0);
+			await settleUntil(() => promptInputs.length >= 1, 10_000);
+			expect(promptInputs).toHaveLength(1);
+			const rendered = promptInputs[0]!;
+			expect(rendered).toContain("prefix-0");
+			expect(rendered).toContain("prefix-109");
+			const occurrences = rendered.split("RESULT-MARKER-ONCE").length - 1;
+			expect(occurrences).toBe(1);
+			runtime.dispose();
+		}, 15_000);
+
 		it("caps maintainContext calls per drain cycle when arrivals never go stable", async () => {
 			// Regression guard for MAX_COALESCE_ROUNDS=3: during the first drain cycle,
 			// each maintainContext call pushes a new turn (queue never goes stable on its

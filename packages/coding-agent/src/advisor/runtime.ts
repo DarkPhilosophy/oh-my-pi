@@ -217,17 +217,30 @@ const FAST_RENDER_MAX_CHARS = 256 * 1024;
  * Cheap early-exit probe: the message's aggregate string payload, capped at
  * `cap`. Walks content (text/thinking blocks, tool arguments/results, string
  * details like edit diffs) without serializing anything, so a single multi-MB
- * message costs O(fields), not O(bytes).
+ * message costs O(fields), not O(bytes). The walk is depth-unbounded — nested
+ * tool arguments (e.g. `arguments.edits[].newText` of a batch-edit tool)
+ * carry real formatter cost via the `primaryArg()` JSON.stringify fallback —
+ * with a cycle guard; pathologically deep structures are conservatively
+ * treated as oversized (they defer to the chunked path, never the sync one).
  */
 function estimateMessageChars(message: AgentMessage, cap: number): number {
 	let total = 0;
+	const seen = new Set<object>();
 	const add = (value: unknown, depth: number): boolean => {
 		if (total > cap) return true;
 		if (typeof value === "string") {
 			total += value.length;
 			return total > cap;
 		}
-		if (!value || typeof value !== "object" || depth >= 4) return false;
+		if (!value || typeof value !== "object") return false;
+		// An already-visited object (shared reference or cycle) was counted
+		// once — skip it. Pathological depth is conservatively oversized.
+		if (seen.has(value)) return false;
+		if (depth >= 64) {
+			total = cap + 1;
+			return true;
+		}
+		seen.add(value);
 		if (Array.isArray(value)) {
 			for (const item of value) if (add(item, depth + 1)) return true;
 			return false;
@@ -597,26 +610,33 @@ export class AdvisorRuntime {
 		if (hasSecrets && obfuscator) {
 			// Slices are bounded by BOTH message count and estimated payload
 			// size: a handful of multi-MB tool results would otherwise scan
-			// their entire byte payload before the first yield. A single
-			// oversized message remains an irreducible slice.
+			// their entire byte payload before the first yield. The prefix is
+			// flushed BEFORE admitting a message that would blow the budget, so
+			// an oversized (irreducible) message scans alone — never glued to
+			// the slice accumulated ahead of it.
 			const obfuscated: AgentMessage[] = [];
 			let start = 0;
 			let count = 0;
 			let chars = 0;
-			for (let end = 0; end < delta.length; ) {
-				chars += estimateMessageChars(delta[end]!, FAST_RENDER_MAX_CHARS + 1);
-				count++;
-				end++;
-				const flush = end === delta.length || count >= RENDER_CHUNK_MESSAGES || chars > FAST_RENDER_MAX_CHARS;
-				if (!flush) continue;
+			const emit = async (end: number): Promise<boolean> => {
 				if (start > 0) {
 					await Bun.sleep(0);
-					if (this.disposed || this.#epoch !== epoch) return null;
+					if (this.disposed || this.#epoch !== epoch) return false;
 				}
 				obfuscated.push(...obfuscateAdvisorDelta(obfuscator, delta.slice(start, end)));
 				start = end;
 				count = 0;
 				chars = 0;
+				return true;
+			};
+			for (let end = 0; end < delta.length; ) {
+				const cost = estimateMessageChars(delta[end]!, FAST_RENDER_MAX_CHARS + 1);
+				if (count > 0 && chars + cost > FAST_RENDER_MAX_CHARS && !(await emit(end))) return null;
+				chars += cost;
+				count++;
+				end++;
+				const flush = end === delta.length || count >= RENDER_CHUNK_MESSAGES || chars > FAST_RENDER_MAX_CHARS;
+				if (flush && !(await emit(end))) return null;
 			}
 			formattedDelta = obfuscated;
 		} else {
@@ -644,33 +664,40 @@ export class AdvisorRuntime {
 			let start = 0;
 			let count = 0;
 			let chars = 0;
-			for (let end = 0; end < formattedDelta.length; ) {
-				const message = formattedDelta[end]!;
-				chars += estimateMessageChars(message, FAST_RENDER_MAX_CHARS + 1);
-				// A toolCall inlines its (possibly much later) toolResult via the
-				// shared index AT THE CALL'S SLICE — charge that result's cost to
-				// THIS slice's budget, or a tiny call message could synchronously
-				// pull a multi-MB result past the ceiling. The result is counted
-				// again in its own slice (it formats as consumed/skipped there);
-				// double-counting only makes slices smaller, never larger.
-				if (message.role === "assistant") {
-					for (const block of (message as AssistantMessage).content) {
-						if (block.type === "toolCall") chars += toolResultChars.get(block.id) ?? 0;
-					}
-				}
-				count++;
-				end++;
-				const flush =
-					end === formattedDelta.length || count >= RENDER_CHUNK_MESSAGES || chars > FAST_RENDER_MAX_CHARS;
-				if (!flush) continue;
+			const emit = async (end: number): Promise<boolean> => {
 				if (start > 0) {
 					await Bun.sleep(0);
-					if (this.disposed || this.#epoch !== epoch) return null;
+					if (this.disposed || this.#epoch !== epoch) return false;
 				}
 				parts.push(formatSessionHistoryMarkdown(formattedDelta.slice(start, end), chunkOptions));
 				start = end;
 				count = 0;
 				chars = 0;
+				return true;
+			};
+			for (let end = 0; end < formattedDelta.length; ) {
+				const message = formattedDelta[end]!;
+				// A toolCall inlines its (possibly much later) toolResult via the
+				// shared index AT THE CALL'S SLICE — its cost is charged to the
+				// slice that renders it. The result is conservatively counted
+				// again in its own slice (it formats as consumed/skipped there);
+				// double-counting only makes slices smaller, never larger.
+				let cost = estimateMessageChars(message, FAST_RENDER_MAX_CHARS + 1);
+				if (message.role === "assistant") {
+					for (const block of (message as AssistantMessage).content) {
+						if (block.type === "toolCall") cost += toolResultChars.get(block.id) ?? 0;
+					}
+				}
+				// Flush the accumulated prefix BEFORE admitting a message that
+				// would blow the budget: an irreducible call+result pair formats
+				// alone (with a yield ahead of it), never glued to the prefix.
+				if (count > 0 && chars + cost > FAST_RENDER_MAX_CHARS && !(await emit(end))) return null;
+				chars += cost;
+				count++;
+				end++;
+				const flush =
+					end === formattedDelta.length || count >= RENDER_CHUNK_MESSAGES || chars > FAST_RENDER_MAX_CHARS;
+				if (flush && !(await emit(end))) return null;
 			}
 			md = parts.filter(part => part.trim()).join("\n");
 		}
