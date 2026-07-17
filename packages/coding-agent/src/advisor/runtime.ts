@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { estimateTokens } from "@oh-my-pi/pi-agent-core/compaction";
-import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { logger } from "@oh-my-pi/pi-utils";
 import { obfuscateToolArguments, type SecretObfuscator } from "../secrets/obfuscator";
@@ -206,6 +206,50 @@ const ADVISOR_RENDER_OPTIONS = {
 	expandPrimaryContext: true,
 	expandEditDiffs: true,
 } as const;
+
+/** Messages formatted per event-loop slice in {@link AdvisorRuntime.#formatRawDeltaChunked}. */
+const RENDER_CHUNK_MESSAGES = 100;
+
+/** Char budget for one synchronous format call; larger deltas defer/chunk. */
+const FAST_RENDER_MAX_CHARS = 256 * 1024;
+
+/**
+ * Cheap early-exit probe: the message's aggregate string payload, capped at
+ * `cap`. Walks content (text/thinking blocks, tool arguments/results, string
+ * details like edit diffs) without serializing anything, so a single multi-MB
+ * message costs O(fields), not O(bytes).
+ */
+function estimateMessageChars(message: AgentMessage, cap: number): number {
+	let total = 0;
+	const add = (value: unknown, depth: number): boolean => {
+		if (total > cap) return true;
+		if (typeof value === "string") {
+			total += value.length;
+			return total > cap;
+		}
+		if (!value || typeof value !== "object" || depth >= 4) return false;
+		if (Array.isArray(value)) {
+			for (const item of value) if (add(item, depth + 1)) return true;
+			return false;
+		}
+		for (const key of Object.keys(value)) {
+			if (add((value as Record<string, unknown>)[key], depth + 1)) return true;
+		}
+		return false;
+	};
+	add(message, 0);
+	return total;
+}
+
+/** Early-exit: does the delta from `from` exceed `cap` aggregate chars? */
+function deltaExceedsSize(all: readonly AgentMessage[], from: number, cap: number): boolean {
+	let total = 0;
+	for (let i = from; i < all.length; i++) {
+		total += estimateMessageChars(all[i]!, cap - total + 1);
+		if (total > cap) return true;
+	}
+	return false;
+}
 
 interface PendingDelta {
 	text: string;
@@ -481,7 +525,6 @@ export class AdvisorRuntime {
 	 * advisor (which would be expensive and likely stale).
 	 */
 	seedTo(count: number): void {
-
 		const messages = this.host.snapshotMessages().slice(0, count);
 		this.#lastCount = messages.length;
 		this.#deliveredPrefix = messages.map(message => ({
@@ -511,6 +554,72 @@ export class AdvisorRuntime {
 		return `${heading}\n\n${md}`;
 	}
 
+	/**
+	 * Chunked variant of {@link #formatRawDelta} for the drain loop's async
+	 * contexts: renders a large raw delta while yielding the event loop
+	 * between bounded slices. A post-reset replay formats the ENTIRE
+	 * transcript; done synchronously that blocks the loop for hundreds of
+	 * milliseconds per ~10MB of transcript (measured 675ms at ~54MB),
+	 * freezing every session hosted by a shared daemon. The dedupe pass runs
+	 * in ONE synchronous step before any yield so `#seenContext` mutations
+	 * stay ordered with competing synchronous renders; every slice shares a
+	 * whole-delta tool-result index and consumed-id set so a toolCall renders
+	 * "⇒ ok" even when its toolResult lands slices later. Returns null when
+	 * the delta is empty or `epoch` was invalidated during a yield.
+	 */
+	async #formatRawDeltaChunked(rawMessages: AgentMessage[], wip: boolean, epoch: number): Promise<string | null> {
+		const delta = rawMessages
+			.filter(message => !(message.role === "custom" && message.customType === "advisor"))
+			.map(message => this.#dedupContextMessage(message));
+		if (delta.length === 0) return null;
+		const obfuscator = this.host.obfuscator;
+		const formattedDelta = obfuscator?.hasSecrets() ? obfuscateAdvisorDelta(obfuscator, delta) : delta;
+		let md: string;
+		if (
+			formattedDelta.length <= RENDER_CHUNK_MESSAGES &&
+			!deltaExceedsSize(formattedDelta, 0, FAST_RENDER_MAX_CHARS)
+		) {
+			md = formatSessionHistoryMarkdown(formattedDelta, ADVISOR_RENDER_OPTIONS);
+		} else {
+			// Slices are bounded by BOTH message count and estimated payload
+			// size, so a handful of huge messages (multi-MB edit diffs) never
+			// collapses into one long synchronous format call. A single
+			// oversized message is irreducible — it forms its own slice.
+			const toolResultIndex = new Map<string, ToolResultMessage>();
+			for (const message of formattedDelta) {
+				if (message.role === "toolResult") toolResultIndex.set(message.toolCallId, message);
+			}
+			const chunkOptions = {
+				...ADVISOR_RENDER_OPTIONS,
+				toolResultIndex,
+				consumedToolCallIds: new Set<string>(),
+			};
+			const parts: string[] = [];
+			let start = 0;
+			let count = 0;
+			let chars = 0;
+			for (let end = 0; end < formattedDelta.length; ) {
+				chars += estimateMessageChars(formattedDelta[end]!, FAST_RENDER_MAX_CHARS + 1);
+				count++;
+				end++;
+				const flush =
+					end === formattedDelta.length || count >= RENDER_CHUNK_MESSAGES || chars > FAST_RENDER_MAX_CHARS;
+				if (!flush) continue;
+				if (start > 0) {
+					await Bun.sleep(0);
+					if (this.disposed || this.#epoch !== epoch) return null;
+				}
+				parts.push(formatSessionHistoryMarkdown(formattedDelta.slice(start, end), chunkOptions));
+				start = end;
+				count = 0;
+				chars = 0;
+			}
+			md = parts.filter(part => part.trim()).join("\n");
+		}
+		if (!md.trim()) return null;
+		const heading = wip ? "### Session update [in progress — more steps follow]" : "### Session update";
+		return `${heading}\n\n${md}`;
+	}
 
 	#renderDelta(messages?: AgentMessage[], wip = false): Omit<PendingDelta, "turns" | "overflowRecovery"> | null {
 		const all = messages ?? this.#latestMessages ?? this.host.snapshotMessages();
@@ -545,8 +654,34 @@ export class AdvisorRuntime {
 			this.#deliveredPrefix.push({ message, fingerprint: fingerprintMessage(message) });
 		}
 		this.#lastCount = all.length;
-		const text = this.#formatRawDelta(rawMessages, wip);
-		return text ? { text, rawMessages, renderRevision: this.#renderRevision, wip } : null;
+		if (rawMessages.length === 0) return null;
+		// Size gate for the SYNCHRONOUS caller (onTurnEnd): a small delta — the
+		// everyday per-turn shape — formats inline, byte-identical to before. A
+		// large one (post-reset replay of a multi-MB transcript, a single turn
+		// carrying a multi-MB edit diff) would block the event loop for
+		// hundreds of milliseconds, so it ships with a STALE renderRevision and
+		// empty text: the drain loop re-renders it with the chunked formatter.
+		// The probe is guarded — a poisoned message (throwing getter) also
+		// routes to the deferred path instead of propagating to the caller.
+		let small = false;
+		try {
+			small =
+				rawMessages.length <= RENDER_CHUNK_MESSAGES &&
+				!deltaExceedsSize(rawMessages, 0, FAST_RENDER_MAX_CHARS) &&
+				// Ordered dedupe: while an earlier delta still awaits its
+				// drain-side render (stale revision), a later delta must not
+				// dedup ahead of it — its "(unchanged)" collapse would land
+				// BEFORE the expansion the advisor never received. Defer it;
+				// the drain re-renders strictly in queue order.
+				!this.#pending.some(delta => delta.renderRevision !== this.#renderRevision);
+		} catch (err) {
+			logger.warn("advisor delta size probe failed; deferring render", { err: String(err) });
+		}
+		if (small) {
+			const text = this.#formatRawDelta(rawMessages, wip);
+			return text ? { text, rawMessages, renderRevision: this.#renderRevision, wip } : null;
+		}
+		return { text: "", rawMessages, renderRevision: this.#renderRevision - 1, wip };
 	}
 
 	/**
