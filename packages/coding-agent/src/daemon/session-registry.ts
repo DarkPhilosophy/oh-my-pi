@@ -1,4 +1,4 @@
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils";
 import { recordDaemonSessionAlias } from "../session/session-listing";
 import { AttachmentEventStream, type EventRecord, OrderedEventLog } from "./event-log";
 import { canonicalProjectRoot } from "./paths";
@@ -273,11 +273,21 @@ export class DaemonSessionRegistry {
 		record.attachments.set(attachmentId, attachment);
 		if (mode === "interactive") record.interactiveAttachment = attachmentId;
 		try {
-			const frames: unknown[] = [...stream.attach(lastSeq)];
-			for (;;) {
-				const next = stream.next();
-				if (next.length === 0) break;
-				frames.push(...next);
+			// Attach replays the event backlog and, when needed, a FULL state
+			// snapshot — serialized synchronously right here. Tag the stretch so
+			// a watchdog block during a multi-MB reattach names this path
+			// instead of "unknown".
+			pushLoopPhase(`daemon:attach-replay:${sessionId}`);
+			const frames: unknown[] = [];
+			try {
+				frames.push(...stream.attach(lastSeq));
+				for (;;) {
+					const next = stream.next();
+					if (next.length === 0) break;
+					frames.push(...next);
+				}
+			} finally {
+				popLoopPhase();
 			}
 			attachment.attaching = false;
 			for (const pending of attachment.pending.splice(0)) {
@@ -390,17 +400,26 @@ export class DaemonSessionRegistry {
 			closed: false,
 		};
 		record.unsubscribe = runtime.subscribe(event => {
-			for (const boundedEvent of splitDaemonEvent(event)) {
-				const published = record.log.append(boundedEvent);
-				for (const attachment of record.attachments.values()) {
-					if (attachment.attaching) {
-						attachment.pending.push(published);
-						continue;
+			// The whole fan-out below is synchronous: payload split/bounding,
+			// log append, and one frame encode PER attachment. A multi-MB tool
+			// result with several attached clients is real loop occupancy —
+			// tag it so watchdog blocks name the session instead of "unknown".
+			pushLoopPhase(`daemon:event-fanout:${sessionId}`);
+			try {
+				for (const boundedEvent of splitDaemonEvent(event)) {
+					const published = record.log.append(boundedEvent);
+					for (const attachment of record.attachments.values()) {
+						if (attachment.attaching) {
+							attachment.pending.push(published);
+							continue;
+						}
+						const frames = attachment.stream.publish(published);
+						for (const frame of frames) void Promise.resolve(attachment.sink(frame)).catch(() => undefined);
 					}
-					const frames = attachment.stream.publish(published);
-					for (const frame of frames) void Promise.resolve(attachment.sink(frame)).catch(() => undefined);
+					if (closesHostedSession(boundedEvent)) void this.close(sessionId).catch(() => undefined);
 				}
-				if (closesHostedSession(boundedEvent)) void this.close(sessionId).catch(() => undefined);
+			} finally {
+				popLoopPhase();
 			}
 			this.#scheduleParking(sessionId, record);
 		});

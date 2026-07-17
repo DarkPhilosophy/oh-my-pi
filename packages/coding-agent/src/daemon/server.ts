@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as path from "node:path";
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
-import { getActiveProfile, logger, postmortem, VERSION } from "@oh-my-pi/pi-utils";
+import { getActiveProfile, logger, popLoopPhase, postmortem, pushLoopPhase, VERSION } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../config/model-registry";
 import { MCPManagerPool } from "../mcp";
 import { type CreateAgentSessionOptions, discoverAuthStorage } from "../sdk";
@@ -889,7 +889,16 @@ export class DaemonServer {
 	}
 
 	#send(connection: Connection, frame: DaemonFrame): void {
-		if (!connection.socket.destroyed) connection.socket.write(encodeDaemonFrame(frame));
+		if (connection.socket.destroyed) return;
+		// encodeDaemonFrame stringifies the whole frame synchronously — for a
+		// large event/snapshot chunk this is the loop cost, so tag it (nested
+		// under fan-out/attach phases, the deepest tag wins attribution).
+		pushLoopPhase(`daemon:send:${frame.tag}`);
+		try {
+			connection.socket.write(encodeDaemonFrame(frame));
+		} finally {
+			popLoopPhase();
+		}
 	}
 
 	#sendError(connection: Connection, requestId: string | undefined, code: DaemonErrorCode, message: string): void {
