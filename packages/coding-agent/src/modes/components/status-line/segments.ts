@@ -141,33 +141,34 @@ const modelSegment: StatusLineSegment = {
 		}
 
 		// `statusLineModel` is aliased to `accent` in many themes, so the badge
-		// uses status colors to stay visibly distinct from the model name color.
+		// uses `success` to stay visibly distinct from the model name color.
 		let content = theme.fg("statusLineModel", withIcon(modelIcon, modelName));
-		// Per-advisor status glyphs — one dot per advisor, colored by ITS OWN
-		// state (same mapping as /advisor status): ● running, ○ paused/no
-		// model, ✕ error/quota-exhausted. Rosters beyond 4 truncate to four
-		// dots plus a "+" overflow marker: ●●●●+. Per-advisor detail lives in
-		// `/advisor status`.
+		// Per-advisor status dots: ● running, ○ paused/no-model, ✕ error/quota.
+		// Truncated to 4 dots + "+" when the roster exceeds 4 advisors.
 		// Optional chaining: lightweight session doubles (test mocks) that don't
-		// implement getAdvisorStatusOverview skip the badge instead of crashing.
+		// implement getAdvisorStatusOverview skip dots instead of crashing.
 		const advisorStats = ctx.session.getAdvisorStatusOverview?.();
 		if (advisorStats?.configured && advisorStats.advisors.length > 0) {
-			const glyphs = advisorStats.advisors
-				.slice(0, 4)
-				.map(a => {
-					switch (a.status) {
-						case "running":
-							return theme.fg("success", "●");
-						case "error":
-						case "quota_exhausted":
-							return theme.fg("error", "✕");
-						default:
-							return theme.fg("dim", "○");
-					}
-				})
-				.join("");
-			const overflow = advisorStats.advisors.length > 4 ? theme.fg("dim", "+") : "";
-			content += glyphs + overflow;
+			let advisorDots = "";
+			for (const a of advisorStats.advisors.slice(0, 4)) {
+				switch (a.status) {
+					case "running":
+						advisorDots += theme.fg("success", "●");
+						break;
+					case "paused":
+					case "no_model":
+						advisorDots += theme.fg("dim", "○");
+						break;
+					case "quota_exhausted":
+						advisorDots += theme.fg("warning", "✕");
+						break;
+					case "error":
+						advisorDots += theme.fg("error", "✕");
+						break;
+				}
+			}
+			if (advisorStats.advisors.length > 4) advisorDots += theme.fg("dim", "+");
+			content += theme.fg("dim", "(") + advisorDots + theme.fg("dim", ")");
 		}
 		if (tail) {
 			content += theme.fg("statusLineModel", tail);

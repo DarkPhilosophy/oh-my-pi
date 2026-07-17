@@ -65,7 +65,7 @@ describe("status line model segment advisor glyphs", () => {
 		expect(rendered.content).not.toContain("++");
 	});
 
-	it("colors each glyph by ITS OWN advisor status, quota and error both red ✕", () => {
+	it("colors each dot by ITS OWN advisor status, quota warning and error red", () => {
 		const ctx = createModelContext(true);
 		ctx.session.getAdvisorStatusOverview = () => ({
 			configured: true,
@@ -78,11 +78,14 @@ describe("status line model segment advisor glyphs", () => {
 		});
 		const content = renderSegment("model", ctx).content;
 		expect(content).toContain(theme.fg("success", "●"));
+		expect(content).toContain(theme.fg("warning", "✕"));
 		expect(content).toContain(theme.fg("error", "✕"));
 		expect(content).toContain(theme.fg("dim", "○"));
-		// Exactly one glyph per advisor: 4 advisors → no overflow marker.
+		// Exactly one glyph per advisor, wrapped in parens: 4 advisors, no
+		// overflow marker.
 		const plain = Bun.stripANSI(content);
 		expect((plain.match(/[●○✕]/g) ?? []).length).toBe(4);
+		expect(plain).toMatch(/\([●○✕]{4}\)/);
 		expect(plain).not.toContain("+");
 	});
 
@@ -94,7 +97,7 @@ describe("status line model segment advisor glyphs", () => {
 		});
 		const plain = Bun.stripANSI(renderSegment("model", ctx).content);
 		expect((plain.match(/●/g) ?? []).length).toBe(4);
-		expect(plain).toContain("●●●●+");
+		expect(plain).toContain("(●●●●+)");
 	});
 
 	it("omits the glyphs when the advisor is inactive", () => {
