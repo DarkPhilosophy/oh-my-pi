@@ -573,14 +573,42 @@ export class AdvisorRuntime {
 			.map(message => this.#dedupContextMessage(message));
 		if (delta.length === 0) return null;
 		const obfuscator = this.host.obfuscator;
-		const formattedDelta = obfuscator?.hasSecrets() ? obfuscateAdvisorDelta(obfuscator, delta) : delta;
-		let md: string;
-		if (
-			formattedDelta.length <= RENDER_CHUNK_MESSAGES &&
-			!deltaExceedsSize(formattedDelta, 0, FAST_RENDER_MAX_CHARS)
-		) {
-			md = formatSessionHistoryMarkdown(formattedDelta, ADVISOR_RENDER_OPTIONS);
+		const hasSecrets = obfuscator?.hasSecrets() === true;
+		let formattedDelta: AgentMessage[];
+		let large = true;
+		try {
+			large = delta.length > RENDER_CHUNK_MESSAGES || deltaExceedsSize(delta, 0, FAST_RENDER_MAX_CHARS);
+		} catch {
+			// A poisoned message trips the probe; take the sliced path, whose
+			// formatter failure is handled by the caller.
+		}
+		if (!large) {
+			formattedDelta = hasSecrets && obfuscator ? obfuscateAdvisorDelta(obfuscator, delta) : delta;
+			const md = formatSessionHistoryMarkdown(formattedDelta, ADVISOR_RENDER_OPTIONS);
+			if (!md.trim()) return null;
+			const heading = wip ? "### Session update [in progress — more steps follow]" : "### Session update";
+			return `${heading}\n\n${md}`;
+		}
+		// Obfuscation scans every string in the delta (O(bytes)); on a multi-MB
+		// replay that is its own event-loop stall, so it runs in yielding
+		// slices too. It happens UP FRONT — not per format slice — because the
+		// cross-slice tool-result index below must hold obfuscated results
+		// (a call in slice 1 renders a result from slice 3).
+		if (hasSecrets && obfuscator) {
+			const obfuscated: AgentMessage[] = [];
+			for (let i = 0; i < delta.length; i += RENDER_CHUNK_MESSAGES) {
+				if (i > 0) {
+					await Bun.sleep(0);
+					if (this.disposed || this.#epoch !== epoch) return null;
+				}
+				obfuscated.push(...obfuscateAdvisorDelta(obfuscator, delta.slice(i, i + RENDER_CHUNK_MESSAGES)));
+			}
+			formattedDelta = obfuscated;
 		} else {
+			formattedDelta = delta;
+		}
+		let md: string;
+		{
 			// Slices are bounded by BOTH message count and estimated payload
 			// size, so a handful of huge messages (multi-MB edit diffs) never
 			// collapses into one long synchronous format call. A single
@@ -839,6 +867,26 @@ export class AdvisorRuntime {
 			// update WIP state, and re-check the maintenance budget.
 			const late = this.#pending.splice(0);
 			if (late.length === 0) break;
+			// A deferred late delta (stale revision, placeholder text) must
+			// render BEFORE it coalesces — concatenating its empty text would
+			// silently drop that turn's content from the advisor prompt while
+			// rawMessages/finalTurns still count it.
+			for (const delta of late) {
+				if (delta.renderRevision === this.#renderRevision) continue;
+				try {
+					const refreshed = await this.#formatRawDeltaChunked(delta.rawMessages, delta.wip, epoch);
+					if (this.#epoch !== epoch) return null;
+					if (refreshed) delta.text = refreshed;
+				} catch (err) {
+					// A poisoned late delta must not reject the drain: keep its
+					// previous text (possibly empty), release the primary, move on.
+					if (this.#epoch !== epoch) return null;
+					this.#failing = true;
+					this.#wakeAllWaiters();
+					logger.warn("advisor late delta render failed; dropping content", { err: String(err) });
+				}
+				delta.renderRevision = this.#renderRevision;
+			}
 			batchText = [batchText, ...late.map(b => b.text)].join("\n\n");
 			rawMessages = rawMessages.concat(late.flatMap(b => b.rawMessages));
 			turns += late.reduce((sum, b) => sum + b.turns, 0);
