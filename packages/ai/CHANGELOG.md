@@ -5,6 +5,14 @@
 ### Fixed
 
 - Fixed OpenAI Codex multi-account fallback dying when a model-scoped window was pinned: a Spark 7-day meter at 100% marked the whole account exhausted and blocked it for shared-window models, so exhausting the sibling left the agent (and advisors/subagents) with "no usable credential" despite ample shared quota. Quota checks and backoff blocks are now scoped per quota family (Spark models meter on their own window; everything else uses the shared account windows), and the live-usage self-heal reconciles each family separately so a stale cross-family block clears instead of surviving until its natural expiry.
+## [17.0.4] - 2026-07-18
+
+### Fixed
+
+- Fixed Kimi Code usage reports dropping the 5h window reset time (`omp usage` showed no "resets in …" for the 5h limit): the API returns `resetTime` on the limit `detail`, not on `window`, so the parsed row-level reset is now carried onto the window when the window itself has none.
+- Made Kimi device-id persistence best-effort: a missing or unwritable `~/.omp/agent` directory no longer throws during Kimi header construction, which silently nulled every `kimi-code` usage probe on fresh installs.
+- Coerced boolean tool-schema subschemas to MFJS object forms for native Moonshot/Kimi endpoints, preventing the task tool's `outputSchema` field from causing HTTP 400 responses ([#5952](https://github.com/can1357/oh-my-pi/issues/5952)).
+
 ## [17.0.3] - 2026-07-17
 
 ### Fixed

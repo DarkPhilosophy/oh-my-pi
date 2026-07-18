@@ -8,6 +8,12 @@
 ### Added
 
 - Added Grok 4.5 to the xai and xai-oauth (SuperGrok) catalogs; grok-4.5 is now the xai-oauth default model. Its reasoning effort is constrained to xAI's supported low/medium/high tiers and marked mandatory, so a thinking-off request clamps to low instead of omitting reasoning (which xAI's grok-4.5 rejects, since reasoning cannot be disabled). The effort cap keys on the xAI host (provider `xai` or base URL `api.x.ai`), so a custom OpenAI-compatible config pointed at xAI gets the same ladder; the documented `grok-build-latest` alias inherits the Grok 4.5 effort/mandatory-reasoning contract (distinct from the separate `grok-build` / `grok-build-0.1` SKUs that reject `reasoning.effort`).
+## [17.0.4] - 2026-07-18
+
+### Changed
+
+- Kimi-family models now use MFJS tool schema on all hosts, including proxies like OpenRouter that forward schemas to Moonshot
+
 ## [17.0.3] - 2026-07-17
 
 ### Fixed
