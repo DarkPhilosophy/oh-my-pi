@@ -385,7 +385,7 @@ export class LocalProtocolHandler implements ProtocolHandler {
 	readonly scheme = "local";
 	readonly immutable = false;
 
-	static #override: LocalProtocolOptions | undefined;
+	static #overrides = new WeakMap<AgentRegistry, LocalProtocolOptions>();
 
 	/**
 	 * Install a process-global override that wins over the AgentRegistry-based
@@ -393,12 +393,17 @@ export class LocalProtocolHandler implements ProtocolHandler {
 	 * `createAgentSession` and by subagents that share their parent's root.
 	 */
 	static setOverride(value: LocalProtocolOptions | undefined): void {
-		LocalProtocolHandler.#override = value;
+		const registry = AgentRegistry.global();
+		if (value) {
+			LocalProtocolHandler.#overrides.set(registry, value);
+		} else {
+			LocalProtocolHandler.#overrides.delete(registry);
+		}
 	}
 
-	/** Reset the process-global override. Test-only. */
+	/** Reset all scoped overrides. Test-only. */
 	static resetOverrideForTests(): void {
-		LocalProtocolHandler.#override = undefined;
+		LocalProtocolHandler.#overrides = new WeakMap();
 	}
 
 	/**
@@ -424,7 +429,7 @@ export class LocalProtocolHandler implements ProtocolHandler {
 	static resolveOptions(context?: ResolveContext): LocalProtocolOptions | undefined {
 		const fromContext = context?.localProtocolOptions;
 		if (fromContext) return fromContext;
-		const override = LocalProtocolHandler.#override;
+		const override = LocalProtocolHandler.#overrides.get(AgentRegistry.global());
 		if (override) return override;
 		const main = AgentRegistry.global()
 			.list()

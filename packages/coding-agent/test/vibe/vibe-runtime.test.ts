@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
-import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { AgentRegistry, createAgentRegistryScope } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentProgress, SingleResult } from "@oh-my-pi/pi-coding-agent/task/types";
@@ -192,6 +192,16 @@ describe("vibe session registry", () => {
 		VibeSessionRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
+	});
+
+	it("global registry is isolated by agent registry scope", () => {
+		const scopeA = createAgentRegistryScope(new AgentRegistry());
+		const scopeB = createAgentRegistryScope(new AgentRegistry());
+		const vibeA = scopeA.run(() => VibeSessionRegistry.global());
+		const vibeB = scopeB.run(() => VibeSessionRegistry.global());
+		expect(vibeA).not.toBe(vibeB);
+		expect(scopeA.run(() => VibeSessionRegistry.global())).toBe(vibeA);
+		expect(scopeB.run(() => VibeSessionRegistry.global())).toBe(vibeB);
 	});
 
 	it("spawn returns immediately and self-delivers a turn result with activity trace + response", async () => {

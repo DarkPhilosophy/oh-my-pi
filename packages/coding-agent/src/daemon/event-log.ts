@@ -31,6 +31,7 @@ export class OrderedEventLog<E> {
 	readonly #sizeOf: (event: E) => number;
 	#events: EventRecord<E>[] = [];
 	#bytes = 0;
+	#eventSizes: number[] = [];
 	#nextSeq = 1;
 	#attachments = new Map<string, number>();
 
@@ -66,10 +67,15 @@ export class OrderedEventLog<E> {
 		return this.#events.length;
 	}
 
-	append(event: E): EventRecord<E> {
+	append(event: E, measuredBytes?: number): EventRecord<E> {
 		const record: EventRecord<E> = Object.freeze({ seq: this.#nextSeq++, event });
+		const bytes =
+			measuredBytes !== undefined && Number.isFinite(measuredBytes)
+				? Math.max(1, Math.trunc(measuredBytes))
+				: this.#sizeOf(event);
 		this.#events.push(record);
-		this.#bytes += this.#sizeOf(event);
+		this.#eventSizes.push(bytes);
+		this.#bytes += bytes;
 		this.#trim();
 		return record;
 	}
@@ -134,12 +140,12 @@ export class OrderedEventLog<E> {
 		if (this.#events.length === 0) return;
 		const safeSeq = this.#attachments.size > 0 ? Math.min(...this.#attachments.values()) : 0;
 		while (this.#events.length > 0 && this.#events[0]!.seq <= safeSeq) {
-			const first = this.#events.shift()!;
-			this.#bytes -= this.#sizeOf(first.event);
+			this.#events.shift();
+			this.#bytes -= this.#eventSizes.shift()!;
 		}
 		while (this.#events.length > this.#maxEvents || (this.#bytes > this.#maxBytes && this.#events.length > 1)) {
-			const first = this.#events.shift()!;
-			this.#bytes -= this.#sizeOf(first.event);
+			this.#events.shift();
+			this.#bytes -= this.#eventSizes.shift()!;
 		}
 	}
 }

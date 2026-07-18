@@ -186,10 +186,9 @@ describe("daemon client", () => {
 		}
 	});
 
-	test("times out requests, closes cleanly, and can reconnect", async () => {
-		let connections = 0;
+	test("treats an unanswered request as a dead transport and requests recovery", async () => {
+		let recoveryRequests = 0;
 		const { server, endpoint } = await socketServer(socket => {
-			connections++;
 			socket.setEncoding("utf8");
 			let buffer = "";
 			socket.on("data", chunk => {
@@ -201,17 +200,25 @@ describe("daemon client", () => {
 					buffer = buffer.slice(newline + 1);
 					const frame = JSON.parse(line) as { tag: string; requestId: string };
 					if (frame.tag === "hello") socket.write(encodeDaemonFrame({ ...helloOk(), requestId: frame.requestId }));
-					// Deliberately leave requests unanswered to exercise timeout.
+					// Deliberately leave requests unanswered: a live socket with
+					// no event-loop progress is an unavailable daemon, not a
+					// healthy connection that callers should keep using.
 				}
 			});
 		});
-		const client = new DaemonClient({ profile: shard.profile, endpoint, token: "secret", requestTimeoutMs: 20 });
+		const client = new DaemonClient({
+			profile: shard.profile,
+			endpoint,
+			token: "secret",
+			requestTimeoutMs: 20,
+			recoverUnavailable: () => {
+				recoveryRequests++;
+			},
+		});
 		try {
 			await expect(client.request("ping")).rejects.toThrow(/timed out/);
-			client.close();
-			expect(client.snapshot.state).toBe("unavailable");
-			await expect(client.request("ping")).rejects.toThrow(/closed/);
-			expect(connections).toBe(1);
+			expect(recoveryRequests).toBe(1);
+			expect(client.snapshot.state).toBe("reconnecting");
 		} finally {
 			client.close();
 			await new Promise<void>(resolve => server.close(() => resolve()));

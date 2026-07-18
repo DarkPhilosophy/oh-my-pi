@@ -195,6 +195,7 @@ export class DaemonClient {
 			const pending = this.#pending.get(requestId);
 			if (!pending) return;
 			this.#pending.delete(requestId);
+			this.#replaceUnresponsiveSocket(socket);
 			pending.reject(
 				new Error(`Daemon ${typeof operation === "string" ? operation : operation.op} request timed out`),
 			);
@@ -388,6 +389,17 @@ export class DaemonClient {
 				this.#scheduleReconnect();
 			});
 		}, delay);
+	}
+
+	#replaceUnresponsiveSocket(socket: net.Socket): void {
+		if (this.#closed || this.#socket !== socket || socket.destroyed) return;
+		this.#requestRecovery();
+		this.#setSnapshot({
+			state: "reconnecting",
+			shard: this.#shard,
+			attempt: Math.max(1, this.#reconnectAttempt + 1),
+		});
+		socket.destroy();
 	}
 
 	#requestRecovery(): void {

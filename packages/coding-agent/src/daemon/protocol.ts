@@ -15,6 +15,8 @@ export type DaemonEncodedSnapshotChunk = Readonly<{
 
 export type DaemonCapability = "snapshot" | "events" | "server_status" | (string & {});
 
+export type DaemonEventDelivery = "all" | "terminal";
+
 export type DaemonErrorCode =
 	| "invalid_frame"
 	| "invalid_version"
@@ -96,7 +98,14 @@ export type DaemonOperation =
 	| { op: "session_load"; sessionId: string }
 	| { op: "session_resume"; sessionId: string }
 	| { op: "session_close"; sessionId: string }
-	| { op: "attach"; sessionId: string; attachmentId: string; mode: "interactive" | "observe"; lastSeq?: number }
+	| {
+			op: "attach";
+			sessionId: string;
+			attachmentId: string;
+			mode: "interactive" | "observe";
+			lastSeq?: number;
+			delivery?: DaemonEventDelivery;
+	  }
 	| { op: "detach"; sessionId: string; attachmentId: string }
 	| { op: "session_command"; sessionId: string; attachmentId: string; command: unknown }
 	| { op: "snapshot_ack"; sessionId: string; attachmentId: string; seq: number }
@@ -389,16 +398,20 @@ function operation(value: unknown): DaemonOperation {
 			exact(source, ["op", "sessionId"], "operation");
 			return { op, sessionId: requiredString(source.sessionId, "operation.sessionId") };
 		case "attach": {
-			exact(source, ["op", "sessionId", "attachmentId", "mode", "lastSeq"], "operation");
+			exact(source, ["op", "sessionId", "attachmentId", "mode", "lastSeq", "delivery"], "operation");
 			const mode = source.mode;
 			if (mode !== "interactive" && mode !== "observe")
 				throw new DaemonProtocolError("invalid_request", "operation.mode must be interactive or observe");
+			const delivery = source.delivery;
+			if (delivery !== undefined && delivery !== "all" && delivery !== "terminal")
+				throw new DaemonProtocolError("invalid_request", "operation.delivery must be all or terminal");
 			return {
 				op,
 				sessionId: requiredString(source.sessionId, "operation.sessionId"),
 				attachmentId: requiredString(source.attachmentId, "operation.attachmentId"),
 				mode,
 				...(source.lastSeq === undefined ? {} : { lastSeq: integer(source.lastSeq, "operation.lastSeq") }),
+				...(delivery === undefined ? {} : { delivery }),
 			};
 		}
 		case "detach":

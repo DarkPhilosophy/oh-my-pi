@@ -70,7 +70,13 @@ const runtimeFactory = async ({
 	};
 };
 
-const server = new DaemonServer({ profile: "test", runtimeDir, token, runtimeFactory });
+const server = new DaemonServer({
+	profile: "test",
+	runtimeDir,
+	token,
+	runtimeFactory,
+	ownerProcessVerifier: () => true,
+});
 await server.run();
 process.stdout.write(`READY ${server.endpoint}\n`);
 // Stay alive until killed.

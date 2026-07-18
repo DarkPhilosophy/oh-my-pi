@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
-import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import {
+	AgentRegistry,
+	createAgentRegistryScope,
+	MAIN_AGENT_ID,
+} from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 
 interface SessionStub {
@@ -55,6 +59,31 @@ describe("AgentLifecycleManager", () => {
 	function registerIdleSub(id: string, session: AgentSession | null, sessionFile: string | null = `/tmp/${id}.jsonl`) {
 		return registry.register({ id, displayName: "task", kind: "sub", session, sessionFile, status: "idle" });
 	}
+	it("does not revive an agent owned by another registry scope", async () => {
+		const scopeA = createAgentRegistryScope(new AgentRegistry());
+		const scopeB = createAgentRegistryScope(new AgentRegistry());
+		const stub = makeSessionStub();
+		try {
+			scopeA.run(() => {
+				scopeA.registry.register({
+					id: "scope-a-agent",
+					displayName: "task",
+					kind: "sub",
+					session: stub.session,
+					status: "idle",
+				});
+			});
+			const lifecycleA = scopeA.run(() => AgentLifecycleManager.global());
+			const lifecycleB = scopeB.run(() => AgentLifecycleManager.global());
+			scopeA.run(() => lifecycleA.adopt("scope-a-agent", { idleTtlMs: 1000 }));
+			await expect(scopeB.run(() => lifecycleB.ensureLive("scope-a-agent"))).rejects.toThrow("Unknown agent");
+			expect(scopeB.run(() => AgentLifecycleManager.global())).toBe(lifecycleB);
+			expect(stub.disposeCalls()).toBe(0);
+		} finally {
+			scopeA.run(() => AgentLifecycleManager.resetGlobalForTests());
+			scopeB.run(() => AgentLifecycleManager.resetGlobalForTests());
+		}
+	});
 
 	it("adopt arms the TTL: an idle agent is parked — session disposed, ref + sessionFile retained", async () => {
 		vi.useFakeTimers();

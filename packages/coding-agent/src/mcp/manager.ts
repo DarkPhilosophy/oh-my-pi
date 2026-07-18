@@ -11,6 +11,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import type { SourceMeta } from "../capability/types";
 import { resolveConfigValue } from "../config/resolve-config-value";
 import type { CustomTool } from "../extensibility/custom-tools/types";
+import { AgentRegistry } from "../registry/agent-registry";
 import { type AuthStorage, REMOTE_REFRESH_SENTINEL } from "../session/auth-storage";
 import {
 	connectToServer,
@@ -166,21 +167,27 @@ export interface MCPDiscoverOptions {
  * Manages connections to MCP servers and provides tools to the agent.
  */
 export class MCPManager {
-	static #instance: MCPManager | undefined;
+	/**
+	 * Manager instances are scoped to the ambient agent registry so daemon
+	 * sessions cannot observe each other's MCP capabilities.
+	 */
+	static #instances = new WeakMap<AgentRegistry, MCPManager>();
 
-	/** Process-global instance shared by internal URL protocol handlers and tools. */
+	/** Return the manager published by the current agent registry, if any. */
 	static instance(): MCPManager | undefined {
-		return MCPManager.#instance;
+		return MCPManager.#instances.get(AgentRegistry.global());
 	}
 
-	/** Install or clear the process-global instance. */
-	static setInstance(value: MCPManager | undefined): void {
-		MCPManager.#instance = value;
+	/** Publish a manager for the current agent registry. */
+	static setInstance(manager: MCPManager | undefined): void {
+		const registry = AgentRegistry.global();
+		if (manager) MCPManager.#instances.set(registry, manager);
+		else MCPManager.#instances.delete(registry);
 	}
 
-	/** Reset the process-global instance. Test-only. */
+	/** Clear all scoped manager mappings. Test-only. */
 	static resetForTests(): void {
-		MCPManager.#instance = undefined;
+		MCPManager.#instances = new WeakMap<AgentRegistry, MCPManager>();
 	}
 
 	#connections = new Map<string, MCPServerConnection>();

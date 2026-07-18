@@ -549,6 +549,8 @@ export async function bootstrapDaemonInteractive(
 		}
 	}
 	const handle = new RemoteSessionHandle(client, sessionId, {
+		delivery: "terminal",
+		reconnectWaitMs: 60_000,
 		recover: async () => {
 			await client.request({ ...createOperation, sessionId });
 		},

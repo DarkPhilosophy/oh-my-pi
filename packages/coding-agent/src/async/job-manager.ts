@@ -1,4 +1,5 @@
 import { logger } from "@oh-my-pi/pi-utils";
+import { AgentRegistry } from "../registry/agent-registry";
 
 const DELIVERY_RETRY_BASE_MS = 500;
 const DELIVERY_RETRY_MAX_MS = 30_000;
@@ -100,23 +101,24 @@ export interface AsyncJobRegisterOptions {
 export interface AsyncJobFilter {
 	ownerId?: string;
 }
-
 export class AsyncJobManager {
-	static #instance: AsyncJobManager | undefined;
+	static #instances = new WeakMap<AgentRegistry, AsyncJobManager>();
 
-	/** Process-global instance shared by internal URL protocol handlers and tools. */
+	/** Instance scoped to the currently resolved agent registry. */
 	static instance(): AsyncJobManager | undefined {
-		return AsyncJobManager.#instance;
+		return AsyncJobManager.#instances.get(AgentRegistry.global());
 	}
 
-	/** Install or clear the process-global instance. */
+	/** Install or clear the instance for the currently resolved registry. */
 	static setInstance(value: AsyncJobManager | undefined): void {
-		AsyncJobManager.#instance = value;
+		const registry = AgentRegistry.global();
+		if (value) AsyncJobManager.#instances.set(registry, value);
+		else AsyncJobManager.#instances.delete(registry);
 	}
 
-	/** Reset the process-global instance. Test-only. */
+	/** Reset all registry-scoped instances. Test-only. */
 	static resetForTests(): void {
-		AsyncJobManager.#instance = undefined;
+		AsyncJobManager.#instances = new WeakMap();
 	}
 
 	readonly #jobs = new Map<string, AsyncJob>();

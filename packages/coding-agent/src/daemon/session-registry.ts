@@ -2,7 +2,12 @@ import { logger, popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils";
 import { recordDaemonSessionAlias } from "../session/session-listing";
 import { AttachmentEventStream, type EventRecord, OrderedEventLog } from "./event-log";
 import { canonicalProjectRoot } from "./paths";
-import { DAEMON_MAX_FRAME_BYTES, encodeDaemonSnapshotChunks, splitDaemonTerminalOutput } from "./protocol";
+import {
+	DAEMON_MAX_FRAME_BYTES,
+	type DaemonEventDelivery,
+	encodeDaemonSnapshotChunks,
+	splitDaemonTerminalOutput,
+} from "./protocol";
 import type {
 	DaemonSessionCreateOverrides,
 	DaemonSessionRuntime,
@@ -41,11 +46,30 @@ type AttachmentSink = (frame: unknown) => void | Promise<void>;
 type AttachmentRecord = {
 	id: string;
 	mode: DaemonAttachmentMode;
+	delivery: DaemonEventDelivery;
 	stream: AttachmentEventStream<unknown, unknown>;
 	sink: AttachmentSink;
 	attaching: boolean;
 	pending: EventRecord<unknown>[];
 };
+
+function projectAttachmentFrame(frame: unknown, delivery: DaemonEventDelivery): unknown {
+	if (
+		delivery === "all" ||
+		typeof frame !== "object" ||
+		frame === null ||
+		!("type" in frame) ||
+		frame.type !== "event"
+	) {
+		return frame;
+	}
+	if (!("event" in frame) || typeof frame.event !== "object" || frame.event === null || !("type" in frame.event)) {
+		return frame;
+	}
+	const type = frame.event.type;
+	if (type === "terminal_output" || type === "terminal_closed") return frame;
+	return { ...frame, event: { type: "daemon_event_skipped" } };
+}
 
 type SessionRecord = {
 	runtime: DaemonSessionRuntime;
@@ -76,26 +100,36 @@ const MAX_DAEMON_EVENT_BYTES = DAEMON_MAX_FRAME_BYTES - 8192;
  * continuity and the live stream survive; the client loses one event's body,
  * not the session.
  */
-function boundDaemonEvent(event: unknown): unknown {
+type BoundedDaemonEvent = {
+	event: unknown;
+	bytes: number;
+};
+
+function boundDaemonEvent(event: unknown): BoundedDaemonEvent {
 	let serialized: string | undefined;
 	try {
 		serialized = JSON.stringify(event);
 	} catch {
 		// Circular payloads would also fail frame encoding.
-		return { type: "daemon_event_truncated", reason: "unserializable" };
+		const marker = { type: "daemon_event_truncated", reason: "unserializable" };
+		return { event: marker, bytes: Buffer.byteLength(JSON.stringify(marker), "utf8") };
 	}
 	// JSON.stringify(undefined / toJSON→undefined) yields undefined: encoding
 	// such an event would drop the frame's event key and emit a malformed frame.
-	if (serialized === undefined) return { type: "daemon_event_truncated", reason: "unserializable" };
+	if (serialized === undefined) {
+		const marker = { type: "daemon_event_truncated", reason: "unserializable" };
+		return { event: marker, bytes: Buffer.byteLength(JSON.stringify(marker), "utf8") };
+	}
 	const bytes = Buffer.byteLength(serialized, "utf8");
-	if (bytes <= MAX_DAEMON_EVENT_BYTES) return event;
+	if (bytes <= MAX_DAEMON_EVENT_BYTES) return { event, bytes };
 	const type =
 		typeof event === "object" && event !== null && "type" in event ? String(event.type).slice(0, 128) : "unknown";
 	logger.warn("Dropping oversized daemon session event", { type, bytes });
-	return { type: "daemon_event_truncated", reason: "oversized", originalType: type, bytes };
+	const marker = { type: "daemon_event_truncated", reason: "oversized", originalType: type, bytes };
+	return { event: marker, bytes: Buffer.byteLength(JSON.stringify(marker), "utf8") };
 }
 
-function splitDaemonEvent(event: unknown): readonly unknown[] {
+function splitDaemonEvent(event: unknown): readonly BoundedDaemonEvent[] {
 	if (
 		typeof event !== "object" ||
 		event === null ||
@@ -106,11 +140,12 @@ function splitDaemonEvent(event: unknown): readonly unknown[] {
 		typeof event.data !== "string"
 	)
 		return [boundDaemonEvent(event)];
-	// Terminal output is bounded by construction: our own bridge emits exactly
-	// {type, data} and the splitter caps data at 128K code units per chunk —
-	// re-measuring every chunk would tax the hottest streaming path for a
-	// shape this codebase cannot produce.
-	return splitDaemonTerminalOutput(event.data).map(data => ({ ...event, data }));
+	// Terminal output is bounded by construction. Account for the fixed object
+	// envelope without another full JSON serialization of the hottest path.
+	return splitDaemonTerminalOutput(event.data).map(data => ({
+		event: { ...event, data },
+		bytes: Buffer.byteLength(data, "utf8") + 64,
+	}));
 }
 
 /** Owns every daemon AgentSession and serializes all mutations to it. */
@@ -200,11 +235,11 @@ export class DaemonSessionRegistry {
 			sessionDir: this.#sessionDir,
 			overrides,
 		});
-		// ONE id everywhere: the registry keys hosted sessions by the underlying
-		// session's own id (the one in the transcript filename), never a minted
-		// handle — `--resume <id printed anywhere>` must behave exactly like
-		// `/resume <id>`. The random fallback only covers sessionless runtimes.
-		const id = runtime.session.sessionId ?? sessionId ?? this.#id();
+		// An explicit id is a recovery contract and must survive a fresh
+		// runtime whose underlying session manager minted a transient id.
+		// Unnamed creates still use the underlying transcript identity so
+		// every user-visible resume surface agrees.
+		const id = sessionId ?? runtime.session.sessionId ?? runtime.sessionId ?? this.#id();
 		if (this.#sessions.has(id)) {
 			await runtime.dispose().catch(() => undefined);
 			throw new RegistryError("session_busy", `session ${id} already exists`);
@@ -248,6 +283,7 @@ export class DaemonSessionRegistry {
 		mode: DaemonAttachmentMode,
 		sink: AttachmentSink,
 		lastSeq?: number,
+		delivery: DaemonEventDelivery = "all",
 	): Promise<{
 		sessionId: string;
 		attachmentId: string;
@@ -266,10 +302,18 @@ export class DaemonSessionRegistry {
 			maxBufferedEvents: 2048,
 			snapshot: () => record.runtime.snapshot(),
 			chunks: encodeDaemonSnapshotChunks,
-			sink: frame => sink(frame),
+			sink: frame => sink(projectAttachmentFrame(frame, delivery)),
 			attachmentId,
 		});
-		const attachment: AttachmentRecord = { id: attachmentId, mode, stream, sink, attaching: true, pending: [] };
+		const attachment: AttachmentRecord = {
+			id: attachmentId,
+			mode,
+			delivery,
+			stream,
+			sink,
+			attaching: true,
+			pending: [],
+		};
 		record.attachments.set(attachmentId, attachment);
 		if (mode === "interactive") record.interactiveAttachment = attachmentId;
 		try {
@@ -280,11 +324,11 @@ export class DaemonSessionRegistry {
 			pushLoopPhase(`daemon:attach-replay:${sessionId}`);
 			const frames: unknown[] = [];
 			try {
-				frames.push(...stream.attach(lastSeq));
+				frames.push(...stream.attach(lastSeq).map(frame => projectAttachmentFrame(frame, delivery)));
 				for (;;) {
 					const next = stream.next();
 					if (next.length === 0) break;
-					frames.push(...next);
+					frames.push(...next.map(frame => projectAttachmentFrame(frame, delivery)));
 				}
 			} finally {
 				popLoopPhase();
@@ -292,7 +336,10 @@ export class DaemonSessionRegistry {
 			attachment.attaching = false;
 			for (const pending of attachment.pending.splice(0)) {
 				const pendingFrames = attachment.stream.publish(pending);
-				for (const frame of pendingFrames) void Promise.resolve(attachment.sink(frame)).catch(() => undefined);
+				for (const frame of pendingFrames)
+					void Promise.resolve(attachment.sink(projectAttachmentFrame(frame, attachment.delivery))).catch(
+						() => undefined,
+					);
 			}
 			return {
 				sessionId,
@@ -407,16 +454,19 @@ export class DaemonSessionRegistry {
 			pushLoopPhase(`daemon:event-fanout:${sessionId}`);
 			try {
 				for (const boundedEvent of splitDaemonEvent(event)) {
-					const published = record.log.append(boundedEvent);
+					const published = record.log.append(boundedEvent.event, boundedEvent.bytes);
 					for (const attachment of record.attachments.values()) {
 						if (attachment.attaching) {
 							attachment.pending.push(published);
 							continue;
 						}
 						const frames = attachment.stream.publish(published);
-						for (const frame of frames) void Promise.resolve(attachment.sink(frame)).catch(() => undefined);
+						for (const frame of frames)
+							void Promise.resolve(attachment.sink(projectAttachmentFrame(frame, attachment.delivery))).catch(
+								() => undefined,
+							);
 					}
-					if (closesHostedSession(boundedEvent)) void this.close(sessionId).catch(() => undefined);
+					if (closesHostedSession(boundedEvent.event)) void this.close(sessionId).catch(() => undefined);
 				}
 			} finally {
 				popLoopPhase();

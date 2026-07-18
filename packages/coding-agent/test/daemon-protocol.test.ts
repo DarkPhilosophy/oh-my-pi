@@ -208,4 +208,35 @@ describe("daemon protocol", () => {
 			}),
 		).toThrow(/argv must be an array of strings/);
 	});
+	test("parses terminal-only attachment delivery and rejects unknown delivery modes", () => {
+		const frame = parseDaemonFrame({
+			v: DAEMON_PROTOCOL_MAJOR,
+			tag: "request",
+			requestId: "attach-terminal",
+			operation: {
+				op: "attach",
+				sessionId: "s1",
+				attachmentId: "a1",
+				mode: "interactive",
+				delivery: "terminal",
+			},
+		});
+		expect(frame.tag).toBe("request");
+		if (frame.tag !== "request" || frame.operation.op !== "attach") throw new Error("unexpected frame");
+		expect(frame.operation.delivery).toBe("terminal");
+		expect(() =>
+			parseDaemonFrame({
+				v: DAEMON_PROTOCOL_MAJOR,
+				tag: "request",
+				requestId: "attach-invalid",
+				operation: {
+					op: "attach",
+					sessionId: "s1",
+					attachmentId: "a1",
+					mode: "interactive",
+					delivery: "verbose",
+				},
+			}),
+		).toThrow(/delivery must be all or terminal/);
+	});
 });

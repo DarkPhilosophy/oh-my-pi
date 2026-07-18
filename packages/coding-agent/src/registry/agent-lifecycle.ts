@@ -56,18 +56,22 @@ interface ParkInFlight {
 }
 
 export class AgentLifecycleManager {
-	static #global: AgentLifecycleManager | undefined;
+	static #globals = new WeakMap<AgentRegistry, AgentLifecycleManager>();
 
 	static global(): AgentLifecycleManager {
-		if (!AgentLifecycleManager.#global) {
-			AgentLifecycleManager.#global = new AgentLifecycleManager();
+		const registry = AgentRegistry.global();
+		let manager = AgentLifecycleManager.#globals.get(registry);
+		if (!manager) {
+			manager = new AgentLifecycleManager(registry);
+			AgentLifecycleManager.#globals.set(registry, manager);
 		}
-		return AgentLifecycleManager.#global;
+		return manager;
 	}
 
-	/** Reset the global manager. Test-only. */
+	/** Reset the current registry-scoped manager. Test-only. */
 	static resetGlobalForTests(): void {
-		const current = AgentLifecycleManager.#global;
+		const registry = AgentRegistry.global();
+		const current = AgentLifecycleManager.#globals.get(registry);
 		if (current) {
 			current.#unsubscribe?.();
 			current.#unsubscribe = undefined;
@@ -79,7 +83,7 @@ export class AgentLifecycleManager {
 			current.#parks.clear();
 			current.#persistedReviverFactory = undefined;
 		}
-		AgentLifecycleManager.#global = undefined;
+		AgentLifecycleManager.#globals = new WeakMap();
 	}
 
 	readonly #registry: AgentRegistry;

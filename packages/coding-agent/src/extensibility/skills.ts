@@ -13,6 +13,7 @@ import { type Skill as CapabilitySkill, loadCapability } from "../discovery";
 import { compareSkillOrder, scanSkillsFromDir } from "../discovery/helpers";
 import autoloadTemplate from "../prompts/skills/autoload.md" with { type: "text" };
 import userInvocationTemplate from "../prompts/skills/user-invocation.md" with { type: "text" };
+import { AgentRegistry } from "../registry/agent-registry";
 import type { SkillPromptDetails } from "../session/messages";
 import { expandTilde } from "../tools/path-utils";
 export interface Skill {
@@ -41,24 +42,24 @@ export interface LoadSkillsResult {
 	warnings: SkillWarning[];
 }
 
-let activeSkills: readonly Skill[] = [];
+let activeSkillsByRegistry = new WeakMap<AgentRegistry, readonly Skill[]>();
 
 /**
- * Process-global snapshot of skills the active session loaded.
+ * Snapshot of skills the active session loaded, scoped to its AgentRegistry.
  * Read by internal URL protocol handlers (skill://).
  */
 export function getActiveSkills(): readonly Skill[] {
-	return activeSkills;
+	return activeSkillsByRegistry.get(AgentRegistry.global()) ?? [];
 }
 
 /** Replace the active skill snapshot. Called once per top-level session. */
 export function setActiveSkills(value: readonly Skill[]): void {
-	activeSkills = value;
+	activeSkillsByRegistry.set(AgentRegistry.global(), value);
 }
 
 /** Reset the active skill snapshot. Test-only. */
 export function resetActiveSkillsForTests(): void {
-	activeSkills = [];
+	activeSkillsByRegistry = new WeakMap();
 }
 
 /**

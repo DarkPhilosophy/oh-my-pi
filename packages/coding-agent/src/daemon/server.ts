@@ -35,6 +35,8 @@ const DEFAULT_MAX_CLIENTS = 64;
 const OWNER_FILE = "daemon.owner";
 /** How long a contender waits out a live-but-unbound owner (starting or draining). */
 const OWNER_LEASE_WAIT_MS = 10_000;
+const TAKEOVER_FILE = "daemon.takeover";
+const OWNER_TERMINATE_GRACE_MS = 1_000;
 const SKIP_DISPATCH = Symbol("skip daemon dispatch");
 
 type Connection = {
@@ -45,6 +47,12 @@ type Connection = {
 	requestIds: Set<string>;
 	closed: boolean;
 	generation: number;
+};
+
+type DaemonOwnerLease = {
+	pid: number;
+	daemonId: string;
+	startedAt: number;
 };
 
 export type DaemonServerOptions = {
@@ -58,6 +66,10 @@ export type DaemonServerOptions = {
 	buildStamp?: string;
 	/** Lease patience override (tests); defaults to OWNER_LEASE_WAIT_MS. */
 	ownerLeaseWaitMs?: number;
+	/** Process identity override for isolated owner-takeover tests. */
+	ownerProcessVerifier?: (
+		owner: Readonly<{ pid: number; daemonId: string; startedAt: number }>,
+	) => boolean | Promise<boolean>;
 	runtimeFactory?: DaemonSessionRuntimeFactory;
 	registry?: DaemonSessionRegistry;
 	now?: () => number;
@@ -117,6 +129,7 @@ export class DaemonServer {
 	readonly #runtimeFactory: DaemonSessionRuntimeFactory;
 	readonly #registryOverride: DaemonSessionRegistry | undefined;
 	readonly #ownerLeaseWaitMs: number;
+	readonly #ownerProcessVerifier: ((owner: Readonly<DaemonOwnerLease>) => boolean | Promise<boolean>) | undefined;
 	readonly #now: () => number;
 	readonly #maxClients: number;
 	readonly #sessionDir: string | undefined;
@@ -160,6 +173,7 @@ export class DaemonServer {
 			Number.isFinite(options.ownerLeaseWaitMs) && options.ownerLeaseWaitMs! >= 1
 				? Math.floor(options.ownerLeaseWaitMs!)
 				: OWNER_LEASE_WAIT_MS;
+		this.#ownerProcessVerifier = options.ownerProcessVerifier;
 		this.#runtimeFactory = options.runtimeFactory ?? createAgentSessionRuntime;
 		this.#usesDefaultRuntimeFactory = options.runtimeFactory === undefined;
 		this.#registryOverride = options.registry;
@@ -282,12 +296,9 @@ export class DaemonServer {
 	async #acquireOwnerLease(): Promise<void> {
 		const ownerPath = path.join(this.#runtimeDir!, OWNER_FILE);
 		this.#ownerPath = ownerPath;
-		// "Owner pid alive but no live listener" is a TRANSIENT state, not an
-		// error: either the owner is starting (it will bind shortly — the probe
-		// flips true and we lose legitimately) or it is draining after a
-		// takeover shutdown (the pid vanishes shortly and we reclaim). Failing
-		// instantly here made every replacement daemon racing a draining
-		// predecessor exit 1 and abort the whole client startup.
+		// A live owner without a responsive endpoint is initially transient: it
+		// may still be starting or draining. Every stale-owner mutation is
+		// serialized by an owner-generation-specific takeover lease.
 		const deadline = Date.now() + this.#ownerLeaseWaitMs;
 		for (;;) {
 			try {
@@ -302,33 +313,143 @@ export class DaemonServer {
 				const code = error instanceof Error && "code" in error ? error.code : undefined;
 				if (code !== "EEXIST") throw error;
 				if (await this.#probeEndpoint()) throw new Error(`daemon endpoint is already owned: ${this.#endpoint}`);
-				let ownerAlive = false;
-				try {
-					const owner = JSON.parse(await Bun.file(ownerPath).text()) as { pid?: unknown };
-					if (typeof owner.pid === "number" && Number.isInteger(owner.pid) && owner.pid > 0) {
-						try {
-							process.kill(owner.pid, 0);
-							ownerAlive = true;
-						} catch (probeError) {
-							const probeCode =
-								probeError instanceof Error && "code" in probeError ? probeError.code : undefined;
-							ownerAlive = probeCode !== "ESRCH";
-						}
-					}
-				} catch {
-					// A malformed or unreadable owner file cannot identify a live owner.
-					ownerAlive = false;
-				}
-				if (!ownerAlive) {
-					await fs.rm(ownerPath, { force: true });
-					continue;
-				}
-				if (Date.now() >= deadline) {
-					throw new Error(`daemon owner is still starting: ${this.#endpoint}`);
-				}
+				const owner = await this.#readOwnerLease(ownerPath);
+				const outcome = await this.#takeOverUnresponsiveOwner(ownerPath, owner, Date.now() >= deadline);
+				if (outcome === "owned") return;
+				if (outcome === "unsafe")
+					throw new Error(`daemon owner is still starting or draining; replacement is unsafe: ${this.#endpoint}`);
 				await Bun.sleep(100);
 			}
 		}
+	}
+
+	async #takeOverUnresponsiveOwner(
+		ownerPath: string,
+		expectedOwner: DaemonOwnerLease | undefined,
+		replaceLiveOwner: boolean,
+	): Promise<"owned" | "waiting" | "unsafe"> {
+		const generation = expectedOwner?.daemonId ?? "invalid";
+		const takeoverPath = path.join(this.#runtimeDir!, `${TAKEOVER_FILE}.${generation}`);
+		let takeoverHandle: fs.FileHandle;
+		try {
+			takeoverHandle = await fs.open(takeoverPath, "wx", 0o600);
+			await takeoverHandle.writeFile(
+				JSON.stringify({ pid: process.pid, daemonId: this.#daemonId, startedAt: this.#startedAt }),
+				"utf8",
+			);
+		} catch (error) {
+			const code = error instanceof Error && "code" in error ? error.code : undefined;
+			if (code === "EEXIST") return "waiting";
+			throw error;
+		}
+		try {
+			if (await this.#probeEndpoint()) return "waiting";
+			const owner = await this.#readOwnerLease(ownerPath);
+			if (expectedOwner && (owner?.pid !== expectedOwner.pid || owner.daemonId !== expectedOwner.daemonId)) {
+				return "waiting";
+			}
+			if (!expectedOwner && owner) return "waiting";
+			if (owner && this.#processAlive(owner.pid)) {
+				if (!replaceLiveOwner) return "waiting";
+				if (!(await this.#ownerProcessMatchesLease(owner))) return "unsafe";
+				process.kill(owner.pid, "SIGTERM");
+				if (!(await this.#waitForProcessExit(owner.pid, OWNER_TERMINATE_GRACE_MS))) {
+					process.kill(owner.pid, "SIGKILL");
+					if (!(await this.#waitForProcessExit(owner.pid, OWNER_TERMINATE_GRACE_MS))) return "unsafe";
+				}
+			}
+			const current = await this.#readOwnerLease(ownerPath);
+			if (
+				(owner === undefined && current === undefined) ||
+				(owner !== undefined && current?.pid === owner.pid && current.daemonId === owner.daemonId)
+			) {
+				await fs.rm(ownerPath, { force: true });
+			} else {
+				return "waiting";
+			}
+			try {
+				const handle = await fs.open(ownerPath, "wx", 0o600);
+				await handle.writeFile(
+					JSON.stringify({ pid: process.pid, daemonId: this.#daemonId, startedAt: this.#startedAt }),
+					"utf8",
+				);
+				this.#ownerHandle = handle;
+				return "owned";
+			} catch (error) {
+				const code = error instanceof Error && "code" in error ? error.code : undefined;
+				if (code === "EEXIST") return "waiting";
+				throw error;
+			}
+		} finally {
+			await takeoverHandle.close().catch(() => undefined);
+			await fs.rm(takeoverPath, { force: true });
+		}
+	}
+
+	async #readOwnerLease(ownerPath: string): Promise<DaemonOwnerLease | undefined> {
+		try {
+			const owner = JSON.parse(await Bun.file(ownerPath).text()) as Partial<DaemonOwnerLease>;
+			if (
+				typeof owner.pid !== "number" ||
+				!Number.isInteger(owner.pid) ||
+				owner.pid <= 0 ||
+				typeof owner.daemonId !== "string" ||
+				owner.daemonId.length === 0 ||
+				typeof owner.startedAt !== "number" ||
+				!Number.isFinite(owner.startedAt)
+			) {
+				return undefined;
+			}
+			return { pid: owner.pid, daemonId: owner.daemonId, startedAt: owner.startedAt };
+		} catch {
+			return undefined;
+		}
+	}
+
+	#processAlive(pid: number): boolean {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch (error) {
+			const code = error instanceof Error && "code" in error ? error.code : undefined;
+			return code !== "ESRCH";
+		}
+	}
+
+	async #ownerProcessMatchesLease(owner: DaemonOwnerLease): Promise<boolean> {
+		if (this.#ownerProcessVerifier) return await this.#ownerProcessVerifier(owner);
+		if (process.platform !== "linux") return false;
+		try {
+			const [processStat, commandLine] = await Promise.all([
+				fs.stat(`/proc/${owner.pid}`),
+				Bun.file(`/proc/${owner.pid}/cmdline`).text(),
+			]);
+			// A recycled PID belongs to a process created after this lease. The
+			// proc directory ctime is the process creation time on Linux. The
+			// worker selector additionally prevents an in-process test server or
+			// unrelated recycled process from ever being signalled.
+			return (
+				processStat.ctimeMs <= owner.startedAt + 1_000 &&
+				commandLine.split("\0").includes("__omp_worker_daemon_server")
+			);
+		} catch {
+			return false;
+		}
+	}
+
+	async #waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
+		const deadline = Date.now() + timeoutMs;
+		while (this.#processAlive(pid)) {
+			if (Date.now() >= deadline) return false;
+			await Bun.sleep(20);
+		}
+		return true;
+	}
+
+	async #ownsCurrentLease(): Promise<boolean> {
+		if (!this.#ownerPath) return false;
+		const owner = await this.#readOwnerLease(this.#ownerPath);
+		return owner?.pid === process.pid && owner.daemonId === this.#daemonId;
 	}
 
 	async #probeEndpoint(): Promise<boolean> {
@@ -477,7 +598,7 @@ export class DaemonServer {
 						server.close(() => finish());
 					});
 				}
-				if (this.#endpoint) await fs.rm(this.#endpoint, { force: true });
+				if (this.#endpoint && (await this.#ownsCurrentLease())) await fs.rm(this.#endpoint, { force: true });
 				return { shutdown: true, blockers: [] };
 			} finally {
 				try {
@@ -729,6 +850,7 @@ export class DaemonServer {
 					operation.mode,
 					frame => this.#sendAttachmentFrame(connection, operation.sessionId, operation.attachmentId, frame),
 					operation.lastSeq,
+					operation.delivery,
 				);
 				if (!this.#connectionActive(connection, generation)) {
 					registry.disconnect(operation.sessionId, operation.attachmentId);
@@ -890,10 +1012,11 @@ export class DaemonServer {
 
 	#send(connection: Connection, frame: DaemonFrame): void {
 		if (connection.socket.destroyed) return;
-		// encodeDaemonFrame stringifies the whole frame synchronously — for a
-		// large event/snapshot chunk this is the loop cost, so tag it (nested
-		// under fan-out/attach phases, the deepest tag wins attribution).
-		pushLoopPhase(`daemon:send:${frame.tag}`);
+		const eventType =
+			frame.tag === "event" && typeof frame.event === "object" && frame.event !== null && "type" in frame.event
+				? String(frame.event.type).slice(0, 128)
+				: undefined;
+		pushLoopPhase(eventType ? `daemon:send:event:${eventType}` : `daemon:send:${frame.tag}`);
 		try {
 			connection.socket.write(encodeDaemonFrame(frame));
 		} finally {

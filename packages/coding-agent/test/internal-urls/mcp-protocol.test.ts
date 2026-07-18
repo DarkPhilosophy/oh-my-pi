@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
 import type { MCPResource, MCPResourceReadResult, MCPResourceTemplate } from "@oh-my-pi/pi-coding-agent/mcp/types";
+import { AgentRegistry, createAgentRegistryScope } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
 function createMockManager(opts: {
 	servers?: string[];
@@ -20,6 +21,40 @@ function createMockManager(opts: {
 }
 
 describe("McpProtocolHandler", () => {
+	it("scopes managers by registry and clears only the active scope", async () => {
+		const scopeA = createAgentRegistryScope(new AgentRegistry());
+		const scopeB = createAgentRegistryScope(new AgentRegistry());
+		const resourcesA = new Map<string, { resources: MCPResource[]; templates: MCPResourceTemplate[] }>();
+		resourcesA.set("scope-a", {
+			resources: [{ uri: "scope-a://resource", name: "scope-a-resource" }],
+			templates: [],
+		});
+		const managerA = createMockManager({
+			servers: ["scope-a"],
+			resources: resourcesA,
+			readResult: { contents: [{ uri: "scope-a://resource", text: "scope A only" }] },
+		});
+		const managerB = createMockManager({ servers: ["scope-b"], resources: new Map() });
+
+		scopeA.run(() => MCPManager.setInstance(managerA));
+		scopeB.run(() => MCPManager.setInstance(managerB));
+		expect(scopeA.run(() => MCPManager.instance())).toBe(managerA);
+		expect(scopeB.run(() => MCPManager.instance())).toBe(managerB);
+
+		const router = InternalUrlRouter.instance();
+		const resource = await scopeA.run(() => router.resolve("mcp://scope-a://resource"));
+		expect(resource.content).toBe("scope A only");
+		await expect(scopeB.run(() => router.resolve("mcp://scope-a://resource"))).rejects.toThrow(
+			"No MCP server has resource",
+		);
+
+		scopeB.run(() => MCPManager.setInstance(undefined));
+		expect(scopeB.run(() => MCPManager.instance())).toBeUndefined();
+		expect(scopeA.run(() => MCPManager.instance())).toBe(managerA);
+
+		scopeA.run(() => MCPManager.setInstance(undefined));
+		expect(scopeA.run(() => MCPManager.instance())).toBeUndefined();
+	});
 	beforeEach(() => {
 		MCPManager.resetForTests();
 		InternalUrlRouter.resetForTests();

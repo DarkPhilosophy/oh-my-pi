@@ -204,6 +204,35 @@ describe("daemon server and registry", () => {
 		expect(fake.runtimes.get(second.sessionId)?.disposed).toBe(true);
 	});
 
+	test("terminal attachments preserve sequence while omitting semantic event payloads", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-terminal-events-"));
+		const fake = fakeFactory();
+		const registry = new DaemonSessionRegistry({ runtimeFactory: fake.runtimeFactory });
+		const session = await registry.create("terminal", root);
+		const frames: unknown[] = [];
+		await registry.attach(
+			session.sessionId,
+			"terminal-client",
+			"interactive",
+			frame => {
+				frames.push(frame);
+			},
+			undefined,
+			"terminal",
+		);
+
+		const largePayload = "semantic-payload".repeat(32 * 1024);
+		fake.runtimes.get(session.sessionId)?.emit({ type: "message_update", message: largePayload });
+		fake.runtimes.get(session.sessionId)?.emit({ type: "terminal_output", data: "visible" });
+
+		const events = frames as Array<{ type?: unknown; seq?: unknown; event?: { type?: unknown; data?: unknown } }>;
+		expect(events.map(frame => frame.seq)).toEqual([1, 2]);
+		expect(events.map(frame => frame.event?.type)).toEqual(["daemon_event_skipped", "terminal_output"]);
+		expect(JSON.stringify(events[0])).not.toContain("semantic-payload");
+		expect(events[1]?.event?.data).toBe("visible");
+		await registry.dispose();
+	});
+
 	test("hosts independent sessions from different working-directory roots", async () => {
 		const firstRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-cwd-a-"));
 		const secondRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-cwd-b-"));
@@ -1134,6 +1163,33 @@ describe("daemon server and registry", () => {
 		expect(summary.sessionId).toBe("0197-real-session-id");
 		expect(registry.list().map(entry => entry.sessionId)).toEqual(["0197-real-session-id"]);
 		await registry.close("0197-real-session-id");
+	});
+
+	test("a named recovery keeps the requested id when the fresh runtime has a different internal id", async () => {
+		const registry = new DaemonSessionRegistry({
+			runtimeFactory: async ({ cwd, sessionId }) =>
+				({
+					sessionId: sessionId ?? "runtime-id",
+					cwd,
+					session: {
+						sessionId: "fresh-internal-id",
+						isStreaming: false,
+						prompt: async () => true,
+						abort: async () => undefined,
+						dispose: async () => undefined,
+						subscribe: () => () => undefined,
+					},
+					protectedJobCount: () => 0,
+					snapshot: () => ({ state: { sessionId }, cwd, entries: [] }),
+					command: async () => ({}),
+					dispose: async () => undefined,
+					subscribe: () => () => undefined,
+				}) as unknown as DaemonSessionRuntime,
+		});
+		const summary = await registry.create("requested-recovery-id", os.tmpdir());
+		expect(summary.sessionId).toBe("requested-recovery-id");
+		expect(registry.list().map(entry => entry.sessionId)).toEqual(["requested-recovery-id"]);
+		await registry.close("requested-recovery-id");
 	});
 
 	test("a named session_create rehydrates the persisted transcript instead of starting blank", async () => {

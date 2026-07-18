@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Reduced interactive daemon fanout overhead by projecting terminal clients to terminal-only events while preserving replay sequence numbers, and by caching event byte sizes instead of serializing them again during acknowledgement pruning.
+- Improved daemon loop-stall diagnostics with synchronous session-event and outbound event-type attribution.
+
+### Fixed
+
+- Fixed clients remaining permanently frozen after a live daemon stopped responding. Timed-out requests now replace the stuck transport, one verified contender safely takes over the owner lease, every client retries reattachment while the replacement runtime loads, and fresh recovery preserves the original session identity.
+- Fixed daemon failover clients retaining the dead daemon's event sequence cursor. Replacement daemons restart event numbering from one, so clients now reset replay state when the daemon identity changes instead of discarding fresh terminal output and leaving the TUI frozen on its old frame.
+- Fixed daemon-hosted sessions sharing subagent state and payload-bearing resource fallbacks. Agent discovery, messaging, lifecycle, async and vibe jobs, MCP resources, local and artifact roots, skills, and rules are now scoped to the owning runtime, so another session cannot see or address its peers or resolve its `history://`, `agent://`, `local://`, `mcp://`, `skill://`, or `rule://` data.
+
+
 ## [17.0.3] - 2026-07-17
 
 ### Changed

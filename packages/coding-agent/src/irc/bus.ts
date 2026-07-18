@@ -1,5 +1,5 @@
 /**
- * IrcBus - Process-global mailbox bus for agent-to-agent messaging.
+ * IrcBus - Registry-scoped mailbox bus for agent-to-agent messaging.
  *
  * Replaces the old auto-reply model: a `send` never blocks on the recipient
  * generating anything. Delivery resolves the recipient via the global
@@ -48,18 +48,21 @@ interface IrcWaiter {
 const MAILBOX_CAP = 100;
 
 export class IrcBus {
-	static #global: IrcBus | undefined;
+	static #globals = new WeakMap<AgentRegistry, IrcBus>();
 
 	static global(): IrcBus {
-		if (!IrcBus.#global) {
-			IrcBus.#global = new IrcBus();
+		const registry = AgentRegistry.global();
+		let bus = IrcBus.#globals.get(registry);
+		if (!bus) {
+			bus = new IrcBus(registry);
+			IrcBus.#globals.set(registry, bus);
 		}
-		return IrcBus.#global;
+		return bus;
 	}
 
-	/** Reset the global bus. Test-only. */
+	/** Reset all registry-scoped buses. Test-only. */
 	static resetGlobalForTests(): void {
-		IrcBus.#global = undefined;
+		IrcBus.#globals = new WeakMap();
 	}
 
 	readonly #registry: AgentRegistry;
@@ -69,7 +72,7 @@ export class IrcBus {
 
 	constructor(registry: AgentRegistry = AgentRegistry.global(), lifecycle?: AgentLifecycleManager) {
 		this.#registry = registry;
-		// Lazy: the lifecycle global self-constructs against the global registry,
+		// Lazy: the lifecycle manager is resolved against the active registry,
 		// so only touch it when a parked recipient actually needs reviving.
 		this.#lifecycle = () => lifecycle ?? AgentLifecycleManager.global();
 	}

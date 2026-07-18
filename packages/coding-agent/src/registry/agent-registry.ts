@@ -1,13 +1,15 @@
 /**
- * AgentRegistry - Process-global registry of agents (the main session plus
- * every subagent), keyed by stable id.
+ * AgentRegistry - ambient session-scope registry of agents (the main session
+ * plus every subagent), keyed by stable id.
  *
- * Tracks each agent's status and (when live) its AgentSession so peers can be
- * addressed by id (`hub`, `task resume`, `history://`). Sessions are
- * registered explicitly at creation; finished agents stay registered as
- * `idle` (live) or `parked` (session disposed, ref + sessionFile retained for
- * revival) and are only removed on explicit release/teardown.
+ * Daemon runtimes install a registry with `createAgentRegistryScope`; direct
+ * mode falls back to the historical process registry. Sessions are registered
+ * explicitly at creation; finished agents stay registered as `idle` (live) or
+ * `parked` (session disposed, ref + sessionFile retained for revival) and are
+ * only removed on explicit release/teardown.
  */
+
+import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { AgentSession } from "../session/agent-session";
 import { oneLineLabel } from "../task/types";
@@ -22,6 +24,7 @@ export const MAIN_AGENT_ID = "Main";
  * - `aborted`: hard-killed, terminal.
  */
 export type AgentStatus = "running" | "idle" | "parked" | "aborted";
+
 /**
  * - `main`/`sub`: the user-facing agent tree (driving agent + task subagents).
  * - `advisor`: a passive review transcript persisted like a subagent for usage
@@ -62,17 +65,31 @@ export interface RegisterInput {
 	status?: AgentStatus;
 }
 
+const registryScope = new AsyncLocalStorage<AgentRegistry>();
+
+export function createAgentRegistryScope(registry = new AgentRegistry()): {
+	registry: AgentRegistry;
+	run<T>(action: () => T): T;
+} {
+	return {
+		registry,
+		run: action => registryScope.run(registry, action),
+	};
+}
+
 export class AgentRegistry {
 	static #global: AgentRegistry | undefined;
 
 	static global(): AgentRegistry {
+		const scoped = registryScope.getStore();
+		if (scoped) return scoped;
 		if (!AgentRegistry.#global) {
 			AgentRegistry.#global = new AgentRegistry();
 		}
 		return AgentRegistry.#global;
 	}
 
-	/** Reset the global registry. Test-only. */
+	/** Reset the fallback global registry. Test-only. */
 	static resetGlobalForTests(): void {
 		AgentRegistry.#global = new AgentRegistry();
 	}

@@ -26,6 +26,7 @@ class Transport {
 	readonly frameListeners = new Set<(frame: DaemonSnapshotFrame) => void>();
 	readonly eventListeners = new Set<(event: DaemonEvent) => void>();
 	attachFrames: unknown[] = [];
+	attachFailures = 0;
 	loadNotFound = false;
 	state: DaemonConnectionSnapshot = {
 		state: "connected",
@@ -58,6 +59,10 @@ class Transport {
 		if (operation === "session_load" && this.loadNotFound) {
 			this.loadNotFound = false;
 			throw new Error("not_found: session s was not found");
+		}
+		if (operation === "attach" && this.attachFailures > 0) {
+			this.attachFailures--;
+			throw new Error("unavailable: replacement runtime is still loading");
 		}
 		if (operation === "attach") return { frames: this.attachFrames };
 		if (operation === "session_command") {
@@ -227,6 +232,69 @@ describe("RemoteSessionHandle", () => {
 		]);
 		expect(transport.requests[3]?.payload.lastSeq).toBe(0);
 	});
+	test("accepts replacement daemon events when its sequence restarts", async () => {
+		const transport = new Transport();
+		transport.emitSnapshot({ ...transport.state, daemonId: "old-daemon" } as DaemonConnectionSnapshot);
+		const handle = remote(transport);
+		await handle.whenReady();
+		transport.emitEvent({
+			v: 1,
+			tag: "event",
+			sessionId: "s",
+			seq: 1,
+			event: { type: "agent_start" },
+		});
+		transport.emitEvent({
+			v: 1,
+			tag: "event",
+			sessionId: "s",
+			seq: 2,
+			event: { type: "agent_end" },
+		});
+		const terminalOutput: string[] = [];
+		handle.subscribe(event => {
+			if (event.type === "terminal_output") terminalOutput.push(event.data);
+		});
+
+		transport.emitSnapshot({
+			state: "reconnecting",
+			shard: { profile: "test" },
+			attempt: 1,
+		});
+		transport.attachFrames = [{ type: "event", seq: 1, event: { type: "terminal_output", data: "fresh" } }];
+		const abort = handle.abort();
+		transport.emitSnapshot({
+			...transport.state,
+			state: "connected",
+			daemonId: "replacement-daemon",
+		} as DaemonConnectionSnapshot);
+
+		await abort;
+		expect(terminalOutput).toEqual(["fresh"]);
+		const reattach = transport.requests.filter(request => request.operation === "attach").at(-1);
+		expect(reattach?.payload.lastSeq).toBe(0);
+	});
+	test("retries transient reattach failures while the replacement daemon remains connected", async () => {
+		const transport = new Transport();
+		const handle = remote(transport);
+		await handle.whenReady();
+		transport.emitSnapshot({
+			...transport.state,
+			state: "reconnecting",
+			attempt: 1,
+		} as DaemonConnectionSnapshot);
+		transport.attachFailures = 2;
+		const abort = handle.abort();
+		transport.emitSnapshot({
+			...transport.state,
+			state: "connected",
+		} as DaemonConnectionSnapshot);
+
+		await expect(abort).resolves.toBeUndefined();
+		expect(handle.connectionState).toBe("connected");
+		expect(transport.requests.filter(request => request.operation === "attach")).toHaveLength(4);
+	});
+
 	test("recreates an unpersisted session after shard replacement", async () => {
 		const transport = new Transport();
 		transport.loadNotFound = true;

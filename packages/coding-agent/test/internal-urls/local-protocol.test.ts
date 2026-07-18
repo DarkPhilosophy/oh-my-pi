@@ -8,6 +8,7 @@ import {
 	resolveLocalRoot,
 	resolveLocalUrlToPath,
 } from "@oh-my-pi/pi-coding-agent/internal-urls";
+import { AgentRegistry, createAgentRegistryScope } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
@@ -132,6 +133,54 @@ describe("LocalProtocolHandler", () => {
 			});
 			const router = InternalUrlRouter.instance();
 			await expect(router.resolve("local://linked/secret.txt")).rejects.toThrow("local:// URL escapes local root");
+		});
+	});
+
+	it("isolates overrides by active AgentRegistry scope", async () => {
+		await withTempDir(async tempDir => {
+			const sessionA = `${path.basename(tempDir)}-scope-a`;
+			const sessionB = `${path.basename(tempDir)}-scope-b`;
+			const optionsA = {
+				getArtifactsDir: () => null,
+				getSessionId: () => sessionA,
+			};
+			const optionsB = {
+				getArtifactsDir: () => null,
+				getSessionId: () => sessionB,
+			};
+			const rootA = resolveLocalRoot(optionsA);
+			const rootB = resolveLocalRoot(optionsB);
+			try {
+				await fs.mkdir(rootA, { recursive: true });
+				await fs.mkdir(rootB, { recursive: true });
+				await Bun.write(path.join(rootA, "PLAN.md"), "# scope-a");
+				await Bun.write(path.join(rootB, "PLAN.md"), "# scope-b");
+
+				const scopeA = createAgentRegistryScope(new AgentRegistry());
+				const scopeB = createAgentRegistryScope(new AgentRegistry());
+				const router = InternalUrlRouter.instance();
+
+				const [resourceA, resourceB] = await Promise.all([
+					scopeA.run(async () => {
+						LocalProtocolHandler.setOverride(optionsA);
+						return router.resolve("local://PLAN.md");
+					}),
+					scopeB.run(async () => {
+						LocalProtocolHandler.setOverride(optionsB);
+						return router.resolve("local://PLAN.md");
+					}),
+				]);
+
+				expect(resourceA.content).toBe("# scope-a");
+				expect(resourceA.sourcePath).toBe(await fs.realpath(path.join(rootA, "PLAN.md")));
+				expect(resourceB.content).toBe("# scope-b");
+				expect(resourceB.sourcePath).toBe(await fs.realpath(path.join(rootB, "PLAN.md")));
+				expect(resolveLocalRoot(optionsA)).toBe(rootA);
+				expect(resolveLocalRoot(optionsB)).toBe(rootB);
+			} finally {
+				await removeWithRetries(rootA);
+				await removeWithRetries(rootB);
+			}
 		});
 	});
 

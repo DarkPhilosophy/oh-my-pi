@@ -27,6 +27,7 @@ import { isRpcHostUriResult, RpcHostUriBridge } from "../modes/rpc/host-uris";
 import type { RpcCommand, RpcSessionState } from "../modes/rpc/rpc-types";
 import { submitInteractiveInput } from "../modes/submit-interactive-input";
 import { initTheme } from "../modes/theme/theme";
+import { type AgentRegistry, createAgentRegistryScope } from "../registry/agent-registry";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "../sdk";
 import { createAgentSession, discoverAuthStorage } from "../sdk";
 import {
@@ -241,6 +242,7 @@ async function prepareCliLaunch(
 	cwd: string,
 	argv: string[],
 	baseOptions?: CreateAgentSessionOptions,
+	sessionId?: string,
 ): Promise<CliLaunchPreparation> {
 	setProjectDir(cwd);
 	const parsed = parseArgs(argv);
@@ -288,8 +290,11 @@ async function prepareCliLaunch(
 		);
 	}
 	if (parsed.resume === true) throw new Error("Bare --resume must be resolved before daemon session creation");
-	const resolvedManager = await createSessionManager(parsed, cwd, activeSettings);
-	const sessionManager = resolvedManager ?? SessionManager.create(cwd, parsed.sessionDir);
+	const resolvedManager =
+		parsed.noSession && sessionId
+			? SessionManager.inMemory(cwd, undefined, sessionId)
+			: await createSessionManager(parsed, cwd, activeSettings);
+	const sessionManager = resolvedManager ?? SessionManager.create(cwd, parsed.sessionDir, undefined, sessionId);
 	const createOptions = await buildSessionOptions(parsed, scopedModels, sessionManager, modelRegistry, activeSettings);
 	createOptions.authStorage = authStorage;
 	createOptions.modelRegistry = modelRegistry;
@@ -310,18 +315,19 @@ async function prepareCliLaunch(
  */
 async function createAgentSessionRuntimeInScope(
 	options: CreateAgentSessionRuntimeOptions,
+	registry: AgentRegistry,
 ): Promise<DaemonSessionRuntime> {
 	const create = options.createSession ?? createAgentSession;
 	const overrides = options.overrides;
 	const cliLaunch =
 		!options.sessionFile && overrides?.argv
-			? await prepareCliLaunch(options.cwd, overrides.argv, options.baseOptions)
+			? await prepareCliLaunch(options.cwd, overrides.argv, options.baseOptions, options.sessionId)
 			: undefined;
 	const sessionManager =
 		cliLaunch?.sessionManager ??
 		(options.sessionFile
 			? await SessionManager.open(options.sessionFile, options.sessionDir, undefined, { initialCwd: options.cwd })
-			: SessionManager.create(options.cwd, options.sessionDir));
+			: SessionManager.create(options.cwd, options.sessionDir, undefined, options.sessionId));
 	const modelPattern =
 		!cliLaunch && (overrides?.provider || overrides?.model)
 			? `${overrides.provider ?? ""}${overrides.provider && overrides.model ? "/" : ""}${overrides.model ?? "*"}`
@@ -342,6 +348,9 @@ async function createAgentSessionRuntimeInScope(
 		...(modelPattern === undefined ? {} : { modelPattern }),
 		...(thinkingLevel === undefined ? {} : { thinkingLevel }),
 	};
+	if (createOptions.agentRegistry !== registry) {
+		createOptions.agentRegistry = registry;
+	}
 	let result: CreateAgentSessionResult;
 	try {
 		result = await create(createOptions);
@@ -966,29 +975,35 @@ async function createAgentSessionRuntimeInScope(
  */
 export function createAgentSessionRuntime(options: CreateAgentSessionRuntimeOptions): Promise<DaemonSessionRuntime> {
 	const projectDirScope = createProjectDirScope(options.cwd);
-	return projectDirScope.run(async () => {
-		const runtime = await createAgentSessionRuntimeInScope(options);
-		return {
-			sessionId: runtime.sessionId,
-			get cwd() {
-				return projectDirScope.get();
-			},
-			session: runtime.session,
-			...(runtime.protectedJobCount
-				? {
-						protectedJobCount: () => projectDirScope.run(() => runtime.protectedJobCount?.() ?? 0),
-					}
-				: {}),
-			snapshot: () => projectDirScope.run(() => runtime.snapshot()),
-			command: (command: unknown, attachmentId?: string) =>
-				projectDirScope.run(() => runtime.command(command, attachmentId)),
-			dispose: () => projectDirScope.run(() => runtime.dispose()),
-			subscribe: (listener: AgentSessionEventListener) => {
-				const unsubscribe = projectDirScope.run(() =>
-					runtime.subscribe(event => projectDirScope.run(() => listener(event))),
-				);
-				return () => projectDirScope.run(unsubscribe);
-			},
-		};
-	});
+	const registryScope = createAgentRegistryScope();
+	return registryScope.run(() =>
+		projectDirScope.run(async () => {
+			const runtime = await createAgentSessionRuntimeInScope(options, registryScope.registry);
+			return {
+				sessionId: runtime.sessionId,
+				get cwd() {
+					return projectDirScope.get();
+				},
+				session: runtime.session,
+				...(runtime.protectedJobCount
+					? {
+							protectedJobCount: () =>
+								registryScope.run(() => projectDirScope.run(() => runtime.protectedJobCount?.() ?? 0)),
+						}
+					: {}),
+				snapshot: () => registryScope.run(() => projectDirScope.run(() => runtime.snapshot())),
+				command: (command: unknown, attachmentId?: string) =>
+					registryScope.run(() => projectDirScope.run(() => runtime.command(command, attachmentId))),
+				dispose: () => registryScope.run(() => projectDirScope.run(() => runtime.dispose())),
+				subscribe: (listener: AgentSessionEventListener) => {
+					const unsubscribe = registryScope.run(() =>
+						projectDirScope.run(() =>
+							runtime.subscribe(event => registryScope.run(() => projectDirScope.run(() => listener(event)))),
+						),
+					);
+					return () => registryScope.run(() => projectDirScope.run(unsubscribe));
+				},
+			};
+		}),
+	);
 }

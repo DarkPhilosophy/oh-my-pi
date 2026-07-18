@@ -1,7 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import { AgentRegistry, createAgentRegistryScope } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 
 describe("AsyncJobManager", () => {
+	test("instance is isolated by registry scope", () => {
+		const scopeA = createAgentRegistryScope(new AgentRegistry());
+		const scopeB = createAgentRegistryScope(new AgentRegistry());
+		const managerA = new AsyncJobManager({ onJobComplete: () => {} });
+		const managerB = new AsyncJobManager({ onJobComplete: () => {} });
+		scopeA.run(() => AsyncJobManager.setInstance(managerA));
+		scopeB.run(() => AsyncJobManager.setInstance(managerB));
+		expect(scopeA.run(() => AsyncJobManager.instance())).toBe(managerA);
+		expect(scopeB.run(() => AsyncJobManager.instance())).toBe(managerB);
+		scopeB.run(() => AsyncJobManager.resetForTests());
+		expect(scopeB.run(() => AsyncJobManager.instance())).toBeUndefined();
+		expect(scopeA.run(() => AsyncJobManager.instance())).toBeUndefined();
+	});
+
 	test("forwards progress updates and delivers completion", async () => {
 		const progressEvents: Array<{ text: string; details?: Record<string, unknown> }> = [];
 		const completions: Array<{ jobId: string; text: string }> = [];

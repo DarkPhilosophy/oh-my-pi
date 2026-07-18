@@ -9,17 +9,28 @@ import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import { AgentRegistry } from "../registry/agent-registry";
 
-const extraArtifactsDirs = new Set<string>();
+let extraArtifactsDirs: WeakMap<AgentRegistry, Record<string, true>> = new WeakMap();
+
+function extraDirsFor(registry: AgentRegistry): Record<string, true> {
+	let dirs = extraArtifactsDirs.get(registry);
+	if (!dirs) {
+		dirs = {};
+		extraArtifactsDirs.set(registry, dirs);
+	}
+	return dirs;
+}
 
 export function registerArtifactsDir(dir: string): () => void {
-	extraArtifactsDirs.add(dir);
+	const registry = AgentRegistry.global();
+	const dirs = extraDirsFor(registry);
+	dirs[dir] = true;
 	return () => {
-		extraArtifactsDirs.delete(dir);
+		delete dirs[dir];
 	};
 }
 
 export function resetRegisteredArtifactDirsForTests(): void {
-	extraArtifactsDirs.clear();
+	extraArtifactsDirs = new WeakMap();
 }
 
 /**
@@ -34,16 +45,17 @@ export function resetRegisteredArtifactDirsForTests(): void {
  * single entry.
  */
 export function artifactsDirsFromRegistry(): string[] {
+	const registry = AgentRegistry.global();
 	const dirs: string[] = [];
 	const addDir = (dir: string | null | undefined) => {
 		if (!dir) return;
 		if (!dirs.includes(dir)) dirs.push(dir);
 	};
-	for (const ref of AgentRegistry.global().list()) {
+	for (const ref of registry.list()) {
 		addDir(ref.session?.sessionManager?.getArtifactsDir());
 		if (ref.sessionFile) addDir(ref.sessionFile.slice(0, -6));
 	}
-	for (const dir of extraArtifactsDirs) addDir(dir);
+	for (const dir of Object.keys(extraDirsFor(registry))) addDir(dir);
 	return dirs;
 }
 

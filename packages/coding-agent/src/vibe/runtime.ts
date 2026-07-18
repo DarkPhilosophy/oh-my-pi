@@ -188,23 +188,26 @@ function mergeTrace(turn: VibeTurn, progress: AgentProgress): void {
 export class VibeTurnError extends Error {}
 
 /**
- * Process-global registry of vibe worker sessions, scoped per owner agent id
+ * Registry-scoped collection of vibe worker sessions, scoped per owner agent id
  * (same convention as AsyncJobManager owner filters). The interactive mode
  * kills an owner's sessions on vibe-mode exit via {@link killAll}.
  */
 export class VibeSessionRegistry {
-	static #global: VibeSessionRegistry | undefined;
+	static #globals = new WeakMap<AgentRegistry, VibeSessionRegistry>();
 
 	static global(): VibeSessionRegistry {
-		if (!VibeSessionRegistry.#global) {
-			VibeSessionRegistry.#global = new VibeSessionRegistry();
+		const registry = AgentRegistry.global();
+		let global = VibeSessionRegistry.#globals.get(registry);
+		if (!global) {
+			global = new VibeSessionRegistry();
+			VibeSessionRegistry.#globals.set(registry, global);
 		}
-		return VibeSessionRegistry.#global;
+		return global;
 	}
 
-	/** Reset the global registry. Test-only. */
+	/** Reset all registry-scoped instances. Test-only. */
 	static resetGlobalForTests(): void {
-		VibeSessionRegistry.#global = undefined;
+		VibeSessionRegistry.#globals = new WeakMap();
 	}
 
 	readonly #records = new Map<string, VibeRecord>();

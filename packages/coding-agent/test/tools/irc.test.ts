@@ -4,7 +4,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { SettingPath } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import { IrcBus, type IrcMessage } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
-import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { AgentRegistry, createAgentRegistryScope } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -111,6 +111,30 @@ describe("IRC", () => {
 		for (const session of sessions.splice(0)) {
 			await session.dispose();
 		}
+	});
+
+	it("isolates sends by registry scope", async () => {
+		const scopeA = createAgentRegistryScope(new AgentRegistry());
+		const scopeB = createAgentRegistryScope(new AgentRegistry());
+		const recipient = makeFakeSession();
+		scopeA.run(() => {
+			scopeA.registry.register({
+				id: "scope-a-agent",
+				displayName: "task",
+				kind: "sub",
+				session: recipient.session,
+			});
+		});
+		const busA = scopeA.run(() => IrcBus.global());
+		const busB = scopeB.run(() => IrcBus.global());
+		expect(scopeA.run(() => busA)).toBe(busA);
+		expect(scopeB.run(() => IrcBus.global())).toBe(busB);
+		await expect(
+			scopeB.run(() => busB.send({ from: "sender", to: "scope-a-agent", body: "secret" })),
+		).resolves.toMatchObject({
+			outcome: "failed",
+		});
+		expect(recipient.delivered).toHaveLength(0);
 	});
 
 	describe("IrcBus", () => {

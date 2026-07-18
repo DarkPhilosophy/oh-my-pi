@@ -4,6 +4,8 @@
  * Project-specific rules from Cursor (.mdc), Windsurf (.md), and Cline formats.
  * Translated to a canonical shape regardless of source format.
  */
+
+import { AgentRegistry } from "../registry/agent-registry";
 import { defineCapability } from ".";
 import type { SourceMeta } from "./types";
 
@@ -263,24 +265,24 @@ export function compileRuleCondition(pattern: string): RegExp {
 	return new RegExp(pattern);
 }
 
-let activeRules: readonly Rule[] = [];
+let activeRulesByRegistry = new WeakMap<AgentRegistry, readonly Rule[]>();
 
 /**
- * Process-global snapshot of rules the active session loaded.
+ * Snapshot of rules the active session loaded, scoped to its AgentRegistry.
  * Read by internal URL protocol handlers (rule://).
  */
 export function getActiveRules(): readonly Rule[] {
-	return activeRules;
+	return activeRulesByRegistry.get(AgentRegistry.global()) ?? [];
 }
 
 /** Replace the active rule snapshot. Called once per top-level session. */
 export function setActiveRules(value: readonly Rule[]): void {
-	activeRules = value;
+	activeRulesByRegistry.set(AgentRegistry.global(), value);
 }
 
 /** Reset the active rule snapshot. Test-only. */
 export function resetActiveRulesForTests(): void {
-	activeRules = [];
+	activeRulesByRegistry = new WeakMap();
 }
 
 export const ruleCapability = defineCapability<Rule>({

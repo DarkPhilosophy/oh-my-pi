@@ -82,4 +82,17 @@ describe("ordered daemon event log", () => {
 		log.acknowledge("b", 3);
 		expect(log.oldestSeq).toBe(4);
 	});
+	test("measures an event once even when acknowledgement prunes it", () => {
+		let measurements = 0;
+		const log = new OrderedEventLog<E>({
+			sizeOf: () => {
+				measurements++;
+				return 32;
+			},
+		});
+		log.registerAttachment("a");
+		log.append({ type: "event", value: 1 });
+		log.acknowledge("a", 1);
+		expect(measurements).toBe(1);
+	});
 });

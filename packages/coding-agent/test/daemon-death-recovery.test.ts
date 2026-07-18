@@ -198,6 +198,158 @@ describe("daemon death recovery", () => {
 		}
 	}, 40_000);
 
+	test("independent client contenders elect one replacement daemon after a hard crash", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-contenders-"));
+		const runtimeDir = path.join(root, "runtime");
+		const cwd = await fs.realpath(root);
+		const child = await spawnCrashServer(runtimeDir, "secret");
+		const contenders: Bun.Subprocess[] = [];
+		const clients: DaemonClient[] = [];
+		const handles: RemoteSessionHandle[] = [];
+		let recoveryRequests = 0;
+		const recoverUnavailable = (): void => {
+			recoveryRequests++;
+			contenders.push(
+				Bun.spawn(["bun", FIXTURE, runtimeDir, "secret"], {
+					stdout: "ignore",
+					stderr: "ignore",
+				}),
+			);
+		};
+		try {
+			for (let i = 0; i < 4; i++) {
+				const client = new DaemonClient({
+					profile: "test",
+					runtimeDir,
+					token: "secret",
+					recoverUnavailable,
+				});
+				clients.push(client);
+				await client.connect();
+				const sessionId = `contender-${i}`;
+				await client.request("session_create", { sessionId, cwd });
+				const handle = new RemoteSessionHandle(client, sessionId, {
+					recover: async () => {
+						await client.request("session_create", { sessionId, cwd });
+					},
+					reconnectWaitMs: 30_000,
+				});
+				handles.push(handle);
+				await handle.whenReady();
+			}
+
+			child.kill(9);
+			await child.exited;
+			await waitFor(
+				() => clients.every(client => client.snapshot.state !== "connected"),
+				10_000,
+				"all contender clients to observe the daemon death",
+			);
+
+			const results = await Promise.allSettled(handles.map((handle, i) => handle.prompt(`after-crash-${i}`)));
+			expect(results.filter(result => result.status === "rejected")).toEqual([]);
+			expect(recoveryRequests).toBeGreaterThanOrEqual(1);
+			const daemonIds = new Set(
+				clients.map(client => (client.snapshot.state === "connected" ? client.snapshot.daemonId : undefined)),
+			);
+			expect(daemonIds).toHaveLength(1);
+			expect(daemonIds.has(undefined)).toBe(false);
+
+			const owner = (await Bun.file(path.join(runtimeDir, "daemon.owner")).json()) as { pid?: unknown };
+			expect(contenders.some(contender => contender.pid === owner.pid)).toBe(true);
+		} finally {
+			for (const handle of handles) await handle.dispose().catch(() => undefined);
+			for (const client of clients) client.close();
+			if (!child.killed) child.kill(9);
+			for (const contender of contenders) {
+				if (contender.exitCode === null) contender.kill(9);
+				await contender.exited;
+			}
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	}, 40_000);
+
+	test("independent clients replace one live but unresponsive daemon and all reattach", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-hang-"));
+		const runtimeDir = path.join(root, "runtime");
+		const cwd = await fs.realpath(root);
+		const child = await spawnCrashServer(runtimeDir, "secret");
+		const contenders: Bun.Subprocess[] = [];
+		const clients: DaemonClient[] = [];
+		const handles: RemoteSessionHandle[] = [];
+		let recoveryRequests = 0;
+		const recoverUnavailable = (): void => {
+			recoveryRequests++;
+			contenders.push(
+				Bun.spawn(["bun", FIXTURE, runtimeDir, "secret"], {
+					stdout: "ignore",
+					stderr: "ignore",
+				}),
+			);
+		};
+		try {
+			for (let i = 0; i < 4; i++) {
+				const client = new DaemonClient({
+					profile: "test",
+					runtimeDir,
+					token: "secret",
+					requestTimeoutMs: 250,
+					recoverUnavailable,
+				});
+				clients.push(client);
+				await client.connect();
+				const sessionId = `hung-${i}`;
+				await client.request("session_create", { sessionId, cwd });
+				const handle = new RemoteSessionHandle(client, sessionId, {
+					recover: async () => {
+						await client.request("session_create", { sessionId, cwd });
+					},
+					reconnectWaitMs: 30_000,
+				});
+				handles.push(handle);
+				await handle.whenReady();
+			}
+			const oldDaemonId = clients[0]!.snapshot.state === "connected" ? clients[0]!.snapshot.daemonId : undefined;
+			expect(oldDaemonId).toBeDefined();
+
+			process.kill(child.pid, "SIGSTOP");
+			const probes = await Promise.allSettled(clients.map(client => client.request("ping")));
+			expect(probes.every(result => result.status === "rejected")).toBe(true);
+			await waitFor(
+				() =>
+					clients.every(
+						client =>
+							client.snapshot.state === "connected" &&
+							client.snapshot.daemonId !== undefined &&
+							client.snapshot.daemonId !== oldDaemonId,
+					),
+				25_000,
+				"all clients to attach to a replacement for the hung daemon",
+			);
+
+			const results = await Promise.allSettled(handles.map((handle, i) => handle.prompt(`after-hang-${i}`)));
+			expect(results.filter(result => result.status === "rejected")).toEqual([]);
+			expect(recoveryRequests).toBeGreaterThanOrEqual(1);
+			const daemonIds = new Set(
+				clients.map(client => (client.snapshot.state === "connected" ? client.snapshot.daemonId : undefined)),
+			);
+			expect(daemonIds).toHaveLength(1);
+			expect(daemonIds.has(undefined)).toBe(false);
+			const owner = (await Bun.file(path.join(runtimeDir, "daemon.owner")).json()) as { pid?: unknown };
+			expect(contenders.some(contender => contender.pid === owner.pid)).toBe(true);
+		} finally {
+			for (const handle of handles) await handle.dispose().catch(() => undefined);
+			for (const client of clients) client.close();
+			if (!child.killed) child.kill(9);
+			await child.exited;
+			for (const contender of contenders) {
+				if (contender.exitCode === null) contender.kill(9);
+				await contender.exited;
+			}
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	}, 40_000);
+
 	test("without recovery, a parked command fails within the reconnect bound instead of hanging forever", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-death-"));
 		const runtimeDir = path.join(root, "runtime");

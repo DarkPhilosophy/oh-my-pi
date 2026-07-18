@@ -5,6 +5,7 @@ import { createAgentSessionRuntime } from "../src/daemon/session-runtime";
 import type { HostedTerminalDescriptor } from "../src/daemon/terminal-bridge";
 import * as interactiveModeModule from "../src/modes/interactive-mode";
 import * as themeModule from "../src/modes/theme/theme";
+import { AgentRegistry } from "../src/registry/agent-registry";
 import type { CreateAgentSessionResult } from "../src/sdk";
 import {
 	type AgentSession,
@@ -44,6 +45,38 @@ describe("daemon session runtime", () => {
 
 		expect(disposeOptions?.mnemopiConsolidateTimeoutMs).toBe(SHUTDOWN_CONSOLIDATE_BUDGET_MS);
 	});
+	test("seeds a recovered CLI runtime with the requested session identity", async () => {
+		let createdSessionId: string | undefined;
+		const runtime = await createAgentSessionRuntime({
+			cwd: process.cwd(),
+			sessionId: "stable-recovery-id",
+			overrides: { argv: ["--no-session", "--no-extensions"] },
+			createSession: async options => {
+				createdSessionId = options.sessionManager?.getSessionId();
+				const session = {
+					sessionId: createdSessionId,
+					isStreaming: false,
+					subscribe: () => () => {},
+					subscribeCommandMetadataChanged: () => () => {},
+					dispose: async () => {
+						await options.sessionManager?.close();
+					},
+				} as unknown as AgentSession;
+				return {
+					session,
+					setToolUIContext: () => {},
+				} as unknown as CreateAgentSessionResult;
+			},
+		});
+		try {
+			expect(createdSessionId).toBe("stable-recovery-id");
+			expect(runtime.sessionId).toBe("stable-recovery-id");
+			expect(runtime.session.sessionId).toBe("stable-recovery-id");
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
 	test("keeps creation and commands inside each session working-directory context", async () => {
 		const root = process.cwd();
 		const firstCwd = path.join(root, "first-project");
@@ -78,6 +111,62 @@ describe("daemon session runtime", () => {
 			expect(await first.command({ type: "get_session_stats" })).toEqual({ cwd: firstCwd });
 			expect(await second.command({ type: "get_session_stats" })).toEqual({ cwd: secondCwd });
 			expect(getProjectDir()).toBe(root);
+		} finally {
+			await Promise.all([first.dispose(), second.dispose()]);
+		}
+	});
+	test("isolates concurrent runtime registries and re-enters each command scope", async () => {
+		const registries: AgentRegistry[] = [];
+		const createRuntime = (sessionId: string) =>
+			createAgentSessionRuntime({
+				cwd: process.cwd(),
+				sessionId,
+				createSession: async options => {
+					const registry = options.agentRegistry;
+					expect(registry).toBeDefined();
+					if (!registry) throw new Error("runtime must inject an agent registry");
+					registries.push(registry);
+					registry.register({
+						id: `child-${sessionId}`,
+						displayName: `Child ${sessionId}`,
+						kind: "sub",
+						parentId: sessionId,
+						session: null,
+					});
+					expect(AgentRegistry.global()).toBe(registry);
+					const session = {
+						sessionId,
+						isStreaming: false,
+						subscribe: () => () => {},
+						subscribeCommandMetadataChanged: () => () => {},
+						getSessionStats: () => ({
+							registryIds: AgentRegistry.global()
+								.list()
+								.map(ref => ref.id),
+						}),
+						dispose: async () => {
+							await options.sessionManager?.close();
+						},
+					} as unknown as AgentSession;
+					return {
+						session,
+						setToolUIContext: () => {},
+					} as unknown as CreateAgentSessionResult;
+				},
+			});
+
+		const [first, second] = await Promise.all([createRuntime("first-registry"), createRuntime("second-registry")]);
+		try {
+			expect(registries).toHaveLength(2);
+			expect(registries[0]).not.toBe(registries[1]);
+			expect(registries[0]!.list().map(ref => ref.id)).toEqual(["child-first-registry"]);
+			expect(registries[1]!.list().map(ref => ref.id)).toEqual(["child-second-registry"]);
+			expect(await first.command({ type: "get_session_stats" })).toEqual({
+				registryIds: ["child-first-registry"],
+			});
+			expect(await second.command({ type: "get_session_stats" })).toEqual({
+				registryIds: ["child-second-registry"],
+			});
 		} finally {
 			await Promise.all([first.dispose(), second.dispose()]);
 		}

@@ -2,7 +2,12 @@ import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import type { DaemonClient } from "../daemon/client";
-import { type DaemonEvent, type DaemonSnapshotFrame, decodeDaemonSnapshotChunks } from "../daemon/protocol";
+import {
+	type DaemonEvent,
+	type DaemonEventDelivery,
+	type DaemonSnapshotFrame,
+	decodeDaemonSnapshotChunks,
+} from "../daemon/protocol";
 import type { BashResult } from "../exec/bash-executor";
 import type {
 	RpcAvailableSlashCommand,
@@ -378,6 +383,7 @@ export class LocalSessionHandle implements SessionHandle {
 export type RemoteSessionHandleOptions = {
 	attachmentId?: string;
 	lastSeq?: number;
+	delivery?: DaemonEventDelivery;
 	recover?: () => Promise<void>;
 	/**
 	 * Upper bound on how long a command issued during a connection outage waits
@@ -394,6 +400,7 @@ export class RemoteSessionHandle implements SessionHandle {
 	readonly #sessionId: string;
 	readonly #attachmentId: string;
 	readonly #recover: (() => Promise<void>) | undefined;
+	readonly #delivery: DaemonEventDelivery;
 	readonly #listeners = new Set<SessionHandleListener>();
 	readonly #extensionUiListeners = new Set<ExtensionUIListener>();
 	readonly #hostToolListeners = new Set<HostToolListener>();
@@ -410,6 +417,7 @@ export class RemoteSessionHandle implements SessionHandle {
 	#reattachTask: Promise<void> | undefined;
 	#connectionWait: Promise<void> | undefined;
 	#resolveConnectionWait: (() => void) | undefined;
+	#daemonId: string | undefined;
 	readonly #reconnectWaitMs: number;
 	readonly #ready: Promise<void>;
 
@@ -418,35 +426,29 @@ export class RemoteSessionHandle implements SessionHandle {
 		this.#sessionId = sessionId;
 		this.#attachmentId = options.attachmentId ?? crypto.randomUUID();
 		this.#recover = options.recover;
+		this.#delivery = options.delivery ?? "all";
 		this.#reconnectWaitMs = Math.max(1, options.reconnectWaitMs ?? 15_000);
 		this.#state = freezeState(defaultState(sessionId));
 		this.#snapshot = freezeSnapshot(this.#state, null, []);
 		this.#lastSeq = options.lastSeq ?? 0;
+		this.#daemonId = client.snapshot.state === "connected" ? client.snapshot.daemonId : undefined;
 		this.#unsubscribeClient.push(
 			client.onSnapshot(snapshot => {
 				if (this.#disposed) return;
 				if (snapshot.state === "connected") {
+					if (snapshot.daemonId !== undefined) {
+						if (this.#daemonId !== undefined && snapshot.daemonId !== this.#daemonId) {
+							this.#lastSeq = 0;
+							this.#snapshotBarrier = -1;
+							this.#snapshotChunks.clear();
+						}
+						this.#daemonId = snapshot.daemonId;
+					}
 					if (!this.#attached) {
 						this.#connectionState = "connected";
 						return;
 					}
-					if (this.#reattachTask) return;
-					this.#connectionState = "connecting";
-					const task = this.#attach(this.#lastSeq);
-					this.#reattachTask = task
-						.then(
-							() => {
-								this.#connectionState = "connected";
-								this.#wakeConnectionWait();
-							},
-							() => {
-								this.#connectionState = "disconnected";
-								this.#wakeConnectionWait();
-							},
-						)
-						.finally(() => {
-							this.#reattachTask = undefined;
-						});
+					this.#beginReattach();
 				} else if (snapshot.state === "reconnecting" || snapshot.state === "connecting") {
 					this.#connectionState = snapshot.state;
 					if (this.#attached && !this.#connectionWait) {
@@ -708,6 +710,37 @@ export class RemoteSessionHandle implements SessionHandle {
 			throw errorFrom(error);
 		}
 	}
+	#beginReattach(): void {
+		if (this.#disposed || !this.#attached || this.#reattachTask || this.#client.snapshot.state !== "connected")
+			return;
+		this.#connectionState = "connecting";
+		this.#reattachTask = this.#reattachUntilConnected().finally(() => {
+			this.#reattachTask = undefined;
+			if (this.#client.snapshot.state === "connected" && this.#connectionState !== "connected")
+				this.#beginReattach();
+		});
+	}
+	async #reattachUntilConnected(): Promise<void> {
+		const deadline = Date.now() + this.#reconnectWaitMs;
+		let delayMs = 100;
+		while (!this.#disposed && this.#client.snapshot.state === "connected") {
+			this.#connectionState = "connecting";
+			try {
+				await this.#attach(this.#lastSeq);
+				this.#connectionState = "connected";
+				this.#wakeConnectionWait();
+				return;
+			} catch {
+				if (Date.now() >= deadline) {
+					this.#connectionState = "disconnected";
+					this.#wakeConnectionWait();
+					return;
+				}
+				await Bun.sleep(delayMs);
+				delayMs = Math.min(delayMs * 2, 1_000);
+			}
+		}
+	}
 	async #attach(lastSeq?: number): Promise<void> {
 		try {
 			await this.#client.connect();
@@ -725,6 +758,7 @@ export class RemoteSessionHandle implements SessionHandle {
 				attachmentId: this.#attachmentId,
 				mode: "interactive",
 				...(lastSeq === undefined ? {} : { lastSeq }),
+				delivery: this.#delivery,
 			});
 			this.#attached = true;
 			this.#connectionState = "connected";

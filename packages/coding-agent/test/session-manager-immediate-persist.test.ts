@@ -63,6 +63,15 @@ function messageContent(entry: Record<string, unknown>): unknown {
 }
 
 describe("SessionManager immediate JSONL persistence", () => {
+	it("preserves an explicit recovery identity for persisted and in-memory sessions", () => {
+		const cwd = makeTempDir("@pi-recovery-id-cwd-");
+		const persisted = SessionManager.create(cwd, path.join(cwd, "sessions"), undefined, "persisted-recovery-id");
+		const inMemory = SessionManager.inMemory(cwd, undefined, "memory-recovery-id");
+
+		expect(persisted.getSessionId()).toBe("persisted-recovery-id");
+		expect(inMemory.getSessionId()).toBe("memory-recovery-id");
+	});
+
 	it("writes the first assistant turn and later entries before appendMessage returns", () => {
 		const cwd = makeTempDir("@pi-immediate-cwd-");
 		const sessionDir = path.join(cwd, "sessions");
