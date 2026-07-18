@@ -5,6 +5,10 @@
 ### Fixed
 
 - Fixed OpenAI Codex multi-account fallback dying when a model-scoped window was pinned: a Spark 7-day meter at 100% marked the whole account exhausted and blocked it for shared-window models, so exhausting the sibling left the agent (and advisors/subagents) with "no usable credential" despite ample shared quota. Quota checks and backoff blocks are now scoped per quota family (Spark models meter on their own window; everything else uses the shared account windows), and the live-usage self-heal reconciles each family separately so a stale cross-family block clears instead of surviving until its natural expiry.
+### Changed
+
+- Anthropic API-key requests to the canonical API now default to 1h prompt-cache retention (`cache_control: { ttl: "1h" }` plus the `extended-cache-ttl-2025-04-11` beta), matching the OAuth default. The previous 5m default cold-missed the entire prompt prefix whenever a session idled past 5 minutes — e.g. waiting on long-running background jobs. `PI_CACHE_RETENTION` now accepts `short` and `none` to override the default in either direction; endpoints without `compat.supportsLongCacheRetention` keep the 5m breakpoint.
+
 ## [17.0.4] - 2026-07-18
 
 ### Fixed

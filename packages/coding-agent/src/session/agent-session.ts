@@ -4215,30 +4215,58 @@ export class AgentSession {
 		return queued;
 	}
 
+	/**
+	 * Orders subscriber fan-out across concurrent `#emitSessionEvent` calls.
+	 * Extension emits only await when the event type has handlers, so an event
+	 * with no handlers could otherwise overtake an earlier event still inside
+	 * its extension emit — an instant refusal delivered its assistant
+	 * `message_end` to the TUI before its own `message_start`, skipping the
+	 * turn-ending error render entirely.
+	 */
+	#subscriberEmitGate: Promise<void> = Promise.resolve();
+
 	async #emitSessionEvent(event: AgentSessionEvent): Promise<void> {
 		if (event.type === "message_update") {
 			this.#emit(event);
 			void this.#queueExtensionEvent(event);
 			return;
 		}
-		await this.#emitExtensionEvent(event);
-		// Hold the wire-level agent_end until in-flight prompts unwind. Subscribers
-		// (rpc-mode, ACP, Cursor) treat agent_end as the "session is idle" signal;
-		// emitting while #promptInFlightCount > 0 lets a client fire its next
-		// `prompt` into a session that still reports isStreaming === true. Flush
-		// happens in #endInFlight / #resetInFlight. A later agent_end (e.g. from
-		// an auto-compaction turn that starts before the original prompt unwinds)
-		// supersedes the pending one, which is what subscribers want — they only
-		// care about the final settle.
-		if (event.type === "agent_end" && this.#promptInFlightCount > 0) {
-			this.#pendingAgentEndEmit = event;
-			return;
+		// Take a FIFO ticket before the extension emit: extension deliveries for
+		// consecutive events still run concurrently, but subscriber fan-out waits
+		// for every earlier event's fan-out (or deferral) to happen first.
+		const previousGate = this.#subscriberEmitGate;
+		const { promise: gate, resolve: releaseGate } = Promise.withResolvers<void>();
+		this.#subscriberEmitGate = gate;
+		try {
+			await this.#emitExtensionEvent(event);
+			await previousGate;
+			// Hold the wire-level agent_end until in-flight prompts unwind. Subscribers
+			// (rpc-mode, ACP, Cursor) treat agent_end as the "session is idle" signal;
+			// emitting while #promptInFlightCount > 0 lets a client fire its next
+			// `prompt` into a session that still reports isStreaming === true. Flush
+			// happens in #endInFlight / #resetInFlight. A later agent_end (e.g. from
+			// an auto-compaction turn that starts before the original prompt unwinds)
+			// supersedes the pending one, which is what subscribers want — they only
+			// care about the final settle.
+			if (event.type === "agent_end" && this.#promptInFlightCount > 0) {
+				this.#pendingAgentEndEmit = event;
+				return;
+			}
+			this.#emit(event);
+		} finally {
+			releaseGate();
 		}
-		this.#emit(event);
 	}
 
 	// Track last assistant message for auto-compaction check
 	#lastAssistantMessage: AssistantMessage | undefined = undefined;
+	/**
+	 * Classifier-refusal turn pruned from active context at settle (#3591).
+	 * Retained until the next run starts so post-settle readers
+	 * ({@link getLastAssistantMessage}: print mode, task executor) still see
+	 * the terminal error instead of a silently successful-looking state.
+	 */
+	#prunedTerminalRefusal: AssistantMessage | undefined = undefined;
 
 	/** Internal handler for agent events - shared by subscribe and reconnect.
 	 *
@@ -4498,6 +4526,11 @@ export class AgentSession {
 	}
 
 	#processAgentEvent = async (event: AgentEvent): Promise<void> => {
+		// A fresh run supersedes the previously settled (and pruned) refusal
+		// turn: state-based lookups take over again.
+		if (event.type === "agent_start") {
+			this.#prunedTerminalRefusal = undefined;
+		}
 		// Step the mid-run todo counter synchronously, BEFORE any await in this
 		// handler. The agent loop's next-turn `getAsideMessages` poll can run
 		// before queued microtasks drain, so `#takeMidRunTodoNudge` MUST see the
@@ -4516,6 +4549,19 @@ export class AgentSession {
 			} else if (!isError && MID_RUN_TODO_NUDGE_MUTATING_TOOLS[toolName]) {
 				this.#mutationsSinceLastTodoTouch++;
 			}
+			// A tool actually ran. Clear the post-reminder suppression synchronously
+			// too: the settle check (`#checkTodoCompletion` in agent_end maintenance)
+			// can otherwise read the stale flag when a tool result and the terminal
+			// stop land in the same tick, swallowing the earned re-escalation.
+			this.#todoReminderAwaitingProgress = false;
+		}
+		// Track the settled assistant turn synchronously as well: agent_end
+		// maintenance reads `#lastAssistantMessage`, and when a turn's events all
+		// land in one tick its handler can run before this handler's post-emit
+		// bookkeeping — leaving maintenance looking at the previous (e.g.
+		// toolUse) assistant message and skipping settle-only work.
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			this.#lastAssistantMessage = event.message;
 		}
 		// Plan-mode internal transition: stamp `SILENT_ABORT_MARKER` on the
 		// persisted message BEFORE the obfuscator's display-side copy below.
@@ -4722,9 +4768,7 @@ export class AgentSession {
 			}
 			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
 
-			// Track assistant message for auto-compaction (checked on agent_end)
 			if (event.message.role === "assistant") {
-				this.#lastAssistantMessage = event.message;
 				const assistantMsg = event.message as AssistantMessage;
 				// Fold this turn's timing into per-model perf aggregates (drives the
 				// /models TPS/TTFT display). Errored turns measure nothing; aborted
@@ -4794,10 +4838,6 @@ export class AgentSession {
 				const details = isRecord(event.message.details) ? event.message.details : undefined;
 				const semanticResult = semanticToolResult(toolName, event.message);
 				const semanticDetails = isRecord(semanticResult?.details) ? semanticResult.details : undefined;
-				// A tool actually ran. Clear the post-reminder suppression: the agent did
-				// productive work in response to the prior nudge, so the next text-only stop
-				// is allowed to escalate to the next reminder if todos remain incomplete.
-				this.#todoReminderAwaitingProgress = false;
 				// Invalidate streaming edit cache when edit tool completes to prevent stale data
 				const editedPath = details ? getStringProperty(details, "path") : undefined;
 				if (toolName === "edit" && editedPath) {
@@ -5043,10 +5083,14 @@ export class AgentSession {
 			}
 			// Classifier refusals are persisted-skipped above; also prune the trailing
 			// stub from active context so the next turn's prompt does not replay it.
+			// Keep a reference for post-settle readers (print mode, task executor via
+			// getLastAssistantMessage) — pruning made the terminal error invisible to
+			// anything inspecting agent state after prompt() resolved.
 			// Fall through to the standard error tail so `session_stop` hooks (block,
 			// continue, telemetry) still fire — matching the pre-fix flow for
 			// `stopReason === "error"`.
 			if (this.#isClassifierRefusal(msg)) {
+				this.#prunedTerminalRefusal = msg;
 				this.#removeAssistantMessageFromActiveContext(msg);
 			}
 			this.#resolveRetry();
@@ -7014,9 +7058,14 @@ export class AgentSession {
 		}
 	}
 
-	/** Most recent assistant message in agent state. */
+	/**
+	 * Most recent settled assistant message. A classifier-refusal turn pruned
+	 * from active context at settle is still reported until the next run
+	 * starts, so terminal-outcome consumers (print mode, task executor) see
+	 * the refusal error rather than the previous turn — or nothing.
+	 */
 	getLastAssistantMessage(): AssistantMessage | undefined {
-		return this.#findLastAssistantMessage();
+		return this.#prunedTerminalRefusal ?? this.#findLastAssistantMessage();
 	}
 	/** Current effective system prompt blocks (includes any per-turn extension modifications) */
 	get systemPrompt(): string[] {
