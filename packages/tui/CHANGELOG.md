@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Improved event-loop watchdog diagnostics by attributing synchronous TUI render stalls to the `ui.render` phase.
+
+
 ## [17.0.3] - 2026-07-17
 
 ### Fixed

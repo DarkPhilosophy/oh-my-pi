@@ -17,7 +17,7 @@
  */
 import * as fs from "node:fs";
 import { performance } from "node:perf_hooks";
-import { $flag, getDebugLogPath } from "@oh-my-pi/pi-utils";
+import { $flag, getDebugLogPath, popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
@@ -2525,8 +2525,13 @@ export class TUI extends Container {
 	#executeRender(): void {
 		const start = this.#renderScheduler.now();
 		this.#lastRenderAt = start;
-		this.#doRender();
-		this.#lastFrameCostMs = this.#renderScheduler.now() - start;
+		pushLoopPhase("ui.render");
+		try {
+			this.#doRender();
+			this.#lastFrameCostMs = this.#renderScheduler.now() - start;
+		} finally {
+			popLoopPhase();
+		}
 	}
 
 	#handleInput(data: string): void {
