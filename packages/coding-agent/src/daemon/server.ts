@@ -38,6 +38,7 @@ const OWNER_LEASE_WAIT_MS = 10_000;
 const TAKEOVER_FILE = "daemon.takeover";
 const OWNER_TERMINATE_GRACE_MS = 1_000;
 const SKIP_DISPATCH = Symbol("skip daemon dispatch");
+class DaemonEndpointOwnedError extends Error {}
 
 type Connection = {
 	socket: net.Socket;
@@ -312,7 +313,8 @@ export class DaemonServer {
 			} catch (error) {
 				const code = error instanceof Error && "code" in error ? error.code : undefined;
 				if (code !== "EEXIST") throw error;
-				if (await this.#probeEndpoint()) throw new Error(`daemon endpoint is already owned: ${this.#endpoint}`);
+				if (await this.#probeEndpoint())
+					throw new DaemonEndpointOwnedError(`daemon endpoint is already owned: ${this.#endpoint}`);
 				const owner = await this.#readOwnerLease(ownerPath);
 				const outcome = await this.#takeOverUnresponsiveOwner(ownerPath, owner, Date.now() >= deadline);
 				if (outcome === "owned") return;
@@ -1053,12 +1055,22 @@ export type StartDaemonServerOptions = Omit<DaemonServerOptions, "profile"> & {
 };
 
 /** Hidden-worker entrypoint used by cli.ts. */
-export async function startDaemonServerFromEnvironment(options: StartDaemonServerOptions = {}): Promise<DaemonServer> {
+export async function startDaemonServerFromEnvironment(
+	options: StartDaemonServerOptions = {},
+): Promise<DaemonServer | undefined> {
 	const profile = options.profile === undefined ? (getActiveProfile() ?? null) : options.profile;
 	const runtimeDir = options.runtimeDir ?? process.env.OMP_DAEMON_RUNTIME_DIR;
 	const server = new DaemonServer({ ...options, profile, runtimeDir });
-	await server.run();
-	return server;
+	try {
+		await server.run();
+		return server;
+	} catch (error) {
+		// Concurrent CLI launches may both decide that the daemon needs to be
+		// spawned. The owner lease elects one winner; the losing hidden worker
+		// has completed successfully and must not leak an expected stack trace.
+		if (error instanceof DaemonEndpointOwnedError) return undefined;
+		throw error;
+	}
 }
 
 /** Start one shard server when the caller owns the process lifecycle. */

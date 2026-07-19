@@ -11,7 +11,7 @@ import {
 	decodeDaemonFrame,
 	encodeDaemonFrame,
 } from "../src/daemon/protocol";
-import { DaemonServer } from "../src/daemon/server";
+import { DaemonServer, startDaemonServerFromEnvironment } from "../src/daemon/server";
 import { DaemonSessionRegistry } from "../src/daemon/session-registry";
 import type {
 	DaemonSessionCreateOverrides,
@@ -472,6 +472,30 @@ describe("daemon server and registry", () => {
 			} finally {
 				client.close();
 			}
+		} finally {
+			await winner.shutdown(true);
+		}
+	});
+	test("the hidden daemon worker exits cleanly when another contender won startup", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-worker-race-"));
+		const runtimeDir = path.join(root, "runtime");
+		const winner = new DaemonServer({
+			profile: "test",
+			runtimeDir,
+			token: "secret",
+			runtimeFactory: fakeFactory().runtimeFactory,
+		});
+		await winner.run();
+		try {
+			await expect(
+				startDaemonServerFromEnvironment({
+					profile: "test",
+					runtimeDir,
+					token: "secret",
+					runtimeFactory: fakeFactory().runtimeFactory,
+				}),
+			).resolves.toBeUndefined();
+			expect(await Bun.file(path.join(runtimeDir, "daemon.owner")).exists()).toBe(true);
 		} finally {
 			await winner.shutdown(true);
 		}
