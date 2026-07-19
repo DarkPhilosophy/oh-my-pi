@@ -100,6 +100,34 @@ describe("loadEntriesFromFileStream (Bun.JSONL parity)", () => {
 		const ids = messageIds(stream.entries);
 		expect(ids).toEqual(["m1", "m2"]); // valid entries kept in order, malformed skipped
 	});
+	it("recovers adjacent complete JSON objects on one physical line", async () => {
+		const content = [
+			JSON.stringify(HEADER),
+			`${JSON.stringify(msg("m1", "s1", "first"))}${JSON.stringify(msg("m2", "m1", "second"))}${JSON.stringify(msg("m3", "m2", "third"))}`,
+		].join("\n");
+		const file = await writeTemp(content);
+
+		const stream = await loadEntriesFromFileStream(file);
+		const parsed = parseSessionContent(content);
+
+		expect(messageIds(stream.entries)).toEqual(["m1", "m2", "m3"]);
+		expect(messageIds(parsed.entries)).toEqual(["m1", "m2", "m3"]);
+		const trailingStream = await loadEntriesFromFileStream(await writeTemp(`${content}\n`));
+		expect(messageIds(trailingStream.entries)).toEqual(["m1", "m2", "m3"]);
+	});
+
+	it("does not split a single JSON object containing an adjacent-object marker in text", async () => {
+		const text = "literal }{ inside a string";
+		const content = [JSON.stringify(HEADER), JSON.stringify(msg("m-safe", "s1", text))].join("\n");
+		const file = await writeTemp(content);
+
+		const stream = await loadEntriesFromFileStream(file);
+		const parsed = parseSessionContent(content);
+
+		expect(stream.entries).toEqual(parsed.entries);
+		expect(messageIds(parsed.entries)).toEqual(["m-safe"]);
+		expect(messageTexts(parsed.entries)).toEqual([text]);
+	});
 
 	it("matches parseSessionContent when there is no title slot (header is the first line)", async () => {
 		const lines = [

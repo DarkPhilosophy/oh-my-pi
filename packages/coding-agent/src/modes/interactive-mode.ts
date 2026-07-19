@@ -3873,6 +3873,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender(true);
 		const renderScheduled = Promise.withResolvers<void>();
 		setImmediate(renderScheduled.resolve);
+		const stillClosingTimer = setTimeout(() => {
+			this.showStatus("Still closing… (flushing memory backend / network)");
+		}, STILL_CLOSING_DELAY_MS);
 		await renderScheduled.promise;
 
 		// Persist the draft and dispose the session through the shared teardown
@@ -3881,9 +3884,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		// first runs the work, the other awaits the same settled promise.
 		// The teardown is registered lazily in `init()` — a `/exit` reached
 		// before `init()` completed falls back to a direct dispose.
-		const stillClosingTimer = setTimeout(() => {
-			this.showStatus("Still closing… (flushing memory backend / network)");
-		}, STILL_CLOSING_DELAY_MS);
 		try {
 			if (this.#signalTeardown) {
 				await this.#signalTeardown();

@@ -14,6 +14,8 @@
 - Fixed clients remaining permanently frozen after a live daemon stopped responding. Timed-out requests now replace the stuck transport, one verified contender safely takes over the owner lease, every client retries reattachment while the replacement runtime loads, and fresh recovery preserves the original session identity.
 - Fixed daemon failover clients retaining the dead daemon's event sequence cursor. Replacement daemons restart event numbering from one, so clients now reset replay state when the daemon identity changes instead of discarding fresh terminal output and leaving the TUI frozen on its old frame.
 - Fixed daemon-hosted sessions sharing subagent state and payload-bearing resource fallbacks. Agent discovery, messaging, lifecycle, async and vibe jobs, MCP resources, local and artifact roots, skills, and rules are now scoped to the owning runtime, so another session cannot see or address its peers or resolve its `history://`, `agent://`, `local://`, `mcp://`, `skill://`, or `rule://` data.
+- Fixed v17.0.5 merge regressions in hook-status row rendering, slow shutdown feedback, and authenticated Codex model discovery.
+- Fixed session JSONL appends merging records after a missing trailing newline, and recovered already-concatenated adjacent records during session loading.
 ## [17.0.5] - 2026-07-18
 
 ### Added

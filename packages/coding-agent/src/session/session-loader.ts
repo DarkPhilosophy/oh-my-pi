@@ -49,13 +49,46 @@ function foldTitleSlot(entries: FileEntry[], slot: SessionTitleUpdate | undefine
 	return entries;
 }
 
+function parseJsonlLineWithAdjacentObjectRecovery(line: string): RawFileEntry[] {
+	const entries = parseJsonlLenient<RawFileEntry>(line);
+	if (entries.length !== 1) return entries;
+
+	let offset = 0;
+	while (offset < line.length) {
+		let values: unknown[];
+		let read: number;
+		try {
+			const parsed = Bun.JSONL.parseChunk(line.slice(offset));
+			values = parsed.values;
+			read = parsed.read;
+		} catch {
+			break;
+		}
+		if (values.length !== 1 || read <= 0) break;
+		const value = values[0];
+		if (value === null || typeof value !== "object" || Array.isArray(value)) break;
+		if (offset > 0) entries.push(value as RawFileEntry);
+		offset += read;
+		if (offset >= line.length || !line.startsWith("{", offset)) break;
+	}
+	return entries;
+}
+
+function parseSessionJsonlContent(content: string): RawFileEntry[] {
+	const entries: RawFileEntry[] = [];
+	for (const line of content.split("\n")) {
+		entries.push(...parseJsonlLineWithAdjacentObjectRecovery(line));
+	}
+	return entries;
+}
+
 /** Parse session JSONL while stripping and folding the optional fixed title slot. */
 export function parseSessionContent(content: string): {
 	entries: FileEntry[];
 	titleSlot: SessionTitleUpdate | undefined;
 } {
 	const { body, slot } = splitTitleSlot(content);
-	const entries = parseJsonlLenient<RawFileEntry>(body) as FileEntry[];
+	const entries = parseSessionJsonlContent(body) as FileEntry[];
 	return { entries: foldTitleSlot(entries, slot), titleSlot: slot };
 }
 
@@ -124,8 +157,17 @@ export async function loadEntriesFromFileStream(filePath: string): Promise<{
 				for (const value of values) entries.push(value as FileEntry);
 			}
 			if (error) {
-				// Malformed record: skip past the next newline and continue.
-				const nextNewline = buffer.indexOf(0x0a, read);
+				// Keep values already parsed, but consume their bytes before
+				// looking for the malformed line's delimiter. Otherwise an
+				// incomplete adjacent record is reparsed at EOF and duplicates
+				// earlier values.
+				if (read > 0) buffer = buffer.subarray(read);
+				// Bun reports adjacent complete objects as a parse error after
+				// returning the preceding values. A leading object here is a
+				// narrow signal to continue parsing the same physical line;
+				// malformed object text still falls through to line skipping.
+				if (read > 0 && values.length > 0 && buffer[0] === 0x7b) continue;
+				const nextNewline = buffer.indexOf(0x0a);
 				if (nextNewline === -1) break; // rest of the bad line not yet received
 				buffer = buffer.subarray(nextNewline + 1);
 				continue;
@@ -133,8 +175,10 @@ export async function loadEntriesFromFileStream(filePath: string): Promise<{
 			if (read === 0) break; // incomplete record awaiting more data
 			buffer = buffer.subarray(read);
 			if (done) {
-				buffer = new Uint8Array();
-				break;
+				if (buffer.length === 0) break;
+				// Bun can report done after a complete value without a delimiter,
+				// while leaving adjacent values unconsumed in the same buffer.
+				continue;
 			}
 		}
 	};

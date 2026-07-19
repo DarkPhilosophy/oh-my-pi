@@ -87,6 +87,7 @@ const writerRegistry = new FinalizationRegistry<number>(fd => {
 
 class FileSessionStorageWriter implements SessionStorageWriter {
 	#fd: number;
+	#needsSeparator = false;
 	#closed = false;
 	#error: Error | undefined;
 	#onError: ((err: Error) => void) | undefined;
@@ -103,6 +104,19 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 		this.#fd = fs.openSync(fpath, flags === "w" ? "w" : "a");
 		// Register for cleanup if abandoned without close()
 		writerRegistry.register(this, this.#fd, this);
+		if (flags === "a") {
+			const size = fs.fstatSync(this.#fd).size;
+			if (size > 0) {
+				const lastByte = Buffer.allocUnsafe(1);
+				const readFd = fs.openSync(fpath, "r");
+				try {
+					fs.readSync(readFd, lastByte, 0, 1, size - 1);
+				} finally {
+					fs.closeSync(readFd);
+				}
+				this.#needsSeparator = lastByte[0] !== 0x0a;
+			}
+		}
 	}
 
 	#recordError(err: unknown): Error {
@@ -111,12 +125,11 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 		this.#onError?.(error);
 		return error;
 	}
-
 	async append(line: string): Promise<void> {
-		if (this.#closed) throw new Error("Writer closed");
+		if (this.#closed) throw new Error("Writer is closed");
 		if (this.#error) throw this.#error;
 		try {
-			const buf = Buffer.from(line, "utf-8");
+			const buf = Buffer.from(this.#needsSeparator ? `\n${line}` : line, "utf-8");
 			let offset = 0;
 			while (offset < buf.length) {
 				const written = fs.writeSync(this.#fd, buf, offset, buf.length - offset);
@@ -124,6 +137,9 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 					throw new Error("Short write");
 				}
 				offset += written;
+			}
+			if (buf.length > 0) {
+				this.#needsSeparator = false;
 			}
 		} catch (err) {
 			throw this.#recordError(err);

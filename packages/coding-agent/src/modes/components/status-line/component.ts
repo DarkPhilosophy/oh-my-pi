@@ -1419,8 +1419,8 @@ export class StatusLineComponent implements Component {
 		if (showHooks && this.#hookStatuses.size > 0) {
 			const sortedStatuses = Array.from(this.#hookStatuses.entries())
 				.sort(([a], [b]) => a.localeCompare(b))
-				.map(([, text]) => sanitizeStatusText(text));
-			lines.push(truncateToWidth(sortedStatuses.join(" "), width));
+				.map(([, text]) => truncateToWidth(sanitizeStatusText(text), width));
+			lines.push(...sortedStatuses);
 		}
 		return lines;
 	}

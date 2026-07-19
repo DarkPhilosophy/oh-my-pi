@@ -138,9 +138,12 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			expect(session.getActiveToolNames()).toContain("read");
 
 			// Deferred discovery mounts MCP under xd:// and activates write as its transport.
+			// Deferred stdio MCP discovery crosses a real child-process boundary, so fake timers cannot drive readiness.
 			const deadline = Date.now() + 12_000;
 			let deviceNames = session.getXdevToolEntries().map(entry => entry.name);
-			while (!deviceNames.includes(MCP_TOOL_NAME) && Date.now() < deadline) {
+			let activeNames = session.getActiveToolNames();
+			while ((!deviceNames.includes(MCP_TOOL_NAME) || !activeNames.includes("write")) && Date.now() < deadline) {
+				activeNames = session.getActiveToolNames();
 				await Bun.sleep(50);
 				deviceNames = session.getXdevToolEntries().map(entry => entry.name);
 			}

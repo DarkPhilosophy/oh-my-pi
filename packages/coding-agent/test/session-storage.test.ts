@@ -164,6 +164,41 @@ describe("FileSessionStorage.writeTextSync", () => {
 		expect(await Bun.file(sessionPath).text()).toBe("second\n");
 	});
 });
+describe("FileSessionStorage.openWriter", () => {
+	let tempDir: string;
+
+	beforeEach(async () => {
+		tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-session-storage-"));
+	});
+
+	afterEach(async () => {
+		await fsp.rm(tempDir, { recursive: true, force: true });
+	});
+
+	it("separates an appended record when the existing file has no trailing newline", async () => {
+		const storage = new FileSessionStorage();
+		const sessionPath = path.join(tempDir, "session.jsonl");
+		const first = JSON.stringify({ type: "session", id: "first" });
+		const second = JSON.stringify({ type: "message", id: "second" });
+		await fsp.writeFile(sessionPath, first);
+
+		const writer = storage.openWriter(sessionPath);
+		try {
+			await writer.append(`${second}\n`);
+		} finally {
+			await writer.close();
+		}
+
+		const records = (await fsp.readFile(sessionPath, "utf8"))
+			.trimEnd()
+			.split("\n")
+			.map(line => JSON.parse(line));
+		expect(records).toEqual([
+			{ type: "session", id: "first" },
+			{ type: "message", id: "second" },
+		]);
+	});
+});
 
 describe("FileSessionStorage.updateSessionTitle", () => {
 	let tempDir: string;

@@ -67,6 +67,7 @@ function makeCtx(): {
 	const renderSessionContextSpy = vi.fn();
 
 	const ctx = {
+		settings: Settings.isolated({}),
 		chatContainer: { clear: vi.fn(), addChild: vi.fn() },
 		pendingMessagesContainer: { clear: vi.fn(), disposeChildren: vi.fn() },
 		pendingBashComponents: [],

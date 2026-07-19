@@ -1780,6 +1780,7 @@ export class ModelRegistry {
 							accountId:
 								oauthAccess?.accountId ??
 								resolveOAuthAccountIdForAccessToken(this.authStorage, "openai-codex", resolvedAccessToken),
+							fetch: this.#fetch,
 						});
 						return managerOptions.fetchDynamicModels?.() ?? null;
 					},
@@ -1869,12 +1870,13 @@ export class ModelRegistry {
 			if (!isAuthenticated(key) && !(descriptor.allowStoredOAuthAdmission && hasStoredOAuth)) {
 				continue;
 			}
-			options.push(
-				descriptor.createOptions(
+			options.push({
+				...descriptor.createOptions(
 					key,
 					hasStoredOAuth ? () => this.#resolveBuiltInDiscoveryOAuthAccess(descriptor.providerId) : undefined,
 				),
-			);
+				dynamicModelsAuthoritative: descriptor.authoritative,
+			});
 		}
 		// Append runtime model managers registered by extensions via fetchDynamicModels.
 		for (const { options: managerOpts } of this.#runtimeModelManagers.values()) {
