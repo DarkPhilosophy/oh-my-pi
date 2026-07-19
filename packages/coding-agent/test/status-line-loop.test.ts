@@ -14,6 +14,7 @@ afterEach(() => {
 function createContext(loopMode: SegmentContext["loopMode"]): SegmentContext {
 	return {
 		session: {} as SegmentContext["session"],
+		projectDir: "/tmp/status-line-loop-test",
 		width: 120,
 		compactThinkingLevel: false,
 		options: {},

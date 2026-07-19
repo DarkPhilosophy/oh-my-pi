@@ -768,7 +768,6 @@ export class UiHelpers {
 				new QueuedMessageBox(entry.label, safeAll, { collapseLines, expanded, footerText }),
 			);
 		}
-		this.ctx.ui.requestComponentRender(this.ctx.pendingMessagesContainer);
 	}
 
 	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void {

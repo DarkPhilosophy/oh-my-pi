@@ -1710,7 +1710,6 @@ export class ModelRegistry {
 		return { models, authoritativeProviders };
 	}
 
-
 	async #collectBuiltInModelManagerOptions(
 		configuredDiscoveryProviders?: ReadonlySet<string>,
 		providerFilter?: ReadonlySet<string>,
