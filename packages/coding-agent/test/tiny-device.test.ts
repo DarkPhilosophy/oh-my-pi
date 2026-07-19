@@ -8,6 +8,7 @@ import {
 	type TinyModelDevice,
 	tinyModelDeviceLoadOrder,
 	tinyModelDeviceSettingToEnv,
+	tinyModelDevicesToMarkUnavailable,
 } from "@oh-my-pi/pi-coding-agent/tiny/device";
 
 describe("tiny model device selection", () => {
@@ -30,6 +31,15 @@ describe("tiny model device selection", () => {
 
 		expect(preference.device).toBe("cpu");
 		expect(tinyModelDeviceLoadOrder(preference)).toEqual(["cpu"]);
+	});
+	it("skips an accelerated device after a confirmed runtime failure", () => {
+		const preference = resolveTinyModelDevicePreference("cuda");
+
+		expect(tinyModelDeviceLoadOrder(preference, new Set(["cuda"]))).toEqual(["cpu"]);
+	});
+	it("only remembers failed accelerated devices after a fallback succeeds", () => {
+		expect(tinyModelDevicesToMarkUnavailable(["cuda"], undefined)).toEqual([]);
+		expect(tinyModelDevicesToMarkUnavailable(["cuda", "cpu"], "cpu")).toEqual(["cuda"]);
 	});
 
 	it("rejects unknown ONNX execution providers", () => {

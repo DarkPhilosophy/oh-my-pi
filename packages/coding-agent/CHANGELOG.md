@@ -9,6 +9,8 @@
 
 ### Fixed
 
+- Fixed tiny-model workers repeatedly retrying a failed accelerated device for later model loads. A device is now remembered as unavailable only after a fallback device loads successfully, avoiding repeated CUDA/ONNX initialization failures without poisoning devices after a total load failure.
+- Fixed large daemon terminal-output events monopolizing the shared event loop while every protocol chunk was synchronously fanned out. Fanout now yields between bounded batches and continues after an attachment sink or event publication failure.
 - Fixed clients remaining permanently frozen after a live daemon stopped responding. Timed-out requests now replace the stuck transport, one verified contender safely takes over the owner lease, every client retries reattachment while the replacement runtime loads, and fresh recovery preserves the original session identity.
 - Fixed daemon failover clients retaining the dead daemon's event sequence cursor. Replacement daemons restart event numbering from one, so clients now reset replay state when the daemon identity changes instead of discarding fresh terminal output and leaving the TUI frozen on its old frame.
 - Fixed daemon-hosted sessions sharing subagent state and payload-bearing resource fallbacks. Agent discovery, messaging, lifecycle, async and vibe jobs, MCP resources, local and artifact roots, skills, and rules are now scoped to the owning runtime, so another session cannot see or address its peers or resolve its `history://`, `agent://`, `local://`, `mcp://`, `skill://`, or `rule://` data.

@@ -50,10 +50,29 @@ export function resolveTinyModelDevicePreference(
 	};
 }
 
-export function tinyModelDeviceLoadOrder(preference: TinyModelDevicePreference): readonly TinyModelDevice[] {
+export function tinyModelDeviceLoadOrder(
+	preference: TinyModelDevicePreference,
+	unavailableDevices?: ReadonlySet<TinyModelDevice>,
+): readonly TinyModelDevice[] {
 	if (preference.device === CPU_DEVICE) return CPU_ONLY_ORDER;
 	if (usesDarwinWorkerWebGpu(preference.device)) return DARWIN_WEBGPU_UNSAFE_ORDER;
+	if (unavailableDevices?.has(preference.device)) return CPU_ONLY_ORDER;
 	return [preference.device, CPU_DEVICE];
+}
+
+/**
+ * Return accelerated devices whose failure is confirmed by a later successful
+ * pipeline load. A failed attempt with no successful fallback must not poison
+ * subsequent model loads because the error may be model-specific.
+ */
+export function tinyModelDevicesToMarkUnavailable(
+	attemptedDevices: readonly TinyModelDevice[],
+	successfulDevice: TinyModelDevice | undefined,
+): readonly TinyModelDevice[] {
+	if (successfulDevice === undefined) return [];
+	const successfulIndex = attemptedDevices.indexOf(successfulDevice);
+	if (successfulIndex < 1) return [];
+	return attemptedDevices.slice(0, successfulIndex).filter(device => device !== CPU_DEVICE);
 }
 
 /** Sentinel `providers.tinyModelDevice` value meaning "use the built-in CPU default". */

@@ -19,7 +19,12 @@ import {
 	sendProgress,
 	type TransformersRuntimeMetadata,
 } from "../subprocess/worker-runtime";
-import { resolveTinyModelDevicePreference, type TinyModelDevice, tinyModelDeviceLoadOrder } from "./device";
+import {
+	resolveTinyModelDevicePreference,
+	type TinyModelDevice,
+	tinyModelDeviceLoadOrder,
+	tinyModelDevicesToMarkUnavailable,
+} from "./device";
 import { resolveTinyModelDtypeOverride, type TinyModelDtype } from "./dtype";
 import { formatTitleUserMessage } from "./message-preproc";
 import {
@@ -64,6 +69,7 @@ interface TransformersRuntime extends TransformersRuntimeMetadata {
 }
 
 const pipelines = new Map<TinyLocalModelKey, Promise<TextGenerationPipeline>>();
+const unavailableDevices = new Set<TinyModelDevice>();
 
 function getTransformersRuntimeKey(): string {
 	return getTransformersVersionSpec().replace(/[^A-Za-z0-9._-]/g, "_");
@@ -130,23 +136,33 @@ async function loadPipelineWithDeviceFallback(
 	transport: TinyTitleTransport,
 	requestId: string,
 ): Promise<{ generator: TextGenerationPipeline; device: TinyModelDevice }> {
-	const devices = tinyModelDeviceLoadOrder(tinyModelDevicePreference);
+	const devices = tinyModelDeviceLoadOrder(tinyModelDevicePreference, unavailableDevices);
 	if (devices[0] !== tinyModelDevicePreference.device) {
-		sendLog(transport, "warn", "tiny-model: requested device is unsafe in the worker; using CPU", {
-			modelKey,
-			repo: spec.repo,
-			requestedDevice: tinyModelDevicePreference.device,
-			device: devices[0],
-		});
+		sendLog(
+			transport,
+			"warn",
+			unavailableDevices.has(tinyModelDevicePreference.device)
+				? "tiny-model: requested device previously failed in this worker; using CPU"
+				: "tiny-model: requested device is unsafe in the worker; using CPU",
+			{
+				modelKey,
+				repo: spec.repo,
+				requestedDevice: tinyModelDevicePreference.device,
+				device: devices[0],
+			},
+		);
 	}
 	let cudaDiagnostics: string | null = null;
+	const attemptedDevices: TinyModelDevice[] = [];
 	for (let i = 0; i < devices.length; i += 1) {
 		const device = devices[i]!;
+		attemptedDevices.push(device);
 		try {
-			return {
-				generator: await loadPipelineOnDevice(transformers, spec, modelKey, transport, requestId, device),
-				device,
-			};
+			const generator = await loadPipelineOnDevice(transformers, spec, modelKey, transport, requestId, device);
+			for (const unavailableDevice of tinyModelDevicesToMarkUnavailable(attemptedDevices, device)) {
+				unavailableDevices.add(unavailableDevice);
+			}
+			return { generator, device };
 		} catch (error) {
 			const deviceDiagnostics = await formatOnnxRuntimeCudaDiagnostics(transformers, device, error);
 			if (deviceDiagnostics) cudaDiagnostics = deviceDiagnostics;

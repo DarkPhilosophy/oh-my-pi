@@ -78,6 +78,8 @@ type SessionRecord = {
 	interactiveAttachment?: string;
 	unsubscribe: () => void;
 	queue: Promise<void>;
+	pendingEvents: BoundedDaemonEvent[];
+	fanoutActive: boolean;
 	closed: boolean;
 	parkTimer?: NodeJS.Timeout;
 };
@@ -90,6 +92,7 @@ function closesHostedSession(event: unknown): boolean {
 
 /** Frame-envelope headroom below DAEMON_MAX_FRAME_BYTES for tag/seq/ids. */
 const MAX_DAEMON_EVENT_BYTES = DAEMON_MAX_FRAME_BYTES - 8192;
+const EVENT_FANOUT_BATCH_SIZE = 32;
 
 /**
  * Bound one event to what a wire frame can carry. An oversized event is
@@ -444,41 +447,79 @@ export class DaemonSessionRegistry {
 			attachments: new Map(),
 			unsubscribe: () => undefined,
 			queue: Promise.resolve(),
+			pendingEvents: [],
+			fanoutActive: false,
 			closed: false,
 		};
 		record.unsubscribe = runtime.subscribe(event => {
-			// The whole fan-out below is synchronous: payload split/bounding,
-			// log append, and one frame encode PER attachment. A multi-MB tool
-			// result with several attached clients is real loop occupancy —
-			// tag it so watchdog blocks name the session instead of "unknown".
+			const boundedEvents = splitDaemonEvent(event);
+			if (record.fanoutActive) {
+				record.pendingEvents.push(...boundedEvents);
+				return;
+			}
+			record.fanoutActive = true;
+			let index = 0;
 			pushLoopPhase(`daemon:event-fanout:${sessionId}`);
 			try {
-				for (const boundedEvent of splitDaemonEvent(event)) {
-					const published = record.log.append(boundedEvent.event, boundedEvent.bytes);
-					for (const attachment of record.attachments.values()) {
-						if (attachment.attaching) {
-							attachment.pending.push(published);
-							continue;
-						}
-						const frames = attachment.stream.publish(published);
-						for (const frame of frames)
-							void Promise.resolve(attachment.sink(projectAttachmentFrame(frame, attachment.delivery))).catch(
-								() => undefined,
-							);
-					}
-					if (closesHostedSession(boundedEvent.event)) void this.close(sessionId).catch(() => undefined);
-				}
+				for (; index < EVENT_FANOUT_BATCH_SIZE && index < boundedEvents.length; index++)
+					this.#publishBoundedEventSafely(sessionId, record, boundedEvents[index]!);
 			} finally {
 				popLoopPhase();
 			}
-			this.#scheduleParking(sessionId, record);
+			if (index < boundedEvents.length) record.pendingEvents.push(...boundedEvents.slice(index));
+			if (record.pendingEvents.length === 0) {
+				record.fanoutActive = false;
+				this.#scheduleParking(sessionId, record);
+				return;
+			}
+			void this.#drainEventFanout(sessionId, record);
 		});
+		this.#scheduleParking(sessionId, record);
 		this.#sessions.set(sessionId, record);
 		// Ledger the registry handle → transcript mapping: anything that shows
 		// this handle to the user must stay resumable after the daemon exits.
 		void recordDaemonSessionAlias(sessionId, runtime.session.sessionFile ?? "");
 		this.#scheduleParking(sessionId, record);
 		return this.#summary(sessionId, record);
+	}
+
+	#publishBoundedEventSafely(sessionId: string, record: SessionRecord, boundedEvent: BoundedDaemonEvent): void {
+		try {
+			this.#publishBoundedEvent(sessionId, record, boundedEvent);
+		} catch (error) {
+			logger.warn("Daemon event fanout failed", { sessionId, error });
+		}
+	}
+
+	#publishBoundedEvent(sessionId: string, record: SessionRecord, boundedEvent: BoundedDaemonEvent): void {
+		const published = record.log.append(boundedEvent.event, boundedEvent.bytes);
+		for (const attachment of record.attachments.values()) {
+			if (attachment.attaching) {
+				attachment.pending.push(published);
+				continue;
+			}
+			const frames = attachment.stream.publish(published);
+			for (const frame of frames)
+				void Promise.resolve(attachment.sink(projectAttachmentFrame(frame, attachment.delivery))).catch(
+					() => undefined,
+				);
+		}
+		if (closesHostedSession(boundedEvent.event)) void this.close(sessionId).catch(() => undefined);
+	}
+
+	async #drainEventFanout(sessionId: string, record: SessionRecord): Promise<void> {
+		while (record.pendingEvents.length > 0) {
+			await Bun.sleep(0);
+			const batch = record.pendingEvents.splice(0, EVENT_FANOUT_BATCH_SIZE);
+			pushLoopPhase(`daemon:event-fanout:${sessionId}`);
+			try {
+				for (const boundedEvent of batch) this.#publishBoundedEventSafely(sessionId, record, boundedEvent);
+			} finally {
+				popLoopPhase();
+			}
+		}
+		record.fanoutActive = false;
+		this.#scheduleParking(sessionId, record);
 	}
 
 	#summary(sessionId: string, record: SessionRecord): DaemonSessionSummary {

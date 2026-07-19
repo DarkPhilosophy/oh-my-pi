@@ -232,7 +232,60 @@ describe("daemon server and registry", () => {
 		expect(events[1]?.event?.data).toBe("visible");
 		await registry.dispose();
 	});
+	test("yields large terminal output fanout between bounded batches", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-terminal-yield-"));
+		const fake = fakeFactory();
+		const registry = new DaemonSessionRegistry({ runtimeFactory: fake.runtimeFactory });
+		const session = await registry.create("terminal-yield", root);
+		const frames: unknown[] = [];
+		const complete = Promise.withResolvers<void>();
+		const output = "x".repeat(128 * 1024 * 40);
+		const expectedChunks = Math.ceil(output.length / (128 * 1024));
+		await registry.attach(session.sessionId, "terminal-client", "interactive", frame => {
+			frames.push(frame);
+			if (frames.length === expectedChunks) complete.resolve();
+		});
 
+		const observer = Promise.withResolvers<void>();
+		queueMicrotask(observer.resolve);
+		fake.runtimes.get(session.sessionId)?.emit({ type: "terminal_output", data: output });
+
+		expect(frames.length).toBeGreaterThan(0);
+		expect(frames.length).toBeLessThan(expectedChunks);
+		await observer.promise;
+		await complete.promise;
+		expect(frames.length).toBe(expectedChunks);
+		await registry.dispose();
+	});
+	test("recovers terminal fanout after an attachment sink throws", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-terminal-fanout-recovery-"));
+		const fake = fakeFactory();
+		const registry = new DaemonSessionRegistry({ runtimeFactory: fake.runtimeFactory });
+		const session = await registry.create("terminal-fanout-recovery", root);
+		const delivered: unknown[] = [];
+		let calls = 0;
+		await registry.attach(
+			session.sessionId,
+			"terminal-client",
+			"interactive",
+			frame => {
+				calls++;
+				if (calls === 1) throw new Error("sink failed");
+				delivered.push(frame);
+			},
+			0,
+		);
+
+		fake.runtimes.get(session.sessionId)?.emit({ type: "terminal_output", data: "first" });
+		fake.runtimes.get(session.sessionId)?.emit({ type: "terminal_output", data: "second" });
+
+		expect(delivered).toHaveLength(1);
+		expect(delivered[0]).toMatchObject({
+			type: "event",
+			event: { type: "terminal_output", data: "second" },
+		});
+		await registry.dispose();
+	});
 	test("hosts independent sessions from different working-directory roots", async () => {
 		const firstRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-cwd-a-"));
 		const secondRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-cwd-b-"));
@@ -637,7 +690,10 @@ describe("daemon server and registry", () => {
 		fake.runtimes.get("s1")?.emit({ type: "message_update", text: "one" });
 		expect((await first.reader.next()).tag).toBe("event");
 		await destroyAndWait(first.socket);
-		server.registry.disconnect("s1", "a1");
+		// The server-side close callback is a separate Unix-socket event; fake timers cannot drive libuv I/O.
+		for (let attempt = 0; attempt < 100 && server.status().attachmentCount > 0; attempt++) {
+			await Bun.sleep(10);
+		}
 		expect(server.status().sessionCount).toBe(1);
 		expect(server.status().attachmentCount).toBe(0);
 		fake.runtimes.get("s1")?.emit({ type: "message_update", text: "two" });
