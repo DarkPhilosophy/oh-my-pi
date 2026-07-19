@@ -5,9 +5,22 @@
 ### Fixed
 
 - Fixed OpenAI Codex multi-account fallback dying when a model-scoped window was pinned: a Spark 7-day meter at 100% marked the whole account exhausted and blocked it for shared-window models, so exhausting the sibling left the agent (and advisors/subagents) with "no usable credential" despite ample shared quota. Quota checks and backoff blocks are now scoped per quota family (Spark models meter on their own window; everything else uses the shared account windows), and the live-usage self-heal reconciles each family separately so a stale cross-family block clears instead of surviving until its natural expiry.
+## [17.0.5] - 2026-07-18
+
 ### Changed
 
-- Anthropic API-key requests to the canonical API now default to 1h prompt-cache retention (`cache_control: { ttl: "1h" }` plus the `extended-cache-ttl-2025-04-11` beta), matching the OAuth default. The previous 5m default cold-missed the entire prompt prefix whenever a session idled past 5 minutes — e.g. waiting on long-running background jobs. `PI_CACHE_RETENTION` now accepts `short` and `none` to override the default in either direction; endpoints without `compat.supportsLongCacheRetention` keep the 5m breakpoint.
+- Changed Anthropic API-key requests to default to a 1-hour prompt-cache retention (using the extended-cache-ttl-2025-04-11 beta) to prevent cold-misses during idle sessions, with support for PI_CACHE_RETENTION values "short" and "none" to override this behavior.
+
+### Fixed
+
+- Fixed transient OpenAI stream truncations by retrying once before output becomes replay-unsafe, preventing recoverable transport errors from failing the turn.
+- Fixed native Kimi Code K3 thinking being disabled during named function selection by utilizing generic required tool choice.
+- Fixed /login moonshot validating China-platform API keys against the international host instead of honoring MOONSHOT_BASE_URL.
+- Fixed Anthropic session stickiness suppressing usage-based re-ranking indefinitely by gating stickiness on a 1-hour cache warmth window (configurable via ANTHROPIC_SESSION_STICKY_CACHE_WARM_MS) to restore proactive multi-account load balancing after long idle periods.
+- Fixed credential ranking where clockless Anthropic usage windows incorrectly outranked clocked sibling credentials.
+- Fixed tool request failures (HTTP 400) on local grammar-constrained OpenAI-compatible backends (such as llama.cpp, LM Studio, and vLLM) by widening bare boolean subschemas into a value-accepting primitive union.
+- Fixed custom OAuth Anthropic-compatible endpoints receiving generated Claude Code fingerprint headers even when explicit header overrides were provided.
+- Fixed active sessions for plan-gated OpenAI Codex models (Sol/Luna) silently re-routing to sibling OAuth accounts when usage headroom changed, ensuring session stickiness is preserved as long as the preferred credential remains usable and eligible.
 
 ## [17.0.4] - 2026-07-18
 

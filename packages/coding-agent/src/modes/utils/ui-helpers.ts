@@ -531,10 +531,10 @@ export class UiHelpers {
 					const images: ImageContent[] = message.content.filter(
 						(content): content is ImageContent => content.type === "image",
 					);
-					if (images.length > 0 && assistantComponent && this.ctx.settings.get("terminal.showImages")) {
+					if (images.length > 0 && assistantComponent) {
 						assistantComponent.setToolResultImages(message.toolCallId, images);
 						const hasText = message.content.some(c => c.type === "text");
-						if (!hasText) {
+						if (!hasText && this.ctx.settings.get("terminal.showImages")) {
 							readToolCallArgs.delete(message.toolCallId);
 							readToolCallAssistantComponents.delete(message.toolCallId);
 							continue;
@@ -768,6 +768,7 @@ export class UiHelpers {
 				new QueuedMessageBox(entry.label, safeAll, { collapseLines, expanded, footerText }),
 			);
 		}
+		this.ctx.ui.requestComponentRender(this.ctx.pendingMessagesContainer);
 	}
 
 	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void {

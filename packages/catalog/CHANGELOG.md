@@ -8,6 +8,19 @@
 ### Added
 
 - Added Grok 4.5 to the xai and xai-oauth (SuperGrok) catalogs; grok-4.5 is now the xai-oauth default model. Its reasoning effort is constrained to xAI's supported low/medium/high tiers and marked mandatory, so a thinking-off request clamps to low instead of omitting reasoning (which xAI's grok-4.5 rejects, since reasoning cannot be disabled). The effort cap keys on the xAI host (provider `xai` or base URL `api.x.ai`), so a custom OpenAI-compatible config pointed at xAI gets the same ladder; the documented `grok-build-latest` alias inherits the Grok 4.5 effort/mandatory-reasoning contract (distinct from the separate `grok-build` / `grok-build-0.1` SKUs that reject `reasoning.effort`).
+## [17.0.5] - 2026-07-18
+
+### Added
+
+- Added an Anthropic compatibility flag to allow non-official OAuth endpoints to opt into configured Claude Code fingerprint header overrides.
+
+### Fixed
+
+- Fixed a security issue where sensitive provider-defined request headers (such as API keys or credentials) were serialized in plaintext within the model cache (models.db). The cache now omits these headers, securely invalidates older cached rows, and restores or refetches them dynamically.
+- Fixed OpenAI Codex discovery to respect caller-supplied fetch configurations (such as proxies or custom CAs) and correctly replace stale bundled models with the authenticated account catalog.
+- Fixed stream timeouts and retry loops during long prefills on local loopback or RFC1918 backends (such as litellm proxies fronting local servers) by applying the local stream-timeout floor to these backends.
+- Fixed Kimi K3 models served through generic OpenAI-compatible routes exposing unsupported reasoning efforts instead of the mandatory low/high/max scale.
+
 ## [17.0.4] - 2026-07-18
 
 ### Changed
