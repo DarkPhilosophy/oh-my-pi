@@ -8,6 +8,7 @@
 - Improved daemon loop-stall diagnostics with synchronous session-event and outbound event-type attribution.
 
 ### Fixed
+- Fixed `/usage show` overflowing narrow terminals when a provider has many accounts by wrapping account bars into width-bounded rows.
 
 - Fixed tiny-model workers repeatedly retrying a failed accelerated device for later model loads. A device is now remembered as unavailable only after a fallback device loads successfully, avoiding repeated CUDA/ONNX initialization failures without poisoning devices after a total load failure.
 - Fixed large daemon terminal-output events monopolizing the shared event loop while every protocol chunk was synchronously fanned out. Fanout now yields between bounded batches and continues after an attachment sink or event publication failure.

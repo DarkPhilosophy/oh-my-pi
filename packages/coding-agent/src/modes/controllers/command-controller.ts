@@ -1552,12 +1552,13 @@ function formatAccountHeaderRow(
 	columnWidth: number,
 	uiTheme: typeof theme,
 	activeAccount?: OAuthAccountIdentity,
+	startIndex = 0,
 ): string[] {
 	const parts = limits.map((limit, index) => {
 		const reset = formatResetShort(limit, nowMs);
 		const report = reports[index];
 		const active = report !== undefined && limitMatchesActiveAccount(report, limit, activeAccount);
-		const label = formatAccountLabel(limit, report, index);
+		const label = formatAccountLabel(limit, report, index + startIndex);
 		return {
 			label: active ? `● ${label}` : label,
 			suffix: reset ? `(${reset})` : "",
@@ -1732,10 +1733,7 @@ function renderUsageBar(limit: UsageLimit, uiTheme: typeof theme, barWidth: numb
 	return `${uiTheme.fg(color, leading)}${uiTheme.fg("dim", empty)}`;
 }
 
-/**
- * Pick a per-account column width so the columns and trailing amount fit in `available`.
- * Falls back to the minimum when the terminal is too narrow rather than wrapping.
- */
+/** Pick the widest per-account column that fits alongside gaps and trailing text. */
 function resolveColumnWidth(count: number, available: number, trailing: number): number {
 	if (count <= 0) return BAR_WIDTH_MAX;
 	const indent = 2;
@@ -1744,6 +1742,15 @@ function resolveColumnWidth(count: number, available: number, trailing: number):
 	const ideal = Math.floor(spaceForBars / count);
 	if (ideal < COLUMN_WIDTH_MIN) return COLUMN_WIDTH_MIN;
 	return ideal;
+}
+
+/** Limit each row to the number of minimum-width account columns that physically fit. */
+function resolveColumnsPerRow(count: number, available: number, trailing: number): number {
+	if (count <= 0) return 0;
+	const indent = 2;
+	const trailingWidth = trailing > 0 ? trailing + 1 : 0;
+	const capacity = Math.floor((available - indent - trailingWidth + 1) / (COLUMN_WIDTH_MIN + 1));
+	return Math.max(1, Math.min(count, capacity));
 }
 
 export function renderUsageReports(
@@ -1877,7 +1884,8 @@ export function renderUsageReports(
 
 		const sectionCount = renderableGroups.reduce((max, g) => Math.max(max, g.sortedLimits.length), 0);
 		const sectionTrailing = renderableGroups.reduce((max, g) => Math.max(max, visibleWidth(g.amountText)), 0);
-		const sectionColumnWidth = resolveColumnWidth(sectionCount, availableWidth, sectionTrailing);
+		const sectionColumnsPerRow = resolveColumnsPerRow(sectionCount, availableWidth, sectionTrailing);
+		const sectionColumnWidth = resolveColumnWidth(sectionColumnsPerRow, availableWidth, sectionTrailing);
 		const sectionBarWidth = Math.min(sectionColumnWidth, BAR_WIDTH_MAX);
 
 		for (const { group, sortedLimits, sortedReports, amountText } of renderableGroups) {
@@ -1886,19 +1894,25 @@ export function renderUsageReports(
 
 			const windowSuffix = formatWindowSuffix(group.label, group.windowLabel, uiTheme);
 			lines.push(`${statusIcon} ${uiTheme.bold(group.label)} ${windowSuffix}`.trim());
-			const accountLabels = formatAccountHeaderRow(
-				sortedLimits,
-				sortedReports,
-				nowMs,
-				sectionColumnWidth,
-				uiTheme,
-				activeAccount,
-			);
-			lines.push(`  ${accountLabels.join(" ")}`.trimEnd());
-			const bars = sortedLimits.map(limit =>
-				padColumn(renderUsageBar(limit, uiTheme, sectionBarWidth), sectionColumnWidth),
-			);
-			lines.push(`  ${bars.join(" ")} ${amountText}`.trimEnd());
+			for (let offset = 0; offset < sortedLimits.length; offset += sectionColumnsPerRow) {
+				const chunkLimits = sortedLimits.slice(offset, offset + sectionColumnsPerRow);
+				const chunkReports = sortedReports.slice(offset, offset + sectionColumnsPerRow);
+				const accountLabels = formatAccountHeaderRow(
+					chunkLimits,
+					chunkReports,
+					nowMs,
+					sectionColumnWidth,
+					uiTheme,
+					activeAccount,
+					offset,
+				);
+				lines.push(`  ${accountLabels.join(" ")}`.trimEnd());
+				const bars = chunkLimits.map(limit =>
+					padColumn(renderUsageBar(limit, uiTheme, sectionBarWidth), sectionColumnWidth),
+				);
+				const trailingAmount = offset + sectionColumnsPerRow >= sortedLimits.length ? ` ${amountText}` : "";
+				lines.push(`  ${bars.join(" ")}${trailingAmount}`.trimEnd());
+			}
 			const resetText = sortedLimits.length <= 1 ? resolveResetRange(sortedLimits, nowMs) : null;
 			if (resetText) {
 				lines.push(`  ${uiTheme.fg("dim", resetText)}`.trimEnd());
@@ -1906,7 +1920,7 @@ export function renderUsageReports(
 			const notes = [...new Set(sortedLimits.flatMap(limit => limit.notes ?? []))];
 			if (notes.length > 0) {
 				lines.push(
-					`  ${uiTheme.fg("dim", replaceTabs(truncateToWidth(sanitizeText(notes.map(n => n.replace(/[\r\n]+/g, " ")).join(" • ")), 110)))}`.trimEnd(),
+					`  ${uiTheme.fg("dim", replaceTabs(truncateToWidth(sanitizeText(notes.map(n => n.replace(/[\r\n]+/g, " ")).join(" • ")), availableWidth - 2)))}`.trimEnd(),
 				);
 			}
 		}

@@ -139,3 +139,19 @@ describe("renderUsageReports session marker (#5691 org-qualified identity)", () 
 		expect(marker).not.toContain("(");
 	});
 });
+
+describe("renderUsageReports terminal width", () => {
+	it("keeps every rendered line within the available width for many accounts", () => {
+		const reports = Array.from({ length: 24 }, (_, index) =>
+			report("github-copilot", `account-${index + 1}@example.test`, [
+				limit("Copilot", "monthly", 30 * 24 * HOUR, (index + 1) / 25),
+			]),
+		);
+		const availableWidth = 40;
+		const text = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), availableWidth));
+
+		for (const line of text.split("\n")) {
+			expect(Bun.stringWidth(line)).toBeLessThanOrEqual(availableWidth);
+		}
+	});
+});
