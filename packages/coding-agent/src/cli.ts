@@ -142,6 +142,8 @@ async function smokeTestDaemonWorker(): Promise<void> {
 		if (lastError) throw new Error(`daemon worker smoke failed: ${lastError.message}`);
 		const status = await client.serverStatus();
 		if (status.shard.profile !== "smoke") throw new Error("daemon worker smoke failed: profile mismatch");
+		const session = (await client.request("session_create", { cwd: root })) as { sessionId: string };
+		await client.request("session_close", { sessionId: session.sessionId });
 		await client.request("shutdown");
 	} finally {
 		client.close();

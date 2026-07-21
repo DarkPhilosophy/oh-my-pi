@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -18,6 +18,7 @@ import type {
 	DaemonSessionRuntime,
 	DaemonSessionSnapshot,
 } from "../src/daemon/session-runtime";
+import * as sdk from "../src/sdk";
 import type { AgentSessionEventListener } from "../src/session/agent-session";
 import { RemoteSessionHandle } from "../src/session/session-handle";
 
@@ -612,6 +613,68 @@ describe("daemon server and registry", () => {
 			await server.shutdown(true);
 		}
 	});
+
+	test("reclaims a stale owner lease when its live pid belongs to another process", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-owner-reused-pid-"));
+		const runtimeDir = path.join(root, "runtime");
+		const ownerPath = path.join(runtimeDir, "daemon.owner");
+		await fs.mkdir(runtimeDir, { recursive: true });
+		await Bun.write(
+			ownerPath,
+			JSON.stringify({ pid: process.pid, daemonId: "stale-owner", startedAt: Date.now() - 60_000 }),
+		);
+		const server = new DaemonServer({
+			profile: "test",
+			runtimeDir,
+			token: "secret",
+			// The production lease loop performs one 100ms platform-clock poll;
+			// this integration contract must cross that real ownership deadline.
+			ownerLeaseWaitMs: 1,
+			ownerProcessVerifier: () => false,
+			runtimeFactory: fakeFactory().runtimeFactory,
+		});
+		try {
+			await server.run();
+			const owner = await Bun.file(ownerPath).json();
+			expect(owner.daemonId).toBe(server.status().daemonId);
+		} finally {
+			await server.shutdown(true).catch(() => undefined);
+		}
+	});
+
+	test("publishes an authenticated endpoint before shared resources finish initializing", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-owner-starting-"));
+		const runtimeDir = path.join(root, "runtime");
+		const ownerPath = path.join(runtimeDir, "daemon.owner");
+		const authStorage = await sdk.discoverAuthStorage(path.join(root, "agent"));
+		const discovery = Promise.withResolvers<typeof authStorage>();
+		const discoveryStarted = Promise.withResolvers<void>();
+		const discover = spyOn(sdk, "discoverAuthStorage").mockImplementation(() => {
+			discoveryStarted.resolve();
+			return discovery.promise;
+		});
+		const server = new DaemonServer({
+			profile: "test",
+			runtimeDir,
+			token: "secret",
+			buildStamp: "test",
+		});
+		const started = server.run();
+		const client = new DaemonClient({ profile: "test", runtimeDir, token: "secret" });
+		try {
+			await discoveryStarted.promise;
+			expect(await Bun.file(ownerPath).exists()).toBe(true);
+			expect((await fs.stat(path.join(runtimeDir, "daemon.sock"))).isSocket()).toBe(true);
+			const status = await client.serverStatus();
+			expect(status).toMatchObject({ daemonId: server.status().daemonId });
+		} finally {
+			discovery.resolve(authStorage);
+			await started.catch(() => undefined);
+			client.close();
+			await server.shutdown(true).catch(() => undefined);
+			discover.mockRestore();
+		}
+	});
 	test("waits out a live-but-unbound owner and reclaims once it drains", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-owner-drain-"));
 		const runtimeDir = path.join(root, "runtime");
@@ -653,6 +716,7 @@ describe("daemon server and registry", () => {
 			runtimeDir,
 			token: "secret",
 			ownerLeaseWaitMs: 400,
+			ownerProcessVerifier: () => undefined,
 			runtimeFactory: fakeFactory().runtimeFactory,
 		});
 		const startedAt = Date.now();

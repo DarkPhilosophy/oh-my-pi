@@ -7,7 +7,6 @@ import { getActiveProfile, logger, popLoopPhase, postmortem, pushLoopPhase, VERS
 import { ModelRegistry } from "../config/model-registry";
 import { MCPManagerPool } from "../mcp";
 import { type CreateAgentSessionOptions, discoverAuthStorage } from "../sdk";
-import { SessionManager } from "../session/session-manager";
 import { daemonBuildStamp } from "./build-stamp";
 import { daemonEndpoint, daemonRuntimeDir, ensureDaemonRuntimeDir, readOrCreateDaemonToken } from "./paths";
 import {
@@ -24,11 +23,7 @@ import {
 	encodeDaemonFrame,
 } from "./protocol";
 import { DaemonSessionRegistry, RegistryError } from "./session-registry";
-import {
-	createAgentSessionRuntime,
-	type DaemonSessionRuntimeFactory,
-	type HostedServerControls,
-} from "./session-runtime";
+import { createAgentSessionRuntime, type DaemonSessionRuntimeFactory } from "./session-runtime";
 import type { DaemonProfile } from "./status";
 
 const DEFAULT_MAX_CLIENTS = 64;
@@ -55,6 +50,7 @@ type DaemonOwnerLease = {
 	daemonId: string;
 	startedAt: number;
 };
+type DaemonOwnerIdentity = "match" | "mismatch" | "unknown";
 
 export type DaemonServerOptions = {
 	profile: DaemonProfile;
@@ -70,7 +66,7 @@ export type DaemonServerOptions = {
 	/** Process identity override for isolated owner-takeover tests. */
 	ownerProcessVerifier?: (
 		owner: Readonly<{ pid: number; daemonId: string; startedAt: number }>,
-	) => boolean | Promise<boolean>;
+	) => boolean | undefined | Promise<boolean | undefined>;
 	runtimeFactory?: DaemonSessionRuntimeFactory;
 	registry?: DaemonSessionRegistry;
 	now?: () => number;
@@ -130,7 +126,9 @@ export class DaemonServer {
 	readonly #runtimeFactory: DaemonSessionRuntimeFactory;
 	readonly #registryOverride: DaemonSessionRegistry | undefined;
 	readonly #ownerLeaseWaitMs: number;
-	readonly #ownerProcessVerifier: ((owner: Readonly<DaemonOwnerLease>) => boolean | Promise<boolean>) | undefined;
+	readonly #ownerProcessVerifier:
+		| ((owner: Readonly<DaemonOwnerLease>) => boolean | undefined | Promise<boolean | undefined>)
+		| undefined;
 	readonly #now: () => number;
 	readonly #maxClients: number;
 	readonly #sessionDir: string | undefined;
@@ -161,6 +159,8 @@ export class DaemonServer {
 	#sharedAuthStorage: AuthStorage | undefined;
 	#sharedMcpManagerPool: MCPManagerPool | undefined;
 	#sessionBaseOptions: CreateAgentSessionOptions | undefined;
+	readonly #runtimeReady = Promise.withResolvers<void>();
+	#runPromise: Promise<this> | undefined;
 
 	constructor(options: DaemonServerOptions) {
 		this.profile = options.profile;
@@ -203,92 +203,83 @@ export class DaemonServer {
 
 	/** Start listening after runtime/token/socket permissions are established. */
 	async run(): Promise<this> {
-		if (this.#server) return this;
+		this.#runPromise ??= this.#start();
+		return this.#runPromise;
+	}
+
+	async #start(): Promise<this> {
 		this.#runtimeDir = this.#runtimeDirOverride ?? daemonRuntimeDir();
 		this.#endpoint = this.#endpointOverride ?? daemonEndpoint(this.#runtimeDir);
 		await ensureDaemonRuntimeDir(this.#runtimeDir);
 		this.#token = this.#tokenOverride ?? (await readOrCreateDaemonToken(this.#runtimeDir));
-		this.#buildStamp = this.#buildStampOverride ?? (await daemonBuildStamp());
-		await fs.chmod(this.#runtimeDir, 0o700);
+		await this.#acquireOwnerLease();
 		try {
-			await this.#acquireOwnerLease();
-			if (this.#usesDefaultRuntimeFactory) {
-				const authStorage = await discoverAuthStorage();
-				const mcpManagerPool = new MCPManagerPool();
-				this.#sharedAuthStorage = authStorage;
-				this.#sharedMcpManagerPool = mcpManagerPool;
-				this.#sessionBaseOptions = {
-					authStorage,
-					modelRegistry: new ModelRegistry(authStorage),
-					mcpManagerPool,
-				};
-			}
-			const serverControls: HostedServerControls = {
-				getSnapshot: () => {
-					const status = this.status();
-					return {
-						state: "connected",
-						shard: status.shard,
-						daemonId: status.daemonId,
-						serverVersion: status.serverVersion,
-						protocolVersion: status.protocolVersion,
-						sessionCount: status.sessionCount,
-						attachmentCount: status.attachmentCount,
-						protectedJobCount: status.protectedJobCount,
-						uptimeMs: status.uptimeMs,
-					};
-				},
-				sessions: () => JSON.stringify(this.registry.list()),
-				reconnect: () => undefined,
-				stop: () => ({
-					shutdown: false,
-					blockers: ["detach the current interactive session before stopping the server"],
-				}),
-			};
-			this.#registry =
-				this.#registryOverride ??
-				new DaemonSessionRegistry({
-					runtimeFactory: options =>
-						this.#runtimeFactory({
-							...options,
-							baseOptions: { ...this.#sessionBaseOptions, ...options.baseOptions },
-							serverControls,
-						}),
-					sessionDir: this.#sessionDir,
-					listSessions: () => SessionManager.listAll(),
-				});
 			for (;;) {
 				const server = net.createServer(socket => this.#accept(socket));
+				server.on("error", error => logger.error("Daemon server error", { error: unknownErrorMessage(error) }));
 				this.#server = server;
+				const listening = Promise.withResolvers<void>();
+				const onError = (error: Error): void => listening.reject(error);
+				server.once("error", onError);
+				server.listen(this.#endpoint, () => {
+					server.off("error", onError);
+					listening.resolve();
+				});
 				try {
-					await new Promise<void>((resolve, reject) => {
-						const onError = (error: Error): void => {
-							server.off("listening", onListening);
-							reject(error);
-						};
-						const onListening = (): void => {
-							server.off("error", onError);
-							resolve();
-						};
-						server.once("error", onError);
-						server.once("listening", onListening);
-						server.listen(this.#endpoint!);
-					});
+					await listening.promise;
 					break;
 				} catch (error) {
+					server.off("error", onError);
 					this.#server = undefined;
-					await new Promise<void>(resolve => server.close(() => resolve()));
-					const code = error instanceof Error && "code" in error ? error.code : undefined;
-					if (code !== "EADDRINUSE" || (await this.#probeEndpoint())) throw error;
-					await fs.rm(this.#endpoint!, { force: true });
+					if (error instanceof Error && "code" in error && error.code === "EADDRINUSE") {
+						if (await this.#probeEndpoint())
+							throw new DaemonEndpointOwnedError(`daemon endpoint is already owned: ${this.#endpoint}`);
+						await fs.rm(this.#endpoint, { force: true });
+						continue;
+					}
+					throw error;
 				}
 			}
-			await fs.chmod(this.#endpoint!, 0o600);
+			await fs.chmod(this.#endpoint, 0o600);
 			this.#postmortemCancel = postmortem.register("daemon-server", async () => {
 				await this.shutdown(true);
 			});
+
+			if (this.#usesDefaultRuntimeFactory) {
+				this.#sharedAuthStorage = await discoverAuthStorage();
+				const modelRegistry = new ModelRegistry(this.#sharedAuthStorage);
+				this.#sharedMcpManagerPool = new MCPManagerPool();
+				this.#sessionBaseOptions = {
+					authStorage: this.#sharedAuthStorage,
+					modelRegistry,
+					mcpManagerPool: this.#sharedMcpManagerPool,
+				};
+			}
+			const runtimeFactory: DaemonSessionRuntimeFactory = this.#usesDefaultRuntimeFactory
+				? options => this.#runtimeFactory({ ...options, baseOptions: this.#sessionBaseOptions })
+				: this.#runtimeFactory;
+			this.#registry =
+				this.#registryOverride ??
+				new DaemonSessionRegistry({
+					runtimeFactory,
+					sessionDir: this.#sessionDir,
+				});
+			this.#buildStamp = this.#buildStampOverride ?? (await daemonBuildStamp());
+			this.#runtimeReady.resolve();
 			return this;
 		} catch (error) {
+			this.#closed = true;
+			for (const socket of this.#rawSockets) socket.destroy();
+			const server = this.#server;
+			this.#server = undefined;
+			if (server) {
+				const closed = Promise.withResolvers<void>();
+				server.close(() => closed.resolve());
+				await closed.promise;
+			}
+			this.#postmortemCancel?.();
+			this.#postmortemCancel = undefined;
+			if ((await this.#ownsCurrentLease()) && this.#endpoint) await fs.rm(this.#endpoint, { force: true });
 			await this.#disposeSharedResources();
 			await this.#releaseOwnerLease();
 			throw error;
@@ -353,11 +344,14 @@ export class DaemonServer {
 			if (!expectedOwner && owner) return "waiting";
 			if (owner && this.#processAlive(owner.pid)) {
 				if (!replaceLiveOwner) return "waiting";
-				if (!(await this.#ownerProcessMatchesLease(owner))) return "unsafe";
-				process.kill(owner.pid, "SIGTERM");
-				if (!(await this.#waitForProcessExit(owner.pid, OWNER_TERMINATE_GRACE_MS))) {
-					process.kill(owner.pid, "SIGKILL");
-					if (!(await this.#waitForProcessExit(owner.pid, OWNER_TERMINATE_GRACE_MS))) return "unsafe";
+				const identity = await this.#ownerProcessIdentity(owner);
+				if (identity === "unknown" && this.#processAlive(owner.pid)) return "unsafe";
+				if (identity === "match") {
+					process.kill(owner.pid, "SIGTERM");
+					if (!(await this.#waitForProcessExit(owner.pid, OWNER_TERMINATE_GRACE_MS))) {
+						process.kill(owner.pid, "SIGKILL");
+						if (!(await this.#waitForProcessExit(owner.pid, OWNER_TERMINATE_GRACE_MS))) return "unsafe";
+					}
 				}
 			}
 			const current = await this.#readOwnerLease(ownerPath);
@@ -418,9 +412,12 @@ export class DaemonServer {
 		}
 	}
 
-	async #ownerProcessMatchesLease(owner: DaemonOwnerLease): Promise<boolean> {
-		if (this.#ownerProcessVerifier) return await this.#ownerProcessVerifier(owner);
-		if (process.platform !== "linux") return false;
+	async #ownerProcessIdentity(owner: DaemonOwnerLease): Promise<DaemonOwnerIdentity> {
+		if (this.#ownerProcessVerifier) {
+			const matches = await this.#ownerProcessVerifier(owner);
+			return matches === undefined ? "unknown" : matches ? "match" : "mismatch";
+		}
+		if (process.platform !== "linux") return "unknown";
 		try {
 			const [processStat, commandLine] = await Promise.all([
 				fs.stat(`/proc/${owner.pid}`),
@@ -428,14 +425,12 @@ export class DaemonServer {
 			]);
 			// A recycled PID belongs to a process created after this lease. The
 			// proc directory ctime is the process creation time on Linux. The
-			// worker selector additionally prevents an in-process test server or
-			// unrelated recycled process from ever being signalled.
-			return (
-				processStat.ctimeMs <= owner.startedAt + 1_000 &&
-				commandLine.split("\0").includes("__omp_worker_daemon_server")
-			);
+			// worker selector additionally distinguishes an OMP daemon host from
+			// an unrelated process that later inherited the same PID.
+			if (processStat.ctimeMs > owner.startedAt + 1_000) return "mismatch";
+			return commandLine.split("\0").includes("__omp_worker_daemon_server") ? "match" : "mismatch";
 		} catch {
-			return false;
+			return "unknown";
 		}
 	}
 
@@ -828,12 +823,12 @@ export class DaemonServer {
 		generation: number,
 	): Promise<unknown | typeof SKIP_DISPATCH> {
 		if (!this.#connectionActive(connection, generation)) return SKIP_DISPATCH;
+		if (operation.op === "ping") return { ok: true, daemonId: this.#daemonId };
+		if (operation.op === "server_status") return this.status();
+		await this.#runtimeReady.promise;
+		if (!this.#connectionActive(connection, generation)) return SKIP_DISPATCH;
 		const registry = this.registry;
 		switch (operation.op) {
-			case "ping":
-				return { ok: true, daemonId: this.#daemonId };
-			case "server_status":
-				return this.status();
 			case "session_create":
 				return registry.create(operation.sessionId, operation.cwd, operation.overrides);
 			case "session_list":
