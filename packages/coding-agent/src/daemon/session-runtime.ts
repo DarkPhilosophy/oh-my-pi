@@ -1,7 +1,7 @@
 import * as os from "node:os";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
-import { logger, postmortem, setProjectDir, VERSION } from "@oh-my-pi/pi-utils";
+import { logger, type postmortem, setProjectDir, VERSION } from "@oh-my-pi/pi-utils";
 import { createProjectDirScope, getActiveProfile, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import { reset as resetCapabilities } from "../capability";
 import { type Args, parseArgs } from "../cli/args";

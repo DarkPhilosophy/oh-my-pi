@@ -11,7 +11,8 @@ import { Database, type Statement } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
+import { parseAlibabaTokenPlanCredential } from "@oh-my-pi/pi-catalog/wire/alibaba-token-plan";
+import { $env, getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
 import type { ApiKeyResolver } from "./auth-retry";
 import * as AIError from "./error";
 import { isUsageLimitOutcome } from "./error/rate-limit";
@@ -42,6 +43,7 @@ import type {
 	UsageReport,
 } from "./usage";
 import { resolveUsedFraction } from "./usage";
+import { alibabaTokenPlanRankingStrategy, alibabaTokenPlanUsageProvider } from "./usage/alibaba-token-plan";
 import { claudeRankingStrategy, claudeUsageProvider } from "./usage/claude";
 import { cursorUsageProvider } from "./usage/cursor";
 import { googleGeminiCliUsageProvider } from "./usage/gemini";
@@ -62,6 +64,8 @@ import {
 	listCodexResetCredits,
 } from "./usage/openai-codex-reset";
 import { opencodeGoUsageProvider } from "./usage/opencode-go";
+import { syntheticUsageProvider } from "./usage/synthetic";
+import { xaiOauthUsageProvider } from "./usage/xai-oauth";
 import { zaiRankingStrategy, zaiUsageProvider } from "./usage/zai";
 
 const USAGE_RANKING_METRIC_EPSILON = 1e-9;
@@ -590,6 +594,7 @@ async function defaultConfigValueResolver(config: string): Promise<string | unde
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_USAGE_PROVIDERS: UsageProvider[] = [
+	alibabaTokenPlanUsageProvider,
 	openaiCodexUsageProvider,
 	kimiUsageProvider,
 	antigravityUsageProvider,
@@ -601,6 +606,8 @@ const DEFAULT_USAGE_PROVIDERS: UsageProvider[] = [
 	opencodeGoUsageProvider,
 	githubCopilotUsageProvider,
 	cursorUsageProvider,
+	syntheticUsageProvider,
+	xaiOauthUsageProvider,
 ];
 
 const DEFAULT_USAGE_PROVIDER_MAP = new Map<Provider, UsageProvider>(
@@ -636,10 +643,10 @@ const USAGE_REPORT_CACHE_KEY_VERSION_OVERRIDES: Partial<Record<Provider, number>
 	"google-antigravity": 2,
 	zai: 2,
 	// v2: cache identity gained an `org:` component so two subscriptions on one
-	// account email stop sharing a slot. The bump also retires pre-org entries —
-	// otherwise an org-less credential could replay another org's cached pool
-	// (incl. the 24h last-good fallback) via the old bare email/account key.
-	anthropic: 2,
+	// account email stop sharing a slot. v3 retires parsed reports created before
+	// Anthropic extra-usage rows existed; header ingestion can otherwise keep
+	// renewing those incomplete reports throughout the 24h last-good retention.
+	anthropic: 3,
 };
 const DEFAULT_OAUTH_REFRESH_TIMEOUT_MS = 10_000;
 /**
@@ -685,6 +692,31 @@ export { isDefinitiveOAuthFailure } from "./error/auth-classify";
 export interface UsageLimitMarkResult {
 	switched: boolean;
 	retryAtMs?: number;
+}
+
+export type ModelUsageHealthState = "healthy" | "reserve" | "depleted" | "unknown";
+
+export interface ModelUsageAccountHealth {
+	credentialId: number;
+	credentialType: AuthCredential["type"];
+	/** True when this credential is currently sticky for options.sessionId. */
+	selected?: true;
+	state: ModelUsageHealthState;
+	remainingFraction?: number;
+	resetsAt?: number;
+}
+
+export interface ModelUsageHealth {
+	state: ModelUsageHealthState;
+	accounts: ModelUsageAccountHealth[];
+}
+
+export interface ModelUsageHealthOptions {
+	modelId?: string;
+	sessionId?: string;
+	baseUrl?: string;
+	reserveFraction: number;
+	signal?: AbortSignal;
 }
 
 type UsageCacheEntry<T> = {
@@ -804,6 +836,8 @@ export interface OAuthAccountSummary {
 	/** Organization/workspace the credential is scoped to (Anthropic/ChatGPT multi-subscription). */
 	orgId?: string;
 	orgName?: string;
+	/** True when this account is the session-sticky OAuth credential requested by `listOAuthAccounts`. */
+	active: boolean;
 }
 export interface InvalidateCredentialMatchingOptions {
 	signal?: AbortSignal;
@@ -976,6 +1010,7 @@ function resolveDefaultUsageProvider(provider: Provider): UsageProvider | undefi
 }
 
 const DEFAULT_RANKING_STRATEGIES = new Map<Provider, CredentialRankingStrategy>([
+	["alibaba-token-plan", alibabaTokenPlanRankingStrategy],
 	["openai-codex", codexRankingStrategy],
 	["anthropic", claudeRankingStrategy],
 	["google-antigravity", antigravityRankingStrategy],
@@ -3026,11 +3061,13 @@ export class AuthStorage {
 				return report;
 			}
 			// Failure: apply a short jittered cool-down so the credential doesn't
-			// re-hit the endpoint on every poll. Serve the last good value when we
-			// have one (keeps the credential in the report); otherwise cache null
-			// so a cold or throttled credential stops re-bursting until the window
-			// expires and the next poll retries.
-			const lastGood = this.#usageCache.getStale<UsageReport | null>(cacheKey)?.value ?? null;
+			// re-hit the endpoint on every poll. Most providers serve the last good
+			// value through transient failures. Session-cookie providers can opt out
+			// so an expired login does not display stale quota indefinitely.
+			const retainLastGood = this.#usageProviderResolver?.(request.provider)?.retainLastGoodOnFailure !== false;
+			const lastGood = retainLastGood
+				? (this.#usageCache.getStale<UsageReport | null>(cacheKey)?.value ?? null)
+				: null;
 			const backoffJitter = USAGE_FAILURE_BACKOFF_MS * (Math.random() * 0.5 - 0.25);
 			const coolDown = Date.now() + USAGE_FAILURE_BACKOFF_MS + backoffJitter;
 			this.#usageCache.set(cacheKey, { value: lastGood, expiresAt: coolDown });
@@ -3164,8 +3201,9 @@ export class AuthStorage {
 		const parsedReport = parseHeaders(headers, now);
 		if (!parsedReport) return false;
 		// Throttled to one ingest per interval — except when a window reads
-		// exhausted: that snapshot must land immediately so the next getApiKey
-		// blocks the credential instead of burning a wire 429 on the wall.
+		// exhausted: persist that snapshot immediately. A full-backed cache can
+		// then block the next getApiKey; a cold header-only snapshot first probes
+		// the usage endpoint.
 		const exhausted = parsedReport.limits.some(limit => this.#isUsageLimitExhausted(limit));
 		const last = this.#usageHeaderIngestAt.get(cacheKey);
 		if (!exhausted && last !== undefined && now - last < USAGE_HEADER_INGEST_INTERVAL_MS) return false;
@@ -3185,7 +3223,8 @@ export class AuthStorage {
 		}
 
 		if (this.#fetchUsageReportsOverride || this.#store.fetchUsageReports) return false;
-		const prior = this.#usageCache.getStale<UsageReport | null>(cacheKey)?.value;
+		const priorEntry = this.#usageCache.getStale<UsageReport | null>(cacheKey);
+		const prior = priorEntry?.value;
 		let merged = report;
 		if (prior && Array.isArray(prior.limits)) {
 			const headerLimitsById = new Map(report.limits.map(limit => [limit.id, limit]));
@@ -3209,12 +3248,19 @@ export class AuthStorage {
 				metadata: {
 					...(report.metadata ?? {}),
 					...(prior.metadata ?? {}),
+					source: prior.metadata?.source,
 					headersUpdatedAt: now,
 				},
 			};
 		}
 
-		this.#usageCache.set(cacheKey, { value: merged, expiresAt: now + USAGE_REPORT_TTL_MS });
+		// Header ingestion merges values but never extends a cache entry's lifetime.
+		// Preserve the existing expiry (including active failure cooldowns) so full
+		// reports refetch on their original 5-minute schedule and full-payload-only
+		// rows such as extra usage stay current; headers only refresh window rows
+		// between fetches. A newly minted header-only report is durable but stale.
+		const expiresAt = Math.max(priorEntry?.expiresAt ?? now - 1, now - 1);
+		this.#usageCache.set(cacheKey, { value: merged, expiresAt });
 		this.#usageHeaderIngestAt.set(cacheKey, now);
 		return true;
 	}
@@ -3243,6 +3289,29 @@ export class AuthStorage {
 					this.#setStoredCredentials(providerId, dedupedEntries);
 				}
 				entries = dedupedEntries;
+			}
+
+			// SuperGrok billing only accepts OAuth bearers. Catalog envVars for
+			// xai-oauth are [XAI_OAUTH_TOKEN, XAI_API_KEY], so the generic path
+			// would (a) build api_key usage requests from stored keys / the paid
+			// API env var and (b) never fall through to XAI_OAUTH_TOKEN when a
+			// non-OAuth row is the only stored credential. Skip api_key material
+			// and only env-fallback to the dedicated OAuth bearer.
+			if (providerId === "xai-oauth") {
+				let hasUsableStoredOAuthCredential = false;
+				for (const entry of entries) {
+					if (entry.credential.type !== "oauth") continue;
+					const request = this.#buildUsageRequestForOauth(provider, entry.credential, baseUrl);
+					if (providerImpl.supports && !providerImpl.supports(request)) continue;
+					requests.push(request);
+					hasUsableStoredOAuthCredential = true;
+				}
+				const oauthToken = $env.XAI_OAUTH_TOKEN?.trim();
+				if (!hasUsableStoredOAuthCredential && oauthToken) {
+					const request = this.#buildUsageRequest(provider, { type: "oauth", accessToken: oauthToken }, baseUrl);
+					if (!providerImpl.supports || providerImpl.supports(request)) requests.push(request);
+				}
+				continue;
 			}
 
 			if (entries.length === 0) {
@@ -3497,6 +3566,177 @@ export class AuthStorage {
 	 */
 	usageProviderFor(provider: Provider): UsageProvider | undefined {
 		return this.#usageProviderResolver?.(provider);
+	}
+
+	/**
+	 * Return model ids whose live reports map to a quantitative usage scope.
+	 * Provider strategies supply model/tier mapping when available; otherwise
+	 * only explicitly matching model ids and account-wide shared limits count.
+	 * Label-only or ambiguous tier limits are excluded rather than guessed.
+	 */
+	getUsageReportingModelIds(
+		provider: Provider,
+		modelIds: readonly string[],
+		reports: readonly UsageReport[],
+	): string[] {
+		const strategy = this.#rankingStrategyResolver?.(provider);
+		const providerReports = reports.filter(report => report.provider === provider);
+		if (providerReports.length === 0) return [];
+		const seen = new Set<string>();
+		const reporting: string[] = [];
+		for (const modelId of modelIds) {
+			if (seen.has(modelId)) continue;
+			seen.add(modelId);
+			const context: CredentialRankingContext = { modelId };
+			const hasUsage = providerReports.some(report => {
+				const limits = strategy
+					? this.#getScopedUsageLimits(strategy, report, context)
+					: report.limits.filter(limit => limit.scope.shared === true || limit.scope.modelId === modelId);
+				return limits.some(limit => this.#isUsageLimitExhausted(limit) || resolveUsedFraction(limit) !== undefined);
+			});
+			if (hasUsage) reporting.push(modelId);
+		}
+		return reporting;
+	}
+
+	/**
+	 * Inspect the credential pool that {@link getApiKey} would use for one model
+	 * without advancing round-robin state or changing session stickiness.
+	 *
+	 * Pool aggregation is deliberately conservative: one healthy sibling makes
+	 * the model healthy, while any unknown sibling prevents a depleted/reserve
+	 * conclusion. Static runtime/config/env credentials return unknown because
+	 * they bypass the managed account pool.
+	 */
+	async getModelUsageHealth(provider: Provider, options: ModelUsageHealthOptions): Promise<ModelUsageHealth> {
+		options.signal?.throwIfAborted();
+		const origin = this.getCredentialOrigin(provider);
+		const strategy = this.#rankingStrategyResolver?.(provider);
+		if (!origin || !strategy || (origin.kind !== "oauth" && origin.kind !== "api_key")) {
+			return { state: "unknown", accounts: [] };
+		}
+
+		const stored = this.#getStoredCredentials(provider).map((entry, index) => ({ entry, index }));
+		const oauthPool = stored.filter(({ entry }) => entry.credential.type === "oauth");
+		const apiKeyPool = stored.filter(({ entry }) => entry.credential.type === "api_key");
+		const loginApiKeyPool = apiKeyPool.filter(
+			({ entry }) => entry.credential.type === "api_key" && entry.credential.source === "login",
+		);
+		const pool = origin.kind === "oauth" ? oauthPool : loginApiKeyPool;
+		if (pool.length === 0) return { state: "unknown", accounts: [] };
+		const sessionCredential = this.#getSessionCredential(provider, options.sessionId);
+		const selectedCredentialId =
+			sessionCredential?.type === origin.kind
+				? this.#getStoredCredentials(provider)[sessionCredential.index]?.id
+				: undefined;
+
+		const rankingContext: CredentialRankingContext = { modelId: options.modelId };
+		const blockScope = strategy.blockScope?.(rankingContext);
+		const reserveFraction = Number.isFinite(options.reserveFraction)
+			? Math.max(0, Math.min(1, options.reserveFraction))
+			: 0;
+		const nowMs = Date.now();
+		const accounts = await Promise.all(
+			pool.map(async ({ entry, index }): Promise<ModelUsageAccountHealth> => {
+				const credentialType = entry.credential.type;
+				const providerKey = this.#getProviderTypeKey(provider, credentialType);
+				let blockedUntil = this.#getCredentialBlockedUntil(provider, providerKey, index, blockScope);
+				if (blockedUntil !== undefined && provider !== "openai-codex") {
+					return {
+						credentialId: entry.id,
+						credentialType,
+						state: "depleted",
+						resetsAt: blockedUntil,
+					};
+				}
+
+				let report: UsageReport | null;
+				try {
+					report = await raceUsageWithSignal(
+						this.#getUsageReport(provider, entry.credential, {
+							baseUrl: options.baseUrl,
+							timeoutMs: this.#usageRequestTimeoutMs,
+							signal: options.signal,
+						}),
+						options.signal,
+					);
+				} catch (error) {
+					if (options.signal?.aborted) throw error;
+					report = null;
+				}
+
+				if (provider === "openai-codex") {
+					blockedUntil = this.#getCredentialBlockedUntil(provider, providerKey, index, blockScope);
+				}
+				if (blockedUntil !== undefined) {
+					return {
+						credentialId: entry.id,
+						credentialType,
+						state: "depleted",
+						resetsAt: blockedUntil,
+					};
+				}
+				if (!report) return { credentialId: entry.id, credentialType, state: "unknown" };
+
+				const limits = this.#getScopedUsageLimits(strategy, report, rankingContext);
+				if (limits.length === 0) return { credentialId: entry.id, credentialType, state: "unknown" };
+
+				const currentLimits = limits.filter(limit => {
+					const resetsAt = limit.window?.resetsAt;
+					return resetsAt === undefined || resetsAt > nowMs || report.fetchedAt >= resetsAt;
+				});
+				if (currentLimits.length === 0) {
+					return { credentialId: entry.id, credentialType, state: "unknown" };
+				}
+				const activeExhausted = currentLimits.filter(limit => this.#isUsageLimitExhausted(limit));
+				if (activeExhausted.length > 0) {
+					const futureResets = activeExhausted
+						.map(limit => limit.window?.resetsAt)
+						.filter((resetsAt): resetsAt is number => resetsAt !== undefined && resetsAt > nowMs);
+					return {
+						credentialId: entry.id,
+						credentialType,
+						state: "depleted",
+						resetsAt: futureResets.length > 0 ? Math.min(...futureResets) : undefined,
+					};
+				}
+
+				const usedFractions = currentLimits
+					.map(resolveUsedFraction)
+					.filter((fraction): fraction is number => fraction !== undefined);
+				if (usedFractions.length === 0) {
+					return { credentialId: entry.id, credentialType, state: "unknown" };
+				}
+				const remainingFraction = Math.max(0, 1 - Math.max(...usedFractions));
+				return {
+					credentialId: entry.id,
+					credentialType,
+					state: remainingFraction <= reserveFraction ? "reserve" : "healthy",
+					remainingFraction,
+				};
+			}),
+		);
+		if (selectedCredentialId !== undefined) {
+			const selectedAccount = accounts.find(account => account.credentialId === selectedCredentialId);
+			if (selectedAccount) selectedAccount.selected = true;
+		}
+
+		if (accounts.some(account => account.state === "healthy")) return { state: "healthy", accounts };
+		if (accounts.some(account => account.state === "unknown")) return { state: "unknown", accounts };
+		if (accounts.some(account => account.state === "reserve")) return { state: "reserve", accounts };
+		return { state: "depleted", accounts };
+	}
+
+	/**
+	 * Release a session's sticky credential so its next {@link getApiKey} call
+	 * re-runs native pool ranking. This never blocks or penalizes the released
+	 * account; usage-aware routing uses it when another sibling has more
+	 * headroom, before considering a model/provider fallback.
+	 */
+	releaseSessionCredentialForReselection(provider: string, sessionId: string): boolean {
+		if (!this.#getSessionCredential(provider, sessionId)) return false;
+		this.#clearSessionCredential(provider, sessionId);
+		return true;
 	}
 
 	async fetchUsageReports(options?: {
@@ -4982,11 +5222,20 @@ export class AuthStorage {
 	 * order, WITHOUT refreshing any token. The array position (0-based) is the
 	 * selector accepted by {@link AuthStorage.getOAuthAccessAt}; a "pick the Nth
 	 * account" UI should render `position + 1`.
+	 *
+	 * When `sessionId` is supplied, the session-sticky OAuth credential is marked
+	 * `active`. No account is active before that session has resolved or pinned a
+	 * credential.
 	 */
-	listOAuthAccounts(provider: string): OAuthAccountSummary[] {
+	listOAuthAccounts(provider: string, sessionId?: string): OAuthAccountSummary[] {
 		if (this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) {
 			return [];
 		}
+		const sessionCredential = this.#getSessionCredential(provider, sessionId);
+		const activeCredentialId =
+			sessionCredential?.type === "oauth"
+				? this.#getStoredCredentials(provider)[sessionCredential.index]?.id
+				: undefined;
 		return this.#getStoredOAuthSelections(provider).map((selection, position) => ({
 			position,
 			credentialId: selection.credentialId,
@@ -4996,7 +5245,27 @@ export class AuthStorage {
 			enterpriseUrl: selection.credential.enterpriseUrl,
 			orgId: selection.credential.orgId,
 			orgName: selection.credential.orgName,
+			active: selection.credentialId === activeCredentialId,
 		}));
+	}
+
+	/**
+	 * Pin one stored OAuth account as this session's preferred credential.
+	 *
+	 * The durable credential id keeps the pin stable across credential refreshes,
+	 * storage reordering, and process restarts. Normal auth retry and usage-limit
+	 * handling may still route around an unavailable account.
+	 */
+	pinSessionOAuthAccount(provider: string, sessionId: string, credentialId: number): boolean {
+		if (!sessionId || this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) {
+			return false;
+		}
+		const stored = this.#getStoredCredentials(provider);
+		const index = stored.findIndex(entry => entry.id === credentialId);
+		const target = stored[index];
+		if (target?.credential.type !== "oauth") return false;
+		this.#recordSessionCredential(provider, sessionId, "oauth", index);
+		return true;
 	}
 
 	/**
@@ -5983,7 +6252,12 @@ function matchesReplacementCredential(
 ): boolean {
 	if (!existing || existing.type !== incoming.type) return false;
 	if (incoming.type === "api_key") {
-		return existing.type === "api_key" && existing.key === incoming.key;
+		if (existing.type !== "api_key") return false;
+		if (existing.key === incoming.key) return true;
+		if (provider !== "alibaba-token-plan") return false;
+		const existingToken = parseAlibabaTokenPlanCredential(existing.key)?.token;
+		const incomingToken = parseAlibabaTokenPlanCredential(incoming.key)?.token;
+		return existingToken !== undefined && existingToken === incomingToken;
 	}
 	const incomingIdentifiers = extractOAuthCredentialIdentifiers(incoming);
 	const incomingIdentityKey = resolveProviderCredentialIdentityKey(provider, incomingIdentifiers);

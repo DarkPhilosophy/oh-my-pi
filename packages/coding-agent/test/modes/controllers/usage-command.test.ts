@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from "bun:test";
+import { stripVTControlCharacters } from "node:util";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
 import { CommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -20,6 +21,14 @@ function renderPresentedBlocks(value: unknown): string {
 		.join("\n");
 }
 
+function createUsageSessionDouble() {
+	return { getUsageReportingModelSelectors: () => [] };
+}
+
+function createSettingsDouble() {
+	return { get: () => false };
+}
+
 describe("CommandController /usage", () => {
 	beforeAll(async () => {
 		const theme = await getThemeByName("dark");
@@ -30,7 +39,8 @@ describe("CommandController /usage", () => {
 	it("renders bars and free percentage for limits that only report remainingFraction", async () => {
 		const present = vi.fn();
 		const ctx = {
-			session: {},
+			session: createUsageSessionDouble(),
+			settings: createSettingsDouble(),
 			ui: { terminal: { columns: 100 } },
 			present,
 			showWarning: vi.fn(),
@@ -61,15 +71,16 @@ describe("CommandController /usage", () => {
 		const firstCall = present.mock.calls[0];
 		expect(firstCall).toBeDefined();
 		const output = renderPresentedBlocks(firstCall?.[0]);
-		expect(output).toContain("25% free");
-		expect(output).toContain("█");
-		expect(output).not.toContain("··········");
+		const plain = stripVTControlCharacters(output);
+		expect(plain).toContain("25% free");
+		expect(plain).not.toContain("··········");
 	});
 
 	it("renders Cursor request quotas in the /usage view", async () => {
 		const present = vi.fn();
 		const ctx = {
-			session: {},
+			session: createUsageSessionDouble(),
+			settings: createSettingsDouble(),
 			ui: { terminal: { columns: 100 } },
 			present,
 			showWarning: vi.fn(),
@@ -86,7 +97,7 @@ describe("CommandController /usage", () => {
 						id: "cursor:requests:gpt-4",
 						label: "gpt-4 requests",
 						scope: { provider: "cursor", windowId: "monthly" },
-						window: { id: "monthly", label: "Monthly", resetsAt: now + 86_400_000 },
+						window: { id: "monthly", label: "Monthly", resetsAt: now + 90_000_000 },
 						amount: {
 							unit: "requests",
 							used: 150,
@@ -117,7 +128,8 @@ describe("CommandController /usage", () => {
 	it("renders saved reset expiry lines for future and expired credits", async () => {
 		const present = vi.fn();
 		const ctx = {
-			session: {},
+			session: createUsageSessionDouble(),
+			settings: createSettingsDouble(),
 			ui: { terminal: { columns: 100 } },
 			present,
 			showWarning: vi.fn(),

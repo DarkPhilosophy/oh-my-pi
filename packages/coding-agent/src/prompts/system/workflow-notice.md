@@ -13,7 +13,7 @@ Worth it when the task benefits from decomposition + parallel coverage, or from 
 <helpers>
 State persists across eval calls, so scout in one call and fan out in the next. Every eval call has:
 
-- `agent(prompt, *, agent="task", model=None, label=None, schema=None, isolated=None, apply=None, merge=None, handle=False)` — run ONE subagent; returns its final text, or the validated object when `schema` (a JSON Schema dict) is given. With `schema` the subagent is forced to emit structured output that is validated for you — branch on the object, not on parsed prose. `agent` picks a discovered agent ("explore", "reviewer", …); `label` names the artifact. Shared background goes in a `local://` file referenced from each prompt, not a parameter. Subagents are told their final text IS the return value, so they hand back raw data. `agent()` blocks until the subagent finishes. Recursion follows `task.maxRecursionDepth` (default 2; a negative value disables the cap): main agent depth = 0, each `agent()` child increments depth by 1, and, when the cap is non-negative, a spawner may call `agent()` only while its current `taskDepth < cap`. Pass `isolated=True` to run the spawn in a copy-on-write worktree so parallel `agent()` calls can edit overlapping files safely — strict opt-in, mirrors the `task` tool, defaults off regardless of `task.isolation.mode`; `isolated=True` while the setting is `"none"` errors out instead of silently downgrading. With isolation, `apply=False` keeps changes in the worktree, and `merge=False` forces patch mode even when the setting is `"branch"`. Captured root patch path, branch name, nested repo patches, and apply summary reach the workflow through `handle=True` — combine it with `apply=False` (or `apply=False, schema=…`) and read `node["patch_path"]`, `node["branch_name"]`, `node["nested_patches"]`, `node["changes_applied"]`, `node["isolation_summary"]` (JS: same keys camelCased) to recover artifacts.
+- `agent(prompt, *, agent="task", model=None, label=None, schema=None, isolated=None, apply=None, merge=None, handle=False)` — run ONE subagent; returns its final text, or the validated object when `schema` (a JSON Schema dict) is given. With `schema` the subagent is forced to emit structured output that is validated for you — branch on the object, not on parsed prose. `agent` picks a discovered agent ("scout", "reviewer", …); `label` names the artifact. Shared background goes in a `local://` file referenced from each prompt, not a parameter. Subagents are told their final text IS the return value, so they hand back raw data. `agent()` blocks until the subagent finishes. Recursion follows `task.maxRecursionDepth` (default 2; a negative value disables the cap): main agent depth = 0, each `agent()` child increments depth by 1, and, when the cap is non-negative, a spawner may call `agent()` only while its current `taskDepth < cap`. Pass `isolated=True` to run the spawn in a copy-on-write worktree so parallel `agent()` calls can edit overlapping files safely — strict opt-in, mirrors the `task` tool, defaults off regardless of `task.isolation.mode`; `isolated=True` while the setting is `"none"` errors out instead of silently downgrading. With isolation, `apply=False` keeps changes in the worktree, and `merge=False` forces patch mode even when the setting is `"branch"`. Captured root patch path, branch name, nested repo patches, and apply summary reach the workflow through `handle=True` — combine it with `apply=False` (or `apply=False, schema=…`) and read `node["patch_path"]`, `node["branch_name"]`, `node["nested_patches"]`, `node["changes_applied"]`, `node["isolation_summary"]` (JS: same keys camelCased) to recover artifacts.
 - `parallel(thunks)` — run zero-arg callables concurrently through a bounded pool, preserving input order; returns once all finish. The pool is bounded by the session's `task` concurrency — don't hand-tune it; fan out as wide as the work divides. A thunk that raises propagates — wrap risky work in `try/except` inside the thunk to keep partial results. In a loop, bind each closure's value with a default arg (`lambda d=d: …`) or every thunk captures the last one.
 - `pipeline(items, *stages)` — map items through `stages` left-to-right. There is a BARRIER between stages: ALL items clear stage N before stage N+1 begins. Each stage is a one-arg callable; stage 1 gets the original item, later stages get the previous result. Same pool width as `parallel()`.
 - `completion(prompt, *, model="default", system=None, schema=None)` — oneshot, stateless model call (no tools, no history). Tiers: "smol", "default", "slow". Cheap classification/scoring inside a fan-out.
@@ -28,56 +28,64 @@ For independent per-item chains (review → verify, fetch → extract → score)
 
 **Python (`eval`, Python backend):**
 
-    DIMENSIONS = [{"key": "bugs", "prompt": "…"}, {"key": "perf", "prompt": "…"}]
-    def review_and_verify(d):
-        found = agent(d["prompt"], label=f"review:{d['key']}", schema=FINDINGS_SCHEMA)
-        return parallel([lambda f=f: {**f, "verdict": agent(
-            f"Refute if you can (default refuted when unsure): {f['title']}",
-            label=f"verify:{f['file']}", schema=VERDICT_SCHEMA)} for f in found["findings"]])
-    phase("Review")
-    results = parallel([lambda d=d: review_and_verify(d) for d in DIMENSIONS])
-    confirmed = [f for group in results for f in group if f["verdict"]["is_real"]]
+```python
+DIMENSIONS = [{"key": "bugs", "prompt": "…"}, {"key": "perf", "prompt": "…"}]
+def review_and_verify(d):
+    found = agent(d["prompt"], label=f"review:{d['key']}", schema=FINDINGS_SCHEMA)
+    return parallel([lambda f=f: {**f, "verdict": agent(
+        f"Refute if you can (default refuted when unsure): {f['title']}",
+        label=f"verify:{f['file']}", schema=VERDICT_SCHEMA)} for f in found["findings"]])
+phase("Review")
+results = parallel([lambda d=d: review_and_verify(d) for d in DIMENSIONS])
+confirmed = [f for group in results for f in group if f["verdict"]["is_real"]]
+```
 
 **JavaScript (`eval`, JavaScript backend):**
 
-    const DIMENSIONS = [{ key: "bugs", prompt: "…" }, { key: "perf", prompt: "…" }];
-    async function reviewAndVerify(d) {
-        const found = await agent(d.prompt, {
-            label: `review:${d.key}`,
-            schema: FINDINGS_SCHEMA,
-        });
-        return await parallel(found.findings.map((f) => async () => ({
-            …f,
-            verdict: await agent(
-                `Refute if you can (default refuted when unsure): ${f.title}`,
-                { label: `verify:${f.file}`, schema: VERDICT_SCHEMA },
-            ),
-        })));
-    }
-    phase("Review");
-    const results = await parallel(DIMENSIONS.map((d) => async () => reviewAndVerify(d)));
-    const confirmed = results.flat().filter((f) => f.verdict.is_real);
+```js
+const DIMENSIONS = [{ key: "bugs", prompt: "…" }, { key: "perf", prompt: "…" }];
+async function reviewAndVerify(d) {
+    const found = await agent(d.prompt, {
+        label: `review:${d.key}`,
+        schema: FINDINGS_SCHEMA,
+    });
+    return await parallel(found.findings.map((f) => async () => ({
+        ...f,
+        verdict: await agent(
+            `Refute if you can (default refuted when unsure): ${f.title}`,
+            { label: `verify:${f.file}`, schema: VERDICT_SCHEMA },
+        ),
+    })));
+}
+phase("Review");
+const results = await parallel(DIMENSIONS.map((d) => async () => reviewAndVerify(d)));
+const confirmed = results.flat().filter((f) => f.verdict.is_real);
+```
 Reach for `pipeline()` only when a stage genuinely needs ALL of the previous stage first — dedup/merge across the whole set, early-exit on zero, or "compare against the other findings" — because its inter-stage barrier makes every item wait for the slowest peer:
 
 **Python (`eval`, Python backend):**
 
-    phase("Find")
-    found = parallel([lambda d=d: agent(d["prompt"], schema=FINDINGS_SCHEMA) for d in DIMENSIONS])
-    findings = dedupe([f for r in found for f in r["findings"]])   # needs everything at once
-    phase("Verify")
-    verdicts = parallel([lambda f=f: agent(verify_prompt(f), schema=VERDICT_SCHEMA) for f in findings])
+```python
+phase("Find")
+found = parallel([lambda d=d: agent(d["prompt"], schema=FINDINGS_SCHEMA) for d in DIMENSIONS])
+findings = dedupe([f for r in found for f in r["findings"]])   # needs everything at once
+phase("Verify")
+verdicts = parallel([lambda f=f: agent(verify_prompt(f), schema=VERDICT_SCHEMA) for f in findings])
+```
 
 **JavaScript (`eval`, JavaScript backend):**
 
-    phase("Find");
-    const found = await parallel(DIMENSIONS.map((d) => async () =>
-        await agent(d.prompt, { schema: FINDINGS_SCHEMA }),
-    ));
-    const findings = dedupe(found.flatMap((r) => r.findings)); // needs everything at once
-    phase("Verify");
-    const verdicts = await parallel(findings.map((f) => async () =>
-        await agent(verifyPrompt(f), { schema: VERDICT_SCHEMA }),
-    ));
+```js
+phase("Find");
+const found = await parallel(DIMENSIONS.map((d) => async () =>
+    await agent(d.prompt, { schema: FINDINGS_SCHEMA }),
+));
+const findings = dedupe(found.flatMap((r) => r.findings)); // needs everything at once
+phase("Verify");
+const verdicts = await parallel(findings.map((f) => async () =>
+    await agent(verifyPrompt(f), { schema: VERDICT_SCHEMA }),
+));
+```
 Use ordinary code between calls to flatten/map/filter; don't add a barrier just for that. Nested `parallel()` pools each cap independently, so keep total fan-out sane.
 </structure>
 

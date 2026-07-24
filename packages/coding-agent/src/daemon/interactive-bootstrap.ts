@@ -407,10 +407,6 @@ export async function ensureDaemonBuildPairing(
 	if (forceStop) {
 		const pid = await effects.readOwnerPid?.();
 		if (pid === undefined) {
-			// Pre-pairing daemons predate the daemon.owner lease file, so there is
-			// no PID to signal. Still attempt replacement: the shutdown request
-			// above may land once its clients drop, and the contender below parks
-			// on the owner lease until the old listener finally releases it.
 			logger.warn("Stale daemon owner PID unavailable; attempting replacement without a signal", {
 				staleStamp,
 				localStamp: effects.localStamp,

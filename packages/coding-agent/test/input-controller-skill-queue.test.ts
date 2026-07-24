@@ -792,6 +792,7 @@ function createEventControllerFixture() {
 		updateEditorTopBorder: vi.fn(),
 		addMessageToChat,
 		updatePendingMessagesDisplay,
+		transcriptMessageComponents: new WeakMap(),
 		pendingTools: new Map(),
 		session: {},
 		get viewSession() {

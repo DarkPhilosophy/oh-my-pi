@@ -15,6 +15,7 @@ import { formatDuration, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
 import { type LoadedCustomShare, loadCustomShare } from "../../export/custom-share";
+import { parseExportArgs } from "../../export/html/args";
 import { shareSession } from "../../export/share";
 import type { CompactOptions } from "../../extensibility/extensions/types";
 import {
@@ -76,16 +77,14 @@ export class CommandController {
 	}
 
 	async handleExportCommand(text: string): Promise<void> {
-		const parts = text.split(/\s+/);
-		const arg = parts.length > 1 ? parts[1] : undefined;
-
-		if (arg === "--copy" || arg === "clipboard" || arg === "copy") {
-			this.ctx.showWarning("Use /dump to copy the session to clipboard.");
-			return;
-		}
-
 		try {
-			const filePath = await this.ctx.session.exportToHtml(arg);
+			const { outputPath, useUserThemes } = parseExportArgs(text.slice("/export".length));
+			if (outputPath === "--copy" || outputPath === "clipboard" || outputPath === "copy") {
+				this.ctx.showWarning("Use /dump to copy the session to clipboard.");
+				return;
+			}
+
+			const filePath = await this.ctx.session.exportToHtml(outputPath, useUserThemes);
 			this.ctx.showStatus(`Session exported to: ${filePath}`);
 			this.openInBrowser(filePath);
 		} catch (error: unknown) {
@@ -550,13 +549,17 @@ export class CommandController {
 					this.ctx.session.sessionId,
 				)
 			: undefined;
+		const usageModelSelectors = this.ctx.session.getUsageReportingModelSelectors(usageReports);
 		const output = renderUsageReports(
 			usageReports,
 			theme,
 			Date.now(),
 			availableWidth,
 			provider => (provider === currentProvider ? activeAccount : undefined),
-			this.ctx.settings.get("usage.maskAccountLabels"),
+			{
+				maskAccountLabels: this.ctx.settings.get("usage.maskAccountLabels"),
+				usageModelSelectors,
+			},
 		);
 		this.ctx.present([new Spacer(1), new Text(output, 1, 0)]);
 	}
@@ -1073,7 +1076,7 @@ export class CommandController {
 		}
 
 		try {
-			await this.ctx.sessionManager.moveTo(resolvedPath);
+			await this.ctx.session.moveSession(resolvedPath);
 		} catch (err) {
 			this.ctx.showError(`Move failed: ${err instanceof Error ? err.message : String(err)}`);
 			return;
@@ -1316,7 +1319,7 @@ export class CommandController {
 
 			compactingLoader.stop();
 			this.ctx.statusContainer.disposeChildren();
-			this.ctx.rebuildChatFromMessages();
+			this.ctx.rebuildChatFromMessages({ reuseSettledComponents: true });
 
 			this.ctx.statusLine.invalidate();
 			// Same as the auto-compaction rebuild: a collapsed transcript is an
@@ -1419,7 +1422,7 @@ export class CommandController {
 }
 
 const BAR_WIDTH_MAX = 24;
-const COLUMN_WIDTH_MIN = 9;
+const COLUMN_WIDTH_MIN = 4;
 
 function renderJobLine(job: AsyncJobSnapshotItem, now: number): string {
 	const duration = formatDuration(Math.max(0, now - job.startTime));
@@ -1639,11 +1642,28 @@ function padColumn(text: string, width: number): string {
 	return `${text}${padding(width - visible)}`;
 }
 
-function resolveAggregateStatus(limits: UsageLimit[]): UsageLimit["status"] {
+type AggregateDisplayStatus = NonNullable<UsageLimit["status"]> | "neutral";
+
+function isUsedOnlyAbsoluteAmount(limit: UsageLimit): boolean {
+	const amount = limit.amount;
+	return (
+		amount.unit !== "percent" &&
+		amount.unit !== "unknown" &&
+		amount.used !== undefined &&
+		Number.isFinite(amount.used) &&
+		amount.limit === undefined &&
+		amount.remaining === undefined &&
+		resolveUsedFraction(limit) === undefined
+	);
+}
+
+function resolveAggregateStatus(limits: UsageLimit[]): AggregateDisplayStatus {
 	const hasOk = limits.some(limit => limit.status === "ok");
 	const hasWarning = limits.some(limit => limit.status === "warning");
 	const hasExhausted = limits.some(limit => limit.status === "exhausted");
-	if (!hasOk && !hasWarning && !hasExhausted) return "unknown";
+	if (!hasOk && !hasWarning && !hasExhausted) {
+		return limits.length > 0 && limits.every(isUsedOnlyAbsoluteAmount) ? "neutral" : "unknown";
+	}
 	if (hasOk) {
 		return hasWarning || hasExhausted ? "warning" : "ok";
 	}
@@ -1671,6 +1691,8 @@ function formatAggregateAmount(limits: UsageLimit[]): string {
 		return `${formatNumber(remainingPct)}% free`;
 	}
 
+	if (limits.length > 0 && limits.every(isUsedOnlyAbsoluteAmount)) return "";
+
 	// Count unique accounts from limit scopes — not limits.length.
 	const uniqueAccountIds = new Set(
 		limits.map(limit => limit.scope.accountId).filter((id): id is string => typeof id === "string" && id.length > 0),
@@ -1682,17 +1704,24 @@ function formatAggregateAmount(limits: UsageLimit[]): string {
 }
 
 function resolveResetRange(limits: UsageLimit[], nowMs: number): string | null {
-	const absolute = limits
-		.map(limit => limit.window?.resetsAt)
-		.filter((value): value is number => value !== undefined && Number.isFinite(value) && value > nowMs);
-	if (absolute.length === 0) return null;
-	const offsets = absolute.map(value => value - nowMs);
+	const windows = limits
+		.map(limit => limit.window)
+		.filter(
+			(window): window is NonNullable<UsageLimit["window"]> =>
+				window?.resetsAt !== undefined && Number.isFinite(window.resetsAt) && window.resetsAt > nowMs,
+		);
+	if (windows.length === 0) return null;
+	// Use the shared verb when every contributing window agrees (e.g. all "tick");
+	// mixed or absent labels fall back to the generic "resets".
+	const labels = new Set(windows.map(window => window.resetLabel ?? "resets"));
+	const verb = labels.size === 1 ? [...labels][0]! : "resets";
+	const offsets = windows.map(window => window.resetsAt! - nowMs);
 	const minReset = Math.min(...offsets);
 	const maxReset = Math.max(...offsets);
 	if (maxReset - minReset > 60_000) {
-		return `resets in ${formatDuration(minReset)}–${formatDuration(maxReset)}`;
+		return `${verb} in ${formatDuration(minReset)}–${formatDuration(maxReset)}`;
 	}
-	return `resets in ${formatDuration(minReset)}`;
+	return `${verb} in ${formatDuration(minReset)}`;
 }
 /**
  * Compact one-line quota summary for a single advisor's provider.
@@ -1746,7 +1775,8 @@ export function formatCompactQuota(
 	return `Quota: ${lines.join(" │ ")}`;
 }
 
-function resolveStatusIcon(status: UsageLimit["status"], uiTheme: typeof theme): string {
+function resolveStatusIcon(status: AggregateDisplayStatus, uiTheme: typeof theme): string {
+	if (status === "neutral") return uiTheme.fg("dim", uiTheme.status.info);
 	if (status === "exhausted") return uiTheme.fg("error", uiTheme.status.error);
 	if (status === "warning") return uiTheme.fg("warning", uiTheme.status.warning);
 	if (status === "ok") return uiTheme.fg("success", uiTheme.status.success);
@@ -1796,6 +1826,14 @@ function resolveUsageGradientRgb(remainingFraction: number): string {
 }
 
 function renderUsageBar(limit: UsageLimit, uiTheme: typeof theme, barWidth: number): string {
+	const usedAmount = limit.amount.used;
+	if (usedAmount !== undefined && isUsedOnlyAbsoluteAmount(limit)) {
+		const used =
+			limit.amount.unit === "usd"
+				? `$${usedAmount.toFixed(2)}`
+				: `${formatNumber(usedAmount, 2)} ${limit.amount.unit}`;
+		return uiTheme.fg("dim", truncateJobLabel(`${used} used`, barWidth));
+	}
 	const usedFraction = resolveUsedFraction(limit);
 	if (usedFraction === undefined) {
 		return uiTheme.fg("dim", "·".repeat(barWidth));
@@ -1804,6 +1842,15 @@ function renderUsageBar(limit: UsageLimit, uiTheme: typeof theme, barWidth: numb
 	const remainingFraction = 1 - Math.min(Math.max(usedFraction, 0), 1);
 	const label = `${formatNumber(remainingFraction * 100)}% free`;
 	const labelWidth = visibleWidth(label);
+	if (labelWidth > barWidth) {
+		// Embedded label doesn't fit: render a plain filled/empty bar of exactly
+		// barWidth cells. Truncating the label would emit meaningless fragments.
+		const filledCells = Math.round(remainingFraction * barWidth);
+		const emptyCells = barWidth - filledCells;
+		const rgb = resolveUsageGradientRgb(remainingFraction);
+		const foreground = `\x1b[38;2;${rgb}m`;
+		return `${foreground}${"█".repeat(filledCells)}\x1b[39m${uiTheme.fg("dim", "░".repeat(emptyCells))}`;
+	}
 	const filledCells = Math.round(remainingFraction * barWidth);
 	const labelStart = Math.max(0, Math.min(filledCells - labelWidth, barWidth - labelWidth));
 	const filledLabelWidth = Math.max(0, Math.min(labelWidth, filledCells - labelStart));
@@ -1843,8 +1890,9 @@ export function renderUsageReports(
 	nowMs: number,
 	availableWidth: number,
 	resolveActiveAccount?: (provider: string) => OAuthAccountIdentity | undefined,
-	maskAccountLabels = false,
+	options: { maskAccountLabels?: boolean; usageModelSelectors?: readonly string[] } = {},
 ): string {
+	const { maskAccountLabels = false, usageModelSelectors = [] } = options;
 	const lines: string[] = [];
 	const latestFetchedAt = Math.max(...reports.map(report => report.fetchedAt ?? 0));
 	const headerSuffix = latestFetchedAt ? ` (${formatDuration(nowMs - latestFetchedAt)} ago)` : "";
@@ -1899,6 +1947,13 @@ export function renderUsageReports(
 				`  ${uiTheme.fg("accent", "in use by this session:")} ${styleAccountMask(activeAccountLabel, uiTheme, maskAccountLabels)}`,
 			);
 		}
+		const reportingModels = usageModelSelectors.filter(selector => selector.startsWith(`${provider}/`));
+		if (reportingModels.length > 0) {
+			lines.push(`  ${uiTheme.fg("accent", "Models with usage data")}`);
+			for (const selector of reportingModels) {
+				lines.push(`    ${replaceTabs(truncateToWidth(sanitizeText(selector), availableWidth - 4))}`);
+			}
+		}
 
 		// Provider-wide disclaimers (e.g. "OMP-observed spend only") render once
 		// above the per-account sections instead of duplicating onto every limit.
@@ -1952,25 +2007,48 @@ export function renderUsageReports(
 			for (const line of resetAccountLines) lines.push(uiTheme.fg("dim", line));
 		}
 
+		// Order account columns ONCE per provider (worst-first), then apply that
+		// same order to every window group. Sorting each group independently by
+		// its own used fraction (issue #6067) desynchronized the columns: an
+		// account exhausted on its 5h window but light on the weekly window would
+		// land in different column positions on each row, so the positional
+		// `account N` labels denoted different credentials per row and an
+		// exhausted limit appeared under a sibling that still had quota.
+		const accountRank = new Map<UsageReport, number>();
+		providerReports.forEach((report, position) => {
+			const worst = report.limits.reduce((max, limit) => {
+				const fraction = resolveUsedFraction(limit) ?? -1;
+				return fraction > max ? fraction : max;
+			}, -1);
+			// Encode worst-first primary key with the stable position as tiebreak
+			// so accounts tied on pressure keep their discovery order.
+			accountRank.set(report, -worst * 1000 + position);
+		});
+
 		const renderableGroups = Array.from(limitGroups.values()).map(group => {
 			const entries = group.limits.map((limit, index) => ({
 				limit,
 				report: group.reports[index],
-				fraction: resolveUsedFraction(limit),
 				index,
 			}));
 			entries.sort((a, b) => {
-				const aFraction = a.fraction ?? -1;
-				const bFraction = b.fraction ?? -1;
-				if (aFraction !== bFraction) return bFraction - aFraction;
+				const aRank = accountRank.get(a.report) ?? a.index;
+				const bRank = accountRank.get(b.report) ?? b.index;
+				if (aRank !== bRank) return aRank - bRank;
 				return a.index - b.index;
 			});
 			const sortedLimits = entries.map(entry => entry.limit);
 			const sortedReports = entries.map(entry => entry.report);
 			const aggregateAmount = formatAggregateAmount(sortedLimits);
+			// Only prefix "combined" when the aggregate is a real combined percentage
+			// (every limit has a fraction). Used-only absolute amounts yield an empty
+			// aggregate; prefixing them produced a bogus 9-char "combined " cell.
+			const allHaveFraction = sortedLimits.every(limit => resolveUsedFraction(limit) !== undefined);
 			const amountText =
-				sortedLimits.length > 1
-					? `combined ${aggregateAmount}`
+				sortedLimits.length > 1 && aggregateAmount.length > 0
+					? allHaveFraction
+						? `combined ${aggregateAmount}`
+						: aggregateAmount
 					: resolveUsedFraction(sortedLimits[0]) === undefined
 						? aggregateAmount
 						: "";

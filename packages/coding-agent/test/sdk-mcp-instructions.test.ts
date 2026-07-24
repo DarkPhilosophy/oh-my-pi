@@ -137,16 +137,18 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 		try {
 			expect(session.getActiveToolNames()).toContain("read");
 
-			// Deferred discovery mounts MCP under xd:// and activates write as its transport.
-			// Deferred stdio MCP discovery crosses a real child-process boundary, so fake timers cannot drive readiness.
+			// Deferred discovery mounts MCP under xd:// and activates write as its
+			// transport. The xd registry reconciles before the async prompt rebuild
+			// while the active tool swap lands after it, so poll the complete
+			// post-condition — exiting on the mount alone races the swap.
 			const deadline = Date.now() + 12_000;
-			let deviceNames = session.getXdevToolEntries().map(entry => entry.name);
-			let activeNames = session.getActiveToolNames();
-			while ((!deviceNames.includes(MCP_TOOL_NAME) || !activeNames.includes("write")) && Date.now() < deadline) {
-				activeNames = session.getActiveToolNames();
+			const settled = () =>
+				session.getXdevToolEntries().some(entry => entry.name === MCP_TOOL_NAME) &&
+				session.getActiveToolNames().includes("write");
+			while (!settled() && Date.now() < deadline) {
 				await Bun.sleep(50);
-				deviceNames = session.getXdevToolEntries().map(entry => entry.name);
 			}
+			const deviceNames = session.getXdevToolEntries().map(entry => entry.name);
 
 			expect(session.getActiveToolNames()).toContain("read");
 			expect(session.getActiveToolNames()).toContain("write");
