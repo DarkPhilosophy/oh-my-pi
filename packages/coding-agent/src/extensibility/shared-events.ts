@@ -15,6 +15,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { CompactionPreparation, CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantRetryRecovery, ImageContent, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import type { postmortem } from "@oh-my-pi/pi-utils";
 import type { Rule } from "../capability/rule";
 import type { Goal, GoalModeState } from "../goals/state";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry } from "../session/session-entries";
@@ -88,9 +89,10 @@ export interface SessionCompactEvent {
 	fromExtension: boolean;
 }
 
-/** Fired on process exit (SIGINT/SIGTERM) */
+/** Fired when a session runtime is disposed. Final process exits include their reason. */
 export interface SessionShutdownEvent {
 	type: "session_shutdown";
+	reason?: postmortem.Reason;
 }
 
 /** Fired when a main-agent turn is about to settle; handlers may request one continuation turn. */

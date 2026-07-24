@@ -140,6 +140,42 @@ describe("renderUsageReports session marker (#5691 org-qualified identity)", () 
 	});
 });
 
+describe("renderUsageReports account privacy", () => {
+	it("masks email identities across account rows and the active-session marker", () => {
+		const email = "aiforall@ghostit.dev";
+		const reports: UsageReport[] = [
+			{
+				...report("anthropic", email, [limit("Claude 7 Day", "weekly", 7 * 24 * HOUR, 0.4)]),
+				metadata: { email, orgId: "uuid-A", orgName: "Team Org" },
+			},
+		];
+		const rendered = renderUsageReports(
+			reports,
+			theme,
+			Date.now(),
+			120,
+			provider => (provider === "anthropic" ? { email, orgId: "uuid-A", orgName: "Team Org" } : undefined),
+			true,
+		);
+		const text = stripVTControlCharacters(rendered);
+
+		expect(text).toContain("aif*** (Team Org)");
+		expect(text).not.toContain(email);
+		expect(text.split("\n").find(line => line.includes("in use by this session"))).toContain("aif*** (Team Org)");
+		expect(rendered).toContain(theme.fg("warning", "***"));
+	});
+
+	it("shows the full email when masking is disabled", () => {
+		const email = "aiforall@ghostit.dev";
+		const reports = [report("anthropic", email, [limit("Claude 7 Day", "weekly", 7 * 24 * HOUR, 0.4)])];
+
+		const text = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 120, undefined, false));
+
+		expect(text).toContain(email);
+		expect(text).not.toContain("aif***");
+	});
+});
+
 describe("renderUsageReports terminal width", () => {
 	it("keeps every rendered line within the available width for many accounts", () => {
 		const reports = Array.from({ length: 24 }, (_, index) =>
@@ -153,5 +189,72 @@ describe("renderUsageReports terminal width", () => {
 		for (const line of text.split("\n")) {
 			expect(Bun.stringWidth(line)).toBeLessThanOrEqual(availableWidth);
 		}
+	});
+
+	it("does not stretch account blocks across surplus terminal width", () => {
+		const now = Date.now();
+		const reports: UsageReport[] = [
+			report("anthropic", "aiforall@ghostit.dev", [limit("Claude 7 Day", "weekly", 7 * 24 * HOUR, 0.4)]),
+			report("anthropic", "ualexen92@gmail.com", [limit("Claude 7 Day", "weekly", 7 * 24 * HOUR, 0.2)]),
+		];
+
+		const compact = stripVTControlCharacters(renderUsageReports(reports, theme, now, 80));
+		const wide = stripVTControlCharacters(renderUsageReports(reports, theme, now, 160));
+
+		expect(wide).toBe(compact);
+	});
+	it("embeds each account's remaining usage in its bar and keeps the combined total on that row", () => {
+		const reports: UsageReport[] = [
+			report("anthropic", "aiforall@ghostit.dev", [limit("Claude 7 Day", "weekly", 7 * 24 * HOUR, 0.52)]),
+			report("anthropic", "ualexen92@gmail.com", [limit("Claude 7 Day", "weekly", 7 * 24 * HOUR, 0)]),
+		];
+
+		const text = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 160));
+		const usageLine = text.split("\n").find(line => line.includes("48% free"));
+
+		expect(usageLine).toContain("100% free");
+		expect(usageLine).toContain("combined 74% free");
+		expect(usageLine).toMatch(/[█▓▒░].*48% free/);
+	});
+
+	it("moves the embedded percentage toward the end as remaining usage grows", () => {
+		const barLine = (usedFraction: number) => {
+			const reports = [
+				report("anthropic", "account@example.test", [limit("Claude 7 Day", "weekly", 7 * 24 * HOUR, usedFraction)]),
+			];
+			return stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 80))
+				.split("\n")
+				.find(line => line.includes("% free"));
+		};
+
+		expect(barLine(0.2)?.indexOf("80% free")).toBeGreaterThan(barLine(0.8)?.indexOf("20% free") ?? Number.MAX_VALUE);
+	});
+
+	it("uses a gradual red-to-green fill and lets the boundary cross the label only near exhaustion", () => {
+		const renderBarLine = (usedFraction: number) => {
+			const reports = [
+				report("anthropic", "account@example.test", [limit("Claude 7 Day", "weekly", 7 * 24 * HOUR, usedFraction)]),
+			];
+			return renderUsageReports(reports, theme, Date.now(), 80)
+				.split("\n")
+				.find(line => line.includes("% free"));
+		};
+		const low = renderBarLine(0.9);
+		const mid = renderBarLine(0.5);
+		const high = renderBarLine(0.1);
+		const rgb = (line: string | undefined) => {
+			const match = line?.match(/\x1b\[(?:30;)?(?:38|48);2;(\d+);(\d+);(\d+)m/);
+			return match ? match.slice(1).map(Number) : [];
+		};
+		const [lowRed = 0, lowGreen = 0] = rgb(low);
+		const [midRed = 0, midGreen = 0, midBlue = 0] = rgb(mid);
+		const [highRed = 0, highGreen = 0] = rgb(high);
+
+		expect(lowRed).toBeGreaterThan(lowGreen);
+		expect(midRed).toBeGreaterThan(midGreen);
+		expect(midGreen).toBeGreaterThan(midBlue);
+		expect(highGreen).toBeGreaterThan(highRed);
+		expect(mid).toMatch(/\x1b\[30;48;2;\d+;\d+;\d+m50% free\x1b\[39;49m/);
+		expect(low).toMatch(/\x1b\[30;48;2;\d+;\d+;\d+m10\x1b\[39;49m\x1b\[38;2;\d+;\d+;\d+m% free/);
 	});
 });

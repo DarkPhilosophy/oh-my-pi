@@ -13,7 +13,7 @@ import { SessionManager } from "../session/session-manager";
 import { resolveWorkerSpawnCmd, workerEnvFromParent } from "../subprocess/worker-client";
 import { daemonBuildStamp } from "./build-stamp";
 import { createDaemonClient, type DaemonClient } from "./client";
-import { DAEMON_PROTOCOL_MAJOR } from "./protocol";
+import { DAEMON_PROTOCOL_MAJOR, type DaemonOperation } from "./protocol";
 import type { DaemonConnectionSnapshot, DaemonProfile } from "./status";
 import { ClientTerminalBridge, clientTerminalEnvSnapshot } from "./terminal-bridge";
 
@@ -321,7 +321,25 @@ async function connectWithSpawn(
 	}
 }
 
-export type BuildPairingOutcome = "matched" | "replaced" | "kept-stale";
+async function requestWithTransportRecovery(
+	client: DaemonClient,
+	operation: DaemonOperation["op"] | DaemonOperation,
+	payload: Record<string, unknown>,
+	profile: DaemonProfile,
+	runtimeDir: string,
+	startTimeoutMs: number,
+	spawnDaemon: typeof spawnDaemonServer,
+): Promise<unknown> {
+	try {
+		return await client.request(operation, payload);
+	} catch (error) {
+		if (!isTransportUnavailableError(error)) throw error;
+		await connectWithSpawn(client, profile, runtimeDir, startTimeoutMs, spawnDaemon);
+		return client.request(operation, payload);
+	}
+}
+
+export type BuildPairingOutcome = "matched" | "replaced";
 
 export type BuildPairingEffects = {
 	localStamp: string;
@@ -335,15 +353,16 @@ export type BuildPairingEffects = {
 };
 
 /**
- * Client↔server build pairing: a daemon left over from an older build keeps
- * serving new clients forever — edits silently never take effect. After a
- * successful handshake, compare build stamps and replace the stale daemon:
+ * Client↔server build pairing: a daemon left over from another build must
+ * never serve this client. After a successful handshake, compare build stamps
+ * and replace any stale daemon:
  *
- * - graceful first: the protocol `shutdown` op (refused while other clients
- *   or protected jobs are alive — those are never killed);
- * - `sessions`-only blockers are persisted/parked state that rehydrates on
- *   the replacement daemon, so the stale owner gets a verified SIGTERM;
- * - after the old owner exits, spawn a fresh daemon and reconnect.
+ * - request graceful protocol shutdown first;
+ * - if shutdown is refused or fails while the server remains reachable,
+ *   signal the verified daemon owner regardless of active clients/sessions;
+ * - after the old owner exits, spawn a fresh daemon and reconnect;
+ * - fail closed if the stale owner cannot be replaced or the replacement
+ *   still reports a mismatched build stamp.
  *
  * A daemon without a stamp (pre-pairing build) is by definition stale.
  */
@@ -355,50 +374,53 @@ export async function ensureDaemonBuildPairing(
 	const staleStamp = client.serverBuildStamp ?? "(pre-pairing daemon)";
 	const waitMs = effects.waitMs ?? DAEMON_START_TIMEOUT_MS;
 	let shutdown: { shutdown?: boolean; blockers?: string[] } | undefined;
+	let forceStop = false;
 	try {
 		shutdown = (await client.request("shutdown")) as { shutdown?: boolean; blockers?: string[] };
 	} catch (error) {
-		if (!isTransportUnavailableError(error)) {
-			logger.warn("Stale daemon shutdown request failed; keeping the running build", {
+		if (isTransportUnavailableError(error)) {
+			// The stale daemon died mid-request — a concurrent client's replacement
+			// won the race (several launches hitting one stale daemon). That is the
+			// desired outcome: wait out the old owner and reconnect or respawn.
+			logger.warn("Stale daemon vanished during shutdown request; proceeding to replacement", {
 				staleStamp,
 				localStamp: effects.localStamp,
 				error: String(error),
 			});
-			return "kept-stale";
-		}
-		// The stale daemon died mid-request — a concurrent client's replacement
-		// won the race (several `--resume` launches hitting one stale daemon).
-		// That is the desired outcome, not a failure: fall through to wait out
-		// the old owner and reconnect to (or spawn) the fresh daemon.
-		logger.warn("Stale daemon vanished during shutdown request; proceeding to replacement", {
-			staleStamp,
-			localStamp: effects.localStamp,
-			error: String(error),
-		});
-	}
-	if (shutdown !== undefined && shutdown.shutdown !== true) {
-		const blockers = shutdown.blockers ?? [];
-		const sessionsOnly = blockers.length > 0 && blockers.every(blocker => blocker === "sessions");
-		if (!sessionsOnly) {
-			// Other live clients or protected jobs own that daemon; replacing it
-			// out from under them would kill their work.
-			logger.warn("Daemon build differs from this client but is busy; not replacing", {
+		} else {
+			forceStop = true;
+			logger.warn("Stale daemon shutdown request failed; forcing build replacement", {
 				staleStamp,
 				localStamp: effects.localStamp,
-				blockers,
+				error: String(error),
 			});
-			return "kept-stale";
 		}
-		// Sessions persist on disk and rehydrate on the replacement daemon.
+	}
+	if (shutdown !== undefined && shutdown.shutdown !== true) {
+		forceStop = true;
+		logger.warn("Daemon build differs from this client; forcing replacement despite active work", {
+			staleStamp,
+			localStamp: effects.localStamp,
+			blockers: shutdown.blockers ?? [],
+		});
+	}
+	if (forceStop) {
 		const pid = await effects.readOwnerPid?.();
 		if (pid === undefined) {
-			logger.warn("Stale daemon owner pid unavailable; keeping the running build", { staleStamp });
-			return "kept-stale";
-		}
-		try {
-			(effects.killOwner ?? (target => process.kill(target, "SIGTERM")))(pid);
-		} catch {
-			// Already exited between status and signal — proceed to respawn.
+			// Pre-pairing daemons predate the daemon.owner lease file, so there is
+			// no PID to signal. Still attempt replacement: the shutdown request
+			// above may land once its clients drop, and the contender below parks
+			// on the owner lease until the old listener finally releases it.
+			logger.warn("Stale daemon owner PID unavailable; attempting replacement without a signal", {
+				staleStamp,
+				localStamp: effects.localStamp,
+			});
+		} else {
+			try {
+				(effects.killOwner ?? (target => process.kill(target, "SIGTERM")))(pid);
+			} catch {
+				// Already exited between status and signal — proceed to respawn.
+			}
 		}
 	}
 	// Wait for the old owner to actually vanish before spawning: the fresh
@@ -436,25 +458,29 @@ export async function ensureDaemonBuildPairing(
 	// one, and a drain-timeout contender also waits out the lease server-side.
 	const reconnectDeadline = Date.now() + waitMs;
 	let lastError: Error | undefined;
-	while (Date.now() < reconnectDeadline) {
+	for (;;) {
 		try {
 			await client.reconnect();
-			break;
+			if (client.snapshot.state === "connected" && client.serverBuildStamp === effects.localStamp) break;
+			// Landed back on the draining stale daemon (its listener can outlive
+			// the shutdown acknowledgement): nudge it again and keep retrying
+			// until the replacement's stamp appears or the budget runs out.
+			if (client.snapshot.state === "connected") {
+				await client.request("shutdown").catch(() => undefined);
+			}
 		} catch (error) {
 			lastError = error instanceof Error ? error : new Error(String(error));
-			await Bun.sleep(CONNECT_RETRY_MS);
 		}
+		if (Date.now() >= reconnectDeadline) break;
+		await Bun.sleep(CONNECT_RETRY_MS);
 	}
 	if (client.snapshot.state !== "connected") {
 		throw new Error(`Unable to reconnect after replacing stale daemon: ${lastError?.message ?? "timeout"}`);
 	}
 	if (client.serverBuildStamp !== effects.localStamp) {
-		// A concurrent old client may have won the respawn race; do not loop.
-		logger.warn("Replacement daemon still reports a different build stamp", {
-			serverStamp: client.serverBuildStamp,
-			localStamp: effects.localStamp,
-		});
-		return "kept-stale";
+		throw new Error(
+			`Refusing mismatched replacement daemon build ${client.serverBuildStamp ?? "(missing stamp)"}; expected ${effects.localStamp}`,
+		);
 	}
 	return "replaced";
 }
@@ -501,6 +527,20 @@ export async function bootstrapDaemonInteractive(
 		waitMs: options.startTimeoutMs ?? DAEMON_START_TIMEOUT_MS,
 	});
 
+	const bootstrapRequest = (
+		operation: DaemonOperation["op"] | DaemonOperation,
+		payload: Record<string, unknown> = {},
+	): Promise<unknown> =>
+		requestWithTransportRecovery(
+			client,
+			operation,
+			payload,
+			profile,
+			client.runtimeDir,
+			options.startTimeoutMs ?? DAEMON_START_TIMEOUT_MS,
+			spawnDaemon,
+		);
+
 	// A string `--resume` names a specific session that may ALREADY be hosted
 	// by this daemon (a client died and left it parked). Probe the live list
 	// first and attach to the existing runtime — a blind session_create would
@@ -519,9 +559,9 @@ export async function bootstrapDaemonInteractive(
 	let sessionId: string | undefined;
 	if (resumeSessionId !== undefined) {
 		try {
-			const listed = (await client.request("session_list")) as Array<{ sessionId?: unknown }>;
+			const listed = (await bootstrapRequest("session_list")) as Array<{ sessionId?: unknown }>;
 			if (Array.isArray(listed) && listed.some(entry => entry.sessionId === resumeSessionId)) {
-				await client.request("session_load", { sessionId: resumeSessionId });
+				await bootstrapRequest("session_load", { sessionId: resumeSessionId });
 				sessionId = resumeSessionId;
 			}
 		} catch (error) {
@@ -530,7 +570,7 @@ export async function bootstrapDaemonInteractive(
 	}
 	if (sessionId === undefined) {
 		try {
-			const created = (await client.request(createOperation)) as { sessionId?: unknown };
+			const created = (await bootstrapRequest(createOperation)) as { sessionId?: unknown };
 			if (typeof created.sessionId !== "string" || created.sessionId.length === 0) {
 				client.close();
 				throw new Error("Daemon did not return a session id");
@@ -544,7 +584,7 @@ export async function bootstrapDaemonInteractive(
 				client.close();
 				throw error;
 			}
-			await client.request("session_load", { sessionId: resumeSessionId });
+			await bootstrapRequest("session_load", { sessionId: resumeSessionId });
 			sessionId = resumeSessionId;
 		}
 	}

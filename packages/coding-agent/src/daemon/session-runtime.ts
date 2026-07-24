@@ -1,7 +1,7 @@
 import * as os from "node:os";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
-import { logger, setProjectDir, VERSION } from "@oh-my-pi/pi-utils";
+import { logger, postmortem, setProjectDir, VERSION } from "@oh-my-pi/pi-utils";
 import { createProjectDirScope, getActiveProfile, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import { reset as resetCapabilities } from "../capability";
 import { type Args, parseArgs } from "../cli/args";
@@ -108,7 +108,7 @@ export type DaemonSessionRuntime = {
 	readonly protectedJobCount?: () => number;
 	snapshot(): DaemonSessionSnapshot;
 	command(command: unknown, attachmentId?: string): Promise<unknown>;
-	dispose(): Promise<void>;
+	dispose(reason?: postmortem.Reason): Promise<void>;
 	subscribe(listener: AgentSessionEventListener): () => void;
 };
 
@@ -294,6 +294,15 @@ async function prepareCliLaunch(
 		parsed.noSession && sessionId
 			? SessionManager.inMemory(cwd, undefined, sessionId)
 			: await createSessionManager(parsed, cwd, activeSettings);
+	// An explicit session selector must never degrade into a fresh empty
+	// session: interactive mode treats an undefined manager as a user
+	// cancellation, but a hosted launch has nobody to cancel — surfacing the
+	// error beats silently hosting the wrong (empty) transcript.
+	if (resolvedManager === undefined && (typeof parsed.resume === "string" || parsed.fork || parsed.continue)) {
+		throw new Error(
+			`Session selection for ${JSON.stringify(argv)} was cancelled; refusing to host a new empty session`,
+		);
+	}
 	const sessionManager = resolvedManager ?? SessionManager.create(cwd, parsed.sessionDir, undefined, sessionId);
 	const createOptions = await buildSessionOptions(parsed, scopedModels, sessionManager, modelRegistry, activeSettings);
 	createOptions.authStorage = authStorage;
@@ -943,7 +952,7 @@ async function createAgentSessionRuntimeInScope(
 					throw new Error("Unsupported daemon RpcCommand");
 			}
 		},
-		dispose: async () => {
+		dispose: async reason => {
 			logger.debug("Daemon runtime dispose started", { sessionId });
 			const hostedTask = hosted?.task;
 			hosted?.mode.detachHosted();
@@ -958,6 +967,7 @@ async function createAgentSessionRuntimeInScope(
 			logger.debug("Daemon runtime session dispose started", { sessionId });
 			await session.dispose({
 				mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
+				...(reason === undefined ? {} : { reason }),
 			});
 			logger.debug("Daemon runtime session dispose settled", { sessionId });
 		},

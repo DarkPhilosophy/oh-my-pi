@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, Model, ProviderSessionState } from "@oh-my-pi/pi-ai";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -589,5 +590,64 @@ describe("AgentSession context promotion", () => {
 
 		expect(session.model?.provider).toBe(codexModel.provider);
 		expect(session.model?.id).toBe(codexModel.id);
+	});
+	it("ignores stale provider usage from a different model for threshold compaction", async () => {
+		const currentModel = createMockModel({
+			id: "current-model",
+			provider: "openai-codex",
+			contextWindow: 10_000,
+		});
+		const staleModel = createMockModel({
+			id: "stale-model",
+			provider: "openai-codex",
+			contextWindow: 200_000,
+			responses: [
+				{
+					content: ["stale response"],
+					stopReason: "stop",
+					usage: {
+						input: 1,
+						output: 2,
+						cacheRead: 0,
+						cacheWrite: 100_000,
+						totalTokens: 100_003,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+				},
+			],
+		});
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: "compacted",
+			shortSummary: undefined,
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+			details: {},
+		}));
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: {
+				model: currentModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: staleModel.stream,
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({
+				"compaction.enabled": true,
+				"compaction.autoContinue": false,
+				"compaction.strategy": "context-full",
+				"compaction.thresholdTokens": 1_000,
+				"contextPromotion.enabled": false,
+			}),
+			modelRegistry,
+		});
+
+		await session.prompt("small prompt");
+
+		expect(compactSpy).not.toHaveBeenCalled();
 	});
 });

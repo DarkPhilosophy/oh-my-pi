@@ -8,10 +8,10 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import { MnemopiSessionState, setMnemopiSessionState } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
-import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AgentSession, type AgentSessionConfig } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { logger, TempDir } from "@oh-my-pi/pi-utils";
+import { logger, postmortem, TempDir } from "@oh-my-pi/pi-utils";
 
 async function flushMicrotasks(): Promise<void> {
 	await Promise.resolve();
@@ -41,7 +41,10 @@ describe("AgentSession concurrent disposal", () => {
 		tempDir.removeSync();
 	});
 
-	function createSession(ownedAsyncJobManager?: AsyncJobManager): AgentSession {
+	function createSession(
+		ownedAsyncJobManager?: AsyncJobManager,
+		extensionRunner?: AgentSessionConfig["extensionRunner"],
+	): AgentSession {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("expected bundled model");
 		const mock = createMockModel({ handler: () => ({ content: ["ok"] }) });
@@ -56,6 +59,7 @@ describe("AgentSession concurrent disposal", () => {
 			settings: Settings.isolated(),
 			modelRegistry: new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml")),
 			ownedAsyncJobManager,
+			extensionRunner,
 			agentId: "Main",
 		});
 		return session;
@@ -142,6 +146,24 @@ describe("AgentSession concurrent disposal", () => {
 			"Post-prompt tasks still draining at dispose deadline",
 			expect.objectContaining({ error: "Error: Timed out draining post-prompt tasks during dispose" }),
 		);
+	});
+
+	it("emits the final shutdown reason to extensions", async () => {
+		const emittedEvents: unknown[] = [];
+		const extensionRunner = {
+			hasHandlers: (event: string) => event === "session_shutdown",
+			emit: async (event: unknown) => {
+				emittedEvents.push(event);
+				return [];
+			},
+			clearManagedTimers: () => {},
+		} as unknown as AgentSessionConfig["extensionRunner"];
+		const current = createSession(undefined, extensionRunner);
+
+		await current.dispose({ reason: postmortem.Reason.EXIT });
+		session = undefined;
+
+		expect(emittedEvents).toEqual([{ type: "session_shutdown", reason: postmortem.Reason.EXIT }]);
 	});
 
 	it("clears the owned async manager when its dispose rejects", async () => {

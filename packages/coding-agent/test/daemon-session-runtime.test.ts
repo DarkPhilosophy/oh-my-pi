@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, type Mock, test, vi } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import { createAgentSessionRuntime } from "../src/daemon/session-runtime";
@@ -12,6 +14,7 @@ import {
 	type AgentSessionDisposeOptions,
 	SHUTDOWN_CONSOLIDATE_BUDGET_MS,
 } from "../src/session/agent-session";
+import { SessionManager } from "../src/session/session-manager";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -203,6 +206,66 @@ describe("daemon session runtime", () => {
 			await runtime.dispose();
 		}
 	});
+
+	test("resume argv opens the persisted session instead of silently creating a fresh one", async () => {
+		// User-reported critical regression shape: `omp --daemon --resume <id>`
+		// appeared to work while hosting an EMPTY new session. The daemon-side
+		// CLI launch must resolve the resume id to the existing transcript and
+		// hand that exact SessionManager to session creation.
+		const cwd = await mkdtemp(path.join(os.tmpdir(), "omp-daemon-resume-"));
+		const fixture = SessionManager.create(cwd);
+		const persistedId = fixture.getSessionId();
+		fixture.appendMessage({ role: "user", content: "resume fixture", timestamp: Date.now() });
+		fixture.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "fixture ack" }],
+			timestamp: Date.now(),
+			stopReason: "stop",
+			api: "openai-completions",
+			model: "mock",
+			provider: "mock",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		});
+		const persistedFile = fixture.getSessionFile();
+		await fixture.close();
+
+		let resumedId: string | undefined;
+		let resumedFile: string | undefined;
+		try {
+			const runtime = await createAgentSessionRuntime({
+				cwd,
+				sessionId: "registry-resume-handle",
+				overrides: { argv: ["--resume", persistedId, "--no-extensions"] },
+				createSession: async options => {
+					resumedId = options.sessionManager?.getSessionId();
+					resumedFile = options.sessionManager?.getSessionFile() ?? undefined;
+					const session = {
+						sessionId: resumedId,
+						isStreaming: false,
+						subscribe: () => () => {},
+						subscribeCommandMetadataChanged: () => () => {},
+						dispose: async () => {
+							await options.sessionManager?.close();
+						},
+					} as unknown as AgentSession;
+					return { session, setToolUIContext: () => {} } as unknown as CreateAgentSessionResult;
+				},
+			});
+			await runtime.dispose();
+			expect(resumedId).toBe(persistedId);
+			expect(resumedFile).toBe(persistedFile ?? undefined);
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+			if (persistedFile) await rm(path.dirname(persistedFile), { recursive: true, force: true });
+		}
+	}, 30_000);
 
 	test("terminal_start takes over a defunct hosted terminal without awaiting its pinned task", async () => {
 		type FakeMode = {

@@ -3901,9 +3901,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		// before `init()` completed falls back to a direct dispose.
 		try {
 			if (this.#signalTeardown) {
-				await this.#signalTeardown();
+				await this.#signalTeardown(postmortem.Reason.EXIT);
 			} else {
-				await this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS });
+				await this.session.dispose({
+					mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
+					reason: postmortem.Reason.EXIT,
+				});
 			}
 		} finally {
 			clearTimeout(stillClosingTimer);

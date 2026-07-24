@@ -6935,7 +6935,7 @@ export class AgentSession {
 		this.#cancelExitRecorder = undefined;
 		try {
 			if (this.#extensionRunner?.hasHandlers("session_shutdown")) {
-				await this.#extensionRunner.emit({ type: "session_shutdown" });
+				await this.#extensionRunner.emit({ type: "session_shutdown", reason: options.reason });
 			}
 		} catch (error) {
 			logger.warn("Failed to emit session_shutdown event", { error: String(error) });
@@ -12047,15 +12047,13 @@ export class AgentSession {
 		// not just an error-specific one; alias it locally so the threshold intent
 		// reads clearly (#3412 review).
 		const assistantPredatesCompaction = errorIsFromBeforeCompaction;
-		// An assistant that predates the latest compaction carries stale, pre-rewrite
-		// `usage`: the scheduled auto-continue re-enters this check with the kept
-		// assistant (#promptWithMessage → #checkCompaction), and its old high prompt
-		// count would re-trip the threshold on a freshly compacted history. Drop the
-		// stale provider number for those messages and let the live stored estimate
-		// (the floor applied below) drive the decision instead.
-		const assistantUsageContextTokens = assistantPredatesCompaction
-			? 0
-			: calculateContextTokens(assistantMessage.usage);
+		// Provider usage is valid only for the current conversation shape and model
+		// window. A pre-compaction assistant carries stale usage from before the
+		// rewrite, while an assistant returned by a fallback or previous model was
+		// billed against a different context window. In both cases, let the live
+		// stored estimate drive the current model's threshold decision.
+		const assistantUsageContextTokens =
+			assistantPredatesCompaction || !sameModel ? 0 : calculateContextTokens(assistantMessage.usage);
 		const storedContextTokens = this.#estimateStoredContextTokens();
 		// Pruning frees bytes for the NEXT prompt; it does not change the size of
 		// the prompt the LLM just billed for. Earlier revisions subtracted the

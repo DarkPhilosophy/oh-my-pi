@@ -1,4 +1,4 @@
-import { logger, popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils";
+import { logger, popLoopPhase, postmortem, pushLoopPhase } from "@oh-my-pi/pi-utils";
 import { recordDaemonSessionAlias } from "../session/session-listing";
 import { AttachmentEventStream, type EventRecord, OrderedEventLog } from "./event-log";
 import { canonicalProjectRoot } from "./paths";
@@ -84,10 +84,13 @@ type SessionRecord = {
 	parkTimer?: NodeJS.Timeout;
 };
 
-function closesHostedSession(event: unknown): boolean {
-	if (typeof event !== "object" || event === null) return false;
+function hostedSessionCloseReason(event: unknown): postmortem.Reason | undefined {
+	if (typeof event !== "object" || event === null) return undefined;
 	const record = event as Record<string, unknown>;
-	return record.type === "terminal_closed" && (record.reason === "exit" || record.reason === "error");
+	if (record.type !== "terminal_closed") return undefined;
+	if (record.reason === "exit") return postmortem.Reason.EXIT;
+	if (record.reason === "error") return postmortem.Reason.MANUAL;
+	return undefined;
 }
 
 /** Frame-envelope headroom below DAEMON_MAX_FRAME_BYTES for tag/seq/ids. */
@@ -274,9 +277,9 @@ export class DaemonSessionRegistry {
 		return [...this.#sessions].map(([id, record]) => this.#summary(id, record));
 	}
 
-	async close(sessionId: string): Promise<{ closed: true }> {
+	async close(sessionId: string, reason?: postmortem.Reason): Promise<{ closed: true }> {
 		const record = this.#require(sessionId);
-		await this.#serialize(record, () => this.#closeRecord(sessionId, record));
+		await this.#serialize(record, () => this.#closeRecord(sessionId, record, reason));
 		return { closed: true };
 	}
 
@@ -504,7 +507,8 @@ export class DaemonSessionRegistry {
 					() => undefined,
 				);
 		}
-		if (closesHostedSession(boundedEvent.event)) void this.close(sessionId).catch(() => undefined);
+		const closeReason = hostedSessionCloseReason(boundedEvent.event);
+		if (closeReason) void this.close(sessionId, closeReason).catch(() => undefined);
 	}
 
 	async #drainEventFanout(sessionId: string, record: SessionRecord): Promise<void> {
@@ -582,7 +586,7 @@ export class DaemonSessionRegistry {
 		}, this.#detachedSessionTtlMs);
 	}
 
-	async #closeRecord(sessionId: string, record: SessionRecord): Promise<void> {
+	async #closeRecord(sessionId: string, record: SessionRecord, reason?: postmortem.Reason): Promise<void> {
 		if (record.closed) return;
 		record.closed = true;
 		// The transcript may have materialized only after install; refresh the
@@ -596,7 +600,7 @@ export class DaemonSessionRegistry {
 		record.interactiveAttachment = undefined;
 		this.#sessions.delete(sessionId);
 		logger.debug("Daemon session removed from live registry", { sessionId });
-		const disposal = record.runtime.dispose();
+		const disposal = record.runtime.dispose(reason);
 		this.#closing.add(disposal);
 		try {
 			await disposal;

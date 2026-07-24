@@ -70,7 +70,7 @@ function localFactory() {
 				recorded.push(JSON.stringify(command));
 				return { accepted: true };
 			},
-			dispose: session.dispose,
+			dispose: reason => session.dispose(reason === undefined ? undefined : { reason }),
 			subscribe: session.subscribe,
 		};
 	};

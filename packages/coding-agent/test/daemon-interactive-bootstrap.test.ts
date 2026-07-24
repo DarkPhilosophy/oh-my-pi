@@ -379,6 +379,92 @@ describe("daemon interactive bootstrap", () => {
 		}
 	}, 30_000);
 
+	test("retries session creation when the paired daemon dies before replying", async () => {
+		const root = await mkdtemp(path.join(os.tmpdir(), "omp-bootstrap-post-pairing-"));
+		const runtimeDir = path.join(root, "runtime");
+		const endpoint = path.join(runtimeDir, "daemon.sock");
+		let dyingCreates = 0;
+		let replacementCreates = 0;
+		let dying: DaemonServer | undefined;
+		let replacement: DaemonServer | undefined;
+		let replacementStart: Promise<void> | undefined;
+		const runtime = (sessionId: string | undefined, cwd: string) => ({
+			sessionId: sessionId ?? "recovered",
+			cwd,
+			snapshot: () => ({
+				state: { sessionId: sessionId ?? "recovered", cwd } as unknown as RpcSessionState,
+				cwd,
+				entries: [],
+			}),
+			session: {
+				sessionId: sessionId ?? "recovered",
+				isStreaming: false,
+				prompt: async () => true,
+				abort: async () => {},
+				dispose: async () => {},
+				subscribe: () => () => {},
+			},
+			command: async () => ({}),
+			dispose: async () => {},
+			subscribe: () => () => {},
+		});
+		dying = new DaemonServer({
+			profile: "test",
+			runtimeDir,
+			endpoint,
+			token: "secret",
+			runtimeFactory: async ({ sessionId, cwd }) => {
+				dyingCreates++;
+				// Pairing has already succeeded. Destroy the accepted socket
+				// while session_create is in flight, as a stale owner does when
+				// another OMP instance replaces it.
+				void dying?.shutdown(true);
+				await Bun.sleep(10);
+				return runtime(sessionId, cwd);
+			},
+		});
+		await dying.run();
+		const spawnDaemon = (() => {
+			replacementStart ??= (async () => {
+				await dying?.shutdown(true);
+				replacement = new DaemonServer({
+					profile: "test",
+					runtimeDir,
+					endpoint,
+					token: "secret",
+					runtimeFactory: async ({ sessionId, cwd }) => {
+						replacementCreates++;
+						return runtime(sessionId, cwd);
+					},
+				});
+				await replacement.run();
+			})();
+			return { exited: Promise.resolve(0), exitCode: null, unref: () => {} };
+		}) as unknown as NonNullable<DaemonInteractiveBootstrapOptions["spawnDaemon"]>;
+		try {
+			const bootstrapped = await bootstrapDaemonInteractive({
+				argv: [],
+				profile: "test",
+				cwd: root,
+				runtimeDir,
+				endpoint,
+				token: "secret",
+				startTimeoutMs: 10_000,
+				spawnDaemon,
+			});
+			expect(dyingCreates).toBe(1);
+			expect(replacementCreates).toBe(1);
+			expect(bootstrapped.handle.connectionState).toBe("connected");
+			await bootstrapped.handle.dispose();
+			bootstrapped.client.close();
+		} finally {
+			await replacementStart?.catch(() => {});
+			await replacement?.shutdown(true);
+			await dying?.shutdown(true);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
 	test("two concurrent launches racing the same dying daemon both connect to one replacement", async () => {
 		const root = await mkdtemp(path.join(os.tmpdir(), "omp-bootstrap-race-"));
 		const runtimeDir = path.join(root, "runtime");
@@ -615,56 +701,136 @@ describe("daemon interactive bootstrap", () => {
 		}
 	}, 20_000);
 
-	test("keeps a stale daemon that other clients still use", async () => {
-		const root = await mkdtemp(path.join(os.tmpdir(), "omp-pairing-busy-"));
-		const runtimeDir = path.join(root, "runtime");
-		const endpoint = path.join(runtimeDir, "daemon.sock");
-		const stale = new DaemonServer({
-			profile: "test",
-			runtimeDir,
-			endpoint,
-			buildStamp: "17.0.0+stale",
+	test("force-replaces a stale daemon even when clients and sessions are active", async () => {
+		let stamp: string | undefined = "old-build";
+		let ownerReads = 0;
+		let spawns = 0;
+		let reconnects = 0;
+		const killed: number[] = [];
+		const fakeClient = {
+			get serverBuildStamp(): string | undefined {
+				return stamp;
+			},
+			request: async () => ({ shutdown: false, blockers: ["clients", "sessions"] }),
+			reconnect: async () => {
+				reconnects++;
+				stamp = "new-build";
+			},
+			snapshot: { state: "connected" },
+		} as unknown as Parameters<typeof ensureDaemonBuildPairing>[0];
+
+		const outcome = await ensureDaemonBuildPairing(fakeClient, {
+			localStamp: "new-build",
+			spawn: () => {
+				spawns++;
+			},
+			readOwnerPid: async () => (ownerReads++ === 0 ? 4321 : undefined),
+			killOwner: pid => {
+				killed.push(pid);
+			},
+			waitMs: 1_000,
 		});
-		await stale.run();
-		try {
-			const other = await createDaemonClient({
-				profile: "test",
-				runtimeDir,
-				endpoint,
-				token: stale.token,
-				connectTimeoutMs: 500,
-			});
-			await other.connect();
-			const client = await createDaemonClient({
-				profile: "test",
-				runtimeDir,
-				endpoint,
-				token: stale.token,
-				connectTimeoutMs: 500,
-			});
-			await client.connect();
 
-			let spawned = false;
-			const outcome = await ensureDaemonBuildPairing(client, {
-				localStamp: "17.0.0+fresh",
-				spawn: () => {
-					spawned = true;
-				},
+		expect(outcome).toBe("replaced");
+		expect(killed).toEqual([4321]);
+		expect(spawns).toBe(1);
+		expect(reconnects).toBeGreaterThanOrEqual(1);
+	});
+
+	test("replaces a pre-pairing daemon whose owner PID file is missing", async () => {
+		// The wrong-build daemon predates both the buildStamp handshake and the
+		// daemon.owner lease file (user-reported: "Refusing stale daemon build
+		// (pre-pairing daemon): its owner PID is unavailable"). Startup must
+		// still spawn a contender and land on the fresh build instead of
+		// aborting outright.
+		let stamp: string | undefined;
+		let spawns = 0;
+		let reconnects = 0;
+		const fakeClient = {
+			get serverBuildStamp(): string | undefined {
+				return stamp;
+			},
+			request: async () => {
+				throw new Error("unknown operation: shutdown");
+			},
+			reconnect: async () => {
+				reconnects++;
+				stamp = "new-build";
+			},
+			snapshot: { state: "connected" },
+		} as unknown as Parameters<typeof ensureDaemonBuildPairing>[0];
+
+		const outcome = await ensureDaemonBuildPairing(fakeClient, {
+			localStamp: "new-build",
+			spawn: () => {
+				spawns++;
+			},
+			readOwnerPid: async () => undefined,
+			killOwner: () => {
+				throw new Error("no owner pid is known; nothing may be signalled");
+			},
+			waitMs: 1_000,
+		});
+
+		expect(outcome).toBe("replaced");
+		expect(spawns).toBe(1);
+		expect(reconnects).toBeGreaterThanOrEqual(1);
+	});
+
+	test("keeps reconnecting while the draining old daemon still answers with its stale stamp", async () => {
+		// User-reported: "Refusing mismatched replacement daemon build (missing
+		// stamp)". The first reconnect can land back on the old daemon whose
+		// listener is still draining; pairing must keep retrying within the
+		// budget until the replacement's stamp appears, not fail on the first
+		// mismatched reconnect.
+		let stamp: string | undefined = "old-build";
+		let reconnects = 0;
+		const fakeClient = {
+			get serverBuildStamp(): string | undefined {
+				return stamp;
+			},
+			request: async () => ({ shutdown: true }),
+			reconnect: async () => {
+				reconnects++;
+				// First two reconnects land on the draining pre-pairing daemon.
+				stamp = reconnects >= 3 ? "new-build" : undefined;
+			},
+			snapshot: { state: "connected" },
+		} as unknown as Parameters<typeof ensureDaemonBuildPairing>[0];
+
+		const outcome = await ensureDaemonBuildPairing(fakeClient, {
+			localStamp: "new-build",
+			spawn: () => {},
+			readOwnerPid: async () => undefined,
+			waitMs: 2_000,
+		});
+
+		expect(outcome).toBe("replaced");
+		expect(reconnects).toBeGreaterThanOrEqual(3);
+	});
+
+	test("fails closed when no replacement ever reports the expected build stamp", async () => {
+		let reconnects = 0;
+		const fakeClient = {
+			get serverBuildStamp(): string | undefined {
+				return "wrong-build";
+			},
+			request: async () => ({ shutdown: true }),
+			reconnect: async () => {
+				reconnects++;
+			},
+			snapshot: { state: "connected" },
+		} as unknown as Parameters<typeof ensureDaemonBuildPairing>[0];
+
+		await expect(
+			ensureDaemonBuildPairing(fakeClient, {
+				localStamp: "new-build",
+				spawn: () => {},
 				readOwnerPid: async () => undefined,
-				killOwner: () => {
-					throw new Error("busy daemon must not be signalled");
-				},
-				waitMs: 1_000,
-			});
-
-			expect(outcome).toBe("kept-stale");
-			expect(spawned).toBe(false);
-			expect(stale.closed).toBe(false);
-			other.close();
-			client.close();
-		} finally {
-			await stale.shutdown(true);
-		}
+				waitMs: 300,
+			}),
+		).rejects.toThrow(/wrong-build.*expected new-build/);
+		expect(reconnects).toBeGreaterThanOrEqual(1);
 	});
 
 	test("spawns a patient contender when the old owner outlives the drain budget", async () => {

@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { postmortem } from "@oh-my-pi/pi-utils";
 import { DaemonClient } from "../src/daemon/client";
 import {
 	DAEMON_MAX_FRAME_BYTES,
@@ -27,7 +28,10 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 function fakeFactory(protectedJobCount = 0) {
-	const runtimes = new Map<string, { emit(event: unknown): void; commands: string[]; disposed: boolean }>();
+	const runtimes = new Map<
+		string,
+		{ emit(event: unknown): void; commands: string[]; disposed: boolean; disposedReason?: postmortem.Reason }
+	>();
 	const runtimeFactory = async ({
 		cwd,
 		sessionId,
@@ -41,6 +45,7 @@ function fakeFactory(protectedJobCount = 0) {
 			emit: (event: unknown) => void;
 			commands: string[];
 			disposed: boolean;
+			disposedReason?: postmortem.Reason;
 		} = {
 			emit: (event: unknown) => {
 				const payload = event as never;
@@ -103,7 +108,10 @@ function fakeFactory(protectedJobCount = 0) {
 				state.commands.push(command.text);
 				return { accepted: true };
 			},
-			dispose: session.dispose,
+			dispose: async reason => {
+				state.disposedReason = reason;
+				await session.dispose();
+			},
 			subscribe: session.subscribe,
 		};
 	};
@@ -395,9 +403,9 @@ describe("daemon server and registry", () => {
 				const runtime = await fake.runtimeFactory(options);
 				return {
 					...runtime,
-					dispose: async () => {
+					dispose: async reason => {
 						await releaseDispose.promise;
-						await runtime.dispose();
+						await runtime.dispose(reason);
 					},
 				};
 			},
@@ -415,6 +423,7 @@ describe("daemon server and registry", () => {
 		releaseDispose.resolve();
 		await flushMicrotasks();
 		expect(fake.runtimes.get(session.sessionId)?.disposed).toBe(true);
+		expect(fake.runtimes.get(session.sessionId)?.disposedReason).toBe(postmortem.Reason.EXIT);
 	});
 
 	test("loads and resumes persisted session IDs through the injected runtime factory", async () => {
@@ -1048,7 +1057,7 @@ describe("daemon server and registry", () => {
 						};
 					},
 					command: async () => ({}),
-					dispose: session.dispose,
+					dispose: reason => session.dispose(reason === undefined ? undefined : { reason }),
 					subscribe: session.subscribe,
 				};
 			},
@@ -1216,7 +1225,7 @@ describe("daemon server and registry", () => {
 						return {};
 					return {};
 				},
-				dispose: session.dispose,
+				dispose: reason => session.dispose(reason === undefined ? undefined : { reason }),
 				subscribe: session.subscribe,
 			};
 		};

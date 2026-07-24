@@ -4448,6 +4448,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"usage.maskAccountLabels": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "providers",
+			group: "Privacy",
+			label: "Mask Usage Accounts",
+			description: "Show email accounts as the first three characters followed by *** in /usage",
+		},
+	},
+
 	// Provider selection
 	"providers.ollama-cloud.maxConcurrency": {
 		type: "number",

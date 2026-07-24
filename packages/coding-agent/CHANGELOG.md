@@ -6,9 +6,15 @@
 
 - Reduced interactive daemon fanout overhead by projecting terminal clients to terminal-only events while preserving replay sequence numbers, and by caching event byte sizes instead of serializing them again during acknowledgement pruning.
 - Improved daemon loop-stall diagnostics with synchronous session-event and outbound event-type attribution.
+- Masked email account labels in `/usage` by default while preserving organization context, with a Providers → Privacy setting to restore full labels.
 
 ### Fixed
-- Fixed `/usage show` overflowing narrow terminals when a provider has many accounts by wrapping account bars into width-bounded rows.
+- Fixed automatic context maintenance using a stale cross-model token count after switching models, which could trigger maintenance before the active model reached its configured threshold.
+- Fixed interactive daemon startup aborting when the paired daemon died after the build handshake but before replying to session discovery or creation. Bootstrap now reconnects through the normal replacement path and retries the interrupted operation once.
+- Fixed clients continuing on a daemon from a different build when active clients or sessions blocked graceful shutdown. Build mismatches now force replacement and fail closed if the fresh daemon still reports the wrong build.
+- Fixed forced build replacement aborting startup against daemons that predate the owner-lease file ("owner PID is unavailable") and against still-draining stale daemons whose listener answered the first reconnect ("mismatched replacement daemon build"). Replacement now proceeds without a signalable PID and keeps reconnecting within the startup budget until the fresh build answers.
+- Fixed hosted CLI launches degrading an explicit `--resume`/`--fork`/`--continue` selection into a fresh empty session when session resolution was cancelled; the daemon now refuses to host the wrong transcript and surfaces the error instead.
+- Fixed `/usage show` multi-account layouts by wrapping narrow rows, keeping wide rows compact, and showing each account's remaining allowance alongside the labeled combined total.
 
 - Fixed tiny-model workers repeatedly retrying a failed accelerated device for later model loads. A device is now remembered as unavailable only after a fallback device loads successfully, avoiding repeated CUDA/ONNX initialization failures without poisoning devices after a total load failure.
 - Fixed large daemon terminal-output events monopolizing the shared event loop while every protocol chunk was synchronously fanned out. Fanout now yields between bounded batches and continues after an attachment sink or event publication failure.

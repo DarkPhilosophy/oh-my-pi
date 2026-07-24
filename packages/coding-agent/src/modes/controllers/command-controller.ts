@@ -10,7 +10,7 @@ import {
 	type UsageLimit,
 	type UsageReport,
 } from "@oh-my-pi/pi-ai";
-import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
+import { getSegmenter, Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
@@ -550,8 +550,13 @@ export class CommandController {
 					this.ctx.session.sessionId,
 				)
 			: undefined;
-		const output = renderUsageReports(usageReports, theme, Date.now(), availableWidth, provider =>
-			provider === currentProvider ? activeAccount : undefined,
+		const output = renderUsageReports(
+			usageReports,
+			theme,
+			Date.now(),
+			availableWidth,
+			provider => (provider === currentProvider ? activeAccount : undefined),
+			this.ctx.settings.get("usage.maskAccountLabels"),
 		);
 		this.ctx.present([new Spacer(1), new Text(output, 1, 0)]);
 	}
@@ -1414,7 +1419,7 @@ export class CommandController {
 }
 
 const BAR_WIDTH_MAX = 24;
-const COLUMN_WIDTH_MIN = 4;
+const COLUMN_WIDTH_MIN = 9;
 
 function renderJobLine(job: AsyncJobSnapshotItem, now: number): string {
 	const duration = formatDuration(Math.max(0, now - job.startTime));
@@ -1510,6 +1515,23 @@ function orgSuffix(report: UsageReport): string {
 	return org ? ` (${org})` : "";
 }
 
+function maskAccountLabel(label: string, enabled: boolean): string {
+	if (!enabled) return label;
+	const at = label.indexOf("@");
+	if (at <= 0) return label;
+	const suffixStart = label.indexOf(" ", at);
+	const suffix = suffixStart === -1 ? "" : label.slice(suffixStart);
+	const visibleLocal = [...getSegmenter().segment(label.slice(0, at))]
+		.slice(0, 3)
+		.map(segment => segment.segment)
+		.join("");
+	return `${visibleLocal}***${suffix}`;
+}
+
+function styleAccountMask(label: string, uiTheme: typeof theme, enabled: boolean): string {
+	return enabled ? label.replace("***", uiTheme.fg("warning", "***")) : label;
+}
+
 function formatAccountLabel(limit: UsageLimit, report: UsageReport, index: number): string {
 	const email = report.metadata?.email;
 	if (typeof email === "string" && email) return `${email}${orgSuffix(report)}`;
@@ -1551,14 +1573,15 @@ function formatAccountHeaderRow(
 	nowMs: number,
 	columnWidth: number,
 	uiTheme: typeof theme,
-	activeAccount?: OAuthAccountIdentity,
+	activeAccount: OAuthAccountIdentity | undefined,
+	maskAccountLabels: boolean,
 	startIndex = 0,
 ): string[] {
 	const parts = limits.map((limit, index) => {
 		const reset = formatResetShort(limit, nowMs);
 		const report = reports[index];
 		const active = report !== undefined && limitMatchesActiveAccount(report, limit, activeAccount);
-		const label = formatAccountLabel(limit, report, index + startIndex);
+		const label = maskAccountLabel(formatAccountLabel(limit, report, index + startIndex), maskAccountLabels);
 		return {
 			label: active ? `● ${label}` : label,
 			suffix: reset ? `(${reset})` : "",
@@ -1574,18 +1597,40 @@ function formatAccountHeaderRow(
 		return parts.map(p => {
 			const full = p.suffix ? `${p.label} ${p.suffix}` : p.label;
 			const cell = padColumn(truncateJobLabel(full, columnWidth), columnWidth);
-			return p.active ? uiTheme.fg("accent", cell) : cell;
+			return styleAccountMask(p.active ? uiTheme.fg("accent", cell) : cell, uiTheme, maskAccountLabels);
 		});
 	}
 
 	return parts.map(p => {
 		const prefix = truncateJobLabel(p.label, prefixBudget);
 		const prefixCell = prefix + " ".repeat(prefixBudget - visibleWidth(prefix));
-		const styledPrefix = p.active ? uiTheme.fg("accent", prefixCell) : prefixCell;
+		const styledPrefix = styleAccountMask(
+			p.active ? uiTheme.fg("accent", prefixCell) : prefixCell,
+			uiTheme,
+			maskAccountLabels,
+		);
 		if (!p.suffix) return styledPrefix + " ".repeat(maxSuffixWidth + gap);
 		const suffixPad = " ".repeat(maxSuffixWidth - visibleWidth(p.suffix));
 		return `${styledPrefix} ${suffixPad}${uiTheme.fg("dim", p.suffix)}`;
 	});
+}
+
+function resolveAccountHeaderWidth(
+	limits: UsageLimit[],
+	reports: UsageReport[],
+	nowMs: number,
+	activeAccount: OAuthAccountIdentity | undefined,
+	maskAccountLabels: boolean,
+	startIndex = 0,
+): number {
+	return limits.reduce((max, limit, index) => {
+		const report = reports[index];
+		const active = report !== undefined && limitMatchesActiveAccount(report, limit, activeAccount);
+		const label = `${active ? "● " : ""}${maskAccountLabel(formatAccountLabel(limit, report, index + startIndex), maskAccountLabels)}`;
+		const reset = formatResetShort(limit, nowMs);
+		const width = visibleWidth(reset ? `${label} (${reset})` : label);
+		return Math.max(max, width);
+	}, BAR_WIDTH_MAX);
 }
 
 function padColumn(text: string, width: number): string {
@@ -1708,40 +1753,79 @@ function resolveStatusIcon(status: UsageLimit["status"], uiTheme: typeof theme):
 	return uiTheme.fg("dim", uiTheme.status.pending);
 }
 
-function resolveStatusColor(status: UsageLimit["status"]): "success" | "warning" | "error" | "dim" {
-	if (status === "exhausted") return "error";
-	if (status === "warning") return "warning";
-	if (status === "ok") return "success";
-	return "dim";
+function resolveUsageGradientRgb(remainingFraction: number): string {
+	const clamped = Math.min(Math.max(remainingFraction, 0), 1);
+	let progress: number;
+	let startRed: number;
+	let startGreen: number;
+	let startBlue: number;
+	let endRed: number;
+	let endGreen: number;
+	let endBlue: number;
+
+	if (clamped <= 0.5) {
+		progress = clamped * 2;
+		startRed = 255;
+		startGreen = 69;
+		startBlue = 58;
+		endRed = 255;
+		endGreen = 159;
+		endBlue = 10;
+	} else if (clamped <= 0.75) {
+		progress = (clamped - 0.5) * 4;
+		startRed = 255;
+		startGreen = 159;
+		startBlue = 10;
+		endRed = 255;
+		endGreen = 214;
+		endBlue = 10;
+	} else {
+		progress = (clamped - 0.75) * 4;
+		startRed = 255;
+		startGreen = 214;
+		startBlue = 10;
+		endRed = 48;
+		endGreen = 209;
+		endBlue = 88;
+	}
+
+	const red = Math.round(startRed + (endRed - startRed) * progress);
+	const green = Math.round(startGreen + (endGreen - startGreen) * progress);
+	const blue = Math.round(startBlue + (endBlue - startBlue) * progress);
+	return `${red};${green};${blue}`;
 }
 
 function renderUsageBar(limit: UsageLimit, uiTheme: typeof theme, barWidth: number): string {
-	const fraction = resolveUsedFraction(limit);
-	if (fraction === undefined) {
+	const usedFraction = resolveUsedFraction(limit);
+	if (usedFraction === undefined) {
 		return uiTheme.fg("dim", "·".repeat(barWidth));
 	}
-	const clamped = Math.min(Math.max(fraction, 0), 1);
-	const exact = clamped * barWidth;
-	const fullCells = Math.floor(exact);
-	const remainder = exact - fullCells;
-	let partial = "";
-	if (remainder >= 2 / 3) partial = "▓";
-	else if (remainder >= 1 / 3) partial = "▒";
-	const leading = "█".repeat(fullCells) + partial;
-	const empty = "░".repeat(Math.max(0, barWidth - fullCells - (partial ? 1 : 0)));
-	const color = resolveStatusColor(limit.status);
-	return `${uiTheme.fg(color, leading)}${uiTheme.fg("dim", empty)}`;
+
+	const remainingFraction = 1 - Math.min(Math.max(usedFraction, 0), 1);
+	const label = `${formatNumber(remainingFraction * 100)}% free`;
+	const labelWidth = visibleWidth(label);
+	const filledCells = Math.round(remainingFraction * barWidth);
+	const labelStart = Math.max(0, Math.min(filledCells - labelWidth, barWidth - labelWidth));
+	const filledLabelWidth = Math.max(0, Math.min(labelWidth, filledCells - labelStart));
+	const rgb = resolveUsageGradientRgb(remainingFraction);
+	const foreground = `\x1b[38;2;${rgb}m`;
+	const inverse = `\x1b[30;48;2;${rgb}m`;
+	const before = labelStart > 0 ? `${foreground}${"█".repeat(labelStart)}\x1b[39m` : "";
+	const filledLabel = filledLabelWidth > 0 ? `${inverse}${label.slice(0, filledLabelWidth)}\x1b[39;49m` : "";
+	const emptyLabel = filledLabelWidth < labelWidth ? `${foreground}${label.slice(filledLabelWidth)}\x1b[39m` : "";
+	const afterEmpty = Math.max(0, barWidth - labelStart - labelWidth);
+	return `${before}${filledLabel}${emptyLabel}${uiTheme.fg("dim", "░".repeat(afterEmpty))}`;
 }
 
 /** Pick the widest per-account column that fits alongside gaps and trailing text. */
-function resolveColumnWidth(count: number, available: number, trailing: number): number {
+function resolveColumnWidth(count: number, available: number, trailing: number, preferred: number): number {
 	if (count <= 0) return BAR_WIDTH_MAX;
 	const indent = 2;
 	const gaps = count - 1;
 	const spaceForBars = available - indent - gaps - (trailing > 0 ? trailing + 1 : 0);
 	const ideal = Math.floor(spaceForBars / count);
 	if (ideal < COLUMN_WIDTH_MIN) return COLUMN_WIDTH_MIN;
-	return ideal;
+	return Math.min(ideal, Math.max(COLUMN_WIDTH_MIN, preferred));
 }
 
 /** Limit each row to the number of minimum-width account columns that physically fit. */
@@ -1759,6 +1843,7 @@ export function renderUsageReports(
 	nowMs: number,
 	availableWidth: number,
 	resolveActiveAccount?: (provider: string) => OAuthAccountIdentity | undefined,
+	maskAccountLabels = false,
 ): string {
 	const lines: string[] = [];
 	const latestFetchedAt = Math.max(...reports.map(report => report.fetchedAt ?? 0));
@@ -1808,9 +1893,11 @@ export function renderUsageReports(
 		}
 
 		lines.push(uiTheme.bold(uiTheme.fg("accent", providerName)));
-		const activeAccountLabel = formatActiveAccountLabel(activeAccount);
+		const activeAccountLabel = maskAccountLabel(formatActiveAccountLabel(activeAccount) ?? "", maskAccountLabels);
 		if (activeAccountLabel) {
-			lines.push(`  ${uiTheme.fg("accent", "in use by this session:")} ${activeAccountLabel}`);
+			lines.push(
+				`  ${uiTheme.fg("accent", "in use by this session:")} ${styleAccountMask(activeAccountLabel, uiTheme, maskAccountLabels)}`,
+			);
 		}
 
 		// Provider-wide disclaimers (e.g. "OMP-observed spend only") render once
@@ -1826,12 +1913,13 @@ export function renderUsageReports(
 		for (const report of providerReports) {
 			const count = report.resetCredits?.availableCount ?? 0;
 			if (count <= 0) continue;
-			const label =
+			const rawLabel =
 				typeof report.metadata?.email === "string" && report.metadata.email
 					? report.metadata.email
 					: typeof report.metadata?.accountId === "string" && report.metadata.accountId
 						? report.metadata.accountId
 						: "account";
+			const label = styleAccountMask(maskAccountLabel(rawLabel, maskAccountLabels), uiTheme, maskAccountLabels);
 			const isActive =
 				!!activeAccount &&
 				((!!activeAccount.accountId && activeAccount.accountId === report.metadata?.accountId) ||
@@ -1879,13 +1967,33 @@ export function renderUsageReports(
 			});
 			const sortedLimits = entries.map(entry => entry.limit);
 			const sortedReports = entries.map(entry => entry.report);
-			return { group, sortedLimits, sortedReports, amountText: formatAggregateAmount(sortedLimits) };
+			const aggregateAmount = formatAggregateAmount(sortedLimits);
+			const amountText =
+				sortedLimits.length > 1
+					? `combined ${aggregateAmount}`
+					: resolveUsedFraction(sortedLimits[0]) === undefined
+						? aggregateAmount
+						: "";
+			return { group, sortedLimits, sortedReports, amountText };
 		});
 
 		const sectionCount = renderableGroups.reduce((max, g) => Math.max(max, g.sortedLimits.length), 0);
 		const sectionTrailing = renderableGroups.reduce((max, g) => Math.max(max, visibleWidth(g.amountText)), 0);
 		const sectionColumnsPerRow = resolveColumnsPerRow(sectionCount, availableWidth, sectionTrailing);
-		const sectionColumnWidth = resolveColumnWidth(sectionColumnsPerRow, availableWidth, sectionTrailing);
+		const preferredColumnWidth = renderableGroups.reduce(
+			(max, g) =>
+				Math.max(
+					max,
+					resolveAccountHeaderWidth(g.sortedLimits, g.sortedReports, nowMs, activeAccount, maskAccountLabels),
+				),
+			BAR_WIDTH_MAX,
+		);
+		const sectionColumnWidth = resolveColumnWidth(
+			sectionColumnsPerRow,
+			availableWidth,
+			sectionTrailing,
+			preferredColumnWidth,
+		);
 		const sectionBarWidth = Math.min(sectionColumnWidth, BAR_WIDTH_MAX);
 
 		for (const { group, sortedLimits, sortedReports, amountText } of renderableGroups) {
@@ -1904,6 +2012,7 @@ export function renderUsageReports(
 					sectionColumnWidth,
 					uiTheme,
 					activeAccount,
+					maskAccountLabels,
 					offset,
 				);
 				lines.push(`  ${accountLabels.join(" ")}`.trimEnd());
@@ -1928,7 +2037,11 @@ export function renderUsageReports(
 		// Render accounts with no rate limits (e.g. business/enterprise plans).
 		const unlimitedReports = providerReports.filter(report => report.limits.length === 0);
 		for (const report of unlimitedReports) {
-			const label = formatUnlimitedReportLabel(report, 0);
+			const label = styleAccountMask(
+				maskAccountLabel(formatUnlimitedReportLabel(report, 0), maskAccountLabels),
+				uiTheme,
+				maskAccountLabels,
+			);
 			const tier = report.metadata?.planType;
 			const tierSuffix = typeof tier === "string" && tier ? ` ${uiTheme.fg("dim", `(${tier})`)}` : "";
 			lines.push(
