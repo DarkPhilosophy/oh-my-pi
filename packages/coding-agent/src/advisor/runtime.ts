@@ -643,17 +643,79 @@ export class AdvisorRuntime {
 		// markdown in one stretch) — a watchdog block here must say so.
 		pushLoopPhase("advisor:render");
 		try {
-			const obfuscator = this.host.obfuscator;
-			const formattedDelta = obfuscator?.hasSecrets()
-				? obfuscateAdvisorDelta(obfuscator, delta, this.#advisorRegexSecretValues)
-				: delta;
-			const md = formatSessionHistoryMarkdown(formattedDelta, ADVISOR_RENDER_OPTIONS);
-			if (!md.trim()) return null;
-			const heading = wip ? "### Session update [in progress — more steps follow]" : "### Session update";
-			return `${heading}\n\n${md}`;
+			return this.#renderDeltaMarkdown(delta, wip);
 		} finally {
 			popLoopPhase();
 		}
+	}
+
+	/**
+	 * Synchronous render pipeline shared by {@link #formatRawDelta} and the
+	 * chunked renderer's small-delta fast path. With secrets configured the
+	 * markdown is rendered twice: the first (raw) pass exists only to discover
+	 * regex secret values actually shown by the render, after which prior
+	 * advisor history and pending updates are scrubbed of friendly placeholder
+	 * prefixes that collided with a newly discovered value, and the second
+	 * pass renders with primary-context customs obfuscated before the final
+	 * markdown-level obfuscation scan (scanning only what the render shows).
+	 */
+	#renderDeltaMarkdown(delta: AgentMessage[], wip: boolean): string | null {
+		const obfuscator = this.host.obfuscator;
+		let md = formatSessionHistoryMarkdown(delta, ADVISOR_RENDER_OPTIONS);
+		if (!md.trim()) return null;
+		if (obfuscator?.hasSecrets()) {
+			this.#collectAndScrubRegexSecrets(obfuscator, delta, [md]);
+			md = formatSessionHistoryMarkdown(this.#obfuscatePrimaryContext(obfuscator, delta), ADVISOR_RENDER_OPTIONS);
+			md = obfuscator.obfuscate(md, this.#advisorRegexSecretValues);
+		}
+		const heading = wip ? "### Session update [in progress — more steps follow]" : "### Session update";
+		return `${heading}\n\n${md}`;
+	}
+
+	/**
+	 * Discover regex secret values from the delta's primary-context customs
+	 * and the rendered markdown, then scrub prior advisor history — and, when
+	 * a NEW value was discovered, coalesced pending updates — whose friendly
+	 * placeholder prefixes became unsafe under the grown value set.
+	 */
+	#collectAndScrubRegexSecrets(
+		obfuscator: SecretObfuscator,
+		delta: readonly AgentMessage[],
+		renderedParts: readonly string[],
+	): void {
+		let discoveredNewRegexSecretValue = false;
+		const addRegexValues = (text: string): void => {
+			for (const secretValue of obfuscator.collectRegexSecretValuesForObfuscation(text)) {
+				if (this.#advisorRegexSecretValues.has(secretValue)) continue;
+				this.#advisorRegexSecretValues.add(secretValue);
+				discoveredNewRegexSecretValue = true;
+			}
+		};
+		for (const message of delta) {
+			if (
+				message.role === "custom" &&
+				PRIMARY_CONTEXT_CUSTOM_TYPES.has(message.customType) &&
+				typeof message.content === "string"
+			) {
+				addRegexValues(message.content);
+			}
+		}
+		for (const part of renderedParts) addRegexValues(part);
+		scrubAdvisorHistory(obfuscator, this.agent.state.messages, this.#advisorRegexSecretValues);
+		if (discoveredNewRegexSecretValue) {
+			this.#pending = this.#pending.map(pending => ({
+				...pending,
+				text: obfuscator.stripUnsafeFriendlyPlaceholderPrefixes(pending.text, this.#advisorRegexSecretValues),
+			}));
+		}
+	}
+
+	#obfuscatePrimaryContext(obfuscator: SecretObfuscator, delta: readonly AgentMessage[]): AgentMessage[] {
+		return delta.map(message =>
+			message.role === "custom" && PRIMARY_CONTEXT_CUSTOM_TYPES.has(message.customType)
+				? obfuscateAdvisorMessage(obfuscator, message, this.#advisorRegexSecretValues)
+				: message,
+		);
 	}
 
 	/**
@@ -666,8 +728,13 @@ export class AdvisorRuntime {
 	 * in ONE synchronous step before any yield so `#seenContext` mutations
 	 * stay ordered with competing synchronous renders; every slice shares a
 	 * whole-delta tool-result index and consumed-id set so a toolCall renders
-	 * "⇒ ok" even when its toolResult lands slices later. Returns null when
-	 * the delta is empty or `epoch` was invalidated during a yield.
+	 * "⇒ ok" even when its toolResult lands slices later. With secrets
+	 * configured the sliced render follows the same two-pass pipeline as
+	 * {@link #renderDeltaMarkdown}: the first sliced pass discovers regex
+	 * secret values per rendered part (never one whole-markdown scan), and
+	 * the second sliced pass re-renders with primary-context customs
+	 * obfuscated, obfuscating each part as it lands. Returns null when the
+	 * delta is empty or `epoch` was invalidated during a yield.
 	 */
 	async #formatRawDeltaChunked(rawMessages: AgentMessage[], wip: boolean, epoch: number): Promise<string | null> {
 		const delta = rawMessages
@@ -675,8 +742,6 @@ export class AdvisorRuntime {
 			.map(message => this.#dedupContextMessage(message));
 		if (delta.length === 0) return null;
 		const obfuscator = this.host.obfuscator;
-		const hasSecrets = obfuscator?.hasSecrets() === true;
-		let formattedDelta: AgentMessage[];
 		let large = true;
 		try {
 			large = delta.length > RENDER_CHUNK_MESSAGES || deltaExceedsSize(delta, 0, FAST_RENDER_MAX_CHARS);
@@ -685,12 +750,12 @@ export class AdvisorRuntime {
 			// formatter failure is handled by the caller.
 		}
 		if (!large) {
-			formattedDelta =
-				hasSecrets && obfuscator ? obfuscateAdvisorDelta(obfuscator, delta, this.#advisorRegexSecretValues) : delta;
-			const md = formatSessionHistoryMarkdown(formattedDelta, ADVISOR_RENDER_OPTIONS);
-			if (!md.trim()) return null;
-			const heading = wip ? "### Session update [in progress — more steps follow]" : "### Session update";
-			return `${heading}\n\n${md}`;
+			pushLoopPhase("advisor:render");
+			try {
+				return this.#renderDeltaMarkdown(delta, wip);
+			} finally {
+				popLoopPhase();
+			}
 		}
 		// The large path must not run on the caller's stack: #drain is entered
 		// synchronously (`void this.#drain()`) from onTurnEnd, so without this
@@ -700,156 +765,98 @@ export class AdvisorRuntime {
 		// (#seenContext mutations must order with competing sync renders).
 		await Bun.sleep(0);
 		if (this.disposed || this.#epoch !== epoch) return null;
-		// Obfuscation scans every string in the delta (O(bytes)); on a multi-MB
-		// replay that is its own event-loop stall, so it runs in yielding
-		// slices too. It happens UP FRONT — not per format slice — because the
-		// cross-slice tool-result index below must hold obfuscated results
-		// (a call in slice 1 renders a result from slice 3).
-		if (hasSecrets && obfuscator) {
-			// Slices are bounded by BOTH message count and estimated payload
-			// size: a handful of multi-MB tool results would otherwise scan
-			// their entire byte payload before the first yield. The prefix is
-			// flushed BEFORE admitting a message that would blow the budget, so
-			// an oversized (irreducible) message scans alone — never glued to
-			// the slice accumulated ahead of it.
-			const obfuscated: AgentMessage[] = [];
-			let start = 0;
-			let count = 0;
-			let chars = 0;
-			const emit = async (end: number): Promise<boolean> => {
-				if (start > 0) {
-					await Bun.sleep(0);
-					if (this.disposed || this.#epoch !== epoch) return false;
-				}
-				pushLoopPhase("advisor:render-slice:obfuscate");
-				try {
-					obfuscated.push(
-						...obfuscateAdvisorDelta(obfuscator, delta.slice(start, end), this.#advisorRegexSecretValues),
-					);
-				} finally {
-					popLoopPhase();
-				}
-				start = end;
-				count = 0;
-				chars = 0;
-				return true;
-			};
-			for (let end = 0; end < delta.length; ) {
-				const cost = estimateMessageChars(delta[end]!, FAST_RENDER_MAX_CHARS + 1);
-				if (count > 0 && chars + cost > FAST_RENDER_MAX_CHARS && !(await emit(end))) return null;
-				chars += cost;
-				count++;
-				end++;
-				const flush = end === delta.length || count >= RENDER_CHUNK_MESSAGES || chars > FAST_RENDER_MAX_CHARS;
-				if (flush && !(await emit(end))) return null;
-			}
-			formattedDelta = obfuscated;
-		} else {
-			formattedDelta = delta;
-		}
-		let md: string;
-		{
-			// Slices are bounded by BOTH message count and estimated payload
-			// size, so a handful of huge messages (multi-MB edit diffs) never
-			// collapses into one long synchronous format call. A single
-			// oversized message is irreducible — it forms its own slice.
-			const toolResultIndex = new Map<string, ToolResultMessage>();
-			const toolResultChars = new Map<string, number>();
-			for (const message of formattedDelta) {
-				if (message.role !== "toolResult") continue;
-				toolResultIndex.set(message.toolCallId, message);
-				toolResultChars.set(message.toolCallId, estimateMessageChars(message, FAST_RENDER_MAX_CHARS + 1));
-			}
-			const chunkOptions = {
-				...ADVISOR_RENDER_OPTIONS,
-				toolResultIndex,
-				consumedToolCallIds: new Set<string>(),
-			};
-			const parts: string[] = [];
-			let start = 0;
-			let count = 0;
-			let chars = 0;
-			const emit = async (end: number): Promise<boolean> => {
-				if (start > 0) {
-					await Bun.sleep(0);
-					if (this.disposed || this.#epoch !== epoch) return false;
-				}
-				pushLoopPhase("advisor:render-slice:format");
-				try {
-					parts.push(formatSessionHistoryMarkdown(formattedDelta.slice(start, end), chunkOptions));
-				} finally {
-					popLoopPhase();
-				}
-				start = end;
-				count = 0;
-				chars = 0;
-				return true;
-			};
-			for (let end = 0; end < formattedDelta.length; ) {
-				const message = formattedDelta[end]!;
-				// A toolCall inlines its (possibly much later) toolResult via the
-				// shared index AT THE CALL'S SLICE — its cost is charged to the
-				// slice that renders it. The result is conservatively counted
-				// again in its own slice (it formats as consumed/skipped there);
-				// double-counting only makes slices smaller, never larger.
-				let cost = estimateMessageChars(message, FAST_RENDER_MAX_CHARS + 1);
-				if (message.role === "assistant") {
-					for (const block of (message as AssistantMessage).content) {
-						if (block.type === "toolCall") cost += toolResultChars.get(block.id) ?? 0;
-					}
-				}
-				// Flush the accumulated prefix BEFORE admitting a message that
-				// would blow the budget: an irreducible call+result pair formats
-				// alone (with a yield ahead of it), never glued to the prefix.
-				if (count > 0 && chars + cost > FAST_RENDER_MAX_CHARS && !(await emit(end))) return null;
-				chars += cost;
-				count++;
-				end++;
-				const flush =
-					end === formattedDelta.length || count >= RENDER_CHUNK_MESSAGES || chars > FAST_RENDER_MAX_CHARS;
-				if (flush && !(await emit(end))) return null;
-			}
-			md = parts.filter(part => part.trim()).join("\n");
-		}
+		const rawParts = await this.#formatDeltaSlices(delta, epoch);
+		if (rawParts === null) return null;
+		let md = rawParts.filter(part => part.trim()).join("\n");
 		if (!md.trim()) return null;
 		if (obfuscator?.hasSecrets()) {
-			let discoveredNewRegexSecretValue = false;
-			const addRegexValues = (text: string): void => {
-				for (const secretValue of obfuscator.collectRegexSecretValuesForObfuscation(text)) {
-					if (this.#advisorRegexSecretValues.has(secretValue)) continue;
-					this.#advisorRegexSecretValues.add(secretValue);
-					discoveredNewRegexSecretValue = true;
-				}
-			};
-			for (const message of delta) {
-				if (
-					message.role === "custom" &&
-					PRIMARY_CONTEXT_CUSTOM_TYPES.has(message.customType) &&
-					typeof message.content === "string"
-				) {
-					addRegexValues(message.content);
-				}
-			}
-			addRegexValues(md);
-			scrubAdvisorHistory(obfuscator, this.agent.state.messages, this.#advisorRegexSecretValues);
-			if (discoveredNewRegexSecretValue) {
-				this.#pending = this.#pending.map(delta => ({
-					...delta,
-					text: obfuscator.stripUnsafeFriendlyPlaceholderPrefixes(delta.text, this.#advisorRegexSecretValues),
-				}));
-			}
-			md = formatSessionHistoryMarkdown(
-				delta.map(message =>
-					message.role === "custom" && PRIMARY_CONTEXT_CUSTOM_TYPES.has(message.customType)
-						? obfuscateAdvisorMessage(obfuscator, message, this.#advisorRegexSecretValues)
-						: message,
-				),
-				ADVISOR_RENDER_OPTIONS,
+			this.#collectAndScrubRegexSecrets(obfuscator, delta, rawParts);
+			const obfuscatedParts = await this.#formatDeltaSlices(
+				this.#obfuscatePrimaryContext(obfuscator, delta),
+				epoch,
+				obfuscator,
 			);
-			md = obfuscator.obfuscate(md, this.#advisorRegexSecretValues);
+			if (obfuscatedParts === null) return null;
+			md = obfuscatedParts.filter(part => part.trim()).join("\n");
 		}
 		const heading = wip ? "### Session update [in progress — more steps follow]" : "### Session update";
 		return `${heading}\n\n${md}`;
+	}
+
+	/**
+	 * Render `messages` into markdown parts in slices bounded by BOTH message
+	 * count and estimated payload size, yielding the event loop between
+	 * slices, so a handful of huge messages (multi-MB edit diffs) never
+	 * collapses into one long synchronous format call. A single oversized
+	 * message is irreducible — it forms its own slice. When `obfuscator` is
+	 * given, each rendered part is obfuscated as it lands: placeholders never
+	 * span message boundaries, so per-part obfuscation matches the sync
+	 * pipeline's whole-markdown scan while keeping every scan bounded.
+	 * Returns null when `epoch` was invalidated during a yield.
+	 */
+	async #formatDeltaSlices(
+		messages: readonly AgentMessage[],
+		epoch: number,
+		obfuscator?: SecretObfuscator,
+	): Promise<string[] | null> {
+		const toolResultIndex = new Map<string, ToolResultMessage>();
+		const toolResultChars = new Map<string, number>();
+		for (const message of messages) {
+			if (message.role !== "toolResult") continue;
+			toolResultIndex.set(message.toolCallId, message);
+			toolResultChars.set(message.toolCallId, estimateMessageChars(message, FAST_RENDER_MAX_CHARS + 1));
+		}
+		const chunkOptions = {
+			...ADVISOR_RENDER_OPTIONS,
+			toolResultIndex,
+			consumedToolCallIds: new Set<string>(),
+		};
+		const parts: string[] = [];
+		let start = 0;
+		let count = 0;
+		let chars = 0;
+		const emit = async (end: number): Promise<boolean> => {
+			if (start > 0) {
+				await Bun.sleep(0);
+				if (this.disposed || this.#epoch !== epoch) return false;
+			}
+			pushLoopPhase("advisor:render-slice:format");
+			try {
+				let part = formatSessionHistoryMarkdown(messages.slice(start, end), chunkOptions);
+				if (obfuscator) part = obfuscator.obfuscate(part, this.#advisorRegexSecretValues);
+				parts.push(part);
+			} finally {
+				popLoopPhase();
+			}
+			start = end;
+			count = 0;
+			chars = 0;
+			return true;
+		};
+		for (let end = 0; end < messages.length; ) {
+			const message = messages[end]!;
+			// A toolCall inlines its (possibly much later) toolResult via the
+			// shared index AT THE CALL'S SLICE — its cost is charged to the
+			// slice that renders it. The result is conservatively counted
+			// again in its own slice (it formats as consumed/skipped there);
+			// double-counting only makes slices smaller, never larger.
+			let cost = estimateMessageChars(message, FAST_RENDER_MAX_CHARS + 1);
+			if (message.role === "assistant") {
+				for (const block of (message as AssistantMessage).content) {
+					if (block.type === "toolCall") cost += toolResultChars.get(block.id) ?? 0;
+				}
+			}
+			// Flush the accumulated prefix BEFORE admitting a message that
+			// would blow the budget: an irreducible call+result pair formats
+			// alone (with a yield ahead of it), never glued to the prefix.
+			if (count > 0 && chars + cost > FAST_RENDER_MAX_CHARS && !(await emit(end))) return null;
+			chars += cost;
+			count++;
+			end++;
+			const flush = end === messages.length || count >= RENDER_CHUNK_MESSAGES || chars > FAST_RENDER_MAX_CHARS;
+			if (flush && !(await emit(end))) return null;
+		}
+		return parts;
 	}
 
 	#renderDelta(messages?: AgentMessage[], wip = false): Omit<PendingDelta, "turns" | "overflowRecovery"> | null {
@@ -1463,20 +1470,6 @@ function obfuscateDetails(
 	// (e.g. `async-result` reads `details.jobs[].label`/`jobId`), so a shallow
 	// pass leaks any secret a background job's label happens to contain.
 	return obfuscateToolArguments(obfuscator, details, sharedRegexSecretValues);
-}
-
-function obfuscateAdvisorDelta(
-	obfuscator: SecretObfuscator,
-	messages: AgentMessage[],
-	sharedRegexSecretValues: ReadonlySet<string>,
-): AgentMessage[] {
-	let changed = false;
-	const result = messages.map(message => {
-		const next = obfuscateAdvisorMessage(obfuscator, message, sharedRegexSecretValues);
-		if (next !== message) changed = true;
-		return next;
-	});
-	return changed ? result : messages;
 }
 
 function obfuscateAdvisorMessage(

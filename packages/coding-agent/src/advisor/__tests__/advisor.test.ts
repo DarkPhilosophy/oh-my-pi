@@ -1217,6 +1217,8 @@ describe("advisor", () => {
 			const obfuscator = {
 				hasSecrets: () => true,
 				obfuscate: (text: string) => text.replaceAll("sk-supersecret-token", "[REDACTED]"),
+				collectRegexSecretValuesForObfuscation: () => [],
+				stripUnsafeFriendlyPlaceholderPrefixes: (text: string) => text,
 			} as unknown as NonNullable<AdvisorRuntimeHost["obfuscator"]>;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
