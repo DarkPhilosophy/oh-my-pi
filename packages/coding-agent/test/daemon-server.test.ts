@@ -4,6 +4,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { postmortem } from "@oh-my-pi/pi-utils";
+import * as buildStamp from "../src/daemon/build-stamp";
 import { DaemonClient } from "../src/daemon/client";
 import {
 	DAEMON_MAX_FRAME_BYTES,
@@ -682,6 +683,47 @@ describe("daemon server and registry", () => {
 			client.close();
 			await server.shutdown(true).catch(() => undefined);
 			discover.mockRestore();
+		}
+	});
+
+	test("resolves the build stamp before the socket accepts a handshake", async () => {
+		// A daemon that listens before its stamp resolves answers `hello` without
+		// a `buildStamp`; the client that just spawned it then reads that as a
+		// mismatched build and shuts it down, looping until it gives up with
+		// `connect ENOENT …/daemon.sock`.
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-stamp-order-"));
+		const runtimeDir = path.join(root, "runtime");
+		const endpoint = path.join(runtimeDir, "daemon.sock");
+		const stamp = Promise.withResolvers<string>();
+		const stampRequested = Promise.withResolvers<void>();
+		const stampSpy = spyOn(buildStamp, "daemonBuildStamp").mockImplementation(() => {
+			stampRequested.resolve();
+			return stamp.promise;
+		});
+		const server = new DaemonServer({
+			profile: "test",
+			runtimeDir,
+			token: "secret",
+			runtimeFactory: fakeFactory().runtimeFactory,
+		});
+		const started = server.run();
+		try {
+			await stampRequested.promise;
+			await expect(fs.stat(endpoint)).rejects.toMatchObject({ code: "ENOENT" });
+			stamp.resolve("stamp-1");
+			await started;
+			const { socket, reader } = await connect(endpoint);
+			try {
+				socket.write(encodeDaemonFrame(hello("secret")));
+				expect(await reader.next()).toMatchObject({ tag: "hello_ok", buildStamp: "stamp-1" });
+			} finally {
+				await destroyAndWait(socket);
+			}
+		} finally {
+			stamp.resolve("stamp-1");
+			await started.catch(() => undefined);
+			await server.shutdown(true).catch(() => undefined);
+			stampSpy.mockRestore();
 		}
 	});
 	test("waits out a live-but-unbound owner and reclaims once it drains", async () => {

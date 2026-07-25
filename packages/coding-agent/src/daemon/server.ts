@@ -214,6 +214,12 @@ export class DaemonServer {
 		this.#token = this.#tokenOverride ?? (await readOrCreateDaemonToken(this.#runtimeDir));
 		await this.#acquireOwnerLease();
 		try {
+			// The pairing identity MUST exist before the socket accepts a single
+			// `hello`: `hello_ok` omits an unset stamp, and a client that reads no
+			// stamp classifies this daemon as a pre-pairing build and shuts it
+			// down — including the replacement it just spawned itself, which is a
+			// `connect ENOENT` loop until the client's start deadline expires.
+			this.#buildStamp = this.#buildStampOverride ?? (await daemonBuildStamp());
 			for (;;) {
 				const server = net.createServer(socket => this.#accept(socket));
 				server.on("error", error => logger.error("Daemon server error", { error: unknownErrorMessage(error) }));
@@ -264,7 +270,6 @@ export class DaemonServer {
 					runtimeFactory,
 					sessionDir: this.#sessionDir,
 				});
-			this.#buildStamp = this.#buildStampOverride ?? (await daemonBuildStamp());
 			this.#runtimeReady.resolve();
 			return this;
 		} catch (error) {
