@@ -623,6 +623,25 @@ function isSessionStorage(value: SessionStorage | ResolveResumableSessionOptions
 	return "listFilesSync" in value;
 }
 
+/**
+ * True when a `--resume`/`--fork` argument names a transcript file rather than
+ * a session id (or id prefix). Path arguments address one exact file, so they
+ * resolve through {@link resolveSessionFileArg} instead of the id matcher —
+ * {@link sessionMatchesResumeArg} is prefix-based and can never match a path.
+ */
+export function isSessionFileArg(sessionArg: string): boolean {
+	return sessionArg.includes("/") || sessionArg.includes("\\") || sessionArg.endsWith(".jsonl");
+}
+
+/** Resolve an explicit transcript path to its session info, or undefined when unreadable. */
+export async function resolveSessionFileArg(
+	sessionArg: string,
+	storage: SessionStorage = new FileSessionStorage(),
+): Promise<SessionInfo | undefined> {
+	const [match] = await collectSessionsFromFiles([path.resolve(sessionArg)], storage, true);
+	return match;
+}
+
 export async function resolveResumableSession(
 	sessionArg: string,
 	cwd: string,

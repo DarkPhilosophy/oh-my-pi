@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -178,21 +178,15 @@ describe("daemon interactive bootstrap", () => {
 			},
 		});
 		await server.run();
-		vi.spyOn(sessionListing, "resolveResumableSession").mockResolvedValue({
-			scope: "local",
-			session: {
-				path: transcript,
-				id: "hosted-1",
-				cwd: root,
-				title: "hosted",
-				created: new Date(0),
-				modified: new Date(0),
-				messageCount: 1,
-				size: 1,
-				firstMessage: "hosted",
-				allMessagesText: "hosted",
-			},
-		});
+		// No resolver mock: `--resume <path>` must resolve through the transcript
+		// FILE. Mocking `resolveResumableSession` here hid a real regression —
+		// its matcher is prefix-based over ids and never matches a path, so the
+		// hosted-session probe was skipped and the launch died with
+		// `session_busy` even though the daemon was hosting that very session.
+		await writeFile(
+			transcript,
+			`${JSON.stringify({ type: "session", version: 3, id: "hosted-1", cwd: root, timestamp: new Date(0).toISOString() })}\n`,
+		);
 		try {
 			// The session is already live in the daemon (a previous client died
 			// and left it parked).
@@ -263,21 +257,10 @@ describe("daemon interactive bootstrap", () => {
 			},
 		});
 		await server.run();
-		vi.spyOn(sessionListing, "resolveResumableSession").mockResolvedValue({
-			scope: "local",
-			session: {
-				path: transcript,
-				id: "hosted-1",
-				cwd: root,
-				title: "hosted",
-				created: new Date(0),
-				modified: new Date(0),
-				messageCount: 1,
-				size: 1,
-				firstMessage: "hosted",
-				allMessagesText: "hosted",
-			},
-		});
+		await writeFile(
+			transcript,
+			`${JSON.stringify({ type: "session", version: 3, id: "hosted-1", cwd: root, timestamp: new Date(0).toISOString() })}\n`,
+		);
 		try {
 			const bootstrapped = await bootstrapDaemonInteractive({
 				argv: ["--resume", transcript],

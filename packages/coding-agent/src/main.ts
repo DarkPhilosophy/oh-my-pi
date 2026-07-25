@@ -75,7 +75,7 @@ import {
 import type { AgentSession } from "./session/agent-session";
 import type { AuthStorage } from "./session/auth-storage";
 import { describePendingToolCalls } from "./session/exit-diagnostics";
-import { resolveResumableSession, type SessionInfo } from "./session/session-listing";
+import { isSessionFileArg, resolveResumableSession, type SessionInfo } from "./session/session-listing";
 import { SessionManager } from "./session/session-manager";
 import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
 import { shouldShowStartupSplash } from "./startup-splash";
@@ -640,7 +640,7 @@ export async function createSessionManager(
 
 	if (typeof parsed.resume === "string") {
 		const sessionArg = parsed.resume;
-		if (sessionArg.includes("/") || sessionArg.includes("\\") || sessionArg.endsWith(".jsonl")) {
+		if (isSessionFileArg(sessionArg)) {
 			return await SessionManager.open(sessionArg, parsed.sessionDir);
 		}
 		const match = await resolveResumableSession(sessionArg, cwd, parsed.sessionDir);

@@ -8,7 +8,7 @@ import { applyStartupCwd } from "../cli/startup-cwd";
 import { Settings } from "../config/settings";
 import { initTheme, stopThemeWatcher } from "../modes/theme/theme";
 import { RemoteSessionHandle, type SessionHandleCommand } from "../session/session-handle";
-import { resolveResumableSession } from "../session/session-listing";
+import { isSessionFileArg, resolveResumableSession, resolveSessionFileArg } from "../session/session-listing";
 import { SessionManager } from "../session/session-manager";
 import { resolveWorkerSpawnCmd, workerEnvFromParent } from "../subprocess/worker-client";
 import { daemonBuildStamp } from "./build-stamp";
@@ -119,6 +119,27 @@ export async function readDaemonModeSetting(): Promise<boolean> {
 	}
 }
 
+const RESUME_FLAGS = ["--resume", "-r", "--session"];
+
+/**
+ * Rewrite the resume argument's value in `argv`, honoring both `--resume <v>`
+ * and `--resume=<v>`. The daemon replays this argv verbatim in its runtime
+ * factory, so an inline form left unrewritten would resume the pre-fork
+ * session and defeat the fork entirely.
+ */
+function withResumeValue(argv: readonly string[], value: string): string[] {
+	const next = [...argv];
+	const inline = next.findIndex(argument => RESUME_FLAGS.some(flag => argument.startsWith(`${flag}=`)));
+	if (inline >= 0) {
+		next.splice(inline, 1, "--resume", value);
+		return next;
+	}
+	const index = next.findIndex(argument => RESUME_FLAGS.includes(argument));
+	if (index < 0) throw new Error("Unable to locate resume argument");
+	next.splice(index, 2, "--resume", value);
+	return next;
+}
+
 export async function resolveDaemonInteractiveResume(
 	options: DaemonInteractiveBootstrapOptions,
 ): Promise<DaemonInteractiveBootstrapOptions | undefined> {
@@ -127,6 +148,11 @@ export async function resolveDaemonInteractiveResume(
 	await applyStartupCwd(parsed);
 	const cwd = options.cwd ?? getProjectDir();
 	if (typeof parsed.resume === "string") {
+		// An explicit transcript path addresses one exact file, and the direct
+		// entrypoint (`SessionManager.open` in main.ts) resumes it in place. Forking
+		// it into cwd here would make `--resume <file>` mean two different things
+		// depending on whether a daemon hosts the session.
+		if (isSessionFileArg(parsed.resume)) return options;
 		const match = await resolveResumableSession(parsed.resume, cwd, parsed.sessionDir);
 		if (
 			match?.scope !== "global" ||
@@ -136,13 +162,7 @@ export async function resolveDaemonInteractiveResume(
 		const forked = await SessionManager.forkFrom(match.session.path, cwd, parsed.sessionDir);
 		const forkedPath = forked.getSessionFile();
 		if (!forkedPath) throw new Error(`Unable to fork session "${parsed.resume}" into ${cwd}`);
-		const argv = [...options.argv];
-		const resumeIndex = argv.findIndex(
-			argument => argument === "--resume" || argument === "-r" || argument === "--session",
-		);
-		if (resumeIndex < 0) throw new Error("Unable to locate resume argument");
-		argv.splice(resumeIndex, 2, "--resume", forkedPath);
-		return { ...options, argv, cwd };
+		return { ...options, argv: withResumeValue(options.argv, forkedPath), cwd };
 	}
 	const folderSessions = await SessionManager.list(cwd, parsed.sessionDir);
 	const allSessions = folderSessions.length === 0 ? await SessionManager.listAll() : undefined;
@@ -542,11 +562,17 @@ export async function bootstrapDaemonInteractive(
 	// first and attach to the existing runtime — a blind session_create would
 	// resume the same transcript into a duplicate runtime and fail with
 	// session_busy. Fresh (unhosted) resumes keep the plain create path so the
-	// runtime factory still processes the full launch argv.
-	const resumeSessionId =
-		typeof parsed.resume === "string"
-			? (await resolveResumableSession(parsed.resume, cwd, parsed.sessionDir))?.session.id
-			: undefined;
+	// runtime factory still processes the full launch argv. A transcript path
+	// resolves through its file: the id matcher is prefix-based and would never
+	// match a path, silently skipping the probe.
+	const resumeArg = typeof parsed.resume === "string" ? parsed.resume : undefined;
+	const resumeSession =
+		resumeArg === undefined
+			? undefined
+			: isSessionFileArg(resumeArg)
+				? await resolveSessionFileArg(resumeArg)
+				: (await resolveResumableSession(resumeArg, cwd, parsed.sessionDir))?.session;
+	const resumeSessionId = resumeSession?.id;
 	const createOperation = {
 		op: "session_create",
 		cwd,
