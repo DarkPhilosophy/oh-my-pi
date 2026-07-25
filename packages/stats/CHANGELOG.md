@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed forked-session deduplication awarding a provider request to whichever copy the filesystem happened to list first; session folders and files are now synced in path order, so the original session keeps the request instead of a fork of it.
+
 ## [17.1.0] - 2026-07-24
 
 ### Fixed

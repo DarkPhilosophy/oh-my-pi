@@ -441,25 +441,38 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 }
 
 /**
- * List all session directories (folders).
+ * List all session directories (folders), sorted by path.
  */
 export async function listSessionFolders(): Promise<string[]> {
 	try {
 		const sessionsDir = getSessionsDir();
 		const entries = await fs.readdir(sessionsDir, { withFileTypes: true });
-		return entries.filter(e => e.isDirectory()).map(e => path.join(sessionsDir, e.name));
+		return entries
+			.filter(e => e.isDirectory())
+			.map(e => path.join(sessionsDir, e.name))
+			.sort();
 	} catch {
 		return [];
 	}
 }
 
 /**
- * List all session files in a folder.
+ * List all session files in a folder, sorted by path.
+ *
+ * Order is load-bearing, not cosmetic: the fork guards in `insertMessageStats`
+ * / `insertUserMessageStats` keep the FIRST file that claims an
+ * `(entry_id, timestamp)` pair, and a fork copies its parent's entries
+ * verbatim. Session filenames lead with an ISO timestamp, so syncing in path
+ * order reaches the original session before any fork of it — otherwise the
+ * owning file would follow raw `readdir` order and vary per filesystem.
  */
 export async function listSessionFiles(folderPath: string): Promise<string[]> {
 	try {
 		const entries = await fs.readdir(folderPath, { recursive: true, withFileTypes: true });
-		return entries.filter(e => e.isFile() && e.name.endsWith(".jsonl")).map(e => path.join(e.parentPath, e.name));
+		return entries
+			.filter(e => e.isFile() && e.name.endsWith(".jsonl"))
+			.map(e => path.join(e.parentPath, e.name))
+			.sort();
 	} catch {
 		return [];
 	}
