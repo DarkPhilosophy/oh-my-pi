@@ -120,6 +120,7 @@ describe("issue #1020 - ctx.shutdown() in interactive mode", () => {
 			async emit(event: { type: string }): Promise<void> {
 				emittedEvents.push(event.type);
 			},
+			clearManagedTimers(): void {},
 		};
 
 		const ctxStub = {

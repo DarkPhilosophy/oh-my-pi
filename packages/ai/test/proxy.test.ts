@@ -23,6 +23,10 @@ async function createSilentProxyServer(): Promise<SilentProxyServer> {
 	const accepted = Promise.withResolvers<net.Socket>();
 	const server = net.createServer(socket => {
 		sockets.add(socket);
+		// Silent means "never answers the CONNECT", not "never reads": a paused
+		// socket never surfaces the peer's FIN, so `close` would never fire and
+		// the client-side teardown assertions could not observe it.
+		socket.resume();
 		socket.once("close", () => sockets.delete(socket));
 		accepted.resolve(socket);
 	});

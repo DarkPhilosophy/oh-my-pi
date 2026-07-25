@@ -473,7 +473,11 @@ exit 64
 
 			expect(result.cancelled).toBe(false);
 			expect(result.exitCode).toBe(0);
-			expect(result.output.trim()).toBe("zsh-alias-ok");
+			// `-l` also sources the system files (`/etc/zshrc`, …), which on some
+			// distros print a login banner. The contract is that the user's zshrc
+			// alias resolved and its output landed last — not that the host is
+			// banner-free.
+			expect(result.output.trimEnd().split("\n").at(-1)).toBe("zsh-alias-ok");
 		} finally {
 			removeSyncWithRetries(shellDir);
 		}

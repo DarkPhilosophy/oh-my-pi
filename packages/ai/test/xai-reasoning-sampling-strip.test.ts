@@ -74,18 +74,21 @@ describe("xAI reasoning sampling-param strip", () => {
 		expect(params.top_p).toBe(0.9);
 	});
 
+	// Control: a non-xAI model keeps presence_penalty. It must NOT be a gpt-5+/o-series
+	// id — those drop every sampling param via `supportsSamplingParams` (#5606), which
+	// would make this assertion pass or fail for the wrong reason.
 	test("applyCommonResponsesSamplingParams still sends presence_penalty for non-xAI models", () => {
 		const model = buildModel({
-			id: "gpt-5",
-			name: "GPT-5",
+			id: "gpt-4.1",
+			name: "GPT-4.1",
 			api: "openai-responses",
 			provider: "openai",
 			baseUrl: "https://api.openai.com/v1",
-			reasoning: true,
+			reasoning: false,
 			input: ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 200_000,
-			maxTokens: 100_000,
+			contextWindow: 1_000_000,
+			maxTokens: 32_768,
 		});
 		const params: Record<string, unknown> = {};
 		applyCommonResponsesSamplingParams(params as never, { presencePenalty: 0.5 }, model);

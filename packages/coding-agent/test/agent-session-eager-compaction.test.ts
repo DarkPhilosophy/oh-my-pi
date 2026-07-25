@@ -96,14 +96,21 @@ function stubCompaction(firstKeptEntryId?: string): void {
 	}));
 }
 
-/** Emit a high-usage assistant turn to drive threshold (context-full) auto-compaction. */
+/**
+ * Emit a high-usage assistant turn to drive threshold (context-full)
+ * auto-compaction. The turn is stamped with the session's active model: usage
+ * billed by a different model is deliberately ignored by the threshold gate
+ * (it was measured against another context window).
+ */
 function emitHighUsageTurn(session: AgentSession): void {
+	const model = session.model;
+	if (!model) throw new Error("Expected an active session model");
 	const assistantMsg = {
 		role: "assistant" as const,
 		content: [{ type: "text" as const, text: "Done." }],
-		api: "anthropic-messages" as const,
-		provider: "anthropic" as const,
-		model: "claude-sonnet-4-5",
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
 		stopReason: "stop" as const,
 		usage: {
 			input: 190_000,

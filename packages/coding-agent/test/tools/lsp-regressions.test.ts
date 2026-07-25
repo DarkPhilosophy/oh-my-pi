@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult, RenderResultOptions } from "@oh-my-pi/pi-agent-core";
 import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
+import * as agentConfig from "@oh-my-pi/pi-coding-agent/config";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { preloadPluginRoots } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import { LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
@@ -1567,12 +1568,26 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	/**
+	 * `loadConfig` merges user-level LSP files (`~/.omp/agent/lsp.json`, …). Any
+	 * server override on the developer's machine flips the loader onto the
+	 * merge path instead of the auto-detect path these local-binary tests
+	 * exercise, so the user tier is dropped for the duration of the test.
+	 */
+	function dropUserLspConfigTier(): void {
+		const actual = agentConfig.getConfigDirPaths;
+		vi.spyOn(agentConfig, "getConfigDirPaths").mockImplementation((subpath, options = {}) =>
+			options.user !== false && options.project === false ? [] : actual(subpath, options),
+		);
+	}
+
 	it("detects Ruff in Windows virtualenv Scripts directories", async () => {
 		const originalPlatform = process.platform;
 		Object.defineProperty(process, "platform", { value: "win32", configurable: true, writable: true });
 
 		const tempDir = TempDir.createSync("@omp-lsp-win32-ruff-");
-		const whichSpy = vi.spyOn(Bun, "which").mockReturnValue(null);
+		const whichSpy = vi.spyOn(piUtils, "$which").mockReturnValue(null);
+		dropUserLspConfigTier();
 
 		try {
 			await Bun.write(path.join(tempDir.path(), "pyproject.toml"), '[project]\nname = "demo"\n');
@@ -1594,7 +1609,8 @@ describe("lsp regressions", () => {
 	it("detects Ruff in Windows virtualenv Scripts directories for Ruff-only roots", async () => {
 		const originalPlatform = process.platform;
 		Object.defineProperty(process, "platform", { value: "win32", configurable: true, writable: true });
-		const whichSpy = vi.spyOn(Bun, "which").mockReturnValue(null);
+		const whichSpy = vi.spyOn(piUtils, "$which").mockReturnValue(null);
+		dropUserLspConfigTier();
 
 		try {
 			for (const marker of ["ruff.toml", ".ruff.toml"] as const) {
@@ -1622,7 +1638,8 @@ describe("lsp regressions", () => {
 	it("detects pyright and pylsp in Windows virtualenv Scripts for Python-only roots", async () => {
 		const originalPlatform = process.platform;
 		Object.defineProperty(process, "platform", { value: "win32", configurable: true, writable: true });
-		const whichSpy = vi.spyOn(Bun, "which").mockReturnValue(null);
+		const whichSpy = vi.spyOn(piUtils, "$which").mockReturnValue(null);
+		dropUserLspConfigTier();
 
 		try {
 			const cases: Array<{ marker: string; server: string; binary: string }> = [
@@ -1631,6 +1648,7 @@ describe("lsp regressions", () => {
 			];
 			for (const { marker, server, binary } of cases) {
 				const tempDir = TempDir.createSync("@omp-lsp-win32-py-marker-");
+				whichSpy.mockClear();
 				try {
 					await Bun.write(path.join(tempDir.path(), marker), "");
 					const scriptsDir = path.join(tempDir.path(), ".venv", "Scripts");
@@ -1640,12 +1658,13 @@ describe("lsp regressions", () => {
 
 					const config = loadConfig(tempDir.path());
 					expect(config.servers[server]?.resolvedCommand).toBe(localBin);
+					// The local binary must short-circuit the PATH lookup for THIS
+					// server; sibling Python servers without a local shim still probe.
+					expect(whichSpy).not.toHaveBeenCalledWith(binary.replace(/\.exe$/, ""));
 				} finally {
 					tempDir.removeSync();
 				}
 			}
-			expect(whichSpy).not.toHaveBeenCalledWith("pyright-langserver");
-			expect(whichSpy).not.toHaveBeenCalledWith("pylsp");
 		} finally {
 			Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true, writable: true });
 			vi.restoreAllMocks();

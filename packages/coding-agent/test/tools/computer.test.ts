@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import * as path from "node:path";
 import type { AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import type { Api, ComputerAction, ComputerToolCallMetadata, Model } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -789,7 +790,7 @@ describe("computer worker module graph", () => {
 				"-e",
 				'await import("./src/eval/js/context-manager.ts"); const { toolRenderers } = await import("./src/tools/renderers.ts"); if (typeof toolRenderers.hub.renderCall !== "function") process.exit(2)',
 			],
-			{ cwd: process.cwd(), stdout: "ignore", stderr: "pipe" },
+			{ cwd: path.join(import.meta.dir, "..", ".."), stdout: "ignore", stderr: "pipe" },
 		);
 		const [exitCode, stderr] = await Promise.all([processHandle.exited, new Response(processHandle.stderr).text()]);
 		if (exitCode !== 0) throw new Error(`eval worker graph import failed:\n${stderr}`);

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { FetchImpl } from "@oh-my-pi/pi-ai";
 import { extractFacts } from "@oh-my-pi/pi-mnemopi/core/extraction";
 import { type ChatMessage, ExtractionClient } from "@oh-my-pi/pi-mnemopi/core/extraction/client";
@@ -17,6 +17,12 @@ function restoreEnv(): void {
 		else process.env[key] = value;
 	}
 }
+
+// Extraction counters are process-global; another suite in the same bun
+// process can leave successes behind, so clear them on both edges.
+beforeEach(() => {
+	resetExtractionStats();
+});
 
 afterEach(() => {
 	restoreEnv();
