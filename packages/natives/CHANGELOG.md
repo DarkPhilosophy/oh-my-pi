@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed native addon builds with CMake 4.x (bundled opus policy floor) and stopped passing `-C target-cpu=native` on darwin arm64, which baked build-host CPU features into shipped addons and broke `ring` compilation.
+- Restored version-sentinel validation for workspace dev loads: a stale `packages/natives/native/*.node` is rejected at load time with a rebuild hint instead of loading silently and failing later as `<sym> is not a function` on newly added exports.
 
 ## [17.1.1] - 2026-07-24
 

@@ -71,8 +71,14 @@ describe("issue 4812: pi-natives sentinel process-stale diagnosis", () => {
 		});
 	});
 
-	it("skips validation entirely in workspace dev", () => {
+	// Divergence from upstream (#4812 skipped workspace loads entirely): a stale
+	// workspace `.node` loads fine but silently lacks newly added exports, which
+	// surfaces later as `<sym> is not a function`. Workspace dev validates too,
+	// pointing at the rebuild instead of a reinstall.
+	it("rejects a stale workspace-dev addon with the rebuild command", () => {
 		const ctx = { ...ctxFor("16.3.11"), isWorkspaceLoad: true };
-		expect(() => validateLoadedBindings(ctx, { grep: () => {} }, unusedCandidate)).not.toThrow();
+		expect(() => validateLoadedBindings(ctx, { grep: () => {} }, unusedCandidate)).toThrow(
+			"bun --cwd=packages/natives run build",
+		);
 	});
 });

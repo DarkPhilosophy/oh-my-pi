@@ -584,13 +584,14 @@ function maybeStageNodeModulesAddon(ctx, errors) {
 }
 
 export function validateLoadedBindings(ctx, bindings, candidate) {
-	// In workspace dev (running out of `packages/natives/native/` rather than a
-	// `node_modules` install or a compiled bundle) the local `.node` only gains
-	// the renamed sentinel after `bun --cwd=packages/natives run build`. Skip
-	// validation there so a stale post-pull dev tree boots while the rebuild
-	// completes; install and compiled-binary paths still validate.
-	if (ctx.isWorkspaceLoad) return;
-	const recovery = "reinstall to re-sync";
+	// A workspace dev tree (running out of `packages/natives/native/` rather
+	// than a `node_modules` install or a compiled bundle) is validated too: a
+	// stale local `.node` that predates `bun --cwd=packages/natives run build`
+	// silently drops newly added exports, which surfaces far from the cause as
+	// `<sym> is not a function`. Fail loudly with the rebuild command instead.
+	const recovery = ctx.isWorkspaceLoad
+		? "run `bun --cwd=packages/natives run build` to rebuild it"
+		: "reinstall to re-sync";
 	if (typeof bindings[ctx.versionSentinelExport] === "function") return;
 
 	// The expected sentinel is missing. Distinguish two failure modes by the
