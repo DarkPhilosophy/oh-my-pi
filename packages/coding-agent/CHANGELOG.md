@@ -10,6 +10,8 @@
 
 ### Fixed
 - Fixed automatic context maintenance using a stale cross-model token count after switching models, which could trigger maintenance before the active model reached its configured threshold.
+- Fixed interactive daemon startup failing with `connect ENOENT …/daemon.sock` whenever a replacement daemon was needed. The server now resolves its build-pairing stamp before the socket accepts connections, so a freshly bound daemon can no longer answer the pairing handshake without a stamp and be shut down by the very client that spawned it.
+- Fixed advisor secret scrubbing losing regex-protected value collection, history re-scrubbing, and friendly-placeholder prefix stripping on the synchronous render path, so a secret discovered later in a delta no longer leaves stale friendly prefixes in already-delivered advisor prompts. The chunked renderer applies the same pipeline per slice.
 - Fixed interactive daemon startup aborting when the paired daemon died after the build handshake but before replying to session discovery or creation. Bootstrap now reconnects through the normal replacement path and retries the interrupted operation once.
 - Fixed clients continuing on a daemon from a different build when active clients or sessions blocked graceful shutdown. Build mismatches now force replacement and fail closed if the fresh daemon still reports the wrong build.
 - Fixed forced build replacement aborting startup against daemons that predate the owner-lease file ("owner PID is unavailable") and against still-draining stale daemons whose listener answered the first reconnect ("mismatched replacement daemon build"). Replacement now proceeds without a signalable PID and keeps reconnecting within the startup budget until the fresh build answers.
