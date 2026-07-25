@@ -5305,6 +5305,11 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 	},
 
+	"searxng.engines": {
+		type: "string",
+		default: undefined,
+	},
+
 	"searxng.language": {
 		type: "string",
 		default: undefined,

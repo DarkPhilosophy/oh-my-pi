@@ -125,7 +125,6 @@ describe("task spawn routing", () => {
 			agent: "task",
 			name: "Spawnling",
 			task: "Do the thing.",
-			model: "openai-codex/gpt-5.6-sol:high",
 		} as TaskParams);
 
 		// Tool returned while the job body is still gated on the deferred.
@@ -146,7 +145,7 @@ describe("task spawn routing", () => {
 		expect(job!.resultText).toContain("message it via `hub` to follow up");
 		expect(job!.resultText).toContain("history://Spawnling");
 		expect(runSpy).toHaveBeenCalledTimes(1);
-		expect(runSpy.mock.calls[0]?.[0].modelOverride).toEqual(["openai-codex/gpt-5.6-sol:high"]);
+		expect(runSpy.mock.calls[0]?.[0].modelOverride).toEqual(["openai/gpt-4.1-mini"]);
 	});
 
 	it("bounds concurrent job bodies with the session spawn semaphore", async () => {
