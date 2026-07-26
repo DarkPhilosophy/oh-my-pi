@@ -203,9 +203,12 @@ function sanitizeOpenAIResponsesHistoryItemForReplay(
 	if (item.type === "image_generation_call") return sanitizeOpenAIResponsesImageGenerationCallForReplay(item);
 	if (item.type === "reasoning") return sanitizeOpenAIResponsesReasoningItemForReplay(item);
 
-	// Provider payload stores raw output items. Computer calls retain their stable
-	// provider item ID; other replay items strip IDs and normalize call_id.
+	// Strip status only from item types whose replay input rejects output
+	// lifecycle metadata. Hosted built-in tool items require status for replay.
 	const { id: _id, ...sanitizedItem } = item;
+	if (item.type === "message" || item.type === "function_call" || item.type === "custom_tool_call") {
+		delete sanitizedItem.status;
+	}
 	if (item.type === "computer_call" && typeof item.id === "string") sanitizedItem.id = item.id;
 	if (typeof item.call_id === "string") {
 		sanitizedItem.call_id = normalizeReplayedResponsesHistoryCallId(item.call_id, normalizedCallIds);
@@ -223,9 +226,6 @@ function sanitizeOpenAIResponsesReasoningItemForReplay(item: Record<string, unkn
 	if (Array.isArray(item.content)) sanitizedItem.content = item.content;
 	if (typeof item.encrypted_content === "string" || item.encrypted_content === null) {
 		sanitizedItem.encrypted_content = item.encrypted_content;
-	}
-	if (item.status === "in_progress" || item.status === "completed" || item.status === "incomplete") {
-		sanitizedItem.status = item.status;
 	}
 	return sanitizedItem as unknown as OpenAIResponsesReplayItem;
 }

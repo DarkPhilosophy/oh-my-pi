@@ -17,6 +17,7 @@ import type { MemoryBackendStartOptions } from "../memory-backend/types";
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
 import { usesCodexTaskPrompt } from "../task/prompt-policy";
 import { isMCPToolName, normalizeToolNames } from "../tools/builtin-names";
+import { computerExposureMode } from "../tools/computer/exposure";
 import { wrapToolWithMetaNotice } from "../tools/output-meta";
 import { ToolAbortError, ToolError } from "../tools/tool-errors";
 import { isMountableUnderXdev, type XdevRegistry } from "../tools/xdev";
@@ -294,6 +295,16 @@ export class SessionTools {
 		return usesCodexTaskPrompt(model) ? "task-policy:gpt-5.6" : "task-policy:default";
 	}
 
+	#logComputerState(message: string, enabled: boolean): void {
+		const model = this.#host.model();
+		logger.debug(message, {
+			enabled,
+			active: this.getEnabledToolNames().includes("computer"),
+			model: model ? formatModelString(model) : undefined,
+			exposure: computerExposureMode(model),
+		});
+	}
+
 	/** Rebuilds model-dependent tool prompts after a model change. */
 	async syncAfterModelChange(previousEditMode: EditMode): Promise<void> {
 		const currentEditMode = this.resolveActiveEditMode();
@@ -302,6 +313,20 @@ export class SessionTools {
 		const modelChanged = this.#currentPromptModelKey() !== this.#promptModelKey;
 		if (editModeChanged || modelChanged) {
 			await this.refreshBaseSystemPrompt();
+		}
+		const computerExpected = this.#host.settings.get("computer.enabled");
+		const computerActive = this.getEnabledToolNames().includes("computer");
+		if (computerExpected && !computerActive) {
+			const model = this.#host.model();
+			const modelName = model ? formatModelString(model) : "the current model";
+			logger.warn("Enabled computer tool missing after model change", { model: modelName });
+			this.#host.emitNotice(
+				"warning",
+				`Computer use remains enabled, but the computer tool is unavailable to ${modelName}.`,
+				"computer",
+			);
+		} else if (computerExpected) {
+			this.#logComputerState("Computer tool retained after model change", true);
 		}
 	}
 
@@ -713,16 +738,24 @@ export class SessionTools {
 	 * tool (e.g. restricted child sessions have no factory).
 	 */
 	async setComputerToolEnabled(enabled: boolean): Promise<boolean> {
+		const logState = (): void => this.#logComputerState("Computer tool state changed", enabled);
 		const active = this.getEnabledToolNames();
 		if (!enabled) {
 			if (active.includes("computer")) {
 				await this.applyActiveToolsByName(active.filter(name => name !== "computer"));
 			}
+			logState();
 			return true;
 		}
 		if (!this.#toolRegistry.has("computer")) {
 			const tool = await this.#createComputerTool?.();
-			if (tool?.name !== "computer") return false;
+			if (tool?.name !== "computer") {
+				const model = this.#host.model();
+				logger.warn("Computer tool could not be created", {
+					model: model ? formatModelString(model) : undefined,
+				});
+				return false;
+			}
 			const wrapped = this.#wrapRuntimeTool(tool);
 			this.#toolRegistry.set(wrapped.name, wrapped);
 			this.#builtInToolNames.add(wrapped.name);
@@ -730,6 +763,7 @@ export class SessionTools {
 		if (!active.includes("computer")) {
 			await this.applyActiveToolsByName([...active, "computer"]);
 		}
+		logState();
 		return true;
 	}
 
