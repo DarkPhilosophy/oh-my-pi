@@ -13,6 +13,7 @@ import { SessionManager } from "../session/session-manager";
 import { resolveWorkerSpawnCmd, workerEnvFromParent } from "../subprocess/worker-client";
 import { daemonBuildStamp } from "./build-stamp";
 import { createDaemonClient, type DaemonClient } from "./client";
+import { readDaemonOwnerPid } from "./paths";
 import { DAEMON_PROTOCOL_MAJOR, type DaemonOperation } from "./protocol";
 import type { DaemonConnectionSnapshot, DaemonProfile } from "./status";
 import { ClientTerminalBridge, clientTerminalEnvSnapshot } from "./terminal-bridge";
@@ -195,15 +196,6 @@ function protocolMismatchServerMajor(error: unknown): number | undefined {
 	if (!match) return undefined;
 	const major = Number(match[1]);
 	return Number.isInteger(major) ? major : undefined;
-}
-
-async function readDaemonOwnerPid(runtimeDir: string): Promise<number | undefined> {
-	try {
-		const owner = (await Bun.file(`${runtimeDir}/daemon.owner`).json()) as { pid?: unknown };
-		return typeof owner.pid === "number" && Number.isInteger(owner.pid) && owner.pid > 0 ? owner.pid : undefined;
-	} catch {
-		return undefined;
-	}
 }
 
 /**

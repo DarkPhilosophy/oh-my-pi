@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed non-interactive CLI paths such as `--version` loading the daemon interactive bootstrap and native computer addon before command routing, which broke startup when Bun addons were disabled.
+- Fixed daemon-hosted interactive startup skipping release-note marker persistence, which made its changelog behavior diverge from the direct CLI path.
 
 ## [17.1.4] - 2026-07-26
 

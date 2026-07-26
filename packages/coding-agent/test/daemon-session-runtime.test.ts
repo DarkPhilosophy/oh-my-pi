@@ -15,6 +15,7 @@ import {
 	SHUTDOWN_CONSOLIDATE_BUDGET_MS,
 } from "../src/session/agent-session";
 import { SessionManager } from "../src/session/session-manager";
+import * as changelogModule from "../src/utils/changelog";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -297,6 +298,7 @@ describe("daemon session runtime", () => {
 			return mode;
 		};
 		vi.spyOn(themeModule, "initTheme").mockResolvedValue(undefined);
+		vi.spyOn(changelogModule, "loadStartupChangelog").mockResolvedValue(undefined);
 		type ModeFactory = { InteractiveMode: () => interactiveModeModule.InteractiveMode };
 		const modeCtor = vi
 			.spyOn(interactiveModeModule as unknown as ModeFactory, "InteractiveMode")

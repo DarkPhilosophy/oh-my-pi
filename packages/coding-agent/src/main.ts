@@ -83,14 +83,7 @@ import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { concreteThinkingLevel, parseConfiguredThinkingLevel } from "./thinking";
 import type { LspStartupServerInfo } from "./tools";
-import {
-	getChangelogPath,
-	parseChangelog,
-	parseChangelogVersion,
-	readLastChangelogVersion,
-	selectStartupChangelog,
-	writeLastChangelogVersion,
-} from "./utils/changelog";
+import { loadStartupChangelog } from "./utils/changelog";
 import { EventBus } from "./utils/event-bus";
 import { withTimeoutSignal } from "./utils/fetch-timeout";
 
@@ -615,35 +608,6 @@ async function moveMissingCwdSessionIfNeeded(
 	const manager = await SessionManager.open(session.path, sessionDir, undefined, { initialCwd: sourceCwd });
 	await manager.moveTo(cwd, sessionDir);
 	return { status: "moved", manager };
-}
-
-async function getChangelogForDisplay(parsed: Args): Promise<string | undefined> {
-	if (parsed.continue || parsed.resume) {
-		return undefined;
-	}
-
-	const lastVersion = await readLastChangelogVersion();
-	const parsedLastVersion = parseChangelogVersion(lastVersion);
-	if (!parsedLastVersion) {
-		await writeLastChangelogVersion(VERSION);
-		return undefined;
-	}
-	if (lastVersion === VERSION) {
-		// Steady state: user already saw the current version's changelog. Skip the file read + parse.
-		return undefined;
-	}
-
-	const changelogPath = getChangelogPath();
-	const entries = await parseChangelog(changelogPath);
-	const startupChangelog = selectStartupChangelog(entries, lastVersion, VERSION);
-	if (startupChangelog.persistCurrentVersion) {
-		await writeLastChangelogVersion(VERSION);
-	}
-	if (startupChangelog.markdown) {
-		return startupChangelog.markdown;
-	}
-
-	return undefined;
 }
 
 const SESSION_ID_ARG_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1572,7 +1536,11 @@ export async function runRootCommand(
 			await runRpcMode(session, mode === "rpc-ui" ? setToolUIContext : undefined, eventBus, rpcInput);
 		} else if (isInteractive) {
 			const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
-			const changelogMarkdown = await logger.time("main:getChangelogForDisplay", getChangelogForDisplay, parsedArgs);
+			const changelogMarkdown = await logger.time(
+				"main:loadStartupChangelog",
+				loadStartupChangelog,
+				Boolean(parsedArgs.continue || parsedArgs.resume),
+			);
 
 			const modelScopeNotification = buildModelScopeNotification(
 				scopedModels,

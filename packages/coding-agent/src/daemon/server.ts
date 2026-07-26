@@ -10,7 +10,13 @@ import { type CreateAgentSessionOptions, discoverAuthStorage } from "../sdk";
 import { listAllSessions, listSessions } from "../session/session-listing";
 import { FileSessionStorage } from "../session/session-storage";
 import { daemonBuildStamp } from "./build-stamp";
-import { daemonEndpoint, daemonRuntimeDir, ensureDaemonRuntimeDir, readOrCreateDaemonToken } from "./paths";
+import {
+	DAEMON_OWNER_FILE,
+	daemonEndpoint,
+	daemonRuntimeDir,
+	ensureDaemonRuntimeDir,
+	readOrCreateDaemonToken,
+} from "./paths";
 import {
 	DAEMON_MAX_FRAME_BYTES,
 	DAEMON_PROTOCOL_MAJOR,
@@ -29,7 +35,7 @@ import { createAgentSessionRuntime, type DaemonSessionRuntimeFactory } from "./s
 import type { DaemonProfile } from "./status";
 
 const DEFAULT_MAX_CLIENTS = 64;
-const OWNER_FILE = "daemon.owner";
+const OWNER_FILE = DAEMON_OWNER_FILE;
 /** How long a contender waits out a live-but-unbound owner (starting or draining). */
 const OWNER_LEASE_WAIT_MS = 10_000;
 const TAKEOVER_FILE = "daemon.takeover";

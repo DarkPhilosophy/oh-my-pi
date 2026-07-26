@@ -4,6 +4,16 @@ import { getConfigRootDir } from "@oh-my-pi/pi-utils";
 
 export const DAEMON_TOKEN_FILE = "daemon.token";
 export const DAEMON_SOCKET_FILE = "daemon.sock";
+export const DAEMON_OWNER_FILE = "daemon.owner";
+
+export async function readDaemonOwnerPid(runtimeDir: string): Promise<number | undefined> {
+	try {
+		const owner = (await Bun.file(path.join(runtimeDir, DAEMON_OWNER_FILE)).json()) as { pid?: unknown };
+		return typeof owner.pid === "number" && Number.isInteger(owner.pid) && owner.pid > 0 ? owner.pid : undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 /** Resolve a project root through symlinks when it exists. */
 export async function canonicalProjectRoot(projectRoot: string): Promise<string> {

@@ -45,6 +45,7 @@ import { lookupBuiltinSlashCommand } from "../slash-commands/builtin-registry";
 import { parseSlashCommand } from "../slash-commands/helpers/parse";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
 import type { TodoPhase } from "../tools/todo";
+import { loadStartupChangelog } from "../utils/changelog";
 import { DAEMON_PROTOCOL_MAJOR } from "./protocol";
 import type { DaemonConnectionSnapshot } from "./status";
 import { HostedTerminal, type HostedTerminalDescriptor } from "./terminal-bridge";
@@ -381,8 +382,10 @@ async function createAgentSessionRuntimeInScope(
 	let initialMessage: string | undefined;
 	let initialImages: ImageContent[] | undefined;
 	let initialMessages: string[] = [];
+	let skipStartupChangelog = false;
 	if (cliLaunch && overrides?.argv) {
 		const initialArgs = applyExtensionFlags(result.session.extensionRunner, overrides.argv) ?? cliLaunch.parsed;
+		skipStartupChangelog = Boolean(initialArgs.continue || initialArgs.resume);
 		if (initialArgs.unrecognizedFlags.length > 0) {
 			await result.session.dispose();
 			throw new Error(`Unrecognized flag: ${initialArgs.unrecognizedFlags[0]}`);
@@ -605,11 +608,12 @@ async function createAgentSessionRuntimeInScope(
 			sessionSettings.get("theme.light"),
 		);
 		setProjectDir(result.session.sessionManager.getCwd());
+		const changelogMarkdown = await loadStartupChangelog(skipStartupChangelog);
 		let mode!: InteractiveMode;
 		mode = new InteractiveMode(
 			result.session,
 			VERSION,
-			undefined,
+			changelogMarkdown,
 			result.setToolUIContext,
 			result.lspServers,
 			result.mcpManager,
