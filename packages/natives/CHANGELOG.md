@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [17.1.4] - 2026-07-26
+
 ### Added
 
 - Added the `@oh-my-pi/pi-natives/desktop` factory entry, which defers native addon loading until a desktop worker initializes its session.

@@ -72,12 +72,13 @@ const BASH_PATTERN_APPROVAL_VALUES = new Set(["allow", "deny", "prompt"]);
  * containing a space, pipe, `&&`, redirect, or `$(...)`.
  *
  * The wrap reuses the same shell binary + args the local `bash-executor` would
- * pick via `settings.getShellConfig()` — Git Bash / `bash.exe` on Windows,
+ * pick via `settings.getShellConfig()` — Git Bash / `bash.exe` on Windows
+ * (`cmd.exe /c` as the last-resort fallback when no bash exists on the host),
  * `$SHELL` (bash/zsh) with the `sh` fallback on POSIX — so the ACP path
  * preserves `bash` tool semantics (`$VAR`, `$(...)`, `source`, POSIX quoting,
- * `-l`) instead of dropping to `cmd.exe` on Windows. The agent host's shell
- * path is used as a proxy for the client's, matching the near-universal
- * ACP deployment shape of an editor spawning omp as a co-hosted subprocess.
+ * `-l`) wherever a POSIX shell is available. The agent host's shell path is
+ * used as a proxy for the client's, matching the near-universal ACP
+ * deployment shape of an editor spawning omp as a co-hosted subprocess.
  */
 export function wrapShellLineForClientTerminal(
 	line: string,

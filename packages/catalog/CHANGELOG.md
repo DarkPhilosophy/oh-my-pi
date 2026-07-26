@@ -12,6 +12,8 @@
 ### Fixed
 
 - Fixed the xAI OAuth curated model list declaring `grok-4.5` twice, which duplicated the entry in the static seed returned by `buildXaiOAuthStaticSeed`.
+## [17.1.4] - 2026-07-26
+
 ### Added
 
 - Added Claude Opus 5 model entries for Amazon Bedrock: `anthropic.claude-opus-5` plus its `us.`, `eu.`, `au.`, and `global.` regional/geo IDs.

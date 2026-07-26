@@ -5,6 +5,8 @@
 ### Fixed
 
 - Fixed OpenAI Codex multi-account fallback dying when a model-scoped window was pinned: a Spark 7-day meter at 100% marked the whole account exhausted and blocked it for shared-window models, so exhausting the sibling left the agent (and advisors/subagents) with "no usable credential" despite ample shared quota. Quota checks and backoff blocks are now scoped per quota family (Spark models meter on their own window; everything else uses the shared account windows), and the live-usage self-heal reconciles each family separately so a stale cross-family block clears instead of surviving until its natural expiry.
+## [17.1.4] - 2026-07-26
+
 ### Added
 
 - MiniMax Token Plan accounts now report quota in `omp usage`. `GET /v1/token_plan/remains` returns one bucket per plan quota, each carrying a rolling interval window and a weekly window, so `minimax-code` surfaces real remaining percentages instead of an empty report. A model the plan does not include comes back looking like an untouched quota; those buckets are dropped from the report and named in its metadata. The mainland id `minimax-code-cn` is untouched.
@@ -47,9 +49,6 @@
 - Fixed statusless provider capacity errors such as `no_capacity` and high-demand responses being treated as terminal instead of retryable. ([#6503](https://github.com/can1357/oh-my-pi/issues/6503))
 - Fixed QwenCloud Token Plan quota reporting to call the current console usage RPC and document how to capture its optional Cookie during login.
 - Fixed Cursor exec-channel MCP calls such as `web_search` omitting `toolCall` blocks when no interaction block arrives, which rendered their tool cards below the final assistant answer or dropped them on transcript replay. ([#6501](https://github.com/can1357/oh-my-pi/issues/6501))
-
-### Fixed
-
 - Fixed Claude scoped weekly limits (e.g. `Claude 7 Day (Fable)`) with `is_active: false` being dropped by the `/usage` parser, rendering as `not reported` in `omp usage` despite carrying real utilization. Live payloads mark only the currently binding limit active — an account pinned at a 100% Fable cap reports its 77% shared weekly row as inactive too — so `is_active` signals severity ranking, not bucket existence, and is now ignored. Exhaustion gating is unchanged: tier rows still hard-block only at confirmed 100% with a future reset.
 - Fixed a TDZ crash (`Cannot access 'claudeCodeVersion' before initialization`) when `providers/anthropic` was the first module loaded: `providers/anthropic` → `stream` → `registry` → `registry/oauth/anthropic` circled back into the still-initializing provider module. The Claude Code fingerprint constants now live in the leaf module `providers/claude-code-fingerprint` (star re-exported from `providers/anthropic`, so import paths are unchanged).
 

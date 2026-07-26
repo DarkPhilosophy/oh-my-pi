@@ -5,6 +5,8 @@
 ### Changed
 
 - Improved event-loop watchdog diagnostics by attributing synchronous TUI render stalls to the `ui.render` phase.
+## [17.1.4] - 2026-07-26
+
 ### Fixed
 
 - Prevented inline Kitty graphics from covering full-width overlays such as `/switch`.
