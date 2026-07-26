@@ -7,7 +7,12 @@ import { APP_NAME, getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../capability";
 import { COLLAB_GUEST_ALLOWED_COMMANDS, CollabGuestLink } from "../collab/guest";
 import { CollabHost } from "../collab/host";
-import { expandRoleAlias, getModelMatchPreferences, resolveCliModel } from "../config/model-resolver";
+import {
+	expandRoleAlias,
+	formatModelString,
+	getModelMatchPreferences,
+	resolveCliModel,
+} from "../config/model-resolver";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import type { SettingPath, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
@@ -37,6 +42,8 @@ import type { SessionOAuthAccountList } from "../session/agent-session-types";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { resolveResumableSession } from "../session/session-listing";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
+import type { ComputerTool } from "../tools/computer";
+import { computerExposureMode } from "../tools/computer/exposure";
 import { expandTilde, resolveToCwd } from "../tools/path-utils";
 import { urlHyperlinkAlways } from "../tui";
 import {
@@ -90,9 +97,41 @@ function formatFastModeStatus(session: AgentSession): string {
 	return session.isFastModeEnabled() ? "on" : "off";
 }
 
-/** `/computer status` label for the session-effective `computer.enabled` value. */
+/** Detailed, session-effective `/computer status` diagnostics. */
 function formatComputerUseStatus(session: AgentSession): string {
-	return session.settings.get("computer.enabled") ? "on" : "off";
+	const enabled = session.settings.get("computer.enabled");
+	const active = session.getEnabledToolNames().includes("computer");
+	const model = session.model;
+	const modelName = model ? formatModelString(model) : "none";
+	const exposure = !enabled || !active ? "not exposed" : computerExposureMode(model);
+	const toolState = active ? "active" : enabled ? "unavailable" : "inactive";
+	const configured = {
+		backend: session.settings.get("computer.backend"),
+		display: session.settings.get("computer.display"),
+		maxWidth: session.settings.get("computer.maxWidth"),
+		maxHeight: session.settings.get("computer.maxHeight"),
+	};
+	const computerTool = session.getToolByName("computer") as Pick<ComputerTool, "effectiveConfiguration"> | undefined;
+	const effective = computerTool?.effectiveConfiguration ?? configured;
+	const configurationChanged =
+		effective.backend !== configured.backend ||
+		effective.display !== configured.display ||
+		effective.maxWidth !== configured.maxWidth ||
+		effective.maxHeight !== configured.maxHeight;
+	return [
+		`Computer use: ${enabled ? "enabled" : "disabled"}`,
+		`tool: ${toolState}`,
+		`backend: ${effective.backend}`,
+		`display: ${effective.display}`,
+		`capture: ${effective.maxWidth}×${effective.maxHeight}`,
+		...(configurationChanged
+			? [
+					`next-session settings: backend=${configured.backend}, display=${configured.display}, capture=${configured.maxWidth}×${configured.maxHeight}`,
+				]
+			: []),
+		`model: ${modelName}`,
+		`exposure: ${exposure}`,
+	].join(" · ");
 }
 
 /**
@@ -107,7 +146,9 @@ async function applyComputerUseToggle(session: AgentSession, enable: boolean): P
 		return "Computer use is unavailable in this session.";
 	}
 	session.settings.override("computer.enabled", enable);
-	return `Computer use ${enable ? "enabled" : "disabled"} for this session.`;
+	return enable
+		? `Computer use enabled for this session. ${formatComputerUseStatus(session)}`
+		: "Computer use disabled for this session.";
 }
 
 const AUTOCOMPLETE_DETAIL_LIMIT = 48;
@@ -573,11 +614,12 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			{ name: "status", description: "Show computer use status" },
 		],
 		allowArgs: true,
-		getTuiAutocompleteDescription: runtime => `Computer: ${formatComputerUseStatus(runtime.ctx.session)}`,
+		getTuiAutocompleteDescription: runtime =>
+			`Computer: ${runtime.ctx.session.settings.get("computer.enabled") ? "on" : "off"}`,
 		handle: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg === "status") {
-				await runtime.output(`Computer use is ${formatComputerUseStatus(runtime.session)}.`);
+				await runtime.output(formatComputerUseStatus(runtime.session));
 				return commandConsumed();
 			}
 			if (!arg || arg === "toggle" || arg === "on" || arg === "off") {
@@ -590,7 +632,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg === "status") {
-				runtime.ctx.showStatus(`Computer use is ${formatComputerUseStatus(runtime.ctx.session)}.`);
+				runtime.ctx.showStatus(formatComputerUseStatus(runtime.ctx.session));
 				runtime.ctx.editor.setText("");
 				return;
 			}

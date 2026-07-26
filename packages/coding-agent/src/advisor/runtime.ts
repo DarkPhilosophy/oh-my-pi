@@ -218,6 +218,15 @@ export function buildAdvisorQuarantineSourceText(currentInput: string, messages:
  */
 const MAX_COALESCE_ROUNDS = 3;
 
+/**
+ * Consecutive quarantined advisor turns tolerated before the failure is surfaced
+ * to the host UI. A quarantine discards the advisor's whole turn before dispatch,
+ * so its advice never reaches the primary; one silent re-prime is allowed to
+ * recover a one-off hallucination, but a persistent quarantine loop is a real
+ * supervision gap the user must see (issue #6661). Reset on any successful turn.
+ */
+const MAX_QUARANTINE_RETRIES = 2;
+
 const ADVISOR_RENDER_OPTIONS = {
 	includeThinking: true,
 	includeToolIntent: true,
@@ -279,6 +288,8 @@ export class AdvisorRuntime {
 	#backlog = 0;
 	#consecutiveFailures = 0;
 	#failureNotified = false;
+	/** Consecutive quarantined turns since the last success/reset (issue #6661). */
+	#consecutiveQuarantines = 0;
 	/** Completed 3-failure backlog-drop cycles since the last success/reset. */
 	#droppedBacklogs = 0;
 	/**
@@ -450,7 +461,6 @@ export class AdvisorRuntime {
 
 	#clearAdvisorContextAtCurrentCursor(): void {
 		this.#consecutiveFailures = 0;
-		this.#failureNotified = false;
 		this.#clearSeenContext();
 		try {
 			this.agent.reset();
@@ -505,6 +515,8 @@ export class AdvisorRuntime {
 		this.#halted = false;
 		this.#failing = false;
 		this.#droppedBacklogs = 0;
+		this.#consecutiveQuarantines = 0;
+		this.#failureNotified = false;
 		this.#resetAdvisorContext(true, true);
 	}
 
@@ -865,6 +877,7 @@ export class AdvisorRuntime {
 					this.#consecutiveFailures = 0;
 					this.#failureNotified = false;
 					this.#droppedBacklogs = 0;
+					this.#consecutiveQuarantines = 0;
 					if (this.host.onTurnSuccess) {
 						try {
 							await this.host.onTurnSuccess();
@@ -906,6 +919,19 @@ export class AdvisorRuntime {
 						logger.debug("advisor onTurnError hook failed", { err: String(hookErr) });
 					}
 					if (err instanceof AdvisorOutputQuarantinedError) {
+						// A quarantine discards the advisor's whole turn before dispatch, so
+						// its advice never reaches the primary. One re-prime is allowed to
+						// recover a one-off hallucination silently; a persistent quarantine
+						// loop is a supervision gap the user must see in the main UI — not an
+						// unbounded silent retry. Surface it (deduped by #notifyFailureOnce)
+						// and drop the batch to break the loop (issue #6661).
+						this.#consecutiveQuarantines++;
+						if (this.#consecutiveQuarantines >= MAX_QUARANTINE_RETRIES) {
+							this.#notifyFailureOnce(err);
+							this.#consecutiveQuarantines = 0;
+							this.#resetAdvisorContext(true, true);
+							continue;
+						}
 						const rePrime = this.#pending.length > 0 ? this.#latestMessages : undefined;
 						// Wake catchup waiters only when nothing is re-primed; otherwise the
 						// re-primed turn restores the backlog and waiters resolve on its completion.

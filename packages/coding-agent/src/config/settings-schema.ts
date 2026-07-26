@@ -234,38 +234,50 @@ export type AnyUiMetadata = UiBase & {
 	ordered?: boolean;
 };
 
-interface BooleanDef {
+/**
+ * Marks a setting whose value is a credential.
+ *
+ * Lives at the top level rather than inside `ui` so it can also describe a
+ * setting the settings panel never shows and therefore cannot carry
+ * `ui.secret`. Read it through `isCredential`, which is the single accessor
+ * both the CLI and the settings panel consult.
+ */
+interface CredentialMarker {
+	credential?: true;
+}
+
+interface BooleanDef extends CredentialMarker {
 	type: "boolean";
 	default: boolean | undefined;
 	ui?: UiBoolean;
 }
 
-interface StringDef {
+interface StringDef extends CredentialMarker {
 	type: "string";
 	default: string | undefined;
 	ui?: UiString;
 }
 
-interface NumberDef {
+interface NumberDef extends CredentialMarker {
 	type: "number";
 	default: number | undefined;
 	ui?: UiNumber;
 }
 
-interface EnumDef<T extends readonly string[]> {
+interface EnumDef<T extends readonly string[]> extends CredentialMarker {
 	type: "enum";
 	values: T;
 	default: T[number];
 	ui?: UiEnum<T>;
 }
 
-interface ArrayDef<T> {
+interface ArrayDef<T> extends CredentialMarker {
 	type: "array";
 	default: T[];
 	ui?: UiArray;
 }
 
-interface RecordDef<T> {
+interface RecordDef<T> extends CredentialMarker {
 	type: "record";
 	default: Record<string, T>;
 	ui?: UiBase;
@@ -378,7 +390,7 @@ export const SETTINGS_SCHEMA = {
 	// Env (`OMP_AUTH_BROKER_URL` / `OMP_AUTH_BROKER_TOKEN`) takes precedence so
 	// per-machine overrides remain trivial.
 	"auth.broker.url": { type: "string", default: undefined },
-	"auth.broker.token": { type: "string", default: undefined },
+	"auth.broker.token": { type: "string", default: undefined, credential: true },
 
 	autoResume: {
 		type: "boolean",
@@ -2787,6 +2799,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"mnemopi.embeddingApiKey": {
 		type: "string",
+		credential: true,
 		default: undefined,
 		ui: {
 			tab: "memory",
@@ -2831,6 +2844,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"mnemopi.llmApiKey": {
 		type: "string",
+		credential: true,
 		default: undefined,
 		ui: {
 			tab: "memory",
@@ -2873,6 +2887,7 @@ export const SETTINGS_SCHEMA = {
 
 	"hindsight.apiToken": {
 		type: "string",
+		credential: true,
 		default: undefined,
 		ui: {
 			tab: "memory",
@@ -2880,7 +2895,6 @@ export const SETTINGS_SCHEMA = {
 			label: "Hindsight API Token",
 			description: "Bearer token for authenticated Hindsight servers",
 			condition: "hindsightActive",
-			secret: true,
 		},
 	},
 
@@ -5260,6 +5274,7 @@ export const SETTINGS_SCHEMA = {
 	"searxng.token": {
 		type: "string",
 		default: undefined,
+		credential: true,
 	},
 
 	"searxng.basicUsername": {
@@ -5270,6 +5285,7 @@ export const SETTINGS_SCHEMA = {
 	"searxng.basicPassword": {
 		type: "string",
 		default: undefined,
+		credential: true,
 	},
 
 	"searxng.categories": {
@@ -5325,6 +5341,7 @@ export const SETTINGS_SCHEMA = {
 	"dev.autoqaPush.token": {
 		type: "string",
 		default: undefined,
+		credential: true,
 	},
 
 	/**
@@ -5409,6 +5426,20 @@ export function getDefault<P extends SettingPath>(path: P): SettingValue<P> {
 /** Check if a path has UI metadata (should appear in settings panel) */
 export function hasUi(path: SettingPath): boolean {
 	return "ui" in SETTINGS_SCHEMA[path];
+}
+
+/**
+ * Whether a setting holds a credential and must never be printed or exported
+ * without an explicit request. Drives both CLI redaction and settings-panel
+ * masking, so the two cannot disagree.
+ */
+export function isCredential(path: SettingPath): boolean {
+	const def = SETTINGS_SCHEMA[path];
+	if ("credential" in def && def.credential === true) return true;
+	// `ui.secret` predates this marker and still means "never display". Reading
+	// both here keeps ONE accessor, so the two spellings cannot produce
+	// different behaviour on different surfaces.
+	return getUi(path)?.secret === true;
 }
 
 /** Get UI metadata for a path (undefined if no UI) */

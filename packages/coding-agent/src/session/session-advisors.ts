@@ -30,7 +30,7 @@ import type {
 	ServiceTier,
 	SimpleStreamOptions,
 } from "@oh-my-pi/pi-ai";
-import { isUsageLimitOutcome, resolveModelServiceTier } from "@oh-my-pi/pi-ai";
+import { isUsageLimitOutcome, resolveModelServiceTier, streamSimple } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { extractHttpStatusFromError, extractRetryHint, logger } from "@oh-my-pi/pi-utils";
@@ -93,8 +93,10 @@ import { formatSessionDumpText } from "./session-dump-format";
 import type { CompactionEntry, SessionEntry } from "./session-entries";
 import { formatSessionHistoryMarkdown } from "./session-history-format";
 import type { SessionManager } from "./session-manager";
+import { buildSessionMetadata } from "./session-metadata";
 import type { YieldQueue } from "./yield-queue";
 
+const ADVISOR_CODEX_SSE_MAX_ATTEMPTS = 1;
 /** Advisor statistics for the advisor status command. */
 export interface AdvisorStats {
 	configured: boolean;
@@ -328,6 +330,17 @@ export class SessionAdvisors {
 		this.#resetAdvisorSessionState();
 	}
 
+	/**
+	 * Rebind every live advisor to the active primary conversation's provider
+	 * identity (session id, prompt-cache key, credential + metadata resolvers,
+	 * telemetry). Invoked on every provider-session change — including branch
+	 * paths that skip conversation restore — so advisors never keep emitting the
+	 * previous conversation's session id/metadata (issue #6625).
+	 */
+	refreshProviderIdentity(): void {
+		for (const advisor of this.#advisors) this.#refreshAdvisorProviderIdentity(advisor);
+	}
+
 	/** Re-primes advisor transcript views after an in-conversation history rewrite. */
 	resetAllRuntimes(): void {
 		this.#resetAllAdvisorRuntimes();
@@ -389,6 +402,38 @@ export class SessionAdvisors {
 	// start, so duplicate concern/blocker advice is also downgraded.
 	#recordAdvisorInterruptDelivered(): void {
 		this.#advisorInterruptImmuneTurnStart = this.#advisorPrimaryTurnsCompleted + 1;
+	}
+
+	/** Rebind one advisor to the active primary conversation's provider identity. */
+	#refreshAdvisorProviderIdentity(advisor: ActiveAdvisor): void {
+		const primaryProviderSessionId = this.#host.sessionId();
+		const providerSessionId = getOrCreateAdvisorProviderSessionId(
+			this.#advisorProviderSessionIds,
+			primaryProviderSessionId,
+			advisor.slug,
+		);
+		advisor.providerSessionId = providerSessionId;
+		advisor.agent.sessionId = providerSessionId;
+		advisor.agent.promptCacheKey = this.#host.agent.promptCacheKey ?? providerSessionId;
+		advisor.agent.getApiKey = requestModel => this.#host.modelRegistry.resolver(requestModel, providerSessionId);
+		advisor.agent.setMetadataResolver(
+			providerSessionId
+				? provider => buildSessionMetadata(providerSessionId, provider, this.#host.modelRegistry.authStorage)
+				: undefined,
+		);
+
+		const telemetry = advisor.agent.telemetry;
+		if (telemetry?.agent) {
+			advisor.agent.setTelemetry({
+				...telemetry,
+				agent: {
+					...telemetry.agent,
+					id: advisor.slug
+						? `${primaryProviderSessionId}-advisor-${advisor.slug}`
+						: `${primaryProviderSessionId}-advisor`,
+				},
+			});
+		}
 	}
 
 	/**
@@ -644,6 +689,15 @@ export class SessionAdvisors {
 				tools: advisorToolMap,
 				allowNativeDelete: advisorCanMutateFiles,
 			});
+			const baseAdvisorStreamFn = this.#advisorStreamFn ?? streamSimple;
+			const advisorStreamFn: StreamFn = (requestModel, context, options) =>
+				baseAdvisorStreamFn(
+					requestModel,
+					context,
+					requestModel.api === "openai-codex-responses"
+						? { ...options, codexSseMaxAttempts: ADVISOR_CODEX_SSE_MAX_ATTEMPTS }
+						: options,
+				);
 			const advisorAgent = new Agent({
 				initialState: {
 					systemPrompt,
@@ -659,7 +713,7 @@ export class SessionAdvisors {
 				cwdResolver: () => this.#host.sessionManager.getCwd(),
 				preferWebsockets: this.#host.preferWebsockets,
 				getApiKey: requestModel => this.#host.modelRegistry.resolver(requestModel, advisorProviderSessionId),
-				streamFn: this.#advisorStreamFn,
+				streamFn: advisorStreamFn,
 				onPayload: this.#host.onPayload,
 				onResponse: this.#host.onResponse,
 				onSseEvent: this.#host.onSseEvent,
@@ -772,6 +826,7 @@ export class SessionAdvisors {
 				retryFallbackPendingSuccess: false,
 				signature,
 			};
+			this.#refreshAdvisorProviderIdentity(advisorRef);
 			this.#attachAdvisorRecorderFeed(advisorRef);
 			if (seedToCurrent) runtime.seedTo(this.#host.agent.state.messages.length);
 			this.#advisorStatuses.set(slug, { name: advisorName, status: "running" });
@@ -1247,7 +1302,15 @@ export class SessionAdvisors {
 		for (const candidate of candidates) {
 			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, advisorProviderSessionId);
 			if (!apiKey) continue;
-
+			// The advisor overflow-compaction one-shot bypasses the advisor `Agent`,
+			// so its installed metadata resolver never runs. Emit the same
+			// `metadata.user_id` identity here (resolved per candidate provider,
+			// after the session-sticky credential is selected) so summarization
+			// requests carry the advisor session id like every other advisor call
+			// (issue #6625).
+			const advisorMetadata = advisorProviderSessionId
+				? buildSessionMetadata(advisorProviderSessionId, candidate.provider, this.#host.modelRegistry.authStorage)
+				: undefined;
 			try {
 				compactResult = await compact(
 					preparation,
@@ -1262,6 +1325,7 @@ export class SessionAdvisors {
 						tools: agent.state.tools,
 						sessionId: advisorProviderSessionId,
 						promptCacheKey: advisorProviderSessionId,
+						metadata: advisorMetadata,
 						providerSessionState: this.#host.providerSessionState,
 						codexCompaction,
 					},

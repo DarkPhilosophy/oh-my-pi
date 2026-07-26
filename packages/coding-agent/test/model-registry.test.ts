@@ -273,6 +273,7 @@ describe("ModelRegistry", () => {
 		let anthropicHeadersOnly: ModelRegistry;
 		let anthropicAuthHeader: ModelRegistry;
 		let mixGoogleCustom: ModelRegistry;
+		let openaiProxy: ModelRegistry;
 		let xaiModelScopedHeaders: ModelRegistry;
 		let otherXaiModelId: string;
 		beforeAll(() => {
@@ -306,6 +307,9 @@ describe("ModelRegistry", () => {
 					),
 				},
 			});
+			openaiProxy = readonlyRegistry({
+				providers: { openai: overrideConfig("https://openai-proxy.example.com/v1") },
+			});
 			const otherXaiModel = sharedBuiltin
 				.getAll()
 				.find(model => model.provider === "xai" && model.id !== "grok-4.3");
@@ -336,6 +340,13 @@ describe("ModelRegistry", () => {
 			for (const model of anthropicModels) {
 				expect(model.baseUrl).toBe("https://my-proxy.example.com/v1");
 			}
+		});
+
+		test("rerouted bundled OpenAI models recompute inferred computer capability", () => {
+			const model = openaiProxy.find("openai", "gpt-5.4");
+
+			expect(model?.baseUrl).toBe("https://openai-proxy.example.com/v1");
+			expect(model?.supportsComputerUse).toBe(false);
 		});
 
 		test("overriding headers merges with model headers", () => {

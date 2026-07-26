@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
 import type { Subprocess } from "bun";
+import { getAgentDir, MAIN_CONFIG_FILENAMES } from "./dirs";
 import { $env, filterChildShellEnv } from "./env";
 import { $which } from "./which";
 
@@ -10,6 +11,12 @@ export interface ShellConfig {
 	args: string[];
 	env: Record<string, string>;
 	prefix: string | undefined;
+}
+
+/** Identifies the settings source users should edit when shell resolution fails. */
+export interface ShellConfigOptions {
+	/** File path or runtime layer that supplied the active shell setting. */
+	configSource?: string;
 }
 let cachedShellConfig: ShellConfig | null = null;
 
@@ -96,25 +103,27 @@ export function resolveBasicShell(): string | undefined {
 /**
  * Get shell configuration based on platform.
  * Resolution order:
- * 1. User-specified shellPath in settings.json
+ * 1. User-specified shellPath from the active settings source
  * 2. On Windows: Git Bash in known locations, then bash on PATH
  * 3. On Unix: $SHELL if bash/zsh, then fallback paths
  * 4. Fallback: sh
  */
-export function getShellConfig(customShellPath?: string): ShellConfig {
-	if (cachedShellConfig) {
+export function getShellConfig(customShellPath?: string, options: ShellConfigOptions = {}): ShellConfig {
+	const configSource = options.configSource ?? path.join(getAgentDir(), MAIN_CONFIG_FILENAMES[0]);
+	// 1. Check user-specified shell path. Validated even on the cached path so a
+	// broken shellPath surfaces its guidance error instead of being masked by an
+	// earlier successful resolution in the same process.
+	if (customShellPath) {
+		if (!fs.existsSync(customShellPath)) {
+			throw new Error(`Custom shell path not found: ${customShellPath}\nPlease update shellPath in ${configSource}`);
+		}
+		if (cachedShellConfig?.shell !== customShellPath) {
+			cachedShellConfig = buildConfig(customShellPath);
+		}
 		return cachedShellConfig;
 	}
-
-	// 1. Check user-specified shell path
-	if (customShellPath) {
-		if (fs.existsSync(customShellPath)) {
-			cachedShellConfig = buildConfig(customShellPath);
-			return cachedShellConfig;
-		}
-		throw new Error(
-			`Custom shell path not found: ${customShellPath}\nPlease update shellPath in ~/.omp/agent/settings.json`,
-		);
+	if (cachedShellConfig) {
+		return cachedShellConfig;
 	}
 
 	if (process.platform === "win32") {
@@ -147,7 +156,7 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 			`No bash shell found. Options:\n` +
 				`  1. Install Git for Windows: https://git-scm.com/download/win\n` +
 				`  2. Add your bash to PATH (Cygwin, MSYS2, etc.)\n` +
-				`  3. Set shellPath in ~/.omp/agent/settings.json\n\n` +
+				`  3. Set shellPath in ${configSource}\n\n` +
 				`Searched Git Bash in:\n${paths.map(p => `  ${p}`).join("\n")}`,
 		);
 	}

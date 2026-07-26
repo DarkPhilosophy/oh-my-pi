@@ -52,6 +52,7 @@ import {
 	applyCanonicalLimitFallback,
 	applyGeneratedModelPolicies,
 	CLOUDFLARE_FALLBACK_MODEL,
+	dropUnsupportedBedrockGeoIds,
 	linkOpenAIPromotionTargets,
 } from "./generated-policies";
 
@@ -634,6 +635,7 @@ async function generateModels() {
 	allModels = dropFireworksWireIds(allModels);
 	allModels = dropUnusableZaiContextTierIds(allModels);
 	allModels = dropXiaomiAudioOnlyIds(allModels);
+	allModels = dropUnsupportedBedrockGeoIds(allModels);
 	allModels = normalizeAntigravityEndpoint(allModels);
 	// Normalize display names: gateway author prefixes ("OpenAI: …"), alias
 	// markers ("(latest)"), provider attribution ("(Antigravity)"), and

@@ -199,6 +199,12 @@ export function createOpenAICodexCompactionRequestContext(options: {
 const CODEX_DEBUG = $flag("PI_CODEX_DEBUG");
 const CODEX_MAX_RETRIES = 5;
 const CODEX_RETRY_DELAY_MS = 500;
+
+function resolveCodexSseMaxAttempts(value: number | undefined): number {
+	if (value === undefined) return CODEX_MAX_RETRIES + 1;
+	if (!Number.isFinite(value)) return 1;
+	return Math.max(1, Math.trunc(value));
+}
 const CODEX_WEBSOCKET_CONNECT_TIMEOUT_MS = 10000;
 const CODEX_WEBSOCKET_PING_INTERVAL_MS = Number($env.PI_CODEX_WEBSOCKET_PING_INTERVAL_MS || 10_000);
 const CODEX_WEBSOCKET_PONG_TIMEOUT_MS = Number($env.PI_CODEX_WEBSOCKET_PONG_TIMEOUT_MS || 60_000);
@@ -1140,13 +1146,17 @@ export function normalizeCodexToolChoice(
 			: undefined;
 		const offeredTool = customTool ?? directTool;
 		if (!offeredTool) return undefined;
+		if (offeredTool.native?.type === "computer" && model?.supportsComputerUse === true) {
+			return { type: "computer" };
+		}
 		return customTool
 			? { type: "custom", name: customTool.customWireName ?? customTool.name }
 			: { type: "function", name: offeredTool.name };
 	};
 	if (choice.type === "computer") {
 		const computer = tools.find(tool => tool.native?.type === "computer");
-		return computer ? { type: "function", name: computer.name } : undefined;
+		if (!computer) return undefined;
+		return model?.supportsComputerUse === true ? { type: "computer" } : { type: "function", name: computer.name };
 	}
 	if (choice.type === "function") {
 		if ("function" in choice && choice.function?.name) {
@@ -1672,6 +1682,7 @@ async function openCodexSseTransport(
 				requestContext.requestMetadata,
 				requestSetup.requestSignal,
 				requestSetup.firstEventTimeoutMs,
+				options?.codexSseMaxAttempts,
 				event => options?.onSseEvent?.(event, model),
 				options?.fetch,
 			),
@@ -3914,6 +3925,7 @@ async function openCodexSseEventStream(
 	requestMetadata: CodexRequestMetadata | undefined,
 	signal: AbortSignal | undefined,
 	firstEventTimeoutMs: number | undefined,
+	codexSseMaxAttempts: number | undefined,
 	onSseEvent?: OpenAICodexResponsesOptions["onSseEvent"],
 	fetchOverride?: FetchImpl,
 ): Promise<AsyncGenerator<Record<string, unknown>>> {
@@ -3962,7 +3974,7 @@ async function openCodexSseEventStream(
 				clearPreResponseTimeout = watchdog.clear;
 				return { signal: watchdog.signal };
 			},
-			maxAttempts: CODEX_MAX_RETRIES + 1,
+			maxAttempts: resolveCodexSseMaxAttempts(codexSseMaxAttempts),
 			defaultDelayMs: attempt => CODEX_RETRY_DELAY_MS * (attempt + 1),
 			maxDelayMs: CODEX_RATE_LIMIT_BUDGET_MS,
 			fetch: fetchAttempt,
@@ -4126,6 +4138,7 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 	// `function_call_output` (OpenAI rejects mismatched pairs).
 	const customCallIds = new Set<string>();
 	const knownCallIds = new Set<string>();
+	const computerCallIds = new Set<string>();
 
 	for (const msg of transformedMessages) {
 		if (msg.role === "user" || msg.role === "developer") {
@@ -4135,14 +4148,15 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 				| undefined;
 			if (historyItems) {
 				const redactedHistoryItems = redactSensitiveInObject(historyItems).result as Array<ResponseInput[number]>;
-				const replayItems = unrollCodexComputerItems(
-					redactedHistoryItems,
-					model.compat.supportsImageDetailOriginal,
-				);
+				const replayItems =
+					model.supportsComputerUse === true
+						? redactedHistoryItems
+						: unrollCodexComputerItems(redactedHistoryItems, model.compat.supportsImageDetailOriginal);
 				for (const item of replayItems) {
 					if (item.type === "custom_tool_call") {
 						customCallIds.add(item.call_id);
 					}
+					if (item.type === "computer_call") computerCallIds.add(item.call_id);
 					if ((item.type === "function_call" || item.type === "custom_tool_call") && item.call_id) {
 						knownCallIds.add(item.call_id);
 					}
@@ -4173,14 +4187,15 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 			if (historyItems) {
 				const sanitizedHistoryItems = sanitizeOpenAIResponsesAssistantHistoryItemsForReplay(historyItems);
 				if (sanitizedHistoryItems) {
-					const replayItems = unrollCodexComputerItems(
-						sanitizedHistoryItems,
-						model.compat.supportsImageDetailOriginal,
-					);
+					const replayItems =
+						model.supportsComputerUse === true
+							? sanitizedHistoryItems
+							: unrollCodexComputerItems(sanitizedHistoryItems, model.compat.supportsImageDetailOriginal);
 					for (const item of replayItems) {
 						if (item.type === "custom_tool_call") {
 							customCallIds.add(item.call_id);
 						}
+						if (item.type === "computer_call") computerCallIds.add(item.call_id);
 						if ((item.type === "function_call" || item.type === "custom_tool_call") && item.call_id) {
 							knownCallIds.add(item.call_id);
 						}
@@ -4198,7 +4213,7 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 			}
 
 			const convertedOutputItems = convertResponsesAssistantMessage(
-				unrollCodexComputerAssistantMessage(msg as AssistantMessage),
+				model.supportsComputerUse === true ? assistantMsg : unrollCodexComputerAssistantMessage(assistantMsg),
 				model,
 				msgIndex,
 				knownCallIds,
@@ -4206,6 +4221,8 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 				customCallIds,
 				false,
 				true,
+				undefined,
+				computerCallIds,
 			);
 			const outputItems = suppressHiddenEmptyFallback
 				? sanitizeOpenAIResponsesAssistantFallbackItemsForReplay(convertedOutputItems)
@@ -4220,13 +4237,14 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 		if (msg.role === "toolResult") {
 			appendResponsesToolResultMessages(
 				messages,
-				unrollCodexComputerToolResult(msg),
+				model.supportsComputerUse === true ? msg : unrollCodexComputerToolResult(msg),
 				model,
 				false,
 				model.compat.supportsImageDetailOriginal,
 				knownCallIds,
 				customCallIds,
 				true,
+				computerCallIds,
 			);
 		}
 
@@ -4255,6 +4273,7 @@ function normalizeInputMessageContent(
 export { convertMessages as convertCodexResponsesMessages };
 
 type CodexToolPayload =
+	| { type: "computer"; name?: never }
 	| {
 			type: "function";
 			name: string;
@@ -4277,8 +4296,12 @@ export function convertOpenAICodexResponsesTools(
 	const allowFreeform = model.applyPatchToolType === "freeform";
 	const payloads: CodexToolPayload[] = [];
 	for (const tool of tools) {
-		// The ChatGPT Codex endpoints reject the native `{ type: "computer" }`
-		// shape, so both standard and Lite transports expose it as a function.
+		// Subscription models default to the function fallback. Explicit metadata
+		// remains authoritative for future Codex endpoints that implement GA computer use.
+		if (tool.native?.type === "computer" && model.supportsComputerUse === true) {
+			payloads.push({ type: "computer" });
+			continue;
+		}
 		if (allowFreeform && tool.customFormat) {
 			payloads.push({
 				type: "custom",
