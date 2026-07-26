@@ -31,6 +31,7 @@ import { interceptUnhandledRejections } from "@oh-my-pi/pi-utils/postmortem";
 import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from "@oh-my-pi/pi-utils/worker-host";
 import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cli/profile-alias";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
+import { isDefaultInteractiveArgv } from "./daemon/interactive-route";
 import { startJsEvalProcess } from "./eval/js/process-entry";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
@@ -427,17 +428,15 @@ export async function runCli(argv: string[]): Promise<void> {
 	// The default interactive route is intentionally decided before loading the
 	// command registry or main graph. The bootstrap itself loads InteractiveMode
 	// only after the authenticated daemon connection is established.
-	if (resolvedArgv[0] !== "--smoke-test") {
+	if (resolvedArgv[0] !== "--smoke-test" && isDefaultInteractiveArgv(resolvedArgv)) {
 		// Dynamic import is required here: this is the cold-start boundary that
 		// keeps command/main modules out of the process until daemon bootstrap.
-		const { isDaemonModeOptedIn, isDefaultInteractiveArgv, launchDaemonInteractive, readDaemonModeSetting } =
-			await import("./daemon/interactive-bootstrap");
+		const { isDaemonModeOptedIn, launchDaemonInteractive, readDaemonModeSetting } = await import(
+			"./daemon/interactive-bootstrap"
+		);
 		// Daemon hosting is opt-in (`--daemon` or the `daemon.enabled` setting);
 		// the default interactive route stays the historical direct launch.
-		if (
-			isDefaultInteractiveArgv(resolvedArgv) &&
-			isDaemonModeOptedIn(resolvedArgv, resolvedArgv.includes("--daemon") ? true : await readDaemonModeSetting())
-		) {
+		if (isDaemonModeOptedIn(resolvedArgv, resolvedArgv.includes("--daemon") ? true : await readDaemonModeSetting())) {
 			try {
 				await launchDaemonInteractive({ argv: resolvedArgv });
 			} catch (error: unknown) {

@@ -2,7 +2,7 @@ import { ProcessTerminal } from "@oh-my-pi/pi-tui";
 import { APP_NAME, logger, normalizePathForComparison } from "@oh-my-pi/pi-utils";
 import { getActiveProfile, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import chalk from "chalk";
-import { type Args, parseArgs } from "../cli/args";
+import { parseArgs } from "../cli/args";
 import { selectSession } from "../cli/session-picker";
 import { applyStartupCwd } from "../cli/startup-cwd";
 import { Settings } from "../config/settings";
@@ -16,6 +16,8 @@ import { createDaemonClient, type DaemonClient } from "./client";
 import { DAEMON_PROTOCOL_MAJOR, type DaemonOperation } from "./protocol";
 import type { DaemonConnectionSnapshot, DaemonProfile } from "./status";
 import { ClientTerminalBridge, clientTerminalEnvSnapshot } from "./terminal-bridge";
+
+export { isDefaultInteractiveArgv } from "./interactive-route";
 
 const DAEMON_SERVER_WORKER_ARG = "__omp_worker_daemon_server";
 const CONNECT_RETRY_MS = 50;
@@ -45,58 +47,6 @@ export type DaemonInteractiveSession = {
 
 function launchArgs(argv: readonly string[]): string[] {
 	return argv[0] === "launch" ? [...argv.slice(1)] : [...argv];
-}
-const NON_INTERACTIVE_COMMANDS: Record<string, true> = {
-	acp: true,
-	"auth-broker": true,
-	"auth-gateway": true,
-	agents: true,
-	bench: true,
-	commit: true,
-	completions: true,
-	__complete: true,
-	config: true,
-	"dry-balance": true,
-	gc: true,
-	grep: true,
-	gallery: true,
-	grievances: true,
-	install: true,
-	join: true,
-	models: true,
-	plugin: true,
-	say: true,
-	setup: true,
-	shell: true,
-	read: true,
-	ssh: true,
-	stats: true,
-	update: true,
-	usage: true,
-	"tiny-models": true,
-	token: true,
-	ttsr: true,
-	worktree: true,
-	wt: true,
-	search: true,
-	q: true,
-};
-
-/** Return whether argv is the default interactive launch path. */
-export function isDefaultInteractiveArgv(argv: readonly string[]): boolean {
-	const first = argv[0];
-	if (first !== undefined && first !== "launch" && !first.startsWith("-") && NON_INTERACTIVE_COMMANDS[first])
-		return false;
-	if (argv.includes("--no-daemon")) return false;
-	let parsed: Args;
-	try {
-		parsed = parseArgs(launchArgs(argv));
-	} catch {
-		return false;
-	}
-	if (parsed.help || parsed.version || parsed.print || parsed.export) return false;
-	if (parsed.mode !== undefined && parsed.mode !== "text") return false;
-	return true;
 }
 
 /**

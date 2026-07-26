@@ -27,6 +27,7 @@
 - Fixed simultaneous cold `--daemon --resume` launches leaking the expected losing worker's owner-lease error into the TUI after another contender had already started the daemon.
 - Fixed cold daemon startup races publishing an owner lease before an authenticated endpoint was available, and prevented stale leases whose PID was reused by another process from blocking recovery or terminating the unrelated process.
 - Fixed daemon session startup crashing when the shard-owned MCP pool received credential storage in place of its loader.
+- Fixed non-interactive CLI paths such as `--version` loading the daemon interactive bootstrap and native computer addon before command routing, which broke startup when Bun addons were disabled.
 - Fixed v17.0.5 merge regressions in hook-status row rendering, slow shutdown feedback, and authenticated Codex model discovery.
 - Fixed session JSONL appends merging records after a missing trailing newline, and recovered already-concatenated adjacent records during session loading.
 ### Added
