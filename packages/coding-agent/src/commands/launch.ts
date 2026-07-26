@@ -105,6 +105,9 @@ export default class Index extends Command {
 		"no-session": Flags.boolean({
 			description: "Don't save session (ephemeral)",
 		}),
+		"no-daemon": Flags.boolean({
+			description: "Run the interactive client directly without a daemon",
+		}),
 		models: Flags.string({
 			description: "Comma-separated model patterns for Ctrl+P cycling",
 		}),

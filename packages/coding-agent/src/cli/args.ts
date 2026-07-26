@@ -47,6 +47,7 @@ export interface Args {
 	help?: boolean;
 	version?: boolean;
 	mode?: Mode;
+	noDaemon?: boolean;
 	noSession?: boolean;
 	sessionDir?: string;
 	providerSessionId?: string;
@@ -227,6 +228,8 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.alias = arg.slice("--alias=".length);
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
+		} else if (arg === "--no-daemon") {
+			result.noDaemon = true;
 		} else if (arg === "--no-session") {
 			result.noSession = true;
 		} else if (arg === "--no-tools") {

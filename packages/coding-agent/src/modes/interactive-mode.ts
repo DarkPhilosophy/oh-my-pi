@@ -22,6 +22,7 @@ import type {
 	NativeScrollbackLiveRegion,
 	OverlayHandle,
 	SlashCommand,
+	Terminal,
 } from "@oh-my-pi/pi-tui";
 import {
 	Container,
@@ -58,13 +59,8 @@ import type { CollabHost } from "../collab/host";
 import { KeybindingsManager } from "../config/keybindings";
 import { formatModelString, type ResolvedModelRoleValue } from "../config/model-resolver";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
-import {
-	isSettingsInitialized,
-	onModelRolesChanged,
-	onStatusLineSessionAccentChanged,
-	Settings,
-	settings,
-} from "../config/settings";
+import { onModelRolesChanged, onStatusLineSessionAccentChanged, type Settings } from "../config/settings";
+import type { DaemonConnectionSnapshot } from "../daemon/status";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {
 	AutocompleteProviderFactory,
@@ -134,6 +130,7 @@ import { getSessionAccentAnsi, getSessionAccentHex } from "../utils/session-colo
 import { messageHasDisplayableThinking } from "../utils/thinking-display";
 import {
 	disposeTerminalTitleState,
+	formatSessionTerminalTitle,
 	popTerminalTitle,
 	pushTerminalTitle,
 	setSessionTerminalTitle,
@@ -657,6 +654,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	#mcpConnectedServers = new Set<string>();
 	#mcpFailedServers = new Map<string, string>();
 	#welcomeComponent?: WelcomeComponent;
+	readonly #hostedTerminal: Terminal | undefined;
+	readonly #hostedDetach: ((reason: "detach" | "exit" | "error", error?: string) => void) | undefined;
+	#daemonSnapshot: DaemonConnectionSnapshot = { state: "direct" };
 	readonly #chatHost: ChatBlockHost = { requestRender: () => this.ui.requestRender() };
 
 	constructor(
@@ -667,6 +667,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		lspServers: LspStartupServerInfo[] | undefined = undefined,
 		mcpManager?: MCPManager,
 		eventBus?: EventBus,
+		host?: {
+			terminal: Terminal;
+			onDetach(reason: "detach" | "exit" | "error", error?: string): void;
+		},
 	) {
 		this.session = session;
 		this.sessionManager = session.sessionManager;
@@ -682,6 +686,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			new MCPCommandController(this).handleMCPAuthChallenge(serverName, challenge),
 		);
 		this.#eventBus = eventBus;
+		this.#hostedTerminal = host?.terminal;
+		this.#hostedDetach = host?.onDetach;
 		if (eventBus) {
 			this.#eventBusUnsubscribers.push(
 				eventBus.on(LSP_STARTUP_EVENT_CHANNEL, data => {
@@ -700,15 +706,15 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 		}
 
-		setTuiTight(settings.get("tui.tight"));
-		setMarkdownMermaidRendering(settings.get("tui.renderMermaid"));
-		this.ui = new TUI(new ProcessTerminal(), settings.get("showHardwareCursor"));
-		this.ui.setMaxInlineImages(settings.get("tui.maxInlineImages"));
-		this.ui.setScrollbackRebuild(settings.get("tui.scrollbackRebuild"));
+		setTuiTight(this.settings.get("tui.tight"));
+		setMarkdownMermaidRendering(this.settings.get("tui.renderMermaid"));
+		this.ui = new TUI(host?.terminal ?? new ProcessTerminal(), this.settings.get("showHardwareCursor"));
+		this.ui.setMaxInlineImages(this.settings.get("tui.maxInlineImages"));
+		this.ui.setScrollbackRebuild(this.settings.get("tui.scrollbackRebuild"));
 		// OSC 66 text-sizing is Kitty-only; resolve the setting against the terminal's
 		// capability (`TERMINAL.textSizing` defaults on for Kitty) so it stays off
 		// unless the user opts in, and never emits raw escapes on other terminals.
-		setTerminalTextSizing(settings.get("tui.textSizing") && TERMINAL.textSizing);
+		setTerminalTextSizing(this.settings.get("tui.textSizing") && TERMINAL.textSizing);
 		this.chatContainer = new TranscriptContainer();
 		this.pendingMessagesContainer = new AnchoredLiveContainer();
 		this.statusContainer = new AnchoredLiveContainer();
@@ -721,8 +727,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor = new CustomEditor(getEditorTheme());
 		this.ui.enableScopedInputRender(this.editor);
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
-		this.editor.setImeSafeCursorLayout(settings.get("tui.imeSafeCursor"));
-		this.editor.setAutocompleteMaxVisible(settings.get("autocompleteMaxVisible"));
+		this.editor.setImeSafeCursorLayout(this.settings.get("tui.imeSafeCursor"));
+		this.editor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
 		this.editor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
 		};
@@ -764,8 +770,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		// hot path where the render never gets to paint the result.
 		this.editor.setTopBorderProvider(availableWidth => this.statusLine.getTopBorder(availableWidth));
 
-		this.hideThinkingBlock = settings.get("hideThinkingBlock");
-		this.proseOnlyThinking = settings.get("proseOnlyThinking");
+		this.hideThinkingBlock = this.settings.get("hideThinkingBlock");
+		this.proseOnlyThinking = this.settings.get("proseOnlyThinking");
 
 		const hookCommands: SlashCommand[] = (
 			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
@@ -856,6 +862,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		// so a resumed long transcript is not re-walked per animation frame.
 		welcome?.playIntro(() => this.ui.requestComponentRender(welcome));
 	}
+	setDaemonSnapshot(snapshot: DaemonConnectionSnapshot): void {
+		this.#daemonSnapshot = snapshot;
+		this.#welcomeComponent?.setServerStatus(snapshot);
+		this.statusLine.setServerStatus(snapshot);
+		this.ui.requestRender();
+	}
 
 	async init(options: InteractiveModeInitOptions = {}): Promise<void> {
 		if (this.isInitialized) return;
@@ -889,10 +901,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Wire the report_tool_issue consent gate to the Yes/No dialog popup.
 		// The handler is process-global — subagent tools (which can't reach
 		// `showHookSelector` on their own) resolve through this exact closure.
-		// `Settings.instance` is the disk-backed singleton; passing it explicitly
-		// guarantees the decision persists even when the prompt is triggered
-		// from a subagent whose own `Settings` is an in-memory snapshot.
-		setAutoQaConsentHandler(() => this.#promptAutoQaConsent(), Settings.instance);
+		// Persist through this session's disk-backed settings even when the prompt
+		// is triggered from a subagent whose own Settings is an in-memory snapshot.
+		setAutoQaConsentHandler(() => this.#promptAutoQaConsent(), this.settings);
 
 		await logger.time(
 			"InteractiveMode.init:slashCommands",
@@ -914,7 +925,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			),
 		);
 
-		const startupQuiet = settings.get("startup.quiet");
+		const startupQuiet = this.settings.get("startup.quiet");
 		this.#welcomeComponent = undefined;
 
 		for (const warning of this.session.configWarnings) {
@@ -931,6 +942,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				recentSessions,
 				this.#getWelcomeLspServers(),
 			);
+			this.#welcomeComponent.setServerStatus(this.#daemonSnapshot);
 
 			// Setup UI layout
 			this.ui.addChild(new Spacer(1));
@@ -943,7 +955,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			// Add changelog if provided
 			if (this.#changelogMarkdown) {
 				this.ui.addChild(new DynamicBorder());
-				if (settings.get("collapseChangelog")) {
+				if (this.settings.get("collapseChangelog")) {
 					const versionMatch = this.#changelogMarkdown.match(/##\s+\[?(\d+\.\d+\.\d+)\]?/);
 					const latestVersion = versionMatch ? versionMatch[1] : this.#version;
 					const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
@@ -998,9 +1010,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Start the UI. Cold `omp` launch opts into clearing on the first paint so
 		// the initial welcome frame does not append over the previous run's scrollback.
 		this.ui.start({ clearScrollback: options.clearInitialTerminalHistory === true });
-		pushTerminalTitle();
-		setTerminalTitleStateEnabled(this.settings.get("tui.titleState"));
-		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+		if (this.#hostedTerminal) {
+			this.#hostedTerminal.write("\x1b[22;2t");
+			this.#hostedTerminal.setTitle(
+				formatSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd()),
+			);
+		} else {
+			pushTerminalTitle();
+			setTerminalTitleStateEnabled(this.settings.get("tui.titleState"));
+			setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+		}
 		this.updateEditorBorderColor();
 		// Single side-effect point for title changes: every setSessionName caller
 		// (first-input titling, /rename, extension renames, plan seeding, replan
@@ -1009,7 +1028,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		// all of which can reach setSessionName during init.
 		this.#eventBusUnsubscribers.push(
 			this.sessionManager.onSessionNameChanged(() => {
-				setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+				if (this.#hostedTerminal) {
+					this.#hostedTerminal.setTitle(
+						formatSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd()),
+					);
+				} else {
+					setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+				}
 				this.#handleSessionAccentInputsChanged();
 			}),
 		);
@@ -1257,14 +1282,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Re-scope project settings (`.claude/settings.yml` etc.) to the new
 		// directory in place so the active session and every settings reader pick
 		// up the destination project's configuration.
-		if (isSettingsInitialized()) {
-			await settings.reloadForCwd(newCwd);
-			// Reapply provider preferences from the newly-loaded settings so the
-			// module-level search/image provider state reflects the destination
-			// project's configuration. Without this, the previous project's
-			// exclusions leak and newly-excluded providers are still used.
-			applyProviderGlobalsFromSettings(settings);
-		}
+		await this.settings.reloadForCwd(newCwd);
+		// Reapply provider preferences from the newly-loaded settings so the
+		// module-level search/image provider state reflects the destination
+		// project's configuration. Without this, the previous project's
+		// exclusions leak and newly-excluded providers are still used.
+		applyProviderGlobalsFromSettings(this.settings);
 		// Re-warm plugin roots, capabilities, slash commands, and the ssh tool so
 		// the next prompt sees everything scoped to the new project directory.
 		clearClaudePluginRootsCache();
@@ -1297,7 +1320,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#cancelLoopAutoSubmit();
 		if (!this.loopModeEnabled || !this.loopPrompt) return;
 		const prompt = this.loopPrompt;
-		const loopAction = settings.get("loop.mode");
+		const loopAction = this.settings.get("loop.mode");
 		this.#deferLoopAutoSubmit(() => {
 			void this.#runLoopIteration(loopAction, prompt);
 		});
@@ -1647,15 +1670,15 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#syncStatusLineSettings(): void {
 		this.statusLine.updateSettings({
-			preset: settings.get("statusLine.preset"),
-			leftSegments: settings.get("statusLine.leftSegments"),
-			rightSegments: settings.get("statusLine.rightSegments"),
-			separator: settings.get("statusLine.separator"),
-			showHookStatus: settings.get("statusLine.showHookStatus"),
-			sessionAccent: settings.get("statusLine.sessionAccent"),
-			transparent: settings.get("statusLine.transparent"),
-			segmentOptions: settings.get("statusLine.segmentOptions"),
-			compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
+			preset: this.settings.get("statusLine.preset"),
+			leftSegments: this.settings.get("statusLine.leftSegments"),
+			rightSegments: this.settings.get("statusLine.rightSegments"),
+			separator: this.settings.get("statusLine.separator"),
+			showHookStatus: this.settings.get("statusLine.showHookStatus"),
+			sessionAccent: this.settings.get("statusLine.sessionAccent"),
+			transparent: this.settings.get("statusLine.transparent"),
+			segmentOptions: this.settings.get("statusLine.segmentOptions"),
+			compactThinkingLevel: this.settings.get("statusLine.compactThinkingLevel"),
 		});
 	}
 
@@ -1671,7 +1694,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		} else if (this.isPythonMode) {
 			this.editor.borderColor = theme.getPythonModeBorderColor();
 		} else {
-			const accentEnabled = !isSettingsInitialized() || settings.get("statusLine.sessionAccent") !== false;
+			const accentEnabled = this.settings.get("statusLine.sessionAccent") !== false;
 			const sessionName = accentEnabled ? this.sessionManager.getSessionName() : undefined;
 			const hex = sessionName
 				? getSessionAccentHex(sessionName, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance)
@@ -1739,7 +1762,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// user opted into the full inline history; export/resume callers choose
 		// their own mode.
 		const context = this.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: settings.get("display.collapseCompacted"),
+			collapseCompactedHistory: this.settings.get("display.collapseCompacted"),
 		});
 		const preservedLiveToolCallIds = new Set<string>();
 		// A preserved pending-tool component whose result has already landed in
@@ -3957,6 +3980,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
+	detachHosted(reason: "detach" | "error" = "detach", error?: string): void {
+		if (!this.#hostedDetach || this.#isShuttingDown) return;
+		this.#isShuttingDown = true;
+		const callback = this.onInputCallback;
+		this.onInputCallback = undefined;
+		callback?.({ text: "", cancelled: true, started: false });
+		this.stop();
+		this.#hostedDetach(reason, error);
+	}
+
 	async shutdown(): Promise<void> {
 		if (this.#isShuttingDown) return;
 		this.#isShuttingDown = true;
@@ -4000,6 +4033,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
 		await this.ui.terminal.drainInput(1000);
+		if (this.#hostedDetach) {
+			const callback = this.onInputCallback;
+			this.onInputCallback = undefined;
+			callback?.({ text: "", cancelled: true, started: false });
+			this.stop();
+			this.#hostedDetach("exit");
+			return;
+		}
 		// Stop the run-state spinner interval BEFORE restoring the shell title, so a
 		// pending tick cannot re-emit an OSC title after `popTerminalTitle` hands the
 		// terminal back (which would leave the parent shell with a `π ⠋ …` tab).
@@ -4201,7 +4242,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#buildWorkingMessageAccentCacheKey(): WorkingMessageAccentCacheKey {
-		const sessionAccentEnabled = !isSettingsInitialized() || settings.get("statusLine.sessionAccent") !== false;
+		const sessionAccentEnabled = this.settings.get("statusLine.sessionAccent") !== false;
 		return {
 			sessionAccentEnabled,
 			sessionName: sessionAccentEnabled ? this.sessionManager.getSessionName() : undefined,
@@ -4477,7 +4518,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("End live mode before using push-to-talk speech input.");
 			return;
 		}
-		if (!settings.get("stt.enabled")) {
+		if (!this.settings.get("stt.enabled")) {
 			this.showWarning("Speech-to-text is disabled. Enable it in settings: stt.enabled");
 			return;
 		}

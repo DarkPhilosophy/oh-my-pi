@@ -9,6 +9,7 @@
  * revival) and are only removed on explicit release/teardown.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { AgentSession } from "../session/agent-session";
 import { oneLineLabel } from "../task/types";
 
@@ -64,10 +65,23 @@ export interface RegisterInput {
 	status?: AgentStatus;
 }
 
+const registryScope = new AsyncLocalStorage<AgentRegistry>();
+
+export function createAgentRegistryScope(registry = new AgentRegistry()) {
+	return {
+		registry,
+		run<T>(action: () => T): T {
+			return registryScope.run(registry, action);
+		},
+	};
+}
+
 export class AgentRegistry {
 	static #global: AgentRegistry | undefined;
 
 	static global(): AgentRegistry {
+		const scoped = registryScope.getStore();
+		if (scoped) return scoped;
 		if (!AgentRegistry.#global) {
 			AgentRegistry.#global = new AgentRegistry();
 		}

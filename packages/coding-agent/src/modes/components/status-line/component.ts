@@ -5,6 +5,8 @@ import type { AssistantMessage, UsageLimit, UsageReport } from "@oh-my-pi/pi-ai"
 import { type Component, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { settings } from "../../../config/settings";
+import type { DaemonConnectionSnapshot } from "../../../daemon/status";
+import { formatDaemonWelcomeStatus } from "../../../daemon/status";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";
 import { limitMatchesActiveAccount } from "../../../slash-commands/helpers/active-oauth-account";
@@ -287,6 +289,7 @@ export class StatusLineComponent implements Component {
 	 */
 	#vibeWorkerTokenRate: (() => number | null) | null = null;
 	#collabStatus: CollabStatus | null = null;
+	#serverStatus: DaemonConnectionSnapshot = { state: "direct" };
 	#focusedAgentId: string | undefined;
 	#activeRepoCache: ActiveRepoCache | undefined;
 
@@ -546,6 +549,10 @@ export class StatusLineComponent implements Component {
 
 	setCollabStatus(status: CollabStatus | null): void {
 		this.#collabStatus = status;
+	}
+	setServerStatus(snapshot: DaemonConnectionSnapshot): void {
+		this.#serverStatus = snapshot;
+		this.invalidate();
 	}
 
 	setHookStatus(key: string, text: string | undefined): void {
@@ -1503,14 +1510,19 @@ export class StatusLineComponent implements Component {
 	}
 
 	render(width: number): readonly string[] {
-		// Only render hook statuses - main status is in editor's top border
-		const showHooks = this.#settings.showHookStatus ?? true;
-		if (!showHooks || this.#hookStatuses.size === 0) {
-			return [];
+		const lines: string[] = [];
+		if (this.#serverStatus.state !== "direct" && this.#serverStatus.state !== "connected") {
+			lines.push(formatDaemonWelcomeStatus(this.#serverStatus, width)[0] ?? "");
 		}
 
-		return Array.from(this.#hookStatuses.entries())
-			.sort(([a], [b]) => a.localeCompare(b))
-			.map(([, text]) => truncateToWidth(sanitizeStatusText(text), width));
+		// Only render hook statuses - main status is in editor's top border
+		const showHooks = this.#settings.showHookStatus ?? true;
+		if (showHooks && this.#hookStatuses.size > 0) {
+			const sortedStatuses = Array.from(this.#hookStatuses.entries())
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([, text]) => truncateToWidth(sanitizeStatusText(text), width));
+			lines.push(...sortedStatuses);
+		}
+		return lines;
 	}
 }

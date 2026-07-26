@@ -934,10 +934,14 @@ export class SessionManager {
 		}
 	}
 
-	#resetToNewSession(options?: NewSessionOptions, forcedSessionFile?: string): string | undefined {
+	#resetToNewSession(
+		options?: NewSessionOptions,
+		forcedSessionFile?: string,
+		forcedSessionId?: string,
+	): string | undefined {
 		this.#diskTail = Promise.resolve();
 		this.#clearDiskError();
-		this.#sessionId = mintSessionId();
+		this.#sessionId = forcedSessionId ?? mintSessionId();
 		this.#sessionName = undefined;
 		this.#titleSource = undefined;
 		this.#titleUpdatedAt = "";
@@ -2249,10 +2253,15 @@ export class SessionManager {
 	 * @param cwd Working directory (stored in the session header)
 	 * @param sessionDir Optional session directory; defaults to the cwd-derived dir.
 	 */
-	static create(cwd: string, sessionDir?: string, storage: SessionStorage = new FileSessionStorage()): SessionManager {
+	static create(
+		cwd: string,
+		sessionDir?: string,
+		storage: SessionStorage = new FileSessionStorage(),
+		sessionId?: string,
+	): SessionManager {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
 		const manager = new SessionManager(cwd, dir, true, storage);
-		manager.#resetToNewSession();
+		manager.#resetToNewSession(undefined, undefined, sessionId);
 		return manager;
 	}
 
@@ -2508,9 +2517,10 @@ export class SessionManager {
 	static inMemory(
 		cwd: string = getProjectDir(),
 		storage: SessionStorage = new MemorySessionStorage(),
+		sessionId?: string,
 	): SessionManager {
 		const manager = new SessionManager(cwd, "", false, storage);
-		manager.#resetToNewSession();
+		manager.#resetToNewSession(undefined, undefined, sessionId);
 		return manager;
 	}
 

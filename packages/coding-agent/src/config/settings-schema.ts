@@ -1780,6 +1780,17 @@ export const SETTINGS_SCHEMA = {
 			description: "Check for omp updates on startup",
 		},
 	},
+	"daemon.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "interaction",
+			group: "Startup & Updates",
+			label: "Daemon Mode",
+			description:
+				"Host interactive sessions in a shared per-profile daemon (opt-in; --daemon / --no-daemon override)",
+		},
+	},
 
 	"marketplace.autoUpdate": {
 		type: "enum",

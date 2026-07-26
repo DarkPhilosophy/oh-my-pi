@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import {
+	bindSettingsToProjectContext,
+	resetSettingsForTest,
+	Settings,
+	settings,
+} from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -7,6 +12,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import * as sessionColor from "@oh-my-pi/pi-coding-agent/utils/session-color";
 import type { Container, NativeScrollbackLiveRegion } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { createProjectDirScope } from "@oh-my-pi/pi-utils/dirs";
 
 type Harness = {
 	mode: InteractiveMode;
@@ -79,6 +85,40 @@ afterEach(() => {
 });
 
 describe("InteractiveMode working-message session accent cache", () => {
+	it("constructs from session-owned settings without process-global settings", async () => {
+		const tempDir = TempDir.createSync("@pi-session-settings-");
+		await Settings.init({ inMemory: true, cwd: tempDir.path() });
+		await initTheme(false);
+		const sessionManager = SessionManager.inMemory(tempDir.path());
+		const sessionSettings = Settings.isolated({ autocompleteMaxVisible: 12 });
+		resetSettingsForTest();
+		const session = {
+			sessionManager,
+			settings: sessionSettings,
+			agent: {
+				state: { tools: [] },
+				metadataForProvider: () => undefined,
+			},
+			customCommands: [],
+			skills: [],
+			autoCompactionEnabled: true,
+			messages: [],
+			systemPrompt: [],
+			state: { model: undefined },
+			model: undefined,
+			thinkingLevel: undefined,
+		} as unknown as AgentSession;
+
+		let mode!: InteractiveMode;
+		createProjectDirScope(tempDir.path()).run(() => {
+			bindSettingsToProjectContext(sessionSettings);
+			mode = new InteractiveMode(session, "test");
+		});
+		harnesses.push({ mode, sessionManager, tempDir });
+
+		expect(mode.editor.getAutocompleteMaxVisible()).toBe(12);
+	});
+
 	it("reports a live seam only while status content is mounted", async () => {
 		const { mode } = await createHarness("Live status");
 		const statusContainer = mode.statusContainer as Container & NativeScrollbackLiveRegion;
