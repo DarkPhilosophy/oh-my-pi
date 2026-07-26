@@ -33,6 +33,7 @@ import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from
 import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cli/profile-alias";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
 import type { DaemonClient } from "./daemon/client";
+import { isDefaultInteractiveArgv } from "./daemon/interactive-route";
 import { startJsEvalProcess } from "./eval/js/process-entry";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
@@ -505,20 +506,18 @@ export async function runCli(argv: string[]): Promise<void> {
 	// The default interactive route is intentionally decided before loading the
 	// command registry or main graph. The bootstrap itself loads InteractiveMode
 	// only after the authenticated daemon connection is established.
-	if (resolvedArgv[0] !== "--smoke-test") {
+	if (resolvedArgv[0] !== "--smoke-test" && isDefaultInteractiveArgv(resolvedArgv)) {
 		// Dynamic import is required here: this is the cold-start boundary that
 		// keeps command/main modules out of the process until daemon bootstrap.
-		const { isDefaultInteractiveArgv, launchDaemonInteractive } = await import("./daemon/interactive-bootstrap");
-		if (isDefaultInteractiveArgv(resolvedArgv)) {
-			try {
-				await launchDaemonInteractive({ argv: resolvedArgv });
-			} catch (error: unknown) {
-				const message = error instanceof Error ? error.message : String(error);
-				process.stderr.write(`Error: daemon interactive startup failed: ${message}\n`);
-				process.exitCode = 1;
-			}
-			return;
+		const { launchDaemonInteractive } = await import("./daemon/interactive-bootstrap");
+		try {
+			await launchDaemonInteractive({ argv: resolvedArgv });
+		} catch (error: unknown) {
+			const message = error instanceof Error ? error.message : String(error);
+			process.stderr.write(`Error: daemon interactive startup failed: ${message}\n`);
+			process.exitCode = 1;
 		}
+		return;
 	}
 
 	if (resolvedArgv[0] === "--smoke-test") {

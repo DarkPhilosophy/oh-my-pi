@@ -29,6 +29,11 @@ describe("daemon interactive bootstrap", () => {
 		expect(isDefaultInteractiveArgv(["launch", "hello"])).toBe(true);
 		expect(isDefaultInteractiveArgv(["grep", "needle"])).toBe(false);
 		expect(isDefaultInteractiveArgv(["--print", "hello"])).toBe(false);
+		expect(isDefaultInteractiveArgv(["--mode", "text"])).toBe(true);
+		expect(isDefaultInteractiveArgv(["--mode", "text", "-p", "hi"])).toBe(false);
+		expect(isDefaultInteractiveArgv(["--mode=text", "--no-daemon"])).toBe(false);
+		expect(isDefaultInteractiveArgv(["explain", "constructor"])).toBe(true);
+		expect(isDefaultInteractiveArgv(["toString"])).toBe(true);
 	});
 	test("daemon hosting is opt-in and --no-daemon always wins", () => {
 		expect(isDaemonModeOptedIn([], false)).toBe(false);
