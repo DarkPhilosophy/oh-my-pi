@@ -6,6 +6,7 @@ import type { FileEntry, SessionHeader } from "@oh-my-pi/pi-coding-agent/session
 import { findMostRecentSession, resolveResumableSession } from "@oh-my-pi/pi-coding-agent/session/session-listing";
 import { loadEntriesFromFile } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { readTerminalBreadcrumbEntry } from "@oh-my-pi/pi-coding-agent/session/session-paths";
 import { getConfigRootDir, getSessionsDir, removeSyncWithRetries, Snowflake, setAgentDir } from "@oh-my-pi/pi-utils";
 
 describe("loadEntriesFromFile", () => {
@@ -221,6 +222,9 @@ describe("SessionManager temp cwd session dirs", () => {
 
 describe("SessionManager legacy session migration persistence", () => {
 	let tempDir: string;
+	let testAgentDir: string;
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 
 	function makeAssistantMessage() {
 		return {
@@ -245,13 +249,21 @@ describe("SessionManager legacy session migration persistence", () => {
 	function getHeader(entries: FileEntry[]): SessionHeader | undefined {
 		return entries.find((entry): entry is SessionHeader => entry.type === "session");
 	}
-
 	beforeEach(() => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-session-manager-legacy-"));
+		testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-session-manager-agent-"));
+		setAgentDir(testAgentDir);
 	});
 
 	afterEach(() => {
 		removeSyncWithRetries(tempDir);
+		if (originalAgentDir) {
+			setAgentDir(originalAgentDir);
+		} else {
+			setAgentDir(fallbackAgentDir);
+			delete process.env.PI_CODING_AGENT_DIR;
+		}
+		removeSyncWithRetries(testAgentDir);
 	});
 
 	it("keeps legacy migration in memory until later persisted activity rewrites the file", async () => {
@@ -367,7 +379,7 @@ describe("SessionManager legacy session migration persistence", () => {
 		expect(persistedEntries[1].id).toBeDefined();
 		expect(persistedEntries[1].parentId).toBeNull();
 	});
-	it("keeps the last non-empty session resumable after starting a fresh session", async () => {
+	it("keeps a lazy fresh-session boundary when continuing in the same terminal", async () => {
 		const session = SessionManager.create(tempDir, tempDir);
 		session.appendMessage({ role: "user", content: "hello", timestamp: Date.now() - 1 });
 		session.appendMessage(makeAssistantMessage());
@@ -379,10 +391,12 @@ describe("SessionManager legacy session migration persistence", () => {
 		const freshSessionFile = await session.newSession();
 		expect(freshSessionFile).toBeDefined();
 		expect(fs.existsSync(freshSessionFile!)).toBe(false);
+		expect((await readTerminalBreadcrumbEntry())?.sessionFile).toBe(freshSessionFile);
 
 		const resumed = await SessionManager.continueRecent(tempDir, tempDir);
 		try {
-			expect(resumed.getSessionFile()).toBe(previousSessionFile);
+			expect(resumed.getSessionFile()).not.toBe(previousSessionFile);
+			expect(fs.existsSync(resumed.getSessionFile()!)).toBe(false);
 		} finally {
 			await resumed.close();
 			await session.close();

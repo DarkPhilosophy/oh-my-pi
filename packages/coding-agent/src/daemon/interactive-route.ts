@@ -14,6 +14,7 @@ const NON_INTERACTIVE_COMMANDS: Record<string, true> = {
 	completions: true,
 	__complete: true,
 	config: true,
+	daemon: true,
 	"dry-balance": true,
 	gc: true,
 	grep: true,

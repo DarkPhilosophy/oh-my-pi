@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { commands } from "../src/cli-commands";
 import { daemonBuildStamp } from "../src/daemon/build-stamp";
 import { createDaemonClient } from "../src/daemon/client";
 import {
@@ -28,12 +29,22 @@ describe("daemon interactive bootstrap", () => {
 		expect(isDefaultInteractiveArgv(["hello"])).toBe(true);
 		expect(isDefaultInteractiveArgv(["launch", "hello"])).toBe(true);
 		expect(isDefaultInteractiveArgv(["grep", "needle"])).toBe(false);
+		expect(isDefaultInteractiveArgv(["daemon", "status"])).toBe(false);
 		expect(isDefaultInteractiveArgv(["--print", "hello"])).toBe(false);
 		expect(isDefaultInteractiveArgv(["--mode", "text"])).toBe(true);
 		expect(isDefaultInteractiveArgv(["--mode", "text", "-p", "hi"])).toBe(false);
 		expect(isDefaultInteractiveArgv(["--mode=text", "--no-daemon"])).toBe(false);
 		expect(isDefaultInteractiveArgv(["explain", "constructor"])).toBe(true);
 		expect(isDefaultInteractiveArgv(["toString"])).toBe(true);
+	});
+	test("omp daemon … is a dispatchable top-level command, not an interactive prompt", () => {
+		// `omp daemon <action>` needs both halves of its registration: an entry
+		// in NON_INTERACTIVE_COMMANDS (asserted just above, so the argv is not
+		// mistaken for an interactive prompt) AND an entry in the command table
+		// so runCli can dispatch it. Dropping either reproduces the original
+		// hang where `omp daemon status` hosted an interactive session on a
+		// non-TTY instead of printing status.
+		expect(commands.some(entry => entry.name === "daemon")).toBe(true);
 	});
 	test("daemon hosting is opt-in and --no-daemon always wins", () => {
 		expect(isDaemonModeOptedIn([], false)).toBe(false);

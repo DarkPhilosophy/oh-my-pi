@@ -391,10 +391,19 @@ export class DaemonServer {
 			if (owner && this.#processAlive(owner.pid)) {
 				if (!replaceLiveOwner) return "waiting";
 				const identity = await this.#ownerProcessIdentity(owner);
-				// An unresponsive process that still matches the daemon lease is
-				// the active owner, not stale state. A contender may reclaim only
-				// a recycled PID that is proven to belong to another process.
-				if (identity !== "mismatch") return "unsafe";
+				// Once the endpoint has remained unresponsive for the complete
+				// lease grace period, a verified daemon owner is wedged. Kill
+				// that exact process before reclaiming its lease; unlinking a
+				// live owner's files would let two daemons mutate shared state.
+				if (identity === "match" && owner.pid !== process.pid) {
+					process.kill(owner.pid, "SIGKILL");
+					for (let attempts = 0; attempts < 50 && this.#processAlive(owner.pid); attempts++) {
+						await Bun.sleep(20);
+					}
+					if (this.#processAlive(owner.pid)) return "unsafe";
+				} else if (identity !== "mismatch") {
+					return "unsafe";
+				}
 			}
 			const current = await this.#readOwnerLease(ownerPath);
 			if (
