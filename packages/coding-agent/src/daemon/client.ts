@@ -18,6 +18,8 @@ import type { DaemonConnectionSnapshot, DaemonProfile, DaemonShard } from "./sta
 
 const CONNECT_TIMEOUT_MS = 10_000;
 const RECOVERY_COOLDOWN_MS = 5_000;
+const HEARTBEAT_INTERVAL_MS = 15_000;
+const HEARTBEAT_TIMEOUT_MS = 5_000;
 
 export type { DaemonConnectionSnapshot } from "./status";
 
@@ -29,6 +31,8 @@ export type DaemonClientOptions = {
 	requestTimeoutMs?: number;
 	connectTimeoutMs?: number;
 	maxFrameBytes?: number;
+	heartbeatIntervalMs?: number;
+	heartbeatTimeoutMs?: number;
 	/** Request a replacement shard after an established connection becomes unavailable. */
 	recoverUnavailable?: () => void;
 };
@@ -78,6 +82,8 @@ export class DaemonClient {
 	readonly #requestTimeoutMs: number;
 	readonly #connectTimeoutMs: number;
 	readonly #maxFrameBytes: number;
+	readonly #heartbeatIntervalMs: number;
+	readonly #heartbeatTimeoutMs: number;
 	readonly #recoverUnavailable: (() => void) | undefined;
 	readonly #shard: DaemonShard;
 	readonly #pending = new Map<string, PendingRequest>();
@@ -96,6 +102,7 @@ export class DaemonClient {
 	#snapshotFrameListeners = new Set<(frame: DaemonSnapshotFrame) => void>();
 	#hello: DaemonHelloOk | undefined;
 	#reconnectTimer: NodeJS.Timeout | undefined;
+	#heartbeatTimer: NodeJS.Timeout | undefined;
 	#generation = 0;
 	#writeChain: Promise<void> = Promise.resolve();
 	#lastRecoveryRequestAt = 0;
@@ -109,6 +116,8 @@ export class DaemonClient {
 		this.#requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
 		this.#connectTimeoutMs = options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
 		this.#maxFrameBytes = options.maxFrameBytes ?? DAEMON_MAX_FRAME_BYTES;
+		this.#heartbeatIntervalMs = options.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS;
+		this.#heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? HEARTBEAT_TIMEOUT_MS;
 		this.#recoverUnavailable = options.recoverUnavailable;
 		this.#snapshotValue = { state: "unavailable", shard: this.#shard };
 	}
@@ -173,6 +182,7 @@ export class DaemonClient {
 		this.#rejectPending(new Error("Daemon connection replaced"));
 		this.#handshake?.reject(new Error("Daemon connection replaced"));
 		this.#handshake = undefined;
+		this.#stopHeartbeat();
 		const oldSocket = this.#socket;
 		this.#socket = undefined;
 		this.#hello = undefined;
@@ -183,6 +193,13 @@ export class DaemonClient {
 	async request(
 		operation: DaemonOperation["op"] | DaemonOperation,
 		payload: Record<string, unknown> = {},
+	): Promise<unknown> {
+		return this.#request(operation, payload, this.#requestTimeoutMs);
+	}
+	async #request(
+		operation: DaemonOperation["op"] | DaemonOperation,
+		payload: Record<string, unknown>,
+		timeoutMs: number,
 	): Promise<unknown> {
 		if (this.#closed) throw new Error("Daemon client is closed");
 		await this.connect();
@@ -199,7 +216,7 @@ export class DaemonClient {
 			pending.reject(
 				new Error(`Daemon ${typeof operation === "string" ? operation : operation.op} request timed out`),
 			);
-		}, this.#requestTimeoutMs);
+		}, timeoutMs);
 		this.#pending.set(requestId, { resolve, reject, timer });
 		try {
 			await this.#writeFrame(socket, {
@@ -229,6 +246,7 @@ export class DaemonClient {
 		this.#generation++;
 		clearTimeout(this.#reconnectTimer);
 		this.#reconnectTimer = undefined;
+		this.#stopHeartbeat();
 		this.#hello = undefined;
 		const socket = this.#socket;
 		this.#socket = undefined;
@@ -309,10 +327,16 @@ export class DaemonClient {
 				serverVersion: hello.serverVersion,
 				protocolVersion: hello.protocolVersion,
 				sessionCount: this.#latestStatus?.sessionCount ?? 0,
+				activeSessionCount: this.#latestStatus?.activeSessionCount ?? 0,
+				idleSessionCount: this.#latestStatus?.idleSessionCount ?? 0,
 				attachmentCount: this.#latestStatus?.attachmentCount ?? 0,
+				connectionCount: this.#latestStatus?.connectionCount ?? 0,
 				protectedJobCount: this.#latestStatus?.protectedJobCount ?? 0,
+				pid: this.#latestStatus?.pid,
+				socketPath: this.#latestStatus?.socketPath,
 				uptimeMs: this.#latestStatus?.uptimeMs ?? 0,
 			});
+			this.#scheduleHeartbeat(socket);
 		} catch (error) {
 			this.#handshake = undefined;
 			if (this.#socket === socket) this.#socket = undefined;
@@ -338,6 +362,7 @@ export class DaemonClient {
 			this.#hello = undefined;
 			if (this.#handshake) this.#handshake.reject(new Error("Daemon connection closed"));
 			this.#handshake = undefined;
+			this.#stopHeartbeat();
 			this.#rejectPending(new Error("Daemon connection closed"));
 			if (!this.#closed) {
 				this.#reconnectAttempt++;
@@ -414,6 +439,29 @@ export class DaemonClient {
 		}
 	}
 
+	#scheduleHeartbeat(socket = this.#socket): void {
+		this.#stopHeartbeat();
+		if (
+			this.#closed ||
+			this.#heartbeatIntervalMs <= 0 ||
+			!socket ||
+			socket.destroyed ||
+			this.#socket !== socket ||
+			!this.#hello
+		)
+			return;
+		this.#heartbeatTimer = setTimeout(() => {
+			this.#heartbeatTimer = undefined;
+			if (this.#closed || socket.destroyed || this.#socket !== socket || !this.#hello) return;
+			void this.#request("ping", {}, this.#heartbeatTimeoutMs)
+				.then(() => this.#scheduleHeartbeat(socket))
+				.catch(() => undefined);
+		}, this.#heartbeatIntervalMs);
+	}
+	#stopHeartbeat(): void {
+		clearTimeout(this.#heartbeatTimer);
+		this.#heartbeatTimer = undefined;
+	}
 	async #writeFrame(socket: net.Socket, frame: DaemonFrame): Promise<void> {
 		const line = encodeDaemonFrame(frame);
 		const write = async (): Promise<void> => {
@@ -454,6 +502,7 @@ export class DaemonClient {
 	}
 
 	#dispatch(frame: DaemonFrame): void {
+		this.#scheduleHeartbeat();
 		if (frame.tag === "hello_ok") {
 			this.#handshake?.resolve(frame);
 			return;

@@ -79,6 +79,11 @@ describe("daemon status presentation", () => {
 			protocolVersion: 1,
 			sessionCount: 4,
 			attachmentCount: 2,
+			connectionCount: 3,
+			activeSessionCount: 2,
+			idleSessionCount: 2,
+			pid: 42,
+			socketPath: "/tmp/omp-daemon.sock",
 			protectedJobCount: 1,
 			uptimeMs: 61_000,
 		};
@@ -88,5 +93,11 @@ describe("daemon status presentation", () => {
 		expect(formatDaemonServerStatus(snapshot)).toContain("profile: none");
 		expect(formatDaemonServerStatus(snapshot)).toContain("sessions: 4");
 		expect(formatDaemonServerStatus(snapshot)).toContain("attachments: 2");
+		expect(formatDaemonServerStatus(snapshot)).toContain("active sessions: 2");
+		expect(formatDaemonServerStatus(snapshot)).toContain("idle sessions: 2");
+		expect(formatDaemonServerStatus(snapshot)).toContain("client connections: 3");
+		expect(formatDaemonServerStatus(snapshot)).toContain("attachments: 2");
+		expect(formatDaemonServerStatus(snapshot)).toContain("pid: 42");
+		expect(formatDaemonServerStatus(snapshot)).toContain("socket: /tmp/omp-daemon.sock");
 	});
 });

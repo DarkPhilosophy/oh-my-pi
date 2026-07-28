@@ -395,6 +395,76 @@ describe("daemon server and registry", () => {
 		}
 	});
 
+	test("does not let a blocked session command stall a sibling session", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-session-isolation-"));
+		const runtimeDir = path.join(root, "runtime");
+		const fake = fakeFactory();
+		const firstStarted = Promise.withResolvers<void>();
+		const releaseFirst = Promise.withResolvers<void>();
+		const server = new DaemonServer({
+			profile: "test",
+			runtimeDir,
+			token: "secret",
+			runtimeFactory: async options => {
+				const runtime = await fake.runtimeFactory(options);
+				return {
+					...runtime,
+					command: async command => {
+						if (runtime.sessionId === "first") {
+							firstStarted.resolve();
+							await releaseFirst.promise;
+						}
+						return runtime.command(command);
+					},
+				};
+			},
+		});
+		await server.run();
+		const firstClient = new DaemonClient({ profile: "test", runtimeDir, token: "secret" });
+		const secondClient = new DaemonClient({ profile: "test", runtimeDir, token: "secret" });
+		try {
+			await firstClient.connect();
+			await secondClient.connect();
+			await firstClient.request("session_create", { sessionId: "first", cwd: root });
+			await secondClient.request("session_create", { sessionId: "second", cwd: root });
+			await firstClient.request("attach", {
+				sessionId: "first",
+				attachmentId: "first-client",
+				mode: "interactive",
+			});
+			await secondClient.request("attach", {
+				sessionId: "second",
+				attachmentId: "second-client",
+				mode: "interactive",
+			});
+
+			const blocked = firstClient.request("session_command", {
+				sessionId: "first",
+				attachmentId: "first-client",
+				command: { text: "block" },
+			});
+			await firstStarted.promise;
+			const sibling = secondClient.request("session_command", {
+				sessionId: "second",
+				attachmentId: "second-client",
+				command: { text: "continue" },
+			});
+			const winner = await Promise.race([sibling.then(() => "sibling"), Bun.sleep(250).then(() => "timeout")]);
+			expect(winner).toBe("sibling");
+			expect(fake.runtimes.get("second")?.commands).toEqual(["continue"]);
+
+			releaseFirst.resolve();
+			await blocked;
+		} finally {
+			releaseFirst.resolve();
+			await server.registry.close("first").catch(() => undefined);
+			await server.registry.close("second").catch(() => undefined);
+			firstClient.close();
+			secondClient.close();
+			await server.shutdown(true);
+		}
+	});
+
 	test("removes an exited hosted session while its runtime cleanup continues", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-terminal-exit-"));
 		const fake = fakeFactory();
@@ -477,6 +547,35 @@ describe("daemon server and registry", () => {
 		try {
 			await expect(loser.run()).rejects.toThrow(/already owned/);
 			expect(await Bun.file(path.join(runtimeDir, "daemon.owner")).exists()).toBe(true);
+			const client = new DaemonClient({ profile: "test", runtimeDir, token: "secret" });
+			try {
+				await expect(client.serverStatus()).resolves.toMatchObject({ daemonId: winner.status().daemonId });
+			} finally {
+				client.close();
+			}
+		} finally {
+			await winner.shutdown(true);
+		}
+	});
+	test("a startup contender cannot unlink a live endpoint whose owner lease vanished", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-owner-missing-"));
+		const runtimeDir = path.join(root, "runtime");
+		const winner = new DaemonServer({
+			profile: "test",
+			runtimeDir,
+			token: "secret",
+			runtimeFactory: fakeFactory().runtimeFactory,
+		});
+		await winner.run();
+		const loser = new DaemonServer({
+			profile: "test",
+			runtimeDir,
+			token: "secret",
+			runtimeFactory: fakeFactory().runtimeFactory,
+		});
+		try {
+			await fs.rm(path.join(runtimeDir, "daemon.owner"));
+			await expect(loser.run()).rejects.toThrow(/already owned/);
 			const client = new DaemonClient({ profile: "test", runtimeDir, token: "secret" });
 			try {
 				await expect(client.serverStatus()).resolves.toMatchObject({ daemonId: winner.status().daemonId });
@@ -877,6 +976,122 @@ describe("daemon server and registry", () => {
 		expect((await idleServer.shutdown()).shutdown).toBe(true);
 	});
 
+	test("drops a provisional interactive session when its creator disconnects before attach", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-provisional-"));
+		const fake = fakeFactory();
+		const server = new DaemonServer({
+			profile: "test",
+			runtimeDir: path.join(root, "runtime"),
+			token: "secret",
+			runtimeFactory: fake.runtimeFactory,
+		});
+		await server.run();
+		try {
+			const client = await connect(server.endpoint!);
+			client.socket.write(encodeDaemonFrame(hello("secret", "provisional-client")));
+			expect((await client.reader.next()).tag).toBe("hello_ok");
+			client.socket.write(
+				encodeDaemonFrame({
+					v: DAEMON_PROTOCOL_MAJOR,
+					tag: "request",
+					requestId: "create-provisional",
+					operation: {
+						op: "session_create",
+						sessionId: "provisional",
+						cwd: root,
+						closeOnDisconnectBeforeAttach: true,
+					},
+				}),
+			);
+			expect(await client.reader.next()).toMatchObject({ tag: "response", ok: true });
+			expect(server.status().sessionCount).toBe(1);
+
+			await destroyAndWait(client.socket);
+			for (let attempt = 0; attempt < 100 && server.status().sessionCount > 0; attempt++) {
+				await Bun.sleep(10);
+			}
+			expect(server.status().sessionCount).toBe(0);
+			expect(fake.runtimes.get("provisional")?.disposed).toBe(true);
+		} finally {
+			await server.shutdown(true);
+		}
+	});
+
+	test("keeps a provisional interactive session after its first snapshot acknowledgement", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-provisional-attached-"));
+		const fake = fakeFactory();
+		const runtimeDir = path.join(root, "runtime");
+		const server = new DaemonServer({
+			profile: "test",
+			runtimeDir,
+			token: "secret",
+			runtimeFactory: fake.runtimeFactory,
+		});
+		await server.run();
+		const client = new DaemonClient({ profile: "test", runtimeDir, token: "secret" });
+		try {
+			await client.connect();
+			await client.request({
+				op: "session_create",
+				sessionId: "attached",
+				cwd: root,
+				closeOnDisconnectBeforeAttach: true,
+			});
+			const attachmentId = "attached-client";
+			const handle = new RemoteSessionHandle(client, "attached", { attachmentId });
+			await handle.whenReady();
+			await client.request("snapshot_ack", { sessionId: "attached", attachmentId, seq: 0 });
+			await handle.dispose();
+			client.close();
+			for (let attempt = 0; attempt < 100 && server.status().connectionCount > 0; attempt++) {
+				await Bun.sleep(10);
+			}
+			expect(server.status().sessionCount).toBe(1);
+			expect(fake.runtimes.get("attached")?.disposed).toBe(false);
+		} finally {
+			client.close();
+			await server.shutdown(true);
+		}
+	});
+
+	test("drops a provisional interactive session when its creator disconnects before snapshot acknowledgement", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-provisional-unacknowledged-"));
+		const fake = fakeFactory();
+		const runtimeDir = path.join(root, "runtime");
+		const server = new DaemonServer({
+			profile: "test",
+			runtimeDir,
+			token: "secret",
+			runtimeFactory: fake.runtimeFactory,
+		});
+		await server.run();
+		const client = new DaemonClient({ profile: "test", runtimeDir, token: "secret" });
+		try {
+			await client.connect();
+			await client.request({
+				op: "session_create",
+				sessionId: "unacknowledged",
+				cwd: root,
+				closeOnDisconnectBeforeAttach: true,
+			});
+			await client.request("attach", {
+				sessionId: "unacknowledged",
+				attachmentId: "unacknowledged-client",
+				mode: "interactive",
+				delivery: "all",
+			});
+			client.close();
+			for (let attempt = 0; attempt < 100 && server.status().connectionCount > 0; attempt++) {
+				await Bun.sleep(10);
+			}
+			expect(server.status().sessionCount).toBe(0);
+			expect(fake.runtimes.get("unacknowledged")?.disposed).toBe(true);
+		} finally {
+			client.close();
+			await server.shutdown(true);
+		}
+	});
+
 	test("an oversized session event becomes a truncation marker instead of wedging the stream", async () => {
 		// A >1MiB event cannot encode into a wire frame: pre-fix it threw
 		// synchronously through the session's subscribe listener, poisoned the
@@ -984,6 +1199,66 @@ describe("daemon server and registry", () => {
 			await server.shutdown(true);
 		}
 	}, 20_000);
+	test("a slow attachment cannot retain unbounded output or stall another client", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-slow-client-"));
+		const fake = fakeFactory();
+		const server = new DaemonServer({
+			profile: "test",
+			runtimeDir: path.join(root, "runtime"),
+			token: "secret",
+			runtimeFactory: fake.runtimeFactory,
+		});
+		await server.run();
+		try {
+			const endpoint = server.endpoint!;
+			const canonicalRoot = await fs.realpath(root);
+			const slow = await connect(endpoint);
+			slow.socket.write(encodeDaemonFrame(hello("secret", "slow-hello")));
+			expect((await slow.reader.next()).tag).toBe("hello_ok");
+			slow.socket.write(
+				encodeDaemonFrame({
+					v: DAEMON_PROTOCOL_MAJOR,
+					tag: "request",
+					requestId: "create-slow",
+					operation: { op: "session_create", sessionId: "slow", cwd: canonicalRoot },
+				}),
+			);
+			expect((await slow.reader.next()).tag).toBe("response");
+			slow.socket.write(
+				encodeDaemonFrame({
+					v: DAEMON_PROTOCOL_MAJOR,
+					tag: "request",
+					requestId: "attach-slow",
+					operation: { op: "attach", sessionId: "slow", attachmentId: "slow-a1", mode: "interactive" },
+				}),
+			);
+			for (let index = 0; index < 4; index++) await slow.reader.next();
+
+			const control = await connect(endpoint);
+			control.socket.write(encodeDaemonFrame(hello("secret", "control-hello")));
+			expect((await control.reader.next()).tag).toBe("hello_ok");
+
+			slow.socket.removeAllListeners("data");
+			slow.socket.pause();
+			fake.runtimes.get("slow")?.emit({ type: "terminal_output", data: "x".repeat(16 * 1024 * 1024) });
+
+			control.socket.write(
+				encodeDaemonFrame({
+					v: DAEMON_PROTOCOL_MAJOR,
+					tag: "request",
+					requestId: "control-ping",
+					operation: { op: "ping" },
+				}),
+			);
+			const ping = await control.reader.next();
+			expect(ping.tag).toBe("response");
+			for (let attempt = 0; attempt < 8 && server.status().connectionCount !== 1; attempt++) await Bun.sleep(0);
+			expect(server.status().connectionCount).toBe(1);
+			await destroyAndWait(control.socket);
+		} finally {
+			await server.shutdown(true);
+		}
+	}, 10_000);
 
 	test("authenticates before mutation and reports authoritative status over Unix socket", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-server-"));
@@ -1047,6 +1322,13 @@ describe("daemon server and registry", () => {
 		expect(status.tag).toBe("response");
 		expect(server.status().sessionCount).toBe(1);
 		expect(server.status().attachmentCount).toBe(0);
+		expect(server.status()).toMatchObject({
+			connectionCount: 1,
+			activeSessionCount: 0,
+			idleSessionCount: 1,
+			pid: process.pid,
+			socketPath: server.endpoint,
+		});
 		client.socket.destroy();
 		const shutdown = await server.shutdown(true);
 		expect(shutdown.shutdown).toBe(true);

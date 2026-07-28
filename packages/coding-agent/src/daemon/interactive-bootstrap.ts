@@ -526,6 +526,7 @@ export async function bootstrapDaemonInteractive(
 	const createOperation = {
 		op: "session_create",
 		cwd,
+		closeOnDisconnectBeforeAttach: true,
 		overrides: createSessionOverrides(launchArgs(options.argv)),
 	} as const;
 	let sessionId: string | undefined;

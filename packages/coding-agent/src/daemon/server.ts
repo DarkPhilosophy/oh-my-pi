@@ -27,6 +27,8 @@ import { createAgentSessionRuntime, type DaemonSessionRuntimeFactory } from "./s
 import type { DaemonProfile } from "./status";
 
 const DEFAULT_MAX_CLIENTS = 64;
+const MAX_CONNECTION_QUEUE_BYTES = 8 * DAEMON_MAX_FRAME_BYTES;
+const MAX_DRAIN_WRITE_BYTES = DAEMON_MAX_FRAME_BYTES;
 const OWNER_FILE = "daemon.owner";
 /** How long a contender waits out a live-but-unbound owner (starting or draining). */
 const OWNER_LEASE_WAIT_MS = 10_000;
@@ -35,14 +37,24 @@ const OWNER_TERMINATE_GRACE_MS = 1_000;
 const SKIP_DISPATCH = Symbol("skip daemon dispatch");
 class DaemonEndpointOwnedError extends Error {}
 
+type PendingWrite = {
+	data: string;
+	bytes: number;
+};
+
 type Connection = {
 	socket: net.Socket;
 	buffer: string;
 	authenticated: boolean;
 	attachments: Set<string>;
 	requestIds: Set<string>;
+	provisionalSessions: Set<string>;
 	closed: boolean;
 	generation: number;
+	outboundQueue: PendingWrite[];
+	outboundQueueIndex: number;
+	outboundQueueBytes: number;
+	waitingForDrain: boolean;
 };
 
 type DaemonOwnerLease = {
@@ -135,6 +147,7 @@ export class DaemonServer {
 	readonly #usesDefaultRuntimeFactory: boolean;
 	readonly #startedAt: number;
 	readonly #connections = new Set<Connection>();
+	readonly #provisionalSessionOwners = new Map<string, Connection>();
 	/**
 	 * Every accepted kernel socket, including pre-handshake and half-closed
 	 * ones already released from #connections. net.Server.close() waits for
@@ -150,6 +163,7 @@ export class DaemonServer {
 	#server: net.Server | undefined;
 	#runtimeDir: string | undefined;
 	#endpoint: string | undefined;
+	#ownsEndpoint = false;
 	#token: string | undefined;
 	#closed = false;
 	#ownerHandle: fs.FileHandle | undefined;
@@ -233,6 +247,7 @@ export class DaemonServer {
 				});
 				try {
 					await listening.promise;
+					this.#ownsEndpoint = true;
 					break;
 				} catch (error) {
 					server.off("error", onError);
@@ -284,7 +299,10 @@ export class DaemonServer {
 			}
 			this.#postmortemCancel?.();
 			this.#postmortemCancel = undefined;
-			if ((await this.#ownsCurrentLease()) && this.#endpoint) await fs.rm(this.#endpoint, { force: true });
+			if (this.#ownsEndpoint && (await this.#ownsCurrentLease()) && this.#endpoint) {
+				await fs.rm(this.#endpoint, { force: true });
+				this.#ownsEndpoint = false;
+			}
 			await this.#disposeSharedResources();
 			await this.#releaseOwnerLease();
 			throw error;
@@ -520,7 +538,13 @@ export class DaemonServer {
 	}
 
 	status(): DaemonServerStatus {
-		const counts = this.#registry?.status() ?? { sessionCount: 0, attachmentCount: 0, protectedJobCount: 0 };
+		const counts = this.#registry?.status() ?? {
+			sessionCount: 0,
+			activeSessionCount: 0,
+			idleSessionCount: 0,
+			attachmentCount: 0,
+			protectedJobCount: 0,
+		};
 		return {
 			daemonId: this.#daemonId,
 			serverVersion: this.#serverVersion,
@@ -529,8 +553,13 @@ export class DaemonServer {
 				profile: this.profile,
 			},
 			sessionCount: counts.sessionCount,
+			activeSessionCount: counts.activeSessionCount,
+			idleSessionCount: counts.idleSessionCount,
 			attachmentCount: counts.attachmentCount,
+			connectionCount: this.#connections.size,
 			protectedJobCount: counts.protectedJobCount,
+			pid: process.pid,
+			...(this.#endpoint === undefined ? {} : { socketPath: this.#endpoint }),
 			uptimeMs: Math.max(0, this.#now() - this.#startedAt),
 			...(this.#buildStamp === undefined ? {} : { buildStamp: this.#buildStamp }),
 		};
@@ -600,7 +629,10 @@ export class DaemonServer {
 						server.close(() => finish());
 					});
 				}
-				if (this.#endpoint && (await this.#ownsCurrentLease())) await fs.rm(this.#endpoint, { force: true });
+				if (this.#ownsEndpoint && this.#endpoint && (await this.#ownsCurrentLease())) {
+					await fs.rm(this.#endpoint, { force: true });
+					this.#ownsEndpoint = false;
+				}
 				return { shutdown: true, blockers: [] };
 			} finally {
 				try {
@@ -642,8 +674,13 @@ export class DaemonServer {
 			authenticated: false,
 			attachments: new Set(),
 			requestIds: new Set(),
+			provisionalSessions: new Set(),
 			closed: false,
 			generation: 0,
+			outboundQueue: [],
+			outboundQueueIndex: 0,
+			outboundQueueBytes: 0,
+			waitingForDrain: false,
 		};
 		this.#connections.add(connection);
 		socket.setEncoding("utf8");
@@ -657,9 +694,26 @@ export class DaemonServer {
 		if (connection.closed) return;
 		connection.closed = true;
 		connection.generation++;
+		connection.outboundQueue.length = 0;
+		connection.outboundQueueIndex = 0;
+		connection.outboundQueueBytes = 0;
+		connection.waitingForDrain = false;
 		// A half-close ('end') removes the connection from tracking while the
 		// kernel socket stays open; net.Server.close() would wait on it forever.
 		connection.socket.destroy();
+		const registry = this.#registry;
+		if (registry) {
+			for (const sessionId of connection.provisionalSessions) {
+				const pending = this.#serializeKeyed(`session:${sessionId}`, async () => {
+					if (this.#provisionalSessionOwners.get(sessionId) !== connection) return;
+					this.#provisionalSessionOwners.delete(sessionId);
+					connection.provisionalSessions.delete(sessionId);
+					await registry.close(sessionId);
+				});
+				this.#inflightLifecycle.add(pending);
+				void pending.catch(() => undefined).finally(() => this.#inflightLifecycle.delete(pending));
+			}
+		}
 		for (const key of connection.attachments) {
 			const separator = key.indexOf("\0");
 			if (separator > 0) this.#registry?.disconnect(key.slice(0, separator), key.slice(separator + 1));
@@ -834,16 +888,29 @@ export class DaemonServer {
 		if (!this.#connectionActive(connection, generation)) return SKIP_DISPATCH;
 		const registry = this.registry;
 		switch (operation.op) {
-			case "session_create":
-				return registry.create(operation.sessionId, operation.cwd, operation.overrides);
+			case "session_create": {
+				const created = await registry.create(operation.sessionId, operation.cwd, operation.overrides);
+				if (!operation.closeOnDisconnectBeforeAttach) return created;
+				if (!this.#connectionActive(connection, generation)) {
+					await registry.close(created.sessionId);
+					return SKIP_DISPATCH;
+				}
+				this.#provisionalSessionOwners.set(created.sessionId, connection);
+				connection.provisionalSessions.add(created.sessionId);
+				return created;
+			}
 			case "session_list":
 				return registry.list();
 			case "session_load":
 				return registry.load(operation.sessionId);
 			case "session_resume":
 				return registry.resume(operation.sessionId);
-			case "session_close":
+			case "session_close": {
+				const owner = this.#provisionalSessionOwners.get(operation.sessionId);
+				owner?.provisionalSessions.delete(operation.sessionId);
+				this.#provisionalSessionOwners.delete(operation.sessionId);
 				return registry.close(operation.sessionId);
+			}
 			case "attach": {
 				const key = `${operation.sessionId}\0${operation.attachmentId}`;
 				const attached = await registry.attach(
@@ -877,9 +944,14 @@ export class DaemonServer {
 			case "session_command":
 				this.#requireAttachmentOwnership(connection, operation.sessionId, operation.attachmentId);
 				return registry.command(operation.sessionId, operation.attachmentId, operation.command);
-			case "snapshot_ack":
+			case "snapshot_ack": {
 				this.#requireAttachmentOwnership(connection, operation.sessionId, operation.attachmentId);
-				return registry.snapshotAck(operation.sessionId, operation.attachmentId, operation.seq);
+				const acknowledged = registry.snapshotAck(operation.sessionId, operation.attachmentId, operation.seq);
+				const owner = this.#provisionalSessionOwners.get(operation.sessionId);
+				owner?.provisionalSessions.delete(operation.sessionId);
+				this.#provisionalSessionOwners.delete(operation.sessionId);
+				return acknowledged;
+			}
 			case "shutdown": {
 				const blockers = this.#shutdownBlockers(connection);
 				if (blockers.length > 0) return { shutdown: false, blockers };
@@ -1013,17 +1085,62 @@ export class DaemonServer {
 	}
 
 	#send(connection: Connection, frame: DaemonFrame): void {
-		if (connection.socket.destroyed) return;
+		if (connection.closed || connection.socket.destroyed) return;
 		const eventType =
 			frame.tag === "event" && typeof frame.event === "object" && frame.event !== null && "type" in frame.event
 				? String(frame.event.type).slice(0, 128)
 				: undefined;
 		pushLoopPhase(eventType ? `daemon:send:event:${eventType}` : `daemon:send:${frame.tag}`);
 		try {
-			connection.socket.write(encodeDaemonFrame(frame));
+			const data = encodeDaemonFrame(frame);
+			const bytes = Buffer.byteLength(data, "utf8");
+			const bufferedBytes = connection.socket.writableLength + connection.outboundQueueBytes;
+			if (bufferedBytes + bytes > MAX_CONNECTION_QUEUE_BYTES) {
+				logger.warn("Disconnecting slow daemon client with saturated output queue", {
+					bufferedBytes,
+					frameBytes: bytes,
+					maxBufferedBytes: MAX_CONNECTION_QUEUE_BYTES,
+				});
+				this.#releaseConnection(connection);
+				return;
+			}
+			if (!connection.waitingForDrain) {
+				if (!connection.socket.write(data)) this.#waitForDrain(connection);
+				return;
+			}
+			connection.outboundQueue.push({ data, bytes });
+			connection.outboundQueueBytes += bytes;
 		} finally {
 			popLoopPhase();
 		}
+	}
+
+	#waitForDrain(connection: Connection): void {
+		connection.waitingForDrain = true;
+		connection.socket.once("drain", () => {
+			if (connection.closed || connection.socket.destroyed) return;
+			connection.waitingForDrain = false;
+			while (connection.outboundQueueIndex < connection.outboundQueue.length) {
+				const pending = connection.outboundQueue[connection.outboundQueueIndex++]!;
+				let data = pending.data;
+				let bytes = pending.bytes;
+				while (connection.outboundQueueIndex < connection.outboundQueue.length) {
+					const next = connection.outboundQueue[connection.outboundQueueIndex]!;
+					if (bytes + next.bytes > MAX_DRAIN_WRITE_BYTES) break;
+					connection.outboundQueueIndex++;
+					data += next.data;
+					bytes += next.bytes;
+				}
+				connection.outboundQueueBytes -= bytes;
+				if (!connection.socket.write(data)) {
+					this.#waitForDrain(connection);
+					return;
+				}
+			}
+			connection.outboundQueue.length = 0;
+			connection.outboundQueueIndex = 0;
+			connection.outboundQueueBytes = 0;
+		});
 	}
 
 	#sendError(connection: Connection, requestId: string | undefined, code: DaemonErrorCode, message: string): void {

@@ -24,6 +24,7 @@ export type DaemonConnectionSnapshot =
 			protocolVersion: number;
 			sessionCount: number;
 			readonly attachmentCount?: number;
+			readonly connectionCount?: number;
 			readonly protectedJobCount?: number;
 			readonly uptimeMs?: number;
 			readonly activeSessionCount?: number;
@@ -109,6 +110,7 @@ export function formatDaemonServerStatus(snapshot: DaemonConnectionSnapshot): st
 			lines.push(`active sessions: ${count(snapshot.activeSessionCount)}`);
 		if (snapshot.idleSessionCount !== undefined) lines.push(`idle sessions: ${count(snapshot.idleSessionCount)}`);
 		if (snapshot.attachmentCount !== undefined) lines.push(`attachments: ${count(snapshot.attachmentCount)}`);
+		if (snapshot.connectionCount !== undefined) lines.push(`client connections: ${count(snapshot.connectionCount)}`);
 		if (snapshot.protectedJobCount !== undefined) lines.push(`protected jobs: ${count(snapshot.protectedJobCount)}`);
 		if (snapshot.uptimeMs !== undefined) lines.push(`uptime: ${count(snapshot.uptimeMs)}ms`);
 		if (snapshot.pid !== undefined) lines.push(`pid: ${count(snapshot.pid)}`);

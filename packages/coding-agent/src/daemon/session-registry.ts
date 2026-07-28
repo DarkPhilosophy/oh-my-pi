@@ -188,6 +188,22 @@ export class DaemonSessionRegistry {
 		return count;
 	}
 
+	get activeSessionCount(): number {
+		let count = 0;
+		for (const record of this.#sessions.values()) {
+			if (record.attachments.size > 0) count++;
+		}
+		return count;
+	}
+
+	get idleSessionCount(): number {
+		let count = 0;
+		for (const record of this.#sessions.values()) {
+			if (record.attachments.size === 0) count++;
+		}
+		return count;
+	}
+
 	get protectedJobCount(): number {
 		let count = 0;
 		for (const record of this.#sessions.values()) count += record.runtime.protectedJobCount?.() ?? 0;
@@ -202,9 +218,17 @@ export class DaemonSessionRegistry {
 		return [...this.#sessions.values()].some(record => record.interactiveAttachment !== undefined);
 	}
 
-	status(): { sessionCount: number; attachmentCount: number; protectedJobCount: number } {
+	status(): {
+		sessionCount: number;
+		activeSessionCount: number;
+		idleSessionCount: number;
+		attachmentCount: number;
+		protectedJobCount: number;
+	} {
 		return {
 			sessionCount: this.sessionCount,
+			activeSessionCount: this.activeSessionCount,
+			idleSessionCount: this.idleSessionCount,
 			attachmentCount: this.attachmentCount,
 			protectedJobCount: this.protectedJobCount,
 		};

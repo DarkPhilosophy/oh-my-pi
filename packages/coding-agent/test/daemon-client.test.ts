@@ -243,8 +243,12 @@ describe("daemon client", () => {
 							protocolVersion: DAEMON_PROTOCOL_MAJOR,
 							shard,
 							sessionCount: 3,
+							activeSessionCount: 2,
+							idleSessionCount: 1,
 							attachmentCount: 1,
+							connectionCount: 1,
 							protectedJobCount: 0,
+							pid: 123,
 							uptimeMs: 10,
 						},
 					}),
@@ -269,8 +273,12 @@ describe("daemon client", () => {
 			protocolVersion: DAEMON_PROTOCOL_MAJOR,
 			shard,
 			sessionCount: 8,
+			activeSessionCount: 5,
+			idleSessionCount: 3,
 			attachmentCount: 2,
+			connectionCount: 1,
 			protectedJobCount: 1,
+			pid: 123,
 			uptimeMs: 42,
 		};
 		const { server, endpoint } = await socketServer(socket => {
@@ -548,6 +556,60 @@ describe("daemon client", () => {
 			await reconnect;
 			await expect(client.request("ping")).resolves.toEqual({ fresh: true });
 			expect(connections).toBe(2);
+		} finally {
+			client.close();
+			await new Promise<void>(resolve => server.close(() => resolve()));
+		}
+	});
+	test("reconnects when an idle connected socket stops responding", async () => {
+		let connections = 0;
+		const reconnected = Promise.withResolvers<void>();
+		const { server, endpoint } = await socketServer(socket => {
+			connections++;
+			const connection = connections;
+			socket.setEncoding("utf8");
+			let buffer = "";
+			socket.on("data", chunk => {
+				buffer += chunk;
+				for (;;) {
+					const newline = buffer.indexOf("\n");
+					if (newline < 0) return;
+					const frame = JSON.parse(buffer.slice(0, newline)) as { tag: string; requestId: string };
+					buffer = buffer.slice(newline + 1);
+					if (frame.tag === "hello") {
+						socket.write(encodeDaemonFrame({ ...helloOk(), requestId: frame.requestId }));
+					} else if (connection > 1) {
+						socket.write(
+							encodeDaemonFrame({
+								v: DAEMON_PROTOCOL_MAJOR,
+								tag: "response",
+								requestId: frame.requestId,
+								ok: true,
+								result: { pong: true },
+							}),
+						);
+					}
+				}
+			});
+		});
+		const client = new DaemonClient({
+			profile: shard.profile,
+			endpoint,
+			token: "secret",
+			heartbeatIntervalMs: 5,
+			heartbeatTimeoutMs: 5,
+		});
+		let connected = 0;
+		client.onSnapshot(snapshot => {
+			if (snapshot.state !== "connected") return;
+			connected++;
+			if (connected === 2) reconnected.resolve();
+		});
+		try {
+			await client.connect();
+			const recovered = await Promise.race([reconnected.promise.then(() => true), Bun.sleep(400).then(() => false)]);
+			expect(recovered).toBe(true);
+			expect(connections).toBeGreaterThanOrEqual(2);
 		} finally {
 			client.close();
 			await new Promise<void>(resolve => server.close(() => resolve()));

@@ -6,6 +6,7 @@
 
 - Reduced interactive daemon fanout overhead by projecting terminal clients to terminal-only events while preserving replay sequence numbers, and by caching event byte sizes instead of serializing them again during acknowledgement pruning.
 - Improved daemon loop-stall diagnostics with synchronous session-event and outbound event-type attribution.
+- Expanded daemon status diagnostics to distinguish stored, active, and idle sessions from client connections and attachments, and to identify the serving process and socket.
 - Masked email account labels in `/usage` by default while preserving organization context, with a Providers → Privacy setting to restore full labels.
 
 ### Fixed
@@ -13,6 +14,8 @@
 - Fixed interactive daemon startup failing with `connect ENOENT …/daemon.sock` whenever a replacement daemon was needed. The server now resolves its build-pairing stamp before the socket accepts connections, so a freshly bound daemon can no longer answer the pairing handshake without a stamp and be shut down by the very client that spawned it.
 - Fixed advisor secret scrubbing losing regex-protected value collection, history re-scrubbing, and friendly-placeholder prefix stripping on the synchronous render path, so a secret discovered later in a delta no longer leaves stale friendly prefixes in already-delivered advisor prompts. The chunked renderer applies the same pipeline per slice.
 - Fixed interactive daemon startup aborting when the paired daemon died after the build handshake but before replying to session discovery or creation. Bootstrap now reconnects through the normal replacement path and retries the interrupted operation once.
+- Fixed cancelling a daemon-backed interactive startup before its first acknowledged attachment leaving an orphaned runtime that blocked later `--resume` attempts with `session_busy`. Provisional sessions now close when their creating connection disappears, but survive once the client has acknowledged the attachment.
+- Fixed one slow daemon session freezing every other client. Request routing now serializes lifecycle changes per session while independent session commands and control operations continue concurrently.
 - Fixed clients continuing on a daemon from a different build when active clients or sessions blocked graceful shutdown. Build mismatches now force replacement and fail closed if the fresh daemon still reports the wrong build.
 - Fixed forced build replacement aborting startup against daemons that predate the owner-lease file ("owner PID is unavailable") and against still-draining stale daemons whose listener answered the first reconnect ("mismatched replacement daemon build"). Replacement now proceeds without a signalable PID and keeps reconnecting within the startup budget until the fresh build answers.
 - Fixed hosted CLI launches degrading an explicit `--resume`/`--fork`/`--continue` selection into a fresh empty session when session resolution was cancelled; the daemon now refuses to host the wrong transcript and surfaces the error instead.
@@ -20,6 +23,7 @@
 - Fixed `/usage show` multi-account layouts by wrapping narrow rows, keeping wide rows compact, and showing each account's remaining allowance alongside the labeled combined total.
 
 - Fixed tiny-model workers repeatedly retrying a failed accelerated device for later model loads. A device is now remembered as unavailable only after a fallback device loads successfully, avoiding repeated CUDA/ONNX initialization failures without poisoning devices after a total load failure.
+- Fixed daemon-wide freezes when an attached terminal stopped reading output. Per-client socket writes now respect backpressure, drain through a bounded queue, and disconnect clients that exceed the queue limit without stalling healthy sessions.
 - Fixed large daemon terminal-output events monopolizing the shared event loop while every protocol chunk was synchronously fanned out. Fanout now yields between bounded batches and continues after an attachment sink or event publication failure.
 - Fixed clients remaining permanently frozen after a live daemon stopped responding. Timed-out requests now replace the stuck transport, one verified contender safely takes over the owner lease, every client retries reattachment while the replacement runtime loads, and fresh recovery preserves the original session identity.
 - Fixed daemon failover clients retaining the dead daemon's event sequence cursor. Replacement daemons restart event numbering from one, so clients now reset replay state when the daemon identity changes instead of discarding fresh terminal output and leaving the TUI frozen on its old frame.

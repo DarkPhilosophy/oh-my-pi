@@ -91,8 +91,12 @@ describe("daemon protocol", () => {
 				protocolVersion: DAEMON_PROTOCOL_MAJOR,
 				shard,
 				sessionCount: 2,
+				activeSessionCount: 1,
+				idleSessionCount: 1,
 				attachmentCount: 1,
+				connectionCount: 1,
 				protectedJobCount: 0,
+				pid: 123,
 				uptimeMs: 50,
 			},
 		});

@@ -93,6 +93,8 @@ export type DaemonOperation =
 			sessionId?: string;
 			cwd: string;
 			overrides?: DaemonSessionCreateOverrides;
+			/** Drop this newly created session if this connection disappears before its first attachment. */
+			closeOnDisconnectBeforeAttach?: boolean;
 	  }
 	| { op: "session_list" }
 	| { op: "session_load"; sessionId: string }
@@ -136,13 +138,17 @@ export type DaemonServerStatus = {
 	protocolVersion: number;
 	shard: DaemonShard;
 	sessionCount: number;
+	activeSessionCount: number;
+	idleSessionCount: number;
 	attachmentCount: number;
+	connectionCount: number;
 	protectedJobCount: number;
+	pid: number;
+	socketPath?: string;
 	uptimeMs: number;
 	/** Build pairing identity; absent on daemons predating the field. */
 	buildStamp?: string;
 };
-
 export type DaemonServerStatusFrame = {
 	v: number;
 	tag: "server_status";
@@ -318,12 +324,11 @@ function helloOk(value: unknown): DaemonHelloOk {
 
 function operation(value: unknown): DaemonOperation {
 	function sessionCreate(source: Record<string, unknown>): DaemonOperation {
-		exact(source, ["op", "sessionId", "cwd", "overrides"], "operation");
+		exact(source, ["op", "sessionId", "cwd", "overrides", "closeOnDisconnectBeforeAttach"], "operation");
 		const overridesValue = source.overrides;
 		let overrides: DaemonSessionCreateOverrides | undefined;
 		if (overridesValue !== undefined) {
 			const overrideSource = record(overridesValue, "operation.overrides");
-			exact(source, ["op", "sessionId", "cwd", "overrides"], "operation");
 			exact(
 				overrideSource,
 				["provider", "model", "thinkingLevel", "steeringMode", "followUpMode", "argv", "clientEnv"],
@@ -362,7 +367,9 @@ function operation(value: unknown): DaemonOperation {
 					: { model: requiredString(overrideSource.model, "operation.overrides.model") }),
 				...(overrideSource.thinkingLevel === undefined
 					? {}
-					: { thinkingLevel: requiredString(overrideSource.thinkingLevel, "operation.overrides.thinkingLevel") }),
+					: {
+							thinkingLevel: requiredString(overrideSource.thinkingLevel, "operation.overrides.thinkingLevel"),
+						}),
 				...(steeringMode === undefined ? {} : { steeringMode }),
 				...(followUpMode === undefined ? {} : { followUpMode }),
 				...(argvValue === undefined ? {} : { argv: argvValue as string[] }),
@@ -371,6 +378,10 @@ function operation(value: unknown): DaemonOperation {
 					: { clientEnv: overrideSource.clientEnv as Record<string, string> }),
 			};
 		}
+		const closeOnDisconnectBeforeAttach =
+			source.closeOnDisconnectBeforeAttach === undefined
+				? undefined
+				: requiredBoolean(source.closeOnDisconnectBeforeAttach, "operation.closeOnDisconnectBeforeAttach");
 		return {
 			op: "session_create",
 			...(source.sessionId === undefined
@@ -378,6 +389,7 @@ function operation(value: unknown): DaemonOperation {
 				: { sessionId: requiredString(source.sessionId, "operation.sessionId") }),
 			cwd: requiredString(source.cwd, "operation.cwd"),
 			...(overrides === undefined ? {} : { overrides }),
+			...(closeOnDisconnectBeforeAttach === undefined ? {} : { closeOnDisconnectBeforeAttach }),
 		};
 	}
 
@@ -578,8 +590,13 @@ function status(value: unknown): DaemonServerStatus {
 			"protocolVersion",
 			"shard",
 			"sessionCount",
+			"activeSessionCount",
+			"idleSessionCount",
 			"attachmentCount",
+			"connectionCount",
 			"protectedJobCount",
+			"pid",
+			"socketPath",
 			"uptimeMs",
 			"buildStamp",
 		],
@@ -591,8 +608,15 @@ function status(value: unknown): DaemonServerStatus {
 		protocolVersion: integer(source.protocolVersion, "status.protocolVersion"),
 		shard: shard(source.shard, "status.shard"),
 		sessionCount: integer(source.sessionCount, "status.sessionCount"),
+		activeSessionCount: integer(source.activeSessionCount, "status.activeSessionCount"),
+		idleSessionCount: integer(source.idleSessionCount, "status.idleSessionCount"),
 		attachmentCount: integer(source.attachmentCount, "status.attachmentCount"),
+		connectionCount: integer(source.connectionCount, "status.connectionCount"),
 		protectedJobCount: integer(source.protectedJobCount, "status.protectedJobCount"),
+		pid: integer(source.pid, "status.pid"),
+		...(source.socketPath === undefined
+			? {}
+			: { socketPath: requiredString(source.socketPath, "status.socketPath") }),
 		uptimeMs: integer(source.uptimeMs, "status.uptimeMs"),
 		...(source.buildStamp === undefined
 			? {}

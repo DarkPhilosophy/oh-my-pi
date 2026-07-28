@@ -167,11 +167,13 @@ describe("daemon multi-session fairness", () => {
 			const victimHandle = new RemoteSessionHandle(victimClient, "victim");
 			await victimHandle.whenReady();
 
-			// 1000 × 32KB bounded events (~32MB) fanned out to the heavy
-			// attachment while the victim runs 50 command round-trips.
+			// 200 × 32KB bounded events (~6.25 MiB) fanned out to the heavy
+			// attachment while the victim runs 50 command round-trips. This stays
+			// below the server's slow-client queue cap; saturation behavior has a
+			// dedicated transport regression.
 			const emit = harness.emitters.get("heavy")!;
 			const payload = "x".repeat(32 * 1024);
-			const total = 1_000;
+			const total = 200;
 			let emitted = 0;
 			const flood = (async () => {
 				for (let burst = 0; burst < total / 50; burst++) {
