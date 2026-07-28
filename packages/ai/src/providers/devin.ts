@@ -217,7 +217,12 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 			for (;;) {
 				const { done, value } = await reader.read();
 				if (value && value.length > 0) {
-					pending = Buffer.concat([pending, value]);
+					// Steady state drains fully per chunk; view the fresh reader chunk
+					// instead of copying it through Buffer.concat (see aws-eventstream.ts).
+					pending =
+						pending.length === 0
+							? Buffer.from(value.buffer, value.byteOffset, value.byteLength)
+							: Buffer.concat([pending, value]);
 				}
 
 				while (pending.length >= 5) {

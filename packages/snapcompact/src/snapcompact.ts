@@ -1963,6 +1963,11 @@ export async function compact<TMessage = Message>(
 
 	const frames = await Promise.all(newFrames);
 	const totalChars = frames.reduce((sum, frame) => sum + frame.chars, 0) + textChars;
+	const frameCols: number[] = [];
+	for (const frame of frames) {
+		if (!frameCols.includes(frame.cols)) frameCols.push(frame.cols);
+	}
+	const summaryCols = frameCols.length > 0 ? frameCols.join(" or ") : geo.cols;
 
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
 	const files = formatFileList(readFiles, modifiedFiles, fileOps.read);
@@ -1975,7 +1980,7 @@ export async function compact<TMessage = Message>(
 			frameCount: frames.length,
 			multipleFrames: frames.length > 1,
 			docColumns: high.columns === 2,
-			cols: geo.cols,
+			cols: summaryCols,
 			rows: geo.rows,
 			sentenceInk: high.variant === "sent",
 			stopwordDimmed: high.stopwordDim === true,

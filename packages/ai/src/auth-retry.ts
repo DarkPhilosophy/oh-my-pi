@@ -1,3 +1,4 @@
+import { extractHttpStatusFromError } from "@oh-my-pi/pi-utils";
 import type { OAuthAccess } from "./auth-storage";
 import * as AIError from "./error";
 import { isAuthRetryableError, isInvalidatedOAuthTokenError } from "./error/auth-classify";
@@ -18,7 +19,7 @@ import { isUsageLimitOutcome } from "./error/rate-limit";
  *   (invalidate/usage-limit the current credential and rotate to a sibling).
  *
  * Current drivers preserve that bounded a/b/c sequence for ordinary 401/auth
- * failures. Usage/account-limit failures skip refresh and may repeat step (c)
+ * failures. 403/usage-limit failures skip refresh and may repeat step (c)
  * until the resolver returns `undefined`, cycles, or hits
  * {@link AUTH_RETRY_MAX_ATTEMPTS}.
  */
@@ -92,7 +93,11 @@ export const AUTH_RETRY_MAX_ATTEMPTS = 64;
 function isDirectCredentialRotationError(error: unknown): boolean {
 	if (isUsageLimit(error) || isInvalidatedOAuthTokenError(error)) return true;
 	const status = AIError.status(error);
+	// 403: the token is valid but access was denied, so refreshing the same
+	// credential can't help — rotate straight through the sibling pool.
+	if (status === 403) return true;
 	const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
+	if (status === undefined && message !== undefined && extractHttpStatusFromError({ message }) === 403) return true;
 	return isUsageLimitOutcome(status, message);
 }
 
@@ -199,8 +204,8 @@ async function runOAuthAttempt<T>(
  * - A resolver → initial `attempt`, then resolver-driven retries until the
  *   applicable policy is exhausted, the resolver declines or cycles, or the
  *   operation reaches {@link AUTH_RETRY_MAX_ATTEMPTS}. Ordinary 401/auth
- *   failures retain one refresh-same plus one sibling switch; usage/account
- *   limits rotate directly through distinct siblings.
+ *   failures retain one refresh-same plus one sibling switch; 403/usage-limit
+ *   failures rotate directly through distinct siblings.
  *
  * Used by non-streaming consumers (image generation, web search, completion
  * helpers). The streaming driver in `stream.ts` implements the same policy with
@@ -289,7 +294,7 @@ export interface WithOAuthAccessOptions {
  * - initial → `getOAuthAccess` (or `opts.seed`).
  * - 401/auth failure → one `getOAuthAccess` with `forceRefresh: true` for the
  *   current account, then sibling rotation.
- * - usage-limit failure → `rotateSessionCredential` directly, without a
+ * - 403/usage-limit failure → `rotateSessionCredential` directly, without a
  *   force-refresh detour.
  *
  * A refresh-same step may retry a new bearer for the same credential identity;

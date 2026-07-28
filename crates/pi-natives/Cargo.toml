@@ -72,6 +72,16 @@ xcap = { version = "=0.9.6", default-features = false }
 [target.'cfg(target_os = "macos")'.dependencies]
 tempfile = "=3.27.0"
 core-graphics = "0.25"
+# Regenerate miniaudio FFI bindings from the compiled headers on macOS only.
+# The maudio-sys pregenerated `unix.rs` bindings are Linux-shaped: their
+# `ma_device`/`ma_context` backend-state unions omit the `#ifdef
+# MA_SUPPORT_COREAUDIO` members that the macOS build of miniaudio.c actually
+# contains, so shipping them on darwin is an ABI mismatch that silently breaks
+# CoreAudio capture (device init/start succeed but no render callbacks fire).
+# darwin builds with host Xcode (libclang available), so bindgen is fine here;
+# the hermetic zig/musl/windows toolchains keep the bindgen-free pregen path,
+# whose bindings are correct for those platforms.
+maudio = { workspace = true, features = ["generate-bindings"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

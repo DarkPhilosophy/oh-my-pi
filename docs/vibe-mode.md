@@ -2,9 +2,10 @@
 
 Vibe mode turns the session into a **director** that drives persistent background
 worker sessions instead of editing code itself. In vibe mode your own toolset is
-stripped down to `read` plus five worker-control tools; the workers do the
-grepping, editing, running, and building, and you verify their work by reading
-the files they touch.
+stripped down to `read`, optional parent-owned `todo`, plus five worker-control
+tools; the workers do the grepping, editing, running, and building, and you
+verify their work by reading the files they touch. When available, `todo` is
+only the director's parent-session bookkeeping tool; workers do not own it.
 
 ## Enabling and disabling
 
@@ -16,8 +17,9 @@ Toggle it with the `/vibe` slash command:
 /vibe                 # run again to exit
 ```
 
-- Entering installs the vibe tools, reduces the active toolset to `read` + the
-  vibe tools, and injects the director instructions for the turn.
+- Entering installs the vibe tools, reduces the active toolset to `read`,
+  optional parent-owned `todo`, and the vibe tools, and injects the director
+  instructions for the turn.
 - An inline prompt (`/vibe <prompt>`) enters the mode and submits that prompt as
   the first directive.
 - Exiting restores the previous toolset and **kills every worker session** — a
@@ -62,7 +64,8 @@ concurrently is the normal shape.
 3. Keep directing other workers while turns are in flight; `vibe_wait` only when
    blocked.
 4. When a turn result arrives, `read` the touched files to verify claims before
-   building on them, then `vibe_send` the next step.
+   building on them. When the optional parent-owned `todo` tool is available,
+   reconcile verified work through it, then `vibe_send` the next step.
 5. Route by difficulty: draft with `fast`, escalate to `good` when `fast` stalls
    or the problem needs judgment.
 6. `vibe_kill` finished or stuck workers; `vibe_list` to recover the roster.

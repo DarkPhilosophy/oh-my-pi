@@ -43,6 +43,7 @@ describe("CommandController /usage", () => {
 			settings: createSettingsDouble(),
 			ui: { terminal: { columns: 100 } },
 			present,
+			presentCommandOutput: present,
 			showWarning: vi.fn(),
 			showError: vi.fn(),
 		} as unknown as InteractiveModeContext;
@@ -83,6 +84,7 @@ describe("CommandController /usage", () => {
 			settings: createSettingsDouble(),
 			ui: { terminal: { columns: 100 } },
 			present,
+			presentCommandOutput: present,
 			showWarning: vi.fn(),
 			showError: vi.fn(),
 		} as unknown as InteractiveModeContext;
@@ -132,6 +134,7 @@ describe("CommandController /usage", () => {
 			settings: createSettingsDouble(),
 			ui: { terminal: { columns: 100 } },
 			present,
+			presentCommandOutput: present,
 			showWarning: vi.fn(),
 			showError: vi.fn(),
 		} as unknown as InteractiveModeContext;

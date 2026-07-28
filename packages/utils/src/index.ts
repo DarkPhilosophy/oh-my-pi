@@ -19,6 +19,7 @@ export * from "./path";
 export * from "./path-tree";
 export * from "./peek-file";
 export * as postmortem from "./postmortem";
+export * from "./process-name";
 export * as procmgr from "./procmgr";
 export * as prompt from "./prompt";
 export * as ptree from "./ptree";

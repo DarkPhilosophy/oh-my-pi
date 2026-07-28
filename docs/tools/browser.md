@@ -84,7 +84,7 @@ The tool returns one result per call; no streaming partial output is emitted fro
   - any other object/array becomes pretty JSON text (`JSON.stringify(value, null, 2)`); a value that is not structured-cloneable is dropped with a debug note.
   - helper side effects (`read`/`write`/`tree`/...) emit `status` events that surface as compact JSON text.
   - primitive `display(value)` (string/number/...) and `console.*` flow to the text channel, which the worker forwards as debug logs rather than tool content; `undefined` is ignored.
-- `tab.screenshot()` also appends text plus an image content item unless `silent: true`; `details.screenshots` records persisted screenshot metadata `{ dest, mimeType, bytes, width, height }`.
+- `tab.screenshot()` returns its saved path and appends text plus an image unless `silent: true`; `details.screenshots` records `{ dest, mimeType, bytes, width, height }`.
 - `run` `details` includes `action`, `name`, current `browser`/`url` when the tab exists, optional `screenshots`, and `details.result` containing only the concatenated text outputs. Combined run text is capped at the inline byte limit via `enforceInlineByteCap()`; over-cap text is saved as a session artifact (`saveBrowserOutputArtifact()`) and the capped text replaces it in content and `details.result`.
 
 ## Flow
@@ -125,7 +125,7 @@ The tool returns one result per call; no streaming partial output is emitted fro
    - `tab.observe({ includeAll?, viewportOnly? })`
    - `tab.ariaSnapshot(selector?, { depth?, boxes? })`
    - `tab.ref(id)`
-   - `tab.screenshot({ selector?, fullPage?, save?, silent? })`
+   - `tab.screenshot({ selector?, fullPage?, silent? })`
    - `tab.extract(format = "markdown")`
    - `tab.click(selector)`
    - `tab.type(selector, text)`
@@ -151,7 +151,7 @@ The tool returns one result per call; no streaming partial output is emitted fro
 16a. `tab.ref(id)` resolves a `[ref=eN]` id from the latest `ariaSnapshot()` to a live `ElementHandle` via `resolveAriaRefHandle()` (`page.evaluateHandle` in the main world, walking the document + shadow roots for the matching `_ariaRef`), throwing if no element matches; it accepts a bare `eN` or a prefixed form. For inline selector use, `parseAriaRefSelector()` recognizes only the explicit `aria-ref=eN` / `aria-ref/eN` / `ariaref/eN` forms inside `tab.click/type/fill/waitFor/scrollIntoView` — a bare `eN` is intentionally rejected there so it does not collide with cmux's native observe ids. The cmux backend resolves the same explicit forms through its `aria-ref` `SelectorSpec` kind in `findElement`.
 17. `tab.goto()` clears the cached element ids before navigating. Any new `tab.observe()` also clears and rebuilds the cache.
 18. `tab.click()` uses a custom retry loop for `text/...` selectors to find an actionable visible match; other selectors use `page.locator(...).click()`. Interactive actions (`click`/`fill`/`type`/`press`/`scroll`/`drag`/`scrollIntoView`/`select`/`uploadFile`) and the `waitFor*` helpers run under a per-op deadline (`min(cellBudget − slack, ceiling)`) threaded into both the puppeteer `signal` and `.setTimeout()`, so a stalled helper aborts the CDP action and rejects with a named `tab.<op> timed out after <ms>ms` that leaves cell budget — never the opaque whole-cell timeout. `goto`/`evaluate` stay uncapped.
-19. `tab.screenshot()` captures either the whole page or a selector PNG, downsizes a copy for model output, chooses a persistence path, writes the image to disk, records metadata, and optionally emits text + image display entries.
+19. `tab.screenshot()` captures the page or selected element as PNG, resizes a model copy, saves under `browser.screenshotDir` or the OS temp directory, returns that path, records metadata, and optionally emits text plus image content.
 20. `display()` calls accumulate in an array. After code finishes, the worker posts `{ displays, returnValue, screenshots }`; `BrowserTool.#run()` appends the return value as trailing text content when not `undefined`.
 21. `close` releases one tab or all tabs via `releaseTab()` / `releaseAllTabs()`. Each tab aborts pending runs, asks the worker to close, waits up to `750` ms for a `closed` ack, terminates the worker, decrements browser refcount, and disposes the browser handle when refcount reaches zero.
 
@@ -176,9 +176,9 @@ The tool returns one result per call; no streaming partial output is emitted fro
   - `accept`/`dismiss`: page `dialog` events are handled automatically.
   - Changing dialog policy on an existing live tab forces tab recreation instead of mutating the worker in place.
 - **Screenshot persistence**
-  - `save` provided: persist full-resolution PNG at the resolved cwd-relative or absolute path.
   - `browser.screenshotDir` session setting set: persist full-resolution PNG under that directory with a timestamped filename.
-  - Neither set: persist the resized image to a temp-file path under the OS temp dir.
+  - Unset: persist to a temp-file path under the OS temp dir.
+  - `tab.screenshot()` returns the saved file path.
 
 ## Side Effects
 - Filesystem
@@ -199,7 +199,7 @@ The tool returns one result per call; no streaming partial output is emitted fro
 - Session state (transcript, memory, jobs, checkpoints, registries)
   - Browser handles are cached in a process-global `Map` keyed by browser kind in `packages/coding-agent/src/tools/browser/registry.ts`.
   - Tabs are cached in a process-global `Map` keyed by `name` in `packages/coding-agent/src/tools/browser/tab-supervisor.ts`.
-  - `run` captures session cwd and optional `browser.screenshotDir` for screenshot/save path resolution.
+  - `run` captures session cwd and optional `browser.screenshotDir` for screenshot path resolution.
   - `restartForModeChange()` drops only headless tabs.
 - User-visible prompts / interactive UI
   - None beyond normal tool output. Dialog auto-handling is invisible unless it fails and emits debug logs.

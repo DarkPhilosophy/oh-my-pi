@@ -83,6 +83,8 @@ These are consumed via `getEnvApiKey()` (`packages/ai/src/stream.ts`) unless not
 | `ALIBABA_TOKEN_PLAN_API_KEY`    | QwenCloud Token Plan auth                       | Using `alibaba-token-plan` provider                            | Preferred provider-specific name                                                                    |
 | `BAILIAN_TOKEN_PLAN_API_KEY`    | QwenCloud Token Plan auth                       | Using `alibaba-token-plan` provider                            | Compatible with Qwen Code's Token Plan preset                                                        |
 | `DEEPSEEK_API_KEY`              | DeepSeek auth                                    | Using DeepSeek models                                          |                                                                                                     |
+| `SILICONFLOW_API_KEY`           | SiliconFlow auth                                 | Using `siliconflow` provider                                   |                                                                                                     |
+| `SILICONFLOW_CN_API_KEY`        | SiliconFlow (China) auth                         | Using `siliconflow-cn` provider                                |                                                                                                     |
 | `KILO_API_KEY`                  | Kilo auth                                        | Using Kilo models                                              |                                                                                                     |
 | `OLLAMA_CLOUD_API_KEY`          | Ollama Cloud auth                                | Using `ollama-cloud` provider                                  |                                                                                                     |
 | `WAFER_SERVERLESS_API_KEY`      | Wafer Serverless auth                            | Using `wafer-serverless` provider                              | Pay-as-you-go Wafer SKU; validated against `https://pass.wafer.ai/v1/models`                        |
@@ -407,6 +409,7 @@ These are read as runtime signals; they are usually set by the terminal/OS rathe
 | ------------------------- | ------------------------------------------------------------------------------------- |
 | `PI_NOTIFICATIONS`        | `off` / `0` / `false` suppress desktop notifications                                  |
 | `PI_TUI_WRITE_LOG`        | If set, logs TUI writes to file                                                       |
+| `PI_TUI_RAW_BACKSPACE_IS_CTRL` | If `1`, interprets raw `0x08` as Ctrl+Backspace instead of Backspace; use when SSH/container hops hide a Windows Terminal client |
 | `PI_HARDWARE_CURSOR`      | If `1`, enables hardware cursor mode                                                  |
 | `PI_NO_SYNC_OUTPUT`       | If set (any non-empty value), disables DEC 2026 synchronized-output wrappers while keeping TUI autowrap guards |
 | `PI_NO_DECCARA`           | If set (truthy), disables Kitty DECCARA rectangular-SGR background fills (forces padded-string rendering) |

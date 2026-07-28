@@ -2,7 +2,7 @@ import { fetchWithRetry } from "@oh-my-pi/pi-utils";
 import { Effort } from "../effort";
 import { isGlm52ReasoningEffortModelId } from "../identity/family";
 import type { ModelManagerOptions } from "../model-manager";
-import type { FetchImpl, ThinkingConfig } from "../types";
+import type { FetchImpl, ModelSpec, ThinkingConfig } from "../types";
 import { discoveryFetch } from "../utils";
 import { createBundledReferenceMap, createReferenceResolver } from "./bundled-references";
 
@@ -97,8 +97,10 @@ export function ollamaCloudModelManagerOptions(
 ): ModelManagerOptions<"ollama-chat"> {
 	const configuredApiKey = config?.apiKey;
 	const baseUrl = normalizeOllamaCloudBaseUrl(config?.baseUrl);
-	const providerReferences = createBundledReferenceMap<"ollama-chat">("ollama-cloud");
-	const resolveReference = createReferenceResolver(providerReferences);
+	let providerReferences: Map<string, ModelSpec<"ollama-chat">> | undefined;
+	const getProviderReferences = () =>
+		(providerReferences ??= createBundledReferenceMap<"ollama-chat">("ollama-cloud"));
+	const resolveReference = createReferenceResolver(getProviderReferences);
 	return {
 		providerId: "ollama-cloud",
 		fetchDynamicModels: async () => {
@@ -123,8 +125,8 @@ export function ollamaCloudModelManagerOptions(
 					if (!id) {
 						return undefined;
 					}
-					const providerReference = providerReferences.get(id);
 					const reference = resolveReference(id);
+					const providerReference = getProviderReferences().get(id);
 					let metadata: OllamaShowResponse | undefined;
 					try {
 						metadata = await fetchShowMetadata(baseUrl, apiKey, id, config?.fetch);

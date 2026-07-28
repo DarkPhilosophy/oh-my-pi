@@ -11,6 +11,7 @@ import type {
 	AssistantRetryRecovery,
 	AssistantRetryRecoveryKind,
 	CodexCompactionContext,
+	Effort,
 	Model,
 	TextContent,
 	ToolChoice,
@@ -27,7 +28,12 @@ import type { RecoveredRetryError } from "../extensibility/shared-events";
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
 import thinkingLoopRedirectTemplate from "../prompts/system/thinking-loop-redirect.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
-import type { ConfiguredThinkingLevel } from "../thinking";
+import {
+	AUTO_THINKING,
+	type ConfiguredThinkingLevel,
+	clampThinkingLevelToCeiling,
+	modelSupportsEffortCeiling,
+} from "../thinking";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { InitialRetryFallbackState } from "./agent-session-types";
 import { isEmptyErrorTurn } from "./messages";
@@ -98,6 +104,8 @@ export interface TurnRecoveryHost {
 	thinkingLevel(): ThinkingLevel | undefined;
 	configuredThinkingLevel(): ConfiguredThinkingLevel | undefined;
 	setThinkingLevel(level: ConfiguredThinkingLevel | undefined): void;
+	/** Hard per-session effort ceiling; fallback recovery must never raise thinking above it. */
+	thinkingLevelCeiling(): Effort | undefined;
 	isDisposed(): boolean;
 	isStreaming(): boolean;
 	isCompacting(): boolean;
@@ -106,11 +114,11 @@ export interface TurnRecoveryHost {
 	promptGeneration(): number;
 	sessionId(): string;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
-	scheduleAgentContinue(options: { delayMs?: number; generation?: number }): void;
+	scheduleAgentContinue(options: { delayMs?: number; generation?: number; onError?: (error: unknown) => void }): void;
 	waitForSessionMessagePersistence(message: AssistantMessage): Promise<void>;
 	appendSessionMessage(message: AssistantMessage): void;
 	sessionMessageAlreadyPersisted(message: AssistantMessage): boolean;
-	setModelWithProviderSessionReset(model: Model): void;
+	setModelWithProviderSessionReset(model: Model): Promise<void>;
 	resetCurrentResponsesProviderSession(reason: string): void;
 	maybeAutoRedeemCodexReset(): Promise<boolean>;
 	runAutoCompaction(
@@ -1011,9 +1019,16 @@ export class TurnRecovery {
 		// Capture the configured selector (auto-aware) so a fallback chain preserves
 		// `auto` instead of collapsing it to the level it resolved to this turn.
 		const currentThinkingLevel = this.#host.configuredThinkingLevel();
-		const nextThinkingLevel = selector.thinkingLevel ?? currentThinkingLevel;
+		const requestedThinkingLevel = selector.thinkingLevel ?? currentThinkingLevel;
+		// A fallback selector's explicit level (or the carried level after the
+		// replacement model's floor clamp) must never exceed the session's
+		// per-spawn effort ceiling.
+		const nextThinkingLevel =
+			requestedThinkingLevel === AUTO_THINKING
+				? requestedThinkingLevel
+				: clampThinkingLevelToCeiling(candidate, requestedThinkingLevel, this.#host.thinkingLevelCeiling());
 		const candidateSelector = formatModelStringWithRouting(candidate);
-		this.#host.setModelWithProviderSessionReset(candidate);
+		await this.#host.setModelWithProviderSessionReset(candidate);
 		this.#host.sessionManager.appendModelChange(candidateSelector, EPHEMERAL_MODEL_CHANGE_ROLE);
 		this.#host.settings.getStorage()?.recordModelUsage(candidateSelector);
 		this.#host.setThinkingLevel(nextThinkingLevel);
@@ -1041,11 +1056,15 @@ export class TurnRecovery {
 		const role = this.#activeRetryFallback?.role ?? this.resolveRetryFallbackRole(currentSelector);
 		if (!role) return false;
 
+		const ceiling = this.#host.thinkingLevelCeiling();
 		for (const selector of this.findRetryFallbackCandidates(role, currentSelector)) {
 			if (this.isRetryFallbackSelectorSuppressed(selector)) continue;
 			const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 			const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
 			if (!candidate) continue;
+			// A candidate whose effort floor exceeds the per-spawn ceiling would be
+			// clamped UP past the cap by its model floor — skip it entirely.
+			if (ceiling !== undefined && !modelSupportsEffortCeiling(candidate, ceiling)) continue;
 			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
 			if (!apiKey) continue;
 			await this.applyRetryFallbackCandidate(role, selector, currentSelector, options);
@@ -1128,7 +1147,7 @@ export class TurnRecovery {
 		const apiKey = await this.#host.modelRegistry.getApiKey(baseModel, this.#host.sessionId());
 		if (!apiKey) return false;
 		const baseSelector = formatModelStringWithRouting(baseModel);
-		this.#host.setModelWithProviderSessionReset(baseModel);
+		await this.#host.setModelWithProviderSessionReset(baseModel);
 		this.#host.sessionManager.appendModelChange(baseSelector, EPHEMERAL_MODEL_CHANGE_ROLE);
 		this.#host.settings.getStorage()?.recordModelUsage(baseSelector);
 		await this.#host.emitSessionEvent({
@@ -1182,7 +1201,7 @@ export class TurnRecovery {
 		const thinkingToApply =
 			currentThinkingLevel === lastAppliedFallbackThinkingLevel ? originalThinkingLevel : currentThinkingLevel;
 		const primarySelector = formatModelStringWithRouting(primaryModel);
-		this.#host.setModelWithProviderSessionReset(primaryModel);
+		await this.#host.setModelWithProviderSessionReset(primaryModel);
 		this.#host.sessionManager.appendModelChange(primarySelector, EPHEMERAL_MODEL_CHANGE_ROLE);
 		this.#host.settings.getStorage()?.recordModelUsage(primarySelector);
 		this.#host.setThinkingLevel(thinkingToApply);
@@ -1520,10 +1539,73 @@ export class TurnRecovery {
 			this.#retryAbortController = undefined;
 		}
 
-		// Retry via continue() outside the agent_end event callback chain.
-		this.#host.scheduleAgentContinue({ delayMs: 1, generation });
+		// The identity-keyed removal above can miss when a context rebuild
+		// recreated the failed turn's message object between settle and retry
+		// (fresh identity, same failed tail — issue #5382). Agent.continue()
+		// rejects any assistant tail, so a missed removal fails the scheduled
+		// retry locally before a provider request is ever made. Re-check the
+		// tail after the backoff (covering rebuilds during the sleep too) and
+		// strip a still-failed assistant tail by position. Never in
+		// preserveFailedTurn mode — the kept turn ends in synthetic tool
+		// results that continue() accepts — and never once a newer prompt owns
+		// the session.
+		if (!options?.preserveFailedTurn && this.#host.promptGeneration() === generation) {
+			this.#stripFailedAssistantTail();
+		}
+
+		// Retry via continue() outside the agent_end event callback chain. A
+		// continuation that still fails locally must close the retry saga —
+		// otherwise auto_retry_end never fires, retryPromise stays pending, and
+		// the in-flight prompt() (and the TUI retry indicator) hang forever.
+		this.#host.scheduleAgentContinue({
+			delayMs: 1,
+			generation,
+			onError: error => void this.#failRetryAfterLocalContinueError(message, error),
+		});
 
 		return true;
+	}
+
+	/**
+	 * Positional backstop for {@link removeAssistantMessageFromActiveContext}:
+	 * when the identity check missed, the failed assistant turn is still the
+	 * active tail and the scheduled continue() would reject it. An
+	 * error/aborted-stopped assistant tail is never legal continuation input
+	 * and no recovery path wants it replayed on the wire, so drop it by
+	 * position; any healthy tail is left untouched.
+	 */
+	#stripFailedAssistantTail(): void {
+		const messages = this.#host.agent.state.messages;
+		const tail = messages[messages.length - 1];
+		if (tail?.role !== "assistant") return;
+		if (tail.stopReason !== "error" && tail.stopReason !== "aborted") return;
+		logger.debug("agent active context failed assistant tail stripped positionally", {
+			stopReason: tail.stopReason,
+			timestamp: tail.timestamp,
+		});
+		this.#host.agent.replaceMessages(messages.slice(0, -1));
+	}
+
+	/**
+	 * Close the retry saga when the scheduled continue() failed locally (no
+	 * provider request was made). Mirrors the other retry dead-ends: emit the
+	 * closing `auto_retry_end` so subscribers stop showing retry progress, and
+	 * resolve the retry promise so the in-flight prompt() unwinds (issue #5382).
+	 */
+	async #failRetryAfterLocalContinueError(message: AssistantMessage, error: unknown): Promise<void> {
+		if (this.#retryAttempt === 0) return;
+		const attempt = this.#retryAttempt;
+		this.#retryAttempt = 0;
+		const localError = error instanceof Error ? error.message : String(error);
+		await this.persistTerminalEmptyErrorTurn(message);
+		await this.#host.emitSessionEvent({
+			type: "auto_retry_end",
+			success: false,
+			attempt,
+			finalError: `Retry continuation failed locally: ${localError}. Original error: ${message.errorMessage ?? "Unknown error"}`,
+		});
+		this.#clearPendingRecoveredRetryErrors();
+		this.resolveRetry();
 	}
 
 	/**

@@ -73,6 +73,14 @@ function buildMatchKeys(keys: readonly KeyId[]): Set<string> {
 	return matchKeys;
 }
 
+function unionOfMatchKeys(matchKeys: ReadonlyMap<ConfigurableEditorAction, ReadonlySet<string>>): Set<string> {
+	const union = new Set<string>();
+	for (const keys of matchKeys.values()) {
+		for (const key of keys) union.add(key);
+	}
+	return union;
+}
+
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 const BRACKETED_IMAGE_PATH_REGEX = /\.(?:png|jpe?g|gif|webp)$/i;
@@ -421,6 +429,17 @@ export class CustomEditor extends Editor {
 		this.pendingImageLinks = [];
 	}
 
+	/** Replace the composer draft with a restored historical prompt: sets the text and
+	 *  re-attaches the message's images so positional `[Image #N]` markers resolve on
+	 *  resubmit instead of degrading to literal text (esc-esc branch, `/tree`). Source
+	 *  links are unknown for restored drafts, so every link slot is `undefined`. */
+	setDraft(text: string, images?: readonly ImageContent[]): void {
+		this.setText(text);
+		this.imageLinks = undefined;
+		this.pendingImages = images ? [...images] : [];
+		this.pendingImageLinks = images ? images.map(() => undefined) : [];
+	}
+
 	/** Treat image/paste markers as indivisible: a stray backspace deletes the whole token
 	 *  instead of corrupting `[Paste #1, +30 lines]` into plain text. */
 	override atomicTokenPattern = PLACEHOLDER_REGEX;
@@ -606,14 +625,14 @@ export class CustomEditor extends Editor {
 			buildMatchKeys(keys),
 		]),
 	);
+	/** Union of every action's match keys: one probe in `handleInput` decides
+	 *  whether the per-action interception chain can match at all. */
+	#actionMatchKeyUnion = unionOfMatchKeys(this.#actionMatchKeys);
 
 	setActionKeys(action: ConfigurableEditorAction, keys: KeyId[]): void {
 		this.#actionKeys.set(action, [...keys]);
-		this.#rebuildActionMatchKeys(action);
-	}
-
-	#rebuildActionMatchKeys(action: ConfigurableEditorAction): void {
-		this.#actionMatchKeys.set(action, buildMatchKeys(this.#actionKeys.get(action) ?? []));
+		this.#actionMatchKeys.set(action, buildMatchKeys(keys));
+		this.#actionMatchKeyUnion = unionOfMatchKeys(this.#actionMatchKeys);
 	}
 
 	#rebuildCustomMatchKeys(): void {
@@ -766,8 +785,10 @@ export class CustomEditor extends Editor {
 			this.#pendingInput.push(data);
 			return;
 		}
-		const hadBareQueuePrefix = this.getText() === "->" || this.getText() === "=>";
-		const kittyParsed = parseKittySequence(data);
+		// textEquals avoids getText()'s O(buffer) join on every keystroke; kitty
+		// sequences always start with ESC, so plain bytes skip the native parse.
+		const hadBareQueuePrefix = this.textEquals("->") || this.textEquals("=>");
+		const kittyParsed = data.charCodeAt(0) === 0x1b ? parseKittySequence(data) : null;
 		if (kittyParsed && (kittyParsed.modifier & 64) !== 0 && this.onCapsLock) {
 			// Caps Lock is modifier bit 64
 			this.onCapsLock();
@@ -833,7 +854,12 @@ export class CustomEditor extends Editor {
 		// Space-hold push-to-talk: a sustained space bar starts/stops STT instead of typing spaces.
 		if (this.#handleSpaceHold(data, canonical)) return;
 
-		if (canonical !== undefined) {
+		// One union probe decides whether any per-action interception below can
+		// match — plain typing then skips the ~20 per-action set lookups per key.
+		if (
+			canonical !== undefined &&
+			(this.#actionMatchKeyUnion.has(canonical) || this.#customMatchKeys.has(canonical))
+		) {
 			// Intercept configured image paste (async - fires and handles result)
 			if (this.#matchesAction(canonical, "app.clipboard.pasteImage") && this.onPasteImage) {
 				void this.onPasteImage();
@@ -980,14 +1006,38 @@ export class CustomEditor extends Editor {
 
 		// Pass to parent for normal handling
 		super.handleInput(data);
-		const cursor = this.getCursor();
-		if (
-			!hadBareQueuePrefix &&
-			(this.getText() === "->" || this.getText() === "=>") &&
-			cursor.line === 0 &&
-			cursor.col === 2
-		) {
-			this.insertText("\n");
+		if (!hadBareQueuePrefix && (this.textEquals("->") || this.textEquals("=>"))) {
+			const cursor = this.getCursor();
+			if (cursor.line === 0 && cursor.col === 2) {
+				this.insertText("\n");
+			}
 		}
+	}
+
+	/**
+	 * Route a keystroke through the base text-editor pipeline only, skipping the
+	 * app-level shortcut interception in {@link handleInput} (Agent Hub, model
+	 * selector, history search, external editor, …). Used when the editor is
+	 * mounted for draft editing beneath another focused surface — e.g. an Ask
+	 * dialog opened over a non-empty prompt — so finishing or submitting the
+	 * draft can never fire an editor-slot shortcut that clears `editorContainer`
+	 * and orphans the overlay. Only text editing, cursor movement, submission,
+	 * and the clear action reach the buffer.
+	 */
+	handleDraftEdit(data: string): void {
+		// The base editor reserves Ctrl+C for parent handling and returns without
+		// touching the buffer, so the configured clear action must be dispatched
+		// explicitly here — otherwise the guard's "finish or clear the prompt"
+		// instruction has no working clear key. onClear (Ctrl+C → handleCtrlC)
+		// clears the draft on first press without swapping the editor slot; a
+		// standalone editor with no callback clears its own text.
+		const parsed = parseKey(data);
+		const canonical = parsed !== undefined ? canonicalKeyId(parsed) : undefined;
+		if (canonical !== undefined && this.#matchesAction(canonical, "app.clear")) {
+			if (this.onClear) this.onClear();
+			else this.setText("");
+			return;
+		}
+		super.handleInput(data);
 	}
 }

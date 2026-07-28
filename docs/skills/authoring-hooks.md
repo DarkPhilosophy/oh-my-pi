@@ -39,7 +39,7 @@ export default function myExtension(pi: ExtensionAPI): void {
 
 | Event | Fires | Can return |
 |---|---|---|
-| `tool_call` | Before every tool execution | `{ block?: boolean; reason?: string }` |
+| `tool_call` | Before every tool execution | `{ block?: boolean; reason?: string; input?: Record<string, unknown> }` |
 | `tool_result` | After every tool execution | `{ content?; details?; isError?: boolean }` |
 
 ### Session lifecycle

@@ -1450,7 +1450,6 @@ function b() {
 			expect(result.details?.async?.state).toBe("running");
 			expect(result.details?.async?.type).toBe("bash");
 			expect(getTextOutput(result)).toContain("Backgrounded as job");
-			expect(getTextOutput(result)).toContain("start");
 
 			const jobId = result.details?.async?.jobId;
 			if (!jobId) {
@@ -1463,6 +1462,7 @@ function b() {
 			await asyncJobManager.drainDeliveries({ timeoutMs: 1 });
 			expect(deliveries).toHaveLength(1);
 			expect(deliveries[0]?.jobId).toBe(jobId);
+			expect(deliveries[0]?.text).toContain("start");
 			expect(deliveries[0]?.text).toContain("done");
 			expect(updates).toEqual(updatesAtBackground);
 			await asyncJobManager.dispose();

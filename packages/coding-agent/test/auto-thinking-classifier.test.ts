@@ -285,6 +285,23 @@ describe("auto thinking classifier helpers", () => {
 		expect(resolveTaskEffortLevel(sonnet, "hi")).toBe(sonnetEfforts[sonnetEfforts.length - 1]);
 		expect(resolveTaskEffortLevel(sonnet, "lo")).toBe(sonnetEfforts[0]);
 
+		const highOnlyModel = buildModel({
+			id: "mock-high-only",
+			name: "Mock High Only",
+			api: "openai-completions",
+			provider: "mock",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			thinking: { mode: "effort", efforts: [Effort.High] },
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 4096,
+		});
+		expect(() => resolveTaskEffortLevel(highOnlyModel, "hi", Effort.Low)).toThrow(
+			"mock/mock-high-only has no supported thinking effort at or below task.maxEffort=low",
+		);
+
 		// No controllable effort surface (devin-agent shape) → undefined, so the
 		// spawn falls back to its default selector instead of forcing an effort.
 		const devinModel = {

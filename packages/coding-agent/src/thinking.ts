@@ -271,19 +271,82 @@ export type TaskEffort = (typeof TASK_EFFORTS)[number];
  * at — high, xhigh, or max), `med` = the middle (lower of the two middles for
  * an even-sized range). Without a model, maps over the full canonical range.
  * Returns `undefined` when the model has no controllable effort surface, so
- * callers fall back to their default selector (e.g. `auto`).
+ * callers fall back to their default selector (e.g. `auto`). Throws when the
+ * configured ceiling is below the model's lowest supported effort.
  */
-export function resolveTaskEffortLevel(model: Model | undefined, effort: TaskEffort): Effort | undefined {
+export function resolveTaskEffortLevel(
+	model: Model | undefined,
+	effort: TaskEffort,
+	maxEffort?: Effort,
+): Effort | undefined {
 	const supported = model ? getSupportedEfforts(model) : THINKING_EFFORTS;
 	if (supported.length === 0) return undefined;
+	let resolved: Effort;
 	switch (effort) {
 		case "lo":
-			return supported[0];
+			resolved = supported[0];
+			break;
 		case "med":
-			return supported[(supported.length - 1) >> 1];
+			resolved = supported[(supported.length - 1) >> 1];
+			break;
 		case "hi":
-			return supported[supported.length - 1];
+			resolved = supported[supported.length - 1];
+			break;
 	}
+	if (maxEffort === undefined) return resolved;
+	const maxIndex = THINKING_EFFORTS.indexOf(maxEffort);
+	const ceiling = supported.findLast(candidate => THINKING_EFFORTS.indexOf(candidate) <= maxIndex);
+	if (ceiling === undefined) {
+		const modelName = model ? `${model.provider}/${model.id}` : "Selected model";
+		throw new RangeError(`${modelName} has no supported thinking effort at or below task.maxEffort=${maxEffort}`);
+	}
+	return THINKING_EFFORTS.indexOf(resolved) > THINKING_EFFORTS.indexOf(ceiling) ? ceiling : resolved;
+}
+
+/**
+ * Clamps a concrete thinking selector to a per-session effort ceiling (e.g. a
+ * task spawn's `task.maxEffort`-capped effort hint). `off`/`inherit`/
+ * `undefined` pass through, as do levels already at or below the ceiling.
+ * Levels above it snap to the highest model-supported effort at or below the
+ * ceiling. A model whose floor exceeds the ceiling has nothing valid to snap
+ * to; the requested level is returned unchanged and the caller is responsible
+ * for rejecting or skipping such models (see {@link modelSupportsEffortCeiling}).
+ */
+export function clampThinkingLevelToCeiling(
+	model: Model | undefined,
+	level: Effort | undefined,
+	ceiling: Effort | undefined,
+): Effort | undefined;
+export function clampThinkingLevelToCeiling(
+	model: Model | undefined,
+	level: ThinkingLevel | undefined,
+	ceiling: Effort | undefined,
+): ThinkingLevel | undefined;
+export function clampThinkingLevelToCeiling(
+	model: Model | undefined,
+	level: ThinkingLevel | undefined,
+	ceiling: Effort | undefined,
+): ThinkingLevel | undefined {
+	if (ceiling === undefined || level === undefined || level === ThinkingLevel.Off || level === ThinkingLevel.Inherit) {
+		return level;
+	}
+	const maxIndex = THINKING_EFFORTS.indexOf(ceiling);
+	if (THINKING_EFFORTS.indexOf(level) <= maxIndex) return level;
+	const supported = model ? getSupportedEfforts(model) : THINKING_EFFORTS;
+	return supported.findLast(candidate => THINKING_EFFORTS.indexOf(candidate) <= maxIndex) ?? level;
+}
+
+/**
+ * True when `model` can honor a thinking-effort ceiling: it either has no
+ * controllable effort surface (nothing to cap) or supports at least one effort
+ * at or below the ceiling. Retry-fallback candidate filtering uses this to
+ * skip models whose floor would force the session above the ceiling.
+ */
+export function modelSupportsEffortCeiling(model: Model, ceiling: Effort): boolean {
+	const supported = getSupportedEfforts(model);
+	if (supported.length === 0) return true;
+	const maxIndex = THINKING_EFFORTS.indexOf(ceiling);
+	return supported.some(candidate => THINKING_EFFORTS.indexOf(candidate) <= maxIndex);
 }
 
 /**

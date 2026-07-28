@@ -1084,13 +1084,7 @@ export class MCPManager {
 	async #loadServerResourcesAndPrompts(name: string, connection: MCPServerConnection): Promise<void> {
 		if (serverSupportsResources(connection.capabilities)) {
 			try {
-				const [resources] = await Promise.all([listResources(connection), listResourceTemplates(connection)]);
-
-				if (this.#notificationsEnabled && connection.capabilities.resources?.subscribe) {
-					const uris = resources.map(r => r.uri);
-					const notificationEpoch = this.#notificationsEpoch;
-					this.#subscribeAndTrack(name, connection, uris, notificationEpoch);
-				}
+				await this.refreshServerResources(name);
 			} catch (error) {
 				logger.debug("Failed to load MCP resources", { path: `mcp:${name}`, error });
 			}
@@ -1150,8 +1144,20 @@ export class MCPManager {
 			connection.resources = undefined;
 			connection.resourceTemplates = undefined;
 
-			// Reload
-			const [resources] = await Promise.all([listResources(connection), listResourceTemplates(connection)]);
+			// Reload. Template listing failures must not discard a successful
+			// resources/list — let both settle, then continue without templates.
+			const [resourcesResult, templatesResult] = await Promise.allSettled([
+				listResources(connection),
+				listResourceTemplates(connection),
+			]);
+			if (templatesResult.status === "rejected") {
+				logger.debug("Failed to list MCP resource templates", {
+					path: `mcp:${name}`,
+					error: templatesResult.reason,
+				});
+			}
+			if (resourcesResult.status === "rejected") throw resourcesResult.reason;
+			const resources = resourcesResult.value;
 			if (this.#notificationsEnabled && connection.capabilities.resources?.subscribe) {
 				const newUris = new Set(resources.map(r => r.uri));
 				const oldUris = this.#subscribedResources.get(name);
@@ -1202,6 +1208,17 @@ export class MCPManager {
 		});
 		this.#pendingResourceRefresh.set(name, { connection, promise });
 		return promise;
+	}
+
+	/**
+	 * Wait until a connected server's resource catalog has been loaded.
+	 * Coalesces with initial loading and notification-driven refreshes.
+	 */
+	async ensureServerResources(name: string): Promise<void> {
+		const connection = this.#connections.get(name);
+		if (!connection || !serverSupportsResources(connection.capabilities)) return;
+		if (connection.resources !== undefined && connection.resourceTemplates !== undefined) return;
+		await this.refreshServerResources(name);
 	}
 
 	/**

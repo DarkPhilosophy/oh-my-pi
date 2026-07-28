@@ -1,7 +1,7 @@
 {
   "type": "module",
   "name": "@oh-my-pi/pi-coding-agent",
-  "version": "17.1.4",
+  "version": "17.1.8",
   "description": "Coding agent CLI with read, bash, edit, write tools and session management",
   "homepage": "https://omp.sh",
   "author": "Can Boluk",
@@ -52,7 +52,6 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "catalog:",
     "@babel/parser": "catalog:",
-    "@babel/traverse": "catalog:",
     "@mozilla/readability": "catalog:",
     "@oh-my-pi/hashline": "catalog:",
     "@oh-my-pi/omp-stats": "catalog:",
@@ -107,7 +106,12 @@
   "files": [
     "src",
     "dist/cli.js",
+    "dist/CHANGELOG-*.md",
     "dist/*.node",
+    "dist/template-*.css",
+    "dist/template-*.html",
+    "dist/template-*.js",
+    "dist/tool-views.generated-*.js",
     "scripts",
     "examples",
     "README.md",

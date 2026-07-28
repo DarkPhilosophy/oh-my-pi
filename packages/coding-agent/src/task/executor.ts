@@ -2647,9 +2647,16 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				progress.contextWindow = model.contextWindow;
 			}
 			// Caller-requested coarse effort maps onto the resolved model's
-			// supported range; undefined (no effort, or no controllable effort
-			// surface) falls through to the normal selectors below.
-			const effortLevel = options.effort !== undefined ? resolveTaskEffortLevel(model, options.effort) : undefined;
+			// supported range, then respects the operator-configured ceiling.
+			// Undefined (no effort, or no controllable effort surface) falls
+			// through to the normal selectors below.
+			// The ceiling outlives initial resolution: it rides into the session so
+			// retry-fallback recovery can never clamp effort back up past it.
+			const spawnEffortCeiling = options.effort !== undefined ? settings.get("task.maxEffort") : undefined;
+			const effortLevel =
+				options.effort !== undefined
+					? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
+					: undefined;
 			if (model) {
 				const displayLevel = effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : undefined);
 				progress.resolvedModel =
@@ -2773,6 +2780,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				modelPatternDefaultFallbackChain:
 					model || modelOverride === undefined ? undefined : defaultRetryFallbackChain,
 				thinkingLevel: effectiveThinkingLevel,
+				thinkingLevelCeiling: spawnEffortCeiling,
 				toolNames,
 				outputSchema,
 				outputSchemaMode: options.outputSchemaMode,

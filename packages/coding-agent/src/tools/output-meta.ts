@@ -632,6 +632,26 @@ export function resolveOutputSinkHeadBytes(s: Settings | undefined): number {
 }
 
 /**
+ * Slack on top of the configured spill threshold before the final-defense
+ * inline byte cap fires. The OutputSink already bounds inline bodies to the
+ * threshold; only notice slop (wall time, exit code, elision marker,
+ * `[raw output: artifact://N]` footer) rides above it. The slack keeps the
+ * cap a genuine last resort for paths that bypass the sink (e.g. ACP
+ * client-bridge terminals) instead of re-truncating — and re-saving — every
+ * sink-elided result (the double-artifact `Artifact: N+1` vs `artifact://N`
+ * mismatch).
+ */
+const INLINE_CAP_SLACK_BYTES = 2 * 1024;
+
+/**
+ * Resolve the `enforceInlineByteCap` budget for streaming tools (bash/ssh)
+ * from session settings: the user's spill threshold plus notice slack.
+ */
+export function resolveInlineByteCapBudget(s: Settings | undefined): number {
+	return getSpillConfig(s).threshold + INLINE_CAP_SLACK_BYTES;
+}
+
+/**
  * Resolve the per-line column cap from session settings. Shared by streaming
  * executors (bash/python/ssh/eval via OutputSink) and the `read` tool's
  * line-buffer post-processing, so one setting controls both surfaces.

@@ -37,7 +37,6 @@ import type { CmuxSocketClient } from "./socket-client";
 interface ScreenshotOptions {
 	selector?: string;
 	fullPage?: boolean;
-	save?: string;
 	silent?: boolean;
 	encoding?: "base64" | "binary";
 }
@@ -487,7 +486,7 @@ export class CmuxTab {
 		return content;
 	}
 
-	async screenshot(opts: ScreenshotOptions = {}): Promise<ScreenshotResult> {
+	async screenshot(opts: ScreenshotOptions = {}): Promise<string> {
 		const context = this.#requireRunContext("tab.screenshot()");
 		// The cmux daemon's `browser.screenshot` captures the surface viewport
 		// only — it has no element-clip or full-page mode, and Bun.Image cannot
@@ -518,20 +517,16 @@ export class CmuxTab {
 				excludeWebP: context.session.excludeWebP,
 			},
 		);
-		const explicitPath = opts.save ? resolveToCwd(opts.save, context.session.cwd) : undefined;
-		const returnedPath = typeof result.path === "string" && result.path.length > 0 ? result.path : undefined;
-		const saveFullRes = !!(explicitPath || context.session.browserScreenshotDir || returnedPath);
+		const saveFullRes = !!context.session.browserScreenshotDir;
 		const savedBuffer = saveFullRes ? buffer : Buffer.from(resized.buffer);
 		const savedMimeType = saveFullRes ? captureMime : resized.mimeType;
 		const ext = savedMimeType === "image/webp" ? "webp" : savedMimeType === "image/jpeg" ? "jpg" : "png";
-		const dest =
-			explicitPath ??
-			(context.session.browserScreenshotDir
-				? path.join(
-						context.session.browserScreenshotDir,
-						`screenshot-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, -1)}.${ext}`,
-					)
-				: (returnedPath ?? path.join(os.tmpdir(), `omp-sshots-${Snowflake.next()}.${ext}`)));
+		const dest = context.session.browserScreenshotDir
+			? path.join(
+					context.session.browserScreenshotDir,
+					`screenshot-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, -1)}.${ext}`,
+				)
+			: path.join(os.tmpdir(), `omp-sshots-${Snowflake.next()}.${ext}`);
 		await fs.promises.mkdir(path.dirname(dest), { recursive: true });
 		await Bun.write(dest, savedBuffer);
 		const info: ScreenshotResult = {
@@ -556,7 +551,7 @@ export class CmuxTab {
 			context.output.push({ type: "text", text: lines.join("\n") });
 			context.output.push({ type: "image", data: resized.data, mimeType: resized.mimeType });
 		}
-		return info;
+		return dest;
 	}
 
 	async waitForUrl(pattern: string | RegExp, opts?: { timeout?: number }): Promise<string> {

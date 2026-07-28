@@ -1306,6 +1306,49 @@ describe("ACP agent", () => {
 		await Bun.sleep(0);
 	});
 
+	it("does not replay internal Hub messages to ACP clients", async () => {
+		const harness = await createHarness();
+		const stored = new FakeAgentSession(harness.cwdA);
+		harness.sessions.push(stored);
+		stored.sessionManager.appendMessage({ role: "user", content: "Delegate this task", timestamp: Date.now() });
+		stored.sessionManager.appendMessage({
+			...makeAssistantMessage(""),
+			content: [
+				{
+					type: "toolCall",
+					id: "toolu_hub_replay",
+					name: "hub",
+					arguments: { op: "send", to: "Scout", message: "Private coordination" },
+				},
+			],
+			stopReason: "toolUse",
+		});
+		stored.sessionManager.appendMessage({
+			role: "toolResult",
+			toolCallId: "toolu_hub_replay",
+			toolName: "hub",
+			content: [{ type: "text", text: "Private reply" }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		await stored.sessionManager.ensureOnDisk();
+		await stored.sessionManager.flush();
+
+		await harness.agent.loadSession({
+			sessionId: stored.sessionId,
+			cwd: harness.cwdA,
+			mcpServers: [],
+		});
+
+		const hubUpdates = harness.updates
+			.filter(update => update.sessionId === stored.sessionId)
+			.map(notification => notification.update)
+			.filter(update => "toolCallId" in update && update.toolCallId === "toolu_hub_replay");
+		expect(hubUpdates).toEqual([]);
+
+		harness.abortController.abort();
+	});
+
 	it("preserves tool_use input payloads when replaying assistant tool calls", async () => {
 		const harness = await createHarness();
 		const stored = new FakeAgentSession(harness.cwdA);

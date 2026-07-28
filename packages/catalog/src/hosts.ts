@@ -111,6 +111,24 @@ function includesAsciiCaseInsensitive(value: string, lowerNeedle: string): boole
 
 // --- Endpoint-shape predicates (URL path/verb shapes, not vendor hosts) ---
 
+/**
+ * Hostname for a Vertex AI GenerateContent / rawPredict / OpenAI-compat
+ * request for the given location.
+ *
+ * - `global` → global endpoint (`aiplatform.googleapis.com`)
+ * - `eu` / `us` multi-regions → REP endpoints (`aiplatform.{eu|us}.rep.googleapis.com`)
+ * - every other location → regional (`{location}-aiplatform.googleapis.com`)
+ *
+ * Multi-region codes do NOT follow the regional `{location}-aiplatform` pattern;
+ * interpolating them that way yields hosts like `eu-aiplatform.googleapis.com`
+ * that 404.
+ */
+export function resolveVertexEndpointHost(location: string): string {
+	if (location === "global") return "aiplatform.googleapis.com";
+	if (location === "eu" || location === "us") return `aiplatform.${location}.rep.googleapis.com`;
+	return `${location}-aiplatform.googleapis.com`;
+}
+
 /** Vertex AI express-mode OpenAI-compatible endpoint (`…/endpoints/openapi`). */
 export function isVertexExpressOpenAIUrl(baseUrl: string): boolean {
 	return baseUrl.includes("/endpoints/openapi");

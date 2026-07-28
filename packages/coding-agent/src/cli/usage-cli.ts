@@ -563,9 +563,34 @@ function formatReloginDeadline(
  * automatically (refresh failure, upstream invalidation). Rows the user
  * replaced or deleted deliberately are lifecycle noise, not lost capacity.
  */
-function isActionableDisable(summary: DisabledCredentialSummary): boolean {
+function isActionableDisable(summary: DisabledCredentialSummary, activeAccounts: UsageAccountIdentity[] = []): boolean {
 	if (summary.type !== "oauth") return false;
-	return !/^(replaced by|deleted by user)/i.test(summary.cause);
+	if (/^(replaced by|deleted by user)/i.test(summary.cause)) return false;
+
+	// Do not display tombstone if there is an active account for the same provider
+	// matching the same identity (email, accountId, or org).
+	const summaryEmail = summary.email?.toLowerCase();
+	const summaryAccountId = summary.accountId?.toLowerCase();
+	const summaryOrgId = summary.orgId?.toLowerCase();
+
+	const matchesActive = activeAccounts.some(account => {
+		if (account.provider !== summary.provider) return false;
+
+		const accountEmail = account.email?.toLowerCase();
+		const accountAccountId = account.accountId?.toLowerCase();
+		const accountOrgId = account.orgId?.toLowerCase();
+
+		// If email or accountId match, it's the same identity
+		if (summaryEmail && accountEmail && summaryEmail === accountEmail) return true;
+		if (summaryAccountId && accountAccountId && summaryAccountId === accountAccountId) return true;
+
+		// Fallback: if orgId matches and neither email nor accountId contradicts
+		if (summaryOrgId && accountOrgId && summaryOrgId === accountOrgId) return true;
+
+		return false;
+	});
+
+	return !matchesActive;
 }
 
 /** Human-sized disable cause: the upstream `error_description` when embedded, else the first clause. */
@@ -613,7 +638,7 @@ export function formatUsageBreakdown(
 	}
 	const disabledByProvider = new Map<string, DisabledCredentialSummary[]>();
 	for (const summary of disabled) {
-		if (!isActionableDisable(summary)) continue;
+		if (!isActionableDisable(summary, accounts)) continue;
 		const list = disabledByProvider.get(summary.provider) ?? [];
 		list.push(summary);
 		disabledByProvider.set(summary.provider, list);
@@ -1021,7 +1046,7 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 				const stats = computeProviderWindowStats(filteredReports.filter(peer => peer.provider === report.provider));
 				if (stats.length > 0) capacity[report.provider] = stats;
 			}
-			let disabledForJson = disabled.filter(isActionableDisable);
+			let disabledForJson = disabled.filter(summary => isActionableDisable(summary, accounts));
 			if (redaction) {
 				disabledForJson = disabledForJson.map(summary => ({
 					...summary,

@@ -25,6 +25,7 @@ import { isWaitingPollDetails } from "../../tools/hub";
 import { formatStatusIcon, replaceTabs, resolveImageOptions } from "../../tools/render-utils";
 import { type FirstResultViewportRepaint, toolRenderers } from "../../tools/renderers";
 import { TODO_STRIKE_TOTAL_FRAMES, type TodoToolDetails } from "../../tools/todo";
+import type { XdevState } from "../../tools/xdev";
 import { isFramedBlockComponent, markFramedBlockComponent, renderStatusLine, WidthAwareText } from "../../tui";
 import { sanitizeWithOptionalSixelPassthrough } from "../../utils/sixel";
 import { renderDiff } from "./diff";
@@ -1327,13 +1328,13 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			}
 			context.renderDiff = renderDiff;
 		} else if (this.#toolName === "write") {
-			// Device-dispatch previews delegate to the mounted tool's own renderer;
-			// expose the session's xd:// registry so custom/MCP renderers survive dispatch.
-			const writeTool = this.#tool as
-				| { session?: { xdevRegistry?: { get(name: string): AgentTool | undefined } } }
-				| undefined;
-			const registry = writeTool?.session?.xdevRegistry;
-			if (registry) context.resolveXdevMounted = (name: string) => registry.get(name);
+			// Device-dispatch previews resolve renderers from the canonical tool map.
+			const writeTool = this.#tool as { session?: { xdev?: XdevState } } | undefined;
+			const xdev = writeTool?.session?.xdev;
+			if (xdev) {
+				context.resolveXdevMounted = (name: string) =>
+					xdev.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
+			}
 		}
 
 		return context;

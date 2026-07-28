@@ -1,6 +1,6 @@
 # Plugin manager and installer plumbing
 
-This document describes how `omp plugin` npm/git/link operations mutate plugin state on disk and how installed npm/git/link plugins become runtime capabilities (tools and extensions today, hooks/commands path resolution available). Marketplace installs use separate marketplace registries and cache plumbing; see `docs/marketplace.md`.
+This document describes how `omp plugin` npm/git/link and marketplace operations mutate plugin state on disk and become runtime capabilities. Marketplace installs keep their own registries and cache, then register the cached plugin through the same `node_modules` and `omp-plugins.lock.json` runtime surfaces used by npm/git/link installs; see `docs/marketplace.md`.
 
 ## Scope and architecture
 
@@ -27,8 +27,9 @@ omp plugin <npm/link action> ...
 
 omp plugin install name@marketplace / omp install name@marketplace
   -> MarketplaceManager
-  -> mutate ~/.omp/marketplaces.json, ~/.omp/plugins/installed_plugins.json, cache dirs
-  -> installed marketplace plugin cache is surfaced as plugin roots/capabilities
+  -> mutate marketplace registries and cache
+  -> symlink the cached package into the scope's node_modules and update omp-plugins.lock.json
+  -> plugin-root discovery loads skills/commands/etc.; runtime loaders import tools and extensions
 ```
 
 ### Command entrypoints
@@ -44,8 +45,8 @@ omp plugin install name@marketplace / omp install name@marketplace
 Global plugin state lives under `~/.omp/plugins`:
 
 - `package.json` — dependency manifest used by `bun install`/`bun uninstall` for npm-installed plugins
-- `node_modules/` — installed npm plugin packages or symlinks
-- `omp-plugins.lock.json` — runtime state for npm/link plugins:
+- `node_modules/` — installed npm packages plus link and marketplace-cache symlinks
+- `omp-plugins.lock.json` — runtime state for npm/link/marketplace plugins:
   - enabled/disabled per plugin
   - selected feature set per plugin
   - persisted plugin settings
@@ -56,12 +57,14 @@ Project-local overrides live at:
 
 Overrides are read-only from manager/loader perspective (no write path here) and can disable plugins or override features/settings for this project.
 
-Marketplace registries live separately:
+Marketplace installs add registry and cache state alongside those runtime entries:
 
 - `~/.omp/marketplaces.json` — configured marketplace catalogs
 - `~/.omp/plugins/installed_plugins.json` — user-scoped marketplace installs
 - `<cwd>/.omp/plugins/installed_plugins.json` — project-scoped marketplace installs when available
 - `~/.omp/plugins/cache/{marketplaces,plugins}/` — cached catalogs and plugin directories
+- `<scope>/plugins/node_modules/<package>` — symlink to the cached plugin, allowing its `package.json` `omp.extensions` and tools to load
+- `<scope>/plugins/omp-plugins.lock.json` — enablement and feature state shared with the runtime plugin loader
 
 ## Plugin spec parsing and metadata interpretation
 

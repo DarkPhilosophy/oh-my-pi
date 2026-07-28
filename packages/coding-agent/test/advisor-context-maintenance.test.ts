@@ -88,7 +88,7 @@ describe("AgentSession advisor context maintenance", () => {
 		return { advisor, advisorMock, settings };
 	}
 
-	function usageAnchor(advisorMock: MockModel, timestamp: number): AssistantMessage {
+	function usageAnchor(advisorMock: MockModel, timestamp: number, cost = 0): AssistantMessage {
 		return {
 			role: "assistant",
 			content: [{ type: "text", text: "prior advisor output" }],
@@ -101,7 +101,7 @@ describe("AgentSession advisor context maintenance", () => {
 				cacheRead: CACHE_READ_TOKENS,
 				cacheWrite: 0,
 				totalTokens: CACHE_READ_TOKENS + INPUT_TOKENS + OUTPUT_TOKENS,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				cost: { input: 0, output: cost, cacheRead: 0, cacheWrite: 0, total: cost },
 			},
 			stopReason: "stop",
 			timestamp,
@@ -122,8 +122,9 @@ describe("AgentSession advisor context maintenance", () => {
 
 	it("maintains a 371,200-token cached advisor context before the 372,000-token window", async () => {
 		const { advisor, advisorMock, settings } = createHarness();
-		const anchor = usageAnchor(advisorMock, Date.now() - 1_000);
-		advisor.state.messages.push(anchor);
+		const anchor = usageAnchor(advisorMock, Date.now() - 1_000, 0.5);
+		advisor.emitExternalEvent({ type: "message_end", message: anchor });
+		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
 
 		await session.prompt("small current update");
 
@@ -140,6 +141,7 @@ describe("AgentSession advisor context maintenance", () => {
 		// current update into the reset advisor context.
 		expect(JSON.stringify(advisorCall.context.messages)).toContain("small current update");
 		expect(JSON.stringify(advisor.state.messages)).not.toContain("prior advisor output");
+		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
 	});
 
 	it("includes advisor system prompt and tool schemas in the local maintenance floor", async () => {

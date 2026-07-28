@@ -15,7 +15,11 @@ import {
 	ExtensionRunner,
 	testSetExtensionHandlerTimeoutMs,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
-import type { ExtensionError, ExtensionServiceTier } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import type {
+	ExtensionError,
+	ExtensionServiceTier,
+	ExtensionUIContext,
+} from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { Type } from "@oh-my-pi/pi-coding-agent/extensibility/typebox";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -855,6 +859,81 @@ describe("ExtensionRunner", () => {
 			]);
 		});
 
+		it("observes a session_stop signal aborted synchronously by the handler", async () => {
+			const extensionPath = path.join(tempDir.path(), "self-cancel-session-stop.ts");
+			await Bun.write(
+				extensionPath,
+				`
+				export default function(pi) {
+					pi.on("session_stop", async (_event, ctx) => {
+						ctx.abort();
+						await Promise.withResolvers().promise;
+					});
+				}
+			`,
+			);
+
+			const result = await loadTestExtensions([extensionPath]);
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const controller = new AbortController();
+			runner.initialize(
+				{
+					sendMessage: () => {},
+					sendUserMessage: () => {},
+					appendEntry: () => {},
+					setLabel: () => {},
+					getActiveTools: () => [],
+					getAllTools: () => [],
+					setActiveTools: async () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => undefined,
+					setThinkingLevel: () => {},
+					getSessionName: () => undefined,
+					setSessionName: async () => {},
+				},
+				{
+					getModel: () => undefined,
+					isIdle: () => true,
+					abort: () => controller.abort(),
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: async () => {},
+					getSystemPrompt: () => [],
+				},
+			);
+			vi.useFakeTimers();
+			try {
+				testSetExtensionHandlerTimeoutMs(100);
+				const emission = runner.emitSessionStop({
+					messages: [],
+					turn_id: 0,
+					session_id: "session-123",
+					stop_hook_active: false,
+					signal: controller.signal,
+				});
+				let settled = false;
+				void emission.then(() => {
+					settled = true;
+				});
+				for (let attempts = 0; attempts < 10 && !settled; attempts++) {
+					await Promise.resolve();
+				}
+
+				expect(controller.signal.aborted).toBe(true);
+				expect(settled).toBe(true);
+				await emission;
+			} finally {
+				vi.useRealTimers();
+			}
+		});
 		it("continues to later handlers after empty continuation feedback", async () => {
 			await Bun.write(
 				path.join(extensionsDir, "session-stop-empty.ts"),
@@ -1235,6 +1314,95 @@ describe("ExtensionRunner", () => {
 			]);
 
 			warnSpy.mockRestore();
+		});
+
+		it("aborts a tool_call handler's confirmation before returning its timeout block", async () => {
+			const extensionPath = path.join(tempDir.path(), "confirm-tool-call.ts");
+			const markerPath = path.join(tempDir.path(), "confirm-settled.txt");
+			fs.writeFileSync(
+				extensionPath,
+				`
+					import * as fs from "node:fs";
+
+					export default function(pi) {
+						pi.on("tool_call", async (_event, ctx) => {
+							ctx.ui.notify("Waiting for confirmation");
+							await ctx.ui.confirm("High-risk command", "Allow this command?");
+							fs.writeFileSync(${JSON.stringify(markerPath)}, "settled");
+						});
+					}
+				`,
+			);
+
+			const result = await loadTestExtensions([extensionPath]);
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const dialog = Promise.withResolvers<boolean>();
+			let dialogSignal: AbortSignal | undefined;
+			const notify = vi.fn<ExtensionUIContext["notify"]>();
+			const confirm: ExtensionUIContext["confirm"] = async (_title, _message, dialogOptions) => {
+				dialogSignal = dialogOptions?.signal;
+				dialogSignal?.addEventListener("abort", () => dialog.resolve(false), { once: true });
+				return await dialog.promise;
+			};
+			const uiPrototype = Object.create(runner.getUIContext(), {
+				confirm: { value: confirm },
+				notify: { value: notify },
+			});
+			const uiContext: ExtensionUIContext = Object.create(uiPrototype);
+			runner.initialize(
+				{
+					sendMessage: () => {},
+					sendUserMessage: () => {},
+					appendEntry: () => {},
+					setLabel: () => {},
+					getActiveTools: () => [],
+					getAllTools: () => [],
+					setActiveTools: async () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => undefined,
+					setThinkingLevel: () => {},
+					getSessionName: () => undefined,
+					setSessionName: async () => {},
+				},
+				{
+					getModel: () => undefined,
+					isIdle: () => true,
+					abort: () => {},
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: async () => {},
+					getSystemPrompt: () => [],
+				},
+				undefined,
+				uiContext,
+			);
+			testSetExtensionHandlerTimeoutMs(10);
+
+			const tool: AgentTool = {
+				name: "guarded",
+				label: "Guarded",
+				description: "must not execute after the extension gate times out",
+				parameters: Type.Object({}),
+				strict: true,
+				execute: async () => ({ content: [{ type: "text", text: "ran" }] }),
+			};
+			const wrapped = new ExtensionToolWrapper(tool, runner);
+
+			await expect(wrapped.execute("tool-call-id", {})).rejects.toThrow(
+				`Extension ${extensionPath} timed out after 10ms`,
+			);
+			expect(notify).toHaveBeenCalledWith("Waiting for confirmation");
+
+			expect(dialogSignal?.aborted).toBe(true);
+			expect(fs.readFileSync(markerPath, "utf8")).toBe("settled");
 		});
 	});
 
@@ -1938,6 +2106,476 @@ describe("ExtensionRunner", () => {
 					paths: ["plans/switch-case-array-syntax.md", "packages/coding-agent/src/main.ts"],
 				},
 			]);
+		});
+
+		// A tool that records the exact params it executed with, so an input override is observable.
+		function createRecordingTool(recordPath: string): AgentTool {
+			return {
+				name: "bash",
+				label: "Bash",
+				description: "Test bash tool",
+				parameters: Type.Object({ command: Type.String() }),
+				strict: true,
+				execute: async (_id: string, params: unknown) => {
+					fs.appendFileSync(recordPath, `${JSON.stringify(params)}\n`);
+					return { content: [{ type: "text", text: "ran" }] };
+				},
+			} as AgentTool;
+		}
+
+		it("executes the tool with a non-blocking handler's replacement input", async () => {
+			const recordPath = path.join(tempDir.path(), "override-executed.jsonl");
+			const extCode = `
+				export default function(pi) {
+					pi.on("tool_call", async (event) => {
+						if (event.toolName !== "bash") return;
+						return { input: { command: "echo revised" } };
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-call-override.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const wrapped = new ExtensionToolWrapper(createRecordingTool(recordPath), runner);
+
+			const resultMessage = await wrapped.execute("tool-call-id", { command: "echo original" });
+
+			expect(resultMessage.content).toEqual([{ type: "text", text: "ran" }]);
+			const executed = fs
+				.readFileSync(recordPath, "utf8")
+				.trim()
+				.split("\n")
+				.map(line => JSON.parse(line));
+			expect(executed).toEqual([{ command: "echo revised" }]);
+		});
+
+		it("ignores a replacement input when the handler also blocks", async () => {
+			const recordPath = path.join(tempDir.path(), "override-blocked.jsonl");
+			const extCode = `
+				export default function(pi) {
+					pi.on("tool_call", async (event) => {
+						if (event.toolName !== "bash") return;
+						return { block: true, reason: "nope", input: { command: "echo revised" } };
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-call-override-blocked.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const wrapped = new ExtensionToolWrapper(createRecordingTool(recordPath), runner);
+
+			await expect(wrapped.execute("tool-call-id", { command: "echo original" })).rejects.toThrow("nope");
+			expect(fs.existsSync(recordPath)).toBe(false); // tool never executed
+		});
+
+		it("executes with the original input when no handler returns a replacement", async () => {
+			const recordPath = path.join(tempDir.path(), "override-absent.jsonl");
+			const extCode = `
+				export default function(pi) {
+					pi.on("tool_call", async (event) => {
+						if (event.toolName !== "bash") return;
+						// observe only; no input override
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-call-no-override.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const wrapped = new ExtensionToolWrapper(createRecordingTool(recordPath), runner);
+
+			await wrapped.execute("tool-call-id", { command: "echo original" });
+
+			const executed = fs
+				.readFileSync(recordPath, "utf8")
+				.trim()
+				.split("\n")
+				.map(line => JSON.parse(line));
+			expect(executed).toEqual([{ command: "echo original" }]);
+		});
+
+		// A tool whose approval policy depends on its args: the command "rm -rf" resolves to deny,
+		// anything else is exec. Lets a test prove the post-override approval re-check (P1).
+		function createArgGatedTool(recordPath: string): AgentTool {
+			return {
+				name: "bash",
+				label: "Bash",
+				description: "Test bash tool",
+				parameters: Type.Object({ command: Type.String() }),
+				strict: true,
+				approval: (args: unknown) => {
+					const command = args && typeof args === "object" && "command" in args ? args.command : undefined;
+					return command === "rm -rf" ? { policy: "deny" as const, reason: "dangerous" } : ("exec" as const);
+				},
+				execute: async (_id: string, params: unknown) => {
+					fs.appendFileSync(recordPath, `${JSON.stringify(params)}\n`);
+					return { content: [{ type: "text", text: "ran" }] };
+				},
+			} as AgentTool;
+		}
+
+		const yoloContext = {
+			settings: { get: (key: string) => (key === "tools.approvalMode" ? "yolo" : {}) },
+		} as never;
+
+		// Minimal runtime init so the approval gate's interactive `select` is wired for prompt-path tests.
+		const initApprovalRunner = (
+			runner: ExtensionRunner,
+			select: (title: string, options: string[]) => Promise<string | undefined>,
+		) => {
+			runner.initialize(
+				{
+					sendMessage: () => {},
+					sendUserMessage: () => {},
+					appendEntry: () => {},
+					setLabel: () => {},
+					getActiveTools: () => [],
+					getAllTools: () => [],
+					setActiveTools: async () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => undefined,
+					setThinkingLevel: () => {},
+					getSessionName: () => undefined,
+					setSessionName: async () => {},
+				} as never,
+				{
+					getModel: () => undefined,
+					isIdle: () => true,
+					abort: () => {},
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: async () => {},
+					getSystemPrompt: () => [],
+				} as never,
+				undefined,
+				{ select, notify: () => {} } as never,
+			);
+		};
+		const alwaysAskContext = {
+			sessionManager,
+			modelRegistry,
+			model: undefined,
+			isIdle: () => true,
+			hasQueuedMessages: () => false,
+			abort: () => {},
+			settings: { get: (key: string) => (key === "tools.approvalMode" ? "always-ask" : {}) },
+		} as never;
+
+		it("blocks a revised input that resolves to a deny policy (approval gates the revised args)", async () => {
+			const recordPath = path.join(tempDir.path(), "regate-blocked.jsonl");
+			const extCode = `
+				export default function(pi) {
+					pi.on("tool_call", async (event) => {
+						if (event.toolName !== "bash") return;
+						return { input: { command: "rm -rf" } };
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-call-regate.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const wrapped = new ExtensionToolWrapper(createArgGatedTool(recordPath), runner);
+
+			// Original "echo original" resolves to exec; the handler rewrites it to "rm -rf", which the
+			// tool's approval declares deny. Because tool_call fires before the approval gate, the gate
+			// resolves against the revised args and blocks — the tool never runs.
+			await expect(
+				wrapped.execute("tool-call-id", { command: "echo original" }, undefined, undefined, yoloContext),
+			).rejects.toThrow(/blocked by user policy/);
+			expect(fs.existsSync(recordPath)).toBe(false); // tool never executed
+		});
+
+		it("allows a revised input that still passes policy", async () => {
+			const recordPath = path.join(tempDir.path(), "regate-allowed.jsonl");
+			const extCode = `
+				export default function(pi) {
+					pi.on("tool_call", async (event) => {
+						if (event.toolName !== "bash") return;
+						return { input: { command: "echo revised" } };
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-call-regate-ok.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const wrapped = new ExtensionToolWrapper(createArgGatedTool(recordPath), runner);
+
+			await wrapped.execute("tool-call-id", { command: "echo original" }, undefined, undefined, yoloContext);
+
+			const executed = fs
+				.readFileSync(recordPath, "utf8")
+				.trim()
+				.split("\n")
+				.map(line => JSON.parse(line));
+			expect(executed).toEqual([{ command: "echo revised" }]);
+		});
+
+		it("uses the last handler's input when several handlers set it", async () => {
+			const recordPath = path.join(tempDir.path(), "regate-multi.jsonl");
+			const first = `
+				export default function(pi) {
+					pi.on("tool_call", async (event) => {
+						if (event.toolName !== "bash") return;
+						return { input: { command: "echo first" } };
+					});
+				}
+			`;
+			const second = `
+				export default function(pi) {
+					pi.on("tool_call", async (event) => {
+						if (event.toolName !== "bash") return;
+						return { input: { command: "echo second" } };
+					});
+				}
+			`;
+			// File names sort first < second, so the loader loads them in that order and second wins.
+			fs.writeFileSync(path.join(extensionsDir, "tool-call-multi-a.ts"), first);
+			fs.writeFileSync(path.join(extensionsDir, "tool-call-multi-b.ts"), second);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const wrapped = new ExtensionToolWrapper(createRecordingTool(recordPath), runner);
+
+			await wrapped.execute("tool-call-id", { command: "echo original" });
+
+			const executed = fs
+				.readFileSync(recordPath, "utf8")
+				.trim()
+				.split("\n")
+				.map(line => JSON.parse(line));
+			expect(executed).toEqual([{ command: "echo second" }]);
+		});
+
+		it("prompts for the revised input, not the original, on an approval-gated tool (P1 prompt→prompt)", async () => {
+			// The Codex P1 follow-up: original and revised args are both prompt-gated, so a stale re-check
+			// on policy alone would let the revised args run under approval granted for the original.
+			// Because tool_call fires before the approval gate, the prompt must reflect the revised args.
+			const extCode = `
+				export default function(pi) {
+					pi.on("tool_call", async (event) => {
+						if (event.toolName !== "prompt_tool") return;
+						return { input: { command: "revised-command" } };
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-call-prompt-revise.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			let promptedWith = "";
+			const select = vi.fn(async (title: string) => {
+				promptedWith = title;
+				return "Approve";
+			});
+			initApprovalRunner(runner, select);
+
+			const executed: unknown[] = [];
+			const promptTool = {
+				name: "prompt_tool",
+				label: "Prompt Tool",
+				description: "Always prompt-gated",
+				parameters: Type.Object({ command: Type.String() }),
+				strict: true,
+				approval: "exec" as const,
+				formatApprovalDetails: (args: unknown) =>
+					args && typeof args === "object" && "command" in args ? String(args.command) : "",
+				execute: async (_id: string, params: unknown) => {
+					executed.push(params);
+					return { content: [{ type: "text", text: "ran" }] };
+				},
+			} as AgentTool;
+			const wrapped = new ExtensionToolWrapper(promptTool, runner);
+
+			await (wrapped as ExtensionToolWrapper<any>).execute(
+				"call-p2p",
+				{ command: "original-command" },
+				undefined,
+				undefined,
+				alwaysAskContext,
+			);
+
+			// The user was prompted for the revised command, and that is what executed.
+			expect(promptedWith).toContain("revised-command");
+			expect(promptedWith).not.toContain("original-command");
+			expect(executed).toEqual([{ command: "revised-command" }]);
+		});
+		it("skips wrapper emission when the loop already emitted tool_call for the dispatch", async () => {
+			// The agent loop emits tool_call at arg-prep time (session beforeToolCall
+			// wiring) and marks the dispatch on the runner; the wrapper must not fire
+			// handlers a second time for the same call. The marker is consume-once,
+			// so a dispatch the loop never marked (nested xd://, Cursor direct)
+			// still emits.
+			const recordPath = path.join(tempDir.path(), "loop-marker.jsonl");
+			const extCode = `
+				export default function(pi) {
+					pi.on("tool_call", async (event) => {
+						if (event.toolName !== "bash") return;
+						return { input: { command: "echo revised" } };
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-call-loop-marker.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const wrapped = new ExtensionToolWrapper(createRecordingTool(recordPath), runner);
+
+			runner.markToolCallEmitted("loop-call-id", "bash");
+			await wrapped.execute("loop-call-id", { command: "echo original" });
+			// Marker consumed above: an unmarked dispatch under the same id emits normally.
+			await wrapped.execute("loop-call-id", { command: "echo original" });
+
+			const executed = fs
+				.readFileSync(recordPath, "utf8")
+				.trim()
+				.split("\n")
+				.map(line => JSON.parse(line));
+			expect(executed).toEqual([{ command: "echo original" }, { command: "echo revised" }]);
+		});
+
+		it("forfeits the xdevApproved prompt bypass when a handler revises the input", async () => {
+			// write.ts dispatches xd:// devices with xdevApproved: true because its
+			// outer gate already approved the ORIGINAL device input. A tool_call
+			// revision may raise the tier, so revised input must face the full gate
+			// (here: no interactive UI => reject) instead of riding the outer approval.
+			const recordPath = path.join(tempDir.path(), "xdev-revised.jsonl");
+			const extCode = `
+				export default function(pi) {
+					pi.on("tool_call", async (event) => {
+						if (event.toolName !== "bash") return;
+						return { input: { command: "echo revised" } };
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-call-xdev-revise.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const wrapped = new ExtensionToolWrapper(createRecordingTool(recordPath), runner);
+			const xdevContext = {
+				settings: { get: (key: string) => (key === "tools.approvalMode" ? "always-ask" : {}) },
+				xdevApproved: true,
+			} as never;
+
+			await expect(
+				wrapped.execute("xdev-call-id", { command: "echo original" }, undefined, undefined, xdevContext),
+			).rejects.toThrow(/requires approval but no interactive UI available/);
+			expect(fs.existsSync(recordPath)).toBe(false); // tool never executed
+		});
+
+		it("emits tool_call before the approval prompt so approval sees the final input", async () => {
+			const order: string[] = [];
+			const extCode = `
+				export default function(pi) {
+					pi.on("tool_call", async (event) => {
+						if (event.toolName !== "prompt_tool") return;
+						globalThis.__orderEvents.push("tool_call");
+						return { input: { command: "revised" } };
+					});
+					pi.on("tool_approval_requested", async () => {
+						globalThis.__orderEvents.push("tool_approval_requested");
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "tool-call-order.ts"), extCode);
+			const globalState = globalThis as typeof globalThis & { __orderEvents?: string[] };
+			globalState.__orderEvents = order;
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const select = vi.fn(async () => {
+				order.push("ui_select");
+				return "Approve";
+			});
+			initApprovalRunner(runner, select);
+
+			const promptTool = {
+				name: "prompt_tool",
+				label: "Prompt Tool",
+				description: "Always prompt-gated",
+				parameters: Type.Object({ command: Type.String() }),
+				strict: true,
+				approval: "exec" as const,
+				execute: async () => ({ content: [{ type: "text", text: "ran" }] }),
+			} as AgentTool;
+			const wrapped = new ExtensionToolWrapper(promptTool, runner);
+
+			await (wrapped as ExtensionToolWrapper<any>).execute(
+				"call-order",
+				{ command: "original" },
+				undefined,
+				undefined,
+				alwaysAskContext,
+			);
+
+			expect(order).toEqual(["tool_call", "tool_approval_requested", "ui_select"]);
+			delete globalState.__orderEvents;
 		});
 	});
 	describe("hasHandlers", () => {

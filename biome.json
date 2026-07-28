@@ -28,7 +28,8 @@
 				"noExplicitAny": "off",
 				"noControlCharactersInRegex": "off",
 				"noEmptyInterface": "off",
-				"noConstEnum": "off"
+				"noConstEnum": "off",
+				"noConfusingVoidType": "off"
 			}
 		}
 	},

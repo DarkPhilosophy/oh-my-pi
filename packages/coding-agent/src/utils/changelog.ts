@@ -1,5 +1,6 @@
+import * as path from "node:path";
 import { getLastChangelogVersionPath, isEnoent, logger } from "@oh-my-pi/pi-utils";
-import bundledChangelog from "../../CHANGELOG.md" with { type: "text" };
+import bundledChangelogPath from "../../CHANGELOG.md" with { type: "file" };
 
 export interface ChangelogEntry {
 	major: number;
@@ -36,8 +37,13 @@ export interface StartupChangelogSelection {
  * The embedded fallback keeps standalone binaries self-contained without
  * resolving relative to the host project's cwd, which caused issue #1423.
  */
+export function resolveBundledChangelogPath(assetPath: string, moduleUrl: string | URL): string | URL {
+	if (path.isAbsolute(assetPath) || path.win32.isAbsolute(assetPath)) return assetPath;
+	return new URL(assetPath, moduleUrl);
+}
+
 export async function parseChangelog(changelogPath: string | undefined): Promise<ChangelogEntry[]> {
-	let content = bundledChangelog;
+	let content: string | undefined;
 	if (changelogPath) {
 		try {
 			content = await Bun.file(changelogPath).text();
@@ -47,6 +53,7 @@ export async function parseChangelog(changelogPath: string | undefined): Promise
 			}
 		}
 	}
+	content ??= await Bun.file(resolveBundledChangelogPath(bundledChangelogPath, import.meta.url)).text();
 
 	return parseChangelogContent(content);
 }

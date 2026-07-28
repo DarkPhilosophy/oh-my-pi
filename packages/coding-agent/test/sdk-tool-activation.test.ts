@@ -15,7 +15,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { VIBE_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/vibe";
-import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import { logger, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 
 const toolActivationExtension: ExtensionFactory = pi => {
@@ -305,7 +305,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			await session.dispose();
 		}
 	});
-	it("registers vibe tools only during explicit vibe activation", async () => {
+	it("registers vibe tools only during explicit vibe activation and exposes parent Todo bookkeeping", async () => {
 		const tempDir = makeTempDir();
 		const { session } = await createAgentSession(baseOptions(tempDir));
 		const previousActiveToolNames = session.getActiveToolNames();
@@ -315,17 +315,81 @@ describe("createAgentSession defaultInactive tool activation", () => {
 				expect(session.getToolByName(name)).toBeUndefined();
 			}
 
-			await session.activateVibeTools(["read"]);
+			await session.activateVibeTools(["read", "todo"]);
+			const todo = session.getToolByName("todo");
+			if (!todo) throw new Error("Expected real Todo tool");
+			expect(session.getActiveToolNames()).toContain("todo");
 			for (const name of VIBE_TOOL_NAMES) {
 				expect(session.getToolByName(name)).toBeDefined();
 				expect(session.getActiveToolNames()).toContain(name);
 			}
+
+			await todo.execute("vibe-todo-init", {
+				op: "init",
+				list: [{ phase: "Work", items: ["Worker change"] }],
+			});
+			await todo.execute("vibe-todo-done", { op: "done", task: "Worker change" });
+			expect(session.getTodoPhases()).toMatchObject([
+				{
+					name: "Work",
+					tasks: [{ content: "Worker change", status: "completed" }],
+				},
+			]);
 
 			await session.deactivateVibeTools(previousActiveToolNames);
 			for (const name of VIBE_TOOL_NAMES) {
 				expect(session.getToolByName(name)).toBeUndefined();
 			}
 			expect(session.getActiveToolNames()).toEqual(previousActiveToolNames);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("rehydrates completed parent Todo work from persisted session history", async () => {
+		const tempDir = makeTempDir();
+		const sessionManager = SessionManager.create(tempDir, tempDir);
+		const { session } = await createAgentSession({
+			...baseOptions(tempDir),
+			sessionManager,
+		});
+
+		try {
+			await session.activateVibeTools(["read", "todo"]);
+			const todo = session.getToolByName("todo");
+			if (!todo) throw new Error("Expected real Todo tool");
+			const init = await todo.execute("vibe-todo-init", {
+				op: "init",
+				list: [{ phase: "Worker flow", items: ["Reconcile worker result"] }],
+			});
+			const done = await todo.execute("vibe-todo-done", { op: "done", task: "Reconcile worker result" });
+			for (const [toolCallId, result] of [
+				["vibe-todo-init", init],
+				["vibe-todo-done", done],
+			] as const) {
+				sessionManager.appendMessage({
+					role: "toolResult",
+					toolCallId,
+					toolName: "todo",
+					content: result.content,
+					details: result.details,
+					isError: result.isError === true,
+					timestamp: Date.now(),
+				});
+			}
+			await sessionManager.ensureOnDisk();
+			const sessionFile = session.sessionFile;
+			if (!sessionFile) throw new Error("Expected persisted session file");
+
+			session.setTodoPhases([]);
+			expect(session.getTodoPhases()).toEqual([]);
+			expect(await session.switchSession(sessionFile)).toBe(true);
+			expect(session.getTodoPhases()).toMatchObject([
+				{
+					name: "Worker flow",
+					tasks: [{ content: "Reconcile worker result", status: "completed" }],
+				},
+			]);
 		} finally {
 			await session.dispose();
 		}
@@ -360,6 +424,40 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			// tts is a discoverable custom tool → mounted as an xd:// device, not top-level.
 			expect(session.getXdevToolEntries().map(entry => entry.name)).toContain("tts");
 			expect(session.getActiveToolNames()).not.toContain("tts");
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("keeps the stable MCP tool-name collision winner during SDK startup and warns", async () => {
+		const tempDir = makeTempDir();
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const createMcpTool = (serverName: string, label: string): CustomTool => ({
+			name: "mcp__foo_bar_lookup",
+			label,
+			description: `Lookup from ${serverName}`,
+			parameters: type({}),
+			mcpServerName: serverName,
+			mcpToolName: "lookup",
+			async execute() {
+				return { content: [{ type: "text", text: serverName }] };
+			},
+		});
+
+		const { session } = await createAgentSession({
+			...baseOptions(tempDir),
+			customTools: [createMcpTool("foo.bar", "foo.bar/lookup"), createMcpTool("foo_bar", "foo_bar/lookup")],
+		});
+
+		try {
+			expect(session.getToolByName("mcp__foo_bar_lookup")?.label).toBe("foo.bar/lookup");
+			expect(warn).toHaveBeenCalledWith("MCP tool name collision; keeping stable winner", {
+				name: "mcp__foo_bar_lookup",
+				keptServer: "foo.bar",
+				keptTool: "lookup",
+				ignoredServer: "foo_bar",
+				ignoredTool: "lookup",
+			});
 		} finally {
 			await session.dispose();
 		}
@@ -457,6 +555,28 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			);
 		} finally {
 			await normal.dispose();
+		}
+	});
+
+	it("renders report-issue guidance only for unrestricted sessions", async () => {
+		const normalDir = makeTempDir();
+		const restrictedDir = makeTempDir();
+		const { session: normal } = await createAgentSession({
+			...baseOptions(normalDir),
+			settings: Settings.isolated({ "dev.autoqa": true }),
+		});
+		const { session: restricted } = await createAgentSession({
+			...baseOptions(restrictedDir),
+			settings: Settings.isolated({ "dev.autoqa": true }),
+			toolNames: ["read"],
+			restrictToolNames: true,
+		});
+
+		try {
+			expect(normal.systemPrompt.join("\n")).toContain("xd://report_issue");
+			expect(restricted.systemPrompt.join("\n")).not.toContain("xd://report_issue");
+		} finally {
+			await Promise.all([normal.dispose(), restricted.dispose()]);
 		}
 	});
 

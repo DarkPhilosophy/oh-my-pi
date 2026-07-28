@@ -220,6 +220,29 @@ describe("legacy-pi @(scope)/pi-ai root `Type` remap (issue #1437)", () => {
 		expect(loaded.schema.safeParse("blue").success).toBe(false);
 		expect(loaded.schema.toJSON?.()?.description).toBe("primary colors");
 	});
+
+	it("exports isRetryableAssistantError for legacy retry classification (issue #6847)", async () => {
+		// `@earendil-works/pi-ai@0.82.x` exports isRetryableAssistantError from its
+		// package root (utils/retry.js). Plugins such as
+		// `@router-for-me/pi-cliproxyapi-provider` (>=1.4.9) import it, so a missing
+		// shim export surfaced as a plain
+		// `Export named 'isRetryableAssistantError' not found` at validation time.
+		const loaded = (await loadLegacyPiModule(
+			await writeFixtureExtension(
+				[
+					'import { isRetryableAssistantError } from "@earendil-works/pi-ai";',
+					'const err = errorMessage => ({ role: "assistant", stopReason: "error", errorMessage });',
+					'export const transient = isRetryableAssistantError(err("upstream connect error"));',
+					'export const quota = isRetryableAssistantError(err("insufficient_quota"));',
+					'export const ok = isRetryableAssistantError({ role: "assistant", stopReason: "stop" });',
+				].join("\n"),
+			),
+		)) as { transient: boolean; quota: boolean; ok: boolean };
+
+		expect(loaded.transient).toBe(true);
+		expect(loaded.quota).toBe(false);
+		expect(loaded.ok).toBe(false);
+	});
 });
 
 describe("legacy pi package root remaps (issue #1474)", () => {

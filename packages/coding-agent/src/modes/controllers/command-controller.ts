@@ -346,7 +346,7 @@ export class CommandController {
 			}
 		}
 
-		this.ctx.present([new Spacer(1), new Text(info, 1, 0)]);
+		this.ctx.presentCommandOutput([new Spacer(1), new Text(info, 1, 0)]);
 	}
 
 	static readonly #advisorStatusGlyph: Record<string, string> = {
@@ -368,7 +368,7 @@ export class CommandController {
 	async handleAdvisorStatusCommand(): Promise<void> {
 		const stats = this.ctx.session.getAdvisorStats();
 		if (!stats.configured) {
-			this.ctx.present([new Spacer(1), new Text("Advisor is disabled.", 1, 0)]);
+			this.ctx.presentCommandOutput([new Spacer(1), new Text("Advisor is disabled.", 1, 0)]);
 			return;
 		}
 		// Fetch live quota data (cached 5 min by the auth-gateway) so we can show
@@ -434,7 +434,7 @@ export class CommandController {
 				info += `${theme.fg("dim", "Tokens:")} ${stats.tokens.total.toLocaleString()}\n`;
 				if (stats.cost > 0) info += `${theme.fg("dim", "Cost:")} $${stats.cost.toFixed(4)}\n`;
 			}
-			this.ctx.present([new Spacer(1), new Text(info, 1, 0)]);
+			this.ctx.presentCommandOutput([new Spacer(1), new Text(info, 1, 0)]);
 			return;
 		}
 		// Single active advisor — detailed view.
@@ -480,7 +480,7 @@ export class CommandController {
 			info += `${theme.fg("dim", "Cache Read:")} ${stats.tokens.cacheRead.toLocaleString()}\n`;
 		}
 		if (stats.cost > 0) info += `${theme.fg("dim", "Cost:")} $${stats.cost.toFixed(4)}\n`;
-		this.ctx.present([new Spacer(1), new Text(info, 1, 0)]);
+		this.ctx.presentCommandOutput([new Spacer(1), new Text(info, 1, 0)]);
 	}
 
 	async handleJobsCommand(): Promise<void> {
@@ -497,7 +497,7 @@ export class CommandController {
 
 		if (snapshot.running.length === 0 && snapshot.recent.length === 0) {
 			info += `\n${theme.fg("dim", "No async jobs yet.")}\n`;
-			this.ctx.present([new Spacer(1), new Text(info, 1, 0)]);
+			this.ctx.presentCommandOutput([new Spacer(1), new Text(info, 1, 0)]);
 			return;
 		}
 
@@ -517,7 +517,7 @@ export class CommandController {
 			}
 		}
 
-		this.ctx.present([new Spacer(1), new Text(info.trimEnd(), 1, 0)]);
+		this.ctx.presentCommandOutput([new Spacer(1), new Text(info.trimEnd(), 1, 0)]);
 	}
 
 	async handleUsageCommand(reports?: UsageReport[] | null): Promise<void> {
@@ -561,7 +561,7 @@ export class CommandController {
 				usageModelSelectors,
 			},
 		);
-		this.ctx.present([new Spacer(1), new Text(output, 1, 0)]);
+		this.ctx.presentCommandOutput([new Spacer(1), new Text(output, 1, 0)]);
 	}
 
 	async handleChangelogCommand(showFull = false): Promise<void> {
@@ -581,7 +581,7 @@ export class CommandController {
 		block.addChild(new Spacer(1));
 		block.addChild(new Markdown(changelogMarkdown + hint, 1, 1, getMarkdownTheme()));
 		block.addChild(new DynamicBorder());
-		this.ctx.present(block);
+		this.ctx.presentCommandOutput(block);
 	}
 
 	handleHotkeysCommand(): void {
@@ -610,7 +610,7 @@ export class CommandController {
 		block.addChild(new Spacer(1));
 		block.addChild(new Text(output, 1, 0));
 		block.addChild(new DynamicBorder());
-		this.ctx.present(block);
+		this.ctx.presentCommandOutput(block);
 	}
 
 	async handleMemoryCommand(text: string): Promise<void> {
@@ -631,7 +631,7 @@ export class CommandController {
 			block.addChild(new Spacer(1));
 			block.addChild(new Markdown(payload, 1, 1, getMarkdownTheme()));
 			block.addChild(new DynamicBorder());
-			this.ctx.present(block);
+			this.ctx.presentCommandOutput(block);
 			return;
 		}
 

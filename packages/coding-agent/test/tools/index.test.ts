@@ -148,12 +148,12 @@ describe("createTools", () => {
 		expect(names).toEqual(["read", "write"]);
 	});
 
-	it("creates an xd:// registry without remounting explicitly requested built-ins", async () => {
+	it("creates xd:// presentation state without remounting explicitly requested built-ins", async () => {
 		const session = createTestSession();
 		const tools = await createTools(session, ["read", "lsp"]);
 
-		expect(session.xdevRegistry).toBeDefined();
-		expect(session.xdevRegistry?.entries()).toEqual([]);
+		expect(session.xdev).toBeDefined();
+		expect(session.xdev?.mountedNames.size).toBe(0);
 		expect(tools.map(tool => tool.name)).toEqual(["read", "lsp"]);
 	});
 

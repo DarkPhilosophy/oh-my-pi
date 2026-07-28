@@ -821,6 +821,7 @@ describe("provider computer safety", () => {
 		const runner = {
 			hasHandlers: () => false,
 			hasUI: () => false,
+			consumeToolCallEmitted: () => false,
 		} as unknown as ExtensionRunner;
 		const wrapped = new ExtensionToolWrapper(tool as unknown as AgentTool, runner);
 		const context = callContext(
@@ -842,6 +843,7 @@ describe("provider computer safety", () => {
 		const runner = {
 			hasHandlers: () => false,
 			hasUI: () => true,
+			consumeToolCallEmitted: () => false,
 			getUIContext: () => ({
 				select: async (message: string) => {
 					promptText = message;
@@ -875,6 +877,7 @@ it("passes provider-native actions and safety checks to extension policy hooks",
 	const runner = {
 		hasHandlers: (type: string) => type === "tool_call",
 		hasUI: () => true,
+		consumeToolCallEmitted: () => false,
 		getUIContext: () => ({ select: async () => "Approve" }),
 		emitToolCall: async (event: { input: Record<string, unknown> }) => {
 			hookInput = event.input;
@@ -896,6 +899,7 @@ it("sanitizes provider safety text as approval data", async () => {
 	const runner = {
 		hasHandlers: () => false,
 		hasUI: () => true,
+		consumeToolCallEmitted: () => false,
 		getUIContext: () => ({
 			select: async (message: string) => {
 				promptText = message;

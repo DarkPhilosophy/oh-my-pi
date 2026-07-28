@@ -32,6 +32,9 @@
 #   CONTAINERD_SOCKET_REMOTE remote containerd socket                      [/run/k3s/containerd/containerd.sock]
 #   NERDCTL_VERSION          nerdctl release to bootstrap on demand        [2.1.6]
 #   BUILDKIT_VERSION         BuildKit release to bootstrap on demand       [0.25.1]
+#   RUNNER_MAX_RUNNERS       maximum concurrent Kata runner pods             [4]
+#   RUNNER_CPU               requested and limited CPU cores per runner       [8]
+#   RUNNER_MEMORY            requested and limited memory per runner          [24Gi]
 set -euo pipefail
 
 : "${CI_HOST:?set CI_HOST to the ssh target of your CI host, e.g. CI_HOST=my-ci-host}"
@@ -45,6 +48,9 @@ BUILD_BACKEND="${BUILD_BACKEND:-auto}"
 CONTAINERD_SOCKET_REMOTE="${CONTAINERD_SOCKET_REMOTE:-/run/k3s/containerd/containerd.sock}"
 NERDCTL_VERSION="${NERDCTL_VERSION:-2.1.6}"
 BUILDKIT_VERSION="${BUILDKIT_VERSION:-0.25.1}"
+RUNNER_MAX_RUNNERS="${RUNNER_MAX_RUNNERS:-4}"
+RUNNER_CPU="${RUNNER_CPU:-8}"
+RUNNER_MEMORY="${RUNNER_MEMORY:-24Gi}"
 
 arg="${1:-$(date +%Y-%m-%d-%H%M%S)}"
 case "$arg" in *:*) IMAGE="$arg";; *) IMAGE="omp-kata-runner:$arg";; esac
@@ -53,7 +59,9 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f "$here/runner.Dockerfile" ] || { echo "no runner.Dockerfile next to $0" >&2; exit 1; }
 
 echo "==> [0/5] copying Dockerfile to ${CI_HOST}:${REMOTE_CTX}"
-ssh "$CI_HOST" "mkdir -p '$REMOTE_CTX'"
+ssh "$CI_HOST" bash -s -- "$REMOTE_CTX" <<'REMOTE'
+mkdir -p "$1"
+REMOTE
 scp -q "$here/runner.Dockerfile" "${CI_HOST}:${REMOTE_CTX}/Dockerfile"
 
 # All build/import/rollout steps run on the host. Config is passed as positional
@@ -61,11 +69,13 @@ scp -q "$here/runner.Dockerfile" "${CI_HOST}:${REMOTE_CTX}/Dockerfile"
 # regardless of the host's login shell.
 ssh "$CI_HOST" bash -s -- \
    "$IMAGE" "$REMOTE_CTX" "$ARC_VALUES" "$ARC_RELEASE" "$ARC_NAMESPACE" "$ARC_CHART_VERSION" \
-   "$KUBECONFIG_REMOTE" "$BUILD_BACKEND" "$CONTAINERD_SOCKET_REMOTE" "$NERDCTL_VERSION" "$BUILDKIT_VERSION" <<'REMOTE'
+   "$KUBECONFIG_REMOTE" "$BUILD_BACKEND" "$CONTAINERD_SOCKET_REMOTE" "$NERDCTL_VERSION" "$BUILDKIT_VERSION" \
+   "$RUNNER_MAX_RUNNERS" "$RUNNER_CPU" "$RUNNER_MEMORY" <<'REMOTE'
 set -euo pipefail
 IMAGE="$1"; REMOTE_CTX="$2"; ARC_VALUES="$3"; ARC_RELEASE="$4"; ARC_NAMESPACE="$5"; ARC_CHART_VERSION="$6"
 export KUBECONFIG="$7"
 BUILD_BACKEND="$8"; CONTAINERD_SOCKET="$9"; NERDCTL_VERSION="${10}"; BUILDKIT_VERSION="${11}"
+RUNNER_MAX_RUNNERS="${12}"; RUNNER_CPU="${13}"; RUNNER_MEMORY="${14}"
 cd "$REMOTE_CTX"
 
 TOOLS_DIR="$REMOTE_CTX/.containerd-build-tools"
@@ -82,6 +92,8 @@ BUILDKITD_PID=""
 cleanup_buildkitd() {
   if [ -n "${BUILDKITD_PID:-}" ]; then
     kill "$BUILDKITD_PID" >/dev/null 2>&1 || true
+    wait "$BUILDKITD_PID" >/dev/null 2>&1 || true
+    rm -f "$RUN_DIR/buildkitd.sock"
   fi
 }
 trap cleanup_buildkitd EXIT
@@ -116,7 +128,13 @@ bootstrap_containerd_tools() {
 }
 
 start_buildkitd() {
-  rm -f "$RUN_DIR/buildkitd.sock"
+  if [ -S "$RUN_DIR/buildkitd.sock" ]; then
+    if "$BUILDKITCTL_BIN" --addr "$BUILDKIT_ADDR" debug workers >/dev/null 2>&1; then
+      echo "==> reusing running BuildKit daemon"
+      return 0
+    fi
+    rm -f "$RUN_DIR/buildkitd.sock"
+  fi
   "$BUILDKITD_BIN" \
     --addr "$BUILDKIT_ADDR" \
     --root "$ROOT_DIR" \
@@ -138,10 +156,10 @@ verify_baked_tools() {
   local runner="$1"
   "$runner" --namespace k8s.io run --rm --entrypoint bash "$IMAGE" -lc '
     set -e
-    for b in gh fd rg magick bun cargo rustc pkg-config clang lld sccache zig cmake ninja cargo-nextest cargo-zigbuild cargo-xwin; do
+    for b in gh fd rg magick bun cargo rustc pkg-config clang lld sccache zstd zig cmake ninja cargo-nextest cargo-zigbuild cargo-xwin bazelisk bazel; do
       command -v "$b" >/dev/null || { echo "MISSING: $b"; exit 1; }
     done
-    echo "tools OK | bun $(bun --version) | rust $(rustc --version) | sccache $(set -- $(sccache --version); echo "$2") | zig $(zig version) | cmake $(set -- $(cmake --version | head -1); echo "$3") | ninja $(ninja --version) | gh $(set -- $(gh --version | head -1); echo "$3")"
+    echo "tools OK | bun $(bun --version) | rust $(rustc --version) | sccache $(set -- $(sccache --version); echo "$2") | zstd $(zstd --version) | zig $(zig version) | cmake $(set -- $(cmake --version | head -1); echo "$3") | ninja $(ninja --version) | gh $(set -- $(gh --version | head -1); echo "$3")"
   '
 }
 
@@ -170,10 +188,10 @@ build_with_docker() {
   echo "==> [2/5] verifying baked tools"
   docker run --rm --entrypoint bash "$IMAGE" -lc '
     set -e
-    for b in gh fd rg magick bun cargo rustc pkg-config clang lld sccache zig cmake ninja cargo-nextest cargo-zigbuild cargo-xwin; do
+    for b in gh fd rg magick bun cargo rustc pkg-config clang lld sccache zstd zig cmake ninja cargo-nextest cargo-zigbuild cargo-xwin bazelisk bazel; do
       command -v "$b" >/dev/null || { echo "MISSING: $b"; exit 1; }
     done
-    echo "tools OK | bun $(bun --version) | rust $(rustc --version) | sccache $(set -- $(sccache --version); echo "$2") | zig $(zig version) | cmake $(set -- $(cmake --version | head -1); echo "$3") | ninja $(ninja --version) | gh $(set -- $(gh --version | head -1); echo "$3")"
+    echo "tools OK | bun $(bun --version) | rust $(rustc --version) | sccache $(set -- $(sccache --version); echo "$2") | zstd $(zstd --version) | zig $(zig version) | cmake $(set -- $(cmake --version | head -1); echo "$3") | ninja $(ninja --version) | gh $(set -- $(gh --version | head -1); echo "$3")"
   '
 
   echo "==> [3/5] importing into k3s containerd (k8s.io namespace)"
@@ -216,15 +234,34 @@ esac
 
 echo "==> [4/5] pointing ARC runner scale set at $IMAGE"
 sed -i "s#image: omp-kata-runner:.*#image: $IMAGE#" "$ARC_VALUES"
+sed -i -E "s/^maxRunners:.*/maxRunners: $RUNNER_MAX_RUNNERS/" "$ARC_VALUES"
+# Ensure the bazel-remote cache credentials reach every runner pod (idempotent;
+# the secret is created by infra/bazel-remote/setup.sh).
+if ! grep -q 'name: bazel-remote-ci' "$ARC_VALUES"; then
+  awk '1; /^        envFrom:/ { print "          - secretRef:"; print "              name: bazel-remote-ci" }' \
+    "$ARC_VALUES" > "$ARC_VALUES.tmp" && mv "$ARC_VALUES.tmp" "$ARC_VALUES"
+  grep -q 'name: bazel-remote-ci' "$ARC_VALUES" || { echo "failed to add bazel-remote-ci envFrom to $ARC_VALUES (no 'envFrom:' anchor?)" >&2; exit 1; }
+fi
 helm upgrade "$ARC_RELEASE" --namespace "$ARC_NAMESPACE" --version "$ARC_CHART_VERSION" \
   -f "$ARC_VALUES" \
+  --set-string "template.spec.containers[0].resources.requests.cpu=$RUNNER_CPU" \
+  --set-string "template.spec.containers[0].resources.limits.cpu=$RUNNER_CPU" \
+  --set-string "template.spec.containers[0].resources.requests.memory=$RUNNER_MEMORY" \
+  --set-string "template.spec.containers[0].resources.limits.memory=$RUNNER_MEMORY" \
   oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set >/dev/null
 
 echo "==> [5/5] verifying rollout"
 live="$(kubectl get autoscalingrunnerset "$ARC_RELEASE" -n "$ARC_NAMESPACE" \
   -o jsonpath='{.spec.template.spec.containers[0].image}')"
-echo "ARC runner image is now: $live"
-[ "$live" = "$IMAGE" ] && echo "OK: reloaded $IMAGE" || { echo "MISMATCH: expected $IMAGE"; exit 1; }
+live_max="$(kubectl get autoscalingrunnerset "$ARC_RELEASE" -n "$ARC_NAMESPACE" -o jsonpath='{.spec.maxRunners}')"
+live_resources="$(kubectl get autoscalingrunnerset "$ARC_RELEASE" -n "$ARC_NAMESPACE" \
+  -o jsonpath='{.spec.template.spec.containers[0].resources.requests.cpu}/{.spec.template.spec.containers[0].resources.limits.cpu} {.spec.template.spec.containers[0].resources.requests.memory}/{.spec.template.spec.containers[0].resources.limits.memory}')"
+expected_resources="$RUNNER_CPU/$RUNNER_CPU $RUNNER_MEMORY/$RUNNER_MEMORY"
+echo "ARC runner image/resources: $live | max=$live_max | $live_resources"
+[ "$live" = "$IMAGE" ] || { echo "MISMATCH: expected image $IMAGE"; exit 1; }
+[ "$live_max" = "$RUNNER_MAX_RUNNERS" ] || { echo "MISMATCH: expected maxRunners $RUNNER_MAX_RUNNERS"; exit 1; }
+[ "$live_resources" = "$expected_resources" ] || { echo "MISMATCH: expected resources $expected_resources"; exit 1; }
+echo "OK: reloaded $IMAGE"
 REMOTE
 
 echo "OK: $IMAGE built on ${CI_HOST}, stored in k3s containerd, and rolled out to ARC."

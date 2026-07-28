@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { isVertexExpressOpenAIUrl, isVertexRawPredictUrl } from "@oh-my-pi/pi-catalog/hosts";
+import { isVertexExpressOpenAIUrl, isVertexRawPredictUrl, resolveVertexEndpointHost } from "@oh-my-pi/pi-catalog/hosts";
 import {
 	mapEffortToAnthropicAdaptiveEffort,
 	mapEffortToGoogleThinkingLevel,
@@ -662,7 +662,7 @@ function resolveVertexRequest(input: string | URL | Request): string | URL | Req
 			url.includes("{location}") ||
 			url.includes("%7Bproject%7D") ||
 			url.includes("%7Blocation%7D");
-		const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
+		const host = resolveVertexEndpointHost(location);
 		const rewritten = hasPlaceholder
 			? url
 					.replace("https://{location}-aiplatform.googleapis.com", `https://${host}`)
@@ -970,7 +970,9 @@ function extractStatusFromAssistantError(message: AssistantMessage): number | un
 }
 
 function isRetryableUpstreamError(error: unknown, status: number | undefined, message: string | undefined): boolean {
-	// 401 means the credential is bad. Usage-limit phrasing (Codex's
+	// 401 means the credential is bad; 403 is its valid-token twin (access
+	// denied by plan, model policy, or org restriction — a sibling account may
+	// not share it). Usage-limit phrasing (Codex's
 	// "You have hit your ChatGPT usage limit", Anthropic's "usage_limit_reached",
 	// Google's "resource_exhausted", OpenAI's "insufficient_quota") and 429s
 	// without transient rate-limit wording mean this account is parked but a
@@ -983,7 +985,7 @@ function isRetryableUpstreamError(error: unknown, status: number | undefined, me
 	// instead of burning siblings.
 	if (AIError.isUsageLimit(error)) return true;
 	if (isInvalidatedOAuthTokenError(error)) return true;
-	if (status === 401) return true;
+	if (status === 401 || status === 403) return true;
 	return isUsageLimitOutcome(status, message);
 }
 

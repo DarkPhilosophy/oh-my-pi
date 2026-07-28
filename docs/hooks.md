@@ -110,7 +110,7 @@ Hook events are strongly typed in `types.ts`.
 
 ### Tool events (pre/post model)
 
-- `tool_call` (pre-execution) → can return `{ block?: boolean; reason?: string }`
+- `tool_call` (pre-execution) → can return `{ block?: boolean; reason?: string; input?: Record<string, unknown> }`. A non-blocking handler that returns `input` replaces the arguments the tool executes with (the raw execution input, not the normalized `event.input` view); ignored when `block` is true, and not applied to `computer` tool calls.
 - `tool_result` (post-execution) → can return `{ content?; details?; isError? }`
 
 This is the hook subsystem’s core pre/post interception model.
@@ -197,7 +197,7 @@ Inside `HookRunner`, order is deterministic by registration sequence:
 
 Conflict behavior by event type:
 
-- `tool_call`: last returned result wins unless a handler blocks; first block short-circuits
+- `tool_call`: last returned result wins unless a handler blocks; first block short-circuits. A returned `input` (execution-argument override) follows the same last-wins rule; handlers do not observe each other's revisions
 - `tool_result`: last returned override wins (no short-circuit)
 - `context`: chained; each handler receives prior handler’s message output
 - `before_agent_start`: first returned message is kept; later messages ignored

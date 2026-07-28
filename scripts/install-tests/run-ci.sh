@@ -43,7 +43,9 @@ find_tarball() {
 }
 
 section "Binary install smoke"
-bun --cwd=packages/natives run build
+if [ "${OMP_INSTALL_TEST_SKIP_NATIVE_BUILD:-0}" != "1" ]; then
+   bun --cwd=packages/natives run build
+fi
 bun --cwd=packages/coding-agent run build
 
 BINARY_DIR="$WORK_DIR/binary-bin"

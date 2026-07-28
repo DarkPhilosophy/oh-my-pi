@@ -4,6 +4,7 @@ import type { DevinModelDiscoveryOptions } from "../discovery/devin";
 import { buildGitLabDuoWorkflowFallbackModel, fetchGitLabDuoWorkflowModels } from "../discovery/gitlab-duo-workflow";
 import type { ModelManagerOptions } from "../model-manager";
 import type { FetchImpl, ModelSpec } from "../types";
+import { resolveModelCacheProviderId } from "./cache-provider-id";
 
 // ---------------------------------------------------------------------------
 // OpenAI Codex
@@ -95,14 +96,12 @@ export interface CursorModelManagerConfig {
 	clientVersion?: string;
 }
 
-const CURSOR_CACHE_PROVIDER_ID = "cursor:max-mode-v2";
-
 export function cursorModelManagerOptions(config: CursorModelManagerConfig = {}): ModelManagerOptions<"cursor-agent"> {
 	const { apiKey: configuredApiKey, getApiKey, baseUrl, clientVersion } = config;
 	const hasApiKey = Boolean(configuredApiKey || getApiKey);
 	return {
 		providerId: "cursor",
-		cacheProviderId: CURSOR_CACHE_PROVIDER_ID,
+		cacheProviderId: resolveModelCacheProviderId("cursor"),
 		...(hasApiKey
 			? {
 					fetchDynamicModels: async () => {

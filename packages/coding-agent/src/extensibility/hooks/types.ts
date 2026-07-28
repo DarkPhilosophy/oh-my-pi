@@ -444,7 +444,6 @@ export type {
  * Handler function type for each event.
  * Handlers can return R, undefined, or void (bare return statements).
  */
-// biome-ignore lint/suspicious/noConfusingVoidType: void allows bare return statements in handlers
 export type HookHandler<E, R = undefined> = (event: E, ctx: HookContext) => Promise<R | void> | R | void;
 
 export interface HookMessageRenderOptions {

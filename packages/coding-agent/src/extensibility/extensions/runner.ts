@@ -38,6 +38,7 @@ import type {
 	ExtensionRuntime,
 	ExtensionShortcut,
 	ExtensionUIContext,
+	ExtensionUIDialogOptions,
 	InputEvent,
 	InputEventResult,
 	MessageRenderer,
@@ -106,6 +107,66 @@ function handlerTimeoutForEvent(eventType: string): number {
 const EXTENSION_HANDLER_TIMEOUT = Symbol("extensionHandlerTimeout");
 const EXTENSION_HANDLER_ABORTED = Symbol("extensionHandlerAborted");
 
+function attachHandlerSignal(
+	dialogOptions: ExtensionUIDialogOptions | undefined,
+	handlerSignal: AbortSignal,
+): ExtensionUIDialogOptions {
+	if (!dialogOptions) return { signal: handlerSignal };
+	if (!dialogOptions.signal) return { ...dialogOptions, signal: handlerSignal };
+	if (dialogOptions.signal === handlerSignal) return dialogOptions;
+	return { ...dialogOptions, signal: AbortSignal.any([dialogOptions.signal, handlerSignal]) };
+}
+
+function createHandlerUIContext(ui: ExtensionUIContext, handlerSignal: AbortSignal): ExtensionUIContext {
+	const askDialog = ui.askDialog;
+	const dialogMethods = {
+		select: (title, options, dialogOptions) =>
+			ui.select(title, options, attachHandlerSignal(dialogOptions, handlerSignal)),
+		confirm: (title, message, dialogOptions) =>
+			ui.confirm(title, message, attachHandlerSignal(dialogOptions, handlerSignal)),
+		input: (title, placeholder, dialogOptions) =>
+			ui.input(title, placeholder, attachHandlerSignal(dialogOptions, handlerSignal)),
+		askDialog: askDialog
+			? (questions, dialogOptions) =>
+					askDialog.call(ui, questions, attachHandlerSignal(dialogOptions, handlerSignal))
+			: undefined,
+		editor: (title, prefill, dialogOptions, editorOptions) =>
+			ui.editor(title, prefill, attachHandlerSignal(dialogOptions, handlerSignal), editorOptions),
+	} satisfies Pick<ExtensionUIContext, "select" | "confirm" | "input" | "askDialog" | "editor">;
+	const delegatedMethods = new Map<PropertyKey, unknown>();
+
+	return new Proxy(ui, {
+		get(target, property) {
+			if (Object.hasOwn(dialogMethods, property)) {
+				return Reflect.get(dialogMethods, property, dialogMethods);
+			}
+			const cached = delegatedMethods.get(property);
+			if (cached) return cached;
+			const value: unknown = Reflect.get(target, property, target);
+			if (typeof value !== "function") return value;
+			const delegated: unknown = value.bind(target);
+			delegatedMethods.set(property, delegated);
+			return delegated;
+		},
+	});
+}
+
+/**
+ * Scope `ctx` to a single handler run without spreading it: `{ ...ctx }` would
+ * snapshot live accessors (notably the `model` getter), so a handler calling
+ * `pi.setModel()` and then reading `ctx.model` would see a stale model.
+ * Prototype delegation keeps every getter live while overriding `ui`.
+ */
+function createHandlerContext(ctx: ExtensionContext, handlerSignal: AbortSignal): ExtensionContext {
+	const scoped: ExtensionContext = Object.create(ctx);
+	Object.defineProperty(scoped, "ui", {
+		value: createHandlerUIContext(ctx.ui, handlerSignal),
+		enumerable: true,
+		configurable: true,
+	});
+	return scoped;
+}
+
 /**
  * Race `work` against a `timeoutMs` budget and optional cancellation signal,
  * clearing the timer and abort listener as soon as one branch settles.
@@ -119,19 +180,37 @@ const EXTENSION_HANDLER_ABORTED = Symbol("extensionHandlerAborted");
  * can `clearTimeout` on the winning branch.
  */
 async function raceHandlerWithTimeout<T>(
-	work: Promise<T>,
+	work: (handlerSignal: AbortSignal) => Promise<T> | T,
 	timeoutMs: number,
 	signal?: AbortSignal,
 ): Promise<T | typeof EXTENSION_HANDLER_TIMEOUT | typeof EXTENSION_HANDLER_ABORTED> {
 	if (signal?.aborted) return EXTENSION_HANDLER_ABORTED;
+
+	const timeoutController = new AbortController();
+	const handlerSignal = signal ? AbortSignal.any([signal, timeoutController.signal]) : timeoutController.signal;
 	const { promise: interruptPromise, resolve: resolveInterrupt } = Promise.withResolvers<
 		typeof EXTENSION_HANDLER_TIMEOUT | typeof EXTENSION_HANDLER_ABORTED
 	>();
-	const timer = setTimeout(() => resolveInterrupt(EXTENSION_HANDLER_TIMEOUT), timeoutMs);
 	const onAbort = () => resolveInterrupt(EXTENSION_HANDLER_ABORTED);
 	signal?.addEventListener("abort", onAbort, { once: true });
+	const timer = setTimeout(() => {
+		timeoutController.abort(new DOMException(`Handler timed out after ${timeoutMs}ms`, "TimeoutError"));
+		resolveInterrupt(EXTENSION_HANDLER_TIMEOUT);
+	}, timeoutMs);
 	try {
-		return await Promise.race([work, interruptPromise]);
+		if (signal?.aborted) return EXTENSION_HANDLER_ABORTED;
+		const workPromise = Promise.resolve(work(handlerSignal));
+		const result = await Promise.race([workPromise, interruptPromise]);
+		if (result === EXTENSION_HANDLER_TIMEOUT) {
+			await Promise.race([
+				workPromise.then(
+					() => undefined,
+					() => undefined,
+				),
+				Bun.sleep(0),
+			]);
+		}
+		return result;
 	} finally {
 		clearTimeout(timer);
 		signal?.removeEventListener("abort", onAbort);
@@ -283,6 +362,32 @@ export class ExtensionRunner {
 	#managedTimers = new ManagedTimers((event, error, stack) =>
 		this.emitError({ extensionPath: "<timer>", event, error, stack }),
 	);
+	/**
+	 * Dedup markers for `tool_call` emission, keyed `${toolCallId}:${toolName}`.
+	 * The agent loop emits `tool_call` at arg-prep time (before scheduling and
+	 * `tool_execution_start`) via the session's `beforeToolCall` wiring; the
+	 * marker tells `ExtensionToolWrapper.execute` not to emit a second event for
+	 * the same dispatch. Keyed by call id + tool name because a nested xd://
+	 * device dispatch reuses the model's toolCallId under a different tool name
+	 * and must still emit its own event. Bounded: markers for calls whose
+	 * execute path never runs (policy deny, validation failure) would otherwise
+	 * accumulate for the session's lifetime.
+	 */
+	#emittedToolCalls = new Set<string>();
+
+	/** Records that the loop already emitted `tool_call` for this dispatch. */
+	markToolCallEmitted(toolCallId: string, toolName: string): void {
+		if (this.#emittedToolCalls.size >= 512) {
+			const oldest = this.#emittedToolCalls.values().next().value;
+			if (oldest !== undefined) this.#emittedToolCalls.delete(oldest);
+		}
+		this.#emittedToolCalls.add(`${toolCallId}:${toolName}`);
+	}
+
+	/** Consumes a {@link markToolCallEmitted} marker; true when the loop already emitted. */
+	consumeToolCallEmitted(toolCallId: string, toolName: string): boolean {
+		return this.#emittedToolCalls.delete(`${toolCallId}:${toolName}`);
+	}
 
 	constructor(
 		private readonly extensions: Extension[],
@@ -655,7 +760,11 @@ export class ExtensionRunner {
 				: undefined;
 		if (signal?.aborted) return undefined;
 		try {
-			const handlerResult = await raceHandlerWithTimeout(Promise.resolve(handler(event, ctx)), timeoutMs, signal);
+			const handlerResult = await raceHandlerWithTimeout(
+				handlerSignal => handler(event, createHandlerContext(ctx, handlerSignal)),
+				timeoutMs,
+				signal,
+			);
 			if (handlerResult === EXTENSION_HANDLER_ABORTED) return undefined;
 			if (handlerResult === EXTENSION_HANDLER_TIMEOUT) {
 				const error = `handler timed out after ${timeoutMs}ms`;
@@ -817,7 +926,10 @@ export class ExtensionRunner {
 
 			for (const handler of handlers) {
 				try {
-					const handlerResult = await raceHandlerWithTimeout(Promise.resolve(handler(event, ctx)), timeoutMs);
+					const handlerResult = await raceHandlerWithTimeout(
+						handlerSignal => handler(event, createHandlerContext(ctx, handlerSignal)),
+						timeoutMs,
+					);
 
 					if (handlerResult === EXTENSION_HANDLER_TIMEOUT) {
 						const error = `handler timed out after ${timeoutMs}ms`;

@@ -8,6 +8,7 @@ import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -74,6 +75,27 @@ describe("AgentSession advisor toggle", () => {
 			await tempDir.remove();
 		} catch {}
 	});
+
+	function appendAdvisorCost(advisor: Agent, cost: number, timestamp: number): void {
+		const message: AgentMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "reviewed" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: cost, cacheRead: 0, cacheWrite: 0, total: cost },
+			},
+			stopReason: "stop",
+			timestamp,
+		};
+		advisor.emitExternalEvent({ type: "message_end", message });
+	}
 
 	it("starts with advisor disabled", () => {
 		expect(session.isAdvisorActive()).toBe(false);
@@ -297,6 +319,190 @@ describe("AgentSession advisor toggle", () => {
 		// Full UUIDv7 — must not contain the display-label "-advisor" suffix
 		expect(sid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
 		expect(sid).not.toContain("-advisor");
+	});
+	it("retains cumulative advisor cost after the advisor is disabled", () => {
+		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+		session.toggleAdvisorEnabled();
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to exist");
+
+		appendAdvisorCost(advisor, 0.41, 1);
+		appendAdvisorCost(advisor, 0.09, 2);
+
+		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
+		session.setAdvisorEnabled(false);
+		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
+	});
+	it("retains total advisor cost after the live roster changes", () => {
+		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+		session.toggleAdvisorEnabled();
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to exist");
+		appendAdvisorCost(advisor, 0.5, 1);
+
+		expect(session.applyAdvisorConfigs([{ name: "Security" }], undefined)).toBe(1);
+		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
+		expect(session.formatAdvisorStatus()).toContain("$0.5000");
+	});
+	it("retains cumulative advisor cost after an in-session history rewrite", async () => {
+		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+		session.toggleAdvisorEnabled();
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to exist");
+		appendAdvisorCost(advisor, 0.5, 1);
+		sessionManager.appendMessage({
+			role: "user",
+			content: [
+				{ type: "text", text: "look" },
+				{ type: "image", data: "iVBORw0KGgo", mimeType: "image/png" },
+			],
+			timestamp: 2,
+		});
+
+		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
+		expect(await session.dropImages()).toEqual({ removed: 1 });
+		expect(advisor.state.messages).toHaveLength(0);
+		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
+		expect(session.getAdvisorStats().cost).toBeCloseTo(0.5, 8);
+		expect(session.formatAdvisorStatus()).toContain("$0.5000");
+	});
+	it("retains cumulative advisor cost when reloading the same session", async () => {
+		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+		session.toggleAdvisorEnabled();
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to exist");
+		appendAdvisorCost(advisor, 0.5, 1);
+
+		await session.reload();
+
+		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
+	});
+	it("keeps advisor cost when switching sessions fails after the reset", async () => {
+		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+		session.toggleAdvisorEnabled();
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to exist");
+		appendAdvisorCost(advisor, 0.5, 1);
+		const previousSessionFile = sessionManager.getSessionFile();
+		const targetSessionFile = SessionManager.createEmptySessionFile(tempDir.path());
+		const failure = new Error("switch failed after advisor reset");
+		vi.spyOn(sessionManager, "getLastModelChangeRole").mockImplementation(() => {
+			throw failure;
+		});
+
+		await expect(session.switchSession(targetSessionFile)).rejects.toThrow(failure);
+
+		expect(sessionManager.getSessionFile()).toBe(previousSessionFile);
+		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
+	});
+	it("clears advisor cost once a switch to a different session commits", async () => {
+		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+		session.toggleAdvisorEnabled();
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to exist");
+		appendAdvisorCost(advisor, 0.5, 1);
+		const targetSessionFile = SessionManager.createEmptySessionFile(tempDir.path());
+
+		expect(await session.switchSession(targetSessionFile)).toBe(true);
+
+		expect(session.getAdvisorCost()).toBe(0);
+	});
+	it("clears cumulative advisor cost for a new session", async () => {
+		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+		session.toggleAdvisorEnabled();
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to exist");
+		appendAdvisorCost(advisor, 0.5, 1);
+
+		await session.newSession();
+
+		expect(session.getAdvisorCost()).toBe(0);
+	});
+	it("clears advisor cost when a branch skips conversation restore", async () => {
+		const extensionRunner = {
+			hasHandlers: (eventType: string) => eventType === "session_before_branch",
+			emit: async () => ({ skipConversationRestore: true }),
+		} as unknown as ExtensionRunner;
+		const branchDir = TempDir.createSync("@pi-advisor-branch-");
+		const branchManager = SessionManager.create(branchDir.path(), branchDir.path());
+		const branchSession = new AgentSession({
+			agent: new Agent({
+				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+			}),
+			sessionManager: branchManager,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry,
+			advisorTools: [],
+			extensionRunner,
+		});
+		try {
+			branchSession.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+			branchSession.toggleAdvisorEnabled();
+			const advisor = branchSession.getAdvisorAgent();
+			if (!advisor) throw new Error("Expected advisor agent to exist");
+			const branchPoint = { role: "user" as const, content: "branch point", timestamp: 1 };
+			branchManager.appendMessage(branchPoint);
+			const entryId = branchManager.getLeafId();
+			if (!entryId) throw new Error("Expected a branchable entry");
+			branchManager.appendMessage({ role: "user", content: "after the branch point", timestamp: 2 });
+			branchSession.agent.replaceMessages(branchManager.buildSessionContext().messages);
+			await branchManager.flush();
+			appendAdvisorCost(advisor, 0.5, 1);
+
+			expect(await branchSession.branch(entryId)).toMatchObject({ cancelled: false });
+
+			// Restoring would rewind to the branch point; the extension owns that, so both
+			// messages stay. Only the spend of the conversation we left must not follow.
+			expect(branchSession.messages).toHaveLength(2);
+			expect(branchSession.getAdvisorCost()).toBe(0);
+		} finally {
+			await branchSession.dispose();
+			await branchDir.remove().catch(() => {});
+		}
+	});
+	it("clears advisor cost when a branch hook throws after the session changed", async () => {
+		const failure = new Error("session_branch handler failed");
+		const extensionRunner = {
+			hasHandlers: () => false,
+			emit: async (event: { type: string }) => {
+				if (event.type === "session_branch") throw failure;
+				return undefined;
+			},
+		} as unknown as ExtensionRunner;
+		const branchDir = TempDir.createSync("@pi-advisor-branch-fail-");
+		const branchManager = SessionManager.create(branchDir.path(), branchDir.path());
+		const branchSession = new AgentSession({
+			agent: new Agent({
+				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+			}),
+			sessionManager: branchManager,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry,
+			advisorTools: [],
+			extensionRunner,
+		});
+		try {
+			branchSession.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+			branchSession.toggleAdvisorEnabled();
+			const advisor = branchSession.getAdvisorAgent();
+			if (!advisor) throw new Error("Expected advisor agent to exist");
+			branchManager.appendMessage({ role: "user", content: "branch point", timestamp: 1 });
+			const entryId = branchManager.getLeafId();
+			if (!entryId) throw new Error("Expected a branchable entry");
+			const previousSessionFile = branchManager.getSessionFile();
+			await branchManager.flush();
+			appendAdvisorCost(advisor, 0.5, 1);
+
+			await expect(branchSession.branch(entryId)).rejects.toThrow(failure);
+
+			// The hook failed only after the branch had already taken over the transcript,
+			// so the abandoned conversation's spend must not be billed to the new one.
+			expect(branchManager.getSessionFile()).not.toBe(previousSessionFile);
+			expect(branchSession.getAdvisorCost()).toBe(0);
+		} finally {
+			await branchSession.dispose();
+			await branchDir.remove().catch(() => {});
+		}
 	});
 	it("marks structurally classified advisor usage limits", async () => {
 		const mock = createMockModel({ responses: [{ content: ["primary complete"] }] });

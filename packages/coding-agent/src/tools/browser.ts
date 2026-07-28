@@ -163,11 +163,11 @@ export class BrowserTool implements AgentTool<typeof browserSchema, BrowserToolD
 			},
 		},
 		{
-			caption: "Screenshot to look at the page — no save path",
+			caption: "Capture a screenshot and return its saved path",
 			call: {
 				action: "run",
 				name: "docs",
-				code: "await tab.screenshot();",
+				code: "return await tab.screenshot();",
 			},
 		},
 		{

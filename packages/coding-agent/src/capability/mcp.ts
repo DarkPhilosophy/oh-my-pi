@@ -53,11 +53,32 @@ export interface MCPServer {
 	_source: SourceMeta;
 }
 
+/** Compare the transport inputs that determine which MCP endpoint gets connected. */
+function isSameMCPConnection(left: MCPServer, right: MCPServer): boolean {
+	if (!Bun.deepEquals(left.auth, right.auth) || !Bun.deepEquals(left.oauth, right.oauth)) return false;
+
+	const leftTransport = left.transport ?? (left.command ? "stdio" : left.url ? "http" : "stdio");
+	const rightTransport = right.transport ?? (right.command ? "stdio" : right.url ? "http" : "stdio");
+	if (leftTransport !== rightTransport) return false;
+
+	if (leftTransport === "stdio") {
+		return (
+			left.command === right.command &&
+			Bun.deepEquals(left.args, right.args) &&
+			Bun.deepEquals(left.env, right.env) &&
+			left.cwd === right.cwd
+		);
+	}
+
+	return left.url === right.url && Bun.deepEquals(left.headers, right.headers);
+}
+
 export const mcpCapability = defineCapability<MCPServer>({
 	id: "mcps",
 	displayName: "MCP Servers",
 	description: "Model Context Protocol server configurations for external tool integrations",
 	key: server => server.name,
+	equivalent: isSameMCPConnection,
 	toExtensionId: server => `mcp:${server.name}`,
 	validate: server => {
 		if (!server.name) return "Missing server name";

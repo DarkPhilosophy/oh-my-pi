@@ -279,6 +279,56 @@ describe("lsp regressions", () => {
 		});
 	});
 
+	it("uses a custom server languageId for disk and in-memory document opens", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-language-id-");
+		const filePath = path.join(tempDir.path(), "foo.gd");
+		const syncedFilePath = path.join(tempDir.path(), "unsaved.gd");
+		try {
+			await Bun.write(
+				path.join(tempDir.path(), ".omp", "lsp.json"),
+				JSON.stringify({
+					servers: {
+						"fake-gd": {
+							command: process.execPath,
+							fileTypes: [".gd"],
+							languageId: "gdscript",
+							rootMarkers: [".omp"],
+						},
+					},
+				}),
+			);
+			await Bun.write(filePath, "extends Node\n");
+
+			const server = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+			const config = loadConfig(tempDir.path());
+			const serverConfig = getServersForFile(config, filePath)[0]?.[1];
+			expect(serverConfig).toBeDefined();
+			if (!serverConfig) throw new Error("Custom GDScript server was not loaded");
+
+			const client = await lspClient.getOrCreateClient(serverConfig, tempDir.path(), 1_000);
+			await lspClient.ensureFileOpen(client, filePath);
+			const diskOpen = await server.waitFor(message => message.method === "textDocument/didOpen");
+			expect(diskOpen.params).toMatchObject({ textDocument: { languageId: "gdscript" } });
+
+			await lspClient.syncContent(client, syncedFilePath, "extends Resource\n");
+			const syncedOpen = await server.waitFor(
+				message => message.method === "textDocument/didOpen" && message !== diskOpen,
+			);
+			expect(syncedOpen.params).toMatchObject({ textDocument: { languageId: "gdscript" } });
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("sends the LSP exit notification after shutdown completes", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-shutdown-");
 		try {
@@ -3096,6 +3146,48 @@ describe("lsp regressions", () => {
 			await expect(second).rejects.toBeInstanceOf(Error);
 			expect(kill).not.toHaveBeenCalled();
 			expect(writes).toHaveLength(1);
+		});
+
+		it("surfaces an asynchronous stdin write rejection instead of resolving the notification", async () => {
+			const epipe = Object.assign(new Error("EPIPE: broken pipe, write"), {
+				code: "EPIPE",
+				syscall: "write",
+			});
+			const client: LspClient = {
+				name: "fake-lsp-write-epipe:/tmp",
+				cwd: "/tmp",
+				config: { command: "fake-lsp-write-epipe", fileTypes: ["ts"], rootMarkers: [] },
+				proc: {
+					exited: Promise.withResolvers<number>().promise,
+					exitCode: null,
+					stdin: {
+						write: () => Promise.reject(epipe),
+						flush: () => 0,
+					},
+					stdout: new ReadableStream<Uint8Array>(),
+					peekStderr: () => "",
+					kill() {},
+				} as unknown as LspClient["proc"],
+				requestId: 0,
+				diagnostics: new Map(),
+				diagnosticsVersion: 0,
+				openFiles: new Map(),
+				pendingRequests: new Map(),
+				messageBuffer: new Uint8Array(0),
+				isReading: false,
+				status: "ready",
+				lastActivity: Date.now(),
+				writeQueue: Promise.resolve(),
+				activeProgressTokens: new Set(),
+				projectLoaded: Promise.resolve(),
+				resolveProjectLoaded: () => {},
+			};
+
+			await expect(
+				lspClient.sendNotification(client, "workspace/didChangeWatchedFiles", {
+					changes: [{ uri: "file:///tmp/example.ts", type: 2 }],
+				}),
+			).rejects.toBe(epipe);
 		});
 
 		it("bounds a wedged notification flush on the caller signal and tears down the client", async () => {

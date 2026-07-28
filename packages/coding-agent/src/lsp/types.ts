@@ -340,6 +340,8 @@ export interface ServerConfig {
 	command: string;
 	args?: string[];
 	fileTypes: string[];
+	/** LSP language identifier sent in didOpen; inferred from the file path when omitted. */
+	languageId?: string;
 	rootMarkers: string[];
 	initOptions?: Record<string, unknown>;
 	settings?: Record<string, unknown>;

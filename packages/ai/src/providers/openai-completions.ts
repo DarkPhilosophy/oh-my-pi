@@ -1499,6 +1499,11 @@ function applyOpenAIChatCompletionsPromptCachePolicy(
 	model: Model<"openai-completions">,
 	options: OpenAICompletionsOptions | undefined,
 ): void {
+	const promptCacheKey = getOpenAIPromptCacheKey(options);
+	if (model.provider === "kimi-code" && promptCacheKey !== undefined) {
+		params.prompt_cache_key = promptCacheKey;
+	}
+
 	const promptCache = options?.promptCache;
 	if (!promptCache || resolveCacheRetention(options?.cacheRetention) === "none") return;
 	if (!model.compat.supportsPromptCacheBreakpoints) {
@@ -1510,7 +1515,7 @@ function applyOpenAIChatCompletionsPromptCachePolicy(
 		return;
 	}
 
-	params.prompt_cache_key = getOpenAIPromptCacheKey(options);
+	params.prompt_cache_key = promptCacheKey;
 	params.prompt_cache_options = {
 		mode: promptCache.mode,
 		ttl: promptCache.ttl ?? model.compat.promptCacheBreakpointTtl,

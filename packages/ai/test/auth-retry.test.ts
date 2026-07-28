@@ -45,7 +45,7 @@ describe("isApiKeyResolver / resolveApiKeyOnce", () => {
 });
 
 describe("isAuthRetryableError", () => {
-	it("treats 401 and usage-limit phrasing as retryable, everything else as not", () => {
+	it("treats 401/403 and usage-limit phrasing as retryable, everything else as not", () => {
 		expect(isAuthRetryableError(authError(401))).toBe(true);
 		expect(isAuthRetryableError(usageLimitError())).toBe(true);
 		expect(
@@ -83,7 +83,10 @@ describe("isAuthRetryableError", () => {
 				),
 			),
 		).toBe(true);
-		expect(isAuthRetryableError(authError(403))).toBe(false);
+		// Bare 403: token valid but access denied (plan/model/org policy) — a
+		// sibling account may not share the restriction, so rotate.
+		expect(isAuthRetryableError(authError(403))).toBe(true);
+		expect(isAuthRetryableError("Error: 403 forbidden")).toBe(true);
 		expect(isAuthRetryableError(authError(500))).toBe(false);
 		expect(isAuthRetryableError(new Error("network blip"))).toBe(false);
 		expect(isAuthRetryableError(undefined)).toBe(false);
@@ -246,6 +249,46 @@ describe("withAuth", () => {
 		expect(result).toBe("success");
 		expect(keys).toEqual(pool);
 		expect(contexts.map(ctx => ctx.lastChance)).toEqual([false, true, true, true]);
+	});
+
+	it("rotates through every distinct sibling on consecutive 403s without a refresh detour", async () => {
+		const keys: string[] = [];
+		const contexts: ApiKeyResolveContext[] = [];
+		const pool = ["k0", "k1", "k2", "k3"];
+		let nextSibling = 0;
+		const result = await withAuth(
+			ctx => {
+				contexts.push(ctx);
+				return ctx.error === undefined ? pool[0] : pool[++nextSibling];
+			},
+			async key => {
+				keys.push(key);
+				if (key === "k3") return "success";
+				throw authError(403);
+			},
+		);
+
+		expect(result).toBe("success");
+		expect(keys).toEqual(pool);
+		// All-`lastChance` rotation: a 403 is a valid-token denial, so the
+		// refresh-same step (b) is skipped like on usage limits.
+		expect(contexts.map(ctx => ctx.lastChance)).toEqual([false, true, true, true]);
+	});
+
+	it("surfaces the last 403 when every sibling is denied", async () => {
+		const errors = [authError(403), authError(403)];
+		const resolved = ["k0", "k1", "k0"];
+		let resolveIndex = 0;
+		let attemptIndex = 0;
+
+		await expect(
+			withAuth(
+				() => resolved[resolveIndex++],
+				async () => {
+					throw errors[Math.min(attemptIndex++, errors.length - 1)]!;
+				},
+			),
+		).rejects.toBe(errors[1]);
 	});
 
 	it("stops usage-limit rotation before retrying an already-attempted credential", async () => {

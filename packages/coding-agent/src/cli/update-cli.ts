@@ -231,6 +231,9 @@ export async function downloadVerifiedBinary(options: VerifiedBinaryDownloadOpti
 		await fs.promises.chmod(options.targetPath, 0o755);
 	} catch (err) {
 		await unlinkIfExists(options.targetPath);
+		if (isTimeoutError(err)) {
+			throw new Error("Timed out downloading release binary after 15 minutes", { cause: err });
+		}
 		throw err;
 	}
 }

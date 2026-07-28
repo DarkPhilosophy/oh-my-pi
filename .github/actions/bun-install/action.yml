@@ -22,11 +22,12 @@ runs:
            else
              echo "setup_bun=true" >> "$GITHUB_OUTPUT"
            fi
-           # The repo keys "are we on can.internal infra?" off $SCCACHE_BUCKET (see
-           # actions/build-native). RUNNER_ENVIRONMENT is empty on ARC pods, so it
-           # is not a usable signal here. On infra, the ARC pod mounts the shared
-           # Bun store at the default cache path; off infra, actions/cache restores it.
-           if [ -n "${SCCACHE_BUCKET:-}" ]; then
+           # The repo keys "are we on can.internal infra?" off $BAZEL_REMOTE_USER
+           # (the bazel-remote-ci secret is envFrom-injected into every omp-kata
+           # runner pod). RUNNER_ENVIRONMENT is empty on ARC pods, so it is not a
+           # usable signal here. On infra, the ARC pod mounts the shared Bun
+           # store at the default cache path; off infra, actions/cache restores it.
+           if [ -n "${BAZEL_REMOTE_USER:-}" ]; then
              echo "cache=mounted" >> "$GITHUB_OUTPUT"
              echo "bun cache backend: mounted PVC (${BUN_INSTALL_CACHE_DIR:-${HOME}/.bun/install/cache})"
            else

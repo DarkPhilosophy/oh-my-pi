@@ -448,18 +448,6 @@ export class AdvisorRuntime {
 	}
 
 	/**
-	 * True when `#pending` is non-empty while the drain loop is busy — i.e., newer
-	 * primary turns arrived after the current batch's transcript window was fixed
-	 * but before the advisor model finished processing it. The delivery path uses
-	 * this to annotate advice that was generated without seeing those newer turns.
-	 * Can be true during `agent.prompt()`, a `maintainContext` await, or a retry
-	 * sleep — any time `#drain` is busy and a concurrent `onTurnEnd` pushed.
-	 */
-	get hasFreshBacklog(): boolean {
-		return this.#pending.length > 0;
-	}
-
-	/**
 	 * Called after each primary turn ends. Renders the incremental delta and
 	 * queues it for the advisor model.
 	 *

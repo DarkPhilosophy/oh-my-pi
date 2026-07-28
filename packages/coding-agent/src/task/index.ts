@@ -156,27 +156,31 @@ export function formatResultOutputFallback(result: Pick<SingleResult, "output" |
 	return result.requests > 0 ? `(no output) after ${result.requests} req` : "(no output)";
 }
 
-/**
- * Render the tool description from a cached agent list and current settings.
- */
-function renderDescription(
-	agents: AgentDefinition[],
-	isolationEnabled: boolean,
-	applyIsolatedChanges: boolean,
-	disabledAgents: string[],
-	batchEnabled: boolean,
-	asyncEnabled: boolean,
-	ircEnabled: boolean,
-	parentSpawns: string,
-): string {
-	const spawnPolicy = resolveSpawnPolicy(parentSpawns);
+interface TaskDescriptionOptions {
+	agents: AgentDefinition[];
+	isolationEnabled: boolean;
+	applyIsolatedChanges: boolean;
+	disabledAgents: string[];
+	batchEnabled: boolean;
+	effortEnabled: boolean;
+	asyncEnabled: boolean;
+	ircEnabled: boolean;
+	parentSpawns: string;
+}
+
+/** Render the tool description from a cached agent list and current settings. */
+function renderDescription(options: TaskDescriptionOptions): string {
+	const spawnPolicy = resolveSpawnPolicy(options.parentSpawns);
 	const spawningDisabled = !spawnPolicy.enabled;
-	let filteredAgents = disabledAgents.length > 0 ? agents.filter(a => !disabledAgents.includes(a.name)) : agents;
+	let filteredAgents =
+		options.disabledAgents.length > 0
+			? options.agents.filter(agent => !options.disabledAgents.includes(agent.name))
+			: options.agents;
 	if (spawningDisabled) {
 		filteredAgents = [];
 	} else if (spawnPolicy.allowedAgents !== null) {
 		const allowed = new Set(spawnPolicy.allowedAgents);
-		filteredAgents = filteredAgents.filter(a => allowed.has(a.name));
+		filteredAgents = filteredAgents.filter(agent => allowed.has(agent.name));
 	}
 	const renderedAgents = filteredAgents.map(agent => ({
 		name: agent.name,
@@ -188,12 +192,13 @@ function renderDescription(
 		agents: renderedAgents,
 		spawningDisabled,
 		defaultAgent: spawnPolicy.defaultAgent,
-		isolationEnabled,
-		applyIsolatedChanges,
-		batchEnabled,
-		asyncEnabled,
+		isolationEnabled: options.isolationEnabled,
+		applyIsolatedChanges: options.applyIsolatedChanges,
+		batchEnabled: options.batchEnabled,
+		effortEnabled: options.effortEnabled,
+		asyncEnabled: options.asyncEnabled,
 		hasBlockingAgents: renderedAgents.some(agent => agent.blocking),
-		ircEnabled,
+		ircEnabled: options.ircEnabled,
 	});
 }
 
@@ -581,28 +586,34 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
 		const isolationEnabled = !planMode && this.session.settings.get("task.isolation.mode") !== "none";
 		const defaultAgent = resolveSpawnPolicy(this.session.getSessionSpawns()).defaultAgent;
-		return getTaskSchema({ isolationEnabled, batchEnabled: this.#isBatchEnabled(), defaultAgent });
+		return getTaskSchema({
+			isolationEnabled,
+			batchEnabled: this.#isBatchEnabled(),
+			effortEnabled: this.session.settings.get("task.enableEffort"),
+			defaultAgent,
+		});
 	}
 
 	renderCall(args: unknown, options: Parameters<typeof renderTaskCall>[1], theme: Theme) {
 		return renderTaskCall(repairTaskParams(args as TaskParams), options, theme);
 	}
 
-	/** Dynamic description that reflects current disabled-agent settings */
+	/** Dynamic description that reflects current task settings. */
 	get description(): string {
 		const disabledAgents = this.session.settings.get("task.disabledAgents") as string[];
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
 		const isolationMode = this.session.settings.get("task.isolation.mode");
-		return renderDescription(
-			this.#discoveredAgents,
-			!planMode && isolationMode !== "none",
-			this.session.settings.get("task.isolation.apply"),
+		return renderDescription({
+			agents: this.#discoveredAgents,
+			isolationEnabled: !planMode && isolationMode !== "none",
+			applyIsolatedChanges: this.session.settings.get("task.isolation.apply"),
 			disabledAgents,
-			this.#isBatchEnabled(),
-			this.session.settings.get("async.enabled"),
-			isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
-			this.session.getSessionSpawns() ?? "*",
-		);
+			batchEnabled: this.#isBatchEnabled(),
+			effortEnabled: this.session.settings.get("task.enableEffort"),
+			asyncEnabled: this.session.settings.get("async.enabled"),
+			ircEnabled: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
+			parentSpawns: this.session.getSessionSpawns() ?? "*",
+		});
 	}
 	private constructor(
 		private readonly session: ToolSession,

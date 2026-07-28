@@ -75,7 +75,7 @@ TUI rendering adds presentation-only truncation from `packages/coding-agent/src/
 ## Limits & Caps
 - Supported detected input formats: `image/png`, `image/jpeg`, `image/gif`, `image/webp` (`SUPPORTED_IMAGE_MIME_TYPES` in `packages/utils/src/mime.ts`).
 - Metadata sniff cap: `DEFAULT_IMAGE_METADATA_HEADER_BYTES = 256 * 1024` bytes. Format detection only reads up to 256 KiB from the file header.
-- Availability is gated by `inspect_image.enabled`, default `false`, in `packages/coding-agent/src/config/settings-schema.ts` / `packages/coding-agent/src/tools/index.ts`.
+- Availability is gated by `inspect_image.mode` (`auto`|`on`|`off`, default `auto`) in `packages/coding-agent/src/config/settings-schema.ts`, resolved with the session-scoped `/vision` override and the active model's image capability in `packages/coding-agent/src/utils/inspect-image-mode.ts` / `packages/coding-agent/src/tools/index.ts`. `auto` registers the tool only when the active model lacks native image input; the legacy `inspect_image.enabled` boolean migrates to `mode` (`true`→`on`, `false`→`off`).
 - Upload input cap: `MAX_IMAGE_INPUT_BYTES = 20 * 1024 * 1024` bytes (20 MiB) in `packages/coding-agent/src/utils/image-loading.ts`.
 - Auto-resize defaults in `packages/coding-agent/src/utils/image-resize.ts`:
   - `maxWidth: 1568`
