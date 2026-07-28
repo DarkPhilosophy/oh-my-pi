@@ -5,6 +5,7 @@ import chalk from "chalk";
 import { parseArgs } from "../cli/args";
 import { selectSession } from "../cli/session-picker";
 import { applyStartupCwd } from "../cli/startup-cwd";
+import { withFileLock } from "../config/file-lock";
 import { Settings } from "../config/settings";
 import { initTheme, stopThemeWatcher } from "../modes/theme/theme";
 import { RemoteSessionHandle, type SessionHandleCommand } from "../session/session-handle";
@@ -238,6 +239,7 @@ async function connectWithSpawn(
 	runtimeDir: string | undefined,
 	startTimeoutMs: number,
 	spawn: typeof spawnDaemonServer = spawnDaemonServer,
+	stderr: "inherit" | "ignore" = "inherit",
 ): Promise<void> {
 	try {
 		await client.connect();
@@ -245,49 +247,105 @@ async function connectWithSpawn(
 	} catch (firstError) {
 		const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
 		const staleMajor = protocolMismatchServerMajor(firstError);
-		let signaledOlderProtocol = false;
-		if (staleMajor !== undefined && staleMajor < DAEMON_PROTOCOL_MAJOR) {
-			signaledOlderProtocol = await signalOlderProtocolOwner(client, staleMajor);
-		} else if (isTerminalConnectionError(client, firstError)) {
-			// Includes a NEWER server major: this client is the outdated build
-			// and must not kill a daemon it cannot replace.
+		if (staleMajor !== undefined && staleMajor > DAEMON_PROTOCOL_MAJOR) {
 			throw new Error(`Daemon connection is terminal: ${firstMessage}`);
-		} else if (!isTransportUnavailableError(firstError)) {
+		}
+		if (staleMajor === undefined && isTerminalConnectionError(client, firstError)) {
+			throw new Error(`Daemon connection is terminal: ${firstMessage}`);
+		}
+		if (staleMajor === undefined && !isTransportUnavailableError(firstError)) {
 			throw new Error(`Daemon connection failed before startup: ${firstMessage}`);
 		}
-		let child = spawn(profile, runtimeDir);
-		const deadline = Date.now() + startTimeoutMs;
-		let lastError = firstError instanceof Error ? firstError : new Error(String(firstError));
-		while (Date.now() < deadline) {
-			if (child.exitCode !== null) {
-				// A contender losing the owner lease (or racing a draining
-				// predecessor) exits nonzero BY DESIGN; that must not abort the
-				// whole startup while the deadline still has budget. Remember
-				// the exit and try again.
-				lastError = new Error(`Daemon server exited during startup with code ${child.exitCode}`);
-				await Bun.sleep(CONNECT_RETRY_MS * 4);
-				child = spawn(profile, runtimeDir);
-				continue;
-			}
-			try {
-				await client.connect();
-				child.unref();
-				return;
-			} catch (error) {
-				lastError = error instanceof Error ? error : new Error(String(error));
-				const major = protocolMismatchServerMajor(lastError);
-				if (major !== undefined && major < DAEMON_PROTOCOL_MAJOR) {
-					// The older daemon is still draining; keep waiting it out.
-					if (!signaledOlderProtocol) signaledOlderProtocol = await signalOlderProtocolOwner(client, major);
-					await Bun.sleep(CONNECT_RETRY_MS);
-					continue;
+		const ownerRuntimeDir = runtimeDir ?? client.runtimeDir;
+		const retryCount = Math.max(1, Math.ceil((startTimeoutMs * 3) / CONNECT_RETRY_MS));
+		await withFileLock(
+			`${ownerRuntimeDir}/daemon-spawn`,
+			async () => {
+				let lastError = firstError instanceof Error ? firstError : new Error(String(firstError));
+				const reconnectDeadline = Date.now() + startTimeoutMs;
+				for (;;) {
+					try {
+						await client.connect();
+						return;
+					} catch (error) {
+						lastError = error instanceof Error ? error : new Error(String(error));
+						const major = protocolMismatchServerMajor(lastError);
+						if (major !== undefined && major > DAEMON_PROTOCOL_MAJOR) {
+							throw new Error(`Daemon connection is terminal: ${lastError.message}`);
+						}
+						if (major === undefined && isTerminalConnectionError(client, lastError)) {
+							throw new Error(`Daemon connection is terminal: ${lastError.message}`);
+						}
+						const ownerPid = await readDaemonOwnerPid(ownerRuntimeDir);
+						if (ownerPid === undefined || ownerPid === process.pid) break;
+						if (major !== undefined && major < DAEMON_PROTOCOL_MAJOR) {
+							await signalOlderProtocolOwner(client, major);
+							break;
+						}
+						if (Date.now() >= reconnectDeadline) {
+							try {
+								process.kill(ownerPid, "SIGTERM");
+								logger.warn("Daemon owner remained unreachable; signaled it before replacement", {
+									pid: ownerPid,
+									runtimeDir: ownerRuntimeDir,
+								});
+							} catch {
+								// The owner exited between reading the lease and signaling it.
+							}
+							break;
+						}
+						await Bun.sleep(CONNECT_RETRY_MS);
+					}
 				}
-				if (isTerminalConnectionError(client, lastError))
-					throw new Error(`Daemon connection is terminal: ${lastError.message}`);
-				await Bun.sleep(CONNECT_RETRY_MS);
-			}
-		}
-		throw new Error(`Unable to connect to daemon: ${lastError.message}`);
+
+				const ownerExitDeadline = Date.now() + Math.min(2_000, startTimeoutMs);
+				for (;;) {
+					const ownerPid = await readDaemonOwnerPid(ownerRuntimeDir);
+					if (ownerPid === undefined || ownerPid === process.pid) break;
+					try {
+						process.kill(ownerPid, 0);
+					} catch {
+						break;
+					}
+					if (Date.now() >= ownerExitDeadline) {
+						throw new Error(`Daemon owner ${ownerPid} did not exit after becoming unreachable`);
+					}
+					await Bun.sleep(CONNECT_RETRY_MS);
+				}
+
+				const child = spawn(profile, ownerRuntimeDir, stderr);
+				const startupDeadline = Date.now() + startTimeoutMs;
+				while (Date.now() < startupDeadline) {
+					try {
+						await client.connect();
+						child.unref();
+						return;
+					} catch (error) {
+						lastError = error instanceof Error ? error : new Error(String(error));
+						const major = protocolMismatchServerMajor(lastError);
+						if (major !== undefined && major > DAEMON_PROTOCOL_MAJOR) {
+							throw new Error(`Daemon connection is terminal: ${lastError.message}`);
+						}
+						if (major === undefined && isTerminalConnectionError(client, lastError)) {
+							throw new Error(`Daemon connection is terminal: ${lastError.message}`);
+						}
+						if (child.exitCode !== null) {
+							const ownerPid = await readDaemonOwnerPid(ownerRuntimeDir);
+							if (ownerPid === undefined) {
+								throw new Error(`Daemon server exited during startup with code ${child.exitCode}`);
+							}
+						}
+						await Bun.sleep(CONNECT_RETRY_MS);
+					}
+				}
+				throw new Error(`Unable to connect to daemon: ${lastError.message}`);
+			},
+			{
+				staleMs: startTimeoutMs * 3 + 5_000,
+				retries: retryCount,
+				retryDelayMs: CONNECT_RETRY_MS,
+			},
+		);
 	}
 }
 
@@ -464,48 +522,46 @@ export async function bootstrapDaemonInteractive(
 	await applyStartupCwd(parsed);
 	const profile = options.profile === undefined ? (getActiveProfile() ?? null) : options.profile;
 	const cwd = options.cwd ?? getProjectDir();
-	let recoveryRuntimeDir = options.runtimeDir;
+	const startTimeoutMs = options.startTimeoutMs ?? DAEMON_START_TIMEOUT_MS;
+	let bootstrapComplete = false;
+	let recovery: Promise<void> | undefined;
 	const spawnDaemon = options.spawnDaemon ?? spawnDaemonServer;
-	const client = await createDaemonClient({
+	let client: DaemonClient;
+	client = await createDaemonClient({
 		profile,
 		runtimeDir: options.runtimeDir,
 		endpoint: options.endpoint,
 		token: options.token,
 		connectTimeoutMs: options.connectTimeoutMs,
 		recoverUnavailable: () => {
-			spawnDaemon(profile, recoveryRuntimeDir, "ignore").unref();
+			if (!bootstrapComplete || recovery) return;
+			recovery = connectWithSpawn(client, profile, client.runtimeDir, startTimeoutMs, spawnDaemon, "ignore")
+				.catch(error => {
+					logger.error("Daemon recovery failed", {
+						error: error instanceof Error ? error.message : String(error),
+						runtimeDir: client.runtimeDir,
+					});
+				})
+				.finally(() => {
+					recovery = undefined;
+				});
 		},
 	});
-	recoveryRuntimeDir = client.runtimeDir;
-	await connectWithSpawn(
-		client,
-		profile,
-		client.runtimeDir,
-		options.startTimeoutMs ?? DAEMON_START_TIMEOUT_MS,
-		spawnDaemon,
-	);
+	await connectWithSpawn(client, profile, client.runtimeDir, startTimeoutMs, spawnDaemon);
 	await ensureDaemonBuildPairing(client, {
 		localStamp: await daemonBuildStamp(),
 		spawn: () => {
 			spawnDaemon(profile, client.runtimeDir, "ignore").unref();
 		},
 		readOwnerPid: () => readDaemonOwnerPid(client.runtimeDir),
-		waitMs: options.startTimeoutMs ?? DAEMON_START_TIMEOUT_MS,
+		waitMs: startTimeoutMs,
 	});
 
 	const bootstrapRequest = (
 		operation: DaemonOperation["op"] | DaemonOperation,
 		payload: Record<string, unknown> = {},
 	): Promise<unknown> =>
-		requestWithTransportRecovery(
-			client,
-			operation,
-			payload,
-			profile,
-			client.runtimeDir,
-			options.startTimeoutMs ?? DAEMON_START_TIMEOUT_MS,
-			spawnDaemon,
-		);
+		requestWithTransportRecovery(client, operation, payload, profile, client.runtimeDir, startTimeoutMs, spawnDaemon);
 
 	// A string `--resume` names a specific session that may ALREADY be hosted
 	// by this daemon (a client died and left it parked). Probe the live list
@@ -569,6 +625,7 @@ export async function bootstrapDaemonInteractive(
 		},
 	});
 	await handle.whenReady();
+	bootstrapComplete = true;
 	return {
 		client,
 		handle,

@@ -67,7 +67,7 @@ class FakeTerminal implements Terminal {
 }
 
 describe("daemon terminal bridge", () => {
-	test("forwards the real terminal byte stream and live capabilities in both directions", () => {
+	test("forwards the real terminal byte stream and live capabilities in both directions", async () => {
 		const physical = new FakeTerminal();
 		const hosted = new HostedTerminal({
 			columns: physical.columns,
@@ -101,6 +101,7 @@ describe("daemon terminal bridge", () => {
 		physical.emitInput("/resume\r");
 		physical.emitResize(160, 50);
 		physical.emitAppearance("light");
+		await Promise.resolve();
 
 		expect(physical.writes).toContain("\x1b[32mOMP\x1b[0m");
 		expect(input).toBe("/resume\r");
@@ -108,5 +109,28 @@ describe("daemon terminal bridge", () => {
 		expect(hosted.rows).toBe(50);
 		expect(resized).toBe(1);
 		expect(hosted.appearance).toBe("light");
+	});
+	test("coalesces synchronous hosted output without losing pending bytes on detach", async () => {
+		const hosted = new HostedTerminal({
+			columns: 120,
+			rows: 40,
+			kittyProtocolActive: false,
+			kittyEnableSequence: null,
+		});
+		const chunks: string[] = [];
+		hosted.setOutput(data => chunks.push(data));
+
+		hosted.write("a");
+		hosted.write("b");
+		hosted.write("c");
+		expect(chunks).toEqual([]);
+		await Promise.resolve();
+		expect(chunks).toEqual(["abc"]);
+
+		hosted.write("d");
+		hosted.setOutput(undefined);
+		expect(chunks).toEqual(["abc", "d"]);
+		await Promise.resolve();
+		expect(chunks).toEqual(["abc", "d"]);
 	});
 });

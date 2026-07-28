@@ -358,13 +358,14 @@ export class DaemonClient {
 		socket.on("error", () => undefined);
 		socket.on("close", () => {
 			if (this.#socket !== socket) return;
+			const wasConnected = this.#hello !== undefined;
 			this.#socket = undefined;
 			this.#hello = undefined;
 			if (this.#handshake) this.#handshake.reject(new Error("Daemon connection closed"));
 			this.#handshake = undefined;
 			this.#stopHeartbeat();
 			this.#rejectPending(new Error("Daemon connection closed"));
-			if (!this.#closed) {
+			if (!this.#closed && wasConnected) {
 				this.#reconnectAttempt++;
 				this.#scheduleReconnect();
 			}

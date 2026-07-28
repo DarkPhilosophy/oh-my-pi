@@ -18,7 +18,9 @@ import { DaemonSessionRegistry } from "../src/daemon/session-registry";
 import type {
 	DaemonSessionCreateOverrides,
 	DaemonSessionRuntime,
+	DaemonSessionRuntimeFactory,
 	DaemonSessionSnapshot,
+	HostedServerControls,
 } from "../src/daemon/session-runtime";
 import * as sdk from "../src/sdk";
 import type { AgentSessionEventListener } from "../src/session/agent-session";
@@ -387,6 +389,49 @@ describe("daemon server and registry", () => {
 			]);
 			expect(server.status().sessionCount).toBe(2);
 			expect(server.status().shard.profile).toBeNull();
+		} finally {
+			await server.registry.close("first").catch(() => undefined);
+			await server.registry.close("second").catch(() => undefined);
+			client.close();
+			await server.shutdown(true);
+		}
+	});
+
+	test("injects authoritative multi-session controls into every hosted runtime", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-hosted-controls-"));
+		const runtimeDir = path.join(root, "runtime");
+		const fake = fakeFactory();
+		const controls = new Map<string, HostedServerControls>();
+		const runtimeFactory: DaemonSessionRuntimeFactory = async options => {
+			const runtime = await fake.runtimeFactory(options);
+			if (options.serverControls) controls.set(runtime.sessionId, options.serverControls);
+			return runtime;
+		};
+		const server = new DaemonServer({
+			profile: null,
+			runtimeDir,
+			token: "secret",
+			runtimeFactory,
+		});
+		await server.run();
+		const client = new DaemonClient({ profile: null, runtimeDir, token: "secret" });
+		try {
+			await client.connect();
+			await client.request("session_create", { sessionId: "first", cwd: root });
+			await client.request("session_create", { sessionId: "second", cwd: root });
+
+			expect(controls.get("first")?.getSnapshot()).toMatchObject({
+				state: "connected",
+				sessionCount: 2,
+				activeSessionCount: 0,
+				idleSessionCount: 2,
+				connectionCount: 1,
+			});
+			const sessions = await controls.get("first")?.sessions?.();
+			expect(sessions).toContain("2 daemon sessions");
+			expect(sessions).toContain("first");
+			expect(sessions).toContain("second");
+			expect(sessions).not.toStartWith("[");
 		} finally {
 			await server.registry.close("first").catch(() => undefined);
 			await server.registry.close("second").catch(() => undefined);
@@ -878,6 +923,41 @@ describe("daemon server and registry", () => {
 			expect(owner.daemonId).toBe("stuck");
 		} finally {
 			await server.shutdown(true).catch(() => undefined);
+		}
+	});
+	test("never terminates a live daemon owner merely because its endpoint is unresponsive", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-owner-unresponsive-"));
+		const runtimeDir = path.join(root, "runtime");
+		const ownerPath = path.join(runtimeDir, "daemon.owner");
+		await fs.mkdir(runtimeDir, { recursive: true });
+		await Bun.write(ownerPath, JSON.stringify({ pid: process.pid, daemonId: "blocked", startedAt: Date.now() }));
+		let terminateSignalCount = 0;
+		let simulatedAlive = true;
+		const kill = spyOn(process, "kill").mockImplementation((_pid, signal) => {
+			if (signal === 0) {
+				if (simulatedAlive) return true;
+				throw Object.assign(new Error("process exited"), { code: "ESRCH" });
+			}
+			terminateSignalCount++;
+			simulatedAlive = false;
+			return true;
+		});
+		const server = new DaemonServer({
+			profile: "test",
+			runtimeDir,
+			token: "secret",
+			ownerLeaseWaitMs: 20,
+			ownerProcessVerifier: () => true,
+			runtimeFactory: fakeFactory().runtimeFactory,
+		});
+		try {
+			await expect(server.run()).rejects.toThrow(/replacement is unsafe/);
+			expect(terminateSignalCount).toBe(0);
+			const owner = await Bun.file(ownerPath).json();
+			expect(owner.daemonId).toBe("blocked");
+		} finally {
+			await server.shutdown(true).catch(() => undefined);
+			kill.mockRestore();
 		}
 	});
 	test("releases interactive lease on EOF, replays ordered events, and gates idle shutdown", async () => {

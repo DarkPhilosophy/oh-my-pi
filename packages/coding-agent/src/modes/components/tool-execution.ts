@@ -465,11 +465,17 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	 * stream at the rate the diffs can sustain.
 	 */
 	#schedulePreviewDiff(): void {
+		if (this.#result !== undefined && !this.#isPartial) return;
 		this.#editDiffDirty = true;
 		if (this.#editDiffInFlight) return;
-		this.#editDiffInFlight = this.#drainPreviewDiff().finally(() => {
-			this.#editDiffInFlight = undefined;
-		});
+		// Transcript rebuilds construct the call block and immediately supply its
+		// final result in the same tick. Defer the drain so that path can cancel
+		// the preview before an expensive whole-file/fuzzy diff starts.
+		this.#editDiffInFlight = Promise.resolve()
+			.then(() => this.#drainPreviewDiff())
+			.finally(() => {
+				this.#editDiffInFlight = undefined;
+			});
 	}
 
 	async #drainPreviewDiff(): Promise<void> {
@@ -579,6 +585,11 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		// When tool is complete, ensure args are marked complete so spinner stops
 		if (!isPartial) {
 			this.#argsComplete = true;
+			// A final tool result supersedes its call preview. Cancel any live
+			// compute and discard a coalesced rerun so transcript reconstruction
+			// never spends CPU rebuilding an already-finalized edit preview.
+			this.#editDiffDirty = false;
+			this.#editDiffAbort?.abort();
 		}
 		this.#updateSpinnerAnimation();
 		this.#updateTodoStrikeAnimation();

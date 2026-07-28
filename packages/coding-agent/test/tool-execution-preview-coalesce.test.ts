@@ -119,4 +119,71 @@ describe("streaming edit preview coalescing", () => {
 			component.stopAnimation();
 		}
 	});
+
+	test("a final result supplied during transcript rebuild skips preview computation", async () => {
+		let calls = 0;
+		const spy = spyOn(EDIT_MODE_STRATEGIES.replace, "computeDiffPreview").mockImplementation(async () => {
+			calls++;
+			return null;
+		});
+		restore = () => spy.mockRestore();
+
+		const ui = { requestRender() {} } as unknown as TUI;
+		const tool = { mode: "replace" } as unknown as AgentTool;
+		const component = new ToolExecutionComponent(
+			"edit",
+			{ path: file, edits: [{ old_text: "const a = 1;", new_text: "const a = 2;" }] },
+			{},
+			tool,
+			ui,
+			tmpDir,
+		);
+		try {
+			component.updateResult({ content: [{ type: "text", text: "Done" }] });
+			await Promise.resolve();
+			await component.whenPreviewSettled();
+
+			expect(calls).toBe(0);
+		} finally {
+			component.stopAnimation();
+		}
+	});
+
+	test("a final result cancels a live preview and discards its queued rerun", async () => {
+		const compute = Promise.withResolvers<PerFileDiffPreview[] | null>();
+		const signals: AbortSignal[] = [];
+		const spy = spyOn(EDIT_MODE_STRATEGIES.replace, "computeDiffPreview").mockImplementation((_args, options) => {
+			signals.push(options.signal);
+			return compute.promise;
+		});
+		restore = () => spy.mockRestore();
+
+		const ui = { requestRender() {} } as unknown as TUI;
+		const tool = { mode: "replace" } as unknown as AgentTool;
+		const component = new ToolExecutionComponent(
+			"edit",
+			{ path: file, edits: [{ old_text: "const a = 1;", new_text: "const a = 2;" }] },
+			{},
+			tool,
+			ui,
+			tmpDir,
+		);
+		try {
+			await Promise.resolve();
+			expect(signals).toHaveLength(1);
+
+			component.updateArgs({
+				path: file,
+				edits: [{ old_text: "const a = 1;", new_text: "const a = 3;" }],
+			});
+			component.updateResult({ content: [{ type: "text", text: "Done" }] });
+			expect(signals[0]!.aborted).toBe(true);
+
+			compute.resolve(null);
+			await component.whenPreviewSettled();
+			expect(signals).toHaveLength(1);
+		} finally {
+			component.stopAnimation();
+		}
+	});
 });

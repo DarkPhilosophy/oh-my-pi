@@ -11,6 +11,7 @@
 
 ### Fixed
 - Fixed automatic context maintenance using a stale cross-model token count after switching models, which could trigger maintenance before the active model reached its configured threshold.
+- Fixed `/server status` and `/server sessions` reporting only the current hosted runtime instead of the daemon's complete registry. Status now uses authoritative multi-session counts and the session inventory identifies every hosted session, working directory, attachment count, and activity state.
 - Fixed interactive daemon startup failing with `connect ENOENT …/daemon.sock` whenever a replacement daemon was needed. The server now resolves its build-pairing stamp before the socket accepts connections, so a freshly bound daemon can no longer answer the pairing handshake without a stamp and be shut down by the very client that spawned it.
 - Fixed advisor secret scrubbing losing regex-protected value collection, history re-scrubbing, and friendly-placeholder prefix stripping on the synchronous render path, so a secret discovered later in a delta no longer leaves stale friendly prefixes in already-delivered advisor prompts. The chunked renderer applies the same pipeline per slice.
 - Fixed interactive daemon startup aborting when the paired daemon died after the build handshake but before replying to session discovery or creation. Bootstrap now reconnects through the normal replacement path and retries the interrupted operation once.
@@ -30,6 +31,8 @@
 - Fixed daemon-hosted sessions sharing subagent state and payload-bearing resource fallbacks. Agent discovery, messaging, lifecycle, async and vibe jobs, MCP resources, local and artifact roots, skills, and rules are now scoped to the owning runtime, so another session cannot see or address its peers or resolve its `history://`, `agent://`, `local://`, `mcp://`, `skill://`, or `rule://` data.
 - Fixed simultaneous cold `--daemon --resume` launches leaking the expected losing worker's owner-lease error into the TUI after another contender had already started the daemon.
 - Fixed cold daemon startup races publishing an owner lease before an authenticated endpoint was available, and prevented stale leases whose PID was reused by another process from blocking recovery or terminating the unrelated process.
+- Fixed daemon startup races removing the live owner's lease, which could let stale-process recovery disrupt the active server.
+- Fixed large terminal-output bursts starving daemon protocol work by batching bridge flushes.
 - Fixed daemon session startup crashing when the shard-owned MCP pool received credential storage in place of its loader.
 - Fixed non-interactive CLI paths such as `--version` loading the daemon interactive bootstrap and native computer addon before command routing, which broke startup when Bun addons were disabled.
 - Fixed v17.0.5 merge regressions in hook-status row rendering, slow shutdown feedback, and authenticated Codex model discovery.

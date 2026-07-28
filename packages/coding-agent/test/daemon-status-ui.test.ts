@@ -3,6 +3,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	type DaemonConnectionSnapshot,
 	formatDaemonServerStatus,
+	formatDaemonSessions,
 	formatDaemonWelcomeStatus,
 } from "@oh-my-pi/pi-coding-agent/daemon/status";
 import { WelcomeComponent } from "@oh-my-pi/pi-coding-agent/modes/components/welcome";
@@ -99,5 +100,31 @@ describe("daemon status presentation", () => {
 		expect(formatDaemonServerStatus(snapshot)).toContain("attachments: 2");
 		expect(formatDaemonServerStatus(snapshot)).toContain("pid: 42");
 		expect(formatDaemonServerStatus(snapshot)).toContain("socket: /tmp/omp-daemon.sock");
+	});
+
+	it("formats the shared daemon session inventory for terminal display", () => {
+		const rendered = formatDaemonSessions([
+			{
+				sessionId: "019f6362-7273-7ec0-afba-4c729add7c12",
+				cwd: "/tmp/project",
+				attachmentCount: 2,
+				interactiveAttached: true,
+				isStreaming: false,
+			},
+			{
+				sessionId: "019f98f5-7d00-75d2-a5d3-23b4675847e4",
+				cwd: "/tmp/other",
+				attachmentCount: 0,
+				interactiveAttached: false,
+				isStreaming: true,
+			},
+		]);
+
+		expect(rendered).toContain("2 daemon sessions");
+		expect(rendered).toContain("019f6362-7273-7ec0-afba-4c729add7c12  interactive");
+		expect(rendered).toContain("cwd: /tmp/project");
+		expect(rendered).toContain("2 attachments · interactive: yes · streaming: no");
+		expect(rendered).toContain("019f98f5-7d00-75d2-a5d3-23b4675847e4  streaming");
+		expect(rendered).toContain("0 attachments · interactive: no · streaming: yes");
 	});
 });

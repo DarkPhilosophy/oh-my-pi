@@ -23,8 +23,12 @@ import {
 	encodeDaemonFrame,
 } from "./protocol";
 import { DaemonSessionRegistry, RegistryError } from "./session-registry";
-import { createAgentSessionRuntime, type DaemonSessionRuntimeFactory } from "./session-runtime";
-import type { DaemonProfile } from "./status";
+import {
+	createAgentSessionRuntime,
+	type DaemonSessionRuntimeFactory,
+	type HostedServerControls,
+} from "./session-runtime";
+import { type DaemonProfile, formatDaemonSessions } from "./status";
 
 const DEFAULT_MAX_CLIENTS = 64;
 const MAX_CONNECTION_QUEUE_BYTES = 8 * DAEMON_MAX_FRAME_BYTES;
@@ -33,7 +37,6 @@ const OWNER_FILE = "daemon.owner";
 /** How long a contender waits out a live-but-unbound owner (starting or draining). */
 const OWNER_LEASE_WAIT_MS = 10_000;
 const TAKEOVER_FILE = "daemon.takeover";
-const OWNER_TERMINATE_GRACE_MS = 1_000;
 const SKIP_DISPATCH = Symbol("skip daemon dispatch");
 class DaemonEndpointOwnedError extends Error {}
 
@@ -55,6 +58,7 @@ type Connection = {
 	outboundQueueIndex: number;
 	outboundQueueBytes: number;
 	waitingForDrain: boolean;
+	drainWaiters: Set<() => void>;
 };
 
 type DaemonOwnerLease = {
@@ -276,9 +280,15 @@ export class DaemonServer {
 					mcpManagerPool: this.#sharedMcpManagerPool,
 				};
 			}
-			const runtimeFactory: DaemonSessionRuntimeFactory = this.#usesDefaultRuntimeFactory
+			const baseRuntimeFactory: DaemonSessionRuntimeFactory = this.#usesDefaultRuntimeFactory
 				? options => this.#runtimeFactory({ ...options, baseOptions: this.#sessionBaseOptions })
 				: this.#runtimeFactory;
+			const serverControls: HostedServerControls = {
+				getSnapshot: () => ({ ...this.status(), state: "connected" }),
+				sessions: () => formatDaemonSessions(this.registry.list()),
+			};
+			const runtimeFactory: DaemonSessionRuntimeFactory = options =>
+				baseRuntimeFactory({ ...options, serverControls });
 			this.#registry =
 				this.#registryOverride ??
 				new DaemonSessionRegistry({
@@ -355,8 +365,21 @@ export class DaemonServer {
 			);
 		} catch (error) {
 			const code = error instanceof Error && "code" in error ? error.code : undefined;
-			if (code === "EEXIST") return "waiting";
-			throw error;
+			if (code !== "EEXIST") throw error;
+			const contender = await this.#readOwnerLease(takeoverPath);
+			if (!contender) return "waiting";
+			const contenderAlive = this.#processAlive(contender.pid);
+			const contenderIdentity = contenderAlive ? await this.#ownerProcessIdentity(contender) : "mismatch";
+			if (contenderAlive && contenderIdentity !== "mismatch") return "waiting";
+			const current = await this.#readOwnerLease(takeoverPath);
+			if (
+				current?.pid === contender.pid &&
+				current.daemonId === contender.daemonId &&
+				current.startedAt === contender.startedAt
+			) {
+				await fs.rm(takeoverPath, { force: true });
+			}
+			return "waiting";
 		}
 		try {
 			if (await this.#probeEndpoint()) return "waiting";
@@ -368,14 +391,10 @@ export class DaemonServer {
 			if (owner && this.#processAlive(owner.pid)) {
 				if (!replaceLiveOwner) return "waiting";
 				const identity = await this.#ownerProcessIdentity(owner);
-				if (identity === "unknown" && this.#processAlive(owner.pid)) return "unsafe";
-				if (identity === "match") {
-					process.kill(owner.pid, "SIGTERM");
-					if (!(await this.#waitForProcessExit(owner.pid, OWNER_TERMINATE_GRACE_MS))) {
-						process.kill(owner.pid, "SIGKILL");
-						if (!(await this.#waitForProcessExit(owner.pid, OWNER_TERMINATE_GRACE_MS))) return "unsafe";
-					}
-				}
+				// An unresponsive process that still matches the daemon lease is
+				// the active owner, not stale state. A contender may reclaim only
+				// a recycled PID that is proven to belong to another process.
+				if (identity !== "mismatch") return "unsafe";
 			}
 			const current = await this.#readOwnerLease(ownerPath);
 			if (
@@ -455,15 +474,6 @@ export class DaemonServer {
 		} catch {
 			return "unknown";
 		}
-	}
-
-	async #waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
-		const deadline = Date.now() + timeoutMs;
-		while (this.#processAlive(pid)) {
-			if (Date.now() >= deadline) return false;
-			await Bun.sleep(20);
-		}
-		return true;
 	}
 
 	async #ownsCurrentLease(): Promise<boolean> {
@@ -681,6 +691,7 @@ export class DaemonServer {
 			outboundQueueIndex: 0,
 			outboundQueueBytes: 0,
 			waitingForDrain: false,
+			drainWaiters: new Set(),
 		};
 		this.#connections.add(connection);
 		socket.setEncoding("utf8");
@@ -698,6 +709,8 @@ export class DaemonServer {
 		connection.outboundQueueIndex = 0;
 		connection.outboundQueueBytes = 0;
 		connection.waitingForDrain = false;
+		for (const resolve of connection.drainWaiters) resolve();
+		connection.drainWaiters.clear();
 		// A half-close ('end') removes the connection from tracking while the
 		// kernel socket stays open; net.Server.close() would wait on it forever.
 		connection.socket.destroy();
@@ -926,8 +939,16 @@ export class DaemonServer {
 					return SKIP_DISPATCH;
 				}
 				connection.attachments.add(key);
-				for (const frame of attached.frames)
+				for (const frame of attached.frames) {
 					this.#sendAttachmentFrame(connection, operation.sessionId, operation.attachmentId, frame);
+					if (connection.outboundQueueBytes >= MAX_DRAIN_WRITE_BYTES) {
+						await this.#waitForConnectionDrain(connection);
+						if (!this.#connectionActive(connection, generation)) {
+							registry.disconnect(operation.sessionId, operation.attachmentId);
+							return SKIP_DISPATCH;
+						}
+					}
+				}
 				return {
 					sessionId: attached.sessionId,
 					attachmentId: attached.attachmentId,
@@ -1084,6 +1105,18 @@ export class DaemonServer {
 		}
 	}
 
+	#resolveDrainWaiters(connection: Connection): void {
+		for (const resolve of connection.drainWaiters) resolve();
+		connection.drainWaiters.clear();
+	}
+
+	async #waitForConnectionDrain(connection: Connection): Promise<void> {
+		if (connection.closed || connection.socket.destroyed || !connection.waitingForDrain) return;
+		const { promise, resolve } = Promise.withResolvers<void>();
+		connection.drainWaiters.add(resolve);
+		await promise;
+	}
+
 	#send(connection: Connection, frame: DaemonFrame): void {
 		if (connection.closed || connection.socket.destroyed) return;
 		const eventType =
@@ -1120,6 +1153,7 @@ export class DaemonServer {
 		connection.socket.once("drain", () => {
 			if (connection.closed || connection.socket.destroyed) return;
 			connection.waitingForDrain = false;
+			this.#resolveDrainWaiters(connection);
 			while (connection.outboundQueueIndex < connection.outboundQueue.length) {
 				const pending = connection.outboundQueue[connection.outboundQueueIndex++]!;
 				let data = pending.data;
@@ -1140,6 +1174,7 @@ export class DaemonServer {
 			connection.outboundQueue.length = 0;
 			connection.outboundQueueIndex = 0;
 			connection.outboundQueueBytes = 0;
+			this.#resolveDrainWaiters(connection);
 		});
 	}
 

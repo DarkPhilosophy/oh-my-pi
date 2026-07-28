@@ -69,6 +69,8 @@ export class HostedTerminal implements Terminal {
 	#resizeHandler: (() => void) | undefined;
 	#appearanceListeners = new Set<(appearance: TerminalAppearance) => void>();
 	#output: ((data: string) => void) | undefined;
+	#pendingOutput: string[] = [];
+	#outputFlushQueued = false;
 
 	constructor(descriptor: HostedTerminalDescriptor) {
 		this.#columns = descriptor.columns;
@@ -107,6 +109,7 @@ export class HostedTerminal implements Terminal {
 	}
 
 	setOutput(output: ((data: string) => void) | undefined): void {
+		if (output !== this.#output) this.#flushOutput();
 		this.#output = output;
 	}
 
@@ -128,6 +131,20 @@ export class HostedTerminal implements Terminal {
 	}
 
 	write(data: string): void {
+		if (!this.#output) return;
+		this.#pendingOutput.push(data);
+		if (this.#outputFlushQueued) return;
+		this.#outputFlushQueued = true;
+		queueMicrotask(() => {
+			this.#outputFlushQueued = false;
+			this.#flushOutput();
+		});
+	}
+
+	#flushOutput(): void {
+		if (this.#pendingOutput.length === 0) return;
+		const data = this.#pendingOutput.join("");
+		this.#pendingOutput.length = 0;
 		this.#output?.(data);
 	}
 
