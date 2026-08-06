@@ -1340,6 +1340,13 @@ export class Settings {
 			delete raw.queueMode;
 		}
 
+		// The retired "all" queue mode (separate entries drained all at once) was
+		// a strictly worse "coalescing": same all-at-once delivery for rapid
+		// sends, but every message kept its own pending box. Map it onto
+		// "coalescing" so legacy configs keep working with the merged view.
+		if (raw.steeringMode === "all") raw.steeringMode = "coalescing";
+		if (raw.followUpMode === "all") raw.followUpMode = "coalescing";
+
 		// lastChangelogVersion moved out of config.yml into the
 		// <agentDir>/last-changelog-version marker file so version bumps no
 		// longer dirty user-tracked configs. Capture for marker seeding (see

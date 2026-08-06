@@ -79,8 +79,8 @@ export type DaemonSessionCreateOverrides = {
 	provider?: string;
 	model?: string;
 	thinkingLevel?: string;
-	steeringMode?: "all" | "one-at-a-time";
-	followUpMode?: "all" | "one-at-a-time";
+	steeringMode?: "all" | "one-at-a-time" | "coalescing";
+	followUpMode?: "all" | "one-at-a-time" | "coalescing";
 	argv?: string[];
 	/** Terminal-identity env of the creating client (never the full env). */
 	clientEnv?: Record<string, string>;
@@ -347,9 +347,19 @@ function operation(value: unknown): DaemonOperation {
 			}
 			const steeringMode = overrideSource.steeringMode;
 			const followUpMode = overrideSource.followUpMode;
-			if (steeringMode !== undefined && steeringMode !== "all" && steeringMode !== "one-at-a-time")
+			if (
+				steeringMode !== undefined &&
+				steeringMode !== "all" &&
+				steeringMode !== "one-at-a-time" &&
+				steeringMode !== "coalescing"
+			)
 				throw new DaemonProtocolError("invalid_request", "operation.overrides.steeringMode is invalid");
-			if (followUpMode !== undefined && followUpMode !== "all" && followUpMode !== "one-at-a-time")
+			if (
+				followUpMode !== undefined &&
+				followUpMode !== "all" &&
+				followUpMode !== "one-at-a-time" &&
+				followUpMode !== "coalescing"
+			)
 				throw new DaemonProtocolError("invalid_request", "operation.overrides.followUpMode is invalid");
 			const argvValue = overrideSource.argv;
 			if (

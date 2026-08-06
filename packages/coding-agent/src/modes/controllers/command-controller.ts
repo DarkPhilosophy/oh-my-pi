@@ -44,6 +44,7 @@ import type { AsyncJobSnapshotItem } from "../../session/agent-session";
 import type { AuthStorage, OAuthAccountIdentity } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
 import type { NewSessionOptions } from "../../session/session-entries";
+import { sessionActionMessage } from "../../session/session-action-message";
 import { formatShakeSummary, type ShakeMode, type ShakeResult } from "../../session/shake-types";
 import { formatActiveAccountLabel, limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
 import { outputMeta } from "../../tools/output-meta";
@@ -992,11 +993,20 @@ export class CommandController {
 		this.ctx.statusLine.invalidate();
 		this.ctx.ui.requestRender();
 
-		const sessionFile = this.ctx.session.sessionFile;
-		const shortPath = sessionFile ? sessionFile.split("/").pop() : "new session";
 		this.ctx.present([
 			new Spacer(1),
-			new Text(`${theme.fg("accent", `${theme.status.success} Session forked to ${shortPath}`)}`, 1, 1),
+			new Text(
+				`${theme.fg(
+					"accent",
+					`${theme.status.success} ${sessionActionMessage(
+						"forked",
+						this.ctx.sessionManager.getSessionId(),
+						this.ctx.sessionManager.getCwd(),
+					)}`,
+				)}`,
+				1,
+				1,
+			),
 		]);
 	}
 
@@ -1089,7 +1099,18 @@ export class CommandController {
 
 		this.ctx.present([
 			new Spacer(1),
-			new Text(`${theme.fg("accent", `${theme.status.success} Moved to ${resolvedPath}`)}`, 1, 1),
+			new Text(
+				`${theme.fg(
+					"accent",
+					`${theme.status.success} ${sessionActionMessage(
+						"moved",
+						this.ctx.sessionManager.getSessionId(),
+						resolvedPath,
+					)}`,
+				)}`,
+				1,
+				1,
+			),
 		]);
 	}
 

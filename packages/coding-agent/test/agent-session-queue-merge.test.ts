@@ -49,8 +49,8 @@ describe("AgentSession queue coalescing", () => {
 			id: "claude-sonnet-4-5",
 		},
 		options?: {
-			steeringMode?: "all" | "one-at-a-time" | "coalescing";
-			followUpMode?: "all" | "one-at-a-time" | "coalescing";
+			steeringMode?: "one-at-a-time" | "coalescing";
+			followUpMode?: "one-at-a-time" | "coalescing";
 		},
 	): Promise<AgentSession> {
 		const model = getBundledModel(modelRef.api, modelRef.id)!;

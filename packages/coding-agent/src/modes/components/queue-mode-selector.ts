@@ -24,7 +24,6 @@ export class QueueModeSelectorComponent extends Container {
 				label: "coalescing",
 				description: "Merge rapid consecutive queued messages into one pending entry",
 			},
-			{ value: "all", label: "all", description: "Process all queued messages at once" },
 		];
 
 		// Add top border

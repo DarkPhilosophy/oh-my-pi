@@ -1616,7 +1616,7 @@ export const SETTINGS_SCHEMA = {
 	// Conversation flow
 	steeringMode: {
 		type: "enum",
-		values: ["all", "one-at-a-time", "coalescing"] as const,
+		values: ["one-at-a-time", "coalescing"] as const,
 		default: "one-at-a-time",
 		ui: {
 			tab: "interaction",
@@ -1628,7 +1628,7 @@ export const SETTINGS_SCHEMA = {
 
 	followUpMode: {
 		type: "enum",
-		values: ["all", "one-at-a-time", "coalescing"] as const,
+		values: ["one-at-a-time", "coalescing"] as const,
 		default: "one-at-a-time",
 		ui: {
 			tab: "interaction",

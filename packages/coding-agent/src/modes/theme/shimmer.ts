@@ -227,6 +227,22 @@ export function shimmerSegments(segments: readonly ShimmerSegment[], theme: Shim
 			// Detect a surrogate pair so a single code point (e.g. an emoji) stays
 			// atomic; the band position is measured in code points, not UTF-16 units.
 			const c = text.charCodeAt(i);
+			if (c === 0x1b) {
+				// Zero-width escape (CSI color, OSC 8 hyperlink, …): flush the open
+				// run, emit the sequence verbatim, and resume with a fresh run so the
+				// band never slices raw escape bytes into colored output.
+				if (runTier !== null && runEnd > runStart) {
+					const seq = compiled[runTier];
+					out += `${seq.open}${text.slice(runStart, runEnd)}${seq.close}`;
+				}
+				runTier = null;
+				const end = escapeEnd(text, i);
+				out += text.slice(i, end);
+				i = end;
+				runStart = i;
+				runEnd = i;
+				continue;
+			}
 			let step = 1;
 			if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
 				const c2 = text.charCodeAt(i + 1);
@@ -281,11 +297,50 @@ function activeBand(mode: "classic" | "kitt", time: number, total: number): { lo
 		: { lo: head - KITT_HEAD_HALF, hi: head + KITT_HEAD_HALF + KITT_TRAIL_LEN };
 }
 
+/**
+ * Scan past one ANSI escape sequence starting at `start` (text[start] === ESC)
+ * and return the index just after it. Escape sequences are zero-width pass-
+ * through atoms: the band positions itself over visible code points only, and
+ * sequences are emitted verbatim between color runs. Without this, an OSC 8
+ * hyperlink (`ESC ] 8 ;; url ESC \`) inside shimmered text would have its raw
+ * bytes — including the URL — swept into color runs and printed as garbage.
+ */
+function escapeEnd(text: string, start: number): number {
+	const next = text.charCodeAt(start + 1);
+	// OSC: `ESC ]` … terminated by BEL (`\x07`) or ST (`ESC \`).
+	if (next === 0x5d) {
+		let i = start + 2;
+		while (i < text.length) {
+			const c = text.charCodeAt(i);
+			if (c === 0x07) return i + 1;
+			if (c === 0x1b && text.charCodeAt(i + 1) === 0x5c) return i + 2;
+			i++;
+		}
+		return text.length;
+	}
+	// CSI: `ESC [` … terminated by a final byte in `@`–`~`.
+	if (next === 0x5b) {
+		let i = start + 2;
+		while (i < text.length) {
+			const c = text.charCodeAt(i);
+			if (c >= 0x40 && c <= 0x7e) return i + 1;
+			i++;
+		}
+		return text.length;
+	}
+	// Any other two-byte escape (ESC + one char), best-effort.
+	return Math.min(start + 2, text.length);
+}
+
 function countCodePoints(text: string): number {
 	let n = 0;
 	let i = 0;
 	while (i < text.length) {
 		const c = text.charCodeAt(i);
+		if (c === 0x1b) {
+			i = escapeEnd(text, i);
+			continue;
+		}
 		if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
 			const c2 = text.charCodeAt(i + 1);
 			if (c2 >= 0xdc00 && c2 <= 0xdfff) {

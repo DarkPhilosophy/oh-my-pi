@@ -17,7 +17,6 @@ import {
 import { DaemonServer } from "../src/daemon/server";
 import type { RpcSessionState } from "../src/modes/rpc/rpc-types";
 import * as sessionListing from "../src/session/session-listing";
-import { SessionManager } from "../src/session/session-manager";
 
 describe("daemon interactive bootstrap", () => {
 	afterEach(() => {
@@ -53,11 +52,10 @@ describe("daemon interactive bootstrap", () => {
 		expect(isDaemonModeOptedIn(["--no-daemon"], true)).toBe(false);
 		expect(isDaemonModeOptedIn(["--daemon", "--no-daemon"], false)).toBe(false);
 	});
-	test("forks an explicit cross-project resume into the requested working directory", async () => {
+	test("resumes an explicit cross-project match in its recorded working directory", async () => {
 		const sourceCwd = "/other/project";
 		const targetCwd = "/current/project";
 		const sourcePath = `${sourceCwd}/source.jsonl`;
-		const forkedPath = `${targetCwd}/forked.jsonl`;
 		vi.spyOn(sessionListing, "resolveResumableSession").mockResolvedValue({
 			scope: "global",
 			session: {
@@ -73,18 +71,15 @@ describe("daemon interactive bootstrap", () => {
 				allMessagesText: "source",
 			},
 		});
-		const forkedManager = { getSessionFile: () => forkedPath } as unknown as SessionManager;
-		const forkFrom = vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(forkedManager);
 
 		const resolved = await resolveDaemonInteractiveResume({
 			argv: ["--resume", "source"],
 			cwd: targetCwd,
 		});
 
-		expect(forkFrom).toHaveBeenCalledWith(sourcePath, targetCwd, undefined);
 		expect(resolved).toMatchObject({
-			argv: ["--resume", forkedPath],
-			cwd: targetCwd,
+			argv: ["--resume", sourcePath],
+			cwd: sourceCwd,
 		});
 	});
 
@@ -681,9 +676,6 @@ describe("daemon interactive bootstrap", () => {
 						return undefined;
 					}
 				},
-				killOwner: () => {
-					throw new Error("graceful path must not signal the owner");
-				},
 				waitMs: 8_000,
 			});
 			await spawnTask;
@@ -700,80 +692,65 @@ describe("daemon interactive bootstrap", () => {
 		}
 	}, 20_000);
 
-	test("force-replaces a stale daemon even when clients and sessions are active", async () => {
-		let stamp: string | undefined = "old-build";
-		let ownerReads = 0;
+	test("preserves a stale daemon when active clients and sessions block shutdown", async () => {
 		let spawns = 0;
 		let reconnects = 0;
-		const killed: number[] = [];
+		let ownerReads = 0;
 		const fakeClient = {
-			get serverBuildStamp(): string | undefined {
-				return stamp;
-			},
+			serverBuildStamp: "old-build",
 			request: async () => ({ shutdown: false, blockers: ["clients", "sessions"] }),
 			reconnect: async () => {
 				reconnects++;
-				stamp = "new-build";
 			},
 			snapshot: { state: "connected" },
 		} as unknown as Parameters<typeof ensureDaemonBuildPairing>[0];
 
-		const outcome = await ensureDaemonBuildPairing(fakeClient, {
-			localStamp: "new-build",
-			spawn: () => {
-				spawns++;
-			},
-			readOwnerPid: async () => (ownerReads++ === 0 ? 4321 : undefined),
-			killOwner: pid => {
-				killed.push(pid);
-			},
-			waitMs: 1_000,
-		});
+		await expect(
+			ensureDaemonBuildPairing(fakeClient, {
+				localStamp: "new-build",
+				spawn: () => {
+					spawns++;
+				},
+				readOwnerPid: async () => {
+					ownerReads++;
+					return 4321;
+				},
+				waitMs: 1_000,
+			}),
+		).rejects.toThrow(/active daemon refused shutdown.*clients, sessions.*left running/);
 
-		expect(outcome).toBe("replaced");
-		expect(killed).toEqual([4321]);
-		expect(spawns).toBe(1);
-		expect(reconnects).toBeGreaterThanOrEqual(1);
+		expect(ownerReads).toBe(0);
+		expect(spawns).toBe(0);
+		expect(reconnects).toBe(0);
 	});
 
-	test("replaces a pre-pairing daemon whose owner PID file is missing", async () => {
-		// The wrong-build daemon predates both the buildStamp handshake and the
-		// daemon.owner lease file (user-reported: "Refusing stale daemon build
-		// (pre-pairing daemon): its owner PID is unavailable"). Startup must
-		// still spawn a contender and land on the fresh build instead of
-		// aborting outright.
-		let stamp: string | undefined;
+	test("preserves a stale daemon when its shutdown request fails without a transport loss", async () => {
 		let spawns = 0;
 		let reconnects = 0;
 		const fakeClient = {
-			get serverBuildStamp(): string | undefined {
-				return stamp;
-			},
+			serverBuildStamp: "old-build",
 			request: async () => {
 				throw new Error("unknown operation: shutdown");
 			},
 			reconnect: async () => {
 				reconnects++;
-				stamp = "new-build";
 			},
 			snapshot: { state: "connected" },
 		} as unknown as Parameters<typeof ensureDaemonBuildPairing>[0];
 
-		const outcome = await ensureDaemonBuildPairing(fakeClient, {
-			localStamp: "new-build",
-			spawn: () => {
-				spawns++;
-			},
-			readOwnerPid: async () => undefined,
-			killOwner: () => {
-				throw new Error("no owner pid is known; nothing may be signalled");
-			},
-			waitMs: 1_000,
-		});
+		await expect(
+			ensureDaemonBuildPairing(fakeClient, {
+				localStamp: "new-build",
+				spawn: () => {
+					spawns++;
+				},
+				readOwnerPid: async () => undefined,
+				waitMs: 1_000,
+			}),
+		).rejects.toThrow(/could not be shut down safely.*unknown operation: shutdown.*left running/);
 
-		expect(outcome).toBe("replaced");
-		expect(spawns).toBe(1);
-		expect(reconnects).toBeGreaterThanOrEqual(1);
+		expect(spawns).toBe(0);
+		expect(reconnects).toBe(0);
 	});
 
 	test("keeps reconnecting while the draining old daemon still answers with its stale stamp", async () => {
@@ -889,9 +866,6 @@ describe("daemon interactive bootstrap", () => {
 				// The owner pid never vanishes: models a predecessor draining past
 				// the budget (the user-reported takeover crash shape).
 				readOwnerPid: async () => process.pid,
-				killOwner: () => {
-					throw new Error("graceful path must not signal the owner");
-				},
 				waitMs: 2_000,
 			});
 			await spawnTask;

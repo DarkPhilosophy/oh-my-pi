@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getProjectDir } from "@oh-my-pi/pi-utils/dirs";
+import { Settings } from "../src/config/settings";
 import { createAgentSessionRuntime } from "../src/daemon/session-runtime";
 import type { HostedTerminalDescriptor } from "../src/daemon/terminal-bridge";
 import * as interactiveModeModule from "../src/modes/interactive-mode";
@@ -118,6 +119,44 @@ describe("daemon session runtime", () => {
 			await Promise.all([first.dispose(), second.dispose()]);
 		}
 	});
+
+	test("keeps runtime cwd metadata live after session relocation", async () => {
+		const originalCwd = await mkdtemp(path.join(os.tmpdir(), "omp-daemon-cwd-before-"));
+		const movedCwd = await mkdtemp(path.join(os.tmpdir(), "omp-daemon-cwd-after-"));
+		let sessionManager: SessionManager | undefined;
+		const runtime = await createAgentSessionRuntime({
+			cwd: originalCwd,
+			sessionId: "relocated-session",
+			createSession: async options => {
+				sessionManager = options.sessionManager;
+				const session = {
+					sessionId: "relocated-session",
+					isStreaming: false,
+					subscribe: () => () => {},
+					subscribeCommandMetadataChanged: () => () => {},
+					dispose: async () => {
+						await options.sessionManager?.close();
+					},
+				} as unknown as AgentSession;
+				return { session, setToolUIContext: () => {} } as unknown as CreateAgentSessionResult;
+			},
+		});
+		try {
+			if (!sessionManager) throw new Error("runtime must inject a session manager");
+			await sessionManager.moveTo(movedCwd);
+
+			expect(runtime.cwd).toBe(movedCwd);
+			expect(runtime.snapshot().cwd).toBe(movedCwd);
+			const state = (await runtime.command({ type: "get_state" })) as { cwd?: string };
+			expect(state.cwd).toBe(movedCwd);
+		} finally {
+			await runtime.dispose();
+			await Promise.all([
+				rm(originalCwd, { recursive: true, force: true }),
+				rm(movedCwd, { recursive: true, force: true }),
+			]);
+		}
+	});
 	test("isolates concurrent runtime registries and re-enters each command scope", async () => {
 		const registries: AgentRegistry[] = [];
 		const createRuntime = (sessionId: string) =>
@@ -212,8 +251,9 @@ describe("daemon session runtime", () => {
 		// appeared to work while hosting an EMPTY new session. The daemon-side
 		// CLI launch must resolve the resume id to the existing transcript and
 		// hand that exact SessionManager to session creation.
-		const cwd = await mkdtemp(path.join(os.tmpdir(), "omp-daemon-resume-"));
-		const fixture = SessionManager.create(cwd);
+		const launchCwd = await mkdtemp(path.join(os.tmpdir(), "omp-daemon-launch-"));
+		const resumedCwd = await mkdtemp(path.join(os.tmpdir(), "omp-daemon-resume-"));
+		const fixture = SessionManager.create(resumedCwd);
 		const persistedId = fixture.getSessionId();
 		fixture.appendMessage({ role: "user", content: "resume fixture", timestamp: Date.now() });
 		fixture.appendMessage({
@@ -238,14 +278,20 @@ describe("daemon session runtime", () => {
 
 		let resumedId: string | undefined;
 		let resumedFile: string | undefined;
+		let resumedManagerCwd: string | undefined;
+		let effectiveProjectDir: string | undefined;
+		let createOptionsCwd: string | undefined;
 		try {
 			const runtime = await createAgentSessionRuntime({
-				cwd,
+				cwd: launchCwd,
 				sessionId: "registry-resume-handle",
 				overrides: { argv: ["--resume", persistedId, "--no-extensions"] },
 				createSession: async options => {
 					resumedId = options.sessionManager?.getSessionId();
 					resumedFile = options.sessionManager?.getSessionFile() ?? undefined;
+					resumedManagerCwd = options.sessionManager?.getCwd();
+					createOptionsCwd = options.cwd;
+					effectiveProjectDir = getProjectDir();
 					const session = {
 						sessionId: resumedId,
 						isStreaming: false,
@@ -261,11 +307,212 @@ describe("daemon session runtime", () => {
 			await runtime.dispose();
 			expect(resumedId).toBe(persistedId);
 			expect(resumedFile).toBe(persistedFile ?? undefined);
+			expect(resumedManagerCwd).toBe(resumedCwd);
+			expect(createOptionsCwd).toBe(resumedCwd);
+			expect(effectiveProjectDir).toBe(resumedCwd);
 		} finally {
-			await rm(cwd, { recursive: true, force: true });
+			await rm(launchCwd, { recursive: true, force: true });
+			await rm(resumedCwd, { recursive: true, force: true });
 			if (persistedFile) await rm(path.dirname(persistedFile), { recursive: true, force: true });
 		}
 	}, 30_000);
+
+	test("direct sessionFile adopts transcript cwd for scope, settings, state, snapshot, and switch", async () => {
+		const launchCwd = await mkdtemp(path.join(os.tmpdir(), "omp-daemon-direct-launch-"));
+		const resumedCwd = await mkdtemp(path.join(os.tmpdir(), "omp-daemon-direct-resume-"));
+		const movedCwd = await mkdtemp(path.join(os.tmpdir(), "omp-daemon-direct-move-"));
+		const switchedCwd = await mkdtemp(path.join(os.tmpdir(), "omp-daemon-direct-switch-"));
+		const sessionDir = await mkdtemp(path.join(os.tmpdir(), "omp-daemon-direct-sessions-"));
+		const fixture = SessionManager.create(resumedCwd, sessionDir);
+		fixture.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "direct resume fixture" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "fixture",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+		const sessionFile = fixture.getSessionFile();
+		await fixture.close();
+		const switchedFixture = SessionManager.create(switchedCwd, sessionDir);
+		switchedFixture.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "switch fixture" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "fixture",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+		const switchedFile = switchedFixture.getSessionFile();
+		await switchedFixture.close();
+		if (!sessionFile || !switchedFile) throw new Error("Expected persisted session fixtures");
+
+		const settings = await Settings.loadIsolated({ cwd: launchCwd, inMemory: true });
+		let sessionManager: SessionManager | undefined;
+		let creationCwd: string | undefined;
+		let creationProjectDir: string | undefined;
+		let creationSettingsCwd: string | undefined;
+		let refreshProjectDir: string | undefined;
+		let refreshSettingsCwd: string | undefined;
+		try {
+			const runtime = await createAgentSessionRuntime({
+				cwd: launchCwd,
+				sessionId: "registry-direct-resume-handle",
+				sessionFile,
+				sessionDir,
+				baseOptions: { settings },
+				createSession: async options => {
+					sessionManager = options.sessionManager;
+					creationCwd = options.cwd;
+					creationProjectDir = getProjectDir();
+					creationSettingsCwd = options.settings?.getCwd();
+					const session = {
+						sessionId: options.sessionManager?.getSessionId(),
+						settings: options.settings,
+						sessionManager: options.sessionManager,
+						customCommands: [],
+						skills: [],
+						isStreaming: false,
+						subscribe: () => () => {},
+						subscribeCommandMetadataChanged: () => () => {},
+						setSlashCommands: () => {},
+						refreshSkills: async () => {
+							refreshProjectDir = getProjectDir();
+							refreshSettingsCwd = options.settings?.getCwd();
+						},
+						switchSession: async (target: string) => {
+							await options.sessionManager?.setSessionFile(target);
+							return true;
+						},
+						dispose: async () => {
+							await options.sessionManager?.close();
+						},
+					} as unknown as AgentSession;
+					return { session, setToolUIContext: () => {} } as unknown as CreateAgentSessionResult;
+				},
+			});
+			expect(sessionManager?.getCwd()).toBe(resumedCwd);
+			expect(creationCwd).toBe(resumedCwd);
+			expect(creationProjectDir).toBe(resumedCwd);
+			expect(creationSettingsCwd).toBe(resumedCwd);
+
+			await sessionManager?.moveTo(movedCwd, sessionDir);
+			expect(await runtime.command({ type: "get_state" })).toMatchObject({ cwd: movedCwd });
+			expect(runtime.snapshot()).toMatchObject({
+				cwd: movedCwd,
+				state: { cwd: movedCwd },
+				header: { cwd: movedCwd },
+			});
+			expect(runtime.cwd).toBe(movedCwd);
+
+			expect(await runtime.command({ type: "switch_session", sessionPath: switchedFile })).toEqual({
+				cancelled: false,
+			});
+			expect(sessionManager?.getCwd()).toBe(switchedCwd);
+			expect(settings.getCwd()).toBe(switchedCwd);
+			expect(refreshProjectDir).toBe(switchedCwd);
+			expect(refreshSettingsCwd).toBe(switchedCwd);
+			expect(await runtime.command({ type: "get_state" })).toMatchObject({ cwd: switchedCwd });
+			expect(runtime.snapshot()).toMatchObject({
+				cwd: switchedCwd,
+				state: { cwd: switchedCwd },
+				header: { cwd: switchedCwd },
+			});
+			expect(runtime.cwd).toBe(switchedCwd);
+			await runtime.dispose();
+		} finally {
+			await sessionManager?.close().catch(() => undefined);
+			await rm(launchCwd, { recursive: true, force: true });
+			await rm(resumedCwd, { recursive: true, force: true });
+			await rm(movedCwd, { recursive: true, force: true });
+			await rm(switchedCwd, { recursive: true, force: true });
+			await rm(sessionDir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	test("hosted terminal emits terminal_cwd on start and on interactive cwd changes", async () => {
+		type FakeMode = {
+			isShuttingDown: boolean;
+			detachHosted: Mock<() => void>;
+			init: () => Promise<void>;
+			renderInitialMessages: () => void;
+			setDaemonSnapshot: () => void;
+			getUserInput: () => Promise<unknown>;
+		};
+		const makeFakeMode = (): FakeMode => {
+			const input = Promise.withResolvers<unknown>();
+			const mode: FakeMode = {
+				isShuttingDown: false,
+				detachHosted: vi.fn(() => {
+					mode.isShuttingDown = true;
+					input.resolve({ text: "", cancelled: true, started: false });
+				}),
+				init: async () => {},
+				renderInitialMessages: () => {},
+				setDaemonSnapshot: () => {},
+				getUserInput: () => input.promise,
+			};
+			return mode;
+		};
+		vi.spyOn(themeModule, "initTheme").mockResolvedValue(undefined);
+		type ModeFactory = { InteractiveMode: () => interactiveModeModule.InteractiveMode };
+		let hostedCwdChange: ((cwd: string) => void) | undefined;
+		const modeCtor = vi
+			.spyOn(interactiveModeModule as unknown as ModeFactory, "InteractiveMode")
+			.mockImplementation(function (this: unknown, ...args: unknown[]) {
+				hostedCwdChange = (args[7] as { onCwdChange?: (cwd: string) => void } | undefined)?.onCwdChange;
+				return makeFakeMode() as unknown as interactiveModeModule.InteractiveMode;
+			});
+		const runtime = await createAgentSessionRuntime({
+			cwd: process.cwd(),
+			sessionId: "hosted-cwd",
+			createSession: async options => {
+				const session = {
+					sessionId: "hosted-cwd",
+					isStreaming: false,
+					subscribe: () => () => {},
+					subscribeCommandMetadataChanged: () => () => {},
+					settings: { get: () => undefined },
+					sessionManager: { getCwd: () => process.cwd() },
+					dispose: async () => {
+						await options.sessionManager?.close();
+					},
+				} as unknown as AgentSession;
+				return { session, setToolUIContext: () => {} } as unknown as CreateAgentSessionResult;
+			},
+		});
+		const bridgeEvents: unknown[] = [];
+		const unsubscribeBridgeEvents = runtime.subscribe(event => bridgeEvents.push(event));
+		const descriptor = { columns: 80, rows: 24 } as HostedTerminalDescriptor;
+		try {
+			await runtime.command({ type: "terminal_start", terminal: descriptor }, "a1");
+			expect(modeCtor).toHaveBeenCalledTimes(1);
+			expect(bridgeEvents).toContainEqual({ type: "terminal_cwd", cwd: process.cwd() });
+			hostedCwdChange?.("/tmp/resumed-project");
+			expect(bridgeEvents).toContainEqual({ type: "terminal_cwd", cwd: "/tmp/resumed-project" });
+		} finally {
+			unsubscribeBridgeEvents();
+			await runtime.dispose();
+		}
+	});
 
 	test("terminal_start takes over a defunct hosted terminal without awaiting its pinned task", async () => {
 		type FakeMode = {

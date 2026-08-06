@@ -63,34 +63,51 @@ describe("issue #4806 command output during streaming", () => {
 		resetSettingsForTest();
 	});
 
-	it("mounts slash-command output once after the active turn ends", async () => {
-		const streamedReply = new Text("agent is streaming", 0, 0);
+	it("mounts slash-command output immediately, above the live streaming region", async () => {
+		const streamedReply = new Text("agent is streaming", 0, 0) as Text & {
+			isTranscriptBlockFinalized?: () => boolean;
+		};
+		streamedReply.isTranscriptBlockFinalized = () => false;
 		mode.chatContainer.addChild(streamedReply);
 
 		mode.handleToolsCommand();
 
-		expect(mode.chatContainer.children).toEqual([streamedReply]);
+		// The panel mounts right away — read-only commands never wait for the
+		// turn to end — and lands above the still-live streaming block so the
+		// transcript stays in event order.
+		expect(mode.chatContainer.children).toHaveLength(2);
+		expect(mode.chatContainer.children[1]).toBe(streamedReply);
+		let transcript = mode.chatContainer.render(80).join("\n");
+		expect(transcript.match(/Available Tools/g)).toHaveLength(1);
 
+		// Turn end neither remounts nor duplicates the already-settled panel.
 		streaming = false;
 		await mode.eventController.handleEvent({ type: "agent_end", messages: [] } as AgentSessionEvent);
 
 		expect(mode.chatContainer.children).toHaveLength(2);
+		transcript = mode.chatContainer.render(80).join("\n");
+		expect(transcript.match(/Available Tools/g)).toHaveLength(1);
+	});
+
+	it("keeps mid-turn slash-command output through a transcript rebuild", () => {
+		mode.handleToolsCommand();
+
+		// Compaction/auto-compaction rebuilds replay only state.messages, which
+		// never contains command panels; the mid-turn panel must survive anyway.
+		mode.rebuildChatFromMessages();
+
 		const transcript = mode.chatContainer.render(80).join("\n");
 		expect(transcript.match(/Available Tools/g)).toHaveLength(1);
 	});
 
-	it("drops deferred slash-command output when the session changes before agent_end", async () => {
-		const streamedReply = new Text("old session is streaming", 0, 0);
-		mode.chatContainer.addChild(streamedReply);
+	it("drops slash-command output mounted for a previous session", async () => {
+		mode.handleToolsCommand();
 		const previousSessionId = session.sessionManager.getSessionId();
 
-		mode.handleToolsCommand();
 		await session.newSession();
-
 		expect(session.sessionManager.getSessionId()).not.toBe(previousSessionId);
-		streaming = false;
-		await mode.eventController.handleEvent({ type: "agent_end", messages: [] } as AgentSessionEvent);
+		mode.rebuildChatFromMessages();
 
-		expect(mode.chatContainer.children).toEqual([streamedReply]);
+		expect(mode.chatContainer.children).toHaveLength(0);
 	});
 });

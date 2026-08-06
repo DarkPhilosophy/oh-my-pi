@@ -257,13 +257,11 @@ export interface InteractiveModeContext {
 	 */
 	present(content: Component | readonly Component[]): void;
 	/**
-	 * Mount command output immediately while idle, or defer it until the active
-	 * agent turn ends so a growing live block cannot push duplicate rows into
-	 * native scrollback.
+	 * Mount command output immediately: appended while idle, or inserted above
+	 * the live streaming region mid-turn so the panel commits to native
+	 * scrollback exactly once instead of repainting with every streaming frame.
 	 */
 	presentCommandOutput(content: Component | readonly Component[]): void;
-	/** Mount command output deferred by {@link presentCommandOutput}. */
-	flushPendingCommandOutput(): void;
 	/**
 	 * Dispose every live block in the transcript (stopping timers/subscriptions)
 	 * and clear it. Used before a full rebuild so animated/streaming blocks do not

@@ -230,7 +230,7 @@ import type {
 	SessionStats,
 	UsageFallbackConfirmation,
 } from "./agent-session-types";
-import { coreQueueMode } from "./agent-session-types";
+import { CORE_QUEUE_MODE } from "./agent-session-types";
 import {
 	ASYNC_INLINE_RESULT_MAX_CHARS,
 	ASYNC_PREVIEW_MAX_CHARS,
@@ -405,6 +405,9 @@ type SetSessionNameWithTrigger = (
 	source?: SessionTitleSource,
 	trigger?: SessionNameTrigger,
 ) => Promise<boolean>;
+
+type SwitchSessionRollback = () => void | Promise<void>;
+type SwitchSessionGuard = (sessionPath: string) => Promise<SwitchSessionRollback | undefined>;
 
 export class AgentSession {
 	readonly agent: Agent;
@@ -1529,6 +1532,12 @@ export class AgentSession {
 
 	setPlanProposalHandler(handler: PlanProposalHandler | null): void {
 		this.#planProposalHandler = handler ?? undefined;
+	}
+
+	#switchSessionGuard: SwitchSessionGuard | undefined;
+
+	setSwitchSessionGuard(guard: SwitchSessionGuard | null): void {
+		this.#switchSessionGuard = guard ?? undefined;
 	}
 
 	#sessionBeforeSwitchReconciler: (() => Promise<void>) | undefined;
@@ -6393,7 +6402,7 @@ export class AgentSession {
 	 * Saves to settings.
 	 */
 	setSteeringMode(mode: QueueMode): void {
-		this.agent.setSteeringMode(coreQueueMode(mode));
+		this.agent.setSteeringMode(CORE_QUEUE_MODE);
 		this.settings.set("steeringMode", mode);
 	}
 
@@ -6402,7 +6411,7 @@ export class AgentSession {
 	 * Saves to settings.
 	 */
 	setFollowUpMode(mode: QueueMode): void {
-		this.agent.setFollowUpMode(coreQueueMode(mode));
+		this.agent.setFollowUpMode(CORE_QUEUE_MODE);
 		this.settings.set("followUpMode", mode);
 	}
 
@@ -7119,13 +7128,33 @@ export class AgentSession {
 			}
 		}
 
-		this.#disconnectFromAgent();
-		await this.abort({ goalReason: "internal" });
-		await this.#sessionBeforeSwitchReconciler?.();
+		const rollbackSwitchReservation = await this.#switchSessionGuard?.(sessionPath);
+		let didRollbackSwitchReservation = false;
+		const rollbackSwitchReservationOnce = async (): Promise<void> => {
+			if (!rollbackSwitchReservation || didRollbackSwitchReservation) return;
+			didRollbackSwitchReservation = true;
+			try {
+				await rollbackSwitchReservation();
+			} catch (rollbackError) {
+				logger.warn("Failed to roll back session switch reservation", {
+					targetSessionFile: sessionPath,
+					error: String(rollbackError),
+				});
+			}
+		};
 
-		await this.#bash.flushPending();
-		// Flush pending writes before switching so restore snapshots reflect committed state.
-		await this.sessionManager.flush();
+		try {
+			this.#disconnectFromAgent();
+			await this.abort({ goalReason: "internal" });
+			await this.#sessionBeforeSwitchReconciler?.();
+
+			await this.#bash.flushPending();
+			// Flush pending writes before switching so restore snapshots reflect committed state.
+			await this.sessionManager.flush();
+		} catch (error) {
+			await rollbackSwitchReservationOnce();
+			throw error;
+		}
 		const previousSessionState = this.sessionManager.captureState();
 		const bashTransition = this.#bash.beginSessionTransition();
 		// Only same-session reloads compare against the prior context to detect
@@ -7312,6 +7341,7 @@ export class AgentSession {
 			this.#bash.finishSessionTransition(bashTransition, true);
 			return true;
 		} catch (error) {
+			await rollbackSwitchReservationOnce();
 			this.sessionManager.restoreState(previousSessionState);
 			this.#freshProviderSessionId = previousFreshProviderSessionId;
 			this.#syncAgentSessionId(previousSessionState.sessionId);

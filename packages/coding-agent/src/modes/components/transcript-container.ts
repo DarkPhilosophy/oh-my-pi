@@ -226,6 +226,24 @@ export class TranscriptContainer
 		return value;
 	}
 
+	/**
+	 * Insert a settled (finalized) block just above the live region — before the
+	 * first still-mutating block (mid-stream assistant reply, pending tool).
+	 * Settled blocks appended *below* a mutating sibling repaint with every
+	 * streaming frame and cannot commit to native scrollback cleanly (#4806);
+	 * mounted in the leading finalized run they commit exactly once and become
+	 * immutable history. Falls back to append when nothing is live (idle path).
+	 */
+	insertSettledBlock(component: Component): void {
+		for (const child of this.children) {
+			if (!isBlockFinalized(child)) {
+				this.insertChildBefore(component, child);
+				return;
+			}
+		}
+		this.addChild(component);
+	}
+
 	getNativeScrollbackLiveRegionStart(): number | undefined {
 		return this.#nativeScrollbackLiveRegionStart;
 	}

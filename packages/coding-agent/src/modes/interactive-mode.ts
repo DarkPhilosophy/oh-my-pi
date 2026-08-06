@@ -433,6 +433,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	historyStorage?: HistoryStorage;
 	readonly #hostedTerminal: Terminal | undefined;
 	readonly #hostedDetach: ((reason: "detach" | "exit" | "error", error?: string) => void) | undefined;
+	readonly #hostedCwdChange: ((cwd: string) => void) | undefined;
 
 	ui: TUI;
 	chatContainer: TranscriptContainer;
@@ -550,8 +551,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	collabHost?: CollabHost;
 	collabGuest?: CollabGuestLink;
 
-	#pendingCommandOutput: Component[] = [];
-	#pendingCommandOutputSessionId: string | undefined;
+	/** Command panels mounted above the live region mid-turn, kept through transcript rebuilds. */
+	#midTurnCommandPanels = new Map<Component, string>();
 	#pendingSlashCommands: SlashCommand[] = [];
 	/** Built-in editor autocomplete provider, before extension wrapping. */
 	#baseAutocompleteProvider: AutocompleteProvider | undefined;
@@ -643,6 +644,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.streamingMessage = undefined;
 		this.lastAssistantUsage = undefined;
 		this.pendingTools.clear();
+		this.#midTurnCommandPanels.clear();
 		this.pendingQueueExpanded = false;
 	}
 	readonly #uiHelpers: UiHelpers;
@@ -678,6 +680,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		host?: {
 			terminal: Terminal;
 			onDetach(reason: "detach" | "exit" | "error", error?: string): void;
+			onCwdChange?(cwd: string): void;
 		},
 	) {
 		this.session = session;
@@ -712,6 +715,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		};
 		this.#hostedTerminal = host?.terminal;
 		this.#hostedDetach = host?.onDetach;
+		this.#hostedCwdChange = host?.onCwdChange;
 		if (eventBus) {
 			this.#eventBusUnsubscribers.push(
 				eventBus.on(LSP_STARTUP_EVENT_CHANNEL, data => {
@@ -1370,6 +1374,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#syncStatusLineSettings();
 		this.statusLine.invalidate();
 		this.ui.requestRender();
+		this.#hostedCwdChange?.(getProjectDir());
 	}
 
 	async getUserInput(): Promise<SubmittedUserInput> {
@@ -1821,12 +1826,24 @@ export class InteractiveMode implements InteractiveModeContext {
 		// and restore the `pendingTools` map so streaming routes back into them.
 		const liveComponents: Component[] = [];
 		const livePendingTools = new Map<string, ToolExecutionHandle>();
+		// Command panels mounted above the live region mid-turn are settled
+		// content but not part of state.messages, so the replay below would drop
+		// them. Prune entries that left the transcript (session switch, explicit
+		// clear), then preserve the rest alongside the in-flight components.
+		for (const [panel, panelSessionId] of this.#midTurnCommandPanels) {
+			if (panelSessionId !== this.sessionManager.getSessionId() || !this.chatContainer.children.includes(panel)) {
+				this.#midTurnCommandPanels.delete(panel);
+			}
+		}
 		if (this.viewSession?.isStreaming) {
 			const liveSet = new Set<Component>();
 			if (this.streamingComponent) liveSet.add(this.streamingComponent);
 			for (const [id, component] of this.pendingTools) {
 				livePendingTools.set(id, component);
 				liveSet.add(component as unknown as Component);
+			}
+			for (const panel of this.#midTurnCommandPanels.keys()) {
+				liveSet.add(panel);
 			}
 			if (liveSet.size > 0) {
 				for (const child of this.chatContainer.children) {
@@ -4214,30 +4231,26 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 
-	/** Defer transcript command panels until the active turn can no longer grow above them. */
+	/** Mount command panels immediately, keeping them above the live streaming region. */
 	presentCommandOutput(content: Component | readonly Component[]): void {
 		if (!this.session.isStreaming) {
 			this.present(content);
 			return;
 		}
+		// Mid-turn panels are settled content: mount them above the live region
+		// (before the first still-mutating block) so they commit to native
+		// scrollback exactly once. Appending below the streaming block repaints
+		// the panel with every streaming frame (#4806); deferring to agent_end
+		// hides read-only command output (/usage, /tools, /context) for the
+		// whole turn.
 		const sessionId = this.sessionManager.getSessionId();
-		if (this.#pendingCommandOutput.length > 0 && this.#pendingCommandOutputSessionId !== sessionId) {
-			this.#pendingCommandOutput = [];
-		}
-		this.#pendingCommandOutputSessionId = sessionId;
 		const items = Array.isArray(content) ? content : [content as Component];
-		this.#pendingCommandOutput.push(...items);
-	}
-
-	/** Mount every command panel queued for the current session while the agent was streaming. */
-	flushPendingCommandOutput(): void {
-		if (this.#pendingCommandOutput.length === 0) return;
-		const pending = this.#pendingCommandOutput;
-		const pendingSessionId = this.#pendingCommandOutputSessionId;
-		this.#pendingCommandOutput = [];
-		this.#pendingCommandOutputSessionId = undefined;
-		if (pendingSessionId !== this.sessionManager.getSessionId()) return;
-		this.present(pending);
+		for (const item of items) {
+			this.chatContainer.insertSettledBlock(item);
+			if (item instanceof ChatBlock) item.mount(this.#chatHost);
+			this.#midTurnCommandPanels.set(item, sessionId);
+		}
+		this.ui.requestRender();
 	}
 
 	#mountChatChild(item: Component): void {

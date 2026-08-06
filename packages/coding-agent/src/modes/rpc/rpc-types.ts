@@ -64,8 +64,8 @@ export type RpcCommand =
 	| { id?: string; type: "cycle_thinking_level" }
 
 	// Queue modes
-	| { id?: string; type: "set_steering_mode"; mode: "all" | "one-at-a-time" | "coalescing" }
-	| { id?: string; type: "set_follow_up_mode"; mode: "all" | "one-at-a-time" | "coalescing" }
+	| { id?: string; type: "set_steering_mode"; mode: "one-at-a-time" | "coalescing" }
+	| { id?: string; type: "set_follow_up_mode"; mode: "one-at-a-time" | "coalescing" }
 	| { id?: string; type: "set_interrupt_mode"; mode: "immediate" | "wait" }
 
 	// Compaction
@@ -118,8 +118,8 @@ export interface RpcSessionState {
 	thinkingLevel: ThinkingLevel | undefined;
 	isStreaming: boolean;
 	isCompacting: boolean;
-	steeringMode: "all" | "one-at-a-time" | "coalescing";
-	followUpMode: "all" | "one-at-a-time" | "coalescing";
+	steeringMode: "one-at-a-time" | "coalescing";
+	followUpMode: "one-at-a-time" | "coalescing";
 	interruptMode: "immediate" | "wait";
 	sessionFile?: string;
 	sessionId: string;

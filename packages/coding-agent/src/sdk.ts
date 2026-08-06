@@ -3033,8 +3033,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			deadline: options.deadline,
 			transformContext,
 			transformProviderContext,
-			steeringMode: settings.get("steeringMode") === "all" ? "all" : "one-at-a-time",
-			followUpMode: settings.get("followUpMode") === "all" ? "all" : "one-at-a-time",
+			// Queue merging happens at enqueue time (coalescing mode), so the core
+			// always drains one queued entry per turn — the retired "all" drain
+			// mode no longer exists in settings.
+			steeringMode: "one-at-a-time",
+			followUpMode: "one-at-a-time",
 			interruptMode: settings.get("interruptMode") ?? "immediate",
 			thinkingBudgets: settings.getGroup("thinkingBudgets"),
 			temperature: settings.get("temperature") >= 0 ? settings.get("temperature") : undefined,

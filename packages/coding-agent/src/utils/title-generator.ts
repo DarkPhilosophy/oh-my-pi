@@ -31,6 +31,16 @@ interface WindowsConsoleTitleApi {
 
 let windowsConsoleTitleApi: WindowsConsoleTitleApi | null | undefined;
 let lastTerminalTitle: string | undefined;
+let lastTerminalWorkingDirectory: string | undefined;
+
+function setTerminalWorkingDirectory(cwd: string): void {
+	if (!process.stdout.isTTY || isTerminalHeadless()) return;
+	const resolvedCwd = path.resolve(cwd);
+	if (resolvedCwd === lastTerminalWorkingDirectory) return;
+	const osc = `\x1b]1337;CurrentDir=${resolvedCwd}\x07`;
+	process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${osc}\x1b\\` : osc);
+	lastTerminalWorkingDirectory = resolvedCwd;
+}
 
 function getWindowsConsoleTitleApi(): WindowsConsoleTitleApi | null {
 	if (process.platform !== "win32") return null;
@@ -446,6 +456,7 @@ export function setTerminalTitle(title: string): void {
 }
 
 export function setSessionTerminalTitle(sessionName: string | undefined, cwd?: string): void {
+	setTerminalWorkingDirectory(cwd ?? process.cwd());
 	// An authoritative session title (rename, new session, focus swap) supersedes
 	// any extension override so the base title tracks the real session again.
 	terminalTitleRuntime.extensionOverride = undefined;

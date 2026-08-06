@@ -1,5 +1,5 @@
 import { ProcessTerminal } from "@oh-my-pi/pi-tui";
-import { APP_NAME, logger, normalizePathForComparison } from "@oh-my-pi/pi-utils";
+import { APP_NAME, logger } from "@oh-my-pi/pi-utils";
 import { getActiveProfile, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import chalk from "chalk";
 import { parseArgs } from "../cli/args";
@@ -75,8 +75,7 @@ const RESUME_FLAGS = ["--resume", "-r", "--session"];
 /**
  * Rewrite the resume argument's value in `argv`, honoring both `--resume <v>`
  * and `--resume=<v>`. The daemon replays this argv verbatim in its runtime
- * factory, so an inline form left unrewritten would resume the pre-fork
- * session and defeat the fork entirely.
+ * factory, so every supported form must resolve to the selected session path.
  */
 function withResumeValue(argv: readonly string[], value: string): string[] {
 	const next = [...argv];
@@ -99,21 +98,17 @@ export async function resolveDaemonInteractiveResume(
 	await applyStartupCwd(parsed);
 	const cwd = options.cwd ?? getProjectDir();
 	if (typeof parsed.resume === "string") {
-		// An explicit transcript path addresses one exact file, and the direct
-		// entrypoint (`SessionManager.open` in main.ts) resumes it in place. Forking
-		// it into cwd here would make `--resume <file>` mean two different things
-		// depending on whether a daemon hosts the session.
+		// Resume the exact session the user selected. A cross-project match must
+		// adopt the transcript's recorded cwd instead of forking a new session
+		// into the launch directory.
 		if (isSessionFileArg(parsed.resume)) return options;
 		const match = await resolveResumableSession(parsed.resume, cwd, parsed.sessionDir);
-		if (
-			match?.scope !== "global" ||
-			normalizePathForComparison(match.session.cwd || cwd) === normalizePathForComparison(cwd)
-		)
-			return options;
-		const forked = await SessionManager.forkFrom(match.session.path, cwd, parsed.sessionDir);
-		const forkedPath = forked.getSessionFile();
-		if (!forkedPath) throw new Error(`Unable to fork session "${parsed.resume}" into ${cwd}`);
-		return { ...options, argv: withResumeValue(options.argv, forkedPath), cwd };
+		if (!match) return options;
+		return {
+			...options,
+			argv: withResumeValue(options.argv, match.session.path),
+			cwd: match.session.cwd || cwd,
+		};
 	}
 	const folderSessions = await SessionManager.list(cwd, parsed.sessionDir);
 	const allSessions = folderSessions.length === 0 ? await SessionManager.listAll() : undefined;
@@ -373,8 +368,6 @@ export type BuildPairingEffects = {
 	localStamp: string;
 	/** Spawn a fresh daemon for this shard (detached; errors surface via reconnect). */
 	spawn: () => void;
-	/** Signal the stale daemon owner process; defaults to SIGTERM via process.kill. */
-	killOwner?: (pid: number) => void;
 	/** Read the daemon.owner pid for the client's runtime dir. */
 	readOwnerPid?: () => Promise<number | undefined>;
 	waitMs?: number;
@@ -387,10 +380,10 @@ export type BuildPairingEffects = {
  *
  * - request graceful protocol shutdown first;
  * - if shutdown is refused or fails while the server remains reachable,
- *   signal the verified daemon owner regardless of active clients/sessions;
- * - after the old owner exits, spawn a fresh daemon and reconnect;
- * - fail closed if the stale owner cannot be replaced or the replacement
- *   still reports a mismatched build stamp.
+ *   preserve the active daemon and fail with an actionable error;
+ * - if it shuts down (or vanishes concurrently), wait for the old owner,
+ *   spawn a fresh daemon, and reconnect;
+ * - fail closed if the replacement still reports a mismatched build stamp.
  *
  * A daemon without a stamp (pre-pairing build) is by definition stale.
  */
@@ -402,7 +395,6 @@ export async function ensureDaemonBuildPairing(
 	const staleStamp = client.serverBuildStamp ?? "(pre-pairing daemon)";
 	const waitMs = effects.waitMs ?? DAEMON_START_TIMEOUT_MS;
 	let shutdown: { shutdown?: boolean; blockers?: string[] } | undefined;
-	let forceStop = false;
 	try {
 		shutdown = (await client.request("shutdown")) as { shutdown?: boolean; blockers?: string[] };
 	} catch (error) {
@@ -416,36 +408,27 @@ export async function ensureDaemonBuildPairing(
 				error: String(error),
 			});
 		} else {
-			forceStop = true;
-			logger.warn("Stale daemon shutdown request failed; forcing build replacement", {
+			logger.warn("Mismatched daemon could not be shut down safely; preserving it", {
 				staleStamp,
 				localStamp: effects.localStamp,
 				error: String(error),
 			});
+			throw new Error(
+				`Daemon build ${staleStamp} differs from client ${effects.localStamp}, but it could not be shut down safely: ${String(error)}. Existing daemon was left running; close its active clients/sessions and retry.`,
+			);
 		}
 	}
 	if (shutdown !== undefined && shutdown.shutdown !== true) {
-		forceStop = true;
-		logger.warn("Daemon build differs from this client; forcing replacement despite active work", {
+		const blockers = shutdown.blockers ?? [];
+		logger.warn("Daemon build differs from this client; preserving active daemon", {
 			staleStamp,
 			localStamp: effects.localStamp,
-			blockers: shutdown.blockers ?? [],
+			blockers,
 		});
-	}
-	if (forceStop) {
-		const pid = await effects.readOwnerPid?.();
-		if (pid === undefined) {
-			logger.warn("Stale daemon owner PID unavailable; attempting replacement without a signal", {
-				staleStamp,
-				localStamp: effects.localStamp,
-			});
-		} else {
-			try {
-				(effects.killOwner ?? (target => process.kill(target, "SIGTERM")))(pid);
-			} catch {
-				// Already exited between status and signal — proceed to respawn.
-			}
-		}
+		const blockerSuffix = blockers.length > 0 ? ` (${blockers.join(", ")})` : "";
+		throw new Error(
+			`Daemon build ${staleStamp} differs from client ${effects.localStamp}, but the active daemon refused shutdown${blockerSuffix}. Existing daemon was left running; close its active clients/sessions and retry.`,
+		);
 	}
 	// Wait for the old owner to actually vanish before spawning: the fresh
 	// daemon races the owner lease and the stale socket otherwise.
@@ -672,10 +655,13 @@ export async function launchDaemonInteractive(options: DaemonInteractiveBootstra
 		},
 	});
 	let closedReason: "exit" | "error" | undefined;
+	let closedSession: { sessionId?: string; sessionFile?: string } | undefined;
 	const unsubscribeEvents = session.handle.subscribe(event => {
 		if (event.type === "terminal_output") bridge.output(event.data);
+		else if (event.type === "terminal_cwd" && typeof event.cwd === "string") process.chdir(event.cwd);
 		else if (event.type === "terminal_closed" && (event.reason === "exit" || event.reason === "error")) {
 			closedReason = event.reason;
+			closedSession = { sessionId: event.sessionId, sessionFile: event.sessionFile };
 			resolveClosed();
 		}
 	});
@@ -747,15 +733,21 @@ export async function launchDaemonInteractive(options: DaemonInteractiveBootstra
 		// teardown cannot overwrite it. Only when the session actually
 		// persisted: the file materializes on the first assistant message, so a
 		// session whose only turn errored has an id --resume cannot find.
+		// Prefer the identity carried by terminal_closed: the cached state can
+		// predate the transcript's materialization (a fresh session's state
+		// frames stop arriving before its file exists), which used to drop the
+		// hint for exactly the sessions that needed it.
 		const finalState = session.handle.state;
+		const resumeSessionId = closedSession?.sessionId ?? finalState.sessionId;
+		const resumeSessionFile = closedSession?.sessionFile ?? finalState.sessionFile;
 		if (
 			closedReason === "exit" &&
-			finalState.sessionId &&
-			finalState.sessionFile &&
-			(await Bun.file(finalState.sessionFile).exists())
+			resumeSessionId &&
+			resumeSessionFile &&
+			(await Bun.file(resumeSessionFile).exists())
 		) {
 			process.stderr.write(
-				`\n${chalk.dim(`Resume this session with ${APP_NAME} --resume ${finalState.sessionId}`)}\n`,
+				`\n${chalk.dim(`Resume this session with ${APP_NAME} --resume ${resumeSessionId}`)}\n`,
 			);
 		}
 		session.client.close();

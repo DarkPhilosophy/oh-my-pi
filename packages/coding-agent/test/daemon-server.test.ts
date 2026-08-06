@@ -89,8 +89,8 @@ function fakeFactory(protectedJobCount = 0) {
 					thinkingLevel: undefined,
 					isStreaming: false,
 					isCompacting: false,
-					steeringMode: "all",
-					followUpMode: "all",
+					steeringMode: "one-at-a-time",
+					followUpMode: "one-at-a-time",
 					interruptMode: "immediate",
 					autoCompactionEnabled: true,
 					messageCount: state.commands.length,
@@ -564,8 +564,8 @@ describe("daemon server and registry", () => {
 			provider: "openai",
 			model: "gpt-test",
 			thinkingLevel: "high",
-			steeringMode: "all",
-			followUpMode: "all",
+			steeringMode: "one-at-a-time",
+			followUpMode: "one-at-a-time",
 		};
 		await registry.create("override", child, overrides);
 		expect(forwarded.at(-1)).toEqual({ cwd: child, overrides });
@@ -1383,8 +1383,8 @@ describe("daemon server and registry", () => {
 						provider: "openai",
 						model: "gpt-test",
 						thinkingLevel: "high",
-						steeringMode: "all",
-						followUpMode: "all",
+						steeringMode: "one-at-a-time",
+						followUpMode: "one-at-a-time",
 					},
 				},
 			}),
@@ -1448,8 +1448,8 @@ describe("daemon server and registry", () => {
 								thinkingLevel: undefined,
 								isStreaming: false,
 								isCompacting: false,
-								steeringMode: "all",
-								followUpMode: "all",
+								steeringMode: "one-at-a-time",
+								followUpMode: "one-at-a-time",
 								interruptMode: "immediate",
 								autoCompactionEnabled: true,
 								messageCount: 0,
@@ -1661,8 +1661,8 @@ describe("daemon server and registry", () => {
 		expect(Bun.hash(receivedTerminalOutput)).toBe(Bun.hash(terminalOutput));
 		await handle.prompt("hello");
 		await handle.setThinkingLevel("high" as never);
-		await handle.setSteeringMode("all");
-		await handle.setFollowUpMode("all");
+		await handle.setSteeringMode("coalescing");
+		await handle.setFollowUpMode("coalescing");
 		await handle.setInterruptMode("immediate");
 		await handle.setTodos(todoPhases);
 		await handle.setHostTools([]);

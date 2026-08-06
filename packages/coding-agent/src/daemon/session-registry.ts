@@ -67,7 +67,7 @@ function projectAttachmentFrame(frame: unknown, delivery: DaemonEventDelivery): 
 		return frame;
 	}
 	const type = frame.event.type;
-	if (type === "terminal_output" || type === "terminal_closed") return frame;
+	if (type === "terminal_output" || type === "terminal_closed" || type === "terminal_cwd") return frame;
 	return { ...frame, event: { type: "daemon_event_skipped" } };
 }
 

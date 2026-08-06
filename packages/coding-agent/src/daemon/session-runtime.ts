@@ -2,7 +2,7 @@ import * as os from "node:os";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { logger, type postmortem, setProjectDir, VERSION } from "@oh-my-pi/pi-utils";
-import { createProjectDirScope, getActiveProfile, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
+import { createProjectDirScope, getActiveProfile } from "@oh-my-pi/pi-utils/dirs";
 import { reset as resetCapabilities } from "../capability";
 import { type Args, parseArgs } from "../cli/args";
 import { applyExtensionFlags } from "../cli/extension-flags";
@@ -10,6 +10,7 @@ import { processFileArguments } from "../cli/file-processor";
 import { buildInitialMessage } from "../cli/initial-message";
 import { ModelRegistry } from "../config/model-registry";
 import { getModelMatchPreferences, resolveModelScope, type ScopedModel } from "../config/model-resolver";
+import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { bindSettingsToProjectContext, Settings } from "../config/settings";
 import {
 	clearPluginRootsAndCaches,
@@ -20,7 +21,12 @@ import { injectOmpExtensionCliRoots } from "../discovery/omp-extension-roots";
 import type { ContextUsage, ExtensionUIContext } from "../extensibility/extensions/types";
 import { buildSkillPromptMessage, parseSkillInvocation } from "../extensibility/skills";
 import { loadSlashCommands } from "../extensibility/slash-commands";
-import { buildSessionOptions, createSessionManager, normalizeContinueSessionArgs } from "../main";
+import {
+	buildSessionOptions,
+	createSessionManager,
+	normalizeContinueSessionArgs,
+	switchToResumedProject,
+} from "../main";
 import { InteractiveMode } from "../modes/interactive-mode";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "../modes/rpc/host-tools";
 import { isRpcHostUriResult, RpcHostUriBridge } from "../modes/rpc/host-uris";
@@ -118,8 +124,9 @@ export type DaemonSessionCreateOverrides = {
 	provider?: string;
 	model?: string;
 	thinkingLevel?: string;
-	steeringMode?: QueueMode;
-	followUpMode?: QueueMode;
+	/** Legacy wire value "all" is accepted for old clients and mapped to "coalescing". */
+	steeringMode?: QueueMode | "all";
+	followUpMode?: QueueMode | "all";
 	argv?: string[];
 	/** Terminal-identity env of the creating client (never the full env). */
 	clientEnv?: Record<string, string>;
@@ -177,8 +184,8 @@ function sessionState(
 		thinkingLevel: session.thinkingLevel,
 		isStreaming: session.isStreaming ?? false,
 		isCompacting: session.isCompacting ?? false,
-		steeringMode: session.steeringMode ?? "all",
-		followUpMode: session.followUpMode ?? "all",
+		steeringMode: session.steeringMode ?? "one-at-a-time",
+		followUpMode: session.followUpMode ?? "one-at-a-time",
 		interruptMode: session.interruptMode ?? "immediate",
 		sessionFile: session.sessionFile,
 		// The state describes the underlying SESSION, not the registry record:
@@ -273,22 +280,11 @@ async function prepareCliLaunch(
 	}
 	if (parsed.noPty) Bun.env.PI_NO_PTY = "1";
 	if (parsed.noTitle) Bun.env.PI_NO_TITLE = "1";
-
 	const canShareShardResources = !parsed.apiKey;
 	const sharedModelRegistry = canShareShardResources ? baseOptions?.modelRegistry : undefined;
 	const sharedAuthStorage = canShareShardResources ? baseOptions?.authStorage : undefined;
 	const authStorage = sharedModelRegistry?.authStorage ?? sharedAuthStorage ?? (await discoverAuthStorage());
 	const modelRegistry = sharedModelRegistry ?? new ModelRegistry(authStorage);
-	let scopedModels: ScopedModel[] = [];
-	const modelPatterns = parsed.models ?? activeSettings.get("enabledModels");
-	if (modelPatterns && modelPatterns.length > 0) {
-		scopedModels = await resolveModelScope(
-			modelPatterns,
-			modelRegistry,
-			getModelMatchPreferences(activeSettings),
-			activeSettings,
-		);
-	}
 	if (parsed.resume === true) throw new Error("Bare --resume must be resolved before daemon session creation");
 	const resolvedManager =
 		parsed.noSession && sessionId
@@ -304,6 +300,22 @@ async function prepareCliLaunch(
 		);
 	}
 	const sessionManager = resolvedManager ?? SessionManager.create(cwd, parsed.sessionDir, undefined, sessionId);
+	if (typeof parsed.resume === "string") {
+		// An explicit resume adopts the stored session's project: switch the
+		// process-wide project dir and settings before deriving model scope so
+		// the destination project's configuration wins over the launch dir's.
+		parsed.cwd = await switchToResumedProject(sessionManager.getCwd(), activeSettings, Promise.resolve());
+	}
+	let scopedModels: ScopedModel[] = [];
+	const modelPatterns = parsed.models ?? activeSettings.get("enabledModels");
+	if (modelPatterns && modelPatterns.length > 0) {
+		scopedModels = await resolveModelScope(
+			modelPatterns,
+			modelRegistry,
+			getModelMatchPreferences(activeSettings),
+			activeSettings,
+		);
+	}
 	const createOptions = await buildSessionOptions(parsed, scopedModels, sessionManager, modelRegistry, activeSettings);
 	createOptions.authStorage = authStorage;
 	createOptions.modelRegistry = modelRegistry;
@@ -337,6 +349,17 @@ async function createAgentSessionRuntimeInScope(
 		(options.sessionFile
 			? await SessionManager.open(options.sessionFile, options.sessionDir, undefined, { initialCwd: options.cwd })
 			: SessionManager.create(options.cwd, options.sessionDir, undefined, options.sessionId));
+	const sessionCwd = sessionManager.getCwd();
+	setProjectDir(sessionCwd);
+	const activeSettings = await (options.baseOptions?.settings ?? options.baseOptions?.settingsManager);
+	if (options.sessionFile && activeSettings) {
+		try {
+			await activeSettings.reloadForCwd(sessionCwd);
+		} catch (error) {
+			await sessionManager.close().catch(() => undefined);
+			throw error;
+		}
+	}
 	const modelPattern =
 		!cliLaunch && (overrides?.provider || overrides?.model)
 			? `${overrides.provider ?? ""}${overrides.provider && overrides.model ? "/" : ""}${overrides.model ?? "*"}`
@@ -351,7 +374,7 @@ async function createAgentSessionRuntimeInScope(
 	}
 	const createOptions: CreateAgentSessionOptions = cliLaunch?.createOptions ?? {
 		...(options.baseOptions ?? {}),
-		cwd: options.cwd,
+		cwd: sessionCwd,
 		sessionManager,
 		hasUI: true,
 		...(modelPattern === undefined ? {} : { modelPattern }),
@@ -370,8 +393,11 @@ async function createAgentSessionRuntimeInScope(
 	bindSettingsToProjectContext(result.session.settings);
 	const session = result.session as unknown as DaemonSession;
 	const sessionId = options.sessionId ?? session.sessionId;
-	if (overrides?.steeringMode) session.setSteeringMode?.(overrides.steeringMode);
-	if (overrides?.followUpMode) session.setFollowUpMode?.(overrides.followUpMode);
+	const currentCwd = (): string => sessionManager.getCwd();
+	if (overrides?.steeringMode)
+		session.setSteeringMode?.(overrides.steeringMode === "all" ? "coalescing" : overrides.steeringMode);
+	if (overrides?.followUpMode)
+		session.setFollowUpMode?.(overrides.followUpMode === "all" ? "coalescing" : overrides.followUpMode);
 	if (thinkingLevel !== undefined) session.setThinkingLevel?.(thinkingLevel, true);
 	// Terminal-identity env of the creating client: extensions (e.g. herdr's
 	// pane status) must see the attached client's terminal, never the daemon
@@ -436,6 +462,7 @@ async function createAgentSessionRuntimeInScope(
 		const cwd = result.session.sessionManager.getCwd();
 		const projectPath = await resolveActiveProjectRegistryPath(cwd);
 		clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
+		await result.session.refreshSkills();
 		resetCapabilities();
 		result.session.setSlashCommands(await loadSlashCommands({ cwd }));
 		await emitAvailableCommands();
@@ -604,6 +631,10 @@ async function createAgentSessionRuntimeInScope(
 			sessionSettings.get("theme.light"),
 		);
 		setProjectDir(result.session.sessionManager.getCwd());
+		// The terminal client is a separate process from this scoped daemon
+		// runtime. Mirror the authoritative session cwd immediately so tmux and
+		// child processes observe the same directory even on startup resume.
+		emitBridgeEvent({ type: "terminal_cwd", cwd: result.session.sessionManager.getCwd() });
 		let mode!: InteractiveMode;
 		mode = new InteractiveMode(
 			result.session,
@@ -620,9 +651,14 @@ async function createAgentSessionRuntimeInScope(
 					emitBridgeEvent({
 						type: "terminal_closed",
 						reason,
+						// The underlying session's identity (not the registry/transport
+						// id) so the client's resume hint survives a stale cached state.
+						sessionId: session.sessionId ?? sessionId,
+						sessionFile: session.sessionFile ?? sessionManager.getSessionFile() ?? undefined,
 						...(error === undefined ? {} : { error }),
 					});
 				},
+				onCwdChange: cwd => emitBridgeEvent({ type: "terminal_cwd", cwd }),
 			},
 		);
 		const fallbackServerSnapshot: DaemonConnectionSnapshot = {
@@ -636,7 +672,7 @@ async function createAgentSessionRuntimeInScope(
 		};
 		const serverControls = options.serverControls ?? {
 			getSnapshot: () => fallbackServerSnapshot,
-			sessions: () => JSON.stringify([{ sessionId, cwd: options.cwd }]),
+			sessions: () => JSON.stringify([{ sessionId, cwd: currentCwd() }]),
 			reconnect: () => undefined,
 		};
 		const getSessionServerSnapshot = (): DaemonConnectionSnapshot => {
@@ -689,11 +725,13 @@ async function createAgentSessionRuntimeInScope(
 
 	return {
 		sessionId,
-		cwd: options.cwd,
+		get cwd() {
+			return currentCwd();
+		},
 		session,
 		protectedJobCount: () => 0,
 		snapshot: () => {
-			const cwd = getProjectDir();
+			const cwd = currentCwd();
 			const snapshot = sessionSnapshot(session, cwd, sessionId, sessionManager);
 			snapshot.state = sessionState(session, sessionId, cwd, result);
 			return snapshot;
@@ -791,7 +829,7 @@ async function createAgentSessionRuntimeInScope(
 						}),
 					};
 				case "get_state":
-					return sessionState(session, sessionId, options.cwd, result);
+					return sessionState(session, sessionId, currentCwd(), result);
 				case "get_available_commands":
 					return { commands: await getAvailableCommands() };
 				case "execute_slash_command": {
@@ -916,10 +954,17 @@ async function createAgentSessionRuntimeInScope(
 							parentSession: command.parentSession,
 						})),
 					};
-				case "switch_session":
-					return {
-						cancelled: !(await result.session.switchSession(command.sessionPath)),
-					};
+				case "switch_session": {
+					const switched = await result.session.switchSession(command.sessionPath);
+					if (switched) {
+						const cwd = sessionManager.getCwd();
+						setProjectDir(cwd);
+						await result.session.settings.reloadForCwd(cwd);
+						applyProviderGlobalsFromSettings(result.session.settings);
+						await reloadPluginState();
+					}
+					return { cancelled: !switched };
+				}
 				case "branch": {
 					const branch = await result.session.branch(command.entryId);
 					return { text: branch.selectedText, cancelled: branch.cancelled };
@@ -989,29 +1034,31 @@ export function createAgentSessionRuntime(options: CreateAgentSessionRuntimeOpti
 	return registryScope.run(() =>
 		projectDirScope.run(async () => {
 			const runtime = await createAgentSessionRuntimeInScope(options, registryScope.registry);
+			const runInScope = <T>(action: () => T): T =>
+				registryScope.run(() =>
+					projectDirScope.run(() => {
+						setProjectDir(runtime.cwd);
+						return action();
+					}),
+				);
 			return {
 				sessionId: runtime.sessionId,
 				get cwd() {
-					return projectDirScope.get();
+					return runtime.cwd;
 				},
 				session: runtime.session,
 				...(runtime.protectedJobCount
 					? {
-							protectedJobCount: () =>
-								registryScope.run(() => projectDirScope.run(() => runtime.protectedJobCount?.() ?? 0)),
+							protectedJobCount: () => runInScope(() => runtime.protectedJobCount?.() ?? 0),
 						}
 					: {}),
-				snapshot: () => registryScope.run(() => projectDirScope.run(() => runtime.snapshot())),
+				snapshot: () => runInScope(() => runtime.snapshot()),
 				command: (command: unknown, attachmentId?: string) =>
-					registryScope.run(() => projectDirScope.run(() => runtime.command(command, attachmentId))),
-				dispose: () => registryScope.run(() => projectDirScope.run(() => runtime.dispose())),
+					runInScope(() => runtime.command(command, attachmentId)),
+				dispose: () => runInScope(() => runtime.dispose()),
 				subscribe: (listener: AgentSessionEventListener) => {
-					const unsubscribe = registryScope.run(() =>
-						projectDirScope.run(() =>
-							runtime.subscribe(event => registryScope.run(() => projectDirScope.run(() => listener(event)))),
-						),
-					);
-					return () => registryScope.run(() => projectDirScope.run(unsubscribe));
+					const unsubscribe = runInScope(() => runtime.subscribe(event => runInScope(() => listener(event))));
+					return () => runInScope(unsubscribe);
 				},
 			};
 		}),

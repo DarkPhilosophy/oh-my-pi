@@ -758,15 +758,15 @@ export class UiHelpers {
 		this.ctx.pendingMessagesContainer.disposeChildren();
 		const queuedMessages = this.ctx.viewSession.getQueuedMessages() as QueuedMessages;
 
-		const steeringMessages: Array<{ message: string; label: string }> = [];
+		const steeringMessages: Array<{ message: string; label: string; shimmer?: boolean }> = [];
 		for (const message of queuedMessages.steering) {
-			steeringMessages.push({ message, label: "Steer" });
+			steeringMessages.push({ message, label: "Steering", shimmer: true });
 		}
 		for (const entry of this.ctx.compactionQueuedMessages as CompactionQueuedMessage[]) {
-			if (entry.mode === "steer") steeringMessages.push({ message: entry.text, label: "Steer" });
+			if (entry.mode === "steer") steeringMessages.push({ message: entry.text, label: "Steering", shimmer: true });
 		}
 
-		const followUpMessages: Array<{ message: string; label: string }> = [];
+		const followUpMessages: Array<{ message: string; label: string; shimmer?: boolean }> = [];
 		for (const message of queuedMessages.followUp) {
 			followUpMessages.push({ message, label: "Follow-up" });
 		}
@@ -794,7 +794,13 @@ export class UiHelpers {
 			const safeAll = entry.message.split("\n").map(line => sanitizeText(line.replace(/\t/g, "    ")));
 			const footerText = idx === allMessages.length - 1 ? hint : undefined;
 			this.ctx.pendingMessagesContainer.addChild(
-				new QueuedMessageBox(entry.label, safeAll, { collapseLines, expanded, footerText }),
+				new QueuedMessageBox(entry.label, safeAll, {
+					collapseLines,
+					expanded,
+					footerText,
+					shimmerTitle: entry.shimmer,
+					ui: this.ctx.ui,
+				}),
 			);
 		}
 	}

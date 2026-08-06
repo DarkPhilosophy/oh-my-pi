@@ -44,6 +44,7 @@ import type { SessionOAuthAccountList } from "../../session/agent-session-types"
 import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome } from "../../session/auth-storage";
 import type { SessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
+import { sessionActionMessage } from "../../session/session-action-message";
 import { FileSessionStorage } from "../../session/session-storage";
 import { type LogoutAccount, toLogoutAccounts } from "../../slash-commands/helpers/logout";
 import {
@@ -66,7 +67,6 @@ import {
 	type ToolSession,
 } from "../../tools";
 import { AskTool, type AskToolDetails, type AskToolInput } from "../../tools/ask";
-import { shortenPath } from "../../tools/render-utils";
 import { ToolAbortError } from "../../tools/tool-errors";
 import { copyToClipboard } from "../../utils/clipboard";
 import { repo } from "../../utils/git";
@@ -426,10 +426,10 @@ export class SelectorController {
 				this.ctx.ui.requestRender();
 				break;
 			case "steeringMode":
-				this.ctx.session.setSteeringMode(value as "all" | "one-at-a-time" | "coalescing");
+				this.ctx.session.setSteeringMode(value as "one-at-a-time" | "coalescing");
 				break;
 			case "followUpMode":
-				this.ctx.session.setFollowUpMode(value as "all" | "one-at-a-time" | "coalescing");
+				this.ctx.session.setFollowUpMode(value as "one-at-a-time" | "coalescing");
 				break;
 			case "interruptMode":
 				this.ctx.session.setInterruptMode(value as "immediate" | "wait");
@@ -1499,7 +1499,7 @@ export class SelectorController {
 		// Clear and re-render the chat
 		this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 		await this.ctx.reloadTodos();
-		this.ctx.showStatus(movedProject ? `Resumed session in ${shortenPath(newCwd)}` : "Resumed session");
+		this.ctx.showStatus(sessionActionMessage("resumed", this.ctx.sessionManager.getSessionId(), newCwd));
 		return true;
 	}
 

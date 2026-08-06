@@ -351,12 +351,15 @@ export interface FreshSessionResult {
 export type RestoredQueuedMessage = { text: string; images?: ImageContent[] };
 
 /** Queue behavior while streaming. */
-export type QueueMode = "all" | "one-at-a-time" | "coalescing";
+export type QueueMode = "one-at-a-time" | "coalescing";
 
-/** Maps the queue mode to the agent core's supported modes. */
-export function coreQueueMode(mode: QueueMode): "all" | "one-at-a-time" {
-	return mode === "all" ? "all" : "one-at-a-time";
-}
+/**
+ * Queue draining at the agent core. "coalescing" merges rapid consecutive
+ * messages into one queued entry at enqueue time, so every remaining mode
+ * drains one entry per turn at the core; the retired "all" setting (separate
+ * entries drained all at once) was removed and is migrated to "coalescing".
+ */
+export const CORE_QUEUE_MODE = "one-at-a-time" as const;
 
 /** Callback when local queue coalescing merges two user messages. */
 export type LocalQueueCoalescedListener = (

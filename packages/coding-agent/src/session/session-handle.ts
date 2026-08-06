@@ -39,10 +39,17 @@ import type { SessionEntry, SessionHeader } from "./session-entries";
 
 export type DaemonTerminalEvent =
 	| { type: "terminal_output"; data: string }
+	| { type: "terminal_cwd"; cwd: string }
 	| {
 			type: "terminal_closed";
 			reason: "detach" | "exit" | "error";
 			error?: string;
+			// Persisted session identity at close time. The client's cached state
+			// can predate the transcript's materialization (state frames are only
+			// emitted at attach and on rare state-carrying events), so the resume
+			// hint must read the identity from here instead of stale cached state.
+			sessionId?: string;
+			sessionFile?: string;
 	  };
 export type SessionHandleEvent = AgentSessionEvent | DaemonTerminalEvent;
 export interface SessionHandleSnapshot {
@@ -87,8 +94,8 @@ export interface SessionHandle {
 	cycleModel(direction?: "forward" | "backward"): Promise<Model | undefined>;
 	setThinkingLevel(level: ThinkingLevel): Promise<void>;
 	cycleThinkingLevel(): Promise<ThinkingLevel | undefined>;
-	setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void>;
-	setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void>;
+	setSteeringMode(mode: QueueMode): Promise<void>;
+	setFollowUpMode(mode: QueueMode): Promise<void>;
 	setInterruptMode(mode: "immediate" | "wait"): Promise<void>;
 	setTodos(phases: TodoPhase[]): Promise<void>;
 	getAvailableModels(): Promise<Model[]>;
@@ -158,8 +165,8 @@ function defaultState(sessionId: string): RpcSessionState {
 		thinkingLevel: undefined,
 		isStreaming: false,
 		isCompacting: false,
-		steeringMode: "all",
-		followUpMode: "all",
+		steeringMode: "one-at-a-time",
+		followUpMode: "one-at-a-time",
 		interruptMode: "immediate",
 		autoCompactionEnabled: true,
 		messageCount: 0,

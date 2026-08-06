@@ -65,6 +65,38 @@ describe("shimmerText", () => {
 		const rendered = shimmerText("🎉🌟✨🚀", testTheme);
 		expect(Bun.stripANSI(rendered)).toBe("🎉🌟✨🚀");
 	});
+
+	it("passes an OSC 8 hyperlink through the sweep without leaking the url", () => {
+		// Escape sequences are zero-width pass-through atoms: the band positions
+		// itself over visible code points only and the sequence bytes are emitted
+		// verbatim between color runs. Before this, the raw OSC payload (the url
+		// included) was sliced into colored runs and printed as garbage.
+		vi.spyOn(settingsModule, "isSettingsInitialized").mockReturnValue(false);
+		vi.spyOn(Date, "now").mockReturnValue(0);
+
+		const link = "\x1b]8;;https://link.example\x1b\\label\x1b]8;;\x1b\\";
+		const rendered = shimmerText(`open ${link} now`, testTheme);
+
+		// Both OSC sequences survive byte-for-byte.
+		expect(rendered).toContain("\x1b]8;;https://link.example\x1b\\");
+		expect(rendered).toContain("\x1b]8;;\x1b\\");
+		// The url never becomes visible text.
+		expect(Bun.stripANSI(rendered)).toBe("open label now");
+	});
+
+	it("passes a BEL-terminated OSC and an embedded CSI through intact", () => {
+		vi.spyOn(settingsModule, "isSettingsInitialized").mockReturnValue(false);
+		vi.spyOn(Date, "now").mockReturnValue(0);
+
+		const osc = "\x1b]8;;https://x.dev\x07go\x1b]8;;\x07";
+		const csi = "\x1b[3mtilt\x1b[23m";
+		const rendered = shimmerText(`${osc} and ${csi}`, testTheme);
+
+		expect(rendered).toContain("\x1b]8;;https://x.dev\x07");
+		expect(rendered).toContain("\x1b[3m");
+		expect(rendered).toContain("\x1b[23m");
+		expect(Bun.stripANSI(rendered)).toBe("go and tilt");
+	});
 });
 
 describe("shimmerText band fast-path", () => {

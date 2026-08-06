@@ -42,6 +42,7 @@ import type { AgentSession, FreshSessionResult } from "../session/agent-session"
 import type { SessionOAuthAccountList } from "../session/agent-session-types";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { resolveResumableSession } from "../session/session-listing";
+import { sessionActionMessage } from "../session/session-action-message";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import type { ComputerTool } from "../tools/computer";
 import { computerExposureMode } from "../tools/computer/exposure";
@@ -2052,7 +2053,9 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			await runtime.reloadPlugins();
 			await runtime.notifyConfigChanged?.();
 			await runtime.notifyTitleChanged?.();
-			await runtime.output(`Moved to ${runtime.sessionManager.getCwd()}.`);
+			await runtime.output(
+				sessionActionMessage("moved", runtime.sessionManager.getSessionId(), runtime.sessionManager.getCwd()),
+			);
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {

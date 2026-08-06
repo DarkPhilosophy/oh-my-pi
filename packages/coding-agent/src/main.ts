@@ -74,6 +74,7 @@ import {
 
 import type { AgentSession } from "./session/agent-session";
 import type { AuthStorage } from "./session/auth-storage";
+import { sessionActionMessage } from "./session/session-action-message";
 import { describePendingToolCalls } from "./session/exit-diagnostics";
 import { isSessionFileArg, resolveResumableSession, type SessionInfo } from "./session/session-listing";
 import { SessionManager } from "./session/session-manager";
@@ -541,7 +542,7 @@ async function moveMissingCwdSessionIfNeeded(
 	return { status: "moved", manager };
 }
 
-async function switchToResumedProject(
+export async function switchToResumedProject(
 	resumedCwd: string | undefined,
 	activeSettings: Settings,
 	pluginPreloadPromise: Promise<unknown>,
@@ -1467,6 +1468,19 @@ export async function runRootCommand(
 			eventBus,
 			preloadedExtensions: extensionsResult,
 		});
+
+		if (parsedArgs.continue || parsedArgs.resume || parsedArgs.fork) {
+			const message = sessionActionMessage(
+				parsedArgs.fork ? "forked" : "resumed",
+				session.sessionManager.getSessionId(),
+				session.sessionManager.getCwd(),
+			);
+			if (isInteractive) {
+				notifs.push({ kind: "info", message });
+			} else {
+				process.stderr.write(`${message}\n`);
+			}
+		}
 
 		// Cold-revive support: a `parked` subagent ref restored from disk (Agent Hub
 		// scan, collab mirror, resumed process) has a sessionFile but no in-memory

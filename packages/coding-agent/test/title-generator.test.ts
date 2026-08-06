@@ -703,6 +703,24 @@ describe("terminal title runtime", () => {
 		expect(last).toContain("my-session");
 		expect(last).not.toContain("Stale extension title");
 	});
+	it("reports the session cwd through OSC 1337, including the tmux passthrough wrapper", () => {
+		const previousTmux = process.env.TMUX;
+		try {
+			delete process.env.TMUX;
+			writes.length = 0;
+			setSessionTerminalTitle("my-session", "/tmp/omp-title-cwd");
+			expect(writes).toContain("\x1b]1337;CurrentDir=/tmp/omp-title-cwd\x07");
+			expect(emittedTitles()).toEqual(["π > my-session"]);
+
+			process.env.TMUX = "1";
+			writes.length = 0;
+			setSessionTerminalTitle("my-session", "/tmp/omp-title-cwd-tmux");
+			expect(writes).toContain("\x1bPtmux;\x1b\x1b]1337;CurrentDir=/tmp/omp-title-cwd-tmux\x07\x1b\\");
+		} finally {
+			if (previousTmux === undefined) delete process.env.TMUX;
+			else process.env.TMUX = previousTmux;
+		}
+	});
 
 	it("dedupes direct writes after sanitizing the title", () => {
 		setTerminalTitle("direct title\u0000");

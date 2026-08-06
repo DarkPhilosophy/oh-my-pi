@@ -1,7 +1,11 @@
-import type { Component } from "@oh-my-pi/pi-tui";
+import type { Component, TUI } from "@oh-my-pi/pi-tui";
 import { truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { shimmerEnabled, shimmerText } from "../theme/shimmer";
 import { theme } from "../theme/theme";
 import { fit } from "./overlay-box";
+
+/** Shimmer redraw cadence for the animated box title (mirrors the loader's 30fps). */
+const SHIMMER_FRAME_MS = 1000 / 30;
 
 /**
  * A single queued steer / follow-up message rendered inside a bordered box.
@@ -42,6 +46,10 @@ export interface QueuedMessageBoxOptions {
 	showTopBorder?: boolean;
 	/** Optional footer text inset into the bottom rule (e.g. the queue hint). */
 	footerText?: string;
+	/** Animate the title with the shimmer sweep (the live steering box). */
+	shimmerTitle?: boolean;
+	/** UI handle that schedules shimmer frames; required for {@link shimmerTitle}. */
+	ui?: TUI;
 }
 
 export class QueuedMessageBox implements Component {
@@ -51,6 +59,9 @@ export class QueuedMessageBox implements Component {
 	#expanded: boolean;
 	#showTopBorder: boolean;
 	#footerText: string | undefined;
+	#shimmerTitle: boolean;
+	#ui: TUI | undefined;
+	#shimmerTimer: NodeJS.Timeout | undefined;
 	#cachedWidth = -1;
 	#cachedLines: string[] | undefined;
 
@@ -68,6 +79,15 @@ export class QueuedMessageBox implements Component {
 		this.#expanded = opts.expanded;
 		this.#showTopBorder = opts.showTopBorder ?? true;
 		this.#footerText = opts.footerText;
+		this.#shimmerTitle = (opts.shimmerTitle ?? false) && shimmerEnabled();
+		this.#ui = opts.ui;
+	}
+
+	dispose(): void {
+		if (this.#shimmerTimer !== undefined) {
+			clearInterval(this.#shimmerTimer);
+			this.#shimmerTimer = undefined;
+		}
 	}
 
 	invalidate(): void {
@@ -76,6 +96,15 @@ export class QueuedMessageBox implements Component {
 	}
 
 	render(width: number): readonly string[] {
+		if (this.#shimmerTitle && this.#showTopBorder && this.#title && this.#shimmerTimer === undefined && this.#ui) {
+			// The pending bar is rebuilt (disposeChildren) on every queue change, so
+			// the interval's lifetime is bounded by this box's own dispose().
+			this.#shimmerTimer = setInterval(() => {
+				this.invalidate();
+				if (typeof this.#ui?.requestComponentRender === "function") this.#ui.requestComponentRender(this);
+				else this.#ui?.requestRender();
+			}, SHIMMER_FRAME_MS);
+		}
 		if (this.#cachedLines && this.#cachedWidth === width) return this.#cachedLines;
 		// Below this the frame has no room; fall back to plain indented rows so a
 		// very narrow terminal still shows something without breaking layout.
@@ -132,9 +161,10 @@ export class QueuedMessageBox implements Component {
 		if (!this.#title) return theme.fg("border", box.topLeft + DASH.repeat(inner) + box.topRight);
 		const shown = truncateToWidth(` ${this.#title} `, Math.max(0, inner - 2));
 		const fill = Math.max(0, inner - 1 - visibleWidth(shown));
+		const title = this.#shimmerTitle ? shimmerText(shown, theme) : theme.bold(theme.fg("accent", shown));
 		return (
 			theme.fg("border", box.topLeft + DASH) +
-			theme.bold(theme.fg("accent", shown)) +
+			title +
 			theme.fg("border", DASH.repeat(fill) + box.topRight)
 		);
 	}
