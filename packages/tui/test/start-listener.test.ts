@@ -21,4 +21,22 @@ describe("TUI start listeners", () => {
 			tui.stop();
 		}
 	});
+	it("forwards terminal focus transitions to subscribers", () => {
+		const terminal = new VirtualTerminal(80, 24);
+		const tui = new TUI(terminal);
+		const states: boolean[] = [];
+		const unsubscribe = tui.onTerminalFocusChange(focused => states.push(focused));
+
+		try {
+			tui.start();
+			expect(states).toEqual([true]);
+			terminal.emitFocus(false);
+			terminal.emitFocus(true);
+			expect(states).toEqual([true, false, true]);
+		} finally {
+			unsubscribe();
+			tui.stop();
+		}
+	});
+
 });

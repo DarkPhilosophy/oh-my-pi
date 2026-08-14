@@ -268,6 +268,9 @@ export interface ExtensionUIContext {
 	/** Listen to raw terminal input (interactive mode only). Returns an unsubscribe function. */
 	onTerminalInput(handler: TerminalInputHandler): () => void;
 
+	/** Listen to real terminal focus transitions (interactive mode only). */
+	onTerminalFocusChange?(handler: (focused: boolean) => void): () => void;
+
 	/** Set status text in the footer/status bar. Pass undefined to clear. */
 	setStatus(key: string, text: string | undefined): void;
 

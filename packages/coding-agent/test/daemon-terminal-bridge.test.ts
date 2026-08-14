@@ -14,9 +14,16 @@ class FakeTerminal implements Terminal {
 	#input?: (data: string) => void;
 	#resize?: () => void;
 	#appearance?: (appearance: TerminalAppearance) => void;
-	start(onInput: (data: string) => void, onResize: () => void): void {
+	#focus?: (focused: boolean) => void;
+	start(
+		onInput: (data: string) => void,
+		onResize: () => void,
+		_onDisconnect?: () => void,
+		onFocusChange?: (focused: boolean) => void,
+	): void {
 		this.#input = onInput;
 		this.#resize = onResize;
+		this.#focus = onFocusChange;
 	}
 	stop(): void {}
 	drainInput(): Promise<void> {
@@ -64,6 +71,9 @@ class FakeTerminal implements Terminal {
 		this.appearance = appearance;
 		this.#appearance?.(appearance);
 	}
+	emitFocus(focused: boolean): void {
+		this.#focus?.(focused);
+	}
 }
 
 describe("daemon terminal bridge", () => {
@@ -78,10 +88,15 @@ describe("daemon terminal bridge", () => {
 			keyboardEnhancementExitSequence: physical.keyboardEnhancementExitSequence,
 			appearance: physical.appearance,
 		});
+		const focusStates: boolean[] = [];
 		const client = new ClientTerminalBridge(physical, {
 			onInput: data => hosted.input(data),
 			onResize: size => hosted.resize(size),
 			onAppearance: appearance => hosted.setAppearance(appearance),
+			onFocus: focused => {
+				focusStates.push(focused);
+				hosted.setFocus(focused);
+			},
 		});
 		hosted.setOutput(data => client.output(data));
 
@@ -101,6 +116,8 @@ describe("daemon terminal bridge", () => {
 		physical.emitInput("/resume\r");
 		physical.emitResize(160, 50);
 		physical.emitAppearance("light");
+		physical.emitFocus(false);
+		physical.emitFocus(true);
 		await Promise.resolve();
 
 		expect(physical.writes).toContain("\x1b[32mOMP\x1b[0m");
@@ -109,6 +126,7 @@ describe("daemon terminal bridge", () => {
 		expect(hosted.rows).toBe(50);
 		expect(resized).toBe(1);
 		expect(hosted.appearance).toBe("light");
+		expect(focusStates).toEqual([false, true]);
 	});
 	test("coalesces synchronous hosted output without losing pending bytes on detach", async () => {
 		const hosted = new HostedTerminal({

@@ -5,6 +5,10 @@
 ### Changed
 
 - Improved event-loop watchdog diagnostics by attributing synchronous TUI render stalls to the `ui.render` phase.
+
+### Fixed
+
+- Fixed the TUI not surfacing terminal focus transitions to start-listener consumers and hosted terminals. Focus changes now flow through the shared terminal interface and propagate immediately to registered listeners.
 ## [17.1.8] - 2026-07-28
 
 ### Fixed

@@ -51,6 +51,8 @@ export type HostedTerminalDescriptor = {
 	keyboardEnhancementEnterSequence?: string | null;
 	keyboardEnhancementExitSequence?: string | null;
 	appearance?: TerminalAppearance;
+	/** Whether the attached terminal was focused when the descriptor was captured. */
+	focused?: boolean;
 	/** Terminal-identity env of the attached client (see {@link clientTerminalEnvSnapshot}). */
 	clientEnv?: Record<string, string>;
 };
@@ -67,6 +69,8 @@ export class HostedTerminal implements Terminal {
 	readonly keyboardEnhancementExitSequence: string | null;
 	#inputHandler: ((data: string) => void) | undefined;
 	#resizeHandler: (() => void) | undefined;
+	#focusHandler: ((focused: boolean) => void) | undefined;
+	#focused: boolean;
 	#appearanceListeners = new Set<(appearance: TerminalAppearance) => void>();
 	#output: ((data: string) => void) | undefined;
 	#pendingOutput: string[] = [];
@@ -76,6 +80,7 @@ export class HostedTerminal implements Terminal {
 		this.#columns = descriptor.columns;
 		this.#rows = descriptor.rows;
 		this.#appearance = descriptor.appearance;
+		this.#focused = descriptor.focused ?? true;
 		this.kittyProtocolActive = descriptor.kittyProtocolActive;
 		this.kittyEnableSequence = descriptor.kittyEnableSequence;
 		this.keyboardEnhancementEnterSequence = descriptor.keyboardEnhancementEnterSequence ?? null;
@@ -94,14 +99,28 @@ export class HostedTerminal implements Terminal {
 		return this.#appearance;
 	}
 
-	start(onInput: (data: string) => void, onResize: () => void): void {
+	start(
+		onInput: (data: string) => void,
+		onResize: () => void,
+		_onDisconnect?: () => void,
+		onFocusChange?: (focused: boolean) => void,
+	): void {
 		this.#inputHandler = onInput;
 		this.#resizeHandler = onResize;
+		this.#focusHandler = onFocusChange;
+		this.#focusHandler?.(this.#focused);
 	}
 
 	stop(): void {
 		this.#inputHandler = undefined;
 		this.#resizeHandler = undefined;
+		this.#focusHandler = undefined;
+	}
+
+	setFocus(focused: boolean): void {
+		if (focused === this.#focused) return;
+		this.#focused = focused;
+		this.#focusHandler?.(focused);
 	}
 
 	drainInput(): Promise<void> {
@@ -191,6 +210,7 @@ export type ClientTerminalBridgeHandlers = {
 	onInput(data: string): void;
 	onResize(size: HostedTerminalSize): void;
 	onAppearance(appearance: TerminalAppearance): void;
+	onFocus(focused: boolean): void;
 };
 
 export class ClientTerminalBridge {
@@ -210,6 +230,8 @@ export class ClientTerminalBridge {
 		this.#terminal.start(
 			data => this.#handlers.onInput(data),
 			() => this.#handlers.onResize({ columns: this.#terminal.columns, rows: this.#terminal.rows }),
+			undefined,
+			focused => this.#handlers.onFocus(focused),
 		);
 	}
 

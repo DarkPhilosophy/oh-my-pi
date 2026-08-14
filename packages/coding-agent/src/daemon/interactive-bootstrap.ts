@@ -633,6 +633,7 @@ export async function launchDaemonInteractive(options: DaemonInteractiveBootstra
 	let pendingInput = "";
 	let pendingSize = { columns: terminal.columns, rows: terminal.rows };
 	let pendingAppearance = terminal.appearance;
+	let pendingFocused = true;
 	let commandChain = Promise.resolve();
 	const enqueue = (command: SessionHandleCommand): void => {
 		commandChain = commandChain
@@ -652,6 +653,10 @@ export async function launchDaemonInteractive(options: DaemonInteractiveBootstra
 		onAppearance: appearance => {
 			pendingAppearance = appearance;
 			if (hostReady) enqueue({ type: "terminal_appearance", appearance });
+		},
+		onFocus: focused => {
+			pendingFocused = focused;
+			if (hostReady) enqueue({ type: "terminal_focus", focused });
 		},
 	});
 	let closedReason: "exit" | "error" | undefined;
@@ -680,10 +685,12 @@ export async function launchDaemonInteractive(options: DaemonInteractiveBootstra
 					keyboardEnhancementEnterSequence: terminal.keyboardEnhancementEnterSequence,
 					keyboardEnhancementExitSequence: terminal.keyboardEnhancementExitSequence,
 					appearance: terminal.appearance,
+					focused: pendingFocused,
 					clientEnv: clientTerminalEnvSnapshot(),
 				},
 			});
 			hostReady = true;
+			enqueue({ type: "terminal_focus", focused: pendingFocused });
 			enqueue({ type: "terminal_resize", size: pendingSize });
 			if (pendingAppearance) enqueue({ type: "terminal_appearance", appearance: pendingAppearance });
 			if (pendingInput) {

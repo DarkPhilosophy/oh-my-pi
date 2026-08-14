@@ -795,6 +795,11 @@ async function createAgentSessionRuntimeInScope(
 						throw new Error("Interactive terminal is not attached");
 					hosted.terminal.setAppearance(command.appearance);
 					return {};
+				case "terminal_focus":
+					if (!hosted || hosted.attachmentId !== attachmentId)
+						throw new Error("Interactive terminal is not attached");
+					hosted.terminal.setFocus(command.focused);
+					return {};
 				case "terminal_detach": {
 					const active = hosted;
 					if (active && active.attachmentId === attachmentId) active.mode.detachHosted();

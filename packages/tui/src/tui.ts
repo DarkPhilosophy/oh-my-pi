@@ -964,6 +964,8 @@ export class TUI extends Container {
 	#previousHeight = 0;
 	#focusedComponent: Component | null = null;
 	#inputListeners = new Set<InputListener>();
+	#terminalFocusListeners = new Set<(focused: boolean) => void>();
+	#terminalFocused = true;
 	#startListeners = new Set<StartListener>();
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
@@ -1692,6 +1694,17 @@ export class TUI extends Container {
 				this.#armMultiplexerResizeTimer(false);
 			},
 			() => this.stop(),
+			focused => {
+				if (focused === this.#terminalFocused) return;
+				this.#terminalFocused = focused;
+				for (const listener of this.#terminalFocusListeners) {
+					try {
+						listener(focused);
+					} catch {
+						// Focus observers are advisory; one broken extension must not break input.
+					}
+				}
+			},
 		);
 		if (this.#stopped) return;
 		for (const listener of this.#startListeners) {
@@ -1719,6 +1732,14 @@ export class TUI extends Container {
 		this.#inputListeners.add(listener);
 		return () => {
 			this.#inputListeners.delete(listener);
+		};
+	}
+
+	onTerminalFocusChange(listener: (focused: boolean) => void): () => void {
+		this.#terminalFocusListeners.add(listener);
+		listener(this.#terminalFocused);
+		return () => {
+			this.#terminalFocusListeners.delete(listener);
 		};
 	}
 

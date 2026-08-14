@@ -52,6 +52,7 @@ export type RpcCommand =
 	| { id?: string; type: "terminal_input"; data: string }
 	| { id?: string; type: "terminal_resize"; size: HostedTerminalSize }
 	| { id?: string; type: "terminal_appearance"; appearance: "dark" | "light" }
+	| { id?: string; type: "terminal_focus"; focused: boolean }
 	| { id?: string; type: "terminal_detach" }
 
 	// Model

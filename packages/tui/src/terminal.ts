@@ -296,6 +296,7 @@ export function emergencyTerminalRestore(): void {
 					"\x1b[?2031l" + // Disable Mode 2031 appearance notifications
 					"\x1b[?2048l" + // Disable in-band resize notifications
 					"\x1b[?5522l" + // Disable enhanced paste notifications
+					"\x1b[?1004l" + // Disable focus reporting
 					"\x1b[<u" + // Pop kitty keyboard protocol
 					"\x1b[>4;0m" + // Disable modifyOtherKeys fallback
 					"\x1b[?1006l\x1b[?1003l\x1b[?1000l" + // Disable mouse tracking (fullscreen overlays)
@@ -318,8 +319,13 @@ export function emergencyTerminalRestore(): void {
 /** Terminal-reported appearance (dark/light mode). */
 export type TerminalAppearance = "dark" | "light";
 export interface Terminal {
-	// Start the terminal with input, resize, and host-disconnect handlers.
-	start(onInput: (data: string) => void, onResize: () => void, onDisconnect?: () => void): void;
+	// Start the terminal with input, resize, disconnect, and focus handlers.
+	start(
+		onInput: (data: string) => void,
+		onResize: () => void,
+		onDisconnect?: () => void,
+		onFocusChange?: (focused: boolean) => void,
+	): void;
 
 	// Stop the terminal and restore state
 	stop(): void;
@@ -468,6 +474,8 @@ export class ProcessTerminal implements Terminal {
 	#stdinBuffer?: StdinBuffer;
 	#stdinDataHandler?: (data: string) => void;
 	#disconnectHandler?: () => void;
+	#focusChangeHandler?: (focused: boolean) => void;
+	#terminalFocused = true;
 	#stdinEndHandler = () => {
 		this.#markTerminalDisconnected("stdin ended");
 	};
@@ -577,10 +585,17 @@ export class ProcessTerminal implements Terminal {
 		this.#privateModeCallbacks.push(callback);
 	}
 
-	start(onInput: (data: string) => void, onResize: () => void, onDisconnect?: () => void): void {
+	start(
+		onInput: (data: string) => void,
+		onResize: () => void,
+		onDisconnect?: () => void,
+		onFocusChange?: (focused: boolean) => void,
+	): void {
 		this.#inputHandler = onInput;
 		this.#resizeHandler = onResize;
 		this.#disconnectHandler = onDisconnect;
+		this.#focusChangeHandler = onFocusChange;
+		this.#terminalFocused = true;
 		// The host terminal's cursor visibility is unknown until we write it.
 		this.#cursorVisible = undefined;
 
@@ -614,6 +629,10 @@ export class ProcessTerminal implements Terminal {
 
 		// Enable bracketed paste mode - terminal will wrap pastes in \x1b[200~ ... \x1b[201~
 		this.#safeWrite("\x1b[?2004h");
+
+		// Ask xterm-compatible terminals to report focus transitions as CSI I/O.
+		// Unsupported terminals ignore the private mode.
+		this.#safeWrite("\x1b[?1004h");
 
 		// Force normal cursor-key (DECCKM) and numeric-keypad mode (terminfo
 		// `rmkx` = "\x1b[?1l\x1b>"). omp decodes both CSI ("\x1b[A") and SS3
@@ -789,6 +808,15 @@ export class ProcessTerminal implements Terminal {
 		const inBandResizePattern = /^\x1b\[48;(\d+)(?::[\d:]*)?;(\d+)(?::[\d:]*)?;(\d+)(?::[\d:]*)?;(\d+)(?::[\d:]*)?t$/;
 
 		this.#stdinBuffer.on("data", (sequence: string) => {
+			if (sequence === "\x1b[I" || sequence === "\x1b[O") {
+				const focused = sequence === "\x1b[I";
+				if (focused !== this.#terminalFocused) {
+					this.#terminalFocused = focused;
+					this.#focusChangeHandler?.(focused);
+				}
+				return;
+			}
+
 			// Fast path for plain-text bytes: every escape-probe regex below
 			// anchors on `^\x1b…`, so a byte that is not ESC can never match. A
 			// non-bracketed paste of N printable chars arrives as N per-scalar
@@ -1387,6 +1415,7 @@ export class ProcessTerminal implements Terminal {
 
 		// Disable bracketed paste mode
 		this.#safeWrite("\x1b[?2004l");
+		this.#safeWrite("\x1b[?1004l");
 		this.#safeWrite("\x1b[?5522l");
 
 		// Disable mouse tracking (enabled only by fullscreen overlays; safe
@@ -1460,6 +1489,7 @@ export class ProcessTerminal implements Terminal {
 		process.stdin.removeListener("close", this.#stdinCloseHandler);
 		process.stdin.removeListener("error", this.#stdinErrorHandler);
 		this.#disconnectHandler = undefined;
+		this.#focusChangeHandler = undefined;
 		this.#inputHandler = undefined;
 		this.#appearance = undefined;
 		if (this.#stdoutResizeListener) {

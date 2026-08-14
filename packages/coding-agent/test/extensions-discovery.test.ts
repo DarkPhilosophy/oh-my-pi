@@ -445,6 +445,18 @@ describe("extensions discovery", () => {
 		expect(result.extensions[0].path).toContain("my-ext.ts");
 	});
 
+	it("reports load errors for missing explicitly configured paths without throwing", async () => {
+		const missingPath = path.join(tempDir.path(), "custom-location", "missing-ext.ts");
+
+		const result = await discoverForTest([missingPath]);
+
+		expect(result.errors).toHaveLength(1);
+		expect(result.errors[0]?.path).toContain("missing-ext.ts");
+		expect(result.errors[0]?.error).toContain("Failed to load extension:");
+		expect(result.errors[0]?.error).toContain("missing-ext.ts");
+		expect(result.extensions).toHaveLength(0);
+	}, 15_000);
+
 	it("resolves 3rd party npm dependencies (chalk)", async () => {
 		// Load the real chalk-logger extension from examples
 		const chalkLoggerPath = path.resolve(import.meta.dirname, "..", "examples", "extensions", "chalk-logger.ts");

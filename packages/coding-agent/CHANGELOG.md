@@ -6,6 +6,11 @@
 
 - Added a non-interactive `omp daemon <status|sessions|reconnect|stop>` CLI command wrapping the daemon client and mirroring the in-TUI `/server` command. The CLI previously had no `daemon` command: `omp daemon …` fell through the interactive-routing gate (`isDefaultInteractiveArgv`) to `launchDaemonInteractive`, so e.g. `omp daemon status` blocked for the full request timeout attempting to host an interactive session on a non-TTY instead of printing daemon status. The argv is now registered both in the command table and `NON_INTERACTIVE_COMMANDS`, and supports `--json` for `status`/`sessions`.
 
+### Fixed
+
+- Added terminal-focus events to daemon-hosted and extension-owned interactive terminals so hosted sessions, hooks, and UI consumers can react when the attached terminal window loses or regains focus.
+- Fixed extension discovery aborting on unreadable or missing configured paths during path canonicalization. Discovery now falls back to the lexical path identity, preserving existing load-error reporting without crashing the whole scan.
+
 ### Changed
 
 - Reduced interactive daemon fanout overhead by projecting terminal clients to terminal-only events while preserving replay sequence numbers, and by caching event byte sizes instead of serializing them again during acknowledgement pruning.

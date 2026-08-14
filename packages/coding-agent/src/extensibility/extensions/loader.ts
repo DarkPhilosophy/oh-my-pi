@@ -1,6 +1,7 @@
 /**
  * Extension loader - loads TypeScript extension modules using native Bun import.
  */
+import * as fsSync from "node:fs";
 import type * as fs1 from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -536,8 +537,22 @@ export async function discoverExtensionPaths(
 
 	const addPath = (extPath: string): void => {
 		const resolved = path.resolve(extPath);
-		if (!seen.has(resolved)) {
-			seen.add(resolved);
+		// Configured and plugin discovery can expose the same extension through
+		// different symlink spellings (for example ~/.omp/agent/extensions and
+		// ~/.omp/plugins/node_modules). Deduplicate by the filesystem target so
+		// one factory cannot bind two runtimes to the same extension.
+		let identity = resolved;
+		try {
+			identity = fsSync.realpathSync.native(resolved);
+		} catch (err) {
+			if (isEacces(err) || hasFsCode(err, "EPERM")) {
+				logger.warn("Failed to canonicalize extension path", { path: resolved, error: String(err) });
+			} else if (!isEnoent(err)) {
+				throw err;
+			}
+		}
+		if (!seen.has(identity)) {
+			seen.add(identity);
 			allPaths.push(extPath);
 		}
 	};

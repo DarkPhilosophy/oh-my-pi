@@ -138,6 +138,7 @@ export class VirtualTerminal implements Terminal {
 	#viewportY = 0;
 	#inputHandler?: (data: string) => void;
 	#resizeHandler?: () => void;
+	#focusHandler?: (focused: boolean) => void;
 	#pendingEngineResize = false;
 	// Byte/resize event log since the last engine recreate. ghostty-web 0.4's
 	// allocator exhausts after enough cumulative write volume in one instance
@@ -171,11 +172,21 @@ export class VirtualTerminal implements Terminal {
 
 	// --- Terminal interface --------------------------------------------------
 
-	start(onInput: (data: string) => void, onResize: () => void): void {
+	start(
+		onInput: (data: string) => void,
+		onResize: () => void,
+		_onDisconnect?: () => void,
+		onFocusChange?: (focused: boolean) => void,
+	): void {
 		this.#inputHandler = onInput;
 		this.#resizeHandler = onResize;
+		this.#focusHandler = onFocusChange;
 		// Enable bracketed paste mode for consistency with ProcessTerminal.
 		this.#engineWrite("\x1b[?2004h");
+	}
+
+	emitFocus(focused: boolean): void {
+		this.#focusHandler?.(focused);
 	}
 
 	async drainInput(_maxMs?: number, _idleMs?: number): Promise<void> {
