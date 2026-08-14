@@ -12,11 +12,17 @@ description: >
 
    The v3 key is <config hash>-<source hash>: config covers toolchain and
    build settings, source covers crates/** + BUILD.bazel. Restores fall
-   back to the config-scoped prefix, so a source generation the exact key
-   has never seen still seeds from the previous generation's archive, and
-   the refreshed archive is saved after the build (an exact hit suppresses
+   back to the config-scoped prefix, then to a bare scope+os+arch prefix:
+   the config hash covers Cargo.toml/Cargo.lock, which every release
+   version bump rewrites, so without the bare fallback each release built
+   the darwin addons fully cold (~40-50 min on macos-15-intel; CI run
+   30357804722). A stale-config archive is safe — bazel keys every
+   action by content digest, so mismatched entries just miss — and the
+   refreshed archive is saved after the build (an exact hit suppresses
    the save — without the source component the first archive for a config
-   generation would permanently shadow newer source states).
+   generation would permanently shadow newer source states). Restored
+   entries untouched for 14 days are pruned before the build so
+   ever-seeding archives don't grow without bound.
 
 inputs:
    scope:
@@ -58,10 +64,12 @@ runs:
            fi
            key="bazel-disk-v3-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-$CONFIG_HASH-$SOURCE_HASH"
            prefix="bazel-disk-v3-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-$CONFIG_HASH-"
+           bare_prefix="bazel-disk-v3-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-"
            {
              echo "remote=$remote"
              echo "cache-key=$key"
              echo "cache-prefix=$prefix"
+             echo "cache-bare-prefix=$bare_prefix"
            } >> "$GITHUB_OUTPUT"
 
       - name: Restore bazel disk cache
@@ -69,10 +77,23 @@ runs:
         if: steps.backend.outputs.remote != 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-           path: ~/.cache/omp-bazel-disk
+           # Both caches ride one archive: the action cache AND the repository
+           # cache (downloads + extracted repo contents at repo/contents, which
+           # reproducible repo rules reuse across output bases). Without the
+           # repo half, every hosted job re-downloaded and re-extracted the
+           # rust/LLVM/zig toolchains. Save sites must list the same paths.
+           path: |
+              ~/.cache/omp-bazel-disk
+              ~/.cache/omp-bazel-repo
            key: ${{ steps.backend.outputs.cache-key }}
+           # Order matters: exact key, same-config prefix, then any archive for
+           # this scope+os+arch. The bare fallback is what keeps release version
+           # bumps (Cargo.toml/Cargo.lock churn -> new CONFIG_HASH) from going
+           # fully cold; bazel's content-addressed action keys make a
+           # stale-config archive a partial hit, never a wrong output.
            restore-keys: |
               ${{ steps.backend.outputs.cache-prefix }}
+              ${{ steps.backend.outputs.cache-bare-prefix }}
 
       - name: Compose cache config
         id: compose
@@ -112,6 +133,18 @@ runs:
              } > "$rc"
            else
              mkdir -p "$HOME/.cache/omp-bazel-disk" "$HOME/.cache/omp-bazel-repo"
+             # Seeding from stale archives means entries dead source
+             # generations wrote would otherwise ride along forever; drop
+             # anything untouched for 14 days (tar preserves mtimes across
+             # the actions/cache round trip, so age survives restores).
+             # DISK CACHE ONLY: never prune omp-bazel-repo file-by-file —
+             # extracted repo contents keep upstream-archive mtimes (often
+             # months old), so an mtime sweep guts contents-cache entries
+             # while bazel still trusts their recorded_inputs, materializing
+             # hollow external repos ("BUILD file not found" — v17.2.0
+             # release run 30519253683). The repo cache is bounded by the
+             # GitHub cache TTL/LRU at the archive level instead.
+             find "$HOME/.cache/omp-bazel-disk" -type f -mtime +14 -delete 2>/dev/null || true
              {
                echo "common --config=ci"
                echo "common --disk_cache=$HOME/.cache/omp-bazel-disk"

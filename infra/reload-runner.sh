@@ -32,9 +32,20 @@
 #   CONTAINERD_SOCKET_REMOTE remote containerd socket                      [/run/k3s/containerd/containerd.sock]
 #   NERDCTL_VERSION          nerdctl release to bootstrap on demand        [2.1.6]
 #   BUILDKIT_VERSION         BuildKit release to bootstrap on demand       [0.25.1]
-#   RUNNER_MAX_RUNNERS       maximum concurrent Kata runner pods             [4]
-#   RUNNER_CPU               requested and limited CPU cores per runner       [8]
-#   RUNNER_MEMORY            requested and limited memory per runner          [24Gi]
+#   RUNNER_MAX_RUNNERS       maximum concurrent Kata runner pods             [8]
+#   RUNNER_CPU_REQUEST       requested CPU cores per runner                   [3]
+#   RUNNER_CPU_LIMIT         CPU-core limit per runner (Kata hotplug ceiling) [8]
+#   RUNNER_MEMORY_REQUEST    requested memory per runner                      [10Gi]
+#   RUNNER_MEMORY_LIMIT      memory limit per runner (Kata hotplug ceiling)   [14Gi]
+#
+# Runner pods are deliberately BURSTABLE, not guaranteed: requests size the
+# scheduler's bin-packing (8 x 3 cpu / 10Gi fits the 32-vCPU / 125 GiB host
+# with headroom), while limits set each Kata VM's hotplug ceiling so a lone
+# native build still gets 8 vCPUs. requests==limits previously capped the
+# host at 4 runners and queued every >4-job workflow fan-out for minutes.
+# Worst-case sum of memory limits (8 x 14Gi = 112Gi) stays under the host's
+# 125 GiB because host OOM under Kata kills VMs unpredictably — keep it that
+# way when retuning.
 set -euo pipefail
 
 : "${CI_HOST:?set CI_HOST to the ssh target of your CI host, e.g. CI_HOST=my-ci-host}"
@@ -48,9 +59,11 @@ BUILD_BACKEND="${BUILD_BACKEND:-auto}"
 CONTAINERD_SOCKET_REMOTE="${CONTAINERD_SOCKET_REMOTE:-/run/k3s/containerd/containerd.sock}"
 NERDCTL_VERSION="${NERDCTL_VERSION:-2.1.6}"
 BUILDKIT_VERSION="${BUILDKIT_VERSION:-0.25.1}"
-RUNNER_MAX_RUNNERS="${RUNNER_MAX_RUNNERS:-4}"
-RUNNER_CPU="${RUNNER_CPU:-8}"
-RUNNER_MEMORY="${RUNNER_MEMORY:-24Gi}"
+RUNNER_MAX_RUNNERS="${RUNNER_MAX_RUNNERS:-8}"
+RUNNER_CPU_REQUEST="${RUNNER_CPU_REQUEST:-3}"
+RUNNER_CPU_LIMIT="${RUNNER_CPU_LIMIT:-8}"
+RUNNER_MEMORY_REQUEST="${RUNNER_MEMORY_REQUEST:-10Gi}"
+RUNNER_MEMORY_LIMIT="${RUNNER_MEMORY_LIMIT:-14Gi}"
 
 arg="${1:-$(date +%Y-%m-%d-%H%M%S)}"
 case "$arg" in *:*) IMAGE="$arg";; *) IMAGE="omp-kata-runner:$arg";; esac
@@ -70,12 +83,12 @@ scp -q "$here/runner.Dockerfile" "${CI_HOST}:${REMOTE_CTX}/Dockerfile"
 ssh "$CI_HOST" bash -s -- \
    "$IMAGE" "$REMOTE_CTX" "$ARC_VALUES" "$ARC_RELEASE" "$ARC_NAMESPACE" "$ARC_CHART_VERSION" \
    "$KUBECONFIG_REMOTE" "$BUILD_BACKEND" "$CONTAINERD_SOCKET_REMOTE" "$NERDCTL_VERSION" "$BUILDKIT_VERSION" \
-   "$RUNNER_MAX_RUNNERS" "$RUNNER_CPU" "$RUNNER_MEMORY" <<'REMOTE'
+   "$RUNNER_MAX_RUNNERS" "$RUNNER_CPU_REQUEST" "$RUNNER_CPU_LIMIT" "$RUNNER_MEMORY_REQUEST" "$RUNNER_MEMORY_LIMIT" <<'REMOTE'
 set -euo pipefail
 IMAGE="$1"; REMOTE_CTX="$2"; ARC_VALUES="$3"; ARC_RELEASE="$4"; ARC_NAMESPACE="$5"; ARC_CHART_VERSION="$6"
 export KUBECONFIG="$7"
 BUILD_BACKEND="$8"; CONTAINERD_SOCKET="$9"; NERDCTL_VERSION="${10}"; BUILDKIT_VERSION="${11}"
-RUNNER_MAX_RUNNERS="${12}"; RUNNER_CPU="${13}"; RUNNER_MEMORY="${14}"
+RUNNER_MAX_RUNNERS="${12}"; RUNNER_CPU_REQUEST="${13}"; RUNNER_CPU_LIMIT="${14}"; RUNNER_MEMORY_REQUEST="${15}"; RUNNER_MEMORY_LIMIT="${16}"
 cd "$REMOTE_CTX"
 
 TOOLS_DIR="$REMOTE_CTX/.containerd-build-tools"
@@ -244,10 +257,10 @@ if ! grep -q 'name: bazel-remote-ci' "$ARC_VALUES"; then
 fi
 helm upgrade "$ARC_RELEASE" --namespace "$ARC_NAMESPACE" --version "$ARC_CHART_VERSION" \
   -f "$ARC_VALUES" \
-  --set-string "template.spec.containers[0].resources.requests.cpu=$RUNNER_CPU" \
-  --set-string "template.spec.containers[0].resources.limits.cpu=$RUNNER_CPU" \
-  --set-string "template.spec.containers[0].resources.requests.memory=$RUNNER_MEMORY" \
-  --set-string "template.spec.containers[0].resources.limits.memory=$RUNNER_MEMORY" \
+  --set-string "template.spec.containers[0].resources.requests.cpu=$RUNNER_CPU_REQUEST" \
+  --set-string "template.spec.containers[0].resources.limits.cpu=$RUNNER_CPU_LIMIT" \
+  --set-string "template.spec.containers[0].resources.requests.memory=$RUNNER_MEMORY_REQUEST" \
+  --set-string "template.spec.containers[0].resources.limits.memory=$RUNNER_MEMORY_LIMIT" \
   oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set >/dev/null
 
 echo "==> [5/5] verifying rollout"
@@ -256,7 +269,7 @@ live="$(kubectl get autoscalingrunnerset "$ARC_RELEASE" -n "$ARC_NAMESPACE" \
 live_max="$(kubectl get autoscalingrunnerset "$ARC_RELEASE" -n "$ARC_NAMESPACE" -o jsonpath='{.spec.maxRunners}')"
 live_resources="$(kubectl get autoscalingrunnerset "$ARC_RELEASE" -n "$ARC_NAMESPACE" \
   -o jsonpath='{.spec.template.spec.containers[0].resources.requests.cpu}/{.spec.template.spec.containers[0].resources.limits.cpu} {.spec.template.spec.containers[0].resources.requests.memory}/{.spec.template.spec.containers[0].resources.limits.memory}')"
-expected_resources="$RUNNER_CPU/$RUNNER_CPU $RUNNER_MEMORY/$RUNNER_MEMORY"
+expected_resources="$RUNNER_CPU_REQUEST/$RUNNER_CPU_LIMIT $RUNNER_MEMORY_REQUEST/$RUNNER_MEMORY_LIMIT"
 echo "ARC runner image/resources: $live | max=$live_max | $live_resources"
 [ "$live" = "$IMAGE" ] || { echo "MISMATCH: expected image $IMAGE"; exit 1; }
 [ "$live_max" = "$RUNNER_MAX_RUNNERS" ] || { echo "MISMATCH: expected maxRunners $RUNNER_MAX_RUNNERS"; exit 1; }

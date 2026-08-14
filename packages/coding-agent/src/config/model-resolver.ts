@@ -27,7 +27,7 @@ import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models
 import { resolveBareVariantAlias, resolveVariantAlias } from "@oh-my-pi/pi-catalog/variant-collapse";
 import { fuzzyMatch } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import {
 	AUTO_THINKING,
@@ -926,10 +926,33 @@ function getModelRoleAlias(value: string, settings?: ModelRoleLookup): string | 
 	return undefined;
 }
 
-function normalizeModelPatternList(value: string | string[] | undefined): string[] {
+/** Normalize comma-separated or array model selectors into an ordered pattern list. */
+export function normalizeModelPatternList(value: string | string[] | undefined): string[] {
 	if (!value) return [];
 	const patterns = Array.isArray(value) ? value.flatMap(pattern => pattern.split(",")) : value.split(",");
 	return patterns.map(pattern => pattern.trim()).filter(Boolean);
+}
+
+/**
+ * Extract the first explicit model-role alias from a raw model selection.
+ *
+ * This intentionally runs before role expansion so callers can retain the
+ * source identity (`@smol`, `pi/slow`, or `*`) even when it resolves to a
+ * concrete provider/model or inherited fallback. Bare role names and explicit
+ * provider/model selectors are not role aliases.
+ */
+export function resolveExplicitModelRole(
+	value: string | string[] | undefined,
+	settings?: ModelRoleLookup,
+): string | undefined {
+	for (const pattern of normalizeModelPatternList(value)) {
+		const prefixLength = modelRoleAliasPrefixLength(pattern);
+		if (prefixLength === undefined) continue;
+		const { base } = splitThinkingSuffix(pattern, prefixLength, MAX_THINKING_SUFFIX_OPTIONS);
+		const role = getModelRoleAlias(base, settings);
+		if (role) return role;
+	}
+	return undefined;
 }
 
 function isSessionInheritedAgentPattern(value: string): boolean {
@@ -1068,6 +1091,8 @@ export function resolveConfiguredModelPatterns(
 	});
 }
 export interface AgentModelPatternResolutionOptions {
+	/** Highest-priority request selector, when supplied by a caller. */
+	requestModel?: string | string[];
 	settingsOverride?: string | string[];
 	agentModel?: string | string[];
 	settings?: Settings;
@@ -1075,11 +1100,25 @@ export interface AgentModelPatternResolutionOptions {
 	fallbackModelPattern?: string;
 }
 
-export function resolveAgentModelPatterns(options: AgentModelPatternResolutionOptions): string[] {
-	const { settingsOverride, agentModel, settings, activeModelPattern, fallbackModelPattern } = options;
+interface EffectiveAgentModelSelection {
+	source?: string | string[];
+	patterns: string[];
+}
+
+function resolveEffectiveAgentModelSelection(
+	options: AgentModelPatternResolutionOptions,
+): EffectiveAgentModelSelection {
+	const { requestModel, settingsOverride, agentModel, settings, activeModelPattern, fallbackModelPattern } = options;
+
+	const requestPatterns = resolveConfiguredModelPatterns(requestModel, settings);
+	if (requestPatterns.length > 0) {
+		return { source: requestModel, patterns: requestPatterns };
+	}
 
 	const overridePatterns = resolveConfiguredModelPatterns(settingsOverride, settings);
-	if (overridePatterns.length > 0) return overridePatterns;
+	if (overridePatterns.length > 0) {
+		return { source: settingsOverride, patterns: overridePatterns };
+	}
 
 	const normalizedAgentPatterns = normalizeModelPatternList(agentModel);
 	const configuredAgentPatterns = resolveConfiguredModelPatterns(agentModel, settings);
@@ -1090,15 +1129,40 @@ export function resolveAgentModelPatterns(options: AgentModelPatternResolutionOp
 			singleAgentPattern === formatModelRoleAlias("task") ||
 			singleAgentPattern === `${LEGACY_MODEL_ROLE_ALIAS_PREFIX}task`
 		) {
-			return configuredAgentPatterns;
+			return { source: agentModel, patterns: configuredAgentPatterns };
 		}
-		if (!agentInheritsSessionModel) return configuredAgentPatterns;
+		if (!agentInheritsSessionModel) return { source: agentModel, patterns: configuredAgentPatterns };
 	}
 
 	const fallback =
 		activeModelPattern?.trim() || fallbackModelPattern?.trim() || settings?.getModelRole("default")?.trim() || "";
-	return resolveConfiguredModelPatterns(fallback, settings);
+	return { patterns: resolveConfiguredModelPatterns(fallback, settings) };
 }
+
+/** Effective agent model patterns paired with the pre-expansion role alias behind them. */
+export interface AgentModelSelection {
+	/** Expanded model patterns to spawn with. */
+	patterns: string[];
+	/** Role alias the patterns came from (`@task` -> `task`), when the source named one. */
+	role: string | undefined;
+}
+
+/**
+ * Resolve an agent's model patterns together with the role identity they were
+ * expanded from. Spawn paths MUST take both from this single call: the child's
+ * inherited retry-fallback chain is keyed off the role, which the expansion
+ * discards, and deriving the two halves separately is how they drift apart.
+ */
+export function resolveAgentModelSelection(options: AgentModelPatternResolutionOptions): AgentModelSelection {
+	const { source, patterns } = resolveEffectiveAgentModelSelection(options);
+	return { patterns, role: resolveExplicitModelRole(source, options.settings) };
+}
+
+/** Effective agent model patterns alone, for callers with no interest in role identity. */
+export function resolveAgentModelPatterns(options: AgentModelPatternResolutionOptions): string[] {
+	return resolveEffectiveAgentModelSelection(options).patterns;
+}
+
 /** Default prewalk hand-off target when no explicit target is configured. */
 export const DEFAULT_PREWALK_TARGET = "@smol";
 
@@ -1129,6 +1193,42 @@ export function resolveAgentPrewalkPattern(options: AgentPrewalkResolutionOption
 	}
 	if (options.agentPrewalk === true) return DEFAULT_PREWALK_TARGET;
 	return agentPattern;
+}
+
+export interface AgentAdvisorResolutionOptions {
+	/** `task.agentAdvisor` settings value for this agent: `"on"`, `"off"`, or a model pattern. */
+	settingsOverride?: string;
+	/** Agent definition `advisor` frontmatter: `true` = default advisor-role model, string = custom model pattern. */
+	agentAdvisor?: boolean | string;
+}
+
+/** Effective advisor for one spawned agent: absent `model` resolves through the `advisor` role. */
+export interface AgentAdvisorSelection {
+	model?: string;
+}
+
+/**
+ * Effective advisor selection for a subagent, or `undefined` when the agent
+ * runs unadvised. The settings override decides enablement first ("off" wins,
+ * "on" enables with the agent's own model pattern or the `advisor` role, any
+ * other value is a custom model pattern); otherwise the agent definition's
+ * `advisor` field applies. A returned pattern lands on the spawned session's
+ * `modelRoles.advisor`, so role aliases and `:level` suffixes resolve there.
+ */
+export function resolveAgentAdvisorSelection(
+	options: AgentAdvisorResolutionOptions,
+): AgentAdvisorSelection | undefined {
+	const agentPattern =
+		typeof options.agentAdvisor === "string" && options.agentAdvisor.trim() ? options.agentAdvisor.trim() : undefined;
+	const override = options.settingsOverride?.trim();
+	if (override) {
+		const lowered = override.toLowerCase();
+		if (lowered === "off" || lowered === "false") return undefined;
+		if (lowered === "on" || lowered === "true") return { model: agentPattern };
+		return { model: override };
+	}
+	if (options.agentAdvisor === true) return {};
+	return agentPattern ? { model: agentPattern } : undefined;
 }
 
 /**

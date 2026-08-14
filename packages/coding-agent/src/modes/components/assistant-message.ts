@@ -11,10 +11,11 @@ import {
 	Text,
 } from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import type { AssistantThinkingRenderer } from "../../extensibility/extensions/types";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { expandKeyHint, getPreviewLines, resolveImageOptions, TRUNCATE_LENGTHS } from "../../tools/render-utils";
+import { convertImageToPng } from "../../utils/image-loading";
 import { canonicalizeMessage, formatThinkingForDisplay, hasDisplayableThinking } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
 import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cache-invalidation-marker";
@@ -184,6 +185,7 @@ export class AssistantMessageComponent extends Container {
 	#toolImagesByCallId = new Map<string, ImageContent[]>();
 	#convertedKittyImages = new Map<string, ImageContent>();
 	#showImages = true;
+	#showToolResultImages = true;
 	#kittyConversionsInFlight = new Set<string>();
 	#transcriptBlockFinalized: boolean;
 	/**
@@ -577,6 +579,15 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	/** Toggle only images produced by tool results; assistant-native images remain governed by setImagesVisible. */
+	setToolResultImagesVisible(visible: boolean): void {
+		if (this.#showToolResultImages === visible) return;
+		this.#showToolResultImages = visible;
+		if (this.#lastMessage) {
+			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+		}
+	}
+
 	setToolResultImages(toolCallId: string, images: ImageContent[]): void {
 		if (!toolCallId) return;
 		const validImages = images.filter(img => img.type === "image" && img.data && img.mimeType);
@@ -607,16 +618,10 @@ export class AssistantMessageComponent extends Container {
 			if (image.mimeType === "image/png") continue;
 			if (this.#convertedKittyImages.has(key) || this.#kittyConversionsInFlight.has(key)) continue;
 			this.#kittyConversionsInFlight.add(key);
-			new Bun.Image(Buffer.from(image.data, "base64"))
-				.png()
-				.toBase64()
-				.then(data => {
+			convertImageToPng(image)
+				.then(converted => {
 					this.#kittyConversionsInFlight.delete(key);
-					this.#convertedKittyImages.set(key, {
-						type: "image",
-						data,
-						mimeType: "image/png",
-					});
+					this.#convertedKittyImages.set(key, converted);
 					if (this.#lastMessage) {
 						this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 					}
@@ -654,6 +659,7 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	#renderToolImages(): void {
+		if (!this.#showToolResultImages) return;
 		const entries = Array.from(this.#toolImagesByCallId.entries()).flatMap(([toolCallId, images]) =>
 			images.map((image, index) => ({ image, key: `${toolCallId}:${index}` })),
 		);
@@ -871,7 +877,7 @@ export class AssistantMessageComponent extends Container {
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				const trimmed = content.text.trim();
 				const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
-				const md = new Markdown(trimmed, 1, 0, getMarkdownTheme(), mdOptions);
+				const md = new Markdown(trimmed, 1, 0, getMarkdownTheme(), mdOptions, 0);
 				this.#contentContainer.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
 				hasRenderedContent = true;

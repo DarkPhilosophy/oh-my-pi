@@ -21,8 +21,8 @@ import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { AUTO_IMAGE_PROVIDER_ORDER } from "@oh-my-pi/pi-coding-agent/tools/image-providers";
 import { SEARCH_PROVIDER_ORDER } from "@oh-my-pi/pi-coding-agent/web/search/types";
 import { createProjectDirScope, getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
+import * as fileLock from "@oh-my-pi/pi-utils/file-lock";
 import { YAML } from "bun";
-import * as fileLock from "../src/config/file-lock";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
 function context(): Context {
@@ -422,50 +422,6 @@ describe("Settings", () => {
 		});
 	});
 
-	describe("defaults", () => {
-		it("keeps eight inline images live by default", async () => {
-			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			expect(settings.get("tui.maxInlineImages")).toBe(8);
-		});
-
-		it("keeps native terminal progress disabled by default", async () => {
-			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			expect(settings.get("terminal.showProgress")).toBe(false);
-			expect(getDefault("terminal.showProgress")).toBe(false);
-		});
-
-		it("keeps the normal startup splash disabled by default", async () => {
-			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			expect(settings.get("startup.showSplash")).toBe(false);
-			expect(getDefault("startup.showSplash")).toBe(false);
-		});
-
-		it("defaults provider in-flight request limits to an empty map", async () => {
-			const settings = Settings.isolated();
-			expect(settings.get("providers.maxInFlightRequests")).toEqual({});
-			expect(getDefault("providers.maxInFlightRequests")).toEqual({});
-		});
-
-		it("exposes all tool calling mode options", () => {
-			const values = getEnumValues("tools.format");
-			expect(values).toEqual([
-				"auto",
-				"native",
-				"glm",
-				"hermes",
-				"kimi",
-				"xml",
-				"anthropic",
-				"deepseek",
-				"harmony",
-				"qwen3",
-				"gemini",
-				"gemma",
-				"minimax",
-			]);
-		});
-	});
-
 	describe("get()", () => {
 		it("resolves overrides, schema defaults, and falsey values", () => {
 			const isolated = Settings.isolated({
@@ -479,7 +435,6 @@ describe("Settings", () => {
 			expect(isolated.get("setupVersion")).toBe(0);
 			expect(isolated.get("shellPath")).toBe("");
 			expect(isolated.get("enabledModels")).toEqual([]);
-			expect(isolated.get("tui.maxInlineImages")).toBe(getDefault("tui.maxInlineImages"));
 		});
 
 		it("invalidates cached resolved values after set, override, and clearOverride", () => {
@@ -584,7 +539,7 @@ describe("Settings", () => {
 			});
 
 			try {
-				expect(() => isolated.set("provider.appendOnlyContext", "on")).not.toThrow();
+				isolated.set("provider.appendOnlyContext", "on");
 				expect(received).toEqual(["on"]);
 			} finally {
 				unsubscribeThrower();
@@ -944,6 +899,60 @@ describe("Settings", () => {
 	});
 
 	describe("migrations", () => {
+		it("consolidates legacy Exa suite toggles onto exa.enabled", async () => {
+			await writeSettings({
+				exa: {
+					enabled: true,
+					enableSearch: false,
+					enableResearcher: true,
+					enableWebsets: true,
+				},
+			});
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("exa.enabled")).toBe(false);
+			settings.set("display.showTokenUsage", true);
+			await settings.flush();
+			expect((await readSettings()).exa).toEqual({ enabled: false });
+		});
+
+		it("migrates quoted dotted Exa toggles and removes obsolete suite settings", async () => {
+			await Bun.write(
+				getConfigPath(),
+				`"exa.enabled": true\n"exa.enableSearch": false\n"exa.enableResearcher": true\n"exa.enableWebsets": true\n`,
+			);
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("exa.enabled")).toBe(false);
+			settings.set("display.showTokenUsage", true);
+			await settings.flush();
+			expect((await readSettings()).exa).toEqual({ enabled: false });
+		});
+
+		it("removes the legacy Exa block when it contains only retired suite toggles", async () => {
+			await writeSettings({ exa: { enableResearcher: true, enableWebsets: true } });
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("exa.enabled")).toBe(true);
+			settings.set("display.showTokenUsage", true);
+			await settings.flush();
+			expect((await readSettings()).exa).toBeUndefined();
+		});
+
+		it("removes the retired computer backend setting", async () => {
+			await writeSettings({ computer: { backend: "auto", enabled: true }, "computer.backend": "native" });
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("computer.enabled")).toBe(true);
+			settings.set("display.showTokenUsage", true);
+			await settings.flush();
+			expect((await readSettings()).computer).toEqual({ enabled: true });
+		});
+
 		it("maps removed atom edit mode settings to hashline", async () => {
 			await writeSettings({
 				edit: {

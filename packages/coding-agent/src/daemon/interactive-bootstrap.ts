@@ -5,7 +5,7 @@ import chalk from "chalk";
 import { parseArgs } from "../cli/args";
 import { selectSession } from "../cli/session-picker";
 import { applyStartupCwd } from "../cli/startup-cwd";
-import { withFileLock } from "../config/file-lock";
+import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { Settings } from "../config/settings";
 import { initTheme, stopThemeWatcher } from "../modes/theme/theme";
 import { RemoteSessionHandle, type SessionHandleCommand } from "../session/session-handle";
@@ -336,7 +336,6 @@ async function connectWithSpawn(
 				throw new Error(`Unable to connect to daemon: ${lastError.message}`);
 			},
 			{
-				staleMs: startTimeoutMs * 3 + 5_000,
 				retries: retryCount,
 				retryDelayMs: CONNECT_RETRY_MS,
 			},
@@ -753,9 +752,7 @@ export async function launchDaemonInteractive(options: DaemonInteractiveBootstra
 			resumeSessionFile &&
 			(await Bun.file(resumeSessionFile).exists())
 		) {
-			process.stderr.write(
-				`\n${chalk.dim(`Resume this session with ${APP_NAME} --resume ${resumeSessionId}`)}\n`,
-			);
+			process.stderr.write(`\n${chalk.dim(`Resume this session with ${APP_NAME} --resume ${resumeSessionId}`)}\n`);
 		}
 		session.client.close();
 	}

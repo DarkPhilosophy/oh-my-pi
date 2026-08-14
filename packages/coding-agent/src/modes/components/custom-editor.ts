@@ -30,7 +30,7 @@ type ConfigurableEditorAction = Extract<
 	| "app.model.cycleBackward"
 	| "app.model.select"
 	| "app.model.selectTemporary"
-	| "app.tools.expand"
+	| "app.tools.toggleVisibility"
 	| "app.thinking.toggle"
 	| "app.editor.external"
 	| "app.history.search"
@@ -47,17 +47,17 @@ const DEFAULT_ACTION_KEYS: Record<ConfigurableEditorAction, KeyId[]> = {
 	"app.clear": ["ctrl+c"],
 	"app.exit": ["ctrl+d"],
 	"app.suspend": ["ctrl+z"],
-	"app.display.reset": ["ctrl+l"],
+	"app.display.reset": ["alt+l"],
 	"app.thinking.cycle": ["shift+tab"],
 	"app.model.cycleForward": ["ctrl+p"],
 	"app.model.cycleBackward": ["shift+ctrl+p"],
 	"app.model.select": ["alt+m"],
 	"app.model.selectTemporary": ["alt+p"],
-	"app.tools.expand": ["ctrl+o"],
+	"app.tools.toggleVisibility": ["ctrl+shift+o"],
 	"app.thinking.toggle": ["ctrl+t"],
 	"app.editor.external": ["ctrl+g"],
 	"app.history.search": ["ctrl+r"],
-	"app.message.dequeue": ["alt+up"],
+	"app.message.dequeue": ["alt+up", "shift+up"],
 	"app.message.expandQueue": ["alt+o"],
 	"app.retry": ["alt+r"],
 	"app.clipboard.pasteImage": ["ctrl+v"],
@@ -466,7 +466,7 @@ export class CustomEditor extends Editor {
 	/** Decorate magic keywords, attachments, and the queue-composer header/list markers.
 	 *  Queue shorthand reserves its first logical line as a dim `Queueing` label; sequential
 	 *  item markers use the accent color so separate follow-ups remain visible while composing. */
-	decorateText = (text: string): string => {
+	override decorateText = (text: string): string => {
 		const editorText = this.getText();
 		const animated = this.focused && this.#shimmerEnabled() && hasMagicKeyword(editorText);
 		const phase = animated ? (Date.now() % CustomEditor.SHIMMER_PERIOD_MS) / CustomEditor.SHIMMER_PERIOD_MS : 0;
@@ -551,7 +551,7 @@ export class CustomEditor extends Editor {
 	onCycleModelForward?: () => void;
 	onCycleModelBackward?: () => void;
 	onSelectModel?: () => void;
-	onExpandTools?: () => void;
+	onToggleToolActivity?: () => void;
 	onToggleThinking?: () => void;
 	onExternalEditor?: () => void;
 	onHistorySearch?: () => void;
@@ -778,7 +778,7 @@ export class CustomEditor extends Editor {
 		void promise.then(this.#onPasteSettled, this.#onPasteSettled);
 	}
 
-	handleInput(data: string): void {
+	override handleInput(data: string): void {
 		// Serialize behind any in-flight async paste so a trailing Enter / follow-up key can't
 		// submit before the clipboard image reaches `pendingImages` (Codex PR #3602 review).
 		if (this.#pasteInFlight > 0) {
@@ -914,9 +914,9 @@ export class CustomEditor extends Editor {
 				return;
 			}
 
-			// Intercept configured tool output expansion shortcut
-			if (this.#matchesAction(canonical, "app.tools.expand") && this.onExpandTools) {
-				this.onExpandTools();
+			// Intercept configured tool activity visibility toggle
+			if (this.#matchesAction(canonical, "app.tools.toggleVisibility") && this.onToggleToolActivity) {
+				this.onToggleToolActivity();
 				return;
 			}
 

@@ -30,6 +30,7 @@
  * real implementations at the dispatch site.
  */
 
+import { isServiceTierOpenAISettingValue, SERVICE_TIER_OPENAI_VALUES } from "../config/service-tier";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { Args } from "./args";
 import { CliUsageError } from "./usage-error";
@@ -46,7 +47,6 @@ import { CliUsageError } from "./usage-error";
 export interface ParseDeps {
 	logger: { warn: (message: string, meta?: Record<string, unknown>) => void };
 	parseThinking: (value: string | null | undefined) => ConfiguredThinkingLevel | undefined;
-	builtinToolNames: readonly string[];
 	normalizeToolNames: (values: Iterable<string>) => string[];
 	thinkingEfforts: readonly string[];
 }
@@ -152,6 +152,14 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	"--max-time": (result, value) => {
 		result.maxTime = parseMaxTimeSeconds(value);
 	},
+	"--service-tier": (result, value) => {
+		if (!isServiceTierOpenAISettingValue(value)) {
+			throw new CliUsageError(
+				`Invalid --service-tier value: ${JSON.stringify(value)}. Expected one of: ${SERVICE_TIER_OPENAI_VALUES.join(", ")}.`,
+			);
+		}
+		result.serviceTier = value;
+	},
 	"--api-key": (result, value) => {
 		result.apiKey = value;
 	},
@@ -180,15 +188,8 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 				.map(s => s.trim())
 				.filter(Boolean),
 		);
-		// An unknown name silently narrowing the toolset is worse than a failed
-		// launch: scripts keep running believing the tool is available (e.g. a
-		// stale `--tools bash,ssh` after the ssh tool's removal).
-		const unknown = names.filter(name => !deps.builtinToolNames.includes(name));
-		if (unknown.length > 0) {
-			throw new CliUsageError(
-				`Unknown tool${unknown.length === 1 ? "" : "s"} in --tools: ${unknown.join(", ")}. Valid tools: ${deps.builtinToolNames.join(", ")}.`,
-			);
-		}
+		// Validation runs after session tool discovery. At this point extension,
+		// custom, plugin-manifest, and MCP tools are not all known yet.
 		result.tools = names;
 	},
 	"--thinking": (result, value, deps) => {
@@ -211,6 +212,10 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	},
 	"--extension": setExtension,
 	"-e": setExtension,
+	"--trusted-extension": (result, value) => {
+		result.trustedExtensions = result.trustedExtensions ?? [];
+		result.trustedExtensions.push(value);
+	},
 	"--plugin-dir": (result, value) => {
 		result.pluginDirs = result.pluginDirs ?? [];
 		result.pluginDirs.push(value);
@@ -291,12 +296,15 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--allow-home",
 	"--continue",
 	"--no-daemon",
+	"--from-claude",
+	"--from-codex",
 	"--no-session",
 	"--no-tools",
 	"--no-lsp",
 	"--no-pty",
 	"--hide-thinking",
 	"--advisor",
+	"--external-thinking",
 	"--prewalk",
 	"--no-prewalk",
 	"--plan-yolo",

@@ -3,13 +3,16 @@ import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { type AutocompleteProvider, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
-import { $env, isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { resolveLocalRoot } from "../../internal-urls";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { extractImagePathFromText } from "../../modes/components/custom-editor";
+import { ReadToolGroupComponent } from "../../modes/components/read-tool-group";
 import { renderSegmentTrack } from "../../modes/components/segment-track";
 import { TinyTitleDownloadProgressComponent } from "../../modes/components/tiny-title-download-progress";
+import { ToolExecutionComponent } from "../../modes/components/tool-execution";
+import { TreeSelectorComponent } from "../../modes/components/tree-selector";
 import { expandEmoticons } from "../../modes/emoji-autocomplete";
 import { materializeImageReferenceLinks, shiftImageMarkers } from "../../modes/image-references";
 import { createPromptActionAutocompleteProvider } from "../../modes/prompt-action-autocomplete";
@@ -19,8 +22,8 @@ import type { InteractiveModeContext } from "../../modes/types";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
+import { parseSlashCommand } from "../../slash-commands/helpers/parse";
 import { isTinyTitleLocalModelKey } from "../../tiny/models";
-import { isLowSignalTitleInput } from "../../tiny/text";
 import { tinyTitleClient } from "../../tiny/title-client";
 import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
@@ -175,6 +178,7 @@ export class InputController {
 	#focusedPasteListenerInstalled = false;
 	#btwBranchListenerInstalled = false;
 	#btwCopyListenerInstalled = false;
+	#expandToolsListenerInstalled = false;
 	// Tap counter for the double-← gesture; reset whenever a quiet gap
 	// (>= LEFT_DOUBLE_TAP_MAX_GAP_MS) starts a fresh sequence. See
 	// #detectLeftDoubleTap.
@@ -248,7 +252,7 @@ export class InputController {
 			this.#btwBranchListenerInstalled = true;
 			this.ctx.ui.addInputListener(data => {
 				if (!matchesKey(data, "b")) return undefined;
-				if (!this.ctx.canBranchBtw()) return undefined;
+				if (!this.ctx.handlesBtwBranchKey()) return undefined;
 				if (this.ctx.ui.getFocused() !== this.ctx.editor) return undefined;
 				if (this.ctx.editor.getText().trim()) return undefined;
 				void this.ctx.handleBtwBranchKey();
@@ -273,6 +277,24 @@ export class InputController {
 				if (!focused || focused === this.ctx.editor || !hasPasteText(focused)) return undefined;
 				if (!this.ctx.keybindings.matches(data, "app.clipboard.pasteImage")) return undefined;
 				void this.handleImagePaste();
+				return { consume: true };
+			});
+		}
+		if (!this.#expandToolsListenerInstalled) {
+			this.#expandToolsListenerInstalled = true;
+			// `app.tools.expand` (Ctrl+O) toggles the transcript's tool-output
+			// preview. It must fire regardless of focus so a truncated edit stays
+			// expandable while an approval prompt / select dialog holds keyboard
+			// focus (#7837). Defers when the main transcript is not the active
+			// surface (a fullscreen/anchored overlay — agent hub, transcript
+			// viewer, log viewer, model picker) or when the focused component
+			// rebinds Ctrl+O for its own use (the tree selector's filter cycle).
+			this.ctx.ui.addInputListener(data => {
+				if (!this.ctx.keybindings.matches(data, "app.tools.expand")) return undefined;
+				if (this.ctx.ui.hasOverlay()) return undefined;
+				if (this.ctx.ui.getFocused() instanceof TreeSelectorComponent && matchesKey(data, "ctrl+o"))
+					return undefined;
+				this.toggleToolOutputExpansion();
 				return { consume: true };
 			});
 		}
@@ -328,10 +350,10 @@ export class InputController {
 			}
 
 			if (this.ctx.loopModeEnabled) {
-				this.ctx.pauseLoop();
 				if (this.ctx.session.isStreaming) {
 					this.#abortStreamingTurn();
 				} else {
+					this.ctx.pauseLoop();
 					this.ctx.cancelPendingSubmission();
 				}
 				return;
@@ -409,14 +431,13 @@ export class InputController {
 		this.ctx.editor.setActionKeys("app.exit", this.ctx.keybindings.getKeys("app.exit"));
 		this.ctx.editor.setActionKeys("app.display.reset", this.ctx.keybindings.getKeys("app.display.reset"));
 		this.ctx.editor.onDisplayReset = () => {
-			// Explicit user gesture (Ctrl+L): re-query the terminal background once
-			// so a mid-session light/dark switch is picked up even on terminals
-			// without an end-to-end Mode 2031 notification path (#5352). The
-			// appearance callback re-evaluates the auto theme; the repaint below
-			// then renders the resolved palette. Bounded to one OSC 11 probe per
-			// gesture — no timers, no periodic polling.
-			this.ctx.ui.terminal.refreshAppearance?.();
-			this.ctx.ui.resetDisplay();
+			// Explicit user gesture (display reset, Alt+L by default): re-query the
+			// terminal background once so a mid-session light/dark switch is picked
+			// up even on terminals without an end-to-end Mode 2031 notification
+			// path (#5352). The appearance callback re-evaluates the auto theme; the
+			// repaint below then renders the resolved palette. Bounded to one OSC 11
+			// probe per gesture — no timers, no periodic polling.
+			this.ctx.resetDisplayAfterAppearanceRefresh();
 		};
 		this.ctx.editor.onExit = () => this.handleCtrlD();
 		this.ctx.editor.setActionKeys("app.suspend", this.ctx.keybindings.getKeys("app.suspend"));
@@ -460,8 +481,11 @@ export class InputController {
 			this.ctx.keybindings.getKeys("app.clipboard.copyPrompt"),
 		);
 		this.ctx.editor.onCopyPrompt = () => this.handleCopyPrompt();
-		this.ctx.editor.setActionKeys("app.tools.expand", this.ctx.keybindings.getKeys("app.tools.expand"));
-		this.ctx.editor.onExpandTools = () => this.toggleToolOutputExpansion();
+		this.ctx.editor.setActionKeys(
+			"app.tools.toggleVisibility",
+			this.ctx.keybindings.getKeys("app.tools.toggleVisibility"),
+		);
+		this.ctx.editor.onToggleToolActivity = () => this.toggleToolActivityVisibility();
 		this.ctx.editor.setActionKeys("app.message.dequeue", this.ctx.keybindings.getKeys("app.message.dequeue"));
 		this.ctx.editor.onDequeue = () => this.handleDequeue();
 		this.ctx.editor.setActionKeys("app.message.expandQueue", this.ctx.keybindings.getKeys("app.message.expandQueue"));
@@ -499,6 +523,9 @@ export class InputController {
 		}
 		for (const key of this.ctx.keybindings.getKeys("app.stt.toggle")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.handleSTTToggle());
+		}
+		for (const key of this.ctx.keybindings.getKeys("app.live.toggle")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.handleLiveCommand());
 		}
 		// Hold the space bar to push-to-talk: the editor recognizes the auto-repeat burst, tracks
 		// the spam back out, and toggles STT on hold start / release. Gated on `stt.enabled` so a
@@ -663,6 +690,7 @@ export class InputController {
 			let inputImageLinks =
 				this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
 			let hasInputImages = (inputImages?.length ?? 0) > 0;
+			const submittedImages = inputImages;
 
 			if (runner?.hasHandlers("input")) {
 				const result = await runner.emitInput(text, inputImages, "interactive");
@@ -682,6 +710,22 @@ export class InputController {
 				}
 				hasInputImages = (inputImages?.length ?? 0) > 0;
 			}
+			const submittedMode = parseSlashCommand(text)?.name;
+			const draftDetached =
+				submittedMode === "plan" ||
+				submittedMode === "vibe" ||
+				submittedMode === "goal" ||
+				submittedMode === "guided-goal";
+			if (
+				draftDetached &&
+				submittedImages?.length &&
+				submittedImages.every((image, index) => this.ctx.editor.pendingImages[index] === image)
+			) {
+				this.ctx.editor.pendingImages.splice(0, submittedImages.length);
+				this.ctx.editor.pendingImageLinks.splice(0, submittedImages.length);
+				this.ctx.editor.imageLinks =
+					this.ctx.editor.pendingImageLinks.length > 0 ? this.ctx.editor.pendingImageLinks : undefined;
+			}
 
 			if (!text && !hasInputImages) return;
 
@@ -697,9 +741,11 @@ export class InputController {
 
 			// Handle built-in slash commands
 			if (text) {
-				const slashResult = await executeBuiltinSlashCommand(text, {
-					ctx: this.ctx,
-				});
+				const input =
+					(inputImages?.length ?? 0) > 0 || (inputImageLinks?.length ?? 0) > 0
+						? { images: inputImages, imageLinks: inputImageLinks }
+						: undefined;
+				const slashResult = await executeBuiltinSlashCommand(text, { ctx: this.ctx, input, draftDetached });
 				if (slashResult === true) {
 					if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
 					return;
@@ -802,6 +848,19 @@ export class InputController {
 			if (this.ctx.session.isCompacting) {
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
 				this.ctx.queueCompactionMessage(text, "steer", images);
+				return;
+			}
+			// Extension commands are local actions. Execute them before the normal
+			// submission path creates an optimistic user message; otherwise a
+			// consumed command remains rendered like a prompt sent to the model.
+			if (this.#isLocalExtensionCommand(text)) {
+				this.ctx.editor.clearDraft(text);
+				try {
+					await this.ctx.session.prompt(text, { images: inputImages });
+				} catch (error) {
+					this.ctx.editor.setText(text);
+					this.ctx.showError(error instanceof Error ? error.message : String(error));
+				}
 				return;
 			}
 
@@ -913,46 +972,27 @@ export class InputController {
 	}
 
 	/**
-	 * Kick off session-title generation while the session is still unnamed.
-	 * Invoked AFTER the optimistic user row is painted so the local tiny-title
-	 * worker's subprocess spawn never lands ahead of the first frame (issue #6462).
-	 * Skips slash extension commands (consumed locally by AgentSession.prompt()),
-	 * already-named sessions, PI_NO_TITLE, and low-signal greetings — no model or
-	 * download UI for those.
+	 * Kick off session-title generation after the optimistic user row paints.
+	 * Local extension commands are consumed before reaching the shared session
+	 * title gate and must not name the conversation.
 	 */
-	#maybeStartTitleGeneration(text: string): void {
-		const runner = this.ctx.session.extensionRunner;
+	#isLocalExtensionCommand(text: string): boolean {
 		const extensionCommandSpace = text.indexOf(" ");
-		const isLocalExtensionCommand =
+		return (
 			text.startsWith("/") &&
-			runner?.getCommand(extensionCommandSpace === -1 ? text.slice(1) : text.slice(1, extensionCommandSpace)) !==
-				undefined;
-		if (
-			isLocalExtensionCommand ||
-			this.ctx.sessionManager.getSessionName() ||
-			$env.PI_NO_TITLE ||
-			isLowSignalTitleInput(text)
-		) {
+			this.ctx.session.extensionRunner?.getCommand(
+				extensionCommandSpace === -1 ? text.slice(1) : text.slice(1, extensionCommandSpace),
+			) !== undefined
+		);
+	}
+
+	#maybeStartTitleGeneration(text: string): void {
+		if (this.#isLocalExtensionCommand(text)) {
 			return;
 		}
-		this.#showTinyTitleDownloadProgress(this.ctx.settings.get("providers.tinyModel"));
-		this.ctx.session
-			.generateTitle(text)
-			.then(async title => {
-				// Re-check: a concurrent attempt for an earlier message may have
-				// already named the session. Don't clobber it. Terminal title and
-				// accent updates fire from the onSessionNameChanged listener.
-				if (title && !this.ctx.sessionManager.getSessionName()) {
-					await this.ctx.sessionManager.setSessionName(title, "auto");
-				}
-			})
-			.catch(err => {
-				logger.warn("title-generator: uncaught auto-title error", {
-					sessionId: this.ctx.session.sessionId,
-					reason: "uncaught-auto-title-error",
-					error: err instanceof Error ? err.message : String(err),
-				});
-			});
+		this.ctx.session.maybeStartTitleGeneration(text, () => {
+			this.#showTinyTitleDownloadProgress(this.ctx.settings.get("providers.tinyModel"));
+		});
 	}
 
 	/** Submit editor text to the focused subagent session (chat-only focus policy). */
@@ -1321,9 +1361,8 @@ export class InputController {
 		}
 
 		if (text) {
-			const slashResult = await executeBuiltinSlashCommand(text, {
-				ctx: this.ctx,
-			});
+			const input = (images?.length ?? 0) > 0 || (imageLinks?.length ?? 0) > 0 ? { images, imageLinks } : undefined;
+			const slashResult = await executeBuiltinSlashCommand(text, { ctx: this.ctx, input });
 			if (slashResult === true) {
 				if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
 				return;
@@ -1882,7 +1921,38 @@ export class InputController {
 	}
 
 	toggleToolOutputExpansion(): void {
+		if (this.ctx.hideToolActivity) {
+			const visibilityKey = this.ctx.keybindings.getDisplayString("app.tools.toggleVisibility");
+			const visibilityHint = visibilityKey ? `${visibilityKey} or /settings` : "/settings";
+			this.ctx.showStatus(`Tool activity is hidden — show it with ${visibilityHint} before expanding`);
+			return;
+		}
 		this.setToolsExpanded(!this.ctx.toolOutputExpanded);
+	}
+
+	toggleToolActivityVisibility(): void {
+		this.ctx.hideToolActivity = !this.ctx.hideToolActivity;
+		this.ctx.settings.set("display.hideToolActivity", this.ctx.hideToolActivity);
+
+		if (!this.ctx.hideToolActivity) {
+			this.ctx.toolOutputExpanded = false;
+		}
+
+		for (const child of this.ctx.chatContainer.children) {
+			if (
+				!this.ctx.hideToolActivity &&
+				(child instanceof ToolExecutionComponent || child instanceof ReadToolGroupComponent)
+			) {
+				child.setExpanded(false);
+			} else if (child instanceof AssistantMessageComponent) {
+				child.setToolResultImagesVisible(!this.ctx.hideToolActivity);
+			}
+		}
+		this.ctx.chatContainer.setToolActivityVisible(!this.ctx.hideToolActivity);
+
+		if (this.ctx.hideToolActivity) this.ctx.ui.clearInlineImages();
+		this.ctx.ui.resetDisplay();
+		this.ctx.showStatus(`Tool activity: ${this.ctx.hideToolActivity ? "hidden" : "visible"}`);
 	}
 
 	setToolsExpanded(expanded: boolean): void {

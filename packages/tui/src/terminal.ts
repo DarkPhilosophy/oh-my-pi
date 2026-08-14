@@ -141,6 +141,66 @@ export function chunkForConPTY(data: string, maxChunkBytes: number = MAX_CONPTY_
 }
 
 /**
+ * Hard cap on bytes queued to a stalled stdout before its consumer is declared
+ * gone. A live terminal drains within milliseconds, so a backlog this large —
+ * far above any legitimate paint (a full session resume is a few MiB) — means
+ * the PTY reader has stopped consuming entirely. Without the cap, `#safeWrite`
+ * keeps handing cosmetic frames (the `hub wait` spinner, 500 ms progress
+ * snapshots) to a writable buffer that never drains, growing RSS without bound
+ * until the host runs out of memory. See #6854.
+ */
+const MAX_STDOUT_BACKLOG_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Turns an unbounded, never-draining stdout writable buffer into a bounded
+ * disconnect signal.
+ *
+ * `process.stdout.write()` returns `false` once its buffer exceeds the stream
+ * high-water mark; the bytes stay queued and are only freed when the consumer
+ * drains (the `drain` event). While the consumer keeps up, writes are accepted
+ * and nothing accumulates. When it stalls, every subsequent write piles onto
+ * the buffer — a stalled-but-alive PTY reader never throws, so the write path
+ * has no other signal that output is going nowhere. This guard sums the bytes
+ * queued since backpressure began and reports when that backlog crosses the
+ * cap, at which point the caller treats the terminal as disconnected.
+ *
+ * Exported for unit testing; `ProcessTerminal` is the sole production user.
+ */
+export class OutputBacklogGuard {
+	#bytes = 0;
+	#tracking = false;
+
+	constructor(private readonly capBytes: number = MAX_STDOUT_BACKLOG_BYTES) {}
+
+	/** True once a refused write started a backlog that has not yet drained. */
+	get tracking(): boolean {
+		return this.#tracking;
+	}
+
+	/**
+	 * Record one `stdout.write()`: `accepted` is that call's return value and
+	 * `bytes` its encoded size. Returns true when the pending backlog now
+	 * exceeds the cap and the terminal should be treated as disconnected.
+	 */
+	record(accepted: boolean, bytes: number): boolean {
+		if (!this.#tracking) {
+			// Consumer is keeping up; nothing is queued.
+			if (accepted) return false;
+			// First refused write: backpressure has begun.
+			this.#tracking = true;
+		}
+		this.#bytes += bytes;
+		return this.#bytes > this.capBytes;
+	}
+
+	/** Called on the stdout `drain` event: the buffer emptied, backlog cleared. */
+	reset(): void {
+		this.#bytes = 0;
+		this.#tracking = false;
+	}
+}
+
+/**
  * Minimal terminal interface for TUI
  */
 
@@ -318,6 +378,8 @@ export function emergencyTerminalRestore(): void {
 }
 /** Terminal-reported appearance (dark/light mode). */
 export type TerminalAppearance = "dark" | "light";
+/** Identity of an accepted explicit terminal appearance refresh request. */
+export type TerminalAppearanceRequestToken = number;
 export interface Terminal {
 	// Start the terminal with input, resize, disconnect, and focus handlers.
 	start(
@@ -348,7 +410,7 @@ export interface Terminal {
 	// Whether Kitty keyboard protocol is active
 	get kittyProtocolActive(): boolean;
 
-	// The exact kitty keyboard push sequence in effect ("\x1b[>1u" or "\x1b[>7u"),
+	// The exact kitty keyboard push sequence in effect ("\x1b[>5u" or "\x1b[>7u"),
 	// or null when the protocol is not active. Kitty keyboard flags are per-screen,
 	// so the TUI re-pushes this after entering the alternate screen.
 	get kittyEnableSequence(): string | null;
@@ -390,17 +452,33 @@ export interface Terminal {
 	 * Subscribers registered after detection are invoked immediately with the
 	 * already-detected appearance so late subscribers never miss it.
 	 */
-	onAppearanceChange(callback: (appearance: TerminalAppearance) => void): void;
+	onAppearanceChange(
+		callback: (appearance: TerminalAppearance, requestToken?: TerminalAppearanceRequestToken) => void,
+	): void;
 	/**
-	 * Issue a single OSC 11 background-color re-query, driving the appearance
-	 * callbacks through the same parse/dedup pipeline used at startup and on Mode
-	 * 2031 notifications. Bounded: one probe per call, no timers. Invoked on the
-	 * user's explicit display-reset gesture (Ctrl+L) so terminals that cannot
-	 * deliver end-to-end Mode 2031 notifications still pick up a light/dark switch
-	 * without a restart. Optional so custom Terminals built against older pi-tui
-	 * versions keep working.
+	 * Register a callback fired for every valid OSC 11 appearance report,
+	 * including reports whose classification matches the current appearance.
+	 * Unlike onAppearanceChange, this does not replay an earlier report.
+	 * Optional so custom Terminals built against older pi-tui versions keep working.
 	 */
-	refreshAppearance?(): void;
+	onAppearanceReport?(
+		callback: (appearance: TerminalAppearance, requestToken?: TerminalAppearanceRequestToken) => void,
+	): (() => void) | void;
+	/**
+	 * Start a bounded OSC 11 background-color refresh cycle, driving appearance
+	 * callbacks through the same parse/dedup pipeline used at startup and on Mode
+	 * 2031 notifications. Direct terminals need one query; tmux needs a
+	 * passthrough query to update its cache followed by one delayed direct cache
+	 * read. Invoked on the user's explicit display-reset gesture so terminals
+	 * without end-to-end Mode 2031 notifications pick up a light/dark switch
+	 * without a restart. No periodic probes are armed.
+	 *
+	 * A caller-provided token must be propagated unchanged to callbacks and
+	 * returned when the request is accepted. This lets callers establish ownership
+	 * before implementations synchronously dispatch a cached response. Optional so
+	 * custom Terminals built against older pi-tui versions keep working.
+	 */
+	refreshAppearance?(requestToken?: TerminalAppearanceRequestToken): TerminalAppearanceRequestToken | void;
 	/** The last detected terminal appearance, or undefined if not yet known. */
 	get appearance(): TerminalAppearance | undefined;
 	/**
@@ -446,6 +524,7 @@ function parseOsc99KeyValues(section: string): Map<string, string> {
 }
 const XTERM_SCROLL_TO_BOTTOM_MODES = [1010, 1011] as const;
 type Osc11QueryRoute = "direct" | "tmux";
+const TMUX_OSC11_CACHE_REFRESH_DELAY_MS = 100;
 
 function isXtermScrollToBottomMode(mode: number): boolean {
 	return mode === 1010 || mode === 1011;
@@ -486,6 +565,7 @@ export class ProcessTerminal implements Terminal {
 		this.#markTerminalDisconnected("stdin failed", err);
 	};
 	#dead = false;
+	#active = false;
 	// Last cursor visibility written to the terminal, sniffed from every
 	// outgoing sequence (frame buffers embed their own ?25h/?25l), so
 	// hideCursor()/showCursor() can skip same-state writes. `undefined` =
@@ -501,14 +581,32 @@ export class ProcessTerminal implements Terminal {
 	#stdoutErrorHandler = (err: Error) => {
 		this.#markTerminalDisconnected("stdout failed", err);
 	};
+	// Bounds the stdout writable buffer against a stalled PTY consumer: a
+	// stalled-but-alive reader never throws, so #safeWrite has no error to catch
+	// and the writable buffer grows without bound as cosmetic frames pile up.
+	// See OutputBacklogGuard and #6854.
+	#stdoutBacklog = new OutputBacklogGuard();
+	#stdoutDrainArmed = false;
+	#stdoutDrainHandler = () => {
+		this.#stdoutDrainArmed = false;
+		this.#stdoutBacklog.reset();
+	};
 
 	#windowsVTInputRestore?: () => void;
 	#xtermScrollToBottomRestoreModes = new Set<number>();
-	#appearanceCallbacks: Array<(appearance: TerminalAppearance) => void> = [];
+	#appearanceCallbacks: Array<
+		(appearance: TerminalAppearance, requestToken?: TerminalAppearanceRequestToken) => void
+	> = [];
+	#appearanceReportCallbacks: Array<
+		(appearance: TerminalAppearance, requestToken?: TerminalAppearanceRequestToken) => void
+	> = [];
 	#appearance: TerminalAppearance | undefined;
 	#osc11Pending = false;
-	#osc11QueuedRoute?: Osc11QueryRoute;
+	#osc11ActiveToken?: TerminalAppearanceRequestToken;
+	#osc11QueuedQuery?: { route: Osc11QueryRoute; token?: TerminalAppearanceRequestToken };
+	#nextAppearanceRequestToken = 1;
 	#osc11ResponseBuffer = "";
+	#osc11TmuxRefreshTimer?: Timer;
 	#osc99PendingId: string | undefined;
 	#osc99ResponseBuffer = "";
 	#osc99Capabilities = new Map<string, string>();
@@ -553,7 +651,9 @@ export class ProcessTerminal implements Terminal {
 		return this.#appearance;
 	}
 
-	onAppearanceChange(callback: (appearance: TerminalAppearance) => void): void {
+	onAppearanceChange(
+		callback: (appearance: TerminalAppearance, requestToken?: TerminalAppearanceRequestToken) => void,
+	): void {
 		this.#appearanceCallbacks.push(callback);
 		// Replay an already-detected appearance: the startup OSC 11 response can
 		// arrive before consumers (e.g. the theme bridge) subscribe, and the
@@ -568,17 +668,37 @@ export class ProcessTerminal implements Terminal {
 		}
 	}
 
+	onAppearanceReport(
+		callback: (appearance: TerminalAppearance, requestToken?: TerminalAppearanceRequestToken) => void,
+	): () => void {
+		this.#appearanceReportCallbacks.push(callback);
+		let subscribed = true;
+		return () => {
+			if (!subscribed) return;
+			subscribed = false;
+			const index = this.#appearanceReportCallbacks.indexOf(callback);
+			if (index !== -1) this.#appearanceReportCallbacks.splice(index, 1);
+		};
+	}
+
 	/**
-	 * Re-query the terminal background via a single OSC 11 probe. Reuses the
-	 * startup DA1-sentinel FIFO, pending/queued gating, parsing, dedup, and
-	 * appearance callbacks. Inside tmux, only this explicit path wraps the query
-	 * and sentinel together for passthrough to the outer terminal; startup and
-	 * Mode 2031 probes remain direct. Bounded to one probe per call; no timers are
-	 * armed. Suppressed while headless or after the terminal is torn down.
+	 * Re-query the terminal background through the startup DA1-sentinel FIFO,
+	 * pending/queued gating, parsing, dedup, and appearance callbacks. Inside
+	 * tmux, only this explicit path first passes an OSC 11 query to the outer
+	 * terminal, waits briefly for tmux to consume the response into its cache,
+	 * then reads that cache with a direct query. The outer query deliberately has
+	 * no DA1 sentinel: multiplexers can decode a fragmented DA1 response as a key
+	 * sequence and leak the remaining bytes into the editor. Startup and Mode 2031
+	 * probes remain direct. Suppressed while inactive, headless, or after teardown.
 	 */
-	refreshAppearance(): void {
-		if (this.#headless || this.#dead) return;
-		this.#queryBackgroundColor(isInsideTmux() ? "tmux" : "direct");
+	refreshAppearance(requestToken?: TerminalAppearanceRequestToken): TerminalAppearanceRequestToken | void {
+		if (!this.#active || this.#headless || this.#dead) return;
+		const token = requestToken ?? this.#nextAppearanceRequestToken++;
+		if (token >= this.#nextAppearanceRequestToken) {
+			this.#nextAppearanceRequestToken = token + 1;
+		}
+		this.#queryBackgroundColor(isInsideTmux() ? "tmux" : "direct", token);
+		return token;
 	}
 
 	onPrivateModeReport(callback: (mode: number, supported: boolean, confirmed?: boolean) => void): void {
@@ -616,10 +736,17 @@ export class ProcessTerminal implements Terminal {
 		// stderr-guard in pi-utils (mirrors openai/codex#24459).
 		suppressTerminalStderr();
 
-		// Save previous state and enable raw mode
+		// A multiplexer or SSH disconnect can leave isTTY true after its pty has
+		// been revoked. Raw mode is then impossible, so take the normal terminal
+		// disconnect path rather than letting Bun abort startup with EIO.
 		this.#wasRaw = process.stdin.isRaw || false;
 		if (process.stdin.setRawMode) {
-			process.stdin.setRawMode(true);
+			try {
+				process.stdin.setRawMode(true);
+			} catch (err) {
+				this.#markTerminalDisconnected("stdin raw mode setup failed", err);
+				return;
+			}
 		}
 		process.stdin.setEncoding("utf8");
 		process.stdin.on("end", this.#stdinEndHandler);
@@ -670,6 +797,9 @@ export class ProcessTerminal implements Terminal {
 		// The query handler intercepts input temporarily, then installs the user's handler
 		// See: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
 		this.#queryAndEnableKittyProtocol();
+		// Explicit probes are safe only after their response parser and stdin
+		// data handler are installed. Keep this false throughout temporary stops.
+		this.#active = true;
 		setHangulCompatibilityJamoWidth(TERMINAL.hangulJamoWidth);
 
 		// Query terminal background color via OSC 11 for dark/light detection.
@@ -943,20 +1073,21 @@ export class ProcessTerminal implements Terminal {
 				switch (owner.kind) {
 					case "osc11": {
 						if (this.#osc11Pending) {
-							// DA1 arrived before the OSC 11 reply: terminal does not support OSC 11.
+							// DA1 arrived before OSC 11 response: terminal doesn't support OSC 11.
 							this.#osc11Pending = false;
+							this.#osc11ActiveToken = undefined;
 							this.#osc11ResponseBuffer = "";
 						}
 						// Start a queued OSC 11 query once the prior cycle is fully drained.
 						if (
-							this.#osc11QueuedRoute !== undefined &&
+							this.#osc11QueuedQuery !== undefined &&
 							!this.#osc11Pending &&
 							!this.#da1SentinelOwners.some(o => o.kind === "osc11") &&
 							!this.#dead
 						) {
-							const route = this.#osc11QueuedRoute;
-							this.#osc11QueuedRoute = undefined;
-							this.#startOsc11Query(route);
+							const query = this.#osc11QueuedQuery;
+							this.#osc11QueuedQuery = undefined;
+							this.#startOsc11Query(query.route, query.token);
 						}
 						break;
 					}
@@ -1008,15 +1139,21 @@ export class ProcessTerminal implements Terminal {
 				const reportedFlags = parseInt(match[1]!, 10);
 				this.#kittyProtocolActive = true;
 				setKittyProtocolActive(true);
-				if (reportedFlags >= 3) {
-					// Already enriched (Ghostty/foot may keep flags from a parent app).
-					// Push level-2 to lock in event reporting.
+				if (isConPTYHosted()) {
+					// ConPTY (native Windows and WSL) drops Shift+letter keypresses
+					// entirely when flag 4 (report alternate keys) is set. Use flag 1
+					// (disambiguate only), preserving flag 2 if already active.
+					this.#kittyEnableSeq = (reportedFlags & 2) !== 0 ? "\x1b[>3u" : "\x1b[>1u";
+					this.#safeWrite(this.#kittyEnableSeq);
+				} else if ((reportedFlags & 2) !== 0) {
+					// Preserve event-type reporting already enabled by a parent app.
+					// Push level-2 to keep its shortcuts reporting consistently.
 					this.#kittyEnableSeq = "\x1b[>7u";
 					this.#safeWrite(this.#kittyEnableSeq);
 				} else {
-					// Level 1 (disambiguate escape codes) — enough for Shift+Enter
-					// without the modifyOtherKeys fallback that caused regression #3259.
-					this.#kittyEnableSeq = "\x1b[>1u";
+					// Disambiguate escape codes and report base-layout keys for physical
+					// shortcut matching, without event reporting that caused regression #3259.
+					this.#kittyEnableSeq = "\x1b[>5u";
 					this.#safeWrite(this.#kittyEnableSeq);
 				}
 				return;
@@ -1037,8 +1174,10 @@ export class ProcessTerminal implements Terminal {
 					if (!osc11Match) return;
 					const [, rHex, gHex, bHex] = osc11Match;
 					this.#osc11Pending = false;
+					const requestToken = this.#osc11ActiveToken;
+					this.#osc11ActiveToken = undefined;
 					this.#osc11ResponseBuffer = "";
-					this.#handleOsc11Response(rHex!, gHex!, bHex!);
+					this.#handleOsc11Response(rHex!, gHex!, bHex!, requestToken);
 					return;
 				}
 			}
@@ -1091,28 +1230,43 @@ export class ProcessTerminal implements Terminal {
 	 * DA1 avoids indefinite hangs: if DA1 response arrives before OSC 11,
 	 * the terminal does not support OSC 11.
 	 */
-	#queryBackgroundColor(route: Osc11QueryRoute = "direct"): void {
+	#queryBackgroundColor(route: Osc11QueryRoute = "direct", token?: TerminalAppearanceRequestToken): void {
 		if (this.#dead) return;
 		// Queue if an OSC 11 query is in flight or its DA1 sentinel hasn't been
 		// consumed yet. Starting a new query while a DA1 is outstanding would
 		// increment the sentinel counter, and the old DA1 arrival would then
 		// prematurely clear the new query's pending state. Preserve a requested
-		// tmux passthrough route when coalescing direct and explicit queries.
+		// tmux passthrough route when coalescing direct and explicit queries, and
+		// retain the latest explicit request identity across automatic queries.
 		if (this.#osc11Pending || this.#da1SentinelOwners.some(o => o.kind === "osc11")) {
-			if (this.#osc11QueuedRoute !== "tmux") this.#osc11QueuedRoute = route;
+			const queued = this.#osc11QueuedQuery;
+			this.#osc11QueuedQuery = {
+				route: queued?.route === "tmux" || route === "tmux" ? "tmux" : "direct",
+				token: token ?? queued?.token,
+			};
 			return;
 		}
-		this.#startOsc11Query(route);
+		this.#startOsc11Query(route, token);
 	}
 
-	#startOsc11Query(route: Osc11QueryRoute): void {
+	#startOsc11Query(route: Osc11QueryRoute, token?: TerminalAppearanceRequestToken): void {
 		this.#osc11Pending = true;
+		this.#osc11ActiveToken = token;
 		this.#osc11ResponseBuffer = "";
-		this.#da1SentinelOwners.push({ kind: "osc11" });
 		if (route === "tmux") {
-			this.#safeWrite(wrapTmuxPassthrough("\x1b]11;?\x07\x1b[c"));
+			this.#safeWrite(wrapTmuxPassthrough("\x1b]11;?\x07"));
+			this.#osc11TmuxRefreshTimer = setTimeout(() => {
+				this.#osc11TmuxRefreshTimer = undefined;
+				if (this.#dead || !this.#osc11Pending) return;
+				this.#startDirectOsc11Query();
+			}, TMUX_OSC11_CACHE_REFRESH_DELAY_MS);
 			return;
 		}
+		this.#startDirectOsc11Query();
+	}
+
+	#startDirectOsc11Query(): void {
+		this.#da1SentinelOwners.push({ kind: "osc11" });
 		this.#safeWrite("\x1b]11;?\x07"); // OSC 11 query (BEL terminated)
 		this.#safeWrite("\x1b[c"); // DA1 sentinel
 	}
@@ -1171,7 +1325,7 @@ export class ProcessTerminal implements Terminal {
 	 * Parse an OSC 11 background color response and compute BT.601 luminance.
 	 * Handles 1-, 2-, 3-, and 4-digit XParseColor hex components.
 	 */
-	#handleOsc11Response(rHex: string, gHex: string, bHex: string): void {
+	#handleOsc11Response(rHex: string, gHex: string, bHex: string, requestToken?: TerminalAppearanceRequestToken): void {
 		const normalize = (hex: string): number => {
 			const value = parseInt(hex, 16);
 			if (Number.isNaN(value)) return 0;
@@ -1180,11 +1334,19 @@ export class ProcessTerminal implements Terminal {
 		};
 		const luminance = 0.299 * normalize(rHex) + 0.587 * normalize(gHex) + 0.114 * normalize(bHex);
 		const mode: TerminalAppearance = luminance < 0.5 ? "dark" : "light";
-		if (mode === this.#appearance) return;
+		const changed = mode !== this.#appearance;
 		this.#appearance = mode;
+		for (const cb of [...this.#appearanceReportCallbacks]) {
+			try {
+				cb(mode, requestToken);
+			} catch {
+				/* ignore callback errors */
+			}
+		}
+		if (!changed) return;
 		for (const cb of this.#appearanceCallbacks) {
 			try {
-				cb(mode);
+				cb(mode, requestToken);
 			} catch {
 				/* ignore callback errors */
 			}
@@ -1387,6 +1549,8 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	stop(): void {
+		// Suppress observer/timer callbacks before any teardown can yield or throw.
+		this.#active = false;
 		if (this.#headless) return;
 		// Unregister from emergency cleanup
 		if (activeTerminal === this) {
@@ -1440,10 +1604,16 @@ export class ProcessTerminal implements Terminal {
 			clearTimeout(this.#mode2031DebounceTimer);
 			this.#mode2031DebounceTimer = undefined;
 		}
+		if (this.#osc11TmuxRefreshTimer) {
+			clearTimeout(this.#osc11TmuxRefreshTimer);
+			this.#osc11TmuxRefreshTimer = undefined;
+		}
 		this.#appearanceCallbacks = [];
+		this.#appearanceReportCallbacks = [];
 		this.#osc11Pending = false;
+		this.#osc11ActiveToken = undefined;
 		this.#clearWindowsTerminalAppearancePoll();
-		this.#osc11QueuedRoute = undefined;
+		this.#osc11QueuedQuery = undefined;
 		this.#osc11ResponseBuffer = "";
 		this.#osc99PendingId = undefined;
 		this.#osc99ResponseBuffer = "";
@@ -1496,6 +1666,11 @@ export class ProcessTerminal implements Terminal {
 			process.stdout.removeListener("resize", this.#stdoutResizeListener);
 			this.#stdoutResizeListener = undefined;
 		}
+		if (this.#stdoutDrainArmed) {
+			process.stdout.removeListener("drain", this.#stdoutDrainHandler);
+			this.#stdoutDrainArmed = false;
+		}
+		this.#stdoutBacklog.reset();
 		this.#resizeHandler = undefined;
 
 		// Pause stdin to prevent any buffered input (e.g., Ctrl+D) from being
@@ -1542,7 +1717,7 @@ export class ProcessTerminal implements Terminal {
 		}
 
 		if (process.platform === "win32") {
-			void postmortem.quit(129);
+			void postmortem.quit(129, { drainStdout: false });
 			return;
 		}
 		try {
@@ -1589,13 +1764,26 @@ export class ProcessTerminal implements Terminal {
 			// `process.stdout.write(string)` UTF-8-encodes before `WriteFile`,
 			// and a code-unit cap would let CJK transcript rows expand past the
 			// threshold. See #2034 and #2095.
-			if (isConPTYHosted() && Buffer.byteLength(data, "utf8") > MAX_CONPTY_WRITE_CHUNK_BYTES) {
+			const bytes = Buffer.byteLength(data, "utf8");
+			let accepted: boolean;
+			if (isConPTYHosted() && bytes > MAX_CONPTY_WRITE_CHUNK_BYTES) {
+				accepted = true;
 				for (const chunk of chunkForConPTY(data, MAX_CONPTY_WRITE_CHUNK_BYTES)) {
 					if (this.#dead) break;
-					process.stdout.write(chunk);
+					accepted = process.stdout.write(chunk);
 				}
 			} else {
-				process.stdout.write(data);
+				accepted = process.stdout.write(data);
+			}
+			// A stalled-but-alive PTY consumer never throws: write() just returns
+			// false and queues the bytes. Bound that never-draining backlog by
+			// declaring the terminal disconnected once it crosses the cap — the
+			// same clean-exit path a dead terminal takes (#6854).
+			if (this.#stdoutBacklog.record(accepted, bytes)) {
+				this.#markTerminalDisconnected("stdout backlog exceeded cap; PTY consumer stalled");
+			} else if (this.#stdoutBacklog.tracking && !this.#stdoutDrainArmed) {
+				this.#stdoutDrainArmed = true;
+				process.stdout.once("drain", this.#stdoutDrainHandler);
 			}
 		} catch (err) {
 			this.#markTerminalDisconnected("stdout failed", err);

@@ -79,6 +79,9 @@ async function startHarness(): Promise<Harness> {
 				state: {
 					sessionId: id,
 					thinkingLevel: undefined,
+					fastModeEnabled: false,
+					fastModeActive: false,
+					tokensPerSecond: null,
 					isStreaming: false,
 					isCompacting: false,
 					steeringMode: "one-at-a-time",

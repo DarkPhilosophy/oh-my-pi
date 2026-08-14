@@ -101,7 +101,7 @@ afterEach(() => {
 });
 
 describe("StatusLineComponent jj cache coherence", () => {
-	it("invalidate() drops the throttled jj branch cache within its TTL and refetches", async () => {
+	it("invalidateGitCaches() drops the throttled jj branch cache within its TTL and refetches", async () => {
 		// A live jj bookmark label; a second query for the SAME root returns a new
 		// label, simulating a colocated bookmark/HEAD move mid-TTL.
 		const branchSpy = spyOn(jj.workingCopy, "label").mockResolvedValue("bookmark-v1");
@@ -118,17 +118,16 @@ describe("StatusLineComponent jj cache coherence", () => {
 
 		// Move the bookmark: a plain render within the 5s TTL must keep serving the
 		// cached label without a refetch (guards that the TTL is real, so the next
-		// assertion proves invalidate() — not TTL expiry — forces the refresh).
+		// assertion proves invalidateGitCaches() — not TTL expiry — forces the refresh).
 		branchSpy.mockResolvedValue("bookmark-v2");
 		const throttled = visible(statusLine.getTopBorder(WIDTH).content);
 		await flushMicrotasks();
 		expect(throttled).toContain("bookmark-v1");
 		expect(branchSpy).toHaveBeenCalledTimes(1);
 
-		// invalidate() (public watcher trigger) must reset the jj caches so the
-		// next render refetches despite being inside the TTL, and paint the new
-		// label — the finding-1 contract.
-		statusLine.invalidate();
+		// A HEAD/bookmark change must explicitly reset the jj caches so the next
+		// render refetches despite being inside the TTL and paints the new label.
+		statusLine.invalidateGitCaches();
 		statusLine.getTopBorder(WIDTH);
 		await flushMicrotasks();
 		expect(branchSpy).toHaveBeenCalledTimes(2);
@@ -154,18 +153,19 @@ describe("StatusLineComponent jj cache coherence", () => {
 		expect(visible(statusLine.getTopBorder(WIDTH).content)).not.toContain("branch-A-STALE");
 		expect(branchSpy).toHaveBeenCalledTimes(1);
 
-		// Switch to repo B mid-flight. #jjRootFor(tmpB) re-points #jjRoot to ROOT_B
-		// and resets the jj caches; ROOT_A's lookup is now stale. The render can't
-		// start B's lookup yet — the single in-flight flag is still held by A.
+		// Switch to repo B mid-flight. The cwd-change caller explicitly resets the
+		// VCS caches, aborting ROOT_A's in-flight query and clearing the slot so
+		// B's lookup can start immediately on the next render.
 		setProjectDir(tmpB);
+		statusLine.invalidateGitCaches();
 		statusLine.getTopBorder(WIDTH);
 		await flushMicrotasks();
-		expect(branchSpy).toHaveBeenCalledTimes(1);
+		expect(branchSpy).toHaveBeenCalledTimes(2);
 
 		// Let ROOT_A's slow query finish, then drain its continuation. The
-		// root-keyed guard must DROP it: #jjRoot is ROOT_B, so A's label must never
-		// become B's cached branch, and A's completion must not advance B's
-		// throttle (leaving B free to refetch) — the finding-2/4 contract.
+		// generation guard must DROP it, so A's label never becomes B's cached
+		// branch and its completion cannot advance B's throttle (leaving B free
+		// to refetch) — the finding-2/4 contract.
 		deferredA.resolve("branch-A-STALE");
 		await flushMicrotasks();
 
@@ -206,9 +206,9 @@ describe("StatusLineComponent jj cache coherence", () => {
 		await flushMicrotasks();
 		expect(branchSpy).toHaveBeenCalledTimes(1);
 
-		// A HEAD/bookmark move fires the watcher → invalidate(). The cwd is
+		// A HEAD/bookmark move fires the watcher → invalidateGitCaches(). The cwd is
 		// unchanged, so the next #jjRootFor re-resolves #jjRoot to the SAME ROOT_A.
-		statusLine.invalidate();
+		statusLine.invalidateGitCaches();
 		statusLine.getTopBorder(WIDTH);
 		await flushMicrotasks();
 

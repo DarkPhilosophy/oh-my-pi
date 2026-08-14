@@ -2,9 +2,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
-import { formatDuration, formatNumber, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
+import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
 import { type ThemeColor, theme } from "../../../modes/theme/theme";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
+import { fileHyperlink } from "../../../tui/hyperlink";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
 import { sanitizeStatusText } from "../../shared";
 import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "./context-thresholds";
@@ -116,9 +117,10 @@ const modelSegment: StatusLineSegment = {
 					: `${theme.thinking.autoPending} auto`;
 			} else {
 				const level = state.thinkingLevel ?? ThinkingLevel.Off;
-				if (level !== ThinkingLevel.Off) {
-					thinkingDisplay = theme.thinking[level as keyof typeof theme.thinking] ?? "";
-				}
+				thinkingDisplay =
+					level === ThinkingLevel.Off
+						? `${theme.status.disabled} off`
+						: (theme.thinking[level as keyof typeof theme.thinking] ?? level);
 			}
 		}
 
@@ -289,7 +291,8 @@ const pathSegment: StatusLineSegment = {
 		if (stripPrefix && ctx.worktree) {
 			const { projectName, worktreeName } = ctx.worktree;
 			const label = ctx.git.branch === worktreeName ? projectName : `${projectName}/${worktreeName}`;
-			const content = withIcon(theme.icon.worktree, clampPathLength(label, opts.maxLength ?? 40));
+			const text = fileHyperlink(getProjectDir(), clampPathLength(label, opts.maxLength ?? 40));
+			const content = withIcon(theme.icon.worktree, text);
 			return { content: theme.fg("statusLinePath", content), visible: true };
 		}
 
@@ -310,13 +313,10 @@ const pathSegment: StatusLineSegment = {
 		}
 
 		pwd = clampPathLength(pwd, opts.maxLength ?? 40);
-		if (repoSuffix) {
-			pwd = `${pwd}${repoSuffix}`;
-		}
 
 		const showScratchIcon = scratch && stripPrefix;
 		const icon = showScratchIcon ? theme.icon.scratchFolder : theme.icon.folder;
-		const content = withIcon(icon, pwd);
+		const content = withIcon(icon, `${fileHyperlink(projectDir, pwd)}${repoSuffix}`);
 		return { content: theme.fg("statusLinePath", content), visible: true };
 	},
 };
@@ -601,10 +601,12 @@ const sessionNameSegment: StatusLineSegment = {
 		const name = sessionManager?.getSessionName();
 		if (!name) return { content: "", visible: false };
 
-		const ansi =
-			getSessionAccentAnsi(
-				getSessionAccentHex(name, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance),
-			) ?? theme.getFgAnsi("accent");
+		const accentEnabled = ctx.sessionAccent !== false;
+		const ansi = accentEnabled
+			? (getSessionAccentAnsi(
+					getSessionAccentHex(name, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance),
+				) ?? theme.getFgAnsi("accent"))
+			: theme.getFgAnsi("accent");
 		return { content: `${ansi}${sanitizeStatusText(name)}\x1b[39m`, visible: true };
 	},
 };
@@ -646,7 +648,7 @@ const usageSegment: StatusLineSegment = {
 	id: "usage",
 	render(ctx) {
 		const u = ctx.usage;
-		if (!u || (!u.fiveHour && !u.sevenDay)) {
+		if (!u || (!u.fiveHour && !u.sevenDay && !u.monthly)) {
 			return { content: "", visible: false };
 		}
 		const parts: string[] = [];
@@ -671,6 +673,18 @@ const usageSegment: StatusLineSegment = {
 					? theme.fg("muted", ` (${formatUsageReset(u.sevenDay.resetHours, "h")})`)
 					: "";
 			parts.push(`7d ${pctText}${reset}`);
+		}
+		if (u.monthly) {
+			const pct = u.monthly.percent;
+			// Cursor and OpenCode Go (normalize gates monthly to those providers).
+			// Both floor used percents upstream (Cursor's dashboard shows 1.88 →
+			// "1% used"; OpenCode's endpoint already emits floored integers).
+			const pctText = theme.fg(pickUsageColor(pct), `${Math.floor(pct)}%`);
+			const reset =
+				u.monthly.resetHours !== undefined
+					? theme.fg("muted", ` (${formatUsageReset(u.monthly.resetHours, "h")})`)
+					: "";
+			parts.push(`mo ${pctText}${reset}`);
 		}
 		const content = withIcon(theme.icon.time, parts.join(theme.sep.dot));
 		return { content, visible: true };

@@ -7,7 +7,7 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { getProjectDir, readJsonl, Snowflake } from "@oh-my-pi/pi-utils";
+import { getProjectDir, readJsonl } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 import { hostHasInheritableConsole } from "../../eval/py/spawn-options";
 import type {
@@ -20,6 +20,7 @@ import type {
 	MCPTransport,
 } from "../../mcp/types";
 import { toJsonRpcError } from "../../mcp/types";
+import { RequestIdAllocator } from "../request-id";
 import { isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "../timeout";
 
 /** Subprocess argv and platform-derived spawn flags for an MCP stdio server. */
@@ -494,7 +495,7 @@ function signalStdioProcess(
 
 /**
  * Terminate an MCP stdio subprocess: SIGTERM (process-group when `detached`
- * on POSIX, direct child otherwise), wait up to `TERM_GRACE_MS` for a
+ * on POSIX, direct child otherwise), wait up to `termGraceMs` for a
  * cooperative exit, then escalate to SIGKILL — waiting up to `KILL_GRACE_MS`
  * more only when the leader itself hadn't already exited. A detached
  * leader's cooperative exit does not prove the whole process group is gone
@@ -507,15 +508,19 @@ function signalStdioProcess(
  * `detached`/`platform` pair: `StdioTransport.connect()` derives `detached`
  * from `resolveStdioSpawnCommand()`, which is tied to the host's real
  * `process.platform`, so a POSIX detached session cannot be reproduced
- * end-to-end through `connect()` on a non-Linux dev/CI host.
+ * end-to-end through `connect()` on a non-Linux dev/CI host. `termGraceMs`
+ * preserves the production grace by default while allowing those real
+ * subprocess tests to cover the same transition without sleeping for a
+ * production-length shutdown window.
  */
 export async function terminateStdioProcess(
 	proc: KillableSubprocess,
 	detached: boolean,
 	platform: NodeJS.Platform = process.platform,
+	termGraceMs = TERM_GRACE_MS,
 ): Promise<void> {
 	signalStdioProcess(proc, detached, "SIGTERM", platform);
-	const exitedOnTerm = await waitForProcessExit(proc.exited, TERM_GRACE_MS);
+	const exitedOnTerm = await waitForProcessExit(proc.exited, termGraceMs);
 	// A non-detached transport has no process group beyond the leader itself:
 	// once it exits, there is nothing left to signal. A detached transport's
 	// leader exiting is NOT proof the group is empty — a grandchild it spawned
@@ -551,6 +556,7 @@ export class StdioTransport implements MCPTransport {
 	 * actually spawned into its own session may target it.
 	 */
 	#detached = false;
+	readonly #requestIds = new RequestIdAllocator();
 
 	onClose?: () => void;
 	onError?: (error: Error) => void;
@@ -734,7 +740,7 @@ export class StdioTransport implements MCPTransport {
 			throw new Error("Transport not connected");
 		}
 
-		const id = Snowflake.next();
+		const id = this.#requestIds.next(this.config.requestIdFormat);
 		const request = {
 			jsonrpc: "2.0" as const,
 			id,

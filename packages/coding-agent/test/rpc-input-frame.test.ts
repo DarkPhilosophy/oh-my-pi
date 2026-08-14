@@ -137,7 +137,6 @@ describe("dispatchRpcInputFrame", () => {
 		const finished: string[] = [];
 		const handleCommand = async (command: RpcCommand): Promise<RpcResponse> => {
 			started.push(command.type);
-			await Bun.sleep(5);
 			finished.push(command.type);
 			if (command.type === "abort_retry") {
 				return { id: command.id, type: "response", command: "abort_retry", success: true };
@@ -324,6 +323,9 @@ describe("RpcInputDispatcher", () => {
 						interruptMode: "immediate",
 						sessionId: "session-1",
 						autoCompactionEnabled: false,
+						fastModeEnabled: false,
+						fastModeActive: false,
+						tokensPerSecond: null,
 						messageCount: 0,
 						queuedMessageCount: 0,
 						todoPhases: [],

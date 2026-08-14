@@ -161,6 +161,14 @@ def _xwin_sysroot_impl(rctx):
         executable = False,
     )
 
+    # Opt into the repo contents cache. The splat is channel-stable, not
+    # bit-reproducible forever (see the module docstring) — caching freezes a
+    # known-good splat, which also keeps remote action keys stable across
+    # pods until this file changes or the cache entry ages out (14 d GC).
+    # OMP_XWIN_CACHE_DIR is a predeclared input (environ attr), so kata and
+    # dev fetches key separate entries.
+    return rctx.repo_metadata(reproducible = True)
+
 xwin_sysroot_repository = repository_rule(
     implementation = _xwin_sysroot_impl,
     doc = "MSVC CRT + Windows SDK sysroot splatted by a pinned xwin release.",

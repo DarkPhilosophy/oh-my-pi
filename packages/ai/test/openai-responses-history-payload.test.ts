@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { type } from "@oh-my-pi/omptype";
 import {
 	convertCodexResponsesMessages,
 	streamOpenAICodexResponses,
@@ -10,7 +11,6 @@ import { createOpenAIResponsesHistoryPayload, truncateResponseItemId } from "@oh
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { type GeneratedProvider, getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import * as piUtils from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 
 const TEST_INSTALLATION_ID = "00000000-0000-4000-8000-000000000001";
 
@@ -610,6 +610,56 @@ describe("OpenAI responses history payload", () => {
 		expect(collectResponsesInputImageDetails(openaiInput)).toEqual(["original"]);
 	});
 
+	it("preserves encrypted_function_args on replayed Codex function calls", () => {
+		// codex-rs #35845: an empty `encrypted_function_args` array marks plaintext
+		// collaboration arguments; the marker must survive replay verbatim or the
+		// backend would treat the replayed arguments as encrypted.
+		const codexModel = getBundledModel<"openai-codex-responses">("openai-codex", "gpt-5.5");
+		const nativeItems = [
+			{
+				type: "function_call",
+				id: "fc_plaintext_1",
+				call_id: "call_plaintext_collab",
+				name: "send_message",
+				namespace: "collaboration",
+				arguments: JSON.stringify({ message: "hello", task_name: "worker" }),
+				encrypted_function_args: [],
+				status: "completed",
+			},
+			{
+				type: "function_call_output",
+				call_id: "call_plaintext_collab",
+				output: "delivered",
+			},
+		];
+		const context: Context = {
+			messages: [
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "fallback should not be replayed" }],
+					api: "openai-codex-responses",
+					provider: "openai-codex",
+					model: codexModel.id,
+					usage: issue5002ZeroUsage,
+					stopReason: "stop",
+					providerPayload: createOpenAIResponsesHistoryPayload("openai-codex", nativeItems),
+					timestamp: Date.now(),
+				},
+				{ role: "user", content: "continue", timestamp: Date.now() },
+			],
+		};
+
+		const input = convertCodexResponsesMessages(codexModel, context);
+		expect(findResponsesInputItemByCallId(input, "function_call", "call_plaintext_collab")).toEqual({
+			type: "function_call",
+			call_id: "call_plaintext_collab",
+			name: "send_message",
+			namespace: "collaboration",
+			arguments: JSON.stringify({ message: "hello", task_name: "worker" }),
+			encrypted_function_args: [],
+		});
+	});
+
 	it("prepends multiple OpenAI developer instructions in order without changing prompt cache key routing", async () => {
 		const model = getOpenAIReasoningModel("openai", "gpt-5-mini");
 		const payload = (await captureResponsesPayload(
@@ -676,8 +726,8 @@ describe("OpenAI responses history payload", () => {
 		]);
 	});
 
-	it("drops unfinished image generation calls from replayed native history", async () => {
-		const model = getOpenAIReasoningModel("openai", "gpt-5-mini");
+	it("normalizes result-bearing native images for full Codex replay", () => {
+		const model = getBundledModel<"openai-codex-responses">("openai-codex", "gpt-5.5");
 		const context: Context = {
 			messages: [
 				{ role: "user", content: "first user", timestamp: Date.now() },
@@ -692,36 +742,43 @@ describe("OpenAI responses history payload", () => {
 							id: "ig_generating",
 							type: "image_generation_call",
 							status: "generating",
-							action: "generate",
+						},
+						{
+							id: "ig_stale_result",
+							type: "image_generation_call",
+							status: "generating",
+							result: "stale-result-image",
 						},
 						{
 							id: "ig_completed",
 							type: "image_generation_call",
 							status: "completed",
-							result: "base64-image",
-							action: "generate",
-							background: "opaque",
-							output_format: "png",
-							quality: "medium",
+							result: "completed-image",
 						},
 					],
-					true,
+					false,
+					"openai-codex",
+					model.id,
 				),
 				{ role: "user", content: "follow-up user", timestamp: Date.now() },
 			],
 		};
-		const payload = (await captureResponsesPayload(model, context)) as { input?: unknown[] };
-		const imageGenerationItems = payload.input?.filter(item => {
-			if (!item || typeof item !== "object") return false;
-			return (item as { type?: unknown }).type === "image_generation_call";
-		});
+		const imageGenerationItems = convertCodexResponsesMessages(model, context).filter(
+			item => item.type === "image_generation_call",
+		);
 
 		expect(imageGenerationItems).toEqual([
+			{
+				id: "ig_stale_result",
+				type: "image_generation_call",
+				status: "completed",
+				result: "stale-result-image",
+			},
 			{
 				id: "ig_completed",
 				type: "image_generation_call",
 				status: "completed",
-				result: "base64-image",
+				result: "completed-image",
 			},
 		]);
 	});

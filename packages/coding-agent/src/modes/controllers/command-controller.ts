@@ -11,7 +11,7 @@ import {
 	type UsageReport,
 } from "@oh-my-pi/pi-ai";
 import { getSegmenter, Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
-import { formatDuration, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatDuration, logger, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
 import { type LoadedCustomShare, loadCustomShare } from "../../export/custom-share";
@@ -28,7 +28,7 @@ import {
 	seedAlreadyExists,
 	summarizeMentalModel,
 } from "../../hindsight";
-import { resolveMemoryBackend } from "../../memory-backend";
+import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../../memory-backend";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
 import { BorderedLoader } from "../../modes/components/bordered-loader";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
@@ -662,7 +662,7 @@ export class CommandController {
 			try {
 				const payload = await hook?.(agentDir, this.ctx.sessionManager.getCwd(), this.ctx.session);
 				if (!payload) {
-					this.ctx.showWarning(`Memory ${action} is not available for the ${backend.id} backend.`);
+					this.ctx.showWarning(memoryStatsUnavailableMessage(backend.id, action));
 					return;
 				}
 				showMarkdownPanel(this.ctx, `Memory ${action === "stats" ? "Stats" : "Diagnostics"}`, payload);
@@ -963,6 +963,37 @@ export class CommandController {
 		this.ctx.statusLine.invalidate();
 		this.ctx.ui.requestRender();
 		this.ctx.showStatus(`Fresh provider session started (${result.closedProviderSessions} ${stateLabel} pruned).`);
+	}
+
+	async handleResetContextCommand(): Promise<void> {
+		if (this.ctx.session.isCompacting) {
+			this.ctx.session.abortCompaction();
+			while (this.ctx.session.isCompacting) {
+				await Bun.sleep(10);
+			}
+		}
+		const result = await this.ctx.session.resetSessionContext();
+		if (!result) {
+			this.ctx.showWarning("Wait for the current response to finish or abort it before resetting the context.");
+			return;
+		}
+		// Drop the rendered transcript so the UI matches the now-empty model
+		// context (mirrors #runNewSessionFlow's teardown, minus the new session —
+		// the session id, title, and transcript file all survive).
+		this.ctx.clearTransientSessionUi();
+		this.ctx.resetTranscript();
+		this.ctx.statusLine.invalidate();
+		this.ctx.updateEditorBorderColor();
+		const noun = result.droppedCount === 1 ? "message" : "messages";
+		this.ctx.present([
+			new Spacer(1),
+			new Text(
+				`${theme.fg("accent", `${theme.status.success} Context reset — ${result.droppedCount} ${noun} dropped; session continues.`)}`,
+				1,
+				1,
+			),
+		]);
+		this.ctx.ui.requestRender(true, { clearScrollback: true });
 	}
 
 	async handleDropCommand(): Promise<void> {
@@ -1415,7 +1446,7 @@ export class CommandController {
 
 			// Rebuild chat from the new session (which now contains the handoff document).
 			this.ctx.clearTransientSessionUi();
-			this.ctx.renderInitialMessages();
+			await this.ctx.renderInitialMessages();
 			this.ctx.statusLine.invalidate();
 			this.ctx.updateEditorBorderColor();
 			await this.ctx.reloadTodos();
@@ -1429,9 +1460,15 @@ export class CommandController {
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			if (message === "Handoff cancelled" || (error instanceof Error && error.name === "AbortError")) {
+			// `session.handoff()` normalizes genuine cancellations to this exact message; a
+			// provider error (even one named AbortError) is re-thrown verbatim so it surfaces
+			// as a real failure instead of a false "cancelled".
+			if (message === "Handoff cancelled") {
 				this.ctx.showError("Handoff cancelled");
 			} else {
+				// Persist the real failure so it is debuggable after the transient
+				// TUI error clears (#7993).
+				logger.error("Handoff failed", { error: message });
 				this.ctx.showError(`Handoff failed: ${message}`);
 			}
 		} finally {

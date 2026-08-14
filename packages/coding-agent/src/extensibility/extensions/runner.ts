@@ -1,7 +1,14 @@
 /**
  * Extension runner - executes extensions and manages their lifecycle.
  */
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { AsyncLocalStorage } from "node:async_hooks";
+import type {
+	AgentMessage,
+	AgentTool,
+	AgentToolContext,
+	AgentToolResult,
+	AgentToolUpdateCallback,
+} from "@oh-my-pi/pi-agent-core";
 import type { CredentialDisabledEvent, ImageContent, Model, ProviderResponseMetadata } from "@oh-my-pi/pi-ai";
 import type { KeyId } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -10,6 +17,7 @@ import type { Settings } from "../../config/settings";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "../../modes/theme/theme";
+import type { AsyncJobSnapshot } from "../../session/agent-session";
 import type { SessionManager } from "../../session/session-manager";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import type { SessionShutdownEvent } from "../shared-events";
@@ -35,12 +43,14 @@ import type {
 	ExtensionError,
 	ExtensionEvent,
 	ExtensionFlag,
+	ExtensionMode,
 	ExtensionRuntime,
 	ExtensionShortcut,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	InputEvent,
 	InputEventResult,
+	McpNotificationEvent,
 	MessageRenderer,
 	RegisteredCommand,
 	RegisteredTool,
@@ -55,6 +65,7 @@ import type {
 	SessionStopEventResult,
 	ToolCallEvent,
 	ToolCallEventResult,
+	ToolRegistrationListener,
 	ToolResultEvent,
 	ToolResultEventResult,
 	UserBashEvent,
@@ -220,6 +231,14 @@ async function raceHandlerWithTimeout<T>(
 const MAX_PENDING_CREDENTIAL_DISABLED = 32;
 
 /**
+ * Buffer cap for `mcp_notification` events received before {@link ExtensionRunner.initialize}
+ * has run. Sized to match the manager-side buffer in `MCPManager.NOTIFICATION_BUFFER_CAP` so
+ * the two layers can't drop different amounts of the same burst — the pipe drains, or it
+ * spills, but it does so consistently at both ends. Drop-oldest under pressure.
+ */
+const MAX_PENDING_MCP_NOTIFICATIONS = 100;
+
+/**
  * Events handled by the generic emit() method.
  * Events with dedicated emitXxx() methods are excluded for stronger type safety.
  */
@@ -321,8 +340,16 @@ const noOpUIContext: ExtensionUIContext = {
 	setToolsExpanded: () => {},
 };
 
+interface ToolRegistrationScope {
+	pending: Set<Promise<void>>;
+	signal?: AbortSignal;
+	closed: boolean;
+}
+
 export class ExtensionRunner {
 	#uiContext: ExtensionUIContext;
+	#mode: ExtensionMode = "print";
+	#toolApprovalPreviewWaiter?: (toolCallId: string) => Promise<void>;
 	#errorListeners: Set<ExtensionErrorListener> = new Set();
 	#getModel: () => Model | undefined = () => undefined;
 	#isIdleFn: () => boolean = () => true;
@@ -332,6 +359,7 @@ export class ExtensionRunner {
 	#getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	#compactFn: (instructionsOrOptions?: string | CompactOptions) => Promise<void> = async () => {};
 	#getSystemPromptFn: () => string[] = () => [];
+	#getAsyncJobSnapshotFn: () => AsyncJobSnapshot | null = () => null;
 	#newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	#branchHandler: BranchHandler = async () => ({ cancelled: false });
 	#navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -341,6 +369,8 @@ export class ExtensionRunner {
 	#getMemoryFn?: () => MemoryRuntimeContext | undefined;
 	#commandDiagnostics: Array<{ type: string; message: string; path: string }> = [];
 	#clientEnv: Record<string, string> | undefined;
+	#toolRegistrationScope = new AsyncLocalStorage<ToolRegistrationScope>();
+	#toolRegistrationBarrier: Promise<void> | undefined;
 	#initialized = false;
 	/**
 	 * Buffer for `credential_disabled` events received via {@link emitCredentialDisabled}
@@ -350,6 +380,19 @@ export class ExtensionRunner {
 	 * {@link MAX_PENDING_CREDENTIAL_DISABLED}; oldest entries are dropped under pressure.
 	 */
 	#pendingCredentialDisabled: CredentialDisabledEvent[] = [];
+
+	/**
+	 * Buffer for `mcp_notification` events received via {@link emitMcpNotification} before
+	 * {@link initialize} has run. Two-layer race: `MCPManager` also buffers frames until
+	 * its first `addNotificationListener` subscriber attaches, but the sdk.ts bridge is
+	 * registered inside `createAgentSession` — BEFORE the mode controller calls
+	 * `ExtensionRunner.initialize()`. Without this second buffer, the manager's drain
+	 * arrives at the bridge → the bridge calls `emitMcpNotification` → the runner drops
+	 * the frame because `#initialized === false`, and the frame evaporates a second time.
+	 * Bounded at {@link MAX_PENDING_MCP_NOTIFICATIONS}; oldest entries are dropped under
+	 * pressure. Drained in {@link initialize} once the runtime/UI context is wired.
+	 */
+	#pendingMcpNotifications: Array<Omit<McpNotificationEvent, "type">> = [];
 
 	/**
 	 * Timers scheduled by extensions through the sanctioned `ctx.setInterval` /
@@ -389,18 +432,100 @@ export class ExtensionRunner {
 		return this.#emittedToolCalls.delete(`${toolCallId}:${toolName}`);
 	}
 
+	/**
+	 * Resolves a tool NAME to its native built-in implementation (the pre-extension-override,
+	 * unwrapped tool) plus a factory for the `AgentToolContext` that native tool expects, or
+	 * undefined when no native built-in of that name exists. Set by the SDK; backs same-tool
+	 * `invokeTool`. The context factory is the same one the agent loop uses for tool execution, so a
+	 * delegated native call sees the ordinary session tool context (ui, cwd, snapshot state, etc.).
+	 */
+	#nativeToolResolver?: (name: string) => { tool: AgentTool; makeContext: () => AgentToolContext } | undefined;
+
+	/** Wires the native-tool resolver used by {@link invokeNativeTool}. */
+	setNativeToolResolver(
+		resolve: (name: string) => { tool: AgentTool; makeContext: () => AgentToolContext } | undefined,
+	): void {
+		this.#nativeToolResolver = resolve;
+	}
+
+	/** Whether a native built-in of `name` is available to delegate to. */
+	hasNativeTool(name: string): boolean {
+		return this.#nativeToolResolver?.(name) !== undefined;
+	}
+
+	/**
+	 * Run the native built-in of `name` with `params` and return its result — the delegation target
+	 * of a same-tool `ctx.invokeTool`. Calls the unwrapped native `execute` directly with the loop's
+	 * ordinary tool context, so it inherits the caller's already-granted approval (the caller is the
+	 * same tool) rather than re-running the gate. `depth` guards a wrapper that recurses into itself;
+	 * it is per call chain (threaded from the caller), not session-global, so concurrent independent
+	 * delegations do not interfere.
+	 */
+	async invokeNativeTool<TDetails = unknown>(
+		name: string,
+		params: Record<string, unknown>,
+		options?: {
+			signal?: AbortSignal;
+			onUpdate?: AgentToolUpdateCallback<TDetails>;
+			depth?: number;
+			/**
+			 * The caller tool's own context. Reused for the native call so metadata the native tool
+			 * reads — `toolCall` (write/edit LSP batch flushing) and provider metadata /
+			 * `providerSafetyApproved` (computer) — is preserved. Falls back to a fresh session tool
+			 * context only when the caller had none.
+			 */
+			callerContext?: AgentToolContext;
+		},
+	): Promise<AgentToolResult<TDetails>> {
+		const resolved = this.#nativeToolResolver?.(name);
+		if (!resolved) throw new Error(`invokeTool: no native built-in named "${name}" to delegate to`);
+		const depth = options?.depth ?? 0;
+		if (depth >= 8) {
+			throw new Error(`invokeTool: delegation depth exceeded 8 (recursive invokeTool for "${name}"?)`);
+		}
+		const toolCallId = `invoke-${name}-${Date.now().toString(36)}-${depth}`;
+		return (await resolved.tool.execute(
+			toolCallId,
+			params as never,
+			options?.signal,
+			options?.onUpdate as never,
+			options?.callerContext ?? resolved.makeContext(),
+		)) as AgentToolResult<TDetails>;
+	}
+
 	constructor(
 		private readonly extensions: Extension[],
 		private readonly runtime: ExtensionRuntime,
-		private readonly cwd: string,
+		/** Ignored: `cwd` is always read live via the `cwd` getter below, not cached here. */
+		_initialCwd: string,
 		private readonly sessionManager: SessionManager,
 		private readonly modelRegistry: ModelRegistry,
 		getMemory?: () => MemoryRuntimeContext | undefined,
 		private readonly settings?: Settings,
 		private readonly localProtocolOptions?: LocalProtocolOptions,
+		getAsyncJobSnapshot?: () => AsyncJobSnapshot | null,
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
+		this.#getAsyncJobSnapshotFn = getAsyncJobSnapshot ?? (() => null);
+	}
+
+	/**
+	 * Live session directory, not a session-start snapshot: `/move`
+	 * (`SessionManager.moveTo()`) relocates the owning session by updating
+	 * `sessionManager`'s own `#cwd`, not a process-global. Reading it here
+	 * via the getter — instead of caching the constructor-time value in a
+	 * field — keeps every `ExtensionContext` built below in sync with this
+	 * session's actual, current directory. Deliberately `sessionManager.getCwd()`
+	 * rather than `getProjectDir()`: the latter is a single process-wide value
+	 * that only the interactive TUI's `/move` handler happens to also update
+	 * (`InteractiveModeContext#applyCwdChange`) — an SDK/ACP host running
+	 * several concurrent sessions each with their own `cwd` (see
+	 * `CreateAgentSessionOptions.cwd`) must never have one session's move
+	 * leak into another's `ctx.cwd` by reading a shared global.
+	 */
+	get cwd(): string {
+		return this.sessionManager.getCwd();
 	}
 
 	initialize(
@@ -408,6 +533,7 @@ export class ExtensionRunner {
 		contextActions: ExtensionContextActions,
 		commandContextActions?: ExtensionCommandContextActions,
 		uiContext?: ExtensionUIContext,
+		mode: ExtensionMode = "print",
 	): void {
 		// Copy actions into the shared runtime (all extension APIs reference this)
 		this.runtime.sendMessage = actions.sendMessage;
@@ -415,7 +541,11 @@ export class ExtensionRunner {
 		this.runtime.appendEntry = actions.appendEntry;
 		this.runtime.getActiveTools = actions.getActiveTools;
 		this.runtime.getAllTools = actions.getAllTools;
-		this.runtime.setActiveTools = actions.setActiveTools;
+		this.runtime.setActiveTools = async toolNames => {
+			const registrationBarrier = this.#toolRegistrationBarrier;
+			if (registrationBarrier) await registrationBarrier;
+			await actions.setActiveTools(toolNames);
+		};
 		this.runtime.getCommands = actions.getCommands;
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
@@ -424,6 +554,12 @@ export class ExtensionRunner {
 		this.runtime.setServiceTier = actions.setServiceTier ?? throwUnsupportedServiceTierAction;
 		this.runtime.getSessionName = actions.getSessionName;
 		this.runtime.setSessionName = actions.setSessionName;
+		this.runtime.registerProvider = (name, config, sourceId) => {
+			this.modelRegistry.registerProvider(name, config, sourceId);
+		};
+		this.runtime.unregisterProvider = name => {
+			this.modelRegistry.unregisterProvider(name);
+		};
 
 		// Context actions (required)
 		this.#getModel = contextActions.getModel;
@@ -446,6 +582,7 @@ export class ExtensionRunner {
 		}
 
 		this.#uiContext = uiContext ?? noOpUIContext;
+		this.#mode = mode;
 		this.#initialized = true;
 
 		// Drain events buffered by emitCredentialDisabled() before initialize ran. The
@@ -458,6 +595,23 @@ export class ExtensionRunner {
 				this.emit({ type: "credential_disabled", ...event }).catch((error: unknown) => {
 					logger.warn("credential_disabled handler threw during initialize flush", {
 						provider: event.provider,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				});
+			}
+		});
+
+		// Drain events buffered by emitMcpNotification() before initialize ran, using the
+		// same deferred-microtask ordering as the credential-disabled drain above so any
+		// onError listener registered synchronously after initialize() still catches
+		// handler errors during flush.
+		const pendingMcp = this.#pendingMcpNotifications.splice(0);
+		queueMicrotask(() => {
+			for (const event of pendingMcp) {
+				this.emit({ type: "mcp_notification", ...event }).catch((error: unknown) => {
+					logger.warn("mcp_notification handler threw during initialize flush", {
+						server: event.server,
+						method: event.method,
 						error: error instanceof Error ? error.message : String(error),
 					});
 				});
@@ -490,10 +644,48 @@ export class ExtensionRunner {
 		await this.emit({ type: "credential_disabled", ...event });
 	}
 
+	/**
+	 * Forward an MCP server notification to extension handlers.
+	 *
+	 * If {@link initialize} has not yet run, the notification is buffered and replayed
+	 * once initialize wires the runtime/UI context. Matches the credential-disabled
+	 * deferral above: the sdk.ts bridge registers `MCPManager.addNotificationListener`
+	 * inside `createAgentSession` — BEFORE the mode controller calls `initialize()` on
+	 * this runner — so notification frames drained by the manager (either fresh
+	 * arrivals or replay from its own startup buffer) can reach us pre-init. Without
+	 * this buffer they would evaporate for a second time here.
+	 *
+	 * Bounded at {@link MAX_PENDING_MCP_NOTIFICATIONS}; oldest entries drop under
+	 * pressure. Never throws; per-handler errors are routed through {@link onError}
+	 * via {@link emit}'s normal isolation.
+	 */
+	async emitMcpNotification(event: Omit<McpNotificationEvent, "type">): Promise<void> {
+		if (!this.#initialized) {
+			if (this.#pendingMcpNotifications.length >= MAX_PENDING_MCP_NOTIFICATIONS) {
+				this.#pendingMcpNotifications.shift();
+			}
+			this.#pendingMcpNotifications.push(event);
+			return;
+		}
+		await this.emit({ type: "mcp_notification", ...event });
+	}
+
 	/** Emits a session stop pass that can be cancelled with the active settle signal. */
 	async emitSessionStop(event: Omit<SessionStopEvent, "type">): Promise<SessionStopEventResult | undefined> {
 		if (event.signal.aborted) return undefined;
 		return await this.emit({ type: "session_stop", ...event });
+	}
+	/** Registers the interactive transcript gate that must settle before a tool approval is presented. */
+	setToolApprovalPreviewWaiter(waiter: (toolCallId: string) => Promise<void>): () => void {
+		this.#toolApprovalPreviewWaiter = waiter;
+		return () => {
+			if (this.#toolApprovalPreviewWaiter === waiter) this.#toolApprovalPreviewWaiter = undefined;
+		};
+	}
+
+	/** Waits until the interactive transcript can show the tool call being approved. */
+	async waitForToolApprovalPreview(toolCallId: string): Promise<void> {
+		await this.#toolApprovalPreviewWaiter?.(toolCallId);
 	}
 
 	getUIContext(): ExtensionUIContext {
@@ -517,6 +709,88 @@ export class ExtensionRunner {
 			}
 		}
 		return tools;
+	}
+
+	/** Get the effective registered tool for a name using normal last-extension-wins precedence. */
+	getRegisteredTool(name: string): RegisteredTool | undefined {
+		for (let index = this.extensions.length - 1; index >= 0; index -= 1) {
+			const tool = this.extensions[index]?.tools.get(name);
+			if (tool) return tool;
+		}
+		return undefined;
+	}
+
+	/**
+	 * Observe tools registered after extension factories have loaded. Listener
+	 * promises are drained before the lifecycle handler that registered them
+	 * completes, keeping the model tool snapshot and system prompt coherent.
+	 */
+	onToolRegistered(listener: (tool: RegisteredTool, signal?: AbortSignal) => void | Promise<void>): () => void {
+		const subscriptions: Array<{ extension: Extension; listener: ToolRegistrationListener }> = [];
+		for (const extension of this.extensions) {
+			const trackRegistration = (pending: Promise<void>): void => {
+				const registrationBarrier = pending.then(
+					() => undefined,
+					() => undefined,
+				);
+				this.#toolRegistrationBarrier = registrationBarrier;
+				void registrationBarrier.then(() => {
+					if (this.#toolRegistrationBarrier === registrationBarrier) this.#toolRegistrationBarrier = undefined;
+				});
+				const scope = this.#toolRegistrationScope.getStore();
+				if (scope && !scope.closed) {
+					scope.pending.add(pending);
+					void pending.then(
+						() => scope.pending.delete(pending),
+						() => {},
+					);
+					return;
+				}
+				void pending.catch(error => {
+					this.emitError({
+						extensionPath: extension.path,
+						event: "tool_registration",
+						error: error instanceof Error ? error.message : String(error),
+						stack: error instanceof Error ? error.stack : undefined,
+					});
+				});
+			};
+			const wrapped: ToolRegistrationListener = toolName => {
+				const tool = extension.tools.get(toolName);
+				if (!tool) return;
+				try {
+					const scope = this.#toolRegistrationScope.getStore();
+					const registrationSignal =
+						scope && !scope.closed ? scope.signal : AbortSignal.timeout(extensionHandlerTimeoutMs);
+					const pending = listener(tool, registrationSignal);
+					if (pending) trackRegistration(pending);
+				} catch (error) {
+					trackRegistration(Promise.reject(error));
+				}
+			};
+			extension.toolRegistrationListeners ??= new Set();
+			extension.toolRegistrationListeners.add(wrapped);
+			subscriptions.push({ extension, listener: wrapped });
+		}
+		return () => {
+			for (const subscription of subscriptions) {
+				subscription.extension.toolRegistrationListeners?.delete(subscription.listener);
+			}
+		};
+	}
+
+	async #flushToolRegistrations(pendingRegistrations: Set<Promise<void>>): Promise<void> {
+		let firstFailure: PromiseRejectedResult | undefined;
+		while (pendingRegistrations.size > 0) {
+			const pending = Array.from(pendingRegistrations);
+			const settled = await Promise.allSettled(pending);
+			for (let index = 0; index < settled.length; index += 1) {
+				pendingRegistrations.delete(pending[index]);
+				const result = settled[index];
+				if (!firstFailure && result?.status === "rejected") firstFailure = result;
+			}
+		}
+		if (firstFailure) throw firstFailure.reason;
 	}
 
 	/**
@@ -665,13 +939,34 @@ export class ExtensionRunner {
 		return undefined;
 	}
 
-	/** Creates an extension context, optionally scoped to a provider request model. */
-	createContext(model?: Model): ExtensionContext {
+	/**
+	 * Creates an extension context, optionally scoped to a provider request model.
+	 *
+	 * `delegation` wires the same-tool `ctx.invokeTool` for a re-registered built-in: when `toolName`
+	 * names an existing native built-in, the context carries an `invokeTool` that runs it (see
+	 * {@link invokeNativeTool}). The rest inherits the wrapper's own call so a bare
+	 * `ctx.invokeTool(params)` behaves like the outer call — `context` preserves `toolCall`/provider
+	 * metadata, `signal`/`onUpdate` default to the wrapper's own channels so aborting the outer tool
+	 * call stops the native one and native progress still streams, and `depth` bounds recursion per
+	 * call chain. Explicit options passed to `invokeTool` override the inherited `signal`/`onUpdate`.
+	 */
+	createContext(
+		model?: Model,
+		delegation?: {
+			toolName: string;
+			depth?: number;
+			context?: AgentToolContext;
+			signal?: AbortSignal;
+			onUpdate?: AgentToolUpdateCallback;
+		},
+	): ExtensionContext {
 		const getModel = model ? () => model : this.#getModel;
 		return {
 			ui: this.#uiContext,
+			mode: this.#mode,
 			getContextUsage: () => this.#getContextUsageFn(),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
+			getAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),
 			hasUI: this.hasUI(),
 			cwd: this.cwd,
 			sessionManager: this.sessionManager,
@@ -691,6 +986,18 @@ export class ExtensionRunner {
 			setInterval: (callback, ms, ...args) => this.#managedTimers.setInterval(callback, ms, ...args),
 			setTimeout: (callback, ms, ...args) => this.#managedTimers.setTimeout(callback, ms, ...args),
 			clearTimer: timer => this.#managedTimers.clear(timer),
+			invokeTool:
+				delegation !== undefined && this.hasNativeTool(delegation.toolName)
+					? (params, options) =>
+							this.invokeNativeTool(delegation.toolName, params, {
+								// Inherit the wrapper's own channels so a bare `ctx.invokeTool(params)` aborts
+								// and streams with the outer call. Explicit options win.
+								signal: options?.signal ?? delegation.signal,
+								onUpdate: options?.onUpdate ?? delegation.onUpdate,
+								depth: (delegation.depth ?? 0) + 1,
+								callerContext: delegation.context,
+							})
+					: undefined,
 		};
 	}
 
@@ -753,45 +1060,73 @@ export class ExtensionRunner {
 		ctx: ExtensionContext,
 		ext: Extension,
 		timeoutMs: number,
+		onFailure?: (kind: "timeout" | "error", message: string) => TResult,
 	): Promise<TResult | undefined> {
 		const signal =
 			event.type === "session_stop" && "signal" in event && event.signal instanceof AbortSignal
 				? event.signal
 				: undefined;
 		if (signal?.aborted) return undefined;
+		const registrationScope: ToolRegistrationScope = { pending: new Set(), closed: false };
+		let handlerResult: TResult | typeof EXTENSION_HANDLER_TIMEOUT | typeof EXTENSION_HANDLER_ABORTED | undefined;
+		let handlerFailure: { error: unknown } | undefined;
 		try {
-			const handlerResult = await raceHandlerWithTimeout(
-				handlerSignal => handler(event, createHandlerContext(ctx, handlerSignal)),
+			handlerResult = await raceHandlerWithTimeout(
+				async handlerSignal => {
+					registrationScope.signal = handlerSignal;
+					let result: TResult | undefined;
+					try {
+						result = await this.#toolRegistrationScope.run(registrationScope, () =>
+							handler(event, createHandlerContext(ctx, handlerSignal)),
+						);
+					} catch (error) {
+						handlerFailure = { error };
+					} finally {
+						registrationScope.closed = true;
+					}
+					try {
+						await this.#flushToolRegistrations(registrationScope.pending);
+					} catch (error) {
+						handlerFailure ??= { error };
+					}
+					return result;
+				},
 				timeoutMs,
 				signal,
 			);
-			if (handlerResult === EXTENSION_HANDLER_ABORTED) return undefined;
-			if (handlerResult === EXTENSION_HANDLER_TIMEOUT) {
-				const error = `handler timed out after ${timeoutMs}ms`;
-				logger.warn("Extension handler timed out", {
-					extensionPath: ext.path,
-					event: event.type,
-					timeoutMs,
-				});
-				this.emitError({
-					extensionPath: ext.path,
-					event: event.type,
-					error,
-				});
-				return undefined;
-			}
-			return handlerResult as TResult | undefined;
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			const stack = err instanceof Error ? err.stack : undefined;
+		} catch (error) {
+			handlerFailure = { error };
+		} finally {
+			registrationScope.closed = true;
+		}
+		if (handlerResult === EXTENSION_HANDLER_ABORTED) return undefined;
+		if (handlerResult === EXTENSION_HANDLER_TIMEOUT) {
+			const error = `handler timed out after ${timeoutMs}ms`;
+			logger.warn("Extension handler timed out", {
+				extensionPath: ext.path,
+				event: event.type,
+				timeoutMs,
+			});
+			this.emitError({
+				extensionPath: ext.path,
+				event: event.type,
+				error,
+			});
+			return onFailure?.("timeout", error);
+		}
+		if (handlerFailure) {
+			const message =
+				handlerFailure.error instanceof Error ? handlerFailure.error.message : String(handlerFailure.error);
+			const stack = handlerFailure.error instanceof Error ? handlerFailure.error.stack : undefined;
 			this.emitError({
 				extensionPath: ext.path,
 				event: event.type,
 				error: message,
 				stack,
 			});
-			return undefined;
+			return onFailure?.("error", message);
 		}
+		return handlerResult as TResult | undefined;
 	}
 
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
@@ -925,46 +1260,26 @@ export class ExtensionRunner {
 			if (!handlers || handlers.length === 0) continue;
 
 			for (const handler of handlers) {
-				try {
-					const handlerResult = await raceHandlerWithTimeout(
-						handlerSignal => handler(event, createHandlerContext(ctx, handlerSignal)),
-						timeoutMs,
-					);
+				const handlerResult = await this.#runHandlerWithTimeout(
+					handler,
+					event,
+					ctx,
+					ext,
+					timeoutMs,
+					(kind, message) => ({
+						block: true,
+						reason:
+							kind === "timeout"
+								? `Extension ${ext.path} timed out after ${timeoutMs}ms`
+								: `Extension ${ext.path} failed: ${message}`,
+					}),
+				);
 
-					if (handlerResult === EXTENSION_HANDLER_TIMEOUT) {
-						const error = `handler timed out after ${timeoutMs}ms`;
-						logger.warn("Extension handler timed out", {
-							extensionPath: ext.path,
-							event: "tool_call",
-							timeoutMs,
-						});
-						this.emitError({
-							extensionPath: ext.path,
-							event: "tool_call",
-							error,
-						});
-						return {
-							block: true,
-							reason: `Extension ${ext.path} timed out after ${timeoutMs}ms`,
-						};
+				if (handlerResult) {
+					result = handlerResult;
+					if (result.block) {
+						return result;
 					}
-
-					if (handlerResult) {
-						result = handlerResult as ToolCallEventResult;
-						if (result.block) {
-							return result;
-						}
-					}
-				} catch (err) {
-					const message = err instanceof Error ? err.message : String(err);
-					const stack = err instanceof Error ? err.stack : undefined;
-					this.emitError({
-						extensionPath: ext.path,
-						event: "tool_call",
-						error: message,
-						stack,
-					});
-					return { block: true, reason: `Extension ${ext.path} failed: ${message}` };
 				}
 			}
 		}
@@ -1067,13 +1382,14 @@ export class ExtensionRunner {
 					| InputEventResult
 					| undefined;
 				if (result?.handled) return result;
-				if (result?.text !== undefined) {
-					currentText = result.text;
-					currentImages = result.images ?? currentImages;
-				}
+				if (result?.text !== undefined) currentText = result.text;
+				if (result?.images !== undefined) currentImages = result.images;
 			}
 		}
-		return currentText !== text || currentImages !== images ? { text: currentText, images: currentImages } : {};
+		const transformed: InputEventResult = {};
+		if (currentText !== text) transformed.text = currentText;
+		if (currentImages !== images) transformed.images = currentImages;
+		return transformed;
 	}
 
 	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {

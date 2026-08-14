@@ -12,9 +12,18 @@ dir. Link steps keep the shared cache: they are the ones that benefit
 battle-tested path for concurrent artifact builds, and after first warm they
 are pure readers.
 
+Also opt @zig_config into Bazel's repo contents cache (repo_metadata,
+bazel >= 8.3): the fetch is deterministic given the pinned zig archive and
+wrapper source, and re-running it cost ~20 s of wrapper compilation on every
+fresh output base — every job on ephemeral CI pods.
+
+Note: bazel's own patch parser (unlike GNU patch) requires the `diff --git`
+separator line before each file section of a multi-file patch.
+
+diff --git a/toolchain/zig-wrapper.zig b/toolchain/zig-wrapper.zig
 --- a/toolchain/zig-wrapper.zig
 +++ b/toolchain/zig-wrapper.zig
-@@ -252,6 +252,32 @@ fn parseArgs(
+@@ -267,6 +267,32 @@
      if (run_mode == RunMode.cc)
          try resolveColonLibraries(arena, cwd, &args);
  
@@ -47,3 +56,19 @@ are pure readers.
      // Add -target as the last parameter. The wrapper should overwrite
      // the target specified by other tools calling the wrapper.
      // Some tools might pass LLVM target triple, which are rejected by zig.
+diff --git a/toolchain/defs.bzl b/toolchain/defs.bzl
+--- a/toolchain/defs.bzl
++++ b/toolchain/defs.bzl
+@@ -278,6 +278,12 @@
+         )
+         repository_ctx.symlink("tools/zig-wrapper{}".format(exe), tool_path)
+ 
++    # omp: opt into the repo contents cache — the fetch is deterministic
++    # given the pinned zig archive and the wrapper source above.
++    if hasattr(repository_ctx, "repo_metadata"):
++        return repository_ctx.repo_metadata(reproducible = True)
++    return None
++
+ zig_repository = repository_rule(
+     attrs = {
+         "version": attr.string(),

@@ -49,6 +49,7 @@ import { buildAvailableSlashCommands } from "../slash-commands/available-command
 import { lookupBuiltinSlashCommand } from "../slash-commands/builtin-registry";
 import { parseSlashCommand } from "../slash-commands/helpers/parse";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
+import { calculateTokensPerSecond } from "../utils/token-rate";
 import type { TodoPhase } from "../tools/todo";
 import { DAEMON_PROTOCOL_MAJOR } from "./protocol";
 import type { DaemonConnectionSnapshot } from "./status";
@@ -63,6 +64,9 @@ export type DaemonSession = {
 	readonly dispose: AgentSession["dispose"];
 	readonly subscribe: AgentSession["subscribe"];
 	readonly sessionId: string;
+	readonly messages?: AgentSession["messages"];
+	readonly isFastModeEnabled?: () => boolean;
+	readonly isFastModeActive?: () => boolean;
 	readonly agent?: {
 		state?: {
 			messages?: readonly unknown[];
@@ -173,7 +177,7 @@ function sessionState(
 	cwd?: string,
 	result?: CreateAgentSessionResult,
 ): RpcSessionState {
-	const messages = session.state?.messages ?? session.agent?.state?.messages;
+	const messages = session.messages ?? session.state?.messages ?? session.agent?.state?.messages;
 	const tools = session.agent?.state?.tools ?? [];
 	const availableToolNames = tools.flatMap(tool =>
 		isRecord(tool) && typeof tool.name === "string" ? [tool.name] : [],
@@ -184,6 +188,9 @@ function sessionState(
 		thinkingLevel: session.thinkingLevel,
 		isStreaming: session.isStreaming ?? false,
 		isCompacting: session.isCompacting ?? false,
+		fastModeEnabled: session.isFastModeEnabled?.() ?? false,
+		fastModeActive: session.isFastModeActive?.() ?? false,
+		tokensPerSecond: calculateTokensPerSecond(session.messages ?? [], session.isStreaming ?? false),
 		steeringMode: session.steeringMode ?? "one-at-a-time",
 		followUpMode: session.followUpMode ?? "one-at-a-time",
 		interruptMode: session.interruptMode ?? "immediate",

@@ -1,7 +1,7 @@
 import { buildModel } from "./build";
 import { readModelCache, writeModelCache } from "./model-cache";
 import { type GeneratedProvider, getBundledModels } from "./models";
-import type { Api, Model, ModelSpec, Provider } from "./types";
+import type { Api, Model, ModelCost, ModelSpec, Provider, TokenCost } from "./types";
 import { isRecord } from "./utils";
 import { collapseBuiltModelVariants } from "./variant-collapse";
 
@@ -14,10 +14,10 @@ const NON_AUTHORITATIVE_RETRY_MS = 5 * 60 * 1000;
 export type ModelRefreshStrategy = "online" | "offline" | "online-if-uncached";
 
 /**
- * Hook for loading and mapping models.dev fallback data into canonical model objects.
+ * Hook for loading and mapping stencil.so fallback data into canonical model objects.
  */
 export interface ModelsDevFallback<TApi extends Api = Api, TPayload = unknown> {
-	/** Fetches raw fallback payload (for example from models.dev). */
+	/** Fetches raw fallback payload (for example from stencil.so). */
 	fetch(): Promise<TPayload>;
 	/** Maps payload into provider models. */
 	map(payload: TPayload, providerId: Provider): readonly ModelSpec<TApi>[];
@@ -39,7 +39,7 @@ export interface ModelManagerOptions<TApi extends Api = Api, TModelsDevPayload =
 	cacheTtlMs?: number;
 	/** When true, a successful dynamic fetch is the complete provider catalog and prunes static-only models. */
 	dynamicModelsAuthoritative?: boolean;
-	/** Cached model ids to ignore when the cache was written against a different static catalog fingerprint. */
+	/** Cached model ids whose presence forces refresh when the static or migration-policy fingerprint changes. */
 	dropCachedModelIdsOnStaticMismatch?: readonly string[];
 	/**
 	 * Trusted, provider-wide request headers (compile-time constants, never
@@ -51,7 +51,7 @@ export interface ModelManagerOptions<TApi extends Api = Api, TModelsDevPayload =
 	restorableHeaderFallback?: Record<string, string>;
 	/** Optional dynamic endpoint fetcher. */
 	fetchDynamicModels?: () => Promise<readonly ModelSpec<TApi>[] | null>;
-	/** Optional models.dev fallback hook. */
+	/** Optional stencil.so fallback hook. */
 	modelsDev?: ModelsDevFallback<TApi, TModelsDevPayload>;
 	/** Clock override for deterministic tests. */
 	now?: () => number;
@@ -171,7 +171,7 @@ function restoreCachedModelHeaders<TApi extends Api>(
 
 /**
  * Resolves provider models with source precedence:
- * static -> models.dev -> cache -> dynamic.
+ * static -> stencil.so -> cache -> dynamic.
  *
  * Later sources override earlier ones by model id.
  */
@@ -199,10 +199,24 @@ export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPa
 	const usableCachedModels = restoredCache.models.filter(model => !restoredCache.unresolvedModelIds.has(model.id));
 	const cacheHasUnresolvedHeaders = restoredCache.unresolvedModelIds.size > 0;
 	const dynamicModelsAuthoritative = options.dynamicModelsAuthoritative ?? false;
-	const staticFingerprint = fingerprintStatic(staticModels, dynamicModelsAuthoritative);
+	const cacheDropIds = options.dropCachedModelIdsOnStaticMismatch;
+	const staticCatalogFingerprint = fingerprintStatic(staticModels, dynamicModelsAuthoritative);
+	// Endpoint-migration policy is cache identity: adding an id must invalidate
+	// matching-static-catalog caches written by the prior resolver.
+	const staticFingerprint =
+		cacheDropIds && cacheDropIds.length > 0
+			? `${staticCatalogFingerprint}:drop:${Bun.hash(cacheDropIds.join("\0")).toString(36)}`
+			: staticCatalogFingerprint;
 	const cacheFingerprintMatches = cache?.staticFingerprint === staticFingerprint && staticFingerprint.length > 0;
+	const cacheNeedsModelMigration =
+		!cacheFingerprintMatches &&
+		cacheDropIds !== undefined &&
+		usableCachedModels.some(model => cacheDropIds.includes(model.id));
 	const hasUsableFreshCache =
-		(cache?.fresh ?? false) && !cacheHasUnresolvedHeaders && (!dynamicModelsAuthoritative || cacheFingerprintMatches);
+		(cache?.fresh ?? false) &&
+		!cacheHasUnresolvedHeaders &&
+		!cacheNeedsModelMigration &&
+		(!dynamicModelsAuthoritative || cacheFingerprintMatches);
 	const dynamicFetcher = options.fetchDynamicModels;
 	const hasDynamicFetcher = typeof dynamicFetcher === "function";
 	const hasAuthoritativeCache = ((cache?.authoritative ?? false) && hasUsableFreshCache) || !hasDynamicFetcher;
@@ -484,19 +498,33 @@ function mergeDynamicModel<TApi extends Api>(existingModel: Model<TApi>, dynamic
 	const supportsImage = dynamicInputAuthoritative
 		? dynamicModel.input.includes("image")
 		: existingModel.input.includes("image") || dynamicModel.input.includes("image");
+	// Synthetic's discovery is authoritative (`dynamicModelsAuthoritative`) and
+	// its per-model `reasoning_parameters.efforts` vocabulary is the route's
+	// whole truth: when the wire advertises only the `none` off-state the
+	// mapper emits `reasoning: false`, and OR-ing the bundled reference's
+	// stale `reasoning: true` back would re-arm an effort dial the route
+	// doesn't expose. Other providers keep the OR so a bundled reasoning flag
+	// survives a discovery row that simply omits the capability.
+	const dynamicReasoningAuthoritative =
+		existingModel.provider === "synthetic" && dynamicModel.provider === "synthetic";
+	const reasoning = dynamicReasoningAuthoritative
+		? dynamicModel.reasoning
+		: existingModel.reasoning || dynamicModel.reasoning;
+	const longContextCost = dynamicModel.cost.longContext ?? existingModel.cost.longContext;
 	// Re-build from spec stage: sparse compat comes from `compatConfig` (the
 	// verbatim override vocabulary), never the resolved `compat` record.
 	return buildModel({
 		...existingModel,
 		...dynamicModel,
 		name: preferDiscoveryName(dynamicModel.name, existingModel.name, dynamicModel.id),
-		reasoning: existingModel.reasoning || dynamicModel.reasoning,
+		reasoning,
 		input: supportsImage ? ["text", "image"] : ["text"],
 		cost: {
 			input: preferDiscoveryCost(dynamicModel.cost.input, existingModel.cost.input),
 			output: preferDiscoveryCost(dynamicModel.cost.output, existingModel.cost.output),
 			cacheRead: preferDiscoveryCost(dynamicModel.cost.cacheRead, existingModel.cost.cacheRead),
 			cacheWrite: preferDiscoveryCost(dynamicModel.cost.cacheWrite, existingModel.cost.cacheWrite),
+			...(longContextCost ? { longContext: longContextCost } : {}),
 		},
 		contextWindow: preferDiscoveryLimit(dynamicModel.contextWindow, existingModel.contextWindow),
 		maxTokens: preferDiscoveryLimit(dynamicModel.maxTokens, existingModel.maxTokens),
@@ -614,7 +642,7 @@ function isModelInputArray(value: unknown): value is ("text" | "image")[] {
 	return true;
 }
 
-function isModelCost(value: unknown): value is Model<Api>["cost"] {
+function isTokenCost(value: unknown): value is TokenCost {
 	if (!isRecord(value)) {
 		return false;
 	}
@@ -643,4 +671,13 @@ function isModelCost(value: unknown): value is Model<Api>["cost"] {
 		return false;
 	}
 	return true;
+}
+
+function isModelCost(value: unknown): value is ModelCost {
+	if (!isTokenCost(value)) return false;
+	const longContext = (value as TokenCost & { longContext?: unknown }).longContext;
+	if (longContext === undefined) return true;
+	if (!isTokenCost(longContext) || !isRecord(longContext)) return false;
+	const threshold = longContext.inputThreshold;
+	return typeof threshold === "number" && threshold > 0 && threshold < Infinity;
 }

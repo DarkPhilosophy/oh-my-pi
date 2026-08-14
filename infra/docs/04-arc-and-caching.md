@@ -161,7 +161,7 @@ githubConfigUrl: "https://github.com/<OWNER>/<REPO>"
 githubConfigSecret: arc-github
 runnerScaleSetName: omp-kata
 minRunners: 0
-maxRunners: 4
+maxRunners: 8
 # none: each job runs inside the runner container, which itself lives in a Kata microVM
 containerMode:
   type: ""
@@ -201,12 +201,15 @@ template:
             mountPath: /opt/bazel-repo-cache
             subPath: bazel-repo-cache
         resources:
+          # Burstable on purpose: requests bin-pack 8 runners onto the
+          # 32-vCPU / 125 GiB host; limits are each Kata VM's hotplug
+          # ceiling. Keep sum(memory limits) under host RAM.
           requests:
-            cpu: "8"
-            memory: "24Gi"
+            cpu: "3"
+            memory: "10Gi"
           limits:
             cpu: "8"
-            memory: "24Gi"
+            memory: "14Gi"
     volumes:
       - name: runner-cache
         persistentVolumeClaim:
@@ -220,10 +223,14 @@ Field by field:
 - **`githubConfigSecret: arc-github`** - the auth secret from [step 1](#1-github-app-and-the-arc-github-secret).
 - **`runnerScaleSetName: omp-kata`** - the runner label. This is the string that
   goes in a workflow's `runs-on:`.
-- **`minRunners: 0` / `maxRunners: 4`** - **scale-to-zero**. With no queued jobs
-  there are zero runner microVMs. Each admitted runner gets an honest 8-vCPU,
-  24-GiB request and limit; excess jobs queue instead of ten 16-vCPU guests
-  fighting over the reference host's 32 physical CPUs.
+- **`minRunners: 0` / `maxRunners: 8`** - **scale-to-zero**. With no queued jobs
+  there are zero runner microVMs. Runner pods are **burstable**: a small
+  request (3 vCPU / 10 GiB) bin-packs eight runners onto the reference host,
+  while the limit (8 vCPU / 14 GiB) is each Kata VM's hotplug ceiling, so a
+  lone heavy job still gets 8 vCPUs. Keep the sum of memory *limits* under
+  host RAM — host OOM under Kata kills VMs unpredictably. (The original
+  guaranteed sizing, 4 x 8 vCPU / 24 GiB requests=limits, reserved the whole
+  host and queued every >4-job workflow fan-out for minutes.)
 - **`containerMode.type: ""`** - **none**. The default chart offers `dind`
   (Docker-in-Docker sidecar) or `kubernetes` mode for job-container isolation;
   both are unnecessary here because the *whole runner pod* is already isolated in
@@ -255,14 +262,17 @@ Field by field:
   mounts to the `arc-runners/runner-cache` PVC. `ReadWriteOnce` is enough on this
   single-node k3s host; use a RWX-capable storage class before spreading runners
   across nodes.
-- **`resources`** - requests `8` CPU / `24Gi`, limits `8` CPU / `24Gi`. Kata reads
-  these and sizes the guest accordingly: the VM now boots at the same
-  guaranteed floor (`default_vcpus: 2`, `default_memory: 4096`) and only
-  hotplugs beyond that toward the limits, with `default_maxvcpus: 0` allowing up
-  to all host CPUs. Effectively the **requests are the boot-time VM size** and
-  the **limits are the hotplug ceiling**. See [02-kata-runtime.md](02-kata-runtime.md)
-  for the runtime knobs and [`infra/tune-kata-runtime.sh`](../tune-kata-runtime.sh)
-  for the SSH-driven patch helper.
+- **`resources`** - requests `3` CPU / `10Gi`, limits `8` CPU / `14Gi`
+  (burstable; see the `maxRunners` bullet above). Kata sizes the guest from
+  these: every VM boots at the fixed floor from the runtime config
+  (`default_vcpus: 2`, `default_memory: 4096` — deliberately at or below the
+  pod request so boot stays cheap) and hotplugs beyond it toward the pod
+  **limits**, with `default_maxvcpus: 0` allowing up to all host CPUs.
+  Effectively the **boot shape is a fixed floor**, the **requests are the
+  scheduler's bin-packing unit**, and the **limits are the hotplug ceiling**.
+  See [02-kata-runtime.md](02-kata-runtime.md) for the runtime knobs and
+  [`infra/tune-kata-runtime.sh`](../tune-kata-runtime.sh) for the SSH-driven
+  patch helper.
 
 ---
 

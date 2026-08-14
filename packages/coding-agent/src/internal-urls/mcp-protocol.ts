@@ -97,7 +97,10 @@ function formatAvailableResources(mcpManager: MCPManager): string {
 		.getConnectedServers()
 		.flatMap(name => {
 			const serverResources = mcpManager.getServerResources(name);
-			return (serverResources?.resources ?? []).map(r => `  ${r.uri} (${name})`);
+			if (!serverResources) return [];
+			const concrete = serverResources.resources.map(r => `  ${r.uri} (${name})`);
+			const templates = serverResources.templates.map(t => `  ${t.uriTemplate} (${name}, template)`);
+			return [...concrete, ...templates];
 		})
 		.join("\n");
 	return available || "  (none)";

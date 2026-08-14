@@ -275,6 +275,32 @@ describe("withAuth", () => {
 		expect(contexts.map(ctx => ctx.lastChance)).toEqual([false, true, true, true]);
 	});
 
+	it("leaves a 403 concurrency cap to the transient retry layer", async () => {
+		const keys: string[] = [];
+		const contexts: ApiKeyResolveContext[] = [];
+		const pool = ["k0", "k1", "k2", "k3"];
+		let resolveIndex = 0;
+		const concurrencyCap = Object.assign(new Error("concurrent requests limit reached"), { status: 403 });
+
+		await expect(
+			withAuth(
+				ctx => {
+					contexts.push(ctx);
+					return ctx.error === undefined ? pool[0] : pool[++resolveIndex];
+				},
+				async key => {
+					keys.push(key);
+					throw concurrencyCap;
+				},
+			),
+		).rejects.toBe(concurrencyCap);
+
+		// The outer transient retry/backoff layer owns concurrency caps. The auth
+		// retry layer must not refresh or select a sibling credential.
+		expect(keys).toEqual(["k0"]);
+		expect(contexts.map(ctx => ctx.lastChance)).toEqual([false]);
+	});
+
 	it("surfaces the last 403 when every sibling is denied", async () => {
 		const errors = [authError(403), authError(403)];
 		const resolved = ["k0", "k1", "k0"];

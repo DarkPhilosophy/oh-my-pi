@@ -11,7 +11,7 @@ import {
 import { setTerminalTextSizing, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { type Component, TUI } from "@oh-my-pi/pi-tui/tui";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
-import { Chalk } from "chalk";
+import { Chalk } from "@oh-my-pi/pi-utils/chalk";
 import { defaultMarkdownTheme } from "./test-themes.js";
 import { VirtualTerminal } from "./virtual-terminal.js";
 
@@ -67,9 +67,6 @@ describe("Markdown component", () => {
 			);
 
 			const lines = markdown.render(80);
-
-			// Check that we have content
-			expect(lines.length > 0).toBeTruthy();
 
 			// Strip ANSI codes for checking
 			const plainLines = lines.map(line => stripVTControlCharacters(line));
@@ -257,6 +254,70 @@ describe("Markdown component", () => {
 			expect(plainLines.some(line => line.includes("-"))).toBeTruthy();
 		});
 
+		it("recovers rich Markdown after a lone closing fence from Gemini", () => {
+			const markdown = new Markdown(
+				`=== PACED IP ROTATION SOAK RESULTS ===
+Total Queries: 20
+Average Latency: 1,240 ms
+\`\`\`
+
+---
+
+### Production Deployment Status
+
+| Workload | Pod Status |
+| :--- | :--- |
+| google-scraper | **1/1 Running** |`,
+				0,
+				0,
+				defaultMarkdownTheme,
+			);
+			markdown.transientRenderCache = true;
+			markdown.render(80);
+
+			markdown.transientRenderCache = false;
+			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+
+			expect(plainLines.some(line => line.includes("| :--- | :--- |"))).toBe(false);
+			expect(plainLines.filter(line => line.includes("+")).length).toBeGreaterThanOrEqual(2);
+			expect(plainLines.some(line => line.includes("google-scraper") && line.includes("1/1 Running"))).toBe(true);
+		});
+
+		it("keeps an intentional unclosed fenced Markdown example literal", () => {
+			const markdown = new Markdown(
+				`Markdown source:
+\`\`\`
+### Production Deployment Status
+
+| Workload | Pod Status |
+| :--- | :--- |
+| google-scraper | 1/1 Running |`,
+				0,
+				0,
+				defaultMarkdownTheme,
+			);
+			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+
+			expect(plainLines.some(line => line.includes("| :--- | :--- |"))).toBe(true);
+			expect(plainLines.filter(line => line.includes("+"))).toHaveLength(0);
+		});
+
+		it("keeps an unfinished code block with a rule and heading literal when no table follows", () => {
+			const markdown = new Markdown(
+				`The process printed this
+\`\`\`
+---
+### Still inside the unfinished block`,
+				0,
+				0,
+				defaultMarkdownTheme,
+			);
+			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+
+			expect(plainLines.some(line => line.includes("---"))).toBe(true);
+			expect(plainLines.some(line => line.includes("### Still inside the unfinished block"))).toBe(true);
+		});
+
 		it("should render row dividers between data rows", () => {
 			const markdown = new Markdown(
 				`| Name | Age |
@@ -337,9 +398,6 @@ describe("Markdown component", () => {
 			);
 
 			const lines = markdown.render(80);
-
-			// Should render without errors
-			expect(lines.length > 0).toBeTruthy();
 
 			const plainLines = lines.map(line => stripVTControlCharacters(line));
 			expect(plainLines.some(line => line.includes("Very long column header"))).toBeTruthy();
@@ -423,7 +481,6 @@ describe("Markdown component", () => {
 
 			// Borders should stay intact (exactly 2 vertical borders for a 1-col table)
 			const tableLines = plainLines.filter(line => line.startsWith("|"));
-			expect(tableLines.length > 0, "Expected table rows to render").toBeTruthy();
 			for (const line of tableLines) {
 				const borderCount = line.split("|").length - 1;
 				expect(borderCount, `Expected 2 borders, got ${borderCount}: "${line}"`).toBe(2);
@@ -466,6 +523,56 @@ describe("Markdown component", () => {
 			}
 		});
 
+		it("does not leak inline-code color into table borders when cells wrap", () => {
+			const markdown = new Markdown(
+				`| Command | Notes |
+| --- | --- |
+| \`config.setupgrading(pendingRequests, emptyFlag)\` | plain |
+| short | other |`,
+				0,
+				0,
+				defaultMarkdownTheme,
+			);
+
+			// Narrow enough to force the long codespan to wrap mid-run.
+			const lines = markdown.render(24);
+			const joinedOutput = lines.join("\n");
+			expect(joinedOutput.includes("\x1b[33m"), "Inline code should be styled (yellow)").toBeTruthy();
+			expect(lines.filter(line => line.includes("|")).length).toBeGreaterThan(3);
+
+			// Walk SGR state through every table row: the "|" border glyphs (and
+			// everything after them on the line) must never be rendered under an
+			// open fg color or bold attribute.
+			for (const line of lines) {
+				if (!line.includes("|")) continue;
+				let bold = false;
+				let fgOpen = false;
+				let i = 0;
+				while (i < line.length) {
+					if (line[i] === "\x1b") {
+						const seq = line.slice(i).match(/^\x1b\[([0-9;]*)m/);
+						expect(seq, `unparseable SGR in: ${JSON.stringify(line)}`).not.toBeNull();
+						for (const p of seq![1]!.split(";")) {
+							if (p === "1") bold = true;
+							else if (p === "22") bold = false;
+							else if (p === "0") {
+								bold = false;
+								fgOpen = false;
+							} else if (p === "39") fgOpen = false;
+							else if (p === "38" || /^3[0-7]$/.test(p) || /^9[0-7]$/.test(p)) fgOpen = true;
+						}
+						i += seq![0].length;
+						continue;
+					}
+					if (line[i] === "|") {
+						expect(fgOpen, `Border inherits fg color in: ${JSON.stringify(line)}`).toBe(false);
+						expect(bold, `Border inherits bold in: ${JSON.stringify(line)}`).toBe(false);
+					}
+					i++;
+				}
+			}
+		});
+
 		it("should handle extremely narrow width gracefully", () => {
 			const markdown = new Markdown(
 				`| A | B | C |
@@ -479,9 +586,6 @@ describe("Markdown component", () => {
 			// Very narrow width
 			const lines = markdown.render(15);
 			const plainLines = lines.map(line => stripVTControlCharacters(line).trimEnd());
-
-			// Should not crash and should produce output
-			expect(lines.length > 0, "Should produce output").toBeTruthy();
 
 			// Lines should not exceed width
 			for (const line of plainLines) {
@@ -965,6 +1069,48 @@ more text`,
 			}
 		});
 
+		it("keeps coding-agent's padded fenced code body at column zero", () => {
+			const markdown = new Markdown("```sh\ncat <<'EOF'\nEOF\n```", 1, 0, defaultMarkdownTheme, undefined, 0);
+
+			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+
+			expect(plainLines).toEqual([" ```sh", "cat <<'EOF'", "EOF", " ```"]);
+		});
+
+		it("keeps literal code body rows unprefixed through nested container wrapping", () => {
+			const longCodeLine = "x".repeat(24);
+			const cases = [
+				`- shell:
+
+  \`\`\`sh
+  ${longCodeLine}
+  EOF
+  \`\`\``,
+				`> \`\`\`sh
+> ${longCodeLine}
+> EOF
+> \`\`\``,
+			];
+
+			for (const text of cases) {
+				const markdown = new Markdown(text, 1, 0, defaultMarkdownTheme, undefined, 0);
+				const plainLines = markdown.render(12).map(line => stripVTControlCharacters(line).trimEnd());
+				const literalRows = plainLines.filter(line => line.includes("x") || line === "EOF");
+
+				expect(literalRows.join("")).toBe(`${longCodeLine}EOF`);
+				expect(literalRows.length).toBeGreaterThan(2);
+				expect(literalRows.every(line => line.startsWith("x") || line === "EOF")).toBe(true);
+			}
+		});
+
+		it("keeps ordinary prose NUL bytes as ordinary padded text", () => {
+			const markdown = new Markdown("before\0after", 1, 0, defaultMarkdownTheme);
+
+			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+
+			expect(plainLines).toEqual([" before\0after"]);
+		});
+
 		it("should not add a trailing blank line when code block is the last rendered block", () => {
 			const cases = ["```js\nconst hello = 'world';\n```", "hello world\n\n```js\nconst hello = 'world';\n```"];
 
@@ -998,6 +1144,21 @@ more text`,
 			expect(seenSources).toEqual([mermaidSource]);
 			expect(plainLines).toEqual(["Start", "  |", "Stop"]);
 			expect(plainLines.some(line => line.includes("```mermaid"))).toBeFalsy();
+		});
+
+		it("keeps resolved Mermaid art inside the coding-agent margin", () => {
+			const markdown = new Markdown(
+				"```mermaid\nflowchart TD\n```",
+				1,
+				0,
+				{ ...defaultMarkdownTheme, resolveMermaidAscii: () => "Start\n  |\nStop" },
+				undefined,
+				0,
+			);
+
+			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+
+			expect(plainLines).toEqual([" Start", "   |", " Stop"]);
 		});
 
 		it("falls back to the original fenced code block when mermaid resolution returns null", () => {
@@ -1749,6 +1910,21 @@ describe("Inline color swatches", () => {
 		expect(prose.includes("■")).toBe(false);
 		const code = new Markdown("Tag `#6C5E` stays plain.", 0, 0, defaultMarkdownTheme).render(80).join("");
 		expect(code.includes("■")).toBe(false);
+	});
+
+	it("does not swatch hash-prefixed UUIDs in prose", () => {
+		const uuid = new Markdown(
+			"Use feedback ID #6635765d-4a44-4a5e-a536-a8b72b0395b5 for testing.",
+			0,
+			0,
+			defaultMarkdownTheme,
+		)
+			.render(80)
+			.join("");
+		expect(uuid.includes("■")).toBe(false);
+
+		const color = new Markdown("Use color #6635765d.", 0, 0, defaultMarkdownTheme).render(80).join("");
+		expect(color.includes(swatchFor("6635765d"))).toBeTruthy();
 	});
 
 	it("uses the theme's colorSwatch symbol when provided", () => {

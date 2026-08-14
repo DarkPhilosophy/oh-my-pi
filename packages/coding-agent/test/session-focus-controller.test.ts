@@ -45,6 +45,7 @@ interface Harness {
 	main: SessionStub;
 	handledEvents: unknown[];
 	setSessionCalls: Array<[AgentSession, string | undefined]>;
+	eventSessionCalls: AgentSession[];
 	counts: {
 		clearTransientSessionUi: () => number;
 		resetTranscriptAnchors: () => number;
@@ -57,6 +58,7 @@ function makeHarness(): Harness {
 	const main = makeSessionStub();
 	const handledEvents: unknown[] = [];
 	const setSessionCalls: Array<[AgentSession, string | undefined]> = [];
+	const eventSessionCalls: AgentSession[] = [];
 	let clearTransientSessionUi = 0;
 	let resetTranscriptAnchors = 0;
 	let renderInitialMessages = 0;
@@ -68,6 +70,9 @@ function makeHarness(): Harness {
 			mainUnsubscribe++;
 		},
 		eventController: {
+			setSession: (session: AgentSession) => {
+				eventSessionCalls.push(session);
+			},
 			handleEvent: async (event: unknown) => {
 				handledEvents.push(event);
 			},
@@ -104,6 +109,7 @@ function makeHarness(): Harness {
 		main,
 		handledEvents,
 		setSessionCalls,
+		eventSessionCalls,
 		counts: {
 			clearTransientSessionUi: () => clearTransientSessionUi,
 			resetTranscriptAnchors: () => resetTranscriptAnchors,
@@ -123,7 +129,7 @@ async function flushAsync(): Promise<void> {
 }
 
 describe("SessionFocusController", () => {
-	it("focusAgent retargets subscription, transcript anchors, and status line onto the worker session", async () => {
+	it("focusAgent retargets event handling, subscription, transcript anchors, and status line onto the worker session", async () => {
 		const h = makeHarness();
 		const worker = makeSessionStub();
 		registerSub(h.registry, "Worker", worker.session, MAIN_AGENT_ID);
@@ -137,6 +143,7 @@ describe("SessionFocusController", () => {
 		expect(h.counts.resetTranscriptAnchors()).toBe(1);
 		expect(h.counts.renderInitialMessages()).toBe(1);
 		expect(h.setSessionCalls).toEqual([[worker.session, "Worker"]]);
+		expect(h.eventSessionCalls).toEqual([worker.session]);
 
 		const event = { type: "message_start", message: { role: "user" } };
 		await worker.emit(event);
@@ -187,6 +194,7 @@ describe("SessionFocusController", () => {
 			[parent.session, "Parent"],
 			[h.main.session, undefined],
 		]);
+		expect(h.eventSessionCalls).toEqual([worker.session, parent.session, h.main.session]);
 	});
 
 	it("parking the focused agent auto-unfocuses back to the main session", async () => {

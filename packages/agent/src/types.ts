@@ -31,13 +31,23 @@ export type StreamFn = (
 	...args: Parameters<typeof streamSimple>
 ) => AssistantMessageEventStream | Promise<AssistantMessageEventStream>;
 
+/** Called once an aside has been inserted into the agent's live context. */
+export const ASIDE_MESSAGE_COMMIT = Symbol("aside-message-commit");
+/** Called when an aside was drained but the agent loop ended before inserting it. */
+export const ASIDE_MESSAGE_DISCARD = Symbol("aside-message-discard");
+
+export type CommittableAsideMessage = AgentMessage & {
+	[ASIDE_MESSAGE_COMMIT]?: () => void;
+	[ASIDE_MESSAGE_DISCARD]?: (error: Error) => void;
+};
+
 /**
  * An aside entry: a ready {@link AgentMessage}, or a sync thunk evaluated at
  * injection time that returns the message to inject or `null` to skip it. Thunks
  * let the producer make the final inject-or-drop decision against current state
  * (e.g. dropping late diagnostics a newer edit superseded).
  */
-export type AsideMessage = AgentMessage | (() => AgentMessage | null);
+export type AsideMessage = CommittableAsideMessage | (() => CommittableAsideMessage | null);
 
 export interface AgentTurnEndContext {
 	/** Assistant/user message that just completed this turn boundary. */
@@ -117,8 +127,11 @@ export function isSoftToolRequirement(directive: ToolChoiceDirective | undefined
 	return typeof directive === "object" && directive !== null && (directive as SoftToolRequirement).soft === true;
 }
 
-/** Source category for a queued steering interrupt observed without consuming the queue. */
-export type SteeringInterruptSource = "user" | "system" | "unknown";
+/**
+ * Source category for a queued steering interrupt observed without consuming the queue.
+ * Distinguishes real-user, agent-authored, system/advisor, and unknown steering.
+ */
+export type SteeringInterruptSource = "user" | "agent" | "system" | "unknown";
 
 /** Non-consuming summary of whether queued steering should interrupt a tool batch. */
 export interface SteeringQueueState {
@@ -227,7 +240,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * mid-batch interrupt poll uses {@link hasSteeringMessages} instead and
 	 * never consumes the queue.
 	 */
-	getSteeringMessages?: () => Promise<AgentMessage[]>;
+	getSteeringMessages?: (signal?: AbortSignal) => Promise<AgentMessage[]>;
 
 	/**
 	 * Peeks whether steering messages are queued, without consuming them.
@@ -272,7 +285,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * If messages are returned, they're added to the context and the agent
 	 * continues with another turn.
 	 */
-	getFollowUpMessages?: () => Promise<AgentMessage[]>;
+	getFollowUpMessages?: (signal?: AbortSignal) => Promise<AgentMessage[]>;
 	/**
 	 * Returns non-interrupting "aside" messages to inject at a step boundary.
 	 *
@@ -306,7 +319,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * Mutate the agent context here; use `beforeModelCall` to inspect the
 	 * provider-bound context.
 	 */
-	syncContextBeforeModelCall?: (context: AgentContext) => void | Promise<void>;
+	syncContextBeforeModelCall?: (context: AgentContext, signal?: AbortSignal) => void | Promise<void>;
 
 	/**
 	 * Asked after the complete provider context has been built, including
@@ -715,7 +728,17 @@ export type ToolLoadMode = "essential" | "discoverable";
  */
 export type ToolApprovalDecision =
 	| ToolTier
-	| { tier: ToolTier; reason?: string; override?: boolean; policy?: "allow" | "deny" | "prompt" };
+	| {
+			tier: ToolTier;
+			reason?: string;
+			override?: boolean;
+			policy?: "allow" | "deny" | "prompt";
+			/** User-policy key for this decision. When set, `tools.approval.<policyKey>`
+			 *  is consulted instead of `tools.approval.<tool.name>`. Lets a dispatcher
+			 *  tool (e.g. `write` for an `xd://` device call) scope user allow/deny/
+			 *  prompt policies to the tool it dispatches into. */
+			policyKey?: string;
+	  };
 export type ToolApproval = ToolApprovalDecision | ((args: unknown) => ToolApprovalDecision);
 
 /**

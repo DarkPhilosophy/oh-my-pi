@@ -2,19 +2,22 @@ import * as path from "node:path";
 import { isEnoent, logger, postmortem, ptree, untilAborted } from "@oh-my-pi/pi-utils";
 import { MessageFramer } from "../jsonrpc/message-framing";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
-import { applyWorkspaceEdit } from "./edits";
+import { applyWorkspaceEdit, type ExecutedWorkspaceChange } from "./edits";
 import { getLspmuxCommand, isLspmuxSupported } from "./lspmux";
+import { connectSharedLspTransport } from "./mux/daemon";
 import type {
 	LspClient,
 	LspJsonRpcId,
 	LspJsonRpcNotification,
 	LspJsonRpcRequest,
 	LspJsonRpcResponse,
+	LspTransport,
+	LspWriteSink,
 	PublishDiagnosticsParams,
 	ServerConfig,
 	WorkspaceEdit,
 } from "./types";
-import { detectLanguageId, fileToUri } from "./utils";
+import { detectLanguageId, EquivalentUriMap, fileToUri, uriToFile } from "./utils";
 
 // =============================================================================
 // Client State
@@ -27,11 +30,23 @@ const fileOperationLocks = new Map<string, Promise<void>>();
 /** Negative cache of recent init failures so a broken server fails fast instead of re-spawning per call. */
 const INIT_FAILURE_BACKOFF_MS = 3 * 60 * 1000;
 const initFailures = new Map<string, { at: number; message: string }>();
+const READER_EXIT_GRACE_MS = 100;
 
 // Idle timeout configuration (disabled by default)
 let idleTimeoutMs: number | null = null;
 let idleCheckInterval: NodeJS.Timeout | null = null;
 const IDLE_CHECK_INTERVAL_MS = 60 * 1000;
+
+// Broker-shared server mode (one language server per project shared by every
+// omp instance through the LSP mux daemon). Off by default so embedders and
+// tests that drive getOrCreateClient directly never touch the daemon broker;
+// the SDK turns it on from the `lsp.shared` setting at session creation.
+let sharedLspEnabled = false;
+
+/** Enable or disable attaching to broker-shared language servers. */
+export function setSharedLspEnabled(enabled: boolean): void {
+	sharedLspEnabled = enabled;
+}
 
 /**
  * Configure the idle timeout for LSP clients.
@@ -154,7 +169,7 @@ const CLIENT_CAPABILITIES = {
 		workspaceEdit: {
 			documentChanges: true,
 			resourceOperations: ["create", "rename", "delete"],
-			failureHandling: "textOnlyTransactional",
+			failureHandling: "abort",
 		},
 		configuration: true,
 		workspaceFolders: true,
@@ -173,9 +188,6 @@ const CLIENT_CAPABILITIES = {
 			willDelete: false,
 			didDelete: false,
 		},
-	},
-	experimental: {
-		snippetTextEdit: true,
 	},
 };
 
@@ -208,7 +220,7 @@ class LspDrainAbortError extends Error {
 }
 
 async function writeMessage(
-	sink: Bun.FileSink,
+	sink: LspWriteSink,
 	message: LspJsonRpcRequest | LspJsonRpcNotification | LspJsonRpcResponse,
 	signal?: AbortSignal,
 ): Promise<void> {
@@ -303,6 +315,7 @@ async function startMessageReader(client: LspClient): Promise<void> {
 
 	const framer = new MessageFramer(Buffer.from(client.messageBuffer));
 
+	let readerFailed = false;
 	try {
 		while (true) {
 			const { done, value } = await reader.read();
@@ -391,6 +404,7 @@ async function startMessageReader(client: LspClient): Promise<void> {
 			}
 		}
 	} catch (err) {
+		readerFailed = true;
 		// Connection closed or error - reject all pending requests
 		for (const pending of Array.from(client.pendingRequests.values())) {
 			pending.reject(new Error(`LSP connection closed: ${err}`));
@@ -401,6 +415,9 @@ async function startMessageReader(client: LspClient): Promise<void> {
 		client.messageBuffer = framer.remainder();
 		reader.releaseLock();
 		client.isReading = false;
+		if (!readerFailed && client.proc.exitCode === null) {
+			await waitForExit(client, READER_EXIT_GRACE_MS);
+		}
 		// Reader exited while the server process is still alive (unrecoverable
 		// read error or bad stream state): nothing will route responses anymore,
 		// so tear the client down — the next call respawns instead of timing out.
@@ -464,11 +481,116 @@ async function handleApplyEditRequest(client: LspClient, message: LspJsonRpcRequ
 	}
 
 	try {
-		await applyWorkspaceEdit(params.edit, client.cwd);
+		await applyWorkspaceEditWithLsp(params.edit, client.cwd);
 		await sendResponse(client, message.id, { applied: true }, "workspace/applyEdit");
 	} catch (err) {
 		await sendResponse(client, message.id, { applied: false, failureReason: String(err) }, "workspace/applyEdit");
 	}
+}
+
+function workspaceEditChanges(executed: ExecutedWorkspaceChange[]): {
+	finalUris: Set<string>;
+	deletedRoots: Set<string>;
+	watchedFiles: WatchedFileChange[];
+} {
+	const finalUris = new Set<string>();
+	const deletedRoots = new Set<string>();
+	const watchedFiles: WatchedFileChange[] = [];
+	const watch = (uri: string, type: FileChangeType) => {
+		watchedFiles.push({ filePath: uriToFile(uri), type });
+	};
+
+	for (const change of executed) {
+		if (change.kind === "edit") {
+			finalUris.add(change.uri);
+			watch(change.uri, FileChangeType.Changed);
+		} else if (change.kind === "create") {
+			finalUris.add(change.uri);
+			watch(change.uri, FileChangeType.Created);
+		} else if (change.kind === "rename") {
+			deletedRoots.add(change.oldUri);
+			finalUris.add(change.newUri);
+			watch(change.oldUri, FileChangeType.Deleted);
+			watch(change.newUri, FileChangeType.Created);
+		} else {
+			deletedRoots.add(change.uri);
+			watch(change.uri, FileChangeType.Deleted);
+		}
+	}
+
+	return { finalUris, deletedRoots, watchedFiles };
+}
+
+function uriIsWithin(uri: string, root: string): boolean {
+	return uri === root || uri.startsWith(root.endsWith("/") ? root : `${root}/`);
+}
+
+/** Reconcile open overlays and file watchers with the ops a workspace edit actually performed. */
+async function reconcileExecutedChanges(
+	executed: ExecutedWorkspaceChange[],
+	cwd: string,
+	signal?: AbortSignal,
+): Promise<void> {
+	if (executed.length === 0) return;
+	const { finalUris, deletedRoots, watchedFiles } = workspaceEditChanges(executed);
+	const workspace = path.resolve(cwd);
+	const activeClients = Array.from(clients.values()).filter(
+		client => client.status === "ready" && path.resolve(client.cwd) === workspace,
+	);
+
+	for (const activeClient of activeClients) {
+		for (const uri of [...activeClient.openFiles.keys()]) {
+			let deleted = false;
+			for (const root of deletedRoots) {
+				if (uriIsWithin(uri, root)) {
+					deleted = true;
+					break;
+				}
+			}
+			if (!deleted) continue;
+			await sendNotification(activeClient, "textDocument/didClose", { textDocument: { uri } }, signal);
+			activeClient.openFiles.delete(uri);
+			activeClient.diagnostics.delete(uri);
+		}
+		for (const uri of finalUris) {
+			if (!activeClient.openFiles.has(uri)) continue;
+			await refreshFile(activeClient, uriToFile(uri), signal);
+		}
+	}
+	await notifyWorkspaceWatchedFiles(cwd, watchedFiles, signal);
+}
+
+/**
+ * Apply a server-provided workspace edit and reconcile every affected open LSP document.
+ * Runtime callers use this wrapper so later semantic requests observe the committed files.
+ * Reconciliation is derived from the ops that actually ran — an op skipped via
+ * `ignoreIfExists`/`ignoreIfNotExists` neither closes overlays nor notifies watchers, and
+ * when the edit fails partway the already-executed prefix is still reconciled before the
+ * error propagates so mutated files never keep stale overlays.
+ */
+export async function applyWorkspaceEditWithLsp(
+	edit: WorkspaceEdit,
+	cwd: string,
+	signal?: AbortSignal,
+): Promise<string[]> {
+	const executed: ExecutedWorkspaceChange[] = [];
+	let applied: string[];
+	try {
+		({ applied } = await applyWorkspaceEdit(edit, cwd, change => executed.push(change)));
+	} catch (err) {
+		// Best-effort: overlays for the mutated prefix must not stay stale, but
+		// reconciliation problems must not mask the original apply failure.
+		try {
+			await reconcileExecutedChanges(executed, cwd, signal);
+		} catch (reconcileErr) {
+			logger.warn("LSP overlay reconciliation after failed workspace edit failed", {
+				error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
+			});
+		}
+		throw err;
+	}
+	await reconcileExecutedChanges(executed, cwd, signal);
+	return applied;
 }
 
 interface DynamicCapabilityRegistration {
@@ -676,6 +798,15 @@ const PROJECT_LOAD_TIMEOUT_MS = 15_000;
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 const EXIT_TIMEOUT_MS = 1_000;
 
+function clientKey(config: ServerConfig, cwd: string): string {
+	return `${config.command}:${cwd}`;
+}
+
+/** Allow an explicit user reload to retry a matching initialization failure immediately. */
+export function clearInitializationFailure(config: ServerConfig, cwd: string): void {
+	initFailures.delete(clientKey(config, cwd));
+}
+
 /**
  * Get or create an LSP client for the given server configuration and working directory.
  * @param config - Server configuration
@@ -692,7 +823,7 @@ export async function getOrCreateClient(
 	initTimeoutMs?: number,
 	signal?: AbortSignal,
 ): Promise<LspClient> {
-	const key = `${config.command}:${cwd}`;
+	const key = clientKey(config, cwd);
 
 	// Check if client already exists
 	const existingClient = clients.get(key);
@@ -727,7 +858,14 @@ export async function getOrCreateClient(
 			? await getLspmuxCommand(baseCommand, baseArgs)
 			: { command: baseCommand, args: baseArgs };
 
-		const proc = ptree.spawn([command, ...args], {
+		// Prefer the broker-shared server unless an external lspmux wrapper is
+		// already multiplexing this command. Any shared-path failure falls back
+		// to a private spawn so LSP never regresses on broker trouble.
+		let proc: LspTransport | null = null;
+		if (sharedLspEnabled && command === baseCommand) {
+			proc = await connectSharedLspTransport({ command, args, cwd, env, signal });
+		}
+		proc ??= ptree.spawn([command, ...args], {
 			cwd,
 			stdin: "pipe",
 			env: env ? { ...Bun.env, ...env } : undefined,
@@ -751,7 +889,7 @@ export async function getOrCreateClient(
 			proc,
 			config,
 			requestId: 0,
-			diagnostics: new Map(),
+			diagnostics: new EquivalentUriMap(),
 			diagnosticsVersion: 0,
 			dynamicCapabilityRegistrations: new Map(),
 			openFiles: new Map(),
@@ -865,13 +1003,13 @@ export async function getActiveOrPendingClient(
 	signal?: AbortSignal,
 ): Promise<LspClient | undefined> {
 	throwIfAborted(signal);
-	const client = clients.get(`${config.command}:${cwd}`);
+	const client = clients.get(clientKey(config, cwd));
 	if (client) {
 		client.lastActivity = Date.now();
 		return client;
 	}
 
-	const pending = clientLocks.get(`${config.command}:${cwd}`);
+	const pending = clientLocks.get(clientKey(config, cwd));
 	if (!pending) return undefined;
 	try {
 		return await untilAborted(signal, pending);
@@ -1303,6 +1441,7 @@ export async function sendRequest(
 		timeout = setTimeout(() => {
 			if (client.pendingRequests.has(id)) {
 				client.pendingRequests.delete(id);
+				void sendNotification(client, "$/cancelRequest", { id }).catch(() => {});
 				const err = new Error(`LSP request ${method} timed out after ${effectiveTimeoutMs}ms`);
 				cleanup();
 				reject(err);
@@ -1369,6 +1508,7 @@ export async function sendNotification(
  * Shutdown all LSP clients.
  */
 export async function shutdownAll(): Promise<void> {
+	stopIdleChecker();
 	const clientsToShutdown = Array.from(clients.values());
 	clients.clear();
 	// Mid-initialize clients live only in clientLocks (publication is deferred

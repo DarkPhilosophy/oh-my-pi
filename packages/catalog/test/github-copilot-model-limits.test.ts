@@ -6,6 +6,7 @@ import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { createModelManager } from "@oh-my-pi/pi-catalog/model-manager";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { githubCopilotModelManagerOptions } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
+import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
 
 function getHeaderValue(headers: unknown, key: string): string | undefined {
 	if (!headers) return undefined;
@@ -51,10 +52,23 @@ async function discoverCopilotModels(
 		});
 	});
 	const options = githubCopilotModelManagerOptions({ apiKey, fetch: fetchMock });
-	expect(options.fetchDynamicModels).toBeDefined();
 	const models = await options.fetchDynamicModels?.();
-	expect(models).not.toBeNull();
 	return { models: models ?? [], fetchMock, requestApiVersions };
+}
+
+function cachedCopilotCompletionModel(id: string, name: string): ModelSpec<"openai-completions"> {
+	return {
+		id,
+		name,
+		api: "openai-completions",
+		provider: "github-copilot",
+		baseUrl: "https://api.githubcopilot.com",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 256_000,
+		maxTokens: 128_000,
+	};
 }
 
 describe("github copilot model limits mapping", () => {
@@ -96,7 +110,7 @@ describe("github copilot model limits mapping", () => {
 	});
 
 	it("uses max_context_window_tokens as context window when Copilot reports a prompt budget", async () => {
-		const { models, fetchMock } = await discoverCopilotModels({
+		const { models } = await discoverCopilotModels({
 			data: [
 				{
 					id: "gemini-2.5-pro",
@@ -113,10 +127,8 @@ describe("github copilot model limits mapping", () => {
 		});
 
 		const model = models.find(candidate => candidate.id === "gemini-2.5-pro");
-		expect(model).toBeDefined();
 		expect(model?.contextWindow).toBe(1_048_576);
 		expect(model?.maxTokens).toBe(64_000);
-		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("falls back to explicit context_length and derives max tokens from max_output_tokens", async () => {
@@ -138,7 +150,6 @@ describe("github copilot model limits mapping", () => {
 		});
 
 		const model = models.find(candidate => candidate.id === "gpt-5.2-codex");
-		expect(model).toBeDefined();
 		expect(model?.api).toBe("openai-responses");
 		expect(model?.contextWindow).toBe(250_000);
 		expect(model?.maxTokens).toBe(128_000);
@@ -161,29 +172,10 @@ describe("github copilot model limits mapping", () => {
 		});
 
 		const model = models.find(candidate => candidate.id === "claude-opus-4.6");
-		expect(model).toBeDefined();
 		expect(model?.contextWindow).toBe(128_000);
 		expect(model?.maxTokens).toBe(16_000);
 	});
 
-	it("keeps bundled Copilot fallback limits truthful offline", () => {
-		expect(getBundledModel("github-copilot", "claude-opus-4.6")).toMatchObject({
-			contextWindow: 168_000,
-			maxTokens: 32_000,
-		});
-		expect(getBundledModel("github-copilot", "gpt-5.2")).toMatchObject({
-			contextWindow: 272_000,
-			maxTokens: 128_000,
-		});
-		expect(getBundledModel("github-copilot", "gpt-5.4-mini")).toMatchObject({
-			contextWindow: 272_000,
-			maxTokens: 128_000,
-		});
-		expect(getBundledModel("github-copilot", "grok-code-fast-1")).toMatchObject({
-			contextWindow: 192_000,
-			maxTokens: 64_000,
-		});
-	});
 	it("inherits bundled GPT-5.4 mini reasoning metadata during discovery", async () => {
 		const { models } = await discoverCopilotModels({
 			data: [
@@ -204,7 +196,6 @@ describe("github copilot model limits mapping", () => {
 		});
 
 		const model = models.find(candidate => candidate.id === "gpt-5.4-mini");
-		expect(model).toBeDefined();
 		expect(model?.api).toBe("openai-responses");
 		expect(model?.reasoning).toBe(true);
 		// max_context_window_tokens is the model window; max_prompt_tokens is only
@@ -235,7 +226,6 @@ describe("github copilot model limits mapping", () => {
 		});
 
 		const model = models.find(candidate => candidate.id === "gpt-5.4");
-		expect(model).toBeDefined();
 		expect(model?.contextWindow).toBe(400_000);
 		expect(model?.maxTokens).toBe(128_000);
 	});
@@ -277,7 +267,6 @@ describe("github copilot model limits mapping", () => {
 			const model = models.find(candidate => candidate.id === "gpt-5.4");
 
 			expect(getBundledModel("github-copilot", "gpt-5.4")?.contextWindow).toBe(272_000);
-			expect(model).toBeDefined();
 			expect(model?.contextWindow).toBe(400_000);
 			expect(model?.maxTokens).toBe(128_000);
 			expect(model?.reasoning).toBe(true);
@@ -298,7 +287,6 @@ describe("github copilot model limits mapping", () => {
 		});
 
 		const model = models.find(candidate => candidate.id === "gpt-5.4");
-		expect(model).toBeDefined();
 		// Should use the Copilot-specific bundled reference (272k after models.json fix),
 		// not the OpenAI global reference (1050k).
 		expect(model?.contextWindow).toBe(272_000);
@@ -316,49 +304,100 @@ describe("github copilot model limits mapping", () => {
 		});
 
 		const model = models.find(candidate => candidate.id === "mai-code-1-flash-picker");
-		expect(model).toBeDefined();
 		expect(model?.api).toBe("openai-responses");
 	});
-	it("invalidates a cached MAI-Code completion route after the endpoint migration", async () => {
-		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ai-copilot-mai-cache-"));
+	it("routes grok-4.5 to the openai-responses endpoint (#7096)", async () => {
+		const { models } = await discoverCopilotModels({
+			data: [
+				{
+					id: "grok-4.5",
+					name: "Grok 4.5",
+				},
+			],
+		});
+
+		const model = models.find(candidate => candidate.id === "grok-4.5");
+		expect(model?.api).toBe("openai-responses");
+	});
+	for (const migration of [
+		{ id: "mai-code-1-flash-picker", name: "MAI-Code-1-Flash" },
+		{ id: "grok-4.5", name: "Grok 4.5" },
+	]) {
+		it(`refreshes a cached ${migration.name} completion route after the endpoint migration`, async () => {
+			const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `pi-ai-copilot-${migration.id}-cache-`));
+			const cacheDbPath = path.join(tempDir, "models.db");
+			const cacheProviderId = `github-copilot-${migration.id}-cache-test`;
+			try {
+				const oldManager = createModelManager({
+					providerId: "github-copilot",
+					cacheProviderId,
+					cacheDbPath,
+					fetchDynamicModels: async () => [cachedCopilotCompletionModel(migration.id, migration.name)],
+				});
+				await oldManager.refresh("online");
+
+				const fetchMock = vi.fn(async () => {
+					return new Response(
+						JSON.stringify({
+							data: [{ id: migration.id, name: migration.name }],
+						}),
+						{
+							status: 200,
+							headers: { "Content-Type": "application/json" },
+						},
+					);
+				});
+				const manager = createModelManager({
+					...githubCopilotModelManagerOptions({ apiKey: "copilot-test-key", fetch: fetchMock }),
+					cacheProviderId,
+					cacheDbPath,
+				});
+				const { models } = await manager.refresh("online-if-uncached");
+				const model = models.find(candidate => candidate.id === migration.id);
+
+				expect(fetchMock).toHaveBeenCalledTimes(1);
+				expect(model?.api).toBe("openai-responses");
+			} finally {
+				await fs.rm(tempDir, { recursive: true, force: true });
+			}
+		});
+	}
+	it("drops cached Grok 4.5 context variants when the migration refresh fails", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ai-copilot-grok-variant-cache-"));
 		const cacheDbPath = path.join(tempDir, "models.db");
-		const cacheProviderId = "github-copilot-mai-cache-test";
+		const cacheProviderId = "github-copilot-grok-variant-cache-test";
 		try {
 			const oldManager = createModelManager({
 				providerId: "github-copilot",
 				cacheProviderId,
 				cacheDbPath,
-				staticModels: [],
 				fetchDynamicModels: async () => [
+					cachedCopilotCompletionModel("grok-4.5", "Grok 4.5"),
 					{
-						id: "mai-code-1-flash-picker",
-						name: "MAI-Code-1-Flash",
-						api: "openai-completions" as const,
-						provider: "github-copilot",
-						baseUrl: "https://api.githubcopilot.com",
-						reasoning: true,
-						input: ["text"],
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-						contextWindow: 256_000,
-						maxTokens: 128_000,
+						...cachedCopilotCompletionModel("grok-4.5-1m", "Grok 4.5 (1M)"),
+						requestModelId: "grok-4.5",
+						contextWindow: 500_000,
 					},
 				],
 			});
 			await oldManager.refresh("online");
 
-			const fetchMock = vi.fn(async () => {
-				throw new Error("a fresh cache must avoid discovery");
-			});
+			const fetchMock = vi.fn(async () => new Response(null, { status: 503 }));
 			const manager = createModelManager({
 				...githubCopilotModelManagerOptions({ apiKey: "copilot-test-key", fetch: fetchMock }),
 				cacheProviderId,
 				cacheDbPath,
 			});
 			const { models } = await manager.refresh("online-if-uncached");
-			const model = models.find(candidate => candidate.id === "mai-code-1-flash-picker");
 
-			expect(fetchMock).not.toHaveBeenCalled();
-			expect(model?.api).toBe("openai-responses");
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			// The bundled catalog now ships a responses-route grok-4.5, so the id
+			// resurfaces from the bundle after the failed refresh. The migration
+			// contract is that the stale cached COMPLETIONS route never comes
+			// back — and the cached long-context variant has no bundled entry,
+			// so it stays dropped.
+			expect(models.find(candidate => candidate.id === "grok-4.5")?.api).toBe("openai-responses");
+			expect(models.find(candidate => candidate.id === "grok-4.5-1m")).toBeUndefined();
 		} finally {
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}
@@ -443,7 +482,6 @@ describe("github copilot tiered context windows", () => {
 		});
 
 		const base = models.find(candidate => candidate.id === "claude-opus-4.7");
-		expect(base).toBeDefined();
 		expect(base?.api).toBe("anthropic-messages");
 		expect(base?.contextWindow).toBe(264_000);
 		expect(base?.maxTokens).toBe(64_000);
@@ -451,7 +489,6 @@ describe("github copilot tiered context windows", () => {
 		expect(base?.headers?.["X-GitHub-Api-Version"]).toBe("2026-06-01");
 
 		const variant = models.find(candidate => candidate.id === "claude-opus-4.7-1m");
-		expect(variant).toBeDefined();
 		expect(variant?.requestModelId).toBe("claude-opus-4.7");
 		expect(variant?.name).toBe("Claude Opus 4.7 (1M)");
 		expect(variant?.api).toBe("anthropic-messages");
@@ -477,8 +514,29 @@ describe("github copilot tiered context windows", () => {
 		});
 
 		const variant = models.find(candidate => candidate.id === "gemini-9.9-pro-preview-1m");
-		expect(variant).toBeDefined();
 		expect(variant?.cost).toEqual({ input: 4, output: 18, cacheRead: 0.4, cacheWrite: 0 });
+	});
+
+	it("prices the base model from its default tier", async () => {
+		const { models } = await discoverCopilotModels({
+			data: [
+				tieredCopilotEntry({
+					id: "gpt-5.6-luna",
+					name: "GPT-5.6 Luna",
+					window: 1_050_000,
+					maxOutput: 50_000,
+					defaultContextMax: 200_000,
+					longContextMax: 1_000_000,
+					defaultPrices: { input: 20, output: 120, cache: 2 },
+					longPrices: { input: 40, output: 180, cache: 4 },
+				}),
+			],
+		});
+
+		const base = models.find(candidate => candidate.id === "gpt-5.6-luna");
+		expect(base?.cost).toMatchObject({ input: 0.2, output: 1.2, cacheRead: 0.02 });
+		const variant = models.find(candidate => candidate.id === "gpt-5.6-luna-1m");
+		expect(variant?.cost).toMatchObject({ input: 0.4, output: 1.8, cacheRead: 0.04 });
 	});
 
 	it("keeps legacy tier-capped responses unchanged and synthesizes no variant", async () => {

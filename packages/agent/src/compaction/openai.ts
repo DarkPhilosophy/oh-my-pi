@@ -37,7 +37,9 @@ import {
 	getOpenAIResponsesHistoryItems,
 	getOpenAIResponsesHistoryPayload,
 	normalizeResponsesToolCallId,
+	stripOpenAIResponsesOutputOnlyStatusesForReplay,
 } from "@oh-my-pi/pi-ai/utils";
+import { captureOpenAIHttpError } from "@oh-my-pi/pi-ai/utils/openai-http";
 import {
 	CODEX_BASE_URL,
 	getCodexAccountId,
@@ -238,6 +240,7 @@ export interface OpenAiRemoteCompactionResponse extends OpenAiRemoteCompactionPr
 export interface RemoteCompactionRequest {
 	systemPrompt: string;
 	prompt: string;
+	maxTokens?: number;
 }
 
 export interface RemoteCompactionResponse {
@@ -737,7 +740,7 @@ export function buildOpenAiNativeHistory(
 		msgIndex++;
 	}
 
-	return input;
+	return stripOpenAIResponsesOutputOnlyStatusesForReplay(input);
 }
 
 // ============================================================================
@@ -840,18 +843,19 @@ export async function requestOpenAiRemoteCompaction(
 	});
 
 	if (!response.ok) {
-		const errorText = await response.text().catch(() => "");
+		const cause = await captureOpenAIHttpError(response);
 		logger.warn("OpenAI remote compaction failed", {
 			endpoint,
 			status: response.status,
 			statusText: response.statusText,
-			errorText,
+			errorText: cause.captured.bodyText ?? "",
 		});
 		throw new ProviderHttpError(
 			`Remote compaction failed (${response.status} ${response.statusText})`,
 			response.status,
 			{
 				headers: response.headers,
+				cause,
 			},
 		);
 	}
@@ -926,8 +930,9 @@ export async function requestRemoteCompaction(
 					{ role: "user", content: request.prompt },
 				],
 				stream: false,
+				max_tokens: request.maxTokens,
 			}
-		: { systemPrompt: request.systemPrompt, prompt: request.prompt };
+		: { systemPrompt: request.systemPrompt, prompt: request.prompt, maxTokens: request.maxTokens };
 
 	const response = await (opts?.fetch ?? fetch)(endpoint, {
 		method: "POST",

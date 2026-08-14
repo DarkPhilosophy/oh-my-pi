@@ -586,18 +586,73 @@ describe("Devin tier routing", () => {
 		expect(sol.routing[Effort.Low]).toBe("gpt-5-6-sol-low");
 		expect(sol.routing.off).toBe("gpt-5-6-sol-none");
 		expect(sol.routing[Effort.Minimal]).toBeUndefined();
+
+		const solFast = family("gpt-5-6-sol-fast");
+		expect(solFast.routing[Effort.Max]).toBe("gpt-5-6-sol-max-priority");
+		expect(solFast.thinking.efforts).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max]);
 	});
 
-	it("keeps families without a -max sibling on the xhigh ceiling", () => {
-		const solFast = family("gpt-5-6-sol-fast");
-		expect(solFast.thinking.efforts).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.XHigh]);
-		expect(solFast.routing[Effort.Max]).toBeUndefined();
-		expect(solFast.routing[Effort.XHigh]).toBe("gpt-5-6-sol-xhigh-priority");
-
+	it("keeps pre-5.6 families without a -max sibling on the xhigh ceiling", () => {
 		const gpt55 = family("gpt-5-5");
 		expect(gpt55.thinking.efforts).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.XHigh]);
 		expect(gpt55.routing[Effort.Minimal]).toBeUndefined();
 		expect(gpt55.routing[Effort.Max]).toBeUndefined();
+	});
+
+	it("routes current Devin families onto their account-visible wire variants", () => {
+		const fable = family("claude-fable-5");
+		expect(fable.routing[Effort.Low]).toBe("claude-5-fable-low");
+		expect(fable.routing[Effort.Max]).toBe("claude-5-fable-max");
+
+		const swe = family("swe-1-7");
+		expect(swe.thinking.efforts).toEqual([Effort.Medium, Effort.Max]);
+		expect(swe.routing[Effort.Medium]).toBe("swe-1-7-medium");
+		expect(swe.routing[Effort.Max]).toBe("swe-1-7");
+
+		const gemini = family("gemini-3-6-flash");
+		expect(gemini.routing[Effort.Minimal]).toBe("gemini-3-6-flash-minimal");
+		expect(gemini.routing[Effort.High]).toBe("gemini-3-6-flash-high");
+
+		const inkling = family("inkling");
+		expect(inkling.routing.off).toBe("inkling-none");
+		expect(inkling.routing[Effort.Max]).toBe("inkling-max");
+	});
+
+	it("collapses entitled current variants and resolves the selected effort to the wire UID", () => {
+		const rawIds = [
+			"claude-5-fable-low",
+			"claude-5-fable-medium",
+			"claude-5-fable-high",
+			"claude-5-fable-xhigh",
+			"claude-5-fable-max",
+			"swe-1-7-medium",
+			"swe-1-7",
+		];
+		const specs = rawIds.map(
+			(id): ModelSpec<"devin-agent"> => ({
+				id,
+				name: id,
+				api: "devin-agent",
+				provider: "devin",
+				baseUrl: "https://server.codeium.com",
+				reasoning: true,
+				input: ["text"],
+				supportsTools: true,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 200_000,
+				maxTokens: 64_000,
+			}),
+		);
+
+		const collapsed = collapseEffortVariants(specs, DEVIN_VARIANT_COLLAPSE_TABLE);
+		expect(collapsed.map(model => model.id).sort()).toEqual(["claude-fable-5", "swe-1-7"]);
+
+		const fable = collapsed.find(model => model.id === "claude-fable-5");
+		const swe = collapsed.find(model => model.id === "swe-1-7");
+		if (!fable || !swe) throw new Error("Current Devin families did not collapse");
+		expect(resolveWireModelId(buildModel(fable), Effort.XHigh)).toBe("claude-5-fable-xhigh");
+		expect(resolveWireModelId(buildModel(swe), Effort.Medium)).toBe("swe-1-7-medium");
+		expect(resolveWireModelId(buildModel(swe), Effort.Max)).toBe("swe-1-7");
 	});
 });
 
@@ -759,6 +814,27 @@ describe("antigravity discovery collapsing", () => {
 				supportsImages: true,
 				thinkingBudget: 10_000,
 			},
+			"gemini-3.7-flash-low": {
+				displayName: "Gemini 3.7 Flash Low",
+				supportsThinking: true,
+				supportsImages: true,
+				maxTokens: 1_048_576,
+				maxOutputTokens: 65_536,
+			},
+			"gemini-3.7-flash-medium": {
+				displayName: "Gemini 3.7 Flash Medium",
+				supportsThinking: true,
+				supportsImages: true,
+				maxTokens: 1_048_576,
+				maxOutputTokens: 65_536,
+			},
+			"gemini-3.7-flash-high": {
+				displayName: "Gemini 3.7 Flash High",
+				supportsThinking: true,
+				supportsImages: true,
+				maxTokens: 1_048_576,
+				maxOutputTokens: 65_536,
+			},
 			"claude-sonnet-4-6": { displayName: "Claude Sonnet 4.6", supportsThinking: true, supportsImages: true },
 			"claude-sonnet-4-6-thinking": {
 				displayName: "Claude Sonnet 4.6 Thinking",
@@ -780,7 +856,12 @@ describe("antigravity discovery collapsing", () => {
 	it("returns collapsed logical entries and keeps the denylist", async () => {
 		const models = await fetchAntigravityDiscoveryModels({ token: "t", endpoint: "https://cca.test", fetcher });
 
-		expect(models?.map(m => m.id).sort()).toEqual(["claude-sonnet-4-6", "gemini-2.5-flash", "gemini-3.5-flash"]);
+		expect(models?.map(m => m.id).sort()).toEqual([
+			"claude-sonnet-4-6",
+			"gemini-2.5-flash",
+			"gemini-3.5-flash",
+			"gemini-3.7-flash",
+		]);
 		const flash = models?.find(m => m.id === "gemini-3.5-flash");
 		expect(flash?.requestModelId).toBe("gemini-3.5-flash-extra-low");
 		expect(flash?.thinking?.effortRouting?.[Effort.High]).toBe("gemini-3-flash-agent");
@@ -790,6 +871,19 @@ describe("antigravity discovery collapsing", () => {
 		const flash25 = models?.find(m => m.id === "gemini-2.5-flash");
 		expect(flash25?.thinking?.effortRouting?.[Effort.High]).toBe("gemini-2.5-flash-thinking");
 		expect(flash25?.thinking?.effortRouting?.off).toBe("gemini-2.5-flash");
+		const flash37 = models?.find(m => m.id === "gemini-3.7-flash");
+		expect(flash37?.requestModelId).toBe("gemini-3.7-flash-low");
+		expect(flash37?.thinking).toEqual({
+			mode: "google-level",
+			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High],
+			requiresEffort: true,
+			effortRouting: {
+				minimal: "gemini-3.7-flash-low",
+				low: "gemini-3.7-flash-low",
+				medium: "gemini-3.7-flash-medium",
+				high: "gemini-3.7-flash-high",
+			},
+		});
 	});
 
 	it("keeps collapsed routing through the gemini-cli re-provision", async () => {
@@ -805,6 +899,10 @@ describe("antigravity discovery collapsing", () => {
 		expect(flash?.baseUrl).toBe("https://cca.test");
 		expect(flash?.requestModelId).toBe("gemini-3.5-flash-extra-low");
 		expect(flash?.thinking?.effortRouting?.off).toBe("gemini-3.5-flash-extra-low");
+		const flash37 = models?.find(m => m.id === "gemini-3.7-flash");
+		expect(flash37?.requestModelId).toBe("gemini-3.7-flash-low");
+		expect(flash37?.thinking?.requiresEffort).toBe(true);
+		expect(flash37?.thinking?.effortRouting?.[Effort.High]).toBe("gemini-3.7-flash-high");
 	});
 
 	it("uses the primary daily endpoint by default", async () => {
@@ -822,7 +920,9 @@ describe("antigravity discovery collapsing", () => {
 			fetcher: defaultFetcher,
 		});
 
-		expect(requestedUrls[0]).toContain(ANTIGRAVITY_PRIMARY_ENDPOINT);
+		const discoveryUrl = requestedUrls.find(url => url.includes("/v1internal:fetchAvailableModels"));
+		expect(discoveryUrl).toBeDefined();
+		expect(discoveryUrl).toContain(ANTIGRAVITY_PRIMARY_ENDPOINT);
 		expect(models?.[0]?.baseUrl).toBe(ANTIGRAVITY_PRIMARY_ENDPOINT);
 	});
 });

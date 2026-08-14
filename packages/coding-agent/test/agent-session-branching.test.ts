@@ -68,7 +68,7 @@ describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("AgentSession branching", () =>
 
 		sessionManager = noSession ? SessionManager.inMemory() : SessionManager.create(tempDir, tempDir);
 		const settings = Settings.isolated();
-		authStorage = await AuthStorage.create(path.join(tempDir, "testauth.db"));
+		authStorage = await AuthStorage.create(":memory:");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
 
 		session = new AgentSession({
@@ -180,6 +180,29 @@ function historicalImagePrompt(text: string): UserMessage {
 		timestamp: Date.now(),
 	};
 }
+
+describe("AgentSession branch title metadata", () => {
+	it("preserves an explicit title when branching before the first prompt", async () => {
+		const ctx = await createTestSession({ inMemory: true });
+		try {
+			const entryId = ctx.sessionManager.appendMessage({
+				role: "user",
+				content: "hello",
+				timestamp: Date.now(),
+			});
+			await ctx.sessionManager.setSessionName("new-ds", "user");
+
+			await ctx.session.branch(entryId);
+
+			expect(ctx.sessionManager.getSessionName()).toBe("new-ds");
+			expect(ctx.sessionManager.titleSource).toBe("user");
+			expect(await ctx.sessionManager.setSessionName("automatic", "auto")).toBe(false);
+			expect(ctx.sessionManager.getSessionName()).toBe("new-ds");
+		} finally {
+			await ctx.cleanup();
+		}
+	});
+});
 
 describe("AgentSession historical image prompts", () => {
 	it("returns the selected images when branching from a user prompt", async () => {

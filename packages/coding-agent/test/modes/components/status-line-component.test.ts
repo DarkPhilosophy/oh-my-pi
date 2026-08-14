@@ -154,7 +154,7 @@ describe("StatusLineComponent", () => {
 	it("renders an empty top border before a remote session projection is attached", () => {
 		const statusLine = new StatusLineComponent();
 
-		expect(statusLine.getTopBorder(100)).toEqual({ content: "", width: 0 });
+		expect(statusLine.getTopBorder(100)).toEqual({ content: "", width: 0, revision: 0 });
 	});
 
 	it("renders the session-owned cwd even when the render scope carries a foreign project dir", () => {

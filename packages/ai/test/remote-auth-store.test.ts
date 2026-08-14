@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import { AuthStorage, REMOTE_REFRESH_SENTINEL, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
 import {
 	AuthBrokerClient,
@@ -15,7 +16,7 @@ import {
 import { snapshotResponseSchema } from "@oh-my-pi/pi-ai/auth-broker/wire-schemas";
 import * as oauthUtils from "@oh-my-pi/pi-ai/registry/oauth";
 import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai/usage";
-import { type } from "arktype";
+import * as claudeUsage from "@oh-my-pi/pi-ai/usage/claude";
 import { removeWithRetries } from "../../utils/src/temp";
 
 function requireLimit(report: UsageReport, id: string): UsageLimit {
@@ -48,7 +49,9 @@ describe("RemoteAuthCredentialStore + AuthStorage integration", () => {
 			accountId: "account-1",
 			email: "a@example.com",
 		});
-		serverStorage = new AuthStorage(serverStore);
+		serverStorage = new AuthStorage(serverStore, {
+			usageProviderResolver: provider => (provider === "anthropic" ? claudeUsage.claudeUsageProvider : undefined),
+		});
 		await serverStorage.reload();
 		handle = startAuthBroker({
 			storage: serverStorage,
@@ -756,12 +759,12 @@ describe("RemoteAuthCredentialStore + AuthStorage integration", () => {
 		}
 	});
 
-	test("RemoteAuthCredentialStore reads snapshot blocks and applies upserts before broker acknowledgement", () => {
+	test("applies block upserts before broker acknowledgement and retains them when persistence is rejected", async () => {
 		const futureBlock = Date.now() + 60_000;
 		const laterBlock = futureBlock + 60_000;
 		const brokerClient = new AuthBrokerClient({ url: "http://127.0.0.1:9", token: "unused" });
 		const fetchSnapshotPending = Promise.withResolvers<FetchSnapshotResult>();
-		vi.spyOn(brokerClient, "fetchSnapshot").mockReturnValue(fetchSnapshotPending.promise);
+		const fetchSnapshotSpy = vi.spyOn(brokerClient, "fetchSnapshot").mockReturnValue(fetchSnapshotPending.promise);
 		const upsertPending = Promise.withResolvers<CredentialBlockResponse>();
 		const upsertSpy = vi.spyOn(brokerClient, "upsertCredentialBlock").mockReturnValue(upsertPending.promise);
 		const remoteStore = new RemoteAuthCredentialStore({
@@ -797,6 +800,7 @@ describe("RemoteAuthCredentialStore + AuthStorage integration", () => {
 		try {
 			expect(remoteStore.getCredentialBlock(7, "anthropic:oauth", "tier:fable")).toBe(futureBlock);
 
+			fetchSnapshotSpy.mockClear();
 			remoteStore.upsertCredentialBlock({
 				credentialId: 7,
 				providerKey: "anthropic:oauth",
@@ -813,6 +817,11 @@ describe("RemoteAuthCredentialStore + AuthStorage integration", () => {
 			remoteStore.deleteCredentialBlock(7, "anthropic:oauth", "tier:fable");
 			expect(remoteStore.getCredentialBlock(7, "anthropic:oauth", "tier:fable")).toBe(laterBlock);
 			expect(remoteStore.getCredentialBlock(7, "anthropic:oauth", "shared")).toBe(futureBlock);
+			upsertPending.reject(new Error("500 persistent credential block store unavailable"));
+			await upsertPending.promise.catch(() => {});
+			await Promise.resolve();
+			expect(fetchSnapshotSpy).not.toHaveBeenCalled();
+			expect(remoteStore.getCredentialBlock(7, "anthropic:oauth", "tier:fable")).toBe(laterBlock);
 		} finally {
 			remoteStore.close();
 		}
@@ -1097,6 +1106,53 @@ describe("RemoteAuthCredentialStore + AuthStorage integration", () => {
 
 		expect(serverInvalidateSpy).toHaveBeenCalled();
 		clientStorage.close();
+	});
+
+	test("broker invalidation drops server-side last-good usage reports", async () => {
+		const credential = serverStore!.listAuthCredentials("anthropic")[0];
+		if (!credential || credential.credential.type !== "oauth") throw new Error("expected OAuth credential");
+		serverStore!.updateAuthCredential(credential.id, {
+			...credential.credential,
+			expires: Date.now() + 3_600_000,
+		});
+		await serverStorage!.reload();
+
+		let calls = 0;
+		const fetchSpy = vi.spyOn(claudeUsage.claudeUsageProvider, "fetchUsage").mockImplementation(async () => {
+			calls += 1;
+			if (calls > 1) return null;
+			return {
+				provider: "anthropic",
+				fetchedAt: Date.now(),
+				limits: [
+					{
+						id: "anthropic:5h",
+						label: "Claude 5 Hour",
+						scope: { provider: "anthropic", windowId: "5h" },
+						amount: { used: 80, limit: 100, unit: "percent" },
+						status: "ok",
+					},
+				],
+				metadata: { accountId: "account-1", email: "a@example.com" },
+			};
+		});
+		const brokerClient = new AuthBrokerClient({ url: handle!.url, token });
+		const initialResult = await brokerClient.fetchSnapshot();
+		if (initialResult.status !== 200) throw new Error("expected snapshot");
+		const remoteStore = new RemoteAuthCredentialStore({
+			client: brokerClient,
+			initialSnapshot: initialResult.snapshot,
+		});
+		const clientStorage = new AuthStorage(remoteStore);
+		await clientStorage.reload();
+		try {
+			expect(await clientStorage.fetchUsageReports()).toHaveLength(1);
+			await clientStorage.invalidateUsageCache();
+			expect(await clientStorage.fetchUsageReports()).toEqual([]);
+			expect(fetchSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			clientStorage.close();
+		}
 	});
 
 	test("account pool exposes only qualified usage reports for visible OAuth identities", async () => {

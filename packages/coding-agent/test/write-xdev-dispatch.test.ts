@@ -2,11 +2,13 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { ToolChoiceQueue } from "@oh-my-pi/pi-coding-agent/session/tool-choice-queue";
 import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { requiresApproval, resolveApproval } from "@oh-my-pi/pi-coding-agent/tools/approval";
 import { githubToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/gh-renderer";
 import { ToolError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { WriteTool, writeToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/write";
@@ -19,9 +21,9 @@ import {
 	type XdevState,
 	xdevDocs,
 	xdevDocsAll,
+	xdevEntries,
 } from "@oh-my-pi/pi-coding-agent/tools/xdev";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 
 // xdev mounting is default-on: discoverable tools like ast_edit unmount into
 // xd://, and a plain `write xd://ast_edit` dispatches them. These guard the
@@ -86,7 +88,7 @@ describe("read and write route xd:// device URLs", () => {
 			const approval = write!.approval;
 			expect(typeof approval).toBe("function");
 			if (typeof approval === "function") {
-				expect(approval({ path: "xd://ast_edit", content })).toBe("write");
+				expect(approval({ path: "xd://ast_edit", content })).toEqual({ tier: "write", policyKey: "ast_edit" });
 			}
 
 			// Execute dispatches through the xdev registry to the mounted ast_edit,
@@ -95,6 +97,9 @@ describe("read and write route xd:// device URLs", () => {
 			expect(previewResult.isError).toBeUndefined();
 			expect(previewResult.details?.xdev?.tool).toBe("ast_edit");
 			expect(previewResult.details?.xdev?.mode).toBe("execute");
+			// The dispatch records the wrapped tool's approval tier so prewalk can
+			// tell a mutation from a read-only device call (issue #7312).
+			expect(previewResult.details?.xdev?.tier).toBe("write");
 			const previewText = previewResult.content.find(entry => entry.type === "text")?.text ?? "";
 			expect(previewText).toContain("modernWrap");
 
@@ -106,6 +111,108 @@ describe("read and write route xd:// device URLs", () => {
 		} finally {
 			await removeWithRetries(tempDir);
 		}
+	});
+
+	it("records a read tier on the dispatch of a read-only device", async () => {
+		const readDevice: AgentTool = {
+			name: "peek",
+			label: "Peek",
+			description: "Read-only device",
+			parameters: type({ q: "string" }),
+			approval: () => "read",
+			async execute() {
+				return { content: [{ type: "text", text: "peeked" }] };
+			},
+		};
+		const xdev = createTestXdevState([readDevice]);
+		const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
+
+		const result = await write.execute("write-xdev-read", { path: "xd://peek", content: JSON.stringify({ q: "x" }) });
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.xdev).toMatchObject({ tool: "peek", mode: "execute", tier: "read" });
+	});
+
+	it("resolves device dispatches against the device's user policy, falling back to write's", async () => {
+		// Like the pi-knowledge plugin in #7923: the mounted device declares no
+		// approval, so it defaults to exec tier — but a device-scoped user policy
+		// must still gate, and without one the dispatch must honor `write`'s policy.
+		const device: AgentTool = {
+			name: "knowledge_search",
+			label: "Knowledge Search",
+			description: "Read-only device without a tier declaration",
+			parameters: type({ q: "string" }),
+			async execute() {
+				return { content: [{ type: "text", text: "ok" }] };
+			},
+		};
+		const xdev = createTestXdevState([device]);
+		const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
+		const args = { path: "xd://knowledge_search", content: JSON.stringify({ q: "x" }) };
+
+		const approval = write.approval;
+		expect(typeof approval).toBe("function");
+		if (typeof approval !== "function") throw new Error("expected a function approval");
+		// The gate reports the mounted tool's (default exec) tier and keys user
+		// policy on the device name.
+		expect(approval(args)).toEqual({ tier: "exec", policyKey: "knowledge_search" });
+
+		// No device policy → falls back to the write tool's own policy.
+		expect(resolveApproval(write, args, "always-ask", { write: "prompt" }).policy).toBe("prompt");
+		expect(resolveApproval(write, args, "always-ask", { write: "allow" }).policy).toBe("allow");
+
+		// Device-scoped allow lets the dispatch through even while the blanket
+		// write policy stays prompt — the exact scenario from #7923.
+		const allowed = resolveApproval(write, args, "always-ask", { write: "prompt", knowledge_search: "allow" });
+		expect(allowed).toMatchObject({ policy: "allow", source: "user", policyKey: "knowledge_search" });
+
+		// Device-scoped deny blocks the dispatch and names the device in the refusal.
+		expect(() => requiresApproval(write, args, "always-ask", { knowledge_search: "deny" })).toThrow(
+			'remove "tools.approval.knowledge_search: deny"',
+		);
+
+		// Device-scoped prompt forces a prompt for this device.
+		expect(resolveApproval(write, args, "always-ask", { knowledge_search: "prompt" }).policy).toBe("prompt");
+
+		// An unrelated device's policy does not leak into this dispatch.
+		expect(resolveApproval(write, args, "always-ask", { other_device: "deny" }).policy).toBe("prompt");
+	});
+
+	it("records the effective tier reported after an execution decorator rewrites device args", async () => {
+		let executedQuery: string | undefined;
+		const device: AgentTool = {
+			name: "peek",
+			label: "Peek",
+			description: "Argument-dependent device",
+			parameters: type({ q: "string" }),
+			approval: args => (args && typeof args === "object" && "q" in args && args.q === "mutate" ? "write" : "read"),
+			async execute(_id, args) {
+				if (!args || typeof args !== "object" || !("q" in args) || typeof args.q !== "string") {
+					throw new Error("Expected a string query");
+				}
+				executedQuery = args.q;
+				return { content: [{ type: "text", text: "done" }] };
+			},
+		};
+		const xdev = createTestXdevState([device]);
+		xdev.decorateExecution = canonical => ({
+			...canonical,
+			async execute(id, _args, signal, onUpdate, context) {
+				const revised = { q: "mutate" };
+				context?.xdevTierResolved?.("write");
+				return canonical.execute(id, revised as never, signal, onUpdate, context);
+			},
+		});
+		const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
+
+		const result = await write.execute(
+			"write-xdev-revised",
+			{ path: "xd://peek", content: JSON.stringify({ q: "inspect" }) },
+			undefined,
+			undefined,
+			{} as never,
+		);
+		expect(executedQuery).toBe("mutate");
+		expect(result.details?.xdev?.tier).toBe("write");
 	});
 
 	it("rejects near-miss xd addresses before filesystem fallback", async () => {
@@ -162,12 +269,18 @@ describe("read and write route xd:// device URLs", () => {
 				ops: [{ pat: "a", out: "b" }],
 				paths: ["artifact://abc"],
 			});
-			expect(tier("xd://ast_edit", astFsPath)).toBe("write");
-			expect(tier("xd://ast_edit", astInternalPath)).toBe("read");
+			expect(tier("xd://ast_edit", astFsPath)).toEqual({ tier: "write", policyKey: "ast_edit" });
+			expect(tier("xd://ast_edit", astInternalPath)).toEqual({ tier: "read", policyKey: "ast_edit" });
 
 			// debug: inspection action → read; a real launch → exec (control).
-			expect(tier("xd://debug", JSON.stringify({ action: "sessions" }))).toBe("read");
-			expect(tier("xd://debug", JSON.stringify({ action: "launch", program: "./app" }))).toBe("exec");
+			expect(tier("xd://debug", JSON.stringify({ action: "sessions" }))).toEqual({
+				tier: "read",
+				policyKey: "debug",
+			});
+			expect(tier("xd://debug", JSON.stringify({ action: "launch", program: "./app" }))).toEqual({
+				tier: "exec",
+				policyKey: "debug",
+			});
 
 			// Fail closed: malformed JSON, non-object or schema-invalid payloads,
 			// missing content, and unknown devices all stay exec so the gate never
@@ -289,6 +402,63 @@ describe("read and write route xd:// device URLs", () => {
 		expect(rendered).toContain("Tokyo: 22°C");
 		expect(backgroundPrefix).not.toBe("");
 		expect(lines.some(line => line.includes(backgroundPrefix))).toBe(true);
+	});
+
+	// Dynamic device summaries are third-party text inlined into the system
+	// prompt. A character bound is not a byte bound: a multi-byte summary passes
+	// several times the intended budget, and cutting a byte budget by character
+	// index splits code points.
+	it("bounds dynamic device summaries in UTF-8 bytes on a code point boundary", () => {
+		const multiByteTail = "あ".repeat(XDEV_EXTERNAL_DESCRIPTION_CAP);
+		const dynamicDevice: AgentTool = {
+			name: "mcp__weather__forecast",
+			label: "Forecast",
+			description: "Weather forecast for a place.",
+			summary: `Napoved\u0007\u2028vremena ${multiByteTail}`,
+			parameters: type({ query: "string" }),
+			async execute() {
+				return { content: [{ type: "text", text: "" }] };
+			},
+		};
+		const builtInDevice: AgentTool = {
+			name: "weather",
+			label: "Weather",
+			description: "Weather for a place.",
+			summary: `Gets the weather ${multiByteTail}`,
+			parameters: type({ query: "string" }),
+			async execute() {
+				return { content: [{ type: "text", text: "" }] };
+			},
+		};
+		const xdev = createTestXdevState([builtInDevice, dynamicDevice], ["weather"]);
+		const entries = new Map(xdevEntries(xdev).map(entry => [entry.name, entry]));
+
+		const dynamic = entries.get("mcp__weather__forecast");
+		if (!dynamic) throw new Error("expected the dynamic device entry");
+		expect(dynamic.dynamic).toBe(true);
+		// Control characters and Unicode line separators collapse to a space
+		// instead of reaching the prompt.
+		expect(dynamic.summary.startsWith("Napoved vremena ")).toBe(true);
+		expect(dynamic.summary.endsWith("…")).toBe(true);
+
+		const body = dynamic.summary.slice(0, -1);
+		const bodyBytes = Buffer.byteLength(body, "utf-8");
+		const summaryBytes = Buffer.byteLength(dynamic.summary, "utf-8");
+		expect(summaryBytes).toBeLessThanOrEqual(XDEV_EXTERNAL_DESCRIPTION_CAP);
+		// The ellipsis is inside the byte budget, and the cut backs off at most
+		// one code point rather than splitting the character at the boundary.
+		expect(bodyBytes).toBeLessThanOrEqual(XDEV_EXTERNAL_DESCRIPTION_CAP - Buffer.byteLength("…", "utf-8"));
+		expect(bodyBytes).toBeGreaterThan(XDEV_EXTERNAL_DESCRIPTION_CAP - 6);
+		expect(body.endsWith("あ")).toBe(true);
+		// A split code point would decode to U+FFFD and fail the round trip.
+		expect(Buffer.from(body, "utf-8").toString("utf-8")).toBe(body);
+
+		// The same boolean drives the cap and the flag, so a built-in device is
+		// never capped and never reported as untrusted.
+		const builtIn = entries.get("weather");
+		if (!builtIn) throw new Error("expected the built-in device entry");
+		expect(builtIn.dynamic).toBe(false);
+		expect(builtIn.summary).toBe(`Gets the weather ${multiByteTail}`);
 	});
 
 	it("docsAll inlines small device docs and falls back to a listing past the caps", async () => {

@@ -109,7 +109,7 @@ describe("StdioTransport.connect", () => {
 // forever. `sleep` is POSIX-only, so the check is scoped to non-Windows hosts.
 describe.skipIf(process.platform === "win32")("StdioTransport request write stall", () => {
 	it("rejects with the timeout error when the child never drains stdin", async () => {
-		const timeoutMs = 400;
+		const timeoutMs = 100;
 		const orphaned: Error[] = [];
 		const captureOrphan = (reason: unknown) => {
 			if (reason instanceof Error) orphaned.push(reason);
@@ -181,6 +181,7 @@ function processExists(pid: number): boolean {
 // end-to-end through `connect()` on a non-Linux dev/CI host, but a real
 // detached process group can still be spawned directly on any POSIX host.
 describe.skipIf(process.platform === "win32")("terminateStdioProcess", () => {
+	const TEST_TERM_GRACE_MS = 50;
 	it("escalates a detached child that traps SIGTERM to SIGKILL", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-stdio-kill-solo-"));
 		const scriptPath = path.join(tempDir, "child.mjs");
@@ -194,7 +195,7 @@ describe.skipIf(process.platform === "win32")("terminateStdioProcess", () => {
 				"setInterval(() => {}, 60_000);",
 			].join("\n"),
 		);
-		const proc = Bun.spawn(["bun", "run", scriptPath], {
+		const proc = Bun.spawn([process.execPath, scriptPath], {
 			stdin: "ignore",
 			stdout: "ignore",
 			stderr: "ignore",
@@ -214,14 +215,14 @@ describe.skipIf(process.platform === "win32")("terminateStdioProcess", () => {
 			}
 
 			const started = performance.now();
-			await terminateStdioProcess(proc, true);
+			await terminateStdioProcess(proc, true, process.platform, TEST_TERM_GRACE_MS);
 			await proc.exited;
 			const elapsedMs = performance.now() - started;
 
 			expect(proc.signalCode).toBe("SIGKILL");
-			// Escalation only fires after the ~1s SIGTERM grace window elapses —
-			// a too-fast exit would mean SIGKILL fired without waiting.
-			expect(elapsedMs).toBeGreaterThanOrEqual(900);
+			// The injected test grace preserves the production transition without
+			// making this subprocess boundary test sleep for the full 1s window.
+			expect(elapsedMs).toBeGreaterThanOrEqual(TEST_TERM_GRACE_MS - 15);
 		} finally {
 			try {
 				process.kill(-proc.pid, "SIGKILL");
@@ -254,12 +255,12 @@ describe.skipIf(process.platform === "win32")("terminateStdioProcess", () => {
 			parentScriptPath,
 			[
 				"process.on('SIGTERM', () => {});",
-				`Bun.spawn(["bun", "run", ${JSON.stringify(grandchildScriptPath)}], { stdout: "ignore", stderr: "ignore", stdin: "ignore" });`,
+				`Bun.spawn([process.execPath, ${JSON.stringify(grandchildScriptPath)}], { stdout: "ignore", stderr: "ignore", stdin: "ignore" });`,
 				"setInterval(() => {}, 60_000);",
 			].join("\n"),
 		);
 
-		const proc = Bun.spawn(["bun", "run", parentScriptPath], {
+		const proc = Bun.spawn([process.execPath, parentScriptPath], {
 			stdin: "ignore",
 			stdout: "ignore",
 			stderr: "ignore",
@@ -281,7 +282,7 @@ describe.skipIf(process.platform === "win32")("terminateStdioProcess", () => {
 			if (grandchildPid === undefined) throw new Error("grandchild never reported its pid");
 			expect(processExists(grandchildPid)).toBe(true);
 
-			await terminateStdioProcess(proc, true);
+			await terminateStdioProcess(proc, true, process.platform, TEST_TERM_GRACE_MS);
 			await proc.exited;
 			expect(proc.signalCode).toBe("SIGKILL");
 
@@ -329,12 +330,12 @@ describe.skipIf(process.platform === "win32")("terminateStdioProcess", () => {
 		await fs.writeFile(
 			parentScriptPath,
 			[
-				`Bun.spawn(["bun", "run", ${JSON.stringify(grandchildScriptPath)}], { stdout: "ignore", stderr: "ignore", stdin: "ignore" });`,
+				`Bun.spawn([process.execPath, ${JSON.stringify(grandchildScriptPath)}], { stdout: "ignore", stderr: "ignore", stdin: "ignore" });`,
 				"setInterval(() => {}, 60_000);",
 			].join("\n"),
 		);
 
-		const proc = Bun.spawn(["bun", "run", parentScriptPath], {
+		const proc = Bun.spawn([process.execPath, parentScriptPath], {
 			stdin: "ignore",
 			stdout: "ignore",
 			stderr: "ignore",
@@ -354,7 +355,7 @@ describe.skipIf(process.platform === "win32")("terminateStdioProcess", () => {
 			expect(processExists(grandchildPid)).toBe(true);
 
 			const started = performance.now();
-			await terminateStdioProcess(proc, true);
+			await terminateStdioProcess(proc, true, process.platform, TEST_TERM_GRACE_MS);
 			await proc.exited;
 			const elapsedMs = performance.now() - started;
 
@@ -424,4 +425,39 @@ describe.skipIf(process.platform === "win32")("StdioTransport.close teardown", (
 			await transport.close();
 		}
 	}, 5000);
+});
+
+describe.skipIf(process.platform === "win32")("StdioTransport request ids", () => {
+	/** Echoes each request back with the JSON type the server actually observed for `id`. */
+	const ECHO_OBSERVED_ID = `for await (const line of console) {
+		const message = JSON.parse(line);
+		process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { idType: typeof message.id, id: message.id } }) + "\\n");
+	}`;
+
+	async function observeIds(requestIdFormat: "string" | "number" | undefined, methods: string[]) {
+		const transport = new StdioTransport({ command: "bun", args: ["-e", ECHO_OBSERVED_ID], requestIdFormat });
+		try {
+			await transport.connect();
+			const observed: { idType: string; id: unknown }[] = [];
+			for (const method of methods) observed.push(await transport.request(method));
+			return observed;
+		} finally {
+			await transport.close();
+		}
+	}
+
+	it("sends integer ids by default", async () => {
+		// The MCP ecosystem norm; integer-only decoders like Apple's `xcrun
+		// mcpbridge` (#7053) work without configuration.
+		expect(await observeIds(undefined, ["first", "second"])).toEqual([
+			{ idType: "number", id: 1 },
+			{ idType: "number", id: 2 },
+		]);
+	}, 15000);
+
+	it("sends snowflake strings for servers opting into string ids", async () => {
+		const [observed] = await observeIds("string", ["probe"]);
+
+		expect(observed.idType).toBe("string");
+	}, 15000);
 });

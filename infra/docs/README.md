@@ -47,7 +47,7 @@ flowchart LR
 Key properties baked into this design:
 
 - **One job = one VM.** Runner pods are ephemeral and JIT-registered; there is no VM templating or pooling, so a job never inherits state from a previous job.
-- **Scale-to-zero.** `minRunners: 0` / `maxRunners: 4` — when no jobs are queued, zero runner pods (and zero microVMs) exist.
+- **Scale-to-zero.** `minRunners: 0` / `maxRunners: 8` — when no jobs are queued, zero runner pods (and zero microVMs) exist. Runners are burstable (3-vCPU/10-GiB requests, 8-vCPU/14-GiB limits) so a full workflow fan-out runs 8-wide while a lone heavy job still bursts to 8 vCPUs.
 - **Host-kernel isolation.** Jobs see the microVM's guest kernel, not the host kernel, so a kernel exploit in a job does not reach the host.
 - **No external registry.** The runner image is built on the host and imported straight into k3s' containerd.
 - **Shared, in-cluster cache.** bazel-remote stores Bazel action results and CAS blobs (Rust compilation, tests, native `.node` addons) behind TLS + htpasswd auth, with a public read-mostly NodePort for GitHub-hosted runners; the runner-cache PVC stores Bun/Cargo downloads. Cache traffic stays on the host.

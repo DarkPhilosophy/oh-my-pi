@@ -18,6 +18,7 @@ import type { CustomMessageEntry, SessionEntry, SessionMessageEntry } from "./en
 import { invalidateMessageCache } from "./message-cache";
 import {
 	collectToolCallsById,
+	isArtifactRecoveryToolResult,
 	isProtectedToolResult,
 	isSkillReadToolResult,
 	type ProtectedToolMatcher,
@@ -46,16 +47,31 @@ export interface ShakeConfig {
 export const DEFAULT_SHAKE_CONFIG: ShakeConfig = {
 	protectTokens: 16_000,
 	minSavings: 4_000,
+	protectedTools: ["skill", isSkillReadToolResult, isArtifactRecoveryToolResult],
+	fenceMinTokens: 400,
+};
+
+/**
+ * Manual `/shake`: aggressive — no savings threshold and drops eligible
+ * regions across history, artifact recovery reads included (the user's full
+ * escape hatch). Still keeps a small recent tail so it cannot strip the tool
+ * results the agent is currently working from (#7776).
+ */
+export const AGGRESSIVE_SHAKE_CONFIG: ShakeConfig = {
+	protectTokens: 4_000,
+	minSavings: 0,
 	protectedTools: ["skill", isSkillReadToolResult],
 	fenceMinTokens: 400,
 };
 
-/** Manual `/shake`: aggressive — drops every eligible region across history. */
-export const AGGRESSIVE_SHAKE_CONFIG: ShakeConfig = {
+/** Compaction dead-end rescue: aggressive reach, but artifact recovery reads stay protected. */
+export const RESCUE_SHAKE_CONFIG: ShakeConfig = {
+	...AGGRESSIVE_SHAKE_CONFIG,
+	// Rescue must be able to elide the newest oversized result even inside the
+	// manual preset's recent-tail window (#7776) — a dead-end recovery that
+	// cannot drop its blocker is not a recovery.
 	protectTokens: 0,
-	minSavings: 0,
-	protectedTools: ["skill", isSkillReadToolResult],
-	fenceMinTokens: 400,
+	protectedTools: [...AGGRESSIVE_SHAKE_CONFIG.protectedTools, isArtifactRecoveryToolResult],
 };
 
 /** Rough token cost of a placeholder line; used only for the savings gate. */

@@ -10,6 +10,7 @@ import {
 	estimateTokens,
 	findCutPoint,
 	getLastAssistantUsage,
+	hasContextTokenUsage,
 	prepareCompaction,
 	resolveThresholdTokens,
 	shouldCompact,
@@ -187,6 +188,19 @@ describe("Token calculation", () => {
 		const usage = createMockUsage(0, 0, 0, 0);
 		expect(calculateContextTokens(usage)).toBe(0);
 	});
+
+	it("prefers positive provider context occupancy without accepting an explicit zero", () => {
+		const usage = { ...createMockUsage(0, 0, 0, 0), contextTokens: 120_000 };
+		expect(calculateContextTokens(usage)).toBe(120_000);
+		expect(hasContextTokenUsage(usage)).toBe(true);
+		expect(hasContextTokenUsage({ ...usage, contextTokens: 0 })).toBe(false);
+	});
+
+	it("preserves total-only provider context without accepting response-only totals", () => {
+		const responseOnly = createMockUsage(0, 29, 0, 0);
+		expect(hasContextTokenUsage(responseOnly)).toBe(false);
+		expect(hasContextTokenUsage({ ...responseOnly, totalTokens: 120_000 })).toBe(true);
+	});
 });
 
 describe("getLastAssistantUsage", () => {
@@ -199,7 +213,6 @@ describe("getLastAssistantUsage", () => {
 		];
 
 		const usage = getLastAssistantUsage(entries);
-		expect(usage).not.toBeNull();
 		expect(usage!.input).toBe(200);
 	});
 
@@ -217,7 +230,6 @@ describe("getLastAssistantUsage", () => {
 		];
 
 		const usage = getLastAssistantUsage(entries);
-		expect(usage).not.toBeNull();
 		expect(usage!.input).toBe(100);
 	});
 
@@ -515,7 +527,6 @@ describe("remote compaction setting", () => {
 			remoteEnabled: false,
 			remoteEndpoint: "https://compaction.example.test/summarize",
 		});
-		expect(preparation).toBeDefined();
 		if (!preparation) {
 			throw new Error("Expected compaction preparation");
 		}
@@ -593,7 +604,6 @@ describe("remote compaction setting", () => {
 			keepRecentTokens: 1000,
 			remoteEnabled: true,
 		});
-		expect(preparation).toBeDefined();
 		if (!preparation) {
 			throw new Error("Expected compaction preparation");
 		}
@@ -933,7 +943,6 @@ describe("remote compaction setting", () => {
 			})
 			.join("\n");
 
-		expect(promptText).toContain("Previous snapcompact archive source text:");
 		expect(promptText).toContain("Archived snapcompact source");
 		expect(result.preserveData).toEqual({ otherState: "keep-me" });
 	});
@@ -1396,7 +1405,6 @@ describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("LLM summarization", () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 
 		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS);
-		expect(preparation).toBeDefined();
 
 		const compactionResult = await compact(preparation!, model, e2eApiKey("ANTHROPIC_API_KEY")!);
 

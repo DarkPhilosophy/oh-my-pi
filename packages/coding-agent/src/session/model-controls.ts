@@ -3,6 +3,7 @@ import type { Model, ProviderSessionState, ServiceTier, ServiceTierByFamily, Ser
 import {
 	clearAnthropicFastModeFallback,
 	Effort,
+	isAnthropicFastModeFallbackDisabled,
 	realizesPriorityServiceTier,
 	resolveModelServiceTier,
 	serviceTierFamily,
@@ -208,7 +209,6 @@ export class ModelControls {
 			selector?: string;
 			thinkingLevel?: ThinkingLevel;
 			persist?: boolean;
-			currentContextTokens?: number;
 		},
 	): Promise<{ switched: boolean }> {
 		const previousEditMode = this.#host.resolveActiveEditMode();
@@ -596,8 +596,8 @@ export class ModelControls {
 		let resolved: Effort | undefined;
 		if (this.#host.magicKeywordEnabled("ultrathink") && containsUltrathink(promptText)) {
 			// The user explicitly asked for maximum thinking; bypass the classifier
-			// (and its xhigh auto ceiling) and jump straight to the highest
-			// supported level for this model.
+			// (and the `providers.autoThinkingMaxEffort` ceiling) and jump straight
+			// to the highest supported level for this model.
 			resolved = clampAutoThinkingEffort(model, Effort.Max);
 		} else {
 			const controller = new AbortController();
@@ -666,7 +666,11 @@ export class ModelControls {
 	 */
 	isFastModeActive(): boolean {
 		const model = this.#model;
-		return !!model && realizesPriorityServiceTier(this.effectiveServiceTier(model), model);
+		if (!model || !realizesPriorityServiceTier(this.effectiveServiceTier(model), model)) return false;
+		if (model.provider === "anthropic") {
+			return !isAnthropicFastModeFallbackDisabled(this.#host.providerSessionState, model);
+		}
+		return true;
 	}
 
 	/**
@@ -730,6 +734,9 @@ export class ModelControls {
 		if (!enabled) {
 			if (this.#serviceTierByFamily[family] === "priority") this.setServiceTierFamily(family, undefined);
 			return true;
+		}
+		if (family === "anthropic" && this.#serviceTierByFamily.anthropic === "priority") {
+			clearAnthropicFastModeFallback(this.#host.providerSessionState);
 		}
 		this.setServiceTierFamily(family, "priority");
 		return true;

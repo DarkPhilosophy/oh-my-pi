@@ -818,6 +818,28 @@ describe("wave 3 commands", () => {
 		expect(output[0]).toContain("Usage: /memory");
 	});
 
+	it("/memory stats: tells the user memory is off instead of naming a nonexistent 'off backend'", async () => {
+		const { output, runtime } = createRuntime();
+		const result = await executeAcpBuiltinSlashCommand("/memory stats", runtime);
+		expect(result).toEqual({ consumed: true });
+		expect(output[0]).toBe("Memory backend is off — there is nothing to show.");
+	});
+
+	it("/memory diagnose: tells the user memory is off instead of naming a nonexistent 'off backend'", async () => {
+		const { output, runtime } = createRuntime();
+		const result = await executeAcpBuiltinSlashCommand("/memory diagnose", runtime);
+		expect(result).toEqual({ consumed: true });
+		expect(output[0]).toBe("Memory backend is off — there is nothing to show.");
+	});
+
+	it("/memory stats: still names the backend when a real backend simply has no stats hook", async () => {
+		const { output, runtime } = createRuntime();
+		runtime.settings.set("memory.backend" as never, "local" as never);
+		const result = await executeAcpBuiltinSlashCommand("/memory stats", runtime);
+		expect(result).toEqual({ consumed: true });
+		expect(output[0]).toBe("Memory stats is not available for the local backend.");
+	});
+
 	// /todo start fuzzy match
 	it("/todo start: finds pending task by substring and starts it", async () => {
 		const { output, session, runtime } = createRuntime();
@@ -1063,8 +1085,7 @@ describe("wave 5 — adapters and polish", () => {
 			// Without this assertion, the command could succeed via a side-effect-free
 			// path that prints the success message without writing the host config.
 			expect(spy).toHaveBeenCalledTimes(1);
-			const [configPath, name, hostConfig] = spy.mock.calls[0]!;
-			expect(typeof configPath).toBe("string");
+			const [, name, hostConfig] = spy.mock.calls[0]!;
 			expect(name).toBe("foo");
 			expect(hostConfig).toMatchObject({ host: "x", username: "y" });
 		} finally {

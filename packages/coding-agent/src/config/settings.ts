@@ -33,6 +33,7 @@ import {
 	setWorktreesDir,
 	toError,
 } from "@oh-my-pi/pi-utils";
+import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { JSONC, YAML } from "bun";
 import { invalidate as invalidateCapabilityFsCache } from "../capability/fs";
 import { type Settings as SettingsCapabilityItem, settingsCapability } from "../capability/settings";
@@ -44,7 +45,6 @@ import { AUTO_IMAGE_PROVIDER_ORDER, isImageProviderId } from "../tools/image-pro
 import { type EditMode, normalizeEditMode } from "../utils/edit-mode";
 import { INSPECT_IMAGE_MODES } from "../utils/inspect-image-mode";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
-import { withFileLock } from "./file-lock";
 import {
 	type BashInterceptorRule,
 	type GroupPrefix,
@@ -445,11 +445,15 @@ export class Settings {
 	}
 
 	/**
-	 * Create an isolated instance for testing.
-	 * Does not affect the global singleton.
+	 * Create an in-memory settings instance without affecting the global singleton.
+	 * A supplied storage handle remains shared for runtime data while setting overrides stay non-persistent.
 	 */
-	static isolated(overrides: Partial<Record<SettingPath, unknown>> = {}): Settings {
+	static isolated(
+		overrides: Partial<Record<SettingPath, unknown>> = {},
+		options: { storage?: AgentStorage | null } = {},
+	): Settings {
 		const instance = new Settings({ inMemory: true, overrides });
+		instance.#storage = options.storage ?? null;
 		instance.#rebuildMerged();
 		return instance;
 	}
@@ -1357,6 +1361,31 @@ export class Settings {
 		}
 		delete raw.lastChangelogVersion;
 
+		// collapseChangelog (boolean) -> startup.changelogMode (enum). Preserve
+		// every explicit legacy choice while giving new installs the schema's
+		// "summary" default: true -> summary, false -> expanded. A separately
+		// configured new mode always wins.
+		const startupObj = isRecord(raw.startup) ? (raw.startup as Record<string, unknown>) : undefined;
+		const legacyCollapseChangelog = typeof raw.collapseChangelog === "boolean" ? raw.collapseChangelog : undefined;
+		const flatChangelogMode = raw["startup.changelogMode"];
+		const normalizedFlatChangelogMode =
+			flatChangelogMode === "summary" || flatChangelogMode === "expanded" || flatChangelogMode === "hidden"
+				? flatChangelogMode
+				: undefined;
+		if (legacyCollapseChangelog !== undefined || normalizedFlatChangelogMode !== undefined) {
+			if (!startupObj) {
+				raw.startup = {};
+			}
+			const target = raw.startup as Record<string, unknown>;
+			if (target.changelogMode === undefined) {
+				target.changelogMode =
+					normalizedFlatChangelogMode ??
+					(legacyCollapseChangelog !== undefined ? (legacyCollapseChangelog ? "summary" : "expanded") : undefined);
+			}
+		}
+		delete raw.collapseChangelog;
+		delete raw["startup.changelogMode"];
+
 		// ask.timeout: ms -> seconds (if value > 1000, it's old ms format)
 		if (raw.ask && typeof (raw.ask as Record<string, unknown>).timeout === "number") {
 			const oldValue = (raw.ask as Record<string, unknown>).timeout as number;
@@ -1768,6 +1797,26 @@ export class Settings {
 		if (tierTouched) raw.tier = tierObj;
 		delete raw.fastModeScope;
 
+		// advisor.subagents (blanket advisor on every spawned subagent) → per-agent
+		// task.agentAdvisor, migrated to the bundled generic `task` agent. An
+		// explicit boolean maps to "on"/"off" IN THE SAME LAYER — migration runs
+		// per file, so a project-level `false` must keep overriding a global
+		// `true` after both layers migrate.
+		{
+			const advisorObj = isRecord(raw.advisor) ? raw.advisor : undefined;
+			const legacySubagents =
+				advisorObj && "subagents" in advisorObj ? advisorObj.subagents : raw["advisor.subagents"];
+			if (typeof legacySubagents === "boolean") {
+				const taskObj = isRecord(raw.task) ? raw.task : {};
+				const agentAdvisor = isRecord(taskObj.agentAdvisor) ? taskObj.agentAdvisor : {};
+				if (!("task" in agentAdvisor)) agentAdvisor.task = legacySubagents ? "on" : "off";
+				taskObj.agentAdvisor = agentAdvisor;
+				raw.task = taskObj;
+			}
+			if (advisorObj) delete advisorObj.subagents;
+			delete raw["advisor.subagents"];
+		}
+
 		// v17 renames that used to nest under a boolean parent path:
 		//   dev.autoqa.consent -> dev.autoqaConsent
 		//   todo.reminders.max -> todo.remindersMax
@@ -1845,6 +1894,52 @@ export class Settings {
 				? [value, ...AUTO_IMAGE_PROVIDER_ORDER.filter(id => id !== value)]
 				: undefined,
 		);
+
+		// Consolidate the retired Exa suite toggles onto the sole remaining
+		// provider switch. The old runtime required both `enabled` and
+		// `enableSearch`, so preserve that AND semantics when both are present.
+		// Researcher and Websets were removed with the standalone Exa tools.
+		const exaObj = isRecord(raw.exa) ? raw.exa : undefined;
+		const exaEnabledValues = [
+			exaObj?.enabled,
+			raw["exa.enabled"],
+			exaObj?.enableSearch,
+			raw["exa.enableSearch"],
+		].filter((value): value is boolean => typeof value === "boolean");
+		const hasFlatExaSetting =
+			"exa.enabled" in raw ||
+			"exa.enableSearch" in raw ||
+			"exa.enableResearcher" in raw ||
+			"exa.enableWebsets" in raw;
+		if (exaObj || hasFlatExaSetting) {
+			const exaRoot = exaObj ?? {};
+			if (exaEnabledValues.length > 0) {
+				exaRoot.enabled = exaEnabledValues.every(Boolean);
+			}
+			delete exaRoot.enableSearch;
+			delete exaRoot.enableResearcher;
+			delete exaRoot.enableWebsets;
+			if (Object.keys(exaRoot).length > 0) {
+				raw.exa = exaRoot;
+			} else {
+				delete raw.exa;
+			}
+			delete raw["exa.enabled"];
+			delete raw["exa.enableSearch"];
+			delete raw["exa.enableResearcher"];
+			delete raw["exa.enableWebsets"];
+		}
+
+		// computer.backend and model-specific controller routing were removed
+		// when the computer tool moved to one native desktop implementation.
+		const computerObj = isRecord(raw.computer) ? raw.computer : undefined;
+		if (computerObj && "backend" in computerObj) {
+			delete computerObj.backend;
+			if (Object.keys(computerObj).length === 0) {
+				delete raw.computer;
+			}
+		}
+		delete raw["computer.backend"];
 
 		return raw;
 	}

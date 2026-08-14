@@ -26,6 +26,7 @@ import type {
 	RpcSessionState,
 } from "../modes/rpc/rpc-types";
 import { buildAvailableSlashCommands, getClientOwnedBuiltinSlashCommands } from "../slash-commands/available-commands";
+import { calculateTokensPerSecond } from "../utils/token-rate";
 import type { TodoPhase } from "../tools/todo";
 import type {
 	AgentSession,
@@ -163,6 +164,9 @@ function defaultState(sessionId: string): RpcSessionState {
 	return {
 		sessionId,
 		thinkingLevel: undefined,
+		fastModeEnabled: false,
+		fastModeActive: false,
+		tokensPerSecond: null,
 		isStreaming: false,
 		isCompacting: false,
 		steeringMode: "one-at-a-time",
@@ -178,6 +182,9 @@ function defaultState(sessionId: string): RpcSessionState {
 function stateFromLocal(session: AgentSession): RpcSessionState {
 	return freezeState({
 		model: session.model,
+		fastModeEnabled: session.isFastModeEnabled(),
+		fastModeActive: session.isFastModeActive(),
+		tokensPerSecond: calculateTokensPerSecond(session.state.messages, session.isStreaming),
 		thinkingLevel: session.thinkingLevel,
 		isStreaming: session.isStreaming,
 		isCompacting: session.isCompacting,

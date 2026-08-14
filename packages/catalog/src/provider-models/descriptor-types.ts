@@ -8,6 +8,8 @@ export type ModelManagerConfig = {
 	cacheIdentity?: string;
 	baseUrl?: string;
 	fetch?: FetchImpl;
+	/** The supplied fetch already applies provider-specific authentication. */
+	authenticated?: boolean;
 };
 
 /** Catalog discovery configuration for providers that support endpoint-based model listing. */

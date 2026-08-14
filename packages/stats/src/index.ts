@@ -68,6 +68,7 @@ async function printStats(): Promise<void> {
 	console.log(`  Input Tokens: ${formatNumber(overall.totalInputTokens)}`);
 	console.log(`  Output Tokens: ${formatNumber(overall.totalOutputTokens)}`);
 	console.log(`  Cache Rate: ${formatPercent(overall.cacheRate)}`);
+	console.log(`  Cache Savings: ${formatPercent(overall.cacheSavings)}`);
 	console.log(`  Total Cost: ${formatCost(overall.totalCost)}`);
 	console.log(`  Premium Requests: ${formatNumber(normalizePremiumRequests(overall.totalPremiumRequests ?? 0))}`);
 	console.log(`  Avg Duration: ${overall.avgDuration !== null ? formatDuration(overall.avgDuration) : "-"}`);
@@ -80,7 +81,7 @@ async function printStats(): Promise<void> {
 		console.log("\nBy Model:");
 		for (const m of byModel.slice(0, 10)) {
 			console.log(
-				`  ${m.model}: ${formatNumber(m.totalRequests)} reqs, ${formatCost(m.totalCost)}, ${formatPercent(m.cacheRate)} cache`,
+				`  ${m.model}: ${formatNumber(m.totalRequests)} reqs, ${formatCost(m.totalCost)}, ${formatPercent(m.cacheRate)} cache rate, ${formatPercent(m.cacheSavings)} cache savings`,
 			);
 		}
 	}
@@ -171,8 +172,8 @@ Examples:
 
 		// Start server
 		const port = parseInt(values.port || "3847", 10);
-		const { port: actualPort } = await startServer(port);
-		console.log(`Dashboard available at: http://localhost:${actualPort}`);
+		const { hostname, port: actualPort } = await startServer(port);
+		console.log(`Dashboard available at: http://${hostname}:${actualPort}`);
 		console.log("Press Ctrl+C to stop\n");
 
 		// Keep process running

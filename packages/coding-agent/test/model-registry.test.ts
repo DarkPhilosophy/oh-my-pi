@@ -342,13 +342,6 @@ describe("ModelRegistry", () => {
 			}
 		});
 
-		test("rerouted bundled OpenAI models recompute inferred computer capability", () => {
-			const model = openaiProxy.find("openai", "gpt-5.4");
-
-			expect(model?.baseUrl).toBe("https://openai-proxy.example.com/v1");
-			expect(model?.supportsComputerUse).toBe(false);
-		});
-
 		test("overriding headers merges with model headers", () => {
 			const anthropicModels = getModelsForProvider(anthropicProxyHeaders, "anthropic");
 			for (const model of anthropicModels) {
@@ -362,6 +355,13 @@ describe("ModelRegistry", () => {
 			for (const model of anthropicModels) {
 				expect(model.headers?.["X-Custom-Header"]).toBe("custom-only");
 			}
+		});
+
+		test("rerouted bundled OpenAI models recompute inferred computer capability", () => {
+			const model = openaiProxy.find("openai", "gpt-5.4");
+
+			expect(model?.baseUrl).toBe("https://openai-proxy.example.com/v1");
+			expect(model?.supportsComputerUse).toBe(false);
 		});
 
 		test("provider header lookup excludes unrelated model overrides", () => {
@@ -551,9 +551,9 @@ describe("ModelRegistry", () => {
 	describe("provider compat overrides", () => {
 		let providerCompat: ModelRegistry;
 		let customCompat: ModelRegistry;
+		let customAnthropicCompat: ModelRegistry;
 		let customModelCompat: ModelRegistry;
 		let customResponsesCompat: ModelRegistry;
-		let customAnthropicCompat: ModelRegistry;
 		beforeAll(() => {
 			providerCompat = readonlyRegistry({
 				providers: {
@@ -692,32 +692,6 @@ describe("ModelRegistry", () => {
 			}
 		});
 
-		test("provider-level Anthropic compat survives dynamic discovery refresh", async () => {
-			writeRawModelsJson({
-				anthropic: {
-					baseUrl: "https://proxy.example/v1",
-					apiKey: "TEST_KEY",
-					compat: { replayUnsignedThinking: false },
-				},
-			});
-			const fetchMock: FetchImpl = async input => {
-				const url = String(input);
-				if (url === "https://models.dev/api.json") return Response.json({});
-				if (url === "https://proxy.example/v1/models") {
-					return Response.json({
-						data: [{ id: "claude-sonnet-5", display_name: "Claude Sonnet 5" }],
-					});
-				}
-				throw new Error(`Unexpected URL: ${url}`);
-			};
-			const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
-			expect(getReplayUnsignedThinking(registry.find("anthropic", "claude-sonnet-5"))).toBe(false);
-
-			await registry.refreshProvider("anthropic", "online");
-
-			expect(getReplayUnsignedThinking(registry.find("anthropic", "claude-sonnet-5"))).toBe(false);
-		});
-
 		test("provider-level compat applies to custom models", () => {
 			const model = customCompat.find("demo", "demo-model");
 			const compat = getOpenAICompat(model);
@@ -732,6 +706,32 @@ describe("ModelRegistry", () => {
 				supportsEagerToolInputStreaming: true,
 				allowAnthropicHeaderOverrides: true,
 			});
+		});
+
+		test("provider-level Anthropic compat survives dynamic discovery refresh", async () => {
+			writeRawModelsJson({
+				anthropic: {
+					baseUrl: "https://proxy.example/v1",
+					apiKey: "TEST_KEY",
+					compat: { replayUnsignedThinking: false },
+				},
+			});
+			const fetchMock: FetchImpl = async input => {
+				const url = String(input);
+				if (url === "https://catalog.stencil.so/models.json.zstd") return Response.json({});
+				if (url === "https://proxy.example/v1/models") {
+					return Response.json({
+						data: [{ id: "claude-sonnet-5", display_name: "Claude Sonnet 5" }],
+					});
+				}
+				throw new Error(`Unexpected URL: ${url}`);
+			};
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+			expect(getReplayUnsignedThinking(registry.find("anthropic", "claude-sonnet-5"))).toBe(false);
+
+			await registry.refreshProvider("anthropic", "online");
+
+			expect(getReplayUnsignedThinking(registry.find("anthropic", "claude-sonnet-5"))).toBe(false);
 		});
 
 		test("custom Responses providers can disable original image detail", () => {
@@ -1174,6 +1174,7 @@ describe("ModelRegistry", () => {
 		};
 		let thinkingCustom: ModelRegistry;
 		let thinkingOverride: ModelRegistry;
+		let deepseekOverride: ModelRegistry;
 		beforeAll(() => {
 			thinkingCustom = readonlyRegistry({
 				providers: {
@@ -1188,6 +1189,21 @@ describe("ModelRegistry", () => {
 						modelOverrides: {
 							"anthropic/claude-sonnet-4": {
 								thinking: { mode: "budget", efforts: [Effort.Low, Effort.Medium] },
+							},
+						},
+					},
+				},
+			});
+			deepseekOverride = readonlyRegistry({
+				providers: {
+					openrouter: {
+						modelOverrides: {
+							"deepseek/deepseek-v4-flash-0731": {
+								thinking: {
+									mode: "effort",
+									efforts: [Effort.Max, Effort.High, Effort.Low],
+									defaultLevel: Effort.High,
+								},
 							},
 						},
 					},
@@ -1209,6 +1225,17 @@ describe("ModelRegistry", () => {
 			expect(model?.thinking).toEqual({
 				mode: "budget",
 				efforts: [Effort.Low, Effort.Medium],
+			});
+		});
+
+		test("model overrides preserve explicit OpenRouter DeepSeek thinking metadata", () => {
+			const model = getModelsForProvider(deepseekOverride, "openrouter").find(
+				m => m.id === "deepseek/deepseek-v4-flash-0731",
+			);
+			expect(model?.thinking).toEqual({
+				mode: "effort",
+				efforts: [Effort.Max, Effort.High, Effort.Low],
+				defaultLevel: Effort.High,
 			});
 		});
 	});
@@ -1285,7 +1312,7 @@ describe("ModelRegistry", () => {
 				},
 			});
 			costPartial = readonlyRegistry({
-				providers: { openrouter: { modelOverrides: { "anthropic/claude-sonnet-4": { cost: { input: 99 } } } } },
+				providers: { openai: { modelOverrides: { "gpt-5.6": { cost: { input: 99 } } } } },
 			});
 			addHeaders = readonlyRegistry({
 				providers: {
@@ -1411,12 +1438,15 @@ describe("ModelRegistry", () => {
 			expect(invalid.find("myprovider", "my-model")).toBeUndefined();
 		});
 
-		test("model override can change cost fields partially", () => {
-			const sonnet = getModelsForProvider(costPartial, "openrouter").find(m => m.id === "anthropic/claude-sonnet-4");
-			// Input cost should be overridden
-			expect(sonnet?.cost.input).toBe(99);
-			// Other cost fields should be preserved from built-in
-			expect(sonnet?.cost.output).toBeGreaterThan(0);
+		test("model override can change cost fields partially without dropping long-context pricing", () => {
+			const gpt56 = getModelsForProvider(costPartial, "openai").find(m => m.id === "gpt-5.6");
+			expect(gpt56?.cost.input).toBe(99);
+			expect(gpt56?.cost.output).toBeGreaterThan(0);
+			expect(gpt56?.cost.longContext).toMatchObject({
+				inputThreshold: 272_000,
+				input: 10,
+				output: 45,
+			});
 		});
 
 		test("model override can add headers", () => {
@@ -2467,6 +2497,7 @@ describe("ModelRegistry", () => {
 		let vertexStale: ModelRegistry;
 		let litellmStaleNamespaceCache: ModelRegistry;
 		let litellmCurrentNamespaceCache: ModelRegistry;
+		let openaiModelsListStaleNamespaceCache: ModelRegistry;
 		const vertexProjectModel = () =>
 			buildModel({
 				id: "zai-org/glm-4.7-maas",
@@ -2692,7 +2723,7 @@ describe("ModelRegistry", () => {
 				{
 					seedCache: dbPath =>
 						writeModelCache(
-							"cached-compact-proxy:openai-models-list-context-v2",
+							"cached-compact-proxy:openai-models-list-context-v3",
 							Date.now(),
 							[
 								buildModel({
@@ -2762,6 +2793,45 @@ describe("ModelRegistry", () => {
 						dbPath,
 					),
 			});
+			openaiModelsListStaleNamespaceCache = readonlyRegistry(
+				{
+					providers: {
+						"stale-openai-proxy": {
+							baseUrl: "https://stale-proxy.example.com/v1",
+							apiKey: "TEST_KEY",
+							api: "openai-completions",
+							discovery: { type: "openai-models-list" },
+							models: [],
+						},
+					},
+				},
+				{
+					// Row under the retired pre-modality namespace; the context-v3
+					// bump must orphan it instead of serving the stale text-only row.
+					seedCache: dbPath =>
+						writeModelCache(
+							"stale-openai-proxy:openai-models-list-context-v2",
+							Date.now(),
+							[
+								buildModel({
+									id: "stale-vlm",
+									name: "Stale VLM",
+									api: "openai-completions",
+									provider: "stale-openai-proxy",
+									baseUrl: "https://stale-proxy.example.com/v1",
+									reasoning: false,
+									input: ["text"],
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+									contextWindow: 128_000,
+									maxTokens: 16_384,
+								}),
+							],
+							true,
+							"",
+							dbPath,
+						),
+				},
+			);
 		});
 
 		test("legacy cached discovery sentinels are ignored after nullable limit cutover", () => {
@@ -2812,6 +2882,13 @@ describe("ModelRegistry", () => {
 			const model = litellmCurrentNamespaceCache.find("litellm-proxy", "minimax/minimax-m3");
 			expect(model?.name).toBe("MiniMax-M3");
 			expect(model?.provider).toBe("litellm-proxy");
+		});
+
+		test("ignores openai-models-list rows cached under the retired context-v2 namespace", () => {
+			// PR #7584 added server-advertised input-modality parsing; warm v2 rows
+			// pinned vision-capable ids at text-only and must not load.
+			expect(openaiModelsListStaleNamespaceCache.find("stale-openai-proxy", "stale-vlm")).toBeUndefined();
+			expect(getModelsForProvider(openaiModelsListStaleNamespaceCache, "stale-openai-proxy")).toHaveLength(0);
 		});
 
 		test("replaces bundled google-vertex models with authoritative Vertex project discovery", () => {

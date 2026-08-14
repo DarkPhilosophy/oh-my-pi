@@ -5,42 +5,31 @@
  * THAT session, and `hasPendingAsyncWork()` / `settleAsyncWork()` define the
  * run quiescence the task executor's barrier is built on.
  */
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { DaemonCompletionNotification } from "@oh-my-pi/pi-coding-agent/launch/protocol";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AsyncResultEntry } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
 describe("AgentSession owner-routed async delivery", () => {
 	let session: AgentSession;
-	let tempDir: string;
 	const authStorages: AuthStorage[] = [];
 
-	beforeEach(() => {
-		tempDir = path.join(os.tmpdir(), `pi-async-delivery-test-${Snowflake.next()}`);
-		fs.mkdirSync(tempDir, { recursive: true });
-	});
-
 	afterEach(async () => {
+		vi.useRealTimers();
 		if (session) {
 			await session.dispose();
 		}
 		for (const authStorage of authStorages.splice(0)) {
 			authStorage.close();
-		}
-		if (tempDir && fs.existsSync(tempDir)) {
-			removeSyncWithRetries(tempDir);
 		}
 		AsyncJobManager.resetForTests();
 	});
@@ -54,7 +43,7 @@ describe("AgentSession owner-routed async delivery", () => {
 			convertToLlm,
 			streamFn: mock.stream,
 		});
-		const authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+		const authStorage = await AuthStorage.create(":memory:");
 		authStorages.push(authStorage);
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		const manager = new AsyncJobManager({});
@@ -95,6 +84,60 @@ describe("AgentSession owner-routed async delivery", () => {
 		expect(sawResult).toBe(true);
 	});
 
+	it("routes an advisor-owned launch completion through the session", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			convertToLlm,
+			streamFn: mock.stream,
+		});
+		const authStorage = await AuthStorage.create(":memory:");
+		authStorages.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const sessionManager = SessionManager.inMemory();
+		const owner = `${sessionManager.getSessionId()}-advisor`;
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage),
+		});
+		const completion = {
+			event: "daemon-completed",
+			completionId: "advisor-completion",
+			owner,
+			daemon: {
+				name: "advisor-worker",
+				id: "daemon-id",
+				state: "exited",
+				createdAt: 1,
+				startedAt: 1,
+				exitedAt: 2,
+				exitCode: 0,
+				restartCount: 0,
+				outputBytes: 0,
+				owner,
+				persist: false,
+				detached: false,
+			},
+		} satisfies DaemonCompletionNotification;
+
+		await session.queueLaunchCompletion(completion);
+		await session.waitForIdle();
+
+		expect(
+			mock.calls.some(call =>
+				call.context.messages.some(message =>
+					typeof message.content === "string"
+						? message.content.includes("advisor-worker")
+						: message.content.some(content => content.type === "text" && content.text.includes("advisor-worker")),
+				),
+			),
+		).toBe(true);
+	});
+
 	it("purges finished owned jobs when starting a new session", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
@@ -104,7 +147,7 @@ describe("AgentSession owner-routed async delivery", () => {
 			convertToLlm,
 			streamFn: mock.stream,
 		});
-		const authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+		const authStorage = await AuthStorage.create(":memory:");
 		authStorages.push(authStorage);
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		const manager = new AsyncJobManager({ retentionMs: 60_000 });
@@ -158,7 +201,7 @@ describe("AgentSession owner-routed async delivery", () => {
 			convertToLlm,
 			streamFn: mock.stream,
 		});
-		const authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+		const authStorage = await AuthStorage.create(":memory:");
 		authStorages.push(authStorage);
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		const manager = new AsyncJobManager({ retentionMs: 60_000 });
@@ -210,7 +253,7 @@ describe("AgentSession owner-routed async delivery", () => {
 			convertToLlm,
 			streamFn: mock.stream,
 		});
-		const authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+		const authStorage = await AuthStorage.create(":memory:");
 		authStorages.push(authStorage);
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		const manager = new AsyncJobManager({ retentionMs: 60_000 });
@@ -267,7 +310,7 @@ describe("AgentSession owner-routed async delivery", () => {
 			convertToLlm,
 			streamFn: mock.stream,
 		});
-		const authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+		const authStorage = await AuthStorage.create(":memory:");
 		authStorages.push(authStorage);
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		const manager = new AsyncJobManager({});
@@ -300,5 +343,54 @@ describe("AgentSession owner-routed async delivery", () => {
 		// reaches quiescence.
 		await session.settleAsyncWork();
 		expect(session.hasPendingAsyncWork()).toBe(false);
+	});
+
+	it("keeps the event loop live until a delayed idle flush runs", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			convertToLlm,
+			streamFn: mock.stream,
+		});
+		const authStorage = await AuthStorage.create(":memory:");
+		authStorages.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const manager = new AsyncJobManager({});
+		AsyncJobManager.setInstance(manager);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage),
+			agentId: "SubAgent",
+			asyncJobManager: manager,
+		});
+
+		let flushed = false;
+		session.yieldQueue.register("keepalive-probe", {
+			isStale: () => {
+				flushed = true;
+				return true;
+			},
+			build: () => null,
+		});
+		vi.useFakeTimers();
+		const baselineTimers = vi.getTimerCount();
+		session.yieldQueue.enqueue("keepalive-probe", {});
+
+		// The 1ms flush timer and a keepalive must both remain armed until the
+		// flush runs. Without the keepalive, Bun can park here until unrelated
+		// TTY I/O wakes the loop.
+		expect(vi.getTimerCount()).toBeGreaterThanOrEqual(baselineTimers + 2);
+
+		vi.advanceTimersByTime(1);
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(flushed).toBe(true);
+		expect(vi.getTimerCount()).toBe(baselineTimers + 1);
 	});
 });

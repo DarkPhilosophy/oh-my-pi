@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
 import { buildOpenAICompat, buildOpenAIResponsesCompat } from "@oh-my-pi/pi-catalog/compat/openai";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { readModelCache, writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { resolveProviderModels } from "@oh-my-pi/pi-catalog/model-manager";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -330,6 +331,52 @@ describe("openai-completions wire-quirk compat detection", () => {
 		).toBe(false);
 	});
 
+	it("downgrades forced tool choice only for DeepSeek reasoning models on OpenCode gateways", () => {
+		const deepseekReasoning = {
+			id: "deepseek-v4-flash",
+			name: "DeepSeek V4 Flash",
+			reasoning: true,
+		} as const;
+
+		expect(
+			buildOpenAICompat(
+				completionsSpec({
+					...deepseekReasoning,
+					provider: "opencode-zen",
+					baseUrl: "https://opencode.ai/zen/v1",
+				}),
+			).supportsForcedToolChoice,
+		).toBe(false);
+		expect(
+			buildOpenAICompat(
+				completionsSpec({
+					...deepseekReasoning,
+					provider: "custom",
+					baseUrl: "https://opencode.ai/zen/go/v1",
+				}),
+			).supportsForcedToolChoice,
+		).toBe(false);
+		expect(
+			buildOpenAICompat(
+				completionsSpec({
+					...deepseekReasoning,
+					provider: "nvidia",
+					baseUrl: "https://integrate.api.nvidia.com/v1",
+				}),
+			).supportsForcedToolChoice,
+		).toBe(true);
+		expect(
+			buildOpenAICompat(
+				completionsSpec({
+					...deepseekReasoning,
+					provider: "opencode-zen",
+					baseUrl: "https://opencode.ai/zen/v1",
+					reasoning: false,
+				}),
+			).supportsForcedToolChoice,
+		).toBe(true);
+	});
+
 	it("requires a synthetic assistant bridge after tool results only for Mistral hosts", () => {
 		// Mistral/Devstral reject a user message directly after a tool result; the chat
 		// builder bridges it with a synthetic assistant turn, keyed on the Mistral host.
@@ -614,6 +661,34 @@ describe("OpenRouter model discovery", () => {
 		}
 	});
 
+	it("maps OpenRouter's advertised reasoning effort ladder and default", async () => {
+		const options = openrouterModelManagerOptions({
+			fetch: async () =>
+				Response.json({
+					data: [
+						{
+							id: "deepseek/deepseek-v4-flash-0731",
+							name: "DeepSeek V4 Flash 0731",
+							supported_parameters: ["tools", "reasoning", "reasoning_effort"],
+							reasoning: {
+								supported_efforts: ["max", "high", "low"],
+								default_effort: "high",
+							},
+						},
+					],
+				}),
+		});
+		const specs = await options.fetchDynamicModels?.();
+		const spec = specs?.find(model => model.id === "deepseek/deepseek-v4-flash-0731");
+		if (!spec) throw new Error("Expected discovered DeepSeek V4 Flash 0731 model");
+
+		expect(buildModel(spec).thinking).toEqual({
+			mode: "effort",
+			efforts: [Effort.Low, Effort.High, Effort.Max],
+			defaultLevel: Effort.High,
+		});
+	});
+
 	it("ignores legacy OpenRouter chat-completions cache rows", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-openrouter-legacy-cache-"));
 		const dbPath = path.join(tempDir, "models.db");
@@ -687,6 +762,52 @@ describe("model cache spec round trip", () => {
 			expect(model?.compat.supportsDeveloperRole).toBe(true);
 			expect(model?.compat.isOpenRouterHost).toBe(false);
 			expect(model?.compatConfig).toEqual(sparse);
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves static long-context pricing through dynamic refresh and cache restore", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-tiered-cost-"));
+		const dbPath = path.join(tempDir, "models.db");
+		const staticModel = completionsSpec({
+			id: "tiered-model",
+			provider: "tiered-cost-test",
+			cost: {
+				input: 1,
+				output: 2,
+				cacheRead: 0.1,
+				cacheWrite: 1.25,
+				longContext: {
+					inputThreshold: 272_000,
+					input: 2,
+					output: 3,
+					cacheRead: 0.2,
+					cacheWrite: 2.5,
+				},
+			},
+		});
+		const dynamicModel = completionsSpec({
+			...staticModel,
+			cost: { input: 3, output: 4, cacheRead: 0.3, cacheWrite: 3.75 },
+		});
+		const options = {
+			providerId: "tiered-cost-test",
+			staticModels: [staticModel],
+			cacheDbPath: dbPath,
+		};
+		try {
+			const online = await resolveProviderModels<"openai-completions">(
+				{ ...options, fetchDynamicModels: async () => [dynamicModel] },
+				"online",
+			);
+			expect(online.models[0]?.cost).toEqual({
+				...dynamicModel.cost,
+				longContext: staticModel.cost.longContext,
+			});
+
+			const offline = await resolveProviderModels<"openai-completions">(options, "offline");
+			expect(offline.models[0]?.cost.longContext).toEqual(staticModel.cost.longContext);
 		} finally {
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}

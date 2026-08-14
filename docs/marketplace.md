@@ -9,7 +9,7 @@ The marketplace system lets you discover, install, and manage plugins from Git, 
 /marketplace install wordpress.com@claude-plugins-official
 ```
 
-In the TUI, `/marketplace` with no arguments opens the interactive plugin browser. In non-TUI command handling, `/marketplace` lists configured marketplaces; use `/marketplace discover` to browse.
+In the TUI, `/marketplace` with no arguments opens the interactive plugin browser. In ACP/RPC command handling, `/marketplace` lists configured marketplaces; use `/marketplace discover` to browse.
 
 ## Concepts
 
@@ -19,10 +19,12 @@ A **plugin** is a directory containing Claude/OMP plugin content such as skills,
 
 **Scopes**: marketplace plugins can be installed at two scopes:
 
-- **user** (default) -- available in all projects, stored in `~/.omp/plugins/installed_plugins.json`
+- **user** (default) -- available in all projects, stored in the user plugins data root's `installed_plugins.json` (`~/.omp/plugins/installed_plugins.json` by default)
 - **project** -- available only in the active project, stored in the nearest project `.omp/plugins/installed_plugins.json`
 
 Enabled project-scoped installs shadow enabled user-scoped installs of the same plugin. A disabled project install does not shadow the user install.
+
+On Linux and macOS, `omp config init-xdg` creates the XDG data, state, and cache roots; it does not move existing data. Once the relevant roots exist and `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME` are set, new user marketplace/plugin state resolves under `$XDG_DATA_HOME/omp` (including `marketplaces.json` and `plugins/`). The `~/.omp` paths below are the non-XDG defaults.
 
 ## Commands
 
@@ -69,7 +71,11 @@ omp plugin uninstall [--scope user|project] name@marketplace
 omp plugin upgrade [--scope user|project] [name@marketplace]
 omp plugin enable [--scope user|project] name@marketplace
 omp plugin disable [--scope user|project] name@marketplace
+omp plugin list
+
 ```
+
+TUI marketplace mutations (explicit commands and the selector) update disk state and invalidate discovery caches but do not refresh the active session. Run `/reload-plugins` to refresh skills, slash commands, and MCP servers; restart the session for newly installed tools, hooks, or extension modules. ACP/RPC marketplace handlers refresh skills and slash commands automatically, but likewise do not rebuild every initialized capability set.
 
 ## Marketplace sources
 
@@ -126,25 +132,26 @@ Top-level `metadata.description`, `metadata.version`, and `metadata.pluginRoot` 
 
 ### Plugin entry fields
 
-| Field         | Required | Description                                                                             |
-| ------------- | -------- | --------------------------------------------------------------------------------------- |
-| `name`        | yes      | Plugin name (same rules as marketplace name)                                            |
-| `source`      | yes      | Where to find the plugin (see below)                                                    |
-| `description` | no       | Short description                                                                       |
-| `version`     | no       | Version string; install version falls back to plugin manifest, source SHA, then `0.0.0` |
-| `author`      | no       | `{ name, email? }`                                                                      |
-| `homepage`    | no       | URL                                                                                     |
-| `repository`  | no       | Repository URL/string                                                                   |
-| `license`     | no       | License string                                                                          |
-| `keywords`    | no       | Array of string keywords                                                                |
-| `category`    | no       | Category string (e.g. `development`, `productivity`, `security`)                        |
-| `tags`        | no       | Array of string tags                                                                    |
-| `strict`      | no       | Boolean                                                                                 |
-| `commands`    | no       | Slash commands provided                                                                 |
-| `agents`      | no       | Agents provided                                                                         |
-| `hooks`       | no       | Hook definitions                                                                        |
-| `mcpServers`  | no       | MCP server definitions                                                                  |
-| `lspServers`  | no       | LSP server definitions or path; copied to `.lsp.json` on install                        |
+| Field         | Required | Description                                                                                    |
+| ------------- | -------- | ---------------------------------------------------------------------------------------------- |
+| `name`        | yes      | Plugin name (same rules as marketplace name)                                                   |
+| `source`      | yes      | Where to find the plugin (see below)                                                           |
+| `description` | no       | Short description                                                                              |
+| `version`     | no       | Version string; install version falls back to plugin manifest, source SHA, then `0.0.0`        |
+| `author`      | no       | `{ name, email? }`                                                                             |
+| `homepage`    | no       | URL                                                                                            |
+| `repository`  | no       | Repository URL/string                                                                          |
+| `license`     | no       | License string                                                                                 |
+| `keywords`    | no       | Array of string keywords                                                                       |
+| `category`    | no       | Category string (e.g. `development`, `productivity`, `security`)                               |
+| `tags`        | no       | Array of string tags                                                                           |
+| `strict`      | no       | Boolean metadata flag; preserved but not used by install/runtime logic                         |
+| `commands`    | no       | Command metadata; preserved but runtime commands are discovered from the installed plugin tree |
+| `agents`      | no       | Agent metadata; preserved but not consumed by marketplace installation                         |
+| `hooks`       | no       | Hook metadata; preserved but runtime hooks are discovered from the installed plugin tree       |
+| `mcpServers`  | no       | MCP metadata; preserved here; runtime MCP configuration comes from the plugin manifest/tree    |
+| `lspServers`  | no       | Inline map or in-plugin path; copied to `.lsp.json` during installation                        |
+| `dapAdapters` | no       | Inline map or in-plugin JSON/YAML path; copied to `.dap.json`, `.dap.yaml`, or `.dap.yml`      |
 
 ### Plugin source formats
 
@@ -200,6 +207,16 @@ The `source` field supports these formats. String sources must start with `./` a
 ```
 
 Current installer behavior rejects npm marketplace sources with `npm plugin sources are not yet supported`; use relative, GitHub, URL, or git-subdir sources.
+
+Invalid catalog JSON or invalid required top-level fields reject the catalog. An invalid plugin entry is logged and skipped so other valid entries remain available.
+
+## Updates, removal, and scope
+
+- `/marketplace update [name]` refreshes catalogs only; it does not reinstall plugins.
+- `omp plugin upgrade name@marketplace` reinstalls every installed scope when `--scope` is omitted. `/marketplace upgrade name@marketplace`, uninstall, and enable/disable require `--scope user|project` when the plugin exists in both scopes.
+- Upgrading all plugins compares only catalog entries that declare `version`. Semver versions must be newer; non-semver versions are treated as changed when unequal. Per-plugin failures are skipped, so an all-plugin upgrade can partially succeed.
+- `marketplace.autoUpdate` controls startup checks: `off`, `notify` (default), or `auto`. Catalogs older than 24 hours are refreshed best-effort before version checks. Despite its name, current `notify` mode writes update availability only to the debug log; it does not show a user-facing notification.
+- Removing a marketplace removes its registry entry and catalog cache; it does not uninstall plugins already cached and registered.
 
 ## On-disk layout
 

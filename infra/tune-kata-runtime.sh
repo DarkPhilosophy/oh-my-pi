@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# Patch the live Kata QEMU config to match the runner pod's guaranteed boot
-# shape, raise guest and host open-file limits, and enlarge the virtiofsd worker pool.
+# Patch the live Kata QEMU config: set the guest BOOT floor (default_vcpus /
+# default_memory), raise guest and host open-file limits, and enlarge the
+# virtiofsd worker pool. Runner pods are burstable (see reload-runner.sh):
+# the boot floor stays deliberately at or below the pod's CPU/memory REQUEST
+# so VMs boot small and fast, and Kata hotplugs each guest toward the pod
+# LIMIT under load. Keep BOOT_VCPUS/BOOT_MEMORY_MIB <= the request when
+# retuning either side.
 # The script runs over SSH, which keeps the desired values version-controlled.
 # It then smoke-tests a new kata-qemu pod.
 #

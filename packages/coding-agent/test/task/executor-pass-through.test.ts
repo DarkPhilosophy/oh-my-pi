@@ -49,6 +49,7 @@ function createMockSession(onPrompt: (params: { emit: (event: AgentSessionEvent)
 		getLastAssistantMessage: () => undefined,
 		abort: async () => {},
 		dispose: async () => {},
+		setIrcWakeTurnObserver: () => {},
 	};
 	return session as unknown as AgentSession;
 }
@@ -133,6 +134,17 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(forwarded?.rules).toBe(rules);
 		expect(forwarded?.preloadedExtensionPaths).toBe(preloadedExtensionPaths);
 		expect(forwarded?.preloadedCustomToolPaths).toBe(preloadedCustomToolPaths);
+	});
+
+	it("forwards an exact credential resolver without replacing it", async () => {
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const getApiKey = async () => "exact-account-key";
+
+		const result = await runSubprocess({ ...baseOptions, getApiKey });
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.getApiKey).toBe(getApiKey);
 	});
 
 	it("forwards undefined when the parent has not pre-discovered state", async () => {
@@ -352,5 +364,26 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(result.exitCode).toBe(0);
 		const forwarded = spy.mock.calls[0]?.[0];
 		expect(forwarded?.thinkingLevel).toBe(ThinkingLevel.Low);
+	});
+	it("persists an explicit role from a caller model override", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
+		const settings = Settings.isolated({
+			modelRoles: { reviewer: `${model.provider}/${model.id}` },
+		});
+		const session = yieldEmittingSession();
+		const initSpy = vi.spyOn(session.sessionManager, "appendSessionInit");
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "subagent-model-override-role",
+			modelOverride: "@reviewer",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(initSpy).toHaveBeenCalledWith(expect.objectContaining({ modelRole: "reviewer" }));
 	});
 });

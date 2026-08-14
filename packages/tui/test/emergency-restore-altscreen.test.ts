@@ -127,7 +127,7 @@ describe("emergencyTerminalRestore alt-screen gating", () => {
 	it("pops keyboard enhancement frames on both screens when crashing from a fullscreen overlay", () => {
 		const { terminal, writes } = startCapturedTerminal();
 		process.stdin.emit("data", "\x1b[?0u");
-		expect(terminal.kittyEnableSequence).toBe("\x1b[>1u");
+		expect(terminal.kittyEnableSequence).toBe("\x1b[>5u");
 
 		terminal.write(`\x1b[?1049h${terminal.kittyEnableSequence}`);
 		setAltScreenActive(true);

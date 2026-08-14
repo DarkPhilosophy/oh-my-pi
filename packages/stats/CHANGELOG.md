@@ -5,6 +5,34 @@
 ### Fixed
 
 - Fixed forked-session deduplication awarding a provider request to whichever copy the filesystem happened to list first; session folders and files are now synced in path order, so the original session keeps the request instead of a fork of it.
+## [17.3.0] - 2026-08-13
+
+### Added
+
+- Added cost-weighted `cacheSavings` metric alongside `cacheRate`, accounting for cache-read discounts and write premiums against equivalent uncached prompt costs.
+
+### Fixed
+
+- Ensured the embedded dashboard archive is byte-reproducible by sorting entries and zeroing tar and gzip timestamps during compilation.
+
+## [17.2.10] - 2026-08-06
+
+### Changed
+
+- Optimized package dependencies by replacing `date-fns` with `@oh-my-pi/pi-utils/dates` and removing unused test dependencies.
+
+## [17.2.9] - 2026-08-05
+
+### Fixed
+
+- Restricted the stats dashboard to IPv4 loopback and removed wildcard CORS access to its API ([#7633](https://github.com/can1357/oh-my-pi/issues/7633)).
+
+## [17.2.4] - 2026-08-01
+
+### Fixed
+
+- Fixed provider usage window stats silently showing no data during SQLite contention by installing a five-second busy timeout on read-only agent database connections ([#7300](https://github.com/can1357/oh-my-pi/issues/7300)).
+
 ## [17.1.2] - 2026-07-24
 
 ### Added

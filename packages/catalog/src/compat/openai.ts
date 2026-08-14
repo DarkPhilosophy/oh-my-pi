@@ -23,7 +23,6 @@ import {
 	isMimoModelIdOrName,
 	isOpenAISamplingRestrictedModelId,
 	isQwenModelId,
-	modelFamilyToken,
 } from "../identity/family";
 import type {
 	ModelSpec,
@@ -227,6 +226,12 @@ function detectStrictModeSupport(provider: string, baseUrl: string): boolean {
  */
 const LOCAL_OPENAI_COMPAT_PROVIDERS = new Set(["llama.cpp", "lm-studio", "vllm", "ollama"]);
 
+/** Hosts that accept only none/auto/required rather than a named tool-choice object. */
+const STRING_ONLY_NAMED_TOOL_CHOICE_PROVIDERS: Record<string, true> = {
+	"llama.cpp": true,
+	"lm-studio": true,
+};
+
 /**
  * Local proxy providers that share the loopback-default baseUrl but forward
  * to an unrelated upstream (OpenAI, Anthropic, …) rather than running a
@@ -313,14 +318,19 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		isDeepseekModelIdOrName(spec.name ?? "") ||
 		isOpenCodeDeepseekAlias;
 	const isDirectDeepseekApi = modelMatchesHost(hostModel, "deepseekDirect");
-	const isDirectDeepseekReasoning = isDirectDeepseekApi && isDeepseekFamily && Boolean(spec.reasoning);
+	const isDeepseekReasoning = isDeepseekFamily && Boolean(spec.reasoning);
+	const isDirectDeepseekReasoning = isDirectDeepseekApi && isDeepseekReasoning;
 	const isGrok = modelMatchesHost(hostModel, "xai");
 	const isMistral = modelMatchesHost(hostModel, "mistral");
 	const isOpenCodeHost = modelMatchesHost(hostModel, "opencode");
+	// Google AI Studio's OpenAI-compat shim (`generativelanguage.googleapis.com/v1beta/openai`)
+	// implements a subset of chat-completions and 400s on `store` ("Unknown name \"store\"").
+	const isGoogleAistudioOpenAI = hostMatchesUrl(baseUrl, "googleAistudio");
 	const isNonStandard =
 		isCerebras ||
 		isGrok ||
 		isMistral ||
+		isGoogleAistudioOpenAI ||
 		hostMatchesUrl(baseUrl, "chutes") ||
 		hostMatchesUrl(baseUrl, "deepseekFamily") ||
 		hostMatchesUrl(baseUrl, "fireworks") ||
@@ -467,10 +477,6 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		supportsSamplingParams: !isOpenAISamplingRestrictedModelId(spec.id),
 		reasoningEffortMap: {},
 		supportsUsageInStreaming: !isCerebras,
-		// pi-ai's thinking-loop guard is gemini-only; default the flag from the
-		// family classifier so OpenAI-compat proxies serving Gemini are covered.
-		// An opaque alias can opt in via `compat.enableGeminiThinkingLoopGuard`.
-		enableGeminiThinkingLoopGuard: modelFamilyToken(spec.id) === "gemini",
 		// Kimi (including via OpenRouter and Fireworks router-form IDs such as
 		// `accounts/fireworks/routers/kimi-*`) calculates TPM rate limits based on
 		// max_tokens, not actual output. The official Kimi K2 model guidance
@@ -484,8 +490,13 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		disableReasoningOnForcedToolChoice: (isKimiModel && !isMoonshotKimiK3) || isAnthropicModel,
 		disableReasoningOnToolChoice: isDeepseekFamily && Boolean(spec.reasoning) && !isOpenRouter,
 		supportsToolChoice: !isDirectDeepseekReasoning,
-		supportsForcedToolChoice: !requiresEnabledThinking,
-		supportsNamedToolChoice: provider !== "llama.cpp",
+		// DeepSeek reasoning models on OpenCode Zen/Go 400 with
+		// "Thinking mode does not support this tool_choice" when a specific
+		// function is forced while the gateway's default thinking mode is active.
+		// Downgrade only on those gateways: other hosts can turn thinking off via
+		// disableReasoningOnToolChoice and must retain hard tool selection.
+		supportsForcedToolChoice: !requiresEnabledThinking && !(isOpenCodeHost && isDeepseekReasoning),
+		supportsNamedToolChoice: STRING_ONLY_NAMED_TOOL_CHOICE_PROVIDERS[provider] !== true,
 		maxTokensField: useMaxTokens ? "max_tokens" : "max_completion_tokens",
 		requiresToolResultName: isMistral,
 		requiresAssistantAfterToolResult: isMistral,
@@ -571,7 +582,7 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		wireModelIdMode,
 		isVercelGatewayHost: isVercelGateway,
 		supportsStrictMode: detectStrictModeSupport(provider, baseUrl),
-		extraBody: isDirectDeepseekReasoning ? { thinking: { type: "enabled" } } : undefined,
+		extraBody: undefined,
 		toolStrictMode: isCerebras ? "all_strict" : "mixed",
 		// Kimi-family ids trigger MFJS on any host, not just native base URLs:
 		// proxies (OpenRouter, custom gateways) forward `tools.function.parameters`
@@ -592,10 +603,24 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 	};
 
 	applyCompatOverrides(compat, spec.compat);
+	const deepseekThinking = compat.extraBody?.thinking;
+	if (
+		isDirectDeepseekReasoning &&
+		typeof deepseekThinking === "object" &&
+		deepseekThinking !== null &&
+		"type" in deepseekThinking &&
+		deepseekThinking.type === "enabled"
+	) {
+		const extraBody = { ...compat.extraBody };
+		delete extraBody.thinking;
+		compat.extraBody = Object.keys(extraBody).length > 0 ? extraBody : undefined;
+	}
 	if (spec.compat?.reasoningDisableMode === undefined) {
 		compat.reasoningDisableMode = requiresEnabledThinking
 			? "omit"
-			: resolveReasoningDisableMode(compat.thinkingFormat);
+			: isDirectDeepseekReasoning
+				? "zai-thinking-disabled"
+				: resolveReasoningDisableMode(compat.thinkingFormat);
 	}
 	if (spec.compat?.omitReasoningEffort === undefined && !compat.supportsReasoningEffort) {
 		compat.omitReasoningEffort = true;
@@ -603,7 +628,12 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 	mergeModelReasoningEffortMap(compat, spec.id, isMimoReasoningEffortModel);
 
 	const whenThinkingPolicy =
-		spec.compat?.whenThinking ?? (isOpenCodeProvider && spec.reasoning ? OPENCODE_WHEN_THINKING : undefined);
+		spec.compat?.whenThinking ??
+		(isDirectDeepseekReasoning
+			? { extraBody: { ...compat.extraBody, thinking: { type: "enabled" } } }
+			: isOpenCodeProvider && spec.reasoning
+				? OPENCODE_WHEN_THINKING
+				: undefined);
 	if (whenThinkingPolicy) {
 		const variant: ResolvedOpenAICompat = { ...compat };
 		applyCompatOverrides(variant, whenThinkingPolicy);
@@ -690,7 +720,7 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 		disableReasoningOnToolChoice: isDeepseekFamily && reasoningCapable && !isOpenRouter,
 		supportsToolChoice: true,
 		supportsForcedToolChoice: true,
-		supportsNamedToolChoice: true,
+		supportsNamedToolChoice: STRING_ONLY_NAMED_TOOL_CHOICE_PROVIDERS[spec.provider] !== true,
 		reasoningContentField: "reasoning_content",
 		requiresReasoningContentForToolCalls:
 			(isKimiModel || (isDeepseekFamily && reasoningCapable) || (isOpenRouter && reasoningCapable)) &&
@@ -718,7 +748,6 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 		// lands on Moonshot's MFJS validator.
 		toolSchemaFlavor: isKimiModel ? "moonshot-mfjs" : undefined,
 		alwaysSendMaxTokens: spec.id ? isKimiModelId(spec.id) : false,
-		enableGeminiThinkingLoopGuard: modelFamilyToken(spec.id ?? "") === "gemini",
 		supportsObfuscationOptOut: isOpenAIUrl || spec.provider === "openai",
 		stripDeepseekSpecialTokens:
 			Boolean(id) && isDeepseekModelIdOrName(id) && (spec.provider === "nvidia" || spec.provider === "deepseek"),

@@ -35,6 +35,8 @@ import { parseStreamingJson } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
 import type { Theme } from "../modes/theme/theme";
+import { truncateHeadBytes } from "../session/streaming-output";
+import { resolveToolTier, type ToolTier } from "./approval";
 import { renderDefaultToolExecution } from "./default-renderer";
 import type { Tool } from "./index";
 import { replaceTabs } from "./render-utils";
@@ -87,6 +89,13 @@ export interface XdevDispatch {
 	mode: "help" | "execute";
 	/** Validated inner args, kept for renderer delegation on result rebuilds. */
 	args?: Record<string, unknown>;
+	/**
+	 * Approval tier of the wrapped tool for {@link args} (`read` = no workspace
+	 * mutation). Absent for `help` dispatches and calls whose tier could not be
+	 * resolved. Consumed by the prewalk coordinator to skip read-only device
+	 * calls when deciding the model hand-off (issue #7312).
+	 */
+	tier?: ToolTier;
 	/** Details object returned by the wrapped tool, when executed. */
 	inner?: unknown;
 }
@@ -178,14 +187,34 @@ function toolSummary(inst: Tool): string {
 	return firstLine?.trim() ?? inst.label ?? inst.name;
 }
 
-function promptCatalogSummary(inst: Tool, maxLength?: number): string {
+/** C0/C1 controls and Unicode line/paragraph separators; summaries must remain one line. */
+const SUMMARY_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g;
+const SUMMARY_ELLIPSIS = "…";
+const SUMMARY_ELLIPSIS_BYTES = Buffer.byteLength(SUMMARY_ELLIPSIS, "utf-8");
+
+/**
+ * Bound a catalog summary for prompt rendering. External summaries are
+ * third-party metadata inlined verbatim, so control characters are stripped
+ * first, then the result is bounded in UTF-8 BYTES rather than characters (a
+ * character bound is not a byte bound for multi-byte scripts). The cut lands
+ * on a code point boundary, so the prompt never carries a partial code point.
+ */
+function sanitizeCatalogSummary(summary: string, maxBytes?: number): string {
+	const cleaned = summary.replace(SUMMARY_CONTROL_CHARS, " ").trim();
+	if (maxBytes === undefined || Buffer.byteLength(cleaned, "utf-8") <= maxBytes) return cleaned;
+	if (maxBytes <= 0) return "";
+	if (maxBytes < SUMMARY_ELLIPSIS_BYTES) return truncateHeadBytes(cleaned, maxBytes).text;
+	const body = truncateHeadBytes(cleaned, maxBytes - SUMMARY_ELLIPSIS_BYTES).text.trimEnd();
+	return `${body}${SUMMARY_ELLIPSIS}`;
+}
+
+function promptCatalogSummary(inst: Tool, maxBytes?: number): string {
 	const summary =
 		toolSummary(inst)
 			.split("\n")
 			.find(line => line.trim().length > 0)
 			?.trim() ?? inst.name;
-	if (maxLength === undefined || summary.length <= maxLength) return summary;
-	return `${summary.slice(0, maxLength).trimEnd()}…`;
+	return sanitizeCatalogSummary(summary, maxBytes) || inst.name;
 }
 
 /** Compile the `tools.xdevInlineDevices` allowlist once per render, dropping
@@ -257,15 +286,19 @@ export function listXdevTools(state: XdevState): Tool[] {
 	});
 }
 
-/** `{name, summary}` pairs for prompt templates and `/tools` display. */
-export function xdevEntries(state: XdevState): Array<{ name: string; summary: string }> {
-	return listXdevTools(state).map(tool => ({
-		name: tool.name,
-		summary: promptCatalogSummary(
-			tool,
-			state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP,
-		),
-	}));
+/** `{name, summary, dynamic}` triples for prompt templates and `/tools` display. */
+export function xdevEntries(state: XdevState): Array<{ name: string; summary: string; dynamic: boolean }> {
+	return listXdevTools(state).map(tool => {
+		// Built-ins are first-party; anything else carries third-party metadata. One
+		// boolean drives both the description cap and the flag callers present, so
+		// the two can never disagree about which summaries are untrusted.
+		const dynamic = !state.builtInNames.has(tool.name);
+		return {
+			name: tool.name,
+			summary: promptCatalogSummary(tool, dynamic ? XDEV_EXTERNAL_DESCRIPTION_CAP : undefined),
+			dynamic,
+		};
+	});
 }
 
 /** `read xd://` listing with one device per line. */
@@ -313,8 +346,8 @@ export function xdevDocsAll(
 			[
 				"## Additional devices (docs on demand)",
 				...overflow.map(tool => {
-					const maxLength = state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP;
-					return `- ${XD_URL_PREFIX}${tool.name} — ${promptCatalogSummary(tool, maxLength)}`;
+					const maxBytes = state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP;
+					return `- ${XD_URL_PREFIX}${tool.name} — ${promptCatalogSummary(tool, maxBytes)}`;
 				}),
 				"",
 				`Read ${XD_URL_PREFIX}<tool> for full docs + JSON schema before first use.`,
@@ -390,7 +423,18 @@ export async function dispatchXdevTool(
 		}
 
 		const validated = parseDeviceArgs(canonical as AiTool, content, toolCallId, () => renderDocs(canonical));
-		xdev = { ...xdev, args: validated };
+		// Record the wrapped tool's approval tier so the prewalk coordinator can
+		// tell a read-only device call (e.g. `lsp` navigation) from a real
+		// workspace mutation without re-decoding the payload. Best-effort: a
+		// throwing approval leaves the tier absent (prewalk then declines to
+		// switch), unlike the write gate which fails closed to `exec`.
+		let tier: ToolTier | undefined;
+		try {
+			tier = resolveToolTier(canonical, validated);
+		} catch {
+			tier = undefined;
+		}
+		xdev = { ...xdev, args: validated, tier };
 		const innerOnUpdate: AgentToolUpdateCallback | undefined = onUpdate
 			? partial =>
 					onUpdate({
@@ -400,7 +444,15 @@ export async function dispatchXdevTool(
 					})
 			: undefined;
 		const executable = state.decorateExecution?.(canonical) ?? canonical;
-		const result = await executable.execute(toolCallId, validated as never, signal, innerOnUpdate, context);
+		const executionContext = context
+			? {
+					...context,
+					xdevTierResolved: (effectiveTier: ToolTier) => {
+						xdev = { ...xdev, tier: effectiveTier };
+					},
+				}
+			: undefined;
+		const result = await executable.execute(toolCallId, validated as never, signal, innerOnUpdate, executionContext);
 		return { result, xdev: { ...xdev, inner: result.details } };
 	} catch (error) {
 		if (

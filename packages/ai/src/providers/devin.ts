@@ -43,6 +43,7 @@ import type {
 	Tool,
 	ToolCall,
 } from "../types";
+import { normalizeSystemPrompts } from "../utils";
 import { isDemotedThinking } from "../utils/block-symbols";
 import { deterministicUuid } from "../utils/deterministic-id";
 import { AssistantMessageEventStream } from "../utils/event-stream";
@@ -124,9 +125,9 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 		const toolBlocks = new Map<string, ToolCall>();
 		const toolPartialJson = new Map<string, string>();
 		// Last-parsed argument-buffer length per tool-call id — bounds the
-		// mid-stream parse work to O(N) via `parseStreamingJsonThrottled`; the
-		// authoritative final parse still runs unconditionally in the toolcall_end
-		// loop below.
+		// mid-stream parse work to O(N log N) via `parseStreamingJsonThrottled`;
+		// the authoritative final parse still runs unconditionally in the
+		// toolcall_end loop below.
 		const toolLastParseLen = new Map<string, number>();
 		let activeToolCallId: string | undefined;
 		let latestStopReason = StopReason.UNSPECIFIED;
@@ -518,7 +519,7 @@ function buildDevinChatRequest(
 			extensionVersion: DEVIN_EXTENSION_VERSION,
 			locale: "en",
 		}),
-		prompt: (context.systemPrompt ?? []).join("\n\n"),
+		prompt: normalizeSystemPrompts(context.systemPrompt).join("\n\n"),
 		chatMessagePrompts: buildChatMessagePrompts(messages, cascadeId, model),
 		chatModelUid: options?.chatModelUid ?? model.requestModelId ?? model.id,
 		requestType: ChatMessageRequestType.CASCADE,

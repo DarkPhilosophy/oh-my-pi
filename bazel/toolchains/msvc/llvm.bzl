@@ -120,6 +120,12 @@ def _llvm_msvc_tools_impl(rctx):
 
     rctx.file("BUILD.bazel", _BUILD.format(version = _LLVM_VERSION, host = key), executable = False)
 
+    # Opt into the repo contents cache: the fetch is a pure function of the
+    # pinned URL+sha256 and the deterministic prune above, and the ~172 s
+    # extraction of the 2 GiB archive was the single largest cost of every
+    # fresh output base on ephemeral CI pods (profiled: run 30510579596).
+    return rctx.repo_metadata(reproducible = True)
+
 llvm_msvc_tools_repository = repository_rule(
     implementation = _llvm_msvc_tools_impl,
     doc = "Pruned LLVM release binaries (clang-cl/lld-link/llvm-lib/llvm-rc) for the exec host.",
