@@ -285,6 +285,7 @@ export class EventController {
 	/** Retargets the approval-preview gate when the viewed session changes. */
 	setSession(session?: AgentSession): void {
 		this.#detachToolApprovalPreviewWaiter?.();
+		this.#clearApprovalPreviewGates();
 		this.#detachToolApprovalPreviewWaiter = session?.extensionRunner?.setToolApprovalPreviewWaiter(toolCallId =>
 			this.#waitForToolApprovalPreview(toolCallId),
 		);

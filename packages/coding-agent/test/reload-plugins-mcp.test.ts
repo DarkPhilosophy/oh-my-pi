@@ -32,11 +32,18 @@ function createTaskSession(cwd: string): ToolSession {
 }
 
 function createFakeCtx(cwd: string, settingsValues: Record<string, unknown> = {}) {
-	const mcpTools = [{ name: "mcp__srv_do" }];
+	const connectedTools = [{ name: "mcp__srv_old" }];
+	const reconnectedTools = [{ name: "mcp__srv_new" }];
+	let currentTools = connectedTools;
 	const mcpManager = {
-		disconnectAll: vi.fn(async () => {}),
-		discoverAndConnect: vi.fn(async (_options?: unknown) => ({ errors: new Map<string, string>() })),
-		getTools: vi.fn(() => mcpTools),
+		disconnectAll: vi.fn(async () => {
+			currentTools = [];
+		}),
+		discoverAndConnect: vi.fn(async (_options?: unknown) => {
+			currentTools = reconnectedTools;
+			return { errors: new Map<string, string>() };
+		}),
+		getTools: vi.fn(() => currentTools),
 	};
 	const session = {
 		refreshMCPTools: vi.fn(async (_tools: unknown) => {}),
@@ -53,7 +60,7 @@ function createFakeCtx(cwd: string, settingsValues: Record<string, unknown> = {}
 		showStatus: vi.fn(() => {}),
 		editor: { setText: vi.fn(() => {}) },
 	} as never as InteractiveModeContext;
-	return { ctx, mcpManager, session, mcpTools };
+	return { ctx, mcpManager, session, connectedTools, reconnectedTools };
 }
 
 describe("/reload-plugins runtime refresh", () => {
@@ -71,7 +78,7 @@ describe("/reload-plugins runtime refresh", () => {
 	});
 
 	test("reconnects MCP servers, rebinds tools, and clears stale prompt commands", async () => {
-		const { ctx, mcpManager, session, mcpTools } = createFakeCtx(projectDir);
+		const { ctx, mcpManager, session, connectedTools, reconnectedTools } = createFakeCtx(projectDir);
 		const runtime: TuiSlashCommandRuntime = { ctx };
 
 		const result = await executeBuiltinSlashCommand("/reload-plugins", runtime);
@@ -79,12 +86,26 @@ describe("/reload-plugins runtime refresh", () => {
 		expect(mcpManager.disconnectAll).toHaveBeenCalledTimes(1);
 		expect(ctx.reloadHooksAndCustomTools).toHaveBeenCalledTimes(1);
 		expect(mcpManager.discoverAndConnect).toHaveBeenCalledTimes(1);
-		expect(session.refreshMCPTools).toHaveBeenCalledTimes(1);
-		expect(session.refreshMCPTools).toHaveBeenCalledWith(mcpTools);
+		expect(session.refreshMCPTools).toHaveBeenCalledTimes(2);
+		expect(session.refreshMCPTools).toHaveBeenNthCalledWith(1, []);
+		expect(session.refreshMCPTools).toHaveBeenNthCalledWith(2, reconnectedTools);
 		expect(session.setMCPPromptCommands).toHaveBeenCalledTimes(1);
 		expect(session.setMCPPromptCommands).toHaveBeenCalledWith([]);
+		expect(session.refreshMCPTools).not.toHaveBeenCalledWith(connectedTools);
 	});
 
+	test("removes disconnected MCP tools when rediscovery fails", async () => {
+		const { ctx, mcpManager, session } = createFakeCtx(projectDir);
+		const runtime: TuiSlashCommandRuntime = { ctx };
+		const rediscoveryError = new Error("rediscovery failed");
+		mcpManager.discoverAndConnect.mockRejectedValueOnce(rediscoveryError);
+
+		await expect(executeBuiltinSlashCommand("/reload-plugins", runtime)).rejects.toBe(rediscoveryError);
+
+		expect(session.setMCPPromptCommands).toHaveBeenCalledWith([]);
+		expect(session.refreshMCPTools).toHaveBeenCalledTimes(1);
+		expect(session.refreshMCPTools).toHaveBeenCalledWith([]);
+	});
 	test("honors mcp.enableProjectConfig=false so opted-out project servers are not started on reload", async () => {
 		const { ctx, mcpManager } = createFakeCtx(projectDir, { "mcp.enableProjectConfig": false });
 		const runtime: TuiSlashCommandRuntime = { ctx };

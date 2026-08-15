@@ -118,6 +118,31 @@ function injectedServerControls(ctx: InteractiveModeContext): InjectedServerCont
 	};
 	return candidate.server ?? candidate.daemon;
 }
+
+const SERVER_SLASH_COMMAND: SlashCommandSpec = {
+	name: "server",
+	description: "Show daemon connection status and controls",
+	inlineHint: "[status|sessions|reconnect|stop]",
+	allowArgs: true,
+	subcommands: [
+		{ name: "status", description: "Show daemon connection status" },
+		{ name: "sessions", description: "List daemon sessions" },
+		{ name: "reconnect", description: "Reconnect to the daemon" },
+		{ name: "stop", description: "Stop the daemon" },
+	],
+	handleTui: async (command, runtime) => {
+		runtime.ctx.editor.setText("");
+		const controls = injectedServerControls(runtime.ctx);
+		await handleServerCommand(command.args, {
+			snapshot: controls?.getSnapshot?.() ?? controls?.snapshot ?? { state: "direct" },
+			output: text => runtime.ctx.showStatus(text),
+			sessions: controls?.sessions,
+			reconnect: controls?.reconnect,
+			stop: controls?.stop,
+		});
+	},
+};
+
 export interface TuiBuiltinSlashCommand extends BuiltinSlashCommand {
 	getArgumentCompletions?: (prefix: string) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
 	getInlineHint?: (argumentText: string) => string | null;
@@ -128,6 +153,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	...BUILTIN_MODE_SLASH_COMMANDS,
 	...BUILTIN_COLLABORATION_SLASH_COMMANDS,
 	...BUILTIN_SESSION_SLASH_COMMANDS,
+	SERVER_SLASH_COMMAND,
 	...BUILTIN_LIFECYCLE_SLASH_COMMANDS,
 	...BUILTIN_MARKETPLACE_SLASH_COMMANDS,
 	...BUILTIN_CONTROL_SLASH_COMMANDS,

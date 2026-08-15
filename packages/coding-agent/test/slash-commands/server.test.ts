@@ -1,4 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import {
+	type BuiltinSlashCommandRuntime,
+	executeBuiltinSlashCommand,
+	getBuiltinSlashCommandOwnership,
+	lookupBuiltinSlashCommand,
+} from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { handleServerCommand, parseServerCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/helpers/server";
 
 describe("/server command", () => {
@@ -7,6 +13,33 @@ describe("/server command", () => {
 		expect(parseServerCommand("sessions")).toBe("sessions");
 		expect(parseServerCommand(" reconnect ")).toBe("reconnect");
 		expect(parseServerCommand("stop now")).toBeNull();
+	});
+
+	it("is registered and dispatches injected TUI controls", async () => {
+		const output: string[] = [];
+		const editorText: string[] = [];
+		const runtime = {
+			ctx: {
+				editor: {
+					setText: (text: string) => {
+						editorText.push(text);
+					},
+				},
+				showStatus: (text: string) => {
+					output.push(text);
+				},
+				server: {
+					snapshot: { state: "connected", shard: { profile: "default", projectRoot: "/tmp/project" } },
+					sessions: () => "session-a\nsession-b",
+				},
+			},
+		} as unknown as BuiltinSlashCommandRuntime;
+
+		expect(lookupBuiltinSlashCommand("server")).toBeDefined();
+		expect(getBuiltinSlashCommandOwnership("server")).toBe("client");
+		expect(await executeBuiltinSlashCommand("/server sessions", runtime)).toBe(true);
+		expect(editorText).toEqual([""]);
+		expect(output).toEqual(["session-a\nsession-b"]);
 	});
 
 	it("dispatches injected callbacks without probing sockets", async () => {

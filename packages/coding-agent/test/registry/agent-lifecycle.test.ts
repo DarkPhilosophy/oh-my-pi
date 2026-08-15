@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import {
@@ -27,12 +28,14 @@ function makeSessionStub(dispose?: () => Promise<void>): SessionStub {
 	return { session: stub as unknown as AgentSession, disposeCalls: () => calls };
 }
 
-function deferred(): { promise: Promise<void>; resolve: () => void } {
+function deferred(): { promise: Promise<void>; resolve: () => void; reject: (reason?: unknown) => void } {
 	let resolve!: () => void;
-	const promise = new Promise<void>(r => {
-		resolve = r;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
 	});
-	return { promise, resolve };
+	return { promise, resolve, reject };
 }
 
 /** Settle the async park chain (timer callback → park() → dispose → setStatus). */
@@ -384,6 +387,169 @@ describe("AgentLifecycleManager", () => {
 		expect(replacement.session).toBe(replacementSession.session);
 		expect(replacementSession.disposeCalls()).toBe(0);
 		expect(lifecycle.has("cas-Sub", replacement)).toBe(true);
+	});
+
+	it("refuses a late adoption of the exact ref already being released", async () => {
+		const disposeGate = deferred();
+		const retiring = makeSessionStub(() => disposeGate.promise);
+		const ref = registerIdleSub("release-adopt-Sub", retiring.session);
+
+		const releasing = lifecycle.release("release-adopt-Sub", ref);
+		await flushAsync();
+		expect(retiring.disposeCalls()).toBe(1);
+
+		lifecycle.adopt("release-adopt-Sub", { idleTtlMs: 0 }, ref);
+		const wasAdoptedDuringRelease = lifecycle.has("release-adopt-Sub", ref);
+
+		disposeGate.resolve();
+		await expect(releasing).resolves.toBe(true);
+		expect(wasAdoptedDuringRelease).toBe(false);
+		expect(lifecycle.has("release-adopt-Sub", ref)).toBe(false);
+		expect(retiring.disposeCalls()).toBe(1);
+		expect(registry.get("release-adopt-Sub")).toBeUndefined();
+	});
+
+	it("ensureLive waits behind release before returning a retiring session", async () => {
+		const disposeGate = deferred();
+		const retiring = makeSessionStub(() => disposeGate.promise);
+		const ref = registerIdleSub("release-barrier-Sub", retiring.session);
+		lifecycle.adopt("release-barrier-Sub", { idleTtlMs: 0 }, ref);
+
+		const releasing = lifecycle.release("release-barrier-Sub", ref);
+		await flushAsync();
+		expect(retiring.disposeCalls()).toBe(1);
+
+		let ensured = false;
+		let rejection: unknown;
+		const ensuring = lifecycle.ensureLive("release-barrier-Sub").then(
+			session => {
+				ensured = true;
+				return session;
+			},
+			error => {
+				rejection = error;
+			},
+		);
+		await flushAsync();
+		expect(ensured).toBe(false);
+
+		disposeGate.resolve();
+		await expect(releasing).resolves.toBe(true);
+		await ensuring;
+		expect(rejection).toBeInstanceOf(Error);
+		expect(String(rejection)).toMatch(/Unknown agent/);
+	});
+
+	it("tombstone persistence failure restores the exact live session", async () => {
+		const markerGate = deferred();
+		const markerFailure = new Error("marker write failed");
+		let markerStarted = false;
+		vi.spyOn(fs, "writeFile").mockImplementation(async () => {
+			markerStarted = true;
+			await markerGate.promise;
+		});
+
+		const stub = makeSessionStub();
+		const ref = registerIdleSub("marker-failure-Sub", stub.session);
+		lifecycle.adopt("marker-failure-Sub", { idleTtlMs: 0 }, ref);
+
+		const releasing = lifecycle.release("marker-failure-Sub", ref, { tombstone: true });
+		await flushAsync();
+		expect(markerStarted).toBe(true);
+
+		let ensured = false;
+		const ensuring = lifecycle.ensureLive("marker-failure-Sub").then(session => {
+			ensured = true;
+			return session;
+		});
+		await flushAsync();
+		expect(ensured).toBe(false);
+
+		markerGate.reject(markerFailure);
+		await expect(releasing).rejects.toThrow("marker write failed");
+		await expect(ensuring).resolves.toBe(stub.session);
+		expect(stub.disposeCalls()).toBe(0);
+		expect(registry.get("marker-failure-Sub")).toBe(ref);
+		expect(ref.status).toBe("idle");
+		expect(ref.session).toBe(stub.session);
+	});
+
+	it("stale revive cannot attach or unregister a newer adopted generation", async () => {
+		const reviveGate = deferred();
+		const stale = makeSessionStub();
+		const oldRef = registry.register({
+			id: "revive-generation-Sub",
+			displayName: "task",
+			kind: "sub",
+			session: null,
+			sessionFile: "/tmp/revive-generation-Sub.jsonl",
+			status: "parked",
+		});
+		lifecycle.adopt(
+			"revive-generation-Sub",
+			{
+				idleTtlMs: 0,
+				revive: async () => {
+					await reviveGate.promise;
+					return stale.session;
+				},
+			},
+			oldRef,
+		);
+
+		const revival = lifecycle.ensureLive("revive-generation-Sub");
+		await flushAsync();
+		await expect(lifecycle.release("revive-generation-Sub", oldRef)).resolves.toBe(true);
+		expect(registry.get("revive-generation-Sub")).toBeUndefined();
+
+		const replacement = makeSessionStub();
+		const newRef = registerIdleSub("revive-generation-Sub", replacement.session);
+		lifecycle.adopt("revive-generation-Sub", { idleTtlMs: 0 }, newRef);
+
+		reviveGate.resolve();
+		await expect(revival).rejects.toThrow(/replaced or became terminal/);
+		expect(stale.disposeCalls()).toBe(1);
+		expect(registry.get("revive-generation-Sub")).toBe(newRef);
+		expect(newRef.session).toBe(replacement.session);
+		expect(newRef.status).toBe("idle");
+		expect(replacement.disposeCalls()).toBe(0);
+	});
+
+	it("rejects a revive that claims the exact ref with a different session file", async () => {
+		const revived = makeSessionStub();
+		const ref = registry.register({
+			id: "revive-session-file-Sub",
+			displayName: "task",
+			kind: "sub",
+			session: null,
+			sessionFile: "/tmp/revive-session-file-Sub.jsonl",
+			status: "parked",
+		});
+		lifecycle.adopt(
+			"revive-session-file-Sub",
+			{
+				idleTtlMs: 0,
+				revive: async () => {
+					expect(
+						registry.attachSession(
+							"revive-session-file-Sub",
+							revived.session,
+							"/tmp/wrong-session-file.jsonl",
+							ref,
+						),
+					).toBe(true);
+					expect(registry.setStatus("revive-session-file-Sub", "running", ref)).toBe(true);
+					return revived.session;
+				},
+			},
+			ref,
+		);
+
+		await expect(lifecycle.ensureLive("revive-session-file-Sub")).rejects.toThrow(
+			/changed before its persisted session could attach/,
+		);
+		expect(revived.disposeCalls()).toBe(1);
+		expect(ref.sessionFile).toBe("/tmp/wrong-session-file.jsonl");
 	});
 
 	it("adopt(Main) is a no-op: Main is never adopted or parked", async () => {

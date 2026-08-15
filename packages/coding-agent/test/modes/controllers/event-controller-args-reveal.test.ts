@@ -272,11 +272,19 @@ describe("EventController paces streamed tool args", () => {
 		const rendered = pendingTools.get("tc-approval")?.render(100).join("\n") ?? "";
 		expect(Bun.stripANSI(rendered)).toContain("ISSUE_7957_PROPOSED_EDIT");
 	});
-	it("retargets the approval-preview waiter with the viewed session", async () => {
+	it("retargeting releases the old session's pending approval wait", async () => {
 		await Settings.init({ inMemory: true, cwd: process.cwd() });
 		const streaming = makeStreamingMessage([]);
 		const fixture = createFixture(streaming);
-		expect(fixture.getApprovalWaiter()).toBeFunction();
+		const mainWaiter = fixture.getApprovalWaiter();
+		if (!mainWaiter) throw new Error("expected the main-session approval-preview waiter");
+
+		let oldWaitResolved = false;
+		const oldWait = mainWaiter("tc-old").then(() => {
+			oldWaitResolved = true;
+		});
+		await Promise.resolve();
+		expect(oldWaitResolved).toBe(false);
 
 		let workerWaiter: ((toolCallId: string) => Promise<void>) | undefined;
 		const workerSession = {
@@ -291,7 +299,9 @@ describe("EventController paces streamed tool args", () => {
 		} as unknown as AgentSession;
 
 		fixture.controller.setSession(workerSession);
+		await oldWait;
 
+		expect(oldWaitResolved).toBe(true);
 		expect(fixture.getApprovalWaiter()).toBeUndefined();
 		expect(workerWaiter).toBeFunction();
 	});

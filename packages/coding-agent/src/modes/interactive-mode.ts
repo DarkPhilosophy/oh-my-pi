@@ -421,19 +421,18 @@ class DeferredCommandPreview implements Component {
 		const rows: string[] = [];
 		for (const item of this.items) rows.push(...item.render(width));
 		const queued = this.commandCount === 1 ? "1 command output" : `${this.commandCount} command outputs`;
-		if (rows.length <= this.maxRows) {
+		if (rows.length < this.maxRows) {
 			rows.push(theme.fg("dim", `${queued} — repeated in the transcript when the agent pauses`));
 			return rows;
 		}
-		const shown = rows.slice(0, Math.max(1, this.maxRows - 1));
+		if (this.maxRows === 1) return rows.slice(0, 1);
+		const shown = rows.slice(0, Math.max(0, this.maxRows - 1));
 		const hidden = rows.length - shown.length;
 		shown.push(theme.fg("dim", `… ${hidden} more rows — ${queued} shown in full when the agent pauses`));
 		return shown;
 	}
 }
 
-/** Never shrink the queued-output preview below this, even on a short terminal. */
-const DEFERRED_PREVIEW_MIN_ROWS = 6;
 /** Ceiling for the preview as a share of the viewport, so the prompt stays visible. */
 const DEFERRED_PREVIEW_VIEWPORT_FRACTION = 0.4;
 
@@ -4442,10 +4441,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.deferredCommandContainer.disposeChildren();
 		if (this.#pendingCommandOutput.length === 0) return;
 		const viewportRows = Math.max(1, this.ui.terminal.rows);
-		const maxPreviewRows = Math.max(
-			DEFERRED_PREVIEW_MIN_ROWS,
-			Math.floor(viewportRows * DEFERRED_PREVIEW_VIEWPORT_FRACTION),
-		);
+		const maxPreviewRows = Math.max(1, Math.floor(viewportRows * DEFERRED_PREVIEW_VIEWPORT_FRACTION));
 		this.deferredCommandContainer.addChild(
 			new DeferredCommandPreview(this.#pendingCommandOutput, maxPreviewRows, this.#pendingCommandOutputCommands),
 		);

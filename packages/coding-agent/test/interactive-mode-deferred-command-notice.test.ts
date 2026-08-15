@@ -67,6 +67,18 @@ function transcriptRowCount(mode: InteractiveMode): number {
 function transcriptText(mode: InteractiveMode): string {
 	return mode.chatContainer.render(120).join("\n");
 }
+function overrideTerminalRows(mode: InteractiveMode, rows: number): () => void {
+	const terminal = mode.ui.terminal;
+	const previous = Object.getOwnPropertyDescriptor(terminal, "rows");
+	Object.defineProperty(terminal, "rows", { configurable: true, get: () => rows });
+	return () => {
+		if (previous) {
+			Object.defineProperty(terminal, "rows", previous);
+		} else {
+			delete (terminal as Partial<Record<"rows", number>>).rows;
+		}
+	};
+}
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -123,6 +135,51 @@ describe("InteractiveMode deferred command preview", () => {
 		expect(rows.join("\n")).toContain("more rows");
 		// The tail is not silently dropped: it arrives in full at the settle.
 		expect(rows.join("\n")).not.toContain("row 199");
+	});
+
+	it("reserves a row for the footer at the viewport ceiling", async () => {
+		const { mode, setStreaming } = await createHarness();
+		const restoreRows = overrideTerminalRows(mode, 15);
+		try {
+			setStreaming(true);
+
+			mode.presentCommandOutput(new Text("row 0\nrow 1\nrow 2\nrow 3\nrow 4\nrow 5", 1, 0));
+
+			expect(mode.deferredCommandContainer.render(120)).toHaveLength(6);
+		} finally {
+			restoreRows();
+		}
+	});
+
+	it("shows actual panel content when a tiny viewport allows only one preview row", async () => {
+		const { mode, setStreaming } = await createHarness();
+		const restoreRows = overrideTerminalRows(mode, 2);
+		try {
+			setStreaming(true);
+
+			mode.presentCommandOutput(new Text("row 0\nrow 1\nrow 2", 1, 0));
+
+			const rows = mode.deferredCommandContainer.render(120);
+			expect(rows).toHaveLength(1);
+			expect(rows.join("\n")).toContain("row 0");
+			expect(rows.join("\n")).not.toContain("more rows");
+		} finally {
+			restoreRows();
+		}
+	});
+
+	it("keeps the preview within the viewport ceiling on short terminals", async () => {
+		const { mode, setStreaming } = await createHarness();
+		const restoreRows = overrideTerminalRows(mode, 5);
+		try {
+			setStreaming(true);
+
+			mode.presentCommandOutput(new Text("row 0\nrow 1\nrow 2\nrow 3\nrow 4\nrow 5", 1, 0));
+
+			expect(mode.deferredCommandContainer.render(120)).toHaveLength(2);
+		} finally {
+			restoreRows();
+		}
 	});
 
 	it("clears the preview and mounts the panels once the turn settles", async () => {

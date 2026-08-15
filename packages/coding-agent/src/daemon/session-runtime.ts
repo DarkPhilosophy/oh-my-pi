@@ -36,6 +36,7 @@ import { initTheme } from "../modes/theme/theme";
 import { type AgentRegistry, createAgentRegistryScope } from "../registry/agent-registry";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "../sdk";
 import { createAgentSession, discoverAuthStorage } from "../sdk";
+import { refreshAgentDiscovery } from "../task";
 import {
 	type AgentSession,
 	type AgentSessionEventListener,
@@ -469,6 +470,7 @@ async function createAgentSessionRuntimeInScope(
 		const cwd = result.session.sessionManager.getCwd();
 		const projectPath = await resolveActiveProjectRegistryPath(cwd);
 		clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
+		await refreshAgentDiscovery(cwd);
 		await result.session.refreshSkills();
 		resetCapabilities();
 		result.session.setSlashCommands(await loadSlashCommands({ cwd }));

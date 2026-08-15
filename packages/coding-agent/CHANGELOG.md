@@ -7,6 +7,9 @@
 - Added a non-interactive `omp daemon <status|sessions|reconnect|stop>` CLI command wrapping the daemon client and mirroring the in-TUI `/server` command. The CLI previously had no `daemon` command: `omp daemon …` fell through the interactive-routing gate (`isDefaultInteractiveArgv`) to `launchDaemonInteractive`, so e.g. `omp daemon status` blocked for the full request timeout attempting to host an interactive session on a non-TTY instead of printing daemon status. The argv is now registered both in the command table and `NON_INTERACTIVE_COMMANDS`, and supports `--json` for `status`/`sessions`.
 
 ### Fixed
+- Fixed `/server` command registration after upstream synchronization and made `/reload` rebuild plugin and MCP tools consistently across interactive, daemon, and RPC sessions, clearing stale MCP bindings when a reload fails.
+- Fixed deferred command and tool previews outliving their owning session, holding an old session's approval gate after retargeting, or overflowing short terminal viewports.
+- Fixed adopted-subagent release, park, and revive races that could return a retiring session, re-adopt an exact ref already being released, resurrect a tombstoned agent, or detach a newer generation.
 
 - Added terminal-focus events to daemon-hosted and extension-owned interactive terminals so hosted sessions, hooks, and UI consumers can react when the attached terminal window loses or regains focus.
 - Fixed extension discovery aborting on unreadable or missing configured paths during path canonicalization. Discovery now falls back to the lexical path identity, preserving existing load-error reporting without crashing the whole scan.
