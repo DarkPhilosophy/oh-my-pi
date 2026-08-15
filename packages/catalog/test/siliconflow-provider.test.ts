@@ -260,4 +260,20 @@ describe("siliconflow built-in providers", () => {
 		expect(await first).toEqual(firstPayload);
 		expect(await second).toEqual(secondPayload);
 	});
+	test("does not reuse cached catalog payloads across caller transports", async () => {
+		const firstPayload = { first: { models: {} } };
+		await fetchWellKnownModels(
+			async () =>
+				new Response(JSON.stringify(firstPayload), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
+		);
+
+		await expect(
+			fetchWellKnownModels(async () => {
+				throw new Error("second transport failed");
+			}),
+		).rejects.toThrow("second transport failed");
+	});
 });

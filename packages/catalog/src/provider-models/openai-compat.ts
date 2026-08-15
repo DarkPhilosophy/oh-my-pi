@@ -104,12 +104,14 @@ function toInputCapabilities(value: unknown): ("text" | "image")[] {
  * reuse the decoded payload on `304`. Failure after a successful load falls
  * back to the session copy.
  */
-const catalogSession: {
+interface CatalogSession {
 	inflight: Promise<unknown> | null;
 	payload: unknown;
 	etag: string | null;
 	hasPayload: boolean;
-} = { inflight: null, payload: undefined, etag: null, hasPayload: false };
+}
+
+const catalogSession: CatalogSession = { inflight: null, payload: undefined, etag: null, hasPayload: false };
 
 const CATALOG_USER_AGENT = USER_AGENT;
 
@@ -130,36 +132,40 @@ export function fetchWellKnownModels(fetchImpl?: FetchImpl, signal?: AbortSignal
 		return fetchCatalogPayload(fetchImpl ?? discoveryFetch(), signal);
 	}
 	if (!catalogSession.inflight) {
-		catalogSession.inflight = fetchCatalogPayload(discoveryFetch()).finally(() => {
+		catalogSession.inflight = fetchCatalogPayload(discoveryFetch(), undefined, catalogSession).finally(() => {
 			catalogSession.inflight = null;
 		});
 	}
 	return catalogSession.inflight;
 }
 
-async function fetchCatalogPayload(fetchImpl: FetchImpl, signal?: AbortSignal): Promise<unknown> {
+async function fetchCatalogPayload(
+	fetchImpl: FetchImpl,
+	signal?: AbortSignal,
+	session?: CatalogSession,
+): Promise<unknown> {
 	const headers: Record<string, string> = {
 		Accept: "application/zstd, application/json",
 		"User-Agent": CATALOG_USER_AGENT,
 	};
-	if (catalogSession.hasPayload && catalogSession.etag) {
-		headers["If-None-Match"] = catalogSession.etag;
+	if (session?.hasPayload && session.etag) {
+		headers["If-None-Match"] = session.etag;
 	}
 	let response: Response;
 	try {
 		response = await fetchImpl(MODELS_DEV_URL, { method: "GET", headers, signal });
 	} catch (error) {
-		if (catalogSession.hasPayload) {
-			return catalogSession.payload;
+		if (session?.hasPayload) {
+			return session.payload;
 		}
 		throw error;
 	}
-	if (response.status === 304 && catalogSession.hasPayload) {
-		return catalogSession.payload;
+	if (response.status === 304 && session?.hasPayload) {
+		return session.payload;
 	}
 	if (!response.ok) {
-		if (catalogSession.hasPayload) {
-			return catalogSession.payload;
+		if (session?.hasPayload) {
+			return session.payload;
 		}
 		throw new Error(`models catalog fetch failed: ${response.status}`);
 	}
@@ -167,9 +173,11 @@ async function fetchCatalogPayload(fetchImpl: FetchImpl, signal?: AbortSignal): 
 	const isZstd = bytes.length >= 4 && new DataView(bytes.buffer, bytes.byteOffset).getUint32(0, true) === ZSTD_MAGIC;
 	const text = new TextDecoder().decode(isZstd ? await Bun.zstdDecompress(bytes) : bytes);
 	const payload: unknown = JSON.parse(text);
-	catalogSession.payload = payload;
-	catalogSession.etag = response.headers.get("etag");
-	catalogSession.hasPayload = true;
+	if (session) {
+		session.payload = payload;
+		session.etag = response.headers.get("etag");
+		session.hasPayload = true;
+	}
 	return payload;
 }
 
