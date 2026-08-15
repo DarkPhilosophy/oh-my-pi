@@ -2154,7 +2154,7 @@ describe("ModelRegistry", () => {
 			}
 		});
 
-		test("github-copilot built-in discovery uses session-active getOAuthAccess and honors apiEndpoint", async () => {
+		test("github-copilot built-in discovery pins OAuth position 0 and honors its apiEndpoint", async () => {
 			const originalCopilotToken = Bun.env.COPILOT_GITHUB_TOKEN;
 			delete Bun.env.COPILOT_GITHUB_TOKEN;
 
@@ -2173,10 +2173,16 @@ describe("ModelRegistry", () => {
 					apiEndpoint: "https://api.business.githubcopilot.com",
 				};
 				const requestedUrls: string[] = [];
-				const fetchMock: FetchImpl = async input => {
+				const authHeaders: Array<string | null> = [];
+				const fetchMock: FetchImpl = async (input, init) => {
 					const url = input instanceof Request ? input.url : String(input);
 					requestedUrls.push(url);
 					if (url === "https://api.business.githubcopilot.com/models") {
+						authHeaders.push(
+							input instanceof Request
+								? input.headers.get("Authorization")
+								: new Headers(init?.headers).get("Authorization"),
+						);
 						return new Response(
 							JSON.stringify({
 								data: [
@@ -2199,22 +2205,26 @@ describe("ModelRegistry", () => {
 					throw new Error(`Unexpected URL: ${url}`);
 				};
 
-				const getOAuthAccessSpy = spyOn(authStorage, "getOAuthAccess").mockImplementation(async providerId => {
-					expect(providerId).toBe("github-copilot");
-					return activeAccess;
+				const getOAuthAccessAtSpy = spyOn(authStorage, "getOAuthAccessAt").mockResolvedValue({
+					ok: true,
+					...activeAccess,
 				});
+				const getOAuthAccessSpy = spyOn(authStorage, "getOAuthAccess");
 
 				try {
 					const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
 					await registry.refreshProvider("github-copilot", "online");
 
-					expect(getOAuthAccessSpy).toHaveBeenCalledWith("github-copilot");
+					expect(getOAuthAccessAtSpy).toHaveBeenCalledWith("github-copilot", 0);
+					expect(getOAuthAccessSpy).not.toHaveBeenCalled();
+					expect(authHeaders).toEqual(["Bearer copilot-token"]);
 					expect(requestedUrls).toContain("https://api.business.githubcopilot.com/models");
 					expect(requestedUrls).not.toContain("https://api.githubcopilot.com/models");
 					const discovered = getModelsForProvider(registry, "github-copilot").filter(m => m.id === "gpt-5.5");
 					expect(discovered.length).toBeGreaterThan(0);
 					expect(discovered[0]?.baseUrl).toBe("https://api.business.githubcopilot.com");
 				} finally {
+					getOAuthAccessAtSpy.mockRestore();
 					getOAuthAccessSpy.mockRestore();
 				}
 			} finally {

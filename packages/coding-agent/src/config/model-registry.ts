@@ -31,13 +31,9 @@ import {
 	resolveModelCacheProviderId,
 	resolveOllamaModelCacheProviderId,
 } from "@oh-my-pi/pi-catalog/provider-models";
-import {
-	collapseBuiltModelVariants,
-	getVariantAliasSources,
-	resolveVariantAlias,
-} from "@oh-my-pi/pi-catalog/variant-collapse";
+import { collapseBuiltModelVariants } from "@oh-my-pi/pi-catalog/variant-collapse";
 import { getAgentDir, isBunTestRuntime, logger, wrapFetchForExtraCa } from "@oh-my-pi/pi-utils";
-import { parseModelString, resolveProviderModelReference } from "../config/model-resolver";
+import { resolveProviderModelReference } from "../config/model-resolver";
 import { generateCodexAttestation } from "../live/attestation";
 import type { AuthStorage, OAuthAccountIdentity } from "../session/auth-storage";
 import { type ApiKeyResolverModel, type ApiKeyResolverOptions, createApiKeyResolver } from "./api-key-resolver";
@@ -85,11 +81,8 @@ import {
 	toModelSpec,
 } from "./model-patch";
 import {
-	BUILT_IN_DISCOVERY_CACHE_TTL_MS,
-	BUILT_IN_DISCOVERY_NON_AUTHORITATIVE_RETRY_MS,
 	type BuiltInDiscoveryResult,
 	extractGoogleOAuthToken,
-	getOAuthCredentialsForProvider,
 	isAuthenticated,
 	isDiscoveryBearerApiKey,
 	kNoAuth,
@@ -1209,16 +1202,13 @@ export class ModelRegistry {
 		return access.accessToken;
 	}
 
-	// Built-in discovery resolves the OAuth bearer per provider. gitlab-duo-agent
-	// keys its model cache per credential (#resolveBuiltInDiscoveryCacheIdentity
-	// uses listOAuthAccounts[0]), so its bearer MUST come from that same row —
-	// getOAuthAccessAt(0) — to keep the fetched catalog and its cache key aligned
-	// across multiple accounts. Every other provider caches under the bare
-	// provider id (no per-account key) and should follow the session-active
-	// account via getOAuthAccess, which preserves account-specific metadata such
-	// as GitHub Copilot's enterprise apiEndpoint.
+	// Built-in discovery resolves OAuth for providers with per-credential model
+	// caches from storage position 0. The bearer and cache identity MUST use the
+	// same stable row so one account's catalog cannot be cached under another
+	// account's namespace. Providers with bare cache ids continue to follow the
+	// session-active account through getOAuthAccess.
 	async #resolveBuiltInDiscoveryAccess(providerId: string): Promise<OAuthAccess | undefined> {
-		if (providerId === "gitlab-duo-agent") {
+		if (providerId === "github-copilot" || providerId === "gitlab-duo-agent") {
 			const resolution = await this.authStorage.getOAuthAccessAt(providerId, 0);
 			return resolution?.ok ? resolution : undefined;
 		}
@@ -1433,10 +1423,12 @@ export class ModelRegistry {
 			if (isAuthenticated(apiKey) || hasStoredOAuth || descriptor.allowUnauthenticated || hasExplicitVllmConfig) {
 				const discoveryBaseUrl = this.#descriptorBaseUrl(descriptor.providerId);
 				const discoveryApiKey = isDiscoveryBearerApiKey(apiKey) ? apiKey : undefined;
-				const cacheIdentity =
-					descriptor.providerId === "gitlab-duo-agent" && hasStoredOAuth
-						? this.#resolveBuiltInDiscoveryCacheIdentity(descriptor.providerId)
-						: undefined;
+				const usesCredentialCacheIdentity =
+					(descriptor.providerId === "github-copilot" || descriptor.providerId === "gitlab-duo-agent") &&
+					hasStoredOAuth;
+				const cacheIdentity = usesCredentialCacheIdentity
+					? this.#resolveBuiltInDiscoveryCacheIdentity(descriptor.providerId)
+					: undefined;
 				const discoveryConfig = {
 					apiKey: cacheIdentity === undefined ? discoveryApiKey : undefined,
 					cacheIdentity,
