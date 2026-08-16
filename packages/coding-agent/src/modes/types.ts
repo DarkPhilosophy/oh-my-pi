@@ -101,6 +101,7 @@ export interface RenderSessionContextOptions {
 	reuseSettledComponents?: boolean;
 	/** Tool calls whose existing live component remains the sole render owner across a rebuild. */
 	preservedLiveToolCallIds?: ReadonlySet<string>;
+	captureToolCallComponent?: (toolCallId: string, component: Component) => void;
 }
 
 export interface InteractiveModeContext {

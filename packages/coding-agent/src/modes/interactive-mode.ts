@@ -247,6 +247,7 @@ interface WorkingMessageAccentCacheKey {
 interface StreamingCommandOutputEntry {
 	component: Component;
 	transcriptIndex: number;
+	anchorToolCallId: string | undefined;
 }
 
 /**
@@ -2041,13 +2042,32 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (component) retained.set(message, component);
 		}
 		this.transcriptMessageComponents = retained;
+		const anchoredToolCallIds = new Set<string>();
+		for (const { anchorToolCallId } of streamingCommandOutput) {
+			if (anchorToolCallId) anchoredToolCallIds.add(anchorToolCallId);
+		}
+		const replayedToolAnchors = new Map<string, Component>();
 		this.renderSessionContext(context, {
 			reuseSettledComponents: options.reuseSettledComponents,
 			preservedLiveToolCallIds,
+			...(anchoredToolCallIds.size > 0
+				? {
+						captureToolCallComponent: (toolCallId: string, component: Component) => {
+							if (anchoredToolCallIds.has(toolCallId)) replayedToolAnchors.set(toolCallId, component);
+						},
+					}
+				: {}),
 		});
 		const replayedTranscript = [...this.chatContainer.children];
-		for (const { component, transcriptIndex } of streamingCommandOutput) {
-			this.#mountSettledChatChild(component, replayedTranscript[transcriptIndex]);
+		// Collapsed compaction can replace an arbitrarily long prefix with one
+		// summary block, invalidating the recorded numeric position. The next
+		// tool call survives that rewrite by ID, so capture its exact replayed
+		// tool/group block and restore the command panel immediately before it.
+		for (const { component, transcriptIndex, anchorToolCallId } of streamingCommandOutput) {
+			const replayedAnchor = anchorToolCallId ? replayedToolAnchors.get(anchorToolCallId) : undefined;
+			const semanticAnchor =
+				replayedAnchor && replayedTranscript.includes(replayedAnchor) ? replayedAnchor : undefined;
+			this.#mountSettledChatChild(component, semanticAnchor ?? replayedTranscript[transcriptIndex]);
 		}
 		for (const child of liveComponents) {
 			this.chatContainer.addChild(child);
@@ -4450,7 +4470,18 @@ export class InteractiveMode implements InteractiveModeContext {
 			for (let index = 0; index < mountedIndex; index++) {
 				if (!trackedComponents.has(this.chatContainer.children[index]!)) transcriptIndex++;
 			}
-			this.#streamingCommandOutput.push({ component: item, transcriptIndex });
+			let anchorToolCallId: string | undefined;
+			let anchorIndex = this.chatContainer.children.length;
+			// A pending tool is the first durable event after a mid-turn command
+			// panel. Its call ID remains stable if it settles before a later rebuild.
+			for (const [toolCallId, component] of this.pendingTools) {
+				const componentIndex = this.chatContainer.children.indexOf(component as unknown as Component);
+				if (componentIndex >= mountedIndex && componentIndex < anchorIndex) {
+					anchorToolCallId = toolCallId;
+					anchorIndex = componentIndex;
+				}
+			}
+			this.#streamingCommandOutput.push({ component: item, transcriptIndex, anchorToolCallId });
 			trackedComponents.add(item);
 		}
 		this.ui.requestRender();

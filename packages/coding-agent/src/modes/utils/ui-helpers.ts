@@ -527,6 +527,7 @@ export class UiHelpers {
 								false,
 								content.id,
 							);
+							options.captureToolCallComponent?.(content.id, readGroup);
 						} else if (afterToolSegment) {
 							if (!readGroup) {
 								readGroup = new ReadToolGroupComponent({
@@ -540,6 +541,7 @@ export class UiHelpers {
 							if (assistantComponent) {
 								readToolCallAssistantComponents.set(content.id, assistantComponent);
 							}
+							options.captureToolCallComponent?.(content.id, readGroup);
 						} else {
 							const normalizedArgs = normalizeToolArgs(content.arguments);
 							readToolCallArgs.set(content.id, normalizedArgs);
@@ -587,6 +589,7 @@ export class UiHelpers {
 					);
 					component.setExpanded(this.ctx.toolOutputExpanded);
 					this.ctx.chatContainer.addChild(component);
+					options.captureToolCallComponent?.(content.id, component);
 
 					if (hasErrorStop && errorMessage) {
 						component.updateResult(
@@ -655,6 +658,7 @@ export class UiHelpers {
 						this.ctx.pendingTools.set(message.toolCallId, readGroup);
 					}
 					component.updateResult(message, false, message.toolCallId);
+					options.captureToolCallComponent?.(message.toolCallId, component);
 					this.ctx.pendingTools.delete(message.toolCallId);
 					readToolCallArgs.delete(message.toolCallId);
 					readToolCallAssistantComponents.delete(message.toolCallId);
