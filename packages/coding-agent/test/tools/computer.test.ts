@@ -366,6 +366,29 @@ describe("computer worker round trips", () => {
 		if (result.ok) expect(result.payload.returnValue).toEqual({ echoed: 7 });
 	});
 
+	it("returns a Promise-shaped window acquisition that resolves to facade metadata", async () => {
+		const transport = new MemoryTransport();
+		new ComputerWorkerCore(transport, () => new FakeNativeSession());
+		const result = await runWorker(
+			transport,
+			"window-promise",
+			[
+				'const pending = desktop.window("42");',
+				'const promiseShaped = typeof pending?.then === "function";',
+				"const win = await pending;",
+				"({ promiseShaped, id: win.id, bounds: win.bounds })",
+			].join("\n"),
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.payload.returnValue).toEqual({
+				promiseShaped: true,
+				id: "42",
+				bounds: { x: 4, y: 5, width: 40, height: 20 },
+			});
+		}
+	});
+
 	it("uses a retained window screenshot in the current run payload", async () => {
 		const transport = new MemoryTransport();
 		new ComputerWorkerCore(transport, () => new FakeNativeSession());

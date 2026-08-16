@@ -60,10 +60,10 @@ Unknown fields are rejected by the schema. `computerApproval()` returns `read` o
 
 ### Discovery
 
-- `desktop.windows({ app?, title? })` returns matching `DesktopWindow[]`; app/title matching is case-insensitive substring matching.
-- `desktop.window(id | { app?, title? })` returns one persistent window facade. Zero matches throw; multiple matches throw with the candidates.
-- `desktop.focusedWindow()` returns a window facade or `null`.
-- `desktop.displays()` returns `DesktopDisplay[]`.
+- `await desktop.windows({ app?, title? })` returns matching `DesktopWindow[]`; app/title matching is case-insensitive substring matching.
+- `await desktop.window(id | { app?, title? })` returns one persistent window facade. Zero matches throw; multiple matches throw with the candidates.
+- `await desktop.focusedWindow()` returns a window facade or `null`.
+- `await desktop.displays()` returns `DesktopDisplay[]`.
 - `desktop.capabilities()` returns capture/input/AX availability, permission states, delivery modes, display server, backend, and display count.
 
 A window facade exposes immutable `id`, `app`, `title`, optional `pid`, `bounds`, and `focused` fields.
@@ -87,7 +87,7 @@ Screenshots are PNGs written under the OS temp directory. Unless `silent: true`,
 
 ### Accessibility
 
-- `win.ax({ all?, maxDepth? }) -> string` returns the native textual accessibility tree with `[ref=eN]` references.
+- `await win.ax({ all?, maxDepth? }) -> string` returns the native textual accessibility tree with `[ref=eN]` references.
 - `win.find({ role?, title?, value?, limit? }) -> El[]` returns all native matches within the requested limit.
 - `await win.ref("e5") -> El` resolves a live native reference.
 - `desktop.elementAt(x, y)` and `desktop.focusedElement()` return `El | null`.
