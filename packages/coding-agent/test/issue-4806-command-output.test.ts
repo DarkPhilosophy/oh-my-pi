@@ -307,6 +307,133 @@ describe("issue #4806 command output during streaming", () => {
 		}
 	});
 
+	it("keeps command output before a replayed sibling when its first anchor remains pending", () => {
+		session.settings.set("display.collapseCompacted", true);
+		session.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "long prefix removed before pending anchor" }],
+			timestamp: Date.now(),
+		} as Message);
+		session.sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "prefix reply before pending anchor" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			stopReason: "stop",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: Date.now(),
+		} as Message);
+		mode.rebuildChatFromMessages();
+
+		const pendingCommand = "printf preserved-pending-anchor";
+		const settledCommand = "printf replayed-later-sibling";
+		const pendingTool = new ToolExecutionComponent(
+			"bash",
+			{ command: pendingCommand },
+			{},
+			undefined,
+			mode.ui,
+			tempDir.path(),
+			"preserved-pending-anchor",
+		);
+		const settledTool = new ToolExecutionComponent(
+			"bash",
+			{ command: settledCommand },
+			{},
+			undefined,
+			mode.ui,
+			tempDir.path(),
+			"replayed-later-sibling",
+		);
+		try {
+			settledTool.updateResult(
+				{ content: [{ type: "text", text: "" }], isError: false },
+				false,
+				"replayed-later-sibling",
+			);
+			mode.chatContainer.addChild(pendingTool);
+			mode.chatContainer.addChild(settledTool);
+			mode.pendingTools.set("preserved-pending-anchor", pendingTool);
+			mode.pendingTools.set("replayed-later-sibling", settledTool);
+			mode.handleToolsCommand();
+			const commandPanel = mode.chatContainer.children.find(child =>
+				Bun.stripANSI(child.render(120).join("\n")).includes("Available Tools"),
+			);
+			expect(commandPanel).toBeDefined();
+			expect(mode.chatContainer.children.indexOf(commandPanel!)).toBeLessThan(
+				mode.chatContainer.children.indexOf(pendingTool),
+			);
+			expect(mode.chatContainer.children.indexOf(commandPanel!)).toBeLessThan(
+				mode.chatContainer.children.indexOf(settledTool),
+			);
+			mode.pendingTools.delete("replayed-later-sibling");
+
+			const firstKeptEntryId = session.sessionManager.appendMessage({
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "preserved-pending-anchor",
+						name: "bash",
+						arguments: { command: pendingCommand },
+					},
+					{
+						type: "toolCall",
+						id: "replayed-later-sibling",
+						name: "bash",
+						arguments: { command: settledCommand },
+					},
+				],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				stopReason: "toolUse",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				timestamp: Date.now(),
+			} as Message);
+			session.sessionManager.appendMessage({
+				role: "toolResult",
+				toolCallId: "replayed-later-sibling",
+				toolName: "bash",
+				content: [{ type: "text", text: "" }],
+				isError: false,
+				timestamp: Date.now(),
+			} as Message);
+			session.sessionManager.appendCompaction("compacted pending prefix", undefined, firstKeptEntryId, 100);
+			session.agent.replaceMessages(session.sessionManager.buildSessionContext().messages);
+
+			mode.rebuildChatFromMessages();
+
+			const replayedSettledIndex = mode.chatContainer.children.findIndex(child =>
+				Bun.stripANSI(child.render(120).join("\n")).includes(settledCommand),
+			);
+			const commandPanelIndex = mode.chatContainer.children.indexOf(commandPanel!);
+			expect(replayedSettledIndex).toBeGreaterThanOrEqual(0);
+			expect(mode.chatContainer.children.indexOf(pendingTool)).toBeGreaterThanOrEqual(0);
+			expect(commandPanelIndex).toBeLessThan(replayedSettledIndex);
+			expect(commandPanelIndex).toBeLessThan(mode.chatContainer.children.indexOf(pendingTool));
+			expect(mode.chatContainer.children.indexOf(pendingTool)).toBeLessThan(replayedSettledIndex);
+		} finally {
+			pendingTool.stopAnimation();
+			settledTool.stopAnimation();
+		}
+	});
+
 	it("restores command output before the exact tool in a multi-tool assistant turn", () => {
 		const earlierCommand = "printf earlier-tool";
 		const anchoredCommand = "printf exact-tool-anchor";

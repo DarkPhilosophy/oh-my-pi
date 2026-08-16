@@ -247,7 +247,7 @@ interface WorkingMessageAccentCacheKey {
 interface StreamingCommandOutputEntry {
 	component: Component;
 	transcriptIndex: number;
-	anchorToolCallId: string | undefined;
+	anchorToolCallIds: readonly string[];
 }
 
 /**
@@ -1947,8 +1947,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		// references — subsequent `message_update`/`message_end` events would then
 		// update orphaned components that never re-render and the live LLM output
 		// vanishes from the chat (#3656). Snapshot the in-flight components,
-		// clear+replay, then re-append them in their original chat-container order
-		// and restore the `pendingTools` map so streaming routes back into them.
+		// clear+replay, then restore them before their nearest surviving semantic
+		// successors and route future streaming updates back into them.
 		const sessionId = this.sessionManager.getSessionId();
 		const streamingCommandOutput =
 			this.#streamingCommandOutputSessionId === sessionId ? [...this.#streamingCommandOutput] : [];
@@ -1957,6 +1957,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		const liveComponents: Component[] = [];
 		const livePendingTools = new Map<string, ToolExecutionHandle>();
+		const liveComponentSuccessors = new Map<Component, (string | Component)[]>();
 		if (this.viewSession?.isStreaming) {
 			const liveSet = new Set<Component>();
 			if (this.streamingComponent) liveSet.add(this.streamingComponent);
@@ -1967,6 +1968,22 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (liveSet.size > 0) {
 				for (const child of this.chatContainer.children) {
 					if (liveSet.has(child)) liveComponents.push(child);
+				}
+				const successorCandidates: Array<{ anchor: string | Component; index: number }> = [];
+				for (const child of liveComponents) {
+					successorCandidates.push({ anchor: child, index: this.chatContainer.children.indexOf(child) });
+				}
+				for (const [id, component] of this.pendingTools) {
+					const index = this.chatContainer.children.indexOf(component as unknown as Component);
+					if (index >= 0) successorCandidates.push({ anchor: id, index });
+				}
+				successorCandidates.sort((left, right) => left.index - right.index);
+				for (const child of liveComponents) {
+					const index = this.chatContainer.children.indexOf(child);
+					liveComponentSuccessors.set(
+						child,
+						successorCandidates.filter(candidate => candidate.index > index).map(candidate => candidate.anchor),
+					);
 				}
 			}
 		}
@@ -2031,6 +2048,56 @@ export class InteractiveMode implements InteractiveModeContext {
 			const index = liveComponents.indexOf(resolved as unknown as Component);
 			if (index >= 0) liveComponents.splice(index, 1);
 		}
+		// A completed parallel sibling is removed from `pendingTools` before this
+		// rebuild starts, so the live component snapshot alone cannot remember
+		// that an earlier pending tool preceded it. Use the durable tool-call
+		// order from both the rebuilt transcript and command-panel anchors (which
+		// still include dangling calls stripped from that transcript), then replay
+		// can resolve the first visible semantic successor.
+		const transcriptToolCallOrder: string[] = [];
+		for (const message of context.messages) {
+			if (message.role !== "assistant") continue;
+			for (const content of message.content) {
+				if (content.type === "toolCall") transcriptToolCallOrder.push(content.id);
+			}
+		}
+		const semanticToolCallSequences: Array<readonly string[]> = [transcriptToolCallOrder];
+		for (const { anchorToolCallIds } of streamingCommandOutput) {
+			semanticToolCallSequences.push(anchorToolCallIds);
+		}
+		const liveToolCallIdsByComponent = new Map<Component, Set<string>>();
+		for (const [id, component] of livePendingTools) {
+			const child = component as unknown as Component;
+			const ids = liveToolCallIdsByComponent.get(child) ?? new Set<string>();
+			ids.add(id);
+			liveToolCallIdsByComponent.set(child, ids);
+		}
+		for (const [component, liveIds] of liveToolCallIdsByComponent) {
+			let semanticSuccessors: string[] = [];
+			for (const sequence of semanticToolCallSequences) {
+				let firstIndex = Number.POSITIVE_INFINITY;
+				for (const id of liveIds) {
+					const index = sequence.indexOf(id);
+					if (index >= 0 && index < firstIndex) firstIndex = index;
+				}
+				if (!Number.isFinite(firstIndex)) continue;
+				const candidates: string[] = [];
+				const candidateIds = new Set<string>();
+				for (let index = firstIndex + 1; index < sequence.length; index++) {
+					const id = sequence[index];
+					if (liveIds.has(id) || candidateIds.has(id)) continue;
+					candidateIds.add(id);
+					candidates.push(id);
+				}
+				if (candidates.length > semanticSuccessors.length) semanticSuccessors = candidates;
+			}
+			const seen = new Set(semanticSuccessors);
+			const structuralSuccessors = liveComponentSuccessors.get(component) ?? [];
+			liveComponentSuccessors.set(component, [
+				...semanticSuccessors,
+				...structuralSuccessors.filter(successor => typeof successor !== "string" || !seen.has(successor)),
+			]);
+		}
 		// Prune the settled-component cache to the messages this rebuild will
 		// actually render. Message objects stay strongly reachable through
 		// session entries for the whole session, so entries for compacted-away
@@ -2042,35 +2109,62 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (component) retained.set(message, component);
 		}
 		this.transcriptMessageComponents = retained;
-		const anchoredToolCallIds = new Set<string>();
-		for (const { anchorToolCallId } of streamingCommandOutput) {
-			if (anchorToolCallId) anchoredToolCallIds.add(anchorToolCallId);
+		const semanticToolCallIds = new Set<string>();
+		for (const { anchorToolCallIds } of streamingCommandOutput) {
+			for (const toolCallId of anchorToolCallIds) semanticToolCallIds.add(toolCallId);
 		}
-		const replayedToolAnchors = new Map<string, Component>();
+		for (const successors of liveComponentSuccessors.values()) {
+			for (const successor of successors) {
+				if (typeof successor === "string") semanticToolCallIds.add(successor);
+			}
+		}
+		const semanticToolAnchors = new Map<string, Component>();
 		this.renderSessionContext(context, {
 			reuseSettledComponents: options.reuseSettledComponents,
 			preservedLiveToolCallIds,
-			...(anchoredToolCallIds.size > 0
+			...(semanticToolCallIds.size > 0
 				? {
 						captureToolCallComponent: (toolCallId: string, component: Component) => {
-							if (anchoredToolCallIds.has(toolCallId)) replayedToolAnchors.set(toolCallId, component);
+							if (semanticToolCallIds.has(toolCallId)) semanticToolAnchors.set(toolCallId, component);
 						},
 					}
 				: {}),
 		});
 		const replayedTranscript = [...this.chatContainer.children];
-		// Collapsed compaction can replace an arbitrarily long prefix with one
-		// summary block, invalidating the recorded numeric position. The next
-		// tool call survives that rewrite by ID, so capture its exact replayed
-		// tool/group block and restore the command panel immediately before it.
-		for (const { component, transcriptIndex, anchorToolCallId } of streamingCommandOutput) {
-			const replayedAnchor = anchorToolCallId ? replayedToolAnchors.get(anchorToolCallId) : undefined;
-			const semanticAnchor =
-				replayedAnchor && replayedTranscript.includes(replayedAnchor) ? replayedAnchor : undefined;
-			this.#mountSettledChatChild(component, semanticAnchor ?? replayedTranscript[transcriptIndex]);
+		// Restore live components from the end so each earlier component can use
+		// its nearest surviving successor as a stable insertion boundary. A
+		// successor may itself remain live or may have settled into the replay
+		// while the rebuild was taking its snapshot.
+		for (let index = liveComponents.length - 1; index >= 0; index--) {
+			const child = liveComponents[index];
+			let semanticAnchor: Component | undefined;
+			for (const successor of liveComponentSuccessors.get(child) ?? []) {
+				const candidate = typeof successor === "string" ? semanticToolAnchors.get(successor) : successor;
+				if (candidate && this.chatContainer.children.includes(candidate)) {
+					semanticAnchor = candidate;
+					break;
+				}
+			}
+			this.#mountSettledChatChild(child, semanticAnchor);
+			for (const [id, component] of livePendingTools) {
+				if (component === child) semanticToolAnchors.set(id, child);
+			}
 		}
-		for (const child of liveComponents) {
-			this.chatContainer.addChild(child);
+		// Collapsed compaction can replace an arbitrarily long prefix with one
+		// summary block, invalidating the recorded numeric position. Capture every
+		// tool that originally followed a command panel: if the first remains live
+		// and is omitted from replay, a later settled sibling still provides the
+		// exact semantic boundary that the panel must precede.
+		for (const { component, transcriptIndex, anchorToolCallIds } of streamingCommandOutput) {
+			let semanticAnchor: Component | undefined;
+			for (const toolCallId of anchorToolCallIds) {
+				const candidate = semanticToolAnchors.get(toolCallId);
+				if (candidate && this.chatContainer.children.includes(candidate)) {
+					semanticAnchor = candidate;
+					break;
+				}
+			}
+			this.#mountSettledChatChild(component, semanticAnchor ?? replayedTranscript[transcriptIndex]);
 		}
 		// `renderSessionContext` clears `pendingTools` at start AND end so the
 		// reconstructed historical tool components don't leak into live tracking.
@@ -4470,18 +4564,19 @@ export class InteractiveMode implements InteractiveModeContext {
 			for (let index = 0; index < mountedIndex; index++) {
 				if (!trackedComponents.has(this.chatContainer.children[index]!)) transcriptIndex++;
 			}
-			let anchorToolCallId: string | undefined;
-			let anchorIndex = this.chatContainer.children.length;
-			// A pending tool is the first durable event after a mid-turn command
-			// panel. Its call ID remains stable if it settles before a later rebuild.
+			const anchorToolCalls: Array<{ id: string; index: number }> = [];
+			// Every pending tool at or after the panel is a semantic successor.
+			// Retaining them in visual order lets a later settled sibling anchor
+			// the panel when the first call remains live and is omitted from replay.
 			for (const [toolCallId, component] of this.pendingTools) {
 				const componentIndex = this.chatContainer.children.indexOf(component as unknown as Component);
-				if (componentIndex >= mountedIndex && componentIndex < anchorIndex) {
-					anchorToolCallId = toolCallId;
-					anchorIndex = componentIndex;
+				if (componentIndex >= mountedIndex) {
+					anchorToolCalls.push({ id: toolCallId, index: componentIndex });
 				}
 			}
-			this.#streamingCommandOutput.push({ component: item, transcriptIndex, anchorToolCallId });
+			anchorToolCalls.sort((left, right) => left.index - right.index);
+			const anchorToolCallIds = anchorToolCalls.map(({ id }) => id);
+			this.#streamingCommandOutput.push({ component: item, transcriptIndex, anchorToolCallIds });
 			trackedComponents.add(item);
 		}
 		this.ui.requestRender();
