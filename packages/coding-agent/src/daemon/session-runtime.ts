@@ -36,7 +36,6 @@ import { initTheme } from "../modes/theme/theme";
 import { type AgentRegistry, createAgentRegistryScope } from "../registry/agent-registry";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "../sdk";
 import { createAgentSession, discoverAuthStorage } from "../sdk";
-import { refreshAgentDiscovery } from "../task";
 import {
 	type AgentSession,
 	type AgentSessionEventListener,
@@ -49,9 +48,10 @@ import { executeAcpBuiltinSlashCommand } from "../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../slash-commands/available-commands";
 import { lookupBuiltinSlashCommand } from "../slash-commands/builtin-registry";
 import { parseSlashCommand } from "../slash-commands/helpers/parse";
+import { refreshAgentDiscovery } from "../task";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
-import { calculateTokensPerSecond } from "../utils/token-rate";
 import type { TodoPhase } from "../tools/todo";
+import { calculateTokensPerSecond } from "../utils/token-rate";
 import { DAEMON_PROTOCOL_MAJOR } from "./protocol";
 import type { DaemonConnectionSnapshot } from "./status";
 import { HostedTerminal, type HostedTerminalDescriptor } from "./terminal-bridge";

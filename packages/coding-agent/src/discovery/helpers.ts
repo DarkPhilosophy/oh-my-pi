@@ -514,6 +514,11 @@ export async function loadFilesFromDir<T>(
 			gitignore: true,
 			hidden: false,
 			fileType: FileType.File,
+			// Thread the caller's non-recursive intent explicitly: the native glob
+			// defaults `recursive` to true and rewrites `*.{ts,js}` -> `**/*.{ts,js}`,
+			// which would walk the entire subtree (e.g. a venv's site-packages under
+			// ~/.codex/tools) and import arbitrary frontend assets as tools (#8552).
+			recursive,
 		});
 		matches = result.matches;
 	} catch {

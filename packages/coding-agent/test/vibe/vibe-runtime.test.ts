@@ -130,17 +130,25 @@ class SwitchGatedSessionStorage extends FaultInjectingSessionStorage {
 		return { started: started.promise, release: release.resolve };
 	}
 
+	async #waitForReadGate(filePath: string): Promise<void> {
+		const gate = this.#readGate;
+		if (gate?.filePath !== filePath) return;
+		this.#readGate = undefined;
+		gate.started.resolve();
+		await gate.release.promise;
+	}
+
+	override async readText(filePath: string): Promise<string> {
+		await this.#waitForReadGate(filePath);
+		return super.readText(filePath);
+	}
+
 	override async readTextSlices(
 		filePath: string,
 		prefixBytes: number,
 		suffixBytes: number,
 	): Promise<[string, string]> {
-		const gate = this.#readGate;
-		if (gate?.filePath === filePath) {
-			this.#readGate = undefined;
-			gate.started.resolve();
-			await gate.release.promise;
-		}
+		await this.#waitForReadGate(filePath);
 		return super.readTextSlices(filePath, prefixBytes, suffixBytes);
 	}
 }
@@ -835,6 +843,7 @@ describe("vibe session registry", () => {
 		const manager = createManager();
 		const session = createSession({ manager });
 		const registry = VibeSessionRegistry.global();
+		registry.setTeardownGraceForTesting(250);
 		const { jobId } = await registry.spawn(session, {
 			cli: "fast",
 			name: "IgnoresSuspendAbort",
@@ -1922,6 +1931,7 @@ describe("vibe session registry", () => {
 		const manager = createManager();
 		const session = createSession({ manager });
 		const registry = VibeSessionRegistry.global();
+		registry.setTeardownGraceForTesting(250);
 		const { jobId } = await registry.spawn(session, {
 			cli: "fast",
 			name: "IgnoresKillAbort",

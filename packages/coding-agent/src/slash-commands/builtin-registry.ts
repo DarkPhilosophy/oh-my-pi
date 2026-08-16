@@ -1,54 +1,7 @@
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { COLLAB_GUEST_ALLOWED_COMMANDS } from "../collab/guest";
-import {
-	expandRoleAlias,
-	formatModelString,
-	getModelMatchPreferences,
-	resolveCliModel,
-} from "../config/model-resolver";
-import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
-import type { SettingPath, SettingValue } from "../config/settings";
-import { settings } from "../config/settings";
 import type { DaemonConnectionSnapshot } from "../daemon/status";
-import {
-	clearPluginRootsAndCaches,
-	resolveActiveProjectRegistryPath,
-	resolveOrDefaultProjectRegistryPath,
-} from "../discovery/helpers.js";
-import { parseExportArgs } from "../export/html/args";
-import { shareSession } from "../export/share";
-import { PluginManager } from "../extensibility/plugins";
-import {
-	getInstalledPluginsRegistryPath,
-	getMarketplacesCacheDir,
-	getMarketplacesRegistryPath,
-	getPluginsCacheDir,
-	MarketplaceManager,
-} from "../extensibility/plugins/marketplace";
-import { resolveMemoryBackend } from "../memory-backend";
-import { runPauseScreen } from "../modes/components/pause-screen";
-import { describeLoopLimitRuntime } from "../modes/loop-limit";
-import { theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
-import { extractLastCodeBlock, extractLastCommand } from "../modes/utils/copy-targets";
-import type { AgentSession, FreshSessionResult } from "../session/agent-session";
-import type { SessionOAuthAccountList } from "../session/agent-session-types";
-import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
-import { resolveResumableSession } from "../session/session-listing";
-import { sessionActionMessage } from "../session/session-action-message";
-import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
-import type { ComputerTool } from "../tools/computer";
-import { computerExposureMode } from "../tools/computer/exposure";
-import { expandTilde, resolveToCwd } from "../tools/path-utils";
-import { urlHyperlinkAlways } from "../tui";
-import {
-	getChangelogPath,
-	parseChangelog,
-	RECENT_CHANGELOG_ENTRY_LIMIT,
-	renderChangelogEntries,
-} from "../utils/changelog";
-import { copyToClipboard } from "../utils/clipboard";
-import type { InspectImageMode } from "../utils/inspect-image-mode";
 import { BUILTIN_COLLABORATION_SLASH_COMMANDS } from "./builtin-collaboration";
 import {
 	buildArgumentCompletions,
@@ -62,25 +15,11 @@ import { BUILTIN_LIFECYCLE_SLASH_COMMANDS } from "./builtin-lifecycle";
 import { BUILTIN_MARKETPLACE_SLASH_COMMANDS, reloadTuiPluginState } from "./builtin-marketplace";
 import { BUILTIN_MODE_SLASH_COMMANDS } from "./builtin-modes";
 import { BUILTIN_SESSION_SLASH_COMMANDS } from "./builtin-session";
-import { CollabQrCodeComponent } from "./helpers/collab-qrcode";
-import { buildContextReportText } from "./helpers/context-report";
-import { formatDuration } from "./helpers/format";
-import { createMarketplaceManager } from "./helpers/marketplace-manager";
-import { handleMcpAcp } from "./helpers/mcp";
-import { commandConsumed, errorMessage, parseSlashCommand, parseSubcommand, usage } from "./helpers/parse";
-import { describeRedeemOutcome, type ResetUsageAccount, toResetUsageAccounts } from "./helpers/reset-usage";
+import { parseSlashCommand } from "./helpers/parse";
 import { handleServerCommand } from "./helpers/server";
-import { matchSessionPinAccounts, toSessionPinAccounts } from "./helpers/session-pin";
-import { handleSshAcp } from "./helpers/ssh";
-import { launchStatsDashboard, parseStatsDashboardArgs } from "./helpers/stats-dashboard";
-import { handleTodoAcp } from "./helpers/todo";
-import { buildUsageReportText } from "./helpers/usage-report";
-import { parseMarketplaceInstallArgs, parsePluginScopeArgs } from "./marketplace-install-parser";
 import type {
 	BuiltinSlashCommand,
 	BuiltinSlashCommandOwner,
-	ParsedSlashCommand,
-	SlashCommandResult,
 	SlashCommandRuntime,
 	SlashCommandSpec,
 	TuiSlashCommandRuntime,

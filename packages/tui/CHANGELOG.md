@@ -9,6 +9,13 @@
 ### Fixed
 
 - Fixed the TUI not surfacing terminal focus transitions to start-listener consumers and hosted terminals. Focus changes now flow through the shared terminal interface and propagate immediately to registered listeners.
+## [17.3.5] - 2026-08-16
+
+### Fixed
+
+- Fixed long CPU-bound event-loop stalls being misclassified as system sleep and omitted from loop-blocked diagnostics.
+- Fixed focused components with markers falling back to full-screen redraws instead of direct row updates, preserving cursor position and native scrollback across marker changes.
+
 ## [17.3.4] - 2026-08-14
 
 ### Fixed

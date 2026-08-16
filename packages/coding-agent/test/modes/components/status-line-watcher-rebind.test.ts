@@ -10,7 +10,6 @@
  * test), and the contract under test is watcher lifecycle, not inotify.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
-import * as fs from "node:fs";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { StatusLineSettings } from "@oh-my-pi/pi-coding-agent/modes/components/status-line";
 import { StatusLineComponent } from "@oh-my-pi/pi-coding-agent/modes/components/status-line";
@@ -84,23 +83,18 @@ const gitSegmentSettings: StatusLineSettings = {
 
 describe("StatusLineComponent git watcher rebind", () => {
 	it("closes the old repo watcher and watches the new repo on session switch", () => {
-		const watchers: Array<{ path: string; close: () => void; closeCalls: () => number }> = [];
-		vi.spyOn(fs, "watch").mockImplementation(((watchPath: fs.PathLike) => {
+		const watchers: Array<{ path: string; closeCalls: () => number }> = [];
+		vi.spyOn(git.head, "watch").mockImplementation(repository => {
 			let closed = 0;
-			const watcher = {
-				close: () => {
-					closed += 1;
-				},
-			};
 			watchers.push({
-				path: String(watchPath),
-				close: watcher.close,
+				path: repository.headPath,
 				closeCalls: () => closed,
 			});
-			return watcher as unknown as fs.FSWatcher;
-		}) as typeof fs.watch);
+			return () => {
+				closed += 1;
+			};
+		});
 		vi.spyOn(git.repo, "resolveSync").mockImplementation(cwd => fakeRepo(cwd));
-		vi.spyOn(git.repo, "isReftableSync").mockReturnValue(false);
 
 		const component = new StatusLineComponent(makeSession("/repo-a"));
 		component.updateSettings(gitSegmentSettings);
@@ -125,18 +119,17 @@ describe("StatusLineComponent git watcher rebind", () => {
 		// settings via updateSettings AFTER SessionManager.getCwd() already moved;
 		// updateSettings itself must rebuild the watcher against the new cwd.
 		const watchers: Array<{ path: string; closeCalls: () => number }> = [];
-		vi.spyOn(fs, "watch").mockImplementation(((watchPath: fs.PathLike) => {
+		vi.spyOn(git.head, "watch").mockImplementation(repository => {
 			let closed = 0;
-			const watcher = {
-				close: () => {
-					closed += 1;
-				},
+			watchers.push({
+				path: repository.headPath,
+				closeCalls: () => closed,
+			});
+			return () => {
+				closed += 1;
 			};
-			watchers.push({ path: String(watchPath), closeCalls: () => closed });
-			return watcher as unknown as fs.FSWatcher;
-		}) as typeof fs.watch);
+		});
 		vi.spyOn(git.repo, "resolveSync").mockImplementation(cwd => fakeRepo(cwd));
-		vi.spyOn(git.repo, "isReftableSync").mockReturnValue(false);
 
 		let cwd = "/repo-move-a";
 		const session = makeSession(cwd);

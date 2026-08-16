@@ -26,8 +26,8 @@ import type {
 	RpcSessionState,
 } from "../modes/rpc/rpc-types";
 import { buildAvailableSlashCommands, getClientOwnedBuiltinSlashCommands } from "../slash-commands/available-commands";
-import { calculateTokensPerSecond } from "../utils/token-rate";
 import type { TodoPhase } from "../tools/todo";
+import { calculateTokensPerSecond } from "../utils/token-rate";
 import type {
 	AgentSession,
 	AgentSessionEvent,

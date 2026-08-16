@@ -1,11 +1,11 @@
 import { ProcessTerminal } from "@oh-my-pi/pi-tui";
 import { APP_NAME, logger } from "@oh-my-pi/pi-utils";
 import { getActiveProfile, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
+import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import chalk from "chalk";
 import { parseArgs } from "../cli/args";
 import { selectSession } from "../cli/session-picker";
 import { applyStartupCwd } from "../cli/startup-cwd";
-import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { Settings } from "../config/settings";
 import { initTheme, stopThemeWatcher } from "../modes/theme/theme";
 import { RemoteSessionHandle, type SessionHandleCommand } from "../session/session-handle";

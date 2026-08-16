@@ -68,16 +68,15 @@ const validModes: Record<Mode, true> = {
 // SIGKILLed at 137). The singleton/global-state bucket is left whole: its suites
 // co-locate in one process to exercise process-wide state, so they must not split.
 //
-// The UI/TUI bucket uses a smaller chunk (5) than the others: its suites build up
-// native ghostty-vt cells, and bun 1.3.14's GC aborts (SIGTRAP/SIGABRT, exit
-// 133/134 inside DOMGCOutputConstraint marking) once ~10 such files share a heap,
-// even with the GC-marker knobs below. Bisection showed no single file is at
-// fault — the crash is cumulative heap volume. Under a 256MB-forced heap, a
-// 10-file chunk aborts ~50% of runs while either 5-file half is 0/20; halving the
-// chunk keeps each process under the threshold.
+// The UI/TUI bucket uses a smaller chunk (4) than the others: its suites build up
+// native ghostty-vt cells, and Bun's GC crashes once enough such files share a
+// heap. Bun 1.3.14 already became unstable around 10 files; Bun
+// 1.4.0-canary.1 additionally segfaults for a reproducible five-file
+// status-line group even though every suite passes alone and in groups of four.
+// A four-file ceiling keeps each process below both observed thresholds.
 const codingAgentBucketPlans: Record<CodingAgentBucket, { label: string; parallel: number; chunkSize?: number }> = {
 	singleton: { label: "singleton/global-state bucket", parallel: 1 },
-	ui: { label: "UI/TUI bucket", parallel: 1, chunkSize: 5 },
+	ui: { label: "UI/TUI bucket", parallel: 1, chunkSize: 4 },
 	runtime: { label: "runtime/session bucket", parallel: 1, chunkSize: 10 },
 	native: { label: "native/tooling/browser/unit bucket", parallel: 1, chunkSize: 10 },
 };
@@ -96,6 +95,11 @@ const fastWorkspacePackages = [
 	"packages/agent",
 	"packages/mnemopi",
 ];
+
+// A single Bun invocation over the AI package's 356 test files accumulates
+// enough JSC heap per worker to hit Bun's GC crash even when assertions pass.
+// Bound each process independently, matching the coding-agent chunk strategy.
+const workspacePackageChunkSizes = new Map<string, number>([["packages/ai", 20]]);
 
 // These suites cover the native package, TUI/browser-ish behavior, local servers,
 // or coding-agent-adjacent benchmark paths. Keep them low-concurrency and in jobs
@@ -241,6 +245,45 @@ async function collectTestsUnder(root: string, baseDir: string): Promise<string[
 	return files;
 }
 
+async function workspacePackageTestCommands(
+	pkg: string,
+	parallel: number,
+	options: { extraArgs?: string[] } = {},
+): Promise<TestCommand[]> {
+	const chunkSize = workspacePackageChunkSizes.get(pkg);
+	if (chunkSize === undefined) {
+		return [workspaceTestCommand(pkg, parallel, options)];
+	}
+
+	const packageDir = path.join(repoRoot, pkg);
+	const testFiles = await collectTestsUnder(path.join(packageDir, "test"), packageDir);
+	if (testFiles.length === 0) {
+		throw new Error(`No tests found for chunked workspace package ${pkg}`);
+	}
+
+	const { extraArgs = [] } = options;
+	const chunkCount = Math.ceil(testFiles.length / chunkSize);
+	const commands: TestCommand[] = [];
+	for (let index = 0; index < testFiles.length; index += chunkSize) {
+		const chunk = testFiles.slice(index, index + chunkSize);
+		commands.push({
+			label: `${pkg} chunk ${commands.length + 1}/${chunkCount} (${chunk.length} files)`,
+			cwd: pkg,
+			command: ["bun", "test", ...extraArgs, ...chunk],
+			parallel,
+		});
+	}
+	return commands;
+}
+
+async function workspaceTestCommands(
+	packages: readonly string[],
+	parallel: number,
+	options: { extraArgs?: string[] } = {},
+): Promise<TestCommand[]> {
+	return (await Promise.all(packages.map(pkg => workspacePackageTestCommands(pkg, parallel, options)))).flat();
+}
+
 function hasAnyMarker(content: string, markers: string[]): boolean {
 	return markers.some(marker => content.includes(marker));
 }
@@ -327,9 +370,9 @@ async function codingAgentTestCommands(bucket: CodingAgentBucket): Promise<TestC
 async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 	switch (mode) {
 		case "workspace":
-			return fastWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 8));
+			return await workspaceTestCommands(fastWorkspacePackages, 8);
 		case "native":
-			return nativeAndIntegrationPackages.map(pkg => workspaceTestCommand(pkg, 4));
+			return await workspaceTestCommands(nativeAndIntegrationPackages, 4);
 		case "coding-agent-singleton":
 			return await codingAgentTestCommands("singleton");
 		case "coding-agent-ui":
@@ -358,9 +401,9 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 		// one failure report. Repo script tests remain available via `test:scripts`.
 		case "local-ts":
 			return [
-				...fastWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 8, { extraArgs: onlyFailuresArgs })),
-				...nativeAndIntegrationPackages.map(pkg => workspaceTestCommand(pkg, 4, { extraArgs: onlyFailuresArgs })),
-				...localOnlyWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 4, { extraArgs: onlyFailuresArgs })),
+				...(await workspaceTestCommands(fastWorkspacePackages, 8, { extraArgs: onlyFailuresArgs })),
+				...(await workspaceTestCommands(nativeAndIntegrationPackages, 4, { extraArgs: onlyFailuresArgs })),
+				...(await workspaceTestCommands(localOnlyWorkspacePackages, 4, { extraArgs: onlyFailuresArgs })),
 				...(await commandsForMode("coding-agent-heavy")),
 			];
 		// `local` is what root `bun run test` drives: the full TS suite plus the
@@ -417,19 +460,25 @@ async function runTestCommand(testCommand: TestCommand): Promise<void> {
 			stdout: "inherit",
 			stderr: "inherit",
 		});
-		const killTimer = setTimeout(() => proc.kill("SIGKILL"), chunkTimeoutMs());
+		// Watchdog, mirroring the parallel path: record that *we* killed the child,
+		// otherwise the resulting 137 is indistinguishable from an OOM kill.
+		let timedOut = false;
+		const killTimer = setTimeout(() => {
+			timedOut = true;
+			proc.kill("SIGKILL");
+		}, chunkTimeoutMs());
 		const exitCode = await proc.exited;
 		clearTimeout(killTimer);
 		if (exitCode === 0) {
 			return;
 		}
-		if (BUN_CRASH_EXITS[exitCode] && attempt < MAX_CHUNK_ATTEMPTS) {
+		if (!timedOut && BUN_CRASH_EXITS[exitCode] && attempt < MAX_CHUNK_ATTEMPTS) {
 			console.log(
 				`==> ${testCommand.label}: bun crashed (exit ${exitCode}); retrying (attempt ${attempt + 1}/${MAX_CHUNK_ATTEMPTS})`,
 			);
 			continue;
 		}
-		throw new Error(`${testCommand.label} failed with exit code ${exitCode}: ${renderedCommand}`);
+		throw new Error(`${testCommand.label} ${describeChunkFailure(exitCode, timedOut)}: ${renderedCommand}`);
 	}
 }
 
@@ -504,6 +553,21 @@ const BUN_CRASH_EXITS: Record<number, true> = {
 // heap-timing dependent — a fresh process nearly always passes — while a
 // deterministic crash still fails every attempt and is reported normally.
 const MAX_CHUNK_ATTEMPTS = 3;
+
+// Why a chunk failed, in words. Exit 137 is SIGKILL, which this runner reaches
+// two very different ways -- the per-chunk watchdog firing, or the kernel OOM
+// killer reaping a chunk that outgrew the runner -- and the bare exit code
+// cannot tell them apart. Which one it was is the difference between "raise
+// OMP_TEST_CHUNK_TIMEOUT" and "lower this bucket's chunkSize", so say it.
+export function describeChunkFailure(exitCode: number, timedOut: boolean): string {
+	if (timedOut) {
+		return `exceeded the ${Math.round(chunkTimeoutMs() / 1000)}s chunk watchdog and was killed (exit ${exitCode}; OMP_TEST_CHUNK_TIMEOUT to change)`;
+	}
+	if (exitCode === 137) {
+		return "was SIGKILLed (exit 137) without reaching the chunk watchdog, which on a CI runner means the OOM killer; lower this bucket's chunkSize";
+	}
+	return `failed with exit code ${exitCode}`;
+}
 
 // The standard `CI` signal is authoritative. In CI each bucket is its own
 // memory-capped runner job (a single fat invocation gets OOM-killed at 137), so

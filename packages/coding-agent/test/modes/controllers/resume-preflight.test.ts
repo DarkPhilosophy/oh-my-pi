@@ -31,7 +31,7 @@ function createResumeContext(opts: { flushFails?: boolean; sourceCwd?: string } 
 	});
 	const ctx = {
 		session: { switchSession },
-		sessionManager: { getCwd: () => state.cwd, getSessionDir: () => "/tmp" },
+		sessionManager: { getCwd: () => state.cwd, getSessionDir: () => "/tmp", getSessionId: () => "test-session" },
 		settings: { flush },
 		clearTransientSessionUi: vi.fn(),
 		applyCwdChange,

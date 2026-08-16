@@ -1,8 +1,9 @@
 /**
  * Extension loader - loads TypeScript extension modules using native Bun import.
  */
-import * as fsSync from "node:fs";
+
 import type * as fs1 from "node:fs";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
@@ -614,6 +615,8 @@ async function discoverHooksInPackageRoot(root: string): Promise<string[]> {
 export interface DiscoverExtensionPathOptions {
 	/** Include ambient native extensions, hooks, and installed plugins. */
 	ambient?: boolean;
+	/** Include ambient hook factories. Disable for read-only catalog commands. */
+	includeAmbientHooks?: boolean;
 }
 
 export async function discoverExtensionPaths(
@@ -680,11 +683,13 @@ export async function discoverExtensionPaths(
 	// scans only this invocation's configured package roots; it must not consult
 	// settings, installed packages, or process-global CLI injection state.
 	if (ambient) {
-		const hooks = await loadCapability<Hook>(hookCapability.id, loadOptions);
-		for (const hookPath of hooks.items
-			.map(hook => hook.path)
-			.filter(hookPath => isExtensionFile(path.basename(hookPath)))) {
-			addPath(hookPath);
+		if (options.includeAmbientHooks !== false) {
+			const hooks = await loadCapability<Hook>(hookCapability.id, loadOptions);
+			for (const hookPath of hooks.items
+				.map(hook => hook.path)
+				.filter(hookPath => isExtensionFile(path.basename(hookPath)))) {
+				addPath(hookPath);
+			}
 		}
 	} else {
 		for (const configuredPath of configuredPaths) {

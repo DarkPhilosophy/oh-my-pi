@@ -38,5 +38,4 @@ describe("TUI start listeners", () => {
 			tui.stop();
 		}
 	});
-
 });

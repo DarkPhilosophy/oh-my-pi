@@ -1724,18 +1724,12 @@ export class EventController {
 		// `async` job, etc.) will re-wake the loop when its result is delivered.
 		// `AgentSession` tags this on the deferred event (see `#hasPendingAsyncWake`
 		// in agent-session.ts). Skip the idle title/loader teardown so the tab keeps
-		// reading "working"; the later terminal `agent_end` performs it. Still flush
-		// a deferred model switch — the plan-mode reconciler queues it to apply once
-		// the current stream ends, and `#finishAgentEnd` is otherwise its only flush
-		// site, so the automatic continuation would otherwise run on the old
-		// model/thinking level until the terminal settle.
+		// reading "working"; the later terminal `agent_end` performs it. Still
+		// settle deferred state: the plan-mode reconciler may have queued a model
+		// switch for the pause, and command panels mounted during the stream no
+		// longer need rebuild preservation once the transcript is quiescent.
 		if (event.isTerminal === false) {
 			await this.ctx.flushPendingModelSwitch();
-			// Reaching here means the first guard passed, so `isStreaming` is already
-			// false: a command issued from now on mounts immediately. Leaving earlier
-			// panels queued would render them out of order, minutes later, after the
-			// user was told they were only waiting for the turn. The transcript is
-			// quiescent at a settle, which is the condition #4806 wanted.
 			this.ctx.flushPendingCommandOutput();
 			return;
 		}

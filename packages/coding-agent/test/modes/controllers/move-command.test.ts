@@ -20,6 +20,7 @@ function createMoveContext(sourceDir: string, settingsFlush?: () => Promise<void
 		session: { isStreaming: false, moveSession },
 		sessionManager: {
 			getCwd: () => state.cwd,
+			getSessionId: () => "test-session",
 			dropSession: vi.fn(async () => {}),
 		},
 		settings: {

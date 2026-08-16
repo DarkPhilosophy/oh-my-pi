@@ -10,8 +10,8 @@ import {
 	PROVIDER_DESCRIPTORS,
 } from "@oh-my-pi/pi-catalog/provider-models/descriptors";
 import {
-	MODELS_DEV_PROVIDER_DESCRIPTORS,
 	fetchWellKnownModels,
+	MODELS_DEV_PROVIDER_DESCRIPTORS,
 	siliconflowCnModelManagerOptions,
 	siliconflowModelManagerOptions,
 } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";

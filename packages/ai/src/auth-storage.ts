@@ -53,7 +53,7 @@ import { cursorUsageProvider } from "./usage/cursor";
 import { googleGeminiCliUsageProvider } from "./usage/gemini";
 import { githubCopilotUsageProvider } from "./usage/github-copilot";
 import { antigravityRankingStrategy, antigravityUsageProvider } from "./usage/google-antigravity";
-import { kimiUsageProvider } from "./usage/kimi";
+import { kimiRankingStrategy, kimiUsageProvider } from "./usage/kimi";
 import { minimaxCodeUsageProvider } from "./usage/minimax-code";
 import { ollamaCloudUsageProvider, ollamaUsageProvider } from "./usage/ollama";
 import { codexRankingStrategy, openaiCodexUsageProvider } from "./usage/openai-codex";
@@ -1083,6 +1083,7 @@ const DEFAULT_RANKING_STRATEGIES = new Map<Provider, CredentialRankingStrategy>(
 	["openai-codex", codexRankingStrategy],
 	["anthropic", claudeRankingStrategy],
 	["google-antigravity", antigravityRankingStrategy],
+	["kimi-code", kimiRankingStrategy],
 	["zai", zaiRankingStrategy],
 	["opencode-go", opencodeGoRankingStrategy],
 ]);
@@ -2681,16 +2682,30 @@ export class AuthStorage {
 	}
 
 	/**
-	 * Check if any form of auth is configured for a provider.
-	 * Unlike getApiKey(), this doesn't refresh OAuth tokens.
+	 * Dedicated auth for default-model availability (picker / `getAvailable`).
+	 * Unlike {@link getApiKey}, this does not refresh OAuth tokens, and unlike
+	 * {@link hasResolvableAuth} it ignores cross-provider env aliases so
+	 * `XAI_API_KEY` does not auto-select SuperGrok (`xai-oauth`).
 	 */
 	hasAuth(provider: string): boolean {
 		if (this.#runtimeOverrides.has(provider)) return true;
 		if (this.#configOverrides.has(provider)) return true;
 		if (this.#getCredentialsForProvider(provider).length > 0) return true;
-		if (getEnvApiKey(provider)) return true;
+		if (this.#hasDedicatedEnvAuth(provider)) return true;
 		if (this.#fallbackResolver?.(provider)) return true;
 		return false;
+	}
+
+	/**
+	 * Whether a request could resolve a key for this provider, including
+	 * cross-provider env aliases (`xai-oauth` borrowing `XAI_API_KEY`).
+	 * Use this for explicit model preflight (`xai-oauth/grok-4.5`); use
+	 * {@link hasAuth} for auto-availability so the default picker stays on
+	 * paid `xai` when only `XAI_API_KEY` is set.
+	 */
+	hasResolvableAuth(provider: string): boolean {
+		if (this.hasAuth(provider)) return true;
+		return Boolean(getEnvApiKey(provider));
 	}
 
 	/**
@@ -2713,6 +2728,22 @@ export class AuthStorage {
 	}
 
 	/**
+	 * Env auth that belongs to this provider, not a cross-provider alias.
+	 *
+	 * `getEnvApiKey("xai-oauth")` also accepts `XAI_API_KEY` so an explicit
+	 * `xai-oauth/…` stream can still borrow the paid key. Availability and
+	 * origin must not: otherwise an API-key-only setup marks SuperGrok as
+	 * signed in and `pickDefaultAvailableModel` prefers `xai-oauth/grok-4.5`
+	 * over paid `xai/grok-4.5`.
+	 */
+	#hasDedicatedEnvAuth(provider: string): boolean {
+		if (provider === "xai-oauth") {
+			return Boolean($env.XAI_OAUTH_TOKEN?.trim());
+		}
+		return Boolean(getEnvApiKey(provider));
+	}
+
+	/**
 	 * Classify where a provider's auth comes from, following the same precedence
 	 * as {@link AuthStorage.getApiKey}: runtime override → config override →
 	 * stored OAuth → login-stored api_key → env var → stored api_key →
@@ -2728,7 +2759,7 @@ export class AuthStorage {
 		if (stored.some(credential => credential.type === "api_key" && credential.source === "login")) {
 			return { kind: "api_key" };
 		}
-		if (getEnvApiKey(provider)) return { kind: "env", envVar: getEnvApiKeyName(provider) };
+		if (this.#hasDedicatedEnvAuth(provider)) return { kind: "env", envVar: getEnvApiKeyName(provider) };
 		if (stored.some(credential => credential.type === "api_key")) return { kind: "api_key" };
 		if (this.#fallbackResolver?.(provider)) return { kind: "fallback" };
 		return undefined;

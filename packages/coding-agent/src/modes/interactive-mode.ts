@@ -52,6 +52,7 @@ import {
 	logger,
 	postmortem,
 	prompt,
+	sanitizeText,
 	setProjectDir,
 } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
@@ -243,6 +244,11 @@ interface WorkingMessageAccentCacheKey {
 	sessionAccentEnabled: boolean;
 }
 
+interface StreamingCommandOutputEntry {
+	component: Component;
+	transcriptIndex: number;
+}
+
 /**
  * Intern the shimmer palettes for each `WorkingMessageAccent` so `compile()`
  * inside `shimmerSegments` sees a stable palette object between animation
@@ -389,52 +395,21 @@ export interface InteractiveModeOptions {
 /**
  * Anchored live-region container for the HUD/status rows between the transcript
  * and the editor (working loader, todo + subagent HUDs, transient notification
- * panels). While it has content every row is live: it reports a seam at 0 so the
- * engine never commits these anchored, rebuilt-in-place rows to native
- * scrollback — otherwise stale duplicates pile up above the live copy on short
- * terminals once the loader sits below a tall HUD. The transcript's own seam,
+ * panels). While it has content every row is live: it reports a seam at 0 and
+ * pins that live region so the engine never commits these anchored,
+ * rebuilt-in-place rows to native scrollback — otherwise stale duplicates pile
+ * up above the live copy on short terminals once the loader sits below a tall HUD. The transcript's own seam,
  * when present, sits higher and wins (topmost-seam merge in TUI.render).
  */
 class AnchoredLiveContainer extends Container implements NativeScrollbackLiveRegion {
 	getNativeScrollbackLiveRegionStart(): number | undefined {
 		return this.children.length > 0 ? 0 : undefined;
 	}
-}
 
-/**
- * Preview of the command panels queued while the agent streams, rendered above
- * the editor so `/usage` and friends answer immediately mid-turn.
- *
- * Capped in height: the panels are shown in full in the transcript at the next
- * settle, so the preview only has to answer the question, not reproduce the
- * whole report. Rendering is delegated to the real panels at the real width, so
- * the preview cannot drift from what eventually lands in the transcript.
- */
-class DeferredCommandPreview implements Component {
-	constructor(
-		private readonly items: readonly Component[],
-		private readonly maxRows: number,
-		private readonly commandCount: number,
-	) {}
-
-	render(width: number): readonly string[] {
-		const rows: string[] = [];
-		for (const item of this.items) rows.push(...item.render(width));
-		const queued = this.commandCount === 1 ? "1 command output" : `${this.commandCount} command outputs`;
-		if (rows.length < this.maxRows) {
-			rows.push(theme.fg("dim", `${queued} — repeated in the transcript when the agent pauses`));
-			return rows;
-		}
-		if (this.maxRows === 1) return rows.slice(0, 1);
-		const shown = rows.slice(0, Math.max(0, this.maxRows - 1));
-		const hidden = rows.length - shown.length;
-		shown.push(theme.fg("dim", `… ${hidden} more rows — ${queued} shown in full when the agent pauses`));
-		return shown;
+	isNativeScrollbackLiveRegionPinned(): boolean {
+		return true;
 	}
 }
-
-/** Ceiling for the preview as a share of the viewport, so the prompt stays visible. */
-const DEFERRED_PREVIEW_VIEWPORT_FRACTION = 0.4;
 
 /** How long the ctrl+p model-role cycle chip track lingers above the editor
  *  before it auto-clears, mirroring the todo HUD's auto-clear timer. */
@@ -516,7 +491,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	omfgContainer: Container;
 	errorBannerContainer: Container;
 	modelCycleContainer: Container;
-	deferredCommandContainer: Container;
 	editor: CustomEditor;
 	editorContainer: Container;
 	hookWidgetContainerAbove: Container;
@@ -627,10 +601,14 @@ export class InteractiveMode implements InteractiveModeContext {
 	collabHost?: CollabHost;
 	collabGuest?: CollabGuestLink;
 
-	#pendingCommandOutput: Component[] = [];
-	#pendingCommandOutputSessionId: string | undefined;
-	/** Commands (not components) queued while streaming, for the deferral hint. */
-	#pendingCommandOutputCommands = 0;
+	/**
+	 * Command output mounted during the active stream, paired with its original
+	 * insertion boundary among persisted transcript components. Rebuilds need
+	 * both values: the panel is not persisted, and a live block that originally
+	 * followed it may settle into replayed history before the rebuild.
+	 */
+	#streamingCommandOutput: StreamingCommandOutputEntry[] = [];
+	#streamingCommandOutputSessionId: string | undefined;
 	#pendingSlashCommands: SlashCommand[] = [];
 	/** Built-in editor autocomplete provider, before extension wrapping. */
 	#baseAutocompleteProvider: AutocompleteProvider | undefined;
@@ -718,10 +696,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.pendingMessagesContainer.disposeChildren();
 		this.#cancelModelCycleClearTimer();
 		this.modelCycleContainer.disposeChildren();
-		this.deferredCommandContainer.disposeChildren();
-		this.#pendingCommandOutput = [];
-		this.#pendingCommandOutputSessionId = undefined;
-		this.#pendingCommandOutputCommands = 0;
+		this.#resetStreamingCommandOutputTracking();
 		this.compactionQueuedMessages = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
@@ -834,7 +809,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.omfgContainer = new AnchoredLiveContainer();
 		this.errorBannerContainer = new AnchoredLiveContainer();
 		this.modelCycleContainer = new AnchoredLiveContainer();
-		this.deferredCommandContainer = new AnchoredLiveContainer();
 		this.editor = new CustomEditor(getEditorTheme());
 		this.ui.enableScopedInputRender(this.editor);
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
@@ -846,7 +820,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.onAutocompleteUpdate = () => {
 			this.ui.requestRender();
 		};
-		this.editor.setShimmerRepaintHandler(() => this.ui.requestComponentRender(this.editor));
+		this.editor.setShimmerRepaintHandler(() => this.ui.requestDirectWrite(this.editor));
 		this.#syncEditorMaxHeight();
 		if (!host?.terminal) {
 			this.#resizeHandler = () => {
@@ -1134,7 +1108,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.addChild(this.omfgContainer);
 		this.ui.addChild(this.errorBannerContainer);
 		this.ui.addChild(this.modelCycleContainer);
-		this.ui.addChild(this.deferredCommandContainer);
 		// Working loader / transient status sits below the sticky todo + subagent
 		// HUDs, just above the editor's hook-widget top margin — so it reads next to
 		// the prompt while keeping the one-line gap above the editor.
@@ -1199,6 +1172,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		// before initHooksAndCustomTools/#reconcileModeFromSession/#enterPlanMode —
 		// all of which can reach setSessionName during init.
 		this.#eventBusUnsubscribers.push(
+			this.sessionManager.onPersistenceError(error => {
+				const detail = truncateToWidth(
+					replaceTabs(sanitizeText(error.message)).replace(/[\r\n]+/g, " "),
+					TRUNCATE_LENGTHS.LINE,
+				);
+				this.showWarning(
+					`Session persistence failed: ${detail}. Unsaved entries remain in memory; persistence will retry on the next entry.`,
+				);
+			}),
 			this.sessionManager.onSessionNameChanged(() => {
 				if (this.#hostedTerminal) {
 					this.#hostedTerminal.setTitle(
@@ -1273,6 +1255,9 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		this.#eventBusUnsubscribers.push(
 			this.session.subscribe(event => {
+				if (event.type === "model_changed") {
+					this.#updateWelcomeModel();
+				}
 				void this.#handleGoalSessionEvent(event);
 			}),
 			onStatusLineSessionAccentChanged(() => {
@@ -1280,6 +1265,11 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.#handleSessionAccentInputsChanged();
 			}),
 		);
+		// Resync the welcome banner to the live model: init-time reconciliations
+		// (#reconcileModeFromSession, #enterPlanMode for plan.defaultOnStartup)
+		// can change the model before this subscription exists, so the
+		// model_changed events they emit are never observed by the handler above.
+		this.#updateWelcomeModel();
 		this.#eventBusUnsubscribers.push(
 			onModelRolesChanged(() => {
 				void this.#reapplyPlanModeModelOnRoleChange();
@@ -1958,6 +1948,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		// vanishes from the chat (#3656). Snapshot the in-flight components,
 		// clear+replay, then re-append them in their original chat-container order
 		// and restore the `pendingTools` map so streaming routes back into them.
+		const sessionId = this.sessionManager.getSessionId();
+		const streamingCommandOutput =
+			this.#streamingCommandOutputSessionId === sessionId ? [...this.#streamingCommandOutput] : [];
+		if (this.#streamingCommandOutputSessionId !== sessionId) {
+			this.#resetStreamingCommandOutputTracking();
+		}
 		const liveComponents: Component[] = [];
 		const livePendingTools = new Map<string, ToolExecutionHandle>();
 		if (this.viewSession?.isStreaming) {
@@ -2049,6 +2045,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			reuseSettledComponents: options.reuseSettledComponents,
 			preservedLiveToolCallIds,
 		});
+		const replayedTranscript = [...this.chatContainer.children];
+		for (const { component, transcriptIndex } of streamingCommandOutput) {
+			this.#mountSettledChatChild(component, replayedTranscript[transcriptIndex]);
+		}
 		for (const child of liveComponents) {
 			this.chatContainer.addChild(child);
 		}
@@ -3611,10 +3611,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.vibeModeEnabled) {
 			return;
 		}
-		const ownerScope = this.#vibeModeOwnerScope;
-		const killed = await VibeSessionRegistry.global().killAll(this.#vibeParentSession(), ownerScope);
-		await this.session.deactivateVibeTools(this.#vibeModePreviousTools ?? []);
-		this.session.setVibeModeState(undefined);
+		// Tear down with the queued-message drain suppressed: aborting the active
+		// turn would otherwise let a queued user steer/follow-up restart on the
+		// still-live Vibe tools before this teardown removes them (issue #8326).
+		let killed = 0;
+		await this.session.runModeExitTeardown(async () => {
+			if (this.session.isStreaming) {
+				await this.session.abort();
+			}
+			killed = await VibeSessionRegistry.global().killAll(this.#vibeParentSession(), this.#vibeModeOwnerScope);
+			await this.session.deactivateVibeTools(this.#vibeModePreviousTools ?? []);
+			this.session.setVibeModeState(undefined);
+		});
 		this.vibeModeEnabled = false;
 		this.#vibeModePreviousTools = undefined;
 		this.#vibeModeOwnerScope = undefined;
@@ -4384,7 +4392,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		nextEditor.onAutocompleteUpdate = () => {
 			this.ui.requestRender();
 		};
-		nextEditor.setShimmerRepaintHandler(() => this.ui.requestComponentRender(this.editor));
+		nextEditor.setShimmerRepaintHandler(() => this.ui.requestDirectWrite(nextEditor));
 		nextEditor.setTopBorderProvider(availableWidth => this.statusLine.getTopBorder(availableWidth));
 		nextEditor.setMaxHeight(this.#computeEditorMaxHeight());
 		if (this.historyStorage) {
@@ -4418,48 +4426,57 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 
-	/** Queue command panels while streaming; flush them when the turn settles. */
+	/**
+	 * Mount command panels immediately. During a stream, settled panels are
+	 * inserted before the first still-mutating transcript block so they can
+	 * commit to native scrollback without repainting beneath live output.
+	 */
 	presentCommandOutput(content: Component | readonly Component[]): void {
 		if (!this.session.isStreaming) {
 			this.present(content);
 			return;
 		}
 		const sessionId = this.sessionManager.getSessionId();
-		if (this.#pendingCommandOutput.length > 0 && this.#pendingCommandOutputSessionId !== sessionId) {
-			this.#pendingCommandOutput = [];
-			this.#pendingCommandOutputCommands = 0;
+		if (this.#streamingCommandOutputSessionId !== sessionId) {
+			this.#resetStreamingCommandOutputTracking();
 		}
-		this.#pendingCommandOutputSessionId = sessionId;
+		this.#streamingCommandOutputSessionId = sessionId;
 		const items = Array.isArray(content) ? content : [content as Component];
-		this.#pendingCommandOutput.push(...items);
-		this.#pendingCommandOutputCommands += 1;
-		this.#renderDeferredCommandNotice();
+		const trackedComponents = new Set(this.#streamingCommandOutput.map(entry => entry.component));
+		for (const item of items) {
+			this.#mountSettledChatChild(item);
+			const mountedIndex = this.chatContainer.children.indexOf(item);
+			let transcriptIndex = 0;
+			for (let index = 0; index < mountedIndex; index++) {
+				if (!trackedComponents.has(this.chatContainer.children[index]!)) transcriptIndex++;
+			}
+			this.#streamingCommandOutput.push({ component: item, transcriptIndex });
+			trackedComponents.add(item);
+		}
 		this.ui.requestRender();
 	}
 
-	#renderDeferredCommandNotice(): void {
-		this.deferredCommandContainer.disposeChildren();
-		if (this.#pendingCommandOutput.length === 0) return;
-		const viewportRows = Math.max(1, this.ui.terminal.rows);
-		const maxPreviewRows = Math.max(1, Math.floor(viewportRows * DEFERRED_PREVIEW_VIEWPORT_FRACTION));
-		this.deferredCommandContainer.addChild(
-			new DeferredCommandPreview(this.#pendingCommandOutput, maxPreviewRows, this.#pendingCommandOutputCommands),
-		);
+	/**
+	 * The settled panels already live in the transcript. Once streaming pauses,
+	 * stop preserving them through rebuilds; from here they follow the same
+	 * ephemeral transcript lifecycle as command output mounted while idle.
+	 */
+	flushPendingCommandOutput(): void {
+		this.#resetStreamingCommandOutputTracking();
 	}
 
-	flushPendingCommandOutput(): void {
-		if (this.#pendingCommandOutput.length === 0) {
-			this.#renderDeferredCommandNotice();
-			return;
+	#resetStreamingCommandOutputTracking(): void {
+		this.#streamingCommandOutput = [];
+		this.#streamingCommandOutputSessionId = undefined;
+	}
+
+	#mountSettledChatChild(item: Component, before?: Component): void {
+		if (before) {
+			this.chatContainer.insertChildBefore(item, before);
+		} else {
+			this.chatContainer.insertSettledBlock(item);
 		}
-		const pending = this.#pendingCommandOutput;
-		const pendingSessionId = this.#pendingCommandOutputSessionId;
-		this.#pendingCommandOutput = [];
-		this.#pendingCommandOutputSessionId = undefined;
-		this.#pendingCommandOutputCommands = 0;
-		this.#renderDeferredCommandNotice();
-		if (pendingSessionId !== this.sessionManager.getSessionId()) return;
-		this.present(pending);
+		if (item instanceof ChatBlock) item.mount(this.#chatHost);
 	}
 
 	#mountChatChild(item: Component): void {
@@ -4468,6 +4485,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	resetTranscript(): void {
+		this.#resetStreamingCommandOutputTracking();
 		this.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
 		this.chatContainer.dispose();
 		this.chatContainer.clear();
@@ -4536,6 +4554,15 @@ export class InteractiveMode implements InteractiveModeContext {
 				fileTypes: server.fileTypes,
 			})) ?? []
 		);
+	}
+
+	#updateWelcomeModel(): void {
+		if (!this.#welcomeComponent) {
+			return;
+		}
+
+		this.#welcomeComponent.setModel(this.session.model?.name ?? "Unknown", this.session.model?.provider ?? "Unknown");
+		this.ui.requestRender();
 	}
 
 	#updateWelcomeLspServers(): void {

@@ -97,6 +97,7 @@ function makeTurnEndContext(options: { lastAssistantMessage?: AssistantMessage }
 		streamingMessage: undefined,
 		pendingTools: new Map<string, unknown>(),
 		flushPendingModelSwitch: async () => {},
+		flushPendingCommandOutput: () => {},
 		ui: { requestRender: () => {}, requestComponentRender: () => {} },
 		chatContainer: { removeChild: () => {} },
 		statusContainer: { clear: () => {}, disposeChildren: () => {}, addChild: () => {} },

@@ -5,7 +5,6 @@ import { type Component, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
-import { settings } from "../../config/settings";
 import { getEditClipboard } from "../../edit/edit-clipboard";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
 import { createAdvisorMessageCard } from "../../modes/components/advisor-message";
@@ -575,10 +574,10 @@ export class UiHelpers {
 						{
 							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(content.name),
 							snapshots: getFileSnapshotStore(this.ctx.viewSession),
-clipboard: getEditClipboard(this.ctx.viewSession),
-showImages: settings.get("terminal.showImages"),
-editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
-editAllowFuzzy: settings.get("edit.fuzzyMatch"),
+							clipboard: getEditClipboard(this.ctx.viewSession),
+							showImages: this.ctx.settings.get("terminal.showImages"),
+							editFuzzyThreshold: this.ctx.settings.get("edit.fuzzyThreshold"),
+							editAllowFuzzy: this.ctx.settings.get("edit.fuzzyMatch"),
 							liveRegion: this.ctx.chatContainer,
 						},
 						tool,
@@ -769,8 +768,8 @@ editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 		// (focus attach/unfocus while a tool executes) keep dangling toolCalls so
 		// the in-flight call re-renders as pending instead of vanishing;
 		// renderSessionContext then keeps it in `pendingTools` for live routing.
-let context = this.ctx.viewSession.buildTranscriptSessionContext({
-	collapseCompactedHistory: settings.get("display.collapseCompacted"),
+		let context = this.ctx.viewSession.buildTranscriptSessionContext({
+			collapseCompactedHistory: this.ctx.settings.get("display.collapseCompacted"),
 			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 		});
 		let replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
@@ -806,7 +805,7 @@ let context = this.ctx.viewSession.buildTranscriptSessionContext({
 				this.ctx.pendingBashComponents = [];
 				this.ctx.pendingPythonComponents = [];
 				context = this.ctx.viewSession.buildTranscriptSessionContext({
-					collapseCompactedHistory: settings.get("display.collapseCompacted"),
+					collapseCompactedHistory: this.ctx.settings.get("display.collapseCompacted"),
 					keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 				});
 				replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;

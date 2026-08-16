@@ -65,6 +65,7 @@ function createContext(options: { terminalProgress?: boolean } = {}) {
 		statusContainer,
 		chatContainer: { removeChild: vi.fn(), clear: vi.fn() },
 		flushPendingModelSwitch: vi.fn(async () => {}),
+		flushPendingCommandOutput: vi.fn(),
 		flushCompactionQueue: vi.fn(async () => {}),
 		rebuildChatFromMessages: vi.fn(),
 		reloadTodos: vi.fn(async () => {}),

@@ -2,14 +2,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { getBlobsDir, isEnoent, parseJsonlLenient } from "@oh-my-pi/pi-utils";
 import { BlobStore, isBlobRef, resolveImageData, resolveImageDataUrl } from "./blob-store";
 import { buildSessionContext } from "./session-context";
-import {
-	type FileEntry,
-	type RawFileEntry,
-	SESSION_TITLE_SLOT_BYTES,
-	type SessionEntry,
-	type SessionHeader,
-	type SessionTitleSlotEntry,
-} from "./session-entries";
+import type { FileEntry, RawFileEntry, SessionEntry, SessionHeader } from "./session-entries";
 import { migrateToCurrentVersion } from "./session-migrations";
 import { isImageBlock, isImageDataPayload } from "./session-persistence";
 import { FileSessionStorage, type SessionStorage } from "./session-storage";
@@ -33,6 +26,15 @@ export interface VisitEntriesFromFileStreamOptions {
 	yieldEveryBytes?: number;
 	/** Yield to the macrotask queue after this many entries have been visited. */
 	yieldEveryEntries?: number;
+	/** Called once for every malformed JSONL record skipped by the stream. */
+	onMalformedRecord?: () => void;
+}
+
+/** Parsed session entries plus corruption metadata needed by writable loaders. */
+export interface SessionLoadResult {
+	entries: FileEntry[];
+	titleSlot: SessionTitleUpdate | undefined;
+	malformedRecords: number;
 }
 
 function splitTitleSlot(content: string): { body: string; slot: SessionTitleUpdate | undefined } {
@@ -42,26 +44,35 @@ function splitTitleSlot(content: string): { body: string; slot: SessionTitleUpda
 	return { body: content.slice(newlineIndex + 1), slot };
 }
 
-function foldTitleSlot(entries: FileEntry[], slot: SessionTitleUpdate | undefined): FileEntry[] {
-	if (!slot || entries.length === 0) return entries;
-	const header = entries[0] as SessionHeader;
-	if (header.type !== "session" || typeof header.id !== "string") return entries;
-	if (slot.title && slot.title.length > 0) {
-		header.title = slot.title;
-	} else {
-		delete header.title;
-	}
-	if (slot.source) {
-		header.titleSource = slot.source;
-	} else {
-		delete header.titleSource;
-	}
-	return entries;
+function isValidSessionHeader(entry: FileEntry | undefined): entry is SessionHeader {
+	return entry?.type === "session" && typeof entry.id === "string";
 }
 
-function parseJsonlLineWithAdjacentObjectRecovery(line: string): RawFileEntry[] {
-	const entries = parseJsonlLenient<RawFileEntry>(line);
-	if (entries.length !== 1) return entries;
+function applyTitleSlot(entry: FileEntry | undefined, slot: SessionTitleUpdate | undefined): void {
+	if (!slot || !isValidSessionHeader(entry)) return;
+	if (slot.title && slot.title.length > 0) {
+		entry.title = slot.title;
+	} else {
+		delete entry.title;
+	}
+	if (slot.source) {
+		entry.titleSource = slot.source;
+	} else {
+		delete entry.titleSource;
+	}
+}
+
+function parseJsonlLineWithAdjacentObjectRecovery(line: string, onMalformedRecord?: () => void): RawFileEntry[] {
+	let malformedRecord = false;
+	const entries = parseJsonlLenient<RawFileEntry>(line, {
+		onMalformedRecord: () => {
+			malformedRecord = true;
+		},
+	});
+	if (entries.length !== 1) {
+		if (malformedRecord) onMalformedRecord?.();
+		return entries;
+	}
 
 	let offset = 0;
 	while (offset < line.length) {
@@ -81,25 +92,27 @@ function parseJsonlLineWithAdjacentObjectRecovery(line: string): RawFileEntry[] 
 		offset += read;
 		if (offset >= line.length || !line.startsWith("{", offset)) break;
 	}
+	if (malformedRecord && offset < line.length) onMalformedRecord?.();
 	return entries;
 }
 
-function parseSessionJsonlContent(content: string): RawFileEntry[] {
+function parseSessionJsonlContent(content: string, onMalformedRecord?: () => void): RawFileEntry[] {
 	const entries: RawFileEntry[] = [];
 	for (const line of content.split("\n")) {
-		entries.push(...parseJsonlLineWithAdjacentObjectRecovery(line));
+		entries.push(...parseJsonlLineWithAdjacentObjectRecovery(line, onMalformedRecord));
 	}
 	return entries;
 }
 
 /** Parse session JSONL while stripping and folding the optional fixed title slot. */
-export function parseSessionContent(content: string): {
-	entries: FileEntry[];
-	titleSlot: SessionTitleUpdate | undefined;
-} {
+export function parseSessionContent(content: string): SessionLoadResult {
 	const { body, slot } = splitTitleSlot(content);
-	const entries = parseSessionJsonlContent(body) as FileEntry[];
-	return { entries: foldTitleSlot(entries, slot), titleSlot: slot };
+	let malformedRecords = 0;
+	const entries = parseSessionJsonlContent(body, () => {
+		malformedRecords++;
+	}) as FileEntry[];
+	applyTitleSlot(entries[0], slot);
+	return { entries, titleSlot: slot, malformedRecords };
 }
 
 /** Parse session JSONL and visit each entry without retaining prior entries. */
@@ -110,6 +123,7 @@ export async function visitEntriesFromFileStream(
 ): Promise<SessionTitleUpdate | undefined> {
 	let titleSlot: SessionTitleUpdate | undefined;
 	let sawFirstLine = false;
+	let sawFirstEntry = false;
 	let bytesSinceYield = 0;
 	let entriesSinceYield = 0;
 	let recordsSeen = 0;
@@ -154,8 +168,13 @@ export async function visitEntriesFromFileStream(
 					stopped = true;
 					break;
 				}
+				const entry = value as FileEntry;
+				if (!sawFirstEntry) {
+					sawFirstEntry = true;
+					applyTitleSlot(entry, titleSlot);
+				}
 				try {
-					if (visit(value as FileEntry) === false) {
+					if (visit(entry) === false) {
 						stopped = true;
 						break;
 					}
@@ -185,6 +204,15 @@ export async function visitEntriesFromFileStream(
 				if (read > 0 && values.length > 0 && buffer[0] === 0x7b) continue;
 				const nextNewline = buffer.indexOf(0x0a);
 				if (nextNewline === -1) break; // rest of the bad line not yet received
+				let nonWhitespace = false;
+				for (let index = read; index < nextNewline; index++) {
+					const byte = buffer[index];
+					if (byte !== 0x09 && byte !== 0x0d && byte !== 0x20) {
+						nonWhitespace = true;
+						break;
+					}
+				}
+				if (nonWhitespace) options.onMalformedRecord?.();
 				recordsSeen++;
 				buffer = buffer.subarray(nextNewline + 1);
 				if (recordsSeen >= maxRecords) {
@@ -244,64 +272,85 @@ export async function visitEntriesFromFileStream(
 }
 
 /** Exported for testing — the ≥8MiB streaming path (works on any file size). */
-export async function loadEntriesFromFileStream(filePath: string): Promise<{
-	entries: FileEntry[];
-	titleSlot: SessionTitleUpdate | undefined;
-}> {
+export async function loadEntriesFromFileStream(filePath: string): Promise<SessionLoadResult> {
 	const entries: FileEntry[] = [];
-	const titleSlot = await visitEntriesFromFileStream(filePath, entry => {
-		entries.push(entry);
-	});
-	return { entries: foldTitleSlot(entries, titleSlot), titleSlot };
+	let malformedRecords = 0;
+	const titleSlot = await visitEntriesFromFileStream(
+		filePath,
+		entry => {
+			entries.push(entry);
+		},
+		{
+			onMalformedRecord: () => {
+				malformedRecords++;
+			},
+		},
+	);
+	return { entries, titleSlot, malformedRecords };
 }
 
-/** Read only the fixed-size head window to detect a physical title slot. */
-export async function readTitleSlotFromFile(
-	filePath: string,
-	storage: SessionStorage = new FileSessionStorage(),
-): Promise<SessionTitleSlotEntry | undefined> {
-	let head: string;
-	try {
-		[head] = await storage.readTextSlices(filePath, SESSION_TITLE_SLOT_BYTES, 0);
-	} catch (err) {
-		if (isEnoent(err)) return undefined;
-		throw err;
-	}
-	const newlineIndex = head.indexOf("\n");
-	if (newlineIndex < 0) return undefined;
-	return parseTitleSlotLine(head.slice(0, newlineIndex));
-}
 /** Exported for compaction.test.ts */
 export function parseSessionEntries(content: string): FileEntry[] {
 	return parseSessionContent(content).entries;
 }
 
-/** Exported for testing */
+function shouldStreamEntries(storage: SessionStorage, size: number): boolean {
+	return storage instanceof FileSessionStorage && size >= STREAM_LOAD_THRESHOLD_BYTES;
+}
+
+async function loadWithKnownSize(filePath: string, storage: SessionStorage, size: number): Promise<SessionLoadResult> {
+	const loaded = shouldStreamEntries(storage, size)
+		? await loadEntriesFromFileStream(filePath)
+		: parseSessionContent(await storage.readText(filePath));
+	return isValidSessionHeader(loaded.entries[0]) ? loaded : { ...loaded, entries: [] };
+}
+
+/** Load and validate a session while retaining malformed-record diagnostics. */
+export async function loadSessionFile(
+	filePath: string,
+	storage: SessionStorage = new FileSessionStorage(),
+): Promise<SessionLoadResult> {
+	try {
+		return await loadWithKnownSize(filePath, storage, storage.statSync(filePath).size);
+	} catch (err) {
+		if (isEnoent(err)) return { entries: [], titleSlot: undefined, malformedRecords: 0 };
+		throw err;
+	}
+}
+
+/** Load the valid entries from a session file, skipping malformed records. */
 export async function loadEntriesFromFile(
 	filePath: string,
 	storage: SessionStorage = new FileSessionStorage(),
 ): Promise<FileEntry[]> {
-	let loaded: { entries: FileEntry[]; titleSlot: SessionTitleUpdate | undefined };
-	try {
-		const stat = storage.statSync(filePath);
-		loaded =
-			storage instanceof FileSessionStorage && stat.size >= STREAM_LOAD_THRESHOLD_BYTES
-				? await loadEntriesFromFileStream(filePath)
-				: parseSessionContent(await storage.readText(filePath));
-	} catch (err) {
-		if (isEnoent(err)) return [];
-		throw err;
-	}
-	const { entries } = loaded;
+	return (await loadSessionFile(filePath, storage)).entries;
+}
 
-	// Validate session header
-	if (entries.length === 0) return entries;
-	const header = entries[0] as SessionHeader;
-	if (header.type !== "session" || typeof header.id !== "string") {
-		return [];
+/**
+ * Visit session entries, using bounded streaming for large file-backed journals.
+ * Small files and non-file backends keep the existing full-load path.
+ */
+export async function visitEntriesFromFile(
+	filePath: string,
+	visit: (entry: FileEntry) => void | boolean,
+	storage: SessionStorage = new FileSessionStorage(),
+): Promise<void> {
+	const size = storage.statSync(filePath).size;
+	if (shouldStreamEntries(storage, size)) {
+		let sawFirstEntry = false;
+		await visitEntriesFromFileStream(filePath, entry => {
+			if (!sawFirstEntry) {
+				sawFirstEntry = true;
+				if (!isValidSessionHeader(entry)) return false;
+			}
+			return visit(entry);
+		});
+		return;
 	}
 
-	return entries;
+	for (const entry of (await loadWithKnownSize(filePath, storage, size)).entries) {
+		if (visit(entry) === false) return;
+	}
 }
 
 /**

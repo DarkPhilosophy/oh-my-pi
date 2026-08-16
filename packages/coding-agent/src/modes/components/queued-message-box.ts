@@ -162,11 +162,7 @@ export class QueuedMessageBox implements Component {
 		const shown = truncateToWidth(` ${this.#title} `, Math.max(0, inner - 2));
 		const fill = Math.max(0, inner - 1 - visibleWidth(shown));
 		const title = this.#shimmerTitle ? shimmerText(shown, theme) : theme.bold(theme.fg("accent", shown));
-		return (
-			theme.fg("border", box.topLeft + DASH) +
-			title +
-			theme.fg("border", DASH.repeat(fill) + box.topRight)
-		);
+		return theme.fg("border", box.topLeft + DASH) + title + theme.fg("border", DASH.repeat(fill) + box.topRight);
 	}
 
 	#bodyRow(gutter: string, text: string, width: number, gp: (s: string) => string): string {
