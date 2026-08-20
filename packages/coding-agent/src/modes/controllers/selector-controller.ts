@@ -34,6 +34,7 @@ import {
 	getAvailableThemes,
 	getSymbolTheme,
 	previewTheme,
+	setCodeGuidanceTrail,
 	setColorBlindMode,
 	setMarkdownMermaidRendering,
 	setSymbolPreset,
@@ -583,6 +584,12 @@ export class SelectorController {
 				this.ctx.session.refreshBaseSystemPrompt().catch(err => {
 					this.ctx.showError(`Failed to apply Mermaid rendering setting: ${err}`);
 				});
+				this.ctx.rebuildChatFromMessages();
+				this.ctx.ui.resetDisplay();
+				break;
+
+			case "tui.codeGuidanceTrail":
+				setCodeGuidanceTrail(value as boolean);
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
 				break;

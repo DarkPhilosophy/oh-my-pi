@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { runLifecycle } from "../src/commands/daemon";
 import { DaemonClient, type DaemonConnectionSnapshot } from "../src/daemon/client";
 import { daemonRuntimeDir } from "../src/daemon/paths";
 import {
@@ -314,6 +315,57 @@ describe("daemon client", () => {
 			expect(snapshot.sessionCount).toBe(8);
 			expect(snapshot.attachmentCount).toBe(2);
 		} finally {
+			client.close();
+			await new Promise<void>(resolve => server.close(() => resolve()));
+		}
+	});
+	test("downgrades forced shutdown for daemons without shutdown_force", async () => {
+		let received: { operation?: { op?: string; force?: boolean } } | undefined;
+		const { server, endpoint } = await socketServer(socket => {
+			socket.setEncoding("utf8");
+			socket.on("data", chunk => {
+				const frame = JSON.parse(String(chunk).trim()) as {
+					tag: string;
+					requestId: string;
+					operation?: { op?: string; force?: boolean };
+				};
+				if (frame.tag === "hello") {
+					socket.write(encodeDaemonFrame({ ...helloOk(), requestId: frame.requestId, capabilities: [] }));
+				} else if (frame.tag === "request") {
+					received = frame;
+					socket.write(
+						encodeDaemonFrame({
+							v: DAEMON_PROTOCOL_MAJOR,
+							tag: "response",
+							requestId: frame.requestId,
+							ok: true,
+							result: { shutdown: true, blockers: [] },
+						}),
+					);
+				}
+			});
+		});
+		const client = new DaemonClient({ profile: shard.profile, endpoint, token: "secret" });
+		const stderr = process.stderr.write;
+		const stdout = process.stdout.write;
+		const messages: string[] = [];
+		const output: string[] = [];
+		process.stderr.write = ((chunk: string | Uint8Array) => {
+			messages.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write;
+		process.stdout.write = ((chunk: string | Uint8Array) => {
+			output.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write;
+		try {
+			await runLifecycle(client, "kill", true);
+			expect(received?.operation).toEqual({ op: "shutdown" });
+			expect(messages.join("")).toMatch(/predates forced shutdown.*Replace the daemon/i);
+			expect(output).toEqual(["daemon killed gracefully\n"]);
+		} finally {
+			process.stderr.write = stderr;
+			process.stdout.write = stdout;
 			client.close();
 			await new Promise<void>(resolve => server.close(() => resolve()));
 		}

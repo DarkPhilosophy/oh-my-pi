@@ -70,6 +70,8 @@ function projectAttachmentFrame(frame: unknown, delivery: DaemonEventDelivery): 
 	if (type === "terminal_output" || type === "terminal_closed" || type === "terminal_cwd") return frame;
 	return { ...frame, event: { type: "daemon_event_skipped" } };
 }
+// Interactive attachments must request delivery "all"; terminal attachments may
+// safely use the projection above because they do not render semantic messages.
 
 type SessionRecord = {
 	runtime: DaemonSessionRuntime;
@@ -216,6 +218,13 @@ export class DaemonSessionRegistry {
 
 	get hasInteractiveAttachments(): boolean {
 		return [...this.#sessions.values()].some(record => record.interactiveAttachment !== undefined);
+	}
+
+	/** True when the registry still has work that must not be interrupted by a graceful lifecycle action. */
+	get hasActiveWork(): boolean {
+		return [...this.#sessions.values()].some(
+			record => record.runtime.session.isStreaming === true || (record.runtime.protectedJobCount?.() ?? 0) > 0,
+		);
 	}
 
 	status(): {
@@ -421,6 +430,9 @@ export class DaemonSessionRegistry {
 		const record = this.#sessions.get(sessionId);
 		if (!record) return;
 		if (record.attachments.has(attachmentId)) this.#detachRecord(record, attachmentId);
+	}
+	requestClientExit(): void {
+		for (const record of this.#sessions.values()) record.runtime.requestClientExit?.();
 	}
 
 	async dispose(): Promise<void> {

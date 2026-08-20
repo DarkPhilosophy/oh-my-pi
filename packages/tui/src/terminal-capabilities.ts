@@ -446,10 +446,10 @@ export function shouldEnableHyperlinksByDefault(
 	return true;
 }
 
-function getFallbackImageProtocol(terminalId: TerminalId): ImageProtocol | null {
+function getFallbackImageProtocol(terminalId: TerminalId, env: NodeJS.ProcessEnv = Bun.env): ImageProtocol | null {
 	if (!process.stdout.isTTY) return null;
 	if (terminalId === "vscode" || terminalId === "alacritty") return null;
-	const term = Bun.env.TERM?.toLowerCase() ?? "";
+	const term = env.TERM?.toLowerCase() ?? "";
 	if (term.includes("screen") || term.includes("tmux") || term.includes("ghostty")) {
 		return ImageProtocol.Kitty;
 	}
@@ -561,40 +561,46 @@ export interface RuntimeTerminal extends TerminalInfo {
 	textSizing: boolean;
 }
 
-export const TERMINAL: RuntimeTerminal = (() => {
-	const resolved = getTerminalInfo(TERMINAL_ID).clone();
+function resolveRuntimeTerminal(env: NodeJS.ProcessEnv): RuntimeTerminal {
+	const terminalId = detectTerminalId(env);
+	const resolved = getTerminalInfo(terminalId, process.platform, env).clone();
 
 	const forcedImageProtocol = getForcedImageProtocol();
 	if (forcedImageProtocol !== undefined) {
 		resolved.imageProtocol = forcedImageProtocol;
 	} else if (resolved.id === "warp") {
 		// Warp advertises Kitty graphics on macOS/Linux only; drop it on win32.
-		resolved.imageProtocol = resolveWarpImageProtocol();
+		resolved.imageProtocol = resolveWarpImageProtocol(process.platform, env);
 	} else if (!resolved.imageProtocol) {
-		const fallbackImageProtocol = getFallbackImageProtocol(resolved.id);
+		const fallbackImageProtocol = getFallbackImageProtocol(resolved.id, env);
 		if (fallbackImageProtocol) resolved.imageProtocol = fallbackImageProtocol;
 	}
-	// Hyperlink (OSC 8) capability. The static per-terminal flag lives on
-	// KNOWN_TERMINALS; shouldEnableHyperlinksByDefault folds in runtime context —
-	// PI_FORCE_HYPERLINKS / PI_NO_HYPERLINKS overrides plus a tmux>=3.4 gate so
-	// modern tmux forwards OSC 8 to outer terminals that opt in via
-	// `terminal-features "*:hyperlinks"`.
-	resolved.hyperlinks = shouldEnableHyperlinksByDefault(Bun.env, resolved.id);
-	// DECCARA rectangular-SGR background fills. The static per-terminal capability
-	// lives on KNOWN_TERMINALS; here we fold in runtime context — multiplexer and
-	// the PI_NO_DECCARA kill switch via detectRectangularSgrSupport — and force it
-	// off inside the test runtime so the xterm.js-backed virtual terminal (which
-	// ignores DECCARA) exercises the padded-string fallback. Integration tests opt
-	// in explicitly through setTerminalDeccara.
-	resolved.deccara = detectRectangularSgrSupport(resolved.id, Bun.env) && !isBunTestRuntime();
+	resolved.hyperlinks = shouldEnableHyperlinksByDefault(env, resolved.id);
+	resolved.deccara = detectRectangularSgrSupport(resolved.id, env) && !isBunTestRuntime();
 	return resolved;
-})();
+}
+
+export const TERMINAL: RuntimeTerminal = resolveRuntimeTerminal(Bun.env);
 
 // Seed Kitty Unicode placeholder support from the resolved terminal id. Only
 // kitty/ghostty are known to honor `U=1` placement; other Kitty-protocol paths
 // (wezterm, tmux/screen fallback) treat the placeholder cells as literal PUA
 // glyphs, which is the "ASCII artifact + laggy scrolling" reported in #1877.
 setKittyGraphics({ unicodePlaceholders: detectKittyUnicodePlaceholdersSupport(TERMINAL.id, Bun.env) });
+
+/**
+ * Re-resolve process-wide terminal capabilities for a hosted client without
+ * installing the client's environment into the daemon process.
+ */
+export function setTerminalEnvironment(env: NodeJS.ProcessEnv): void {
+	const resolved = resolveRuntimeTerminal(env);
+	// Settings and runtime probes own these mutable fields; preserve them across
+	// a reattach from another terminal client.
+	const textSizing = TERMINAL.textSizing;
+	const supportsScreenToScrollback = TERMINAL.supportsScreenToScrollback;
+	Object.assign(TERMINAL, resolved, { textSizing, supportsScreenToScrollback });
+	setKittyGraphics({ unicodePlaceholders: detectKittyUnicodePlaceholdersSupport(TERMINAL.id, env) });
+}
 
 /**
  * Override terminal image protocol at runtime after capability probes complete.

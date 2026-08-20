@@ -132,6 +132,7 @@ import { vocalizer } from "../tts/vocalizer";
 import { renderTreeList } from "../tui/tree-list";
 import { formatStartupChangelogSummary, type StartupChangelogSelection } from "../utils/changelog";
 import { copyToClipboard } from "../utils/clipboard";
+import { ensureCopyUrlHandler } from "../utils/copy-store";
 import type { EventBus } from "../utils/event-bus";
 import { getEditorCommand, openInEditor } from "../utils/external-editor";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../utils/session-color";
@@ -208,6 +209,7 @@ import {
 	getSymbolTheme,
 	onTerminalAppearanceChange,
 	onThemeChange,
+	setCodeGuidanceTrail,
 	setMarkdownMermaidRendering,
 	startMacOSAppearanceReprobeFallback,
 	theme,
@@ -794,6 +796,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		setTuiTight(this.settings.get("tui.tight"));
 		setMarkdownMermaidRendering(this.settings.get("tui.renderMermaid"));
+		setCodeGuidanceTrail(this.settings.get("tui.codeGuidanceTrail"));
 		this.ui = new TUI(host?.terminal ?? new ProcessTerminal(), this.settings.get("showHardwareCursor"));
 		this.ui.setMaxInlineImages(this.settings.get("tui.maxInlineImages"));
 		this.ui.setScrollbackRebuild(this.settings.get("tui.scrollbackRebuild"));
@@ -1144,6 +1147,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Start the UI. Cold `omp` launch opts into clearing on the first paint so
 		// the initial welcome frame does not append over the previous run's scrollback.
 		this.ui.start({ clearScrollback: options.clearInitialTerminalHistory === true });
+		// Best-effort, idempotent: make the code-block `[copy]` chip clickable by
+		// registering the omp-copy: URL scheme if it is not already claimed. Runs
+		// fire-and-forget so it never blocks the first frame and never forces
+		// anything — a manual `omp copy --install-handler` remains available.
+		void ensureCopyUrlHandler();
 		// Register the right-side widget compositor AFTER ui.start(): setRightPanel
 		// schedules a render, and #loadTodoList() above can yield, so registering it
 		// earlier risked a full frame painting before the terminal was started/cleared
@@ -1523,6 +1531,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#loopAutoSubmitTimer = setTimeout(() => {
 			this.#loopAutoSubmitTimer = undefined;
 			if (!this.loopModeEnabled || !this.onInputCallback) return;
+			if (this.#isAutoSubmitBlocked()) {
+				this.#deferLoopAutoSubmit(callback);
+				return;
+			}
 			callback();
 		}, 800);
 	}
@@ -4386,7 +4398,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
-	detachHosted(reason: "detach" | "error" = "detach", error?: string): void {
+	detachHosted(reason: "detach" | "exit" | "error" = "detach", error?: string): void {
 		if (!this.#hostedDetach || this.#isShuttingDown) return;
 		this.#isShuttingDown = true;
 		const callback = this.onInputCallback;

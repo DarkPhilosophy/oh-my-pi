@@ -14,6 +14,7 @@ import {
 	isDefaultInteractiveArgv,
 	resolveDaemonInteractiveResume,
 } from "../src/daemon/interactive-bootstrap";
+import { isDaemonControlArgv } from "../src/daemon/interactive-route";
 import { DaemonServer } from "../src/daemon/server";
 import type { RpcSessionState } from "../src/modes/rpc/rpc-types";
 import * as sessionListing from "../src/session/session-listing";
@@ -29,6 +30,7 @@ describe("daemon interactive bootstrap", () => {
 		expect(isDefaultInteractiveArgv(["launch", "hello"])).toBe(true);
 		expect(isDefaultInteractiveArgv(["grep", "needle"])).toBe(false);
 		expect(isDefaultInteractiveArgv(["daemon", "status"])).toBe(false);
+		expect(isDefaultInteractiveArgv(["browser-relay"])).toBe(false);
 		expect(isDefaultInteractiveArgv(["--print", "hello"])).toBe(false);
 		expect(isDefaultInteractiveArgv(["--mode", "text"])).toBe(true);
 		expect(isDefaultInteractiveArgv(["--mode", "text", "-p", "hi"])).toBe(false);
@@ -44,6 +46,12 @@ describe("daemon interactive bootstrap", () => {
 		// hang where `omp daemon status` hosted an interactive session on a
 		// non-TTY instead of printing status.
 		expect(commands.some(entry => entry.name === "daemon")).toBe(true);
+	});
+	test("recognizes the explicit --daemon lifecycle spelling", () => {
+		expect(isDaemonControlArgv(["--daemon", "start"])).toBe(true);
+		expect(isDaemonControlArgv(["--daemon", "kill", "--force"])).toBe(true);
+		expect(isDaemonControlArgv(["--daemon"])).toBe(false);
+		expect(isDaemonControlArgv(["--daemon", "--help"])).toBe(false);
 	});
 	test("daemon hosting is opt-in and --no-daemon always wins", () => {
 		expect(isDaemonModeOptedIn([], false)).toBe(false);
@@ -81,6 +89,83 @@ describe("daemon interactive bootstrap", () => {
 			argv: ["--resume", sourcePath],
 			cwd: sourceCwd,
 		});
+	});
+
+	test("forwards semantic thinking events to interactive clients", async () => {
+		const root = await mkdtemp(path.join(os.tmpdir(), "omp-bootstrap-thinking-"));
+		const runtimeDir = path.join(root, "runtime");
+		const endpoint = path.join(runtimeDir, "daemon.sock");
+		// The registry fans out through the runtime-level subscribe; the
+		// production runtime bridges session events into those listeners.
+		let emitRuntime: ((event: unknown) => void) | undefined;
+		const server = new DaemonServer({
+			profile: "test",
+			runtimeDir,
+			endpoint,
+			runtimeFactory: async ({ sessionId, cwd }) => ({
+				sessionId: sessionId ?? "session",
+				cwd,
+				snapshot: () => ({
+					state: { sessionId: sessionId ?? "session", cwd } as unknown as RpcSessionState,
+					cwd,
+					entries: [],
+				}),
+				session: {
+					sessionId: sessionId ?? "session",
+					isStreaming: false,
+					prompt: async () => true,
+					abort: async () => {},
+					dispose: async () => {},
+					subscribe: () => () => {},
+				},
+				command: async () => ({}),
+				dispose: async () => {},
+				subscribe: listener => {
+					emitRuntime = listener as unknown as (event: unknown) => void;
+					return () => {};
+				},
+			}),
+		});
+		await server.run();
+		try {
+			const bootstrapped = await bootstrapDaemonInteractive({
+				argv: [],
+				profile: "test",
+				cwd: root,
+				runtimeDir,
+				endpoint,
+				token: server.token,
+			});
+			const events: unknown[] = [];
+			const received = Promise.withResolvers<unknown>();
+			const unsubscribe = bootstrapped.handle.subscribe(event => {
+				events.push(event);
+				received.resolve(event);
+			});
+			expect(emitRuntime).toBeDefined();
+			// The real UI thinking stream arrives as message_update frames wrapping
+			// assistantMessageEvent thinking_delta; terminal delivery used to drop
+			// every non-terminal event, including these.
+			const thinkingEvent = {
+				type: "message_update",
+				assistantMessageEvent: { type: "thinking_delta", delta: "visible thinking" },
+			};
+			emitRuntime!(thinkingEvent);
+			const receivedEvent = await Promise.race([
+				received.promise,
+				Bun.sleep(5_000).then(() => {
+					throw new Error("timed out waiting for thinking event");
+				}),
+			]);
+			expect(receivedEvent).toEqual(thinkingEvent);
+			expect(events).toContainEqual(thinkingEvent);
+			unsubscribe();
+			await bootstrapped.handle.dispose();
+			bootstrapped.client.close();
+		} finally {
+			await server.shutdown();
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 
 	test("authenticates, forwards the complete launch argv, and detaches without disposing the server runtime", async () => {
@@ -691,6 +776,65 @@ describe("daemon interactive bootstrap", () => {
 			await stale.shutdown(true);
 		}
 	}, 20_000);
+	test("does not shut down an empty daemon belonging to another profile", async () => {
+		const root = await mkdtemp(path.join(os.tmpdir(), "omp-profile-isolation-"));
+		const runtimeDir = path.join(root, "runtime");
+		await mkdir(runtimeDir, { recursive: true });
+		const endpoint = path.join(runtimeDir, "daemon.sock");
+		let spawns = 0;
+		const server = new DaemonServer({
+			profile: "work",
+			runtimeDir,
+			endpoint,
+			token: "secret",
+			runtimeFactory: async ({ sessionId, cwd }) => {
+				const id = sessionId ?? "profile-isolation";
+				return {
+					sessionId: id,
+					cwd,
+					snapshot: () => ({
+						state: { sessionId: id, cwd } as unknown as RpcSessionState,
+						cwd,
+						entries: [],
+					}),
+					session: {
+						sessionId: id,
+						isStreaming: false,
+						prompt: async () => true,
+						abort: async () => {},
+						dispose: async () => {},
+						subscribe: () => () => {},
+					},
+					command: async () => ({}),
+					dispose: async () => {},
+					subscribe: () => () => {},
+				};
+			},
+		});
+		try {
+			await server.run();
+			const spawnDaemon = (() => {
+				spawns++;
+				return { exited: Promise.resolve(0), exitCode: null, unref: () => {} };
+			}) as unknown as NonNullable<DaemonInteractiveBootstrapOptions["spawnDaemon"]>;
+			await expect(
+				bootstrapDaemonInteractive({
+					argv: [],
+					profile: "personal",
+					cwd: root,
+					runtimeDir,
+					endpoint,
+					token: "secret",
+					startTimeoutMs: 100,
+					spawnDaemon,
+				}),
+			).rejects.toThrow(/profile mismatch|authentication failed|Daemon connection failed/);
+			expect(spawns).toBe(0);
+		} finally {
+			await server.shutdown(true);
+			await rm(root, { recursive: true, force: true });
+		}
+	});
 
 	test("preserves a stale daemon when active clients and sessions block shutdown", async () => {
 		let spawns = 0;

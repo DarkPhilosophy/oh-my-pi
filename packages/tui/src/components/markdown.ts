@@ -914,6 +914,15 @@ const EMPTY_RENDER_LINES: readonly string[] = [];
 interface RenderedLine {
 	text: string;
 	literalCode?: true;
+	/** Optional structured code layout used when a fenced row must wrap inside a frame. */
+	codePrefix?: string;
+	/** Unstyled gutter text (digits + connector) so wrap can blank digits without touching ANSI. */
+	codePlainPrefix?: string;
+	codeBody?: string;
+	codeContinuationPrefix?: string;
+	codeOuterPadding?: number;
+	/** Keep a framed code row intact during the outer markdown wrap pass. */
+	noWrap?: true;
 }
 
 interface RenderedListItemLine extends RenderedLine {
@@ -1176,6 +1185,19 @@ export interface MarkdownTheme {
 	code: (text: string) => string;
 	codeBlock: (text: string) => string;
 	codeBlockBorder: (text: string) => string;
+	/** Render the ASCII language marker and label for a fenced code block header. */
+	codeBlockLanguage?: (lang: string) => string;
+	/** Steering-style ├─/└─/│ gutter inside fenced code blocks. Defaults to true. */
+	guidanceTrail?: boolean;
+	/** Bottom-right chip label (e.g. "copy") painted into the footer rule when set. */
+	copyChip?: string;
+	/**
+	 * Resolve the OSC 8 hyperlink target for a code block's copy chip from its
+	 * raw body. Returns a URL (e.g. `omp-copy:<id>`) to make the chip a real
+	 * click-to-copy link, or undefined to keep it a plain visual label. Only
+	 * used when {@link copyChip} is set and the terminal supports hyperlinks.
+	 */
+	copyChipTarget?: (code: string) => string | undefined;
 	quote: (text: string) => string;
 	quoteBorder: (text: string) => string;
 	hr: (text: string) => string;
@@ -2033,7 +2055,12 @@ export class Markdown
 				// Lists wrap while their structural prefixes are still available, so
 				// continuation rows retain the correct hanging indent. Re-wrapping the
 				// flattened rows here would discard that structure.
-				if (token.type === "list" || TERMINAL.isImageLine(renderedRow.text) || isOsc66Line(renderedRow.text)) {
+				if (
+					token.type === "list" ||
+					renderedRow.noWrap === true ||
+					TERMINAL.isImageLine(renderedRow.text) ||
+					isOsc66Line(renderedRow.text)
+				) {
 					wrappedLines.push(renderedRow);
 				} else {
 					const wrappedRows = wrapTextWithAnsi(renderedRow.text, contentWidth);
@@ -2132,10 +2159,134 @@ export class Markdown
 		return layouts;
 	}
 
-	#renderCodeBodyLines(token: Token, codeIndent: string): RenderedLine[] {
+	#isFencedCodeToken(token: Token): boolean {
+		const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
+		const firstLine = raw.slice(0, raw.indexOf("\n") >= 0 ? raw.indexOf("\n") : raw.length).trimStart();
+		return firstLine.startsWith("```") || firstLine.startsWith("~~~");
+	}
+
+	/**
+	 * Frame fenced code in the same rounded-box language as the welcome screen.
+	 * The box hugs its content: width is the longest body row or the header,
+	 * never the full terminal row. The active symbol preset owns the glyphs:
+	 * unicode/nerd-font get ╭─╮│, the ascii preset degrades to +-| — one code
+	 * path, both terminals. Syntax colors come from the active Markdown theme.
+	 */
+	#boxFencedCodeLines(token: Token, bodyLines: readonly RenderedLine[], width: number): RenderedLine[] {
+		const box = this.#theme.symbols.boxRound;
+		// Header, body, and footer all use the same border color so the frame
+		// reads as one continuous shape (no mismatched dim/bright sides).
+		const borderColor = this.#theme.codeBlockBorder;
+		const border = (text: string): string => borderColor(text);
+		const lang = "lang" in token && typeof token.lang === "string" && token.lang.length > 0 ? token.lang : undefined;
+		// The hook supplies the semantic marker (icon) or nothing. Plain-text
+		// returns equal to `lang` mean the theme has no icon — use one label, not
+		// `[js js]`.
+		const marker = lang ? this.#theme.codeBlockLanguage?.(lang) : undefined;
+		const label = lang ? (marker && marker !== lang ? `${marker} ${lang}` : lang) : "";
+		const title = lang ? ` [${label}] ` : "";
+
+		// Reserve one breathing space on each side of every body row. The frame is
+		// compact, but code must never touch either vertical border.
+		const bodyWidth = bodyLines.reduce((max, line) => Math.max(max, visibleWidth(line.text)), 0);
+		const outerPadding = bodyLines.some(line => (line.codeOuterPadding ?? 0) > 0) ? 1 : 0;
+		const innerWidth = Math.min(
+			Math.max(4, width - 2),
+			Math.max(bodyWidth + outerPadding + 2, visibleWidth(title) + 1),
+		);
+		const contentWidth = Math.max(1, innerWidth - 2);
+		// Header must be exactly innerWidth + 2 border cells wide, same as body.
+		// visibleWidth() counts emoji as 2 cells; the title already includes the
+		// leading/trailing spaces, so headerFill = innerWidth - titleWidth - 1
+		// (one horizontal after topLeft, before the title).
+		const titleWidth = visibleWidth(title);
+		const headerFill = Math.max(0, innerWidth - titleWidth - 1);
+		// Color each header segment independently. A colored emoji (e.g. 🟨) in
+		// the title resets the terminal's SGR foreground mid-line, so a single
+		// border() wrap would leave everything after the title (the top-right
+		// ───╮) uncolored/white. Re-applying border() after the title forces the
+		// right side back to the same dim color as the left side and the frame.
+		const header =
+			`${border(`${box.topLeft}${box.horizontal}`)}` +
+			`${border(title)}` +
+			`${border(`${box.horizontal.repeat(headerFill)}${box.topRight}`)}`;
+		const framed: RenderedLine[] = [{ text: header, noWrap: true }];
+
+		for (const body of bodyLines) {
+			const prefix = body.codePrefix;
+			const plainPrefix = body.codePlainPrefix ?? prefix;
+			const leftPadding = padding(body.codeOuterPadding ?? 0);
+			const source = body.codeBody ?? body.text;
+			const firstWidth = Math.max(
+				1,
+				contentWidth - visibleWidth(leftPadding) - (plainPrefix ? visibleWidth(plainPrefix) : 0),
+			);
+			const wrapped = wrapTextWithAnsi(source, firstWidth);
+			const rows = wrapped.length > 0 ? wrapped : [""];
+
+			// Steering semantics (queued-message-box): `└─` claims the END of the
+			// block. If that last logical line wraps, its first row downgrades to
+			// `├─`. Continuation rows keep the `│  ` rail — digits blanked on the
+			// PLAIN prefix, then re-styled once, so ANSI escapes never get mangled.
+			const wraps = rows.length > 1;
+			const styled = body.codePlainPrefix !== undefined;
+			const demotedPlain = wraps && plainPrefix ? plainPrefix.replace("└─", "├─") : plainPrefix;
+			const firstRowPrefix =
+				styled && demotedPlain !== undefined ? this.#theme.codeBlockBorder(demotedPlain) : (demotedPlain ?? "");
+			const continuationPlain = plainPrefix
+				? plainPrefix.replace(/\d/g, " ").replace(/├─/, "│ ").replace(/└─/, "│ ")
+				: (body.codeContinuationPrefix ?? "");
+			const continuationPrefix = styled ? this.#theme.codeBlockBorder(continuationPlain) : continuationPlain;
+
+			for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+				const rowPrefix = rowIndex === 0 ? firstRowPrefix : continuationPrefix;
+				const rowText = leftPadding + rowPrefix + rows[rowIndex]!;
+				const pad = Math.max(0, contentWidth - visibleWidth(rowText));
+				framed.push({
+					text: `${border(box.vertical)} ${rowText}${padding(pad)} ${border(box.vertical)}`,
+					literalCode: body.literalCode,
+					noWrap: true,
+				});
+			}
+		}
+		// Footer with optional copy chip on the right side. When the theme resolves
+		// a target for the block, the chip becomes an OSC 8 hyperlink so a real
+		// mouse click copies it — no main-screen mouse tracking, so native scroll
+		// and selection are untouched. Border color wraps all three segments so
+		// the frame stays one continuous shape around the (possibly linked) chip.
+		const copyLabel = this.#theme.copyChip ? `[${this.#theme.copyChip}]` : "";
+		if (copyLabel) {
+			const chipWidth = visibleWidth(copyLabel);
+			const fill = Math.max(0, innerWidth - chipWidth - 1);
+			const code = "text" in token && typeof token.text === "string" ? token.text : "";
+			const target = code ? this.#theme.copyChipTarget?.(code) : undefined;
+			// Emit the OSC 8 link directly rather than via formatHyperlink: the copy
+			// chip is an explicit affordance whose enablement the theme already
+			// decided (copyChipTarget returns undefined when links are off). Routing
+			// through the TERMINAL.hyperlinks capability gate would drop the link
+			// under tmux/unknown outer terminals that still forward OSC 8, so the
+			// click would silently do nothing. Terminals lacking OSC 8 ignore it.
+			const chip = target
+				? `\x1b]8;;${target.replaceAll("\x1b", "").replaceAll("\x07", "")}\x07${border(copyLabel)}\x1b]8;;\x07`
+				: border(copyLabel);
+			framed.push({
+				text: `${border(`${box.bottomLeft}${box.horizontal.repeat(fill)}`)}${chip}${border(`${box.horizontal}${box.bottomRight}`)}`,
+				noWrap: true,
+			});
+		} else {
+			framed.push({
+				text: border(`${box.bottomLeft}${box.horizontal.repeat(innerWidth)}${box.bottomRight}`),
+				noWrap: true,
+			});
+		}
+		return framed;
+	}
+	#renderCodeBodyLines(token: Token, codeIndent: string, lineNumbers = false): RenderedLine[] {
 		const literalCode = this.#codeBlockIndent === 0;
 		const bodyLines: RenderedLine[] = [];
 		const tokenText = "text" in token && typeof token.text === "string" ? token.text : "";
+		const lineNumberWidth = String(tokenText.split("\n").length).length;
+		let lineNumber = 0;
 		const lang = "lang" in token && typeof token.lang === "string" ? token.lang : undefined;
 		const normalizedLang = lang?.toLowerCase();
 		const canStreamDiff =
@@ -2143,14 +2294,34 @@ export class Markdown
 			!this.#renderingFrozenPrefix &&
 			this.#theme.highlightCode &&
 			(normalizedLang === "diff" || normalizedLang === "patch" || normalizedLang === "udiff");
-		const addBodyLine = (line: string): void => {
-			bodyLines.push(renderedLine(literalCode ? line : codeIndent + line, literalCode));
+		const addBodyLine = (line: string, isLastLogical: boolean): void => {
+			// Steering semantics (queued-message-box): `└─` only on the LAST logical
+			// line; the framer demotes it to `├─` when the line wraps. With the
+			// guidance trail off, gutters stay plain `N │ ` (or bare codeIndent).
+			const trail = this.#theme.guidanceTrail !== false;
+			const connector = !trail ? "" : isLastLogical ? "└─" : "├─";
+			const plainPrefix = lineNumbers
+				? trail
+					? `${String(++lineNumber).padStart(lineNumberWidth)} ${connector} `
+					: `${String(++lineNumber).padStart(lineNumberWidth)} ${this.#theme.symbols.boxRound.vertical} `
+				: codeIndent;
+			const styledPrefix = lineNumbers ? this.#theme.codeBlockBorder(plainPrefix) : codeIndent;
+			bodyLines.push({
+				text: styledPrefix + line,
+				literalCode: literalCode ? true : undefined,
+				codePrefix: styledPrefix,
+				codePlainPrefix: plainPrefix,
+				codeBody: line,
+				codeContinuationPrefix: padding(visibleWidth(plainPrefix)),
+				codeOuterPadding: literalCode ? 1 : 0,
+			});
 		};
 
+		const rawLines = tokenText.split("\n");
 		if (this.#theme.highlightCode && (!this.transientRenderCache || this.#renderingFrozenPrefix)) {
 			const highlightedLines = this.#theme.highlightCode(tokenText, lang);
-			for (const hlLine of highlightedLines) {
-				addBodyLine(hlLine);
+			for (let i = 0; i < highlightedLines.length; i++) {
+				addBodyLine(highlightedLines[i]!, i === highlightedLines.length - 1);
 			}
 			return bodyLines;
 		}
@@ -2160,20 +2331,22 @@ export class Markdown
 			const lineEnd = tokenText.lastIndexOf("\n");
 			if (closedFence || lineEnd >= 0) {
 				const completedText = closedFence ? tokenText : tokenText.slice(0, lineEnd);
-				for (const hlLine of this.#highlightStreamingDiffLines(completedText, lang)) {
-					addBodyLine(hlLine);
+				const highlighted = this.#highlightStreamingDiffLines(completedText, lang);
+				const tailText = closedFence ? "" : tokenText.slice(lineEnd + 1);
+				const tailLines = tailText === "" ? [] : tailText.split("\n");
+				const total = highlighted.length + tailLines.length;
+				for (let i = 0; i < highlighted.length; i++) {
+					addBodyLine(highlighted[i]!, i === total - 1);
 				}
-				if (!closedFence) {
-					for (const codeLine of tokenText.slice(lineEnd + 1).split("\n")) {
-						addBodyLine(this.#theme.codeBlock(codeLine));
-					}
+				for (let i = 0; i < tailLines.length; i++) {
+					addBodyLine(this.#theme.codeBlock(tailLines[i]!), highlighted.length + i === total - 1);
 				}
 				return bodyLines;
 			}
 		}
 
-		for (const codeLine of tokenText.split("\n")) {
-			addBodyLine(this.#theme.codeBlock(codeLine));
+		for (let i = 0; i < rawLines.length; i++) {
+			addBodyLine(this.#theme.codeBlock(rawLines[i]!), i === rawLines.length - 1);
 		}
 		return bodyLines;
 	}
@@ -2441,11 +2614,22 @@ export class Markdown
 				}
 
 				const codeIndent = padding(this.#codeBlockIndent);
-				lines.push(renderedLine(this.#theme.codeBlockBorder(`\`\`\`${token.lang || ""}`)));
-				for (const bodyLine of this.#renderCodeBodyLines(token, codeIndent)) {
-					lines.push(bodyLine);
+				const fenced = this.#isFencedCodeToken(token);
+				const closedFence = fenced && this.#codeTokenHasClosingFence(token);
+				const bodyLines = this.#renderCodeBodyLines(token, closedFence ? "" : codeIndent, closedFence);
+				if (closedFence) {
+					// Complete fenced blocks render as a portable ASCII box; raw ```
+					// delimiters never reach the terminal.
+					lines.push(...this.#boxFencedCodeLines(token, bodyLines, width));
+				} else if (fenced) {
+					// An open streamed fence must retain its delimiter rows until it
+					// closes; transcript scrollback depends on those stable rows.
+					lines.push(renderedLine(this.#theme.codeBlockBorder(`\`\`\`${token.lang || ""}`)));
+					for (const bodyLine of bodyLines) lines.push(bodyLine);
+					lines.push(renderedLine(this.#theme.codeBlockBorder("```")));
+				} else {
+					for (const bodyLine of bodyLines) lines.push(bodyLine);
 				}
-				lines.push(renderedLine(this.#theme.codeBlockBorder("```")));
 				if (nextTokenType && nextTokenType !== "space") {
 					lines.push(renderedLine("")); // Add spacing after code blocks (unless space token follows)
 				}
@@ -2901,13 +3085,12 @@ export class Markdown
 					lines.push({ text: this.#renderInlineTokens(token.tokens || [], styleContext), nested: false });
 				}
 			} else if (token.type === "code") {
-				// Code block in list item
+				// Code block in list item — fenced blocks get the same themed box.
 				const codeIndent = padding(this.#codeBlockIndent);
-				lines.push({ text: this.#theme.codeBlockBorder(`\`\`\`${token.lang || ""}`), nested: false });
-				for (const bodyLine of this.#renderCodeBodyLines(token, codeIndent)) {
-					lines.push({ ...bodyLine, nested: false });
-				}
-				lines.push({ text: this.#theme.codeBlockBorder("```"), nested: false });
+				const fenced = this.#isFencedCodeToken(token) && this.#codeTokenHasClosingFence(token);
+				const bodyLines = this.#renderCodeBodyLines(token, fenced ? "" : codeIndent, fenced);
+				const framed = fenced ? this.#boxFencedCodeLines(token, bodyLines, width) : bodyLines;
+				for (const line of framed) lines.push({ ...line, nested: false });
 			} else if (isMathToken(token)) {
 				// Display math block inside a list item: stack fractions / matrix rows.
 				const apply = styleContext?.applyText ?? ((t: string) => this.#applyDefaultStyle(t));

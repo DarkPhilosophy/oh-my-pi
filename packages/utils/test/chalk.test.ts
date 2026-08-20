@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Chalk, detectColorLevel } from "../src/chalk";
+import chalk, { Chalk, detectColorLevel, setChalkEnvironment } from "../src/chalk";
 
 const ESC = "\u001B[";
 
@@ -47,5 +47,16 @@ describe("chalk", () => {
 		expect(detectColorLevel({ CI: "1", GITHUB_ACTIONS: "1" }, true)).toBe(3);
 		expect(detectColorLevel({ CI: "1" }, true)).toBe(0);
 		expect(detectColorLevel({ TERM: "xterm-256color" }, false)).toBe(0);
+	});
+	test("can enable the default formatter for a hosted client terminal", () => {
+		const previousLevel = chalk.level;
+		try {
+			chalk.level = 0;
+			setChalkEnvironment({ COLORTERM: "truecolor" });
+			expect(chalk.italic("thinking")).toBe(`${ESC}3mthinking${ESC}23m`);
+		} finally {
+			setChalkEnvironment(process.env, Boolean(process.stdout.isTTY));
+			chalk.level = previousLevel;
+		}
 	});
 });

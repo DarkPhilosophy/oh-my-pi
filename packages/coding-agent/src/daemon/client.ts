@@ -139,6 +139,13 @@ export class DaemonClient {
 	}
 
 	/** Build pairing identity from the daemon's hello; undefined until connected or on pre-stamp daemons. */
+	get capabilities(): readonly string[] {
+		return this.#hello?.capabilities ?? [];
+	}
+
+	hasCapability(capability: string): boolean {
+		return this.#hello?.capabilities.includes(capability) === true;
+	}
 	get serverBuildStamp(): string | undefined {
 		return this.#hello?.buildStamp;
 	}

@@ -36,6 +36,7 @@ import {
 	normalizeCreateContent,
 	parseDiffHunks,
 } from "../diff";
+import { hashPatchInput, noChangeLoopDiagnostic, recordNoopEdit, resetNoopEdit } from "../hashline/noop-loop-guard";
 import {
 	adjustIndentation,
 	convertLeadingTabsToSpaces,
@@ -1837,6 +1838,7 @@ export async function executePatchSingle(
 	}
 
 	const input: PatchInput = { path: resolvedPath, op, rename: resolvedRename, diff };
+	const inputHash = hashPatchInput(JSON.stringify({ path, op, rename, diff }));
 	const patchFileSystem = new LspFileSystem(
 		session,
 		path, // original user-provided path for bridge guard (may be local://, vault://, etc.)
@@ -1852,6 +1854,19 @@ export async function executePatchSingle(
 		allowFuzzy,
 		allowCreateOverwrite,
 	});
+
+	const byteIdenticalNoop =
+		result.change.type === "update" &&
+		!result.change.newPath &&
+		result.change.oldContent !== undefined &&
+		result.change.newContent !== undefined &&
+		result.change.oldContent === result.change.newContent;
+	if (byteIdenticalNoop) {
+		const { count, escalate } = recordNoopEdit(session, resolvedPath, inputHash);
+		if (escalate) {
+			throw new ToolError(noChangeLoopDiagnostic(path, count), { path: resolvedPath });
+		}
+	}
 
 	// Post-write verification: only meaningful for in-place updates where the
 	// patch actually changes content and the file is not being renamed away.
@@ -1874,11 +1889,19 @@ export async function executePatchSingle(
 			postEditContent.length === preEditContent.length &&
 			postEditContent.every((b, i) => b === preEditContent[i]);
 		if (unchanged) {
-			throw new ToolError(`edit appeared successful but file content did not change on disk: ${path}`, {
-				path: resolvedPath,
-			});
+			const { count, escalate } = recordNoopEdit(session, resolvedPath, inputHash);
+			throw new ToolError(
+				escalate
+					? noChangeLoopDiagnostic(path, count)
+					: `edit appeared successful but file content did not change on disk: ${path}`,
+				{ path: resolvedPath },
+			);
 		}
 	}
+	// Reset only after post-write verification succeeds. A bridge/LSP that
+	// acknowledges a write without persisting it must remain countable across
+	// retries so the loop guard can escalate.
+	if (!byteIdenticalNoop) resetNoopEdit(session, resolvedPath);
 
 	if (resolvedRename) {
 		invalidateFsScanAfterRename(resolvedPath, resolvedRename);
@@ -1919,7 +1942,11 @@ export async function executePatchSingle(
 			resultText = `Deleted ${path}`;
 			break;
 		case "update":
-			resultText = effectiveRename ? `Updated and moved ${path} to ${effectiveRename}` : `Updated ${path}`;
+			if (byteIdenticalNoop) {
+				resultText = `No changes made to ${path}: the patch already matches the file on disk.`;
+			} else {
+				resultText = effectiveRename ? `Updated and moved ${path} to ${effectiveRename}` : `Updated ${path}`;
+			}
 			break;
 	}
 

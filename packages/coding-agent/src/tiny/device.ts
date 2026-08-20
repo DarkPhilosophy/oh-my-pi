@@ -6,7 +6,15 @@ export type TinyModelDevice = DeviceType;
 export interface TinyModelDevicePreference {
 	device: TinyModelDevice;
 	raw: string | undefined;
+	auto?: boolean;
 }
+
+export interface TinyModelAcceleratorAvailability {
+	cuda: boolean;
+	rocm: boolean;
+}
+
+const DEFAULT_ACCELERATOR_AVAILABILITY: TinyModelAcceleratorAvailability = { cuda: false, rocm: false };
 
 const CPU_DEVICE: TinyModelDevice = "cpu";
 const CPU_ONLY_ORDER: readonly TinyModelDevice[] = [CPU_DEVICE];
@@ -44,16 +52,29 @@ export function normalizeTinyModelDevice(value: string | undefined): TinyModelDe
 export function resolveTinyModelDevicePreference(
 	value: string | undefined = $env.PI_TINY_DEVICE,
 ): TinyModelDevicePreference {
+	const normalized = normalizeTinyModelDevice(value);
 	return {
-		device: normalizeTinyModelDevice(value) ?? CPU_DEVICE,
+		device: normalized ?? CPU_DEVICE,
 		raw: value,
+		auto: normalized === "auto",
 	};
+}
+
+function autoDeviceLoadOrder(
+	availability: TinyModelAcceleratorAvailability,
+	unavailableDevices?: ReadonlySet<TinyModelDevice>,
+): readonly TinyModelDevice[] {
+	const preferred: TinyModelDevice = availability.cuda ? "cuda" : availability.rocm ? "gpu" : CPU_DEVICE;
+	if (preferred === CPU_DEVICE || unavailableDevices?.has(preferred)) return CPU_ONLY_ORDER;
+	return [preferred, CPU_DEVICE];
 }
 
 export function tinyModelDeviceLoadOrder(
 	preference: TinyModelDevicePreference,
 	unavailableDevices?: ReadonlySet<TinyModelDevice>,
+	availability: TinyModelAcceleratorAvailability = DEFAULT_ACCELERATOR_AVAILABILITY,
 ): readonly TinyModelDevice[] {
+	if (preference.auto) return autoDeviceLoadOrder(availability, unavailableDevices);
 	if (preference.device === CPU_DEVICE) return CPU_ONLY_ORDER;
 	if (usesDarwinWorkerWebGpu(preference.device)) return DARWIN_WEBGPU_UNSAFE_ORDER;
 	if (unavailableDevices?.has(preference.device)) return CPU_ONLY_ORDER;

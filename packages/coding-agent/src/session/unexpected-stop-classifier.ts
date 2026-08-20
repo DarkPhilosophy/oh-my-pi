@@ -66,15 +66,34 @@ export async function classifyUnexpectedStop(
 	deps: ClassifyUnexpectedStopDeps,
 ): Promise<boolean | undefined> {
 	const backend = deps.settings.get("providers.unexpectedStopModel");
+	if (backend !== ONLINE_MEMORY_MODEL_KEY) {
+		try {
+			if (isTinyMemoryLocalModelKey(backend)) return await classifyLocal(text, backend, deps);
+			return undefined;
+		} catch (error) {
+			logger.debug("unexpected-stop: classification failed", {
+				error: error instanceof Error ? error.message : String(error),
+				backend,
+			});
+			return undefined;
+		}
+	}
+
 	try {
-		if (backend === ONLINE_MEMORY_MODEL_KEY) {
-			return await classifyOnline(text, deps);
-		}
-		if (isTinyMemoryLocalModelKey(backend)) {
-			return await classifyLocal(text, backend, deps);
-		}
-		return undefined;
+		return await classifyOnline(text, deps);
 	} catch (error) {
+		if (deps.signal?.aborted) return undefined;
+		const fallback = deps.settings.get("providers.unexpectedStopFallbackModel");
+		if (isTinyMemoryLocalModelKey(fallback)) {
+			try {
+				return await classifyLocal(text, fallback, deps);
+			} catch (fallbackError) {
+				logger.debug("unexpected-stop: fallback classification failed", {
+					error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+					backend: fallback,
+				});
+			}
+		}
 		logger.debug("unexpected-stop: classification failed", {
 			error: error instanceof Error ? error.message : String(error),
 			backend,

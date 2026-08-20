@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage, ToolCall, Usage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -115,6 +116,16 @@ describe("EventController mixed assistant text/tool rendering", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		resetSettingsForTest();
+	});
+
+	it("keeps finalized thinking distinct from the user-message background", () => {
+		const component = new AssistantMessageComponent(
+			assistantMessage([{ type: "thinking", thinking: "REASONING BLOCK" }]),
+			false,
+		);
+		const rendered = component.render(120).join("\n");
+		expect(rendered).toContain("REASONING BLOCK");
+		expect(rendered).not.toContain("\x1b[48;");
 	});
 
 	it("renders assistant text segments in order around two tool results from one mixed message", async () => {

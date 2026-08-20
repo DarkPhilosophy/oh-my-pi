@@ -970,6 +970,17 @@ export const SETTINGS_SCHEMA = {
 			description: "Remove the 1-character horizontal padding from the left and right of the terminal output",
 		},
 	},
+	"tui.codeGuidanceTrail": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Code Guidance Trail",
+			description:
+				"Show the steering-style gutter inside fenced code blocks: ├─ / └─ connectors per logical line and the │ rail on wrapped continuation rows. Off renders plain numbered lines.",
+		},
+	},
 	"tui.scrollbackRebuild": {
 		type: "boolean",
 		default: false,
@@ -1648,24 +1659,24 @@ export const SETTINGS_SCHEMA = {
 	steeringMode: {
 		type: "enum",
 		values: ["one-at-a-time", "coalescing"] as const,
-		default: "one-at-a-time",
+		default: "coalescing",
 		ui: {
 			tab: "interaction",
 			group: "Input",
 			label: "Steering Mode",
-			description: "How to process queued steering messages while the agent is working",
+			description: "How to process your queued steering messages while the agent is working",
 		},
 	},
 
 	followUpMode: {
 		type: "enum",
 		values: ["one-at-a-time", "coalescing"] as const,
-		default: "one-at-a-time",
+		default: "coalescing",
 		ui: {
 			tab: "interaction",
 			group: "Input",
 			label: "Follow-Up Mode",
-			description: "How to drain queued follow-up messages after a turn completes",
+			description: "How to drain your queued follow-up messages after a turn completes",
 		},
 	},
 
@@ -3529,6 +3540,16 @@ export const SETTINGS_SCHEMA = {
 			description: "Block shell commands that have dedicated tools",
 		},
 	},
+	"bashInterceptor.forwardSimpleCommands": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "shell",
+			group: "Bash",
+			label: "Bash Interceptor Forward Simple Commands",
+			description: "Forward safe simple matches to the built-in read, grep, or glob tool instead of blocking them",
+		},
+	},
 	"bashInterceptor.patterns": { type: "array", default: DEFAULT_BASH_INTERCEPTOR_RULES },
 
 	"bash.direnv": {
@@ -5254,6 +5275,20 @@ export const SETTINGS_SCHEMA = {
 			label: "Unexpected Stop Model",
 			description:
 				"Classifier for unexpected-stop detection: online (the TINY role from /models, else smol) by default, or a local on-device model.",
+			condition: "unexpectedStopDetection",
+			options: TINY_MEMORY_MODEL_OPTIONS,
+		},
+	},
+	"providers.unexpectedStopFallbackModel": {
+		type: "enum",
+		values: TINY_MEMORY_MODEL_VALUES,
+		default: "qwen2.5-1.5b",
+		ui: {
+			tab: "providers",
+			group: "Tiny Model",
+			label: "Unexpected Stop Fallback Model",
+			description:
+				"Local model to use only when the online unexpected-stop classifier fails; local-primary configurations do not need this setting.",
 			condition: "unexpectedStopDetection",
 			options: TINY_MEMORY_MODEL_OPTIONS,
 		},

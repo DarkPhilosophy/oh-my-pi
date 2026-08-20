@@ -187,4 +187,17 @@ describe("hashline noop loop guard", () => {
 			);
 		});
 	});
+	it("stops a repeated no-op edit instead of returning indefinitely", async () => {
+		await withTempDir(async tempDir => {
+			const filePath = path.join(tempDir, "a.ts");
+			await Bun.write(filePath, "aaa\nbbb\nccc\n");
+			const session = makeSession(tempDir);
+			const input = buildNoopInput(filePath, "a.ts", session);
+
+			for (let attempt = 1; attempt < NOOP_HARD_LIMIT; attempt++) {
+				await executeHashlineSingle(execOptions(input, session));
+			}
+			await expect(executeHashlineSingle(execOptions(input, session))).rejects.toBeInstanceOf(ToolError);
+		});
+	});
 });

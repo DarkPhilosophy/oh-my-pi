@@ -11,8 +11,13 @@ import type { Terminal, TerminalAppearance } from "@oh-my-pi/pi-tui";
 const CLIENT_TERMINAL_ENV_KEYS: Record<string, true> = {
 	TERM: true,
 	COLORTERM: true,
+	FORCE_COLOR: true,
+	NO_COLOR: true,
 	TERM_PROGRAM: true,
 	TERM_PROGRAM_VERSION: true,
+	TERM_FEATURES: true,
+	WT_SESSION: true,
+	COLORFGBG: true,
 	STY: true,
 	DISPLAY: true,
 	WAYLAND_DISPLAY: true,

@@ -773,6 +773,11 @@ export function getNativesDir(): string {
 	return dirs.rootSubdir("natives", "cache");
 }
 
+/** Get the code-block copy store directory (~/.omp/copy; XDG default: $XDG_CACHE_HOME/omp/copy). */
+export function getCopyStoreDir(): string {
+	return dirs.rootSubdir("copy", "cache");
+}
+
 /** Get the stats database path (~/.omp/stats.db). */
 export function getStatsDbPath(): string {
 	return dirs.rootSubdir("stats.db", "data");

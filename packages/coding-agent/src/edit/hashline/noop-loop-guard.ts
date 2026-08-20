@@ -97,3 +97,17 @@ export function resetNoopEdit(session: NoopLoopGuardOwner, canonicalPath: string
 export function hashPatchInput(input: string): string {
 	return Bun.hash(input).toString(16);
 }
+
+/**
+ * Build the escalated diagnostic after {@link NOOP_HARD_LIMIT} repeated
+ * byte-identical no-ops. The caller throws it as a tool failure.
+ */
+export function noChangeLoopDiagnostic(path: string, count: number): string {
+	return (
+		`STOP. Edits to ${path} have been a byte-identical no-op ${count} times in a row — ` +
+		`the patch body matches the file at the targeted lines and the soft hint did not break the cycle. ` +
+		`Cease re-issuing this payload. Either the intended change is already on disk (move on), ` +
+		`or your anchor is wrong (re-read the file with \`read\` to observe the current line numbers and ` +
+		`tag, then author a different edit). This exact payload will keep being rejected until it changes.`
+	);
+}

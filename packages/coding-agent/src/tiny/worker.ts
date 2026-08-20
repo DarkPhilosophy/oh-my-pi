@@ -21,6 +21,7 @@ import {
 } from "../subprocess/worker-runtime";
 import {
 	resolveTinyModelDevicePreference,
+	type TinyModelAcceleratorAvailability,
 	type TinyModelDevice,
 	tinyModelDeviceLoadOrder,
 	tinyModelDevicesToMarkUnavailable,
@@ -46,6 +47,10 @@ const TINY_TITLE_SYSTEM_PROMPT = prompt.render(titleSystemPrompt);
 
 const tinyModelDevicePreference = resolveTinyModelDevicePreference();
 const tinyModelDtypeOverride = resolveTinyModelDtypeOverride();
+const tinyModelAcceleratorAvailability: TinyModelAcceleratorAvailability = {
+	cuda: process.env.CUDA_VISIBLE_DEVICES !== "",
+	rocm: process.env.ROCR_VISIBLE_DEVICES !== "" || process.env.HIP_VISIBLE_DEVICES !== "",
+};
 
 interface TransformersRuntime extends TransformersRuntimeMetadata {
 	env: {
@@ -136,7 +141,11 @@ async function loadPipelineWithDeviceFallback(
 	transport: TinyTitleTransport,
 	requestId: string,
 ): Promise<{ generator: TextGenerationPipeline; device: TinyModelDevice }> {
-	const devices = tinyModelDeviceLoadOrder(tinyModelDevicePreference, unavailableDevices);
+	const devices = tinyModelDeviceLoadOrder(
+		tinyModelDevicePreference,
+		unavailableDevices,
+		tinyModelAcceleratorAvailability,
+	);
 	if (devices[0] !== tinyModelDevicePreference.device) {
 		sendLog(
 			transport,

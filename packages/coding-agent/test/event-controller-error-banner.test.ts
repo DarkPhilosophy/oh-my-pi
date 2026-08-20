@@ -434,6 +434,28 @@ describe("EventController thinking visibility", () => {
 	});
 });
 
+it("mounts a thinking-only update when message_start was missed", async () => {
+	const message = makeAssistantMessage({
+		content: [{ type: "thinking", thinking: "server-side reasoning" }],
+	});
+	const { controller, ctx } = createFixture();
+
+	await controller.handleEvent({
+		type: "message_update",
+		message,
+		assistantMessageEvent: {
+			type: "thinking_delta",
+			delta: "server-side reasoning",
+			contentIndex: 0,
+		},
+	} as Extract<AgentSessionEvent, { type: "message_update" }>);
+
+	if (!(ctx.streamingComponent instanceof AssistantMessageComponent)) {
+		throw new Error("Expected a mounted streaming assistant component");
+	}
+	expect(Bun.stripANSI(ctx.streamingComponent.render(80).join("\n"))).toContain("server-side reasoning");
+});
+
 describe("EventController working loader reconciliation", () => {
 	it("restores the working loader after compaction clears status while the focused session streams", async () => {
 		const { controller, ctx } = createFixture();

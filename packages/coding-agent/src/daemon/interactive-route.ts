@@ -9,11 +9,13 @@ const NON_INTERACTIVE_COMMANDS: Record<string, true> = {
 	"auth-broker": true,
 	"auth-gateway": true,
 	agents: true,
+	"browser-relay": true,
 	bench: true,
 	commit: true,
 	completions: true,
 	__complete: true,
 	config: true,
+	copy: true,
 	daemon: true,
 	"dry-balance": true,
 	gc: true,
@@ -40,6 +42,22 @@ const NON_INTERACTIVE_COMMANDS: Record<string, true> = {
 	search: true,
 	q: true,
 };
+
+const DAEMON_CONTROL_ACTIONS = new Set([
+	"status",
+	"sessions",
+	"reconnect",
+	"start",
+	"bgjob",
+	"kill",
+	"refresh",
+	"stop",
+]);
+
+/** Recognize the explicit lifecycle form `omp --daemon <action>`. */
+export function isDaemonControlArgv(argv: readonly string[]): boolean {
+	return argv[0] === "--daemon" && argv[1] !== undefined && DAEMON_CONTROL_ACTIONS.has(argv[1]);
+}
 
 const NON_INTERACTIVE_FLAGS: Record<string, true> = {
 	"--help": true,

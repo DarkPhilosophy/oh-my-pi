@@ -608,4 +608,15 @@ export class Theme {
 		if (!hex) return this.fg("muted", icon);
 		return `${colorToAnsi(hex, this.mode)}${icon}\x1b[39m`;
 	}
+
+	/**
+	 * Return the stable ASCII language marker used by Markdown code headers.
+	 * Code headers are deliberately readable in plain terminals: unlike tool
+	 * cells, they do not inherit Nerd Font glyphs or brand-color styling.
+	 */
+	getLangIconAscii(lang: string | undefined): string {
+		if (!lang) return SYMBOL_PRESETS.ascii["lang.default"];
+		const key = langMap[lang.toLowerCase()];
+		return key ? SYMBOL_PRESETS.ascii[key] : SYMBOL_PRESETS.ascii["lang.default"];
+	}
 }

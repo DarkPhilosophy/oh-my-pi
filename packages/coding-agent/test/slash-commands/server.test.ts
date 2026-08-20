@@ -7,12 +7,15 @@ import {
 } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { handleServerCommand, parseServerCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/helpers/server";
 
-describe("/server command", () => {
+describe("/daemon command", () => {
 	it("parses supported operations and defaults to status", () => {
 		expect(parseServerCommand("")).toBe("status");
 		expect(parseServerCommand("sessions")).toBe("sessions");
 		expect(parseServerCommand(" reconnect ")).toBe("reconnect");
+		expect(parseServerCommand("kill --force")).toBe("kill");
+		expect(parseServerCommand("refresh --graceful")).toBe("refresh");
 		expect(parseServerCommand("stop now")).toBeNull();
+		expect(parseServerCommand("kill grateful")).toBeNull();
 	});
 
 	it("is registered and dispatches injected TUI controls", async () => {
@@ -35,9 +38,10 @@ describe("/server command", () => {
 			},
 		} as unknown as BuiltinSlashCommandRuntime;
 
+		expect(lookupBuiltinSlashCommand("daemon")).toBeDefined();
 		expect(lookupBuiltinSlashCommand("server")).toBeDefined();
-		expect(getBuiltinSlashCommandOwnership("server")).toBe("client");
-		expect(await executeBuiltinSlashCommand("/server sessions", runtime)).toBe(true);
+		expect(getBuiltinSlashCommandOwnership("daemon")).toBe("client");
+		expect(await executeBuiltinSlashCommand("/daemon sessions", runtime)).toBe(true);
 		expect(editorText).toEqual([""]);
 		expect(output).toEqual(["session-a\nsession-b"]);
 	});
@@ -55,7 +59,7 @@ describe("/server command", () => {
 			},
 		});
 		expect(calls).toEqual(["reconnect"]);
-		expect(output).toEqual(["server reconnect requested"]);
+		expect(output).toEqual(["daemon reconnect requested"]);
 	});
 
 	it("reports shutdown blockers without claiming the daemon stopped", async () => {
@@ -67,7 +71,33 @@ describe("/server command", () => {
 			},
 			stop: async () => ({ shutdown: false, blockers: ["clients", "protected_jobs"] }),
 		});
-		expect(output).toEqual(["server stop blocked: clients, protected_jobs"]);
+		expect(output).toEqual(["daemon stop blocked: clients, protected_jobs"]);
+	});
+
+	it("maps kill and refresh with force through injected callbacks", async () => {
+		const calls: Array<[string, boolean | undefined]> = [];
+		const output: string[] = [];
+		const callbacks = {
+			snapshot: { state: "direct" as const },
+			output: (text: string) => {
+				output.push(text);
+			},
+			kill: (force?: boolean) => {
+				calls.push(["kill", force]);
+				return { shutdown: true, blockers: [] };
+			},
+			refresh: (force?: boolean) => {
+				calls.push(["refresh", force]);
+				return { shutdown: true, blockers: [] };
+			},
+		};
+		await handleServerCommand("kill --force", callbacks);
+		await handleServerCommand("refresh --graceful", callbacks);
+		expect(calls).toEqual([
+			["kill", true],
+			["refresh", false],
+		]);
+		expect(output).toEqual(["daemon kill requested forcefully", "daemon refresh requested"]);
 	});
 
 	it("confirms a successful daemon stop", async () => {
@@ -79,6 +109,6 @@ describe("/server command", () => {
 			},
 			stop: async () => ({ shutdown: true, blockers: [] }),
 		});
-		expect(output).toEqual(["server stop requested"]);
+		expect(output).toEqual(["daemon stop requested"]);
 	});
 });

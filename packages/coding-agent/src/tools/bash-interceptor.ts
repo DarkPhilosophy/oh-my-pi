@@ -8,6 +8,15 @@
 import { type BashInterceptorRule, DEFAULT_BASH_INTERCEPTOR_RULES } from "../config/settings-schema";
 import { extractFlatShellCommandSegments } from "./shell-tokenize";
 
+export interface BuiltinForward {
+	/** Hardcoded built-in name; never taken from a user-configured rule. */
+	tool: "read" | "grep" | "glob";
+	/** Validated input for the built-in tool. */
+	input: Record<string, unknown>;
+	/** Read selector produced by the planner, kept separate from the path. */
+	selector?: string;
+}
+
 export interface InterceptionResult {
 	/** If true, the bash command should be blocked */
 	block: boolean;
@@ -15,6 +24,8 @@ export interface InterceptionResult {
 	message?: string;
 	/** Suggested tool to use instead */
 	suggestedTool?: string;
+	/** Safe, simple-command forwarding plan when the built-in mode is enabled. */
+	forward?: BuiltinForward;
 }
 
 /**
@@ -109,6 +120,128 @@ function interceptionCandidates(command: string): string[] {
 	return candidates;
 }
 
+type SimpleShellWord = { value: string; quoted: boolean };
+
+/**
+ * Conservative lexer for commands eligible for re-forwarding. Unlike the
+ * interceptor matcher, this rejects shell operators and expansions rather than
+ * trying to reproduce shell semantics.
+ */
+function tokenizeSimpleShell(command: string): SimpleShellWord[] | undefined {
+	const words: SimpleShellWord[] = [];
+	let value = "";
+	let quoted = false;
+	let quote: "'" | '"' | undefined;
+	const push = (): void => {
+		if (value.length > 0 || quoted) words.push({ value, quoted });
+		value = "";
+		quoted = false;
+	};
+	for (let i = 0; i < command.length; i++) {
+		const ch = command[i];
+		if (";&|<>();$`\n\r".includes(ch)) return [];
+		if (quote === "'") {
+			if (ch === "'") quote = undefined;
+			else value += ch;
+			quoted = true;
+			continue;
+		}
+		if (quote === '"') {
+			if (ch === '"') {
+				quote = undefined;
+				continue;
+			}
+			if (ch === "\\" && i + 1 < command.length) {
+				if (";&|<>();$`\n\r".includes(command[i + 1] as string)) return [];
+				value += command[++i] as string;
+				quoted = true;
+				continue;
+			}
+			value += ch;
+			quoted = true;
+			continue;
+		}
+		if (ch === "'" || ch === '"') {
+			quote = ch;
+			quoted = true;
+			continue;
+		}
+		if (ch === "\\") {
+			if (i + 1 >= command.length || ";&|<>();$`\n\r".includes(command[i + 1] as string)) return [];
+			value += command[++i] as string;
+			continue;
+		}
+		if (ch === " " || ch === "\t") {
+			push();
+			continue;
+		}
+		value += ch;
+	}
+	if (quote !== undefined) return [];
+	push();
+	return words;
+}
+
+function parseSimpleForward(command: string, tool: string): BuiltinForward | undefined {
+	const words = tokenizeSimpleShell(command);
+	if (!words || words.length < 2) return undefined;
+	const executable = words[0]?.value.toLowerCase();
+	if (!executable || words[0]?.quoted || words.some(word => word.value.length === 0 && !word.quoted)) return undefined;
+	const args = words.slice(1).map(word => word.value);
+
+	if (tool === "read" && executable === "cat") {
+		if (args.length !== 1 || !args[0] || args[0].startsWith("-")) return undefined;
+		return { tool: "read", input: { path: args[0] } };
+	}
+
+	if (tool === "read" && executable === "head") {
+		let count: string | undefined;
+		if (args[0] === "-n" && args[1]) {
+			count = args[1];
+			args.splice(0, 2);
+		} else if (/^-[0-9]+$/.test(args[0] ?? "")) {
+			count = args.shift()?.slice(1);
+		}
+		if (!count || !/^[0-9]+$/.test(count) || args.length !== 1 || !args[0] || args[0].startsWith("-"))
+			return undefined;
+		return { tool: "read", input: { path: args[0] }, selector: `1-${count}` };
+	}
+
+	if (tool === "grep" && executable === "grep") {
+		let caseSensitive = true;
+		if (args[0] === "-i") {
+			caseSensitive = false;
+			args.shift();
+		}
+		if (args[0] === "--") args.shift();
+		if (
+			args.length < 1 ||
+			args.length > 2 ||
+			!args[0] ||
+			(args[0].startsWith("-") && args[0] !== "--") ||
+			args[1]?.startsWith("-")
+		)
+			return undefined;
+		const input: Record<string, unknown> = { pattern: args[0], case: caseSensitive, gitignore: true };
+		if (args[1]) input.path = args[1];
+		return { tool: "grep", input };
+	}
+
+	if (tool === "glob" && executable === "find") {
+		if (
+			args.length !== 3 ||
+			!args[0] ||
+			args[0].startsWith("-") ||
+			args[1] !== "-name" ||
+			!args[2] ||
+			args[2].startsWith("-")
+		)
+			return undefined;
+		return { tool: "glob", input: { path: `${args[0]}/**/${args[2]}`, hidden: true, gitignore: false } };
+	}
+	return undefined;
+}
+
 /**
  * Check if a bash command should be intercepted.
  *
@@ -139,6 +272,11 @@ export function checkBashInterception(
 					block: true,
 					message: `Blocked: ${rule.message}\n\nOriginal command: ${originalCommand}`,
 					suggestedTool: rule.tool,
+					// Only the full command may re-forward. Segment candidates
+					// (pipeline stages, `a && b`, stripped `VAR=1` prefixes) stay
+					// block-only: their semantics cannot be reproduced by a
+					// single built-in tool call.
+					forward: candidate === command.trim() ? parseSimpleForward(candidate, rule.tool) : undefined,
 				};
 			}
 		}

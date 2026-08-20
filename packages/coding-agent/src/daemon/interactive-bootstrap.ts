@@ -14,7 +14,7 @@ import { SessionManager } from "../session/session-manager";
 import { resolveWorkerSpawnCmd, workerEnvFromParent } from "../subprocess/worker-client";
 import { daemonBuildStamp } from "./build-stamp";
 import { createDaemonClient, type DaemonClient } from "./client";
-import { DAEMON_PROTOCOL_MAJOR, type DaemonOperation } from "./protocol";
+import { DAEMON_PROTOCOL_MAJOR, type DaemonOperation, type DaemonServerStatus } from "./protocol";
 import type { DaemonConnectionSnapshot, DaemonProfile } from "./status";
 import { ClientTerminalBridge, clientTerminalEnvSnapshot } from "./terminal-bridge";
 
@@ -138,7 +138,7 @@ type SpawnedDaemonServer = {
 	unref(): void;
 };
 
-function spawnDaemonServer(
+export function spawnDaemonServer(
 	profile: DaemonProfile,
 	runtimeDir?: string,
 	stderr: "inherit" | "ignore" = "inherit",
@@ -203,6 +203,35 @@ async function readDaemonOwnerPid(runtimeDir: string): Promise<number | undefine
 }
 
 /**
+ * Project a `server_status` payload for a daemon that predates the operation.
+ * The handshake snapshot carries every field the daemon reported; missing
+ * counters are legitimately zero, and the pid comes from the owner lease.
+ */
+async function legacyServerStatus(client: DaemonClient): Promise<DaemonServerStatus> {
+	const snapshot = client.snapshot;
+	if (snapshot.state !== "connected") throw new Error("Daemon connection is not established");
+	const pid = snapshot.pid ?? (await readDaemonOwnerPid(client.runtimeDir));
+	if (pid === undefined) {
+		throw new Error(`Daemon owner pid is unavailable in ${client.runtimeDir}`);
+	}
+	return {
+		daemonId: snapshot.daemonId ?? "",
+		serverVersion: snapshot.serverVersion,
+		protocolVersion: snapshot.protocolVersion,
+		shard: snapshot.shard,
+		sessionCount: snapshot.sessionCount,
+		activeSessionCount: snapshot.activeSessionCount ?? 0,
+		idleSessionCount: snapshot.idleSessionCount ?? 0,
+		attachmentCount: snapshot.attachmentCount ?? 0,
+		connectionCount: snapshot.connectionCount ?? 0,
+		protectedJobCount: snapshot.protectedJobCount ?? 0,
+		pid,
+		...(snapshot.socketPath === undefined ? {} : { socketPath: snapshot.socketPath }),
+		uptimeMs: snapshot.uptimeMs ?? 0,
+	};
+}
+
+/**
  * SIGTERM the owner of a daemon speaking an OLDER protocol major. It cannot
  * serve this client and cannot be asked to shut down over the wire, so the
  * polite build-pairing takeover (which checks blockers first) is unreachable
@@ -228,7 +257,7 @@ async function signalOlderProtocolOwner(client: DaemonClient, serverMajor: numbe
 	}
 }
 
-async function connectWithSpawn(
+export async function connectWithSpawn(
 	client: DaemonClient,
 	profile: DaemonProfile,
 	runtimeDir: string | undefined,
@@ -358,6 +387,31 @@ async function requestWithTransportRecovery(
 		if (!isTransportUnavailableError(error)) throw error;
 		await connectWithSpawn(client, profile, runtimeDir, startTimeoutMs, spawnDaemon);
 		return client.request(operation, payload);
+	}
+}
+
+/**
+ * Start (or connect to) the detached daemon without creating an interactive
+ * session. This is the lifecycle entry used by `omp daemon start|bgjob`.
+ */
+export async function startDaemonBackground(
+	options: { profile?: DaemonProfile; runtimeDir?: string; startTimeoutMs?: number } = {},
+): Promise<DaemonServerStatus> {
+	const profile = options.profile === undefined ? (getActiveProfile() ?? null) : options.profile;
+	const startTimeoutMs = options.startTimeoutMs ?? DAEMON_START_TIMEOUT_MS;
+	const client = await createDaemonClient({ profile, runtimeDir: options.runtimeDir });
+	try {
+		await connectWithSpawn(client, profile, client.runtimeDir, startTimeoutMs, spawnDaemonServer, "ignore");
+		await ensureDaemonBuildPairing(client, {
+			localStamp: await daemonBuildStamp(),
+			spawn: () => spawnDaemonServer(profile, client.runtimeDir, "ignore").unref(),
+			readOwnerPid: () => readDaemonOwnerPid(client.runtimeDir),
+			waitMs: startTimeoutMs,
+		});
+		if (client.hasCapability("server_status")) return await client.serverStatus();
+		return await legacyServerStatus(client);
+	} finally {
+		client.close();
 	}
 }
 
@@ -600,12 +654,16 @@ export async function bootstrapDaemonInteractive(
 		}
 	}
 	const handle = new RemoteSessionHandle(client, sessionId, {
-		delivery: "terminal",
-		reconnectWaitMs: 60_000,
+		// Interactive clients need semantic session events as well as terminal
+		// output. thinking_delta is nested in message_update and is lost by the
+		// terminal-only projection.
+		delivery: "all",
 		recover: async () => {
 			await client.request({ ...createOperation, sessionId });
 		},
 	});
+	// Keep the daemon's semantic stream attached to the interactive client;
+	// terminal-only delivery replaces message_update frames and hides thinking.
 	await handle.whenReady();
 	bootstrapComplete = true;
 	return {

@@ -148,6 +148,21 @@ describe("theme auto-detection", () => {
 		expect(detectSpy).not.toHaveBeenCalled();
 	});
 
+	it("uses the hosted client's color mode instead of daemon env", async () => {
+		using _globals = withThemeTestGlobals({ colorfgbg: "15;0" });
+		await themeModule.initTheme(false, undefined, undefined, "dark", "light", {
+			TERM: "dumb",
+			COLORTERM: "",
+		});
+		expect(themeModule.theme.getColorMode()).toBe("256color");
+
+		await themeModule.initTheme(false, undefined, undefined, "dark", "light", {
+			TERM: "xterm-256color",
+			COLORTERM: "truecolor",
+		});
+		expect(themeModule.theme.getColorMode()).toBe("truecolor");
+	});
+
 	it("keeps honoring terminal-reported appearance outside fallback mode", async () => {
 		using _globals = withThemeTestGlobals();
 		const detectSpy = vi.spyOn(nativesModule, "detectMacOSAppearance").mockReturnValue(MacOSAppearance.Light);

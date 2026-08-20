@@ -6,6 +6,8 @@ import {
 import type { EditorTheme, MarkdownTheme, SelectListTheme, SettingsListTheme, SymbolTheme } from "@oh-my-pi/pi-tui";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+import { isSettingsInitialized, settings } from "../../config/settings";
+import { registerCopyBlock } from "../../utils/copy-store";
 import { resolveMermaidAscii } from "./mermaid-cache";
 import { theme } from "./theme";
 import type { Theme } from "./theme-class";
@@ -135,10 +137,18 @@ export function getSymbolTheme(): SymbolTheme {
 let cachedMarkdownTheme: MarkdownTheme | undefined;
 let cachedMarkdownThemeRef: Theme | undefined;
 let markdownMermaidRendering = true;
+let codeGuidanceTrail = true;
 
 export function setMarkdownMermaidRendering(enabled: boolean): void {
 	if (markdownMermaidRendering === enabled) return;
 	markdownMermaidRendering = enabled;
+	cachedMarkdownTheme = undefined;
+}
+
+/** Toggle the ├─/└─/│ gutter inside fenced code blocks (tui.codeGuidanceTrail). */
+export function setCodeGuidanceTrail(enabled: boolean): void {
+	if (codeGuidanceTrail === enabled) return;
+	codeGuidanceTrail = enabled;
 	cachedMarkdownTheme = undefined;
 }
 
@@ -170,6 +180,16 @@ export function getMarkdownTheme(): MarkdownTheme {
 		code: (text: string) => theme.fg("mdCode", text),
 		codeBlock: (text: string) => theme.fg("mdCodeBlock", text),
 		codeBlockBorder: (text: string) => theme.fg("mdCodeBlockBorder", text),
+		// Markdown composes the marker with the readable language name.
+		// Keep this callback to the semantic icon so the header cannot become `JS js`.
+		codeBlockLanguage: (lang: string) => theme.getLangIconStyled(lang),
+		/** Steering-style ├─/└─/│ gutter inside fenced code blocks. */
+		guidanceTrail: codeGuidanceTrail,
+		/** Footer chip on fenced code blocks; clickable via OSC 8 → `omp copy`. */
+		copyChip: "copy",
+		/** Inline `omp-copy:<len>.<base64url>` click target — code in the URL, no store. */
+		copyChipTarget: (code: string) =>
+			isSettingsInitialized() && settings.get("tui.hyperlinks") !== "off" ? registerCopyBlock(code) : undefined,
 		quote: (text: string) => theme.fg("mdQuote", text),
 		quoteBorder: (text: string) => theme.fg("mdQuoteBorder", text),
 		hr: (text: string) => theme.fg("mdHr", text),

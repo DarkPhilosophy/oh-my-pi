@@ -1,7 +1,9 @@
 import * as os from "node:os";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
+import { setTerminalEnvironment } from "@oh-my-pi/pi-tui";
 import { logger, type postmortem, setProjectDir, VERSION } from "@oh-my-pi/pi-utils";
+import { setChalkEnvironment } from "@oh-my-pi/pi-utils/chalk";
 import { createProjectDirScope, getActiveProfile } from "@oh-my-pi/pi-utils/dirs";
 import { reset as resetCapabilities } from "../capability";
 import { type Args, parseArgs } from "../cli/args";
@@ -32,7 +34,7 @@ import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "../
 import { isRpcHostUriResult, RpcHostUriBridge } from "../modes/rpc/host-uris";
 import type { RpcCommand, RpcSessionState } from "../modes/rpc/rpc-types";
 import { submitInteractiveInput } from "../modes/submit-interactive-input";
-import { initTheme } from "../modes/theme/theme";
+import { initTheme, onTerminalAppearanceChange } from "../modes/theme/theme";
 import { type AgentRegistry, createAgentRegistryScope } from "../registry/agent-registry";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "../sdk";
 import { createAgentSession, discoverAuthStorage } from "../sdk";
@@ -117,6 +119,7 @@ export type DaemonSessionRuntime = {
 	readonly cwd: string;
 	readonly session: DaemonSession;
 	readonly protectedJobCount?: () => number;
+	requestClientExit?(): void;
 	snapshot(): DaemonSessionSnapshot;
 	command(command: unknown, attachmentId?: string): Promise<unknown>;
 	dispose(reason?: postmortem.Reason): Promise<void>;
@@ -136,12 +139,25 @@ export type DaemonSessionCreateOverrides = {
 	/** Terminal-identity env of the creating client (never the full env). */
 	clientEnv?: Record<string, string>;
 };
-
 export type HostedServerControls = {
 	getSnapshot(): DaemonConnectionSnapshot;
 	sessions?(): Promise<string> | string;
 	reconnect?(): Promise<void> | void;
-	stop?():
+	stop?(
+		force?: boolean,
+	):
+		| Promise<{ shutdown?: boolean; blockers?: string[] } | undefined>
+		| { shutdown?: boolean; blockers?: string[] }
+		| undefined;
+	kill?(
+		force?: boolean,
+	):
+		| Promise<{ shutdown?: boolean; blockers?: string[] } | undefined>
+		| { shutdown?: boolean; blockers?: string[] }
+		| undefined;
+	refresh?(
+		force?: boolean,
+	):
 		| Promise<{ shutdown?: boolean; blockers?: string[] } | undefined>
 		| { shutdown?: boolean; blockers?: string[] }
 		| undefined;
@@ -623,21 +639,37 @@ async function createAgentSessionRuntimeInScope(
 				task: Promise<void>;
 		  }
 		| undefined;
+	const requestClientExit = (): void => {
+		hosted?.mode.detachHosted("exit");
+	};
 
 	const startHostedInteractive = async (attachmentId: string, descriptor: HostedTerminalDescriptor): Promise<void> => {
 		if (hosted) throw new Error("An interactive terminal is already attached");
 		// A reattach may come from a different terminal (pane/multiplexer);
-		// refresh the per-session client identity for extensions.
-		if (descriptor.clientEnv) result.session.extensionRunner?.setClientEnv(descriptor.clientEnv);
+		// refresh every client-owned terminal decision, not only extensions.
+		if (descriptor.clientEnv) {
+			result.session.extensionRunner?.setClientEnv(descriptor.clientEnv);
+			setTerminalEnvironment(descriptor.clientEnv);
+		}
+		// Hosted output is always consumed by the attached terminal, even though
+		// this daemon's own stdout is /dev/null. Keep old clients without an env
+		// snapshot styled using the daemon markers while treating output as TTY.
+		setChalkEnvironment(descriptor.clientEnv ?? Bun.env);
 		const terminal = new HostedTerminal(descriptor);
 		terminal.setOutput(data => emitBridgeEvent({ type: "terminal_output", data }));
 		const sessionSettings = result.session.settings;
+		// Seed the client-reported appearance before theme auto-detection. The daemon
+		// process may have been spawned from a different terminal environment.
+		if (descriptor.appearance !== undefined) {
+			onTerminalAppearanceChange(descriptor.appearance, { ephemeral: true });
+		}
 		await initTheme(
 			true,
 			sessionSettings.get("symbolPreset"),
 			sessionSettings.get("colorBlindMode"),
 			sessionSettings.get("theme.dark"),
 			sessionSettings.get("theme.light"),
+			descriptor.clientEnv,
 		);
 		setProjectDir(result.session.sessionManager.getCwd());
 		// The terminal client is a separate process from this scoped daemon
@@ -692,11 +724,15 @@ async function createAgentSessionRuntimeInScope(
 			...serverControls,
 			getSnapshot: getSessionServerSnapshot,
 		};
-		(mode as InteractiveMode & { server: HostedServerControls }).server = sessionServerControls;
+		(mode as InteractiveMode & { daemon: HostedServerControls }).daemon = sessionServerControls;
 		mode.setDaemonSnapshot(sessionServerControls.getSnapshot());
 		await mode.init({ clearInitialTerminalHistory: true });
 		mode.setDaemonSnapshot(sessionServerControls.getSnapshot());
-		mode.renderInitialMessages({
+		// Transcript replay yields while rebuilding large histories. Wait for it
+		// to commit before accepting initial prompts or live terminal input;
+		// otherwise streamed components can race the replay and be reordered or
+		// discarded by the staged-container swap.
+		await mode.renderInitialMessages({
 			preserveExistingChat: true,
 			clearTerminalHistory: true,
 		});
@@ -1011,12 +1047,11 @@ async function createAgentSessionRuntimeInScope(
 					throw new Error("Unsupported daemon RpcCommand");
 			}
 		},
+		requestClientExit,
 		dispose: async reason => {
 			logger.debug("Daemon runtime dispose started", { sessionId });
 			const hostedTask = hosted?.task;
 			hosted?.mode.detachHosted();
-			await hostedTask;
-			logger.debug("Daemon runtime hosted task settled", { sessionId });
 			unsubscribeSession();
 			unsubscribeCommandMetadata();
 			for (const resolve of pendingExtensionResponses.values()) resolve({ cancelled: true });
@@ -1024,10 +1059,14 @@ async function createAgentSessionRuntimeInScope(
 			hostUriBridge.clear();
 			hostToolBridge.rejectAllPending("Daemon session disposed");
 			logger.debug("Daemon runtime session dispose started", { sessionId });
-			await session.dispose({
+			// Start the session teardown before awaiting the hosted task: a hosted
+			// task parked in `prompt()` only unblocks once dispose aborts the turn,
+			// so awaiting it first would make a forced shutdown wait for the model.
+			const sessionDisposal = session.dispose({
 				mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
 				...(reason === undefined ? {} : { reason }),
 			});
+			await Promise.all([hostedTask, sessionDisposal]);
 			logger.debug("Daemon runtime session dispose settled", { sessionId });
 		},
 		subscribe: (listener: AgentSessionEventListener) => {
@@ -1069,7 +1108,8 @@ export function createAgentSessionRuntime(options: CreateAgentSessionRuntimeOpti
 				snapshot: () => runInScope(() => runtime.snapshot()),
 				command: (command: unknown, attachmentId?: string) =>
 					runInScope(() => runtime.command(command, attachmentId)),
-				dispose: () => runInScope(() => runtime.dispose()),
+				requestClientExit: () => runInScope(() => runtime.requestClientExit?.()),
+				dispose: (reason?: postmortem.Reason) => runInScope(() => runtime.dispose(reason)),
 				subscribe: (listener: AgentSessionEventListener) => {
 					const unsubscribe = runInScope(() => runtime.subscribe(event => runInScope(() => listener(event))));
 					return () => runInScope(unsubscribe);

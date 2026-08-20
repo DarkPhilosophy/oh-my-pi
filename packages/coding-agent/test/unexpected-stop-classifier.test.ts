@@ -7,6 +7,7 @@ import {
 	isUnexpectedStopCandidate,
 	parseUnexpectedStopClassification,
 } from "@oh-my-pi/pi-coding-agent/session/unexpected-stop-classifier";
+import { tinyModelClient } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
 
 function makeAssistantMessage(options: {
 	stopReason: AssistantMessage["stopReason"];
@@ -146,6 +147,124 @@ describe("classifyUnexpectedStop", () => {
 		expect(options?.maxTokens).toBe(4096);
 		expect(options?.maxTokens).toBeGreaterThan(1024);
 	});
+});
+
+it("returns the online result without invoking the local fallback", async () => {
+	const baseModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+	if (!baseModel) throw new Error("Expected bundled Claude Sonnet 4.5 model");
+	const settings = {
+		get(path: string) {
+			if (path === "providers.unexpectedStopModel") return "online";
+			if (path === "providers.unexpectedStopFallbackModel") return "qwen2.5-1.5b";
+			return undefined;
+		},
+		getModelRole(role: string) {
+			return role === "smol" ? `${baseModel.provider}/${baseModel.id}` : undefined;
+		},
+	} as never;
+	const registry = {
+		getAvailable: () => [baseModel],
+		getApiKey: async () => "test-key",
+		resolver: () => async () => "test-key",
+	} as never;
+	vi.spyOn(ai, "completeSimple").mockResolvedValue({
+		stopReason: "stop",
+		content: [{ type: "text", text: "YES" }],
+	} as never);
+	const localComplete = vi.spyOn(tinyModelClient, "complete");
+
+	await expect(
+		classifyUnexpectedStop("I will continue.", { settings, registry, sessionId: "session-1" }),
+	).resolves.toBe(true);
+	expect(localComplete).not.toHaveBeenCalled();
+});
+
+it("uses the configured local fallback after an online failure", async () => {
+	const baseModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+	if (!baseModel) throw new Error("Expected bundled Claude Sonnet 4.5 model");
+	const settings = {
+		get(path: string) {
+			if (path === "providers.unexpectedStopModel") return "online";
+			if (path === "providers.unexpectedStopFallbackModel") return "qwen2.5-1.5b";
+			return undefined;
+		},
+		getModelRole(role: string) {
+			return role === "smol" ? `${baseModel.provider}/${baseModel.id}` : undefined;
+		},
+	} as never;
+	const registry = {
+		getAvailable: () => [baseModel],
+		getApiKey: async () => "test-key",
+		resolver: () => async () => "test-key",
+	} as never;
+	vi.spyOn(ai, "completeSimple").mockRejectedValue(new Error("online unavailable"));
+	const localComplete = vi.spyOn(tinyModelClient, "complete").mockResolvedValue("NO");
+
+	await expect(
+		classifyUnexpectedStop("I will continue.", { settings, registry, sessionId: "session-1" }),
+	).resolves.toBe(false);
+	expect(localComplete).toHaveBeenCalledWith(
+		"qwen2.5-1.5b",
+		expect.any(String),
+		expect.objectContaining({ maxTokens: 16 }),
+	);
+});
+
+it("does not use the fallback for an ambiguous online response", async () => {
+	const baseModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+	if (!baseModel) throw new Error("Expected bundled Claude Sonnet 4.5 model");
+	const settings = {
+		get(path: string) {
+			if (path === "providers.unexpectedStopModel") return "online";
+			if (path === "providers.unexpectedStopFallbackModel") return "qwen2.5-1.5b";
+			return undefined;
+		},
+		getModelRole(role: string) {
+			return role === "smol" ? `${baseModel.provider}/${baseModel.id}` : undefined;
+		},
+	} as never;
+	const registry = {
+		getAvailable: () => [baseModel],
+		getApiKey: async () => "test-key",
+		resolver: () => async () => "test-key",
+	} as never;
+	vi.spyOn(ai, "completeSimple").mockResolvedValue({
+		stopReason: "stop",
+		content: [{ type: "text", text: "maybe" }],
+	} as never);
+	const localComplete = vi.spyOn(tinyModelClient, "complete");
+
+	await expect(
+		classifyUnexpectedStop("I will continue.", { settings, registry, sessionId: "session-1" }),
+	).resolves.toBeUndefined();
+	expect(localComplete).not.toHaveBeenCalled();
+});
+
+it("returns undefined when both online and fallback classification fail", async () => {
+	const baseModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+	if (!baseModel) throw new Error("Expected bundled Claude Sonnet 4.5 model");
+	const settings = {
+		get(path: string) {
+			if (path === "providers.unexpectedStopModel") return "online";
+			if (path === "providers.unexpectedStopFallbackModel") return "qwen2.5-1.5b";
+			return undefined;
+		},
+		getModelRole(role: string) {
+			return role === "smol" ? `${baseModel.provider}/${baseModel.id}` : undefined;
+		},
+	} as never;
+	const registry = {
+		getAvailable: () => [baseModel],
+		getApiKey: async () => "test-key",
+		resolver: () => async () => "test-key",
+	} as never;
+	vi.spyOn(ai, "completeSimple").mockRejectedValue(new Error("online unavailable"));
+	const localComplete = vi.spyOn(tinyModelClient, "complete").mockRejectedValue(new Error("local unavailable"));
+
+	await expect(
+		classifyUnexpectedStop("I will continue.", { settings, registry, sessionId: "session-1" }),
+	).resolves.toBeUndefined();
+	expect(localComplete).toHaveBeenCalledTimes(1);
 });
 
 describe("parseUnexpectedStopClassification", () => {

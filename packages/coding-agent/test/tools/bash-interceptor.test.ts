@@ -28,6 +28,131 @@ function createBashTool(rules: BashInterceptorRule[]): BashTool {
 	return new BashTool(session);
 }
 
+function createForwardingBashTool(options?: {
+	toolName?: string;
+	tool?: { name: string; execute: (...args: unknown[]) => Promise<unknown> };
+	hasBuiltInTool?: boolean;
+	asyncEnabled?: boolean;
+}): { tool: BashTool; forwardedInputs: Array<Record<string, unknown>> } {
+	const forwardedInputs: Array<Record<string, unknown>> = [];
+	const target =
+		options?.tool ??
+		({
+			name: options?.toolName ?? "grep",
+			async execute(_id: unknown, input: unknown) {
+				forwardedInputs.push(input as Record<string, unknown>);
+				return { content: [{ type: "text", text: "forwarded result" }] };
+			},
+		} as const);
+	const session = {
+		cwd: "/workspace",
+		settings: {
+			get(key: string) {
+				if (key === "bashInterceptor.enabled") return true;
+				if (key === "bashInterceptor.forwardSimpleCommands") return true;
+				if (key === "async.enabled") return options?.asyncEnabled ?? true;
+				if (key === "bash.autoBackground.enabled") return false;
+				if (key === "bash.autoBackground.thresholdMs") return 60_000;
+				return undefined;
+			},
+			getBashInterceptorRules() {
+				return DEFAULT_BASH_INTERCEPTOR_RULES;
+			},
+		},
+		getToolByName(name: string) {
+			return name === (options?.toolName ?? "grep") ? target : undefined;
+		},
+		hasBuiltInTool(name: string) {
+			return name === (options?.toolName ?? "grep") ? (options?.hasBuiltInTool ?? true) : undefined;
+		},
+	} as unknown as ToolSession;
+	return { tool: new BashTool(session), forwardedInputs };
+}
+
+function grepContext(): AgentToolContext {
+	return { toolNames: ["bash", "grep"] } as AgentToolContext;
+}
+
+async function expectNormalInterceptorBlock(input: BashToolInput): Promise<void> {
+	const { tool, forwardedInputs } = createForwardingBashTool();
+	await expect(tool.execute("tool-call", input, undefined, undefined, grepContext())).rejects.toThrow(
+		"Use the `grep` tool instead",
+	);
+	expect(forwardedInputs).toHaveLength(0);
+}
+
+describe("BashTool simple-command forwarding", () => {
+	it.each([
+		["async", { command: "grep needle file.txt", async: true }],
+		["environment", { command: "grep needle file.txt", env: { NEEDLE: "value" } }],
+		["PTY", { command: "grep needle file.txt", pty: true }],
+		["internal URL", { command: "grep needle local://file.txt" }],
+		["timeout", { command: "grep needle file.txt", timeout: 30 }],
+	] satisfies Array<[string, BashToolInput]>)(
+		"keeps the normal interceptor block for %s calls",
+		async (_name, input) => {
+			await expectNormalInterceptorBlock(input);
+		},
+	);
+
+	it("preserves quoted patterns, spaced paths, and ---terminated arguments byte-for-byte", async () => {
+		const { tool, forwardedInputs } = createForwardingBashTool();
+		await tool.execute(
+			"tool-call",
+			{ command: "grep -- 'a b' 'dir/file name.txt'" },
+			undefined,
+			undefined,
+			grepContext(),
+		);
+		expect(forwardedInputs).toEqual([
+			{ pattern: "a b", path: "/workspace/dir/file name.txt", case: true, gitignore: true },
+		]);
+	});
+
+	it("blocks forwarding when a leading cd uses an internal URL", async () => {
+		const { tool, forwardedInputs } = createForwardingBashTool();
+		await expect(
+			tool.execute(
+				"tool-call",
+				{ command: "cd local://dir && grep needle file.txt" },
+				undefined,
+				undefined,
+				grepContext(),
+			),
+		).rejects.toThrow("Use the `grep` tool instead");
+		expect(forwardedInputs).toHaveLength(0);
+	});
+
+	it("keeps planner selectors separate from literal colon-digit paths", async () => {
+		expect(checkBashInterception("head -n 2 'a:1'", ["read"]).forward).toEqual({
+			tool: "read",
+			input: { path: "a:1" },
+			selector: "1-2",
+		});
+	});
+
+	it("rejects a resolved tool that would recurse into Bash", async () => {
+		const recursive = {
+			name: "bash",
+			async execute() {
+				throw new Error("must not recurse");
+			},
+		};
+		const { tool } = createForwardingBashTool({ tool: recursive, toolName: "grep" });
+		await expect(
+			tool.execute("tool-call", { command: "grep needle file.txt" }, undefined, undefined, grepContext()),
+		).rejects.toThrow("Use the `grep` tool instead");
+	});
+
+	it("keeps the normal block for a shadowing non-built-in target", async () => {
+		const { tool, forwardedInputs } = createForwardingBashTool({ hasBuiltInTool: false });
+		await expect(
+			tool.execute("tool-call", { command: "grep needle file.txt" }, undefined, undefined, grepContext()),
+		).rejects.toThrow("Use the `grep` tool instead");
+		expect(forwardedInputs).toHaveLength(0);
+	});
+});
+
 describe("BashTool interception", () => {
 	it("checks the original command before leading cd normalization", async () => {
 		const tool = createBashTool([

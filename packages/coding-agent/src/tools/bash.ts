@@ -29,7 +29,7 @@ import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
-import { checkBashInterception } from "./bash-interceptor";
+import { type BuiltinForward, checkBashInterception } from "./bash-interceptor";
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
 import { resolveEvalBackends } from "./eval-backends";
@@ -626,6 +626,34 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		return outputText || "(no output)";
 	}
 
+	async #executeBuiltinForward(
+		plan: BuiltinForward,
+		toolCallId: string,
+		signal: AbortSignal | undefined,
+		ctx: AgentToolContext | undefined,
+		baseCwd: string,
+	): Promise<AgentToolResult<BashToolDetails> | undefined> {
+		const tool = this.session.getToolByName?.(plan.tool);
+		if (!tool || tool === this || tool.name === "bash" || this.session.hasBuiltInTool?.(plan.tool) !== true)
+			return undefined;
+		const input = { ...plan.input };
+		if (typeof input.path === "string" && !input.path.includes("://")) {
+			input.path = resolveToCwd(input.path, baseCwd);
+			if (plan.selector) input.path = `${input.path}:${plan.selector}`;
+		}
+		const result = await tool.execute(`${toolCallId}:builtin:${plan.tool}`, input, signal, undefined, ctx);
+		return {
+			...result,
+			content: [
+				...result.content,
+				{
+					type: "text",
+					text: `[Forwarded by bash interceptor: executed with the built-in ${plan.tool} tool; use ${plan.tool} directly next time.]`,
+				},
+			],
+		} as AgentToolResult<BashToolDetails>;
+	}
+
 	/**
 	 * Throw for outcomes that are *not* a completed command: user aborts and a
 	 * missing exit status. Timeouts are handled separately by
@@ -981,13 +1009,37 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		// or the dedicated-tool command that follows the directory change.
 		if (this.session.settings.get("bashInterceptor.enabled")) {
 			const rules = this.session.settings.getBashInterceptorRules();
+			const forwardSimpleCommands = this.session.settings.get("bashInterceptor.forwardSimpleCommands");
 			const commandsToCheck = rawCommand === command ? [command] : [rawCommand, command];
+			let deferredInterception: { message?: string } | undefined;
 			for (const commandToCheck of commandsToCheck) {
 				const interception = checkBashInterception(commandToCheck, ctx?.toolNames ?? [], rules, rawCommand);
-				if (interception.block) {
-					throw new ToolError(interception.message ?? "Command blocked");
+				if (!interception.block) continue;
+				const hasForwardUnsupportedOptions =
+					asyncRequested ||
+					(rawEnv !== undefined && Object.keys(rawEnv).length > 0) ||
+					pty ||
+					rawCommand.includes("://") ||
+					rawTimeout !== 300;
+				if (forwardSimpleCommands && interception.forward && !hasForwardUnsupportedOptions) {
+					const forwarded = await this.#executeBuiltinForward(
+						interception.forward,
+						_toolCallId,
+						signal,
+						ctx,
+						cwd ? resolveToCwd(cwd, this.session.cwd) : this.session.cwd,
+					);
+					if (forwarded) return forwarded;
 				}
+				// A leading cd wrapper is checked before its normalized command. Defer
+				// its block so the simple command after `&&` can be forwarded safely.
+				if (forwardSimpleCommands && commandToCheck !== command) {
+					deferredInterception = interception;
+					continue;
+				}
+				throw new ToolError(interception.message ?? "Command blocked");
 			}
+			if (deferredInterception) throw new ToolError(deferredInterception.message ?? "Command blocked");
 		}
 
 		const internalUrlOptions: InternalUrlExpansionOptions = {

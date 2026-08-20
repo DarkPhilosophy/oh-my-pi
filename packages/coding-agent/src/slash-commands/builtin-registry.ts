@@ -44,7 +44,21 @@ type InjectedServerControls = {
 	getSnapshot?: () => DaemonConnectionSnapshot;
 	sessions?: () => Promise<string> | string;
 	reconnect?: () => Promise<void> | void;
-	stop?: () =>
+	stop?: (
+		force?: boolean,
+	) =>
+		| Promise<{ shutdown?: boolean; blockers?: string[] } | undefined>
+		| { shutdown?: boolean; blockers?: string[] }
+		| undefined;
+	kill?: (
+		force?: boolean,
+	) =>
+		| Promise<{ shutdown?: boolean; blockers?: string[] } | undefined>
+		| { shutdown?: boolean; blockers?: string[] }
+		| undefined;
+	refresh?: (
+		force?: boolean,
+	) =>
 		| Promise<{ shutdown?: boolean; blockers?: string[] } | undefined>
 		| { shutdown?: boolean; blockers?: string[] }
 		| undefined;
@@ -55,19 +69,22 @@ function injectedServerControls(ctx: InteractiveModeContext): InjectedServerCont
 		server?: InjectedServerControls;
 		daemon?: InjectedServerControls;
 	};
-	return candidate.server ?? candidate.daemon;
+	return candidate.daemon ?? candidate.server;
 }
 
-const SERVER_SLASH_COMMAND: SlashCommandSpec = {
-	name: "server",
+const DAEMON_SLASH_COMMAND: SlashCommandSpec = {
+	name: "daemon",
+	aliases: ["server"],
 	description: "Show daemon connection status and controls",
-	inlineHint: "[status|sessions|reconnect|stop]",
+	inlineHint: "[status|sessions|reconnect|stop|kill|refresh] [--force]",
 	allowArgs: true,
 	subcommands: [
 		{ name: "status", description: "Show daemon connection status" },
 		{ name: "sessions", description: "List daemon sessions" },
 		{ name: "reconnect", description: "Reconnect to the daemon" },
-		{ name: "stop", description: "Stop the daemon" },
+		{ name: "stop", description: "Stop the daemon gracefully" },
+		{ name: "kill", description: "Stop the daemon immediately or safely" },
+		{ name: "refresh", description: "Replace the daemon process" },
 	],
 	handleTui: async (command, runtime) => {
 		runtime.ctx.editor.setText("");
@@ -78,6 +95,8 @@ const SERVER_SLASH_COMMAND: SlashCommandSpec = {
 			sessions: controls?.sessions,
 			reconnect: controls?.reconnect,
 			stop: controls?.stop,
+			kill: controls?.kill,
+			refresh: controls?.refresh,
 		});
 	},
 };
@@ -92,7 +111,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	...BUILTIN_MODE_SLASH_COMMANDS,
 	...BUILTIN_COLLABORATION_SLASH_COMMANDS,
 	...BUILTIN_SESSION_SLASH_COMMANDS,
-	SERVER_SLASH_COMMAND,
+	DAEMON_SLASH_COMMAND,
 	...BUILTIN_LIFECYCLE_SLASH_COMMANDS,
 	...BUILTIN_MARKETPLACE_SLASH_COMMANDS,
 	...BUILTIN_CONTROL_SLASH_COMMANDS,

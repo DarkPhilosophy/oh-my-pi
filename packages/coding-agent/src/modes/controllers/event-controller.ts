@@ -1039,11 +1039,28 @@ export class EventController {
 		if (!this.#vocalizedMessageUpdates.delete(event)) {
 			this.#vocalizeDelta(event);
 		}
-		if (this.ctx.streamingComponent && event.message.role === "assistant") {
+		// Thinking can arrive before the provider emits the first visible text
+		// block. Unlock and apply the same visibility decision immediately, not
+		// only after a streaming component already exists.
+		if (event.message.role === "assistant") {
 			const unlockedThinkingVisibility = this.ctx.noteDisplayableThinkingContent(event.message);
-			if (unlockedThinkingVisibility) {
+			if (this.ctx.streamingComponent && unlockedThinkingVisibility) {
 				this.ctx.streamingComponent.setHideThinkingBlock(this.ctx.effectiveHideThinkingBlock);
 				this.#streamingReveal.resyncVisibility();
+			}
+			// A stream may begin with message_update when message_start was
+			// coalesced or missed. Recreate the exact message-start path so the
+			// first thinking block is mounted instead of remaining data-only.
+			if (!this.ctx.streamingComponent) {
+				this.#lastVisibleBlockCount = 0;
+				this.#streamedToolCallIdByIndex.clear();
+				this.ctx.streamingComponent = createAssistantMessageComponent(this.ctx);
+				this.ctx.streamingMessage = event.message;
+				this.ctx.chatContainer.addChild(this.ctx.streamingComponent);
+				this.#streamingReveal.begin(
+					this.ctx.streamingComponent,
+					splitAssistantMessageToolTimeline(event.message).beforeTools,
+				);
 			}
 			this.ctx.streamingMessage = event.message;
 			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);

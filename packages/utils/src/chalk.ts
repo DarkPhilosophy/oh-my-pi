@@ -217,7 +217,7 @@ function colorSupport(level: ColorLevel): ColorSupport | false {
 }
 
 /** Color support detected for standard output. */
-export const supportsColor = colorSupport(detectColorLevel(process.env, Boolean(process.stdout.isTTY)));
+export let supportsColor = colorSupport(detectColorLevel(process.env, Boolean(process.stdout.isTTY)));
 
 /** Color support detected for standard error. */
 export const supportsColorStderr = colorSupport(detectColorLevel(process.env, Boolean(process.stderr.isTTY)));
@@ -308,5 +308,19 @@ export const Chalk = ChalkImplementation as unknown as ChalkConstructor;
 
 const defaultLevel = supportsColor === false ? 0 : supportsColor.level;
 const chalk = new Chalk({ level: defaultLevel });
+
+/**
+ * Re-resolve the default formatter for a hosted terminal.
+ *
+ * A daemon's stdout is intentionally /dev/null, so import-time detection sees
+ * a non-TTY and disables chalk even though its rendered frames are written to
+ * a real client terminal. Hosted callers must provide the client's environment
+ * and explicitly treat the output as terminal-bound.
+ */
+export function setChalkEnvironment(environment: NodeJS.ProcessEnv, isTTY = true): void {
+	const level = detectColorLevel(environment, isTTY);
+	supportsColor = colorSupport(level);
+	chalk.level = level;
+}
 
 export default chalk;

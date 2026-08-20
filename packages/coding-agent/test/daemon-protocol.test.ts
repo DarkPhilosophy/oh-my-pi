@@ -212,6 +212,38 @@ describe("daemon protocol", () => {
 			}),
 		).toThrow(/argv must be an array of strings/);
 	});
+	test("parses an explicit force shutdown request", () => {
+		const frame = parseDaemonFrame({
+			v: DAEMON_PROTOCOL_MAJOR,
+			tag: "request",
+			requestId: "shutdown-force",
+			operation: { op: "shutdown", force: true },
+		});
+		if (frame.tag !== "request") throw new Error("unexpected frame");
+		expect(frame.operation).toEqual({ op: "shutdown", force: true });
+		expect(() =>
+			parseDaemonFrame({
+				v: DAEMON_PROTOCOL_MAJOR,
+				tag: "request",
+				requestId: "shutdown-invalid",
+				operation: { op: "shutdown", force: "yes" },
+			}),
+		).toThrow(/operation.force must be a boolean/);
+	});
+	test("accepts unknown hello capabilities for forward compatibility", () => {
+		const frame = parseDaemonFrame({
+			v: DAEMON_PROTOCOL_MAJOR,
+			tag: "hello_ok",
+			requestId: "hello-ok",
+			daemonId: "d1",
+			serverVersion: "0.1.0",
+			protocolVersion: DAEMON_PROTOCOL_MAJOR,
+			shard,
+			capabilities: ["future_capability"],
+		});
+		if (frame.tag !== "hello_ok") throw new Error("unexpected frame");
+		expect(frame.capabilities).toEqual(["future_capability"]);
+	});
 	test("parses terminal-only attachment delivery and rejects unknown delivery modes", () => {
 		const frame = parseDaemonFrame({
 			v: DAEMON_PROTOCOL_MAJOR,

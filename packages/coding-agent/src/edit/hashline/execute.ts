@@ -35,7 +35,7 @@ import type { EditToolDetails, EditToolPerFileResult, LspBatchRequest } from "..
 import { pruneOversizedEditSnapshots } from "../snapshot-details";
 import { nativeBlockResolver } from "./block-resolver";
 import { HashlineFilesystem } from "./filesystem";
-import { hashPatchInput, NOOP_HARD_LIMIT, recordNoopEdit, resetNoopEdit } from "./noop-loop-guard";
+import { hashPatchInput, noChangeLoopDiagnostic, recordNoopEdit, resetNoopEdit } from "./noop-loop-guard";
 import { type HashlineParams, hashlineEditParamsSchema } from "./params";
 
 export interface ExecuteHashlineSingleOptions {
@@ -59,24 +59,6 @@ function noChangeDiagnostic(path: string): string {
 		`your body row(s) are byte-identical to the file at the targeted lines. ` +
 		`The bug is somewhere else — re-read the file before issuing another edit. ` +
 		`Do NOT widen the payload or add lines; verify the anchor first.`
-	);
-}
-
-/**
- * Escalated diagnostic surfaced once the same payload has no-op'd
- * {@link NOOP_HARD_LIMIT} times in a row on the same canonical path. Thrown as
- * a {@link ToolError} so the agent loop sees a tool *failure* — empirically
- * far more effective at breaking a no-op edit loop than the soft hint alone
- * (issue #2081 saw 182 byte-identical no-op results in 205 calls before the
- * user aborted).
- */
-function noChangeLoopDiagnostic(path: string, count: number): string {
-	return (
-		`STOP. Edits to ${path} have been a byte-identical no-op ${count} times in a row — ` +
-		`the patch body matches the file at the targeted lines and the soft hint did not break the cycle. ` +
-		`Cease re-issuing this payload. Either the intended change is already on disk (move on), ` +
-		`or your anchor is wrong (re-read the file with \`read\` to observe the current line numbers and ` +
-		`tag, then author a different edit). This exact payload will keep being rejected until it changes.`
 	);
 }
 

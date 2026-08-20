@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { DEFAULT_FUZZY_THRESHOLD, executePatchSingle } from "@oh-my-pi/pi-coding-agent/edit";
+import { NOOP_HARD_LIMIT } from "@oh-my-pi/pi-coding-agent/edit/hashline/noop-loop-guard";
 import type { FileDiagnosticsResult } from "@oh-my-pi/pi-coding-agent/lsp";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
@@ -109,5 +110,51 @@ describe("executePatchSingle — post-write verification error path", () => {
 		expect(caught).toBeInstanceOf(Error);
 		const context = (caught as Error & { context?: { path?: string } }).context;
 		expect(context?.path).toBe(path.join(tempDir, relPath));
+	});
+	test("escalates repeated acknowledged writes that never reach disk", async () => {
+		const relPath = "foo.txt";
+		await fs.writeFile(path.join(tempDir, relPath), "a\n");
+		const session = makeSession(tempDir);
+		const options = {
+			session,
+			path: relPath,
+			params: { op: "update" as const, diff: "@@\n-a\n+b" },
+			allowFuzzy: true,
+			fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
+			writethrough: silentlySwallowingWritethrough,
+			beginDeferredDiagnosticsForPath: noopBeginDeferred,
+		};
+
+		for (let attempt = 1; attempt < NOOP_HARD_LIMIT; attempt++) {
+			await expect(executePatchSingle(options)).rejects.toThrow("did not change on disk");
+		}
+		await expect(executePatchSingle(options)).rejects.toThrow("STOP.");
+		expect(await fs.readFile(path.join(tempDir, relPath), "utf8")).toBe("a\n");
+	});
+
+	test("breaks a repeated byte-identical apply-patch loop", async () => {
+		const relPath = "foo.txt";
+		await fs.writeFile(path.join(tempDir, relPath), "a\n");
+		const session = makeSession(tempDir);
+		const options = {
+			session,
+			path: relPath,
+			params: { op: "update" as const, diff: "@@\n-a\n+a" },
+			allowFuzzy: true,
+			fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
+			writethrough: async (targetPath: string, content: string) => {
+				await fs.writeFile(targetPath, content);
+				return undefined;
+			},
+			beginDeferredDiagnosticsForPath: noopBeginDeferred,
+		};
+
+		for (let attempt = 1; attempt < 3; attempt++) {
+			const result = await executePatchSingle(options);
+			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+			expect(text).toContain("No changes made to foo.txt");
+		}
+		await expect(executePatchSingle(options)).rejects.toThrow("STOP.");
+		expect(await fs.readFile(path.join(tempDir, relPath), "utf8")).toBe("a\n");
 	});
 });

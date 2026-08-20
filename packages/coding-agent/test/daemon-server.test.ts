@@ -33,7 +33,13 @@ async function flushMicrotasks(): Promise<void> {
 function fakeFactory(protectedJobCount = 0) {
 	const runtimes = new Map<
 		string,
-		{ emit(event: unknown): void; commands: string[]; disposed: boolean; disposedReason?: postmortem.Reason }
+		{
+			emit(event: unknown): void;
+			commands: string[];
+			disposed: boolean;
+			disposedReason?: postmortem.Reason;
+			clientExitRequested: boolean;
+		}
 	>();
 	const runtimeFactory = async ({
 		cwd,
@@ -49,6 +55,7 @@ function fakeFactory(protectedJobCount = 0) {
 			commands: string[];
 			disposed: boolean;
 			disposedReason?: postmortem.Reason;
+			clientExitRequested: boolean;
 		} = {
 			emit: (event: unknown) => {
 				const payload = event as never;
@@ -58,6 +65,7 @@ function fakeFactory(protectedJobCount = 0) {
 			},
 			commands: [],
 			disposed: false,
+			clientExitRequested: false,
 		};
 		runtimes.set(id, state);
 		const session: DaemonSessionRuntime["session"] = {
@@ -83,6 +91,10 @@ function fakeFactory(protectedJobCount = 0) {
 			cwd,
 			session,
 			protectedJobCount: () => protectedJobCount,
+			requestClientExit: () => {
+				state.clientExitRequested = true;
+				state.emit({ type: "terminal_closed", reason: "exit" });
+			},
 			snapshot: (): DaemonSessionSnapshot => ({
 				state: {
 					sessionId: id,
@@ -301,6 +313,40 @@ describe("daemon server and registry", () => {
 		});
 		await registry.dispose();
 	});
+	test("preserves the complete semantic event shape for all-delivery attachments", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-event-shape-"));
+		const fake = fakeFactory();
+		const registry = new DaemonSessionRegistry({ runtimeFactory: fake.runtimeFactory });
+		const session = await registry.create("event-shape", root);
+		const delivered: unknown[] = [];
+		await registry.attach(
+			session.sessionId,
+			"all-client",
+			"interactive",
+			frame => {
+				delivered.push(frame);
+			},
+			0,
+			"all",
+		);
+
+		const event = {
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "thinking_delta",
+				delta: "visible thinking",
+				contentIndex: 2,
+				extra: { preserved: true },
+			},
+			extraFrameField: "preserved",
+		};
+		fake.runtimes.get(session.sessionId)?.emit(event);
+
+		expect(delivered).toHaveLength(1);
+		expect(delivered[0]).toMatchObject({ type: "event", event });
+		expect((delivered[0] as { event: unknown }).event).toBe(event);
+		await registry.dispose();
+	});
 	test("hosts independent sessions from different working-directory roots", async () => {
 		const firstRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-cwd-a-"));
 		const secondRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-cwd-b-"));
@@ -441,6 +487,42 @@ describe("daemon server and registry", () => {
 			client.close();
 			await server.shutdown(true);
 		}
+	});
+	test("terminate controls request hosted client exit while refresh preserves recovery", async () => {
+		const runControl = async (action: "refresh" | "stop" | "kill"): Promise<unknown[]> => {
+			const root = await fs.mkdtemp(path.join(os.tmpdir(), `omp-daemon-hosted-${action}-`));
+			const fake = fakeFactory();
+			const controls = new Map<string, HostedServerControls>();
+			const runtimeFactory: DaemonSessionRuntimeFactory = async options => {
+				const runtime = await fake.runtimeFactory(options);
+				if (options.serverControls) controls.set(runtime.sessionId, options.serverControls);
+				return runtime;
+			};
+			const server = new DaemonServer({
+				profile: null,
+				runtimeDir: path.join(root, "runtime"),
+				token: "secret",
+				runtimeFactory,
+			});
+			await server.run();
+			const events: unknown[] = [];
+			try {
+				await server.registry.create("live", root);
+				await server.registry.attach("live", "hosted", "interactive", frame => {
+					if (typeof frame === "object" && frame !== null && "event" in frame) events.push(frame.event);
+				});
+				const control = controls.get("live")?.[action];
+				expect(control?.(true)).toMatchObject({ shutdown: true });
+				for (let attempt = 0; attempt < 100 && !server.closed; attempt++) await Bun.sleep(1);
+				return events;
+			} finally {
+				await server.shutdown(true);
+			}
+		};
+
+		expect(await runControl("refresh")).not.toContainEqual({ type: "terminal_closed", reason: "exit" });
+		expect(await runControl("stop")).toContainEqual({ type: "terminal_closed", reason: "exit" });
+		expect(await runControl("kill")).toContainEqual({ type: "terminal_closed", reason: "exit" });
 	});
 
 	test("does not let a blocked session command stall a sibling session", async () => {
@@ -1059,6 +1141,75 @@ describe("daemon server and registry", () => {
 		expect((await idleServer.shutdown()).shutdown).toBe(true);
 	});
 
+	test("arms idle shutdown after the last client disconnects", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-idle-grace-"));
+		const runtimeDir = path.join(root, "runtime");
+		const server = new DaemonServer({
+			profile: "test",
+			runtimeDir,
+			token: "secret",
+			idleShutdownGraceMs: 10,
+			runtimeFactory: fakeFactory().runtimeFactory,
+		});
+		let client: { socket: net.Socket; reader: FrameReader } | undefined;
+		try {
+			await server.run();
+			client = await connect(server.endpoint!);
+			await Bun.sleep(30);
+			expect(server.closed).toBe(false);
+			await destroyAndWait(client.socket);
+			for (let attempt = 0; attempt < 100 && !server.closed; attempt++) await Bun.sleep(5);
+			expect(server.closed).toBe(true);
+			await server.shutdown(true);
+		} finally {
+			if (client && !client.socket.destroyed) await destroyAndWait(client.socket);
+			await server.shutdown(true).catch(() => undefined);
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+	test("does not idle-shutdown while session creation is in flight", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-idle-lifecycle-"));
+		const gate = Promise.withResolvers<void>();
+		const entered = Promise.withResolvers<void>();
+		const runtimeFactory: DaemonSessionRuntimeFactory = async options => {
+			entered.resolve();
+			await gate.promise;
+			return fakeFactory().runtimeFactory(options);
+		};
+		const server = new DaemonServer({
+			profile: "test",
+			runtimeDir: path.join(root, "runtime"),
+			token: "secret",
+			idleShutdownGraceMs: 10,
+			runtimeFactory,
+		});
+		const client = await connect((await server.run()).endpoint!);
+		try {
+			client.socket.write(encodeDaemonFrame(hello("secret", "slow-create")));
+			expect((await client.reader.next()).tag).toBe("hello_ok");
+			client.socket.write(
+				encodeDaemonFrame({
+					v: DAEMON_PROTOCOL_MAJOR,
+					tag: "request",
+					requestId: "create",
+					operation: { op: "session_create", sessionId: "slow", cwd: root },
+				}),
+			);
+			await entered.promise;
+			await destroyAndWait(client.socket);
+			await Bun.sleep(30);
+			expect(server.closed).toBe(false);
+			expect(server.status().sessionCount).toBe(0);
+			gate.resolve();
+			for (let attempt = 0; attempt < 100 && server.status().sessionCount === 0; attempt++) await Bun.sleep(5);
+			expect(server.status().sessionCount).toBe(1);
+		} finally {
+			gate.resolve();
+			await server.shutdown(true);
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test("drops a provisional interactive session when its creator disconnects before attach", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-provisional-"));
 		const fake = fakeFactory();
@@ -1522,8 +1673,13 @@ describe("daemon server and registry", () => {
 		const blocked = (await blockedClient.request("shutdown")) as { shutdown: boolean; blockers: string[] };
 		expect(blocked.shutdown).toBe(false);
 		expect(blocked.blockers).toContain("sessions");
-		await blockedClient.request("session_close", { sessionId: "live" });
-		expect(await blockedClient.request("shutdown")).toEqual({ shutdown: true, blockers: [] });
+		const forced = (await blockedClient.request({ op: "shutdown", force: true })) as {
+			shutdown: boolean;
+			blockers: string[];
+		};
+		expect(forced).toEqual({ shutdown: true, blockers: [] });
+		for (let attempt = 0; attempt < 20 && !blockedServer.closed; attempt++) await Bun.sleep(5);
+		expect(blockedServer.closed).toBe(true);
 		blockedClient.close();
 	});
 	test("hydrates RemoteSessionHandle state and dispatches typed commands across reconnect", async () => {

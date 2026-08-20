@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed hosted daemon rendering retaining the daemon process's terminal capability profile after a client attaches. Capabilities can now be re-resolved from client-scoped environment markers without mutating the daemon environment.
 - Fixed the TUI not surfacing terminal focus transitions to start-listener consumers and hosted terminals. Focus changes now flow through the shared terminal interface and propagate immediately to registered listeners.
 ## [17.3.5] - 2026-08-16
 

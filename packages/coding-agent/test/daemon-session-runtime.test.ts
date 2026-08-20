@@ -2,6 +2,7 @@ import { afterEach, describe, expect, type Mock, test, vi } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import { Settings } from "../src/config/settings";
 import { createAgentSessionRuntime } from "../src/daemon/session-runtime";
@@ -76,6 +77,62 @@ describe("daemon session runtime", () => {
 			expect(createdSessionId).toBe("stable-recovery-id");
 			expect(runtime.sessionId).toBe("stable-recovery-id");
 			expect(runtime.session.sessionId).toBe("stable-recovery-id");
+		} finally {
+			await runtime.dispose();
+		}
+	});
+	test("requests hosted terminal exit with an exit reason", async () => {
+		let shuttingDown = false;
+		const input = Promise.withResolvers<{ text: string; cancelled: boolean; started: boolean }>();
+		const detachHosted = vi.fn(() => {
+			shuttingDown = true;
+			input.resolve({ text: "", cancelled: true, started: false });
+		});
+		vi.spyOn(themeModule, "initTheme").mockResolvedValue(undefined);
+		vi.spyOn(
+			interactiveModeModule as unknown as { InteractiveMode: () => interactiveModeModule.InteractiveMode },
+			"InteractiveMode",
+		).mockImplementation(
+			() =>
+				({
+					get isShuttingDown() {
+						return shuttingDown;
+					},
+					detachHosted,
+					init: async () => {},
+					renderInitialMessages: () => {},
+					setDaemonSnapshot: () => {},
+					getUserInput: () => input.promise,
+				}) as unknown as interactiveModeModule.InteractiveMode,
+		);
+		const runtime = await createAgentSessionRuntime({
+			cwd: process.cwd(),
+			sessionId: "hosted-exit",
+			createSession: async options => {
+				const session = {
+					sessionId: "hosted-exit",
+					isStreaming: false,
+					subscribe: () => () => {},
+					subscribeCommandMetadataChanged: () => () => {},
+					settings: { get: () => undefined },
+					sessionManager: { getCwd: () => process.cwd() },
+					dispose: async () => {
+						await options.sessionManager?.close();
+					},
+				} as unknown as AgentSession;
+				return { session, setToolUIContext: () => {} } as unknown as CreateAgentSessionResult;
+			},
+		});
+		try {
+			const start = runtime.command(
+				{ type: "terminal_start", terminal: { columns: 80, rows: 24 } },
+				"exit-attachment",
+			);
+			await Bun.sleep(0);
+			expect(typeof runtime.requestClientExit).toBe("function");
+			runtime.requestClientExit?.();
+			await start;
+			expect(detachHosted).toHaveBeenCalledWith("exit");
 		} finally {
 			await runtime.dispose();
 		}
@@ -449,6 +506,7 @@ describe("daemon session runtime", () => {
 	}, 30_000);
 
 	test("hosted terminal emits terminal_cwd on start and on interactive cwd changes", async () => {
+		const renderReplay = Promise.withResolvers<void>();
 		type FakeMode = {
 			isShuttingDown: boolean;
 			detachHosted: Mock<() => void>;
@@ -466,7 +524,7 @@ describe("daemon session runtime", () => {
 					input.resolve({ text: "", cancelled: true, started: false });
 				}),
 				init: async () => {},
-				renderInitialMessages: () => {},
+				renderInitialMessages: () => renderReplay.promise,
 				setDaemonSnapshot: () => {},
 				getUserInput: () => input.promise,
 			};
@@ -501,14 +559,35 @@ describe("daemon session runtime", () => {
 		});
 		const bridgeEvents: unknown[] = [];
 		const unsubscribeBridgeEvents = runtime.subscribe(event => bridgeEvents.push(event));
-		const descriptor = { columns: 80, rows: 24 } as HostedTerminalDescriptor;
+		const descriptor = {
+			columns: 80,
+			rows: 24,
+			kittyProtocolActive: false,
+			kittyEnableSequence: null,
+			clientEnv: { TERM: "xterm-256color" },
+		} as HostedTerminalDescriptor;
+		const previousChalkLevel = chalk.level;
 		try {
-			await runtime.command({ type: "terminal_start", terminal: descriptor }, "a1");
+			// A daemon imports chalk with a pipe stdout (level 0). terminal_start
+			// must re-enable styles for the attached client terminal.
+			chalk.level = 0;
+			const start = runtime.command({ type: "terminal_start", terminal: descriptor }, "a1");
+			await Promise.resolve();
 			expect(modeCtor).toHaveBeenCalledTimes(1);
 			expect(bridgeEvents).toContainEqual({ type: "terminal_cwd", cwd: process.cwd() });
+			let startSettled = false;
+			void start.then(() => {
+				startSettled = true;
+			});
+			await Promise.resolve();
+			expect(startSettled).toBe(false);
+			renderReplay.resolve();
+			await start;
+			expect(chalk.italic("thinking")).toBe("\x1b[3mthinking\x1b[23m");
 			hostedCwdChange?.("/tmp/resumed-project");
 			expect(bridgeEvents).toContainEqual({ type: "terminal_cwd", cwd: "/tmp/resumed-project" });
 		} finally {
+			chalk.level = previousChalkLevel;
 			unsubscribeBridgeEvents();
 			await runtime.dispose();
 		}

@@ -5,13 +5,18 @@
 ### Added
 
 - Added a non-interactive `omp daemon <status|sessions|reconnect|stop>` CLI command wrapping the daemon client and mirroring the in-TUI `/server` command. The CLI previously had no `daemon` command: `omp daemon …` fell through the interactive-routing gate (`isDefaultInteractiveArgv`) to `launchDaemonInteractive`, so e.g. `omp daemon status` blocked for the full request timeout attempting to host an interactive session on a non-TTY instead of printing daemon status. The argv is now registered both in the command table and `NON_INTERACTIVE_COMMANDS`, and supports `--json` for `status`/`sessions`.
+- Added the `bashInterceptor.forwardSimpleCommands` setting for opt-in forwarding of eligible simple read-only Bash commands through built-in tools.
 
 ### Fixed
+- Fixed Bash interceptor forwarding eligibility and dispatch fidelity: unsupported async/env/PTY/internal-URL/timeout options, shadowed or recursive targets, and ambiguous argv are no longer forwarded, while quoted arguments and read selectors retain their exact values.
+- Fixed daemon-hosted themes and terminal decorations using the daemon process profile instead of the attached client's color and capability environment.
+- Fixed repeated apply-patch writes that were acknowledged without changing the file on disk from retrying indefinitely; the per-session no-op guard now escalates after the established threshold.
 - Fixed `/server` command registration after upstream synchronization and made `/reload` rebuild plugin and MCP tools consistently across interactive, daemon, and RPC sessions, clearing stale MCP bindings when a reload fails.
 - Fixed deferred command and tool previews outliving their owning session, holding an old session's approval gate after retargeting, or overflowing short terminal viewports.
 - Fixed adopted-subagent release, park, and revive races that could return a retiring session, re-adopt an exact ref already being released, resurrect a tombstoned agent, or detach a newer generation.
 - Fixed computer-use guidance to await window discovery and AX snapshots consistently.
 
+- Fixed daemon forced shutdown requests to older same-major daemons by capability-gating the wire field and falling back with an actionable warning.
 - Added terminal-focus events to daemon-hosted and extension-owned interactive terminals so hosted sessions, hooks, and UI consumers can react when the attached terminal window loses or regains focus.
 - Fixed extension discovery aborting on unreadable or missing configured paths during path canonicalization. Discovery now falls back to the lexical path identity, preserving existing load-error reporting without crashing the whole scan.
 

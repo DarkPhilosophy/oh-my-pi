@@ -38,10 +38,14 @@ export const compressHelp = {
 	description: "Rewrite a text file into the dense prompt register, reporting what it drops",
 } satisfies CommandMetadata;
 
+export const copyHelp = {
+	description: "Copy a stored code block to the clipboard (backs the omp-copy: chip handler)",
+} satisfies CommandMetadata;
+
 export const configHelp = { description: "Manage configuration settings" } satisfies CommandMetadata;
 
 export const daemonHelp = {
-	description: "Manage the profile daemon server (status, sessions, reconnect, stop)",
+	description: "Manage the profile daemon (start, status, sessions, kill, refresh)",
 } satisfies CommandMetadata;
 
 export const dryBalanceHelp = {

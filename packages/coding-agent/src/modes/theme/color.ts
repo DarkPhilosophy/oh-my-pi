@@ -4,16 +4,16 @@ import type { ColorMode, ColorValue } from "./schema";
 // Color Utilities
 // ============================================================================
 
-export function detectColorMode(): ColorMode {
-	const colorterm = Bun.env.COLORTERM;
+export function detectColorMode(env: NodeJS.ProcessEnv = Bun.env): ColorMode {
+	const colorterm = env.COLORTERM;
 	if (colorterm === "truecolor" || colorterm === "24bit") {
 		return "truecolor";
 	}
 	// Windows Terminal supports truecolor
-	if (Bun.env.WT_SESSION) {
+	if (env.WT_SESSION) {
 		return "truecolor";
 	}
-	const term = Bun.env.TERM || "";
+	const term = env.TERM || "";
 	// Only fall back to 256color for truly limited terminals
 	if (term === "dumb" || term === "" || term === "linux") {
 		return "256color";

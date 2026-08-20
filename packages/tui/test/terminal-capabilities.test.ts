@@ -23,6 +23,31 @@ describe("detectTerminalId", () => {
 	});
 });
 
+describe("hosted terminal capability environment", () => {
+	it("re-resolves the renderer profile without mutating daemon env", async () => {
+		const proc = Bun.spawn({
+			cmd: [
+				process.execPath,
+				"--eval",
+				`import { setTerminalEnvironment, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
+setTerminalEnvironment({ TERM_PROGRAM: "kitty", KITTY_WINDOW_ID: "7", COLORTERM: "truecolor" });
+console.log(JSON.stringify({ id: TERMINAL.id, trueColor: TERMINAL.trueColor, hyperlinks: TERMINAL.hyperlinks, daemonTerm: Bun.env.TERM_PROGRAM ?? null }));`,
+			],
+			env: { ...Bun.env, TERM_PROGRAM: "daemon", COLORTERM: "", KITTY_WINDOW_ID: "" },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(stderr).toBe("");
+		expect(exitCode).toBe(0);
+		expect(JSON.parse(stdout)).toEqual({ id: "kitty", trueColor: true, hyperlinks: true, daemonTerm: "daemon" });
+	});
+});
+
 describe("synchronizedOutputUserOverride", () => {
 	it("returns null when the user expresses no preference", () => {
 		expect(synchronizedOutputUserOverride({})).toBeNull();

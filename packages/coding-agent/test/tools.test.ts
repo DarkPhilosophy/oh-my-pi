@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as url from "node:url";
 import * as zlib from "node:zlib";
-import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import type { AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { DEFAULT_BASH_INTERCEPTOR_RULES, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { EditTool } from "@oh-my-pi/pi-coding-agent/edit";
@@ -1912,8 +1912,59 @@ function b() {
 
 			expect(defaultSettings.get("bashInterceptor.patterns")).toEqual(DEFAULT_BASH_INTERCEPTOR_RULES);
 			expect(defaultSettings.getBashInterceptorRules()).toEqual(DEFAULT_BASH_INTERCEPTOR_RULES);
+			expect(defaultSettings.get("bashInterceptor.forwardSimpleCommands")).toBe(false);
 			expect(explicitEmptySettings.get("bashInterceptor.patterns")).toEqual([]);
 			expect(explicitEmptySettings.getBashInterceptorRules()).toEqual([]);
+		});
+
+		it("can re-forward a simple grep to the built-in tool with a compact warning", async () => {
+			const file = path.join(testDir, "forwardSimpleCommands.txt");
+			fs.writeFileSync(file, "keep this line\nneedle result\n");
+			const settings = Settings.isolated({
+				"bashInterceptor.enabled": true,
+				"bashInterceptor.forwardSimpleCommands": true,
+			});
+			const grep = new GrepTool(createTestToolSession(testDir, settings));
+			const forwardingSession = createTestToolSession(testDir, settings, {
+				getToolByName: name => (name === "grep" ? (grep as unknown as AgentTool) : undefined),
+				hasBuiltInTool: name => name === "grep",
+			});
+			const result = await new BashTool(forwardingSession).execute(
+				"test-call-8-forwardSimpleCommands",
+				{ command: `grep needle ${shellEscape(file)}` },
+				undefined,
+				undefined,
+				createTestToolContext(["grep"]),
+			);
+			expect(getTextOutput(result)).toContain("needle result");
+			expect(getTextOutput(result)).toContain(
+				"[Forwarded by bash interceptor: executed with the built-in grep tool; use grep directly next time.]",
+			);
+		});
+
+		it("forwards a built-in command after a leading cd wrapper", async () => {
+			const file = path.join(testDir, "cd-forward.txt");
+			fs.writeFileSync(file, "needle after cd\n");
+			const settings = Settings.isolated({
+				"bashInterceptor.enabled": true,
+				"bashInterceptor.forwardSimpleCommands": true,
+			});
+			const grep = new GrepTool(createTestToolSession(testDir, settings));
+			const forwardingSession = createTestToolSession(testDir, settings, {
+				getToolByName: name => (name === "grep" ? (grep as unknown as AgentTool) : undefined),
+				hasBuiltInTool: name => name === "grep",
+			});
+			const result = await new BashTool(forwardingSession).execute(
+				"test-call-8-forward-cd",
+				{ command: `cd ${shellEscape(testDir)} && grep needle cd-forward.txt` },
+				undefined,
+				undefined,
+				createTestToolContext(["grep"]),
+			);
+			expect(getTextOutput(result)).toContain("needle after cd");
+			expect(getTextOutput(result)).toContain(
+				"[Forwarded by bash interceptor: executed with the built-in grep tool; use grep directly next time.]",
+			);
 		});
 
 		it("should block built-in interceptor commands when enabled with default patterns", async () => {

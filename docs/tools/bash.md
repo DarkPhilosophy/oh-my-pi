@@ -7,7 +7,7 @@
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/bash.md`
 - Key collaborators:
   - `packages/coding-agent/src/tools/bash-interactive.ts` — PTY/TUI execution path.
-  - `packages/coding-agent/src/tools/bash-interceptor.ts` — blocks tool-better shell patterns.
+  - `packages/coding-agent/src/tools/bash-interceptor.ts` — routes tool-better shell patterns, optionally re-forwarding safe simple commands.
   - `packages/coding-agent/src/tools/bash-skill-urls.ts` — expands internal URLs to paths.
   - `packages/coding-agent/src/tools/bash-pty-selection.ts` — `canUseInteractiveBashPty()` decides whether a call may use the local PTY overlay.
   - `packages/coding-agent/src/tools/gh-cache-invalidation.ts` — drops `github-cache` rows for mutating `gh issue`/`gh pr` subcommands.
@@ -61,6 +61,7 @@ Two independent settings can prevent a Bash subprocess from starting. They serve
 | --- | --- | --- | --- |
 | `bash.patterns` | Command-specific execution policy | Literal text with `*` wildcards | Allows the call, requests human approval, or denies it. |
 | `bashInterceptor.patterns` | Prefer a dedicated tool over Bash | JavaScript regular expression, optional flags, tool name, and message | Returns a Bash tool error telling the model to call the named dedicated tool instead. |
+| `bashInterceptor.forwardSimpleCommands` | Choose simple-command forwarding | Boolean | When true, strict `grep`, `cat`, and `find` matches run through built-in tools instead of returning the interceptor block; default false. |
 
 ### `bash.patterns`: permission policy
 
@@ -91,6 +92,7 @@ Use this setting for safety and user control. It remains useful for commands wit
 ```yaml
 bashInterceptor:
   enabled: true
+  forwardSimpleCommands: true
   patterns:
     - pattern: '^\s*(cat|head|tail)\s+'
       tool: read
@@ -102,7 +104,7 @@ bashInterceptor:
 
 An interceptor rule only applies when its `tool` is available in the current session. If `read` is disabled, a `cat` rule targeting `read` does not block the Bash call. This makes the interceptor a best-effort capability preference rather than an execution-security boundary.
 
-The built-in default rules route common operations such as `cat` to `read`, `rg` to `grep`, in-place `sed` to `edit`, shell redirection to `write`, and unmanaged services/background processes to `hub`. See `DEFAULT_BASH_INTERCEPTOR_RULES` in `packages/coding-agent/src/config/settings-schema.ts` for the complete list.
+Set `bashInterceptor.forwardSimpleCommands: true` to execute only strict read-only forms through the built-in tool. Supported adapters are `cat FILE` → `read`, `head -n N FILE` / `head -N FILE` → `read` with a `:1-N` selector, `grep [-i] PATTERN [PATH]` → `grep`, and `find ROOT -name PATTERN` → `glob`. The parser rejects pipes, redirects, command substitution, environment assignments, multi-command input, unsupported flags, and mutating commands. Forwarding is also gated off when `async: true`, a non-empty `env`, `pty: true`, any `://` internal URL, a non-default `timeout`, an unavailable/recursive/shadowed target, or any other option the built-in cannot preserve; those calls retain the normal interceptor block. Quoted arguments and `--` are forwarded only when their shell values can be reconstructed exactly. The forwarded result ends with `[Forwarded by bash interceptor: executed with the built-in <tool> tool; use <tool> directly next time.]`. Unsupported or ambiguous forms retain the normal blocked response.
 
 For compatibility with existing custom regexes, the interceptor always checks the complete original command first. It then checks raw, flat command fragments separated by unquoted and unescaped `&&`, `||`, `;`, `|`, `&`, or newlines. It also checks fragments after leading environment assignments are removed:
 
@@ -127,7 +129,7 @@ Choose the setting by the desired outcome:
 1. `BashTool.execute()` in `packages/coding-agent/src/tools/bash.ts` reads `command`, validates `env`, and defaults `timeout` to `300`.
 2. If `cwd` is absent, it rewrites a leading `cd <path> && ...` into the structured `cwd` field and strips that prefix from `command`.
 3. If `async: true` is requested while `async.enabled` is off, it throws `ToolError` before any execution.
-4. If `bashInterceptor.enabled` is on, `checkBashInterception()` runs against both the original command and the `cd`-stripped command. For each form, configured regexes still check the complete input first, then each flat command separated by unquoted/unescaped `&&`, `||`, `;`, `|`, `|&`, `&`, or newlines (excluding stages that consume piped stdin from `|` or `|&`, including across blank/comment continuations), followed by versions of those fragments without leading `NAME=value` assignments. A matching enabled rule throws before URL expansion or execution.
+4. If `bashInterceptor.enabled` is on, `checkBashInterception()` runs against both the original command and the `cd`-stripped command. For each form, configured regexes still check the complete input first, then each flat command separated by unquoted/unescaped `&&`, `||`, `;`, `|`, `|&`, `&`, or newlines (excluding stages that consume piped stdin from `|` or `|&`, including across blank/comment continuations), followed by versions of those fragments without leading `NAME=value` assignments. With `bashInterceptor.forwardSimpleCommands`, a matching standalone command is first offered to the conservative built-in parser; safe matches execute the built-in and append the forwarding notice, while assignments, shell operators, multi-command input, and ambiguous matches retain the blocking error.
 5. `expandInternalUrls()` rewrites supported internal URLs inside `command`, each `env` value, and protocol-looking `cwd` values. Command replacements are shell-escaped; `env` and `cwd` replacements use raw filesystem/string values because they are not interpolated into shell text.
 6. `resolveToCwd()` resolves `cwd` against `session.cwd`; `fs.stat()` verifies that the target exists and is a directory.
 7. `timeout: 0` disables the deadline. Otherwise `clampTimeout("bash", requestedTimeoutSec, tools.maxTimeout)` applies a positive global ceiling (when configured), then `TOOL_TIMEOUTS.bash` (`min: 1`, `max: 3600`). When clamped, `#buildCompletedResult()` / `#buildBackgroundStartResult()` append a notice line.

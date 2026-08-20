@@ -2261,6 +2261,18 @@ export class TUI extends Container {
 		};
 	}
 
+	/**
+	 * Main-screen mouse tracking is intentionally unsupported. It breaks native
+	 * terminal scrollback and text selection. Copy uses the keyboard path.
+	 */
+	setMainScreenMouseTracking(_enabled: boolean): void {
+		// no-op: main-screen mouse is not supported
+	}
+
+	get mainScreenMouseTracking(): boolean {
+		return false;
+	}
+
 	onTerminalFocusChange(listener: (focused: boolean) => void): () => void {
 		this.#terminalFocusListeners.add(listener);
 		listener(this.#terminalFocused);

@@ -13,7 +13,7 @@ export type DaemonEncodedSnapshotChunk = Readonly<{
 	data: string;
 }>;
 
-export type DaemonCapability = "snapshot" | "events" | "server_status" | (string & {});
+export type DaemonCapability = "snapshot" | "events" | "server_status" | "shutdown_force" | (string & {});
 
 export type DaemonEventDelivery = "all" | "terminal";
 
@@ -111,7 +111,7 @@ export type DaemonOperation =
 	| { op: "detach"; sessionId: string; attachmentId: string }
 	| { op: "session_command"; sessionId: string; attachmentId: string; command: unknown }
 	| { op: "snapshot_ack"; sessionId: string; attachmentId: string; seq: number }
-	| { op: "shutdown" };
+	| { op: "shutdown"; force?: boolean };
 
 export type DaemonRequest = {
 	v: number;
@@ -409,9 +409,13 @@ function operation(value: unknown): DaemonOperation {
 		case "ping":
 		case "server_status":
 		case "session_list":
-		case "shutdown":
 			exact(source, ["op"], "operation");
 			return { op };
+		case "shutdown": {
+			exact(source, ["op", "force"], "operation");
+			const force = source.force === undefined ? undefined : requiredBoolean(source.force, "operation.force");
+			return { op, ...(force === undefined ? {} : { force }) };
+		}
 		case "session_create":
 			return sessionCreate(source);
 		case "session_load":

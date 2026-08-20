@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { detectMacOSAppearance, MacAppearanceObserver } from "@oh-my-pi/pi-natives";
 import type { Terminal, TerminalAppearance } from "@oh-my-pi/pi-tui";
 import { colorLuma, getCustomThemesDir, logger } from "@oh-my-pi/pi-utils";
-import { ansi256ToHex, resolveThemeColors, resolveVarRefs } from "./color";
+import { ansi256ToHex, detectColorMode, resolveThemeColors, resolveVarRefs } from "./color";
 import { type CreateThemeOptions, getBuiltinThemes, loadTheme, loadThemeJson } from "./loader";
 import type { ThemeColor, ThemeJson } from "./schema";
 import type { SymbolPreset } from "./symbols";
@@ -27,30 +27,32 @@ export {
 	getSettingsListTheme,
 	getSymbolTheme,
 	highlightCode,
+	setCodeGuidanceTrail,
 	setMarkdownMermaidRendering,
 } from "./tui-adapters";
 
 /** Appearance detected via OSC 11 background color query, or undefined if not yet available. */
 var terminalReportedAppearance: "dark" | "light" | undefined;
+var themeEnvironment: NodeJS.ProcessEnv = Bun.env;
 
 /** Appearance reported by the macOS fallback observer, or undefined if not yet available. */
 var macOSReportedAppearance: "dark" | "light" | undefined;
 
-function shouldUseMacOSAppearanceFallback(): boolean {
+function shouldUseMacOSAppearanceFallback(env: NodeJS.ProcessEnv = themeEnvironment): boolean {
 	// Zellij currently breaks OSC 11 passthrough on macOS, so terminal-derived
 	// appearance cannot be trusted there. Fall back to host macOS appearance
 	// without letting it override valid terminal signals elsewhere.
-	return process.platform === "darwin" && !!Bun.env.ZELLIJ;
+	return process.platform === "darwin" && !!env.ZELLIJ;
 }
 
-function detectTerminalBackground(): "dark" | "light" {
+function detectTerminalBackground(env: NodeJS.ProcessEnv = themeEnvironment): "dark" | "light" {
 	// Tier 1: terminal-reported appearance from OSC 11 luminance.
-	if (!shouldUseMacOSAppearanceFallback() && terminalReportedAppearance) {
+	if (!shouldUseMacOSAppearanceFallback(env) && terminalReportedAppearance) {
 		return terminalReportedAppearance;
 	}
 
 	// Tier 2: COLORFGBG env var (static at process start, but still terminal-derived).
-	const colorfgbg = Bun.env.COLORFGBG || "";
+	const colorfgbg = env.COLORFGBG || "";
 	if (colorfgbg) {
 		const parts = colorfgbg.split(";");
 		if (parts.length >= 2) {
@@ -60,7 +62,7 @@ function detectTerminalBackground(): "dark" | "light" {
 	}
 
 	// Tier 3: host macOS appearance for known-broken terminal paths only.
-	if (shouldUseMacOSAppearanceFallback()) {
+	if (shouldUseMacOSAppearanceFallback(env)) {
 		const macAppearance = macOSReportedAppearance ?? detectMacOSAppearance();
 		if (macAppearance) return macAppearance;
 	}
@@ -108,6 +110,7 @@ let themeEpoch = 0;
 
 function getCurrentThemeOptions(): CreateThemeOptions {
 	return {
+		mode: detectColorMode(themeEnvironment),
 		symbolPresetOverride: currentSymbolPresetOverride,
 		colorBlindMode: currentColorBlindMode,
 	};
@@ -119,7 +122,11 @@ export async function initTheme(
 	colorBlindMode?: boolean,
 	darkTheme?: string,
 	lightTheme?: string,
+	environment?: NodeJS.ProcessEnv,
 ): Promise<void> {
+	// Hosted sessions must resolve colors and appearance from the attached
+	// client, not from the daemon process that happened to start first.
+	themeEnvironment = environment ?? Bun.env;
 	autoDetectedTheme = true;
 	autoDarkTheme = darkTheme ?? "dark";
 	autoLightTheme = lightTheme ?? "light";

@@ -144,6 +144,48 @@ export async function copyToClipboard(text: string): Promise<void> {
 	}
 }
 
+/**
+ * Copy text from a short-lived (detached) process — e.g. the `omp copy`
+ * launched by the `omp-copy:` URL handler when a code-block `[copy]` chip is
+ * clicked.
+ *
+ * On Linux the X11/Wayland clipboard is owner-based: the selection dies when
+ * its owner exits. `wl-copy`/`xclip`/`xsel` fork a persistent owner, so prefer
+ * them; if none exist, fall back to the native (arboard) write and linger so
+ * this process keeps serving paste requests for a bounded window. macOS and
+ * Windows retain clipboard contents after the writer exits, so a plain write
+ * (which also emits OSC 52 when a TTY is present) is enough.
+ */
+export async function copyTextPersistent(text: string): Promise<void> {
+	if (process.platform !== "linux") {
+		await copyToClipboard(text);
+		return;
+	}
+	const isWayland = Boolean(process.env.WAYLAND_DISPLAY);
+	const candidates = isWayland
+		? [["wl-copy"]]
+		: [
+				["xclip", "-selection", "clipboard"],
+				["xsel", "-ib"],
+			];
+	for (const cmd of candidates) {
+		try {
+			await spawnCapture(cmd, { input: text, timeoutMs: 5000 });
+			return;
+		} catch {
+			// Tool missing or failed — try the next persistent writer.
+		}
+	}
+	// No forking writer available: set via arboard, then linger so the X11
+	// owner thread answers SelectionRequest events long enough to paste.
+	try {
+		await nativeCopyToClipboard(text);
+	} catch {
+		// best-effort
+	}
+	if (!isWayland) await Bun.sleep(120_000);
+}
+
 // PowerShell one-liner that emits the Windows clipboard image as base64-encoded
 // PNG on stdout, or nothing when the clipboard does not hold image data. Used
 // for native Windows fallback and WSL interop because arboard can miss host

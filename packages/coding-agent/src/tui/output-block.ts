@@ -21,6 +21,13 @@ export interface OutputBlockOptions {
 	/** Override the state-derived border color. Used for muted "legacy" tool
 	 * frames that should not visually compete with framed-output tools. */
 	borderColor?: ThemeColor;
+	/**
+	 * When true, the block hugs its content (longest line or header, plus
+	 * borders/padding) instead of spanning the full row — but only while the
+	 * natural width stays below 60% of the given `width`. Wide content (diffs,
+	 * long lines) keeps the full row so it stays readable.
+	 */
+	fitToContent?: boolean;
 }
 
 const FRAMED_BLOCK_COMPONENT = Symbol("framedBlockComponent");
@@ -68,7 +75,35 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	const h = theme.boxRound.horizontal;
 	const v = theme.boxRound.vertical;
 	const cap = h.repeat(3);
-	const lineWidth = Math.max(0, width);
+
+	// fitToContent: measure the natural width of header + body before wrapping.
+	// Wrap must happen against the *natural* content width or short lines would
+	// be measured post-wrap and the box could never narrow.
+	let lineWidth = Math.max(0, width);
+	if (options.fitToContent) {
+		const padL = normalizeContentPaddingLeft(options.contentPaddingLeft);
+		const padR = normalizeContentPaddingLeft(options.contentPaddingRight ?? options.contentPaddingLeft);
+		const overhead = visibleWidth(v) * 2 + padL + padR;
+		const headerWidth =
+			header || headerMeta
+				? visibleWidth(` ${[header, headerMeta].filter(Boolean).join(theme.sep.dot)} `) +
+					visibleWidth(cap) +
+					visibleWidth(cap)
+				: 0;
+		let bodyWidth = 0;
+		for (const section of sections) {
+			for (const line of section.lines) {
+				for (const raw of line.split("\n")) {
+					bodyWidth = Math.max(bodyWidth, visibleWidth(raw.trimEnd()));
+				}
+			}
+		}
+		const natural = Math.min(lineWidth, Math.max(headerWidth, bodyWidth + overhead));
+		// Only narrow when the content is comfortably below the row; wide content
+		// keeps the full width so long lines wrap against the real row, not a
+		// shrunken box.
+		if (natural < lineWidth * 0.6) lineWidth = natural;
+	}
 	// Border colors: running/pending use accent, success uses dim (gray), error/warning keep their colors
 	const borderColor: ThemeColor =
 		options.borderColor ??
@@ -237,6 +272,7 @@ export class CachedOutputBlock {
 		h.optional(options.state);
 		h.optional(options.borderColor);
 		h.bool(options.applyBg ?? true);
+		h.bool(options.fitToContent ?? false);
 		if (options.sections) {
 			for (const s of options.sections) {
 				h.optional(s.label);

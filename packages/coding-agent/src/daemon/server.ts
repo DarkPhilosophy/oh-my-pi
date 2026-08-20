@@ -36,6 +36,7 @@ const MAX_DRAIN_WRITE_BYTES = DAEMON_MAX_FRAME_BYTES;
 const OWNER_FILE = "daemon.owner";
 /** How long a contender waits out a live-but-unbound owner (starting or draining). */
 const OWNER_LEASE_WAIT_MS = 10_000;
+const DEFAULT_IDLE_SHUTDOWN_GRACE_MS = 30_000;
 const TAKEOVER_FILE = "daemon.takeover";
 const SKIP_DISPATCH = Symbol("skip daemon dispatch");
 class DaemonEndpointOwnedError extends Error {}
@@ -79,6 +80,8 @@ export type DaemonServerOptions = {
 	buildStamp?: string;
 	/** Lease patience override (tests); defaults to OWNER_LEASE_WAIT_MS. */
 	ownerLeaseWaitMs?: number;
+	/** Grace period before an unconnected, session-free daemon exits. */
+	idleShutdownGraceMs?: number;
 	/** Process identity override for isolated owner-takeover tests. */
 	ownerProcessVerifier?: (
 		owner: Readonly<{ pid: number; daemonId: string; startedAt: number }>,
@@ -142,6 +145,7 @@ export class DaemonServer {
 	readonly #runtimeFactory: DaemonSessionRuntimeFactory;
 	readonly #registryOverride: DaemonSessionRegistry | undefined;
 	readonly #ownerLeaseWaitMs: number;
+	readonly #idleShutdownGraceMs: number;
 	readonly #ownerProcessVerifier:
 		| ((owner: Readonly<DaemonOwnerLease>) => boolean | undefined | Promise<boolean | undefined>)
 		| undefined;
@@ -179,6 +183,7 @@ export class DaemonServer {
 	#sessionBaseOptions: CreateAgentSessionOptions | undefined;
 	readonly #runtimeReady = Promise.withResolvers<void>();
 	#runPromise: Promise<this> | undefined;
+	#idleShutdownTimer: NodeJS.Timeout | undefined;
 
 	constructor(options: DaemonServerOptions) {
 		this.profile = options.profile;
@@ -192,6 +197,10 @@ export class DaemonServer {
 			Number.isFinite(options.ownerLeaseWaitMs) && options.ownerLeaseWaitMs! >= 1
 				? Math.floor(options.ownerLeaseWaitMs!)
 				: OWNER_LEASE_WAIT_MS;
+		this.#idleShutdownGraceMs =
+			Number.isFinite(options.idleShutdownGraceMs) && options.idleShutdownGraceMs! >= 0
+				? Math.floor(options.idleShutdownGraceMs!)
+				: DEFAULT_IDLE_SHUTDOWN_GRACE_MS;
 		this.#ownerProcessVerifier = options.ownerProcessVerifier;
 		this.#runtimeFactory = options.runtimeFactory ?? createAgentSessionRuntime;
 		this.#usesDefaultRuntimeFactory = options.runtimeFactory === undefined;
@@ -286,6 +295,9 @@ export class DaemonServer {
 			const serverControls: HostedServerControls = {
 				getSnapshot: () => ({ ...this.status(), state: "connected" }),
 				sessions: () => formatDaemonSessions(this.registry.list()),
+				stop: force => this.requestShutdownFromControl(force === true, "terminate"),
+				kill: force => this.requestShutdownFromControl(force === true, "terminate"),
+				refresh: force => this.requestShutdownFromControl(force === true, "replace"),
 			};
 			const runtimeFactory: DaemonSessionRuntimeFactory = options =>
 				baseRuntimeFactory({ ...options, serverControls });
@@ -296,6 +308,7 @@ export class DaemonServer {
 					sessionDir: this.#sessionDir,
 				});
 			this.#runtimeReady.resolve();
+			this.#scheduleIdleShutdown();
 			return this;
 		} catch (error) {
 			this.#closed = true;
@@ -587,9 +600,34 @@ export class DaemonServer {
 	idleShutdownEligible(): boolean {
 		return (
 			this.#connections.size === 0 &&
+			this.#inflightLifecycle.size === 0 &&
 			!this.#registry?.hasLiveSessions &&
 			(this.#registry?.protectedJobCount ?? 0) === 0
 		);
+	}
+
+	#cancelIdleShutdown(): void {
+		if (this.#idleShutdownTimer === undefined) return;
+		clearTimeout(this.#idleShutdownTimer);
+		this.#idleShutdownTimer = undefined;
+	}
+
+	#scheduleIdleShutdown(): void {
+		if (this.#closed || this.#connections.size > 0 || this.#idleShutdownTimer !== undefined) return;
+		this.#idleShutdownTimer = setTimeout(() => {
+			this.#idleShutdownTimer = undefined;
+			if (this.#closed || this.#connections.size > 0) return;
+			if (this.idleShutdownEligible()) {
+				void this.shutdown(true).catch(error => {
+					logger.error("Daemon idle shutdown failed", { error: unknownErrorMessage(error) });
+				});
+				return;
+			}
+			// Parked sessions and protected jobs can outlive their last client.
+			// Recheck after another grace period so the daemon exits once they
+			// settle without requiring a new client to kick the lifecycle.
+			this.#scheduleIdleShutdown();
+		}, this.#idleShutdownGraceMs);
 	}
 
 	async #disposeSharedResources(): Promise<void> {
@@ -605,10 +643,33 @@ export class DaemonServer {
 		}
 	}
 
+	/** Request lifecycle shutdown from a hosted slash command.
+	 *
+	 * The slash handler runs inside the daemon, so it cannot use the protocol
+	 * client's special "exclude requester" blocker path. A safe request checks
+	 * active work, then schedules the same forced teardown used by the CLI.
+	 */
+	requestShutdownFromControl(force = false, intent: "terminate" | "replace" = "replace"): DaemonShutdownResult {
+		if (!force && this.#registry?.hasActiveWork) return { shutdown: false, blockers: ["sessions"] };
+		if (!force && (this.#registry?.protectedJobCount ?? 0) > 0)
+			return { shutdown: false, blockers: ["protected_jobs"] };
+		setTimeout(() => {
+			// Re-check at fire time for the safe path: work may have started
+			// between the synchronous precheck and this teardown (TOCTOU). Force
+			// is the operator's explicit bypass and skips the recheck.
+			if (!force && this.#registry?.hasActiveWork) return;
+			if (!force && (this.#registry?.protectedJobCount ?? 0) > 0) return;
+			if (intent === "terminate") this.#registry?.requestClientExit();
+			void this.shutdown(true);
+		}, 0);
+		return { shutdown: true, blockers: [] };
+	}
+
 	async shutdown(force = false): Promise<DaemonShutdownResult> {
 		if (this.#shutdownPromise) return this.#shutdownPromise;
 		const blockers = this.#shutdownBlockers();
 		if (blockers.length > 0 && !force) return { shutdown: false, blockers };
+		this.#cancelIdleShutdown();
 		this.#shutdownPromise = (async () => {
 			this.#closed = true;
 			for (const connection of [...this.#connections]) {
@@ -681,6 +742,7 @@ export class DaemonServer {
 	}
 
 	#accept(socket: net.Socket): void {
+		this.#cancelIdleShutdown();
 		this.#rawSockets.add(socket);
 		socket.on("close", () => this.#rawSockets.delete(socket));
 		if (this.#closed || this.#connections.size >= this.#maxClients) {
@@ -742,6 +804,7 @@ export class DaemonServer {
 		}
 		connection.attachments.clear();
 		this.#connections.delete(connection);
+		this.#scheduleIdleShutdown();
 	}
 	#onData(connection: Connection, chunk: string): void {
 		connection.buffer += chunk;
@@ -819,7 +882,7 @@ export class DaemonServer {
 			serverVersion: this.#serverVersion,
 			protocolVersion: DAEMON_PROTOCOL_MAJOR,
 			shard: { profile: this.profile },
-			capabilities: ["snapshot", "events", "server_status"],
+			capabilities: ["snapshot", "events", "server_status", "shutdown_force"],
 			...(this.#buildStamp === undefined ? {} : { buildStamp: this.#buildStamp }),
 		});
 	}
@@ -983,9 +1046,24 @@ export class DaemonServer {
 				return acknowledged;
 			}
 			case "shutdown": {
+				// A force request is an explicit lifecycle decision from the local
+				// operator. It intentionally bypasses blockers and tears down every
+				// session/client on this daemon, unlike the legacy graceful request.
+				if (operation.force === true) {
+					setTimeout(() => {
+						void this.shutdown(true);
+					}, 0);
+					return { shutdown: true, blockers: [] };
+				}
 				const blockers = this.#shutdownBlockers(connection);
 				if (blockers.length > 0) return { shutdown: false, blockers };
 				setTimeout(() => {
+					// Re-check at fire time: a new client/session may have appeared
+					// between the synchronous precheck and this teardown (TOCTOU).
+					// The requester itself is excluded so its still-open connection
+					// does not count as a "clients" blocker; shutdown(true) then runs
+					// the real teardown only when the world is still quiet.
+					if (this.#shutdownBlockers(connection).length > 0) return;
 					void this.shutdown(true);
 				}, 0);
 				return { shutdown: true, blockers: [] };

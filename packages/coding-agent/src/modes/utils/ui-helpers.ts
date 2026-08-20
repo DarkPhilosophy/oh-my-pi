@@ -464,6 +464,11 @@ export class UiHelpers {
 			// the next iteration is reached no matter how the prior message exited.
 			if (i > 0) yield;
 			const message = messages[i]!;
+			// Seed thinking visibility from persisted assistant turns before their
+			// components are constructed. This keeps resumed sessions consistent
+			// with live streams when thinking is configured off but history contains
+			// displayable reasoning.
+			this.ctx.noteDisplayableThinkingContent?.(message);
 			if (message.role !== "toolResult") flushPendingUsage();
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {

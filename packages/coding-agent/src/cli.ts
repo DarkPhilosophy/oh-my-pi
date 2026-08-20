@@ -32,7 +32,7 @@ import { setProcessName } from "@oh-my-pi/pi-utils/process-name";
 import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from "@oh-my-pi/pi-utils/worker-host";
 import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cli/profile-alias";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
-import { isDefaultInteractiveArgv } from "./daemon/interactive-route";
+import { isDaemonControlArgv, isDefaultInteractiveArgv } from "./daemon/interactive-route";
 import { startJsEvalProcess } from "./eval/js/process-entry";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
@@ -447,6 +447,35 @@ export async function runCli(argv: string[]): Promise<void> {
 	// poison `workerHostEntry()` for the whole test process, forcing eval/stats/
 	// browser workers onto the same-realm inline fallback.
 	if (isProcessEntry) declareWorkerHostEntry();
+	// Root-level daemon lifecycle controls must be consumed before the normal
+	// interactive route, otherwise `bgjob`/`kill`/`refresh` leaks into launch as
+	// a prompt. Bare `--daemon` remains the existing interactive opt-in.
+	if (resolvedArgv.includes("--daemon")) {
+		const { parseDaemonLifecycleArgv, runDaemonLifecycle } = await import("./daemon/lifecycle");
+		const lifecycle = parseDaemonLifecycleArgv(resolvedArgv);
+		if (lifecycle && "error" in lifecycle) {
+			process.stderr.write(`error: ${lifecycle.error}\n`);
+			process.exitCode = 2;
+			return;
+		}
+		if (lifecycle) {
+			try {
+				if (!(await runDaemonLifecycle(lifecycle))) process.exitCode = 1;
+			} catch (error: unknown) {
+				process.stderr.write(
+					`error: daemon lifecycle failed: ${error instanceof Error ? error.message : String(error)}\n`,
+				);
+				process.exitCode = 1;
+			}
+			return;
+		}
+	}
+
+	// The remaining root daemon forms (status/sessions/reconnect/stop) use the
+	// regular non-interactive command implementation. Preserve their action
+	// token while normalizing `--daemon <action>` to `daemon <action>`.
+	if (isDaemonControlArgv(resolvedArgv)) resolvedArgv = ["daemon", ...resolvedArgv.slice(1)];
+
 	// The default interactive route is intentionally decided before loading the
 	// command registry or main graph. The bootstrap itself loads InteractiveMode
 	// only after the authenticated daemon connection is established.
