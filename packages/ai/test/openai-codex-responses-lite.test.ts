@@ -166,12 +166,14 @@ describe("openai-codex optional response controls", () => {
 		expect("stream_options" in suppressed).toBe(false);
 	});
 
-	it("disables native reasoning with effort none when an external scratchpad replaces it", async () => {
+	it("disables native reasoning at the model's lowest tier when an external scratchpad replaces it", async () => {
 		const model = createCodexModel("gpt-5.5");
 		const body = await buildTransformedCodexRequestBody(model, createCodexTestContext(), {
 			forceReasoningOff: true,
 		});
-		expect(body.reasoning).toEqual({ effort: "none" });
+		// `none` is off every current Codex ladder and the backend rejects it
+		// outright ("Unsupported value: 'none' ..."), so off means lowest tier.
+		expect(body.reasoning).toEqual({ effort: "low" });
 	});
 
 	it("forces reasoning.context to all_turns for Responses Lite", async () => {
@@ -187,7 +189,7 @@ describe("openai-codex optional response controls", () => {
 			responsesLite: true,
 			reasoningContext: "current_turn",
 		});
-		expect(noneEffort.reasoning).toEqual({ effort: "none", summary: "auto", context: "all_turns" });
+		expect(noneEffort.reasoning).toEqual({ effort: "low", summary: "auto", context: "all_turns" });
 
 		const plainRequest = await transformRequestBody({ model: model.id }, model, {
 			responsesLite: false,

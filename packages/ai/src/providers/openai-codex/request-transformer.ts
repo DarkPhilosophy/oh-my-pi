@@ -1,6 +1,6 @@
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { supportsAllTurnsReasoningContext, supportsCodexReasoningSummary } from "@oh-my-pi/pi-catalog/identity";
-import { requireSupportedEffort } from "@oh-my-pi/pi-catalog/model-thinking";
+import { getSupportedEfforts, requireSupportedEffort } from "@oh-my-pi/pi-catalog/model-thinking";
 import { $env } from "@oh-my-pi/pi-utils";
 import type { Model } from "../../types";
 import { mapOpenAIReasoningEffort } from "../openai-shared";
@@ -134,11 +134,8 @@ function concurrentSummariesEnabled(): boolean {
  * A mapped value outside the Codex wire vocabulary is a broken compat/model
  * effort map — fail loudly rather than silently sending a different tier.
  */
-function mapCodexWireEffort(
-	model: Model<"openai-codex-responses">,
-	effort: CodexCallerEffort,
-): ReasoningConfig["effort"] {
-	const mapped = mapOpenAIReasoningEffort(model, model.compat, requireSupportedEffort(model, EFFORT_BY_NAME[effort]));
+function mapCodexCatalogEffort(model: Model<"openai-codex-responses">, effort: Effort): ReasoningConfig["effort"] {
+	const mapped = mapOpenAIReasoningEffort(model, model.compat, requireSupportedEffort(model, effort));
 	switch (mapped) {
 		case "none":
 		case "minimal":
@@ -155,13 +152,37 @@ function mapCodexWireEffort(
 	}
 }
 
+/**
+ * Wire effort for "reasoning off". `none` is NOT a universal Codex tier: models
+ * whose ladder starts at `low` (e.g. `gpt-5.3-codex-spark`) reject
+ * `reasoning.effort: "none"` with `Unsupported value: 'none' is not supported
+ * with the '<model>' model`, killing the turn. Send `none` only when some
+ * supported effort actually maps to it; otherwise clamp to the model's lowest
+ * tier, matching the `lowest-effort` disable mode of the plain Responses path.
+ */
+function resolveCodexOffEffort(model: Model<"openai-codex-responses">): ReasoningConfig["effort"] {
+	const supported = getSupportedEfforts(model);
+	if (supported.length === 0) return "none";
+	for (const effort of supported) {
+		if (mapCodexCatalogEffort(model, effort) === "none") return "none";
+	}
+	return mapCodexCatalogEffort(model, supported[0]!);
+}
+
+function mapCodexWireEffort(
+	model: Model<"openai-codex-responses">,
+	effort: CodexCallerEffort,
+): ReasoningConfig["effort"] {
+	return mapCodexCatalogEffort(model, EFFORT_BY_NAME[effort]);
+}
+
 function getReasoningConfig(
 	model: Model<"openai-codex-responses">,
 	effort: NonNullable<CodexRequestOptions["reasoningEffort"]>,
 	options: CodexRequestOptions,
 ): ReasoningConfig {
 	const config: ReasoningConfig = {
-		effort: effort === "none" ? "none" : mapCodexWireEffort(model, effort),
+		effort: effort === "none" ? resolveCodexOffEffort(model) : mapCodexWireEffort(model, effort),
 	};
 	// The backend only emits reasoning summaries when `reasoning.summary` is
 	// present: omitting it yields zero `response.reasoning_summary_text.*`
@@ -458,7 +479,7 @@ export async function transformRequestBody(
 
 	if (options.reasoningOff || options.reasoningEffort !== undefined || responsesLite) {
 		const reasoningConfig: Partial<ReasoningConfig> = options.reasoningOff
-			? { effort: "none" }
+			? { effort: resolveCodexOffEffort(model) }
 			: options.reasoningEffort !== undefined
 				? getReasoningConfig(model, options.reasoningEffort, options)
 				: {};

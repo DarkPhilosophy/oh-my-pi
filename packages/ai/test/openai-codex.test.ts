@@ -334,14 +334,20 @@ describe("openai-codex reasoning effort wire mapping", () => {
 		}
 	});
 
-	it("keeps pre-5.6 efforts 1:1 and passes none through unmapped", async () => {
+	it("keeps pre-5.6 efforts 1:1 and clamps a reasoning-off request to the model's lowest tier", async () => {
 		const gpt55 = createCodexModel("gpt-5.5");
 		const unshifted = await transformRequestBody({ model: gpt55.id }, gpt55, { reasoningEffort: "xhigh" });
 		expect(unshifted.reasoning?.effort).toBe("xhigh");
 
-		const gpt56 = createCodexModel("gpt-5.6-sol");
-		const none = await transformRequestBody({ model: gpt56.id }, gpt56, { reasoningEffort: "none" });
-		expect(none.reasoning?.effort).toBe("none");
+		// `none` is not on any current Codex ladder: sending it makes the backend
+		// reject the turn with "Unsupported value: 'none' is not supported with
+		// the '<model>' model", so reasoning-off clamps to the lowest wire tier.
+		const spark = createCodexModel("gpt-5.3-codex-spark");
+		const offEffort = await transformRequestBody({ model: spark.id }, spark, { reasoningEffort: "none" });
+		expect(offEffort.reasoning?.effort).toBe("low");
+
+		const explicitOff = await transformRequestBody({ model: spark.id }, spark, { reasoningOff: true });
+		expect(explicitOff.reasoning?.effort).toBe("low");
 	});
 });
 
