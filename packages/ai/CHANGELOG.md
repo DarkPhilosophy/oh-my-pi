@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed Codex model entitlement denials leaving the session on the wrong ChatGPT account when the upstream error named the resolved rollout SKU (e.g. `gpt-5.3-codex-spark-1p-codexswic-ev3`) instead of the requested model id; the denial now rotates to an account that has the model.
+- Fixed a Codex denial for one model tier being treated as a denial of another (e.g. a `-codex-spark` or `-daybreak-*` denial applied to plain `gpt-5.2`); only deployment-suffixed rollout SKUs of the requested model now match, so a tier's block never leaks onto a different tier or meter.
 
 ## [17.4.1] - 2026-08-21
 

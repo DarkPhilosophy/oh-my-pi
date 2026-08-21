@@ -651,6 +651,40 @@ describe("AuthStorage forceRefresh + rotateSessionCredential", () => {
 		);
 	});
 
+	test("Codex denial naming a different tier does not block the requested base model", async () => {
+		if (!store) throw new Error("test setup failed");
+		const codexStorage = new AuthStorage(store, { usageProviderResolver: () => undefined });
+		vi.spyOn(oauthUtils, "getOAuthApiKey").mockImplementation(async (_provider, credentials) => {
+			const credential = credentials[CODEX_PROVIDER] as OAuthCredentials | undefined;
+			if (!credential) return null;
+			return { apiKey: credential.access, newCredentials: credential };
+		});
+		await codexStorage.set(CODEX_PROVIDER, [
+			{ type: "oauth", access: "tier-a", refresh: "ref-A", expires: farExpiry(), accountId: "account-A" },
+			{ type: "oauth", access: "tier-b", refresh: "ref-B", expires: farExpiry(), accountId: "account-B" },
+		]);
+
+		const sessionId = "tier-mixup";
+		const modelId = "gpt-5.2";
+		expect(await codexStorage.getApiKey(CODEX_PROVIDER, sessionId, { modelId })).toBe("tier-a");
+		// A Spark-tier denial is a different model with its own entitlement and
+		// meter: it must not rotate or block the plain chat model.
+		const denial = new ProviderHttpError(
+			"Codex error event: The 'gpt-5.2-codex-spark' model is not supported when using Codex with a ChatGPT account.",
+			400,
+			{ code: "invalid_request_error" },
+		);
+
+		expect(
+			await codexStorage.rotateSessionCredential(CODEX_PROVIDER, sessionId, {
+				error: denial,
+				modelId,
+				apiKey: "tier-a",
+			}),
+		).toBe(false);
+		expect(await codexStorage.getApiKey(CODEX_PROVIDER, sessionId, { modelId })).toBe("tier-a");
+	});
+
 	test("rotateSessionCredential treats structured usage codes as quota blocks despite generic messages", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 		registerProvider();

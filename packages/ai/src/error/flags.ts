@@ -136,26 +136,44 @@ function codexChatGPTAccountPolicyModelFromText(text: string): string | undefine
 
 /**
  * Whether the model named in a Codex entitlement denial is the model we asked
- * for. Upstream does not echo the requested id verbatim: it reports the
- * resolved rollout SKU (`gpt-5.3-codex-spark` →
- * `gpt-5.3-codex-spark-1p-codexswic-ev3`) and, for dated/aliased ids, the base
- * family instead. A strict equality check therefore rejected the denial and
- * left the session pinned to the account that lacks the entitlement instead of
- * rotating to the one that has it. Match on either id being a
- * separator-bounded prefix of the other so a denial for a sibling model
- * (`gpt-5.3-codex` vs `gpt-5.3-codex-spark`) still does not match.
+ * for. Upstream does not always echo the requested id verbatim: it reports the
+ * resolved rollout SKU, which extends the requested id with a *deployment*
+ * suffix (`gpt-5.3-codex-spark` → `gpt-5.3-codex-spark-1p-codexswic-ev3`). A
+ * strict equality check rejected those denials and left the session pinned to
+ * the account that lacks the entitlement instead of rotating to the one that
+ * has it.
+ *
+ * The extension is accepted ONLY when every extra segment is deployment-shaped:
+ * it carries a digit (`1p`, `ev3`) or is a known rollout token. A tier segment
+ * (`gpt-5.2` vs `gpt-5.2-codex-spark`, `…-daybreak-blue`) names a DIFFERENT
+ * model with its own entitlement and its own meter, so it must never match —
+ * otherwise a denial for one tier blocks the other on that account.
  */
+const CODEX_ROLLOUT_SUFFIX_TOKENS: Record<string, true> = {
+	codexswic: true,
+	swic: true,
+	rollout: true,
+	ga: true,
+};
+
 function codexChatGPTAccountPolicyModelMatches(
 	deniedIdentity: string | undefined,
 	requestedIdentity: string | undefined,
 ): boolean {
 	if (deniedIdentity === undefined || requestedIdentity === undefined) return false;
 	if (deniedIdentity === requestedIdentity) return true;
-	const [shorter, longer] =
-		deniedIdentity.length < requestedIdentity.length
-			? [deniedIdentity, requestedIdentity]
-			: [requestedIdentity, deniedIdentity];
-	return longer.startsWith(shorter) && /[-._]/.test(longer.charAt(shorter.length));
+	if (deniedIdentity.length <= requestedIdentity.length || !deniedIdentity.startsWith(requestedIdentity)) {
+		return false;
+	}
+	const suffix = deniedIdentity.slice(requestedIdentity.length);
+	if (!/^[-._]/.test(suffix)) return false;
+	for (const segment of suffix.split(/[-._]/)) {
+		if (segment === "") continue;
+		if (/\d/.test(segment)) continue;
+		if (CODEX_ROLLOUT_SUFFIX_TOKENS[segment] === true) continue;
+		return false;
+	}
+	return true;
 }
 
 function isCodexChatGPTAccountPolicyText(
