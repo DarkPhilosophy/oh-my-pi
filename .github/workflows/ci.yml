@@ -144,6 +144,13 @@ jobs:
          - name: Verify Rust license compliance (cargo-deny 0.20.2)
            run: |
               cargo install --locked --version 0.20.2 cargo-deny
+              # `--offline` needs every workspace crate already in the registry
+              # cache. PR runs use a fresh GitHub-hosted runner (see runs-on
+              # above), where the only prior cargo work is the cargo-deny
+              # install, so nothing populates the index for our own graph and
+              # resolution fails. Non-PR events land on omp-kata, whose Cargo
+              # cache is warm, which is why main stayed green. Fetch first.
+              cargo fetch --locked
               cargo deny --locked --offline check licenses sources
          - name: Type check workspace
            run: bun run ci:check:full
