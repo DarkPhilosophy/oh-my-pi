@@ -6,6 +6,7 @@
 
 - Fixed Codex model entitlement denials leaving the session on the wrong ChatGPT account when the upstream error named the resolved rollout SKU (e.g. `gpt-5.3-codex-spark-1p-codexswic-ev3`) instead of the requested model id; the denial now rotates to an account that has the model.
 - Fixed a Codex denial for one model tier being treated as a denial of another (e.g. a `-codex-spark` or `-daybreak-*` denial applied to plain `gpt-5.2`); only deployment-suffixed rollout SKUs of the requested model now match, so a tier's block never leaks onto a different tier or meter.
+- Fixed advisors and other sessions staying stuck on an account that lacks a model (e.g. `gpt-daybreak-blue-latest`): a model entitlement denial raised before any credential selection was recorded now resolves and blocks the offending account, so the next attempt falls back to the account that has the model.
 
 ## [17.4.1] - 2026-08-21
 

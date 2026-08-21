@@ -6428,10 +6428,27 @@ export class AuthStorage {
 			).switched;
 		}
 
-		const sessionCredential = await this.#resolveCredentialTarget(provider, sessionId, {
+		let sessionCredential = await this.#resolveCredentialTarget(provider, sessionId, {
 			credentialId: options?.credentialId,
 			apiKey: options?.apiKey,
 		});
+		if (
+			!sessionCredential &&
+			sessionId !== undefined &&
+			options?.credentialId === undefined &&
+			options?.apiKey === undefined
+		) {
+			// No sticky credential is recorded for this caller yet: advisors and
+			// subagents resolve keys under their own provider session id, and a
+			// cached bearer can serve a whole turn without recording a selection.
+			// Bailing out here left the account that just refused the model as the
+			// next selection too, so an entitlement denial looped on the wrong
+			// account instead of falling back to the account that has the model.
+			// Resolve (and thereby record) the selection this request would use,
+			// then block that account.
+			await this.getApiKey(provider, sessionId, { modelId: options?.modelId, signal: options?.signal });
+			sessionCredential = await this.#resolveCredentialTarget(provider, sessionId);
+		}
 		if (!sessionCredential) return false;
 
 		const deniedModel = AIError.codexChatGPTAccountPolicyModel(error);
