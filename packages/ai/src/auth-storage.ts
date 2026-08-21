@@ -1265,6 +1265,7 @@ type CredentialBlockRouting = {
 type UsageRankedCandidate<T extends AuthCredential> = UsageCandidate<T> & {
 	blocked: boolean;
 	blockedUntil?: number;
+	modelPolicyBlocked: boolean;
 	hasPriorityBoost: boolean;
 	planPriority: number;
 	secondaryUsed: number;
@@ -1287,6 +1288,14 @@ type RankedApiKeyCandidate = UsageRankedCandidate<ApiKeyCredential>;
  */
 export class AuthStorage {
 	static readonly #defaultBackoffMs = 60_000; // Default backoff when no reset time available
+	/**
+	 * Model-entitlement denials ("this model is not supported with this
+	 * account") describe account configuration, not a rate window, so they hold
+	 * far longer than the generic backoff. A 60s block let the unentitled
+	 * account become the earliest-unblocking candidate again and the session
+	 * bounced back onto it before the entitled account was ever used.
+	 */
+	static readonly #modelPolicyBlockMs = 12 * 60 * 60 * 1000;
 
 	/** Provider -> credentials cache, populated from store on reload(). */
 	#data: Map<string, StoredCredential[]> = new Map();
@@ -1868,6 +1877,28 @@ export class AuthStorage {
 		return blockedUntil;
 	}
 
+	/** Returns the active block for one exact scope, excluding legacy global blocks and sibling scopes. */
+	#getCredentialExactScopeBlockedUntil(
+		provider: string,
+		providerKey: string,
+		credentialIndex: number,
+		blockScope: string,
+	): number | undefined {
+		const nowMs = Date.now();
+		let blockedUntil = this.#getCredentialBlockedUntilForKey(
+			this.#toScopedBackoffKey(providerKey, blockScope),
+			credentialIndex,
+			nowMs,
+		);
+		const credentialId = this.#getStoredCredentials(provider)[credentialIndex]?.id;
+		if (credentialId === undefined) return blockedUntil;
+		const persistedBlockedUntil = this.#readPersistedCredentialBlock(credentialId, providerKey, blockScope);
+		if (persistedBlockedUntil !== undefined && (blockedUntil === undefined || persistedBlockedUntil > blockedUntil)) {
+			blockedUntil = persistedBlockedUntil;
+		}
+		return blockedUntil;
+	}
+
 	/** Checks if a credential is temporarily blocked due to usage limits. */
 	#isCredentialBlocked(
 		provider: string,
@@ -2168,6 +2199,7 @@ export class AuthStorage {
 				usageChecked,
 				blocked,
 				blockedUntil,
+				modelPolicyBlocked: false,
 				hasPriorityBoost: strategy.hasPriorityBoost?.(primary) ?? false,
 				planPriority: 0,
 				secondaryUsed: this.#normalizeUsageFraction(secondary),
@@ -4443,6 +4475,7 @@ export class AuthStorage {
 		credentialType: AuthCredential["type"],
 		modelId: string | undefined,
 		blockScopeOverride?: string,
+		siblingScopesOverride?: readonly string[],
 	): CredentialBlockRouting {
 		const providerKey = this.#getProviderTypeKey(provider, credentialType);
 		const strategy = this.#rankingStrategyResolver?.(provider);
@@ -4451,9 +4484,10 @@ export class AuthStorage {
 		const blockScope = blockScopeOverride ?? defaultBlockScope;
 		const requestBlockScopes = credentialBlockScopesForRequest(provider, strategy, rankingContext, defaultBlockScope);
 		const siblingBlockScopes =
-			blockScopeOverride && !requestBlockScopes.includes(blockScopeOverride)
+			siblingScopesOverride ??
+			(blockScopeOverride && !requestBlockScopes.includes(blockScopeOverride)
 				? [...requestBlockScopes, blockScopeOverride]
-				: requestBlockScopes;
+				: requestBlockScopes);
 		return {
 			providerKey,
 			strategy,
@@ -4613,6 +4647,12 @@ export class AuthStorage {
 		planRequirement: OpenAICodexPlanRequirement,
 	): number {
 		if (left.blocked !== right.blocked) return left.blocked ? 1 : -1;
+		if (left.blocked && right.blocked && left.modelPolicyBlocked !== right.modelPolicyBlocked) {
+			// Entitlement is categorical: never loop back to an account known not
+			// to own this model merely because its policy block expires before an
+			// entitled sibling's unrelated usage-window block.
+			return left.modelPolicyBlocked ? 1 : -1;
+		}
 		if (left.blocked && right.blocked) {
 			const leftBlockedUntil = left.blockedUntil ?? Number.POSITIVE_INFINITY;
 			const rightBlockedUntil = right.blockedUntil ?? Number.POSITIVE_INFINITY;
@@ -4687,6 +4727,7 @@ export class AuthStorage {
 	}): Promise<OAuthCandidate[]> {
 		const nowMs = Date.now();
 		const { strategy } = args;
+		const modelPolicyScope = modelAccountPolicyBlockScope(args.provider, args.rankingContext.modelId);
 		const ranked: RankedOAuthCandidate[] = [];
 		// Pre-fetch usage reports in parallel for non-blocked credentials.
 		// Wrap with a timeout so slow/429'd fetches don't indefinitely block
@@ -4775,6 +4816,14 @@ export class AuthStorage {
 				usageChecked,
 				blocked,
 				blockedUntil,
+				modelPolicyBlocked:
+					modelPolicyScope !== undefined &&
+					this.#getCredentialExactScopeBlockedUntil(
+						args.provider,
+						args.providerKey,
+						selection.index,
+						modelPolicyScope,
+					) !== undefined,
 				hasPriorityBoost: strategy.hasPriorityBoost?.(primary) ?? false,
 				planPriority: getOpenAICodexPlanPriority(usage, args.planRequirement),
 				secondaryUsed: this.#normalizeUsageFraction(secondary),
@@ -6463,17 +6512,29 @@ export class AuthStorage {
 				? modelAccountPolicyBlockScope(provider, options?.modelId)
 				: undefined;
 			if (exactCodexModelPolicy && modelPolicyScope === undefined) return false;
+			// An entitlement denial is about *which account owns the model*, not
+			// about usage windows. Judging sibling availability with the request's
+			// usage scopes (chat/spark/shared) made a sibling that merely hit its
+			// ordinary chat cap look unavailable, so the rotation reported
+			// "no sibling" and the session stayed pinned to the account that does
+			// not have the model at all. Only a sibling already denied for THIS
+			// model counts as unavailable here; a quota-capped sibling still gets
+			// selected and surfaces real usage-limit semantics from the wire.
 			const routing = this.#credentialBlockRouting(
 				provider,
 				sessionCredential.type,
 				options?.modelId,
 				modelPolicyScope,
+				modelPolicyScope === undefined ? undefined : [modelPolicyScope],
 			);
 			return this.#blockCredentialForRotation(
 				provider,
 				sessionCredential.type,
 				sessionCredential.index,
-				Date.now() + AuthStorage.#defaultBackoffMs,
+				// Entitlement is account configuration, not a rate window: a short
+				// backoff let the unentitled account rank first again (blocked
+				// candidates order by earliest unblock) and the denial looped.
+				Date.now() + (exactCodexModelPolicy ? AuthStorage.#modelPolicyBlockMs : AuthStorage.#defaultBackoffMs),
 				routing,
 			).switched;
 		}

@@ -680,6 +680,45 @@ describe("AuthStorage forceRefresh + rotateSessionCredential", () => {
 		expect(await codexStorage.getApiKey(CODEX_PROVIDER, sessionId, { modelId })).toBe("entitled");
 	});
 
+	test("Codex denial rotates to the entitled account even when that account hit its chat cap", async () => {
+		if (!store) throw new Error("test setup failed");
+		const codexStorage = new AuthStorage(store, { usageProviderResolver: () => undefined });
+		vi.spyOn(oauthUtils, "getOAuthApiKey").mockImplementation(async (_provider, credentials) => {
+			const credential = credentials[CODEX_PROVIDER] as OAuthCredentials | undefined;
+			if (!credential) return null;
+			return { apiKey: credential.access, newCredentials: credential };
+		});
+		await codexStorage.set(CODEX_PROVIDER, [
+			{ type: "oauth", access: "no-entitlement", refresh: "ref-A", expires: farExpiry(), accountId: "account-A" },
+			{ type: "oauth", access: "entitled", refresh: "ref-B", expires: farExpiry(), accountId: "account-B" },
+		]);
+
+		// Account B spent its ordinary chat quota — a usage window, not an
+		// entitlement. It is still the only account that owns the model.
+		const quotaSession = "chat-session";
+		expect(await codexStorage.getApiKey(CODEX_PROVIDER, quotaSession, { modelId: "gpt-5.2" })).toBe("no-entitlement");
+		expect(
+			await codexStorage.markUsageLimitReached(CODEX_PROVIDER, quotaSession, {
+				modelId: "gpt-5.2",
+				apiKey: "entitled",
+				retryAfterMs: 2 * 24 * 60 * 60 * 1000,
+			}),
+		).toBeDefined();
+
+		const sessionId = "daybreak-session";
+		const modelId = "gpt-daybreak-blue-latest";
+		const denial = new ProviderHttpError(
+			"Codex error event: The 'gpt-daybreak-blue-latest' model is not supported when using Codex with a ChatGPT account.",
+			400,
+			{ code: "invalid_request_error" },
+		);
+		expect(await codexStorage.getApiKey(CODEX_PROVIDER, sessionId, { modelId })).toBe("no-entitlement");
+		expect(await codexStorage.rotateSessionCredential(CODEX_PROVIDER, sessionId, { error: denial, modelId })).toBe(
+			true,
+		);
+		expect(await codexStorage.getApiKey(CODEX_PROVIDER, sessionId, { modelId })).toBe("entitled");
+	});
+
 	test("Codex denial naming a different tier does not block the requested base model", async () => {
 		if (!store) throw new Error("test setup failed");
 		const codexStorage = new AuthStorage(store, { usageProviderResolver: () => undefined });
