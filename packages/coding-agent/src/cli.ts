@@ -482,6 +482,14 @@ export async function runCli(argv: string[]): Promise<void> {
 	// token while normalizing `--daemon <action>` to `daemon <action>`.
 	if (isDaemonControlArgv(resolvedArgv)) resolvedArgv = ["daemon", ...resolvedArgv.slice(1)];
 
+	// `--license` is a terminal top-level flag: resolve it before the interactive
+	// route, otherwise the daemon launch path consumes it as session input and
+	// reports "Unrecognized flag". (`--smoke-test` is already excluded below.)
+	if (resolvedArgv[0] === "--license") {
+		process.stdout.write(formatLicenseOutput());
+		return;
+	}
+
 	// The default interactive route is intentionally decided before loading the
 	// command registry or main graph. The bootstrap itself loads InteractiveMode
 	// only after the authenticated daemon connection is established.
@@ -507,10 +515,6 @@ export async function runCli(argv: string[]): Promise<void> {
 
 	if (resolvedArgv[0] === "--smoke-test") {
 		await runSmokeTest();
-		return;
-	}
-	if (resolvedArgv[0] === "--license") {
-		process.stdout.write(formatLicenseOutput());
 		return;
 	}
 	const [{ run }, { commands, resolveCliArgv }] = await Promise.all([
