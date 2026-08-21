@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Codex model entitlement denials leaving the session on the wrong ChatGPT account when the upstream error named the resolved rollout SKU (e.g. `gpt-5.3-codex-spark-1p-codexswic-ev3`) instead of the requested model id; the denial now rotates to an account that has the model.
+
 ## [17.4.1] - 2026-08-21
 
 ### Added

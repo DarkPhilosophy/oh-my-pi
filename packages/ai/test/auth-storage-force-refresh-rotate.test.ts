@@ -613,6 +613,44 @@ describe("AuthStorage forceRefresh + rotateSessionCredential", () => {
 		).toBe("daybreak-denied");
 	});
 
+	test("Codex denial naming the upstream rollout SKU still rotates for the requested model id", async () => {
+		if (!store) throw new Error("test setup failed");
+		const codexStorage = new AuthStorage(store, { usageProviderResolver: () => undefined });
+		vi.spyOn(oauthUtils, "getOAuthApiKey").mockImplementation(async (_provider, credentials) => {
+			const credential = credentials[CODEX_PROVIDER] as OAuthCredentials | undefined;
+			if (!credential) return null;
+			return { apiKey: credential.access, newCredentials: credential };
+		});
+		await codexStorage.set(CODEX_PROVIDER, [
+			{ type: "oauth", access: "spark-denied", refresh: "ref-A", expires: farExpiry(), accountId: "account-A" },
+			{ type: "oauth", access: "spark-sibling", refresh: "ref-B", expires: farExpiry(), accountId: "account-B" },
+		]);
+
+		const sessionId = "spark-model-policy";
+		const modelId = "gpt-5.3-codex-spark";
+		const first = await codexStorage.getApiKey(CODEX_PROVIDER, sessionId, { modelId });
+		expect(first).toBe("spark-denied");
+		// Upstream reports the resolved rollout SKU, not the requested id.
+		const denial = new ProviderHttpError(
+			"Codex error event: The 'gpt-5.3-codex-spark-1p-codexswic-ev3' model is not supported when using Codex with a ChatGPT account.",
+			400,
+			{ code: "invalid_request_error" },
+		);
+
+		expect(
+			await codexStorage.rotateSessionCredential(CODEX_PROVIDER, sessionId, {
+				error: denial,
+				modelId,
+				apiKey: first,
+			}),
+		).toBe(true);
+		expect(await codexStorage.getApiKey(CODEX_PROVIDER, sessionId, { modelId })).toBe("spark-sibling");
+		// A sibling family stays entitled on the denied account.
+		expect(await codexStorage.getApiKey(CODEX_PROVIDER, "spark-other-model", { modelId: "gpt-5.3-codex" })).toBe(
+			"spark-denied",
+		);
+	});
+
 	test("rotateSessionCredential treats structured usage codes as quota blocks despite generic messages", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 		registerProvider();

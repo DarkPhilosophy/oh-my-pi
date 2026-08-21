@@ -134,6 +134,30 @@ function codexChatGPTAccountPolicyModelFromText(text: string): string | undefine
 	return normalizeCodexChatGPTAccountPolicyModel(modelId) === undefined ? undefined : modelId;
 }
 
+/**
+ * Whether the model named in a Codex entitlement denial is the model we asked
+ * for. Upstream does not echo the requested id verbatim: it reports the
+ * resolved rollout SKU (`gpt-5.3-codex-spark` →
+ * `gpt-5.3-codex-spark-1p-codexswic-ev3`) and, for dated/aliased ids, the base
+ * family instead. A strict equality check therefore rejected the denial and
+ * left the session pinned to the account that lacks the entitlement instead of
+ * rotating to the one that has it. Match on either id being a
+ * separator-bounded prefix of the other so a denial for a sibling model
+ * (`gpt-5.3-codex` vs `gpt-5.3-codex-spark`) still does not match.
+ */
+function codexChatGPTAccountPolicyModelMatches(
+	deniedIdentity: string | undefined,
+	requestedIdentity: string | undefined,
+): boolean {
+	if (deniedIdentity === undefined || requestedIdentity === undefined) return false;
+	if (deniedIdentity === requestedIdentity) return true;
+	const [shorter, longer] =
+		deniedIdentity.length < requestedIdentity.length
+			? [deniedIdentity, requestedIdentity]
+			: [requestedIdentity, deniedIdentity];
+	return longer.startsWith(shorter) && /[-._]/.test(longer.charAt(shorter.length));
+}
+
 function isCodexChatGPTAccountPolicyText(
 	text: string,
 	provider: string | undefined,
@@ -143,7 +167,7 @@ function isCodexChatGPTAccountPolicyText(
 	const deniedModel = codexChatGPTAccountPolicyModelFromText(text);
 	const deniedIdentity = normalizeCodexChatGPTAccountPolicyModel(deniedModel);
 	const requestedIdentity = normalizeCodexChatGPTAccountPolicyModel(modelId);
-	return deniedIdentity !== undefined && deniedIdentity === requestedIdentity;
+	return codexChatGPTAccountPolicyModelMatches(deniedIdentity, requestedIdentity);
 }
 const STALE_RESPONSE_ITEM_PATTERNS = [/\bItem with id ['"][^'"]+['"] not found\.?/i, /previous[ _]?response/i] as const;
 const STALE_RESPONSE_ITEM_DETAIL_PATTERN = /not[ _]?found|invalid|expired|stale|zero[ _-]?data[ _-]?retention/i;
@@ -573,7 +597,7 @@ export function codexChatGPTAccountPolicyModel(error: unknown, depth = 0): strin
 	return "cause" in error ? codexChatGPTAccountPolicyModel(error.cause, depth + 1) : undefined;
 }
 
-/** Whether the exact Codex entitlement denial applies to this provider and requested model. */
+/** Whether the Codex entitlement denial applies to this provider and requested model. */
 export function isCodexChatGPTAccountPolicyError(
 	error: unknown,
 	provider: string,
@@ -582,7 +606,7 @@ export function isCodexChatGPTAccountPolicyError(
 	const deniedModel = codexChatGPTAccountPolicyModel(error);
 	const deniedIdentity = normalizeCodexChatGPTAccountPolicyModel(deniedModel);
 	const requestedIdentity = normalizeCodexChatGPTAccountPolicyModel(modelId);
-	return provider === "openai-codex" && deniedIdentity !== undefined && deniedIdentity === requestedIdentity;
+	return provider === "openai-codex" && codexChatGPTAccountPolicyModelMatches(deniedIdentity, requestedIdentity);
 }
 
 /**
