@@ -16,6 +16,10 @@ on:
          - ".bazelversion"
          - "Cargo.toml"
          - "Cargo.lock"
+         - "deny.toml"
+         - "about.toml"
+         - "LICENSE"
+         - "THIRD-PARTY-NOTICES.txt"
          - "rust-toolchain.toml"
          - "rustfmt.toml"
          # A root dependency change (lockfile/catalog/patches) affects every
@@ -41,6 +45,10 @@ on:
          - ".bazelversion"
          - "Cargo.toml"
          - "Cargo.lock"
+         - "deny.toml"
+         - "about.toml"
+         - "LICENSE"
+         - "THIRD-PARTY-NOTICES.txt"
          - "rust-toolchain.toml"
          - "rustfmt.toml"
          - "bun.lock"
@@ -133,6 +141,10 @@ jobs:
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/bun-install
+         - name: Verify Rust license compliance (cargo-deny 0.20.2)
+           run: |
+              cargo install --locked --version 0.20.2 cargo-deny
+              cargo deny --locked --offline check licenses sources
          - name: Type check workspace
            run: bun run ci:check:full
          - name: Build collab web
@@ -465,6 +477,13 @@ jobs:
       needs: [release_metadata, check, rust_validate, native_addons, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods]
       runs-on: ubuntu-22.04
       steps:
+         - uses: actions/checkout@v4
+         - uses: ./.github/actions/bun-install
+         # Generated-config drift gate: bazel/clippy.bazelrc is maintained by
+         # scripts/release.ts (like the lockfiles); a stale file only blocks
+         # publishing, never ordinary CI.
+         - name: Check generated clippy config
+           run: bun scripts/gen-clippy-bazelrc.ts --check
          - run: echo "release validation green"
 
    # Builds (does not publish) the Linux-hosted release binaries in parallel
@@ -764,7 +783,9 @@ jobs:
            run: |
               bun run ci:release:checksums SHA256SUMS.txt \
                 packages/coding-agent/binaries/omp-* \
-                packages/browser-relay/dist/omp-browser-relay-extension.zip
+                packages/browser-relay/dist/omp-browser-relay-extension.zip \
+                LICENSE \
+                THIRD-PARTY-NOTICES.txt
          - name: Create GitHub Release
            uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
            with:
@@ -772,6 +793,8 @@ jobs:
               files: |
                  packages/coding-agent/binaries/omp-*
                  packages/browser-relay/dist/omp-browser-relay-extension.zip
+                 LICENSE
+                 THIRD-PARTY-NOTICES.txt
                  SHA256SUMS.txt
               body_path: release-notes.md
               generate_release_notes: true

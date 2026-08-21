@@ -7,6 +7,7 @@
 import * as path from "node:path";
 import * as url from "node:url";
 import { isDefinitiveOAuthFailure, type TSchema } from "@oh-my-pi/pi-ai";
+import type { OAuthCredentials } from "@oh-my-pi/pi-ai/oauth/types";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { SourceMeta } from "../capability/types";
 import { resolveConfigValue } from "../config/resolve-config-value";
@@ -31,9 +32,10 @@ import { type LoadMCPConfigsResult, loadAllMCPConfigs, validateServerConfig } fr
 import {
 	lookupMcpOAuthCredential,
 	type MCPOAuthCredentialLookup,
+	refreshManagedMcpOAuthCredential,
 	selectMcpOAuthRefreshMaterial,
 } from "./oauth-credentials";
-import { type MCPStoredOAuthCredential, refreshMCPOAuthToken } from "./oauth-flow";
+import type { MCPStoredOAuthCredential } from "./oauth-flow";
 import type { McpConnectionStatusEvent } from "./startup-events";
 import type { MCPToolDetails } from "./tool-bridge";
 import { DeferredMCPTool, MCPTool } from "./tool-bridge";
@@ -351,8 +353,13 @@ export class MCPManager {
 		return () => this.#promptsChangedSubscribers.delete(handler);
 	}
 
-	#emitToolsChanged(): void {
-		this.#onToolsChanged?.(this.#tools);
+	/**
+	 * Fan out a tool-set change. The primary `setOnToolsChanged` handler may be
+	 * async (the SDK rebinds the session tool registry there); callers that must
+	 * not resolve before the registry is rebound await this.
+	 */
+	async #emitToolsChanged(): Promise<void> {
+		await this.#onToolsChanged?.(this.#tools);
 		for (const handler of this.#toolsChangedSubscribers) handler(this.#tools);
 	}
 
@@ -619,7 +626,7 @@ export class MCPManager {
 						this.reconnectServer(name, options);
 					const customTools = MCPTool.fromTools(connection, serverTools, reconnect);
 					this.#replaceServerTools(name, customTools);
-					this.#emitToolsChanged();
+					void this.#emitToolsChanged();
 					void this.toolCache?.set(name, config, serverTools);
 
 					onStatus?.({ type: "connected", serverName: name });
@@ -975,7 +982,7 @@ export class MCPManager {
 		// Remove tools from this server and notify consumers
 		const hadTools = this.#tools.some(t => t.mcpServerName === name);
 		this.#tools = this.#tools.filter(t => t.mcpServerName !== name);
-		if (hadTools) this.#emitToolsChanged();
+		if (hadTools) void this.#emitToolsChanged();
 
 		// Notify prompt consumers so stale commands are cleared
 		if (connection?.prompts?.length) this.#emitPromptsChanged(name);
@@ -1207,7 +1214,7 @@ export class MCPManager {
 			const customTools = MCPTool.fromTools(connection, serverTools, reconnect);
 			void this.toolCache?.set(name, config, serverTools);
 			this.#replaceServerTools(name, customTools);
-			this.#emitToolsChanged();
+			void this.#emitToolsChanged();
 			void this.#loadServerResourcesAndPrompts(name, connection);
 			return connection;
 		} catch (error) {
@@ -1260,7 +1267,7 @@ export class MCPManager {
 
 		// Replace tools from this server
 		this.#replaceServerTools(name, customTools);
-		this.#emitToolsChanged();
+		await this.#emitToolsChanged();
 	}
 
 	/**
@@ -1448,6 +1455,36 @@ export class MCPManager {
 	}
 
 	/**
+	 * Refresh a broker-redacted MCP OAuth credential through the auth-broker.
+	 *
+	 * When running in broker mode the client only ever holds the redacted
+	 * refresh sentinel; the real refresh token lives on the broker. Delegating
+	 * to {@link AuthStorage.forceRefreshCredentialById} makes the broker run the
+	 * `refresh_token` grant and return a fresh access token, which the client
+	 * uses while keeping {@link REMOTE_REFRESH_SENTINEL} in the refresh slot.
+	 */
+	async #refreshBrokeredMcpCredential(credentialId: string, signal?: AbortSignal): Promise<OAuthCredentials> {
+		const storage = this.#authStorage;
+		if (!storage) throw new Error("MCP OAuth broker refresh requires an auth storage");
+		const row = storage.listStoredCredentials(credentialId).find(entry => entry.credential.type === "oauth");
+		if (!row) throw new Error(`No broker credential row for ${credentialId}`);
+		const entry = await storage.forceRefreshCredentialById(row.id, signal);
+		if (entry.credential.type !== "oauth") {
+			throw new Error(`Broker returned non-OAuth credential for ${credentialId}`);
+		}
+		const refreshed = entry.credential;
+		return {
+			access: refreshed.access,
+			refresh: REMOTE_REFRESH_SENTINEL,
+			expires: refreshed.expires,
+			accountId: refreshed.accountId,
+			email: refreshed.email,
+			projectId: refreshed.projectId,
+			enterpriseUrl: refreshed.enterpriseUrl,
+		};
+	}
+
+	/**
 	 * Resolve OAuth credentials and shell commands in config.
 	 * `oauth: false` skips credential injection (reauth's unauthenticated probe);
 	 * `forceRefresh` bypasses the expiry buffer (401/403 auth-error hook).
@@ -1478,24 +1515,15 @@ export class MCPManager {
 							return Boolean(current.refresh && material?.tokenUrl);
 						},
 						refresh: (current, signal) => {
+							// Broker-backed credentials redact the refresh token
+							// (REMOTE_REFRESH_SENTINEL); the broker holds the real one, so
+							// route the refresh through it instead of failing locally.
 							if (current.refresh === REMOTE_REFRESH_SENTINEL) {
-								throw new Error("MCP OAuth refresh token is broker-redacted; local refresh is unavailable");
+								return this.#refreshBrokeredMcpCredential(credentialId, signal);
 							}
-							const material = selectMcpOAuthRefreshMaterial(current, auth);
-							const tokenUrl = material?.tokenUrl;
-							if (!current.refresh || !tokenUrl) {
-								throw new Error("MCP OAuth credential is missing refresh material");
-							}
-							const clientId = material?.clientId;
-							const clientSecret = material?.clientSecret;
-							const authorizationUrl =
-								material && "authorizationUrl" in material ? material.authorizationUrl : undefined;
-							const resourceIsFallback =
-								!material?.resource && (config.type === "http" || config.type === "sse") && Boolean(config.url);
-							const resource = material?.resource ?? (resourceIsFallback ? config.url : undefined);
-							return refreshMCPOAuthToken(tokenUrl, current.refresh, clientId, clientSecret, resource, {
-								authorizationUrl,
-								stripSameOriginResource: resourceIsFallback,
+							return refreshManagedMcpOAuthCredential(current, {
+								serverUrl: config.type === "http" || config.type === "sse" ? config.url : undefined,
+								auth,
 								signal,
 							});
 						},
@@ -1523,10 +1551,8 @@ export class MCPManager {
 							isDefinitiveOAuthFailure(error instanceof Error ? error.message : String(error)),
 						disabledCause: error =>
 							`oauth refresh failed: ${error instanceof Error ? error.message : String(error)}`,
-						keepCredentialOnRefreshFailure: error =>
-							!(error instanceof Error && error.message.includes("broker-redacted")),
+						keepCredentialOnRefreshFailure: true,
 						onRefreshFailure: refreshError => {
-							if (refreshError instanceof Error && refreshError.message.includes("broker-redacted")) return;
 							logger.warn("MCP OAuth refresh failed, using existing token", {
 								credentialId,
 								error: refreshError,

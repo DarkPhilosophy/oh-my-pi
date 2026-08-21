@@ -489,7 +489,7 @@ describe("AgentSession context promotion", () => {
 		}
 		const settings = Settings.isolated({
 			"compaction.enabled": true,
-			"compaction.strategy": "snapcompact",
+			"compaction.methodOrder": ["snapcompact", "soft"],
 			"compaction.keepRecentTokens": 1,
 			"compaction.thresholdPercent": -1,
 			"contextPromotion.enabled": false,
@@ -670,7 +670,10 @@ describe("AgentSession context promotion", () => {
 			settings: Settings.isolated({
 				"compaction.enabled": true,
 				"compaction.autoContinue": false,
-				"compaction.strategy": "context-full",
+				// Speculative background compaction has its own grace-band trigger;
+				// this test pins the stale-usage threshold contract only.
+				"compaction.asyncEnabled": false,
+				"compaction.methodOrder": ["remote"],
 				"compaction.thresholdTokens": 1_000,
 				"contextPromotion.enabled": false,
 			}),

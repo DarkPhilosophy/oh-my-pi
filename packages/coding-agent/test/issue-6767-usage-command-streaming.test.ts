@@ -82,20 +82,22 @@ describe("issue #6767 /usage output during streaming", () => {
 		resetSettingsForTest();
 	});
 
-	it("defers the usage panel until the active turn ends, mounting it once", async () => {
+	it("anchors the usage panel after the live block and keeps it single after the turn ends", async () => {
 		const streamedReply = new Text("agent is streaming", 0, 0);
 		mode.chatContainer.addChild(streamedReply);
 
 		await mode.handleUsageCommand(usageReports);
 
-		// Mid-stream: the finalized panel must NOT mount above the growing live
-		// block (that is what duplicates in native scrollback — issue #6767).
-		expect(mode.chatContainer.children).toEqual([streamedReply]);
+		// Mid-stream the panel mounts BELOW the growing live block (Spacer + Text)
+		// — never above it, which is what duplicated in native scrollback (#6767).
+		expect(mode.chatContainer.children[0]).toBe(streamedReply);
+		expect(mode.chatContainer.children).toHaveLength(3);
 
 		streaming = false;
 		await mode.eventController.handleEvent({ type: "agent_end", messages: [] } as AgentSessionEvent);
 
-		// streamedReply + the deferred usage panel (Spacer + Text).
+		// The end-of-turn rebuild re-anchors the tracked panel instead of
+		// mounting a second copy.
 		expect(mode.chatContainer.children).toHaveLength(3);
 		const transcript = mode.chatContainer.render(80).join("\n");
 		expect(transcript.match(/Usage \(/g)).toHaveLength(1);

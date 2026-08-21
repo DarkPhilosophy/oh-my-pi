@@ -53,6 +53,7 @@ function makeHarness() {
 		setRightInfo: vi.fn(),
 		hookWidgetContainerAbove: new Container(),
 		hookWidgetContainerBelow: new Container(),
+		syncComposerShape: vi.fn(),
 	} as unknown as InteractiveModeContext;
 
 	const controller = new ExtensionUiController(ctx);

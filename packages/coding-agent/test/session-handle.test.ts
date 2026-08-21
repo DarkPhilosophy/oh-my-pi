@@ -543,6 +543,8 @@ describe("LocalSessionHandle", () => {
 			},
 			model,
 			thinkingLevel: "medium",
+			isFastModeEnabled: () => false,
+			isFastModeActive: () => false,
 			isStreaming: false,
 			isCompacting: false,
 			sessionFile: undefined,

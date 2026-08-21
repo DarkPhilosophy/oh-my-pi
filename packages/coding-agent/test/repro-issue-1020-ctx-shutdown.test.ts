@@ -30,10 +30,12 @@ describe("issue #1020 - ctx.shutdown() in interactive mode", () => {
 			): void {
 				capturedContextActions = contextActions;
 			},
+			getComposerShapes: () => [],
 		};
 
 		const ctxStub = {
 			shutdownRequested: false,
+			syncComposerShape: () => {},
 			session: {
 				extensionRunner: fakeExtensionRunner,
 				// other session fields are only touched lazily by other actions; we
@@ -65,11 +67,13 @@ describe("issue #1020 - ctx.shutdown() in interactive mode", () => {
 				capturedContextActions = contextActions;
 			},
 			onError(_handler: (error: unknown) => void): void {},
+			getComposerShapes: () => [],
 			async emit(_event: unknown): Promise<void> {},
 		};
 
 		const ctxStub = {
 			shutdownRequested: false,
+			syncComposerShape: () => {},
 			session: {
 				extensionRunner: fakeExtensionRunner,
 			},
@@ -121,6 +125,10 @@ describe("issue #1020 - ctx.shutdown() in interactive mode", () => {
 				emittedEvents.push(event.type);
 			},
 			clearManagedTimers(): void {},
+			disposeFileFallbacks(): void {},
+			getComposerShapes(): [] {
+				return [];
+			},
 		};
 
 		const ctxStub = {
@@ -141,6 +149,7 @@ describe("issue #1020 - ctx.shutdown() in interactive mode", () => {
 			hookWidgetContainerAbove: new Container(),
 			hookWidgetContainerBelow: new Container(),
 			ui: { requestRender: () => {} },
+			syncComposerShape: () => {},
 		} as unknown as InteractiveModeContext;
 
 		const controller = new ExtensionUiController(ctxStub);
