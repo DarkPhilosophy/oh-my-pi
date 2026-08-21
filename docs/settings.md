@@ -424,7 +424,7 @@ A value of `-1` means "use the provider/model default" — `omp` does not send t
 | `tier.google`       | enum   | `none`    | `none`, `flex`, `priority`. Gemini API sends it in the body; Vertex sends `priority` via header (`flex` is a no-op on Vertex).                                                                                                                                                 |
 | `tier.subagent`     | enum   | `inherit` | `inherit`, `none`, `auto`, `default`, `flex`, `scale`, `priority`. Applied to the spawned model's family; `inherit` tracks the main agent.                                                                                                                                     |
 | `tier.advisor`      | enum   | `none`    | `inherit`, `none`, `auto`, `default`, `flex`, `scale`, `priority`. Applied to the advisor model's family.                                                                                                                                                                      |
-| `personality`       | enum   | `default` | `default`, `friendly`, `pragmatic`, `none`.                                                                                                                                                                                                                                    |
+| `personality`       | enum   | `default` | `default`, `friendly`, `pragmatic`, `none`. A user-level `<agent dir>/PERSONALITY.md` replaces the selected preset's text; `none` still omits the block. See [system-prompt-customization](./system-prompt-customization.md).                                                  |
 
 ### Retry and fallback
 

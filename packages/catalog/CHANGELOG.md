@@ -13,6 +13,8 @@
 - Fixed caller-supplied transports and abort signals sharing the process-wide `models.dev` discovery request, so one provider timeout can no longer cancel or supply another provider's catalog.
 
 - Fixed the xAI OAuth curated model list declaring `grok-4.5` twice, which duplicated the entry in the static seed returned by `buildXaiOAuthStaticSeed`.
+## [17.4.1] - 2026-08-21
+
 ### Added
 
 - Added helper functions and constants for reading enterprise ChatGPT workspace data-residency regions from Codex OAuth access tokens and forwarding the residency header to Codex backend endpoints.

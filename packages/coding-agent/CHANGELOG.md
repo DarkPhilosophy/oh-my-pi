@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [17.4.1] - 2026-08-21
+
 ### Added
 
 - Added a non-interactive `omp daemon <status|sessions|reconnect|stop>` CLI command wrapping the daemon client and mirroring the in-TUI `/server` command. The CLI previously had no `daemon` command: `omp daemon …` fell through the interactive-routing gate (`isDefaultInteractiveArgv`) to `launchDaemonInteractive`, so e.g. `omp daemon status` blocked for the full request timeout attempting to host an interactive session on a non-TTY instead of printing daemon status. The argv is now registered both in the command table and `NON_INTERACTIVE_COMMANDS`, and supports `--json` for `status`/`sessions`.
@@ -63,6 +65,7 @@
 - Fixed non-interactive CLI paths such as `--version` loading the daemon interactive bootstrap and native computer addon before command routing, which broke startup when Bun addons were disabled.
 - Fixed v17.0.5 merge regressions in hook-status row rendering, slow shutdown feedback, and authenticated Codex model discovery.
 - Fixed session JSONL appends merging records after a missing trailing newline, and recovered already-concatenated adjacent records during session loading.
+- Added `PERSONALITY.md` support: `~/.omp/agent/PERSONALITY.md` (profile/XDG-aware agent dir) replaces the system prompt's personality block text; `personality: none` still omits the block ([#8528](https://github.com/can1357/oh-my-pi/issues/8528))
 - Sloppy edits now support inline replacements with `⟪old│new⟫` syntax (`⟪old│⟫` for deletions and `⟪│new⟫` for insertions), alongside automatic recovery for common formatting mistakes without needing a retry.
 - Sloppy edits now recover operations that mix `⟪old│new⟫` inline replacements with a `»` REWRITE instead of failing the payload: a redundant REWRITE is dropped, a diverging one is applied as the final text, and a note explains the interpretation.
 - Expanded archive support in `read` and `write` tools: `read` can now inspect and extract members from `.rar`, `.7z`, `.iso`, `.cab`, `.deb`, `.rpm`, `.cpio`, `.ar`/`.a`, `.lzh`, `.arj`, compressed tar files (`.tar.bz2`, `.tar.xz`, `.tar.zst`), package formats (`.whl`, `.ipa`, `.xpi`, `.vsix`, `.nupkg`, `.cbz`, `.cbr`), `.asar` archives, and single-file compressed streams; `write` can create `.tar.zst` and update `.asar` archives.
@@ -88,6 +91,7 @@
 - Settings menus now support click-to-toggle and drag-to-reorder for list items, as well as warning indicators and risk notes on sensitive options such as External Thinking.
 - Supervised process completion notices now render as compact single-line entries.
 - The todo HUD header now displays a consolidated progress bar showing task completion across all stages.
+- `/settings` rows can now carry a risk note: a warning glyph on the row plus a warning-colored line above the description. `External Thinking` (`externalThinking`, `--external-thinking`) is the first user — providers have flagged the request shape it produces as abuse, up to account-level enforcement, so both the settings entry and `--help` now say so.
 
 ### Fixed
 
@@ -112,6 +116,8 @@
 - Fixed prompt guidance and descriptions for Task tools and SSH usage.
 - ACP editor clients that support elicitation forms (Zed) can now use `ask`, so the agent can pose single-choice, multi-select, and free-text questions inline instead of guessing.
 - `/retry` and `/handoff` now work over ACP, so editor clients (Zed) list them and can run them instead of sending the text to the model.
+- Added `qwenTemplateReasoningEffort` to the `models.yml` `compat` schema, so the auto-enabled Qwen 3.8+ template effort dialect (`chat_template_kwargs.reasoning_effort`) can be switched off per provider/model for strict local servers that reject unknown `chat_template_kwargs`.
+- Extensions can provide a normalized `usage` provider through `pi.registerProvider()`. Its reports now flow through AuthStorage caching, history, and usage displays, and the override is removed when the extension provider is unregistered.
 
 ## [17.4.0] - 2026-08-20
 
@@ -150,12 +156,6 @@
 - Cancelled prompts during pre-stream turn setup restore the text and image attachments to the editor.
 - `top` builtin accepts single-dash macOS flags such as `-pid` and `-stats`.
 - GNU/BSD compat sweep across built-in shell utilities (`timeout`, `diff`, `find`, `date`, `tail`, `head`, `rg`, `stat`, `truncate`, `cksum`, `sleep`, `which`, `nohup`, `kill`).
-- Added `qwenTemplateReasoningEffort` to the `models.yml` `compat` schema, so the auto-enabled Qwen 3.8+ template effort dialect (`chat_template_kwargs.reasoning_effort`) can be switched off per provider/model for strict local servers that reject unknown `chat_template_kwargs`.
-- Extensions can provide a normalized `usage` provider through `pi.registerProvider()`. Its reports now flow through AuthStorage caching, history, and usage displays, and the override is removed when the extension provider is unregistered.
-
-### Changed
-
-- `/settings` rows can now carry a risk note: a warning glyph on the row plus a warning-colored line above the description. `External Thinking` (`externalThinking`, `--external-thinking`) is the first user — providers have flagged the request shape it produces as abuse, up to account-level enforcement, so both the settings entry and `--help` now say so.
 
 ## [17.3.8] - 2026-08-19
 
