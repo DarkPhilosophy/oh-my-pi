@@ -1012,6 +1012,8 @@ export class TurnRecovery {
 
 		const id = AIError.classifyMessage({
 			api: activeModel.api,
+			provider: activeModel.provider,
+			model: activeModel.id,
 			errorId: message.errorId,
 			errorMessage: message.errorMessage,
 			errorStatus: message.errorStatus,

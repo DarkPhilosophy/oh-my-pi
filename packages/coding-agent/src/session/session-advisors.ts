@@ -1233,11 +1233,24 @@ export class SessionAdvisors {
 		const errorId = assistantFailure
 			? AIError.classifyMessage({
 					api: currentModel.api,
+					// Provider + model identity are REQUIRED for the provider-scoped
+					// account-policy patterns (e.g. Codex refusing a model on a ChatGPT
+					// account). Without them the denial classifies as a plain invalid
+					// request, so the advisor never rotates to a sibling credential that
+					// does have the model and stays stuck on the first account.
+					provider: currentModel.provider,
+					model: currentModel.id,
 					errorId: assistantFailure.errorId,
 					errorMessage: message,
 					errorStatus: assistantFailure.errorStatus,
 				})
-			: AIError.classify(error, currentModel.api);
+			: // Same provider/model identity requirement as above: a denial that
+				// arrives as a raw error (no assistant message was committed) must
+				// still classify as an account policy so the advisor rotates.
+				AIError.classify(error, currentModel.api, {
+					provider: currentModel.provider,
+					modelId: currentModel.id,
+				});
 		if (AIError.is(errorId, AIError.Flag.Abort) || AIError.is(errorId, AIError.Flag.UserInterrupt)) return false;
 		if (
 			AIError.is(errorId, AIError.Flag.ContextOverflow) ||

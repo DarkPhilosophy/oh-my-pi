@@ -87,6 +87,35 @@ describe("error-id classification", () => {
 		expect(AIError.is(id, AIError.Flag.ContentBlocked)).toBe(true);
 		expect(AIError.retriable(id)).toBe(false);
 	});
+	it("classifies a raw Codex ChatGPT-account model denial only when the model identity is supplied", () => {
+		// The advisor/turn-recovery raw-error path has no assistant message, so it
+		// must pass provider+model itself; without the context the same throw
+		// degrades to a plain invalid request and no credential rotation runs.
+		const thrown = new Error(
+			"Codex error event: The 'gpt-daybreak-blue-latest' model is not supported when using Codex with a ChatGPT account. (code=invalid_request_error)",
+		);
+		const withContext = AIError.classify(thrown, "openai-codex-responses", {
+			provider: "openai-codex",
+			modelId: "gpt-daybreak-blue-latest",
+		});
+		expect(AIError.is(withContext, AIError.Flag.AccountPolicy)).toBe(true);
+		expect(
+			AIError.isAccountPolicyError(thrown, "openai-codex-responses", {
+				provider: "openai-codex",
+				modelId: "gpt-daybreak-blue-latest",
+			}),
+		).toBe(true);
+		expect(AIError.is(AIError.classify(thrown, "openai-codex-responses"), AIError.Flag.AccountPolicy)).toBe(false);
+		expect(
+			AIError.is(
+				AIError.classify(thrown, "openai-codex-responses", {
+					provider: "openai-codex",
+					modelId: "gpt-5.1-codex",
+				}),
+				AIError.Flag.AccountPolicy,
+			),
+		).toBe(false);
+	});
 
 	it("classifies only the matching Codex ChatGPT-account model entitlement denial as account policy", () => {
 		const errorMessage =

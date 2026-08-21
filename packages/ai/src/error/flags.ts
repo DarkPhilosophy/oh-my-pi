@@ -444,7 +444,18 @@ function classifyText(
 	return fallbackStatus ?? 0;
 }
 
-export function classify(error: unknown, api?: Api): number {
+/**
+ * Provider identity for the provider-scoped patterns (e.g. Codex refusing a
+ * model on a ChatGPT account). Raw-error callers that know which model was
+ * requested MUST pass it, otherwise an account-policy denial degrades to a
+ * plain invalid request and no credential rotation is attempted.
+ */
+export interface ClassifyContext {
+	provider?: string;
+	modelId?: string;
+}
+
+export function classify(error: unknown, api?: Api, context?: ClassifyContext): number {
 	let kinds = 0;
 	const seen = new Set<object>();
 	let link: unknown = error;
@@ -520,7 +531,7 @@ export function classify(error: unknown, api?: Api): number {
 			linkMessage = (link as { message: string }).message;
 		}
 
-		const textId = classifyText(linkMessage, status(link), api);
+		const textId = classifyText(linkMessage, status(link), api, context?.provider, context?.modelId);
 		kinds |= textId & KIND_MASK;
 
 		link = typeof link === "object" && "cause" in link ? (link as { cause: unknown }).cause : undefined;
@@ -540,8 +551,8 @@ export function isUsageLimit(error: unknown, api?: Api): boolean {
 }
 
 /** Whether an upstream rejection is an account-scoped policy denial worth retrying with a sibling credential. */
-export function isAccountPolicyError(error: unknown, api?: Api): boolean {
-	return is(classify(error, api), Flag.AccountPolicy);
+export function isAccountPolicyError(error: unknown, api?: Api, context?: ClassifyContext): boolean {
+	return is(classify(error, api, context), Flag.AccountPolicy);
 }
 
 /**

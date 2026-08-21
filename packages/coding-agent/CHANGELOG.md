@@ -10,6 +10,7 @@
 ### Fixed
 - Fixed Bash interceptor forwarding eligibility and dispatch fidelity: unsupported async/env/PTY/internal-URL/timeout options, shadowed or recursive targets, and ambiguous argv are no longer forwarded, while quoted arguments and read selectors retain their exact values.
 - Fixed `omp --license` failing with "Unrecognized flag" when daemon interactive mode is enabled; the flag now prints the license before the interactive route claims the argv.
+- Fixed advisors staying stuck on the first account when a model is only entitled on a second one; a Codex ChatGPT-account model denial raised as a raw error is now recognized as an account policy block and rotates to a sibling credential instead of reporting the advisor unavailable.
 - Fixed daemon-hosted themes and terminal decorations using the daemon process profile instead of the attached client's color and capability environment.
 - Fixed repeated apply-patch writes that were acknowledged without changing the file on disk from retrying indefinitely; the per-session no-op guard now escalates after the established threshold.
 - Fixed `/server` command registration after upstream synchronization and made `/reload` rebuild plugin and MCP tools consistently across interactive, daemon, and RPC sessions, clearing stale MCP bindings when a reload fails.
