@@ -14,7 +14,7 @@ import {
 	type PlanReviewAnnotationState,
 	PlanReviewOverlay,
 } from "@oh-my-pi/pi-coding-agent/modes/components/plan-review-overlay";
-import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
+import { InteractiveMode, planSaveFileName } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -636,6 +636,41 @@ describe("InteractiveMode plan review rendering", () => {
 		expect(await Bun.file(resolvedPlanPath).text()).toContain("edited body");
 	});
 
+	it("saves the final plan to the chosen path and starts a new session", async () => {
+		const planFilePath = "local://PLAN.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		await Bun.write(resolvedPlanPath, "# Draft plan\n\noriginal body\n");
+
+		mode.planModeEnabled = true;
+		mode.planModePlanFilePath = planFilePath;
+		const edited = "# Auto QA\n\nSave the final plan.\n\n## Verify\n\n- run focused tests\n";
+		vi.spyOn(mode, "showPlanReview").mockImplementation(async (_plan, _title, _options, dialogOptions) => {
+			dialogOptions?.onPlanEdited?.(edited);
+			return "Save and quit";
+		});
+		const generateTitle = vi.spyOn(session, "generateTitle").mockResolvedValue("Auto QA");
+		const destination = path.join(tempDir.path(), "AUTO_QA_PLAN.md");
+		vi.spyOn(mode, "showHookCustom").mockResolvedValue({ path: "AUTO_QA_PLAN.md" });
+		const clear = vi.spyOn(mode, "handleClearCommand").mockResolvedValue();
+
+		await mode.handlePlanApproval({
+			planFilePath,
+			planExists: true,
+			title: "DRAFT",
+		});
+
+		expect(generateTitle).toHaveBeenCalledWith(
+			"# Auto QA\nSave the final plan.\n## Verify\n- run focused tests",
+			expect.any(String),
+		);
+		expect(await Bun.file(destination).text()).toBe(edited);
+		expect(clear).toHaveBeenCalledTimes(1);
+		expect(mode.planModeEnabled).toBe(false);
+	});
+
 	it("carries pre-approval local artifacts into the fresh approve-and-execute session", async () => {
 		const planFilePath = "local://handoff-plan.md";
 		const localOptions = {
@@ -718,6 +753,7 @@ describe("InteractiveMode plan review rendering", () => {
 				"Approve and compact context",
 				"Approve and keep context (~7.3k / 10k)",
 				"Refine plan",
+				"Save and quit",
 			],
 			expect.any(Object),
 			expect.any(Object),
@@ -792,6 +828,7 @@ describe("InteractiveMode plan review rendering", () => {
 			"Approve and compact context",
 			`Approve and keep context (~${compactNumber(tokens)} / ${compactNumber(executionModel.contextWindow)})`,
 			"Refine plan",
+			"Save and quit",
 		]);
 	});
 
@@ -870,7 +907,13 @@ describe("InteractiveMode plan review rendering", () => {
 		expect(selector).toHaveBeenCalledWith(
 			expect.any(String),
 			"Plan mode - next step",
-			["Approve and execute", "Approve and compact context", "Approve and keep context", "Refine plan"],
+			[
+				"Approve and execute",
+				"Approve and compact context",
+				"Approve and keep context",
+				"Refine plan",
+				"Save and quit",
+			],
 			expect.any(Object),
 			expect.any(Object),
 		);
@@ -2092,6 +2135,24 @@ describe("AssistantMessageComponent aborted replay", () => {
 		const rendered = renderAssistant(message);
 		expect(rendered).not.toContain(USER_INTERRUPT_LABEL);
 		expect(rendered).not.toContain("Operation aborted");
+	});
+});
+
+describe("planSaveFileName", () => {
+	it("turns a short topic into <TOPIC>_PLAN.md", () => {
+		expect(planSaveFileName("PyO3 types")).toBe("PYO3_TYPES_PLAN.md");
+		expect(planSaveFileName("Auth storage plan")).toBe("AUTH_STORAGE_PLAN.md");
+	});
+
+	it("trims verbose fallback titles at a word boundary", () => {
+		expect(planSaveFileName("Split PyEnvironmentBackend request into PyO3 methods")).toBe(
+			"SPLIT_PYENVIRONMENTBACKEND_PLAN.md",
+		);
+	});
+
+	it("falls back to PLAN.md for empty or plan-only titles", () => {
+		expect(planSaveFileName("  ")).toBe("PLAN.md");
+		expect(planSaveFileName("Plan")).toBe("PLAN.md");
 	});
 });
 

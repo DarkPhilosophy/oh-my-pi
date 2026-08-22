@@ -230,6 +230,33 @@ class ProtocolParsingTests(unittest.TestCase):
         self.assertFalse(notification.is_passive())
 
 
+    def test_parse_select_option_details(self) -> None:
+        notification = parse_notification(
+            {
+                "type": "extension_ui_request",
+                "id": "ui-2",
+                "method": "select",
+                "title": "Deploy",
+                "options": ["Keep", "Deploy"],
+                "optionDetails": [{}, {"description": "Push to production"}],
+            }
+        )
+
+        self.assertIsInstance(notification, ExtensionUiRequest)
+        self.assertEqual(notification.options, ("Keep", "Deploy"))
+        self.assertEqual(
+            notification.option_details,
+            ({}, {"description": "Push to production"}),
+        )
+
+    def test_extension_ui_request_preserves_positional_constructor(self) -> None:
+        request = ExtensionUiRequest(
+            "ui-legacy", "confirm", "Confirm", None, "Continue?"
+        )
+
+        self.assertEqual(request.message, "Continue?")
+        self.assertIsNone(request.option_details)
+
     def test_parse_extension_ui_set_widget_request_with_right_editor_priority(self) -> None:
         notification = parse_notification(
             {

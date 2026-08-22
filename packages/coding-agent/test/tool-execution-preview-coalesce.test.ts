@@ -117,50 +117,54 @@ describe("streaming edit preview coalescing", () => {
 			component.stopAnimation();
 		}
 	});
-
-	test("a final result supplied during transcript rebuild skips preview computation", async () => {
-		let calls = 0;
-		const spy = spyOn(EDIT_MODE_STRATEGIES.replace, "computeDiffPreview").mockImplementation(async () => {
-			calls++;
-			return null;
-		});
+	// Transcript rebuild constructs a historical edit call and applies its
+	// persisted result within the same sync replay chunk. The renderer prefers
+	// `details.diff` from that result, so the streaming preview compute must be
+	// cancelled before it runs — re-running the edit engine for every historical
+	// edit made session restore take multiple seconds (sloppy matcher dominated
+	// the restore CPU profile).
+	test("a result settled in the same tick as construction cancels the preview compute", async () => {
+		const spy = spyOn(EDIT_MODE_STRATEGIES.replace, "computeDiffPreview");
 		restore = () => spy.mockRestore();
 
 		const ui = { requestRender() {} } as unknown as TUI;
 		const tool = { mode: "replace" } as unknown as AgentTool;
 		const component = new ToolExecutionComponent(
 			"edit",
-			{ path: file, edits: [{ old_text: "const a = 1;", new_text: "const a = 2;" }] },
+			{ path: file, old_string: "const a = 1;", new_string: "const a = 2;" },
 			{},
 			tool,
 			ui,
 			tmpDir,
 		);
 		try {
-			component.updateResult({ content: [{ type: "text", text: "Done" }] });
-			await Promise.resolve();
+			component.updateResult(
+				{
+					content: [{ type: "text", text: "ok" }],
+					details: { diff: "@@ -1 +1 @@\n-const a = 1;\n+const a = 2;", firstChangedLine: 1 },
+				},
+				false,
+			);
 			await component.whenPreviewSettled();
-
-			expect(calls).toBe(0);
+			expect(spy).not.toHaveBeenCalled();
 		} finally {
 			component.stopAnimation();
 		}
 	});
 
-	test("a final result cancels a live preview and discards its queued rerun", async () => {
-		const compute = Promise.withResolvers<PerFileDiffPreview[] | null>();
+	test("a final result aborts an in-flight preview and drops its queued rerun", async () => {
+		const deferred = Promise.withResolvers<PerFileDiffPreview[] | null>();
 		const signals: AbortSignal[] = [];
 		const spy = spyOn(EDIT_MODE_STRATEGIES.replace, "computeDiffPreview").mockImplementation((_args, options) => {
 			signals.push(options.signal);
-			return compute.promise;
+			return deferred.promise;
 		});
 		restore = () => spy.mockRestore();
-
 		const ui = { requestRender() {} } as unknown as TUI;
 		const tool = { mode: "replace" } as unknown as AgentTool;
 		const component = new ToolExecutionComponent(
 			"edit",
-			{ path: file, edits: [{ old_text: "const a = 1;", new_text: "const a = 2;" }] },
+			{ path: file, old_string: "const a = 1;", new_string: "const a = 2;" },
 			{},
 			tool,
 			ui,
@@ -168,16 +172,11 @@ describe("streaming edit preview coalescing", () => {
 		);
 		try {
 			await Promise.resolve();
-			expect(signals).toHaveLength(1);
-
-			component.updateArgs({
-				path: file,
-				edits: [{ old_text: "const a = 1;", new_text: "const a = 3;" }],
-			});
+			component.updateArgs({ path: file, old_string: "const a = 1;", new_string: "const a = 3;" });
 			component.updateResult({ content: [{ type: "text", text: "Done" }] });
+			expect(signals).toHaveLength(1);
 			expect(signals[0]!.aborted).toBe(true);
-
-			compute.resolve(null);
+			deferred.resolve(null);
 			await component.whenPreviewSettled();
 			expect(signals).toHaveLength(1);
 		} finally {

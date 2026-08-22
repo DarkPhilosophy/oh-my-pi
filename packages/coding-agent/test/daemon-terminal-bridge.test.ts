@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Terminal, TerminalAppearance } from "@oh-my-pi/pi-tui";
+import type { Terminal, TerminalAppearance, TerminalStartOptions } from "@oh-my-pi/pi-tui";
 import { ClientTerminalBridge, HostedTerminal } from "../src/daemon/terminal-bridge";
 
 class FakeTerminal implements Terminal {
@@ -19,11 +19,11 @@ class FakeTerminal implements Terminal {
 		onInput: (data: string) => void,
 		onResize: () => void,
 		_onDisconnect?: () => void,
-		onFocusChange?: (focused: boolean) => void,
+		options?: TerminalStartOptions,
 	): void {
 		this.#input = onInput;
 		this.#resize = onResize;
-		this.#focus = onFocusChange;
+		this.#focus = options?.onFocusChange;
 	}
 	stop(): void {}
 	drainInput(): Promise<void> {

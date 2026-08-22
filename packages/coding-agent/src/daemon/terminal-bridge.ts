@@ -1,4 +1,4 @@
-import type { Terminal, TerminalAppearance } from "@oh-my-pi/pi-tui";
+import type { Terminal, TerminalAppearance, TerminalStartOptions } from "@oh-my-pi/pi-tui";
 
 /**
  * Env that identifies the CLIENT terminal (multiplexer pane, terminal program,
@@ -108,11 +108,11 @@ export class HostedTerminal implements Terminal {
 		onInput: (data: string) => void,
 		onResize: () => void,
 		_onDisconnect?: () => void,
-		onFocusChange?: (focused: boolean) => void,
+		options?: TerminalStartOptions,
 	): void {
 		this.#inputHandler = onInput;
 		this.#resizeHandler = onResize;
-		this.#focusHandler = onFocusChange;
+		this.#focusHandler = options?.onFocusChange;
 		this.#focusHandler?.(this.#focused);
 	}
 
@@ -236,7 +236,7 @@ export class ClientTerminalBridge {
 			data => this.#handlers.onInput(data),
 			() => this.#handlers.onResize({ columns: this.#terminal.columns, rows: this.#terminal.rows }),
 			undefined,
-			focused => this.#handlers.onFocus(focused),
+			{ onFocusChange: focused => this.#handlers.onFocus(focused) },
 		);
 	}
 

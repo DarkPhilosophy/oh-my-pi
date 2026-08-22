@@ -1,25 +1,15 @@
+import { detectTerminalId, getTerminalInfo } from "@oh-my-pi/pi-tui";
 import type { ColorMode, ColorValue } from "./schema";
 
 // ============================================================================
 // Color Utilities
 // ============================================================================
 
+/** Resolve theme color depth from the shared terminal capability model. */
 export function detectColorMode(env: NodeJS.ProcessEnv = Bun.env): ColorMode {
-	const colorterm = env.COLORTERM;
-	if (colorterm === "truecolor" || colorterm === "24bit") {
-		return "truecolor";
-	}
-	// Windows Terminal supports truecolor
-	if (env.WT_SESSION) {
-		return "truecolor";
-	}
-	const term = env.TERM || "";
-	// Only fall back to 256color for truly limited terminals
-	if (term === "dumb" || term === "" || term === "linux") {
-		return "256color";
-	}
-	// Assume truecolor for everything else - virtually all modern terminals support it
-	return "truecolor";
+	if (env.WT_SESSION) return "truecolor";
+	const terminal = getTerminalInfo(detectTerminalId(env), process.platform, env);
+	return terminal.trueColor ? "truecolor" : "256color";
 }
 
 export function colorToAnsi(color: string, mode: ColorMode): string {

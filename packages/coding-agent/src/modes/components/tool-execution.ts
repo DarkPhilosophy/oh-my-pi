@@ -363,6 +363,12 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#clipboard?: Clipboard;
 	#isPartial = true;
 	#resultVersion = 0;
+	// Post-finalize mutation counter (see FinalizableBlock.getTranscriptBlockVersion):
+	// a tool block can keep changing after isTranscriptBlockFinalized() first
+	// returns true — an async task's terminal result settlement, seal(), or an
+	// expansion toggle — and the transcript's width-epoch resolution and
+	// committed-render bypass must observe those mutations.
+	#blockVersion = 0;
 	#lastDisplayKey: string | undefined;
 	// Bumped whenever a render input that #rebuildDisplay consumes but the memo
 	// key cannot cheaply hash changes: streamed call args, the async edit-diff
@@ -549,6 +555,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	 * stream at the rate the diffs can sustain.
 	 */
 	#schedulePreviewDiff(): void {
+		if (!this.#editMode) return;
 		if (this.#result !== undefined && !this.#isPartial) return;
 		this.#editDiffDirty = true;
 		if (this.#editDiffInFlight) return;
@@ -563,13 +570,30 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	}
 
 	async #drainPreviewDiff(): Promise<void> {
+		// One microtask of deferral so a same-tick settled result (transcript
+		// rebuild: construct → updateResult within one sync replay chunk) cancels
+		// the compute before the edit engine runs instead of after. Session
+		// restore settles thousands of historical edit calls this way; without
+		// the deferral each one re-ran the full sloppy matcher + whole-file diff
+		// to produce a preview the renderer discards in favor of `details.diff`.
+		await undefined;
 		while (this.#editDiffDirty) {
 			this.#editDiffDirty = false;
 			await this.#computePreviewDiff();
 		}
 	}
 
+	/**
+	 * True once a terminal result makes the streaming preview moot: renderResult
+	 * prefers `details.diff` and renders errors from the result text, consulting
+	 * the computed preview only for a non-error result that carries no details.
+	 */
+	#previewDiffSettled(): boolean {
+		const result = this.#result;
+		return result !== undefined && !this.#isPartial && (result.isError === true || result.details != null);
+	}
 	async #computePreviewDiff(): Promise<void> {
+		if (this.#previewDiffSettled()) return;
 		const editMode = this.#editMode;
 		if (!editMode) return;
 		const strategy = EDIT_MODE_STRATEGIES[editMode];
@@ -580,9 +604,10 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 		const previewArgs = getArgsWithStreamedTextInput(args);
 		const partialJson = partialJsonOf(previewArgs);
+		const isStreaming = !this.#argsComplete;
 		let effectiveArgs: unknown;
 		try {
-			effectiveArgs = strategy.extractCompleteEdits(previewArgs, partialJson);
+			effectiveArgs = strategy.extractCompleteEdits(previewArgs, partialJson, isStreaming);
 		} catch {
 			effectiveArgs = previewArgs;
 		}
@@ -615,7 +640,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#editDiffAbort = controller;
 
 		try {
-			const isStreaming = !this.#argsComplete;
 			if (editMode === "hashline" && !this.#snapshots) return;
 			const previews = await strategy.computeDiffPreview(effectiveArgs, {
 				cwd: this.#cwd,
@@ -669,6 +693,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#partialResultShapePainted = false;
 		this.#result = result;
 		this.#resultVersion++;
+		this.#blockVersion++;
 		this.#isPartial = isPartial;
 		this.#displaceableByToolName = displaceableToolName(this.#toolName, result, isPartial);
 		// When tool is complete, ensure args are marked complete so spinner stops
@@ -677,6 +702,12 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			// A final tool result supersedes its call preview. Cancel any live
 			// compute and discard a coalesced rerun so transcript reconstruction
 			// never spends CPU rebuilding an already-finalized edit preview.
+			this.#editDiffDirty = false;
+			this.#editDiffAbort?.abort();
+		}
+		if (this.#editMode && this.#previewDiffSettled()) {
+			// Stop the streaming-preview pipeline: a queued or in-flight compute
+			// would produce a diff the renderer ignores once details exist.
 			this.#editDiffDirty = false;
 			this.#editDiffAbort?.abort();
 		}
@@ -935,6 +966,10 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		return (this.#result.details as { async?: { state?: string } } | undefined)?.async?.state === "running";
 	}
 
+	getTranscriptBlockVersion(): number {
+		return this.#blockVersion;
+	}
+
 	/**
 	 * Mark the tool terminal even though no result arrived (the turn aborted or
 	 * abandoned it) and stop animating, so it can freeze and stops pinning the
@@ -943,6 +978,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	seal(): void {
 		if (this.#sealed) return;
 		this.#sealed = true;
+		this.#blockVersion++;
 		this.#displaceableByToolName = undefined;
 		// A sealed detached task is abandoned history: settle its progress rows
 		// on static gray — but only while none of them are committed; a recolor
@@ -991,6 +1027,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	}
 
 	setExpanded(expanded: boolean): void {
+		if (this.#expanded !== expanded) this.#blockVersion++;
 		this.#expanded = expanded;
 		this.#updateDisplay();
 	}
