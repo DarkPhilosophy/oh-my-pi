@@ -2917,4 +2917,35 @@ describe("framed code review follow-ups", () => {
 		expect(rendered.every(line => visibleWidth(line) <= 24)).toBe(true);
 		expect(rendered.some(line => stripVTControlCharacters(line).includes("+- [js]"))).toBe(true);
 	});
+
+	it("resolves duplicate post-tab-expansion fences to their own bodies", () => {
+		const captured: string[] = [];
+		const theme = { ...defaultMarkdownTheme, copyChip: "copy" };
+		Object.defineProperty(theme, "copyChipTarget", {
+			value: (body: string) => {
+				captured.push(body);
+			},
+			configurable: true,
+		});
+		const originalHyperlinks = TERMINAL.hyperlinks;
+		try {
+			TERMINAL.hyperlinks = true;
+			new Markdown("```make\n\tall\n```\n\n```sh\n   all\n```", 0, 0, theme as typeof defaultMarkdownTheme).render(
+				60,
+			);
+			expect(captured.some(body => body.includes("\t"))).toBe(true);
+			expect(captured).toEqual(["\tall", "   all"]);
+		} finally {
+			TERMINAL.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("clamps compact grapheme rows to the requested width", () => {
+		for (const width of [1, 3]) {
+			const rendered = new Markdown("```js\n\u65e5\u672c\u8a9e\n```", 0, 0, defaultMarkdownTheme).render(width);
+			for (const line of rendered) {
+				expect(Bun.stringWidth(stripVTControlCharacters(line))).toBeLessThanOrEqual(Math.max(1, width));
+			}
+		}
+	});
 });

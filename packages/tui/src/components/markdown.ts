@@ -2154,7 +2154,13 @@ export class Markdown implements Component {
 			for (const body of bodyLines) {
 				const source = body.codeBody ?? body.text;
 				for (const row of wrapCodeLineWithAnsi(source, Math.max(1, requestedWidth))) {
-					compact.push({ text: row, noWrap: true });
+					// With no room even for borders, chrome is already omitted; when a
+					// single atomic grapheme still cannot fit, truncation is the only
+					// way to keep the noWrap row inside the container.
+					compact.push({
+						text: truncateToWidth(row, Math.max(1, requestedWidth), Ellipsis.Omit),
+						noWrap: true,
+					});
 				}
 			}
 			return compact.length > 0 ? compact : [{ text: "", noWrap: true }];
