@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added compact framed rendering for completed fenced Markdown code blocks, with width-aware wrapping and language labels while preserving raw delimiters for still-streaming fences.
+
+### Changed
+
+- Improved incremental Markdown lexing to reuse append-only guard scans and stable block boundaries during streaming.
+
 ## [18.0.3] - 2026-08-23
 
 ### Fixed
