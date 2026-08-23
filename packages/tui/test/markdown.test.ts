@@ -3077,4 +3077,10 @@ describe("framed code review follow-ups", () => {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
 	});
+	it("preserves list code when the marker fills the row", () => {
+		const rows = new Markdown("- ```js\n  x\n  ```", 0, 0, defaultMarkdownTheme)
+			.render(2)
+			.map(line => stripVTControlCharacters(line));
+		expect(rows.some(line => line.includes("x"))).toBe(true);
+	});
 });

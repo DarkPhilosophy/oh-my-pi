@@ -3030,6 +3030,13 @@ export class Markdown implements Component {
 			if (line.noWrap) {
 				const available = Math.max(0, width - visibleWidth(firstPrefix));
 				const prefix = truncateToWidth(firstPrefix, width, Ellipsis.Omit);
+				if (available === 0 && line.text) {
+					lines.push(renderedLine(prefix));
+					for (const wrappedLine of wrapTextWithAnsi(line.text, Math.max(1, width))) {
+						lines.push({ ...line, text: wrappedLine });
+					}
+					return;
+				}
 				lines.push({ ...line, text: prefix + truncateToWidth(line.text, available, Ellipsis.Omit) });
 				return;
 			}
