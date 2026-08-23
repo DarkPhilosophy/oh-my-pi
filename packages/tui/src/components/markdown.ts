@@ -1939,10 +1939,14 @@ export class Markdown implements Component {
 		if (reusablePrefix && reusablePrefix.tokenCount <= stableTokenCount) {
 			contentLines.push(...reusablePrefix.lines);
 			renderedUntil = reusablePrefix.tokenCount;
-			// The stable tokens were not rendered in this frame. Start source-span
-			// recovery after their expanded prefix so an equivalent tail fence cannot
-			// resolve to the first stable occurrence.
-			this.#copySourceSearchCursor = replaceTabs(stableText).length;
+			// Only rows from the matched cache entry were reused. Tokens newly
+			// admitted to the stable prefix still render below and must recover
+			// copy payloads from their own source spans.
+			let reusedSourceLength = 0;
+			for (let index = 0; index < reusablePrefix.tokenCount; index++) {
+				reusedSourceLength += tokens[index]?.raw.length ?? 0;
+			}
+			this.#copySourceSearchCursor = reusedSourceLength;
 		}
 
 		if (renderedUntil < stableTokenCount) {

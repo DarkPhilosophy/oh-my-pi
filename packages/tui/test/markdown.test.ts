@@ -2967,6 +2967,32 @@ describe("framed code review follow-ups", () => {
 		}
 	});
 
+	it("recovers copy payloads from tokens newly added to a cached stable prefix", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			const markdown = new Markdown("prose\n\n", 0, 0, theme);
+			markdown.transientRenderCache = true;
+			markdown.render(60);
+			captured.length = 0;
+			markdown.setText("prose\n\n```make\n\tall\n```\n\n");
+			markdown.render(60);
+			expect(captured).toEqual(["\tall"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
 	it("keeps an open fence's list marker attached before closure", () => {
 		const rows = new Markdown("- ```make\n  \tall", 0, 0, defaultMarkdownTheme)
 			.render(40)
