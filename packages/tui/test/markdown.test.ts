@@ -2829,16 +2829,26 @@ describe("framed code review regressions", () => {
 		expect(plainLines.some(line => line.includes("const value = 1"))).toBe(true);
 	});
 
-	it("passes the raw nested-list code body to the copy target", async () => {
+	it("passes the raw nested-list code body to the copy target", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
 		let captured: string | undefined;
-		const theme = { ...defaultMarkdownTheme, copyChip: "copy" };
-		Object.defineProperty(theme, "copyChipTarget", {
-			value: (body: string) => {
-				captured = body;
-			},
-			configurable: true,
-		});
-		new Markdown("- item\n\n  ```make\n  \tall\n  ```", 0, 0, theme as typeof defaultMarkdownTheme).render(60);
-		expect(captured).toContain("\t");
+		try {
+			// The copy target is only consulted when OSC 8 links are supported;
+			// force that capability so this source-recovery assertion is portable
+			// across headless/native CI workers.
+			terminalState.hyperlinks = true;
+			const theme = { ...defaultMarkdownTheme, copyChip: "copy" };
+			Object.defineProperty(theme, "copyChipTarget", {
+				value: (body: string) => {
+					captured = body;
+				},
+				configurable: true,
+			});
+			new Markdown("- item\n\n  ```make\n  \tall\n  ```", 0, 0, theme as typeof defaultMarkdownTheme).render(60);
+			expect(captured).toContain("\t");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
 	});
 });
