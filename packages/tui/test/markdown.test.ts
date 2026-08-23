@@ -3083,4 +3083,24 @@ describe("framed code review follow-ups", () => {
 			.map(line => stripVTControlCharacters(line));
 		expect(rows.some(line => line.includes("x"))).toBe(true);
 	});
+	it("strips reduced indentation inside compound containers", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("> - ```js\n>  x\n>   ```", 0, 0, theme).render(40);
+			expect(captured).toBe("x");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
 });

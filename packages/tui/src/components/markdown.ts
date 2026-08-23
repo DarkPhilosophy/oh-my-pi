@@ -88,6 +88,14 @@ function isMarkdownContainerPrefix(prefix: string): boolean {
 	return true;
 }
 
+function markdownContainerPrefixLength(line: string): number {
+	let longest = 0;
+	for (let end = 1; end <= line.length; end++) {
+		if (isMarkdownContainerPrefix(line.slice(0, end))) longest = end;
+	}
+	return longest;
+}
+
 function isGfmTableDelimiter(line: string, headerLine: string | undefined): boolean {
 	if (!headerLine || !line.includes("|") || !headerLine.includes("|")) return false;
 	const delimiterCells = line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|");
@@ -2193,6 +2201,7 @@ export class Markdown implements Component {
 			(max, prefix) => (/^[ \t]+$/.test(prefix) ? Math.max(max, prefix.length) : max),
 			0,
 		);
+		const hasStructuralContainer = prefixes.some(prefix => /[>+*]|\d+[.)]/.test(prefix));
 		const body = sourceRaw.slice(firstLineEnd + 1, lastLineStart);
 		if (prefixes.length === 0) return body;
 		return body
@@ -2200,6 +2209,7 @@ export class Markdown implements Component {
 			.map(line => {
 				const prefix = prefixes.find(candidate => line.startsWith(candidate));
 				if (prefix) return line.slice(prefix.length);
+				if (hasStructuralContainer) return line.slice(markdownContainerPrefixLength(line));
 				if (whitespaceBudget === 0) return line;
 				const leadingWhitespace = /^[ \t]*/.exec(line)?.[0].length ?? 0;
 				return line.slice(Math.min(leadingWhitespace, whitespaceBudget));
