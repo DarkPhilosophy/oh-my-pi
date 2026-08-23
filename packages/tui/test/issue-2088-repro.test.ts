@@ -732,25 +732,27 @@ describe("issue #2088: tmux pane-resize race produces viewport flash", () => {
 			const term = new VirtualTerminal(40, 6, 1000);
 			const lines = Array.from({ length: 12 }, (_value, index) => `line-${index}`);
 			const component = new MutableLinesComponent(lines);
-			const tui = new TUI(term);
+			const scheduler = new ManualRenderScheduler();
+			const tui = new TUI(term, undefined, { renderScheduler: scheduler });
 			tui.addChild(component);
 
 			try {
 				tui.start();
-				await settle(term);
+				await scheduler.advanceBy(0, term);
+				const baselineRedraws = tui.fullRedraws;
 				const writes = captureWrites(term);
 
 				term.resize(80, 6);
-				await Bun.sleep(10);
+				await scheduler.advanceBy(10, term);
 				lines[11] = "line-11 updated during resize";
 				component.setLines(lines);
 				tui.requestRender();
 
-				await Bun.sleep(20);
+				await scheduler.advanceBy(20, term);
 				expect(writes).toHaveLength(0);
 
-				await Bun.sleep(DEBOUNCE_SETTLE_WAIT_MS);
-				await settle(term);
+				await scheduler.advanceBy(20, term);
+				expect(tui.fullRedraws - baselineRedraws).toBe(1);
 				expect(visible(term).at(-1)).toBe("line-11 updated during resize");
 			} finally {
 				tui.stop();

@@ -7,8 +7,11 @@ import {
 	type NativeScrollbackLiveRegion,
 	TUI,
 } from "@oh-my-pi/pi-tui";
+import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 import { VirtualRenderScheduler } from "./virtual-render-scheduler";
 import { VirtualTerminal } from "./virtual-terminal";
+
+withoutTerminalMultiplexer();
 
 // Law-encoding suite for native-scrollback commits.
 //

@@ -229,7 +229,17 @@ export function applySloppy(content: string, input: string, context: SloppyApply
 	try {
 		return apply(content, input, context);
 	} catch (error) {
-		if (error instanceof Error) throw new Error(toSloppyVoice(error.message));
+		if (error instanceof Error) {
+			const lines = toSloppyVoice(error.message).split("\n");
+			for (let index = 0; index + 1 < lines.length; index++) {
+				if (!lines[index].startsWith("Copy-ready corrected payload")) continue;
+				const opener = lines[index + 1];
+				if (opener === SECTION_OPENER || opener === `${SECTION_OPENER}*`) {
+					lines[index + 1] = `${opener}${context.path}`;
+				}
+			}
+			throw new Error(lines.join("\n"));
+		}
 		throw error;
 	}
 }
@@ -929,7 +939,7 @@ function parseOperations(input: string, content: string): Operation[] {
 	let rewriteLines: string[] = [];
 	let referenceSeparator: string | undefined;
 
-	const finish = () => {
+	const finish = (endIndex: number) => {
 		const sourcePatternText = normalizeBlock(patternLines, false);
 		const rewriteText = normalizeBlock(rewriteLines, true);
 		if (referenceSeparator !== undefined && rewriteText.trim() === "") {
@@ -937,8 +947,14 @@ function parseOperations(input: string, content: string): Operation[] {
 			// after a legacy MATCH the final text is missing — hand back a
 			// fill-in skeleton instead of echoing the broken payload.
 			if (!hasInlineSelection(sourcePatternText)) {
+				const correctedLines = [...lines];
+				const separatorIndex = correctedLines.findLastIndex(
+					(line, index) => index < endIndex && line.trim() === referenceSeparator,
+				);
+				correctedLines[separatorIndex] = REWRITE_HEADER;
+				correctedLines.splice(endIndex, 0, "<final text>");
 				throw new Error(
-					`${referenceSeparator} after MATCH reads as the ${REWRITE_HEADER} separator, leaving REWRITE empty.\nCopy-ready corrected payload (fill in the final text):\n${OPENER}${allMatches ? "*" : ""}\n${sourcePatternText}\n${REWRITE_HEADER}\n<final text>`,
+					`${referenceSeparator} after MATCH reads as the ${REWRITE_HEADER} separator, leaving REWRITE empty.\nCopy-ready corrected payload (fill in the final text):\n${correctedLines.join("\n")}`,
 				);
 			}
 			operations.push(createOperation(sourcePatternText, "", allMatches, operations.length + 1, false));
@@ -947,7 +963,7 @@ function parseOperations(input: string, content: string): Operation[] {
 		operations.push(createOperation(sourcePatternText, rewriteText, allMatches, operations.length + 1, true));
 	};
 	const pendingSeparatorErrors = new Map<number, string>();
-	const finishPattern = () => {
+	const finishPattern = (endIndex: number) => {
 		const sourcePatternText = normalizeBlock(patternLines, false);
 		if (
 			hasInlineSelection(sourcePatternText) ||
@@ -1043,7 +1059,7 @@ function parseOperations(input: string, content: string): Operation[] {
 				// No block resembles the desired text; keep the fail-closed error.
 			}
 		}
-		const needsSeparator = `Operation ${operations.length + 1} needs ${REWRITE_HEADER}. Retry:\n${OPENER}\n${patternLines.join("\n")}\n${REWRITE_HEADER}\n<new text>`;
+		const needsSeparator = `Operation ${operations.length + 1} needs ${REWRITE_HEADER}.\nCopy-ready corrected payload (fill in the new text):\n${[...lines.slice(0, endIndex), REWRITE_HEADER, "<new text>", ...lines.slice(endIndex)].join("\n")}`;
 		// A multiline pattern-only block may be the delete half of a move; assume
 		// deletion now, justified post-parse only when another op re-emits it.
 		const normalizedPattern = normalizeText(sourcePatternText).text;
@@ -1115,7 +1131,7 @@ function parseOperations(input: string, content: string): Operation[] {
 				referenceSeparator = trimmed;
 			} else if (parsedOpener !== false) {
 				// A doubled opener produced an empty operation; drop it as noise.
-				if (patternLines.some(entry => entry.trim() !== "")) finishPattern();
+				if (patternLines.some(entry => entry.trim() !== "")) finishPattern(index);
 				allMatches = parsedOpener === 0;
 				patternLines = [];
 				rewriteLines = [];
@@ -1127,7 +1143,7 @@ function parseOperations(input: string, content: string): Operation[] {
 		}
 
 		if (parsedOpener !== false) {
-			finish();
+			finish(index);
 			allMatches = parsedOpener === 0;
 			patternLines = [];
 			rewriteLines = [];
@@ -1153,8 +1169,8 @@ function parseOperations(input: string, content: string): Operation[] {
 		}
 	}
 
-	if (state === "rewrite") finish();
-	else if (state === "pattern") finishPattern();
+	if (state === "rewrite") finish(lines.length);
+	else if (state === "pattern") finishPattern(lines.length);
 	if (operations.length === 0) throw new Error(`Empty patch. Start with ${OPENER}.`);
 	for (let index = 0; index < operations.length; index++) {
 		const operationRewrite = operations[index].rewrite;

@@ -1,4 +1,5 @@
 import { loadNative } from "./loader-state.js";
+import { adaptDesktopSession } from "./desktop-adapter.js";
 
 /**
  * Native addon entrypoint.
@@ -18,7 +19,7 @@ const nativeBindings = loadNative();
 // classes
 export const AudioCapture = nativeBindings.AudioCapture;
 export const AudioPlayback = nativeBindings.AudioPlayback;
-export const DesktopSession = nativeBindings.DesktopSession;
+export const DesktopSession = adaptDesktopSession(nativeBindings.DesktopSession);
 export const FileLock = nativeBindings.FileLock;
 export const HighlightStream = nativeBindings.HighlightStream;
 export const LiveWebRtcPeer = nativeBindings.LiveWebRtcPeer;

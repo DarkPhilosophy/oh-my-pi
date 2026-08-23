@@ -9,7 +9,10 @@ import {
 	TERMINAL,
 	TUI,
 } from "@oh-my-pi/pi-tui";
+import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 import { VirtualTerminal } from "./virtual-terminal";
+
+withoutTerminalMultiplexer();
 
 class MutableLinesComponent implements Component {
 	#lines: string[];

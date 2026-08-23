@@ -521,6 +521,16 @@ export async function runCli(argv: string[]): Promise<void> {
 		}
 	}
 
+	// `PI_PROXY` must reach the bare global `fetch` before any provider call:
+	// OAuth refresh/login and usage probes never pass through
+	// `wrapFetchForProxy`, so without this they bypass the proxy and fail
+	// wherever the provider blocks the caller's region. Dynamically imported
+	// like every other dependency in this entry module: a static `pi-ai` import
+	// would load the provider graph before profile bootstrap and on paths
+	// (`--version`, worker selectors) that never touch the network.
+	const { installGlobalProxyFetch } = await import("@oh-my-pi/pi-ai/utils/proxy");
+	installGlobalProxyFetch();
+
 	if (resolvedArgv[0] === "--smoke-test") {
 		await runSmokeTest();
 		return;

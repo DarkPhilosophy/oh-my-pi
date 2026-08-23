@@ -266,6 +266,7 @@ export interface ToolExecutionHandle extends Component {
 		toolCallId?: string,
 	): void;
 	setArgsComplete(toolCallId?: string): void;
+	setExecutionStarted(toolCallId?: string): void;
 	setExpanded(expanded: boolean): void;
 	setToolActivityVisible(visible: boolean): void;
 	/** Freeze the block as final history: stop spinners and let it commit to scrollback. */
@@ -413,6 +414,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#todoStrikeInterval?: NodeJS.Timeout;
 	// Track if args are still being streamed (for edit/write spinner)
 	#argsComplete = false;
+	#executionStarted = false;
 	// Sealed once the tool reaches a terminal state (result delivered, or the
 	// turn abandoned it without one). Drives `isTranscriptBlockFinalized`: until
 	// sealed the block stays in the transcript's repaintable live region so a
@@ -454,10 +456,14 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		spinnerFrame?: number;
 		expanded: boolean;
 		isPartial: boolean;
+		argsComplete?: boolean;
+		executionStarted?: boolean;
 		renderContext?: Record<string, unknown>;
 	} = {
 		expanded: false,
 		isPartial: true,
+		argsComplete: false,
+		executionStarted: false,
 	};
 
 	constructor(
@@ -528,9 +534,28 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	 * This triggers an immediate final diff computation for edit-like tools.
 	 */
 	setArgsComplete(_toolCallId?: string): void {
+		const alreadyComplete = this.#argsComplete;
 		this.#argsComplete = true;
 		this.#updateSpinnerAnimation();
 		this.#schedulePreviewDiff();
+		if (alreadyComplete) return;
+		this.#displayInputVersion++;
+		this.#updateDisplay();
+	}
+
+	/**
+	 * Signal that this specific call has begun executing (`tool_execution_start`).
+	 * Distinct from {@link setArgsComplete}: exclusive writes are marked complete
+	 * at `message_end` but stay queued until this fires for that call.
+	 */
+	setExecutionStarted(_toolCallId?: string): void {
+		if (this.#executionStarted) return;
+		this.#executionStarted = true;
+		this.#argsComplete = true;
+		this.#updateSpinnerAnimation();
+		this.#schedulePreviewDiff();
+		this.#displayInputVersion++;
+		this.#updateDisplay();
 	}
 
 	/**
@@ -1052,7 +1077,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		// TUI startup, so a result rendered before it lands must re-shape once it
 		// does (it gates Image children vs text fallback in #rebuildDisplay); keyed
 		// here for the same reason markdown.ts keys its render cache on it.
-		const key = `${this.#resultVersion}|${this.#expanded}|${this.#isPartial}|${this.#spinnerFrame ?? "-"}|${this.#showImages}|${getThemeEpoch()}|${this.#displayInputVersion}|${this.#backgroundTaskFrozenStyled}|${TERMINAL.imageProtocol ?? "-"}|${this.#imageSizeKey()}`;
+		const key = `${this.#resultVersion}|${this.#expanded}|${this.#isPartial}|${this.#argsComplete ? "1" : "0"}|${this.#executionStarted ? "1" : "0"}|${this.#spinnerFrame ?? "-"}|${this.#showImages}|${getThemeEpoch()}|${this.#displayInputVersion}|${this.#backgroundTaskFrozenStyled}|${TERMINAL.imageProtocol ?? "-"}|${this.#imageSizeKey()}`;
 		if (key === this.#lastDisplayKey && this.#displayBuilt) return;
 		this.#lastDisplayKey = key;
 
@@ -1120,6 +1145,8 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		// Sync shared mutable render state for component closures
 		this.#renderState.expanded = this.#expanded;
 		this.#renderState.isPartial = this.#isPartial;
+		this.#renderState.argsComplete = this.#argsComplete;
+		this.#renderState.executionStarted = this.#executionStarted;
 		this.#renderState.spinnerFrame = this.#spinnerFrame;
 
 		// Non-self-framing tools (custom/extension renderers and the generic

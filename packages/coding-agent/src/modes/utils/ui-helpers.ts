@@ -108,7 +108,6 @@ type QueuedMessages = {
 	followUp: string[];
 };
 type AddMessageOptions = {
-	populateHistory?: boolean;
 	imageLinks?: readonly (string | undefined)[];
 	reuseSettledComponent?: boolean;
 };
@@ -301,9 +300,6 @@ export class UiHelpers {
 						this.ctx.transcriptMessageComponents.set(message, userComponent);
 					}
 					this.ctx.chatContainer.addChild(userComponent);
-					if (options?.populateHistory && message.role === "user" && !isSynthetic) {
-						this.ctx.editor.addToHistory(textContent);
-					}
 				}
 				break;
 			}
@@ -706,7 +702,7 @@ export class UiHelpers {
 				if (message.role === "user") resolveWaitingPoll();
 				if (message.role === "user") resolveTodoSnapshot();
 				// All other messages use standard rendering
-				this.ctx.addMessageToChat(message, options);
+				this.ctx.addMessageToChat(message, { reuseSettledComponent: options.reuseSettledComponents });
 			}
 		}
 		flushPendingUsage();
@@ -745,6 +741,9 @@ export class UiHelpers {
 		if (this.ctx.viewSession.isStreaming) {
 			for (const [toolCallId, component] of this.ctx.pendingTools) {
 				component.setArgsComplete(toolCallId);
+				if (this.ctx.eventController?.hasToolExecutionStarted(toolCallId)) {
+					component.setExecutionStarted(toolCallId);
+				}
 			}
 		} else {
 			for (const component of this.ctx.pendingTools.values()) {
@@ -868,10 +867,6 @@ export class UiHelpers {
 		let replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
 		const renderOptions = {
 			updateFooter: true,
-			// A dirty replay may restart from a newer context. Populate history
-			// once from the stable context below instead of duplicating it on
-			// every attempt.
-			populateHistory: false,
 		};
 		let committed = false;
 		let replayAttempts = 0;
@@ -933,14 +928,6 @@ export class UiHelpers {
 				}
 			}
 			committed = true;
-
-			if (!this.ctx.focusedAgentId) {
-				for (const message of context.messages) {
-					if (message.role !== "user" || message.synthetic) continue;
-					const text = this.getUserMessageText(message);
-					if (text) this.ctx.editor.addToHistory(text);
-				}
-			}
 
 			// Show compaction info if session was compacted.
 			const allEntries = this.ctx.viewSession.sessionManager.getEntries();

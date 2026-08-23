@@ -507,6 +507,10 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		this.#updateDisplay();
 	}
 
+	setExecutionStarted(_toolCallId?: string): void {
+		this.#updateDisplay();
+	}
+
 	setExpanded(expanded: boolean): void {
 		if (this.#expanded !== expanded) this.#blockVersion++;
 		this.#expanded = expanded;

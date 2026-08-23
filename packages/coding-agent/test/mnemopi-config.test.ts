@@ -1,13 +1,22 @@
 import { describe, expect, it } from "bun:test";
+import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { loadMnemopiConfig } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
+import { loadMnemopiConfig, type MnemopiBackendConfig } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
+import { getMemoriesDir } from "@oh-my-pi/pi-utils";
 
 // `mnemopi.embeddingVariant` selects the concrete local embedding model, while an
 // explicit `mnemopi.embeddingModel` is an advanced override that wins. Scoping is
 // pinned to "global" so the resolver stays pure (no legacy-bank disk probing).
-function embeddingModelFor(overrides: Record<string, unknown>): string | undefined {
+function mnemopiConfigFor(
+	overrides: Record<string, unknown>,
+	agentDir = "/tmp/mnemopi-config-test",
+): MnemopiBackendConfig {
 	const settings = Settings.isolated({ "mnemopi.scoping": "global", ...overrides });
-	return loadMnemopiConfig(settings, "/tmp/mnemopi-embedding-variant-test").providerOptions.embeddingModel;
+	return loadMnemopiConfig(settings, agentDir);
+}
+
+function embeddingModelFor(overrides: Record<string, unknown>): string | undefined {
+	return mnemopiConfigFor(overrides).providerOptions.embeddingModel;
 }
 
 describe("loadMnemopiConfig embedding variant resolution", () => {
@@ -57,5 +66,15 @@ describe("loadMnemopiConfig embedding variant resolution", () => {
 			if (previous === undefined) delete Bun.env.MNEMOPI_EMBEDDING_MODEL;
 			else Bun.env.MNEMOPI_EMBEDDING_MODEL = previous;
 		}
+	});
+});
+
+describe("loadMnemopiConfig database path resolution", () => {
+	it("resolves a blank dbPath to persistent agent storage", () => {
+		const agentDir = "/tmp/mnemopi-blank-db-path-test";
+		const defaultPath = path.join(getMemoriesDir(agentDir), "mnemopi", "mnemopi.db");
+
+		expect(mnemopiConfigFor({ "mnemopi.dbPath": "" }, agentDir).dbPath).toBe(defaultPath);
+		expect(mnemopiConfigFor({ "mnemopi.dbPath": " \t " }, agentDir).dbPath).toBe(defaultPath);
 	});
 });

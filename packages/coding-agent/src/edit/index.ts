@@ -12,7 +12,7 @@ import patchDescription from "../prompts/tools/patch.md" with { type: "text" };
 import replaceDescription from "../prompts/tools/replace.md" with { type: "text" };
 import type { ToolSession } from "../tools";
 import { truncateForPrompt } from "../tools/approval";
-import { findUniqueWorkspaceSuffix, isInternalUrlPath } from "../tools/path-utils";
+import { findUniqueWorkspaceSuffix, isInternalUrlPath, resolveFileWriteApprovalTier } from "../tools/path-utils";
 import { resolvePlanPath } from "../tools/plan-mode-guard";
 import { type EditMode, normalizeEditMode, resolveEditMode } from "../utils/edit-mode";
 import { type AppliedEditObserver, createEditBlackboxObserver } from "./blackbox";
@@ -377,29 +377,53 @@ async function executeSinglePathEntries(
 	};
 }
 
-function extractApprovalPath(args: unknown): string {
+/**
+ * Every target path a payload will touch, for approval tiering and display.
+ * Multi-file hashline / apply_patch / sloppy payloads report one entry per
+ * section so a mixed internal+workspace call cannot be under-classified.
+ */
+function extractApprovalPaths(args: unknown, mode: EditMode): string[] {
 	const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
 	const input = typeof record.input === "string" ? record.input : undefined;
-	if (input) {
-		const hashlineMatch = /^\[([^#\r\n]+)(?:#[0-9a-fA-F]{4})?\]/m.exec(input);
-		if (hashlineMatch?.[1]) return hashlineMatch[1];
-
-		const applyPatchMatch = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/m.exec(input);
-		if (applyPatchMatch?.[1]) return applyPatchMatch[1].trim();
+	if (input && mode === "sloppy") {
+		const sloppyPaths = splitSloppySections(input)
+			.map(section => section.path)
+			.filter(path => path.length > 0);
+		if (sloppyPaths.length > 0) return sloppyPaths;
+	}
+	if (input && mode === "hashline") {
+		const hashlinePaths = [...input.matchAll(/^\[([^#\r\n]+)(?:#[0-9a-fA-F]{4})?\]/gm)]
+			.map(match => match[1])
+			.filter((path): path is string => typeof path === "string" && path.length > 0);
+		if (hashlinePaths.length > 0) return hashlinePaths;
+	}
+	if (input && mode === "apply_patch") {
+		const applyPatchPaths = [...input.matchAll(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/gm)]
+			.map(match => match[1]?.trim())
+			.filter((path): path is string => typeof path === "string" && path.length > 0);
+		if (applyPatchPaths.length > 0) return applyPatchPaths;
 	}
 
 	const targetPath = record.path;
-	return typeof targetPath === "string" && targetPath.length > 0 ? targetPath : "(unknown)";
+	return typeof targetPath === "string" && targetPath.length > 0 ? [targetPath] : [];
 }
 
 export class EditTool implements AgentTool<TInput> {
 	readonly approval = (args: unknown) => {
-		const targetPath = extractApprovalPath(args);
-		return targetPath !== "(unknown)" && isInternalUrlPath(targetPath) ? "read" : "write";
+		// Internal-resource edits (memory://, skill://, local://, …) are read-tier,
+		// but a payload that also targets a real workspace file must stay write-tier
+		// so the always-ask prompt still fires — `executeSloppy` writes every section
+		// regardless of the first one's scheme (#9353 review).
+		const targets = extractApprovalPaths(args, this.mode);
+		return targets.length > 0 && targets.every(target => resolveFileWriteApprovalTier(target) === "read")
+			? "read"
+			: "write";
 	};
-	readonly formatApprovalDetails = (args: unknown): string[] => [
-		`File: ${truncateForPrompt(extractApprovalPath(args))}`,
-	];
+	readonly formatApprovalDetails = (args: unknown): string[] => {
+		const targets = extractApprovalPaths(args, this.mode);
+		if (targets.length === 0) return ["File: (unknown)"];
+		return targets.map(target => `File: ${truncateForPrompt(target)}`);
+	};
 	readonly name = "edit";
 	readonly label = "Edit";
 	readonly loadMode = "essential";

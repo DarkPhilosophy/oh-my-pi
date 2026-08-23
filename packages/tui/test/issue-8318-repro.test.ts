@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "bun:test";
 import { type Component, type NativeScrollbackLiveRegion, TUI } from "@oh-my-pi/pi-tui";
+import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 import { VirtualTerminal } from "./virtual-terminal";
+
+withoutTerminalMultiplexer();
 
 // Kitty OSC 66 text-sizing marker and the erase sequences the renderer emits.
 // A scale-`s` heading renders `s` cells tall and `visibleWidth` cells wide, so

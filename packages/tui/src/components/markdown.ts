@@ -1785,17 +1785,19 @@ export class Markdown
 	// raw-span offsets). Every fallback is correctness-preserving — only speed
 	// differs; the render loop sees the identical token list either way.
 	#lexTokens(text: string): Token[] {
-		const canStream = !HAS_REF_DEF.test(text) && !text.includes("\r");
+		// When a frozen prefix exists, it was already verified ref-def-free when
+		// frozen (#freezeStablePrefix only runs when canStream was true). The prefix
+		// ends at a "\n\n" block boundary (stableBlockBoundary), so the tail starts
+		// at a fresh line — scanning only the tail for ref defs is sufficient and
+		// avoids re-scanning the growing prefix every frame (O(n²) → O(n) overall).
 		const prefix = this.#streamPrefixText;
 		const prefixTokens = this.#streamPrefixTokens;
-		if (
-			canStream &&
-			prefix !== undefined &&
-			prefixTokens !== undefined &&
-			text.length > prefix.length &&
-			text.startsWith(prefix)
-		) {
-			const tailTokens = lexDocument(text.slice(prefix.length));
+		const hasPrefix =
+			prefix !== undefined && prefixTokens !== undefined && text.length > prefix.length && text.startsWith(prefix);
+		const refDefText = hasPrefix ? text.slice(prefix.length) : text;
+		const canStream = !HAS_REF_DEF.test(refDefText) && !refDefText.includes("\r");
+		if (canStream && hasPrefix) {
+			const tailTokens = lexDocument(refDefText);
 			const tokens = [...prefixTokens, ...tailTokens];
 			this.#freezeStablePrefix(text, tokens, { preserveExisting: true });
 			return tokens;

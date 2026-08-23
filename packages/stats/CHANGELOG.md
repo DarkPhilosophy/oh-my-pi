@@ -5,6 +5,9 @@
 ### Fixed
 
 - Fixed forked-session deduplication awarding a provider request to whichever copy the filesystem happened to list first; session folders and files are now synced in path order, so the original session keeps the request instead of a fork of it.
+- Fixed the Projects dashboard folder endpoint running unrelated dashboard aggregations when loading folder statistics.
+- Fixed stats sync crashing with a NOT NULL constraint error when legacy session files carry a partially-populated usage cost.
+
 ## [17.4.0] - 2026-08-20
 
 ### Changed

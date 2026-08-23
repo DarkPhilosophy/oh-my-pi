@@ -337,6 +337,21 @@ describe("Editor component", () => {
 			editor.handleInput("\x1b[A"); // stays at "same" (only one entry)
 			expect(editor.getText()).toBe("same");
 		});
+		it("persists a consecutive duplicate so storage can refresh its project metadata", () => {
+			const persisted: string[] = [];
+			const editor = new Editor(defaultEditorTheme);
+			editor.setHistoryStorage({
+				add: prompt => {
+					persisted.push(prompt);
+					return Promise.resolve();
+				},
+				getRecent: () => [{ prompt: "same" }],
+			});
+
+			editor.addToHistory("same");
+
+			expect(persisted).toEqual(["same"]);
+		});
 
 		it("allows non-consecutive duplicates in history", () => {
 			const editor = new Editor(defaultEditorTheme);
