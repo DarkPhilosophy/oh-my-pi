@@ -3055,4 +3055,26 @@ describe("framed code review follow-ups", () => {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
 	});
+
+	it("anchors nested opening-fence recovery to a real fence line", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			const source = "> mention ```js here\n> continued\n>\n> ```js\n> const answer = 42\n> ```";
+			new Markdown(source, 0, 0, theme).render(80);
+			expect(captured).toBe("const answer = 42");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
 });

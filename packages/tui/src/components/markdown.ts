@@ -69,6 +69,25 @@ const MARKDOWN_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
 const MARKDOWN_HEADING_LINE = /^ {0,3}#{1,6}[ \t]+\S/;
 const FENCED_SOURCE_INTRO = /\b(?:code|example|markdown|output|snippet|source)\s*:?\s*$/i;
 
+function isMarkdownContainerPrefix(prefix: string): boolean {
+	let remaining = prefix;
+	while (remaining.length > 0) {
+		remaining = remaining.replace(/^[ \t]+/, "");
+		if (remaining.length === 0) return true;
+		if (remaining.startsWith(">")) {
+			remaining = remaining.slice(1);
+			continue;
+		}
+		const listMarker = /^(?:[-+*]|\d+[.)])[ \t]+/.exec(remaining);
+		if (listMarker) {
+			remaining = remaining.slice(listMarker[0].length);
+			continue;
+		}
+		return false;
+	}
+	return true;
+}
+
 function isGfmTableDelimiter(line: string, headerLine: string | undefined): boolean {
 	if (!headerLine || !line.includes("|") || !headerLine.includes("|")) return false;
 	const delimiterCells = line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|");
@@ -2092,9 +2111,27 @@ export class Markdown implements Component {
 			const openLine = rawLines[0]?.trim() ?? "";
 			const openingFence = MARKDOWN_FENCE_LINE.exec(openLine)?.[1];
 			if (!openLine || !openingFence) return fallback;
-			const openAt = expandedSource.indexOf(openLine, searchStart);
+			let openingLineStart = expandedSource.lastIndexOf("\n", Math.max(0, searchStart - 1)) + 1;
+			let openAt = -1;
+			while (openingLineStart <= expandedSource.length) {
+				const openingLineEnd = expandedSource.indexOf("\n", openingLineStart);
+				const sourceLine =
+					openingLineEnd >= 0
+						? expandedSource.slice(openingLineStart, openingLineEnd)
+						: expandedSource.slice(openingLineStart);
+				const fenceAt = sourceLine.indexOf(openLine);
+				if (
+					fenceAt >= 0 &&
+					sourceLine.slice(fenceAt).trim() === openLine &&
+					isMarkdownContainerPrefix(sourceLine.slice(0, fenceAt))
+				) {
+					openAt = openingLineStart + fenceAt;
+					break;
+				}
+				if (openingLineEnd < 0) break;
+				openingLineStart = openingLineEnd + 1;
+			}
 			if (openAt < 0) return fallback;
-			const openingLineStart = expandedSource.lastIndexOf("\n", openAt - 1) + 1;
 			const openingFenceColumn = openAt - openingLineStart;
 			const fenceChar = openingFence.charAt(0);
 			const fenceLength = openingFence.length;
