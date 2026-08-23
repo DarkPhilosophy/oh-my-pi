@@ -2855,11 +2855,13 @@ describe("framed code review regressions", () => {
 
 describe("framed code review follow-ups", () => {
 	it("keeps every framed row within the requested width for wide graphemes", () => {
-		for (const width of [6, 7, 8, 9, 10]) {
+		for (const width of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
 			const rendered = new Markdown("```js\n日本語\n```", 0, 0, defaultMarkdownTheme).render(width);
 			expect(rendered.every(line => visibleWidth(line) <= width)).toBe(true);
 			const plain = rendered.map(line => stripVTControlCharacters(line));
-			for (const glyph of ["日", "本", "語"]) expect(plain.some(line => line.includes(glyph))).toBe(true);
+			if (width >= 2) {
+				for (const glyph of ["日", "本", "語"]) expect(plain.some(line => line.includes(glyph))).toBe(true);
+			}
 		}
 	});
 

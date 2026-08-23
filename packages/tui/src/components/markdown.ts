@@ -1535,6 +1535,8 @@ export class Markdown implements Component {
 	#text: string;
 	/** Original input retained for copy-chip payloads (before display tab expansion). */
 	#sourceText: string;
+	/** Expanded-source cursor used to disambiguate repeated fenced blocks. */
+	#copySourceSearchCursor = 0;
 	#paddingX: number; // Left/right padding
 	#paddingY: number; // Top/bottom padding
 	#defaultTextStyle?: DefaultTextStyle;
@@ -1832,6 +1834,7 @@ export class Markdown implements Component {
 
 		// Parse markdown to HTML-like tokens
 		const tokens = this.#lexTokens(normalizedText);
+		this.#copySourceSearchCursor = 0;
 		let contentLines: string[];
 		this.#activeRenderSignature = signature;
 		try {
@@ -2056,7 +2059,9 @@ export class Markdown implements Component {
 		const rawForSpan = raw.replace(/^(?:\r?\n)+|(?:\r?\n)+$/g, "");
 		if (!rawForSpan) return fallback;
 		const expandedSource = replaceTabs(this.#sourceText);
-		let expandedStart = expandedSource.indexOf(rawForSpan);
+		const searchStart = this.#copySourceSearchCursor;
+		let expandedStart = expandedSource.indexOf(rawForSpan, searchStart);
+		let expandedEnd = expandedStart >= 0 ? expandedStart + rawForSpan.length : -1;
 		if (expandedStart < 0) {
 			// Nested tokens lose their container prefixes, so `raw` is not a
 			// contiguous substring of the source. Locate the opening and actual
@@ -2069,12 +2074,14 @@ export class Markdown implements Component {
 					.find(line => line.trim().length > 0)
 					?.trim() ?? "";
 			if (!openLine || !closeLine) return fallback;
-			const openAt = expandedSource.indexOf(openLine);
+			const openAt = expandedSource.indexOf(openLine, searchStart);
 			if (openAt < 0) return fallback;
 			const closeAt = expandedSource.indexOf(closeLine, openAt + openLine.length);
 			if (closeAt < 0) return fallback;
 			expandedStart = openAt;
+			expandedEnd = closeAt + closeLine.length;
 		}
+		this.#copySourceSearchCursor = Math.max(this.#copySourceSearchCursor, expandedEnd);
 		const toSourceOffset = (expandedOffset: number): number => {
 			let expanded = 0;
 			for (let sourceOffset = 0; sourceOffset < this.#sourceText.length; sourceOffset++) {
@@ -2083,10 +2090,7 @@ export class Markdown implements Component {
 			}
 			return this.#sourceText.length;
 		};
-		const sourceRaw = this.#sourceText.slice(
-			toSourceOffset(expandedStart),
-			toSourceOffset(expandedStart + rawForSpan.length),
-		);
+		const sourceRaw = this.#sourceText.slice(toSourceOffset(expandedStart), toSourceOffset(expandedEnd));
 		const firstLineEnd = sourceRaw.indexOf("\n");
 		const lastLineStart = sourceRaw.lastIndexOf("\n");
 		return firstLineEnd >= 0 && lastLineStart > firstLineEnd
@@ -2122,7 +2126,9 @@ export class Markdown implements Component {
 					// A single grapheme wider than sourceWidth arrives on its own
 					// over-width row; it must reach the terminal whole instead of
 					// being truncated out of existence.
-					const text = requestedWidth >= 3 ? `${edge}${row}${edge}` : row;
+					const rowWidth = visibleWidth(row);
+					const canFrame = requestedWidth >= 3 && rowWidth + 2 <= requestedWidth;
+					const text = canFrame ? `${edge}${row}${edge}` : truncateToWidth(row, requestedWidth, Ellipsis.Omit);
 					narrow.push({ text, noWrap: true });
 				}
 			}
