@@ -1523,6 +1523,8 @@ function splitPushedHighlightLines(pushed: string): string[] {
 
 export class Markdown implements Component {
 	#text: string;
+	/** Original input retained for copy-chip payloads (before display tab expansion). */
+	#sourceText: string;
 	#paddingX: number; // Left/right padding
 	#paddingY: number; // Top/bottom padding
 	#defaultTextStyle?: DefaultTextStyle;
@@ -1594,7 +1596,8 @@ export class Markdown implements Component {
 		defaultTextStyle?: DefaultTextStyle,
 		codeBlockIndent: number = 2,
 	) {
-		this.#text = normalizeOsc8Terminators(text);
+		this.#sourceText = normalizeOsc8Terminators(text);
+		this.#text = this.#sourceText;
 		this.#paddingX = paddingX;
 		this.#paddingY = paddingY;
 		this.#theme = theme;
@@ -1615,6 +1618,7 @@ export class Markdown implements Component {
 			// reused — the checked region may have changed anywhere.
 			this.#appendOnlySinceLastScan = false;
 		}
+		this.#sourceText = text;
 		this.#text = text;
 		if (!text.trim()) {
 			// Blank replacement: render() early-returns before #lexTokens can see
@@ -2028,6 +2032,33 @@ export class Markdown implements Component {
 		return firstLine.startsWith("```") || firstLine.startsWith("~~~");
 	}
 
+	/** Recover the source body for copy targets after display tab expansion. */
+	#originalCodeBody(token: Token): string {
+		const fallback = "text" in token && typeof token.text === "string" ? token.text : "";
+		const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
+		if (!raw) return fallback;
+		const expandedSource = replaceTabs(this.#sourceText);
+		const expandedStart = expandedSource.indexOf(raw);
+		if (expandedStart < 0) return fallback;
+		const toSourceOffset = (expandedOffset: number): number => {
+			let expanded = 0;
+			for (let sourceOffset = 0; sourceOffset < this.#sourceText.length; sourceOffset++) {
+				if (expanded >= expandedOffset) return sourceOffset;
+				expanded += this.#sourceText[sourceOffset] === "\t" ? 3 : 1;
+			}
+			return this.#sourceText.length;
+		};
+		const sourceRaw = this.#sourceText.slice(
+			toSourceOffset(expandedStart),
+			toSourceOffset(expandedStart + raw.length),
+		);
+		const firstLineEnd = sourceRaw.indexOf("\n");
+		const lastLineStart = sourceRaw.lastIndexOf("\n");
+		return firstLineEnd >= 0 && lastLineStart > firstLineEnd
+			? sourceRaw.slice(firstLineEnd + 1, lastLineStart)
+			: fallback;
+	}
+
 	/**
 	 * Frame fenced code in the same rounded-box language as the welcome screen.
 	 * The box hugs its content: width is the longest body row or the header,
@@ -2046,8 +2077,8 @@ export class Markdown implements Component {
 		const rawTitle = label ? ` [${label}] ` : "";
 
 		// A full box needs two borders, two breathing spaces, and one content cell.
-		// Use a compact borderless body when the caller has fewer than five cells.
-		if (requestedWidth < 5) {
+		// Use a compact borderless body when the caller has fewer than six cells.
+		if (requestedWidth < 6) {
 			const edge = box.vertical;
 			const sourceWidth = Math.max(1, requestedWidth - 2);
 			const narrow: RenderedLine[] = [];
@@ -2125,7 +2156,7 @@ export class Markdown implements Component {
 		if (copyLabel && visibleWidth(copyLabel) > 0) {
 			const chipWidth = visibleWidth(copyLabel);
 			const fill = Math.max(0, innerWidth - chipWidth - 1);
-			const code = "text" in token && typeof token.text === "string" ? token.text : "";
+			const code = this.#originalCodeBody(token);
 			const target = code && TERMINAL.hyperlinks ? this.#theme.copyChipTarget?.(code) : undefined;
 			const chip = target
 				? `\x1b]8;;${target.replaceAll("\x1b", "").replaceAll("\x07", "")}\x07${border(copyLabel)}\x1b]8;;\x07`
@@ -2870,8 +2901,8 @@ export class Markdown implements Component {
 			// already carry their own full indent.
 			// Framed code blocks must fit inside the hang, not the full list
 			// width, or the right border lands under the bullet rail.
-			const itemWidth = Math.max(1, width - visibleWidth(bullet));
-			const itemLines = this.#renderListItem(item.tokens || [], depth, itemWidth, styleContext);
+			const itemWidth = Math.max(1, width - visibleWidth(firstPrefix));
+			const itemLines = this.#renderListItem(item.tokens || [], depth, itemWidth, styleContext, itemWidth);
 			if (itemLines.length > 0) {
 				const firstLine = itemLines[0]!;
 				if (firstLine.nested) {

@@ -1147,6 +1147,53 @@ more text`,
 				).toBe(true);
 			}
 		});
+		it("keeps code visible at the exact five-column frame width", () => {
+			const width = 5;
+			const plainLines = new Markdown("```js\nabc\n```", 0, 0, defaultMarkdownTheme)
+				.render(width)
+				.map(line => stripVTControlCharacters(line));
+
+			expect(
+				plainLines.every(line => visibleWidth(line) <= width),
+				plainLines.join("\n"),
+			).toBe(true);
+			expect(plainLines.join("\n")).toContain("abc");
+		});
+		it("subtracts nested-list indentation before sizing a code frame", () => {
+			const width = 24;
+			const source = "- outer\n  - inner\n\n    ```js\n    const value = 123456789;\n    ```";
+			const plainLines = new Markdown(source, 0, 0, defaultMarkdownTheme)
+				.render(width)
+				.map(line => stripVTControlCharacters(line).trimEnd());
+			const frameRows = plainLines.filter(line => /^\s+\|.*\|$/.test(line));
+
+			expect(frameRows.length).toBeGreaterThan(0);
+			expect(frameRows.every(line => line.startsWith("    |"))).toBe(true);
+			expect(
+				plainLines.every(line => visibleWidth(line) <= width),
+				plainLines.join("\n"),
+			).toBe(true);
+		});
+		it("passes the original tabbed code body to copy-chip targets", () => {
+			const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+			const originalHyperlinks = terminalState.hyperlinks;
+			let targetBody = "";
+			try {
+				terminalState.hyperlinks = true;
+				const copyTheme = {
+					...defaultMarkdownTheme,
+					copyChip: "copy",
+					copyChipTarget: (code: string) => {
+						targetBody = code;
+						return "omp-copy:raw-body";
+					},
+				};
+				new Markdown("```make\n\tall:\n\t\t@echo hi\n```", 0, 0, copyTheme).render(40);
+				expect(targetBody).toBe("\tall:\n\t\t@echo hi");
+			} finally {
+				terminalState.hyperlinks = originalHyperlinks;
+			}
+		});
 		it("keeps ordinary prose NUL bytes as ordinary padded text", () => {
 			const markdown = new Markdown("before\0after", 1, 0, defaultMarkdownTheme);
 
