@@ -1908,6 +1908,10 @@ export class Markdown implements Component {
 		if (reusablePrefix && reusablePrefix.tokenCount <= stableTokenCount) {
 			contentLines.push(...reusablePrefix.lines);
 			renderedUntil = reusablePrefix.tokenCount;
+			// The stable tokens were not rendered in this frame. Start source-span
+			// recovery after their expanded prefix so an equivalent tail fence cannot
+			// resolve to the first stable occurrence.
+			this.#copySourceSearchCursor = replaceTabs(stableText).length;
 		}
 
 		if (renderedUntil < stableTokenCount) {
@@ -2078,7 +2082,9 @@ export class Markdown implements Component {
 			if (openAt < 0) return fallback;
 			const closeAt = expandedSource.indexOf(closeLine, openAt + openLine.length);
 			if (closeAt < 0) return fallback;
-			expandedStart = openAt;
+			// Include the container prefix on the opening line so it can be removed
+			// consistently from each recovered body line below.
+			expandedStart = expandedSource.lastIndexOf("\n", openAt - 1) + 1;
 			expandedEnd = closeAt + closeLine.length;
 		}
 		this.#copySourceSearchCursor = Math.max(this.#copySourceSearchCursor, expandedEnd);
@@ -2093,9 +2099,16 @@ export class Markdown implements Component {
 		const sourceRaw = this.#sourceText.slice(toSourceOffset(expandedStart), toSourceOffset(expandedEnd));
 		const firstLineEnd = sourceRaw.indexOf("\n");
 		const lastLineStart = sourceRaw.lastIndexOf("\n");
-		return firstLineEnd >= 0 && lastLineStart > firstLineEnd
-			? sourceRaw.slice(firstLineEnd + 1, lastLineStart)
-			: fallback;
+		if (firstLineEnd < 0 || lastLineStart <= firstLineEnd) return fallback;
+		const openingLine = sourceRaw.slice(0, firstLineEnd);
+		const fenceAt = openingLine.search(/(`{3,}|~{3,})/);
+		const containerPrefix = fenceAt > 0 ? openingLine.slice(0, fenceAt) : "";
+		const body = sourceRaw.slice(firstLineEnd + 1, lastLineStart);
+		if (!containerPrefix) return body;
+		return body
+			.split("\n")
+			.map(line => (line.startsWith(containerPrefix) ? line.slice(containerPrefix.length) : line))
+			.join("\n");
 	}
 	/**
 	 * Frame fenced code in the same rounded-box language as the welcome screen.

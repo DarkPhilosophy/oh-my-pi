@@ -2904,7 +2904,7 @@ describe("framed code review follow-ups", () => {
 				},
 			};
 			new Markdown("- item\n\n  ```make\n  \tall\n  ```\n- next", 0, 0, theme).render(80);
-			expect(captured).toContain("\t");
+			expect(captured).toBe("\tall");
 			expect(captured).not.toContain("```");
 		} finally {
 			terminalState.hyperlinks = originalHyperlinks;
@@ -2937,6 +2937,33 @@ describe("framed code review follow-ups", () => {
 			expect(captured).toEqual(["\tall", "   all"]);
 		} finally {
 			TERMINAL.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("advances copy search past a reused streaming prefix", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			const stable = "```make\n\tall\n```\n\nprose";
+			const markdown = new Markdown(stable, 0, 0, theme);
+			markdown.transientRenderCache = true;
+			markdown.render(60);
+			captured.length = 0;
+			markdown.setText(`${stable}\n\n\`\`\`sh\n   all\n\`\`\``);
+			markdown.render(60);
+			expect(captured).toEqual(["   all"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
 		}
 	});
 
