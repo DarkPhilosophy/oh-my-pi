@@ -7,7 +7,7 @@ import {
 import type { EditorTheme, MarkdownTheme, SelectListTheme, SettingsListTheme, SymbolTheme } from "@oh-my-pi/pi-tui";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
-import { registerCopyBlock } from "../../utils/copy-store";
+import { registerCopyBlock, supportsCopyUrlHandler } from "../../utils/copy-store";
 import { resolveMermaidAscii } from "./mermaid-cache";
 import type { SlashCommandIconName } from "./symbols";
 import { theme } from "./theme";
@@ -55,7 +55,9 @@ function getHighlightColors(t: Theme): NativeHighlightColors {
  * the 33ms frame budget and starving the spinner/render timers (the "TUI freeze").
  */
 const HIGHLIGHT_CACHE_MAX = 256;
-const highlightCache = new LRUCache<string, string>({ max: HIGHLIGHT_CACHE_MAX });
+const highlightCache = new LRUCache<string, string>({
+	max: HIGHLIGHT_CACHE_MAX,
+});
 let highlightCacheTheme: Theme | undefined;
 
 function highlightCached(code: string, validLang: string | undefined, highlightTheme: Theme): string | null {
@@ -175,7 +177,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 		codeBlock: (text: string) => theme.fg("mdCodeBlock", text),
 		codeBlockBorder: (text: string) => theme.fg("mdCodeBlockBorder", text),
 		copyChip: "copy",
-		copyChipTarget: registerCopyBlock,
+		copyChipTarget: code => (supportsCopyUrlHandler() ? registerCopyBlock(code) : undefined),
 		quote: (text: string) => theme.fg("mdQuote", text),
 		quoteBorder: (text: string) => theme.fg("mdQuoteBorder", text),
 		hr: (text: string) => theme.fg("mdHr", text),

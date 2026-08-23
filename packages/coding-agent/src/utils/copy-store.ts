@@ -5,6 +5,11 @@ import * as path from "node:path";
 
 export const COPY_URL_SCHEME = "omp-copy";
 
+/** Whether this platform has a registration path for the custom copy URL scheme. */
+export function supportsCopyUrlHandler(platform: NodeJS.Platform = process.platform): boolean {
+	return platform === "linux";
+}
+
 export function registerCopyBlock(code: string): string {
 	const bytes = Buffer.from(code, "utf8");
 	return `${COPY_URL_SCHEME}:${bytes.length}.${bytes.toString("base64url")}`;
@@ -39,7 +44,7 @@ function resolveOmpBinary(): string {
 }
 
 export async function isCopyUrlHandlerRegistered(): Promise<boolean> {
-	if (process.platform !== "linux") return false;
+	if (!supportsCopyUrlHandler()) return false;
 	try {
 		const proc = Bun.spawn(["xdg-mime", "query", "default", COPY_SCHEME_MIME], {
 			stdout: "pipe",
@@ -56,7 +61,7 @@ export async function isCopyUrlHandlerRegistered(): Promise<boolean> {
 export async function registerCopyUrlHandler(): Promise<CopyHandlerResult> {
 	const appsDir = path.join(os.homedir(), ".local", "share", "applications");
 	const desktopPath = path.join(appsDir, COPY_DESKTOP_ENTRY);
-	if (process.platform !== "linux") return { ok: false, desktopPath, error: "only supported on Linux (xdg)" };
+	if (!supportsCopyUrlHandler()) return { ok: false, desktopPath, error: "only supported on Linux (xdg)" };
 	await fsp.mkdir(appsDir, { recursive: true });
 	const entry = [
 		"[Desktop Entry]",
@@ -76,14 +81,18 @@ export async function registerCopyUrlHandler(): Promise<CopyHandlerResult> {
 	const code = await xdg.exited;
 	if (code !== 0) {
 		const error = (await new Response(xdg.stderr).text()).trim();
-		return { ok: false, desktopPath, error: error || `xdg-mime exited ${code}` };
+		return {
+			ok: false,
+			desktopPath,
+			error: error || `xdg-mime exited ${code}`,
+		};
 	}
 	return { ok: true, desktopPath };
 }
 
 export async function ensureCopyUrlHandler(): Promise<void> {
 	try {
-		if (process.platform !== "linux" || (await isCopyUrlHandlerRegistered())) return;
+		if (!supportsCopyUrlHandler() || (await isCopyUrlHandlerRegistered())) return;
 		await registerCopyUrlHandler();
 	} catch {
 		// Best effort; `omp copy --install-handler` remains available.

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { getMarkdownTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/tui-adapters";
-import { resolveCopyBlock } from "@oh-my-pi/pi-coding-agent/utils/copy-store";
+import { resolveCopyBlock, supportsCopyUrlHandler } from "@oh-my-pi/pi-coding-agent/utils/copy-store";
 import { Markdown, TERMINAL } from "@oh-my-pi/pi-tui";
 
 const originalHyperlinks = TERMINAL.hyperlinks;
@@ -28,5 +28,11 @@ describe("Markdown copy link", () => {
 		expect(target).toBeDefined();
 		expect(resolveCopyBlock(target!)).toBe(code.trimEnd());
 		expect(footer).toContain("[copy]");
+	});
+
+	it("emits clickable copy targets only on platforms with an installed handler path", () => {
+		expect(supportsCopyUrlHandler("linux")).toBe(true);
+		expect(supportsCopyUrlHandler("darwin")).toBe(false);
+		expect(supportsCopyUrlHandler("win32")).toBe(false);
 	});
 });
