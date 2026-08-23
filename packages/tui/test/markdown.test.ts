@@ -2810,3 +2810,35 @@ describe("windowed lexing (documents past WINDOWED_LEX_MIN_BYTES)", () => {
 		expect(rendered.filter(line => line.includes(" 1. item 0 ")).length).toBeLessThanOrEqual(1);
 	});
 });
+
+describe("framed code review regressions", () => {
+	it("keeps every wide grapheme visible in a narrow frame", () => {
+		const rendered = new Markdown("```js\n日本語\n```", 0, 0, defaultMarkdownTheme).render(8);
+		const plainLines = rendered.map(line => stripVTControlCharacters(line));
+		// The frame cannot hold all six cells at once at this width, but no
+		// grapheme may be truncated out of existence.
+		for (const glyph of ["日", "本", "語"]) {
+			expect(plainLines.some(line => line.includes(glyph))).toBe(true);
+		}
+	});
+
+	it("keeps delimiters on an unclosed fence inside a list", () => {
+		const rendered = new Markdown("- item\n\n  ```js\n  const value = 1", 0, 0, defaultMarkdownTheme).render(60);
+		const plainLines = rendered.map(line => stripVTControlCharacters(line).trimEnd());
+		expect(plainLines.some(line => line.includes("```js"))).toBe(true);
+		expect(plainLines.some(line => line.includes("const value = 1"))).toBe(true);
+	});
+
+	it("passes the raw nested-list code body to the copy target", async () => {
+		let captured: string | undefined;
+		const theme = { ...defaultMarkdownTheme, copyChip: "copy" };
+		Object.defineProperty(theme, "copyChipTarget", {
+			value: (body: string) => {
+				captured = body;
+			},
+			configurable: true,
+		});
+		new Markdown("- item\n\n  ```make\n  \tall\n  ```", 0, 0, theme as typeof defaultMarkdownTheme).render(60);
+		expect(captured).toContain("\t");
+	});
+});

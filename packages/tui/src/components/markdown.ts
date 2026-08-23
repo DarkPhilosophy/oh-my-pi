@@ -2038,8 +2038,22 @@ export class Markdown implements Component {
 		const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
 		if (!raw) return fallback;
 		const expandedSource = replaceTabs(this.#sourceText);
-		const expandedStart = expandedSource.indexOf(raw);
-		if (expandedStart < 0) return fallback;
+		let expandedStart = expandedSource.indexOf(raw);
+		if (expandedStart < 0) {
+			// Nested tokens lose their container prefixes, so `raw` is not a
+			// contiguous substring of the source. Locate the opening fence line
+			// and slice between fence lines instead, keeping original indentation
+			// and tabs intact for the copy payload.
+			const openLine = raw.split("\n", 1)[0] ?? "";
+			const trimmedOpen = openLine.trimStart();
+			if (!trimmedOpen) return fallback;
+			const openAt = expandedSource.indexOf(trimmedOpen);
+			if (openAt < 0) return fallback;
+			const closeLine = raw.split("\n").at(-1)?.trimStart() ?? "";
+			const closeAt = closeLine ? expandedSource.indexOf(closeLine, openAt + openLine.length) : -1;
+			if (closeAt < 0) return fallback;
+			expandedStart = openAt;
+		}
 		const toSourceOffset = (expandedOffset: number): number => {
 			let expanded = 0;
 			for (let sourceOffset = 0; sourceOffset < this.#sourceText.length; sourceOffset++) {
@@ -2085,11 +2099,10 @@ export class Markdown implements Component {
 			for (const body of bodyLines) {
 				const source = body.codeBody ?? body.text;
 				for (const row of wrapCodeLineWithAnsi(source, sourceWidth)) {
-					const content = truncateToWidth(row, sourceWidth, Ellipsis.Omit);
-					const text =
-						requestedWidth >= 3
-							? `${edge}${content}${edge}`
-							: truncateToWidth(content, requestedWidth, Ellipsis.Omit);
+					// A single grapheme wider than sourceWidth arrives on its own
+					// over-width row; it must reach the terminal whole instead of
+					// being truncated out of existence.
+					const text = requestedWidth >= 3 ? `${edge}${row}${edge}` : row;
 					narrow.push({ text, noWrap: true });
 				}
 			}
@@ -2142,7 +2155,10 @@ export class Markdown implements Component {
 			for (let rowIndex = 0; rowIndex < visualRows.length; rowIndex++) {
 				const rowPrefix = rowIndex === 0 ? firstPrefix : continuationPrefix;
 				const rawRow = leftPadding + rowPrefix + visualRows[rowIndex]!;
-				const rowText = truncateToWidth(rawRow, contentWidth, Ellipsis.Omit);
+				// Normal wrapping bounds rows to sourceWidth; only a single grapheme
+				// cluster wider than the content cell can exceed it, and that row
+				// must survive whole rather than lose its grapheme to a clamp.
+				const rowText = rawRow;
 				const pad = Math.max(0, contentWidth - visibleWidth(rowText));
 				framed.push({
 					text: `${border(box.vertical)} ${rowText}${padding(pad)} ${border(box.vertical)}`,
@@ -2977,10 +2993,21 @@ export class Markdown implements Component {
 			} else if (token.type === "code") {
 				// Code block in list item — fenced blocks get the same themed box.
 				const codeIndent = padding(this.#codeBlockIndent);
-				const fenced = this.#isFencedCodeToken(token) && this.#codeTokenHasClosingFence(token);
-				const bodyLines = this.#renderCodeBodyLines(token, fenced ? "" : codeIndent, fenced);
-				const framed = fenced ? this.#boxFencedCodeLines(token, bodyLines, frameWidth) : bodyLines;
-				for (const line of framed) lines.push({ ...line, nested: false });
+				const fenced = this.#isFencedCodeToken(token);
+				const closedFence = fenced && this.#codeTokenHasClosingFence(token);
+				const bodyLines = this.#renderCodeBodyLines(token, closedFence ? "" : codeIndent, closedFence);
+				if (closedFence) {
+					const framed = this.#boxFencedCodeLines(token, bodyLines, frameWidth);
+					for (const line of framed) lines.push({ ...line, nested: false });
+				} else {
+					// An open fence inside a list keeps its delimiters as literal
+					// code rows (same contract as the top-level path) instead of
+					// being silently swallowed by the framed renderer.
+					const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
+					for (const rawLine of raw.split("\n")) {
+						lines.push({ text: replaceTabs(rawLine), literalCode: true, nested: false });
+					}
+				}
 			} else if (isMathToken(token)) {
 				// Display math block inside a list item: stack fractions / matrix rows.
 				const apply = styleContext?.applyText ?? ((t: string) => this.#applyDefaultStyle(t));
