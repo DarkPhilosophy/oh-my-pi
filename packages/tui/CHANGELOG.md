@@ -10,6 +10,10 @@
 
 - Improved incremental Markdown lexing to reuse append-only guard scans and stable block boundaries during streaming.
 
+### Fixed
+
+- Fixed narrow and nested framed Markdown code blocks so wide graphemes stay within the requested width and copy targets preserve raw source boundaries without cache collisions.
+
 ## [18.0.3] - 2026-08-23
 
 ### Fixed
