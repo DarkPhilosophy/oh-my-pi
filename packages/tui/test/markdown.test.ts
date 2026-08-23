@@ -2852,3 +2852,45 @@ describe("framed code review regressions", () => {
 		}
 	});
 });
+
+describe("framed code review follow-ups", () => {
+	it("keeps every framed row within the requested width for wide graphemes", () => {
+		for (const width of [6, 7, 8, 9, 10]) {
+			const rendered = new Markdown("```js\n日本語\n```", 0, 0, defaultMarkdownTheme).render(width);
+			expect(rendered.every(line => visibleWidth(line) <= width)).toBe(true);
+			const plain = rendered.map(line => stripVTControlCharacters(line));
+			for (const glyph of ["日", "本", "語"]) expect(plain.some(line => line.includes(glyph))).toBe(true);
+		}
+	});
+
+	it("does not copy a trailing fence or reuse a tab-expanded cache entry", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			clearRenderCache();
+			new Markdown("```make\n\tall\n```", 0, 0, theme).render(80);
+			new Markdown("```make\n   all\n```", 0, 0, theme).render(80);
+			new Markdown("```js\nconst value = 1;\n```\n\nnext", 0, 0, theme).render(80);
+			expect(captured).toEqual(["\tall", "   all", "const value = 1;"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("keeps nested list frames on the containing width budget", () => {
+		const source = "- outer\n  - inner\n    ```js\n    const value = 1;\n    ```";
+		const rendered = new Markdown(source, 0, 0, defaultMarkdownTheme).render(24);
+		expect(rendered.every(line => visibleWidth(line) <= 24)).toBe(true);
+		expect(rendered.some(line => stripVTControlCharacters(line).includes("+- [js]"))).toBe(true);
+	});
+});

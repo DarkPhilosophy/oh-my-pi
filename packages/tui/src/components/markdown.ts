@@ -43,6 +43,16 @@ function wrapCodeLineWithAnsi(text: string, width: number): string[] {
 	return rows.map(row => row.replaceAll("\u00a0", " ").replaceAll(sentinel, "\u00a0"));
 }
 
+/** Return the widest atomic grapheme in a code source, measured in terminal cells. */
+function widestGraphemeCells(text: string): number {
+	let widest = 1;
+	for (const { segment } of getSegmenter().segment(text)) {
+		if (segment === "\n" || segment === "\r") continue;
+		widest = Math.max(widest, visibleWidth(segment));
+	}
+	return widest;
+}
+
 const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
 
 // Marked treats the backslash in an ST-terminated OSC 8 sequence (`ESC \\`) as
@@ -1809,7 +1819,7 @@ export class Markdown implements Component {
 		// by MarkdownTheme and is one of the most styling-sensitive entries.
 		let cacheKey: string | undefined;
 		if (!this.transientRenderCache) {
-			cacheKey = this.#renderCacheKey(normalizedText, signature);
+			cacheKey = this.#renderCacheKey(normalizedText, this.#text, signature);
 			const cached = renderCache.get(cacheKey);
 			if (cached !== undefined) {
 				// Populate L1 so subsequent calls from this instance are O(1) map lookup.
@@ -1870,8 +1880,11 @@ export class Markdown implements Component {
 		};
 	}
 
-	#renderCacheKey(normalizedText: string, signature: RenderSignature): string {
-		return `${normalizedText}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}`;
+	#renderCacheKey(normalizedText: string, sourceText: string, signature: RenderSignature): string {
+		// The display lexer expands tabs, but copy-chip targets must preserve the
+		// original source bytes. Keep the raw source in the cache identity so two
+		// documents that render identically can never reuse the other's target.
+		return `${normalizedText.length}:${normalizedText}\x00${sourceText.length}:${sourceText}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}`;
 	}
 
 	#renderStreamingContentLines(
@@ -2037,20 +2050,28 @@ export class Markdown implements Component {
 		const fallback = "text" in token && typeof token.text === "string" ? token.text : "";
 		const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
 		if (!raw) return fallback;
+		// Marked may include the newline after a closing fence in token.raw. It
+		// belongs to the following block, not to the copy payload; trim only
+		// delimiter-adjacent newlines used for locating this token.
+		const rawForSpan = raw.replace(/^(?:\r?\n)+|(?:\r?\n)+$/g, "");
+		if (!rawForSpan) return fallback;
 		const expandedSource = replaceTabs(this.#sourceText);
-		let expandedStart = expandedSource.indexOf(raw);
+		let expandedStart = expandedSource.indexOf(rawForSpan);
 		if (expandedStart < 0) {
 			// Nested tokens lose their container prefixes, so `raw` is not a
-			// contiguous substring of the source. Locate the opening fence line
-			// and slice between fence lines instead, keeping original indentation
-			// and tabs intact for the copy payload.
-			const openLine = raw.split("\n", 1)[0] ?? "";
-			const trimmedOpen = openLine.trimStart();
-			if (!trimmedOpen) return fallback;
-			const openAt = expandedSource.indexOf(trimmedOpen);
+			// contiguous substring of the source. Locate the opening and actual
+			// closing fence lines instead, preserving the source span's tabs.
+			const rawLines = rawForSpan.split("\n");
+			const openLine = rawLines[0]?.trim() ?? "";
+			const closeLine =
+				[...rawLines]
+					.reverse()
+					.find(line => line.trim().length > 0)
+					?.trim() ?? "";
+			if (!openLine || !closeLine) return fallback;
+			const openAt = expandedSource.indexOf(openLine);
 			if (openAt < 0) return fallback;
-			const closeLine = raw.split("\n").at(-1)?.trimStart() ?? "";
-			const closeAt = closeLine ? expandedSource.indexOf(closeLine, openAt + openLine.length) : -1;
+			const closeAt = expandedSource.indexOf(closeLine, openAt + openLine.length);
 			if (closeAt < 0) return fallback;
 			expandedStart = openAt;
 		}
@@ -2064,7 +2085,7 @@ export class Markdown implements Component {
 		};
 		const sourceRaw = this.#sourceText.slice(
 			toSourceOffset(expandedStart),
-			toSourceOffset(expandedStart + raw.length),
+			toSourceOffset(expandedStart + rawForSpan.length),
 		);
 		const firstLineEnd = sourceRaw.indexOf("\n");
 		const lastLineStart = sourceRaw.lastIndexOf("\n");
@@ -2072,7 +2093,6 @@ export class Markdown implements Component {
 			? sourceRaw.slice(firstLineEnd + 1, lastLineStart)
 			: fallback;
 	}
-
 	/**
 	 * Frame fenced code in the same rounded-box language as the welcome screen.
 	 * The box hugs its content: width is the longest body row or the header,
@@ -2114,6 +2134,25 @@ export class Markdown implements Component {
 		const maxInnerWidth = Math.max(3, requestedWidth - 2);
 		const innerWidth = Math.min(maxInnerWidth, Math.max(3, bodyWidth + outerPadding + 2, visibleWidth(rawTitle) + 1));
 		const contentWidth = innerWidth - 2;
+		// If even a single atomic grapheme cannot fit beside the frame chrome,
+		// drop the chrome rather than emitting an over-wide noWrap row. The
+		// borderless fallback still hard-wraps at the requested terminal width.
+		const needsCompactGraphemeLayout = bodyLines.some(body => {
+			const source = body.codeBody ?? body.text;
+			const leftPadding = padding(Math.min(body.codeOuterPadding ?? 0, contentWidth));
+			const available = Math.max(0, contentWidth - visibleWidth(leftPadding));
+			return available < widestGraphemeCells(source);
+		});
+		if (needsCompactGraphemeLayout) {
+			const compact: RenderedLine[] = [];
+			for (const body of bodyLines) {
+				const source = body.codeBody ?? body.text;
+				for (const row of wrapCodeLineWithAnsi(source, Math.max(1, requestedWidth))) {
+					compact.push({ text: row, noWrap: true });
+				}
+			}
+			return compact.length > 0 ? compact : [{ text: "", noWrap: true }];
+		}
 		const title = truncateToWidth(rawTitle, Math.max(0, innerWidth - 1), Ellipsis.Omit);
 		const titleWidth = visibleWidth(title);
 		const headerFill = Math.max(0, innerWidth - titleWidth - 1);
@@ -2130,10 +2169,10 @@ export class Markdown implements Component {
 			const available = Math.max(0, contentWidth - visibleWidth(leftPadding));
 			const source = body.codeBody ?? body.text;
 			const styled = body.codePlainPrefix !== undefined;
-			// Reserve one content cell so a narrow frame never drops the code row
-			// behind a full line-number/guidance prefix. Truncate the plain prefix
-			// before styling it so ANSI sequences cannot defeat the width bound.
-			const prefixBudget = Math.max(0, available - 1);
+			// Reserve the widest atomic grapheme so a narrow frame never drops the
+			// code row behind a full line-number/guidance prefix. Truncate the plain
+			// prefix before styling it so ANSI sequences cannot defeat the bound.
+			const prefixBudget = Math.max(0, available - widestGraphemeCells(source));
 			const basePlainPrefix = truncateToWidth(plainPrefix, prefixBudget, Ellipsis.Omit);
 			const sourceWidth = Math.max(1, available - visibleWidth(basePlainPrefix));
 			const firstPlainPrefix =
@@ -2918,7 +2957,7 @@ export class Markdown implements Component {
 			// Framed code blocks must fit inside the hang, not the full list
 			// width, or the right border lands under the bullet rail.
 			const itemWidth = Math.max(1, width - visibleWidth(firstPrefix));
-			const itemLines = this.#renderListItem(item.tokens || [], depth, itemWidth, styleContext, itemWidth);
+			const itemLines = this.#renderListItem(item.tokens || [], depth, itemWidth, styleContext, itemWidth, width);
 			if (itemLines.length > 0) {
 				const firstLine = itemLines[0]!;
 				if (firstLine.nested) {
@@ -2955,6 +2994,7 @@ export class Markdown implements Component {
 		width: number,
 		styleContext?: InlineStyleContext,
 		frameWidth: number = width,
+		nestedWidth: number = width,
 	): RenderedListItemLine[] {
 		const lines: RenderedListItemLine[] = [];
 
@@ -2962,7 +3002,10 @@ export class Markdown implements Component {
 			if (token.type === "list") {
 				// Nested list - render with one additional indent level
 				// These lines carry their own indent, so tag them for pass-through
-				const nestedLines = this.#renderList(token as ListToken, parentDepth + 1, width, styleContext);
+				// `width` is already reduced for the current item's frame. Nested list
+				// recursion must start from the containing list's global width or each
+				// level subtracts its prefix a second time.
+				const nestedLines = this.#renderList(token as ListToken, parentDepth + 1, nestedWidth, styleContext);
 				for (const nestedLine of nestedLines) {
 					lines.push({ ...nestedLine, nested: true });
 				}
