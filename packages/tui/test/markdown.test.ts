@@ -2887,6 +2887,28 @@ describe("framed code review follow-ups", () => {
 		}
 	});
 
+	it("recovers nested copy payloads when raw ends with a newline", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("- item\n\n  ```make\n  \tall\n  ```\n- next", 0, 0, theme).render(80);
+			expect(captured).toContain("\t");
+			expect(captured).not.toContain("```");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
 	it("keeps nested list frames on the containing width budget", () => {
 		const source = "- outer\n  - inner\n    ```js\n    const value = 1;\n    ```";
 		const rendered = new Markdown(source, 0, 0, defaultMarkdownTheme).render(24);
