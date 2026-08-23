@@ -2204,19 +2204,18 @@ export class Markdown implements Component {
 		return body
 			.split("\n")
 			.map((line, index) => {
-				const prefix = prefixes.find(candidate => line.startsWith(candidate));
-				if (prefix) return line.slice(prefix.length);
-
-				// Reduced container indentation is ambiguous when the code itself
-				// begins like a list marker (`1. x`). Anchor stripping to Marked's
-				// parsed row instead of greedily consuming every marker-shaped
-				// prefix from the source line.
+				// Match Marked's parsed row before accepting an exact recovered
+				// prefix: a shorter closing-fence prefix may also match the body
+				// while leaving container indentation behind.
 				const parsed = parsedLines[index];
 				if (parsed !== undefined) {
 					for (let offset = 0; offset <= line.length; offset++) {
 						if (replaceTabs(line.slice(offset)) === replaceTabs(parsed)) return line.slice(offset);
 					}
 				}
+
+				const prefix = prefixes.find(candidate => line.startsWith(candidate));
+				if (prefix) return line.slice(prefix.length);
 				if (hasStructuralContainer) return line;
 				if (whitespaceBudget === 0) return line;
 				const leadingWhitespace = /^[ \t]*/.exec(line)?.[0].length ?? 0;

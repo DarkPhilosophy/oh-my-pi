@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Fenced code blocks now expose a clickable `copy` link that copies their original source text.
+
 ## [18.0.3] - 2026-08-23
 
 ### Added
