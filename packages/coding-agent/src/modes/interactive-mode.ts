@@ -138,6 +138,7 @@ import { vocalizer } from "../tts/vocalizer";
 import { renderTreeList } from "../tui/tree-list";
 import { formatStartupChangelogSummary, type StartupChangelogSelection } from "../utils/changelog";
 import { copyToClipboard } from "../utils/clipboard";
+import { ensureCopyUrlHandler } from "../utils/copy-store";
 import type { EventBus } from "../utils/event-bus";
 import { getEditorCommand, openInEditor } from "../utils/external-editor";
 import { resumeCommand } from "../utils/resume-command";
@@ -1175,6 +1176,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender();
 		});
 		this.composer.setStatusComponent(this.statusLine);
+		void ensureCopyUrlHandler();
 
 		this.composer.setRuntimeChildren([
 			this.chatContainer,

@@ -2910,6 +2910,26 @@ describe("framed code review follow-ups", () => {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
 	});
+	it("preserves marker-shaped code after reduced ordered-list indentation", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("1. ```js\n  1. x\n   ```", 0, 0, theme).render(80);
+			expect(captured).toBe("1. x");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
 
 	it("keeps nested list frames on the containing width budget", () => {
 		const source = "- outer\n  - inner\n    ```js\n    const value = 1;\n    ```";

@@ -88,14 +88,6 @@ function isMarkdownContainerPrefix(prefix: string): boolean {
 	return true;
 }
 
-function markdownContainerPrefixLength(line: string): number {
-	let longest = 0;
-	for (let end = 1; end <= line.length; end++) {
-		if (isMarkdownContainerPrefix(line.slice(0, end))) longest = end;
-	}
-	return longest;
-}
-
 function isGfmTableDelimiter(line: string, headerLine: string | undefined): boolean {
 	if (!headerLine || !line.includes("|") || !headerLine.includes("|")) return false;
 	const delimiterCells = line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|");
@@ -2201,19 +2193,31 @@ export class Markdown implements Component {
 		const prefixes = [closingPrefix, openingPrefix].filter(
 			(prefix, index, all) => prefix.length > 0 && all.indexOf(prefix) === index,
 		);
+		const hasStructuralContainer = prefixes.some(prefix => prefix.trim().length > 0);
 		const whitespaceBudget = prefixes.reduce(
 			(max, prefix) => (/^[ \t]+$/.test(prefix) ? Math.max(max, prefix.length) : max),
 			0,
 		);
-		const hasStructuralContainer = prefixes.some(prefix => /[>+*]|\d+[.)]/.test(prefix));
 		const body = sourceRaw.slice(firstLineEnd + 1, lastLineStart);
 		if (prefixes.length === 0) return body;
+		const parsedLines = fallback.split("\n");
 		return body
 			.split("\n")
-			.map(line => {
+			.map((line, index) => {
 				const prefix = prefixes.find(candidate => line.startsWith(candidate));
 				if (prefix) return line.slice(prefix.length);
-				if (hasStructuralContainer) return line.slice(markdownContainerPrefixLength(line));
+
+				// Reduced container indentation is ambiguous when the code itself
+				// begins like a list marker (`1. x`). Anchor stripping to Marked's
+				// parsed row instead of greedily consuming every marker-shaped
+				// prefix from the source line.
+				const parsed = parsedLines[index];
+				if (parsed !== undefined) {
+					for (let offset = 0; offset <= line.length; offset++) {
+						if (replaceTabs(line.slice(offset)) === replaceTabs(parsed)) return line.slice(offset);
+					}
+				}
+				if (hasStructuralContainer) return line;
 				if (whitespaceBudget === 0) return line;
 				const leadingWhitespace = /^[ \t]*/.exec(line)?.[0].length ?? 0;
 				return line.slice(Math.min(leadingWhitespace, whitespaceBudget));

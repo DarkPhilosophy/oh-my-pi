@@ -144,6 +144,30 @@ export async function copyToClipboard(text: string): Promise<void> {
 	}
 }
 
+/** Copy from the short-lived process launched by the omp-copy URL handler. */
+export async function copyTextPersistent(text: string): Promise<void> {
+	if (process.platform !== "linux") {
+		await copyToClipboard(text);
+		return;
+	}
+	const candidates = process.env.WAYLAND_DISPLAY
+		? [["wl-copy"]]
+		: [
+				["xclip", "-selection", "clipboard"],
+				["xsel", "-ib"],
+			];
+	for (const command of candidates) {
+		try {
+			await spawnCapture(command, { input: text, timeoutMs: 5000 });
+			return;
+		} catch {
+			// Try the next persistent clipboard owner.
+		}
+	}
+	await nativeCopyToClipboard(text);
+	if (!process.env.WAYLAND_DISPLAY) await Bun.sleep(120_000);
+}
+
 // PowerShell one-liner that emits the Windows clipboard image as base64-encoded
 // PNG on stdout, or nothing when the clipboard does not hold image data. Used
 // for native Windows fallback and WSL interop because arboard can miss host

@@ -7,6 +7,7 @@ import {
 import type { EditorTheme, MarkdownTheme, SelectListTheme, SettingsListTheme, SymbolTheme } from "@oh-my-pi/pi-tui";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+import { registerCopyBlock } from "../../utils/copy-store";
 import { resolveMermaidAscii } from "./mermaid-cache";
 import type { SlashCommandIconName } from "./symbols";
 import { theme } from "./theme";
@@ -173,6 +174,8 @@ export function getMarkdownTheme(): MarkdownTheme {
 		code: (text: string) => theme.fg("mdCode", text),
 		codeBlock: (text: string) => theme.fg("mdCodeBlock", text),
 		codeBlockBorder: (text: string) => theme.fg("mdCodeBlockBorder", text),
+		copyChip: "copy",
+		copyChipTarget: registerCopyBlock,
 		quote: (text: string) => theme.fg("mdQuote", text),
 		quoteBorder: (text: string) => theme.fg("mdQuoteBorder", text),
 		hr: (text: string) => theme.fg("mdHr", text),
