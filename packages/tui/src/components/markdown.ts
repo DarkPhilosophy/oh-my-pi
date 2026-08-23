@@ -2101,13 +2101,26 @@ export class Markdown implements Component {
 		const lastLineStart = sourceRaw.lastIndexOf("\n");
 		if (firstLineEnd < 0 || lastLineStart <= firstLineEnd) return fallback;
 		const openingLine = sourceRaw.slice(0, firstLineEnd);
-		const fenceAt = openingLine.search(/(`{3,}|~{3,})/);
-		const containerPrefix = fenceAt > 0 ? openingLine.slice(0, fenceAt) : "";
+		const closingLine = sourceRaw.slice(lastLineStart + 1);
+		const openingFenceAt = openingLine.search(/(`{3,}|~{3,})/);
+		const closingFenceAt = closingLine.search(/(`{3,}|~{3,})/);
+		const openingPrefix = openingFenceAt > 0 ? openingLine.slice(0, openingFenceAt) : "";
+		// A list item's opening line may contain `- `, while its body and closing
+		// fence use the continuation prefix (`  `). Prefer the actual closing-line
+		// prefix for body recovery and retain the opening prefix as a fallback for
+		// blockquote-shaped tokens.
+		const closingPrefix = closingFenceAt > 0 ? closingLine.slice(0, closingFenceAt) : "";
+		const prefixes = [closingPrefix, openingPrefix].filter(
+			(prefix, index, all) => prefix.length > 0 && all.indexOf(prefix) === index,
+		);
 		const body = sourceRaw.slice(firstLineEnd + 1, lastLineStart);
-		if (!containerPrefix) return body;
+		if (prefixes.length === 0) return body;
 		return body
 			.split("\n")
-			.map(line => (line.startsWith(containerPrefix) ? line.slice(containerPrefix.length) : line))
+			.map(line => {
+				const prefix = prefixes.find(candidate => line.startsWith(candidate));
+				return prefix ? line.slice(prefix.length) : line;
+			})
 			.join("\n");
 	}
 	/**
@@ -3073,7 +3086,9 @@ export class Markdown implements Component {
 					// being silently swallowed by the framed renderer.
 					const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
 					for (const rawLine of raw.split("\n")) {
-						lines.push({ text: replaceTabs(rawLine), literalCode: true, nested: false });
+						// Keep open-fence rows in the list-aware noWrap path so the
+						// bullet and continuation rail remain attached before closure.
+						lines.push({ text: replaceTabs(rawLine), noWrap: true, nested: false });
 					}
 				}
 			} else if (isMathToken(token)) {

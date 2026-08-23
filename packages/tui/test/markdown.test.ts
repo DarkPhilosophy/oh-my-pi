@@ -2967,6 +2967,14 @@ describe("framed code review follow-ups", () => {
 		}
 	});
 
+	it("keeps an open fence's list marker attached before closure", () => {
+		const rows = new Markdown("- ```make\n  \tall", 0, 0, defaultMarkdownTheme)
+			.render(40)
+			.map(line => stripVTControlCharacters(line));
+		expect(rows.some(line => line.startsWith("- ```make"))).toBe(true);
+		expect(rows.some(line => line.includes("all"))).toBe(true);
+	});
+
 	it("clamps compact grapheme rows to the requested width", () => {
 		for (const width of [1, 3]) {
 			const rendered = new Markdown("```js\n\u65e5\u672c\u8a9e\n```", 0, 0, defaultMarkdownTheme).render(width);
