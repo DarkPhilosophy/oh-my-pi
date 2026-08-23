@@ -1535,6 +1535,8 @@ export class Markdown implements Component {
 	#text: string;
 	/** Original input retained for copy-chip payloads (before display tab expansion). */
 	#sourceText: string;
+	/** Source bytes with display tabs expanded; shared by token-span lookups. */
+	#expandedSourceText: string;
 	/** Expanded-source cursor used to disambiguate repeated fenced blocks. */
 	#copySourceSearchCursor = 0;
 	#paddingX: number; // Left/right padding
@@ -1609,6 +1611,7 @@ export class Markdown implements Component {
 		codeBlockIndent: number = 2,
 	) {
 		this.#sourceText = normalizeOsc8Terminators(text);
+		this.#expandedSourceText = replaceTabs(this.#sourceText);
 		this.#text = this.#sourceText;
 		this.#paddingX = paddingX;
 		this.#paddingY = paddingY;
@@ -1631,6 +1634,7 @@ export class Markdown implements Component {
 			this.#appendOnlySinceLastScan = false;
 		}
 		this.#sourceText = text;
+		this.#expandedSourceText = replaceTabs(text);
 		this.#text = text;
 		if (!text.trim()) {
 			// Blank replacement: render() early-returns before #lexTokens can see
@@ -2052,6 +2056,20 @@ export class Markdown implements Component {
 		return firstLine.startsWith("```") || firstLine.startsWith("~~~");
 	}
 
+	/**
+	 * Advance the raw-source lookup past a rendered leaf token. Container tokens
+	 * recurse into their children, while code tokens advance from the exact span
+	 * resolved by #originalCodeBody().
+	 */
+	#advanceCopySourceCursor(token: Token): void {
+		if (token.type === "code" || token.type === "list" || token.type === "blockquote") return;
+		const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
+		if (!raw) return;
+		const expandedSource = this.#expandedSourceText;
+		const offset = expandedSource.indexOf(raw, this.#copySourceSearchCursor);
+		if (offset >= 0) this.#copySourceSearchCursor = offset + raw.length;
+	}
+
 	/** Recover the source body for copy targets after display tab expansion. */
 	#originalCodeBody(token: Token): string {
 		const fallback = "text" in token && typeof token.text === "string" ? token.text : "";
@@ -2062,7 +2080,7 @@ export class Markdown implements Component {
 		// delimiter-adjacent newlines used for locating this token.
 		const rawForSpan = raw.replace(/^(?:\r?\n)+|(?:\r?\n)+$/g, "");
 		if (!rawForSpan) return fallback;
-		const expandedSource = replaceTabs(this.#sourceText);
+		const expandedSource = this.#expandedSourceText;
 		const searchStart = this.#copySourceSearchCursor;
 		let expandedStart = expandedSource.indexOf(rawForSpan, searchStart);
 		let expandedEnd = expandedStart >= 0 ? expandedStart + rawForSpan.length : -1;
@@ -2537,6 +2555,7 @@ export class Markdown implements Component {
 		styleContext?: InlineStyleContext,
 	): RenderedLine[] {
 		const lines: RenderedLine[] = [];
+		this.#advanceCopySourceCursor(token);
 
 		// Display math block (own-line `$$…$$` / `\[…\]`): stack `\frac` vertically
 		// and keep `\\` row breaks, so fractions and matrices span multiple lines.
@@ -3037,6 +3056,7 @@ export class Markdown implements Component {
 		const lines: RenderedListItemLine[] = [];
 
 		for (const token of tokens) {
+			this.#advanceCopySourceCursor(token);
 			if (token.type === "list") {
 				// Nested list - render with one additional indent level
 				// These lines carry their own indent, so tag them for pass-through

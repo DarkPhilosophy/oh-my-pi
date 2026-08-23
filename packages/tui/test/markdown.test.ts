@@ -2983,4 +2983,25 @@ describe("framed code review follow-ups", () => {
 			}
 		}
 	});
+	it("anchors copy lookup after preceding fence-like prose", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			const source = "<!--\n```make\n\twrong\n```\n-->\n\n```make\n   right\n```";
+			new Markdown(source, 0, 0, theme).render(80);
+			expect(captured).toEqual(["   right"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
 });
