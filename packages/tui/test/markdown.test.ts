@@ -3004,4 +3004,55 @@ describe("framed code review follow-ups", () => {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
 	});
+	it("does not synthesize a fence around four-space-indented literal backticks", () => {
+		const rows = new Markdown("    ```\n    literal", 0, 0, defaultMarkdownTheme)
+			.render(40)
+			.map(line => stripVTControlCharacters(line).trimEnd());
+		expect(rows.filter(line => line.includes("```"))).toHaveLength(1);
+		expect(rows.some(line => line.includes("literal"))).toBe(true);
+		expect(rows.some(line => /^\+-/.test(line))).toBe(false);
+	});
+
+	it("matches the actual closing fence line when code contains delimiter text", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			const source = '- ```js\n  \tconsole.log("```")\n  \tvalue\n  ```';
+			new Markdown(source, 0, 0, theme).render(80);
+			expect(captured).toBe('\tconsole.log("```")\n\tvalue');
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("strips each available list indent from copied code rows", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("- ```js\n x\n  ````", 0, 0, theme).render(40);
+			expect(captured).toBe("x");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
 });

@@ -2052,8 +2052,8 @@ export class Markdown implements Component {
 
 	#isFencedCodeToken(token: Token): boolean {
 		const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
-		const firstLine = raw.slice(0, raw.indexOf("\n") >= 0 ? raw.indexOf("\n") : raw.length).trimStart();
-		return firstLine.startsWith("```") || firstLine.startsWith("~~~");
+		const firstLine = raw.slice(0, raw.indexOf("\n") >= 0 ? raw.indexOf("\n") : raw.length);
+		return MARKDOWN_FENCE_LINE.test(firstLine);
 	}
 
 	/**
@@ -2090,20 +2090,41 @@ export class Markdown implements Component {
 			// closing fence lines instead, preserving the source span's tabs.
 			const rawLines = rawForSpan.split("\n");
 			const openLine = rawLines[0]?.trim() ?? "";
-			const closeLine =
-				[...rawLines]
-					.reverse()
-					.find(line => line.trim().length > 0)
-					?.trim() ?? "";
-			if (!openLine || !closeLine) return fallback;
+			const openingFence = MARKDOWN_FENCE_LINE.exec(openLine)?.[1];
+			if (!openLine || !openingFence) return fallback;
 			const openAt = expandedSource.indexOf(openLine, searchStart);
 			if (openAt < 0) return fallback;
-			const closeAt = expandedSource.indexOf(closeLine, openAt + openLine.length);
+			const openingLineStart = expandedSource.lastIndexOf("\n", openAt - 1) + 1;
+			const openingFenceColumn = openAt - openingLineStart;
+			const fenceChar = openingFence.charAt(0);
+			const fenceLength = openingFence.length;
+			let lineStart = expandedSource.indexOf("\n", openAt + openLine.length);
+			if (lineStart < 0) return fallback;
+			lineStart++;
+			let closeAt = -1;
+			let closeLength = 0;
+			while (lineStart <= expandedSource.length) {
+				const lineEnd = expandedSource.indexOf("\n", lineStart);
+				const sourceLine =
+					lineEnd >= 0 ? expandedSource.slice(lineStart, lineEnd) : expandedSource.slice(lineStart);
+				const fenceAt = sourceLine.search(fenceChar === "`" ? /`{3,}/ : /~{3,}/);
+				if (fenceAt >= 0 && fenceAt <= openingFenceColumn) {
+					let candidateLength = 0;
+					while (sourceLine.charAt(fenceAt + candidateLength) === fenceChar) candidateLength++;
+					if (candidateLength >= fenceLength && sourceLine.slice(fenceAt + candidateLength).trim().length === 0) {
+						closeAt = lineStart + fenceAt;
+						closeLength = candidateLength;
+						break;
+					}
+				}
+				if (lineEnd < 0) break;
+				lineStart = lineEnd + 1;
+			}
 			if (closeAt < 0) return fallback;
 			// Include the container prefix on the opening line so it can be removed
 			// consistently from each recovered body line below.
-			expandedStart = expandedSource.lastIndexOf("\n", openAt - 1) + 1;
-			expandedEnd = closeAt + closeLine.length;
+			expandedStart = openingLineStart;
+			expandedEnd = closeAt + closeLength;
 		}
 		this.#copySourceSearchCursor = Math.max(this.#copySourceSearchCursor, expandedEnd);
 		const toSourceOffset = (expandedOffset: number): number => {
@@ -2131,13 +2152,20 @@ export class Markdown implements Component {
 		const prefixes = [closingPrefix, openingPrefix].filter(
 			(prefix, index, all) => prefix.length > 0 && all.indexOf(prefix) === index,
 		);
+		const whitespaceBudget = prefixes.reduce(
+			(max, prefix) => (/^[ \t]+$/.test(prefix) ? Math.max(max, prefix.length) : max),
+			0,
+		);
 		const body = sourceRaw.slice(firstLineEnd + 1, lastLineStart);
 		if (prefixes.length === 0) return body;
 		return body
 			.split("\n")
 			.map(line => {
 				const prefix = prefixes.find(candidate => line.startsWith(candidate));
-				return prefix ? line.slice(prefix.length) : line;
+				if (prefix) return line.slice(prefix.length);
+				if (whitespaceBudget === 0) return line;
+				const leadingWhitespace = /^[ \t]*/.exec(line)?.[0].length ?? 0;
+				return line.slice(Math.min(leadingWhitespace, whitespaceBudget));
 			})
 			.join("\n");
 	}
