@@ -590,13 +590,13 @@ impl DiffStreamState {
 /// after the first mismatch.
 ///
 /// The explicit constructor export is part of the generated native addon ABI.
-#[napi]
-pub struct DiffStream {
+#[napi(js_name = "DiffStream")]
+pub struct NativeDiffStream {
 	state: Arc<Mutex<DiffStreamState>>,
 }
 
 #[napi]
-impl DiffStream {
+impl NativeDiffStream {
 	/// Create an empty two-sided stream.
 	#[napi(constructor)]
 	pub fn new() -> Result<Self> {
@@ -725,7 +725,7 @@ impl DiffStream {
 		Ok(task::blocking("diff.finish", (), move |_| Ok(stream_result(&old, &new, context))))
 	}
 }
-impl Default for DiffStream {
+impl Default for NativeDiffStream {
 	fn default() -> Self {
 		Self { state: Arc::new(Mutex::new(DiffStreamState::default())) }
 	}
