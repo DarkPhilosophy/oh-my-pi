@@ -15,7 +15,15 @@ export function supportsCopyUrlHandler(
 	env: NodeJS.ProcessEnv = process.env,
 	xdgMime: string | null = Bun.which("xdg-mime"),
 ): boolean {
-	return platform === "linux" && xdgMime !== null && !env.SSH_CLIENT && !env.SSH_CONNECTION && !env.SSH_TTY;
+	return (
+		platform === "linux" &&
+		Boolean(xdgMime) &&
+		!env.SSH_CLIENT &&
+		!env.SSH_CONNECTION &&
+		!env.SSH_TTY &&
+		!env.WSL_DISTRO_NAME &&
+		!env.WSL_INTEROP
+	);
 }
 
 export function registerCopyBlock(code: string): string {
