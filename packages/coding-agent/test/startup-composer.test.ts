@@ -113,6 +113,24 @@ describe("Composer prepaint", () => {
 		composer.ui.stop();
 		expect(terminal.stops).toBe(1);
 	});
+	it("renders the startup welcome exactly once", async () => {
+		const terminal = new CountingTerminal(80, 60);
+		const composer = new Composer({
+			preferences: config,
+			terminal,
+			welcome: { version: "9.9.9", modelName: "Test Model", providerName: "test" },
+		});
+
+		composer.start({ playWelcomeIntro: false });
+		await terminal.waitForRender();
+
+		const viewport = terminal
+			.getViewport()
+			.map(row => Bun.stripANSI(row))
+			.join("\n");
+		expect(viewport.match(/Welcome back!/g)?.length).toBe(1);
+		composer.ui.stop();
+	});
 
 	it("adopts the live draft with final theme, keybindings, and submit behavior", async () => {
 		const terminal = new CountingTerminal();

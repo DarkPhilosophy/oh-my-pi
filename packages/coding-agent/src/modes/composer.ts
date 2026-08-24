@@ -193,10 +193,6 @@ export class Composer implements TerminalFrameProvider {
 
 		if (!this.#preferences.quiet) this.#ensureWelcome();
 		this.#rebuildHeader();
-		this.ui.addChild(this.#header);
-		this.ui.addChild(this.#bootstrapInputGap);
-		this.ui.addChild(this.editor);
-		this.ui.addChild(this.#statusHost);
 		this.ui.setFocus(this.editor);
 	}
 	/** Compose the bounded mutable viewport and the next ordered history append. */
@@ -455,17 +451,8 @@ export class Composer implements TerminalFrameProvider {
 	/** Mount or replace session-aware root children while preserving the header and status hosts. */
 	setRuntimeChildren(children: readonly Component[]): void {
 		if (this.#stopped) return;
-		this.ui.removeChild(this.#statusHost);
-		if (this.#runtimeMounted) {
-			for (const child of this.#runtimeChildren) this.ui.removeChild(child);
-		} else {
-			this.ui.removeChild(this.#bootstrapInputGap);
-			this.ui.removeChild(this.editor);
-			this.#runtimeMounted = true;
-		}
+		this.#runtimeMounted = true;
 		this.#runtimeChildren = children;
-		for (const child of children) this.ui.addChild(child);
-		this.ui.addChild(this.#statusHost);
 		this.ui.requestRender();
 	}
 
