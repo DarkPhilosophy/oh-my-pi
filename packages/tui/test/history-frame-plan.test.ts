@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
 import { type TerminalFramePlan, type TerminalFrameProvider, TUI, type ViewportSize } from "@oh-my-pi/pi-tui";
 import { VirtualRenderScheduler } from "./virtual-render-scheduler";
 import { VirtualTerminal } from "./virtual-terminal";
@@ -166,6 +166,81 @@ describe("terminal frame plans", () => {
 			"",
 			"",
 		]);
+		tui.stop();
+	});
+
+	it("keeps an application-owned viewport anchored while history appends below it", () => {
+		const terminal = new VirtualTerminal(20, 3);
+		const provider = new Provider({
+			history: { id: 1, rows: Array.from({ length: 5 }, (_, index) => `history-${index}`) },
+			viewport: ["live-0", "live-1", "live-2"],
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		tui.start();
+
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["live-0", "live-1", "live-2"]);
+		terminal.sendInput("\x1b[<64;1;1M");
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["history-2", "history-3", "history-4"]);
+		expect(tui.isViewportFollowingBottom()).toBeFalse();
+
+		provider.plan = { history: { id: 2, rows: ["history-5"] }, viewport: ["live-0", "live-1", "live-2"] };
+		tui.requestRender(true);
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["history-2", "history-3", "history-4"]);
+
+		terminal.sendInput("\x1b[<65;1;1M");
+		expect(tui.isViewportFollowingBottom()).toBeFalse();
+		terminal.sendInput("\x1b[<65;1;1M");
+		expect(tui.isViewportFollowingBottom()).toBeTrue();
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["live-0", "live-1", "live-2"]);
+		tui.stop();
+	});
+	it("captures real main-screen wheel input while a frame provider owns the viewport", () => {
+		const terminal = new VirtualTerminal(20, 3);
+		const writes: string[] = [];
+		const realWrite = terminal.write.bind(terminal);
+		vi.spyOn(terminal, "write").mockImplementation((data: string) => {
+			writes.push(data);
+			realWrite(data);
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(new Provider({ viewport: ["live-0"] }));
+		tui.start();
+
+		expect(writes.join("")).toContain("\x1b[?1000h\x1b[?1003h\x1b[?1006h");
+		writes.length = 0;
+		tui.stop();
+		expect(writes.join("")).toContain("\x1b[?1006l\x1b[?1003l\x1b[?1000l");
+	});
+
+	it("preserves an unpinned provider viewport origin across height changes", () => {
+		const terminal = new VirtualTerminal(20, 3);
+		const provider = new Provider({
+			history: { id: 1, rows: Array.from({ length: 6 }, (_, index) => `history-${index}`) },
+			viewport: ["live-0", "live-1", "live-2"],
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		tui.start();
+		terminal.sendInput("\x1b[<64;1;1M");
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["history-3", "history-4", "history-5"]);
+
+		terminal.resize(20, 4);
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual([
+			"history-3",
+			"history-4",
+			"history-5",
+			"live-0",
+		]);
+
+		terminal.resize(30, 4);
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual([
+			"history-3",
+			"history-4",
+			"history-5",
+			"live-0",
+		]);
+		expect(tui.isViewportFollowingBottom()).toBeFalse();
 		tui.stop();
 	});
 

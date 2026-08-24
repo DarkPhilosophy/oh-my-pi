@@ -15,6 +15,8 @@
 
 ### Fixed
 
+- Fixed the visible terminal area being cut at the history/live boundary after a turn finalized; contextual right panels now retain finalized row ownership and the conversation viewport can scroll independently of row mutability.
+
 - Fixed narrow and nested framed Markdown code blocks so wide graphemes stay within the requested width and copy targets preserve raw source boundaries without cache collisions.
 
 ## [18.0.3] - 2026-08-23

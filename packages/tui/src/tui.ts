@@ -22,6 +22,7 @@ import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
 import { LoopWatchdog } from "./loop-watchdog";
+import { parseSgrMouse } from "./mouse";
 import { compositeRightPanelsInRange, type PanelLayoutResult, RIGHT_PANEL_MIN_COL } from "./right-panel";
 import { isConPTYHosted, setAltScreenActive, type Terminal } from "./terminal";
 import {
@@ -143,6 +144,7 @@ export interface ViewportSize {
 export interface HistoryBatch {
 	readonly id: number;
 	readonly rows: readonly string[];
+	readonly segments?: readonly TerminalFrameSegment[];
 }
 /** One component-owned row range inside the mutable viewport. */
 export interface TerminalFrameSegment {
@@ -1292,6 +1294,7 @@ class TerminalFrameProviderComponent
 {
 	#history: string[] = [];
 	#viewport: readonly string[] = [];
+	#historySegments: TerminalFrameSegment[] = [];
 	#segments: readonly TerminalFrameSegment[] = [];
 	#acknowledgedIds = new Set<number>();
 	#replayPrepared = false;
@@ -1307,7 +1310,11 @@ class TerminalFrameProviderComponent
 		if (plan.history && !this.#acknowledgedIds.has(plan.history.id)) {
 			this.#replayPrepared = false;
 			this.#acknowledgedIds.add(plan.history.id);
+			const historyStart = this.#history.length;
 			this.#history.push(...plan.history.rows);
+			for (const segment of plan.history.segments ?? []) {
+				this.#historySegments.push({ ...segment, start: historyStart + segment.start });
+			}
 			this.provider.acknowledgeHistory(plan.history.id);
 		}
 		this.#viewport = plan.viewport.length > size.rows ? plan.viewport.slice(0, size.rows) : plan.viewport;
@@ -1316,11 +1323,14 @@ class TerminalFrameProviderComponent
 	}
 	getFrameSegments(): readonly TerminalFrameSegment[] {
 		const historyRows = this.#history.length;
-		return this.#segments.map(segment => ({
-			component: segment.component,
-			start: historyRows + segment.start,
-			rowCount: segment.rowCount,
-		}));
+		return [
+			...this.#historySegments,
+			...this.#segments.map(segment => ({
+				component: segment.component,
+				start: historyRows + segment.start,
+				rowCount: segment.rowCount,
+			})),
+		];
 	}
 
 	renderViewportTail(width: number, maxRows: number): readonly string[] {
@@ -1345,6 +1355,7 @@ class TerminalFrameProviderComponent
 		this.#replayPrepared = true;
 		this.provider.resetHistory();
 		this.#history = [];
+		this.#historySegments = [];
 		this.#acknowledgedIds.clear();
 	}
 }
@@ -1537,6 +1548,10 @@ export class TUI extends Container {
 	// un-scrolled without rewriting history); live rows repaint at fixed
 	// positions with blank rows below the shrunken tail.
 	#windowTopRow = 0;
+	// Application-owned viewport state. Row ownership (committed history versus
+	// mutable live output) never constrains which unified frame rows are visible.
+	#viewportOrigin = 0;
+	#viewportFollowsBottom = true;
 	// Exactly what is painted on the screen rows (post-composite, prepared).
 	#previousWindow: string[] = [];
 	#nativeScrollbackLiveRegionStart: number | undefined;
@@ -1646,6 +1661,9 @@ export class TUI extends Container {
 	// normal screen. #altPreviousLines is the last alt frame, for repaint-skip.
 	#altActive = false;
 	#altMouseTrackingActive = false;
+	// Frame-provider sessions own the conversation viewport, so the main screen
+	// must report wheel input instead of moving an invisible native viewport.
+	#mainScreenMouseTracking = false;
 	#altPreviousLines: string[] = [];
 	#altEnterWidth = 0;
 	#altEnterHeight = 0;
@@ -2229,6 +2247,7 @@ export class TUI extends Container {
 			this.clear();
 			for (const child of this.#frameProviderPreviousChildren ?? []) this.addChild(child);
 			this.#frameProviderComponent = undefined;
+			this.setMainScreenMouseTracking(false);
 			this.#frameProviderPreviousChildren = undefined;
 			this.requestRender(true);
 			return;
@@ -2241,6 +2260,7 @@ export class TUI extends Container {
 		this.clear();
 		this.addChild(component);
 		this.#frameProviderComponent = component;
+		this.setMainScreenMouseTracking(true);
 		this.requestRender(true);
 	}
 
@@ -2504,6 +2524,7 @@ export class TUI extends Container {
 				},
 			},
 		);
+		if (this.#mainScreenMouseTracking) this.terminal.write(MOUSE_TRACKING_ON);
 		if (this.#stopped) return;
 		for (const listener of this.#startListeners) {
 			try {
@@ -2549,15 +2570,20 @@ export class TUI extends Container {
 	}
 
 	/**
-	 * Main-screen mouse tracking is intentionally unsupported. It breaks native
-	 * terminal scrollback and text selection. Copy uses the keyboard path.
+	 * Let application-owned frame providers receive main-screen wheel input.
+	 * Native selection remains available through the terminal's mouse-reporting
+	 * bypass modifier; keyboard copy is unaffected.
 	 */
-	setMainScreenMouseTracking(_enabled: boolean): void {
-		// no-op: main-screen mouse is not supported
+	setMainScreenMouseTracking(enabled: boolean): void {
+		if (this.#mainScreenMouseTracking === enabled) return;
+		this.#mainScreenMouseTracking = enabled;
+		if (this.#hasStarted && !this.#stopped && !this.#altActive) {
+			this.terminal.write(enabled ? MOUSE_TRACKING_ON : MOUSE_TRACKING_OFF);
+		}
 	}
 
 	get mainScreenMouseTracking(): boolean {
-		return false;
+		return this.#mainScreenMouseTracking;
 	}
 
 	onTerminalFocusChange(listener: (focused: boolean) => void): () => void {
@@ -2718,6 +2744,7 @@ export class TUI extends Container {
 			this.#altPreviousLines = [];
 			this.#pendingAltExit = "";
 		}
+		if (this.#mainScreenMouseTracking) this.terminal.write(MOUSE_TRACKING_OFF);
 		this.#purgeInlineImages();
 		this.#clearSixelProbeState();
 		this.#stopped = true;
@@ -2974,6 +3001,23 @@ export class TUI extends Container {
 		);
 		if (composited === window) return window;
 		return this.#prepareLinesArray(composited, width);
+	}
+
+	/** Move the unified conversation viewport by physical rows. */
+	scrollViewportBy(delta: number): void {
+		const height = Math.max(0, this.terminal.rows);
+		const maximum = Math.max(0, this.#previousFrameLength - height);
+		const next =
+			delta === Number.POSITIVE_INFINITY ? maximum : Math.max(0, Math.min(maximum, this.#viewportOrigin + delta));
+		if (next === this.#viewportOrigin && this.#viewportFollowsBottom === (next === maximum)) return;
+		this.#viewportOrigin = next;
+		this.#viewportFollowsBottom = next === maximum;
+		this.requestRender(true);
+	}
+
+	/** Whether new rows currently keep the unified viewport pinned to its tail. */
+	isViewportFollowingBottom(): boolean {
+		return this.#viewportFollowsBottom;
 	}
 
 	requestRender(force = false, options?: RenderRequestOptions): void {
@@ -3545,6 +3589,14 @@ export class TUI extends Container {
 			return;
 		}
 
+		if (this.#frameProviderComponent !== undefined && this.overlayStack.length === 0 && data.startsWith("\x1b[<")) {
+			const mouse = parseSgrMouse(data);
+			if (mouse?.wheel !== null && mouse?.wheel !== undefined) {
+				this.scrollViewportBy(mouse.wheel * 3);
+				return;
+			}
+		}
+
 		// Global debug key handler (Shift+Ctrl+D)
 		if (matchesKey(data, "shift+ctrl+d") && this.onDebug) {
 			this.onDebug();
@@ -4016,7 +4068,9 @@ export class TUI extends Container {
 		} else if (!wantAlt && this.#altActive) {
 			const mouseExit = this.#altMouseTrackingActive ? MOUSE_TRACKING_OFF : "";
 			const enhancementExit = this.#keyboardEnhancementExit();
-			const exitSequence = `${mouseExit}${enhancementExit}\x1b[?1049l`;
+			const exitSequence = `${mouseExit}${enhancementExit}\x1b[?1049l${
+				this.#mainScreenMouseTracking ? MOUSE_TRACKING_ON : ""
+			}`;
 			// Session replacement can finish while a fullscreen selector is still
 			// covering the old normal buffer. Keep the overlay visible until the
 			// replacement is ready, then fuse the buffer restore into that full paint;
@@ -4521,6 +4575,20 @@ export class TUI extends Container {
 			if (widthChanged) {
 				committedPrefixResliced = true;
 				this.#committedPrefix = rawFrame.slice(0, this.#committedRows);
+			}
+		}
+		if (this.#frameProviderComponent !== undefined) {
+			// Frame providers expose a unified immutable-history + mutable-live
+			// tape, so visibility is independent from the native-history
+			// emission watermark. Legacy component roots retain their established
+			// native-scrollback geometry until they adopt the same contract.
+			const maximumViewportOrigin = Math.max(0, frameLength - height);
+			this.#viewportOrigin = this.#viewportFollowsBottom
+				? maximumViewportOrigin
+				: Math.max(0, Math.min(this.#viewportOrigin, maximumViewportOrigin));
+			windowTop = this.#viewportOrigin;
+			if (!this.#viewportFollowsBottom || windowTop < this.#committedRows) {
+				chunkTo = this.#committedRows;
 			}
 		}
 

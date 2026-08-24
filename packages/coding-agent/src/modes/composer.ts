@@ -1,6 +1,7 @@
 import {
 	type Component,
 	Container,
+	type HistoryBatch,
 	isInsideTerminalMultiplexer,
 	ProcessTerminal,
 	type ResizeScrollbackMode,
@@ -133,6 +134,7 @@ export class Composer implements TerminalFrameProvider {
 		| {
 				id: number;
 				rows: readonly string[];
+				segments: readonly TerminalFrameSegment[];
 				source: "header" | { transcript: TranscriptContainer; transcriptId: number };
 		  }
 		| undefined;
@@ -311,9 +313,13 @@ export class Composer implements TerminalFrameProvider {
 		width: number,
 		rows: number,
 		chromeRows: number,
-	): { id: number; rows: readonly string[] } | undefined {
+	): HistoryBatch | undefined {
 		if (this.#offeredHistory !== undefined) {
-			return { id: this.#offeredHistory.id, rows: this.#offeredHistory.rows };
+			return {
+				id: this.#offeredHistory.id,
+				rows: this.#offeredHistory.rows,
+				segments: this.#offeredHistory.segments,
+			};
 		}
 		if (!this.#headerRetired) {
 			const welcome = this.#welcome;
@@ -323,21 +329,32 @@ export class Composer implements TerminalFrameProvider {
 			const headerRows = this.#header.render(width).length;
 			const liveRows = transcript.liveRowCount(width);
 			if (headerRows + chromeRows + liveRows <= rows) return undefined;
+			const retiredRows = [...this.#header.render(width), ""];
 			this.#offeredHistory = {
 				id: this.#nextHistoryId++,
-				rows: [...this.#header.render(width), ""],
+				rows: retiredRows,
+				segments: [{ component: this.#header, start: 0, rowCount: retiredRows.length }],
 				source: "header",
 			};
-			return { id: this.#offeredHistory.id, rows: this.#offeredHistory.rows };
+			return {
+				id: this.#offeredHistory.id,
+				rows: this.#offeredHistory.rows,
+				segments: this.#offeredHistory.segments,
+			};
 		}
 		const batch = transcript.peekFinalizedBatch(width, Math.max(0, rows - chromeRows));
 		if (batch === undefined) return undefined;
 		this.#offeredHistory = {
 			id: this.#nextHistoryId++,
 			rows: batch.rows,
+			segments: [{ component: transcript, start: 0, rowCount: batch.rows.length }],
 			source: { transcript, transcriptId: batch.id },
 		};
-		return { id: this.#offeredHistory.id, rows: this.#offeredHistory.rows };
+		return {
+			id: this.#offeredHistory.id,
+			rows: this.#offeredHistory.rows,
+			segments: this.#offeredHistory.segments,
+		};
 	}
 
 	#renderRoots(roots: readonly Component[], width: number): string[] {
