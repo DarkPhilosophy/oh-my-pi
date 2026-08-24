@@ -18,6 +18,8 @@ import type { Theme } from "./theme-class";
 // ============================================================================
 
 let cachedHighlightColorsFor: Theme | undefined;
+let copyUrlHandlerReady = false;
+
 let cachedHighlightColors: NativeHighlightColors | undefined;
 
 function getHighlightColors(t: Theme): NativeHighlightColors {
@@ -38,6 +40,9 @@ function getHighlightColors(t: Theme): NativeHighlightColors {
 		};
 	}
 	return cachedHighlightColors;
+}
+export function setCopyUrlHandlerReady(ready: boolean): void {
+	copyUrlHandlerReady = ready;
 }
 
 /**
@@ -177,7 +182,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 		codeBlock: (text: string) => theme.fg("mdCodeBlock", text),
 		codeBlockBorder: (text: string) => theme.fg("mdCodeBlockBorder", text),
 		copyChip: "copy",
-		copyChipTarget: copyUrlTarget,
+		copyChipTarget: code => copyUrlTarget(code, copyUrlHandlerReady),
 		quote: (text: string) => theme.fg("mdQuote", text),
 		quoteBorder: (text: string) => theme.fg("mdQuoteBorder", text),
 		hr: (text: string) => theme.fg("mdHr", text),

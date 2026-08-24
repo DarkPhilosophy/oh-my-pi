@@ -1615,7 +1615,7 @@ interface StreamingHighlightCache extends RenderSignature {
 
 interface ExpandedSource {
 	text: string;
-	sourceOffsets: readonly number[];
+	sourceOffsets: number[];
 }
 
 /** Expand display tabs once and retain O(1) expanded-to-source offset lookup. */
@@ -1648,8 +1648,8 @@ export class Markdown implements Component {
 	#sourceText: string;
 	/** Source bytes with display tabs expanded; shared by token-span lookups. */
 	#expandedSourceText: string;
-	/** Source offset at each expanded-text boundary; rebuilt once per text update. */
-	#expandedSourceOffsets: readonly number[];
+	/** Source offset at each expanded-text boundary; extended on append-only updates. */
+	#expandedSourceOffsets: number[];
 	/** Expanded-source cursor used to disambiguate repeated fenced blocks. */
 	#copySourceSearchCursor = 0;
 	// Suffix of #text a future append could still complete into a match
@@ -1767,10 +1767,23 @@ export class Markdown implements Component {
 				text = this.#text.slice(0, this.#text.length - (memoized?.length ?? 0)) + normalized;
 			}
 			this.#oscPartialEscape = trailingOsc8Partial(normalized);
+			if (normalized === pending) {
+				const delta = text.slice(this.#sourceText.length);
+				let expandedLength = this.#expandedSourceText.length;
+				for (let deltaOffset = 0; deltaOffset < delta.length; deltaOffset++) {
+					const sourceOffset = this.#sourceText.length + deltaOffset;
+					expandedLength += delta[deltaOffset] === "\t" ? DEFAULT_TAB_WIDTH : 1;
+					for (let offset = this.#expandedSourceOffsets.length; offset <= expandedLength; offset++) {
+						this.#expandedSourceOffsets.push(sourceOffset + 1);
+					}
+				}
+				this.#expandedSourceText += replaceTabs(delta);
+			} else {
+				const expandedSource = expandSourceText(text);
+				this.#expandedSourceText = expandedSource.text;
+				this.#expandedSourceOffsets = expandedSource.sourceOffsets;
+			}
 			this.#sourceText = text;
-			const expandedSource = expandSourceText(text);
-			this.#expandedSourceText = expandedSource.text;
-			this.#expandedSourceOffsets = expandedSource.sourceOffsets;
 			this.#text = text;
 			this.invalidate();
 			return true;

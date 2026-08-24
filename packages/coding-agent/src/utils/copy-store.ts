@@ -23,8 +23,9 @@ export function registerCopyBlock(code: string): string {
 	return `${COPY_URL_SCHEME}:${bytes.length}.${bytes.toString("base64url")}`;
 }
 
-/** Create a self-contained OSC 8 target when it fits Linux's argv limit. */
-export function copyUrlTarget(code: string): string | undefined {
+/** Create a self-contained OSC 8 target after handler validation and within Linux's argv limit. */
+export function copyUrlTarget(code: string, handlerReady: boolean): string | undefined {
+	if (!handlerReady) return undefined;
 	const target = registerCopyBlock(code);
 	return Buffer.byteLength(target) <= MAX_COPY_URL_BYTES ? target : undefined;
 }

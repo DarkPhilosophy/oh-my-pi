@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { getMarkdownTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/tui-adapters";
+import { getMarkdownTheme, setCopyUrlHandlerReady } from "@oh-my-pi/pi-coding-agent/modes/theme/tui-adapters";
 import { resolveCopyBlock, supportsCopyUrlHandler } from "@oh-my-pi/pi-coding-agent/utils/copy-store";
 import { Markdown, TERMINAL } from "@oh-my-pi/pi-tui";
 
@@ -12,9 +12,11 @@ beforeAll(async () => {
 	await Settings.init({ inMemory: true });
 	await initTheme(false);
 	TERMINAL.hyperlinks = true;
+	setCopyUrlHandlerReady(true);
 });
 
 afterAll(() => {
+	setCopyUrlHandlerReady(false);
 	TERMINAL.hyperlinks = originalHyperlinks;
 	resetSettingsForTest();
 });
