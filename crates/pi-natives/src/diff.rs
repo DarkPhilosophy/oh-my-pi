@@ -588,6 +588,8 @@ impl DiffStreamState {
 /// Complete lines are observable during ingestion. Only equal leading lines
 /// are declared stable before EOF; future input can change Myers alignment
 /// after the first mismatch.
+///
+/// The explicit constructor export is part of the generated native addon ABI.
 #[napi]
 pub struct DiffStream {
 	state: Arc<Mutex<DiffStreamState>>,
