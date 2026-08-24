@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getDefault } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
+import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { COMPOSER_DEFAULTS, Composer, type ComposerPreferences } from "@oh-my-pi/pi-coding-agent/modes/composer";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import {
@@ -34,6 +37,26 @@ class CountingTerminal extends VirtualTerminal {
 		this.stops += 1;
 		super.stop();
 	}
+}
+
+function streamingAssistantMessage(text: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude-sonnet",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
 }
 
 class ThrowingStartTerminal extends CountingTerminal {
@@ -131,6 +154,30 @@ describe("Composer prepaint", () => {
 		expect(viewport.match(/Welcome back!/g)?.length).toBe(1);
 		composer.ui.stop();
 	});
+	it("uses the restored startup header as the third rightEditor placement target", async () => {
+		const terminal = new CountingTerminal(160, 20);
+		const composer = new Composer({
+			preferences: config,
+			terminal,
+			welcome: { version: "9.9.9", modelName: "Test Model", providerName: "test" },
+		});
+		composer.ui.setRightPanel(
+			() => [["<HEADER-RIGHT-0>", "<HEADER-RIGHT-1>", "<HEADER-RIGHT-2>"]],
+			[composer.rightPanelHeaderTarget],
+		);
+
+		composer.start({ playWelcomeIntro: false });
+		await terminal.waitForRender();
+
+		const viewport = terminal.getViewport();
+		expect(viewport.some(row => row.includes("<HEADER-RIGHT-0>"))).toBeTrue();
+		const editorTop = viewport.findIndex(row => Bun.stripANSI(row).startsWith("╭"));
+		const widgetRows = viewport
+			.map((row, index) => (row.includes("<HEADER-RIGHT-") ? index : -1))
+			.filter(index => index >= 0);
+		expect(widgetRows.every(index => index < editorTop)).toBeTrue();
+		composer.ui.stop();
+	});
 	it("composites rightEditor widgets into runtime children owned by the frame provider", async () => {
 		const terminal = new CountingTerminal(80, 12);
 		const composer = new Composer({ preferences: config, terminal });
@@ -142,6 +189,59 @@ describe("Composer prepaint", () => {
 		await terminal.waitForRender();
 
 		expect(terminal.getViewport().some(row => row.includes("<RIGHT-0>"))).toBeTrue();
+		composer.ui.stop();
+	});
+	it("moves stable rows from a real streaming assistant into history before completion", async () => {
+		const terminal = new CountingTerminal(60, 8, 1_000);
+		const composer = new Composer({ preferences: { ...config, quiet: true }, terminal });
+		const transcript = new TranscriptContainer();
+		const assistant = new AssistantMessageComponent(undefined, true);
+		const text = Array.from(
+			{ length: 30 },
+			(_, index) => `assistant-row-${index} contains enough stable prose to wrap in the narrow terminal.`,
+		).join("\n\n");
+		assistant.updateContent(streamingAssistantMessage(text), { transient: true });
+		transcript.addChild(assistant);
+
+		composer.start({ playWelcomeIntro: false });
+		await terminal.waitForRender();
+		composer.setRuntimeChildren([transcript]);
+		await terminal.waitForRender();
+		composer.ui.requestRender();
+		await terminal.waitForRender();
+
+		const { baseY } = terminal.getBufferPosition();
+		const history = terminal
+			.getScrollBuffer()
+			.slice(0, baseY)
+			.map(row => Bun.stripANSI(row));
+		expect(assistant.isTranscriptBlockFinalized()).toBeFalse();
+		expect(history.some(row => row.includes("assistant-row-0"))).toBeTrue();
+
+		const grownText = Array.from(
+			{ length: 40 },
+			(_, index) => `assistant-row-${index} contains enough stable prose to wrap in the narrow terminal.`,
+		).join("\n\n");
+		assistant.updateContent(streamingAssistantMessage(grownText), { transient: true });
+		composer.ui.requestRender();
+		await terminal.waitForRender();
+		composer.ui.requestRender();
+		await terminal.waitForRender();
+
+		const streamingRows = terminal.getScrollBuffer().map(row => Bun.stripANSI(row));
+		for (let index = 0; index < 40; index++) {
+			expect(streamingRows.filter(row => row.includes(`assistant-row-${index} `))).toHaveLength(1);
+		}
+
+		assistant.updateContent(streamingAssistantMessage(grownText), { transient: false });
+		assistant.markTranscriptBlockFinalized();
+		composer.ui.requestRender();
+		await terminal.waitForRender();
+		const finalizedRows = terminal.getScrollBuffer().map(row => Bun.stripANSI(row));
+		for (let index = 0; index < 40; index++) {
+			expect(finalizedRows.filter(row => row.includes(`assistant-row-${index} `))).toHaveLength(1);
+		}
+		assistant.dispose();
 		composer.ui.stop();
 	});
 

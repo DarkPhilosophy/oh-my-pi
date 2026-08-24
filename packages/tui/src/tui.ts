@@ -1719,6 +1719,7 @@ export class TUI extends Container {
 	// scrollback, and only into rows owned by the registered target roots.
 	#rightPanelProvider: ((width: number) => readonly (readonly string[])[]) | null = null;
 	#rightPanelTargets: Set<Component> | null = null;
+	#rightPanelExclusions: Set<Component> | null = null;
 	#rightPanelLayoutCallback: ((result: PanelLayoutResult) => void) | null = null;
 	/** Whether the right-panel provider had non-empty blocks on the last composite pass. */
 	#rightPanelHasBlocks = false;
@@ -2805,19 +2806,21 @@ export class TUI extends Container {
 	/**
 	 * Register a provider of right-side info panel blocks. Each frame the
 	 * engine composites the blocks into the trailing whitespace of the visible
-	 * window — only into rows rendered by `targets` (direct root children), so
-	 * the panel never overlaps bottom chrome (editor, status line) or rows
-	 * committed to native scrollback. Disjoint target roots stay isolated: rows
-	 * between targeted roots are not eligible for panel placement. Pass `null` to remove.
+	 * window. `targets` opt rows in; `exclusions` opt rows out and always win,
+	 * keeping input chrome ineligible even when a broader target overlaps it.
+	 * Disjoint eligible roots remain isolated. Pass `null` to remove.
 	 */
 	setRightPanel(
 		provider: ((width: number) => readonly (readonly string[])[]) | null,
 		targets?: readonly Component[],
 		onLayout?: (result: PanelLayoutResult) => void,
+		exclusions?: readonly Component[],
 	): void {
 		this.#rightPanelProvider = provider;
 		this.#rightPanelTargets =
 			provider !== null && targets !== undefined && targets.length > 0 ? new Set(targets) : null;
+		this.#rightPanelExclusions =
+			provider !== null && exclusions !== undefined && exclusions.length > 0 ? new Set(exclusions) : null;
 		this.#rightPanelLayoutCallback = onLayout ?? null;
 		// Defer painting until the terminal is started: a provider registered
 		// during setup (before start()) would otherwise commit a frame into raw
@@ -2868,8 +2871,6 @@ export class TUI extends Container {
 		const targets = this.#rightPanelTargets;
 		if (targets !== null) {
 			eligibleRows = new Array<boolean>(window.length).fill(false);
-			let firstEligible = -1;
-			let lastEligible = -1;
 			const placementSegments = this.#frameProviderComponent?.getFrameSegments() ?? this.#frameSegments;
 			for (const segment of placementSegments) {
 				if (!targets.has(segment.component)) continue;
@@ -2877,11 +2878,25 @@ export class TUI extends Container {
 				const frameEnd = segment.start + segment.rowCount;
 				const windowStart = Math.max(0, frameStart - windowTop);
 				const windowEnd = Math.min(window.length, frameEnd - windowTop);
-				for (let row = windowStart; row < windowEnd; row++) {
-					eligibleRows[row] = true;
-					if (firstEligible === -1) firstEligible = row;
-					lastEligible = row;
+				for (let row = windowStart; row < windowEnd; row++) eligibleRows[row] = true;
+			}
+			const exclusions = this.#rightPanelExclusions;
+			if (exclusions !== null) {
+				for (const segment of placementSegments) {
+					if (!exclusions.has(segment.component)) continue;
+					const frameStart = segment.start;
+					const frameEnd = segment.start + segment.rowCount;
+					const windowStart = Math.max(0, frameStart - windowTop);
+					const windowEnd = Math.min(window.length, frameEnd - windowTop);
+					for (let row = windowStart; row < windowEnd; row++) eligibleRows[row] = false;
 				}
+			}
+			let firstEligible = -1;
+			let lastEligible = -1;
+			for (let row = 0; row < eligibleRows.length; row++) {
+				if (!eligibleRows[row]) continue;
+				if (firstEligible === -1) firstEligible = row;
+				lastEligible = row;
 			}
 			if (firstEligible === -1) {
 				this.#rightPanelLayoutCallback?.({

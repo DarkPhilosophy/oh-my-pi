@@ -108,6 +108,8 @@ export class Composer implements TerminalFrameProvider {
 	readonly ui: TUI;
 	#editor: CustomEditor;
 	readonly #header = new Container();
+	/** Composer-owned startup/header root used by right-panel placement filters. */
+	readonly rightPanelHeaderTarget: Component = this.#header;
 	readonly #bootstrapInputGap = new Spacer(1);
 	readonly #statusHost = new StatusHost();
 	readonly #exit: (code: number) => void;

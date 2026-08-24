@@ -29,6 +29,9 @@ import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cach
  */
 const MAX_TRANSCRIPT_ERROR_LINES = 8;
 
+const MARKDOWN_TABLE_DELIMITER = /^ {0,3}\|?(?:[ \t]*:?-+:?[ \t]*\|)+[ \t]*:?-*:?[ \t]*$/;
+const CODE_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+
 type ThinkingContentBlock = Extract<AssistantMessage["content"][number], { type: "thinking" }>;
 type DisplayThinkingContentBlock = ThinkingContentBlock & { rawThinking?: string };
 
@@ -47,14 +50,37 @@ function resolveThinkingDisplay(block: ThinkingContentBlock, proseOnly: boolean)
 }
 
 /**
- * Whether `text` contains a ` ```mermaid ` fence (open or closed) outside
- * ordinary code fences. Mermaid defers native-scrollback settling wholesale
- * (see {@link AssistantMessageComponent.getTranscriptBlockSettledRows}): its
- * ASCII rendering resolves asynchronously, so even a completed fence can
- * re-layout rows that already looked settled. Fence-aware so a mermaid
- * example inside a regular code block never triggers the deferral.
+ * Whether streaming Markdown can still re-layout already rendered rows.
+ * Mermaid diagrams and growing GFM tables remain wholly live until their
+ * layout becomes permanent.
  */
-
+function detectLiveReflowingMarkdown(text: string): boolean {
+	let fence: string | null = null;
+	let previousLine = "";
+	for (const line of text.split("\n")) {
+		const fenceMatch = CODE_FENCE_LINE.exec(line);
+		if (fence !== null) {
+			if (
+				fenceMatch &&
+				fenceMatch[2]!.trim() === "" &&
+				fenceMatch[1]![0] === fence[0] &&
+				fenceMatch[1]!.length >= fence.length
+			) {
+				fence = null;
+			}
+			continue;
+		}
+		if (fenceMatch) {
+			if (/^mermaid\b/.test(fenceMatch[2]!.trim())) return true;
+			fence = fenceMatch[1]!;
+			previousLine = "";
+			continue;
+		}
+		if (previousLine.includes("|") && MARKDOWN_TABLE_DELIMITER.test(line)) return true;
+		previousLine = line;
+	}
+	return false;
+}
 /**
  * Frames for the streaming "thinking" pulse rendered in place of a hidden
  * thinking block while the model is still producing it. A single fixed-width
@@ -162,6 +188,8 @@ export class AssistantMessageComponent extends Container {
 	#showToolResultImages = true;
 	#kittyConversionsInFlight = new Set<string>();
 	#transcriptBlockFinalized: boolean;
+	/** Reflowing streaming Markdown cannot expose an append-only settled prefix. */
+	#hasLiveReflowingMarkdown = false;
 	/**
 	 * When true, the turn-ending `Error: …` line for `stopReason === "error"` is
 	 * suppressed because the same error is currently shown in the pinned banner
@@ -409,6 +437,14 @@ export class AssistantMessageComponent extends Container {
 
 	isTranscriptBlockFinalized(): boolean {
 		return this.#transcriptBlockFinalized;
+	}
+
+	getTranscriptBlockSettledRows(): number {
+		if (this.#transcriptBlockFinalized || !this.#lastUpdateTransient) return 0;
+		if (this.#hasLiveReflowingMarkdown || this.#thinkingDots) return 0;
+		const first = this.#fastPathItems?.[0];
+		if (!first || this.#markerSlot.children.length > 0 || this.#contentContainer.children[0] !== first.md) return 0;
+		return first.md.getLastRenderSettledRows();
 	}
 
 	getTranscriptBlockVersion(): number {
@@ -745,6 +781,12 @@ export class AssistantMessageComponent extends Container {
 			this.#thinkingRateLive = false;
 		}
 
+		this.#hasLiveReflowingMarkdown = message.content.some(content => {
+			if (content.type === "text") return detectLiveReflowingMarkdown(content.text);
+			if (content.type !== "thinking" || this.hideThinkingBlock) return false;
+			const display = resolveThinkingDisplay(content, this.proseOnlyThinking);
+			return display.visible && detectLiveReflowingMarkdown(display.text);
+		});
 		// Fast path: reuse Markdown children when shape is stable during streaming
 		if (this.#tryFastPathUpdate(message, opts)) return;
 

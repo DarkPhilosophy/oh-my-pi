@@ -1274,8 +1274,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		void ensureCopyUrlHandler();
 		this.ui.setRightPanel(
 			width => this.#rightInfoProvider(width),
-			[this.chatContainer, this.todoContainer],
+			[this.composer.rightPanelHeaderTarget, this.chatContainer, this.todoContainer],
 			result => this.#rightInfoLayoutCallback?.(result),
+			[this.editorContainer],
 		);
 		if (this.#hostedTerminal) {
 			this.#hostedTerminal.write("\x1b[22;2t");

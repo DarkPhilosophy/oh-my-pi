@@ -229,8 +229,9 @@ export class TranscriptContainer
 	// The custom native-scrollback ledger above remains authoritative for the
 	// legacy/direct render path.
 	#providerFrontier = 0;
+	#providerFrontierRows = 0;
 	#providerNextBatchId = 1;
-	#providerOffered: { batch: HistoryBatch; end: number } | undefined;
+	#providerOffered: { batch: HistoryBatch; end: number; frontierRows: number } | undefined;
 
 	// Stable-prefix floor accumulated across renders since the last
 	// getRenderStablePrefixRows() read (see RenderStablePrefix: reading
@@ -494,6 +495,7 @@ export class TranscriptContainer
 	canRemoveBlock(component: Component): boolean {
 		const index = this.children.indexOf(component);
 		if (index < 0 || index < this.#providerFrontier) return false;
+		if (index === this.#providerFrontier && this.#providerFrontierRows > 0) return false;
 		return this.#providerOffered === undefined || index >= this.#providerOffered.end;
 	}
 
@@ -518,16 +520,19 @@ export class TranscriptContainer
 	/** Rebuild provider retirement before a destructive history replay. */
 	resetRetirement(): void {
 		this.#providerFrontier = 0;
+		this.#providerFrontierRows = 0;
 		this.#providerOffered = undefined;
 	}
 
 	/** Rows occupied by the provider-owned, not-yet-retired transcript tail. */
 	liveRowCount(width: number): number {
 		const start = this.#providerOffered?.end ?? this.#providerFrontier;
+		const frontierRows = this.#providerOffered?.frontierRows ?? this.#providerFrontierRows;
 		let total = 0;
 		let visible = 0;
 		for (let index = start; index < this.children.length; index++) {
-			const block = stripPlainBlankEdges(this.children[index]!.render(width));
+			let block = stripPlainBlankEdges(this.children[index]!.render(width));
+			if (index === start && frontierRows > 0) block = block.slice(frontierRows);
 			if (block.length > 0) total += block.length + (visible++ > 0 ? 1 : 0);
 		}
 		return total;
@@ -541,35 +546,51 @@ export class TranscriptContainer
 		if (this.#providerOffered !== undefined) return this.#providerOffered.batch;
 		const start = this.#providerFrontier;
 		if (start >= this.children.length) return undefined;
-		const heights: number[] = [];
+		const frontierRows = this.#providerFrontierRows;
+		const rendered: Array<readonly string[]> = [];
 		let total = 0;
 		let visible = 0;
 		for (let index = start; index < this.children.length; index++) {
-			const block = stripPlainBlankEdges(this.children[index]!.render(width));
-			heights.push(block.length);
+			let block = stripPlainBlankEdges(this.children[index]!.render(width));
+			if (index === start && frontierRows > 0) block = block.slice(frontierRows);
+			rendered.push(block);
 			if (block.length > 0) total += block.length + (visible++ > 0 ? 1 : 0);
 		}
 		const room = Math.max(0, Math.trunc(capacity));
 		if (total <= room) return undefined;
+
 		let end = start;
 		let freed = 0;
 		while (end < this.children.length && isBlockFinalized(this.children[end]!)) {
 			if (total - freed <= room) break;
-			const height = heights[end - start] ?? 0;
-			freed += height > 0 ? height + 1 : 0;
+			const block = rendered[end - start] ?? EMPTY_TAIL;
+			freed += block.length > 0 ? block.length + 1 : 0;
 			end++;
 		}
-		if (end === start) return undefined;
+
 		const rows: string[] = [];
-		for (let index = start; index < end; index++) {
-			const block = stripPlainBlankEdges(this.children[index]!.render(width));
-			if (block.length === 0) continue;
+		let offeredFrontierRows = 0;
+		if (end > start) {
+			for (let index = start; index < end; index++) {
+				const block = rendered[index - start] ?? EMPTY_TAIL;
+				if (block.length === 0) continue;
+				if (rows.length > 0) rows.push("");
+				rows.push(...block);
+			}
 			if (rows.length > 0) rows.push("");
-			rows.push(...block);
+		} else {
+			const child = this.children[start]!;
+			const block = rendered[0] ?? EMPTY_TAIL;
+			const settledRows = Math.max(0, Math.min(block.length, getBlockSettledRows(child) - frontierRows));
+			const requiredRows = Math.max(0, total - room);
+			const retireRows = Math.min(settledRows, requiredRows);
+			if (retireRows === 0) return undefined;
+			rows.push(...block.slice(0, retireRows));
+			offeredFrontierRows = frontierRows + retireRows;
 		}
-		if (rows.length > 0) rows.push("");
+
 		const batch: HistoryBatch = { id: this.#providerNextBatchId++, rows };
-		this.#providerOffered = { batch, end };
+		this.#providerOffered = { batch, end, frontierRows: offeredFrontierRows };
 		return batch;
 	}
 
@@ -578,6 +599,7 @@ export class TranscriptContainer
 		const offered = this.#providerOffered;
 		if (offered === undefined || offered.batch.id !== id) return;
 		this.#providerFrontier = offered.end;
+		this.#providerFrontierRows = offered.frontierRows;
 		this.#providerOffered = undefined;
 	}
 
@@ -586,13 +608,15 @@ export class TranscriptContainer
 		const capacity = Math.max(0, Math.trunc(rows));
 		if (capacity === 0) return EMPTY_TAIL;
 		const start = this.#providerOffered?.end ?? this.#providerFrontier;
+		const frontierRows = this.#providerOffered?.frontierRows ?? this.#providerFrontierRows;
 		const shown: Component[] = [];
 		const blocks: (readonly string[])[] = [];
 		let total = 0;
 		for (let index = start; index < this.children.length; index++) {
 			const child = this.children[index]!;
 			this.#setProviderAllocation(child, Number.MAX_SAFE_INTEGER, frame);
-			const block = stripPlainBlankEdges(child.render(width));
+			let block = stripPlainBlankEdges(child.render(width));
+			if (index === start && frontierRows > 0) block = block.slice(frontierRows);
 			if (block.length === 0) continue;
 			total += block.length + (shown.length > 0 ? 1 : 0);
 			shown.push(child);
@@ -619,7 +643,7 @@ export class TranscriptContainer
 		for (let index = 0; index < shown.length; index++) {
 			const allocated = allocation[index]!;
 			this.#setProviderAllocation(shown[index]!, allocated, frame);
-			const block = stripPlainBlankEdges(shown[index]!.render(width));
+			const block = blocks[index]!;
 			output.push(...(block.length <= allocated ? block : block.slice(block.length - allocated)));
 		}
 		return output.length > capacity ? output.slice(output.length - capacity) : output;

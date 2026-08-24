@@ -304,6 +304,25 @@ describe("TUI.setRightPanel", () => {
 		}
 	});
 
+	it("lets exclusion roots override broad right-panel targets", async () => {
+		const term = new VirtualTerminal(80, 12);
+		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
+		const chat = new Lines(["chat-0", "chat-1", "chat-2"]);
+		const editor = new Lines(["[editor-0]", "[editor-1]", "[editor-2]"]);
+		tui.addChild(chat);
+		tui.addChild(editor);
+		tui.setRightPanel(() => [["<W0>", "<W1>", "<W2>", "<W3>"]], [chat, editor], undefined, [editor]);
+		tui.start();
+		await settle(term);
+		try {
+			const viewport = term.getViewport();
+			expect(viewport.some(line => line.includes("<W"))).toBeFalse();
+			expect(viewport.slice(3, 6).every(line => !line.includes("<W"))).toBeTrue();
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("does not use rows between disjoint target roots for right-panel placement", async () => {
 		const term = new VirtualTerminal(80, 12);
 		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
@@ -445,7 +464,6 @@ describe("TUI.setRightPanel", () => {
 			tui.stop();
 		}
 	});
-
 
 	it("reports right-panel blocks hidden while overlay rows cover their placement", async () => {
 		const term = new VirtualTerminal(80, 12);
