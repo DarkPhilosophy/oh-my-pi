@@ -78,6 +78,7 @@
 
 ### Added
 
+- Added a DeepInfra `/login` flow that validates the pasted API key against the DeepInfra chat completions endpoint.
 - Added Codex Responses support for Code Mode, preserving tool modes and passing tool namespace metadata during sessions.
 
 ### Fixed
