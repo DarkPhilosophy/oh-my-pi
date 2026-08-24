@@ -3,6 +3,7 @@ import {
 	copyToClipboard as nativeCopyToClipboard,
 	readImageFromClipboard as nativeReadImageFromClipboard,
 } from "@oh-my-pi/pi-natives/clipboard";
+import * as nativeClipboard from "@oh-my-pi/pi-natives/clipboard";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { SUPPORTED_IMAGE_MIME_TYPES } from "@oh-my-pi/pi-utils/mime";
 import MAC_FILE_URL_SCRIPT from "./mac-file-urls.applescript" with { type: "text" };
@@ -166,10 +167,18 @@ export async function copyTextPersistent(text: string): Promise<void> {
 	}
 	await nativeCopyToClipboard(text);
 	if (!process.env.WAYLAND_DISPLAY) {
-		// X11 selections remain owned by the process that supplied them. The
-		// native arboard instance is process-global, so keep this short-lived
-		// handler alive instead of expiring a valid clipboard after two minutes.
-		await Promise.withResolvers<void>().promise;
+		// X11 selections remain owned by the process that supplied them. Keep
+		// serving only while our payload is still the active selection; once
+		// another owner replaces it, this short-lived handler can exit.
+		for (;;) {
+			await Bun.sleep(250);
+			try {
+				const clipboard = nativeClipboard as typeof nativeClipboard & { readTextFromClipboard(): string };
+				if (clipboard.readTextFromClipboard() !== text) return;
+			} catch {
+				return;
+			}
+		}
 	}
 }
 

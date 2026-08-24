@@ -281,23 +281,23 @@ describe("readMacFileUrlsFromClipboard", () => {
 });
 
 describe("copyTextPersistent", () => {
-	it("keeps the native X11 clipboard owner alive without a fixed expiry", async () => {
+	it("stops the native X11 clipboard owner after another owner replaces the text", async () => {
 		setPlatform("linux");
 		process.env.DISPLAY = ":0";
 		spySpawn([], ["", ""], [1, 1]);
-		const nativeCalled = Promise.withResolvers<void>();
-		const nativeCopy = vi.spyOn(native, "copyToClipboard").mockImplementation(() => {
-			nativeCalled.resolve();
-		});
-		let settled = false;
-
-		void copyTextPersistent("persistent").finally(() => {
-			settled = true;
-		});
-		await nativeCalled.promise;
-
-		expect(nativeCopy).toHaveBeenCalledWith("persistent");
-		expect(settled).toBe(false);
+		const nativeCopy = vi.spyOn(native, "copyToClipboard").mockImplementation(() => {});
+		const clipboard = native as typeof native & { readTextFromClipboard(): string };
+		const nativeRead = vi.spyOn(clipboard, "readTextFromClipboard").mockReturnValue("replacement");
+		vi.useFakeTimers();
+		try {
+			const copy = copyTextPersistent("persistent");
+			await vi.advanceTimersByTimeAsync(250);
+			await copy;
+			expect(nativeCopy).toHaveBeenCalledWith("persistent");
+			expect(nativeRead).toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 

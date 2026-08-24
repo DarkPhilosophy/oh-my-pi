@@ -3119,6 +3119,27 @@ describe("framed code review follow-ups", () => {
 		}
 	});
 
+	it("does not mistake delimiter text after code for a nested closing fence", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("- ```js\n y\n x```\n  ```", 0, 0, theme).render(40);
+			expect(captured).toBe("y\nx```");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
 	it("strips each available list indent from copied code rows", () => {
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;

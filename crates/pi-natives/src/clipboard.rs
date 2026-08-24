@@ -139,6 +139,19 @@ pub fn copy_to_clipboard(text: JsString) -> Result<()> {
 	set_clipboard_text(&js::utf8(text)?)
 }
 
+/// Read plain text from the system clipboard.
+///
+/// # Errors
+/// Returns an error if clipboard access fails or does not contain text.
+#[napi]
+pub fn read_text_from_clipboard() -> Result<String> {
+	let mut clipboard = Clipboard::new()
+		.map_err(|err| Error::from_reason(format!("Failed to access clipboard: {err}")))?;
+	clipboard
+		.get_text()
+		.map_err(|err| Error::from_reason(format!("Failed to read clipboard text: {err}")))
+}
+
 /// Linux: keep a single `arboard::Clipboard` alive for the whole process.
 ///
 /// X11 (and Wayland) clipboards are owner-based: the process that set the
