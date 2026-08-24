@@ -9,7 +9,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task";
-import type { TodoPhase } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -360,6 +360,33 @@ describe("InteractiveMode todo HUD anchor", () => {
 		// Hidden stages do not change the compact title.
 		const root = lines.find(line => line.includes("TODO"));
 		expect(root?.trim()).toBe("TODO");
+	});
+
+	it("expands and collapses the complete todo HUD through /todo", async () => {
+		mode.setTodos([
+			{
+				name: "Implementation",
+				tasks: Array.from(
+					{ length: 8 },
+					(_, index): TodoItem => ({
+						content: `Task ${index + 1}`,
+						status: index === 0 ? "in_progress" : "pending",
+					}),
+				),
+			},
+		]);
+
+		await mode.handleTodoCommand("expand");
+		await mode.handleTodoCommand("expand");
+
+		expect(renderTodos(mode)).toContain("Task 8");
+		expect(renderTodos(mode)).not.toContain("more todo");
+
+		await mode.handleTodoCommand("collapse");
+		await mode.handleTodoCommand("collapse");
+
+		expect(renderTodos(mode)).not.toContain("Task 8");
+		expect(renderTodos(mode)).toContain("3 more todos");
 	});
 
 	describe("compact todo for small terminal height (< 18 rows)", () => {

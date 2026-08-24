@@ -144,22 +144,28 @@ export class TranscriptContainer extends Container {
 		const live = this.#liveEntries();
 		const capacity = Math.max(0, Math.trunc(rows));
 		if (live.length === 0 || capacity === 0) return EMPTY_ROWS;
-		if (live.length > capacity) return this.#renderEmergency(live, width, capacity, frame);
 
-		// Full-height pass first: within capacity, live blocks render whole.
-		const blocks: (readonly string[])[] = new Array(live.length);
+		// Full-height pass first: measure every live block whole. Empty blocks
+		// (hidden tool activity under display.hideToolActivity, content-less
+		// streaming blocks) occupy no viewport rows, so they are dropped here and
+		// never reach the pressure/emergency paths — otherwise they would reserve
+		// a base row (over-truncating real text) or emit a blank row per block.
+		const shown: TranscriptEntry[] = [];
+		const blocks: (readonly string[])[] = [];
 		let total = 0;
-		let visible = 0;
-		for (let index = 0; index < live.length; index++) {
-			this.#setAllocation(live[index]!.component, Number.MAX_SAFE_INTEGER, frame);
-			const rendered = trimBlankEdges(live[index]!.component.render(width));
-			blocks[index] = rendered;
-			if (rendered.length > 0) total += rendered.length + (visible++ > 0 ? 1 : 0);
+		for (const entry of live) {
+			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, frame);
+			const rendered = trimBlankEdges(entry.component.render(width));
+			if (rendered.length === 0) continue;
+			total += rendered.length + (shown.length > 0 ? 1 : 0);
+			shown.push(entry);
+			blocks.push(rendered);
 		}
+		if (shown.length === 0) return EMPTY_ROWS;
+		if (shown.length > capacity) return this.#renderEmergency(shown, width, capacity, frame);
 		if (total <= capacity) {
 			const output: string[] = [];
 			for (const rendered of blocks) {
-				if (rendered.length === 0) continue;
 				if (output.length > 0) output.push("");
 				output.push(...rendered);
 			}
@@ -169,18 +175,18 @@ export class TranscriptContainer extends Container {
 		// Pressure: one row minimum per block, surplus to the newest blocks first,
 		// separators dropped. Tool blocks re-render compact below three rows; text
 		// blocks keep their latest rows visible.
-		const allocation: number[] = new Array(live.length).fill(1);
-		let surplus = capacity - live.length;
-		for (let index = live.length - 1; index >= 0 && surplus > 0; index--) {
+		const allocation: number[] = new Array(shown.length).fill(1);
+		let surplus = capacity - shown.length;
+		for (let index = shown.length - 1; index >= 0 && surplus > 0; index--) {
 			const extra = Math.min(Math.max(0, blocks[index]!.length - 1), surplus);
 			allocation[index] += extra;
 			surplus -= extra;
 		}
 		const output: string[] = [];
-		for (let index = 0; index < live.length; index++) {
+		for (let index = 0; index < shown.length; index++) {
 			const allocated = allocation[index]!;
-			this.#setAllocation(live[index]!.component, allocated, frame);
-			const rendered = trimBlankEdges(live[index]!.component.render(width));
+			this.#setAllocation(shown[index]!.component, allocated, frame);
+			const rendered = trimBlankEdges(shown[index]!.component.render(width));
 			if (rendered.length <= allocated) output.push(...rendered);
 			else output.push(...rendered.slice(rendered.length - allocated));
 		}
@@ -262,23 +268,25 @@ export class TranscriptContainer extends Container {
 	}
 
 	#renderEmergency(
-		live: readonly TranscriptEntry[],
+		shown: readonly TranscriptEntry[],
 		width: number,
 		rows: number,
 		frame: AnimationFrame,
 	): readonly string[] {
 		const output: string[] = [];
-		const hiddenCount = Math.max(0, live.length - rows);
+		const hiddenCount = Math.max(0, shown.length - rows);
 		let hiddenActive = 0;
 		for (let index = 0; index < hiddenCount; index++) {
-			if (live[index]!.state === "active") hiddenActive++;
+			if (shown[index]!.state === "active") hiddenActive++;
 		}
 		if (hiddenActive > 0) output.push(`${hiddenActive} more transcript blocks active`);
 		const visibleRows = rows - output.length;
-		const visible = visibleRows > 0 ? live.slice(-visibleRows) : [];
+		const visible = visibleRows > 0 ? shown.slice(-visibleRows) : [];
+		// Callers pass only non-empty blocks; trim residual edge blanks so each
+		// block contributes its first real row instead of a reserved blank.
 		for (const entry of visible) {
 			this.#setAllocation(entry.component, 1, frame);
-			output.push(entry.component.render(width)[0] ?? "");
+			output.push(trimBlankEdges(entry.component.render(width))[0] ?? "");
 		}
 		return output.slice(0, rows);
 	}

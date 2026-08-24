@@ -21,6 +21,7 @@ import { usesCodexTaskPrompt } from "../task/prompt-policy";
 import { isMCPToolName, normalizeToolNames } from "../tools/builtin-names";
 import { computerExposureMode } from "../tools/computer/exposure";
 import { wrapToolWithMetaNotice } from "../tools/output-meta";
+import { isFilesystemSourcePath } from "../tools/path-utils";
 import { supportsExternalThinking } from "../tools/think";
 import { ToolAbortError, ToolError } from "../tools/tool-errors";
 import { isMountableUnderXdev, listXdevTools, type XdevState, xdevDocsFor, xdevEntries } from "../tools/xdev";
@@ -520,7 +521,7 @@ export class SessionTools {
 						? "sdk"
 						: "extension";
 			const sourceInfo: SourceInfo = {
-				path: `<${source}:${name}>`,
+				path: registeredFilesystemSourcePath(this.#host.extensionRunner(), name) ?? `<${source}:${name}>`,
 				source,
 				scope: "temporary",
 				origin: "top-level",
@@ -1788,4 +1789,11 @@ export class SessionTools {
 			throw error;
 		}
 	}
+}
+
+function registeredFilesystemSourcePath(runner: ExtensionRunner | undefined, name: string): string | undefined {
+	const registered = runner?.getRegisteredTool(name);
+	if (!registered) return undefined;
+	const candidate = registered.definition.sourcePath ?? registered.extensionPath;
+	return candidate && isFilesystemSourcePath(candidate) ? candidate : undefined;
 }

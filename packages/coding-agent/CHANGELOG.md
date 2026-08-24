@@ -5,6 +5,37 @@
 ### Added
 
 - Fenced code blocks now expose a clickable `copy` link that copies their original source text.
+## [18.0.4] - 2026-08-24
+
+### Added
+
+- Added the `omp git` command (and `/git` slash command): an interactive, fullscreen repository TUI featuring a split/inline/hunk diff viewer with minimap scrollbar, syntax highlighting, a staging sidebar with line-level staging, commit composer with amend support, and author avatars. Supports keyboard navigation, full mouse interaction, and pinning views to specific commits via `omp git <revision>`.
+- Overhauled the `/extensions` Extension Control Center into a fullscreen alternate-screen dashboard with mouse support, tab navigation, unified inspector views across extension types, live MCP connection management, and expandable details (`Ctrl+O`).
+- Added support for live syntax highlighting in streaming markdown code blocks.
+- Added an immediately editable startup composer for interactive launches, preserving drafts typed while session initialization is in progress.
+
+### Changed
+
+- Improved streaming markdown and thinking block rendering performance on long sessions by batching token updates and eliminating redundant re-processing.
+- Optimized streaming edit verification and session restoration for large files and history-heavy sessions.
+
+### Fixed
+
+- Fixed invalid streamed edit patches occasionally reaching the edit tool instead of being stopped early.
+- Fixed `!` shell commands on zsh/fish by running them inside a real PTY, resolving terminal option errors and preserving ANSI color formatting.
+- Fixed transcript layout corruption and viewport compression caused by interrupted streams, empty blocks, or collapsed wrapped diff lines.
+- Fixed transcript scrollback loss where output below sticky cards (such as hub-wait or todo) failed to commit to terminal history.
+- Improved HTTP 413 error handling: accurately distinguish between true token-context overflows and provider byte/media budget limits, persist terminal errors across sessions, and enable proper fallback-chain model switching.
+- Fixed discovery-backed session models failing to restore when resuming sessions with `omp --resume` or `--continue`.
+- Fixed browser tool initial launch timeouts on slow or cold host environments.
+- Fixed eval runtime probes hanging on Windows due to inherited stdin handles.
+- Fixed Claude models replaying partial thinking blocks as conversation text when interrupted mid-turn.
+- Fixed image request failures with Kimi Code and Moonshot models by ensuring inline base64 image delivery.
+- Fixed SQLite WAL-mode databases without sidecars failing to open in the Read tool.
+- Fixed pasted image thumbnail rendering in the composer attachment preview.
+- Fixed Linux startup event loop delays caused by legacy extension cache fsync churn.
+- Fixed subagent advisors abandoning reviews on the final yield turn during session teardown.
+- Fixed `/todo` expand/collapse commands and corrected `/shake thinking` reporting.
 
 ## [18.0.3] - 2026-08-23
 
