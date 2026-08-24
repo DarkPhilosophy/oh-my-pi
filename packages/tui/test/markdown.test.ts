@@ -907,23 +907,23 @@ console.log(answer);`;
 				terminalState.hyperlinks = originalHyperlinks;
 			}
 		});
-		it("does not emit a copy-chip link when terminal hyperlinks are disabled", () => {
+		it("keeps the explicit copy action linked when generic hyperlink detection is disabled", () => {
 			const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 			const originalHyperlinks = terminalState.hyperlinks;
 			let targetCalls = 0;
 			try {
 				terminalState.hyperlinks = false;
-				const noLinksTheme = {
+				const copyTheme = {
 					...defaultMarkdownTheme,
 					copyChip: "copy",
 					copyChipTarget: () => {
 						targetCalls++;
-						return "omp-copy:disabled";
+						return "omp-copy:explicit";
 					},
 				};
-				const footer = new Markdown("```js\nconst x = 1\n```", 0, 0, noLinksTheme).render(40).at(-1) ?? "";
-				expect(targetCalls).toBe(0);
-				expect(footer).not.toContain("\x1b]8;;");
+				const footer = new Markdown("```js\nconst x = 1\n```", 0, 0, copyTheme).render(40).at(-1) ?? "";
+				expect(targetCalls).toBe(1);
+				expect(footer).toContain("\x1b]8;;omp-copy:explicit\x07");
 				expect(stripVTControlCharacters(footer)).toContain("[copy]");
 			} finally {
 				terminalState.hyperlinks = originalHyperlinks;

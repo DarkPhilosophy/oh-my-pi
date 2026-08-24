@@ -2350,7 +2350,7 @@ export class Markdown implements Component {
 			const chipWidth = visibleWidth(copyLabel);
 			const fill = Math.max(0, innerWidth - chipWidth - 1);
 			const code = this.#originalCodeBody(token);
-			const target = code && TERMINAL.hyperlinks ? this.#theme.copyChipTarget?.(code) : undefined;
+			const target = code ? this.#theme.copyChipTarget?.(code) : undefined;
 			const chip = target
 				? `\x1b]8;;${target.replaceAll("\x1b", "").replaceAll("\x07", "")}\x07${border(copyLabel)}\x1b]8;;\x07`
 				: border(copyLabel);
