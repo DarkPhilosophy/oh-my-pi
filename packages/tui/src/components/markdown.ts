@@ -91,13 +91,14 @@ const MARKDOWN_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
 const MARKDOWN_HEADING_LINE = /^ {0,3}#{1,6}[ \t]+\S/;
 const FENCED_SOURCE_INTRO = /\b(?:code|example|markdown|output|snippet|source)\s*:?\s*$/i;
 
-function isMarkdownContainerPrefix(prefix: string): boolean {
+function isMarkdownFencePrefix(prefix: string): boolean {
 	let remaining = prefix;
 	while (remaining.length > 0) {
-		remaining = remaining.replace(/^[ \t]+/, "");
+		const indent = /^ {0,3}/.exec(remaining)?.[0] ?? "";
+		remaining = remaining.slice(indent.length);
 		if (remaining.length === 0) return true;
 		if (remaining.startsWith(">")) {
-			remaining = remaining.slice(1);
+			remaining = remaining.slice(1).replace(/^[ \t]/, "");
 			continue;
 		}
 		const listMarker = /^(?:[-+*]|\d+[.)])[ \t]+/.exec(remaining);
@@ -2422,7 +2423,7 @@ export class Markdown implements Component {
 				if (
 					fenceAt >= 0 &&
 					sourceLine.slice(fenceAt).trim() === openLine &&
-					isMarkdownContainerPrefix(sourceLine.slice(0, fenceAt))
+					isMarkdownFencePrefix(sourceLine.slice(0, fenceAt))
 				) {
 					openAt = openingLineStart + fenceAt;
 					break;
@@ -2447,7 +2448,7 @@ export class Markdown implements Component {
 				if (fenceAt >= 0 && fenceAt <= openingFenceColumn + 3) {
 					let candidateLength = 0;
 					while (sourceLine.charAt(fenceAt + candidateLength) === fenceChar) candidateLength++;
-					const legalPrefix = isMarkdownContainerPrefix(sourceLine.slice(0, fenceAt));
+					const legalPrefix = isMarkdownFencePrefix(sourceLine.slice(0, fenceAt));
 					if (
 						legalPrefix &&
 						candidateLength >= fenceLength &&

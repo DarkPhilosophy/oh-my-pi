@@ -3209,6 +3209,27 @@ describe("framed code review follow-ups", () => {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
 	});
+	it("rejects indented-code rows while locating nested opening fences", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			const source = "    ```js\n    wrong\n    ```\n\n- ```js\n  right\n  ```";
+			new Markdown(source, 0, 0, theme).render(80);
+			expect(captured).toBe("right");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
 	it("preserves list code when the marker fills the row", () => {
 		const rows = new Markdown("- ```js\n  x\n  ```", 0, 0, defaultMarkdownTheme)
 			.render(2)
