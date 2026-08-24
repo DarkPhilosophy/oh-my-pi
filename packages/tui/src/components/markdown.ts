@@ -19,6 +19,7 @@ import type {
 } from "../tui";
 import {
 	applyBackgroundToLine,
+	DEFAULT_TAB_WIDTH,
 	Ellipsis,
 	encodeTextSized,
 	getPaddingX,
@@ -1533,6 +1534,33 @@ interface StreamingDiffLineCache extends RenderSignature {
 interface TableLayoutLock {
 	availableWidth: number;
 	columnWidths: readonly number[];
+interface ExpandedSource {
+	text: string;
+	sourceOffsets: readonly number[];
+}
+
+/** Expand display tabs once and retain O(1) expanded-to-source offset lookup. */
+function expandSourceText(source: string): ExpandedSource {
+	const sourceOffsets: number[] = [0];
+	let expandedLength = 0;
+	for (let sourceOffset = 0; sourceOffset < source.length; sourceOffset++) {
+		const width = source[sourceOffset] === "\t" ? DEFAULT_TAB_WIDTH : 1;
+		expandedLength += width;
+		for (let offset = sourceOffsets.length; offset <= expandedLength; offset++) {
+			sourceOffsets.push(sourceOffset + 1);
+		}
+	}
+	return { text: replaceTabs(source), sourceOffsets };
+}
+
+/**
+ * Split a highlight-stream push result (newline-terminated lines) into
+ * per-line strings, dropping the empty tail produced by the final newline.
+ */
+function splitPushedHighlightLines(pushed: string): string[] {
+	const lines = pushed.split("\n");
+	lines.pop();
+	return lines;
 }
 
 interface TableRenderSpec extends TableLayoutLock {
@@ -1556,6 +1584,8 @@ export class Markdown
 	#sourceText: string;
 	/** Source bytes with display tabs expanded; shared by token-span lookups. */
 	#expandedSourceText: string;
+	/** Source offset at each expanded-text boundary; rebuilt once per text update. */
+	#expandedSourceOffsets: readonly number[];
 	/** Expanded-source cursor used to disambiguate repeated fenced blocks. */
 	#copySourceSearchCursor = 0;
 	#paddingX: number; // Left/right padding
@@ -1659,7 +1689,9 @@ export class Markdown
 		codeBlockIndent: number = 2,
 	) {
 		this.#sourceText = normalizeOsc8Terminators(text);
-		this.#expandedSourceText = replaceTabs(this.#sourceText);
+		const expandedSource = expandSourceText(this.#sourceText);
+		this.#expandedSourceText = expandedSource.text;
+		this.#expandedSourceOffsets = expandedSource.sourceOffsets;
 		this.#text = this.#sourceText;
 		this.#paddingX = paddingX;
 		this.#paddingY = paddingY;
@@ -1683,7 +1715,9 @@ export class Markdown
 		}
 		if (!text.startsWith(this.#text)) this.#clearTableLayouts();
 		this.#sourceText = text;
-		this.#expandedSourceText = replaceTabs(text);
+		const expandedSource = expandSourceText(text);
+		this.#expandedSourceText = expandedSource.text;
+		this.#expandedSourceOffsets = expandedSource.sourceOffsets;
 		this.#text = text;
 		if (!text.trim()) {
 			// Blank replacement: render() early-returns before #lexTokens can see
@@ -2413,15 +2447,9 @@ export class Markdown
 			expandedEnd = closeAt + closeLength;
 		}
 		this.#copySourceSearchCursor = Math.max(this.#copySourceSearchCursor, expandedEnd);
-		const toSourceOffset = (expandedOffset: number): number => {
-			let expanded = 0;
-			for (let sourceOffset = 0; sourceOffset < this.#sourceText.length; sourceOffset++) {
-				if (expanded >= expandedOffset) return sourceOffset;
-				expanded += this.#sourceText[sourceOffset] === "\t" ? 3 : 1;
-			}
-			return this.#sourceText.length;
-		};
-		const sourceRaw = this.#sourceText.slice(toSourceOffset(expandedStart), toSourceOffset(expandedEnd));
+		const sourceStart = this.#expandedSourceOffsets[expandedStart] ?? this.#sourceText.length;
+		const sourceEnd = this.#expandedSourceOffsets[expandedEnd] ?? this.#sourceText.length;
+		const sourceRaw = this.#sourceText.slice(sourceStart, sourceEnd);
 		const firstLineEnd = sourceRaw.indexOf("\n");
 		const lastLineStart = sourceRaw.lastIndexOf("\n");
 		if (firstLineEnd < 0 || lastLineStart <= firstLineEnd) return fallback;

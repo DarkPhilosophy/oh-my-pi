@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import {
+	copyTextPersistent,
 	readImageFromClipboard,
 	readMacFileUrlsFromClipboard,
 	readTextFromClipboard,
@@ -276,6 +277,27 @@ describe("readMacFileUrlsFromClipboard", () => {
 		spySpawn([], "", 127);
 
 		expect(await readMacFileUrlsFromClipboard()).toEqual([]);
+	});
+});
+
+describe("copyTextPersistent", () => {
+	it("keeps the native X11 clipboard owner alive without a fixed expiry", async () => {
+		setPlatform("linux");
+		process.env.DISPLAY = ":0";
+		spySpawn([], ["", ""], [1, 1]);
+		const nativeCalled = Promise.withResolvers<void>();
+		const nativeCopy = vi.spyOn(native, "copyToClipboard").mockImplementation(() => {
+			nativeCalled.resolve();
+		});
+		let settled = false;
+
+		void copyTextPersistent("persistent").finally(() => {
+			settled = true;
+		});
+		await nativeCalled.promise;
+
+		expect(nativeCopy).toHaveBeenCalledWith("persistent");
+		expect(settled).toBe(false);
 	});
 });
 
