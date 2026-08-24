@@ -588,7 +588,6 @@ impl DiffStreamState {
 /// Complete lines are observable during ingestion. Only equal leading lines
 /// are declared stable before EOF; future input can change Myers alignment
 /// after the first mismatch.
-#[derive(Default)]
 #[napi]
 pub struct DiffStream {
 	state: Arc<Mutex<DiffStreamState>>,
@@ -599,7 +598,7 @@ impl DiffStream {
 	/// Create an empty two-sided stream.
 	#[napi(constructor)]
 	pub fn new() -> Self {
-		Self::default()
+		Self { state: Arc::new(Mutex::new(DiffStreamState::default())) }
 	}
 
 	/// Append a JavaScript text chunk to one side.
@@ -722,6 +721,12 @@ impl DiffStream {
 		let new = state.new.text.clone();
 		drop(state);
 		Ok(task::blocking("diff.finish", (), move |_| Ok(stream_result(&old, &new, context))))
+	}
+}
+
+impl Default for DiffStream {
+	fn default() -> Self {
+		Self { state: Arc::new(Mutex::new(DiffStreamState::default())) }
 	}
 }
 
