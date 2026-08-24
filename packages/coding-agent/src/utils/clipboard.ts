@@ -165,11 +165,7 @@ export async function copyTextPersistent(text: string): Promise<void> {
 			// Try the next persistent clipboard owner.
 		}
 	}
-	if (!process.env.WAYLAND_DISPLAY) {
-		nativeCopyToClipboardPersistent(text);
-		return;
-	}
-	await nativeCopyToClipboard(text);
+	nativeCopyToClipboardPersistent(text);
 }
 
 // PowerShell one-liner that emits the Windows clipboard image as base64-encoded
