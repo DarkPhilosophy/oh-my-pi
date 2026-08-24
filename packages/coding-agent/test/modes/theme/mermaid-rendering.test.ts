@@ -46,15 +46,16 @@ describe("Mermaid rendering setting", () => {
 		expect(systemPrompt.join("\n")).not.toContain("```mermaid");
 	});
 
-	it("falls back to a framed code block when rendering is disabled", () => {
+	it("falls back to a highlighted code fence when rendering is disabled", () => {
 		setMarkdownMermaidRendering(false);
 
 		const markdown = new Markdown("```mermaid\ngraph TD\n  A --> B\n```", 0, 0, getMarkdownTheme());
 		const lines = stripAnsi(markdown.render(80).join("\n"));
 
-		expect(lines).toContain("[⌘ mermaid]");
+		expect(lines).toContain("[mermaid]");
 		expect(lines).toContain("graph TD");
 		expect(lines).toContain("-->");
+		expect(lines).not.toContain("```");
 	});
 
 	it("uses content-visible Titanium colors for Mermaid structure", async () => {

@@ -640,233 +640,6 @@ Average Latency: 1,240 ms
 			expect(dataLine, "Should have data row").toBeTruthy();
 		});
 
-		it("locks streamed table widths only after the table enters native scrollback", () => {
-			const initial = `| Entry | Value |
-| --- | --- |
-| short-entry | R000 |`;
-			const beforeCommit = `${initial}
-| medium-width-entry | R001 |`;
-			const afterCommit = `${beforeCommit}
-| much-longer-entry-that-arrives-after-commit | R002 |`;
-			const markdown = new Markdown(initial, 0, 0, defaultMarkdownTheme);
-			markdown.transientRenderCache = true;
-
-			const topBorder = (lines: readonly string[]): string => {
-				const plain = lines.map(line => stripVTControlCharacters(line).trimEnd());
-				const border = plain.find(line => line.startsWith("+"));
-				expect(border).toBeDefined();
-				return border!;
-			};
-
-			const initialBorder = topBorder(markdown.render(80));
-			markdown.setText(beforeCommit);
-			const growingLines = markdown.render(80);
-			const growingBorder = topBorder(growingLines);
-			// Wholly-live tables retain today's natural-width behavior.
-			expect(growingBorder).not.toBe(initialBorder);
-
-			const tableStart = growingLines.findIndex(line => stripVTControlCharacters(line).trimStart().startsWith("+"));
-			markdown.setNativeScrollbackCommittedRows(tableStart + 1);
-			markdown.setText(afterCommit);
-			const lockedLines = markdown.render(80);
-			expect(topBorder(lockedLines)).toBe(growingBorder);
-			expect(lockedLines.some(line => stripVTControlCharacters(line).includes("R002"))).toBe(true);
-
-			// Finalization must not swap in a canonical full-content layout from L2.
-			markdown.transientRenderCache = false;
-			expect(topBorder(markdown.render(80))).toBe(growingBorder);
-
-			// A destructive replay has no immutable old tape to protect and may
-			// recompute the natural width from the complete table.
-			markdown.prepareNativeScrollbackReplay();
-			expect(topBorder(markdown.render(80))).not.toBe(growingBorder);
-		});
-
-		it("keeps layout locks independent across streamed tables", () => {
-			const first = `| First table column | Value |
-| --- | --- |
-| medium-width-entry | A |`;
-			const second = `${first}
-
-| Entry | Value |
-| --- | --- |
-| short | R000 |`;
-			const widenedSecond = `${second}
-| much-longer-entry-that-arrives-after-commit | R001 |`;
-			const markdown = new Markdown(first, 0, 0, defaultMarkdownTheme);
-			markdown.transientRenderCache = true;
-			markdown.render(80);
-			markdown.setNativeScrollbackCommittedRows(1);
-
-			markdown.setText(second);
-			const secondLines = markdown.render(80);
-			const borders = secondLines
-				.map(line => stripVTControlCharacters(line).trimEnd())
-				.filter(line => line.startsWith("+"));
-			expect(borders).toHaveLength(6);
-			const secondTop = secondLines.findIndex(
-				(line, index) => index > 0 && stripVTControlCharacters(line).trimEnd() === borders[3],
-			);
-			expect(secondTop).toBeGreaterThan(0);
-			expect(borders[3]).not.toBe(borders[0]);
-
-			markdown.setNativeScrollbackCommittedRows(secondTop + 1);
-			markdown.setText(widenedSecond);
-			const widenedBorders = markdown
-				.render(80)
-				.map(line => stripVTControlCharacters(line).trimEnd())
-				.filter(line => line.startsWith("+"));
-			expect(widenedBorders[0]).toBe(borders[0]);
-			expect(widenedBorders[3]).toBe(borders[3]);
-		});
-
-		it("does not lock a quoted table until the table itself enters native scrollback", () => {
-			const initial = `> > Intro sentence deliberately long enough to wrap across several physical quote rows before the table.
-> >
-> > | Entry | Value |
-> > | --- | --- |
-> > | short | R000 |`;
-			const beforeCommit = `${initial}
-> > | medium-width-entry | R001 |`;
-			const afterCommit = `${beforeCommit}
-> > | entry-that-is-even-wider-than-the-locked-layout | R002 |`;
-			const markdown = new Markdown(initial, 0, 0, defaultMarkdownTheme);
-			markdown.transientRenderCache = true;
-
-			const tableGeometry = (lines: readonly string[]): { start: number; border: string } => {
-				const plain = lines.map(line => stripVTControlCharacters(line).trimEnd());
-				const header = plain.findIndex(line => line.includes("Entry") && line.includes("Value"));
-				expect(header).toBeGreaterThan(0);
-				return { start: header - 1, border: plain[header - 1]! };
-			};
-
-			const initialLines = markdown.render(48);
-			const initialTable = tableGeometry(initialLines);
-			expect(initialTable.start).toBeGreaterThan(2);
-			// Commit only the quote prose; the nested table remains wholly live.
-			markdown.setNativeScrollbackCommittedRows(initialTable.start);
-
-			markdown.setText(beforeCommit);
-			const growingLines = markdown.render(48);
-			const growingTable = tableGeometry(growingLines);
-			expect(growingTable.border).not.toBe(initialTable.border);
-
-			markdown.setNativeScrollbackCommittedRows(growingTable.start + 1);
-			markdown.setText(afterCommit);
-			const lockedLines = markdown.render(48);
-			expect(tableGeometry(lockedLines).border).toBe(growingTable.border);
-			expect(lockedLines.some(line => stripVTControlCharacters(line).includes("R002"))).toBe(true);
-		});
-
-		it("recomputes a locked streamed table after resize or non-append replacement", () => {
-			const short = `| Entry | Value |
-| --- | --- |
-| short | R000 |`;
-			const wide = `${short}
-| much-longer-entry-that-arrives-after-commit | R001 |`;
-			const topBorder = (lines: readonly string[]): string => {
-				const border = lines
-					.map(line => stripVTControlCharacters(line).trimEnd())
-					.find(line => line.startsWith("+"));
-				expect(border).toBeDefined();
-				return border!;
-			};
-			const markdown = new Markdown(short, 0, 0, defaultMarkdownTheme);
-			markdown.transientRenderCache = true;
-			const shortBorder = topBorder(markdown.render(80));
-			markdown.setNativeScrollbackCommittedRows(1);
-			markdown.setText(wide);
-			expect(topBorder(markdown.render(80))).toBe(shortBorder);
-
-			// A width change starts fresh geometry; the complete source can widen.
-			expect(topBorder(markdown.render(100))).not.toBe(shortBorder);
-
-			const replacement = `| New | Value |
-| --- | --- |
-| x | R100 |`;
-			const expandedReplacement = `${replacement}
-| replacement-column-can-grow | R101 |`;
-			markdown.setText(replacement);
-			const replacementBorder = topBorder(markdown.render(80));
-			markdown.setText(expandedReplacement);
-			expect(topBorder(markdown.render(80))).not.toBe(replacementBorder);
-		});
-
-		it("does not lock a table when earlier code prints an identical border", () => {
-			const table = `| Entry | Value |
-| --- | --- |
-| short | R000 |`;
-			const probe = new Markdown(table, 0, 0, defaultMarkdownTheme);
-			const narrowBorder = probe
-				.render(80)
-				.map(line => stripVTControlCharacters(line).trimEnd())
-				.find(line => line.startsWith("+"));
-			expect(narrowBorder).toBeDefined();
-
-			const source = `\`\`\`
-${narrowBorder}
-\`\`\`
-
-${table}`;
-			const markdown = new Markdown(source, 0, 0, defaultMarkdownTheme);
-			markdown.transientRenderCache = true;
-			const initialLines = markdown.render(80);
-			const plainInitialLines = initialLines.map(line => stripVTControlCharacters(line).trimEnd());
-			const codeBorderRow = plainInitialLines.indexOf(narrowBorder!);
-			const tableHeaderRow = plainInitialLines.findIndex(line => line.includes("Entry") && line.includes("Value"));
-			expect(codeBorderRow).toBeGreaterThanOrEqual(0);
-			expect(tableHeaderRow).toBeGreaterThan(codeBorderRow);
-			const actualTableStart = tableHeaderRow - 1;
-			expect(plainInitialLines[actualTableStart]!).toBe(narrowBorder!);
-
-			// Commit through the code block, but stop immediately before the real
-			// table. Textual border scanning used to mistake the code row for it.
-			markdown.setNativeScrollbackCommittedRows(actualTableStart);
-			markdown.setText(`${source}
-| much-longer-entry-that-arrives-after-commit | R001 |`);
-			const widenedBorder = markdown
-				.render(80)
-				.map(line => stripVTControlCharacters(line).trimEnd())
-				.filter(line => line.startsWith("+"))
-				.at(-1);
-			expect(widenedBorder).toBeDefined();
-			expect(widenedBorder).not.toBe(narrowBorder);
-		});
-
-		it("restores table layout metadata when finalization hits the shared render cache", () => {
-			clearRenderCache();
-			const short = `| Entry | Value |
-| --- | --- |
-| short | R000 |`;
-			const wide = `${short}
-| much-longer-entry-that-arrives-after-commit | R001 |`;
-			const topBorder = (lines: readonly string[]): string => {
-				const border = lines
-					.map(line => stripVTControlCharacters(line).trimEnd())
-					.find(line => line.startsWith("+"));
-				expect(border).toBeDefined();
-				return border!;
-			};
-
-			const markdown = new Markdown(short, 0, 0, defaultMarkdownTheme);
-			markdown.transientRenderCache = true;
-			const narrowBorder = topBorder(markdown.render(80));
-
-			// Pre-warm the canonical final render after this instance has retained
-			// metadata from its narrower transient frame.
-			const cachedWideBorder = topBorder(new Markdown(wide, 0, 0, defaultMarkdownTheme).render(80));
-			markdown.setText(wide);
-			markdown.transientRenderCache = false;
-			expect(topBorder(markdown.render(80))).toBe(cachedWideBorder);
-
-			// The frame served by L2 is now in native scrollback. Locking it must
-			// preserve the wide cached geometry, not the earlier transient geometry.
-			markdown.setNativeScrollbackCommittedRows(1);
-			expect(topBorder(markdown.render(80))).toBe(cachedWideBorder);
-			expect(cachedWideBorder).not.toBe(narrowBorder);
-			clearRenderCache();
-		});
-
 		it("should respect paddingX when calculating table width", () => {
 			const markdown = new Markdown(
 				`| Column One | Column Two |
@@ -1077,7 +850,7 @@ console.log(answer);`;
 		it("uses the semantic language icon and one readable label", () => {
 			const semanticTheme = {
 				...defaultMarkdownTheme,
-				codeBlockLanguage: (lang: string) => (lang === "rust" ? "\u{e7a8}" : ""),
+				codeBlockLanguage: (lang: string) => (lang === "rust" ? `\u{e7a8} ${lang}` : ""),
 			};
 			const markdown = new Markdown("```rust\nfn main() {}\n```", 0, 0, semanticTheme);
 			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
@@ -1096,7 +869,7 @@ console.log(answer);`;
 			const emojiTheme = {
 				...defaultMarkdownTheme,
 				codeBlockBorder: (t: string) => chalk.dim(t),
-				codeBlockLanguage: () => "\u{1F7E8}",
+				codeBlockLanguage: () => "\u{1F7E8} js",
 			};
 			const header = new Markdown("```js\nconst a = 1;\n```", 0, 0, emojiTheme).render(40)[0];
 			// A dim-open sequence must appear AFTER the emoji: this guards the
@@ -1109,25 +882,53 @@ console.log(answer);`;
 		});
 
 		it("renders the copy chip as an OSC 8 hyperlink when the theme resolves a target", () => {
-			// The chip target makes `[copy]` a real click-to-copy link (opened by
-			// the terminal via the omp-copy: URL scheme), so copy works with a
-			// mouse click without main-screen mouse tracking — scroll stays native.
-			const linkTheme = {
-				...defaultMarkdownTheme,
-				copyChip: "copy",
-				copyChipTarget: (code: string) => `omp-copy:${code.length.toString(16).padStart(16, "0")}`,
-			};
-			const lines = new Markdown("```js\nconst a = 1;\n```", 0, 0, linkTheme).render(40);
-			const footer = lines.at(-1) ?? "";
-			// OSC 8 open with the resolved target, the [copy] label, then OSC 8 close.
-			expect(footer).toContain("\x1b]8;;omp-copy:");
-			expect(footer).toContain("[copy]");
-			expect(footer).toContain("\x1b]8;;\x07");
-			// Plain footer shape is unchanged: one bottom rule ending in the chip.
-			const plain = stripVTControlCharacters(footer).trimEnd();
-			expect(plain).toMatch(/^\+-+\[copy\]-\+$/);
+			const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+			const originalHyperlinks = terminalState.hyperlinks;
+			try {
+				terminalState.hyperlinks = true;
+				// The chip target makes `[copy]` a real click-to-copy link (opened by
+				// the terminal via the omp-copy: URL scheme), so copy works with a
+				// mouse click without main-screen mouse tracking, so scroll stays native.
+				const linkTheme = {
+					...defaultMarkdownTheme,
+					copyChip: "copy",
+					copyChipTarget: (code: string) => `omp-copy:${code.length.toString(16).padStart(16, "0")}`,
+				};
+				const lines = new Markdown("```js\nconst a = 1;\n```", 0, 0, linkTheme).render(40);
+				const footer = lines.at(-1) ?? "";
+				// OSC 8 open with the resolved target, the [copy] label, then OSC 8 close.
+				expect(footer).toContain("\x1b]8;;omp-copy:");
+				expect(footer).toContain("[copy]");
+				expect(footer).toContain("\x1b]8;;\x07");
+				// Plain footer shape is unchanged: one bottom rule ending in the chip.
+				const plain = stripVTControlCharacters(footer).trimEnd();
+				expect(plain).toMatch(/^\+-+\[copy\]-\+$/);
+			} finally {
+				terminalState.hyperlinks = originalHyperlinks;
+			}
 		});
-
+		it("does not emit a copy-chip link when terminal hyperlinks are disabled", () => {
+			const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+			const originalHyperlinks = terminalState.hyperlinks;
+			let targetCalls = 0;
+			try {
+				terminalState.hyperlinks = false;
+				const noLinksTheme = {
+					...defaultMarkdownTheme,
+					copyChip: "copy",
+					copyChipTarget: () => {
+						targetCalls++;
+						return "omp-copy:disabled";
+					},
+				};
+				const footer = new Markdown("```js\nconst x = 1\n```", 0, 0, noLinksTheme).render(40).at(-1) ?? "";
+				expect(targetCalls).toBe(0);
+				expect(footer).not.toContain("\x1b]8;;");
+				expect(stripVTControlCharacters(footer)).toContain("[copy]");
+			} finally {
+				terminalState.hyperlinks = originalHyperlinks;
+			}
+		});
 		it("keeps the copy chip a plain label when the theme resolves no target", () => {
 			const plainChipTheme = { ...defaultMarkdownTheme, copyChip: "copy" };
 			const lines = new Markdown("```js\nconst a = 1;\n```", 0, 0, plainChipTheme).render(40);
@@ -1247,6 +1048,152 @@ more text`,
 			}
 		});
 
+		it("aligns every framed row through padding and blockquote layout", () => {
+			const plainLines = new Markdown(
+				"> ```sh\n> printf test\n> EOF\n> ```",
+				1,
+				0,
+				defaultMarkdownTheme,
+				undefined,
+				0,
+			)
+				.render(28)
+				.map(line => stripVTControlCharacters(line).trimEnd());
+			const frameRows = plainLines.filter(line => /[+|]/.test(line));
+
+			expect(frameRows.length).toBeGreaterThanOrEqual(4);
+			expect(
+				frameRows.every(line => line.startsWith(" │ ")),
+				frameRows.join("\n"),
+			).toBe(true);
+			expect(frameRows.map(line => line.search(/[+|]/))).toEqual(frameRows.map(() => 3));
+		});
+
+		it("preserves every code character across hard-wrapped frame rows", () => {
+			const source = "left    right    tail";
+			const plainLines = new Markdown(`\`\`\`txt\n${source}\n\`\`\``, 0, 0, defaultMarkdownTheme)
+				.render(14)
+				.map(line => stripVTControlCharacters(line));
+			const body = plainLines
+				.slice(1, -1)
+				.map(line => {
+					const left = line.indexOf("|");
+					const right = line.lastIndexOf("|");
+					let inner = line.slice(left + 1, right);
+					// The frame adds one separator cell immediately before the right rail.
+					if (inner.length > 0) inner = inner.slice(0, -1);
+					const connector = Math.max(inner.indexOf("├─"), inner.indexOf("└─"));
+					if (connector >= 0) inner = inner.slice(connector + 2).replace(/^ /, "");
+					else {
+						const rail = inner.indexOf("│");
+						if (rail >= 0) inner = inner.slice(rail + 1).replace(/^ {2}/, "");
+					}
+					return inner;
+				})
+				.join("")
+				.trimEnd();
+
+			expect(body).toBe(source);
+		});
+
+		it("keeps narrow list code-frame borders contiguous", () => {
+			const plainLines = new Markdown("- item\n\n  ```js\n  const value = 1\n  ```", 0, 0, defaultMarkdownTheme)
+				.render(22)
+				.map(line => stripVTControlCharacters(line).trimEnd());
+			const frameRows = plainLines.filter(line => /[+|]/.test(line));
+
+			expect(frameRows.some(line => /^\s+\+- \[js\] -+\+$/.test(line))).toBe(true);
+			expect(frameRows.some(line => /^\s+\+-+\+$/.test(line))).toBe(true);
+			expect(frameRows.some(line => /^\s*\|$/.test(line))).toBe(false);
+			expect(
+				frameRows.every(line => visibleWidth(line) <= 22),
+				frameRows.join("\n"),
+			).toBe(true);
+		});
+
+		it("fits oversized language and copy labels inside the frame width", () => {
+			const width = 18;
+			const boundedTheme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy-label-that-is-far-too-long",
+			};
+			const language = "language".repeat(13);
+			const plainLines = new Markdown(`\`\`\`${language}\nx\n\`\`\``, 0, 0, boundedTheme)
+				.render(width)
+				.map(line => stripVTControlCharacters(line).trimEnd());
+
+			expect(
+				plainLines.every(line => visibleWidth(line) <= width),
+				plainLines.join("\n"),
+			).toBe(true);
+			expect(plainLines[0]).toMatch(/^\+-.*\+$/);
+			expect(plainLines.at(-1)).toMatch(/^\+.*\+$/);
+			expect(plainLines.slice(1, -1).every(line => /^\|.*\|$/.test(line))).toBe(true);
+		});
+		it("keeps a short language title complete when width allows", () => {
+			const lines = new Markdown("```javascript\nx\n```", 0, 0, defaultMarkdownTheme)
+				.render(80)
+				.map(line => stripVTControlCharacters(line).trimEnd());
+			expect(lines[0]).toContain("[javascript]");
+		});
+		it("keeps every framed row within very narrow widths", () => {
+			for (const width of [1, 2, 3, 4]) {
+				const lines = new Markdown("```js\nabcdef\n```", 0, 0, defaultMarkdownTheme)
+					.render(width)
+					.map(line => stripVTControlCharacters(line));
+				expect(
+					lines.every(line => visibleWidth(line) <= width),
+					lines.join("\n"),
+				).toBe(true);
+			}
+		});
+		it("keeps code visible at the exact five-column frame width", () => {
+			const width = 5;
+			const plainLines = new Markdown("```js\nabc\n```", 0, 0, defaultMarkdownTheme)
+				.render(width)
+				.map(line => stripVTControlCharacters(line));
+
+			expect(
+				plainLines.every(line => visibleWidth(line) <= width),
+				plainLines.join("\n"),
+			).toBe(true);
+			expect(plainLines.join("\n")).toContain("abc");
+		});
+		it("subtracts nested-list indentation before sizing a code frame", () => {
+			const width = 24;
+			const source = "- outer\n  - inner\n\n    ```js\n    const value = 123456789;\n    ```";
+			const plainLines = new Markdown(source, 0, 0, defaultMarkdownTheme)
+				.render(width)
+				.map(line => stripVTControlCharacters(line).trimEnd());
+			const frameRows = plainLines.filter(line => /^\s+\|.*\|$/.test(line));
+
+			expect(frameRows.length).toBeGreaterThan(0);
+			expect(frameRows.every(line => line.startsWith("    |"))).toBe(true);
+			expect(
+				plainLines.every(line => visibleWidth(line) <= width),
+				plainLines.join("\n"),
+			).toBe(true);
+		});
+		it("passes the original tabbed code body to copy-chip targets", () => {
+			const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+			const originalHyperlinks = terminalState.hyperlinks;
+			let targetBody = "";
+			try {
+				terminalState.hyperlinks = true;
+				const copyTheme = {
+					...defaultMarkdownTheme,
+					copyChip: "copy",
+					copyChipTarget: (code: string) => {
+						targetBody = code;
+						return "omp-copy:raw-body";
+					},
+				};
+				new Markdown("```make\n\tall:\n\t\t@echo hi\n```", 0, 0, copyTheme).render(40);
+				expect(targetBody).toBe("\tall:\n\t\t@echo hi");
+			} finally {
+				terminalState.hyperlinks = originalHyperlinks;
+			}
+		});
 		it("keeps ordinary prose NUL bytes as ordinary padded text", () => {
 			const markdown = new Markdown("before\0after", 1, 0, defaultMarkdownTheme);
 
@@ -2861,5 +2808,366 @@ describe("windowed lexing (documents past WINDOWED_LEX_MIN_BYTES)", () => {
 		}
 		// A window cut that restarted the list would renumber later items.
 		expect(rendered.filter(line => line.includes(" 1. item 0 ")).length).toBeLessThanOrEqual(1);
+	});
+});
+
+describe("framed code review regressions", () => {
+	it("keeps every wide grapheme visible in a narrow frame", () => {
+		const rendered = new Markdown("```js\n日本語\n```", 0, 0, defaultMarkdownTheme).render(8);
+		const plainLines = rendered.map(line => stripVTControlCharacters(line));
+		// The frame cannot hold all six cells at once at this width, but no
+		// grapheme may be truncated out of existence.
+		for (const glyph of ["日", "本", "語"]) {
+			expect(plainLines.some(line => line.includes(glyph))).toBe(true);
+		}
+	});
+
+	it("keeps delimiters on an unclosed fence inside a list", () => {
+		const rendered = new Markdown("- item\n\n  ```js\n  const value = 1", 0, 0, defaultMarkdownTheme).render(60);
+		const plainLines = rendered.map(line => stripVTControlCharacters(line).trimEnd());
+		expect(plainLines.some(line => line.includes("```js"))).toBe(true);
+		expect(plainLines.some(line => line.includes("const value = 1"))).toBe(true);
+	});
+
+	it("passes the raw nested-list code body to the copy target", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			// The copy target is only consulted when OSC 8 links are supported;
+			// force that capability so this source-recovery assertion is portable
+			// across headless/native CI workers.
+			terminalState.hyperlinks = true;
+			const theme = { ...defaultMarkdownTheme, copyChip: "copy" };
+			Object.defineProperty(theme, "copyChipTarget", {
+				value: (body: string) => {
+					captured = body;
+				},
+				configurable: true,
+			});
+			new Markdown("- item\n\n  ```make\n  \tall\n  ```", 0, 0, theme as typeof defaultMarkdownTheme).render(60);
+			expect(captured).toContain("\t");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+});
+
+describe("framed code review follow-ups", () => {
+	it("keeps every framed row within the requested width for wide graphemes", () => {
+		for (const width of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+			const rendered = new Markdown("```js\n日本語\n```", 0, 0, defaultMarkdownTheme).render(width);
+			expect(rendered.every(line => visibleWidth(line) <= width)).toBe(true);
+			const plain = rendered.map(line => stripVTControlCharacters(line));
+			if (width >= 2) {
+				for (const glyph of ["日", "本", "語"]) expect(plain.some(line => line.includes(glyph))).toBe(true);
+			}
+		}
+	});
+
+	it("does not copy a trailing fence or reuse a tab-expanded cache entry", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			clearRenderCache();
+			new Markdown("```make\n\tall\n```", 0, 0, theme).render(80);
+			new Markdown("```make\n   all\n```", 0, 0, theme).render(80);
+			new Markdown("```js\nconst value = 1;\n```\n\nnext", 0, 0, theme).render(80);
+			expect(captured).toEqual(["\tall", "   all", "const value = 1;"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("recovers nested copy payloads when raw ends with a newline", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("- item\n\n  ```make\n  \tall\n  ```\n- next", 0, 0, theme).render(80);
+			expect(captured).toBe("\tall");
+			expect(captured).not.toContain("```");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+	it("preserves marker-shaped code after reduced ordered-list indentation", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("1. ```js\n  1. x\n   ```", 0, 0, theme).render(80);
+			expect(captured).toBe("1. x");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("matches parsed code before stripping a shorter closing-fence prefix", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("- ```js\n  abc\n ```", 0, 0, theme).render(80);
+			expect(captured).toBe("abc");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("keeps nested list frames on the containing width budget", () => {
+		const source = "- outer\n  - inner\n    ```js\n    const value = 1;\n    ```";
+		const rendered = new Markdown(source, 0, 0, defaultMarkdownTheme).render(24);
+		expect(rendered.every(line => visibleWidth(line) <= 24)).toBe(true);
+		expect(rendered.some(line => stripVTControlCharacters(line).includes("+- [js]"))).toBe(true);
+	});
+
+	it("resolves duplicate post-tab-expansion fences to their own bodies", () => {
+		const captured: string[] = [];
+		const theme = { ...defaultMarkdownTheme, copyChip: "copy" };
+		Object.defineProperty(theme, "copyChipTarget", {
+			value: (body: string) => {
+				captured.push(body);
+			},
+			configurable: true,
+		});
+		const originalHyperlinks = TERMINAL.hyperlinks;
+		try {
+			TERMINAL.hyperlinks = true;
+			new Markdown("```make\n\tall\n```\n\n```sh\n   all\n```", 0, 0, theme as typeof defaultMarkdownTheme).render(
+				60,
+			);
+			expect(captured.some(body => body.includes("\t"))).toBe(true);
+			expect(captured).toEqual(["\tall", "   all"]);
+		} finally {
+			TERMINAL.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("advances copy search past a reused streaming prefix", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			const stable = "```make\n\tall\n```\n\nprose";
+			const markdown = new Markdown(stable, 0, 0, theme);
+			markdown.transientRenderCache = true;
+			markdown.render(60);
+			captured.length = 0;
+			markdown.setText(`${stable}\n\n\`\`\`sh\n   all\n\`\`\``);
+			markdown.render(60);
+			expect(captured).toEqual(["   all"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("recovers copy payloads from tokens newly added to a cached stable prefix", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			const markdown = new Markdown("prose\n\n", 0, 0, theme);
+			markdown.transientRenderCache = true;
+			markdown.render(60);
+			captured.length = 0;
+			markdown.setText("prose\n\n```make\n\tall\n```\n\n");
+			markdown.render(60);
+			expect(captured).toEqual(["\tall"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("keeps an open fence's list marker attached before closure", () => {
+		const rows = new Markdown("- ```make\n  \tall", 0, 0, defaultMarkdownTheme)
+			.render(40)
+			.map(line => stripVTControlCharacters(line));
+		expect(rows.some(line => line.startsWith("- ```make"))).toBe(true);
+		expect(rows.some(line => line.includes("all"))).toBe(true);
+	});
+
+	it("clamps compact grapheme rows to the requested width", () => {
+		for (const width of [1, 3]) {
+			const rendered = new Markdown("```js\n\u65e5\u672c\u8a9e\n```", 0, 0, defaultMarkdownTheme).render(width);
+			for (const line of rendered) {
+				expect(Bun.stringWidth(stripVTControlCharacters(line))).toBeLessThanOrEqual(Math.max(1, width));
+			}
+		}
+	});
+	it("anchors copy lookup after preceding fence-like prose", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			const source = "<!--\n```make\n\twrong\n```\n-->\n\n```make\n   right\n```";
+			new Markdown(source, 0, 0, theme).render(80);
+			expect(captured).toEqual(["   right"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+	it("does not synthesize a fence around four-space-indented literal backticks", () => {
+		const rows = new Markdown("    ```\n    literal", 0, 0, defaultMarkdownTheme)
+			.render(40)
+			.map(line => stripVTControlCharacters(line).trimEnd());
+		expect(rows.filter(line => line.includes("```"))).toHaveLength(1);
+		expect(rows.some(line => line.includes("literal"))).toBe(true);
+		expect(rows.some(line => /^\+-/.test(line))).toBe(false);
+	});
+
+	it("matches the actual closing fence line when code contains delimiter text", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			const source = '- ```js\n  \tconsole.log("```")\n  \tvalue\n  ```';
+			new Markdown(source, 0, 0, theme).render(80);
+			expect(captured).toBe('\tconsole.log("```")\n\tvalue');
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("strips each available list indent from copied code rows", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("- ```js\n x\n  ````", 0, 0, theme).render(40);
+			expect(captured).toBe("x");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("anchors nested opening-fence recovery to a real fence line", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			const source = "> mention ```js here\n> continued\n>\n> ```js\n> const answer = 42\n> ```";
+			new Markdown(source, 0, 0, theme).render(80);
+			expect(captured).toBe("const answer = 42");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+	it("preserves list code when the marker fills the row", () => {
+		const rows = new Markdown("- ```js\n  x\n  ```", 0, 0, defaultMarkdownTheme)
+			.render(2)
+			.map(line => stripVTControlCharacters(line));
+		expect(rows.some(line => line.includes("x"))).toBe(true);
+	});
+	it("strips reduced indentation inside compound containers", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("> - ```js\n>  x\n>   ```", 0, 0, theme).render(40);
+			expect(captured).toBe("x");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
 	});
 });

@@ -1202,6 +1202,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender();
 		});
 		this.composer.setStatusComponent(this.statusLine);
+		void ensureCopyUrlHandler().then(ready => {
+			if (ready) this.ui.requestRender();
+		});
 
 		this.composer.setRuntimeChildren([
 			this.chatContainer,

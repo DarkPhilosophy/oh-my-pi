@@ -40,7 +40,7 @@ export const compressHelp = {
 } satisfies CommandMetadata;
 
 export const copyHelp = {
-	description: "Copy a stored code block to the clipboard (backs the omp-copy: chip handler)",
+	description: "Copy a fenced code block from an omp-copy: hyperlink",
 } satisfies CommandMetadata;
 
 export const configHelp = { description: "Manage configuration settings" } satisfies CommandMetadata;

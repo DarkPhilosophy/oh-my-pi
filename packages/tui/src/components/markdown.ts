@@ -23,13 +23,39 @@ import {
 	encodeTextSized,
 	getPaddingX,
 	getSegmenter,
-	isOsc66Line,
 	padding,
 	replaceTabs,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "../utils";
+
+/** Wrap a code row without treating ordinary spaces as break separators. */
+function wrapCodeLineWithAnsi(text: string, width: number): string[] {
+	const maxWidth = Math.max(1, Math.trunc(width));
+	let sentinel = "";
+	for (let codePoint = 0xe000; codePoint <= 0xf8ff; codePoint++) {
+		const candidate = String.fromCodePoint(codePoint);
+		if (!text.includes(candidate)) {
+			sentinel = candidate;
+			break;
+		}
+	}
+	if (!sentinel) sentinel = "\ufffc";
+	const protectedText = text.replaceAll("\u00a0", sentinel).replaceAll(" ", "\u00a0");
+	const rows = wrapTextWithAnsi(protectedText, maxWidth);
+	return rows.map(row => row.replaceAll("\u00a0", " ").replaceAll(sentinel, "\u00a0"));
+}
+
+/** Return the widest atomic grapheme in a code source, measured in terminal cells. */
+function widestGraphemeCells(text: string): number {
+	let widest = 1;
+	for (const { segment } of getSegmenter().segment(text)) {
+		if (segment === "\n" || segment === "\r") continue;
+		widest = Math.max(widest, visibleWidth(segment));
+	}
+	return widest;
+}
 
 const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
 
@@ -43,32 +69,21 @@ function normalizeOsc8Terminators(text: string): string {
 	return text.replace(OSC8_ST_PREFIX_REGEX, "$1\x07");
 }
 
-const MARKDOWN_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
-const MARKDOWN_HEADING_LINE = /^ {0,3}#{1,6}[ \t]+\S/;
-const FENCED_SOURCE_INTRO = /\b(?:code|example|markdown|output|snippet|source)\s*:?\s*$/i;
+// OSC 66 (Kitty text-sizing) heading spans are emitted as a single indivisible
+// unit by the H1 render path. Like image-protocol lines, they must bypass
+// ANSI wrapping and width padding: re-wrapping splits/normalizes the sized span
+// (recomputing the explicit `w=` cell count and hoisting SGR out of the OSC
+// payload), and padding would append trailing cells past the doubled glyph.
+const OSC66_LINE_PREFIX = "\x1b]66;";
 
-function isGfmTableDelimiter(line: string, headerLine: string | undefined): boolean {
-	if (!headerLine || !line.includes("|") || !headerLine.includes("|")) return false;
-	const delimiterCells = line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|");
-	const headerCells = headerLine.trim().replace(/^\|/, "").replace(/\|$/, "").split("|");
-	return (
-		delimiterCells.length >= 2 &&
-		headerCells.length === delimiterCells.length &&
-		delimiterCells.every(cell => /^:?-{3,}:?$/.test(cell.trim())) &&
-		headerCells.every(cell => cell.trim().length > 0)
-	);
+function isOsc66Line(line: string): boolean {
+	return line.includes(OSC66_LINE_PREFIX);
 }
 
-/**
- * Gemini can emit a bare closing fence without its opener, then continue with
- * headings and tables. CommonMark must interpret that lone fence as an opener,
- * which turns the rest of an otherwise valid report into one raw code block.
- *
- * Repair only the unambiguous rich-document shape at final render: one
- * unmatched bare fence after prose, followed by both an ATX heading and a GFM
- * table delimiter. Keep ordinary incomplete code blocks, fenced Markdown
- * examples, and every matched fence untouched.
- */
+const MARKDOWN_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+const MARKDOWN_HEADING_LINE = /^ {0,3}#{1,6}(?:[ \t]+|$)/;
+const FENCED_SOURCE_INTRO = /\b(?:code|example|markdown|output|snippet|source)\s*:?\s*$/i;
+
 function repairOrphanClosingFence(text: string): string {
 	const lines = text.split("\n");
 	let open: { index: number; marker: string; info: string } | undefined;
@@ -85,35 +100,51 @@ function repairOrphanClosingFence(text: string): string {
 			open = undefined;
 		}
 	}
-	if (open?.info !== "") return text;
-
-	let previous = "";
-	for (let index = open.index - 1; index >= 0; index--) {
-		previous = lines[index]!.trim();
-		if (previous) break;
-	}
-	if (!previous || previous.endsWith(":") || FENCED_SOURCE_INTRO.test(previous)) return text;
-
+	if (open?.info !== "" || !FENCED_SOURCE_INTRO.test(lines[open.index - 1]?.trim() ?? "")) return text;
 	let hasHeading = false;
 	let hasTableDelimiter = false;
 	for (let index = open.index + 1; index < lines.length; index++) {
 		const line = lines[index]!;
 		hasHeading ||= MARKDOWN_HEADING_LINE.test(line);
 		hasTableDelimiter ||= isGfmTableDelimiter(line, lines[index - 1]);
-		if (hasHeading && hasTableDelimiter) {
-			lines.splice(open.index, 1);
-			return lines.join("\n");
-		}
+	}
+	if (hasHeading && hasTableDelimiter) {
+		lines.splice(open.index, 1);
+		return lines.join("\n");
 	}
 	return text;
 }
 
-// OSC 66 (Kitty text-sizing) heading spans are emitted as a single indivisible
-// unit by the H1 render path. Like image-protocol lines, they bypass ANSI
-// wrapping and width padding (see `isOsc66Line` in ../utils): re-wrapping
-// splits/normalizes the sized span (recomputing the explicit `w=` cell count
-// and hoisting SGR out of the OSC payload), and padding would append trailing
-// cells past the doubled glyph.
+function isMarkdownContainerPrefix(prefix: string): boolean {
+	let remaining = prefix;
+	while (remaining.length > 0) {
+		remaining = remaining.replace(/^[ \t]+/, "");
+		if (remaining.length === 0) return true;
+		if (remaining.startsWith(">")) {
+			remaining = remaining.slice(1);
+			continue;
+		}
+		const listMarker = /^(?:[-+*]|\d+[.)])[ \t]+/.exec(remaining);
+		if (listMarker) {
+			remaining = remaining.slice(listMarker[0].length);
+			continue;
+		}
+		return false;
+	}
+	return true;
+}
+
+function isGfmTableDelimiter(line: string, headerLine: string | undefined): boolean {
+	if (!headerLine || !line.includes("|") || !headerLine.includes("|")) return false;
+	const delimiterCells = line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|");
+	const headerCells = headerLine.trim().replace(/^\|/, "").replace(/\|$/, "").split("|");
+	return (
+		delimiterCells.length >= 2 &&
+		headerCells.length === delimiterCells.length &&
+		delimiterCells.every(cell => /^:?-{3,}:?$/.test(cell.trim())) &&
+		headerCells.every(cell => cell.trim().length > 0)
+	);
+}
 
 function normalizeHtmlEntitiesForTerminal(raw: string): string {
 	const parseCodePoint = (value: number): string => {
@@ -1045,12 +1076,22 @@ const NO_BLOCK_BOUNDARY = { end: 0, count: 0 } as const;
  *  - A preceding `list` must be provably closed: CommonMark lets a same-marker
  *    item continue the list across the blank line, and marked merges both into
  *    one renumbered loose list (`listMayContinueAt`).
+ *
+ * `startIndex` resumes the scan at `tokens[startIndex]` (positions still
+ * accumulate from `base`). The streaming freeze passes the frozen-prefix
+ * token count: that prefix's boundary is permanent under append-only growth
+ * (re-verified when frozen), so only the mutable tail can hold a new one.
  */
-function stableBlockBoundary(text: string, base: number, tokens: Token[]): { end: number; count: number } {
+function stableBlockBoundary(
+	text: string,
+	base: number,
+	tokens: Token[],
+	startIndex = 0,
+): { end: number; count: number } {
 	let pos = base;
 	let end = 0;
 	let count = 0;
-	for (let i = 0; i < tokens.length; i++) {
+	for (let i = startIndex; i < tokens.length; i++) {
 		const raw = tokens[i].raw;
 		const tokenEnd = pos + raw.length;
 		if (raw.endsWith("\n\n")) {
@@ -1174,12 +1215,8 @@ export interface DefaultTextStyle {
 	underline?: boolean;
 }
 
-/**
- * Stateful incremental code highlighter carrying parser state across pushes.
- * Produced per streaming fence by {@link MarkdownTheme.createHighlightStream}.
- */
+/** Stateful incremental syntax highlighter for a streaming code fence. */
 export interface HighlightStreamSession {
-	/** Highlight the next chunk and advance parser state. */
 	push(chunk: string): string;
 }
 
@@ -1216,13 +1253,6 @@ export interface MarkdownTheme {
 	strikethrough: (text: string) => string;
 	underline: (text: string) => string;
 	highlightCode?: (code: string, lang?: string) => string[];
-	/**
-	 * Create a stateful incremental highlighter for one streaming code fence.
-	 * `push` receives newline-terminated complete lines (only the final push
-	 * may omit the trailing newline) and must return highlighted ANSI text for
-	 * exactly the pushed chunk, byte-identical to highlighting the concatenated
-	 * text through `highlightCode`. Return null when `lang` is unsupported.
-	 */
 	createHighlightStream?: (lang?: string) => HighlightStreamSession | null;
 	/**
 	 * Resolve a mermaid ASCII rendering by fenced block source text.
@@ -1494,21 +1524,10 @@ interface StreamPrefixLineCache extends RenderSignature {
 	lines: readonly string[];
 	tables: readonly TableRenderSpec[];
 }
-interface StreamingHighlightCache extends RenderSignature {
+interface StreamingDiffLineCache extends RenderSignature {
 	lang: string | undefined;
 	text: string;
 	lines: readonly string[];
-	stream: HighlightStreamSession;
-}
-
-/**
- * Split a highlight-stream push result (newline-terminated lines) into
- * per-line strings, dropping the empty tail produced by the final newline.
- */
-function splitPushedHighlightLines(pushed: string): string[] {
-	const lines = pushed.split("\n");
-	lines.pop();
-	return lines;
 }
 
 interface TableLayoutLock {
@@ -1533,6 +1552,12 @@ export class Markdown
 	implements Component, NativeScrollbackCommittedRows, NativeScrollbackReplay, NativeScrollbackWidthEpoch
 {
 	#text: string;
+	/** Original input retained for copy-chip payloads (before display tab expansion). */
+	#sourceText: string;
+	/** Source bytes with display tabs expanded; shared by token-span lookups. */
+	#expandedSourceText: string;
+	/** Expanded-source cursor used to disambiguate repeated fenced blocks. */
+	#copySourceSearchCursor = 0;
 	#paddingX: number; // Left/right padding
 	#paddingY: number; // Top/bottom padding
 	#defaultTextStyle?: DefaultTextStyle;
@@ -1579,17 +1604,33 @@ export class Markdown
 		{ text: string; transientRenderCache: boolean; hasMutableTrailingRow: boolean }
 	>();
 
+	// Guard-scan memo (PoC C): the ref-def/CR verdict with the exact text
+	// length it was checked on. Reuse is sound only while setText has been
+	// append-only since (tracked via the startsWith that setText performs): a
+	// FALSE verdict stays valid — appending cannot remove an offending ref or
+	// CR; a TRUE verdict can flip only when the delta gains a "[" at a fresh
+	// line or a "]" / ":" completing a dangling "[…" that straddles the scan
+	// edge, or "\n" / "\r". Byte-identity of the checked region: replaceTabs
+	// is a per-char map and normalizeOsc8Terminators changes old bytes only
+	// when an OSC8 terminator straddles the boundary (which breaks startsWith
+	// — the flag then reads non-append), so transient-mode appends are
+	// byte-identical. Non-transient repairOrphanClosingFence can additionally
+	// delete a bare fence line; its triggers (heading + table lines) always
+	// bring "\n" with them, so such frames take the suspicious-delta path,
+	// and a deletion that shortens the text trips the length gate — either
+	// way the verdict is re-derived, never reused across the deletion.
+	#lastScanLength = -1;
+	#lastScanCanStream = false;
+	#lastScanValid = false;
+	#appendOnlySinceLastScan = true;
 	// True while #renderStreamingContentLines renders the frozen token range:
 	// frozen code blocks highlight even in transient mode so their bytes match
 	// the finalized render (they render once into the prefix line cache, so
-	// the FFI cost is amortized). In the volatile tail, an open fence
-	// incrementally highlights its completed lines through a stateful
-	// highlight stream (falling back to per-line highlighting for diff-family
-	// fences when the theme lacks one) so semantic colors reach native
-	// scrollback before rows leave the viewport; only the trailing partial
-	// line stays unhighlighted.
+	// the FFI cost is amortized). The volatile tail normally stays
+	// unhighlighted; streaming diff fences line-highlight completed rows so
+	// semantic colors reach native scrollback before rows leave the viewport.
 	#renderingFrozenPrefix = false;
-	#streamingHighlightCache?: StreamingHighlightCache;
+	#streamingDiffLineCache?: StreamingDiffLineCache;
 	#activeRenderSignature?: RenderSignature;
 	// Streaming tables may grow naturally while wholly repaintable. Once any
 	// physical row of a table enters native scrollback, its current column widths
@@ -1601,19 +1642,9 @@ export class Markdown
 	#activeTableRenderSpecs?: TableRenderSpec[];
 
 	#ignoreTight = false;
-	// Width-independent mutation counter for the width-epoch leading-stability
-	// checks (getNativeScrollbackWidthEpochRevision): a Markdown that precedes an
-	// epoch source (startup changelog before the transcript, a thinking block
-	// before the streaming answer) would otherwise be validated by comparing
-	// width-dependent row counts, which conflates reflow with mutation and fails
-	// resolution on every width change. Bumped by every content-shape mutation.
-	#widthEpochRevision = 0;
 
 	setIgnoreTight(ignore: boolean): this {
-		if (this.#ignoreTight !== ignore) {
-			this.#clearTableLayouts();
-			this.#widthEpochRevision++;
-		}
+		if (this.#ignoreTight !== ignore) this.#clearTableLayouts();
 		this.#ignoreTight = ignore;
 		this.invalidate();
 		return this;
@@ -1627,7 +1658,9 @@ export class Markdown
 		defaultTextStyle?: DefaultTextStyle,
 		codeBlockIndent: number = 2,
 	) {
-		this.#text = normalizeOsc8Terminators(text);
+		this.#sourceText = normalizeOsc8Terminators(text);
+		this.#expandedSourceText = replaceTabs(this.#sourceText);
+		this.#text = this.#sourceText;
 		this.#paddingX = paddingX;
 		this.#paddingY = paddingY;
 		this.#theme = theme;
@@ -1643,7 +1676,14 @@ export class Markdown
 		// full lex + wrap runs per re-emit — one of the top CPU hotspots during
 		// streaming (issue #4353). Mirrors `Text.setText`'s guard.
 		if (text === this.#text) return false;
+		if (!text.startsWith(this.#text)) {
+			// Non-append edit: the previous frame's guard verdict cannot be
+			// reused — the checked region may have changed anywhere.
+			this.#appendOnlySinceLastScan = false;
+		}
 		if (!text.startsWith(this.#text)) this.#clearTableLayouts();
+		this.#sourceText = text;
+		this.#expandedSourceText = replaceTabs(text);
 		this.#text = text;
 		if (!text.trim()) {
 			// Blank replacement: render() early-returns before #lexTokens can see
@@ -1654,13 +1694,8 @@ export class Markdown
 			this.#streamPrefixLineCache = undefined;
 			this.#settledExposedText = undefined;
 		}
-		this.#widthEpochRevision++;
 		this.invalidate();
 		return true;
-	}
-
-	getNativeScrollbackWidthEpochRevision(): number {
-		return this.#widthEpochRevision;
 	}
 
 	invalidate(): void {
@@ -1676,7 +1711,11 @@ export class Markdown
 		const next = value === true;
 		if (this.#transientRenderCache === next) return;
 		this.#transientRenderCache = next;
-		this.#widthEpochRevision++;
+		// The mode switch changes which normalization applies to the raw text
+		// (transient: replaceTabs; final: repairOrphanClosingFence(replaceTabs)),
+		// so a memo computed on the other mode's buffer must not be reused —
+		// re-derive on the next frame instead.
+		this.#appendOnlySinceLastScan = false;
 		this.invalidate();
 	}
 
@@ -1789,13 +1828,52 @@ export class Markdown
 		// frozen (#freezeStablePrefix only runs when canStream was true). The prefix
 		// ends at a "\n\n" block boundary (stableBlockBoundary), so the tail starts
 		// at a fresh line — scanning only the tail for ref defs is sufficient and
-		// avoids re-scanning the growing prefix every frame (O(n²) → O(n) overall).
+		// avoids re-scanning the grown prefix every frame (O(n²) → O(n) overall).
 		const prefix = this.#streamPrefixText;
 		const prefixTokens = this.#streamPrefixTokens;
 		const hasPrefix =
 			prefix !== undefined && prefixTokens !== undefined && text.length > prefix.length && text.startsWith(prefix);
 		const refDefText = hasPrefix ? text.slice(prefix.length) : text;
-		const canStream = !HAS_REF_DEF.test(refDefText) && !refDefText.includes("\r");
+		// Guard-scan memo (PoC C): while setText has been append-only and the
+		// grown delta introduces no "[", "]", ":", "\n" or "\r", the previous
+		// verdict stays valid — the checked region is byte-identical (OSC8/tab
+		// normalization is prefix-stable on appends) and none of the chars a
+		// ref-def or CR needs crossed the scan edge. A false verdict is monotone
+		// (appends cannot delete an existing ref def or CR), so it is reused
+		// even when the delta is suspicious; only a true verdict on a suspicious
+		// delta re-runs the tail scan (PR #9303). The tail scan is also the
+		// cold path after non-append edits, which clear the memo. A FALSE
+		// verdict is monotone under appends alone (transient mode: no repair,
+		// appends cannot delete a ref-def or CR), so there it is reused even
+		// on a suspicious delta. Final mode is the exception: render() detects
+		// repairOrphanClosingFence deletions (the normalized buffer shrank)
+		// and invalidates the memo on the affected frame, so the re-derive
+		// happens exactly when the CR/ref-def trigger behind a false verdict
+		// may have been deleted — never left stale, and never re-scanned on
+		// frames where the memo is sound.
+		let canStream: boolean;
+		if (this.#lastScanValid && this.#appendOnlySinceLastScan && text.length > this.#lastScanLength) {
+			const delta = text.slice(this.#lastScanLength);
+			if (
+				!delta.includes("[") &&
+				!delta.includes("]") &&
+				!delta.includes(":") &&
+				!delta.includes("\n") &&
+				!delta.includes("\r")
+			) {
+				canStream = this.#lastScanCanStream;
+			} else if (this.#lastScanCanStream) {
+				canStream = !HAS_REF_DEF.test(refDefText) && !refDefText.includes("\r");
+			} else {
+				canStream = false;
+			}
+		} else {
+			canStream = !HAS_REF_DEF.test(refDefText) && !refDefText.includes("\r");
+		}
+		this.#lastScanLength = text.length;
+		this.#lastScanCanStream = canStream;
+		this.#lastScanValid = true;
+		this.#appendOnlySinceLastScan = true;
 		if (canStream && hasPrefix) {
 			const tailTokens = lexDocument(refDefText);
 			const tokens = [...prefixTokens, ...tailTokens];
@@ -1819,7 +1897,21 @@ export class Markdown
 	// reference definitions, so each token's `raw` is a verbatim slice of `text`
 	// and the summed offsets address `text` exactly.
 	#freezeStablePrefix(text: string, tokens: Token[], opts: { preserveExisting: boolean }): void {
-		const frozen = stableBlockBoundary(text, 0, tokens);
+		// On the streaming-concat path (preserveExisting), tokens[0..prefixCount)
+		// ARE the previously frozen prefix and the text above it is byte-
+		// identical, so its boundary cannot move: re-walking those tokens every
+		// frame is pure overhead (O(prefix) per frame, O(n²) over a stream).
+		// Skip them and resume at the first tail token; `base` starts at the
+		// prefix length so accumulated offsets stay global. The cold full-lex
+		// path (preserveExisting: false) re-derives the whole stream, so it
+		// must keep walking from 0.
+		const skipPrefix = opts.preserveExisting ? (this.#streamPrefixTokens?.length ?? 0) : 0;
+		const frozen = stableBlockBoundary(
+			text,
+			skipPrefix > 0 ? (this.#streamPrefixText?.length ?? 0) : 0,
+			tokens,
+			skipPrefix,
+		);
 		if (frozen.count > 0) {
 			this.#streamPrefixText = text.slice(0, frozen.end);
 			this.#streamPrefixTokens = tokens.slice(0, frozen.count);
@@ -1865,10 +1957,17 @@ export class Markdown
 			return EMPTY_RENDER_LINES;
 		}
 
-		// Replace tabs with 3 spaces for consistent rendering
-		const normalizedText = this.transientRenderCache
-			? replaceTabs(this.#text)
-			: repairOrphanClosingFence(replaceTabs(this.#text));
+		// Replace tabs with spaces, then repair orphan fences in final mode.
+		const tabbed = replaceTabs(this.#text);
+		const normalizedText = this.transientRenderCache ? tabbed : repairOrphanClosingFence(tabbed);
+		if (!this.transientRenderCache && normalizedText.length < tabbed.length) {
+			// repairOrphanClosingFence deleted bytes this frame (orphan fence
+			// removed): the guard-scan memo's checked region is no longer
+			// byte-identical, and a cached false verdict may have been based
+			// on the very CR/ref-def line that was deleted. Invalidate so the
+			// next #lexTokens re-derives on the repaired buffer.
+			this.#lastScanValid = false;
+		}
 		const signature = this.#renderSignature(width, paddingX);
 
 		// L2: module-level LRU — survives component disposal/recreation across
@@ -1884,8 +1983,8 @@ export class Markdown
 		// theme.heading is used as the representative theme probe — it's required
 		// by MarkdownTheme and is one of the most styling-sensitive entries.
 		let cacheKey: string | undefined;
-		if (!this.transientRenderCache && this.#lockedTableLayouts.size === 0) {
-			cacheKey = this.#renderCacheKey(normalizedText, signature);
+		if (!this.transientRenderCache) {
+			cacheKey = this.#renderCacheKey(normalizedText, this.#text, signature);
 			const cached = renderCache.get(cacheKey);
 			if (cached !== undefined) {
 				// Restore both the rendered rows and the geometry metadata that produced
@@ -1906,6 +2005,7 @@ export class Markdown
 
 		// Parse markdown to HTML-like tokens
 		const tokens = this.#lexTokens(normalizedText);
+		this.#copySourceSearchCursor = 0;
 		let contentLines: string[];
 		const tableRenderSpecs: TableRenderSpec[] = [];
 		this.#activeTableRenderSpecs = tableRenderSpecs;
@@ -1966,8 +2066,11 @@ export class Markdown
 		};
 	}
 
-	#renderCacheKey(normalizedText: string, signature: RenderSignature): string {
-		return `${normalizedText}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}`;
+	#renderCacheKey(normalizedText: string, sourceText: string, signature: RenderSignature): string {
+		// The display lexer expands tabs, but copy-chip targets must preserve the
+		// original source bytes. Keep the raw source in the cache identity so two
+		// documents that render identically can never reuse the other's target.
+		return `${normalizedText.length}:${normalizedText}\x00${sourceText.length}:${sourceText}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}`;
 	}
 
 	#renderStreamingContentLines(
@@ -1985,12 +2088,19 @@ export class Markdown
 		const contentLines: string[] = [];
 		const reusablePrefix = this.#matchingStreamPrefixLineCache(normalizedText, frozenText, signature);
 		let renderedUntil = 0;
-		let renderedSourceOffset = 0;
+		const renderedSourceOffset = 0;
 		if (reusablePrefix && reusablePrefix.tokenCount <= frozenTokenCount) {
 			contentLines.push(...reusablePrefix.lines);
 			this.#activeTableRenderSpecs?.push(...reusablePrefix.tables);
 			renderedUntil = reusablePrefix.tokenCount;
-			renderedSourceOffset = reusablePrefix.text.length;
+			// Only rows from the matched cache entry were reused. Tokens newly
+			// admitted to the stable prefix still render below and must recover
+			// copy payloads from their own source spans.
+			let reusedSourceLength = 0;
+			for (let index = 0; index < reusablePrefix.tokenCount; index++) {
+				reusedSourceLength += tokens[index]?.raw.length ?? 0;
+			}
+			this.#copySourceSearchCursor = reusedSourceLength;
 		}
 
 		if (renderedUntil < frozenTokenCount) {
@@ -2210,10 +2320,154 @@ export class Markdown
 
 	#isFencedCodeToken(token: Token): boolean {
 		const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
-		const firstLine = raw.slice(0, raw.indexOf("\n") >= 0 ? raw.indexOf("\n") : raw.length).trimStart();
-		return firstLine.startsWith("```") || firstLine.startsWith("~~~");
+		const firstLine = raw.slice(0, raw.indexOf("\n") >= 0 ? raw.indexOf("\n") : raw.length);
+		return MARKDOWN_FENCE_LINE.test(firstLine);
 	}
 
+	/**
+	 * Advance the raw-source lookup past a rendered leaf token. Container tokens
+	 * recurse into their children, while code tokens advance from the exact span
+	 * resolved by #originalCodeBody().
+	 */
+	#advanceCopySourceCursor(token: Token): void {
+		if (token.type === "code" || token.type === "list" || token.type === "blockquote") return;
+		const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
+		if (!raw) return;
+		const expandedSource = this.#expandedSourceText;
+		const offset = expandedSource.indexOf(raw, this.#copySourceSearchCursor);
+		if (offset >= 0) this.#copySourceSearchCursor = offset + raw.length;
+	}
+
+	/** Recover the source body for copy targets after display tab expansion. */
+	#originalCodeBody(token: Token): string {
+		const fallback = "text" in token && typeof token.text === "string" ? token.text : "";
+		const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
+		if (!raw) return fallback;
+		// Marked may include the newline after a closing fence in token.raw. It
+		// belongs to the following block, not to the copy payload; trim only
+		// delimiter-adjacent newlines used for locating this token.
+		const rawForSpan = raw.replace(/^(?:\r?\n)+|(?:\r?\n)+$/g, "");
+		if (!rawForSpan) return fallback;
+		const expandedSource = this.#expandedSourceText;
+		const searchStart = this.#copySourceSearchCursor;
+		let expandedStart = expandedSource.indexOf(rawForSpan, searchStart);
+		let expandedEnd = expandedStart >= 0 ? expandedStart + rawForSpan.length : -1;
+		if (expandedStart < 0) {
+			// Nested tokens lose their container prefixes, so `raw` is not a
+			// contiguous substring of the source. Locate the opening and actual
+			// closing fence lines instead, preserving the source span's tabs.
+			const rawLines = rawForSpan.split("\n");
+			const openLine = rawLines[0]?.trim() ?? "";
+			const openingFence = MARKDOWN_FENCE_LINE.exec(openLine)?.[1];
+			if (!openLine || !openingFence) return fallback;
+			let openingLineStart = expandedSource.lastIndexOf("\n", Math.max(0, searchStart - 1)) + 1;
+			let openAt = -1;
+			while (openingLineStart <= expandedSource.length) {
+				const openingLineEnd = expandedSource.indexOf("\n", openingLineStart);
+				const sourceLine =
+					openingLineEnd >= 0
+						? expandedSource.slice(openingLineStart, openingLineEnd)
+						: expandedSource.slice(openingLineStart);
+				const fenceAt = sourceLine.indexOf(openLine);
+				if (
+					fenceAt >= 0 &&
+					sourceLine.slice(fenceAt).trim() === openLine &&
+					isMarkdownContainerPrefix(sourceLine.slice(0, fenceAt))
+				) {
+					openAt = openingLineStart + fenceAt;
+					break;
+				}
+				if (openingLineEnd < 0) break;
+				openingLineStart = openingLineEnd + 1;
+			}
+			if (openAt < 0) return fallback;
+			const openingFenceColumn = openAt - openingLineStart;
+			const fenceChar = openingFence.charAt(0);
+			const fenceLength = openingFence.length;
+			let lineStart = expandedSource.indexOf("\n", openAt + openLine.length);
+			if (lineStart < 0) return fallback;
+			lineStart++;
+			let closeAt = -1;
+			let closeLength = 0;
+			while (lineStart <= expandedSource.length) {
+				const lineEnd = expandedSource.indexOf("\n", lineStart);
+				const sourceLine =
+					lineEnd >= 0 ? expandedSource.slice(lineStart, lineEnd) : expandedSource.slice(lineStart);
+				const fenceAt = sourceLine.search(fenceChar === "`" ? /`{3,}/ : /~{3,}/);
+				if (fenceAt >= 0 && fenceAt <= openingFenceColumn) {
+					let candidateLength = 0;
+					while (sourceLine.charAt(fenceAt + candidateLength) === fenceChar) candidateLength++;
+					if (candidateLength >= fenceLength && sourceLine.slice(fenceAt + candidateLength).trim().length === 0) {
+						closeAt = lineStart + fenceAt;
+						closeLength = candidateLength;
+						break;
+					}
+				}
+				if (lineEnd < 0) break;
+				lineStart = lineEnd + 1;
+			}
+			if (closeAt < 0) return fallback;
+			// Include the container prefix on the opening line so it can be removed
+			// consistently from each recovered body line below.
+			expandedStart = openingLineStart;
+			expandedEnd = closeAt + closeLength;
+		}
+		this.#copySourceSearchCursor = Math.max(this.#copySourceSearchCursor, expandedEnd);
+		const toSourceOffset = (expandedOffset: number): number => {
+			let expanded = 0;
+			for (let sourceOffset = 0; sourceOffset < this.#sourceText.length; sourceOffset++) {
+				if (expanded >= expandedOffset) return sourceOffset;
+				expanded += this.#sourceText[sourceOffset] === "\t" ? 3 : 1;
+			}
+			return this.#sourceText.length;
+		};
+		const sourceRaw = this.#sourceText.slice(toSourceOffset(expandedStart), toSourceOffset(expandedEnd));
+		const firstLineEnd = sourceRaw.indexOf("\n");
+		const lastLineStart = sourceRaw.lastIndexOf("\n");
+		if (firstLineEnd < 0 || lastLineStart <= firstLineEnd) return fallback;
+		const openingLine = sourceRaw.slice(0, firstLineEnd);
+		const closingLine = sourceRaw.slice(lastLineStart + 1);
+		const openingFenceAt = openingLine.search(/(`{3,}|~{3,})/);
+		const closingFenceAt = closingLine.search(/(`{3,}|~{3,})/);
+		const openingPrefix = openingFenceAt > 0 ? openingLine.slice(0, openingFenceAt) : "";
+		// A list item's opening line may contain `- `, while its body and closing
+		// fence use the continuation prefix (`  `). Prefer the actual closing-line
+		// prefix for body recovery and retain the opening prefix as a fallback for
+		// blockquote-shaped tokens.
+		const closingPrefix = closingFenceAt > 0 ? closingLine.slice(0, closingFenceAt) : "";
+		const prefixes = [closingPrefix, openingPrefix].filter(
+			(prefix, index, all) => prefix.length > 0 && all.indexOf(prefix) === index,
+		);
+		const hasStructuralContainer = prefixes.some(prefix => prefix.trim().length > 0);
+		const whitespaceBudget = prefixes.reduce(
+			(max, prefix) => (/^[ \t]+$/.test(prefix) ? Math.max(max, prefix.length) : max),
+			0,
+		);
+		const body = sourceRaw.slice(firstLineEnd + 1, lastLineStart);
+		if (prefixes.length === 0) return body;
+		const parsedLines = fallback.split("\n");
+		return body
+			.split("\n")
+			.map((line, index) => {
+				// Match Marked's parsed row before accepting an exact recovered
+				// prefix: a shorter closing-fence prefix may also match the body
+				// while leaving container indentation behind.
+				const parsed = parsedLines[index];
+				if (parsed !== undefined) {
+					for (let offset = 0; offset <= line.length; offset++) {
+						if (replaceTabs(line.slice(offset)) === replaceTabs(parsed)) return line.slice(offset);
+					}
+				}
+
+				const prefix = prefixes.find(candidate => line.startsWith(candidate));
+				if (prefix) return line.slice(prefix.length);
+				if (hasStructuralContainer) return line;
+				if (whitespaceBudget === 0) return line;
+				const leadingWhitespace = /^[ \t]*/.exec(line)?.[0].length ?? 0;
+				return line.slice(Math.min(leadingWhitespace, whitespaceBudget));
+			})
+			.join("\n");
+	}
 	/**
 	 * Frame fenced code in the same rounded-box language as the welcome screen.
 	 * The box hugs its content: width is the longest body row or the header,
@@ -2223,38 +2477,68 @@ export class Markdown
 	 */
 	#boxFencedCodeLines(token: Token, bodyLines: readonly RenderedLine[], width: number): RenderedLine[] {
 		const box = this.#theme.symbols.boxRound;
-		// Header, body, and footer all use the same border color so the frame
-		// reads as one continuous shape (no mismatched dim/bright sides).
 		const borderColor = this.#theme.codeBlockBorder;
 		const border = (text: string): string => borderColor(text);
+		const requestedWidth = Math.max(0, Math.trunc(width));
 		const lang = "lang" in token && typeof token.lang === "string" && token.lang.length > 0 ? token.lang : undefined;
-		// The hook supplies the semantic marker (icon) or nothing. Plain-text
-		// returns equal to `lang` mean the theme has no icon — use one label, not
-		// `[js js]`.
-		const marker = lang ? this.#theme.codeBlockLanguage?.(lang) : undefined;
-		const label = lang ? (marker && marker !== lang ? `${marker} ${lang}` : lang) : "";
-		const title = lang ? ` [${label}] ` : "";
+		const formattedLabel = lang ? this.#theme.codeBlockLanguage?.(lang)?.trim() : undefined;
+		const label = formattedLabel && visibleWidth(formattedLabel) > 0 ? formattedLabel : (lang ?? "");
+		const rawTitle = label ? ` [${label}] ` : "";
 
-		// Reserve one breathing space on each side of every body row. The frame is
-		// compact, but code must never touch either vertical border.
+		// A full box needs two borders, two breathing spaces, and one content cell.
+		// Use a compact borderless body when the caller has fewer than six cells.
+		if (requestedWidth < 6) {
+			const edge = box.vertical;
+			const sourceWidth = Math.max(1, requestedWidth - 2);
+			const narrow: RenderedLine[] = [];
+			for (const body of bodyLines) {
+				const source = body.codeBody ?? body.text;
+				for (const row of wrapCodeLineWithAnsi(source, sourceWidth)) {
+					// A single grapheme wider than sourceWidth arrives on its own
+					// over-width row; it must reach the terminal whole instead of
+					// being truncated out of existence.
+					const rowWidth = visibleWidth(row);
+					const canFrame = requestedWidth >= 3 && rowWidth + 2 <= requestedWidth;
+					const text = canFrame ? `${edge}${row}${edge}` : truncateToWidth(row, requestedWidth, Ellipsis.Omit);
+					narrow.push({ text, noWrap: true });
+				}
+			}
+			return narrow.length > 0 ? narrow : [{ text: "", noWrap: true }];
+		}
+
 		const bodyWidth = bodyLines.reduce((max, line) => Math.max(max, visibleWidth(line.text)), 0);
 		const outerPadding = bodyLines.some(line => (line.codeOuterPadding ?? 0) > 0) ? 1 : 0;
-		const innerWidth = Math.min(
-			Math.max(4, width - 2),
-			Math.max(bodyWidth + outerPadding + 2, visibleWidth(title) + 1),
-		);
-		const contentWidth = Math.max(1, innerWidth - 2);
-		// Header must be exactly innerWidth + 2 border cells wide, same as body.
-		// visibleWidth() counts emoji as 2 cells; the title already includes the
-		// leading/trailing spaces, so headerFill = innerWidth - titleWidth - 1
-		// (one horizontal after topLeft, before the title).
+		const maxInnerWidth = Math.max(3, requestedWidth - 2);
+		const innerWidth = Math.min(maxInnerWidth, Math.max(3, bodyWidth + outerPadding + 2, visibleWidth(rawTitle) + 1));
+		const contentWidth = innerWidth - 2;
+		// If even a single atomic grapheme cannot fit beside the frame chrome,
+		// drop the chrome rather than emitting an over-wide noWrap row. The
+		// borderless fallback still hard-wraps at the requested terminal width.
+		const needsCompactGraphemeLayout = bodyLines.some(body => {
+			const source = body.codeBody ?? body.text;
+			const leftPadding = padding(Math.min(body.codeOuterPadding ?? 0, contentWidth));
+			const available = Math.max(0, contentWidth - visibleWidth(leftPadding));
+			return available < widestGraphemeCells(source);
+		});
+		if (needsCompactGraphemeLayout) {
+			const compact: RenderedLine[] = [];
+			for (const body of bodyLines) {
+				const source = body.codeBody ?? body.text;
+				for (const row of wrapCodeLineWithAnsi(source, Math.max(1, requestedWidth))) {
+					// With no room even for borders, chrome is already omitted; when a
+					// single atomic grapheme still cannot fit, truncation is the only
+					// way to keep the noWrap row inside the container.
+					compact.push({
+						text: truncateToWidth(row, Math.max(1, requestedWidth), Ellipsis.Omit),
+						noWrap: true,
+					});
+				}
+			}
+			return compact.length > 0 ? compact : [{ text: "", noWrap: true }];
+		}
+		const title = truncateToWidth(rawTitle, Math.max(0, innerWidth - 1), Ellipsis.Omit);
 		const titleWidth = visibleWidth(title);
 		const headerFill = Math.max(0, innerWidth - titleWidth - 1);
-		// Color each header segment independently. A colored emoji (e.g. 🟨) in
-		// the title resets the terminal's SGR foreground mid-line, so a single
-		// border() wrap would leave everything after the title (the top-right
-		// ───╮) uncolored/white. Re-applying border() after the title forces the
-		// right side back to the same dim color as the left side and the frame.
 		const header =
 			`${border(`${box.topLeft}${box.horizontal}`)}` +
 			`${border(title)}` +
@@ -2262,59 +2546,56 @@ export class Markdown
 		const framed: RenderedLine[] = [{ text: header, noWrap: true }];
 
 		for (const body of bodyLines) {
-			const prefix = body.codePrefix;
+			const prefix = body.codePrefix ?? "";
 			const plainPrefix = body.codePlainPrefix ?? prefix;
-			const leftPadding = padding(body.codeOuterPadding ?? 0);
+			const leftPadding = padding(Math.min(body.codeOuterPadding ?? 0, contentWidth));
+			const available = Math.max(0, contentWidth - visibleWidth(leftPadding));
 			const source = body.codeBody ?? body.text;
-			const firstWidth = Math.max(
-				1,
-				contentWidth - visibleWidth(leftPadding) - (plainPrefix ? visibleWidth(plainPrefix) : 0),
-			);
-			const wrapped = wrapTextWithAnsi(source, firstWidth);
-			const rows = wrapped.length > 0 ? wrapped : [""];
-
-			// Steering semantics (queued-message-box): `└─` claims the END of the
-			// block. If that last logical line wraps, its first row downgrades to
-			// `├─`. Continuation rows keep the `│  ` rail — digits blanked on the
-			// PLAIN prefix, then re-styled once, so ANSI escapes never get mangled.
-			const wraps = rows.length > 1;
 			const styled = body.codePlainPrefix !== undefined;
-			const demotedPlain = wraps && plainPrefix ? plainPrefix.replace("└─", "├─") : plainPrefix;
-			const firstRowPrefix =
-				styled && demotedPlain !== undefined ? this.#theme.codeBlockBorder(demotedPlain) : (demotedPlain ?? "");
+			// Reserve the widest atomic grapheme so a narrow frame never drops the
+			// code row behind a full line-number/guidance prefix. Truncate the plain
+			// prefix before styling it so ANSI sequences cannot defeat the bound.
+			const prefixBudget = Math.max(0, available - widestGraphemeCells(source));
+			const basePlainPrefix = truncateToWidth(plainPrefix, prefixBudget, Ellipsis.Omit);
+			const sourceWidth = Math.max(1, available - visibleWidth(basePlainPrefix));
+			const firstPlainPrefix =
+				visibleWidth(source) > sourceWidth && basePlainPrefix
+					? basePlainPrefix.replace("└─", "├─")
+					: basePlainPrefix;
 			const continuationPlain = plainPrefix
 				? plainPrefix.replace(/\d/g, " ").replace(/├─/, "│ ").replace(/└─/, "│ ")
 				: (body.codeContinuationPrefix ?? "");
-			const continuationPrefix = styled ? this.#theme.codeBlockBorder(continuationPlain) : continuationPlain;
+			const firstPrefixPlain = truncateToWidth(firstPlainPrefix, prefixBudget, Ellipsis.Omit);
+			const continuationPlainFitted = truncateToWidth(continuationPlain, prefixBudget, Ellipsis.Omit);
+			const firstPrefix = styled ? this.#theme.codeBlockBorder(firstPrefixPlain) : firstPrefixPlain;
+			const continuationPrefix = styled
+				? this.#theme.codeBlockBorder(continuationPlainFitted)
+				: continuationPlainFitted;
+			const wrapped = wrapCodeLineWithAnsi(source, sourceWidth);
+			const visualRows = wrapped.length > 0 ? wrapped : [""];
 
-			for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
-				const rowPrefix = rowIndex === 0 ? firstRowPrefix : continuationPrefix;
-				const rowText = leftPadding + rowPrefix + rows[rowIndex]!;
+			for (let rowIndex = 0; rowIndex < visualRows.length; rowIndex++) {
+				const rowPrefix = rowIndex === 0 ? firstPrefix : continuationPrefix;
+				const rawRow = leftPadding + rowPrefix + visualRows[rowIndex]!;
+				// Normal wrapping bounds rows to sourceWidth; only a single grapheme
+				// cluster wider than the content cell can exceed it, and that row
+				// must survive whole rather than lose its grapheme to a clamp.
+				const rowText = rawRow;
 				const pad = Math.max(0, contentWidth - visibleWidth(rowText));
 				framed.push({
 					text: `${border(box.vertical)} ${rowText}${padding(pad)} ${border(box.vertical)}`,
-					literalCode: body.literalCode,
 					noWrap: true,
 				});
 			}
 		}
-		// Footer with optional copy chip on the right side. When the theme resolves
-		// a target for the block, the chip becomes an OSC 8 hyperlink so a real
-		// mouse click copies it — no main-screen mouse tracking, so native scroll
-		// and selection are untouched. Border color wraps all three segments so
-		// the frame stays one continuous shape around the (possibly linked) chip.
-		const copyLabel = this.#theme.copyChip ? `[${this.#theme.copyChip}]` : "";
-		if (copyLabel) {
+
+		const rawCopyLabel = this.#theme.copyChip ? `[${this.#theme.copyChip}]` : "";
+		const copyLabel = truncateToWidth(rawCopyLabel, Math.max(0, innerWidth - 1), Ellipsis.Omit);
+		if (copyLabel && visibleWidth(copyLabel) > 0) {
 			const chipWidth = visibleWidth(copyLabel);
 			const fill = Math.max(0, innerWidth - chipWidth - 1);
-			const code = "text" in token && typeof token.text === "string" ? token.text : "";
-			const target = code ? this.#theme.copyChipTarget?.(code) : undefined;
-			// Emit the OSC 8 link directly rather than via formatHyperlink: the copy
-			// chip is an explicit affordance whose enablement the theme already
-			// decided (copyChipTarget returns undefined when links are off). Routing
-			// through the TERMINAL.hyperlinks capability gate would drop the link
-			// under tmux/unknown outer terminals that still forward OSC 8, so the
-			// click would silently do nothing. Terminals lacking OSC 8 ignore it.
+			const code = this.#originalCodeBody(token);
+			const target = code && TERMINAL.hyperlinks ? this.#theme.copyChipTarget?.(code) : undefined;
 			const chip = target
 				? `\x1b]8;;${target.replaceAll("\x1b", "").replaceAll("\x07", "")}\x07${border(copyLabel)}\x1b]8;;\x07`
 				: border(copyLabel);
@@ -2362,10 +2643,15 @@ export class Markdown
 
 		const rawLines = tokenText.split("\n");
 		const streaming = this.transientRenderCache && !this.#renderingFrozenPrefix;
+		const normalizedLang = lang?.toLowerCase();
+		const canStreamDiff =
+			streaming &&
+			this.#theme.highlightCode &&
+			(normalizedLang === "diff" || normalizedLang === "patch" || normalizedLang === "udiff");
 		if (this.#theme.highlightCode && (!streaming || this.#codeTokenHasClosingFence(token))) {
 			// Finalized content — or a fence that closed mid-stream, which
 			// highlights through the same whole-block call the finalized render
-			// uses so rows entering native scrollback byte-match it.
+			// uses so cached stable rows byte-match it.
 			const highlightedLines = this.#theme.highlightCode(tokenText, lang);
 			for (let i = 0; i < highlightedLines.length; i++) {
 				addBodyLine(highlightedLines[i]!, i === highlightedLines.length - 1);
@@ -2373,12 +2659,10 @@ export class Markdown
 			return bodyLines;
 		}
 
-		if (streaming && this.#theme.highlightCode) {
-			// Open fence: highlight completed lines incrementally so semantic
-			// colors reach native scrollback before rows leave the viewport;
-			// only the trailing partial line stays unhighlighted.
+		if (canStreamDiff) {
 			const lineEnd = tokenText.lastIndexOf("\n");
-			const completedLines = lineEnd >= 0 ? this.#highlightStreamingLines(tokenText.slice(0, lineEnd), lang) : null;
+			const completedLines =
+				lineEnd >= 0 ? this.#highlightStreamingDiffLines(tokenText.slice(0, lineEnd), lang) : null;
 			if (completedLines) {
 				for (const hlLine of completedLines) {
 					addBodyLine(hlLine, false);
@@ -2427,17 +2711,11 @@ export class Markdown
 		return false;
 	}
 
-	/**
-	 * Highlight the completed (newline-terminated) prefix of a streaming code
-	 * fence. Uses a stateful per-fence highlight stream so each render pushes
-	 * only the newly completed lines, with output byte-identical to the
-	 * whole-block `highlightCode` the finalized render performs. Returns null
-	 * when no stream is available for `lang` (caller falls back to plain
-	 * code-block styling).
-	 */
-	#highlightStreamingLines(completedText: string, lang: string | undefined): readonly string[] | null {
+	#highlightStreamingDiffLines(completedText: string, lang: string | undefined): readonly string[] {
+		const highlightCode = this.#theme.highlightCode;
+		if (!highlightCode) return [];
 		const signature = this.#activeRenderSignature;
-		const cache = this.#streamingHighlightCache;
+		const cache = this.#streamingDiffLineCache;
 		if (
 			signature &&
 			cache &&
@@ -2457,47 +2735,23 @@ export class Markdown
 			cache.headingProbe === signature.headingProbe
 		) {
 			if (completedText.length === cache.text.length) return cache.lines;
-			// Invariant: the stream has consumed `cache.text + "\n"`, so pushing
-			// the added lines with a trailing newline advances it to
-			// `completedText + "\n"` — every fed line stays newline-terminated.
+			const lines = cache.lines.slice();
 			const addedText = completedText.slice(cache.text.length + 1);
-			const lines = cache.lines.concat(splitPushedHighlightLines(cache.stream.push(`${addedText}\n`)));
-			this.#streamingHighlightCache = { ...signature, lang, text: completedText, lines, stream: cache.stream };
+			for (const codeLine of addedText.split("\n")) {
+				lines.push(...highlightCode(codeLine, lang));
+			}
+			this.#streamingDiffLineCache = { ...signature, lang, text: completedText, lines };
 			return lines;
 		}
 
-		const stream = this.#createHighlightStream(lang);
-		if (!stream) return null;
-		const lines = splitPushedHighlightLines(stream.push(`${completedText}\n`));
+		const lines: string[] = [];
+		for (const codeLine of completedText.split("\n")) {
+			lines.push(...highlightCode(codeLine, lang));
+		}
 		if (signature) {
-			this.#streamingHighlightCache = { ...signature, lang, text: completedText, lines, stream };
+			this.#streamingDiffLineCache = { ...signature, lang, text: completedText, lines };
 		}
 		return lines;
-	}
-
-	/**
-	 * Resolve a highlight stream for `lang`. Prefers the theme's stateful
-	 * factory; without one, emulates a stream via per-line `highlightCode` for
-	 * diff-family fences only — that grammar is line-local, so per-line output
-	 * matches the whole-block render (other grammars carry cross-line state
-	 * and would diverge).
-	 */
-	#createHighlightStream(lang: string | undefined): HighlightStreamSession | null {
-		const factory = this.#theme.createHighlightStream;
-		if (factory) return factory(lang);
-		const highlightCode = this.#theme.highlightCode;
-		if (!highlightCode) return null;
-		const normalizedLang = lang?.toLowerCase();
-		if (normalizedLang !== "diff" && normalizedLang !== "patch" && normalizedLang !== "udiff") return null;
-		return {
-			push: chunk => {
-				const lines = chunk.split("\n");
-				const trailing = lines.pop() ?? "";
-				let out = "";
-				for (const line of lines) out += `${highlightCode(line, lang).join("\n")}\n`;
-				return trailing ? out + highlightCode(trailing, lang).join("\n") : out;
-			},
-		};
 	}
 
 	#renderEmptyPaddingLines(signature: RenderSignature): string[] {
@@ -2602,6 +2856,7 @@ export class Markdown
 		tokenKey = "root",
 	): RenderedLine[] {
 		const lines: RenderedLine[] = [];
+		this.#advanceCopySourceCursor(token);
 
 		// Display math block (own-line `$$…$$` / `\[…\]`): stack `\frac` vertically
 		// and keep `\\` row breaks, so fractions and matrices span multiple lines.
@@ -3045,6 +3300,20 @@ export class Markdown
 		// Use the list's start property (defaults to 1 for ordered lists)
 		const startNumber = token.start ?? 1;
 		const pushWrapped = (line: RenderedLine, firstPrefix: string, continuationPrefix: string): void => {
+			if (line.noWrap) {
+				const available = Math.max(0, width - visibleWidth(firstPrefix));
+				const prefix = truncateToWidth(firstPrefix, width, Ellipsis.Omit);
+				if (available === 0 && line.text) {
+					lines.push(renderedLine(prefix));
+					for (const wrappedLine of wrapTextWithAnsi(line.text, Math.max(1, width))) {
+						lines.push({ ...line, text: wrappedLine });
+					}
+					return;
+				}
+				lines.push({ ...line, text: prefix + truncateToWidth(line.text, available, Ellipsis.Omit) });
+				return;
+			}
+
 			if (line.literalCode) {
 				const wrappedLiteralRows = wrapTextWithAnsi(line.text, Math.max(1, width));
 				if (wrappedLiteralRows.length === 0) {
@@ -3087,8 +3356,10 @@ export class Markdown
 
 			// Process item tokens; nested-list lines arrive structurally tagged and
 			// already carry their own full indent.
-			const itemLines = this.#renderListItem(item.tokens || [], depth, width, styleContext);
-
+			// Framed code blocks must fit inside the hang, not the full list
+			// width, or the right border lands under the bullet rail.
+			const itemWidth = Math.max(1, width - visibleWidth(firstPrefix));
+			const itemLines = this.#renderListItem(item.tokens || [], depth, itemWidth, styleContext, itemWidth, width);
 			if (itemLines.length > 0) {
 				const firstLine = itemLines[0]!;
 				if (firstLine.nested) {
@@ -3124,14 +3395,20 @@ export class Markdown
 		parentDepth: number,
 		width: number,
 		styleContext?: InlineStyleContext,
+		frameWidth: number = width,
+		nestedWidth: number = width,
 	): RenderedListItemLine[] {
 		const lines: RenderedListItemLine[] = [];
 
 		for (const token of tokens) {
+			this.#advanceCopySourceCursor(token);
 			if (token.type === "list") {
 				// Nested list - render with one additional indent level
 				// These lines carry their own indent, so tag them for pass-through
-				const nestedLines = this.#renderList(token as ListToken, parentDepth + 1, width, styleContext);
+				// `width` is already reduced for the current item's frame. Nested list
+				// recursion must start from the containing list's global width or each
+				// level subtracts its prefix a second time.
+				const nestedLines = this.#renderList(token as ListToken, parentDepth + 1, nestedWidth, styleContext);
 				for (const nestedLine of nestedLines) {
 					lines.push({ ...nestedLine, nested: true });
 				}
@@ -3162,10 +3439,23 @@ export class Markdown
 			} else if (token.type === "code") {
 				// Code block in list item — fenced blocks get the same themed box.
 				const codeIndent = padding(this.#codeBlockIndent);
-				const fenced = this.#isFencedCodeToken(token) && this.#codeTokenHasClosingFence(token);
-				const bodyLines = this.#renderCodeBodyLines(token, fenced ? "" : codeIndent, fenced);
-				const framed = fenced ? this.#boxFencedCodeLines(token, bodyLines, width) : bodyLines;
-				for (const line of framed) lines.push({ ...line, nested: false });
+				const fenced = this.#isFencedCodeToken(token);
+				const closedFence = fenced && this.#codeTokenHasClosingFence(token);
+				const bodyLines = this.#renderCodeBodyLines(token, closedFence ? "" : codeIndent, closedFence);
+				if (closedFence) {
+					const framed = this.#boxFencedCodeLines(token, bodyLines, frameWidth);
+					for (const line of framed) lines.push({ ...line, nested: false });
+				} else {
+					// An open fence inside a list keeps its delimiters as literal
+					// code rows (same contract as the top-level path) instead of
+					// being silently swallowed by the framed renderer.
+					const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
+					for (const rawLine of raw.split("\n")) {
+						// Keep open-fence rows in the list-aware noWrap path so the
+						// bullet and continuation rail remain attached before closure.
+						lines.push({ text: replaceTabs(rawLine), noWrap: true, nested: false });
+					}
+				}
 			} else if (isMathToken(token)) {
 				// Display math block inside a list item: stack fractions / matrix rows.
 				const apply = styleContext?.applyText ?? ((t: string) => this.#applyDefaultStyle(t));

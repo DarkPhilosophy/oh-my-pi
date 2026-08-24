@@ -22,6 +22,15 @@ function renderCold(text: string, width: number): readonly string[] {
 	clearRenderCache();
 	return out;
 }
+/** Cold render in transient mode — same masking-safe pattern as renderCold. */
+function renderColdTransient(text: string, width: number): readonly string[] {
+	clearRenderCache();
+	const out = new Markdown(text, 0, 0, THEME);
+	out.transientRenderCache = true;
+	const lines = out.render(width);
+	clearRenderCache();
+	return lines;
+}
 
 /** Reveal `full` in `step`-char increments through ONE reused (streaming) instance
  *  and assert each step matches a cold full-lex render of the same prefix. */
@@ -121,7 +130,8 @@ describe("Markdown incremental streaming lex (E2)", () => {
 		const rendered = new Markdown("```rust\nfn main() {}\n```", 0, 0, theme).render(80).join("\n");
 		expect(rendered).toContain(icon);
 		expect(rendered).toContain("rust");
-		expect(rendered).toContain("| rust ");
+		expect(rendered).toContain("| rust]");
+		expect(rendered).not.toContain("rust rust");
 		expect(rendered).not.toContain("```");
 	});
 
@@ -337,7 +347,27 @@ describe("Markdown incremental streaming lex (E2)", () => {
 		streaming.setText(doc);
 		const streamLines = streaming.render(60);
 		expect(streamLines).toEqual(renderCold(doc, 60));
-		expect(streaming.getLastRenderSettledRows()).toBeGreaterThan(0);
+	});
+
+	it("orphan-fence repair starting mid-stream keeps growth byte-identical", () => {
+		// Final-mode repairOrphanClosingFence deletes an unmatched bare fence
+		// once both a heading and a GFM table delimiter follow it. The raw text
+		// grows append-only across the transition while the NORMALIZED text
+		// (with the fence deleted) is no longer an append-extension of the
+		// previous frame's, so the guard-scan memo's byte alignment is put to
+		// the test: the trigger either brings "\n" into the delta (suspicious
+		// path re-scans) or shortens the text (length gate re-derives). The
+		// cold-render oracle must match at every step.
+		const doc =
+			"Intro paragraph before the stray fence lands in the stream.\n\n" +
+			"```\n" +
+			"# Heading after the orphan fence\n\n" +
+			"| col a | col b |\n" +
+			"| --- | --- |\n\n" +
+			"Trailing paragraph that keeps streaming after the table ends.";
+		assertIdenticalGrowth(doc, 60, 1);
+		assertIdenticalGrowth(doc, 60, 3);
+		assertIdenticalGrowth(doc, 60, 13);
 	});
 
 	it("a document that is one still-growing list never freezes mid-list", () => {
@@ -352,7 +382,42 @@ describe("Markdown incremental streaming lex (E2)", () => {
 			streaming.setText(doc.slice(0, len));
 			const streamLines = streaming.render(60);
 			expect(streamLines).toEqual(renderCold(doc.slice(0, len), 60));
-			expect(streaming.getLastRenderSettledRows()).toBe(0);
+		}
+	});
+
+	it("flipping transientRenderCache re-derives the guard memo", () => {
+		// Regression: final mode normalized this document through
+		// repairOrphanClosingFence, which deleted the bare fence line carrying
+		// the text's only "\r". Memoized in final mode the verdict is
+		// canStream=true (no CR, no ref defs) with #lastScanLength taken from
+		// the REPAIRED buffer. Flipping to transient mode re-introduces the
+		// raw "\r" (transient skips repair); if the memo survived the flip, a
+		// clean-suffix append would reuse canStream=true and stream the
+		// CR-containing tail. The mode flip must invalidate the memo so the
+		// next frame re-derives and falls back to the full lex.
+		const crlfFence =
+			"Intro paragraph before the stray fence with a CRLF line end.\n\n" +
+			"```\r\n" +
+			"# Heading after the fence\n\n" +
+			"| a | b |\n" +
+			"| --- | --- |\n\n" +
+			"Tail prose that only streams in after the table.";
+		const streaming = new Markdown("", 0, 0, THEME);
+		clearRenderCache();
+		streaming.setText(crlfFence);
+		streaming.render(60); // final mode: repair deletes the fence + its CR
+		// Switch to transient streaming on the same instance and append only
+		// CLEAN suffixes (no newline/bracket/colon): a stale memo would be
+		// reused on each of these and stream the CR-containing tail against
+		// the repaired-buffer prefix, diverging from the cold render.
+		streaming.transientRenderCache = true;
+		let grown = crlfFence;
+		for (const suffix of [" tail-a", " tail-b", " tail-c"]) {
+			grown += suffix;
+			clearRenderCache();
+			streaming.setText(grown);
+			const streamLines = streaming.render(60);
+			expect(streamLines).toEqual(renderColdTransient(grown, 60));
 		}
 	});
 });
