@@ -5,6 +5,10 @@ import * as path from "node:path";
 
 export const COPY_URL_SCHEME = "omp-copy";
 
+// Linux caps one argv entry near 128 KiB. Leave headroom for desktop-launcher
+// bookkeeping rather than emitting an OSC action that can only fail with E2BIG.
+const MAX_COPY_URL_BYTES = 120 * 1024;
+
 /** Whether this process can install a client-local custom URL handler. */
 export function supportsCopyUrlHandler(
 	platform: NodeJS.Platform = process.platform,
@@ -19,9 +23,10 @@ export function registerCopyBlock(code: string): string {
 	return `${COPY_URL_SCHEME}:${bytes.length}.${bytes.toString("base64url")}`;
 }
 
-/** Create the self-contained OSC 8 target; handler installation is best-effort startup work. */
-export function copyUrlTarget(code: string): string {
-	return registerCopyBlock(code);
+/** Create a self-contained OSC 8 target when it fits Linux's argv limit. */
+export function copyUrlTarget(code: string): string | undefined {
+	const target = registerCopyBlock(code);
+	return Buffer.byteLength(target) <= MAX_COPY_URL_BYTES ? target : undefined;
 }
 
 export function resolveCopyBlock(arg: string): string | undefined {
@@ -40,6 +45,10 @@ export function resolveCopyBlock(arg: string): string | undefined {
 
 const COPY_DESKTOP_ENTRY = `${COPY_URL_SCHEME}.desktop`;
 const COPY_SCHEME_MIME = `x-scheme-handler/${COPY_URL_SCHEME}`;
+
+function copyDesktopPath(): string {
+	return path.join(os.homedir(), ".local", "share", "applications", COPY_DESKTOP_ENTRY);
+}
 
 export interface CopyHandlerResult {
 	ok: boolean;
@@ -83,16 +92,17 @@ export async function isCopyUrlHandlerRegistered(): Promise<boolean> {
 			stderr: "ignore",
 		});
 		const out = (await new Response(proc.stdout).text()).trim();
-		await proc.exited;
-		return out === COPY_DESKTOP_ENTRY;
+		if ((await proc.exited) !== 0 || out !== COPY_DESKTOP_ENTRY) return false;
+		const expectedEntry = createCopyDesktopEntry(resolveOmpBinary());
+		return (await Bun.file(copyDesktopPath()).text()) === expectedEntry;
 	} catch {
 		return false;
 	}
 }
 
 export async function registerCopyUrlHandler(): Promise<CopyHandlerResult> {
-	const appsDir = path.join(os.homedir(), ".local", "share", "applications");
-	const desktopPath = path.join(appsDir, COPY_DESKTOP_ENTRY);
+	const desktopPath = copyDesktopPath();
+	const appsDir = path.dirname(desktopPath);
 	if (!supportsCopyUrlHandler()) return { ok: false, desktopPath, error: "only supported on Linux (xdg)" };
 	await fs.mkdir(appsDir, { recursive: true });
 	const entry = createCopyDesktopEntry(resolveOmpBinary());

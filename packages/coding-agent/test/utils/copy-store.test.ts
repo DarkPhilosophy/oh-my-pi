@@ -17,6 +17,10 @@ describe("copy URL handler", () => {
 		expect(copyUrlTarget("echo ready")).toMatch(/^omp-copy:/);
 	});
 
+	it("does not advertise a copy target that exceeds Linux's argument limit", () => {
+		expect(copyUrlTarget("x".repeat(100 * 1024))).toBeUndefined();
+	});
+
 	it("quotes and escapes the executable as one desktop Exec argument", () => {
 		const entry = createCopyDesktopEntry('/opt/Oh My $Pi/omp"dev');
 		expect(entry).toContain('Exec="/opt/Oh My \\$Pi/omp\\"dev" copy %u');
