@@ -168,18 +168,41 @@ describe("TranscriptContainer", () => {
 		expect(transcript.blockStates()).toEqual(["committed", "active"]);
 	});
 
-	it("reoffers committed history after an explicit destructive reset", () => {
+	it("replays committed history without rewinding lifecycle state", () => {
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["final"], true));
 		const first = transcript.peekFinalizedBatch(80, 0);
 		if (first === undefined) throw new Error("expected initial batch");
 		transcript.acknowledgeFinalizedBatch(first.id);
+		expect(transcript.blockStates()).toEqual(["committed"]);
 
-		transcript.resetRetirement();
-		// Fits again after the reset: stays live until pressure returns.
-		expect(transcript.renderViewport(80, 10, frame)).toEqual(["final"]);
-		const replay = transcript.peekFinalizedBatch(80, 0);
+		transcript.beginReplay();
+		expect(transcript.renderViewport(80, 10, frame)).toEqual([]);
+		const replay = transcript.peekFinalizedBatch(80, 10);
 		expect(replay?.id).toBeGreaterThan(first.id);
 		expect(replay?.rows).toEqual(["final", ""]);
+		transcript.acknowledgeFinalizedBatch(replay!.id);
+		expect(transcript.blockStates()).toEqual(["committed"]);
+		expect(transcript.peekFinalizedBatch(80, 0)).toBeUndefined();
+	});
+
+	it("flushes a finalized prefix without viewport pressure", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["fits"], true));
+
+		expect(transcript.peekFinalizedBatch(80, 10)).toBeUndefined();
+		expect(transcript.peekFlushBatch(80)?.rows).toEqual(["fits", ""]);
+	});
+
+	it("keeps the live viewport while an independent replay is offered", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["committed"], true));
+		const committed = transcript.peekFinalizedBatch(80, 0)!;
+		transcript.acknowledgeFinalizedBatch(committed.id);
+		transcript.addChild(new Block(["active"], false));
+
+		transcript.beginReplay();
+		expect(transcript.peekFinalizedBatch(80, 10)?.rows).toEqual(["committed", ""]);
+		expect(transcript.renderViewport(80, 10, frame)).toEqual(["active"]);
 	});
 });

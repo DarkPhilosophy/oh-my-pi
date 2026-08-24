@@ -31,9 +31,10 @@ export type SidebarAction =
 	| { type: "unstage"; file?: ChangedFile }
 	| { type: "commit"; message: string; amend: boolean; stageAll: boolean };
 
+type FileTarget = { kind: "file"; file: ChangedFile } | { kind: "dir"; key: string };
+
 type Target =
-	| { kind: "file"; file: ChangedFile }
-	| { kind: "dir"; key: string }
+	| FileTarget
 	| { kind: "view-style"; style: "path" | "tree" }
 	| { kind: "stage-all" }
 	| { kind: "unstage-all" }
@@ -43,7 +44,9 @@ type Target =
 	| { kind: "commit-button" };
 
 interface Row {
-	text: string;
+	text?: string;
+	/** File/dir rows are formatted only when they enter the viewport. */
+	entry?: FileEntry;
 	target?: Target;
 	/** Column-scoped hit targets for rows carrying several buttons. */
 	hits?: { from: number; to: number; target: Target }[];
@@ -77,7 +80,7 @@ function targetKey(target: Target): string {
 }
 /** One rendered entry of a file section: nested dirs (tree mode) or flat files. */
 interface FileEntry {
-	target: Target;
+	target: FileTarget;
 	/** Tree indentation depth; omitted in flat path mode. */
 	depth?: number;
 	file?: ChangedFile;
@@ -144,6 +147,7 @@ export class Sidebar {
 	readonly #avatars: AvatarLoader;
 	readonly #onSelectFile: (file: ChangedFile | null) => void;
 	readonly #onAction: (action: SidebarAction) => void;
+	readonly #onFocusDiff: () => void;
 	readonly #requestRender: () => void;
 	readonly summary = new Input();
 	readonly description = new Editor(getEditorTheme());
@@ -154,6 +158,30 @@ export class Sidebar {
 	viewStyle: "path" | "tree" = "tree";
 	readonly #collapsed = new Set<string>();
 	#targets: Target[] = [];
+	#treeVersion = 0;
+	readonly #targetByKey = new Map<string, Target>();
+	readonly #fileEntryCache = new Map<
+		string,
+		{
+			files: readonly ChangedFile[];
+			style: "path" | "tree";
+			treeVersion: number;
+			entries: FileEntry[];
+			rows: Row[];
+		}
+	>();
+	#targetSnapshot:
+		| {
+				clean: boolean;
+				unstaged: readonly ChangedFile[];
+				staged: readonly ChangedFile[];
+				headFiles: readonly ChangedFile[] | undefined;
+				style: "path" | "tree";
+				treeVersion: number;
+		  }
+		| undefined;
+	/** Tree depth per target key (file/dir rows only); parent-jump for `←`. */
+	readonly #entryDepth = new Map<string, number>();
 	#selectedKey: string | undefined;
 	#scrollTop = 0;
 	#visibleRows: (Row | undefined)[] = [];
@@ -167,6 +195,7 @@ export class Sidebar {
 		imageBudget?: ImageBudget;
 		onSelectFile: (file: ChangedFile | null) => void;
 		onAction: (action: SidebarAction) => void;
+		onFocusDiff: () => void;
 		requestRender: () => void;
 	}) {
 		this.#model = options.model;
@@ -174,6 +203,7 @@ export class Sidebar {
 		this.#imageBudget = options.imageBudget;
 		this.#onSelectFile = options.onSelectFile;
 		this.#onAction = options.onAction;
+		this.#onFocusDiff = options.onFocusDiff;
 		this.#requestRender = options.requestRender;
 		this.summary.prompt = "";
 		this.description.setBorderVisible(false);
@@ -183,7 +213,7 @@ export class Sidebar {
 	/** Currently selected target, if any. */
 	get selected(): Target | undefined {
 		if (this.#selectedKey === undefined) return this.#targets[0];
-		return this.#targets.find(target => targetKey(target) === this.#selectedKey) ?? this.#targets[0];
+		return this.#targetByKey.get(this.#selectedKey) ?? this.#targets[0];
 	}
 
 	get selectedFile(): ChangedFile | null {
@@ -206,66 +236,113 @@ export class Sidebar {
 
 	/** Section entries in display order: tree dirs + files, or flat files. */
 	#fileEntries(files: readonly ChangedFile[], section: string): FileEntry[] {
+		const cached = this.#fileEntryCache.get(section);
+		if (cached?.files === files && cached.style === this.viewStyle && cached.treeVersion === this.#treeVersion) {
+			return cached.entries;
+		}
+
+		let entries: FileEntry[];
 		if (this.viewStyle === "path") {
-			return files.map(file => ({ target: { kind: "file", file } as const, file }));
+			entries = files.map(file => ({ target: { kind: "file", file } as const, file }));
+		} else {
+			const root: TreeDir = { name: "", dirs: new Map(), files: [] };
+			for (const file of files) {
+				const parts = file.path.split("/");
+				let node = root;
+				for (const part of parts.slice(0, -1)) {
+					let next = node.dirs.get(part);
+					if (!next) {
+						next = { name: part, dirs: new Map(), files: [] };
+						node.dirs.set(part, next);
+					}
+					node = next;
+				}
+				node.files.push(file);
+			}
+			// Compress single-child directory chains ("a/b/c" as one row).
+			const compress = (node: TreeDir): void => {
+				for (const [key, child] of [...node.dirs]) {
+					let merged = child;
+					while (merged.files.length === 0 && merged.dirs.size === 1) {
+						const [only] = merged.dirs.values();
+						merged = { name: `${merged.name}/${only.name}`, dirs: only.dirs, files: only.files };
+					}
+					if (merged !== child) {
+						node.dirs.delete(key);
+						node.dirs.set(key, merged);
+					}
+					compress(merged);
+				}
+			};
+			compress(root);
+			entries = [];
+			const walk = (node: TreeDir, depth: number, prefix: string): void => {
+				for (const dir of [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+					const key = `${section}:${prefix}${dir.name}`;
+					const collapsed = this.#collapsed.has(key);
+					entries.push({ target: { kind: "dir", key }, depth, dirName: dir.name, collapsed });
+					if (!collapsed) walk(dir, depth + 1, `${prefix}${dir.name}/`);
+				}
+				for (const file of node.files) entries.push({ target: { kind: "file", file }, depth, file });
+			};
+			walk(root, 0, "");
 		}
-		const root: TreeDir = { name: "", dirs: new Map(), files: [] };
-		for (const file of files) {
-			const parts = file.path.split("/");
-			let node = root;
-			for (const part of parts.slice(0, -1)) {
-				let next = node.dirs.get(part);
-				if (!next) {
-					next = { name: part, dirs: new Map(), files: [] };
-					node.dirs.set(part, next);
-				}
-				node = next;
-			}
-			node.files.push(file);
-		}
-		// Compress single-child directory chains ("a/b/c" as one row).
-		const compress = (node: TreeDir): void => {
-			for (const [key, child] of [...node.dirs]) {
-				let merged = child;
-				while (merged.files.length === 0 && merged.dirs.size === 1) {
-					const [only] = merged.dirs.values();
-					merged = { name: `${merged.name}/${only.name}`, dirs: only.dirs, files: only.files };
-				}
-				if (merged !== child) {
-					node.dirs.delete(key);
-					node.dirs.set(key, merged);
-				}
-				compress(merged);
-			}
-		};
-		compress(root);
-		const entries: FileEntry[] = [];
-		const walk = (node: TreeDir, depth: number, prefix: string): void => {
-			for (const dir of [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name))) {
-				const key = `${section}:${prefix}${dir.name}`;
-				const collapsed = this.#collapsed.has(key);
-				entries.push({ target: { kind: "dir", key }, depth, dirName: dir.name, collapsed });
-				if (!collapsed) walk(dir, depth + 1, `${prefix}${dir.name}/`);
-			}
-			for (const file of node.files) entries.push({ target: { kind: "file", file }, depth, file });
-		};
-		walk(root, 0, "");
+		this.#fileEntryCache.set(section, {
+			files,
+			style: this.viewStyle,
+			treeVersion: this.#treeVersion,
+			entries,
+			rows: entries.map(entry => ({ entry, target: entry.target })),
+		});
 		return entries;
 	}
 
 	#rebuildTargets(): void {
+		const headFiles = this.#model.headCommit?.files;
+		const snapshot = this.#targetSnapshot;
+		if (
+			snapshot?.clean === this.#model.clean &&
+			snapshot.unstaged === this.#model.unstaged &&
+			snapshot.staged === this.#model.staged &&
+			snapshot.headFiles === headFiles &&
+			snapshot.style === this.viewStyle &&
+			snapshot.treeVersion === this.#treeVersion
+		) {
+			return;
+		}
+
 		const targets: Target[] = [];
+		this.#entryDepth.clear();
+		this.#targetByKey.clear();
+		const pushTarget = (target: Target): void => {
+			targets.push(target);
+			this.#targetByKey.set(targetKey(target), target);
+		};
+		const pushEntry = (entry: FileEntry): void => {
+			this.#entryDepth.set(targetKey(entry.target), entry.depth ?? 0);
+			pushTarget(entry.target);
+		};
 		if (this.#model.clean) {
-			for (const entry of this.#fileEntries(this.#model.headCommit?.files ?? [], "commit"))
-				targets.push(entry.target);
+			for (const entry of this.#fileEntries(headFiles ?? [], "commit")) pushEntry(entry);
 		} else {
-			targets.push({ kind: "stage-all" });
-			for (const entry of this.#fileEntries(this.#model.unstaged, "unstaged")) targets.push(entry.target);
-			targets.push({ kind: "unstage-all" });
-			for (const entry of this.#fileEntries(this.#model.staged, "staged")) targets.push(entry.target);
-			targets.push({ kind: "amend" }, { kind: "summary" }, { kind: "description" }, { kind: "commit-button" });
+			pushTarget({ kind: "stage-all" });
+			for (const entry of this.#fileEntries(this.#model.unstaged, "unstaged")) pushEntry(entry);
+			pushTarget({ kind: "unstage-all" });
+			for (const entry of this.#fileEntries(this.#model.staged, "staged")) pushEntry(entry);
+			pushTarget({ kind: "amend" });
+			pushTarget({ kind: "summary" });
+			pushTarget({ kind: "description" });
+			pushTarget({ kind: "commit-button" });
 		}
 		this.#targets = targets;
+		this.#targetSnapshot = {
+			clean: this.#model.clean,
+			unstaged: this.#model.unstaged,
+			staged: this.#model.staged,
+			headFiles,
+			style: this.viewStyle,
+			treeVersion: this.#treeVersion,
+		};
 	}
 
 	#select(target: Target): void {
@@ -302,11 +379,13 @@ export class Sidebar {
 			case "dir": {
 				if (this.#collapsed.has(target.key)) this.#collapsed.delete(target.key);
 				else this.#collapsed.add(target.key);
+				this.#treeVersion++;
 				this.#requestRender();
 				break;
 			}
 			case "view-style":
 				this.viewStyle = target.style;
+				this.#treeVersion++;
 				this.#requestRender();
 				break;
 			case "stage-all":
@@ -362,6 +441,86 @@ export class Sidebar {
 		}
 		return false;
 	}
+	/** True while a commit-form text input is capturing letter keys. */
+	get editing(): boolean {
+		const target = this.selected;
+		return this.focused && (target?.kind === "summary" || target?.kind === "description");
+	}
+
+	/**
+	 * Move selection to the next/previous visible file row. False at the
+	 * boundary. `from` anchors the walk at the file currently shown in the
+	 * diff pane, so hunk rollover works even when the sidebar selection sits
+	 * on a dir row or a commit-form control.
+	 */
+	selectAdjacentFile(direction: 1 | -1, from?: ChangedFile | null): boolean {
+		this.#rebuildTargets();
+		let start = from
+			? this.#targets.findIndex(
+					target => target.kind === "file" && target.file.path === from.path && target.file.area === from.area,
+				)
+			: -1;
+		if (start < 0) {
+			const current = this.selected;
+			start = current ? this.#targets.findIndex(target => targetKey(target) === targetKey(current)) : -1;
+		}
+		for (let i = start + direction; i >= 0 && i < this.#targets.length; i += direction) {
+			const target = this.#targets[i];
+			if (target.kind === "file") {
+				this.#select(target);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Select the commit summary input (the `c` shortcut). False on a clean tree. */
+	focusCommitForm(): boolean {
+		this.#rebuildTargets();
+		const summary = this.#targets.find(target => target.kind === "summary");
+		if (!summary) return false;
+		this.#select(summary);
+		return true;
+	}
+
+	/** `←`: collapse an expanded dir, otherwise jump to the parent dir row. */
+	#collapseOrParent(): void {
+		const target = this.selected;
+		if (!target || (target.kind !== "file" && target.kind !== "dir")) return;
+		if (target.kind === "dir" && !this.#collapsed.has(target.key)) {
+			this.#collapsed.add(target.key);
+			this.#treeVersion++;
+			this.#requestRender();
+			return;
+		}
+		const index = this.#targets.findIndex(candidate => targetKey(candidate) === targetKey(target));
+		const depth = this.#entryDepth.get(targetKey(target)) ?? 0;
+		for (let i = index - 1; i >= 0; i--) {
+			const candidate = this.#targets[i];
+			// Section headers/buttons bound the tree walk.
+			if (candidate.kind !== "file" && candidate.kind !== "dir") return;
+			if (candidate.kind === "dir" && (this.#entryDepth.get(targetKey(candidate)) ?? 0) < depth) {
+				this.#select(candidate);
+				return;
+			}
+		}
+	}
+
+	/** `→`: expand a collapsed dir, step into an expanded one, open a file. */
+	#expandOrOpen(): void {
+		const target = this.selected;
+		if (target?.kind === "dir") {
+			if (this.#collapsed.has(target.key)) {
+				this.#collapsed.delete(target.key);
+				this.#treeVersion++;
+				this.#requestRender();
+			} else {
+				this.#moveSelection(1);
+			}
+			return;
+		}
+		if (target?.kind === "file") this.#onFocusDiff();
+	}
 
 	handleInput(data: string): void {
 		this.#rebuildTargets();
@@ -388,15 +547,27 @@ export class Sidebar {
 			}
 		}
 
-		if (matchesKey(data, "up")) this.#moveSelection(-1);
-		else if (matchesKey(data, "down")) this.#moveSelection(1);
+		if (matchesKey(data, "up") || data === "k") this.#moveSelection(-1);
+		else if (matchesKey(data, "down") || data === "j") this.#moveSelection(1);
+		else if (matchesKey(data, "left") || data === "h") this.#collapseOrParent();
+		else if (matchesKey(data, "right") || data === "l") this.#expandOrOpen();
+		else if (matchesKey(data, "home") || data === "g") this.#moveSelection(-this.#targets.length);
+		else if (matchesKey(data, "end") || data === "G") this.#moveSelection(this.#targets.length);
 		else if (matchesKey(data, "pageUp")) this.#moveSelection(-Math.max(1, this.#lastHeight - 4));
 		else if (matchesKey(data, "pageDown")) this.#moveSelection(Math.max(1, this.#lastHeight - 4));
-		else if (matchesKey(data, "enter") && target) this.#activate(target);
-		else if (data === " " && target?.kind !== undefined && (target.kind === "file" || target.kind === "dir"))
+		else if (matchesKey(data, "enter") && target) {
+			// Enter opens a file (focus the diff); space/s/u do the staging.
+			if (target.kind === "file") this.#onFocusDiff();
+			else this.#activate(target);
+		} else if (data === " " && target?.kind !== undefined && (target.kind === "file" || target.kind === "dir"))
 			this.#activate(target);
+		else if (data === "s" && target?.kind === "file" && target.file.area === "unstaged")
+			this.#onAction({ type: "stage", file: target.file });
+		else if (data === "u" && target?.kind === "file" && target.file.area === "staged")
+			this.#onAction({ type: "unstage", file: target.file });
 		else if (data === "t") {
 			this.viewStyle = this.viewStyle === "path" ? "tree" : "path";
+			this.#treeVersion++;
 			this.#requestRender();
 		}
 	}
@@ -434,7 +605,7 @@ export class Sidebar {
 		const rows: Row[] = [];
 		let pinned: Row[] = [];
 		if (this.#model.clean) {
-			rows.push(...this.#commitViewRows(width, isSelected));
+			rows.push(...this.#commitViewRows(width));
 		} else {
 			rows.push(...this.#changesHeaderRows(width));
 			rows.push(...this.#fileListRows(width, isSelected));
@@ -454,11 +625,11 @@ export class Sidebar {
 		this.#visibleRows = [];
 		for (let i = 0; i < listHeight; i++) {
 			const row = rows[this.#scrollTop + i];
-			lines.push(row ? truncateToWidth(row.text, width) : "");
+			lines.push(row ? truncateToWidth(this.#rowText(row, width, selectedKey), width) : "");
 			this.#visibleRows.push(row);
 		}
 		for (const row of pinned) {
-			lines.push(truncateToWidth(row.text, width));
+			lines.push(truncateToWidth(this.#rowText(row, width, selectedKey), width));
 			this.#visibleRows.push(row);
 		}
 		return lines.slice(0, height);
@@ -483,23 +654,24 @@ export class Sidebar {
 		};
 	}
 
-	#entryRows(
-		files: readonly ChangedFile[],
-		section: string,
-		width: number,
-		isSelected: (target: Target) => boolean,
-	): Row[] {
-		const treeMode = this.viewStyle === "tree";
-		return this.#fileEntries(files, section).map(entry => {
-			if (entry.target.kind === "dir") {
-				return { text: dirRowText(entry, width, isSelected(entry.target), this.focused), target: entry.target };
-			}
-			const file = entry.file as ChangedFile;
-			return {
-				text: fileRowText(file, width, isSelected(entry.target), this.focused, treeMode ? entry.depth : undefined),
-				target: entry.target,
-			};
-		});
+	#entryRows(files: readonly ChangedFile[], section: string): Row[] {
+		const entries = this.#fileEntries(files, section);
+		const cached = this.#fileEntryCache.get(section);
+		return cached?.entries === entries ? cached.rows : entries.map(entry => ({ entry, target: entry.target }));
+	}
+
+	#rowText(row: Row, width: number, selectedKey: string | undefined): string {
+		const entry = row.entry;
+		if (!entry) return row.text ?? "";
+		const selected = selectedKey === targetKey(entry.target);
+		if (entry.target.kind === "dir") return dirRowText(entry, width, selected, this.focused);
+		return fileRowText(
+			entry.target.file,
+			width,
+			selected,
+			this.focused,
+			this.viewStyle === "tree" ? entry.depth : undefined,
+		);
 	}
 
 	#changesHeaderRows(width: number): Row[] {
@@ -526,7 +698,7 @@ export class Sidebar {
 			),
 			target: stageAll,
 		});
-		rows.push(...this.#entryRows(this.#model.unstaged, "unstaged", width, isSelected));
+		rows.push(...this.#entryRows(this.#model.unstaged, "unstaged"));
 		if (this.#model.unstaged.length === 0) rows.push({ text: theme.fg("dim", "   no unstaged files") });
 		rows.push({ text: "" });
 		const unstageAll: Target = { kind: "unstage-all" };
@@ -540,7 +712,7 @@ export class Sidebar {
 			),
 			target: unstageAll,
 		});
-		rows.push(...this.#entryRows(this.#model.staged, "staged", width, isSelected));
+		rows.push(...this.#entryRows(this.#model.staged, "staged"));
 		if (this.#model.staged.length === 0) rows.push({ text: theme.fg("dim", "   no staged files") });
 		return rows;
 	}
@@ -595,7 +767,7 @@ export class Sidebar {
 		return rows;
 	}
 
-	#commitViewRows(width: number, isSelected: (target: Target) => boolean): Row[] {
+	#commitViewRows(width: number): Row[] {
 		const rows: Row[] = [];
 		const head = this.#model.headCommit;
 		if (!head) {
@@ -626,6 +798,10 @@ export class Sidebar {
 			});
 		}
 		rows.push({ text: theme.fg("borderMuted", "─".repeat(Math.max(0, width))) });
+		if (!head.filesLoaded) {
+			rows.push({ text: theme.fg("dim", " Loading changed files…") });
+			return rows;
+		}
 
 		const additions = head.files.reduce((sum, file) => sum + (file.additions ?? 0), 0);
 		const deletions = head.files.reduce((sum, file) => sum + (file.deletions ?? 0), 0);
@@ -633,7 +809,7 @@ export class Sidebar {
 			text: ` ${theme.bold(`${head.files.length} modified`)}  ${theme.fg("success", `+${additions}`)} ${theme.fg("error", `−${deletions}`)} ${theme.fg("dim", `· ${head.shortSha}`)}`,
 		});
 		rows.push(this.#viewToggleRow(width));
-		rows.push(...this.#entryRows(head.files, "commit", width, isSelected));
+		rows.push(...this.#entryRows(head.files, "commit"));
 		return rows;
 	}
 

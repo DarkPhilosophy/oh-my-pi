@@ -124,16 +124,13 @@ export class EventController {
 	// the retry's fresh cards do not render the same call twice (Codex review on
 	// #6881). Keyed by call id; reset per turn.
 	#syntheticFailureCards = new Map<string, ToolExecutionHandle>();
-	// Completions that arrived before any component existed for their call id.
-	// Cursor's server-resolved tools (todo) emit `tool_execution_end` through a
-	// synchronous callback fired mid-parse, while the `toolcall_start` for the
-	// same call rides `AssistantMessageEventStream` and is delivered a microtask
-	// later. When the server packs start and completion into one HTTP/2 chunk
-	// the completion is handled FIRST — with no `pendingTools` entry to settle.
-	// Dropping it would strand the card the streamed block creates moments
-	// later, so the event is held here and replayed the moment that component
-	// materializes (`#handleMessageUpdate`). Keyed by call id; ids are unique
-	// per turn, and the map is cleared with the other transcript anchors.
+	// Completions can outrun their streamed tool-call block: server-resolved
+	// tools may finish synchronously, and any sufficiently fast tool can settle
+	// before the UI dispatch creates its card. Hold the result
+	// so the eventual card finalizes instead of pinning transcript retirement.
+	// User-facing side effects run only on first arrival; only the component
+	// update is deferred. Call ids are unique per turn, and this map is cleared
+	// with the other transcript anchors.
 	#orphanedToolCompletions = new Map<string, Extract<AgentSessionEvent, { type: "tool_execution_end" }>>();
 	#postToolAssistantComponents = new Map<string, AssistantMessageComponent>();
 	#lastAssistantComponent: AssistantMessageComponent | undefined = undefined;
@@ -424,18 +421,10 @@ export class EventController {
 		// A collapsed read renders into a shared group keyed by id; rename its
 		// entry so the row isn't duplicated under the new id.
 		if (pending instanceof ReadToolGroupComponent) pending.renameEntry(oldId, newId);
-		// A server-resolved completion (Cursor/todo) can land under `newId` while
-		// the card was still keyed by `oldId`, so it was parked in
-		// `#orphanedToolCompletions` instead of settling. Now that the card owns
-		// `newId`, apply the held result — the normal creation path that consumes
-		// held completions is skipped on a re-key (Codex review on #6881).
-		if (pending) {
-			const orphan = this.#orphanedToolCompletions.get(newId);
-			if (orphan) {
-				this.#orphanedToolCompletions.delete(newId);
-				this.#settleHeldCompletion(pending, orphan);
-			}
-		}
+		// A fast completion can land under `newId` while the card is still keyed
+		// by `oldId`. Consume it now that the card owns the final id; the normal
+		// creation path is skipped on a re-key (Codex review on #6881).
+		if (pending) this.#settleHeldCompletionIfPresent(newId, pending);
 	}
 
 	#inlineReadToolImages(
@@ -1167,16 +1156,9 @@ export class EventController {
 					this.ctx.pendingTools.set(content.id, component);
 					this.#toolTimelineComponents.set(content.id, component);
 					this.#toolArgsReveal.bind(content.id, component);
-					// A held completion for this call means its `tool_execution_end`
-					// outran this streamed block (see #orphanedToolCompletions).
-					// Attach it now that the card exists so it settles immediately
-					// instead of animating forever. Only the component is settled —
-					// the handler's other side effects already ran on first arrival.
-					const orphan = this.#orphanedToolCompletions.get(content.id);
-					if (orphan) {
-						this.#orphanedToolCompletions.delete(content.id);
-						this.#settleHeldCompletion(component, orphan);
-					}
+					// A held completion settles only the new card; its user-facing
+					// side effects already ran on first arrival.
+					this.#settleHeldCompletionIfPresent(content.id, component);
 				} else {
 					const component = this.ctx.pendingTools.get(content.id);
 					if (component) {
@@ -1423,6 +1405,7 @@ export class EventController {
 			this.ctx.chatContainer.addChild(component);
 			this.ctx.pendingTools.set(event.toolCallId, component);
 			this.#toolTimelineComponents.set(event.toolCallId, component);
+			this.#settleHeldCompletionIfPresent(event.toolCallId, component);
 			this.ctx.ui.requestRender();
 		} else {
 			// The tool is about to run, so its arguments are final and validated.
@@ -1494,6 +1477,13 @@ export class EventController {
 			}
 			this.ctx.ui.requestRender();
 		}
+	}
+
+	#settleHeldCompletionIfPresent(toolCallId: string, component: ToolExecutionHandle): void {
+		const event = this.#orphanedToolCompletions.get(toolCallId);
+		if (!event) return;
+		this.#orphanedToolCompletions.delete(toolCallId);
+		this.#settleHeldCompletion(component, event);
 	}
 
 	/**
@@ -1640,14 +1630,12 @@ export class EventController {
 					}
 				}
 				this.ctx.ui.requestRender();
-			} else if (event.toolName === "todo") {
-				// No component yet: the streamed block that creates the card has not
-				// been delivered (see #orphanedToolCompletions). Hold the completion
-				// for replay instead of dropping it — scoped to `todo`, the only
-				// tool whose completion is emitted synchronously mid-parse. The
-				// panel/warning side effects below still run NOW, on first arrival;
-				// the replay settles only the component
-				// (`#settleHeldCompletion`), so neither is repeated.
+			} else if (!this.#toolTimelineComponents.has(event.toolCallId)) {
+				// No component yet: the async streamed-block handler lost the race
+				// to this completion. Hold the result instead of dropping it. Any
+				// tool can finish inside that scheduling window; user-facing side
+				// effects below still run now, and `#settleHeldCompletion` later
+				// updates only the card.
 				this.#orphanedToolCompletions.set(event.toolCallId, event);
 			}
 		}

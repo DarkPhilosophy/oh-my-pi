@@ -128,7 +128,9 @@ export interface TerminalFrameProvider {
 	/** Full semantic viewport used only on the transient resize buffer. */
 	renderResizeFrame?(viewport: ViewportSize): readonly string[];
 	/** Re-offer finalized history after a display reset or resize replay. */
-	resetHistory?(): void;
+	beginHistoryReplay?(): void;
+	/** Force every currently eligible finalized prefix to retire before stop. */
+	beginHistoryFlush?(): void;
 }
 
 export interface TUIStartOptions {
@@ -1340,6 +1342,28 @@ export class TUI extends Container {
 		this.#paintEndSequence = enabled ? PAINT_END : PAINT_END_NO_SYNC;
 	}
 
+	#flushHistoryBeforeStop(): void {
+		const provider = this.#frameProvider;
+		if (provider?.beginHistoryFlush === undefined) return;
+		const width = this.terminal.columns;
+		const height = this.terminal.rows;
+		if (width <= 0 || height <= 0) return;
+		provider.beginHistoryFlush();
+		while (true) {
+			this.#imageBudget.beginPass();
+			const plan = provider.renderFrame({ columns: width, rows: height });
+			this.#imageBudget.endPass();
+			if (plan.history === undefined) return;
+			let viewport = Array.from(plan.viewport);
+			if (viewport.length > height) viewport = viewport.slice(0, height);
+			const acceptedBefore = this.#acceptedHistoryBatchId;
+			this.#emitPlanFrame(width, height, viewport, plan.history, provider);
+			if (plan.history.id > acceptedBefore && this.#acceptedHistoryBatchId === acceptedBefore) {
+				throw new Error("History flush did not accept the offered batch");
+			}
+		}
+	}
+
 	stop(): void {
 		this.#resizeSettleTimer?.cancel();
 		this.#resizeSettleTimer = undefined;
@@ -1359,6 +1383,7 @@ export class TUI extends Container {
 			this.#altPreviousLines = [];
 			this.#pendingAltExit = "";
 		}
+		this.#flushHistoryBeforeStop();
 		// Deliberately leave transmitted images in the terminal's graphics store:
 		// placeholder cells committed to native scrollback render only while their
 		// image data lives, so a delete-by-id here blanks every transcript image
@@ -1492,7 +1517,7 @@ export class TUI extends Container {
 	}
 	#prepareForcedRender(clearScrollback: boolean): void {
 		if (clearScrollback && !this.#clearScrollbackOnNextRender) {
-			this.#frameProvider?.resetHistory?.();
+			this.#frameProvider?.beginHistoryReplay?.();
 			if (TERMINAL.imageProtocol === ImageProtocol.Kitty) this.#imageBudget.forgetTransmitted();
 		}
 		this.#clearScrollbackOnNextRender ||= clearScrollback;
@@ -1983,7 +2008,7 @@ export class TUI extends Container {
 			return;
 		}
 		const provider = this.#frameProvider;
-		if (!provider?.resetHistory) return;
+		if (!provider?.beginHistoryReplay) return;
 		this.#resizeReplaySize = size;
 		if (this.#clearScrollbackOnNextRender) {
 			this.#forceViewportRepaintOnNextRender = true;
@@ -1993,7 +2018,7 @@ export class TUI extends Container {
 			this.#prepareForcedRender(true);
 			return;
 		}
-		provider.resetHistory();
+		provider.beginHistoryReplay();
 		this.#forceViewportRepaintOnNextRender = true;
 	}
 

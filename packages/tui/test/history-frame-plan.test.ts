@@ -81,7 +81,7 @@ class WidthReplayProvider implements TerminalFrameProvider {
 		this.#retired = true;
 	}
 
-	resetHistory(): void {
+	beginHistoryReplay(): void {
 		this.#retired = false;
 		this.resetCount++;
 	}
@@ -111,9 +111,35 @@ class HeightReplayProvider implements TerminalFrameProvider {
 		this.#retired = true;
 	}
 
-	resetHistory(): void {
+	beginHistoryReplay(): void {
 		this.#retired = false;
 		this.resetCount++;
+	}
+}
+
+class FlushProvider implements TerminalFrameProvider {
+	#nextId = 1;
+	#pending = ["final one", "final two"];
+	#flushing = false;
+	readonly acknowledged: number[] = [];
+
+	renderFrame(): TerminalFramePlan {
+		const row = this.#flushing ? this.#pending[0] : undefined;
+		return {
+			history: row === undefined ? undefined : { id: this.#nextId, rows: [row] },
+			viewport: ["editor"],
+		};
+	}
+
+	acknowledgeHistory(id: number): void {
+		if (id !== this.#nextId || this.#pending.length === 0) return;
+		this.acknowledged.push(id);
+		this.#nextId++;
+		this.#pending.shift();
+	}
+
+	beginHistoryFlush(): void {
+		this.#flushing = true;
 	}
 }
 
@@ -147,6 +173,19 @@ describe("terminal frame plans", () => {
 		expect(terminal.getBufferPosition().baseY).toBe(0);
 		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["spinner two", "editor", "", ""]);
 		tui.stop();
+	});
+
+	it("flushes every eligible history batch before terminal handoff", () => {
+		const terminal = new VirtualTerminal(20, 3);
+		const provider = new FlushProvider();
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+
+		tui.stop();
+
+		expect(provider.acknowledged).toEqual([1, 2]);
+		expect(plainBuffer(terminal)).toContain("final one");
+		expect(plainBuffer(terminal)).toContain("final two");
 	});
 
 	it("keeps visible history above the anchored viewport while room remains", () => {

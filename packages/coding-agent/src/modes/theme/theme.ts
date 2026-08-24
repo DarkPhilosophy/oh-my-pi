@@ -21,6 +21,7 @@ export {
 } from "./symbols";
 export { Theme } from "./theme-class";
 export {
+	createHighlightStream,
 	getEditorTheme,
 	getMarkdownTheme,
 	getSelectListTheme,
@@ -29,6 +30,7 @@ export {
 	highlightCode,
 	setCopyUrlHandlerReady,
 	setMarkdownMermaidRendering,
+	warmHighlighter,
 } from "./tui-adapters";
 
 /** Appearance detected via OSC 11 background color query, or undefined if not yet available. */

@@ -32,6 +32,14 @@ interface TranscriptEntry {
 	state: BlockState;
 }
 
+type OfferedKind = "commit" | "replay";
+type RetirementPolicy = "pressure" | "flush";
+
+interface Replay {
+	cursor: number;
+	end: number;
+}
+
 const MAX_LIVE_BLOCKS = 256;
 const EMPTY_ROWS: readonly string[] = [];
 
@@ -58,7 +66,9 @@ export class TranscriptContainer extends Container {
 	#entries: TranscriptEntry[] = [];
 	#frontier = 0;
 	#nextBatchId = 1;
-	#offered: { batch: HistoryBatch; end: number } | undefined;
+	#offered: { batch: HistoryBatch; end: number; kind: OfferedKind } | undefined;
+	#replay: Replay | undefined;
+	#replayRequested = false;
 	#toolActivityVisible = true;
 	#lastFrame: AnimationFrame = { tick: 0, now: 0 };
 
@@ -81,6 +91,8 @@ export class TranscriptContainer extends Container {
 		this.#entries = [];
 		this.#frontier = 0;
 		this.#offered = undefined;
+		this.#replay = undefined;
+		this.#replayRequested = false;
 	}
 
 	setToolActivityVisible(visible: boolean): void {
@@ -116,13 +128,14 @@ export class TranscriptContainer extends Container {
 		return Math.max(0, Math.trunc(rows)) > active && this.#liveCount() < MAX_LIVE_BLOCKS;
 	}
 
-	/** Rebuild retirement state before replaying the complete transcript history. */
-	resetRetirement(): void {
-		this.#frontier = 0;
-		this.#offered = undefined;
-		for (const entry of this.#entries) {
-			if (entry.state === "committed") entry.state = isFinalized(entry.component) ? "settled" : "active";
+	/** Replays the immutable committed prefix without changing lifecycle state. */
+	beginReplay(): void {
+		this.#syncEntries();
+		if (this.#offered !== undefined) {
+			this.#replayRequested = true;
+			return;
 		}
+		this.#startReplay();
 	}
 
 	/** Total rows the live (non-committed, non-offered) tail occupies at `width`. */
@@ -194,14 +207,29 @@ export class TranscriptContainer extends Container {
 	}
 
 	/**
-	 * Offer the settled prefix that must retire for the live tail to fit
-	 * `capacity` rows. Blocks stay live (re-rendering at the current width)
-	 * while room remains; the offer stands until the terminal acknowledges it.
+	 * Offers the shortest finalized prefix needed to restore live capacity.
+	 * The offer stands until the terminal acknowledges it.
 	 */
 	peekFinalizedBatch(width: number, capacity: number): HistoryBatch | undefined {
+		return this.#peekBatch(width, capacity, "pressure");
+	}
+
+	/** Offers the complete currently eligible prefix for graceful shutdown. */
+	peekFlushBatch(width: number): HistoryBatch | undefined {
+		return this.#peekBatch(width, 0, "flush");
+	}
+
+	#peekBatch(width: number, capacity: number, policy: RetirementPolicy): HistoryBatch | undefined {
 		this.#syncEntries();
 		this.#settleFinalized();
 		if (this.#offered !== undefined) return this.#offered.batch;
+		if (this.#replay !== undefined) {
+			const start = this.#replay.cursor;
+			const end = Math.min(start + 1, this.#replay.end);
+			const batch: HistoryBatch = { id: this.#nextBatchId++, rows: this.#renderRange(start, end, width) };
+			this.#offered = { batch, end, kind: "replay" };
+			return batch;
+		}
 		const room = Math.max(0, Math.trunc(capacity));
 		const live = this.#liveEntries();
 		if (live.length === 0) return undefined;
@@ -215,42 +243,49 @@ export class TranscriptContainer extends Container {
 			if (rendered.length > 0) total += rendered.length + (visible++ > 0 ? 1 : 0);
 		}
 		const overflowing = total > room || this.#liveCount() >= MAX_LIVE_BLOCKS;
-		if (!overflowing) return undefined;
+		if (policy === "pressure" && !overflowing) return undefined;
 		// Retire the longest settled prefix needed to fit; commit order is
 		// absolute, so retirement stops at the first still-active block.
 		let end = this.#frontier;
 		let freed = 0;
 		let index = 0;
 		while (end < this.#entries.length && this.#entries[end]!.state === "settled") {
-			if (total - freed <= room && this.#liveCount() - (end - this.#frontier) < MAX_LIVE_BLOCKS) break;
+			if (
+				policy === "pressure" &&
+				total - freed <= room &&
+				this.#liveCount() - (end - this.#frontier) < MAX_LIVE_BLOCKS
+			)
+				break;
 			freed += heights[index]! > 0 ? heights[index]! + 1 : 0;
 			end++;
 			index++;
 		}
 		if (end === this.#frontier) return undefined;
-		const rows: string[] = [];
-		for (let retire = this.#frontier; retire < end; retire++) {
-			this.#setAllocation(this.#entries[retire]!.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
-			const block = trimBlankEdges(this.#entries[retire]!.component.render(width));
-			if (block.length === 0) continue;
-			if (rows.length > 0) rows.push("");
-			rows.push(...block);
-		}
-		if (rows.length > 0) rows.push("");
-		const batch: HistoryBatch = { id: this.#nextBatchId++, rows };
-		this.#offered = { batch, end };
+		const batch: HistoryBatch = {
+			id: this.#nextBatchId++,
+			rows: this.#renderRange(this.#frontier, end, width),
+		};
+		this.#offered = { batch, end, kind: "commit" };
 		return batch;
 	}
 
-	/** Retire exactly the history batch most recently offered by this container. */
+	/** Acknowledges exactly the most recently offered commit or replay batch. */
 	acknowledgeFinalizedBatch(id: number): void {
 		const offered = this.#offered;
 		if (offered === undefined || offered.batch.id !== id) return;
-		for (let index = this.#frontier; index < offered.end; index++) {
-			this.#entries[index]!.state = "committed";
+		if (offered.kind === "commit") {
+			for (let index = this.#frontier; index < offered.end; index++) {
+				this.#entries[index]!.state = "committed";
+			}
+			this.#frontier = offered.end;
+		} else {
+			const replay = this.#replay;
+			if (replay === undefined || offered.end > replay.end) return;
+			replay.cursor = offered.end;
+			if (replay.cursor === replay.end) this.#replay = undefined;
 		}
-		this.#frontier = offered.end;
 		this.#offered = undefined;
+		if (this.#replayRequested) this.#startReplay();
 	}
 
 	/** Full semantic render used by exports and non-terminal commands. */
@@ -265,6 +300,26 @@ export class TranscriptContainer extends Container {
 			rows.push(...block);
 		}
 		return rows;
+	}
+
+	#renderRange(start: number, end: number, width: number): readonly string[] {
+		const rows: string[] = [];
+		for (let index = start; index < end; index++) {
+			const entry = this.#entries[index]!;
+			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			const block = trimBlankEdges(entry.component.render(width));
+			if (block.length === 0) continue;
+			if (rows.length > 0) rows.push("");
+			rows.push(...block);
+		}
+		if (rows.length > 0) rows.push("");
+		return rows;
+	}
+
+	#startReplay(): void {
+		const end = this.#frontier;
+		this.#replay = end > 0 ? { cursor: 0, end } : undefined;
+		this.#replayRequested = false;
 	}
 
 	#renderEmergency(
@@ -301,9 +356,9 @@ export class TranscriptContainer extends Container {
 		}
 	}
 
-	/** Live entries: past the committed frontier and not in the offered batch. */
+	/** Live entries exclude an offered commit but never an independent replay. */
 	#liveEntries(): TranscriptEntry[] {
-		const start = this.#offered?.end ?? this.#frontier;
+		const start = this.#offered?.kind === "commit" ? this.#offered.end : this.#frontier;
 		return this.#entries.slice(start);
 	}
 

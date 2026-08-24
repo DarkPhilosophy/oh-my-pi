@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added asynchronous, size-bounded SVG-to-PNG rasterization for terminal media previews.
+- Added `DiffStream` for incremental text/byte ingestion, direct asynchronous file opening, stable-prefix progress, off-thread exact Myers runs/unified hunks, and asynchronous syntax-grammar warmup.
+
 ## [18.0.3] - 2026-08-23
 
 ### Fixed

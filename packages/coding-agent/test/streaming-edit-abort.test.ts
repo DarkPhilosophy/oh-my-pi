@@ -649,7 +649,15 @@ it(
 		// control also absorbs, so calibrate the guard-work ceiling against the
 		// measured jitter instead of trusting a fixed wall-clock bound alone.
 		expect(maxSyncSpanMs).toBeLessThan(Math.max(5, ambientDriftMs * 3));
-		expect(maxDriftMs).toBeLessThan(Math.max(5, ambientDriftMs + 5));
+		// The guard run legitimately spends one tick decoding + LF-normalizing the
+		// 2MB target and then pays GC for that churn — single-digit ms locally,
+		// 12ms observed on a 2-core CI runner. The ambient control cannot absorb
+		// those (they only occur under guard work), so the absolute floor covers
+		// them. Regression drift is an order of magnitude above it: an unsliced
+		// removed-lines pass scans 200 lines x 2MB in one continuation (>=40ms
+		// even on fast hardware), and inline-sync blocking is caught by the
+		// tighter maxSyncSpanMs bound above.
+		expect(maxDriftMs).toBeLessThan(Math.max(30, ambientDriftMs + 5));
 		expect(guard.abortTriggered).toBe(false);
 		expect(abortCalls.count).toBe(0);
 	},

@@ -124,6 +124,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.imagesHelp,
 	},
 	{
+		name: "if-bench",
+		load: () => import("./commands/if-bench").then(m => m.default),
+		help: commandHelp.ifBenchHelp,
+	},
+	{
 		name: "install",
 		load: () => import("./commands/install").then(m => m.default),
 		help: commandHelp.installHelp,

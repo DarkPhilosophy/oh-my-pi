@@ -347,6 +347,14 @@
       "types": "./src/eval/index.ts",
       "import": "./src/eval/index.ts"
     },
+    "./if-bench": {
+      "types": "./src/if-bench/index.ts",
+      "import": "./src/if-bench/index.ts"
+    },
+    "./if-bench/*": {
+      "types": "./src/if-bench/*.ts",
+      "import": "./src/if-bench/*.ts"
+    },
     "./eval/js/*": {
       "types": "./src/eval/js/*.ts",
       "import": "./src/eval/js/*.ts"
