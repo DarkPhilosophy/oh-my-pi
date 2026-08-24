@@ -595,12 +595,6 @@ pub struct DiffStream {
 	state: Arc<Mutex<DiffStreamState>>,
 }
 
-impl Default for DiffStream {
-	fn default() -> Self {
-		Self { state: Arc::new(Mutex::new(DiffStreamState::default())) }
-	}
-}
-
 #[napi]
 impl DiffStream {
 	/// Create an empty two-sided stream.
@@ -610,7 +604,7 @@ impl DiffStream {
 		reason = "N-API constructors are invoked through generated JavaScript"
 	)]
 	pub fn new() -> Self {
-		Self::default()
+		Self { state: Arc::new(Mutex::new(DiffStreamState::default())) }
 	}
 
 	/// Append a JavaScript text chunk to one side.
@@ -733,6 +727,11 @@ impl DiffStream {
 		let new = state.new.text.clone();
 		drop(state);
 		Ok(task::blocking("diff.finish", (), move |_| Ok(stream_result(&old, &new, context))))
+	}
+}
+impl Default for DiffStream {
+	fn default() -> Self {
+		Self { state: Arc::new(Mutex::new(DiffStreamState::default())) }
 	}
 }
 
