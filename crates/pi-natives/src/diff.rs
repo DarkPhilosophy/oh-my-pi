@@ -588,10 +588,15 @@ impl DiffStreamState {
 /// Complete lines are observable during ingestion. Only equal leading lines
 /// are declared stable before EOF; future input can change Myers alignment
 /// after the first mismatch.
-#[derive(Default)]
 #[napi]
 pub struct DiffStream {
 	state: Arc<Mutex<DiffStreamState>>,
+}
+
+impl Default for DiffStream {
+	fn default() -> Self {
+		Self { state: Arc::new(Mutex::new(DiffStreamState::default())) }
+	}
 }
 
 #[napi]
