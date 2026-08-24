@@ -159,10 +159,6 @@ export interface TerminalFrameProvider {
 	renderResizeFrame?(viewport: ViewportSize): readonly string[];
 	/** Re-offer finalized history after a destructive display replay. */
 	resetHistory?(): void;
-	/** Upstream frame-plan replay hook; preferred when present. */
-	beginHistoryReplay?(): void;
-	/** Force every currently eligible finalized prefix to retire before stop. */
-	beginHistoryFlush?(): void;
 }
 
 export interface TUIStartOptions {
@@ -1328,34 +1324,11 @@ class TerminalFrameProviderComponent
 	setNativeScrollbackCommittedRows(_rows: number): void {}
 
 	prepareNativeScrollbackReplay(): void {
-		if (this.#replayPrepared) return;
-		const beginReplay = this.provider.beginHistoryReplay;
-		const resetHistory = this.provider.resetHistory;
-		if (!beginReplay && !resetHistory) return;
+		if (!this.provider.resetHistory || this.#replayPrepared) return;
 		this.#replayPrepared = true;
-		if (beginReplay) beginReplay.call(this.provider);
-		else resetHistory?.call(this.provider);
+		this.provider.resetHistory();
 		this.#history = [];
 		this.#acknowledgedIds.clear();
-	}
-
-	flushNativeHistory(): boolean {
-		const beginFlush = this.provider.beginHistoryFlush;
-		if (!beginFlush) return false;
-		beginFlush.call(this.provider);
-		const size = this.viewportSize();
-		while (true) {
-			const plan = this.provider.renderFrame(size);
-			const history = plan.history;
-			if (!history) {
-				this.#viewport = plan.viewport.length > size.rows ? plan.viewport.slice(0, size.rows) : plan.viewport;
-				return true;
-			}
-			if (this.#acknowledgedIds.has(history.id)) return false;
-			this.#acknowledgedIds.add(history.id);
-			this.#history.push(...history.rows);
-			this.provider.acknowledgeHistory(history.id);
-		}
 	}
 }
 
@@ -2727,7 +2700,6 @@ export class TUI extends Container {
 			this.#altPreviousLines = [];
 			this.#pendingAltExit = "";
 		}
-		if (this.#frameProviderComponent?.flushNativeHistory()) this.renderNow();
 		this.#purgeInlineImages();
 		this.#clearSixelProbeState();
 		this.#stopped = true;
@@ -3974,8 +3946,6 @@ export class TUI extends Container {
 	 * incremental update. Scrollback is `frame[0..committedRows)` at all
 	 * times — no viewport probes, no deferred reconciliation.
 	 */
-
-	/** Render one frame: alt-screen modal, provider plan, or children fallback. */
 	#doRender(): void {
 		if (this.#stopped) return;
 		const width = this.terminal.columns;

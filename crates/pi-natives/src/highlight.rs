@@ -13,10 +13,7 @@ use syntect::parsing::{
 	ParseState, Scope, ScopeStack, ScopeStackOp, SyntaxDefinition, SyntaxReference, SyntaxSet,
 };
 
-use crate::{
-	js::{self, InlineStr},
-	task,
-};
+use crate::js::{self, InlineStr};
 
 /// One theme colour: an ANSI escape sequence such as `\x1b[38;2;255;0;0m`.
 ///
@@ -517,16 +514,6 @@ fn highlight_into(
 			}
 		}
 	}
-}
-
-/// Warm syntax grammars and scope matchers on the native worker pool.
-#[napi]
-pub fn warm_highlighter() -> task::Promise<()> {
-	task::blocking("highlight.warm", (), move |_| {
-		let _ = get_syntax_set();
-		let _ = get_scope_matchers();
-		Ok(())
-	})
 }
 
 /// Stateful incremental syntax highlighter for streamed code.

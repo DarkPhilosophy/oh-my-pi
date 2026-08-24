@@ -296,11 +296,6 @@ export class TranscriptContainer
 		}
 	}
 
-	/** Re-offer finalized history after a destructive terminal replay. */
-	beginReplay(): void {
-		this.resetRetirement();
-	}
-
 	override captureNativeScrollbackWidthEpoch(): unknown {
 		// A finalized notice may be appended below a still-streaming block. The
 		// epoch must stay tied to the earliest live source; resolving the final
@@ -576,11 +571,6 @@ export class TranscriptContainer
 		const batch: HistoryBatch = { id: this.#providerNextBatchId++, rows };
 		this.#providerOffered = { batch, end };
 		return batch;
-	}
-
-	/** Offer the complete currently eligible finalized prefix during graceful shutdown. */
-	peekFlushBatch(width: number): HistoryBatch | undefined {
-		return this.peekFinalizedBatch(width, 0);
 	}
 
 	/** Retire exactly the outstanding provider history offer. */

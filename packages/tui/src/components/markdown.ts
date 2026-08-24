@@ -95,26 +95,6 @@ function isOsc66Line(line: string): boolean {
 	return line.includes(OSC66_LINE_PREFIX);
 }
 
-function isMarkdownFencePrefix(prefix: string): boolean {
-	let remaining = prefix;
-	while (remaining.length > 0) {
-		const indent = /^ {0,3}/.exec(remaining)?.[0] ?? "";
-		remaining = remaining.slice(indent.length);
-		if (remaining.length === 0) return true;
-		if (remaining.startsWith(">")) {
-			remaining = remaining.slice(1).replace(/^[ \t]/, "");
-			continue;
-		}
-		const listMarker = /^(?:[-+*]|\d+[.)])[ \t]+/.exec(remaining);
-		if (listMarker) {
-			remaining = remaining.slice(listMarker[0].length);
-			continue;
-		}
-		return false;
-	}
-	return true;
-}
-
 const MARKDOWN_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const MARKDOWN_HEADING_LINE = /^ {0,3}#{1,6}(?:[ \t]+|$)/;
 const FENCED_SOURCE_INTRO = /\b(?:code|example|markdown|output|snippet|source)\s*:?\s*$/i;
@@ -148,6 +128,25 @@ function repairOrphanClosingFence(text: string): string {
 		return lines.join("\n");
 	}
 	return text;
+}
+
+function isMarkdownContainerPrefix(prefix: string): boolean {
+	let remaining = prefix;
+	while (remaining.length > 0) {
+		remaining = remaining.replace(/^[ \t]+/, "");
+		if (remaining.length === 0) return true;
+		if (remaining.startsWith(">")) {
+			remaining = remaining.slice(1);
+			continue;
+		}
+		const listMarker = /^(?:[-+*]|\d+[.)])[ \t]+/.exec(remaining);
+		if (listMarker) {
+			remaining = remaining.slice(listMarker[0].length);
+			continue;
+		}
+		return false;
+	}
+	return true;
 }
 
 function isGfmTableDelimiter(line: string, headerLine: string | undefined): boolean {
@@ -1540,20 +1539,6 @@ interface StreamPrefixLineCache extends RenderSignature {
 	lines: readonly string[];
 	tables: readonly TableRenderSpec[];
 }
-interface TailRowCache extends RenderSignature {
-	tokenStart: number;
-	cachedThrough: number;
-	rows: (readonly string[] | undefined)[];
-	raws: (string | undefined)[];
-	nextTypes: (string | undefined)[];
-}
-
-interface TailRenderRecorder {
-	rows: (readonly string[] | undefined)[];
-	raws: (string | undefined)[];
-	nextTypes: (string | undefined)[];
-}
-
 interface StreamingHighlightCache extends RenderSignature {
 	lang: string | undefined;
 	text: string;
@@ -1561,10 +1546,6 @@ interface StreamingHighlightCache extends RenderSignature {
 	stream: HighlightStreamSession;
 }
 
-/**
- * Split a highlight-stream push result (newline-terminated lines) into
- * per-line strings, dropping the empty tail produced by the final newline.
- */
 function splitPushedHighlightLines(pushed: string): string[] {
 	const lines = pushed.split("\n");
 	lines.pop();
@@ -1620,8 +1601,7 @@ export class Markdown
 	#expandedSourceOffsets: number[];
 	/** Expanded-source cursor used to disambiguate repeated fenced blocks. */
 	#copySourceSearchCursor = 0;
-	// Suffix of #text a future append could still complete into a match
-	// (see trailingOsc8Partial); drives the append-only fast path.
+	// Suffix of #text that a future append could complete into an OSC 8 match.
 	#oscPartialEscape?: string;
 	#paddingX: number; // Left/right padding
 	#paddingY: number; // Top/bottom padding
@@ -1649,7 +1629,6 @@ export class Markdown
 	#streamPrefixText?: string;
 	#streamPrefixTokens?: Token[];
 	#streamPrefixLineCache?: StreamPrefixLineCache;
-	#tailRowCache?: TailRowCache;
 	// Rows of the most recent render() that are settled — top padding plus the
 	// rendered frozen token prefix — exposed via getLastRenderSettledRows()
 	// for native-scrollback commit gating.
@@ -1723,11 +1702,11 @@ export class Markdown
 		defaultTextStyle?: DefaultTextStyle,
 		codeBlockIndent: number = 2,
 	) {
-		this.#sourceText = text;
-		const expandedSource = expandSourceText(text);
+		this.#sourceText = normalizeOsc8Terminators(text);
+		const expandedSource = expandSourceText(this.#sourceText);
 		this.#expandedSourceText = expandedSource.text;
 		this.#expandedSourceOffsets = expandedSource.sourceOffsets;
-		this.#text = normalizeOsc8Terminators(text);
+		this.#text = this.#sourceText;
 		this.#oscPartialEscape = trailingOsc8Partial(this.#text);
 		this.#paddingX = paddingX;
 		this.#paddingY = paddingY;
@@ -1737,24 +1716,20 @@ export class Markdown
 	}
 
 	setText(text: string): boolean {
-		// Source recovery must observe byte-exact caller input even when display
-		// normalization maps an OSC ST terminator to BEL.
-		if (text === this.#sourceText) return false;
-		const sourceText = text;
+		// Identical re-emit (throttled tick): fully normalized already.
+		if (text === this.#text) return false;
 		// Streaming path: append-only growth. Only the memoized pending escape
 		// suffix plus the delta can hold a not-yet-normalized match (a crossing
 		// match starts in the pending suffix; everything else is in the delta).
-		// Normalize that region alone and splice it onto the old prefix. The
-		// common clean-delta frame allocates nothing. After ST → BEL rewrites,
-		// normalized render text no longer aligns with the raw source, so later
-		// frames use the cold pass while source recovery remains byte-exact.
-		if (
-			this.#text === this.#sourceText &&
-			sourceText.length > this.#sourceText.length &&
-			sourceText.startsWith(this.#sourceText)
-		) {
+		// Normalize that region alone and splice it onto the old prefix;
+		// String.replace returns the input unchanged when nothing matches, so
+		// the common clean-delta frame allocates nothing. Once a match is
+		// rewritten (ST → BEL), the caller's raw text no longer aligns with
+		// #text (2-byte ST vs 1-byte BEL), so later frames fall back to the
+		// cold full-document pass — still byte-correct, just not faster.
+		if (text.length > this.#text.length && text.startsWith(this.#text)) {
 			const memoized = this.#oscPartialEscape;
-			const pending = (memoized ?? "") + sourceText.slice(this.#sourceText.length);
+			const pending = (memoized ?? "") + text.slice(this.#text.length);
 			const normalized = normalizeOsc8Terminators(pending);
 			if (normalized !== pending) {
 				// A stored byte was rewritten (ST → BEL on a crossing match): the
@@ -1764,7 +1739,7 @@ export class Markdown
 			}
 			this.#oscPartialEscape = trailingOsc8Partial(normalized);
 			if (normalized === pending) {
-				const delta = sourceText.slice(this.#sourceText.length);
+				const delta = text.slice(this.#sourceText.length);
 				let expandedLength = this.#expandedSourceText.length;
 				for (let deltaOffset = 0; deltaOffset < delta.length; deltaOffset++) {
 					const sourceOffset = this.#sourceText.length + deltaOffset;
@@ -1775,28 +1750,32 @@ export class Markdown
 				}
 				this.#expandedSourceText += replaceTabs(delta);
 			} else {
-				const expandedSource = expandSourceText(sourceText);
+				const expandedSource = expandSourceText(text);
 				this.#expandedSourceText = expandedSource.text;
 				this.#expandedSourceOffsets = expandedSource.sourceOffsets;
 			}
-			this.#sourceText = sourceText;
+			this.#sourceText = text;
 			this.#text = text;
 			this.invalidate();
 			return true;
 		}
 		// Non-append edits / cold path: full-document pass.
-		text = normalizeOsc8Terminators(sourceText);
+		text = normalizeOsc8Terminators(text);
 		this.#oscPartialEscape = trailingOsc8Partial(text);
-		// The raw-source equality guard above handles throttled re-emits before
-		// normalization; reaching this path therefore represents a real edit.
+		// Equality guard: streaming re-emits identical text on ticks that carried
+		// no delta (throttled provider frames, reconciled tool-execution updates).
+		// Without this, the caller-side `#cachedLines` gets thrown away and the
+		// full lex + wrap runs per re-emit — one of the top CPU hotspots during
+		// streaming (issue #4353). Mirrors `Text.setText`'s guard.
+		if (text === this.#text) return false;
 		if (!text.startsWith(this.#text)) {
 			// Non-append edit: the previous frame's guard verdict cannot be
 			// reused — the checked region may have changed anywhere.
 			this.#appendOnlySinceLastScan = false;
 		}
 		if (!text.startsWith(this.#text)) this.#clearTableLayouts();
-		this.#sourceText = sourceText;
-		const expandedSource = expandSourceText(sourceText);
+		this.#sourceText = text;
+		const expandedSource = expandSourceText(text);
 		this.#expandedSourceText = expandedSource.text;
 		this.#expandedSourceOffsets = expandedSource.sourceOffsets;
 		this.#text = text;
@@ -1807,7 +1786,6 @@ export class Markdown
 			this.#streamPrefixText = undefined;
 			this.#streamPrefixTokens = undefined;
 			this.#streamPrefixLineCache = undefined;
-			this.#tailRowCache = undefined;
 			this.#settledExposedText = undefined;
 		}
 		this.invalidate();
@@ -2003,7 +1981,6 @@ export class Markdown
 			this.#streamPrefixText = undefined;
 			this.#streamPrefixTokens = undefined;
 			this.#streamPrefixLineCache = undefined;
-			this.#tailRowCache = undefined;
 		}
 		return tokens;
 	}
@@ -2039,7 +2016,6 @@ export class Markdown
 			this.#streamPrefixText = undefined;
 			this.#streamPrefixTokens = undefined;
 			this.#streamPrefixLineCache = undefined;
-			this.#tailRowCache = undefined;
 		}
 	}
 
@@ -2102,7 +2078,7 @@ export class Markdown
 		// by MarkdownTheme and is one of the most styling-sensitive entries.
 		let cacheKey: string | undefined;
 		if (!this.transientRenderCache) {
-			cacheKey = this.#renderCacheKey(normalizedText, this.#sourceText, signature);
+			cacheKey = this.#renderCacheKey(normalizedText, this.#text, signature);
 			const cached = renderCache.get(cacheKey);
 			if (cached !== undefined) {
 				// Restore both the rendered rows and the geometry metadata that produced
@@ -2200,7 +2176,7 @@ export class Markdown
 		const frozenText = this.#streamPrefixText;
 		const frozenTokenCount = this.#streamPrefixTokens?.length ?? 0;
 		if (frozenText === undefined || frozenTokenCount === 0 || !normalizedText.startsWith(frozenText)) {
-			return this.#renderStreamingTail(tokens, 0, contentWidth, signature);
+			return this.#renderContentLines(tokens, 0, tokens.length, contentWidth, signature, 0, 0);
 		}
 
 		const contentLines: string[] = [];
@@ -2265,7 +2241,17 @@ export class Markdown
 		}
 
 		if (renderedUntil < tokens.length) {
-			contentLines.push(...this.#renderStreamingTail(tokens, renderedUntil, contentWidth, signature));
+			contentLines.push(
+				...this.#renderContentLines(
+					tokens,
+					renderedUntil,
+					tokens.length,
+					contentWidth,
+					signature,
+					contentLines.length,
+					frozenText.length,
+				),
+			);
 		}
 
 		return contentLines;
@@ -2293,112 +2279,6 @@ export class Markdown
 		return cache;
 	}
 
-	/**
-	 * Render the unfrozen tail, splicing byte-identical rows from
-	 * {@link #tailRowCache} for every token whose raw text and following-token
-	 * type still match the cached snapshot. The splice reuses the exact content
-	 * lines a fresh render would produce — the row offsets are implicit in the
-	 * array order, so no offset recomputation is needed. The growing last token
-	 * is never spliced (its raw text always differs); it renders fresh and is
-	 * recorded again, so the cache trails the stream by one token.
-	 */
-	#renderStreamingTail(tokens: Token[], start: number, contentWidth: number, signature: RenderSignature): string[] {
-		const out: string[] = [];
-		let spliceEnd = start;
-		const cache = this.#tailRowCache;
-		if (cache !== undefined) {
-			spliceEnd = this.#tailSpliceEnd(cache, start, signature, tokens);
-			for (let i = start; i < spliceEnd; i++) {
-				out.push(...cache.rows[i - start]!);
-			}
-			for (let i = start; i < spliceEnd; i++) {
-				this.#advanceSplicedCopySourceCursor(tokens[i]!);
-			}
-		}
-
-		const recorder: TailRenderRecorder = {
-			rows: new Array(tokens.length - spliceEnd).fill(undefined),
-			raws: new Array(tokens.length - spliceEnd).fill(undefined),
-			nextTypes: new Array(tokens.length - spliceEnd).fill(undefined),
-		};
-		let sourceOffset = 0;
-		for (let index = 0; index < spliceEnd; index++) sourceOffset += tokens[index]?.raw.length ?? 0;
-		const fresh = this.#renderContentLines(
-			tokens,
-			spliceEnd,
-			tokens.length,
-			contentWidth,
-			signature,
-			out.length,
-			sourceOffset,
-			recorder,
-		);
-		out.push(...fresh);
-
-		// Refresh the cache: keep entries for spliced tokens (their raws stay
-		// valid), overlay the fresh entries, and re-derive the contiguous
-		// covered prefix (splicing stops at the first uncacheable or
-		// changed token). All arrays are tail-relative (index 0 = token
-		// `start`), so a mostly-frozen document allocates only for the
-		// unfrozen tail instead of the whole token list every frame.
-		const tailCount = tokens.length - start;
-		const rows: (readonly string[] | undefined)[] = new Array(tailCount).fill(undefined);
-		const raws: (string | undefined)[] = new Array(tailCount).fill(undefined);
-		const nextTypes: (string | undefined)[] = new Array(tailCount).fill(undefined);
-		if (cache !== undefined && cache.tokenStart === start) {
-			for (let i = start; i < Math.min(cache.cachedThrough, spliceEnd); i++) {
-				rows[i - start] = cache.rows[i - start];
-				raws[i - start] = cache.raws[i - start];
-				nextTypes[i - start] = cache.nextTypes[i - start];
-			}
-		}
-		for (let i = spliceEnd; i < tokens.length; i++) {
-			rows[i - start] = recorder.rows[i - spliceEnd];
-			raws[i - start] = recorder.raws[i - spliceEnd];
-			nextTypes[i - start] = recorder.nextTypes[i - spliceEnd];
-		}
-		let cachedThrough = start;
-		while (cachedThrough < tokens.length && rows[cachedThrough - start] !== undefined) cachedThrough++;
-		this.#tailRowCache = {
-			...signature,
-			tokenStart: start,
-			cachedThrough,
-			rows,
-			raws,
-			nextTypes,
-		};
-		return out;
-	}
-
-	// Longest cache-spliceable prefix: every cached row from `start` up to
-	// (but not including) the returned index is byte-identical to a fresh
-	// render of the same token. Stops at the first uncacheable token (rows
-	// undefined), the first token whose raw text changed (the growing tail
-	// token), or a following-token type change.
-	#tailSpliceEnd(cache: TailRowCache, start: number, signature: RenderSignature, tokens: Token[]): number {
-		if (cache.tokenStart !== start) return start;
-		if (cache.width !== signature.width) return start;
-		if (cache.paddingX !== signature.paddingX) return start;
-		if (cache.paddingY !== signature.paddingY) return start;
-		if (cache.codeBlockIndent !== signature.codeBlockIndent) return start;
-		if (cache.themeId !== signature.themeId) return start;
-		if (cache.defaultTextStyleId !== signature.defaultTextStyleId) return start;
-		if (cache.imageProtocol !== signature.imageProtocol) return start;
-		if (cache.hyperlinks !== signature.hyperlinks) return start;
-		if (cache.textSizing !== signature.textSizing) return start;
-		if (cache.bgColorProbe !== signature.bgColorProbe) return start;
-		if (cache.headingProbe !== signature.headingProbe) return start;
-		const limit = Math.min(cache.cachedThrough, tokens.length);
-		for (let i = start; i < limit; i++) {
-			if (cache.rows[i - start] === undefined) return i; // uncacheable token stops the splice
-			const cachedRaw = cache.raws[i - start];
-			const token = tokens[i];
-			if (cachedRaw === undefined || token === undefined) return start;
-			if (token.raw !== cachedRaw) return i; // changed/growing token: fresh-render from here
-			if ((tokens[i + 1]?.type ?? undefined) !== cache.nextTypes[i - start]) return i;
-		}
-		return limit;
-	}
 	#renderContentLines(
 		tokens: Token[],
 		start: number,
@@ -2407,10 +2287,8 @@ export class Markdown
 		signature: RenderSignature,
 		rowOffset: number,
 		startingSourceOffset: number,
-		tailRecorder?: TailRenderRecorder,
 	): string[] {
 		const wrappedLines: RenderedLine[] = [];
-		const tokenWrappedRowCounts: number[] = [];
 		let sourceOffset = startingSourceOffset;
 		for (let i = start; i < end; i++) {
 			const token = tokens[i];
@@ -2449,7 +2327,6 @@ export class Markdown
 				}
 				tokenLineOffsets.push(wrappedLines.length - tokenWrappedRowStart);
 			}
-			tokenWrappedRowCounts[i] = wrappedLines.length - tokenWrappedRowStart;
 			const tableSpecs = this.#activeTableRenderSpecs;
 			if (tableSpecs !== undefined) {
 				for (let specIndex = tableSpecStart; specIndex < tableSpecs.length; specIndex++) {
@@ -2517,19 +2394,6 @@ export class Markdown
 			}
 		}
 
-		if (tailRecorder !== undefined) {
-			let contentCursor = 0;
-			for (let i = start; i < end; i++) {
-				const token = tokens[i]!;
-				const rowCount = tokenWrappedRowCounts[i] ?? 0;
-				tailRecorder.raws[i - start] = token.raw;
-				tailRecorder.nextTypes[i - start] = tokens[i + 1]?.type;
-				tailRecorder.rows[i - start] =
-					token.type === "table" ? undefined : contentLines.slice(contentCursor, contentCursor + rowCount);
-				contentCursor += rowCount;
-			}
-		}
-
 		return contentLines;
 	}
 
@@ -2547,6 +2411,7 @@ export class Markdown
 		}
 		return layouts;
 	}
+
 	#isFencedCodeToken(token: Token): boolean {
 		const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
 		const firstLine = raw.slice(0, raw.indexOf("\n") >= 0 ? raw.indexOf("\n") : raw.length);
@@ -2567,13 +2432,6 @@ export class Markdown
 		if (offset >= 0) this.#copySourceSearchCursor = offset + raw.length;
 	}
 
-	/** Advance across a cached top-level token whose nested rows were spliced. */
-	#advanceSplicedCopySourceCursor(token: Token): void {
-		const raw = "raw" in token && typeof token.raw === "string" ? replaceTabs(token.raw) : "";
-		if (!raw) return;
-		const offset = this.#expandedSourceText.indexOf(raw, this.#copySourceSearchCursor);
-		if (offset >= 0) this.#copySourceSearchCursor = offset + raw.length;
-	}
 	/** Recover the source body for copy targets after display tab expansion. */
 	#originalCodeBody(token: Token): string {
 		const fallback = "text" in token && typeof token.text === "string" ? token.text : "";
@@ -2608,7 +2466,7 @@ export class Markdown
 				if (
 					fenceAt >= 0 &&
 					sourceLine.slice(fenceAt).trim() === openLine &&
-					isMarkdownFencePrefix(sourceLine.slice(0, fenceAt))
+					isMarkdownContainerPrefix(sourceLine.slice(0, fenceAt))
 				) {
 					openAt = openingLineStart + fenceAt;
 					break;
@@ -2633,7 +2491,7 @@ export class Markdown
 				if (fenceAt >= 0 && fenceAt <= openingFenceColumn + 3) {
 					let candidateLength = 0;
 					while (sourceLine.charAt(fenceAt + candidateLength) === fenceChar) candidateLength++;
-					const legalPrefix = isMarkdownFencePrefix(sourceLine.slice(0, fenceAt));
+					const legalPrefix = isMarkdownContainerPrefix(sourceLine.slice(0, fenceAt));
 					if (
 						legalPrefix &&
 						candidateLength >= fenceLength &&
@@ -2893,9 +2751,7 @@ export class Markdown
 			const lineEnd = tokenText.lastIndexOf("\n");
 			const completedLines = lineEnd >= 0 ? this.#highlightStreamingLines(tokenText.slice(0, lineEnd), lang) : null;
 			if (completedLines) {
-				for (const hlLine of completedLines) {
-					addBodyLine(hlLine, false);
-				}
+				for (const hlLine of completedLines) addBodyLine(hlLine, false);
 				for (const codeLine of tokenText.slice(lineEnd + 1).split("\n")) {
 					addBodyLine(this.#theme.codeBlock(codeLine), true);
 				}
@@ -3101,7 +2957,6 @@ export class Markdown
 		tokenKey = "root",
 	): RenderedLine[] {
 		const lines: RenderedLine[] = [];
-		const sourceCursorBefore = this.#copySourceSearchCursor;
 		this.#advanceCopySourceCursor(token);
 
 		// Display math block (own-line `$$…$$` / `\[…\]`): stack `\frac` vertically
@@ -3320,9 +3175,6 @@ export class Markdown
 				}
 		}
 
-		if (token.type === "code" && this.#copySourceSearchCursor === sourceCursorBefore) {
-			this.#originalCodeBody(token);
-		}
 		return lines;
 	}
 
@@ -3686,7 +3538,6 @@ export class Markdown
 					lines.push({ text: this.#renderInlineTokens(token.tokens || [], styleContext), nested: false });
 				}
 			} else if (token.type === "code") {
-				const sourceCursorBefore = this.#copySourceSearchCursor;
 				// Code block in list item — fenced blocks get the same themed box.
 				const codeIndent = padding(this.#codeBlockIndent);
 				const fenced = this.#isFencedCodeToken(token);
@@ -3706,10 +3557,6 @@ export class Markdown
 						lines.push({ text: replaceTabs(rawLine), noWrap: true, nested: false });
 					}
 				}
-				// Some render paths (too-narrow frames, Mermaid) do not need a
-				// copy target. They must still consume this token's source span
-				// before a later nested fence searches for its own source.
-				if (this.#copySourceSearchCursor === sourceCursorBefore) this.#originalCodeBody(token);
 			} else if (isMathToken(token)) {
 				// Display math block inside a list item: stack fractions / matrix rows.
 				const apply = styleContext?.applyText ?? ((t: string) => this.#applyDefaultStyle(t));

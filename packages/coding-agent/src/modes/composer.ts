@@ -44,7 +44,8 @@ export const COMPOSER_DEFAULTS: ComposerPreferences = {
 	showHardwareCursor: true,
 	maxInlineImages: 8,
 	scrollbackRebuild: false,
-	resizeScrollback: "append",
+
+	resizeScrollback: "rebuild",
 	imeSafeCursor: false,
 	autocompleteMaxVisible: 10,
 	spellingTypoDetection: true,
@@ -130,12 +131,9 @@ export class Composer implements TerminalFrameProvider {
 		| {
 				id: number;
 				rows: readonly string[];
-				source: "header" | "headerReplay" | { transcript: TranscriptContainer; transcriptId: number };
+				source: "header" | { transcript: TranscriptContainer; transcriptId: number };
 		  }
 		| undefined;
-	#historyReplayRequested = false;
-	#headerReplayPending = false;
-	#historyFlush = false;
 	// The welcome header retires to terminal history exactly once, after the
 	// intro settles; until then it renders as mutable viewport chrome.
 	#headerRetired = false;
@@ -229,10 +227,7 @@ export class Composer implements TerminalFrameProvider {
 		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
 		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - after.length), frame);
 		const composed = [...before, ...active, ...after];
-		if (
-			history !== undefined &&
-			(this.#offeredHistory?.source === "header" || this.#offeredHistory?.source === "headerReplay")
-		) {
+		if (history !== undefined && this.#offeredHistory?.source === "header") {
 			const visibleHeaderRows = Math.max(0, rows - composed.length);
 			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
 		}
@@ -242,21 +237,17 @@ export class Composer implements TerminalFrameProvider {
 		};
 	}
 
-	/** Acknowledges one accepted header, replay, or transcript batch. */
+	/** Retire an accepted terminal history batch (header, then transcript prefixes). */
 	acknowledgeHistory(id: number): void {
 		const offered = this.#offeredHistory;
 		if (offered === undefined || offered.id !== id) return;
 		if (offered.source === "header") {
 			this.#headerRetired = true;
 			this.#retiredHeaderRows = offered.rows;
-		} else if (offered.source === "headerReplay") {
-			this.#headerReplayPending = false;
-			this.#retiredHeaderRows = offered.rows;
 		} else {
 			offered.source.transcript.acknowledgeFinalizedBatch(offered.source.transcriptId);
 		}
 		this.#offeredHistory = undefined;
-		if (this.#historyReplayRequested) this.#startHistoryReplay();
 	}
 
 	/** Render the semantic transcript tail while the terminal borrows its resize buffer. */
@@ -281,25 +272,15 @@ export class Composer implements TerminalFrameProvider {
 		return rendered.length <= rows ? rendered : rendered.slice(rendered.length - rows);
 	}
 
-	/** Replays committed presentation without changing logical retirement state. */
+	/** Re-offer the complete finalized prefix after a display reset or resize replay. */
 	resetHistory(): void {
-		if (this.#offeredHistory !== undefined) {
-			this.#historyReplayRequested = true;
-			return;
-		}
-		this.#startHistoryReplay();
-	}
-
-	/** Forces every currently eligible finalized prefix to retire before stop. */
-	beginHistoryFlush(): void {
-		this.#historyFlush = true;
-	}
-
-	#startHistoryReplay(): void {
-		this.#headerReplayPending = this.#headerRetired && (this.#retiredHeaderRows?.length ?? 0) > 0;
-		this.#historyReplayRequested = false;
+		this.#offeredHistory = undefined;
+		this.#headerRetired = false;
+		this.#retiredHeaderRows = undefined;
+		this.#retiredHeaderStart = 0;
+		this.#resizeRetiredHeaderStart = undefined;
 		for (const child of this.#runtimeChildren) {
-			if (child instanceof TranscriptContainer) child.beginReplay();
+			if (child instanceof TranscriptContainer) child.resetRetirement();
 		}
 	}
 
@@ -313,36 +294,22 @@ export class Composer implements TerminalFrameProvider {
 		if (this.#offeredHistory !== undefined) {
 			return { id: this.#offeredHistory.id, rows: this.#offeredHistory.rows };
 		}
-		if (this.#headerReplayPending) {
-			this.#offeredHistory = {
-				id: this.#nextHistoryId++,
-				rows: this.#reflowRetiredHeader(width, 0),
-				source: "headerReplay",
-			};
-			return { id: this.#offeredHistory.id, rows: this.#offeredHistory.rows };
-		}
 		if (!this.#headerRetired) {
 			const welcome = this.#welcome;
 			if (welcome !== undefined && !welcome.isTranscriptBlockFinalized()) return undefined;
 			// The header stays live viewport chrome until the screen fills; then it
 			// retires first so transcript prefixes can follow in order.
-			const renderedHeader = this.#header.render(width);
-			if (renderedHeader.length > 0) {
-				const liveRows = transcript.liveRowCount(width);
-				if (!this.#historyFlush && renderedHeader.length + chromeRows + liveRows <= rows) return undefined;
-				this.#offeredHistory = {
-					id: this.#nextHistoryId++,
-					rows: [...renderedHeader, ""],
-					source: "header",
-				};
-				return { id: this.#offeredHistory.id, rows: this.#offeredHistory.rows };
-			}
-			this.#headerRetired = true;
-			this.#retiredHeaderRows = [];
+			const headerRows = this.#header.render(width).length;
+			const liveRows = transcript.liveRowCount(width);
+			if (headerRows + chromeRows + liveRows <= rows) return undefined;
+			this.#offeredHistory = {
+				id: this.#nextHistoryId++,
+				rows: [...this.#header.render(width), ""],
+				source: "header",
+			};
+			return { id: this.#offeredHistory.id, rows: this.#offeredHistory.rows };
 		}
-		const batch = this.#historyFlush
-			? transcript.peekFlushBatch(width)
-			: transcript.peekFinalizedBatch(width, Math.max(0, rows - chromeRows));
+		const batch = transcript.peekFinalizedBatch(width, Math.max(0, rows - chromeRows));
 		if (batch === undefined) return undefined;
 		this.#offeredHistory = {
 			id: this.#nextHistoryId++,
@@ -505,9 +472,9 @@ export class Composer implements TerminalFrameProvider {
 	/** Stop a composer that has not transferred terminal ownership. */
 	stop(): void {
 		if (!this.#started || this.#stopped || this.#transferred) return;
+		this.#stopped = true;
 		this.#welcome?.stopIntro();
 		this.ui.stop();
-		this.#stopped = true;
 	}
 
 	#applyWelcomeUpdate(update: ComposerWelcomeUpdate): void {
@@ -552,9 +519,9 @@ export class Composer implements TerminalFrameProvider {
 	#requestExit(code: number): void {
 		// Remains live after transfer until InteractiveMode installs its configured handlers.
 		if (this.#stopped) return;
+		this.#stopped = true;
 		this.#welcome?.stopIntro();
 		if (this.#started) this.ui.stop();
-		this.#stopped = true;
 		this.#exit(code);
 	}
 }
