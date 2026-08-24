@@ -590,7 +590,7 @@ impl DiffStreamState {
 /// after the first mismatch.
 ///
 /// The explicit constructor export is part of the generated native addon ABI.
-#[napi(js_name = "DiffStream")]
+#[napi]
 pub struct NativeDiffStream {
 	state: Arc<Mutex<DiffStreamState>>,
 }
