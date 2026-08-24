@@ -69,6 +69,20 @@ const OSC8_ST_PREFIX_REGEX = /(\x1b\]8;[^\x07\x1b]*)\x1b\\/g;
 function normalizeOsc8Terminators(text: string): string {
 	return text.replace(OSC8_ST_PREFIX_REGEX, "$1\x07");
 }
+function trailingOsc8Partial(text: string): string | undefined {
+	const start = text.lastIndexOf("\x1b]8;");
+	if (start !== -1) {
+		const body = text.slice(start + 4);
+		const cut = body.search(/[\x07\x1b]/);
+		if (cut === -1 || (cut === body.length - 1 && body.charCodeAt(cut) === 0x1b)) {
+			return text.slice(start);
+		}
+	}
+	if (text.endsWith("\x1b]8;") || text.endsWith("\x1b]8") || text.endsWith("\x1b]") || text.endsWith("\x1b")) {
+		return text.slice(text.lastIndexOf("\x1b"));
+	}
+	return undefined;
+}
 
 // OSC 66 (Kitty text-sizing) heading spans are emitted as a single indivisible
 // unit by the H1 render path. Like image-protocol lines, they must bypass
@@ -1580,6 +1594,8 @@ export class Markdown
 	#expandedSourceOffsets: number[];
 	/** Expanded-source cursor used to disambiguate repeated fenced blocks. */
 	#copySourceSearchCursor = 0;
+	// Suffix of #text that a future append could complete into an OSC 8 match.
+	#oscPartialEscape?: string;
 	#paddingX: number; // Left/right padding
 	#paddingY: number; // Top/bottom padding
 	#defaultTextStyle?: DefaultTextStyle;
@@ -1685,6 +1701,7 @@ export class Markdown
 		this.#expandedSourceText = expandedSource.text;
 		this.#expandedSourceOffsets = expandedSource.sourceOffsets;
 		this.#text = this.#sourceText;
+		this.#oscPartialEscape = trailingOsc8Partial(this.#text);
 		this.#paddingX = paddingX;
 		this.#paddingY = paddingY;
 		this.#theme = theme;
@@ -1738,6 +1755,7 @@ export class Markdown
 		}
 		// Non-append edits / cold path: full-document pass.
 		text = normalizeOsc8Terminators(text);
+		this.#oscPartialEscape = trailingOsc8Partial(text);
 		// Equality guard: streaming re-emits identical text on ticks that carried
 		// no delta (throttled provider frames, reconciled tool-execution updates).
 		// Without this, the caller-side `#cachedLines` gets thrown away and the
