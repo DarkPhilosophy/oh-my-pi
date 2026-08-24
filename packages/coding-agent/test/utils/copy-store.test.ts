@@ -14,12 +14,13 @@ describe("copy URL handler", () => {
 		expect(supportsCopyUrlHandler("linux", {}, "/usr/bin/xdg-mime")).toBe(true);
 	});
 
-	it("always emits a self-contained OSC target for fenced code", () => {
-		expect(copyUrlTarget("echo ready")).toMatch(/^omp-copy:/);
+	it("emits a self-contained OSC target only after handler readiness", () => {
+		expect(copyUrlTarget("echo ready", false)).toBeUndefined();
+		expect(copyUrlTarget("echo ready", true)).toMatch(/^omp-copy:/);
 	});
 
 	it("does not advertise a copy target that exceeds Linux's argument limit", () => {
-		expect(copyUrlTarget("x".repeat(100 * 1024))).toBeUndefined();
+		expect(copyUrlTarget("x".repeat(100 * 1024), true)).toBeUndefined();
 	});
 
 	it("installs the handler beneath XDG_DATA_HOME when configured", () => {

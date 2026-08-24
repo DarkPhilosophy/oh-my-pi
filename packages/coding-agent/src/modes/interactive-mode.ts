@@ -220,6 +220,7 @@ import {
 	onTerminalAppearanceChange,
 	onThemeChange,
 	setCodeGuidanceTrail,
+	setCopyUrlHandlerReady,
 	setMarkdownMermaidRendering,
 	startMacOSAppearanceReprobeFallback,
 	theme,
@@ -1203,7 +1204,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 		this.composer.setStatusComponent(this.statusLine);
 		void ensureCopyUrlHandler().then(ready => {
-			if (ready) this.ui.requestRender();
+			setCopyUrlHandlerReady(ready);
+			this.ui.requestRender();
 		});
 
 		this.composer.setRuntimeChildren([

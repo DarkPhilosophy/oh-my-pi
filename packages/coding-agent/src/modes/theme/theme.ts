@@ -28,6 +28,7 @@ export {
 	getSymbolTheme,
 	highlightCode,
 	setCodeGuidanceTrail,
+	setCopyUrlHandlerReady,
 	setMarkdownMermaidRendering,
 } from "./tui-adapters";
 
