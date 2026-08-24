@@ -599,12 +599,8 @@ pub struct DiffStream {
 impl DiffStream {
 	/// Create an empty two-sided stream.
 	#[napi(constructor)]
-	#[allow(
-		clippy::must_use_candidate,
-		reason = "N-API constructors are invoked through generated JavaScript"
-	)]
-	pub fn new() -> Self {
-		Self { state: Arc::new(Mutex::new(DiffStreamState::default())) }
+	pub fn new() -> Result<Self> {
+		Ok(Self { state: Arc::new(Mutex::new(DiffStreamState::default())) })
 	}
 
 	/// Append a JavaScript text chunk to one side.
