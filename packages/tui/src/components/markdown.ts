@@ -2670,9 +2670,9 @@ export class Markdown implements Component {
 		const lang = "lang" in token && typeof token.lang === "string" ? token.lang : undefined;
 		const addBodyLine = (line: string, isLastLogical: boolean): void => {
 			// Steering semantics (queued-message-box): `└─` only on the LAST logical
-			// line; the framer demotes it to `├─` when the line wraps. With the
-			// guidance trail off, gutters stay plain `N │ ` (or bare codeIndent).
-			const trail = this.#theme.guidanceTrail !== false;
+			// line; the framer demotes it to `├─` when the line wraps. ASCII mode
+			// disables the Unicode-only trail; gutters remain `N | `.
+			const trail = this.#theme.guidanceTrail !== false && this.#theme.symbols.boxRound.horizontal !== "-";
 			const connector = !trail ? "" : isLastLogical ? "└─" : "├─";
 			const plainPrefix = lineNumbers
 				? trail
