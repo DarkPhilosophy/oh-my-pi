@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { getMarkdownTheme, setCopyUrlHandlerReady } from "@oh-my-pi/pi-coding-agent/modes/theme/tui-adapters";
@@ -7,7 +7,7 @@ import { Markdown, TERMINAL } from "@oh-my-pi/pi-tui";
 
 const originalHyperlinks = TERMINAL.hyperlinks;
 
-beforeAll(async () => {
+beforeEach(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 	await initTheme(false);
@@ -15,7 +15,7 @@ beforeAll(async () => {
 	setCopyUrlHandlerReady(true);
 });
 
-afterAll(() => {
+afterEach(() => {
 	setCopyUrlHandlerReady(false);
 	TERMINAL.hyperlinks = originalHyperlinks;
 	resetSettingsForTest();

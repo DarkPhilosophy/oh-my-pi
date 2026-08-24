@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import {
 	autolinkSchemeScanIndex,
@@ -907,7 +907,7 @@ console.log(answer);`;
 				terminalState.hyperlinks = originalHyperlinks;
 			}
 		});
-		it("keeps the explicit copy action linked when generic hyperlink detection is disabled", () => {
+		it("keeps the copy chip plain when hyperlink support is disabled", () => {
 			const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 			const originalHyperlinks = terminalState.hyperlinks;
 			let targetCalls = 0;
@@ -922,8 +922,8 @@ console.log(answer);`;
 					},
 				};
 				const footer = new Markdown("```js\nconst x = 1\n```", 0, 0, copyTheme).render(40).at(-1) ?? "";
-				expect(targetCalls).toBe(1);
-				expect(footer).toContain("\x1b]8;;omp-copy:explicit\x07");
+				expect(targetCalls).toBe(0);
+				expect(footer).not.toContain("\x1b]8;;");
 				expect(stripVTControlCharacters(footer)).toContain("[copy]");
 			} finally {
 				terminalState.hyperlinks = originalHyperlinks;
@@ -1644,14 +1644,14 @@ bar`,
 
 	describe("Links", () => {
 		// CI environments often resolve to the "base" terminal which has hyperlinks
-		// disabled; force them on so OSC 8 assertions are deterministic. The render
-		// cache keys on TERMINAL.hyperlinks, so flipping the bit invalidates entries.
+		// disabled; scope the capability override to each test so shared-process
+		// suites cannot observe it between cases.
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;
-		beforeAll(() => {
+		beforeEach(() => {
 			terminalState.hyperlinks = true;
 		});
-		afterAll(() => {
+		afterEach(() => {
 			terminalState.hyperlinks = originalHyperlinks;
 		});
 
