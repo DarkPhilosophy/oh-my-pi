@@ -278,4 +278,25 @@ describe("composer welcome native-history resize", () => {
 		expect(resized).toContain("block-3@30");
 		composer.ui.stop();
 	});
+
+	it("flushes a roomy finalized transcript before composer shutdown", async () => {
+		const terminal = new VirtualTerminal(40, 10);
+		const scheduler = new VirtualRenderScheduler();
+		const composer = new Composer({
+			terminal,
+			tuiOptions: { renderScheduler: scheduler },
+			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
+		});
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new WidthTranscriptBlock(1));
+		composer.setRuntimeChildren([transcript, new MutableComposerTail()]);
+		composer.start({ playWelcomeIntro: false });
+		await scheduler.settle(terminal);
+		expect(transcript.blockStates()).toEqual(["settled"]);
+
+		composer.stop();
+
+		expect(transcript.blockStates()).toEqual(["committed"]);
+		expect(plainBuffer(terminal)).toContain("block-1@40");
+	});
 });

@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added asynchronous, size-bounded SVG-to-PNG rasterization for terminal media previews.
+- Added `DiffStream` for incremental text/byte ingestion, direct asynchronous file opening, stable-prefix progress, off-thread exact Myers runs/unified hunks, and asynchronous syntax-grammar warmup.
+- Added persistent clipboard-write and clipboard-read APIs through the public `@oh-my-pi/pi-natives/clipboard` entry point.
+
+## [18.0.3] - 2026-08-23
+
+### Fixed
+
+- `macOSCheckSpelling` no longer reports the whole checked string as misspelled: automatic language identification returns an orthography result spanning the entire text, which leaked through as a typo range overlapping the real word span (doubling editor text under the undercurl and drifting the cursor).
+
+## [18.0.1] - 2026-08-23
+
 ### Fixed
 
 - Native macOS spellchecker now honors all active system dictionaries: misspelling detection uses automatic language identification and completions/guesses/corrections select the per-word language, so non-English text (e.g. Russian) is checked instead of only the shared checker's current language ([#9334](https://github.com/can1357/oh-my-pi/issues/9334)).

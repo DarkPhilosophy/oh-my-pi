@@ -85,8 +85,9 @@ shrink may have pushed before the resize callback ran):
 
 The raw TUI defaults to `preserve` and accepts
 `PI_TUI_RESIZE_SCROLLBACK`; the coding agent defaults to `rebuild`. Replays
-reset provider retirement and consume fresh monotonic history batches. They do
-not compare physical row counts across widths or infer a commit boundary.
+walk the immutable committed prefix through a separate cursor and consume fresh
+monotonic history ids without rewinding logical retirement state. They do not
+compare physical row counts across widths or infer a commit boundary.
 
 The renderer never probes the user's scroll position. This keeps updates safe
 while the user is reading older terminal history and avoids terminal- or

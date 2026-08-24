@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import {
 	autolinkSchemeScanIndex,
@@ -1644,14 +1644,14 @@ bar`,
 
 	describe("Links", () => {
 		// CI environments often resolve to the "base" terminal which has hyperlinks
-		// disabled; force them on so OSC 8 assertions are deterministic. The render
-		// cache keys on TERMINAL.hyperlinks, so flipping the bit invalidates entries.
+		// disabled; scope the capability override to each test so shared-process
+		// suites cannot observe it between cases.
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;
-		beforeAll(() => {
+		beforeEach(() => {
 			terminalState.hyperlinks = true;
 		});
-		afterAll(() => {
+		afterEach(() => {
 			terminalState.hyperlinks = originalHyperlinks;
 		});
 
@@ -3171,6 +3171,51 @@ describe("framed code review follow-ups", () => {
 		}
 	});
 
+	it("preserves raw OSC terminators in copied fenced source", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const st = "\x1b\\";
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			new Markdown(`\`\`\`sh\nprintf '${st}'\n\`\`\``, 0, 0, theme).render(80);
+			new Markdown(`\`\`\`sh\nprintf '\x07'\n\`\`\``, 0, 0, theme).render(80);
+			expect(captured).toEqual([`printf '${st}'`, "printf '\x07'"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("advances copy recovery past Mermaid code without a copy target", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+				resolveMermaidAscii: (source: string) => (source.includes("wrong") ? "diagram" : null),
+			};
+			const source = "```mermaid\nwrong\n```\n\n- ```mermaid\n  right\n  ```";
+			new Markdown(source, 0, 0, theme).render(80);
+			expect(captured).toBe("right");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
 	it("anchors nested opening-fence recovery to a real fence line", () => {
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;
@@ -3188,6 +3233,27 @@ describe("framed code review follow-ups", () => {
 			const source = "> mention ```js here\n> continued\n>\n> ```js\n> const answer = 42\n> ```";
 			new Markdown(source, 0, 0, theme).render(80);
 			expect(captured).toBe("const answer = 42");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+	it("rejects indented-code rows while locating nested opening fences", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			const source = "    ```js\n    wrong\n    ```\n\n- ```js\n  right\n  ```";
+			new Markdown(source, 0, 0, theme).render(80);
+			expect(captured).toBe("right");
 		} finally {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
