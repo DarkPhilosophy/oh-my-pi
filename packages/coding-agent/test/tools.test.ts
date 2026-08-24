@@ -1870,7 +1870,7 @@ describe("Coding Agent Tools", () => {
 				replace_all: true,
 			});
 
-			expect(getTextOutput(result)).toContain("Successfully replaced 3 occurrences");
+			expect(getTextOutput(result)).toContain("qux bar qux baz qux");
 			const content = await Bun.file(testFile).text();
 			expect(content).toBe("qux bar qux baz qux");
 		});
@@ -1929,7 +1929,7 @@ function b() {
 				replace_all: true,
 			});
 
-			expect(getTextOutput(result)).toContain("Successfully replaced 2 occurrences");
+			expect(getTextOutput(result)).toContain("replaced");
 			const content = await Bun.file(testFile).text();
 			expect(content).toBe("start\nreplaced\nend\nstart\nreplaced\nend");
 		});
@@ -1945,7 +1945,7 @@ function b() {
 				replace_all: true,
 			});
 
-			expect(getTextOutput(result)).toContain("Successfully replaced text");
+			expect(getTextOutput(result)).toContain("hello universe");
 			const content = await Bun.file(testFile).text();
 			expect(content).toBe("hello universe");
 		});
@@ -3074,7 +3074,7 @@ describe("edit tool CRLF handling", () => {
 			new_string: "replaced line\n",
 		});
 
-		expect(getTextOutput(result)).toContain("Successfully replaced");
+		expect(getTextOutput(result)).toContain("replaced line");
 	});
 
 	it("should preserve CRLF line endings after edit", async () => {

@@ -2,8 +2,8 @@
  * Minimal TUI implementation with explicit history batches.
  *
  * Two output channels: a product-owned {@link TerminalFrameProvider} returns,
- * per frame, an optional immutable {@link HistoryBatch} (finalized transcript
- * rows appended to native history exactly once, gated by a monotonic id and
+ * per frame, an optional immutable {@link HistoryBatch} (finalized or naturally
+ * emitted stable rows, or one complete replay, gated by a monotonic id and
  * acknowledgement) plus the complete mutable viewport. The writer anchors the
  * viewport directly below whatever history remains visible, diffs
  * viewport-only frames, and never infers finality from a row's position.
@@ -109,13 +109,20 @@ export interface ViewportSize {
 	readonly rows: number;
 }
 
-/** Immutable finalized rows offered until the terminal accepts this identifier. */
+/** Immutable append or complete replay offered until the terminal accepts this identifier. */
 export interface HistoryBatch {
 	readonly id: number;
 	readonly rows: readonly string[];
+	/**
+	 * `append` (the default) adds finalized or naturally emitted rows. `replay`
+	 * is the complete logical ledger; the writer bottom-splits it against the
+	 * leading blank viewport and serializes the remainder plus final viewport in
+	 * one synchronous terminal write.
+	 */
+	readonly kind?: "append" | "replay";
 }
 
-/** One history append and the complete mutable viewport for a terminal frame. */
+/** One history append or complete replay plus the mutable viewport for a terminal frame. */
 export interface TerminalFramePlan {
 	readonly history?: HistoryBatch;
 	readonly viewport: readonly string[];
@@ -1383,6 +1390,11 @@ export class TUI extends Container {
 			this.#altPreviousLines = [];
 			this.#pendingAltExit = "";
 		}
+		// A latched destructive reset (settled rebuild-mode resize, /clear) pairs
+		// ED3 with a complete-ledger replay. Running that pair during stop would
+		// erase native history and re-stream the whole transcript at quit; drop
+		// the latch so the flush below writes only un-retired rows.
+		this.#clearScrollbackOnNextRender = false;
 		this.#flushHistoryBeforeStop();
 		// Deliberately leave transmitted images in the terminal's graphics store:
 		// placeholder cells committed to native scrollback render only while their
@@ -2023,10 +2035,9 @@ export class TUI extends Container {
 	}
 
 	/**
-	 * Physical write transaction: append an unacknowledged history batch above
-	 * the anchored mutable viewport, repaint the viewport, and erase stale rows
-	 * below. Appending K rows scrolls at most K rows off the top — the oldest
-	 * visible history — and the viewport anchor follows the retained history.
+	 * Physical write transaction: append an ordinary batch, or bottom-split one
+	 * complete replay into a history remainder and final viewport, then serialize
+	 * the whole result in one terminal write before acknowledgement.
 	 */
 	#emitPlanFrame(
 		width: number,
@@ -2040,11 +2051,28 @@ export class TUI extends Container {
 			while (viewport.length < height) viewport.push("");
 			viewport = this.#compositeOverlaysIntoWindow(viewport, width, height);
 		}
-		const markers = this.#extractCursorMarkers(viewport);
-		const prepared = this.#prepareLinesArray(viewport, width);
 		const history = offered !== undefined && offered.id > this.#acceptedHistoryBatchId ? offered : undefined;
 		if (offered !== undefined && offered.id <= this.#acceptedHistoryBatchId) provider?.acknowledgeHistory(offered.id);
-		const historyRows = history?.rows ?? [];
+
+		let historyRows = history?.rows ?? [];
+		let replayViewportRows = 0;
+		if (history?.kind === "replay") {
+			// Providers may omit unused leading rows from a short viewport. Make
+			// that logical space explicit before the bottom-first replay split.
+			while (viewport.length < height) viewport.unshift("");
+			let leadingBlankRows = 0;
+			while (leadingBlankRows < viewport.length && !/\S/.test(viewport[leadingBlankRows]!)) {
+				leadingBlankRows++;
+			}
+			const moved = Math.min(historyRows.length, leadingBlankRows);
+			if (moved > 0) {
+				viewport = [...historyRows.slice(historyRows.length - moved), ...viewport.slice(moved)];
+				historyRows = historyRows.slice(0, historyRows.length - moved);
+				replayViewportRows = moved;
+			}
+		}
+		const markers = this.#extractCursorMarkers(viewport);
+		const prepared = this.#prepareLinesArray(viewport, width);
 		const preparedHistory = this.#prepareLinesArray(historyRows, width);
 		const rows = prepared.length;
 		// Destructive reset (session replace, /tree, explicit clear, or a settled
@@ -2137,6 +2165,8 @@ export class TUI extends Container {
 			}
 			if (newTop + rows < height) buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
 		}
+		const mutableTop = newTop + replayViewportRows;
+		const mutablePrepared = replayViewportRows > 0 ? prepared.slice(replayViewportRows) : prepared;
 		const marker = markers[0];
 		const target =
 			marker !== undefined && rows > 0
@@ -2144,23 +2174,23 @@ export class TUI extends Container {
 				: null;
 		if (target) {
 			buffer += `\x1b[${target.row + 1};${target.col + 1}H${target.visible ? "\x1b[?25h" : "\x1b[?25l"}`;
-			this.#parkedViewportOffset = Math.max(0, target.row - newTop);
+			this.#parkedViewportOffset = Math.max(0, target.row - mutableTop);
 		} else {
 			// Park the hidden cursor on the viewport's top row: terminals keep the
 			// cursor attached to its logical line through resize reflow, so the
 			// post-resize anchor probe can recover where the viewport landed.
-			buffer += `\x1b[?25l\x1b[${newTop + 1};1H`;
+			buffer += `\x1b[?25l\x1b[${mutableTop + 1};1H`;
 			this.#parkedViewportOffset = 0;
 		}
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);
 		if (target) this.#recordHardwareCursorState(target);
 		else this.#recordHardwareCursorHidden();
-		this.#providerWindow = prepared;
-		this.#providerViewportTop = newTop;
+		this.#providerWindow = mutablePrepared;
+		this.#providerViewportTop = mutableTop;
 		this.#previousWidth = width;
 		this.#previousHeight = height;
-		this.#previousFrameLength = rows;
+		this.#previousFrameLength = mutablePrepared.length;
 		this.#clearScrollbackOnNextRender = false;
 		this.#forceViewportRepaintOnNextRender = false;
 		this.#hasEverRendered = true;
@@ -2168,10 +2198,9 @@ export class TUI extends Container {
 		if (history !== undefined) {
 			this.#acceptedHistoryBatchId = history.id;
 			provider?.acknowledgeHistory(history.id);
-			// Draining is one batch per frame; the provider may hold further
-			// finalized prefixes (large resumed transcripts). Pump the next frame
-			// instead of waiting for an unrelated render request.
-			this.requestRender();
+			// Normal retirement may hold another ordered batch. Replay is always
+			// complete, so pumping it would create a second visible redraw/write.
+			if (history.kind !== "replay") this.requestRender();
 		}
 	}
 

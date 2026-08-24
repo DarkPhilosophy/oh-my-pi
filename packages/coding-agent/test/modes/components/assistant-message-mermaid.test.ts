@@ -4,6 +4,7 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { AssistantThinkingRenderer } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
+import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { clearMermaidCache } from "@oh-my-pi/pi-coding-agent/modes/theme/mermaid-cache";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { ImageProtocol, setTerminalImageProtocol, TERMINAL, Text } from "@oh-my-pi/pi-tui";
@@ -53,6 +54,54 @@ afterEach(() => {
 	resetSettingsForTest();
 	setTerminalImageProtocol(originalImageProtocol);
 	clearMermaidCache();
+});
+
+describe("AssistantMessageComponent transcript lifecycle", () => {
+	it("keeps a revised streaming message mutable until finalization", () => {
+		const component = new AssistantMessageComponent();
+		const transcript = new TranscriptContainer();
+		transcript.addChild(component);
+		component.updateContent(
+			createAssistantMessage(
+				"First completed paragraph is deliberately long enough to wrap.\n\nCurrent partial paragraph",
+			),
+			{ transient: true },
+		);
+		transcript.renderViewport(80, 20, { now: 0, tick: 0 });
+
+		component.updateContent(
+			createAssistantMessage("Revised opening paragraph replaces the prior draft.\n\nCurrent partial paragraph"),
+			{ transient: true },
+		);
+		const live = Bun.stripANSI(transcript.renderViewport(80, 20, { now: 1, tick: 1 }).join("\n"));
+		expect(live).toContain("Revised opening paragraph");
+		expect(transcript.peekFinalizedBatch(80, 0)).toBeUndefined();
+
+		component.markTranscriptBlockFinalized();
+		const batch = transcript.peekFlushBatch(80);
+		expect(Bun.stripANSI(batch?.rows.join("\n") ?? "")).toContain("Revised opening paragraph");
+	});
+
+	it("appends a late cache-miss marker after assistant output", () => {
+		const component = new AssistantMessageComponent();
+		component.updateContent(
+			createAssistantMessage(
+				"First completed paragraph is deliberately long enough to wrap.\n\nCurrent partial paragraph",
+			),
+			{ transient: true },
+		);
+		const transcript = new TranscriptContainer();
+		transcript.addChild(component);
+		transcript.renderViewport(80, 20, { now: 0, tick: 0 });
+
+		component.setCacheInvalidation({ reprocessedTokens: 50_000 });
+		component.markTranscriptBlockFinalized();
+
+		const batch = transcript.peekFlushBatch(80);
+		const rendered = Bun.stripANSI(batch?.rows.join("\n") ?? "");
+		expect(rendered).toContain("Current partial paragraph");
+		expect(rendered.indexOf("cache miss")).toBeGreaterThan(rendered.indexOf("Current partial paragraph"));
+	});
 });
 
 describe("AssistantMessageComponent mermaid markdown", () => {

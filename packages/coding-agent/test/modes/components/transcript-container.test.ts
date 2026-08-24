@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
+import {
+	TranscriptContainer,
+	type TranscriptStableRow,
+} from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import type { Component } from "@oh-my-pi/pi-tui";
 
 class Block implements Component {
@@ -30,9 +33,170 @@ class Block implements Component {
 	}
 }
 
+function literalStableRow(row: string): TranscriptStableRow {
+	return { key: row };
+}
+
+class AppendBlock extends Block {
+	readonly transcriptBlockMode = "appendOnly" as const;
+	#stable: readonly TranscriptStableRow[];
+	#stableRender: readonly string[];
+
+	constructor(rows: string[], stable: readonly string[], finalized = false) {
+		super(rows, finalized);
+		this.#stable = stable.map(literalStableRow);
+		this.#stableRender = stable;
+	}
+
+	publish(rows: readonly string[]): void {
+		this.#stable = rows.map(literalStableRow);
+		this.#stableRender = rows;
+	}
+
+	publishStable(rows: readonly TranscriptStableRow[], rendered: readonly string[]): void {
+		this.#stable = rows;
+		this.#stableRender = rendered;
+	}
+
+	getTranscriptStableRows(): readonly TranscriptStableRow[] {
+		return this.#stable;
+	}
+
+	renderTranscriptStableRows(count: number, _width: number): readonly string[] {
+		return this.#stableRender.slice(0, count);
+	}
+}
+
+class ReflowingAppendBlock implements Component {
+	readonly transcriptBlockMode = "appendOnly" as const;
+	#finalized = false;
+	readonly #stable: TranscriptStableRow = { key: "abcdefgh" };
+
+	isTranscriptBlockFinalized(): boolean {
+		return this.#finalized;
+	}
+
+	finalize(): void {
+		this.#finalized = true;
+	}
+
+	getTranscriptStableRows(): readonly TranscriptStableRow[] {
+		return [this.#stable];
+	}
+
+	renderTranscriptStableRows(count: number, width: number): readonly string[] {
+		if (count <= 0) return [];
+		const rows: string[] = [];
+		for (let offset = 0; offset < 8; offset += width) rows.push("abcdefgh".slice(offset, offset + width));
+		return rows;
+	}
+
+	render(width: number): readonly string[] {
+		return [...this.renderTranscriptStableRows(1, width), this.#finalized ? "final" : "partial"];
+	}
+}
+
 const frame = { tick: 0, now: 0 };
 
 describe("TranscriptContainer", () => {
+	it("captures mutable by default and append-only declarations permanently", () => {
+		const transcript = new TranscriptContainer();
+		const mutable = new Block(["mutable"], false) as Block & {
+			transcriptBlockMode?: "appendOnly";
+			getTranscriptStableRows?: () => readonly TranscriptStableRow[];
+		};
+		transcript.addChild(mutable);
+		mutable.transcriptBlockMode = "appendOnly";
+		mutable.getTranscriptStableRows = () => [literalStableRow("mutable")];
+		transcript.addChild(new AppendBlock(["stable", "partial"], ["stable"]));
+
+		expect(transcript.blockModes()).toEqual(["mutable", "appendOnly"]);
+	});
+
+	it("rejects non-prefix and retracting append-only publications", () => {
+		const transcript = new TranscriptContainer();
+		const block = new AppendBlock(["one", "two"], ["one"]);
+		transcript.addChild(block);
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["one", "two"]);
+
+		block.publish(["changed"]);
+		expect(() => transcript.renderViewport(80, 2, frame)).toThrow("must extend");
+
+		block.publish([]);
+		expect(() => transcript.renderViewport(80, 2, frame)).toThrow("must extend");
+
+		block.publishStable([literalStableRow("one"), literalStableRow("two")], ["one", "changed physical row"]);
+		expect(() => transcript.renderViewport(80, 2, frame)).toThrow("must render as a prefix");
+	});
+
+	it("emits only the stable current head under row pressure", () => {
+		const transcript = new TranscriptContainer();
+		const head = new Block(["mutable head"], false);
+		const later = new AppendBlock(["later stable", "later partial"], ["later stable"]);
+		transcript.addChild(head);
+		transcript.addChild(later);
+
+		expect(transcript.peekFinalizedBatch(80, 1)).toBeUndefined();
+
+		head.finalize(["mutable head"]);
+		const retired = transcript.peekFinalizedBatch(80, 1);
+		expect(retired?.rows).toEqual(["mutable head", ""]);
+		transcript.acknowledgeFinalizedBatch(retired!.id);
+
+		const emitted = transcript.peekFinalizedBatch(80, 1);
+		expect(emitted?.rows).toEqual(["later stable"]);
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["later partial"]);
+	});
+
+	it("retires only the un-emitted final suffix", () => {
+		const transcript = new TranscriptContainer();
+		const block = new AppendBlock(["one", "two", "partial"], ["one", "two"]);
+		transcript.addChild(block);
+
+		const first = transcript.peekFinalizedBatch(80, 2)!;
+		expect(first.rows).toEqual(["one"]);
+		transcript.acknowledgeFinalizedBatch(first.id);
+		const second = transcript.peekFinalizedBatch(80, 1)!;
+		expect(second.rows).toEqual(["two"]);
+		transcript.acknowledgeFinalizedBatch(second.id);
+
+		block.finalize(["one", "two", "final"]);
+		const suffix = transcript.peekFinalizedBatch(80, 0)!;
+		expect(suffix.rows).toEqual(["final", ""]);
+	});
+
+	it("advances a fully emitted finalized head without a physical write", () => {
+		const transcript = new TranscriptContainer();
+		const block = new AppendBlock(["complete"], ["complete"]);
+		transcript.addChild(block);
+		const emitted = transcript.peekFinalizedBatch(80, 0)!;
+		transcript.acknowledgeFinalizedBatch(emitted.id);
+
+		block.finalize(["complete"]);
+		expect(transcript.peekFinalizedBatch(80, 0)).toBeUndefined();
+		expect(transcript.blockStates()).toEqual(["committed"]);
+	});
+
+	it("replays and retires semantic stable rows after they reflow at a new width", () => {
+		const transcript = new TranscriptContainer();
+		const block = new ReflowingAppendBlock();
+		transcript.addChild(block);
+
+		const emitted = transcript.peekFinalizedBatch(4, 2)!;
+		expect(emitted.rows).toEqual(["abcd", "efgh"]);
+		transcript.acknowledgeFinalizedBatch(emitted.id);
+		expect(transcript.renderViewport(8, 1, frame)).toEqual(["partial"]);
+
+		transcript.beginReplay();
+		const replay = transcript.peekReplayBatch(8)!;
+		expect(replay.rows).toEqual(["abcdefgh"]);
+		transcript.acknowledgeFinalizedBatch(replay.id);
+
+		block.finalize();
+		const suffix = transcript.peekFinalizedBatch(8, 0)!;
+		expect(suffix.rows).toEqual(["final", ""]);
+	});
+
 	it("keeps settled blocks live while the viewport has room", () => {
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["settled"], true));
@@ -204,5 +368,30 @@ describe("TranscriptContainer", () => {
 		transcript.beginReplay();
 		expect(transcript.peekFinalizedBatch(80, 10)?.rows).toEqual(["committed", ""]);
 		expect(transcript.renderViewport(80, 10, frame)).toEqual(["active"]);
+	});
+	it("renders exactly the trailing semantic rows without walking the full ledger", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["a1", "a2"], true));
+		transcript.addChild(new Block([], true));
+		transcript.addChild(new AppendBlock(["b1", "b2"], ["b1"], true));
+		transcript.addChild(new Block(["c1"], false));
+
+		const full = transcript.render(80);
+		for (const cap of [1, 3, 4, full.length, full.length + 5]) {
+			expect(transcript.renderTail(80, cap)).toEqual(full.slice(-Math.min(cap, full.length)));
+		}
+		expect(transcript.renderTail(80, 0)).toEqual([]);
+	});
+
+	it("cancels a pending replay so shutdown flush emits only un-retired rows", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["committed"], true));
+		const committed = transcript.peekFinalizedBatch(80, 0)!;
+		transcript.acknowledgeFinalizedBatch(committed.id);
+		transcript.addChild(new Block(["tail"], true));
+
+		transcript.beginReplay();
+		transcript.cancelReplay();
+		expect(transcript.peekFlushBatch(80)?.rows).toEqual(["tail", ""]);
 	});
 });

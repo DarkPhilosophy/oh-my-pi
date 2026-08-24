@@ -25,6 +25,15 @@ class Provider implements TerminalFrameProvider {
 	}
 }
 
+class CountingTerminal extends VirtualTerminal {
+	readonly writes: string[] = [];
+
+	override write(data: string): void {
+		this.writes.push(data);
+		super.write(data);
+	}
+}
+
 const scheduler = {
 	now: () => 0,
 	scheduleImmediate(callback: () => void) {
@@ -162,6 +171,42 @@ describe("terminal frame plans", () => {
 		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["history two", "editor", "status"]);
 		tui.stop();
 	});
+	it("bottom-splits a complete replay and serializes it in one terminal write", () => {
+		const terminal = new CountingTerminal(20, 4);
+		const provider = new Provider({ viewport: ["live", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		terminal.writes.length = 0;
+
+		provider.plan = {
+			history: { id: 1, rows: ["history one", "history two", "history three", "history four"], kind: "replay" },
+			viewport: ["live", "editor"],
+		};
+		tui.requestRender(true);
+
+		expect(terminal.writes).toHaveLength(1);
+		expect(provider.acknowledged).toEqual([1]);
+		expect(plainBuffer(terminal)).toEqual([
+			"history one",
+			"history two",
+			"history three",
+			"history four",
+			"live",
+			"editor",
+		]);
+
+		tui.requestRender(true);
+		expect(plainBuffer(terminal)).toEqual([
+			"history one",
+			"history two",
+			"history three",
+			"history four",
+			"live",
+			"editor",
+		]);
+		tui.stop();
+	});
+
 	it("repaints a viewport-only frame in place without scrolling", () => {
 		const terminal = new VirtualTerminal(20, 4);
 		const provider = new Provider({ viewport: ["spinner one", "editor"] });

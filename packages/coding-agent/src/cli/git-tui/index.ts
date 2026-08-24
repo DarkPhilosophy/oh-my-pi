@@ -15,8 +15,9 @@
  * stage/unstage (hunk-aware), `x` discards a hunk, `w` wraps, `b` cycles
  * whitespace handling (exact → ignore whitespace → ignore
  * formatting/import-only changes), `c` jumps to the commit form, `r`
- * refreshes. In the sidebar tree `←`/`→` collapse/expand directories and
- * `enter` opens the selected file in the diff pane.
+ * refreshes. In the sidebar tree `←`/`→` collapse/expand directories,
+ * `enter` opens the selected file in the diff pane, and `space` stages or
+ * unstages the selected row — on a directory, every file underneath it.
  */
 import {
 	type Component,
@@ -286,13 +287,15 @@ class GitTuiComponent implements Component {
 		try {
 			switch (action.type) {
 				case "stage":
-					await this.#model.stage(action.file);
-					this.#setStatus(theme.fg("success", action.file ? `Staged ${action.file.path}` : "Staged all changes"));
+					await this.#model.stage(action.selection?.files);
+					this.#setStatus(
+						theme.fg("success", action.selection ? `Staged ${action.selection.label}` : "Staged all changes"),
+					);
 					break;
 				case "unstage":
-					await this.#model.unstage(action.file);
+					await this.#model.unstage(action.selection?.files);
 					this.#setStatus(
-						theme.fg("success", action.file ? `Unstaged ${action.file.path}` : "Unstaged all changes"),
+						theme.fg("success", action.selection ? `Unstaged ${action.selection.label}` : "Unstaged all changes"),
 					);
 					break;
 				case "commit": {
@@ -398,8 +401,9 @@ class GitTuiComponent implements Component {
 	#stageCurrentFile(): void {
 		const file = this.#currentFile;
 		if (!file) return;
-		if (file.area === "unstaged") void this.#runAction({ type: "stage", file });
-		else if (file.area === "staged") void this.#runAction({ type: "unstage", file });
+		const selection = { files: [file], label: file.path };
+		if (file.area === "unstaged") void this.#runAction({ type: "stage", selection });
+		else if (file.area === "staged") void this.#runAction({ type: "unstage", selection });
 	}
 
 	#setMode(mode: ViewMode): void {

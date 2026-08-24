@@ -308,6 +308,30 @@ export class EventController {
 		this.#lastReadGroup?.finalize();
 		this.#lastReadGroup = undefined;
 	}
+	/** Freeze foreground tool cards once no live agent turn can complete them. */
+	#sealAbandonedForegroundTools(): void {
+		const background = new Set<ToolExecutionHandle>();
+		for (const toolCallId of this.#backgroundTaskCallIds) {
+			const component = this.ctx.pendingTools.get(toolCallId);
+			if (component) background.add(component);
+		}
+		for (const component of this.#toolTimelineComponents.values()) {
+			if (
+				(component instanceof ToolExecutionComponent || component instanceof ReadToolGroupComponent) &&
+				!background.has(component)
+			) {
+				component.seal();
+			}
+		}
+		for (const [toolCallId, component] of this.ctx.pendingTools) {
+			if (this.#backgroundTaskCallIds.has(toolCallId)) continue;
+			component.seal();
+			this.ctx.pendingTools.delete(toolCallId);
+		}
+		this.#backgroundTaskCallIds = new Set(
+			Array.from(this.#backgroundTaskCallIds).filter(toolCallId => this.ctx.pendingTools.has(toolCallId)),
+		);
+	}
 	#approvalPreviewGate(toolCallId: string): ApprovalPreviewGate {
 		let gate = this.#approvalPreviewGates.get(toolCallId);
 		if (!gate) {
@@ -735,6 +759,11 @@ export class EventController {
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
 		this.#clearApprovalPreviewGates();
+		// A new turn cannot inherit a foreground tool execution. A dropped
+		// agent_end (for example after a renderer exception) otherwise leaves a
+		// live-only tool card without a persisted result; ordered transcript
+		// retirement then remains pinned behind that invisible stale card.
+		this.#sealAbandonedForegroundTools();
 		this.#toolTimelineComponents.clear();
 		this.#streamedToolCallIdByIndex.clear();
 		this.#retractedToolCallIds.clear();
@@ -1757,33 +1786,8 @@ export class EventController {
 			this.ctx.loadingAnimation = undefined;
 			this.ctx.statusContainer.disposeChildren();
 		}
-		if (this.ctx.streamingComponent) {
-			this.ctx.chatContainer.removeChild(this.ctx.streamingComponent);
-			// Removal is refused for blocks already offered/committed to history;
-			// finalize so a kept block can never jam transcript retirement.
-			this.ctx.streamingComponent.markTranscriptBlockFinalized();
-			this.ctx.streamingComponent = undefined;
-			this.ctx.streamingMessage = undefined;
-		}
 		await this.ctx.flushPendingModelSwitch();
-		for (const toolCallId of Array.from(this.ctx.pendingTools.keys())) {
-			if (!this.#backgroundTaskCallIds.has(toolCallId)) {
-				// A foreground tool still pending at turn end never delivered a result;
-				// seal it so it freezes (and stops animating) rather than lingering in
-				// the transcript live region as a streaming preview until the next thaw.
-				const component = this.ctx.pendingTools.get(toolCallId);
-				// A foreground read still pending at turn end shares a group component
-				// keyed by every read's id; seal it too so a never-delivered read does
-				// not keep the group live (and pinning the live region) indefinitely.
-				if (component instanceof ToolExecutionComponent || component instanceof ReadToolGroupComponent) {
-					component.seal();
-				}
-				this.ctx.pendingTools.delete(toolCallId);
-			}
-		}
-		this.#backgroundTaskCallIds = new Set(
-			Array.from(this.#backgroundTaskCallIds).filter(toolCallId => this.ctx.pendingTools.has(toolCallId)),
-		);
+		this.#sealAbandonedForegroundTools();
 		this.#approvalAttentionToolCallIds.clear();
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();
