@@ -144,11 +144,18 @@ export interface HistoryBatch {
 	readonly id: number;
 	readonly rows: readonly string[];
 }
+/** One component-owned row range inside the mutable viewport. */
+export interface TerminalFrameSegment {
+	readonly component: Component;
+	readonly start: number;
+	readonly rowCount: number;
+}
 
 /** One history append and the complete mutable viewport for a terminal frame. */
 export interface TerminalFramePlan {
 	readonly history?: HistoryBatch;
 	readonly viewport: readonly string[];
+	readonly segments?: readonly TerminalFrameSegment[];
 }
 
 /** Produces bounded terminal frames and retires acknowledged history batches. */
@@ -1285,6 +1292,7 @@ class TerminalFrameProviderComponent
 {
 	#history: string[] = [];
 	#viewport: readonly string[] = [];
+	#segments: readonly TerminalFrameSegment[] = [];
 	#acknowledgedIds = new Set<number>();
 	#replayPrepared = false;
 
@@ -1303,7 +1311,16 @@ class TerminalFrameProviderComponent
 			this.provider.acknowledgeHistory(plan.history.id);
 		}
 		this.#viewport = plan.viewport.length > size.rows ? plan.viewport.slice(0, size.rows) : plan.viewport;
+		this.#segments = plan.segments ?? [];
 		return [...this.#history, ...this.#viewport];
+	}
+	getFrameSegments(): readonly TerminalFrameSegment[] {
+		const historyRows = this.#history.length;
+		return this.#segments.map(segment => ({
+			component: segment.component,
+			start: historyRows + segment.start,
+			rowCount: segment.rowCount,
+		}));
 	}
 
 	renderViewportTail(width: number, maxRows: number): readonly string[] {
@@ -2829,6 +2846,16 @@ export class TUI extends Container {
 			return window;
 		}
 		const blocks = provider(width);
+		if (this.terminal.isNativeViewportAtBottom?.() === false) {
+			this.#rightPanelHasBlocks = false;
+			this.#rightPanelLayoutCallback?.({
+				placedBlockIndices: [],
+				hiddenBlockIndices: blocks.map((_, i) => i),
+				availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
+				searchRows: 0,
+			});
+			return window;
+		}
 		// Conservatively track whether non-empty blocks are placed on screen.
 		// Only this compositor clears the flag, so a direct write between
 		// setRightPanel(null) and the next full render still falls back, protecting
@@ -2853,7 +2880,8 @@ export class TUI extends Container {
 			eligibleRows = new Array<boolean>(window.length).fill(false);
 			let firstEligible = -1;
 			let lastEligible = -1;
-			for (const segment of this.#frameSegments) {
+			const placementSegments = this.#frameProviderComponent?.getFrameSegments() ?? this.#frameSegments;
+			for (const segment of placementSegments) {
 				if (!targets.has(segment.component)) continue;
 				const frameStart = segment.start;
 				const frameEnd = segment.start + segment.rowCount;

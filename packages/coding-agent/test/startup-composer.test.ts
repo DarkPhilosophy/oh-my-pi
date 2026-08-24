@@ -13,7 +13,7 @@ import {
 	takeStartupComposerLease,
 } from "@oh-my-pi/pi-coding-agent/modes/startup-composer";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { TerminalStartOptions } from "@oh-my-pi/pi-tui";
+import { type TerminalStartOptions, Text } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { createTestSession } from "./utilities";
 
@@ -129,6 +129,19 @@ describe("Composer prepaint", () => {
 			.map(row => Bun.stripANSI(row))
 			.join("\n");
 		expect(viewport.match(/Welcome back!/g)?.length).toBe(1);
+		composer.ui.stop();
+	});
+	it("composites rightEditor widgets into runtime children owned by the frame provider", async () => {
+		const terminal = new CountingTerminal(80, 12);
+		const composer = new Composer({ preferences: config, terminal });
+		const chat = new Text(["chat-0", "chat-1", "chat-2", "chat-3", "chat-4", "chat-5"].join("\n"));
+		composer.setRuntimeChildren([chat]);
+		composer.ui.setRightPanel(() => [["<RIGHT-0>", "<RIGHT-1>", "<RIGHT-2>"]], [chat]);
+
+		composer.start({ playWelcomeIntro: false });
+		await terminal.waitForRender();
+
+		expect(terminal.getViewport().some(row => row.includes("<RIGHT-0>"))).toBeTrue();
 		composer.ui.stop();
 	});
 

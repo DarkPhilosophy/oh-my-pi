@@ -9,6 +9,7 @@ import {
 	type Terminal,
 	type TerminalFramePlan,
 	type TerminalFrameProvider,
+	type TerminalFrameSegment,
 	TUI,
 	type TUIOptions,
 	type ViewportSize,
@@ -44,8 +45,7 @@ export const COMPOSER_DEFAULTS: ComposerPreferences = {
 	showHardwareCursor: true,
 	maxInlineImages: 8,
 	scrollbackRebuild: false,
-
-	resizeScrollback: "rebuild",
+	resizeScrollback: "append",
 	imeSafeCursor: false,
 	autocompleteMaxVisible: 10,
 	spellingTypoDetection: true,
@@ -210,30 +210,49 @@ export class Composer implements TerminalFrameProvider {
 			: [this.#header, this.#bootstrapInputGap, this.editor, this.#statusHost];
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) {
-			return { viewport: this.#renderRoots(roots, width).slice(-rows) };
+			const rendered = this.#renderRootsWithSegments(roots, width);
+			const offset = Math.max(0, rendered.rows.length - rows);
+			return {
+				viewport: rendered.rows.slice(offset),
+				segments: this.#sliceSegments(rendered.segments, offset, rows),
+			};
 		}
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
-		const preRoots = this.#renderRoots(roots.slice(0, transcriptIndex), width);
-		const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
+		const pre = this.#renderRootsWithSegments(roots.slice(0, transcriptIndex), width);
+		const post = this.#renderRootsWithSegments(roots.slice(transcriptIndex + 1), width);
+		const after = post.rows;
 		// Offer history under capacity pressure only: blocks stay live (and keep
 		// reflowing to the current width) while the screen has room. A batch
 		// leaves the mutable viewport in the same frame it is appended, so its
 		// rows are never painted twice.
-		const history = this.#offerHistory(transcript, width, rows, preRoots.length + after.length);
+		const history = this.#offerHistory(transcript, width, rows, pre.rows.length + after.length);
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
-		const before = [...headerRows, ...preRoots];
+		const before = [...headerRows, ...pre.rows];
 		const now = performance.now();
 		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
 		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - after.length), frame);
 		const composed = [...before, ...active, ...after];
+		const segments: TerminalFrameSegment[] = [];
+		if (headerRows.length > 0) segments.push({ component: this.#header, start: 0, rowCount: headerRows.length });
+		for (const segment of pre.segments) {
+			segments.push({ ...segment, start: headerRows.length + segment.start });
+		}
+		if (active.length > 0) {
+			segments.push({ component: transcript, start: before.length, rowCount: active.length });
+		}
+		for (const segment of post.segments) {
+			segments.push({ ...segment, start: before.length + active.length + segment.start });
+		}
 		if (history !== undefined && this.#offeredHistory?.source === "header") {
 			const visibleHeaderRows = Math.max(0, rows - composed.length);
 			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
 		}
+		const offset = Math.max(0, composed.length - rows);
 		return {
 			history,
-			viewport: composed.length <= rows ? composed : composed.slice(-rows),
+			viewport: composed.slice(offset),
+			segments: this.#sliceSegments(segments, offset, rows),
 		};
 	}
 
@@ -320,9 +339,38 @@ export class Composer implements TerminalFrameProvider {
 	}
 
 	#renderRoots(roots: readonly Component[], width: number): string[] {
+		return this.#renderRootsWithSegments(roots, width).rows;
+	}
+
+	#renderRootsWithSegments(
+		roots: readonly Component[],
+		width: number,
+	): { rows: string[]; segments: TerminalFrameSegment[] } {
 		const rows: string[] = [];
-		for (const root of roots) rows.push(...root.render(width));
-		return rows;
+		const segments: TerminalFrameSegment[] = [];
+		for (const component of roots) {
+			const rendered = component.render(width);
+			segments.push({ component, start: rows.length, rowCount: rendered.length });
+			rows.push(...rendered);
+		}
+		return { rows, segments };
+	}
+
+	#sliceSegments(segments: readonly TerminalFrameSegment[], offset: number, rows: number): TerminalFrameSegment[] {
+		const end = offset + rows;
+		const visible: TerminalFrameSegment[] = [];
+		for (const segment of segments) {
+			const segmentEnd = segment.start + segment.rowCount;
+			const start = Math.max(offset, segment.start);
+			const clippedEnd = Math.min(end, segmentEnd);
+			if (clippedEnd <= start) continue;
+			visible.push({
+				component: segment.component,
+				start: start - offset,
+				rowCount: clippedEnd - start,
+			});
+		}
+		return visible;
 	}
 
 	/** Reflow accepted hard rows exactly as the restored terminal buffer will. */
