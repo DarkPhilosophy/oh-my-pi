@@ -1205,6 +1205,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.composer.setStatusComponent(this.statusLine);
 		void ensureCopyUrlHandler().then(ready => {
 			setCopyUrlHandlerReady(ready);
+			this.ui.invalidate();
 			this.ui.requestRender();
 		});
 

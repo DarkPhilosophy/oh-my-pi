@@ -2490,7 +2490,7 @@ export class Markdown
 				const sourceLine =
 					lineEnd >= 0 ? expandedSource.slice(lineStart, lineEnd) : expandedSource.slice(lineStart);
 				const fenceAt = sourceLine.search(fenceChar === "`" ? /`{3,}/ : /~{3,}/);
-				if (fenceAt >= 0 && fenceAt <= openingFenceColumn) {
+				if (fenceAt >= 0 && fenceAt <= openingFenceColumn + 3) {
 					let candidateLength = 0;
 					while (sourceLine.charAt(fenceAt + candidateLength) === fenceChar) candidateLength++;
 					const legalPrefix = isMarkdownContainerPrefix(sourceLine.slice(0, fenceAt));
