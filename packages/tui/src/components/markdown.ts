@@ -2431,7 +2431,12 @@ export class Markdown
 				if (fenceAt >= 0 && fenceAt <= openingFenceColumn) {
 					let candidateLength = 0;
 					while (sourceLine.charAt(fenceAt + candidateLength) === fenceChar) candidateLength++;
-					if (candidateLength >= fenceLength && sourceLine.slice(fenceAt + candidateLength).trim().length === 0) {
+					const legalPrefix = isMarkdownContainerPrefix(sourceLine.slice(0, fenceAt));
+					if (
+						legalPrefix &&
+						candidateLength >= fenceLength &&
+						sourceLine.slice(fenceAt + candidateLength).trim().length === 0
+					) {
 						closeAt = lineStart + fenceAt;
 						closeLength = candidateLength;
 						break;
