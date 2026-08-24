@@ -598,6 +598,7 @@ pub struct DiffStream {
 impl DiffStream {
 	/// Create an empty two-sided stream.
 	#[napi(constructor)]
+	#[must_use]
 	pub fn new() -> Self {
 		Self::default()
 	}
