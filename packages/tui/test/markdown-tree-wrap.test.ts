@@ -133,15 +133,14 @@ describe("Markdown tree-guide hanging wrap", () => {
 			expect(line.startsWith("| ")).toBeTruthy();
 			expect(line.endsWith("|")).toBeTruthy();
 		}
-		// First visual row carries the frame's own `├─` gutter, continuations the
-		// `│` rail — never a markdown hanging indent at column 0.
-		expect(body[0]).toContain("├─ ├── alpha");
-		expect(body[1]).toContain("│ ");
-		expect(body[1]!.startsWith("│")).toBeFalsy();
+		// The default ASCII preset keeps the frame gutter ASCII-only and never
+		// applies the markdown hanging indent to the code payload.
+		expect(body[0]).toContain("| 1 | ├── alpha");
+		expect(body[1]).toMatch(/^\|\s+\|\s/);
 
 		// No glyph lost or duplicated by the frame's wrap.
 		const text = body
-			.map(line => line.replace(/^\|\s*(?:\d+\s+)?(?:├─|└─|│)?/, "").replace(/\|$/, ""))
+			.map(line => line.replace(/^\|\s*(?:\d+\s+)?\|\s/, "").replace(/\|$/, ""))
 			.join("")
 			.replace(/ /g, "");
 		expect(text).toBe(codeLine.replace(/ /g, ""));

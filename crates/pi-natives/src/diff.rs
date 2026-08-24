@@ -591,6 +591,7 @@ impl DiffStreamState {
 ///
 /// The explicit constructor export is part of the generated native addon ABI.
 #[napi]
+#[must_use]
 pub struct DiffStream {
 	state: Arc<Mutex<DiffStreamState>>,
 }
