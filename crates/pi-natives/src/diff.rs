@@ -591,7 +591,6 @@ impl DiffStreamState {
 ///
 /// The explicit constructor export is part of the generated native addon ABI.
 #[napi]
-#[must_use]
 pub struct DiffStream {
 	state: Arc<Mutex<DiffStreamState>>,
 }
@@ -606,6 +605,10 @@ impl Default for DiffStream {
 impl DiffStream {
 	/// Create an empty two-sided stream.
 	#[napi(constructor)]
+	#[allow(
+		clippy::must_use_candidate,
+		reason = "N-API constructors are invoked through generated JavaScript"
+	)]
 	pub fn new() -> Self {
 		Self::default()
 	}
