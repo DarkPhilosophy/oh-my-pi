@@ -2151,6 +2151,9 @@ export class Markdown implements Component {
 			for (let i = start; i < spliceEnd; i++) {
 				out.push(...cache.rows[i - start]!);
 			}
+			for (let i = start; i < spliceEnd; i++) {
+				this.#advanceSplicedCopySourceCursor(tokens[i]!);
+			}
 		}
 
 		const recorder: TailRenderRecorder = {
@@ -2361,6 +2364,14 @@ export class Markdown implements Component {
 		if (!raw) return;
 		const expandedSource = this.#expandedSourceText;
 		const offset = expandedSource.indexOf(raw, this.#copySourceSearchCursor);
+		if (offset >= 0) this.#copySourceSearchCursor = offset + raw.length;
+	}
+
+	/** Advance across a cached top-level token whose nested rows were spliced. */
+	#advanceSplicedCopySourceCursor(token: Token): void {
+		const raw = "raw" in token && typeof token.raw === "string" ? replaceTabs(token.raw) : "";
+		if (!raw) return;
+		const offset = this.#expandedSourceText.indexOf(raw, this.#copySourceSearchCursor);
 		if (offset >= 0) this.#copySourceSearchCursor = offset + raw.length;
 	}
 

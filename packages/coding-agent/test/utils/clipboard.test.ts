@@ -281,23 +281,15 @@ describe("readMacFileUrlsFromClipboard", () => {
 });
 
 describe("copyTextPersistent", () => {
-	it("stops the native X11 clipboard owner after another owner replaces the text", async () => {
+	it("delegates X11 lifetime to the ownership-aware native copy", async () => {
 		setPlatform("linux");
 		process.env.DISPLAY = ":0";
 		spySpawn([], ["", ""], [1, 1]);
-		const nativeCopy = vi.spyOn(native, "copyToClipboard").mockImplementation(() => {});
-		const clipboard = native as typeof native & { readTextFromClipboard(): string };
-		const nativeRead = vi.spyOn(clipboard, "readTextFromClipboard").mockReturnValue("replacement");
-		vi.useFakeTimers();
-		try {
-			const copy = copyTextPersistent("persistent");
-			vi.advanceTimersByTime(250);
-			await copy;
-			expect(nativeCopy).toHaveBeenCalledWith("persistent");
-			expect(nativeRead).toHaveBeenCalled();
-		} finally {
-			vi.useRealTimers();
-		}
+		const nativeCopy = vi.spyOn(native, "copyToClipboardPersistent").mockImplementation(() => {});
+
+		await copyTextPersistent("persistent");
+
+		expect(nativeCopy).toHaveBeenCalledWith("persistent");
 	});
 });
 
