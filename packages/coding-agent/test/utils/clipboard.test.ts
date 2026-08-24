@@ -291,7 +291,7 @@ describe("copyTextPersistent", () => {
 		vi.useFakeTimers();
 		try {
 			const copy = copyTextPersistent("persistent");
-			await vi.advanceTimersByTimeAsync(250);
+			vi.advanceTimersByTime(250);
 			await copy;
 			expect(nativeCopy).toHaveBeenCalledWith("persistent");
 			expect(nativeRead).toHaveBeenCalled();
