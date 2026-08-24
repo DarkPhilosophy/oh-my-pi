@@ -3192,6 +3192,28 @@ describe("framed code review follow-ups", () => {
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;
 		const st = "\x1b\\";
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			new Markdown(`\`\`\`sh\nprintf '${st}'\n\`\`\``, 0, 0, theme).render(80);
+			new Markdown(`\`\`\`sh\nprintf '\x07'\n\`\`\``, 0, 0, theme).render(80);
+			expect(captured).toEqual([`printf '${st}'`, "printf '\x07'"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("advances copy recovery past Mermaid code without a copy target", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
 		let captured: string | undefined;
 		try {
 			terminalState.hyperlinks = true;
@@ -3202,9 +3224,11 @@ describe("framed code review follow-ups", () => {
 					captured = body;
 					return undefined;
 				},
+				resolveMermaidAscii: (source: string) => (source.includes("wrong") ? "diagram" : null),
 			};
-			new Markdown(`\`\`\`sh\nprintf '${st}'\n\`\`\``, 0, 0, theme).render(80);
-			expect(captured).toBe(`printf '${st}'`);
+			const source = "```mermaid\nwrong\n```\n\n- ```mermaid\n  right\n  ```";
+			new Markdown(source, 0, 0, theme).render(80);
+			expect(captured).toBe("right");
 		} finally {
 			terminalState.hyperlinks = originalHyperlinks;
 		}

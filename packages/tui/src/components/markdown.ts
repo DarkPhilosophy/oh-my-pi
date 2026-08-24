@@ -2000,7 +2000,7 @@ export class Markdown implements Component {
 		// by MarkdownTheme and is one of the most styling-sensitive entries.
 		let cacheKey: string | undefined;
 		if (!this.transientRenderCache) {
-			cacheKey = this.#renderCacheKey(normalizedText, this.#text, signature);
+			cacheKey = this.#renderCacheKey(normalizedText, this.#sourceText, signature);
 			const cached = renderCache.get(cacheKey);
 			if (cached !== undefined) {
 				// Populate L1 so subsequent calls from this instance are O(1) map lookup.
@@ -2940,6 +2940,7 @@ export class Markdown implements Component {
 		styleContext?: InlineStyleContext,
 	): RenderedLine[] {
 		const lines: RenderedLine[] = [];
+		const sourceCursorBefore = this.#copySourceSearchCursor;
 		this.#advanceCopySourceCursor(token);
 
 		// Display math block (own-line `$$…$$` / `\[…\]`): stack `\frac` vertically
@@ -3123,6 +3124,9 @@ export class Markdown implements Component {
 				}
 		}
 
+		if (token.type === "code" && this.#copySourceSearchCursor === sourceCursorBefore) {
+			this.#originalCodeBody(token);
+		}
 		return lines;
 	}
 
@@ -3484,6 +3488,7 @@ export class Markdown implements Component {
 					lines.push({ text: this.#renderInlineTokens(token.tokens || [], styleContext), nested: false });
 				}
 			} else if (token.type === "code") {
+				const sourceCursorBefore = this.#copySourceSearchCursor;
 				// Code block in list item — fenced blocks get the same themed box.
 				const codeIndent = padding(this.#codeBlockIndent);
 				const fenced = this.#isFencedCodeToken(token);
@@ -3503,6 +3508,10 @@ export class Markdown implements Component {
 						lines.push({ text: replaceTabs(rawLine), noWrap: true, nested: false });
 					}
 				}
+				// Some render paths (too-narrow frames, Mermaid) do not need a
+				// copy target. They must still consume this token's source span
+				// before a later nested fence searches for its own source.
+				if (this.#copySourceSearchCursor === sourceCursorBefore) this.#originalCodeBody(token);
 			} else if (isMathToken(token)) {
 				// Display math block inside a list item: stack fractions / matrix rows.
 				const apply = styleContext?.applyText ?? ((t: string) => this.#applyDefaultStyle(t));
