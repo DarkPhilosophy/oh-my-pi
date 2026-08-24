@@ -165,7 +165,12 @@ export async function copyTextPersistent(text: string): Promise<void> {
 		}
 	}
 	await nativeCopyToClipboard(text);
-	if (!process.env.WAYLAND_DISPLAY) await Bun.sleep(120_000);
+	if (!process.env.WAYLAND_DISPLAY) {
+		// X11 selections remain owned by the process that supplied them. The
+		// native arboard instance is process-global, so keep this short-lived
+		// handler alive instead of expiring a valid clipboard after two minutes.
+		await Promise.withResolvers<void>().promise;
+	}
 }
 
 // PowerShell one-liner that emits the Windows clipboard image as base64-encoded

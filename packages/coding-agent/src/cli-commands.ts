@@ -17,6 +17,7 @@ import {
 	STRING_VALUE_FLAGS,
 	VALUELESS_FLAGS,
 } from "./cli/flag-tables";
+import Copy from "./commands/copy";
 import { launchHelp } from "./commands/launch-help";
 
 export const commands: CommandEntry[] = [
@@ -78,7 +79,7 @@ export const commands: CommandEntry[] = [
 	},
 	{
 		name: "copy",
-		load: () => import("./commands/copy").then(m => m.default),
+		load: async () => Copy,
 		help: commandHelp.copyHelp,
 	},
 	{
