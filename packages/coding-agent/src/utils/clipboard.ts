@@ -1,7 +1,7 @@
-import * as nativeClipboard from "@oh-my-pi/pi-natives/clipboard";
 import {
 	type ClipboardImage,
 	copyToClipboard as nativeCopyToClipboard,
+	copyToClipboardPersistent as nativeCopyToClipboardPersistent,
 	readImageFromClipboard as nativeReadImageFromClipboard,
 } from "@oh-my-pi/pi-natives/clipboard";
 import * as logger from "@oh-my-pi/pi-utils/logger";
@@ -165,21 +165,11 @@ export async function copyTextPersistent(text: string): Promise<void> {
 			// Try the next persistent clipboard owner.
 		}
 	}
-	await nativeCopyToClipboard(text);
 	if (!process.env.WAYLAND_DISPLAY) {
-		// X11 selections remain owned by the process that supplied them. Keep
-		// serving only while our payload is still the active selection; once
-		// another owner replaces it, this short-lived handler can exit.
-		for (;;) {
-			await Bun.sleep(250);
-			try {
-				const clipboard = nativeClipboard as typeof nativeClipboard & { readTextFromClipboard(): string };
-				if (clipboard.readTextFromClipboard() !== text) return;
-			} catch {
-				return;
-			}
-		}
+		nativeCopyToClipboardPersistent(text);
+		return;
 	}
+	await nativeCopyToClipboard(text);
 }
 
 // PowerShell one-liner that emits the Windows clipboard image as base64-encoded

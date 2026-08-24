@@ -3034,6 +3034,33 @@ describe("framed code review follow-ups", () => {
 		}
 	});
 
+	it("advances copy lookup across spliced tail fences", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			const firstFrame = "```make\n\tall\n```\n\n```make\n    all";
+			const markdown = new Markdown(firstFrame, 0, 0, theme);
+			markdown.transientRenderCache = true;
+			markdown.render(60);
+			captured.length = 0;
+			markdown.setText(`${firstFrame}\n\`\`\``);
+			markdown.render(60);
+			expect(captured.at(-1)).toBe("    all");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
 	it("keeps an open fence's list marker attached before closure", () => {
 		const rows = new Markdown("- ```make\n  \tall", 0, 0, defaultMarkdownTheme)
 			.render(40)
