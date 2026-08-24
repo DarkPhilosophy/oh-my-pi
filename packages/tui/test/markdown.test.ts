@@ -3188,6 +3188,28 @@ describe("framed code review follow-ups", () => {
 		}
 	});
 
+	it("preserves raw OSC terminators in copied fenced source", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const st = "\x1b\\";
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown(`\`\`\`sh\nprintf '${st}'\n\`\`\``, 0, 0, theme).render(80);
+			expect(captured).toBe(`printf '${st}'`);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
 	it("anchors nested opening-fence recovery to a real fence line", () => {
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;

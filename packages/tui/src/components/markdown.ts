@@ -1732,11 +1732,11 @@ export class Markdown implements Component {
 		defaultTextStyle?: DefaultTextStyle,
 		codeBlockIndent: number = 2,
 	) {
-		this.#sourceText = normalizeOsc8Terminators(text);
-		const expandedSource = expandSourceText(this.#sourceText);
+		this.#sourceText = text;
+		const expandedSource = expandSourceText(text);
 		this.#expandedSourceText = expandedSource.text;
 		this.#expandedSourceOffsets = expandedSource.sourceOffsets;
-		this.#text = this.#sourceText;
+		this.#text = normalizeOsc8Terminators(text);
 		this.#oscPartialEscape = trailingOsc8Partial(this.#text);
 		this.#paddingX = paddingX;
 		this.#paddingY = paddingY;
@@ -1746,20 +1746,24 @@ export class Markdown implements Component {
 	}
 
 	setText(text: string): boolean {
-		// Identical re-emit (throttled tick): fully normalized already.
-		if (text === this.#text) return false;
+		// Source recovery must observe byte-exact caller input even when display
+		// normalization maps an OSC ST terminator to BEL.
+		if (text === this.#sourceText) return false;
+		const sourceText = text;
 		// Streaming path: append-only growth. Only the memoized pending escape
 		// suffix plus the delta can hold a not-yet-normalized match (a crossing
 		// match starts in the pending suffix; everything else is in the delta).
-		// Normalize that region alone and splice it onto the old prefix;
-		// String.replace returns the input unchanged when nothing matches, so
-		// the common clean-delta frame allocates nothing. Once a match is
-		// rewritten (ST → BEL), the caller's raw text no longer aligns with
-		// #text (2-byte ST vs 1-byte BEL), so later frames fall back to the
-		// cold full-document pass — still byte-correct, just not faster.
-		if (text.length > this.#text.length && text.startsWith(this.#text)) {
+		// Normalize that region alone and splice it onto the old prefix. The
+		// common clean-delta frame allocates nothing. After ST → BEL rewrites,
+		// normalized render text no longer aligns with the raw source, so later
+		// frames use the cold pass while source recovery remains byte-exact.
+		if (
+			this.#text === this.#sourceText &&
+			sourceText.length > this.#sourceText.length &&
+			sourceText.startsWith(this.#sourceText)
+		) {
 			const memoized = this.#oscPartialEscape;
-			const pending = (memoized ?? "") + text.slice(this.#text.length);
+			const pending = (memoized ?? "") + sourceText.slice(this.#sourceText.length);
 			const normalized = normalizeOsc8Terminators(pending);
 			if (normalized !== pending) {
 				// A stored byte was rewritten (ST → BEL on a crossing match): the
@@ -1769,7 +1773,7 @@ export class Markdown implements Component {
 			}
 			this.#oscPartialEscape = trailingOsc8Partial(normalized);
 			if (normalized === pending) {
-				const delta = text.slice(this.#sourceText.length);
+				const delta = sourceText.slice(this.#sourceText.length);
 				let expandedLength = this.#expandedSourceText.length;
 				for (let deltaOffset = 0; deltaOffset < delta.length; deltaOffset++) {
 					const sourceOffset = this.#sourceText.length + deltaOffset;
@@ -1780,31 +1784,27 @@ export class Markdown implements Component {
 				}
 				this.#expandedSourceText += replaceTabs(delta);
 			} else {
-				const expandedSource = expandSourceText(text);
+				const expandedSource = expandSourceText(sourceText);
 				this.#expandedSourceText = expandedSource.text;
 				this.#expandedSourceOffsets = expandedSource.sourceOffsets;
 			}
-			this.#sourceText = text;
+			this.#sourceText = sourceText;
 			this.#text = text;
 			this.invalidate();
 			return true;
 		}
 		// Non-append edits / cold path: full-document pass.
-		text = normalizeOsc8Terminators(text);
+		text = normalizeOsc8Terminators(sourceText);
 		this.#oscPartialEscape = trailingOsc8Partial(text);
-		// Equality guard: streaming re-emits identical text on ticks that carried
-		// no delta (throttled provider frames, reconciled tool-execution updates).
-		// Without this, the caller-side `#cachedLines` gets thrown away and the
-		// full lex + wrap runs per re-emit — one of the top CPU hotspots during
-		// streaming (issue #4353). Mirrors `Text.setText`'s guard.
-		if (text === this.#text) return false;
+		// The raw-source equality guard above handles throttled re-emits before
+		// normalization; reaching this path therefore represents a real edit.
 		if (!text.startsWith(this.#text)) {
 			// Non-append edit: the previous frame's guard verdict cannot be
 			// reused — the checked region may have changed anywhere.
 			this.#appendOnlySinceLastScan = false;
 		}
-		this.#sourceText = text;
-		const expandedSource = expandSourceText(text);
+		this.#sourceText = sourceText;
+		const expandedSource = expandSourceText(sourceText);
 		this.#expandedSourceText = expandedSource.text;
 		this.#expandedSourceOffsets = expandedSource.sourceOffsets;
 		this.#text = text;
