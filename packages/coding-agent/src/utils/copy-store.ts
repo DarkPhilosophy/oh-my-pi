@@ -19,11 +19,9 @@ export function registerCopyBlock(code: string): string {
 	return `${COPY_URL_SCHEME}:${bytes.length}.${bytes.toString("base64url")}`;
 }
 
-let copyUrlHandlerReady = false;
-
-/** Create a clickable target only after this process confirmed the local handler. */
-export function copyUrlTarget(code: string, handlerReady = copyUrlHandlerReady): string | undefined {
-	return handlerReady ? registerCopyBlock(code) : undefined;
+/** Create the self-contained OSC 8 target; handler installation is best-effort startup work. */
+export function copyUrlTarget(code: string): string {
+	return registerCopyBlock(code);
 }
 
 export function resolveCopyBlock(arg: string): string | undefined {
@@ -115,18 +113,13 @@ export async function registerCopyUrlHandler(): Promise<CopyHandlerResult> {
 	if (!(await isCopyUrlHandlerRegistered())) {
 		return { ok: false, desktopPath, error: "xdg-mime did not activate the omp-copy handler" };
 	}
-	copyUrlHandlerReady = true;
 	return { ok: true, desktopPath };
 }
 
 export async function ensureCopyUrlHandler(): Promise<boolean> {
-	copyUrlHandlerReady = false;
 	try {
 		if (!supportsCopyUrlHandler()) return false;
-		if (await isCopyUrlHandlerRegistered()) {
-			copyUrlHandlerReady = true;
-			return true;
-		}
+		if (await isCopyUrlHandlerRegistered()) return true;
 		const result = await registerCopyUrlHandler();
 		return result.ok;
 	} catch {

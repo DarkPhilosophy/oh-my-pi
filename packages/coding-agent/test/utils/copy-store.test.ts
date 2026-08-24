@@ -13,9 +13,8 @@ describe("copy URL handler", () => {
 		expect(supportsCopyUrlHandler("linux", {}, "/usr/bin/xdg-mime")).toBe(true);
 	});
 
-	it("emits a target only after the local handler is confirmed reachable", () => {
-		expect(copyUrlTarget("echo ready", false)).toBeUndefined();
-		expect(copyUrlTarget("echo ready", true)).toMatch(/^omp-copy:/);
+	it("always emits a self-contained OSC target for fenced code", () => {
+		expect(copyUrlTarget("echo ready")).toMatch(/^omp-copy:/);
 	});
 
 	it("quotes and escapes the executable as one desktop Exec argument", () => {

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { getMarkdownTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/tui-adapters";
-import { supportsCopyUrlHandler } from "@oh-my-pi/pi-coding-agent/utils/copy-store";
+import { resolveCopyBlock, supportsCopyUrlHandler } from "@oh-my-pi/pi-coding-agent/utils/copy-store";
 import { Markdown, TERMINAL } from "@oh-my-pi/pi-tui";
 
 const originalHyperlinks = TERMINAL.hyperlinks;
@@ -20,11 +20,13 @@ afterAll(() => {
 });
 
 describe("Markdown copy link", () => {
-	it("keeps the copy chip non-clickable until the local handler is confirmed", () => {
+	it("renders the copy chip as an OSC 8 hyperlink carrying the original code", () => {
 		const code = "const value = 1;\n";
 		const footer = new Markdown(`\`\`\`ts\n${code}\`\`\``, 0, 0, getMarkdownTheme()).render(80).at(-1) ?? "";
+		const target = footer.match(/\x1b]8;;(omp-copy:[^\x07]+)\x07/)?.[1];
 
-		expect(footer).not.toContain("\x1b]8;;omp-copy:");
+		expect(target).toBeDefined();
+		expect(resolveCopyBlock(target!)).toBe(code.trimEnd());
 		expect(footer).toContain("[copy]");
 	});
 
