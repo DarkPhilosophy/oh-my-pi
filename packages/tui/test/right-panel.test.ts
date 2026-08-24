@@ -446,27 +446,6 @@ describe("TUI.setRightPanel", () => {
 		}
 	});
 
-	it("removes the live right panel while the native viewport is scrolled into history", async () => {
-		const term = new VirtualTerminal(80, 12, 1000);
-		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
-		const chat = new Lines(Array.from({ length: 30 }, (_, i) => `msg-${i}`));
-		tui.addChild(chat);
-		tui.setRightPanel(() => [["<W0>", "<W1>", "<W2>"]], [chat]);
-		tui.start();
-		await settle(term);
-		try {
-			expect(term.getViewport().some(line => line.includes("<W0>"))).toBeTrue();
-			term.scrollLines(-4);
-			chat.lines.push("msg-30");
-			tui.requestRender();
-			await settle(term);
-
-			expect(term.isNativeViewportAtBottom()).toBeFalse();
-			expect(term.getViewport().some(line => line.includes("<W"))).toBeFalse();
-		} finally {
-			tui.stop();
-		}
-	});
 
 	it("reports right-panel blocks hidden while overlay rows cover their placement", async () => {
 		const term = new VirtualTerminal(80, 12);

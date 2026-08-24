@@ -2846,16 +2846,6 @@ export class TUI extends Container {
 			return window;
 		}
 		const blocks = provider(width);
-		if (this.terminal.isNativeViewportAtBottom?.() === false) {
-			this.#rightPanelHasBlocks = false;
-			this.#rightPanelLayoutCallback?.({
-				placedBlockIndices: [],
-				hiddenBlockIndices: blocks.map((_, i) => i),
-				availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
-				searchRows: 0,
-			});
-			return window;
-		}
 		// Conservatively track whether non-empty blocks are placed on screen.
 		// Only this compositor clears the flag, so a direct write between
 		// setRightPanel(null) and the next full render still falls back, protecting

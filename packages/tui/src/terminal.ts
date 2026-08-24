@@ -452,12 +452,6 @@ export interface Terminal {
 	 * built against older pi-tui versions keep working.
 	 */
 	readonly pendingOutputBytes?: number;
-	/**
-	 * Whether the terminal's presented viewport follows the live grid, when the
-	 * host can report native scrollback position. Unknown hosts omit this.
-	 */
-	isNativeViewportAtBottom?(): boolean | undefined;
-
 	// Whether Kitty keyboard protocol is active
 	get kittyProtocolActive(): boolean;
 
