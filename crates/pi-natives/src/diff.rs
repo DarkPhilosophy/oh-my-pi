@@ -588,19 +588,18 @@ impl DiffStreamState {
 /// Complete lines are observable during ingestion. Only equal leading lines
 /// are declared stable before EOF; future input can change Myers alignment
 /// after the first mismatch.
-///
-/// The explicit constructor export is part of the generated native addon ABI.
+#[derive(Default)]
 #[napi]
-pub struct NativeDiffStream {
+pub struct DiffStream {
 	state: Arc<Mutex<DiffStreamState>>,
 }
 
 #[napi]
-impl NativeDiffStream {
+impl DiffStream {
 	/// Create an empty two-sided stream.
 	#[napi(constructor)]
-	pub fn new() -> Result<Self> {
-		Ok(Self { state: Arc::new(Mutex::new(DiffStreamState::default())) })
+	pub fn new() -> Self {
+		Self::default()
 	}
 
 	/// Append a JavaScript text chunk to one side.
@@ -723,11 +722,6 @@ impl NativeDiffStream {
 		let new = state.new.text.clone();
 		drop(state);
 		Ok(task::blocking("diff.finish", (), move |_| Ok(stream_result(&old, &new, context))))
-	}
-}
-impl Default for NativeDiffStream {
-	fn default() -> Self {
-		Self { state: Arc::new(Mutex::new(DiffStreamState::default())) }
 	}
 }
 
