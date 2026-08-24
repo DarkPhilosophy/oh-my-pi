@@ -1,18 +1,29 @@
 /** Self-contained OSC 8 copy targets for fenced code blocks. */
-import * as fsp from "node:fs/promises";
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
 export const COPY_URL_SCHEME = "omp-copy";
 
-/** Whether this platform has a registration path for the custom copy URL scheme. */
-export function supportsCopyUrlHandler(platform: NodeJS.Platform = process.platform): boolean {
-	return platform === "linux";
+/** Whether this process can install a client-local custom URL handler. */
+export function supportsCopyUrlHandler(
+	platform: NodeJS.Platform = process.platform,
+	env: NodeJS.ProcessEnv = process.env,
+	xdgMime: string | null = Bun.which("xdg-mime"),
+): boolean {
+	return platform === "linux" && xdgMime !== null && !env.SSH_CLIENT && !env.SSH_CONNECTION && !env.SSH_TTY;
 }
 
 export function registerCopyBlock(code: string): string {
 	const bytes = Buffer.from(code, "utf8");
 	return `${COPY_URL_SCHEME}:${bytes.length}.${bytes.toString("base64url")}`;
+}
+
+let copyUrlHandlerReady = false;
+
+/** Create a clickable target only after this process confirmed the local handler. */
+export function copyUrlTarget(code: string, handlerReady = copyUrlHandlerReady): string | undefined {
+	return handlerReady ? registerCopyBlock(code) : undefined;
 }
 
 export function resolveCopyBlock(arg: string): string | undefined {
@@ -43,6 +54,29 @@ function resolveOmpBinary(): string {
 	return Bun.which("omp") ?? "omp";
 }
 
+function quoteDesktopExecArgument(value: string): string {
+	const escaped = value
+		.replaceAll("\\", "\\\\")
+		.replaceAll('"', '\\"')
+		.replaceAll("`", "\\`")
+		.replaceAll("$", "\\$")
+		.replaceAll("%", "%%");
+	return `"${escaped}"`;
+}
+
+export function createCopyDesktopEntry(binary: string): string {
+	return [
+		"[Desktop Entry]",
+		"Type=Application",
+		"Name=OMP Copy",
+		`Exec=${quoteDesktopExecArgument(binary)} copy %u`,
+		"NoDisplay=true",
+		"Terminal=false",
+		`MimeType=${COPY_SCHEME_MIME};`,
+		"",
+	].join("\n");
+}
+
 export async function isCopyUrlHandlerRegistered(): Promise<boolean> {
 	if (!supportsCopyUrlHandler()) return false;
 	try {
@@ -62,18 +96,9 @@ export async function registerCopyUrlHandler(): Promise<CopyHandlerResult> {
 	const appsDir = path.join(os.homedir(), ".local", "share", "applications");
 	const desktopPath = path.join(appsDir, COPY_DESKTOP_ENTRY);
 	if (!supportsCopyUrlHandler()) return { ok: false, desktopPath, error: "only supported on Linux (xdg)" };
-	await fsp.mkdir(appsDir, { recursive: true });
-	const entry = [
-		"[Desktop Entry]",
-		"Type=Application",
-		"Name=OMP Copy",
-		`Exec=${resolveOmpBinary()} copy %u`,
-		"NoDisplay=true",
-		"Terminal=false",
-		`MimeType=${COPY_SCHEME_MIME};`,
-		"",
-	].join("\n");
-	await fsp.writeFile(desktopPath, entry, "utf8");
+	await fs.mkdir(appsDir, { recursive: true });
+	const entry = createCopyDesktopEntry(resolveOmpBinary());
+	await Bun.write(desktopPath, entry);
 	const xdg = Bun.spawn(["xdg-mime", "default", COPY_DESKTOP_ENTRY, COPY_SCHEME_MIME], {
 		stdout: "ignore",
 		stderr: "pipe",
@@ -87,14 +112,25 @@ export async function registerCopyUrlHandler(): Promise<CopyHandlerResult> {
 			error: error || `xdg-mime exited ${code}`,
 		};
 	}
+	if (!(await isCopyUrlHandlerRegistered())) {
+		return { ok: false, desktopPath, error: "xdg-mime did not activate the omp-copy handler" };
+	}
+	copyUrlHandlerReady = true;
 	return { ok: true, desktopPath };
 }
 
-export async function ensureCopyUrlHandler(): Promise<void> {
+export async function ensureCopyUrlHandler(): Promise<boolean> {
+	copyUrlHandlerReady = false;
 	try {
-		if (!supportsCopyUrlHandler() || (await isCopyUrlHandlerRegistered())) return;
-		await registerCopyUrlHandler();
+		if (!supportsCopyUrlHandler()) return false;
+		if (await isCopyUrlHandlerRegistered()) {
+			copyUrlHandlerReady = true;
+			return true;
+		}
+		const result = await registerCopyUrlHandler();
+		return result.ok;
 	} catch {
 		// Best effort; `omp copy --install-handler` remains available.
+		return false;
 	}
 }
