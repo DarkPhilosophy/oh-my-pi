@@ -291,6 +291,17 @@ describe("copyTextPersistent", () => {
 
 		expect(nativeCopy).toHaveBeenCalledWith("persistent");
 	});
+
+	it("delegates Wayland fallback lifetime to the ownership-aware native copy", async () => {
+		setPlatform("linux");
+		process.env.WAYLAND_DISPLAY = "wayland-0";
+		spySpawn([], [""], [1]);
+		const nativeCopy = vi.spyOn(native, "copyToClipboardPersistent").mockImplementation(() => {});
+
+		await copyTextPersistent("persistent");
+
+		expect(nativeCopy).toHaveBeenCalledWith("persistent");
+	});
 });
 
 describe("readTextFromClipboard", () => {
