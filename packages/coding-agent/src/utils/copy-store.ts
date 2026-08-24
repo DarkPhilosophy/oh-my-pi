@@ -46,8 +46,9 @@ export function resolveCopyBlock(arg: string): string | undefined {
 const COPY_DESKTOP_ENTRY = `${COPY_URL_SCHEME}.desktop`;
 const COPY_SCHEME_MIME = `x-scheme-handler/${COPY_URL_SCHEME}`;
 
-function copyDesktopPath(): string {
-	return path.join(os.homedir(), ".local", "share", "applications", COPY_DESKTOP_ENTRY);
+export function copyDesktopPath(env: NodeJS.ProcessEnv = process.env, home: string = os.homedir()): string {
+	const dataHome = env.XDG_DATA_HOME || path.join(home, ".local", "share");
+	return path.join(dataHome, "applications", COPY_DESKTOP_ENTRY);
 }
 
 export interface CopyHandlerResult {
