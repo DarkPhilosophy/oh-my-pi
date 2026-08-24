@@ -70,7 +70,7 @@ describe("edit parse-regression blackbox", () => {
 		const disabledSession = makeSession(tempDir, disabledSettings);
 		const filePath = await writeFixture("disabled.ts");
 
-		await new EditTool(disabledSession, "replace").execute("disabled", {
+		const result = await new EditTool(disabledSession, "replace").execute("disabled", {
 			path: "disabled.ts",
 			old_string: "return 1;",
 			new_string: "return (;",
@@ -78,6 +78,21 @@ describe("edit parse-regression blackbox", () => {
 
 		expect(await Bun.file(filePath).text()).toContain("return (;");
 		expect(await Bun.file(logPath).exists()).toBe(false);
+		// The parse-regression warning is independent of blackbox recording.
+		const text = result.content.map(part => (part.type === "text" ? part.text : "")).join("\n");
+		expect(text).toMatch(/no longer parses after this edit/);
+	});
+	test("does not warn when the edit keeps the file parsing", async () => {
+		await writeFixture("clean.ts");
+
+		const result = await new EditTool(session, "replace").execute("clean", {
+			path: "clean.ts",
+			old_string: "return 1;",
+			new_string: "return 2;",
+		});
+
+		const text = result.content.map(part => (part.type === "text" ? part.text : "")).join("\n");
+		expect(text).not.toMatch(/no longer parses/);
 	});
 
 	test("appends valid-to-invalid transitions from every edit variant", async () => {

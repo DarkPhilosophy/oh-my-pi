@@ -1,6 +1,7 @@
 import {
 	type Component,
 	Container,
+	type HistoryBatch,
 	type NativeScrollbackCommittedRows,
 	type NativeScrollbackLiveRegion,
 	type NativeScrollbackWidthEpoch,
@@ -8,6 +9,18 @@ import {
 	type ViewportTailProvider,
 } from "@oh-my-pi/pi-tui";
 import { isToolActivityComponent } from "./tool-activity";
+
+/** Shared animation time supplied by the bounded frame provider. */
+export interface AnimationFrame {
+	readonly tick: number;
+	readonly now: number;
+}
+
+interface TranscriptPresentationTarget {
+	setTranscriptAllocation?(rows: number, frame: AnimationFrame): void;
+}
+
+export type BlockState = "active" | "settled" | "committed";
 
 /**
  * A transcript block that is still mutating (a foreground tool awaiting its
@@ -109,9 +122,13 @@ function stripPlainBlankEdges(lines: readonly string[]): readonly string[] {
 	let start = 0;
 	let end = lines.length;
 	while (start < end && isPlainBlank(lines[start]!)) start++;
+
 	while (end > start && isPlainBlank(lines[end - 1]!)) end--;
 	return start === 0 && end === lines.length ? lines : lines.slice(start, end);
 }
+
+/** Strip blank edges for provider and tool-card viewport allocation. */
+export const trimBlankEdges = stripPlainBlankEdges;
 
 /**
  * One block's recorded contribution to the assembled transcript: the raw array
@@ -208,6 +225,13 @@ export class TranscriptContainer
 		}
 	>();
 
+	// Ordered retirement state used only by the modern TerminalFrameProvider.
+	// The custom native-scrollback ledger above remains authoritative for the
+	// legacy/direct render path.
+	#providerFrontier = 0;
+	#providerNextBatchId = 1;
+	#providerOffered: { batch: HistoryBatch; end: number } | undefined;
+
 	// Stable-prefix floor accumulated across renders since the last
 	// getRenderStablePrefixRows() read (see RenderStablePrefix: reading
 	// consumes the report and re-bases the baseline). Out-of-band renders
@@ -216,6 +240,11 @@ export class TranscriptContainer
 	override addChild(component: Component): void {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
 		super.addChild(component);
+	}
+
+	override removeChild(component: Component): void {
+		if (!this.canRemoveBlock(component)) return;
+		super.removeChild(component);
 	}
 
 	setToolActivityVisible(visible: boolean): void {
@@ -238,6 +267,8 @@ export class TranscriptContainer
 		this.#generation++;
 		super.clear();
 		this.#committedRows = 0;
+		this.#providerFrontier = 0;
+		this.#providerOffered = undefined;
 	}
 
 	override setNativeScrollbackCommittedRows(rows: number): void {
@@ -457,6 +488,164 @@ export class TranscriptContainer
 			if (!isBlockFinalized(children[i]!)) return false;
 		}
 		return index === children.length - 1;
+	}
+
+	/** Whether a transient block may be removed without desynchronizing terminal history. */
+	canRemoveBlock(component: Component): boolean {
+		const index = this.children.indexOf(component);
+		if (index < 0 || index < this.#providerFrontier) return false;
+		return this.#providerOffered === undefined || index >= this.#providerOffered.end;
+	}
+
+	/** Lifecycle state per block in transcript order. */
+	blockStates(): readonly BlockState[] {
+		const offeredEnd = this.#providerOffered?.end ?? this.#providerFrontier;
+		return this.children.map((component, index) => {
+			if (index < this.#providerFrontier) return "committed";
+			if (index < offeredEnd || isBlockFinalized(component)) return "settled";
+			return "active";
+		});
+	}
+
+	/** Whether visible active capacity permits another live block. */
+	canAdmit(rows: number): boolean {
+		const states = this.blockStates();
+		const active = states.filter(state => state === "active").length;
+		const live = states.filter(state => state !== "committed").length;
+		return Math.max(0, Math.trunc(rows)) > active && live < 256;
+	}
+
+	/** Rebuild provider retirement before a destructive history replay. */
+	resetRetirement(): void {
+		this.#providerFrontier = 0;
+		this.#providerOffered = undefined;
+	}
+
+	/** Rows occupied by the provider-owned, not-yet-retired transcript tail. */
+	liveRowCount(width: number): number {
+		const start = this.#providerOffered?.end ?? this.#providerFrontier;
+		let total = 0;
+		let visible = 0;
+		for (let index = start; index < this.children.length; index++) {
+			const block = stripPlainBlankEdges(this.children[index]!.render(width));
+			if (block.length > 0) total += block.length + (visible++ > 0 ? 1 : 0);
+		}
+		return total;
+	}
+
+	/**
+	 * Offer the shortest finalized prefix required to fit the mutable tail.
+	 * The offer remains stable until the terminal acknowledges it.
+	 */
+	peekFinalizedBatch(width: number, capacity: number): HistoryBatch | undefined {
+		if (this.#providerOffered !== undefined) return this.#providerOffered.batch;
+		const start = this.#providerFrontier;
+		if (start >= this.children.length) return undefined;
+		const heights: number[] = [];
+		let total = 0;
+		let visible = 0;
+		for (let index = start; index < this.children.length; index++) {
+			const block = stripPlainBlankEdges(this.children[index]!.render(width));
+			heights.push(block.length);
+			if (block.length > 0) total += block.length + (visible++ > 0 ? 1 : 0);
+		}
+		const room = Math.max(0, Math.trunc(capacity));
+		if (total <= room) return undefined;
+		let end = start;
+		let freed = 0;
+		while (end < this.children.length && isBlockFinalized(this.children[end]!)) {
+			if (total - freed <= room) break;
+			const height = heights[end - start] ?? 0;
+			freed += height > 0 ? height + 1 : 0;
+			end++;
+		}
+		if (end === start) return undefined;
+		const rows: string[] = [];
+		for (let index = start; index < end; index++) {
+			const block = stripPlainBlankEdges(this.children[index]!.render(width));
+			if (block.length === 0) continue;
+			if (rows.length > 0) rows.push("");
+			rows.push(...block);
+		}
+		if (rows.length > 0) rows.push("");
+		const batch: HistoryBatch = { id: this.#providerNextBatchId++, rows };
+		this.#providerOffered = { batch, end };
+		return batch;
+	}
+
+	/** Retire exactly the outstanding provider history offer. */
+	acknowledgeFinalizedBatch(id: number): void {
+		const offered = this.#providerOffered;
+		if (offered === undefined || offered.batch.id !== id) return;
+		this.#providerFrontier = offered.end;
+		this.#providerOffered = undefined;
+	}
+
+	/** Render the provider-owned mutable transcript viewport. */
+	renderViewport(width: number, rows: number, frame: AnimationFrame): readonly string[] {
+		const capacity = Math.max(0, Math.trunc(rows));
+		if (capacity === 0) return EMPTY_TAIL;
+		const start = this.#providerOffered?.end ?? this.#providerFrontier;
+		const shown: Component[] = [];
+		const blocks: (readonly string[])[] = [];
+		let total = 0;
+		for (let index = start; index < this.children.length; index++) {
+			const child = this.children[index]!;
+			this.#setProviderAllocation(child, Number.MAX_SAFE_INTEGER, frame);
+			const block = stripPlainBlankEdges(child.render(width));
+			if (block.length === 0) continue;
+			total += block.length + (shown.length > 0 ? 1 : 0);
+			shown.push(child);
+			blocks.push(block);
+		}
+		if (shown.length === 0) return EMPTY_TAIL;
+		if (shown.length > capacity) return this.#renderProviderEmergency(shown, width, capacity, frame);
+		if (total <= capacity) {
+			const output: string[] = [];
+			for (const block of blocks) {
+				if (output.length > 0) output.push("");
+				output.push(...block);
+			}
+			return output;
+		}
+		const allocation = new Array<number>(shown.length).fill(1);
+		let surplus = capacity - shown.length;
+		for (let index = shown.length - 1; index >= 0 && surplus > 0; index--) {
+			const extra = Math.min(Math.max(0, blocks[index]!.length - 1), surplus);
+			allocation[index] += extra;
+			surplus -= extra;
+		}
+		const output: string[] = [];
+		for (let index = 0; index < shown.length; index++) {
+			const allocated = allocation[index]!;
+			this.#setProviderAllocation(shown[index]!, allocated, frame);
+			const block = stripPlainBlankEdges(shown[index]!.render(width));
+			output.push(...(block.length <= allocated ? block : block.slice(block.length - allocated)));
+		}
+		return output.length > capacity ? output.slice(output.length - capacity) : output;
+	}
+
+	#renderProviderEmergency(
+		shown: readonly Component[],
+		width: number,
+		rows: number,
+		frame: AnimationFrame,
+	): readonly string[] {
+		const output: string[] = [];
+		const hiddenCount = Math.max(0, shown.length - rows);
+		const hiddenActive = shown.slice(0, hiddenCount).filter(component => !isBlockFinalized(component)).length;
+		if (hiddenActive > 0) output.push(`${hiddenActive} more transcript blocks active`);
+		const visibleRows = rows - output.length;
+		const visible = visibleRows > 0 ? shown.slice(-visibleRows) : [];
+		for (const component of visible) {
+			this.#setProviderAllocation(component, 1, frame);
+			output.push(stripPlainBlankEdges(component.render(width))[0] ?? "");
+		}
+		return output.slice(0, rows);
+	}
+
+	#setProviderAllocation(component: Component, rows: number, frame: AnimationFrame): void {
+		(component as Component & TranscriptPresentationTarget).setTranscriptAllocation?.(rows, frame);
 	}
 
 	/**

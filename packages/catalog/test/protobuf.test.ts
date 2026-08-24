@@ -83,10 +83,10 @@ it("round-trips a map whose key is __proto__ without prototype pollution", () =>
 
 	expect(Object.getPrototypeOf(decoded.entries)).toBeNull();
 	expect(Object.keys(decoded.entries).sort()).toEqual(["__proto__", "safe"]);
-	expect(decoded.entries["__proto__"]).toBe("polluted");
-	expect(decoded.entries["safe"]).toBe("ok");
+	expect(Reflect.get(decoded.entries, "__proto__")).toBe("polluted");
+	expect(decoded.entries.safe).toBe("ok");
 
 	const json = StringMapSchema.toJson(decoded) as { entries: Record<string, string> };
 	expect(Object.keys(json.entries).sort()).toEqual(["__proto__", "safe"]);
-	expect(json.entries["__proto__"]).toBe("polluted");
+	expect(Reflect.get(json.entries, "__proto__")).toBe("polluted");
 });

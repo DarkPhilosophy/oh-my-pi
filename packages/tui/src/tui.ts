@@ -133,6 +133,34 @@ export interface TUIOptions {
 	renderScheduler?: RenderScheduler;
 }
 
+/** Physical terminal dimensions supplied to a frame provider. */
+export interface ViewportSize {
+	readonly columns: number;
+	readonly rows: number;
+}
+
+/** Immutable finalized rows offered until the terminal accepts this identifier. */
+export interface HistoryBatch {
+	readonly id: number;
+	readonly rows: readonly string[];
+}
+
+/** One history append and the complete mutable viewport for a terminal frame. */
+export interface TerminalFramePlan {
+	readonly history?: HistoryBatch;
+	readonly viewport: readonly string[];
+}
+
+/** Produces bounded terminal frames and retires acknowledged history batches. */
+export interface TerminalFrameProvider {
+	renderFrame(viewport: ViewportSize): TerminalFramePlan;
+	acknowledgeHistory(id: number): void;
+	/** Full semantic viewport used only during a transient resize repaint. */
+	renderResizeFrame?(viewport: ViewportSize): readonly string[];
+	/** Re-offer finalized history after a destructive display replay. */
+	resetHistory?(): void;
+}
+
 export interface TUIStartOptions {
 	/** Clear saved native scrollback before the first paint. */
 	clearScrollback?: boolean;
@@ -904,14 +932,28 @@ export class Container
 			revisions = new Array(count);
 			this.#memoChildWidthEpochRevisions = revisions;
 		}
+		let widthEpochChanged = false;
 		for (let i = 0; i < count; i++) {
-			const childLines = children[i]!.render(width);
-			revisions[i] = getNativeScrollbackWidthEpochRevision(children[i]!);
-			if (refs[i] !== childLines) {
+			const child = children[i]!;
+			const previousLines = refs[i];
+			const previousRevision = revisions[i];
+			const childLines = child.render(width);
+			const revision = getNativeScrollbackWidthEpochRevision(child);
+			revisions[i] = revision;
+			if (
+				this.#memoLines !== undefined &&
+				this.#memoWidth === width &&
+				((previousLines !== undefined && previousLines.length !== childLines.length) ||
+					(previousRevision !== undefined && revision !== previousRevision))
+			) {
+				widthEpochChanged = true;
+			}
+			if (previousLines !== childLines) {
 				unchanged = false;
 				refs[i] = childLines;
 			}
 		}
+		if (widthEpochChanged) this.#widthEpochRevision++;
 		this.#memoChildren = children.slice();
 		this.#memoWidth = width;
 		if (unchanged) return this.#memoLines!;
@@ -1229,10 +1271,74 @@ export function findCommittedPrefixResync(
 }
 
 /**
+ * Adapts the explicit upstream frame-plan contract to the richer native
+ * scrollback ledger. Finalized batches remain part of the semantic frame after
+ * acknowledgement, while the mutable viewport is pinned below them.
+ */
+class TerminalFrameProviderComponent
+	implements
+		Component,
+		NativeScrollbackLiveRegion,
+		NativeScrollbackCommittedRows,
+		NativeScrollbackReplay,
+		ViewportTailProvider
+{
+	#history: string[] = [];
+	#viewport: readonly string[] = [];
+	#acknowledgedIds = new Set<number>();
+	#replayPrepared = false;
+
+	constructor(
+		readonly provider: TerminalFrameProvider,
+		private readonly viewportSize: () => ViewportSize,
+	) {}
+
+	render(width: number): readonly string[] {
+		const size = this.viewportSize();
+		const plan = this.provider.renderFrame({ columns: width, rows: size.rows });
+		if (plan.history && !this.#acknowledgedIds.has(plan.history.id)) {
+			this.#replayPrepared = false;
+			this.#acknowledgedIds.add(plan.history.id);
+			this.#history.push(...plan.history.rows);
+			this.provider.acknowledgeHistory(plan.history.id);
+		}
+		this.#viewport = plan.viewport.length > size.rows ? plan.viewport.slice(0, size.rows) : plan.viewport;
+		return [...this.#history, ...this.#viewport];
+	}
+
+	renderViewportTail(width: number, maxRows: number): readonly string[] {
+		const rows =
+			this.provider.renderResizeFrame?.({ columns: width, rows: maxRows }) ??
+			this.provider.renderFrame({ columns: width, rows: maxRows }).viewport;
+		return rows.length > maxRows ? rows.slice(rows.length - maxRows) : rows;
+	}
+
+	getNativeScrollbackLiveRegionStart(): number {
+		return this.#history.length;
+	}
+
+	isNativeScrollbackLiveRegionPinned(): boolean {
+		return true;
+	}
+
+	setNativeScrollbackCommittedRows(_rows: number): void {}
+
+	prepareNativeScrollbackReplay(): void {
+		if (!this.provider.resetHistory || this.#replayPrepared) return;
+		this.#replayPrepared = true;
+		this.provider.resetHistory();
+		this.#history = [];
+		this.#acknowledgedIds.clear();
+	}
+}
+
+/**
  * TUI - Main class for managing terminal UI with differential rendering
  */
 export class TUI extends Container {
 	terminal: Terminal;
+	#frameProviderComponent: TerminalFrameProviderComponent | undefined;
+	#frameProviderPreviousChildren: Component[] | undefined;
 	#previousFrameLength = 0;
 	#previousWidth = 0;
 	#previousHeight = 0;
@@ -2094,6 +2200,32 @@ export class TUI extends Container {
 		this.#resizeScrollbackMode = mode;
 	}
 
+	/**
+	 * Install the product-owned bounded frame provider. The existing custom
+	 * renderer remains the physical writer, retaining its scrollback, image,
+	 * right-panel, resize, and terminal compatibility guarantees.
+	 */
+	setFrameProvider(provider: TerminalFrameProvider | undefined): void {
+		if (provider === undefined) {
+			if (!this.#frameProviderComponent) return;
+			this.clear();
+			for (const child of this.#frameProviderPreviousChildren ?? []) this.addChild(child);
+			this.#frameProviderComponent = undefined;
+			this.#frameProviderPreviousChildren = undefined;
+			this.requestRender(true);
+			return;
+		}
+		if (!this.#frameProviderComponent) this.#frameProviderPreviousChildren = [...this.children];
+		const component = new TerminalFrameProviderComponent(provider, () => ({
+			columns: this.terminal.columns,
+			rows: this.terminal.rows,
+		}));
+		this.clear();
+		this.addChild(component);
+		this.#frameProviderComponent = component;
+		this.requestRender(true);
+	}
+
 	getShowHardwareCursor(): boolean {
 		return this.#showHardwareCursor;
 	}
@@ -2850,6 +2982,17 @@ export class TUI extends Container {
 	}
 
 	/**
+	 * Paint a forced frame synchronously when startup must hand off an already
+	 * visible component tree before further asynchronous initialization.
+	 */
+	renderNow(options?: RenderRequestOptions): void {
+		if (this.#stopped) return;
+		this.#prepareForcedRender(options?.clearScrollback === true);
+		this.#renderRequested = false;
+		this.#executeRender();
+	}
+
+	/**
 	 * Opt `component` into subtree-only renders when input leaves focus stable.
 	 *
 	 * The host must explicitly request renders for every sibling mutated by the
@@ -3166,8 +3309,12 @@ export class TUI extends Container {
 				this.#deferredForcedClearScrollback = false;
 				return;
 			}
-			const deferredClearScrollback = this.#deferredForcedClearScrollback;
+			const deferredClearScrollback =
+				this.#deferredForcedClearScrollback ||
+				(this.#frameProviderComponent !== undefined && this.#resizeScrollbackMode === "rebuild");
 			this.#deferredForcedClearScrollback = false;
+			this.#frameProviderComponent?.prepareNativeScrollbackReplay();
+			this.invalidate();
 			this.requestRender(true, { clearScrollback: deferredClearScrollback });
 		}, TUI.#MULTIPLEXER_RESIZE_DEBOUNCE_MS);
 	}
@@ -4382,6 +4529,9 @@ export class TUI extends Container {
 					clearScrollback:
 						divergenceRebuild ||
 						(resizeScrollbackReplay && this.#resizeScrollbackMode === "rebuild") ||
+						(replaceRequested &&
+							this.#frameProviderComponent !== undefined &&
+							this.#resizeScrollbackMode === "rebuild") ||
 						((replaceRequested || geometryRebuild) && !isMultiplexerSession()),
 				}
 			: { kind: "update", chunkTo, windowTop };
@@ -5326,7 +5476,13 @@ export class TUI extends Container {
 			// rebuild — ED3 + full history — and the clearScrollback intent below
 			// matches the gesture-driven reset path.
 			this.#resizeEventPending = true;
-			this.requestRender(true, { clearScrollback: !isMultiplexerSession() });
+			this.#frameProviderComponent?.prepareNativeScrollbackReplay();
+			this.invalidate();
+			this.requestRender(true, {
+				clearScrollback:
+					!isMultiplexerSession() ||
+					(this.#frameProviderComponent !== undefined && this.#resizeScrollbackMode === "rebuild"),
+			});
 		}, TUI.#RESIZE_VIEWPORT_SETTLE_MS);
 	}
 

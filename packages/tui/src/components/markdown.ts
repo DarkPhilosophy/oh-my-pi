@@ -115,7 +115,7 @@ function repairOrphanClosingFence(text: string): string {
 			open = undefined;
 		}
 	}
-	if (open?.info !== "" || !FENCED_SOURCE_INTRO.test(lines[open.index - 1]?.trim() ?? "")) return text;
+	if (open?.info !== "" || FENCED_SOURCE_INTRO.test(lines[open.index - 1]?.trim() ?? "")) return text;
 	let hasHeading = false;
 	let hasTableDelimiter = false;
 	for (let index = open.index + 1; index < lines.length; index++) {
@@ -1539,10 +1539,17 @@ interface StreamPrefixLineCache extends RenderSignature {
 	lines: readonly string[];
 	tables: readonly TableRenderSpec[];
 }
-interface StreamingDiffLineCache extends RenderSignature {
+interface StreamingHighlightCache extends RenderSignature {
 	lang: string | undefined;
 	text: string;
 	lines: readonly string[];
+	stream: HighlightStreamSession;
+}
+
+function splitPushedHighlightLines(pushed: string): string[] {
+	const lines = pushed.split("\n");
+	lines.pop();
+	return lines;
 }
 
 interface TableLayoutLock {
@@ -1663,12 +1670,11 @@ export class Markdown
 	#appendOnlySinceLastScan = true;
 	// True while #renderStreamingContentLines renders the frozen token range:
 	// frozen code blocks highlight even in transient mode so their bytes match
-	// the finalized render (they render once into the prefix line cache, so
-	// the FFI cost is amortized). The volatile tail normally stays
-	// unhighlighted; streaming diff fences line-highlight completed rows so
-	// semantic colors reach native scrollback before rows leave the viewport.
+	// the finalized render. In the volatile tail, a stateful highlight stream
+	// styles completed rows immediately; diff-family grammars retain their
+	// safe line-local fallback when the theme has no stream implementation.
 	#renderingFrozenPrefix = false;
-	#streamingDiffLineCache?: StreamingDiffLineCache;
+	#streamingHighlightCache?: StreamingHighlightCache;
 	#activeRenderSignature?: RenderSignature;
 	// Streaming tables may grow naturally while wholly repaintable. Once any
 	// physical row of a table enters native scrollback, its current column widths
@@ -2426,14 +2432,6 @@ export class Markdown
 		if (offset >= 0) this.#copySourceSearchCursor = offset + raw.length;
 	}
 
-	/** Advance across a cached top-level token whose nested rows were spliced. */
-	#advanceSplicedCopySourceCursor(token: Token): void {
-		const raw = "raw" in token && typeof token.raw === "string" ? replaceTabs(token.raw) : "";
-		if (!raw) return;
-		const offset = this.#expandedSourceText.indexOf(raw, this.#copySourceSearchCursor);
-		if (offset >= 0) this.#copySourceSearchCursor = offset + raw.length;
-	}
-
 	/** Recover the source body for copy targets after display tab expansion. */
 	#originalCodeBody(token: Token): string {
 		const fallback = "text" in token && typeof token.text === "string" ? token.text : "";
@@ -2738,11 +2736,6 @@ export class Markdown
 
 		const rawLines = tokenText.split("\n");
 		const streaming = this.transientRenderCache && !this.#renderingFrozenPrefix;
-		const normalizedLang = lang?.toLowerCase();
-		const canStreamDiff =
-			streaming &&
-			this.#theme.highlightCode &&
-			(normalizedLang === "diff" || normalizedLang === "patch" || normalizedLang === "udiff");
 		if (this.#theme.highlightCode && (!streaming || this.#codeTokenHasClosingFence(token))) {
 			// Finalized content — or a fence that closed mid-stream, which
 			// highlights through the same whole-block call the finalized render
@@ -2754,14 +2747,11 @@ export class Markdown
 			return bodyLines;
 		}
 
-		if (canStreamDiff) {
+		if (streaming && this.#theme.highlightCode) {
 			const lineEnd = tokenText.lastIndexOf("\n");
-			const completedLines =
-				lineEnd >= 0 ? this.#highlightStreamingDiffLines(tokenText.slice(0, lineEnd), lang) : null;
+			const completedLines = lineEnd >= 0 ? this.#highlightStreamingLines(tokenText.slice(0, lineEnd), lang) : null;
 			if (completedLines) {
-				for (const hlLine of completedLines) {
-					addBodyLine(hlLine, false);
-				}
+				for (const hlLine of completedLines) addBodyLine(hlLine, false);
 				for (const codeLine of tokenText.slice(lineEnd + 1).split("\n")) {
 					addBodyLine(this.#theme.codeBlock(codeLine), true);
 				}
@@ -2806,11 +2796,9 @@ export class Markdown
 		return false;
 	}
 
-	#highlightStreamingDiffLines(completedText: string, lang: string | undefined): readonly string[] {
-		const highlightCode = this.#theme.highlightCode;
-		if (!highlightCode) return [];
+	#highlightStreamingLines(completedText: string, lang: string | undefined): readonly string[] | null {
 		const signature = this.#activeRenderSignature;
-		const cache = this.#streamingDiffLineCache;
+		const cache = this.#streamingHighlightCache;
 		if (
 			signature &&
 			cache &&
@@ -2830,23 +2818,41 @@ export class Markdown
 			cache.headingProbe === signature.headingProbe
 		) {
 			if (completedText.length === cache.text.length) return cache.lines;
-			const lines = cache.lines.slice();
 			const addedText = completedText.slice(cache.text.length + 1);
-			for (const codeLine of addedText.split("\n")) {
-				lines.push(...highlightCode(codeLine, lang));
-			}
-			this.#streamingDiffLineCache = { ...signature, lang, text: completedText, lines };
+			const lines = cache.lines.concat(splitPushedHighlightLines(cache.stream.push(`${addedText}\n`)));
+			this.#streamingHighlightCache = { ...signature, lang, text: completedText, lines, stream: cache.stream };
 			return lines;
 		}
 
-		const lines: string[] = [];
-		for (const codeLine of completedText.split("\n")) {
-			lines.push(...highlightCode(codeLine, lang));
-		}
-		if (signature) {
-			this.#streamingDiffLineCache = { ...signature, lang, text: completedText, lines };
-		}
+		const stream = this.#createHighlightStream(lang);
+		if (!stream) return null;
+		const lines = splitPushedHighlightLines(stream.push(`${completedText}\n`));
+		if (signature) this.#streamingHighlightCache = { ...signature, lang, text: completedText, lines, stream };
 		return lines;
+	}
+
+	#createHighlightStream(lang: string | undefined): HighlightStreamSession | null {
+		const factory = this.#theme.createHighlightStream;
+		if (factory) {
+			try {
+				return factory(lang);
+			} catch {
+				// A stale or broken native highlighter must not break rendering.
+			}
+		}
+		const highlightCode = this.#theme.highlightCode;
+		if (!highlightCode) return null;
+		const normalizedLang = lang?.toLowerCase();
+		if (normalizedLang !== "diff" && normalizedLang !== "patch" && normalizedLang !== "udiff") return null;
+		return {
+			push: chunk => {
+				const lines = chunk.split("\n");
+				const trailing = lines.pop() ?? "";
+				let out = "";
+				for (const line of lines) out += `${highlightCode(line, lang).join("\n")}\n`;
+				return trailing ? out + highlightCode(trailing, lang).join("\n") : out;
+			},
+		};
 	}
 
 	#renderEmptyPaddingLines(signature: RenderSignature): string[] {

@@ -730,8 +730,8 @@ describe("Cursor history encoding", () => {
 		};
 		const args = assistant.content[0].args;
 		expect(Object.hasOwn(args, "__proto__")).toBe(true);
-		expect(args["__proto__"]).toEqual({ polluted: true });
-		expect(args["safe"]).toBe("ok");
+		expect(Reflect.get(args, "__proto__")).toEqual({ polluted: true });
+		expect(args.safe).toBe("ok");
 
 		// The protobuf argument map must carry the same own keys — a plain `{}`
 		// map would retarget its prototype to the encoded bytes and replay

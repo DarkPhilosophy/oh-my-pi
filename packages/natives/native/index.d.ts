@@ -339,7 +339,7 @@ export declare function __ompInstallTokioRuntime(): void
  * `packages/natives/native/index.js` (which derives the name from
  * `package.json#version`).
  */
-export declare function __piNativesV18_0_0(): void
+export declare function __piNativesV18_0_4(): void
 
 /**
  * Apply ast-grep rewrite rules to matching files; honors `dryRun` and returns
@@ -674,6 +674,16 @@ export interface ContextLine {
  * Returns an error if clipboard access fails.
  */
 export declare function copyToClipboard(text: string): void
+
+/**
+ * Copy plain text and, on Linux, block until another process takes clipboard
+ * ownership.
+ *
+ * The Linux wait is driven by X11/Wayland ownership events, so identical
+ * replacement text still releases the process without polling clipboard
+ * contents.
+ */
+export declare function copyToClipboardPersistent(text: string): void
 
 /**
  * All pairs `(i, j)` with `i < j` whose cosine similarity meets `threshold`.
@@ -1838,6 +1848,14 @@ export interface PtyStartOptions {
  * Returns an error if clipboard access fails or image encoding fails.
  */
 export declare function readImageFromClipboard(): Promise<ClipboardImage | undefined | null>
+
+/**
+ * Read plain text from the system clipboard.
+ *
+ * # Errors
+ * Returns an error if clipboard access fails or does not contain text.
+ */
+export declare function readTextFromClipboard(): string
 
 /**
  * Render one snapcompact frame on a libuv worker: print pre-normalized text

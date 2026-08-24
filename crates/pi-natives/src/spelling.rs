@@ -109,8 +109,14 @@ mod platform {
 			)
 		};
 		let mut ranges = Vec::new();
-		for result in results.iter() {
+		for result in &results {
 			let range = result.range();
+			// With `automaticallyIdentifiesLanguages`, `checkString:` also returns an
+			// orthography result spanning the entire string; only spelling results
+			// mark misspellings (rendering them as typo ranges doubled editor text).
+			if result.resultType() != NSTextCheckingType::Spelling {
+				continue;
+			}
 			if range.length == 0 || range.location >= NS_NOT_FOUND {
 				continue;
 			}

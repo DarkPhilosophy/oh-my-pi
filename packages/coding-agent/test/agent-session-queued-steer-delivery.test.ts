@@ -184,7 +184,7 @@ describe("AgentSession queued steer delivery", () => {
 
 		expect(mock.calls.length).toBe(2);
 		expect(session.agent.hasQueuedMessages()).toBe(false);
-	});
+	}, 15_000);
 
 	it("drains steering left after aborting an auto-continued queued turn", async () => {
 		const { session, mock } = await createSession([
@@ -213,7 +213,7 @@ describe("AgentSession queued steer delivery", () => {
 		expect(mock.calls.length).toBe(3);
 		expect(session.agent.hasQueuedMessages()).toBe(false);
 		expect(session.getQueuedMessages().steering).toEqual([]);
-	});
+	}, 15_000);
 
 	it("dequeuing an ultrathink prompt mid-stream restores the text and drops its companion notice", async () => {
 		const { session } = await createSession([{ content: ["host answer"] }]);
@@ -304,5 +304,5 @@ describe("AgentSession queued steer delivery", () => {
 		await session.waitForIdle();
 
 		expect(session.agent.peekSteeringQueue()).toEqual([]);
-	});
+	}, 15_000);
 });

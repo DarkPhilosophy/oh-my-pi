@@ -37,6 +37,9 @@ import {
 } from "./oauth-credentials";
 import type { MCPStoredOAuthCredential } from "./oauth-flow";
 import type { McpConnectionStatusEvent } from "./startup-events";
+
+export type McpCatalogChangeEvent = { serverName: string; kind: "resources" | "prompts" };
+
 import type { MCPToolDetails } from "./tool-bridge";
 import { DeferredMCPTool, MCPTool } from "./tool-bridge";
 import type { MCPToolCache } from "./tool-cache";
@@ -219,6 +222,8 @@ export class MCPManager {
 	#authStorage: AuthStorage | null = null;
 	#authHandler?: MCPAuthHandler;
 	#notificationListeners = new Set<(serverName: string, method: string, params: unknown) => void>();
+	#connectionStatusListeners = new Set<(event: McpConnectionStatusEvent) => void>();
+	#catalogChangeListeners = new Set<(event: McpCatalogChangeEvent) => void>();
 	/**
 	 * Notifications received before any listener attached, to be drained on
 	 * the first {@link addNotificationListener} call. Bounded by
@@ -250,6 +255,56 @@ export class MCPManager {
 		private cwd: string,
 		private toolCache: MCPToolCache | null = null,
 	) {}
+
+	/**
+	 * Register a listener for MCP connection lifecycle events
+	 * (`connecting` / `connected` / `failed`).
+	 *
+	 * Returns an unsubscribe function. Listener failures are isolated — a
+	 * listener that throws does not prevent other listeners from firing.
+	 */
+	addConnectionStatusListener(listener: (event: McpConnectionStatusEvent) => void): () => void {
+		this.#connectionStatusListeners.add(listener);
+		return () => {
+			this.#connectionStatusListeners.delete(listener);
+		};
+	}
+
+	#emitConnectionStatus(event: McpConnectionStatusEvent): void {
+		for (const listener of this.#connectionStatusListeners) {
+			try {
+				listener(event);
+			} catch (error) {
+				logger.debug("MCP connection status listener threw", { error });
+			}
+		}
+	}
+
+	/**
+	 * Register a listener for MCP catalog refreshes (`resources` / `prompts`).
+	 *
+	 * Connection lifecycle stays on {@link addConnectionStatusListener}. This
+	 * fires after a successful catalog refresh so `/extensions` can repaint
+	 * without treating catalog load as another `connected` event.
+	 *
+	 * Returns an unsubscribe function. Listener failures are isolated.
+	 */
+	addCatalogChangeListener(listener: (event: McpCatalogChangeEvent) => void): () => void {
+		this.#catalogChangeListeners.add(listener);
+		return () => {
+			this.#catalogChangeListeners.delete(listener);
+		};
+	}
+
+	#emitCatalogChange(event: McpCatalogChangeEvent): void {
+		for (const listener of this.#catalogChangeListeners) {
+			try {
+				listener(event);
+			} catch (error) {
+				logger.debug("MCP catalog change listener threw", { error });
+			}
+		}
+	}
 
 	/**
 	 * Register a listener for server-initiated MCP notifications.
@@ -458,6 +513,7 @@ export class MCPManager {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			options?.onStatus?.({ type: "failed", serverName: ".mcp.json", error: message });
+			this.#emitConnectionStatus({ type: "failed", serverName: ".mcp.json", error: message });
 			throw error;
 		}
 		const { configs, exaApiKeys, sources } = loadedConfigs;
@@ -469,12 +525,21 @@ export class MCPManager {
 	/**
 	 * Connect to specific MCP servers.
 	 * Connections are made in parallel for faster startup.
+	 *
+	 * Incremental: tools for already-owned connections stay in {@link getTools}.
+	 * Each newly resolved server is merged via {@link MCPManager.#replaceServerTools}.
+	 * Interactive enable (`/mcp enable`, `/extensions`) can pass a single
+	 * `{ [name]: config }` without wiping the rest of the registry.
 	 */
 	async connectServers(
 		configs: Record<string, MCPServerConfig>,
 		sources: Record<string, SourceMeta>,
 		onStatus?: (event: McpConnectionStatusEvent) => void,
 	): Promise<MCPLoadResult> {
+		const notify = (event: McpConnectionStatusEvent) => {
+			onStatus?.(event);
+			this.#emitConnectionStatus(event);
+		};
 		type ConnectionTask = {
 			name: string;
 			config: MCPServerConfig;
@@ -484,7 +549,6 @@ export class MCPManager {
 
 		const errors = new Map<string, string>();
 		const connectedServers = new Set<string>();
-		const allTools: CustomTool<TSchema, MCPToolDetails>[] = [];
 		const reportedErrors = new Set<string>();
 		let allowBackgroundLogging = false;
 		const statusServerNames: string[] = [];
@@ -584,6 +648,7 @@ export class MCPManager {
 					// network interruption).
 					connection.transport.onClose = () => {
 						logger.debug("MCP transport lost, triggering reconnect", { path: `mcp:${name}` });
+						this.#emitConnectionStatus({ type: "connecting", serverNames: [name] });
 						void this.reconnectServer(name);
 					};
 
@@ -629,24 +694,24 @@ export class MCPManager {
 					void this.#emitToolsChanged();
 					void this.toolCache?.set(name, config, serverTools);
 
-					onStatus?.({ type: "connected", serverName: name });
+					notify({ type: "connected", serverName: name });
 					await this.#loadServerResourcesAndPrompts(name, connection);
 				})
 				.catch(error => {
 					if (this.#pendingToolLoads.get(name) !== toolsPromise) return;
 					this.#pendingToolLoads.delete(name);
 					const message = error instanceof Error ? error.message : String(error);
-					onStatus?.(createMcpStartupFailure(name, message, sources[name]));
+					notify(createMcpStartupFailure(name, message, sources[name]));
 					if (!allowBackgroundLogging || reportedErrors.has(name)) return;
 					logger.error("MCP tool load failed", { path: `mcp:${name}`, error: message });
 				});
 		}
 
 		// Notify about servers we're connecting to, including configs that fail fast.
-		if (statusServerNames.length > 0 && onStatus) {
-			onStatus({ type: "connecting", serverNames: statusServerNames });
+		if (statusServerNames.length > 0) {
+			notify({ type: "connecting", serverNames: statusServerNames });
 			for (const { name, message } of validationFailures) {
-				onStatus(createMcpStartupFailure(name, message, sources[name]));
+				notify(createMcpStartupFailure(name, message, sources[name]));
 			}
 		}
 
@@ -686,7 +751,7 @@ export class MCPManager {
 					const { connection, serverTools } = value;
 					connectedServers.add(name);
 					const reconnect = () => this.reconnectServer(name);
-					allTools.push(...MCPTool.fromTools(connection, serverTools, reconnect));
+					this.#replaceServerTools(name, MCPTool.fromTools(connection, serverTools, reconnect));
 				} else if (task.tracked.status === "rejected") {
 					const message =
 						task.tracked.reason instanceof Error ? task.tracked.reason.message : String(task.tracked.reason);
@@ -697,24 +762,19 @@ export class MCPManager {
 					if (cached) {
 						const source = this.#sources.get(name);
 						const reconnect = () => this.reconnectServer(name);
-						allTools.push(
-							...DeferredMCPTool.fromTools(name, cached, () => this.waitForConnection(name), source, reconnect),
+						this.#replaceServerTools(
+							name,
+							DeferredMCPTool.fromTools(name, cached, () => this.waitForConnection(name), source, reconnect),
 						);
 					}
 				}
 			}
 		}
 
-		// Stable sort by name so the order is independent of connection completion.
-		// See `sortMCPToolsByName` for the cache-stability rationale.
-		sortMCPToolsByName(allTools);
-
-		// Update cached tools
-		this.#tools = allTools;
 		allowBackgroundLogging = true;
 
 		return {
-			tools: allTools,
+			tools: this.#tools,
 			errors,
 			connectedServers: Array.from(connectedServers),
 			exaApiKeys: [], // Will be populated by discoverAndConnect
@@ -1075,6 +1135,11 @@ export class MCPManager {
 			}
 			this.#pendingConnections.delete(name);
 			this.#pendingToolLoads.delete(name);
+			this.#emitConnectionStatus({
+				type: "failed",
+				serverName: name,
+				error: "MCP server crashed too many times; automatic reconnects suspended",
+			});
 			return true;
 		}
 		return false;
@@ -1132,6 +1197,7 @@ export class MCPManager {
 			try {
 				const connection = await this.#connectAndWireServer(name, config, source, reconnectEpoch);
 				logger.debug("MCP reconnected", { path: `mcp:${name}`, tools: connection.tools?.length ?? 0 });
+				this.#emitConnectionStatus({ type: "connected", serverName: name });
 				return connection;
 			} catch (error) {
 				if (this.#epoch !== reconnectEpoch) {
@@ -1153,6 +1219,7 @@ export class MCPManager {
 					await Bun.sleep(delays[attempt]);
 				} else {
 					logger.error("MCP reconnect failed after retries", { path: `mcp:${name}`, error: msg });
+					this.#emitConnectionStatus({ type: "failed", serverName: name, error: msg });
 					// Don't remove stale tools — keep them in the registry so they
 					// remain selected. Calls will fail with MCP errors, which
 					// triggers the tool-level reconnect, or the user can run
@@ -1206,6 +1273,7 @@ export class MCPManager {
 		}
 		connection.transport.onClose = () => {
 			logger.debug("MCP transport lost, triggering reconnect", { path: `mcp:${name}` });
+			this.#emitConnectionStatus({ type: "connecting", serverNames: [name] });
 			void this.reconnectServer(name);
 		};
 		try {
@@ -1241,8 +1309,7 @@ export class MCPManager {
 
 		if (serverSupportsPrompts(connection.capabilities)) {
 			try {
-				await listPrompts(connection);
-				this.#emitPromptsChanged(name);
+				await this.refreshServerPrompts(name);
 			} catch (error) {
 				logger.debug("Failed to load MCP prompts", { path: `mcp:${name}`, error });
 			}
@@ -1349,12 +1416,16 @@ export class MCPManager {
 			}
 		};
 
-		const promise = doRefresh().finally(() => {
-			const pending = this.#pendingResourceRefresh.get(name);
-			if (pending?.promise === promise) {
-				this.#pendingResourceRefresh.delete(name);
-			}
-		});
+		const promise = doRefresh()
+			.then(() => {
+				this.#emitCatalogChange({ serverName: name, kind: "resources" });
+			})
+			.finally(() => {
+				const pending = this.#pendingResourceRefresh.get(name);
+				if (pending?.promise === promise) {
+					this.#pendingResourceRefresh.delete(name);
+				}
+			});
 		this.#pendingResourceRefresh.set(name, { connection, promise });
 		return promise;
 	}
@@ -1381,6 +1452,7 @@ export class MCPManager {
 		await listPrompts(connection);
 
 		this.#emitPromptsChanged(name);
+		this.#emitCatalogChange({ serverName: name, kind: "prompts" });
 	}
 
 	/**

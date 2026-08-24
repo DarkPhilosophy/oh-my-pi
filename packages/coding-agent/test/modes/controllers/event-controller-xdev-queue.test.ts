@@ -61,7 +61,7 @@ function createFixture(streamingMessage: AssistantMessage) {
 		transcriptMessageComponents: new WeakMap(),
 		pendingTools,
 		noteDisplayableThinkingContent: vi.fn(() => false),
-		chatContainer: { addChild: vi.fn(), isBlockUncommitted: () => true },
+		chatContainer: { addChild: vi.fn(), canRemoveBlock: () => true },
 		toolOutputExpanded: false,
 		lastAssistantUsage: undefined,
 		showPinnedError: vi.fn(),
