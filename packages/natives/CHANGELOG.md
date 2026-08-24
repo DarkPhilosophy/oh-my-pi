@@ -6,6 +6,7 @@
 
 - Added asynchronous, size-bounded SVG-to-PNG rasterization for terminal media previews.
 - Added `DiffStream` for incremental text/byte ingestion, direct asynchronous file opening, stable-prefix progress, off-thread exact Myers runs/unified hunks, and asynchronous syntax-grammar warmup.
+- Added persistent clipboard-write and clipboard-read APIs through the public `@oh-my-pi/pi-natives/clipboard` entry point.
 
 ## [18.0.3] - 2026-08-23
 
