@@ -1004,8 +1004,8 @@ const renderCache = new LRUCache<string, readonly string[]>({
 	sizeCalculation: renderedLinesCacheSize,
 });
 
-function renderedLinesCacheSize(lines: readonly string[]): number {
-	let size = lines.length;
+function renderedLinesCacheSize(lines: readonly string[], key: string): number {
+	let size = key.length + lines.length;
 	for (let i = 0; i < lines.length; i++) size += lines[i]!.length;
 	return Math.max(1, size);
 }
@@ -2375,7 +2375,7 @@ export class Markdown implements Component {
 	 */
 	#advanceCopySourceCursor(token: Token): void {
 		if (token.type === "code" || token.type === "list" || token.type === "blockquote") return;
-		const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
+		const raw = "raw" in token && typeof token.raw === "string" ? replaceTabs(token.raw) : "";
 		if (!raw) return;
 		const expandedSource = this.#expandedSourceText;
 		const offset = expandedSource.indexOf(raw, this.#copySourceSearchCursor);
@@ -2494,7 +2494,8 @@ export class Markdown implements Component {
 			(max, prefix) => (/^[ \t]+$/.test(prefix) ? Math.max(max, prefix.length) : max),
 			0,
 		);
-		const body = sourceRaw.slice(firstLineEnd + 1, lastLineStart);
+		const bodyEnd = sourceRaw[lastLineStart - 1] === "\r" ? lastLineStart - 1 : lastLineStart;
+		const body = sourceRaw.slice(firstLineEnd + 1, bodyEnd);
 		if (prefixes.length === 0) return body;
 		const parsedLines = fallback.split("\n");
 		return body
