@@ -5,6 +5,70 @@
 ### Added
 
 - Fenced code blocks now expose a clickable `copy` link that copies their original source text.
+- Added an explicit append-only transcript declaration and width-independent stable-row API for components that can guarantee an immutable history prefix across later updates.
+- Added `:img` read selector to rasterize local SVG/SVGZ files for vision input.
+- Added side-by-side image and SVG previews to `omp git`, including local Git LFS object resolution and explicit placeholders for unavailable or unsupported binary content.
+- Added the `omp if-bench` command: a zero-tool instruction-following and working-memory benchmark that drives one cached conversation per model, adding one more glyph array action every turn while a `nya{1,N}` directive moves through the prompt, with a live turn-ladder board and a ranked scoreboard
+- Added `q` shortcut to exit the git TUI
+- Added a third state to the git TUI whitespace toggle (`b`): beyond ignoring whitespace-only line changes, it hides formatting-only changes (indentation, line splits/joins, blank lines) and import-only changes in TypeScript/JavaScript, Rust, and Go
+- Compressed single-child directory chains in the sidebar tree view
+- Split pure additions (new/untracked files) into their own list below tracked changes in each git TUI file section, separated by a rule; addition rows drop the redundant status letter and deleted files render struck through
+
+### Changed
+
+- Standardized completed edit results on hashline-style path and numbered-preview output across edit modes.
+- Made `omp git` stream file contents into an off-thread native differ, paint complete lines immediately, progressively apply syntax highlighting, and defer large commit file statistics until after the first interactive frame.
+- Added `r` shortcut to refresh the git state
+- Added `s`/`u` shortcuts to stage/unstage files directly from the sidebar
+- Made `space` (and `s`/`u`) in the git TUI sidebar stage/unstage whole directories; `enter`/`←`/`→` keep folding the tree
+- Added `space` shortcut as page down in the diff pane
+- Expanded `omp git` keyboard navigation: `alt+↓`/`alt+↑` jump hunks and roll into the adjacent file at the edges, `]`/`[` switch files, `←`/`→` collapse/expand sidebar directories, `enter` opens the selected file, vim motions (`j`/`k`/`h`/`l`/`g`/`G`) work in both panes, `1`–`4` pick a diff view directly, and `c` jumps to the commit form.
+
+### Fixed
+
+- Fixed the welcome screen staying at its original width after a terminal resize; a settled rebuild now recomposes it at the new width like the rest of the transcript.
+- Fixed `omp if-bench` ending an Anthropic model's run on a transient `Refusal (cyber)` classification; the cyber classifier is stochastic near the threshold, so a refused turn is now retried with a fresh session (up to 3 attempts) before it is scored as a run-ending provider failure.
+- Fixed streamed assistant responses crashing when a later provider delta revised earlier Markdown; assistant output now stays mutable until finalization.
+- Fixed an orphaned foreground tool card surviving a later agent turn and pinning the entire transcript outside native scrollback; new turns now seal abandoned cards while preserving background-task updates.
+- Fixed resize and display replays to include naturally emitted active-head rows in one atomic bottom-first transaction without rewinding lifecycle state, while graceful shutdown still drains every eligible final suffix.
+- Fixed terminal resizes lagging on large transcripts: the transient resize repaint now renders only the visible tail instead of the entire committed transcript per resize event.
+- Fixed cache-miss dividers crashing completed streamed assistant messages after stable rows had entered native history; cache-miss status now trails the assistant output.
+- Fixed quitting re-streaming the entire committed transcript when a resize-triggered scrollback replay was still pending; shutdown now flushes only genuinely un-retired rows.
+- Fixed fast tool completions leaving a permanent running summary that blocked transcript retirement and squeezed later tool output.
+- Fixed `omp git` hunk navigation (`alt+↓`/`alt+↑`) appearing to do nothing while the file sidebar had focus: the diff cursor band now stays visible (dimmed) when the pane is unfocused.
+- Fixed the git TUI sidebar jumping back to the top of the file list after staging or unstaging a file; selection now stays on the nearest remaining row
+
+## [18.0.4] - 2026-08-24
+
+### Added
+
+- Added the `omp git` command (and `/git` slash command): an interactive, fullscreen repository TUI featuring a split/inline/hunk diff viewer with minimap scrollbar, syntax highlighting, a staging sidebar with line-level staging, commit composer with amend support, and author avatars. Supports keyboard navigation, full mouse interaction, and pinning views to specific commits via `omp git <revision>`.
+- Overhauled the `/extensions` Extension Control Center into a fullscreen alternate-screen dashboard with mouse support, tab navigation, unified inspector views across extension types, live MCP connection management, and expandable details (`Ctrl+O`).
+- Added support for live syntax highlighting in streaming markdown code blocks.
+- Added an immediately editable startup composer for interactive launches, preserving drafts typed while session initialization is in progress.
+
+### Changed
+
+- Improved streaming markdown and thinking block rendering performance on long sessions by batching token updates and eliminating redundant re-processing.
+- Optimized streaming edit verification and session restoration for large files and history-heavy sessions.
+
+### Fixed
+
+- Fixed invalid streamed edit patches occasionally reaching the edit tool instead of being stopped early.
+- Fixed `!` shell commands on zsh/fish by running them inside a real PTY, resolving terminal option errors and preserving ANSI color formatting.
+- Fixed transcript layout corruption and viewport compression caused by interrupted streams, empty blocks, or collapsed wrapped diff lines.
+- Fixed transcript scrollback loss where output below sticky cards (such as hub-wait or todo) failed to commit to terminal history.
+- Improved HTTP 413 error handling: accurately distinguish between true token-context overflows and provider byte/media budget limits, persist terminal errors across sessions, and enable proper fallback-chain model switching.
+- Fixed discovery-backed session models failing to restore when resuming sessions with `omp --resume` or `--continue`.
+- Fixed browser tool initial launch timeouts on slow or cold host environments.
+- Fixed eval runtime probes hanging on Windows due to inherited stdin handles.
+- Fixed Claude models replaying partial thinking blocks as conversation text when interrupted mid-turn.
+- Fixed image request failures with Kimi Code and Moonshot models by ensuring inline base64 image delivery.
+- Fixed SQLite WAL-mode databases without sidecars failing to open in the Read tool.
+- Fixed pasted image thumbnail rendering in the composer attachment preview.
+- Fixed Linux startup event loop delays caused by legacy extension cache fsync churn.
+- Fixed subagent advisors abandoning reviews on the final yield turn during session teardown.
+- Fixed `/todo` expand/collapse commands and corrected `/shake thinking` reporting.
 
 ## [18.0.3] - 2026-08-23
 
@@ -271,6 +335,7 @@
 - Fixed v17.0.5 merge regressions in hook-status row rendering, slow shutdown feedback, and authenticated Codex model discovery.
 - Fixed session JSONL appends merging records after a missing trailing newline, and recovered already-concatenated adjacent records during session loading.
 - Added `PERSONALITY.md` support: `~/.omp/agent/PERSONALITY.md` (profile/XDG-aware agent dir) replaces the system prompt's personality block text; `personality: none` still omits the block ([#8528](https://github.com/can1357/oh-my-pi/issues/8528))
+- Added DeepInfra backends for the `image_gen` tool (via the OpenAI-compatible images endpoint, selectable via `providers.imageOrder` or a per-request `provider: deepinfra`) and the `tts` tool (`providers.tts: deepinfra`, MP3 or WAV).
 - Sloppy edits now support inline replacements with `⟪old│new⟫` syntax (`⟪old│⟫` for deletions and `⟪│new⟫` for insertions), alongside automatic recovery for common formatting mistakes without needing a retry.
 - Sloppy edits now recover operations that mix `⟪old│new⟫` inline replacements with a `»` REWRITE instead of failing the payload: a redundant REWRITE is dropped, a diverging one is applied as the final text, and a note explains the interpretation.
 - Expanded archive support in `read` and `write` tools: `read` can now inspect and extract members from `.rar`, `.7z`, `.iso`, `.cab`, `.deb`, `.rpm`, `.cpio`, `.ar`/`.a`, `.lzh`, `.arj`, compressed tar files (`.tar.bz2`, `.tar.xz`, `.tar.zst`), package formats (`.whl`, `.ipa`, `.xpi`, `.vsix`, `.nupkg`, `.cbz`, `.cbr`), `.asar` archives, and single-file compressed streams; `write` can create `.tar.zst` and update `.asar` archives.

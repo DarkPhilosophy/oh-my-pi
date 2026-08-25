@@ -814,11 +814,11 @@ console.log(answer);`;
 			const markdown = new Markdown(`\`\`\`js\n${script}\n\`\`\``, 0, 0, defaultMarkdownTheme);
 			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
 
-			// Fences are framing only: one `[lang]` header, `├─`/`└─` tree gutters,
-			// a compact ASCII frame, and no raw ``` rows.
+			// Fences are framing only: one `[lang]` header, an ASCII-safe numbered
+			// gutter, a compact frame, and no raw ``` rows.
 			expect(plainLines[0]).toMatch(/^\+- \[js\] /);
-			expect(plainLines.some(line => line.includes("├─ const answer = 42;"))).toBe(true);
-			expect(plainLines.some(line => line.includes("└─ console.log(answer);"))).toBe(true);
+			expect(plainLines.some(line => line.includes("| 1 | const answer = 42;"))).toBe(true);
+			expect(plainLines.some(line => line.includes("| 2 | console.log(answer);"))).toBe(true);
 			expect(plainLines.some(line => line.includes("```"))).toBe(false);
 		});
 
@@ -841,10 +841,10 @@ console.log(answer);`;
 				expect(line.startsWith("| ")).toBe(true);
 				expect(line.endsWith("|"), `Unframed code row: ${line}`).toBe(true);
 			}
-			// Wrapped logical line: `├─` on the first visual row, `│ ` rail on
-			// continuation rows — same gutter discipline as the steering queue.
-			expect(plainLines[1]).toContain("├─");
-			expect(plainLines[2]).toContain("│ ");
+			// ASCII preset keeps the numbered gutter ASCII-only and aligns wrapped
+			// continuation rows under the code body.
+			expect(plainLines[1]).toContain("1 | ");
+			expect(plainLines[2]).not.toMatch(/[├└│]/);
 		});
 
 		it("uses the semantic language icon and one readable label", () => {
@@ -956,7 +956,7 @@ again, hello world`,
 
 			const languageIndex = plainLines.findIndex(line => line.startsWith("+- [js] "));
 			expect(languageIndex !== -1, "Should render the code language label").toBeTruthy();
-			expect(plainLines[languageIndex + 1]).toContain('└─ const hello = "world";');
+			expect(plainLines[languageIndex + 1]).toContain('1 | const hello = "world";');
 
 			const afterCode = plainLines.slice(languageIndex + 3);
 			const emptyLineCount = afterCode.findIndex(line => line !== "");
@@ -983,14 +983,14 @@ code block
 more text`,
 			];
 			// The box hugs its content: width = gutter + longest code row, not the
-			// full terminal width. defaultMarkdownTheme uses the ascii preset (+-|),
-			// and a single-line block ends on the `└─` connector.
+			// full terminal width. defaultMarkdownTheme uses the ASCII preset (+-|),
+			// so its gutter contains no Unicode guidance connector.
 			const expectedLines = [
 				"hello this is text",
 				"",
-				"+-----------------+",
-				"| 1 └─ code block |",
-				"+-----------------+",
+				"+----------------+",
+				"| 1 | code block |",
+				"+----------------+",
 				"",
 				"more text",
 			];
@@ -1010,8 +1010,8 @@ more text`,
 			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
 
 			expect(plainLines[0]).toMatch(/^ \+- \[sh\] /);
-			expect(plainLines.some(line => line.includes("├─ cat <<'EOF'"))).toBe(true);
-			expect(plainLines.some(line => line.includes("└─ EOF"))).toBe(true);
+			expect(plainLines.some(line => line.includes("1 | cat <<'EOF'"))).toBe(true);
+			expect(plainLines.some(line => line.includes("2 | EOF"))).toBe(true);
 		});
 
 		it("keeps literal code body rows unprefixed through nested container wrapping", () => {
@@ -1084,6 +1084,8 @@ more text`,
 					if (inner.length > 0) inner = inner.slice(0, -1);
 					const connector = Math.max(inner.indexOf("├─"), inner.indexOf("└─"));
 					if (connector >= 0) inner = inner.slice(connector + 2).replace(/^ /, "");
+					else if (/^ \d+ \| /.test(inner)) inner = inner.replace(/^ \d+ \| /, "");
+					else if (/^ +\| /.test(inner)) inner = inner.replace(/^ +\| /, "");
 					else {
 						const rail = inner.indexOf("│");
 						if (rail >= 0) inner = inner.slice(rail + 1).replace(/^ {2}/, "");

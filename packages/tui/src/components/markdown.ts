@@ -991,8 +991,8 @@ const renderCache = new LRUCache<string, RenderCacheEntry>({
 	sizeCalculation: renderCacheEntrySize,
 });
 
-function renderedLinesCacheSize(lines: readonly string[]): number {
-	let size = lines.length;
+function renderedLinesCacheSize(lines: readonly string[], key: string): number {
+	let size = key.length + lines.length;
 	for (let i = 0; i < lines.length; i++) size += lines[i]!.length;
 	return Math.max(1, size);
 }
@@ -1797,6 +1797,7 @@ export class Markdown
 		this.#cachedWidth = undefined;
 		this.#cachedLines = undefined;
 	}
+
 	get transientRenderCache(): boolean {
 		return this.#transientRenderCache;
 	}
@@ -2425,7 +2426,7 @@ export class Markdown
 	 */
 	#advanceCopySourceCursor(token: Token): void {
 		if (token.type === "code" || token.type === "list" || token.type === "blockquote") return;
-		const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
+		const raw = "raw" in token && typeof token.raw === "string" ? replaceTabs(token.raw) : "";
 		if (!raw) return;
 		const expandedSource = this.#expandedSourceText;
 		const offset = expandedSource.indexOf(raw, this.#copySourceSearchCursor);
@@ -2536,7 +2537,8 @@ export class Markdown
 			(max, prefix) => (/^[ \t]+$/.test(prefix) ? Math.max(max, prefix.length) : max),
 			0,
 		);
-		const body = sourceRaw.slice(firstLineEnd + 1, lastLineStart);
+		const bodyEnd = sourceRaw[lastLineStart - 1] === "\r" ? lastLineStart - 1 : lastLineStart;
+		const body = sourceRaw.slice(firstLineEnd + 1, bodyEnd);
 		if (prefixes.length === 0) return body;
 		const parsedLines = fallback.split("\n");
 		return body
@@ -2713,9 +2715,9 @@ export class Markdown
 		const lang = "lang" in token && typeof token.lang === "string" ? token.lang : undefined;
 		const addBodyLine = (line: string, isLastLogical: boolean): void => {
 			// Steering semantics (queued-message-box): `└─` only on the LAST logical
-			// line; the framer demotes it to `├─` when the line wraps. With the
-			// guidance trail off, gutters stay plain `N │ ` (or bare codeIndent).
-			const trail = this.#theme.guidanceTrail !== false;
+			// line; the framer demotes it to `├─` when the line wraps. ASCII mode
+			// disables the Unicode-only trail; gutters remain `N | `.
+			const trail = this.#theme.guidanceTrail !== false && this.#theme.symbols.boxRound.horizontal !== "-";
 			const connector = !trail ? "" : isLastLogical ? "└─" : "├─";
 			const plainPrefix = lineNumbers
 				? trail

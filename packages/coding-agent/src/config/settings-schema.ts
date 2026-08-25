@@ -1328,7 +1328,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "appearance",
 			group: "Display",
 			label: "Cache Miss Marker",
-			description: "Show a divider above an assistant turn whose request lost (missed) the prompt cache",
+			description: "Show a divider after an assistant turn whose request lost (missed) the prompt cache",
 		},
 	},
 
@@ -5435,13 +5435,14 @@ export const SETTINGS_SCHEMA = {
 	},
 	"providers.tts": {
 		type: "enum",
-		values: ["auto", "local", "xai"] as const,
+		values: ["auto", "local", "xai", "deepinfra"] as const,
 		default: "auto",
 		ui: {
 			tab: "providers",
 			group: "Services",
 			label: "Text-to-Speech Provider",
-			description: "Backend for the tts tool: local on-device neural TTS (Kokoro-82M) or xAI Grok Voice",
+			description:
+				"Backend for the tts tool: local on-device neural TTS (Kokoro-82M), xAI Grok Voice, or DeepInfra speech",
 			options: [
 				{
 					value: "auto",
@@ -5453,6 +5454,11 @@ export const SETTINGS_SCHEMA = {
 					value: "xai",
 					label: "xAI Grok Voice",
 					description: "Requires xAI Grok OAuth or XAI_API_KEY; MP3 or WAV",
+				},
+				{
+					value: "deepinfra",
+					label: "DeepInfra Speech",
+					description: "Requires DEEPINFRA_API_KEY; MP3 or WAV",
 				},
 			],
 		},

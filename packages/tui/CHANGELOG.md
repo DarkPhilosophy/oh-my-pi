@@ -18,6 +18,29 @@
 - Fixed the visible terminal area being cut at the history/live boundary after a turn finalized; contextual right panels now retain finalized row ownership and the conversation viewport can scroll independently of row mutability.
 
 - Fixed narrow and nested framed Markdown code blocks so wide graphemes stay within the requested width and copy targets preserve raw source boundaries without cache collisions.
+### Breaking Changes
+
+- Renamed TerminalFrameProvider.resetHistory to beginHistoryReplay
+
+### Changed
+
+- History replay batches now bottom-split into leading viewport space and serialize the complete replay remainder plus final viewport in one synchronous terminal write.
+
+### Fixed
+
+- Fixed graceful terminal shutdown leaving eligible finalized output in the mutable viewport instead of retiring it before shell handoff.
+- Fixed a latched destructive scrollback rebuild (settled rebuild-mode resize, display reset) erasing and re-streaming the whole transcript during stop; the latch is dropped and shutdown writes only the un-retired tail.
+
+## [18.0.4] - 2026-08-24
+
+### Changed
+
+- Significantly improved streaming Markdown rendering performance by caching unchanged rows, resuming boundary walks, and inspecting only text deltas for guard scans and OSC 8 normalization.
+
+### Fixed
+
+- Fixed TUI aborting when syntax highlighting fails during Markdown rendering by falling back to unhighlighted text.
+- Fixed Korean IME cursor drift in Orca by properly matching two-cell Hangul Compatibility Jamo rendering.
 
 ## [18.0.3] - 2026-08-23
 
