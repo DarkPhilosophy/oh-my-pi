@@ -523,7 +523,7 @@ describe("TUI.setRightPanel", () => {
 			expect(retiredViewport.some(line => line.includes("<W0>"))).toBeTrue();
 			expect(retiredViewport.find(line => line.startsWith("[editor]"))).not.toContain("<W");
 
-			term.sendInput("\x1b[<64;1;1M");
+			tui.scrollViewportBy(-3);
 			await settle(term);
 			retiredViewport = term.getViewport();
 			expect(retiredViewport.some(line => line.includes("retired-0"))).toBeTrue();

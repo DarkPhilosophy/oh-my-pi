@@ -180,7 +180,7 @@ describe("terminal frame plans", () => {
 		tui.start();
 
 		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["live-0", "live-1", "live-2"]);
-		terminal.sendInput("\x1b[<64;1;1M");
+		tui.scrollViewportBy(-3);
 		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["history-2", "history-3", "history-4"]);
 		expect(tui.isViewportFollowingBottom()).toBeFalse();
 
@@ -188,14 +188,83 @@ describe("terminal frame plans", () => {
 		tui.requestRender(true);
 		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["history-2", "history-3", "history-4"]);
 
-		terminal.sendInput("\x1b[<65;1;1M");
+		tui.scrollViewportBy(3);
 		expect(tui.isViewportFollowingBottom()).toBeFalse();
-		terminal.sendInput("\x1b[<65;1;1M");
+		tui.scrollViewportBy(3);
 		expect(tui.isViewportFollowingBottom()).toBeTrue();
 		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["live-0", "live-1", "live-2"]);
 		tui.stop();
 	});
-	it("captures real main-screen wheel input while a frame provider owns the viewport", () => {
+	it("preserves the semantic viewport while stable live rows promote into history", () => {
+		const terminal = new VirtualTerminal(20, 3);
+		const provider = new Provider({
+			history: { id: 1, rows: ["history-0", "history-1"] },
+			viewport: ["live-0", "live-1", "live-2", "editor"],
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		tui.start();
+		tui.scrollViewportBy(-1);
+		const anchored = terminal.getViewport().map(row => row.trimEnd());
+		provider.plan = {
+			history: { id: 2, rows: ["live-0", "live-1"] },
+			viewport: ["live-2", "editor"],
+		};
+		tui.requestRender(true);
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(anchored);
+		expect(tui.isViewportFollowingBottom()).toBeFalse();
+		tui.stop();
+	});
+
+	it("scrolls the contextual viewport by exactly one physical row", () => {
+		const terminal = new VirtualTerminal(20, 3);
+		const provider = new Provider({
+			history: { id: 1, rows: Array.from({ length: 5 }, (_, index) => `history-${index}`) },
+			viewport: ["live-0", "live-1", "live-2"],
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		tui.start();
+
+		terminal.sendInput("\x1b[1;7A");
+		expect(terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd())).toEqual([
+			"history-4     ↑4 ↓1",
+			"live-0",
+			"live-1",
+		]);
+		expect(tui.getViewportPosition()).toEqual({ above: 4, below: 1 });
+
+		terminal.sendInput("\x1b[1;7B");
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["live-0", "live-1", "live-2"]);
+		expect(tui.getViewportPosition()).toEqual({ above: 5, below: 0 });
+		tui.stop();
+	});
+
+	it("pauses ordinary frame paints while the contextual viewport is scrolled away", () => {
+		const terminal = new VirtualTerminal(20, 3);
+		const provider = new Provider({
+			history: { id: 1, rows: Array.from({ length: 5 }, (_, index) => `history-${index}`) },
+			viewport: ["live-0", "live-1", "live-2"],
+		});
+		const renderFrame = vi.spyOn(provider, "renderFrame");
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		tui.start();
+		tui.scrollViewportBy(-3);
+		const callsBeforeUpdate = renderFrame.mock.calls.length;
+		const frozenViewport = terminal.getViewport();
+
+		provider.plan = { viewport: ["changed-0", "changed-1", "changed-2"] };
+		tui.requestRender();
+
+		expect(renderFrame).toHaveBeenCalledTimes(callsBeforeUpdate);
+		expect(terminal.getViewport()).toEqual(frozenViewport);
+
+		tui.scrollViewportBy(Number.POSITIVE_INFINITY);
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["changed-0", "changed-1", "changed-2"]);
+		tui.stop();
+	});
+	it("leaves main-screen mouse input available for native text selection", () => {
 		const terminal = new VirtualTerminal(20, 3);
 		const writes: string[] = [];
 		const realWrite = terminal.write.bind(terminal);
@@ -204,13 +273,52 @@ describe("terminal frame plans", () => {
 			realWrite(data);
 		});
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
-		tui.setFrameProvider(new Provider({ viewport: ["live-0"] }));
+		tui.setFrameProvider(
+			new Provider({
+				history: { id: 1, rows: Array.from({ length: 5 }, (_, index) => `history-${index}`) },
+				viewport: ["live-0", "live-1", "live-2"],
+			}),
+		);
 		tui.start();
 
-		expect(writes.join("")).toContain("\x1b[?1000h\x1b[?1003h\x1b[?1006h");
-		writes.length = 0;
+		const output = writes.join("");
+		expect(output).not.toContain("\x1b[?1000h");
+		expect(output).not.toContain("\x1b[?1003h");
+		expect(output).not.toContain("\x1b[?1006h");
 		tui.stop();
-		expect(writes.join("")).toContain("\x1b[?1006l\x1b[?1003l\x1b[?1000l");
+	});
+	it("keeps wheel tracking until a finalized transient viewport returns to bottom", () => {
+		const terminal = new VirtualTerminal(20, 3);
+		const writes: string[] = [];
+		const realWrite = terminal.write.bind(terminal);
+		vi.spyOn(terminal, "write").mockImplementation((data: string) => {
+			writes.push(data);
+			realWrite(data);
+		});
+		const provider = new Provider({
+			viewport: ["history-0", "history-1", "history-2", "history-3", "history-4", "live-0", "live-1", "live-2"],
+			transientOverflow: true,
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		tui.start();
+
+		expect(writes.join("")).toContain("\x1b[?1000h\x1b[?1006h");
+		terminal.sendInput("\x1b[<64;1;1M");
+		expect(tui.getViewportPosition()).toEqual({ above: 4, below: 1 });
+		expect(terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd())[0]).toContain("↑4 ↓1");
+
+		const trackingOffBeforeFinalize = writes.filter(data => data.includes("\x1b[?1006l\x1b[?1000l")).length;
+		provider.plan = { viewport: ["final-0", "final-1", "final-2"] };
+		tui.requestRender(true);
+		expect(writes.filter(data => data.includes("\x1b[?1006l\x1b[?1000l"))).toHaveLength(trackingOffBeforeFinalize);
+
+		terminal.sendInput("\x1b[<65;1;1M");
+		expect(tui.isViewportFollowingBottom()).toBeTrue();
+		expect(writes.filter(data => data.includes("\x1b[?1006l\x1b[?1000l"))).toHaveLength(
+			trackingOffBeforeFinalize + 1,
+		);
+		tui.stop();
 	});
 
 	it("preserves an unpinned provider viewport origin across height changes", () => {
@@ -222,7 +330,7 @@ describe("terminal frame plans", () => {
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
 		tui.start();
-		terminal.sendInput("\x1b[<64;1;1M");
+		tui.scrollViewportBy(-3);
 		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["history-3", "history-4", "history-5"]);
 
 		terminal.resize(20, 4);

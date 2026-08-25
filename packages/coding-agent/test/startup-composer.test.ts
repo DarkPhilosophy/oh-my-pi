@@ -196,10 +196,13 @@ describe("Composer prepaint", () => {
 		const composer = new Composer({ preferences: { ...config, quiet: true }, terminal });
 		const transcript = new TranscriptContainer();
 		const assistant = new AssistantMessageComponent(undefined, true);
-		const text = Array.from(
-			{ length: 30 },
-			(_, index) => `assistant-row-${index} contains enough stable prose to wrap in the narrow terminal.`,
-		).join("\n\n");
+		const text = [
+			"| A | B |\n| --- | --- |\n| x | y |",
+			...Array.from(
+				{ length: 30 },
+				(_, index) => `assistant-row-${index} contains enough stable prose to wrap in the narrow terminal.`,
+			),
+		].join("\n\n");
 		assistant.updateContent(streamingAssistantMessage(text), { transient: true });
 		transcript.addChild(assistant);
 
@@ -218,10 +221,13 @@ describe("Composer prepaint", () => {
 		expect(assistant.isTranscriptBlockFinalized()).toBeFalse();
 		expect(history.some(row => row.includes("assistant-row-0"))).toBeTrue();
 
-		const grownText = Array.from(
-			{ length: 40 },
-			(_, index) => `assistant-row-${index} contains enough stable prose to wrap in the narrow terminal.`,
-		).join("\n\n");
+		const grownText = [
+			"| A | B |\n| --- | --- |\n| x | y |",
+			...Array.from(
+				{ length: 40 },
+				(_, index) => `assistant-row-${index} contains enough stable prose to wrap in the narrow terminal.`,
+			),
+		].join("\n\n");
 		assistant.updateContent(streamingAssistantMessage(grownText), { transient: true });
 		composer.ui.requestRender();
 		await terminal.waitForRender();

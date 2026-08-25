@@ -41,18 +41,8 @@ interface FinalizableBlock {
 	 */
 	getTranscriptBlockVersion?(): number;
 	/**
-	 * Leading rows of the block's current render() output that are declared
-	 * FINAL while the block is still live: byte-stable at the current width
-	 * until the block finalizes, monotone non-decreasing under streaming
-	 * growth, re-derived per render (the container reads it right after
-	 * calling render()). The container extends the native-scrollback commit
-	 * boundary through these rows so a long streaming reply's scrolled-off
-	 * head reaches terminal history mid-stream. Declaring a row that later
-	 * changes strands a stale copy in immutable history (the engine audit
-	 * repairs by recommitting below — duplication, never loss), so
-	 * implementers report only rows whose bytes provably cannot change (e.g.
-	 * rendered output of markdown's frozen token prefix). Absent = 0: nothing
-	 * commits until the block finalizes.
+	 * Leading rows of the current render that are byte-stable while the block
+	 * remains live. Only this prefix may retire into immutable scrollback.
 	 */
 	getTranscriptBlockSettledRows?(): number;
 	/**
@@ -79,6 +69,13 @@ function isBlockFinalized(child: Component): boolean {
 	return fn ? fn.call(child) : true;
 }
 
+function getBlockSettledRows(child: Component): number {
+	const fn = (child as Component & FinalizableBlock).getTranscriptBlockSettledRows;
+	if (!fn) return 0;
+	const rows = fn.call(child);
+	return Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
+}
+
 function isBlockPinned(child: Component): boolean {
 	return (child as Component & Partial<NativeScrollbackLiveRegion>).isNativeScrollbackLiveRegionPinned?.() === true;
 }
@@ -86,14 +83,6 @@ function isBlockPinned(child: Component): boolean {
 function getBlockVersion(child: Component): number | undefined {
 	const fn = (child as Component & FinalizableBlock).getTranscriptBlockVersion;
 	return fn ? fn.call(child) : undefined;
-}
-
-/** Clamped read of a block's declared settled rows (see {@link FinalizableBlock}). */
-function getBlockSettledRows(child: Component): number {
-	const fn = (child as Component & FinalizableBlock).getTranscriptBlockSettledRows;
-	if (!fn) return 0;
-	const value = fn.call(child);
-	return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
 }
 
 /** Seal a displaceable snapshot whose rows entered native scrollback (see {@link FinalizableBlock.isDisplaceableBlock}). */
@@ -516,6 +505,10 @@ export class TranscriptContainer
 		const live = states.filter(state => state !== "committed").length;
 		return Math.max(0, Math.trunc(rows)) > active && live < 256;
 	}
+	/** Whether the provider-owned tail contains a block that can still mutate. */
+	hasActiveBlock(): boolean {
+		return this.blockStates().some(state => state === "active");
+	}
 
 	/** Rebuild provider retirement before a destructive history replay. */
 	resetRetirement(): void {
@@ -569,26 +562,25 @@ export class TranscriptContainer
 		}
 
 		const rows: string[] = [];
-		let offeredFrontierRows = 0;
-		if (end > start) {
-			for (let index = start; index < end; index++) {
-				const block = rendered[index - start] ?? EMPTY_TAIL;
-				if (block.length === 0) continue;
-				if (rows.length > 0) rows.push("");
-				rows.push(...block);
-			}
+		for (let index = start; index < end; index++) {
+			const block = rendered[index - start] ?? EMPTY_TAIL;
+			if (block.length === 0) continue;
 			if (rows.length > 0) rows.push("");
-		} else {
-			const child = this.children[start]!;
-			const block = rendered[0] ?? EMPTY_TAIL;
-			const settledRows = Math.max(0, Math.min(block.length, getBlockSettledRows(child) - frontierRows));
-			const requiredRows = Math.max(0, total - room);
-			const retireRows = Math.min(settledRows, requiredRows);
-			if (retireRows === 0) return undefined;
-			rows.push(...block.slice(0, retireRows));
-			offeredFrontierRows = frontierRows + retireRows;
+			rows.push(...block);
 		}
-
+		let offeredFrontierRows = 0;
+		if (end < this.children.length && total - freed > room) {
+			const child = this.children[end]!;
+			const block = rendered[end - start] ?? EMPTY_TAIL;
+			const settledRows = Math.max(0, Math.min(block.length, getBlockSettledRows(child) - frontierRows));
+			if (settledRows > 0) {
+				if (rows.length > 0) rows.push("");
+				rows.push(...block.slice(0, settledRows));
+				offeredFrontierRows = frontierRows + settledRows;
+			}
+		}
+		if (rows.length === 0) return undefined;
+		if (offeredFrontierRows === 0) rows.push("");
 		const batch: HistoryBatch = { id: this.#providerNextBatchId++, rows };
 		this.#providerOffered = { batch, end, frontierRows: offeredFrontierRows };
 		return batch;

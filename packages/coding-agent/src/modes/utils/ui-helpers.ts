@@ -993,13 +993,14 @@ export class UiHelpers {
 		this.ctx.pendingMessagesContainer.disposeChildren();
 		const queuedMessages = this.ctx.viewSession.getQueuedMessages() as QueuedMessages;
 
-		const steeringMessages: Array<{ message: string; label: string; shimmer?: boolean }> = [];
-		for (const message of queuedMessages.steering) {
-			steeringMessages.push({ message, label: "Steering", shimmer: true });
-		}
-		for (const entry of this.ctx.compactionQueuedMessages as CompactionQueuedMessage[]) {
-			if (entry.mode === "steer") steeringMessages.push({ message: entry.text, label: "Steering", shimmer: true });
-		}
+		const steeringText = [
+			...queuedMessages.steering,
+			...(this.ctx.compactionQueuedMessages as CompactionQueuedMessage[])
+				.filter(entry => entry.mode === "steer")
+				.map(entry => entry.text),
+		].join("\n");
+		const steeringMessages: Array<{ message: string; label: string; shimmer?: boolean }> =
+			steeringText.length > 0 ? [{ message: steeringText, label: "Steering", shimmer: true }] : [];
 
 		const followUpMessages: Array<{ message: string; label: string; shimmer?: boolean }> = [];
 		for (const message of queuedMessages.followUp) {

@@ -106,13 +106,13 @@ const CURSOR_BEGIN = `${HIDE_CURSOR}${SYNC_OUTPUT_BEGIN}`;
 const CURSOR_BEGIN_NO_SYNC = HIDE_CURSOR;
 const CURSOR_END = SYNC_OUTPUT_END;
 const CURSOR_END_NO_SYNC = "";
-// Mouse reporting is scoped to fullscreen overlays that opt into pointer
-// interaction. 1000h = button click tracking, 1003h = any-motion tracking for
-// hover targets, and 1006h = SGR extended coordinates past column/row 223.
-// Selection-first overlays leave these modes disabled so the terminal retains
-// native text selection.
 const MOUSE_TRACKING_ON = "\x1b[?1000h\x1b[?1003h\x1b[?1006h";
 const MOUSE_TRACKING_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
+// Main-screen tracking is enabled only while a mutable transcript exceeds the
+// physical viewport. It gives OMP wheel reports for the transient viewport;
+// once the transient region disappears, native mouse selection is restored.
+const TRANSIENT_WHEEL_TRACKING_ON = "\x1b[?1000h\x1b[?1006h";
+const TRANSIENT_WHEEL_TRACKING_OFF = "\x1b[?1006l\x1b[?1000l";
 const ALT_SCREEN_ENTER = "\x1b[?1049h";
 const ALT_SCREEN_EXIT = "\x1b[?1049l";
 
@@ -158,6 +158,8 @@ export interface TerminalFramePlan {
 	readonly history?: HistoryBatch;
 	readonly viewport: readonly string[];
 	readonly segments?: readonly TerminalFrameSegment[];
+	/** A mutable semantic tail currently extends above the physical viewport. */
+	readonly transientOverflow?: boolean;
 }
 
 /** Produces bounded terminal frames and retires acknowledged history batches. */
@@ -1298,6 +1300,7 @@ class TerminalFrameProviderComponent
 	#segments: readonly TerminalFrameSegment[] = [];
 	#acknowledgedIds = new Set<number>();
 	#replayPrepared = false;
+	#transientOverflow = false;
 
 	constructor(
 		readonly provider: TerminalFrameProvider,
@@ -1317,7 +1320,8 @@ class TerminalFrameProviderComponent
 			}
 			this.provider.acknowledgeHistory(plan.history.id);
 		}
-		this.#viewport = plan.viewport.length > size.rows ? plan.viewport.slice(0, size.rows) : plan.viewport;
+		this.#transientOverflow = plan.transientOverflow === true;
+		this.#viewport = plan.viewport;
 		this.#segments = plan.segments ?? [];
 		return [...this.#history, ...this.#viewport];
 	}
@@ -1339,6 +1343,9 @@ class TerminalFrameProviderComponent
 			this.provider.renderFrame({ columns: width, rows: maxRows }).viewport;
 		return rows.length > maxRows ? rows.slice(rows.length - maxRows) : rows;
 	}
+	hasTransientOverflow(): boolean {
+		return this.#transientOverflow;
+	}
 
 	getNativeScrollbackLiveRegionStart(): number {
 		return this.#history.length;
@@ -1346,6 +1353,10 @@ class TerminalFrameProviderComponent
 
 	isNativeScrollbackLiveRegionPinned(): boolean {
 		return true;
+	}
+
+	getNativeScrollbackLiveRegionPinnedStart(): number {
+		return this.#history.length;
 	}
 
 	setNativeScrollbackCommittedRows(_rows: number): void {}
@@ -1552,6 +1563,7 @@ export class TUI extends Container {
 	// mutable live output) never constrains which unified frame rows are visible.
 	#viewportOrigin = 0;
 	#viewportFollowsBottom = true;
+	#viewportPositionVisible = false;
 	// Exactly what is painted on the screen rows (post-composite, prepared).
 	#previousWindow: string[] = [];
 	#nativeScrollbackLiveRegionStart: number | undefined;
@@ -1649,6 +1661,7 @@ export class TUI extends Container {
 	#hasStarted = false;
 	/** True between a `deferInput` start() and enableInput(). */
 	#inputDeferred = false;
+	#transientWheelTrackingActive = false;
 	// Always-on event-loop lag probe. The high default threshold keeps it quiet;
 	// it only logs `ui.loop-blocked` (with the current loop phase) when a frame
 	// budget is genuinely starved. Armed in start(), disarmed in stop().
@@ -1661,9 +1674,6 @@ export class TUI extends Container {
 	// normal screen. #altPreviousLines is the last alt frame, for repaint-skip.
 	#altActive = false;
 	#altMouseTrackingActive = false;
-	// Frame-provider sessions own the conversation viewport, so the main screen
-	// must report wheel input instead of moving an invisible native viewport.
-	#mainScreenMouseTracking = false;
 	#altPreviousLines: string[] = [];
 	#altEnterWidth = 0;
 	#altEnterHeight = 0;
@@ -2247,7 +2257,6 @@ export class TUI extends Container {
 			this.clear();
 			for (const child of this.#frameProviderPreviousChildren ?? []) this.addChild(child);
 			this.#frameProviderComponent = undefined;
-			this.setMainScreenMouseTracking(false);
 			this.#frameProviderPreviousChildren = undefined;
 			this.requestRender(true);
 			return;
@@ -2260,7 +2269,6 @@ export class TUI extends Container {
 		this.clear();
 		this.addChild(component);
 		this.#frameProviderComponent = component;
-		this.setMainScreenMouseTracking(true);
 		this.requestRender(true);
 	}
 
@@ -2524,7 +2532,6 @@ export class TUI extends Container {
 				},
 			},
 		);
-		if (this.#mainScreenMouseTracking) this.terminal.write(MOUSE_TRACKING_ON);
 		if (this.#stopped) return;
 		for (const listener of this.#startListeners) {
 			try {
@@ -2567,23 +2574,6 @@ export class TUI extends Container {
 		return () => {
 			this.#inputListeners.delete(listener);
 		};
-	}
-
-	/**
-	 * Let application-owned frame providers receive main-screen wheel input.
-	 * Native selection remains available through the terminal's mouse-reporting
-	 * bypass modifier; keyboard copy is unaffected.
-	 */
-	setMainScreenMouseTracking(enabled: boolean): void {
-		if (this.#mainScreenMouseTracking === enabled) return;
-		this.#mainScreenMouseTracking = enabled;
-		if (this.#hasStarted && !this.#stopped && !this.#altActive) {
-			this.terminal.write(enabled ? MOUSE_TRACKING_ON : MOUSE_TRACKING_OFF);
-		}
-	}
-
-	get mainScreenMouseTracking(): boolean {
-		return this.#mainScreenMouseTracking;
 	}
 
 	onTerminalFocusChange(listener: (focused: boolean) => void): () => void {
@@ -2727,6 +2717,16 @@ export class TUI extends Container {
 		this.#cursorBeginSequence = enabled ? CURSOR_BEGIN : CURSOR_BEGIN_NO_SYNC;
 		this.#cursorEndSequence = enabled ? CURSOR_END : CURSOR_END_NO_SYNC;
 	}
+	#syncTransientWheelTracking(): void {
+		const enabled =
+			this.#hasStarted &&
+			!this.#stopped &&
+			!this.#altActive &&
+			(this.#frameProviderComponent?.hasTransientOverflow() === true || !this.#viewportFollowsBottom);
+		if (enabled === this.#transientWheelTrackingActive) return;
+		this.terminal.write(enabled ? TRANSIENT_WHEEL_TRACKING_ON : TRANSIENT_WHEEL_TRACKING_OFF);
+		this.#transientWheelTrackingActive = enabled;
+	}
 
 	stop(): void {
 		// Leave the resize alt buffer first so the teardown cursor math below runs
@@ -2744,7 +2744,10 @@ export class TUI extends Container {
 			this.#altPreviousLines = [];
 			this.#pendingAltExit = "";
 		}
-		if (this.#mainScreenMouseTracking) this.terminal.write(MOUSE_TRACKING_OFF);
+		if (this.#transientWheelTrackingActive) {
+			this.terminal.write(TRANSIENT_WHEEL_TRACKING_OFF);
+			this.#transientWheelTrackingActive = false;
+		}
 		this.#purgeInlineImages();
 		this.#clearSixelProbeState();
 		this.#stopped = true;
@@ -3003,8 +3006,21 @@ export class TUI extends Container {
 		return this.#prepareLinesArray(composited, width);
 	}
 
+	#compositeViewportPosition(window: string[], width: number, above: number, below: number): string[] {
+		if (below === 0 || window.length === 0 || width < 12) return window;
+		const label = ` ↑${above} ↓${below} `;
+		const labelWidth = visibleWidth(label);
+		if (labelWidth >= width) return window;
+		const contentWidth = width - labelWidth;
+		const prefix = truncateToWidth(window[0] ?? "", contentWidth, Ellipsis.Omit);
+		const padding = " ".repeat(Math.max(0, contentWidth - visibleWidth(prefix)));
+		const composited = window.slice();
+		composited[0] = `${prefix}${padding}\x1b[2m${label}\x1b[0m`;
+		return this.#prepareLinesArray(composited, width);
+	}
+
 	/** Move the unified conversation viewport by physical rows. */
-	scrollViewportBy(delta: number): void {
+	scrollViewportBy(delta: number, showPosition = false): void {
 		const height = Math.max(0, this.terminal.rows);
 		const maximum = Math.max(0, this.#previousFrameLength - height);
 		const next =
@@ -3012,6 +3028,7 @@ export class TUI extends Container {
 		if (next === this.#viewportOrigin && this.#viewportFollowsBottom === (next === maximum)) return;
 		this.#viewportOrigin = next;
 		this.#viewportFollowsBottom = next === maximum;
+		this.#viewportPositionVisible = showPosition && next !== maximum;
 		this.requestRender(true);
 	}
 
@@ -3020,7 +3037,16 @@ export class TUI extends Container {
 		return this.#viewportFollowsBottom;
 	}
 
+	/** Physical-row offsets around the current contextual viewport. */
+	getViewportPosition(): { above: number; below: number } {
+		const height = Math.max(0, this.terminal.rows);
+		const maximum = Math.max(0, this.#previousFrameLength - height);
+		const origin = Math.max(0, Math.min(maximum, this.#viewportOrigin));
+		return { above: origin, below: maximum - origin };
+	}
+
 	requestRender(force = false, options?: RenderRequestOptions): void {
+		if (this.#frameProviderComponent !== undefined && !this.#viewportFollowsBottom && !force) return;
 		// Any non-component-scoped request makes the pending frame a full one.
 		this.#pendingRenderComponentsOnly = false;
 		if (force) {
@@ -3589,14 +3615,6 @@ export class TUI extends Container {
 			return;
 		}
 
-		if (this.#frameProviderComponent !== undefined && this.overlayStack.length === 0 && data.startsWith("\x1b[<")) {
-			const mouse = parseSgrMouse(data);
-			if (mouse?.wheel !== null && mouse?.wheel !== undefined) {
-				this.scrollViewportBy(mouse.wheel * 3);
-				return;
-			}
-		}
-
 		// Global debug key handler (Shift+Ctrl+D)
 		if (matchesKey(data, "shift+ctrl+d") && this.onDebug) {
 			this.onDebug();
@@ -3614,6 +3632,28 @@ export class TUI extends Container {
 			} else {
 				// No visible overlays, restore to preFocus
 				this.setFocus(focusedOverlay.preFocus);
+			}
+		}
+
+		if (this.#transientWheelTrackingActive && data.startsWith("\x1b[<")) {
+			const event = parseSgrMouse(data);
+			if (event?.wheel) {
+				this.scrollViewportBy(event.wheel, true);
+				return;
+			}
+		}
+		if (this.#frameProviderComponent !== undefined && this.#getTopmostVisibleOverlay() === undefined) {
+			if (matchesKey(data, "ctrl+alt+up")) {
+				this.scrollViewportBy(-1, true);
+				return;
+			}
+			if (matchesKey(data, "ctrl+alt+down")) {
+				this.scrollViewportBy(1, true);
+				return;
+			}
+			if (matchesKey(data, "ctrl+alt+end")) {
+				this.scrollViewportBy(Number.POSITIVE_INFINITY, true);
+				return;
 			}
 		}
 
@@ -4054,7 +4094,7 @@ export class TUI extends Container {
 			// screen, or Esc/modified keys revert to legacy encoding inside
 			// fullscreen overlays (Ghostty/kitty/iTerm2).
 			const mouseEnter = wantMouseTracking ? MOUSE_TRACKING_ON : "";
-			this.terminal.write(`\x1b[?1049h${this.#keyboardEnhancementEnter()}${mouseEnter}`);
+			this.terminal.write(`${ALT_SCREEN_ENTER}${this.#keyboardEnhancementEnter()}${mouseEnter}`);
 			setAltScreenActive(true);
 			this.terminal.hideCursor();
 			this.#forgetHardwareCursorState();
@@ -4068,9 +4108,7 @@ export class TUI extends Container {
 		} else if (!wantAlt && this.#altActive) {
 			const mouseExit = this.#altMouseTrackingActive ? MOUSE_TRACKING_OFF : "";
 			const enhancementExit = this.#keyboardEnhancementExit();
-			const exitSequence = `${mouseExit}${enhancementExit}\x1b[?1049l${
-				this.#mainScreenMouseTracking ? MOUSE_TRACKING_ON : ""
-			}`;
+			const exitSequence = `${mouseExit}${enhancementExit}${ALT_SCREEN_EXIT}`;
 			// Session replacement can finish while a fullscreen selector is still
 			// covering the old normal buffer. Keep the overlay visible until the
 			// replacement is ready, then fuse the buffer restore into that full paint;
@@ -4178,6 +4216,7 @@ export class TUI extends Container {
 			rawFrame = this.render(width);
 			this.#imageBudget.endPass();
 		}
+		this.#syncTransientWheelTracking();
 		// Ghostty initial-image deferral must run before any render state is
 		// consumed (#resizeEventPending, hardware-cursor state, commit
 		// re-anchoring): the early return abandons this frame and the deferred
@@ -4615,6 +4654,15 @@ export class TUI extends Container {
 				cursorPos = { row: windowTop + overlayMarkers[0]!.row, col: overlayMarkers[0]!.col };
 			}
 			window = this.#prepareLinesArray(window, width);
+		}
+		if (this.#frameProviderComponent !== undefined && !this.#viewportFollowsBottom && this.#viewportPositionVisible) {
+			const maximumViewportOrigin = Math.max(0, frameLength - height);
+			window = this.#compositeViewportPosition(
+				window,
+				width,
+				this.#viewportOrigin,
+				maximumViewportOrigin - this.#viewportOrigin,
+			);
 		}
 		const cursorTrackingLineCount = hasVisibleOverlay ? Math.max(frame.length, windowTop + height) : frame.length;
 

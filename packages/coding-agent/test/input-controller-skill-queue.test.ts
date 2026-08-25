@@ -829,6 +829,22 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		expect(rendered).toContain("Alt+Up (or Up) to edit");
 	});
 
+	it("renders steering from agent and compaction queues in one box", async () => {
+		fixture = await createRealSession();
+		const { session } = fixture;
+		queueCustomSteer(session, "first steering");
+		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session);
+		ctx.compactionQueuedMessages.push({ text: "second steering", mode: "steer" });
+
+		const uiHelpers = new UiHelpers(ctx);
+		uiHelpers.updatePendingMessagesDisplay();
+
+		const rendered = stripAnsi(pendingMessagesContainer.render(120).join("\n"));
+		expect(rendered.match(/ Steering /g)?.length).toBe(1);
+		expect(rendered).toContain("├─ first steering");
+		expect(rendered).toContain("└─ second steering");
+	});
+
 	it("collapses queued steering text with a row and character footer", async () => {
 		fixture = await createRealSession();
 		const { session } = fixture;

@@ -28,7 +28,6 @@ import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cach
  * the persisted session.
  */
 const MAX_TRANSCRIPT_ERROR_LINES = 8;
-
 const MARKDOWN_TABLE_DELIMITER = /^ {0,3}\|?(?:[ \t]*:?-+:?[ \t]*\|)+[ \t]*:?-*:?[ \t]*$/;
 const CODE_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
@@ -48,14 +47,15 @@ function resolveThinkingDisplay(block: ThinkingContentBlock, proseOnly: boolean)
 		visible: hasDisplayableThinking(rawThinking ?? block.thinking, formatted),
 	};
 }
-
 /**
- * Whether streaming Markdown can still re-layout already rendered rows.
- * Mermaid diagrams and growing GFM tables remain wholly live until their
- * layout becomes permanent.
+ * Whether the mutable suffix of streaming Markdown can still re-layout rows.
+ * A closed table or Mermaid fence followed by prose is stable; only a table
+ * still growing at EOF or an unclosed Mermaid fence keeps the block live.
  */
 function detectLiveReflowingMarkdown(text: string): boolean {
 	let fence: string | null = null;
+	let mermaidFence = false;
+	let table = false;
 	let previousLine = "";
 	for (const line of text.split("\n")) {
 		const fenceMatch = CODE_FENCE_LINE.exec(line);
@@ -67,20 +67,27 @@ function detectLiveReflowingMarkdown(text: string): boolean {
 				fenceMatch[1]!.length >= fence.length
 			) {
 				fence = null;
+				mermaidFence = false;
 			}
 			continue;
 		}
 		if (fenceMatch) {
-			if (/^mermaid\b/.test(fenceMatch[2]!.trim())) return true;
 			fence = fenceMatch[1]!;
+			mermaidFence = /^mermaid\b/.test(fenceMatch[2]!.trim());
+			table = false;
 			previousLine = "";
 			continue;
 		}
-		if (previousLine.includes("|") && MARKDOWN_TABLE_DELIMITER.test(line)) return true;
+		if (previousLine.includes("|") && MARKDOWN_TABLE_DELIMITER.test(line)) {
+			table = true;
+		} else if (table && !line.includes("|")) {
+			table = false;
+		}
 		previousLine = line;
 	}
-	return false;
+	return mermaidFence || table;
 }
+
 /**
  * Frames for the streaming "thinking" pulse rendered in place of a hidden
  * thinking block while the model is still producing it. A single fixed-width
@@ -188,8 +195,6 @@ export class AssistantMessageComponent extends Container {
 	#showToolResultImages = true;
 	#kittyConversionsInFlight = new Set<string>();
 	#transcriptBlockFinalized: boolean;
-	/** Reflowing streaming Markdown cannot expose an append-only settled prefix. */
-	#hasLiveReflowingMarkdown = false;
 	/**
 	 * When true, the turn-ending `Error: …` line for `stopReason === "error"` is
 	 * suppressed because the same error is currently shown in the pinned banner
@@ -226,6 +231,8 @@ export class AssistantMessageComponent extends Container {
 	/** Whether the last updateContent carried an in-flight streaming partial; such
 	 *  renders bypass the markdown module LRU (see Markdown.transientRenderCache). */
 	#lastUpdateTransient = false;
+	/** Reflowing streaming Markdown cannot expose an append-only settled prefix. */
+	#hasLiveReflowingMarkdown = false;
 	// Fast-path state: reuse Markdown children when message shape is stable during streaming.
 	#fastPathKey: string | undefined;
 	#fastPathItems:
