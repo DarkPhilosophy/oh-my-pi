@@ -997,8 +997,8 @@ function renderedLinesCacheSize(lines: readonly string[], key: string): number {
 	return Math.max(1, size);
 }
 
-function renderCacheEntrySize(entry: RenderCacheEntry): number {
-	let size = renderedLinesCacheSize(entry.lines);
+function renderCacheEntrySize(entry: RenderCacheEntry, key: string): number {
+	let size = renderedLinesCacheSize(entry.lines, key);
 	for (const table of entry.tables) size += table.key.length + table.columnWidths.length + 4;
 	return size;
 }
