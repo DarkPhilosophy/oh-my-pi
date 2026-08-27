@@ -328,7 +328,9 @@ async function prepareCliLaunch(
 		// An explicit resume adopts the stored session's project: switch the
 		// process-wide project dir and settings before deriving model scope so
 		// the destination project's configuration wins over the launch dir's.
-		parsed.cwd = await switchToResumedProject(sessionManager.getCwd(), activeSettings, Promise.resolve());
+		parsed.cwd = (
+			await switchToResumedProject(sessionManager.getCwd(), activeSettings, Promise.resolve(), sessionManager)
+		).cwd;
 	}
 	let scopedModels: ScopedModel[] = [];
 	const modelPatterns = parsed.models ?? activeSettings.get("enabledModels");

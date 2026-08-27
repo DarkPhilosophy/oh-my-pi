@@ -8,6 +8,35 @@
 ### Added
 
 - Added Grok 4.5 to the xai and xai-oauth (SuperGrok) catalogs; grok-4.5 is now the xai-oauth default model. Its reasoning effort is constrained to xAI's supported low/medium/high tiers and marked mandatory, so a thinking-off request clamps to low instead of omitting reasoning (which xAI's grok-4.5 rejects, since reasoning cannot be disabled). The effort cap keys on the xAI host (provider `xai` or base URL `api.x.ai`), so a custom OpenAI-compatible config pointed at xAI gets the same ladder; the documented `grok-build-latest` alias inherits the Grok 4.5 effort/mandatory-reasoning contract (distinct from the separate `grok-build` / `grok-build-0.1` SKUs that reject `reasoning.effort`).
+## [18.0.8] - 2026-08-27
+
+### Fixed
+
+- Fixed the thinking control mode for OpenAI models served over Bedrock Converse (`global.openai.gpt-5.6-luna`, `-sol`, `-terra`), which are now classified as `effort` rather than `budget` so requests use OpenAI's reasoning schema.
+- Fixed LiteLLM discovery leaking a colliding bundled model's provider-specific transport onto custom endpoints: a discovered alias (e.g. `kimi-k3`) matching a bundled Fireworks model no longer inherits that model's wire-id transform, which had caused requests to POST a model id the endpoint never advertised and return HTTP 400 ([#9938](https://github.com/can1357/oh-my-pi/issues/9938)).
+
+## [18.0.7] - 2026-08-26
+
+### Added
+
+- Added cached background refresh from the shared models.dev catalog so newly published models for known providers can appear without a new OMP release, while bundled models remain the offline fallback.
+
+### Fixed
+
+- Fixed LiteLLM model discovery so model pricing is correctly populated when pricing information is provided by a later metadata endpoint.
+
+## [18.0.5] - 2026-08-25
+
+### Added
+
+- Added built-in DeepInfra provider support (`deepinfra`, `DEEPINFRA_API_KEY`) with live model discovery, including chat models, context windows, pricing, cache-read pricing, vision input, and reasoning-effort capabilities.
+- Added built-in Yolo-Auto provider support with the flat-rate `deepseek-flash-v4` model and live model discovery.
+
+### Fixed
+
+- Fixed the Synthetic provider’s default model to use `hf:zai-org/GLM-5.2` instead of the retired `hf:zai-org/GLM-5.1`.
+
+## [18.0.4] - 2026-08-24
 
 ### Fixed
 - Fixed caller-supplied transports and abort signals sharing the process-wide `models.dev` discovery request, so one provider timeout can no longer cancel or supply another provider's catalog.
@@ -47,7 +76,6 @@
 
 ### Added
 
-- Added DeepInfra as a built-in provider (`deepinfra`, `DEEPINFRA_API_KEY`) with dynamic model discovery from DeepInfra's public tagged catalog: chat models, context windows, per-1M-token pricing (including cache reads), vision input, and reasoning-effort support all come from the API at discovery time (output-token caps fall back to bundled/stencil.so references — the catalog’s `max_tokens` restates the context ceiling, and a bundled cap is clamped to the window DeepInfra actually serves). DeepInfra’s discovered modality list is authoritative through the refresh merge, so a model that loses its `vision`/`vlm` tags stops advertising image input instead of retaining it from the bundled reference.
 - Added helper functions and constants for reading enterprise ChatGPT workspace data-residency regions from Codex OAuth access tokens and forwarding the residency header to Codex backend endpoints.
 
 ### Changed

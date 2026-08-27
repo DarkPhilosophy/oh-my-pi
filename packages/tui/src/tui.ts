@@ -26,8 +26,8 @@ import { parseSgrMouse } from "./mouse";
 import { compositeRightPanelsInRange, type PanelLayoutResult, RIGHT_PANEL_MIN_COL } from "./right-panel";
 import { isConPTYHosted, setAltScreenActive, type Terminal } from "./terminal";
 import {
+	encodeKittyDeleteAllImages,
 	encodeKittyDeleteImage,
-	encodeKittyDeletePlacement,
 	encodeKittyPlacementLine,
 	ImageProtocol,
 	isImageProtocolForced,
@@ -2748,7 +2748,8 @@ export class TUI extends Container {
 			this.terminal.write(TRANSIENT_WHEEL_TRACKING_OFF);
 			this.#transientWheelTrackingActive = false;
 		}
-		this.#purgeInlineImages();
+		// Keep transmitted Kitty data alive: committed scrollback placeholders
+		// remain visible after the interactive process exits.
 		this.#clearSixelProbeState();
 		this.#stopped = true;
 		this.#watchdog.stop();
@@ -3505,6 +3506,10 @@ export class TUI extends Container {
 		return true;
 	}
 	#prepareForcedRender(clearScrollback: boolean): void {
+		if (clearScrollback && !this.#clearScrollbackOnNextRender) {
+			this.#imageBudget.forgetTransmitted();
+			this.invalidate();
+		}
 		this.#clearScrollbackOnNextRender ||= clearScrollback;
 		this.#forceViewportRepaintOnNextRender = true;
 		if (this.#renderTimer) {
@@ -5483,11 +5488,8 @@ export class TUI extends Container {
 			// no retransmit). Deleting epoch 1 too matters for images absent from
 			// the replay — nothing would ever replace their stale entry.
 			buffer += "\x1b[H\x1b[3J";
-			for (const { imageId, lastEpoch } of this.#imageBudget.resetPlacementEpochs()) {
-				for (let placementId = 1; placementId <= lastEpoch; placementId++) {
-					buffer += encodeKittyDeletePlacement(imageId, placementId);
-				}
-			}
+			buffer += encodeKittyDeleteAllImages();
+			this.#imageBudget.resetPlacementEpochs();
 		} else {
 			// ED2 clears only the viewport. Initial/non-destructive replays may
 			// first ask supporting terminals to preserve the prior screen, but a

@@ -375,23 +375,6 @@ export class Composer implements TerminalFrameProvider {
 		return { rows, segments };
 	}
 
-	#sliceSegments(segments: readonly TerminalFrameSegment[], offset: number, rows: number): TerminalFrameSegment[] {
-		const end = offset + rows;
-		const visible: TerminalFrameSegment[] = [];
-		for (const segment of segments) {
-			const segmentEnd = segment.start + segment.rowCount;
-			const start = Math.max(offset, segment.start);
-			const clippedEnd = Math.min(end, segmentEnd);
-			if (clippedEnd <= start) continue;
-			visible.push({
-				component: segment.component,
-				start: start - offset,
-				rowCount: clippedEnd - start,
-			});
-		}
-		return visible;
-	}
-
 	/** Reflow accepted hard rows exactly as the restored terminal buffer will. */
 	#reflowRetiredHeader(width: number, start: number): string[] {
 		const lines = this.#retiredHeaderRows;

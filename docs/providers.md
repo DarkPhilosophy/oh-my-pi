@@ -149,6 +149,7 @@ Each provider has one or more environment variables that supply a key when no st
 | `lm-studio`                      | `LM_STUDIO_API_KEY` (optional; keyless by default)                            |
 | `llama.cpp`                      | `LLAMA_CPP_API_KEY` (only when the server requires auth)                      |
 | `vllm`                           | `VLLM_API_KEY` (optional for an unauthenticated local server)                 |
+| `yolo-auto`                      | `YOLO_AUTO_API_KEY`                                                            |
 
 OAuth-backed providers such as `anthropic`, `github-copilot`, `cursor`, `ollama-cloud`, `qwen-portal`, `kimi-code`, `xai-oauth`, `wafer-serverless`, `google-gemini-cli`, and `google-antigravity` are normally reached through `/login` rather than an environment variable. See [Environment variables](./environment-variables.md) for search-tool and configuration variables not listed here.
 

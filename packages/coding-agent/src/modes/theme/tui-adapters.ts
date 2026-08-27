@@ -3,6 +3,7 @@ import {
 	HighlightStream as NativeHighlightStream,
 	highlightCode as nativeHighlightCode,
 	supportsLanguage as nativeSupportsLanguage,
+	warmHighlighter as nativeWarmHighlighter,
 } from "@oh-my-pi/pi-natives";
 import type { EditorTheme, MarkdownTheme, SelectListTheme, SettingsListTheme, SymbolTheme } from "@oh-my-pi/pi-tui";
 import chalk from "@oh-my-pi/pi-utils/chalk";
@@ -96,6 +97,30 @@ export function highlightCode(code: string, lang?: string, highlightTheme: Theme
 	// Always return a fresh array: callers (e.g. renderCodeCell) push extra lines
 	// onto the result, which would corrupt the cached string otherwise.
 	return (highlighted ?? code).split("\n");
+}
+/** Create a stateful highlighter for progressive terminal rendering. */
+export function createHighlightStream(lang?: string, highlightTheme: Theme = theme): NativeHighlightStream | null {
+	const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
+	if (!validLang) return null;
+	try {
+		if (typeof NativeHighlightStream !== "function") return null;
+		return new NativeHighlightStream(validLang, getHighlightColors(highlightTheme));
+	} catch {
+		return null;
+	}
+}
+
+let highlighterWarmup: Promise<void> | undefined;
+
+/** Warm native syntax grammars off-thread once per process. */
+export function warmHighlighter(): Promise<void> {
+	if (!highlighterWarmup) {
+		highlighterWarmup =
+			typeof nativeWarmHighlighter === "function"
+				? nativeWarmHighlighter().catch(() => undefined)
+				: Promise.resolve();
+	}
+	return highlighterWarmup;
 }
 
 export function getSymbolTheme(): SymbolTheme {

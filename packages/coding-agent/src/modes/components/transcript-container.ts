@@ -16,7 +16,7 @@ export interface AnimationFrame {
 	readonly now: number;
 }
 
-interface TranscriptPresentationTarget {
+export interface TranscriptPresentationTarget {
 	setTranscriptAllocation?(rows: number, frame: AnimationFrame): void;
 }
 

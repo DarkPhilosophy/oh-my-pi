@@ -28849,7 +28849,7 @@
 			"contextWindow": 1050000,
 			"maxTokens": 128000,
 			"thinking": {
-				"mode": "budget",
+				"mode": "effort",
 				"efforts": [
 					"low",
 					"medium",
@@ -28888,7 +28888,7 @@
 			"contextWindow": 1050000,
 			"maxTokens": 128000,
 			"thinking": {
-				"mode": "budget",
+				"mode": "effort",
 				"efforts": [
 					"low",
 					"medium",
@@ -28927,7 +28927,7 @@
 			"contextWindow": 1050000,
 			"maxTokens": 128000,
 			"thinking": {
-				"mode": "budget",
+				"mode": "effort",
 				"efforts": [
 					"low",
 					"medium",
@@ -294425,6 +294425,103 @@
 				"emptyLengthFinishIsContextError": false,
 				"usesOpenAIToolCallIdLimit": false,
 				"dropThinkingWhenReasoningEffort": false
+			}
+		}
+	},
+	"yolo-auto": {
+		"deepseek-flash-v4": {
+			"id": "deepseek-flash-v4",
+			"name": "DeepSeek Flash V4",
+			"api": "openai-completions",
+			"provider": "yolo-auto",
+			"baseUrl": "https://yolo-auto.com/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh",
+					"max"
+				],
+				"effortMap": {
+					"minimal": "low",
+					"low": "low",
+					"medium": "high",
+					"high": "high",
+					"xhigh": "max",
+					"max": "max"
+				}
+			},
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 131072,
+			"maxTokens": null,
+			"compat": {
+				"supportsStore": false,
+				"supportsDeveloperRole": false,
+				"supportsMultipleSystemMessages": true,
+				"supportsReasoningEffort": true,
+				"supportsReasoningParams": true,
+				"supportsSamplingParams": true,
+				"supportsPenaltyAndStopParams": true,
+				"reasoningEffortMap": {},
+				"supportsUsageInStreaming": true,
+				"alwaysSendMaxTokens": false,
+				"disableReasoningOnForcedToolChoice": false,
+				"disableReasoningOnToolChoice": true,
+				"supportsToolChoice": true,
+				"supportsForcedToolChoice": true,
+				"supportsNamedToolChoice": true,
+				"maxTokensField": "max_completion_tokens",
+				"requiresToolResultName": false,
+				"requiresAssistantAfterToolResult": false,
+				"requiresThinkingAsText": false,
+				"requiresMistralToolIds": false,
+				"thinkingFormat": "chat-template",
+				"reasoningDisableMode": "chat-template-thinking-false",
+				"omitReasoningEffort": false,
+				"includeEncryptedReasoning": true,
+				"filterReasoningHistory": false,
+				"reasoningContentField": "reasoning_content",
+				"requiresReasoningContentForToolCalls": true,
+				"requiresReasoningContentForAllAssistantTurns": true,
+				"allowsSyntheticReasoningContentForToolCalls": false,
+				"replayReasoningContent": false,
+				"qwenPreserveThinking": false,
+				"qwenTemplateReasoningEffort": false,
+				"requiresAssistantContentForToolCalls": false,
+				"supportsPromptCacheBreakpoints": false,
+				"isOpenRouterHost": false,
+				"wireModelIdMode": "raw",
+				"isVercelGatewayHost": false,
+				"supportsStrictMode": false,
+				"toolStrictMode": "mixed",
+				"stripDeepseekSpecialTokens": false,
+				"streamMarkupHealingPattern": "thinking",
+				"reasoningDeltasMayBeCumulative": false,
+				"emptyLengthFinishIsContextError": false,
+				"usesOpenAIToolCallIdLimit": false,
+				"dropThinkingWhenReasoningEffort": false
+			},
+			"requiresGlyphTokenization": false,
+			"tokenizer": "deepseek-v3",
+			"supportsComputerUse": false,
+			"compatConfig": {
+				"supportsDeveloperRole": false,
+				"supportsStore": false,
+				"supportsReasoningEffort": true,
+				"thinkingFormat": "chat-template"
 			}
 		}
 	},

@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+## [18.0.8] - 2026-08-27
+
+### Fixed
+
+- Large session histories no longer leave macOS Terminal unresponsive during repaint.
+- Bounded the interactive PTY reader→JS queue (64 × ≤64 KiB) and forward chunks through a separate `call_async` pump so a fast child plus a stalled JS consumer cannot accumulate unbounded output in-process, without freezing PTY input/resize/kill. After a finite child exit, wait until accepted output reaches `on_chunk`; only a permanently open slave skips that wait. Cancel, timeout, and that stuck-open path abort the pump before `start()` resolves. Same defect class as the non-PTY bash bridge (#4078).
+
+## [18.0.6] - 2026-08-26
+
+### Fixed
+
+- Improved TypeScript and TSX syntax highlighting, including correct handling of type annotations and template literals.
+
+## [18.0.5] - 2026-08-25
+
+### Added
+
+- Added asynchronous, size-bounded SVG-to-PNG rasterization for terminal media previews.
+- Added the `DiffStream` API for processing text and byte input incrementally, opening files asynchronously, reporting stable-prefix progress, generating exact unified diffs, and warming syntax grammars asynchronously.
+
+## [18.0.3] - 2026-08-23
+
+### Fixed
+
+- `macOSCheckSpelling` no longer reports the whole checked string as misspelled: automatic language identification returns an orthography result spanning the entire text, which leaked through as a typo range overlapping the real word span (doubling editor text under the undercurl and drifting the cursor).
+
+## [18.0.1] - 2026-08-23
+
 ### Fixed
 
 - Native macOS spellchecker now honors all active system dictionaries: misspelling detection uses automatic language identification and completions/guesses/corrections select the per-word language, so non-English text (e.g. Russian) is checked instead of only the shared checker's current language ([#9334](https://github.com/can1357/oh-my-pi/issues/9334)).

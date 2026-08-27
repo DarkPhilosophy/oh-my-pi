@@ -2,34 +2,55 @@
 
 ## [Unreleased]
 
-### Changed
+## [18.0.8] - 2026-08-27
 
-- Improved event-loop watchdog diagnostics by attributing synchronous TUI render stalls to the `ui.render` phase.
 ### Added
 
-- Added compact framed rendering for completed fenced Markdown code blocks, with width-aware wrapping and language labels while preserving raw delimiters for still-streaming fences.
-
-### Changed
-
-- Improved incremental Markdown lexing to reuse append-only guard scans and stable block boundaries during streaming.
+- `ProcessTerminal` accepts a `conpty` option to force ConPTY-hosted behavior on or off, keeping terminal tests hermetic on WSL where live env detection would otherwise flip kitty-keyboard flags and write chunking ([#9887](https://github.com/can1357/oh-my-pi/issues/9887)).
 
 ### Fixed
 
-- Fixed the visible terminal area being cut at the history/live boundary after a turn finalized; contextual right panels now retain finalized row ownership and the conversation viewport can scroll independently of row mutability.
+- Fixed pending-work animations repeatedly composing expensive frames without applying their full render cost to CPU backpressure.
+- Fixed unfinished live viewport rows entering tmux pane history and duplicating streamed output ([#9780](https://github.com/can1357/oh-my-pi/issues/9780)).
 
-- Fixed narrow and nested framed Markdown code blocks so wide graphemes stay within the requested width and copy targets preserve raw source boundaries without cache collisions.
+## [18.0.7] - 2026-08-26
+
 ### Breaking Changes
 
-- Renamed TerminalFrameProvider.resetHistory to beginHistoryReplay
-
-### Changed
-
-- History replay batches now bottom-split into leading viewport space and serialize the complete replay remainder plus final viewport in one synchronous terminal write.
+- Removed the `inlineMathSpanEnd` and `mathStartIndex` exports; the math delimiter grammar now lives in `@oh-my-pi/pi-utils/math-delimiters`.
 
 ### Fixed
 
-- Fixed graceful terminal shutdown leaving eligible finalized output in the mutable viewport instead of retiring it before shell handoff.
-- Fixed a latched destructive scrollback rebuild (settled rebuild-mode resize, display reset) erasing and re-streaming the whole transcript during stop; the latch is dropped and shutdown writes only the un-retired tail.
+- Math spans now end at the first unescaped delimiter, so a TeX row break no longer closes a span early: `\(a \\) b\)` renders as one equation, and an escaped `\$` no longer ends `$$…$$`.
+- Fixed image previews displaying as garbled characters in Paseo terminals.
+- Fixed terminal resizing from duplicating committed history in native scrollback.
+- Fixed autocomplete suggestions for bare-name skills such as `/batch` when no command matches the prefix more strongly.
+
+## [18.0.6] - 2026-08-26
+
+### Added
+
+- Added `Markdown.getLastRenderStableText()` to expose the stable prefix of streamed Markdown text for append-only transcript publication.
+
+## [18.0.5] - 2026-08-25
+
+### Breaking Changes
+
+- Renamed the public `TerminalFrameProvider.resetHistory` method to `beginHistoryReplay`.
+
+### Added
+
+- Loader messages can now be provided as a function, allowing dynamic labels such as live countdowns to update on each spinner tick while preserving the existing behavior for static strings.
+
+### Changed
+
+- Improved history replay and terminal output handling so replayed content is rendered efficiently and complete replay results are written together.
+
+### Fixed
+
+- Fixed graceful shutdown so finalized output is correctly retired before handing control back to the shell.
+- Fixed terminal scrollback corruption during shutdown, tmux pane zoom and resize, and destructive screen resets, preventing duplicated frames, lost history, and stale transcript re-streaming.
+- Fixed streaming Markdown rendering at chunk boundaries to preserve CommonMark emphasis behavior for Unicode text and correctly recognize GFM tables as they are completed.
 
 ## [18.0.4] - 2026-08-24
 
@@ -46,19 +67,32 @@
 
 ### Fixed
 
-- Fixed hosted daemon rendering retaining the daemon process's terminal capability profile after a client attaches. Capabilities can now be re-resolved from client-scoped environment markers without mutating the daemon environment.
-- Fixed the TUI not surfacing terminal focus transitions to start-listener consumers and hosted terminals. Focus changes now flow through the shared terminal interface and propagate immediately to registered listeners.
+- Fixed inline images vanishing from the transcript and scrollback when the session exits: stop no longer deletes transmitted Kitty images from the terminal's graphics store.
+
+## [18.0.2] - 2026-08-23
+
+### Fixed
+
+- Fixed visible history being erased when enlarging the terminal.
+
+## [18.0.1] - 2026-08-23
+
 ### Added
 
 - Collapsed individual skill commands into a `/skill:` namespace entry to declutter suggestions
+- Added `TUI.renderNow()` for terminal-safe synchronous priority frames that retain resize debounce, output-backlog, and image deferral safeguards.
 
 ### Changed
 
 - Improved slash command autocompletion to chain suggestions after selecting a namespace
+- Replaced the native-scrollback inference API (`NativeScrollback*` interfaces and the scrollback rebuild/resize settings hooks) with explicit `TerminalFramePlan` history batches.
+- Post-resize repaints now recover the reflowed viewport anchor with a cursor-position report (DSR) instead of trusting stale grid coordinates, so a settled resize no longer duplicates the editor/status rows on screen.
+- History appends that overflow the screen erase the old live viewport first, so a scroll can only push committed rows and blanks into scrollback, never an unfinished frame.
 
 ### Fixed
 
 - Fixed consecutive prompt submissions being skipped by persistent history, allowing the latest project metadata to replace the previous entry without duplicating editor navigation history.
+- Fixed the history drain stalling on idle screens: accepting a batch now pumps the next frame, so a large resumed transcript retires to terminal history instead of pinning the live viewport in its emergency aggregate.
 - Fixed fuzzy matching so a qualifying whole-word hit is not hidden by an earlier mid-word occurrence ([#8465](https://github.com/can1357/oh-my-pi/pull/8465) by [@Mustaqeem66](https://github.com/Mustaqeem66)).
 - Fixed stray characters appearing in the terminal viewport during title updates
 - Fixed editor input lag when autocomplete providers are slow by keeping only the latest pending lookup.
@@ -345,12 +379,6 @@
 
 ### Added
 
-- Added `TUI.setRightPanel(provider, targets?)`: registers right-side info panel blocks composited into the visible window at the emit stage, restricted to rows rendered by the target root children. Compositing happens after the window/commit math on the window copy only, so panels never overlap bottom chrome, never enter native scrollback, and do not disturb component-scoped render reuse or the live-region/stable-prefix protocol.
-- Added the `right-panel` module (`compositeRightPanel`, `compositeRightPanels`, `compositeRightPanelsInRange`, `trimRightPadding`): pure negative-space compositing helpers. Trailing padding is ignored when measuring free space but only rows that actually receive panel text are rewritten, so full-width styled backgrounds stay byte-exact.
-
-### Fixed
-
-- Fixed right-side panel compositing landing on Kitty OSC 66 text-sizing heading rows and the following blank structural reservation row. The compositor predicate is now generic (`isOccupiedLine`) and the TUI pre-marks OSC 66 headings plus their first visible-width-zero successor as occupied before placement.
 - Added a fullscreen overlay mouse-tracking opt-out to allow selection-first dialogs to preserve native terminal text selection.
 - Added `Terminal.refreshAppearance()` to allow consumers to manually trigger a refresh of the detected dark/light terminal appearance without periodic polling.
 

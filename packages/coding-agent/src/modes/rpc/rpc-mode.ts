@@ -1012,7 +1012,12 @@ export async function runRpcMode(
 		await refreshAgentDiscovery(cwd);
 		resetCapabilities();
 		await session.refreshSkills();
-		session.setSlashCommands(await loadSlashCommands({ cwd }));
+		session.setSlashCommands(
+			await loadSlashCommands({
+				cwd,
+				extensionRoots: session.effectiveExtensionRoots,
+			}),
+		);
 		await emitAvailableCommandsUpdate();
 	};
 	const emitAvailableCommandsUpdate = async () => {

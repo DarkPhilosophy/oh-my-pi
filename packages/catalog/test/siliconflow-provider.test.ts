@@ -238,7 +238,8 @@ describe("siliconflow built-in providers", () => {
 
 		const first = fetchWellKnownModels(async (_input, init) => {
 			firstCalls++;
-			expect(init?.signal).toBe(controller.signal);
+			expect(init?.signal).toBeInstanceOf(AbortSignal);
+			expect(init?.signal).not.toBe(controller.signal);
 			return firstResponse.promise;
 		}, controller.signal);
 		const second = fetchWellKnownModels(async () => {

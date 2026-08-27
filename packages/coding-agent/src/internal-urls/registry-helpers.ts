@@ -44,13 +44,14 @@ export function resetRegisteredArtifactDirsForTests(): void {
  * `addDir` dedup collapses the depth-0 case (both formulas agree) back to a
  * single entry.
  */
-export function artifactsDirsFromRegistry(): string[] {
+export function artifactsDirsFromRegistry(options?: { preferredDir?: string }): string[] {
 	const registry = AgentRegistry.global();
 	const dirs: string[] = [];
 	const addDir = (dir: string | null | undefined) => {
 		if (!dir) return;
 		if (!dirs.includes(dir)) dirs.push(dir);
 	};
+	if (options?.preferredDir) addDir(options.preferredDir);
 	for (const ref of registry.list()) {
 		addDir(ref.session?.sessionManager?.getArtifactsDir());
 		if (ref.sessionFile) addDir(ref.sessionFile.slice(0, -6));
@@ -73,7 +74,7 @@ export function artifactsDirsFromRegistry(): string[] {
  * EPERM-rewrite backups (`.bak`) are skipped. When the same id appears in
  * multiple dirs, the first hit wins (registry dirs are scanned first).
  */
-export async function sessionFilesFromDisk(): Promise<Map<string, string>> {
+export async function sessionFilesFromDisk(preferredDir?: string): Promise<Map<string, string>> {
 	const found = new Map<string, string>();
 	const seenDirs = new Set<string>();
 	const scan = async (dir: string, depth: number): Promise<void> => {
@@ -99,7 +100,7 @@ export async function sessionFilesFromDisk(): Promise<Map<string, string>> {
 			if (!found.has(id)) found.set(id, path.join(dir, name));
 		}
 	};
-	for (const dir of artifactsDirsFromRegistry()) await scan(dir, 0);
+	for (const dir of artifactsDirsFromRegistry(preferredDir ? { preferredDir } : undefined)) await scan(dir, 0);
 	return found;
 }
 

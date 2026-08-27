@@ -29,6 +29,7 @@ export enum NotifyProtocol {
 export type TerminalId =
 	| "kitty"
 	| "ghostty"
+	| "orca"
 	| "wezterm"
 	| "iterm2"
 	| "vscode"
@@ -506,6 +507,7 @@ const KNOWN_TERMINALS = Object.freeze({
 	// Recognized terminals
 	kitty: new TerminalInfo("kitty", ImageProtocol.Kitty, true, true, NotifyProtocol.Osc99, true, true, true),
 	ghostty: new TerminalInfo("ghostty", ImageProtocol.Kitty, true, true, NotifyProtocol.Osc9, false, false, false, 2),
+	orca: new TerminalInfo("orca", null, true, false, NotifyProtocol.Bell, false, false, false, 2),
 	wezterm: new TerminalInfo("wezterm", ImageProtocol.Kitty, true, true, NotifyProtocol.Osc9),
 	iterm2: new TerminalInfo("iterm2", ImageProtocol.Iterm2, true, true, NotifyProtocol.Osc9),
 	vscode: new TerminalInfo("vscode", null, true, true, NotifyProtocol.Bell),
@@ -546,6 +548,7 @@ export function detectTerminalId(env: NodeJS.ProcessEnv = Bun.env): TerminalId {
 	if (TERM_PROGRAM) {
 		if (caseEq(TERM_PROGRAM, "kitty")) return "kitty";
 		if (caseEq(TERM_PROGRAM, "ghostty")) return "ghostty";
+		if (caseEq(TERM_PROGRAM, "orca")) return "orca";
 		if (caseEq(TERM_PROGRAM, "wezterm")) return "wezterm";
 		if (caseEq(TERM_PROGRAM, "iterm.app")) return "iterm2";
 		if (caseEq(TERM_PROGRAM, "vscode")) return "vscode";
@@ -856,6 +859,11 @@ export function encodeKittyPlacementLine(options: {
  */
 export function encodeKittyDeleteImage(imageId: number): string {
 	return wrapTmuxPassthroughIfNeeded(`\x1b_Ga=d,d=I,i=${imageId},q=2\x1b\\`);
+}
+
+/** Delete every Kitty image and placement after a destructive display reset. */
+export function encodeKittyDeleteAllImages(): string {
+	return wrapTmuxPassthroughIfNeeded("\x1b_Ga=d,d=A,q=2\x1b\\");
 }
 
 /**
