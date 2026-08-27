@@ -60,6 +60,8 @@ type Connection = {
 	outboundQueueBytes: number;
 	waitingForDrain: boolean;
 	drainWaiters: Set<() => void>;
+	attachmentSendQueueBytes: number;
+	attachmentSendQueue: Promise<void>;
 };
 
 type DaemonOwnerLease = {
@@ -124,6 +126,24 @@ function frameType(value: unknown): string | undefined {
 	if (typeof value !== "object" || value === null || Array.isArray(value) || !("type" in value)) return undefined;
 	const type = value.type;
 	return typeof type === "string" ? type : undefined;
+}
+
+function attachmentFrameBytes(frame: unknown): number {
+	if (
+		typeof frame === "object" &&
+		frame !== null &&
+		!Array.isArray(frame) &&
+		"event" in frame &&
+		typeof frame.event === "object" &&
+		frame.event !== null &&
+		!Array.isArray(frame.event) &&
+		"type" in frame.event &&
+		frame.event.type === "terminal_output" &&
+		"data" in frame.event &&
+		typeof frame.event.data === "string"
+	)
+		return Buffer.byteLength(frame.event.data, "utf8");
+	return 1024;
 }
 
 function frameSeq(value: unknown): number | undefined {
@@ -762,7 +782,9 @@ export class DaemonServer {
 			outboundQueueIndex: 0,
 			outboundQueueBytes: 0,
 			waitingForDrain: false,
+			attachmentSendQueue: Promise.resolve(),
 			drainWaiters: new Set(),
+			attachmentSendQueueBytes: 0,
 		};
 		this.#connections.add(connection);
 		socket.setEncoding("utf8");
@@ -998,15 +1020,20 @@ export class DaemonServer {
 			}
 			case "attach": {
 				const key = `${operation.sessionId}\0${operation.attachmentId}`;
+				const attachmentReady = Promise.withResolvers<void>();
 				const attached = await registry.attach(
 					operation.sessionId,
 					operation.attachmentId,
 					operation.mode,
-					frame => this.#sendAttachmentFrame(connection, operation.sessionId, operation.attachmentId, frame),
+					async frame => {
+						await attachmentReady.promise;
+						await this.#queueAttachmentFrame(connection, operation.sessionId, operation.attachmentId, frame);
+					},
 					operation.lastSeq,
 					operation.delivery,
 				);
 				if (!this.#connectionActive(connection, generation)) {
+					attachmentReady.resolve();
 					registry.disconnect(operation.sessionId, operation.attachmentId);
 					return SKIP_DISPATCH;
 				}
@@ -1021,6 +1048,7 @@ export class DaemonServer {
 						}
 					}
 				}
+				attachmentReady.resolve();
 				return {
 					sessionId: attached.sessionId,
 					attachmentId: attached.attachmentId,
@@ -1100,6 +1128,29 @@ export class DaemonServer {
 			if (this.#lifecycleQueues.get(key) === next) this.#lifecycleQueues.delete(key);
 		});
 		return deferred.promise;
+	}
+
+	#queueAttachmentFrame(
+		connection: Connection,
+		sessionId: string,
+		attachmentId: string,
+		frame: unknown,
+	): Promise<void> {
+		const frameBytes = attachmentFrameBytes(frame);
+		connection.attachmentSendQueueBytes += frameBytes;
+		const send = async () => {
+			try {
+				if (connection.waitingForDrain || connection.outboundQueueBytes >= MAX_DRAIN_WRITE_BYTES)
+					await this.#waitForConnectionDrain(connection);
+				if (connection.closed || connection.socket.destroyed) return;
+				this.#sendAttachmentFrame(connection, sessionId, attachmentId, frame);
+			} finally {
+				connection.attachmentSendQueueBytes -= frameBytes;
+			}
+		};
+		const pending = connection.attachmentSendQueue.then(send);
+		connection.attachmentSendQueue = pending.catch(() => undefined);
+		return pending;
 	}
 
 	#sendAttachmentFrame(connection: Connection, sessionId: string, attachmentId: string, frame: unknown): void {
@@ -1237,6 +1288,20 @@ export class DaemonServer {
 
 	#waitForDrain(connection: Connection): void {
 		connection.waitingForDrain = true;
+		const saturationTimer = setTimeout(() => {
+			if (
+				!connection.closed &&
+				connection.waitingForDrain &&
+				connection.attachmentSendQueueBytes >= MAX_CONNECTION_QUEUE_BYTES
+			) {
+				logger.warn("Disconnecting slow daemon client with saturated attachment queue", {
+					bufferedBytes: connection.attachmentSendQueueBytes,
+					maxBufferedBytes: MAX_CONNECTION_QUEUE_BYTES,
+				});
+				this.#releaseConnection(connection);
+			}
+		}, 500);
+		saturationTimer.unref?.();
 		connection.socket.once("drain", () => {
 			if (connection.closed || connection.socket.destroyed) return;
 			connection.waitingForDrain = false;

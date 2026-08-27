@@ -28,8 +28,6 @@ import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cach
  * the persisted session.
  */
 const MAX_TRANSCRIPT_ERROR_LINES = 8;
-const MARKDOWN_TABLE_DELIMITER = /^ {0,3}\|?(?:[ \t]*:?-+:?[ \t]*\|)+[ \t]*:?-*:?[ \t]*$/;
-const CODE_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
 type ThinkingContentBlock = Extract<AssistantMessage["content"][number], { type: "thinking" }>;
 type DisplayThinkingContentBlock = ThinkingContentBlock & { rawThinking?: string };
@@ -46,46 +44,6 @@ function resolveThinkingDisplay(block: ThinkingContentBlock, proseOnly: boolean)
 		text: formatted.trim(),
 		visible: hasDisplayableThinking(rawThinking ?? block.thinking, formatted),
 	};
-}
-/**
- * Whether the mutable suffix of streaming Markdown can still re-layout rows.
- * A closed table or Mermaid fence followed by prose is stable; only a table
- * still growing at EOF or an unclosed Mermaid fence keeps the block live.
- */
-function detectLiveReflowingMarkdown(text: string): boolean {
-	let fence: string | null = null;
-	let mermaidFence = false;
-	let table = false;
-	let previousLine = "";
-	for (const line of text.split("\n")) {
-		const fenceMatch = CODE_FENCE_LINE.exec(line);
-		if (fence !== null) {
-			if (
-				fenceMatch &&
-				fenceMatch[2]!.trim() === "" &&
-				fenceMatch[1]![0] === fence[0] &&
-				fenceMatch[1]!.length >= fence.length
-			) {
-				fence = null;
-				mermaidFence = false;
-			}
-			continue;
-		}
-		if (fenceMatch) {
-			fence = fenceMatch[1]!;
-			mermaidFence = /^mermaid\b/.test(fenceMatch[2]!.trim());
-			table = false;
-			previousLine = "";
-			continue;
-		}
-		if (previousLine.includes("|") && MARKDOWN_TABLE_DELIMITER.test(line)) {
-			table = true;
-		} else if (table && !line.includes("|")) {
-			table = false;
-		}
-		previousLine = line;
-	}
-	return mermaidFence || table;
 }
 
 /**
@@ -231,9 +189,7 @@ export class AssistantMessageComponent extends Container {
 	/** Whether the last updateContent carried an in-flight streaming partial; such
 	 *  renders bypass the markdown module LRU (see Markdown.transientRenderCache). */
 	#lastUpdateTransient = false;
-	/** Reflowing streaming Markdown cannot expose an append-only settled prefix. */
-	#hasLiveReflowingMarkdown = false;
-	// Fast-path state: reuse Markdown children when message shape is stable during streaming.
+	/** Fast-path state: reuse Markdown children when message shape is stable during streaming. */
 	#fastPathKey: string | undefined;
 	#fastPathItems:
 		| Array<{ md: Markdown; contentIndex: number; blockType: "text" | "thinking"; lastText: string }>
@@ -444,14 +400,6 @@ export class AssistantMessageComponent extends Container {
 
 	isTranscriptBlockFinalized(): boolean {
 		return this.#transcriptBlockFinalized;
-	}
-
-	getTranscriptBlockSettledRows(): number {
-		if (this.#transcriptBlockFinalized || !this.#lastUpdateTransient) return 0;
-		if (this.#hasLiveReflowingMarkdown || this.#thinkingDots) return 0;
-		const first = this.#fastPathItems?.[0];
-		if (!first || this.#markerSlot.children.length > 0 || this.#contentContainer.children[0] !== first.md) return 0;
-		return first.md.getLastRenderSettledRows();
 	}
 
 	getTranscriptBlockVersion(): number {
@@ -788,12 +736,6 @@ export class AssistantMessageComponent extends Container {
 			this.#thinkingRateLive = false;
 		}
 
-		this.#hasLiveReflowingMarkdown = message.content.some(content => {
-			if (content.type === "text") return detectLiveReflowingMarkdown(content.text);
-			if (content.type !== "thinking" || this.hideThinkingBlock) return false;
-			const display = resolveThinkingDisplay(content, this.proseOnlyThinking);
-			return display.visible && detectLiveReflowingMarkdown(display.text);
-		});
 		// Fast path: reuse Markdown children when shape is stable during streaming
 		if (this.#tryFastPathUpdate(message, opts)) return;
 

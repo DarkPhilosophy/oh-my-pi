@@ -22,7 +22,7 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { AgentDefinition, SingleResult, TaskParams } from "@oh-my-pi/pi-coding-agent/task/types";
+import type { AgentDefinition, AgentProgress, SingleResult, TaskParams } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { isRecord } from "@oh-my-pi/pi-utils";
 
@@ -94,6 +94,24 @@ function makeResult(id: string, overrides: Partial<SingleResult> = {}): SingleRe
 		tokens: 0,
 		requests: 1,
 		...overrides,
+	};
+}
+
+function makeProgress(id: string): AgentProgress {
+	return {
+		index: 0,
+		id,
+		agent: "task",
+		agentSource: "bundled",
+		status: "running",
+		task: "task prompt",
+		recentTools: [],
+		recentOutput: [],
+		toolCount: 0,
+		requests: 1,
+		tokens: 0,
+		cost: 0,
+		durationMs: 5,
 	};
 }
 
@@ -612,6 +630,33 @@ describe("task.batch spawning", () => {
 			"# Goal\nShared synchronous context.",
 			"# Goal\nShared synchronous context.",
 		]);
+	});
+
+	it("coalesces a seven-agent progress burst into one UI update", async () => {
+		mockDiscovery();
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			for (let update = 0; update < 4; update++) options.onProgress?.(makeProgress(options.id ?? "?"));
+			return makeResult(options.id ?? "?");
+		});
+
+		const tool = await TaskTool.create(createSession({ settings: { "async.enabled": false, "task.batch": true } }));
+		let updateCount = 0;
+		await tool.execute(
+			"tc-sync-progress-burst",
+			{
+				context: "Shared synchronous context.",
+				tasks: Array.from({ length: 7 }, (_, index) => ({
+					name: `Agent${index + 1}`,
+					task: `Do task ${index + 1}.`,
+				})),
+			} as TaskParams,
+			undefined,
+			() => {
+				updateCount++;
+			},
+		);
+
+		expect(updateCount).toBe(1);
 	});
 
 	it("settles the batch async aggregate when a queued spawn is cancelled mid-flight", async () => {

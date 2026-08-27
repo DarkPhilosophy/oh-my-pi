@@ -53,6 +53,8 @@ import { renderResult, renderCall as renderTaskCall } from "./render";
 import { repairTaskParams } from "./repair-args";
 import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
 
+const BATCH_PROGRESS_COALESCE_MS = 150;
+
 function renderSubagentUserPrompt(assignment: string): string {
 	return prompt.render(subagentUserPromptTemplate, {
 		assignment: assignment.trim(),
@@ -1267,6 +1269,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 		const startTime = Date.now();
 		const latestProgress = new Map<number, AgentProgress>();
+		let combinedProgressTimer: NodeJS.Timeout | undefined;
+		let combinedProgressDirty = false;
 		const emitCombined = () => {
 			onUpdate?.({
 				content: [{ type: "text", text: `Running ${spawns.length} agents...` }],
@@ -1280,6 +1284,25 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				},
 			});
 		};
+		const flushCombinedProgress = () => {
+			if (!combinedProgressDirty) {
+				combinedProgressTimer = undefined;
+				return;
+			}
+			combinedProgressDirty = false;
+			emitCombined();
+			combinedProgressTimer = setTimeout(flushCombinedProgress, BATCH_PROGRESS_COALESCE_MS);
+			combinedProgressTimer.unref?.();
+		};
+		const scheduleCombinedProgress = () => {
+			if (combinedProgressTimer) {
+				combinedProgressDirty = true;
+				return;
+			}
+			emitCombined();
+			combinedProgressTimer = setTimeout(flushCombinedProgress, BATCH_PROGRESS_COALESCE_MS);
+			combinedProgressTimer.unref?.();
+		};
 
 		const payloads = await this.#runSyncSpawns({
 			toolCallId,
@@ -1290,9 +1313,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			onItemProgress: onUpdate
 				? (index, progress) => {
 						latestProgress.set(index, { ...progress, index });
-						emitCombined();
+						scheduleCombinedProgress();
 					}
 				: undefined,
+		}).finally(() => {
+			clearTimeout(combinedProgressTimer);
 		});
 
 		const merged = mergeSyncPayloads(spawns, payloads);

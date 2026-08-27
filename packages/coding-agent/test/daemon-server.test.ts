@@ -1472,6 +1472,8 @@ describe("daemon server and registry", () => {
 			control.socket.write(encodeDaemonFrame(hello("secret", "control-hello")));
 			expect((await control.reader.next()).tag).toBe("hello_ok");
 
+			const slowClosed = Promise.withResolvers<void>();
+			slow.socket.once("close", slowClosed.resolve);
 			slow.socket.removeAllListeners("data");
 			slow.socket.pause();
 			fake.runtimes.get("slow")?.emit({ type: "terminal_output", data: "x".repeat(16 * 1024 * 1024) });
@@ -1486,7 +1488,7 @@ describe("daemon server and registry", () => {
 			);
 			const ping = await control.reader.next();
 			expect(ping.tag).toBe("response");
-			for (let attempt = 0; attempt < 8 && server.status().connectionCount !== 1; attempt++) await Bun.sleep(0);
+			await slowClosed.promise;
 			expect(server.status().connectionCount).toBe(1);
 			await destroyAndWait(control.socket);
 		} finally {
