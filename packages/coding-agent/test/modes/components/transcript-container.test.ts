@@ -30,6 +30,29 @@ class Block implements Component {
 	}
 }
 
+class AllocationAwareBlock implements Component {
+	#allocation = Number.MAX_SAFE_INTEGER;
+	#finalized = false;
+
+	constructor(private readonly rows: readonly string[]) {}
+
+	finalize(): void {
+		this.#finalized = true;
+	}
+
+	isTranscriptBlockFinalized(): boolean {
+		return this.#finalized;
+	}
+
+	setTranscriptAllocation(rows: number): void {
+		this.#allocation = rows;
+	}
+
+	render(): readonly string[] {
+		return this.rows.slice(-this.#allocation);
+	}
+}
+
 const frame = { tick: 0, now: 0 };
 
 describe("TranscriptContainer", () => {
@@ -96,6 +119,18 @@ describe("TranscriptContainer", () => {
 		const batch = transcript.peekFinalizedBatch(80, 1);
 		expect(batch?.rows).toEqual(["old settled", ""]);
 		expect(transcript.renderViewport(80, 1, frame)).toEqual(["fresh live"]);
+	});
+
+	it("retires the complete finalized block after a constrained live render", () => {
+		const transcript = new TranscriptContainer();
+		const rows = Array.from({ length: 8 }, (_value, index) => `row-${index}`);
+		const block = new AllocationAwareBlock(rows);
+		transcript.addChild(block);
+
+		expect(transcript.renderViewport(80, 3, frame)).toEqual(["row-5", "row-6", "row-7"]);
+		block.finalize();
+
+		expect(transcript.peekFinalizedBatch(80, 0)?.rows).toEqual([...rows, ""]);
 	});
 
 	it("assigns one row per live block until pressure requires aggregation", () => {

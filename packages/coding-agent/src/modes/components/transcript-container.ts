@@ -535,7 +535,11 @@ export class TranscriptContainer
 	 * Offer the shortest finalized prefix required to fit the mutable tail.
 	 * The offer remains stable until the terminal acknowledges it.
 	 */
-	peekFinalizedBatch(width: number, capacity: number): HistoryBatch | undefined {
+	peekFinalizedBatch(
+		width: number,
+		capacity: number,
+		frame: AnimationFrame = { now: 0, tick: 0 },
+	): HistoryBatch | undefined {
 		if (this.#providerOffered !== undefined) return this.#providerOffered.batch;
 		const start = this.#providerFrontier;
 		if (start >= this.children.length) return undefined;
@@ -544,6 +548,7 @@ export class TranscriptContainer
 		let total = 0;
 		let visible = 0;
 		for (let index = start; index < this.children.length; index++) {
+			this.#setProviderAllocation(this.children[index]!, Number.MAX_SAFE_INTEGER, frame);
 			let block = stripPlainBlankEdges(this.children[index]!.render(width));
 			if (index === start && frontierRows > 0) block = block.slice(frontierRows);
 			rendered.push(block);

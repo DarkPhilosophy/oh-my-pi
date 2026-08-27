@@ -228,12 +228,12 @@ export class Composer implements TerminalFrameProvider {
 		// reflowing to the current width) while the screen has room. A batch
 		// leaves the mutable viewport in the same frame it is appended, so its
 		// rows are never painted twice.
-		const history = this.#offerHistory(transcript, width, rows, pre.rows.length + after.length);
+		const now = performance.now();
+		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
+		const history = this.#offerHistory(transcript, width, rows, pre.rows.length + after.length, frame);
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
 		const before = [...headerRows, ...pre.rows];
-		const now = performance.now();
-		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
 		const active = transcript.renderViewport(width, Number.MAX_SAFE_INTEGER, frame);
 		const composed = [...before, ...active, ...after];
 		const segments: TerminalFrameSegment[] = [];
@@ -312,6 +312,7 @@ export class Composer implements TerminalFrameProvider {
 		width: number,
 		rows: number,
 		chromeRows: number,
+		frame: AnimationFrame,
 	): HistoryBatch | undefined {
 		if (this.#offeredHistory !== undefined) {
 			return {
@@ -341,7 +342,7 @@ export class Composer implements TerminalFrameProvider {
 				segments: this.#offeredHistory.segments,
 			};
 		}
-		const batch = transcript.peekFinalizedBatch(width, Math.max(0, rows - chromeRows));
+		const batch = transcript.peekFinalizedBatch(width, Math.max(0, rows - chromeRows), frame);
 		if (batch === undefined) return undefined;
 		this.#offeredHistory = {
 			id: this.#nextHistoryId++,
