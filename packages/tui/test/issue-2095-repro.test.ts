@@ -36,6 +36,9 @@ class TallContent implements Component {
 		this.#lines = Array.from({ length: rowCount }, (_v, i) => `transcript row ${i.toString().padStart(5, "0")}`);
 	}
 
+	setTail(value: string): void {
+		this.#lines[this.#lines.length - 1] = value;
+	}
 	invalidate(): void {}
 
 	render(width: number): string[] {
@@ -64,11 +67,13 @@ function captureWrites(term: VirtualTerminal): string[] {
 describe("issue #2095: ConPTY post-full-paint settle prevents viewport drift", () => {
 	const originalWslDistro = Bun.env.WSL_DISTRO_NAME;
 	const originalWslInterop = Bun.env.WSL_INTEROP;
+	const originalHerdrEnv = Bun.env.HERDR_ENV;
 
 	beforeEach(() => {
 		// Default to a clean Linux: tests explicitly opt into win32 or WSL.
 		delete Bun.env.WSL_DISTRO_NAME;
 		delete Bun.env.WSL_INTEROP;
+		delete Bun.env.HERDR_ENV;
 	});
 
 	afterEach(() => {
@@ -77,6 +82,8 @@ describe("issue #2095: ConPTY post-full-paint settle prevents viewport drift", (
 		else Bun.env.WSL_DISTRO_NAME = originalWslDistro;
 		if (originalWslInterop === undefined) delete Bun.env.WSL_INTEROP;
 		else Bun.env.WSL_INTEROP = originalWslInterop;
+		if (originalHerdrEnv === undefined) delete Bun.env.HERDR_ENV;
+		else Bun.env.HERDR_ENV = originalHerdrEnv;
 		vi.restoreAllMocks();
 	});
 
@@ -117,6 +124,31 @@ describe("issue #2095: ConPTY post-full-paint settle prevents viewport drift", (
 			await Bun.sleep(180);
 			await settle(term);
 			expect(tui.fullRedraws).toBe(fullPaintsAfterStart);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("coalesces follow-up paints after a tall full paint in a direct Herdr pane", async () => {
+		setPlatform("linux");
+		Bun.env.HERDR_ENV = "1";
+		const term = new VirtualTerminal(142, 38, 4096);
+		const tui = new TUI(term);
+		tui.addChild(new TallContent(200));
+
+		try {
+			tui.start();
+			await settle(term);
+			tui.requestRender(true, { clearScrollback: true });
+			await settle(term);
+			const writes = captureWrites(term);
+			for (let i = 0; i < 8; i++) {
+				const tail = `live-tail-${i}`;
+				(tui.children[0] as TallContent).setTail(tail);
+				tui.requestRender();
+			}
+			await Bun.sleep(60);
+			expect(writes).toHaveLength(0);
 		} finally {
 			tui.stop();
 		}

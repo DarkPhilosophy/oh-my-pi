@@ -3442,7 +3442,7 @@ export class TUI extends Container {
 	 * end of the window. See #2095.
 	 */
 	#armPostFullPaintSettle(): void {
-		if (!isConPTYHosted()) return;
+		if (!isConPTYHosted() && Bun.env.HERDR_ENV !== "1") return;
 		const until = this.#renderScheduler.now() + TUI.#CONPTY_POST_FULL_PAINT_SETTLE_MS;
 		if (until <= this.#postFullPaintSettleUntilMs) return;
 		this.#postFullPaintSettleUntilMs = until;

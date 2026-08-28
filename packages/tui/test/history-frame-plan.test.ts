@@ -136,6 +136,19 @@ describe("terminal frame plans", () => {
 		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["history two", "editor", "status"]);
 		tui.stop();
 	});
+	it("appends a history batch taller than the viewport without replacing its rows with blanks", () => {
+		const terminal = new VirtualTerminal(40, 8, 1_000);
+		const rows = Array.from({ length: 55 }, (_, index) => (index % 8 === 0 ? "" : `read-row-${index}`));
+		const provider = new Provider({ viewport: rows });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		provider.plan = { history: { id: 1, rows }, viewport: ["editor"] };
+		tui.requestRender(true);
+
+		const buffer = plainBuffer(terminal);
+		for (const row of rows.filter(Boolean)) expect(buffer.filter(candidate => candidate === row)).toHaveLength(1);
+		tui.stop();
+	});
 	it("repaints a viewport-only frame in place without scrolling", () => {
 		const terminal = new VirtualTerminal(20, 4);
 		const provider = new Provider({ viewport: ["spinner one", "editor"] });
