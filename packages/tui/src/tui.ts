@@ -19,6 +19,7 @@ import * as fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import { $flag, getDebugLogPath, popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
+import { TuiDebugServer } from "./debug-server";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
 import { LoopWatchdog } from "./loop-watchdog";
@@ -213,6 +214,15 @@ const DEFAULT_RENDER_SCHEDULER: RenderScheduler = {
  * which leading rows survived.
  */
 export interface Component {
+	/** Stable identifier surfaced in the debug tree as kind#id. */
+	debugId?: string;
+	/** Override for the tree node kind (default: constructor.name). */
+	debugKind?: string;
+	/** Widget state for the debug `values`/`tree` ops. JSON-serializable. */
+	debugState?(): Record<string, unknown>;
+	/** Children for the debug tree when not already exposed as a public `children` array. */
+	debugChildren?: readonly Component[];
+
 	/**
 	 * Render the component to an array of physical rows at the given width.
 	 * The result is component-owned and `readonly` to the caller; an unchanged
@@ -1382,6 +1392,15 @@ export class TUI extends Container {
 	#previousWidth = 0;
 	#previousHeight = 0;
 	#focusedComponent: Component | null = null;
+	#debugServer: TuiDebugServer | undefined;
+	#debugPaint:
+		| {
+				lines: readonly string[];
+				windowTop: number;
+				altScreen: boolean;
+				cursor?: { x: number; y: number; visible?: boolean };
+		  }
+		| undefined;
 	#inputListeners = new Set<InputListener>();
 	#terminalFocusListeners = new Set<(focused: boolean) => void>();
 	#terminalFocused = true;
@@ -2331,6 +2350,27 @@ export class TUI extends Container {
 	getFocused(): Component | null {
 		return this.#focusedComponent;
 	}
+	/** Last viewport successfully written by the renderer, for debug inspection. */
+	getDebugPaint():
+		| {
+				lines: readonly string[];
+				windowTop: number;
+				altScreen: boolean;
+				cursor?: { x: number; y: number; visible?: boolean };
+		  }
+		| undefined {
+		return this.#debugPaint;
+	}
+
+	/** Render the current root document at the live terminal width for debug inspection. */
+	getDebugDocument(): readonly string[] {
+		return this.render(Math.max(1, this.terminal.columns));
+	}
+
+	/** Feed debug and test input through the same pipeline as terminal stdin. */
+	injectDebugInput(data: string): void {
+		this.#handleInput(data);
+	}
 
 	/**
 	 * Show an overlay component with configurable positioning and sizing.
@@ -2434,6 +2474,13 @@ export class TUI extends Container {
 	start(options?: TUIStartOptions): void {
 		this.#stopped = false;
 		this.#hasStarted = true;
+		this.#debugPaint = undefined;
+		this.#debugServer?.stop();
+		this.#debugServer = undefined;
+		const debugPath = process.env.OMP_TUI_DEBUG;
+		if (debugPath !== undefined && debugPath.length > 0) {
+			this.#debugServer = new TuiDebugServer(this, debugPath);
+		}
 		this.#inputDeferred = options?.deferInput === true;
 		this.#watchdog.start();
 		this.#ghosttyInitialImageDelayDone = false;
@@ -2549,6 +2596,7 @@ export class TUI extends Container {
 		this.requestRender(true, { clearScrollback: options?.clearScrollback === true });
 	}
 	/**
+
 	 * Take ownership of stdin after a `deferInput` start: raw mode, input
 	 * handlers, and the response-eliciting capability probes start() skipped.
 	 * Keystrokes typed in cooked mode meanwhile arrive through the normal input
@@ -2731,6 +2779,8 @@ export class TUI extends Container {
 	stop(): void {
 		// Leave the resize alt buffer first so the teardown cursor math below runs
 		// against the restored normal screen (which #previousLines still describes).
+		this.#debugServer?.stop();
+		this.#debugServer = undefined;
 		if (this.#resizeAltActive) {
 			this.terminal.write(this.#leaveResizeAltSequence());
 		}
@@ -5878,6 +5928,7 @@ export class TUI extends Container {
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);
 		this.#altPreviousLines = fitted;
+		this.#debugPaint = { lines: fitted, windowTop: 0, altScreen: true };
 		this.#fullRedrawCount += 1;
 	}
 

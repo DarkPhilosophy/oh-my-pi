@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [18.0.9] - 2026-08-28
+
+### Fixed
+
+- Fixed inconsistent model colors between the Model Preference chart and Model Statistics table.
+
+## [18.0.4] - 2026-08-24
+
+### Fixed
+
+- Fixed SuperGrok usage appearing as free by applying matching public xAI API pricing (including 200K-token rates), labeling costs as API-equivalent estimates, backfilling existing usage records, and displaying subscription-only models as N/A ([#9512](https://github.com/can1357/oh-my-pi/issues/9512)).
+
+## [18.0.1] - 2026-08-23
+
 ### Fixed
 
 - Fixed forked-session deduplication awarding a provider request to whichever copy the filesystem happened to list first; session folders and files are now synced in path order, so the original session keeps the request instead of a fork of it.

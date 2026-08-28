@@ -15,8 +15,7 @@ import type { StatusLineSettings } from "@oh-my-pi/pi-coding-agent/modes/compone
 import { StatusLineComponent } from "@oh-my-pi/pi-coding-agent/modes/components/status-line";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import type { GitRepository } from "@oh-my-pi/pi-coding-agent/utils/git";
-import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -62,14 +61,8 @@ function makeSession(cwd: string): AgentSession {
 	} as unknown as AgentSession;
 }
 
-function fakeRepo(root: string): GitRepository {
-	return {
-		commonDir: `${root}/.git`,
-		gitDir: `${root}/.git`,
-		gitEntryPath: `${root}/.git`,
-		headPath: `${root}/.git/HEAD`,
-		repoRoot: root,
-	};
+function fakeRepo(root: string): NonNullable<ReturnType<typeof vcs.repo>> {
+	return { kind: "git", root: () => root } as unknown as NonNullable<ReturnType<typeof vcs.repo>>;
 }
 
 const gitSegmentSettings: StatusLineSettings = {
@@ -84,29 +77,29 @@ const gitSegmentSettings: StatusLineSettings = {
 describe("StatusLineComponent git watcher rebind", () => {
 	it("closes the old repo watcher and watches the new repo on session switch", () => {
 		const watchers: Array<{ path: string; closeCalls: () => number }> = [];
-		vi.spyOn(git.head, "watch").mockImplementation(repository => {
+		vi.spyOn(vcs, "watch").mockImplementation(repository => {
 			let closed = 0;
 			watchers.push({
-				path: repository.headPath,
+				path: repository.root(),
 				closeCalls: () => closed,
 			});
 			return () => {
 				closed += 1;
 			};
 		});
-		vi.spyOn(git.repo, "resolveSync").mockImplementation(cwd => fakeRepo(cwd));
+		vi.spyOn(vcs, "repo").mockImplementation(cwd => fakeRepo(cwd));
 
 		const component = new StatusLineComponent(makeSession("/repo-a"));
 		component.updateSettings(gitSegmentSettings);
 		component.watchBranch(() => {});
 
 		expect(watchers).toHaveLength(1);
-		expect(watchers[0]?.path).toBe("/repo-a/.git/HEAD");
+		expect(watchers[0]?.path).toBe("/repo-a");
 
 		component.setSession(makeSession("/repo-b"));
 
 		expect(watchers).toHaveLength(2);
-		expect(watchers[1]?.path).toBe("/repo-b/.git/HEAD");
+		expect(watchers[1]?.path).toBe("/repo-b");
 		expect(watchers[0]?.closeCalls()).toBe(1);
 		expect(watchers[1]?.closeCalls()).toBe(0);
 
@@ -119,17 +112,17 @@ describe("StatusLineComponent git watcher rebind", () => {
 		// settings via updateSettings AFTER SessionManager.getCwd() already moved;
 		// updateSettings itself must rebuild the watcher against the new cwd.
 		const watchers: Array<{ path: string; closeCalls: () => number }> = [];
-		vi.spyOn(git.head, "watch").mockImplementation(repository => {
+		vi.spyOn(vcs, "watch").mockImplementation(repository => {
 			let closed = 0;
 			watchers.push({
-				path: repository.headPath,
+				path: repository.root(),
 				closeCalls: () => closed,
 			});
 			return () => {
 				closed += 1;
 			};
 		});
-		vi.spyOn(git.repo, "resolveSync").mockImplementation(cwd => fakeRepo(cwd));
+		vi.spyOn(vcs, "repo").mockImplementation(cwd => fakeRepo(cwd));
 
 		let cwd = "/repo-move-a";
 		const session = makeSession(cwd);
@@ -139,13 +132,13 @@ describe("StatusLineComponent git watcher rebind", () => {
 		component.watchBranch(() => {});
 
 		expect(watchers).toHaveLength(1);
-		expect(watchers[0]?.path).toBe("/repo-move-a/.git/HEAD");
+		expect(watchers[0]?.path).toBe("/repo-move-a");
 
 		cwd = "/repo-move-b";
 		component.updateSettings(gitSegmentSettings);
 
 		expect(watchers).toHaveLength(2);
-		expect(watchers[1]?.path).toBe("/repo-move-b/.git/HEAD");
+		expect(watchers[1]?.path).toBe("/repo-move-b");
 		expect(watchers[0]?.closeCalls()).toBe(1);
 
 		// Destination project without git-backed segments: the old watcher must
@@ -160,7 +153,7 @@ describe("StatusLineComponent git watcher rebind", () => {
 		// current cwd.
 		component.updateSettings(gitSegmentSettings);
 		expect(watchers).toHaveLength(3);
-		expect(watchers[2]?.path).toBe("/repo-move-c/.git/HEAD");
+		expect(watchers[2]?.path).toBe("/repo-move-c");
 
 		component.dispose();
 	});

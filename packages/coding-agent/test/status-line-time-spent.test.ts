@@ -67,6 +67,7 @@ function createCtx(activeMs: number): SegmentContext {
 		speculationBlinkOn: true,
 		subagentCount: 0,
 		activeMs,
+		turnElapsedMs: null,
 		activeRepo: null,
 		worktree: null,
 		git: { branch: null, status: null, pr: null },
