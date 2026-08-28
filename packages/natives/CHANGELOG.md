@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed local Linux native builds failing to link vendored static Opus when CMake installs libraries under `lib64`.
+
 ## [18.0.10] - 2026-08-28
 
 ### Added
