@@ -95,6 +95,7 @@ export type WorkerInbound =
 			dialogs?: "accept" | "dismiss";
 	  }
 	| { type: "abort-select"; id: string }
+	| { type: "release-runtime"; name: string }
 	| {
 			type: "run";
 			id: string;

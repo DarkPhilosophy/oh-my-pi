@@ -791,13 +791,19 @@ interface AriaSnapshotLine {
 
 export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 	const entries: AriaSnapshotLine[] = [];
-	for (const line of snapshot.split("\n")) {
-		const ref = /\[ref=(e\d+)\]/.exec(line)?.[1];
+	for (const rawLine of snapshot.split("\n")) {
+		const prefix = /^\s*-\s+/.exec(rawLine)?.[0];
+		if (!prefix) continue;
+		let content = rawLine.slice(prefix.length);
+		if (content.startsWith("'") && content.endsWith("'")) {
+			content = content.slice(1, -1).replaceAll("''", "'");
+		}
+		const ref = /\[ref=(e\d+)\]/.exec(content)?.[1];
 		if (!ref) continue;
-		const role = /^\s*-\s+([^\s["]+)/.exec(line)?.[1];
+		const role = /^([^\s["]+)/.exec(content)?.[1];
 		if (!role || role === "/url:") continue;
-		const quotedName = /^\s*-\s+[^\s["]+\s+"((?:[^"\\]|\\.)*)"/.exec(line)?.[1];
-		const states = [...line.matchAll(/\[([^\]]+)\]/g)]
+		const quotedName = /^[^\s["]+\s+"((?:[^"\\]|\\.)*)"/.exec(content)?.[1];
+		const states = [...content.matchAll(/\[([^\]]+)\]/g)]
 			.map(match => match[1]!)
 			.filter(state => !state.startsWith("ref=") && !state.startsWith("cursor=") && !state.startsWith("box="));
 		entries.push({
@@ -1180,6 +1186,9 @@ export class WorkerCore {
 			case "abort-select":
 				if (this.#activeSelection?.id === msg.id) this.#activeSelection.ac.abort(new ToolAbortError());
 				return;
+			case "release-runtime":
+				this.#runtimes.delete(msg.name);
+				return;
 			case "abort":
 				if (this.#active?.id === msg.id) {
 					const reason = msg.expectedCleanup
@@ -1270,14 +1279,13 @@ export class WorkerCore {
 			if (!this.#webDriverBiDi || !this.#browser) {
 				throw new ToolError("Tab selection is available only for Firefox WebDriver BiDi");
 			}
-			await untilAborted(ac.signal, () => this.#selectBiDiPage(msg.targetId, msg.targetMatcher, msg.dialogs));
+			await this.#selectBiDiPage(msg.targetId, msg.targetMatcher, msg.dialogs);
+			throwIfAborted(ac.signal);
 			if (msg.url) {
-				await untilAborted(ac.signal, () =>
-					this.#requirePage().goto(msg.url!, {
-						waitUntil: msg.waitUntil ?? "load",
-						timeout: msg.timeoutMs,
-					}),
-				);
+				await this.#requirePage().goto(msg.url, {
+					waitUntil: msg.waitUntil ?? "load",
+					timeout: msg.timeoutMs,
+				});
 			}
 			throwIfAborted(ac.signal);
 			this.#transport.send({ type: "selected", id: msg.id, info: await this.#currentReadyInfo() });

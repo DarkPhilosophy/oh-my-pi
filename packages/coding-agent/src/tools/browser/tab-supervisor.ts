@@ -574,7 +574,6 @@ async function reserveFirefoxWorker(worker: WorkerHandle, signal?: AbortSignal):
 		await untilAborted(signal, () => previous.catch(() => undefined));
 	} catch (error) {
 		released.resolve();
-		if (firefoxOperationChains.get(worker) === current) firefoxOperationChains.delete(worker);
 		throw error;
 	}
 	return () => {
@@ -730,6 +729,7 @@ export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Pr
 		if (aliases.length > 1) {
 			if (tab.pending.size > 0)
 				throw new ToolError("Cannot close a Firefox tab alias while the shared relay is busy");
+			tab.worker.send({ type: "release-runtime", name });
 			const survivor = aliases.find(([aliasName]) => aliasName !== name)?.[1];
 			tabs.delete(name);
 			tab.state = "dead";
