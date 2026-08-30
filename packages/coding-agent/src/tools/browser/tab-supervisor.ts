@@ -725,7 +725,9 @@ async function runInTabWithSnapshotUnlocked(
 					logger.warn("Failed to recycle browser tab worker; killing tab", {
 						error: recycleError instanceof Error ? recycleError.message : String(recycleError),
 					});
-					await forceKillTab(name, "Browser tab worker recovery failed; tab killed");
+					await forceKillTab(name, "Browser tab worker recovery failed; tab killed", {
+						sharedFirefoxWorker: tab.kindTag === "firefox-relay",
+					});
 				}
 			}
 			throw error;
@@ -1080,6 +1082,7 @@ export async function selectFirefoxWorkerTab(
 		if (msg.type === "selected" && msg.id === id) selected.resolve(msg.info);
 		else if (msg.type === "select-failed" && msg.id === id) selected.reject(errorFromPayload(msg.error));
 	});
+	const unlistenError = worker.onError(error => selected.reject(error));
 	let dispatched = false;
 	const abort = (): void => {
 		if (!dispatched) {
@@ -1104,11 +1107,16 @@ export async function selectFirefoxWorkerTab(
 			"Timed out selecting Firefox browser tab",
 			async () => {
 				abort();
-				await selected.promise.catch(() => undefined);
+				await raceWithTimeout(
+					selected.promise,
+					GRACE_MS,
+					"Timed out cancelling Firefox browser tab selection",
+				).catch(() => undefined);
 			},
 		);
 	} finally {
 		unlisten();
+		unlistenError();
 		signal?.removeEventListener("abort", abort);
 		releaseReservation();
 	}
