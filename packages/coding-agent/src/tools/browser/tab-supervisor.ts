@@ -688,13 +688,15 @@ async function runInTabWithSnapshotUnlocked(
 				promise,
 				opts.timeoutMs + GRACE_MS,
 				"Browser code execution hung past grace; tab killed",
-				async reason => await forceKillTab(name, reason),
+				async reason => await forceKillTab(name, reason, { sharedFirefoxWorker: tab.kindTag === "firefox-relay" }),
 			);
 		} catch (error) {
 			const runTimedOut =
 				error instanceof ToolError && error.message.startsWith("Browser code execution timed out after ");
 			if (runTimedOut && tab.kindTag === "firefox-relay") {
-				await forceKillTab(name, "Firefox browser operation timed out; shared relay worker killed");
+				await forceKillTab(name, "Firefox browser operation timed out; shared relay worker killed", {
+					sharedFirefoxWorker: true,
+				});
 			} else if (runTimedOut || error instanceof RecoverableWorkerError) {
 				try {
 					if (tab.worker.mode === "inline") {
@@ -854,7 +856,7 @@ export async function releaseAllTabs(opts: ReleaseTabOptions = {}): Promise<numb
 		const aliasCount = [...tabs.values()].filter(
 			candidate => candidate.backend === "worker" && candidate.worker === tab.worker,
 		).length;
-		await forceKillTab(tab.name, "All Firefox relay aliases closed");
+		await forceKillTab(tab.name, "All Firefox relay aliases closed", { sharedFirefoxWorker: true });
 		count += aliasCount;
 	}
 	for (const name of [...tabs.keys()]) {
@@ -1164,7 +1166,11 @@ function publishRecycledWorker(
 	worker.onMessage(msg => handleTabMessage(tab, msg));
 }
 
-export async function forceKillTab(name: string, reason: string): Promise<void> {
+export async function forceKillTab(
+	name: string,
+	reason: string,
+	options: { sharedFirefoxWorker?: boolean } = {},
+): Promise<void> {
 	const tab = tabs.get(name);
 	if (!tab) return;
 	killedTabs.set(name, reason);
@@ -1181,6 +1187,14 @@ export async function forceKillTab(name: string, reason: string): Promise<void> 
 		const aliases = [...tabs.entries()].filter(
 			([, candidate]) => candidate.backend === "worker" && candidate.worker === tab.worker,
 		);
+		if (!options.sharedFirefoxWorker && aliases.length > 1) {
+			tab.worker.send({ type: "release-runtime", name });
+			const survivor = aliases.find(([aliasName]) => aliasName !== name)?.[1];
+			tabs.delete(name);
+			if (survivor?.backend === "worker") firefoxSharedTabs.set(survivor);
+			await releaseBrowser(tab.browser, { kill: false });
+			return;
+		}
 		firefoxSharedTabs.delete(tab);
 		await tab.worker.terminate().catch(() => undefined);
 		for (const [aliasName, alias] of aliases) {

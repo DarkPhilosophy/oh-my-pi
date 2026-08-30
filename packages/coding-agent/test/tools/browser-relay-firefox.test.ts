@@ -256,6 +256,37 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(sent).toEqual(["select"]);
 	});
 
+	it("force-kills one Firefox alias without terminating its shared worker", async () => {
+		let terminations = 0;
+		const sent: string[] = [];
+		const worker = {
+			mode: "inline",
+			send: msg => sent.push(msg.type),
+			onMessage: () => () => undefined,
+			onError: () => () => undefined,
+			terminate: async () => {
+				terminations++;
+			},
+		} satisfies WorkerHandle;
+		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
+		endpoint.refCount = 2;
+		const first = createFirefoxTab("firefox-drop-first", endpoint, worker);
+		const second = createFirefoxTab("firefox-keep-second", endpoint, worker);
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(first.name, first);
+		tabs.set(second.name, second);
+
+		await forceKillTab(first.name, "first alias failed");
+
+		expect(terminations).toBe(0);
+		expect(sent).toContain("release-runtime");
+		expect(first.state).toBe("dead");
+		expect(second.state).toBe("alive");
+		expect(tabs.has(first.name)).toBe(false);
+		expect(tabs.get(second.name)?.worker).toBe(worker);
+		expect(endpoint.refCount).toBe(1);
+	});
+
 	it("invalidates every alias when the shared Firefox worker is killed", async () => {
 		let terminations = 0;
 		const worker = {
@@ -275,7 +306,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 		tabs.set(first.name, first);
 		tabs.set(second.name, second);
 
-		await forceKillTab(first.name, "shared Firefox worker failed");
+		await forceKillTab(first.name, "shared Firefox worker failed", { sharedFirefoxWorker: true });
 
 		expect(terminations).toBe(1);
 		expect(first.state).toBe("dead");

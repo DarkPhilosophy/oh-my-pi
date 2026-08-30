@@ -217,7 +217,7 @@ describe("browser init deadline carry-over", () => {
 	);
 });
 describe("visible OMP-owned browser tabs", () => {
-	it.skipIf(!CHROMIUM_AVAILABLE || process.env.CI === "true")(
+	it.skipIf(!CHROMIUM_AVAILABLE)(
 		"creates independent pages without pinning the resizable window viewport",
 		async () => {
 			let browser: BrowserHandle | undefined;
