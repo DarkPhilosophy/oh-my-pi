@@ -1109,7 +1109,14 @@ export async function selectFirefoxWorkerTab(
 			async () => {
 				abort();
 				try {
-					await raceWithTimeout(selected.promise, GRACE_MS, "Timed out cancelling Firefox browser tab selection");
+					await raceWithTimeout(
+						selected.promise.then(
+							() => undefined,
+							() => undefined,
+						),
+						GRACE_MS,
+						"Timed out cancelling Firefox browser tab selection",
+					);
 				} catch {
 					await invalidateFirefoxWorker(worker, "Firefox tab selection did not acknowledge cancellation");
 				}

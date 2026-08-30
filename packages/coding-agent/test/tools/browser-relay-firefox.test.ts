@@ -223,6 +223,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 	it("cancels an in-flight Firefox selection before publishing an alias", async () => {
 		const listeners = new Set<Parameters<WorkerHandle["onMessage"]>[0]>();
 		const sent: string[] = [];
+		let terminations = 0;
 		const worker = {
 			mode: "inline",
 			send: msg => {
@@ -246,21 +247,20 @@ describe("Firefox WebDriver BiDi relay", () => {
 				return () => listeners.delete(listener);
 			},
 			onError: () => () => undefined,
-			terminate: async () => undefined,
+			terminate: async () => {
+				terminations++;
+			},
 		} satisfies WorkerHandle;
-		const ac = new AbortController();
 		const selection = selectFirefoxWorkerTab(worker, {
 			name: "cancelled-alias",
 			targetMatcher: "cancelled",
-			timeoutMs: 1_000,
-			signal: ac.signal,
+			timeoutMs: 1,
 		});
 		await Bun.sleep(0);
 
-		ac.abort();
-
 		await expect(selection).rejects.toThrow();
 		expect(sent).toEqual(["select", "abort-select"]);
+		expect(terminations).toBe(0);
 	});
 
 	it("releases the selection lock when cancellation precedes dispatch", async () => {
