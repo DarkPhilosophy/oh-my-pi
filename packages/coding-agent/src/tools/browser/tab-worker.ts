@@ -886,19 +886,34 @@ async function collectBiDiObservationEntries(
 			const input = element as unknown as {
 				value?: unknown;
 				disabled?: boolean;
+				required?: boolean;
+				readOnly?: boolean;
 				checked?: boolean;
 				pressed?: boolean;
 				selected?: boolean;
 				expanded?: boolean;
 				ariaDescription?: string | null;
 				ariaKeyShortcuts?: string | null;
+				ownerDocument: {
+					getElementById(id: string): { textContent: string | null } | null;
+				};
 				getAttribute(name: string): string | null;
 			};
+			const nativeValue =
+				typeof input.value === "string" || typeof input.value === "number" ? input.value : undefined;
+			const describedBy = input.getAttribute("aria-describedby");
+			const description = describedBy
+				?.split(/\s+/)
+				.map(id => input.ownerDocument.getElementById(id)?.textContent?.trim())
+				.filter((text): text is string => Boolean(text))
+				.join(" ");
 			return {
-				value: typeof input.value === "string" || typeof input.value === "number" ? input.value : undefined,
-				description: input.ariaDescription ?? undefined,
+				value: nativeValue ?? input.getAttribute("aria-valuenow") ?? undefined,
+				description: description || input.ariaDescription || input.getAttribute("aria-description") || undefined,
 				keyshortcuts: input.ariaKeyShortcuts ?? undefined,
 				disabled: input.disabled === true,
+				required: input.required === true || input.getAttribute("aria-required") === "true",
+				readonly: input.readOnly === true || input.getAttribute("aria-readonly") === "true",
 				checked: input.checked,
 				pressed: input.pressed,
 				selected: input.selected,
@@ -913,6 +928,8 @@ async function collectBiDiObservationEntries(
 			description?: string;
 			keyshortcuts?: string;
 			disabled: boolean;
+			required: boolean;
+			readonly: boolean;
 			checked?: boolean;
 			pressed?: boolean;
 			selected?: boolean;
@@ -928,6 +945,8 @@ async function collectBiDiObservationEntries(
 		const selected = resolveAriaState(details.selected, details.ariaSelected);
 		const expanded = resolveAriaState(details.expanded, details.ariaExpanded);
 		if (details.disabled && !states.includes("disabled")) states.push("disabled");
+		if (details.required && !states.includes("required")) states.push("required");
+		if (details.readonly && !states.includes("readonly")) states.push("readonly");
 		if (checked !== undefined && !states.some(state => state.split("=", 1)[0] === "checked")) {
 			states.push(`checked=${String(checked)}`);
 		}

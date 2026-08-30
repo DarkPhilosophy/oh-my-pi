@@ -707,10 +707,11 @@ async function runInTabWithSnapshotUnlocked(
 		} catch (error) {
 			const runTimedOut =
 				error instanceof ToolError && error.message.startsWith("Browser code execution timed out after ");
-			if (runTimedOut && tab.kindTag === "firefox-relay") {
-				await forceKillTab(name, "Firefox browser operation timed out; shared relay worker killed", {
-					sharedFirefoxWorker: true,
-				});
+			if (tab.kindTag === "firefox-relay" && (runTimedOut || error instanceof ToolAbortError)) {
+				const reason = runTimedOut
+					? "Firefox browser operation timed out; shared relay worker killed"
+					: "Firefox browser operation aborted; shared relay worker killed";
+				await forceKillTab(name, reason, { sharedFirefoxWorker: true });
 			} else if (runTimedOut || error instanceof RecoverableWorkerError) {
 				try {
 					if (tab.worker.mode === "inline") {
