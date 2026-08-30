@@ -784,7 +784,7 @@ async function collectObservationEntries(
 }
 
 interface AriaSnapshotLine {
-	ref: string;
+	ref?: string;
 	role: string;
 	name?: string;
 	states: string[];
@@ -809,7 +809,6 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 		const quotedNameMatch = /^[^\s["]+\s+"((?:[^"\\]|\\.)*)"/.exec(content);
 		const metadata = content.slice(quotedNameMatch?.[0].length ?? role.length);
 		const ref = /\[ref=(e\d+)\]/.exec(metadata)?.[1];
-		if (!ref) continue;
 		const states = [...metadata.matchAll(/\[([^\]]+)\]/g)]
 			.map(match => match[1]!)
 			.filter(state => !state.startsWith("ref=") && !state.startsWith("cursor=") && !state.startsWith("box="));
@@ -868,6 +867,15 @@ async function collectBiDiObservationEntries(
 	const entries: ObservationEntry[] = [];
 	for (const node of parseAriaSnapshotLines(snapshot)) {
 		if (!options.includeAll && !isInteractiveAriaSnapshotNode(node.role, node.states)) continue;
+		if (!node.ref) {
+			entries.push({
+				id: core.nextElementId(),
+				role: node.role,
+				name: node.name,
+				states: normalizeAriaSnapshotStates(node.states),
+			});
+			continue;
+		}
 		const handle = await resolveAriaRefHandle(page, node.ref);
 		if (!handle) continue;
 		let inViewport = true;
@@ -888,6 +896,8 @@ async function collectBiDiObservationEntries(
 				disabled?: boolean;
 				required?: boolean;
 				readOnly?: boolean;
+				multiple?: boolean;
+				tagName?: string;
 				checked?: boolean;
 				pressed?: boolean;
 				selected?: boolean;
@@ -913,6 +923,10 @@ async function collectBiDiObservationEntries(
 				keyshortcuts: input.ariaKeyShortcuts ?? undefined,
 				disabled: input.disabled === true,
 				required: input.required === true || input.getAttribute("aria-required") === "true",
+				multiple: input.multiple === true,
+				tagName: input.tagName,
+				ariaMultiline: input.getAttribute("aria-multiline"),
+				ariaMultiselectable: input.getAttribute("aria-multiselectable"),
 				readonly: input.readOnly === true || input.getAttribute("aria-readonly") === "true",
 				checked: input.checked,
 				pressed: input.pressed,
@@ -929,6 +943,8 @@ async function collectBiDiObservationEntries(
 			keyshortcuts?: string;
 			disabled: boolean;
 			required: boolean;
+			multiple: boolean;
+			tagName?: string;
 			readonly: boolean;
 			checked?: boolean;
 			pressed?: boolean;
@@ -938,6 +954,8 @@ async function collectBiDiObservationEntries(
 			ariaPressed: string | null;
 			ariaSelected: string | null;
 			ariaExpanded: string | null;
+			ariaMultiline: string | null;
+			ariaMultiselectable: string | null;
 		};
 		const states = normalizeAriaSnapshotStates(node.states);
 		const checked = resolveAriaState(details.checked, details.ariaChecked);
@@ -949,6 +967,12 @@ async function collectBiDiObservationEntries(
 		if (details.readonly && !states.includes("readonly")) states.push("readonly");
 		if (checked !== undefined && !states.some(state => state.split("=", 1)[0] === "checked")) {
 			states.push(`checked=${String(checked)}`);
+		}
+		if ((details.tagName === "TEXTAREA" || details.ariaMultiline === "true") && !states.includes("multiline")) {
+			states.push("multiline");
+		}
+		if ((details.multiple || details.ariaMultiselectable === "true") && !states.includes("multiselectable")) {
+			states.push("multiselectable");
 		}
 		if (pressed !== undefined && !states.some(state => state.split("=", 1)[0] === "pressed")) {
 			states.push(`pressed=${String(pressed)}`);

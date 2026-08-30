@@ -76,6 +76,12 @@ describe("Firefox WebDriver BiDi relay", () => {
 		]);
 	});
 
+	it("retains inaccessible Firefox controls that have no actionable ref", () => {
+		expect(parseAriaSnapshotLines('- button "Unavailable" [disabled]')).toEqual([
+			{ ref: undefined, role: "button", name: "Unavailable", states: ["disabled"] },
+		]);
+	});
+
 	it("ignores structural ARIA metadata while retaining actionable serializer states", () => {
 		expect(isInteractiveAriaSnapshotNode("heading", ["level=2"])).toBe(false);
 		expect(isInteractiveAriaSnapshotNode("heading", ["invalid=false"])).toBe(false);
