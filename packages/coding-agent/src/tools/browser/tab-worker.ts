@@ -804,12 +804,13 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 		if (content.startsWith("'") && content.endsWith("'")) {
 			content = content.slice(1, -1).replaceAll("''", "'");
 		}
-		const role = /^([^\s["]+)/.exec(content)?.[1];
-		if (!role || role === "/url:") continue;
+		const roleMatch = /^([^\s[":]+):?/.exec(content);
+		const role = roleMatch?.[1];
+		if (!role || role === "/url") continue;
 		const quotedNameMatch = /^[^\s["]+\s+"((?:[^"\\]|\\.)*)"/.exec(content);
 		const slashNameMatch = quotedNameMatch ? null : /^[^\s["]+\s+(\/(?:[^/\\]|\\.)*\/)/.exec(content);
 		const nameMatch = quotedNameMatch ?? slashNameMatch;
-		const metadata = content.slice(nameMatch?.[0].length ?? role.length);
+		const metadata = content.slice(nameMatch?.[0].length ?? roleMatch![0].length);
 		const ref = /\[ref=(e\d+)\]/.exec(metadata)?.[1];
 		const states = [
 			...[...metadata.matchAll(/\[([^\]]+)\]/g)]
@@ -822,7 +823,8 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 		const name =
 			quotedNameMatch !== null
 				? decodeAriaSnapshotName(quotedNameMatch[1]!)
-				: slashNameMatch?.[1]?.replace(/\\\//g, "/");
+				: (slashNameMatch?.[1]?.replace(/\\\//g, "/") ??
+					(role === "text" ? content.slice(roleMatch![0].length).trim() || undefined : undefined));
 		entries.push({ ref, role, name, states });
 	}
 	return entries;
