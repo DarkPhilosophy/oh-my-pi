@@ -72,10 +72,11 @@ describe("Firefox WebDriver BiDi relay", () => {
 		]);
 	});
 
-	it("ignores structural ARIA metadata when identifying default observation targets", () => {
+	it("ignores structural ARIA metadata while retaining actionable serializer states", () => {
 		expect(isInteractiveAriaSnapshotNode("heading", ["level=2"])).toBe(false);
 		expect(isInteractiveAriaSnapshotNode("heading", ["invalid=false"])).toBe(false);
-		expect(isInteractiveAriaSnapshotNode("heading", ["focused"])).toBe(true);
+		expect(isInteractiveAriaSnapshotNode("treeitem", ["expanded"])).toBe(true);
+		expect(isInteractiveAriaSnapshotNode("generic", ["active"])).toBe(true);
 		expect(isInteractiveAriaSnapshotNode("checkbox", [])).toBe(true);
 	});
 

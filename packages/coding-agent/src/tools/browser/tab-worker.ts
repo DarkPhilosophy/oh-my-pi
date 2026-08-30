@@ -826,14 +826,17 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 export function isInteractiveAriaSnapshotNode(role: string, states: readonly string[]): boolean {
 	return (
 		INTERACTIVE_AX_ROLES.has(role) ||
-		states.some(
-			state =>
-				state === "focused" ||
-				state.startsWith("checked=") ||
-				state.startsWith("pressed=") ||
-				state.startsWith("selected=") ||
-				state.startsWith("expanded="),
-		)
+		states.some(state => {
+			const key = state.split("=", 1)[0];
+			return (
+				key === "checked" ||
+				key === "pressed" ||
+				key === "selected" ||
+				key === "expanded" ||
+				key === "focused" ||
+				key === "active"
+			);
+		})
 	);
 }
 
