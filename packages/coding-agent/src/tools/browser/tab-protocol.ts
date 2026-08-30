@@ -94,6 +94,7 @@ export type WorkerInbound =
 			timeoutMs: number;
 			dialogs?: "accept" | "dismiss";
 	  }
+	| { type: "abort-select"; id: string }
 	| {
 			type: "run";
 			id: string;
@@ -103,6 +104,7 @@ export type WorkerInbound =
 			session: SessionSnapshot;
 			targetId?: string;
 			targetMatcher?: string;
+			dialogs?: "accept" | "dismiss";
 	  }
 	| { type: "abort"; id: string; expectedCleanup?: boolean }
 	| { type: "tool-reply"; id: string; reply: ToolReply }

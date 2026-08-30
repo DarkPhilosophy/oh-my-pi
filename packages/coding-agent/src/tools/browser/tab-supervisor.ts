@@ -350,7 +350,9 @@ async function acquireTabImpl(
 			waitUntil: opts.waitUntil,
 			timeoutMs: opts.timeoutMs,
 			dialogs: opts.dialogs,
+			signal: opts.signal,
 		});
+		if (opts.signal?.aborted) throw new ToolAbortError();
 		holdBrowser(browser);
 		if (tempHold) await releaseBrowser(browser, { kill: false });
 		const tab: WorkerTabSession = {
@@ -634,6 +636,7 @@ async function runInTabWithSnapshot(
 			timeoutMs: opts.timeoutMs,
 			session: snapshot,
 			targetId: tab.kindTag === "firefox-relay" ? tab.targetId : undefined,
+			dialogs: tab.dialogPolicy,
 		});
 		try {
 			return await raceWithTimeout(
@@ -916,7 +919,13 @@ function handleTabMessage(tab: WorkerTabSession, msg: WorkerOutbound): void {
 		return;
 	}
 	if (msg.type === "ready") {
-		tab.info = msg.info;
+		const owner = [...tabs.values()].find(
+			candidate =>
+				candidate.backend === "worker" &&
+				candidate.worker === tab.worker &&
+				candidate.targetId === msg.info.targetId,
+		);
+		if (owner?.backend === "worker") owner.info = msg.info;
 		return;
 	}
 	if (msg.type === "tool-call") {
@@ -973,6 +982,7 @@ export async function selectFirefoxWorkerTab(
 		waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
 		timeoutMs: number;
 		dialogs?: DialogPolicy;
+		signal?: AbortSignal;
 	},
 ): Promise<ReadyInfo> {
 	const previous = firefoxSelectionChains.get(worker) ?? Promise.resolve();
@@ -980,6 +990,7 @@ export async function selectFirefoxWorkerTab(
 	const current = previous.catch(() => undefined).then(() => released.promise);
 	firefoxSelectionChains.set(worker, current);
 	await previous.catch(() => undefined);
+	const { signal, ...selectionOptions } = options;
 
 	const id = Snowflake.next();
 	const selected = Promise.withResolvers<ReadyInfo>();
@@ -987,11 +998,25 @@ export async function selectFirefoxWorkerTab(
 		if (msg.type === "selected" && msg.id === id) selected.resolve(msg.info);
 		else if (msg.type === "select-failed" && msg.id === id) selected.reject(errorFromPayload(msg.error));
 	});
+	let dispatched = false;
+	const abort = (): void => {
+		if (dispatched) {
+			try {
+				worker.send({ type: "abort-select", id });
+			} catch {}
+		}
+		selected.reject(signal?.reason ?? new ToolAbortError());
+	};
+	if (signal?.aborted) abort();
+	else signal?.addEventListener("abort", abort, { once: true });
 	try {
-		worker.send({ type: "select", id, ...options });
+		if (signal?.aborted) return await selected.promise;
+		dispatched = true;
+		worker.send({ type: "select", id, ...selectionOptions });
 		return await raceWithTimeout(selected.promise, options.timeoutMs, "Timed out selecting Firefox browser tab");
 	} finally {
 		unlisten();
+		signal?.removeEventListener("abort", abort);
 		released.resolve();
 		if (firefoxSelectionChains.get(worker) === current) firefoxSelectionChains.delete(worker);
 	}

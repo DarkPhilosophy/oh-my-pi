@@ -171,6 +171,70 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(second.targetId).toBe("second");
 	});
 
+	it("cancels an in-flight Firefox selection before publishing an alias", async () => {
+		const sent: string[] = [];
+		const worker = {
+			mode: "inline",
+			send: msg => {
+				sent.push(msg.type);
+			},
+			onMessage: () => () => undefined,
+			onError: () => () => undefined,
+			terminate: async () => undefined,
+		} satisfies WorkerHandle;
+		const ac = new AbortController();
+		const selection = selectFirefoxWorkerTab(worker, {
+			targetMatcher: "cancelled",
+			timeoutMs: 1_000,
+			signal: ac.signal,
+		});
+		await Bun.sleep(0);
+
+		ac.abort();
+
+		await expect(selection).rejects.toThrow();
+		expect(sent).toEqual(["select", "abort-select"]);
+	});
+
+	it("releases the selection lock when cancellation precedes dispatch", async () => {
+		const listeners = new Set<Parameters<WorkerHandle["onMessage"]>[0]>();
+		const sent: string[] = [];
+		const worker = {
+			mode: "inline",
+			send: msg => {
+				sent.push(msg.type);
+				if (msg.type !== "select") return;
+				for (const listener of listeners) {
+					listener({
+						type: "selected",
+						id: msg.id,
+						info: {
+							url: "https://second.example",
+							viewport: { width: 1280, height: 720 },
+							targetId: "second",
+						},
+					});
+				}
+			},
+			onMessage: listener => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			onError: () => () => undefined,
+			terminate: async () => undefined,
+		} satisfies WorkerHandle;
+		const ac = new AbortController();
+		ac.abort();
+
+		await expect(
+			selectFirefoxWorkerTab(worker, { targetMatcher: "cancelled", timeoutMs: 1_000, signal: ac.signal }),
+		).rejects.toThrow();
+		const second = await selectFirefoxWorkerTab(worker, { targetMatcher: "second", timeoutMs: 1_000 });
+
+		expect(second.targetId).toBe("second");
+		expect(sent).toEqual(["select"]);
+	});
+
 	it("invalidates every alias when the shared Firefox worker is killed", async () => {
 		let terminations = 0;
 		const worker = {

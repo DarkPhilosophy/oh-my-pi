@@ -1082,6 +1082,7 @@ export class WorkerCore {
 	#elementCache = new Map<number, ElementHandle>();
 	#elementCounter = 0;
 	#active: ActiveRun | null = null;
+	#activeSelection?: { id: string; ac: AbortController };
 	#runtime: JsRuntime | null = null;
 	#unsub: () => void;
 	#isolated: boolean;
@@ -1176,6 +1177,9 @@ export class WorkerCore {
 			case "select":
 				await this.#selectBiDiContext(msg);
 				return;
+			case "abort-select":
+				if (this.#activeSelection?.id === msg.id) this.#activeSelection.ac.abort(new ToolAbortError());
+				return;
 			case "abort":
 				if (this.#active?.id === msg.id) {
 					const reason = msg.expectedCleanup
@@ -1260,20 +1264,27 @@ export class WorkerCore {
 		}
 	}
 	async #selectBiDiContext(msg: Extract<WorkerInbound, { type: "select" }>): Promise<void> {
+		const ac = new AbortController();
+		this.#activeSelection = { id: msg.id, ac };
 		try {
 			if (!this.#webDriverBiDi || !this.#browser) {
 				throw new ToolError("Tab selection is available only for Firefox WebDriver BiDi");
 			}
-			await this.#selectBiDiPage(msg.targetId, msg.targetMatcher, msg.dialogs);
+			await untilAborted(ac.signal, () => this.#selectBiDiPage(msg.targetId, msg.targetMatcher, msg.dialogs));
 			if (msg.url) {
-				await this.#requirePage().goto(msg.url, {
-					waitUntil: msg.waitUntil ?? "load",
-					timeout: msg.timeoutMs,
-				});
+				await untilAborted(ac.signal, () =>
+					this.#requirePage().goto(msg.url!, {
+						waitUntil: msg.waitUntil ?? "load",
+						timeout: msg.timeoutMs,
+					}),
+				);
 			}
+			throwIfAborted(ac.signal);
 			this.#transport.send({ type: "selected", id: msg.id, info: await this.#currentReadyInfo() });
 		} catch (error) {
 			this.#transport.send({ type: "select-failed", id: msg.id, error: errorPayload(error) });
+		} finally {
+			if (this.#activeSelection?.id === msg.id) this.#activeSelection = undefined;
 		}
 	}
 
@@ -1285,12 +1296,17 @@ export class WorkerCore {
 			preferVisible: true,
 		});
 		if (this.#page !== page) {
+			if (this.#dialogHandler && this.#page && !this.#page.isClosed()) {
+				this.#page.off("dialog", this.#dialogHandler);
+			}
+			this.#dialogHandler = undefined;
+			this.#dialogPolicy = undefined;
 			this.#clearElementCache();
 			this.#page = page;
 			this.#targetId = await targetIdForPage(page, false);
 			this.#observeDialogs();
 		}
-		if (dialogs) this.#applyDialogPolicy(dialogs);
+		this.#applyDialogPolicy(dialogs);
 	}
 
 	async #findAttachedTarget(targetId: string): Promise<Target> {
@@ -1373,10 +1389,13 @@ export class WorkerCore {
 		};
 	}
 
-	#applyDialogPolicy(policy: DialogPolicy): void {
+	#applyDialogPolicy(policy?: DialogPolicy): void {
 		const page = this.#requirePage();
-		if (this.#dialogPolicy === policy && this.#dialogHandler) return;
+		if (this.#dialogPolicy === policy && (policy === undefined || this.#dialogHandler)) return;
 		if (this.#dialogHandler) page.off("dialog", this.#dialogHandler);
+		this.#dialogPolicy = undefined;
+		this.#dialogHandler = undefined;
+		if (!policy) return;
 		const handler = (dialog: Dialog): void => {
 			const action = policy === "accept" ? dialog.accept() : dialog.dismiss();
 			void action.then(
@@ -1442,7 +1461,7 @@ export class WorkerCore {
 		let runPage: RunPageScope | undefined;
 		try {
 			if (this.#webDriverBiDi && (msg.targetId || msg.targetMatcher)) {
-				await this.#selectBiDiPage(msg.targetId, msg.targetMatcher, this.#dialogPolicy);
+				await this.#selectBiDiPage(msg.targetId, msg.targetMatcher, msg.dialogs);
 			}
 			throwIfAborted(signal);
 			runPage = createRunPageScope(this.#requirePage());
