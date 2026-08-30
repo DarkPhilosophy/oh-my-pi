@@ -840,6 +840,14 @@ export function isInteractiveAriaSnapshotNode(role: string, states: readonly str
 	);
 }
 
+export function resolveAriaState(nativeValue: unknown, ariaValue: string | null): boolean | "mixed" | undefined {
+	if (typeof nativeValue === "boolean") return nativeValue;
+	if (ariaValue === "true") return true;
+	if (ariaValue === "false") return false;
+	if (ariaValue === "mixed") return "mixed";
+	return undefined;
+}
+
 async function collectBiDiObservationEntries(
 	core: WorkerCore,
 	page: Page,
@@ -872,15 +880,19 @@ async function collectBiDiObservationEntries(
 				selected?: boolean;
 				ariaDescription?: string | null;
 				ariaKeyShortcuts?: string | null;
+				getAttribute(name: string): string | null;
 			};
 			return {
 				value: typeof input.value === "string" || typeof input.value === "number" ? input.value : undefined,
 				description: input.ariaDescription ?? undefined,
 				keyshortcuts: input.ariaKeyShortcuts ?? undefined,
 				disabled: input.disabled === true,
-				checked: typeof input.checked === "boolean" ? input.checked : undefined,
-				pressed: typeof input.pressed === "boolean" ? input.pressed : undefined,
-				selected: typeof input.selected === "boolean" ? input.selected : undefined,
+				checked: input.checked,
+				pressed: input.pressed,
+				selected: input.selected,
+				ariaChecked: input.getAttribute("aria-checked"),
+				ariaPressed: input.getAttribute("aria-pressed"),
+				ariaSelected: input.getAttribute("aria-selected"),
 			};
 		})) as {
 			value?: string | number;
@@ -890,17 +902,23 @@ async function collectBiDiObservationEntries(
 			checked?: boolean;
 			pressed?: boolean;
 			selected?: boolean;
+			ariaChecked: string | null;
+			ariaPressed: string | null;
+			ariaSelected: string | null;
 		};
 		const states = [...node.states];
+		const checked = resolveAriaState(details.checked, details.ariaChecked);
+		const pressed = resolveAriaState(details.pressed, details.ariaPressed);
+		const selected = resolveAriaState(details.selected, details.ariaSelected);
 		if (details.disabled && !states.includes("disabled")) states.push("disabled");
-		if (details.checked !== undefined && !states.some(state => state.startsWith("checked="))) {
-			states.push(`checked=${String(details.checked)}`);
+		if (checked !== undefined && !states.some(state => state.split("=", 1)[0] === "checked")) {
+			states.push(`checked=${String(checked)}`);
 		}
-		if (details.pressed !== undefined && !states.some(state => state.startsWith("pressed="))) {
-			states.push(`pressed=${String(details.pressed)}`);
+		if (pressed !== undefined && !states.some(state => state.split("=", 1)[0] === "pressed")) {
+			states.push(`pressed=${String(pressed)}`);
 		}
-		if (details.selected !== undefined && !states.some(state => state.startsWith("selected="))) {
-			states.push(`selected=${String(details.selected)}`);
+		if (selected !== undefined && !states.some(state => state.split("=", 1)[0] === "selected")) {
+			states.push(`selected=${String(selected)}`);
 		}
 		const id = core.nextElementId();
 		core.cacheElement(id, handle);
@@ -1319,7 +1337,7 @@ export class WorkerCore {
 			if (!this.#webDriverBiDi || !this.#browser) {
 				throw new ToolError("Tab selection is available only for Firefox WebDriver BiDi");
 			}
-			await this.#selectBiDiPage(msg.targetId, msg.targetMatcher, msg.dialogs);
+			await this.#selectBiDiPage(msg.name, msg.targetId, msg.targetMatcher, msg.dialogs);
 			throwIfAborted(ac.signal);
 			if (msg.url) {
 				await this.#requirePage().goto(msg.url, {
@@ -1336,7 +1354,12 @@ export class WorkerCore {
 		}
 	}
 
-	async #selectBiDiPage(targetId?: string, targetMatcher?: string, dialogs?: DialogPolicy): Promise<void> {
+	async #selectBiDiPage(
+		cacheKey: string,
+		targetId?: string,
+		targetMatcher?: string,
+		dialogs?: DialogPolicy,
+	): Promise<void> {
 		const browser = this.#requireBrowser();
 		let page = targetId ? await findBiDiPageByTargetId(await browser.pages(), targetId) : undefined;
 		page ??= await pickElectronTarget(browser, {
@@ -1346,7 +1369,7 @@ export class WorkerCore {
 		if (this.#page !== page) {
 			this.#detachDialogListeners();
 			this.#dialogPolicy = undefined;
-			this.#clearElementCache();
+			this.#clearElementCache(cacheKey);
 			this.#page = page;
 			this.#targetId = await targetIdForPage(page, false);
 			this.#observeDialogs();
@@ -1522,7 +1545,7 @@ export class WorkerCore {
 		this.#activeElementCacheKey = msg.name;
 		try {
 			if (this.#webDriverBiDi && (msg.targetId || msg.targetMatcher)) {
-				await this.#selectBiDiPage(msg.targetId, msg.targetMatcher, msg.dialogs);
+				await this.#selectBiDiPage(msg.name, msg.targetId, msg.targetMatcher, msg.dialogs);
 			}
 			throwIfAborted(signal);
 			runPage = createRunPageScope(this.#requirePage());

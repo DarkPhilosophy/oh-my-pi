@@ -17,6 +17,7 @@ import {
 	findBiDiPageByTargetId,
 	isInteractiveAriaSnapshotNode,
 	parseAriaSnapshotLines,
+	resolveAriaState,
 } from "../../src/tools/browser/tab-worker";
 
 function createFirefoxHandle(webSocketUrl: string): FirefoxRelayBrowserHandle {
@@ -79,6 +80,13 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(isInteractiveAriaSnapshotNode("treeitem", ["expanded"])).toBe(true);
 		expect(isInteractiveAriaSnapshotNode("generic", ["active"])).toBe(true);
 		expect(isInteractiveAriaSnapshotNode("checkbox", [])).toBe(true);
+	});
+
+	it("reads false and mixed states from custom ARIA widgets", () => {
+		expect(resolveAriaState(undefined, "false")).toBe(false);
+		expect(resolveAriaState(undefined, "mixed")).toBe("mixed");
+		expect(resolveAriaState(true, "false")).toBe(true);
+		expect(resolveAriaState(undefined, null)).toBeUndefined();
 	});
 
 	it("delegates discovery to the sole BiDi worker without opening a registry session", async () => {
@@ -181,8 +189,8 @@ describe("Firefox WebDriver BiDi relay", () => {
 		};
 
 		const [first, second] = await Promise.all([
-			selectFirefoxWorkerTab(worker, { targetMatcher: "first", timeoutMs: 1_000 }),
-			selectFirefoxWorkerTab(worker, { targetMatcher: "second", timeoutMs: 1_000 }),
+			selectFirefoxWorkerTab(worker, { name: "first-alias", targetMatcher: "first", timeoutMs: 1_000 }),
+			selectFirefoxWorkerTab(worker, { name: "second-alias", targetMatcher: "second", timeoutMs: 1_000 }),
 		]);
 
 		expect(sends).toEqual(["first", "second"]);
@@ -221,6 +229,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 		} satisfies WorkerHandle;
 		const ac = new AbortController();
 		const selection = selectFirefoxWorkerTab(worker, {
+			name: "cancelled-alias",
 			targetMatcher: "cancelled",
 			timeoutMs: 1_000,
 			signal: ac.signal,
@@ -264,9 +273,18 @@ describe("Firefox WebDriver BiDi relay", () => {
 		ac.abort();
 
 		await expect(
-			selectFirefoxWorkerTab(worker, { targetMatcher: "cancelled", timeoutMs: 1_000, signal: ac.signal }),
+			selectFirefoxWorkerTab(worker, {
+				name: "cancelled-alias",
+				targetMatcher: "cancelled",
+				timeoutMs: 1_000,
+				signal: ac.signal,
+			}),
 		).rejects.toThrow();
-		const second = await selectFirefoxWorkerTab(worker, { targetMatcher: "second", timeoutMs: 1_000 });
+		const second = await selectFirefoxWorkerTab(worker, {
+			name: "second-alias",
+			targetMatcher: "second",
+			timeoutMs: 1_000,
+		});
 
 		expect(second.targetId).toBe("second");
 		expect(sent).toEqual(["select"]);

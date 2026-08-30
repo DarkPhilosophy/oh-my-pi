@@ -364,6 +364,7 @@ async function acquireTabImpl(
 				throw new ToolError("Firefox Browser Relay is busy with another tab operation");
 			}
 			const info = await selectFirefoxWorkerTab(firefoxSharedTab.worker, {
+				name,
 				targetMatcher: opts.target,
 				url: opts.url,
 				waitUntil: opts.waitUntil,
@@ -1045,6 +1046,7 @@ async function dispatchToolCall(
 export async function selectFirefoxWorkerTab(
 	worker: WorkerHandle,
 	options: {
+		name: string;
 		targetId?: string;
 		targetMatcher?: string;
 		url?: string;

@@ -87,6 +87,7 @@ export type WorkerInbound =
 	| {
 			type: "select";
 			id: string;
+			name: string;
 			targetId?: string;
 			targetMatcher?: string;
 			url?: string;
