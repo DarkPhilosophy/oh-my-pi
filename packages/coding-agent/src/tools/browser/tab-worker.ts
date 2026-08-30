@@ -807,17 +807,23 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 		const role = /^([^\s["]+)/.exec(content)?.[1];
 		if (!role || role === "/url:") continue;
 		const quotedNameMatch = /^[^\s["]+\s+"((?:[^"\\]|\\.)*)"/.exec(content);
-		const metadata = content.slice(quotedNameMatch?.[0].length ?? role.length);
+		const slashNameMatch = quotedNameMatch ? null : /^[^\s["]+\s+(\/(?:[^/\\]|\\.)*\/)/.exec(content);
+		const nameMatch = quotedNameMatch ?? slashNameMatch;
+		const metadata = content.slice(nameMatch?.[0].length ?? role.length);
 		const ref = /\[ref=(e\d+)\]/.exec(metadata)?.[1];
-		const states = [...metadata.matchAll(/\[([^\]]+)\]/g)]
-			.map(match => match[1]!)
-			.filter(state => !state.startsWith("ref=") && !state.startsWith("cursor=") && !state.startsWith("box="));
-		entries.push({
-			ref,
-			role,
-			name: quotedNameMatch === null ? undefined : decodeAriaSnapshotName(quotedNameMatch[1]!),
-			states,
-		});
+		const states = [
+			...[...metadata.matchAll(/\[([^\]]+)\]/g)]
+				.map(match => match[1]!)
+				.filter(state => !state.startsWith("ref=") && !state.startsWith("cursor=") && !state.startsWith("box=")),
+			...[...metadata.matchAll(/\b(level|checked|pressed|selected|expanded|disabled|focused|active)=(\S+)/g)].map(
+				match => `${match[1]}=${match[2]}`,
+			),
+		];
+		const name =
+			quotedNameMatch !== null
+				? decodeAriaSnapshotName(quotedNameMatch[1]!)
+				: slashNameMatch?.[1]?.replace(/\\\//g, "/");
+		entries.push({ ref, role, name, states });
 	}
 	return entries;
 }
@@ -868,6 +874,7 @@ async function collectBiDiObservationEntries(
 	for (const node of parseAriaSnapshotLines(snapshot)) {
 		if (!options.includeAll && !isInteractiveAriaSnapshotNode(node.role, node.states)) continue;
 		if (!node.ref) {
+			if (options.viewportOnly) continue;
 			entries.push({
 				role: node.role,
 				name: node.name,
@@ -935,6 +942,7 @@ async function collectBiDiObservationEntries(
 				ariaChecked: input.getAttribute("aria-checked"),
 				ariaPressed: input.getAttribute("aria-pressed"),
 				ariaSelected: input.getAttribute("aria-selected"),
+				ariaModal: input.getAttribute("aria-modal"),
 				ariaExpanded: input.getAttribute("aria-expanded"),
 			};
 		})) as {
@@ -954,6 +962,7 @@ async function collectBiDiObservationEntries(
 			ariaPressed: string | null;
 			ariaSelected: string | null;
 			ariaExpanded: string | null;
+			ariaModal: string | null;
 			ariaMultiline: string | null;
 			ariaMultiselectable: string | null;
 		};
@@ -965,6 +974,7 @@ async function collectBiDiObservationEntries(
 		if (details.disabled && !states.includes("disabled")) states.push("disabled");
 		if (details.required && !states.includes("required")) states.push("required");
 		if (details.readonly && !states.includes("readonly")) states.push("readonly");
+		if (details.ariaModal === "true" && !states.includes("modal")) states.push("modal");
 		if (checked !== undefined && !states.some(state => state.split("=", 1)[0] === "checked")) {
 			states.push(`checked=${String(checked)}`);
 		}

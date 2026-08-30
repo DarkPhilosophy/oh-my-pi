@@ -1217,6 +1217,13 @@ export function publishRecycledWorker(
 	worker: WorkerHandle,
 	info: ReadyInfo,
 ): void {
+	const reservationChain = firefoxOperationChains.get(oldWorker);
+	if (reservationChain) {
+		firefoxOperationChains.set(worker, reservationChain);
+		void reservationChain.finally(() => {
+			if (firefoxOperationChains.get(worker) === reservationChain) firefoxOperationChains.delete(worker);
+		});
+	}
 	for (const alias of tabs.values()) {
 		if (alias.backend !== "worker" || alias.worker !== oldWorker) continue;
 		alias.worker = worker;

@@ -63,6 +63,8 @@ describe("Firefox WebDriver BiDi relay", () => {
 					`  - 'button "Save: draft" [ref=e9]'`,
 					'- button "Escape\\x1bkey" [ref=e10]',
 					'- button "Open [ref=e999]" [ref=e11] [focused]',
+					"- button /search/ [ref=e12]",
+					'- checkbox "Keep me" [ref=e13] checked=false',
 					'    - /url: "/ignored"',
 				].join("\n"),
 			),
@@ -72,6 +74,8 @@ describe("Firefox WebDriver BiDi relay", () => {
 			{ ref: "e9", role: "button", name: "Save: draft", states: [] },
 			{ ref: "e10", role: "button", name: "Escape\u001bkey", states: [] },
 			{ ref: "e11", role: "button", name: "Open [ref=e999]", states: ["focused"] },
+			{ ref: "e12", role: "button", name: "/search/", states: [] },
+			{ ref: "e13", role: "checkbox", name: "Keep me", states: ["checked=false"] },
 		]);
 	});
 
