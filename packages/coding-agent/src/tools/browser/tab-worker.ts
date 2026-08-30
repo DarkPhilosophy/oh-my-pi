@@ -869,10 +869,10 @@ async function collectBiDiObservationEntries(
 		if (!options.includeAll && !isInteractiveAriaSnapshotNode(node.role, node.states)) continue;
 		if (!node.ref) {
 			entries.push({
-				id: core.nextElementId(),
 				role: node.role,
 				name: node.name,
 				states: normalizeAriaSnapshotStates(node.states),
+				actionable: false,
 			});
 			continue;
 		}

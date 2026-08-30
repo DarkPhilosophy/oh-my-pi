@@ -1108,11 +1108,11 @@ export async function selectFirefoxWorkerTab(
 			"Timed out selecting Firefox browser tab",
 			async () => {
 				abort();
-				await raceWithTimeout(
-					selected.promise,
-					GRACE_MS,
-					"Timed out cancelling Firefox browser tab selection",
-				).catch(() => undefined);
+				try {
+					await raceWithTimeout(selected.promise, GRACE_MS, "Timed out cancelling Firefox browser tab selection");
+				} catch {
+					await invalidateFirefoxWorker(worker, "Firefox tab selection did not acknowledge cancellation");
+				}
 			},
 		);
 	} finally {
@@ -1121,6 +1121,17 @@ export async function selectFirefoxWorkerTab(
 		signal?.removeEventListener("abort", abort);
 		releaseReservation();
 	}
+}
+
+async function invalidateFirefoxWorker(worker: WorkerHandle, reason: string): Promise<void> {
+	const alias = [...tabs.values()].find(
+		tab => tab.backend === "worker" && tab.kindTag === "firefox-relay" && tab.worker === worker,
+	);
+	if (alias) {
+		await forceKillTab(alias.name, reason, { sharedFirefoxWorker: true });
+		return;
+	}
+	await terminateWorker(worker);
 }
 
 function safeSend(tab: WorkerTabSession, msg: WorkerInbound): void {

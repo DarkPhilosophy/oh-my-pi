@@ -3,13 +3,14 @@ import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 export type Transferable = Bun.Transferable;
 
 export interface ObservationEntry {
-	id: number;
+	id?: number;
 	role: string;
 	name?: string;
 	value?: string | number;
 	description?: string;
 	keyshortcuts?: string;
 	states: string[];
+	actionable?: false;
 }
 
 export interface Observation {

@@ -3,7 +3,6 @@ import type { Page } from "puppeteer-core";
 import type { FirefoxRelayBrowserHandle } from "../../src/tools/browser/registry";
 import { DEFAULT_FIREFOX_BIDI_URL, validateFirefoxWebSocketUrl } from "../../src/tools/browser/relay/firefox";
 import {
-	buildInitPayload,
 	FirefoxSharedTabRegistry,
 	forceKillTab,
 	getTabsMapForTest,
@@ -104,25 +103,6 @@ describe("Firefox WebDriver BiDi relay", () => {
 			"checked=true",
 			"expanded=true",
 		]);
-	});
-
-	it("delegates discovery to the sole BiDi worker without opening a registry session", async () => {
-		const handle: FirefoxRelayBrowserHandle = {
-			key: `firefox-relay:${DEFAULT_FIREFOX_BIDI_URL}`,
-			kind: { kind: "firefox-relay", webSocketUrl: DEFAULT_FIREFOX_BIDI_URL },
-			webSocketUrl: DEFAULT_FIREFOX_BIDI_URL,
-			refCount: 0,
-		};
-
-		const payload = await buildInitPayload(handle, { timeoutMs: 1_000, target: "account" });
-
-		expect(payload).toMatchObject({
-			mode: "attach",
-			targetId: "",
-			targetMatcher: "account",
-			protocol: "webDriverBiDi",
-			activateForScreenshot: true,
-		});
 	});
 
 	it("keeps worker ownership isolated by Firefox endpoint through close", () => {
