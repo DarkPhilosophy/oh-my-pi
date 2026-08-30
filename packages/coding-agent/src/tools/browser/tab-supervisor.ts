@@ -194,6 +194,7 @@ const READY_BUDGET_FLOOR_MS = 500;
 // mapped to the kill reason. Lets the next `run` on that name explain WHY the tab
 // vanished instead of a bare "not alive". Cleared when the name is opened again.
 const killedTabs = new Map<string, string>();
+const firefoxAcquireChains = new Map<string, Promise<void>>();
 const firefoxOperationChains = new WeakMap<WorkerHandle, Promise<void>>();
 const firefoxSharedTabs = new FirefoxSharedTabRegistry();
 const DEFAULT_TAB_CLOSE_TIMEOUT_MS = 5_000;
@@ -237,8 +238,10 @@ export function acquireTab(name: string, browser: BrowserHandle, opts: AcquireTa
 	// promise settles; without an acquisition-owned hold, cleanup would then
 	// run through a disconnected handle and leave the worker's page behind.
 	holdBrowser(browser);
-	const prior = acquireChains.get(name) ?? Promise.resolve();
-	const acquisition = prior.then(() => acquireTabImpl(name, browser, opts));
+	const namePrior = acquireChains.get(name) ?? Promise.resolve();
+	const firefoxKey = "webSocketUrl" in browser ? browser.key : undefined;
+	const endpointPrior = firefoxKey ? (firefoxAcquireChains.get(firefoxKey) ?? Promise.resolve()) : Promise.resolve();
+	const acquisition = Promise.all([namePrior, endpointPrior]).then(() => acquireTabImpl(name, browser, opts));
 	const result = acquisition.then(
 		async value => {
 			await releaseBrowser(browser, { kill: false });
@@ -254,8 +257,10 @@ export function acquireTab(name: string, browser: BrowserHandle, opts: AcquireTa
 		() => undefined,
 	);
 	acquireChains.set(name, tail);
+	if (firefoxKey) firefoxAcquireChains.set(firefoxKey, tail);
 	void tail.then(() => {
 		if (acquireChains.get(name) === tail) acquireChains.delete(name);
+		if (firefoxKey && firefoxAcquireChains.get(firefoxKey) === tail) firefoxAcquireChains.delete(firefoxKey);
 	});
 	return result;
 }
@@ -841,9 +846,18 @@ export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Pr
 }
 
 export async function releaseAllTabs(opts: ReleaseTabOptions = {}): Promise<number> {
-	const names = [...tabs.keys()];
 	let count = 0;
-	for (const name of names) {
+	const sharedFirefoxWorkers = new Set<WorkerHandle>();
+	for (const tab of tabs.values()) {
+		if (tab.backend !== "worker" || tab.kindTag !== "firefox-relay" || sharedFirefoxWorkers.has(tab.worker)) continue;
+		sharedFirefoxWorkers.add(tab.worker);
+		const aliasCount = [...tabs.values()].filter(
+			candidate => candidate.backend === "worker" && candidate.worker === tab.worker,
+		).length;
+		await forceKillTab(tab.name, "All Firefox relay aliases closed");
+		count += aliasCount;
+	}
+	for (const name of [...tabs.keys()]) {
 		if (await releaseTab(name, opts)) count++;
 	}
 	return count;
