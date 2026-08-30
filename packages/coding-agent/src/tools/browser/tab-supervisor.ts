@@ -1217,6 +1217,7 @@ export async function forceKillTab(
 			return;
 		}
 		firefoxSharedTabs.delete(tab);
+		if (tab.worker.mode === "inline") tab.worker.send({ type: "close" });
 		await tab.worker.terminate().catch(() => undefined);
 		for (const [aliasName, alias] of aliases) {
 			killedTabs.set(aliasName, reason);

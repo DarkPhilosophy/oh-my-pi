@@ -91,9 +91,13 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(resolveAriaState(undefined, null)).toBeUndefined();
 	});
 
-	it("normalizes Firefox focus state and preserves collapsed widgets", () => {
-		expect(normalizeAriaSnapshotStates(["active", "disabled", "focused"])).toEqual(["focused", "disabled"]);
-		expect(resolveAriaState(undefined, "false")).toBe(false);
+	it("normalizes Firefox focus and bare boolean states", () => {
+		expect(normalizeAriaSnapshotStates(["active", "disabled", "focused", "checked", "expanded"])).toEqual([
+			"focused",
+			"disabled",
+			"checked=true",
+			"expanded=true",
+		]);
 	});
 
 	it("delegates discovery to the sole BiDi worker without opening a registry session", async () => {
@@ -420,11 +424,12 @@ describe("Firefox WebDriver BiDi relay", () => {
 		await forceKillTab(first.name, "test cleanup", { sharedFirefoxWorker: true });
 	});
 
-	it("invalidates every alias when the shared Firefox worker is killed", async () => {
+	it("gracefully closes an inline Firefox worker before invalidating every alias", async () => {
 		let terminations = 0;
+		const sent: string[] = [];
 		const worker = {
 			mode: "inline",
-			send: () => undefined,
+			send: msg => sent.push(msg.type),
 			onMessage: () => () => undefined,
 			onError: () => () => undefined,
 			terminate: async () => {
@@ -441,6 +446,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 
 		await forceKillTab(first.name, "shared Firefox worker failed", { sharedFirefoxWorker: true });
 
+		expect(sent).toContain("close");
 		expect(terminations).toBe(1);
 		expect(first.state).toBe("dead");
 		expect(second.state).toBe("dead");

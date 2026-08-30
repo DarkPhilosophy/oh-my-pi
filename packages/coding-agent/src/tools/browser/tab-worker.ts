@@ -849,7 +849,13 @@ export function resolveAriaState(nativeValue: unknown, ariaValue: string | null)
 }
 
 export function normalizeAriaSnapshotStates(states: readonly string[]): string[] {
-	const normalized = states.map(state => (state === "active" ? "focused" : state));
+	const normalized = states.map(state => {
+		if (state === "active") return "focused";
+		if (state === "checked" || state === "pressed" || state === "selected" || state === "expanded") {
+			return `${state}=true`;
+		}
+		return state;
+	});
 	return [...new Set(normalized)];
 }
 
