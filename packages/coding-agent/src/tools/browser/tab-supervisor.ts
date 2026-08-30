@@ -4,6 +4,7 @@ import {
 	logger,
 	postmortem,
 	Snowflake,
+	untilAborted,
 	withTimeout,
 	workerHostEntry,
 } from "@oh-my-pi/pi-utils";
@@ -193,7 +194,7 @@ const READY_BUDGET_FLOOR_MS = 500;
 // mapped to the kill reason. Lets the next `run` on that name explain WHY the tab
 // vanished instead of a bare "not alive". Cleared when the name is opened again.
 const killedTabs = new Map<string, string>();
-const firefoxSelectionChains = new WeakMap<WorkerHandle, Promise<void>>();
+const firefoxOperationChains = new WeakMap<WorkerHandle, Promise<void>>();
 const firefoxSharedTabs = new FirefoxSharedTabRegistry();
 const DEFAULT_TAB_CLOSE_TIMEOUT_MS = 5_000;
 class RecoverableWorkerError extends ToolError {}
@@ -564,7 +565,42 @@ export async function runInTab(name: string, opts: RunInTabOptions): Promise<Run
 	);
 }
 
+async function reserveFirefoxWorker(worker: WorkerHandle, signal?: AbortSignal): Promise<() => void> {
+	const previous = firefoxOperationChains.get(worker) ?? Promise.resolve();
+	const released = Promise.withResolvers<void>();
+	const current = previous.catch(() => undefined).then(() => released.promise);
+	firefoxOperationChains.set(worker, current);
+	try {
+		await untilAborted(signal, () => previous.catch(() => undefined));
+	} catch (error) {
+		released.resolve();
+		if (firefoxOperationChains.get(worker) === current) firefoxOperationChains.delete(worker);
+		throw error;
+	}
+	return () => {
+		released.resolve();
+		if (firefoxOperationChains.get(worker) === current) firefoxOperationChains.delete(worker);
+	};
+}
+
 async function runInTabWithSnapshot(
+	name: string,
+	opts: { code: string; timeoutMs: number; signal?: AbortSignal; session?: ToolSession },
+	snapshot: SessionSnapshot,
+): Promise<RunResultOk> {
+	const initial = tabs.get(name);
+	const releaseReservation =
+		initial?.backend === "worker" && initial.kindTag === "firefox-relay"
+			? await reserveFirefoxWorker(initial.worker, opts.signal)
+			: undefined;
+	try {
+		return await runInTabWithSnapshotUnlocked(name, opts, snapshot);
+	} finally {
+		releaseReservation?.();
+	}
+}
+
+async function runInTabWithSnapshotUnlocked(
 	name: string,
 	opts: { code: string; timeoutMs: number; signal?: AbortSignal; session?: ToolSession },
 	snapshot: SessionSnapshot,
@@ -990,11 +1026,7 @@ export async function selectFirefoxWorkerTab(
 		signal?: AbortSignal;
 	},
 ): Promise<ReadyInfo> {
-	const previous = firefoxSelectionChains.get(worker) ?? Promise.resolve();
-	const released = Promise.withResolvers<void>();
-	const current = previous.catch(() => undefined).then(() => released.promise);
-	firefoxSelectionChains.set(worker, current);
-	await previous.catch(() => undefined);
+	const releaseReservation = await reserveFirefoxWorker(worker, options.signal);
 	const { signal, ...selectionOptions } = options;
 
 	const id = Snowflake.next();
@@ -1005,12 +1037,15 @@ export async function selectFirefoxWorkerTab(
 	});
 	let dispatched = false;
 	const abort = (): void => {
-		if (dispatched) {
-			try {
-				worker.send({ type: "abort-select", id });
-			} catch {}
+		if (!dispatched) {
+			selected.reject(signal?.reason ?? new ToolAbortError());
+			return;
 		}
-		selected.reject(signal?.reason ?? new ToolAbortError());
+		try {
+			worker.send({ type: "abort-select", id });
+		} catch (error) {
+			selected.reject(error);
+		}
 	};
 	if (signal?.aborted) abort();
 	else signal?.addEventListener("abort", abort, { once: true });
@@ -1018,12 +1053,19 @@ export async function selectFirefoxWorkerTab(
 		if (signal?.aborted) return await selected.promise;
 		dispatched = true;
 		worker.send({ type: "select", id, ...selectionOptions });
-		return await raceWithTimeout(selected.promise, options.timeoutMs, "Timed out selecting Firefox browser tab");
+		return await raceWithTimeout(
+			selected.promise,
+			options.timeoutMs,
+			"Timed out selecting Firefox browser tab",
+			async () => {
+				abort();
+				await selected.promise.catch(() => undefined);
+			},
+		);
 	} finally {
 		unlisten();
 		signal?.removeEventListener("abort", abort);
-		released.resolve();
-		if (firefoxSelectionChains.get(worker) === current) firefoxSelectionChains.delete(worker);
+		releaseReservation();
 	}
 }
 

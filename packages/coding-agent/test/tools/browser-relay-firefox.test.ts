@@ -172,13 +172,30 @@ describe("Firefox WebDriver BiDi relay", () => {
 	});
 
 	it("cancels an in-flight Firefox selection before publishing an alias", async () => {
+		const listeners = new Set<Parameters<WorkerHandle["onMessage"]>[0]>();
 		const sent: string[] = [];
 		const worker = {
 			mode: "inline",
 			send: msg => {
 				sent.push(msg.type);
+				if (msg.type !== "abort-select") return;
+				for (const listener of listeners) {
+					listener({
+						type: "select-failed",
+						id: msg.id,
+						error: {
+							name: "ToolAbortError",
+							message: "Selection aborted",
+							isAbort: true,
+							isToolError: true,
+						},
+					});
+				}
 			},
-			onMessage: () => () => undefined,
+			onMessage: listener => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
 			onError: () => () => undefined,
 			terminate: async () => undefined,
 		} satisfies WorkerHandle;
