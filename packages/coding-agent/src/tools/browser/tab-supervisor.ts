@@ -41,7 +41,7 @@ import type {
 // Coding-agent binary/bundle workers route through the CLI entrypoint with a
 // hidden argv mode, so compiled/npm builds only need one JavaScript entry.
 
-interface WorkerHandle {
+export interface WorkerHandle {
 	send(msg: WorkerInbound, transferList?: Transferable[]): void;
 	onMessage(handler: (msg: WorkerOutbound) => void): () => void;
 	onError(handler: (error: Error) => void): () => void;
@@ -101,6 +101,30 @@ export interface CmuxTabSession extends TabSessionBase<CmuxBrowserHandle> {
 }
 
 export type TabSession = WorkerTabSession | CmuxTabSession;
+
+export class FirefoxSharedTabRegistry {
+	#tabs = new Map<string, WorkerTabSession>();
+
+	get(browser: FirefoxRelayBrowserHandle): WorkerTabSession | undefined {
+		const tab = this.#tabs.get(browser.key);
+		return tab?.state === "alive" ? tab : undefined;
+	}
+
+	set(tab: WorkerTabSession): void {
+		if (tab.kindTag !== "firefox-relay") return;
+		this.#tabs.set(tab.browser.key, tab);
+	}
+
+	replaceWorker(tab: WorkerTabSession, oldWorker: WorkerHandle, worker: WorkerHandle): void {
+		const shared = this.#tabs.get(tab.browser.key);
+		if (shared?.worker === oldWorker) shared.worker = worker;
+	}
+
+	delete(tab: WorkerTabSession): void {
+		const shared = this.#tabs.get(tab.browser.key);
+		if (shared?.worker === tab.worker) this.#tabs.delete(tab.browser.key);
+	}
+}
 
 export interface AcquireTabOptions {
 	url?: string;
@@ -173,7 +197,7 @@ const READY_BUDGET_FLOOR_MS = 500;
 // mapped to the kill reason. Lets the next `run` on that name explain WHY the tab
 // vanished instead of a bare "not alive". Cleared when the name is opened again.
 const killedTabs = new Map<string, string>();
-const firefoxSharedTabs = new Map<string, WorkerTabSession>();
+const firefoxSharedTabs = new FirefoxSharedTabRegistry();
 const DEFAULT_TAB_CLOSE_TIMEOUT_MS = 5_000;
 class RecoverableWorkerError extends ToolError {}
 const REPORTED_INIT_FAILURE = Symbol("reported-init-failure");
@@ -318,7 +342,7 @@ async function acquireTabImpl(
 			throw error;
 		}
 	}
-	const firefoxSharedTab = browser.kind.kind === "firefox-relay" ? firefoxSharedTabs.get(browser.key) : undefined;
+	const firefoxSharedTab = "webSocketUrl" in browser ? firefoxSharedTabs.get(browser) : undefined;
 	if (firefoxSharedTab?.state === "alive") {
 		if (firefoxSharedTab.pending.size > 0) {
 			throw new ToolError("Firefox Browser Relay is busy with another tab operation");
@@ -440,7 +464,7 @@ async function acquireTabImpl(
 	};
 	worker.onMessage(msg => handleTabMessage(tab, msg));
 	tabs.set(name, tab);
-	if (tab.kindTag === "firefox-relay") firefoxSharedTabs.set(browser.key, tab);
+	if (tab.kindTag === "firefox-relay") firefoxSharedTabs.set(tab);
 	return { tab, created: true };
 }
 
@@ -666,7 +690,7 @@ export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Pr
 			});
 			return true;
 		}
-		firefoxSharedTabs.delete(tab.browser.key);
+		firefoxSharedTabs.delete(tab);
 	}
 	const wasAlive = tab.state === "alive";
 	tab.state = "dead";
@@ -1036,8 +1060,7 @@ function publishRecycledWorker(
 		if (candidate === tab) candidate.info = info;
 		candidate.state = "alive";
 	}
-	const firefoxSharedTab = firefoxSharedTabs.get(tab.browser.key);
-	if (firefoxSharedTab?.worker === oldWorker) firefoxSharedTab.worker = worker;
+	firefoxSharedTabs.replaceWorker(tab, oldWorker, worker);
 	worker.onMessage(msg => handleTabMessage(tab, msg));
 }
 
@@ -1054,7 +1077,7 @@ async function forceKillTab(name: string, reason: string): Promise<void> {
 		tabs.delete(name);
 		return;
 	}
-	if (firefoxSharedTabs.get(tab.browser.key)?.worker === tab.worker) firefoxSharedTabs.delete(tab.browser.key);
+	firefoxSharedTabs.delete(tab);
 	await tab.worker.terminate().catch(() => undefined);
 	if (tab.kindTag === "headless") await closeOrphanTarget(tab);
 	await releaseBrowser(tab.browser, { kill: false });
