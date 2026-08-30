@@ -1167,15 +1167,19 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 	}
 }
 
-function publishRecycledWorker(
+export function publishRecycledWorker(
 	tab: WorkerTabSession,
-	_oldWorker: WorkerHandle,
+	oldWorker: WorkerHandle,
 	worker: WorkerHandle,
 	info: ReadyInfo,
 ): void {
-	tab.worker = worker;
+	for (const alias of tabs.values()) {
+		if (alias.backend !== "worker" || alias.worker !== oldWorker) continue;
+		alias.worker = worker;
+		alias.state = "alive";
+	}
 	tab.info = info;
-	tab.state = "alive";
+	firefoxSharedTabs.set(tab);
 	worker.onMessage(msg => handleTabMessage(tab, msg));
 }
 

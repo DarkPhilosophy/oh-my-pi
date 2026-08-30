@@ -7,6 +7,7 @@ import {
 	FirefoxSharedTabRegistry,
 	forceKillTab,
 	getTabsMapForTest,
+	publishRecycledWorker,
 	releaseTab,
 	selectFirefoxWorkerTab,
 	type WorkerHandle,
@@ -341,6 +342,33 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(tabs.get(busy.name)?.state).toBe("alive");
 		sharedPending.clear();
 		await forceKillTab(busy.name, "test cleanup", { sharedFirefoxWorker: true });
+	});
+
+	it("repoints every Firefox alias when its shared worker is recycled", async () => {
+		const oldWorker = {
+			mode: "worker",
+			send: () => undefined,
+			onMessage: () => () => undefined,
+			onError: () => () => undefined,
+			terminate: async () => undefined,
+		} satisfies WorkerHandle;
+		const replacement = {
+			...oldWorker,
+			onMessage: () => () => undefined,
+		} satisfies WorkerHandle;
+		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
+		endpoint.refCount = 2;
+		const first = createFirefoxTab("firefox-recycle-first", endpoint, oldWorker);
+		const second = createFirefoxTab("firefox-recycle-second", endpoint, oldWorker);
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(first.name, first);
+		tabs.set(second.name, second);
+
+		publishRecycledWorker(first, oldWorker, replacement, first.info);
+
+		expect(tabs.get(first.name)?.worker).toBe(replacement);
+		expect(tabs.get(second.name)?.worker).toBe(replacement);
+		await forceKillTab(first.name, "test cleanup", { sharedFirefoxWorker: true });
 	});
 
 	it("invalidates every alias when the shared Firefox worker is killed", async () => {
