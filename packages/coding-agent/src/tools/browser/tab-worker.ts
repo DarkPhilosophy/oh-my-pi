@@ -812,13 +812,14 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 		const nameMatch = quotedNameMatch ?? slashNameMatch;
 		const metadata = content.slice(nameMatch?.[0].length ?? roleMatch![0].length);
 		const ref = /\[ref=(e\d+)\]/.exec(metadata)?.[1];
+		const bareMetadata = metadata.replace(/\[[^\]]*\]/g, " ");
 		const states = [
 			...[...metadata.matchAll(/\[([^\]]+)\]/g)]
 				.map(match => match[1]!)
 				.filter(state => !state.startsWith("ref=") && !state.startsWith("cursor=") && !state.startsWith("box=")),
-			...[...metadata.matchAll(/\b(level|checked|pressed|selected|expanded|disabled|focused|active)=(\S+)/g)].map(
-				match => `${match[1]}=${match[2]}`,
-			),
+			...[
+				...bareMetadata.matchAll(/\b(level|checked|pressed|selected|expanded|disabled|focused|active)=(\S+)/g),
+			].map(match => `${match[1]}=${match[2]}`),
 		];
 		const name =
 			quotedNameMatch !== null
