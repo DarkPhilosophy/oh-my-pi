@@ -60,13 +60,6 @@ describe("ai& provider support", () => {
 		expect(provider?.name).toBe("ai&");
 	});
 
-	test("keeps the documented static seed usable without a key and honors a custom endpoint", () => {
-		const options = aiandModelManagerOptions({ baseUrl: "https://config.aiand.test/" });
-		expect(options.fetchDynamicModels).toBeUndefined();
-		expect(options.staticModels?.map(model => model.id)).toContain("moonshotai/kimi-k2.7-code");
-		expect(options.staticModels?.every(model => model.baseUrl === "https://config.aiand.test/v1")).toBe(true);
-	});
-
 	test("maps ai& /v1/models metadata: context, capabilities, efforts, and USD pricing", async () => {
 		delete Bun.env.AIAND_BASE_URL;
 		const fetchMock: FetchImpl = vi.fn(async () =>

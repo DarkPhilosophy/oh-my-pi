@@ -171,6 +171,8 @@ long as that extension registration is active. `pi.unregisterProvider(name)` (an
 extension source cleanup) removes only that runtime override, restoring the built-in
 or configured usage resolver.
 
+Extension-registered providers (`registerProvider`) can supply `fetchDynamicModels` for runtime model discovery; these fetches are hard-bounded to a 15-second timeout (`RUNTIME_DYNAMIC_MODEL_FETCH_TIMEOUT_MS` in `model-provider-discovery.ts`) so a hung endpoint cannot stall discovery.
+
 In interactive mode, `input` handlers run before the built-in first-message auto-title check. Extensions that call `await pi.setSessionName(...)` from `input` can set the persisted session name and prevent the default auto-generated title from running for that session.
 
 Also exposed:
@@ -191,6 +193,8 @@ Also exposed:
 - `triggerTurn: true` — starts a turn when idle (also honored with `deliverAs: "nextTurn"`: idle prompts immediately; while streaming the queued message schedules an internal continuation)
 
 `pi.sendUserMessage(content, { deliverAs })` always goes through prompt flow. Omit `deliverAs` to start a normal prompt when idle; while streaming, omitted `deliverAs` queues the message as a steer. Set `deliverAs: "followUp"` to wait until the current run finishes.
+
+Payloads passed to `pi.sendMessage` are normalized before delivery (`normalizeCustomMessagePayload` in `session/messages.ts`): non-object payloads are coerced to string content under the default custom type, missing `customType`/`attribution` fields are defaulted, and invalid content collapses to an empty string — malformed payloads no longer persist entries that crash later session resumes.
 
 ## 2) Handler context (`ExtensionContext`)
 
@@ -251,6 +255,7 @@ const contrasting = ctx.models
   .list()
   .find((m) => current && ctx.models.family(m) !== ctx.models.family(current));
 ```
+
 ## 3) Command context (`ExtensionCommandContext`)
 
 Command handlers additionally get:
@@ -292,7 +297,7 @@ Cancelable pre-events:
 - `after_provider_response`
 - `context`
 - `agent_start` / `agent_end` — agent loop lifecycle notification; `agent_end` remains notification-only
-- `session_stop` — main-session stop hook, awaited before settle; may continue with `{ continue: true, additionalContext }` or `{ decision: "block", reason }`; capped at 8 consecutive continuations and never fires for task/subagent sessions
+- `session_stop` — main-session stop hook, awaited before settle; may continue with `{ continue: true, additionalContext }` or `{ decision: "block", reason }`; capped at 8 consecutive continuations, never fires for task/subagent sessions, and defers until agent-owned background jobs are fully idle (`#hasPendingAsyncWake` in `session/agent-session.ts`)
 - `turn_start` / `turn_end`
 - `message_start` / `message_update` / `message_end` — lifecycle notifications; `message_end` receives a detached message snapshot, so use `tool_result` or `context` when an extension needs to change provider context
 
@@ -559,36 +564,20 @@ Supported:
 - notifications/status/editor text/terminal input/custom overlays
 - theme listing/loading by name (`setTheme` supports string names)
 - tools expanded toggle
-- `setWidget(key, content, options)` for persistent widgets:
-  - `content: string[]` renders one widget block from the provided lines
-  - `content: ExtensionWidgetBlock[]` renders independently placeable sub-blocks (`{ id?, lines, priority? }`)
-  - `content: ExtensionUiComponentFactory` is supported in interactive mode and receives the live TUI/theme
-  - `options.placement: "aboveEditor"` renders above the editor
-  - `options.placement: "belowEditor"` renders below the editor
-  - `options.placement: "rightEditor"` floats in visible right-side whitespace beside the conversation, never over text or the editor/status line
-  - `options.priority` orders `rightEditor` widgets when space is tight; lower numbers claim space first, otherwise shorter blocks are preferred
 
-Current no-op methods in this controller (still `() => {}`):
+Current no-op methods in this controller:
 
 - `setFooter`
 - `setHeader`
 
-`setEditorComponent` is wired to the live editor (`ctx.setEditorComponent(factory)`). Above/below widgets are capped to a short inline preview; `rightEditor` widgets keep their full block content so the compositor can decide which blocks fit and report layout feedback.
+`setEditorComponent` is wired to the live editor (`ctx.setEditorComponent(factory)`). `setWidget` renders real widget components above or below the editor via `setHookWidget(...)` (`placement: "aboveEditor" | "belowEditor"`; string-array content capped at 10 lines). `setEditorText` and `pasteToEditor` schedule a repaint after mutating the editor, so prompt changes don't leave stale content on screen.
 
 ### RPC mode (`rpc-mode.ts`)
 
 `ctx.ui` is backed by RPC `extension_ui_request` events:
 
 - dialog methods (`select`, `confirm`, `input`, `editor`) round-trip to client responses
-- fire-and-forget methods emit requests (`notify`, `setStatus`, `setWidget`, `setEditorText`; `setTitle` emits only when `PI_RPC_EMIT_TITLE=1`)
-- `setWidget` emits `method: "setWidget"` with:
-  - `widgetKey`
-  - `widgetLines?: string[]` for a single string-array widget
-  - `widgetBlocks?: { id?: string; lines: string[]; priority?: number }[]` for independently placeable right-side blocks
-  - `widgetPlacement?: "aboveEditor" | "belowEditor" | "rightEditor"`
-  - `widgetPriority?: number`
-- Component factories are interactive-only; RPC clients receive line/block data, not live TUI components.
-- RPC clients can send a `widget_layout` command back with `widgetKey`, `visible`, `availableWidth`, `visibleRows`, and optional `hiddenBlocks`; the Python client exposes this as `send_widget_layout(...)`. OMP forwards the frame to extension `on("widget_layout", ...)` handlers so widgets can stop polling, resize content, or skip hidden blocks.
+- fire-and-forget methods emit requests (`notify`, `setStatus`, `setWidget` for string arrays, `setEditorText`; `setTitle` emits only when `PI_RPC_EMIT_TITLE=1`)
 
 Unsupported/no-op in RPC implementation:
 

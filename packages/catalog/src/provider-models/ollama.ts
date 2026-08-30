@@ -1,6 +1,7 @@
 import { fetchWithRetry } from "@oh-my-pi/pi-utils";
+import { compareRevision, parseRevision } from "../compat/revision";
+import { classifyModel } from "../compat/taxonomy";
 import { Effort } from "../effort";
-import { isGlm52ReasoningEffortModelId } from "../identity/family";
 import type { ModelManagerOptions } from "../model-manager";
 import type { FetchImpl, ModelSpec, ThinkingConfig } from "../types";
 import { discoveryFetch } from "../utils";
@@ -8,7 +9,6 @@ import { createBundledReferenceMap, createReferenceResolver } from "./bundled-re
 
 export interface OllamaCloudModelManagerConfig {
 	apiKey?: string;
-	getApiKey?: () => Promise<string | undefined>;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 }
@@ -97,7 +97,19 @@ function getThinkingConfig(modelId: string, capabilities: string[] | undefined):
 	if (!capabilities?.includes("thinking")) {
 		return undefined;
 	}
-	if (isGlm52ReasoningEffortModelId(modelId)) {
+	const identity = classifyModel("ollama-cloud", modelId, { lenient: true });
+	const revision = identity.revision === undefined ? undefined : parseRevision(identity.revision);
+	const floor = parseRevision(identity.family === "flash" ? "5.3" : "5.2");
+	const isGlmEffortModel =
+		identity.class === "glm" &&
+		(identity.family === undefined ||
+			identity.family === "air" ||
+			identity.family === "turbo" ||
+			identity.family === "flash") &&
+		revision !== undefined &&
+		floor !== undefined &&
+		compareRevision(revision, floor) >= 0;
+	if (isGlmEffortModel) {
 		return OLLAMA_CLOUD_GLM_52_THINKING;
 	}
 	return { mode: "effort", efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High] };
@@ -125,7 +137,7 @@ async function fetchShowMetadata(
 export function ollamaCloudModelManagerOptions(
 	config?: OllamaCloudModelManagerConfig,
 ): ModelManagerOptions<"ollama-chat"> {
-	const configuredApiKey = config?.apiKey;
+	const apiKey = config?.apiKey;
 	const baseUrl = normalizeOllamaCloudBaseUrl(config?.baseUrl);
 	let providerReferences: Map<string, ModelSpec<"ollama-chat">> | undefined;
 	const getProviderReferences = () =>
@@ -134,9 +146,8 @@ export function ollamaCloudModelManagerOptions(
 	return {
 		providerId: "ollama-cloud",
 		fetchDynamicModels: async () => {
-			const apiKey = (config?.getApiKey ? await config.getApiKey() : undefined) ?? configuredApiKey;
 			if (!apiKey) {
-				return null;
+				return [];
 			}
 			const response = await fetchWithRetry(`${baseUrl}/api/tags`, {
 				method: "GET",

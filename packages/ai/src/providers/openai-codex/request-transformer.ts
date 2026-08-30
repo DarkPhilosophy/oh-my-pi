@@ -1,6 +1,5 @@
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { supportsAllTurnsReasoningContext, supportsCodexReasoningSummary } from "@oh-my-pi/pi-catalog/identity";
-import { getSupportedEfforts, requireSupportedEffort } from "@oh-my-pi/pi-catalog/model-thinking";
+import { requireSupportedEffort } from "@oh-my-pi/pi-catalog/model-thinking";
 import { $env } from "@oh-my-pi/pi-utils";
 import type { Model } from "../../types";
 import { mapOpenAIReasoningEffort } from "../openai-shared";
@@ -134,8 +133,11 @@ function concurrentSummariesEnabled(): boolean {
  * A mapped value outside the Codex wire vocabulary is a broken compat/model
  * effort map — fail loudly rather than silently sending a different tier.
  */
-function mapCodexCatalogEffort(model: Model<"openai-codex-responses">, effort: Effort): ReasoningConfig["effort"] {
-	const mapped = mapOpenAIReasoningEffort(model, model.compat, requireSupportedEffort(model, effort));
+function mapCodexWireEffort(
+	model: Model<"openai-codex-responses">,
+	effort: CodexCallerEffort,
+): ReasoningConfig["effort"] {
+	const mapped = mapOpenAIReasoningEffort(model, model.compat, requireSupportedEffort(model, EFFORT_BY_NAME[effort]));
 	switch (mapped) {
 		case "none":
 		case "minimal":
@@ -152,37 +154,13 @@ function mapCodexCatalogEffort(model: Model<"openai-codex-responses">, effort: E
 	}
 }
 
-/**
- * Wire effort for "reasoning off". `none` is NOT a universal Codex tier: models
- * whose ladder starts at `low` (e.g. `gpt-5.3-codex-spark`) reject
- * `reasoning.effort: "none"` with `Unsupported value: 'none' is not supported
- * with the '<model>' model`, killing the turn. Send `none` only when some
- * supported effort actually maps to it; otherwise clamp to the model's lowest
- * tier, matching the `lowest-effort` disable mode of the plain Responses path.
- */
-function resolveCodexOffEffort(model: Model<"openai-codex-responses">): ReasoningConfig["effort"] {
-	const supported = getSupportedEfforts(model);
-	if (supported.length === 0) return "none";
-	for (const effort of supported) {
-		if (mapCodexCatalogEffort(model, effort) === "none") return "none";
-	}
-	return mapCodexCatalogEffort(model, supported[0]!);
-}
-
-function mapCodexWireEffort(
-	model: Model<"openai-codex-responses">,
-	effort: CodexCallerEffort,
-): ReasoningConfig["effort"] {
-	return mapCodexCatalogEffort(model, EFFORT_BY_NAME[effort]);
-}
-
 function getReasoningConfig(
 	model: Model<"openai-codex-responses">,
 	effort: NonNullable<CodexRequestOptions["reasoningEffort"]>,
 	options: CodexRequestOptions,
 ): ReasoningConfig {
 	const config: ReasoningConfig = {
-		effort: effort === "none" ? resolveCodexOffEffort(model) : mapCodexWireEffort(model, effort),
+		effort: effort === "none" ? "none" : mapCodexWireEffort(model, effort),
 	};
 	// The backend only emits reasoning summaries when `reasoning.summary` is
 	// present: omitting it yields zero `response.reasoning_summary_text.*`
@@ -190,12 +168,11 @@ function getReasoningConfig(
 	// `undefined` means "default on" — matching `applyResponsesCompatPolicy`
 	// on the plain Responses path — and only an explicit `null` (the caller
 	// hiding thinking) opts out.
-	if (options.reasoningSummary !== null && supportsCodexReasoningSummary(model.id)) {
+	if (options.reasoningSummary !== null && model.compat.supportsReasoningSummary) {
 		config.summary = options.reasoningSummary ?? "auto";
 	}
 	return config;
 }
-
 function filterInput(input: InputItem[] | undefined): InputItem[] | undefined {
 	if (!Array.isArray(input)) return input;
 
@@ -479,7 +456,7 @@ export async function transformRequestBody(
 
 	if (options.reasoningOff || options.reasoningEffort !== undefined || responsesLite) {
 		const reasoningConfig: Partial<ReasoningConfig> = options.reasoningOff
-			? { effort: resolveCodexOffEffort(model) }
+			? { effort: "none" }
 			: options.reasoningEffort !== undefined
 				? getReasoningConfig(model, options.reasoningEffort, options)
 				: {};
@@ -492,7 +469,7 @@ export async function transformRequestBody(
 		if (responsesLite) {
 			body.reasoning.context = "all_turns";
 		} else if (options.reasoningContext !== undefined) {
-			if (options.reasoningContext === "all_turns" && !supportsAllTurnsReasoningContext(model.id)) {
+			if (options.reasoningContext === "all_turns" && !model.compat.supportsAllTurnsReasoningContext) {
 				delete body.reasoning.context;
 			} else {
 				body.reasoning.context = options.reasoningContext;

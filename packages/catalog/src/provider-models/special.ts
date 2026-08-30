@@ -4,6 +4,7 @@ import type { DevinModelDiscoveryOptions } from "../discovery/devin";
 import { buildGitLabDuoWorkflowFallbackModel, fetchGitLabDuoWorkflowModels } from "../discovery/gitlab-duo-workflow";
 import type { ModelManagerOptions } from "../model-manager";
 import type { FetchImpl, ModelSpec } from "../types";
+import { DEVIN_DEFAULT_BASE_URL } from "../wire/devin";
 import { resolveModelCacheProviderId } from "./cache-provider-id";
 
 // ---------------------------------------------------------------------------
@@ -91,22 +92,18 @@ function unionCodexModels(
 
 export interface CursorModelManagerConfig {
 	apiKey?: string;
-	getApiKey?: () => Promise<string | undefined>;
 	baseUrl?: string;
 	clientVersion?: string;
 }
 
 export function cursorModelManagerOptions(config: CursorModelManagerConfig = {}): ModelManagerOptions<"cursor-agent"> {
-	const { apiKey: configuredApiKey, getApiKey, baseUrl, clientVersion } = config;
-	const hasApiKey = Boolean(configuredApiKey || getApiKey);
+	const { apiKey, baseUrl, clientVersion } = config;
 	return {
 		providerId: "cursor",
 		cacheProviderId: resolveModelCacheProviderId("cursor"),
-		...(hasApiKey
+		...(apiKey
 			? {
 					fetchDynamicModels: async () => {
-						const apiKey = (getApiKey ? await getApiKey() : undefined) ?? configuredApiKey;
-						if (!apiKey) return null;
 						const { fetchCursorUsableModels } = await cursorDiscovery();
 						return fetchCursorUsableModels({ apiKey, baseUrl, clientVersion });
 					},
@@ -123,8 +120,6 @@ const cursorDiscovery = once(() => import("../discovery/cursor"));
 
 export interface GitLabDuoWorkflowModelManagerConfig {
 	apiKey?: string;
-	getApiKey?: () => Promise<string | undefined>;
-	cacheIdentity?: string;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 	namespaceId?: string;
@@ -135,14 +130,7 @@ export interface GitLabDuoWorkflowModelManagerConfig {
 export function gitLabDuoWorkflowModelManagerOptions(
 	config: GitLabDuoWorkflowModelManagerConfig = {},
 ): ModelManagerOptions<"gitlab-duo-agent"> {
-	const { apiKey: configuredApiKey, getApiKey, cacheIdentity } = config;
-	const hasApiKey = Boolean(configuredApiKey || getApiKey);
-	// Prefer the OAuth cache identity over a configured token: fetchDynamicModels
-	// resolves the bearer as `getApiKey() ?? configuredApiKey` (OAuth-first), so
-	// the cache key must be OAuth-first too — otherwise a mixed-auth setup (expired
-	// OAuth + env/config token) fetches as the OAuth account but caches under the
-	// token, serving another account's namespace on a later token-only refresh.
-	const cacheKeyIdentity = cacheIdentity ?? configuredApiKey;
+	const apiKey = config.apiKey;
 	return {
 		providerId: "gitlab-duo-agent",
 		// GitLab Duo discovery is credential- and namespace-specific
@@ -151,49 +139,42 @@ export function gitLabDuoWorkflowModelManagerOptions(
 		// account/namespace load the first one's authoritative model list at startup
 		// and skip refetching. Partition the cache by a non-reversible fingerprint of
 		// the exact inputs `fetchGitLabDuoWorkflowModels` resolves the namespace from
-		// (credential/cache identity + base URL + namespace/project config + the same
-		// env vars + the effective workspace cwd whose git remote drives
-		// auto-discovery). Built-in lazy-OAuth discovery passes the OAuth account's
-		// cacheIdentity, which takes precedence over a configured token so the cache
-		// key matches the OAuth bearer fetchDynamicModels prefers. Falls back to the
-		// bare provider id when no credential identity is present.
-		...(cacheKeyIdentity
-			? { cacheProviderId: gitLabDuoWorkflowModelCacheProviderId(cacheKeyIdentity, config) }
-			: undefined),
+		// (credential + base URL + namespace/project config + the same env vars + the
+		// effective workspace cwd whose git remote drives auto-discovery). Built-in
+		// discovery only passes apiKey/baseUrl/fetch, so the cwd/env terms — not the
+		// empty config fields — are what actually separate workspace A from B here.
+		// Falls back to the bare provider id when no credential is present.
+		...(apiKey ? { cacheProviderId: gitLabDuoWorkflowModelCacheProviderId(apiKey, config) } : undefined),
 		dynamicModelsAuthoritative: true,
 		staticModels: [
 			buildGitLabDuoWorkflowFallbackModel("claude_sonnet_4_6_vertex", "Claude Sonnet 4.6 - Vertex", config.baseUrl),
 		],
-		...(hasApiKey
+		...(apiKey
 			? {
-					fetchDynamicModels: async () => {
-						const apiKey = (getApiKey ? await getApiKey() : undefined) ?? configuredApiKey;
-						if (!apiKey) return null;
-						return fetchGitLabDuoWorkflowModels({
+					fetchDynamicModels: async () =>
+						fetchGitLabDuoWorkflowModels({
 							apiKey,
 							baseUrl: config.baseUrl,
 							fetch: config.fetch,
 							namespaceId: config.namespaceId,
 							projectId: config.projectId,
 							cwd: config.cwd,
-						});
-					},
+						}),
 				}
 			: undefined),
 	};
 }
 
-function gitLabDuoWorkflowModelCacheProviderId(identity: string, config: GitLabDuoWorkflowModelManagerConfig): string {
+function gitLabDuoWorkflowModelCacheProviderId(apiKey: string, config: GitLabDuoWorkflowModelManagerConfig): string {
 	// Mirror the exact inputs `discoverGitLabDuoWorkflowNamespace` keys off: explicit
 	// namespace/project config OR the same env vars, then the git remote at the
 	// effective cwd. Built-in discovery leaves the config fields empty, so the env +
-	// resolved cwd terms are what actually distinguish two workspaces sharing an
-	// OAuth identity or token.
+	// resolved cwd terms are what actually distinguish two workspaces sharing a token.
 	const namespaceId = config.namespaceId ?? Bun.env.GITLAB_DUO_NAMESPACE_ID ?? "";
 	const projectId = config.projectId ?? Bun.env.GITLAB_DUO_PROJECT_ID ?? Bun.env.GITLAB_DUO_PROJECT_PATH ?? "";
 	const cwd = config.cwd ?? process.cwd();
 	const scope = [config.baseUrl ?? "", namespaceId, projectId, cwd].join("\u0000");
-	return `gitlab-duo-agent:${Bun.hash(`${identity}\u0000${scope}`).toString(36)}`;
+	return `gitlab-duo-agent:${Bun.hash(`${apiKey}\u0000${scope}`).toString(36)}`;
 }
 
 // Devin (Codeium Cascade)
@@ -201,22 +182,69 @@ function gitLabDuoWorkflowModelCacheProviderId(identity: string, config: GitLabD
 
 export interface DevinModelManagerConfig {
 	apiKey?: string;
-	getApiKey?: () => Promise<string | undefined>;
 	baseUrl?: string;
 	fetch?: DevinModelDiscoveryOptions["fetch"];
 }
 
+/**
+ * Curated Devin seed — the entire bundled surface for the provider. The
+ * Cascade catalog is credential-scoped (gated per account/team), so catalog
+ * generation never fetches it: baking one account's roster into the shared
+ * bundle would misstate every other account's entitlements and leave zombie
+ * rows behind (see CREDENTIAL_SCOPED_PROVIDERS in generate-models.ts). Both
+ * SWE-1.6 lanes are verified live against `GetCliModelConfigs`; the
+ * descriptor's `defaultModel` (`swe-1-6`) must resolve synchronously at
+ * boot, before credential-scoped runtime discovery replaces the seed. Field
+ * shape mirrors `devinModelSpec` so seeded and discovered rows are
+ * indistinguishable downstream.
+ */
+export const DEVIN_STATIC_MODELS: readonly ModelSpec<"devin-agent">[] = [
+	{
+		id: "swe-1-6-fast",
+		name: "SWE-1.6 Fast",
+		api: "devin-agent",
+		provider: "devin",
+		baseUrl: DEVIN_DEFAULT_BASE_URL,
+		reasoning: true,
+		// SWE-1.6 lanes ignore inline images despite upstream `supports_images`
+		// (see DEVIN_IMAGE_BLIND_UIDS in ../discovery/devin.ts).
+		input: ["text"],
+		supportsTools: true,
+		cost: { input: 0.3, output: 1.5, cacheRead: 0.03, cacheWrite: 0 },
+		contextWindow: 200_000,
+		maxTokens: 128_000,
+		compat: { supportsParallelToolCalls: true },
+	},
+	{
+		id: "swe-1-6",
+		name: "SWE-1.6",
+		api: "devin-agent",
+		provider: "devin",
+		baseUrl: DEVIN_DEFAULT_BASE_URL,
+		reasoning: true,
+		input: ["text"],
+		supportsTools: true,
+		// Included in the Coding Plan: upstream reports no cost dimensions.
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 200_000,
+		maxTokens: 128_000,
+		compat: { supportsParallelToolCalls: true },
+	},
+];
+
 export function devinModelManagerOptions(config: DevinModelManagerConfig = {}): ModelManagerOptions<"devin-agent"> {
-	const { apiKey: configuredApiKey, getApiKey, baseUrl, fetch } = config;
-	const hasApiKey = Boolean(configuredApiKey || getApiKey);
+	const { apiKey, baseUrl, fetch } = config;
 	return {
 		providerId: "devin",
-		...(hasApiKey ? { dynamicModelsAuthoritative: true } : undefined),
-		...(hasApiKey
+		// A configured host serves its own Cascade deployment; keep the seed on it.
+		staticModels:
+			baseUrl === undefined || baseUrl === DEVIN_DEFAULT_BASE_URL
+				? DEVIN_STATIC_MODELS
+				: DEVIN_STATIC_MODELS.map(model => ({ ...model, baseUrl })),
+		...(apiKey ? { dynamicModelsAuthoritative: true } : undefined),
+		...(apiKey
 			? {
 					fetchDynamicModels: async () => {
-						const apiKey = (getApiKey ? await getApiKey() : undefined) ?? configuredApiKey;
-						if (!apiKey) return null;
 						const { fetchDevinModels } = await devinDiscovery();
 						return fetchDevinModels({ apiKey, baseUrl, fetch });
 					},

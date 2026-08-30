@@ -10,7 +10,6 @@ import {
 	PROVIDER_DESCRIPTORS,
 } from "@oh-my-pi/pi-catalog/provider-models/descriptors";
 import {
-	fetchWellKnownModels,
 	MODELS_DEV_PROVIDER_DESCRIPTORS,
 	siliconflowCnModelManagerOptions,
 	siliconflowModelManagerOptions,
@@ -226,55 +225,5 @@ describe("siliconflow built-in providers", () => {
 		expect(models?.map(model => model.id)).toEqual(["deepseek-ai/DeepSeek-V4-Pro"]);
 		// Canonical fallback still hydrates reasoning when stencil.so is unreachable.
 		expect(models?.[0]?.reasoning).toBe(true);
-	});
-
-	test("isolates caller transports so a timed catalog lookup cannot capture another provider", async () => {
-		const firstResponse = Promise.withResolvers<Response>();
-		let firstCalls = 0;
-		let secondCalls = 0;
-		const firstPayload = { first: { models: {} } };
-		const secondPayload = { second: { models: {} } };
-		const controller = new AbortController();
-
-		const first = fetchWellKnownModels(async (_input, init) => {
-			firstCalls++;
-			expect(init?.signal).toBeInstanceOf(AbortSignal);
-			expect(init?.signal).not.toBe(controller.signal);
-			return firstResponse.promise;
-		}, controller.signal);
-		const second = fetchWellKnownModels(async () => {
-			secondCalls++;
-			return new Response(JSON.stringify(secondPayload), {
-				status: 200,
-				headers: { "content-type": "application/json" },
-			});
-		});
-
-		expect(firstCalls).toBe(1);
-		expect(secondCalls).toBe(1);
-		firstResponse.resolve(
-			new Response(JSON.stringify(firstPayload), {
-				status: 200,
-				headers: { "content-type": "application/json" },
-			}),
-		);
-		expect(await first).toEqual(firstPayload);
-		expect(await second).toEqual(secondPayload);
-	});
-	test("does not reuse cached catalog payloads across caller transports", async () => {
-		const firstPayload = { first: { models: {} } };
-		await fetchWellKnownModels(
-			async () =>
-				new Response(JSON.stringify(firstPayload), {
-					status: 200,
-					headers: { "content-type": "application/json" },
-				}),
-		);
-
-		await expect(
-			fetchWellKnownModels(async () => {
-				throw new Error("second transport failed");
-			}),
-		).rejects.toThrow("second transport failed");
 	});
 });

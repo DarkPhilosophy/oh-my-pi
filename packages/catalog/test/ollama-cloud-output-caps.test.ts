@@ -9,6 +9,7 @@ const cloudModel: Model<"ollama-chat"> = {
 	api: "ollama-chat",
 	provider: "ollama-cloud",
 	baseUrl: "https://ollama.com",
+	identity: { class: "deepseek" },
 	reasoning: true,
 	input: ["text"],
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -136,15 +137,6 @@ test("ollama-cloud discovery always omits max output tokens", async () => {
 	expect(model?.omitMaxOutputTokens).toBe(true);
 });
 
-test("ollama-cloud discovery returns null when no API key resolves", async () => {
-	// null (not []) means "degrade to cache/static" rather than writing an empty
-	// authoritative snapshot that would drop previously cached dynamic models.
-	await expect(ollamaCloudModelManagerOptions({}).fetchDynamicModels?.()).resolves.toBeNull();
-	await expect(
-		ollamaCloudModelManagerOptions({ getApiKey: async () => undefined }).fetchDynamicModels?.(),
-	).resolves.toBeNull();
-});
-
 test("ollama-chat omits num_predict when model opts out of max output tokens", async () => {
 	let requestBody: Record<string, unknown> | undefined;
 	const fetchMock: FetchImpl = vi.fn(async (_input, init) => {
@@ -177,6 +169,7 @@ test("ollama-chat clamps num_predict at the Ollama Cloud 65536 output-token cap 
 		api: "ollama-chat",
 		provider: "ollama-cloud",
 		baseUrl: "https://ollama.com",
+		identity: { class: "deepseek" },
 		reasoning: true,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -214,6 +207,7 @@ test("ollama-chat does not clamp num_predict for self-hosted ollama (#3392)", as
 		api: "ollama-chat",
 		provider: "ollama",
 		baseUrl: "http://127.0.0.1:11434",
+		identity: { class: "deepseek" },
 		reasoning: false,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

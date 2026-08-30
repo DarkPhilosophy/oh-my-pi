@@ -4,8 +4,6 @@ import type { Api, FetchImpl } from "../types";
 /** Config passed to a provider's runtime model-manager factory. */
 export type ModelManagerConfig = {
 	apiKey?: string;
-	getApiKey?: () => Promise<string | undefined>;
-	cacheIdentity?: string;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 	/** The supplied fetch already applies provider-specific authentication. */

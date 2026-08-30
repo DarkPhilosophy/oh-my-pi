@@ -279,6 +279,10 @@ export interface InteractiveModeContext {
 	 * scrollback exactly once instead of repainting with every streaming frame.
 	 */
 	presentCommandOutput(content: Component | readonly Component[]): void;
+	/** Show session information in a focused transient overlay. */
+	showSessionInfo(info: string): void;
+	/** Mount command output deferred by {@link presentCommandOutput}. */
+	flushPendingCommandOutput(): void;
 	/**
 	 * Dispose every live block in the transcript (stopping timers/subscriptions)
 	 * and clear it. Used before a full rebuild so animated/streaming blocks do not
