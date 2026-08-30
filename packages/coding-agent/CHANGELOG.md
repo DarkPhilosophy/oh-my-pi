@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added connect-only Browser Relay support for existing Firefox-family WebDriver BiDi endpoints, including Zen, without installing launchers or starting the browser.
+
 ## [18.0.10] - 2026-08-28
 
 ### Added
@@ -25,6 +29,8 @@
 - Fixed native-extension imports such as `numpy` hanging indefinitely in the Python evaluation tool on Windows.
 - Fixed a macOS composer display issue where undercurl could remain attached to stale text after rapid typing.
 - Improved `xd://` MCP failure messages with actionable transport stages, failure categories, server and tool context, retryability, trace IDs, and redacted JSON-RPC details.
+
+- Fixed long transcripts appearing as repeated viewports in terminal history after pane width changes by preserving existing scrollback instead of replaying the entire transcript by default.
 - Fixed ACP `read` tool-call locations so clients such as Zed Follow receive the resolved filesystem path rather than the OMP line-range selector.
 
 ## [18.0.9] - 2026-08-28

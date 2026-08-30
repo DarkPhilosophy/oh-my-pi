@@ -1330,6 +1330,28 @@ describe("TUI terminal-state regressions", () => {
 			}
 		});
 
+		it("does not archive application chrome on non-destructive paints inside Herdr", async () => {
+			await withEnvPatch({ HERDR_ENV: "1" }, async () => {
+				const saved = TERMINAL.supportsScreenToScrollback;
+				setTerminalScreenToScrollback(true);
+				const term = new VirtualTerminal(20, 5);
+				const tui = new TUI(term);
+				tui.addChild(new MutableLinesComponent(["hello"]));
+				const writes = captureWrites(term);
+
+				try {
+					tui.start();
+					await settle(term);
+					const out = writes.join("");
+					expect(out).not.toContain("\x1b[22J");
+					expect(out).toContain("\x1b[2J\x1b[H");
+				} finally {
+					tui.stop();
+					setTerminalScreenToScrollback(saved);
+				}
+			});
+		});
+
 		it("clears stale screen content on a supported non-destructive paint when the terminal ignores CSI 22 J", async () => {
 			const saved = TERMINAL.supportsScreenToScrollback;
 			setTerminalScreenToScrollback(true);

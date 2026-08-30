@@ -345,6 +345,15 @@ describe("settled tmux width resize stays viewport-scale in `preserve` mode", ()
 			expect(rowCount(rows, "hist-a-029")).toBe(1);
 			expect(rowCount(rows, "hist-b-015")).toBe(1);
 			expect(rowCount(rows, "hist-c-029")).toBeGreaterThanOrEqual(1);
+			// #then the live viewport remains pinned to the newest transcript and
+			// footer after each settled width epoch; stale window anchoring used to
+			// leave the top of the current response permanently cut off.
+			const viewport = fixture.term
+				.getViewport()
+				.map(row => Bun.stripANSI(row).trimEnd())
+				.filter(Boolean);
+			expect(viewport).toContain("hist-c-029");
+			expect(viewport).toContain("editor-2");
 			expect(rowCount(rows, "hist-c-029")).toBeLessThanOrEqual(2);
 		} finally {
 			fixture.tui.stop();
@@ -376,6 +385,9 @@ describe("settled tmux width resize stays viewport-scale in `preserve` mode", ()
 			streaming.md.setText(`${markerLines("s", 20).join("\n\n")}\n\nhist-q-000\n\nhist-q-001`);
 			fixture.tui.requestRender();
 			await settle(fixture);
+			const viewport = fixture.term.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+			expect(viewport).toContain("hist-q-001");
+			expect(viewport).toContain("editor-2");
 			const bytes = writes.join("");
 
 			// #then the queued rows surface at least once (never dropped; the host's
@@ -430,11 +442,9 @@ describe("settled tmux width resize stays viewport-scale in `preserve` mode", ()
 });
 
 describe("settled tmux width resize refreshes stale-width scrollback (tui.resizeScrollback)", () => {
-	test("the default `tui.resizeScrollback` setting is `append`: one fresh current-width copy per settled resize, without ED3", async () => {
-		// #given a settled idle session running the product default (the boot
-		// path applies settings.get("tui.resizeScrollback") onto the engine)
-		// whose transcript holds a width-wrapping line; regressing this leaves
-		// pane scrollback wrapped at the old width forever after a resize
+	test("`preserve` remains available without becoming the product default", async () => {
+		// #given a settled idle session whose transcript is much taller than the
+		// viewport
 		const fixture = await buildSettledSession([
 			new StaticBlock(markerLines("a", 30)),
 			new WrappingLeaf(WIDE_LINE),
@@ -442,40 +452,34 @@ describe("settled tmux width resize refreshes stale-width scrollback (tui.resize
 			new VersionedBlock(markerLines("c", 20)),
 		]);
 		try {
-			const defaultMode = Settings.instance.get("tui.resizeScrollback");
-			expect(defaultMode).toBe("append");
-			fixture.tui.setResizeScrollback(defaultMode);
+			expect(Settings.instance.get("tui.resizeScrollback")).toBe("append");
+			fixture.tui.setResizeScrollback("preserve");
 			const writes = spyWrites(fixture);
+			const historyBeforeShrink = fixture.term.getScrollBuffer().length;
 
 			// #when the pane width shrinks and settles once
 			fixture.tui.requestRender();
 			fixture.term.resize(80, 30);
 			await settle(fixture);
 			const shrinkBytes = writes.join("");
+			const historyAfterShrink = fixture.term.getScrollBuffer().length;
 
-			// #then exactly one clean replay ran (off-viewport history re-emitted
-			// once — a storm or a second copy per settle re-emits it more) and no
-			// ED3 reached the pane
+			// #then the resize repaints only the viewport: it neither clears
+			// history nor appends a second copy of off-viewport transcript rows
 			expect(shrinkBytes).not.toContain(ED3);
-			expect(byteOccurrences(shrinkBytes, "hist-a-000")).toBe(1);
-			// #then history now holds the fresh current-width wrap (the host's
-			// rewrap of the old copy cannot produce a 70-cell row)
-			const rowsAfterShrink = combinedRows(fixture.term);
-			expect(rowCount(rowsAfterShrink, WIDE_TAIL_AT_80)).toBe(1);
-			// #then duplication is bounded to exactly the one fresh copy
-			expect(rowCount(rowsAfterShrink, "hist-a-000")).toBe(2);
-			expect(rowCount(rowsAfterShrink, "hist-c-019")).toBeGreaterThanOrEqual(1);
-			expect(rowCount(rowsAfterShrink, "hist-c-019")).toBeLessThanOrEqual(2);
+			expect(shrinkBytes).not.toContain("hist-a-000");
+			expect(rowCount(combinedRows(fixture.term), "hist-a-000")).toBe(1);
+			expect(historyAfterShrink - historyBeforeShrink).toBeLessThanOrEqual(40);
 
-			// #when a second resize settles
+			// #when another settled width resize follows
 			writes.length = 0;
 			fixture.tui.requestRender();
 			fixture.term.resize(110, 30);
 			await settle(fixture);
 
-			// #then growth stays monotonic at one copy per settle (no compounding)
-			expect(byteOccurrences(writes.join(""), "hist-a-000")).toBe(1);
-			expect(rowCount(combinedRows(fixture.term), "hist-a-000")).toBe(3);
+			// #then it still emits no off-viewport transcript copy
+			expect(writes.join("")).not.toContain("hist-a-000");
+			expect(rowCount(combinedRows(fixture.term), "hist-a-000")).toBe(1);
 		} finally {
 			fixture.tui.stop();
 			await fixture.term.flush();

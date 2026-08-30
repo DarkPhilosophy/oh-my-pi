@@ -4790,7 +4790,7 @@ export class TUI extends Container {
 				leadingSequence: deferredAltExit,
 				// A width-epoch replay must not push the invalidated old-width
 				// viewport into native history on terminals that support it.
-				copyScreenToScrollback: !resizeScrollbackReplay,
+				copyScreenToScrollback: !resizeScrollbackReplay && Bun.env.HERDR_ENV !== "1",
 			});
 			this.#pendingAltExit = "";
 			this.#committedPrefix = rawFrame.slice(0, chunkTo);
