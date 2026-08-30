@@ -789,6 +789,11 @@ interface AriaSnapshotLine {
 	states: string[];
 }
 
+function decodeAriaSnapshotName(value: string): string {
+	const jsonCompatible = value.replace(/\\x([0-9A-Fa-f]{2})/g, (_match, hex: string) => `\\u00${hex}`);
+	return JSON.parse(`"${jsonCompatible}"`) as string;
+}
+
 export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 	const entries: AriaSnapshotLine[] = [];
 	for (const rawLine of snapshot.split("\n")) {
@@ -809,7 +814,7 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 		entries.push({
 			ref,
 			role,
-			name: quotedName === undefined ? undefined : JSON.parse(`"${quotedName}"`),
+			name: quotedName === undefined ? undefined : decodeAriaSnapshotName(quotedName),
 			states,
 		});
 	}
@@ -1196,10 +1201,13 @@ export class WorkerCore {
 			case "abort-select":
 				if (this.#activeSelection?.id === msg.id) this.#activeSelection.ac.abort(new ToolAbortError());
 				return;
-			case "release-runtime":
+			case "release-runtime": {
+				const runtime = this.#runtimes.get(msg.name);
 				this.#runtimes.delete(msg.name);
+				runtime?.dispose();
 				this.#clearElementCache(msg.name);
 				return;
+			}
 			case "abort":
 				if (this.#active?.id === msg.id) {
 					const reason = msg.expectedCleanup
@@ -2400,6 +2408,8 @@ export class WorkerCore {
 
 	async #close(): Promise<void> {
 		this.#unsub();
+		for (const runtime of this.#runtimes.values()) runtime.dispose();
+		this.#runtimes.clear();
 		this.#uninstallRejectionGuard();
 		this.#clearAllElementCaches();
 		const page = this.#page;
