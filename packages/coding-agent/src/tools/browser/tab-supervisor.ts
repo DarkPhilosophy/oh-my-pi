@@ -341,36 +341,41 @@ async function acquireTabImpl(
 	}
 	const firefoxSharedTab = "webSocketUrl" in browser ? firefoxSharedTabs.get(browser) : undefined;
 	if (firefoxSharedTab?.state === "alive") {
-		if (firefoxSharedTab.pending.size > 0) {
-			throw new ToolError("Firefox Browser Relay is busy with another tab operation");
+		try {
+			if (firefoxSharedTab.pending.size > 0) {
+				throw new ToolError("Firefox Browser Relay is busy with another tab operation");
+			}
+			const info = await selectFirefoxWorkerTab(firefoxSharedTab.worker, {
+				targetMatcher: opts.target,
+				url: opts.url,
+				waitUntil: opts.waitUntil,
+				timeoutMs: opts.timeoutMs,
+				dialogs: opts.dialogs,
+				signal: opts.signal,
+			});
+			if (opts.signal?.aborted) throw new ToolAbortError();
+			holdBrowser(browser);
+			if (tempHold) await releaseBrowser(browser, { kill: false });
+			const tab: WorkerTabSession = {
+				name,
+				browser,
+				targetId: info.targetId,
+				backend: "worker",
+				worker: firefoxSharedTab.worker,
+				state: "alive",
+				info,
+				pending: firefoxSharedTab.pending,
+				dialogPolicy: opts.dialogs,
+				kindTag: "firefox-relay",
+				activateForScreenshot: opts.target !== undefined,
+				ownerSessionId: opts.ownerSessionId,
+			};
+			tabs.set(name, tab);
+			return { tab, created: true };
+		} catch (error) {
+			if (tempHold || browser.refCount === 0) await releaseBrowser(browser, { kill: false });
+			throw error;
 		}
-		const info = await selectFirefoxWorkerTab(firefoxSharedTab.worker, {
-			targetMatcher: opts.target,
-			url: opts.url,
-			waitUntil: opts.waitUntil,
-			timeoutMs: opts.timeoutMs,
-			dialogs: opts.dialogs,
-			signal: opts.signal,
-		});
-		if (opts.signal?.aborted) throw new ToolAbortError();
-		holdBrowser(browser);
-		if (tempHold) await releaseBrowser(browser, { kill: false });
-		const tab: WorkerTabSession = {
-			name,
-			browser,
-			targetId: info.targetId,
-			backend: "worker",
-			worker: firefoxSharedTab.worker,
-			state: "alive",
-			info,
-			pending: firefoxSharedTab.pending,
-			dialogPolicy: opts.dialogs,
-			kindTag: "firefox-relay",
-			activateForScreenshot: opts.target !== undefined,
-			ownerSessionId: opts.ownerSessionId,
-		};
-		tabs.set(name, tab);
-		return { tab, created: true };
 	}
 	let initPayload: WorkerInitPayload;
 	let worker: WorkerHandle;
@@ -1023,7 +1028,6 @@ export async function selectFirefoxWorkerTab(
 }
 
 function safeSend(tab: WorkerTabSession, msg: WorkerInbound): void {
-	if (tab.state !== "alive") return;
 	try {
 		tab.worker.send(msg);
 	} catch (err) {

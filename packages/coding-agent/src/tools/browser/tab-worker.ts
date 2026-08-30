@@ -1083,7 +1083,7 @@ export class WorkerCore {
 	#elementCounter = 0;
 	#active: ActiveRun | null = null;
 	#activeSelection?: { id: string; ac: AbortController };
-	#runtime: JsRuntime | null = null;
+	#runtimes = new Map<string, JsRuntime>();
 	#unsub: () => void;
 	#isolated: boolean;
 	#uninstallRejectionGuard: () => void;
@@ -1467,7 +1467,7 @@ export class WorkerCore {
 			runPage = createRunPageScope(this.#requirePage());
 			const browser = this.#requireBrowser();
 			const tabApi = this.#createTabApi(msg.name, msg.timeoutMs, signal, msg.session, output, screenshots, active);
-			const runtime = this.#ensureRuntime(msg.session);
+			const runtime = this.#ensureRuntime(msg.name, msg.session);
 			runtime.setCwd(msg.session.cwd);
 			const onFloatingRejection = (reason: unknown): void => this.#recordFloatingRejection(active, reason);
 			runtime.setRunScope({
@@ -1573,13 +1573,15 @@ export class WorkerCore {
 		}
 	}
 
-	#ensureRuntime(session: SessionSnapshot): JsRuntime {
-		if (this.#runtime) return this.#runtime;
-		this.#runtime = new JsRuntime({
+	#ensureRuntime(name: string, session: SessionSnapshot): JsRuntime {
+		const existing = this.#runtimes.get(name);
+		if (existing) return existing;
+		const runtime = new JsRuntime({
 			initialCwd: session.cwd,
-			sessionId: `browser-tab-${this.#targetId ?? "unknown"}`,
+			sessionId: `browser-tab-${name}`,
 		});
-		return this.#runtime;
+		this.#runtimes.set(name, runtime);
+		return runtime;
 	}
 
 	#hooksForActiveRun(): RuntimeHooks | null {
