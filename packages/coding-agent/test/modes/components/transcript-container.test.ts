@@ -210,7 +210,7 @@ describe("TranscriptContainer", () => {
 		if (first === undefined) throw new Error("expected initial batch");
 		transcript.acknowledgeFinalizedBatch(first.id);
 
-		transcript.resetRetirement();
+		transcript.resetStableEmission();
 		// Fits again after the reset: stays live until pressure returns.
 		expect(transcript.renderViewport(80, 10, frame)).toEqual(["final"]);
 		const replay = transcript.peekFinalizedBatch(80, 0);

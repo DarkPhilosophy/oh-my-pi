@@ -510,8 +510,8 @@ export class TranscriptContainer
 		return this.blockStates().some(state => state === "active");
 	}
 
-	/** Rebuild provider retirement before a destructive history replay. */
-	resetRetirement(): void {
+	/** Forget emitted transcript history before a destructive display replay. */
+	resetStableEmission(): void {
 		this.#providerFrontier = 0;
 		this.#providerFrontierRows = 0;
 		this.#providerOffered = undefined;

@@ -302,7 +302,7 @@ export class Composer implements TerminalFrameProvider {
 		this.#retiredHeaderStart = 0;
 		this.#resizeRetiredHeaderStart = undefined;
 		for (const child of this.#runtimeChildren) {
-			if (child instanceof TranscriptContainer) child.resetRetirement();
+			if (child instanceof TranscriptContainer) child.resetStableEmission();
 		}
 	}
 

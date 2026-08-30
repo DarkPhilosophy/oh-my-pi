@@ -2140,6 +2140,7 @@ export class InputController {
 
 		// This is an explicit user display gesture: rebuild native history so the
 		// visibility change also applies to rows already retired from the viewport.
+		this.ctx.chatContainer.resetStableEmission();
 		this.ctx.ui.resetDisplay();
 
 		this.ctx.showStatus(`Thinking blocks: ${this.ctx.hideThinkingBlock ? "hidden" : "visible"}`);
