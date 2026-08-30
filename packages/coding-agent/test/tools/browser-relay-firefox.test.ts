@@ -7,11 +7,16 @@ import {
 	FirefoxSharedTabRegistry,
 	forceKillTab,
 	getTabsMapForTest,
+	releaseTab,
 	selectFirefoxWorkerTab,
 	type WorkerHandle,
 	type WorkerTabSession,
 } from "../../src/tools/browser/tab-supervisor";
-import { findBiDiPageByTargetId, parseAriaSnapshotLines } from "../../src/tools/browser/tab-worker";
+import {
+	findBiDiPageByTargetId,
+	isInteractiveAriaSnapshotNode,
+	parseAriaSnapshotLines,
+} from "../../src/tools/browser/tab-worker";
 
 function createFirefoxHandle(webSocketUrl: string): FirefoxRelayBrowserHandle {
 	return {
@@ -54,6 +59,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 					'  - textbox "Title" [ref=e8]',
 					`  - 'button "Save: draft" [ref=e9]'`,
 					'- button "Escape\\x1bkey" [ref=e10]',
+					'- button "Open [ref=e999]" [ref=e11] [focused]',
 					'    - /url: "/ignored"',
 				].join("\n"),
 			),
@@ -62,7 +68,15 @@ describe("Firefox WebDriver BiDi relay", () => {
 			{ ref: "e8", role: "textbox", name: "Title", states: [] },
 			{ ref: "e9", role: "button", name: "Save: draft", states: [] },
 			{ ref: "e10", role: "button", name: "Escape\u001bkey", states: [] },
+			{ ref: "e11", role: "button", name: "Open [ref=e999]", states: ["focused"] },
 		]);
+	});
+
+	it("ignores structural ARIA metadata when identifying default observation targets", () => {
+		expect(isInteractiveAriaSnapshotNode("heading", ["level=2"])).toBe(false);
+		expect(isInteractiveAriaSnapshotNode("heading", ["invalid=false"])).toBe(false);
+		expect(isInteractiveAriaSnapshotNode("heading", ["focused"])).toBe(true);
+		expect(isInteractiveAriaSnapshotNode("checkbox", [])).toBe(true);
 	});
 
 	it("delegates discovery to the sole BiDi worker without opening a registry session", async () => {
@@ -285,6 +299,47 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(tabs.has(first.name)).toBe(false);
 		expect(tabs.get(second.name)?.worker).toBe(worker);
 		expect(endpoint.refCount).toBe(1);
+		await forceKillTab(second.name, "test cleanup", { sharedFirefoxWorker: true });
+		expect(tabs.has(second.name)).toBe(false);
+		expect(endpoint.refCount).toBe(0);
+	});
+
+	it("releases an idle Firefox alias while its sibling owns the shared run", async () => {
+		const worker = {
+			mode: "inline",
+			send: () => undefined,
+			onMessage: () => () => undefined,
+			onError: () => () => undefined,
+			terminate: async () => undefined,
+		} satisfies WorkerHandle;
+		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
+		endpoint.refCount = 2;
+		const idle = createFirefoxTab("firefox-idle-owner", endpoint, worker);
+		const busy = createFirefoxTab("firefox-busy-sibling", endpoint, worker);
+		const sharedPending = new Map([
+			[
+				"busy-run",
+				{
+					tabName: busy.name,
+					resolve: () => undefined,
+					reject: () => undefined,
+					session: {},
+					toolCalls: new Map(),
+				},
+			],
+		]) as unknown as WorkerTabSession["pending"];
+		idle.pending = sharedPending;
+		busy.pending = sharedPending;
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(idle.name, idle);
+		tabs.set(busy.name, busy);
+
+		await releaseTab(idle.name);
+
+		expect(tabs.has(idle.name)).toBe(false);
+		expect(tabs.get(busy.name)?.state).toBe("alive");
+		sharedPending.clear();
+		await forceKillTab(busy.name, "test cleanup", { sharedFirefoxWorker: true });
 	});
 
 	it("invalidates every alias when the shared Firefox worker is killed", async () => {

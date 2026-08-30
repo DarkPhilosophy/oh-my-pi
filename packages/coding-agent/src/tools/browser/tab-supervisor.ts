@@ -54,6 +54,7 @@ export interface WorkerHandle {
 export type DialogPolicy = "accept" | "dismiss";
 
 export interface PendingRun {
+	tabName: string;
 	resolve(result: RunResultOk): void;
 	reject(error: unknown): void;
 	session: ToolSession;
@@ -288,6 +289,17 @@ async function acquireTabImpl(
 	// below cannot drop it to refCount 0 and dispose the instance we are about
 	// to reuse (e.g. reopening the sole tab with a different dialogs policy).
 	let tempHold = false;
+	const releaseExistingTab = async (): Promise<void> => {
+		try {
+			await releaseTab(name, { kill: false });
+		} catch (error) {
+			if (tempHold) {
+				tempHold = false;
+				await releaseBrowser(browser, { kill: false }).catch(() => undefined);
+			}
+			throw error;
+		}
+	};
 	const existing = tabs.get(name);
 	if (existing) {
 		if (existing.browser === browser && existing.state === "alive") {
@@ -295,11 +307,11 @@ async function acquireTabImpl(
 			if (existing.backend === "cmux" && existing.cmuxAttachedSurface !== requestedCmuxSurface) {
 				holdBrowser(browser);
 				tempHold = true;
-				await releaseTab(name, { kill: false });
+				await releaseExistingTab();
 			} else if (opts.dialogs !== undefined && opts.dialogs !== existing.dialogPolicy) {
 				holdBrowser(browser);
 				tempHold = true;
-				await releaseTab(name, { kill: false });
+				await releaseExistingTab();
 			} else {
 				const reuseSteps: string[] = [];
 				if (opts.viewport && browser.kind.kind !== "cmux") {
@@ -331,7 +343,7 @@ async function acquireTabImpl(
 				holdBrowser(browser);
 				tempHold = true;
 			}
-			await releaseTab(name, { kill: false });
+			await releaseExistingTab();
 		}
 	}
 
@@ -638,6 +650,7 @@ async function runInTabWithSnapshotUnlocked(
 	// until timeout even after the tab is gone.
 	const closeAc = new AbortController();
 	const pending: PendingRun = {
+		tabName: name,
 		resolve,
 		reject,
 		session: opts.session ?? ({} as ToolSession),
@@ -733,8 +746,8 @@ export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Pr
 			([, candidate]) => candidate.backend === "worker" && candidate.worker === tab.worker,
 		);
 		if (aliases.length > 1) {
-			if (tab.pending.size > 0)
-				throw new ToolError("Cannot close a Firefox tab alias while the shared relay is busy");
+			const aliasIsBusy = [...tab.pending.values()].some(pending => pending.tabName === name);
+			if (aliasIsBusy) throw new ToolError("Cannot close a Firefox tab alias while it is busy");
 			tab.worker.send({ type: "release-runtime", name });
 			const survivor = aliases.find(([aliasName]) => aliasName !== name)?.[1];
 			tabs.delete(name);

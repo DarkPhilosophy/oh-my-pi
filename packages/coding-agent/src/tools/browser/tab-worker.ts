@@ -10,6 +10,7 @@ import type {
 	Dialog,
 	ElementHandle,
 	ElementScreenshotOptions,
+	Frame,
 	HTTPResponse,
 	KeyboardTypeOptions,
 	KeyInput,
@@ -803,22 +804,37 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 		if (content.startsWith("'") && content.endsWith("'")) {
 			content = content.slice(1, -1).replaceAll("''", "'");
 		}
-		const ref = /\[ref=(e\d+)\]/.exec(content)?.[1];
-		if (!ref) continue;
 		const role = /^([^\s["]+)/.exec(content)?.[1];
 		if (!role || role === "/url:") continue;
-		const quotedName = /^[^\s["]+\s+"((?:[^"\\]|\\.)*)"/.exec(content)?.[1];
-		const states = [...content.matchAll(/\[([^\]]+)\]/g)]
+		const quotedNameMatch = /^[^\s["]+\s+"((?:[^"\\]|\\.)*)"/.exec(content);
+		const metadata = content.slice(quotedNameMatch?.[0].length ?? role.length);
+		const ref = /\[ref=(e\d+)\]/.exec(metadata)?.[1];
+		if (!ref) continue;
+		const states = [...metadata.matchAll(/\[([^\]]+)\]/g)]
 			.map(match => match[1]!)
 			.filter(state => !state.startsWith("ref=") && !state.startsWith("cursor=") && !state.startsWith("box="));
 		entries.push({
 			ref,
 			role,
-			name: quotedName === undefined ? undefined : decodeAriaSnapshotName(quotedName),
+			name: quotedNameMatch === null ? undefined : decodeAriaSnapshotName(quotedNameMatch[1]!),
 			states,
 		});
 	}
 	return entries;
+}
+
+export function isInteractiveAriaSnapshotNode(role: string, states: readonly string[]): boolean {
+	return (
+		INTERACTIVE_AX_ROLES.has(role) ||
+		states.some(
+			state =>
+				state === "focused" ||
+				state.startsWith("checked=") ||
+				state.startsWith("pressed=") ||
+				state.startsWith("selected=") ||
+				state.startsWith("expanded="),
+		)
+	);
 }
 
 async function collectBiDiObservationEntries(
@@ -829,7 +845,7 @@ async function collectBiDiObservationEntries(
 ): Promise<ObservationEntry[]> {
 	const entries: ObservationEntry[] = [];
 	for (const node of parseAriaSnapshotLines(snapshot)) {
-		if (!options.includeAll && !INTERACTIVE_AX_ROLES.has(node.role) && node.states.length === 0) continue;
+		if (!options.includeAll && !isInteractiveAriaSnapshotNode(node.role, node.states)) continue;
 		const handle = await resolveAriaRefHandle(page, node.ref);
 		if (!handle) continue;
 		let inViewport = true;
@@ -1103,6 +1119,8 @@ export class WorkerCore {
 	#webDriverBiDi = false;
 	#dialogPolicy?: DialogPolicy;
 	#dialogHandler?: (dialog: Dialog) => void;
+	#dialogObserver?: (dialog: Dialog) => void;
+	#frameNavigationObserver?: (frame: Frame) => void;
 	#openDialog?: OpenDialogInfo;
 
 	constructor(transport: Transport, isolated: boolean) {
@@ -1323,10 +1341,7 @@ export class WorkerCore {
 			preferVisible: true,
 		});
 		if (this.#page !== page) {
-			if (this.#dialogHandler && this.#page && !this.#page.isClosed()) {
-				this.#page.off("dialog", this.#dialogHandler);
-			}
-			this.#dialogHandler = undefined;
+			this.#detachDialogListeners();
 			this.#dialogPolicy = undefined;
 			this.#clearElementCache();
 			this.#page = page;
@@ -1396,12 +1411,27 @@ export class WorkerCore {
 	 */
 	#observeDialogs(): void {
 		const page = this.#requirePage();
-		page.on("dialog", dialog => {
+		this.#dialogObserver = dialog => {
 			this.#openDialog = { type: dialog.type(), message: dialog.message() };
-		});
-		page.on("framenavigated", frame => {
+		};
+		this.#frameNavigationObserver = frame => {
 			if (frame === page.mainFrame()) this.#openDialog = undefined;
-		});
+		};
+		page.on("dialog", this.#dialogObserver);
+		page.on("framenavigated", this.#frameNavigationObserver);
+	}
+
+	#detachDialogListeners(): void {
+		const page = this.#page;
+		if (page && !page.isClosed()) {
+			if (this.#dialogHandler) page.off("dialog", this.#dialogHandler);
+			if (this.#dialogObserver) page.off("dialog", this.#dialogObserver);
+			if (this.#frameNavigationObserver) page.off("framenavigated", this.#frameNavigationObserver);
+		}
+		this.#dialogHandler = undefined;
+		this.#dialogObserver = undefined;
+		this.#frameNavigationObserver = undefined;
+		this.#openDialog = undefined;
 	}
 
 	async #currentReadyInfo(): Promise<ReadyInfo> {
@@ -2413,7 +2443,7 @@ export class WorkerCore {
 		this.#uninstallRejectionGuard();
 		this.#clearAllElementCaches();
 		const page = this.#page;
-		if (this.#dialogHandler && page && !page.isClosed()) page.off("dialog", this.#dialogHandler);
+		this.#detachDialogListeners();
 		if (this.#mode === "headless" && page && !page.isClosed()) await page.close().catch(() => undefined);
 		if (this.#browser?.connected) this.#browser.disconnect();
 		this.#transport.send({ type: "closed" });
