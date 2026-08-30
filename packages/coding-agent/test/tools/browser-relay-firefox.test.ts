@@ -97,4 +97,21 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(registry.get(endpointA)).toBeUndefined();
 		expect(registry.get(endpointB)).toBe(tabB);
 	});
+
+	it("reuses the endpoint worker after one of two named aliases closes", () => {
+		const registry = new FirefoxSharedTabRegistry();
+		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
+		const worker = {} as WorkerHandle;
+		const original = createFirefoxTab("firefox-first", endpoint, worker);
+		const alias = createFirefoxTab("firefox-second", endpoint, worker);
+
+		registry.set(original);
+		// Closing an alias removes only that name from the supervisor's tabs map.
+		// The endpoint registry continues to own the original live worker.
+		alias.state = "dead";
+
+		const third = registry.get(endpoint);
+		expect(third).toBe(original);
+		expect(third?.worker).toBe(worker);
+	});
 });

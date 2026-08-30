@@ -17,6 +17,7 @@ import { pickElectronTarget, shouldPreserveConnectedBrowserFocus } from "./attac
 import { CmuxTab, runCmuxCode } from "./cmux/cmux-tab";
 import { mapWaitUntil } from "./cmux/rpc";
 import { DEFAULT_VIEWPORT } from "./launch";
+import { closeCdpTarget, forgetSharedTarget, recordSharedTarget, type SharedTargetScope } from "./orphan-registry";
 import {
 	type BrowserHandle,
 	type BrowserKindTag,
@@ -465,6 +466,10 @@ async function acquireTabImpl(
 	worker.onMessage(msg => handleTabMessage(tab, msg));
 	tabs.set(name, tab);
 	if (tab.kindTag === "firefox-relay") firefoxSharedTabs.set(tab);
+	// Durably record ownership so another live omp process can reap this page if
+	// this process dies abnormally before its own teardown closes the tab.
+	const scope = sharedScopeOf(browser);
+	if (scope) void recordSharedTarget(scope, info.targetId);
 	return { tab, created: true };
 }
 
@@ -783,6 +788,8 @@ export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Pr
 		cleanupError ??= error;
 	} finally {
 		tabs.delete(name);
+		const scope = sharedScopeOf(tab.browser);
+		if (scope) void forgetSharedTarget(scope, tab.targetId);
 	}
 	if (cleanupError) throw cleanupError;
 	return true;
@@ -862,6 +869,9 @@ export async function buildInitPayload(
 			mode: "headless",
 			browserWSEndpoint,
 			safeDir,
+			// Visible launches still need an OMP-owned page, stealth setup, and
+			// independent lifecycle; only their fixed device emulation is disabled.
+			emulateViewport: browser.kind.headless,
 			viewport: opts.viewport,
 			dialogs: opts.dialogs,
 			url: opts.url,
@@ -1082,6 +1092,8 @@ async function forceKillTab(name: string, reason: string): Promise<void> {
 	if (tab.kindTag === "headless") await closeOrphanTarget(tab);
 	await releaseBrowser(tab.browser, { kill: false });
 	tabs.delete(name);
+	const scope = sharedScopeOf(tab.browser);
+	if (scope) void forgetSharedTarget(scope, tab.targetId);
 }
 
 /**
@@ -1091,16 +1103,18 @@ async function forceKillTab(name: string, reason: string): Promise<void> {
  * protocol timeout, retaining the cleanup hold for tens of seconds.
  */
 async function closeTargetById(browser: PuppeteerBrowserHandle, targetId: string): Promise<void> {
-	const session = await browser.browser
-		.target()
-		.createCDPSession()
-		.catch(() => null);
-	if (!session) return;
-	try {
-		await session.send("Target.closeTarget", { targetId }).catch(() => undefined);
-	} finally {
-		await session.detach().catch(() => undefined);
-	}
+	await closeCdpTarget(browser.browser, targetId);
+}
+
+/**
+ * Durable-ownership scope for a browser handle, or undefined when the handle is
+ * not the project-shared broker-owned Chromium (the only browser whose targets
+ * outlive their creating process and thus need cross-process orphan reaping).
+ */
+function sharedScopeOf(browser: BrowserHandle): SharedTargetScope | undefined {
+	if ("client" in browser || "webSocketUrl" in browser) return undefined;
+	if (browser.kind.kind !== "headless" || !browser.sharedDaemon) return undefined;
+	return { projectDir: browser.sharedDaemon.projectDir, daemonName: browser.sharedDaemon.name };
 }
 
 /**
