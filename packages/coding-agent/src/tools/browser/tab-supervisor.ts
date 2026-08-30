@@ -1079,22 +1079,50 @@ export async function selectFirefoxWorkerTab(
 
 	const id = Snowflake.next();
 	const selected = Promise.withResolvers<ReadyInfo>();
+	const acknowledged = Promise.withResolvers<void>();
 	const unlisten = worker.onMessage(msg => {
-		if (msg.type === "selected" && msg.id === id) selected.resolve(msg.info);
-		else if (msg.type === "select-failed" && msg.id === id) selected.reject(errorFromPayload(msg.error));
-	});
-	const unlistenError = worker.onError(error => selected.reject(error));
-	let dispatched = false;
-	const abort = (): void => {
-		if (!dispatched) {
-			selected.reject(signal?.reason ?? new ToolAbortError());
-			return;
+		if (msg.type === "selected" && msg.id === id) {
+			acknowledged.resolve();
+			selected.resolve(msg.info);
+		} else if (msg.type === "select-failed" && msg.id === id) {
+			acknowledged.resolve();
+			selected.reject(errorFromPayload(msg.error));
 		}
+	});
+	const unlistenError = worker.onError(error => {
+		acknowledged.resolve();
+		selected.reject(error);
+	});
+	let dispatched = false;
+	let cancellationStarted = false;
+	const sendAbort = (): void => {
+		if (!dispatched) return;
 		try {
 			worker.send({ type: "abort-select", id });
 		} catch (error) {
+			acknowledged.resolve();
 			selected.reject(error);
 		}
+	};
+	const cancelSelection = async (): Promise<void> => {
+		if (cancellationStarted) return;
+		cancellationStarted = true;
+		const reason = signal?.reason ?? new ToolAbortError();
+		if (!dispatched) {
+			selected.reject(reason);
+			return;
+		}
+		sendAbort();
+		try {
+			await raceWithTimeout(acknowledged.promise, GRACE_MS, "Timed out cancelling Firefox browser tab selection");
+		} catch {
+			await invalidateFirefoxWorker(worker, "Firefox tab selection did not acknowledge cancellation");
+		} finally {
+			selected.reject(reason);
+		}
+	};
+	const abort = (): void => {
+		void cancelSelection();
 	};
 	if (signal?.aborted) abort();
 	else signal?.addEventListener("abort", abort, { once: true });
@@ -1107,13 +1135,10 @@ export async function selectFirefoxWorkerTab(
 			options.timeoutMs,
 			"Timed out selecting Firefox browser tab",
 			async () => {
-				abort();
+				sendAbort();
 				try {
 					await raceWithTimeout(
-						selected.promise.then(
-							() => undefined,
-							() => undefined,
-						),
+						acknowledged.promise,
 						GRACE_MS,
 						"Timed out cancelling Firefox browser tab selection",
 					);

@@ -903,6 +903,7 @@ async function collectBiDiObservationEntries(
 				disabled?: boolean;
 				required?: boolean;
 				readOnly?: boolean;
+				selectedOptions?: { 0?: { textContent: string | null } };
 				multiple?: boolean;
 				tagName?: string;
 				checked?: boolean;
@@ -918,6 +919,7 @@ async function collectBiDiObservationEntries(
 			};
 			const nativeValue =
 				typeof input.value === "string" || typeof input.value === "number" ? input.value : undefined;
+			const selectedOptionLabel = input.selectedOptions?.[0]?.textContent?.trim();
 			const describedBy = input.getAttribute("aria-describedby");
 			const description = describedBy
 				?.split(/\s+/)
@@ -925,7 +927,12 @@ async function collectBiDiObservationEntries(
 				.filter((text): text is string => Boolean(text))
 				.join(" ");
 			return {
-				value: nativeValue ?? input.getAttribute("aria-valuenow") ?? undefined,
+				value:
+					input.getAttribute("aria-valuetext") ??
+					selectedOptionLabel ??
+					nativeValue ??
+					input.getAttribute("aria-valuenow") ??
+					undefined,
 				description: description || input.ariaDescription || input.getAttribute("aria-description") || undefined,
 				keyshortcuts: input.ariaKeyShortcuts ?? undefined,
 				disabled: input.disabled === true,
