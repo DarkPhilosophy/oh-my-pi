@@ -116,11 +116,6 @@ export class FirefoxSharedTabRegistry {
 		this.#tabs.set(tab.browser.key, tab);
 	}
 
-	replaceWorker(tab: WorkerTabSession, oldWorker: WorkerHandle, worker: WorkerHandle): void {
-		const shared = this.#tabs.get(tab.browser.key);
-		if (shared?.worker === oldWorker) shared.worker = worker;
-	}
-
 	delete(tab: WorkerTabSession): void {
 		const shared = this.#tabs.get(tab.browser.key);
 		if (shared?.worker === tab.worker) this.#tabs.delete(tab.browser.key);
@@ -198,6 +193,7 @@ const READY_BUDGET_FLOOR_MS = 500;
 // mapped to the kill reason. Lets the next `run` on that name explain WHY the tab
 // vanished instead of a bare "not alive". Cleared when the name is opened again.
 const killedTabs = new Map<string, string>();
+const firefoxSelectionChains = new WeakMap<WorkerHandle, Promise<void>>();
 const firefoxSharedTabs = new FirefoxSharedTabRegistry();
 const DEFAULT_TAB_CLOSE_TIMEOUT_MS = 5_000;
 class RecoverableWorkerError extends ToolError {}
@@ -647,6 +643,9 @@ async function runInTabWithSnapshot(
 				async reason => await forceKillTab(name, reason),
 			);
 		} catch (error) {
+			// Firefox owns one shared BiDi worker per endpoint. Its own timeout
+			// aborts and clears the active run; only the outer grace timeout kills
+			// the shared worker and invalidates every alias.
 			const runTimedOut =
 				error instanceof ToolError && error.message.startsWith("Browser code execution timed out after ");
 			if ((runTimedOut || error instanceof RecoverableWorkerError) && tab.kindTag !== "firefox-relay") {
@@ -687,7 +686,10 @@ export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Pr
 		if (aliases.length > 1) {
 			if (tab.pending.size > 0)
 				throw new ToolError("Cannot close a Firefox tab alias while the shared relay is busy");
+			const survivor = aliases.find(([aliasName]) => aliasName !== name)?.[1];
 			tabs.delete(name);
+			tab.state = "dead";
+			if (survivor?.backend === "worker") firefoxSharedTabs.set(survivor);
 			await releaseBrowser(tab.browser, {
 				kill: false,
 				timeoutMs: opts.timeoutMs ?? DEFAULT_TAB_CLOSE_TIMEOUT_MS,
@@ -962,7 +964,7 @@ async function dispatchToolCall(
 		pending.signal?.removeEventListener("abort", onParentAbort);
 	}
 }
-async function selectFirefoxWorkerTab(
+export async function selectFirefoxWorkerTab(
 	worker: WorkerHandle,
 	options: {
 		targetId?: string;
@@ -973,6 +975,12 @@ async function selectFirefoxWorkerTab(
 		dialogs?: DialogPolicy;
 	},
 ): Promise<ReadyInfo> {
+	const previous = firefoxSelectionChains.get(worker) ?? Promise.resolve();
+	const released = Promise.withResolvers<void>();
+	const current = previous.catch(() => undefined).then(() => released.promise);
+	firefoxSelectionChains.set(worker, current);
+	await previous.catch(() => undefined);
+
 	const id = Snowflake.next();
 	const selected = Promise.withResolvers<ReadyInfo>();
 	const unlisten = worker.onMessage(msg => {
@@ -984,6 +992,8 @@ async function selectFirefoxWorkerTab(
 		return await raceWithTimeout(selected.promise, options.timeoutMs, "Timed out selecting Firefox browser tab");
 	} finally {
 		unlisten();
+		released.resolve();
+		if (firefoxSelectionChains.get(worker) === current) firefoxSelectionChains.delete(worker);
 	}
 }
 
@@ -1060,21 +1070,17 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 
 function publishRecycledWorker(
 	tab: WorkerTabSession,
-	oldWorker: WorkerHandle,
+	_oldWorker: WorkerHandle,
 	worker: WorkerHandle,
 	info: ReadyInfo,
 ): void {
-	for (const candidate of tabs.values()) {
-		if (candidate.backend !== "worker" || candidate.worker !== oldWorker) continue;
-		candidate.worker = worker;
-		if (candidate === tab) candidate.info = info;
-		candidate.state = "alive";
-	}
-	firefoxSharedTabs.replaceWorker(tab, oldWorker, worker);
+	tab.worker = worker;
+	tab.info = info;
+	tab.state = "alive";
 	worker.onMessage(msg => handleTabMessage(tab, msg));
 }
 
-async function forceKillTab(name: string, reason: string): Promise<void> {
+export async function forceKillTab(name: string, reason: string): Promise<void> {
 	const tab = tabs.get(name);
 	if (!tab) return;
 	killedTabs.set(name, reason);
@@ -1085,6 +1091,20 @@ async function forceKillTab(name: string, reason: string): Promise<void> {
 	if (tab.backend === "cmux") {
 		await releaseBrowser(tab.browser, { kill: false });
 		tabs.delete(name);
+		return;
+	}
+	if (tab.kindTag === "firefox-relay") {
+		const aliases = [...tabs.entries()].filter(
+			([, candidate]) => candidate.backend === "worker" && candidate.worker === tab.worker,
+		);
+		firefoxSharedTabs.delete(tab);
+		await tab.worker.terminate().catch(() => undefined);
+		for (const [aliasName, alias] of aliases) {
+			killedTabs.set(aliasName, reason);
+			alias.state = "dead";
+			await releaseBrowser(alias.browser, { kill: false });
+			tabs.delete(aliasName);
+		}
 		return;
 	}
 	firefoxSharedTabs.delete(tab);

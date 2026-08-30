@@ -1066,6 +1066,14 @@ export function describeInflight(inflight: Map<number, InflightOp>): string {
 		.join(", ");
 }
 
+export async function findBiDiPageByTargetId(pages: Page[], targetId: string): Promise<Page> {
+	for (const candidate of pages) {
+		const candidateId = await targetIdForPage(candidate, false).catch(() => "");
+		if (candidateId === targetId) return candidate;
+	}
+	throw new ToolError(`Target ${targetId} is no longer available on the attached Firefox browser`);
+}
+
 export class WorkerCore {
 	#transport: Transport;
 	#browser?: Browser;
@@ -1271,16 +1279,7 @@ export class WorkerCore {
 
 	async #selectBiDiPage(targetId?: string, targetMatcher?: string, dialogs?: DialogPolicy): Promise<void> {
 		const browser = this.#requireBrowser();
-		let page: Page | undefined;
-		if (targetId) {
-			for (const candidate of await browser.pages()) {
-				const candidateId = await targetIdForPage(candidate, false).catch(() => "");
-				if (candidateId === targetId) {
-					page = candidate;
-					break;
-				}
-			}
-		}
+		let page = targetId ? await findBiDiPageByTargetId(await browser.pages(), targetId) : undefined;
 		page ??= await pickElectronTarget(browser, {
 			matcher: targetMatcher,
 			preferVisible: true,

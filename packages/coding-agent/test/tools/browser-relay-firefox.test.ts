@@ -1,13 +1,17 @@
 import { describe, expect, it } from "bun:test";
+import type { Page } from "puppeteer-core";
 import type { FirefoxRelayBrowserHandle } from "../../src/tools/browser/registry";
 import { DEFAULT_FIREFOX_BIDI_URL, validateFirefoxWebSocketUrl } from "../../src/tools/browser/relay/firefox";
 import {
 	buildInitPayload,
 	FirefoxSharedTabRegistry,
+	forceKillTab,
+	getTabsMapForTest,
+	selectFirefoxWorkerTab,
 	type WorkerHandle,
 	type WorkerTabSession,
 } from "../../src/tools/browser/tab-supervisor";
-import { parseAriaSnapshotLines } from "../../src/tools/browser/tab-worker";
+import { findBiDiPageByTargetId, parseAriaSnapshotLines } from "../../src/tools/browser/tab-worker";
 
 function createFirefoxHandle(webSocketUrl: string): FirefoxRelayBrowserHandle {
 	return {
@@ -23,8 +27,12 @@ function createFirefoxTab(name: string, browser: FirefoxRelayBrowserHandle, work
 		name,
 		browser,
 		worker,
+		backend: "worker",
+		activateForScreenshot: false,
 		state: "alive",
 		kindTag: "firefox-relay",
+		pending: new Map(),
+		info: { url: "about:blank", viewport: { width: 1280, height: 720 }, targetId: name },
 	} as unknown as WorkerTabSession;
 }
 describe("Firefox WebDriver BiDi relay", () => {
@@ -72,7 +80,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 		});
 	});
 
-	it("keeps worker ownership isolated by Firefox endpoint through replacement and close", () => {
+	it("keeps worker ownership isolated by Firefox endpoint through close", () => {
 		const registry = new FirefoxSharedTabRegistry();
 		const endpointA = createFirefoxHandle("ws://127.0.0.1:9222/session");
 		const endpointB = createFirefoxHandle("ws://127.0.0.1:9333/session");
@@ -87,11 +95,6 @@ describe("Firefox WebDriver BiDi relay", () => {
 		registry.set(tabB);
 		expect(registry.get(endpointA)).toBe(tabA);
 		expect(registry.get(endpointB)).toBe(tabB);
-
-		const replacementA = {} as WorkerHandle;
-		registry.replaceWorker(tabA, workerA, replacementA);
-		expect(tabA.worker).toBe(replacementA);
-		expect(tabB.worker).toBe(workerB);
 
 		registry.delete(tabA);
 		expect(registry.get(endpointA)).toBeUndefined();
@@ -113,5 +116,87 @@ describe("Firefox WebDriver BiDi relay", () => {
 		const third = registry.get(endpoint);
 		expect(third).toBe(original);
 		expect(third?.worker).toBe(worker);
+	});
+
+	it("rejects a closed Firefox browsing context instead of falling back to another tab", async () => {
+		const page = { mainFrame: () => ({ _id: "live-context" }) } as unknown as Page;
+		await expect(findBiDiPageByTargetId([page], "closed-context")).rejects.toThrow(
+			"Target closed-context is no longer available",
+		);
+	});
+
+	it("serializes concurrent selections on the shared Firefox worker", async () => {
+		const listeners = new Set<Parameters<WorkerHandle["onMessage"]>[0]>();
+		const sends: string[] = [];
+		let inFlight = 0;
+		let maxInFlight = 0;
+		const worker: WorkerHandle = {
+			mode: "inline",
+			send: msg => {
+				if (msg.type !== "select") return;
+				sends.push(msg.targetMatcher ?? "");
+				inFlight++;
+				maxInFlight = Math.max(maxInFlight, inFlight);
+				setTimeout(() => {
+					inFlight--;
+					for (const listener of listeners) {
+						listener({
+							type: "selected",
+							id: msg.id,
+							info: {
+								url: `https://${msg.targetMatcher}.example`,
+								viewport: { width: 1280, height: 720 },
+								targetId: msg.targetMatcher ?? "",
+							},
+						});
+					}
+				}, 5);
+			},
+			onMessage: listener => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			onError: () => () => undefined,
+			terminate: async () => undefined,
+		};
+
+		const [first, second] = await Promise.all([
+			selectFirefoxWorkerTab(worker, { targetMatcher: "first", timeoutMs: 1_000 }),
+			selectFirefoxWorkerTab(worker, { targetMatcher: "second", timeoutMs: 1_000 }),
+		]);
+
+		expect(sends).toEqual(["first", "second"]);
+		expect(maxInFlight).toBe(1);
+		expect(first.targetId).toBe("first");
+		expect(second.targetId).toBe("second");
+	});
+
+	it("invalidates every alias when the shared Firefox worker is killed", async () => {
+		let terminations = 0;
+		const worker = {
+			mode: "inline",
+			send: () => undefined,
+			onMessage: () => () => undefined,
+			onError: () => () => undefined,
+			terminate: async () => {
+				terminations++;
+			},
+		} satisfies WorkerHandle;
+		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
+		endpoint.refCount = 2;
+		const first = createFirefoxTab("firefox-kill-first", endpoint, worker);
+		const second = createFirefoxTab("firefox-kill-second", endpoint, worker);
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(first.name, first);
+		tabs.set(second.name, second);
+
+		await forceKillTab(first.name, "shared Firefox worker failed");
+
+		expect(terminations).toBe(1);
+		expect(first.state).toBe("dead");
+		expect(second.state).toBe("dead");
+		expect(tabs.has(first.name)).toBe(false);
+		expect(tabs.has(second.name)).toBe(false);
+		expect(endpoint.refCount).toBe(0);
 	});
 });
