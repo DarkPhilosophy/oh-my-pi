@@ -1085,8 +1085,8 @@ export class WorkerCore {
 	#browser?: Browser;
 	#page?: Page;
 	#targetId?: string;
-	#elementCache = new Map<number, ElementHandle>();
-	#elementCounter = 0;
+	#elementCaches = new Map<string, { handles: Map<number, ElementHandle>; counter: number }>();
+	#activeElementCacheKey = "default";
 	#active: ActiveRun | null = null;
 	#activeSelection?: { id: string; ac: AbortController };
 	#runtimes = new Map<string, JsRuntime>();
@@ -1163,13 +1163,23 @@ export class WorkerCore {
 		return failure;
 	}
 
+	#elementCacheState(): { handles: Map<number, ElementHandle>; counter: number } {
+		let state = this.#elementCaches.get(this.#activeElementCacheKey);
+		if (!state) {
+			state = { handles: new Map(), counter: 0 };
+			this.#elementCaches.set(this.#activeElementCacheKey, state);
+		}
+		return state;
+	}
+
 	nextElementId(): number {
-		this.#elementCounter += 1;
-		return this.#elementCounter;
+		const state = this.#elementCacheState();
+		state.counter += 1;
+		return state.counter;
 	}
 
 	cacheElement(id: number, handle: ElementHandle): void {
-		this.#elementCache.set(id, handle);
+		this.#elementCacheState().handles.set(id, handle);
 	}
 
 	async #handleMessage(msg: WorkerInbound): Promise<void> {
@@ -1188,6 +1198,7 @@ export class WorkerCore {
 				return;
 			case "release-runtime":
 				this.#runtimes.delete(msg.name);
+				this.#clearElementCache(msg.name);
 				return;
 			case "abort":
 				if (this.#active?.id === msg.id) {
@@ -1467,6 +1478,7 @@ export class WorkerCore {
 		let returnValue: unknown;
 		let failure: { error: unknown } | undefined;
 		let runPage: RunPageScope | undefined;
+		this.#activeElementCacheKey = msg.name;
 		try {
 			if (this.#webDriverBiDi && (msg.targetId || msg.targetMatcher)) {
 				await this.#selectBiDiPage(msg.targetId, msg.targetMatcher, msg.dialogs);
@@ -2321,7 +2333,7 @@ export class WorkerCore {
 	}
 
 	async #resolveCachedHandle(id: number): Promise<ElementHandle> {
-		const handle = this.#elementCache.get(id);
+		const handle = this.#elementCacheState().handles.get(id);
 		if (!handle) throw new ToolError(`Unknown element id ${id}. Run tab.observe() to refresh the element list.`);
 		try {
 			const isConnected = (await handle.evaluate(el => el.isConnected)) as boolean;
@@ -2359,15 +2371,15 @@ export class WorkerCore {
 			this.#requirePage().locator(normalizeSelector(selector)).setTimeout(timeoutMs).waitHandle({ signal: sig }),
 		)) as ElementHandle;
 	}
-	#clearElementCache(): void {
-		if (this.#elementCache.size === 0) {
-			this.#elementCounter = 0;
-			return;
-		}
-		const handles = [...this.#elementCache.values()];
-		this.#elementCache.clear();
-		this.#elementCounter = 0;
-		for (const handle of handles) void handle.dispose().catch(() => undefined);
+	#clearElementCache(key: string = this.#activeElementCacheKey): void {
+		const state = this.#elementCaches.get(key);
+		if (!state) return;
+		this.#elementCaches.delete(key);
+		for (const handle of state.handles.values()) void handle.dispose().catch(() => undefined);
+	}
+
+	#clearAllElementCaches(): void {
+		for (const key of [...this.#elementCaches.keys()]) this.#clearElementCache(key);
 	}
 
 	/** Best-effort `Page.stopLoading` so an abandoned navigation cannot stall later ops. */
@@ -2389,7 +2401,7 @@ export class WorkerCore {
 	async #close(): Promise<void> {
 		this.#unsub();
 		this.#uninstallRejectionGuard();
-		this.#clearElementCache();
+		this.#clearAllElementCaches();
 		const page = this.#page;
 		if (this.#dialogHandler && page && !page.isClosed()) page.off("dialog", this.#dialogHandler);
 		if (this.#mode === "headless" && page && !page.isClosed()) await page.close().catch(() => undefined);

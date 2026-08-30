@@ -686,12 +686,11 @@ async function runInTabWithSnapshotUnlocked(
 				async reason => await forceKillTab(name, reason),
 			);
 		} catch (error) {
-			// Firefox owns one shared BiDi worker per endpoint. Its own timeout
-			// aborts and clears the active run; only the outer grace timeout kills
-			// the shared worker and invalidates every alias.
 			const runTimedOut =
 				error instanceof ToolError && error.message.startsWith("Browser code execution timed out after ");
-			if ((runTimedOut || error instanceof RecoverableWorkerError) && tab.kindTag !== "firefox-relay") {
+			if (runTimedOut && tab.kindTag === "firefox-relay") {
+				await forceKillTab(name, "Firefox browser operation timed out; shared relay worker killed");
+			} else if (runTimedOut || error instanceof RecoverableWorkerError) {
 				try {
 					if (tab.worker.mode === "inline") {
 						const reason = runTimedOut
