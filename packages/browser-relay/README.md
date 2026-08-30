@@ -15,6 +15,19 @@ That's it: the relay server auto-starts under omp's profile-independent global d
 
 `app.target` picks a specific tab by URL/title substring; without it, omp adopts the visible tab without stealing focus. Tabs omp is **actively driving** are gathered into a per-window **"omp" tab group** (cyan) — released when omp lets go of the tab and dissolved on disconnect; the rest of your tabs, pinned tabs, tabs in your own groups, and tabs you drag out are left alone. Disable with `omp browser-relay --no-group`.
 
+### Firefox-family browsers
+
+Firefox forks such as Zen use the browser's native WebDriver BiDi transport rather than the Chromium extension:
+
+1. Start the browser itself with a loopback WebDriver BiDi endpoint, for example `--remote-debugging-port 9222`.
+2. `omp config set browser.relay true`
+3. `omp config set browser.relayBrowser firefox`
+4. Optionally configure a non-default endpoint with `omp config set browser.relayUrl ws://127.0.0.1:9333/session`.
+
+The browser tool connects to the already-running browser; it never installs another launcher or starts the browser. Disconnecting omp leaves the browser and its tabs open. Firefox does not expose Chromium's `chrome.debugger` extension API, so no Firefox extension is required.
+
+WebDriver BiDi grants broad control over logged-in tabs and browser session data. Firefox binds its Remote Agent to loopback, but the endpoint has no OMP authentication layer: another local process that can connect to the port can control the browser. Enable it only on a trusted machine and stop the browser when remote automation is no longer needed.
+
 ## Development
 
 - `bun run build` — bundles the extension into `dist/extension/`, zips it for GH releases, and regenerates the embedded CLI install assets under `packages/coding-agent/src/tools/browser/relay/extension-assets/` (**commit those**).

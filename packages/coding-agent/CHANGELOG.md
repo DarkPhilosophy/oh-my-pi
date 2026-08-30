@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added connect-only Browser Relay support for Firefox-family browsers through local WebDriver BiDi endpoints.
+
 ## [18.0.10] - 2026-08-28
 
 ### Added

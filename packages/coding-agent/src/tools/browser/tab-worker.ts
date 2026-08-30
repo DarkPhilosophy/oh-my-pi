@@ -42,6 +42,7 @@ import {
 	parseAriaRefSelector,
 	resolveAriaRefHandle,
 } from "./aria/aria-snapshot";
+import { pickElectronTarget } from "./attach";
 import {
 	applyStealthPatches,
 	applyViewport,
@@ -687,9 +688,10 @@ function privateTargetId(target: Target): string | undefined {
 	return typeof raw._targetId === "string" ? raw._targetId : undefined;
 }
 
-async function targetIdForTarget(target: Target): Promise<string> {
+async function targetIdForTarget(target: Target, allowCdp: boolean = true): Promise<string> {
 	const fastTargetId = privateTargetId(target);
 	if (fastTargetId) return fastTargetId;
+	if (!allowCdp) throw new ToolError("Target id unavailable without CDP");
 	const session = await target.createCDPSession();
 	try {
 		const info = (await session.send("Target.getTargetInfo")) as { targetInfo?: { targetId?: string } };
@@ -700,7 +702,12 @@ async function targetIdForTarget(target: Target): Promise<string> {
 	}
 }
 
-async function targetIdForPage(page: Page): Promise<string> {
+async function targetIdForPage(page: Page, allowCdp: boolean = true): Promise<string> {
+	if (!allowCdp) {
+		const frame = page.mainFrame() as unknown as { _id?: unknown };
+		if (typeof frame._id === "string") return frame._id;
+		throw new ToolError("Browsing context id unavailable from Firefox WebDriver BiDi page");
+	}
 	return await targetIdForTarget(page.target());
 }
 
@@ -773,6 +780,111 @@ async function collectObservationEntries(
 	for (const child of node.children ?? []) {
 		await collectObservationEntries(core, child, entries, options);
 	}
+}
+
+interface AriaSnapshotLine {
+	ref: string;
+	role: string;
+	name?: string;
+	states: string[];
+}
+
+export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
+	const entries: AriaSnapshotLine[] = [];
+	for (const line of snapshot.split("\n")) {
+		const ref = /\[ref=(e\d+)\]/.exec(line)?.[1];
+		if (!ref) continue;
+		const role = /^\s*-\s+([^\s["]+)/.exec(line)?.[1];
+		if (!role || role === "/url:") continue;
+		const quotedName = /^\s*-\s+[^\s["]+\s+"((?:[^"\\]|\\.)*)"/.exec(line)?.[1];
+		const states = [...line.matchAll(/\[([^\]]+)\]/g)]
+			.map(match => match[1]!)
+			.filter(state => !state.startsWith("ref=") && !state.startsWith("cursor=") && !state.startsWith("box="));
+		entries.push({
+			ref,
+			role,
+			name: quotedName === undefined ? undefined : JSON.parse(`"${quotedName}"`),
+			states,
+		});
+	}
+	return entries;
+}
+
+async function collectBiDiObservationEntries(
+	core: WorkerCore,
+	page: Page,
+	snapshot: string,
+	options: { viewportOnly: boolean; includeAll: boolean },
+): Promise<ObservationEntry[]> {
+	const entries: ObservationEntry[] = [];
+	for (const node of parseAriaSnapshotLines(snapshot)) {
+		if (!options.includeAll && !INTERACTIVE_AX_ROLES.has(node.role) && node.states.length === 0) continue;
+		const handle = await resolveAriaRefHandle(page, node.ref);
+		if (!handle) continue;
+		let inViewport = true;
+		if (options.viewportOnly) {
+			try {
+				inViewport = await handle.isIntersectingViewport();
+			} catch {
+				inViewport = false;
+			}
+		}
+		if (!inViewport) {
+			await handle.dispose().catch(() => undefined);
+			continue;
+		}
+		const details = (await handle.evaluate(element => {
+			const input = element as unknown as {
+				value?: unknown;
+				disabled?: boolean;
+				checked?: boolean;
+				pressed?: boolean;
+				selected?: boolean;
+				ariaDescription?: string | null;
+				ariaKeyShortcuts?: string | null;
+			};
+			return {
+				value: typeof input.value === "string" || typeof input.value === "number" ? input.value : undefined,
+				description: input.ariaDescription ?? undefined,
+				keyshortcuts: input.ariaKeyShortcuts ?? undefined,
+				disabled: input.disabled === true,
+				checked: typeof input.checked === "boolean" ? input.checked : undefined,
+				pressed: typeof input.pressed === "boolean" ? input.pressed : undefined,
+				selected: typeof input.selected === "boolean" ? input.selected : undefined,
+			};
+		})) as {
+			value?: string | number;
+			description?: string;
+			keyshortcuts?: string;
+			disabled: boolean;
+			checked?: boolean;
+			pressed?: boolean;
+			selected?: boolean;
+		};
+		const states = [...node.states];
+		if (details.disabled && !states.includes("disabled")) states.push("disabled");
+		if (details.checked !== undefined && !states.some(state => state.startsWith("checked="))) {
+			states.push(`checked=${String(details.checked)}`);
+		}
+		if (details.pressed !== undefined && !states.some(state => state.startsWith("pressed="))) {
+			states.push(`pressed=${String(details.pressed)}`);
+		}
+		if (details.selected !== undefined && !states.some(state => state.startsWith("selected="))) {
+			states.push(`selected=${String(details.selected)}`);
+		}
+		const id = core.nextElementId();
+		core.cacheElement(id, handle);
+		entries.push({
+			id,
+			role: node.role,
+			name: node.name,
+			value: details.value,
+			description: details.description,
+			keyshortcuts: details.keyshortcuts,
+			states,
+		});
+	}
+	return entries;
 }
 
 async function resolveActionableQueryHandlerClickTarget(handles: ElementHandle[]): Promise<ElementHandle | null> {
@@ -968,6 +1080,7 @@ export class WorkerCore {
 	#uninstallRejectionGuard: () => void;
 	#mode?: WorkerInitPayload["mode"];
 	#activateForScreenshot = true;
+	#webDriverBiDi = false;
 	#dialogPolicy?: DialogPolicy;
 	#dialogHandler?: (dialog: Dialog) => void;
 	#openDialog?: OpenDialogInfo;
@@ -1052,6 +1165,9 @@ export class WorkerCore {
 			case "run":
 				await this.#run(msg);
 				return;
+			case "select":
+				await this.#selectBiDiContext(msg);
+				return;
 			case "abort":
 				if (this.#active?.id === msg.id) {
 					const reason = msg.expectedCleanup
@@ -1072,10 +1188,12 @@ export class WorkerCore {
 	async #init(payload: WorkerInitPayload): Promise<void> {
 		try {
 			this.#mode = payload.mode;
+			this.#webDriverBiDi = payload.mode === "attach" && payload.protocol === "webDriverBiDi";
 			this.#activateForScreenshot = payload.mode === "headless" || payload.activateForScreenshot !== false;
 			const puppeteer = await loadPuppeteerInWorker(payload.safeDir);
 			this.#browser = await puppeteer.connect({
 				browserWSEndpoint: payload.browserWSEndpoint,
+				protocol: this.#webDriverBiDi ? "webDriverBiDi" : undefined,
 				defaultViewport: null,
 				protocolTimeout: BROWSER_PROTOCOL_TIMEOUT_MS,
 			});
@@ -1096,11 +1214,15 @@ export class WorkerCore {
 				await applyStealthPatches(this.#browser, this.#page, { browserSession: null, override: null });
 				await applyViewport(this.#page, payload.viewport);
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
+			} else if (this.#webDriverBiDi) {
+				this.#page = await pickElectronTarget(this.#browser, {
+					matcher: payload.targetMatcher,
+					preferVisible: payload.activateForScreenshot === false,
+				});
+				this.#observeDialogs();
+				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
 			} else {
 				const target = await this.#findAttachedTarget(payload.targetId);
-				// Post-timeout recycle: unblock the target BEFORE adopting the page — an open
-				// modal dialog or hung navigation can stall `target.page()` / ready info, and a
-				// stalled init used to time out and force-kill the tab.
 				if (payload.recover) await this.#recoverAttachedTarget(target);
 				const page = await target.page();
 				if (!page) throw new ToolError(`Target ${payload.targetId} is no longer available on the attached browser`);
@@ -1116,7 +1238,7 @@ export class WorkerCore {
 					timeout: payload.timeoutMs,
 				});
 			}
-			this.#targetId = await targetIdForPage(this.#page);
+			this.#targetId = await targetIdForPage(this.#page, !this.#webDriverBiDi);
 			this.#transport.send({ type: "ready", info: await this.#currentReadyInfo() });
 		} catch (error) {
 			// A failed headless init leaves the worker's page orphaned in the shared
@@ -1128,6 +1250,48 @@ export class WorkerCore {
 			}
 			this.#transport.send({ type: "init-failed", error: errorPayload(error) });
 		}
+	}
+	async #selectBiDiContext(msg: Extract<WorkerInbound, { type: "select" }>): Promise<void> {
+		try {
+			if (!this.#webDriverBiDi || !this.#browser) {
+				throw new ToolError("Tab selection is available only for Firefox WebDriver BiDi");
+			}
+			await this.#selectBiDiPage(msg.targetId, msg.targetMatcher, msg.dialogs);
+			if (msg.url) {
+				await this.#requirePage().goto(msg.url, {
+					waitUntil: msg.waitUntil ?? "load",
+					timeout: msg.timeoutMs,
+				});
+			}
+			this.#transport.send({ type: "selected", id: msg.id, info: await this.#currentReadyInfo() });
+		} catch (error) {
+			this.#transport.send({ type: "select-failed", id: msg.id, error: errorPayload(error) });
+		}
+	}
+
+	async #selectBiDiPage(targetId?: string, targetMatcher?: string, dialogs?: DialogPolicy): Promise<void> {
+		const browser = this.#requireBrowser();
+		let page: Page | undefined;
+		if (targetId) {
+			for (const candidate of await browser.pages()) {
+				const candidateId = await targetIdForPage(candidate, false).catch(() => "");
+				if (candidateId === targetId) {
+					page = candidate;
+					break;
+				}
+			}
+		}
+		page ??= await pickElectronTarget(browser, {
+			matcher: targetMatcher,
+			preferVisible: true,
+		});
+		if (this.#page !== page) {
+			this.#clearElementCache();
+			this.#page = page;
+			this.#targetId = await targetIdForPage(page, false);
+			this.#observeDialogs();
+		}
+		if (dialogs) this.#applyDialogPolicy(dialogs);
 	}
 
 	async #findAttachedTarget(targetId: string): Promise<Target> {
@@ -1200,7 +1364,7 @@ export class WorkerCore {
 
 	async #currentReadyInfo(): Promise<ReadyInfo> {
 		const page = this.#requirePage();
-		const targetId = this.#targetId ?? (await targetIdForPage(page));
+		const targetId = this.#targetId ?? (await targetIdForPage(page, !this.#webDriverBiDi));
 		this.#targetId = targetId;
 		return {
 			url: redactUrlCredentials(page.url()),
@@ -1278,6 +1442,9 @@ export class WorkerCore {
 		let failure: { error: unknown } | undefined;
 		let runPage: RunPageScope | undefined;
 		try {
+			if (this.#webDriverBiDi && (msg.targetId || msg.targetMatcher)) {
+				await this.#selectBiDiPage(msg.targetId, msg.targetMatcher, this.#dialogPolicy);
+			}
 			throwIfAborted(signal);
 			runPage = createRunPageScope(this.#requirePage());
 			const browser = this.#requireBrowser();
@@ -1841,12 +2008,18 @@ export class WorkerCore {
 		this.#clearElementCache();
 		const includeAll = options.includeAll ?? false;
 		const viewportOnly = options.viewportOnly ?? false;
-		const snapshot = (await untilAborted(options.signal, () =>
-			page.accessibility.snapshot({ interestingOnly: !includeAll }),
-		)) as SerializedAXNode | null;
-		if (!snapshot) throw new ToolError("Accessibility snapshot unavailable");
-		const entries: ObservationEntry[] = [];
-		await collectObservationEntries(this, snapshot, entries, { includeAll, viewportOnly });
+		let entries: ObservationEntry[];
+		if (this.#webDriverBiDi) {
+			const ariaSnapshot = await untilAborted(options.signal, () => captureAriaSnapshot(page, null));
+			entries = await collectBiDiObservationEntries(this, page, ariaSnapshot, { includeAll, viewportOnly });
+		} else {
+			const snapshot = (await untilAborted(options.signal, () =>
+				page.accessibility.snapshot({ interestingOnly: !includeAll }),
+			)) as SerializedAXNode | null;
+			if (!snapshot) throw new ToolError("Accessibility snapshot unavailable");
+			entries = [];
+			await collectObservationEntries(this, snapshot, entries, { includeAll, viewportOnly });
+		}
 		const scroll = (await untilAborted(options.signal, () =>
 			page.evaluate(() => {
 				const win = globalThis as unknown as {
@@ -1891,10 +2064,11 @@ export class WorkerCore {
 		// or hand back a sibling tab's pixels. Activate first; best-effort so an
 		// already-active or freshly-closed target never fails the capture.
 		//
-		// For a user-driven browser, redundant activation would steal window focus.
-		// The supervisor disables it only after adopting the visible tab; if the user
-		// later switches away, reject capture rather than risk sibling-tab pixels.
-		await preparePageForScreenshot(page, signal, this.#activateForScreenshot);
+		// For a user-driven Chromium browser, redundant activation would steal
+		// focus, so a hidden adopted tab fails capture. WebDriver BiDi can activate
+		// the exact browsing context at the point of an explicit screenshot request;
+		// adoption itself remains non-intrusive.
+		await preparePageForScreenshot(page, signal, this.#activateForScreenshot || this.#webDriverBiDi);
 		const fullPage = opts.selector ? false : (opts.fullPage ?? false);
 		const captureType = "png";
 		const captureMime = "image/png" as const;
