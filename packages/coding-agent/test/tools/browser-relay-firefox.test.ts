@@ -7,6 +7,7 @@ import {
 	FirefoxSharedTabRegistry,
 	forceKillTab,
 	getTabsMapForTest,
+	handleTabMessage,
 	publishRecycledWorker,
 	releaseTab,
 	selectFirefoxWorkerTab,
@@ -16,6 +17,7 @@ import {
 import {
 	findBiDiPageByTargetId,
 	isInteractiveAriaSnapshotNode,
+	normalizeAriaSnapshotStates,
 	parseAriaSnapshotLines,
 	resolveAriaState,
 } from "../../src/tools/browser/tab-worker";
@@ -89,6 +91,11 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(resolveAriaState(undefined, null)).toBeUndefined();
 	});
 
+	it("normalizes Firefox focus state and preserves collapsed widgets", () => {
+		expect(normalizeAriaSnapshotStates(["active", "disabled", "focused"])).toEqual(["focused", "disabled"]);
+		expect(resolveAriaState(undefined, "false")).toBe(false);
+	});
+
 	it("delegates discovery to the sole BiDi worker without opening a registry session", async () => {
 		const handle: FirefoxRelayBrowserHandle = {
 			key: `firefox-relay:${DEFAULT_FIREFOX_BIDI_URL}`,
@@ -146,6 +153,30 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(third?.worker).toBe(worker);
 	});
 
+	it("refreshes every Firefox alias that shares the selected context", () => {
+		const browser = createFirefoxHandle("ws://127.0.0.1:9333/session");
+		const worker = {} as WorkerHandle;
+		const first = createFirefoxTab("shared-context-first", browser, worker);
+		const second = createFirefoxTab("shared-context-second", browser, worker);
+		first.targetId = "shared-context";
+		second.targetId = "shared-context";
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(first.name, first);
+		tabs.set(second.name, second);
+
+		const info = {
+			url: "https://updated.example",
+			title: "Updated",
+			viewport: { width: 1280, height: 720 },
+			targetId: "shared-context",
+		};
+		handleTabMessage(first, { type: "ready", info });
+
+		expect(first.info).toBe(info);
+		expect(second.info).toBe(info);
+		tabs.delete(first.name);
+		tabs.delete(second.name);
+	});
 	it("rejects a closed Firefox browsing context instead of falling back to another tab", async () => {
 		const page = { mainFrame: () => ({ _id: "live-context" }) } as unknown as Page;
 		await expect(findBiDiPageByTargetId([page], "closed-context")).rejects.toThrow(

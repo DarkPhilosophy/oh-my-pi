@@ -976,7 +976,7 @@ export async function buildInitPayload(
 	};
 }
 
-function handleTabMessage(tab: WorkerTabSession, msg: WorkerOutbound): void {
+export function handleTabMessage(tab: WorkerTabSession, msg: WorkerOutbound): void {
 	if (msg.type === "result") {
 		const pending = tab.pending.get(msg.id);
 		if (!pending) return;
@@ -989,13 +989,15 @@ function handleTabMessage(tab: WorkerTabSession, msg: WorkerOutbound): void {
 		return;
 	}
 	if (msg.type === "ready") {
-		const owner = [...tabs.values()].find(
-			candidate =>
+		for (const candidate of tabs.values()) {
+			if (
 				candidate.backend === "worker" &&
 				candidate.worker === tab.worker &&
-				candidate.targetId === msg.info.targetId,
-		);
-		if (owner?.backend === "worker") owner.info = msg.info;
+				candidate.targetId === msg.info.targetId
+			) {
+				candidate.info = msg.info;
+			}
+		}
 		return;
 	}
 	if (msg.type === "tool-call") {

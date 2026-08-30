@@ -848,6 +848,11 @@ export function resolveAriaState(nativeValue: unknown, ariaValue: string | null)
 	return undefined;
 }
 
+export function normalizeAriaSnapshotStates(states: readonly string[]): string[] {
+	const normalized = states.map(state => (state === "active" ? "focused" : state));
+	return [...new Set(normalized)];
+}
+
 async function collectBiDiObservationEntries(
 	core: WorkerCore,
 	page: Page,
@@ -878,6 +883,7 @@ async function collectBiDiObservationEntries(
 				checked?: boolean;
 				pressed?: boolean;
 				selected?: boolean;
+				expanded?: boolean;
 				ariaDescription?: string | null;
 				ariaKeyShortcuts?: string | null;
 				getAttribute(name: string): string | null;
@@ -890,9 +896,11 @@ async function collectBiDiObservationEntries(
 				checked: input.checked,
 				pressed: input.pressed,
 				selected: input.selected,
+				expanded: input.expanded,
 				ariaChecked: input.getAttribute("aria-checked"),
 				ariaPressed: input.getAttribute("aria-pressed"),
 				ariaSelected: input.getAttribute("aria-selected"),
+				ariaExpanded: input.getAttribute("aria-expanded"),
 			};
 		})) as {
 			value?: string | number;
@@ -902,14 +910,17 @@ async function collectBiDiObservationEntries(
 			checked?: boolean;
 			pressed?: boolean;
 			selected?: boolean;
+			expanded?: boolean;
 			ariaChecked: string | null;
 			ariaPressed: string | null;
 			ariaSelected: string | null;
+			ariaExpanded: string | null;
 		};
-		const states = [...node.states];
+		const states = normalizeAriaSnapshotStates(node.states);
 		const checked = resolveAriaState(details.checked, details.ariaChecked);
 		const pressed = resolveAriaState(details.pressed, details.ariaPressed);
 		const selected = resolveAriaState(details.selected, details.ariaSelected);
+		const expanded = resolveAriaState(details.expanded, details.ariaExpanded);
 		if (details.disabled && !states.includes("disabled")) states.push("disabled");
 		if (checked !== undefined && !states.some(state => state.split("=", 1)[0] === "checked")) {
 			states.push(`checked=${String(checked)}`);
@@ -919,6 +930,9 @@ async function collectBiDiObservationEntries(
 		}
 		if (selected !== undefined && !states.some(state => state.split("=", 1)[0] === "selected")) {
 			states.push(`selected=${String(selected)}`);
+		}
+		if (expanded !== undefined && !states.some(state => state.split("=", 1)[0] === "expanded")) {
+			states.push(`expanded=${String(expanded)}`);
 		}
 		const id = core.nextElementId();
 		core.cacheElement(id, handle);
