@@ -255,7 +255,6 @@ export class Composer implements TerminalFrameProvider {
 			history,
 			viewport: composed,
 			segments,
-			transientOverflow: transcript.hasActiveBlock() && composed.length > rows,
 		};
 	}
 

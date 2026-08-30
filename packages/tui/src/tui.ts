@@ -23,7 +23,6 @@ import { TuiDebugServer } from "./debug-server";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
 import { LoopWatchdog } from "./loop-watchdog";
-import { parseSgrMouse } from "./mouse";
 import { compositeRightPanelsInRange, type PanelLayoutResult, RIGHT_PANEL_MIN_COL } from "./right-panel";
 import { isConPTYHosted, setAltScreenActive, type Terminal } from "./terminal";
 import {
@@ -109,11 +108,6 @@ const CURSOR_END = SYNC_OUTPUT_END;
 const CURSOR_END_NO_SYNC = "";
 const MOUSE_TRACKING_ON = "\x1b[?1000h\x1b[?1003h\x1b[?1006h";
 const MOUSE_TRACKING_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
-// Main-screen tracking is enabled only while a mutable transcript exceeds the
-// physical viewport. It gives OMP wheel reports for the transient viewport;
-// once the transient region disappears, native mouse selection is restored.
-const TRANSIENT_WHEEL_TRACKING_ON = "\x1b[?1000h\x1b[?1006h";
-const TRANSIENT_WHEEL_TRACKING_OFF = "\x1b[?1006l\x1b[?1000l";
 const ALT_SCREEN_ENTER = "\x1b[?1049h";
 const ALT_SCREEN_EXIT = "\x1b[?1049l";
 
@@ -159,8 +153,6 @@ export interface TerminalFramePlan {
 	readonly history?: HistoryBatch;
 	readonly viewport: readonly string[];
 	readonly segments?: readonly TerminalFrameSegment[];
-	/** A mutable semantic tail currently extends above the physical viewport. */
-	readonly transientOverflow?: boolean;
 }
 
 /** Produces bounded terminal frames and retires acknowledged history batches. */
@@ -1310,7 +1302,6 @@ class TerminalFrameProviderComponent
 	#segments: readonly TerminalFrameSegment[] = [];
 	#acknowledgedIds = new Set<number>();
 	#replayPrepared = false;
-	#transientOverflow = false;
 
 	constructor(
 		readonly provider: TerminalFrameProvider,
@@ -1330,7 +1321,6 @@ class TerminalFrameProviderComponent
 			}
 			this.provider.acknowledgeHistory(plan.history.id);
 		}
-		this.#transientOverflow = plan.transientOverflow === true;
 		this.#viewport = plan.viewport;
 		this.#segments = plan.segments ?? [];
 		return [...this.#history, ...this.#viewport];
@@ -1352,9 +1342,6 @@ class TerminalFrameProviderComponent
 			this.provider.renderResizeFrame?.({ columns: width, rows: maxRows }) ??
 			this.provider.renderFrame({ columns: width, rows: maxRows }).viewport;
 		return rows.length > maxRows ? rows.slice(rows.length - maxRows) : rows;
-	}
-	hasTransientOverflow(): boolean {
-		return this.#transientOverflow;
 	}
 
 	getNativeScrollbackLiveRegionStart(): number {
@@ -1680,7 +1667,6 @@ export class TUI extends Container {
 	#hasStarted = false;
 	/** True between a `deferInput` start() and enableInput(). */
 	#inputDeferred = false;
-	#transientWheelTrackingActive = false;
 	// Always-on event-loop lag probe. The high default threshold keeps it quiet;
 	// it only logs `ui.loop-blocked` (with the current loop phase) when a frame
 	// budget is genuinely starved. Armed in start(), disarmed in stop().
@@ -2765,17 +2751,6 @@ export class TUI extends Container {
 		this.#cursorBeginSequence = enabled ? CURSOR_BEGIN : CURSOR_BEGIN_NO_SYNC;
 		this.#cursorEndSequence = enabled ? CURSOR_END : CURSOR_END_NO_SYNC;
 	}
-	#syncTransientWheelTracking(): void {
-		const enabled =
-			this.#hasStarted &&
-			!this.#stopped &&
-			!this.#altActive &&
-			(this.#frameProviderComponent?.hasTransientOverflow() === true || !this.#viewportFollowsBottom);
-		if (enabled === this.#transientWheelTrackingActive) return;
-		this.terminal.write(enabled ? TRANSIENT_WHEEL_TRACKING_ON : TRANSIENT_WHEEL_TRACKING_OFF);
-		this.#transientWheelTrackingActive = enabled;
-	}
-
 	stop(): void {
 		// Leave the resize alt buffer first so the teardown cursor math below runs
 		// against the restored normal screen (which #previousLines still describes).
@@ -2793,10 +2768,6 @@ export class TUI extends Container {
 			this.#altMouseTrackingActive = false;
 			this.#altPreviousLines = [];
 			this.#pendingAltExit = "";
-		}
-		if (this.#transientWheelTrackingActive) {
-			this.terminal.write(TRANSIENT_WHEEL_TRACKING_OFF);
-			this.#transientWheelTrackingActive = false;
 		}
 		// Keep transmitted Kitty data alive: committed scrollback placeholders
 		// remain visible after the interactive process exits.
@@ -3690,13 +3661,6 @@ export class TUI extends Container {
 			}
 		}
 
-		if (this.#transientWheelTrackingActive && data.startsWith("\x1b[<")) {
-			const event = parseSgrMouse(data);
-			if (event?.wheel) {
-				this.scrollViewportBy(event.wheel, true);
-				return;
-			}
-		}
 		if (this.#frameProviderComponent !== undefined && this.#getTopmostVisibleOverlay() === undefined) {
 			if (matchesKey(data, "ctrl+alt+up")) {
 				this.scrollViewportBy(-1, true);
@@ -4271,7 +4235,6 @@ export class TUI extends Container {
 			rawFrame = this.render(width);
 			this.#imageBudget.endPass();
 		}
-		this.#syncTransientWheelTracking();
 		// Ghostty initial-image deferral must run before any render state is
 		// consumed (#resizeEventPending, hardware-cursor state, commit
 		// re-anchoring): the early return abandons this frame and the deferred

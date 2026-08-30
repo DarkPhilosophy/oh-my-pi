@@ -300,7 +300,7 @@ describe("terminal frame plans", () => {
 		expect(output).not.toContain("\x1b[?1006h");
 		tui.stop();
 	});
-	it("keeps wheel tracking until a finalized transient viewport returns to bottom", () => {
+	it("preserves native selection while a transient viewport overflows", () => {
 		const terminal = new VirtualTerminal(20, 3);
 		const writes: string[] = [];
 		const realWrite = terminal.write.bind(terminal);
@@ -310,27 +310,17 @@ describe("terminal frame plans", () => {
 		});
 		const provider = new Provider({
 			viewport: ["history-0", "history-1", "history-2", "history-3", "history-4", "live-0", "live-1", "live-2"],
-			transientOverflow: true,
 		});
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
 		tui.start();
 
-		expect(writes.join("")).toContain("\x1b[?1000h\x1b[?1006h");
+		const output = writes.join("");
+		expect(output).not.toContain("\x1b[?1000h");
+		expect(output).not.toContain("\x1b[?1003h");
+		expect(output).not.toContain("\x1b[?1006h");
 		terminal.sendInput("\x1b[<64;1;1M");
-		expect(tui.getViewportPosition()).toEqual({ above: 4, below: 1 });
-		expect(terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd())[0]).toContain("↑4 ↓1");
-
-		const trackingOffBeforeFinalize = writes.filter(data => data.includes("\x1b[?1006l\x1b[?1000l")).length;
-		provider.plan = { viewport: ["final-0", "final-1", "final-2"] };
-		tui.requestRender(true);
-		expect(writes.filter(data => data.includes("\x1b[?1006l\x1b[?1000l"))).toHaveLength(trackingOffBeforeFinalize);
-
-		terminal.sendInput("\x1b[<65;1;1M");
 		expect(tui.isViewportFollowingBottom()).toBeTrue();
-		expect(writes.filter(data => data.includes("\x1b[?1006l\x1b[?1000l"))).toHaveLength(
-			trackingOffBeforeFinalize + 1,
-		);
 		tui.stop();
 	});
 
