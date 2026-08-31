@@ -3235,6 +3235,29 @@ describe("framed code review follow-ups", () => {
 		}
 	});
 
+	it("advances copy recovery past leaves whose OSC terminators normalize", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			const st = "\x1b\\";
+			const source = `<!-- \x1b]8;;https://example.com${st}\n\`\`\`js\nwrong\n\`\`\`\n-->\n- \`\`\`js\n  right\n  \`\`\``;
+			new Markdown(source, 0, 0, theme).render(80);
+			expect(captured).toBe("right");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
 	it("advances copy recovery past Mermaid code without a copy target", () => {
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;
