@@ -3046,6 +3046,17 @@ export class TUI extends Container {
 	 * blank base — the transcript is never touched while the alt buffer is up.
 	 */
 	#renderAltFrame(width: number, height: number): void {
+		this.#imageBudget.beginPass();
+		const blocks = this.#rightPanelProvider?.(width) ?? [];
+		this.#imageBudget.endPass();
+		if (blocks.length > 0) {
+			this.#rightPanelLayoutCallback?.({
+				placedBlockIndices: [],
+				hiddenBlockIndices: blocks.map((_, index) => index),
+				availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
+				searchRows: 0,
+			});
+		}
 		const base: string[] = new Array(Math.max(0, height)).fill("");
 		let lines = this.#compositeOverlaysIntoWindow(base, width, height);
 		this.#extractCursorMarkers(lines);

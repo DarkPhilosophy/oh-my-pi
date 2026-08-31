@@ -529,6 +529,7 @@ describe("TUI.setRightPanel", () => {
 				anchor: "top-left",
 				width: 80,
 				maxHeight: 3,
+				fullscreen: true,
 			});
 			await settle(term);
 			expect(term.getViewport().some(line => line.includes("<W0>"))).toBeFalse();
