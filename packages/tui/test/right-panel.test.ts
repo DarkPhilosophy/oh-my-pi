@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { type Component, type PanelLayoutResult, TUI } from "@oh-my-pi/pi-tui";
+import { type Component, type PanelLayoutResult, type TerminalFrameProvider, TUI } from "@oh-my-pi/pi-tui";
 import { RESERVED_IMAGE_ROW } from "../src/components/image";
 import { compositeRightPanel, compositeRightPanels } from "../src/right-panel";
 import { VirtualTerminal } from "./virtual-terminal";
@@ -436,10 +436,23 @@ describe("TUI.setRightPanel", () => {
 	it("keeps scrolled-off rows free of panel text when content exceeds the viewport", async () => {
 		const term = new VirtualTerminal(80, 12, 1000);
 		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
-		const chat = new Lines(Array.from({ length: 30 }, (_, i) => `msg-${i}`));
+		const chat = new Lines(Array.from({ length: 11 }, (_, i) => `msg-${i + 19}`));
 		const chrome = new Lines(["[editor]"]);
-		tui.addChild(chat);
-		tui.addChild(chrome);
+		let historyPending = true;
+		const provider: TerminalFrameProvider = {
+			renderFrame: () => ({
+				history: historyPending ? { id: 1, rows: Array.from({ length: 19 }, (_, i) => `msg-${i}`) } : undefined,
+				viewport: [...chat.render(), ...chrome.render()],
+				segments: [
+					{ component: chat, start: 0, rowCount: 11 },
+					{ component: chrome, start: 11, rowCount: 1 },
+				],
+			}),
+			acknowledgeHistory: () => {
+				historyPending = false;
+			},
+		};
+		tui.setFrameProvider(provider);
 		tui.setRightPanel(() => [["<W0>", "<W1>", "<W2>"]], [chat]);
 		tui.start();
 		await settle(term);

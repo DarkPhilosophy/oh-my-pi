@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { Container, type RightPanelBlockInput } from "@oh-my-pi/pi-tui";
+import { Container, type RightPanelBlock, type RightPanelBlockInput } from "@oh-my-pi/pi-tui";
 import type { ExtensionUiComponentFactory } from "../src/extensibility/extensions";
 import { ExtensionUiController } from "../src/modes/controllers/extension-ui-controller";
 import type { InteractiveModeContext } from "../src/modes/types";
@@ -14,7 +14,7 @@ function makeCtx(): {
 	const rightInfo: (string[][] | undefined)[] = [];
 	let provider: ((width: number) => readonly RightPanelBlockInput[]) | undefined;
 	const snapshot = (width = 80): string[][] | undefined =>
-		provider?.(width).map(block => [...(Array.isArray(block) ? block : block.lines)]);
+		provider?.(width).map(block => [...(Array.isArray(block) ? block : (block as RightPanelBlock).lines)]);
 	const ctx = {
 		hookWidgetContainerAbove: new Container(),
 		hookWidgetContainerBelow: new Container(),
