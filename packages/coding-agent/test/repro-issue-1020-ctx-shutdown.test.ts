@@ -118,6 +118,11 @@ describe("issue #1020 - ctx.shutdown() in interactive mode", () => {
 				initializeCount += 1;
 			},
 			onError(_handler: (error: unknown) => void): void {},
+			disposeFileFallbacks(): void {},
+			clearManagedTimers(): void {},
+			getComposerShapes(): readonly [] {
+				return [];
+			},
 			hasHandlers(event: string): boolean {
 				return event === "session_shutdown";
 			},
@@ -139,6 +144,8 @@ describe("issue #1020 - ctx.shutdown() in interactive mode", () => {
 			setWorkingMessage: () => {},
 			setRightInfo: (_blocks?: unknown) => {},
 			setEditorComponent: () => {},
+			syncComposerShape: () => {},
+			syncEditorSpelling: () => {},
 			toolOutputExpanded: false,
 			setToolsExpanded: () => {},
 			hookWidgetContainerAbove: new Container(),

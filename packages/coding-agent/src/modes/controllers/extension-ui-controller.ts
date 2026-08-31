@@ -1416,6 +1416,7 @@ export class ExtensionUiController {
 	}
 
 	clearHookWidgets(): void {
+		const hadHookWidgets = this.#hookWidgetsAbove.size > 0 || this.#hookWidgetsBelow.size > 0;
 		for (const widget of this.#hookWidgetsAbove.values()) {
 			widget.dispose?.();
 		}
@@ -1424,13 +1425,14 @@ export class ExtensionUiController {
 		}
 		this.#hookWidgetsAbove.clear();
 		this.#hookWidgetsBelow.clear();
+		const hadRightWidgets = this.#rightWidgets.size > 0;
 		for (const widget of this.#rightWidgets.values()) {
 			this.#disposeRightWidgetEntry(widget);
 		}
 		this.#rightWidgets.clear();
 		this.#widgetLayoutCache.clear();
-		this.#flushRightWidgets();
-		this.#rebuildHookWidgets();
+		if (hadRightWidgets) this.#flushRightWidgets();
+		if (hadHookWidgets) this.#rebuildHookWidgets();
 	}
 
 	clearExtensionTerminalInputListeners(): void {
