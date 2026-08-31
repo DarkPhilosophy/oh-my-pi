@@ -2395,7 +2395,6 @@ export class StatusLineComponent implements Component {
 	}
 
 	getTopBorder(width: number, previewTitle?: string): { content: string; width: number; revision: number } {
-		if (this.session) return { content: "", width: 0, revision: this.#renderRevision };
 		const content = this.#dimWhileFocusProxied(this.#buildStatusLine(width, "box", previewTitle));
 		return {
 			content,

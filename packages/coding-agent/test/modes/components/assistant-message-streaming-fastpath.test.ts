@@ -43,6 +43,15 @@ beforeEach(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 });
+it("reports settled rows for the last transient markdown block", () => {
+	const component = new AssistantMessageComponent();
+	component.updateContent(msg([{ type: "text", text: "Paragraph 1\n\nParagraph 2\n\nParagraph 3" }]), {
+		transient: true,
+	});
+	component.render(80);
+	// Paragraph 1 and 2 are fully formed, plus padding.
+	expect(component.getTranscriptBlockSettledRows()).toBeGreaterThan(0);
+});
 
 afterEach(() => {
 	resetSettingsForTest();

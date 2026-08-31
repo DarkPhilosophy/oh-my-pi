@@ -402,6 +402,47 @@ export class AssistantMessageComponent extends Container {
 		return this.#transcriptBlockFinalized;
 	}
 
+	#lastRenderSettledRows = 0;
+
+	override render(width: number): readonly string[] {
+		this.#lastRenderSettledRows = 0;
+		const result = super.render(width);
+
+		if (
+			this.#lastUpdateTransient &&
+			this.#fastPathItems &&
+			this.#fastPathItems.length > 0 &&
+			!this.#errorPinned &&
+			this.#kittyConversionsInFlight.size === 0
+		) {
+			const lastFastPathItem = this.#fastPathItems[this.#fastPathItems.length - 1]!;
+			const lastMarkdown = lastFastPathItem.md;
+			const mdSettled = lastMarkdown.getLastRenderSettledRows();
+
+			if (mdSettled > 0) {
+				let offset = this.#markerSlot.render(width).length;
+				let valid = true;
+				for (const child of this.#contentContainer.children) {
+					if (child === lastMarkdown) break;
+					if (!(child instanceof Markdown) && !(child instanceof Spacer)) {
+						valid = false;
+						break;
+					}
+					offset += child.render(width).length;
+				}
+				if (valid) {
+					this.#lastRenderSettledRows = offset + mdSettled;
+				}
+			}
+		}
+
+		return result;
+	}
+
+	getTranscriptBlockSettledRows(): number {
+		return this.#lastRenderSettledRows;
+	}
+
 	getTranscriptBlockVersion(): number {
 		return this.#blockVersion;
 	}

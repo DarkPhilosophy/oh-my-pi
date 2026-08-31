@@ -545,11 +545,14 @@ export class TranscriptContainer
 		if (start >= this.children.length) return undefined;
 		const frontierRows = this.#providerFrontierRows;
 		const rendered: Array<readonly string[]> = [];
+		const rawRendered: Array<readonly string[]> = [];
 		let total = 0;
 		let visible = 0;
 		for (let index = start; index < this.children.length; index++) {
 			this.#setProviderAllocation(this.children[index]!, Number.MAX_SAFE_INTEGER, frame);
-			let block = stripPlainBlankEdges(this.children[index]!.render(width));
+			const raw = this.children[index]!.render(width);
+			rawRendered.push(raw);
+			let block = stripPlainBlankEdges(raw);
 			if (index === start && frontierRows > 0) block = block.slice(frontierRows);
 			rendered.push(block);
 			if (block.length > 0) total += block.length + (visible++ > 0 ? 1 : 0);
@@ -576,12 +579,18 @@ export class TranscriptContainer
 		let offeredFrontierRows = 0;
 		if (end < this.children.length && total - freed > room) {
 			const child = this.children[end]!;
+			const raw = rawRendered[end - start] ?? EMPTY_TAIL;
+			let lead = 0;
+			while (lead < raw.length && isPlainBlank(raw[lead]!)) lead++;
 			const block = rendered[end - start] ?? EMPTY_TAIL;
-			const settledRows = Math.max(0, Math.min(block.length, getBlockSettledRows(child) - frontierRows));
+			const settledRaw = getBlockSettledRows(child);
+			const fullMapped = settledRaw > 0 ? Math.max(0, settledRaw - lead) : 0;
+			const effectiveFrontier = end === start ? frontierRows : 0;
+			const settledRows = Math.max(0, Math.min(block.length, fullMapped - effectiveFrontier));
 			if (settledRows > 0) {
 				if (rows.length > 0) rows.push("");
 				rows.push(...block.slice(0, settledRows));
-				offeredFrontierRows = frontierRows + settledRows;
+				offeredFrontierRows = effectiveFrontier + settledRows;
 			}
 		}
 		if (rows.length === 0) return undefined;

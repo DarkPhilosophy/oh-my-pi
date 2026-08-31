@@ -235,7 +235,7 @@ export class Composer implements TerminalFrameProvider {
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
 		const before = [...headerRows, ...pre.rows];
-		const active = transcript.renderViewport(width, Number.MAX_SAFE_INTEGER, frame);
+		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - after.length), frame);
 		const composed = [...before, ...active, ...after];
 		const segments: TerminalFrameSegment[] = [];
 		if (headerRows.length > 0) segments.push({ component: this.#header, start: 0, rowCount: headerRows.length });
@@ -252,7 +252,6 @@ export class Composer implements TerminalFrameProvider {
 			const visibleHeaderRows = Math.max(0, rows - composed.length);
 			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
 		}
-		const offset = Math.max(0, composed.length - rows);
 		return {
 			history,
 			viewport: composed,

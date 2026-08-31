@@ -28,6 +28,12 @@ class Block implements Component {
 	render(): readonly string[] {
 		return this.#rows;
 	}
+
+	getTranscriptBlockSettledRows?(): number;
+
+	setSettledRows(n: number): void {
+		this.getTranscriptBlockSettledRows = () => n;
+	}
 }
 
 class AllocationAwareBlock implements Component {
@@ -201,6 +207,55 @@ describe("TranscriptContainer", () => {
 		expect(transcript.canRemoveBlock(settled)).toBe(false);
 		transcript.removeChild(settled);
 		expect(transcript.blockStates()).toEqual(["committed", "active"]);
+	});
+
+	it("retires the declared settled rows of a still-live block", () => {
+		const transcript = new TranscriptContainer();
+		const block = new Block(["live 1", "live 2", "live 3"], false);
+		block.setSettledRows(2);
+		transcript.addChild(block);
+
+		// Under zero capacity, the settled prefix is offered.
+		const batch = transcript.peekFinalizedBatch(80, 0);
+		expect(batch?.rows).toEqual(["live 1", "live 2"]);
+
+		// The live viewport excludes the offered prefix.
+		expect(transcript.renderViewport(80, 10, frame)).toEqual(["live 3"]);
+
+		transcript.acknowledgeFinalizedBatch(batch!.id);
+
+		// After acknowledgment, the prefix remains excluded.
+		expect(transcript.renderViewport(80, 10, frame)).toEqual(["live 3"]);
+	});
+
+	it("correctly maps raw settled rows to stripped live blocks when offering history", () => {
+		const transcript = new TranscriptContainer();
+		// 2 leading blanks, 3 content rows, 1 trailing blank. Total 6 rows.
+		const block = new Block(["", "  ", "live 1", "live 2", "live 3", ""], false);
+		transcript.addChild(block);
+
+		// 4 raw rows settled: the 2 leading blanks, "live 1", and "live 2".
+		block.setSettledRows(4);
+
+		// With zero capacity, it forces the settled prefix out into history.
+		const batch = transcript.peekFinalizedBatch(80, 0);
+		// The leading blanks are stripped from both the history batch and the viewport.
+		// The mapped settled length is 4 - 2 = 2 rows of the stripped content.
+		expect(batch?.rows).toEqual(["live 1", "live 2"]);
+
+		// The live viewport should contain only the remaining stripped content row.
+		expect(transcript.renderViewport(80, 10, frame)).toEqual(["live 3"]);
+
+		transcript.acknowledgeFinalizedBatch(batch!.id);
+
+		// Increase settled raw rows to 5 (includes "live 3").
+		block.setSettledRows(5);
+
+		const batch2 = transcript.peekFinalizedBatch(80, 0);
+		// Remaining settled stripped rows: 5 - 2 = 3. We already offered 2, so 1 more is offered.
+		expect(batch2?.rows).toEqual(["live 3"]);
+
+		expect(transcript.renderViewport(80, 10, frame)).toEqual([]);
 	});
 
 	it("reoffers committed history after an explicit destructive reset", () => {
