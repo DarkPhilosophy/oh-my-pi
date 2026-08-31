@@ -5,6 +5,10 @@
 ### Fixed
 
 - Fixed local Linux native builds failing to link vendored static Opus when CMake installs libraries under `lib64`.
+### Added
+
+- Added persistent clipboard-write and clipboard-read APIs through the public `@oh-my-pi/pi-natives/clipboard` entry point.
+
 ## [18.0.11] - 2026-08-29
 
 ### Fixed
@@ -52,6 +56,7 @@
 
 - Added asynchronous, size-bounded SVG-to-PNG rasterization for terminal media previews.
 - Added the `DiffStream` API for processing text and byte input incrementally, opening files asynchronously, reporting stable-prefix progress, generating exact unified diffs, and warming syntax grammars asynchronously.
+- Added `DiffStream` for incremental text/byte ingestion, direct asynchronous file opening, stable-prefix progress, off-thread exact Myers runs/unified hunks, and asynchronous syntax-grammar warmup.
 
 ## [18.0.3] - 2026-08-23
 
