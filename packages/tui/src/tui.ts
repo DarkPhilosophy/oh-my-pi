@@ -18,6 +18,7 @@ import { $flag, getDebugLogPath, logger } from "@oh-my-pi/pi-utils";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget, RESERVED_IMAGE_ROW } from "./components/image";
 import { TuiDebugServer } from "./debug-server";
 import { isKeyRelease, matchesKey } from "./keys";
+import { parseKittyVirtualPlacementImageId } from "./kitty-graphics";
 import { LoopWatchdog } from "./loop-watchdog";
 import {
 	compositeRightPanelsInRange,
@@ -957,7 +958,7 @@ export class TUI extends Container {
 			0,
 			viewport.length,
 			(line, index) => occupied[index] === true || TERMINAL.isImageLine(line),
-			line => TERMINAL.isImageEscapeLine(line),
+			line => TERMINAL.isImageEscapeLine(line) && parseKittyVirtualPlacementImageId(line) === undefined,
 			onLayout,
 		);
 	}
@@ -983,8 +984,8 @@ export class TUI extends Container {
 			const input = blocks[index]!;
 			const lines = "lines" in input ? input.lines : input;
 			for (const line of lines) {
-				const placement = parseKittyDirectPlacementLine(line);
-				if (placement) imageIds.add(placement.imageId);
+				const imageId = parseKittyDirectPlacementLine(line)?.imageId ?? parseKittyVirtualPlacementImageId(line);
+				if (imageId !== undefined) imageIds.add(imageId);
 			}
 		}
 		this.#imageBudget.retainPassSince(passMark, imageIds);
