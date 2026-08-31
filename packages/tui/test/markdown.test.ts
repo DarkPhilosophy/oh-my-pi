@@ -3195,6 +3195,74 @@ describe("framed code review follow-ups", () => {
 		}
 	});
 
+	it("preserves raw OSC terminators in copied fenced source", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const st = "\x1b\\";
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			new Markdown(`\`\`\`sh\nprintf '${st}'\n\`\`\``, 0, 0, theme).render(80);
+			new Markdown(`\`\`\`sh\nprintf '\x07'\n\`\`\``, 0, 0, theme).render(80);
+			expect(captured).toEqual([`printf '${st}'`, "printf '\x07'"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("advances copy recovery past leaves whose OSC terminators normalize", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			const st = "\x1b\\";
+			const source = `<!-- \x1b]8;;https://example.com${st}\n\`\`\`js\nwrong\n\`\`\`\n-->\n- \`\`\`js\n  right\n  \`\`\``;
+			new Markdown(source, 0, 0, theme).render(80);
+			expect(captured).toBe("right");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("advances copy recovery past Mermaid code without a copy target", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+				resolveMermaidAscii: (source: string) => (source.includes("wrong") ? "diagram" : null),
+			};
+			const source = "```mermaid\nwrong\n```\n\n- ```mermaid\n  right\n  ```";
+			new Markdown(source, 0, 0, theme).render(80);
+			expect(captured).toBe("right");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
 	it("anchors nested opening-fence recovery to a real fence line", () => {
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;

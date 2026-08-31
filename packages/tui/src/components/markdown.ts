@@ -69,6 +69,46 @@ const OSC8_ST_PREFIX_REGEX = /(\x1b\]8;[^\x07\x1b]*)\x1b\\/g;
 function normalizeOsc8Terminators(text: string): string {
 	return text.replace(OSC8_ST_PREFIX_REGEX, "$1\x07");
 }
+
+function findNormalizedOsc8Span(
+	source: string,
+	needle: string,
+	start: number,
+): { start: number; end: number } | undefined {
+	const normalizedNeedle = normalizeOsc8Terminators(needle);
+	const suffix = source.slice(start);
+	const normalizedParts: string[] = [];
+	const rawBoundaries: number[] = [start];
+	let rawCursor = 0;
+	OSC8_ST_PREFIX_REGEX.lastIndex = 0;
+	for (let match = OSC8_ST_PREFIX_REGEX.exec(suffix); match; match = OSC8_ST_PREFIX_REGEX.exec(suffix)) {
+		const unchanged = suffix.slice(rawCursor, match.index);
+		normalizedParts.push(unchanged);
+		for (let index = 0; index < unchanged.length; index++) rawBoundaries.push(start + rawCursor + index + 1);
+		const prefix = match[1]!;
+		normalizedParts.push(prefix, "\x07");
+		for (let index = 0; index < prefix.length; index++) rawBoundaries.push(start + match.index + index + 1);
+		rawBoundaries.push(start + match.index + match[0].length);
+		rawCursor = match.index + match[0].length;
+	}
+	const tail = suffix.slice(rawCursor);
+	normalizedParts.push(tail);
+	for (let index = 0; index < tail.length; index++) rawBoundaries.push(start + rawCursor + index + 1);
+	const normalizedSource = normalizedParts.join("");
+	const normalizedStart = normalizedSource.indexOf(normalizedNeedle);
+	if (normalizedStart < 0) return undefined;
+	return {
+		start: rawBoundaries[normalizedStart]!,
+		end: rawBoundaries[normalizedStart + normalizedNeedle.length]!,
+	};
+}
+
+/** The longest suffix of `text` a future append could still complete into a
+ *  full `\x1b]8;[^\x07\x1b]*\x1b\\` match: the last `\x1b]8;` plus clean
+ *  body (or that plus the pending ST-ESC `\x1b`), or a strict prefix of the
+ *  escape start. Any other suffix is already normalized or uncompletable
+ *  (a BEL or an ESC follows it), so this is exactly the region a crossing
+ *  match can occupy. */
 function trailingOsc8Partial(text: string): string | undefined {
 	const start = text.lastIndexOf("\x1b]8;");
 	if (start !== -1) {
@@ -2451,6 +2491,13 @@ export class Markdown
 		return MARKDOWN_FENCE_LINE.test(firstLine);
 	}
 
+	#findCopySourceSpan(raw: string): { start: number; end: number } | undefined {
+		const start = this.#copySourceSearchCursor;
+		const exactStart = this.#expandedSourceText.indexOf(raw, start);
+		if (exactStart >= 0) return { start: exactStart, end: exactStart + raw.length };
+		return findNormalizedOsc8Span(this.#expandedSourceText, raw, start);
+	}
+
 	/**
 	 * Advance the raw-source lookup past a rendered leaf token. Container tokens
 	 * recurse into their children, while code tokens advance from the exact span
@@ -2460,11 +2507,17 @@ export class Markdown
 		if (token.type === "code" || token.type === "list" || token.type === "blockquote") return;
 		const raw = "raw" in token && typeof token.raw === "string" ? replaceTabs(token.raw) : "";
 		if (!raw) return;
-		const expandedSource = this.#expandedSourceText;
-		const offset = expandedSource.indexOf(raw, this.#copySourceSearchCursor);
-		if (offset >= 0) this.#copySourceSearchCursor = offset + raw.length;
+		const span = this.#findCopySourceSpan(raw);
+		if (span) this.#copySourceSearchCursor = span.end;
 	}
 
+	/** Advance across a cached top-level token whose nested rows were spliced. */
+	#advanceSplicedCopySourceCursor(token: Token): void {
+		const raw = "raw" in token && typeof token.raw === "string" ? replaceTabs(token.raw) : "";
+		if (!raw) return;
+		const span = this.#findCopySourceSpan(raw);
+		if (span) this.#copySourceSearchCursor = span.end;
+	}
 	/** Recover the source body for copy targets after display tab expansion. */
 	#originalCodeBody(token: Token): string {
 		const fallback = "text" in token && typeof token.text === "string" ? token.text : "";
@@ -2477,8 +2530,9 @@ export class Markdown
 		if (!rawForSpan) return fallback;
 		const expandedSource = this.#expandedSourceText;
 		const searchStart = this.#copySourceSearchCursor;
-		let expandedStart = expandedSource.indexOf(rawForSpan, searchStart);
-		let expandedEnd = expandedStart >= 0 ? expandedStart + rawForSpan.length : -1;
+		const sourceSpan = this.#findCopySourceSpan(rawForSpan);
+		let expandedStart = sourceSpan?.start ?? -1;
+		let expandedEnd = sourceSpan?.end ?? -1;
 		if (expandedStart < 0) {
 			// Nested tokens lose their container prefixes, so `raw` is not a
 			// contiguous substring of the source. Locate the opening and actual
