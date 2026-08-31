@@ -178,6 +178,7 @@ export function compositeRightPanelsInRange(
 		const block = isRightPanelBlock(input) ? input.lines : input;
 		if (block.length === 0) continue;
 		const normalizedBlock = normalizePanelBlock(block);
+		if (normalizedBlock.some((line, index) => isBackfilledOccupiedLine(line, index))) continue;
 		let panelWidth = 0;
 		for (const line of normalizedBlock) panelWidth = Math.max(panelWidth, visibleWidth(line));
 		const col = width - panelWidth - 1; // 1-col gap from the panel

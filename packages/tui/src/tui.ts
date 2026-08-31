@@ -15,7 +15,7 @@
 import * as fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import { $flag, getDebugLogPath, logger } from "@oh-my-pi/pi-utils";
-import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
+import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget, RESERVED_IMAGE_ROW } from "./components/image";
 import { TuiDebugServer } from "./debug-server";
 import { isKeyRelease, matchesKey } from "./keys";
 import { LoopWatchdog } from "./loop-watchdog";
@@ -858,6 +858,7 @@ export class TUI extends Container {
 	#rightPanelProvider: ((width: number) => readonly RightPanelBlockInput[]) | null = null;
 	#rightPanelTargets: Set<Component> | null = null;
 	#rightPanelLayoutCallback: ((result: PanelLayoutResult) => void) | null = null;
+	#rightPanelBlockCount = 0;
 	#providerSegments: readonly TerminalFrameSegment[] = [];
 
 	constructor(terminal: Terminal, showHardwareCursor?: boolean, options?: TUIOptions) {
@@ -889,6 +890,7 @@ export class TUI extends Container {
 		onLayout?: (result: PanelLayoutResult) => void,
 	): void {
 		this.#rightPanelProvider = provider;
+		if (provider === null) this.#rightPanelBlockCount = 0;
 		this.#rightPanelTargets =
 			provider !== null && targets !== undefined && targets.length > 0 ? new Set(targets) : null;
 		this.#rightPanelLayoutCallback = onLayout ?? null;
@@ -899,6 +901,7 @@ export class TUI extends Container {
 		const provider = this.#rightPanelProvider;
 		if (provider === null) return viewport;
 		const blocks = preparedBlocks ?? provider(width);
+		this.#rightPanelBlockCount = blocks.length;
 		if (blocks.length === 0) return viewport;
 		if (this.#getTopmostVisibleOverlay() !== undefined) {
 			this.#rightPanelLayoutCallback?.({
@@ -2946,9 +2949,11 @@ export class TUI extends Container {
 	 * reserved row of a scale ≥ 3 heading is covered, not just the first.
 	 */
 	#osc66SpacerGlyphWidth(lines: readonly string[], index: number): number {
-		if (index <= 0 || lines[index] !== "") return -1;
+		const isReservedSpacer = (line: string | undefined): boolean =>
+			line === "" || (line !== undefined && visibleWidth(line) === 0 && line.includes(RESERVED_IMAGE_ROW));
+		if (index <= 0 || !isReservedSpacer(lines[index])) return -1;
 		let gap = 1;
-		while (gap < TUI.#OSC66_MAX_SPACER_ROWS && index - gap > 0 && lines[index - gap] === "") {
+		while (gap < TUI.#OSC66_MAX_SPACER_ROWS && index - gap > 0 && isReservedSpacer(lines[index - gap])) {
 			gap++;
 		}
 		const above = lines[index - gap];
@@ -3046,13 +3051,11 @@ export class TUI extends Container {
 	 * blank base — the transcript is never touched while the alt buffer is up.
 	 */
 	#renderAltFrame(width: number, height: number): void {
-		this.#imageBudget.beginPass();
-		const blocks = this.#rightPanelProvider?.(width) ?? [];
-		this.#imageBudget.endPass();
-		if (blocks.length > 0) {
+		const blockCount = this.#rightPanelBlockCount;
+		if (blockCount > 0) {
 			this.#rightPanelLayoutCallback?.({
 				placedBlockIndices: [],
-				hiddenBlockIndices: blocks.map((_, index) => index),
+				hiddenBlockIndices: Array.from({ length: blockCount }, (_, index) => index),
 				availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
 				searchRows: 0,
 			});
