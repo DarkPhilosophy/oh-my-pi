@@ -21,6 +21,7 @@ InterruptMode: TypeAlias = Literal["immediate", "wait"]
 StopReason: TypeAlias = Literal["stop", "length", "toolUse", "error", "aborted"]
 NotifyType: TypeAlias = Literal["info", "warning", "error"]
 WidgetPlacement: TypeAlias = Literal["aboveEditor", "belowEditor", "rightEditor"]
+WidgetAlignment: TypeAlias = Literal["top", "bottom"]
 TodoStatus: TypeAlias = Literal[
     "pending", "in_progress", "completed", "abandoned", "blocked"
 ]
@@ -79,6 +80,7 @@ _NOTIFY_TYPE_VALUES: Final[frozenset[str]] = frozenset({"info", "warning", "erro
 _WIDGET_PLACEMENT_VALUES: Final[frozenset[str]] = frozenset(
     {"aboveEditor", "belowEditor", "rightEditor"}
 )
+_WIDGET_ALIGNMENT_VALUES: Final[frozenset[str]] = frozenset({"top", "bottom"})
 _TODO_STATUS_VALUES: Final[frozenset[str]] = frozenset(
     {"pending", "in_progress", "completed", "abandoned", "blocked"}
 )
@@ -301,8 +303,20 @@ def _tuple_of_widget_blocks(values: object, *, field: str) -> tuple[ExtensionWid
         if lines is None:
             raise ValueError(f"{item_field}.lines must contain at least one string")
         priority = _optional_number(item, "priority")
+        alignment = cast(
+            WidgetAlignment | None,
+            _optional_literal(
+                item.get("alignment"),
+                _WIDGET_ALIGNMENT_VALUES,
+                field=f"{item_field}.alignment",
+            ),
+        )
         block_id = _optional_str(item, "id")
-        result.append(ExtensionWidgetBlock(lines=lines, priority=priority, id=block_id))
+        result.append(
+            ExtensionWidgetBlock(
+                lines=lines, priority=priority, alignment=alignment, id=block_id
+            )
+        )
     return tuple(result) or None
 
 
@@ -973,6 +987,7 @@ class MessagesPage:
 class ExtensionWidgetBlock:
     lines: tuple[str, ...]
     priority: float | None = None
+    alignment: WidgetAlignment | None = None
     id: str | None = None
 
 
@@ -997,6 +1012,7 @@ class ExtensionUiRequest:
     widget_blocks: tuple[ExtensionWidgetBlock, ...] | None = None
     widget_placement: WidgetPlacement | None = None
     widget_priority: float | None = None
+    widget_alignment: WidgetAlignment | None = None
     text: str | None = None
     url: str | None = None
     launch_url: str | None = None
@@ -1461,7 +1477,7 @@ def parse_session_state(payload: JsonObject) -> SessionState:
         dump_tools=dump_tools,
         fast_mode_enabled=bool(payload.get("fastModeEnabled", False)),
         fast_mode_active=bool(payload.get("fastModeActive", False)),
-        tokens_per_second=_optional_float(payload, "tokensPerSecond"),
+        tokens_per_second=_optional_number(payload, "tokensPerSecond"),
         context_usage=parse_context_usage(
             _optional_json_object(
                 payload.get("contextUsage"), field="sessionState.contextUsage"
@@ -1638,6 +1654,14 @@ def parse_extension_ui_request(payload: JsonObject) -> ExtensionUiRequest:
             ),
         ),
         widget_priority=_optional_number(payload, "widgetPriority"),
+        widget_alignment=cast(
+            WidgetAlignment | None,
+            _optional_literal(
+                payload.get("widgetAlignment"),
+                _WIDGET_ALIGNMENT_VALUES,
+                field="extension_ui_request.widgetAlignment",
+            ),
+        ),
         text=_optional_str(payload, "text"),
         url=_optional_str(payload, "url"),
         launch_url=_optional_str(payload, "launchUrl"),

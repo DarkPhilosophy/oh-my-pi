@@ -74,6 +74,7 @@ function widgetBlocksForRpc(
 				.map(block => ({
 					lines: block.lines.map(line => String(line)),
 					priority: block.priority,
+					alignment: block.alignment,
 					id: block.id,
 				}))
 				.filter(block => block.lines.length > 0),
@@ -882,6 +883,7 @@ export async function runRpcMode(
 				...widgetContent,
 				widgetPlacement: options?.placement,
 				widgetPriority: options?.priority,
+				widgetAlignment: options?.alignment,
 			} as RpcExtensionUIRequest);
 		}
 

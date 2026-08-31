@@ -1,7 +1,17 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, Message, Usage, UsageReport } from "@oh-my-pi/pi-ai";
-import type { Component, Container, EditorTheme, Loader, PanelLayoutResult, Spacer, Text, TUI } from "@oh-my-pi/pi-tui";
+import type {
+	Component,
+	Container,
+	EditorTheme,
+	Loader,
+	PanelLayoutResult,
+	RightPanelBlockInput,
+	Spacer,
+	Text,
+	TUI,
+} from "@oh-my-pi/pi-tui";
 import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
 import type { KeybindingsManager } from "../config/keybindings";
@@ -104,7 +114,7 @@ export interface RenderSessionContextOptions {
 	preservedLiveToolCallIds?: ReadonlySet<string>;
 }
 
-export type RightInfoProvider = (width: number) => readonly (readonly string[])[];
+export type RightInfoProvider = (width: number) => readonly RightPanelBlockInput[];
 
 export interface InteractiveModeContext {
 	// UI access
