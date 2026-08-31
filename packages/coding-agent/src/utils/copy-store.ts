@@ -21,6 +21,7 @@ export function supportsCopyUrlHandler(
 		!env.SSH_CLIENT &&
 		!env.SSH_CONNECTION &&
 		!env.SSH_TTY &&
+		!env.MOSH_IP &&
 		!env.WSL_DISTRO_NAME &&
 		!env.WSL_INTEROP
 	);
