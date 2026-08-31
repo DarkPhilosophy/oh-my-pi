@@ -214,6 +214,26 @@ describe("compositeRightPanels", () => {
 		expect(bAt).toBeGreaterThanOrEqual(aAt + a.length);
 	});
 
+	it("anchors bottom-aligned blocks at the lower edge", () => {
+		const base = Array.from({ length: 12 }, () => "hi");
+		const top = ["T0", "T1"];
+		const bottom = ["B0", "B1"];
+		const out = compositeRightPanels(
+			base,
+			[
+				{ lines: top, alignment: "top" },
+				{ lines: bottom, alignment: "bottom" },
+			],
+			WIDTH,
+			40,
+		);
+
+		expect(out[0].endsWith("T0")).toBe(true);
+		expect(out[1].endsWith("T1")).toBe(true);
+		expect(out[10].endsWith("B0")).toBe(true);
+		expect(out[11].endsWith("B1")).toBe(true);
+	});
+
 	it("drops only the block that does not fit and keeps the rest", () => {
 		// 5 free rows then a wall: a 4-row block fits, a 12-row block cannot.
 		const base = ["", "", "", "", "", "x".repeat(COL + 1)];

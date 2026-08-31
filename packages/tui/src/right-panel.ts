@@ -28,6 +28,15 @@ export function trimRightPadding(line: string): string {
 export const RIGHT_PANEL_MIN_ROWS = 6;
 /** A panel column left of this hides the block: the terminal is too narrow. */
 export const RIGHT_PANEL_MIN_COL = 30;
+export type RightPanelAlignment = "top" | "bottom";
+export interface RightPanelBlock {
+	readonly lines: readonly string[];
+	readonly alignment?: RightPanelAlignment;
+}
+export type RightPanelBlockInput = readonly string[] | RightPanelBlock;
+function isRightPanelBlock(input: RightPanelBlockInput): input is RightPanelBlock {
+	return !Array.isArray(input);
+}
 
 /**
  * Composite a single right-side panel into the trailing whitespace of
@@ -65,7 +74,7 @@ export function compositeRightPanel(
  */
 export function compositeRightPanels(
 	baseLines: string[],
-	blocks: readonly (readonly string[])[],
+	blocks: readonly RightPanelBlockInput[],
 	width: number,
 	viewportHeight: number,
 	isOccupiedLine: (line: string, index: number) => boolean = () => false,
@@ -106,7 +115,7 @@ export interface PanelLayoutResult {
  */
 export function compositeRightPanelsInRange(
 	baseLines: string[],
-	blocks: readonly (readonly string[])[],
+	blocks: readonly RightPanelBlockInput[],
 	width: number,
 	searchStart: number,
 	searchEnd: number,
@@ -165,15 +174,20 @@ export function compositeRightPanelsInRange(
 
 	const placements: { start: number; block: readonly string[]; col: number; originalIndex: number }[] = [];
 	for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
-		const block = blocks[blockIdx];
+		const input = blocks[blockIdx];
+		const block = isRightPanelBlock(input) ? input.lines : input;
 		if (block.length === 0) continue;
 		const normalizedBlock = normalizePanelBlock(block);
 		let panelWidth = 0;
 		for (const line of normalizedBlock) panelWidth = Math.max(panelWidth, visibleWidth(line));
 		const col = width - panelWidth - 1; // 1-col gap from the panel
 		if (col < RIGHT_PANEL_MIN_COL) continue; // too narrow for this block — hide just this one
+		const alignment = isRightPanelBlock(input) ? (input.alignment ?? "top") : "top";
 		let placed = -1;
-		for (let start = searchStart; start + normalizedBlock.length <= searchEnd; start++) {
+		const firstStart = alignment === "bottom" ? searchEnd - normalizedBlock.length : searchStart;
+		const lastStart = alignment === "bottom" ? searchStart : searchEnd - normalizedBlock.length;
+		const step = alignment === "bottom" ? -1 : 1;
+		for (let start = firstStart; alignment === "bottom" ? start >= lastStart : start <= lastStart; start += step) {
 			let ok = true;
 			for (let k = 0; k < normalizedBlock.length; k++) {
 				if (occupied[start + k] || contentWidth(start + k) > col) {

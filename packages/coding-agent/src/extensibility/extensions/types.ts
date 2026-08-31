@@ -220,8 +220,11 @@ export interface ExtensionUIDialogOptions {
 export type TerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined;
 
 export type WidgetPlacement = "aboveEditor" | "belowEditor" | "rightEditor";
+export type WidgetAlignment = "top" | "bottom";
 export interface ExtensionWidgetOptions {
 	placement?: WidgetPlacement;
+	/** Vertical edge used by `rightEditor`; defaults to `top`. */
+	alignment?: WidgetAlignment;
 	/**
 	 * Placement priority for `rightEditor` widgets when the negative space cannot
 	 * fit every panel. Lower numbers are placed first (claim space first). Widgets
@@ -239,6 +242,8 @@ export interface ExtensionWidgetBlock {
 	id?: string;
 	lines: string[];
 	priority?: number;
+	/** Overrides the parent widget alignment for this independently placed block. */
+	alignment?: WidgetAlignment;
 }
 
 export type ExtensionUiComponent = Component & { dispose?(): void };

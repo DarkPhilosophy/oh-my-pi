@@ -228,6 +228,7 @@ export class Composer implements TerminalFrameProvider {
 		// reflowing to the current width) while the screen has room. A batch
 		// leaves the mutable viewport in the same frame it is appended, so its
 		// rows are never painted twice.
+
 		const now = performance.now();
 		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
 		const history = this.#offerHistory(transcript, width, rows, pre.rows.length + after.length, frame);
@@ -251,6 +252,7 @@ export class Composer implements TerminalFrameProvider {
 			const visibleHeaderRows = Math.max(0, rows - composed.length);
 			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
 		}
+		const offset = Math.max(0, composed.length - rows);
 		return {
 			history,
 			viewport: composed,

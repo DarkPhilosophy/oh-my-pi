@@ -402,6 +402,7 @@ export type RpcSessionEventFrame = AgentSessionEvent | RpcSubagentFrame;
 export interface RpcExtensionWidgetBlock {
 	lines: string[];
 	priority?: number;
+	alignment?: "top" | "bottom";
 	id?: string;
 }
 
@@ -462,6 +463,7 @@ export type RpcExtensionUIRequest =
 			widgetBlocks?: RpcExtensionWidgetBlock[] | undefined;
 			widgetPlacement?: "aboveEditor" | "belowEditor" | "rightEditor";
 			widgetPriority?: number;
+			widgetAlignment?: "top" | "bottom";
 	  }
 	| { type: "extension_ui_request"; id: string; method: "setTitle"; title: string }
 	| { type: "extension_ui_request"; id: string; method: "set_editor_text"; text: string }

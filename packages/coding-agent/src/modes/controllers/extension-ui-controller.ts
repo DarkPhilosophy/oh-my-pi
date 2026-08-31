@@ -1,4 +1,11 @@
-import type { Component, OverlayHandle, PanelLayoutResult, RenderRequestOptions, TUI } from "@oh-my-pi/pi-tui";
+import type {
+	Component,
+	OverlayHandle,
+	PanelLayoutResult,
+	RenderRequestOptions,
+	RightPanelBlock,
+	TUI,
+} from "@oh-my-pi/pi-tui";
 import { Container, RIGHT_PANEL_MIN_COL, Spacer, Text, trimRightPadding } from "@oh-my-pi/pi-tui";
 import type { CollabUiRequestDraft, CollabUiSelectItem } from "@oh-my-pi/pi-wire";
 import { KeybindingsManager } from "../../config/keybindings";
@@ -22,6 +29,7 @@ import type {
 	ExtensionWidgetOptions,
 	SendUserMessageHandler,
 	TerminalInputHandler,
+	WidgetAlignment,
 	WidgetLayoutEvent,
 } from "../../extensibility/extensions";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
@@ -45,12 +53,13 @@ const ASK_NEXT_OPTION = "Next →";
 interface RightWidgetPanelBlock {
 	lines: string[];
 	priority?: number;
+	alignment?: WidgetAlignment;
 	id?: string;
 }
 
 type RightWidgetEntry =
-	| { kind: "blocks"; blocks: RightWidgetPanelBlock[]; priority?: number }
-	| { kind: "component"; component: ExtensionUiComponent; priority?: number };
+	| { kind: "blocks"; blocks: RightWidgetPanelBlock[]; priority?: number; alignment?: WidgetAlignment }
+	| { kind: "component"; component: ExtensionUiComponent; priority?: number; alignment?: WidgetAlignment };
 
 function isWidgetBlock(value: unknown): value is ExtensionWidgetBlock {
 	return typeof value === "object" && value !== null && Array.isArray((value as { lines?: unknown }).lines);
@@ -87,7 +96,7 @@ export class ExtensionUiController {
 	#composerShapeDisposers: Array<() => void> = [];
 	#hookWidgetsAbove = new Map<string, ExtensionUiComponent>();
 	#hookWidgetsBelow = new Map<string, ExtensionUiComponent>();
-	#rightInfoProvider = (width: number): string[][] => this.#rightWidgetLines(width);
+	#rightInfoProvider = (width: number): RightPanelBlock[] => this.#rightWidgetLines(width);
 	#rightWidgets = new Map<string, RightWidgetEntry>();
 	#errorSubscribedRunners = new WeakSet<object>();
 	// Block index → widget key / block id / block row count, refreshed each
@@ -392,7 +401,7 @@ export class ExtensionUiController {
 		// never drop the existing widget. Only after a successful build do we dispose
 		// the old entries and install the new one.
 		if (placement === "rightEditor") {
-			const nextEntry = this.#contentToRightEntry(content, options?.priority);
+			const nextEntry = this.#contentToRightEntry(content, options?.priority, options?.alignment);
 			// Drop a stale inline entry for this key (if it was above/below before) only
 			// now that the right replacement is built.
 			this.#removeHookWidget(this.#hookWidgetsAbove, key);
@@ -429,7 +438,11 @@ export class ExtensionUiController {
 		existing?.dispose?.();
 		widgets.delete(key);
 	}
-	#contentToRightEntry(content: ExtensionWidgetContent, priority: number | undefined): RightWidgetEntry {
+	#contentToRightEntry(
+		content: ExtensionWidgetContent,
+		priority: number | undefined,
+		alignment: WidgetAlignment | undefined,
+	): RightWidgetEntry {
 		if (Array.isArray(content)) {
 			if (content.length > 0 && content.every(isWidgetBlock)) {
 				return {
@@ -439,15 +452,17 @@ export class ExtensionUiController {
 							lines: block.lines.map(line => String(line)),
 							priority: block.priority,
 							id: block.id,
+							alignment: block.alignment,
 						}))
 						.filter(block => block.lines.length > 0),
 					priority,
+					alignment,
 				};
 			}
-			return { kind: "blocks", blocks: [{ lines: content.map(line => String(line)) }], priority };
+			return { kind: "blocks", blocks: [{ lines: content.map(line => String(line)) }], priority, alignment };
 		}
-		if (content === undefined) return { kind: "blocks", blocks: [], priority };
-		return { kind: "component", component: this.#createRightWidgetComponent(content), priority };
+		if (content === undefined) return { kind: "blocks", blocks: [], priority, alignment };
+		return { kind: "component", component: this.#createRightWidgetComponent(content), priority, alignment };
 	}
 
 	#rightWidgetBlocks(entry: RightWidgetEntry, width: number): RightWidgetPanelBlock[] {
@@ -494,7 +509,7 @@ export class ExtensionUiController {
 		this.ctx.setRightInfo(this.#rightInfoProvider, result => this.#handlePanelLayout(result));
 	}
 
-	#rightWidgetLines(width: number): string[][] {
+	#rightWidgetLines(width: number): RightPanelBlock[] {
 		// Each rightEditor block is composited independently so multi-section
 		// widgets can degrade contextually when the negative space is short.
 		// Placement order: explicit block priority, then widget priority, then
@@ -503,6 +518,7 @@ export class ExtensionUiController {
 			this.#rightWidgetBlocks(entry, width).map((block, blockIndex) => ({
 				lines: block.lines,
 				priority: block.priority ?? entry.priority,
+				alignment: block.alignment ?? entry.alignment,
 				widgetIndex,
 				blockIndex,
 				widgetKey: key,
@@ -522,7 +538,7 @@ export class ExtensionUiController {
 		this.#lastBlockWidgetKeys = blocks.map(b => b.widgetKey);
 		this.#lastBlockIds = blocks.map(b => b.blockId);
 		this.#lastBlockSizes = blocks.map(b => b.lines.length);
-		return blocks.map(block => block.lines);
+		return blocks.map(block => ({ lines: block.lines, alignment: block.alignment }));
 	}
 
 	/**
