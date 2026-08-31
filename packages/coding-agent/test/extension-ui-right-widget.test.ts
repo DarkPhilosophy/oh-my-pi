@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { Container } from "@oh-my-pi/pi-tui";
+import { Container, type RightPanelBlockInput } from "@oh-my-pi/pi-tui";
 import type { ExtensionUiComponentFactory } from "../src/extensibility/extensions";
 import { ExtensionUiController } from "../src/modes/controllers/extension-ui-controller";
 import type { InteractiveModeContext } from "../src/modes/types";
@@ -12,13 +12,14 @@ function makeCtx(): {
 	currentRightInfo: (width?: number) => string[][] | undefined;
 } {
 	const rightInfo: (string[][] | undefined)[] = [];
-	let provider: ((width: number) => readonly (readonly string[])[]) | undefined;
-	const snapshot = (width = 80): string[][] | undefined => provider?.(width).map(block => [...block]);
+	let provider: ((width: number) => readonly RightPanelBlockInput[]) | undefined;
+	const snapshot = (width = 80): string[][] | undefined =>
+		provider?.(width).map(block => [...("lines" in block ? block.lines : block)]);
 	const ctx = {
 		hookWidgetContainerAbove: new Container(),
 		hookWidgetContainerBelow: new Container(),
 		ui: { requestRender: () => {} },
-		setRightInfo: (blocks: string[][] | ((width: number) => readonly (readonly string[])[]) | undefined) => {
+		setRightInfo: (blocks: string[][] | ((width: number) => readonly RightPanelBlockInput[]) | undefined) => {
 			provider = typeof blocks === "function" ? blocks : blocks === undefined ? undefined : () => blocks;
 			rightInfo.push(snapshot());
 		},

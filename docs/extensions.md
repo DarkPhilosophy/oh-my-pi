@@ -564,6 +564,15 @@ Supported:
 - notifications/status/editor text/terminal input/custom overlays
 - theme listing/loading by name (`setTheme` supports string names)
 - tools expanded toggle
+- `setWidget(key, content, options)` for persistent widgets:
+  - `content: string[]` renders one widget block from the provided lines
+  - `content: ExtensionWidgetBlock[]` renders independently placeable sub-blocks (`{ id?, lines, priority?, alignment? }`)
+  - `content: ExtensionUiComponentFactory` is supported in interactive mode and receives the live TUI/theme
+  - `options.placement: "aboveEditor"` renders above the editor
+  - `options.placement: "belowEditor"` renders below the editor
+  - `options.placement: "rightEditor"` floats in visible right-side whitespace beside the conversation, never over text or the editor/status line
+  - `options.priority` orders `rightEditor` widgets when space is tight; lower numbers claim space first, otherwise shorter blocks are preferred
+  - `options.alignment: "top" | "bottom"` anchors a `rightEditor` widget to the selected vertical edge; individual blocks can override it
 
 Current no-op methods in this controller:
 
@@ -577,7 +586,16 @@ Current no-op methods in this controller:
 `ctx.ui` is backed by RPC `extension_ui_request` events:
 
 - dialog methods (`select`, `confirm`, `input`, `editor`) round-trip to client responses
-- fire-and-forget methods emit requests (`notify`, `setStatus`, `setWidget` for string arrays, `setEditorText`; `setTitle` emits only when `PI_RPC_EMIT_TITLE=1`)
+- fire-and-forget methods emit requests (`notify`, `setStatus`, `setWidget`, `setEditorText`; `setTitle` emits only when `PI_RPC_EMIT_TITLE=1`)
+- `setWidget` emits `method: "setWidget"` with:
+  - `widgetKey`
+  - `widgetLines?: string[]` for a single string-array widget
+  - `widgetBlocks?: { id?: string; lines: string[]; priority?: number; alignment?: "top" | "bottom" }[]` for independently placeable right-side blocks
+  - `widgetPlacement?: "aboveEditor" | "belowEditor" | "rightEditor"`
+  - `widgetPriority?: number`
+  - `widgetAlignment?: "top" | "bottom"`
+- Component factories are interactive-only; RPC clients receive line/block data, not live TUI components.
+- RPC clients can send a `widget_layout` command back with `widgetKey`, `visible`, `availableWidth`, `visibleRows`, and optional `hiddenBlocks`; the Python client exposes this as `send_widget_layout(...)`. OMP forwards the frame to extension `on("widget_layout", ...)` handlers so widgets can stop polling, resize content, or skip hidden blocks.
 
 Unsupported/no-op in RPC implementation:
 
