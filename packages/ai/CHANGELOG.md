@@ -2,6 +2,99 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added API-key authentication for ClinePass through the official `CLINE_API_KEY` variable, including account-route validation and rolling quota-window reporting in `omp usage` ([#7863](https://github.com/can1357/oh-my-pi/pull/7863) by [@will-bogusz](https://github.com/will-bogusz)).
+- ClinePass login now validates the API key against the `/users/me` account identity route instead of a probe chat completion, so roster churn cannot break sign-in and validation no longer consumes subscription quota ([#7863](https://github.com/can1357/oh-my-pi/pull/7863) by [@will-bogusz](https://github.com/will-bogusz)).
+- ClinePass failures now surface actionable messages: subscription-window and free-tier limit markers classify as usage limits (fail fast, rotate sibling credentials), while not-subscribed, organization-account, and roster-rotation `model not found` responses are rewritten with recovery guidance ([#7863](https://github.com/can1357/oh-my-pi/pull/7863) by [@will-bogusz](https://github.com/will-bogusz)).
+- ClinePass requests now mirror the official Cline CLI's client-identity headers (with Cline's blessing), unlocking roster entries the gateway restricts to Cline product surfaces — including free-tier `deepseek/deepseek-v4-flash`. A surface-gate 403 is classified as per-model client policy rather than a credential failure, so it no longer rotates sibling keys ([#7863](https://github.com/can1357/oh-my-pi/pull/7863) by [@will-bogusz](https://github.com/will-bogusz)).
+- Updated ClinePass requests to use the current Cline client identity and stable task ids, per-model reasoning and Qwen cache controls, and gateway-reported billed costs ([#7863](https://github.com/can1357/oh-my-pi/pull/7863) by [@will-bogusz](https://github.com/will-bogusz)).
+- Devin router models (`compat.modelRouter`, e.g. `adaptive`) now resolve through `AssignModel` before chatting: the provider sends the current user prompt with the turn's cascade id, then issues `GetChatMessage` with the assigned model uid and its assignment JWT. The router uid is never sent as `chatModelUid`, and a missing assignment fails the turn instead of silently degrading ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
+- Devin responses surface credit metering on `usage.credits` (`cost`, `committedCost`, `acuCost`) and the concrete routed model on `upstreamModel` (assigned uid, replaced by the response's `actualModelUid` when reported) ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
+- Devin accounts report plan and credit usage in `/usage` through a new `devin` usage provider backed by `SeatManagementService/GetUserStatus`: prompt/flow/flex credit balances against the plan period, daily and weekly quota percent windows with their reset timestamps, plan tier, overage balance, and account/org identity. Credit-billed plans (no dated quota window) surface credits only ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
+
+### Changed
+
+- Provider request builders now read resolved model policy (`model.compat`, `model.identity`, `model.thinking`, behavior rules) for every model-conditional decision — Harmony escaping, vision stripping, thinking transports and ladders, Claude Code instruction injection, Google beta headers and thought-signature handling, Cloudflare gateway routing, Codex service-tier pricing, and quota metering — instead of matching model names.
+- Updated Devin auth, assignment, chat, and usage requests to the current released CLI identity, version `3000.6.2` ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
+- Devin auth, model assignment, and chat requests now send the native Devin CLI identity (`ideName: devin-cli`, `ideType: chisel`, `extensionName: chisel`, mapped `os`) instead of the Windsurf IDE identity; `ideType: chisel` is what the backend requires for router assignment ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
+- Devin parallel tool calls follow `compat.supportsParallelToolCalls` instead of being disabled unconditionally, so natively discovered configs that support parallelism can use it ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
+
+## [18.0.11] - 2026-08-29
+
+### Fixed
+
+- Fixed automatic session retries for Anthropic-compatible streams that end prematurely without a completion signal.
+- Fixed Gemini 3.x tool-call continuations through OpenAI-compatible endpoints.
+- Fixed credential fallback for HTTP 402 payment-required and deactivated-workspace responses, preventing them from being misclassified as quota exhaustion.
+- Fixed Perplexity email sign-in for accounts protected by authenticator-based two-factor authentication.
+- Fixed Qianfan API-key login validation for keys that cannot access the validation model.
+- Fixed Z.AI browser sign-in to report an occupied callback port before opening the browser.
+
+## [18.0.9] - 2026-08-28
+
+### Fixed
+
+- Improved OAuth sign-in flows, including a fallback message when the browser cannot automatically close the OAuth success tab.
+- Fixed Cloudflare AI Gateway onboarding and routing so gateway account and endpoint configuration is preserved correctly while gateway credentials are not sent as upstream OpenAI authorization headers.
+- Fixed Codex OAuth quota handling so chat and Spark usage remain independent, legacy shared quota limits continue to work, and incomplete usage reports are not incorrectly treated as unlimited.
+
+## [18.0.8] - 2026-08-27
+
+### Added
+
+- Added Z.AI GLM Coding Plan usage tracking: credit-based `CREDIT_LIMIT` windows (5h + weekly) now surface in `omp usage` and the status line with the plan tier (`plan: lite/pro/max`).
+
+### Fixed
+
+- Fixed Amazon Bedrock requests to OpenAI-schema models (the `gpt-5.x` SKUs) failing with HTTP 400 `unknown_parameter: 'thinking'` when reasoning was enabled, by sending `reasoning.effort` instead of Anthropic's `thinking` budget block for models the catalog marks as effort-controlled.
+- Fixed Cursor replay rejecting sessions with orphaned tool results while preserving their output as assistant context.
+
+## [18.0.7] - 2026-08-26
+
+### Added
+
+- Added application-level usage attribution for billing and usage reporting, with per-application aggregation and automatic client identification. Applications can set their label with `OMP_APP_NAME` (default: `omp`); update the broker before clients to support the new usage reports.
+
+### Fixed
+
+- Fixed Anthropic Claude subscription OAuth requests being rejected by the upstream service ([#9801](https://github.com/can1357/oh-my-pi/pull/9801)).
+- Fixed OpenAI-compatible streaming errors being reported as empty successful completions, enabling retries and model fallback when queue admission fails.
+- Fixed multimodal tool results in OpenAI Responses requests so inline, remote, and OpenAI file-backed images are preserved correctly.
+- Fixed resumed and forked Cursor sessions failing when their history came from a Responses-based provider such as Codex ([#9754](https://github.com/can1357/oh-my-pi/issues/9754)).
+- Fixed Cursor `composer-2.5` selections using the Fast variant instead of the Standard tier ([#9012](https://github.com/can1357/oh-my-pi/issues/9012)).
+
+## [18.0.6] - 2026-08-26
+
+### Added
+
+- Added the `backgroundIdleMs` option to customize how long background auth-broker activity remains active before automatically parking.
+
+### Fixed
+
+- Fixed auth-broker background activity keeping processes alive unnecessarily, so unused broker-backed auth storage now parks automatically and no longer prevents CLI exit.
+
+## [18.0.5] - 2026-08-25
+
+### Breaking Changes
+
+- Renamed the exported stream-retry helper from `withEmptyCompletionRetry` to `withReplaySafeStreamRetry` and added retry policy options for empty completions and provider errors. Consumers using the old helper must migrate.
+
+### Added
+
+- Added browser-based Sign in with OpenRouter using OAuth PKCE, while retaining support for pasted OpenRouter API keys and redirect URLs for remote sessions.
+- Added `/login` API-key authentication for DeepInfra and Yolo-Auto, including validation against each provider before the credentials are accepted.
+
+### Fixed
+
+- Fixed DeepSeek vision models from losing image input while keeping image parts stripped for text-only DeepSeek endpoints.
+- Fixed OpenAI-compatible gateways that report uppercase completion reasons such as `STOP` or `MAX_TOKENS`; these are now classified correctly, including mapping `MAX_TOKENS` to a length limit.
+- Fixed provider message-count limit errors being treated as unrecoverable payload errors instead of recoverable context overflows.
+- Improved Codex WebSocket continuations so rate limits, throttling, and compatible mode changes preserve valid response continuations instead of unnecessarily replaying the full context.
+- Fixed Codex WebSocket cleanup failures caused by already-closed sockets.
+- Added safe retries for transient mid-stream socket closures across OpenAI Responses, Chat Completions, Azure OpenAI Responses, and Codex SSE when no replay-unsafe output has been emitted.
+- Fixed usage and cost reporting for OpenAI-compatible gateways backed by Vertex AI or Gemini by recognizing cached prompt tokens reported through `cachedContentTokenCount`.
+
 ## [18.0.4] - 2026-08-24
 
 ### Fixed
@@ -78,7 +171,6 @@
 
 ### Added
 
-- Added a DeepInfra `/login` flow that validates the pasted API key against the DeepInfra chat completions endpoint.
 - Added Codex Responses support for Code Mode, preserving tool modes and passing tool namespace metadata during sessions.
 
 ### Fixed
@@ -1941,7 +2033,7 @@
 - Fixed Anthropic-compatible proxies that omit `usage`/`delta` objects from `message_start`/`message_delta`/`content_block_*` envelopes crashing the turn with an unretryable `TypeError`; the missing payloads now degrade to logged envelope anomalies like every other malformed-frame case.
 - Fixed `applyPromptCaching` placing `cache_control` on `thinking`/`redacted_thinking` blocks — Anthropic rejects that with a 400. A thinking-only assistant turn inside the trailing cache window (e.g. followed by the synthetic `Continue.` pad) no longer receives a breakpoint.
 - Fixed consecutive `assistant` params reaching the wire when an empty user/developer turn between two assistant turns was dropped by the converter (e.g. an empty "nudge" submission after a length-truncated reply); Anthropic 400s on non-alternating assistant turns, and the broken triple replayed on every subsequent request. A `user: "Continue."` separator is now inserted, mirroring the trailing-prefill fallback.
-- Fixed `supportsAdaptiveThinkingDisplay` misparsing bare dated Opus ids: `claude-opus-4-20250514` (Opus 4.0) parsed as minor `20250514` ≥ 4.7, which silently dropped the `interleaved-thinking-2025-05-14` beta for API-key Opus 4.0 requests.
+- Fixed adaptive-display classification misparsing bare dated Opus ids: `claude-opus-4-20250514` (Opus 4.0) parsed as minor `20250514` ≥ 4.7, which silently dropped the `interleaved-thinking-2025-05-14` beta for API-key Opus 4.0 requests.
 - Fixed `output_config.effort` shipping without the `effort-2025-11-24` beta on thinking-off requests against adaptive-only Claude models (the effort:"low" pin), and the mid-conversation `system` role shipping without `mid-conversation-system-2026-04-07` on API-key and OAuth-utility requests; both betas are now added whenever the request can carry the corresponding field.
 - Fixed GitHub Copilot anthropic-messages requests going out with no `Content-Type` and no `anthropic-version` header — the copilot branch builds its headers from scratch and Bun's fetch does not default `Content-Type` for string bodies. Both headers are now pinned to match every other branch.
 - Fixed Anthropic client/provider retry multiplication: with the first-event watchdog disabled (`PI_STREAM_FIRST_EVENT_TIMEOUT_MS=0`), the client's internal `maxRetries: 5` reactivated and stacked with the provider loop's 3 retries — up to 24 wire attempts with double backoff. The provider now pins per-request `maxRetries: 0` unconditionally.

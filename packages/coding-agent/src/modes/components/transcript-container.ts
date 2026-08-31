@@ -1,5 +1,6 @@
 import type { Component, HistoryBatch } from "@oh-my-pi/pi-tui";
 import { Container } from "@oh-my-pi/pi-tui";
+import { logger } from "@oh-my-pi/pi-utils";
 import { isToolActivityComponent } from "./tool-activity";
 
 /** Shared animation time supplied by the constrained transcript root. */
@@ -25,6 +26,9 @@ export interface TranscriptStableRow {
  * Explicit semantic-row contract for a block whose stable head may enter native
  * history before finalization. Every later array must extend the prior keys
  * exactly; each row renderer is deterministic for its width.
+ * A publication that breaks these invariants (e.g. a mid-stream theme change
+ * re-coloring already-emitted bytes) freezes further stable-row emission for
+ * that block instead of failing the render — see {@link TranscriptContainer}.
  */
 export interface AppendOnlyTranscriptBlock {
 	readonly transcriptBlockMode: "appendOnly";
@@ -35,10 +39,21 @@ export interface AppendOnlyTranscriptBlock {
 	 * prefix the block's full render at the same width.
 	 */
 	renderTranscriptStableRows(count: number, width: number): readonly string[];
+	/**
+	 * Discard every published stable row so the block re-renders its head from
+	 * scratch. Called only alongside a destructive display reset (e.g. a
+	 * thinking-visibility toggle) that clears the native scrollback those rows
+	 * occupied — the sole context in which the append-only "published bytes never
+	 * change" contract may be retracted. Optional: blocks whose stable-row
+	 * presentation never changes may omit it.
+	 */
+	resetTranscriptStableRows?(): void;
 }
 
 interface FinalizableBlock {
 	isTranscriptBlockFinalized?(): boolean;
+	/** Render the row that must remain represented under emergency viewport pressure. */
+	renderTranscriptBlockEmergencyRow?(width: number): string | undefined;
 }
 
 /**
@@ -56,6 +71,13 @@ interface TranscriptEntry {
 	stableRows: readonly TranscriptStableRow[];
 	renderedStableByWidth: Map<number, readonly string[]>;
 	emitted: number;
+	/**
+	 * Set when a published stable row drifted (retraction, byte change within a
+	 * width epoch, or no longer a render prefix). Rows already in native
+	 * scrollback cannot be retracted, so the entry keeps its last good stable
+	 * state for emitted-row slicing but never emits another mid-stream row.
+	 */
+	stableFrozen: boolean;
 }
 
 type RetirementPolicy = "pressure" | "flush";
@@ -83,7 +105,8 @@ function isPlainBlank(line: string): boolean {
 	return !/\S/.test(line);
 }
 
-function isRowPrefix(prefix: readonly string[], rows: readonly string[]): boolean {
+/** Whether `prefix` matches `rows` byte-for-byte from the top. */
+export function isRowPrefix(prefix: readonly string[], rows: readonly string[]): boolean {
 	if (prefix.length > rows.length) return false;
 	for (let index = 0; index < prefix.length; index++) {
 		if (prefix[index] !== rows[index]) return false;
@@ -129,6 +152,7 @@ export class TranscriptContainer extends Container {
 			stableRows: EMPTY_STABLE_ROWS,
 			renderedStableByWidth: new Map(),
 			emitted: 0,
+			stableFrozen: false,
 		});
 	}
 
@@ -155,6 +179,32 @@ export class TranscriptContainer extends Container {
 			if (isToolActivityComponent(child)) child.setToolActivityVisible(visible);
 		}
 		this.invalidate();
+	}
+
+	/**
+	 * Forget the append-only emission ledger — emitted counts, published stable
+	 * rows, per-width render cache, and freeze state — for every block, and ask
+	 * each append-only block to drop its own published rows. The next replay then
+	 * re-renders each block from its current {@link Component.render}, applying a
+	 * changed presentation (e.g. a thinking-visibility toggle) to rows that were
+	 * already emitted as stable heads while streaming (#10177).
+	 *
+	 * Callers MUST pair this with a scrollback-clearing {@link resetDisplay}: the
+	 * emitted rows it forgets still sit in native history until that clear
+	 * rewrites them, so unpaired use would duplicate them on the next retirement.
+	 */
+	resetStableEmission(): void {
+		this.#syncEntries();
+		if (this.#offered?.kind === "append") this.#offered = undefined;
+		for (const entry of this.#entries) {
+			entry.emitted = 0;
+			entry.stableRows = EMPTY_STABLE_ROWS;
+			entry.renderedStableByWidth = new Map();
+			entry.stableFrozen = false;
+			if (entry.mode === "appendOnly") {
+				(entry.component as Component & AppendOnlyTranscriptBlock).resetTranscriptStableRows?.();
+			}
+		}
 	}
 
 	/** Whether a transient block may be discarded without leaving tape history. */
@@ -260,7 +310,18 @@ export class TranscriptContainer extends Container {
 
 		const allocation: number[] = new Array(shown.length).fill(1);
 		let surplus = capacity - shown.length;
-		for (let index = shown.length - 1; index >= 0 && surplus > 0; index--) {
+		// Surplus rows favor ordinary transcript blocks over dynamic tool-activity
+		// cards (newest-first within each class), so a growing tool card collapses to
+		// its compact form instead of clipping already-visible assistant text (#9718).
+		const order: number[] = [];
+		for (let index = shown.length - 1; index >= 0; index--) {
+			if (!isToolActivityComponent(shown[index]!.entry.component)) order.push(index);
+		}
+		for (let index = shown.length - 1; index >= 0; index--) {
+			if (isToolActivityComponent(shown[index]!.entry.component)) order.push(index);
+		}
+		for (const index of order) {
+			if (surplus <= 0) break;
 			const extra = Math.min(Math.max(0, blocks[index]!.length - 1), surplus);
 			allocation[index] += extra;
 			surplus -= extra;
@@ -339,6 +400,7 @@ export class TranscriptContainer extends Container {
 			policy === "pressure" &&
 			total > room &&
 			head?.mode === "appendOnly" &&
+			!head.stableFrozen &&
 			head.state !== "committed" &&
 			head.emitted < head.stableRows.length
 		) {
@@ -346,7 +408,8 @@ export class TranscriptContainer extends Container {
 			const before = this.#renderStablePrefix(head, head.emitted, width);
 			const after = this.#renderStablePrefix(head, emittedEnd, width);
 			if (!isRowPrefix(before, after) || after.length === before.length) {
-				throw new Error("Append-only transcript semantic row render must add a non-empty suffix");
+				this.#freezeStableRows(head, EMPTY_ROWS, "semantic row render added no suffix");
+				return undefined;
 			}
 			const batch: HistoryBatch = {
 				id: this.#nextBatchId++,
@@ -439,14 +502,14 @@ export class TranscriptContainer extends Container {
 
 	#renderEntry(entry: TranscriptEntry, width: number): readonly string[] {
 		const rendered = trimBlankEdges(entry.component.render(width));
-		if (entry.mode === "mutable") return rendered;
+		if (entry.mode === "mutable" || entry.stableFrozen) return rendered;
 		const appendOnly = entry.component as Component & AppendOnlyTranscriptBlock;
 		const stable = appendOnly.getTranscriptStableRows();
 		if (!isStablePrefix(entry.stableRows, stable)) {
-			throw new Error("Append-only transcript stable rows must extend the previously published prefix");
+			return this.#freezeStableRows(entry, rendered, "publication retracted the published prefix");
 		}
 		if (entry.emitted > stable.length) {
-			throw new Error("Append-only transcript stable rows cannot retract emitted history");
+			return this.#freezeStableRows(entry, rendered, "publication retracted emitted history");
 		}
 		const published =
 			stable.length > entry.stableRows.length
@@ -454,14 +517,27 @@ export class TranscriptContainer extends Container {
 				: entry.stableRows;
 		const stableRendered = appendOnly.renderTranscriptStableRows(published.length, width);
 		if (!isRowPrefix(stableRendered, rendered)) {
-			throw new Error("Append-only transcript stable rows must render as a prefix of the block");
+			return this.#freezeStableRows(entry, rendered, "stable rows no longer render as a prefix of the block");
 		}
 		const priorRender = entry.renderedStableByWidth.get(width);
 		if (priorRender && !isRowPrefix(priorRender, stableRendered)) {
-			throw new Error("Append-only transcript stable rows changed within a width epoch");
+			return this.#freezeStableRows(entry, rendered, "stable rows changed within a width epoch");
 		}
 		entry.stableRows = published;
 		entry.renderedStableByWidth.set(width, stableRendered.slice());
+		return rendered;
+	}
+
+	/**
+	 * Demote a drifting append-only publication: rows already written to native
+	 * scrollback cannot be retracted, so keep the last good stable state for
+	 * emitted-row slicing and stop mid-stream emission for this block. The block
+	 * still renders and retires whole on finalization; worst case is the old
+	 * finalize-time behavior plus a possible stale-byte seam in scrollback.
+	 */
+	#freezeStableRows(entry: TranscriptEntry, rendered: readonly string[], reason: string): readonly string[] {
+		entry.stableFrozen = true;
+		logger.warn("Append-only transcript block frozen", { reason, emitted: entry.emitted });
 		return rendered;
 	}
 
@@ -529,16 +605,52 @@ export class TranscriptContainer extends Container {
 		rows: number,
 		frame: AnimationFrame,
 	): readonly string[] {
-		const output: string[] = [];
-		const hiddenCount = Math.max(0, shown.length - rows);
+		let visibleRows = rows;
+		let visible: { entry: TranscriptEntry; index: number }[] = [];
+		let emergencyCandidate: { entry: TranscriptEntry; index: number } | undefined;
+		let emergencyRow: string | undefined;
 		let hiddenActive = 0;
-		for (let index = 0; index < hiddenCount; index++) {
-			if (shown[index]!.entry.state === "active") hiddenActive++;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			visible = visibleRows > 0 ? shown.slice(-visibleRows) : [];
+			emergencyCandidate = undefined;
+			emergencyRow = undefined;
+			const visibleStart = shown.length - visibleRows;
+			for (let index = visibleStart - 1; index >= 0; index--) {
+				const candidate = shown[index]!;
+				const block = candidate.entry.component as Component & FinalizableBlock;
+				const row =
+					candidate.entry.state === "settled" ? block.renderTranscriptBlockEmergencyRow?.(width) : undefined;
+				if (row === undefined) continue;
+				emergencyCandidate = candidate;
+				emergencyRow = row;
+				visible = [candidate, ...visible.slice(1)];
+				break;
+			}
+
+			let activeTotal = 0;
+			for (const candidate of shown) {
+				if (candidate.entry.state === "active") activeTotal++;
+			}
+			hiddenActive = activeTotal;
+			for (const candidate of visible) {
+				if (candidate.entry.state === "active") hiddenActive--;
+			}
+			// The summary row itself represents the newest active block when no
+			// active row fits beside it; report only the additional backlog.
+			if (hiddenActive === activeTotal && hiddenActive > 0) hiddenActive--;
+			if (attempt === 0 && hiddenActive > 0) {
+				visibleRows = Math.max(0, rows - 1);
+				continue;
+			}
+			break;
 		}
-		if (hiddenActive > 0) output.push(`${hiddenActive} more transcript blocks active`);
-		const visibleRows = rows - output.length;
-		const visible = visibleRows > 0 ? shown.slice(-visibleRows) : [];
+
+		const output = hiddenActive > 0 ? [`${hiddenActive} more transcript blocks active`] : [];
 		for (const candidate of visible) {
+			if (candidate === emergencyCandidate) {
+				output.push(emergencyRow ?? "");
+				continue;
+			}
 			this.#setAllocation(candidate.entry.component, 1, frame);
 			const rendered = this.#renderEntry(candidate.entry, width).slice(
 				this.#projectedEmitted(candidate.entry, candidate.index, width),
@@ -591,6 +703,7 @@ export class TranscriptContainer extends Container {
 					stableRows: EMPTY_STABLE_ROWS,
 					renderedStableByWidth: new Map(),
 					emitted: 0,
+					stableFrozen: false,
 				},
 		);
 		this.#frontier = this.#entries.findIndex(entry => entry.state !== "committed");
