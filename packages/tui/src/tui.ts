@@ -23,7 +23,12 @@ import { TuiDebugServer } from "./debug-server";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
 import { LoopWatchdog } from "./loop-watchdog";
-import { compositeRightPanelsInRange, type PanelLayoutResult, RIGHT_PANEL_MIN_COL } from "./right-panel";
+import {
+	compositeRightPanelsInRange,
+	type PanelLayoutResult,
+	RIGHT_PANEL_MIN_COL,
+	type RightPanelBlockInput,
+} from "./right-panel";
 import { isConPTYHosted, setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteAllImages,
@@ -969,12 +974,6 @@ export class Container
 		if (widthEpochChanged) this.#widthEpochRevision++;
 		this.#memoChildren = children.slice();
 		this.#memoWidth = width;
-		let start = 0;
-		this.#frameSegments = refs.map((lines, index) => {
-			const segment = { component: children[index]!, start, rowCount: lines.length };
-			start += lines.length;
-			return segment;
-		});
 		if (unchanged) return this.#memoLines!;
 		const lines: string[] = [];
 		for (let i = 0; i < count; i++) {
@@ -983,10 +982,6 @@ export class Container
 		}
 		this.#memoLines = lines;
 		return lines;
-	}
-
-	getFrameSegments(): readonly TerminalFrameSegment[] {
-		return this.#frameSegments;
 	}
 }
 
@@ -1756,8 +1751,10 @@ export class TUI extends Container {
 		preFocus: Component | null;
 		hidden: boolean;
 	}[] = [];
-	#rightPanelSourceFrame: readonly string[] = [];
-	#rightPanelWindowOffset = 0;
+
+	// Right-panel provider: composited into the visible window at the emit
+	// stage, after the window/commit math — never into rows that enter native
+	// scrollback, and only into rows owned by the registered target roots.
 	#rightPanelProvider: ((width: number) => readonly RightPanelBlockInput[]) | null = null;
 	#rightPanelTargets: Set<Component> | null = null;
 	#rightPanelExclusions: Set<Component> | null = null;
@@ -2173,83 +2170,6 @@ export class TUI extends Container {
 		});
 		this.#composedFrame.push(this.#stripCursorMarkers(line, markerIndex));
 	}
-	/**
-	 * Float blocks in right-side whitespace owned by the selected frame roots.
-	 * Passing `null` removes the panel.
-	 */
-	setRightPanel(
-		provider: ((width: number) => readonly RightPanelBlockInput[]) | null,
-		targets?: readonly Component[],
-		onLayout?: (result: PanelLayoutResult) => void,
-	): void {
-		this.#rightPanelProvider = provider;
-		this.#rightPanelTargets =
-			provider !== null && targets !== undefined && targets.length > 0 ? new Set(targets) : null;
-		this.#rightPanelLayoutCallback = onLayout ?? null;
-		if (this.#hasStarted) this.requestRender();
-	}
-
-	#compositeRightPanel(viewport: string[], width: number): string[] {
-		const provider = this.#rightPanelProvider;
-		if (provider === null) return viewport;
-		const blocks = provider(width);
-		if (blocks.length === 0) return viewport;
-		if (this.#getTopmostVisibleOverlay() !== undefined) {
-			this.#rightPanelLayoutCallback?.({
-				placedBlockIndices: [],
-				hiddenBlockIndices: blocks.map((_, index) => index),
-				availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
-				searchRows: 0,
-			});
-			return viewport;
-		}
-
-		const occupied = new Array<boolean>(viewport.length).fill(false);
-		const targets = this.#rightPanelTargets;
-		if (targets !== null) {
-			occupied.fill(true);
-			for (const segment of this.#providerSegments) {
-				if (!targets.has(segment.component)) continue;
-				const end = Math.min(viewport.length, segment.start + segment.rowCount);
-				for (let row = Math.max(0, segment.start); row < end; row++) occupied[row] = false;
-			}
-		}
-		for (let row = 0; row < viewport.length; row++) {
-			const line = viewport[row] ?? "";
-			if (!isOsc66Line(line)) continue;
-			occupied[row] = true;
-			const reservedRows = Math.max(0, osc66MaxScale(line) - 1);
-			for (let offset = 1; offset <= reservedRows && row + offset < viewport.length; offset++) {
-				occupied[row + offset] = true;
-			}
-		}
-		if (this.#rightPanelWindowOffset > 0) {
-			for (let sourceRow = this.#rightPanelWindowOffset - 1; sourceRow >= 0; sourceRow--) {
-				const line = this.#rightPanelSourceFrame[sourceRow];
-				if (line === undefined) break;
-				const reservedRows = Math.max(0, osc66MaxScale(line) - 1);
-				if (reservedRows === 0) {
-					if (visibleWidth(line) > 0) break;
-					continue;
-				}
-				for (let offset = 1; offset <= reservedRows; offset++) {
-					const viewportRow = sourceRow + offset - this.#rightPanelWindowOffset;
-					if (viewportRow >= 0 && viewportRow < viewport.length) occupied[viewportRow] = true;
-				}
-				break;
-			}
-		}
-		return compositeRightPanelsInRange(
-			viewport,
-			blocks,
-			width,
-			0,
-			viewport.length,
-			(line, index) => occupied[index] === true || TERMINAL.isImageLine(line),
-			line => TERMINAL.isImageEscapeLine(line),
-			this.#rightPanelLayoutCallback ?? undefined,
-		);
-	}
 
 	#syncTerminalCursorMode(component: Component | null): void {
 		if (isFocusable(component)) {
@@ -2543,7 +2463,6 @@ export class TUI extends Container {
 	}
 
 	start(options?: TUIStartOptions): void {
-		this.#hasStarted = true;
 		this.#stopped = false;
 		this.#hasStarted = true;
 		this.#debugPaint = undefined;
@@ -2949,7 +2868,7 @@ export class TUI extends Container {
 	 * Disjoint eligible roots remain isolated. Pass `null` to remove.
 	 */
 	setRightPanel(
-		provider: ((width: number) => readonly (readonly string[])[]) | null,
+		provider: ((width: number) => readonly RightPanelBlockInput[]) | null,
 		targets?: readonly Component[],
 		onLayout?: (result: PanelLayoutResult) => void,
 		exclusions?: readonly Component[],
@@ -3152,6 +3071,7 @@ export class TUI extends Container {
 		const origin = Math.max(0, Math.min(maximum, this.#viewportOrigin));
 		return { above: origin, below: maximum - origin };
 	}
+
 	requestRender(force = false, options?: RenderRequestOptions): void {
 		if (this.#frameProviderComponent !== undefined && !this.#viewportFollowsBottom && !force) return;
 		// Any non-component-scoped request makes the pending frame a full one.
@@ -3944,8 +3864,8 @@ export class TUI extends Container {
 	 * frozen while an overlay is visible, so overlay pixels can never enter
 	 * native scrollback.
 	 */
-	#compositeOverlaysIntoWindow(window: string[], termWidth: number, termHeight: number): string[] {
-		const result = [...window];
+	#overlayLayouts(termWidth: number, termHeight: number): OverlayLayout[] {
+		const layouts: OverlayLayout[] = [];
 		for (const entry of this.overlayStack) {
 			if (!this.#isOverlayVisible(entry)) continue;
 			const { component, options } = entry;
@@ -3961,15 +3881,39 @@ export class TUI extends Container {
 						: overlayLines.slice(0, maxHeight);
 			}
 			const { row, col } = this.#resolveOverlayLayout(options, overlayLines.length, termWidth, termHeight);
-			for (let i = 0; i < overlayLines.length; i++) {
+			layouts.push({ row, col, width, lines: overlayLines });
+		}
+		return layouts;
+	}
+
+	#compositeOverlaysIntoWindow(
+		window: string[],
+		termWidth: number,
+		termHeight: number,
+		layouts = this.#overlayLayouts(termWidth, termHeight),
+	): string[] {
+		const result = [...window];
+		for (const { row, col, width, lines } of layouts) {
+			for (let i = 0; i < lines.length; i++) {
 				const idx = row + i;
 				if (idx < 0 || idx >= result.length) continue;
-				const truncatedOverlayLine =
-					visibleWidth(overlayLines[i]) > width ? sliceByColumn(overlayLines[i], 0, width, true) : overlayLines[i];
+				const line = lines[i] ?? "";
+				const truncatedOverlayLine = visibleWidth(line) > width ? sliceByColumn(line, 0, width, true) : line;
 				result[idx] = this.#compositeLineAt(result[idx], truncatedOverlayLine, col, width, termWidth);
 			}
 		}
 		return result;
+	}
+
+	#overlayOccupiedRows(layouts: readonly OverlayLayout[], termHeight: number): boolean[] {
+		const occupied = new Array<boolean>(Math.max(0, termHeight)).fill(false);
+		for (const { row, lines } of layouts) {
+			for (let i = 0; i < lines.length; i++) {
+				const idx = row + i;
+				if (idx >= 0 && idx < occupied.length) occupied[idx] = true;
+			}
+		}
+		return occupied;
 	}
 
 	/** Splice overlay content into a base line at a specific column. Single-pass optimized. */
@@ -4151,7 +4095,6 @@ export class TUI extends Container {
 	 * incremental update. Scrollback is `frame[0..committedRows)` at all
 	 * times — no viewport probes, no deferred reconciliation.
 	 */
-
 	#doRender(): void {
 		if (this.#stopped) return;
 		const width = this.terminal.columns;

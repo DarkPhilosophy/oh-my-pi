@@ -14,7 +14,7 @@ function makeCtx(): {
 	const rightInfo: (string[][] | undefined)[] = [];
 	let provider: ((width: number) => readonly RightPanelBlockInput[]) | undefined;
 	const snapshot = (width = 80): string[][] | undefined =>
-		provider?.(width).map(block => [...(Array.isArray(block) ? block : block.lines)]);
+		provider?.(width).map(block => [...("lines" in block ? block.lines : block)]);
 	const ctx = {
 		hookWidgetContainerAbove: new Container(),
 		hookWidgetContainerBelow: new Container(),

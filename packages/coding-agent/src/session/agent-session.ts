@@ -416,7 +416,6 @@ const noOpUIContext: ExtensionUIContext = {
 // AgentSession Class
 // ============================================================================
 
-
 type MessageEndPersistenceSlot = {
 	readonly promise: Promise<void>;
 	persist: (persistMessage: () => void) => Promise<void>;

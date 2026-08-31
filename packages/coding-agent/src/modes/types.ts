@@ -107,7 +107,7 @@ export interface InteractiveModeInitOptions {
 
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<HookSelectorOptions, "disabledIndices">;
 
-export type RightInfoProvider = (width: number) => readonly (readonly string[])[];
+export type RightInfoProvider = (width: number) => readonly RightPanelBlockInput[];
 export interface RenderSessionContextOptions {
 	updateFooter?: boolean;
 	reuseSettledComponents?: boolean;
@@ -116,7 +116,6 @@ export interface RenderSessionContextOptions {
 	captureToolCallComponent?: (toolCallId: string, component: Component) => void;
 }
 
-export type RightInfoProvider = (width: number) => readonly RightPanelBlockInput[];
 export interface InteractiveModeContext {
 	// UI access
 	ui: TUI;
