@@ -80,6 +80,23 @@ describe("AssistantMessageComponent streaming settled rows", () => {
 		component.render(80);
 		expect(component.getTranscriptBlockSettledRows()).toBe(0);
 	});
+
+	it("exposes no settled rows while a cache-miss marker may still be prepended", () => {
+		const component = new AssistantMessageComponent();
+		component.setMayPrependMarker(true);
+		component.updateContent(msg([{ type: "text", text: "Paragraph 1\n\nParagraph 2\n\nParagraph 3" }]), {
+			transient: true,
+		});
+		component.render(80);
+		// The marker is inserted only at message_end, after streaming would have
+		// retired a prefix. Retiring now then prepending the marker would shift the
+		// committed rows, so no prefix is offered while a prepend is possible.
+		expect(component.getTranscriptBlockSettledRows()).toBe(0);
+
+		component.setMayPrependMarker(false);
+		component.render(80);
+		expect(component.getTranscriptBlockSettledRows()).toBeGreaterThan(0);
+	});
 });
 
 afterEach(() => {

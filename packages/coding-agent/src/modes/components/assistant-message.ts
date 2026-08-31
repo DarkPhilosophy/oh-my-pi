@@ -402,6 +402,23 @@ export class AssistantMessageComponent extends Container {
 		return this.#transcriptBlockFinalized;
 	}
 
+	/**
+	 * True when a cache-miss marker may be prepended to this block at message_end
+	 * (see {@link setCacheInvalidation}). The marker is inserted only once the
+	 * turn's usage is known — after streaming has already retired the block's
+	 * settled prefix into immutable scrollback — so prepending it would shift the
+	 * committed rows and duplicate/drop a line. While a late prepend is possible
+	 * the block therefore exposes no settled rows; the tail stays live until
+	 * finalize. Enabled from the `display.cacheMissMarker` setting; default off
+	 * keeps the streaming-retirement fast path.
+	 */
+	#mayPrependMarker = false;
+
+	/** Gate streaming settled-row retirement when a late marker prepend is possible. */
+	setMayPrependMarker(mayPrepend: boolean): void {
+		this.#mayPrependMarker = mayPrepend;
+	}
+
 	#lastRenderSettledRows = 0;
 
 	override render(width: number): readonly string[] {
@@ -413,6 +430,7 @@ export class AssistantMessageComponent extends Container {
 			this.#fastPathItems &&
 			this.#fastPathItems.length > 0 &&
 			!this.#errorPinned &&
+			!this.#mayPrependMarker &&
 			this.#markerSlot.children.length === 0 &&
 			this.#kittyConversionsInFlight.size === 0
 		) {
