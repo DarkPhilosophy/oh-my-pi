@@ -536,6 +536,16 @@ describe("TUI.setRightPanel", () => {
 			expect(layouts.at(-1)?.placedBlockIndices).toEqual([]);
 			expect(layouts.at(-1)?.hiddenBlockIndices).toEqual([0]);
 
+			tui.setRightPanel(
+				() => [["new-0"], ["new-1"]],
+				[chat],
+				result => layouts.push(result),
+			);
+			tui.requestRender(true);
+			await settle(term);
+			expect(layouts.at(-1)?.placedBlockIndices).toEqual([]);
+			expect(layouts.at(-1)?.hiddenBlockIndices).toEqual([0, 1]);
+
 			overlay.hide();
 		} finally {
 			tui.stop();

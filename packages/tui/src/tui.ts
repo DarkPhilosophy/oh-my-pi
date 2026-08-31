@@ -858,7 +858,6 @@ export class TUI extends Container {
 	#rightPanelProvider: ((width: number) => readonly RightPanelBlockInput[]) | null = null;
 	#rightPanelTargets: Set<Component> | null = null;
 	#rightPanelLayoutCallback: ((result: PanelLayoutResult) => void) | null = null;
-	#rightPanelBlockCount = 0;
 	#providerSegments: readonly TerminalFrameSegment[] = [];
 
 	constructor(terminal: Terminal, showHardwareCursor?: boolean, options?: TUIOptions) {
@@ -890,21 +889,24 @@ export class TUI extends Container {
 		onLayout?: (result: PanelLayoutResult) => void,
 	): void {
 		this.#rightPanelProvider = provider;
-		if (provider === null) this.#rightPanelBlockCount = 0;
 		this.#rightPanelTargets =
 			provider !== null && targets !== undefined && targets.length > 0 ? new Set(targets) : null;
 		this.#rightPanelLayoutCallback = onLayout ?? null;
 		if (this.#hasStarted) this.requestRender();
 	}
 
-	#compositeRightPanel(viewport: string[], width: number, preparedBlocks?: readonly RightPanelBlockInput[]): string[] {
+	#compositeRightPanel(
+		viewport: string[],
+		width: number,
+		preparedBlocks?: readonly RightPanelBlockInput[],
+		onLayout: ((result: PanelLayoutResult) => void) | undefined = this.#rightPanelLayoutCallback ?? undefined,
+	): string[] {
 		const provider = this.#rightPanelProvider;
 		if (provider === null) return viewport;
 		const blocks = preparedBlocks ?? provider(width);
-		this.#rightPanelBlockCount = blocks.length;
 		if (blocks.length === 0) return viewport;
 		if (this.#getTopmostVisibleOverlay() !== undefined) {
-			this.#rightPanelLayoutCallback?.({
+			onLayout?.({
 				placedBlockIndices: [],
 				hiddenBlockIndices: blocks.map((_, index) => index),
 				availableWidth: Math.max(0, width - RIGHT_PANEL_MIN_COL - 1),
@@ -956,8 +958,36 @@ export class TUI extends Container {
 			viewport.length,
 			(line, index) => occupied[index] === true || TERMINAL.isImageLine(line),
 			line => TERMINAL.isImageEscapeLine(line),
-			this.#rightPanelLayoutCallback ?? undefined,
+			onLayout,
 		);
+	}
+
+	#retainPlacedRightPanelImages(
+		viewport: string[],
+		width: number,
+		blocks: readonly RightPanelBlockInput[] | undefined,
+		passMark: number,
+	): void {
+		if (!blocks || blocks.length === 0) {
+			this.#imageBudget.retainPassSince(passMark, new Set());
+			return;
+		}
+		let layout: PanelLayoutResult | undefined;
+		this.#compositeRightPanel(viewport, width, blocks, result => {
+			layout = result;
+		});
+		const placed = new Set(layout?.placedBlockIndices ?? []);
+		const imageIds = new Set<number>();
+		for (let index = 0; index < blocks.length; index++) {
+			if (!placed.has(index)) continue;
+			const input = blocks[index]!;
+			const lines = "lines" in input ? input.lines : input;
+			for (const line of lines) {
+				const placement = parseKittyDirectPlacementLine(line);
+				if (placement) imageIds.add(placement.imageId);
+			}
+		}
+		this.#imageBudget.retainPassSince(passMark, imageIds);
 	}
 
 	#syncTerminalCursorMode(component: Component | null): void {
@@ -2378,8 +2408,8 @@ export class TUI extends Container {
 		this.#debugNextWindowTop = 0;
 		this.#imageBudget.beginPass();
 		const plan = provider.renderFrame({ columns: width, rows: height });
+		const panelPassMark = this.#imageBudget.markPass();
 		const rightPanelBlocks = this.#rightPanelProvider?.(width) ?? undefined;
-		this.#imageBudget.endPass();
 		let viewport = Array.from(plan.viewport);
 		if (viewport.length > height) {
 			const message = `Frame provider returned ${viewport.length} rows for a ${height}-row viewport`;
@@ -2387,10 +2417,12 @@ export class TUI extends Container {
 			logger.error("TUI layout contract violated", { rows: viewport.length, height });
 			viewport = viewport.slice(0, height);
 		}
-		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
 		this.#providerSegments = plan.segments ?? [];
 		this.#rightPanelSourceFrame = viewport;
 		this.#rightPanelWindowOffset = 0;
+		this.#retainPlacedRightPanelImages(viewport, width, rightPanelBlocks, panelPassMark);
+		this.#imageBudget.endPass();
+		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
 		this.#emitPlanFrame(width, height, viewport, plan.history, provider, rightPanelBlocks);
 	}
 	/**
@@ -3051,7 +3083,7 @@ export class TUI extends Container {
 	 * blank base — the transcript is never touched while the alt buffer is up.
 	 */
 	#renderAltFrame(width: number, height: number): void {
-		const blockCount = this.#rightPanelBlockCount;
+		const blockCount = this.#imageBudget.preview(() => this.#rightPanelProvider?.(width).length ?? 0);
 		if (blockCount > 0) {
 			this.#rightPanelLayoutCallback?.({
 				placedBlockIndices: [],
