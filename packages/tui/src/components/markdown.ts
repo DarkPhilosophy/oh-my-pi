@@ -2188,6 +2188,10 @@ export class Markdown
 			headingProbe,
 		};
 	}
+	// All-primitive signature — compare via the canonical render-cache encoding.
+	#signatureEquals(a: RenderSignature, b: RenderSignature): boolean {
+		return this.#renderCacheKey("", "", a) === this.#renderCacheKey("", "", b);
+	}
 
 	#renderCacheKey(normalizedText: string, sourceText: string, signature: RenderSignature): string {
 		// The display lexer expands tabs, but copy-chip targets must preserve the
