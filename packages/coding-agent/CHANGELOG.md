@@ -20,6 +20,9 @@
 - Fixed an issue where custom model overrides were lost during configuration updates
 - Fixed "Please use nerdfont" notification incorrectly persisting after theme configuration
 - Fixed sampling parameter errors for newer Anthropic models (Opus 4.7+, Sonnet 5+)
+### Fixed
+
+- Fixed rapid queued steer/follow-up image submissions racing into split or dropped pending entries by serializing queue mutations; added opt-in `coalescing` queue mode to merge rapid consecutive queued user entries while preserving attachments, hidden magic-keyword companions, restore behavior, delivery, and `[Image #N]` marker numbering.
 
 ## [18.0.11] - 2026-08-29
 

@@ -31,6 +31,7 @@ type FakeEditor = {
 	onUpWhenEmpty?: () => boolean;
 	onChange?: (text: string) => void;
 	setText(text: string): void;
+	setCollapsedText(text: string): void;
 	getText(): string;
 	addToHistory(text: string): void;
 	setActionKeys(action: string, keys: string[]): void;
@@ -118,6 +119,9 @@ function createContext(): {
 	);
 	const editor: FakeEditor = {
 		setText(text: string) {
+			editorText = text;
+		},
+		setCollapsedText(text: string) {
 			editorText = text;
 		},
 		getText() {
