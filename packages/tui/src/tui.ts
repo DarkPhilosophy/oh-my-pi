@@ -895,10 +895,10 @@ export class TUI extends Container {
 		if (this.#hasStarted) this.requestRender();
 	}
 
-	#compositeRightPanel(viewport: string[], width: number): string[] {
+	#compositeRightPanel(viewport: string[], width: number, preparedBlocks?: readonly RightPanelBlockInput[]): string[] {
 		const provider = this.#rightPanelProvider;
 		if (provider === null) return viewport;
-		const blocks = provider(width);
+		const blocks = preparedBlocks ?? provider(width);
 		if (blocks.length === 0) return viewport;
 		if (this.#getTopmostVisibleOverlay() !== undefined) {
 			this.#rightPanelLayoutCallback?.({
@@ -1711,12 +1711,13 @@ export class TUI extends Container {
 		while (true) {
 			this.#imageBudget.beginPass();
 			const plan = provider.renderFrame({ columns: width, rows: height });
+			const rightPanelBlocks = this.#rightPanelProvider?.(width) ?? undefined;
 			this.#imageBudget.endPass();
 			if (plan.history === undefined) return;
 			let viewport = Array.from(plan.viewport);
 			if (viewport.length > height) viewport = viewport.slice(0, height);
 			const acceptedBefore = this.#acceptedHistoryBatchId;
-			this.#emitPlanFrame(width, height, viewport, plan.history, provider);
+			this.#emitPlanFrame(width, height, viewport, plan.history, provider, rightPanelBlocks);
 			if (plan.history.id > acceptedBefore && this.#acceptedHistoryBatchId === acceptedBefore) {
 				throw new Error("History flush did not accept the offered batch");
 			}
@@ -2374,6 +2375,7 @@ export class TUI extends Container {
 		this.#debugNextWindowTop = 0;
 		this.#imageBudget.beginPass();
 		const plan = provider.renderFrame({ columns: width, rows: height });
+		const rightPanelBlocks = this.#rightPanelProvider?.(width) ?? undefined;
 		this.#imageBudget.endPass();
 		let viewport = Array.from(plan.viewport);
 		if (viewport.length > height) {
@@ -2386,7 +2388,7 @@ export class TUI extends Container {
 		this.#providerSegments = plan.segments ?? [];
 		this.#rightPanelSourceFrame = viewport;
 		this.#rightPanelWindowOffset = 0;
-		this.#emitPlanFrame(width, height, viewport, plan.history, provider);
+		this.#emitPlanFrame(width, height, viewport, plan.history, provider, rightPanelBlocks);
 	}
 	/**
 	 * Re-offer finalized history once after a settled resize.
@@ -2481,8 +2483,9 @@ export class TUI extends Container {
 		viewportRows: string[],
 		offered: HistoryBatch | undefined,
 		provider: TerminalFrameProvider | undefined,
+		rightPanelBlocks?: readonly RightPanelBlockInput[],
 	): void {
-		let viewport = this.#compositeRightPanel(viewportRows, width);
+		let viewport = this.#compositeRightPanel(viewportRows, width, rightPanelBlocks);
 		if (this.#getTopmostVisibleOverlay() !== undefined) {
 			while (viewport.length < height) viewport.push("");
 			viewport = this.#compositeOverlaysIntoWindow(viewport, width, height);
@@ -2739,6 +2742,7 @@ export class TUI extends Container {
 	#renderChildrenFrame(width: number, height: number): void {
 		this.#imageBudget.beginPass();
 		const composed = this.render(width);
+		const rightPanelBlocks = this.#rightPanelProvider?.(width) ?? undefined;
 		this.#imageBudget.endPass();
 		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
 		this.#debugNextWindowTop = Math.max(0, composed.length - height);
@@ -2749,7 +2753,7 @@ export class TUI extends Container {
 		this.#providerSegments = this.getFrameSegments()
 			.map(segment => ({ ...segment, start: segment.start - offset }))
 			.filter(segment => segment.start + segment.rowCount > 0);
-		this.#emitPlanFrame(width, height, viewport, undefined, undefined);
+		this.#emitPlanFrame(width, height, viewport, undefined, undefined, rightPanelBlocks);
 	}
 
 	/** Stateless variant for overlay-composited windows and alt-screen frames. */

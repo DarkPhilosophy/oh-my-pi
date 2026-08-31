@@ -11,7 +11,7 @@
  * protocol, because the composed frame itself is never mutated.
  */
 import { RESERVED_IMAGE_ROW } from "./components/image";
-import { padding, replaceTabs, truncateToWidth, visibleWidth } from "./utils";
+import { isOsc66Line, osc66MaxScale, padding, replaceTabs, truncateToWidth, visibleWidth } from "./utils";
 
 const TRAILING_PADDING_RE = /[ \t]+((?:\x1b\[[0-9;]*m)*)$/u;
 
@@ -239,8 +239,17 @@ export function compositeRightPanelsInRange(
 }
 
 function normalizePanelBlock(block: readonly string[]): readonly string[] {
-	for (const line of block) {
-		if (line.includes("\t")) return block.map(panelLine => replaceTabs(panelLine));
+	const normalized = block.some(line => line.includes("\t"))
+		? block.map(panelLine => replaceTabs(panelLine))
+		: [...block];
+	for (let row = 0; row < normalized.length; row++) {
+		const heading = normalized[row] ?? "";
+		if (!isOsc66Line(heading)) continue;
+		const reservedRows = Math.max(0, osc66MaxScale(heading) - 1);
+		for (let offset = 1; offset <= reservedRows && row + offset < normalized.length; offset++) {
+			const index = row + offset;
+			if (visibleWidth(normalized[index] ?? "") === 0) normalized[index] = RESERVED_IMAGE_ROW;
+		}
 	}
-	return block;
+	return normalized;
 }

@@ -227,6 +227,20 @@ describe("compositeRightPanels", () => {
 		expect(out[11].endsWith("B1")).toBe(true);
 	});
 
+	it("preserves scaled OSC 66 reservation rows inside panel blocks", () => {
+		const heading = "\x1b]66;s=3;Title\x1b\\";
+		const out = compositeRightPanels(
+			Array.from({ length: 8 }, () => ""),
+			[[heading, "", "", "tail"]],
+			WIDTH,
+			40,
+		);
+
+		expect(out[0]).toContain(heading);
+		expect(out[1]).toContain(RESERVED_IMAGE_ROW);
+		expect(out[2]).toContain(RESERVED_IMAGE_ROW);
+	});
+
 	it("drops only the block that does not fit and keeps the rest", () => {
 		// 5 free rows then a wall: a 4-row block fits, a 12-row block cannot.
 		const base = ["", "", "", "", "", "x".repeat(COL + 1)];
@@ -298,6 +312,19 @@ function immediateScheduler() {
 	};
 }
 describe("TUI.setRightPanel", () => {
+	it("evaluates component-backed panels inside the image-budget render pass", async () => {
+		const term = new VirtualTerminal(80, 12);
+		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
+		tui.setRightPanel(() => {
+			tui.imageBudget.observe(1);
+			return [["widget"]];
+		});
+
+		tui.start();
+		await settle(term);
+		tui.stop();
+	});
+
 	it("composites into chat rows of the visible window, never into chrome rows", async () => {
 		const term = new VirtualTerminal(80, 12);
 		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
