@@ -413,6 +413,7 @@ export class AssistantMessageComponent extends Container {
 			this.#fastPathItems &&
 			this.#fastPathItems.length > 0 &&
 			!this.#errorPinned &&
+			this.#markerSlot.children.length === 0 &&
 			this.#kittyConversionsInFlight.size === 0
 		) {
 			const lastFastPathItem = this.#fastPathItems[this.#fastPathItems.length - 1]!;

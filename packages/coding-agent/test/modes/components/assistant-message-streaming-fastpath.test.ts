@@ -43,14 +43,43 @@ beforeEach(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 });
-it("reports settled rows for the last transient markdown block", () => {
-	const component = new AssistantMessageComponent();
-	component.updateContent(msg([{ type: "text", text: "Paragraph 1\n\nParagraph 2\n\nParagraph 3" }]), {
-		transient: true,
+describe("AssistantMessageComponent streaming settled rows", () => {
+	it("keeps every reported prefix row byte-stable as markdown grows and finalizes", () => {
+		const component = new AssistantMessageComponent();
+		component.updateContent(msg([{ type: "text", text: "Paragraph 1\n\nParagraph 2\n\nParagraph 3" }]), {
+			transient: true,
+		});
+		const initial = component.render(80);
+		const settled = component.getTranscriptBlockSettledRows();
+		expect(settled).toBeGreaterThan(0);
+		const prefix = initial.slice(0, settled);
+
+		component.updateContent(
+			msg([{ type: "text", text: "Paragraph 1\n\nParagraph 2\n\nParagraph 3\n\nParagraph 4" }]),
+			{ transient: true },
+		);
+		expect(component.render(80).slice(0, settled)).toEqual(prefix);
+
+		component.updateContent(
+			msg([{ type: "text", text: "Paragraph 1\n\nParagraph 2\n\nParagraph 3\n\nParagraph 4" }]),
+			{ transient: false },
+		);
+		component.markTranscriptBlockFinalized();
+		expect(component.render(80).slice(0, settled)).toEqual(prefix);
 	});
-	component.render(80);
-	// Paragraph 1 and 2 are fully formed, plus padding.
-	expect(component.getTranscriptBlockSettledRows()).toBeGreaterThan(0);
+
+	it("does not retire a streaming prefix ahead of a cache-invalidation marker", () => {
+		const component = new AssistantMessageComponent();
+		component.updateContent(msg([{ type: "text", text: "Paragraph 1\n\nParagraph 2\n\nParagraph 3" }]), {
+			transient: true,
+		});
+		component.render(80);
+		expect(component.getTranscriptBlockSettledRows()).toBeGreaterThan(0);
+
+		component.setCacheInvalidation({ reprocessedTokens: 4096 });
+		component.render(80);
+		expect(component.getTranscriptBlockSettledRows()).toBe(0);
+	});
 });
 
 afterEach(() => {

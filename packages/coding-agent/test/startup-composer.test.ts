@@ -191,7 +191,7 @@ describe("Composer prepaint", () => {
 		expect(terminal.getViewport().some(row => row.includes("<RIGHT-0>"))).toBeTrue();
 		composer.ui.stop();
 	});
-	it("keeps a streaming assistant viewport-only until the complete block finalizes", async () => {
+	it("retires stable streaming rows and preserves every row exactly once after finalize", async () => {
 		const terminal = new CountingTerminal(60, 8, 1_000);
 		const composer = new Composer({ preferences: { ...config, quiet: true }, terminal });
 		const transcript = new TranscriptContainer();
@@ -219,7 +219,7 @@ describe("Composer prepaint", () => {
 			.slice(0, baseY)
 			.map(row => Bun.stripANSI(row));
 		expect(assistant.isTranscriptBlockFinalized()).toBeFalse();
-		expect(history.some(row => row.includes("assistant-row-0"))).toBeFalse();
+		expect(history.filter(row => row.includes("assistant-row-0 "))).toHaveLength(1);
 
 		const grownText = [
 			"| A | B |\n| --- | --- |\n| x | y |",
