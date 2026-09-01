@@ -229,7 +229,7 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
-	it("scrolls the contextual viewport by exactly one physical row", () => {
+	it("scrolls the unified viewport by exactly one physical row without obscuring transcript text", () => {
 		const terminal = new VirtualTerminal(20, 3);
 		const provider = new Provider({
 			history: { id: 1, rows: Array.from({ length: 5 }, (_, index) => `history-${index}`) },
@@ -240,16 +240,10 @@ describe("terminal frame plans", () => {
 		tui.start();
 
 		terminal.sendInput("\x1b[1;7A");
-		expect(terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd())).toEqual([
-			"history-4     ↑4 ↓1",
-			"live-0",
-			"live-1",
-		]);
-		expect(tui.getViewportPosition()).toEqual({ above: 4, below: 1 });
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["history-4", "live-0", "live-1"]);
 
 		terminal.sendInput("\x1b[1;7B");
 		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["live-0", "live-1", "live-2"]);
-		expect(tui.getViewportPosition()).toEqual({ above: 5, below: 0 });
 		tui.stop();
 	});
 

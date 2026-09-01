@@ -531,6 +531,14 @@ function isMultiplexerSession(): boolean {
 	);
 }
 
+/** Whether the active terminal can erase and replay its native scrollback. */
+function canRebuildScrollback(): boolean {
+	if (!isMultiplexerSession()) return true;
+	// tmux implements ED3 for its pane history. Other multiplexers either ignore
+	// it or retain stale rows, so they must keep the pinned commit ceiling.
+	return Boolean(Bun.env.TMUX);
+}
+
 /**
  * Terminals that re-report their size whenever the alternate screen buffer is
  * toggled. The non-multiplexer resize fast path ({@link TUI.#beginResizeViewport})
@@ -1574,7 +1582,6 @@ export class TUI extends Container {
 	// mutable live output) never constrains which unified frame rows are visible.
 	#viewportOrigin = 0;
 	#viewportFollowsBottom = true;
-	#viewportPositionVisible = false;
 	// Exactly what is painted on the screen rows (post-composite, prepared).
 	#previousWindow: string[] = [];
 	#nativeScrollbackLiveRegionStart: number | undefined;
@@ -3033,21 +3040,8 @@ export class TUI extends Container {
 		return this.#prepareLinesArray(composited, width);
 	}
 
-	#compositeViewportPosition(window: string[], width: number, above: number, below: number): string[] {
-		if (below === 0 || window.length === 0 || width < 12) return window;
-		const label = ` ↑${above} ↓${below} `;
-		const labelWidth = visibleWidth(label);
-		if (labelWidth >= width) return window;
-		const contentWidth = width - labelWidth;
-		const prefix = truncateToWidth(window[0] ?? "", contentWidth, Ellipsis.Omit);
-		const padding = " ".repeat(Math.max(0, contentWidth - visibleWidth(prefix)));
-		const composited = window.slice();
-		composited[0] = `${prefix}${padding}\x1b[2m${label}\x1b[0m`;
-		return this.#prepareLinesArray(composited, width);
-	}
-
 	/** Move the unified conversation viewport by physical rows. */
-	scrollViewportBy(delta: number, showPosition = false): void {
+	scrollViewportBy(delta: number): void {
 		const height = Math.max(0, this.terminal.rows);
 		const maximum = Math.max(0, this.#previousFrameLength - height);
 		const next =
@@ -3055,21 +3049,12 @@ export class TUI extends Container {
 		if (next === this.#viewportOrigin && this.#viewportFollowsBottom === (next === maximum)) return;
 		this.#viewportOrigin = next;
 		this.#viewportFollowsBottom = next === maximum;
-		this.#viewportPositionVisible = showPosition && next !== maximum;
 		this.requestRender(true);
 	}
 
 	/** Whether new rows currently keep the unified viewport pinned to its tail. */
 	isViewportFollowingBottom(): boolean {
 		return this.#viewportFollowsBottom;
-	}
-
-	/** Physical-row offsets around the current contextual viewport. */
-	getViewportPosition(): { above: number; below: number } {
-		const height = Math.max(0, this.terminal.rows);
-		const maximum = Math.max(0, this.#previousFrameLength - height);
-		const origin = Math.max(0, Math.min(maximum, this.#viewportOrigin));
-		return { above: origin, below: maximum - origin };
 	}
 
 	requestRender(force = false, options?: RenderRequestOptions): void {
@@ -3665,18 +3650,17 @@ export class TUI extends Container {
 				this.setFocus(focusedOverlay.preFocus);
 			}
 		}
-
 		if (this.#frameProviderComponent !== undefined && this.#getTopmostVisibleOverlay() === undefined) {
 			if (matchesKey(data, "ctrl+alt+up")) {
-				this.scrollViewportBy(-1, true);
+				this.scrollViewportBy(-1);
 				return;
 			}
 			if (matchesKey(data, "ctrl+alt+down")) {
-				this.scrollViewportBy(1, true);
+				this.scrollViewportBy(1);
 				return;
 			}
 			if (matchesKey(data, "ctrl+alt+end")) {
-				this.scrollViewportBy(Number.POSITIVE_INFINITY, true);
+				this.scrollViewportBy(Number.POSITIVE_INFINITY);
 				return;
 			}
 		}
@@ -4262,12 +4246,16 @@ export class TUI extends Container {
 		// reports no seam (shell semantics).
 		const frameLength = rawFrame.length;
 		const finalBoundary = Math.max(0, Math.min(frameLength, liveRegionStart ?? frameLength));
-		// No commit may cross into a pinned region, even one below an unpinned
-		// topmost seam (an anchored HUD/panel under a streaming transcript). The
-		// topmost seam still governs exactness (finalBoundary); this ceiling only
-		// bars a growing pinned region's scrolled-off rows from native scrollback.
-		const commitCeiling = this.#nativeScrollbackPinnedBoundary ?? frameLength;
-
+		// Rewrite mode can safely record offscreen mutable rows as frozen visual
+		// snapshots: if their final rendering diverges, the normal divergence
+		// rebuild erases and replays the authoritative frame. Multiplexers cannot
+		// provide that repair guarantee, so preserve their pinned ceiling.
+		// Without rewrite, preserve the pinned ceiling so immutable native
+		// history is never stale.
+		const commitCeiling =
+			this.#scrollbackRebuildEnabled && canRebuildScrollback()
+				? frameLength
+				: (this.#nativeScrollbackPinnedBoundary ?? frameLength);
 		// 2. Transition state captured before any emitter runs.
 		let prevWindowTop = this.#windowTopRow;
 		const prevHardwareCursorRow = this.#hardwareCursorRow;
@@ -4482,7 +4470,7 @@ export class TUI extends Container {
 			!firstPaint &&
 			!replaceRequested &&
 			!geometryChanged &&
-			!isMultiplexerSession() &&
+			canRebuildScrollback() &&
 			(committedRowsResynced || frameLength <= this.#committedRows);
 		// A settled in-place width resize left native history wrapped at the old
 		// width (the host rewraps its own scrollback; long lines stay shredded at
@@ -4678,15 +4666,6 @@ export class TUI extends Container {
 			}
 			window = this.#prepareLinesArray(window, width);
 		}
-		if (this.#frameProviderComponent !== undefined && !this.#viewportFollowsBottom && this.#viewportPositionVisible) {
-			const maximumViewportOrigin = Math.max(0, frameLength - height);
-			window = this.#compositeViewportPosition(
-				window,
-				width,
-				this.#viewportOrigin,
-				maximumViewportOrigin - this.#viewportOrigin,
-			);
-		}
 		const cursorTrackingLineCount = hasVisibleOverlay ? Math.max(frame.length, windowTop + height) : frame.length;
 
 		// `resetDisplay()` requests an unbounded replay of the current
@@ -4704,7 +4683,7 @@ export class TUI extends Container {
 						(replaceRequested &&
 							this.#frameProviderComponent !== undefined &&
 							this.#resizeScrollbackMode === "rebuild") ||
-						((replaceRequested || geometryRebuild) && !isMultiplexerSession()),
+						((replaceRequested || geometryRebuild) && canRebuildScrollback()),
 				}
 			: { kind: "update", chunkTo, windowTop };
 		this.#logRedraw(intent, frameLength, height);

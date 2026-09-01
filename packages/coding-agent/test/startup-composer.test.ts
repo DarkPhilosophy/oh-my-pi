@@ -17,6 +17,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/modes/startup-composer";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { type TerminalStartOptions, Text } from "@oh-my-pi/pi-tui";
+import { withoutTerminalMultiplexer } from "../../tui/test/helpers/terminal-multiplexer";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { createTestSession } from "./utilities";
 
@@ -59,6 +60,13 @@ function streamingAssistantMessage(text: string): AssistantMessage {
 	};
 }
 
+function streamingThinkingMessage(thinking: string): AssistantMessage {
+	return {
+		...streamingAssistantMessage(""),
+		content: [{ type: "thinking", thinking }],
+	};
+}
+
 class ThrowingStartTerminal extends CountingTerminal {
 	override start(): void {
 		this.starts += 1;
@@ -82,6 +90,8 @@ class InputTrackingTerminal extends CountingTerminal {
 		this.inputEnables += 1;
 	}
 }
+
+withoutTerminalMultiplexer();
 
 describe("Composer prepaint", () => {
 	let settings: Settings;
@@ -220,6 +230,8 @@ describe("Composer prepaint", () => {
 			.map(row => Bun.stripANSI(row));
 		expect(assistant.isTranscriptBlockFinalized()).toBeFalse();
 		expect(history.filter(row => row.includes("assistant-row-0 "))).toHaveLength(1);
+		composer.ui.scrollViewportBy(-3);
+		await terminal.waitForRender();
 
 		const grownText = [
 			"| A | B |\n| --- | --- |\n| x | y |",
@@ -230,23 +242,118 @@ describe("Composer prepaint", () => {
 		].join("\n\n");
 		assistant.updateContent(streamingAssistantMessage(grownText), { transient: true });
 		composer.ui.requestRender();
-		await terminal.waitForRender();
-		composer.ui.requestRender();
-		await terminal.waitForRender();
-
-		const streamingRows = terminal.getScrollBuffer().map(row => Bun.stripANSI(row));
-		for (let index = 0; index < 40; index++) {
-			expect(streamingRows.filter(row => row.includes(`assistant-row-${index} `)).length).toBeLessThanOrEqual(1);
-		}
+		expect(composer.ui.isViewportFollowingBottom()).toBeFalse();
 
 		assistant.updateContent(streamingAssistantMessage(grownText), { transient: false });
 		assistant.markTranscriptBlockFinalized();
 		composer.ui.requestRender();
+		expect(composer.ui.isViewportFollowingBottom()).toBeFalse();
+		composer.ui.scrollViewportBy(Number.POSITIVE_INFINITY);
 		await terminal.waitForRender();
+
 		const finalizedRows = terminal.getScrollBuffer().map(row => Bun.stripANSI(row));
 		for (let index = 0; index < 40; index++) {
 			expect(finalizedRows.filter(row => row.includes(`assistant-row-${index} `))).toHaveLength(1);
 		}
+		assistant.dispose();
+		composer.ui.stop();
+	});
+
+	it("keeps a tight 60-line plain-text stream readable without cutting", async () => {
+		const terminal = new CountingTerminal(60, 10, 1_000);
+		const composer = new Composer({
+			preferences: { ...config, quiet: true, scrollbackRebuild: true },
+			terminal,
+		});
+		const transcript = new TranscriptContainer();
+		const assistant = new AssistantMessageComponent(undefined, false);
+		const lines = Array.from({ length: 60 }, (_, index) => `plain-line-${String(index + 1).padStart(2, "0")}.`);
+		assistant.updateContent(streamingAssistantMessage(lines[0]!), { transient: true });
+		transcript.addChild(assistant);
+
+		composer.start({ playWelcomeIntro: false });
+		await terminal.waitForRender();
+		composer.setRuntimeChildren([transcript]);
+		await terminal.waitForRender();
+		for (let count = 2; count <= lines.length; count++) {
+			assistant.updateContent(streamingAssistantMessage(lines.slice(0, count).join("\n")), { transient: true });
+			composer.ui.requestRender();
+			await terminal.waitForRender();
+		}
+		const nativeHistoryWhileStreaming = terminal
+			.getScrollBuffer()
+			.slice(0, terminal.getBufferPosition().baseY)
+			.map(row => Bun.stripANSI(row));
+		expect(nativeHistoryWhileStreaming.some(row => row.includes("plain-line-01."))).toBeTrue();
+
+		composer.ui.scrollViewportBy(-10_000);
+		await terminal.waitForRender();
+		const visibleAtTop = terminal.getViewport().map(row => Bun.stripANSI(row));
+		expect(visibleAtTop.some(row => row.includes("plain-line-01."))).toBeTrue();
+		composer.ui.scrollViewportBy(Number.POSITIVE_INFINITY);
+		await terminal.waitForRender();
+
+		const visibleAtBottom = terminal.getViewport().map(row => Bun.stripANSI(row));
+		expect(visibleAtBottom.some(row => row.includes("plain-line-60."))).toBeTrue();
+
+		assistant.updateContent(streamingAssistantMessage(lines.join("\n")), { transient: false });
+		assistant.markTranscriptBlockFinalized();
+		composer.ui.requestRender();
+		await terminal.waitForRender();
+		const buffer = terminal.getScrollBuffer().map(row => Bun.stripANSI(row));
+		for (const line of lines) {
+			expect(buffer.filter(row => row.includes(line))).toHaveLength(1);
+		}
+		assistant.dispose();
+		composer.ui.stop();
+	});
+
+	it("keeps the beginning of a tall live thinking transcript reachable", async () => {
+		const terminal = new CountingTerminal(60, 8, 1_000);
+		const composer = new Composer({ preferences: { ...config, quiet: true }, terminal });
+		const transcript = new TranscriptContainer();
+		const assistant = new AssistantMessageComponent(undefined, false);
+		const paragraphs = Array.from(
+			{ length: 30 },
+			(_, index) => `thinking-row-${index} contains enough prose to wrap in the narrow terminal.`,
+		);
+		assistant.updateContent(streamingThinkingMessage(paragraphs[0]!), { transient: true });
+		transcript.addChild(assistant);
+
+		composer.start({ playWelcomeIntro: false });
+		await terminal.waitForRender();
+		composer.setRuntimeChildren([transcript]);
+		await terminal.waitForRender();
+		for (let count = 2; count <= paragraphs.length; count++) {
+			assistant.updateContent(streamingThinkingMessage(paragraphs.slice(0, count).join("\n\n")), {
+				transient: true,
+			});
+			composer.ui.requestRender();
+			await terminal.waitForRender();
+		}
+		composer.ui.scrollViewportBy(-10_000);
+		await terminal.waitForRender();
+		const viewport = terminal.getViewport().map(row => Bun.stripANSI(row));
+		expect(viewport.some(row => row.includes("thinking-row-0 "))).toBeTrue();
+
+		composer.ui.scrollViewportBy(Number.POSITIVE_INFINITY);
+		await terminal.waitForRender();
+		expect(
+			terminal
+				.getViewport()
+				.map(row => Bun.stripANSI(row))
+				.some(row => row.includes("thinking-row-29 ")),
+		).toBeTrue();
+
+		assistant.updateContent(streamingThinkingMessage(paragraphs.join("\n\n")), { transient: false });
+		assistant.markTranscriptBlockFinalized();
+		composer.ui.requestRender();
+		await terminal.waitForRender();
+		const finalizedRows = terminal.getScrollBuffer().map(row => Bun.stripANSI(row));
+		for (let index = 0; index < 30; index++) {
+			expect(finalizedRows.filter(row => row.includes(`thinking-row-${index} `))).toHaveLength(1);
+		}
+
 		assistant.dispose();
 		composer.ui.stop();
 	});

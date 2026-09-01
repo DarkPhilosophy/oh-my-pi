@@ -68,34 +68,21 @@ describe("AssistantMessageComponent streaming settled rows", () => {
 		expect(component.render(80).slice(0, settled)).toEqual(prefix);
 	});
 
-	it("does not retire a streaming prefix ahead of a cache-invalidation marker", () => {
+	it("keeps the settled prefix stable when a cache marker is appended at message end", () => {
 		const component = new AssistantMessageComponent();
 		component.updateContent(msg([{ type: "text", text: "Paragraph 1\n\nParagraph 2\n\nParagraph 3" }]), {
 			transient: true,
 		});
-		component.render(80);
-		expect(component.getTranscriptBlockSettledRows()).toBeGreaterThan(0);
+		const initial = component.render(80);
+		const settled = component.getTranscriptBlockSettledRows();
+		expect(settled).toBeGreaterThan(0);
+		const prefix = initial.slice(0, settled);
 
 		component.setCacheInvalidation({ reprocessedTokens: 4096 });
-		component.render(80);
-		expect(component.getTranscriptBlockSettledRows()).toBe(0);
-	});
-
-	it("exposes no settled rows while a cache-miss marker may still be prepended", () => {
-		const component = new AssistantMessageComponent();
-		component.setMayPrependMarker(true);
-		component.updateContent(msg([{ type: "text", text: "Paragraph 1\n\nParagraph 2\n\nParagraph 3" }]), {
-			transient: true,
-		});
-		component.render(80);
-		// The marker is inserted only at message_end, after streaming would have
-		// retired a prefix. Retiring now then prepending the marker would shift the
-		// committed rows, so no prefix is offered while a prepend is possible.
-		expect(component.getTranscriptBlockSettledRows()).toBe(0);
-
-		component.setMayPrependMarker(false);
-		component.render(80);
-		expect(component.getTranscriptBlockSettledRows()).toBeGreaterThan(0);
+		const withMarker = component.render(80);
+		expect(component.getTranscriptBlockSettledRows()).toBe(settled);
+		expect(withMarker.slice(0, settled)).toEqual(prefix);
+		expect(Bun.stripANSI(withMarker.slice(settled).join("\n"))).toContain("cache miss");
 	});
 });
 

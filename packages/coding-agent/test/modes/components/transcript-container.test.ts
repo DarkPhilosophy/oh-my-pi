@@ -127,28 +127,28 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(80, 1, frame)).toEqual(["fresh live"]);
 	});
 
-	it("retires the complete finalized block after a constrained live render", () => {
+	it("keeps a constrained live block intact in the logical viewport", () => {
 		const transcript = new TranscriptContainer();
 		const rows = Array.from({ length: 8 }, (_value, index) => `row-${index}`);
 		const block = new AllocationAwareBlock(rows);
 		transcript.addChild(block);
 
-		expect(transcript.renderViewport(80, 3, frame)).toEqual(["row-5", "row-6", "row-7"]);
+		expect(transcript.renderViewport(80, 3, frame)).toEqual(rows);
 		block.finalize();
 
 		expect(transcript.peekFinalizedBatch(80, 0)?.rows).toEqual([...rows, ""]);
 	});
 
-	it("assigns one row per live block until pressure requires aggregation", () => {
+	it("keeps every live block intact when the logical viewport exceeds physical capacity", () => {
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["first"], false));
 		transcript.addChild(new Block(["second"], false));
 
-		expect(transcript.renderViewport(80, 2, frame)).toEqual(["first", "second"]);
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["first", "", "second"]);
 		expect(transcript.canAdmit(2)).toBe(false);
-		expect(transcript.renderViewport(80, 1, frame)).toEqual(["1 more transcript blocks active"]);
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["first", "", "second"]);
 	});
-	it("does not report settled resume backlog as active", () => {
+	it("keeps settled resume backlog visible until history accepts it", () => {
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["settled one"], true));
 		transcript.addChild(new Block(["settled two"], true));
@@ -156,9 +156,9 @@ describe("TranscriptContainer", () => {
 
 		// The welcome header can consume the first history offer, leaving the
 		// settled transcript prefix live for one frame while it drains next.
-		expect(transcript.renderViewport(80, 1, frame)).toEqual(["current tool"]);
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["settled one", "", "settled two", "", "current tool"]);
 	});
-	it("excludes empty blocks so pressure never emits blank rows (issue 9483)", () => {
+	it("excludes empty blocks without collapsing the logical viewport (issue 9483)", () => {
 		const transcript = new TranscriptContainer();
 		// Text blocks interleaved with empty (hidden tool-activity) blocks that
 		// render nothing but stay live until retired.
@@ -166,24 +166,20 @@ describe("TranscriptContainer", () => {
 			transcript.addChild(new Block([`t${i}a`, `t${i}b`, `t${i}c`], true));
 			for (let j = 0; j < 8; j++) transcript.addChild(new Block([], true));
 		}
-		// Emergency path: more non-empty blocks than rows. Every row carries real
-		// text — no block's tail is dropped as blank padding.
 		const out = transcript.renderViewport(80, 12, frame);
-		expect(out).toHaveLength(12);
-		expect(out.every(row => /\S/.test(row))).toBe(true);
+		expect(out.filter(row => row.length > 0)).toHaveLength(18);
+		expect(out.filter(row => row.length > 0).every(row => /\S/.test(row))).toBe(true);
 	});
 
-	it("empty blocks do not reserve capacity from real text under pressure (issue 9483)", () => {
+	it("empty blocks do not remove real text from the logical viewport (issue 9483)", () => {
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["A1", "A2", "A3", "A4"], true));
 		transcript.addChild(new Block([], true));
 		transcript.addChild(new Block(["B1", "B2", "B3", "B4"], true));
 		transcript.addChild(new Block([], true));
 		transcript.addChild(new Block(["C1", "C2", "C3", "C4"], true));
-		// Capacity 10 fits all real content once the two empty blocks stop
-		// stealing a base row each; the older block keeps its tail rows.
 		const out = transcript.renderViewport(80, 10, frame);
-		expect(out).toEqual(["A3", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4"]);
+		expect(out).toEqual(["A1", "A2", "A3", "A4", "", "B1", "B2", "B3", "B4", "", "C1", "C2", "C3", "C4"]);
 	});
 
 	it("permits removing settled blocks until they are offered or committed", () => {

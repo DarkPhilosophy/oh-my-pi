@@ -615,63 +615,17 @@ export class TranscriptContainer
 		if (capacity === 0) return EMPTY_TAIL;
 		const start = this.#providerOffered?.end ?? this.#providerFrontier;
 		const frontierRows = this.#providerOffered?.frontierRows ?? this.#providerFrontierRows;
-		const shown: Component[] = [];
-		const blocks: (readonly string[])[] = [];
-		let total = 0;
+		const output: string[] = [];
 		for (let index = start; index < this.children.length; index++) {
 			const child = this.children[index]!;
 			this.#setProviderAllocation(child, Number.MAX_SAFE_INTEGER, frame);
 			let block = stripPlainBlankEdges(child.render(width));
 			if (index === start && frontierRows > 0) block = block.slice(frontierRows);
 			if (block.length === 0) continue;
-			total += block.length + (shown.length > 0 ? 1 : 0);
-			shown.push(child);
-			blocks.push(block);
+			if (output.length > 0) output.push("");
+			output.push(...block);
 		}
-		if (shown.length === 0) return EMPTY_TAIL;
-		if (shown.length > capacity) return this.#renderProviderEmergency(shown, width, capacity, frame);
-		if (total <= capacity) {
-			const output: string[] = [];
-			for (const block of blocks) {
-				if (output.length > 0) output.push("");
-				output.push(...block);
-			}
-			return output;
-		}
-		const allocation = new Array<number>(shown.length).fill(1);
-		let surplus = capacity - shown.length;
-		for (let index = shown.length - 1; index >= 0 && surplus > 0; index--) {
-			const extra = Math.min(Math.max(0, blocks[index]!.length - 1), surplus);
-			allocation[index] += extra;
-			surplus -= extra;
-		}
-		const output: string[] = [];
-		for (let index = 0; index < shown.length; index++) {
-			const allocated = allocation[index]!;
-			this.#setProviderAllocation(shown[index]!, allocated, frame);
-			const block = blocks[index]!;
-			output.push(...(block.length <= allocated ? block : block.slice(block.length - allocated)));
-		}
-		return output.length > capacity ? output.slice(output.length - capacity) : output;
-	}
-
-	#renderProviderEmergency(
-		shown: readonly Component[],
-		width: number,
-		rows: number,
-		frame: AnimationFrame,
-	): readonly string[] {
-		const output: string[] = [];
-		const hiddenCount = Math.max(0, shown.length - rows);
-		const hiddenActive = shown.slice(0, hiddenCount).filter(component => !isBlockFinalized(component)).length;
-		if (hiddenActive > 0) output.push(`${hiddenActive} more transcript blocks active`);
-		const visibleRows = rows - output.length;
-		const visible = visibleRows > 0 ? shown.slice(-visibleRows) : [];
-		for (const component of visible) {
-			this.#setProviderAllocation(component, 1, frame);
-			output.push(stripPlainBlankEdges(component.render(width))[0] ?? "");
-		}
-		return output.slice(0, rows);
+		return output;
 	}
 
 	#setProviderAllocation(component: Component, rows: number, frame: AnimationFrame): void {
