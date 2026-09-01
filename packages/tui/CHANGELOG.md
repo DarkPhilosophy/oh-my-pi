@@ -6,6 +6,10 @@
 
 - Added right-side negative-space panels with independent block placement and `top`/`bottom` vertical alignment.
 
+### Fixed
+
+- Fixed the transcript getting stuck in the live viewport with no scrollable history: frame providers now report live-region pinning per frame instead of permanently, so settled rows reach native scrollback again.
+
 ## [18.0.11] - 2026-08-29
 
 ### Added

@@ -1236,13 +1236,13 @@ export const SETTINGS_SCHEMA = {
 	},
 	"tui.scrollbackRebuild": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "appearance",
 			group: "Display",
 			label: "Rewrite Scrollback",
 			description:
-				"Erase and replay terminal scrollback when a block's final form replaces its live preview. When off (default), stale preview copies remain in history and the final content is appended below.",
+				"Erase and replay terminal scrollback when a block's final form replaces its live preview, so history holds the content exactly once. Off leaves the stale preview copy in history and appends the final content below it (a visibly duplicated block). Panes that cannot erase their own history keep the append behaviour regardless.",
 		},
 	},
 	"tui.resizeScrollback": {

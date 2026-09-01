@@ -45,7 +45,7 @@ export const COMPOSER_DEFAULTS: ComposerPreferences = {
 	composerShape: "band",
 	showHardwareCursor: true,
 	maxInlineImages: 8,
-	scrollbackRebuild: false,
+	scrollbackRebuild: true,
 	resizeScrollback: "append",
 	imeSafeCursor: false,
 	autocompleteMaxVisible: 10,

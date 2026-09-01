@@ -279,6 +279,10 @@ describe("Composer prepaint", () => {
 			assistant.updateContent(streamingAssistantMessage(lines.slice(0, count).join("\n")), { transient: true });
 			composer.ui.requestRender();
 			await terminal.waitForRender();
+			if (count === 30) {
+				const liveViewport = terminal.getViewport().map(row => Bun.stripANSI(row));
+				expect(liveViewport.some(row => row.includes("plain-line-30."))).toBeTrue();
+			}
 		}
 		const nativeHistoryWhileStreaming = terminal
 			.getScrollBuffer()
@@ -290,11 +294,17 @@ describe("Composer prepaint", () => {
 		await terminal.waitForRender();
 		const visibleAtTop = terminal.getViewport().map(row => Bun.stripANSI(row));
 		expect(visibleAtTop.some(row => row.includes("plain-line-01."))).toBeTrue();
+		assistant.updateContent(streamingAssistantMessage([...lines, "fresh-live-row."].join("\n")), { transient: true });
+		composer.ui.requestLiveRender();
+		await terminal.waitForRender();
+		const stillVisibleAtTop = terminal.getViewport().map(row => Bun.stripANSI(row));
+		expect(stillVisibleAtTop.some(row => row.includes("plain-line-01."))).toBeTrue();
+		expect(stillVisibleAtTop.some(row => row.includes("fresh-live-row."))).toBeFalse();
 		composer.ui.scrollViewportBy(Number.POSITIVE_INFINITY);
 		await terminal.waitForRender();
 
 		const visibleAtBottom = terminal.getViewport().map(row => Bun.stripANSI(row));
-		expect(visibleAtBottom.some(row => row.includes("plain-line-60."))).toBeTrue();
+		expect(visibleAtBottom.some(row => row.includes("fresh-live-row."))).toBeTrue();
 
 		assistant.updateContent(streamingAssistantMessage(lines.join("\n")), { transient: false });
 		assistant.markTranscriptBlockFinalized();
@@ -303,6 +313,42 @@ describe("Composer prepaint", () => {
 		const buffer = terminal.getScrollBuffer().map(row => Bun.stripANSI(row));
 		for (const line of lines) {
 			expect(buffer.filter(row => row.includes(line))).toHaveLength(1);
+		}
+		assistant.dispose();
+		composer.ui.stop();
+	});
+
+	it("preserves a visible partial assistant response when cancellation finalizes above the viewport", async () => {
+		const terminal = new CountingTerminal(60, 8, 1_000);
+		const composer = new Composer({ preferences: { ...config, quiet: true }, terminal });
+		const transcript = new TranscriptContainer();
+		const assistant = new AssistantMessageComponent(undefined, false);
+		const partial = Array.from({ length: 20 }, (_, index) => `cancel-row-${index}.`).join("\n");
+		assistant.updateContent(streamingAssistantMessage(partial), { transient: true });
+		transcript.addChild(assistant);
+
+		composer.start({ playWelcomeIntro: false });
+		await terminal.waitForRender();
+		composer.setRuntimeChildren([transcript]);
+		await terminal.waitForRender();
+		expect(
+			terminal
+				.getViewport()
+				.map(row => Bun.stripANSI(row))
+				.some(row => row.includes("cancel-row-19.")),
+		).toBeTrue();
+
+		assistant.updateContent(
+			{ ...streamingAssistantMessage(partial), stopReason: "aborted", errorMessage: "Operation aborted" },
+			{ transient: false },
+		);
+		assistant.markTranscriptBlockFinalized();
+		composer.ui.requestRender();
+		await terminal.waitForRender();
+
+		const afterCancel = terminal.getScrollBuffer().map(row => Bun.stripANSI(row));
+		for (let index = 0; index < 20; index++) {
+			expect(afterCancel.filter(row => row.includes(`cancel-row-${index}.`))).toHaveLength(1);
 		}
 		assistant.dispose();
 		composer.ui.stop();

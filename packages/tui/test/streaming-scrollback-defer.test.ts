@@ -289,6 +289,10 @@ describe("streaming scrollback — visual record", () => {
 		const term = new VirtualTerminal(60, 8, 1_000);
 		overrideProbe(term, undefined);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		// The pinned commit ceiling is the contract for terminals that cannot
+		// erase and replay their history; rebuild-capable hosts scroll the wall
+		// and replay it instead (long live transcripts must not be capped).
+		tui.setScrollbackRebuild(false);
 		const wall = new PinnedSeamLineList([]);
 
 		try {
@@ -1213,15 +1217,17 @@ describe("scrollback commit gap — live barriers", () => {
 
 describe("scrollback divergence — multiplexer fallback", () => {
 	let savedTerminalEnv: Record<string, string | undefined> = {};
-	let savedTmux: string | undefined;
+	let savedZellij: string | undefined;
 	beforeEach(() => {
 		savedTerminalEnv = saveTerminalEnv();
-		savedTmux = Bun.env.TMUX;
-		Bun.env.TMUX = "/tmp/tmux-1000/default,12345,0";
+		savedZellij = Bun.env.ZELLIJ;
+		// A pane that cannot ED3 its own history. tmux implements ED3 for pane
+		// history and takes the erase-and-replay path instead.
+		Bun.env.ZELLIJ = "0";
 	});
 	afterEach(() => {
-		if (savedTmux === undefined) delete Bun.env.TMUX;
-		else Bun.env.TMUX = savedTmux;
+		if (savedZellij === undefined) delete Bun.env.ZELLIJ;
+		else Bun.env.ZELLIJ = savedZellij;
 		restoreTerminalEnv(savedTerminalEnv);
 		savedTerminalEnv = {};
 	});
@@ -1246,8 +1252,8 @@ describe("scrollback divergence — multiplexer fallback", () => {
 			await settle(term);
 			expect(tape(term)).toEqual(preview);
 
-			// Finalize divergence inside a tmux pane: ED3 would corrupt the
-			// pane's own history, so the engine keeps the repair-below contract —
+			// Finalize divergence inside a pane with no usable ED3: the clear
+			// would not reach pane history, so the engine keeps repair-below —
 			// the full result reaches the tape contiguously, the frozen preview
 			// head stays above it exactly once, and nothing is erased.
 			const result = rows("result-", 9);

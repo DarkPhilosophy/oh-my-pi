@@ -1439,6 +1439,8 @@ export class TUI extends Container {
 	 * terminal receives only fresh frames instead of every intermediate one.
 	 */
 	static readonly #MAX_PENDING_OUTPUT_BYTES = 256 * 1024;
+	/** Live paints may exceed the ordinary threshold, but remain bounded. */
+	static readonly #MAX_LIVE_PENDING_OUTPUT_BYTES = 1024 * 1024;
 	/** Retry cadence while the output backlog gate is holding renders back. */
 	static readonly #OUTPUT_BACKLOG_RETRY_MS = 10;
 	#inputRenderGraceUntilMs = 0;
@@ -1729,6 +1731,7 @@ export class TUI extends Container {
 	// once per frame by #doRender.
 	#componentRenderTargets = new Set<Component>();
 	#pendingRenderComponentsOnly = false;
+	#pendingLiveRender = false;
 	// Root children that must re-render during the current compose; null for a
 	// full compose. Non-null only for the duration of a component-scoped
 	// render() call inside #doRender (the scratch set below, reused per frame).
@@ -2478,6 +2481,7 @@ export class TUI extends Container {
 		const debugPath = process.env.OMP_TUI_DEBUG;
 		if (debugPath !== undefined && debugPath.length > 0) {
 			this.#debugServer = new TuiDebugServer(this, debugPath);
+			this.#debugServer.start();
 		}
 		this.#inputDeferred = options?.deferInput === true;
 		this.#watchdog.start();
@@ -3095,6 +3099,18 @@ export class TUI extends Container {
 		}
 		this.#requestOrdinaryRender();
 	}
+	/**
+	 * Schedule a full compose that contains live streaming state.
+	 *
+	 * This preserves every full-render invalidation while allowing the frame
+	 * through the larger live-output backlog budget.
+	 */
+	requestLiveRender(): void {
+		if (this.#stopped) return;
+		this.#pendingLiveRender = true;
+		this.#pendingRenderComponentsOnly = false;
+		this.#requestOrdinaryRender();
+	}
 
 	/**
 	 * Paint a forced frame synchronously when startup must hand off an already
@@ -3141,6 +3157,7 @@ export class TUI extends Container {
 		if (!this.#renderRequested && this.#postFullPaintSettleTimer === undefined) {
 			this.#pendingRenderComponentsOnly = true;
 		}
+		this.#pendingLiveRender = true;
 		this.#componentRenderTargets.add(component);
 		this.#requestOrdinaryRender();
 	}
@@ -3520,6 +3537,9 @@ export class TUI extends Container {
 		if (clearScrollback && !this.#clearScrollbackOnNextRender) {
 			this.#imageBudget.forgetTransmitted();
 			this.invalidate();
+			if (this.#frameProviderComponent !== undefined) {
+				this.#viewportFollowsBottom = true;
+			}
 		}
 		this.#clearScrollbackOnNextRender ||= clearScrollback;
 		this.#forceViewportRepaintOnNextRender = true;
@@ -3593,7 +3613,8 @@ export class TUI extends Container {
 	 */
 	#deferRenderForOutputBacklog(): boolean {
 		const pending = this.terminal.pendingOutputBytes;
-		if (pending === undefined || pending <= TUI.#MAX_PENDING_OUTPUT_BYTES) return false;
+		const maximum = this.#pendingLiveRender ? TUI.#MAX_LIVE_PENDING_OUTPUT_BYTES : TUI.#MAX_PENDING_OUTPUT_BYTES;
+		if (pending === undefined || pending <= maximum) return false;
 		this.#renderRequested = true;
 		this.#renderTimer ??= this.#renderScheduler.scheduleRender(
 			this.#runScheduledRender,
@@ -4088,6 +4109,7 @@ export class TUI extends Container {
 		// requests made up to this frame, whichever path the frame takes.
 		const componentScopedOnly = this.#pendingRenderComponentsOnly;
 		this.#pendingRenderComponentsOnly = false;
+		this.#pendingLiveRender = false;
 
 		// Fullscreen alt-screen short-circuit. While the topmost visible overlay
 		// requests it, borrow the terminal's alternate buffer and paint only the
@@ -4246,12 +4268,13 @@ export class TUI extends Container {
 		// reports no seam (shell semantics).
 		const frameLength = rawFrame.length;
 		const finalBoundary = Math.max(0, Math.min(frameLength, liveRegionStart ?? frameLength));
-		// Rewrite mode can safely record offscreen mutable rows as frozen visual
-		// snapshots: if their final rendering diverges, the normal divergence
-		// rebuild erases and replays the authoritative frame. Multiplexers cannot
-		// provide that repair guarantee, so preserve their pinned ceiling.
-		// Without rewrite, preserve the pinned ceiling so immutable native
-		// history is never stale.
+		// No commit may cross into a pinned region, even one below an unpinned
+		// topmost seam (an anchored HUD/panel under a streaming transcript). The
+		// topmost seam still governs exactness (finalBoundary); this ceiling only
+		// bars a growing pinned region's scrolled-off rows from native scrollback.
+		// When the terminal can erase and replay its native scrollback, the
+		// pinned suffix is recoverable, so commits are not capped there — that
+		// cap is what cut long live transcripts out of history.
 		const commitCeiling =
 			this.#scrollbackRebuildEnabled && canRebuildScrollback()
 				? frameLength
@@ -4886,7 +4909,9 @@ export class TUI extends Container {
 			prevWindowTop,
 			prevHardwareCursorRow,
 			forceWindowRewrite:
-				this.#forceViewportRepaintOnNextRender || (geometryChanged && this.#resizeRepaintsInPlace()),
+				this.#forceViewportRepaintOnNextRender ||
+				this.#resizeAltActive ||
+				(geometryChanged && this.#resizeRepaintsInPlace()),
 			repaintVirtualScrollInPlace: hasVisibleOverlay,
 			cursorTrackingLineCount,
 		});
@@ -5228,6 +5253,18 @@ export class TUI extends Container {
 		this.#forceViewportRepaintOnNextRender = false;
 		this.#previousWidth = width;
 		this.#previousHeight = height;
+		this.#debugPaint = {
+			lines: window.slice(),
+			windowTop: this.#windowTopRow,
+			altScreen: false,
+			cursor: hardwareCursor.state
+				? {
+						x: hardwareCursor.state.col,
+						y: hardwareCursor.state.row - this.#windowTopRow,
+						visible: hardwareCursor.visible,
+					}
+				: { x: 0, y: 0, visible: false },
+		};
 		this.#recordHardwareCursorUpdate(hardwareCursor);
 	}
 
@@ -5306,7 +5343,12 @@ export class TUI extends Container {
 		},
 	): void {
 		this.#fullRedrawCount += 1;
-		let buffer = this.#paintBeginSequence + purgeSequence + options.leadingSequence + imageTransmitBuffer;
+		let buffer =
+			this.#paintBeginSequence +
+			this.#leaveResizeAltSequence() +
+			purgeSequence +
+			options.leadingSequence +
+			imageTransmitBuffer;
 		if (options.commitTo > options.commitFrom) {
 			if (options.appendOnly) {
 				if (options.prepaintWindowTop !== undefined) {
@@ -5946,7 +5988,7 @@ export class TUI extends Container {
 				if (previousWindow[i] !== frame[chunkFrom + i]) prefixIntact = false;
 			}
 			if (prefixIntact) {
-				let buffer = this.#paintBeginSequence + purgeSequence;
+				let buffer = this.#paintBeginSequence + this.#leaveResizeAltSequence() + purgeSequence;
 				const moveToBottom = height - 1 - currentScreenRow;
 				if (moveToBottom > 0) buffer += `\x1b[${moveToBottom}B`;
 				for (let r = height - scroll; r < height; r++) {
@@ -6017,7 +6059,7 @@ export class TUI extends Container {
 				this.#previousHeight = height;
 				return;
 			}
-			let buffer = this.#paintBeginSequence + purgeSequence;
+			let buffer = this.#paintBeginSequence + this.#leaveResizeAltSequence() + purgeSequence;
 			if (inPlaceRewrite) {
 				// The cursor tracker can be stale after overlay-only frames, and
 				// meaningless after an uncommitted slide. A large CUU clamps at the
@@ -6075,7 +6117,7 @@ export class TUI extends Container {
 		// pass through the screen and scroll off as the window rows are written
 		// below them, so the rows entering scrollback are exactly the chunk.
 		this.#fullRedrawCount += 1;
-		let buffer = this.#paintBeginSequence + purgeSequence;
+		let buffer = this.#paintBeginSequence + this.#leaveResizeAltSequence() + purgeSequence;
 		if (currentScreenRow > 0) buffer += `\x1b[${currentScreenRow}A`;
 		buffer += "\r";
 		let wroteLine = false;

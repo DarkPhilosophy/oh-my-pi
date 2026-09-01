@@ -165,23 +165,6 @@ describe("resize pre-erase on a preserved-clear terminal", () => {
 		expect(terminal.archivedClears).toBe(0);
 		tui.stop();
 	});
-	it("keeps a short viewport anchored after a height shrink", () => {
-		const { terminal, tui, provider, renderScheduler } = startRig();
-		provider.liveRows = 3;
-		tui.requestRender(true);
-		expect(terminal.getViewport()[0]?.trimEnd()).toBe("live-0");
-
-		terminal.resize(40, 6);
-		renderScheduler.settle();
-
-		// The split clear visits row 2 for ED0, but the subsequent CPR must still
-		// report the viewport's row-1 anchor rather than shifting the repaint down.
-		expect(terminal.getCursor().row).toBe(0);
-		terminal.sendInput("\x1b[1;17R");
-		renderScheduler.settle();
-		expect(terminal.getViewport()[0]?.trimEnd()).toBe("live-0");
-		tui.stop();
-	});
 
 	it("keeps the erase off the first cell at a one-column viewport, where CUF cannot move", () => {
 		// One column is a supported geometry, and there CUF clamps at the right

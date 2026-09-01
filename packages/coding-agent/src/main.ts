@@ -507,12 +507,16 @@ async function runInteractiveMode(
 	// Consume failures immediately, but defer any banner until the transcript is stable.
 	const checkedVersionPromise = versionCheckPromise.catch(() => undefined);
 
-	// `init` already cleared native history before painting the startup frame.
-	// Replaying resumed transcript rows and repainting the viewport is enough;
-	// another clear would only archive the startup frame. In-process session
-	// replacements still request `clearTerminalHistory` at their own callsites.
+	// The resumed transcript replay owns the authoritative paint: it must
+	// request its own scrollback clear so the whole transcript is emitted as
+	// real lines, exactly like the in-process `/resume` path and the daemon
+	// runtime. Gating this on the environment left cold `--resume` repainting
+	// in place, so the replayed history never reached native scrollback.
 	await logger.time("InteractiveMode.renderInitialMessages", () =>
-		mode.renderInitialMessages({ preserveExistingChat: true }),
+		mode.renderInitialMessages({
+			preserveExistingChat: true,
+			clearTerminalHistory: resuming,
+		}),
 	);
 	// A resolved version check must not insert its banner into a partial transcript.
 	checkedVersionPromise.then(newVersion => {

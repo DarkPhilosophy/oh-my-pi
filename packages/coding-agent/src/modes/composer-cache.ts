@@ -190,7 +190,7 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 			composerShape,
 			showHardwareCursor,
 			maxInlineImages,
-			scrollbackRebuild: scrollbackRebuild === true,
+			scrollbackRebuild: scrollbackRebuild !== false,
 			resizeScrollback:
 				resizeScrollback === "append" || resizeScrollback === "rebuild" || resizeScrollback === "preserve"
 					? resizeScrollback

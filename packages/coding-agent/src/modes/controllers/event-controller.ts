@@ -1339,7 +1339,7 @@ export class EventController {
 				}
 			}
 
-			this.ctx.ui.requestRender();
+			this.ctx.ui.requestLiveRender();
 		}
 	}
 
@@ -1502,9 +1502,9 @@ export class EventController {
 				if (!recoverableEmptyOutput) this.ctx.showPinnedError(event.message.errorMessage);
 			}
 			this.ctx.statusLine.invalidate();
-			this.ctx.ui.requestRender();
+			this.ctx.ui.requestLiveRender();
 		}
-		this.ctx.ui.requestRender();
+		this.ctx.ui.requestLiveRender();
 	}
 
 	async #handleToolExecutionStart(event: Extract<AgentSessionEvent, { type: "tool_execution_start" }>): Promise<void> {

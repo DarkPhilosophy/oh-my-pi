@@ -21,6 +21,8 @@
 - Fixed an issue where custom model overrides were lost during configuration updates
 - Fixed "Please use nerdfont" notification incorrectly persisting after theme configuration
 - Fixed sampling parameter errors for newer Anthropic models (Opus 4.7+, Sonnet 5+)
+- Fixed streaming transcript rows being cut at the history/live boundary and the terminal staying stuck in the live viewport, so scrolling back through long replies and `/usage` output works without restarting or `/resume`.
+- Fixed finalized blocks appearing twice in terminal history (the scrolled-off live preview kept above the final content) by enabling `tui.scrollbackRebuild` by default; panes that cannot erase their own history keep appending instead.
 ### Fixed
 
 - Fixed rapid queued steer/follow-up image submissions racing into split or dropped pending entries by serializing queue mutations; added opt-in `coalescing` queue mode to merge rapid consecutive queued user entries while preserving attachments, hidden magic-keyword companions, restore behavior, delivery, and `[Image #N]` marker numbering.

@@ -1597,7 +1597,7 @@ describe("TUI terminal-state regressions", () => {
 			});
 		});
 
-		it("tmux: deleting a committed row re-anchors via commit resync without losing rows", async () => {
+		it("tmux: deleting a committed row erases and replays pane history exactly once", async () => {
 			await withEnvPatch({ TMUX: "1", STY: undefined, ZELLIJ: undefined }, async () => {
 				const term = new UnknownViewportTerminal(40, 4, 10_000);
 				const tui = new TUI(term);
@@ -1620,26 +1620,18 @@ describe("TUI terminal-state regressions", () => {
 
 					const writes = captureWrites(term);
 					// Deleting "remove-me" (already committed to pane history) shifts
-					// every later row up by one. The committed-prefix audit detects the
-					// shift and re-anchors the commit index at the divergence: pane
-					// history keeps the stale copy and the shifted rows recommit
-					// (duplication, never loss), so the window re-anchors to the full
-					// tail instead of pinning a blank row.
+					// every later row up by one. tmux implements ED3 for its pane
+					// history, so the engine erases and replays instead of recommitting
+					// below the stale copy: history holds the transcript exactly once,
+					// with no duplicated block and no lost rows.
 					component.setLines(["old-0", "old-2", "old-3", "tail-0", "tail-1", "tail-2", "tail-3"]);
 					tui.requestRender();
 					await settle(term);
 
 					expect(visible(term)).toEqual(["tail-0", "tail-1", "tail-2", "tail-3"]);
-					expect(writes.join("")).not.toContain("\x1b[3J");
+					expect(writes.join("")).toContain("\x1b[3J");
 					const history = term.getScrollBuffer().slice(0, term.getBufferPosition().baseY);
-					expect(history.map(line => line.trimEnd())).toEqual([
-						"old-0",
-						"remove-me",
-						"old-2",
-						"old-3",
-						"old-2",
-						"old-3",
-					]);
+					expect(history.map(line => line.trimEnd())).toEqual(["old-0", "old-2", "old-3"]);
 				} finally {
 					tui.stop();
 				}

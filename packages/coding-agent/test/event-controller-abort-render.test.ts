@@ -57,11 +57,12 @@ function createFixture(opts: {
 	const markTranscriptBlockFinalized = vi.fn();
 	const streamingComponent = { updateContent, setComplete, markTranscriptBlockFinalized };
 	const requestRender = vi.fn();
+	const requestLiveRender = vi.fn();
 
 	const ctxBase = {
 		isInitialized: true,
 		init: vi.fn(async () => {}),
-		ui: { requestRender },
+		ui: { requestRender, requestLiveRender },
 		statusLine: { invalidate: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
 		streamingComponent,

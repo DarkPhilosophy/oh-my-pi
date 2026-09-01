@@ -107,6 +107,41 @@ describe("TUI output-backpressure render gate", () => {
 		}
 	});
 
+	it("keeps a queued full compose live through moderate backlog without narrowing it", () => {
+		const term = new BackloggedTerminal(40, 6);
+		const scheduler = new DeferredRenderScheduler();
+		const live = new Text("live-initial", 0, 0);
+		const sibling = new Text("sibling-initial", 0, 0);
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		tui.addChild(live);
+		tui.addChild(sibling);
+
+		try {
+			tui.start();
+			stepRender(scheduler);
+			term.written.length = 0;
+			term.pendingBytes = 512 * 1024;
+
+			sibling.setText("sibling-full-update");
+			tui.requestRender();
+			live.setText("live-delta");
+			tui.requestComponentRender(live);
+			stepRender(scheduler);
+
+			const output = term.written.join("");
+			expect(output).toContain("live-delta");
+			expect(output).toContain("sibling-full-update");
+
+			term.written.length = 0;
+			sibling.setText("ordinary-full-update");
+			tui.requestRender();
+			stepRender(scheduler);
+			expect(term.written).toEqual([]);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("never gates terminals that do not report an output backlog", () => {
 		const term = new VirtualTerminal(40, 6);
 		const scheduler = new DeferredRenderScheduler();
