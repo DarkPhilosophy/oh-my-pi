@@ -20,6 +20,9 @@
 
 - Fixed terminal query support in supervised PTY processes, including cursor position reports.
 - Fixed paste-and-submit handling so an Enter keypress received with a bracketed paste is delivered to the previously focused component; `Editor.onLargePaste` now receives `PasteOptions` describing the queued submit.
+### Fixed
+
+- Avoid inserting a trailing space when auto-completing directory paths with `@`.
 
 ## [18.1.3] - 2026-09-02
 
