@@ -43,7 +43,7 @@ import type { OAuthAccountIdentity } from "../../session/auth-storage";
 import { formatCompactQuota } from "../controllers/command-controller";
 import { getSelectListTheme, theme } from "../theme/theme";
 import { HookEditorComponent } from "./hook-editor";
-import { buildBrowserItems, ModelBrowser, sortModelItems } from "./model-browser";
+import { buildBrowserItems, ModelBrowser, resolveRoleAssignments, sortModelItems } from "./model-browser";
 import {
 	bottomBorder,
 	divider,
@@ -78,8 +78,10 @@ export interface AdvisorConfigDeps {
 	settings: Settings;
 	scopedModels: ReadonlyArray<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	availableToolNames: string[];
-	/** Formatted advisor-role model shown on the seeded default row (e.g. "anthropic/claude-..."). */
+	/** Formatted advisor-role model shown for advisors without an explicit model (e.g. "anthropic/claude-..."). */
 	defaultModelLabel?: string;
+	/** Project folder name, shown as the project section title in the roster. */
+	projectName?: string;
 }
 
 const PREVIEW_WIDTH = 60;
@@ -131,6 +133,11 @@ export class AdvisorConfigOverlayComponent implements Component {
 	#scopedModels: ReadonlyArray<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	#availableToolNames: readonly string[];
 	#defaultModelLabel: string | undefined;
+	#projectName: string | undefined;
+	/** Roster row value under the cursor when leaving the list screen. */
+	#listCursor: string | undefined;
+	/** Detail-screen field under the cursor when descending into a field editor. */
+	#detailCursor: string | undefined;
 	#cb: AdvisorConfigCallbacks;
 	#scope: AdvisorConfigScope;
 	#doc: WatchdogConfigDoc;
@@ -162,10 +169,10 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#scopedModels = deps.scopedModels;
 		this.#availableToolNames = deps.availableToolNames;
 		this.#defaultModelLabel = deps.defaultModelLabel;
+		this.#projectName = deps.projectName;
 		this.#cb = callbacks;
 		this.#scope = scope;
 		this.#doc = doc;
-		this.#ensureRosterVisible();
 		this.#showList();
 		// Prefetch usage reports for quota display; non-fatal if unavailable.
 		if (callbacks.getUsageReports) {
@@ -184,7 +191,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 	render(width: number): readonly string[] {
 		const height = Math.max(14, process.stdout.rows || 40);
 		const bodyRows = Math.max(3, height - 4);
-		const title = `Advisor configuration · ${this.#scope}${this.#dirty ? "  ● unsaved" : ""}`;
+		const title = `Advisor configuration · ${this.#scopeTitle(this.#scope)}${this.#dirty ? "  ● unsaved" : ""}`;
 		const out: string[] = [];
 
 		if (this.#screen === "list") {
@@ -279,13 +286,17 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const help =
 			value === "add"
 				? "Create a new advisor entry, then edit its model, tools, and instructions."
-				: value === "scope"
-					? `Switch between the project and user WATCHDOG.yml. Currently editing the ${this.#scope}-level file.`
-					: value === "save"
-						? "Write this scope's WATCHDOG.yml and reload the live advisors without a restart."
-						: value === "close"
-							? "Close the editor. Unsaved changes are discarded."
-							: "";
+				: value.startsWith("scope:")
+					? value === `scope:${this.#scope}`
+						? `Editing this section's WATCHDOG.yml.`
+						: `Open the ${value === "scope:project" ? "project" : "global"} WATCHDOG.yml.`
+					: value === "empty"
+						? `No advisors configured here. The advisor role default (${this.#defaultModelLabel ?? "none"}) applies. Use "+ Add advisor" to configure one.`
+						: value === "save"
+							? "Write this scope's WATCHDOG.yml and reload the live advisors without a restart."
+							: value === "close"
+								? "Close the editor. Unsaved changes are discarded."
+								: "";
 		return wrap(help, bodyWidth).map(line => truncateToWidth(theme.fg("muted", line), bodyWidth));
 	}
 
@@ -337,6 +348,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 	// ───────────────────────────── screens ───────────────────────────
 
 	#setScreen(screen: Screen, active: Component, footerHint: string): void {
+		if (screen !== "list") this.#rememberListCursor();
 		this.#screen = screen;
 		this.#active = active;
 		this.#footerHint = footerHint;
@@ -344,25 +356,16 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#cb.requestRender();
 	}
 
-	#otherScope(): AdvisorConfigScope {
-		return this.#scope === "project" ? "user" : "project";
+	#scopeTitle(scope: AdvisorConfigScope): string {
+		return scope === "project" ? `Project · ${this.#projectName ?? "project"}` : "Global";
 	}
 
-	#ensureRosterVisible(): void {
-		if (this.#doc.advisors.length === 0) this.#doc.advisors.push({ name: "default" });
-	}
-
-	#isBareDefaultDoc(doc: WatchdogConfigDoc): boolean {
-		if (doc.advisors.length !== 1 || doc.instructions?.trim()) return false;
-		const advisor = doc.advisors[0];
-		if (!advisor) return false;
-		return (
-			advisor.name === "default" &&
-			!advisor.model?.trim() &&
-			advisor.tools === undefined &&
-			!advisor.instructions?.trim() &&
-			advisor.enabled !== false
-		);
+	/** Remember the roster cursor so returning from a sub-screen lands on the same row. */
+	#rememberListCursor(): void {
+		const list = this.#active;
+		if (list instanceof SelectList && this.#screen === "list") {
+			this.#listCursor = list.getSelectedItem()?.value ?? this.#listCursor;
+		}
 	}
 
 	#advisorSummary(advisor: AdvisorConfig): string {
@@ -372,20 +375,36 @@ export class AdvisorConfigOverlayComponent implements Component {
 	}
 
 	#showList(): void {
-		this.#ensureRosterVisible();
-		const items: SelectItem[] = this.#doc.advisors.map((advisor, index) => ({
-			value: `advisor:${index}`,
-			label: `${advisor.enabled === false ? "○" : "●"} ${advisor.name || "(unnamed)"}`,
-			description: this.#advisorSummary(advisor),
-		}));
+		this.#rememberListCursor();
+		const items: SelectItem[] = [];
+		for (const scope of ["project", "user"] as const) {
+			const active = scope === this.#scope;
+			items.push({
+				value: `scope:${scope}`,
+				label: `${active ? "▾" : "▸"} ${this.#scopeTitle(scope)}`,
+				description: active ? "editing" : "click to open",
+			});
+			if (!active) continue;
+			for (const [index, advisor] of this.#doc.advisors.entries()) {
+				items.push({
+					value: `advisor:${index}`,
+					label: `  ${advisor.enabled === false ? "○" : "●"} ${advisor.name || "(unnamed)"}`,
+					description: this.#advisorSummary(advisor),
+				});
+			}
+			if (this.#doc.advisors.length === 0) {
+				items.push({ value: "empty", label: "  (no advisors)", description: "role default applies" });
+			}
+		}
 		items.push({ value: "add", label: "+ Add advisor" });
 		items.push({ value: "shared", label: "Shared instructions", description: previewLine(this.#doc.instructions) });
-		items.push({ value: "scope", label: `Scope: ${this.#scope}`, description: `→ ${this.#otherScope()}` });
 		items.push({ value: "save", label: "Save & apply" });
 		items.push({ value: "close", label: "Close" });
 
 		// Show every row (no internal overflow-search); the split frame supplies height.
 		const list = new SelectList(items, Math.max(1, items.length), getSelectListTheme());
+		const remembered = this.#listCursor ? items.findIndex(item => item.value === this.#listCursor) : -1;
+		list.setSelectedIndex(remembered >= 0 ? remembered : Math.min(1, items.length - 1));
 		list.onSelectionChange = () => {
 			this.#previewScroll = 0;
 			this.#cb.requestRender();
@@ -402,6 +421,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		if (value === "add") {
 			this.#doc.advisors.push({ name: `Advisor ${this.#doc.advisors.length + 1}` });
 			this.#dirty = true;
+			this.#listCursor = `advisor:${this.#doc.advisors.length - 1}`;
 			this.#showDetail(this.#doc.advisors.length - 1);
 			return;
 		}
@@ -409,20 +429,23 @@ export class AdvisorConfigOverlayComponent implements Component {
 			this.#showInstructionsEditor(-1);
 			return;
 		}
-		if (value === "scope") {
+		if (value === "empty") return;
+		const scopeMatch = /^scope:(project|user)$/.exec(value);
+		if (scopeMatch) {
+			const next = scopeMatch[1] as AdvisorConfigScope;
+			if (next === this.#scope) return;
 			if (this.#dirty) {
 				this.#cb.notify('Unsaved changes — "Save & apply" or Close before switching scope.');
 				return;
 			}
-			const next = this.#otherScope();
 			this.#doc = await this.#cb.loadDoc(next);
-			this.#ensureRosterVisible();
 			this.#scope = next;
+			this.#listCursor = `scope:${next}`;
 			this.#showList();
 			return;
 		}
 		if (value === "save") {
-			await this.#cb.save(this.#scope, this.#isBareDefaultDoc(this.#doc) ? { advisors: [] } : this.#doc);
+			await this.#cb.save(this.#scope, this.#doc);
 			this.#dirty = false;
 			this.#showList();
 			return;
@@ -462,7 +485,12 @@ export class AdvisorConfigOverlayComponent implements Component {
 			{ value: "back", label: "Back" },
 		);
 		const list = new SelectList(items, Math.max(1, items.length), getSelectListTheme());
-		list.onSelect = item => this.#onDetailSelect(index, item.value);
+		const remembered = this.#detailCursor ? items.findIndex(item => item.value === this.#detailCursor) : -1;
+		if (remembered >= 0) list.setSelectedIndex(remembered);
+		list.onSelect = item => {
+			this.#detailCursor = item.value;
+			this.#onDetailSelect(index, item.value);
+		};
 		list.onCancel = () => this.#showList();
 		this.#setScreen("detail", list, `Editing "${advisor.name}" · Enter / click edit field · Esc back`);
 	}
@@ -535,13 +563,22 @@ export class AdvisorConfigOverlayComponent implements Component {
 				models = [];
 			}
 		}
+		// Same roster as `/model`: role chips, MRU ordering, perf stats, and the
+		// advisor's current model pinned + preselected so Enter keeps it.
+		const allModels = this.#scopedModels.length > 0 ? models : this.#modelRegistry.getAll();
+		const roles = resolveRoleAssignments(this.#settings, allModels, models);
 		const items = buildBrowserItems(models);
-		sortModelItems(items, { mruOrder });
+		sortModelItems(items, { roles, mruOrder });
 
+		const current = this.#doc.advisors[index].model?.trim();
+		const currentSelector = current ? current.split(":", 1)[0] : undefined;
 		const picker = new ModelBrowser(this.#settings, {});
+		picker.setRoles(roles);
 		picker.setMruOrder(mruOrder);
 		picker.setPerfStats(storage?.getModelPerf() ?? new Map());
+		picker.setCurrentSelector(currentSelector);
 		picker.setItems(items);
+		if (currentSelector) picker.selectSelector(currentSelector);
 		picker.onActivate = item => {
 			const efforts = getSupportedEfforts(item.model);
 			if (efforts.length === 0) {
