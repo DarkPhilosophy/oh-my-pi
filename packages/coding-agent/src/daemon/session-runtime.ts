@@ -678,8 +678,7 @@ async function createAgentSessionRuntimeInScope(
 		// runtime. Mirror the authoritative session cwd immediately so tmux and
 		// child processes observe the same directory even on startup resume.
 		emitBridgeEvent({ type: "terminal_cwd", cwd: result.session.sessionManager.getCwd() });
-		let mode!: InteractiveMode;
-		mode = new InteractiveMode(
+		const mode: InteractiveMode = new InteractiveMode(
 			result.session,
 			VERSION,
 			undefined,

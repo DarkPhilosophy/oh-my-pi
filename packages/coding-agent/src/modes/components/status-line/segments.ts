@@ -210,9 +210,23 @@ const modelSegment: StatusLineSegment = {
 		// success = all running, warning = quota-exhausted, error = failed,
 		// dim = everything paused/no-model. Per-advisor detail lives in `(adv)` status.
 		// Optional chaining: lightweight session doubles (test mocks) that don't
-		// implement getAdvisorStatusOverview skip dots instead of crashing.
+		// implement getAdvisorStatusOverview skip the badge instead of crashing.
 		const advisorStats = ctx.session.getAdvisorStatusOverview?.();
 		if (advisorStats?.configured && advisorStats.advisors.length > 0) {
+			const statuses = advisorStats.advisors.map(a => a.status);
+			const badgeColor = statuses.includes("error")
+				? "error"
+				: statuses.includes("quota_exhausted")
+					? "warning"
+					: statuses.includes("running")
+						? "success"
+						: "dim";
+			// Closed eye once every advisor has finished reviewing the yielded
+			// turn — no more comments until a new primary turn starts.
+			const allYielded = advisorStats.advisors.every(a => a.yielded);
+			const advisorIcon = allYielded ? theme.icon.advisorClosed || theme.icon.advisor : theme.icon.advisor;
+			if (advisorIcon) content += theme.fg(badgeColor, ` ${advisorIcon}`);
+			// Per-advisor roster detail: one glyph per advisor, capped at four.
 			let advisorDots = "";
 			for (const a of advisorStats.advisors.slice(0, 4)) {
 				switch (a.status) {

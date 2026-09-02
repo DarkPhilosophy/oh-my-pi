@@ -4,6 +4,7 @@ import {
 	copyToClipboardPersistent as nativeCopyToClipboardPersistent,
 	readImageFromClipboard as nativeReadImageFromClipboard,
 } from "@oh-my-pi/pi-natives/clipboard";
+import { isWsl } from "@oh-my-pi/pi-utils";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { SUPPORTED_IMAGE_MIME_TYPES } from "@oh-my-pi/pi-utils/mime";
 import MAC_FILE_URL_SCRIPT from "./mac-file-urls.applescript" with { type: "text" };
@@ -61,10 +62,6 @@ async function spawnCapture(
 
 function hasDisplay(): boolean {
 	return process.platform !== "linux" || Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
-}
-
-function isWsl(): boolean {
-	return process.platform === "linux" && Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
 }
 
 /**

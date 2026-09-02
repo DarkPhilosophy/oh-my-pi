@@ -1,5 +1,5 @@
 import { encodeSixel } from "@oh-my-pi/pi-natives";
-import { $env, isBunTestRuntime, isTerminalHeadless } from "@oh-my-pi/pi-utils";
+import { $env, isBunTestRuntime, isTerminalHeadless, isWsl } from "@oh-my-pi/pi-utils";
 import { sendDesktopNotification, shouldDeliverDesktopNotification } from "./desktop-notify";
 import {
 	detectKittyUnicodePlaceholdersSupport,
@@ -9,9 +9,11 @@ import {
 	renderKittyPlaceholderLines,
 	setKittyGraphics,
 } from "./kitty-graphics";
+import { isInsideTerminalMultiplexer } from "./terminal-multiplexer";
 import { isInsideTmux, wrapTmuxPassthrough, wrapTmuxPassthroughIfNeeded } from "./tmux";
 import type { HangulCompatibilityJamoWidth } from "./utils";
 
+export * from "./terminal-multiplexer";
 export { isInsideTmux, wrapTmuxPassthrough } from "./tmux";
 
 export enum ImageProtocol {
@@ -29,12 +31,12 @@ export enum NotifyProtocol {
 export type TerminalId =
 	| "kitty"
 	| "ghostty"
-	| "orca"
 	| "wezterm"
 	| "iterm2"
 	| "vscode"
 	| "alacritty"
 	| "warp"
+	| "orca"
 	| "base"
 	| "trueColor";
 
@@ -108,7 +110,7 @@ export class TerminalInfo {
 		/** Renders the Kitty OSC 66 text-sizing protocol (scaled spans). Kitty only. */
 		public readonly supportsTextSizing: boolean = false,
 		/**
-		 * Hangul Compatibility Jamo (U+3131..=U+318E) cell width. Ghostty follows
+		 * Hangul Compatibility Jamo (U+3131..=U+318E) cell width. Ghostty and Orca follow
 		 * UAX#11 (2 cells); Warp paints 1; "platform" keeps the OS default
 		 * (macOS narrow, otherwise UAX#11).
 		 */
@@ -209,19 +211,6 @@ export class TerminalInfo {
 	}
 }
 
-/** Detect terminal multiplexers where scrollback clearing and height-change redraws are hostile. */
-export function isInsideTerminalMultiplexer(env: NodeJS.ProcessEnv = Bun.env): boolean {
-	// TMUX/STY/ZELLIJ, Herdr, and CMUX workspace/surface/remote-transport
-	// markers are authoritative session signals. TERM can also survive when those are
-	// stripped (`sudo` without -E, `su`, env-sanitizing launchers/ssh). Do not
-	// use CMUX_SOCKET_PATH here: it is a CLI socket override and can be set
-	// outside a CMUX terminal.
-	if (env.TMUX || env.STY || env.ZELLIJ || env.HERDR_ENV === "1") return true;
-	if (env.CMUX_WORKSPACE_ID || env.CMUX_SURFACE_ID || env.CMUX_REMOTE_TRANSPORT) return true;
-	const term = env.TERM?.toLowerCase() ?? "";
-	return term.startsWith("tmux") || term.startsWith("screen");
-}
-
 /**
  * Whether the agent process is running inside a Zellij session. Read fresh on
  * each call (like {@link isInsideTmux}) so a session attached/detached mid-run
@@ -237,8 +226,8 @@ export function isNotificationSuppressed(): boolean {
 	return value === "off" || value === "0" || value === "false";
 }
 
-function getForcedImageProtocol(): ImageProtocol | null | undefined {
-	const raw = $env.PI_FORCE_IMAGE_PROTOCOL?.trim().toLowerCase();
+function getForcedImageProtocol(env: NodeJS.ProcessEnv = $env): ImageProtocol | null | undefined {
+	const raw = env.PI_FORCE_IMAGE_PROTOCOL?.trim().toLowerCase();
 	if (!raw) return undefined;
 	if (raw === "kitty") return ImageProtocol.Kitty;
 	if (raw === "iterm2" || raw === "iterm") return ImageProtocol.Iterm2;
@@ -463,8 +452,12 @@ export function shouldEnableHyperlinksByDefault(
 	return true;
 }
 
-function getFallbackImageProtocol(terminalId: TerminalId, env: NodeJS.ProcessEnv = Bun.env): ImageProtocol | null {
-	if (!process.stdout.isTTY) return null;
+function getFallbackImageProtocol(
+	terminalId: TerminalId,
+	env: NodeJS.ProcessEnv = Bun.env,
+	isTTY: boolean = process.stdout.isTTY === true,
+): ImageProtocol | null {
+	if (!isTTY) return null;
 	if (terminalId === "vscode" || terminalId === "alacritty") return null;
 	const term = env.TERM?.toLowerCase() ?? "";
 	if (term.includes("screen") || term.includes("tmux") || term.includes("ghostty")) {
@@ -482,9 +475,59 @@ export function resolveWarpImageProtocol(
 	platform: NodeJS.Platform = process.platform,
 	env: NodeJS.ProcessEnv = Bun.env,
 ): ImageProtocol | null {
-	const windowsHost =
-		platform === "win32" || (platform === "linux" && Boolean(env.WSL_DISTRO_NAME || env.WSL_INTEROP));
+	const windowsHost = platform === "win32" || isWsl(platform, env);
 	return windowsHost ? null : ImageProtocol.Kitty;
+}
+
+/**
+ * Paseo (getpaseo/paseo) hardcodes `TERM_PROGRAM=kitty` into every PTY
+ * (`buildTerminalEnvironment`) while its xterm.js renderer implements neither
+ * Kitty graphics nor Unicode placeholders — trusting the advertisement turns
+ * image previews into literal PUA garbage (getpaseo/paseo#3850). Paseo
+ * injects `PASEO_TERMINAL_ID` into every terminal it hosts, which makes a
+ * reliable embedder signal.
+ */
+export function isPaseoEmbedder(env: NodeJS.ProcessEnv = Bun.env): boolean {
+	return Boolean(env.PASEO_TERMINAL_ID);
+}
+
+/**
+ * Resolve the image protocol for a non-forced runtime: static per-terminal
+ * support (with Warp's platform carve-out), then the multiplexer fallback,
+ * then host carve-outs. `isTTY` is injectable because the fallback only fires
+ * on a real TTY — a piped subprocess cannot exercise that path, so regression
+ * tests call this directly.
+ */
+export function resolveImageProtocol(
+	terminalId: TerminalId,
+	env: NodeJS.ProcessEnv = Bun.env,
+	isTTY: boolean = process.stdout.isTTY === true,
+): ImageProtocol | null {
+	let imageProtocol: ImageProtocol | null;
+	if (terminalId === "warp") {
+		// Warp advertises Kitty graphics on macOS/Linux only; drop it on win32.
+		imageProtocol = resolveWarpImageProtocol(process.platform, env);
+	} else {
+		imageProtocol = getTerminalInfo(terminalId).imageProtocol;
+		if (!imageProtocol) {
+			const fallbackImageProtocol = getFallbackImageProtocol(terminalId, env, isTTY);
+			if (fallbackImageProtocol) imageProtocol = fallbackImageProtocol;
+		}
+	}
+	// Paseo's xterm.js renderer draws neither Kitty APC nor placeholders —
+	// applied after the multiplexer fallback so tmux/screen inside a Paseo
+	// pane cannot restore Kitty via getFallbackImageProtocol
+	// (getpaseo/paseo#3850).
+	if (imageProtocol !== null && isPaseoEmbedder(env)) {
+		return null;
+	}
+	// Herdr owns the pane grid but does not expose whether the attached client
+	// enabled its experimental Kitty renderer. Outer-terminal identity variables
+	// can leak into the pane, so only the explicit protocol override is safe.
+	if (imageProtocol !== null && env.HERDR_ENV === "1") {
+		return null;
+	}
+	return imageProtocol;
 }
 
 function getWarpTerminalInfo(platform: NodeJS.Platform, env: NodeJS.ProcessEnv = Bun.env): TerminalInfo {
@@ -507,11 +550,11 @@ const KNOWN_TERMINALS = Object.freeze({
 	// Recognized terminals
 	kitty: new TerminalInfo("kitty", ImageProtocol.Kitty, true, true, NotifyProtocol.Osc99, true, true, true),
 	ghostty: new TerminalInfo("ghostty", ImageProtocol.Kitty, true, true, NotifyProtocol.Osc9, false, false, false, 2),
-	orca: new TerminalInfo("orca", null, true, false, NotifyProtocol.Bell, false, false, false, 2),
 	wezterm: new TerminalInfo("wezterm", ImageProtocol.Kitty, true, true, NotifyProtocol.Osc9),
 	iterm2: new TerminalInfo("iterm2", ImageProtocol.Iterm2, true, true, NotifyProtocol.Osc9),
 	vscode: new TerminalInfo("vscode", null, true, true, NotifyProtocol.Bell),
 	alacritty: new TerminalInfo("alacritty", null, true, true, NotifyProtocol.Bell),
+	orca: new TerminalInfo("orca", null, true, false, NotifyProtocol.Bell, false, false, false, 2),
 	// Warp identifies via TERM_PROGRAM=WarpTerminal and ships the Kitty graphics
 	// protocol on macOS/Linux (direct placement only — no Unicode placeholders, so
 	// detectKittyUnicodePlaceholdersSupport correctly excludes it). It does not
@@ -548,12 +591,12 @@ export function detectTerminalId(env: NodeJS.ProcessEnv = Bun.env): TerminalId {
 	if (TERM_PROGRAM) {
 		if (caseEq(TERM_PROGRAM, "kitty")) return "kitty";
 		if (caseEq(TERM_PROGRAM, "ghostty")) return "ghostty";
-		if (caseEq(TERM_PROGRAM, "orca")) return "orca";
 		if (caseEq(TERM_PROGRAM, "wezterm")) return "wezterm";
 		if (caseEq(TERM_PROGRAM, "iterm.app")) return "iterm2";
 		if (caseEq(TERM_PROGRAM, "vscode")) return "vscode";
 		if (caseEq(TERM_PROGRAM, "alacritty")) return "alacritty";
 		if (caseEq(TERM_PROGRAM, "warpterminal")) return "warp";
+		if (caseEq(TERM_PROGRAM, "orca")) return "orca";
 	}
 
 	if (TERM?.toLowerCase().includes("ghostty")) return "ghostty";
@@ -582,22 +625,28 @@ export interface RuntimeTerminal extends TerminalInfo {
 }
 
 function resolveRuntimeTerminal(env: NodeJS.ProcessEnv): RuntimeTerminal {
-	const terminalId = detectTerminalId(env);
-	const resolved = getTerminalInfo(terminalId, process.platform, env).clone();
+	const resolved = getTerminalInfo(detectTerminalId(env)).clone();
 	// Detection records support; hosts opt into OSC 66 separately.
 	resolved.textSizing = false;
 
-	const forcedImageProtocol = getForcedImageProtocol();
+	const forcedImageProtocol = getForcedImageProtocol(env);
 	if (forcedImageProtocol !== undefined) {
 		resolved.imageProtocol = forcedImageProtocol;
-	} else if (resolved.id === "warp") {
-		// Warp advertises Kitty graphics on macOS/Linux only; drop it on win32.
-		resolved.imageProtocol = resolveWarpImageProtocol(process.platform, env);
-	} else if (!resolved.imageProtocol) {
-		const fallbackImageProtocol = getFallbackImageProtocol(resolved.id, env);
-		if (fallbackImageProtocol) resolved.imageProtocol = fallbackImageProtocol;
+	} else {
+		resolved.imageProtocol = resolveImageProtocol(resolved.id, env, process.stdout.isTTY === true);
 	}
+	// Hyperlink (OSC 8) capability. The static per-terminal flag lives on
+	// KNOWN_TERMINALS; shouldEnableHyperlinksByDefault folds in runtime context —
+	// PI_FORCE_HYPERLINKS / PI_NO_HYPERLINKS overrides plus a tmux>=3.4 gate so
+	// modern tmux forwards OSC 8 to outer terminals that opt in via
+	// `terminal-features "*:hyperlinks"`.
 	resolved.hyperlinks = shouldEnableHyperlinksByDefault(env, resolved.id);
+	// DECCARA rectangular-SGR background fills. The static per-terminal capability
+	// lives on KNOWN_TERMINALS; here we fold in runtime context — multiplexer and
+	// the PI_NO_DECCARA kill switch via detectRectangularSgrSupport — and force it
+	// off inside the test runtime so the xterm.js-backed virtual terminal (which
+	// ignores DECCARA) exercises the padded-string fallback. Integration tests opt
+	// in explicitly through setTerminalDeccara.
 	resolved.deccara = detectRectangularSgrSupport(resolved.id, env) && !isBunTestRuntime();
 	return resolved;
 }
@@ -872,8 +921,11 @@ export function encodeKittyPlacementLine(options: {
 export function encodeKittyDeleteImage(imageId: number): string {
 	return wrapTmuxPassthroughIfNeeded(`\x1b_Ga=d,d=I,i=${imageId},q=2\x1b\\`);
 }
-
-/** Delete every Kitty image and placement after a destructive display reset. */
+/**
+ * Delete every Kitty image and placement in the terminal. Used only by an
+ * explicit destructive display reset: text erases leave untracked placements
+ * painted, so per-image bookkeeping cannot guarantee a clean viewport.
+ */
 export function encodeKittyDeleteAllImages(): string {
 	return wrapTmuxPassthroughIfNeeded("\x1b_Ga=d,d=A,q=2\x1b\\");
 }

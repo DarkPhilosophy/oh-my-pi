@@ -73,10 +73,10 @@ describe("status line model segment advisor glyphs", () => {
 		ctx.session.getAdvisorStatusOverview = () => ({
 			configured: true,
 			advisors: [
-				{ name: "a", status: "running" },
-				{ name: "b", status: "quota_exhausted" },
-				{ name: "c", status: "error" },
-				{ name: "d", status: "paused" },
+				{ name: "a", status: "running", yielded: false },
+				{ name: "b", status: "quota_exhausted", yielded: false },
+				{ name: "c", status: "error", yielded: false },
+				{ name: "d", status: "paused", yielded: false },
 			],
 		});
 		const content = renderSegment("model", ctx).content;
@@ -96,7 +96,7 @@ describe("status line model segment advisor glyphs", () => {
 		const ctx = createModelContext(true);
 		ctx.session.getAdvisorStatusOverview = () => ({
 			configured: true,
-			advisors: Array.from({ length: 6 }, (_, i) => ({ name: `a${i}`, status: "running" as const })),
+			advisors: Array.from({ length: 6 }, (_, i) => ({ name: `a${i}`, status: "running" as const, yielded: false })),
 		});
 		const plain = Bun.stripANSI(renderSegment("model", ctx).content);
 		expect((plain.match(/●/g) ?? []).length).toBe(4);

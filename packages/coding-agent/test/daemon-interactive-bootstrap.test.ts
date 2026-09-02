@@ -464,7 +464,6 @@ describe("daemon interactive bootstrap", () => {
 		const endpoint = path.join(runtimeDir, "daemon.sock");
 		let dyingCreates = 0;
 		let replacementCreates = 0;
-		let dying: DaemonServer | undefined;
 		let replacement: DaemonServer | undefined;
 		let replacementStart: Promise<void> | undefined;
 		const runtime = (sessionId: string | undefined, cwd: string) => ({
@@ -487,7 +486,7 @@ describe("daemon interactive bootstrap", () => {
 			dispose: async () => {},
 			subscribe: () => () => {},
 		});
-		dying = new DaemonServer({
+		const dying: DaemonServer = new DaemonServer({
 			profile: "test",
 			runtimeDir,
 			endpoint,

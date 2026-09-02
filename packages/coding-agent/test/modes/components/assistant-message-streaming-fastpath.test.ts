@@ -43,48 +43,6 @@ beforeEach(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 });
-describe("AssistantMessageComponent streaming settled rows", () => {
-	it("keeps every reported prefix row byte-stable as markdown grows and finalizes", () => {
-		const component = new AssistantMessageComponent();
-		component.updateContent(msg([{ type: "text", text: "Paragraph 1\n\nParagraph 2\n\nParagraph 3" }]), {
-			transient: true,
-		});
-		const initial = component.render(80);
-		const settled = component.getTranscriptBlockSettledRows();
-		expect(settled).toBeGreaterThan(0);
-		const prefix = initial.slice(0, settled);
-
-		component.updateContent(
-			msg([{ type: "text", text: "Paragraph 1\n\nParagraph 2\n\nParagraph 3\n\nParagraph 4" }]),
-			{ transient: true },
-		);
-		expect(component.render(80).slice(0, settled)).toEqual(prefix);
-
-		component.updateContent(
-			msg([{ type: "text", text: "Paragraph 1\n\nParagraph 2\n\nParagraph 3\n\nParagraph 4" }]),
-			{ transient: false },
-		);
-		component.markTranscriptBlockFinalized();
-		expect(component.render(80).slice(0, settled)).toEqual(prefix);
-	});
-
-	it("keeps the settled prefix stable when a cache marker is appended at message end", () => {
-		const component = new AssistantMessageComponent();
-		component.updateContent(msg([{ type: "text", text: "Paragraph 1\n\nParagraph 2\n\nParagraph 3" }]), {
-			transient: true,
-		});
-		const initial = component.render(80);
-		const settled = component.getTranscriptBlockSettledRows();
-		expect(settled).toBeGreaterThan(0);
-		const prefix = initial.slice(0, settled);
-
-		component.setCacheInvalidation({ reprocessedTokens: 4096 });
-		const withMarker = component.render(80);
-		expect(component.getTranscriptBlockSettledRows()).toBe(settled);
-		expect(withMarker.slice(0, settled)).toEqual(prefix);
-		expect(Bun.stripANSI(withMarker.slice(settled).join("\n"))).toContain("cache miss");
-	});
-});
 
 afterEach(() => {
 	resetSettingsForTest();

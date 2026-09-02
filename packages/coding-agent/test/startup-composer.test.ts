@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getDefault } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
-import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
-import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { COMPOSER_DEFAULTS, Composer, type ComposerPreferences } from "@oh-my-pi/pi-coding-agent/modes/composer";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import {
@@ -16,55 +13,21 @@ import {
 	takeStartupComposerLease,
 } from "@oh-my-pi/pi-coding-agent/modes/startup-composer";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { type TerminalStartOptions, Text } from "@oh-my-pi/pi-tui";
-import { withoutTerminalMultiplexer } from "../../tui/test/helpers/terminal-multiplexer";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { createTestSession } from "./utilities";
 
 class CountingTerminal extends VirtualTerminal {
 	starts = 0;
 	stops = 0;
-	override start(
-		onInput: (data: string) => void,
-		onResize: () => void,
-		onDisconnect?: () => void,
-		options?: TerminalStartOptions,
-	): void {
+	override start(onInput: (data: string) => void, onResize: () => void): void {
 		this.starts += 1;
-		super.start(onInput, onResize, onDisconnect, options);
+		super.start(onInput, onResize);
 	}
 
 	override stop(): void {
 		this.stops += 1;
 		super.stop();
 	}
-}
-
-function streamingAssistantMessage(text: string): AssistantMessage {
-	return {
-		role: "assistant",
-		content: [{ type: "text", text }],
-		api: "anthropic-messages",
-		provider: "anthropic",
-		model: "claude-sonnet",
-		usage: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
-		stopReason: "stop",
-		timestamp: Date.now(),
-	};
-}
-
-function streamingThinkingMessage(thinking: string): AssistantMessage {
-	return {
-		...streamingAssistantMessage(""),
-		content: [{ type: "thinking", thinking }],
-	};
 }
 
 class ThrowingStartTerminal extends CountingTerminal {
@@ -74,24 +37,22 @@ class ThrowingStartTerminal extends CountingTerminal {
 	}
 }
 class InputTrackingTerminal extends CountingTerminal {
-	startOptions: TerminalStartOptions | undefined;
+	startOptions: { deferInput?: boolean } | undefined;
 	inputEnables = 0;
 	override start(
 		onInput: (data: string) => void,
 		onResize: () => void,
-		onDisconnect?: () => void,
-		options?: TerminalStartOptions,
+		_onDisconnect?: () => void,
+		options?: { deferInput?: boolean },
 	): void {
 		this.startOptions = options;
-		super.start(onInput, onResize, onDisconnect, options);
+		super.start(onInput, onResize);
 	}
 
 	enableInput(): void {
 		this.inputEnables += 1;
 	}
 }
-
-withoutTerminalMultiplexer();
 
 describe("Composer prepaint", () => {
 	let settings: Settings;
@@ -106,7 +67,6 @@ describe("Composer prepaint", () => {
 			composerShape: settings.get("composer.shape") ?? "box",
 			showHardwareCursor: settings.get("showHardwareCursor"),
 			maxInlineImages: settings.get("tui.maxInlineImages"),
-			scrollbackRebuild: settings.get("tui.scrollbackRebuild"),
 			resizeScrollback: settings.get("tui.resizeScrollback"),
 			imeSafeCursor: settings.get("tui.imeSafeCursor"),
 			autocompleteMaxVisible: settings.get("autocompleteMaxVisible"),
@@ -146,263 +106,6 @@ describe("Composer prepaint", () => {
 		composer.ui.stop();
 		expect(terminal.stops).toBe(1);
 	});
-	it("renders the startup welcome exactly once", async () => {
-		const terminal = new CountingTerminal(80, 60);
-		const composer = new Composer({
-			preferences: config,
-			terminal,
-			welcome: { version: "9.9.9", modelName: "Test Model", providerName: "test" },
-		});
-
-		composer.start({ playWelcomeIntro: false });
-		await terminal.waitForRender();
-
-		const viewport = terminal
-			.getViewport()
-			.map(row => Bun.stripANSI(row))
-			.join("\n");
-		expect(viewport.match(/Welcome back!/g)?.length).toBe(1);
-		composer.ui.stop();
-	});
-	it("uses the restored startup header as the third rightEditor placement target", async () => {
-		const terminal = new CountingTerminal(160, 20);
-		const composer = new Composer({
-			preferences: config,
-			terminal,
-			welcome: { version: "9.9.9", modelName: "Test Model", providerName: "test" },
-		});
-		composer.ui.setRightPanel(
-			() => [["<HEADER-RIGHT-0>", "<HEADER-RIGHT-1>", "<HEADER-RIGHT-2>"]],
-			[composer.rightPanelHeaderTarget],
-		);
-
-		composer.start({ playWelcomeIntro: false });
-		await terminal.waitForRender();
-
-		const viewport = terminal.getViewport();
-		expect(viewport.some(row => row.includes("<HEADER-RIGHT-0>"))).toBeTrue();
-		const editorTop = viewport.findIndex(row => Bun.stripANSI(row).startsWith("╭"));
-		const widgetRows = viewport
-			.map((row, index) => (row.includes("<HEADER-RIGHT-") ? index : -1))
-			.filter(index => index >= 0);
-		expect(widgetRows.every(index => index < editorTop)).toBeTrue();
-		composer.ui.stop();
-	});
-	it("composites rightEditor widgets into runtime children owned by the frame provider", async () => {
-		const terminal = new CountingTerminal(80, 12);
-		const composer = new Composer({ preferences: config, terminal });
-		const chat = new Text(["chat-0", "chat-1", "chat-2", "chat-3", "chat-4", "chat-5"].join("\n"));
-		composer.setRuntimeChildren([chat]);
-		composer.ui.setRightPanel(() => [["<RIGHT-0>", "<RIGHT-1>", "<RIGHT-2>"]], [chat]);
-
-		composer.start({ playWelcomeIntro: false });
-		await terminal.waitForRender();
-
-		expect(terminal.getViewport().some(row => row.includes("<RIGHT-0>"))).toBeTrue();
-		composer.ui.stop();
-	});
-	it("retires stable streaming rows and preserves every row exactly once after finalize", async () => {
-		const terminal = new CountingTerminal(60, 8, 1_000);
-		const composer = new Composer({ preferences: { ...config, quiet: true }, terminal });
-		const transcript = new TranscriptContainer();
-		const assistant = new AssistantMessageComponent(undefined, true);
-		const text = [
-			"| A | B |\n| --- | --- |\n| x | y |",
-			...Array.from(
-				{ length: 30 },
-				(_, index) => `assistant-row-${index} contains enough stable prose to wrap in the narrow terminal.`,
-			),
-		].join("\n\n");
-		assistant.updateContent(streamingAssistantMessage(text), { transient: true });
-		transcript.addChild(assistant);
-
-		composer.start({ playWelcomeIntro: false });
-		await terminal.waitForRender();
-		composer.setRuntimeChildren([transcript]);
-		await terminal.waitForRender();
-		composer.ui.requestRender();
-		await terminal.waitForRender();
-
-		const { baseY } = terminal.getBufferPosition();
-		const history = terminal
-			.getScrollBuffer()
-			.slice(0, baseY)
-			.map(row => Bun.stripANSI(row));
-		expect(assistant.isTranscriptBlockFinalized()).toBeFalse();
-		expect(history.filter(row => row.includes("assistant-row-0 "))).toHaveLength(1);
-		composer.ui.scrollViewportBy(-3);
-		await terminal.waitForRender();
-
-		const grownText = [
-			"| A | B |\n| --- | --- |\n| x | y |",
-			...Array.from(
-				{ length: 40 },
-				(_, index) => `assistant-row-${index} contains enough stable prose to wrap in the narrow terminal.`,
-			),
-		].join("\n\n");
-		assistant.updateContent(streamingAssistantMessage(grownText), { transient: true });
-		composer.ui.requestRender();
-		expect(composer.ui.isViewportFollowingBottom()).toBeFalse();
-
-		assistant.updateContent(streamingAssistantMessage(grownText), { transient: false });
-		assistant.markTranscriptBlockFinalized();
-		composer.ui.requestRender();
-		expect(composer.ui.isViewportFollowingBottom()).toBeFalse();
-		composer.ui.scrollViewportBy(Number.POSITIVE_INFINITY);
-		await terminal.waitForRender();
-
-		const finalizedRows = terminal.getScrollBuffer().map(row => Bun.stripANSI(row));
-		for (let index = 0; index < 40; index++) {
-			expect(finalizedRows.filter(row => row.includes(`assistant-row-${index} `))).toHaveLength(1);
-		}
-		assistant.dispose();
-		composer.ui.stop();
-	});
-
-	it("keeps a tight 60-line plain-text stream readable without cutting", async () => {
-		const terminal = new CountingTerminal(60, 10, 1_000);
-		const composer = new Composer({
-			preferences: { ...config, quiet: true, scrollbackRebuild: true },
-			terminal,
-		});
-		const transcript = new TranscriptContainer();
-		const assistant = new AssistantMessageComponent(undefined, false);
-		const lines = Array.from({ length: 60 }, (_, index) => `plain-line-${String(index + 1).padStart(2, "0")}.`);
-		assistant.updateContent(streamingAssistantMessage(lines[0]!), { transient: true });
-		transcript.addChild(assistant);
-
-		composer.start({ playWelcomeIntro: false });
-		await terminal.waitForRender();
-		composer.setRuntimeChildren([transcript]);
-		await terminal.waitForRender();
-		for (let count = 2; count <= lines.length; count++) {
-			assistant.updateContent(streamingAssistantMessage(lines.slice(0, count).join("\n")), { transient: true });
-			composer.ui.requestRender();
-			await terminal.waitForRender();
-			if (count === 30) {
-				const liveViewport = terminal.getViewport().map(row => Bun.stripANSI(row));
-				expect(liveViewport.some(row => row.includes("plain-line-30."))).toBeTrue();
-			}
-		}
-		const nativeHistoryWhileStreaming = terminal
-			.getScrollBuffer()
-			.slice(0, terminal.getBufferPosition().baseY)
-			.map(row => Bun.stripANSI(row));
-		expect(nativeHistoryWhileStreaming.some(row => row.includes("plain-line-01."))).toBeTrue();
-
-		composer.ui.scrollViewportBy(-10_000);
-		await terminal.waitForRender();
-		const visibleAtTop = terminal.getViewport().map(row => Bun.stripANSI(row));
-		expect(visibleAtTop.some(row => row.includes("plain-line-01."))).toBeTrue();
-		assistant.updateContent(streamingAssistantMessage([...lines, "fresh-live-row."].join("\n")), { transient: true });
-		composer.ui.requestLiveRender();
-		await terminal.waitForRender();
-		const stillVisibleAtTop = terminal.getViewport().map(row => Bun.stripANSI(row));
-		expect(stillVisibleAtTop.some(row => row.includes("plain-line-01."))).toBeTrue();
-		expect(stillVisibleAtTop.some(row => row.includes("fresh-live-row."))).toBeFalse();
-		composer.ui.scrollViewportBy(Number.POSITIVE_INFINITY);
-		await terminal.waitForRender();
-
-		const visibleAtBottom = terminal.getViewport().map(row => Bun.stripANSI(row));
-		expect(visibleAtBottom.some(row => row.includes("fresh-live-row."))).toBeTrue();
-
-		assistant.updateContent(streamingAssistantMessage(lines.join("\n")), { transient: false });
-		assistant.markTranscriptBlockFinalized();
-		composer.ui.requestRender();
-		await terminal.waitForRender();
-		const buffer = terminal.getScrollBuffer().map(row => Bun.stripANSI(row));
-		for (const line of lines) {
-			expect(buffer.filter(row => row.includes(line))).toHaveLength(1);
-		}
-		assistant.dispose();
-		composer.ui.stop();
-	});
-
-	it("preserves a visible partial assistant response when cancellation finalizes above the viewport", async () => {
-		const terminal = new CountingTerminal(60, 8, 1_000);
-		const composer = new Composer({ preferences: { ...config, quiet: true }, terminal });
-		const transcript = new TranscriptContainer();
-		const assistant = new AssistantMessageComponent(undefined, false);
-		const partial = Array.from({ length: 20 }, (_, index) => `cancel-row-${index}.`).join("\n");
-		assistant.updateContent(streamingAssistantMessage(partial), { transient: true });
-		transcript.addChild(assistant);
-
-		composer.start({ playWelcomeIntro: false });
-		await terminal.waitForRender();
-		composer.setRuntimeChildren([transcript]);
-		await terminal.waitForRender();
-		expect(
-			terminal
-				.getViewport()
-				.map(row => Bun.stripANSI(row))
-				.some(row => row.includes("cancel-row-19.")),
-		).toBeTrue();
-
-		assistant.updateContent(
-			{ ...streamingAssistantMessage(partial), stopReason: "aborted", errorMessage: "Operation aborted" },
-			{ transient: false },
-		);
-		assistant.markTranscriptBlockFinalized();
-		composer.ui.requestRender();
-		await terminal.waitForRender();
-
-		const afterCancel = terminal.getScrollBuffer().map(row => Bun.stripANSI(row));
-		for (let index = 0; index < 20; index++) {
-			expect(afterCancel.filter(row => row.includes(`cancel-row-${index}.`))).toHaveLength(1);
-		}
-		assistant.dispose();
-		composer.ui.stop();
-	});
-
-	it("keeps the beginning of a tall live thinking transcript reachable", async () => {
-		const terminal = new CountingTerminal(60, 8, 1_000);
-		const composer = new Composer({ preferences: { ...config, quiet: true }, terminal });
-		const transcript = new TranscriptContainer();
-		const assistant = new AssistantMessageComponent(undefined, false);
-		const paragraphs = Array.from(
-			{ length: 30 },
-			(_, index) => `thinking-row-${index} contains enough prose to wrap in the narrow terminal.`,
-		);
-		assistant.updateContent(streamingThinkingMessage(paragraphs[0]!), { transient: true });
-		transcript.addChild(assistant);
-
-		composer.start({ playWelcomeIntro: false });
-		await terminal.waitForRender();
-		composer.setRuntimeChildren([transcript]);
-		await terminal.waitForRender();
-		for (let count = 2; count <= paragraphs.length; count++) {
-			assistant.updateContent(streamingThinkingMessage(paragraphs.slice(0, count).join("\n\n")), {
-				transient: true,
-			});
-			composer.ui.requestRender();
-			await terminal.waitForRender();
-		}
-		composer.ui.scrollViewportBy(-10_000);
-		await terminal.waitForRender();
-		const viewport = terminal.getViewport().map(row => Bun.stripANSI(row));
-		expect(viewport.some(row => row.includes("thinking-row-0 "))).toBeTrue();
-
-		composer.ui.scrollViewportBy(Number.POSITIVE_INFINITY);
-		await terminal.waitForRender();
-		expect(
-			terminal
-				.getViewport()
-				.map(row => Bun.stripANSI(row))
-				.some(row => row.includes("thinking-row-29 ")),
-		).toBeTrue();
-
-		assistant.updateContent(streamingThinkingMessage(paragraphs.join("\n\n")), { transient: false });
-		assistant.markTranscriptBlockFinalized();
-		composer.ui.requestRender();
-		await terminal.waitForRender();
-		const finalizedRows = terminal.getScrollBuffer().map(row => Bun.stripANSI(row));
-		for (let index = 0; index < 30; index++) {
-			expect(finalizedRows.filter(row => row.includes(`thinking-row-${index} `))).toHaveLength(1);
-		}
-
-		assistant.dispose();
-		composer.ui.stop();
-	});
 
 	it("adopts the live draft with final theme, keybindings, and submit behavior", async () => {
 		const terminal = new CountingTerminal();
@@ -437,6 +140,9 @@ describe("Composer prepaint", () => {
 				undefined,
 				adoptedComposer,
 			);
+			// Composer shape resolves through the session-scoped settings instance,
+			// not the process-wide singleton.
+			mode.settings.set("composer.shape", "box");
 			lease.adopt();
 			vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 
@@ -457,9 +163,8 @@ describe("Composer prepaint", () => {
 			expect(mode.editor.getExpandedText()).toBe(expectedDraft);
 			terminal.sendInput("\x18");
 			expect(mode.editor.getExpandedText()).toBe("");
-			expect(mode.editor.disableSubmit).toBe(true);
+			expect(mode.editor.disableSubmit).toBe(false);
 			terminal.sendInput("ready");
-			terminal.sendInput("\r");
 			expect(mode.editor.getExpandedText()).toBe("ready");
 
 			const submitted = mode.getUserInput();
@@ -476,7 +181,7 @@ describe("Composer prepaint", () => {
 		}
 	});
 
-	it("keeps submit gated while initialization and loop readiness are pending", async () => {
+	it("keeps submit gated during initialization, then dispatches with steer", async () => {
 		const terminal = new CountingTerminal();
 		const composer = new Composer({ preferences: config, terminal });
 		composer.start();
@@ -500,7 +205,8 @@ describe("Composer prepaint", () => {
 			await releaseInit.promise;
 		});
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
-		const prompt = vi.spyOn(testSession.session, "prompt");
+		vi.spyOn(testSession.session, "maybeStartTitleGeneration").mockImplementation(() => {});
+		const prompt = vi.spyOn(testSession.session, "prompt").mockResolvedValue(true);
 
 		try {
 			const initializing = mode.init({ suppressWelcomeIntro: true });
@@ -514,16 +220,63 @@ describe("Composer prepaint", () => {
 
 			releaseInit.resolve();
 			await initializing;
+			// Init wired the submit pipeline and lifted the gate: an Enter before
+			// the input loop's first getUserInput dispatches directly with steer
+			// instead of being silently dropped.
+			expect(mode.editor.disableSubmit).toBe(false);
 			terminal.sendInput("\r");
-			expect(prompt).not.toHaveBeenCalled();
-			expect(mode.editor.getExpandedText()).toBe("alpha");
-
-			const submitted = mode.getUserInput();
-			terminal.sendInput("\r");
-			expect(await submitted).toEqual(expect.objectContaining({ text: "alpha" }));
-			expect(prompt).not.toHaveBeenCalled();
+			for (let i = 0; i < 50 && prompt.mock.calls.length === 0; i++) await Promise.resolve();
+			expect(prompt).toHaveBeenCalledWith("alpha", expect.objectContaining({ streamingBehavior: "steer" }));
+			expect(mode.editor.getExpandedText()).toBe("");
 		} finally {
 			releaseInit.resolve();
+			mode.stop();
+			lease.dispose();
+			await testSession.cleanup();
+			vi.restoreAllMocks();
+		}
+	});
+
+	it("accepts input while the initial CLI prompt's first turn is still running", async () => {
+		const terminal = new CountingTerminal();
+		const composer = new Composer({ preferences: config, terminal });
+		composer.start();
+		const lease = new ComposerLease(composer);
+		const testSession = await createTestSession({ inMemory: true });
+		const mode = new InteractiveMode(
+			testSession.session,
+			"test",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			lease.composer,
+		);
+		lease.adopt();
+		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		vi.spyOn(testSession.session, "maybeStartTitleGeneration").mockImplementation(() => {});
+		const turn = Promise.withResolvers<boolean>();
+		const prompt = vi.spyOn(testSession.session, "prompt").mockResolvedValue(true);
+
+		try {
+			await mode.init({ suppressWelcomeIntro: true });
+
+			// The `omp "prompt"` launch shape: the CLI message is dispatched after
+			// init and its first turn is still in flight when the user types. The
+			// input loop has not reached getUserInput yet.
+			prompt.mockReturnValueOnce(turn.promise);
+			const initialTurn = testSession.session.prompt("count to 25", { streamingBehavior: "steer" });
+
+			terminal.sendInput("also add tests");
+			terminal.sendInput("\r");
+			for (let i = 0; i < 50 && prompt.mock.calls.length < 2; i++) await Promise.resolve();
+			expect(prompt).toHaveBeenCalledWith("also add tests", expect.objectContaining({ streamingBehavior: "steer" }));
+			expect(mode.editor.getExpandedText()).toBe("");
+
+			turn.resolve(true);
+			await initialTurn;
+		} finally {
 			mode.stop();
 			lease.dispose();
 			await testSession.cleanup();
@@ -651,7 +404,6 @@ describe("Composer prepaint", () => {
 			composerShape: getDefault("composer.shape") ?? "box",
 			showHardwareCursor: getDefault("showHardwareCursor"),
 			maxInlineImages: getDefault("tui.maxInlineImages"),
-			scrollbackRebuild: getDefault("tui.scrollbackRebuild"),
 			resizeScrollback: getDefault("tui.resizeScrollback"),
 			imeSafeCursor: getDefault("tui.imeSafeCursor"),
 			autocompleteMaxVisible: getDefault("autocompleteMaxVisible"),
@@ -804,7 +556,6 @@ describe("Composer prepaint", () => {
 			composerShape: "box",
 			showHardwareCursor: config.showHardwareCursor,
 			maxInlineImages: config.maxInlineImages,
-			scrollbackRebuild: config.scrollbackRebuild,
 			resizeScrollback: config.resizeScrollback,
 			imeSafeCursor: config.imeSafeCursor,
 			autocompleteMaxVisible: config.autocompleteMaxVisible,
@@ -853,6 +604,24 @@ describe("Composer prepaint", () => {
 			.map(r => Bun.stripANSI(r))
 			.join("\n");
 		expect(output).toContain("rust-analyzer");
+	});
+	it("transfers the in-flight recent-session load across composer ownership", async () => {
+		const terminal = new CountingTerminal(80, 32);
+		const load = Promise.withResolvers<Array<{ name: string; timeAgo: string }>>();
+		beginStartupComposer({
+			preferences: config,
+			terminal,
+			version: "9.9.9",
+			cache: false,
+			recentSessions: () => load.promise,
+		});
+
+		const lease = takeStartupComposerLease();
+		expect(lease).toBeDefined();
+		const rows = [{ name: "already loading", timeAgo: "just now" }];
+		load.resolve(rows);
+		expect(await lease?.recentSessions).toEqual(rows);
+		lease?.dispose();
 	});
 	it("defers raw input until resolved settings arrive, adoption as fallback", async () => {
 		// Regression contract: losing the deferral re-blinds typing during the

@@ -359,9 +359,7 @@ describe("AuthStorage forceRefresh + rotateSessionCredential", () => {
 		authStorage.close();
 		const concurrentStore = await SqliteAuthCredentialStore.open(path.join(tempDir, "agent.db"));
 		store = concurrentStore;
-		let targetCredentialId: number | undefined;
 		let targetRemoved = false;
-		let concurrentStorage: AuthStorage;
 		const usageProvider: UsageProvider = {
 			id: PROVIDER,
 			async fetchUsage() {
@@ -378,7 +376,7 @@ describe("AuthStorage forceRefresh + rotateSessionCredential", () => {
 			findWindowLimits: () => ({}),
 			windowDefaults: { primaryMs: 60_000, secondaryMs: 60_000 },
 		};
-		concurrentStorage = new AuthStorage(concurrentStore, {
+		const concurrentStorage = new AuthStorage(concurrentStore, {
 			usageProviderResolver: provider => (provider === PROVIDER ? usageProvider : undefined),
 			rankingStrategyResolver: provider => (provider === PROVIDER ? rankingStrategy : undefined),
 		});
@@ -393,7 +391,7 @@ describe("AuthStorage forceRefresh + rotateSessionCredential", () => {
 		const rows = concurrentStore.listAuthCredentials(PROVIDER);
 		const target = rows[0];
 		if (!target) throw new Error("expected target credential");
-		targetCredentialId = target.id;
+		const targetCredentialId = target.id;
 		const siblings = rows.slice(1);
 
 		const marked = await concurrentStorage.markUsageLimitReached(PROVIDER, undefined, {

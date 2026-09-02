@@ -1,4 +1,4 @@
-import type { Terminal, TerminalAppearance, TerminalStartOptions } from "@oh-my-pi/pi-tui/terminal";
+import type { Terminal, TerminalAppearance } from "@oh-my-pi/pi-tui/terminal";
 import { CELL_U32, CellFlags, KittyTerminal, loadModuleSync } from "kitty-vt-wasm";
 
 // ---------------------------------------------------------------------------
@@ -24,12 +24,29 @@ import { CELL_U32, CellFlags, KittyTerminal, loadModuleSync } from "kitty-vt-was
 // allocator and grid state stay isolated across tests.
 const kittyModule = loadModuleSync(Bun.resolveSync("kitty-vt-wasm/kitty-vt.wasm", import.meta.dir));
 
-function createEngine(columns: number, rows: number, scrollback: number): KittyTerminal {
+function createEngine(
+	columns: number,
+	rows: number,
+	scrollback: number,
+	onReply?: (data: string) => void,
+): KittyTerminal {
 	return KittyTerminal.createSync({
 		columns,
 		rows,
 		scrollback,
 		wasm: kittyModule,
+		// Forward cursor-position reports (CSI row;col R) to the application like
+		// a real terminal answering DSR 6n; TUI's post-resize anchor probe relies
+		// on the round trip. Other query replies stay swallowed: tests assert on
+		// grid state, and unsolicited capability responses would leak into the
+		// focused component as junk keystrokes.
+		onOutput: onReply
+			? bytes => {
+					const reply = new TextDecoder().decode(bytes);
+					const match = reply.match(/\x1b\[\d+;\d+R/);
+					if (match) onReply(match[0]);
+				}
+			: undefined,
 		// Swallow host events (title, bell, engine log lines); tests read the
 		// grid, and the default log fallback would console.error into test
 		// output.
@@ -78,7 +95,7 @@ export class VirtualTerminal implements Terminal {
 	#viewportY = 0;
 	#inputHandler?: (data: string) => void;
 	#resizeHandler?: () => void;
-	#focusHandler?: (focused: boolean) => void;
+	#focusChangeHandler?: (focused: boolean) => void;
 	#pendingEngineResize = false;
 	// Memoized text of committed scrollback rows, keyed by absolute offset. A
 	// resize, clear, or bounded-history eviction renumbers offsets; those paths
@@ -90,7 +107,11 @@ export class VirtualTerminal implements Terminal {
 		this.#columns = columns;
 		this.#rows = rows;
 		this.#scrollbackCap = scrollback ?? DEFAULT_SCROLLBACK_LINES;
-		this.#term = createEngine(columns, rows, this.#scrollbackCap);
+		this.#term = createEngine(columns, rows, this.#scrollbackCap, reply => {
+			// Deliver asynchronously like a real PTY read loop; a synchronous
+			// callback would re-enter the TUI mid-write.
+			queueMicrotask(() => this.#inputHandler?.(reply));
+		});
 	}
 
 	// --- Terminal interface --------------------------------------------------
@@ -99,17 +120,18 @@ export class VirtualTerminal implements Terminal {
 		onInput: (data: string) => void,
 		onResize: () => void,
 		_onDisconnect?: () => void,
-		options?: TerminalStartOptions,
+		options?: { onFocusChange?: (focused: boolean) => void },
 	): void {
 		this.#inputHandler = onInput;
 		this.#resizeHandler = onResize;
-		this.#focusHandler = options?.onFocusChange;
+		this.#focusChangeHandler = options?.onFocusChange;
 		// Enable bracketed paste mode for consistency with ProcessTerminal.
 		this.#engineWrite("\x1b[?2004h");
 	}
 
+	/** Simulate a host focus in/out notification (CSI I / CSI O). */
 	emitFocus(focused: boolean): void {
-		this.#focusHandler?.(focused);
+		this.#focusChangeHandler?.(focused);
 	}
 
 	async drainInput(_maxMs?: number, _idleMs?: number): Promise<void> {
@@ -120,6 +142,7 @@ export class VirtualTerminal implements Terminal {
 		this.#engineWrite("\x1b[?2004l\x1b[?5522l");
 		this.#inputHandler = undefined;
 		this.#resizeHandler = undefined;
+		this.#focusChangeHandler = undefined;
 	}
 
 	write(data: string): void {
@@ -409,7 +432,9 @@ export class VirtualTerminal implements Terminal {
 
 	#recreate(): void {
 		this.#term.dispose();
-		this.#term = createEngine(this.#columns, this.#rows, this.#scrollbackCap);
+		this.#term = createEngine(this.#columns, this.#rows, this.#scrollbackCap, reply => {
+			queueMicrotask(() => this.#inputHandler?.(reply));
+		});
 		this.#pendingEngineResize = false;
 		this.#viewportY = 0;
 		this.#historyTextCache.length = 0; // fresh engine: prior scrollback is gone

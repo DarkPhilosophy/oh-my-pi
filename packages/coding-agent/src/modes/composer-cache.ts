@@ -143,8 +143,6 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 	const composerShape = field(rawPreferences, "composerShape");
 	const showHardwareCursor = field(rawPreferences, "showHardwareCursor");
 	const maxInlineImages = field(rawPreferences, "maxInlineImages");
-	const scrollbackRebuild = field(rawPreferences, "scrollbackRebuild");
-
 	const resizeScrollback = field(rawPreferences, "resizeScrollback");
 	const imeSafeCursor = field(rawPreferences, "imeSafeCursor");
 	const autocompleteMaxVisible = field(rawPreferences, "autocompleteMaxVisible");
@@ -156,7 +154,6 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 		typeof composerShape !== "string" ||
 		typeof showHardwareCursor !== "boolean" ||
 		typeof maxInlineImages !== "number" ||
-		(scrollbackRebuild !== undefined && typeof scrollbackRebuild !== "boolean") ||
 		(resizeScrollback !== undefined &&
 			resizeScrollback !== "append" &&
 			resizeScrollback !== "rebuild" &&
@@ -190,7 +187,6 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 			composerShape,
 			showHardwareCursor,
 			maxInlineImages,
-			scrollbackRebuild: scrollbackRebuild !== false,
 			resizeScrollback:
 				resizeScrollback === "append" || resizeScrollback === "rebuild" || resizeScrollback === "preserve"
 					? resizeScrollback

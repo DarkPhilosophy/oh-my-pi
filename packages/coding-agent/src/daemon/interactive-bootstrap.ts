@@ -562,8 +562,7 @@ export async function bootstrapDaemonInteractive(
 	let bootstrapComplete = false;
 	let recovery: Promise<void> | undefined;
 	const spawnDaemon = options.spawnDaemon ?? spawnDaemonServer;
-	let client: DaemonClient;
-	client = await createDaemonClient({
+	const client: DaemonClient = await createDaemonClient({
 		profile,
 		runtimeDir: options.runtimeDir,
 		endpoint: options.endpoint,

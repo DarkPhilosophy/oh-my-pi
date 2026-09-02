@@ -304,36 +304,6 @@ function immediateScheduler() {
 		},
 	};
 }
-
-class RetiringTargetProvider implements TerminalFrameProvider {
-	readonly target = new Lines([]);
-	#retiring = false;
-	#retired = false;
-
-	retire(): void {
-		this.#retiring = true;
-	}
-
-	renderFrame(_viewport: ViewportSize): TerminalFramePlan {
-		const rows = Array.from({ length: 8 }, (_, index) => `retired-${index}`);
-		return {
-			history:
-				this.#retiring && !this.#retired
-					? {
-							id: 1,
-							rows,
-							segments: [{ component: this.target, start: 0, rowCount: rows.length }],
-						}
-					: undefined,
-			viewport: this.#retiring ? ["[editor]", "[status]", "[footer]"] : [...rows, "[editor]", "[status]"],
-			segments: this.#retiring ? undefined : [{ component: this.target, start: 0, rowCount: rows.length }],
-		};
-	}
-
-	acknowledgeHistory(id: number): void {
-		if (id === 1) this.#retired = true;
-	}
-}
 describe("TUI.setRightPanel", () => {
 	it("composites into chat rows of the visible window, never into chrome rows", async () => {
 		const term = new VirtualTerminal(80, 12);
@@ -530,38 +500,6 @@ describe("TUI.setRightPanel", () => {
 			expect(viewport.some(line => line.includes("msg-29"))).toBeTrue();
 			expect(viewport.some(line => line.includes("<W0>"))).toBeTrue();
 			expect(viewport.find(line => line.startsWith("[editor]"))).not.toContain("<W");
-		} finally {
-			tui.stop();
-		}
-	});
-
-	it("keeps finalized target rows eligible after they retire into history", async () => {
-		const term = new VirtualTerminal(80, 10, 1000);
-		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
-		const provider = new RetiringTargetProvider();
-		tui.setFrameProvider(provider);
-		tui.setRightPanel(() => [["<W0>", "<W1>", "<W2>"]], [provider.target]);
-		tui.start();
-		await settle(term);
-		try {
-			const liveViewport = term.getViewport();
-			expect(liveViewport.some(line => line.includes("retired-0"))).toBeTrue();
-			expect(liveViewport.some(line => line.includes("<W0>"))).toBeTrue();
-
-			provider.retire();
-			tui.requestRender(true);
-			await settle(term);
-			let retiredViewport = term.getViewport();
-			expect(retiredViewport.some(line => line.includes("retired-1"))).toBeTrue();
-			expect(retiredViewport.some(line => line.includes("<W0>"))).toBeTrue();
-			expect(retiredViewport.find(line => line.startsWith("[editor]"))).not.toContain("<W");
-
-			tui.scrollViewportBy(-3);
-			await settle(term);
-			retiredViewport = term.getViewport();
-			expect(retiredViewport.some(line => line.includes("retired-0"))).toBeTrue();
-			expect(retiredViewport.some(line => line.includes("<W0>"))).toBeTrue();
-			expect(retiredViewport.some(line => line.startsWith("[footer]"))).toBeFalse();
 		} finally {
 			tui.stop();
 		}
