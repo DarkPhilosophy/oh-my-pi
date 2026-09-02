@@ -9,6 +9,7 @@ import {
 	type Terminal,
 	type TerminalFramePlan,
 	type TerminalFrameProvider,
+	type TerminalFrameSegment,
 	TUI,
 	type TUIOptions,
 	type ViewportSize,
@@ -223,11 +224,16 @@ export class Composer implements TerminalFrameProvider {
 			: [this.#header, this.#bootstrapInputGap, this.editor, this.#statusHost];
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) {
-			return { viewport: this.#renderRoots(roots, width).slice(-rows) };
+			return this.#planWithSegments(
+				roots.map(root => ({ component: root, rows: root.render(width) })),
+				rows,
+			);
 		}
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
-		const preRoots = this.#renderRoots(roots.slice(0, transcriptIndex), width);
-		const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
+		const preChunks = roots.slice(0, transcriptIndex).map(root => ({ component: root, rows: root.render(width) }));
+		const afterChunks = roots.slice(transcriptIndex + 1).map(root => ({ component: root, rows: root.render(width) }));
+		const preRoots = preChunks.flatMap(chunk => chunk.rows);
+		const after = afterChunks.flatMap(chunk => chunk.rows);
 		// Offer history under capacity pressure only: blocks stay live (and keep
 		// reflowing to the current width) while the screen has room. A batch
 		// leaves the mutable viewport in the same frame it is appended, so its
@@ -244,9 +250,38 @@ export class Composer implements TerminalFrameProvider {
 			const visibleHeaderRows = Math.max(0, rows - composed.length);
 			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
 		}
+		const plan = this.#planWithSegments(
+			[
+				{ component: this.#header, rows: headerRows },
+				...preChunks,
+				{ component: transcript, rows: active },
+				...afterChunks,
+			],
+			rows,
+		);
+		return { history, viewport: plan.viewport, segments: plan.segments };
+	}
+
+	/**
+	 * Bound the composed rows to the viewport height while publishing which
+	 * component owns each visible row. The terminal needs that ownership map to
+	 * place right-side widgets in transcript rows only, never in input chrome.
+	 */
+	#planWithSegments(
+		chunks: readonly { component: Component; rows: readonly string[] }[],
+		rows: number,
+	): { viewport: string[]; segments: TerminalFrameSegment[] } {
+		const composed: string[] = [];
+		const segments: TerminalFrameSegment[] = [];
+		for (const chunk of chunks) {
+			segments.push({ component: chunk.component, start: composed.length, rowCount: chunk.rows.length });
+			composed.push(...chunk.rows);
+		}
+		if (composed.length <= rows) return { viewport: composed, segments };
+		const dropped = composed.length - rows;
 		return {
-			history,
-			viewport: composed.length <= rows ? composed : composed.slice(-rows),
+			viewport: composed.slice(dropped),
+			segments: segments.map(segment => ({ ...segment, start: segment.start - dropped })),
 		};
 	}
 

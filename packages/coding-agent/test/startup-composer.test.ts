@@ -650,4 +650,21 @@ describe("Composer prepaint", () => {
 		expect(terminal.inputEnables).toBe(1);
 		lease?.composer.ui.stop();
 	});
+
+	it("publishes row ownership so right-side widgets paint in header rows", async () => {
+		// Regression: without per-row segments in the frame plan, every targeted
+		// row is ineligible and extension right widgets never paint (#right-panel).
+		const terminal = new CountingTerminal(100, 30);
+		const composer = new Composer({ preferences: config, terminal });
+		composer.ui.setRightPanel(() => [["<WIDGET-0>"]], [composer.rightPanelHeaderTarget]);
+		composer.start();
+		try {
+			await terminal.waitForRender(() =>
+				terminal.getViewport().some(row => Bun.stripANSI(row).includes("<WIDGET-0>")),
+			);
+			expect(terminal.getViewport().some(row => Bun.stripANSI(row).includes("<WIDGET-0>"))).toBeTrue();
+		} finally {
+			composer.ui.stop();
+		}
+	});
 });
