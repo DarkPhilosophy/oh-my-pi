@@ -102,6 +102,8 @@ export class SelectList implements Component, MouseRoutable {
 	#hoveredIndex: number | null = null;
 	/** Per-render map of 0-based output line → filtered-item index. */
 	#hitRows: (number | undefined)[] = [];
+	/** When false, the cursor row renders like any other row (unfocused pane). */
+	#focused = true;
 
 	onSelect?: (item: SelectItem) => void;
 	onCancel?: () => void;
@@ -115,6 +117,11 @@ export class SelectList implements Component, MouseRoutable {
 	) {
 		this.#maxVisible = Math.max(1, Math.trunc(maxVisible));
 		this.#filteredItems = items;
+	}
+
+	/** Hide the cursor while another pane owns focus; the selection itself is kept. */
+	setFocused(focused: boolean): void {
+		this.#focused = focused;
 	}
 	/** Return item, selection, and filter state for debug inspection. */
 	debugState(): Record<string, unknown> {
@@ -241,7 +248,7 @@ export class SelectList implements Component, MouseRoutable {
 			const hovered = this.theme.hovered !== undefined && i === this.#hoveredIndex && i !== this.#selectedIndex;
 			const itemRows = this.#renderItem(
 				item,
-				i === this.#selectedIndex,
+				this.#focused && i === this.#selectedIndex,
 				rowWidth,
 				primaryColumnWidth,
 				iconColumnWidth,
@@ -601,5 +608,14 @@ export class SelectList implements Component, MouseRoutable {
 	getSelectedItem(): SelectItem | null {
 		const item = this.#filteredItems[this.#selectedIndex];
 		return item || null;
+	}
+
+	getSelectedIndex(): number {
+		return this.#selectedIndex;
+	}
+
+	/** Number of rows after filtering. */
+	getItemCount(): number {
+		return this.#filteredItems.length;
 	}
 }

@@ -6665,8 +6665,9 @@ describe("advisor", () => {
 			// whose offset broke mouse hit-testing and wasted the upper space).
 			expect(frame.length).toBe(fullHeight);
 			const text = strip(frame);
-			expect(text).toContain("Advisor configuration");
-			expect(text).toContain("project");
+			// Both rosters are visible at once: project on top, global below.
+			expect(text).toContain("Project · project");
+			expect(text).toContain("Global");
 			expect(text).toContain("Architecture");
 			expect(text).toContain("Security");
 			expect(text).toContain("+ Add advisor");
@@ -6701,18 +6702,34 @@ describe("advisor", () => {
 			expect(strip(overlay.render(200))).toContain("read, web_search");
 		});
 
-		it("opens an advisor's detail editor on a left click in the sidebar", async () => {
+		it("focuses the clicked advisor and edits it inline in the right pane", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
 			setThemeInstance(uiTheme);
 			const overlay = make({ advisors: [{ name: "Architecture" }, { name: "Security" }] });
-			// Render once so the frame geometry is recorded; the first advisor sits on
-			// the first body row (0-based screen row 1 → SGR 1-based row 2).
+			// Render once so the frame geometry is recorded; the second advisor sits on
+			// the second body row (0-based screen row 2 → SGR 1-based row 3).
 			overlay.render(120);
-			overlay.handleInput("\x1b[<0;4;2M"); // left-button press, col 4, row 2
+			overlay.handleInput("\x1b[<0;4;3M"); // left-button press, col 4, row 3
 			const text = strip(overlay.render(120));
-			expect(text).toContain("Editing");
-			expect(text).toContain("Architecture");
+			// Right pane header names the clicked advisor; its fields are editable in place.
+			expect(text).toContain("Security  · Project");
+			expect(text).toContain("Enabled");
+			expect(text).toContain("Model");
+			expect(text).toContain("Instructions");
+		});
+
+		it("↓ past the project roster's end moves the cursor into the global roster", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const overlay = make({ advisors: [{ name: "Only" }] });
+			overlay.render(200);
+			// Only → + Add advisor → Shared instructions → Save & apply → (edge) → global roster.
+			for (let i = 0; i < 4; i++) overlay.handleInput("\x1b[B");
+			const text = strip(overlay.render(200));
+			// The editor pane header now describes the Global roster's cursor row.
+			expect(text).toContain("No advisors configured in Global");
 		});
 
 		it("seeds a visible default advisor (labeled with the role model) when the config is empty", async () => {

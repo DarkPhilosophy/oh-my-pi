@@ -1,19 +1,21 @@
 /**
- * Fullscreen `/advisor configure` overlay: a mouse- and keyboard-driven editor
- * for the `WATCHDOG.yml` advisor roster at project or user level.
+ * Fullscreen `/advisor configure` overlay: a three-pane editor for the
+ * `WATCHDOG.yml` advisor rosters.
  *
- * It paints the entire alternate screen from row 0 (so SGR mouse rows index
- * directly into the rendered frame) using the shared {@link ./overlay-box} chrome.
- * The list screen is a two-pane split (the `/extensions` idiom): a clickable
- * advisor/action sidebar on the left, and a scrollable preview of the highlighted
- * advisor's model / tools / instructions on the right, filling the free space.
+ * Layout (paints the whole alternate screen from row 0 so SGR mouse rows index
+ * directly into the frame):
  *
- * Each screen is backed by a proven primitive — {@link SelectList} (list / detail
- * / tools / thinking), {@link Input} (name), {@link ModelSelectorComponent} (the
- * same rich `/model` picker, in direct-select mode), and {@link HookEditorComponent}
- * (multiline instructions; Ctrl+G opens `$EDITOR`). The overlay edits an in-memory
- * {@link WatchdogConfigDoc} and only touches disk + the live advisors via the host
- * `save` callback.
+ *   ┌ Project · <folder> ┬ <selected advisor> ─────────┐
+ *   │ roster (own cursor)│ inline field editor          │
+ *   ├ Global ────────────┤   Enabled / Name / Model /   │
+ *   │ roster (own cursor)│   Tools / Instructions ...   │
+ *   └────────────────────┴──────────────────────────────┘
+ *
+ * Both rosters are live at once (each backed by its own {@link SelectList} and
+ * {@link WatchdogConfigDoc}); the right pane always edits the advisor under the
+ * cursor of the *focused* roster. ←/→ (and clicks) move focus between the three
+ * panes. Field editors (model browser, tools, thinking, name, instructions) open
+ * inside the right pane, never as a separate screen.
  */
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model, UsageReport } from "@oh-my-pi/pi-ai";
@@ -44,16 +46,7 @@ import { formatCompactQuota } from "../controllers/command-controller";
 import { getSelectListTheme, theme } from "../theme/theme";
 import { HookEditorComponent } from "./hook-editor";
 import { buildBrowserItems, ModelBrowser, resolveRoleAssignments, sortModelItems } from "./model-browser";
-import {
-	bottomBorder,
-	divider,
-	dividerSplit,
-	row,
-	splitBodyWidth,
-	splitRow,
-	topBorder,
-	topBorderSplit,
-} from "./overlay-box";
+import { bottomBorder, fit, row, splitBodyWidth, splitRow, topBorderSplit } from "./overlay-box";
 
 /** Host callbacks: all disk + live-runtime effects flow through these. */
 export interface AdvisorConfigCallbacks {
@@ -66,7 +59,7 @@ export interface AdvisorConfigCallbacks {
 	requestRender: () => void;
 	/** Surface a transient status/warning line to the user. */
 	notify: (message: string) => void;
-	/** Live advisor usage stats; lets the preview show tokens/cost per advisor. */
+	/** Live advisor usage stats; lets the editor show tokens/cost per advisor. */
 	getAdvisorStats?: () => PerAdvisorStat[];
 	getUsageReports?: () => Promise<UsageReport[] | null>;
 	/** Resolve the active OAuth identity for quota filtering (per-advisor account stickiness). */
@@ -80,11 +73,12 @@ export interface AdvisorConfigDeps {
 	availableToolNames: string[];
 	/** Formatted advisor-role model shown for advisors without an explicit model (e.g. "anthropic/claude-..."). */
 	defaultModelLabel?: string;
-	/** Project folder name, shown as the project section title in the roster. */
+	/** Project folder name, shown as the project pane title. */
 	projectName?: string;
 }
 
 const PREVIEW_WIDTH = 60;
+const SCOPES: readonly AdvisorConfigScope[] = ["project", "user"];
 
 function previewLine(text: string | undefined): string {
 	if (!text?.trim()) return "(none)";
@@ -110,16 +104,26 @@ function commitTools(selected: ReadonlySet<string>, all: readonly string[]): str
 
 function formatAdvisorTools(tools: readonly string[] | undefined, emptyLabel: string): string {
 	if (tools === undefined) return "read, grep, glob (default)";
-	return tools.length > 0 ? tools.join(", ") : emptyLabel;
+	return tools.length === 0 ? emptyLabel : tools.join(", ");
 }
 
-/** Soft-wrap plain text to `width`, returning at least one (possibly empty) line. */
-function wrap(text: string, width: number): string[] {
+/** Soft-wrap text to `width`, preserving embedded newlines. */
+function wrap(text: string | undefined, width: number): string[] {
 	if (!text) return [""];
 	return Bun.wrapAnsi(text, Math.max(1, width), { trim: false }).split("\n");
 }
 
-type Screen = "list" | "detail" | "name" | "model" | "tools" | "thinking" | "instructions";
+type Pane = "project" | "user" | "editor";
+/** What the right pane currently hosts. */
+type EditorMode = "fields" | "name" | "model" | "thinking" | "tools" | "instructions";
+
+interface ScopeState {
+	doc: WatchdogConfigDoc;
+	list: SelectList;
+	dirty: boolean;
+	/** Remembered roster row value so rebuilds keep the cursor. */
+	cursor: string | undefined;
+}
 
 /**
  * Fullscreen advisor-configuration overlay. Implements {@link Component} directly
@@ -134,33 +138,31 @@ export class AdvisorConfigOverlayComponent implements Component {
 	#availableToolNames: readonly string[];
 	#defaultModelLabel: string | undefined;
 	#projectName: string | undefined;
-	/** Roster row value under the cursor when leaving the list screen. */
-	#listCursor: string | undefined;
-	/** Detail-screen field under the cursor when descending into a field editor. */
-	#detailCursor: string | undefined;
 	#cb: AdvisorConfigCallbacks;
-	#scope: AdvisorConfigScope;
-	#doc: WatchdogConfigDoc;
-	/** Cached usage reports (quota/window/reset) prefetched on overlay open. */
 	#cachedReports: UsageReport[] | null = null;
-	#dirty = false;
 
-	#screen: Screen = "list";
-	/** The interactive element for the current screen. */
-	#active: Component = new SelectList([], 1, getSelectListTheme());
-	#footerHint = "";
-	#previewScroll = 0;
+	#scopes: Record<AdvisorConfigScope, ScopeState>;
+	#focus: Pane;
+	#mode: EditorMode = "fields";
+	/** Right-pane component (field list or an open field editor). */
+	#editor: Component = new SelectList([], 1, getSelectListTheme());
+	/** Remembered field-list row so returning from a field editor lands on it. */
+	#fieldCursor: string | undefined;
+	#editorScroll = 0;
 
-	// Frame geometry from the last render (the frame paints from screen row 0,
-	// so SGR `event.row`/`event.col` — already 0-based — index it directly).
-	#bodyRowStart = 0;
+	// Frame geometry from the last render (frame paints from screen row 0).
+	#sidebarWidth = 0;
 	#dividerCol = 0;
+	#projectRowStart = 0;
+	#projectRows = 0;
+	#userRowStart = 0;
+	#userRows = 0;
 
 	constructor(
 		tui: TUI,
 		deps: AdvisorConfigDeps,
-		scope: AdvisorConfigScope,
-		doc: WatchdogConfigDoc,
+		initialScope: AdvisorConfigScope,
+		initialDoc: WatchdogConfigDoc,
 		callbacks: AdvisorConfigCallbacks,
 	) {
 		this.#tui = tui;
@@ -171,12 +173,25 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#defaultModelLabel = deps.defaultModelLabel;
 		this.#projectName = deps.projectName;
 		this.#cb = callbacks;
-		this.#scope = scope;
-		this.#doc = doc;
-		this.#showList();
-		// Prefetch usage reports for quota display; non-fatal if unavailable.
+		this.#focus = initialScope;
+		const empty = (): WatchdogConfigDoc => ({ advisors: [] });
+		this.#scopes = {
+			project: this.#newScope(initialScope === "project" ? initialDoc : empty()),
+			user: this.#newScope(initialScope === "user" ? initialDoc : empty()),
+		};
+		const other: AdvisorConfigScope = initialScope === "project" ? "user" : "project";
+		callbacks
+			.loadDoc(other)
+			.then(doc => {
+				this.#scopes[other].doc = doc;
+				this.#rebuildRoster(other);
+			})
+			.catch(err => callbacks.notify(`Advisor config: ${err instanceof Error ? err.message : String(err)}`));
+		this.#rebuildRoster("project");
+		this.#rebuildRoster("user");
+		this.#showFields();
 		if (callbacks.getUsageReports) {
-			void callbacks
+			callbacks
 				.getUsageReports()
 				.then(r => {
 					this.#cachedReports = r;
@@ -186,37 +201,160 @@ export class AdvisorConfigOverlayComponent implements Component {
 		}
 	}
 
+	#newScope(doc: WatchdogConfigDoc): ScopeState {
+		return { doc, list: new SelectList([], 1, getSelectListTheme()), dirty: false, cursor: undefined };
+	}
+
 	// ───────────────────────────── render ─────────────────────────────
 
 	render(width: number): readonly string[] {
 		const height = Math.max(14, process.stdout.rows || 40);
-		const bodyRows = Math.max(3, height - 4);
-		const title = `Advisor configuration · ${this.#scopeTitle(this.#scope)}${this.#dirty ? "  ● unsaved" : ""}`;
+		const bodyRows = Math.max(6, height - 3);
+		this.#sidebarWidth = Math.max(22, Math.min(42, Math.floor(width * 0.34)));
+		this.#dividerCol = this.#sidebarWidth + 3;
+		const bodyWidth = splitBodyWidth(width, this.#sidebarWidth);
+
+		// Left column: project roster on top, global roster below, each half the body.
+		const projectRows = Math.max(2, Math.floor((bodyRows - 1) / 2));
+		const userRows = Math.max(2, bodyRows - 1 - projectRows);
+		this.#scopes.project.list.setMaxVisible(projectRows);
+		this.#scopes.user.list.setMaxVisible(userRows);
+		// Only the focused pane shows a cursor; the others keep their selection silently.
+		this.#scopes.project.list.setFocused(this.#focus === "project");
+		this.#scopes.user.list.setFocused(this.#focus === "user");
+		if (this.#editor instanceof SelectList) this.#editor.setFocused(this.#focus === "editor");
+		const left: string[] = [];
+		left.push(...this.#padTo(this.#scopes.project.list.render(this.#sidebarWidth), projectRows));
+		left.push(this.#sectionRule("user", this.#sidebarWidth));
+		left.push(...this.#padTo(this.#scopes.user.list.render(this.#sidebarWidth), userRows));
+
+		const dirty = this.#scopes.project.dirty || this.#scopes.user.dirty;
+		const title = `${this.#paneTitle("project")}${dirty ? "  ● unsaved" : ""}`;
+		const right = this.#editorWindow(bodyWidth, bodyRows);
+
 		const out: string[] = [];
-
-		if (this.#screen === "list") {
-			const sidebarWidth = Math.max(22, Math.min(42, Math.floor(width * 0.34)));
-			this.#dividerCol = sidebarWidth + 3;
-			const bodyWidth = splitBodyWidth(width, sidebarWidth);
-			const sidebar = this.#active.render(sidebarWidth);
-			const preview = this.#previewWindow(bodyWidth, bodyRows);
-			out.push(topBorderSplit(width, title, sidebarWidth));
-			this.#bodyRowStart = out.length;
-			for (let i = 0; i < bodyRows; i++) {
-				out.push(splitRow(sidebar[i] ?? "", preview[i] ?? "", width, sidebarWidth));
-			}
-			out.push(dividerSplit(width, sidebarWidth));
-		} else {
-			out.push(topBorder(width, title));
-			this.#bodyRowStart = out.length;
-			const lines = this.#active.render(Math.max(1, width - 4));
-			for (let i = 0; i < bodyRows; i++) out.push(row(lines[i] ?? "", width));
-			out.push(divider(width));
+		out.push(topBorderSplit(width, title, this.#sidebarWidth));
+		this.#projectRowStart = 1;
+		this.#projectRows = projectRows;
+		this.#userRowStart = 1 + projectRows + 1;
+		this.#userRows = userRows;
+		for (let i = 0; i < bodyRows; i++) {
+			out.push(splitRow(left[i] ?? "", right[i] ?? "", width, this.#sidebarWidth));
 		}
-
-		out.push(row(theme.fg("dim", this.#footerHint), width));
+		out.push(row(theme.fg("dim", this.#footerHint()), width));
 		out.push(bottomBorder(width));
 		return out;
+	}
+
+	#padTo(lines: readonly string[], rows: number): string[] {
+		const out = lines.slice(0, rows);
+		while (out.length < rows) out.push("");
+		return out;
+	}
+
+	#paneTitle(scope: AdvisorConfigScope): string {
+		const label = scope === "project" ? `Project · ${this.#projectName ?? "project"}` : "Global";
+		const focused = this.#focus === scope;
+		return focused ? theme.fg("accent", label) : theme.fg("dim", label);
+	}
+
+	#sectionRule(scope: AdvisorConfigScope, width: number): string {
+		const label = ` ${this.#paneTitle(scope)} `;
+		const rule = theme.fg(
+			"border",
+			theme.boxRound.horizontal.repeat(Math.max(0, width - 1 - Bun.stringWidth(Bun.stripANSI(label)))),
+		);
+		return fit(`${theme.fg("border", theme.boxRound.horizontal)}${label}${rule}`, width);
+	}
+
+	#footerHint(): string {
+		if (this.#focus === "editor") {
+			switch (this.#mode) {
+				case "name":
+					return "Type a name · Enter save · Esc cancel";
+				case "model":
+					return "Type to search · Enter / click twice picks · Esc back";
+				case "thinking":
+					return "Enter / click pick · Esc back";
+				case "tools":
+					return "Enter / click toggle · Done or Esc apply · ← rosters";
+				case "instructions":
+					return "";
+				default:
+					return "↑↓ move · Enter / click edit · ← rosters · Esc close";
+			}
+		}
+		return "↑↓ move · → / Enter edit · click select · Esc close";
+	}
+
+	#editorWindow(bodyWidth: number, rows: number): string[] {
+		const lines = this.#editorContent(bodyWidth);
+		const maxScroll = Math.max(0, lines.length - rows);
+		this.#editorScroll = Math.min(this.#editorScroll, maxScroll);
+		const window = lines.slice(this.#editorScroll, this.#editorScroll + rows);
+		if (lines.length > rows) {
+			const marker =
+				this.#editorScroll + rows < lines.length
+					? theme.fg("dim", `  ↓ ${lines.length - this.#editorScroll - rows} more`)
+					: theme.fg("dim", "  (end)");
+			window[rows - 1] = marker;
+		}
+		return this.#padTo(window, rows);
+	}
+
+	#editorContent(bodyWidth: number): string[] {
+		const target = this.#selected();
+		const header = target
+			? theme.bold(
+					`${target.advisor.name || "(unnamed)"}  ${theme.fg("dim", `· ${this.#scopeLabel(target.scope)}`)}`,
+				)
+			: theme.bold(this.#focus === "editor" ? "Advisor" : this.#scopeLabel(this.#focus));
+		const lines: string[] = [header, ""];
+		if (this.#mode === "fields") {
+			if (target) {
+				lines.push(...this.#editor.render(bodyWidth));
+				lines.push("", ...this.#usageLines(target.advisor));
+			} else {
+				lines.push(...this.#editor.render(bodyWidth));
+			}
+		} else {
+			lines.push(...this.#editor.render(bodyWidth));
+		}
+		return lines.map(line => truncateToWidth(line, bodyWidth));
+	}
+
+	#scopeLabel(scope: AdvisorConfigScope): string {
+		return scope === "project" ? `Project · ${this.#projectName ?? "project"}` : "Global";
+	}
+
+	#usageLines(advisor: AdvisorConfig): string[] {
+		const liveStat = this.#cb.getAdvisorStats?.().find(s => s.name === (advisor.name || "default"));
+		if (!liveStat || (liveStat.status !== "running" && liveStat.status !== "quota_exhausted")) return [];
+		const lines: string[] = [theme.fg("dim", "Usage:")];
+		const spendParts = [
+			`${liveStat.tokens.input.toLocaleString()} in`,
+			`${liveStat.tokens.output.toLocaleString()} out`,
+		];
+		if (liveStat.tokens.cacheRead > 0) spendParts.push(`${liveStat.tokens.cacheRead.toLocaleString()} cache`);
+		lines.push(theme.fg("dim", `  Tokens: ${spendParts.join(", ")}`));
+		if (liveStat.cost > 0) lines.push(theme.fg("dim", `  Cost: $${liveStat.cost.toFixed(4)}`));
+		if (liveStat.contextWindow > 0) {
+			const pct = Math.round((liveStat.contextTokens / liveStat.contextWindow) * 100);
+			lines.push(
+				theme.fg(
+					"dim",
+					`  Context: ${liveStat.contextTokens.toLocaleString()}/${liveStat.contextWindow.toLocaleString()} (${pct}%)`,
+				),
+			);
+		}
+		const quotaProvider =
+			(advisor.model?.includes("/") ? advisor.model.split("/")[0] : null) ?? liveStat.model?.provider;
+		if (this.#cachedReports && quotaProvider) {
+			const activeAccount = this.#cb.resolveActiveAccount?.(quotaProvider, liveStat.sessionId);
+			const quota = formatCompactQuota(quotaProvider, this.#cachedReports, Date.now(), activeAccount);
+			if (quota) lines.push(theme.fg("dim", `  ${quota}`));
+		}
+		return lines;
 	}
 
 	// ───────────────────────────── input ─────────────────────────────
@@ -226,146 +364,126 @@ export class AdvisorConfigOverlayComponent implements Component {
 			routeSgrMouseInput(data, event => this.#routeMouseEvent(event));
 			return;
 		}
-		this.#active.handleInput?.(data);
+		if (this.#focus !== "editor") {
+			if (data === "\x1b[C") {
+				this.#focusEditor();
+				return;
+			}
+			if (data === "\x1b[D") {
+				return;
+			}
+			// ↓ past the project roster's end drops into the global roster; ↑ above the
+			// global roster's top climbs back. Each roster keeps its own cursor.
+			const list = this.#scopes[this.#focus].list;
+			const at = list.getSelectedIndex();
+			if (data === "\x1b[B" && this.#focus === "project" && at >= list.getItemCount() - 1) {
+				this.#focus = "user";
+				this.#showFields();
+				return;
+			}
+			if (data === "\x1b[A" && this.#focus === "user" && at <= 0) {
+				this.#focus = "project";
+				this.#showFields();
+				return;
+			}
+			list.handleInput(data);
+			return;
+		}
+		// Editor pane: ← returns to the rosters unless a text editor is open.
+		if (data === "\x1b[D" && this.#mode !== "name" && this.#mode !== "instructions" && this.#mode !== "model") {
+			this.#focus = this.#lastRosterFocus;
+			this.#cb.requestRender();
+			return;
+		}
+		this.#editor.handleInput?.(data);
 	}
 
 	/** Forward enhanced-paste transports into a multiline instructions editor. */
 	pasteText(text: string): void {
-		if (this.#active instanceof HookEditorComponent) this.#active.pasteText(text);
+		if (this.#editor instanceof HookEditorComponent) this.#editor.pasteText(text);
 	}
 
-	#routeMouseEvent(event: SgrMouseEvent): boolean {
-		// Right pane of the split (the preview) only scrolls; everything left of the
-		// divider routes into the active list/component at frame-local coordinates.
-		if (this.#screen === "list" && event.col >= this.#dividerCol) {
-			if (event.wheel !== null) {
-				this.#previewScroll = Math.max(0, this.#previewScroll + event.wheel);
-				this.#cb.requestRender();
-			}
-			return true;
-		}
-		const el = this.#active as Partial<MouseRoutable>;
-		if (typeof el.routeMouse === "function") {
-			el.routeMouse(event, event.row - this.#bodyRowStart, event.col);
-			return true;
-		}
-		return false;
-	}
+	#lastRosterFocus: AdvisorConfigScope = "project";
 
-	// ───────────────────────────── preview ───────────────────────────
-
-	#previewWindow(bodyWidth: number, rows: number): string[] {
-		const lines = this.#previewContent(bodyWidth);
-		const maxScroll = Math.max(0, lines.length - rows);
-		const start = Math.min(this.#previewScroll, maxScroll);
-		const window = lines.slice(start, start + rows);
-		if (lines.length > rows) {
-			const marker =
-				start + rows < lines.length
-					? theme.fg("dim", `  ↓ ${lines.length - rows - start} more`)
-					: theme.fg("dim", "  (end)");
-			window[rows - 1] = marker;
-		}
-		return window;
-	}
-
-	#previewContent(bodyWidth: number): string[] {
-		const list = this.#active;
-		const value = list instanceof SelectList ? (list.getSelectedItem()?.value ?? "") : "";
-		const match = /^advisor:(\d+)$/.exec(value);
-		if (match) {
-			const advisor = this.#doc.advisors[Number(match[1])];
-			if (advisor) return this.#advisorPreview(advisor, bodyWidth);
-		}
-		if (value === "shared") {
-			const lines = [theme.bold("Shared instructions"), ""];
-			const text = this.#doc.instructions?.trim();
-			lines.push(...(text ? wrap(text, bodyWidth) : [theme.fg("muted", "(none)")]));
-			return lines.map(line => truncateToWidth(line, bodyWidth));
-		}
-		const help =
-			value === "add"
-				? "Create a new advisor entry, then edit its model, tools, and instructions."
-				: value.startsWith("scope:")
-					? value === `scope:${this.#scope}`
-						? `Editing this section's WATCHDOG.yml.`
-						: `Open the ${value === "scope:project" ? "project" : "global"} WATCHDOG.yml.`
-					: value === "empty"
-						? `No advisors configured here. The advisor role default (${this.#defaultModelLabel ?? "none"}) applies. Use "+ Add advisor" to configure one.`
-						: value === "save"
-							? "Write this scope's WATCHDOG.yml and reload the live advisors without a restart."
-							: value === "close"
-								? "Close the editor. Unsaved changes are discarded."
-								: "";
-		return wrap(help, bodyWidth).map(line => truncateToWidth(theme.fg("muted", line), bodyWidth));
-	}
-
-	#advisorPreview(advisor: AdvisorConfig, bodyWidth: number): string[] {
-		const model = advisor.model?.trim() || this.#defaultModelLabel || "advisor role default";
-		const tools = formatAdvisorTools(advisor.tools, "no tools");
-		const lines = [
-			theme.bold(advisor.name || "(unnamed)"),
-			"",
-			`${theme.fg("dim", "Enabled:")} ${advisor.enabled === false ? "○ off" : "● on"}`,
-			`${theme.fg("dim", "Model:")} ${model}`,
-			`${theme.fg("dim", "Tools:")} ${tools}`,
-			"",
-			theme.fg("dim", "Instructions:"),
-		];
-		const instr = advisor.instructions?.trim();
-		lines.push(...(instr ? wrap(instr, bodyWidth) : [theme.fg("muted", "(none)")]));
-		// Show live usage stats when available from the session.
-		const liveStat = this.#cb.getAdvisorStats?.()?.find(s => s.name === (advisor.name || "default"));
-		if (liveStat && (liveStat.status === "running" || liveStat.status === "quota_exhausted")) {
-			lines.push("", theme.fg("dim", "Usage:"));
-			const spendParts: string[] = [
-				`${liveStat.tokens.input.toLocaleString()} in`,
-				`${liveStat.tokens.output.toLocaleString()} out`,
-			];
-			if (liveStat.tokens.cacheRead > 0) spendParts.push(`${liveStat.tokens.cacheRead.toLocaleString()} cache`);
-			lines.push(theme.fg("dim", `  Tokens: ${spendParts.join(", ")}`));
-			if (liveStat.cost > 0) lines.push(theme.fg("dim", `  Cost: $${liveStat.cost.toFixed(4)}`));
-			if (liveStat.contextWindow > 0) {
-				const pct = Math.round((liveStat.contextTokens / liveStat.contextWindow) * 100);
-				lines.push(
-					theme.fg(
-						"dim",
-						`  Context: ${liveStat.contextTokens.toLocaleString()}/${liveStat.contextWindow.toLocaleString()} (${pct}%)`,
-					),
-				);
-			}
-		}
-		const quotaProvider =
-			(advisor.model?.includes("/") ? advisor.model.split("/")[0] : null) ?? liveStat?.model?.provider;
-		if (this.#cachedReports && quotaProvider) {
-			const activeAccount = this.#cb.resolveActiveAccount?.(quotaProvider, liveStat?.sessionId);
-			const quota = formatCompactQuota(quotaProvider, this.#cachedReports, Date.now(), activeAccount);
-			if (quota) lines.push(theme.fg("dim", `  ${quota}`));
-		}
-		return lines.map(line => truncateToWidth(line, bodyWidth));
-	}
-
-	// ───────────────────────────── screens ───────────────────────────
-
-	#setScreen(screen: Screen, active: Component, footerHint: string): void {
-		if (screen !== "list") this.#rememberListCursor();
-		this.#screen = screen;
-		this.#active = active;
-		this.#footerHint = footerHint;
-		this.#previewScroll = 0;
+	#focusEditor(): void {
+		if (this.#focus !== "editor") this.#lastRosterFocus = this.#focus;
+		this.#focus = "editor";
 		this.#cb.requestRender();
 	}
 
-	#scopeTitle(scope: AdvisorConfigScope): string {
-		return scope === "project" ? `Project · ${this.#projectName ?? "project"}` : "Global";
+	#routeMouseEvent(event: SgrMouseEvent): boolean {
+		if (event.col >= this.#dividerCol) {
+			if (event.wheel !== null) {
+				const el = this.#editor as Partial<MouseRoutable>;
+				if (this.#mode !== "fields" && typeof el.routeMouse === "function") {
+					el.routeMouse(event, event.row - 3, event.col - this.#dividerCol - 1);
+				} else {
+					this.#editorScroll = Math.max(0, this.#editorScroll + event.wheel);
+				}
+				this.#cb.requestRender();
+				return true;
+			}
+			this.#focusEditor();
+			const el = this.#editor as Partial<MouseRoutable>;
+			// Editor content starts 2 rows below the body top (header + blank).
+			if (typeof el.routeMouse === "function")
+				el.routeMouse(event, event.row - 1 - 2 + this.#editorScroll, event.col - this.#dividerCol - 1);
+			return true;
+		}
+		const inProject = event.row >= this.#projectRowStart && event.row < this.#projectRowStart + this.#projectRows;
+		const inUser = event.row >= this.#userRowStart && event.row < this.#userRowStart + this.#userRows;
+		const scope: AdvisorConfigScope | undefined = inProject ? "project" : inUser ? "user" : undefined;
+		if (!scope) return false;
+		if (event.wheel === null && this.#focus !== scope) {
+			this.#focus = scope;
+			this.#showFields();
+		}
+		const start = scope === "project" ? this.#projectRowStart : this.#userRowStart;
+		this.#scopes[scope].list.routeMouse(event, event.row - start, event.col - 2);
+		return true;
 	}
 
-	/** Remember the roster cursor so returning from a sub-screen lands on the same row. */
-	#rememberListCursor(): void {
-		const list = this.#active;
-		if (list instanceof SelectList && this.#screen === "list") {
-			this.#listCursor = list.getSelectedItem()?.value ?? this.#listCursor;
-		}
+	// ───────────────────────────── rosters ───────────────────────────
+
+	#selected(): { scope: AdvisorConfigScope; index: number; advisor: AdvisorConfig } | undefined {
+		const scope = this.#focus === "editor" ? this.#lastRosterFocus : this.#focus;
+		const value = this.#scopes[scope].list.getSelectedItem()?.value;
+		const match = value ? /^advisor:(\d+)$/.exec(value) : null;
+		if (!match) return undefined;
+		const index = Number(match[1]);
+		const advisor = this.#scopes[scope].doc.advisors[index];
+		return advisor ? { scope, index, advisor } : undefined;
+	}
+
+	#rebuildRoster(scope: AdvisorConfigScope): void {
+		const state = this.#scopes[scope];
+		const items: SelectItem[] = state.doc.advisors.map((advisor, index) => ({
+			value: `advisor:${index}`,
+			label: `${advisor.enabled === false ? "○" : "●"} ${advisor.name || "(unnamed)"}`,
+			description: this.#advisorSummary(advisor),
+		}));
+		if (items.length === 0)
+			items.push({ value: "empty", label: "(no advisors)", description: "role default applies" });
+		items.push({ value: "add", label: "+ Add advisor" });
+		items.push({ value: "shared", label: "Shared instructions", description: previewLine(state.doc.instructions) });
+		items.push({ value: "save", label: state.dirty ? "Save & apply ●" : "Save & apply" });
+		const list = new SelectList(items, Math.max(1, items.length), getSelectListTheme());
+		const remembered = state.cursor ? items.findIndex(item => item.value === state.cursor) : -1;
+		if (remembered >= 0) list.setSelectedIndex(remembered);
+		list.onSelectionChange = item => {
+			state.cursor = item.value;
+			if (this.#mode === "fields") this.#showFields();
+			this.#cb.requestRender();
+		};
+		list.onSelect = item => {
+			state.cursor = item.value;
+			void this.#onRosterSelect(scope, item.value).catch(err => {
+				this.#cb.notify(`Advisor config: ${err instanceof Error ? err.message : String(err)}`);
+			});
+		};
+		list.onCancel = () => this.#cb.close();
+		state.list = list;
+		state.cursor = list.getSelectedItem()?.value;
 	}
 
 	#advisorSummary(advisor: AdvisorConfig): string {
@@ -374,183 +492,154 @@ export class AdvisorConfigOverlayComponent implements Component {
 		return `${model} · ${tools}`;
 	}
 
-	#showList(): void {
-		this.#rememberListCursor();
-		const items: SelectItem[] = [];
-		for (const scope of ["project", "user"] as const) {
-			const active = scope === this.#scope;
-			items.push({
-				value: `scope:${scope}`,
-				label: `${active ? "▾" : "▸"} ${this.#scopeTitle(scope)}`,
-				description: active ? "editing" : "click to open",
-			});
-			if (!active) continue;
-			for (const [index, advisor] of this.#doc.advisors.entries()) {
-				items.push({
-					value: `advisor:${index}`,
-					label: `  ${advisor.enabled === false ? "○" : "●"} ${advisor.name || "(unnamed)"}`,
-					description: this.#advisorSummary(advisor),
-				});
-			}
-			if (this.#doc.advisors.length === 0) {
-				items.push({ value: "empty", label: "  (no advisors)", description: "role default applies" });
-			}
-		}
-		items.push({ value: "add", label: "+ Add advisor" });
-		items.push({ value: "shared", label: "Shared instructions", description: previewLine(this.#doc.instructions) });
-		items.push({ value: "save", label: "Save & apply" });
-		items.push({ value: "close", label: "Close" });
-
-		// Show every row (no internal overflow-search); the split frame supplies height.
-		const list = new SelectList(items, Math.max(1, items.length), getSelectListTheme());
-		const remembered = this.#listCursor ? items.findIndex(item => item.value === this.#listCursor) : -1;
-		list.setSelectedIndex(remembered >= 0 ? remembered : Math.min(1, items.length - 1));
-		list.onSelectionChange = () => {
-			this.#previewScroll = 0;
-			this.#cb.requestRender();
-		};
-		list.onSelect = item =>
-			void this.#onListSelect(item.value).catch(err => {
-				this.#cb.notify(`Advisor config: ${err instanceof Error ? err.message : String(err)}`);
-			});
-		list.onCancel = () => this.#cb.close();
-		this.#setScreen("list", list, "↑↓ move · Enter / click select · scroll preview on the right · Esc close");
+	#markDirty(scope: AdvisorConfigScope): void {
+		this.#scopes[scope].dirty = true;
+		this.#rebuildRoster(scope);
 	}
 
-	async #onListSelect(value: string): Promise<void> {
+	async #onRosterSelect(scope: AdvisorConfigScope, value: string): Promise<void> {
+		const state = this.#scopes[scope];
 		if (value === "add") {
-			this.#doc.advisors.push({ name: `Advisor ${this.#doc.advisors.length + 1}` });
-			this.#dirty = true;
-			this.#listCursor = `advisor:${this.#doc.advisors.length - 1}`;
-			this.#showDetail(this.#doc.advisors.length - 1);
+			state.doc.advisors.push({ name: `Advisor ${state.doc.advisors.length + 1}` });
+			state.cursor = `advisor:${state.doc.advisors.length - 1}`;
+			this.#markDirty(scope);
+			this.#focusEditor();
+			this.#showFields();
 			return;
 		}
 		if (value === "shared") {
-			this.#showInstructionsEditor(-1);
-			return;
-		}
-		if (value === "empty") return;
-		const scopeMatch = /^scope:(project|user)$/.exec(value);
-		if (scopeMatch) {
-			const next = scopeMatch[1] as AdvisorConfigScope;
-			if (next === this.#scope) return;
-			if (this.#dirty) {
-				this.#cb.notify('Unsaved changes — "Save & apply" or Close before switching scope.');
-				return;
-			}
-			this.#doc = await this.#cb.loadDoc(next);
-			this.#scope = next;
-			this.#listCursor = `scope:${next}`;
-			this.#showList();
+			this.#focusEditor();
+			this.#showInstructionsEditor(scope, -1);
 			return;
 		}
 		if (value === "save") {
-			await this.#cb.save(this.#scope, this.#doc);
-			this.#dirty = false;
-			this.#showList();
+			await this.#cb.save(scope, state.doc);
+			state.dirty = false;
+			this.#rebuildRoster(scope);
+			this.#cb.notify(`Saved ${this.#scopeLabel(scope)} advisors`);
+			this.#cb.requestRender();
 			return;
 		}
-		if (value === "close") {
-			this.#cb.close();
-			return;
+		if (value === "empty") return;
+		if (/^advisor:\d+$/.test(value)) {
+			this.#focusEditor();
+			this.#showFields();
 		}
-		const match = /^advisor:(\d+)$/.exec(value);
-		if (match) this.#showDetail(Number(match[1]));
 	}
 
-	#showDetail(index: number): void {
-		const advisor = this.#doc.advisors[index];
-		if (!advisor) {
-			this.#showList();
+	// ───────────────────────────── editor pane ───────────────────────
+
+	#setEditor(mode: EditorMode, component: Component): void {
+		this.#mode = mode;
+		this.#editor = component;
+		this.#editorScroll = 0;
+		this.#cb.requestRender();
+	}
+
+	#showFields(): void {
+		const target = this.#selected();
+		if (!target) {
+			const scope = this.#focus === "editor" ? this.#lastRosterFocus : this.#focus;
+			const value = this.#scopes[scope].list.getSelectedItem()?.value;
+			const help =
+				value === "add"
+					? "Create a new advisor entry, then edit its model, tools, and instructions here."
+					: value === "shared"
+						? `Shared instructions prepended to every advisor in ${this.#scopeLabel(scope)}: ${previewLine(this.#scopes[scope].doc.instructions)}`
+						: value === "save"
+							? `Write ${this.#scopeLabel(scope)}'s WATCHDOG.yml and reload the live advisors without a restart.`
+							: `No advisors configured in ${this.#scopeLabel(scope)}. The advisor role default (${this.#defaultModelLabel ?? "none"}) applies. Use "+ Add advisor" to configure one.`;
+			const text = new StaticLines(help);
+			this.#setEditor("fields", text);
 			return;
 		}
+		const { scope, index, advisor } = target;
 		const modelDescription = advisor.model?.trim() || this.#defaultModelLabel || "advisor role default";
-		const toolsDescription = formatAdvisorTools(advisor.tools, "no tools");
 		const items: SelectItem[] = [
+			{ value: "toggleEnabled", label: "Enabled", description: advisor.enabled === false ? "○ off" : "● on" },
 			{ value: "name", label: "Name", description: advisor.name },
-			{
-				value: "toggleEnabled",
-				label: "Enabled",
-				description: advisor.enabled === false ? "○ off" : "● on",
-			},
 			{ value: "model", label: "Model", description: modelDescription },
 		];
-		if (advisor.model?.trim()) {
-			items.push({ value: "resetModel", label: "Reset model to advisor-role default" });
-		}
+		if (advisor.model?.trim()) items.push({ value: "resetModel", label: "Reset model to advisor-role default" });
 		items.push(
-			{ value: "tools", label: "Tools", description: toolsDescription },
+			{ value: "tools", label: "Tools", description: formatAdvisorTools(advisor.tools, "no tools") },
 			{ value: "instructions", label: "Instructions", description: previewLine(advisor.instructions) },
 			{ value: "delete", label: "Delete this advisor" },
-			{ value: "back", label: "Back" },
 		);
 		const list = new SelectList(items, Math.max(1, items.length), getSelectListTheme());
-		const remembered = this.#detailCursor ? items.findIndex(item => item.value === this.#detailCursor) : -1;
+		const remembered = this.#fieldCursor ? items.findIndex(item => item.value === this.#fieldCursor) : -1;
 		if (remembered >= 0) list.setSelectedIndex(remembered);
-		list.onSelect = item => {
-			this.#detailCursor = item.value;
-			this.#onDetailSelect(index, item.value);
+		list.onSelectionChange = item => {
+			this.#fieldCursor = item.value;
 		};
-		list.onCancel = () => this.#showList();
-		this.#setScreen("detail", list, `Editing "${advisor.name}" · Enter / click edit field · Esc back`);
+		list.onSelect = item => {
+			this.#fieldCursor = item.value;
+			this.#onFieldSelect(scope, index, item.value);
+		};
+		list.onCancel = () => this.#cb.close();
+		this.#setEditor("fields", list);
 	}
 
-	#onDetailSelect(index: number, field: string): void {
+	#onFieldSelect(scope: AdvisorConfigScope, index: number, field: string): void {
+		const doc = this.#scopes[scope].doc;
 		switch (field) {
 			case "toggleEnabled": {
-				const a = this.#doc.advisors[index];
+				const a = doc.advisors[index];
 				a.enabled = a.enabled === false ? undefined : false;
-				this.#dirty = true;
-				this.#showDetail(index);
+				this.#markDirty(scope);
+				this.#showFields();
 				return;
 			}
 			case "name":
-				this.#showNameEditor(index);
+				this.#showNameEditor(scope, index);
 				return;
 			case "model":
-				this.#showModelPicker(index);
+				this.#showModelPicker(scope, index);
 				return;
 			case "tools":
 				this.#showToolsEditor(
+					scope,
 					index,
-					new Set(this.#doc.advisors[index].tools ?? [...ADVISOR_DEFAULT_TOOL_NAMES]),
+					new Set(doc.advisors[index].tools ?? [...ADVISOR_DEFAULT_TOOL_NAMES]),
 					0,
 				);
 				return;
 			case "resetModel":
-				this.#doc.advisors[index].model = undefined;
-				this.#dirty = true;
-				this.#showDetail(index);
+				doc.advisors[index].model = undefined;
+				this.#markDirty(scope);
+				this.#showFields();
 				return;
 			case "instructions":
-				this.#showInstructionsEditor(index);
+				this.#showInstructionsEditor(scope, index);
 				return;
 			case "delete":
-				this.#doc.advisors.splice(index, 1);
-				this.#dirty = true;
-				this.#showList();
+				doc.advisors.splice(index, 1);
+				this.#scopes[scope].cursor = undefined;
+				this.#markDirty(scope);
+				this.#focus = scope;
+				this.#showFields();
 				return;
 			default:
-				this.#showList();
+				this.#showFields();
 		}
 	}
 
-	#showNameEditor(index: number): void {
+	#showNameEditor(scope: AdvisorConfigScope, index: number): void {
 		const input = new Input();
-		input.setValue(this.#doc.advisors[index].name);
+		input.setValue(this.#scopes[scope].doc.advisors[index].name);
 		input.onSubmit = value => {
 			const name = value.trim();
 			if (name) {
-				this.#doc.advisors[index].name = name;
-				this.#dirty = true;
+				this.#scopes[scope].doc.advisors[index].name = name;
+				this.#markDirty(scope);
 			}
-			this.#showDetail(index);
+			this.#showFields();
 		};
-		input.onEscape = () => this.#showDetail(index);
-		this.#setScreen("name", input, "Type a name · Enter save · Esc cancel");
+		input.onEscape = () => this.#showFields();
+		this.#setEditor("name", input);
 	}
 
-	#showModelPicker(index: number): void {
+	#showModelPicker(scope: AdvisorConfigScope, index: number): void {
 		const storage = this.#settings.getStorage();
 		const mruOrder = storage?.getModelUsageOrder() ?? [];
 		let models: ReadonlyArray<Model>;
@@ -563,14 +652,11 @@ export class AdvisorConfigOverlayComponent implements Component {
 				models = [];
 			}
 		}
-		// Same roster as `/model`: role chips, MRU ordering, perf stats, and the
-		// advisor's current model pinned + preselected so Enter keeps it.
 		const allModels = this.#scopedModels.length > 0 ? models : this.#modelRegistry.getAll();
 		const roles = resolveRoleAssignments(this.#settings, allModels, models);
 		const items = buildBrowserItems(models);
 		sortModelItems(items, { roles, mruOrder });
-
-		const current = this.#doc.advisors[index].model?.trim();
+		const current = this.#scopes[scope].doc.advisors[index].model?.trim();
 		const currentSelector = current ? current.split(":", 1)[0] : undefined;
 		const picker = new ModelBrowser(this.#settings, {});
 		picker.setRoles(roles);
@@ -582,34 +668,32 @@ export class AdvisorConfigOverlayComponent implements Component {
 		picker.onActivate = item => {
 			const efforts = getSupportedEfforts(item.model);
 			if (efforts.length === 0) {
-				this.#doc.advisors[index].model = item.selector;
-				this.#dirty = true;
-				this.#showDetail(index);
+				this.#scopes[scope].doc.advisors[index].model = item.selector;
+				this.#markDirty(scope);
+				this.#showFields();
 			} else {
-				this.#showThinkingPicker(index, item.selector, efforts);
+				this.#showThinkingPicker(scope, index, item.selector, efforts);
 			}
 		};
-		picker.onCancel = () => this.#showDetail(index);
-		this.#setScreen("model", picker, "Type to search · Enter / click twice picks · Esc back");
+		picker.onCancel = () => this.#showFields();
+		this.#setEditor("model", picker);
 	}
 
-	#showThinkingPicker(index: number, selector: string, efforts: readonly string[]): void {
+	#showThinkingPicker(scope: AdvisorConfigScope, index: number, selector: string, efforts: readonly string[]): void {
 		const items: SelectItem[] = [{ value: "", label: "(model default thinking)" }];
 		for (const effort of efforts) items.push({ value: effort, label: effort });
 		const list = new SelectList(items, Math.max(1, items.length), getSelectListTheme());
 		list.onSelect = item => {
-			// `item.value` is one of the model's own supported efforts (or "" for the
-			// model default); `formatModelSelectorValue` spells the `:level` suffix.
 			const level = item.value ? (item.value as ThinkingLevel) : undefined;
-			this.#doc.advisors[index].model = formatModelSelectorValue(selector, level);
-			this.#dirty = true;
-			this.#showDetail(index);
+			this.#scopes[scope].doc.advisors[index].model = formatModelSelectorValue(selector, level);
+			this.#markDirty(scope);
+			this.#showFields();
 		};
-		list.onCancel = () => this.#showModelPicker(index);
-		this.#setScreen("thinking", list, `Thinking effort for ${selector} · Enter / click pick · Esc back`);
+		list.onCancel = () => this.#showModelPicker(scope, index);
+		this.#setEditor("thinking", list);
 	}
 
-	#showToolsEditor(index: number, selected: Set<string>, cursor: number): void {
+	#showToolsEditor(scope: AdvisorConfigScope, index: number, selected: Set<string>, cursor: number): void {
 		const all = this.#availableToolNames;
 		const items: SelectItem[] = all.map(name => ({
 			value: name,
@@ -622,51 +706,54 @@ export class AdvisorConfigOverlayComponent implements Component {
 		list.onSelectionChange = item => {
 			cursorIndex = items.findIndex(i => i.value === item.value);
 		};
+		const apply = (): void => {
+			this.#scopes[scope].doc.advisors[index].tools = commitTools(selected, all);
+			this.#markDirty(scope);
+			this.#showFields();
+		};
 		list.onSelect = item => {
 			if (item.value === "__done") {
-				this.#doc.advisors[index].tools = commitTools(selected, all);
-				this.#dirty = true;
-				this.#showDetail(index);
+				apply();
 				return;
 			}
 			if (selected.has(item.value)) selected.delete(item.value);
 			else selected.add(item.value);
-			this.#showToolsEditor(index, selected, cursorIndex);
+			this.#showToolsEditor(scope, index, selected, cursorIndex);
 		};
-		list.onCancel = () => {
-			this.#doc.advisors[index].tools = commitTools(selected, all);
-			this.#dirty = true;
-			this.#showDetail(index);
-		};
-		this.#setScreen(
-			"tools",
-			list,
-			"Enter / click toggle · select Done or Esc to apply (empty = no tools; read/grep/glob = default)",
-		);
+		list.onCancel = apply;
+		this.#setEditor("tools", list);
 	}
 
-	/** `index === -1` edits the shared top-level instructions; otherwise advisor[index]. */
-	#showInstructionsEditor(index: number): void {
+	/** `index === -1` edits the scope's shared instructions; otherwise advisor[index]. */
+	#showInstructionsEditor(scope: AdvisorConfigScope, index: number): void {
+		const doc = this.#scopes[scope].doc;
 		const shared = index < 0;
-		const current = shared ? this.#doc.instructions : this.#doc.advisors[index].instructions;
-		const title = shared ? "Shared advisor instructions" : `Instructions — ${this.#doc.advisors[index].name}`;
+		const current = shared ? doc.instructions : doc.advisors[index].instructions;
+		const title = shared
+			? `Shared instructions · ${this.#scopeLabel(scope)}`
+			: `Instructions — ${doc.advisors[index].name}`;
 		const editor = new HookEditorComponent(
 			this.#tui,
 			title,
 			current,
 			value => {
 				const text = value.trim() ? value : undefined;
-				if (shared) this.#doc.instructions = text;
-				else this.#doc.advisors[index].instructions = text;
-				this.#dirty = true;
-				if (shared) this.#showList();
-				else this.#showDetail(index);
+				if (shared) doc.instructions = text;
+				else doc.advisors[index].instructions = text;
+				this.#markDirty(scope);
+				this.#showFields();
 			},
-			() => {
-				if (shared) this.#showList();
-				else this.#showDetail(index);
-			},
+			() => this.#showFields(),
 		);
-		this.#setScreen("instructions", editor, "");
+		this.#setEditor("instructions", editor);
 	}
+}
+
+/** Static wrapped help text for the editor pane when no advisor is under the cursor. */
+class StaticLines implements Component {
+	constructor(private readonly text: string) {}
+	render(width: number): readonly string[] {
+		return wrap(this.text, width).map(line => theme.fg("muted", line));
+	}
+	handleInput(): void {}
 }
