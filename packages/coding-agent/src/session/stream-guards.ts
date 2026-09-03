@@ -54,7 +54,6 @@ export class StreamingEditGuard {
 		this.#abortTriggered = false;
 	}
 
-
 	/** Aborts a legacy patch edit when its final streamed preview cannot apply. */
 	maybeAbort(event: AgentEvent): void {
 		if (this.#host.resolveActiveEditMode() !== "patch") return;
@@ -90,7 +89,6 @@ export class StreamingEditGuard {
 		);
 		if (failed) this.#abortPatch(event.toolCallId, failed.path, failed.error);
 	}
-
 
 	#abortPatch(toolCallId: string, filePath: string, error: string): void {
 		this.#abortTriggered = true;

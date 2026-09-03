@@ -78,7 +78,6 @@ export interface AdvisorConfigDeps {
 }
 
 const PREVIEW_WIDTH = 60;
-const SCOPES: readonly AdvisorConfigScope[] = ["project", "user"];
 
 function previewLine(text: string | undefined): string {
 	if (!text?.trim()) return "(none)";

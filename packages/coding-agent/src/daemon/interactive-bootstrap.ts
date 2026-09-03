@@ -47,7 +47,7 @@ export type DaemonInteractiveSession = {
 };
 
 function launchArgs(argv: readonly string[]): string[] {
-	return argv[0] === "launch" ? [...argv.slice(1)] : [...argv];
+	return argv[0] === "launch" ? argv.slice(1) : [...argv];
 }
 
 /**

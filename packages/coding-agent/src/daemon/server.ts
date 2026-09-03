@@ -692,20 +692,20 @@ export class DaemonServer {
 		this.#cancelIdleShutdown();
 		this.#shutdownPromise = (async () => {
 			this.#closed = true;
-			for (const connection of [...this.#connections]) {
+			for (const connection of this.#connections) {
 				connection.socket.destroy();
 				this.#releaseConnection(connection);
 			}
 			// Half-closed or handshake-orphaned sockets may already be out of
 			// #connections while net.Server still counts them; a single lingering
 			// socket parks server.close() — and this shutdown — forever.
-			for (const socket of [...this.#rawSockets]) socket.destroy();
+			for (const socket of this.#rawSockets) socket.destroy();
 			try {
 				// Drain in-flight lifecycle ops (bounded): a session_create whose
 				// runtime factory is mid-await would otherwise install into a
 				// disposed registry and leak the runtime.
 				if (this.#inflightLifecycle.size > 0) {
-					await Promise.race([Promise.allSettled([...this.#inflightLifecycle]), Bun.sleep(5_000)]);
+					await Promise.race([Promise.allSettled(this.#inflightLifecycle), Bun.sleep(5_000)]);
 				}
 				await this.#registry?.dispose();
 				const server = this.#server;
@@ -723,7 +723,7 @@ export class DaemonServer {
 							// Deterministic exit beats a perfect close: destroy
 							// whatever lingers and stop waiting. close() settles
 							// later on its own; nothing awaits it anymore.
-							for (const socket of [...this.#rawSockets]) socket.destroy();
+							for (const socket of this.#rawSockets) socket.destroy();
 							finish();
 						}, 2_000);
 						server.close(() => finish());

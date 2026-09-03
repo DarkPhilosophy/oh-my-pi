@@ -437,7 +437,7 @@ export class DaemonSessionRegistry {
 
 	async dispose(): Promise<void> {
 		this.#disposed = true;
-		for (const sessionId of [...this.#sessions.keys()]) await this.close(sessionId);
+		for (const sessionId of this.#sessions.keys()) await this.close(sessionId);
 		// Drain to quiescence: an in-flight runtime factory settles into a
 		// #install rejection whose runtime disposal lands in #closing — loop
 		// until nothing new appears so no runtime outlives the registry.
@@ -631,7 +631,7 @@ export class DaemonSessionRegistry {
 		this.#cancelParking(record);
 		logger.debug("Daemon session close started", { sessionId, attachmentCount: record.attachments.size });
 		record.unsubscribe();
-		for (const attachment of [...record.attachments.values()]) this.#detachRecord(record, attachment.id);
+		for (const attachment of record.attachments.values()) this.#detachRecord(record, attachment.id);
 		record.attachments.clear();
 		record.interactiveAttachment = undefined;
 		this.#sessions.delete(sessionId);

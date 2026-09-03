@@ -1,12 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-	type Component,
-	type PanelLayoutResult,
-	type TerminalFramePlan,
-	type TerminalFrameProvider,
-	TUI,
-	type ViewportSize,
-} from "@oh-my-pi/pi-tui";
+import { type Component, type PanelLayoutResult, type TerminalFrameProvider, TUI } from "@oh-my-pi/pi-tui";
 import { RESERVED_IMAGE_ROW } from "../src/components/image";
 import { compositeRightPanel, compositeRightPanels } from "../src/right-panel";
 import { VirtualTerminal } from "./virtual-terminal";

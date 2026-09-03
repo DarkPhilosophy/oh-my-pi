@@ -399,7 +399,7 @@ async function createAgentSessionRuntimeInScope(
 		throw new Error(`Unknown daemon thinking level: ${overrides.thinkingLevel}`);
 	}
 	const createOptions: CreateAgentSessionOptions = cliLaunch?.createOptions ?? {
-		...(options.baseOptions ?? {}),
+		...options.baseOptions,
 		cwd: sessionCwd,
 		sessionManager,
 		hasUI: true,

@@ -1,5 +1,4 @@
 import type { Component } from "@oh-my-pi/pi-tui";
-import { settings } from "../../config/settings";
 
 const GAP: readonly string[] = [""];
 const FLUSH: readonly string[] = [];
@@ -14,10 +13,16 @@ const FLUSH: readonly string[] = [];
  * apply immediately.
  */
 export class EditorTopGap implements Component {
-	/** @param statusRowOccupied Whether the status/working row directly above rendered lines this frame. */
-	constructor(readonly statusRowOccupied: () => boolean) {}
+	/**
+	 * @param statusRowOccupied Whether the status/working row directly above rendered lines this frame.
+	 * @param composerShape Current session-scoped composer shape.
+	 */
+	constructor(
+		readonly statusRowOccupied: () => boolean,
+		readonly composerShape: () => string | undefined,
+	) {}
 
 	render(_width: number): readonly string[] {
-		return settings.get("composer.shape") === "band" && this.statusRowOccupied() ? FLUSH : GAP;
+		return this.composerShape() === "band" && this.statusRowOccupied() ? FLUSH : GAP;
 	}
 }

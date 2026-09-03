@@ -30,9 +30,9 @@ function createGuard(
 		isDisposed: () => false,
 		promptGeneration: () => 0,
 		localProtocolOptions: () => ({}),
-		emitNotice() { },
-		schedulePostPromptTask() { },
-		discardAssistantTurn() { },
+		emitNotice() {},
+		schedulePostPromptTask() {},
+		discardAssistantTurn() {},
 	});
 	return { guard, aborts };
 }
@@ -157,9 +157,9 @@ describe("streaming edit abort", () => {
 			isDisposed: () => false,
 			promptGeneration: () => 0,
 			localProtocolOptions: () => ({}),
-			emitNotice() { },
-			schedulePostPromptTask() { },
-			discardAssistantTurn() { },
+			emitNotice() {},
+			schedulePostPromptTask() {},
+			discardAssistantTurn() {},
 		};
 		const activeHashlineGuard = new StreamingEditGuard(activeModeHost);
 		activeHashlineGuard.maybeAbort(previewEvent(false, [{ path: "a.ts", error: "invalid hashline range" }]));

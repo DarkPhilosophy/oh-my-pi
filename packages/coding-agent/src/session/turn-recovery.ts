@@ -1101,9 +1101,9 @@ export class TurnRecovery {
 			(persistedEntryId === undefined
 				? undefined
 				: branch.find(
-					entry =>
-						entry.id === persistedEntryId && entry.type === "message" && entry.message.role === "assistant",
-				)) ??
+						entry =>
+							entry.id === persistedEntryId && entry.type === "message" && entry.message.role === "assistant",
+					)) ??
 			branch
 				.slice()
 				.reverse()
@@ -1839,8 +1839,8 @@ export class TurnRecovery {
 		const latestAssistant = options?.preserveFailedTurn
 			? failedMessage
 			: this.#host.agent.state.messages.findLast(
-				(message): message is AssistantMessage => message.role === "assistant" && message !== failedMessage,
-			);
+					(message): message is AssistantMessage => message.role === "assistant" && message !== failedMessage,
+				);
 		for (const role of this.retryFallbackChainKeys(currentSelector)) {
 			for (const selector of this.findRetryFallbackCandidates(role, currentSelector, undefined, options)) {
 				if (this.isRetryFallbackSelectorSuppressed(selector)) continue;
@@ -2238,9 +2238,9 @@ export class TurnRecovery {
 			(siblingAvailabilityWaitMs === undefined
 				? (recordedUsageLimitOutcome?.retryAfterMs ?? parsedRetryAfterMs)
 				: Math.min(
-					recordedUsageLimitOutcome?.retryAfterMs ?? parsedRetryAfterMs ?? Infinity,
-					siblingAvailabilityWaitMs,
-				));
+						recordedUsageLimitOutcome?.retryAfterMs ?? parsedRetryAfterMs ?? Infinity,
+						siblingAvailabilityWaitMs,
+					));
 		const waitForSiblingCredential =
 			siblingAvailabilityWaitMs !== undefined &&
 			effectiveUsageLimitWaitMs !== undefined &&
@@ -2543,7 +2543,7 @@ export class TurnRecovery {
 
 	async #promptAgentWithIdleRetry(messages: AgentMessage[], options?: { toolChoice?: ToolChoice }): Promise<void> {
 		const deadline = Date.now() + 30_000;
-		for (; ;) {
+		for (;;) {
 			try {
 				await this.#host.agent.prompt(messages, options);
 				return;
@@ -2679,9 +2679,9 @@ export class TurnRecovery {
 			(persistedEntryId === undefined
 				? undefined
 				: branch.find(
-					entry =>
-						entry.id === persistedEntryId && entry.type === "message" && entry.message.role === "assistant",
-				)) ??
+						entry =>
+							entry.id === persistedEntryId && entry.type === "message" && entry.message.role === "assistant",
+					)) ??
 			branch
 				.slice()
 				.reverse()

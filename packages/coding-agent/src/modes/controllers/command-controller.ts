@@ -84,7 +84,7 @@ function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown:
 }
 
 export class CommandController {
-	constructor(private readonly ctx: InteractiveModeContext) { }
+	constructor(private readonly ctx: InteractiveModeContext) {}
 
 	async #restoreAfterMoveFailure(
 		previousState: Parameters<InteractiveModeContext["sessionManager"]["rollbackMove"]>[0],
@@ -103,7 +103,7 @@ export class CommandController {
 			let realigned = false;
 			try {
 				realigned = await this.ctx.applyCwdChange(actual);
-			} catch { }
+			} catch {}
 			if (!realigned) {
 				this.ctx.showError(
 					`Failed to roll back move: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)} (failed to re-align workspace to ${actual})`,
@@ -120,14 +120,14 @@ export class CommandController {
 		let sourceRestored = false;
 		try {
 			sourceRestored = await this.ctx.applyCwdChange(previousState.cwd);
-		} catch { }
+		} catch {}
 		if (sourceRestored) return;
 
 		const actual = this.ctx.sessionManager.getCwd();
 		let realigned = false;
 		try {
 			realigned = await this.ctx.applyCwdChange(actual);
-		} catch { }
+		} catch {}
 		if (!realigned) {
 			this.ctx.showError(`Failed to restore source workspace after rollback: workspace remains at ${actual}`);
 			await this.ctx.shutdown();
@@ -296,7 +296,7 @@ export class CommandController {
 					this.ctx.showError(`Custom share failed: ${err instanceof Error ? err.message : String(err)}`);
 				}
 			} finally {
-				await fs.rm(tmpFile, { force: true }).catch(() => { });
+				await fs.rm(tmpFile, { force: true }).catch(() => {});
 			}
 			return;
 		}
@@ -1377,7 +1377,8 @@ export class CommandController {
 				if (shouldPersistCwd) await this.#applyBashResultCwd(result);
 			} catch (error) {
 				this.ctx.showError(
-					`Bash command completed, but OMP failed to update its working directory: ${error instanceof Error ? error.message : "Unknown error"
+					`Bash command completed, but OMP failed to update its working directory: ${
+						error instanceof Error ? error.message : "Unknown error"
 					}`,
 				);
 			}

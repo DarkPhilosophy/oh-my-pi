@@ -370,11 +370,11 @@ export class ToolExecutionComponent extends Container {
 		executionStarted?: boolean;
 		renderContext?: Record<string, unknown>;
 	} = {
-			expanded: false,
-			isPartial: true,
-			argsComplete: false,
-			executionStarted: false,
-		};
+		expanded: false,
+		isPartial: true,
+		argsComplete: false,
+		executionStarted: false,
+	};
 
 	constructor(
 		toolName: string,
@@ -631,9 +631,9 @@ export class ToolExecutionComponent extends Container {
 			this.#result === undefined &&
 			(renderer === undefined
 				? // Only the generic #formatToolExecution fallback consumes the frame;
-				// a custom renderCall/renderResult pair routes through the custom
-				// branch whose pending label is a static tool-name Text.
-				!this.#tool?.renderCall && !this.#tool?.renderResult
+					// a custom renderCall/renderResult pair routes through the custom
+					// branch whose pending label is a static tool-name Text.
+					!this.#tool?.renderCall && !this.#tool?.renderResult
 				: typeof pendingAnimation === "function"
 					? pendingAnimation(this.#args)
 					: pendingAnimation === true);
@@ -930,9 +930,9 @@ export class ToolExecutionComponent extends Container {
 		const elapsed =
 			this.#isRunning() && this.#executionStartedAtNow !== undefined
 				? theme.fg(
-					"dim",
-					` ${Math.max(0, Math.floor((this.#presentationFrame.now - this.#executionStartedAtNow) / 1000))}s`,
-				)
+						"dim",
+						` ${Math.max(0, Math.floor((this.#presentationFrame.now - this.#executionStartedAtNow) / 1000))}s`,
+					)
 				: "";
 		const text = truncateToWidth(
 			`${theme.fg("toolTitle", theme.bold(summary.label))}${detail}${elapsed}`,

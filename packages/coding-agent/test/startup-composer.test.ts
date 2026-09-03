@@ -75,7 +75,7 @@ class GrowingBlock implements Component {
 		return this.#lines;
 	}
 
-	invalidate(): void { }
+	invalidate(): void {}
 }
 
 describe("Composer prepaint", () => {

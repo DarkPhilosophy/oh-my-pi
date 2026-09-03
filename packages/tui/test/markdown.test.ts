@@ -3150,7 +3150,7 @@ describe("framed code review follow-ups", () => {
 			.map(line => stripVTControlCharacters(line).trimEnd());
 		expect(rows.filter(line => line.includes("```"))).toHaveLength(1);
 		expect(rows.some(line => line.includes("literal"))).toBe(true);
-		expect(rows.some(line => /^\+-/.test(line))).toBe(false);
+		expect(rows.some(line => line.startsWith("+-"))).toBe(false);
 	});
 
 	it("matches the actual closing fence line when code contains delimiter text", () => {

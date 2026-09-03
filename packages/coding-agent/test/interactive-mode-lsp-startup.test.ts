@@ -14,7 +14,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { LspStartupServerInfo } from "@oh-my-pi/pi-coding-agent/tools";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
 
 describe("InteractiveMode LSP startup welcome banner", () => {
 	let authStorage: AuthStorage;
@@ -178,6 +178,7 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 			await releaseDispose.promise;
 		});
 		const showStatusSpy = vi.spyOn(mode, "showStatus");
+		const processQuitSpy = vi.spyOn(postmortem, "quit").mockResolvedValue(undefined as never);
 
 		const shutdown = mode.shutdown();
 		await disposeStarted.promise;
@@ -190,6 +191,7 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 		releaseDispose.resolve();
 		await shutdown;
 		expect(detachReasons).toEqual(["exit"]);
+		expect(processQuitSpy).not.toHaveBeenCalled();
 	});
 
 	it("does not render LSP startup warnings when startup.quiet is enabled", () => {

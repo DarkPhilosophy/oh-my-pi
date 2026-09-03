@@ -1929,7 +1929,7 @@ describe("advisor", () => {
 				reset: () => {},
 				state: { messages: [] },
 			};
-			const values = new Array(200_000).fill("");
+			const values = Array.from({ length: 200_000 }, () => "");
 			const messages: AgentMessage[] = [
 				{
 					role: "assistant",

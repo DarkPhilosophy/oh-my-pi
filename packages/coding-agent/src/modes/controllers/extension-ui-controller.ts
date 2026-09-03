@@ -641,7 +641,12 @@ export class ExtensionUiController {
 
 		if (widgets.size === 0) {
 			if (spacerWhenEmpty) {
-				container.addChild(new EditorTopGap(() => this.ctx.statusRowOccupied));
+				container.addChild(
+					new EditorTopGap(
+						() => this.ctx.statusRowOccupied,
+						() => this.ctx.settings.get("composer.shape"),
+					),
+				);
 			}
 			return;
 		}

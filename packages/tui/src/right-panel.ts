@@ -151,7 +151,7 @@ export function compositeRightPanelsInRange(
 	// cells it reserves, whereas ordinary Markdown spacing is a plain "" row. Walking
 	// every zero-width row would wrongly mark an unrelated blank spacer above the
 	// image as occupied and hide a `rightEditor` block that fits there.
-	const occupied = new Array<boolean>(baseLines.length).fill(false);
+	const occupied = Array.from({ length: baseLines.length }, () => false);
 	for (let i = 0; i < baseLines.length; i++) {
 		const line = baseLines[i] ?? "";
 		if (isOccupiedLine(line, i)) occupied[i] = true;
@@ -162,7 +162,7 @@ export function compositeRightPanelsInRange(
 	}
 
 	// Content width with trailing padding ignored, computed lazily per row.
-	const freeWidthCache: (number | undefined)[] = new Array(baseLines.length);
+	const freeWidthCache: (number | undefined)[] = Array.from({ length: baseLines.length });
 	const contentWidth = (row: number): number => {
 		let w = freeWidthCache[row];
 		if (w === undefined) {

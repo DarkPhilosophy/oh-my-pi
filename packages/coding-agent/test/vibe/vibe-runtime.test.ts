@@ -264,11 +264,11 @@ function createFakeWorkerSession(options: { streaming?: boolean; onDispose?: () 
 			script = undefined;
 			if (active) {
 				for (const event of active.events) {
-					for (const listener of [...listeners]) listener(event);
+					for (const listener of Array.from(listeners)) listener(event);
 				}
 				lastAssistant = { stopReason: "stop", content: [{ type: "text", text: active.responseText }] };
 				const end = { type: "message_end", message: { role: "assistant", content: lastAssistant.content } };
-				for (const listener of [...listeners]) listener(end);
+				for (const listener of Array.from(listeners)) listener(end);
 			}
 			return true;
 		},

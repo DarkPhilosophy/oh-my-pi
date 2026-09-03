@@ -154,7 +154,8 @@ function getReasoningConfig(
 	options: CodexRequestOptions,
 ): ReasoningConfig {
 	const requested = effort === "none" ? minimumSupportedEffort(model) : EFFORT_BY_NAME[effort];
-	if (requested === undefined) throw new Error(`Model ${model.provider}/${model.id} has no supported reasoning efforts`);
+	if (requested === undefined)
+		throw new Error(`Model ${model.provider}/${model.id} has no supported reasoning efforts`);
 	const config: ReasoningConfig = { effort: mapCodexWireEffort(model, requested) };
 	// The backend only emits reasoning summaries when `reasoning.summary` is
 	// present: omitting it yields zero `response.reasoning_summary_text.*`

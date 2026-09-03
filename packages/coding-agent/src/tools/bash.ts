@@ -363,17 +363,17 @@ export interface BashToolDetails {
 	};
 }
 
-export interface BashToolOptions { }
+export interface BashToolOptions {}
 
 type ManagedBashJobCompletion =
 	| {
-		kind: "completed";
-		result: AgentToolResult<BashToolDetails>;
-	}
+			kind: "completed";
+			result: AgentToolResult<BashToolDetails>;
+	  }
 	| {
-		kind: "failed";
-		error: unknown;
-	};
+			kind: "failed";
+			error: unknown;
+	  };
 
 interface ManagedBashJobHandle {
 	jobId: string;
@@ -1010,17 +1010,17 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		command = await expandInternalUrls(command, { ...internalUrlOptions, ensureLocalParentDirs: true });
 		const resolvedEnv = env
 			? Object.fromEntries(
-				await Promise.all(
-					Object.entries(env).map(async ([key, value]) => [
-						key,
-						await expandInternalUrls(value, {
-							...internalUrlOptions,
-							ensureLocalParentDirs: true,
-							noEscape: true,
-						}),
-					]),
-				),
-			)
+					await Promise.all(
+						Object.entries(env).map(async ([key, value]) => [
+							key,
+							await expandInternalUrls(value, {
+								...internalUrlOptions,
+								ensureLocalParentDirs: true,
+								noEscape: true,
+							}),
+						]),
+					),
+				)
 			: undefined;
 
 		// Resolve protocol URLs (skill://, agent://, etc.) in extracted cwd.
@@ -1167,14 +1167,14 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		// the executeBash branch so a cold `.envrc` can't outlast a short call.
 		const backendPreflight =
 			(clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty) ||
-				canUseInteractiveBashPty(pty, ctx)
+			canUseInteractiveBashPty(pty, ctx)
 				? await applyDirenvPreflight(command, commandCwd, {
-					callerEnv: resolvedEnv,
-					signal,
-					timeoutMs: this.session.settings.get("bash.direnvLoadTimeoutMs"),
-					callerTimeoutMs: timeoutMs,
-					direnvSetting: this.session.settings.get("bash.direnv"),
-				})
+						callerEnv: resolvedEnv,
+						signal,
+						timeoutMs: this.session.settings.get("bash.direnvLoadTimeoutMs"),
+						callerTimeoutMs: timeoutMs,
+						direnvSetting: this.session.settings.get("bash.direnv"),
+					})
 				: undefined;
 
 		// Route through the client terminal when the client advertises the terminal capability.
@@ -1299,7 +1299,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				let lastPolledOutput: ClientBridgeTerminalOutput = { output: "", truncated: false };
 
 				// Poll until the process exits, times out, or the caller aborts.
-				for (; ;) {
+				for (;;) {
 					const racers: Array<Promise<BridgeRaceResult>> = [
 						exitRacer,
 						timeoutPromise,
@@ -1442,31 +1442,31 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const wallTimeStart = performance.now();
 		const result: BashResult | BashInteractiveResult = interactiveUi
 			? await runInteractiveBashPty(interactiveUi, {
-				// PTY bypasses executeBash, so feed it the direnv-transformed
-				// command + merged env (backendPreflight is defined whenever this
-				// branch runs, since both gate on canUseInteractiveBashPty).
-				command: backendPreflight?.command ?? command,
-				cwd: commandCwd,
-				timeoutMs,
-				signal,
-				env: backendPreflight?.env ?? resolvedEnv,
-				artifactPath,
-				artifactId,
-			})
+					// PTY bypasses executeBash, so feed it the direnv-transformed
+					// command + merged env (backendPreflight is defined whenever this
+					// branch runs, since both gate on canUseInteractiveBashPty).
+					command: backendPreflight?.command ?? command,
+					cwd: commandCwd,
+					timeoutMs,
+					signal,
+					env: backendPreflight?.env ?? resolvedEnv,
+					artifactPath,
+					artifactId,
+				})
 			: // executeBash runs its OWN direnv preflight internally — pass the RAW
-			// command + resolvedEnv here so the unset prefix / env merge is not
-			// applied twice.
-			await executeBash(command, {
-				cwd: commandCwd,
-				sessionKey: this.session.getSessionId?.() ?? undefined,
-				timeout: timeoutMs ?? 0,
-				signal,
-				env: resolvedEnv,
-				artifactPath,
-				artifactId,
-				onChunk: streamTailUpdates(tailBuffer, onUpdate),
-				onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
-			});
+				// command + resolvedEnv here so the unset prefix / env merge is not
+				// applied twice.
+				await executeBash(command, {
+					cwd: commandCwd,
+					sessionKey: this.session.getSessionId?.() ?? undefined,
+					timeout: timeoutMs ?? 0,
+					signal,
+					env: resolvedEnv,
+					artifactPath,
+					artifactId,
+					onChunk: streamTailUpdates(tailBuffer, onUpdate),
+					onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
+				});
 		const wallTimeMs = performance.now() - wallTimeStart;
 		if (result.cancelled) {
 			// A cancelled result is either a timeout (the command's deadline fired)
@@ -1589,13 +1589,13 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						config.showHeader === false
 							? undefined
 							: renderStatusLine(
-								{
-									icon: options.spinnerFrame !== undefined ? "running" : "pending",
-									spinnerFrame: options.spinnerFrame,
-									title: config.resolveTitle(args, options),
-								},
-								uiTheme,
-							);
+									{
+										icon: options.spinnerFrame !== undefined ? "running" : "pending",
+										spinnerFrame: options.spinnerFrame,
+										title: config.resolveTitle(args, options),
+									},
+									uiTheme,
+								);
 					return outputBlock.render(
 						{
 							header,
@@ -1633,17 +1633,17 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 				config.showHeader === false
 					? undefined
 					: renderStatusLine(
-						success
-							? {
-								iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
-								title: config.resolveTitle(args, options),
-							}
-							: {
-								icon: isPartial ? "pending" : isTimeout ? "warning" : "error",
-								title: config.resolveTitle(args, options),
-							},
-						uiTheme,
-					);
+							success
+								? {
+										iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
+										title: config.resolveTitle(args, options),
+									}
+								: {
+										icon: isPartial ? "pending" : isTimeout ? "warning" : "error",
+										title: config.resolveTitle(args, options),
+									},
+							uiTheme,
+						);
 			const outputBlock = new CachedOutputBlock();
 
 			// Per-instance cache for the expensive inner lines computation. Mirrors
@@ -1729,9 +1729,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const timeoutLine =
 						statsParts.length > 0
 							? uiTheme.fg(
-								"dim",
-								`${uiTheme.format.bracketLeft}${statsParts.join(" | ")}${uiTheme.format.bracketRight}`,
-							)
+									"dim",
+									`${uiTheme.format.bracketLeft}${statsParts.join(" | ")}${uiTheme.format.bracketRight}`,
+								)
 							: undefined;
 					let warningLine: string | undefined;
 					if (details?.meta?.truncation && !showingFullOutput) {

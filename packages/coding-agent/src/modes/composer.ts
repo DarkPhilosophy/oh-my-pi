@@ -289,10 +289,10 @@ export class Composer implements TerminalFrameProvider {
 			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
 		}
 		const plan = this.#planWithSegments([
-				{ component: this.#header, rows: headerRows },
-				...preChunks,
-				{ component: transcript, rows: active },
-				...afterChunks,
+			{ component: this.#header, rows: headerRows },
+			...preChunks,
+			{ component: transcript, rows: active },
+			...afterChunks,
 		]);
 		return { history, viewport: plan.viewport, segments: plan.segments };
 	}

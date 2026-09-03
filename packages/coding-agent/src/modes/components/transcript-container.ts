@@ -332,16 +332,16 @@ export class TranscriptContainer extends Container {
 		this.#lastFrame = frame;
 		this.#syncEntries();
 		this.#settleFinalized();
-			const output: string[] = [];
+		const output: string[] = [];
 		for (const { entry, index } of this.#liveEntries()) {
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, frame);
 			const rendered = this.#renderEntry(entry, width).slice(this.#projectedEmitted(entry, index, width));
 			if (rendered.length === 0) continue;
-				if (output.length > 0) output.push("");
-				output.push(...rendered);
-			}
-			return output;
+			if (output.length > 0) output.push("");
+			output.push(...rendered);
 		}
+		return output;
+	}
 
 	/** Offers stable-head emission or the shortest finalized prefix needed under pressure. */
 	peekFinalizedBatch(width: number, capacity: number): HistoryBatch | undefined {

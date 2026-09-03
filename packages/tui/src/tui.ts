@@ -703,9 +703,9 @@ export class TUI extends Container {
 	// Screen row where the provider's mutable viewport begins (0-based); rows
 	// above it hold history still visible on the physical screen.
 	#providerViewportTop = 0;
- #providerLogicalCommitted = 0;
- /** Whether physical scrollback currently contains inferred rows from a live, unfinalized frame. */
- #providerHasTransientHistory = false;
+	#providerLogicalCommitted = 0;
+	/** Whether physical scrollback currently contains inferred rows from a live, unfinalized frame. */
+	#providerHasTransientHistory = false;
 	// Viewport-relative row of the hardware cursor after the last normal paint
 	// (0 = parked at the viewport top). A resize reflows the normal buffer
 	// before the app hears about it; terminals keep the cursor attached to its
@@ -923,12 +923,12 @@ export class TUI extends Container {
 		return mode === "append" || mode === "rebuild" || mode === "preserve" ? mode : "preserve";
 	}
 
- /** Install the product-owned logical frame provider. */
+	/** Install the product-owned logical frame provider. */
 	setFrameProvider(provider: TerminalFrameProvider | undefined): void {
 		this.#frameProvider = provider;
 		this.#providerWindow = [];
-  this.#providerLogicalCommitted = 0;
-  this.#providerHasTransientHistory = false;
+		this.#providerLogicalCommitted = 0;
+		this.#providerHasTransientHistory = false;
 		this.#resizeReplaySize = undefined;
 		this.requestRender(true);
 	}
@@ -2296,7 +2296,7 @@ export class TUI extends Container {
 		let eligibleRows: boolean[] | undefined;
 		const targets = this.#rightPanelTargets;
 		if (targets !== null) {
-			eligibleRows = new Array<boolean>(viewport.length).fill(false);
+			eligibleRows = Array.from({ length: viewport.length }, () => false);
 			for (const segment of this.#planSegments) {
 				if (!targets.has(segment.component)) continue;
 				const end = Math.min(viewport.length, segment.start + segment.rowCount);
@@ -2324,7 +2324,7 @@ export class TUI extends Container {
 			lo = firstEligible;
 			hi = lastEligible + 1;
 		}
-		const occupied = new Array<boolean>(viewport.length).fill(false);
+		const occupied = Array.from({ length: viewport.length }, () => false);
 		if (eligibleRows !== undefined) {
 			for (let row = 0; row < eligibleRows.length; row++) {
 				if (!eligibleRows[row]) occupied[row] = true;
@@ -2538,28 +2538,28 @@ export class TUI extends Container {
 		} while (this.#imageBudget.endPass());
 		this.#planSegments = plan.segments ?? [];
 		this.#rightPanelRowsAbove = [];
-  const logicalViewport = Array.from(plan.viewport);
-  const overflow = Math.max(0, logicalViewport.length - height);
-  const inferredHistory =
-   overflow > this.#providerLogicalCommitted
-    ? logicalViewport.slice(this.#providerLogicalCommitted, overflow)
-    : [];
-  if (plan.history !== undefined && plan.history.kind !== "replay" && this.#providerHasTransientHistory) {
-   // The terminal borrowed native scrollback for a live frame. Before accepting
-   // finalized history, replace that transient copy with the provider's
-   // authoritative replay so no partial stream survives as permanent history.
-   provider.acknowledgeHistory(plan.history.id);
-   this.#providerLogicalCommitted = 0;
-   this.#providerHasTransientHistory = false;
-   this.#prepareForcedRender(true);
-   this.requestRender(true);
-   return;
+		const logicalViewport = Array.from(plan.viewport);
+		const overflow = Math.max(0, logicalViewport.length - height);
+		const inferredHistory =
+			overflow > this.#providerLogicalCommitted
+				? logicalViewport.slice(this.#providerLogicalCommitted, overflow)
+				: [];
+		if (plan.history !== undefined && plan.history.kind !== "replay" && this.#providerHasTransientHistory) {
+			// The terminal borrowed native scrollback for a live frame. Before accepting
+			// finalized history, replace that transient copy with the provider's
+			// authoritative replay so no partial stream survives as permanent history.
+			provider.acknowledgeHistory(plan.history.id);
+			this.#providerLogicalCommitted = 0;
+			this.#providerHasTransientHistory = false;
+			this.#prepareForcedRender(true);
+			this.requestRender(true);
+			return;
 		}
-  this.#providerLogicalCommitted = Math.max(this.#providerLogicalCommitted, overflow);
-  this.#providerHasTransientHistory ||= inferredHistory.length > 0;
-  const viewport = logicalViewport.slice(overflow);
+		this.#providerLogicalCommitted = Math.max(this.#providerLogicalCommitted, overflow);
+		this.#providerHasTransientHistory ||= inferredHistory.length > 0;
+		const viewport = logicalViewport.slice(overflow);
 		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
-  this.#emitPlanFrame(width, height, viewport, plan.history, provider, inferredHistory);
+		this.#emitPlanFrame(width, height, viewport, plan.history, provider, inferredHistory);
 	}
 	/**
 	 * Re-offer finalized history once after a settled resize.
@@ -2654,7 +2654,7 @@ export class TUI extends Container {
 		viewportRows: string[],
 		offered: HistoryBatch | undefined,
 		provider: TerminalFrameProvider | undefined,
-  inferredHistory: readonly string[] = [],
+		inferredHistory: readonly string[] = [],
 	): void {
 		let viewport = viewportRows;
 		const overlayVisible = this.#getTopmostVisibleOverlay() !== undefined;
@@ -2666,7 +2666,7 @@ export class TUI extends Container {
 		const history = offered !== undefined && offered.id > this.#acceptedHistoryBatchId ? offered : undefined;
 		if (offered !== undefined && offered.id <= this.#acceptedHistoryBatchId) provider?.acknowledgeHistory(offered.id);
 
-  let historyRows = [...inferredHistory, ...(history?.rows ?? [])];
+		let historyRows = [...inferredHistory, ...(history?.rows ?? [])];
 		let replayViewportRows = 0;
 		if (history?.kind === "replay") {
 			// Providers may omit unused leading rows from a short viewport. Make
@@ -2694,8 +2694,8 @@ export class TUI extends Container {
 		if (destructiveReset) {
 			this.#providerViewportTop = 0;
 			this.#providerWindow = [];
-   this.#providerLogicalCommitted = 0;
-   this.#providerHasTransientHistory = false;
+			this.#providerLogicalCommitted = 0;
+			this.#providerHasTransientHistory = false;
 		}
 		// The viewport stays anchored directly below whatever history remains on
 		// screen. Appending K history rows moves the anchor down by K; the write
