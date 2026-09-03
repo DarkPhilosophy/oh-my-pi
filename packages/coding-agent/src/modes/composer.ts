@@ -209,7 +209,7 @@ export class Composer implements TerminalFrameProvider {
 		this.ui.addChild(this.#statusHost);
 		this.ui.setFocus(this.editor);
 	}
-	/** Compose the bounded mutable viewport and the next ordered history append. */
+	/** Compose the complete logical viewport and the next ordered history append. */
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {
 		if (!this.#started || this.#stopped) return { viewport: [] };
 		const width = Math.max(1, viewport.columns);
@@ -224,10 +224,7 @@ export class Composer implements TerminalFrameProvider {
 			: [this.#header, this.#bootstrapInputGap, this.editor, this.#statusHost];
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) {
-			return this.#planWithSegments(
-				roots.map(root => ({ component: root, rows: root.render(width) })),
-				rows,
-			);
+			return this.#planWithSegments(roots.map(root => ({ component: root, rows: root.render(width) })));
 		}
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
 		const preChunks = roots.slice(0, transcriptIndex).map(root => ({ component: root, rows: root.render(width) }));
@@ -244,45 +241,33 @@ export class Composer implements TerminalFrameProvider {
 		const before = [...headerRows, ...preRoots];
 		const now = performance.now();
 		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
-		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - after.length), frame);
+		const active = transcript.renderViewport(width, Number.MAX_SAFE_INTEGER, frame);
 		const composed = [...before, ...active, ...after];
 		if (history !== undefined && this.#offeredHistory?.source === "header") {
 			const visibleHeaderRows = Math.max(0, rows - composed.length);
 			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
 		}
-		const plan = this.#planWithSegments(
-			[
+		const plan = this.#planWithSegments([
 				{ component: this.#header, rows: headerRows },
 				...preChunks,
 				{ component: transcript, rows: active },
 				...afterChunks,
-			],
-			rows,
-		);
+		]);
 		return { history, viewport: plan.viewport, segments: plan.segments };
 	}
 
-	/**
-	 * Bound the composed rows to the viewport height while publishing which
-	 * component owns each visible row. The terminal needs that ownership map to
-	 * place right-side widgets in transcript rows only, never in input chrome.
-	 */
-	#planWithSegments(
-		chunks: readonly { component: Component; rows: readonly string[] }[],
-		rows: number,
-	): { viewport: string[]; segments: TerminalFrameSegment[] } {
-		const composed: string[] = [];
+	/** Publish component ownership for every row in the complete logical frame. */
+	#planWithSegments(chunks: readonly { component: Component; rows: readonly string[] }[]): {
+		viewport: string[];
+		segments: TerminalFrameSegment[];
+	} {
+		const viewport: string[] = [];
 		const segments: TerminalFrameSegment[] = [];
 		for (const chunk of chunks) {
-			segments.push({ component: chunk.component, start: composed.length, rowCount: chunk.rows.length });
-			composed.push(...chunk.rows);
+			segments.push({ component: chunk.component, start: viewport.length, rowCount: chunk.rows.length });
+			viewport.push(...chunk.rows);
 		}
-		if (composed.length <= rows) return { viewport: composed, segments };
-		const dropped = composed.length - rows;
-		return {
-			viewport: composed.slice(dropped),
-			segments: segments.map(segment => ({ ...segment, start: segment.start - dropped })),
-		};
+		return { viewport, segments };
 	}
 
 	/** Acknowledges one accepted header, replay, or transcript batch. */
