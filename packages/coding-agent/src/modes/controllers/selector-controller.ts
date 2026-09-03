@@ -1,8 +1,6 @@
 import * as path from "node:path";
 import { type AgentMessage, type AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
-import { syncAllSessions } from "@oh-my-pi/omp-stats/aggregator";
-import { getDailyActivity } from "@oh-my-pi/omp-stats/db";
 import { PASTE_CODE_LOGIN_PROVIDERS, type UsageReport } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
@@ -69,6 +67,7 @@ import {
 	toResetUsageAccounts,
 } from "../../slash-commands/helpers/reset-usage";
 import { toSessionPinAccounts } from "../../slash-commands/helpers/session-pin";
+import { loadDailyActivity } from "../../stats/activity-client";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -86,6 +85,7 @@ import { AskTool, type AskToolDetails, type AskToolInput } from "../../tools/ask
 import { ToolAbortError } from "../../tools/tool-errors";
 import { applyHyperlinkSetting } from "../../tui/hyperlink";
 import { copyToClipboard } from "../../utils/clipboard";
+import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
 import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../components/advisor-config";
 import { AgentHubOverlayComponent } from "../components/agent-hub";
@@ -315,13 +315,7 @@ export class SelectorController {
 			maskAccountLabels: settings.get("usage.maskAccountLabels"),
 			mergeAccounts: settings.get("usage.mergeAccounts"),
 			labelPlacement: settings.get("usage.labelPlacement"),
-			loadActivity: async push => {
-				// Show whatever the stats DB already has, then re-query after an
-				// incremental session sync so the heatmap converges on fresh data.
-				push(await getDailyActivity());
-				await syncAllSessions();
-				push(await getDailyActivity());
-			},
+			loadActivity: loadDailyActivity,
 			requestRender: () => this.ctx.ui.requestRender(),
 			onClose: done,
 		});
@@ -1432,6 +1426,11 @@ export class SelectorController {
 				}
 				void copyToClipboard(content);
 				this.ctx.showStatus(`Copied ${label} to clipboard`);
+			},
+			onOpen: (href, label) => {
+				done();
+				openPath(href);
+				this.ctx.showStatus(`Opening ${label}: ${href}`);
 			},
 			onCancel: done,
 		});

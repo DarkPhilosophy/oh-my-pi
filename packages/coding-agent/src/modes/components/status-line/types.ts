@@ -69,6 +69,8 @@ export interface SegmentContext {
 	sessionAccent?: boolean;
 	/** Stand-in session title for previews; `session_name` renders it when the session is unnamed. */
 	previewTitle?: string;
+	/** Replace dynamic values with ellipses while preserving each segment's icon, color, and static text. */
+	startupPlaceholder?: boolean;
 	activeRepo: ActiveRepoContext | null;
 	/** Session-owned working directory; never the process-global fallback. */
 	projectDir: string;
@@ -76,6 +78,8 @@ export interface SegmentContext {
 	options: StatusLineSegmentOptions;
 	/** Render the model segment's thinking level as a compact leading glyph. */
 	compactThinkingLevel: boolean;
+	/** Key-sorted extension/hook status values. Segment renderers sanitize before display. */
+	hookStatuses?: readonly string[];
 	planMode: {
 		enabled: boolean;
 		paused: boolean;

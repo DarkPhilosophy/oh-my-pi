@@ -61,10 +61,10 @@ const windows = await desktop.windows({ app: "Code" });
 display(windows);
 
 display(await desktop.displays());
-display(desktop.capabilities());
+display(await desktop.capabilities());
 ```
 
-`await desktop.windows({ app?, title? })` returns window IDs, app/title, PID, logical bounds, and focus state. Select exactly one target with `await desktop.window(idOrFilter)`; an ambiguous filter throws and lists candidates. `await desktop.focusedWindow()` returns the current target.
+`desktop.windows({ app?, title? })` returns window IDs, app/title, PID, logical bounds, and focus state. Select exactly one target with `desktop.window(idOrFilter)`; an ambiguous filter throws and lists candidates. `desktop.focusedWindow()` returns the current target.
 
 ## Screenshots and pixel input
 
@@ -96,15 +96,13 @@ Input defaults to `delivery: "background"`, which avoids changing the user's foc
 Prefer AX to pixels when controls are exposed:
 
 ```js
-const selector = { title: "Settings" };
-const win = await desktop.window(selector);
-await win.ax();
+const win = await desktop.window({ title: "Settings" });
 const buttons = await win.find({ role: "button", title: "Save" });
 assert(buttons.length === 1, "Expected one Save button");
 await buttons[0].press();
 ```
 
-- `await win.ax({ all?, maxDepth? })` returns a textual tree with `[ref=eN]` references.
+- `win.ax({ all?, maxDepth? })` returns a textual tree with `[ref=eN]` references.
 - `win.find({ role?, title?, value?, limit? })` returns every match.
 - `await win.ref("e5")`, `desktop.elementAt(x, y)`, and `desktop.focusedElement()` return live elements.
 - Elements expose `value`, `setValue`, `bounds`, `attributes`, `actions`, `perform`, `press`, `click`, `focus`, `parent`, and `children` operations.
@@ -133,11 +131,11 @@ await wait(
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | macOS x64/arm64         | ScreenCapture/Quartz plus native AX and input. Grant Screen Recording for capture and Accessibility for input/AX, then restart the launching host.                                                                          |
 | Linux X11 x64/arm64     | X11 capture/input and AT-SPI accessibility. Requires a readable display plus RandR/XTEST.                                                                                                                                   |
-| Linux Wayland x64/arm64 | RemoteDesktop portal or `LIBEI_SOCKET` input and AT-SPI accessibility. ScreenCast portal/PipeWire capture ships only in builds compiled with the `wayland-pipewire` Cargo feature; released binaries omit it, so `desktop.capabilities()` reports `capture: false` there. RemoteDesktop permission is requested lazily on first native input, is not persisted, and closes with the desktop session; read-only window/AX inspection does not request it. Compositor restrictions apply; background per-window native input is unavailable. |
-| Windows x64             | Native display/window capture, Win32 input, and UI Automation accessibility.                                                                                                                                                |
+| Linux Wayland x64/arm64 | RemoteDesktop portal or `LIBEI_SOCKET` input and AT-SPI accessibility. ScreenCast portal/PipeWire capture ships only in builds compiled with the `wayland-pipewire` Cargo feature; released binaries omit it, so `capabilities()` reports `capture: false` there. RemoteDesktop permission is requested lazily on first native input, is not persisted, and closes with the desktop session; read-only window/AX inspection does not request it. Compositor restrictions apply; background per-window native input is unavailable. |
+| Windows x64/arm64       | Native display/window capture, Win32 input, and UI Automation accessibility.                                                                                                                                                |
 | Other published targets | Unsupported unless the native addon reports capabilities.                                                                                                                                                                   |
 
-Inspect `desktop.capabilities()` rather than assuming capture, input, AX, or permission state. On Wayland, input reports `prompt-or-granted` before first native input without opening a RemoteDesktop session. Released builds are compiled without the `wayland-pipewire` feature, so `desktop.capabilities()` reports `capture: false`; where the feature is present, a missing portal/PipeWire feature or denied RemoteDesktop portal is reported as a capture/input/permission failure rather than falling back to X11.
+Inspect `desktop.capabilities()` rather than assuming capture, input, AX, or permission state. On Wayland, input reports `prompt-or-granted` before first native input without opening a RemoteDesktop session. Released builds are compiled without the `wayland-pipewire` feature, so `capabilities()` reports `capture: false`; where the feature is present, a missing portal/PipeWire feature or denied RemoteDesktop portal is reported as a capture/input/permission failure rather than falling back to X11.
 
 ## Safety and troubleshooting
 

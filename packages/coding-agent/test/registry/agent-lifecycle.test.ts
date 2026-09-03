@@ -524,7 +524,7 @@ describe("AgentLifecycleManager", () => {
 		const markerGate = deferred();
 		const markerFailure = new Error("marker write failed");
 		let markerStarted = false;
-		vi.spyOn(fs, "writeFile").mockImplementation(async () => {
+		vi.spyOn(fsp, "writeFile").mockImplementation(async () => {
 			markerStarted = true;
 			await markerGate.promise;
 		});

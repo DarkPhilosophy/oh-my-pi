@@ -200,6 +200,7 @@ export interface TurnRecoveryHost {
 		source: string;
 		delayMs?: number;
 		generation?: number;
+		shouldContinue?: () => boolean;
 		onError?: (error: unknown) => void;
 	}): void;
 	waitForSessionMessagePersistence(message: AssistantMessage): Promise<void>;
@@ -1100,9 +1101,9 @@ export class TurnRecovery {
 			(persistedEntryId === undefined
 				? undefined
 				: branch.find(
-						entry =>
-							entry.id === persistedEntryId && entry.type === "message" && entry.message.role === "assistant",
-					)) ??
+					entry =>
+						entry.id === persistedEntryId && entry.type === "message" && entry.message.role === "assistant",
+				)) ??
 			branch
 				.slice()
 				.reverse()
@@ -1170,9 +1171,9 @@ export class TurnRecovery {
 	 * "error"` (a stalled/dropped stream reported as an error rather than an
 	 * abort — issue #5375). Only fires while the session is neither aborting nor
 	 * tearing down. A user/lifecycle abort (`#abortInProgress`), a dispose-driven
-	 * abort (`#isDisposed`), or a session-induced streaming-edit guard abort
-	 * (`StreamingEditGuard.abortTriggered` — auto-generated-file guard or failed-patch
-	 * preview) is deliberate and MUST settle the turn instead: routing it through
+	 * abort (`#isDisposed`), or a failed-patch streaming guard abort
+	 * (`StreamingEditGuard.abortTriggered`) is deliberate and MUST settle the turn
+	 * instead: routing it through
 	 * retry would orphan `#retryPromise` on a continuation the guard skips
 	 * (hanging the in-flight `prompt()`) or silently undo the guard's intended
 	 * abort. Deliberate user interrupts (`UserInterrupt`) and silent aborts carry
@@ -1838,8 +1839,8 @@ export class TurnRecovery {
 		const latestAssistant = options?.preserveFailedTurn
 			? failedMessage
 			: this.#host.agent.state.messages.findLast(
-					(message): message is AssistantMessage => message.role === "assistant" && message !== failedMessage,
-				);
+				(message): message is AssistantMessage => message.role === "assistant" && message !== failedMessage,
+			);
 		for (const role of this.retryFallbackChainKeys(currentSelector)) {
 			for (const selector of this.findRetryFallbackCandidates(role, currentSelector, undefined, options)) {
 				if (this.isRetryFallbackSelectorSuppressed(selector)) continue;
@@ -2237,9 +2238,9 @@ export class TurnRecovery {
 			(siblingAvailabilityWaitMs === undefined
 				? (recordedUsageLimitOutcome?.retryAfterMs ?? parsedRetryAfterMs)
 				: Math.min(
-						recordedUsageLimitOutcome?.retryAfterMs ?? parsedRetryAfterMs ?? Infinity,
-						siblingAvailabilityWaitMs,
-					));
+					recordedUsageLimitOutcome?.retryAfterMs ?? parsedRetryAfterMs ?? Infinity,
+					siblingAvailabilityWaitMs,
+				));
 		const waitForSiblingCredential =
 			siblingAvailabilityWaitMs !== undefined &&
 			effectiveUsageLimitWaitMs !== undefined &&
@@ -2453,6 +2454,7 @@ export class TurnRecovery {
 			source: "automatic-retry",
 			delayMs: 1,
 			generation,
+			shouldContinue: () => this.#retryAttempt > 0,
 			onError: error => void this.#failRetryAfterLocalContinueError(message, error),
 		});
 
@@ -2541,7 +2543,7 @@ export class TurnRecovery {
 
 	async #promptAgentWithIdleRetry(messages: AgentMessage[], options?: { toolChoice?: ToolChoice }): Promise<void> {
 		const deadline = Date.now() + 30_000;
-		for (;;) {
+		for (; ;) {
 			try {
 				await this.#host.agent.prompt(messages, options);
 				return;
@@ -2677,9 +2679,9 @@ export class TurnRecovery {
 			(persistedEntryId === undefined
 				? undefined
 				: branch.find(
-						entry =>
-							entry.id === persistedEntryId && entry.type === "message" && entry.message.role === "assistant",
-					)) ??
+					entry =>
+						entry.id === persistedEntryId && entry.type === "message" && entry.message.role === "assistant",
+				)) ??
 			branch
 				.slice()
 				.reverse()

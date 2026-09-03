@@ -6,7 +6,6 @@ import type { FileEntry, SessionHeader } from "@oh-my-pi/pi-coding-agent/session
 import { findMostRecentSession, resolveResumableSession } from "@oh-my-pi/pi-coding-agent/session/session-listing";
 import { loadEntriesFromFile } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { readTerminalBreadcrumbEntry } from "@oh-my-pi/pi-coding-agent/session/session-paths";
 import {
 	getConfigRootDir,
 	getSessionsDir,
@@ -16,8 +15,8 @@ import {
 	setAgentDir,
 } from "@oh-my-pi/pi-utils";
 
-const OLDER_MTIME = new Date("2024-01-01T00:00:00Z");
-const NEWER_MTIME = new Date("2024-01-02T00:00:00Z");
+const OLDER_MTIME = new Date("2000-01-01T00:00:00.000Z");
+const NEWER_MTIME = new Date("2000-01-01T00:00:01.000Z");
 
 describe("loadEntriesFromFile", () => {
 	let tempDir: string;
@@ -286,6 +285,7 @@ describe("SessionManager legacy session migration persistence", () => {
 	function getHeader(entries: FileEntry[]): SessionHeader | undefined {
 		return entries.find((entry): entry is SessionHeader => entry.type === "session");
 	}
+
 	beforeEach(() => {
 		// Deterministic, non-TTY terminal id so the per-terminal breadcrumb
 		// (written by newSession/continueRecent) is scoped to this test and
@@ -296,8 +296,6 @@ describe("SessionManager legacy session migration persistence", () => {
 		testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-session-manager-legacy-agent-"));
 		setAgentDir(testAgentDir);
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-session-manager-legacy-"));
-		testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-session-manager-agent-"));
-		setAgentDir(testAgentDir);
 	});
 
 	afterEach(() => {
@@ -310,12 +308,6 @@ describe("SessionManager legacy session migration persistence", () => {
 			delete process.env.PI_CODING_AGENT_DIR;
 		}
 		removeSyncWithRetries(tempDir);
-		if (originalAgentDir) {
-			setAgentDir(originalAgentDir);
-		} else {
-			setAgentDir(fallbackAgentDir);
-			delete process.env.PI_CODING_AGENT_DIR;
-		}
 		removeSyncWithRetries(testAgentDir);
 	});
 
@@ -431,7 +423,7 @@ describe("SessionManager legacy session migration persistence", () => {
 		expect(persistedEntries[1].id).toBeDefined();
 		expect(persistedEntries[1].parentId).toBeNull();
 	});
-	it("keeps a lazy fresh-session boundary when continuing in the same terminal", async () => {
+	it("keeps an explicitly started session resumable after its first turn", async () => {
 		const session = SessionManager.create(tempDir, tempDir);
 		session.appendMessage({ role: "user", content: "hello", timestamp: Date.now() - 1 });
 		session.appendMessage(makeAssistantMessage());
@@ -442,11 +434,9 @@ describe("SessionManager legacy session migration persistence", () => {
 
 		const freshSessionFile = await session.newSession();
 		expect(freshSessionFile).toBeDefined();
-		expect(fs.existsSync(freshSessionFile!)).toBe(false);
-		expect((await readTerminalBreadcrumbEntry())?.sessionFile).toBe(freshSessionFile);
-
-		// Lazy new-session persistence: nothing on disk yet, so materialize the
-		// fresh session the way assistant output would (issue #5730).
+		// The boundary itself is durable before the first turn; completed output
+		// then keeps the same session at the head of restart selection (#5730).
+		expect(fs.existsSync(freshSessionFile!)).toBe(true);
 		session.appendMessage({ role: "user", content: "first message of fresh session", timestamp: Date.now() });
 		session.appendMessage(makeAssistantMessage());
 		await session.flush();
@@ -454,7 +444,6 @@ describe("SessionManager legacy session migration persistence", () => {
 
 		const resumed = await SessionManager.continueRecent(tempDir, tempDir);
 		try {
-			expect(resumed.getSessionFile()).not.toBe(previousSessionFile);
 			// The `/new` boundary is durable: once materialized, relaunch resumes
 			// the fresh session, not the pre-`/new` transcript.
 			expect(resumed.getSessionFile()).toBe(freshSessionFile);
