@@ -269,7 +269,7 @@ export function validateProviderMaxInFlightRequests(value: unknown): Record<stri
 	return normalized;
 }
 
-const PATH_SCOPED_ARRAY_SETTINGS = new Set<SettingPath>(["enabledModels", "disabledProviders"]);
+const PATH_SCOPED_ARRAY_SETTINGS = new Set<SettingPath>(["enabledModels", "disabledProviders", "enabledProviders"]);
 type PathScopedStringArrayEntry = {
 	path?: unknown;
 	paths?: unknown;
@@ -1328,6 +1328,20 @@ export class Settings {
 	}
 
 	/**
+	 * Get enabled providers (for compatibility with discovery system).
+	 */
+	getEnabledProviders(): string[] {
+		return this.get("enabledProviders");
+	}
+
+	/**
+	 * Set enabled providers (for compatibility with discovery system).
+	 */
+	setEnabledProviders(ids: string[]): void {
+		this.set("enabledProviders", ids);
+	}
+
+	/**
 	 * Set disabled providers (for compatibility with discovery system).
 	 */
 	setDisabledProviders(ids: string[]): void {
@@ -1912,9 +1926,10 @@ export class Settings {
 			raw.steeringMode = raw.queueMode;
 			delete raw.queueMode;
 		}
-		// doubleEscapeAction: "branch"/"tree" -> "rewind". Both legacy actions are
-		// superseded by the in-transcript rewind selector; only "none" survives.
-		if (raw.doubleEscapeAction === "branch" || raw.doubleEscapeAction === "tree") {
+		// doubleEscapeAction: legacy "branch" -> "rewind". The old branch backtrack
+		// was superseded by the in-transcript rewind selector; "tree" survives as a
+		// current action (opens the session tree) beside "rewind" and "none".
+		if (raw.doubleEscapeAction === "branch") {
 			raw.doubleEscapeAction = "rewind";
 		}
 
@@ -2015,15 +2030,8 @@ export class Settings {
 			delete raw["inspect_image.mode"];
 		}
 
-		// task.isolation.enabled (boolean) -> task.isolation.mode (enum)
 		const taskObj = raw.task as Record<string, unknown> | undefined;
 		const isolationObj = taskObj?.isolation as Record<string, unknown> | undefined;
-		if (isolationObj && "enabled" in isolationObj) {
-			if (typeof isolationObj.enabled === "boolean") {
-				isolationObj.mode = isolationObj.enabled ? "auto" : "none";
-			}
-			delete isolationObj.enabled;
-		}
 
 		// task.simple: removed — the task tool no longer accepts a per-call
 		// schema (workflows drive structured output via eval agent()) and the
@@ -2042,22 +2050,76 @@ export class Settings {
 			todoObj.eager = todoObj.eager ? "always" : "default";
 		}
 
-		// task.isolation.mode: legacy values from before the pi-iso PAL refactor.
-		// `worktree` was git worktree → now lives under `rcopy`. `fuse-overlay`
-		// and `fuse-projfs` are now the platform-named `overlayfs` / `projfs`
-		// kinds; the PAL falls back internally when the chosen one isn't
-		// available, so we don't need the old TS-side platform guards.
-		if (isolationObj && typeof isolationObj.mode === "string") {
-			const legacy: Record<string, string> = {
-				worktree: "rcopy",
-				"fuse-overlay": "overlayfs",
-				"fuse-projfs": "projfs",
-			};
-			const mapped = legacy[isolationObj.mode as string];
-			if (mapped !== undefined) {
-				isolationObj.mode = mapped;
-			}
+		// features.unexpectedStopDetection (boolean) -> enum none|mechanical|smart.
+		// `true` reproduced the previous small-model-classified behavior, which is
+		// now "smart"; `false` maps to "none" so explicitly disabled configs remain
+		// off rather than inheriting the new "mechanical" default.
+		// Handles nested and quoted-dotted sources, like inspect_image above.
+		const featuresObj = isRecord(raw.features) ? (raw.features as Record<string, unknown>) : undefined;
+		const legacyUnexpectedStop =
+			typeof featuresObj?.unexpectedStopDetection === "boolean"
+				? featuresObj.unexpectedStopDetection
+				: typeof raw["features.unexpectedStopDetection"] === "boolean"
+					? (raw["features.unexpectedStopDetection"] as boolean)
+					: undefined;
+		if (legacyUnexpectedStop !== undefined) {
+			if (!featuresObj) raw.features = {};
+			const target = raw.features as Record<string, unknown>;
+			const current = target.unexpectedStopDetection;
+			const currentIsMode = typeof current === "string" && ["none", "mechanical", "smart"].includes(current);
+			if (!currentIsMode) target.unexpectedStopDetection = legacyUnexpectedStop ? "smart" : "none";
+			delete raw["features.unexpectedStopDetection"];
 		}
+		// Split the legacy combined isolation setting into enablement and backend.
+		// Handle both nested YAML and quoted dotted keys. Explicit enabled and
+		// backend values win; legacy backend names are normalized everywhere.
+		const legacyIsolationBackends: Record<string, string> = {
+			worktree: "rcopy",
+			"fuse-overlay": "overlayfs",
+			"fuse-projfs": "projfs",
+		};
+		const legacyIsolationModePath = ["task", "isolation", "mode"].join(".");
+		const legacyIsolationMode =
+			typeof isolationObj?.mode === "string"
+				? isolationObj.mode
+				: typeof raw[legacyIsolationModePath] === "string"
+					? (raw[legacyIsolationModePath] as string)
+					: undefined;
+		const flatIsolationEnabled = raw["task.isolation.enabled"];
+		const explicitIsolationEnabled =
+			typeof isolationObj?.enabled === "boolean"
+				? isolationObj.enabled
+				: typeof flatIsolationEnabled === "boolean"
+					? flatIsolationEnabled
+					: undefined;
+		if (legacyIsolationMode !== undefined || explicitIsolationEnabled !== undefined) {
+			if (!isRecord(raw.task)) raw.task = {};
+			const targetTask = raw.task as Record<string, unknown>;
+			if (!isRecord(targetTask.isolation)) targetTask.isolation = {};
+			const targetIsolation = targetTask.isolation as Record<string, unknown>;
+			targetIsolation.enabled = explicitIsolationEnabled ?? legacyIsolationMode !== "none";
+			delete targetIsolation.mode;
+		}
+		delete raw[legacyIsolationModePath];
+		delete raw["task.isolation.enabled"];
+
+		const rootIsolation = isRecord(raw.isolation) ? (raw.isolation as Record<string, unknown>) : undefined;
+		const configuredBackend =
+			typeof rootIsolation?.backend === "string"
+				? rootIsolation.backend
+				: typeof raw["isolation.backend"] === "string"
+					? (raw["isolation.backend"] as string)
+					: undefined;
+		const derivedBackend =
+			legacyIsolationMode === undefined || legacyIsolationMode === "none"
+				? undefined
+				: (legacyIsolationBackends[legacyIsolationMode] ?? legacyIsolationMode);
+		const backend = configuredBackend ?? derivedBackend;
+		if (backend !== undefined) {
+			if (!rootIsolation) raw.isolation = {};
+			(raw.isolation as Record<string, unknown>).backend = legacyIsolationBackends[backend] ?? backend;
+		}
+		delete raw["isolation.backend"];
 
 		// edit.mode: removed "atom" and "vim" variants map back to "hashline"
 		const editObj = raw.edit as Record<string, unknown> | undefined;

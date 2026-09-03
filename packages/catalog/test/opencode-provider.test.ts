@@ -584,6 +584,50 @@ describe("OpenCode provider discovery", () => {
 		}
 	});
 
+	test("drops cached Gemini 3.7 Flash effort metadata when refresh fails (#10543)", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-opencode-gemini37-cache-"));
+		const cacheDbPath = path.join(tempDir, "models.db");
+		try {
+			const options = opencodeZenModelManagerOptions({ apiKey: "zen-account-key" });
+			const cacheProviderId = options.cacheProviderId;
+			if (!cacheProviderId) throw new Error("OpenCode Zen cache provider id is missing");
+			const bundledModels = getBundledModels("opencode-zen");
+			const current = bundledModels.find(model => model.id === "gemini-3.7-flash");
+			if (!current?.thinking) throw new Error("OpenCode Zen Gemini 3.7 Flash is missing thinking metadata");
+			const stale = {
+				...current,
+				thinking: {
+					...current.thinking,
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High],
+				},
+			};
+			writeModelCache(cacheProviderId, Date.now(), [stale], true, "merge-v3:pre-10543", cacheDbPath);
+
+			let fetches = 0;
+			const upgraded = await resolveProviderModels(
+				{
+					...options,
+					staticModels: bundledModels,
+					cacheDbPath,
+					modelsDev: undefined,
+					fetchDynamicModels: async () => {
+						fetches++;
+						throw new Error("offline");
+					},
+				},
+				"online-if-uncached",
+			);
+			expect(fetches).toBe(1);
+			expect(upgraded.models.find(model => model.id === current.id)?.thinking?.efforts).toEqual([
+				Effort.Low,
+				Effort.Medium,
+				Effort.High,
+			]);
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	test("routes opencode-go deepseek-v4-flash to the responses API", () => {
 		const descriptor = MODELS_DEV_PROVIDER_DESCRIPTORS.find(item => item.providerId === "opencode-go");
 		// stencil.so lists deepseek-v4-flash without provider.npm, so it would
@@ -614,6 +658,47 @@ describe("OpenCode provider discovery", () => {
 				baseUrl: "https://opencode.ai/zen/go/v1",
 			});
 		}
+	});
+
+	test("routes muse-spark-1.3 contributor ids to the responses API (#10610)", () => {
+		// models.dev omits the muse-spark-1.3 ids under both gateways, so without
+		// an override they fall through to openai-completions even though the Go
+		// and Zen gateways serve them only at /v1/responses
+		// (opencode.ai/docs/go/#endpoints, opencode.ai/docs/zen/#endpoints).
+		// Sending completions requests 500s on every turn.
+		const goDescriptor = MODELS_DEV_PROVIDER_DESCRIPTORS.find(item => item.providerId === "opencode-go");
+		expect(goDescriptor?.resolveApi?.("muse-spark-1.3-contributor", { tool_call: true })).toEqual({
+			api: "openai-responses",
+			baseUrl: "https://opencode.ai/zen/go/v1",
+		});
+		const zenDescriptor = MODELS_DEV_PROVIDER_DESCRIPTORS.find(item => item.providerId === "opencode-zen");
+		expect(zenDescriptor?.resolveApi?.("muse-spark-1.3-contributor-free", { tool_call: true })).toEqual({
+			api: "openai-responses",
+			baseUrl: "https://opencode.ai/zen/v1",
+		});
+	});
+
+	test("routes unbundled future muse-spark revisions to responses on both gateways", async () => {
+		// Both gateways serve every Muse Spark SKU at /responses; a revision
+		// that neither models.dev nor the exact pins know yet must not fall
+		// through to chat completions and 500 on every request (#10610).
+		const go = opencodeGoModelManagerOptions({
+			apiKey: "test-key",
+			fetch: async () => modelListResponse(["muse-spark-1.4-contributor"]),
+		});
+		const zen = opencodeZenModelManagerOptions({
+			apiKey: "test-key",
+			fetch: async () => modelListResponse(["muse-spark-1.4-contributor-free"]),
+		});
+		const [goModels, zenModels] = await Promise.all([go.fetchDynamicModels?.(), zen.fetchDynamicModels?.()]);
+		expect(goModels?.find(model => model.id === "muse-spark-1.4-contributor")).toMatchObject({
+			api: "openai-responses",
+			baseUrl: "https://opencode.ai/zen/go/v1",
+		});
+		expect(zenModels?.find(model => model.id === "muse-spark-1.4-contributor-free")).toMatchObject({
+			api: "openai-responses",
+			baseUrl: "https://opencode.ai/zen/v1",
+		});
 	});
 
 	test("pins gateway-only muse-spark ids to responses in live discovery (#8957)", async () => {

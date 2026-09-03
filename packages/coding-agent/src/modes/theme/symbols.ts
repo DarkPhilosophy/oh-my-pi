@@ -786,7 +786,9 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.pin": "\uf08d",
 	// pick:  | alt: ⊛ ◍ 
 	"icon.tokens": "\ue26b",
-	// pick:  | alt: ◫ ▦
+	// pick:  (nf-dev-windows) | alt:  (nf-cod-window) ◫ ▦
+	// INTENTIONAL: the Windows logo is the chosen glyph here. It has been "fixed"
+	// to nf-cod-window before (739d5a3947) and reverted; do not swap it again.
 	"icon.context": "\ue70f",
 	// pick:  | alt: $ ¢
 	"icon.cost": "\uf155",
@@ -1325,7 +1327,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"tool.review": "rev",
 	"tool.inspectImage": "[i]",
 	"tool.goal": "(o)",
-	"tool.irc": "irc",
+	"tool.irc": "#",
 	"tool.delete": "rm",
 	"tool.move": "mv",
 };
