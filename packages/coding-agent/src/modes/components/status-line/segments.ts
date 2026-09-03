@@ -235,31 +235,34 @@ const modelSegment: StatusLineSegment = {
 				const advisorIcon = allYielded ? eyeClosed : eyeOpen;
 				if (advisorIcon) content += theme.fg(badgeColor, ` ${advisorIcon}`);
 			}
-			// Per-advisor roster detail: one glyph per advisor, capped at four.
-			let advisorGlyphs = "";
+			// Per-advisor roster detail: one glyph per advisor, capped at four,
+			// space-separated inside parentheses: `( )`.
+			const advisorGlyphs: string[] = [];
 			for (const a of advisorStats.advisors.slice(0, 4)) {
 				switch (a.status) {
 					case "running":
-						advisorGlyphs += nerd
-							? a.yielded
-								? theme.fg("dim", eyeClosed)
-								: theme.fg("success", eyeOpen)
-							: theme.fg("success", "●");
+						advisorGlyphs.push(
+							nerd
+								? a.yielded
+									? theme.fg("dim", eyeClosed)
+									: theme.fg("success", eyeOpen)
+								: theme.fg("success", "●"),
+						);
 						break;
 					case "paused":
 					case "no_model":
-						advisorGlyphs += theme.fg("dim", nerd ? eyeClosed : "○");
+						advisorGlyphs.push(theme.fg("dim", nerd ? eyeClosed : "○"));
 						break;
 					case "quota_exhausted":
-						advisorGlyphs += theme.fg("warning", nerd ? eyeClosed : "✕");
+						advisorGlyphs.push(theme.fg("warning", nerd ? eyeClosed : "✕"));
 						break;
 					case "error":
-						advisorGlyphs += theme.fg("error", nerd ? eyeClosed : "✕");
+						advisorGlyphs.push(theme.fg("error", nerd ? eyeClosed : "✕"));
 						break;
 				}
 			}
-			if (advisorStats.advisors.length > 4) advisorGlyphs += theme.fg("dim", "+");
-			content += nerd ? ` ${advisorGlyphs}` : theme.fg("dim", "(") + advisorGlyphs + theme.fg("dim", ")");
+			if (advisorStats.advisors.length > 4) advisorGlyphs.push(theme.fg("dim", "+"));
+			content += ` ${theme.fg("dim", "(")}${advisorGlyphs.join(" ")}${theme.fg("dim", ")")}`;
 		}
 		if (tail) {
 			content += accentFg(ctx, "statusLineModel", tail);

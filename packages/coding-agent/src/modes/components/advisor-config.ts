@@ -366,7 +366,18 @@ export class AdvisorConfigOverlayComponent implements Component {
 		}
 		if (this.#focus !== "editor") {
 			if (data === "\x1b[C") {
-				this.#focusEditor();
+				// → only moves focus where there is something to edit: an advisor's
+				// field list, or the shared-instructions text editor (as if ↵). Rows
+				// like "+ Add advisor" / "Save & apply" / the empty placeholder keep
+				// the cursor in the roster instead of dropping it into the void.
+				const scope = this.#focus;
+				const value = this.#scopes[scope].list.getSelectedItem()?.value;
+				if (value === "shared") {
+					this.#focusEditor();
+					this.#showInstructionsEditor(scope, -1);
+				} else if (this.#selected()) {
+					this.#focusEditor();
+				}
 				return;
 			}
 			if (data === "\x1b[D") {

@@ -88,7 +88,7 @@ describe("status line model segment advisor glyphs", () => {
 		// overflow marker.
 		const plain = Bun.stripANSI(content);
 		expect((plain.match(/[●○✕]/g) ?? []).length).toBe(4);
-		expect(plain).toMatch(/\([●○✕]{4}\)/);
+		expect(plain).toMatch(/\([●○✕]( [●○✕]){3}\)/);
 		expect(plain).not.toContain("+");
 	});
 
@@ -100,7 +100,7 @@ describe("status line model segment advisor glyphs", () => {
 		});
 		const plain = Bun.stripANSI(renderSegment("model", ctx).content);
 		expect((plain.match(/●/g) ?? []).length).toBe(4);
-		expect(plain).toContain("(●●●●+)");
+		expect(plain).toContain("(● ● ● ● +)");
 	});
 
 	it("omits the glyphs when the advisor is inactive", () => {
