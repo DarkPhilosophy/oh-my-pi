@@ -155,6 +155,7 @@ describe("UsageDashboardComponent session toggles", () => {
 			createMasker: createAccountMasker,
 			maskAccountLabels,
 			mergeAccounts,
+			labelPlacement: "moving",
 			loadActivity: async () => {},
 			requestRender: () => {},
 			onClose: () => {},

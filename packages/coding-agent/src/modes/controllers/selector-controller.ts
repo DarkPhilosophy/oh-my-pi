@@ -304,12 +304,17 @@ export class SelectorController {
 					Date.now(),
 					width,
 					provider => (provider === currentProvider ? activeAccount : undefined),
-					{ usageModelSelectors, maskAccountLabels: view.maskAccountLabels },
+					{
+						usageModelSelectors,
+						maskAccountLabels: view.maskAccountLabels,
+						labelPlacement: settings.get("usage.labelPlacement"),
+					},
 				),
 			createMasker: createAccountMasker,
 			// Read on every open; the overlay's p/m toggles never write back.
 			maskAccountLabels: settings.get("usage.maskAccountLabels"),
 			mergeAccounts: settings.get("usage.mergeAccounts"),
+			labelPlacement: settings.get("usage.labelPlacement"),
 			loadActivity: async push => {
 				// Show whatever the stats DB already has, then re-query after an
 				// incremental session sync so the heatmap converges on fresh data.

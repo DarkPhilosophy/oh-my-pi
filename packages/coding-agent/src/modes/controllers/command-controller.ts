@@ -61,6 +61,7 @@ import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
 import { type AccountMasker, createAccountMasker, MASK_STARS } from "../utils/usage-mask";
+import { renderFractionBar } from "../utils/usage-bar";
 
 function formatCreditValue(value: number): string {
 	return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
@@ -77,7 +78,7 @@ function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown:
 }
 
 export class CommandController {
-	constructor(private readonly ctx: InteractiveModeContext) {}
+	constructor(private readonly ctx: InteractiveModeContext) { }
 
 	async #restoreAfterMoveFailure(
 		previousState: Parameters<InteractiveModeContext["sessionManager"]["rollbackMove"]>[0],
@@ -96,7 +97,7 @@ export class CommandController {
 			let realigned = false;
 			try {
 				realigned = await this.ctx.applyCwdChange(actual);
-			} catch {}
+			} catch { }
 			if (!realigned) {
 				this.ctx.showError(
 					`Failed to roll back move: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)} (failed to re-align workspace to ${actual})`,
@@ -113,14 +114,14 @@ export class CommandController {
 		let sourceRestored = false;
 		try {
 			sourceRestored = await this.ctx.applyCwdChange(previousState.cwd);
-		} catch {}
+		} catch { }
 		if (sourceRestored) return;
 
 		const actual = this.ctx.sessionManager.getCwd();
 		let realigned = false;
 		try {
 			realigned = await this.ctx.applyCwdChange(actual);
-		} catch {}
+		} catch { }
 		if (!realigned) {
 			this.ctx.showError(`Failed to restore source workspace after rollback: workspace remains at ${actual}`);
 			await this.ctx.shutdown();
@@ -289,7 +290,7 @@ export class CommandController {
 					this.ctx.showError(`Custom share failed: ${err instanceof Error ? err.message : String(err)}`);
 				}
 			} finally {
-				await fs.rm(tmpFile, { force: true }).catch(() => {});
+				await fs.rm(tmpFile, { force: true }).catch(() => { });
 			}
 			return;
 		}
@@ -1303,8 +1304,7 @@ export class CommandController {
 				if (shouldPersistCwd) await this.#applyBashResultCwd(result);
 			} catch (error) {
 				this.ctx.showError(
-					`Bash command completed, but OMP failed to update its working directory: ${
-						error instanceof Error ? error.message : "Unknown error"
+					`Bash command completed, but OMP failed to update its working directory: ${error instanceof Error ? error.message : "Unknown error"
 					}`,
 				);
 			}
@@ -1944,49 +1944,12 @@ function resolveStatusIcon(status: AggregateDisplayStatus, uiTheme: typeof theme
 	return uiTheme.fg("dim", uiTheme.status.pending);
 }
 
-function resolveUsageGradientRgb(remainingFraction: number): string {
-	const clamped = Math.min(Math.max(remainingFraction, 0), 1);
-	let progress: number;
-	let startRed: number;
-	let startGreen: number;
-	let startBlue: number;
-	let endRed: number;
-	let endGreen: number;
-	let endBlue: number;
-
-	if (clamped <= 0.5) {
-		progress = clamped * 2;
-		startRed = 255;
-		startGreen = 69;
-		startBlue = 58;
-		endRed = 255;
-		endGreen = 159;
-		endBlue = 10;
-	} else if (clamped <= 0.75) {
-		progress = (clamped - 0.5) * 4;
-		startRed = 255;
-		startGreen = 159;
-		startBlue = 10;
-		endRed = 255;
-		endGreen = 214;
-		endBlue = 10;
-	} else {
-		progress = (clamped - 0.75) * 4;
-		startRed = 255;
-		startGreen = 214;
-		startBlue = 10;
-		endRed = 48;
-		endGreen = 209;
-		endBlue = 88;
-	}
-
-	const red = Math.round(startRed + (endRed - startRed) * progress);
-	const green = Math.round(startGreen + (endGreen - startGreen) * progress);
-	const blue = Math.round(startBlue + (endBlue - startBlue) * progress);
-	return `${red};${green};${blue}`;
-}
-
-function renderUsageBar(limit: UsageLimit, uiTheme: typeof theme, barWidth: number): string {
+function renderUsageBar(
+	limit: UsageLimit,
+	uiTheme: typeof theme,
+	barWidth: number,
+	labelPlacement: "moving" | "right",
+): string {
 	const usedAmount = limit.amount.used;
 	if (usedAmount !== undefined && isUsedOnlyAbsoluteAmount(limit)) {
 		const used =
@@ -2000,29 +1963,7 @@ function renderUsageBar(limit: UsageLimit, uiTheme: typeof theme, barWidth: numb
 		return uiTheme.fg("dim", "·".repeat(barWidth));
 	}
 
-	const remainingFraction = 1 - Math.min(Math.max(usedFraction, 0), 1);
-	const label = `${formatNumber(remainingFraction * 100)}% free`;
-	const labelWidth = visibleWidth(label);
-	if (labelWidth > barWidth) {
-		// Embedded label doesn't fit: render a plain filled/empty bar of exactly
-		// barWidth cells. Truncating the label would emit meaningless fragments.
-		const filledCells = Math.round(remainingFraction * barWidth);
-		const emptyCells = barWidth - filledCells;
-		const rgb = resolveUsageGradientRgb(remainingFraction);
-		const foreground = `\x1b[38;2;${rgb}m`;
-		return `${foreground}${"█".repeat(filledCells)}\x1b[39m${uiTheme.fg("dim", "░".repeat(emptyCells))}`;
-	}
-	const filledCells = Math.round(remainingFraction * barWidth);
-	const labelStart = Math.max(0, Math.min(filledCells - labelWidth, barWidth - labelWidth));
-	const filledLabelWidth = Math.max(0, Math.min(labelWidth, filledCells - labelStart));
-	const rgb = resolveUsageGradientRgb(remainingFraction);
-	const foreground = `\x1b[38;2;${rgb}m`;
-	const inverse = `\x1b[30;48;2;${rgb}m`;
-	const before = labelStart > 0 ? `${foreground}${"█".repeat(labelStart)}\x1b[39m` : "";
-	const filledLabel = filledLabelWidth > 0 ? `${inverse}${label.slice(0, filledLabelWidth)}\x1b[39;49m` : "";
-	const emptyLabel = filledLabelWidth < labelWidth ? `${foreground}${label.slice(filledLabelWidth)}\x1b[39m` : "";
-	const afterEmpty = Math.max(0, barWidth - labelStart - labelWidth);
-	return `${before}${filledLabel}${emptyLabel}${uiTheme.fg("dim", "░".repeat(afterEmpty))}`;
+	return renderFractionBar(1 - Math.min(Math.max(usedFraction, 0), 1), barWidth, uiTheme, labelPlacement);
 }
 
 /** Pick the widest per-account column that fits alongside gaps and trailing text. */
@@ -2051,9 +1992,13 @@ export function renderUsageReports(
 	nowMs: number,
 	availableWidth: number,
 	resolveActiveAccount?: (provider: string) => OAuthAccountIdentity | undefined,
-	options: { maskAccountLabels?: boolean; usageModelSelectors?: readonly string[] } = {},
+	options: {
+		maskAccountLabels?: boolean;
+		usageModelSelectors?: readonly string[];
+		labelPlacement?: "moving" | "right";
+	} = {},
 ): string {
-	const { maskAccountLabels = false, usageModelSelectors = [] } = options;
+	const { maskAccountLabels = false, usageModelSelectors = [], labelPlacement = "moving" } = options;
 	const lines: string[] = [];
 	const latestFetchedAt = Math.max(...reports.map(report => report.fetchedAt ?? 0));
 	const headerSuffix = latestFetchedAt ? ` (${formatDuration(nowMs - latestFetchedAt)} ago)` : "";
@@ -2262,7 +2207,7 @@ export function renderUsageReports(
 				);
 				lines.push(`  ${accountLabels.join(" ")}`.trimEnd());
 				const bars = chunkLimits.map(limit =>
-					padColumn(renderUsageBar(limit, uiTheme, sectionBarWidth), sectionColumnWidth),
+					padColumn(renderUsageBar(limit, uiTheme, sectionBarWidth, labelPlacement), sectionColumnWidth),
 				);
 				const trailingAmount = offset + sectionColumnsPerRow >= sortedLimits.length ? ` ${amountText}` : "";
 				lines.push(`  ${bars.join(" ")}${trailingAmount}`.trimEnd());

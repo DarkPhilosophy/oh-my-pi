@@ -327,4 +327,15 @@ describe("renderUsageReports terminal width", () => {
 		expect(mid).toMatch(/\x1b\[30;48;2;\d+;\d+;\d+m50% free\x1b\[39;49m/);
 		expect(low).toMatch(/\x1b\[30;48;2;\d+;\d+;\d+m10\x1b\[39;49m\x1b\[38;2;\d+;\d+;\d+m% free/);
 	});
+
+	it("can anchor the embedded percentage at the right edge while the fill crosses through it", () => {
+		const reports = [
+			report("anthropic", "account@example.test", [limit("Claude 7 Day", "weekly", 7 * 24 * HOUR, 0.5)]),
+		];
+		const line = renderUsageReports(reports, theme, Date.now(), 80, undefined, { labelPlacement: "right" })
+			.split("\n")
+			.find(candidate => candidate.includes("% free"));
+
+		expect(Bun.stripANSI(line ?? "")).toMatch(/50% free$/);
+	});
 });
