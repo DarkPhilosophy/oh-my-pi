@@ -66,6 +66,8 @@ import {
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
+import { type AccountMasker, createAccountMasker, MASK_STARS } from "../utils/usage-mask";
+import { renderFractionBar } from "../utils/usage-bar";
 
 function formatCreditValue(value: number): string {
 	return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
@@ -82,7 +84,7 @@ function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown:
 }
 
 export class CommandController {
-	constructor(private readonly ctx: InteractiveModeContext) {}
+	constructor(private readonly ctx: InteractiveModeContext) { }
 
 	async #restoreAfterMoveFailure(
 		previousState: Parameters<InteractiveModeContext["sessionManager"]["rollbackMove"]>[0],
@@ -101,7 +103,7 @@ export class CommandController {
 			let realigned = false;
 			try {
 				realigned = await this.ctx.applyCwdChange(actual);
-			} catch {}
+			} catch { }
 			if (!realigned) {
 				this.ctx.showError(
 					`Failed to roll back move: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)} (failed to re-align workspace to ${actual})`,
@@ -118,14 +120,14 @@ export class CommandController {
 		let sourceRestored = false;
 		try {
 			sourceRestored = await this.ctx.applyCwdChange(previousState.cwd);
-		} catch {}
+		} catch { }
 		if (sourceRestored) return;
 
 		const actual = this.ctx.sessionManager.getCwd();
 		let realigned = false;
 		try {
 			realigned = await this.ctx.applyCwdChange(actual);
-		} catch {}
+		} catch { }
 		if (!realigned) {
 			this.ctx.showError(`Failed to restore source workspace after rollback: workspace remains at ${actual}`);
 			await this.ctx.shutdown();
@@ -294,7 +296,7 @@ export class CommandController {
 					this.ctx.showError(`Custom share failed: ${err instanceof Error ? err.message : String(err)}`);
 				}
 			} finally {
-				await fs.rm(tmpFile, { force: true }).catch(() => {});
+				await fs.rm(tmpFile, { force: true }).catch(() => { });
 			}
 			return;
 		}
@@ -1365,8 +1367,7 @@ export class CommandController {
 				if (shouldPersistCwd) await this.#applyBashResultCwd(result);
 			} catch (error) {
 				this.ctx.showError(
-					`Bash command completed, but OMP failed to update its working directory: ${
-						error instanceof Error ? error.message : "Unknown error"
+					`Bash command completed, but OMP failed to update its working directory: ${error instanceof Error ? error.message : "Unknown error"
 					}`,
 				);
 			}
@@ -1982,14 +1983,12 @@ function resolveStatusIcon(status: AggregateDisplayStatus, uiTheme: typeof theme
 	return uiTheme.fg("dim", uiTheme.status.pending);
 }
 
-function resolveStatusColor(status: UsageLimit["status"]): "success" | "warning" | "error" | "dim" {
-	if (status === "exhausted") return "error";
-	if (status === "warning") return "warning";
-	if (status === "ok") return "success";
-	return "dim";
-}
-
-function renderUsageBar(limit: UsageLimit, uiTheme: typeof theme, barWidth: number): string {
+function renderUsageBar(
+	limit: UsageLimit,
+	uiTheme: typeof theme,
+	barWidth: number,
+	labelPlacement: "moving" | "right",
+): string {
 	const usedAmount = limit.amount.used;
 	if (usedAmount !== undefined && isUsedOnlyAbsoluteAmount(limit)) {
 		const used =
@@ -2002,17 +2001,8 @@ function renderUsageBar(limit: UsageLimit, uiTheme: typeof theme, barWidth: numb
 	if (fraction === undefined) {
 		return uiTheme.fg("dim", "·".repeat(barWidth));
 	}
-	const clamped = Math.min(Math.max(fraction, 0), 1);
-	const exact = clamped * barWidth;
-	const fullCells = Math.floor(exact);
-	const remainder = exact - fullCells;
-	let partial = "";
-	if (remainder >= 2 / 3) partial = "▓";
-	else if (remainder >= 1 / 3) partial = "▒";
-	const leading = "█".repeat(fullCells) + partial;
-	const empty = "░".repeat(Math.max(0, barWidth - fullCells - (partial ? 1 : 0)));
-	const color = resolveStatusColor(limit.status);
-	return `${uiTheme.fg(color, leading)}${uiTheme.fg("dim", empty)}`;
+
+	return renderFractionBar(1 - Math.min(Math.max(usedFraction, 0), 1), barWidth, uiTheme, labelPlacement);
 }
 
 /**
@@ -2035,8 +2025,13 @@ export function renderUsageReports(
 	nowMs: number,
 	availableWidth: number,
 	resolveActiveAccount?: (provider: string) => OAuthAccountIdentity | undefined,
-	usageModelSelectors: readonly string[] = [],
+	options: {
+		maskAccountLabels?: boolean;
+		usageModelSelectors?: readonly string[];
+		labelPlacement?: "moving" | "right";
+	} = {},
 ): string {
+	const { maskAccountLabels = false, usageModelSelectors = [], labelPlacement = "moving" } = options;
 	const lines: string[] = [];
 	const latestFetchedAt = Math.max(...reports.map(report => report.fetchedAt ?? 0));
 	const headerSuffix = latestFetchedAt ? ` (${formatDuration(nowMs - latestFetchedAt)} ago)` : "";
@@ -2194,19 +2189,26 @@ export function renderUsageReports(
 
 			const windowSuffix = formatWindowSuffix(group.label, group.windowLabel, uiTheme);
 			lines.push(`${statusIcon} ${uiTheme.bold(group.label)} ${windowSuffix}`.trim());
-			const accountLabels = formatAccountHeaderRow(
-				sortedLimits,
-				sortedReports,
-				nowMs,
-				sectionColumnWidth,
-				uiTheme,
-				activeAccount,
-			);
-			lines.push(`  ${accountLabels.join(" ")}`.trimEnd());
-			const bars = sortedLimits.map(limit =>
-				padColumn(renderUsageBar(limit, uiTheme, sectionBarWidth), sectionColumnWidth),
-			);
-			lines.push(`  ${bars.join(" ")} ${amountText}`.trimEnd());
+			for (let offset = 0; offset < sortedLimits.length; offset += sectionColumnsPerRow) {
+				const chunkLimits = sortedLimits.slice(offset, offset + sectionColumnsPerRow);
+				const chunkReports = sortedReports.slice(offset, offset + sectionColumnsPerRow);
+				const accountLabels = formatAccountHeaderRow(
+					chunkLimits,
+					chunkReports,
+					nowMs,
+					sectionColumnWidth,
+					uiTheme,
+					activeAccount,
+					mask,
+					offset,
+				);
+				lines.push(`  ${accountLabels.join(" ")}`.trimEnd());
+				const bars = chunkLimits.map(limit =>
+					padColumn(renderUsageBar(limit, uiTheme, sectionBarWidth, labelPlacement), sectionColumnWidth),
+				);
+				const trailingAmount = offset + sectionColumnsPerRow >= sortedLimits.length ? ` ${amountText}` : "";
+				lines.push(`  ${bars.join(" ")}${trailingAmount}`.trimEnd());
+			}
 			const resetText = sortedLimits.length <= 1 ? resolveResetRange(sortedLimits, nowMs) : null;
 			if (resetText) {
 				lines.push(`  ${uiTheme.fg("dim", resetText)}`.trimEnd());

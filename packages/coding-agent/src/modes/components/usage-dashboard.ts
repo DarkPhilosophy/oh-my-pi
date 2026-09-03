@@ -13,12 +13,13 @@ import { formatProviderName } from "../../slash-commands/helpers/format";
 import { colorToAnsi } from "../theme/color";
 import { theme } from "../theme/theme";
 import {
-	matchesSelectCancel,
-	matchesSelectDown,
-	matchesSelectPageDown,
-	matchesSelectPageUp,
-	matchesSelectUp,
+ matchesSelectCancel,
+ matchesSelectDown,
+ matchesSelectPageDown,
+ matchesSelectPageUp,
+ matchesSelectUp,
 } from "../utils/keybinding-matchers";
+
 import { bottomBorder, divider, row, topBorder } from "./overlay-box";
 
 // =============================================================================
@@ -27,17 +28,17 @@ import { bottomBorder, divider, row, topBorder } from "./overlay-box";
 
 /** One quota bucket on a provider card: the account-aggregate of one window group. */
 export interface CardWindowRow {
-	/** Display label (limit label with tier folded in). */
-	label: string;
-	/** Window label/id shown dim after the label when sibling rows share a label. */
-	windowTag?: string;
-	/** Mean used fraction across accounts (0..1, >1 = overage); undefined when unreported. */
-	fraction: number | undefined;
-	status: UsageLimit["status"];
-	/** Reset countdown of the worst account, ms from now, when in the future. */
-	resetMs?: number;
-	/** Absolute used amount (e.g. `$12.34 used`) for limits without a fraction. */
-	usedText?: string;
+ /** Display label (limit label with tier folded in). */
+ label: string;
+ /** Window label/id shown dim after the label when sibling rows share a label. */
+ windowTag?: string;
+ /** Mean used fraction across accounts (0..1, >1 = overage); undefined when unreported. */
+ fraction: number | undefined;
+ status: UsageLimit["status"];
+ /** Reset countdown of the worst account, ms from now, when in the future. */
+ resetMs?: number;
+ /** Absolute used amount (e.g. `$12.34 used`) for limits without a fraction. */
+ usedText?: string;
 }
 
 /** Compact per-provider summary backing one card in the subscriptions grid. */
@@ -55,31 +56,31 @@ export interface ProviderCard {
 }
 
 function formatLimitTitle(limit: UsageLimit): string {
-	const tier = limit.scope.tier;
-	if (tier && !limit.label.toLowerCase().includes(tier.toLowerCase())) {
-		return `${limit.label} (${tier})`;
-	}
-	return limit.label;
+ const tier = limit.scope.tier;
+ if (tier && !limit.label.toLowerCase().includes(tier.toLowerCase())) {
+  return `${limit.label} (${tier})`;
+ }
+ return limit.label;
 }
 
 function isUsedOnlyAbsoluteAmount(limit: UsageLimit): boolean {
-	const amount = limit.amount;
-	return (
-		amount.unit !== "percent" &&
-		amount.unit !== "unknown" &&
-		amount.used !== undefined &&
-		Number.isFinite(amount.used) &&
-		amount.limit === undefined &&
-		amount.remaining === undefined &&
-		resolveUsedFraction(limit) === undefined
-	);
+ const amount = limit.amount;
+ return (
+  amount.unit !== "percent" &&
+  amount.unit !== "unknown" &&
+  amount.used !== undefined &&
+  Number.isFinite(amount.used) &&
+  amount.limit === undefined &&
+  amount.remaining === undefined &&
+  resolveUsedFraction(limit) === undefined
+ );
 }
 
 function formatUsedOnlyAmount(limit: UsageLimit): string {
-	const used = limit.amount.used ?? 0;
-	if (limit.amount.unit === "usd") return `$${used.toFixed(2)} used`;
-	const formatted = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(used);
-	return `${formatted} ${limit.amount.unit} used`;
+ const used = limit.amount.used ?? 0;
+ if (limit.amount.unit === "usd") return `$${used.toFixed(2)} used`;
+ const formatted = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(used);
+ return `${formatted} ${limit.amount.unit} used`;
 }
 
 /**
@@ -88,13 +89,13 @@ function formatUsedOnlyAmount(limit: UsageLimit): string {
  * worst account's status.
  */
 function aggregateStatus(limits: UsageLimit[]): UsageLimit["status"] {
-	const hasOk = limits.some(limit => limit.status === "ok");
-	const hasWarning = limits.some(limit => limit.status === "warning");
-	const hasExhausted = limits.some(limit => limit.status === "exhausted");
-	if (hasOk) return hasWarning || hasExhausted ? "warning" : "ok";
-	if (hasWarning) return "warning";
-	if (hasExhausted) return "exhausted";
-	return "unknown";
+ const hasOk = limits.some(limit => limit.status === "ok");
+ const hasWarning = limits.some(limit => limit.status === "warning");
+ const hasExhausted = limits.some(limit => limit.status === "exhausted");
+ if (hasOk) return hasWarning || hasExhausted ? "warning" : "ok";
+ if (hasWarning) return "warning";
+ if (hasExhausted) return "exhausted";
+ return "unknown";
 }
 
 /** Fraction below which a window counts as untouched (renders as 100% free). */
@@ -105,25 +106,25 @@ const IDLE_FRACTION = 0.005;
  * shares the label column with the limit name.
  */
 function compactWindowTag(window: NonNullable<UsageLimit["window"]>): string {
-	if (window.durationMs) {
-		const hours = window.durationMs / 3_600_000;
-		if (hours >= 28 * 24) return "mo";
-		if (hours >= 24) return `${Math.round(hours / 24)}d`;
-		return `${Math.round(hours)}h`;
-	}
-	const id = window.id.toLowerCase();
-	return id.length <= 3 ? id : id.slice(0, 1);
+ if (window.durationMs) {
+  const hours = window.durationMs / 3_600_000;
+  if (hours >= 28 * 24) return "mo";
+  if (hours >= 24) return `${Math.round(hours / 24)}d`;
+  return `${Math.round(hours)}h`;
+ }
+ const id = window.id.toLowerCase();
+ return id.length <= 3 ? id : id.slice(0, 1);
 }
 
 /** Card-level status from its window rows, same mixing rules as {@link aggregateStatus}. */
 function aggregateRowStatus(windows: CardWindowRow[]): UsageLimit["status"] {
-	const hasOk = windows.some(window => window.status === "ok");
-	const hasWarning = windows.some(window => window.status === "warning");
-	const hasExhausted = windows.some(window => window.status === "exhausted");
-	if (hasOk) return hasWarning || hasExhausted ? "warning" : "ok";
-	if (hasWarning) return "warning";
-	if (hasExhausted) return "exhausted";
-	return "unknown";
+ const hasOk = windows.some(window => window.status === "ok");
+ const hasWarning = windows.some(window => window.status === "warning");
+ const hasExhausted = windows.some(window => window.status === "exhausted");
+ if (hasOk) return hasWarning || hasExhausted ? "warning" : "ok";
+ if (hasWarning) return "warning";
+ if (hasExhausted) return "exhausted";
+ return "unknown";
 }
 
 /**
@@ -154,33 +155,33 @@ export function buildProviderCards(reports: UsageReport[], nowMs: number): Provi
 			}
 		}
 
-		const windows: CardWindowRow[] = [...buckets.values()].map(bucket => {
-			const fractions = bucket.limits
-				.map(limit => resolveUsedFraction(limit))
-				.filter((value): value is number => value !== undefined);
-			const fraction =
-				fractions.length > 0 ? fractions.reduce((sum, value) => sum + value, 0) / fractions.length : undefined;
-			const worst = bucket.limits.reduce((max, limit) =>
-				(resolveUsedFraction(limit) ?? -1) > (resolveUsedFraction(max) ?? -1) ? limit : max,
-			);
-			const resetsAt = worst.window?.resetsAt;
-			return {
-				label: bucket.label,
-				windowTag: worst.window ? compactWindowTag(worst.window) : undefined,
-				fraction,
-				status: aggregateStatus(bucket.limits),
-				resetMs: resetsAt !== undefined && resetsAt > nowMs ? resetsAt - nowMs : undefined,
-				usedText:
-					fraction === undefined && isUsedOnlyAbsoluteAmount(worst) ? formatUsedOnlyAmount(worst) : undefined,
-			};
-		});
-		windows.sort((a, b) => (b.fraction ?? -1) - (a.fraction ?? -1));
-		// The window tag earns its columns only when sibling rows would otherwise
-		// be indistinguishable (e.g. Antigravity's daily vs weekly "Usage (Google)").
-		for (const window of windows) {
-			const duplicated = windows.some(other => other !== window && other.label === window.label);
-			if (!duplicated) window.windowTag = undefined;
-		}
+  const windows: CardWindowRow[] = [...buckets.values()].map(bucket => {
+   const fractions = bucket.limits
+    .map(limit => resolveUsedFraction(limit))
+    .filter((value): value is number => value !== undefined);
+   const fraction =
+    fractions.length > 0 ? fractions.reduce((sum, value) => sum + value, 0) / fractions.length : undefined;
+   const worst = bucket.limits.reduce((max, limit) =>
+    (resolveUsedFraction(limit) ?? -1) > (resolveUsedFraction(max) ?? -1) ? limit : max,
+   );
+   const resetsAt = worst.window?.resetsAt;
+   return {
+    label: bucket.label,
+    windowTag: worst.window ? compactWindowTag(worst.window) : undefined,
+    fraction,
+    status: aggregateStatus(bucket.limits),
+    resetMs: resetsAt !== undefined && resetsAt > nowMs ? resetsAt - nowMs : undefined,
+    usedText:
+     fraction === undefined && isUsedOnlyAbsoluteAmount(worst) ? formatUsedOnlyAmount(worst) : undefined,
+   };
+  });
+  windows.sort((a, b) => (b.fraction ?? -1) - (a.fraction ?? -1));
+  // The window tag earns its columns only when sibling rows would otherwise
+  // be indistinguishable (e.g. Antigravity's daily vs weekly "Usage (Google)").
+  for (const window of windows) {
+   const duplicated = windows.some(other => other !== window && other.label === window.label);
+   if (!duplicated) window.windowTag = undefined;
+  }
 
 		cards.push({
 			provider,
@@ -207,25 +208,25 @@ export function buildProviderCards(reports: UsageReport[], nowMs: number): Provi
 
 /** GitHub-style week-per-column heatmap grid derived from daily activity. */
 export interface HeatmapLayout {
-	/** Per week column: short month name when the column starts a new month. */
-	monthLabels: (string | undefined)[];
-	/** 7 rows (Mon..Sun) × N week columns; 0..4 intensity, null = future day. */
-	cells: (number | null)[][];
-	totalCost: number;
-	totalRequests: number;
+ /** Per week column: short month name when the column starts a new month. */
+ monthLabels: (string | undefined)[];
+ /** 7 rows (Mon..Sun) × N week columns; 0..4 intensity, null = future day. */
+ cells: (number | null)[][];
+ totalCost: number;
+ totalRequests: number;
 }
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 export const HEATMAP_DAY_LABELS = ["M", "T", "W", "T", "F", "S", "S"];
 
 function localIso(date: Date): string {
-	const month = String(date.getMonth() + 1).padStart(2, "0");
-	const day = String(date.getDate()).padStart(2, "0");
-	return `${date.getFullYear()}-${month}-${day}`;
+ const month = String(date.getMonth() + 1).padStart(2, "0");
+ const day = String(date.getDate()).padStart(2, "0");
+ return `${date.getFullYear()}-${month}-${day}`;
 }
 
 function addDays(date: Date, days: number): Date {
-	return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+ return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
 }
 
 /**
@@ -237,48 +238,48 @@ function addDays(date: Date, days: number): Date {
  * *how much* work a day carried.
  */
 export function buildHeatmapLayout(points: DailyActivityPoint[], weeks: number, today = new Date()): HeatmapLayout {
-	const byDay = new Map(points.map(point => [point.day, point]));
-	const anyCost = points.some(point => point.cost > 0);
-	const metric = (point: DailyActivityPoint): number => (anyCost ? point.cost : point.requests);
+ const byDay = new Map(points.map(point => [point.day, point]));
+ const anyCost = points.some(point => point.cost > 0);
+ const metric = (point: DailyActivityPoint): number => (anyCost ? point.cost : point.requests);
 
-	const today0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-	const mondayOffset = (today0.getDay() + 6) % 7;
-	const currentMonday = addDays(today0, -mondayOffset);
-	const start = addDays(currentMonday, -(weeks - 1) * 7);
-	const startIso = localIso(start);
-	const todayIso = localIso(today0);
+ const today0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+ const mondayOffset = (today0.getDay() + 6) % 7;
+ const currentMonday = addDays(today0, -mondayOffset);
+ const start = addDays(currentMonday, -(weeks - 1) * 7);
+ const startIso = localIso(start);
+ const todayIso = localIso(today0);
 
-	const inRange = points.filter(point => point.day >= startIso && point.day <= todayIso);
-	const max = inRange.reduce((acc, point) => Math.max(acc, metric(point)), 0);
-	const level = (value: number): number => {
-		if (value <= 0 || max <= 0) return 0;
-		return Math.min(4, Math.max(1, Math.ceil(Math.sqrt(value / max) * 4)));
-	};
+ const inRange = points.filter(point => point.day >= startIso && point.day <= todayIso);
+ const max = inRange.reduce((acc, point) => Math.max(acc, metric(point)), 0);
+ const level = (value: number): number => {
+  if (value <= 0 || max <= 0) return 0;
+  return Math.min(4, Math.max(1, Math.ceil(Math.sqrt(value / max) * 4)));
+ };
 
-	const monthLabels: (string | undefined)[] = [];
-	const cells: (number | null)[][] = Array.from({ length: 7 }, () =>
-		Array.from({ length: weeks }, (): number | null => null),
-	);
-	let previousMonth = -1;
-	for (let week = 0; week < weeks; week++) {
-		const weekStart = addDays(start, week * 7);
-		const month = weekStart.getMonth();
-		monthLabels.push(month !== previousMonth ? MONTH_NAMES[month] : undefined);
-		previousMonth = month;
-		for (let day = 0; day < 7; day++) {
-			const date = addDays(weekStart, day);
-			if (date > today0) continue;
-			const point = byDay.get(localIso(date));
-			cells[day][week] = level(point ? metric(point) : 0);
-		}
-	}
+ const monthLabels: (string | undefined)[] = [];
+ const cells: (number | null)[][] = Array.from({ length: 7 }, () =>
+  Array.from({ length: weeks }, (): number | null => null),
+ );
+ let previousMonth = -1;
+ for (let week = 0; week < weeks; week++) {
+  const weekStart = addDays(start, week * 7);
+  const month = weekStart.getMonth();
+  monthLabels.push(month !== previousMonth ? MONTH_NAMES[month] : undefined);
+  previousMonth = month;
+  for (let day = 0; day < 7; day++) {
+   const date = addDays(weekStart, day);
+   if (date > today0) continue;
+   const point = byDay.get(localIso(date));
+   cells[day][week] = level(point ? metric(point) : 0);
+  }
+ }
 
-	return {
-		monthLabels,
-		cells,
-		totalCost: inRange.reduce((sum, point) => sum + point.cost, 0),
-		totalRequests: inRange.reduce((sum, point) => sum + point.requests, 0),
-	};
+ return {
+  monthLabels,
+  cells,
+  totalCost: inRange.reduce((sum, point) => sum + point.cost, 0),
+  totalRequests: inRange.reduce((sum, point) => sum + point.requests, 0),
+ };
 }
 
 // =============================================================================
@@ -385,45 +386,24 @@ export class UsageDashboardComponent implements Component {
 		const titlePad = Math.max(0, width - 2 - visibleWidth(title) - visibleWidth(accountsText));
 		lines.push(`${this.#statusIcon(cardStatus)} ${title}${" ".repeat(titlePad)}${accountsText}`);
 
-		if (card.unlimited) {
-			lines.push(`  ${theme.fg("dim", "no limits")}`);
-			return lines;
-		}
+ #styleMask(text: string): string {
+  return this.#mask ? text.replaceAll("***", theme.fg("warning", "***")) : text;
+ }
 
-		const hidden = card.windows.length - CARD_MAX_WINDOWS;
-		const visibleWindows = card.windows.slice(0, CARD_MAX_WINDOWS);
-		// Fixed columns across every row of the card so bars all start and end
-		// at the same x: label | bar | pct | reset. The reset column sizes to
-		// the card's widest countdown instead of flexing per row.
-		const resetWidth = visibleWindows.reduce(
-			(max, window) => Math.max(max, window.resetMs !== undefined ? formatDuration(window.resetMs).length : 0),
-			0,
-		);
-		const labelWidth = Math.min(16, Math.max(6, width - 24));
-		const barWidth = Math.max(5, width - 2 - labelWidth - 1 - 5 - (resetWidth > 0 ? resetWidth + 1 : 0));
-		for (const window of visibleWindows) {
-			const tagPlain = window.windowTag
-				? truncateToWidth(window.windowTag, Math.max(2, Math.floor(labelWidth / 2) - 1))
-				: "";
-			const baseWidth = tagPlain ? labelWidth - visibleWidth(tagPlain) - 1 : labelWidth;
-			const basePlain = truncateToWidth(window.label, baseWidth).padEnd(baseWidth);
-			const label = tagPlain
-				? `${theme.fg("muted", basePlain)} ${theme.fg("dim", tagPlain)}`
-				: theme.fg("muted", basePlain);
-			if (window.fraction === undefined) {
-				const text = theme.fg("dim", window.usedText ?? "no data");
-				lines.push(truncateToWidth(`  ${label} ${text}`, width));
-				continue;
-			}
-			const freePct = Math.max(0, Math.round((1 - window.fraction) * 100));
-			const pctText = theme.fg(this.#statusColor(window.status), `${freePct}%`.padStart(5));
-			const resetPlain = window.resetMs !== undefined ? formatDuration(window.resetMs) : "";
-			const resetText = resetWidth > 0 ? ` ${theme.fg("dim", resetPlain.padStart(resetWidth))}` : "";
-			lines.push(`  ${label} ${this.#miniBar(window.fraction, window.status, barWidth)}${pctText}${resetText}`);
-		}
-		if (hidden > 0) lines.push(`  ${theme.fg("dim", `+${hidden} more`)}`);
-		return lines;
-	}
+ /** Wrap card lines in a rounded box; every box in the grid shares the same height. */
+ #boxCard(inner: string[], width: number, height: number): string[] {
+  const innerWidth = width - 2;
+  const out: string[] = [theme.fg("dim", `╭${"─".repeat(innerWidth)}╮`)];
+  for (let i = 0; i < height; i++) {
+   const line = inner[i] ?? "";
+   const body = truncateToWidth(line, innerWidth);
+   out.push(
+    `${theme.fg("dim", "│")}${body}${" ".repeat(Math.max(0, innerWidth - visibleWidth(body)))}${theme.fg("dim", "│")}`,
+   );
+  }
+  out.push(theme.fg("dim", `╰${"─".repeat(innerWidth)}╯`));
+  return out;
+ }
 
 	#renderCardsGrid(innerWidth: number): string[] {
 		if (this.#cards.length === 0) return [theme.fg("dim", "No usage data available.")];
@@ -455,83 +435,75 @@ export class UsageDashboardComponent implements Component {
 		return lines;
 	}
 
-	// ---------------------------------------------------------------------------
-	// Heatmap rendering
-	// ---------------------------------------------------------------------------
+ #renderHeatmap(innerWidth: number): string[] {
+  const summary: string[] = [];
+  if (this.#activityError) {
+   return [theme.fg("dim", "Usage history unavailable (stats database could not be read).")];
+  }
+  const points = this.#activity;
+  if (!points) return [theme.fg("dim", "Loading usage history…")];
 
-	/** Truecolor ramp from the theme's background side toward its accent: level 1
-	 * sits near-invisible, level 4 is the full accent, so cell brightness reads
-	 * as amount of work. Anchored to black or white by the text color's luma so
-	 * the ramp keeps its direction on light themes. */
-	#heatRamp(): string[] {
-		const mode = theme.getColorMode();
-		const darkBackground = (colorLuma(theme.getColorHex("text")) ?? 1) > 0.5;
-		const from = darkBackground ? { r: 20, g: 20, b: 24 } : { r: 244, g: 244, b: 246 };
-		const to = hexToRgb(theme.getColorHex("accent"));
-		return [0.3, 0.5, 0.72, 1].map(t =>
-			colorToAnsi(
-				rgbToHex({
-					r: Math.round(from.r + (to.r - from.r) * t),
-					g: Math.round(from.g + (to.g - from.g) * t),
-					b: Math.round(from.b + (to.b - from.b) * t),
-				}),
-				mode,
-			),
-		);
-	}
+  const labelWidth = 2;
+  const weeks = Math.max(4, Math.min(53, Math.floor((innerWidth - labelWidth) / 2)));
+  const layout = buildHeatmapLayout(points, weeks);
+  const ramp = this.#heatRamp();
+  const reset = "\x1b[39m";
 
-	#renderHeatmap(innerWidth: number): string[] {
-		const summary: string[] = [];
-		if (this.#activityError) {
-			return [theme.fg("dim", "Usage history unavailable (stats database could not be read).")];
-		}
-		const points = this.#activity;
-		if (!points) return [theme.fg("dim", "Loading usage history…")];
+  const cost =
+   layout.totalCost >= 1
+    ? `$${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(layout.totalCost)}`
+    : `$${layout.totalCost.toFixed(2)}`;
+  const requests = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(
+   layout.totalRequests,
+  );
+  summary.push(
+   `${theme.bold(theme.fg("accent", "Activity"))} ${theme.fg("dim", `${cost} · ${requests} requests · last ${weeks} weeks`)}${this.#syncing ? theme.fg("dim", " · syncing…") : ""}`,
+  );
+  summary.push("");
 
-		const labelWidth = 2;
-		const weeks = Math.max(4, Math.min(53, Math.floor((innerWidth - labelWidth) / 2)));
-		const layout = buildHeatmapLayout(points, weeks);
-		const ramp = this.#heatRamp();
-		const reset = "\x1b[39m";
+  let monthLine = " ".repeat(labelWidth);
+  for (let week = 0; week < weeks; week++) {
+   const label = layout.monthLabels[week];
+   const targetCol = labelWidth + week * 2;
+   if (label && targetCol >= visibleWidth(monthLine)) {
+    monthLine = monthLine.padEnd(targetCol) + label;
+   }
+  }
+  summary.push(theme.fg("dim", truncateToWidth(monthLine, innerWidth)));
 
-		const cost =
-			layout.totalCost >= 1
-				? `$${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(layout.totalCost)}`
-				: `$${layout.totalCost.toFixed(2)}`;
-		const requests = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(
-			layout.totalRequests,
-		);
-		summary.push(
-			`${theme.bold(theme.fg("accent", "Activity"))} ${theme.fg("dim", `${cost} · ${requests} requests · last ${weeks} weeks`)}${this.#syncing ? theme.fg("dim", " · syncing…") : ""}`,
-		);
-		summary.push("");
+  for (let day = 0; day < 7; day++) {
+   let line = theme.fg("dim", HEATMAP_DAY_LABELS[day]) + " ";
+   for (let week = 0; week < weeks; week++) {
+    const cell = layout.cells[day][week];
+    if (cell === null) line += "  ";
+    else if (cell === 0) line += `${theme.fg("dim", "·")} `;
+    else line += `${ramp[cell - 1]}■${reset} `;
+   }
+   summary.push(line.trimEnd());
+  }
+  return summary;
+ }
 
-		let monthLine = " ".repeat(labelWidth);
-		for (let week = 0; week < weeks; week++) {
-			const label = layout.monthLabels[week];
-			const targetCol = labelWidth + week * 2;
-			if (label && targetCol >= visibleWidth(monthLine)) {
-				monthLine = monthLine.padEnd(targetCol) + label;
-			}
-		}
-		summary.push(theme.fg("dim", truncateToWidth(monthLine, innerWidth)));
+ // ---------------------------------------------------------------------------
+ // Frame
+ // ---------------------------------------------------------------------------
 
-		for (let day = 0; day < 7; day++) {
-			let line = theme.fg("dim", HEATMAP_DAY_LABELS[day]) + " ";
-			for (let week = 0; week < weeks; week++) {
-				const cell = layout.cells[day][week];
-				if (cell === null) line += "  ";
-				else if (cell === 0) line += `${theme.fg("dim", "·")} `;
-				else line += `${ramp[cell - 1]}■${reset} `;
-			}
-			summary.push(line.trimEnd());
-		}
-		return summary;
-	}
+ #detailLines(innerWidth: number): string[] {
+  if (this.#detailCache?.width !== innerWidth || this.#detailCache.masked !== this.#mask) {
+   this.#detailCache = {
+    width: innerWidth,
+    masked: this.#mask,
+    lines: this.#options.renderDetail(innerWidth, { maskAccountLabels: this.#mask }).split("\n"),
+   };
+  }
+  return this.#detailCache.lines;
+ }
 
-	// ---------------------------------------------------------------------------
-	// Frame
-	// ---------------------------------------------------------------------------
+ render(width: number): readonly string[] {
+  const height = Math.max(14, process.stdout.rows || 40);
+  const innerWidth = Math.max(20, width - 4);
+  // Fixed chrome: top border, status row, content…, divider, hint, bottom border.
+  const contentRows = Math.max(5, height - 5);
 
 	#overviewLines(innerWidth: number): string[] {
 		const lines: string[] = [];
@@ -559,9 +531,36 @@ export class UsageDashboardComponent implements Component {
 		const maxScroll = Math.max(0, contentSource.length - contentRows);
 		if (this.#scroll > maxScroll) this.#scroll = maxScroll;
 
-		const latestFetchedAt = Math.max(0, ...this.#options.reports.map(report => report.fetchedAt ?? 0));
-		const checkedText = latestFetchedAt ? `checked ${formatDuration(this.#nowMs - latestFetchedAt)} ago` : "";
-		const title = this.#view === "detail" ? "Usage · Details" : "Usage";
+  const out: string[] = [];
+  out.push(topBorder(width, title));
+  out.push(row(checkedText ? theme.fg("dim", checkedText) : "", width));
+  // Visible scrollbar in the right inset column whenever the content
+  // overflows: proportional thumb over a dim track.
+  const scrollbar = maxScroll > 0 ? this.#scrollbarCells(scrollSource.length, scrollRows) : undefined;
+  for (let i = 0; i < scrollRows; i++) {
+   const line = row(scrollSource[this.#scroll + i] ?? "", width);
+   if (!scrollbar) {
+    out.push(line);
+    continue;
+   }
+   const cell = scrollbar[i] ? theme.fg("accent", "█") : theme.fg("dim", "│");
+   // Replace the single-space right inset (the char before the closing border).
+   const border = theme.fg("border", theme.boxRound.vertical);
+   out.push(line.slice(0, line.length - border.length - 1) + cell + border);
+  }
+  for (const line of footer) out.push(row(line, width));
+  out.push(divider(width));
+  const scrollHint = maxScroll > 0 ? "↑/↓ scroll · " : "";
+  const privacy = `p ${this.#mask ? "show" : "hide"} accounts`;
+  const merge = `m ${this.#merge ? "split" : "merge"} accounts`;
+  const hint =
+   this.#view === "detail"
+    ? `${scrollHint}${privacy} · Esc back`
+    : `${scrollHint}↵ details · ${privacy} · ${merge} · Esc close`;
+  out.push(row(theme.fg("dim", hint), width));
+  out.push(bottomBorder(width));
+  return out;
+ }
 
 		const out: string[] = [];
 		out.push(topBorder(width, title));
@@ -577,10 +576,13 @@ export class UsageDashboardComponent implements Component {
 		return out;
 	}
 
-	#scrollBy(delta: number): void {
-		this.#scroll = Math.max(0, this.#scroll + delta);
-		this.#options.requestRender();
-	}
+ /** Per-viewport-row thumb flags for a `total`-line body shown in `rows` rows. */
+ #scrollbarCells(total: number, rows: number): boolean[] {
+  const thumb = Math.max(1, Math.round((rows / total) * rows));
+  const maxScroll = total - rows;
+  const top = Math.round((this.#scroll / maxScroll) * (rows - thumb));
+  return Array.from({ length: rows }, (_, i) => i >= top && i < top + thumb);
+ }
 
 	#setView(view: "overview" | "detail"): void {
 		this.#view = view;
