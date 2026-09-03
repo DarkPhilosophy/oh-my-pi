@@ -1,7 +1,19 @@
-import { describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it } from "bun:test";
 import type { DailyActivityPoint } from "@oh-my-pi/omp-stats/shared-types";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
-import { buildHeatmapLayout, buildProviderCards } from "@oh-my-pi/pi-coding-agent/modes/components/usage-dashboard";
+import {
+	buildHeatmapLayout,
+	buildProviderCards,
+	UsageDashboardComponent,
+} from "@oh-my-pi/pi-coding-agent/modes/components/usage-dashboard";
+import { createAccountMasker } from "@oh-my-pi/pi-coding-agent/modes/utils/usage-mask";
+import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+
+beforeAll(async () => {
+	const uiTheme = await getThemeByName("dark");
+	if (!uiTheme) throw new Error("theme unavailable");
+	setThemeInstance(uiTheme);
+});
 
 function day(day: string, cost: number, requests = 1): DailyActivityPoint {
 	return { day, cost, requests, totalTokens: 0 };
@@ -106,5 +118,66 @@ describe("buildProviderCards", () => {
 		expect(idle.sort()).toEqual(["cursor", "ollama-cloud"]);
 		const unlimited = cards.find(card => card.provider === "ollama-cloud");
 		expect(unlimited?.unlimited).toBe(true);
+	});
+});
+
+describe("buildProviderCards split + privacy", () => {
+	const now = Date.now();
+	const reports = [
+		report("anthropic", "alice@x.test", [limit("anthropic", "a", "7d", "Claude 7 Day", 1.0, "exhausted")]),
+		report("anthropic", "alina@x.test", [limit("anthropic", "b", "7d", "Claude 7 Day", 0.0, "ok")]),
+	];
+
+	it("merge=false yields one card per account, each with its own fraction", () => {
+		const cards = buildProviderCards(reports, now, { merge: false });
+		expect(cards.map(card => card.account)).toEqual(["alice@x.test", "alina@x.test"]);
+		expect(cards.map(card => card.windows[0].fraction)).toEqual([1, 0]);
+	});
+
+	it("masks split-card account labels and keeps colliding prefixes distinguishable", () => {
+		const labels = reports.map(r => String(r.metadata?.email));
+		const cards = buildProviderCards(reports, now, { merge: false, mask: createAccountMasker(labels, true) });
+		const masked = cards.map(card => card.account);
+		expect(masked.every(label => label !== undefined && !label.includes("@x.test"))).toBe(true);
+		expect(new Set(masked).size).toBe(2);
+	});
+});
+
+describe("UsageDashboardComponent session toggles", () => {
+	function mount(maskAccountLabels: boolean, mergeAccounts: boolean) {
+		const reports = [
+			report("anthropic", "alice@x.test", [limit("anthropic", "a", "7d", "Claude 7 Day", 0.5, "ok")]),
+			report("anthropic", "bob@x.test", [limit("anthropic", "b", "7d", "Claude 7 Day", 0.1, "ok")]),
+		];
+		return new UsageDashboardComponent({
+			reports,
+			renderDetail: () => "",
+			createMasker: createAccountMasker,
+			maskAccountLabels,
+			mergeAccounts,
+			loadActivity: async () => {},
+			requestRender: () => {},
+			onClose: () => {},
+		});
+	}
+
+	it("p and m flip privacy/merge only for the open overlay, starting from the settings values", () => {
+		const dashboard = mount(true, true);
+		expect(dashboard.viewState).toMatchObject({ maskAccountLabels: true, mergeAccounts: true });
+		dashboard.handleInput("p");
+		dashboard.handleInput("m");
+		expect(dashboard.viewState).toMatchObject({ maskAccountLabels: false, mergeAccounts: false });
+		const text = Bun.stripANSI(dashboard.render(120).join("\n"));
+		expect(text).toContain("alice@x.test");
+		expect(text).toContain("bob@x.test");
+		// A fresh mount re-reads the (unchanged) settings: toggles never persisted.
+		expect(mount(true, true).viewState).toMatchObject({ maskAccountLabels: true, mergeAccounts: true });
+	});
+
+	it("masks split cards while privacy is on", () => {
+		const dashboard = mount(true, false);
+		const text = Bun.stripANSI(dashboard.render(120).join("\n"));
+		expect(text).not.toContain("alice@x.test");
+		expect(text).toContain("***");
 	});
 });

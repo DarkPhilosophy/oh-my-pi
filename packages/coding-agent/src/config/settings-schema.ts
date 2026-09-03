@@ -5348,6 +5348,16 @@ export const SETTINGS_SCHEMA = {
 			description: "Show email accounts as the first three characters followed by *** in /usage",
 		},
 	},
+	"usage.mergeAccounts": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "providers",
+			group: "Privacy",
+			label: "Merge Usage Accounts",
+			description: "Show one /usage card per provider (accounts averaged) instead of one card per account",
+		},
+	},
 
 	// Provider selection
 	"providers.ollama-cloud.maxConcurrency": {

@@ -10,7 +10,7 @@ import {
 	type UsageLimit,
 	type UsageReport,
 } from "@oh-my-pi/pi-ai";
-import { getSegmenter, Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
+import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, logger, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
@@ -60,6 +60,7 @@ import {
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
+import { type AccountMasker, createAccountMasker, MASK_STARS } from "../utils/usage-mask";
 
 function formatCreditValue(value: number): string {
 	return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
@@ -1695,21 +1696,8 @@ function orgSuffix(report: UsageReport): string {
 	return org ? ` (${org})` : "";
 }
 
-function maskAccountLabel(label: string, enabled: boolean): string {
-	if (!enabled) return label;
-	const at = label.indexOf("@");
-	if (at <= 0) return label;
-	const suffixStart = label.indexOf(" ", at);
-	const suffix = suffixStart === -1 ? "" : label.slice(suffixStart);
-	const visibleLocal = [...getSegmenter().segment(label.slice(0, at))]
-		.slice(0, 3)
-		.map(segment => segment.segment)
-		.join("");
-	return `${visibleLocal}***${suffix}`;
-}
-
-function styleAccountMask(label: string, uiTheme: typeof theme, enabled: boolean): string {
-	return enabled ? label.replace("***", uiTheme.fg("warning", "***")) : label;
+function styleAccountMask(label: string, uiTheme: typeof theme): string {
+	return label.replace(MASK_STARS, uiTheme.fg("warning", MASK_STARS));
 }
 
 function formatAccountLabel(limit: UsageLimit, report: UsageReport, index: number): string {
@@ -1754,14 +1742,14 @@ function formatAccountHeaderRow(
 	columnWidth: number,
 	uiTheme: typeof theme,
 	activeAccount: OAuthAccountIdentity | undefined,
-	maskAccountLabels: boolean,
+	mask: AccountMasker,
 	startIndex = 0,
 ): string[] {
 	const parts = limits.map((limit, index) => {
 		const reset = formatResetShort(limit, nowMs);
 		const report = reports[index];
 		const active = report !== undefined && limitMatchesActiveAccount(report, limit, activeAccount);
-		const label = maskAccountLabel(formatAccountLabel(limit, report, index + startIndex), maskAccountLabels);
+		const label = mask(formatAccountLabel(limit, report, index + startIndex));
 		return {
 			label: active ? `● ${label}` : label,
 			suffix: reset ? `(${reset})` : "",
@@ -1777,18 +1765,14 @@ function formatAccountHeaderRow(
 		return parts.map(p => {
 			const full = p.suffix ? `${p.label} ${p.suffix}` : p.label;
 			const cell = padColumn(truncateJobLabel(full, columnWidth), columnWidth);
-			return styleAccountMask(p.active ? uiTheme.fg("accent", cell) : cell, uiTheme, maskAccountLabels);
+			return styleAccountMask(p.active ? uiTheme.fg("accent", cell) : cell, uiTheme);
 		});
 	}
 
 	return parts.map(p => {
 		const prefix = truncateJobLabel(p.label, prefixBudget);
 		const prefixCell = prefix + " ".repeat(prefixBudget - visibleWidth(prefix));
-		const styledPrefix = styleAccountMask(
-			p.active ? uiTheme.fg("accent", prefixCell) : prefixCell,
-			uiTheme,
-			maskAccountLabels,
-		);
+		const styledPrefix = styleAccountMask(p.active ? uiTheme.fg("accent", prefixCell) : prefixCell, uiTheme);
 		if (!p.suffix) return styledPrefix + " ".repeat(maxSuffixWidth + gap);
 		const suffixPad = " ".repeat(maxSuffixWidth - visibleWidth(p.suffix));
 		return `${styledPrefix} ${suffixPad}${uiTheme.fg("dim", p.suffix)}`;
@@ -1800,13 +1784,13 @@ function resolveAccountHeaderWidth(
 	reports: UsageReport[],
 	nowMs: number,
 	activeAccount: OAuthAccountIdentity | undefined,
-	maskAccountLabels: boolean,
+	mask: AccountMasker,
 	startIndex = 0,
 ): number {
 	return limits.reduce((max, limit, index) => {
 		const report = reports[index];
 		const active = report !== undefined && limitMatchesActiveAccount(report, limit, activeAccount);
-		const label = `${active ? "● " : ""}${maskAccountLabel(formatAccountLabel(limit, report, index + startIndex), maskAccountLabels)}`;
+		const label = `${active ? "● " : ""}${mask(formatAccountLabel(limit, report, index + startIndex))}`;
 		const reset = formatResetShort(limit, nowMs);
 		const width = visibleWidth(reset ? `${label} (${reset})` : label);
 		return Math.max(max, width);
@@ -2118,10 +2102,19 @@ export function renderUsageReports(
 		}
 
 		lines.push(uiTheme.bold(uiTheme.fg("accent", providerName)));
-		const activeAccountLabel = maskAccountLabel(formatActiveAccountLabel(activeAccount) ?? "", maskAccountLabels);
+		// One masker per provider so colliding masks (`mai1@` vs `mai2@`) get
+		// ordinals consistently across the header, reset lines and unlimited rows.
+		const mask = createAccountMasker(
+			providerReports.flatMap((report, index) => [
+				...report.limits.map(limit => formatAccountLabel(limit, report, index)),
+				formatUnlimitedReportLabel(report, index),
+			]),
+			maskAccountLabels,
+		);
+		const activeAccountLabel = mask(formatActiveAccountLabel(activeAccount) ?? "");
 		if (activeAccountLabel) {
 			lines.push(
-				`  ${uiTheme.fg("accent", "in use by this session:")} ${styleAccountMask(activeAccountLabel, uiTheme, maskAccountLabels)}`,
+				`  ${uiTheme.fg("accent", "in use by this session:")} ${styleAccountMask(activeAccountLabel, uiTheme)}`,
 			);
 		}
 		const reportingModels = usageModelSelectors.filter(selector => selector.startsWith(`${provider}/`));
@@ -2151,7 +2144,7 @@ export function renderUsageReports(
 					: typeof report.metadata?.accountId === "string" && report.metadata.accountId
 						? report.metadata.accountId
 						: "account";
-			const label = styleAccountMask(maskAccountLabel(rawLabel, maskAccountLabels), uiTheme, maskAccountLabels);
+			const label = styleAccountMask(mask(rawLabel), uiTheme);
 			const isActive =
 				!!activeAccount &&
 				((!!activeAccount.accountId && activeAccount.accountId === report.metadata?.accountId) ||
@@ -2237,10 +2230,7 @@ export function renderUsageReports(
 		const sectionColumnsPerRow = resolveColumnsPerRow(sectionCount, availableWidth, sectionTrailing);
 		const preferredColumnWidth = renderableGroups.reduce(
 			(max, g) =>
-				Math.max(
-					max,
-					resolveAccountHeaderWidth(g.sortedLimits, g.sortedReports, nowMs, activeAccount, maskAccountLabels),
-				),
+				Math.max(max, resolveAccountHeaderWidth(g.sortedLimits, g.sortedReports, nowMs, activeAccount, mask)),
 			BAR_WIDTH_MAX,
 		);
 		const sectionColumnWidth = resolveColumnWidth(
@@ -2267,7 +2257,7 @@ export function renderUsageReports(
 					sectionColumnWidth,
 					uiTheme,
 					activeAccount,
-					maskAccountLabels,
+					mask,
 					offset,
 				);
 				lines.push(`  ${accountLabels.join(" ")}`.trimEnd());
@@ -2292,11 +2282,7 @@ export function renderUsageReports(
 		// Render accounts with no rate limits (e.g. business/enterprise plans).
 		const unlimitedReports = providerReports.filter(report => report.limits.length === 0);
 		for (const report of unlimitedReports) {
-			const label = styleAccountMask(
-				maskAccountLabel(formatUnlimitedReportLabel(report, 0), maskAccountLabels),
-				uiTheme,
-				maskAccountLabels,
-			);
+			const label = styleAccountMask(mask(formatUnlimitedReportLabel(report, 0)), uiTheme);
 			const tier = report.metadata?.planType;
 			const tierSuffix = typeof tier === "string" && tier ? ` ${uiTheme.fg("dim", `(${tier})`)}` : "";
 			lines.push(
