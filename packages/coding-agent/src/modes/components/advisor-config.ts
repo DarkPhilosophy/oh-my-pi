@@ -207,7 +207,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 	// ───────────────────────────── render ─────────────────────────────
 
 	render(width: number): readonly string[] {
-		const height = Math.max(14, process.stdout.rows || 40);
+		const height = Math.max(14, this.#tui.terminal?.rows || process.stdout.rows || 40);
 		const bodyRows = Math.max(6, height - 3);
 		this.#sidebarWidth = Math.max(22, Math.min(42, Math.floor(width * 0.34)));
 		this.#dividerCol = this.#sidebarWidth + 3;

@@ -113,9 +113,24 @@ provider "openai-codex" {
 			cache-write 5.0
 		}
 	}
-	// OpenAI enabled a 1M window for subscription Codex GPT-5.6 (2026-08-16);
-	// the Codex model registry still reports the stale 272000 figure.
-	models "gpt-5.6-luna" "gpt-5.6-sol" "gpt-5.6-terra" {
+	// Astra exposes its 1M subscription window only when extended context is
+	// enabled. Codex has no token prices, but the threshold still owns the
+	// standard-window clamp used by the runtime toggle.
+	models "gpt-6-astra" {
+		long-context-cost {
+			input-threshold 272000
+			input 0.0
+			output 0.0
+			cache-read 0.0
+			cache-write 0.0
+		}
+		limits-patch {
+			context-window 1000000
+		}
+	}
+	// OpenAI enabled 1M subscription windows for these Codex SKUs; the Codex
+	// model registry still reports the standard 272000 figure.
+	models "gpt-5.6-luna" "gpt-5.6-sol" "gpt-5.6-terra" "gpt-6-astra" {
 		context-window-floor 1000000
 	}
 }

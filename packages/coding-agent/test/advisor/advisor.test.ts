@@ -6645,8 +6645,18 @@ describe("advisor", () => {
 			notify: () => {},
 		};
 		const strip = (lines: readonly string[]): string => lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-		const make = (doc: WatchdogConfigDoc, extra?: Partial<AdvisorConfigDeps>): AdvisorConfigOverlayComponent =>
-			new AdvisorConfigOverlayComponent({} as unknown as TUI, { ...deps, ...extra }, "project", doc, callbacks);
+		const make = (
+			doc: WatchdogConfigDoc,
+			extra?: Partial<AdvisorConfigDeps>,
+			terminalRows?: number,
+		): AdvisorConfigOverlayComponent =>
+			new AdvisorConfigOverlayComponent(
+				{ terminal: terminalRows === undefined ? undefined : { rows: terminalRows } } as unknown as TUI,
+				{ ...deps, ...extra },
+				"project",
+				doc,
+				callbacks,
+			);
 		const fullHeight = Math.max(14, process.stdout.rows || 40);
 
 		it("paints a full-screen split frame: roster sidebar + selected-advisor preview", async () => {
@@ -6664,6 +6674,7 @@ describe("advisor", () => {
 			// Fills the screen top-to-bottom (the fix for the bottom-anchored frame
 			// whose offset broke mouse hit-testing and wasted the upper space).
 			expect(frame.length).toBe(fullHeight);
+
 			const text = strip(frame);
 			// Both rosters are visible at once: project on top, global below.
 			expect(text).toContain("Project · project");
@@ -6675,6 +6686,14 @@ describe("advisor", () => {
 			// Right preview reflects the highlighted (first) advisor.
 			expect(text).toContain("x-ai/grok-code-fast:high");
 			expect(text).toContain("read, grep, glob (default)");
+		});
+		it("uses the hosted client viewport height instead of the daemon stdout fallback", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const overlay = make({ advisors: [] }, undefined, 20);
+
+			expect(overlay.render(100)).toHaveLength(20);
 		});
 
 		it("renders an explicit no-tools advisor distinctly from the omitted default", async () => {

@@ -10796,7 +10796,31 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:118",
+				"source": "providers/openai-codex.kdl:119",
+				"providers": [
+					"openai-codex"
+				],
+				"models": [
+					{
+						"kind": "exact",
+						"value": "gpt-6-astra"
+					}
+				],
+				"catalog": {
+					"longContext": {
+						"inputThreshold": 272000,
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"limitsPatch": {
+						"contextWindow": 1000000
+					}
+				}
+			},
+			{
+				"source": "providers/openai-codex.kdl:133",
 				"providers": [
 					"openai-codex"
 				],
@@ -10812,6 +10836,10 @@
 					{
 						"kind": "exact",
 						"value": "gpt-5.6-terra"
+					},
+					{
+						"kind": "exact",
+						"value": "gpt-6-astra"
 					}
 				],
 				"catalog": {
