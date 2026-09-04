@@ -3,12 +3,14 @@ import type { Api, Model } from "@oh-my-pi/pi-ai";
 import * as ai from "@oh-my-pi/pi-ai";
 import { type GeneratedProvider, getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import {
+	bindTerminalTitleSink,
 	disposeTerminalTitleState,
 	generateSessionTitle,
 	setExtensionTerminalTitle,
 	setSessionTerminalTitle,
 	setTerminalTitle,
 	setTerminalTitleState,
+	TerminalTitleController,
 } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
 import { logger, setTerminalHeadless } from "@oh-my-pi/pi-utils";
 import { mockWindowsConsoleTitle, type WindowsConsoleTitleMock } from "./terminal-title-test-utils";
@@ -650,6 +652,39 @@ describe("terminal title runtime", () => {
 		else Reflect.deleteProperty(process.stdout, "isTTY");
 		setTerminalHeadless(prevHeadless);
 		vi.useRealTimers();
+	});
+
+	it("routes titles through a hosted terminal when daemon stdout is not a TTY", () => {
+		Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
+		const titles: string[] = [];
+		const unbind = bindTerminalTitleSink({ setTitle: title => titles.push(title) });
+		try {
+			setTerminalTitle("π ⠋ daemon-session");
+			expect(titles).toEqual(["π ⠋ daemon-session"]);
+			expect(writes).toEqual([]);
+		} finally {
+			unbind();
+		}
+	});
+
+	it("isolates title state between concurrent hosted daemon sessions", () => {
+		const first: string[] = [];
+		const second: string[] = [];
+		const firstController = new TerminalTitleController({ setTitle: title => first.push(title) });
+		const secondController = new TerminalTitleController({ setTitle: title => second.push(title) });
+
+		firstController.setSessionTitle("first");
+		secondController.setSessionTitle("second");
+		first.length = 0;
+		second.length = 0;
+
+		firstController.setState("working");
+		expect(first.at(-1)).toMatch(/^π [\u2800-\u28ff] first$/);
+		expect(second).toEqual([]);
+
+		secondController.setState("attention");
+		expect(second).toEqual(["π ! second"]);
+		secondController.dispose();
 	});
 
 	it("keeps an extension override verbatim across a run-state change (spinner never clobbers it)", () => {

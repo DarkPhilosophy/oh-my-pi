@@ -45,7 +45,23 @@ interface WindowsConsoleTitleApi {
 let windowsConsoleTitleApi: WindowsConsoleTitleApi | null | undefined;
 let lastTerminalTitle: string | undefined;
 let lastTerminalWorkingDirectory: string | undefined;
+type TerminalTitleSink = { setTitle(title: string): void };
+let terminalTitleSink: TerminalTitleSink | undefined;
 
+/**
+ * Route title updates to the terminal owned by the current interactive mode.
+ * Hosted daemon sessions have no TTY on process.stdout, so their OSC title
+ * must travel through the terminal bridge instead.
+ */
+export function bindTerminalTitleSink(sink: TerminalTitleSink): () => void {
+	terminalTitleSink = sink;
+	lastTerminalTitle = undefined;
+	return () => {
+		if (terminalTitleSink !== sink) return;
+		terminalTitleSink = undefined;
+		lastTerminalTitle = undefined;
+	};
+}
 function setTerminalWorkingDirectory(cwd: string): void {
 	if (!process.stdout.isTTY || isTerminalHeadless()) return;
 	const resolvedCwd = path.resolve(cwd);
@@ -484,10 +500,11 @@ export function formatSessionTerminalTitle(sessionName: string | undefined, cwd?
  * Repeating the same sanitized title is a no-op on every platform.
  */
 export function setTerminalTitle(title: string): void {
-	if (!process.stdout.isTTY || isTerminalHeadless()) return;
+	if (!terminalTitleSink && (!process.stdout.isTTY || isTerminalHeadless())) return;
 	const next = sanitizeTerminalTitlePart(title) ?? DEFAULT_TERMINAL_TITLE;
 	if (next === lastTerminalTitle) return;
-	if (!setWindowsConsoleTitle(next)) writeTitleSequence(`\x1b]0;${next}\x07`);
+	if (terminalTitleSink) terminalTitleSink.setTitle(next);
+	else if (!setWindowsConsoleTitle(next)) writeTitleSequence(`\x1b]0;${next}\x07`);
 	lastTerminalTitle = next;
 }
 
@@ -570,6 +587,69 @@ export function buildTerminalTitleWithState(
 	return label ? `${DEFAULT_TERMINAL_TITLE} ${separator} ${label}` : `${DEFAULT_TERMINAL_TITLE} ${separator}`;
 }
 
+/**
+ * Session-scoped terminal-title state for hosted daemon TUIs. A daemon can host
+ * several sessions concurrently, so their labels, run states, timers, and sinks
+ * must never share the process-global direct-mode runtime.
+ */
+export class TerminalTitleController {
+	readonly #sink: TerminalTitleSink;
+	#label: string | undefined;
+	#state: TerminalTitleState = "idle";
+	#frame = 0;
+	#enabled = true;
+	#timer: NodeJS.Timeout | undefined;
+	#lastTitle: string | undefined;
+
+	constructor(sink: TerminalTitleSink) {
+		this.#sink = sink;
+	}
+
+	setEnabled(enabled: boolean): void {
+		this.#enabled = enabled;
+		if (!enabled) this.#stopSpinner();
+		else if (this.#state === "working") this.#startSpinner();
+		this.#emit();
+	}
+
+	setSessionTitle(sessionName: string | undefined, cwd?: string): void {
+		this.#label = sanitizeTerminalTitlePart(sessionName) ?? getFallbackTerminalTitle(cwd);
+		this.#emit();
+	}
+
+	setState(state: TerminalTitleState): void {
+		this.#state = state;
+		if (state === "working" && this.#enabled) this.#startSpinner();
+		else this.#stopSpinner();
+		this.#emit();
+	}
+
+	dispose(): void {
+		this.#stopSpinner();
+	}
+
+	#emit(): void {
+		const title = buildTerminalTitleWithState(this.#label, this.#state, this.#frame, this.#enabled, process.platform);
+		if (title === this.#lastTitle) return;
+		this.#sink.setTitle(title);
+		this.#lastTitle = title;
+	}
+
+	#startSpinner(): void {
+		if (process.platform === "win32" || this.#timer) return;
+		this.#timer = setInterval(() => {
+			this.#frame = (this.#frame + 1) % TITLE_SPINNER_FRAMES.length;
+			this.#emit();
+		}, TITLE_SPINNER_INTERVAL_MS);
+		this.#timer.unref?.();
+	}
+
+	#stopSpinner(): void {
+		clearInterval(this.#timer);
+		this.#timer = undefined;
+	}
+}
+
 function emitTerminalTitle(): void {
 	// An extension override owns the terminal verbatim; the terminal sink
 	// deduplicates repeated state updates.
@@ -591,7 +671,7 @@ function stopTerminalTitleSpinner(): void {
 }
 
 function startTerminalTitleSpinner(): void {
-	if (isConPTYHosted() || terminalTitleRuntime.timer || !process.stdout.isTTY) return;
+	if (isConPTYHosted() || terminalTitleRuntime.timer || (!process.stdout.isTTY && !terminalTitleSink)) return;
 	terminalTitleRuntime.timer = setInterval(() => {
 		terminalTitleRuntime.frame = (terminalTitleRuntime.frame + 1) % TITLE_SPINNER_FRAMES.length;
 		emitTerminalTitle();

@@ -147,11 +147,12 @@ import { getSessionAccentAnsi, getSessionAccentHex } from "../utils/session-colo
 import { messageHasDisplayableThinking } from "../utils/thinking-display";
 import {
 	disposeTerminalTitleState,
-	formatSessionTerminalTitle,
 	popTerminalTitle,
 	pushTerminalTitle,
 	setSessionTerminalTitle,
+	setTerminalTitleState,
 	setTerminalTitleStateEnabled,
+	TerminalTitleController,
 } from "../utils/title-generator";
 import {
 	aggregateVibeWorkerTokensPerSecond,
@@ -538,6 +539,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #hostedTerminal: Terminal | undefined;
 	readonly #hostedDetach: ((reason: "detach" | "exit" | "error", error?: string) => void) | undefined;
 	readonly #hostedCwdChange: ((cwd: string) => void) | undefined;
+	readonly #terminalTitleController: TerminalTitleController | undefined;
 
 	/** Canonical composer shared by cold prepaint and the session-aware runtime. */
 	readonly composer: Composer;
@@ -880,6 +882,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			});
 		this.composer.setPreferences(preferences);
 		this.ui = this.composer.ui;
+		this.#hostedTerminal = host?.terminal;
+		this.#terminalTitleController = host?.terminal ? new TerminalTitleController(host.terminal) : undefined;
 		this.editor = this.composer.editor;
 		this.editor.magicKeywordsEnabled = () => this.settings.get("magicKeywords.enabled");
 		this.editor.imageReferenceHyperlink = imageReferenceHyperlink;
@@ -1309,17 +1313,20 @@ export class InteractiveMode implements InteractiveModeContext {
 			result => this.#rightInfoLayoutCallback?.(result),
 			[this.editorContainer],
 		);
-		if (this.#hostedTerminal) {
-			this.#hostedTerminal.write("\x1b[22;2t");
-			this.#hostedTerminal.setTitle(
-				formatSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd()),
+		if (this.#hostedTerminal) this.#hostedTerminal.write("\x1b[22;2t");
+		else pushTerminalTitle();
+		if (this.#terminalTitleController) {
+			this.#terminalTitleController.setEnabled(this.settings.get("tui.titleState"));
+			this.#terminalTitleController.setSessionTitle(
+				this.sessionManager.getSessionName(),
+				this.sessionManager.getCwd(),
 			);
 		} else {
-			pushTerminalTitle();
 			setTerminalTitleStateEnabled(this.settings.get("tui.titleState"));
 			setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
 		}
 		this.updateEditorBorderColor();
+
 		// Single side-effect point for title changes: every setSessionName caller
 		// (first-input titling, /rename, extension renames, plan seeding, replan
 		// refresh) gets the terminal title + accent updates from here. Registered
@@ -1336,9 +1343,10 @@ export class InteractiveMode implements InteractiveModeContext {
 				);
 			}),
 			this.sessionManager.onSessionNameChanged(() => {
-				if (this.#hostedTerminal) {
-					this.#hostedTerminal.setTitle(
-						formatSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd()),
+				if (this.#terminalTitleController) {
+					this.#terminalTitleController.setSessionTitle(
+						this.sessionManager.getSessionName(),
+						this.sessionManager.getCwd(),
 					);
 				} else {
 					setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
@@ -1512,6 +1520,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		// `streamingBehavior: "steer"`, so whichever lands second queues into the
 		// other's turn instead of dying.
 		this.editor.disableSubmit = false;
+	}
+
+	setTerminalTitleState(state: "idle" | "working" | "attention"): void {
+		if (this.#terminalTitleController) this.#terminalTitleController.setState(state);
+		else setTerminalTitleState(state);
 	}
 
 	/** Reload the title-generation system prompt override for the provided working
@@ -4938,7 +4951,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	stop(): void {
-		this.#appearanceRefreshRequest = undefined;
+		this.#terminalTitleController?.dispose();
 		// Last chance to refresh the startup status placeholder for the next launch.
 		this.#persistComposerStatus();
 		if (this.loadingAnimation) {

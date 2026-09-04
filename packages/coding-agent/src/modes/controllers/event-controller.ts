@@ -40,7 +40,6 @@ import { nextActionableTask } from "../../tools/todo";
 import { SpeechEnhancer } from "../../tts/speech-enhancer";
 import { vocalizer } from "../../tts/vocalizer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
-import { setTerminalTitleState } from "../../utils/title-generator";
 import { createAssistantMessageComponent } from "../utils/interactive-context-helpers";
 import {
 	assistantHasVisibleContent,
@@ -894,7 +893,7 @@ export class EventController {
 		this.ctx.statusLine.markActivityStart();
 		this.#setTerminalProgress(true);
 		this.ctx.ensureLoadingAnimation();
-		setTerminalTitleState("working");
+		this.ctx.setTerminalTitleState("working");
 		this.ctx.ui.requestRender();
 	}
 
@@ -1568,7 +1567,7 @@ export class EventController {
 		const renderToolName = toolRenderName(event.toolName, tool);
 		if (renderToolName === "ask" || this.#toolWillPromptForApproval(renderToolName, event.args)) {
 			this.#approvalAttentionToolCallIds.add(event.toolCallId);
-			setTerminalTitleState("attention");
+			this.ctx.setTerminalTitleState("attention");
 		}
 		this.#resolveDisplaceablePoll(renderToolName);
 		if (!this.ctx.pendingTools.has(event.toolCallId)) {
@@ -1767,7 +1766,7 @@ export class EventController {
 			this.#approvalAttentionToolCallIds.delete(event.toolCallId) &&
 			this.#approvalAttentionToolCallIds.size === 0
 		) {
-			setTerminalTitleState("working");
+			this.ctx.setTerminalTitleState("working");
 		}
 		if (event.toolName === "read") {
 			if (this.#inlineReadToolImages(event.toolCallId, event.result)) {
@@ -1946,7 +1945,7 @@ export class EventController {
 			this.ctx.flushPendingCommandOutput();
 			return;
 		}
-		setTerminalTitleState("idle");
+		this.ctx.setTerminalTitleState("idle");
 
 		await this.#finishAgentEnd(event);
 	}

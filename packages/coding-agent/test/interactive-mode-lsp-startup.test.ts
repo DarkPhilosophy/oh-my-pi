@@ -154,6 +154,35 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 		expect(rendered).not.toContain("direct mode");
 	});
 
+	it("forwards working and idle title states through a hosted daemon terminal", async () => {
+		mode.stop();
+		session.settings.set("tui.titleState", true);
+		const terminal = new HostedTerminal({
+			columns: 120,
+			rows: 40,
+			kittyProtocolActive: false,
+			kittyEnableSequence: null,
+		});
+		const output: string[] = [];
+		terminal.setOutput(data => output.push(data));
+		mode = new InteractiveMode(session, "test", undefined, () => {}, lspServers, undefined, eventBus, {
+			terminal,
+			onDetach: () => {},
+		});
+		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		await mode.init({ suppressWelcomeIntro: true });
+
+		output.length = 0;
+		mode.setTerminalTitleState("working");
+		await Promise.resolve();
+		expect(output.join("")).toMatch(/\x1b\]0;π [\u2800-\u28ff] /);
+
+		output.length = 0;
+		mode.setTerminalTitleState("idle");
+		await Promise.resolve();
+		expect(output.join("")).toContain("\x1b]0;π > ");
+	});
+
 	it("finishes graceful session teardown before closing a hosted terminal", async () => {
 		mode.stop();
 		const terminal = new HostedTerminal({

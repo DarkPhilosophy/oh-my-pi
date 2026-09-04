@@ -12,7 +12,6 @@
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID, type RegistryEvent } from "../../registry/agent-registry";
 import type { AgentSession } from "../../session/agent-session";
-import { setTerminalTitleState } from "../../utils/title-generator";
 import type { InteractiveModeContext } from "../types";
 
 export class SessionFocusController {
@@ -139,7 +138,7 @@ export class SessionFocusController {
 		// target would otherwise inherit the previous session's stuck spinner, so
 		// reset it to idle (agent_end teardown already ran via clearTransientSessionUi).
 		if (target.isStreaming) await this.ctx.eventController.handleEvent({ type: "agent_start" });
-		else setTerminalTitleState("idle");
+		else this.ctx.setTerminalTitleState("idle");
 		if (generation !== this.#attachGeneration) return false;
 		this.ctx.updateEditorBorderColor();
 		this.ctx.ui.requestRender();

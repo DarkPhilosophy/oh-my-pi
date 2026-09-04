@@ -150,6 +150,8 @@ export interface InteractiveModeContext {
 	): void;
 	syncComposerShape(): void;
 	syncEditorSpelling(): void;
+	/** Update this interactive session's terminal title without affecting sibling daemon sessions. */
+	setTerminalTitleState(state: "idle" | "working" | "attention"): void;
 
 	// Session access
 	session: AgentSession;
