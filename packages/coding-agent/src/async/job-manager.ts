@@ -1,3 +1,4 @@
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { AgentRegistry } from "../registry/agent-registry";
 import type { StructuredSubagentOutput } from "../task/types";
@@ -73,6 +74,12 @@ export class AsyncJobError extends Error {
 	}
 }
 
+/** Progress metadata retained for renderers and multimodal completion delivery. */
+export interface AsyncJobDetails extends Record<string, unknown> {
+	/** Images recovered from command output, independent of text truncation. */
+	images?: ImageContent[];
+}
+
 export interface AsyncJob {
 	id: string;
 	type: AsyncJobType;
@@ -91,7 +98,7 @@ export interface AsyncJob {
 	 */
 	structured?: StructuredSubagentOutput;
 	/** Latest tool-render details reported by the running job. */
-	latestDetails?: Record<string, unknown>;
+	latestDetails?: AsyncJobDetails;
 	/**
 	 * Registry id of the agent that registered the job (e.g. "Main",
 	 * "AuthLoader"). Used by scoped cancel/list APIs so a subagent's teardown
@@ -170,7 +177,7 @@ interface AsyncJobDelivery {
 	 * retrying) — without it, a recovered delivery would silently drop
 	 * `structured` even though `text` survives on the delivery itself.
 	 */
-	jobSnapshot?: Pick<AsyncJob, "type" | "status" | "startTime" | "label" | "structured" | "agentId">;
+	jobSnapshot?: Pick<AsyncJob, "type" | "status" | "startTime" | "label" | "structured" | "agentId" | "latestDetails">;
 }
 
 export interface AsyncJobDeliveryState {
@@ -192,7 +199,7 @@ export interface AsyncJobRegisterOptions {
 	ownerId?: string;
 	/** Registry id of the subagent this job runs; see {@link AsyncJob.agentId}. */
 	agentId?: string;
-	onProgress?: (text: string, details?: Record<string, unknown>) => void | Promise<void>;
+	onProgress?: (text: string, details?: AsyncJobDetails) => void | Promise<void>;
 	/** Register the job in queued state; see {@link AsyncJob.queued}. */
 	queued?: boolean;
 }
@@ -284,7 +291,7 @@ export class AsyncJobManager {
 		run: (ctx: {
 			jobId: string;
 			signal: AbortSignal;
-			reportProgress: (text: string, details?: Record<string, unknown>) => Promise<void>;
+			reportProgress: (text: string, details?: AsyncJobDetails) => Promise<void>;
 			/** Clear the queued flag once the job actually starts executing. */
 			markRunning: () => void;
 		}) => Promise<string | AsyncJobRunResult>,
@@ -324,7 +331,7 @@ export class AsyncJobManager {
 			queued: options?.queued === true,
 		};
 
-		const reportProgress = async (text: string, details?: Record<string, unknown>): Promise<void> => {
+		const reportProgress = async (text: string, details?: AsyncJobDetails): Promise<void> => {
 			if (details) job.latestDetails = details;
 			if (!options?.onProgress) return;
 			try {
@@ -979,6 +986,7 @@ export class AsyncJobManager {
 						label: job.label,
 						structured: job.structured,
 						agentId: job.agentId,
+						latestDetails: job.latestDetails,
 					}
 				: undefined,
 		});
@@ -1108,6 +1116,7 @@ export class AsyncJobManager {
 			resultText: delivery.text,
 			structured: snapshot.structured,
 			agentId: snapshot.agentId,
+			latestDetails: snapshot.latestDetails,
 		};
 	}
 

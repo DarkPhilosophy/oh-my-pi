@@ -27,6 +27,7 @@ export const FileLock = nativeBindings.FileLock;
 export const HighlightStream = nativeBindings.HighlightStream;
 export const LiveWebRtcPeer = nativeBindings.LiveWebRtcPeer;
 export const MacAppearanceObserver = nativeBindings.MacAppearanceObserver;
+export const NativeOAuthCallback = nativeBindings.NativeOAuthCallback;
 export const PowerAssertion = nativeBindings.PowerAssertion;
 export const Process = nativeBindings.Process;
 export const PtySession = nativeBindings.PtySession;
@@ -38,7 +39,7 @@ export const VcsRepo = nativeBindings.VcsRepo;
 
 // functions
 export const __ompInstallTokioRuntime = nativeBindings.__ompInstallTokioRuntime;
-export const __piNativesV18_1_8 = nativeBindings.__piNativesV18_1_8;
+export const __piNativesV18_1_9 = nativeBindings.__piNativesV18_1_9;
 export const astEdit = nativeBindings.astEdit;
 export const astGrep = nativeBindings.astGrep;
 export const astMatch = nativeBindings.astMatch;
@@ -47,6 +48,7 @@ export const copyToClipboard = nativeBindings.copyToClipboard;
 export const copyToClipboardPersistent = nativeBindings.copyToClipboardPersistent;
 export const cosineSimilarityPairs = nativeBindings.cosineSimilarityPairs;
 export const countTokens = nativeBindings.countTokens;
+export const decodeSixelToPng = nativeBindings.decodeSixelToPng;
 export const detectMacOSAppearance = nativeBindings.detectMacOSAppearance;
 export const deviceCheckGenerateToken = nativeBindings.deviceCheckGenerateToken;
 export const diffLineRuns = nativeBindings.diffLineRuns;

@@ -9,6 +9,12 @@
 ### Fixed
 
 - Fixed the transcript getting stuck in the live viewport with no scrollable history: frame providers now report live-region pinning per frame instead of permanently, so settled rows reach native scrollback again.
+## [18.1.9] - 2026-09-04
+
+### Added
+
+- Added Markdown hyperlink target resolution while preserving the displayed URL text.
+
 ## [18.1.6] - 2026-09-03
 
 ### Fixed

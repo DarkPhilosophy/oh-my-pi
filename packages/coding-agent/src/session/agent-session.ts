@@ -115,6 +115,7 @@ import {
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { getEditStore } from "../edit/store";
 import { releaseCompletionHandles } from "../eval/completion-bridge";
+import type { EvalPreludeDefinition } from "../eval/preludes";
 import type { PythonResult } from "../eval/py/executor";
 import { WorkPoolRegistry } from "../task/workpool";
 import type { BashResult } from "../exec/bash-executor";
@@ -223,7 +224,6 @@ import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
 import { normalizeModelContextImages } from "../utils/image-loading";
 import { videoPreviewSource } from "../utils/video";
-import type { InspectImageMode } from "../utils/inspect-image-mode";
 import { resumeCommand } from "../utils/resume-command";
 import { generateSessionTitle } from "../utils/title-generator";
 import { buildNamedToolChoice, isToolChoiceActive } from "../utils/tool-choice";
@@ -588,6 +588,7 @@ export class AgentSession {
 	#unsubscribeModelRoles?: () => void;
 	#unsubscribeExtendedContext?: () => void;
 	#unsubscribeCodeMode?: () => void;
+	#unsubscribeEvalPreludeSettings?: () => void;
 	/** Last (enable, providerId) tuple resolved by `#syncAppendOnlyContext` — used to skip no-op invalidations. */
 	#lastAppendOnlyResolution?: { enable: boolean; providerId: string | undefined };
 	#eventListeners: AgentSessionEventListener[] = [];
@@ -603,8 +604,6 @@ export class AgentSession {
 	#queuedMessageDrainScheduled = false;
 	#queuedUserMessageTail: Promise<void> = Promise.resolve();
 	#planModeState: PlanModeState | undefined;
-	/** Session-scoped `/vision` override; undefined = follow persisted `inspect_image.mode`. */
-	#inspectImageModeOverride: InspectImageMode | undefined;
 	#vibeModeState: VibeModeState | undefined;
 	#goalModeState: GoalModeState | undefined;
 	#goalRuntime: GoalRuntime;
@@ -694,6 +693,8 @@ export class AgentSession {
 	#codexResetCoordinator: CodexAutoRedeemCoordinator;
 	// Extension system
 	#extensionRunner: ExtensionRunner | undefined = undefined;
+	#getEvalPreludes: (() => readonly EvalPreludeDefinition[]) | undefined;
+	#reconcileBrowserMcpFilter: AgentSessionConfig["reconcileBrowserMcpFilter"];
 	/**
 	 * Backs `ctx.setInterval`/`setTimeout`/`clearTimer` for the runner-less
 	 * command-context fallback (SDK embeddings with no extension runner). Lazily
@@ -1285,6 +1286,8 @@ export class AgentSession {
 		this.#promptTemplates = config.promptTemplates ?? [];
 		this.#slashCommands = config.slashCommands ?? [];
 		this.#extensionRunner = config.extensionRunner;
+		this.#getEvalPreludes = config.getEvalPreludes;
+		this.#reconcileBrowserMcpFilter = config.reconcileBrowserMcpFilter;
 		this.#customCommands = config.customCommands ?? [];
 		const recoveryHost: TurnRecoveryHost = {
 			agent: this.agent,
@@ -1510,18 +1513,12 @@ export class AgentSession {
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
 			notifyCommandMetadataChanged: () => this.#notifyCommandMetadataChanged(),
 			localProtocolOptions: () => this.#localProtocolOptions(),
-			getInspectImageModeOverride: () => this.#inspectImageModeOverride,
-			setInspectImageModeOverride: mode => {
-				this.#inspectImageModeOverride = mode;
-			},
 		};
 		this.#tools = new SessionTools(sessionToolsHost, {
 			autoApprove: config.autoApprove,
 			toolRegistry: config.toolRegistry,
 			createVibeTools: config.createVibeTools,
-			createComputerTool: config.createComputerTool,
 			createThinkTool: config.createThinkTool,
-			createInspectImageTool: config.createInspectImageTool,
 			builtInToolNames: config.builtInToolNames,
 			mcpManagerToolNames: config.mcpManagerToolNames,
 			presentationPinnedToolNames: config.presentationPinnedToolNames,
@@ -1826,6 +1823,24 @@ export class AgentSession {
 		// restores) premium long-context windows, and the live model object must
 		// follow so compaction thresholds and context display react immediately.
 		this.#unsubscribeExtendedContext = onExtendedContextChanged(() => void this.#reapplyExtendedContextPolicy());
+		this.#unsubscribeEvalPreludeSettings = this.settings.onEffectiveChange((path, value) => {
+			if (path !== "browser.enabled" && path !== "computer.enabled") return;
+			void (async () => {
+				if (path === "browser.enabled" && this.#reconcileBrowserMcpFilter) {
+					const tools = await this.#reconcileBrowserMcpFilter(value === true);
+					await this.refreshMCPTools(tools);
+				}
+				await this.refreshBaseSystemPrompt();
+			})().catch(error => {
+				if (path === "browser.enabled" && value === true && this.settings.get("browser.enabled")) {
+					this.settings.override("browser.enabled", false);
+				}
+				logger.warn("Failed to reconcile eval prelude setting change", {
+					path,
+					error: String(error),
+				});
+			});
+		});
 		this.#unsubscribeCodeMode = onCodeModeChanged(() => {
 			void this.#tools.reconcileCodeMode().catch(error => {
 				logger.warn("Code Mode reconcile after setting change failed", { error: String(error) });
@@ -4532,6 +4547,10 @@ export class AgentSession {
 			this.#unsubscribeCodeMode();
 			this.#unsubscribeCodeMode = undefined;
 		}
+		if (this.#unsubscribeEvalPreludeSettings) {
+			this.#unsubscribeEvalPreludeSettings();
+			this.#unsubscribeEvalPreludeSettings = undefined;
+		}
 		this.#eventListeners = [];
 		this.#runStateListeners.clear();
 		this.#sessionChangeCallbacks.clear();
@@ -5129,51 +5148,14 @@ export class AgentSession {
 		return this.#tools.restoreNonMCPToolPresentation(nonMCPToolNames, nonMCPMountedToolNames);
 	}
 
-	/**
-	 * Session-scoped enable/disable for the settings-gated `computer` tool.
-	 *
-	 * Enabling builds the tool through {@link AgentSessionConfig.createComputerTool}
-	 * on first use and activates it; disabling drops it from the active set while
-	 * keeping the registry entry so repeated toggles reuse one desktop controller.
-	 *
-	 * @returns false when enabling was requested but this session cannot build the
-	 * tool (e.g. restricted child sessions have no factory).
-	 */
-	setComputerToolEnabled(enabled: boolean): Promise<boolean> {
-		return this.#tools.setComputerToolEnabled(enabled);
+	/** Current enabled eval prelude definitions. */
+	getEvalPreludes(): readonly EvalPreludeDefinition[] {
+		return this.#getEvalPreludes?.() ?? [];
 	}
 
 	/** Applies the external-thinking setting to the private scratchpad tool immediately. */
 	setThinkToolEnabled(enabled: boolean): Promise<boolean> {
 		return this.#tools.setThinkToolEnabled(enabled);
-	}
-
-	/**
-	 * Session-scoped inspect_image mode (`/vision`). `auto` clears the override
-	 * and returns to the persisted `inspect_image.mode` setting; `on`/`off`
-	 * force the tool for this session only. See {@link SessionTools.setInspectImageMode}.
-	 */
-	setInspectImageMode(mode: InspectImageMode): Promise<boolean> {
-		return this.#tools.setInspectImageMode(mode);
-	}
-
-	/** Effective inspect_image state for `/vision status`. */
-	inspectImageState(): { mode: InspectImageMode; active: boolean; model: string | undefined } {
-		return this.#tools.inspectImageState();
-	}
-
-	/** Session-scoped `/vision` override; undefined means "follow the persisted setting". */
-	getInspectImageModeOverride(): InspectImageMode | undefined {
-		return this.#inspectImageModeOverride;
-	}
-
-	/**
-	 * Reconciles the inspect_image tool set after the persisted
-	 * `inspect_image.mode` setting changed (e.g. via the settings selector), so
-	 * the new value takes effect immediately instead of on the next model switch.
-	 */
-	applyInspectImageModeChange(): Promise<boolean> {
-		return this.#tools.reconcileInspectImageTool();
 	}
 
 	/** Cancels the local rollout-memory startup owned by this session. */
@@ -8362,14 +8344,6 @@ export class AgentSession {
 			}
 		}
 
-		// inspect_image auto mode keys off model image capability. Reconcile
-		// centrally here so retry-fallback and metadata-only model changes cannot
-		// leave the tool set stale.
-		try {
-			await this.#tools.reconcileInspectImageAfterModelChange();
-		} catch (error) {
-			logger.warn("inspect_image reconcile after model change failed", { error: String(error) });
-		}
 		try {
 			await this.#tools.reconcileThinkTool();
 		} catch (error) {

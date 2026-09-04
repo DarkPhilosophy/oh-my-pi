@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [18.1.9] - 2026-09-04
+
+### Added
+
+- Added recoverable native custom-scheme OAuth callbacks for macOS, Linux desktops, and Windows, with a manual fallback for unavailable or remote sessions.
+
+### Fixed
+
+- Fixed Gemini tool continuations through custom Anthropic Messages proxies and OpenAI Responses relays, preserving tool-call and result associations across multi-turn requests.
+
 ## [18.1.8] - 2026-09-03
 
 ### Added
@@ -5477,3 +5487,4 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 ## [0.9.4] - 2025-11-26
 
 Initial release with multi-provider LLM support.
+Older entries are archived in [packages/ai/CHANGELOG.md@8a9097246135](https://github.com/can1357/oh-my-pi/blob/8a9097246135bd572ff96fb552121fe1194d2906/packages/ai/CHANGELOG.md).
