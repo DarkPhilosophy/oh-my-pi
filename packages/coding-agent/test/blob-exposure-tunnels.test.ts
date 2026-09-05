@@ -52,20 +52,20 @@ function prepareFake(output: string, options: { exitCode?: number; restartOnce?:
 	fs.writeFileSync(
 		target,
 		`#!/bin/sh\n` +
-		`: > ${shellLiteral(argsFile)}\n` +
-		`for arg do printf '%s\\n' "$arg" >> ${shellLiteral(argsFile)}; done\n` +
-		`printf 'run\\n' >> ${shellLiteral(runsFile)}\n` +
-		`trap 'printf "SIGINT\\n" >> ${shellLiteral(signalsFile)}; exit 0' INT\n` +
-		`trap 'printf "SIGTERM\\n" >> ${shellLiteral(signalsFile)}; exit 0' TERM\n` +
-		`printf '%s\\n' ${shellLiteral(output)}\n` +
-		(restartMarker
-			? `if [ ! -e ${shellLiteral(restartMarker)} ]; then\n` +
-			`  printf 'first\\n' > ${shellLiteral(restartMarker)}\n` +
-			`  exit 23\n` +
-			`fi\n` +
-			`printf 'restarted\\n' >> ${shellLiteral(restartMarker)}\n`
-			: "") +
-		(options.exitCode === undefined ? `while :; do /bin/sleep 1; done\n` : `exit ${options.exitCode}\n`),
+			`: > ${shellLiteral(argsFile)}\n` +
+			`for arg do printf '%s\\n' "$arg" >> ${shellLiteral(argsFile)}; done\n` +
+			`printf 'run\\n' >> ${shellLiteral(runsFile)}\n` +
+			`trap 'printf "SIGINT\\n" >> ${shellLiteral(signalsFile)}; exit 0' INT\n` +
+			`trap 'printf "SIGTERM\\n" >> ${shellLiteral(signalsFile)}; exit 0' TERM\n` +
+			`printf '%s\\n' ${shellLiteral(output)}\n` +
+			(restartMarker
+				? `if [ ! -e ${shellLiteral(restartMarker)} ]; then\n` +
+					`  printf 'first\\n' > ${shellLiteral(restartMarker)}\n` +
+					`  exit 23\n` +
+					`fi\n` +
+					`printf 'restarted\\n' >> ${shellLiteral(restartMarker)}\n`
+				: "") +
+			(options.exitCode === undefined ? `while :; do /bin/sleep 1; done\n` : `exit ${options.exitCode}\n`),
 	);
 	fs.chmodSync(target, 0o755);
 	for (const name of ["ssh", "devtunnel", "zrok", "bore", "cloudflared"]) {
