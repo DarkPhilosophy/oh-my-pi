@@ -514,6 +514,27 @@ describe("callSessionTool", () => {
 		);
 	});
 
+	it("strips intent prohibited by a false pattern schema", async () => {
+		const tool = createSchemaTool("false-pattern-intent", {
+			type: "object",
+			patternProperties: { "^i$": false },
+		});
+		expect(
+			await callSessionTool("false-pattern-intent", { i: "caller intent" }, { session: createSession([tool]) }),
+		).toBe("string:caller intent");
+	});
+
+	it("preserves intent constrained by unevaluatedProperties", async () => {
+		const tool = createSchemaTool("unevaluated-intent", {
+			type: "object",
+			unevaluatedProperties: { type: "string" },
+			minProperties: 1,
+		});
+		expect(
+			await callSessionTool("unevaluated-intent", { i: "caller intent" }, { session: createSession([tool]) }),
+		).toBe("string:caller intent");
+	});
+
 	it("preserves data required by negating a false property schema", async () => {
 		const tool = createSchemaTool("not-false-intent", { type: "object", not: { properties: { i: false } } });
 		expect(await callSessionTool("not-false-intent", { i: "data" }, { session: createSession([tool]) })).toBe(

@@ -230,14 +230,17 @@ export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 		}
 		const patternProperties = node.patternProperties;
 		if (isJsonObject(patternProperties)) {
-			for (const pattern of Object.keys(patternProperties)) {
+			for (const [pattern, patternSchema] of Object.entries(patternProperties)) {
 				try {
-					if (new RegExp(pattern).test(key)) return true;
+					if (new RegExp(pattern).test(key)) {
+						if (patternSchema !== false) return true;
+					}
 				} catch {
 					// Invalid patterns are rejected by validation and cannot declare ownership.
 				}
 			}
 		}
+		if (isJsonObject(node.unevaluatedProperties)) return true;
 		if (isJsonObject(node.additionalProperties)) return true;
 		for (const keyword of ["anyOf", "oneOf", "allOf"] as const) {
 			const branches = node[keyword];

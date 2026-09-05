@@ -232,6 +232,28 @@ describe("MCP tool arguments", () => {
 		expect(calls).toEqual([{ method: "tools/call", params: { name: "false-intent", arguments: {} } }]);
 	});
 
+	it("strips intent prohibited by a false pattern schema", async () => {
+		const calls: CapturedRequest[] = [];
+		const tool = new MCPTool(createCapturedConnection(calls), {
+			name: "false-pattern-intent",
+			inputSchema: { type: "object", patternProperties: { "^i$": false } },
+		});
+		await tool.execute("false-pattern", { i: "caller intent" }, undefined, unusedContext, undefined);
+		expect(calls).toEqual([{ method: "tools/call", params: { name: "false-pattern-intent", arguments: {} } }]);
+	});
+
+	it("forwards intent constrained by unevaluatedProperties", async () => {
+		const calls: CapturedRequest[] = [];
+		const tool = new MCPTool(createCapturedConnection(calls), {
+			name: "unevaluated-intent",
+			inputSchema: { type: "object", unevaluatedProperties: { type: "string" }, minProperties: 1 },
+		});
+		await tool.execute("unevaluated", { i: "caller intent" }, undefined, unusedContext, undefined);
+		expect(calls).toEqual([
+			{ method: "tools/call", params: { name: "unevaluated-intent", arguments: { i: "caller intent" } } },
+		]);
+	});
+
 	it("strips harness intent explicitly prohibited by not-required", async () => {
 		const calls: CapturedRequest[] = [];
 		const tool = new MCPTool(createCapturedConnection(calls), {
