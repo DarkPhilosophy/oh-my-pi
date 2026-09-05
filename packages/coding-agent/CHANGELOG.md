@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 - Added Model Hub controls for editing thinking levels on concrete retry fallback rows.
+- Fixed edit and write results to report the formatted bytes actually committed by LSP writethrough.
+
+### Changed
+
+- Muse Code sessions send a compact hashline edit description (~3 KB less per request); all other models keep the full prompt.
+
+### Fixed
+
+	- Fixed GPT-6 Astra extended-context support and preserved maximum context windows reported by OpenAI Codex discovery ([#10980](https://github.com/can1357/oh-my-pi/pull/10980) by [@H4vC](https://github.com/H4vC)).
 
 ## [18.1.11] - 2026-09-05
 
@@ -12,6 +21,7 @@
 
 ### Fixed
 
+- Fixed `todo` and other tools called through eval rejecting optional `None`/`null` arguments that direct tool calls accept.
 - Report oversized selected lines that cannot fit after read context, with a working raw recovery selector instead of a looping continuation hint ([#10775](https://github.com/can1357/oh-my-pi/issues/10775)).
 - Fixed WorkPool child sessions crashing during startup while constructing their incremental `yield` tool schema.
 - Commit summaries written in Vietnamese, Korean, and other accented scripts are no longer rejected for exceeding the length limit, and keep their accents as typed.
