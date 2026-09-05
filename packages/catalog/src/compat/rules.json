@@ -45,6 +45,7 @@
 		"auth/minimax.kdl",
 		"auth/mistral.kdl",
 		"auth/moonshot.kdl",
+		"auth/muse-code.kdl",
 		"auth/nanogpt.kdl",
 		"auth/novita.kdl",
 		"auth/nvidia.kdl",
@@ -138,6 +139,7 @@
 		"providers/minimax.kdl",
 		"providers/mistral.kdl",
 		"providers/moonshot.kdl",
+		"providers/muse-code.kdl",
 		"providers/nanogpt.kdl",
 		"providers/novita.kdl",
 		"providers/nvidia.kdl",
@@ -5683,9 +5685,34 @@
 				}
 			},
 			{
-				"source": "classes/meta.kdl:6",
+				"source": "classes/meta.kdl:8",
 				"class": "meta",
 				"models": [
+					{
+						"kind": "exact",
+						"value": "muse-spark-1.3"
+					}
+				],
+				"thinking": {
+					"efforts": [
+						"minimal",
+						"low",
+						"medium",
+						"high",
+						"xhigh",
+						"max"
+					],
+					"mode": "effort"
+				}
+			},
+			{
+				"source": "classes/meta.kdl:12",
+				"class": "meta",
+				"models": [
+					{
+						"kind": "exact",
+						"value": "muse-spark-1.1"
+					},
 					{
 						"kind": "exact",
 						"value": "muse-spark-1.2"
@@ -5693,10 +5720,6 @@
 					{
 						"kind": "exact",
 						"value": "muse-spark-1.2-contributor"
-					},
-					{
-						"kind": "exact",
-						"value": "muse-spark-1.3"
 					},
 					{
 						"kind": "exact",
@@ -5715,7 +5738,7 @@
 				}
 			},
 			{
-				"source": "classes/meta.kdl:11",
+				"source": "classes/meta.kdl:17",
 				"class": "meta",
 				"providers": [
 					"kilo",
@@ -9309,7 +9332,7 @@
 				}
 			},
 			{
-				"source": "providers/meta.kdl:6",
+				"source": "providers/meta.kdl:7",
 				"class": "unknown",
 				"providers": [
 					"meta"
@@ -9332,7 +9355,8 @@
 				],
 				"wire": {
 					"includeEncryptedReasoning": true,
-					"supportsReasoningEffort": true
+					"supportsReasoningEffort": true,
+					"clampOutputToModelMax": true
 				}
 			},
 			{
@@ -9564,6 +9588,37 @@
 						"text",
 						"image"
 					]
+				}
+			},
+			{
+				"source": "providers/muse-code.kdl:12",
+				"class": "unknown",
+				"providers": [
+					"muse-code"
+				],
+				"thinking": {
+					"efforts": [
+						"minimal",
+						"low",
+						"medium",
+						"high",
+						"xhigh"
+					],
+					"mode": "effort"
+				}
+			},
+			{
+				"source": "providers/muse-code.kdl:3",
+				"providers": [
+					"muse-code"
+				],
+				"wire": {
+					"includeEncryptedReasoning": true,
+					"supportsReasoningEffort": true,
+					"clampOutputToModelMax": true
+				},
+				"catalog": {
+					"editPromptVariant": "compact"
 				}
 			},
 			{
@@ -10537,7 +10592,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:36",
+				"source": "providers/openai-codex.kdl:38",
 				"providers": [
 					"openai-codex"
 				],
@@ -10561,12 +10616,11 @@
 					"serviceTierCost": {
 						"flex": 0.5,
 						"priority": 2.5
-					},
-					"contextWindowFloor": 1050000
+					}
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:50",
+				"source": "providers/openai-codex.kdl:52",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10586,7 +10640,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:55",
+				"source": "providers/openai-codex.kdl:57",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10602,7 +10656,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:58",
+				"source": "providers/openai-codex.kdl:60",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10618,7 +10672,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:63",
+				"source": "providers/openai-codex.kdl:65",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10637,7 +10691,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:75",
+				"source": "providers/openai-codex.kdl:77",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10663,7 +10717,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:81",
+				"source": "providers/openai-codex.kdl:83",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10689,7 +10743,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:73",
+				"source": "providers/openai-codex.kdl:75",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10706,7 +10760,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:91",
+				"source": "providers/openai-codex.kdl:93",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10726,7 +10780,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:97",
+				"source": "providers/openai-codex.kdl:99",
 				"class": "unknown",
 				"providers": [
 					"openai-codex"
@@ -10742,7 +10796,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:100",
+				"source": "providers/openai-codex.kdl:102",
 				"class": "unknown",
 				"providers": [
 					"openai-codex"
@@ -10758,7 +10812,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:106",
+				"source": "providers/openai-codex.kdl:108",
 				"providers": [
 					"openai-codex"
 				],
@@ -10780,7 +10834,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:114",
+				"source": "providers/openai-codex.kdl:116",
 				"providers": [
 					"openai-codex"
 				],
@@ -10801,7 +10855,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:123",
+				"source": "providers/openai-codex.kdl:125",
 				"providers": [
 					"openai-codex"
 				],
@@ -10826,7 +10880,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:132",
+				"source": "providers/openai-codex.kdl:134",
 				"providers": [
 					"openai-codex"
 				],
@@ -10847,7 +10901,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:143",
+				"source": "providers/openai-codex.kdl:145",
 				"providers": [
 					"openai-codex"
 				],
@@ -10867,6 +10921,25 @@
 				],
 				"catalog": {
 					"contextWindowFloor": 1000000
+				}
+			},
+			{
+				"source": "providers/openai-codex.kdl:154",
+				"providers": [
+					"openai-codex"
+				],
+				"models": [
+					{
+						"kind": "exact",
+						"value": "gpt-6-astra"
+					},
+					{
+						"kind": "exact",
+						"value": "gpt-6-astra-wm"
+					}
+				],
+				"catalog": {
+					"maxContextWindow": 872000
 				}
 			},
 			{
@@ -14437,6 +14510,7 @@
 							],
 							"prefix": [
 								"gpt-5",
+								"gpt-6",
 								"oswe",
 								"mai-"
 							]
@@ -14758,6 +14832,15 @@
 			},
 			{
 				"provider": "meta",
+				"match": {
+					"prefix": [
+						"muse-image-",
+						"muse-voice-"
+					]
+				}
+			},
+			{
+				"provider": "muse-code",
 				"match": {
 					"prefix": [
 						"muse-image-",
@@ -16387,6 +16470,68 @@
 						"label": "deepseek",
 						"url": "https://api.deepseek.com/v1/models"
 					}
+				}
+			},
+			{
+				"id": "muse-code",
+				"apiKeyFormat": "bearer",
+				"name": "Muse Code (Subscription)",
+				"expiry": "jwt-or-never",
+				"login": {
+					"kind": "device-code",
+					"scopes": [],
+					"scopeSeparator": " ",
+					"clientId": {
+						"value": "1031625952748946"
+					},
+					"device": {
+						"url": {
+							"value": "https://auth.meta.com/oidc/device/authorization/"
+						},
+						"body": "form",
+						"standard": true,
+						"params": {},
+						"headers": {
+							"Accept": "application/json",
+							"x-api-version": "1.0.0"
+						}
+					},
+					"token": {
+						"url": {
+							"value": "https://auth.meta.com/oidc/device/token/"
+						},
+						"body": "form",
+						"standard": true,
+						"params": {},
+						"headers": {
+							"Accept": "application/json",
+							"x-api-version": "1.0.0"
+						}
+					},
+					"response": {
+						"userCode": "user_code",
+						"deviceCode": "device_code",
+						"verificationUri": "verification_uri",
+						"verificationUriComplete": "verification_uri_complete",
+						"interval": "interval",
+						"expiresIn": "expires_in"
+					},
+					"instructions": "Enter code: {user_code}",
+					"afterExchange": "muse-code-key",
+					"credential": {
+						"access": {
+							"path": "access_token"
+						},
+						"refresh": {
+							"path": "refresh_token"
+						},
+						"expires": {
+							"mode": "never"
+						}
+					}
+				},
+				"refresh": {
+					"kind": "none"
 				}
 			},
 			{
