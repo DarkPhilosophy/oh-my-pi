@@ -54,7 +54,7 @@ describe("Codex model discovery", () => {
 					{ headers: { etag: "models-v1" } },
 				);
 			},
-			{ preconnect() {} },
+			{ preconnect() { } },
 		);
 		const result = await fetchCodexModels({
 			accessToken: "test-token",
@@ -107,7 +107,7 @@ describe("Codex model discovery", () => {
 						],
 					}),
 				),
-			{ preconnect() {} },
+			{ preconnect() { } },
 		);
 		const result = await fetchCodexModels({
 			accessToken: "test-token",
@@ -147,7 +147,7 @@ describe("Codex model discovery", () => {
 						],
 					}),
 				),
-			{ preconnect() {} },
+			{ preconnect() { } },
 		);
 		const result = await fetchCodexModels({
 			accessToken: "test-token",
@@ -188,7 +188,7 @@ describe("Codex model discovery", () => {
 						],
 					}),
 				),
-			{ preconnect() {} },
+			{ preconnect() { } },
 		);
 		const result = await fetchCodexModels({
 			accessToken: "test-token",
@@ -232,7 +232,7 @@ describe("Codex model discovery", () => {
 						},
 					],
 				}),
-			{ preconnect() {} },
+			{ preconnect() { } },
 		);
 		const result = await fetchCodexModels({
 			accessToken: "test-token",
@@ -252,12 +252,12 @@ describe("Codex model discovery", () => {
 			const builtModel = buildModel(model);
 			// Codex credits keep this base rate and do not charge for cache
 			// writes; unlike the API card, there is no long-context tier. The
-			// default window stays at the deployment-advertised 272K; the
-			// 1.05M documented window is the `/extended-context` maximum.
+			// Astra's public context floor is 1.05M; discovery metadata remains
+			// available separately for deployment-specific maximums.
 			expect(builtModel.cost).toEqual({ input: 10, output: 50, cacheRead: 1, cacheWrite: 0 });
 			expect(builtModel.serviceTierCost).toEqual({ flex: 0.5, priority: 2.5 });
 			expect(builtModel).toMatchObject({
-				contextWindow: 272_000,
+				contextWindow: 1_050_000,
 				maxTokens: 128_000,
 			});
 		}
@@ -299,7 +299,7 @@ describe("Codex model discovery", () => {
 						],
 					}),
 				),
-			{ preconnect() {} },
+			{ preconnect() { } },
 		);
 		const result = await fetchCodexModels({
 			accessToken: "test-token",
@@ -368,7 +368,7 @@ describe("Codex model discovery", () => {
 						],
 					}),
 				),
-			{ preconnect() {} },
+			{ preconnect() { } },
 		);
 		try {
 			const result = await resolveProviderModels(
@@ -419,7 +419,7 @@ describe("Codex model discovery", () => {
 					}),
 				);
 			},
-			{ preconnect() {} },
+			{ preconnect() { } },
 		);
 		try {
 			const options = openaiCodexModelManagerOptions({
@@ -471,7 +471,7 @@ describe("Codex model discovery", () => {
 				}
 				return new Response("nope", { status: 500 });
 			},
-			{ preconnect() {} },
+			{ preconnect() { } },
 		);
 		try {
 			const options = openaiCodexModelManagerOptions({
@@ -528,7 +528,7 @@ describe("Codex model discovery", () => {
 					],
 				});
 			},
-			{ preconnect() {} },
+			{ preconnect() { } },
 		);
 		try {
 			const options = openaiCodexModelManagerOptions({
@@ -564,7 +564,7 @@ describe("Codex model discovery", () => {
 			maxTokens: 128_000,
 		};
 		const fetchFn: typeof fetch = Object.assign(async () => new Response("forbidden", { status: 403 }), {
-			preconnect() {},
+			preconnect() { },
 		});
 		try {
 			const options = openaiCodexModelManagerOptions({
@@ -715,7 +715,7 @@ describe("Codex model discovery", () => {
 						],
 					}),
 				),
-			{ preconnect() {} },
+			{ preconnect() { } },
 		);
 		const result = await fetchCodexModels({
 			accessToken: "test-token",
@@ -755,7 +755,7 @@ describe("Codex model discovery", () => {
 						],
 					}),
 				),
-			{ preconnect() {} },
+			{ preconnect() { } },
 		);
 		try {
 			const options = openaiCodexModelManagerOptions({
@@ -802,7 +802,7 @@ describe("Codex model discovery", () => {
 						],
 					}),
 				),
-			{ preconnect() {} },
+			{ preconnect() { } },
 		);
 		const result = await fetchCodexModels({
 			accessToken: "test-token",
@@ -831,7 +831,7 @@ describe("Codex model discovery", () => {
 						],
 					}),
 				),
-			{ preconnect() {} },
+			{ preconnect() { } },
 		);
 		const result = await fetchCodexModels({
 			accessToken: "test-token",
