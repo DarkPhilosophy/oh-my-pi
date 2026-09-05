@@ -133,6 +133,7 @@ export function createPersistedSubagentReviverFactory(
 				...(persistedModelPattern ? { modelPattern: persistedModelPattern } : {}),
 				modelPatternAuthFallback: init.resolvedModel,
 				settings: subagentSettings,
+				advisorScope: ctx.session.advisorScope,
 				sessionManager: reopened,
 				agentId: ref.id,
 				agentDisplayName: ref.displayName,

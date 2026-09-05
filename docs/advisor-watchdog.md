@@ -58,9 +58,9 @@ Slash commands:
 
 | Command              | Effect                                                                                                                               |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `/advisor`           | Toggle the advisor subsystem for this session (session-scoped override; does not change persisted `advisor.enabled`).                |
-| `/advisor on`        | Enable the configured/default advisor runtimes for this session. Session-scoped; not persisted to config.                            |
-| `/advisor off`       | Disable the advisor subsystem for this session and stop its runtimes. Session-scoped; not persisted to config.                       |
+| `/advisor`           | Toggle this session's advisor and its descendant veto; does not change persisted settings. |
+| `/advisor on`        | Enable this session's advisor and release its descendant veto. Children retain their own opt-ins and explicit off overrides. |
+| `/advisor off`       | Stop advisors in this session and its descendants, including opted-in children spawned or revived afterward. Not persisted to config. |
 | `/advisor status`    | Show each advisor's runtime state, model, context usage, token usage, and cost.                                                      |
 | `/advisor dump`      | Copy the compact transcript (all active advisors when a roster is present) to the clipboard.                                         |
 | `/advisor dump raw`  | Copy the full dump, including system prompt, tools, thinking, and calls.                                                             |
@@ -298,6 +298,8 @@ Subagents run unadvised by default; advisors are opted in **per agent** instead 
 
 - Agent definition frontmatter `advisor`: `true` advises spawned sessions of that agent with the model resolved for the `advisor` role; a string (e.g. `advisor: "deepseek/deepseek-v4-flash"` or `advisor: "@smol:high"`) sets an explicit advisor model pattern with an optional `:level` thinking suffix.
 - The `task.agentAdvisor` settings record (agent name → `"on"` / `"off"` / model pattern) overrides the frontmatter, and is configured per agent from the `/agents` hub: Enter on an agent opens its property strip; the advisor strip offers on/off, a model-browser pick, or a raw pattern.
+
+An explicit `/advisor off` in an ancestor takes precedence over these opt-ins. It stops live descendant advisors and prevents new or parked/restored children from starting advisors while the veto remains active. `/advisor on` releases that ancestor's veto; it does not opt unadvised children in or override a child's own explicit off. This control is runtime-only and scoped to the session tree: it neither rewrites global settings nor affects unrelated sessions. A default `advisor.enabled: false` without an explicit off command still permits per-agent opt-ins.
 
 The legacy `advisor.subagents: true` setting migrates to `task.agentAdvisor: { task: "on" }` — the bundled generic `task` agent keeps its advisor, other agents start unadvised.
 

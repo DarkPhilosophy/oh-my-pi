@@ -158,6 +158,7 @@ import {
 	type SecretObfuscator,
 } from "./secrets";
 import { AgentSession, type InitialRetryFallbackState, type PlanYolo, type Prewalk } from "./session/agent-session";
+import type { AdvisorScope } from "./session/session-advisors";
 import { discoverAuthStorage as discoverAuthStorageFromConfig } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
 import { DateCwdReminderInjector } from "./session/date-cwd-reminder";
@@ -178,6 +179,7 @@ import {
 	type RetryFallbackResolutionContext,
 	resolveRetryFallbackChainKey,
 } from "./session/retry-fallback-chains";
+import { createReserveRoutingStreamFn } from "./session/reserve-routing";
 import { getRestorableSessionModels } from "./session/session-context";
 import { SessionManager } from "./session/session-manager";
 import { collectMountedMCPToolRoutes, projectMountedMCPXdevGuidance } from "./session/session-tools";
@@ -376,6 +378,8 @@ function applyMCPEnvironment(result: { exaApiKeys: string[] }): void {
 
 // Types
 export interface CreateAgentSessionOptions {
+	/** Parent session's runtime advisor veto; never persisted in Settings. */
+	advisorScope?: AdvisorScope;
 	/** Working directory for project-local discovery. Default: getProjectDir() */
 	cwd?: string;
 	/** Additional workspace directories beyond cwd (multi-root), absolute or cwd-relative. */
@@ -1838,6 +1842,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			isDisposed: () => session?.isDisposed ?? false,
 			getHindsightSessionState: () => session?.getHindsightSessionState(),
 			getMnemopiSessionState: () => session?.getMnemopiSessionState(),
+			getAdvisorScope: () => session?.advisorScope,
 			getAgentId: () => resolvedAgentId,
 			getToolByName: name => session?.getToolByName(name),
 			hasBuiltInTool: name => session?.hasBuiltInTool(name) ?? false,
@@ -3536,8 +3541,15 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// the session drives. Wrapped in a per-provider concurrency limiter so
 		// each LLM HTTP request — not the whole subagent lifecycle — holds the
 		// slot, preventing the nested-spawn deadlock from issue #3749.
+		const getRequestApiKey =
+			options.getApiKey ?? ((requestModel: Model) => modelRegistry.resolver(requestModel, agent.sessionId));
 		const settingsAwareStreamFn = wrapStreamFnWithBlobUrlFallback(
-			wrapStreamFnWithProviderConcurrency(settings, createSettingsAwareStreamFn(settings)),
+			createReserveRoutingStreamFn(
+				settings,
+				authStorage,
+				wrapStreamFnWithProviderConcurrency(settings, createSettingsAwareStreamFn(settings)),
+				getRequestApiKey,
+			),
 			blobBroker,
 		);
 		const codeModeState: { namespacesInfo?: unknown } = {};
@@ -3593,7 +3605,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			kimiApiFormat,
 			preferWebsockets: preferOpenAICodexWebsockets,
 			getToolContext: tc => toolContextStore.getContext(tc),
-			getApiKey: options.getApiKey ?? (requestModel => modelRegistry.resolver(requestModel, agent.sessionId)),
+			// Resolve reserve eligibility before touching the independent normal pool.
+			getApiKey: requestModel =>
+				requestModel.reserveRoute &&
+				requestModel.id !== requestModel.reserveRoute.model &&
+				settings.get("providers.openai-codex.useReserve")
+					? undefined
+					: getRequestApiKey(requestModel),
 			streamFn: (streamModel, context, streamOptions) => {
 				if (notifyFirstChatDispatch) {
 					const cb = notifyFirstChatDispatch;
@@ -3854,6 +3872,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			providerPromptCacheKeySource,
 			parentEvalSessionId: options.parentEvalSessionId,
 			advisorTools,
+			advisorScope: options.advisorScope,
 			// Same per-call `grep` seam the primary bridge gets, built against the
 			// advisor's own tool session so a `pi_grep` frame's context width and
 			// match cap are honored there too.

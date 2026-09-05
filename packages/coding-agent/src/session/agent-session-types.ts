@@ -40,6 +40,7 @@ import type { ConfiguredThinkingLevel } from "../thinking";
 import type { XdevState } from "../tools/xdev";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
 import type { SessionManager } from "./session-manager";
+import type { AdvisorScope } from "./session-advisors";
 
 /** Callback when a prompt is queued while streaming. */
 export type QueuedUserMessageListener = (text: string, imageCount: number, replacedText?: string) => void;
@@ -282,6 +283,8 @@ export interface AgentSessionConfig {
 	providerPromptCacheKeySource?: "explicit" | "fork";
 	/** Full advisor toolset built against an advisor-scoped tool session. */
 	advisorTools?: AgentTool[];
+	/** Parent session's runtime advisor veto. */
+	advisorScope?: AdvisorScope;
 	/**
 	 * Build a `grep` honoring a Cursor `pi_grep` frame's own context width and
 	 * match cap, against the advisor-scoped tool session. Without it an advisor

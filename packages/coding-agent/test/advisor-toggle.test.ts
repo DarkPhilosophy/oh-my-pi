@@ -421,6 +421,66 @@ describe("AgentSession advisor toggle", () => {
 		expect(sessionB.isAdvisorActive()).toBe(true);
 	});
 
+	it("applies explicit parent off to live, new and restored opted-in descendants only", async () => {
+		const children: AgentSession[] = [];
+		const { promise: reviewStarted, resolve: signalReviewStarted } = Promise.withResolvers<AbortSignal>();
+		const advisorMock = createMockModel({
+			handler: (_context, options) => {
+				if (!options?.signal) throw new Error("Expected cancellable advisor request");
+				signalReviewStarted(options.signal);
+				return { delayMs: 60_000, content: ["late advice"] };
+			},
+		});
+		const makeChild = (parent?: AgentSession, enabled = true): AgentSession => {
+			const child = new AgentSession({
+				agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
+				sessionManager: SessionManager.inMemory(),
+				settings: Settings.isolated({
+					"advisor.enabled": enabled,
+					modelRoles: { advisor: `${model.provider}/${model.id}` },
+				}),
+				modelRegistry,
+				advisorTools: [],
+				advisorStreamFn: advisorMock.stream,
+				advisorScope: parent?.advisorScope,
+			});
+			children.push(child);
+			return child;
+		};
+		try {
+			const live = makeChild(session);
+			const nested = makeChild(live);
+			const unrelated = makeChild();
+			expect(live.isAdvisorActive()).toBe(true);
+			const reviewing = live.getAdvisorAgent()!.prompt("review the current task");
+			const reviewSignal = await reviewStarted;
+			session.setAdvisorEnabled(false);
+			expect(reviewSignal.aborted).toBe(true);
+			await reviewing;
+			expect(live.isAdvisorActive()).toBe(false);
+			expect(nested.isAdvisorActive()).toBe(false);
+			expect(unrelated.isAdvisorActive()).toBe(true);
+			expect(live.setAdvisorEnabled(true)).toBe(false);
+			const fresh = makeChild(session);
+			expect(fresh.isAdvisorActive()).toBe(false);
+			await live.dispose();
+			const restored = makeChild(session);
+			expect(restored.isAdvisorActive()).toBe(false);
+			const optedOut = makeChild(session, false);
+			const explicitlyOff = makeChild(session);
+			explicitlyOff.setAdvisorEnabled(false);
+			session.setAdvisorEnabled(true);
+			expect(fresh.isAdvisorActive()).toBe(true);
+			expect(restored.isAdvisorActive()).toBe(true);
+			expect(nested.isAdvisorActive()).toBe(true);
+			expect(optedOut.isAdvisorActive()).toBe(false);
+			expect(explicitlyOff.isAdvisorActive()).toBe(false);
+			expect(session.settings.get("advisor.enabled")).toBe(false);
+		} finally {
+			await Promise.all(children.map(child => child.dispose()));
+		}
+	});
+
 	it("exposes provider sessionId on live advisor stats", () => {
 		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
 		session.toggleAdvisorEnabled();

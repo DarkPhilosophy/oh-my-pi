@@ -346,6 +346,7 @@ import {
 } from "./queued-messages";
 import type { ServingModel } from "./retry-fallback-chains";
 import {
+	type AdvisorScope,
 	type AdvisorStats,
 	type AdvisorStatusOverviewEntry,
 	SessionAdvisors,
@@ -1710,6 +1711,7 @@ export class AgentSession {
 		};
 		this.#advisors = new SessionAdvisors(advisorsHost, {
 			enabled: this.settings.get("advisor.enabled"),
+			parentScope: config.advisorScope,
 			tools: config.advisorTools,
 			createGrepTool: config.advisorCreateGrepTool,
 			createEditTool: config.advisorCreateEditTool,
@@ -4359,7 +4361,7 @@ export class AgentSession {
 		this.yieldQueue.clear();
 		this.agent.setAsideMessageProvider(undefined);
 		this.agent.hasIrcInterrupts = undefined;
-		this.#advisors.stopRuntime();
+		this.#advisors.dispose();
 		this.#eval.beginDispose();
 	}
 
@@ -10456,6 +10458,11 @@ export class AgentSession {
 		const filePath = path.join(os.tmpdir(), `omp-llm-request-${Snowflake.next()}.json`);
 		await Bun.write(filePath, `${JSON.stringify(payload, null, 2)}\n`);
 		return filePath;
+	}
+
+	/** Runtime veto inherited by newly spawned and revived descendants. */
+	get advisorScope(): AdvisorScope {
+		return this.#advisors.scope;
 	}
 
 	/**

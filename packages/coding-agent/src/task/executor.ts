@@ -387,6 +387,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Options for subagent execution */
 export interface ExecutorOptions {
+	/** Live parent advisor veto, retained across parking and revival. */
+	advisorScope?: CreateAgentSessionOptions["advisorScope"];
 	cwd: string;
 	/** Additional workspace directories to seed on the subagent session (multi-root). */
 	additionalDirectories?: string[];
@@ -3334,6 +3336,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				modelRegistry,
 				getApiKey: options.getApiKey,
 				settings: subagentSettings,
+				advisorScope: options.advisorScope,
 				model,
 				modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,
 				modelPatternAuthFallback:
