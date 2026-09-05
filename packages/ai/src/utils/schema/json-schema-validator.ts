@@ -173,6 +173,29 @@ function resolveLocalRef(root: unknown, ref: string): unknown | undefined {
 	return current;
 }
 
+/** Return whether a schema node or same-instance composed/ref branch declares a property. */
+export function schemaDefinesProperty(schema: unknown, key: string): boolean {
+	const root = schema;
+	const visited = new WeakSet<object>();
+	const visit = (node: unknown): boolean => {
+		if (!isJsonObject(node)) return false;
+		if (visited.has(node)) return false;
+		visited.add(node);
+		const properties = node.properties;
+		if (isJsonObject(properties) && Object.hasOwn(properties, key)) return true;
+		for (const keyword of ["anyOf", "oneOf", "allOf"] as const) {
+			const branches = node[keyword];
+			if (Array.isArray(branches) && branches.some(visit)) return true;
+		}
+		if (typeof node.$ref === "string") {
+			const resolved = resolveLocalRef(root, node.$ref);
+			if (resolved !== undefined && visit(resolved)) return true;
+		}
+		return false;
+	};
+	return visit(schema);
+}
+
 /** Resolve a `#/path/to/node` pointer against the root schema. Returns `undefined` for external/unsupported refs. */
 
 function isRequiredSet(value: unknown): value is string[] {
