@@ -6,6 +6,10 @@
 
 - Muse Code sessions send a compact hashline edit description (~3 KB less per request); all other models keep the full prompt.
 
+### Fixed
+
+- Fixed GPT-6 Astra extended-context support and preserved maximum context windows reported by OpenAI Codex discovery.
+
 ## [18.1.11] - 2026-09-05
 
 ### Added

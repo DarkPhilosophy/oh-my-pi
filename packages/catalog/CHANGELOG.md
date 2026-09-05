@@ -10,7 +10,7 @@
 
 ### Fixed
 
-- Fixed GPT-6 Astra requests through GitHub Copilot failing with an unsupported endpoint error ([#10874](https://github.com/can1357/oh-my-pi/pull/10874) by [@xpcmdshell](https://github.com/xpcmdshell)).
+- Fixed GPT-6 Astra showing as free with a 272K-token window in the OpenAI Codex catalog by applying its documented pricing and 1.05M-token context window.
 
 ## [18.1.9] - 2026-09-04
 
