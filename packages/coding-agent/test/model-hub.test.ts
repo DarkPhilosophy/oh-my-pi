@@ -1029,6 +1029,24 @@ describe("ModelHub", () => {
 			expect(onFallbackChainChange).toHaveBeenLastCalledWith("default", ["openai/gpt-5.6:high"]);
 		});
 
+		test("removes a role-specific fallback when it becomes that role's primary", () => {
+			const model = getBundledModel("openai", "gpt-5.6");
+			const other = getBundledModel("openai", "gpt-5.5");
+			if (!model || !other) throw new Error("Expected bundled OpenAI models");
+			const settings = Settings.isolated({
+				modelRoles: { plan: "openai/gpt-5.6:high" },
+				"retry.fallbackChains": { plan: ["openai/gpt-5.6:low", "openai/gpt-5.5"] },
+			});
+			const { hub, onFallbackChainChange } = createHub({ models: [model, other], scoped: true, settings });
+			enterRolesView(hub);
+			for (let i = 0; i < 5; i++) hub.handleInput(DOWN);
+			hub.handleInput("t");
+			hub.handleInput("\x1b[C");
+			hub.handleInput("\x1b[C");
+			hub.handleInput("\n");
+			expect(onFallbackChainChange).toHaveBeenLastCalledWith("plan", ["openai/gpt-5.5"]);
+		});
+
 		test.each(["test/*", "test/missing"])(
 			"explains unavailable thinking for an unresolved fallback selector (%s)",
 			selector => {
