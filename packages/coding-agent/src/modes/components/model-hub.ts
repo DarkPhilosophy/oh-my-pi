@@ -29,6 +29,8 @@ import {
 } from "@oh-my-pi/pi-tui";
 import type { ModelRegistry } from "../../config/model-registry";
 import {
+	formatModelSelectorValue,
+	formatModelString,
 	parseModelPattern,
 	type ModelRoleLookup,
 	type ResolvedModelRoleValue,
@@ -42,7 +44,7 @@ import {
 	type ConfiguredThinkingLevel,
 	getConfiguredThinkingLevelMetadata,
 } from "../../thinking";
-import { formatRetryFallbackSelector, isRetryFallbackWildcardKey } from "../../session/retry-fallback-chains";
+import { isRetryFallbackWildcardKey } from "../../session/retry-fallback-chains";
 import { theme } from "../theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import {
@@ -1004,7 +1006,12 @@ export class ModelHubComponent implements Component {
 		});
 		this.#strip = {
 			kind: "thinking",
-			item: { provider: model.provider, id: model.id, model, selector: row.selector },
+			item: {
+				provider: model.provider,
+				id: model.id,
+				model,
+				selector: parsed.upstream ? `${formatModelString(model)}@${parsed.upstream}` : formatModelString(model),
+			},
 			role: row.role,
 			chainIndex: row.chainIndex,
 			chips,
@@ -1071,7 +1078,7 @@ export class ModelHubComponent implements Component {
 							chip.thinkingLevel === ThinkingLevel.Inherit || chip.thinkingLevel === AUTO_THINKING
 								? undefined
 								: chip.thinkingLevel;
-						const selector = formatRetryFallbackSelector(strip.item.model, level);
+						const selector = formatModelSelectorValue(strip.item.selector, level);
 						const before = chain.slice(0, strip.chainIndex).filter(entry => entry !== selector);
 						const after = chain.slice(strip.chainIndex + 1).filter(entry => entry !== selector);
 						before.push(selector);
