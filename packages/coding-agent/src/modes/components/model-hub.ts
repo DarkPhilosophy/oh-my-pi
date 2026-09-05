@@ -1096,7 +1096,7 @@ export class ModelHubComponent implements Component {
 						const primaryRaw = strip.role.includes("/") ? strip.role : this.#settings.getModelRole(strip.role);
 						const primary = primaryRaw ? parseRetryFallbackSelector(primaryRaw, this.#registry)?.raw : undefined;
 						const edited = parseRetryFallbackSelector(selector, this.#registry)?.raw;
-						if (primary && edited === primary) {
+						if (strip.role !== "default" && primary && edited === primary) {
 							chain.splice(0, chain.length, ...chain.filter((_, index) => index !== strip.chainIndex));
 						} else {
 							const next = chain
