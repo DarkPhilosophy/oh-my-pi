@@ -12,6 +12,7 @@
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
+import { modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { getCatalogProviderEntry } from "@oh-my-pi/pi-catalog/provider-models";
 import {
@@ -993,6 +994,9 @@ export class ModelHubComponent implements Component {
 		const literalModel = this.#registry.find(parsed.provider, parsed.id);
 		const routing = literalModel ? undefined : splitUpstreamRouting(parsed.id);
 		const model = literalModel ?? this.#registry.find(parsed.provider, routing?.base ?? parsed.id);
+		if (routing && model && !modelMatchesHost(model, "openrouter") && !modelMatchesHost(model, "vercelAIGateway")) {
+			return undefined;
+		}
 		const routedModel = routing && model ? parseModelPattern(row.selector, [model]).model : model;
 		if (!routedModel) return undefined;
 		return { model: routedModel, selector: `${parsed.provider}/${parsed.id}`, thinkingLevel: parsed.thinkingLevel };
@@ -1089,14 +1093,19 @@ export class ModelHubComponent implements Component {
 								? undefined
 								: chip.thinkingLevel;
 						const selector = formatModelSelectorValue(strip.item.selector, level);
-						const primary = this.#roles[strip.role]?.model;
-						const primarySelector = primary ? `${primary.provider}/${primary.id}` : undefined;
+						const primary = strip.role === "default" ? undefined : this.#roles[strip.role]?.model;
 						const before = chain
 							.slice(0, strip.chainIndex)
-							.filter(entry => entry !== selector && entry !== primarySelector);
+							.filter(
+								entry =>
+									entry !== selector && entry !== (primary ? `${primary.provider}/${primary.id}` : undefined),
+							);
 						const after = chain
 							.slice(strip.chainIndex + 1)
-							.filter(entry => entry !== selector && entry !== primarySelector);
+							.filter(
+								entry =>
+									entry !== selector && entry !== (primary ? `${primary.provider}/${primary.id}` : undefined),
+							);
 						before.push(selector);
 						chain.splice(0, chain.length, ...before, ...after);
 						this.#setFallbackChain(strip.role, chain);
