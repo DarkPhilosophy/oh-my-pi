@@ -28,11 +28,21 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import type { ModelRegistry } from "../../config/model-registry";
-import { type ModelRoleLookup, type ResolvedModelRoleValue, resolveModelRoleValue } from "../../config/model-resolver";
+import {
+	parseModelPattern,
+	type ModelRoleLookup,
+	type ResolvedModelRoleValue,
+	resolveModelRoleValue,
+} from "../../config/model-resolver";
 import { getKnownRoleIds, getRoleInfo } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
-import { AUTO_THINKING, type ConfiguredThinkingLevel, getConfiguredThinkingLevelMetadata } from "../../thinking";
-import { formatRetryFallbackSelector, parseRetryFallbackSelector } from "../../session/retry-fallback-chains";
+import {
+	AUTO_THINKING,
+	concreteThinkingLevel,
+	type ConfiguredThinkingLevel,
+	getConfiguredThinkingLevelMetadata,
+} from "../../thinking";
+import { formatRetryFallbackSelector, isRetryFallbackWildcardKey } from "../../session/retry-fallback-chains";
 import { theme } from "../theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import {
@@ -978,9 +988,9 @@ export class ModelHubComponent implements Component {
 	}
 
 	#openFallbackThinkingStrip(row: Extract<RolesRow, { kind: "fallback" }>): void {
-		const parsed = parseRetryFallbackSelector(row.selector, this.#registry);
-		if (!parsed) return;
-		const model = this.#registry.find(parsed.provider, parsed.id.split("@", 1)[0]);
+		if (isRetryFallbackWildcardKey(row.selector)) return;
+		const parsed = parseModelPattern(row.selector, this.#registry.getAll());
+		const model = parsed.model;
 		if (!model) return;
 		const options = this.#thinkingOptionsFor(model).filter(level => level !== AUTO_THINKING);
 		const chips = options.map(level => {
@@ -999,7 +1009,7 @@ export class ModelHubComponent implements Component {
 			role: row.role,
 			chainIndex: row.chainIndex,
 			chips,
-			index: Math.max(0, options.indexOf(parsed.thinkingLevel ?? ThinkingLevel.Inherit)),
+			index: Math.max(0, options.indexOf(concreteThinkingLevel(parsed.thinkingLevel) ?? ThinkingLevel.Inherit)),
 			returnToRoles: true,
 		};
 	}
@@ -1059,12 +1069,17 @@ export class ModelHubComponent implements Component {
 				if (strip.chainIndex !== undefined && strip.role && chip.thinkingLevel !== undefined) {
 					const chain = [...(this.#fallbackChains()[strip.role] ?? [])];
 					if (strip.chainIndex < chain.length) {
-						chain[strip.chainIndex] = formatRetryFallbackSelector(
-							strip.item.model,
+						const level =
 							chip.thinkingLevel === ThinkingLevel.Inherit || chip.thinkingLevel === AUTO_THINKING
 								? undefined
-								: chip.thinkingLevel,
-						);
+								: chip.thinkingLevel;
+						let selector = formatRetryFallbackSelector(strip.item.model, level);
+						const routeMatch = strip.item.selector.match(/@([^:]+)(?::|$)/);
+						if (routeMatch) {
+							const base = selector.replace(/:[^:]+$/, "");
+							selector = `${base}@${routeMatch[1]}${level ? `:${level}` : ""}`;
+						}
+						chain[strip.chainIndex] = selector;
 						this.#setFallbackChain(strip.role, chain);
 					}
 				} else if (strip.role && chip.thinkingLevel !== undefined) {
@@ -2053,8 +2068,10 @@ export class ModelHubComponent implements Component {
 			}
 			const row = this.#rolesRows[this.#roleIndex];
 			if (row?.kind === "fallback") {
-				const parsed = parseRetryFallbackSelector(row.selector, this.#registry);
-				return parsed && this.#registry.find(parsed.provider, parsed.id.split("@", 1)[0])
+				if (isRetryFallbackWildcardKey(row.selector))
+					return "↑/↓ rows · Enter replace · f add another · x remove · thinking n/a · [/] reorder · ← providers";
+				const parsed = parseModelPattern(row.selector, this.#registry.getAll());
+				return parsed.model
 					? "↑/↓ rows · Enter replace · f add another · x remove · t thinking · [/] reorder · ← providers"
 					: "↑/↓ rows · Enter replace · f add another · x remove · thinking n/a · [/] reorder · ← providers";
 			}
