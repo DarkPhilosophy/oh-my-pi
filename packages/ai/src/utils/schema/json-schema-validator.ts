@@ -181,6 +181,10 @@ export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 		if (!isJsonObject(node)) return false;
 		if (visited.has(node)) return false;
 		visited.add(node);
+		if (isJsonObject(node.const) && Object.hasOwn(node.const, key)) return true;
+		if (Array.isArray(node.enum) && node.enum.some(value => isJsonObject(value) && Object.hasOwn(value, key))) {
+			return true;
+		}
 		const properties = node.properties;
 		if (isJsonObject(properties) && Object.hasOwn(properties, key)) return true;
 		const required = node.required;

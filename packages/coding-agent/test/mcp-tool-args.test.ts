@@ -206,6 +206,22 @@ describe("MCP tool arguments", () => {
 		]);
 	});
 
+	it.each(["const", "enum"] as const)("forwards intent owned by an object-valued %s", async keyword => {
+		const calls: CapturedRequest[] = [];
+		const definition: MCPToolDefinition = {
+			name: "object-constraint",
+			inputSchema: {
+				type: "object",
+				[keyword]: keyword === "const" ? { i: "token" } : [{ i: "token" }],
+			},
+		};
+		const tool = new MCPTool(createCapturedConnection(calls), definition);
+		await tool.execute("object", { i: "token" }, undefined, unusedContext, undefined);
+		expect(calls).toEqual([
+			{ method: "tools/call", params: { name: "object-constraint", arguments: { i: "token" } } },
+		]);
+	});
+
 	it("forwards intent admitted by propertyNames", async () => {
 		const calls: CapturedRequest[] = [];
 		const definition: MCPToolDefinition = {

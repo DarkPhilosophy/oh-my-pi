@@ -257,6 +257,16 @@ describe("callSessionTool", () => {
 		).toBe("string:caller intent");
 	});
 
+	it.each(["const", "enum"] as const)("preserves intent in object-valued %s", async keyword => {
+		const tool = createSchemaTool("object-constraint", {
+			type: "object",
+			[keyword]: keyword === "const" ? { i: "token" } : [{ i: "token" }],
+		});
+		expect(await callSessionTool("object-constraint", { i: "token" }, { session: createSession([tool]) })).toBe(
+			"string:token",
+		);
+	});
+
 	it("preserves intent admitted by propertyNames", async () => {
 		const tool = createSchemaTool("property-name-intent", {
 			type: "object",
