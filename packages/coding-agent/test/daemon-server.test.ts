@@ -237,12 +237,14 @@ describe("daemon server and registry", () => {
 		const registry = new DaemonSessionRegistry({ runtimeFactory: fake.runtimeFactory });
 		const session = await registry.create("terminal", root);
 		const frames: unknown[] = [];
+		const complete = Promise.withResolvers<void>();
 		await registry.attach(
 			session.sessionId,
 			"terminal-client",
 			"interactive",
 			frame => {
 				frames.push(frame);
+				if (frames.length === 2) complete.resolve();
 			},
 			undefined,
 			"terminal",
@@ -251,6 +253,7 @@ describe("daemon server and registry", () => {
 		const largePayload = "semantic-payload".repeat(32 * 1024);
 		fake.runtimes.get(session.sessionId)?.emit({ type: "message_update", message: largePayload });
 		fake.runtimes.get(session.sessionId)?.emit({ type: "terminal_output", data: "visible" });
+		await complete.promise;
 
 		const events = frames as Array<{ type?: unknown; seq?: unknown; event?: { type?: unknown; data?: unknown } }>;
 		expect(events.map(frame => frame.seq)).toEqual([1, 2]);
@@ -284,12 +287,96 @@ describe("daemon server and registry", () => {
 		expect(frames.length).toBe(expectedChunks);
 		await registry.dispose();
 	});
+	test("keeps session output backpressured until every attachment releases the frame", async () => {
+		const fake = fakeFactory();
+		let pendingBytes = () => 0;
+		const registry = new DaemonSessionRegistry({
+			runtimeFactory: async options => ({
+				...(await fake.runtimeFactory(options)),
+				setTerminalOutputBacklog: source => {
+					pendingBytes = source;
+				},
+			}),
+		});
+		const first = Promise.withResolvers<void>();
+		const second = Promise.withResolvers<void>();
+		try {
+			const session = await registry.create("backpressure", process.cwd());
+			await registry.attach(session.sessionId, "first", "interactive", () => first.promise);
+			await registry.attach(session.sessionId, "second", "observe", () => second.promise);
+			fake.runtimes.get(session.sessionId)!.emit({ type: "terminal_output", data: "output" });
+			expect(pendingBytes()).toBeGreaterThan(0);
+			first.resolve();
+			await flushMicrotasks();
+			expect(pendingBytes()).toBeGreaterThan(0);
+			second.resolve();
+			await flushMicrotasks();
+			expect(pendingBytes()).toBe(0);
+		} finally {
+			first.resolve();
+			second.resolve();
+			await registry.dispose();
+		}
+	});
+	test("releases detached output backlog without double-releasing a late delivery", async () => {
+		const fake = fakeFactory();
+		let pendingBytes = () => 0;
+		const registry = new DaemonSessionRegistry({
+			runtimeFactory: async options => ({
+				...(await fake.runtimeFactory(options)),
+				setTerminalOutputBacklog: source => {
+					pendingBytes = source;
+				},
+			}),
+		});
+		const stalled = Promise.withResolvers<void>();
+		try {
+			const session = await registry.create("detached-backlog", process.cwd());
+			await registry.attach(session.sessionId, "stalled", "interactive", () => stalled.promise);
+			fake.runtimes.get(session.sessionId)!.emit({ type: "terminal_output", data: "output" });
+			expect(pendingBytes()).toBeGreaterThan(0);
+			registry.disconnect(session.sessionId, "stalled");
+			expect(pendingBytes()).toBe(0);
+			stalled.resolve();
+			await flushMicrotasks();
+			expect(pendingBytes()).toBe(0);
+		} finally {
+			stalled.resolve();
+			await registry.dispose();
+		}
+	});
+	test("yields a burst of separate terminal writes without losing their order", async () => {
+		const fake = fakeFactory();
+		const registry = new DaemonSessionRegistry({ runtimeFactory: fake.runtimeFactory });
+		const session = await registry.create("terminal-burst", process.cwd());
+		const received: string[] = [];
+		const complete = Promise.withResolvers<void>();
+		const writes = Array.from({ length: 100 }, (_, index) => `${index}\n`);
+		try {
+			await registry.attach(session.sessionId, "burst-client", "interactive", frame => {
+				const event = (frame as { event?: { type?: string; data?: string } }).event;
+				if (event?.type !== "terminal_output" || event.data === undefined) return;
+				received.push(event.data);
+				if (received.length === writes.length) complete.resolve();
+			});
+			const observer = Promise.withResolvers<void>();
+			queueMicrotask(observer.resolve);
+			for (const data of writes) fake.runtimes.get(session.sessionId)!.emit({ type: "terminal_output", data });
+			await observer.promise;
+			expect(received.length).toBeLessThan(writes.length);
+			await complete.promise;
+			expect(received).toEqual(writes);
+		} finally {
+			await registry.dispose();
+		}
+	});
 	test("recovers terminal fanout after an attachment sink throws", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-daemon-terminal-fanout-recovery-"));
 		const fake = fakeFactory();
 		const registry = new DaemonSessionRegistry({ runtimeFactory: fake.runtimeFactory });
 		const session = await registry.create("terminal-fanout-recovery", root);
 		const delivered: unknown[] = [];
+		const complete = Promise.withResolvers<void>();
 		let calls = 0;
 		await registry.attach(
 			session.sessionId,
@@ -299,12 +386,14 @@ describe("daemon server and registry", () => {
 				calls++;
 				if (calls === 1) throw new Error("sink failed");
 				delivered.push(frame);
+				complete.resolve();
 			},
 			0,
 		);
 
 		fake.runtimes.get(session.sessionId)?.emit({ type: "terminal_output", data: "first" });
 		fake.runtimes.get(session.sessionId)?.emit({ type: "terminal_output", data: "second" });
+		await complete.promise;
 
 		expect(delivered).toHaveLength(1);
 		expect(delivered[0]).toMatchObject({

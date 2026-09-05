@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added an opt-in provider setting to use Luna Reserve across eligible accounts, with fallback to normal Luna and independent quota handling.
+- Added an offline history profiler for direct and daemon-hosted rendering, reporting event-loop gaps, CPU, memory, output volume, and optional persistence rewrites.
+- Daemon-hosted sessions now run in isolated worker threads, so a stalled session no longer freezes other attached clients or the daemon's control channel.
+
+### Fixed
+
+- Fixed `/advisor off` leaving subagent advisors running or allowing opted-in advisors to restart when children are spawned or revived.
+- Reduced daemon control-channel traffic during streamed output by coalescing event acknowledgements while preserving ordered delivery.
+- Reduced event-loop stalls during background session-file rewrites on large histories by serializing entries in time slices instead of one synchronous pass.
+- Reduced daemon client pauses on long sessions by retaining immutable history when only the session status changes.
+- Reduced first-replay stalls by warming native syntax grammars off-thread before rendering restored history.
+- Restored lightweight terminal startup by keeping daemon session inventory rendering out of the first-paint module graph.
+
 ## [18.1.9] - 2026-09-04
 
 ### Breaking Changes

@@ -190,6 +190,7 @@ const STT_WORKER_ARG = "__omp_worker_stt";
 const TTS_WORKER_ARG = "__omp_worker_tts";
 const MNEMOPI_EMBED_WORKER_ARG = "__omp_worker_mnemopi_embed";
 const DAEMON_SERVER_WORKER_ARG = "__omp_worker_daemon_server";
+const DAEMON_SESSION_WORKER_ARG = "__omp_worker_daemon_session";
 
 async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === TINY_WORKER_ARG) {
@@ -281,6 +282,12 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		// Worker selectors must dispatch before the normal command graph loads.
 		const { startDaemonBrokerFromEnvironment } = await import("./launch/broker");
 		await startDaemonBrokerFromEnvironment();
+		return true;
+	}
+	if (arg === DAEMON_SESSION_WORKER_ARG) {
+		if (parentPort) installWorkerInbox(parentPort);
+		const { runDaemonSessionWorker } = await import("./daemon/session-worker");
+		await runDaemonSessionWorker();
 		return true;
 	}
 	if (arg === DAEMON_SERVER_WORKER_ARG) {

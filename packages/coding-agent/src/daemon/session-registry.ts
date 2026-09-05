@@ -51,6 +51,7 @@ type AttachmentRecord = {
 	sink: AttachmentSink;
 	attaching: boolean;
 	pending: EventRecord<unknown>[];
+	pendingDeliveryReleases: Set<() => void>;
 };
 
 function projectAttachmentFrame(frame: unknown, delivery: DaemonEventDelivery): unknown {
@@ -81,6 +82,7 @@ type SessionRecord = {
 	unsubscribe: () => void;
 	queue: Promise<void>;
 	pendingEvents: BoundedDaemonEvent[];
+	pendingOutputBytes: number;
 	fanoutActive: boolean;
 	closed: boolean;
 	parkTimer?: NodeJS.Timeout;
@@ -336,13 +338,17 @@ export class DaemonSessionRegistry {
 		if (mode === "interactive" && record.interactiveAttachment && record.interactiveAttachment !== attachmentId)
 			throw new RegistryError("session_busy", `session ${sessionId} already has an interactive attachment`);
 		this.#cancelParking(record);
+		// No `sink`: attach returns its frames to the caller and live fan-out
+		// delivers through `attachment.sink` explicitly, so the stream must not
+		// also push them. Restarts are deferred because a worker-hosted
+		// snapshot is async.
 		const stream = new AttachmentEventStream<unknown, unknown>(record.log, {
 			chunkSize: 64,
 			maxBufferedEvents: 2048,
 			snapshot: () => record.runtime.snapshot(),
 			chunks: encodeDaemonSnapshotChunks,
-			sink: frame => sink(projectAttachmentFrame(frame, delivery)),
 			attachmentId,
+			deferRestart: true,
 		});
 		const attachment: AttachmentRecord = {
 			id: attachmentId,
@@ -352,18 +358,20 @@ export class DaemonSessionRegistry {
 			sink,
 			attaching: true,
 			pending: [],
+			pendingDeliveryReleases: new Set(),
 		};
 		record.attachments.set(attachmentId, attachment);
 		if (mode === "interactive") record.interactiveAttachment = attachmentId;
 		try {
 			// Attach replays the event backlog and, when needed, a FULL state
-			// snapshot — serialized synchronously right here. Tag the stretch so
-			// a watchdog block during a multi-MB reattach names this path
-			// instead of "unknown".
-			pushLoopPhase(`daemon:attach-replay:${sessionId}`);
+			// snapshot. The snapshot itself may be computed in a session worker
+			// (async); only the synchronous chunk drain is tagged so a watchdog
+			// block during a multi-MB reattach names this path.
 			const frames: unknown[] = [];
+			const attached = await stream.attachTo(lastSeq);
+			frames.push(...attached.map(frame => projectAttachmentFrame(frame, delivery)));
+			pushLoopPhase(`daemon:attach-replay:${sessionId}`);
 			try {
-				frames.push(...stream.attach(lastSeq).map(frame => projectAttachmentFrame(frame, delivery)));
 				for (;;) {
 					const next = stream.next();
 					if (next.length === 0) break;
@@ -487,11 +495,14 @@ export class DaemonSessionRegistry {
 			unsubscribe: () => undefined,
 			queue: Promise.resolve(),
 			pendingEvents: [],
+			pendingOutputBytes: 0,
 			fanoutActive: false,
 			closed: false,
 		};
+		runtime.setTerminalOutputBacklog?.(() => record.pendingOutputBytes);
 		record.unsubscribe = runtime.subscribe(event => {
 			const boundedEvents = splitDaemonEvent(event);
+			for (const boundedEvent of boundedEvents) record.pendingOutputBytes += boundedEvent.bytes;
 			if (record.fanoutActive) {
 				record.pendingEvents.push(...boundedEvents);
 				return;
@@ -506,11 +517,6 @@ export class DaemonSessionRegistry {
 				popLoopPhase();
 			}
 			if (index < boundedEvents.length) record.pendingEvents.push(...boundedEvents.slice(index));
-			if (record.pendingEvents.length === 0) {
-				record.fanoutActive = false;
-				this.#scheduleParking(sessionId, record);
-				return;
-			}
 			void this.#drainEventFanout(sessionId, record);
 		});
 		this.#scheduleParking(sessionId, record);
@@ -531,24 +537,68 @@ export class DaemonSessionRegistry {
 	}
 
 	#publishBoundedEvent(sessionId: string, record: SessionRecord, boundedEvent: BoundedDaemonEvent): void {
-		const published = record.log.append(boundedEvent.event, boundedEvent.bytes);
-		for (const attachment of record.attachments.values()) {
-			if (attachment.attaching) {
-				attachment.pending.push(published);
-				continue;
+		let pendingDeliveries = 1;
+		const bytes = boundedEvent.bytes;
+		const delivered = (): void => {
+			if (--pendingDeliveries === 0) record.pendingOutputBytes -= bytes;
+		};
+		try {
+			const published = record.log.append(boundedEvent.event, boundedEvent.bytes);
+			for (const attachment of record.attachments.values()) {
+				if (attachment.attaching) {
+					attachment.pending.push(published);
+					continue;
+				}
+				const frames = attachment.stream.publish(published);
+				for (const frame of frames) {
+					const pending = attachment.sink(projectAttachmentFrame(frame, attachment.delivery));
+					if (pending) {
+						pendingDeliveries++;
+						let released = false;
+						const release = (): void => {
+							if (released) return;
+							released = true;
+							attachment.pendingDeliveryReleases.delete(release);
+							delivered();
+						};
+						attachment.pendingDeliveryReleases.add(release);
+						void pending.then(release, release);
+					}
+				}
+				if (attachment.stream.restartPending) void this.#resumeRestart(sessionId, record, attachment);
 			}
-			const frames = attachment.stream.publish(published);
-			for (const frame of frames)
-				void Promise.resolve(attachment.sink(projectAttachmentFrame(frame, attachment.delivery))).catch(
-					() => undefined,
-				);
+			const closeReason = hostedSessionCloseReason(boundedEvent.event);
+			if (closeReason) void this.close(sessionId, closeReason).catch(() => undefined);
+		} finally {
+			delivered();
 		}
-		const closeReason = hostedSessionCloseReason(boundedEvent.event);
-		if (closeReason) void this.close(sessionId, closeReason).catch(() => undefined);
+	}
+
+	/**
+	 * A gap/overflow restart on a live attachment needs a fresh snapshot,
+	 * which is async for worker-hosted sessions. Take it off the fan-out path
+	 * and deliver begin/chunks/end through the attachment sink in order.
+	 */
+	async #resumeRestart(sessionId: string, record: SessionRecord, attachment: AttachmentRecord): Promise<void> {
+		try {
+			const frames = [...(await attachment.stream.resumeRestartTo())];
+			for (;;) {
+				const next = attachment.stream.next();
+				if (next.length === 0) break;
+				frames.push(...next);
+			}
+			if (!record.attachments.has(attachment.id)) return;
+			for (const frame of frames) await attachment.sink(projectAttachmentFrame(frame, attachment.delivery));
+		} catch (error) {
+			logger.warn("Daemon attachment restart failed", { sessionId, attachmentId: attachment.id, error });
+		}
 	}
 
 	async #drainEventFanout(sessionId: string, record: SessionRecord): Promise<void> {
-		while (record.pendingEvents.length > 0) {
+		// Keep the lane active until the next event-loop turn even when the first
+		// write fit in one batch. Otherwise a burst of separate runtime callbacks
+		// resets the budget for every write and never yields to another session.
+		do {
 			await Bun.sleep(0);
 			const batch = record.pendingEvents.splice(0, EVENT_FANOUT_BATCH_SIZE);
 			pushLoopPhase(`daemon:event-fanout:${sessionId}`);
@@ -557,7 +607,7 @@ export class DaemonSessionRegistry {
 			} finally {
 				popLoopPhase();
 			}
-		}
+		} while (record.pendingEvents.length > 0);
 		record.fanoutActive = false;
 		this.#scheduleParking(sessionId, record);
 	}
@@ -581,6 +631,8 @@ export class DaemonSessionRegistry {
 	#detachRecord(record: SessionRecord, attachmentId: string): void {
 		const attachment = record.attachments.get(attachmentId);
 		if (!attachment) return;
+		for (const release of attachment.pendingDeliveryReleases) release();
+		attachment.pendingDeliveryReleases.clear();
 		if (attachment.mode === "interactive") {
 			void record.runtime.command({ type: "terminal_detach" }, attachmentId).catch(() => undefined);
 		}

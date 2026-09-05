@@ -164,6 +164,8 @@ export type SnapshotOptions<E, S> = Readonly<{
 	chunks?: (snapshot: S) => readonly S[] | Promise<readonly S[]>;
 	sink?: (frame: SnapshotFrame<E, S>) => void | Promise<void>;
 	attachmentId?: string;
+	/** Defer gap/overflow restarts to {@link AttachmentEventStream.resumeRestartTo} (required for async snapshots). */
+	deferRestart?: boolean;
 }>;
 
 type SnapshotState<E, S> = {
@@ -186,6 +188,8 @@ export class AttachmentEventStream<E, S> {
 	readonly #maxBufferedEvents: number;
 	readonly #attachmentId: string;
 	#state: SnapshotState<E, S> | undefined;
+	/** Set when a gap/overflow restart needs an async snapshot; resolved by {@link resumeRestartTo}. */
+	#restartPending: { reason: "overflow" | "gap"; previousBarrierSeq: number } | undefined;
 	#deliveredSeq = 0;
 	#queue: Promise<void> = Promise.resolve();
 
@@ -219,6 +223,11 @@ export class AttachmentEventStream<E, S> {
 
 	get snapshotting(): boolean {
 		return this.#state !== undefined;
+	}
+
+	/** True after a restart frame was emitted for an async snapshot that has not been taken yet. */
+	get restartPending(): boolean {
+		return this.#restartPending !== undefined;
 	}
 
 	/** Starts replay or a fresh snapshot. Snapshot attachments receive begin first. */
@@ -268,6 +277,9 @@ export class AttachmentEventStream<E, S> {
 	publish(record: EventRecord<E>): readonly SnapshotFrame<E, S>[] {
 		if (!Number.isInteger(record.seq) || record.seq < 1) return this.#restart("gap");
 		if (record.seq <= this.#deliveredSeq) return [];
+		// A pending async restart re-snapshots at resume time; everything until
+		// then is covered by that barrier, so buffering it would only replay it.
+		if (this.#restartPending) return [];
 		const state = this.#state;
 		if (!state) {
 			if (record.seq !== this.#deliveredSeq + 1) return this.#restart("gap");
@@ -300,8 +312,7 @@ export class AttachmentEventStream<E, S> {
 					return this.#send(frames);
 				}
 			}
-			const barrierSeq = this.#log.latestSeq;
-			const snapshot = await this.#options.snapshot();
+			const { snapshot, barrierSeq } = await this.#takeSnapshot();
 			this.#beginSnapshot(snapshot, await this.#chunks(snapshot), barrierSeq);
 			return this.#send([{ type: "snapshot_begin", barrierSeq: this.#state!.barrierSeq }]);
 		});
@@ -315,9 +326,37 @@ export class AttachmentEventStream<E, S> {
 		return this.#enqueue(async () => this.#send(this.publish(record)));
 	}
 
+	/** Complete a restart deferred by an async snapshot; returns the begin frame. */
+	async resumeRestartTo(): Promise<readonly SnapshotFrame<E, S>[]> {
+		return this.#enqueue(async () => {
+			if (!this.#restartPending) return [];
+			const { snapshot, barrierSeq } = await this.#takeSnapshot();
+			if (!this.#restartPending) return [];
+			this.#restartPending = undefined;
+			this.#beginSnapshot(snapshot, await this.#chunks(snapshot), barrierSeq);
+			return this.#send([{ type: "snapshot_begin", barrierSeq: this.#state!.barrierSeq }]);
+		});
+	}
+
 	close(): void {
 		this.#log.unregisterAttachment(this.#attachmentId);
 		this.#state = undefined;
+		this.#restartPending = undefined;
+	}
+
+	/**
+	 * Snapshot plus the barrier it is consistent with. A synchronous snapshot
+	 * may observe events emitted while it is computed, so its barrier is taken
+	 * beforehand and those events replay after it. A worker-hosted snapshot
+	 * is ordered after every event the worker posted before replying, so the
+	 * barrier is taken once it resolves and nothing inside it is replayed.
+	 */
+	async #takeSnapshot(): Promise<{ snapshot: S; barrierSeq: number }> {
+		const before = this.#log.latestSeq;
+		const raw = this.#options.snapshot();
+		if (!(raw instanceof Promise)) return { snapshot: raw, barrierSeq: before };
+		const snapshot = await raw;
+		return { snapshot, barrierSeq: this.#log.latestSeq };
 	}
 
 	#beginSnapshot(snapshot: S, chunks?: readonly S[], barrierSeq = this.#log.latestSeq): void {
@@ -372,11 +411,14 @@ export class AttachmentEventStream<E, S> {
 
 	#restart(reason: "overflow" | "gap"): SnapshotFrame<E, S>[] {
 		const previousBarrierSeq = this.#state?.barrierSeq ?? this.#deliveredSeq;
-		const barrierSeq = this.#log.latestSeq;
 		this.#state = undefined;
+		if (this.#options.deferRestart) {
+			this.#restartPending = { reason, previousBarrierSeq };
+			return [{ type: "snapshot_restart", reason, previousBarrierSeq }];
+		}
 		const snapshot = this.#options.snapshot();
-		if (snapshot instanceof Promise) throw new Error("async snapshot requires publishTo");
-		this.#beginSnapshot(snapshot, this.#syncChunks(snapshot), barrierSeq);
+		if (snapshot instanceof Promise) throw new Error("async snapshot requires deferRestart");
+		this.#beginSnapshot(snapshot, this.#syncChunks(snapshot), this.#log.latestSeq);
 		return [
 			{ type: "snapshot_restart", reason, previousBarrierSeq },
 			{ type: "snapshot_begin", barrierSeq: this.#state!.barrierSeq },

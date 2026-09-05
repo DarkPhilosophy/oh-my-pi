@@ -23,12 +23,14 @@ import {
 	encodeDaemonFrame,
 } from "./protocol";
 import { DaemonSessionRegistry, RegistryError } from "./session-registry";
+import { createWorkerSessionRuntime } from "./session-worker";
 import {
 	createAgentSessionRuntime,
 	type DaemonSessionRuntimeFactory,
 	type HostedServerControls,
 } from "./session-runtime";
-import { type DaemonProfile, formatDaemonSessions } from "./status";
+import { formatDaemonSessions } from "./session-display";
+import type { DaemonProfile } from "./status";
 
 const DEFAULT_MAX_CLIENTS = 64;
 const MAX_CONNECTION_QUEUE_BYTES = 8 * DAEMON_MAX_FRAME_BYTES;
@@ -89,6 +91,12 @@ export type DaemonServerOptions = {
 		owner: Readonly<{ pid: number; daemonId: string; startedAt: number }>,
 	) => boolean | undefined | Promise<boolean | undefined>;
 	runtimeFactory?: DaemonSessionRuntimeFactory;
+	/**
+	 * Where hosted sessions run. `worker` (default) gives every session its own
+	 * thread so a stalled session cannot freeze other clients; `inline` keeps
+	 * the historical single-loop hosting. Injected `runtimeFactory` is always inline.
+	 */
+	sessionIsolation?: "worker" | "inline";
 	registry?: DaemonSessionRegistry;
 	now?: () => number;
 	maxClients?: number;
@@ -171,6 +179,7 @@ export class DaemonServer {
 		| undefined;
 	readonly #now: () => number;
 	readonly #maxClients: number;
+	readonly #sessionIsolation: "worker" | "inline" | undefined;
 	readonly #sessionDir: string | undefined;
 	readonly #usesDefaultRuntimeFactory: boolean;
 	readonly #startedAt: number;
@@ -226,6 +235,7 @@ export class DaemonServer {
 		this.#usesDefaultRuntimeFactory = options.runtimeFactory === undefined;
 		this.#registryOverride = options.registry;
 		this.#now = options.now ?? Date.now;
+		this.#sessionIsolation = options.sessionIsolation;
 		this.#maxClients = Math.max(1, Math.trunc(options.maxClients ?? DEFAULT_MAX_CLIENTS));
 		this.#sessionDir = options.sessionDir;
 		this.#startedAt = this.#now();
@@ -319,8 +329,11 @@ export class DaemonServer {
 				kill: force => this.requestShutdownFromControl(force === true, "terminate"),
 				refresh: force => this.requestShutdownFromControl(force === true, "replace"),
 			};
+			const isolateSessions = this.#usesDefaultRuntimeFactory && this.#sessionIsolation !== "inline";
 			const runtimeFactory: DaemonSessionRuntimeFactory = options =>
-				baseRuntimeFactory({ ...options, serverControls });
+				isolateSessions
+					? createWorkerSessionRuntime({ ...options, serverControls })
+					: baseRuntimeFactory({ ...options, serverControls });
 			this.#registry =
 				this.#registryOverride ??
 				new DaemonSessionRegistry({

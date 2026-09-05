@@ -203,7 +203,7 @@ describe("daemon session runtime", () => {
 			await sessionManager.moveTo(movedCwd);
 
 			expect(runtime.cwd).toBe(movedCwd);
-			expect(runtime.snapshot().cwd).toBe(movedCwd);
+			expect((await runtime.snapshot()).cwd).toBe(movedCwd);
 			const state = (await runtime.command({ type: "get_state" })) as { cwd?: string };
 			expect(state.cwd).toBe(movedCwd);
 		} finally {

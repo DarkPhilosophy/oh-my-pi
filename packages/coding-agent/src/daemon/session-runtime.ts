@@ -1,5 +1,6 @@
 import * as os from "node:os";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import type { AuthStorage } from "@oh-my-pi/pi-ai";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { setTerminalEnvironment } from "@oh-my-pi/pi-tui";
 import { logger, type postmortem, setProjectDir, VERSION } from "@oh-my-pi/pi-utils";
@@ -36,6 +37,7 @@ import type { RpcCommand, RpcSessionState } from "../modes/rpc/rpc-types";
 import { submitInteractiveInput } from "../modes/submit-interactive-input";
 import { initTheme, onTerminalAppearanceChange } from "../modes/theme/theme";
 import { type AgentRegistry, createAgentRegistryScope } from "../registry/agent-registry";
+import { MCPManagerPool } from "../mcp";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "../sdk";
 import { createAgentSession, discoverAuthStorage } from "../sdk";
 import {
@@ -120,7 +122,10 @@ export type DaemonSessionRuntime = {
 	readonly session: DaemonSession;
 	readonly protectedJobCount?: () => number;
 	requestClientExit?(): void;
-	snapshot(): DaemonSessionSnapshot;
+	/** Session-scoped transport backlog used by hosted TUI render backpressure. */
+	setTerminalOutputBacklog?(pendingBytes: () => number): void;
+	/** Async when the session lives in a worker; the registry attaches through the async stream path. */
+	snapshot(): DaemonSessionSnapshot | Promise<DaemonSessionSnapshot>;
 	command(command: unknown, attachmentId?: string): Promise<unknown>;
 	dispose(reason?: postmortem.Reason): Promise<void>;
 	subscribe(listener: AgentSessionEventListener): () => void;
@@ -139,6 +144,7 @@ export type DaemonSessionCreateOverrides = {
 	/** Terminal-identity env of the creating client (never the full env). */
 	clientEnv?: Record<string, string>;
 };
+
 export type HostedServerControls = {
 	getSnapshot(): DaemonConnectionSnapshot;
 	sessions?(): Promise<string> | string;
@@ -173,6 +179,24 @@ export type CreateAgentSessionRuntimeOptions = {
 	createSession?: (options: CreateAgentSessionOptions) => Promise<CreateAgentSessionResult>;
 	serverControls?: HostedServerControls;
 };
+
+export type DaemonSessionBaseResources = {
+	baseOptions: CreateAgentSessionOptions;
+	authStorage: AuthStorage;
+	mcpManagerPool: MCPManagerPool;
+};
+
+/** Build the process-local resources shared by daemon session runtimes. */
+export async function createDaemonSessionBaseResources(): Promise<DaemonSessionBaseResources> {
+	const authStorage = await discoverAuthStorage();
+	const modelRegistry = new ModelRegistry(authStorage);
+	const mcpManagerPool = new MCPManagerPool();
+	return {
+		authStorage,
+		mcpManagerPool,
+		baseOptions: { authStorage, modelRegistry, mcpManagerPool },
+	};
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -633,6 +657,7 @@ async function createAgentSessionRuntimeInScope(
 	} as unknown as ExtensionUIContext;
 	result.setToolUIContext?.(extensionUiContext, true);
 	let startupInputsSubmitted = false;
+	let terminalOutputBacklog = () => 0;
 	let hosted:
 		| {
 				attachmentId: string;
@@ -657,7 +682,7 @@ async function createAgentSessionRuntimeInScope(
 		// this daemon's own stdout is /dev/null. Keep old clients without an env
 		// snapshot styled using the daemon markers while treating output as TTY.
 		setChalkEnvironment(descriptor.clientEnv ?? Bun.env);
-		const terminal = new HostedTerminal(descriptor);
+		const terminal = new HostedTerminal(descriptor, () => terminalOutputBacklog());
 		terminal.setOutput(data => emitBridgeEvent({ type: "terminal_output", data }));
 		const sessionSettings = result.session.settings;
 		// Seed the client-reported appearance before theme auto-detection. The daemon
@@ -1049,6 +1074,9 @@ async function createAgentSessionRuntimeInScope(
 			}
 		},
 		requestClientExit,
+		setTerminalOutputBacklog: pendingBytes => {
+			terminalOutputBacklog = pendingBytes;
+		},
 		dispose: async reason => {
 			logger.debug("Daemon runtime dispose started", { sessionId });
 			const hostedTask = hosted?.task;
@@ -1110,6 +1138,7 @@ export function createAgentSessionRuntime(options: CreateAgentSessionRuntimeOpti
 				command: (command: unknown, attachmentId?: string) =>
 					runInScope(() => runtime.command(command, attachmentId)),
 				requestClientExit: () => runInScope(() => runtime.requestClientExit?.()),
+				setTerminalOutputBacklog: (pendingBytes: () => number) => runtime.setTerminalOutputBacklog?.(pendingBytes),
 				dispose: (reason?: postmortem.Reason) => runInScope(() => runtime.dispose(reason)),
 				subscribe: (listener: AgentSessionEventListener) => {
 					const unsubscribe = runInScope(() => runtime.subscribe(event => runInScope(() => listener(event))));
