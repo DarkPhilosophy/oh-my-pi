@@ -832,6 +832,29 @@ export class SessionManager {
 		return body;
 	}
 
+	/**
+	 * Time-sliced variant of {@link #fileBody} for the async rewrite paths.
+	 * Serializing a large history is the single longest synchronous stretch in
+	 * the manager (~0.5 s for a 175 MB session), and it runs on the event loop
+	 * that also services streaming deltas and daemon clients. Yielding between
+	 * slices keeps that loop responsive; the caller's epoch guard already
+	 * abandons the body if a synchronous rewrite lands during a yield.
+	 */
+	async #fileBodySliced(): Promise<string> {
+		const budgetMs = 8;
+		let body = this.#titleSlotLine();
+		body += this.#lineFor(this.#header);
+		let sliceStart = performance.now();
+		for (const entry of this.#entries) {
+			body += this.#lineFor(entry);
+			if (performance.now() - sliceStart >= budgetMs) {
+				await Bun.sleep(0);
+				sliceStart = performance.now();
+			}
+		}
+		return body;
+	}
+
 	#historyContainsAssistantMessage(): boolean {
 		return this.#entries.some(isAssistantEntry);
 	}
@@ -944,7 +967,9 @@ export class SessionManager {
 				const sessionFile = this.#sessionFile;
 				if (!sessionFile) return false;
 				if (this.#diskEpoch !== epoch) return false;
-				await this.#storage.writeTextAtomic(sessionFile, this.#fileBody(), {
+				const body = await this.#fileBodySliced();
+				if (this.#diskEpoch !== epoch) return false;
+				await this.#storage.writeTextAtomic(sessionFile, body, {
 					commitGuard: () => !this.#released && this.#diskEpoch === epoch,
 				});
 				if (this.#diskEpoch !== epoch) return false;
