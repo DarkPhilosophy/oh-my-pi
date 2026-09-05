@@ -1711,15 +1711,19 @@ describe("ModelRegistry", () => {
 		});
 	});
 	describe("extended context", () => {
-		test("keeps bundled Astra at its documented window regardless of the toggle", async () => {
+		test("toggles bundled Astra between its default and maximum windows without discovery", async () => {
 			const testSettings = Settings.isolated();
 			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
-			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(1_050_000);
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
 
 			testSettings.set("extendedContext", true);
 			await registry.reapplyModelPolicies();
 			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(1_050_000);
 			expect(registry.find("openai-codex", "gpt-5.5")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", false);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
 		});
 
 		test("preserves an explicit Astra context override when extended context is enabled", () => {
@@ -1742,7 +1746,7 @@ describe("ModelRegistry", () => {
 				"openai-codex",
 				Date.now(),
 				[
-					{ ...astra, maxContextWindow: 1_048_576 },
+					{ ...astra, maxContextWindow: 640_000 },
 					{ ...legacy, maxContextWindow: 128_000 },
 				],
 				true,
@@ -1752,13 +1756,17 @@ describe("ModelRegistry", () => {
 
 			testSettings.set("extendedContext", true);
 			await registry.reapplyModelPolicies();
-			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(1_050_000);
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(640_000);
 			// An advertised maximum smaller than the current window cannot shrink it.
 			expect(registry.find("openai-codex", "gpt-5.5")?.contextWindow).toBe(272_000);
 
 			testSettings.set("extendedContext", false);
 			await registry.reapplyModelPolicies();
-			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(1_050_000);
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(640_000);
 		});
 
 		test("off caps billable premium models without shrinking subscription estimates", async () => {

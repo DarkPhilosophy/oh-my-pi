@@ -10592,7 +10592,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:38",
+				"source": "providers/openai-codex.kdl:39",
 				"providers": [
 					"openai-codex"
 				],
@@ -10616,8 +10616,7 @@
 					"serviceTierCost": {
 						"flex": 0.5,
 						"priority": 2.5
-					},
-					"contextWindowFloor": 1050000
+					}
 				}
 			},
 			{
@@ -10918,7 +10917,7 @@
 					}
 				],
 				"catalog": {
-					"maxContextWindow": 872000
+					"maxContextWindow": 1050000
 				}
 			},
 			{
