@@ -150,6 +150,7 @@ type StripState =
 			kind: "role" | "scope" | "thinking";
 			item: ModelBrowserItem;
 			role?: string;
+			chainIndex?: number;
 			scope?: ModelRoleSelectionScope;
 			chips: StripChip[];
 			index: number;
@@ -1032,6 +1033,7 @@ export class ModelHubComponent implements Component {
 			returnToRoles: true,
 		};
 	}
+
 	#closeStrip(): void {
 		const strip = this.#strip;
 		this.#strip = null;
@@ -1578,6 +1580,10 @@ export class ModelHubComponent implements Component {
 		}
 		if (printable === "n") {
 			this.#openRoleNameStrip();
+			return;
+		}
+		if (printable === "t" && row?.kind === "fallback") {
+			this.#openFallbackThinkingStrip(row);
 			return;
 		}
 		if (printable === "t") {

@@ -70,6 +70,7 @@ function makeRegistry(models: () => Model[], overrides: RegistryOverrides = {}):
 		getAll: overrides.getAll ?? models,
 		getDiscoverableProviders: overrides.getDiscoverableProviders ?? (() => []),
 		getProviderDiscoveryState: overrides.getProviderDiscoveryState ?? (() => undefined),
+		find: (provider: string, id: string) => models().find(model => model.provider === provider && model.id === id),
 		authStorage: { hasAuth: () => false },
 	} as unknown as ModelRegistry;
 }
