@@ -187,6 +187,11 @@ export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 			const branches = node[keyword];
 			if (Array.isArray(branches) && branches.some(visit)) return true;
 		}
+		for (const keyword of ["if", "then", "else", "not"] as const) {
+			if (visit(node[keyword])) return true;
+		}
+		const dependentSchemas = node.dependentSchemas;
+		if (isJsonObject(dependentSchemas) && Object.values(dependentSchemas).some(visit)) return true;
 		if (typeof node.$ref === "string") {
 			const resolved = resolveLocalRef(root, node.$ref);
 			if (resolved !== undefined && visit(resolved)) return true;

@@ -254,6 +254,75 @@ describe("callSessionTool", () => {
 		);
 	});
 
+	it("preserves and coerces intent declared by a selected conditional branch", async () => {
+		const tool = createSchemaTool("conditional-intent", {
+			type: "object",
+			properties: { mode: { type: "string" } },
+			required: ["mode"],
+			if: {
+				properties: { mode: { const: "intent" } },
+				required: ["mode"],
+			},
+			// oxlint-disable-next-line unicorn/no-thenable -- JSON Schema if/then/else keyword
+			then: {
+				properties: { [INTENT_FIELD]: { type: "number" } },
+				required: [INTENT_FIELD],
+			},
+		});
+
+		expect(
+			await callSessionTool(
+				"conditional-intent",
+				{ mode: "intent", [INTENT_FIELD]: "5" },
+				{ session: createSession([tool]) },
+			),
+		).toBe("number:5");
+	});
+
+	it("preserves and coerces intent declared by an activated dependent schema", async () => {
+		const tool = createSchemaTool("dependent-intent", {
+			type: "object",
+			properties: { enabled: { type: "boolean" } },
+			required: ["enabled"],
+			dependentSchemas: {
+				enabled: {
+					properties: { [INTENT_FIELD]: { type: "number" } },
+					required: [INTENT_FIELD],
+				},
+			},
+		});
+
+		expect(
+			await callSessionTool(
+				"dependent-intent",
+				{ enabled: true, [INTENT_FIELD]: "5" },
+				{ session: createSession([tool]) },
+			),
+		).toBe("number:5");
+	});
+
+	it("keeps intent predicates from bypassing conditional validation", async () => {
+		const tool = createSchemaTool("intent-predicate", {
+			type: "object",
+			if: { properties: { i: { const: "strict" } }, required: ["i"] },
+			// oxlint-disable-next-line unicorn/no-thenable -- JSON Schema if/then/else keyword
+			then: { properties: { value: { type: "number" } }, required: ["value"] },
+		});
+		await expect(
+			callSessionTool("intent-predicate", { i: "strict", value: "invalid" }, { session: createSession([tool]) }),
+		).rejects.toThrow("Validation failed");
+	});
+
+	it("validates intent constraints inside a negated schema", async () => {
+		const tool = createSchemaTool("negated-intent", {
+			type: "object",
+			not: { properties: { i: { const: "forbidden" } }, required: ["i"] },
+		});
+		await expect(
+			callSessionTool("negated-intent", { i: "forbidden" }, { session: createSession([tool]) }),
+		).rejects.toThrow("Validation failed");
+	});
+
 	it("preserves and coerces intent through an escaped local reference", async () => {
 		const tool = createSchemaTool("referenced-intent", {
 			$ref: "#/$defs/intent~1property~0schema",
