@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Fixed edit and write results to report the formatted bytes actually committed by LSP writethrough.
 
 ### Changed
 
