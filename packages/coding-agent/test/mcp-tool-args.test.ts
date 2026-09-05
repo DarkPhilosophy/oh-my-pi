@@ -170,7 +170,7 @@ describe("MCP tool arguments", () => {
 	it("preserves `i` when the server's own schema declares it", async () => {
 		// A server that legitimately exposes `i` as one of its parameters
 		// must receive the caller-supplied value untouched. The boundary
-		// guard checks the server's declared `properties` and steps aside.
+		// guard checks the server's schema and steps aside.
 		const calls: CapturedRequest[] = [];
 		const definition: MCPToolDefinition = {
 			name: "echo",
@@ -186,6 +186,42 @@ describe("MCP tool arguments", () => {
 		await tool.execute("call-1", { i: "hello" }, undefined, unusedContext, undefined);
 
 		expect(calls).toEqual([{ method: "tools/call", params: { name: "echo", arguments: { i: "hello" } } }]);
+	});
+
+	it("forwards schema-owned intent through a referenced MCP schema", async () => {
+		const calls: CapturedRequest[] = [];
+		const definition: MCPToolDefinition = {
+			name: "referenced-input",
+			inputSchema: {
+				type: "object",
+				$ref: "#/$defs/input",
+				$defs: { input: { type: "object", properties: { i: { type: "string" } }, required: ["i"] } },
+			},
+		};
+		const tool = new MCPTool(createCapturedConnection(calls), definition);
+		await tool.execute("call-ref", { i: "server data" }, undefined, unusedContext, undefined);
+		expect(calls).toEqual([
+			{ method: "tools/call", params: { name: "referenced-input", arguments: { i: "server data" } } },
+		]);
+	});
+
+	it("does not claim intent from an unused MCP schema definition", async () => {
+		const calls: CapturedRequest[] = [];
+		const definition = createSearchToolDefinition();
+		definition.inputSchema.$defs = {
+			unused: { type: "object", properties: { i: { type: "string" } }, required: ["i"] },
+		};
+		const tool = new MCPTool(createCapturedConnection(calls), definition);
+		await tool.execute(
+			"call-unused",
+			{ i: "harness intent", symbol: "Foo", language: "TypeScript" },
+			undefined,
+			unusedContext,
+			undefined,
+		);
+		expect(calls).toEqual([
+			{ method: "tools/call", params: { name: "search", arguments: { symbol: "Foo", language: "TypeScript" } } },
+		]);
 	});
 
 	it("resolves local image arguments before forwarding tools/call", async () => {

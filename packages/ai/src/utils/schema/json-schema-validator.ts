@@ -173,7 +173,7 @@ function resolveLocalRef(root: unknown, ref: string): unknown | undefined {
 	return current;
 }
 
-/** Return whether a schema node or same-instance composed/ref branch declares a property. */
+/** Whether any same-instance schema declaration or constraint owns this property name. */
 export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 	const root = schema;
 	const visited = new WeakSet<object>();
@@ -183,6 +183,19 @@ export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 		visited.add(node);
 		const properties = node.properties;
 		if (isJsonObject(properties) && Object.hasOwn(properties, key)) return true;
+		const required = node.required;
+		if (Array.isArray(required) && required.includes(key)) return true;
+		const patternProperties = node.patternProperties;
+		if (isJsonObject(patternProperties)) {
+			for (const pattern of Object.keys(patternProperties)) {
+				try {
+					if (new RegExp(pattern).test(key)) return true;
+				} catch {
+					// Invalid patterns are rejected by validation and cannot declare ownership.
+				}
+			}
+		}
+		if (isJsonObject(node.additionalProperties)) return true;
 		for (const keyword of ["anyOf", "oneOf", "allOf"] as const) {
 			const branches = node[keyword];
 			if (Array.isArray(branches) && branches.some(visit)) return true;
@@ -191,7 +204,10 @@ export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 			if (visit(node[keyword])) return true;
 		}
 		const dependentSchemas = node.dependentSchemas;
-		if (isJsonObject(dependentSchemas) && Object.values(dependentSchemas).some(visit)) return true;
+		if (isJsonObject(dependentSchemas)) {
+			if (Object.hasOwn(dependentSchemas, key)) return true;
+			if (Object.values(dependentSchemas).some(visit)) return true;
+		}
 		if (typeof node.$ref === "string") {
 			const resolved = resolveLocalRef(root, node.$ref);
 			if (resolved !== undefined && visit(resolved)) return true;
