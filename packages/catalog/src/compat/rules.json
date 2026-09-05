@@ -10537,7 +10537,36 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:33",
+				"source": "providers/openai-codex.kdl:36",
+				"providers": [
+					"openai-codex"
+				],
+				"models": [
+					{
+						"kind": "exact",
+						"value": "gpt-6-astra"
+					},
+					{
+						"kind": "exact",
+						"value": "gpt-6-astra-wm"
+					}
+				],
+				"catalog": {
+					"costPatch": {
+						"input": 10,
+						"output": 50,
+						"cacheRead": 1,
+						"cacheWrite": 0
+					},
+					"serviceTierCost": {
+						"flex": 0.5,
+						"priority": 2.5
+					},
+					"contextWindowFloor": 1050000
+				}
+			},
+			{
+				"source": "providers/openai-codex.kdl:50",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10557,7 +10586,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:38",
+				"source": "providers/openai-codex.kdl:55",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10573,7 +10602,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:41",
+				"source": "providers/openai-codex.kdl:58",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10589,7 +10618,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:46",
+				"source": "providers/openai-codex.kdl:63",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10608,7 +10637,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:58",
+				"source": "providers/openai-codex.kdl:75",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10634,7 +10663,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:64",
+				"source": "providers/openai-codex.kdl:81",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10660,7 +10689,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:56",
+				"source": "providers/openai-codex.kdl:73",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10677,7 +10706,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:74",
+				"source": "providers/openai-codex.kdl:91",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10697,7 +10726,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:80",
+				"source": "providers/openai-codex.kdl:97",
 				"class": "unknown",
 				"providers": [
 					"openai-codex"
@@ -10713,7 +10742,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:83",
+				"source": "providers/openai-codex.kdl:100",
 				"class": "unknown",
 				"providers": [
 					"openai-codex"
@@ -10729,7 +10758,29 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:89",
+				"source": "providers/openai-codex.kdl:106",
+				"providers": [
+					"openai-codex"
+				],
+				"models": [
+					{
+						"kind": "exact",
+						"value": "gpt-5.6-luna"
+					},
+					{
+						"kind": "exact",
+						"value": "gpt-5.6-luna-wm"
+					}
+				],
+				"catalog": {
+					"reserveRoute": {
+						"model": "gpt-reserve",
+						"tier": "base-model-inference"
+					}
+				}
+			},
+			{
+				"source": "providers/openai-codex.kdl:114",
 				"providers": [
 					"openai-codex"
 				],
@@ -10750,7 +10801,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:98",
+				"source": "providers/openai-codex.kdl:123",
 				"providers": [
 					"openai-codex"
 				],
@@ -10775,7 +10826,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:107",
+				"source": "providers/openai-codex.kdl:132",
 				"providers": [
 					"openai-codex"
 				],
@@ -10796,31 +10847,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:119",
-				"providers": [
-					"openai-codex"
-				],
-				"models": [
-					{
-						"kind": "exact",
-						"value": "gpt-6-astra"
-					}
-				],
-				"catalog": {
-					"longContext": {
-						"inputThreshold": 272000,
-						"input": 0,
-						"output": 0,
-						"cacheRead": 0,
-						"cacheWrite": 0
-					},
-					"limitsPatch": {
-						"contextWindow": 1000000
-					}
-				}
-			},
-			{
-				"source": "providers/openai-codex.kdl:133",
+				"source": "providers/openai-codex.kdl:143",
 				"providers": [
 					"openai-codex"
 				],
@@ -10836,10 +10863,6 @@
 					{
 						"kind": "exact",
 						"value": "gpt-5.6-terra"
-					},
-					{
-						"kind": "exact",
-						"value": "gpt-6-astra"
 					}
 				],
 				"catalog": {

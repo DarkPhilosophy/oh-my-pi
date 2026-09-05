@@ -594,6 +594,9 @@ export class TurnRecovery {
 		const id = this.#classifyRetryMessage(message);
 		const activeModel = this.#host.model();
 		if (!activeModel || !AIError.is(id, AIError.Flag.UsageLimit)) return false;
+		// Reserve routing quarantines its exact account/meter observation itself.
+		// The logical session remains on Luna; a reserve failure must never deplete it.
+		if (message.provider === activeModel.provider && message.model === activeModel.reserveRoute?.model) return false;
 
 		let recorded = this.#usageLimitOutcomes.get(message);
 		if (!recorded) {
@@ -880,7 +883,7 @@ export class TurnRecovery {
 		});
 	}
 	async #handleUnexpectedAssistantStop(assistantMessage: AssistantMessage): Promise<boolean> {
-		if (!this.#host.settings.get("features.unexpectedStopDetection")) {
+		if (this.#host.settings.get("features.unexpectedStopDetection") === "none") {
 			return false;
 		}
 		if (!isUnexpectedStopCandidate(assistantMessage)) {
@@ -1584,6 +1587,22 @@ export class TurnRecovery {
 		const currentSelector = formatRetryFallbackSelector(currentModel, this.#host.thinkingLevel());
 		let health: ModelUsageHealth;
 		try {
+			// Direct reserve selections are authorized against their own meter by
+			// the credential resolver, never against the shared normal pool.
+			if (currentModel.reserveRoute?.model === currentModel.id) return false;
+			if (currentModel.reserveRoute && this.#host.settings.get("providers.openai-codex.useReserve")) {
+				const reserve = await this.#host.modelRegistry.authStorage.getReserveCredential(
+					currentModel.provider,
+					currentModel.reserveRoute,
+					{ sessionId: this.#host.sessionId(), signal },
+				);
+				if (reserve) {
+					// The selected request can use a different quota pool. Normal
+					// account depletion must not block or switch this logical model.
+					this.#usageReserveApprovedSelector = undefined;
+					return false;
+				}
+			}
 			health = await this.#host.modelRegistry.authStorage.getModelUsageHealth(currentModel.provider, {
 				modelId: currentModel.id,
 				sessionId: this.#host.sessionId(),

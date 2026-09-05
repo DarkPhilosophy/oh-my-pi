@@ -1155,6 +1155,8 @@ export interface Model<TApi extends Api = Api> {
 	toolMode?: "code_mode_only";
 	/** Preferred model to switch to when context promotion is triggered (model id or provider/id). */
 	contextPromotionTarget?: string;
+	/** Equivalent wire model backed by an independently metered, account-scoped reserve allowance. */
+	reserveRoute?: { model: string; tier: string };
 	/** Preferred model to use only for compaction (model id or provider/id); the active session model is unchanged. */
 	compactionModel?: string;
 	/** Provider-native compaction endpoint configuration. */

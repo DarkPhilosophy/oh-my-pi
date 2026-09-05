@@ -2338,6 +2338,41 @@ describe("ModelRegistry", () => {
 			expect(disabledProbeUrls).toEqual([]);
 		});
 	});
+	test("discovers a selectable reserve model only while an account has reserve allowance", async () => {
+		await Settings.init({ inMemory: true });
+		await authStorage.set("openai-codex", [
+			{
+				type: "oauth",
+				access: "test-access",
+				refresh: "test-refresh",
+				expires: Date.now() + 3_600_000,
+				accountId: "reserve-account",
+			},
+		]);
+		const quota = spyOn(authStorage, "getReserveCredential").mockResolvedValue({ credentialId: 7, observedAt: 1 });
+		const fetchMock: FetchImpl = async () =>
+			new Response(
+				JSON.stringify({
+					models: [{ slug: "gpt-5.6-luna", display_name: "Luna", context_window: 1_000_000 }],
+				}),
+				{ headers: { "content-type": "application/json" } },
+			);
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		try {
+			await registry.refreshProvider("openai-codex", "online");
+			expect(registry.getAvailable().find(model => model.id === "gpt-reserve")).toMatchObject({
+				provider: "openai-codex",
+				requestModelId: "gpt-reserve",
+				reserveRoute: { model: "gpt-reserve", tier: "base-model-inference" },
+			});
+			quota.mockResolvedValue(undefined);
+			await registry.refreshProvider("openai-codex", "online");
+			expect(registry.getAvailable().some(model => model.id === "gpt-reserve")).toBe(false);
+			expect(registry.find("openai-codex", "gpt-5.6-luna")).toBeDefined();
+		} finally {
+			quota.mockRestore();
+		}
+	});
 	describe("extended context", () => {
 		test("off caps premium long-context models at the standard-pricing threshold", async () => {
 			await Settings.init({ inMemory: true, overrides: { extendedContext: false } });
@@ -2348,6 +2383,7 @@ describe("ModelRegistry", () => {
 			expect(registry.find("openai-codex", "gpt-5.6-sol")?.contextWindow).toBe(272_000);
 			// Standard-priced 1M models (no long-context tier) keep their window.
 			expect(registry.find("anthropic", "claude-opus-4-8")?.contextWindow).toBe(1_000_000);
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(1_050_000);
 		});
 
 		test("reapplyModelPolicies re-clamps and restores premium windows on toggle", async () => {
@@ -2359,13 +2395,13 @@ describe("ModelRegistry", () => {
 			settings.set("extendedContext", false);
 			await registry.reapplyModelPolicies();
 			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(272_000);
-			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(1_050_000);
 
 			settings.set("extendedContext", true);
 			await registry.reapplyModelPolicies();
 			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(1_050_000);
 			expect(registry.find("openai-codex", "gpt-5.6-terra")?.contextWindow).toBe(1_000_000);
-			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(1_000_000);
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(1_050_000);
 		});
 	});
 	describe("bundled Anthropic catalog availability", () => {

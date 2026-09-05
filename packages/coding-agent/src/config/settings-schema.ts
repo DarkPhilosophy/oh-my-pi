@@ -5771,6 +5771,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"providers.openai-codex.useReserve": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "providers",
+			group: "OpenAI Codex",
+			label: "Use Luna Reserve",
+			description: "Use gpt-reserve for Luna when an account has reserve quota; fall back to Luna when unavailable.",
+		},
+	},
+
 	"providers.openaiWebsockets": {
 		type: "enum",
 		values: ["auto", "off", "on"] as const,

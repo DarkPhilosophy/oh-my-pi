@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import type { ApiKeyResolver, FetchImpl, OAuthAccess, UsageProvider } from "@oh-my-pi/pi-ai";
+import { resolveApiKeyOnce } from "@oh-my-pi/pi-ai";
 import { registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
 import { registerOAuthProvider, unregisterOAuthProvider, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
@@ -42,7 +43,12 @@ import { getAgentDir, isBunTestRuntime, logger, wrapFetchForExtraCa } from "@oh-
 import { resolveProviderModelReference } from "../config/model-resolver";
 import { generateCodexAttestation } from "../live/attestation";
 import type { AuthStorage, OAuthAccountIdentity } from "../session/auth-storage";
-import { type ApiKeyResolverModel, type ApiKeyResolverOptions, createApiKeyResolver } from "./api-key-resolver";
+import {
+	type ApiKeyResolverModel,
+	type ApiKeyResolverOptions,
+	createApiKeyResolver,
+	createReserveApiKeyResolver,
+} from "./api-key-resolver";
 import type { ConfigError, ConfigFile } from "./config-file";
 import {
 	buildCustomModelOverlay,
@@ -1468,6 +1474,47 @@ export class ModelRegistry {
 			.filter(result => currentDiscoverableProviders.has(result.provider))
 			.flatMap(result => result.models);
 		const discovered = [...configuredDiscovered, ...builtInDiscovery.models];
+		const reserveTargets = new Set<string>();
+		const discoveredCount = discovered.length;
+		for (let index = 0; index < discoveredCount; index++) {
+			const model = discovered[index]!;
+			const route = model.reserveRoute;
+			if (!route || model.id === route.model) continue;
+			const selector = `${model.provider}/${route.model}`;
+			if (reserveTargets.has(selector)) continue;
+			reserveTargets.add(selector);
+			let available = false;
+			if (strategy === "offline") {
+				available = this.#runtimeDiscoveredModels.some(
+					candidate => candidate.provider === model.provider && candidate.id === route.model,
+				);
+			} else {
+				try {
+					available = (await this.authStorage.getReserveCredential(model.provider, route)) !== undefined;
+				} catch (error) {
+					logger.debug("Reserve model availability refresh failed", {
+						provider: model.provider,
+						error: String(error),
+					});
+				}
+			}
+			if (!available) continue;
+			const existingIndex = discovered.findIndex(
+				candidate => candidate.provider === model.provider && candidate.id === route.model,
+			);
+			if (existingIndex >= 0) {
+				discovered[existingIndex] = { ...discovered[existingIndex]!, reserveRoute: route };
+			} else {
+				discovered.push({
+					...model,
+					id: route.model,
+					name: route.model,
+					requestModelId: route.model,
+					reserveRoute: route,
+					thinking: model.thinking ? { ...model.thinking, effortRouting: undefined } : undefined,
+				});
+			}
+		}
 		if (discovered.length === 0 && builtInDiscovery.authoritativeProviders.size === 0) {
 			return;
 		}
@@ -2455,6 +2502,9 @@ export class ModelRegistry {
 		sessionId?: string,
 		options?: { signal?: AbortSignal },
 	): Promise<string | undefined> {
+		if (model.reserveRoute?.model === model.id) {
+			return resolveApiKeyOnce(this.resolver(model, sessionId), options?.signal);
+		}
 		const commandKey = this.#resolveCommandBackedApiKey(model.provider);
 		if (commandKey.configured) return commandKey.value;
 		if (this.#keylessProviders.has(model.provider) && !this.authStorage.hasAuth(model.provider)) {
@@ -2523,6 +2573,9 @@ export class ModelRegistry {
 		const options = typeof optionsOrSessionId === "string" ? { sessionId: optionsOrSessionId } : optionsOrSessionId;
 		if (typeof target === "string") {
 			return createApiKeyResolver(this, target, options);
+		}
+		if (target.reserveRoute?.model === target.id) {
+			return createReserveApiKeyResolver(this.authStorage, target.provider, target.reserveRoute, options?.sessionId);
 		}
 		return createApiKeyResolver(this, target.provider, {
 			...options,

@@ -1094,6 +1094,69 @@ describe("AgentSession retry fallback", () => {
 		expect(requestedModels).toEqual([]);
 	});
 
+	it("does not debit the logical Luna pool for a reserve failure after output", async () => {
+		const source = getBundledModel("openai-codex", "gpt-5.6-luna");
+		if (!source) throw new Error("Expected bundled Luna model");
+		const primaryModel = { ...source, reserveRoute: { model: "gpt-reserve", tier: "base-model-inference" } };
+		const reserve = createMockModel({
+			id: "gpt-reserve",
+			provider: source.provider,
+			responses: [{ content: ["Partial response"], stopReason: "error", errorMessage: "429 usage limit reached" }],
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: reserve.stream,
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.enabled": false,
+			"retry.modelFallback": false,
+			"retry.usageAwareFallback": false,
+		});
+		const markUsage = vi.spyOn(modelRegistry.authStorage, "markUsageLimitReached");
+		session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry });
+		await session.prompt("Start a reserve response");
+		await session.waitForIdle();
+		expect(getLastAssistantMessage(session).stopReason).toBe("error");
+		expect(getLastAssistantMessage(session).model).toBe("gpt-reserve");
+		expect(markUsage).not.toHaveBeenCalled();
+	});
+
+	it("does not hard-lock an available reserve route when the normal model pool is exhausted", async () => {
+		const source = getBundledModel("openai-codex", "gpt-5.6-luna");
+		if (!source) throw new Error("Expected bundled Luna model");
+		const primaryModel = { ...source, reserveRoute: { model: "gpt-reserve", tier: "base-model-inference" } };
+		const mock = createMockModel({
+			id: source.id,
+			provider: source.provider,
+			responses: [{ content: ["reserve remains usable"] }],
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: mock.stream,
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"features.unexpectedStopDetection": "none",
+			"providers.openai-codex.useReserve": true,
+			"retry.usageAwareFallback": true,
+			"retry.usageReservePolicy": "fail-closed",
+		});
+		const reserve = vi
+			.spyOn(modelRegistry.authStorage, "getReserveCredential")
+			.mockResolvedValue({ credentialId: 7, observedAt: Date.now() });
+		vi.spyOn(modelRegistry.authStorage, "getModelUsageHealth").mockResolvedValue({ state: "depleted", accounts: [] });
+		session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry });
+		await session.prompt("Use the independent allowance");
+		await session.waitForIdle();
+		expect(mock.calls).toHaveLength(1);
+		expect(getLastAssistantMessage(session).content).toEqual([{ type: "text", text: "reserve remains usable" }]);
+		reserve.mockResolvedValue(undefined);
+		await expect(session.prompt("Both allowances unavailable")).rejects.toThrow("reserve policy is fail-closed");
+	});
+
 	it("enforces fail-closed usage health when model fallback is disabled", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!primaryModel) throw new Error("Expected bundled fail-closed model");

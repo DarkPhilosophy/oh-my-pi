@@ -2,7 +2,7 @@ import { type Api, type ApiKeyResolver, type AuthStorage, isUsageLimitOutcome, t
 import * as AIError from "@oh-my-pi/pi-ai/error";
 
 /** Model slice accepted by the model-form `resolver(model, sessionId)` overload. */
-export type ApiKeyResolverModel = Pick<Model<Api>, "provider" | "baseUrl" | "id">;
+export type ApiKeyResolverModel = Pick<Model<Api>, "provider" | "baseUrl" | "id" | "reserveRoute">;
 
 export interface ApiKeyResolverOptions {
 	/** Session id for credential stickiness; read at resolve time by the caller. */
@@ -77,5 +77,33 @@ export function createApiKeyResolver(
 			return registry.getApiKeyForProvider(provider, sessionId, { baseUrl, modelId });
 		}
 		return registry.getApiKeyForProvider(provider, sessionId, { baseUrl, modelId, forceRefresh: true, signal });
+	};
+}
+
+/** Resolve a directly selected reserve model without consulting or blocking the normal pool. */
+export function createReserveApiKeyResolver(
+	auth: Pick<AuthStorage, "getReserveCredential" | "getOAuthAccessByCredentialId" | "rejectReserveCredential">,
+	provider: string,
+	route: { model: string; tier: string },
+	sessionId?: string,
+): ApiKeyResolver {
+	let observation: { credentialId: number; observedAt: number } | undefined;
+	const attempted = new Set<number>();
+	return async ({ error, signal }) => {
+		signal?.throwIfAborted();
+		if (error === undefined) attempted.clear();
+		else if (observation) auth.rejectReserveCredential(provider, route, observation);
+		while (true) {
+			observation = await auth.getReserveCredential(provider, route, {
+				sessionId,
+				signal,
+				excludeCredentialIds: attempted,
+			});
+			if (!observation || attempted.has(observation.credentialId)) return undefined;
+			attempted.add(observation.credentialId);
+			const access = await auth.getOAuthAccessByCredentialId(provider, observation.credentialId, { signal });
+			signal?.throwIfAborted();
+			if (access?.ok) return access.accessToken;
+		}
 	};
 }

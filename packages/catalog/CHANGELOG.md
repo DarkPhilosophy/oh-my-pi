@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed GPT-6 Astra showing as free with an incorrect context window in the OpenAI Codex catalog by applying its documented pricing and 1.05M-token context window.
+
 ## [18.1.9] - 2026-09-04
 
 ### Added

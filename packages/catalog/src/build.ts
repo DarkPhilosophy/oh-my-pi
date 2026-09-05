@@ -58,6 +58,14 @@ function applyCatalogAssignments<TApi extends Api>(model: Model<TApi>, catalog: 
 	} else {
 		delete model.requiresCursorToolSchemaProjection;
 	}
+	const reserveRoute = objectPayload(catalog.reserveRoute);
+	if (reserveRoute) {
+		const reserveModel: unknown = Reflect.get(reserveRoute, "model");
+		const tier: unknown = Reflect.get(reserveRoute, "tier");
+		if (typeof reserveModel === "string" && typeof tier === "string") {
+			model.reserveRoute = { model: reserveModel, tier };
+		}
+	}
 	const contextPromotionTarget = catalog.contextPromotionTarget;
 	if (typeof contextPromotionTarget === "string" && model.contextPromotionTarget === undefined) {
 		model.contextPromotionTarget = contextPromotionTarget;

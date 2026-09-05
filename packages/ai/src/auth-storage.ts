@@ -1353,6 +1353,7 @@ export class AuthStorage {
 	#rankingStrategyResolver?: (provider: Provider) => CredentialRankingStrategy | undefined;
 	#usageCache: UsageCache;
 	#usageCacheEpoch = 0;
+	#reserveRejections = new Map<string, number>();
 	#usageRequestInFlight: Map<string, Promise<UsageReport | null>> = new Map();
 	#usageHeaderIngestAt: Map<string, number> = new Map();
 	#usageReportsInFlight: Map<string, Promise<UsageReport[] | null>> = new Map();
@@ -6016,6 +6017,79 @@ export class AuthStorage {
 			orgName: selection.credential.orgName,
 			active: selection.credentialId === activeCredentialId,
 		}));
+	}
+
+	/**
+	 * Prefer the active OAuth account, then an eligible sibling, using only its exact reserve meter.
+	 */
+	async getReserveCredential(
+		provider: string,
+		route: { model: string; tier: string },
+		options?: { sessionId?: string; signal?: AbortSignal; excludeCredentialIds?: ReadonlySet<number> },
+	): Promise<{ credentialId: number; observedAt: number } | undefined> {
+		const accounts = this.listOAuthAccounts(provider, options?.sessionId);
+		if (accounts.length === 0) return undefined;
+		const preferred = accounts.find(account => account.active);
+		const candidates = preferred ? [preferred, ...accounts.filter(account => account !== preferred)] : accounts;
+		const reports = await this.fetchUsageReports({ signal: options?.signal });
+		const now = Date.now();
+		for (const account of candidates) {
+			if (options?.excludeCredentialIds?.has(account.credentialId)) continue;
+			if (!account.accountId && !account.email) continue;
+			const report = reports?.find(candidate => {
+				if (candidate.provider !== provider) return false;
+				const metadata = candidate.metadata;
+				const accountId = typeof metadata?.accountId === "string" ? metadata.accountId : undefined;
+				if (account.accountId !== undefined) return accountId === account.accountId;
+				const email = typeof metadata?.email === "string" ? metadata.email : undefined;
+				return (
+					account.email !== undefined && email !== undefined && email.toLowerCase() === account.email.toLowerCase()
+				);
+			});
+			if (!report) continue;
+			const rejectionKey = `${provider}:${route.model}:${account.credentialId}`;
+			const rejectedAt = this.#reserveRejections.get(rejectionKey);
+			if (rejectedAt !== undefined && rejectedAt >= report.fetchedAt) continue;
+			this.#reserveRejections.delete(rejectionKey);
+			const reserveLimits = report.limits.filter(
+				limit => limit.scope.tier === route.tier && limit.scope.modelId === route.model,
+			);
+			if (
+				reserveLimits.length === 0 ||
+				reserveLimits.some(
+					limit =>
+						limit.status === "exhausted" ||
+						(limit.window?.resetsAt !== undefined && limit.window.resetsAt <= now) ||
+						(limit.amount.remaining !== undefined && limit.amount.remaining <= 0) ||
+						(limit.amount.remainingFraction !== undefined && limit.amount.remainingFraction <= 0) ||
+						!((limit.amount.remainingFraction ?? 0) > 0 || (limit.amount.remaining ?? 0) > 0),
+				)
+			) {
+				continue;
+			}
+			const meterStates = report.metadata?.meterStates;
+			const state =
+				meterStates && typeof meterStates === "object" && !Array.isArray(meterStates)
+					? (meterStates as Record<string, unknown>)[route.tier]
+					: undefined;
+			const reserveState =
+				state && typeof state === "object" && !Array.isArray(state)
+					? (state as { allowed?: boolean; limitReached?: boolean })
+					: undefined;
+			if (reserveState?.allowed === true && reserveState.limitReached !== true) {
+				return { credentialId: account.credentialId, observedAt: report.fetchedAt };
+			}
+		}
+		return undefined;
+	}
+
+	/** Quarantine a rejected reserve observation without blocking the account's normal usage pool. */
+	rejectReserveCredential(
+		provider: string,
+		route: { model: string },
+		observation: { credentialId: number; observedAt: number },
+	): void {
+		this.#reserveRejections.set(`${provider}:${route.model}:${observation.credentialId}`, observation.observedAt);
 	}
 
 	/**

@@ -287,6 +287,58 @@ describe("AuthStorage codex oauth ranking", () => {
 		}
 	});
 
+	test("routes reserve independently of exhausted chat and Spark pools and binds its account", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+		await authStorage.set("openai-codex", [
+			{ type: "oauth", ...createCredential("normal", "normal@example.com") },
+			{ type: "oauth", ...createCredential("reserve", "reserve@example.com") },
+		]);
+		const route = { model: "gpt-reserve", tier: "base-model-inference" };
+		const report = createCodexUsageReport({
+			accountId: "reserve",
+			primary: { usedFraction: 1, resetInMs: HOUR_MS },
+			secondary: { usedFraction: 1, resetInMs: WEEK_MS },
+		});
+		const reserve = createLimit({
+			key: "primary",
+			windowId: "7d",
+			windowLabel: "Reserve",
+			durationMs: WEEK_MS,
+			usedFraction: 0.95,
+			resetInMs: WEEK_MS,
+		});
+		reserve.scope = { provider: "openai-codex", modelId: route.model, tier: route.tier };
+		report.limits.push(reserve);
+		report.metadata = {
+			...report.metadata,
+			accountId: "reserve",
+			meterStates: {
+				chat: { allowed: false, limitReached: true },
+				spark: { allowed: false, limitReached: true },
+				"base-model-inference": { allowed: true, limitReached: false },
+			},
+		};
+		usageByAccount.set("reserve", report);
+		usageByAccount.set(
+			"normal",
+			createCodexUsageReport({
+				accountId: "normal",
+				primary: { usedFraction: 0, resetInMs: HOUR_MS },
+				secondary: { usedFraction: 0, resetInMs: WEEK_MS },
+			}),
+		);
+		const selected = await authStorage.getReserveCredential("openai-codex", route);
+		expect(selected?.credentialId).toBe(
+			authStorage.listOAuthAccounts("openai-codex").find(account => account.accountId === "reserve")?.credentialId,
+		);
+		if (!selected) throw new Error("reserve account was not selected");
+		const access = await authStorage.getOAuthAccessByCredentialId("openai-codex", selected.credentialId);
+		expect(access).toMatchObject({ ok: true, accountId: "reserve" });
+		authStorage.rejectReserveCredential("openai-codex", route, selected);
+		expect(await authStorage.getReserveCredential("openai-codex", route)).toBeUndefined();
+		expect(await authStorage.getApiKey("openai-codex", "normal-pool", { modelId: "gpt-5.6-luna" })).toBeDefined();
+	});
+
 	test("prefers near-reset weekly account over lower-used far-reset account", async () => {
 		if (!authStorage) throw new Error("test setup failed");
 
