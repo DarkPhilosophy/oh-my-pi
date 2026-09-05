@@ -196,8 +196,8 @@ function requiresOnlyPropertyPresence(schema: unknown, key: string, root: unknow
 	return (
 		(schema.type === undefined || schema.type === "object") &&
 		Array.isArray(schema.required) &&
-		schema.required.length === 1 &&
-		schema.required[0] === key
+		schema.required.includes(key) &&
+		schema.required.every(entry => typeof entry === "string")
 	);
 }
 
