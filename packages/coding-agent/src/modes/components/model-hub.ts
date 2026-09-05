@@ -1094,20 +1094,14 @@ export class ModelHubComponent implements Component {
 								: chip.thinkingLevel;
 						const selector = formatModelSelectorValue(strip.item.selector, level);
 						const primary = strip.role === "default" ? undefined : this.#roles[strip.role]?.model;
-						const before = chain
-							.slice(0, strip.chainIndex)
-							.filter(
-								entry =>
-									entry !== selector && entry !== (primary ? `${primary.provider}/${primary.id}` : undefined),
-							);
-						const after = chain
-							.slice(strip.chainIndex + 1)
-							.filter(
-								entry =>
-									entry !== selector && entry !== (primary ? `${primary.provider}/${primary.id}` : undefined),
-							);
-						before.push(selector);
-						chain.splice(0, chain.length, ...before, ...after);
+						const before = chain.slice(0, strip.chainIndex).filter(entry => entry !== selector);
+						const after = chain.slice(strip.chainIndex + 1).filter(entry => entry !== selector);
+						if (primary && selector === `${primary.provider}/${primary.id}`) {
+							chain.splice(0, chain.length, ...before, ...after);
+						} else {
+							before.push(selector);
+							chain.splice(0, chain.length, ...before, ...after);
+						}
 						this.#setFallbackChain(strip.role, chain);
 						const roleIndex = this.#rolesRows.findIndex(
 							row => row.kind === "fallback" && row.role === strip.role && row.selector === selector,
