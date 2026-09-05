@@ -1,9 +1,10 @@
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { validateToolArguments } from "@oh-my-pi/pi-ai";
+import { toolWireSchema, validateToolArguments } from "@oh-my-pi/pi-ai";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { ToolSession } from "../../tools";
 import { ToolError } from "../../tools/tool-errors";
+import { schemaDeclaresIntentField } from "../../utils/tool-schema";
 import { invokeEvalPrelude } from "../preludes";
 import { EVAL_AGENT_BRIDGE_NAME, type EvalAgentHandleResult, runEvalAgent } from "../agent-bridge";
 import { EVAL_BUDGET_BRIDGE_NAME, type EvalBudgetResult, runEvalBudget } from "../budget-bridge";
@@ -56,10 +57,10 @@ function getTool(session: ToolSession, name: string): AgentTool {
 	return tool;
 }
 
-function normalizeArgs(args: unknown): unknown {
+function normalizeArgs(args: unknown, injectIntent = true): unknown {
 	if (!isRecord(args)) return args;
 	const record = { ...args };
-	if (record[INTENT_FIELD] === undefined) {
+	if (injectIntent && record[INTENT_FIELD] === undefined) {
 		record[INTENT_FIELD] = "js prelude";
 	}
 	return record;
@@ -203,9 +204,10 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 	}
 	const tool = getTool(options.session, name);
 	const toolCallId = `js-${name}-${crypto.randomUUID()}`;
+	const intentIsDeclared = schemaDeclaresIntentField(toolWireSchema(tool));
 	const suppliedIntent = isRecord(args) ? args[INTENT_FIELD] : undefined;
 	const validationArgs = isRecord(args) ? { ...args } : args;
-	if (isRecord(validationArgs)) delete validationArgs[INTENT_FIELD];
+	if (isRecord(validationArgs) && !intentIsDeclared) delete validationArgs[INTENT_FIELD];
 	let validatedArgs: unknown;
 	try {
 		validatedArgs = validateToolArguments(tool, {
@@ -231,10 +233,10 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 			validatedArgs = validationArgs;
 		}
 	}
-	if (isRecord(validatedArgs) && suppliedIntent !== undefined) {
+	if (isRecord(validatedArgs) && !intentIsDeclared && suppliedIntent !== undefined) {
 		validatedArgs[INTENT_FIELD] = suppliedIntent;
 	}
-	const normalizedArgs = normalizeArgs(validatedArgs);
+	const normalizedArgs = normalizeArgs(validatedArgs, !intentIsDeclared);
 	try {
 		const result = await tool.execute(
 			toolCallId,

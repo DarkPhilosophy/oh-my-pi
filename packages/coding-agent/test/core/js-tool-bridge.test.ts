@@ -147,6 +147,53 @@ describe("callSessionTool", () => {
 		expect(result).toBe("caller intent");
 	});
 
+	it("validates and preserves a schema-declared intent field", async () => {
+		const execute = async (_id: string, args: unknown) => ({
+			content: [
+				{
+					type: "text" as const,
+					text: `${typeof (args as Record<string, unknown>)[INTENT_FIELD]}:${String((args as Record<string, unknown>)[INTENT_FIELD])}`,
+				},
+			],
+		});
+		const tool: AgentTool = {
+			name: "required-intent",
+			label: "required intent",
+			description: "required intent tool",
+			parameters: type({ [INTENT_FIELD]: "number" }),
+			concurrency: "parallel",
+			execute,
+		} as unknown as AgentTool;
+
+		const result = await callSessionTool(
+			"required-intent",
+			{ [INTENT_FIELD]: "5" },
+			{ session: createSession([tool]) },
+		);
+
+		expect(result).toBe("number:5");
+	});
+
+	it("validates constrained tool-owned intent without supplying a missing optional value", async () => {
+		const execute = vi.fn(async (_id: string, args: unknown) => ({
+			content: [{ type: "text" as const, text: String((args as Record<string, unknown>)[INTENT_FIELD]) }],
+		}));
+		const tool: AgentTool = {
+			name: "constrained-intent",
+			label: "constrained intent",
+			description: "constrained intent tool",
+			parameters: type({ [`${INTENT_FIELD}?`]: "'allowed'" }),
+			concurrency: "parallel",
+			execute,
+		} as unknown as AgentTool;
+
+		await expect(
+			callSessionTool("constrained-intent", { [INTENT_FIELD]: "disallowed" }, { session: createSession([tool]) }),
+		).rejects.toThrow("Validation failed");
+		expect(execute).not.toHaveBeenCalled();
+		expect(await callSessionTool("constrained-intent", {}, { session: createSession([tool]) })).toBe("undefined");
+	});
+
 	it("recovers a missing todo operation from raw parse metadata", async () => {
 		let phases: TodoPhase[] = [];
 		const session: ToolSession = {
