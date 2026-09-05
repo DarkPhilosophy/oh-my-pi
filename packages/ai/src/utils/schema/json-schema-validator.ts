@@ -173,6 +173,34 @@ function resolveLocalRef(root: unknown, ref: string): unknown | undefined {
 	return current;
 }
 
+/** A presence-only constraint, as distinct from restrictions on a property's value. */
+function requiresOnlyPropertyPresence(schema: unknown, key: string, root: unknown, depth = 0): boolean {
+	if (!isJsonObject(schema) || depth >= MAX_REF_DEPTH) return false;
+	for (const keyword of Object.keys(schema)) {
+		switch (keyword) {
+			case "required":
+			case "type":
+			case "$ref":
+			case "description":
+			case "title":
+			case "$comment":
+				break;
+			default:
+				return false;
+		}
+	}
+	if ("$ref" in schema) {
+		if (typeof schema.$ref !== "string" || schema.required !== undefined || schema.type !== undefined) return false;
+		return requiresOnlyPropertyPresence(resolveLocalRef(root, schema.$ref), key, root, depth + 1);
+	}
+	return (
+		(schema.type === undefined || schema.type === "object") &&
+		Array.isArray(schema.required) &&
+		schema.required.length === 1 &&
+		schema.required[0] === key
+	);
+}
+
 /** Whether any same-instance schema declaration or constraint owns this property name. */
 export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 	const root = schema;
@@ -211,9 +239,12 @@ export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 			const branches = node[keyword];
 			if (Array.isArray(branches) && branches.some(visit)) return true;
 		}
-		for (const keyword of ["if", "then", "else", "not"] as const) {
+		for (const keyword of ["if", "then", "else"] as const) {
 			if (visit(node[keyword])) return true;
 		}
+		// `not: { required: [key] }` forbids the name rather than declaring data.
+		// Negated value constraints still own their inputs and must be validated.
+		if (!requiresOnlyPropertyPresence(node.not, key, root) && visit(node.not)) return true;
 		const dependentSchemas = node.dependentSchemas;
 		if (isJsonObject(dependentSchemas)) {
 			if (Object.hasOwn(dependentSchemas, key)) return true;

@@ -222,6 +222,16 @@ describe("MCP tool arguments", () => {
 		]);
 	});
 
+	it("strips harness intent explicitly prohibited by not-required", async () => {
+		const calls: CapturedRequest[] = [];
+		const tool = new MCPTool(createCapturedConnection(calls), {
+			name: "forbidden-presence",
+			inputSchema: { type: "object", not: { required: ["i"] } },
+		});
+		await tool.execute("not-required", { i: "caller intent" }, undefined, unusedContext, undefined);
+		expect(calls).toEqual([{ method: "tools/call", params: { name: "forbidden-presence", arguments: {} } }]);
+	});
+
 	it("forwards intent admitted by propertyNames", async () => {
 		const calls: CapturedRequest[] = [];
 		const definition: MCPToolDefinition = {

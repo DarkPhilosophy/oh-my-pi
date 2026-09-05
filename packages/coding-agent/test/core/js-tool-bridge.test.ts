@@ -489,6 +489,24 @@ describe("callSessionTool", () => {
 		).rejects.toThrow("Validation failed");
 	});
 
+	it.each(["direct", "annotated", "reference"] as const)(
+		"keeps harness intent out of a presence prohibition (%s)",
+		async shape => {
+			const presence =
+				shape === "annotated"
+					? { type: "object", required: ["i"], description: "Reserved name" }
+					: { required: ["i"] };
+			const tool = createSchemaTool("forbidden-presence", {
+				type: "object",
+				not: shape === "reference" ? { $ref: "#/$defs/presence" } : presence,
+				$defs: { presence },
+			});
+			expect(
+				await callSessionTool("forbidden-presence", { i: "caller intent" }, { session: createSession([tool]) }),
+			).toBe("string:caller intent");
+		},
+	);
+
 	it("validates intent constraints inside a negated schema", async () => {
 		const tool = createSchemaTool("negated-intent", {
 			type: "object",
