@@ -980,7 +980,7 @@ export class ModelHubComponent implements Component {
 	#openFallbackThinkingStrip(row: Extract<RolesRow, { kind: "fallback" }>): void {
 		const parsed = parseRetryFallbackSelector(row.selector, this.#registry);
 		if (!parsed) return;
-		const model = this.#registry.find(parsed.provider, parsed.id);
+		const model = this.#registry.find(parsed.provider, parsed.id.split("@", 1)[0]);
 		if (!model) return;
 		const options = this.#thinkingOptionsFor(model).filter(level => level !== AUTO_THINKING);
 		const chips = options.map(level => {
@@ -1061,7 +1061,9 @@ export class ModelHubComponent implements Component {
 					if (strip.chainIndex < chain.length) {
 						chain[strip.chainIndex] = formatRetryFallbackSelector(
 							strip.item.model,
-							chip.thinkingLevel === ThinkingLevel.Inherit ? undefined : (chip.thinkingLevel as ThinkingLevel),
+							chip.thinkingLevel === ThinkingLevel.Inherit || chip.thinkingLevel === AUTO_THINKING
+								? undefined
+								: chip.thinkingLevel,
 						);
 						this.#setFallbackChain(strip.role, chain);
 					}
@@ -2052,7 +2054,7 @@ export class ModelHubComponent implements Component {
 			const row = this.#rolesRows[this.#roleIndex];
 			if (row?.kind === "fallback") {
 				const parsed = parseRetryFallbackSelector(row.selector, this.#registry);
-				return parsed && this.#registry.find(parsed.provider, parsed.id)
+				return parsed && this.#registry.find(parsed.provider, parsed.id.split("@", 1)[0])
 					? "↑/↓ rows · Enter replace · f add another · x remove · t thinking · [/] reorder · ← providers"
 					: "↑/↓ rows · Enter replace · f add another · x remove · thinking n/a · [/] reorder · ← providers";
 			}
