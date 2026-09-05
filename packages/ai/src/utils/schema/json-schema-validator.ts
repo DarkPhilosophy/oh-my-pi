@@ -185,6 +185,9 @@ export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 		if (isJsonObject(properties) && Object.hasOwn(properties, key)) return true;
 		const required = node.required;
 		if (Array.isArray(required) && required.includes(key)) return true;
+		if (node.propertyNames !== undefined && validateSchemaValueInRoot(node.propertyNames, key, root).success) {
+			return true;
+		}
 		const patternProperties = node.patternProperties;
 		if (isJsonObject(patternProperties)) {
 			for (const pattern of Object.keys(patternProperties)) {
@@ -674,16 +677,20 @@ function validateNumberKeywords(
 	return valid;
 }
 
-export function validateJsonSchemaValue(schema: unknown, value: unknown): JsonSchemaValidationResult {
+function validateSchemaValueInRoot(schema: unknown, value: unknown, root: unknown): JsonSchemaValidationResult {
 	const issues: JsonSchemaValidationIssue[] = [];
 	const success = validateSchemaNode(
 		schema,
 		value,
 		[],
-		{ root: schema, seenPairs: new Set(), objectIds: new WeakMap(), nextObjectId: { value: 0 }, refDepth: 0 },
+		{ root, seenPairs: new Set(), objectIds: new WeakMap(), nextObjectId: { value: 0 }, refDepth: 0 },
 		issues,
 	);
 	return { success, issues };
+}
+
+export function validateJsonSchemaValue(schema: unknown, value: unknown): JsonSchemaValidationResult {
+	return validateSchemaValueInRoot(schema, value, schema);
 }
 
 export function isJsonSchemaValueValid(schema: unknown, value: unknown): boolean {

@@ -241,6 +241,54 @@ describe("callSessionTool", () => {
 		expect(execute).not.toHaveBeenCalled();
 	});
 
+	it("preserves intent admitted by propertyNames", async () => {
+		const tool = createSchemaTool("property-name-intent", {
+			type: "object",
+			propertyNames: { const: INTENT_FIELD },
+			minProperties: 1,
+		});
+
+		expect(
+			await callSessionTool(
+				"property-name-intent",
+				{ [INTENT_FIELD]: "caller intent" },
+				{ session: createSession([tool]) },
+			),
+		).toBe("string:caller intent");
+	});
+
+	it("preserves intent admitted by referenced propertyNames", async () => {
+		const tool = createSchemaTool("referenced-property-name-intent", {
+			type: "object",
+			propertyNames: { $ref: "#/$defs/intentName" },
+			minProperties: 1,
+			$defs: { intentName: { const: INTENT_FIELD } },
+		});
+
+		expect(
+			await callSessionTool(
+				"referenced-property-name-intent",
+				{ [INTENT_FIELD]: "caller intent" },
+				{ session: createSession([tool]) },
+			),
+		).toBe("string:caller intent");
+	});
+
+	it("does not claim intent excluded by propertyNames", async () => {
+		const tool = createSchemaTool("excluded-property-name-intent", {
+			type: "object",
+			propertyNames: { not: { const: INTENT_FIELD } },
+		});
+
+		expect(
+			await callSessionTool(
+				"excluded-property-name-intent",
+				{ [INTENT_FIELD]: "caller intent" },
+				{ session: createSession([tool]) },
+			),
+		).toBe("string:caller intent");
+	});
+
 	it("rejects invalid intent matched by patternProperties", async () => {
 		const tool = createSchemaTool("pattern-intent", {
 			type: "object",
