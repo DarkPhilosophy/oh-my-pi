@@ -204,17 +204,21 @@ function requiresOnlyPropertyPresence(schema: unknown, key: string, root: unknow
 /** Whether any same-instance schema declaration or constraint owns this property name. */
 export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 	const root = schema;
-	const visited = new WeakSet<object>();
-	const visit = (node: unknown): boolean => {
+	const visited = new WeakMap<object, number>();
+	const visit = (node: unknown, context: "positive" | "negative" | "predicate" = "positive"): boolean => {
 		if (!isJsonObject(node)) return false;
-		if (visited.has(node)) return false;
-		visited.add(node);
+		const contextBit = context === "positive" ? 1 : context === "negative" ? 2 : 4;
+		const previousContexts = visited.get(node) ?? 0;
+		if (previousContexts & contextBit) return false;
+		visited.set(node, previousContexts | contextBit);
 		if (isJsonObject(node.const) && Object.hasOwn(node.const, key)) return true;
 		if (Array.isArray(node.enum) && node.enum.some(value => isJsonObject(value) && Object.hasOwn(value, key))) {
 			return true;
 		}
 		const properties = node.properties;
-		if (isJsonObject(properties) && Object.hasOwn(properties, key)) return true;
+		if (isJsonObject(properties) && Object.hasOwn(properties, key)) {
+			return properties[key] !== false || context !== "positive";
+		}
 		const required = node.required;
 		if (Array.isArray(required) && required.includes(key)) return true;
 		if (
@@ -237,18 +241,24 @@ export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 		if (isJsonObject(node.additionalProperties)) return true;
 		for (const keyword of ["anyOf", "oneOf", "allOf"] as const) {
 			const branches = node[keyword];
-			if (Array.isArray(branches) && branches.some(visit)) return true;
+			if (Array.isArray(branches) && branches.some(branch => visit(branch, context))) return true;
 		}
-		for (const keyword of ["if", "then", "else"] as const) {
-			if (visit(node[keyword])) return true;
+		if (visit(node.if, "predicate")) return true;
+		for (const keyword of ["then", "else"] as const) {
+			if (visit(node[keyword], context)) return true;
 		}
 		// `not: { required: [key] }` forbids the name rather than declaring data.
 		// Negated value constraints still own their inputs and must be validated.
-		if (!requiresOnlyPropertyPresence(node.not, key, root) && visit(node.not)) return true;
+		if (
+			(context !== "positive" || !requiresOnlyPropertyPresence(node.not, key, root)) &&
+			visit(node.not, context === "predicate" ? "predicate" : context === "positive" ? "negative" : "positive")
+		) {
+			return true;
+		}
 		const dependentSchemas = node.dependentSchemas;
 		if (isJsonObject(dependentSchemas)) {
 			if (Object.hasOwn(dependentSchemas, key)) return true;
-			if (Object.values(dependentSchemas).some(visit)) return true;
+			if (Object.values(dependentSchemas).some(dependency => visit(dependency, context))) return true;
 		}
 		const dependentRequired = node.dependentRequired;
 		if (isJsonObject(dependentRequired)) {
@@ -262,12 +272,12 @@ export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 			if (Object.hasOwn(dependencies, key)) return true;
 			for (const dependency of Object.values(dependencies)) {
 				if (Array.isArray(dependency) && dependency.includes(key)) return true;
-				if (visit(dependency)) return true;
+				if (visit(dependency, context)) return true;
 			}
 		}
 		if (typeof node.$ref === "string") {
 			const resolved = resolveLocalRef(root, node.$ref);
-			if (resolved !== undefined && visit(resolved)) return true;
+			if (resolved !== undefined && visit(resolved, context)) return true;
 		}
 		return false;
 	};

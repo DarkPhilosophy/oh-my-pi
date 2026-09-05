@@ -222,6 +222,16 @@ describe("MCP tool arguments", () => {
 		]);
 	});
 
+	it("strips harness intent prohibited by a false property schema", async () => {
+		const calls: CapturedRequest[] = [];
+		const tool = new MCPTool(createCapturedConnection(calls), {
+			name: "false-intent",
+			inputSchema: { type: "object", properties: { i: false } },
+		});
+		await tool.execute("false", { i: "caller intent" }, undefined, unusedContext, undefined);
+		expect(calls).toEqual([{ method: "tools/call", params: { name: "false-intent", arguments: {} } }]);
+	});
+
 	it("strips harness intent explicitly prohibited by not-required", async () => {
 		const calls: CapturedRequest[] = [];
 		const tool = new MCPTool(createCapturedConnection(calls), {

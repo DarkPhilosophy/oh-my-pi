@@ -507,6 +507,51 @@ describe("callSessionTool", () => {
 		},
 	);
 
+	it("keeps harness intent out of a false property schema", async () => {
+		const tool = createSchemaTool("false-intent", { type: "object", properties: { i: false } });
+		expect(await callSessionTool("false-intent", { i: "caller intent" }, { session: createSession([tool]) })).toBe(
+			"string:caller intent",
+		);
+	});
+
+	it("preserves data required by negating a false property schema", async () => {
+		const tool = createSchemaTool("not-false-intent", { type: "object", not: { properties: { i: false } } });
+		expect(await callSessionTool("not-false-intent", { i: "data" }, { session: createSession([tool]) })).toBe(
+			"string:data",
+		);
+	});
+
+	it("preserves false-property predicates as decision inputs", async () => {
+		const tool = createSchemaTool("false-intent-predicate", {
+			type: "object",
+			if: { properties: { i: false } },
+			// oxlint-disable-next-line unicorn/no-thenable -- JSON Schema if/then/else keyword
+			then: false,
+			else: true,
+		});
+		expect(await callSessionTool("false-intent-predicate", { i: "data" }, { session: createSession([tool]) })).toBe(
+			"string:data",
+		);
+	});
+
+	it("preserves intent required by double negation", async () => {
+		const tool = createSchemaTool("double-not-intent", { type: "object", not: { not: { required: ["i"] } } });
+		expect(await callSessionTool("double-not-intent", { i: "data" }, { session: createSession([tool]) })).toBe(
+			"string:data",
+		);
+	});
+
+	it("visits a shared reference under both negation polarities", async () => {
+		const tool = createSchemaTool("shared-polarity", {
+			type: "object",
+			anyOf: [{ $ref: "#/$defs/absent" }, { not: { $ref: "#/$defs/absent" } }],
+			$defs: { absent: { not: { required: ["i"] } } },
+		});
+		expect(await callSessionTool("shared-polarity", {}, { session: createSession([tool]) })).toBe(
+			"undefined:undefined",
+		);
+	});
+
 	it("validates intent constraints inside a negated schema", async () => {
 		const tool = createSchemaTool("negated-intent", {
 			type: "object",
