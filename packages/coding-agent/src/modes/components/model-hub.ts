@@ -32,6 +32,7 @@ import { type ModelRoleLookup, type ResolvedModelRoleValue, resolveModelRoleValu
 import { getKnownRoleIds, getRoleInfo } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
 import { AUTO_THINKING, type ConfiguredThinkingLevel, getConfiguredThinkingLevelMetadata } from "../../thinking";
+import { formatRetryFallbackSelector, parseRetryFallbackSelector } from "../../session/retry-fallback-chains";
 import { theme } from "../theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import {
@@ -141,6 +142,7 @@ type StripState =
 			kind: "role" | "scope" | "thinking";
 			item: ModelBrowserItem;
 			role?: string;
+			chainIndex?: number;
 			scope?: ModelRoleSelectionScope;
 			chips: StripChip[];
 			index: number;
@@ -975,6 +977,33 @@ export class ModelHubComponent implements Component {
 		};
 	}
 
+	#openFallbackThinkingStrip(row: Extract<RolesRow, { kind: "fallback" }>): void {
+		const parsed = parseRetryFallbackSelector(row.selector, this.#registry);
+		if (!parsed) return;
+		const model = this.#registry.find(parsed.provider, parsed.id);
+		if (!model) return;
+		const options = this.#thinkingOptionsFor(model).filter(level => level !== AUTO_THINKING);
+		const chips = options.map(level => {
+			const label = getConfiguredThinkingLevelMetadata(level).label;
+			const glyph = thinkingLevelGlyph(level);
+			return {
+				label,
+				styled: glyph ? `${theme.fg("accent", glyph)} ${label}` : label,
+				action: "thinking" as const,
+				thinkingLevel: level,
+			};
+		});
+		this.#strip = {
+			kind: "thinking",
+			item: { provider: model.provider, id: model.id, model, selector: row.selector },
+			role: row.role,
+			chainIndex: row.chainIndex,
+			chips,
+			index: Math.max(0, options.indexOf(parsed.thinkingLevel ?? ThinkingLevel.Inherit)),
+			returnToRoles: true,
+		};
+	}
+
 	#closeStrip(): void {
 		const strip = this.#strip;
 		this.#strip = null;
@@ -1027,7 +1056,16 @@ export class ModelHubComponent implements Component {
 				}
 				return;
 			case "thinking":
-				if (strip.role && chip.thinkingLevel !== undefined) {
+				if (strip.chainIndex !== undefined && strip.role && chip.thinkingLevel !== undefined) {
+					const chain = [...(this.#fallbackChains()[strip.role] ?? [])];
+					if (strip.chainIndex < chain.length) {
+						chain[strip.chainIndex] = formatRetryFallbackSelector(
+							strip.item.model,
+							chip.thinkingLevel === ThinkingLevel.Inherit ? undefined : (chip.thinkingLevel as ThinkingLevel),
+						);
+						this.#setFallbackChain(strip.role, chain);
+					}
+				} else if (strip.role && chip.thinkingLevel !== undefined) {
 					this.#callbacks.onAssign(
 						strip.item.model,
 						strip.role,
@@ -1491,6 +1529,10 @@ export class ModelHubComponent implements Component {
 		}
 		if (printable === "n") {
 			this.#openRoleNameStrip();
+			return;
+		}
+		if (printable === "t" && row?.kind === "fallback") {
+			this.#openFallbackThinkingStrip(row);
 			return;
 		}
 		if (printable === "t") {
@@ -2009,7 +2051,10 @@ export class ModelHubComponent implements Component {
 			}
 			const row = this.#rolesRows[this.#roleIndex];
 			if (row?.kind === "fallback") {
-				return "↑/↓ rows · Enter replace · f add another · x remove · [/] reorder · ← providers";
+				const parsed = parseRetryFallbackSelector(row.selector, this.#registry);
+				return parsed && this.#registry.find(parsed.provider, parsed.id)
+					? "↑/↓ rows · Enter replace · f add another · x remove · t thinking · [/] reorder · ← providers"
+					: "↑/↓ rows · Enter replace · f add another · x remove · thinking n/a · [/] reorder · ← providers";
 			}
 			if (row?.kind === "chainKey") {
 				return "↑/↓ rows · Enter/f add fallback · x clear chain · ← providers";
