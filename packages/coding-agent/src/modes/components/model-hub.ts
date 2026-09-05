@@ -1072,10 +1072,10 @@ export class ModelHubComponent implements Component {
 								? undefined
 								: chip.thinkingLevel;
 						const selector = formatRetryFallbackSelector(strip.item.model, level);
-						chain[strip.chainIndex] = selector;
-						for (let index = chain.length - 1; index >= 0; index--) {
-							if (index !== strip.chainIndex && chain[index] === selector) chain.splice(index, 1);
-						}
+						const before = chain.slice(0, strip.chainIndex).filter(entry => entry !== selector);
+						const after = chain.slice(strip.chainIndex + 1).filter(entry => entry !== selector);
+						before.push(selector);
+						chain.splice(0, chain.length, ...before, ...after);
 						this.#setFallbackChain(strip.role, chain);
 					}
 				} else if (strip.role && chip.thinkingLevel !== undefined) {
