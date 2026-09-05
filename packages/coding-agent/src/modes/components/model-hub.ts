@@ -30,7 +30,6 @@ import {
 import type { ModelRegistry } from "../../config/model-registry";
 import {
 	formatModelSelectorValue,
-	parseModelString,
 	splitUpstreamRouting,
 	type ModelRoleLookup,
 	type ResolvedModelRoleValue,
@@ -38,12 +37,7 @@ import {
 } from "../../config/model-resolver";
 import { getKnownRoleIds, getRoleInfo } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
-import {
-	AUTO_THINKING,
-	concreteThinkingLevel,
-	type ConfiguredThinkingLevel,
-	getConfiguredThinkingLevelMetadata,
-} from "../../thinking";
+import { AUTO_THINKING, type ConfiguredThinkingLevel, getConfiguredThinkingLevelMetadata } from "../../thinking";
 import { isRetryFallbackWildcardKey, parseRetryFallbackSelector } from "../../session/retry-fallback-chains";
 import { theme } from "../theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
@@ -995,8 +989,9 @@ export class ModelHubComponent implements Component {
 		if (isRetryFallbackWildcardKey(row.selector)) return undefined;
 		const parsed = parseRetryFallbackSelector(row.selector, this.#registry);
 		if (!parsed) return undefined;
-		const routing = splitUpstreamRouting(parsed.id);
-		const model = this.#registry.find(parsed.provider, routing?.base ?? parsed.id);
+		const literalModel = this.#registry.find(parsed.provider, parsed.id);
+		const routing = literalModel ? undefined : splitUpstreamRouting(parsed.id);
+		const model = literalModel ?? this.#registry.find(parsed.provider, routing?.base ?? parsed.id);
 		if (!model) return undefined;
 		return { model, selector: `${parsed.provider}/${parsed.id}`, thinkingLevel: parsed.thinkingLevel };
 	}
