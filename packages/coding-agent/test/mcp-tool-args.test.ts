@@ -188,6 +188,24 @@ describe("MCP tool arguments", () => {
 		expect(calls).toEqual([{ method: "tools/call", params: { name: "echo", arguments: { i: "hello" } } }]);
 	});
 
+	it("strips harness intent when propertyNames cannot admit an additional property", async () => {
+		const calls: CapturedRequest[] = [];
+		const definition: MCPToolDefinition = {
+			name: "closed-property-names",
+			inputSchema: {
+				type: "object",
+				properties: { value: {} },
+				propertyNames: { type: "string" },
+				additionalProperties: false,
+			},
+		};
+		const tool = new MCPTool(createCapturedConnection(calls), definition);
+		await tool.execute("closed", { value: "x", i: "caller intent" }, undefined, unusedContext, undefined);
+		expect(calls).toEqual([
+			{ method: "tools/call", params: { name: "closed-property-names", arguments: { value: "x" } } },
+		]);
+	});
+
 	it("forwards intent admitted by propertyNames", async () => {
 		const calls: CapturedRequest[] = [];
 		const definition: MCPToolDefinition = {

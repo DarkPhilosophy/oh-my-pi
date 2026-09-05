@@ -185,7 +185,11 @@ export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 		if (isJsonObject(properties) && Object.hasOwn(properties, key)) return true;
 		const required = node.required;
 		if (Array.isArray(required) && required.includes(key)) return true;
-		if (node.propertyNames !== undefined && validateSchemaValueInRoot(node.propertyNames, key, root).success) {
+		if (
+			node.propertyNames !== undefined &&
+			node.additionalProperties !== false &&
+			validateSchemaValueInRoot(node.propertyNames, key, root).success
+		) {
 			return true;
 		}
 		const patternProperties = node.patternProperties;

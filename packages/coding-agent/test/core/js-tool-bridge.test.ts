@@ -241,6 +241,22 @@ describe("callSessionTool", () => {
 		expect(execute).not.toHaveBeenCalled();
 	});
 
+	it("preserves harness intent when propertyNames does not open a closed schema", async () => {
+		const tool = createSchemaTool("closed-property-names", {
+			type: "object",
+			properties: { value: {} },
+			propertyNames: { type: "string" },
+			additionalProperties: false,
+		});
+		expect(
+			await callSessionTool(
+				"closed-property-names",
+				{ value: "x", i: "caller intent" },
+				{ session: createSession([tool]) },
+			),
+		).toBe("string:caller intent");
+	});
+
 	it("preserves intent admitted by propertyNames", async () => {
 		const tool = createSchemaTool("property-name-intent", {
 			type: "object",
