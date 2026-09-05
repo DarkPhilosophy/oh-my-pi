@@ -208,6 +208,21 @@ export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 			if (Object.hasOwn(dependentSchemas, key)) return true;
 			if (Object.values(dependentSchemas).some(visit)) return true;
 		}
+		const dependentRequired = node.dependentRequired;
+		if (isJsonObject(dependentRequired)) {
+			if (Object.hasOwn(dependentRequired, key)) return true;
+			for (const dependencies of Object.values(dependentRequired)) {
+				if (Array.isArray(dependencies) && dependencies.includes(key)) return true;
+			}
+		}
+		const dependencies = node.dependencies;
+		if (isJsonObject(dependencies)) {
+			if (Object.hasOwn(dependencies, key)) return true;
+			for (const dependency of Object.values(dependencies)) {
+				if (Array.isArray(dependency) && dependency.includes(key)) return true;
+				if (visit(dependency)) return true;
+			}
+		}
 		if (typeof node.$ref === "string") {
 			const resolved = resolveLocalRef(root, node.$ref);
 			if (resolved !== undefined && visit(resolved)) return true;
