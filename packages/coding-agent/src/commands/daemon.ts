@@ -14,7 +14,8 @@ import { startDaemonBackground } from "../daemon/interactive-bootstrap";
 import { daemonRuntimeDir } from "../daemon/paths";
 import type { DaemonOperation, DaemonServerStatus } from "../daemon/protocol";
 import type { DaemonSessionDisplay } from "../daemon/status";
-import { formatDaemonServerStatus, formatDaemonSessions } from "../daemon/status";
+import { formatDaemonSessions } from "../daemon/session-display";
+import { formatDaemonServerStatus } from "../daemon/status";
 
 type DaemonAction = "status" | "sessions" | "reconnect" | "start" | "bgjob" | "kill" | "refresh" | "stop";
 type ShutdownResult = { shutdown: boolean; blockers?: readonly string[] };

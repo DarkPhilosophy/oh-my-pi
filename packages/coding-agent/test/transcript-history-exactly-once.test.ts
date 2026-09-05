@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
-import { type Component, TUI } from "@oh-my-pi/pi-tui";
+import { Composer } from "@oh-my-pi/pi-coding-agent/modes/composer";
+import { type Component } from "@oh-my-pi/pi-tui";
 import { StressRenderScheduler } from "../../tui/test/render-stress-scheduler";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
@@ -39,18 +40,19 @@ class LiveBlock implements Component {
 	}
 }
 
-// Streams a live block behind a run of small finalized history blocks until the
-// history fully commits to native scrollback, then verifies exactly-once history
-// on the terminal tape. Regression guard: transcript-side committed-prefix
-// compaction (dropping committed rows from the local frame) shifted the frame
-// under the engine's committed-prefix ledger, the audit re-anchored, and
-// already-taped rows were recommitted below their first copy — visibly
-// duplicated blocks. The transcript now always keeps its full local frame.
+// Exercise the product-owned frame provider, which transfers finalized
+// transcript rows into native scrollback while retaining the streaming tail.
+// Mounting TranscriptContainer directly into TUI bypasses that transfer.
 async function streamPastCommit(tracked: boolean): Promise<Map<string, number>> {
 	const term = new VirtualTerminal(40, 6);
 	Object.defineProperty(term, "isNativeViewportAtBottom", { configurable: true, value: () => undefined });
 	const scheduler = new StressRenderScheduler();
-	const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+	const composer = new Composer({
+		terminal: term,
+		preferences: { quiet: true },
+		tuiOptions: { renderScheduler: scheduler },
+	});
+	const tui = composer.ui;
 	const chat = new TranscriptContainer();
 	const historyRows: string[] = [];
 	for (let i = 0; i < 6; i++) {
@@ -60,10 +62,10 @@ async function streamPastCommit(tracked: boolean): Promise<Map<string, number>> 
 	}
 	const live = new LiveBlock();
 	chat.addChild(live);
-	tui.addChild(chat);
+	composer.setRuntimeChildren([chat]);
 
 	try {
-		tui.start();
+		composer.start({ playWelcomeIntro: false });
 		await scheduler.drain(term);
 		// Grow the live block one row per frame with the settled prefix trailing
 		// by one, pushing the finalized history through commit and compaction.
@@ -74,7 +76,7 @@ async function streamPastCommit(tracked: boolean): Promise<Map<string, number>> 
 			await scheduler.drain(term);
 		}
 	} finally {
-		tui.stop();
+		composer.stop();
 		await term.flush();
 	}
 
@@ -94,17 +96,22 @@ async function finalizeThenStartSecondStream(): Promise<Map<string, number>> {
 	const term = new VirtualTerminal(40, 6);
 	Object.defineProperty(term, "isNativeViewportAtBottom", { configurable: true, value: () => undefined });
 	const scheduler = new StressRenderScheduler();
-	const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+	const composer = new Composer({
+		terminal: term,
+		preferences: { quiet: true },
+		tuiOptions: { renderScheduler: scheduler },
+	});
+	const tui = composer.ui;
 	const chat = new TranscriptContainer();
 	const completedRows = ["first-thinking", "first-prose"];
 	chat.addChild(new HistoryBlock(completedRows, true));
 	const live = new LiveBlock();
 	live.lines = ["second-live-000"];
 	chat.addChild(live);
-	tui.addChild(chat);
+	composer.setRuntimeChildren([chat]);
 
 	try {
-		tui.start();
+		composer.start({ playWelcomeIntro: false });
 		for (let i = 1; i < 20; i++) {
 			live.lines.push(`second-live-${String(i).padStart(3, "0")}`);
 			live.settled = live.lines.length - 1;
@@ -112,7 +119,7 @@ async function finalizeThenStartSecondStream(): Promise<Map<string, number>> {
 			await scheduler.drain(term);
 		}
 	} finally {
-		tui.stop();
+		composer.stop();
 		await term.flush();
 	}
 

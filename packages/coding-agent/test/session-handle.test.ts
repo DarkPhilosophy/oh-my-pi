@@ -143,6 +143,98 @@ const state = {
 } as const;
 
 describe("RemoteSessionHandle", () => {
+	test("recovers a live sequence gap without publishing later output twice", async () => {
+		const transport = new Transport();
+		const handle = remote(transport);
+		await handle.whenReady();
+		const recovered = Promise.withResolvers<void>();
+		const received: string[] = [];
+		handle.subscribe(event => {
+			if (event.type !== "terminal_output") return;
+			received.push(event.data);
+			if (event.data === "third") recovered.resolve();
+		});
+		try {
+			transport.emitEvent({
+				v: 1,
+				tag: "event",
+				sessionId: "s",
+				seq: 1,
+				event: { type: "terminal_output", data: "first" },
+			});
+			transport.attachFrames = [
+				{ type: "event", seq: 2, event: { type: "terminal_output", data: "second" } },
+				{ type: "event", seq: 3, event: { type: "terminal_output", data: "third" } },
+			];
+			transport.emitEvent({
+				v: 1,
+				tag: "event",
+				sessionId: "s",
+				seq: 3,
+				event: { type: "terminal_output", data: "third" },
+			});
+			await recovered.promise;
+			transport.emitEvent({
+				v: 1,
+				tag: "event",
+				sessionId: "s",
+				seq: 3,
+				event: { type: "terminal_output", data: "third" },
+			});
+			expect(received).toEqual(["first", "second", "third"]);
+		} finally {
+			await handle.dispose();
+		}
+	});
+	test("coalesces burst acknowledgements without delaying ordered event delivery", async () => {
+		const gate = Promise.withResolvers<void>();
+		const settled = Promise.withResolvers<void>();
+		const acknowledgements: number[] = [];
+		let inFlight = 0;
+		let peakInFlight = 0;
+		class DelayedAcknowledgements extends Transport {
+			override async request(operation: string, payload: Record<string, unknown>): Promise<unknown> {
+				if (operation !== "snapshot_ack") return super.request(operation, payload);
+				const seq = payload.seq as number;
+				acknowledgements.push(seq);
+				peakInFlight = Math.max(peakInFlight, ++inFlight);
+				try {
+					await gate.promise;
+					return undefined;
+				} finally {
+					inFlight--;
+					if (seq === 2000) settled.resolve();
+				}
+			}
+		}
+		const transport = new DelayedAcknowledgements();
+		const handle = remote(transport);
+		await handle.whenReady();
+		const received: string[] = [];
+		handle.subscribe(event => {
+			if (event.type === "terminal_output") received.push(event.data);
+		});
+		try {
+			for (let seq = 1; seq <= 2000; seq++) {
+				transport.emitEvent({
+					v: 1,
+					tag: "event",
+					sessionId: "s",
+					seq,
+					event: { type: "terminal_output", data: String(seq) },
+				});
+			}
+			expect(received).toEqual(Array.from({ length: 2000 }, (_, i) => String(i + 1)));
+			expect(peakInFlight).toBe(1);
+			expect(acknowledgements).toEqual([1]);
+			gate.resolve();
+			await settled.promise;
+			expect(acknowledgements).toEqual([1, 2000]);
+		} finally {
+			gate.resolve();
+			await handle.dispose();
+		}
+	});
 	test("replaces cached state from an ordered snapshot and ignores stale events", async () => {
 		const transport = new Transport();
 		const handle = remote(transport);

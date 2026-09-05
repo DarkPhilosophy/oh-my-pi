@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed the transcript getting stuck in the live viewport with no scrollable history: frame providers now report live-region pinning per frame instead of permanently, so settled rows reach native scrollback again.
+- Fixed unnecessary scrollback clears when finalized history batches are still being retired during tool completion.
 ## [18.1.9] - 2026-09-04
 
 ### Added

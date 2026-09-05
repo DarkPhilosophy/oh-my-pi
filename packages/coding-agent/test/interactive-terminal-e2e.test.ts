@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
@@ -53,6 +53,7 @@ describe("libkitty end-to-end", () => {
 	});
 
 	afterEach(async () => {
+		vi.restoreAllMocks();
 		mode?.stop();
 		await session?.dispose();
 		authStorage?.close();
@@ -78,6 +79,81 @@ describe("libkitty end-to-end", () => {
 		const hits = viewport.filter(row => row.includes("hi there omp"));
 		if (hits.length !== 1) dump("viewport after submit", viewport);
 		expect(hits.length).toBe(1);
+	});
+
+	it("preserves history and one submitted message across real Enter and acknowledgement", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		mode.addMessageToChat({
+			role: "user",
+			content: [{ type: "text", text: "STABLE_HISTORY_SENTINEL" }],
+			timestamp: 1,
+		});
+		const pending = mode.getUserInput();
+		await term.waitForRender();
+		term.sendInput("ACKNOWLEDGED_SUBMISSION");
+		await term.waitForRender();
+		term.sendInput("\r");
+		const input = await pending;
+		await term.waitForRender(() =>
+			plainRows(term.getViewport()).some(row => row.includes("ACKNOWLEDGED_SUBMISSION")),
+		);
+		const before = plainRows(term.getScrollBuffer());
+		expect(before.filter(row => row.includes("ACKNOWLEDGED_SUBMISSION"))).toHaveLength(1);
+		expect(before.filter(row => row.includes("STABLE_HISTORY_SENTINEL"))).toHaveLength(1);
+		const writes = vi.spyOn(term, "write");
+		await mode.eventController.handleEvent({
+			type: "message_start",
+			message: {
+				role: "user",
+				content: [{ type: "text", text: input.text }],
+				attribution: "user",
+				timestamp: Date.now(),
+			},
+		});
+		await term.waitForRender();
+		const after = plainRows(term.getScrollBuffer());
+		expect(after.filter(row => row.includes("ACKNOWLEDGED_SUBMISSION"))).toHaveLength(1);
+		expect(after.filter(row => row.includes("STABLE_HISTORY_SENTINEL"))).toHaveLength(1);
+		expect(writes.mock.calls.map(([data]) => data).join("")).not.toContain("\x1b[3J");
+		expect(writes.mock.calls.map(([data]) => data).join("")).not.toContain("STABLE_HISTORY_SENTINEL");
+	});
+
+	it("does not clear or replay retired history when the profiling command completes", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		for (let index = 0; index < 50; index++) {
+			mode.addMessageToChat({
+				role: "user",
+				content: [{ type: "text", text: `TOOL_HISTORY_${index}_SENTINEL` }],
+				timestamp: index,
+			});
+		}
+		await mode.eventController.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "profiling-command",
+			toolName: "bash",
+			args: { command: "bun test packages/coding-agent/test/history-profile.test.ts" },
+		});
+		await term.waitForRender();
+		const before = plainRows(term.getScrollBuffer());
+		expect(before.filter(row => row.includes("TOOL_HISTORY_0_SENTINEL"))).toHaveLength(1);
+		const writes = vi.spyOn(term, "write");
+		await mode.eventController.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "profiling-command",
+			toolName: "bash",
+			result: {
+				content: [{ type: "text", text: "1 pass\n0 fail\n15 expect() calls\nRan 1 test across 1 file." }],
+				details: {},
+			},
+			isError: false,
+		});
+		await term.waitForRender();
+		const after = plainRows(term.getScrollBuffer());
+		const markers = after.flatMap(row => row.match(/TOOL_HISTORY_\d+_SENTINEL/g) ?? []);
+		expect(markers).toEqual(Array.from({ length: 50 }, (_, index) => `TOOL_HISTORY_${index}_SENTINEL`));
+		const bytes = writes.mock.calls.map(([data]) => data).join("");
+		expect(bytes.includes("\x1b[3J")).toBe(false);
+		expect(bytes.includes("TOOL_HISTORY_0_SENTINEL")).toBe(false);
 	});
 
 	it("keeps the whole buffer clean across non-overflowing width resizes", async () => {

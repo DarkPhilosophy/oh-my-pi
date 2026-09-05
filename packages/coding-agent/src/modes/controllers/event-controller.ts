@@ -987,7 +987,7 @@ export class EventController {
 				}
 				this.ctx.updatePendingMessagesDisplay();
 			}
-			this.ctx.ui.requestRender(true);
+			this.ctx.ui.requestRender();
 		} else if (event.message.role === "developer") {
 			// A run-initiating synthetic developer prompt (auto-continue, or a
 			// queued follow-up drained inside the current run — plan approval, /goal)

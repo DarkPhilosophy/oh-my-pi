@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { formatDaemonSessions } from "@oh-my-pi/pi-coding-agent/daemon/session-display";
 import {
 	type DaemonConnectionSnapshot,
 	formatDaemonServerStatus,
-	formatDaemonSessions,
 	formatDaemonWelcomeStatus,
 } from "@oh-my-pi/pi-coding-agent/daemon/status";
 import { WelcomeComponent } from "@oh-my-pi/pi-coding-agent/modes/components/welcome";

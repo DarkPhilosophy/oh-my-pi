@@ -424,6 +424,9 @@ export class RemoteSessionHandle implements SessionHandle {
 	#snapshot: SessionHandleSnapshot;
 	#connectionState: SessionHandleConnectionState = "connecting";
 	#lastSeq = 0;
+	#pendingAck: number | undefined;
+	#ackInFlight = false;
+	#ackEpoch = 0;
 	#snapshotBarrier = -1;
 	#snapshotChunks = new Map<number, unknown>();
 	#disposed = false;
@@ -449,9 +452,15 @@ export class RemoteSessionHandle implements SessionHandle {
 		this.#unsubscribeClient.push(
 			client.onSnapshot(snapshot => {
 				if (this.#disposed) return;
+				if (snapshot.state !== "connected") {
+					this.#pendingAck = undefined;
+					this.#ackEpoch++;
+				}
 				if (snapshot.state === "connected") {
 					if (snapshot.daemonId !== undefined) {
 						if (this.#daemonId !== undefined && snapshot.daemonId !== this.#daemonId) {
+							this.#pendingAck = undefined;
+							this.#ackEpoch++;
 							this.#lastSeq = 0;
 							this.#snapshotBarrier = -1;
 							this.#snapshotChunks.clear();
@@ -828,7 +837,9 @@ export class RemoteSessionHandle implements SessionHandle {
 	}
 	#replaceState(state: RpcSessionState): void {
 		this.#state = freezeState(state);
-		this.#snapshot = freezeSnapshot(this.#state, this.#snapshot.header, this.#snapshot.entries);
+		// Header and entries are already deeply frozen by snapshot ingestion.
+		// State-only events must not copy the entire transcript on every turn.
+		this.#snapshot = Object.freeze({ ...this.#snapshot, state: this.#state });
 	}
 	#replaceSnapshot(snapshot: SessionHandleSnapshot): void {
 		this.#state = freezeState(snapshot.state);
@@ -916,7 +927,11 @@ export class RemoteSessionHandle implements SessionHandle {
 	#applyEvent(seq: number, event: unknown): void {
 		if (!Number.isInteger(seq) || seq <= this.#lastSeq) return;
 		if (seq !== this.#lastSeq + 1 && this.#lastSeq !== 0) {
+			// A live frame can overtake a missing frame when a connection is
+			// replaced. Never publish the later frame: reattach from the last
+			// contiguous cursor so the registry replays the gap in order.
 			this.#connectionState = "reconnecting";
+			this.#beginReattach();
 			return;
 		}
 		this.#lastSeq = seq;
@@ -949,13 +964,32 @@ export class RemoteSessionHandle implements SessionHandle {
 		void this.#ack(seq);
 	}
 	async #ack(seq: number): Promise<void> {
-		if (this.#connectionState !== "connected") return;
-		await this.#client
-			.request("snapshot_ack", {
-				sessionId: this.#sessionId,
-				attachmentId: this.#attachmentId,
-				seq,
-			})
-			.catch(() => undefined);
+		if (this.#disposed || this.#connectionState !== "connected") return;
+		this.#pendingAck = Math.max(this.#pendingAck ?? seq, seq);
+		if (this.#ackInFlight) return;
+		this.#ackInFlight = true;
+		try {
+			while (!this.#disposed && this.#connectionState === "connected" && this.#pendingAck !== undefined) {
+				const latestSeq = this.#pendingAck;
+				const epoch = this.#ackEpoch;
+				this.#pendingAck = undefined;
+				try {
+					await this.#client.request("snapshot_ack", {
+						sessionId: this.#sessionId,
+						attachmentId: this.#attachmentId,
+						seq: latestSeq,
+					});
+				} catch {
+					// Reattach replays from #lastSeq. Do not spin on a failed
+					// connection or erase a replacement connection's pending ACK.
+					if (epoch === this.#ackEpoch) {
+						this.#pendingAck = undefined;
+						break;
+					}
+				}
+			}
+		} finally {
+			this.#ackInFlight = false;
+		}
 	}
 }

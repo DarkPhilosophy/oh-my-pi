@@ -1,6 +1,5 @@
 import { truncateToWidth } from "@oh-my-pi/pi-tui";
 import { sanitizeStatusText } from "../modes/shared";
-import { shortenPath } from "../tools/render-utils";
 
 /** Profile identity shared by the daemon connection and its UI. */
 export type DaemonProfile = string | null;
@@ -130,29 +129,6 @@ export function formatDaemonServerStatus(snapshot: DaemonConnectionSnapshot): st
 		lines.push(`server version: ${clean(snapshot.serverVersion)}`);
 	} else if (snapshot.state === "reconnecting") {
 		lines.push(`attempt: ${count(snapshot.attempt)}`);
-	}
-	return lines.join("\n");
-}
-
-/** Human-readable daemon session inventory shared by local and proxied `/server sessions`. */
-export function formatDaemonSessions(sessions: readonly DaemonSessionDisplay[]): string {
-	if (sessions.length === 0) return "No daemon sessions";
-	const lines = [`${sessions.length} daemon session${sessions.length === 1 ? "" : "s"}`];
-	for (const session of sessions) {
-		const activity = session.isStreaming
-			? "streaming"
-			: session.interactiveAttached
-				? "interactive"
-				: session.attachmentCount > 0
-					? "attached"
-					: "parked";
-		const attachments = `${session.attachmentCount} attachment${session.attachmentCount === 1 ? "" : "s"}`;
-		lines.push(
-			"",
-			`● ${clean(session.sessionId)}  ${activity}`,
-			`  cwd: ${clean(shortenPath(session.cwd))}`,
-			`  ${attachments} · interactive: ${session.interactiveAttached ? "yes" : "no"} · streaming: ${session.isStreaming ? "yes" : "no"}`,
-		);
 	}
 	return lines.join("\n");
 }

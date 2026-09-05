@@ -2541,7 +2541,7 @@ export class TUI extends Container {
 		const logicalViewport = Array.from(plan.viewport);
 		const overflow = Math.max(0, logicalViewport.length - height);
 		const inferredHistory =
-			overflow > this.#providerLogicalCommitted
+			plan.history === undefined && overflow > this.#providerLogicalCommitted
 				? logicalViewport.slice(this.#providerLogicalCommitted, overflow)
 				: [];
 		if (plan.history !== undefined && plan.history.kind !== "replay" && this.#providerHasTransientHistory) {
@@ -2555,7 +2555,12 @@ export class TUI extends Container {
 			this.requestRender(true);
 			return;
 		}
-		this.#providerLogicalCommitted = Math.max(this.#providerLogicalCommitted, overflow);
+		// An offered batch owns retirement. Its remaining viewport can still
+		// overflow while the next finalized batch waits for acknowledgement.
+		// Borrowing those same rows into native history would turn the next
+		// ordinary append into a destructive replay.
+		this.#providerLogicalCommitted =
+			plan.history === undefined ? Math.max(this.#providerLogicalCommitted, overflow) : 0;
 		this.#providerHasTransientHistory ||= inferredHistory.length > 0;
 		const viewport = logicalViewport.slice(overflow);
 		if (this.#maybeDeferGhosttyInitialImagePaint()) return;

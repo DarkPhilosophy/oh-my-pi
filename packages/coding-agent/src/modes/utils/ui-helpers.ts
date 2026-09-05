@@ -46,6 +46,7 @@ import { decodeStreamedToolArgs, streamingStringKeysForTool } from "../../modes/
 import { materializeImageReferenceLinksSync } from "../../modes/image-references";
 import { videoPreviewSource } from "../../utils/video";
 import { theme } from "../../modes/theme/theme";
+import { warmHighlighter } from "../theme/tui-adapters";
 import type { CompactionQueuedMessage, InteractiveModeContext, RenderSessionContextOptions } from "../../modes/types";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
@@ -952,11 +953,15 @@ export class UiHelpers {
 		let replayAttempts = 0;
 		this.ctx.initialChatRendered = false;
 		try {
-			// Resolve before replacing live component maps: streaming events may arrive during filesystem I/O.
-			await refreshAssistantMessageLinkTargets(
-				this.ctx,
-				context.messages.filter((message): message is AssistantMessage => message.role === "assistant"),
-			);
+			// Resolve before replacing live maps. Load syntax grammars off-thread
+			// before a cold code fence can initialize them synchronously during paint.
+			await Promise.all([
+				warmHighlighter(),
+				refreshAssistantMessageLinkTargets(
+					this.ctx,
+					context.messages.filter((message): message is AssistantMessage => message.role === "assistant"),
+				),
+			]);
 
 			this.ctx.chatContainer = stagedChatContainer;
 			this.ctx.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
