@@ -1071,13 +1071,11 @@ export class ModelHubComponent implements Component {
 							chip.thinkingLevel === ThinkingLevel.Inherit || chip.thinkingLevel === AUTO_THINKING
 								? undefined
 								: chip.thinkingLevel;
-						let selector = formatRetryFallbackSelector(strip.item.model, level);
-						const routeMatch = strip.item.selector.match(/@([^:]+)(?::|$)/);
-						if (routeMatch) {
-							const base = selector.replace(/:[^:]+$/, "");
-							selector = `${base}@${routeMatch[1]}${level ? `:${level}` : ""}`;
-						}
+						const selector = formatRetryFallbackSelector(strip.item.model, level);
 						chain[strip.chainIndex] = selector;
+						for (let index = chain.length - 1; index >= 0; index--) {
+							if (index !== strip.chainIndex && chain[index] === selector) chain.splice(index, 1);
+						}
 						this.#setFallbackChain(strip.role, chain);
 					}
 				} else if (strip.role && chip.thinkingLevel !== undefined) {
