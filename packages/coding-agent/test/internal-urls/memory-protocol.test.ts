@@ -107,6 +107,44 @@ describe("MemoryProtocolHandler", () => {
 		expect(JSON.stringify(tool.parameters.toJsonSchema())).toContain("memory://");
 	});
 
+	it("reads memory through the calling session's configured registry", async () => {
+		await withMemoryFixture(async ({ cwd, memoryRoot }) => {
+			await Bun.write(path.join(memoryRoot, "memory_summary.md"), "custom registry summary");
+			const agentRegistry = new AgentRegistry();
+			const settings = Settings.isolated({ "memory.backend": "local" });
+			agentRegistry.register({
+				id: "custom-session",
+				displayName: "custom-session",
+				kind: "main",
+				session: {
+					sessionManager: { getCwd: () => cwd, getSessionId: () => "custom-session" },
+					settings,
+				} as unknown as AgentSession,
+				sessionFile: null,
+			});
+			const tool = new ReadTool({
+				cwd,
+				hasUI: false,
+				settings,
+				agentRegistry,
+				getSessionId: () => "custom-session",
+				getSessionFile: () => null,
+				getSessionSpawns: () => null,
+			});
+
+			const result = await tool.execute("custom-memory", { path: "memory://root" });
+
+			expect(result.content).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringContaining("custom registry summary"),
+					}),
+				]),
+			);
+		});
+	});
+
 	it("resolves memory://root to memory_summary.md", async () => {
 		await withMemoryFixture(async ({ memoryRoot }) => {
 			await Bun.write(path.join(memoryRoot, "memory_summary.md"), "summary");

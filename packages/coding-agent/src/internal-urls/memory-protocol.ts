@@ -272,7 +272,7 @@ interface MemoryCallerBinding {
  * sits in it, so two sessions in one worktree never impersonate each other.
  */
 function findCallerSession(context: ResolveContext): AgentSession | undefined {
-	const refs = AgentRegistry.global().list();
+	const refs = (context.agentRegistry ?? AgentRegistry.global()).list();
 	if (context.sessionFile !== undefined) {
 		const byFile = refs.find(ref => ref.session?.sessionFile === context.sessionFile)?.session;
 		if (byFile) return byFile;

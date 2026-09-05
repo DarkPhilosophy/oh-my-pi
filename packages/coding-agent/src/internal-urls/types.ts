@@ -7,6 +7,7 @@
 
 import type { Rule } from "../capability/rule";
 import type { Skill } from "../extensibility/skills";
+import type { AgentRegistry } from "../registry/agent-registry";
 import type { LocalProtocolOptions } from "./local-protocol";
 
 /**
@@ -106,6 +107,8 @@ export interface ResolveContext {
 	 * as a second exact identity alongside {@link sessionFile}.
 	 */
 	sessionId?: string;
+	/** Registry that owns the calling session; defaults to the process-wide registry. */
+	agentRegistry?: AgentRegistry;
 	/** Settings of the calling session (used by `issue://`/`pr://` for cache TTLs). */
 	settings?: unknown;
 	/** Caller's abort signal. */
