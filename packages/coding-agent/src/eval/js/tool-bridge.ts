@@ -27,6 +27,7 @@ interface ToolBridgeOptions {
 	session: ToolSession;
 	signal?: AbortSignal;
 	emitStatus?: (event: JsStatusEvent) => void;
+	defaultIntent?: string;
 }
 
 type ToolValue =
@@ -57,11 +58,11 @@ function getTool(session: ToolSession, name: string): AgentTool {
 	return tool;
 }
 
-function normalizeArgs(args: unknown, injectIntent = true): unknown {
+function normalizeArgs(args: unknown, defaultIntent?: string): unknown {
 	if (!isRecord(args)) return args;
 	const record = { ...args };
-	if (injectIntent && record[INTENT_FIELD] === undefined) {
-		record[INTENT_FIELD] = "js prelude";
+	if (defaultIntent !== undefined && !(INTENT_FIELD in record)) {
+		record[INTENT_FIELD] = defaultIntent;
 	}
 	return record;
 }
@@ -236,7 +237,10 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 	if (isRecord(validatedArgs) && !intentIsDeclared && suppliedIntent !== undefined) {
 		validatedArgs[INTENT_FIELD] = suppliedIntent;
 	}
-	const normalizedArgs = normalizeArgs(validatedArgs, !intentIsDeclared);
+	const normalizedArgs = normalizeArgs(
+		validatedArgs,
+		!intentIsDeclared ? (options.defaultIntent ?? "js prelude") : undefined,
+	);
 	try {
 		const result = await tool.execute(
 			toolCallId,
