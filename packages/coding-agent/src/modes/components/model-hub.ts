@@ -30,8 +30,8 @@ import {
 import type { ModelRegistry } from "../../config/model-registry";
 import {
 	formatModelSelectorValue,
-	formatModelString,
-	parseModelPattern,
+	parseModelString,
+	splitUpstreamRouting,
 	type ModelRoleLookup,
 	type ResolvedModelRoleValue,
 	resolveModelRoleValue,
@@ -44,7 +44,7 @@ import {
 	type ConfiguredThinkingLevel,
 	getConfiguredThinkingLevelMetadata,
 } from "../../thinking";
-import { isRetryFallbackWildcardKey } from "../../session/retry-fallback-chains";
+import { isRetryFallbackWildcardKey, parseRetryFallbackSelector } from "../../session/retry-fallback-chains";
 import { theme } from "../theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import {
@@ -988,21 +988,16 @@ export class ModelHubComponent implements Component {
 		};
 	}
 
-	#fallbackRowModel(row: Extract<RolesRow, { kind: "fallback" }>):
-		| {
-				model: Model;
-				selector: string;
-				thinkingLevel: ThinkingLevel | undefined;
-		  }
-		| undefined {
-		const parsed = parseModelPattern(row.selector, this.#registry.getAll());
-		if (!parsed.model || parsed.warning) return undefined;
-		const selector = parsed.upstream
-			? `${formatModelString(parsed.model)}@${parsed.upstream}`
-			: formatModelString(parsed.model);
-		const thinkingLevel = concreteThinkingLevel(parsed.thinkingLevel);
-		if (formatModelSelectorValue(selector, thinkingLevel) !== row.selector) return undefined;
-		return { model: parsed.model, selector, thinkingLevel };
+	#fallbackRowModel(
+		row: Extract<RolesRow, { kind: "fallback" }>,
+	): { model: Model; selector: string; thinkingLevel: ThinkingLevel | undefined } | undefined {
+		if (isRetryFallbackWildcardKey(row.selector)) return undefined;
+		const parsed = parseRetryFallbackSelector(row.selector, this.#registry);
+		if (!parsed) return undefined;
+		const routing = splitUpstreamRouting(parsed.id);
+		const model = this.#registry.find(parsed.provider, routing?.base ?? parsed.id);
+		if (!model) return undefined;
+		return { model, selector: `${parsed.provider}/${parsed.id}`, thinkingLevel: parsed.thinkingLevel };
 	}
 
 	#openFallbackThinkingStrip(row: Extract<RolesRow, { kind: "fallback" }>): void {
