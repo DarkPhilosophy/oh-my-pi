@@ -1022,7 +1022,7 @@ export class SessionMaintenance {
 						{
 							promptOverride: this.#host.obfuscateTextForProvider(compactionPrep.hookPrompt),
 							extraContext: compactionPrep.hookContext,
-							remoteInstructions: this.#host.baseSystemPrompt().join("\n\n"),
+							remoteSystemPrompt: this.#host.baseSystemPrompt(),
 							convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
 							codexCompaction,
 						},
@@ -1383,7 +1383,7 @@ export class SessionMaintenance {
 				{
 					promptOverride: this.#host.obfuscateTextForProvider(compactionPrep.hookPrompt),
 					extraContext: compactionPrep.hookContext,
-					remoteInstructions: this.#host.baseSystemPrompt().join("\n\n"),
+					remoteSystemPrompt: this.#host.baseSystemPrompt(),
 					codexCompaction,
 					// Isolate from the live turn: remote compaction transports key
 					// sticky provider sessions by sessionId, and a speculation
@@ -3515,7 +3515,7 @@ export class SessionMaintenance {
 								{
 									promptOverride: this.#host.obfuscateTextForProvider(compactionPrep.hookPrompt),
 									extraContext: compactionPrep.hookContext,
-									remoteInstructions: this.#host.baseSystemPrompt().join("\n\n"),
+									remoteSystemPrompt: this.#host.baseSystemPrompt(),
 									metadata: this.#host.agent.metadataForProvider(candidate.provider),
 									initiatorOverride: "agent",
 									convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),

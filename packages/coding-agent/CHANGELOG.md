@@ -18,6 +18,30 @@
 - Restored lightweight terminal startup by keeping daemon session inventory rendering out of the first-paint module graph.
 - Fixed `todo` and other tools called through eval rejecting optional `None`/`null` arguments that direct tool calls accept.
 
+## [18.1.11] - 2026-09-05
+
+### Added
+
+- Added the `retry.waitForUsageReset` setting: when a provider reports usage-limit exhaustion with a reset time (5-hour or weekly quota windows on any provider), the session sleeps until the reset instead of failing fast past `retry.maxDelayMs`.
+- Added opt-in `bash.allowCompoundCommands` approval for conservative literal `&&` chains, with ordered per-segment rules and normal bash policy fallback for unmatched segments. The opt-in requires a positively classified POSIX-quoting shell; incompatible and unknown shells retain legacy approval. Whole-chain denies take precedence over earlier prompts.
+
+### Fixed
+
+- Report oversized selected lines that cannot fit after read context, with a working raw recovery selector instead of a looping continuation hint ([#10775](https://github.com/can1357/oh-my-pi/issues/10775)).
+- Fixed WorkPool child sessions crashing during startup while constructing their incremental `yield` tool schema.
+- Commit summaries written in Vietnamese, Korean, and other accented scripts are no longer rejected for exceeding the length limit, and keep their accents as typed.
+
+## [18.1.10] - 2026-09-04
+
+### Changed
+
+- Subagent `yield` now takes `data`/`error` directly instead of nesting them under a `result` wrapper.
+
+### Fixed
+
+- Fixed Codex V2 remote compaction rebuilding the request prefix differently from normal turns, restoring prompt-cache reuse ([#10786](https://github.com/can1357/oh-my-pi/issues/10786)).
+- Restored mouse clicks, hover, and wheel scrolling in Plan Review.
+
 ## [18.1.9] - 2026-09-04
 
 ### Breaking Changes
@@ -213,7 +237,7 @@
 - Fixed vibe mode becoming un-exitable after branching a session (including via `/btw`), which previously failed with "Vibe parent session changed before mode exit could be persisted." ([#10468](https://github.com/can1357/oh-my-pi/issues/10468)).
 - Fixed HTML session exports reordering interleaved assistant text, thinking, images, and tool calls in the transcript, and split matching text/tool sidebar rows with block-accurate navigation. ([#10253](https://github.com/can1357/oh-my-pi/pull/10253) by [@realcoderandom](https://github.com/realcoderandom))
 - Fixed the built-in `grep` and `sed` treating a basic regular expression as an extended one: a bare `+` is now the literal and `\+` the operator, patterns like `^+` or `s/^\+/` no longer match every line, `^` anchors inside `\(…\)` and after `\|`, and a repetition operator with nothing to repeat is reported instead of silently selecting the whole file ([#10298](https://github.com/can1357/oh-my-pi/pull/10298) by [@mruangutai](https://github.com/mruangutai)).
-- Fixed RPC `prompt` responses for `/skill:*` commands arriving only after the entire prompt-dispatch pipeline finished (usage preflight, compaction, provider calls): under provider stress that outlasts any client prompt timeout, so hosts reported the prompt as rejected while the turn was in fact running. The skill branch now builds the skill prompt eagerly (preserving the immediate error for an unreadable skill file) and dispatches the expensive pipeline asynchronously after answering, matching plain prompts; when the dispatch is cancelled before a turn starts (e.g. an abort overtakes usage preflight), the session now reports it through the non-invoked  completion frame instead of leaving hosts waiting for an  that never comes ([#10249](https://github.com/can1357/oh-my-pi/pull/10249) by [@cwr250](https://github.com/cwr250)).
+- Fixed RPC `prompt` responses for `/skill:*` commands arriving only after the entire prompt-dispatch pipeline finished (usage preflight, compaction, provider calls): under provider stress that outlasts any client prompt timeout, so hosts reported the prompt as rejected while the turn was in fact running. The skill branch now builds the skill prompt eagerly (preserving the immediate error for an unreadable skill file) and dispatches the expensive pipeline asynchronously after answering, matching plain prompts; when the dispatch is cancelled before a turn starts (e.g. an abort overtakes usage preflight), the session now reports it through the non-invoked completion frame instead of leaving hosts waiting for an that never comes ([#10249](https://github.com/can1357/oh-my-pi/pull/10249) by [@cwr250](https://github.com/cwr250)).
 - Fixed stale `omp-plugins.lock.json` entries loading leftover `node_modules` trees for plugins no longer declared in an existing `package.json` — the orphaned copy double-loaded its extensions. Lockfile-only plugins remain supported for manifest-less roots and symlinked packages (`omp plugin link`, marketplace runtime packages); stale entries are skipped with a warning.
 
 ## [18.1.2] - 2026-09-01
@@ -242,6 +266,7 @@
 - Fixed sampling parameter errors for newer Anthropic models (Opus 4.7+, Sonnet 5+)
 - Fixed streaming transcript rows being cut at the history/live boundary and the terminal staying stuck in the live viewport, so scrolling back through long replies and `/usage` output works without restarting or `/resume`.
 - Fixed finalized blocks appearing twice in terminal history (the scrolled-off live preview kept above the final content) by enabling `tui.scrollbackRebuild` by default; panes that cannot erase their own history keep appending instead.
+
 ### Fixed
 
 - Fixed rapid queued steer/follow-up image submissions racing into split or dropped pending entries by serializing queue mutations; added opt-in `coalescing` queue mode to merge rapid consecutive queued user entries while preserving attachments, hidden magic-keyword companions, restore behavior, delivery, and `[Image #N]` marker numbering.
@@ -883,6 +908,7 @@
 - Added the `bashInterceptor.forwardSimpleCommands` setting for opt-in forwarding of eligible simple read-only Bash commands through built-in tools.
 
 ### Fixed
+
 - Fixed Bash interceptor forwarding eligibility and dispatch fidelity: unsupported async/env/PTY/internal-URL/timeout options, shadowed or recursive targets, and ambiguous argv are no longer forwarded, while quoted arguments and read selectors retain their exact values.
 - Fixed `omp --license` failing with "Unrecognized flag" when daemon interactive mode is enabled; the flag now prints the license before the interactive route claims the argv.
 - Fixed advisors staying stuck on the first account when a model is only entitled on a second one; a Codex ChatGPT-account model denial raised as a raw error is now recognized as an account policy block and rotates to a sibling credential instead of reporting the advisor unavailable.
@@ -908,6 +934,7 @@
 - Renamed the queued steering box title to `Steering` and animated it with the shimmer sweep at the loader's redraw cadence.
 
 ### Fixed
+
 - Fixed transcript command panels (`/usage show`, `/mcp`, `/tools`, `/jobs`, …) staying invisible until the active turn ended. The deferral added for [#4806](https://github.com/can1357/oh-my-pi/issues/4806) queued every panel until `agent_end`, so a turn running for an hour hid its command output for the whole hour and the command read as ignored. Panels now mount immediately above the live region — inserted before the first still-mutating block — so they render at once and still commit to native scrollback exactly once, which is what the duplication report actually asked for. Rebuilds retain the ordered tool-call successors that originally followed each panel, preventing collapsed compaction from moving a panel across a settled sibling when the first successor remains live.
 - Fixed the daemon dropping the `Resume this session with omp --resume <id>` hint after `Closing session…`. The client printed it from cached remote session state, whose `sessionFile` stays undefined unless a state-bearing frame arrived before shutdown, so the hint vanished intermittently. The `terminal_closed` event now carries the persisted session identity and the client prefers it over the cached state.
 - Fixed the shimmer sweep corrupting ANSI and OSC 8 escape sequences. Escapes are now zero-width pass-through atoms emitted verbatim between color runs, so a hyperlink survives the sweep with its target intact instead of leaking the raw URL into the visible text, and the band positions itself over visible code points only.
@@ -1323,7 +1350,7 @@
 ### Fixed
 
 - Fixed `/usage`, `/advisor status`, and every other panel command answering only after the agent stopped working. Since `17.0.1` their output was queued until the turn settled (to stop mid-turn transcript mounts duplicating rows in native scrollback, issues #4806/#6767), and the deferral was silent, so on a long turn the command was indistinguishable from a dead one. The panel now renders immediately above the editor in an anchored container that is cleared and rebuilt in place, never entering the transcript, and the full output still lands in the transcript at the next settle. The preview is capped to 40% of the viewport (minimum 6 rows) so a tall report cannot push the prompt off screen.
-- Fixed the todo panel showing no progress while the agent worked through a plan: every sub-todo read as unchecked no matter how far along the run was. Three causes, all in the collapsed (default) view — the walking viewport dropped *every* closed row, so a completion only ever removed a line and the card's strike-reveal animation ran against a row nobody rendered; the phase the agent was actually in was the one phase header rendered without a `done/total` count; and the 60s todo auto-clear deleted closed tasks from an unfinished plan, resetting the phase counter to `0/n` and renumbering the stages until the next `todo` call restored the real snapshot. The viewport now keeps the newest closed task as a checked lead row (additive to the open-task cap), every phase header carries its progress, counts include abandoned tasks, and auto-clear only fires once the whole list is settled.
+- Fixed the todo panel showing no progress while the agent worked through a plan: every sub-todo read as unchecked no matter how far along the run was. Three causes, all in the collapsed (default) view — the walking viewport dropped _every_ closed row, so a completion only ever removed a line and the card's strike-reveal animation ran against a row nobody rendered; the phase the agent was actually in was the one phase header rendered without a `done/total` count; and the 60s todo auto-clear deleted closed tasks from an unfinished plan, resetting the phase counter to `0/n` and renumbering the stages until the next `todo` call restored the real snapshot. The viewport now keeps the newest closed task as a checked lead row (additive to the open-task cap), every phase header carries its progress, counts include abandoned tasks, and auto-clear only fires once the whole list is settled.
 - Status-line `usage` now renders monthly Cursor quotas (`mo N%`) in addition to the existing `5h` / `7d` windows ([#7998](https://github.com/can1357/oh-my-pi/pull/7998) by [@dnth](https://github.com/dnth)).
 - Restored the `ctx.ui.custom()` overlay API that regressed after v0.45.6: `overlayOptions` (anchor/width/maxHeight/margin positioning and sizing) is now forwarded to `showOverlay` instead of a hardcoded full-cover geometry, `onHandle` receives the resulting `OverlayHandle`, and `OverlayHandle`/`OverlayOptions` are exported from the extension API types again.
 - Fixed a content refusal that arrives after the model already emitted a tool call ending the turn outright instead of consulting the model fallback chain. When the refused turn produced nothing visible and every emitted tool call provably never executed (each paired with a synthetic `executed: false` result), the turn is now retryable and the configured `retry.fallbackChains` entry gets its chance, matching how a refusal with no tool calls already behaves.
@@ -1770,7 +1797,7 @@
 - Native compaction preserves provider-native success and non-authentication failure semantics while retaining authenticated cross-provider fallback when the native provider rejects credentials.
 - Fixed the Cursor Pi exec bridge silently dropping frame arguments. `pi_read`'s `offset`/`limit` were ignored, so a ranged read returned the whole file; `pi_grep`'s `literal` was ignored, so a fixed-string search ran as a regex and matched the wrong lines; and the path/glob join produced a `./`-prefixed spec. Ranges are now composed onto `read`'s `:N+K` inline selector, literal patterns are escaped, and the join uses `node:path`. These are `optional int32` fields, so a present `0` is honored rather than folded into a default: `pi_read` with `limit: 0` answers with empty output instead of the entire file, and `pi_find` with `limit: 0` clamps to 1 the way the reference client does.
 - `pi_grep`'s `context` and `limit` are honored. Neither is expressible in the model-facing `grep` schema — context width comes from `grep.contextBefore`/`grep.contextAfter` fixed at tool construction — so the bridge builds a per-call `grep` for frames that supply them. `GrepTool` accepts these as constructor options; the model-facing schema is unchanged, and a frame that supplies neither keeps the shared instance and the session's defaults.
-- `pi_ls`'s `limit` is still not mapped, now deliberately: it caps directory *entries*, while the local `read` tool renders a depth-2 tree with per-directory caps and elision rows and applies a selector as a *rendered line* slice. Mapping it to `:1+K` would cap a different unit while appearing honored.
+- `pi_ls`'s `limit` is still not mapped, now deliberately: it caps directory _entries_, while the local `read` tool renders a depth-2 tree with per-directory caps and elision rows and applies a selector as a _rendered line_ slice. Mapping it to `:1+K` would cap a different unit while appearing honored.
 - The legacy pi shim's regex-literal escaper and path/glob join were verbatim copies of the modern bridge's. Both paths now call the shared helpers, so the two Pi translations cannot drift.
 - Fixed every Cursor `pi_edit` frame failing instead of editing. Two independent causes: the session drops `edit` from the tool registry for Cursor so the model uses full-file `write`, but that registry is also the exec bridge's tool source, so the native frame — which the server sends regardless of the advertised catalog — found no tool; and the retained instance followed the session's configured edit mode, while `PiEditExecArgs` carries `old_text`/`new_text` pairs that only `replace` accepts (the default `hashline` takes a single `input` string). The bridge now resolves a `replace`-mode instance through its fallback resolver, still wrapped for approval.
 - Fixed a `pi_grep` frame carrying `context` or `limit` escaping the approval gate. Honoring those fields needs a per-call `grep`, and the per-call instance was built raw while every registry tool is wrapped, so such calls bypassed `tools.approval.grep` and the exec-tier check for SSH-targeted paths. Both bridge callsites now build it through one shared factory that applies the same wrapper.
@@ -1786,7 +1813,7 @@
 - Fixed a mixed-content MCP resource read reaching Cursor mislabelled. The mime type was taken from the first content item while the payload came from whichever item supplied it, so an image blob followed by a text note sent the text as `image/png`. Each branch now reports the type of the part it actually sends.
 - Fixed `pi_read`'s `offset`/`limit` returning more lines than the frame asked for. The range is composed onto the local `read` tool's inline selector, and a plain `:N+K` deliberately pads with one leading and three trailing context lines — helpful when a human reads a snippet, wrong for a caller that named an exact range: offset 5/limit 20 handed Cursor lines 4-27. Ranged Pi reads now compose `:raw:N+K`, which slices exactly the requested lines.
 - Fixed `pi_grep` returning fewer matches than it asked for when they spread across many files. The local `grep` windows results to the first 20 files and tells the caller to paginate with `skip`, but `PiGrepExecArgs` has no `skip` field — so a frame asking for 100 matches over 25 one-match files got 20, `match_limit_reached` unset, and advice it could not act on: output silently short and labelled complete. A search carrying a total match cap now reads enough files to satisfy it (cap+1, so a result landing exactly on the cap is distinguishable from a clipped one) and reports the cap when it actually bites.
-- Fixed every native `pi_edit` failing after a session switched onto Cursor. The replace-mode `edit` instance the frame needs was built only for sessions *created* on Cursor, and the tool roster is not rebuilt on a model switch — so a session that started elsewhere kept its configured-mode `edit` in the registry, which the bridge resolves before its fallback, and the frame's `old_text`/`new_text` pairs failed validation against a `hashline` schema. The instance is now built from the `edit` grant regardless of the session's initial provider (lazily, so a session that never reaches Cursor never constructs one) and `pi_edit` asks for it explicitly through a dedicated accessor. A session that was never granted `edit` is still refused.
+- Fixed every native `pi_edit` failing after a session switched onto Cursor. The replace-mode `edit` instance the frame needs was built only for sessions _created_ on Cursor, and the tool roster is not rebuilt on a model switch — so a session that started elsewhere kept its configured-mode `edit` in the registry, which the bridge resolves before its fallback, and the frame's `old_text`/`new_text` pairs failed validation against a `hashline` schema. The instance is now built from the `edit` grant regardless of the session's initial provider (lazily, so a session that never reaches Cursor never constructs one) and `pi_edit` asks for it explicitly through a dedicated accessor. A session that was never granted `edit` is still refused.
 - Fixed the Cursor bridge's tool resolver being able to execute an unadvertised `edit`. That resolver doubles as the agent loop's fallback for any call outside the advertised set, so serving `edit` from it meant a hallucinated call — or one naming a tool the session deselected after startup — could run a replace-mode edit the model was never offered. It is device-only again; `pi_edit` uses its own accessor.
 - Fixed the legacy Cursor `read` frame ignoring the `offset`/`limit` modern builds paginate with. Only the Pi variant composed a range, so every page of a legacy read returned the whole file (or its own truncation) and a model walking a large file never advanced past the first window. Both frames now translate a range through the same helper, and the answer sets `range_applied` to describe whether a window was actually composed.
 - Fixed the legacy Cursor `grep` frame ignoring its pagination `offset`. The local `grep` paginates by file through `skip` and advertises exactly that in its own "use skip=N" advice, so an unforwarded offset re-ran the identical search and answered page one for every page. The answer now reports the offset it applied in `offset_applied`.
@@ -1969,7 +1996,7 @@
 - Fixed `/context` counting hidden, explicit-only skills (`hide: true` / `disable-model-invocation`) in the Skills category and subtracting that inflated estimate from the first system-prompt block, which reported `System prompt: 0 tokens` and inflated Skills usage. Accounting now counts only the skills actually rendered into the system prompt — mirroring `buildSystemPrompt`'s filter, so hidden skills and all skills when the `read` tool is unavailable contribute zero ([#6498](https://github.com/can1357/oh-my-pi/issues/6498)).
 - Fixed `pi-sprite` failing plugin validation because the legacy Pi compatibility shims omitted `createExtensionRuntime` and terminal capability/image-deletion helpers used by the extension ([#6506](https://github.com/can1357/oh-my-pi/issues/6506)).
 - Fixed Escape waiting for an in-flight `session_stop` extension handler to exhaust its timeout; abort now cancels the active stop pass without reporting a false timeout or applying stale continuation context ([#6489](https://github.com/can1357/oh-my-pi/issues/6489)).
-- Fixed the agent not resuming after re-answering a past `ask` from the session tree. Committing a new answer via `/tree` branched a fresh sibling `toolResult` and rebuilt context, but nothing ever continued the agent — unlike a live `ask`, whose continuation is intrinsic to the streaming run loop — so the model never consumed the new answer and the session sat idle until a manual prompt. `navigateTree` now reports the commit (`askReanswerCommitted`) and the interactive `/tree` handler resumes the agent via `resumeAfterAskReanswer()` *after* its transcript rebuild, so the resumed turn never renders against the stale pre-rebuild UI. Plain leaf moves and the read-only `reopenAsk` probe stay idle ([#6483](https://github.com/can1357/oh-my-pi/issues/6483)).
+- Fixed the agent not resuming after re-answering a past `ask` from the session tree. Committing a new answer via `/tree` branched a fresh sibling `toolResult` and rebuilt context, but nothing ever continued the agent — unlike a live `ask`, whose continuation is intrinsic to the streaming run loop — so the model never consumed the new answer and the session sat idle until a manual prompt. `navigateTree` now reports the commit (`askReanswerCommitted`) and the interactive `/tree` handler resumes the agent via `resumeAfterAskReanswer()` _after_ its transcript rebuild, so the resumed turn never renders against the stale pre-rebuild UI. Plain leaf moves and the read-only `reopenAsk` probe stay idle ([#6483](https://github.com/can1357/oh-my-pi/issues/6483)).
 - Fixed Ctrl+C and fatal shutdown entering an `ExtensionExitError` rejection loop while an extension or hook was still loading ([#6488](https://github.com/can1357/oh-my-pi/issues/6488)).
 
 ## [17.1.3] - 2026-07-24
@@ -2005,7 +2032,7 @@
 - Fixed credential-free web search engines (SearXNG, DuckDuckGo, Google, Startpage, Ecosia, Mojeek, and the Public Web fan-out) returning zero results for queries with `site:` paths (e.g. `site:github.com/owner/repo`) or `inurl:` operators: scraper engines only match `site:` against a bare domain and DuckDuckGo ignores `inurl:` entirely, so such queries silently emptied the result set and fell through to the next provider in the chain. A shared `formatScraperQuery` formatter now structurally demotes path-carrying `site:` and all `inurl:` values to plain search terms (covering OR-grouped and quoted directives) while preserving bare-domain `site:` filters, negated operators, and each engine's supported syntax; the pipeline post-filter still enforces the demoted constraints on returned sources.
 - Fixed `ast_edit` previews reading like applied edits to the model: the `⟨proposed⟩` badge was TUI-only, so the model-visible result (hashline header + `-`/`+` rows, identical to applied edit output) carried no staged-proposal signal. The preview result now leads with a "Staged as a proposal — files NOT modified yet" notice naming `xd://resolve`/`xd://reject`, the injected resolve reminder names the source tool, and the `ast_edit` tool prompt documents the two-phase flow.
 - Fixed the `hub` launch `ps`/`list` response burying the active process behind every exited one and growing without bound in long-lived projects: the broker now lists non-terminal daemons first (oldest to newest) and caps exited/failed history at the 10 most recently exited, so the active launch is immediately visible and the response stays bounded. Broker recovery also preserves each already-terminal daemon's real exit time instead of overwriting it with the restart timestamp, so the history cap keeps the genuinely most-recently-exited processes after an idle-broker restart ([#6517](https://github.com/can1357/oh-my-pi/issues/6517)).
-- Fixed a tool call rendering twice in the transcript. A mid-stream `rebuildChatFromMessages` (from `/shake`, auto-compaction, or a settings toggle) preserves the live `pendingTools` components across the clear+replay, but that preservation assumed every pending-tool component was still dangling. When a tool's result had already landed in the session entries while its component still lingered in `pendingTools`, the replay reconstructed the completed block *and* the preserved live component was re-appended, so the same block appeared twice; resolved components are now dropped from preservation and owned by the replay ([#6516](https://github.com/can1357/oh-my-pi/issues/6516)).
+- Fixed a tool call rendering twice in the transcript. A mid-stream `rebuildChatFromMessages` (from `/shake`, auto-compaction, or a settings toggle) preserves the live `pendingTools` components across the clear+replay, but that preservation assumed every pending-tool component was still dangling. When a tool's result had already landed in the session entries while its component still lingered in `pendingTools`, the replay reconstructed the completed block _and_ the preserved live component was re-appended, so the same block appeared twice; resolved components are now dropped from preservation and owned by the replay ([#6516](https://github.com/can1357/oh-my-pi/issues/6516)).
 - Fixed `--model default` (and other bare role names) resolving to the bundled `cursor/default` catalog model instead of the configured `modelRoles.default` role. `resolveCliModel`'s exact-match phase ran its unauthenticated catalog fallback before role resolution, so a bundled id colliding with a reserved role name shadowed a configured, runnable role — failing with `No API key found for cursor` on machines without Cursor credentials. The catalog fallback is now deferred so an authenticated exact model still wins, a configured role beats an unauthenticated catalog-only id, and the catalog id is still recovered when no role matches ([#6508](https://github.com/can1357/oh-my-pi/issues/6508)).
 
 ### Removed
@@ -2031,7 +2058,7 @@
 - Fixed live-call attestation depending on the ChatGPT desktop app being installed: `generateLiveAttestation` now mints DeviceCheck tokens in-process through the `@oh-my-pi/pi-natives` `deviceCheckGenerateToken` binding instead of probing `/Applications` for the app's `devicecheck.node` addon, so the `x-oai-attestation` header works on hosts without the desktop app and drops the `createRequire` addon probing; the attestation provider is now wired up to `@oh-my-pi/pi-ai` for ChatGPT-OAuth Codex requests.
 - Fixed `xd://` device execution failures rendering as `write` errors instead of using the mounted tool's own error renderer.
 - Fixed custom tools without bespoke renderers losing the default state-tinted card when mounted under `xd://`; dispatched calls now keep their label, arguments, status, output preview, and expansion affordance instead of dumping a bare result line into the transcript.
-- Fixed the clipboard image-paste keybind mangling copied URL text into a bogus path error on macOS (e.g. `Image not found at /https/::i.can.ac:CE4Ek3.png` for a copied `https://i.can.ac/CE4Ek3.png`). AppleScript's `the clipboard as «class furl»` coerces plain *text* into a file URL by treating the string as an HFS path (`:`↔`/` swap), so `readMacFileUrlsFromClipboard` returned a garbage path that dead-ended in `handleImagePathPaste` instead of falling through to the text paste. The script now bails early via `clipboard info for «class furl»` unless the pasteboard actually carries a `public.file-url` representation, so URL/text clipboards paste as text.
+- Fixed the clipboard image-paste keybind mangling copied URL text into a bogus path error on macOS (e.g. `Image not found at /https/::i.can.ac:CE4Ek3.png` for a copied `https://i.can.ac/CE4Ek3.png`). AppleScript's `the clipboard as «class furl»` coerces plain _text_ into a file URL by treating the string as an HFS path (`:`↔`/` swap), so `readMacFileUrlsFromClipboard` returned a garbage path that dead-ended in `handleImagePathPaste` instead of falling through to the text paste. The script now bails early via `clipboard info for «class furl»` unless the pasteboard actually carries a `public.file-url` representation, so URL/text clipboards paste as text.
 - Fixed spilled tool-output artifact descriptors leaking on error/abort paths. `OutputSink.dump()` was the only path that closed the spill `Bun.FileSink`, but the bash and Python executors re-throw on failure and their `finally` blocks never closed the sink, so a large-output command that errored leaked the artifact descriptor until an unrelated read (e.g. a `SKILL.md` load) hit `EMFILE`. `OutputSink` now exposes an idempotent `dispose()` that closes the sink exactly once, wired into every executor's `finally` ([#6463](https://github.com/can1357/oh-my-pi/issues/6463)).
 - Fixed the first submitted prompt stalling while the local tiny-title worker started: the interactive submit handler now paints the pending user row before starting title generation, and startup prewarms an idle, unref'd worker so the first submit reuses a live subprocess instead of paying spawn latency ahead of the first frame ([#6462](https://github.com/can1357/oh-my-pi/issues/6462)).
 - Fixed legacy Pi extensions failing validation when importing the upstream `keyText` keybinding helper ([#6470](https://github.com/can1357/oh-my-pi/issues/6470)).
@@ -2197,7 +2224,7 @@
 - Added Codex (ChatGPT subscription) support to `generate_image`. The tool now resolves a connected `openai-codex` OAuth credential and drives OpenAI's hosted `image_generation` tool through the ChatGPT backend (`chatgpt.com/backend-api/codex/responses`, `chatgpt-account-id` header) **independent of the active chat model** — so image generation works on a ChatGPT/Codex subscription with no metered `OPENAI_API_KEY`, even when the active model is Claude/Gemini/etc. A new `providers.image: "openai-codex"` option forces it; `auto` now auto-detects a connected subscription (priority: active GPT image tool > Codex subscription > Antigravity > xAI > OpenRouter > Gemini), and the `openai` preference falls back to it when no `OPENAI_API_KEY`/active GPT model is present.
 - Added an optional `provider` parameter to `generate_image` (`auto` | `openai` | `openai-codex` | `antigravity` | `xai` | `gemini` | `openrouter`) that overrides the `providers.image` setting **for a single request** — so "generate this using gemini / codex / xai" routes per-call without changing the global setting. Absent → the `providers.image` setting applies, unchanged; the named provider uses the same resolution semantics (falls back to auto-detect if it has no credentials). File: `tools/image-gen.ts` (`imageProviderSchema`, `findImageApiKey` `preference` arg).
 - Added OpenTelemetry log and metric export alongside the existing trace export. When `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` (or the shared `OTEL_EXPORTER_OTLP_ENDPOINT`) is set, `omp` registers a `LoggerProvider` and forwards every centralized-logger event as an OTLP log record (severity + attributes + active span context for log↔trace correlation, min level via `OTEL_LOG_LEVEL`, plus a structured `agent run completed` summary event). When `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` (or the shared endpoint) is set, it registers a `MeterProvider` with a `PeriodicExportingMetricReader` and records GenAI-semconv `gen_ai.client.token.usage` plus `pi.omp.agent.*` counters/histograms (runs, steps, chat/tool calls by name+status+finish reason, latencies, estimated cost, errors) from the agent run summary and per-chat usage hooks. Each signal honors its own `OTEL_*_EXPORTER=none` kill switch, the global `OTEL_SDK_DISABLED`, and declines non-`http/protobuf` protocols independently ([#4604](https://github.com/can1357/oh-my-pi/issues/4604)).
-- `retry.fallbackChains` wildcards now support id-prefixed targets and keys: a chain entry like `"openrouter/google/*"` re-prefixes the failing model's bare id (`google-antigravity/gemini-x` → `openrouter/google/gemini-x`), a plain `"provider/*"` entry falling back *from* an aggregator strips the vendor prefix when the target provider only knows the bare id (`openrouter/google/x` → `google-vertex/x`), and an id-prefixed key (`"openrouter/google/*"`) scopes a chain to that provider's ids under the prefix.
+- `retry.fallbackChains` wildcards now support id-prefixed targets and keys: a chain entry like `"openrouter/google/*"` re-prefixes the failing model's bare id (`google-antigravity/gemini-x` → `openrouter/google/gemini-x`), a plain `"provider/*"` entry falling back _from_ an aggregator strips the vendor prefix when the target provider only knows the bare id (`openrouter/google/x` → `google-vertex/x`), and an id-prefixed key (`"openrouter/google/*"`) scopes a chain to that provider's ids under the prefix.
 - The session tree selector (`/tree`, `/branch`) now supports Shift+Enter to summarize-and-switch in one step: it forks from the selected entry with a branch summary, with no extra prompt and regardless of `branchSummary.enabled`. Plain Enter keeps the current behavior (direct switch by default; the summary prompt only when `branchSummary.enabled` is on). ([#5152](https://github.com/can1357/oh-my-pi/issues/5152))
 - Added the turn's local timestamp (`YYYY-MM-DD HH:mm:ss`, down to the second) to the per-turn token-usage row shown under assistant messages when `display.showTokenUsage` is enabled.
 
@@ -2746,8 +2773,8 @@
 ### Added
 
 - Added a new `--prewalk` execution flow (with `--prewalk-into <model>` and `--no-prewalk` overrides) that starts tasks on a strong model for planning and todo initialization before handing off to a faster, cheaper model for implementation.
- - Added a status line annotation for the active prewalk phase (armed or active).
- - Added the `tui.scrollbackRebuild` setting to gate the erase-and-replay native scrollback rebuild mechanism (defaults to off).
+- Added a status line annotation for the active prewalk phase (armed or active).
+- Added the `tui.scrollbackRebuild` setting to gate the erase-and-replay native scrollback rebuild mechanism (defaults to off).
 - Added a display setting to toggle between collapsing or keeping compacted history inline in live session displays.
 - Added a compact session-only model picker (Alt+P) for quick model switching, featuring `@` search to quickly list and apply configured quick roles.
 - Redesigned Agent Hub entries into a cleaner two-line card layout showing identity, active model, reasoning level, age, and task description.
@@ -3036,6 +3063,7 @@
 ### Fixed
 
 - Fixed rapid queued steer/follow-up image submissions racing into split or dropped pending entries by serializing queue mutations; added opt-in `coalescing` queue mode to merge rapid consecutive queued user entries while preserving attachments, hidden magic-keyword companions, restore behavior, delivery, and `[Image #N]` marker numbering.
+
 ### Added
 
 - Added the `rightEditor` widget placement to the extension UI API (`ctx.ui.setWidget(key, lines, { placement: "rightEditor", priority? })`): each panel is composited independently into the conversation's right-side whitespace, never overlaps visible text or the editor/status line, and hides per-block (not cut) when no run is tall enough to hold it. Panels are ordered by optional `priority` then ascending height, so the smallest always-present panels stay visible and the tallest hide first.
@@ -3733,7 +3761,7 @@
 - Fixed `snapcompact` compaction silently falling back to LLM summaries when local preflight rejects the archive.
 - Fixed `snapcompact` compaction silently falling back to an LLM summary when local preflight rejects the archive; manual and auto snapcompact now fail locally with the blocker instead of making provider calls. ([#3599](https://github.com/can1357/oh-my-pi/issues/3599))
 - Fixed garbled casing in auto-generated session titles. `normalizeGeneratedTitle` (`packages/coding-agent/src/tiny/text.ts`) used to force Title Case via a `\b\p{Ll}` regex, capitalizing function words ("for" → "For") and amplifying stray model capitals ("dAemon" → "DAemon"). It now reconciles each title token against the user's own message: tokens typed verbatim are kept; proper nouns the user cased distinctively are restored when the model flattened them ("tinyvmm" → "TinyVMM"); lowercase words carrying a stray interior capital the user never wrote are flattened ("dAemon" → "daemon"); and model-cased PascalCase proper nouns ("GitHub", "OAuth") are left untouched. Restoration is limited to distinctively cased source tokens so a message that merely starts with "For" can't force a mid-title "for" to "For". Applies to both the local tiny-model and online pi/smol title paths.
-- Fixed IRC broadcasts (`to: "all"`) rendering twice in the main agent's transcript. A subagent broadcast fans out one `bus.send` per live peer, and `listVisibleTo` always includes `Main`, so the main agent received the body once as its own `irc:incoming` card *and* once per other recipient as an `irc:relay` observation of the sibling legs (`Sender → Other`) — identical text shown N+1 times. `IrcTool.#executeSend` now sets `suppressRelay` on every broadcast leg when `Main` is among the targets (it already has the body via its direct incoming card), and `IrcBus.send` skips `#relayToMainUi` for suppressed legs. Direct sub→sub relays, direct messages to `Main`, and `Main`'s own outbound sends are unaffected.
+- Fixed IRC broadcasts (`to: "all"`) rendering twice in the main agent's transcript. A subagent broadcast fans out one `bus.send` per live peer, and `listVisibleTo` always includes `Main`, so the main agent received the body once as its own `irc:incoming` card _and_ once per other recipient as an `irc:relay` observation of the sibling legs (`Sender → Other`) — identical text shown N+1 times. `IrcTool.#executeSend` now sets `suppressRelay` on every broadcast leg when `Main` is among the targets (it already has the body via its direct incoming card), and `IrcBus.send` skips `#relayToMainUi` for suppressed legs. Direct sub→sub relays, direct messages to `Main`, and `Main`'s own outbound sends are unaffected.
 - Fixed Claude API refusals polluting the replayed session context and causing later prompts to refuse again. ([#3592](https://github.com/can1357/oh-my-pi/issues/3592))
 - Fixed browser screenshots reporting `0x0` dimensions when `Bun.Image` rejects an image whose PNG/JPEG header still exposes real dimensions. ([#3577](https://github.com/can1357/oh-my-pi/issues/3577))
 - Fixed Anthropic classifier refusals being persisted as assistant dialogue after no fallback handled them; refusal stops are now displayed as errors but pruned from active and saved context before the next prompt. ([#3591](https://github.com/can1357/oh-my-pi/issues/3591))
@@ -3782,7 +3810,7 @@
 ### Fixed
 
 - Fixed Windows stdio MCP server launches showing a separate `cmd.exe` window for direct executable servers; MCP subprocesses now set `windowsHide` on every Windows spawn path. ([#3535](https://github.com/can1357/oh-my-pi/issues/3535))
-- Fixed MCP OAuth still failing with `Authorization failed: An unexpected error occurred` against Plane's `https://mcp.plane.so/http/mcp` endpoint after #3502. The protected-resource metadata advertised the path-scoped issuer `https://mcp.plane.so/http`, but `discoverOAuthEndpoints` (`packages/coding-agent/src/mcp/oauth-discovery.ts`) probed `/.well-known/oauth-authorization-server` at the *origin root* first and accepted the metadata served there — which describes a *different* issuer (`https://mcp.plane.so/`) whose `/authorize` endpoint rejects every grant. Discovery now honors RFC 8414 §3.3 and skips authorization-server / OpenID Connect well-known documents whose `issuer` field doesn't match the queried base URL (trailing-slash insensitive). Servers that omit `issuer` keep today's permissive behavior, so legacy flows are unaffected. ([#3537](https://github.com/can1357/oh-my-pi/issues/3537))
+- Fixed MCP OAuth still failing with `Authorization failed: An unexpected error occurred` against Plane's `https://mcp.plane.so/http/mcp` endpoint after #3502. The protected-resource metadata advertised the path-scoped issuer `https://mcp.plane.so/http`, but `discoverOAuthEndpoints` (`packages/coding-agent/src/mcp/oauth-discovery.ts`) probed `/.well-known/oauth-authorization-server` at the _origin root_ first and accepted the metadata served there — which describes a _different_ issuer (`https://mcp.plane.so/`) whose `/authorize` endpoint rejects every grant. Discovery now honors RFC 8414 §3.3 and skips authorization-server / OpenID Connect well-known documents whose `issuer` field doesn't match the queried base URL (trailing-slash insensitive). Servers that omit `issuer` keep today's permissive behavior, so legacy flows are unaffected. ([#3537](https://github.com/can1357/oh-my-pi/issues/3537))
 
 ## [16.1.21] - 2026-06-26
 
@@ -4119,7 +4147,7 @@
 
 - Fixed `omp bench` and `omp dry-balance` failing to resolve models from extension providers
 - Improved error reporting for `omp bench` runs that return no output or tokens
-- Cache-miss marker no longer fires on a cold turn whose predecessor only *wrote* the prompt cache (never read it back). The session's opening request always writes the prefix with `cacheRead 0`, so a long-running first tool call (e.g. `gh run watch`) that outlived the provider's cache TTL surfaced a spurious `⊘ cache miss` divider right under the opening message. The marker now requires the previous turn to have actually read a warm prefix, so it flags only a demonstrably working cache going cold — and collapses a run of consecutive cold turns to a single marker at the moment the cache broke.
+- Cache-miss marker no longer fires on a cold turn whose predecessor only _wrote_ the prompt cache (never read it back). The session's opening request always writes the prefix with `cacheRead 0`, so a long-running first tool call (e.g. `gh run watch`) that outlived the provider's cache TTL surfaced a spurious `⊘ cache miss` divider right under the opening message. The marker now requires the previous turn to have actually read a warm prefix, so it flags only a demonstrably working cache going cold — and collapses a run of consecutive cold turns to a single marker at the moment the cache broke.
 - Fixed `omp bench` and `omp dry-balance` failing to resolve models from extension-registered providers (`pi.registerProvider(...)`). Both commands build a one-shot `ModelRegistry` that previously only knew built-in catalog providers, so a `provider/model` selector for a provider contributed by an extension under `~/.omp/agent/extensions/` errored with "Model not found". A new `loadCliExtensionProviders` helper loads the session's extensions, drains their provider registrations into the registry, and discovers dynamic provider catalogs before resolving selectors — mirroring the interactive session and `omp models` paths.
 - `omp bench` now reports a run that streamed no content and measured no output tokens as a failure ("provider returned no output") instead of a misleading green check with `tokens 0 / TPS 0.0`.
 - Cleared stale pending-preview gates when `resolve` finds no runnable handler, and forwarded the missing `peekPendingInvoker` and `clearPendingInvokers` hooks on the production session so staged previews actually reach the resolve tool and the gate drains on dispatch failure. ([#3061](https://github.com/can1357/oh-my-pi/issues/3061))
@@ -4239,7 +4267,7 @@
 
 - Fixed memory-leaking stale transcripts in the agent viewer when underlying files are deleted
 - Fixed the Agent Hub transcript viewer rendering the transcript body one column right of the "Agent Hub" title (and the title appearing to shift when scrolled to the top): the fullscreen viewer added its own outer gutter on top of the transcript rows, which already carry a 1-column left pad, so the header and body no longer shared a gutter. The viewer now renders the scroll body at full width without the extra gutter, and the file-mention row carries the same 1-column pad as every other row.
-- Fixed the bash tool failing with `pi-natives:command: syntax error at end of input` on a valid `&&`/`;` chain whose later pipeline stage is a compound command, e.g. `echo x && git log | while read h; do …; done | head`. The minimizer's segmented-chain runner rebuilds each chain segment from the brush AST via `pipeline.to_string()` and re-executes that string, but `simple_segment` only validated the *first* pipeline stage — so a compound later stage (`while`/`for`/`if`/subshell) was re-serialized without its terminator and re-run as broken shell. Every stage is now required to be a Display-safe simple command, and — as a general guard against the recurring class of brush `Display` round-trip divergences (previously: quoted here-doc close tags, multi-byte char/byte offsets) — each reconstructed segment is now re-parsed and must match the original pipeline shape before the chain runner executes it; any divergence runs the command whole, unsegmented, instead of corrupting it.
+- Fixed the bash tool failing with `pi-natives:command: syntax error at end of input` on a valid `&&`/`;` chain whose later pipeline stage is a compound command, e.g. `echo x && git log | while read h; do …; done | head`. The minimizer's segmented-chain runner rebuilds each chain segment from the brush AST via `pipeline.to_string()` and re-executes that string, but `simple_segment` only validated the _first_ pipeline stage — so a compound later stage (`while`/`for`/`if`/subshell) was re-serialized without its terminator and re-run as broken shell. Every stage is now required to be a Display-safe simple command, and — as a general guard against the recurring class of brush `Display` round-trip divergences (previously: quoted here-doc close tags, multi-byte char/byte offsets) — each reconstructed segment is now re-parsed and must match the original pipeline shape before the chain runner executes it; any divergence runs the command whole, unsegmented, instead of corrupting it.
 - Fixed `Ctrl+T` (toggle thinking blocks) and the `/settings` "Hide Thinking Blocks" toggle only collapsing/expanding thinking in the live region: blocks that had scrolled into committed native scrollback on ED3-risk terminals kept their pre-toggle snapshot, so scrolling up showed the old thinking state. Both paths now `resetDisplay()` after flipping each block's flag, forcing a full clear + replay of the whole transcript (matching the tool-output expansion toggle) so every block above the fold re-renders at its new height.
 - Fixed ACP mobile voice settings being unable to call `speech.models.list` by exposing the local STT/TTS model and voice catalog without triggering setup or downloads ([#3011](https://github.com/can1357/oh-my-pi/issues/3011)).
 - Fixed the collapsed inline arg preview used by tools without a custom renderer (e.g. `advise`, MCP tools) truncating every value at a fixed 24 columns, so a long note was cut to `note="Your “stric…"` even on a wide card with empty space to spare. Each value now grows into the width the card actually has, reserving only a small slice for the keys that still follow so a long leading value can't hide them.
@@ -4432,7 +4460,7 @@
 - Changed STT dependency setup to validate recorder and model assets per `stt.modelName`, so switching speech models re-runs dependency checks and downloads for the new model
 - Changed STT startup with cached models to warm the speech model in the background and defer full model loading until transcription begins, reducing push-to-talk start latency
 - Allowed user-visible terminal and final-chat responses to include LaTeX math delimiters/commands and Mermaid ` ```mermaid ` diagrams
-- Changed the hold-`Space` push-to-talk gesture to recognize a held bar from the *regularity* of the OS key auto-repeat rather than a raw space count or speed alone, so it no longer spams the editor, no longer eats deliberate space taps, and no longer triggers when the bar is smashed. Recording starts only after two consecutive inter-space deltas are "mechanical" — both fast (within ~120 ms) and near-identical, the metronomic signature of auto-repeat; the few pre-burst spaces typed are then tracked back out. Smashing (fast but jittery) and deliberate spacing (steady but slow) both keep typing real spaces and never start recording.
+- Changed the hold-`Space` push-to-talk gesture to recognize a held bar from the _regularity_ of the OS key auto-repeat rather than a raw space count or speed alone, so it no longer spams the editor, no longer eats deliberate space taps, and no longer triggers when the bar is smashed. Recording starts only after two consecutive inter-space deltas are "mechanical" — both fast (within ~120 ms) and near-identical, the metronomic signature of auto-repeat; the few pre-burst spaces typed are then tracked back out. Smashing (fast but jittery) and deliberate spacing (steady but slow) both keep typing real spaces and never start recording.
 - Updated markdown Mermaid rendering to color ASCII diagrams with the active theme and automatically choose a narrower layout that better fits the terminal width
 - Made the watched-session transcript sent to the advisor (and shown by `/advisor dump`) clearer: each turn now opens with a `### Session update` heading; watched-agent roles render as inline `**agent**:` / `**user**:` labels instead of level-2 headings that collided with the advisor's own turns; consecutive same-role messages collapse under one label (the watched agent emits one assistant message per tool call); and batched updates are joined by a blank line rather than a `---` rule.
 - Changed the compact transcript tool-intent prefix (`history://`, `/advisor dump`) from `# ` to `// ` so intent lines read as comments instead of rendering as Markdown H1 headings.
@@ -4555,12 +4583,12 @@
 - Changed path normalization in contract validation to use `path.posix.normalize()` for consistent path handling
 - Extended extension `registerProvider()` typing with OAuth provider support and source-aware registration metadata.
 - **Slash commands and hook commands now work during streaming**: Previously, using a slash command or hook command while the agent was streaming would crash with "Agent is already processing". Now:
-  - Hook commands execute immediately (they manage their own LLM interaction via `pi.sendMessage()`)
-  - File-based slash commands are expanded and queued via steer/followUp
-  - `steer()` and `followUp()` now expand file-based slash commands and error on hook commands (hook commands cannot be queued)
-  - `prompt()` accepts new `streamingBehavior` option (`"steer"` or `"followUp"`) to specify queueing behavior during streaming
-  - RPC `prompt` command now accepts optional `streamingBehavior` field
-  ([#420](https://github.com/badlogic/pi-mono/issues/420))
+   - Hook commands execute immediately (they manage their own LLM interaction via `pi.sendMessage()`)
+   - File-based slash commands are expanded and queued via steer/followUp
+   - `steer()` and `followUp()` now expand file-based slash commands and error on hook commands (hook commands cannot be queued)
+   - `prompt()` accepts new `streamingBehavior` option (`"steer"` or `"followUp"`) to specify queueing behavior during streaming
+   - RPC `prompt` command now accepts optional `streamingBehavior` field
+     ([#420](https://github.com/badlogic/pi-mono/issues/420))
 - Editor component now uses word wrapping instead of character-level wrapping for better readability ([#382](https://github.com/badlogic/pi-mono/pull/382) by [@nickseelert](https://github.com/nickseelert))
 - Extensions can have their own `package.json` with dependencies (resolved via jiti)
 - Documentation: `docs/hooks.md` and `docs/custom-tools.md` merged into `docs/extensions.md`
@@ -4701,7 +4729,7 @@
 ### Fixed
 
 - Fixed hashline edits from `read`, `search`, and `ast-grep` so replacements are rejected when they target lines not shown in the tool output
-- Fixed `/tan` refusing to launch while the main response was still streaming. The command exists to fork tangential work *alongside* an active session, so it now dispatches mid-stream and queues its handoff breadcrumb for the next turn instead of steering the in-flight one.
+- Fixed `/tan` refusing to launch while the main response was still streaming. The command exists to fork tangential work _alongside_ an active session, so it now dispatches mid-stream and queues its handoff breadcrumb for the next turn instead of steering the in-flight one.
 - Fixed `/tan` background agents never staying in the Agent Hub. The forked clone now uses an `<agentId>.jsonl` session file (so the persisted-subagent scan keys it by the same id the live ref uses) and is parked rather than unregistered on completion, so it stays listed and its transcript stays readable.
 - Fixed the `/tan` dispatch breadcrumb rendering its full raw `<system-notice>` block in the transcript. It now shows a single compact line (`Tangent dispatched [task] <jobId> — <work>`), styled as a sibling of the "Background job completed" line.
 - Fixed profile bootstrap parsing so built-in string flags like `--plan` no longer consume the profile-boundary marker and drop the trailing user message
@@ -4710,14 +4738,14 @@
 - Fixed Ctrl+C teardown waiting up to 30s when an extension's `session_shutdown` handler hung — observed on Windows with `omp-discord-presence` 0.1.2 stuck on a stale Discord IPC pipe. `ExtensionRunner.emit` previously shared the generic 30s `EXTENSION_HANDLER_TIMEOUT_MS` budget for every event, including the fire-and-forget teardown event extensions cannot observe. `session_shutdown` now uses a dedicated 2s `SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS` cap routed through a per-event `handlerTimeoutForEvent()` lookup, so a hung third-party handler can no longer hold dispose hostage. As a defence-in-depth ladder, a Ctrl+C arriving while interactive shutdown is already running now hard-exits with code 130 (the session JSONL has already been sync-flushed by the first press), surfaced via a new read-only `InteractiveModeContext.isShuttingDown` ([#2600](https://github.com/can1357/oh-my-pi/issues/2600)).
 - Fixed the external editor flow (Ctrl+G, plan editor, `/todo edit`) warning `No editor configured` on Windows even when the user expected the system's native editor. `getEditorCommand()` now falls back to `notepad` on `win32` after consulting `$VISUAL`/`$EDITOR` (and trims those values so accidental whitespace is ignored), so Windows users get a working editor out of the box while POSIX still warns to nudge configuration ([#2604](https://github.com/can1357/oh-my-pi/issues/2604)).
 - Fixed Kokoro TTS setup loading the workspace/global `@huggingface/transformers` runtime before the side-installed Kokoro runtime, which could leave `onnxruntime-node@1.26.0` bound to an older `libonnxruntime.so.1` and fail with `VERS_1.26.0` missing ([#2591](https://github.com/can1357/oh-my-pi/issues/2591)).
-- Fixed `scripts/ci-release-notes.ts` stranding curated changelog entries from intervening *silent* tags (a `vX.Y.Z` tag pushed without a GitHub Release, e.g. the `v15.12.5`/`v15.12.6` casualties of the pre-#2564 release-cancellation bug). The generator now walks `(latest-published-release, target]` — resolved via `gh release list` from the `release_github` CI job — and merges every in-range `## [X.Y.Z]` section per package, grouped by `### <category>` with bullet-level dedupe so post-release changelog flattening cannot duplicate entries. Falls back to the legacy single-version extraction when no prior published release resolves, and `OMP_RELEASE_NOTES_FLOOR=v15.12.4` overrides the lookup for manual rebuilds ([#2596](https://github.com/can1357/oh-my-pi/issues/2596)).
+- Fixed `scripts/ci-release-notes.ts` stranding curated changelog entries from intervening _silent_ tags (a `vX.Y.Z` tag pushed without a GitHub Release, e.g. the `v15.12.5`/`v15.12.6` casualties of the pre-#2564 release-cancellation bug). The generator now walks `(latest-published-release, target]` — resolved via `gh release list` from the `release_github` CI job — and merges every in-range `## [X.Y.Z]` section per package, grouped by `### <category>` with bullet-level dedupe so post-release changelog flattening cannot duplicate entries. Falls back to the legacy single-version extraction when no prior published release resolves, and `OMP_RELEASE_NOTES_FLOOR=v15.12.4` overrides the lookup for manual rebuilds ([#2596](https://github.com/can1357/oh-my-pi/issues/2596)).
 - Fixed `Test & smoke (TS)` CI timeouts caused by parallel test files racing on the process-global Settings singleton. `CustomEditor` now accepts a `magicKeywordsEnabledOverride` injection point so the shimmer-gate test can assert behaviour without calling `resetSettingsForTest()` / `Settings.init()`; the "streaming tool call preview height" describe drops its gratuitous Settings reset+init. Production wiring is unchanged ([#2582](https://github.com/can1357/oh-my-pi/issues/2582))
 - Fixed a collapsed, still-streaming tool preview (an `eval`/`bash`/`ssh` box with output streaming in) reading as "weirdly truncated" — top border and head rows missing — once its box outgrew the viewport, snapping back to whole only while expanded with `ctrl+o` and breaking again when collapsed. A streaming preview was classified commit-unstable whenever collapsed, so the transcript offered none of its rows to native scrollback; once the box outgrew the window its head fell into the gap between the commit boundary and the window top, committed nowhere and repainted nowhere. The `provisionalPendingPreview` flag now applies only to the pending call preview (before any result) — once a streaming result exists the result renderer is the live, top-anchored shape and the block is commit-stable in both collapsed and expanded states, so its durable head always reaches scrollback.
 - Fixed a crash in subagent task execution and extensions when a string (instead of a string array) was returned or set for the system prompt. Gracefully wrap string values in arrays.
 - Fixed the todo completion reminder escalating 1/3 → 2/3 → 3/3 within a single user pause: `#checkTodoCompletion` appended a `<system-reminder>` and then scheduled `agent.continue()`, so a text-only acknowledgement ("paused at your instruction") triggered another `agent_end` that re-ran the same check and fired the next reminder — no user input required. `AgentSession` now tracks `#todoReminderAwaitingProgress`: a reminder sets it, any `toolResult` (real progress) or a new user prompt clears it, and `#checkTodoCompletion` stays silent while it is set. Escalation through `todo.reminders.max` still works when the agent makes tool-level progress between stops ([#2590](https://github.com/can1357/oh-my-pi/issues/2590)).
 - Fixed profile bootstrap so an extension-shadowed `--plan` flag no longer swallows a following global `--profile`.
 - Fixed MCP OAuth URL-keyed credentials to stay profile-scoped under shared auth-broker storage and to clear discovered definition-only server auth during `/mcp unauth`.
-- Fixed `/mcp unauth` deleting another profile's MCP OAuth credential row under broker-backed auth storage: when a shared `mcp.json` pins an explicit `auth.credentialId` scoped to a different profile (`mcp_oauth:profile:<other>:<url>`), removal now skips ids scoped to a non-active profile, mirroring the read path that already refuses to *use* a foreign profile's id. Legacy url-keyed (`mcp_oauth:<url>`) and active-profile ids are still cleared.
+- Fixed `/mcp unauth` deleting another profile's MCP OAuth credential row under broker-backed auth storage: when a shared `mcp.json` pins an explicit `auth.credentialId` scoped to a different profile (`mcp_oauth:profile:<other>:<url>`), removal now skips ids scoped to a non-active profile, mirroring the read path that already refuses to _use_ a foreign profile's id. Legacy url-keyed (`mcp_oauth:<url>`) and active-profile ids are still cleared.
 - Fixed auto-learn managed skills to use the active profile's agent directory, so authored profile skills keep priority over managed fallbacks.
 
 ## [15.13.0] - 2026-06-14
@@ -4742,8 +4770,8 @@
 - Added a local on-device neural TTS backend for the `tts` tool and a `providers.tts` switch (`auto` | `local` | `xai`, default `auto`). `local` synthesizes speech with Kokoro-82M — SoTA on-device TTS quality — via `kokoro-js` on the shared ONNX runtime (`@huggingface/transformers` + `onnxruntime-node`) in a subprocess worker (mirroring the tiny-model worker), keeping the model warm across calls and emitting 24 kHz WAV/PCM16 with no network call; `xai` keeps the existing Grok Voice cloud path; `auto` prefers local but routes `.mp3` requests to xAI when credentials exist (no local MP3 encoder is bundled, so a local `.mp3` request is written as a sibling `.wav`). `kokoro-js` is never a hard dependency: it is lazily `bun install`ed into a version-keyed runtime dir on first use (with `onnxruntime-node` force-pinned to a Bun-safe version), so its transformers@3.x graph never pollutes the main tree. New `tts.localModel` (default `kokoro`) and `tts.localVoice` (default `af_heart`; American/British, female/male voices) settings select the on-device voice.
 - Added a unified, interactive `omp setup speech` command that walks one reusable flow across all three speech dependencies: it lets you pick and persist the speech-to-text (`stt.modelName`) and text-to-speech (`tts.localModel`) models from a TUI list, then downloads both models plus an audio recorder with live progress. The recorder is now auto-provisioned cross-platform (a static `ffmpeg` binary is fetched via the shared tools-manager when no SoX/FFmpeg/arecord is present, with the PowerShell fallback on Windows) instead of dead-ending with "install sox manually". `--check` and `--json` report recorder + STT-model + TTS-model readiness without installing.
 - Added `omp say <text>`, which synthesizes text with the local on-device TTS engine and plays it through the speakers (cross-platform: `afplay` on macOS, `paplay`/`aplay`/bundled `ffmpeg` on Linux, PowerShell `Media.SoundPlayer` on Windows). `--out <file>` writes a WAV instead of playing, `--voice`/`--model` override the `tts.localVoice`/`tts.localModel` settings, and an uninstalled model prints an actionable `omp setup speech` hint.
-- Added streaming speech vocalization: with `speech.enabled` on, the assistant speaks its reply through the speakers as it streams. Assistant text deltas are fed *directly into the engine's incremental text input* (Kokoro's `TextSplitterStream` via the worker) as they arrive, rather than pre-chunked in JS and synthesized one batch call per sentence — the engine owns sentence segmentation and emits one audio chunk per sentence. A single persistent player (`StreamingAudioPlayer`) drains those chunks **gaplessly** (raw 32-bit-float PCM piped to one `ffmpeg`→PulseAudio/ALSA process on Linux; interruptible per-file `afplay`/PowerShell `SoundPlayer` on macOS/Windows), replacing the spawn-a-player-per-sentence path that added latency and audible gaps. Overspeech is handled end to end: a new turn, a sent message, or an Esc/Ctrl+C interrupt stops playback **instantly** (the player process is killed rather than letting the current sentence finish); holding the push-to-talk key **ducks** the volume while you speak and restores it when you stop; and sequential utterances queue and drain in order instead of overlapping. `speech.mode` (`all` | `assistant` | `yield`, default `assistant`) picks what is spoken — `all` adds thinking, `yield` speaks only the final message at turn end — and `speech.voice` selects the Kokoro voice. `ask`-tool questions are spoken in every mode. Synthesis reuses the local Kokoro engine (`tts.localModel`) through a new streaming synthesis path (`TtsClient.synthesizeStream`) that pushes text in and streams audio chunks back over the worker protocol.
-- Added live (streaming) speech-to-text: with `stt.enabled` on, transcription now appears in the composer *as you speak* instead of all at once after you stop. The recorder streams raw 16 kHz mono PCM from sox/ffmpeg/arecord stdout to the warm STT worker, where an energy-based endpointer (no extra model) splits speech into segments at natural pauses; each finalized segment is committed into the editor while the in-progress segment shows a live volatile preview that refreshes in place and is kept out of the undo history. Works with both the default Parakeet (sherpa-onnx) and the Whisper (transformers.js) tiers. Recorders that cannot stream to a pipe (the Windows PowerShell mci fallback) transparently fall back to single-shot transcription.
+- Added streaming speech vocalization: with `speech.enabled` on, the assistant speaks its reply through the speakers as it streams. Assistant text deltas are fed _directly into the engine's incremental text input_ (Kokoro's `TextSplitterStream` via the worker) as they arrive, rather than pre-chunked in JS and synthesized one batch call per sentence — the engine owns sentence segmentation and emits one audio chunk per sentence. A single persistent player (`StreamingAudioPlayer`) drains those chunks **gaplessly** (raw 32-bit-float PCM piped to one `ffmpeg`→PulseAudio/ALSA process on Linux; interruptible per-file `afplay`/PowerShell `SoundPlayer` on macOS/Windows), replacing the spawn-a-player-per-sentence path that added latency and audible gaps. Overspeech is handled end to end: a new turn, a sent message, or an Esc/Ctrl+C interrupt stops playback **instantly** (the player process is killed rather than letting the current sentence finish); holding the push-to-talk key **ducks** the volume while you speak and restores it when you stop; and sequential utterances queue and drain in order instead of overlapping. `speech.mode` (`all` | `assistant` | `yield`, default `assistant`) picks what is spoken — `all` adds thinking, `yield` speaks only the final message at turn end — and `speech.voice` selects the Kokoro voice. `ask`-tool questions are spoken in every mode. Synthesis reuses the local Kokoro engine (`tts.localModel`) through a new streaming synthesis path (`TtsClient.synthesizeStream`) that pushes text in and streams audio chunks back over the worker protocol.
+- Added live (streaming) speech-to-text: with `stt.enabled` on, transcription now appears in the composer _as you speak_ instead of all at once after you stop. The recorder streams raw 16 kHz mono PCM from sox/ffmpeg/arecord stdout to the warm STT worker, where an energy-based endpointer (no extra model) splits speech into segments at natural pauses; each finalized segment is committed into the editor while the in-progress segment shows a live volatile preview that refreshes in place and is kept out of the undo history. Works with both the default Parakeet (sherpa-onnx) and the Whisper (transformers.js) tiers. Recorders that cannot stream to a pipe (the Windows PowerShell mci fallback) transparently fall back to single-shot transcription.
 - Added `skills.enableAgentsUser` and `skills.enableAgentsProject` settings (default on) so the canonical OMP-native `~/.agent[s]/skills` and project-walkup `.agent[s]/skills` are configurable independently from the third-party Claude/Codex/Pi toggles.
 - Added a read-only `ctx.models` facade for extensions: `list()` (authenticated models), `current()` (live session model), `resolve(spec)` (a model string or role alias → `Model`, using the same settings-backed aliases and match preferences as core selection), and `family(model)` (opaque canonical-identity lineage token for cross-family comparisons). Lets extension tools select models the way core does without reaching into the mutable registry ([#2406](https://github.com/can1357/oh-my-pi/issues/2406))
 - Added RPC prompt lifecycle hints so hosts can distinguish scheduled agent turns from local-only slash commands via `data.agentInvoked` and `prompt_result`.
@@ -4773,15 +4801,15 @@
 - Allowed `compat.streamIdleTimeoutMs: 0` in `models.yml`. The schema was `.positive()`, so the documented "set to 0 to disable" escape hatch was only reachable via the global env var ([#2422](https://github.com/can1357/oh-my-pi/issues/2422))
 - Fixed LaTeX math delimiters (`$`/`$$`) and commands (such as `\text`, `\times`) rendering raw in the terminal by instructing the model to write equations as plain text / Unicode in its replies. The instruction is scoped to conversational output, so it does not constrain LaTeX or Markdown/KaTeX content the agent is asked to write to files ([#2550](https://github.com/can1357/oh-my-pi/pull/2550) by [@usr-bin-roygbiv](https://github.com/usr-bin-roygbiv)).
 - Fixed the MCP stdio transport `close()` potentially hanging while awaiting a read loop that can block indefinitely; teardown now detaches the read loop instead of awaiting it ([#2550](https://github.com/can1357/oh-my-pi/pull/2550) by [@usr-bin-roygbiv](https://github.com/usr-bin-roygbiv)).
-- Fixed per-project memory isolation pulling other projects' memories into recall. Legacy (pre-#2412) mnemopi banks were rescued into recall when *any* working-memory row tagged the active cwd, but recall reads a bank wholesale and cannot filter rows by cwd, so a mixed-cwd bank leaked unrelated projects' memories. A legacy bank is now rescued only when *every* row tags the active cwd ([#2412](https://github.com/can1357/oh-my-pi/issues/2412)).
-- Fixed a prompt template whose name collides with a builtin slash-command *alias* (e.g. a `models` template beside the builtin `/model`, which owns the `models` alias) appearing as a duplicate entry in the slash-command autocomplete picker. The picker's reserved-name filter now also excludes command aliases, matching runtime resolution (slash commands expand before prompt templates, so the template was already unreachable).
+- Fixed per-project memory isolation pulling other projects' memories into recall. Legacy (pre-#2412) mnemopi banks were rescued into recall when _any_ working-memory row tagged the active cwd, but recall reads a bank wholesale and cannot filter rows by cwd, so a mixed-cwd bank leaked unrelated projects' memories. A legacy bank is now rescued only when _every_ row tags the active cwd ([#2412](https://github.com/can1357/oh-my-pi/issues/2412)).
+- Fixed a prompt template whose name collides with a builtin slash-command _alias_ (e.g. a `models` template beside the builtin `/model`, which owns the `models` alias) appearing as a duplicate entry in the slash-command autocomplete picker. The picker's reserved-name filter now also excludes command aliases, matching runtime resolution (slash commands expand before prompt templates, so the template was already unreachable).
 - Fixed the tool-result renderer re-shaping on every `invalidate()` (spinner tick, stream chunk, resize, keystroke), which made large grep/find/read results block the main thread for seconds and made typing sluggish. `ToolExecutionComponent.#updateDisplay()` now memoizes on a dirty key (result version, expand state, partial flag, spinner frame, image visibility, theme epoch, background-task freeze state, the resolved terminal image protocol, and a display-input version that covers streamed call args, the async edit-diff preview, and Kitty image conversions) and a `#displayBuilt` guard that also fast-paths the `#contentText` fallback, so the O(result-size) shaping runs once per change instead of every frame without freezing streamed args, previews, converted images, a backgrounded task settling to its static form, or images that arrive before the async image-protocol probe resolves. Image-bearing results also re-shape on terminal resize (keyed on the resolved image dimensions only when images are present) so inline images rescale, while image-free results never re-shape on resize ([#2484](https://github.com/can1357/oh-my-pi/issues/2484))
 - Fixed `setTheme()` not bumping the theme epoch on its invalid-theme fallback path: a failed theme load swaps the active theme to the dark fallback, so memoized renderers (the tool-result renderer above) must re-shape — previously they kept the failed theme's stale colors until some other state changed ([#2484](https://github.com/can1357/oh-my-pi/issues/2484))
 - Fixed tool-call spinners animating out of phase across parallel tool calls — each live tool block advanced its glyph from its own per-instance start time, so concurrent spinners showed different frames. Glyphs now derive from a single shared monotonic clock (`sharedSpinnerFrame`), keeping every live block in lockstep.
 - Fixed the per-turn token-usage row (`display.showTokenUsage`) churning and duplicating in scrollback, most visibly with parallel tool calls. The row was rendered inside the assistant block above the turn's tool blocks, so finalizing the block was deferred and late appends recommitted the already-committed tool rows. The assistant block now always finalizes as soon as a tool-call appears, and the usage row is emitted as a standalone finalized block below the turn's tool blocks across all three render paths (live, transcript rebuild, agent-hub).
 - Fixed the editor input box claiming a disproportionate share of small terminals (<=18 rows): the editor max-height floor (6 rows) ignored the available space. The height now yields to terminal size (`EDITOR_MIN_CHROME_ROWS`), reserving rows for the transcript and status line whenever the terminal can host both; on terminals too small for both, the editor collapses to its real bordered minimum instead of overshooting a fictitious cap.
 - Fixed `ultrathink` / `orchestrate` / `workflowz` keywords not glowing while typing — the editor appended a CURSOR_MARKER (ESC-prefixed) after each render, so the magic-keyword regex's right-boundary `(?!\S)` tripped on ESC and dropped the gradient until a trailing character was typed. The marker-aware editor decorate (`packages/tui`) plus a phase-aware `highlightMagicKeywords` overload restore the live glow and add a Claude-Code-style shimmer while the prompt is focused, gated on `magicKeywords.enabled` ([#2475](https://github.com/can1357/oh-my-pi/issues/2475)).
-- Fixed the compaction flow (`/compact` and plan-mode "Approve and compact context") leaving UI artifacts. `executeCompaction` added a `Spacer(1)` to the transcript that the sibling handoff path never adds and that leaked as an orphan blank line whenever compaction was cancelled or failed; that spacer is removed. On success the compaction loader is now stopped and the status container cleared *before* the transcript is rebuilt, so the live loader row no longer flickers over the reconciled transcript near the status seam (the idempotent `finally` still covers the cancel/fail paths) ([#2486](https://github.com/can1357/oh-my-pi/issues/2486))
+- Fixed the compaction flow (`/compact` and plan-mode "Approve and compact context") leaving UI artifacts. `executeCompaction` added a `Spacer(1)` to the transcript that the sibling handoff path never adds and that leaked as an orphan blank line whenever compaction was cancelled or failed; that spacer is removed. On success the compaction loader is now stopped and the status container cleared _before_ the transcript is rebuilt, so the live loader row no longer flickers over the reconciled transcript near the status seam (the idempotent `finally` still covers the cancel/fail paths) ([#2486](https://github.com/can1357/oh-my-pi/issues/2486))
 - Fixed plan approval's "Approve and compact context" running the compaction summarizer on the pre-plan model instead of the plan model, cold-missing the plan model's prompt cache. Compaction now runs on the plan model (warm cache); the switch to the execution/pre-plan model happens only after a successful compaction and before any input queued during compaction is dispatched, so the queued turn runs on the post-compaction model. A cancelled compaction now also restores the pre-plan model (it previously stranded the session on the plan model), while a failed compaction stays on the plan model with its context intact.
 - Fixed `Alt+Up` (dequeue) reporting "No queued messages to restore" for messages — including skills — typed while the session was compacting. `restoreQueuedMessagesToEditor` now drains `compactionQueuedMessages` alongside the agent queue, so the `Alt+Up to edit` hint restores every pending message it advertises.
 - Fixed `restoreQueuedMessagesToEditor` (Alt+Up dequeue and Esc-abort) producing colliding `[Image #N]` markers when the editor draft already held pending image(s): queued text was prepended but queued images were appended, so positional marker → image lookup at submit time resolved to the wrong image. Each queued message's image markers are now renumbered by the running pending-image count before merge so the combined text stays aligned with the merged `pendingImages` order ([#2531](https://github.com/can1357/oh-my-pi/issues/2531)).
@@ -4892,7 +4920,7 @@
 - Fixed concurrent `omp --session` startups (e.g. cmux pane restore after an unclean shutdown) crashing with `SQLITE_BUSY_RECOVERY` while the agent SQLite databases were still under WAL recovery. The auth credential store and `AgentStorage.open()` retry the `SQLITE_BUSY` family with bounded backoff, and every shared SQLite open path (`AgentStorage`, history, autoresearch, memories, github cache, auto-QA grievances, catalog model cache, stats) now installs the busy handler before the first lock-taking statement so transient WAL recovery contention waits instead of crashing ([#2421](https://github.com/can1357/oh-my-pi/issues/2421)).
 - Mnemopi `per-project` / `per-project-tagged` bank derivation is now stable for one cwd, ignoring the surrounding git layout. Previously the bank id was hashed from `git.repo.resolveSync(cwd)?.repoRoot ?? path.resolve(cwd)`, so adding or removing a `.git` anywhere above the working directory silently repointed the same conversation to a new bank and stranded its memories (e.g. `/home/x/projects/repo` flipping between `projects-…` and `repo-…`). The derivation in `packages/coding-agent/src/mnemopi/config.ts` now hashes `path.resolve(cwd)` directly, and session startup widens the recall set with any sibling bank under `<dbDir>/banks/` whose `working_memory` rows already carry the active cwd in `metadata_json.$.cwd`, so memories stranded by the old, less-stable derivation become visible again on the next session without manual migration ([#2412](https://github.com/can1357/oh-my-pi/issues/2412)).
 - Fixed model switching (Ctrl+P role cycling and the alt+p / `/switch` / `/models` selector) intermittently freezing the UI for several seconds. `AgentSession.setModel`/`setModelTemporary` ran an eager `await modelRegistry.getApiKey(model)` purely as an existence pre-flight and discarded the value — but `getApiKey` does real work: it synchronously executes command-backed key programs (`apiKey: "!cmd"`, `execSync` with a 10s timeout, blocking the event loop) and refreshes OAuth tokens over the network when one crosses the expiry window (the "fine for a few switches, then a multi-second stall" symptom). Switching now uses the synchronous, side-effect-free `ModelRegistry.hasConfiguredAuth` check; the concrete key (command execution + OAuth refresh) is still resolved lazily per request via the existing resolver, so an unconfigured provider still fails fast with `No API key` while a healthy switch never touches the network or spawns a subprocess. `hasConfiguredAuth` no longer runs the command program or refreshes tokens either, matching its documented "probe without resolving an API key" contract.
-- Fixed session resume (`pi -c` / `--continue` / `--session`) hanging for ~10s at startup — surfaced by the watchdog as `Still starting … phase: createAgentSession > restoreSessionModel` — when an OAuth token needed refreshing or the auth broker (`OMP_AUTH_BROKER_URL`) was unreachable. Picking which saved model to restore is a pure *selection* that only needs to know whether auth is configured, but `restoreSessionModel` probed each candidate with the async `getApiKey`, which refreshes OAuth tokens over the network, executes command-backed key programs, and issues auth-broker requests — so a slow or unreachable endpoint stalled resume for the full refresh timeout per candidate. Startup model selection now uses the synchronous, side-effect-free `ModelRegistry.hasConfiguredAuth` probe (the same fix already applied to interactive model switching); the concrete key is still resolved lazily on the first request via the resolver.
+- Fixed session resume (`pi -c` / `--continue` / `--session`) hanging for ~10s at startup — surfaced by the watchdog as `Still starting … phase: createAgentSession > restoreSessionModel` — when an OAuth token needed refreshing or the auth broker (`OMP_AUTH_BROKER_URL`) was unreachable. Picking which saved model to restore is a pure _selection_ that only needs to know whether auth is configured, but `restoreSessionModel` probed each candidate with the async `getApiKey`, which refreshes OAuth tokens over the network, executes command-backed key programs, and issues auth-broker requests — so a slow or unreachable endpoint stalled resume for the full refresh timeout per candidate. Startup model selection now uses the synchronous, side-effect-free `ModelRegistry.hasConfiguredAuth` probe (the same fix already applied to interactive model switching); the concrete key is still resolved lazily on the first request via the resolver.
 
 ## [15.12.3] - 2026-06-12
 
@@ -5272,7 +5300,7 @@
 - Forwarded model ids through `ModelRegistry` API-key resolvers and Antigravity usage-limit rotation so `pi-ai` can apply model-family-scoped OAuth quota backoff instead of treating all `google-antigravity` counters as credential-wide. ([#2198](https://github.com/can1357/oh-my-pi/issues/2198))
 - Fixed bare `omp extensions` being treated as a chat prompt instead of returning an actionable plugin-command error ([#2089](https://github.com/can1357/oh-my-pi/issues/2089)).
 - Fixed hide-secrets redaction so configured secrets are scrubbed from provider-facing system prompts, tool definitions, developer/system-reminder messages, and assistant tool-call arguments before model requests ([#2146](https://github.com/can1357/oh-my-pi/issues/2146)).
-- Fixed subagents looping indefinitely on byte-identical no-op `edit` calls. The hashline executor previously surfaced a soft "your body row(s) are byte-identical to the file" hint that some models ignored; one captured session emitted 182 such repeats in 205 calls over 16 minutes before the user aborted. A new per-`ToolSession` `noopLoopGuard` now tracks consecutive identical no-op payloads per canonical path and escalates to a thrown `ToolError` after `NOOP_HARD_LIMIT` (3) repeats, so the agent loop sees a tool *failure* and breaks the cycle ([#2081](https://github.com/can1357/oh-my-pi/issues/2081)).
+- Fixed subagents looping indefinitely on byte-identical no-op `edit` calls. The hashline executor previously surfaced a soft "your body row(s) are byte-identical to the file" hint that some models ignored; one captured session emitted 182 such repeats in 205 calls over 16 minutes before the user aborted. A new per-`ToolSession` `noopLoopGuard` now tracks consecutive identical no-op payloads per canonical path and escalates to a thrown `ToolError` after `NOOP_HARD_LIMIT` (3) repeats, so the agent loop sees a tool _failure_ and breaks the cycle ([#2081](https://github.com/can1357/oh-my-pi/issues/2081)).
 - Fixed the bash result renderer recomputing styled output (`split` / `replaceTabs` / `truncateToVisualLines`) on every TUI repaint, which scaled with both transcript length and per-row output size. With a long captured session every keystroke walked hundreds of bash rows; the reporter on issue #2081 observed Ctrl+X/Ctrl+C feeling unresponsive because the main thread was pinned re-styling scrollback. The result renderer now caches its produced lines keyed by `(width, previewLines, expanded, rawOutput, isPartial)`, mirroring the existing eval-renderer cache; `invalidate()` clears the cache as before. Hot-path repaints with unchanged inputs are now O(1) ([#2081](https://github.com/can1357/oh-my-pi/issues/2081)).
 - Fixed ACP `available_commands_update` to include extension-registered slash commands so clients like Zed surface them in the slash-command palette.
 - Fixed ACP cancel button leaving the session in a stuck state — a new prompt sent while a turn is still in-flight (e.g. immediately after pressing Stop in Zed before `session/cancel` is processed) now implicitly cancels the running turn and queues the new message, instead of throwing an error that blocks further interaction.
@@ -5296,7 +5324,7 @@
 
 - Centralized model-identity logic in the new `@oh-my-pi/pi-catalog` package: `config/model-equivalence.ts`, `config/model-id-affixes.ts`, and `config/model-provider-priority.ts` were removed in favor of `@oh-my-pi/pi-catalog/identity`, and the registry's proxy-reference lookup now shares the catalog's single lazily-built bundled-model walk (`@oh-my-pi/pi-catalog/identity` bundled accessors) with the canonical-equivalence index instead of walking the ~12K bundled models twice into duplicate maps
 - Split the configured/implicit provider discovery protocols (Ollama, llama.cpp, LM Studio, openai-models-list, proxy) out of `config/model-registry.ts` into `config/model-discovery.ts`; the registry keeps orchestration (caching, status tracking, merging) while the protocol clients take an injected fetch/auth context
-- Catalog *values* (bundled models, `modelsAreEqual`, `clampThinkingLevelForModel`, `getSupportedEfforts`, `DEFAULT_MODEL_PER_PROVIDER`, Gemini/Antigravity wire headers) are now imported from `@oh-my-pi/pi-catalog/<module>` instead of the `@oh-my-pi/pi-ai` barrel, which no longer re-exports them; the resolver's `defaultModelPerProvider` alias was removed and its duplicated default-model fallback / scoped-model dedupe blocks were factored into `pickDefaultAvailableModel` and a shared `addScopedModel` helper
+- Catalog _values_ (bundled models, `modelsAreEqual`, `clampThinkingLevelForModel`, `getSupportedEfforts`, `DEFAULT_MODEL_PER_PROVIDER`, Gemini/Antigravity wire headers) are now imported from `@oh-my-pi/pi-catalog/<module>` instead of the `@oh-my-pi/pi-ai` barrel, which no longer re-exports them; the resolver's `defaultModelPerProvider` alias was removed and its duplicated default-model fallback / scoped-model dedupe blocks were factored into `pickDefaultAvailableModel` and a shared `addScopedModel` helper
 - Cached custom model alias maps and built them lazily on first custom model reference lookup, avoiding unnecessary startup model-registry initialization
 - Cached resolved auth broker configuration and snapshot reads for the process lifetime so repeated startup paths reuse the same `OMP_AUTH_BROKER_*` resolution instead of re-running config/token discovery
 - Reused task-agent discovery results for repeated `TaskTool.create` calls in the same working directory to avoid repeated plugin scans during subagent startup
@@ -5368,7 +5396,7 @@
 - Fixed ast-edit and file-mention snapshots being recorded under non-canonical paths (invisible to stale-tag recovery under symlinked cwds), and the ast-edit apply step leaving every just-issued preview tag stale — post-apply snapshots are re-recorded and fresh tags surfaced in the result.
 - Fixed notebook cells containing literal `# %% [markdown]` marker text being silently split into extra cells on any edit; marker-shaped source lines are now escaped on render and restored on parse.
 - Fixed the LSP client being published before `initialize` completed (concurrent callers hit "server not initialized" flakes on first use), reader-loop death leaving a permanent zombie client where every request times out at 30s forever (bad messages are now isolated per-message and a dead reader tears the client down for respawn), framing stalls on header blocks without `Content-Length` (now resynced past the junk in both LSP and DAP), `lsp status` hardcoding `ready` for every client including wedged ones, and shutdown skipping clients still mid-initialize (their server processes outlived exit).
-- Fixed numeric LSP code-action selectors being shadowed by substring title matches — `query: "2"` could apply a *different* quickfix whose title contained "2"; numeric queries now select strictly by index.
+- Fixed numeric LSP code-action selectors being shadowed by substring title matches — `query: "2"` could apply a _different_ quickfix whose title contained "2"; numeric queries now select strictly by index.
 - Fixed `file://` URIs built without percent-encoding: a `%` in a path threw `URIError` on round-trip and a `#` truncated the server-side path, desynchronizing diagnostics and workspace edits; URIs from lax servers carrying a raw `#`/`?` now route to the lenient parser instead of parsing "successfully" as fragment/query and misrouting edits.
 - Fixed multiple LSP inserts at the same position applying in reverse of spec order (transposed import/reference insertions), and `applyWorkspaceEdit` now overlap-validates every file before writing any, so a conflicting rename no longer leaves the workspace half-renamed.
 - Fixed `lsp reload` hanging for the whole tool timeout (`didChangeConfiguration` was sent as a request; it is a notification), biome failures being silently reported as "no diagnostics", a hung language server adding up to 30s to every edit (writethrough init is now deadline-bounded at 5s with deterministic spawn failures negative-cached for 3 minutes), and DAP `pause()` burning its full timeout when the stopped event raced the subscription; concurrent DAP breakpoint mutations are also serialized per session (last-writer no longer silently drops the other's breakpoints), queued mutations honor the caller's abort at dequeue, and the DAP output buffer retains a full 128KB tail instead of dropping whole chunks below the cap.
@@ -5575,7 +5603,7 @@
 - Fixed Esc interrupts rendering a redundant `Interrupted by user` assistant transcript line while preserving the interrupt reason for tool-result placeholders and continuation logic.
 - LSP writethrough no longer burns the full diagnostics poll on every edit/write. `typescript-language-server` never echoes the document version in `publishDiagnostics` ([upstream #983](https://github.com/typescript-language-server/typescript-language-server/issues/983)), so the exact-version gate never passed; `waitForDiagnostics` now accepts an exact version match instantly and otherwise settles on the latest publish after a short quiescence window, dropping superseded in-flight diagnostics.
 - LSP writethrough no longer blocks the whole edit/write on slow diagnostics: it now waits only a short inline window (~500ms) for a settled result, then hands the in-flight fetch to the deferred channel so a slow or cold language server (e.g. a large-project `tsserver`) delivers its diagnostics as a follow-up message instead of stalling the tool 3–5s on every edit. The background fetch also gets a longer budget so slow servers still surface late rather than being dropped.
-- Fixed the `c`/`.` continue shortcut making the agent second-guess itself after an Esc interrupt. Continuing used to submit an *empty* user turn, which left the model with only the aborted-turn context — so it tended to restate the halted state and ask whether to proceed rather than just continuing. The shortcut now resumes with a hidden agent-authored `developer` directive ("keep going — don't stop to summarize or re-confirm the plan") instead of an empty turn. It still produces no visible transcript entry, same as before.
+- Fixed the `c`/`.` continue shortcut making the agent second-guess itself after an Esc interrupt. Continuing used to submit an _empty_ user turn, which left the model with only the aborted-turn context — so it tended to restate the halted state and ask whether to proceed rather than just continuing. The shortcut now resumes with a hidden agent-authored `developer` directive ("keep going — don't stop to summarize or re-confirm the plan") instead of an empty turn. It still produces no visible transcript entry, same as before.
 - Fixed native scrollback commit boundaries to be computed generically from finalized transcript blocks and observed append-only live growth, so tall final tool results and streaming previews keep their scrolled-off heads on ED3-risk terminals without per-tool append-only predicates; live blocks that re-layout remain deferred until finalization or the next checkpoint.
 - Fixed read-group summaries for multi-path `read` results to use result-provided display targets so each resolved path is shown as its own row
 - Fixed read-group range summaries to abbreviate long merged selectors with ellipsis to keep repeated-file range rows readable
@@ -5842,7 +5870,7 @@
 ### Fixed
 
 - Fixed user-message rendering to materialize image links from embedded image blocks when rebuilding chat output, so image placeholders remain clickable after replayed or restored messages
-- Fixed queued/steering user messages carrying a pasted image rendering out of order — sometimes dropping the user bubble *below* the very tool output it was sent to steer. `EventController.#handleMessageStart` awaited async image-link materialization between the user `message_start` and `addMessageToChat`; since `AgentSession.#emit` dispatches TUI listeners fire-and-forget, that mid-handler yield let the next synchronously-handled events (assistant `message_start`, tool execution start/end) append their components first, scrambling transcript order and live-region block boundaries. The bubble is now appended synchronously, with clickable image links still materialized via the synchronous blob-store fallback.
+- Fixed queued/steering user messages carrying a pasted image rendering out of order — sometimes dropping the user bubble _below_ the very tool output it was sent to steer. `EventController.#handleMessageStart` awaited async image-link materialization between the user `message_start` and `addMessageToChat`; since `AgentSession.#emit` dispatches TUI listeners fire-and-forget, that mid-handler yield let the next synchronously-handled events (assistant `message_start`, tool execution start/end) append their components first, scrambling transcript order and live-region block boundaries. The bubble is now appended synchronously, with clickable image links still materialized via the synchronous blob-store fallback.
 - Fixed tool execution cards to finalize promptly when a turn is abandoned or completed so stale streaming previews and frozen spinner frames no longer keep transcript rows in the live region
 - Fixed `read` and `search` TUI rendering to emit OSC 8 hyperlinks for HTTP URLs, `local://` resources backed by files, and filesystem search targets, including line-specific links for search match rows.
 - Fixed aborted streaming assistant messages staying frozen before their red "Operation aborted" label when status rows were appended underneath on ED3-risk terminals.
@@ -5940,7 +5968,9 @@
 ### Added
 
 - Added env-driven OpenTelemetry trace export. When `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) is set, `omp` registers a global OTLP/proto trace exporter and switches on the agent loop's telemetry, so the `invoke_agent` / `chat` / `execute_tool` spans actually reach a collector instead of a no-op tracer. Honors the standard `OTEL_*` env contract (endpoint, headers, `OTEL_SERVICE_NAME`, `OTEL_SDK_DISABLED` and `OTEL_TRACES_EXPORTER=none` parsed case-insensitively) and the `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` capture toggle; it is a no-op when no endpoint is configured. Only the `http/protobuf` transport is supported — a `grpc` or `http/json` `OTEL_EXPORTER_OTLP*_PROTOCOL` declines rather than misrouting spans. This makes the existing telemetry usable from headless hosts that run `omp` as a spawned child process, where an in-process `TracerProvider` registered by the parent can't reach the child. Uses the `@opentelemetry/exporter-trace-otlp-proto` 2.x line, which exports cleanly under Bun.
+
 ## Fixed
+
 - Fixed the status line session name (and the editor border / status-line gap fill) being nearly illegible on light themes.
 - Added `IndexedSessionStorage` and `SessionStorageBackend` exports to support shared metadata-indexed session backends
 - Added the `tui.maxInlineImages` setting (default `8`) capping how many inline images render as live terminal graphics. Once a new image pushes the count past the cap, the oldest images are hidden via a full redraw — replaced by their `[Image: …]` text placeholder and purged from the terminal's graphics store — so long sessions with many screenshots/diagrams stop piling up images (and, on Kitty, stop leaving scrollback ghosts). Set to `0` to keep every image inline.
@@ -6257,9 +6287,9 @@
 
 ### Fixed
 
-- Fixed a rewind/restore loop when the session leaf lands on an assistant turn that emitted tool calls (e.g. selecting such a turn in `/tree`, or restoring a session whose head is a mid-batch turn). That turn's tool results are persisted as its children — *below* the leaf — so they fall off the leaf→root path that `buildSessionContext` walks, leaving the assistant turn's `tool_use` blocks dangling as the final message. `transformMessages` then fabricated one synthetic `"aborted"`/`"No result provided"` result per call plus a `<turn-aborted>` developer note, which both rendered as phantom failed calls on a turn that "hadn't run anything yet" and re-injected the whole failed batch into the model's context, prompting it to re-issue the batch (the spiral). `buildSessionContext` now strips dangling `tool_use` blocks from a trailing assistant turn (dropping the turn entirely if nothing else remains), so a rewound turn resumes cleanly from its reasoning/text. Live turns are unaffected — their results persist and the leaf advances past the assistant before any rebuild.
+- Fixed a rewind/restore loop when the session leaf lands on an assistant turn that emitted tool calls (e.g. selecting such a turn in `/tree`, or restoring a session whose head is a mid-batch turn). That turn's tool results are persisted as its children — _below_ the leaf — so they fall off the leaf→root path that `buildSessionContext` walks, leaving the assistant turn's `tool_use` blocks dangling as the final message. `transformMessages` then fabricated one synthetic `"aborted"`/`"No result provided"` result per call plus a `<turn-aborted>` developer note, which both rendered as phantom failed calls on a turn that "hadn't run anything yet" and re-injected the whole failed batch into the model's context, prompting it to re-issue the batch (the spiral). `buildSessionContext` now strips dangling `tool_use` blocks from a trailing assistant turn (dropping the turn entirely if nothing else remains), so a rewound turn resumes cleanly from its reasoning/text. Live turns are unaffected — their results persist and the leaf advances past the assistant before any rebuild.
 - Fixed external extension loading on Windows compiled binaries: bare `@oh-my-pi/pi-*` value imports (e.g. `import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai"`) failed with `Cannot find package '\$bunfs\root\packages\…'` because `legacy-pi-compat.ts` built shim override paths from a hardcoded POSIX `/$bunfs/root/packages` literal. Win32 normalised the leading slash to a backslash and the resulting path never resolved against the real bunfs mount (`<drive>:\~BUN\root\…`). The bunfs package root is now derived from `import.meta.dir`, so override paths stay platform-native on Windows, Linux, and macOS ([#1514](https://github.com/can1357/oh-my-pi/issues/1514)).
-- Fixed the interactive prompt showing no cursor in Ghostty. A prior change wired the editor's cursor mode to a new `getUseTerminalCursorMarker()` (which always reported the *requested* preference) instead of the resolved hardware-cursor visibility, so when Ghostty force-hid the hardware cursor the editor stayed in terminal-cursor (marker-only) mode and drew no glyph — leaving no visible caret with either `showHardwareCursor`/`PI_HARDWARE_CURSOR` value. The editor now follows `ui.getShowHardwareCursor()`: a hidden hardware cursor falls back to the steady software-cursor glyph (which still emits `CURSOR_MARKER` for IME positioning).
+- Fixed the interactive prompt showing no cursor in Ghostty. A prior change wired the editor's cursor mode to a new `getUseTerminalCursorMarker()` (which always reported the _requested_ preference) instead of the resolved hardware-cursor visibility, so when Ghostty force-hid the hardware cursor the editor stayed in terminal-cursor (marker-only) mode and drew no glyph — leaving no visible caret with either `showHardwareCursor`/`PI_HARDWARE_CURSOR` value. The editor now follows `ui.getShowHardwareCursor()`: a hidden hardware cursor falls back to the steady software-cursor glyph (which still emits `CURSOR_MARKER` for IME positioning).
 
 ### Changed
 
@@ -7165,7 +7195,7 @@
 - Fixed an ESM circular-import TDZ that crashed test suites when modules from the `task/` and `tools/` graphs were evaluated together (e.g. `executor-warnings.test.ts` + `task-simple-mode.test.ts`) by deferring `BUILTIN_TOOLS.task`'s `TaskTool.create` dereference to factory-call time and sourcing `truncateTail` from `session/streaming-output` instead of the `tools/` barrel
 - Treat keyless-by-design providers (llama.cpp, ollama, lm-studio) as authenticated in subagent model resolution; fixes silent fallback to parent remote model when a local model is configured. ([#1008](https://github.com/can1357/oh-my-pi/issues/1008))
 - Fixed subagent disposal and session transitions that previously canceled all running async jobs, preventing inadvertent termination of a parent agent’s background work
-- Fixed multi-entry edits silently rendering a fake success when every entry failed (e.g. all hit the auto-generated guard), by surfacing `isError: true` from the single-path edit orchestrator so the renderer takes the error branch instead of falling through to the streaming-preview fallback that displays the *proposed* diff
+- Fixed multi-entry edits silently rendering a fake success when every entry failed (e.g. all hit the auto-generated guard), by surfacing `isError: true` from the single-path edit orchestrator so the renderer takes the error branch instead of falling through to the streaming-preview fallback that displays the _proposed_ diff
 - Fixed the auto-generated streaming guard being gated behind `edit.streamingAbort` (default false), so it now pre-empts streaming edit tool calls targeting auto-generated files regardless of that setting
 - Fixed subagents launched in the same parallel batch not seeing each other in their initial `# IRC Peers` system-prompt block by pre-registering the agent in the global `AgentRegistry` before `rebuildSystemPrompt` runs and attaching the live session afterwards
 - Fixed plugin manifest extensions whose entry points at a directory (e.g. `pi-goal`'s `"pi": { "extensions": [".pi/extensions/pi-goal"] }`) failing to load with `Failed to load extension: Directories cannot be read like files`. The plugin path resolver now resolves directory entries to their `index.{ts,js,mjs,cjs}` file, matching the behavior of native auto-discovery via `resolveExtensionEntries`.
@@ -8119,7 +8149,7 @@
 - Changed Vim page-scroll commands `C-f`, `C-b`, `C-u`, and `C-d` to move in viewport-height based increments instead of fixed constants
 - Changed `z` command behavior so `zt`, `zb`, and `z.` now align cursor movement to first non-blank in the line
 - Changed `:g`/`:v` global command handling to process matching lines safely by working in reverse order and preserving file structure
-- Changed vim tab breadcrumb rendering from ` → ` to `→` in the editor view
+- Changed vim tab breadcrumb rendering from `→` to `→` in the editor view
 - Changed custom tool and task execution contexts to no longer expose a shared `searchDb` accessor, removing direct access to native grep/glob/fuzzyFind search backends from extension callbacks
 - Changed the `task` tool `schema` field to require JSON-encoded JTD schema text instead of a schema object, matching prompt guidance and task-subagent invocation
 - Changed chunk edit payloads to encode selectors as `path: "file:selector"` and updated chunk tool guidance and examples to match
@@ -11894,12 +11924,12 @@
 ### Added
 
 - Added `/debug` command with interactive menu for bug report generation:
-  - `Report: performance issue` - CPU profiling with reproduction flow
-  - `Report: dump session` - Immediate session bundle creation
-  - `Report: memory issue` - Heap snapshot with bundle
-  - `View: recent logs` - Display last 50 log entries
-  - `View: system info` - Show environment details
-  - `Clear: artifact cache` - Remove old session artifacts
+   - `Report: performance issue` - CPU profiling with reproduction flow
+   - `Report: dump session` - Immediate session bundle creation
+   - `Report: memory issue` - Heap snapshot with bundle
+   - `View: recent logs` - Display last 50 log entries
+   - `View: system info` - Show environment details
+   - `Clear: artifact cache` - Remove old session artifacts
 
 ### Fixed
 
@@ -14349,11 +14379,11 @@ There are multiple SDK breaking changes since v0.49.3. For the quickest migratio
 
 - Extension editor (`ctx.ui.editor()`) now uses Enter to submit and Shift+Enter for newlines, matching the main editor. Previously used Ctrl+Enter to submit. Extensions with hardcoded "ctrl+enter" hints need updating. ([#642](https://github.com/badlogic/pi-mono/pull/642) by [@mitsuhiko](https://github.com/mitsuhiko))
 - Renamed `/branch` command to `/fork` ([#641](https://github.com/badlogic/pi-mono/issues/641))
-  - RPC: `branch` → `fork`, `get_branch_messages` → `get_fork_messages`
-  - SDK: `branch()` → `fork()`, `getBranchMessages()` → `getForkMessages()`
-  - AgentSession: `branch()` → `fork()`, `getUserMessagesForBranching()` → `getUserMessagesForForking()`
-  - Extension events: `session_before_branch` → `session_before_fork`, `session_branch` → `session_fork`
-  - Settings: `doubleEscapeAction: "branch" | "tree"` → `"fork" | "tree"`
+   - RPC: `branch` → `fork`, `get_branch_messages` → `get_fork_messages`
+   - SDK: `branch()` → `fork()`, `getBranchMessages()` → `getForkMessages()`
+   - AgentSession: `branch()` → `fork()`, `getUserMessagesForBranching()` → `getUserMessagesForForking()`
+   - Extension events: `session_before_branch` → `session_before_fork`, `session_branch` → `session_fork`
+   - Settings: `doubleEscapeAction: "branch" | "tree"` → `"fork" | "tree"`
 - `SessionManager.list()` and `SessionManager.listAll()` are now async, returning `Promise<SessionInfo[]>`. Callers must await them. ([#620](https://github.com/badlogic/pi-mono/pull/620) by [@tmustier](https://github.com/tmustier))
 
 ### Added
@@ -14618,6 +14648,7 @@ There are multiple SDK breaking changes since v0.49.3. For the quickest migratio
 This release unifies hooks and custom tools into a single "extensions" system and renames "slash commands" to "prompt templates". ([#454](https://github.com/badlogic/pi-mono/issues/454))
 
 **Before migrating, read:**
+
 - [docs/extensions.md](docs/extensions.md) - Full API reference
 - [README.md](README.md) - Extensions section with examples
 - [examples/extensions/](examples/extensions/) - Working examples
@@ -14627,14 +14658,17 @@ This release unifies hooks and custom tools into a single "extensions" system an
 Hooks and custom tools are now unified as **extensions**. Both were TypeScript modules exporting a factory function that receives an API object. Now there's one concept, one discovery location, one CLI flag, one settings.json entry.
 
 **Automatic migration:**
+
 - `commands/` directories are automatically renamed to `prompts/` on startup (both `~/.pi/agent/commands/` and `.pi/commands/`)
 
 **Manual migration required:**
+
 1. Move files from `hooks/` and `tools/` directories to `extensions/` (deprecation warnings shown on startup)
 2. Update imports and type names in your extension code
 3. Update `settings.json` if you have explicit hook and custom tool paths configured
 
 **Directory changes:**
+
 ```
 # Before
 ~/.pi/agent/hooks/*.ts       →  ~/.pi/agent/extensions/*.ts
@@ -14644,6 +14678,7 @@ Hooks and custom tools are now unified as **extensions**. Both were TypeScript m
 ```
 
 **Extension discovery rules** (in `extensions/` directories):
+
 1. **Direct files:** `extensions/*.ts` or `*.js` → loaded directly
 2. **Subdirectory with index:** `extensions/myext/index.ts` → loaded as single extension
 3. **Subdirectory with package.json:** `extensions/myext/package.json` with `"pi"` field → loads declared paths
@@ -14651,17 +14686,18 @@ Hooks and custom tools are now unified as **extensions**. Both were TypeScript m
 ```json
 // extensions/my-package/package.json
 {
-  "name": "my-extension-package",
-  "dependencies": { "zod": "^3.0.0" },
-  "pi": {
-    "extensions": ["./src/main.ts", "./src/tools.ts"]
-  }
+	"name": "my-extension-package",
+	"dependencies": { "zod": "^3.0.0" },
+	"pi": {
+		"extensions": ["./src/main.ts", "./src/tools.ts"]
+	}
 }
 ```
 
 No recursion beyond one level. Complex packages must use the `package.json` manifest. Dependencies are resolved via jiti, and extensions can be published to and installed from npm.
 
 **Type renames:**
+
 - `HookAPI` → `ExtensionAPI`
 - `HookContext` → `ExtensionContext`
 - `HookCommandContext` → `ExtensionCommandContext`
@@ -14674,6 +14710,7 @@ No recursion beyond one level. Complex packages must use the `package.json` mani
 - `HookMessage` → `CustomMessage`
 
 **Import changes:**
+
 ```typescript
 // Before (hook)
 import type { HookAPI, HookContext } from "@mariozechner/pi-coding-agent";
@@ -14716,6 +14753,7 @@ export default function (pi: ExtensionAPI) {
 - `ctx.sessionManager` - Read session entries, get branch history
 
 **Settings changes:**
+
 ```json
 // Before
 {
@@ -14730,6 +14768,7 @@ export default function (pi: ExtensionAPI) {
 ```
 
 **CLI changes:**
+
 ```bash
 # Before
 pi --hook ./safety.ts --tool ./todo.ts
@@ -14745,22 +14784,26 @@ pi --extension ./safety.ts -e ./todo.ts
 **Automatic migration:** The `commands/` directory is automatically renamed to `prompts/` on startup (if `prompts/` doesn't exist). Works for both regular directories and symlinks.
 
 **Directory changes:**
+
 ```
 ~/.pi/agent/commands/*.md    →  ~/.pi/agent/prompts/*.md
 .pi/commands/*.md            →  .pi/prompts/*.md
 ```
 
 **SDK type renames:**
+
 - `FileSlashCommand` → `PromptTemplate`
 - `LoadSlashCommandsOptions` → `LoadPromptTemplatesOptions`
 
 **SDK function renames:**
+
 - `discoverSlashCommands()` → `discoverPromptTemplates()`
 - `loadSlashCommands()` → `loadPromptTemplates()`
 - `expandSlashCommand()` → `expandPromptTemplate()`
 - `getCommandsDir()` → `getPromptsDir()`
 
 **SDK option renames:**
+
 - `CreateAgentSessionOptions.slashCommands` → `.promptTemplates`
 - `AgentSession.fileCommands` → `.promptTemplates`
 - `PromptOptions.expandSlashCommands` → `.expandPromptTemplates`
@@ -14768,17 +14811,20 @@ pi --extension ./safety.ts -e ./todo.ts
 ### SDK Migration
 
 **Discovery functions:**
+
 - `discoverAndLoadHooks()` → `discoverAndLoadExtensions()`
 - `discoverAndLoadCustomTools()` → merged into `discoverAndLoadExtensions()`
 - `loadHooks()` → `loadExtensions()`
 - `loadCustomTools()` → merged into `loadExtensions()`
 
 **Runner and wrapper:**
+
 - `HookRunner` → `ExtensionRunner`
 - `wrapToolsWithHooks()` → `wrapToolsWithExtensions()`
 - `wrapToolWithHooks()` → `wrapToolWithExtensions()`
 
 **CreateAgentSessionOptions:**
+
 - `.hooks` → removed (use `.additionalExtensionPaths` for paths)
 - `.additionalHookPaths` → `.additionalExtensionPaths`
 - `.preloadedHooks` → `.preloadedExtensions`
@@ -14787,6 +14833,7 @@ pi --extension ./safety.ts -e ./todo.ts
 - `.slashCommands` → `.promptTemplates`
 
 **AgentSession:**
+
 - `.hookRunner` → `.extensionRunner`
 - `.fileCommands` → `.promptTemplates`
 - `.sendHookMessage()` → `.sendCustomMessage()`
@@ -14794,6 +14841,7 @@ pi --extension ./safety.ts -e ./todo.ts
 ### Session Migration
 
 **Automatic.** Session version bumped from 2 to 3. Existing sessions are migrated on first load:
+
 - Message role `"hookMessage"` → `"custom"`
 
 ## [0.34.1] - 2026-01-04
@@ -14857,12 +14905,12 @@ pi --extension ./safety.ts -e ./todo.ts
 ### Changed
 
 - **Slash commands and hook commands now work during streaming**: Previously, using a slash command or hook command while the agent was streaming would crash with "Agent is already processing". Now:
-  - Hook commands execute immediately (they manage their own LLM interaction via `pi.sendMessage()`)
-  - File-based slash commands are expanded and queued via steer/followUp
-  - `steer()` and `followUp()` now expand file-based slash commands and error on hook commands (hook commands cannot be queued)
-  - `prompt()` accepts new `streamingBehavior` option (`"steer"` or `"followUp"`) to specify queueing behavior during streaming
-  - RPC `prompt` command now accepts optional `streamingBehavior` field
-  ([#420](https://github.com/badlogic/pi-mono/issues/420))
+   - Hook commands execute immediately (they manage their own LLM interaction via `pi.sendMessage()`)
+   - File-based slash commands are expanded and queued via steer/followUp
+   - `steer()` and `followUp()` now expand file-based slash commands and error on hook commands (hook commands cannot be queued)
+   - `prompt()` accepts new `streamingBehavior` option (`"steer"` or `"followUp"`) to specify queueing behavior during streaming
+   - RPC `prompt` command now accepts optional `streamingBehavior` field
+     ([#420](https://github.com/badlogic/pi-mono/issues/420))
 
 ### Fixed
 
@@ -14879,22 +14927,22 @@ pi --extension ./safety.ts -e ./todo.ts
 ### Breaking Changes
 
 - **Queue API replaced with steer/followUp**: The `queueMessage()` method has been split into two methods with different delivery semantics ([#403](https://github.com/badlogic/pi-mono/issues/403)):
-  - `steer(text)`: Interrupts the agent mid-run (Enter while streaming). Delivered after current tool execution.
-  - `followUp(text)`: Waits until the agent finishes (Alt+Enter while streaming). Delivered only when agent stops.
+   - `steer(text)`: Interrupts the agent mid-run (Enter while streaming). Delivered after current tool execution.
+   - `followUp(text)`: Waits until the agent finishes (Alt+Enter while streaming). Delivered only when agent stops.
 - **Settings renamed**: `queueMode` setting renamed to `steeringMode`. Added new `followUpMode` setting. Old settings.json files are migrated automatically.
 - **AgentSession methods renamed**:
-  - `queueMessage()` → `steer()` and `followUp()`
-  - `queueMode` getter → `steeringMode` and `followUpMode` getters
-  - `setQueueMode()` → `setSteeringMode()` and `setFollowUpMode()`
-  - `queuedMessageCount` → `pendingMessageCount`
-  - `getQueuedMessages()` → `getSteeringMessages()` and `getFollowUpMessages()`
-  - `clearQueue()` now returns `{ steering: string[], followUp: string[] }`
-  - `hasQueuedMessages()` → `hasPendingMessages()`
+   - `queueMessage()` → `steer()` and `followUp()`
+   - `queueMode` getter → `steeringMode` and `followUpMode` getters
+   - `setQueueMode()` → `setSteeringMode()` and `setFollowUpMode()`
+   - `queuedMessageCount` → `pendingMessageCount`
+   - `getQueuedMessages()` → `getSteeringMessages()` and `getFollowUpMessages()`
+   - `clearQueue()` now returns `{ steering: string[], followUp: string[] }`
+   - `hasQueuedMessages()` → `hasPendingMessages()`
 - **Hook API signature changed**: `pi.sendMessage()` second parameter changed from `triggerTurn?: boolean` to `options?: { triggerTurn?, deliverAs? }`. Use `deliverAs: "followUp"` for follow-up delivery. Affects both hooks and internal `sendHookMessage()` method.
 - **RPC API changes**:
-  - `queue_message` command → `steer` and `follow_up` commands
-  - `set_queue_mode` command → `set_steering_mode` and `set_follow_up_mode` commands
-  - `RpcSessionState.queueMode` → `steeringMode` and `followUpMode`
+   - `queue_message` command → `steer` and `follow_up` commands
+   - `set_queue_mode` command → `set_steering_mode` and `set_follow_up_mode` commands
+   - `RpcSessionState.queueMode` → `steeringMode` and `followUpMode`
 - **Settings UI**: "Queue mode" setting split into "Steering mode" and "Follow-up mode"
 
 ## [0.31.1] - 2026-01-02
@@ -15229,14 +15277,14 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 - **Credential storage refactored**: API keys and OAuth tokens are now stored in `~/.pi/agent/auth.json` instead of `oauth.json` and `settings.json`. Existing credentials are automatically migrated on first run. ([#296](https://github.com/badlogic/pi-mono/issues/296))
 - **SDK API changes** ([#296](https://github.com/badlogic/pi-mono/issues/296)):
-  - Added `AuthStorage` class for credential management (API keys and OAuth tokens)
-  - Added `ModelRegistry` class for model discovery and API key resolution
-  - Added `discoverAuthStorage()` and `discoverModels()` discovery functions
-  - `createAgentSession()` now accepts `authStorage` and `modelRegistry` options
-  - Removed `configureOAuthStorage()`, `defaultGetApiKey()`, `findModel()`, `discoverAvailableModels()`
-  - Removed `getApiKey` callback option (use `AuthStorage.setRuntimeApiKey()` for runtime overrides)
-  - Use `getModel()` from `@oh-my-pi/pi-ai` for built-in models, `modelRegistry.find()` for custom models + built-in models
-  - See updated [SDK documentation](docs/sdk.md) and [README](README.md)
+   - Added `AuthStorage` class for credential management (API keys and OAuth tokens)
+   - Added `ModelRegistry` class for model discovery and API key resolution
+   - Added `discoverAuthStorage()` and `discoverModels()` discovery functions
+   - `createAgentSession()` now accepts `authStorage` and `modelRegistry` options
+   - Removed `configureOAuthStorage()`, `defaultGetApiKey()`, `findModel()`, `discoverAvailableModels()`
+   - Removed `getApiKey` callback option (use `AuthStorage.setRuntimeApiKey()` for runtime overrides)
+   - Use `getModel()` from `@oh-my-pi/pi-ai` for built-in models, `modelRegistry.find()` for custom models + built-in models
+   - See updated [SDK documentation](docs/sdk.md) and [README](README.md)
 - **Settings changes**: Removed `apiKeys` from `settings.json`. Use `auth.json` instead. ([#296](https://github.com/badlogic/pi-mono/issues/296))
 
 ### Fixed
@@ -15266,14 +15314,14 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 ### Added
 
 - **Compaction hook improvements**: The `before_compact` session event now includes:
-  - `previousSummary`: Summary from the last compaction (if any), so hooks can preserve accumulated context
-  - `messagesToKeep`: Messages that will be kept after the summary (recent turns), in addition to `messagesToSummarize`
-  - `resolveApiKey`: Function to resolve API keys for any model (checks settings, OAuth, env vars)
-  - Removed `apiKey` string in favor of `resolveApiKey` for more flexibility
+   - `previousSummary`: Summary from the last compaction (if any), so hooks can preserve accumulated context
+   - `messagesToKeep`: Messages that will be kept after the summary (recent turns), in addition to `messagesToSummarize`
+   - `resolveApiKey`: Function to resolve API keys for any model (checks settings, OAuth, env vars)
+   - Removed `apiKey` string in favor of `resolveApiKey` for more flexibility
 - **SessionManager API cleanup**:
-  - Renamed `loadSessionFromEntries()` to `buildSessionContext()` (builds LLM context from entries, handling compaction)
-  - Renamed `loadEntries()` to `getEntries()` (returns defensive copy of all session entries)
-  - Added `buildSessionContext()` method to SessionManager
+   - Renamed `loadSessionFromEntries()` to `buildSessionContext()` (builds LLM context from entries, handling compaction)
+   - Renamed `loadEntries()` to `getEntries()` (returns defensive copy of all session entries)
+   - Added `buildSessionContext()` method to SessionManager
 
 ## [0.27.5] - 2025-12-24
 
@@ -15463,13 +15511,13 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 - **Custom tools now require `index.ts` entry point**: Auto-discovered custom tools must be in a subdirectory with an `index.ts` file. The old pattern `~/.pi/agent/tools/mytool.ts` must become `~/.pi/agent/tools/mytool/index.ts`. This allows multi-file tools to import helper modules. Explicit paths via `--tool` or `settings.json` still work with any `.ts` file.
 - **Hook `tool_result` event restructured**: The `ToolResultEvent` now exposes full tool result data instead of just text. ([#233](https://github.com/badlogic/pi-mono/pull/233))
-  - Removed: `result: string` field
-  - Added: `content: (TextContent | ImageContent)[]` - full content array
-  - Added: `details: unknown` - tool-specific details (typed per tool via discriminated union on `toolName`)
-  - `ToolResultEventResult.result` renamed to `ToolResultEventResult.text` (removed), use `content` instead
-  - Hook handlers returning `{ result: "..." }` must change to `{ content: [{ type: "text", text: "..." }] }`
-  - Built-in tool details types exported: `BashToolDetails`, `ReadToolDetails`, `GrepToolDetails`, `FindToolDetails`, `LsToolDetails`, `TruncationResult`
-  - Type guards exported for narrowing: `isBashToolResult`, `isReadToolResult`, `isEditToolResult`, `isWriteToolResult`, `isGrepToolResult`, `isFindToolResult`, `isLsToolResult`
+   - Removed: `result: string` field
+   - Added: `content: (TextContent | ImageContent)[]` - full content array
+   - Added: `details: unknown` - tool-specific details (typed per tool via discriminated union on `toolName`)
+   - `ToolResultEventResult.result` renamed to `ToolResultEventResult.text` (removed), use `content` instead
+   - Hook handlers returning `{ result: "..." }` must change to `{ content: [{ type: "text", text: "..." }] }`
+   - Built-in tool details types exported: `BashToolDetails`, `ReadToolDetails`, `GrepToolDetails`, `FindToolDetails`, `LsToolDetails`, `TruncationResult`
+   - Type guards exported for narrowing: `isBashToolResult`, `isReadToolResult`, `isEditToolResult`, `isWriteToolResult`, `isGrepToolResult`, `isFindToolResult`, `isLsToolResult`
 
 ## [0.23.4] - 2025-12-18
 
@@ -15494,12 +15542,12 @@ Total color count increased from 46 to 50. See [docs/theme.md](docs/theme.md) fo
 
 - Improved system prompt documentation section with clearer pointers to specific doc files for custom models, themes, skills, hooks, custom tools, and RPC.
 - Cleaned up documentation:
-  - `theme.md`: Added missing color tokens (`thinkingXhigh`, `bashMode`)
-  - `skills.md`: Rewrote with better framing and examples
-  - `hooks.md`: Fixed timeout/error handling docs, added import aliases section
-  - `custom-tools.md`: Added intro with use cases and comparison table
-  - `rpc.md`: Added missing `hook_error` event documentation
-  - `README.md`: Complete settings table, condensed philosophy section, standardized OAuth docs
+   - `theme.md`: Added missing color tokens (`thinkingXhigh`, `bashMode`)
+   - `skills.md`: Rewrote with better framing and examples
+   - `hooks.md`: Fixed timeout/error handling docs, added import aliases section
+   - `custom-tools.md`: Added intro with use cases and comparison table
+   - `rpc.md`: Added missing `hook_error` event documentation
+   - `README.md`: Complete settings table, condensed philosophy section, standardized OAuth docs
 - Hooks loader now supports same import aliases as custom tools (`@sinclair/typebox`, `@oh-my-pi/pi-ai`, `@oh-my-pi/pi-tui`, `@oh-my-pi/pi-coding-agent`).
 
 ### Breaking Changes
@@ -15732,12 +15780,12 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 ### Changed
 
 - **Tool output truncation**: All tools now enforce consistent truncation limits with actionable notices for the LLM. ([#134](https://github.com/badlogic/pi-mono/issues/134))
-  - **Limits**: 2000 lines OR 50KB (whichever hits first), never partial lines
-  - **read**: Shows `[Showing lines X-Y of Z. Use offset=N to continue]`. If first line exceeds 50KB, suggests bash command
-  - **bash**: Tail truncation with temp file. Shows `[Showing lines X-Y of Z. Full output: /tmp/...]`
-  - **grep**: Pre-truncates match lines to 500 chars. Shows match limit and line truncation notices
-  - **find/ls**: Shows result/entry limit notices
-  - TUI displays truncation warnings in yellow at bottom of tool output (visible even when collapsed)
+   - **Limits**: 2000 lines OR 50KB (whichever hits first), never partial lines
+   - **read**: Shows `[Showing lines X-Y of Z. Use offset=N to continue]`. If first line exceeds 50KB, suggests bash command
+   - **bash**: Tail truncation with temp file. Shows `[Showing lines X-Y of Z. Full output: /tmp/...]`
+   - **grep**: Pre-truncates match lines to 500 chars. Shows match limit and line truncation notices
+   - **find/ls**: Shows result/entry limit notices
+   - TUI displays truncation warnings in yellow at bottom of tool output (visible even when collapsed)
 
 ## [0.13.1] - 2025-12-06
 
@@ -15824,13 +15872,13 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 ### Added
 
 - **Context Compaction**: Long sessions can now be compacted to reduce context usage while preserving recent conversation history. ([#92](https://github.com/badlogic/pi-mono/issues/92), [docs](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/README.md#context-compaction))
-  - `/compact [instructions]`: Manually compact context with optional custom instructions for the summary
-  - `/autocompact`: Toggle automatic compaction when context exceeds threshold
-  - Compaction summarizes older messages while keeping recent messages (default 20k tokens) verbatim
-  - Auto-compaction triggers when context reaches `contextWindow - reserveTokens` (default 16k reserve)
-  - Compacted sessions show a collapsible summary in the TUI (toggle with `o` key)
-  - HTML exports include compaction summaries as collapsible sections
-  - RPC mode supports `{"type":"compact"}` command and auto-compaction (emits compaction events)
+   - `/compact [instructions]`: Manually compact context with optional custom instructions for the summary
+   - `/autocompact`: Toggle automatic compaction when context exceeds threshold
+   - Compaction summarizes older messages while keeping recent messages (default 20k tokens) verbatim
+   - Auto-compaction triggers when context reaches `contextWindow - reserveTokens` (default 16k reserve)
+   - Compacted sessions show a collapsible summary in the TUI (toggle with `o` key)
+   - HTML exports include compaction summaries as collapsible sections
+   - RPC mode supports `{"type":"compact"}` command and auto-compaction (emits compaction events)
 - **Branch Source Tracking**: Branched sessions now store `branchedFrom` in the session header, containing the path to the original session file. Useful for tracing session lineage.
 
 ## [0.12.5] - 2025-12-03
@@ -15867,11 +15915,11 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 ### Added
 
 - **Models**: Added support for OpenAI's new models:
-  - `gpt-4.1` (128K context)
-  - `gpt-4.1-mini` (128K context)
-  - `gpt-4.1-nano` (128K context)
-  - `o3` (200K context, reasoning model)
-  - `o4-mini` (200K context, reasoning model)
+   - `gpt-4.1` (128K context)
+   - `gpt-4.1-mini` (128K context)
+   - `gpt-4.1-nano` (128K context)
+   - `o3` (200K context, reasoning model)
+   - `o4-mini` (200K context, reasoning model)
 
 ## [0.12.0] - 2025-12-02
 
@@ -16278,11 +16326,11 @@ Initial public release.
 ### Changed
 
 - Editor: updated keyboard shortcuts to follow Unix conventions:
-  - **Ctrl+W** deletes the previous word (stopping at whitespace or punctuation)
-  - **Ctrl+U** deletes from cursor to start of line (at line start, merges with previous line)
-  - **Ctrl+K** deletes from cursor to end of line (at line end, merges with next line)
-  - **Option+Backspace** in Ghostty now behaves like **Ctrl+W** (delete word backwards)
-  - **Cmd+Backspace** in Ghostty now behaves like **Ctrl+U** (delete to start of line)
+   - **Ctrl+W** deletes the previous word (stopping at whitespace or punctuation)
+   - **Ctrl+U** deletes from cursor to start of line (at line start, merges with previous line)
+   - **Ctrl+K** deletes from cursor to end of line (at line end, merges with next line)
+   - **Option+Backspace** in Ghostty now behaves like **Ctrl+W** (delete word backwards)
+   - **Cmd+Backspace** in Ghostty now behaves like **Ctrl+U** (delete to start of line)
 
 ## [0.7.8] - 2025-11-13
 

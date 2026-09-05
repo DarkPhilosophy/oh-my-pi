@@ -205,6 +205,35 @@ describe("MCP tool arguments", () => {
 		]);
 	});
 
+	it("preserves intent declared by legacy dependencies", async () => {
+		const calls: CapturedRequest[] = [];
+		const definition: MCPToolDefinition = {
+			name: "legacy-dependent-input",
+			description: "Echo legacy dependent input",
+			inputSchema: {
+				type: "object",
+				properties: { mode: { type: "string" } },
+				dependencies: { mode: [INTENT_FIELD] },
+			},
+		};
+		const tool = new MCPTool(createCapturedConnection(calls), definition);
+
+		await tool.execute(
+			"call-legacy",
+			{ mode: "active", [INTENT_FIELD]: "server data" },
+			undefined,
+			unusedContext,
+			undefined,
+		);
+
+		expect(calls).toEqual([
+			{
+				method: "tools/call",
+				params: { name: "legacy-dependent-input", arguments: { mode: "active", [INTENT_FIELD]: "server data" } },
+			},
+		]);
+	});
+
 	it("does not claim intent from an unused MCP schema definition", async () => {
 		const calls: CapturedRequest[] = [];
 		const definition = createSearchToolDefinition();

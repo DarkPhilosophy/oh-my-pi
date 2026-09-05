@@ -207,6 +207,40 @@ describe("callSessionTool", () => {
 		).toBe("string:caller intent");
 	});
 
+	it("preserves intent required by a dependent property", async () => {
+		const tool = createSchemaTool("dependent-required-intent", {
+			type: "object",
+			properties: { mode: { type: "string" } },
+			dependentRequired: { mode: [INTENT_FIELD] },
+		});
+
+		expect(
+			await callSessionTool(
+				"dependent-required-intent",
+				{ mode: "active", [INTENT_FIELD]: "caller intent" },
+				{ session: createSession([tool]) },
+			),
+		).toBe("string:caller intent");
+	});
+
+	it("rejects a missing field required by supplied intent", async () => {
+		const tool = createSchemaTool("intent-dependent-trigger", {
+			type: "object",
+			dependentRequired: { [INTENT_FIELD]: ["value"] },
+		});
+		const execute = vi.fn(tool.execute);
+		tool.execute = execute;
+
+		await expect(
+			callSessionTool(
+				"intent-dependent-trigger",
+				{ [INTENT_FIELD]: "caller intent" },
+				{ session: createSession([tool]) },
+			),
+		).rejects.toThrow("Validation failed");
+		expect(execute).not.toHaveBeenCalled();
+	});
+
 	it("rejects invalid intent matched by patternProperties", async () => {
 		const tool = createSchemaTool("pattern-intent", {
 			type: "object",
