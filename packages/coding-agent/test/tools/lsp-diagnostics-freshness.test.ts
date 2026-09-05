@@ -199,7 +199,7 @@ describe("LSP diagnostics freshness", () => {
 		});
 		const result = await writethrough(filePath, "export const value=1\n");
 
-		expect(result?.formatter).toBe(FileFormatResult.FORMATTED);
+		expect(result?.diagnostics?.formatter).toBe(FileFormatResult.FORMATTED);
 		expect(await Bun.file(filePath).text()).toBe("export const value = 1;\n");
 		expect(getOrCreate).not.toHaveBeenCalled();
 		expect(sync).not.toHaveBeenCalled();
@@ -221,7 +221,7 @@ describe("LSP diagnostics freshness", () => {
 		const content = "export const value=1\n";
 		const result = await writethrough(filePath, content);
 
-		expect(result?.formatter).toBe(FileFormatResult.FAILED);
+		expect(result?.diagnostics?.formatter).toBe(FileFormatResult.FAILED);
 		expect(await Bun.file(filePath).text()).toBe(content);
 	});
 
@@ -345,8 +345,8 @@ describe("LSP diagnostics freshness", () => {
 		});
 		const result = await writethrough(filePath, "export const value=1\n");
 
-		expect(result?.formatter).toBe(FileFormatResult.FORMATTED);
-		expect(result?.messages).toEqual([]);
+		expect(result?.diagnostics?.formatter).toBe(FileFormatResult.FORMATTED);
+		expect(result?.diagnostics?.messages).toEqual([]);
 		expect(await Bun.file(filePath).text()).toBe("export const value = 1;\n");
 	});
 
@@ -432,9 +432,9 @@ describe("LSP diagnostics freshness", () => {
 		const result = await writethrough(filePath, "export const value = 2;\n");
 
 		expect(result).toBeDefined();
-		expect(result?.messages).toEqual([]);
-		expect(result?.summary).toBe("OK");
-		expect(result?.errored).toBe(false);
+		expect(result?.diagnostics?.messages).toEqual([]);
+		expect(result?.diagnostics?.summary).toBe("OK");
+		expect(result?.diagnostics?.errored).toBe(false);
 		expect(await Bun.file(filePath).text()).toBe("export const value = 2;\n");
 	});
 
@@ -476,9 +476,9 @@ describe("LSP diagnostics freshness", () => {
 		const result = await writethrough(filePath, "export const value: number = 'x';\n");
 
 		expect(result).toBeDefined();
-		expect(result?.errored).toBe(true);
-		expect(result?.messages?.some(m => m.includes("real error"))).toBe(true);
-		expect(result?.messages?.some(m => m.includes("stale error"))).toBe(false);
+		expect(result?.diagnostics?.errored).toBe(true);
+		expect(result?.diagnostics?.messages?.some(m => m.includes("real error"))).toBe(true);
+		expect(result?.diagnostics?.messages?.some(m => m.includes("stale error"))).toBe(false);
 	});
 
 	it("matches published diagnostics when the server renormalizes the document URI", async () => {
@@ -508,8 +508,8 @@ describe("LSP diagnostics freshness", () => {
 		});
 		const result = await writethrough(filePath, "export const value = missing;\n");
 
-		expect(result?.errored).toBe(true);
-		expect(result?.messages?.some(message => message.includes("renormalized URI error"))).toBe(true);
+		expect(result?.diagnostics?.errored).toBe(true);
+		expect(result?.diagnostics?.messages?.some(message => message.includes("renormalized URI error"))).toBe(true);
 	});
 
 	it("matches Windows drive-letter case and percent-encoding differences", () => {
@@ -570,8 +570,8 @@ describe("LSP diagnostics freshness", () => {
 		);
 		deferredController.abort();
 
-		expect(inline?.errored).toBe(true);
-		expect(inline?.messages?.some(message => message.includes("pull error"))).toBe(true);
+		expect(inline?.diagnostics?.errored).toBe(true);
+		expect(inline?.diagnostics?.messages?.some(message => message.includes("pull error"))).toBe(true);
 		expect(onDeferredDiagnostics).not.toHaveBeenCalled();
 	});
 
@@ -733,10 +733,10 @@ describe("LSP diagnostics freshness", () => {
 			const result = await writethrough(filePath, 'import { Database } from "bun:sqlite";\nawait Bun.sleep(1)\n');
 
 			expect(result).toBeDefined();
-			expect(result?.errored).toBe(true);
-			expect(result?.messages?.some(message => message.includes("bun:sqlite"))).toBe(false);
-			expect(result?.messages?.some(message => message.includes("Cannot find name 'Bun'"))).toBe(false);
-			expect(result?.messages?.some(message => message.includes("';' expected."))).toBe(true);
+			expect(result?.diagnostics?.errored).toBe(true);
+			expect(result?.diagnostics?.messages?.some(message => message.includes("bun:sqlite"))).toBe(false);
+			expect(result?.diagnostics?.messages?.some(message => message.includes("Cannot find name 'Bun'"))).toBe(false);
+			expect(result?.diagnostics?.messages?.some(message => message.includes("';' expected."))).toBe(true);
 			expect(await Bun.file(filePath).text()).toBe('import { Database } from "bun:sqlite";\nawait Bun.sleep(1)\n');
 		} finally {
 			orphanDir.removeSync();

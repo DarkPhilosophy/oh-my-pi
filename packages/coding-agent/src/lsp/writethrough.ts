@@ -48,8 +48,7 @@ export type WritethroughDeferredHandle = {
 	finalize: (diagnostics: FileDiagnosticsResult | undefined) => void;
 };
 
-export interface WritethroughResult extends Partial<FileDiagnosticsResult> {
-	/** Structured diagnostics remain nested for tool details. */
+export interface WritethroughResult {
 	diagnostics?: FileDiagnosticsResult;
 	finalContent: string;
 }
@@ -476,7 +475,7 @@ async function runLspWritethrough(
 		diagnostics.formatter = formatter;
 	}
 
-	return diagnostics ? { ...diagnostics, finalContent, diagnostics } : { finalContent };
+	return { finalContent, diagnostics };
 }
 
 async function flushWritethroughBatch(
