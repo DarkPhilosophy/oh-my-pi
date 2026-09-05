@@ -3,7 +3,7 @@ import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { callSessionTool } from "@oh-my-pi/pi-coding-agent/eval/js/tool-bridge";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { type TodoPhase, TodoTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 
 function createTool(name: string, execute: AgentTool["execute"]): AgentTool {
@@ -76,6 +76,103 @@ describe("callSessionTool", () => {
 			undefined,
 			context,
 		);
+	});
+
+	it("validates optional nulls before executing a real todo tool", async () => {
+		let phases: TodoPhase[] = [
+			{
+				name: "Regression",
+				tasks: [{ content: "Exercise bridge", status: "in_progress" }],
+			},
+		];
+		const session: ToolSession = {
+			...createSession([]),
+			getTodoPhases: () => phases,
+			setTodoPhases: next => {
+				phases = next;
+			},
+			getToolByName: name => (name === "todo" ? (todoTool as unknown as AgentTool) : undefined),
+		};
+		const todoTool = new TodoTool(session);
+
+		const result = await callSessionTool(
+			"todo",
+			{
+				op: "done",
+				phase: "Regression",
+				list: null,
+				task: null,
+				items: null,
+				reason: null,
+			},
+			{ session },
+		);
+
+		expect(result).not.toEqual(expect.objectContaining({ hasError: true }));
+		expect(phases[0]?.tasks.map(task => task.status)).toEqual(["completed"]);
+	});
+
+	it("rejects null for a required field before executing a strict tool", async () => {
+		const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "unexpected" }] });
+		const tool: AgentTool = {
+			name: "strict",
+			label: "strict",
+			description: "strict tool",
+			parameters: type({ value: "string" }),
+			concurrency: "parallel",
+			execute,
+		} as unknown as AgentTool;
+		await expect(callSessionTool("strict", { value: null }, { session: createSession([tool]) })).rejects.toThrow(
+			"Validation failed",
+		);
+		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it("preserves caller intent through closed-schema validation", async () => {
+		const tool: AgentTool = {
+			name: "intent",
+			label: "intent",
+			description: "intent tool",
+			parameters: type({ "value?": "string" }).onUndeclaredKey("reject"),
+			concurrency: "shared",
+			execute: async (_id: string, args: unknown) => ({
+				content: [{ type: "text", text: String((args as Record<string, unknown>)[INTENT_FIELD]) }],
+			}),
+		} as unknown as AgentTool;
+		const result = await callSessionTool(
+			"intent",
+			{ value: "x", [INTENT_FIELD]: "caller intent" },
+			{ session: createSession([tool]) },
+		);
+		expect(result).toBe("caller intent");
+	});
+
+	it("recovers a missing todo operation from raw parse metadata", async () => {
+		let phases: TodoPhase[] = [];
+		const session: ToolSession = {
+			...createSession([]),
+			getTodoPhases: () => phases,
+			setTodoPhases: next => {
+				phases = next;
+			},
+			getToolByName: name => (name === "todo" ? (todoTool as unknown as AgentTool) : undefined),
+		};
+		const todoTool = new TodoTool(session);
+
+		const result = await callSessionTool(
+			"todo",
+			{
+				list: [{ phase: "Recovered", items: ["From malformed JSON"] }],
+				__parseError: "Unexpected token",
+				__rawJson: '{"list": [broken}',
+			},
+			{ session },
+		);
+
+		expect(result).not.toEqual(expect.objectContaining({ hasError: true }));
+		expect(phases).toEqual([
+			{ name: "Recovered", tasks: [{ content: "From malformed JSON", status: "in_progress" }] },
+		]);
 	});
 
 	it("returns structured tool results when details or images are present", async () => {

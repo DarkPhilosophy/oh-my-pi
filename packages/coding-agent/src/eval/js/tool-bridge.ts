@@ -1,4 +1,5 @@
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { validateToolArguments } from "@oh-my-pi/pi-ai";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { ToolSession } from "../../tools";
@@ -201,8 +202,39 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 		throw new ToolError(`\`${name}\` cannot run through the eval bridge; call the direct \`${name}\` tool.`);
 	}
 	const tool = getTool(options.session, name);
-	const normalizedArgs = normalizeArgs(args);
 	const toolCallId = `js-${name}-${crypto.randomUUID()}`;
+	const suppliedIntent = isRecord(args) ? args[INTENT_FIELD] : undefined;
+	const validationArgs = isRecord(args) ? { ...args } : args;
+	if (isRecord(validationArgs)) delete validationArgs[INTENT_FIELD];
+	let validatedArgs: unknown;
+	try {
+		validatedArgs = validateToolArguments(tool, {
+			type: "toolCall",
+			id: toolCallId,
+			name,
+			arguments: validationArgs as Record<string, unknown>,
+		});
+	} catch (error) {
+		if (!tool.lenientArgValidation) {
+			options.emitStatus?.({
+				op: name,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			throw error;
+		}
+		if (isRecord(validationArgs)) {
+			const fallback = { ...validationArgs };
+			delete fallback.__parseError;
+			delete fallback.__rawJson;
+			validatedArgs = fallback;
+		} else {
+			validatedArgs = validationArgs;
+		}
+	}
+	if (isRecord(validatedArgs) && suppliedIntent !== undefined) {
+		validatedArgs[INTENT_FIELD] = suppliedIntent;
+	}
+	const normalizedArgs = normalizeArgs(validatedArgs);
 	try {
 		const result = await tool.execute(
 			toolCallId,
