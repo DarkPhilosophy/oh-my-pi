@@ -192,6 +192,74 @@ describe("callSessionTool", () => {
 		expect(result).toBe("number:5");
 	});
 
+	it("preserves a required-only intent field", async () => {
+		const tool = createSchemaTool("required-only-intent", {
+			type: "object",
+			required: [INTENT_FIELD],
+		});
+
+		expect(
+			await callSessionTool(
+				"required-only-intent",
+				{ [INTENT_FIELD]: "caller intent" },
+				{ session: createSession([tool]) },
+			),
+		).toBe("string:caller intent");
+	});
+
+	it("rejects invalid intent matched by patternProperties", async () => {
+		const tool = createSchemaTool("pattern-intent", {
+			type: "object",
+			patternProperties: { "^i$": { type: "number" } },
+		});
+		const execute = vi.fn(tool.execute);
+		tool.execute = execute;
+
+		await expect(
+			callSessionTool("pattern-intent", { [INTENT_FIELD]: "invalid" }, { session: createSession([tool]) }),
+		).rejects.toThrow("Validation failed");
+		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it("preserves and coerces intent consumed by additionalProperties", async () => {
+		const tool = createSchemaTool("additional-intent", {
+			type: "object",
+			additionalProperties: { type: "number" },
+		});
+
+		expect(
+			await callSessionTool("additional-intent", { [INTENT_FIELD]: "5" }, { session: createSession([tool]) }),
+		).toBe("number:5");
+	});
+
+	it("treats intent ownership as schema-wide across anyOf branches", async () => {
+		const tool = createSchemaTool("schema-wide-intent", {
+			anyOf: [
+				{
+					type: "object",
+					properties: { [INTENT_FIELD]: { type: "number" } },
+					required: [INTENT_FIELD],
+					additionalProperties: false,
+				},
+				{
+					type: "object",
+					properties: { value: { type: "string" } },
+					required: ["value"],
+					additionalProperties: false,
+				},
+			],
+		});
+		const execute = vi.fn(tool.execute);
+		tool.execute = execute;
+		const session = createSession([tool]);
+
+		await expect(
+			callSessionTool("schema-wide-intent", { value: "x", [INTENT_FIELD]: "invalid" }, { session }),
+		).rejects.toThrow("Validation failed");
+		expect(execute).not.toHaveBeenCalled();
+		expect(await callSessionTool("schema-wide-intent", { value: "x" }, { session })).toBe("undefined:undefined");
+	});
+
 	it("preserves and coerces a required intent field declared by an anyOf branch", async () => {
 		const tool = createSchemaTool("any-of-intent", {
 			anyOf: [

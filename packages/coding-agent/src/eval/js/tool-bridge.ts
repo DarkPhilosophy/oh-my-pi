@@ -205,6 +205,8 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 	}
 	const tool = getTool(options.session, name);
 	const toolCallId = `js-${name}-${crypto.randomUUID()}`;
+	// A schema-owned name stays tool data across alternatives. Deleting an
+	// invalid value to make another branch match could select a different operation.
 	const intentIsDeclared = schemaDeclaresIntentField(toolWireSchema(tool));
 	const suppliedIntent = isRecord(args) ? args[INTENT_FIELD] : undefined;
 	const validationArgs = isRecord(args) ? { ...args } : args;
