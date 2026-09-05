@@ -187,8 +187,9 @@ function getDisabledProviderIdsFromSettings(settingsInstance?: Settings): Set<st
 }
 
 /**
- * Whether premium long-context windows are enabled. Defaults to true when no
- * settings source is available (SDK embedding, early boot).
+ * Whether extended context windows are enabled: advertised maximum windows
+ * plus premium long-context tiers. Defaults to true when no settings source
+ * is available (SDK embedding, early boot).
  */
 function isExtendedContextEnabledFromSettings(settingsInstance?: Settings): boolean {
 	try {

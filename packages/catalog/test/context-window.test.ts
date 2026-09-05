@@ -16,7 +16,7 @@ function bundledAstra() {
 
 test("uses the policy fallback when a model maximum is not finite", () => {
 	const astra = bundledAstra();
-	expect(resolveMaxContextWindow({ ...astra, maxContextWindow: Number.NaN })).toBe(1_050_000);
+	expect(resolveMaxContextWindow({ ...astra, maxContextWindow: Number.NaN })).toBe(872_000);
 });
 
 test("uses the policy fallback when cached maxima are non-positive", () => {
@@ -30,7 +30,7 @@ test("uses the policy fallback when cached maxima are non-positive", () => {
 		);
 		if (!cachedSpec) throw new Error("Expected cached Astra model");
 
-		expect(resolveMaxContextWindow(buildModel(cachedSpec))).toBe(1_050_000);
+		expect(resolveMaxContextWindow(buildModel(cachedSpec))).toBe(872_000);
 	} finally {
 		removeSyncWithRetries(tempDir);
 	}

@@ -1718,7 +1718,7 @@ describe("ModelRegistry", () => {
 
 			testSettings.set("extendedContext", true);
 			await registry.reapplyModelPolicies();
-			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(1_050_000);
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(872_000);
 			expect(registry.find("openai-codex", "gpt-5.5")?.contextWindow).toBe(272_000);
 
 			testSettings.set("extendedContext", false);
