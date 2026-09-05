@@ -1510,6 +1510,8 @@ export interface ToolScopeOptions {
 	rules?: readonly Rule[];
 	/** Calling session's session file — lets history:///agent:// resolve against the caller's root. */
 	sessionFile?: string;
+	/** Calling session's stable session-manager id — binds memory:// to the caller that has no session file. */
+	sessionId?: string;
 	/** Materialize readable external URLs to local text files before scope derivation. */
 	resolveExternalUrl?: (rawPath: string) => Promise<ResolvedExternalSearchUrl | undefined>;
 }
@@ -1598,6 +1600,7 @@ export async function resolveToolSearchScope(opts: ToolScopeOptions): Promise<To
 			settings: opts.settings,
 			signal: opts.signal,
 			sessionFile: opts.sessionFile,
+			sessionId: opts.sessionId,
 			localProtocolOptions: opts.localProtocolOptions,
 			skills: opts.skills,
 			rules: opts.rules,

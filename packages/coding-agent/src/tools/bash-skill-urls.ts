@@ -44,6 +44,7 @@ export interface InternalUrlExpansionOptions {
 	localOptions?: LocalProtocolOptions;
 	cwd?: string;
 	sessionFile?: string;
+	sessionId?: string;
 	ensureLocalParentDirs?: boolean;
 	/** Calling session's agent-scoped applicable rules — lets rule:// resolve without process-global state. */
 	rules?: readonly Rule[];
@@ -263,6 +264,7 @@ async function resolveInternalUrlToPath(
 	ensureLocalParentDirs?: boolean,
 	cwd?: string,
 	sessionFile?: string,
+	sessionId?: string,
 	rules?: readonly Rule[],
 ): Promise<string> {
 	const url = normalizeLocalScheme(rawUrl);
@@ -305,7 +307,7 @@ async function resolveInternalUrlToPath(
 
 	let resource: InternalResource;
 	try {
-		resource = await internalRouter.resolve(url, { cwd, pathOnly: true, sessionFile, rules });
+		resource = await internalRouter.resolve(url, { cwd, pathOnly: true, sessionFile, sessionId, rules });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new ToolError(`Failed to resolve ${scheme}:// URL in bash command: ${url}\n${message}`);
@@ -368,6 +370,7 @@ export async function expandInternalUrls(command: string, options: InternalUrlEx
 				options.ensureLocalParentDirs,
 				options.cwd,
 				options.sessionFile,
+				options.sessionId,
 				options.rules,
 			);
 		} catch {

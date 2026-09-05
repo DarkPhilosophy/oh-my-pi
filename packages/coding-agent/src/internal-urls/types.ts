@@ -99,6 +99,13 @@ export interface ResolveContext {
 	 * file: those handlers keep their existing in-memory behavior.
 	 */
 	sessionFile?: string;
+	/**
+	 * Calling session's stable session-manager id. Sessions that have no
+	 * session file yet (SDK, embedded, `-p`) are only addressable by this id,
+	 * so handlers that must bind a URL to its caller (`memory://`) accept it
+	 * as a second exact identity alongside {@link sessionFile}.
+	 */
+	sessionId?: string;
 	/** Settings of the calling session (used by `issue://`/`pr://` for cache TTLs). */
 	settings?: unknown;
 	/** Caller's abort signal. */
