@@ -34,6 +34,7 @@
 - Reduced first-replay stalls by warming native syntax grammars off-thread before rendering restored history.
 - Restored lightweight terminal startup by keeping daemon session inventory rendering out of the first-paint module graph.
 - Fixed `todo` and other tools called through eval rejecting optional `None`/`null` arguments that direct tool calls accept.
+- Added Model Hub controls for editing thinking levels on concrete retry fallback rows.
 
 ## [18.1.11] - 2026-09-05
 
