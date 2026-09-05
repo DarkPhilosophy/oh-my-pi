@@ -986,6 +986,20 @@ describe("ModelHub", () => {
 			expect(onAssign).not.toHaveBeenCalled();
 		});
 
+		test("preserves routed fallback identity when changing Off", () => {
+			const model = makeModel("openrouter", "z-ai/glm-5.2");
+			const settings = Settings.isolated({
+				"retry.fallbackChains": { default: ["openrouter/z-ai/glm-5.2@cerebras"] },
+			});
+			const { hub, onFallbackChainChange } = createHub({ models: [model], scoped: true, settings });
+			enterRolesView(hub);
+			hub.handleInput(DOWN);
+			hub.handleInput("t");
+			hub.handleInput("\x1b[C");
+			hub.handleInput("\n");
+			expect(onFallbackChainChange).toHaveBeenLastCalledWith("default", ["openrouter/z-ai/glm-5.2@cerebras:off"]);
+		});
+
 		test.each(["test/*", "test/missing"])(
 			"explains unavailable thinking for an unresolved fallback selector (%s)",
 			selector => {
