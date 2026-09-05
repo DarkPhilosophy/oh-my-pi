@@ -17,6 +17,24 @@ function createTool(name: string, execute: AgentTool["execute"]): AgentTool {
 	} as unknown as AgentTool;
 }
 
+function createSchemaTool(name: string, parameters: Record<string, unknown>): AgentTool {
+	return {
+		name,
+		label: name,
+		description: `${name} tool`,
+		parameters,
+		concurrency: "parallel",
+		execute: async (_id: string, args: unknown) => ({
+			content: [
+				{
+					type: "text" as const,
+					text: `${typeof (args as Record<string, unknown>)[INTENT_FIELD]}:${String((args as Record<string, unknown>)[INTENT_FIELD])}`,
+				},
+			],
+		}),
+	} as unknown as AgentTool;
+}
+
 function createSession(tools: AgentTool[]): ToolSession {
 	const registry = new Map(tools.map(tool => [tool.name, tool]));
 	return {
@@ -172,6 +190,122 @@ describe("callSessionTool", () => {
 		);
 
 		expect(result).toBe("number:5");
+	});
+
+	it("preserves and coerces a required intent field declared by an anyOf branch", async () => {
+		const tool = createSchemaTool("any-of-intent", {
+			anyOf: [
+				{
+					type: "object",
+					properties: { [INTENT_FIELD]: { type: "number" } },
+					required: [INTENT_FIELD],
+					additionalProperties: false,
+				},
+				{
+					type: "object",
+					properties: { value: { type: "string" } },
+					required: ["value"],
+					additionalProperties: false,
+				},
+			],
+		});
+
+		expect(await callSessionTool("any-of-intent", { [INTENT_FIELD]: "5" }, { session: createSession([tool]) })).toBe(
+			"number:5",
+		);
+	});
+
+	it("preserves and coerces an intent field declared by a oneOf branch", async () => {
+		const tool = createSchemaTool("one-of-intent", {
+			oneOf: [
+				{
+					type: "object",
+					properties: { [INTENT_FIELD]: { type: "number" } },
+					required: [INTENT_FIELD],
+					additionalProperties: false,
+				},
+				{
+					type: "object",
+					properties: { value: { type: "string" } },
+					required: ["value"],
+					additionalProperties: false,
+				},
+			],
+		});
+
+		expect(await callSessionTool("one-of-intent", { [INTENT_FIELD]: "5" }, { session: createSession([tool]) })).toBe(
+			"number:5",
+		);
+	});
+
+	it("preserves and coerces an intent field constrained by allOf", async () => {
+		const tool = createSchemaTool("all-of-intent", {
+			type: "object",
+			allOf: [
+				{
+					properties: { [INTENT_FIELD]: { type: "number" } },
+					required: [INTENT_FIELD],
+				},
+			],
+		});
+
+		expect(await callSessionTool("all-of-intent", { [INTENT_FIELD]: "5" }, { session: createSession([tool]) })).toBe(
+			"number:5",
+		);
+	});
+
+	it("preserves and coerces intent through an escaped local reference", async () => {
+		const tool = createSchemaTool("referenced-intent", {
+			$ref: "#/$defs/intent~1property~0schema",
+			$defs: {
+				"intent/property~schema": {
+					type: "object",
+					properties: { [INTENT_FIELD]: { type: "number" } },
+					required: [INTENT_FIELD],
+					additionalProperties: false,
+				},
+			},
+		});
+
+		expect(
+			await callSessionTool("referenced-intent", { [INTENT_FIELD]: "5" }, { session: createSession([tool]) }),
+		).toBe("number:5");
+	});
+
+	it("terminates cyclic local references without claiming intent ownership", async () => {
+		const tool = createSchemaTool("cyclic-schema", {
+			$ref: "#/$defs/cycle",
+			$defs: { cycle: { $ref: "#/$defs/cycle" } },
+		});
+
+		expect(
+			await callSessionTool(
+				"cyclic-schema",
+				{ [INTENT_FIELD]: "caller intent" },
+				{ session: createSession([tool]) },
+			),
+		).toBe("string:caller intent");
+	});
+
+	it("does not treat a nested intent property as a root tool parameter", async () => {
+		const tool = createSchemaTool("nested-intent", {
+			type: "object",
+			properties: {
+				wrapper: {
+					type: "object",
+					properties: { [INTENT_FIELD]: { type: "number" } },
+				},
+			},
+			additionalProperties: false,
+		});
+
+		expect(
+			await callSessionTool(
+				"nested-intent",
+				{ wrapper: {}, [INTENT_FIELD]: "caller intent" },
+				{ session: createSession([tool]) },
+			),
+		).toBe("string:caller intent");
 	});
 
 	it("validates constrained tool-owned intent without supplying a missing optional value", async () => {
