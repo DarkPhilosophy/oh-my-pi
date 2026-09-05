@@ -2152,11 +2152,11 @@ const FIREWORKS_FAST_VARIANT_SPECS: ReadonlyArray<{
 	name: string;
 	cost: { input: number; output: number; cacheRead: number };
 }> = [
-		{ base: "kimi-k2.7-code", name: "Kimi K2.7 Code Fast", cost: { input: 1.9, output: 8, cacheRead: 0.38 } },
-		{ base: "kimi-k2.6", name: "Kimi K2.6 Fast", cost: { input: 2, output: 8, cacheRead: 0.3 } },
-		{ base: "glm-5.1", name: "GLM-5.1 Fast", cost: { input: 2.8, output: 8.8, cacheRead: 0.52 } },
-		{ base: "glm-5.2", name: "GLM-5.2 Fast", cost: { input: 2.1, output: 6.6, cacheRead: 0.21 } },
-	];
+	{ base: "kimi-k2.7-code", name: "Kimi K2.7 Code Fast", cost: { input: 1.9, output: 8, cacheRead: 0.38 } },
+	{ base: "kimi-k2.6", name: "Kimi K2.6 Fast", cost: { input: 2, output: 8, cacheRead: 0.3 } },
+	{ base: "glm-5.1", name: "GLM-5.1 Fast", cost: { input: 2.8, output: 8.8, cacheRead: 0.52 } },
+	{ base: "glm-5.2", name: "GLM-5.2 Fast", cost: { input: 2.1, output: 6.6, cacheRead: 0.21 } },
+];
 
 /**
  * Build the Fireworks Fast seed by projecting each base bundled spec into a
@@ -2525,13 +2525,13 @@ async function fetchClinePassLiveCatalog(fetchImpl: FetchImpl): Promise<ClinePas
 				...(maxTokens > 0 ? { maxTokens } : {}),
 				...(pricing
 					? {
-						cost: {
-							input: parseFloat(String(pricing.prompt ?? "0")) * 1_000_000,
-							output: parseFloat(String(pricing.completion ?? "0")) * 1_000_000,
-							cacheRead: parseFloat(String(pricing.input_cache_read ?? "0")) * 1_000_000,
-							cacheWrite: parseFloat(String(pricing.input_cache_write ?? "0")) * 1_000_000,
-						},
-					}
+							cost: {
+								input: parseFloat(String(pricing.prompt ?? "0")) * 1_000_000,
+								output: parseFloat(String(pricing.completion ?? "0")) * 1_000_000,
+								cacheRead: parseFloat(String(pricing.input_cache_read ?? "0")) * 1_000_000,
+								cacheWrite: parseFloat(String(pricing.input_cache_write ?? "0")) * 1_000_000,
+							},
+						}
 					: {}),
 				...(params ? { reasoning: params.includes("reasoning") } : {}),
 				...(modality
@@ -2609,15 +2609,15 @@ function buildClinePassSubscriptionModel(
 		return references.has(id) && !baseLimitsAreFallback
 			? { ...base, cost: upstream.cost }
 			: {
-				...base,
-				name: references.has(id) ? base.name : upstream.name,
-				reasoning: upstream.reasoning,
-				input: upstream.input,
-				cost: upstream.cost,
-				contextWindow: upstream.contextWindow,
-				maxTokens: upstream.maxTokens,
-				...(upstream.reasoning ? {} : { thinking: undefined }),
-			};
+					...base,
+					name: references.has(id) ? base.name : upstream.name,
+					reasoning: upstream.reasoning,
+					input: upstream.input,
+					cost: upstream.cost,
+					contextWindow: upstream.contextWindow,
+					maxTokens: upstream.maxTokens,
+					...(upstream.reasoning ? {} : { thinking: undefined }),
+				};
 	}
 	const live = liveCatalog?.bySlug.get(id);
 	if (!live) return base;
@@ -3643,10 +3643,10 @@ export function alibabaTokenPlanModelManagerOptions(
 						const limits = modelLimitsFor("alibaba-token-plan", normalizedId);
 						const enriched = limits
 							? {
-								...defaults,
-								contextWindow: limits.context ?? defaults.contextWindow,
-								maxTokens: limits.maxTokens ?? defaults.maxTokens,
-							}
+									...defaults,
+									contextWindow: limits.context ?? defaults.contextWindow,
+									maxTokens: limits.maxTokens ?? defaults.maxTokens,
+								}
 							: defaults;
 
 						if (isDeepseekV4Generation("alibaba-token-plan", normalizedId)) {
@@ -4193,8 +4193,8 @@ export function syntheticModelManagerOptions(
 							// tools, since a populated wire list can be incomplete; an
 							// explicit reference `false` stays `false` either way.
 							...(record.supported_features !== undefined &&
-								!features.includes("tools") &&
-								reference?.supportsTools !== true
+							!features.includes("tools") &&
+							reference?.supportsTools !== true
 								? { supportsTools: false }
 								: reference?.supportsTools === false
 									? { supportsTools: false }
@@ -4873,8 +4873,8 @@ const AIAND_STATIC_MODEL_IDS = AIAND_STATIC_MODELS.map(model => model.id);
 function mapAiandThinking(entry: OpenAICompatibleModelRecord): ThinkingConfig | undefined {
 	const efforts = Array.isArray(entry.reasoning_efforts)
 		? entry.reasoning_efforts.flatMap(value =>
-			typeof value === "string" && AIAND_EFFORT_BY_WIRE_VALUE[value] ? [AIAND_EFFORT_BY_WIRE_VALUE[value]] : [],
-		)
+				typeof value === "string" && AIAND_EFFORT_BY_WIRE_VALUE[value] ? [AIAND_EFFORT_BY_WIRE_VALUE[value]] : [],
+			)
 		: [];
 	if (efforts.length === 0) {
 		return undefined;
@@ -5662,8 +5662,8 @@ function mapLiteLLMRichEntry<TApi extends Api>(
 				? false
 				: supportedOpenAIParams !== undefined
 					? supportedOpenAIParams.some(param =>
-						["tools", "tool_choice", "functions", "function_call"].includes(param),
-					)
+							["tools", "tool_choice", "functions", "function_call"].includes(param),
+						)
 					: reference?.supportsTools;
 	// Enrich from the bundled reference with provider-INDEPENDENT reasoning
 	// hints only. The reference is resolved against the global bundled catalog,
@@ -6250,8 +6250,8 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 				const fetchImpl = discoveryFetch(config?.fetch);
 				const requestBaseUrl = isPersonalGitHubCopilotBaseUrl(baseUrl)
 					? ((await withCatalogDiscoveryTimeout(DEFAULT_OPENAI_COMPATIBLE_DISCOVERY_TIMEOUT_MS, signal =>
-						discoverGitHubCopilotApiEndpoint(apiKey, fetchImpl, signal),
-					)) ?? baseUrl)
+							discoverGitHubCopilotApiEndpoint(apiKey, fetchImpl, signal),
+						)) ?? baseUrl)
 					: baseUrl;
 				const longContextVariants: ModelSpec<Api>[] = [];
 				const models = await fetchOpenAICompatibleModels<Api>({
@@ -6314,9 +6314,9 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 						const defaultContextMax = tokenPrices.defaultTier?.contextMax;
 						const defaultTierWindow =
 							defaultContextMax !== undefined &&
-								defaultContextMax > 0 &&
-								contextWindow !== null &&
-								maxTokens !== null
+							defaultContextMax > 0 &&
+							contextWindow !== null &&
+							maxTokens !== null
 								? Math.min(contextWindow, defaultContextMax + maxTokens)
 								: contextWindow;
 						const unreferencedIdentity =
@@ -6325,56 +6325,56 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 								: undefined;
 						const base: ModelSpec<Api> = reference
 							? {
-								...reference,
-								api,
-								provider: "github-copilot",
-								baseUrl: requestBaseUrl,
-								name,
-								input,
-								contextWindow: defaultTierWindow,
-								maxTokens,
-								headers: mergeCopilotApiHeaders(getProviderReferences().get(defaults.id)?.headers),
-								...(api === "openai-completions"
-									? {
-										compat: {
-											supportsStore: false,
-											supportsDeveloperRole: false,
-											supportsReasoningEffort: false,
-										},
-									}
-									: {}),
-							}
+									...reference,
+									api,
+									provider: "github-copilot",
+									baseUrl: requestBaseUrl,
+									name,
+									input,
+									contextWindow: defaultTierWindow,
+									maxTokens,
+									headers: mergeCopilotApiHeaders(getProviderReferences().get(defaults.id)?.headers),
+									...(api === "openai-completions"
+										? {
+												compat: {
+													supportsStore: false,
+													supportsDeveloperRole: false,
+													supportsReasoningEffort: false,
+												},
+											}
+										: {}),
+								}
 							: {
-								...defaults,
-								api,
-								baseUrl: requestBaseUrl,
-								name,
-								input,
-								contextWindow: defaultTierWindow,
-								maxTokens,
-								headers: mergeCopilotApiHeaders(),
-								// Copilot's `/models` advertises no reasoning bit, so a
-								// thinking-capable Claude with no bundled reference would
-								// fall back to `reasoning: false` and lose its effort dial.
-								// Gate on the id classifier (not the transport alone) so a
-								// lagging enterprise catalog serving a pre-thinking Claude
-								// (<= 3.5) over the Messages proxy is not handed a fabricated
-								// dial it would reject; a modern reference-less model (e.g.
-								// claude-opus-5) is marked so `buildModel` derives the ladder.
-								...(unreferencedIdentity?.class === "anthropic" &&
+									...defaults,
+									api,
+									baseUrl: requestBaseUrl,
+									name,
+									input,
+									contextWindow: defaultTierWindow,
+									maxTokens,
+									headers: mergeCopilotApiHeaders(),
+									// Copilot's `/models` advertises no reasoning bit, so a
+									// thinking-capable Claude with no bundled reference would
+									// fall back to `reasoning: false` and lose its effort dial.
+									// Gate on the id classifier (not the transport alone) so a
+									// lagging enterprise catalog serving a pre-thinking Claude
+									// (<= 3.5) over the Messages proxy is not handed a fabricated
+									// dial it would reject; a modern reference-less model (e.g.
+									// claude-opus-5) is marked so `buildModel` derives the ladder.
+									...(unreferencedIdentity?.class === "anthropic" &&
 									revisionAtLeast(unreferencedIdentity.revision, "3.7")
-									? { reasoning: true }
-									: {}),
-								...(api === "openai-completions"
-									? {
-										compat: {
-											supportsStore: false,
-											supportsDeveloperRole: false,
-											supportsReasoningEffort: false,
-										},
-									}
-									: {}),
-							};
+										? { reasoning: true }
+										: {}),
+									...(api === "openai-completions"
+										? {
+												compat: {
+													supportsStore: false,
+													supportsDeveloperRole: false,
+													supportsReasoningEffort: false,
+												},
+											}
+										: {}),
+								};
 						const defaultCost = copilotTierCost(tokenPrices.defaultTier);
 						if (defaultCost) {
 							// Cache writes are not reported per tier; retain the bundled provider rate.

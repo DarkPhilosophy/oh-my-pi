@@ -10592,7 +10592,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:38",
+				"source": "providers/openai-codex.kdl:35",
 				"providers": [
 					"openai-codex"
 				],
@@ -10616,11 +10616,12 @@
 					"serviceTierCost": {
 						"flex": 0.5,
 						"priority": 2.5
-					}
+					},
+					"contextWindowFloor": 1050000
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:52",
+				"source": "providers/openai-codex.kdl:49",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10640,7 +10641,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:57",
+				"source": "providers/openai-codex.kdl:54",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10656,7 +10657,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:60",
+				"source": "providers/openai-codex.kdl:57",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10672,7 +10673,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:65",
+				"source": "providers/openai-codex.kdl:62",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10691,7 +10692,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:77",
+				"source": "providers/openai-codex.kdl:74",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10717,7 +10718,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:83",
+				"source": "providers/openai-codex.kdl:80",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10743,7 +10744,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:75",
+				"source": "providers/openai-codex.kdl:72",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10760,7 +10761,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:93",
+				"source": "providers/openai-codex.kdl:90",
 				"class": "openai",
 				"providers": [
 					"openai-codex"
@@ -10780,7 +10781,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:99",
+				"source": "providers/openai-codex.kdl:96",
 				"class": "unknown",
 				"providers": [
 					"openai-codex"
@@ -10796,7 +10797,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:102",
+				"source": "providers/openai-codex.kdl:99",
 				"class": "unknown",
 				"providers": [
 					"openai-codex"
@@ -10812,7 +10813,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:108",
+				"source": "providers/openai-codex.kdl:105",
 				"providers": [
 					"openai-codex"
 				],
@@ -10834,7 +10835,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:116",
+				"source": "providers/openai-codex.kdl:113",
 				"providers": [
 					"openai-codex"
 				],
@@ -10855,7 +10856,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:125",
+				"source": "providers/openai-codex.kdl:122",
 				"providers": [
 					"openai-codex"
 				],
@@ -10880,7 +10881,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:134",
+				"source": "providers/openai-codex.kdl:131",
 				"providers": [
 					"openai-codex"
 				],
@@ -10901,7 +10902,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:145",
+				"source": "providers/openai-codex.kdl:142",
 				"providers": [
 					"openai-codex"
 				],
@@ -10924,7 +10925,7 @@
 				}
 			},
 			{
-				"source": "providers/openai-codex.kdl:154",
+				"source": "providers/openai-codex.kdl:151",
 				"providers": [
 					"openai-codex"
 				],

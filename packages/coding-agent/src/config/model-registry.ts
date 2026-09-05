@@ -214,11 +214,11 @@ function isExtendedContextEnabledFromSettings(settingsInstance?: Settings): bool
 /** Authentication material returned to legacy extensions for one model request. */
 export type ResolvedRequestAuth =
 	| {
-		ok: true;
-		apiKey?: string;
-		headers?: Record<string, string>;
-		env?: Record<string, string>;
-	}
+			ok: true;
+			apiKey?: string;
+			headers?: Record<string, string>;
+			env?: Record<string, string>;
+	  }
 	| { ok: false; error: string };
 
 /**
@@ -613,15 +613,15 @@ export class ModelRegistry {
 		const runtimeMetadata =
 			discoveryConfig.discovery.type === "lm-studio"
 				? await discoverLmStudioModelRuntimeMetadata(
-					model,
-					this.#nonResolvingDiscoveryContext(),
-					discoveryConfig.discovery.timeoutMs,
-				)
+						model,
+						this.#nonResolvingDiscoveryContext(),
+						discoveryConfig.discovery.timeoutMs,
+					)
 				: await discoverLlamaCppModelRuntimeMetadata(
-					model,
-					this.#nonResolvingDiscoveryContext(),
-					discoveryConfig.discovery.timeoutMs,
-				);
+						model,
+						this.#nonResolvingDiscoveryContext(),
+						discoveryConfig.discovery.timeoutMs,
+					);
 		if (runtimeMetadata === undefined) {
 			return this.find(model.provider, model.id) ?? model;
 		}
@@ -1054,11 +1054,11 @@ export class ModelRegistry {
 				: models;
 			const withCompat = providerOverride?.compat
 				? withTransport.map(model =>
-					buildModel({
-						...model,
-						compat: mergeCompat(model.compat, providerOverride.compat),
-					} as ModelSpec<Api>),
-				)
+						buildModel({
+							...model,
+							compat: mergeCompat(model.compat, providerOverride.compat),
+						} as ModelSpec<Api>),
+					)
 				: withTransport.map(model => buildModel(model));
 			const resolved = this.#applyProviderModelOverrides(providerId, withCompat);
 			const cachedModels = this.#applyHardcodedModelPolicies(resolved);
@@ -1164,8 +1164,8 @@ export class ModelRegistry {
 					? cache.models
 					: restorableHeaderFallback
 						? cache.models.map(model =>
-							omittedHeaderIds.has(model.id) ? { ...model, headers: { ...restorableHeaderFallback } } : model,
-						)
+								omittedHeaderIds.has(model.id) ? { ...model, headers: { ...restorableHeaderFallback } } : model,
+							)
 						: cache.models.filter(model => !omittedHeaderIds.has(model.id));
 			if (restorableHeaderFallback && cache.unrestorableHeaderModelIds.length > 0) {
 				writeModelCache(
@@ -1217,24 +1217,24 @@ export class ModelRegistry {
 	#normalizeDiscoverableModels(providerConfig: DiscoveryProviderConfig, models: Model<Api>[]): Model<Api>[] {
 		const withDecoderMetadata =
 			providerConfig.discovery.type === "ollama" ||
-				providerConfig.discovery.type === "llama.cpp" ||
-				providerConfig.discovery.type === "lm-studio"
+			providerConfig.discovery.type === "llama.cpp" ||
+			providerConfig.discovery.type === "lm-studio"
 				? models.map(model =>
-					buildModel({ ...model, imageInputDecoder: "stb", compat: model.compatConfig } as ModelSpec<Api>),
-				)
+						buildModel({ ...model, imageInputDecoder: "stb", compat: model.compatConfig } as ModelSpec<Api>),
+					)
 				: models;
 
 		const withRemoteCompaction = providerConfig.remoteCompaction
 			? withDecoderMetadata.map(model =>
-				buildModel({
-					...model,
-					remoteCompaction: mergeProviderRemoteCompactionConfig(
-						model.remoteCompaction,
-						providerConfig.remoteCompaction,
-					),
-					compat: model.compatConfig,
-				} as ModelSpec<Api>),
-			)
+					buildModel({
+						...model,
+						remoteCompaction: mergeProviderRemoteCompactionConfig(
+							model.remoteCompaction,
+							providerConfig.remoteCompaction,
+						),
+						compat: model.compatConfig,
+					} as ModelSpec<Api>),
+				)
 			: withDecoderMetadata;
 
 		if (providerConfig.provider !== "ollama" || providerConfig.api !== "openai-responses") {
@@ -1246,10 +1246,10 @@ export class ModelRegistry {
 			const normalized =
 				model.api === "openai-completions"
 					? buildModel({
-						...model,
-						api: "openai-responses" as const,
-						compat: model.compatConfig,
-					} as ModelSpec<Api>)
+							...model,
+							api: "openai-responses" as const,
+							compat: model.compatConfig,
+						} as ModelSpec<Api>)
 					: model;
 			if (contextLengthOverride === undefined) {
 				return normalized;
@@ -1376,7 +1376,7 @@ export class ModelRegistry {
 						providerConfig.discovery?.type === "litellm"
 							? normalizeLiteLLMDiscoveryBaseUrl(providerConfig.baseUrl)
 							: providerConfig.discovery?.type === "openai-models-list" &&
-								providerConfig.discovery.injectV1 === false
+								  providerConfig.discovery.injectV1 === false
 								? normalizeBareDiscoveryBaseUrl(providerConfig.baseUrl)
 								: providerConfig.baseUrl,
 					headers: providerConfig.headers,
@@ -1461,11 +1461,11 @@ export class ModelRegistry {
 			selectedDiscoverableProviders.length === 0
 				? Promise.resolve<{ provider: DiscoveryProviderConfig; models: Model<Api>[] }[]>([])
 				: Promise.all(
-					selectedDiscoverableProviders.map(async provider => ({
-						provider,
-						models: await this.#discoverProviderModelsCoalesced(provider, strategy),
-					})),
-				);
+						selectedDiscoverableProviders.map(async provider => ({
+							provider,
+							models: await this.#discoverProviderModelsCoalesced(provider, strategy),
+						})),
+					);
 		const [configuredDiscoveryResults, builtInDiscovery] = await Promise.all([
 			configuredDiscoveriesPromise,
 			this.#discoverBuiltInProviderModels(strategy, providerFilter),
@@ -1650,9 +1650,9 @@ export class ModelRegistry {
 				this.#lastDiscoveryWarnings.delete(providerConfig.provider);
 				return cached
 					? this.#normalizeDiscoverableModels(
-						providerConfig,
-						cached.models.map(model => buildModel(model)),
-					)
+							providerConfig,
+							cached.models.map(model => buildModel(model)),
+						)
 					: [];
 			}
 		}
@@ -1862,67 +1862,67 @@ export class ModelRegistry {
 			) => ModelManagerOptions<Api>;
 			allowStoredOAuthAdmission?: boolean;
 		}> = [
-				{
+			{
+				providerId: "google-antigravity",
+				authoritative: false,
+				resolveKey: extractGoogleOAuthToken,
+				allowStoredOAuthAdmission: true,
+				createOptions: (oauthToken, _raw, getOAuthAccess) => ({
 					providerId: "google-antigravity",
-					authoritative: false,
-					resolveKey: extractGoogleOAuthToken,
-					allowStoredOAuthAdmission: true,
-					createOptions: (oauthToken, _raw, getOAuthAccess) => ({
-						providerId: "google-antigravity",
-						fetchDynamicModels: async () => {
-							const oauthAccess = getOAuthAccess ? await getOAuthAccess() : undefined;
-							const resolvedToken = oauthAccess?.accessToken ?? oauthToken;
-							if (!resolvedToken) return null;
-							const managerOptions = googleAntigravityModelManagerOptions({
-								oauthToken: resolvedToken,
-								endpoint: oauthAccess?.apiEndpoint ?? this.#descriptorBaseUrl("google-antigravity"),
-								fetch: this.#fetch,
-							});
-							return managerOptions.fetchDynamicModels?.() ?? null;
-						},
-					}),
-				},
-				{
-					providerId: "google-gemini-cli",
-					authoritative: false,
-					resolveKey: extractGoogleOAuthToken,
-					allowStoredOAuthAdmission: true,
-					createOptions: (oauthToken, raw, getOAuthAccess) => ({
-						providerId: "google-gemini-cli",
-						fetchDynamicModels: async () => {
-							const oauthAccess = getOAuthAccess ? await getOAuthAccess() : undefined;
-							const resolvedToken = oauthAccess?.accessToken ?? oauthToken;
-							if (!resolvedToken) return null;
-							const managerOptions = googleGeminiCliModelManagerOptions({
-								oauthToken: resolvedToken,
-								projectId:
-									oauthAccess?.projectId ??
-									extractGoogleOAuthProjectId(raw) ??
-									this.#resolveGeminiCliDiscoveryProjectId(resolvedToken),
-								endpoint: oauthAccess?.apiEndpoint ?? this.#descriptorBaseUrl("google-gemini-cli"),
-								fetch: this.#fetch,
-							});
-							return managerOptions.fetchDynamicModels?.() ?? null;
-						},
-					}),
-				},
-				{
-					providerId: "openai-codex",
-					authoritative: true,
-					resolveKey: value => value,
-					allowStoredOAuthAdmission: true,
-					createOptions: (accessToken, _raw, getOAuthAccess) =>
-						openaiCodexModelManagerOptions({
-							resolveAccounts: async () => {
-								const resolvedAccessToken = accessToken ?? (await getOAuthAccess?.())?.accessToken;
-								return resolvedAccessToken
-									? resolveCodexDiscoveryAccounts(this.authStorage, resolvedAccessToken)
-									: null;
-							},
+					fetchDynamicModels: async () => {
+						const oauthAccess = getOAuthAccess ? await getOAuthAccess() : undefined;
+						const resolvedToken = oauthAccess?.accessToken ?? oauthToken;
+						if (!resolvedToken) return null;
+						const managerOptions = googleAntigravityModelManagerOptions({
+							oauthToken: resolvedToken,
+							endpoint: oauthAccess?.apiEndpoint ?? this.#descriptorBaseUrl("google-antigravity"),
 							fetch: this.#fetch,
-						}),
-				},
-			];
+						});
+						return managerOptions.fetchDynamicModels?.() ?? null;
+					},
+				}),
+			},
+			{
+				providerId: "google-gemini-cli",
+				authoritative: false,
+				resolveKey: extractGoogleOAuthToken,
+				allowStoredOAuthAdmission: true,
+				createOptions: (oauthToken, raw, getOAuthAccess) => ({
+					providerId: "google-gemini-cli",
+					fetchDynamicModels: async () => {
+						const oauthAccess = getOAuthAccess ? await getOAuthAccess() : undefined;
+						const resolvedToken = oauthAccess?.accessToken ?? oauthToken;
+						if (!resolvedToken) return null;
+						const managerOptions = googleGeminiCliModelManagerOptions({
+							oauthToken: resolvedToken,
+							projectId:
+								oauthAccess?.projectId ??
+								extractGoogleOAuthProjectId(raw) ??
+								this.#resolveGeminiCliDiscoveryProjectId(resolvedToken),
+							endpoint: oauthAccess?.apiEndpoint ?? this.#descriptorBaseUrl("google-gemini-cli"),
+							fetch: this.#fetch,
+						});
+						return managerOptions.fetchDynamicModels?.() ?? null;
+					},
+				}),
+			},
+			{
+				providerId: "openai-codex",
+				authoritative: true,
+				resolveKey: value => value,
+				allowStoredOAuthAdmission: true,
+				createOptions: (accessToken, _raw, getOAuthAccess) =>
+					openaiCodexModelManagerOptions({
+						resolveAccounts: async () => {
+							const resolvedAccessToken = accessToken ?? (await getOAuthAccess?.())?.accessToken;
+							return resolvedAccessToken
+								? resolveCodexDiscoveryAccounts(this.authStorage, resolvedAccessToken)
+								: null;
+						},
+						fetch: this.#fetch,
+					}),
+			},
+		];
 		const disabledProviders = getDisabledProviderIdsFromSettings(this.#settings);
 		const standardProviderDescriptors = PROVIDER_DESCRIPTORS.filter(descriptor => {
 			if (disabledProviders.has(descriptor.providerId)) return false;
@@ -1983,8 +1983,8 @@ export class ModelRegistry {
 					fetch: this.#fetch,
 					...(hasStoredOAuth
 						? {
-							getApiKey: () => this.#resolveBuiltInDiscoveryApiKey(descriptor.providerId),
-						}
+								getApiKey: () => this.#resolveBuiltInDiscoveryApiKey(descriptor.providerId),
+							}
 						: {}),
 				};
 				const preparedConfig =
@@ -2813,9 +2813,9 @@ export class ModelRegistry {
 			const runtimeTransportOverride = this.#runtimeProviderOverrides.get(providerName);
 			const nextModelsWithTransport = runtimeTransportOverride
 				? nextModels.map(model => {
-					if (model.provider !== providerName) return model;
-					return this.#applyProviderTransportOverrideToModel(model, runtimeTransportOverride);
-				})
+						if (model.provider !== providerName) return model;
+						return this.#applyProviderTransportOverrideToModel(model, runtimeTransportOverride);
+					})
 				: nextModels;
 			this.#unprojectedModels = this.#applyProviderBedrockOverrides(nextModelsWithTransport);
 
