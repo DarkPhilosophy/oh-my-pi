@@ -10,6 +10,10 @@
 
 - Fixed the transcript getting stuck in the live viewport with no scrollable history: frame providers now report live-region pinning per frame instead of permanently, so settled rows reach native scrollback again.
 - Fixed unnecessary scrollback clears when finalized history batches are still being retired during tool completion.
+### Fixed
+
+- Avoid inserting a trailing space when auto-completing directory paths with `@`, and keep autocomplete open when accepting a directory with Tab or Enter.
+
 ## [18.1.9] - 2026-09-04
 
 ### Added

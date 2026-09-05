@@ -241,6 +241,79 @@ describe("callSessionTool", () => {
 		expect(execute).not.toHaveBeenCalled();
 	});
 
+	it("preserves harness intent when propertyNames does not open a closed schema", async () => {
+		const tool = createSchemaTool("closed-property-names", {
+			type: "object",
+			properties: { value: {} },
+			propertyNames: { type: "string" },
+			additionalProperties: false,
+		});
+		expect(
+			await callSessionTool(
+				"closed-property-names",
+				{ value: "x", i: "caller intent" },
+				{ session: createSession([tool]) },
+			),
+		).toBe("string:caller intent");
+	});
+
+	it.each(["const", "enum"] as const)("preserves intent in object-valued %s", async keyword => {
+		const tool = createSchemaTool("object-constraint", {
+			type: "object",
+			[keyword]: keyword === "const" ? { i: "token" } : [{ i: "token" }],
+		});
+		expect(await callSessionTool("object-constraint", { i: "token" }, { session: createSession([tool]) })).toBe(
+			"string:token",
+		);
+	});
+
+	it("preserves intent admitted by propertyNames", async () => {
+		const tool = createSchemaTool("property-name-intent", {
+			type: "object",
+			propertyNames: { const: INTENT_FIELD },
+			minProperties: 1,
+		});
+
+		expect(
+			await callSessionTool(
+				"property-name-intent",
+				{ [INTENT_FIELD]: "caller intent" },
+				{ session: createSession([tool]) },
+			),
+		).toBe("string:caller intent");
+	});
+
+	it("preserves intent admitted by referenced propertyNames", async () => {
+		const tool = createSchemaTool("referenced-property-name-intent", {
+			type: "object",
+			propertyNames: { $ref: "#/$defs/intentName" },
+			minProperties: 1,
+			$defs: { intentName: { const: INTENT_FIELD } },
+		});
+
+		expect(
+			await callSessionTool(
+				"referenced-property-name-intent",
+				{ [INTENT_FIELD]: "caller intent" },
+				{ session: createSession([tool]) },
+			),
+		).toBe("string:caller intent");
+	});
+
+	it("does not claim intent excluded by propertyNames", async () => {
+		const tool = createSchemaTool("excluded-property-name-intent", {
+			type: "object",
+			propertyNames: { not: { const: INTENT_FIELD } },
+		});
+
+		expect(
+			await callSessionTool(
+				"excluded-property-name-intent",
+				{ [INTENT_FIELD]: "caller intent" },
+				{ session: createSession([tool]) },
+			),
+		).toBe("string:caller intent");
+	});
 	it("rejects invalid intent matched by patternProperties", async () => {
 		const tool = createSchemaTool("pattern-intent", {
 			type: "object",
@@ -415,6 +488,89 @@ describe("callSessionTool", () => {
 		).rejects.toThrow("Validation failed");
 	});
 
+	it.each(["direct", "annotated", "reference"] as const)(
+		"keeps harness intent out of a presence prohibition (%s)",
+		async shape => {
+			const presence =
+				shape === "annotated"
+					? { type: "object", required: ["i"], description: "Reserved name" }
+					: { required: ["i"] };
+			const tool = createSchemaTool("forbidden-presence", {
+				type: "object",
+				not: shape === "reference" ? { $ref: "#/$defs/presence" } : presence,
+				$defs: { presence },
+			});
+			expect(
+				await callSessionTool("forbidden-presence", { i: "caller intent" }, { session: createSession([tool]) }),
+			).toBe("string:caller intent");
+		},
+	);
+
+	it("keeps harness intent out of a false property schema", async () => {
+		const tool = createSchemaTool("false-intent", { type: "object", properties: { i: false } });
+		expect(await callSessionTool("false-intent", { i: "caller intent" }, { session: createSession([tool]) })).toBe(
+			"string:caller intent",
+		);
+	});
+
+	it("strips intent prohibited by a false pattern schema", async () => {
+		const tool = createSchemaTool("false-pattern-intent", {
+			type: "object",
+			patternProperties: { "^i$": false },
+		});
+		expect(
+			await callSessionTool("false-pattern-intent", { i: "caller intent" }, { session: createSession([tool]) }),
+		).toBe("string:caller intent");
+	});
+
+	it("preserves intent constrained by unevaluatedProperties", async () => {
+		const tool = createSchemaTool("unevaluated-intent", {
+			type: "object",
+			unevaluatedProperties: { type: "string" },
+			minProperties: 1,
+		});
+		expect(
+			await callSessionTool("unevaluated-intent", { i: "caller intent" }, { session: createSession([tool]) }),
+		).toBe("string:caller intent");
+	});
+
+	it("preserves data required by negating a false property schema", async () => {
+		const tool = createSchemaTool("not-false-intent", { type: "object", not: { properties: { i: false } } });
+		expect(await callSessionTool("not-false-intent", { i: "data" }, { session: createSession([tool]) })).toBe(
+			"string:data",
+		);
+	});
+
+	it("preserves false-property predicates as decision inputs", async () => {
+		const tool = createSchemaTool("false-intent-predicate", {
+			type: "object",
+			if: { properties: { i: false } },
+			// oxlint-disable-next-line unicorn/no-thenable -- JSON Schema if/then/else keyword
+			then: false,
+			else: true,
+		});
+		expect(await callSessionTool("false-intent-predicate", { i: "data" }, { session: createSession([tool]) })).toBe(
+			"string:data",
+		);
+	});
+
+	it("preserves intent required by double negation", async () => {
+		const tool = createSchemaTool("double-not-intent", { type: "object", not: { not: { required: ["i"] } } });
+		expect(await callSessionTool("double-not-intent", { i: "data" }, { session: createSession([tool]) })).toBe(
+			"string:data",
+		);
+	});
+
+	it("visits a shared reference under both negation polarities", async () => {
+		const tool = createSchemaTool("shared-polarity", {
+			type: "object",
+			anyOf: [{ $ref: "#/$defs/absent" }, { not: { $ref: "#/$defs/absent" } }],
+			$defs: { absent: { not: { required: ["i"] } } },
+		});
+		expect(await callSessionTool("shared-polarity", {}, { session: createSession([tool]) })).toBe(
+			"undefined:undefined",
+		);
+	});
 	it("validates intent constraints inside a negated schema", async () => {
 		const tool = createSchemaTool("negated-intent", {
 			type: "object",
