@@ -1000,6 +1000,36 @@ describe("ModelHub", () => {
 			expect(onFallbackChainChange).toHaveBeenLastCalledWith("default", ["openrouter/z-ai/glm-5.2@cerebras:off"]);
 		});
 
+		test("does not expose thinking for non-aggregator upstream routes", () => {
+			const model = makeModel("anthropic", "claude-sonnet-4-5");
+			const settings = Settings.isolated({
+				"retry.fallbackChains": { default: ["anthropic/claude-sonnet-4-5@cerebras"] },
+			});
+			const { hub, onFallbackChainChange } = createHub({ models: [model], scoped: true, settings });
+			enterRolesView(hub);
+			hub.handleInput(DOWN);
+			expect(footerLine(hub.render(220))).toContain("thinking n/a");
+			hub.handleInput("t");
+			expect(onFallbackChainChange).not.toHaveBeenCalled();
+		});
+
+		test("keeps a shared default primary match when editing its fallback", () => {
+			const model = getBundledModel("openai", "gpt-5.6");
+			if (!model) throw new Error("Expected bundled model openai/gpt-5.6");
+			const settings = Settings.isolated({
+				modelRoles: { default: "openai/gpt-5.6:high" },
+				"retry.fallbackChains": { default: ["openai/gpt-5.6:low"] },
+			});
+			const { hub, onFallbackChainChange } = createHub({ models: [model], scoped: true, settings });
+			enterRolesView(hub);
+			hub.handleInput(DOWN);
+			hub.handleInput("t");
+			hub.handleInput("\x1b[C");
+			hub.handleInput("\x1b[C");
+			hub.handleInput("\n");
+			expect(onFallbackChainChange).toHaveBeenLastCalledWith("default", ["openai/gpt-5.6:high"]);
+		});
+
 		test.each(["test/*", "test/missing"])(
 			"explains unavailable thinking for an unresolved fallback selector (%s)",
 			selector => {
