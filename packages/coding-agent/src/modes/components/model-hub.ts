@@ -996,7 +996,8 @@ export class ModelHubComponent implements Component {
 		if (routing && model && !modelMatchesHost(model, "openrouter") && !modelMatchesHost(model, "vercelAIGateway")) {
 			return undefined;
 		}
-		const routedModel = routing && model ? parseModelPattern(row.selector, [model]).model : model;
+		const routedModel =
+			routing && model ? parseModelPattern(`${parsed.provider}/${parsed.id}`, [model]).model : model;
 		if (!routedModel) return undefined;
 		return { model: routedModel, selector: `${parsed.provider}/${parsed.id}`, thinkingLevel: parsed.thinkingLevel };
 	}
@@ -1097,9 +1098,14 @@ export class ModelHubComponent implements Component {
 						if (strip.role !== "default" && primary && edited === primary) {
 							chain.splice(0, chain.length, ...chain.filter((_, index) => index !== strip.chainIndex));
 						} else {
+							const editedRaw = edited ?? selector;
 							const next = chain
 								.map((entry, index) => (index === strip.chainIndex ? selector : entry))
-								.filter((entry, index) => index === strip.chainIndex || entry !== selector);
+								.filter(
+									(entry, index) =>
+										index === strip.chainIndex ||
+										parseRetryFallbackSelector(entry, this.#registry)?.raw !== editedRaw,
+								);
 							chain.splice(0, chain.length, ...next);
 						}
 						this.#setFallbackChain(strip.role, chain);
