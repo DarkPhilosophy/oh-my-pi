@@ -30,6 +30,7 @@ import {
 import type { ModelRegistry } from "../../config/model-registry";
 import {
 	formatModelSelectorValue,
+	parseModelPattern,
 	splitUpstreamRouting,
 	type ModelRoleLookup,
 	type ResolvedModelRoleValue,
@@ -991,8 +992,9 @@ export class ModelHubComponent implements Component {
 		const literalModel = this.#registry.find(parsed.provider, parsed.id);
 		const routing = literalModel ? undefined : splitUpstreamRouting(parsed.id);
 		const model = literalModel ?? this.#registry.find(parsed.provider, routing?.base ?? parsed.id);
-		if (!model) return undefined;
-		return { model, selector: `${parsed.provider}/${parsed.id}`, thinkingLevel: parsed.thinkingLevel };
+		const routedModel = routing && model ? parseModelPattern(row.selector, [model]).model : model;
+		if (!routedModel) return undefined;
+		return { model: routedModel, selector: `${parsed.provider}/${parsed.id}`, thinkingLevel: parsed.thinkingLevel };
 	}
 
 	#openFallbackThinkingStrip(row: Extract<RolesRow, { kind: "fallback" }>): void {
@@ -1085,8 +1087,14 @@ export class ModelHubComponent implements Component {
 								? undefined
 								: chip.thinkingLevel;
 						const selector = formatModelSelectorValue(strip.item.selector, level);
-						const before = chain.slice(0, strip.chainIndex).filter(entry => entry !== selector);
-						const after = chain.slice(strip.chainIndex + 1).filter(entry => entry !== selector);
+						const primary = this.#roles[strip.role]?.model;
+						const primarySelector = primary ? `${primary.provider}/${primary.id}` : undefined;
+						const before = chain
+							.slice(0, strip.chainIndex)
+							.filter(entry => entry !== selector && entry !== primarySelector);
+						const after = chain
+							.slice(strip.chainIndex + 1)
+							.filter(entry => entry !== selector && entry !== primarySelector);
 						before.push(selector);
 						chain.splice(0, chain.length, ...before, ...after);
 						this.#setFallbackChain(strip.role, chain);
