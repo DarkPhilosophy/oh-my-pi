@@ -26,6 +26,7 @@ import {
 } from "@oh-my-pi/pi-tui";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import type { SessionMessageEntry } from "../../session/session-entries";
+import { isUserTurnInitiator } from "../../session/messages";
 import { replaceTabs } from "../../tools/render-utils";
 import { highlightCode, type ThemeColor, theme } from "../theme/theme";
 import { commandFromToolCall, extractBlocks, extractLinks } from "../utils/copy-targets";
@@ -475,22 +476,29 @@ export class CopySelectorComponent implements Component {
 }
 
 /**
- * The trailing slice starting at the last user message at or before
- * `entries.length - limit`.
+ * The trailing slice starting at the last turn initiator at or before
+ * `entries.length - limit`: a user message, or a custom message that starts
+ * a user-attributed turn (a directly invoked `/skill:` prompt, a collab peer's
+ * prompt), the same boundary `ChatTranscriptBuilder` uses.
  *
- * The cut has to land on a turn boundary: `ChatTranscriptBuilder` drops a tool
- * result whose initiating call was sliced away, so a tail beginning mid-turn
- * renders without its command — and a tail of nothing but orphaned results
- * would leave the picker with no target at all. Scanning backwards keeps the
- * whole final turn instead, and a branch whose last turn is itself longer than
+ * The cut has to land on a turn boundary: the builder drops a tool result
+ * whose initiating call was sliced away, so a tail beginning mid-turn renders
+ * without its command — and a tail of nothing but orphaned results would
+ * leave the picker with no target at all. Scanning backwards keeps the whole
+ * final turn instead, and a branch whose last turn is itself longer than
  * `limit` replays in full.
  */
 function recentEntries(entries: SessionMessageEntry[], limit: number): SessionMessageEntry[] {
 	if (entries.length <= limit) return entries;
 	for (let index = entries.length - limit; index > 0; index--) {
-		if (entries[index]!.message.role === "user") return entries.slice(index);
+		if (startsTurn(entries[index]!)) return entries.slice(index);
 	}
 	return entries;
+}
+
+function startsTurn(entry: SessionMessageEntry): boolean {
+	const message = entry.message;
+	return message.role === "user" || (message.role === "custom" && isUserTurnInitiator(message));
 }
 
 /** Raw multi-line text of a user message (string or text blocks). */

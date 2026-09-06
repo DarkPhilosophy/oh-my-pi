@@ -522,4 +522,30 @@ describe("CopySelectorComponent", () => {
 			selector.dispose();
 		}
 	});
+
+	it("cuts the tail at a directly invoked skill prompt, not only at a user message", () => {
+		// A `/skill:` prompt the user invoked starts a turn of its own, so a
+		// branch whose recent history is skill turns must not walk back to a
+		// far older user message and replay thousands of entries.
+		const entries = promptChain(50);
+		for (let index = 0; index < 900; index++) {
+			entries.push(
+				entry(`s${index}`, entries.at(-1)!.id, {
+					role: "custom",
+					customType: "skill-prompt",
+					attribution: "user",
+					content: `skill step ${index}`,
+					display: true,
+					timestamp: 1000 + index,
+				} as unknown as AgentMessage),
+			);
+		}
+		const selector = pickerOver(entries, []);
+		try {
+			expect(selector.targetCount).toBeLessThan(700);
+			expect(Bun.stripANSI(selector.render(100).join("\n"))).toContain("a earlier turns");
+		} finally {
+			selector.dispose();
+		}
+	});
 });
