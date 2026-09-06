@@ -2,6 +2,11 @@ import { PERSONAL_GITHUB_COPILOT_BASE_URL } from "../wire/github-copilot";
 
 export interface ModelCacheProviderIdOptions {
 	apiKey?: string;
+	/**
+	 * Stable per-account namespace used when the credential itself resolves
+	 * lazily at fetch time; keeps two accounts on separate cache rows.
+	 */
+	cacheIdentity?: string;
 	baseUrl?: string;
 }
 
@@ -93,7 +98,7 @@ export function resolveModelCacheProviderId(providerId: string, options: ModelCa
 			// prior endpoint's cache and re-runs discovery instead of hitting the
 			// stale host and 403ing (PR #8510 review).
 			const baseUrl = options.baseUrl ?? PERSONAL_GITHUB_COPILOT_BASE_URL;
-			const scope = `${options.apiKey ?? ""}\u0000${baseUrl}`;
+			const scope = `${options.cacheIdentity ?? options.apiKey ?? ""}\u0000${baseUrl}`;
 			return `github-copilot:models-v1:${Bun.hash(scope).toString(36)}`;
 		}
 		case "openrouter":

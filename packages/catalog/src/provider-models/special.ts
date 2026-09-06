@@ -264,6 +264,9 @@ export function getGitLabDuoModels(): Model<Api>[] {
 
 export interface GitLabDuoWorkflowModelManagerConfig {
 	apiKey?: string;
+	getApiKey?: () => Promise<string | undefined>;
+	/** Stable per-account namespace used when the credential resolves lazily. */
+	cacheIdentity?: string;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 	namespaceId?: string;
@@ -275,6 +278,8 @@ export function gitLabDuoWorkflowModelManagerOptions(
 	config: GitLabDuoWorkflowModelManagerConfig = {},
 ): ModelManagerOptions<"gitlab-duo-agent"> {
 	const apiKey = config.apiKey;
+	const getApiKey = config.getApiKey;
+	const cacheKey = config.cacheIdentity ?? apiKey;
 	return {
 		providerId: "gitlab-duo-agent",
 		// GitLab Duo discovery is credential- and namespace-specific
@@ -285,30 +290,32 @@ export function gitLabDuoWorkflowModelManagerOptions(
 		// the exact inputs `fetchGitLabDuoWorkflowModels` resolves the namespace from
 		// (credential + base URL + namespace/project config + the same env vars + the
 		// effective workspace cwd whose git remote drives auto-discovery). Built-in
-		// discovery only passes apiKey/baseUrl/fetch, so the cwd/env terms — not the
-		// empty config fields — are what actually separate workspace A from B here.
+		// discovery passes a lazy resolver plus a stable cache identity, so the
+		// namespace stays per-account even before a token is refreshed.
 		// Falls back to the bare provider id when no credential is present.
-		...(apiKey ? { cacheProviderId: gitLabDuoWorkflowModelCacheProviderId(apiKey, config) } : undefined),
+		...(cacheKey ? { cacheProviderId: gitLabDuoWorkflowModelCacheProviderId(cacheKey, config) } : undefined),
 		dynamicModelsAuthoritative: true,
 		staticModels: [
 			buildGitLabDuoWorkflowFallbackModel("claude_sonnet_4_6_vertex", "Claude Sonnet 4.6 - Vertex", config.baseUrl),
 		],
-		...(apiKey
+		...(apiKey || getApiKey
 			? {
-					fetchDynamicModels: async () =>
-						fetchGitLabDuoWorkflowModels({
-							apiKey,
+					fetchDynamicModels: async () => {
+						const resolvedApiKey = apiKey ?? (await getApiKey?.());
+						if (!resolvedApiKey) return null;
+						return fetchGitLabDuoWorkflowModels({
+							apiKey: resolvedApiKey,
 							baseUrl: config.baseUrl,
 							fetch: config.fetch,
 							namespaceId: config.namespaceId,
 							projectId: config.projectId,
 							cwd: config.cwd,
-						}),
+						});
+					},
 				}
 			: undefined),
 	};
 }
-
 function gitLabDuoWorkflowModelCacheProviderId(apiKey: string, config: GitLabDuoWorkflowModelManagerConfig): string {
 	// Mirror the exact inputs `discoverGitLabDuoWorkflowNamespace` keys off: explicit
 	// namespace/project config OR the same env vars, then the git remote at the

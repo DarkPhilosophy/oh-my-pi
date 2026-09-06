@@ -605,10 +605,21 @@ function isLikelyNanoGptTextModelId(id: string): boolean {
 type SimpleProviderDiscoveryHeaders = Record<string, string> | (() => Record<string, string> | undefined);
 type SimpleProviderConfig = {
 	apiKey?: string;
+	getApiKey?: () => Promise<string | undefined>;
+	cacheIdentity?: string;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 	headers?: SimpleProviderDiscoveryHeaders;
 };
+
+/** Whether a static key or a lazy resolver can produce a discovery bearer. */
+function hasSimpleProviderApiKey(config: SimpleProviderConfig | undefined): boolean {
+	return Boolean(config?.apiKey || config?.getApiKey);
+}
+
+async function resolveSimpleProviderApiKey(config: SimpleProviderConfig | undefined): Promise<string | undefined> {
+	return (config?.getApiKey ? await config.getApiKey() : undefined) ?? config?.apiKey;
+}
 
 function resolveSimpleProviderHeaders(
 	headers: SimpleProviderDiscoveryHeaders | undefined,
@@ -650,9 +661,11 @@ function createOpenAICompatibleModelManagerOptions<TApi extends Api>(
 		...(options.dropCachedModelIdsOnStaticMismatch && {
 			dropCachedModelIdsOnStaticMismatch: options.dropCachedModelIdsOnStaticMismatch,
 		}),
-		...((!options.requireApiKey || apiKey) && {
-			fetchDynamicModels: () =>
-				fetchOpenAICompatibleModels({
+		...((!options.requireApiKey || hasSimpleProviderApiKey(options.config)) && {
+			fetchDynamicModels: async () => {
+				const apiKey = await resolveSimpleProviderApiKey(options.config);
+				if (options.requireApiKey && !apiKey) return null;
+				return fetchOpenAICompatibleModels({
 					api: options.api,
 					provider: options.providerId,
 					baseUrl,
@@ -663,7 +676,8 @@ function createOpenAICompatibleModelManagerOptions<TApi extends Api>(
 					}),
 					mapModel: (entry, defaults) => options.mapModel(entry, defaults, references.get(defaults.id)),
 					fetch: options.config?.fetch,
-				}),
+				});
+			},
 		}),
 	};
 }
@@ -695,9 +709,11 @@ function createSimpleAnthropicProviderOptions(
 	const references = createBundledReferenceMap<"anthropic-messages">(providerId);
 	return {
 		providerId,
-		...(apiKey && {
-			fetchDynamicModels: () =>
-				fetchOpenAICompatibleModels({
+		...(hasSimpleProviderApiKey(config) && {
+			fetchDynamicModels: async () => {
+				const apiKey = await resolveSimpleProviderApiKey(config);
+				if (!apiKey) return null;
+				return fetchOpenAICompatibleModels({
 					api: "anthropic-messages",
 					provider: providerId,
 					baseUrl: discoveryBaseUrl,
@@ -712,7 +728,8 @@ function createSimpleAnthropicProviderOptions(
 						};
 					},
 					fetch: config?.fetch,
-				}),
+				});
+			},
 		}),
 	};
 }
@@ -6063,6 +6080,8 @@ export function nanoGptModelManagerOptions(
 
 export interface GithubCopilotModelManagerConfig {
 	apiKey?: string;
+	getApiKey?: () => Promise<string | undefined>;
+	cacheIdentity?: string;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 }
@@ -6222,21 +6241,30 @@ function createCopilotLongContextVariant(
 
 export function githubCopilotModelManagerOptions(config?: GithubCopilotModelManagerConfig): ModelManagerOptions<Api> {
 	const rawApiKey = config?.apiKey;
+	const getApiKey = config?.getApiKey;
 	const configuredBaseUrl = config?.baseUrl ?? "https://api.githubcopilot.com";
-	const parsedApiKey = rawApiKey ? parseGitHubCopilotApiKey(rawApiKey) : undefined;
-	const apiKey = parsedApiKey?.accessToken;
-	const baseUrl =
-		parsedApiKey?.apiEndpoint && configuredBaseUrl.includes("githubcopilot.com")
-			? parsedApiKey.apiEndpoint
-			: parsedApiKey?.enterpriseUrl && configuredBaseUrl.includes("githubcopilot.com")
-				? getGitHubCopilotBaseUrl(parsedApiKey.enterpriseUrl)
-				: configuredBaseUrl;
+	/** Copilot bakes the plan-specific endpoint into every spec, so the host is derived per credential. */
+	const resolveCopilotCredential = (raw: string | undefined) => {
+		const parsed = raw ? parseGitHubCopilotApiKey(raw) : undefined;
+		const baseUrl =
+			parsed?.apiEndpoint && configuredBaseUrl.includes("githubcopilot.com")
+				? parsed.apiEndpoint
+				: parsed?.enterpriseUrl && configuredBaseUrl.includes("githubcopilot.com")
+					? getGitHubCopilotBaseUrl(parsed.enterpriseUrl)
+					: configuredBaseUrl;
+		return { apiKey: parsed?.accessToken, baseUrl };
+	};
+	const staticCredential = resolveCopilotCredential(rawApiKey);
 	let providerReferences: Map<string, ModelSpec<Api>> | undefined;
 	const getProviderReferences = () => (providerReferences ??= createBundledReferenceMap<Api>("github-copilot"));
 	const resolveReference = createReferenceResolver(getProviderReferences);
 	return {
 		providerId: "github-copilot",
-		cacheProviderId: resolveModelCacheProviderId("github-copilot", { apiKey: rawApiKey, baseUrl }),
+		cacheProviderId: resolveModelCacheProviderId("github-copilot", {
+			apiKey: rawApiKey,
+			cacheIdentity: config?.cacheIdentity,
+			baseUrl: staticCredential.baseUrl,
+		}),
 		dropCachedModelIdsOnStaticMismatch: COPILOT_CACHE_INVALIDATED_MODEL_IDS,
 		// COPILOT_API_HEADERS are compile-time wire identity constants, not
 		// credentials. The cache omits all request headers for
@@ -6245,8 +6273,10 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 		// claude-opus-5 and its synthesized -1m sibling) is dropped on offline
 		// reads. Declaring the constant lets the cache restore it by value.
 		restorableHeaderFallback: { ...COPILOT_API_HEADERS },
-		...(apiKey && {
+		...((rawApiKey || getApiKey) && {
 			fetchDynamicModels: async () => {
+				const { apiKey, baseUrl } = resolveCopilotCredential(rawApiKey ?? (await getApiKey?.()));
+				if (!apiKey) return null;
 				const fetchImpl = discoveryFetch(config?.fetch);
 				const requestBaseUrl = isPersonalGitHubCopilotBaseUrl(baseUrl)
 					? ((await withCatalogDiscoveryTimeout(DEFAULT_OPENAI_COMPATIBLE_DISCOVERY_TIMEOUT_MS, signal =>

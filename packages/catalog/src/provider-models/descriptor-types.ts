@@ -4,6 +4,14 @@ import type { Api, FetchImpl } from "../types";
 /** Config passed to a provider's runtime model-manager factory. */
 export type ModelManagerConfig = {
 	apiKey?: string;
+	/**
+	 * Resolves the discovery bearer at fetch time. Built-in OAuth providers are
+	 * admitted on a stored credential and refresh only when a network discovery
+	 * actually runs, so a fresh cache never triggers a token refresh.
+	 */
+	getApiKey?: () => Promise<string | undefined>;
+	/** Stable per-account cache namespace for credential-scoped providers. */
+	cacheIdentity?: string;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 	/** The supplied fetch already applies provider-specific authentication. */
