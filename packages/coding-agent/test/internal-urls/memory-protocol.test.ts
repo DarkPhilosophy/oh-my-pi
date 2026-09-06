@@ -772,11 +772,11 @@ describe("MemoryProtocolHandler — mnemopi bridge (issue #4443)", () => {
 			});
 			// The child shares this cwd, so a cwd-only context names no caller and
 			// identifies no bank — what the prompt used to send.
-			const ambiguous = await getInternalUrlSuggestions("memory://", () => ({ cwd: sharedCwd }));
+			const ambiguous = await getInternalUrlSuggestions("memory://", sharedCwd);
 			expect(ambiguous?.items.map(item => item.value) ?? []).not.toContain("memory://<memory-id>");
 
 			// Naming the session that will resolve the URL offers its own bank again.
-			const bound = await getInternalUrlSuggestions("memory://", () => ({
+			const bound = await getInternalUrlSuggestions("memory://", undefined, undefined, () => ({
 				cwd: sharedCwd,
 				sessionId: "test-mnemopi",
 			}));
@@ -784,14 +784,19 @@ describe("MemoryProtocolHandler — mnemopi bridge (issue #4443)", () => {
 
 			// Typing into the child instead binds to its hindsight backend, which has
 			// no addressable ids, rather than to the peer bank in the same cwd.
-			const childBound = await getInternalUrlSuggestions("memory://", () => ({
+			const childBound = await getInternalUrlSuggestions("memory://", undefined, undefined, () => ({
 				cwd: sharedCwd,
 				sessionFile: childSessionFile,
 			}));
 			expect(childBound?.items.map(item => item.value)).not.toContain("memory://<memory-id>");
 
 			// A caller that is no longer registered is offered nothing at all.
-			expect(await getInternalUrlSuggestions("memory://", () => ({ cwd: sharedCwd, sessionId: "gone" }))).toBeNull();
+			expect(
+				await getInternalUrlSuggestions("memory://", undefined, undefined, () => ({
+					cwd: sharedCwd,
+					sessionId: "gone",
+				})),
+			).toBeNull();
 		});
 	});
 

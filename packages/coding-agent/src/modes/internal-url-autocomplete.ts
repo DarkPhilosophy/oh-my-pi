@@ -93,18 +93,21 @@ export type InternalUrlCallerContext = Pick<ResolveContext, "cwd" | "sessionFile
 /**
  * Suggestions for the internal-url token ending at the cursor, or `null` when
  * the text is not such a token or no candidate matches the typed query.
- * Read caller identity only after recognizing an internal-URL token.
+ * The optional lazy caller binding overrides cwd and is read only after
+ * recognizing an internal-URL token.
  */
 export async function getInternalUrlSuggestions(
 	textBeforeCursor: string,
-	getCaller?: () => InternalUrlCallerContext,
+	cwd?: string,
 	signal?: AbortSignal,
+	getCaller?: () => InternalUrlCallerContext,
 ): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
 	if (signal?.aborted) return null;
 	const ctx = extractInternalUrlContext(textBeforeCursor);
 	if (!ctx) return null;
 
 	const candidates = await InternalUrlRouter.instance().complete(ctx.scheme, ctx.query, {
+		...(cwd === undefined ? {} : { cwd }),
 		...getCaller?.(),
 		...(signal ? { signal } : {}),
 	});

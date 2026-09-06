@@ -176,7 +176,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 				// tokens such as `#copy` literal.
 				const githubRefSuggestions = getGithubRefSuggestions(textBeforeCursor);
 				if (githubRefSuggestions) return githubRefSuggestions;
-				return getInternalUrlSuggestions(textBeforeCursor, this.#internalUrlCaller, signal);
+				return getInternalUrlSuggestions(textBeforeCursor, undefined, signal, this.#internalUrlCaller);
 			}
 		}
 
@@ -206,7 +206,12 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			}
 		}
 
-		const urlSuggestions = await getInternalUrlSuggestions(textBeforeCursor, this.#internalUrlCaller, signal);
+		const urlSuggestions = await getInternalUrlSuggestions(
+			textBeforeCursor,
+			undefined,
+			signal,
+			this.#internalUrlCaller,
+		);
 		if (urlSuggestions) return urlSuggestions;
 
 		if (!isSettingsInitialized() || settings.get("emojiAutocomplete")) {
