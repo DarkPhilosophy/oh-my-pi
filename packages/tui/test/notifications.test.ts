@@ -285,6 +285,22 @@ describe("terminal notifications", () => {
 		expect(sounds).toEqual(["done", "request", "none"]);
 	});
 
+	it("never hands Herdr a title it would read as a help request", () => {
+		// The title is the CLI's first positional; `help`, `--help` and `-h` there
+		// print usage instead of showing anything, while the spawn still succeeds
+		// and would suppress the OSC fallback. Other hyphen titles are fine.
+		Bun.env.HERDR_ENV = "1";
+		Bun.env.HERDR_PANE_ID = "w6:p1";
+		vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+		const spawn = vi.spyOn(Bun, "spawn").mockImplementation((..._args: unknown[]) => ({ unref: vi.fn() }) as never);
+
+		TERMINAL.sendNotification({ title: "--help", body: "Complete", type: "completion" });
+		TERMINAL.sendNotification({ title: "-x session", body: "Complete", type: "completion" });
+
+		const titles = spawn.mock.calls.map(call => (call[0] as unknown as { cmd: string[] }).cmd[3]);
+		expect(titles).toEqual(["Oh My Pi", "-x session"]);
+	});
+
 	it("keeps the OSC fallback when the Herdr pane id is absent", () => {
 		Bun.env.HERDR_ENV = "1";
 		delete Bun.env.HERDR_PANE_ID;

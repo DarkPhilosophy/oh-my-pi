@@ -77,6 +77,12 @@ function sendCmuxNotification(message: string | TerminalNotification, env: NodeJ
 }
 
 const HERDR_PANE_ID_PATTERN = /^[0-9A-Za-z:_-]{1,64}$/u;
+/**
+ * `herdr notification show` takes the title as its first positional and reads
+ * exactly these three values there as a help request; it has no `--`
+ * terminator. Any other text, including one starting with `-`, is a title.
+ */
+const HERDR_USAGE_TOKENS = new Set(["help", "--help", "-h"]);
 
 /**
  * Route a notification through Herdr when the process runs inside one of its
@@ -99,7 +105,9 @@ function sendHerdrNotification(message: string | TerminalNotification, env: Node
 	const paneId = env.HERDR_PANE_ID?.trim();
 	if (!paneId || !HERDR_PANE_ID_PATTERN.test(paneId)) return false;
 
-	const { title, body } = notificationTitleAndBody(message);
+	const parsed = notificationTitleAndBody(message);
+	const title = HERDR_USAGE_TOKENS.has(parsed.title) ? CMUX_NOTIFICATION_TITLE : parsed.title;
+	const body = parsed.body;
 	const kinds = typeof message === "string" ? [] : [message.type ?? []].flat();
 	const sound =
 		kinds.includes("ask") || kinds.includes("error") ? "request" : kinds.includes("completion") ? "done" : "none";
