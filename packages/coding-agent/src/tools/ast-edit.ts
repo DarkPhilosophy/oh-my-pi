@@ -291,7 +291,7 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 				settings: this.session.settings,
 				signal,
 				sessionFile: this.session.getSessionFile() ?? undefined,
-				sessionId: this.session.getSessionId?.() ?? undefined,
+				sessionId: this.session.sessionManager?.getSessionId() ?? this.session.getSessionId?.() ?? undefined,
 				agentRegistry: this.session.agentRegistry,
 				localProtocolOptions: this.session.localProtocolOptions,
 				skills: this.session.skills,
