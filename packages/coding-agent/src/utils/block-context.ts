@@ -161,6 +161,8 @@ function isHashCommentStart(line: string, index: number): boolean {
  */
 function lexicalBracketContext(fullLines: readonly string[], visible: ReadonlySet<number>): Map<number, string> {
 	const context = new Map<number, string>();
+	// Without bracket characters, the lexical fallback cannot add boundary lines.
+	if (!fullLines.some(line => /[()[\]{}]/.test(line))) return context;
 	const stack: StackEntry[] = [];
 	let mode: ScannerMode = "code";
 	let escaped = false;
