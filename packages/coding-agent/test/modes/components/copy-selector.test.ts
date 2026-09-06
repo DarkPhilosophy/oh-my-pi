@@ -384,4 +384,108 @@ describe("CopySelectorComponent", () => {
 		expect(boxed).toContain("const answer = 42;");
 		expect(boxed).not.toContain("bun test");
 	});
+
+	/** A picker over `entries` with the harness deps, recording picks. */
+	function pickerOver(
+		entries: SessionMessageEntry[],
+		picks: Array<{ content: string; label: string }>,
+	): CopySelectorComponent {
+		return new CopySelectorComponent(entries, {
+			ui: { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI,
+			cwd: "/tmp",
+			requestRender: () => {},
+			onPick: (content, label) => picks.push({ content, label }),
+			onCancel: () => {},
+		});
+	}
+
+	it("replays only the recent tail of a long branch until `a` loads the earlier turns", () => {
+		// One component is built and rendered per entry, so a long session cost
+		// seconds before its first frame; the picker starts at the tail instead.
+		const entries: SessionMessageEntry[] = [];
+		for (let index = 0; index < 900; index++) {
+			entries.push(
+				entry(`u${index}`, index === 0 ? null : `u${index - 1}`, {
+					role: "user",
+					content: `prompt ${index}`,
+					timestamp: index,
+				} as AgentMessage),
+			);
+		}
+		const picks: Array<{ content: string; label: string }> = [];
+		const selector = pickerOver(entries, picks);
+		try {
+			expect(selector.targetCount).toBeLessThan(entries.length);
+			expect(Bun.stripANSI(selector.render(100).join("\n"))).toContain("a earlier turns");
+
+			// Step off the newest turn: the reload must restore this turn, not
+			// fall back to the last target of the fuller transcript.
+			selector.handleInput(UP);
+			selector.handleInput(UP);
+			selector.handleInput("a");
+			expect(selector.targetCount).toBe(entries.length);
+			const loaded = Bun.stripANSI(selector.render(100).join("\n"));
+			expect(loaded).not.toContain("a earlier turns");
+			expect(loaded).toContain(`${entries.length - 2}/${entries.length}`);
+
+			selector.handleInput(ENTER);
+			expect(picks).toEqual([{ content: "prompt 897", label: "user message" }]);
+		} finally {
+			selector.dispose();
+		}
+	});
+
+	it("keeps a copyable target when the final turn is longer than the replay cap", () => {
+		// Cutting blindly at `length - limit` would start the tail inside the
+		// tool results, whose calls are gone: the builder drops them and the
+		// picker mounts with nothing to copy.
+		const entries: SessionMessageEntry[] = [
+			entry("u1", null, { role: "user", content: "run the sweep", timestamp: 1 } as AgentMessage),
+		];
+		for (let index = 0; index < 700; index++) {
+			const call = `call-${index}`;
+			entries.push(
+				entry(`a${index}`, entries.at(-1)!.id, {
+					role: "assistant",
+					content: [{ type: "toolCall", id: call, name: "bash", arguments: { command: `step ${index}` } }],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-sonnet-4-5",
+					stopReason: "toolUse",
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					timestamp: 2 + index * 2,
+				} as unknown as AgentMessage),
+			);
+			entries.push(
+				entry(`t${index}`, entries.at(-1)!.id, {
+					role: "toolResult",
+					toolCallId: call,
+					toolName: "bash",
+					content: [{ type: "text", text: `output ${index}` }],
+					isError: false,
+					timestamp: 3 + index * 2,
+				} as unknown as AgentMessage),
+			);
+		}
+		const picks: Array<{ content: string; label: string }> = [];
+		const selector = pickerOver(entries, picks);
+		try {
+			// The single user turn is the only boundary, so the whole branch replays.
+			expect(selector.targetCount).toBeGreaterThan(0);
+			expect(Bun.stripANSI(selector.render(100).join("\n"))).not.toContain("a earlier turns");
+
+			selector.handleInput(ENTER);
+			expect(picks).toHaveLength(1);
+			expect(picks[0]!.content).toContain("output 699");
+		} finally {
+			selector.dispose();
+		}
+	});
 });
