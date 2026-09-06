@@ -11,9 +11,13 @@
 - Fixed the transcript getting stuck in the live viewport with no scrollable history: frame providers now report live-region pinning per frame instead of permanently, so settled rows reach native scrollback again.
 - Fixed unnecessary scrollback clears when finalized history batches are still being retired during tool completion.
 - Fixed the right-side widget panel disappearing once the transcript grew past one screen: panel placement now resolves segment rows against the visible viewport instead of the taller logical frame.
+## [18.1.12] - 2026-09-06
+
 ### Fixed
 
+- Fixed notifications never arriving in a Herdr pane. Herdr multiplexes panes like tmux but swallows bare OSC 9 / OSC 99 and has no passthrough envelope, so a backgrounded pane got no signal at all; delivery now goes through `herdr notification show` (a waiting question or an error rings `request`, a settled turn rings `done`), and the in-band write stays as the fallback when the pane id or the `herdr` binary is missing.
 - Avoid inserting a trailing space when auto-completing directory paths with `@`, and keep autocomplete open when accepting a directory with Tab or Enter.
+- Horizontal wheel reports (the sideways drift of a two-finger trackpad scroll) no longer decode as a vertical wheel direction, so fullscreen selectors such as `/copy` and the rewind picker stop jumping up and back down at the end of a scroll gesture.
 
 ## [18.1.9] - 2026-09-04
 
