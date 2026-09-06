@@ -1013,7 +1013,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					skills: this.session.skills,
 					rules: this.session.activeRules,
 					sessionFile: this.session.getSessionFile() ?? undefined,
-					sessionId: this.session.sessionManager?.getSessionId() ?? this.session.getSessionId?.() ?? undefined,
+					sessionId: this.session.sessionManager?.getSessionId?.() ?? this.session.getSessionId?.() ?? undefined,
 					agentRegistry: this.session.agentRegistry,
 				});
 				const searchablePaths = internalResolution.paths;
@@ -1058,7 +1058,8 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 						skills: this.session.skills,
 						rules: this.session.activeRules,
 						sessionFile: this.session.getSessionFile() ?? undefined,
-						sessionId: this.session.sessionManager?.getSessionId() ?? this.session.getSessionId?.() ?? undefined,
+						sessionId:
+							this.session.sessionManager?.getSessionId?.() ?? this.session.getSessionId?.() ?? undefined,
 						agentRegistry: this.session.agentRegistry,
 						resolveExternalUrl: materializeExternalUrlForSearch,
 						trackImmutableSources: true,

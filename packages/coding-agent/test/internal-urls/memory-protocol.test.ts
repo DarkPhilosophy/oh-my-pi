@@ -14,6 +14,7 @@ import {
 import { getInternalUrlSuggestions } from "@oh-my-pi/pi-coding-agent/modes/internal-url-autocomplete";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { GlobTool } from "@oh-my-pi/pi-coding-agent/tools/glob";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
@@ -143,6 +144,46 @@ describe("MemoryProtocolHandler", () => {
 					}),
 				]),
 			);
+		});
+	});
+
+	it("reads memory with a journal-only ToolSession manager", async () => {
+		await withMemoryFixture(async ({ cwd, memoryRoot }) => {
+			const settings = Settings.isolated({ "memory.backend": "local" });
+			const manager = SessionManager.inMemory(cwd);
+			const journal = {
+				appendCustomEntry: manager.appendCustomEntry.bind(manager),
+				ensureOnDisk: manager.ensureOnDisk.bind(manager),
+				flush: manager.flush.bind(manager),
+				getBranch: manager.getBranch.bind(manager),
+				getEntries: manager.getEntries.bind(manager),
+			};
+			const agentRegistry = new AgentRegistry();
+			agentRegistry.register({
+				id: "journal-owner",
+				displayName: "journal-owner",
+				kind: "main",
+				sessionFile: null,
+				session: { settings, sessionManager: manager } as unknown as AgentSession,
+			});
+			await Bun.write(path.join(memoryRoot, "memory_summary.md"), "journal-only summary");
+			const tool = new ReadTool({
+				cwd,
+				hasUI: false,
+				settings,
+				agentRegistry,
+				sessionManager: journal,
+				getSessionId: () => manager.getSessionId(),
+				getSessionFile: () => null,
+				getSessionSpawns: () => null,
+			});
+			const result = await tool.execute("journal-memory", { path: "memory://root" });
+			expect(
+				result.content
+					.filter(item => item.type === "text")
+					.map(item => item.text)
+					.join("\n"),
+			).toContain("journal-only summary");
 		});
 	});
 

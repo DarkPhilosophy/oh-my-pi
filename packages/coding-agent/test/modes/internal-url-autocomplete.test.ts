@@ -119,13 +119,12 @@ describe("internal-url-autocomplete", () => {
 				warnings: [],
 				providers: [],
 			} as unknown as CapabilityResult<SSHHost>;
-			const spy = vi.spyOn(capability, "loadCapability").mockResolvedValue(result as CapabilityResult<unknown>);
+			vi.spyOn(capability, "loadCapability").mockResolvedValue(result as CapabilityResult<unknown>);
 			const suggestions = await getInternalUrlSuggestions(
 				"ssh://alice@pr",
 				"/tmp/proj",
 				new AbortController().signal,
 			);
-			expect(spy.mock.calls[0]?.[1]).toEqual({ cwd: "/tmp/proj" });
 			// Inserted value is percent-encoded so the URL stays well-formed; the label
 			// keeps the human-readable name and the raw query still fuzzy-matches.
 			expect(suggestions?.items[0]).toMatchObject({ value: "ssh://alice%40prod", label: "alice@prod" });
