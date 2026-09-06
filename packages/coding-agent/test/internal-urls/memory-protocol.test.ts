@@ -11,6 +11,7 @@ import {
 	MnemopiSessionState,
 	setMnemopiSessionState,
 } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
+import { getInternalUrlSuggestions } from "@oh-my-pi/pi-coding-agent/modes/internal-url-autocomplete";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -745,6 +746,52 @@ describe("MemoryProtocolHandler — mnemopi bridge (issue #4443)", () => {
 				await twinState?.dispose({ consolidate: false });
 				await twinDir.remove();
 			}
+		});
+	});
+
+	it("offers the calling session's own memory id to prompt autocomplete when a child shares its cwd", async () => {
+		await withMnemopiSession(async ({ dbDir }) => {
+			const sharedCwd = dbDir.path();
+			const childSessionFile = path.join(sharedCwd, "autocomplete-child.jsonl");
+			const childSession = {
+				sessionFile: childSessionFile,
+				sessionManager: {
+					getCwd: () => sharedCwd,
+					getArtifactsDir: () => null,
+					getSessionId: () => "autocomplete-child",
+				},
+				settings: Settings.isolated({ "memory.backend": "hindsight" }),
+			} as unknown as AgentSession;
+			AgentRegistry.global().register({
+				id: "autocomplete-child",
+				displayName: "autocomplete-child",
+				kind: "sub",
+				parentId: "test-mnemopi",
+				session: childSession,
+				sessionFile: childSessionFile,
+			});
+			// The child shares this cwd, so a cwd-only context names no caller and
+			// identifies no bank — what the prompt used to send.
+			const ambiguous = await getInternalUrlSuggestions("memory://", () => ({ cwd: sharedCwd }));
+			expect(ambiguous?.items.map(item => item.value) ?? []).not.toContain("memory://<memory-id>");
+
+			// Naming the session that will resolve the URL offers its own bank again.
+			const bound = await getInternalUrlSuggestions("memory://", () => ({
+				cwd: sharedCwd,
+				sessionId: "test-mnemopi",
+			}));
+			expect(bound?.items.map(item => item.value)).toContain("memory://<memory-id>");
+
+			// Typing into the child instead binds to its hindsight backend, which has
+			// no addressable ids, rather than to the peer bank in the same cwd.
+			const childBound = await getInternalUrlSuggestions("memory://", () => ({
+				cwd: sharedCwd,
+				sessionFile: childSessionFile,
+			}));
+			expect(childBound?.items.map(item => item.value)).not.toContain("memory://<memory-id>");
+
+			// A caller that is no longer registered is offered nothing at all.
+			expect(await getInternalUrlSuggestions("memory://", () => ({ cwd: sharedCwd, sessionId: "gone" }))).toBeNull();
 		});
 	});
 

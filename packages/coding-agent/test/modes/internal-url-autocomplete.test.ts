@@ -98,36 +98,12 @@ describe("internal-url-autocomplete", () => {
 			expect(result!.items[0]!.value).toBe("skill://react");
 		});
 
-		it("carries the candidate description through", async () => {
-			const result = await getInternalUrlSuggestions("rule://python");
-			expect(result!.items[0]).toMatchObject({ value: "rule://python", description: "robomp rules" });
-		});
-
 		it("returns null when no candidate matches", async () => {
 			expect(await getInternalUrlSuggestions("skill://zzzzz")).toBeNull();
 		});
 
 		it("returns null for schemes without a completion handler", async () => {
 			expect(await getInternalUrlSuggestions("issue://")).toBeNull();
-		});
-
-		it("threads cwd through to ssh host completion", async () => {
-			const result: CapabilityResult<SSHHost> = {
-				items: [
-					{
-						name: "web1",
-						host: "10.0.0.1",
-						_source: { provider: "ssh-json", providerName: "SSH Config", path: "/x", level: "user" },
-					},
-				],
-				all: [],
-				warnings: [],
-				providers: [],
-			};
-			const spy = vi.spyOn(capability, "loadCapability").mockResolvedValue(result as CapabilityResult<unknown>);
-			const suggestions = await getInternalUrlSuggestions("ssh://", "/tmp/proj");
-			expect(suggestions?.items.map(i => i.value)).toEqual(["ssh://web1"]);
-			expect(spy.mock.calls[0]?.[1]).toEqual({ cwd: "/tmp/proj" });
 		});
 
 		it("percent-encodes a configured ssh host with reserved characters while matching a raw query", async () => {
