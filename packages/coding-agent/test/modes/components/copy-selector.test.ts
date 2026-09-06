@@ -389,21 +389,21 @@ describe("CopySelectorComponent", () => {
 	function pickerOver(
 		entries: SessionMessageEntry[],
 		picks: Array<{ content: string; label: string }>,
+		onRender: () => void = () => {},
 	): CopySelectorComponent {
 		return new CopySelectorComponent(entries, {
 			ui: { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI,
 			cwd: "/tmp",
-			requestRender: () => {},
+			requestRender: onRender,
 			onPick: (content, label) => picks.push({ content, label }),
 			onCancel: () => {},
 		});
 	}
 
-	it("replays only the recent tail of a long branch until `a` loads the earlier turns", () => {
-		// One component is built and rendered per entry, so a long session cost
-		// seconds before its first frame; the picker starts at the tail instead.
+	/** `count` user turns, oldest first, chained by parent id. */
+	function promptChain(count: number): SessionMessageEntry[] {
 		const entries: SessionMessageEntry[] = [];
-		for (let index = 0; index < 900; index++) {
+		for (let index = 0; index < count; index++) {
 			entries.push(
 				entry(`u${index}`, index === 0 ? null : `u${index - 1}`, {
 					role: "user",
@@ -412,6 +412,40 @@ describe("CopySelectorComponent", () => {
 				} as AgentMessage),
 			);
 		}
+		return entries;
+	}
+
+	it("does not repaint for a wheel notch that cannot move the viewport", () => {
+		// The picker opens scrolled to the newest turn, so every wheel-down
+		// notch there used to repaint the whole frame and make it twitch.
+		let renders = 0;
+		const selector = pickerOver(promptChain(120), [], () => renders++);
+		const wheelDown = "\x1b[<65;1;10M";
+		const wheelUp = "\x1b[<64;1;10M";
+		try {
+			selector.render(100);
+
+			selector.handleInput(wheelDown);
+			selector.handleInput(wheelDown);
+			expect(renders).toBe(0);
+
+			// A notch that moves the viewport still repaints, in both directions.
+			selector.handleInput(wheelUp);
+			expect(renders).toBe(1);
+			selector.handleInput(wheelDown);
+			expect(renders).toBe(2);
+
+			selector.handleInput(wheelDown);
+			expect(renders).toBe(2);
+		} finally {
+			selector.dispose();
+		}
+	});
+
+	it("replays only the recent tail of a long branch until `a` loads the earlier turns", () => {
+		// One component is built and rendered per entry, so a long session cost
+		// seconds before its first frame; the picker starts at the tail instead.
+		const entries = promptChain(900);
 		const picks: Array<{ content: string; label: string }> = [];
 		const selector = pickerOver(entries, picks);
 		try {

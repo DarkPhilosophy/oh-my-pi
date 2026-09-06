@@ -206,8 +206,11 @@ export class CopySelectorComponent implements Component {
 		if (data.startsWith("\x1b[<")) {
 			routeSgrMouseInput(data, event => {
 				if (event.wheel !== null) {
+					// A wheel notch at either end moves nothing: repainting it
+					// anyway makes the frame twitch under a fast wheel.
+					const before = this.#scrollView.getScrollOffset();
 					this.#scrollView.scroll(event.wheel * 3);
-					this.deps.requestRender();
+					if (this.#scrollView.getScrollOffset() !== before) this.deps.requestRender();
 					return true;
 				}
 				if (event.leftClick) this.#click(event.row, event.col);
