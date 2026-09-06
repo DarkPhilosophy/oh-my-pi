@@ -43,6 +43,12 @@ export type TerminalId =
 const CMUX_NOTIFICATION_TITLE = "Oh My Pi";
 const CMUX_SURFACE_ID_PATTERN = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/iu;
 
+/** Title and body for an out-of-band multiplexer notification (cmux, Herdr). */
+function notificationTitleAndBody(message: string | TerminalNotification): { title: string; body: string } {
+	if (typeof message === "string") return { title: CMUX_NOTIFICATION_TITLE, body: message };
+	return { title: message.title?.trim() || CMUX_NOTIFICATION_TITLE, body: message.body ?? "" };
+}
+
 /**
  * Route a notification through cmux when the process belongs to a concrete
  * surface. Workspace/socket state alone is not enough: only the injected
@@ -54,9 +60,7 @@ function sendCmuxNotification(message: string | TerminalNotification, env: NodeJ
 	const surfaceId = env.CMUX_SURFACE_ID?.trim();
 	if (!surfaceId || !CMUX_SURFACE_ID_PATTERN.test(surfaceId)) return false;
 
-	const title =
-		typeof message === "string" ? CMUX_NOTIFICATION_TITLE : message.title?.trim() || CMUX_NOTIFICATION_TITLE;
-	const body = typeof message === "string" ? message : (message.body ?? "");
+	const { title, body } = notificationTitleAndBody(message);
 	try {
 		const child = Bun.spawn({
 			cmd: ["cmux", "notify", "--surface", surfaceId, "--title", title, "--body", body],
@@ -82,7 +86,8 @@ const HERDR_PANE_ID_PATTERN = /^[0-9A-Za-z:_-]{1,64}$/u;
  * at all that the agent finished or is waiting for input.
  *
  * `sound` maps the notification kind onto what Herdr offers: a question waiting
- * on the user rings `request`, a settled turn rings `done`, anything else stays
+ * on the user and a turn that stopped with an error both need the human and
+ * ring `request`, a settled turn rings `done`, anything else stays
  * silent. Returns whether Herdr owns delivery, so every existing terminal
  * fallback is preserved when the pane id is absent or the binary is missing.
  */
@@ -94,11 +99,10 @@ function sendHerdrNotification(message: string | TerminalNotification, env: Node
 	const paneId = env.HERDR_PANE_ID?.trim();
 	if (!paneId || !HERDR_PANE_ID_PATTERN.test(paneId)) return false;
 
-	const title =
-		typeof message === "string" ? CMUX_NOTIFICATION_TITLE : message.title?.trim() || CMUX_NOTIFICATION_TITLE;
-	const body = typeof message === "string" ? message : (message.body ?? "");
+	const { title, body } = notificationTitleAndBody(message);
 	const kinds = typeof message === "string" ? [] : [message.type ?? []].flat();
-	const sound = kinds.includes("ask") ? "request" : kinds.includes("completion") ? "done" : "none";
+	const sound =
+		kinds.includes("ask") || kinds.includes("error") ? "request" : kinds.includes("completion") ? "done" : "none";
 	try {
 		const child = Bun.spawn({
 			cmd: ["herdr", "notification", "show", title, "--body", body, "--sound", sound],

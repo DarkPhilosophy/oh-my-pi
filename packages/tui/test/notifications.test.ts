@@ -267,20 +267,22 @@ describe("terminal notifications", () => {
 		expect(stdout).not.toHaveBeenCalled();
 	});
 
-	it("rings Herdr's completion sound for a settled turn and stays silent otherwise", () => {
+	it("rings done for a settled turn, request for an error, and stays silent otherwise", () => {
 		Bun.env.HERDR_ENV = "1";
 		Bun.env.HERDR_PANE_ID = "w6:p1";
 		vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 		const spawn = vi.spyOn(Bun, "spawn").mockImplementation((..._args: unknown[]) => ({ unref: vi.fn() }) as never);
 
 		TERMINAL.sendNotification({ title: "session", body: "Complete", type: "completion" });
+		// A turn that stopped on an error needs the human as much as a question does.
 		TERMINAL.sendNotification({ title: "session", body: "Stopped with error", type: "error" });
+		TERMINAL.sendNotification({ title: "session", body: "Reminder", type: "info" });
 
 		const sounds = spawn.mock.calls.map(call => {
 			const { cmd } = call[0] as unknown as { cmd: string[] };
 			return cmd[cmd.indexOf("--sound") + 1];
 		});
-		expect(sounds).toEqual(["done", "none"]);
+		expect(sounds).toEqual(["done", "request", "none"]);
 	});
 
 	it("keeps the OSC fallback when the Herdr pane id is absent", () => {
