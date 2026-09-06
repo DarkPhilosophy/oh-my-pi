@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.12] - 2026-09-06
+
 ### Fixed
 
 - Avoid inserting a trailing space when auto-completing directory paths with `@`, and keep autocomplete open when accepting a directory with Tab or Enter.
