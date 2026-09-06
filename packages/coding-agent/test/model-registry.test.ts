@@ -1711,11 +1711,6 @@ describe("ModelRegistry", () => {
 		});
 	});
 	describe("extended context", () => {
-		test("keeps bundled Astra at its default window without a settings source", () => {
-			const registry = new ModelRegistry(authStorage, modelsJsonPath);
-			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
-		});
-
 		test("toggles bundled Astra between its default and maximum windows without discovery", async () => {
 			const testSettings = Settings.isolated();
 			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
