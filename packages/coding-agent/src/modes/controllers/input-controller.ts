@@ -2154,7 +2154,7 @@ export class InputController {
 		this.ctx.chatContainer.setToolActivityVisible(!this.ctx.hideToolActivity);
 
 		if (this.ctx.hideToolActivity) this.ctx.ui.clearInlineImages();
-		this.ctx.ui.resetDisplay();
+		this.ctx.ui.requestRender(true);
 		this.ctx.showStatus(`Tool activity: ${this.ctx.hideToolActivity ? "hidden" : "visible"}`);
 	}
 
@@ -2165,15 +2165,9 @@ export class InputController {
 				child.setExpanded(expanded);
 			}
 		}
-		// Toggling expansion mutates every block, but on ED3-risk terminals the
-		// transcript freezes a snapshot of each block once it scrolls past the live
-		// region (committed native scrollback is immutable there). A plain repaint
-		// replays those stale snapshots, so the toggle appears to do nothing above
-		// the live block. resetDisplay() invalidates the snapshots and forces a
-		// full clear + replay — the keyboard-accessible resize-reset equivalent —
-		// which is the only path that re-emits the whole transcript at its new
-		// heights.
-		this.ctx.ui.resetDisplay();
+		// Toggling expansion mutates every live block; force a full repaint so
+		// each block is rendered again at its new height in the same frame.
+		this.ctx.ui.requestRender(true);
 	}
 
 	toggleThinkingBlockVisibility(): void {

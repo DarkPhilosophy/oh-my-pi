@@ -270,7 +270,7 @@ class Lines implements Component {
 	constructor(lines: string[]) {
 		this.lines = lines;
 	}
-	invalidate(): void { }
+	invalidate(): void {}
 	render(): string[] {
 		return [...this.lines];
 	}
@@ -293,7 +293,7 @@ function immediateScheduler() {
 		scheduleImmediate: (callback: () => void) => callback(),
 		scheduleRender: (callback: () => void, _delayMs: number) => {
 			callback();
-			return { cancel: () => { } };
+			return { cancel: () => {} };
 		},
 	};
 }
@@ -518,10 +518,14 @@ describe("TUI.setRightPanel", () => {
 					{ component: chat, start: 20, rowCount: 12 },
 				],
 			}),
-			acknowledgeHistory: () => { },
+			acknowledgeHistory: () => {},
 		};
 		tui.setFrameProvider(provider);
-		tui.setRightPanel(() => [["<W0>", "<W1>", "<W2>"]], [chat], result => layouts.push(result));
+		tui.setRightPanel(
+			() => [["<W0>", "<W1>", "<W2>"]],
+			[chat],
+			result => layouts.push(result),
+		);
 		tui.start();
 		await settle(term);
 		try {

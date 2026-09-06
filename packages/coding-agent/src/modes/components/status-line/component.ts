@@ -2036,6 +2036,7 @@ export class StatusLineComponent implements Component {
 		previewTitle?: string,
 		options?: { readonly placeholders?: boolean },
 	): string {
+		if (!this.session) return "";
 		const effectiveSettings = this.#resolveSettings();
 		const placeholders = options?.placeholders === true;
 		const plain = layout !== "box" && layout !== "band";

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the status line rendering live folder and session values before a session exists, instead of the startup placeholders.
+- Fixed `!` shortcut commands not running through the configured user shell's interactive PTY, so a standalone `cd` no longer failed to persist for the next command.
+- Fixed the `providers.openai-codex.useReserve` setting being unreachable because its group was missing from the settings Providers tab.
+- Fixed Mermaid code-fence fallback headers showing an icon instead of the `[mermaid]` language label when rendering is disabled or fails.
+- Fixed tool-activity and tool-expansion toggles not repainting the transcript, and the terminal title staying busy after an agent turn ended.
+
 ## [18.1.12] - 2026-09-06
 
 - Fixed edit and write results to report the formatted bytes actually committed by LSP writethrough.

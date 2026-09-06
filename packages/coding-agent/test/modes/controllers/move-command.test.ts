@@ -34,6 +34,9 @@ function createMoveContext(sourceDir: string, settingsFlush?: () => Promise<void
 			getCwd: () => state.cwd,
 			getSessionId: () => "test-session",
 			dropSession: vi.fn(async () => {}),
+			captureState,
+			restoreState,
+			rollbackMove,
 		},
 		settings: {
 			flush: vi.fn(settingsFlush ?? (async () => {})),

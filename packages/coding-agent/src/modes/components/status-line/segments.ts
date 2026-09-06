@@ -427,6 +427,13 @@ const pathSegment: StatusLineSegment = {
 	id: "path",
 	render(ctx) {
 		const opts = ctx.options.path ?? {};
+		if (ctx.startupPlaceholder) {
+			return {
+				content: theme.fg("statusLinePath", withIcon(theme.icon.folder, STARTUP_PLACEHOLDER)),
+				visible: true,
+			};
+		}
+
 		const stripPrefix = opts.stripWorkPrefix !== false;
 
 		// Linked git worktree: the on-disk path nests the worktree base, the
@@ -436,9 +443,7 @@ const pathSegment: StatusLineSegment = {
 		if (stripPrefix && ctx.worktree) {
 			const { projectName, worktreeName } = ctx.worktree;
 			const label = ctx.git.branch === worktreeName ? projectName : `${projectName}/${worktreeName}`;
-			const text = ctx.startupPlaceholder
-				? STARTUP_PLACEHOLDER
-				: fileHyperlink(getProjectDir(), clampPathLength(label, opts.maxLength ?? 40));
+			const text = fileHyperlink(getProjectDir(), clampPathLength(label, opts.maxLength ?? 40));
 			const content = withIcon(theme.icon.worktree, text);
 			return { content: theme.fg("statusLinePath", content), visible: true };
 		}
@@ -463,7 +468,7 @@ const pathSegment: StatusLineSegment = {
 
 		const showScratchIcon = scratch && stripPrefix;
 		const icon = showScratchIcon ? theme.icon.scratchFolder : theme.icon.folder;
-		const text = ctx.startupPlaceholder ? STARTUP_PLACEHOLDER : `${fileHyperlink(projectDir, pwd)}${repoSuffix}`;
+		const text = `${fileHyperlink(projectDir, pwd)}${repoSuffix}`;
 		const content = withIcon(icon, text);
 		return { content: theme.fg("statusLinePath", content), visible: true };
 	},

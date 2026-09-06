@@ -703,7 +703,6 @@ function createSimpleAnthropicProviderOptions(
 	defaultBaseUrlFallback: string,
 	config?: SimpleProviderConfig,
 ): ModelManagerOptions<"anthropic-messages"> {
-	const apiKey = config?.apiKey;
 	const baseUrl = normalizeAnthropicBaseUrl(config?.baseUrl, defaultBaseUrlFallback);
 	const discoveryBaseUrl = toAnthropicDiscoveryBaseUrl(baseUrl);
 	const references = createBundledReferenceMap<"anthropic-messages">(providerId);

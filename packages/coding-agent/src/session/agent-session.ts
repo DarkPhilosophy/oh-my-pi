@@ -118,7 +118,7 @@ import { releaseCompletionHandles } from "../eval/completion-bridge";
 import type { EvalPreludeDefinition } from "../eval/preludes";
 import type { PythonResult } from "../eval/py/executor";
 import { WorkPoolRegistry } from "../task/workpool";
-import type { BashResult } from "../exec/bash-executor";
+import type { BashPtyOptions, BashResult } from "../exec/bash-executor";
 import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
 import type { CustomTool } from "../extensibility/custom-tools/types";
@@ -8513,7 +8513,7 @@ export class AgentSession {
 	executeBash(
 		command: string,
 		onChunk?: (chunk: string) => void,
-		options?: { excludeFromContext?: boolean; useUserShell?: boolean },
+		options?: { excludeFromContext?: boolean; useUserShell?: boolean; pty?: BashPtyOptions },
 	): Promise<BashResult> {
 		return this.#bash.executeBash(command, onChunk, options);
 	}

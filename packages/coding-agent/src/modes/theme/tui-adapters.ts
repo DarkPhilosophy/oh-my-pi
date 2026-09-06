@@ -213,7 +213,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 		code: (text: string) => theme.fg("mdCode", text),
 		codeBlock: (text: string) => theme.fg("mdCodeBlock", text),
 		codeBlockBorder: (text: string) => theme.fg("mdCodeBlockBorder", text),
-		codeBlockLanguage: (lang: string) => theme.getLangIconStyled(lang),
+		codeBlockLanguage: (lang: string) => lang,
 		guidanceTrail: codeGuidanceTrail,
 		copyChip: "copy",
 		copyChipTarget: code => copyUrlTarget(code, copyUrlHandlerReady),

@@ -51,6 +51,7 @@ import {
 	splitAssistantMessageToolTimeline,
 } from "../utils/transcript-render-helpers";
 import { isWarpCliAgentProtocolActive } from "../warp-events";
+import { setTerminalTitleState } from "../../utils/title-generator";
 import { StreamingRevealController } from "./streaming-reveal";
 import { streamingStringKeysForTool, ToolArgsRevealController } from "./tool-args-reveal";
 
@@ -1972,6 +1973,7 @@ export class EventController {
 			this.ctx.flushPendingCommandOutput();
 			return;
 		}
+		setTerminalTitleState("idle");
 		this.ctx.setTerminalTitleState("idle");
 
 		await this.#finishAgentEnd(event);

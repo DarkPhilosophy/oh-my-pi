@@ -39,6 +39,7 @@ function createResumeContext(opts: { flushFails?: boolean; sourceCwd?: string; p
 	const ctx = {
 		session: { switchSession },
 		sessionManager: {
+			getSessionId: () => "test-session",
 			getCwd: () => state.cwd,
 			getSessionDir: () => "/tmp",
 			getSessionFile: () => opts.previousSessionFile,
