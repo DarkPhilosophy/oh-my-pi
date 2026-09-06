@@ -270,7 +270,7 @@ class Lines implements Component {
 	constructor(lines: string[]) {
 		this.lines = lines;
 	}
-	invalidate(): void {}
+	invalidate(): void { }
 	render(): string[] {
 		return [...this.lines];
 	}
@@ -293,7 +293,7 @@ function immediateScheduler() {
 		scheduleImmediate: (callback: () => void) => callback(),
 		scheduleRender: (callback: () => void, _delayMs: number) => {
 			callback();
-			return { cancel: () => {} };
+			return { cancel: () => { } };
 		},
 	};
 }
@@ -493,6 +493,43 @@ describe("TUI.setRightPanel", () => {
 			expect(viewport.some(line => line.includes("msg-29"))).toBeTrue();
 			expect(viewport.some(line => line.includes("<W0>"))).toBeTrue();
 			expect(viewport.find(line => line.startsWith("[editor]"))).not.toContain("<W");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("keeps the panel placed when the provider frame overflows the viewport", async () => {
+		// No history batch is offered, so the plan's logical frame stays taller
+		// than the terminal and only its bottom `rows` are emitted. Segment
+		// coordinates are logical: the transcript's segment starts at logical row
+		// 20 but at on-screen row 0. Left unshifted, every target row landed past
+		// the viewport, no row was eligible, and the panel hid itself entirely —
+		// the widget vanishing once a session grew past one screen.
+		const term = new VirtualTerminal(80, 12, 1000);
+		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
+		const scrolled = new Lines(Array.from({ length: 20 }, (_, i) => `old-${i}`));
+		const chat = new Lines(Array.from({ length: 12 }, (_, i) => `msg-${i}`));
+		const layouts: PanelLayoutResult[] = [];
+		const provider: TerminalFrameProvider = {
+			renderFrame: () => ({
+				viewport: [...scrolled.render(), ...chat.render()],
+				segments: [
+					{ component: scrolled, start: 0, rowCount: 20 },
+					{ component: chat, start: 20, rowCount: 12 },
+				],
+			}),
+			acknowledgeHistory: () => { },
+		};
+		tui.setFrameProvider(provider);
+		tui.setRightPanel(() => [["<W0>", "<W1>", "<W2>"]], [chat], result => layouts.push(result));
+		tui.start();
+		await settle(term);
+		try {
+			const viewport = term.getViewport();
+			expect(viewport.some(line => line.includes("msg-11"))).toBeTrue();
+			expect(layouts.at(-1)?.hiddenBlockIndices).toEqual([]);
+			expect(layouts.at(-1)?.placedBlockIndices).toEqual([0]);
+			expect(viewport.some(line => line.includes("<W0>"))).toBeTrue();
 		} finally {
 			tui.stop();
 		}
