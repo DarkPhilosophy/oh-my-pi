@@ -262,6 +262,34 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
+	it("accepts a finalized batch that re-offers already-borrowed rows without a destructive replay", () => {
+		// A live overflowing frame lends its scrolled-off rows to native
+		// scrollback. When the transcript later finalizes that same prefix, the
+		// rows on screen are already correct: clearing scrollback and replaying
+		// only collapsed the visible window (and with it the right-side panel).
+		const terminal = new VirtualTerminal(20, 4);
+		let replays = 0;
+		const provider = new Provider({ viewport: ["a", "b", "live", "editor", "extra"] });
+		const replayingProvider: TerminalFrameProvider = {
+			renderFrame: size => provider.renderFrame(size),
+			acknowledgeHistory: id => provider.acknowledgeHistory(id),
+			beginHistoryReplay: () => {
+				replays++;
+			},
+		};
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(replayingProvider);
+		expect(terminal.getBufferPosition().baseY).toBe(1);
+
+		provider.plan = { history: { id: 1, rows: ["a", "b"] }, viewport: ["live", "editor", "extra"] };
+		tui.requestRender(true);
+
+		expect(replays).toBe(0);
+		expect(provider.acknowledged).toEqual([1]);
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["b", "live", "editor", "extra"]);
+		tui.stop();
+	});
+
 	it("fuses fullscreen overlay exit into a session replacement paint", () => {
 		const terminal = new CountingTerminal(171, 39);
 		const provider = new Provider({ viewport: ["old session"] });

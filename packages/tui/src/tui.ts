@@ -706,6 +706,8 @@ export class TUI extends Container {
 	#providerLogicalCommitted = 0;
 	/** Whether physical scrollback currently contains inferred rows from a live, unfinalized frame. */
 	#providerHasTransientHistory = false;
+	/** The exact rows borrowed into native scrollback by those live frames, in order. */
+	#providerTransientRows: string[] = [];
 	// Viewport-relative row of the hardware cursor after the last normal paint
 	// (0 = parked at the viewport top). A resize reflows the normal buffer
 	// before the app hears about it; terminals keep the cursor attached to its
@@ -929,6 +931,7 @@ export class TUI extends Container {
 		this.#providerWindow = [];
 		this.#providerLogicalCommitted = 0;
 		this.#providerHasTransientHistory = false;
+		this.#providerTransientRows = [];
 		this.#resizeReplaySize = undefined;
 		this.requestRender(true);
 	}
@@ -2273,6 +2276,7 @@ export class TUI extends Container {
 	 * are exactly the on-screen viewport, never a retired history batch, so
 	 * compositing can never enter the immutable ledger.
 	 */
+
 	#compositeRightPanelIntoViewport(viewport: string[], width: number, overlayVisible: boolean): string[] {
 		const provider = this.#rightPanelProvider;
 		if (provider === null) return viewport;
@@ -2558,27 +2562,46 @@ export class TUI extends Container {
 			plan.history === undefined && overflow > this.#providerLogicalCommitted
 				? logicalViewport.slice(this.#providerLogicalCommitted, overflow)
 				: [];
-		if (plan.history !== undefined && plan.history.kind !== "replay" && this.#providerHasTransientHistory) {
-			// The terminal borrowed native scrollback for a live frame. Before accepting
-			// finalized history, replace that transient copy with the provider's
-			// authoritative replay so no partial stream survives as permanent history.
-			provider.acknowledgeHistory(plan.history.id);
-			this.#providerLogicalCommitted = 0;
-			this.#providerHasTransientHistory = false;
-			this.#prepareForcedRender(true);
-			this.requestRender(true);
-			return;
+		if (inferredHistory.length > 0) this.#providerTransientRows.push(...inferredHistory);
+		let history = plan.history;
+		if (history !== undefined && history.kind !== "replay" && this.#providerHasTransientHistory) {
+			// Rows the terminal borrowed into native scrollback for a live frame are
+			// provider-rendered rows of the same append-only ledger, so a finalized
+			// batch normally re-offers them as its own leading rows. When it does,
+			// they are already permanent and correct: accept the batch and write only
+			// its remainder. Only a batch that disagrees with what is already on
+			// screen needs the destructive replay, which clears scrollback and
+			// collapses the visible window.
+			const borrowed = this.#providerTransientRows;
+			const offeredRows = history.rows;
+			const matches =
+				offeredRows.length >= borrowed.length && borrowed.every((row, index) => offeredRows[index] === row);
+			if (matches) {
+				history = { ...history, rows: history.rows.slice(borrowed.length) };
+				this.#providerTransientRows = [];
+				this.#providerHasTransientHistory = false;
+			} else {
+				// The transient copy is not a prefix of the authoritative ledger (a
+				// partially streamed block reached scrollback). Replace it wholesale.
+				provider.acknowledgeHistory(history.id);
+				this.#providerLogicalCommitted = 0;
+				this.#providerHasTransientHistory = false;
+				this.#providerTransientRows = [];
+				this.#prepareForcedRender(true);
+				this.requestRender(true);
+				return;
+			}
 		}
 		// An offered batch owns retirement. Its remaining viewport can still
 		// overflow while the next finalized batch waits for acknowledgement.
 		// Borrowing those same rows into native history would turn the next
 		// ordinary append into a destructive replay.
-		this.#providerLogicalCommitted =
-			plan.history === undefined ? Math.max(this.#providerLogicalCommitted, overflow) : 0;
+		this.#providerLogicalCommitted = history === undefined ? Math.max(this.#providerLogicalCommitted, overflow) : 0;
+		if (history !== undefined) this.#providerTransientRows = [];
 		this.#providerHasTransientHistory ||= inferredHistory.length > 0;
 		const viewport = logicalViewport.slice(overflow);
 		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
-		this.#emitPlanFrame(width, height, viewport, plan.history, provider, inferredHistory);
+		this.#emitPlanFrame(width, height, viewport, history, provider, inferredHistory);
 	}
 	/**
 	 * Re-offer finalized history once after a settled resize.
@@ -2715,6 +2738,7 @@ export class TUI extends Container {
 			this.#providerWindow = [];
 			this.#providerLogicalCommitted = 0;
 			this.#providerHasTransientHistory = false;
+			this.#providerTransientRows = [];
 		}
 		// The viewport stays anchored directly below whatever history remains on
 		// screen. Appending K history rows moves the anchor down by K; the write
