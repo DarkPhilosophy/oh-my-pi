@@ -75,12 +75,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		resetSettingsForTest();
 	});
 
-	function setTodoClearDelay(todoClearDelay: number): void {
-		session.settings.override("tasks.todoClearDelay", todoClearDelay);
-	}
-
-	it("clears closed todos from the panel instantly without mutating session history", () => {
-		setTodoClearDelay(0);
+	it("preserves completed and abandoned tasks in the HUD and session history", () => {
 		const phases: TodoPhase[] = [
 			{
 				name: "Implementation",
@@ -93,10 +88,12 @@ describe("InteractiveMode todo HUD persistence", () => {
 		session.setTodoPhases(phases);
 
 		mode.setTodos(session.getTodoPhases());
-
-		expect(renderTodos(mode)).not.toContain("done task");
-		expect(renderTodos(mode)).not.toContain("abandoned task");
+		expect(renderTodos(mode)).toContain("done task");
+		expect(renderTodos(mode)).toContain("abandoned task");
 		expect(session.getTodoPhases()).toEqual(phases);
+		expect(mode.todoPhases).toEqual(phases);
+		mode.toggleTodoExpansion();
+		expect(renderTodos(mode)).toContain("done task");
 	});
 
 	/**
@@ -117,8 +114,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		},
 	];
 
-	it("keeps an unfinished plan's progress when the auto-clear delay elapses", () => {
-		setTodoClearDelay(1);
+	it("keeps an unfinished plan's progress through idle time", () => {
 		vi.useFakeTimers();
 
 		mode.setTodos(unfinishedPlan());
@@ -131,26 +127,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(rendered).toContain("current task");
 	});
 
-	it("keeps an unfinished plan's progress when auto-clear is instant", () => {
-		setTodoClearDelay(0);
-
-		mode.setTodos(unfinishedPlan());
-
-		const rendered = renderTodos(mode);
-		expect(rendered).toContain("2/3");
-		expect(rendered).toContain("current task");
-	});
-
-	it("leaves closed todos visible when auto-clear is disabled", () => {
-		setTodoClearDelay(-1);
-
-		mode.setTodos([{ name: "Implementation", tasks: [{ content: "done task", status: "completed" }] }]);
-
-		expect(renderTodos(mode)).toContain("done task");
-	});
-
 	it("reloads the visible HUD from the explicitly attached session", async () => {
-		setTodoClearDelay(-1);
 		const focusedDir = TempDir.createSync("@pi-focused-todo-");
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 to exist in registry");
@@ -188,8 +165,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		}
 	});
 
-	it("clears closed todos after the configured delay", () => {
-		setTodoClearDelay(1);
+	it("keeps completed tasks visible and expandable beyond the old auto-clear deadline", () => {
 		vi.useFakeTimers();
 
 		mode.setTodos([{ name: "Implementation", tasks: [{ content: "done task", status: "completed" }] }]);
@@ -198,14 +174,15 @@ describe("InteractiveMode todo HUD persistence", () => {
 		vi.advanceTimersByTime(999);
 		expect(renderTodos(mode)).toContain("done task");
 		expect(renderTodos(mode)).toContain("TODO");
-
-		vi.advanceTimersByTime(1);
-		expect(renderTodos(mode)).not.toContain("done task");
+		vi.advanceTimersByTime(60_000);
+		expect(renderTodos(mode)).toContain("done task");
+		expect(mode.todoPhases.flatMap(phase => phase.tasks).map(task => task.status)).toEqual(["completed"]);
+		mode.toggleTodoExpansion();
+		expect(renderTodos(mode)).toContain("done task");
 	});
 
 	it("marks todos complete when subagent reconciliation reports a finished agent", async () => {
 		await replaceMode();
-		setTodoClearDelay(-1);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 		session.setTodoPhases([
 			{ name: "Implementation", tasks: [{ content: "Fix review comments", status: "pending" }] },
@@ -231,7 +208,6 @@ describe("InteractiveMode todo HUD persistence", () => {
 
 	it("reconciles focused worker todos without overwriting the main session", async () => {
 		await replaceMode();
-		setTodoClearDelay(-1);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 		const mainPhases: TodoPhase[] = [
 			{ name: "Main plan", tasks: [{ content: "orchestrate the main work", status: "in_progress" }] },
@@ -307,7 +283,6 @@ describe("InteractiveMode todo HUD persistence", () => {
 		// the main session. A subagent completing here must land in the worker, not
 		// be written over the main session's canonical plan (#9575 review).
 		await replaceMode();
-		setTodoClearDelay(-1);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 		const mainPhases: TodoPhase[] = [
 			{ name: "Main plan", tasks: [{ content: "orchestrate the main work", status: "in_progress" }] },
@@ -358,7 +333,6 @@ describe("InteractiveMode todo HUD persistence", () => {
 
 	it("completes a blocked todo when the detached subagent it waits on finishes", async () => {
 		await replaceMode();
-		setTodoClearDelay(-1);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 		// A todo blocked while waiting on a detached subagent. Blocked todos are
 		// excluded from the stop reminder, so if reconciliation skipped them this

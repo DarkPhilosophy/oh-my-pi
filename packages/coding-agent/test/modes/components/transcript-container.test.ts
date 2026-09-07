@@ -72,6 +72,28 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(80, 10, frame)).toEqual(["settled", "", "streaming"]);
 	});
 
+	it("does not retire the still-visible part of a resumed settled block", () => {
+		const transcript = new TranscriptContainer();
+		const rows = Array.from({ length: 40 }, (_, index) => `answer-${index}`);
+		transcript.addChild(new Block(rows, true));
+		expect(transcript.peekFinalizedBatch(80, 30)).toBeUndefined();
+		expect(transcript.renderViewport(80, 30, frame).slice(-30)).toEqual(rows.slice(-30));
+		expect(transcript.peekFinalizedBatch(80, 30)).toBeUndefined();
+	});
+
+	it("publishes only the offscreen portion of a settled row prefix", () => {
+		const transcript = new TranscriptContainer();
+		const rows = Array.from({ length: 40 }, (_, index) => `answer-${index}`);
+		const block = new Block(rows, false);
+		block.setSettledRows(40);
+		transcript.addChild(block);
+		const batch = transcript.peekFinalizedBatch(80, 30);
+		expect(batch?.rows).toEqual(rows.slice(0, 10));
+		transcript.acknowledgeFinalizedBatch(batch!.id);
+		expect(transcript.renderViewport(80, 30, frame)).toEqual(rows.slice(10));
+		expect(transcript.peekFinalizedBatch(80, 30)).toBeUndefined();
+	});
+
 	it("retires the settled prefix only under capacity pressure, in order", () => {
 		const transcript = new TranscriptContainer();
 		const first = new Block(["first final"], true);

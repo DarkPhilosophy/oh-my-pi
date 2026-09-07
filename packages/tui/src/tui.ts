@@ -2534,6 +2534,11 @@ export class TUI extends Container {
 	#renderProviderFrame(width: number, height: number): void {
 		const provider = this.#frameProvider;
 		if (!provider || width <= 0 || height <= 0) return;
+		if (this.#clearScrollbackOnNextRender) {
+			this.#providerLogicalCommitted = 0;
+			this.#providerHasTransientHistory = false;
+			this.#providerTransientRows = [];
+		}
 		this.#debugNextWindowTop = 0;
 		let plan: TerminalFramePlan;
 		do {
@@ -2542,6 +2547,9 @@ export class TUI extends Container {
 		} while (this.#imageBudget.endPass());
 		const logicalViewport = Array.from(plan.viewport);
 		const overflow = Math.max(0, logicalViewport.length - height);
+		// Native history already owns this prefix. Closing temporary editor
+		// chrome must not paint it again as mutable viewport content.
+		const viewportStart = plan.history === undefined ? Math.max(overflow, this.#providerLogicalCommitted) : overflow;
 		// Segments arrive in logical-frame coordinates while the emitted viewport
 		// is only the bottom `height` rows. Rebase them exactly like the children
 		// path does (see `#renderChildrenFrame`), so the right panel resolves its
@@ -2550,14 +2558,14 @@ export class TUI extends Container {
 		// the panel hid itself entirely.
 		const planSegments = plan.segments ?? [];
 		this.#planSegments =
-			overflow === 0
+			viewportStart === 0
 				? planSegments
 				: planSegments.map(segment => ({
 						component: segment.component,
-						start: segment.start - overflow,
+						start: segment.start - viewportStart,
 						rowCount: segment.rowCount,
 					}));
-		this.#rightPanelRowsAbove = logicalViewport.slice(0, overflow);
+		this.#rightPanelRowsAbove = logicalViewport.slice(0, viewportStart);
 		const inferredHistory =
 			plan.history === undefined && overflow > this.#providerLogicalCommitted
 				? logicalViewport.slice(this.#providerLogicalCommitted, overflow)
@@ -2599,7 +2607,7 @@ export class TUI extends Container {
 		this.#providerLogicalCommitted = history === undefined ? Math.max(this.#providerLogicalCommitted, overflow) : 0;
 		if (history !== undefined) this.#providerTransientRows = [];
 		this.#providerHasTransientHistory ||= inferredHistory.length > 0;
-		const viewport = logicalViewport.slice(overflow);
+		const viewport = logicalViewport.slice(viewportStart);
 		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
 		this.#emitPlanFrame(width, height, viewport, history, provider, inferredHistory);
 	}
@@ -2736,9 +2744,6 @@ export class TUI extends Container {
 		if (destructiveReset) {
 			this.#providerViewportTop = 0;
 			this.#providerWindow = [];
-			this.#providerLogicalCommitted = 0;
-			this.#providerHasTransientHistory = false;
-			this.#providerTransientRows = [];
 		}
 		// The viewport stays anchored directly below whatever history remains on
 		// screen. Appending K history rows moves the anchor down by K; the write

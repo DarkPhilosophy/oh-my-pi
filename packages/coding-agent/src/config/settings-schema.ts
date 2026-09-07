@@ -5240,26 +5240,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"tasks.todoClearDelay": {
-		type: "number",
-		default: 60,
-		ui: {
-			tab: "tools",
-			group: "Todos",
-			label: "Todo Auto-Clear Delay",
-			description: "Delay before completed or abandoned todos are removed from the todo widget",
-			options: [
-				{ value: "0", label: "Instant" },
-				{ value: "60", label: "1 minute", description: "Default" },
-				{ value: "300", label: "5 minutes" },
-				{ value: "900", label: "15 minutes" },
-				{ value: "1800", label: "30 minutes" },
-				{ value: "3600", label: "1 hour" },
-				{ value: "-1", label: "Never" },
-			],
-		},
-	},
-
 	"task.showResolvedModelBadge": {
 		type: "boolean",
 		default: false,

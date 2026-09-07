@@ -262,6 +262,48 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
+	it("does not repaint scrolled header rows when suggestions repeatedly open and close", () => {
+		const terminal = new VirtualTerminal(30, 5);
+		const header = ["HEADER-A", "HEADER-B", "HEADER-C", "HEADER-D"];
+		const provider = new Provider({ viewport: [...header, "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		try {
+			for (let cycle = 0; cycle < 3; cycle++) {
+				provider.plan = { viewport: [...header, "editor", "choice-1", "choice-2"] };
+				tui.requestRender(true);
+				provider.plan = { viewport: [...header, "editor"] };
+				tui.requestRender(true);
+				const buffer = plainBuffer(terminal);
+				for (const row of header) expect(buffer.filter(line => line === row)).toHaveLength(1);
+				expect(buffer.filter(line => line === "editor")).toHaveLength(1);
+			}
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("keeps replacement overflow owned across idle repaint and shrinking HUD", () => {
+		const terminal = new VirtualTerminal(30, 5);
+		const provider = new Provider({ viewport: ["old session"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		const transcript = ["row-a", "row-b", "row-c", "row-d", "resumed"];
+		try {
+			provider.plan = { viewport: [...transcript, "TODO", "done", "editor"] };
+			tui.requestRender(true, { clearScrollback: true });
+			tui.requestRender(true);
+			for (const row of transcript) expect(plainBuffer(terminal).filter(line => line === row)).toHaveLength(1);
+			provider.plan = { viewport: [...transcript, "editor"] };
+			tui.requestRender(true);
+			for (const row of transcript) expect(plainBuffer(terminal).filter(line => line === row)).toHaveLength(1);
+			expect(plainBuffer(terminal)).not.toContain("old session");
+			expect(plainBuffer(terminal)).not.toContain("TODO");
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("accepts a finalized batch that re-offers already-borrowed rows without a destructive replay", () => {
 		// A live overflowing frame lends its scrolled-off rows to native
 		// scrollback. When the transcript later finalizes that same prefix, the

@@ -462,7 +462,7 @@ class StatusHudContainer extends AnchoredLiveContainer {
 }
 
 /** How long the ctrl+p model-role cycle chip track lingers above the editor
- *  before it auto-clears, mirroring the todo HUD's auto-clear timer. */
+ *  before it auto-clears. */
 const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
 
 const SUBAGENT_HUD_VISIBLE_LIMIT = 8;
@@ -583,7 +583,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	loopPrompt: string | undefined = undefined;
 	loopLimit: LoopLimitRuntime | undefined = undefined;
 	#loopAutoSubmitTimer: NodeJS.Timeout | undefined;
-	#todoAutoClearTimer: NodeJS.Timeout | undefined;
 	#modelCycleClearTimer: NodeJS.Timeout | undefined;
 	#nextAppearanceRequestToken = 1;
 	#appearanceRefreshRequest: { token: TerminalAppearanceRequestToken; deadline: number } | undefined;
@@ -2676,55 +2675,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		const owner = this.#todoPhasesOwner ?? this.session;
 		owner.setTodoPhases(next);
 		this.todoPhases = next;
-		this.#syncTodoAutoClearTimer();
 		this.#renderTodoList();
 		this.ui.requestRender();
-	}
-
-	#cancelTodoAutoClearTimer(): void {
-		if (!this.#todoAutoClearTimer) return;
-		clearTimeout(this.#todoAutoClearTimer);
-		this.#todoAutoClearTimer = undefined;
-	}
-
-	/**
-	 * Whether every todo is closed, so the HUD has nothing left to track.
-	 *
-	 * The auto-clear only fires on a settled list. Scrubbing closed tasks while
-	 * open work remains is destructive: the walking viewport already hides all but
-	 * the newest closed row, and those tasks are what the phase progress counters
-	 * and the stage roman numerals are computed from — dropping them mid-run reset
-	 * an in-flight phase to `0/n` and renumbered the stages, so a plan the agent
-	 * was four tasks into rendered as untouched until the next `todo` call
-	 * restored the real snapshot.
-	 */
-	#isTodoListSettled(phases: TodoPhase[]): boolean {
-		let seenTask = false;
-		for (const phase of phases) {
-			for (const task of phase.tasks) {
-				if (!isClosedTodo(task)) return false;
-				seenTask = true;
-			}
-		}
-		return seenTask;
-	}
-
-	#syncTodoAutoClearTimer(): void {
-		this.#cancelTodoAutoClearTimer();
-		const delaySeconds = this.settings.get("tasks.todoClearDelay");
-		if (!Number.isFinite(delaySeconds) || delaySeconds < 0 || !this.#isTodoListSettled(this.todoPhases)) return;
-		if (delaySeconds === 0) {
-			this.todoPhases = [];
-			return;
-		}
-
-		this.#todoAutoClearTimer = setTimeout(() => {
-			this.#todoAutoClearTimer = undefined;
-			this.todoPhases = [];
-			this.#renderTodoList();
-			this.ui.requestRender();
-		}, delaySeconds * 1000);
-		this.#todoAutoClearTimer.unref?.();
 	}
 
 	/**
@@ -2788,7 +2740,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#observerUiSyncNeedsTodoReconcile = false;
 			this.#reconcileTodosWithSubagents();
 		}
-		this.#syncTodoAutoClearTimer();
 		this.#renderTodoList();
 		this.#renderSubagentList();
 		this.ui.requestRender();
@@ -2901,7 +2852,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Overall progress (summed across every stage) fills the path in reading
 		// order: down the spine, around the bend, out along the tail.
 		// Clamp so partial progress lights at least one cell; a closed plan fills
-		// the entire path until the configured auto-clear removes the HUD.
+		// the entire path until an explicit TODO update replaces the plan.
 		const totalTasks = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
 		const closedTasks = phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
 		const pathLen = contentLines.length + tailLen;
@@ -2984,7 +2935,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/**
   * Anchored HUD of in-flight subagents, mirroring the Todos block above the
-
+ 
  /**
   * Anchored HUD of in-flight subagents, mirroring the Todos block above the
   * editor. Driven entirely by observer-registry change events, so rows appear
@@ -3001,7 +2952,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	async #loadTodoList(source: AgentSession = this.session): Promise<void> {
 		this.todoPhases = source.getTodoPhases();
 		this.#todoPhasesOwner = source;
-		this.#syncTodoAutoClearTimer();
 		this.#renderTodoList();
 	}
 
@@ -4962,7 +4912,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		// stopAnimation would otherwise keep an 80ms interval pinning the process.
 		stopSharedSpinnerTicker();
 		this.#liveCommandController.dispose();
-		this.#cancelTodoAutoClearTimer();
 		this.#cancelObserverUiSyncTimer();
 		this.#cancelGoalContinuation();
 		if (this.#sttController) {
@@ -6191,7 +6140,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			];
 		}
 		this.#todoPhasesOwner = this.viewSession;
-		this.#syncTodoAutoClearTimer();
 		this.#renderTodoList();
 		this.ui.requestRender();
 	}

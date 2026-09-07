@@ -435,7 +435,11 @@ export class TranscriptContainer extends Container {
 			let leadingBlankRows = 0;
 			while (leadingBlankRows < raw.length && isPlainBlank(raw[leadingBlankRows]!)) leadingBlankRows++;
 			const renderedHead = this.#renderEntry(head, width);
-			const emittedEnd = Math.min(renderedHead.length, Math.max(0, settledRows - leadingBlankRows));
+			const emittedEnd = Math.min(
+				renderedHead.length,
+				Math.max(0, settledRows - leadingBlankRows),
+				head.emitted + total - room,
+			);
 			if (emittedEnd > head.emitted) {
 				const batch: HistoryBatch = {
 					id: this.#nextBatchId++,
@@ -479,6 +483,15 @@ export class TranscriptContainer extends Container {
 			if (
 				policy === "pressure" &&
 				total - freed <= room &&
+				this.#liveCount() - (end - this.#frontier) < MAX_LIVE_BLOCKS
+			)
+				break;
+			// A finalized block can still occupy most of the physical screen.
+			// Do not retire its visible tail merely because its first rows overflow.
+			if (
+				policy === "pressure" &&
+				room > 0 &&
+				total - freed - (heights[index]! > 0 ? heights[index]! + 1 : 0) < room &&
 				this.#liveCount() - (end - this.#frontier) < MAX_LIVE_BLOCKS
 			)
 				break;

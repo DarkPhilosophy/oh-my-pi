@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Fixed resumed answers losing their still-visible live region when finalized transcript blocks were retired under partial overflow.
+- Fixed completed TODOs disappearing during idle by removing automatic HUD clearing and its `tasks.todoClearDelay` setting.
+- Fixed opening command suggestions prematurely retiring the still-visible welcome header and hiding contextual widgets.
 - Fixed the status line rendering live folder and session values before a session exists, instead of the startup placeholders.
 - Fixed `!` shortcut commands not running through the configured user shell's interactive PTY, so a standalone `cd` no longer failed to persist for the next command.
 - Fixed the `providers.openai-codex.useReserve` setting being unreachable because its group was missing from the settings Providers tab.
