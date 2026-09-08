@@ -242,7 +242,7 @@ describe("renderUsageReports content", () => {
 			renderUsageReports(reports, theme, Date.now(), 80, undefined, { maskAccountLabels: true }),
 		);
 		const resetLine = output.split("\n").find(line => line.includes("saved reset"));
-		expect(resetLine).toContain("a*** cd (Org   Name): 1 saved reset");
+		expect(resetLine).toContain("ab *** (Org   Name): 1 saved reset");
 		expect(output).not.toContain("\r");
 		expect(output).not.toContain("\t");
 	});

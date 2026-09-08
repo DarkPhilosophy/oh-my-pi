@@ -21,10 +21,10 @@ export function maskAccountLabel(label: string, enabled: boolean): string {
 	if (at > 0) identityEnd = at;
 	else {
 		if (PLACEHOLDER_LABEL.test(label)) return label;
-		const space = label.indexOf(" ");
-		identityEnd = space === -1 ? label.length : space;
+		const structuredSuffix = label.indexOf(" (", 0);
+		identityEnd = structuredSuffix === -1 ? label.length : structuredSuffix;
 	}
-	const suffixStart = label.indexOf(" ", identityEnd);
+	const suffixStart = at > 0 ? label.indexOf(" ", identityEnd) : label.indexOf(" (", identityEnd);
 	const suffix = suffixStart === -1 ? "" : label.slice(suffixStart);
 	let visibleLocal = "";
 	let count = 0;

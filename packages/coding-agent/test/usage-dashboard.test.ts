@@ -271,7 +271,7 @@ describe("buildProviderCards split + privacy", () => {
 		const rendered = dashboard.render(48).join("\n");
 		expect(rendered).not.toContain("\r");
 		expect(rendered).not.toContain("\t");
-		expect(Bun.stripANSI(rendered)).toContain("a*** cd (Org   Name)");
+		expect(Bun.stripANSI(rendered)).toContain("ab *** (Org   Name)");
 	});
 });
 
