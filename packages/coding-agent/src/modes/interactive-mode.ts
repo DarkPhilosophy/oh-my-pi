@@ -126,9 +126,17 @@ import { isMCPToolName } from "../tools/builtin-names";
 import type { LspStartupServerInfo } from "../tools";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
 import {
+<<<<<<< HEAD
 	formatMoreItems,
 	replaceTabs,
 	shortenEmbeddedPaths,
+=======
+	FEED_MODEL_BADGE_WIDTH,
+	formatFeedModelBadge,
+	formatMoreItems,
+	isFeedModelBadgeEnabled,
+	replaceTabs,
+>>>>>>> a33cc26824e3c91edd9fa42d681f10dceb4ac2f0
 	shortenPath,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
@@ -503,13 +511,16 @@ export function renderSubagentHudLines(
 	const dot = theme.styledSymbol("status.done", "accent");
 	const visible = running.slice(0, SUBAGENT_HUD_VISIBLE_LIMIT);
 	const hiddenCount = running.length - visible.length;
+	const showModelBadge = isFeedModelBadgeEnabled();
+	const outerIndent = " ";
 	const rows = renderTreeList(
 		{
 			items: visible,
 			expanded: true,
-			renderItem: session => {
-				const displayId = formatTaskId(session.id);
+			renderItem: (session, context) => {
+				const rowWidth = Math.max(0, columns - visibleWidth(outerIndent) - (context.prefixWidth ?? 0));
 				const role = session.agent ?? session.progress?.agent;
+<<<<<<< HEAD
 				const badge = agentTypeBadge(role, theme);
 				const resolvedModel =
 					showResolvedModelBadge && session.progress?.resolvedModel?.trim()
@@ -556,12 +567,65 @@ export function renderSubagentHudLines(
 					];
 				}
 				return truncateToWidth(line, Math.max(1, columns - 6));
+=======
+				const displayId = truncateToWidth(
+					formatTaskId(session.id),
+					Math.max(0, rowWidth - visibleWidth(`${dot} `)),
+				);
+				const badge = truncateToWidth(
+					agentTypeBadge(role, theme),
+					Math.max(0, rowWidth - visibleWidth(`${dot} ${displayId}`)),
+				);
+				const titleBudget = Math.max(0, rowWidth - visibleWidth(`${dot} ${displayId}${badge}`));
+				const modelBadge = showModelBadge
+					? formatFeedModelBadge(
+							session.progress?.resolvedModelIdentity ?? session.progress?.resolvedModel,
+							session.progress?.resolvedThinkingLevel,
+							session.progress?.advisor,
+							theme,
+							Math.min(FEED_MODEL_BADGE_WIDTH, Math.max(0, titleBudget - 1)),
+						)
+					: "";
+				const modelLead = modelBadge ? `${modelBadge} ` : "";
+				let line = `${dot} ${modelLead}${theme.fg("accent", theme.bold(displayId))}${badge}`;
+				const description = session.description?.trim() || session.progress?.description?.trim();
+				const distinctDescription =
+					description && !labelEchoesHandle(session.id, description) ? description : undefined;
+				if (distinctDescription) {
+					const budget = Math.max(0, rowWidth - visibleWidth(line) - visibleWidth(": "));
+					const formatted = replaceTabs(distinctDescription).replace(/\s*[\r\n]+\s*/g, " ↵ ");
+					if (budget > 0) {
+						line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(formatted, budget))}`;
+					}
+				} else {
+					// No spawn description: fall back to a muted task preview, same as
+					// the inline task rows when a row has no label.
+					const taskPreview = session.progress?.task?.trim();
+					if (taskPreview && !labelEchoesHandle(session.id, taskPreview)) {
+						const formatted = replaceTabs(taskPreview).replace(/\s*[\r\n]+\s*/g, " ↵ ");
+						const budget = Math.min(TRUNCATE_LENGTHS.SHORT, Math.max(0, rowWidth - visibleWidth(line) - 1));
+						if (budget > 0) line += ` ${theme.fg("muted", truncateToWidth(formatted, budget))}`;
+					}
+				}
+				return truncateToWidth(line, rowWidth, "");
+>>>>>>> a33cc26824e3c91edd9fa42d681f10dceb4ac2f0
 			},
 		},
 		theme,
 	);
+<<<<<<< HEAD
 	if (hiddenCount > 0) rows.push(theme.fg("dim", `… ${hiddenCount} more running — open Agent Hub for full list`));
 	return ["", theme.bold(theme.fg("accent", "Subagents")), ...rows.map(line => ` ${line}`)];
+=======
+	if (hiddenCount > 0) {
+		rows.push(theme.fg("dim", `… ${hiddenCount} more running — open Agent Hub for full list`));
+	}
+	return [
+		"",
+		truncateToWidth(theme.bold(theme.fg("accent", "Subagents")), columns),
+		...rows.map(line => truncateToWidth(`${outerIndent}${line}`, columns, "")),
+	];
+>>>>>>> a33cc26824e3c91edd9fa42d681f10dceb4ac2f0
 }
 
 const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;

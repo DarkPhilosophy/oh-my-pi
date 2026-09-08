@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.15] - 2026-09-08
+
 ### Fixed
 
 - GitHub Copilot sign-in keeps the GitHub-owned Copilot CLI OAuth app on Enterprise domains: private instances run their own OAuth registry and reject the github.com-registered OpenCode client, which is now used only for public github.com sign-ins ([#11285](https://github.com/can1357/oh-my-pi/pull/11285) by [@H4vC](https://github.com/H4vC))
