@@ -665,6 +665,60 @@ describe("Firefox WebDriver BiDi relay", () => {
 		await forceKillTab(owner.name, "test cleanup", { sharedFirefoxWorker: true });
 		await forceKillTab(waiting.name, "test cleanup", { sharedFirefoxWorker: true });
 	});
+	it("passes only the caller deadline remainder to Firefox execution after reservation", async () => {
+		const listeners = new Set<Parameters<WorkerHandle["onMessage"]>[0]>();
+		let runTimeoutMs: number | undefined;
+		const worker: WorkerHandle = {
+			mode: "inline",
+			send: msg => {
+				if (msg.type === "select") {
+					setTimeout(() => {
+						for (const listener of listeners) listener({ type: "selected", id: msg.id, info: owner.info });
+					}, 25);
+				} else if (msg.type === "run") {
+					runTimeoutMs = msg.timeoutMs;
+					queueMicrotask(() =>
+						handleTabMessage(waiting, {
+							type: "result",
+							id: msg.id,
+							ok: true,
+							payload: { displays: [], returnValue: 1, screenshots: [] },
+						}),
+					);
+				}
+			},
+			onMessage: listener => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			onError: () => () => undefined,
+			terminate: async () => undefined,
+		};
+		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
+		endpoint.refCount = 2;
+		const owner = createFirefoxTab("firefox-budget-owner", endpoint, worker);
+		const waiting = createFirefoxTab("firefox-budget-waiting", endpoint, worker);
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(owner.name, owner);
+		tabs.set(waiting.name, waiting);
+		const selection = selectFirefoxWorkerTab(worker, {
+			name: owner.name,
+			targetId: owner.targetId,
+			timeoutMs: 1_000,
+		});
+		await expect(
+			runInTab(waiting.name, {
+				code: "return 1",
+				timeoutMs: 100,
+				session: { cwd: "/tmp", settings: { get: () => undefined } } as never,
+			}),
+		).resolves.toMatchObject({ returnValue: 1 });
+		expect(runTimeoutMs).toBeGreaterThan(0);
+		expect(runTimeoutMs).toBeLessThan(100);
+		await selection;
+		await forceKillTab(owner.name, "test cleanup", { sharedFirefoxWorker: true });
+		await forceKillTab(waiting.name, "test cleanup", { sharedFirefoxWorker: true });
+	});
 
 	it("aborts nested host tools before force-killing the shared worker", async () => {
 		const worker = {

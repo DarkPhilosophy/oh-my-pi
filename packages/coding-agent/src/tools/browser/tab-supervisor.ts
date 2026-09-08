@@ -637,18 +637,20 @@ async function runInTabWithSnapshot(
 	snapshot: SessionSnapshot,
 ): Promise<RunResultOk> {
 	const initial = tabs.get(name);
-	const remainingMs =
-		opts.deadlineStartMs === undefined
-			? opts.timeoutMs
-			: Math.max(0, opts.timeoutMs - (performance.now() - opts.deadlineStartMs));
-	const releaseReservation =
-		initial?.backend === "worker" && initial.kindTag === "firefox-relay"
-			? await reserveFirefoxWorker(initial.worker, opts.signal, remainingMs)
-			: undefined;
-	try {
+	if (initial?.backend !== "worker" || initial.kindTag !== "firefox-relay") {
 		return await runInTabWithSnapshotUnlocked(name, opts, snapshot);
+	}
+	const startedAt = opts.deadlineStartMs ?? performance.now();
+	const remainingBeforeReservation = Math.max(0, opts.timeoutMs - (performance.now() - startedAt));
+	const releaseReservation = await reserveFirefoxWorker(initial.worker, opts.signal, remainingBeforeReservation);
+	try {
+		const remainingMs = Math.max(0, opts.timeoutMs - (performance.now() - startedAt));
+		if (remainingMs <= 0) {
+			throw new ToolError(`Browser code execution timed out after ${opts.timeoutMs}ms`);
+		}
+		return await runInTabWithSnapshotUnlocked(name, { ...opts, timeoutMs: remainingMs }, snapshot);
 	} finally {
-		releaseReservation?.();
+		releaseReservation();
 	}
 }
 
