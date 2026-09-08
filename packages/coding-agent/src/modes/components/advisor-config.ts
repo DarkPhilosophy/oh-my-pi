@@ -24,6 +24,7 @@ import {
 	type Component,
 	Input,
 	type MouseRoutable,
+	replaceTabs,
 	routeSgrMouseInput,
 	type SelectItem,
 	SelectList,
@@ -31,6 +32,7 @@ import {
 	type TUI,
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import {
 	ADVISOR_DEFAULT_TOOL_NAMES,
 	type AdvisorConfig,
@@ -38,7 +40,7 @@ import {
 	type WatchdogConfigDoc,
 } from "../../advisor";
 import type { ModelRegistry } from "../../config/model-registry";
-import { formatModelSelectorValue } from "../../config/model-resolver";
+import { formatModelSelectorValue, resolveModelFromString } from "../../config/model-resolver";
 import type { Settings } from "../../config/settings";
 import type { PerAdvisorStat } from "../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
@@ -120,6 +122,7 @@ interface ScopeState {
 	doc: WatchdogConfigDoc;
 	list: SelectList;
 	dirty: boolean;
+	loading: boolean;
 	/** Remembered roster row value so rebuilds keep the cursor. */
 	cursor: string | undefined;
 }
@@ -170,7 +173,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#scopedModels = deps.scopedModels;
 		this.#availableToolNames = deps.availableToolNames;
 		this.#defaultModelLabel = deps.defaultModelLabel;
-		this.#projectName = deps.projectName;
+		this.#projectName =
+			deps.projectName === undefined ? undefined : replaceTabs(sanitizeText(deps.projectName)).replace(/\s+/g, " ");
 		this.#cb = callbacks;
 		this.#focus = initialScope;
 		const empty = (): WatchdogConfigDoc => ({ advisors: [] });
@@ -179,13 +183,21 @@ export class AdvisorConfigOverlayComponent implements Component {
 			user: this.#newScope(initialScope === "user" ? initialDoc : empty()),
 		};
 		const other: AdvisorConfigScope = initialScope === "project" ? "user" : "project";
+		this.#scopes[other].loading = true;
 		callbacks
 			.loadDoc(other)
 			.then(doc => {
 				this.#scopes[other].doc = doc;
+				this.#scopes[other].loading = false;
 				this.#rebuildRoster(other);
+				if (this.#focus === other) this.#showFields();
+				this.#cb.requestRender();
 			})
-			.catch(err => callbacks.notify(`Advisor config: ${err instanceof Error ? err.message : String(err)}`));
+			.catch(err => {
+				this.#scopes[other].loading = false;
+				callbacks.notify(`Advisor config: ${err instanceof Error ? err.message : String(err)}`);
+				this.#cb.requestRender();
+			});
 		this.#rebuildRoster("project");
 		this.#rebuildRoster("user");
 		this.#showFields();
@@ -201,7 +213,13 @@ export class AdvisorConfigOverlayComponent implements Component {
 	}
 
 	#newScope(doc: WatchdogConfigDoc): ScopeState {
-		return { doc, list: new SelectList([], 1, getSelectListTheme()), dirty: false, cursor: undefined };
+		return {
+			doc,
+			list: new SelectList([], 1, getSelectListTheme()),
+			dirty: false,
+			loading: false,
+			cursor: undefined,
+		};
 	}
 
 	// ───────────────────────────── render ─────────────────────────────
@@ -228,7 +246,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		left.push(...this.#padTo(this.#scopes.user.list.render(this.#sidebarWidth), userRows));
 
 		const dirty = this.#scopes.project.dirty || this.#scopes.user.dirty;
-		const title = `${this.#paneTitle("project")}${dirty ? "  ● unsaved" : ""}`;
+		const title = `${this.#paneTitle("project")}${dirty ? `  ${theme.symbol("status.pending")} unsaved` : ""}`;
 		const right = this.#editorWindow(bodyWidth, bodyRows);
 
 		const out: string[] = [];
@@ -433,7 +451,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 				this.#cb.requestRender();
 				return true;
 			}
-			this.#focusEditor();
+			if (event.leftClick) this.#focusEditor();
 			const el = this.#editor as Partial<MouseRoutable>;
 			// Editor content starts 2 rows below the body top (header + blank).
 			if (typeof el.routeMouse === "function")
@@ -444,7 +462,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const inUser = event.row >= this.#userRowStart && event.row < this.#userRowStart + this.#userRows;
 		const scope: AdvisorConfigScope | undefined = inProject ? "project" : inUser ? "user" : undefined;
 		if (!scope) return false;
-		if (event.wheel === null && this.#focus !== scope) {
+		if (event.leftClick && this.#focus !== scope) {
 			this.#focus = scope;
 			this.#showFields();
 		}
@@ -469,14 +487,17 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const state = this.#scopes[scope];
 		const items: SelectItem[] = state.doc.advisors.map((advisor, index) => ({
 			value: `advisor:${index}`,
-			label: `${advisor.enabled === false ? "○" : "●"} ${advisor.name || "(unnamed)"}`,
+			label: `${theme.symbol(advisor.enabled === false ? "status.disabled" : "status.enabled")} ${advisor.name || "(unnamed)"}`,
 			description: this.#advisorSummary(advisor),
 		}));
 		if (items.length === 0)
 			items.push({ value: "empty", label: "(no advisors)", description: "role default applies" });
 		items.push({ value: "add", label: "+ Add advisor" });
 		items.push({ value: "shared", label: "Shared instructions", description: previewLine(state.doc.instructions) });
-		items.push({ value: "save", label: state.dirty ? "Save & apply ●" : "Save & apply" });
+		items.push({
+			value: "save",
+			label: state.dirty ? `Save & apply ${theme.symbol("status.pending")}` : "Save & apply",
+		});
 		const list = new SelectList(items, Math.max(1, items.length), getSelectListTheme());
 		const remembered = state.cursor ? items.findIndex(item => item.value === state.cursor) : -1;
 		if (remembered >= 0) list.setSelectedIndex(remembered);
@@ -509,6 +530,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 
 	async #onRosterSelect(scope: AdvisorConfigScope, value: string): Promise<void> {
 		const state = this.#scopes[scope];
+		if (state.loading) return;
 		if (value === "add") {
 			state.doc.advisors.push({ name: `Advisor ${state.doc.advisors.length + 1}` });
 			state.cursor = `advisor:${state.doc.advisors.length - 1}`;
@@ -566,7 +588,14 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const { scope, index, advisor } = target;
 		const modelDescription = advisor.model?.trim() || this.#defaultModelLabel || "advisor role default";
 		const items: SelectItem[] = [
-			{ value: "toggleEnabled", label: "Enabled", description: advisor.enabled === false ? "○ off" : "● on" },
+			{
+				value: "toggleEnabled",
+				label: "Enabled",
+				description:
+					advisor.enabled === false
+						? `${theme.symbol("status.disabled")} off`
+						: `${theme.symbol("status.enabled")} on`,
+			},
 			{ value: "name", label: "Name", description: advisor.name },
 			{ value: "model", label: "Model", description: modelDescription },
 		];
@@ -667,7 +696,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const items = buildBrowserItems(models);
 		sortModelItems(items, { roles, mruOrder });
 		const current = this.#scopes[scope].doc.advisors[index].model?.trim();
-		const currentSelector = current ? current.split(":", 1)[0] : undefined;
+		const currentModel = current ? resolveModelFromString(current, [...models]) : undefined;
+		const currentSelector = currentModel ? `${currentModel.provider}/${currentModel.id}` : undefined;
 		const picker = new ModelBrowser(this.#settings, {});
 		picker.setRoles(roles);
 		picker.setMruOrder(mruOrder);

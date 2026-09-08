@@ -2,8 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Subagents now show their current activity and a separate, width-bounded current-tool row; resolved model labels follow the model badge setting.
+
 ### Fixed
 
+- Fixed Firefox relay aliases losing their target or sharing unsafe work after timeouts, with bounded run and close waits.
+- Fixed resumed background task cards freezing on their first progress update and read-only TODO inspection reopening dismissed lists.
+- Fixed advisor configuration edits racing scope loading and quota cards combining distinct organizations.
 - Fixed completed TODO HUDs to dismiss visually after `tasks.todoClearDelay` without deleting canonical tasks; dismissal and explicit reveal survive session resume.
 - Restored `tasks.todoClearDelay` (`60` seconds by default, `0` immediate, negative disabled).
 - Fixed resumed answers losing their still-visible live region when finalized transcript blocks were retired under partial overflow.

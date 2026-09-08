@@ -3,13 +3,14 @@ import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 export type Transferable = Bun.Transferable;
 
 export interface ObservationEntry {
-	id: number;
+	id?: number;
 	role: string;
 	name?: string;
 	value?: string | number;
 	description?: string;
 	keyshortcuts?: string;
 	states: string[];
+	actionable?: false;
 }
 
 export interface Observation {
@@ -88,6 +89,7 @@ export type WorkerInbound =
 	| {
 			type: "select";
 			id: string;
+			name: string;
 			targetId?: string;
 			targetMatcher?: string;
 			url?: string;
@@ -95,6 +97,8 @@ export type WorkerInbound =
 			timeoutMs: number;
 			dialogs?: "accept" | "dismiss";
 	  }
+	| { type: "abort-select"; id: string }
+	| { type: "release-runtime"; name: string }
 	| {
 			type: "run";
 			id: string;
@@ -104,6 +108,7 @@ export type WorkerInbound =
 			session: SessionSnapshot;
 			targetId?: string;
 			targetMatcher?: string;
+			dialogs?: "accept" | "dismiss";
 	  }
 	| { type: "abort"; id: string; expectedCleanup?: boolean }
 	| { type: "tool-reply"; id: string; reply: ToolReply }

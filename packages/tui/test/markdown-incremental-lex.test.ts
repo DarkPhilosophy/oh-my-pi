@@ -420,4 +420,31 @@ describe("Markdown incremental streaming lex (E2)", () => {
 			expect(streamLines).toEqual(renderColdTransient(grown, 60));
 		}
 	});
+
+	it("maps cached ST-normalized prefixes to the later nested fence copy body", () => {
+		const targets: string[] = [];
+		const theme = {
+			...THEME,
+			copyChip: "copy",
+			copyChipTarget: (code: string) => {
+				targets.push(code);
+				return `omp-copy:${targets.length}`;
+			},
+		};
+		const st = "\x1b\\";
+		const prefix =
+			`${`${"\x1b]8;;https://example.com"}${st}`.repeat(8)}intro\x1b]8;;${st}\n\n` +
+			"```ts\nconst earlier = true;\n```\n\n";
+		const suffix = "```ts\nconst later = true;\n```\n";
+		const streaming = new Markdown("", 0, 0, theme);
+		streaming.transientRenderCache = true;
+		clearRenderCache();
+		streaming.setText(prefix);
+		streaming.render(80);
+		targets.length = 0;
+		clearRenderCache();
+		streaming.setText(prefix + suffix);
+		streaming.render(80);
+		expect(targets.at(-1)).toBe("const later = true;");
+	});
 });

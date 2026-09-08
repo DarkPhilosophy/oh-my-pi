@@ -291,18 +291,24 @@ const modelSegment: StatusLineSegment = {
 								? a.yielded
 									? theme.fg("dim", eyeClosed)
 									: theme.fg("success", eyeOpen)
-								: theme.fg("success", "●"),
+								: theme.fg("success", theme.getSymbolPreset() === "ascii" ? "*" : "●"),
 						);
 						break;
 					case "paused":
 					case "no_model":
-						advisorGlyphs.push(theme.fg("dim", nerd ? eyeClosed : "○"));
+						advisorGlyphs.push(
+							theme.fg("dim", nerd ? eyeClosed : theme.getSymbolPreset() === "ascii" ? "-" : "○"),
+						);
 						break;
 					case "quota_exhausted":
-						advisorGlyphs.push(theme.fg("warning", nerd ? eyeClosed : "✕"));
+						advisorGlyphs.push(
+							theme.fg("warning", nerd ? eyeClosed : theme.getSymbolPreset() === "ascii" ? "x" : "✕"),
+						);
 						break;
 					case "error":
-						advisorGlyphs.push(theme.fg("error", nerd ? eyeClosed : "✕"));
+						advisorGlyphs.push(
+							theme.fg("error", nerd ? eyeClosed : theme.getSymbolPreset() === "ascii" ? "x" : "✕"),
+						);
 						break;
 				}
 			}

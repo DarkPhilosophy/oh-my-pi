@@ -1,4 +1,5 @@
 import { ToolError } from "../../tool-errors";
+import { isLoopbackRelayUrl } from "./daemon";
 
 export const DEFAULT_FIREFOX_BIDI_URL = "ws://127.0.0.1:9222/session";
 
@@ -12,12 +13,7 @@ export function validateFirefoxWebSocketUrl(rawUrl: string): string {
 	if (url.protocol !== "ws:" && url.protocol !== "wss:") {
 		throw new ToolError(`Firefox WebDriver BiDi endpoint must use ws:// or wss:// (got ${url.protocol})`);
 	}
-	if (
-		url.hostname !== "127.0.0.1" &&
-		url.hostname !== "localhost" &&
-		url.hostname !== "[::1]" &&
-		url.hostname !== "::1"
-	) {
+	if (!isLoopbackRelayUrl(url.href)) {
 		throw new ToolError(`Refusing non-loopback Firefox WebDriver BiDi endpoint: ${url.hostname}`);
 	}
 	return url.href.replace(/\/$/, "");

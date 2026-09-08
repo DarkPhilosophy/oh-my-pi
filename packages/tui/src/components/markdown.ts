@@ -1644,6 +1644,8 @@ interface RenderSignature {
 
 interface StreamPrefixLineCache extends RenderSignature {
 	text: string;
+	/** Raw source prefix backing `text`; normalized-equal edits must not reuse rows. */
+	sourceText: string;
 	tokenCount: number;
 	lines: readonly string[];
 	tables: readonly TableRenderSpec[];
@@ -2350,6 +2352,10 @@ export class Markdown implements Component {
 		this.#streamPrefixLineCache = {
 			...signature,
 			text: frozenText,
+			sourceText: this.#sourceText.slice(
+				0,
+				this.#expandedSourceOffsets[frozenText.length] ?? this.#sourceText.length,
+			),
 			tokenCount: frozenTokenCount,
 			lines: contentLines.slice(),
 			tables: this.#activeTableRenderSpecs?.slice() ?? [],
@@ -2392,6 +2398,7 @@ export class Markdown implements Component {
 	): StreamPrefixLineCache | undefined {
 		const cache = this.#streamPrefixLineCache;
 		if (!cache) return undefined;
+		if (!this.#sourceText.startsWith(cache.sourceText)) return undefined;
 		if (!normalizedText.startsWith(cache.text) || !frozenText.startsWith(cache.text)) return undefined;
 		if (cache.width !== signature.width) return undefined;
 		if (cache.paddingX !== signature.paddingX) return undefined;
@@ -2550,6 +2557,11 @@ export class Markdown implements Component {
 		const start = this.#copySourceSearchCursor;
 		const exactStart = this.#expandedSourceText.indexOf(raw, start);
 		if (exactStart >= 0) return { start: exactStart, end: exactStart + raw.length };
+		const suffix = this.#expandedSourceText.slice(start);
+		OSC8_ST_PREFIX_REGEX.lastIndex = 0;
+		const hasStTerminatedOsc = OSC8_ST_PREFIX_REGEX.test(suffix);
+		OSC8_ST_PREFIX_REGEX.lastIndex = 0;
+		if (!hasStTerminatedOsc) return undefined;
 		return findNormalizedOsc8Span(this.#expandedSourceText, raw, start);
 	}
 
@@ -3682,11 +3694,13 @@ export class Markdown implements Component {
 					lines.push({ text: this.#renderInlineTokens(token.tokens || [], styleContext), nested: false });
 				}
 			} else if (token.type === "code") {
+				const sourceCursorBefore = this.#copySourceSearchCursor;
 				// Code block in list item — fenced blocks get the same themed box.
 				const codeIndent = padding(this.#codeBlockIndent);
 				const fenced = this.#isFencedCodeToken(token);
 				const closedFence = fenced && this.#codeTokenHasClosingFence(token);
 				const bodyLines = this.#renderCodeBodyLines(token, closedFence ? "" : codeIndent, closedFence);
+				const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
 				if (closedFence) {
 					const framed = this.#boxFencedCodeLines(token, bodyLines, frameWidth);
 					for (const line of framed) lines.push({ ...line, nested: false });
@@ -3694,12 +3708,40 @@ export class Markdown implements Component {
 					// An open fence inside a list keeps its delimiters as literal
 					// code rows (same contract as the top-level path) instead of
 					// being silently swallowed by the framed renderer.
-					const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
+					const delimiter = raw.match(/(`{3,}|~{3,})/)?.[1] ?? "```";
 					for (const rawLine of raw.split("\n")) {
 						// Keep open-fence rows in the list-aware noWrap path so the
 						// bullet and continuation rail remain attached before closure.
 						lines.push({ text: replaceTabs(rawLine), noWrap: true, nested: false });
 					}
+					lines.push({ text: replaceTabs(delimiter), noWrap: true, nested: false });
+				}
+				// Some render paths (too-narrow frames, Mermaid) do not need a
+				// copy target. They must still consume this token's source span
+				// before a later nested fence searches for its own source.
+				if (this.#copySourceSearchCursor === sourceCursorBefore) this.#originalCodeBody(token);
+			} else if (token.type === "blockquote") {
+				const quoteInlineStyleContext: InlineStyleContext = {
+					applyText: (text: string) => text,
+					stylePrefix: "",
+				};
+				const quoteContentWidth = Math.max(1, frameWidth - 2);
+				const renderedQuoteLines: RenderedLine[] = [];
+				const quoteTokens = token.tokens || [];
+				for (let index = 0; index < quoteTokens.length; index++) {
+					const quoteToken = quoteTokens[index]!;
+					renderedQuoteLines.push(
+						...this.#renderToken(
+							quoteToken,
+							quoteContentWidth,
+							quoteTokens[index + 1]?.type,
+							quoteInlineStyleContext,
+						),
+					);
+				}
+				while (renderedQuoteLines.length > 0 && renderedQuoteLines.at(-1)!.text === "") renderedQuoteLines.pop();
+				for (const line of this.#applyQuoteBorder(renderedQuoteLines, frameWidth)) {
+					lines.push({ ...line, nested: false });
 				}
 			} else if (isMathToken(token)) {
 				// Display math block inside a list item: stack fractions / matrix rows.

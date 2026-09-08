@@ -18,6 +18,8 @@ import { stripVTControlCharacters } from "node:util";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
 import { renderUsageReports } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { loadTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/loader";
+import { renderFractionBar } from "@oh-my-pi/pi-coding-agent/modes/utils/usage-bar";
 
 const HOUR = 3_600_000;
 
@@ -300,12 +302,13 @@ describe("renderUsageReports terminal width", () => {
 		expect(barLine(0.2)?.indexOf("80% free")).toBeGreaterThan(barLine(0.8)?.indexOf("20% free") ?? Number.MAX_VALUE);
 	});
 
-	it("uses a gradual red-to-green fill and lets the boundary cross the label only near exhaustion", () => {
+	it("uses a gradual red-to-green fill and lets the boundary cross the label only near exhaustion", async () => {
+		const truecolorTheme = await loadTheme("dark", { mode: "truecolor" });
 		const renderBarLine = (usedFraction: number) => {
 			const reports = [
 				report("anthropic", "account@example.test", [limit("Claude 7 Day", "weekly", 7 * 24 * HOUR, usedFraction)]),
 			];
-			return renderUsageReports(reports, theme, Date.now(), 80)
+			return renderUsageReports(reports, truecolorTheme, Date.now(), 80)
 				.split("\n")
 				.find(line => line.includes("% free"));
 		};
@@ -324,8 +327,21 @@ describe("renderUsageReports terminal width", () => {
 		expect(midRed).toBeGreaterThan(midGreen);
 		expect(midGreen).toBeGreaterThan(midBlue);
 		expect(highGreen).toBeGreaterThan(highRed);
-		expect(mid).toMatch(/\x1b\[30;48;2;\d+;\d+;\d+m50% free\x1b\[39;49m/);
-		expect(low).toMatch(/\x1b\[30;48;2;\d+;\d+;\d+m10\x1b\[39;49m\x1b\[38;2;\d+;\d+;\d+m% free/);
+		expect(mid).toMatch(/\x1b\[38;2;\d+;\d+;\d+m/);
+		expect(mid).toMatch(/\x1b\[48;2;\d+;\d+;\d+m50% free\x1b\[39;49m/);
+	});
+	it("keeps a fully free narrow bar within its requested width", () => {
+		for (const width of [1, 2, 9, 10, 12]) {
+			const rendered = renderFractionBar(1, width, theme);
+			expect(Bun.stringWidth(Bun.stripANSI(rendered))).toBe(width);
+		}
+	});
+	it("uses ANSI-256 escapes for both bar foreground and inverse background", async () => {
+		const ansi256Theme = await loadTheme("dark", { mode: "256color" });
+		const rendered = renderFractionBar(0.5, 20, ansi256Theme);
+		expect(rendered).toMatch(/\x1b\[38;5;\d+m/);
+		expect(rendered).toMatch(/\x1b\[48;5;\d+m/);
+		expect(rendered).not.toMatch(/\x1b\[(?:38|48);2;/);
 	});
 
 	it("can anchor the embedded percentage at the right edge while the fill crosses through it", () => {

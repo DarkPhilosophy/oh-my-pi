@@ -817,18 +817,18 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 /**
  * Extract a short preview from tool args for display.
  */
-function extractToolArgsPreview(args: Record<string, unknown>): string {
-	// Priority order for preview
+function extractToolArgsPreview(args: Record<string, unknown>): { value: string; key: string } | undefined {
+	// Priority order for preview. Keep the key so renderers can distinguish
+	// filesystem paths from literal patterns/commands.
 	const previewKeys = ["command", "file_path", "path", "pattern", "query", "url", "task", "prompt"];
 
 	for (const key of previewKeys) {
 		if (args[key] && typeof args[key] === "string") {
 			const value = args[key] as string;
-			return value.length > 60 ? `${value.slice(0, 59)}…` : value;
+			return { value: value.length > 60 ? `${value.slice(0, 59)}…` : value, key };
 		}
 	}
-
-	return "";
+	return undefined;
 }
 
 function getNumberField(record: Record<string, unknown>, key: string): number | undefined {
@@ -1504,7 +1504,9 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				} else if (isRecord(event.args)) {
 					startArgs = event.args;
 				}
-				progress.currentToolArgs = extractToolArgsPreview(startArgs);
+				const preview = extractToolArgsPreview(startArgs);
+				progress.currentToolArgs = preview?.value;
+				progress.currentToolArgsKey = preview?.key;
 				progress.currentToolStartMs = now;
 				const intent = event.intent?.trim();
 				if (intent) {
@@ -1535,6 +1537,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				}
 				progress.currentTool = undefined;
 				progress.currentToolArgs = undefined;
+				progress.currentToolArgsKey = undefined;
 				progress.currentToolStartMs = undefined;
 				// The finalized TaskToolDetails will be captured below into
 				// `extractedToolData.task`; drop the in-flight snapshot so the

@@ -718,8 +718,6 @@ async function createAgentSessionRuntimeInScope(
 					emitBridgeEvent({
 						type: "terminal_closed",
 						reason,
-						// The underlying session's identity (not the registry/transport
-						// id) so the client's resume hint survives a stale cached state.
 						sessionId: session.sessionId ?? sessionId,
 						sessionFile: session.sessionFile ?? sessionManager.getSessionFile() ?? undefined,
 						...(error === undefined ? {} : { error }),
@@ -727,6 +725,7 @@ async function createAgentSessionRuntimeInScope(
 				},
 				onCwdChange: cwd => emitBridgeEvent({ type: "terminal_cwd", cwd }),
 			},
+			result.subagentEventBus,
 		);
 		const fallbackServerSnapshot: DaemonConnectionSnapshot = {
 			state: "connected",

@@ -4,6 +4,7 @@ import {
 	logger,
 	postmortem,
 	Snowflake,
+	untilAborted,
 	withTimeout,
 	workerHostEntry,
 } from "@oh-my-pi/pi-utils";
@@ -42,7 +43,7 @@ import type {
 // Coding-agent binary/bundle workers route through the CLI entrypoint with a
 // hidden argv mode, so compiled/npm builds only need one JavaScript entry.
 
-interface WorkerHandle {
+export interface WorkerHandle {
 	send(msg: WorkerInbound, transferList?: Transferable[]): void;
 	onMessage(handler: (msg: WorkerOutbound) => void): () => void;
 	onError(handler: (error: Error) => void): () => void;
@@ -53,6 +54,7 @@ interface WorkerHandle {
 export type DialogPolicy = "accept" | "dismiss";
 
 export interface PendingRun {
+	tabName: string;
 	resolve(result: RunResultOk): void;
 	reject(error: unknown): void;
 	session: ToolSession;
@@ -103,6 +105,25 @@ export interface CmuxTabSession extends TabSessionBase<CmuxBrowserHandle> {
 
 export type TabSession = WorkerTabSession | CmuxTabSession;
 
+export class FirefoxSharedTabRegistry {
+	#tabs = new Map<string, WorkerTabSession>();
+
+	get(browser: FirefoxRelayBrowserHandle): WorkerTabSession | undefined {
+		const tab = this.#tabs.get(browser.key);
+		return tab?.state === "alive" ? tab : undefined;
+	}
+
+	set(tab: WorkerTabSession): void {
+		if (tab.kindTag !== "firefox-relay") return;
+		this.#tabs.set(tab.browser.key, tab);
+	}
+
+	delete(tab: WorkerTabSession): void {
+		const shared = this.#tabs.get(tab.browser.key);
+		if (shared?.worker === tab.worker) this.#tabs.delete(tab.browser.key);
+	}
+}
+
 export interface AcquireTabOptions {
 	url?: string;
 	waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
@@ -139,6 +160,8 @@ export interface RunInTabOptions {
 	timeoutMs: number;
 	signal?: AbortSignal;
 	session: ToolSession;
+	/** Start of the caller's full operation deadline. */
+	deadlineStartMs?: number;
 }
 
 export interface ReleaseTabOptions {
@@ -174,7 +197,9 @@ const READY_BUDGET_FLOOR_MS = 500;
 // mapped to the kill reason. Lets the next `run` on that name explain WHY the tab
 // vanished instead of a bare "not alive". Cleared when the name is opened again.
 const killedTabs = new Map<string, string>();
-let firefoxSharedTab: WorkerTabSession | undefined;
+const firefoxAcquireChains = new Map<string, Promise<void>>();
+const firefoxOperationChains = new WeakMap<WorkerHandle, Promise<void>>();
+const firefoxSharedTabs = new FirefoxSharedTabRegistry();
 const DEFAULT_TAB_CLOSE_TIMEOUT_MS = 5_000;
 class RecoverableWorkerError extends ToolError {}
 const REPORTED_INIT_FAILURE = Symbol("reported-init-failure");
@@ -216,8 +241,10 @@ export function acquireTab(name: string, browser: BrowserHandle, opts: AcquireTa
 	// promise settles; without an acquisition-owned hold, cleanup would then
 	// run through a disconnected handle and leave the worker's page behind.
 	holdBrowser(browser);
-	const prior = acquireChains.get(name) ?? Promise.resolve();
-	const acquisition = prior.then(() => acquireTabImpl(name, browser, opts));
+	const namePrior = acquireChains.get(name) ?? Promise.resolve();
+	const firefoxKey = "webSocketUrl" in browser ? browser.key : undefined;
+	const endpointPrior = firefoxKey ? (firefoxAcquireChains.get(firefoxKey) ?? Promise.resolve()) : Promise.resolve();
+	const acquisition = Promise.all([namePrior, endpointPrior]).then(() => acquireTabImpl(name, browser, opts));
 	const result = acquisition.then(
 		async value => {
 			await releaseBrowser(browser, { kill: false });
@@ -233,8 +260,10 @@ export function acquireTab(name: string, browser: BrowserHandle, opts: AcquireTa
 		() => undefined,
 	);
 	acquireChains.set(name, tail);
+	if (firefoxKey) firefoxAcquireChains.set(firefoxKey, tail);
 	void tail.then(() => {
 		if (acquireChains.get(name) === tail) acquireChains.delete(name);
+		if (firefoxKey && firefoxAcquireChains.get(firefoxKey) === tail) firefoxAcquireChains.delete(firefoxKey);
 	});
 	return result;
 }
@@ -262,6 +291,17 @@ async function acquireTabImpl(
 	// below cannot drop it to refCount 0 and dispose the instance we are about
 	// to reuse (e.g. reopening the sole tab with a different dialogs policy).
 	let tempHold = false;
+	const releaseExistingTab = async (): Promise<void> => {
+		try {
+			await releaseTab(name, { kill: false });
+		} catch (error) {
+			if (tempHold) {
+				tempHold = false;
+				await releaseBrowser(browser, { kill: false }).catch(() => undefined);
+			}
+			throw error;
+		}
+	};
 	const existing = tabs.get(name);
 	if (existing) {
 		if (existing.browser === browser && existing.state === "alive") {
@@ -269,11 +309,11 @@ async function acquireTabImpl(
 			if (existing.backend === "cmux" && existing.cmuxAttachedSurface !== requestedCmuxSurface) {
 				holdBrowser(browser);
 				tempHold = true;
-				await releaseTab(name, { kill: false });
+				await releaseExistingTab();
 			} else if (opts.dialogs !== undefined && opts.dialogs !== existing.dialogPolicy) {
 				holdBrowser(browser);
 				tempHold = true;
-				await releaseTab(name, { kill: false });
+				await releaseExistingTab();
 			} else {
 				const reuseSteps: string[] = [];
 				if (opts.viewport && browser.kind.kind !== "cmux") {
@@ -305,7 +345,7 @@ async function acquireTabImpl(
 				holdBrowser(browser);
 				tempHold = true;
 			}
-			await releaseTab(name, { kill: false });
+			await releaseExistingTab();
 		}
 	}
 
@@ -319,35 +359,47 @@ async function acquireTabImpl(
 			throw error;
 		}
 	}
-	if (browser.kind.kind === "firefox-relay" && firefoxSharedTab?.state === "alive") {
-		if (firefoxSharedTab.pending.size > 0) {
-			throw new ToolError("Firefox Browser Relay is busy with another tab operation");
+	const firefoxSharedTab = "webSocketUrl" in browser ? firefoxSharedTabs.get(browser) : undefined;
+	if (firefoxSharedTab?.state === "alive") {
+		try {
+			if (firefoxSharedTab.pending.size > 0) {
+				throw new ToolError("Firefox Browser Relay is busy with another tab operation");
+			}
+			const info = await selectFirefoxWorkerTab(firefoxSharedTab.worker, {
+				name,
+				targetMatcher: opts.target,
+				url: opts.url,
+				waitUntil: opts.waitUntil,
+				timeoutMs: opts.timeoutMs,
+				dialogs: opts.dialogs,
+				signal: opts.signal,
+			});
+			if (opts.signal?.aborted) throw new ToolAbortError();
+			holdBrowser(browser);
+			if (tempHold) await releaseBrowser(browser, { kill: false });
+			const tab: WorkerTabSession = {
+				name,
+				browser,
+				targetId: info.targetId,
+				backend: "worker",
+				worker: firefoxSharedTab.worker,
+				state: "alive",
+				info,
+				pending: firefoxSharedTab.pending,
+				dialogPolicy: opts.dialogs,
+				kindTag: "firefox-relay",
+				activateForScreenshot: opts.target !== undefined,
+				ownerSessionId: opts.ownerSessionId,
+			};
+			tabs.set(name, tab);
+			return { tab, created: true };
+		} catch (error) {
+			if (error instanceof RecoverableWorkerError) {
+				await invalidateFirefoxWorker(firefoxSharedTab.worker, "Firefox tab selection failed recoverably");
+			}
+			if (tempHold || browser.refCount === 0) await releaseBrowser(browser, { kill: false });
+			throw error;
 		}
-		const info = await selectFirefoxWorkerTab(firefoxSharedTab.worker, {
-			targetMatcher: opts.target,
-			url: opts.url,
-			waitUntil: opts.waitUntil,
-			timeoutMs: opts.timeoutMs,
-			dialogs: opts.dialogs,
-		});
-		holdBrowser(browser);
-		if (tempHold) await releaseBrowser(browser, { kill: false });
-		const tab: WorkerTabSession = {
-			name,
-			browser,
-			targetId: info.targetId,
-			backend: "worker",
-			worker: firefoxSharedTab.worker,
-			state: "alive",
-			info,
-			pending: firefoxSharedTab.pending,
-			dialogPolicy: opts.dialogs,
-			kindTag: "firefox-relay",
-			activateForScreenshot: opts.target !== undefined,
-			ownerSessionId: opts.ownerSessionId,
-		};
-		tabs.set(name, tab);
-		return { tab, created: true };
 	}
 	let initPayload: WorkerInitPayload;
 	let worker: WorkerHandle;
@@ -374,7 +426,7 @@ async function acquireTabImpl(
 		// `BuildMessage`-class failures arrive asynchronously via the worker's `error` event,
 		// after `spawnTabWorker`'s synchronous try/catch has already returned. Fall back to
 		// the inline worker here so module-resolution failures don't poison every tab open.
-		await worker.terminate().catch(() => undefined);
+		await terminateWorker(worker);
 		// A headless worker that died mid-init may have already created its page in the
 		// shared browser — a killed worker can't close it, so close the target the worker
 		// reported (no-op when it never got that far).
@@ -397,7 +449,7 @@ async function acquireTabImpl(
 		try {
 			info = await initializeTabWorker(worker, initPayload, initBudgetMs, startedAt);
 		} catch (inlineError) {
-			await worker.terminate().catch(() => undefined);
+			await terminateWorker(worker);
 			if ("browser" in browser) closeAbandonedWorkerPage(browser, worker);
 			if (tempHold || browser.refCount === 0) await releaseBrowser(browser, { kill: false });
 			const finalError = new ToolError(
@@ -416,7 +468,7 @@ async function acquireTabImpl(
 	// the registry; a browser still leased/held elsewhere (refCount > 0) is left
 	// for its owner to release.
 	if (opts.signal?.aborted) {
-		await worker.terminate().catch(() => undefined);
+		await terminateWorker(worker);
 		if ("browser" in browser) closeAbandonedWorkerPage(browser, worker);
 		if (tempHold || browser.refCount === 0) await releaseBrowser(browser, { kill: false }).catch(() => undefined);
 		throw new ToolAbortError("Browser tab open aborted");
@@ -440,7 +492,7 @@ async function acquireTabImpl(
 	};
 	worker.onMessage(msg => handleTabMessage(tab, msg));
 	tabs.set(name, tab);
-	if (tab.kindTag === "firefox-relay") firefoxSharedTab = tab;
+	if (tab.kindTag === "firefox-relay") firefoxSharedTabs.set(tab);
 	// Durably record ownership so another live omp process can reap this page if
 	// this process dies abnormally before its own teardown closes the tab.
 	const scope = sharedScopeOf(browser);
@@ -527,7 +579,13 @@ async function acquireCmuxTab(
 export async function runInTab(name: string, opts: RunInTabOptions): Promise<RunResultOk> {
 	return await runInTabWithSnapshot(
 		name,
-		{ code: opts.code, timeoutMs: opts.timeoutMs, signal: opts.signal, session: opts.session },
+		{
+			code: opts.code,
+			timeoutMs: opts.timeoutMs,
+			signal: opts.signal,
+			session: opts.session,
+			deadlineStartMs: opts.deadlineStartMs,
+		},
 		{
 			cwd: opts.session.cwd,
 			browserScreenshotDir: expandBrowserScreenshotDir(opts.session),
@@ -536,7 +594,67 @@ export async function runInTab(name: string, opts: RunInTabOptions): Promise<Run
 	);
 }
 
+async function reserveFirefoxWorker(
+	worker: WorkerHandle,
+	signal?: AbortSignal,
+	timeoutMs?: number,
+): Promise<() => void> {
+	const previous = firefoxOperationChains.get(worker) ?? Promise.resolve();
+	const released = Promise.withResolvers<void>();
+	const current = previous.catch(() => undefined).then(() => released.promise);
+	firefoxOperationChains.set(worker, current);
+	const controller = timeoutMs === undefined ? undefined : new AbortController();
+	const timeout = timeoutMs === undefined ? undefined : setTimeout(() => controller?.abort(), timeoutMs);
+	try {
+		await untilAborted(
+			controller ? (signal ? AbortSignal.any([signal, controller.signal]) : controller.signal) : signal,
+			() => previous.catch(() => undefined),
+		);
+	} catch (error) {
+		released.resolve();
+		if (controller?.signal.aborted && !signal?.aborted) {
+			throw new ToolError(`Timed out after ${timeoutMs}ms waiting for Firefox worker reservation`);
+		}
+		throw error;
+	} finally {
+		clearTimeout(timeout);
+	}
+	return () => {
+		released.resolve();
+		if (firefoxOperationChains.get(worker) === current) firefoxOperationChains.delete(worker);
+	};
+}
+
 async function runInTabWithSnapshot(
+	name: string,
+	opts: {
+		code: string;
+		timeoutMs: number;
+		signal?: AbortSignal;
+		session?: ToolSession;
+		deadlineStartMs?: number;
+	},
+	snapshot: SessionSnapshot,
+): Promise<RunResultOk> {
+	const initial = tabs.get(name);
+	if (initial?.backend !== "worker" || initial.kindTag !== "firefox-relay") {
+		return await runInTabWithSnapshotUnlocked(name, opts, snapshot);
+	}
+	const startedAt = opts.deadlineStartMs ?? performance.now();
+	const remainingBeforeReservation = Math.max(0, opts.timeoutMs - (performance.now() - startedAt));
+	const releaseReservation = await reserveFirefoxWorker(initial.worker, opts.signal, remainingBeforeReservation);
+	try {
+		const remainingMs = Math.max(0, opts.timeoutMs - (performance.now() - startedAt));
+		if (remainingMs <= 0) {
+			throw new ToolError(`Browser code execution timed out after ${opts.timeoutMs}ms`);
+		}
+		return await runInTabWithSnapshotUnlocked(name, { ...opts, timeoutMs: remainingMs }, snapshot);
+	} finally {
+		releaseReservation();
+	}
+}
+
+async function runInTabWithSnapshotUnlocked(
 	name: string,
 	opts: { code: string; timeoutMs: number; signal?: AbortSignal; session?: ToolSession },
 	snapshot: SessionSnapshot,
@@ -570,6 +688,7 @@ async function runInTabWithSnapshot(
 	// until timeout even after the tab is gone.
 	const closeAc = new AbortController();
 	const pending: PendingRun = {
+		tabName: name,
 		resolve,
 		reject,
 		session: opts.session ?? ({} as ToolSession),
@@ -613,24 +732,30 @@ async function runInTabWithSnapshot(
 			timeoutMs: opts.timeoutMs,
 			session: snapshot,
 			targetId: tab.kindTag === "firefox-relay" ? tab.targetId : undefined,
+			dialogs: tab.dialogPolicy,
 		});
 		try {
 			return await raceWithTimeout(
 				promise,
 				opts.timeoutMs + GRACE_MS,
 				"Browser code execution hung past grace; tab killed",
-				async reason => await forceKillTab(name, reason),
+				async reason => await forceKillTab(name, reason, { sharedFirefoxWorker: tab.kindTag === "firefox-relay" }),
 			);
 		} catch (error) {
 			const runTimedOut =
 				error instanceof ToolError && error.message.startsWith("Browser code execution timed out after ");
-			if ((runTimedOut || error instanceof RecoverableWorkerError) && tab.kindTag !== "firefox-relay") {
+			if (tab.kindTag === "firefox-relay" && (runTimedOut || error instanceof ToolAbortError)) {
+				const reason = runTimedOut
+					? "Firefox browser operation timed out; shared relay worker killed"
+					: "Firefox browser operation aborted; shared relay worker killed";
+				await forceKillTab(name, reason, { sharedFirefoxWorker: true });
+			} else if (runTimedOut || error instanceof RecoverableWorkerError) {
 				try {
 					if (tab.worker.mode === "inline") {
 						const reason = runTimedOut
 							? "Browser code execution timed out; tab killed"
 							: "Browser request interception cleanup failed; tab killed";
-						await forceKillTab(name, reason);
+						await forceKillTab(name, reason, { sharedFirefoxWorker: tab.kindTag === "firefox-relay" });
 					} else {
 						await recycleTimedOutWorkerTab(tab, opts.timeoutMs + GRACE_MS);
 					}
@@ -638,7 +763,9 @@ async function runInTabWithSnapshot(
 					logger.warn("Failed to recycle browser tab worker; killing tab", {
 						error: recycleError instanceof Error ? recycleError.message : String(recycleError),
 					});
-					await forceKillTab(name, "Browser tab worker recovery failed; tab killed");
+					await forceKillTab(name, "Browser tab worker recovery failed; tab killed", {
+						sharedFirefoxWorker: tab.kindTag === "firefox-relay",
+					});
 				}
 			}
 			throw error;
@@ -650,6 +777,19 @@ async function runInTabWithSnapshot(
 }
 
 export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Promise<boolean> {
+	const initial = tabs.get(name);
+	const releaseReservation =
+		initial?.backend === "worker" && initial.kindTag === "firefox-relay"
+			? await reserveFirefoxWorker(initial.worker, undefined, opts.timeoutMs)
+			: undefined;
+	try {
+		return await releaseTabUnlocked(name, opts);
+	} finally {
+		releaseReservation?.();
+	}
+}
+
+async function releaseTabUnlocked(name: string, opts: ReleaseTabOptions = {}): Promise<boolean> {
 	const tab = tabs.get(name);
 	if (!tab) {
 		logger.debug("releaseTab: unknown tab", { name });
@@ -660,9 +800,13 @@ export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Pr
 			([, candidate]) => candidate.backend === "worker" && candidate.worker === tab.worker,
 		);
 		if (aliases.length > 1) {
-			if (tab.pending.size > 0)
-				throw new ToolError("Cannot close a Firefox tab alias while the shared relay is busy");
+			const aliasIsBusy = [...tab.pending.values()].some(pending => pending.tabName === name);
+			if (aliasIsBusy) throw new ToolError("Cannot close a Firefox tab alias while it is busy");
+			tab.worker.send({ type: "release-runtime", name });
+			const survivor = aliases.find(([aliasName]) => aliasName !== name)?.[1];
 			tabs.delete(name);
+			tab.state = "dead";
+			if (survivor?.backend === "worker") firefoxSharedTabs.set(survivor);
 			await releaseBrowser(tab.browser, {
 				kill: false,
 				timeoutMs: opts.timeoutMs ?? DEFAULT_TAB_CLOSE_TIMEOUT_MS,
@@ -670,7 +814,7 @@ export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Pr
 			});
 			return true;
 		}
-		firefoxSharedTab = undefined;
+		firefoxSharedTabs.delete(tab);
 	}
 	const wasAlive = tab.state === "alive";
 	tab.state = "dead";
@@ -771,9 +915,18 @@ export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Pr
 }
 
 export async function releaseAllTabs(opts: ReleaseTabOptions = {}): Promise<number> {
-	const names = [...tabs.keys()];
 	let count = 0;
-	for (const name of names) {
+	const sharedFirefoxWorkers = new Set<WorkerHandle>();
+	for (const tab of tabs.values()) {
+		if (tab.backend !== "worker" || tab.kindTag !== "firefox-relay" || sharedFirefoxWorkers.has(tab.worker)) continue;
+		sharedFirefoxWorkers.add(tab.worker);
+		const aliasCount = [...tabs.values()].filter(
+			candidate => candidate.backend === "worker" && candidate.worker === tab.worker,
+		).length;
+		await forceKillTab(tab.name, "All Firefox relay aliases closed", { sharedFirefoxWorker: true });
+		count += aliasCount;
+	}
+	for (const name of [...tabs.keys()]) {
 		if (await releaseTab(name, opts)) count++;
 	}
 	return count;
@@ -810,6 +963,11 @@ export async function releaseTabsForOwner(ownerId: string, opts: ReleaseTabOptio
 /** Test-only accessor for the module-global tabs map. */
 export function getTabsMapForTest(): ReadonlyMap<string, TabSession> {
 	return tabs;
+}
+
+/** Test-only accessor for seeding the module-global Firefox alias registry. */
+export function getFirefoxSharedTabsForTest(): FirefoxSharedTabRegistry {
+	return firefoxSharedTabs;
 }
 
 function isLastSurfaceCloseError(err: unknown): boolean {
@@ -876,7 +1034,7 @@ export async function buildInitPayload(
 	};
 }
 
-function handleTabMessage(tab: WorkerTabSession, msg: WorkerOutbound): void {
+export function handleTabMessage(tab: WorkerTabSession, msg: WorkerOutbound): void {
 	if (msg.type === "result") {
 		const pending = tab.pending.get(msg.id);
 		if (!pending) return;
@@ -889,7 +1047,15 @@ function handleTabMessage(tab: WorkerTabSession, msg: WorkerOutbound): void {
 		return;
 	}
 	if (msg.type === "ready") {
-		tab.info = msg.info;
+		for (const candidate of tabs.values()) {
+			if (
+				candidate.backend === "worker" &&
+				candidate.worker === tab.worker &&
+				candidate.targetId === msg.info.targetId
+			) {
+				candidate.info = msg.info;
+			}
+		}
 		return;
 	}
 	if (msg.type === "tool-call") {
@@ -937,33 +1103,137 @@ async function dispatchToolCall(
 		pending.signal?.removeEventListener("abort", onParentAbort);
 	}
 }
-async function selectFirefoxWorkerTab(
+export async function selectFirefoxWorkerTab(
 	worker: WorkerHandle,
 	options: {
+		name: string;
 		targetId?: string;
 		targetMatcher?: string;
 		url?: string;
 		waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
 		timeoutMs: number;
 		dialogs?: DialogPolicy;
+		signal?: AbortSignal;
 	},
 ): Promise<ReadyInfo> {
+	const releaseReservation = await reserveFirefoxWorker(worker, options.signal);
+	const { signal, ...selectionOptions } = options;
+
 	const id = Snowflake.next();
 	const selected = Promise.withResolvers<ReadyInfo>();
+	const acknowledged = Promise.withResolvers<void>();
 	const unlisten = worker.onMessage(msg => {
-		if (msg.type === "selected" && msg.id === id) selected.resolve(msg.info);
-		else if (msg.type === "select-failed" && msg.id === id) selected.reject(errorFromPayload(msg.error));
+		if (msg.type === "selected" && msg.id === id) {
+			for (const candidate of tabs.values()) {
+				if (
+					candidate.backend === "worker" &&
+					candidate.worker === worker &&
+					candidate.targetId === msg.info.targetId
+				) {
+					candidate.info = msg.info;
+				}
+			}
+			acknowledged.resolve();
+			selected.resolve(msg.info);
+		} else if (msg.type === "select-failed" && msg.id === id) {
+			acknowledged.resolve();
+			selected.reject(errorFromPayload(msg.error));
+		}
 	});
+	const unlistenError = worker.onError(error => {
+		acknowledged.resolve();
+		selected.reject(error);
+	});
+	let dispatched = false;
+	let cancellationStarted = false;
+	const sendAbort = (): void => {
+		if (!dispatched) return;
+		try {
+			worker.send({ type: "abort-select", id });
+		} catch (error) {
+			acknowledged.resolve();
+			selected.reject(error);
+		}
+	};
+	const cancelSelection = async (): Promise<void> => {
+		if (cancellationStarted) return;
+		cancellationStarted = true;
+		const reason = signal?.reason ?? new ToolAbortError();
+		if (!dispatched) {
+			selected.reject(reason);
+			return;
+		}
+		sendAbort();
+		try {
+			await raceWithTimeout(acknowledged.promise, GRACE_MS, "Timed out cancelling Firefox browser tab selection");
+		} catch {
+			await invalidateFirefoxWorker(worker, "Firefox tab selection did not acknowledge cancellation");
+		} finally {
+			selected.reject(reason);
+		}
+	};
+	const abort = (): void => {
+		void cancelSelection();
+	};
+	if (signal?.aborted) abort();
+	else signal?.addEventListener("abort", abort, { once: true });
 	try {
-		worker.send({ type: "select", id, ...options });
-		return await raceWithTimeout(selected.promise, options.timeoutMs, "Timed out selecting Firefox browser tab");
+		if (signal?.aborted) return await selected.promise;
+		dispatched = true;
+		worker.send({ type: "select", id, ...selectionOptions });
+		return await raceWithTimeout(
+			selected.promise,
+			options.timeoutMs,
+			"Timed out selecting Firefox browser tab",
+			async () => {
+				sendAbort();
+				try {
+					await raceWithTimeout(
+						acknowledged.promise,
+						GRACE_MS,
+						"Timed out cancelling Firefox browser tab selection",
+					);
+					if (selectionOptions.url) {
+						await invalidateFirefoxWorker(worker, "Firefox tab selection navigation timed out");
+					}
+				} catch {
+					await invalidateFirefoxWorker(worker, "Firefox tab selection did not acknowledge cancellation");
+				}
+			},
+		);
 	} finally {
 		unlisten();
+		unlistenError();
+		signal?.removeEventListener("abort", abort);
+		releaseReservation();
 	}
 }
 
+async function invalidateFirefoxWorker(worker: WorkerHandle, reason: string): Promise<void> {
+	const alias = [...tabs.values()].find(
+		tab => tab.backend === "worker" && tab.kindTag === "firefox-relay" && tab.worker === worker,
+	);
+	if (alias) {
+		await forceKillTab(alias.name, reason, { sharedFirefoxWorker: true });
+		return;
+	}
+	await terminateWorker(worker);
+}
+
+export async function handleFirefoxSelectionErrorForTest(tab: WorkerTabSession, error: unknown): Promise<void> {
+	if (error instanceof RecoverableWorkerError) {
+		await invalidateFirefoxWorker(tab.worker, "Firefox tab selection failed recoverably");
+	}
+}
+
+export function selectFirefoxWorkerTabForTest(
+	worker: WorkerHandle,
+	options: Parameters<typeof selectFirefoxWorkerTab>[1],
+): Promise<ReadyInfo> {
+	return selectFirefoxWorkerTab(worker, options);
+}
+
 function safeSend(tab: WorkerTabSession, msg: WorkerInbound): void {
-	if (tab.state !== "alive") return;
 	try {
 		tab.worker.send(msg);
 	} catch (err) {
@@ -989,7 +1259,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 	// must not restart the recycle's init budget.
 	const startedAt = performance.now();
 	const oldWorker = tab.worker;
-	await oldWorker.terminate().catch(() => undefined);
+	await terminateWorker(oldWorker);
 	const browserWSEndpoint =
 		"webSocketUrl" in tab.browser ? tab.browser.webSocketUrl : tab.browser.browser.wsEndpoint();
 	if (!browserWSEndpoint) throw new ToolError("Browser websocket endpoint is unavailable");
@@ -1011,7 +1281,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 		const info = await initializeTabWorker(worker, payload, timeoutMs, startedAt);
 		publishRecycledWorker(tab, oldWorker, worker, info);
 	} catch (error) {
-		await worker.terminate().catch(() => undefined);
+		await terminateWorker(worker);
 		// The recycle's budget is exhausted: the run caller already timed out, so a
 		// retried init can't beat its deadline — fail fast and let the caller
 		// force-kill the tab instead of spending the phase floors' excess.
@@ -1023,7 +1293,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 			const info = await initializeTabWorker(worker, payload, timeoutMs, startedAt);
 			publishRecycledWorker(tab, oldWorker, worker, info);
 		} catch (inlineError) {
-			await worker.terminate().catch(() => undefined);
+			await terminateWorker(worker);
 			const finalError = new ToolError(
 				`Failed to recycle timed-out browser tab worker (inline fallback also failed): ${inlineError instanceof Error ? inlineError.message : String(inlineError)}`,
 			);
@@ -1033,36 +1303,87 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 	}
 }
 
-function publishRecycledWorker(
+export function publishRecycledWorker(
 	tab: WorkerTabSession,
 	oldWorker: WorkerHandle,
 	worker: WorkerHandle,
 	info: ReadyInfo,
 ): void {
-	for (const candidate of tabs.values()) {
-		if (candidate.backend !== "worker" || candidate.worker !== oldWorker) continue;
-		candidate.worker = worker;
-		if (candidate === tab) candidate.info = info;
-		candidate.state = "alive";
+	const reservationChain = firefoxOperationChains.get(oldWorker);
+	if (reservationChain) {
+		firefoxOperationChains.set(worker, reservationChain);
+		void reservationChain.finally(() => {
+			if (firefoxOperationChains.get(worker) === reservationChain) firefoxOperationChains.delete(worker);
+		});
 	}
-	if (firefoxSharedTab?.worker === oldWorker) firefoxSharedTab.worker = worker;
+	for (const alias of tabs.values()) {
+		if (alias.backend !== "worker" || alias.worker !== oldWorker) continue;
+		alias.worker = worker;
+		alias.state = "alive";
+	}
+	tab.info = info;
+	firefoxSharedTabs.set(tab);
 	worker.onMessage(msg => handleTabMessage(tab, msg));
 }
 
-async function forceKillTab(name: string, reason: string): Promise<void> {
+export async function forceKillTab(
+	name: string,
+	reason: string,
+	options: { sharedFirefoxWorker?: boolean } = {},
+): Promise<void> {
 	const tab = tabs.get(name);
 	if (!tab) return;
+	if (tab.backend === "worker" && tab.kindTag === "firefox-relay") {
+		tab.state = "dead";
+		const aliases = [...tabs.entries()].filter(
+			([, candidate]) => candidate.backend === "worker" && candidate.worker === tab.worker,
+		);
+		if (!options.sharedFirefoxWorker && aliases.length > 1) {
+			tab.worker.send({ type: "release-runtime", name });
+			const survivor = aliases.find(([aliasName]) => aliasName !== name)?.[1];
+			tabs.delete(name);
+			if (survivor?.backend === "worker") firefoxSharedTabs.set(survivor);
+			await releaseBrowser(tab.browser, { kill: false });
+			return;
+		}
+	}
 	killedTabs.set(name, reason);
 	tab.state = "dead";
 	const error = postmortem.markExpectedCleanupError(new ToolError(reason));
-	for (const pending of tab.pending.values()) pending.reject(error);
+	for (const pending of tab.pending.values()) {
+		for (const ctrl of pending.toolCalls.values()) ctrl.abort(error);
+		pending.closeAc?.abort(error);
+		pending.reject(error);
+	}
 	tab.pending.clear();
 	if (tab.backend === "cmux") {
 		await releaseBrowser(tab.browser, { kill: false });
 		tabs.delete(name);
 		return;
 	}
-	if (firefoxSharedTab?.worker === tab.worker) firefoxSharedTab = undefined;
+	if (tab.kindTag === "firefox-relay") {
+		const aliases = [...tabs.entries()].filter(
+			([, candidate]) => candidate.backend === "worker" && candidate.worker === tab.worker,
+		);
+		if (!options.sharedFirefoxWorker && aliases.length > 1) {
+			tab.worker.send({ type: "release-runtime", name });
+			const survivor = aliases.find(([aliasName]) => aliasName !== name)?.[1];
+			tabs.delete(name);
+			if (survivor?.backend === "worker") firefoxSharedTabs.set(survivor);
+			await releaseBrowser(tab.browser, { kill: false });
+			return;
+		}
+		firefoxSharedTabs.delete(tab);
+		await terminateWorker(tab.worker);
+		for (const [aliasName, alias] of aliases) {
+			killedTabs.set(aliasName, reason);
+			alias.state = "dead";
+			await releaseBrowser(alias.browser, { kill: false });
+			tabs.delete(aliasName);
+		}
+		return;
+	}
+	firefoxSharedTabs.delete(tab);
 	await tab.worker.terminate().catch(() => undefined);
 	if (tab.kindTag === "headless") await closeOrphanTarget(tab);
 	await releaseBrowser(tab.browser, { kill: false });
@@ -1087,7 +1408,7 @@ async function closeTargetById(browser: PuppeteerBrowserHandle, targetId: string
  * outlive their creating process and thus need cross-process orphan reaping).
  */
 function sharedScopeOf(browser: BrowserHandle): SharedTargetScope | undefined {
-	if (!("browser" in browser)) return undefined;
+	if ("client" in browser || "webSocketUrl" in browser) return undefined;
 	if (browser.kind.kind !== "headless" || !browser.sharedDaemon) return undefined;
 	return { projectDir: browser.sharedDaemon.projectDir, daemonName: browser.sharedDaemon.name };
 }
@@ -1135,6 +1456,22 @@ async function waitForClosed(tab: WorkerTabSession): Promise<void> {
 	} finally {
 		unsubscribe();
 	}
+}
+
+async function terminateWorker(worker: WorkerHandle): Promise<void> {
+	if (worker.mode === "inline") {
+		const { promise, resolve } = Promise.withResolvers<void>();
+		const unsubscribe = worker.onMessage(msg => {
+			if (msg.type === "closed") resolve();
+		});
+		try {
+			worker.send({ type: "close" });
+			await raceWithTimeout(promise, GRACE_MS, "Timed out closing inline browser worker").catch(() => undefined);
+		} finally {
+			unsubscribe();
+		}
+	}
+	await worker.terminate().catch(() => undefined);
 }
 
 function expandBrowserScreenshotDir(session: ToolSession): string | undefined {

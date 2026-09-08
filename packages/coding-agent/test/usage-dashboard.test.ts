@@ -19,8 +19,13 @@ function day(day: string, cost: number, requests = 1): DailyActivityPoint {
 	return { day, cost, requests, totalTokens: 0 };
 }
 
-function report(provider: string, email: string, limits: UsageReport["limits"]): UsageReport {
-	return { provider, fetchedAt: Date.now(), limits, metadata: { email } };
+function report(
+	provider: string,
+	email: string,
+	limits: UsageReport["limits"],
+	organization?: { orgId: string; orgName?: string },
+): UsageReport {
+	return { provider, fetchedAt: Date.now(), limits, metadata: { email, ...organization } };
 }
 
 function limit(
@@ -134,12 +139,66 @@ describe("buildProviderCards split + privacy", () => {
 		expect(cards.map(card => card.windows[0].fraction)).toEqual([1, 0]);
 	});
 
+	it("keeps same-label organizations distinct when split and aggregates them when merged", () => {
+		const sameEmail = "shared@x.test";
+		const reports = [
+			report("anthropic", sameEmail, [limit("anthropic", "shared", "7d", "Claude 7 Day", 0.8, "warning")], {
+				orgId: "org-team-east",
+				orgName: "Team",
+			}),
+			report("anthropic", sameEmail, [limit("anthropic", "shared", "7d", "Claude 7 Day", 0.2, "ok")], {
+				orgId: "org-team-west",
+				orgName: "Team",
+			}),
+		];
+		const split = buildProviderCards(reports, now, { merge: false });
+		expect(split).toHaveLength(2);
+		expect(split.map(card => card.account)).toEqual([`${sameEmail} (Team)`, `${sameEmail} (Team)`]);
+		expect(split.map(card => card.windows[0].fraction)).toEqual([0.8, 0.2]);
+		const merged = buildProviderCards(reports, now, { merge: true });
+		expect(merged).toHaveLength(1);
+		expect(merged[0].accounts).toBe(2);
+		expect(merged[0].windows[0].fraction).toBeCloseTo(0.5);
+	});
 	it("masks split-card account labels and keeps colliding prefixes distinguishable", () => {
 		const labels = reports.map(r => String(r.metadata?.email));
 		const cards = buildProviderCards(reports, now, { merge: false, mask: createAccountMasker(labels, true) });
 		const masked = cards.map(card => card.account);
 		expect(masked.every(label => label !== undefined && !label.includes("@x.test"))).toBe(true);
 		expect(new Set(masked).size).toBe(2);
+	});
+
+	it("keeps organization qualifiers visible in narrow split-card headers", () => {
+		const email = "shared-account-with-a-long-address@example.test";
+		const reports = [
+			report("anthropic", email, [limit("anthropic", "east", "7d", "Claude 7 Day", 0.8, "warning")], {
+				orgId: "org-east",
+				orgName: "East",
+			}),
+			report("anthropic", email, [limit("anthropic", "west", "7d", "Claude 7 Day", 0.2, "ok")], {
+				orgId: "org-west",
+				orgName: "West",
+			}),
+		];
+		const dashboard = new UsageDashboardComponent({
+			reports,
+			renderDetail: () => "",
+			createMasker: createAccountMasker,
+			maskAccountLabels: false,
+			mergeAccounts: false,
+			labelPlacement: "moving",
+			loadActivity: async () => {},
+			requestRender: () => {},
+			onClose: () => {},
+		});
+
+		const headers = Bun.stripANSI(dashboard.render(36).join("\n"))
+			.split("\n")
+			.filter(line => line.includes("(East)") || line.includes("(West)"));
+		expect(headers).toHaveLength(2);
+		expect(headers.some(line => line.includes("(East)"))).toBe(true);
+		expect(headers.some(line => line.includes("(West)"))).toBe(true);
+		expect(headers.every(line => line.length <= 36)).toBe(true);
 	});
 });
 

@@ -254,6 +254,18 @@ export class TranscriptContainer extends Container {
 		this.addChild(component);
 	}
 
+	/** Whether no rows of this component have entered immutable history. */
+	isBlockUncommitted(component: Component): boolean {
+		this.#syncEntries();
+		const index = this.#entries.findIndex(entry => entry.component === component);
+		if (index < 0) return true;
+		const entry = this.#entries[index]!;
+		if (entry.state === "committed" || entry.emitted > 0) return false;
+		if (this.#offered?.kind === "commit" && index < this.#offered.end) return false;
+		if (this.#offered?.kind === "append" && index === this.#offered.entry) return false;
+		return true;
+	}
+
 	/**
 	 * Whether `component` still sits in the live (repaintable) region: at or
 	 * after the retirement frontier. Self-animating finalized blocks poll this

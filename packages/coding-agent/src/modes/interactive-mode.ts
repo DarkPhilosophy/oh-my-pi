@@ -138,6 +138,7 @@ import {
 	TODO_HUD_STATE_CUSTOM_TYPE,
 	todoMatchesAnyDescription,
 	type TodoHudStateEntryData,
+	USER_TODO_EDIT_CUSTOM_TYPE,
 } from "../tools/todo";
 import { vocalizer } from "../tts/vocalizer";
 import { applyHyperlinkSetting } from "../tui/hyperlink";
@@ -483,12 +484,15 @@ const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
  * eval `agent()` spawns are rendered by their own eval cell tree.
  * Returns an empty array when nothing is running so the container can clear.
  */
-export function renderSubagentHudLines(sessions: ObservableSession[], columns: number): string[] {
+export function renderSubagentHudLines(
+	sessions: ObservableSession[],
+	columns: number,
+	showResolvedModelBadge = false,
+): string[] {
 	const running = sessions.filter(
 		session => session.kind === "subagent" && session.status === "active" && session.detached === true,
 	);
 	if (running.length === 0) return [];
-
 	const dot = theme.styledSymbol("status.done", "accent");
 	const visible = running.slice(0, SUBAGENT_HUD_VISIBLE_LIMIT);
 	const hiddenCount = running.length - visible.length;
@@ -500,34 +504,46 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 				const displayId = formatTaskId(session.id);
 				const role = session.agent ?? session.progress?.agent;
 				const badge = agentTypeBadge(role, theme);
+				const resolvedModel =
+					showResolvedModelBadge && session.progress?.resolvedModel?.trim()
+						? session.progress.resolvedModel.trim()
+						: undefined;
 				let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}${badge}`;
-				const description = session.description?.trim() || session.progress?.description?.trim();
+				if (resolvedModel)
+					line += `:${theme.fg("dim", truncateToWidth(replaceTabs(sanitizeText(resolvedModel)).replace(/[\r\n]+/g, " "), 30))}`;
+				const description =
+					session.progress?.lastIntent?.trim() ||
+					session.progress?.description?.trim() ||
+					session.description?.trim() ||
+					session.progress?.assignment?.trim() ||
+					session.progress?.task?.trim();
 				const distinctDescription =
 					description && !labelEchoesHandle(session.id, description) ? description : undefined;
 				if (distinctDescription) {
-					const budget = Math.max(
-						TRUNCATE_LENGTHS.SHORT,
-						columns - visibleWidth(displayId) - visibleWidth(Bun.stripANSI(badge)) - 10,
-					);
-					const formatted = replaceTabs(distinctDescription).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-					line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(formatted, budget))}`;
-				} else {
-					// No spawn description: fall back to a muted task preview, same as
-					// the inline task rows when a row has no label.
-					const taskPreview = session.progress?.task?.trim();
-					if (taskPreview && !labelEchoesHandle(session.id, taskPreview)) {
-						const formatted = replaceTabs(taskPreview).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-						line += ` ${theme.fg("muted", truncateToWidth(formatted, TRUNCATE_LENGTHS.SHORT))}`;
-					}
+					const budget = Math.max(1, columns - visibleWidth(Bun.stripANSI(line)) - 8);
+					const formatted = replaceTabs(sanitizeText(distinctDescription)).replace(/\s*[\r\n]+\s*/g, " ");
+					line += `${theme.sep.dot}${theme.fg("accent", truncateToWidth(formatted, budget))}`;
 				}
-				return line;
+				const currentTool = session.progress?.currentTool?.trim();
+				if (currentTool) {
+					const args = session.progress?.currentToolArgs?.trim();
+					const argsKey = session.progress?.currentToolArgsKey;
+					const displayArgs =
+						argsKey === "path" || argsKey === "file_path" || argsKey === "command" ? shortenPath(args) : args;
+					const toolText = replaceTabs(
+						sanitizeText(displayArgs ? `${currentTool}(${displayArgs})` : currentTool),
+					).replace(/\s*[\r\n]+\s*/g, " ");
+					return [
+						truncateToWidth(line, Math.max(1, columns - 6)),
+						`${theme.tree.hook} ${theme.fg("dim", truncateToWidth(toolText, Math.max(1, columns - 8)))}`,
+					];
+				}
+				return truncateToWidth(line, Math.max(1, columns - 6));
 			},
 		},
 		theme,
 	);
-	if (hiddenCount > 0) {
-		rows.push(theme.fg("dim", `… ${hiddenCount} more running — open Agent Hub for full list`));
-	}
+	if (hiddenCount > 0) rows.push(theme.fg("dim", `… ${hiddenCount} more running — open Agent Hub for full list`));
 	return ["", theme.bold(theme.fg("accent", "Subagents")), ...rows.map(line => ` ${line}`)];
 }
 
@@ -1438,6 +1454,14 @@ export class InteractiveMode implements InteractiveModeContext {
 			onStatusLineSessionAccentChanged(() => {
 				this.#syncStatusLineSettings();
 				this.#handleSessionAccentInputsChanged();
+			}),
+		);
+		this.#eventBusUnsubscribers.push(
+			this.settings.onEffectiveChange(path => {
+				if (path === "task.showResolvedModelBadge") {
+					this.#renderSubagentList();
+					this.ui.requestRender();
+				}
 			}),
 		);
 		// Resync the welcome banner to the live model: init-time reconciliations
@@ -2681,6 +2705,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// `viewSession`) keeps a follow-up reconcile in the same window correct.
 		const owner = this.#todoPhasesOwner ?? this.session;
 		owner.setTodoPhases(next);
+		owner.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: next });
 		this.todoPhases = next;
 		this.#syncTodoHudState(owner);
 		this.#renderTodoList();
@@ -2990,18 +3015,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		return [...leadingLines, combinedLine];
 	}
 
-	/**
-  * Anchored HUD of in-flight subagents, mirroring the Todos block above the
-  
- /**
-  * Anchored HUD of in-flight subagents, mirroring the Todos block above the
-  * editor. Driven entirely by observer-registry change events, so rows appear
-  * on spawn and the whole block clears itself once the last subagent leaves
-  * the "active" state.
-  */
 	#renderSubagentList(): void {
 		this.subagentContainer.clear();
-		const lines = renderSubagentHudLines(this.#observerRegistry.getSessions(), this.ui.terminal.columns);
+		const lines = renderSubagentHudLines(
+			this.#observerRegistry.getSessions(),
+			this.ui.terminal.columns,
+			this.settings.get("task.showResolvedModelBadge"),
+		);
 		if (lines.length === 0) return;
 		this.subagentContainer.addChild(new Text(lines.join("\n"), 1, 0));
 	}

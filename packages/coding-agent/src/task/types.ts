@@ -426,6 +426,8 @@ export interface AgentProgress {
 	lastIntent?: string;
 	currentTool?: string;
 	currentToolArgs?: string;
+	/** Argument key selected for the display preview, when known. */
+	currentToolArgsKey?: string;
 	currentToolStartMs?: number;
 	recentTools: Array<{ tool: string; args: string; endMs: number }>;
 	recentOutput: string[];

@@ -342,6 +342,35 @@ describe("terminal frame plans", () => {
 		}
 	});
 
+	it("releases a shortened replacement from the previous frame watermark before it grows", () => {
+		const terminal = new CountingTerminal(30, 3);
+		const oldRows = ["old-1", "old-2", "old-3", "old-4", "old-5", "old-6"];
+		const provider = new Provider({ viewport: oldRows });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		try {
+			const oldHistory = plainBuffer(terminal).slice(0, terminal.getBufferPosition().baseY);
+
+			provider.plan = { viewport: ["new-1"] };
+			tui.requestRender(true);
+			provider.plan = { viewport: ["new-1", "new-2", "new-3", "new-4"] };
+			tui.requestRender(true);
+
+			const buffer = plainBuffer(terminal);
+			expect(buffer.slice(0, oldHistory.length)).toEqual(oldHistory);
+			for (const row of ["new-1", "new-2", "new-3", "new-4"]) {
+				expect(buffer.filter(line => line === row)).toHaveLength(1);
+			}
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["new-2", "new-3", "new-4"]);
+			const snapshot = buffer;
+			tui.requestRender(true);
+			expect(plainBuffer(terminal)).toEqual(snapshot);
+			expect(terminal.writes.join("")).not.toMatch(/\x1b\[[23]J/);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("accepts a finalized batch that re-offers already-borrowed rows without a destructive replay", () => {
 		// A live overflowing frame lends its scrolled-off rows to native
 		// scrollback. When the transcript later finalizes that same prefix, the

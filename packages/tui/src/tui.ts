@@ -2541,9 +2541,38 @@ export class TUI extends Container {
 		if (!flushing && this.#maybeDeferGhosttyInitialImagePaint()) return false;
 		const logicalViewport = Array.from(plan.viewport);
 		const overflow = Math.max(0, logicalViewport.length - height);
-		// Native history already owns this prefix. Closing temporary editor
-		// chrome must not paint it again as mutable viewport content.
-		const viewportStart = plan.history === undefined ? Math.max(overflow, this.#providerLogicalCommitted) : overflow;
+		let prependedRows: string[] = [];
+		const borrowed = this.#providerTransientRows;
+		if (
+			plan.history === undefined &&
+			borrowed.length > 0 &&
+			logicalViewport.length < this.#providerLogicalCommitted &&
+			!logicalViewport.every((row, index) => borrowed[index] === row)
+		) {
+			// A replacement releases logical ownership, never native scrollback.
+			this.#providerLogicalCommitted = 0;
+			this.#providerHasTransientHistory = false;
+			this.#providerTransientRows = [];
+		}
+		if (
+			plan.history === undefined &&
+			borrowed.length > 0 &&
+			overflow > borrowed.length &&
+			!borrowed.every((row, index) => logicalViewport[index] === row)
+		) {
+			for (let offset = 1; offset + borrowed.length <= overflow; offset++) {
+				if (!borrowed.every((row, index) => logicalViewport[offset + index] === row)) continue;
+				prependedRows = logicalViewport.slice(0, offset);
+				this.#providerTransientRows = [...prependedRows, ...borrowed];
+				this.#providerLogicalCommitted += offset;
+				break;
+			}
+		}
+		// Animation can change borrowed bytes without changing their ownership.
+		const viewportStart =
+			plan.history === undefined && logicalViewport.length > this.#providerLogicalCommitted
+				? Math.max(overflow, this.#providerLogicalCommitted)
+				: overflow;
 		if (plan.history?.kind === "replay" && overflow > 0) {
 			plan = {
 				...plan,
@@ -2566,20 +2595,14 @@ export class TUI extends Container {
 						rowCount: segment.rowCount,
 					}));
 		this.#rightPanelRowsAbove = logicalViewport.slice(0, viewportStart);
-		const inferredHistory =
+		const newlyOverflowed =
 			plan.history === undefined && overflow > this.#providerLogicalCommitted
 				? logicalViewport.slice(this.#providerLogicalCommitted, overflow)
 				: [];
-		if (inferredHistory.length > 0) this.#providerTransientRows.push(...inferredHistory);
+		const inferredHistory = prependedRows.length > 0 ? [...prependedRows, ...newlyOverflowed] : newlyOverflowed;
+		if (newlyOverflowed.length > 0) this.#providerTransientRows.push(...newlyOverflowed);
 		let history = plan.history;
 		if (history !== undefined && history.kind !== "replay" && this.#providerHasTransientHistory) {
-			// Rows the terminal borrowed into native scrollback for a live frame are
-			// provider-rendered rows of the same append-only ledger, so a finalized
-			// batch normally re-offers them as its own leading rows. When it does,
-			// they are already permanent and correct: accept the batch and write only
-			// its remainder. Only a batch that disagrees with what is already on
-			// screen needs the destructive replay, which clears scrollback and
-			// collapses the visible window.
 			const borrowed = this.#providerTransientRows;
 			const offeredRows = history.rows;
 			const matches =
@@ -2589,15 +2612,11 @@ export class TUI extends Container {
 				this.#providerTransientRows = [];
 				this.#providerHasTransientHistory = false;
 			} else {
-				// The transient copy is not a prefix of the authoritative ledger (a
-				// partially streamed block reached scrollback). Replace it wholesale.
-				provider.acknowledgeHistory(history.id);
+				// Diverged borrowed rows are already native scrollback. Preserve
+				// them and append the finalized batch once, without clearing.
 				this.#providerLogicalCommitted = 0;
 				this.#providerHasTransientHistory = false;
 				this.#providerTransientRows = [];
-				this.#prepareForcedRender(true);
-				if (!flushing) this.requestRender(true);
-				return true;
 			}
 		}
 		// An offered batch owns retirement. Its remaining viewport can still

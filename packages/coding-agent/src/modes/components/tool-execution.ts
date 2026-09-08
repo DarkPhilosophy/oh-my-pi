@@ -192,6 +192,8 @@ export interface ToolExecutionHandle extends Component {
 	setExecutionStarted(toolCallId?: string): void;
 	setExpanded(expanded: boolean): void;
 	setToolActivityVisible(visible: boolean): void;
+	/** Rebind reconstructed cards to the transcript that owns their rows. */
+	setLiveRegion?(liveRegion: TranscriptLiveRegionProbe): void;
 	/** Mark the call parked: it returned, but stays tracked for async job frames. */
 	parkAsBackground(): void;
 	/** Seal the block as final history and stop its animations. */
@@ -419,6 +421,9 @@ export class ToolExecutionComponent extends Container {
 
 		this.#updateSpinnerAnimation();
 		this.#updateDisplay();
+	}
+	setLiveRegion(liveRegion: TranscriptLiveRegionProbe): void {
+		this.#liveRegion = liveRegion;
 	}
 
 	updateArgs(args: any, _toolCallId?: string): void {

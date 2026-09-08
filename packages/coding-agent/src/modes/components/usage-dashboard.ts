@@ -146,18 +146,43 @@ export interface BuildCardsOptions {
 	mask?: AccountMasker;
 }
 
-/** Best-effort identity for one report's account: email, account id, project id, or ordinal. */
+/** Best-effort identity for one report's account: email, organization, account id, project id, or ordinal. */
 export function formatReportAccountLabel(report: UsageReport, index: number): string {
 	const meta = report.metadata;
-	const email = meta?.email;
-	if (typeof email === "string" && email) return email;
-	const accountId =
-		typeof meta?.accountId === "string" && meta.accountId ? meta.accountId : report.limits[0]?.scope.accountId;
-	if (accountId) return accountId;
-	const projectId =
-		typeof meta?.projectId === "string" && meta.projectId ? meta.projectId : report.limits[0]?.scope.projectId;
-	if (projectId) return projectId;
-	return `account ${index + 1}`;
+	const base =
+		typeof meta?.email === "string" && meta.email
+			? meta.email
+			: typeof meta?.accountId === "string" && meta.accountId
+				? meta.accountId
+				: report.limits[0]?.scope.accountId ||
+					(typeof meta?.projectId === "string" && meta.projectId
+						? meta.projectId
+						: report.limits[0]?.scope.projectId);
+	if (!base) return `account ${index + 1}`;
+	const organization =
+		typeof meta?.orgName === "string" && meta.orgName
+			? meta.orgName
+			: typeof meta?.orgId === "string" && meta.orgId
+				? meta.orgId
+				: undefined;
+	return organization && organization !== base ? `${base} (${organization})` : base;
+}
+
+/** Stable split-card identity; display labels intentionally remain human-readable. */
+function formatReportAccountKey(report: UsageReport, index: number): string {
+	const meta = report.metadata;
+	const base =
+		typeof meta?.email === "string" && meta.email
+			? meta.email
+			: typeof meta?.accountId === "string" && meta.accountId
+				? meta.accountId
+				: report.limits[0]?.scope.accountId ||
+					(typeof meta?.projectId === "string" && meta.projectId
+						? meta.projectId
+						: report.limits[0]?.scope.projectId) ||
+					`account-${index + 1}`;
+	const orgId = typeof meta?.orgId === "string" && meta.orgId ? meta.orgId : undefined;
+	return orgId ? `${base}\u0000org:${orgId}` : base;
 }
 
 export function buildProviderCards(
@@ -169,7 +194,8 @@ export function buildProviderCards(
 	const grouped = new Map<string, { provider: string; account?: string; reports: UsageReport[] }>();
 	reports.forEach((report, index) => {
 		const account = merge ? undefined : formatReportAccountLabel(report, index);
-		const key = account === undefined ? report.provider : `${report.provider}\u0000${account}`;
+		const identity = merge ? undefined : formatReportAccountKey(report, index);
+		const key = identity === undefined ? report.provider : `${report.provider}\u0000${identity}`;
 		const entry = grouped.get(key) ?? { provider: report.provider, account, reports: [] };
 		entry.reports.push(report);
 		grouped.set(key, entry);
@@ -354,6 +380,17 @@ const ACTIVITY_ROWS = 10;
 /** Cards keep at least this many rows even on short terminals; activity yields below it. */
 const CARDS_MIN_ROWS = 6;
 
+function fitAccountLabel(label: string, width: number): string {
+	if (width <= 0) return "";
+	const qualifierStart = label.lastIndexOf(" (");
+	if (qualifierStart <= 0 || !label.endsWith(")")) return truncateToWidth(label, width);
+	const base = label.slice(0, qualifierStart);
+	const qualifier = label.slice(qualifierStart);
+	const qualifierWidth = visibleWidth(qualifier);
+	if (qualifierWidth >= width) return truncateToWidth(qualifier, width);
+	return `${truncateToWidth(base, Math.max(1, width - qualifierWidth))}${qualifier}`;
+}
+
 export class UsageDashboardComponent implements Component {
 	#options: UsageDashboardOptions;
 	#cards: ProviderCard[] = [];
@@ -421,14 +458,13 @@ export class UsageDashboardComponent implements Component {
 		if (status === "ok") return theme.fg("success", theme.status.success);
 		return theme.fg("dim", "·");
 	}
-
 	/** Inner (borderless) lines of one card; the grid pads every card to the tallest. */
 	#renderCardLines(card: ProviderCard, width: number): string[] {
 		const lines: string[] = [];
 		const cardStatus = card.unlimited ? "ok" : aggregateRowStatus(card.windows);
 		const accountsText =
 			card.account !== undefined
-				? this.#styleMask(theme.fg("dim", card.account))
+				? this.#styleMask(theme.fg("dim", fitAccountLabel(card.account, Math.max(1, width - 2 - 4 - 1))))
 				: card.accounts > 1
 					? theme.fg("dim", `${card.accounts} accts`)
 					: "";

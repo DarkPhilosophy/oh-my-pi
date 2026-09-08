@@ -32,6 +32,21 @@ describe("Markdown copy link", () => {
 		expect(footer).toContain("[copy]");
 	});
 
+	it("invalidates cached Markdown when copy-handler readiness changes", () => {
+		const source = "```ts\nconst cached = true;\n```";
+		const renderFooter = () => new Markdown(source, 0, 0, getMarkdownTheme()).render(80).at(-1) ?? "";
+		const copyTarget = (footer: string) => footer.match(/\x1b]8;;(omp-copy:[^\x07]+)\x07/)?.[1];
+
+		setCopyUrlHandlerReady(false);
+		expect(copyTarget(renderFooter())).toBeUndefined();
+
+		setCopyUrlHandlerReady(true);
+		expect(copyTarget(renderFooter())).toBeDefined();
+
+		setCopyUrlHandlerReady(false);
+		expect(copyTarget(renderFooter())).toBeUndefined();
+	});
+
 	it("emits clickable copy targets only on platforms with an installed handler path", () => {
 		expect(supportsCopyUrlHandler("linux", {}, "/usr/bin/xdg-mime")).toBe(true);
 		expect(supportsCopyUrlHandler("darwin")).toBe(false);

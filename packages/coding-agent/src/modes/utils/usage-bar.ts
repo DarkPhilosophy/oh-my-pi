@@ -6,6 +6,8 @@
  * dashboard cards so the two never disagree on colors.
  */
 import { visibleWidth } from "@oh-my-pi/pi-tui";
+import { rgbToHex } from "@oh-my-pi/pi-utils";
+import { colorToAnsi } from "../theme/color";
 import { theme } from "../theme/theme";
 
 const PERCENT_FORMAT = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
@@ -45,11 +47,15 @@ export function renderFractionBar(
 	const remaining = Math.min(Math.max(remainingFraction, 0), 1);
 	const label = `${PERCENT_FORMAT.format(remaining * 100)}% free`;
 	const labelWidth = visibleWidth(label);
-	const filledCells = Math.round(remaining * barWidth);
-	const rgb = resolveUsageGradientRgb(remaining);
-	const foreground = `\x1b[38;2;${rgb}m`;
+	const filledCells = Math.min(barWidth, Math.max(remaining > 0 ? 1 : 0, Math.round(remaining * barWidth)));
+	const rgb = resolveUsageGradientRgb(remaining).split(";").map(Number);
+	const hex = rgbToHex({ r: rgb[0]!, g: rgb[1]!, b: rgb[2]! });
+	const foreground = colorToAnsi(hex, uiTheme.getColorMode());
+	const background = colorToAnsi(hex, uiTheme.getColorMode()).replace("\x1b[38;", "\x1b[48;");
 	if (labelWidth > barWidth) {
-		return `${foreground}${"█".repeat(Math.max(1, filledCells))}\x1b[39m${uiTheme.fg("dim", "░".repeat(Math.max(0, barWidth - Math.max(1, filledCells))))}`;
+		const filled = "█".repeat(filledCells);
+		const empty = "░".repeat(Math.max(0, barWidth - filledCells));
+		return `${foreground}${filled}\x1b[39m${uiTheme.fg("dim", empty)}`;
 	}
 	const labelStart =
 		labelPlacement === "right"
@@ -58,14 +64,13 @@ export function renderFractionBar(
 	const filledBeforeLabel = Math.min(filledCells, labelStart);
 	const emptyBeforeLabel = labelStart - filledBeforeLabel;
 	const filledLabelWidth = Math.max(0, Math.min(labelWidth, filledCells - labelStart));
-	const inverse = `\x1b[30;48;2;${rgb}m`;
+	const inverse = `\x1b[30m${background}`;
 	const filledBefore = filledBeforeLabel > 0 ? `${foreground}${"█".repeat(filledBeforeLabel)}\x1b[39m` : "";
 	const emptyBefore = emptyBeforeLabel > 0 ? uiTheme.fg("dim", "░".repeat(emptyBeforeLabel)) : "";
 	const filledLabel = filledLabelWidth > 0 ? `${inverse}${label.slice(0, filledLabelWidth)}\x1b[39;49m` : "";
 	const emptyLabel = filledLabelWidth < labelWidth ? `${foreground}${label.slice(filledLabelWidth)}\x1b[39m` : "";
 	const filledAfterWidth = Math.max(0, filledCells - labelStart - labelWidth);
 	const filledAfter = filledAfterWidth > 0 ? `${foreground}${"█".repeat(filledAfterWidth)}\x1b[39m` : "";
-	const minimumFill = filledCells <= labelWidth && remaining > 0 ? `${foreground}█\x1b[39m` : "";
-	const afterEmpty = Math.max(0, barWidth - Math.max(filledCells, labelStart + labelWidth));
-	return `${minimumFill}${filledBefore}${emptyBefore}${filledLabel}${emptyLabel}${filledAfter}${uiTheme.fg("dim", "░".repeat(Math.max(0, afterEmpty - visibleWidth(minimumFill))))}`;
+	const content = `${filledBefore}${emptyBefore}${filledLabel}${emptyLabel}${filledAfter}`;
+	return `${content}${uiTheme.fg("dim", "░".repeat(Math.max(0, barWidth - visibleWidth(content))))}`;
 }

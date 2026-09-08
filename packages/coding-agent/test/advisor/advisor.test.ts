@@ -28,6 +28,7 @@ import {
 import type { ModelRegistry } from "../../src/config/model-registry";
 import type { Settings } from "../../src/config/settings";
 import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../../src/modes/components/advisor-config";
+import { loadTheme } from "../../src/modes/theme/loader";
 import { createAdvisorMessageCard } from "../../src/modes/components/advisor-message";
 import { getThemeByName, setThemeInstance } from "../../src/modes/theme/theme";
 import { SecretObfuscator } from "../../src/secrets/obfuscator";
@@ -6721,6 +6722,21 @@ describe("advisor", () => {
 			expect(strip(overlay.render(200))).toContain("read, web_search");
 		});
 
+		it("keeps roster focus when pointer motion or the wheel is routed over the editor", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+
+			for (const mouseInput of ["\x1b[<32;80;3M", "\x1b[<65;80;3M"]) {
+				const overlay = make({ advisors: [{ name: "Architecture" }, { name: "Security" }] });
+				overlay.render(120);
+				overlay.handleInput(mouseInput);
+				overlay.handleInput("\x1b[B");
+
+				expect(strip(overlay.render(120))).toContain("Security  · Project");
+			}
+		});
+
 		it("focuses the clicked advisor and edits it inline in the right pane", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
@@ -6760,6 +6776,29 @@ describe("advisor", () => {
 			expect(text).toContain("default");
 			expect(text).toContain("anthropic/claude-opus");
 		});
+		it("uses ASCII preset markers for roster state, enabled state, and dirty state", async () => {
+			const previousTheme = await loadTheme("dark");
+			const asciiTheme = await loadTheme("dark", { symbolPresetOverride: "ascii" });
+			setThemeInstance(asciiTheme);
+			try {
+				const overlay = make({
+					advisors: [{ name: "Active" }, { name: "Disabled", enabled: false }],
+				});
+				overlay.render(120);
+				overlay.handleInput("\x1b[C");
+				overlay.handleInput("\r");
+				const text = strip(overlay.render(120));
+
+				expect(text).toContain("[ ] Active");
+				expect(text).toContain("[ ] Disabled");
+				expect(text).toContain("[ ] off");
+				expect(text.match(/\*/g)?.length).toBeGreaterThanOrEqual(2);
+				expect(text).not.toMatch(/[●○]/);
+			} finally {
+				setThemeInstance(previousTheme);
+			}
+		});
+
 		it("shows disabled advisors with a dim circle marker and toggles them in the detail editor", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
@@ -6771,11 +6810,33 @@ describe("advisor", () => {
 				],
 			});
 			const text = strip(overlay.render(200));
-			// The list shows ● for enabled and ○ for disabled.
-			expect(text).toContain("● Active");
-			expect(text).toContain("○ Disabled");
+			expect(text).toContain(`${uiTheme.symbol("status.enabled")} Active`);
+			expect(text).toContain(`${uiTheme.symbol("status.disabled")} Disabled`);
 			// The preview of the highlighted (first) advisor shows its enabled status.
-			expect(text).toContain("● on");
+			expect(text).toContain(`${uiTheme.symbol("status.enabled")} on`);
+		});
+		it("sanitizes project names and blocks global actions while loading", async () => {
+			const { promise: loading, resolve: resolveLoad } = Promise.withResolvers<WatchdogConfigDoc>();
+			let saves = 0;
+			const overlay = new AdvisorConfigOverlayComponent(
+				{ terminal: { rows: 20 } } as unknown as TUI,
+				{ ...deps, projectName: "bad\tname\ninjected\x1b[31m" },
+				"project",
+				{ advisors: [{ name: "Project" }] },
+				{ ...callbacks, loadDoc: () => loading, save: async () => void saves++ },
+			);
+			const renderedName = strip(overlay.render(120));
+			expect(renderedName).toContain("bad name injected");
+			expect(renderedName).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f]/);
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\r");
+			expect(saves).toBe(0);
+			resolveLoad({ advisors: [{ name: "Loaded global" }] });
+			await loading;
+			expect(strip(overlay.render(120))).toContain("Loaded global");
 		});
 	});
 });

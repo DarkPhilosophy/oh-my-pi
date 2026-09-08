@@ -32,7 +32,7 @@ describe("renderUsageReports content", () => {
 
 		const output = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 98));
 		expect(output).toContain("25% free");
-		expect(output).toContain("█");
+		expect(output).toMatch(/[█░]/);
 		expect(output).not.toContain("··········");
 	});
 
@@ -94,5 +94,56 @@ describe("renderUsageReports content", () => {
 		expect(output).toContain(`expires in`);
 		expect(output).toContain(`(${futureIso.slice(0, 10)})`);
 		expect(output).toContain(`expired (${expiredIso.slice(0, 10)})`);
+	});
+
+	it("keeps combined fractional quota rows within narrow report widths", () => {
+		const reports: UsageReport[] = ["acct-1", "acct-2"].map((accountId, index) => ({
+			provider: "openai-codex",
+			fetchedAt: 1_700_000_000_000,
+			limits: [
+				{
+					id: "codex-weekly",
+					label: "Weekly",
+					scope: { provider: "openai-codex", tier: "pro", accountId },
+					window: { id: "weekly", label: "weekly" },
+					amount: { usedFraction: index === 0 ? 0.25 : 0.75, unit: "requests" },
+					status: "ok",
+				},
+			],
+			metadata: { email: `user${index + 1}@example.com`, accountId },
+		}));
+
+		const width20Output = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 20));
+		const width20QuotaLines = width20Output
+			.split("\n")
+			.filter(line => line.includes("free") || line.includes("combined"));
+		expect(width20QuotaLines.every(line => [...line].length <= 20)).toBe(true);
+		expect(width20Output).toContain("combined");
+
+		const width16Output = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 16));
+		const width16QuotaLines = width16Output
+			.split("\n")
+			.filter(line => line.includes("free") || line.includes("combined"));
+		expect(width16QuotaLines.every(line => [...line].length <= 16)).toBe(true);
+	});
+
+	it("distinguishes masked saved reset labels whose qualified account labels differ", () => {
+		const reports: UsageReport[] = ["First org", "Second org"].map((orgName, index) => ({
+			provider: "openai-codex",
+			fetchedAt: 1_700_000_000_000,
+			limits: [],
+			metadata: {
+				email: index === 0 ? "main-one@example.com" : "main-two@example.com",
+				accountId: `acct-${index + 1}`,
+				orgName,
+			},
+			resetCredits: { availableCount: 1 },
+		}));
+
+		const output = stripVTControlCharacters(
+			renderUsageReports(reports, theme, Date.now(), 98, undefined, { maskAccountLabels: true }),
+		);
+		expect(output).toContain("mai*** (First org): 1 saved reset");
+		expect(output).toContain("mai*** (Second org): 1 saved reset");
 	});
 });

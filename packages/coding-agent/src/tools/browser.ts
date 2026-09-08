@@ -345,6 +345,7 @@ async function runBrowser(
 	timeoutMs: number,
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<unknown>> {
+	const deadlineStartMs = performance.now();
 	const code = resolveBrowserRunCode(params);
 	const tab = getTab(name);
 	if (tab) {
@@ -357,6 +358,7 @@ async function runBrowser(
 		timeoutMs,
 		signal,
 		session,
+		deadlineStartMs,
 	});
 
 	if (screenshots.length) details.screenshots = screenshots;

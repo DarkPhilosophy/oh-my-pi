@@ -110,6 +110,23 @@ describe("status line model segment advisor glyphs", () => {
 		expect(plain).not.toMatch(/[●○✕]/);
 	});
 });
+describe("status line model segment real symbol presets", () => {
+	it("uses ASCII-safe glyphs for advisor statuses", async () => {
+		await initTheme(false, "ascii");
+		const ctx = createModelContext(true);
+		ctx.session.getAdvisorStatusOverview = () => ({
+			configured: true,
+			advisors: [
+				{ name: "running", status: "running", yielded: false },
+				{ name: "paused", status: "paused", yielded: true },
+			],
+		});
+		const plain = Bun.stripANSI(renderSegment("model", ctx).content);
+		expect(plain).toContain("(* -)");
+		expect(plain).not.toMatch(/[^\x00-\x7f]/);
+		await initTheme(false);
+	});
+});
 
 describe("status line model segment compact thinking level", () => {
 	function createThinkingContext(compactThinkingLevel: boolean): SegmentContext {

@@ -2143,6 +2143,11 @@ export function renderUsageReports(
 			providerReports.flatMap((report, index) => [
 				...report.limits.map(limit => formatAccountLabel(limit, report, index)),
 				formatUnlimitedReportLabel(report, index),
+				typeof report.metadata?.email === "string" && report.metadata.email
+					? `${report.metadata.email}${orgSuffix(report)}`
+					: typeof report.metadata?.accountId === "string" && report.metadata.accountId
+						? `${report.metadata.accountId}${orgSuffix(report)}`
+						: "account",
 			]),
 			maskAccountLabels,
 		);
@@ -2175,9 +2180,9 @@ export function renderUsageReports(
 			if (count <= 0) continue;
 			const rawLabel =
 				typeof report.metadata?.email === "string" && report.metadata.email
-					? report.metadata.email
+					? `${report.metadata.email}${orgSuffix(report)}`
 					: typeof report.metadata?.accountId === "string" && report.metadata.accountId
-						? report.metadata.accountId
+						? `${report.metadata.accountId}${orgSuffix(report)}`
 						: "account";
 			const label = styleAccountMask(mask(rawLabel), uiTheme);
 			const isActive =
@@ -2299,7 +2304,10 @@ export function renderUsageReports(
 				const bars = chunkLimits.map(limit =>
 					padColumn(renderUsageBar(limit, uiTheme, sectionBarWidth, labelPlacement), sectionColumnWidth),
 				);
-				const trailingAmount = offset + sectionColumnsPerRow >= sortedLimits.length ? ` ${amountText}` : "";
+				const trailingAmount =
+					offset + sectionColumnsPerRow >= sortedLimits.length
+						? ` ${truncateToWidth(amountText, Math.max(0, availableWidth - 2 - sectionColumnWidth * chunkLimits.length - chunkLimits.length))}`
+						: "";
 				lines.push(`  ${bars.join(" ")}${trailingAmount}`.trimEnd());
 			}
 			const resetText = sortedLimits.length <= 1 ? resolveResetRange(sortedLimits, nowMs) : null;
