@@ -246,4 +246,35 @@ describe("renderUsageReports content", () => {
 		expect(output).not.toContain("\r");
 		expect(output).not.toContain("\t");
 	});
+
+	it("preserves reset count and active marker at minimum width", () => {
+		const reports: UsageReport[] = [
+			{
+				provider: "openai-codex",
+				fetchedAt: Date.now(),
+				limits: [],
+				metadata: { email: "active@example.com" },
+				resetCredits: { availableCount: 1 },
+			},
+			{
+				provider: "openai-codex",
+				fetchedAt: Date.now(),
+				limits: [],
+				metadata: { email: "other@example.com" },
+				resetCredits: { availableCount: 2 },
+			},
+		];
+		const width = 20;
+		const output = stripVTControlCharacters(
+			renderUsageReports(reports, theme, Date.now(), width, () => ({ email: "active@example.com" })),
+		);
+		const resetLines = output
+			.split("\n")
+			.filter(line => line.includes("saved reset") || /\d+ resets?(?: \(|$)/.test(line));
+		expect(resetLines.some(line => line.includes("1 reset") && line.includes("(active)"))).toBe(true);
+		expect(resetLines.some(line => line.includes("2 resets"))).toBe(true);
+		expect(resetLines.filter(line => line.includes("saved reset")).every(line => [...line].length <= width)).toBe(
+			true,
+		);
+	});
 });

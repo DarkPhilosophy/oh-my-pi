@@ -10,7 +10,7 @@ import {
 	type UsageLimit,
 	type UsageReport,
 } from "@oh-my-pi/pi-ai";
-import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
+import { Loader, Markdown, padding, Spacer, Text, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { formatDuration, logger, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
@@ -2167,10 +2167,21 @@ export function renderUsageReports(
 						: "account";
 			const isActive = reportMatchesActiveAccount(report, activeAccount);
 			const suffix = `: ${count} saved reset${count === 1 ? "" : "s"}${isActive ? " (active)" : ""}`;
-			const labelBudget = Math.max(1, availableWidth - visibleWidth(`    • ${suffix}`));
 			const safeLabel = normalizeUsageAccountLabel(rawLabel);
-			const label = styleAccountMask(truncateToWidth(mask(safeLabel), labelBudget), uiTheme);
-			resetAccountLines.push(`    • ${label}${suffix}`);
+			const maskedLabel = mask(safeLabel);
+			const fixedWidth = visibleWidth(`    • ${suffix}`);
+			if (fixedWidth < availableWidth) {
+				const labelBudget = availableWidth - fixedWidth;
+				const label = styleAccountMask(truncateToWidth(maskedLabel, labelBudget), uiTheme);
+				resetAccountLines.push(`    • ${label}${suffix}`);
+			} else {
+				const label = styleAccountMask(truncateToWidth(maskedLabel, Math.max(1, availableWidth - 6)), uiTheme);
+				resetAccountLines.push(`    • ${label}`);
+				const compact = `${count} reset${count === 1 ? "" : "s"}${isActive ? " (active)" : ""}`;
+				for (const detail of wrapTextWithAnsi(compact, Math.max(1, availableWidth - 4))) {
+					resetAccountLines.push(`    ${detail}`);
+				}
+			}
 			for (const credit of report.resetCredits?.credits ?? []) {
 				if (!credit.expiresAt) continue;
 				const expiryMs = Date.parse(credit.expiresAt);
