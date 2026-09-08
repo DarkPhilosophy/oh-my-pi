@@ -19,8 +19,13 @@ function day(day: string, cost: number, requests = 1): DailyActivityPoint {
 	return { day, cost, requests, totalTokens: 0 };
 }
 
-function report(provider: string, email: string, limits: UsageReport["limits"]): UsageReport {
-	return { provider, fetchedAt: Date.now(), limits, metadata: { email } };
+function report(
+	provider: string,
+	email: string,
+	limits: UsageReport["limits"],
+	organization?: { orgId: string; orgName?: string },
+): UsageReport {
+	return { provider, fetchedAt: Date.now(), limits, metadata: { email, ...organization } };
 }
 
 function limit(
@@ -132,6 +137,27 @@ describe("buildProviderCards split + privacy", () => {
 		const cards = buildProviderCards(reports, now, { merge: false });
 		expect(cards.map(card => card.account)).toEqual(["alice@x.test", "alina@x.test"]);
 		expect(cards.map(card => card.windows[0].fraction)).toEqual([1, 0]);
+	});
+
+	it("keeps same-email accounts in different organizations on distinct cards", () => {
+		const sameEmail = "shared@x.test";
+		const cards = buildProviderCards(
+			[
+				report("anthropic", sameEmail, [limit("anthropic", "shared", "7d", "Claude 7 Day", 0.8, "warning")], {
+					orgId: "org-team",
+					orgName: "Team",
+				}),
+				report("anthropic", sameEmail, [limit("anthropic", "shared", "7d", "Claude 7 Day", 0.2, "ok")], {
+					orgId: "org-max",
+					orgName: "Max",
+				}),
+			],
+			now,
+			{ merge: false },
+		);
+
+		expect(cards.map(card => card.account)).toEqual([`${sameEmail} (Team)`, `${sameEmail} (Max)`]);
+		expect(cards.map(card => card.windows[0].fraction)).toEqual([0.8, 0.2]);
 	});
 
 	it("masks split-card account labels and keeps colliding prefixes distinguishable", () => {

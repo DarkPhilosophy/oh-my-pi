@@ -146,18 +146,26 @@ export interface BuildCardsOptions {
 	mask?: AccountMasker;
 }
 
-/** Best-effort identity for one report's account: email, account id, project id, or ordinal. */
+/** Best-effort identity for one report's account: email, organization, account id, project id, or ordinal. */
 export function formatReportAccountLabel(report: UsageReport, index: number): string {
 	const meta = report.metadata;
-	const email = meta?.email;
-	if (typeof email === "string" && email) return email;
-	const accountId =
-		typeof meta?.accountId === "string" && meta.accountId ? meta.accountId : report.limits[0]?.scope.accountId;
-	if (accountId) return accountId;
-	const projectId =
-		typeof meta?.projectId === "string" && meta.projectId ? meta.projectId : report.limits[0]?.scope.projectId;
-	if (projectId) return projectId;
-	return `account ${index + 1}`;
+	const base =
+		typeof meta?.email === "string" && meta.email
+			? meta.email
+			: typeof meta?.accountId === "string" && meta.accountId
+				? meta.accountId
+				: report.limits[0]?.scope.accountId ||
+					(typeof meta?.projectId === "string" && meta.projectId
+						? meta.projectId
+						: report.limits[0]?.scope.projectId);
+	if (!base) return `account ${index + 1}`;
+	const organization =
+		typeof meta?.orgName === "string" && meta.orgName
+			? meta.orgName
+			: typeof meta?.orgId === "string" && meta.orgId
+				? meta.orgId
+				: undefined;
+	return organization && organization !== base ? `${base} (${organization})` : base;
 }
 
 export function buildProviderCards(

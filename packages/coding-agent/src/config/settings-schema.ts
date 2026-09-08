@@ -5303,7 +5303,7 @@ export const SETTINGS_SCHEMA = {
 
 	"usage.maskAccountLabels": {
 		type: "boolean",
-		default: true,
+		default: false,
 		ui: {
 			tab: "providers",
 			group: "Privacy",
