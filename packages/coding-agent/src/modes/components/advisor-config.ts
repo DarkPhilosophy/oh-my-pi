@@ -393,6 +393,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 					this.#focusEditor();
 					this.#showInstructionsEditor(scope, -1);
 				} else if (this.#selected()) {
+					this.#showFields();
 					this.#focusEditor();
 				}
 				return;
@@ -517,6 +518,19 @@ export class AdvisorConfigOverlayComponent implements Component {
 		state.cursor = list.getSelectedItem()?.value;
 	}
 
+	#hasSyntheticDefaultAdvisor(doc: WatchdogConfigDoc): boolean {
+		if (doc.advisors.length !== 1) return false;
+		const advisor = doc.advisors[0];
+		return (
+			advisor?.name === "default" &&
+			!advisor.model?.trim() &&
+			advisor.tools === undefined &&
+			!advisor.instructions?.trim() &&
+			advisor.enabled !== false &&
+			advisor.maxNotesPerUpdate === undefined
+		);
+	}
+
 	#advisorSummary(advisor: AdvisorConfig): string {
 		const model = advisor.model?.trim() || this.#defaultModelLabel || "advisor role default";
 		const tools = formatAdvisorTools(advisor.tools, "no tools");
@@ -545,7 +559,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 			return;
 		}
 		if (value === "save") {
-			await this.#cb.save(scope, state.doc);
+			const doc = this.#hasSyntheticDefaultAdvisor(state.doc) ? { ...state.doc, advisors: [] } : state.doc;
+			await this.#cb.save(scope, doc);
 			state.dirty = false;
 			this.#rebuildRoster(scope);
 			this.#cb.notify(`Saved ${this.#scopeLabel(scope)} advisors`);
