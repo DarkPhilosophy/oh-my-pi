@@ -1007,6 +1007,9 @@ export class UiHelpers {
 					visibleChatContainer.addChild(child);
 				}
 			}
+			for (const component of this.ctx.pendingTools.values()) {
+				component.setLiveRegion?.(visibleChatContainer);
+			}
 			committed = true;
 
 			// Show compaction info if session was compacted.

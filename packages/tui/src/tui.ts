@@ -2314,6 +2314,19 @@ export class TUI extends Container {
 		if (!flushing && this.#maybeDeferGhosttyInitialImagePaint()) return false;
 		const logicalViewport = Array.from(plan.viewport);
 		const overflow = Math.max(0, logicalViewport.length - height);
+		if (plan.history === undefined && this.#providerTransientRows.length > 0) {
+			const borrowed = this.#providerTransientRows;
+			if (
+				logicalViewport.length < borrowed.length ||
+				borrowed.some((row, index) => logicalViewport[index] !== row)
+			) {
+				// A mutable prefix changed or disappeared. Keep the terminal's old
+				// scrollback, but do not apply its row offsets to this new frame.
+				this.#providerLogicalCommitted = 0;
+				this.#providerHasTransientHistory = false;
+				this.#providerTransientRows = [];
+			}
+		}
 		const viewportStart = plan.history === undefined ? Math.max(overflow, this.#providerLogicalCommitted) : overflow;
 		if (plan.history?.kind === "replay" && overflow > 0) {
 			plan = {
@@ -2336,13 +2349,13 @@ export class TUI extends Container {
 				this.#providerTransientRows = [];
 				this.#providerHasTransientHistory = false;
 			} else {
-				provider.acknowledgeHistory(history.id);
+				// The provider's finalized prefix diverged from rows already pushed
+				// by the mutable viewport. Those rows are now native scrollback and
+				// cannot be removed safely: retain them and append the finalized
+				// batch exactly once rather than clearing the user's scrollback.
 				this.#providerLogicalCommitted = 0;
 				this.#providerHasTransientHistory = false;
 				this.#providerTransientRows = [];
-				this.#prepareForcedRender(true);
-				if (!flushing) this.requestRender(true);
-				return true;
 			}
 		}
 		if (history?.kind === "replay") {

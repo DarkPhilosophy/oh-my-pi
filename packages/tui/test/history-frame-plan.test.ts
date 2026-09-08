@@ -337,6 +337,60 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
+	it("finalizes drifted borrowed rows without clearing preexisting scrollback", () => {
+		const terminal = new CountingTerminal(20, 4);
+		const provider = new Provider({
+			viewport: ["mutable old", "live one", "live two", "live three", "editor"],
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		terminal.write("shell one\r\nshell two\r\nshell three\r\nshell four\r\n");
+		terminal.writes.length = 0;
+
+		provider.plan = {
+			history: { id: 1, rows: ["mutable final"] },
+			viewport: ["live one", "live two", "live three", "editor"],
+		};
+		tui.requestRender(true);
+
+		expect(provider.acknowledged).toEqual([1]);
+		expect(terminal.writes.join("")).not.toMatch(/\x1b\[[23]J/);
+		const buffer = plainBuffer(terminal);
+		for (const row of ["mutable old", "shell one", "mutable final"]) {
+			expect(buffer.filter(line => line === row)).toHaveLength(1);
+		}
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual([
+			"live one",
+			"live two",
+			"live three",
+			"editor",
+		]);
+		tui.stop();
+	});
+
+	it("keeps a shortened or prepended mutable frame visible without clearing native history", () => {
+		const terminal = new CountingTerminal(30, 3);
+		const provider = new Provider({ viewport: ["header", "editor", "s1", "s2", "s3", "s4"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		terminal.writes.length = 0;
+		try {
+			provider.plan = { viewport: ["header", "editor"] };
+			tui.requestRender(true);
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["header", "editor", ""]);
+			provider.plan = { viewport: ["new", "header", "editor", "s1", "s2", "s3", "s4"] };
+			tui.requestRender(true);
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["s2", "s3", "s4"]);
+			expect(plainBuffer(terminal)).toContain("new");
+			const snapshot = plainBuffer(terminal);
+			tui.requestRender(true);
+			expect(plainBuffer(terminal)).toEqual(snapshot);
+			expect(terminal.writes.join("")).not.toMatch(/\x1b\[[23]J/);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("does not repaint scrolled rows when suggestions repeatedly open and close", () => {
 		const terminal = new VirtualTerminal(30, 5);
 		const header = ["HEADER-A", "HEADER-B", "HEADER-C", "HEADER-D"];
