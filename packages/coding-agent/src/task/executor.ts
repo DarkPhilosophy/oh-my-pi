@@ -9,7 +9,7 @@ import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
 import { AgentBusyError, EventLoopKeepalive, recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
-import { logger, popLoopPhase, prompt, pushLoopPhase, untilAborted } from "@oh-my-pi/pi-utils";
+import { logger, popLoopPhase, prompt, pushLoopPhase, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobManager } from "../async";
 import type { Rule } from "../capability/rule";
 import type { EffectiveExtensionRoots } from "../capability/types";
@@ -62,6 +62,7 @@ import { LIST_STATUS_ORDER } from "../tools/hub/messaging";
 import { DEFAULT_HUB_LIST_LIMIT } from "../tools/hub/types";
 import { normalizeSchema } from "../tools/jtd-to-json-schema";
 import { buildOutputValidator, summarizeValidationFailure } from "../tools/output-schema-validator";
+import { previewLine, replaceTabs, shortenToolArgumentPaths, TRUNCATE_LENGTHS } from "../tools/render-utils";
 import { ToolAbortError } from "../tools/tool-errors";
 import { type EventBus, emitSubagentFrame } from "../utils/event-bus";
 import { trackLateCleanup } from "../utils/late-cleanup";
@@ -813,8 +814,13 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 	return { rawOutput, exitCode, stderr, abortedViaYield, hasYield, structuredOutput };
 }
 
+function formatToolArgsPreview(value: string, key: string): { value: string; key: string } {
+	const safe = shortenToolArgumentPaths(replaceTabs(sanitizeText(value)), key);
+	return { value: previewLine(safe, TRUNCATE_LENGTHS.CONTENT), key };
+}
+
 /**
- * Extract display arguments; renderers shorten paths before width clipping.
+ * Extract bounded display arguments after path and terminal sanitation.
  */
 function extractToolArgsPreview(
 	args: Record<string, unknown>,
@@ -823,19 +829,19 @@ function extractToolArgsPreview(
 	const previewKeys = ["command", "file_path", "path", "pattern", "query", "url", "task", "prompt"];
 	if (toolName === "edit" && typeof args.input === "string") {
 		const paths = getEditInputPaths(args.input);
-		if (paths.length > 0) return { value: paths.join(", "), key: "path" };
+		if (paths.length > 0) return formatToolArgsPreview(paths.join(", "), "path");
 	}
 	const compoundEdits = args.edits;
 	if (toolName === "edit" && Array.isArray(compoundEdits)) {
 		const paths = compoundEdits
 			.map(edit => (edit && typeof edit === "object" ? (edit as Record<string, unknown>).path : undefined))
 			.filter((value): value is string => typeof value === "string" && value.length > 0);
-		if (paths.length > 0) return { value: paths.join(", "), key: "path" };
+		if (paths.length > 0) return formatToolArgsPreview(paths.join(", "), "path");
 	}
 	for (const key of previewKeys) {
 		if (typeof args[key] === "string" && args[key]) {
 			const value = args[key] as string;
-			return { value, key };
+			return formatToolArgsPreview(value, key);
 		}
 	}
 	return undefined;
