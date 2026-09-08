@@ -6369,6 +6369,40 @@ describe("advisor", () => {
 			expect(doc.advisors[0]?.model).toBe("openrouter/z-route:free");
 		});
 
+		it("preserves routed model identity and explicit effort through Enter on both pickers", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const model = buildModel({
+				id: "z-route:free",
+				name: "z-route:free",
+				api: "openai-completions",
+				provider: "openrouter",
+				baseUrl: "https://example.com",
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128_000,
+				maxTokens: 1024,
+			});
+			const doc: WatchdogConfigDoc = {
+				advisors: [{ name: "Architecture", model: "openrouter/z-route:free:high" }],
+			};
+			const overlay = make(doc, {
+				settings: Settings.isolated({}),
+				scopedModels: [{ model }],
+			});
+			overlay.render(120);
+			overlay.handleInput("\x1b[C");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\r");
+			overlay.handleInput("\r");
+			overlay.handleInput("\r");
+
+			expect(doc.advisors[0]?.model).toBe("openrouter/z-route:free:high");
+		});
+
 		it("saves an enabled toggle only for the clicked advisor and scope", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");

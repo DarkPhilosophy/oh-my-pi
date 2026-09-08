@@ -40,7 +40,11 @@ import {
 	type WatchdogConfigDoc,
 } from "../../advisor";
 import type { ModelRegistry } from "../../config/model-registry";
-import { formatModelSelectorValue, resolveModelFromString } from "../../config/model-resolver";
+import {
+	formatModelSelectorValue,
+	formatModelStringWithRouting,
+	resolveModelRoleValue,
+} from "../../config/model-resolver";
 import type { Settings } from "../../config/settings";
 import type { PerAdvisorStat } from "../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
@@ -712,7 +716,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const items = buildBrowserItems(models);
 		sortModelItems(items, { roles, mruOrder });
 		const current = this.#scopes[scope].doc.advisors[index].model?.trim();
-		const currentModel = current ? resolveModelFromString(current, [...models]) : undefined;
+		const resolvedCurrent = resolveModelRoleValue(current, [...models], { settings: this.#settings });
+		const currentModel = resolvedCurrent.model;
 		const currentSelector = currentModel ? `${currentModel.provider}/${currentModel.id}` : undefined;
 		const picker = new ModelBrowser(this.#settings, {});
 		picker.setRoles(roles);
@@ -723,22 +728,36 @@ export class AdvisorConfigOverlayComponent implements Component {
 		if (currentSelector) picker.selectSelector(currentSelector);
 		picker.onActivate = item => {
 			const efforts = getSupportedEfforts(item.model);
+			const isCurrentModel = currentModel?.provider === item.model.provider && currentModel.id === item.model.id;
+			const selector = isCurrentModel ? formatModelStringWithRouting(currentModel) : item.selector;
 			if (efforts.length === 0) {
-				this.#scopes[scope].doc.advisors[index].model = item.selector;
+				this.#scopes[scope].doc.advisors[index].model = selector;
 				this.#markDirty(scope);
 				this.#showFields();
 			} else {
-				this.#showThinkingPicker(scope, index, item.selector, efforts);
+				const currentLevel =
+					isCurrentModel && resolvedCurrent.explicitThinkingLevel && resolvedCurrent.thinkingLevel !== "auto"
+						? resolvedCurrent.thinkingLevel
+						: undefined;
+				this.#showThinkingPicker(scope, index, selector, efforts, currentLevel);
 			}
 		};
 		picker.onCancel = () => this.#showFields();
 		this.#setEditor("model", picker);
 	}
 
-	#showThinkingPicker(scope: AdvisorConfigScope, index: number, selector: string, efforts: readonly string[]): void {
+	#showThinkingPicker(
+		scope: AdvisorConfigScope,
+		index: number,
+		selector: string,
+		efforts: readonly string[],
+		currentLevel?: ThinkingLevel,
+	): void {
 		const items: SelectItem[] = [{ value: "", label: "(model default thinking)" }];
 		for (const effort of efforts) items.push({ value: effort, label: effort });
 		const list = new SelectList(items, Math.max(1, items.length), getSelectListTheme());
+		const currentIndex = currentLevel ? items.findIndex(item => item.value === currentLevel) : -1;
+		if (currentIndex >= 0) list.setSelectedIndex(currentIndex);
 		list.onSelect = item => {
 			const level = item.value ? (item.value as ThinkingLevel) : undefined;
 			this.#scopes[scope].doc.advisors[index].model = formatModelSelectorValue(selector, level);
