@@ -155,6 +155,27 @@ describe("subagent HUD lines", () => {
 		expect(settledText).not.toContain("read(");
 	});
 
+	it("shortens home paths in path-tool arguments without rewriting command text", () => {
+		const homePath = path.join(process.env.HOME!, "private-project", "secret.ts");
+		const readOut = render([
+			makeSession({
+				id: "Reader",
+				progress: makeProgress({ id: "Reader", currentTool: "read", currentToolArgs: homePath }),
+			}),
+		]);
+		expect(readOut).toContain("read(~/private-project/secret.ts)");
+		expect(readOut).not.toContain(process.env.HOME!);
+
+		const command = `${homePath} --check`;
+		const bashOut = render([
+			makeSession({
+				id: "Runner",
+				progress: makeProgress({ id: "Runner", currentTool: "bash", currentToolArgs: command }),
+			}),
+		]);
+		expect(bashOut).toContain(`bash(${command})`);
+	});
+
 	it("shows a non-default role badge and hides descriptions that only echo the id", () => {
 		const withRole = render([
 			makeSession({
@@ -230,6 +251,21 @@ describe("subagent HUD lines", () => {
 			makeSession({ id: "Worker", progress: makeProgress({ id: "Worker", task: "Investigate flaky CI on macOS" }) }),
 		]);
 		expectSameRow(fromTask, "Worker", "Investigate flaky CI on macOS");
+
+		const generatedOverWrappedTask = render([
+			makeSession({
+				id: "Worker",
+				description: "Generated activity label",
+				progress: makeProgress({
+					id: "Worker",
+					description: "Generated progress label",
+					assignment: "Inspect HUD precedence",
+					task: "Complete assignment thoroughly:\n\n# Target\nHUD",
+				}),
+			}),
+		]);
+		expectSameRow(generatedOverWrappedTask, "Worker", "Generated progress label");
+		expect(generatedOverWrappedTask).not.toContain("Complete assignment thoroughly");
 
 		const multiLineTask = render([
 			makeSession({

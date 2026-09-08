@@ -534,9 +534,10 @@ export function renderSubagentHudLines(
 					line += `:${theme.fg("dim", truncateToWidth(replaceTabs(sanitizeText(resolvedModel)).replace(/[\r\n]+/g, " "), 30))}`;
 				const rawDescription =
 					session.progress?.lastIntent?.trim() ||
-					session.progress?.task?.trim() ||
+					session.progress?.description?.trim() ||
 					session.description?.trim() ||
-					session.progress?.description?.trim();
+					session.progress?.assignment?.trim() ||
+					session.progress?.task?.trim();
 				const description =
 					rawDescription && !labelEchoesHandle(session.id, rawDescription) ? rawDescription : undefined;
 				if (description) {
@@ -547,10 +548,18 @@ export function renderSubagentHudLines(
 				const currentTool = session.progress?.currentTool?.trim();
 				if (currentTool) {
 					const args = session.progress?.currentToolArgs?.trim();
-					const toolText = replaceTabs(sanitizeText(args ? `${currentTool}(${args})` : currentTool)).replace(
-						/\s*[\r\n]+\s*/g,
-						" ",
-					);
+					const pathTool =
+						currentTool === "read" ||
+						currentTool === "write" ||
+						currentTool === "edit" ||
+						currentTool === "glob" ||
+						currentTool === "grep" ||
+						currentTool === "find" ||
+						currentTool === "ls";
+					const displayArgs = pathTool ? shortenPath(args) : args;
+					const toolText = replaceTabs(
+						sanitizeText(displayArgs ? `${currentTool}(${displayArgs})` : currentTool),
+					).replace(/\s*[\r\n]+\s*/g, " ");
 					return [
 						truncateToWidth(line, Math.max(1, columns - 6)),
 						`${theme.tree.hook} ${theme.fg("dim", truncateToWidth(toolText, Math.max(1, columns - 8)))}`,
@@ -2800,14 +2809,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	/**
-  * Anchored HUD of in-flight subagents, mirroring the Todos block above the
-
- /**
-  * Anchored HUD of in-flight subagents, mirroring the Todos block above the
-  * editor. Driven entirely by observer-registry change events, so rows appear
-  * on spawn and the whole block clears itself once the last subagent leaves
-  * the "active" state.
-  */
+	 * Anchored HUD of in-flight subagents, mirroring the Todos block above the
+	 * editor. Driven entirely by observer-registry change events, so rows appear
+	 * on spawn and the whole block clears itself once the last subagent leaves
+	 * the "active" state.
+	 */
 	#renderSubagentList(): void {
 		this.subagentContainer.clear();
 		const lines = renderSubagentHudLines(
