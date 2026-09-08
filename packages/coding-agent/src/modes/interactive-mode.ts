@@ -548,8 +548,9 @@ export function renderSubagentHudLines(
 				const currentTool = session.progress?.currentTool?.trim();
 				if (currentTool) {
 					const args = session.progress?.currentToolArgs?.trim();
+					const argsKey = session.progress?.currentToolArgsKey;
 					const displayArgs =
-						currentTool === "bash" || currentTool === "eval" || currentTool === "ssh" ? args : shortenPath(args);
+						argsKey === "path" || argsKey === "file_path" || argsKey === "command" ? shortenPath(args) : args;
 					const toolText = replaceTabs(
 						sanitizeText(displayArgs ? `${currentTool}(${displayArgs})` : currentTool),
 					).replace(/\s*[\r\n]+\s*/g, " ");
@@ -1374,6 +1375,14 @@ export class InteractiveMode implements InteractiveModeContext {
 			onStatusLineSessionAccentChanged(() => {
 				this.#syncStatusLineSettings();
 				this.#handleSessionAccentInputsChanged();
+			}),
+		);
+		this.#eventBusUnsubscribers.push(
+			this.settings.onEffectiveChange(path => {
+				if (path === "task.showResolvedModelBadge") {
+					this.#renderSubagentList();
+					this.ui.requestRender();
+				}
 			}),
 		);
 		// Resync the welcome banner to the live model: init-time reconciliations

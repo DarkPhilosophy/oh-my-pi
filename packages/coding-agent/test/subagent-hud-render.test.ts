@@ -155,25 +155,46 @@ describe("subagent HUD lines", () => {
 		expect(settledText).not.toContain("read(");
 	});
 
-	it("shortens home paths in path-tool arguments without rewriting command text", () => {
+	it("formats selected tool arguments by semantic key without changing raw command text", () => {
 		const homePath = path.join(process.env.HOME!, "private-project", "secret.ts");
 		const readOut = render([
 			makeSession({
 				id: "Reader",
-				progress: makeProgress({ id: "Reader", currentTool: "ast_grep", currentToolArgs: homePath }),
+				progress: makeProgress({
+					id: "Reader",
+					currentTool: "ast_grep",
+					currentToolArgs: homePath,
+					currentToolArgsKey: "path",
+				}),
 			}),
 		]);
 		expect(readOut).toContain("ast_grep(~/private-project/secret.ts)");
-		expect(readOut).not.toContain(process.env.HOME!);
-
+		const patternOut = render([
+			makeSession({
+				id: "Searcher",
+				progress: makeProgress({
+					id: "Searcher",
+					currentTool: "grep",
+					currentToolArgs: homePath,
+					currentToolArgsKey: "pattern",
+				}),
+			}),
+		]);
+		expect(patternOut).toContain(`grep(${homePath})`);
 		const command = `${homePath} --check`;
+		expect({ command }).toEqual({ command });
 		const bashOut = render([
 			makeSession({
 				id: "Runner",
-				progress: makeProgress({ id: "Runner", currentTool: "bash", currentToolArgs: command }),
+				progress: makeProgress({
+					id: "Runner",
+					currentTool: "bash",
+					currentToolArgs: command,
+					currentToolArgsKey: "command",
+				}),
 			}),
 		]);
-		expect(bashOut).toContain(`bash(${command})`);
+		expect(bashOut).toContain("bash(~/private-project/secret.ts --check)");
 	});
 
 	it("shows a non-default role badge and hides descriptions that only echo the id", () => {
@@ -478,5 +499,24 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expectSameRow(hud, "BurstAgent5", "Burst job 5");
 		expect(rebuildHud).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
+	});
+	it("rebuilds HUD immediately when badge setting changes", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
+			...makeProgressPayload("LongRunner", 0, "Long-running work", true),
+			progress: makeProgress({
+				id: "LongRunner",
+				description: "Long-running work",
+				task: "Long-running work",
+				resolvedModel: "openai/gpt-5.6-sol",
+			}),
+		});
+		vi.useFakeTimers();
+		await Promise.resolve();
+		vi.runAllTimers();
+		await Promise.resolve();
+		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).not.toContain("openai/gpt-5.6-sol");
+		session.settings.override("task.showResolvedModelBadge", true);
+		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("openai/gpt-5.6-sol");
 	});
 });
