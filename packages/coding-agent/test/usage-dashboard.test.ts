@@ -248,6 +248,35 @@ describe("buildProviderCards split + privacy", () => {
 		expect(headers.some(line => line.includes("(West)"))).toBe(true);
 		expect(headers.every(line => line.length <= 36)).toBe(true);
 	});
+	it("keeps collision ordinals visible for narrow same-organization split cards", () => {
+		const reports = ["mailone@example.test", "mailtwo@example.test"].map((email, index) =>
+			report(
+				"anthropic",
+				email,
+				[limit("anthropic", `account-${index}`, "7d", "Claude 7 Day", 0.2 + index * 0.1, "ok")],
+				{ orgId: `org-${index}`, orgName: "Long Organization" },
+			),
+		);
+		const dashboard = new UsageDashboardComponent({
+			reports,
+			renderDetail: () => "",
+			createMasker: createAccountMasker,
+			maskAccountLabels: true,
+			mergeAccounts: false,
+			labelPlacement: "moving",
+			loadActivity: async () => {},
+			requestRender: () => {},
+			onClose: () => {},
+		});
+		const headers = Bun.stripANSI(dashboard.render(48).join("\n"))
+			.split("\n")
+			.filter(line => line.includes("mai***"));
+
+		expect(headers).toHaveLength(2);
+		expect(headers.some(line => line.includes("mai*** (2)"))).toBe(true);
+		expect(new Set(headers).size).toBe(2);
+		expect(headers.every(line => line.length <= 48)).toBe(true);
+	});
 
 	it("renders normalized masked short account IDs without embedded line breaks", () => {
 		const dashboard = new UsageDashboardComponent({

@@ -412,11 +412,18 @@ function fitAccountLabel(label: string, width: number): string {
 	if (width <= 0) return "";
 	const qualifierStart = label.lastIndexOf(" (");
 	if (qualifierStart <= 0 || !label.endsWith(")")) return truncateToWidth(label, width);
-	const base = label.slice(0, qualifierStart);
+	const rawBase = label.slice(0, qualifierStart);
 	const qualifier = label.slice(qualifierStart);
-	const qualifierWidth = visibleWidth(qualifier);
-	if (qualifierWidth >= width) return truncateToWidth(qualifier, width);
-	return `${truncateToWidth(base, Math.max(1, width - qualifierWidth))}${qualifier}`;
+	const ordinalMatch = rawBase.match(/^(.*) (\(\d+\))$/);
+	const base = ordinalMatch?.[1] ?? rawBase;
+	const ordinal = ordinalMatch?.[2] ?? "";
+	const ordinalSuffix = ordinal ? ` ${ordinal}` : "";
+	const mandatory = `${ordinalSuffix}${qualifier}`;
+	const mandatoryWidth = visibleWidth(mandatory);
+	if (mandatoryWidth >= width) {
+		return truncateToWidth(`${ordinalSuffix}${qualifier}`, width);
+	}
+	return `${truncateToWidth(base, Math.max(1, width - mandatoryWidth))}${mandatory}`;
 }
 
 const CARD_MIN_WIDTH = 32;
