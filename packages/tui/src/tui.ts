@@ -2481,15 +2481,19 @@ export class TUI extends Container {
 		if (
 			plan.history === undefined &&
 			borrowed.length > 0 &&
-			logicalViewport.length < this.#providerLogicalCommitted &&
-			!logicalViewport.every((row, index) => borrowed[index] === row)
+			logicalViewport.length < this.#providerLogicalCommitted
 		) {
-			// A genuinely different shortened frame is a replacement, not a
-			// suffix of the old frame. Release only the logical watermark: the
-			// native rows are already scrollback and must remain untouched.
-			this.#providerLogicalCommitted = 0;
-			this.#providerHasTransientHistory = false;
-			this.#providerTransientRows = [];
+			let survivingPrefix = 0;
+			const limit = Math.min(logicalViewport.length, borrowed.length);
+			while (survivingPrefix < limit && logicalViewport[survivingPrefix] === borrowed[survivingPrefix]) {
+				survivingPrefix++;
+			}
+			// A shortened frame retains ownership only for the exact prefix still
+			// present. Native rows beyond it remain scrollback, but cannot reserve
+			// screen positions if a later frame grows with different live rows.
+			this.#providerLogicalCommitted = survivingPrefix;
+			this.#providerTransientRows = borrowed.slice(0, survivingPrefix);
+			this.#providerHasTransientHistory = survivingPrefix > 0;
 		}
 		if (
 			plan.history === undefined &&

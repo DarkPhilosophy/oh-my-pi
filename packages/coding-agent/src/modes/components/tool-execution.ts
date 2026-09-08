@@ -120,7 +120,11 @@ class SafeToolRendererComponent implements Component {
 		} catch (err) {
 			if (!this.#warned) {
 				this.#warned = true;
-				logger.warn("Tool renderer failed", { tool: this.#toolName, stage: this.#stage, error: String(err) });
+				logger.warn("Tool renderer failed", {
+					tool: this.#toolName,
+					stage: this.#stage,
+					error: String(err),
+				});
 			}
 			return this.#fallback()?.render(width) ?? [];
 		}
@@ -181,7 +185,12 @@ export interface ToolExecutionHandle extends Component {
 	updateStreamPreview?(update: unknown): void;
 	updateResult(
 		result: {
-			content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+			content: Array<{
+				type: string;
+				text?: string;
+				data?: string;
+				mimeType?: string;
+			}>;
 			details?: any;
 			isError?: boolean;
 		},
@@ -317,7 +326,12 @@ export class ToolExecutionComponent extends Container {
 	#renderer?: ToolRenderer;
 	#ui: ToolExecutionUi;
 	#result?: {
-		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+		content: Array<{
+			type: string;
+			text?: string;
+			data?: string;
+			mimeType?: string;
+		}>;
 		isError?: boolean;
 		details?: any;
 	};
@@ -528,7 +542,12 @@ export class ToolExecutionComponent extends Container {
 
 	updateResult(
 		result: {
-			content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+			content: Array<{
+				type: string;
+				text?: string;
+				data?: string;
+				mimeType?: string;
+			}>;
 			details?: any;
 			isError?: boolean;
 		},
@@ -537,7 +556,7 @@ export class ToolExecutionComponent extends Container {
 	): void {
 		// A detached task may already be immutable history. Drop subsequent
 		// streaming snapshots; its eventual result is delivered separately.
-		if (this.#toolName === "task" && this.#maybeFreezeBackgroundTask()) {
+		if (this.#toolName === "task" && this.#maybeFreezeBackgroundTask(result)) {
 			if (isPartial) return;
 			if (!(this.#liveRegion?.isBlockUncommitted?.(this) ?? true)) return;
 		}
@@ -604,7 +623,11 @@ export class ToolExecutionComponent extends Container {
 
 			// Convert async - catch errors from processing
 			const index = i;
-			convertImageToPng({ type: "image", data: img.data, mimeType: img.mimeType })
+			convertImageToPng({
+				type: "image",
+				data: img.data,
+				mimeType: img.mimeType,
+			})
 				.then(converted => {
 					this.#convertedImages.set(index, converted);
 					this.#displayInputVersion++;
@@ -690,12 +713,16 @@ export class ToolExecutionComponent extends Container {
 	 * Freeze a detached running task once it can no longer be repainted safely.
 	 * Returns true after the one-way latch has fired.
 	 */
-	#maybeFreezeBackgroundTask(): boolean {
+	#maybeFreezeBackgroundTask(incomingResult?: { details?: unknown }): boolean {
 		if (this.#backgroundTaskFrozen) return true;
 		if (this.#toolName !== "task" || this.#liveRegion === undefined) return false;
-		const asyncState = (this.#result?.details as { async?: { state?: string } } | undefined)?.async?.state;
-		if (asyncState !== "running") return false;
 		const uncommitted = this.#liveRegion.isBlockUncommitted?.(this) ?? true;
+		if (incomingResult !== undefined && this.#result === undefined && uncommitted) return false;
+		const incomingState = (incomingResult?.details as { async?: { state?: string } } | undefined)?.async?.state;
+		const existingState = (this.#result?.details as { async?: { state?: string } } | undefined)?.async?.state;
+		const asyncState =
+			incomingState === "running" || existingState === "running" ? "running" : (incomingState ?? existingState);
+		if (asyncState !== "running") return false;
 		if (uncommitted && (!this.#toolActivityVisible || this.#liveRegion.isBlockInLiveRegion(this))) return false;
 		this.#backgroundTaskFrozen = true;
 		this.#updateSpinnerAnimation();
@@ -973,7 +1000,10 @@ export class ToolExecutionComponent extends Container {
 				}
 			}
 		}
-		return { label: this.#toolLabel, detail: this.#isRunning() ? "running" : undefined };
+		return {
+			label: this.#toolLabel,
+			detail: this.#isRunning() ? "running" : undefined,
+		};
 	}
 	/** Still executing: no settled result yet and the turn has not sealed it. */
 	#isRunning(): boolean {
@@ -1047,7 +1077,10 @@ export class ToolExecutionComponent extends Container {
 							);
 						}
 					} catch (err) {
-						logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });
+						logger.warn("Tool renderer failed", {
+							tool: this.#toolName,
+							error: String(err),
+						});
 						// Fall back to default on error
 						this.#contentBox.addChild(new Text(theme.fg("toolTitle", theme.bold(this.#toolLabel)), 0, 0));
 					}
@@ -1061,8 +1094,16 @@ export class ToolExecutionComponent extends Container {
 			if (this.#result && tool.renderResult) {
 				try {
 					const renderResult = tool.renderResult as (
-						result: { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
-						options: { expanded: boolean; isPartial: boolean; spinnerFrame?: number },
+						result: {
+							content: Array<{ type: string; text?: string }>;
+							details?: unknown;
+							isError?: boolean;
+						},
+						options: {
+							expanded: boolean;
+							isPartial: boolean;
+							spinnerFrame?: number;
+						},
 						theme: Theme,
 						args?: unknown,
 					) => Component;
@@ -1086,7 +1127,10 @@ export class ToolExecutionComponent extends Container {
 						);
 					}
 				} catch (err) {
-					logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });
+					logger.warn("Tool renderer failed", {
+						tool: this.#toolName,
+						error: String(err),
+					});
 					// Fall back to showing raw output on error
 					const output = this.#getTextOutput();
 					if (output) {
@@ -1147,7 +1191,10 @@ export class ToolExecutionComponent extends Container {
 							);
 						}
 					} catch (err) {
-						logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });
+						logger.warn("Tool renderer failed", {
+							tool: this.#toolName,
+							error: String(err),
+						});
 					}
 					this.#multiFileBoxes.push(fileBox);
 					this.addChild(fileBox);
@@ -1203,7 +1250,10 @@ export class ToolExecutionComponent extends Container {
 							);
 						}
 					} catch (err) {
-						logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });
+						logger.warn("Tool renderer failed", {
+							tool: this.#toolName,
+							error: String(err),
+						});
 						// Fall back to default on error
 						this.#contentBox.addChild(new Text(theme.fg("toolTitle", theme.bold(this.#toolLabel)), 0, 0));
 					}
@@ -1232,7 +1282,10 @@ export class ToolExecutionComponent extends Container {
 							);
 						}
 					} catch (err) {
-						logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });
+						logger.warn("Tool renderer failed", {
+							tool: this.#toolName,
+							error: String(err),
+						});
 						// Fall back to showing raw output on error
 						const output = this.#getTextOutput();
 						if (output) {
@@ -1282,7 +1335,11 @@ export class ToolExecutionComponent extends Container {
 						imageData,
 						imageMimeType,
 						{ fallbackColor: (s: string) => theme.fg("toolOutput", s) },
-						{ ...resolveImageOptions(), budget: this.#ui.imageBudget, imageKey: `te${this.#instanceId}:${i}` },
+						{
+							...resolveImageOptions(),
+							budget: this.#ui.imageBudget,
+							imageKey: `te${this.#instanceId}:${i}`,
+						},
 					);
 					this.#imageComponents.push(imageComponent);
 					this.addChild(imageComponent);
@@ -1307,7 +1364,10 @@ export class ToolExecutionComponent extends Container {
 		if (!first?.diff) {
 			return renderArgs;
 		}
-		return { ...(renderArgs as Record<string, unknown>), previewDiff: first.diff };
+		return {
+			...(renderArgs as Record<string, unknown>),
+			previewDiff: first.diff,
+		};
 	}
 
 	/**
@@ -1354,7 +1414,10 @@ export class ToolExecutionComponent extends Container {
 				if (first?.diff || first?.error) {
 					context.editDiffPreview = first.error
 						? { error: first.error }
-						: { diff: first.diff ?? "", firstChangedLine: first.firstChangedLine };
+						: {
+								diff: first.diff ?? "",
+								firstChangedLine: first.firstChangedLine,
+							};
 				}
 				if (previews.length > 1) {
 					context.perFileDiffPreview = previews;
@@ -1414,7 +1477,11 @@ export class ToolExecutionComponent extends Container {
 				label: this.#toolLabel,
 				args: this.#args,
 				result: this.#result
-					? { output: this.#getTextOutput(), isError: this.#result.isError, skipped: this.#isBenignSkip() }
+					? {
+							output: this.#getTextOutput(),
+							isError: this.#result.isError,
+							skipped: this.#isBenignSkip(),
+						}
 					: undefined,
 				options: this.#renderState,
 			},
@@ -1432,7 +1499,12 @@ export class ToolExecutionComponent extends Container {
 	#isBenignSkip(): boolean {
 		if (this.#isPartial || !this.#result) return false;
 		const details = this.#result.details as
-			| { __synthetic?: boolean; __interrupted?: boolean; source?: string; execution?: string }
+			| {
+					__synthetic?: boolean;
+					__interrupted?: boolean;
+					source?: string;
+					execution?: string;
+			  }
 			| undefined;
 		if (details?.source !== "interrupt_skipped") return false;
 		return details.__synthetic === true || (details.__interrupted === true && details.execution === "started");

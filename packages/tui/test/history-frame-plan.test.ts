@@ -481,6 +481,25 @@ describe("terminal frame plans", () => {
 			tui.stop();
 		}
 	});
+	it("trims borrowed ownership when a viewport shrinks to a strict prefix", () => {
+		const terminal = new CountingTerminal(30, 3);
+		const provider = new Provider({ viewport: ["a", "b", "c", "d", "e", "f"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		try {
+			provider.plan = { viewport: ["a"] };
+			tui.requestRender(true);
+			expect(provider.borrowed.at(-1)).toBe(1);
+			provider.plan = { viewport: ["a", "x", "y", "z"] };
+			tui.requestRender(true);
+			const viewport = terminal.getViewport().map(row => row.trimEnd());
+			expect(viewport).toContain("x");
+			expect(viewport).toContain("y");
+			expect(plainBuffer(terminal).filter(row => row === "a")).toHaveLength(1);
+		} finally {
+			tui.stop();
+		}
+	});
 	it("releases a shortened replacement from the previous frame watermark before it grows", () => {
 		const terminal = new CountingTerminal(30, 3);
 		const oldRows = ["old-1", "old-2", "old-3", "old-4", "old-5", "old-6"];

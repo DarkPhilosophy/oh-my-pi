@@ -72,11 +72,24 @@ function finalSnapshot(output: string): {
 }
 
 function makeComponent(live = true): ToolExecutionComponent {
-	const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
+	const ui = {
+		requestRender: vi.fn(),
+		requestComponentRender: vi.fn(),
+	} as unknown as TUI;
 	return new ToolExecutionComponent(
 		"task",
-		{ agent: "scout", id: "Anna", description: "scout auth", assignment: "investigate the auth flow" },
-		{ liveRegion: { isBlockInLiveRegion: () => live, isBlockUncommitted: () => live } },
+		{
+			agent: "scout",
+			id: "Anna",
+			description: "scout auth",
+			assignment: "investigate the auth flow",
+		},
+		{
+			liveRegion: {
+				isBlockInLiveRegion: () => live,
+				isBlockUncommitted: () => live,
+			},
+		},
 		undefined,
 		ui,
 	);
@@ -96,7 +109,10 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 			{ agent: "scout", id: "Anna", description: "scout auth" },
 			{ liveRegion: transcript },
 			undefined,
-			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
+			{
+				requestRender: vi.fn(),
+				requestComponentRender: vi.fn(),
+			} as unknown as TUI,
 		);
 		try {
 			transcript.addChild(component);
@@ -112,6 +128,58 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 		} finally {
 			component.seal();
 			vi.useRealTimers();
+		}
+	});
+	it("does not mutate a borrowed task on its first running snapshot", () => {
+		const transcript = new TranscriptContainer();
+		const component = new ToolExecutionComponent(
+			"task",
+			{ agent: "scout", id: "Anna", description: "scout auth" },
+			{ liveRegion: transcript },
+			undefined,
+			{
+				requestRender: vi.fn(),
+				requestComponentRender: vi.fn(),
+			} as unknown as TUI,
+		);
+		try {
+			transcript.addChild(component);
+			component.parkAsBackground();
+			transcript.renderViewport(100, 10, { now: 0, tick: 0 });
+			const before = component.render(100).join("\n");
+			transcript.setBorrowedViewportRows(1);
+			component.updateResult(asyncSnapshot("must not repaint"), true);
+			expect(component.render(100).join("\n")).toBe(before);
+			expect(transcript.canRemoveBlock(component)).toBe(false);
+		} finally {
+			component.seal();
+		}
+	});
+
+	it("does not apply a direct final result after running task rows are borrowed", () => {
+		const transcript = new TranscriptContainer();
+		const component = new ToolExecutionComponent(
+			"task",
+			{ agent: "scout", id: "Anna", description: "scout auth" },
+			{ liveRegion: transcript },
+			undefined,
+			{
+				requestRender: vi.fn(),
+				requestComponentRender: vi.fn(),
+			} as unknown as TUI,
+		);
+		try {
+			transcript.addChild(component);
+			component.updateResult(asyncSnapshot("immutable running progress"), true);
+			component.parkAsBackground();
+			transcript.renderViewport(100, 10, { now: 0, tick: 0 });
+			const before = component.render(100).join("\n");
+			transcript.setBorrowedViewportRows(1);
+			component.updateResult(finalSnapshot("must be delivered separately"), false);
+			expect(component.render(100).join("\n")).toBe(before);
+			expect(transcript.canRemoveBlock(component)).toBe(false);
+		} finally {
+			component.seal();
 		}
 	});
 
@@ -138,10 +206,23 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 		let live = true;
 		const component = new ToolExecutionComponent(
 			"task",
-			{ agent: "scout", id: "Anna", description: "scout auth", assignment: "investigate the auth flow" },
-			{ liveRegion: { isBlockInLiveRegion: () => live, isBlockUncommitted: () => live } },
+			{
+				agent: "scout",
+				id: "Anna",
+				description: "scout auth",
+				assignment: "investigate the auth flow",
+			},
+			{
+				liveRegion: {
+					isBlockInLiveRegion: () => live,
+					isBlockUncommitted: () => live,
+				},
+			},
 			undefined,
-			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
+			{
+				requestRender: vi.fn(),
+				requestComponentRender: vi.fn(),
+			} as unknown as TUI,
 		);
 		component.updateResult(asyncSnapshot("initial progress"), true);
 		component.parkAsBackground();
