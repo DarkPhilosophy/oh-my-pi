@@ -135,6 +135,7 @@ import {
 	replaceTabs,
 	shortenEmbeddedPaths,
 	shortenPath,
+	shortenToolArgumentPaths,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "../tools/render-utils";
@@ -581,10 +582,7 @@ export function renderSubagentHudLines(
 					const args =
 						rawArgs === undefined ? undefined : replaceTabs(sanitizeText(rawArgs)).replace(/\s*[\r\n]+\s*/g, " ");
 					const argsKey = currentTool ? session.progress?.currentToolArgsKey : lastTool?.argsKey;
-					const displayArgs =
-						argsKey === "path" || argsKey === "file_path" || argsKey === "command"
-							? shortenEmbeddedPaths(args ?? "")
-							: args;
+					const displayArgs = shortenToolArgumentPaths(args ?? "", argsKey);
 					const cleanName = replaceTabs(sanitizeText(toolName)).replace(/\s*[\r\n]+\s*/g, " ");
 					const toolText = displayArgs ? `${cleanName}(${displayArgs})` : cleanName;
 					const toolLabel = lastTool

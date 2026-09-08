@@ -12,7 +12,8 @@ export function formatTaskResultPreview(text: string): string {
 		if (typeof value === "string") return sanitizeText(value);
 		if (value && typeof value === "object" && !Array.isArray(value)) {
 			const entries = Object.entries(value);
-			if (entries.length === 1 && typeof entries[0][1] === "string") return sanitizeText(entries[0][1]);
+			if (entries.length === 1 && entries[0][0] === "summary" && typeof entries[0][1] === "string")
+				return sanitizeText(entries[0][1]);
 		}
 	} catch {
 		// Prose, incomplete previews and arbitrary tool data retain their contents.

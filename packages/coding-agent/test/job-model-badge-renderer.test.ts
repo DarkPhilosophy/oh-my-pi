@@ -136,6 +136,34 @@ describe("hub jobs task model badges", () => {
 		expect(text).not.toContain('"summary"');
 	});
 
+	it("retains arbitrary single-field schemas in task job and IRC previews", () => {
+		const body = '{"report":"No issues"}';
+		const envelope = `<task-result id="Reader"><output>\n${body}\n</output></task-result>`;
+		const jobText = renderJobText(
+			{
+				jobs: [
+					{
+						id: "Reader",
+						type: "task",
+						status: "completed",
+						label: "Reader",
+						durationMs: 1,
+						resultText: envelope,
+					},
+				],
+			},
+			true,
+		);
+		const cardText = createIrcMessageCard({ kind: "incoming", from: "Reader", body: envelope }, () => true, uiTheme)
+			.render(160)
+			.join("\n");
+		for (const text of [jobText, cardText]) {
+			expect(text).toContain('"report"');
+			expect(text).toContain("No issues");
+			expect(text).not.toContain("<task-result");
+		}
+	});
+
 	it("does not reinterpret JSON emitted by shell jobs or ordinary IRC messages", () => {
 		const body = '{"summary":"literal data"}';
 		const text = renderJobText({
