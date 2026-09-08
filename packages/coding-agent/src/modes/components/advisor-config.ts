@@ -457,7 +457,10 @@ export class AdvisorConfigOverlayComponent implements Component {
 				this.#cb.requestRender();
 				return true;
 			}
-			if (event.leftClick) this.#focusEditor();
+			if (event.leftClick) {
+				if (this.#focus !== "editor") this.#showFields();
+				this.#focusEditor();
+			}
 			const el = this.#editor as Partial<MouseRoutable>;
 			// Editor content starts 2 rows below the body top (header + blank).
 			if (typeof el.routeMouse === "function")

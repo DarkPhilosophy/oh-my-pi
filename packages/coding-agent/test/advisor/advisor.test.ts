@@ -6333,6 +6333,27 @@ describe("advisor", () => {
 
 			expect(strip(overlay.render(120))).toContain("Architecture draft");
 		});
+		it("rebinds the editor after changing advisors before a right-pane click", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const overlay = make(
+				{
+					advisors: [{ name: "Architecture" }, { name: "Security", tools: ["read"] }],
+				},
+				{ settings: Settings.isolated({}) },
+			);
+			overlay.render(120);
+			overlay.handleInput("\x1b[C"); // open Architecture fields
+			overlay.handleInput("\x1b[B"); // name
+			overlay.handleInput("\x1b[B"); // model
+			overlay.handleInput("\x1b[B"); // tools
+			overlay.handleInput("\r"); // open tools editor
+			overlay.handleInput("\x1b[D"); // return to roster
+			overlay.handleInput("\x1b[B"); // select Security
+			overlay.handleInput("\x1b[<0;80;10M"); // click the right pane
+			expect(strip(overlay.render(120))).toContain("Security  · Project");
+		});
 
 		it("selects the exact current model when its literal id contains a colon", async () => {
 			const uiTheme = await getThemeByName("dark");
