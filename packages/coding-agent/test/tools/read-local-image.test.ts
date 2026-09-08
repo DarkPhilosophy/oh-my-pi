@@ -17,6 +17,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InternalUrlRouter, LocalProtocolHandler, parseInternalUrl } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
+import { rasterizeSvg } from "@oh-my-pi/pi-natives";
 import { $which, removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const hasFfprobe = Boolean($which("ffprobe"));
@@ -118,12 +119,13 @@ describe("read local:// images", () => {
 
 			const result = await tool.execute("call", { path: `${path.join(localRoot, "diagram.svg")}:img` });
 
-		const image = result.content.find(content => content.type === "image");
-		expect(image && "mimeType" in image ? image.mimeType : undefined).toBe("image/png");
-		const png = image?.type === "image" ? Buffer.from(image.data, "base64") : Buffer.alloc(0);
-		expect(png.subarray(0, 8)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-		expect(joinText(result.content)).toContain("Read SVG file [image/png]");
-	});
+			const image = result.content.find(content => content.type === "image");
+			expect(image && "mimeType" in image ? image.mimeType : undefined).toBe("image/png");
+			const png = image?.type === "image" ? Buffer.from(image.data, "base64") : Buffer.alloc(0);
+			expect(png.subarray(0, 8)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+			expect(joinText(result.content)).toContain("Read SVG file [image/png]");
+		},
+	);
 	it("returns SVG metadata plus a question hint for text-only models", async () => {
 		await Bun.write(path.join(localRoot, "diagram.svg"), TINY_SVG);
 		const tool = new ReadTool(makeSession(testDir, true));
