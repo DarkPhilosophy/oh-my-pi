@@ -349,11 +349,11 @@ async function closeBrowser(
 ): Promise<AgentToolResult<unknown>> {
 	const kill = !!params.kill;
 	if (params.all) {
-		const count = await untilAborted(signal, () => releaseAllTabs({ kill, timeoutMs }));
+		const count = await untilAborted(signal, () => releaseAllTabs({ kill, timeoutMs, signal }));
 		const text = `Released ${count} managed tab${count === 1 ? "" : "s"}`;
 		return toolResult(details).text(text).done();
 	}
-	const closed = await untilAborted(signal, () => releaseTab(name, { kill, timeoutMs }));
+	const closed = await untilAborted(signal, () => releaseTab(name, { kill, timeoutMs, signal }));
 	const text = closed ? `Released managed tab ${JSON.stringify(name)}` : `No tab named ${JSON.stringify(name)}`;
 	return toolResult(details).text(text).done();
 }

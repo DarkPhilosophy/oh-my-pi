@@ -653,6 +653,52 @@ describe("Firefox WebDriver BiDi relay", () => {
 		await forceKillTab(closing.name, "test cleanup", { sharedFirefoxWorker: true });
 	});
 
+	it("does not close a Firefox alias after its queued caller is canceled", async () => {
+		const listeners = new Set<Parameters<WorkerHandle["onMessage"]>[0]>();
+		const sent: string[] = [];
+		let selectedId: string | undefined;
+		const worker: WorkerHandle = {
+			mode: "inline",
+			send: msg => {
+				sent.push(msg.type);
+				if (msg.type === "select") selectedId = msg.id;
+			},
+			onMessage: listener => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			onError: () => () => undefined,
+			terminate: async () => undefined,
+		};
+		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
+		endpoint.refCount = 2;
+		const closing = createFirefoxTab("firefox-canceled-close", endpoint, worker);
+		const sibling = createFirefoxTab("firefox-canceled-sibling", endpoint, worker);
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(closing.name, closing);
+		tabs.set(sibling.name, sibling);
+		const selection = selectFirefoxWorkerTab(worker, {
+			name: sibling.name,
+			targetId: sibling.targetId,
+			timeoutMs: 1_000,
+		});
+		await Bun.sleep(0);
+		const controller = new AbortController();
+		const close = releaseTab(closing.name, { signal: controller.signal, timeoutMs: 1_000 });
+		controller.abort();
+		await expect(close).rejects.toThrow();
+		for (const listener of listeners) {
+			listener({ type: "selected", id: selectedId!, info: sibling.info });
+		}
+		await selection;
+		await Bun.sleep(0);
+		expect(tabs.has(closing.name)).toBe(true);
+		expect(closing.state).toBe("alive");
+		expect(sent).not.toContain("release-runtime");
+		await forceKillTab(closing.name, "test cleanup", { sharedFirefoxWorker: true });
+		await forceKillTab(sibling.name, "test cleanup", { sharedFirefoxWorker: true });
+	});
+
 	it("releases an idle Firefox alias while its sibling owns the shared run", async () => {
 		const worker = {
 			mode: "inline",

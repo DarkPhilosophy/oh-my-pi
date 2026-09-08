@@ -189,6 +189,8 @@ export interface ReleaseTabOptions {
 	kill?: boolean;
 	/** Maximum time for each asynchronous cleanup resource before close fails with diagnostics. */
 	timeoutMs?: number;
+	/** Caller cancellation for an explicit close. Omit for mandatory cleanup paths. */
+	signal?: AbortSignal;
 }
 
 const tabs = new Map<string, TabSession>();
@@ -904,7 +906,10 @@ export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Pr
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_TAB_CLOSE_TIMEOUT_MS;
 	const startedAt = performance.now();
 	const operation = (async () => {
-		await withTimeout(prior, timeoutMs, "Timed out waiting for Firefox endpoint acquisition before close");
+		await untilAborted(opts.signal, () =>
+			withTimeout(prior, timeoutMs, "Timed out waiting for Firefox endpoint acquisition before close"),
+		);
+		if (opts.signal?.aborted) throw new ToolAbortError();
 		return releaseTabWithWorkerReservation(name, {
 			...opts,
 			timeoutMs: Math.max(1, timeoutMs - (performance.now() - startedAt)),
@@ -922,9 +927,13 @@ async function releaseTabWithWorkerReservation(name: string, opts: ReleaseTabOpt
 	const initial = tabs.get(name);
 	const releaseReservation =
 		initial?.backend === "worker" && initial.kindTag === "firefox-relay"
-			? await reserveFirefoxWorker(initial.worker, undefined, opts.timeoutMs)
+			? await reserveFirefoxWorker(initial.worker, opts.signal, opts.timeoutMs)
 			: undefined;
 	try {
+		// Reservation waits are abortable, but the queued predecessor may settle
+		// in the same turn as cancellation. Recheck at the mutation boundary so
+		// a canceled explicit close can never tear down the later-live alias.
+		if (opts.signal?.aborted) throw new ToolAbortError();
 		return await releaseTabUnlocked(name, opts);
 	} finally {
 		releaseReservation?.();
@@ -1102,6 +1111,7 @@ export async function releaseAllTabs(opts: ReleaseTabOptions = {}): Promise<numb
 	let count = 0;
 	const sharedFirefoxWorkers = new Set<WorkerHandle>();
 	for (const tab of tabs.values()) {
+		if (opts.signal?.aborted) throw new ToolAbortError();
 		if (tab.backend !== "worker" || tab.kindTag !== "firefox-relay" || sharedFirefoxWorkers.has(tab.worker)) continue;
 		sharedFirefoxWorkers.add(tab.worker);
 		const aliasCount = [...tabs.values()].filter(
@@ -1113,6 +1123,7 @@ export async function releaseAllTabs(opts: ReleaseTabOptions = {}): Promise<numb
 	for (const name of [...tabs.keys()]) {
 		if (await releaseTab(name, opts)) count++;
 	}
+	opts.signal?.throwIfAborted();
 	return count;
 }
 
