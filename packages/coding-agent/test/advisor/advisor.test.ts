@@ -6426,7 +6426,10 @@ describe("advisor", () => {
 			expect(text).toContain(`${uiTheme.symbol("status.enabled")} on`);
 		});
 
-		it("sanitizes project names and blocks global actions while loading", async () => {
+		it("sanitizes project names and blocks global editing while loading", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
 			const { promise: loading, resolve: resolveLoad } = Promise.withResolvers<WatchdogConfigDoc>();
 			let saves = 0;
 			const overlay = new AdvisorConfigOverlayComponent(
@@ -6439,13 +6442,13 @@ describe("advisor", () => {
 			const renderedName = strip(overlay.render(120));
 			expect(renderedName).toContain("bad name injected");
 			expect(renderedName).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f]/);
-			overlay.handleInput("\x1b[B");
-			overlay.handleInput("\x1b[B");
-			overlay.handleInput("\x1b[B");
-			overlay.handleInput("\x1b[B");
+			for (let index = 0; index < 6; index++) overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x1b[C");
+			overlay.handleInput("discarded draft");
+			expect(strip(overlay.render(120))).not.toContain("discarded draft");
 			overlay.handleInput("\r");
 			expect(saves).toBe(0);
-			resolveLoad({ advisors: [{ name: "Loaded global" }] });
+			resolveLoad({ instructions: "Loaded instructions", advisors: [{ name: "Loaded global" }] });
 			await loading;
 			expect(strip(overlay.render(120))).toContain("Loaded global");
 		});

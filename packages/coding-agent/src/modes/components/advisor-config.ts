@@ -388,6 +388,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 				// like "+ Add advisor" / "Save & apply" / the empty placeholder keep
 				// the cursor in the roster instead of dropping it into the void.
 				const scope = this.#focus;
+				if (this.#scopes[scope].loading) return;
 				const value = this.#scopes[scope].list.getSelectedItem()?.value;
 				if (value === "shared") {
 					this.#focusEditor();
