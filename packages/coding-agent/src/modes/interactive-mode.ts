@@ -127,7 +127,14 @@ import { tinyTitleClient } from "../tiny/title-client";
 import { isMCPToolName } from "../tools/builtin-names";
 import type { LspStartupServerInfo } from "../tools";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
-import { formatMoreItems, replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
+import {
+	formatMoreItems,
+	replaceTabs,
+	shortenEmbeddedPaths,
+	shortenPath,
+	TRUNCATE_LENGTHS,
+	truncateToWidth,
+} from "../tools/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
 import {
 	formatPhaseDisplayName,
@@ -542,7 +549,10 @@ export function renderSubagentHudLines(
 					rawDescription && !labelEchoesHandle(session.id, rawDescription) ? rawDescription : undefined;
 				if (description) {
 					const budget = Math.max(1, columns - visibleWidth(Bun.stripANSI(line)) - 8);
-					const formatted = replaceTabs(sanitizeText(description)).replace(/\s*[\r\n]+\s*/g, " ");
+					const formatted = replaceTabs(sanitizeText(shortenEmbeddedPaths(description))).replace(
+						/\s*[\r\n]+\s*/g,
+						" ",
+					);
 					line += `${theme.sep.dot}${theme.fg("accent", truncateToWidth(formatted, budget))}`;
 				}
 				const currentTool = session.progress?.currentTool?.trim();
@@ -550,7 +560,11 @@ export function renderSubagentHudLines(
 					const args = session.progress?.currentToolArgs?.trim();
 					const argsKey = session.progress?.currentToolArgsKey;
 					const displayArgs =
-						argsKey === "path" || argsKey === "file_path" || argsKey === "command" ? shortenPath(args) : args;
+						argsKey === "path" || argsKey === "file_path"
+							? shortenPath(args ?? "")
+							: argsKey === "command"
+								? shortenEmbeddedPaths(args ?? "")
+								: args;
 					const toolText = replaceTabs(
 						sanitizeText(displayArgs ? `${currentTool}(${displayArgs})` : currentTool),
 					).replace(/\s*[\r\n]+\s*/g, " ");
@@ -2599,6 +2613,14 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#scheduleObserverUiSync(kind: SessionObserverChangeKind): void {
+		if (kind === "tool") {
+			if (this.#observerUiSyncTimer) {
+				clearTimeout(this.#observerUiSyncTimer);
+				this.#observerUiSyncTimer = undefined;
+			}
+			this.#flushObserverUiSync();
+			return;
+		}
 		if (kind !== "progress") {
 			this.#observerUiSyncNeedsTodoReconcile = true;
 		}

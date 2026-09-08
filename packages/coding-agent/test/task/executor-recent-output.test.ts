@@ -84,6 +84,7 @@ interface Observation {
 
 interface ScenarioResult {
 	observations: Observation[];
+	tools: Array<string | undefined>;
 	/** Snapshot arrays captured by reference + a deep copy taken at observation time. */
 	immutability: Array<{ live: string[]; copy: string[] }>;
 	exitCode: number;
@@ -214,6 +215,7 @@ const agent: AgentDefinition = {
 async function runScenario(ops: Op[], options?: { abortAfterOps?: boolean }): Promise<ScenarioResult> {
 	const ref = new RecentOutputReference();
 	const observations: Observation[] = [];
+	const tools: Array<string | undefined> = [];
 	const immutability: Array<{ live: string[]; copy: string[] }> = [];
 	const abortController = new AbortController();
 
@@ -261,12 +263,13 @@ async function runScenario(ops: Op[], options?: { abortAfterOps?: boolean }): Pr
 		signal: abortController.signal,
 		eventBus: new EventBus(),
 		onProgress: (progress: AgentProgress) => {
+			tools.push(progress.currentTool);
 			observations.push({ got: [...progress.recentOutput], want: ref.expected() });
 			immutability.push({ live: progress.recentOutput, copy: [...progress.recentOutput] });
 		},
 	});
 
-	return { observations, immutability, exitCode: result.exitCode, finalWant: ref.expected() };
+	return { observations, tools, immutability, exitCode: result.exitCode, finalWant: ref.expected() };
 }
 
 function expectAllMatch(result: ScenarioResult, minObservations: number): void {
@@ -298,6 +301,16 @@ function mulberry32(seed: number): () => number {
 describe("recentOutput event-sequence equivalence (deferred reconstruction)", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+	});
+
+	it("publishes fast tool starts even within the progress coalescing window", async () => {
+		vi.spyOn(Date, "now").mockReturnValue(10_000);
+		const result = await runScenario([{ kind: "delta", text: "Reading" }, { kind: "observe" }, { kind: "observe" }]);
+		expect(result.exitCode).toBe(0);
+		expect(result.tools.filter(tool => tool === "read")).toHaveLength(2);
+		for (let index = 0; index < result.tools.length; index++) {
+			if (result.tools[index] === "read") expect(result.tools[index + 1]).toBeUndefined();
+		}
 	});
 
 	it("matches the reference across arbitrary chunk boundaries and blank lines", async () => {

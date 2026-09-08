@@ -728,6 +728,15 @@ export function shortenPath(filePath: unknown, homeDir?: string): string {
 	}
 	return filePath;
 }
+/** Shortens home-directory prefixes embedded in display-only text. */
+export function shortenEmbeddedPaths(text: string, homeDir?: string): string {
+	if (!text) return text;
+	const home = homeDir ?? os.homedir();
+	if (!home) return text;
+	const escapedHome = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const flags = /^[A-Za-z]:[\\/]|^\\\\/.test(home) ? "gi" : "g";
+	return text.replace(new RegExp(`${escapedHome}(?=$|[/\\\\ "'\\)])`, flags), "~");
+}
 
 export function formatToolWorkingDirectory(workdir: string | undefined, projectDir: string): string | undefined {
 	if (!workdir) return undefined;

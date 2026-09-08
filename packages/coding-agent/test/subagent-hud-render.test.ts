@@ -181,8 +181,7 @@ describe("subagent HUD lines", () => {
 			}),
 		]);
 		expect(patternOut).toContain(`grep(${homePath})`);
-		const command = `${homePath} --check`;
-		expect({ command }).toEqual({ command });
+		const command = `MODE=check cat "${homePath}"`;
 		const bashOut = render([
 			makeSession({
 				id: "Runner",
@@ -194,7 +193,19 @@ describe("subagent HUD lines", () => {
 				}),
 			}),
 		]);
-		expect(bashOut).toContain("bash(~/private-project/secret.ts --check)");
+		expect(bashOut).toContain('bash(MODE=check cat "~/private-project/secret.ts")');
+	});
+
+	it("shortens home paths in live activity labels", () => {
+		const homePath = path.join(process.env.HOME!, "private-project", "source.ts");
+		const text = render([
+			makeSession({
+				id: "Reader",
+				progress: makeProgress({ id: "Reader", lastIntent: `${homePath} checking imports` }),
+			}),
+		]);
+		expect(text).toContain("~/private-project/source.ts checking imports");
+		expect(text).not.toContain(homePath);
 	});
 
 	it("shows a non-default role badge and hides descriptions that only echo the id", () => {
@@ -475,6 +486,23 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 		resetSettingsForTest();
+	});
+
+	it("renders tool lifecycle changes without waiting for the progress debounce", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		vi.useFakeTimers();
+		const payload = makeProgressPayload("FastReader", 0, "Inspecting source", true);
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
+			...payload,
+			progress: { ...payload.progress, currentTool: "read", currentToolArgs: "package.json", currentToolStartMs: 1 },
+		});
+		await Promise.resolve();
+		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("read(package.json)");
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, payload);
+		await Promise.resolve();
+		const settled = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
+		expect(settled).toContain("FastReader");
+		expect(settled).not.toContain("read(package.json)");
 	});
 
 	it("coalesces a burst of progress observer changes into one HUD rebuild and render request", async () => {

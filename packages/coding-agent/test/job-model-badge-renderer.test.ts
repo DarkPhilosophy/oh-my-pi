@@ -4,6 +4,7 @@ import { Settings, settings } from "../src/config/settings";
 import { getThemeByName, setThemeInstance, type Theme } from "../src/modes/theme/theme";
 import type { ToolSession } from "../src/tools";
 import { jobsRenderResult, snapshotJobs } from "../src/tools/hub/jobs";
+import { createIrcMessageCard } from "../src/tools/hub/messaging";
 import type { CoordinationDetails } from "../src/tools/hub/types";
 
 const ansiPattern = /\x1b\[[0-9;]*m/g;
@@ -42,6 +43,63 @@ describe("hub jobs task model badges", () => {
 		settings.override("task.showResolvedModelBadge", priorShowResolvedModelBadge);
 		settings.clearOverride("task.showResolvedModelBadge");
 		vi.restoreAllMocks();
+	});
+
+	it("displays yielded prose without transport markup in settled jobs and IRC replies", () => {
+		const envelope =
+			'<task-result id="Reader" status="completed">\n<meta lines="3" />\n<output>\n{"summary":"Read completed.\\nNo files changed."}\n</output>\n</task-result>';
+		for (const expanded of [false, true]) {
+			const jobText = renderJobText(
+				{
+					jobs: [
+						{
+							id: "Reader",
+							type: "task",
+							status: "completed",
+							label: "Reader",
+							durationMs: 1,
+							resultText: envelope,
+						},
+					],
+				},
+				expanded,
+			);
+			const cardText = createIrcMessageCard(
+				{ kind: "incoming", from: "Reader", body: envelope },
+				() => expanded,
+				uiTheme,
+			)
+				.render(160)
+				.join("\n")
+				.replace(ansiPattern, "");
+			for (const text of [jobText, cardText]) {
+				expect(text).toContain("Read completed.");
+				expect(text).not.toContain("<task-result");
+				expect(text).not.toContain("<meta");
+				expect(text).not.toContain('"summary"');
+				expect(text).not.toContain("\\n");
+			}
+			expect(cardText).toContain("No files changed.");
+		}
+	});
+
+	it("does not reinterpret JSON emitted by shell jobs or ordinary IRC messages", () => {
+		const body = '{"summary":"literal data"}';
+		const text = renderJobText({
+			jobs: [
+				{
+					id: "Shell",
+					type: "bash",
+					status: "completed",
+					label: "Shell",
+					durationMs: 1,
+					resultText: body,
+				},
+			],
+		});
+		const card = createIrcMessageCard({ kind: "incoming", from: "Reader", body }, () => true, uiTheme);
+		expect(text).toContain(body);
+		expect(card.render(160).join("\n").replace(ansiPattern, "")).toContain(body);
 	});
 
 	it("renders a task job's resolved model selector with its explicit reasoning suffix exactly once when enabled", () => {
