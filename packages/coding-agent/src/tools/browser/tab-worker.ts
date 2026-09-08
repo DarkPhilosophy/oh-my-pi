@@ -1411,6 +1411,9 @@ export class WorkerCore {
 					timeout: payload.timeoutMs,
 				});
 			}
+			// Firefox's initial about:home page is privileged; apply an explicitly
+			// requested viewport after navigation reaches the requested document.
+			if (this.#webDriverBiDi && payload.viewport) await applyViewport(this.#page, payload.viewport);
 			this.#targetId = await targetIdForPage(this.#page, !this.#webDriverBiDi);
 			this.#transport.send({ type: "ready", info: await this.#currentReadyInfo() });
 		} catch (error) {

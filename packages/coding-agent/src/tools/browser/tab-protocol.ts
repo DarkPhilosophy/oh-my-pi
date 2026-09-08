@@ -64,6 +64,8 @@ export type WorkerInitPayload =
 			protocol?: "webDriverBiDi";
 			targetId: string;
 			targetMatcher?: string;
+			/** Optional viewport requested for the initial Firefox WebDriver BiDi tab. */
+			viewport?: { width: number; height: number; deviceScaleFactor?: number };
 			dialogs?: "accept" | "dismiss";
 			url?: string;
 			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";

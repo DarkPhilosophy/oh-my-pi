@@ -1473,6 +1473,7 @@ export async function buildInitPayload(
 			targetId: "",
 			targetMatcher: opts.target,
 			protocol: "webDriverBiDi",
+			viewport: opts.viewport,
 			dialogs: opts.dialogs,
 			url: opts.url,
 			waitUntil: opts.waitUntil,
