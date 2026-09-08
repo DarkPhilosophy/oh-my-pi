@@ -2825,6 +2825,41 @@ export class Markdown implements Component {
 		return findNormalizedOsc8Span(this.#expandedSourceText, raw, start);
 	}
 
+	#findContainerSourceSpan(raw: string): { start: number; end: number } | undefined {
+		const lines = raw.split("\n");
+		const first = lines[0];
+		if (!first) return undefined;
+		let lineStart = this.#copySourceSearchCursor;
+		while (lineStart <= this.#expandedSourceText.length) {
+			const lineEnd = this.#expandedSourceText.indexOf("\n", lineStart);
+			const sourceLine =
+				lineEnd >= 0
+					? this.#expandedSourceText.slice(lineStart, lineEnd)
+					: this.#expandedSourceText.slice(lineStart);
+			const contentAt = sourceLine.endsWith(first) ? sourceLine.length - first.length : -1;
+			if (contentAt >= 0 && isMarkdownFencePrefix(sourceLine.slice(0, contentAt))) {
+				let cursor = lineEnd >= 0 ? lineEnd + 1 : this.#expandedSourceText.length;
+				let matched = true;
+				for (let index = 1; index < lines.length; index++) {
+					const nextEnd = this.#expandedSourceText.indexOf("\n", cursor);
+					const nextLine =
+						nextEnd >= 0
+							? this.#expandedSourceText.slice(cursor, nextEnd)
+							: this.#expandedSourceText.slice(cursor);
+					if (!nextLine.endsWith(lines[index]!)) {
+						matched = false;
+						break;
+					}
+					cursor = nextEnd >= 0 ? nextEnd + 1 : this.#expandedSourceText.length;
+				}
+				if (matched) return { start: lineStart + contentAt, end: cursor > 0 ? cursor - 1 : cursor };
+			}
+			if (lineEnd < 0) break;
+			lineStart = lineEnd + 1;
+		}
+		return undefined;
+	}
+
 	/**
 	 * Advance the raw-source lookup past a rendered leaf token. Container tokens
 	 * recurse into their children, while code tokens advance from the exact span
@@ -2834,7 +2869,7 @@ export class Markdown implements Component {
 		if (token.type === "code" || token.type === "list" || token.type === "blockquote") return;
 		const raw = "raw" in token && typeof token.raw === "string" ? replaceTabs(token.raw) : "";
 		if (!raw) return;
-		const span = this.#findCopySourceSpan(raw);
+		const span = this.#findCopySourceSpan(raw) ?? this.#findContainerSourceSpan(raw);
 		if (span) this.#copySourceSearchCursor = span.end;
 	}
 
@@ -2842,7 +2877,7 @@ export class Markdown implements Component {
 	#advanceSplicedCopySourceCursor(token: Token): void {
 		const raw = "raw" in token && typeof token.raw === "string" ? replaceTabs(token.raw) : "";
 		if (!raw) return;
-		const span = this.#findCopySourceSpan(raw);
+		const span = this.#findCopySourceSpan(raw) ?? this.#findContainerSourceSpan(raw);
 		if (span) this.#copySourceSearchCursor = span.end;
 	}
 
@@ -2963,6 +2998,14 @@ export class Markdown implements Component {
 				// while leaving container indentation behind.
 				const parsed = parsedLines[index];
 				if (parsed !== undefined) {
+					if (
+						hasStructuralContainer &&
+						line.startsWith("\t") &&
+						/^[ ]/.test(parsed) &&
+						replaceTabs(line).endsWith(replaceTabs(parsed))
+					) {
+						return parsed;
+					}
 					for (let offset = 0; offset <= line.length; offset++) {
 						if (replaceTabs(line.slice(offset)) === replaceTabs(parsed)) return line.slice(offset);
 					}

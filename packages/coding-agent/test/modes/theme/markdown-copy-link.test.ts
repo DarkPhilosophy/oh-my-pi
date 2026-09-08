@@ -32,6 +32,22 @@ describe("Markdown copy link", () => {
 		expect(footer).toContain("[copy]");
 	});
 
+	it("copies the parsed body when a list consumes part of a tab", () => {
+		const footer = new Markdown("- ```js\n\tx\n  ```", 0, 0, getMarkdownTheme()).render(80).at(-1) ?? "";
+		const target = footer.match(/\x1b]8;;(omp-copy:[^\x07]+)\x07/)?.[1];
+
+		expect(target).toBeDefined();
+		expect(resolveCopyBlock(target!)).toBe(" x");
+	});
+
+	it("skips container-prefixed comment leaves before a later fenced copy", () => {
+		const source = "- <!--\n  ```js\n  wrong\n  ```\n  -->\n- ```js\n  right\n  ```";
+		const footer = new Markdown(source, 0, 0, getMarkdownTheme()).render(80).at(-1) ?? "";
+		const target = footer.match(/\x1b]8;;(omp-copy:[^\x07]+)\x07/)?.[1];
+
+		expect(target).toBeDefined();
+		expect(resolveCopyBlock(target!)).toBe("right");
+	});
 	it("emits clickable copy targets only on platforms with an installed handler path", () => {
 		expect(supportsCopyUrlHandler("linux", {}, "/usr/bin/xdg-mime")).toBe(true);
 		expect(supportsCopyUrlHandler("darwin")).toBe(false);
