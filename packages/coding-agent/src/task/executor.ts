@@ -1480,7 +1480,10 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		}
 	};
 
-	const activeTools = new Map<string, { tool: string; args?: string; argsKey?: string; startMs: number }>();
+	const activeTools = new Map<
+		string,
+		{ tool: string; args?: string; argsKey?: string; intent?: string; startMs: number }
+	>();
 	let visibleToolCallId: string | undefined;
 
 	const processEvent = (event: AgentEvent) => {
@@ -1522,6 +1525,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					tool: event.toolName,
 					args: preview?.value,
 					argsKey: preview?.key,
+					intent: event.intent?.trim() || progress.lastIntent,
 					startMs: now,
 				});
 				visibleToolCallId = event.toolCallId;
@@ -1567,6 +1571,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					progress.currentToolArgs = visible?.args;
 					progress.currentToolArgsKey = visible?.argsKey;
 					progress.currentToolStartMs = visible?.startMs;
+					if (visible) progress.lastIntent = visible.intent;
 				}
 				// The finalized TaskToolDetails will be captured below into
 				// `extractedToolData.task`; drop the in-flight snapshot so the

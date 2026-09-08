@@ -86,7 +86,7 @@ interface Observation {
 interface ScenarioResult {
 	observations: Observation[];
 	tools: Array<string | undefined>;
-	toolSnapshots: Array<Pick<AgentProgress, "currentTool" | "currentToolArgs" | "recentTools">>;
+	toolSnapshots: Array<Pick<AgentProgress, "currentTool" | "currentToolArgs" | "lastIntent" | "recentTools">>;
 	/** Snapshot arrays captured by reference + a deep copy taken at observation time. */
 	immutability: Array<{ live: string[]; copy: string[] }>;
 	exitCode: number;
@@ -267,6 +267,7 @@ async function runScenario(
 			toolSnapshots.push({
 				currentTool: progress.currentTool,
 				currentToolArgs: progress.currentToolArgs,
+				lastIntent: progress.lastIntent,
 				recentTools: progress.recentTools.slice(),
 			});
 			observations.push({ got: [...progress.recentOutput], want: ref.expected() });
@@ -326,9 +327,16 @@ describe("recentOutput event-sequence equivalence (deferred reconstruction)", ()
 				toolCallId: "obs-1",
 				toolName: "read",
 				args: { path: "src/one.ts" },
+				intent: "Reading the first file",
 			};
 			const searchEvents: AgentSessionEvent[] = [
-				{ type: "tool_execution_start", toolCallId: "search-2", toolName: "grep", args: { pattern: "needle" } },
+				{
+					type: "tool_execution_start",
+					toolCallId: "search-2",
+					toolName: "grep",
+					args: { pattern: "needle" },
+					intent: "Searching for the symbol",
+				},
 				{
 					type: "tool_execution_end",
 					toolCallId: "search-2",
@@ -348,6 +356,7 @@ describe("recentOutput event-sequence equivalence (deferred reconstruction)", ()
 			const afterFirst = result.toolSnapshots.find(snapshot => snapshot.recentTools[0]?.tool === finishedName);
 			expect(afterFirst?.currentTool).toBe(finishReadFirst ? "grep" : "read");
 			expect(afterFirst?.currentToolArgs).toBe(finishReadFirst ? "needle" : "src/one.ts");
+			expect(afterFirst?.lastIntent).toBe(finishReadFirst ? "Searching for the symbol" : "Reading the first file");
 			expect(afterFirst?.recentTools[0]).toMatchObject({
 				tool: finishedName,
 				args: finishReadFirst ? "src/one.ts" : "needle",

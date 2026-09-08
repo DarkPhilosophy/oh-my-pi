@@ -770,12 +770,18 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("read(package.json)");
 		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
 			...payload,
-			progress: { ...payload.progress, recentTools: [{ tool: "read", args: "package.json", endMs: 2 }] },
+			progress: { ...payload.progress, currentTool: "read", currentToolArgs: "bun.lock", currentToolStartMs: 1 },
+		});
+		await Promise.resolve();
+		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("read(bun.lock)");
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
+			...payload,
+			progress: { ...payload.progress, recentTools: [{ tool: "read", args: "bun.lock", endMs: 2 }] },
 		});
 		await Promise.resolve();
 		const settled = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
 		expect(settled).toContain("FastReader");
-		expectSameRow(settled, theme.symbol("status.success"), "read(package.json)");
+		expectSameRow(settled, theme.symbol("status.success"), "read(bun.lock)");
 	});
 
 	it("coalesces a burst of progress observer changes into one HUD rebuild and render request", async () => {
