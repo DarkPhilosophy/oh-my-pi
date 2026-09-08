@@ -177,6 +177,65 @@ describe("Firefox WebDriver BiDi relay", () => {
 		tabs.delete(first.name);
 		tabs.delete(second.name);
 	});
+
+	it("refreshes same-target aliases from a Firefox selected acknowledgement", async () => {
+		const listeners = new Set<Parameters<WorkerHandle["onMessage"]>[0]>();
+		const worker: WorkerHandle = {
+			mode: "inline",
+			send: msg => {
+				if (msg.type !== "select") return;
+				for (const listener of listeners) {
+					listener({
+						type: "selected",
+						id: msg.id,
+						info: {
+							url: "https://updated.example/path",
+							title: "Updated title",
+							viewport: { width: 1280, height: 720 },
+							targetId: "shared-context",
+						},
+					});
+				}
+			},
+			onMessage: listener => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			onError: () => () => undefined,
+			terminate: async () => undefined,
+		};
+		const browser = createFirefoxHandle("ws://127.0.0.1:9333/session");
+		const first = createFirefoxTab("selected-context-first", browser, worker);
+		const second = createFirefoxTab("selected-context-second", browser, worker);
+		const unrelated = createFirefoxTab("selected-context-unrelated", browser, worker);
+		first.targetId = "shared-context";
+		second.targetId = "shared-context";
+		unrelated.targetId = "unrelated-context";
+		const unrelatedInfo = unrelated.info;
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(first.name, first);
+		tabs.set(second.name, second);
+		tabs.set(unrelated.name, unrelated);
+
+		try {
+			const selected = await selectFirefoxWorkerTab(worker, {
+				name: second.name,
+				targetId: second.targetId,
+				timeoutMs: 1_000,
+			});
+
+			expect(selected.url).toBe("https://updated.example/path");
+			expect(first.info.url).toBe("https://updated.example/path");
+			expect(first.info.title).toBe("Updated title");
+			expect(second.info.url).toBe("https://updated.example/path");
+			expect(second.info.title).toBe("Updated title");
+			expect(unrelated.info).toBe(unrelatedInfo);
+		} finally {
+			tabs.delete(first.name);
+			tabs.delete(second.name);
+			tabs.delete(unrelated.name);
+		}
+	});
 	it("rejects a closed Firefox browsing context instead of falling back to another tab", async () => {
 		const page = { mainFrame: () => ({ _id: "live-context" }) } as unknown as Page;
 		await expect(findBiDiPageByTargetId([page], "closed-context")).rejects.toThrow(

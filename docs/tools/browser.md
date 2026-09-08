@@ -17,7 +17,6 @@ The prelude exists only while Eval and `browser.enabled` are enabled. It is not 
 
 ## JavaScript API
 
-```js
 const tab = await browser.open({
   name: "main",
   url: "https://example.com",
@@ -25,7 +24,10 @@ const tab = await browser.open({
 });
 
 const observation = await tab.observe();
-await tab.id(observation.elements[0].id).click();
+const first = observation.elements[0];
+if (first.actionable !== false) {
+  await tab.id(first.id).click();
+}
 const title = await tab.title();
 
 const length = await tab.run(
@@ -56,6 +58,7 @@ Direct helpers cross the host bridge and return real structured values:
 Direct `waitFor` and `waitForSelector` return booleans. `tab.id(number)` and `tab.ref("e5")` instead return `BrowserElement` handles. Handles support `click`, `type`, `fill`, `press`, `hover`, `focus`, `select`, `uploadFile`, `scrollIntoView`, `boundingBox`, `isVisible`, `isHidden`, and `evaluate`. A string passed to `BrowserElement.evaluate` is a function expression invoked with the element as its first argument.
 
 Selectors accept CSS and Puppeteer `aria/…`, `text/…`, `xpath/…`, and `pierce/…` query handlers. Playwright-only pseudos such as `:has-text()` and `:visible` are rejected. `tab.select` is required for `<select>` elements; `tab.fill` does not support them.
+- `observe()` entries with `actionable: false` are informational and have no usable `id`; check `entry.actionable !== false` before passing `entry.id` to `tab.id`.
 
 `observe()` assigns numeric ids consumed by `tab.id`. `ariaSnapshot()` assigns `[ref=eN]` ids consumed by `tab.ref`. Navigation and re-rendering invalidate handles; re-observe and act in the same Eval cell.
 
@@ -84,12 +87,12 @@ The return value stays structured. Nonempty text emitted by inner `display(...)`
 
 ## Python API
 
-Python exposes the same handles and direct method names. `open` and `close` use keyword arguments, while `browser.tab` and `tab.id`/`tab.ref` are synchronous handle lookups. Keyword arguments on direct helpers become a trailing JavaScript options object.
-
 ```python
 tab = await browser.open(name="main", url="https://example.com")
 observation = await tab.observe(viewportOnly=True)
-await tab.id(observation["elements"][0]["id"]).click()
+first = observation["elements"][0]
+if first.get("actionable", True):
+    await tab.id(first["id"]).click()
 title = await tab.run("return await tab.title();", timeout=30)
 await tab.close()
 ```

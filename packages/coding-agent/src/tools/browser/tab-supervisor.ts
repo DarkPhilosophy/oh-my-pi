@@ -1085,6 +1085,15 @@ export async function selectFirefoxWorkerTab(
 	const acknowledged = Promise.withResolvers<void>();
 	const unlisten = worker.onMessage(msg => {
 		if (msg.type === "selected" && msg.id === id) {
+			for (const candidate of tabs.values()) {
+				if (
+					candidate.backend === "worker" &&
+					candidate.worker === worker &&
+					candidate.targetId === msg.info.targetId
+				) {
+					candidate.info = msg.info;
+				}
+			}
 			acknowledged.resolve();
 			selected.resolve(msg.info);
 		} else if (msg.type === "select-failed" && msg.id === id) {
