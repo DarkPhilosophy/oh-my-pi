@@ -75,7 +75,7 @@ declare module "puppeteer-core" {
 }
 
 declare global {
-	interface Element extends HTMLElement {}
+	interface Element extends HTMLElement { }
 	function getComputedStyle(element: Element): Record<string, unknown>;
 	var innerWidth: number;
 	var innerHeight: number;
@@ -282,7 +282,7 @@ export function normalizeSelector(selector: string): string {
 	) {
 		throw new ToolError(
 			`Playwright-only selector ${JSON.stringify(selector)} is not supported by the browser tool. ` +
-				`Use a puppeteer text selector ("text/Allow all"), an aria selector ("aria/Name"), CSS, or "xpath/...".`,
+			`Use a puppeteer text selector ("text/Allow all"), an aria selector ("aria/Name"), CSS, or "xpath/...".`,
 		);
 	}
 	if (selector.startsWith("p-") && !LEGACY_SELECTOR_PREFIXES.some(prefix => selector.startsWith(prefix))) {
@@ -383,7 +383,7 @@ async function runGuardedHandleAction<T>(
 	if (state.invalidatedBy) {
 		throw new ToolError(
 			`${label} cannot run: this handle was invalidated after ${state.invalidatedBy} timed out; ` +
-				"run tab.observe() or tab.ariaSnapshot() to resolve a fresh handle",
+			"run tab.observe() or tab.ariaSnapshot() to resolve a fresh handle",
 		);
 	}
 	throwIfAborted(signal);
@@ -542,8 +542,8 @@ function redactUrlCredentials(url: string): string {
 	}
 }
 
-class RequestInterceptionCleanupError extends ToolError {}
-class NavigationCleanupError extends ToolError {}
+class RequestInterceptionCleanupError extends ToolError { }
+class NavigationCleanupError extends ToolError { }
 
 interface RunPageScope {
 	page: Page;
@@ -806,8 +806,8 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 		const roleMatch = /^([^\s[":]+):?/.exec(content);
 		const role = roleMatch?.[1];
 		if (!role || role.startsWith("/")) continue;
-		const quotedNameMatch = /^[^\s["]+\s+"((?:[^"\\]|\\.)*)"/.exec(content);
-		const slashNameMatch = quotedNameMatch ? null : /^[^\s["]+\s+(\/(?:[^/\\]|\\.)*\/)/.exec(content);
+		const quotedNameMatch = /^[^\s[":]+:?\s+"((?:[^"\\]|\\.)*)"/.exec(content);
+		const slashNameMatch = quotedNameMatch ? null : /^[^\s[":]+:?\s+(\/(?:[^/\\]|\\.)*\/)/.exec(content);
 		const nameMatch = quotedNameMatch ?? slashNameMatch;
 		const metadata = content.slice(nameMatch?.[0].length ?? roleMatch![0].length);
 		const ref = /\[ref=(e\d+)\]/.exec(metadata)?.[1];
@@ -918,6 +918,7 @@ async function collectBiDiObservationEntries(
 					getElementById(id: string): { textContent: string | null } | null;
 				};
 				getAttribute(name: string): string | null;
+				matches?(selector: string): boolean;
 			};
 			const nativeValue =
 				typeof input.value === "string" || typeof input.value === "number" ? input.value : undefined;
@@ -952,6 +953,7 @@ async function collectBiDiObservationEntries(
 				ariaPressed: input.getAttribute("aria-pressed"),
 				ariaSelected: input.getAttribute("aria-selected"),
 				ariaModal: input.getAttribute("aria-modal"),
+				nativeModal: input.tagName === "DIALOG" && input.matches?.(":modal") === true,
 				ariaExpanded: input.getAttribute("aria-expanded"),
 			};
 		})) as {
@@ -972,6 +974,7 @@ async function collectBiDiObservationEntries(
 			ariaSelected: string | null;
 			ariaExpanded: string | null;
 			ariaModal: string | null;
+			nativeModal: boolean;
 			ariaMultiline: string | null;
 			ariaMultiselectable: string | null;
 		};
@@ -983,7 +986,7 @@ async function collectBiDiObservationEntries(
 		if (details.disabled && !states.includes("disabled")) states.push("disabled");
 		if (details.required && !states.includes("required")) states.push("required");
 		if (details.readonly && !states.includes("readonly")) states.push("readonly");
-		if (details.ariaModal === "true" && !states.includes("modal")) states.push("modal");
+		if ((details.ariaModal === "true" || details.nativeModal) && !states.includes("modal")) states.push("modal");
 		if (checked !== undefined && !states.some(state => state.split("=", 1)[0] === "checked")) {
 			states.push(`checked=${String(checked)}`);
 		}
@@ -1036,7 +1039,7 @@ async function resolveActionableQueryHandlerClickTarget(handles: ElementHandle[]
 			});
 			clickableProxy = asElementHandle(proxy.asElement());
 			if (clickableProxy) clickable = clickableProxy;
-		} catch {}
+		} catch { }
 		try {
 			const intersecting = await clickable.isIntersectingViewport();
 			if (!intersecting) continue;
@@ -1129,7 +1132,7 @@ async function clickQueryHandlerText(
 	}
 	throw new ToolError(
 		`Timed out clicking ${selector} (seen ${lastSeen} matches; last reason: ${lastReason ?? "unknown"}). ` +
-			"If there are multiple matching elements, use observe + tab.id() or a more specific selector.",
+		"If there are multiple matching elements, use observe + tab.id() or a more specific selector.",
 	);
 }
 
@@ -1212,6 +1215,7 @@ export class WorkerCore {
 	#elementCaches = new Map<string, { handles: Map<number, ElementHandle>; counter: number; targetId?: string }>();
 	#activeElementCacheKey = "default";
 	#active: ActiveRun | null = null;
+	#cleanupRequired = false;
 	#activeSelection?: { id: string; ac: AbortController };
 	#runtimes = new Map<string, JsRuntime>();
 	#unsub: () => void;
@@ -1379,9 +1383,9 @@ export class WorkerCore {
 				this.#page = payload.targetId
 					? await findBiDiPageByTargetId(await this.#browser.pages(), payload.targetId)
 					: await pickElectronTarget(this.#browser, {
-							matcher: payload.targetMatcher,
-							preferVisible: payload.activateForScreenshot === false,
-						});
+						matcher: payload.targetMatcher,
+						preferVisible: payload.activateForScreenshot === false,
+					});
 				this.#observeDialogs();
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
 			} else {
@@ -1730,16 +1734,23 @@ export class WorkerCore {
 			if (this.#active?.id === msg.id) this.#active = null;
 		}
 		if (failure) {
-			this.#transport.send({ type: "result", id: msg.id, ok: false, error: errorPayload(failure.error) });
+			const error = errorPayload(failure.error);
+			if (this.#cleanupRequired) error.recoverTab = true;
+			this.#transport.send({ type: "result", id: msg.id, ok: false, error });
 			return;
 		}
 		if (completed) {
-			await this.#postReadyInfo();
+			if (!this.#cleanupRequired) await this.#postReadyInfo();
 			this.#transport.send({
 				type: "result",
 				id: msg.id,
 				ok: true,
-				payload: { displays: output.finish(), returnValue: cloneSafe(returnValue), screenshots },
+				payload: {
+					displays: output.finish(),
+					returnValue: cloneSafe(returnValue),
+					screenshots,
+					recoverTab: this.#cleanupRequired,
+				},
 			});
 		}
 	}
@@ -1886,7 +1897,7 @@ export class WorkerCore {
 				break;
 			}
 		}
-		return await new Promise<never>(() => {});
+		return await new Promise<never>(() => { });
 	}
 
 	/**
@@ -1959,13 +1970,9 @@ export class WorkerCore {
 						);
 					} catch (err) {
 						if (err instanceof Error && err.name === "TimeoutError") {
-							// Abandon the hung navigation NOW — a still-pending load stalls every
-							// later op on this page and cascades into more opaque timeouts.
 							await this.#stopLoading();
+							if (this.#webDriverBiDi) this.#cleanupRequired = true;
 							const message = `tab.goto(${JSON.stringify(url)}) timed out after ${budgetBound}ms; pending navigation stopped — retry with a longer tool timeout or waitUntil:"domcontentloaded"`;
-							// Firefox WebDriver BiDi has no stop-loading command. Mark its shared
-							// worker for recycling so the abandoned navigation cannot interfere
-							// with a later alias; attach-mode recycling never closes user tabs.
 							throw this.#webDriverBiDi ? new NavigationCleanupError(message) : new ToolError(message);
 						}
 						throw err;
@@ -2139,9 +2146,9 @@ export class WorkerCore {
 						typeof fn === "string"
 							? page.mainFrame().mainRealm().evaluate(fn)
 							: page
-									.mainFrame()
-									.mainRealm()
-									.evaluate(fn as (...a: unknown[]) => unknown, ...args),
+								.mainFrame()
+								.mainRealm()
+								.evaluate(fn as (...a: unknown[]) => unknown, ...args),
 					),
 				) as never,
 			scrollIntoView: selector =>
@@ -2304,9 +2311,9 @@ export class WorkerCore {
 		const ext = savedMimeType === "image/webp" ? "webp" : savedMimeType === "image/jpeg" ? "jpg" : "png";
 		const dest = session.browserScreenshotDir
 			? path.join(
-					session.browserScreenshotDir,
-					`screenshot-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, -1)}.${ext}`,
-				)
+				session.browserScreenshotDir,
+				`screenshot-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, -1)}.${ext}`,
+			)
 			: path.join(os.tmpdir(), `omp-sshots-${Snowflake.next()}.${ext}`);
 		await fs.promises.mkdir(path.dirname(dest), { recursive: true });
 		await Bun.write(dest, savedBuffer);
@@ -2561,7 +2568,7 @@ export class WorkerCore {
 		const page = this.#page;
 		this.#detachDialogListeners();
 		if (this.#mode === "headless" && page && !page.isClosed()) await page.close().catch(() => undefined);
-		if (this.#browser?.connected) this.#browser.disconnect();
+		if (this.#browser?.connected) await this.#browser.disconnect();
 		this.#transport.send({ type: "closed" });
 		this.#transport.close();
 	}

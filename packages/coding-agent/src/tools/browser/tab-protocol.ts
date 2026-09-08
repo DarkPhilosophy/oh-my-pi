@@ -125,6 +125,8 @@ export interface RunResultOk {
 	displays: Array<TextContent | ImageContent>;
 	returnValue: unknown;
 	screenshots: ScreenshotResult[];
+	/** The run caught a cleanup failure; the backend must discard or recover its worker before reuse. */
+	recoverTab?: boolean;
 }
 
 export interface RunErrorPayload {

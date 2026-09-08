@@ -293,7 +293,11 @@ async function acquireTabImpl(
 	let tempHold = false;
 	const releaseExistingTab = async (): Promise<void> => {
 		try {
-			await releaseTab(name, { kill: false });
+			if (browser.kind.kind === "firefox-relay" && tabs.get(name)?.browser.key === browser.key) {
+				await releaseTabWithWorkerReservation(name, { kill: false });
+			} else {
+				await releaseTab(name, { kill: false });
+			}
 		} catch (error) {
 			if (tempHold) {
 				tempHold = false;
@@ -426,7 +430,7 @@ async function acquireTabImpl(
 		// `BuildMessage`-class failures arrive asynchronously via the worker's `error` event,
 		// after `spawnTabWorker`'s synchronous try/catch has already returned. Fall back to
 		// the inline worker here so module-resolution failures don't poison every tab open.
-		await terminateWorker(worker);
+		await terminateWorker(worker, browser.kind.kind === "firefox-relay");
 		// A headless worker that died mid-init may have already created its page in the
 		// shared browser — a killed worker can't close it, so close the target the worker
 		// reported (no-op when it never got that far).
@@ -449,7 +453,7 @@ async function acquireTabImpl(
 		try {
 			info = await initializeTabWorker(worker, initPayload, initBudgetMs, startedAt);
 		} catch (inlineError) {
-			await terminateWorker(worker);
+			await terminateWorker(worker, browser.kind.kind === "firefox-relay");
 			if ("browser" in browser) closeAbandonedWorkerPage(browser, worker);
 			if (tempHold || browser.refCount === 0) await releaseBrowser(browser, { kill: false });
 			const finalError = new ToolError(
@@ -468,7 +472,7 @@ async function acquireTabImpl(
 	// the registry; a browser still leased/held elsewhere (refCount > 0) is left
 	// for its owner to release.
 	if (opts.signal?.aborted) {
-		await terminateWorker(worker);
+		await terminateWorker(worker, browser.kind.kind === "firefox-relay");
 		if ("browser" in browser) closeAbandonedWorkerPage(browser, worker);
 		if (tempHold || browser.refCount === 0) await releaseBrowser(browser, { kill: false }).catch(() => undefined);
 		throw new ToolAbortError("Browser tab open aborted");
@@ -734,42 +738,53 @@ async function runInTabWithSnapshotUnlocked(
 			targetId: tab.kindTag === "firefox-relay" ? tab.targetId : undefined,
 			dialogs: tab.dialogPolicy,
 		});
-		try {
-			return await raceWithTimeout(
-				promise,
-				opts.timeoutMs + GRACE_MS,
-				"Browser code execution hung past grace; tab killed",
-				async reason => await forceKillTab(name, reason, { sharedFirefoxWorker: tab.kindTag === "firefox-relay" }),
-			);
-		} catch (error) {
-			const runTimedOut =
-				error instanceof ToolError && error.message.startsWith("Browser code execution timed out after ");
-			if (tab.kindTag === "firefox-relay" && (runTimedOut || error instanceof ToolAbortError)) {
-				const reason = runTimedOut
-					? "Firefox browser operation timed out; shared relay worker killed"
-					: "Firefox browser operation aborted; shared relay worker killed";
-				await forceKillTab(name, reason, { sharedFirefoxWorker: true });
-			} else if (runTimedOut || error instanceof RecoverableWorkerError) {
-				try {
-					if (tab.worker.mode === "inline") {
-						const reason = runTimedOut
-							? "Browser code execution timed out; tab killed"
-							: "Browser request interception cleanup failed; tab killed";
-						await forceKillTab(name, reason, { sharedFirefoxWorker: tab.kindTag === "firefox-relay" });
-					} else {
-						await recycleTimedOutWorkerTab(tab, opts.timeoutMs + GRACE_MS);
-					}
-				} catch (recycleError) {
-					logger.warn("Failed to recycle browser tab worker; killing tab", {
-						error: recycleError instanceof Error ? recycleError.message : String(recycleError),
-					});
-					await forceKillTab(name, "Browser tab worker recovery failed; tab killed", {
-						sharedFirefoxWorker: tab.kindTag === "firefox-relay",
-					});
-				}
+		const result = await raceWithTimeout(
+			promise,
+			opts.timeoutMs + GRACE_MS,
+			"Browser code execution hung past grace; tab killed",
+			async reason => await forceKillTab(name, reason, { sharedFirefoxWorker: tab.kindTag === "firefox-relay" }),
+		);
+		if (result.recoverTab) {
+			if (tab.kindTag === "firefox-relay") {
+				await forceKillTab(name, "Firefox navigation timed out; reopen the tab before the next operation", {
+					sharedFirefoxWorker: true,
+				});
+			} else {
+				await recycleTimedOutWorkerTab(tab, opts.timeoutMs + GRACE_MS);
 			}
-			throw error;
 		}
+		return result;
+	} catch (error) {
+		const runTimedOut =
+			error instanceof ToolError && error.message.startsWith("Browser code execution timed out after ");
+		if (
+			tab.kindTag === "firefox-relay" &&
+			(runTimedOut || error instanceof ToolAbortError || error instanceof RecoverableWorkerError)
+		) {
+			const reason = runTimedOut
+				? "Firefox browser operation timed out; shared relay worker killed"
+				: "Firefox browser operation aborted or requires cleanup; shared relay worker killed";
+			await forceKillTab(name, reason, { sharedFirefoxWorker: true });
+		} else if (runTimedOut || error instanceof RecoverableWorkerError) {
+			try {
+				if (tab.worker.mode === "inline") {
+					const reason = runTimedOut
+						? "Browser code execution timed out; tab killed"
+						: "Browser request interception cleanup failed; tab killed";
+					await forceKillTab(name, reason, { sharedFirefoxWorker: tab.kindTag === "firefox-relay" });
+				} else {
+					await recycleTimedOutWorkerTab(tab, opts.timeoutMs + GRACE_MS);
+				}
+			} catch (recycleError) {
+				logger.warn("Failed to recycle browser tab worker; killing tab", {
+					error: recycleError instanceof Error ? recycleError.message : String(recycleError),
+				});
+				await forceKillTab(name, "Browser tab worker recovery failed; tab killed", {
+					sharedFirefoxWorker: tab.kindTag === "firefox-relay",
+				});
+			}
+		}
+		throw error;
 	} finally {
 		opts.signal?.removeEventListener("abort", abort);
 		tab.pending.delete(id);
@@ -777,6 +792,28 @@ async function runInTabWithSnapshotUnlocked(
 }
 
 export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Promise<boolean> {
+	const initial = tabs.get(name);
+	if (initial?.kindTag !== "firefox-relay") return releaseTabWithWorkerReservation(name, opts);
+	const key = initial.browser.key;
+	const prior = firefoxAcquireChains.get(key) ?? Promise.resolve();
+	const timeoutMs = opts.timeoutMs ?? DEFAULT_TAB_CLOSE_TIMEOUT_MS;
+	const startedAt = performance.now();
+	const operation = (async () => {
+		await withTimeout(prior, timeoutMs, "Timed out waiting for Firefox endpoint acquisition before close");
+		return releaseTabWithWorkerReservation(name, {
+			...opts,
+			timeoutMs: Math.max(1, timeoutMs - (performance.now() - startedAt)),
+		});
+	})();
+	const tail = Promise.all([prior, operation.catch(() => undefined)]).then(() => undefined);
+	firefoxAcquireChains.set(key, tail);
+	void tail.then(() => {
+		if (firefoxAcquireChains.get(key) === tail) firefoxAcquireChains.delete(key);
+	});
+	return operation;
+}
+
+async function releaseTabWithWorkerReservation(name: string, opts: ReleaseTabOptions): Promise<boolean> {
 	const initial = tabs.get(name);
 	const releaseReservation =
 		initial?.backend === "worker" && initial.kindTag === "firefox-relay"
@@ -1246,7 +1283,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 	// must not restart the recycle's init budget.
 	const startedAt = performance.now();
 	const oldWorker = tab.worker;
-	await terminateWorker(oldWorker);
+	await terminateWorker(oldWorker, tab.kindTag === "firefox-relay");
 	const browserWSEndpoint =
 		"webSocketUrl" in tab.browser ? tab.browser.webSocketUrl : tab.browser.browser.wsEndpoint();
 	if (!browserWSEndpoint) throw new ToolError("Browser websocket endpoint is unavailable");
@@ -1268,7 +1305,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 		const info = await initializeTabWorker(worker, payload, timeoutMs, startedAt);
 		publishRecycledWorker(tab, oldWorker, worker, info);
 	} catch (error) {
-		await terminateWorker(worker);
+		await terminateWorker(worker, tab.kindTag === "firefox-relay");
 		// The recycle's budget is exhausted: the run caller already timed out, so a
 		// retried init can't beat its deadline — fail fast and let the caller
 		// force-kill the tab instead of spending the phase floors' excess.
@@ -1280,7 +1317,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 			const info = await initializeTabWorker(worker, payload, timeoutMs, startedAt);
 			publishRecycledWorker(tab, oldWorker, worker, info);
 		} catch (inlineError) {
-			await terminateWorker(worker);
+			await terminateWorker(worker, tab.kindTag === "firefox-relay");
 			const finalError = new ToolError(
 				`Failed to recycle timed-out browser tab worker (inline fallback also failed): ${inlineError instanceof Error ? inlineError.message : String(inlineError)}`,
 			);
@@ -1307,8 +1344,14 @@ export function publishRecycledWorker(
 		if (alias.backend !== "worker" || alias.worker !== oldWorker) continue;
 		alias.worker = worker;
 		alias.state = "alive";
+		// A shared Firefox browsing context is represented by multiple aliases;
+		// refresh metadata for aliases that point at the recycled context, while
+		// leaving unrelated targets on the same worker untouched.
+		if (alias.targetId === tab.targetId) {
+			alias.info = info;
+			alias.targetId = info.targetId;
+		}
 	}
-	tab.info = info;
 	firefoxSharedTabs.set(tab);
 	worker.onMessage(msg => handleTabMessage(tab, msg));
 }
@@ -1361,7 +1404,7 @@ export async function forceKillTab(
 			return;
 		}
 		firefoxSharedTabs.delete(tab);
-		await terminateWorker(tab.worker);
+		await terminateWorker(tab.worker, true);
 		for (const [aliasName, alias] of aliases) {
 			killedTabs.set(aliasName, reason);
 			alias.state = "dead";
@@ -1445,15 +1488,15 @@ async function waitForClosed(tab: WorkerTabSession): Promise<void> {
 	}
 }
 
-async function terminateWorker(worker: WorkerHandle): Promise<void> {
-	if (worker.mode === "inline") {
+async function terminateWorker(worker: WorkerHandle, graceful = false): Promise<void> {
+	if (worker.mode === "inline" || graceful) {
 		const { promise, resolve } = Promise.withResolvers<void>();
 		const unsubscribe = worker.onMessage(msg => {
 			if (msg.type === "closed") resolve();
 		});
 		try {
 			worker.send({ type: "close" });
-			await raceWithTimeout(promise, GRACE_MS, "Timed out closing inline browser worker").catch(() => undefined);
+			await raceWithTimeout(promise, GRACE_MS, "Timed out closing browser worker").catch(() => undefined);
 		} finally {
 			unsubscribe();
 		}

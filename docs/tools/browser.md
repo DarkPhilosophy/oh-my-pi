@@ -122,7 +122,7 @@ Host result details preserve structured `value` separately from displayed conten
 
 Relay and attached modes operate on real logged-in sessions; sites attribute actions to the user. Name a target or create a dedicated tab. Never navigate the user's visible tab or take a consequential action without direct authorization.
 
-Each named tab has one worker and permits one active run. A timed-out or aborted run can recycle the worker and invalidate handles. `browser.close({ all: true })` releases all managed tabs; `kill` never closes or kills relay/CDP-attached browsers.
+Each named tab permits one active run. Firefox aliases on the same endpoint share a worker and serialize operations. A timed-out or aborted run can invalidate handles. Firefox navigation timeouts discard the affected worker and its aliases even if run code catches the error; reopen the intended target explicitly before the next operation. The attached Firefox browser remains open. `browser.close({ all: true })` releases all managed tabs; `kill` never closes or kills relay/CDP-attached browsers.
 
 ## Common recovery
 
