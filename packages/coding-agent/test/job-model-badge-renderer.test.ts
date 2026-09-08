@@ -87,7 +87,7 @@ describe("hub jobs task model badges", () => {
 	});
 
 	it("neutralizes terminal commands materialized by task result JSON decoding", () => {
-		const envelope = `<task-result id="Reader"><output>\n${JSON.stringify({ summary: "Read \x1b[2Jcompleted.\x00" })}\n</output></task-result>`;
+		const envelope = `<task-result id="Reader"><output>\n${JSON.stringify({ summary: "Read \x1b[2Jcompleted.\x00\tNext" })}\n</output></task-result>`;
 		const jobText = renderJobText(
 			{
 				jobs: [
@@ -110,6 +110,8 @@ describe("hub jobs task model badges", () => {
 			expect(text).toContain("Read completed.");
 			expect(text).not.toContain("\x1b[2J");
 			expect(text).not.toContain("\x00");
+			expect(text).not.toContain("\t");
+			expect(text).toContain("Next");
 		}
 	});
 

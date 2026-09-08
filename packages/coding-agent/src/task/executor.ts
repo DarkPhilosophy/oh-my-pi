@@ -814,16 +814,19 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 }
 
 /**
- * Extract a short preview from tool args for display.
+ * Extract display arguments; renderers shorten paths before width clipping.
  */
-function extractToolArgsPreview(args: Record<string, unknown>): { value: string; key: string } | undefined {
+function extractToolArgsPreview(
+	args: Record<string, unknown>,
+	toolName: string,
+): { value: string; key: string } | undefined {
 	const previewKeys = ["command", "file_path", "path", "pattern", "query", "url", "task", "prompt"];
-	if (typeof args.input === "string") {
+	if (toolName === "edit" && typeof args.input === "string") {
 		const paths = getEditInputPaths(args.input);
 		if (paths.length > 0) return { value: paths.join(", "), key: "path" };
 	}
 	const compoundEdits = args.edits;
-	if (Array.isArray(compoundEdits)) {
+	if (toolName === "edit" && Array.isArray(compoundEdits)) {
 		const paths = compoundEdits
 			.map(edit => (edit && typeof edit === "object" ? (edit as Record<string, unknown>).path : undefined))
 			.filter((value): value is string => typeof value === "string" && value.length > 0);
@@ -832,7 +835,7 @@ function extractToolArgsPreview(args: Record<string, unknown>): { value: string;
 	for (const key of previewKeys) {
 		if (typeof args[key] === "string" && args[key]) {
 			const value = args[key] as string;
-			return { value: value.length > 60 ? `${value.slice(0, 59)}…` : value, key };
+			return { value, key };
 		}
 	}
 	return undefined;
@@ -1517,7 +1520,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				} else if (isRecord(event.args)) {
 					startArgs = event.args;
 				}
-				const preview = extractToolArgsPreview(startArgs);
+				const preview = extractToolArgsPreview(startArgs, event.toolName);
 				progress.currentToolArgs = preview?.value;
 				progress.currentToolArgsKey = preview?.key;
 				progress.currentToolStartMs = now;
