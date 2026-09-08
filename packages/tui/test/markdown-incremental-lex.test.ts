@@ -520,4 +520,39 @@ describe("Markdown OSC 8 tail normalization across streaming appends", () => {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
 	});
+	it("refreshes frozen copy payloads after a normalized-equal raw edit", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const targets: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...THEME,
+				copyChip: "copy",
+				copyChipTarget: (code: string) => {
+					targets.push(code);
+					return `omp-copy:${targets.length}`;
+				},
+			};
+			const st = "\x1b\\";
+			const rawSt = `\x1b]8;;https://example.com${st}linked\x1b]8;;${st}`;
+			const rawBel = "\x1b]8;;https://example.com\x07linked\x1b]8;;\x07";
+			const initial = `\`\`\`text\n${rawSt}\n\`\`\`\n\ntail`;
+			const edited = `\`\`\`text\n${rawBel}\n\`\`\`\n\ntail`;
+			const streaming = new Markdown(initial, 0, 0, theme);
+			streaming.transientRenderCache = true;
+			clearRenderCache();
+			streaming.render(80);
+
+			targets.length = 0;
+			clearRenderCache();
+			streaming.setText(edited);
+			streaming.render(80);
+
+			expect(targets).toContain(rawBel);
+			expect(targets).not.toContain(rawSt);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
 });
