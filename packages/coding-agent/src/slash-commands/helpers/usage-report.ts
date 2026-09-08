@@ -1,10 +1,11 @@
+import { replaceTabs } from "@oh-my-pi/pi-tui";
 import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
 import type { SlashCommandRuntime } from "../types";
 import { reportMatchesActiveAccount } from "./active-oauth-account";
+import { createAccountMasker } from "../../modes/utils/usage-mask";
 import { formatDuration, formatProviderName, renderAsciiBar } from "./format";
-
 function formatWindowSuffix(label: string, windowLabel: string | undefined): string {
 	if (!windowLabel) return "";
 	const normalizedLabel = label.toLowerCase();
@@ -25,7 +26,7 @@ function formatUsageAmount(limit: UsageLimit): string {
 	return `${usedText}${remainingText}`;
 }
 
-function formatUsageReportAccount(report: UsageReport, limit: UsageLimit, index: number): string {
+function formatUsageReportAccount(report: UsageReport, limit: UsageLimit | undefined, index: number): string {
 	const metaOrgName = report.metadata?.orgName;
 	const metaOrgId = report.metadata?.orgId;
 	const org =
@@ -42,14 +43,14 @@ function formatUsageReportAccount(report: UsageReport, limit: UsageLimit, index:
 	// ?? won't help here: empty string is not null/undefined, so it would suppress
 	// a valid scoped fallback (e.g. metadata.accountId="" hides limit.scope.accountId).
 	const metaAccountId = report.metadata?.accountId;
-	const accountId = typeof metaAccountId === "string" && metaAccountId ? metaAccountId : limit.scope.accountId;
+	const accountId = typeof metaAccountId === "string" && metaAccountId ? metaAccountId : limit?.scope.accountId;
 	if (typeof accountId === "string" && accountId) {
 		return org && org !== accountId ? `${accountId} (${org})` : accountId;
 	}
 	const metaProjectId = report.metadata?.projectId;
-	const projectId = typeof metaProjectId === "string" && metaProjectId ? metaProjectId : limit.scope.projectId;
+	const projectId = typeof metaProjectId === "string" && metaProjectId ? metaProjectId : limit?.scope.projectId;
 	if (typeof projectId === "string" && projectId) return projectId;
-	return `account ${index + 1}`;
+	return limit ? `account ${index + 1}` : "account";
 }
 
 function renderUsageReports(
@@ -57,7 +58,19 @@ function renderUsageReports(
 	nowMs: number,
 	resolveActiveAccount?: (provider: string) => OAuthAccountIdentity | undefined,
 	usageModelSelectors: readonly string[] = [],
+	maskAccountLabels = false,
 ): string {
+	const normalizeLabel = (label: string): string => replaceTabs(sanitizeText(label)).replace(/[\r\n]+/g, " ");
+	const accountMasker = createAccountMasker(
+		reports
+			.flatMap(report => [
+				formatUsageReportAccount(report, undefined, 0),
+				...report.limits.map((limit, index) => formatUsageReportAccount(report, limit, index)),
+			])
+			.map(normalizeLabel),
+		maskAccountLabels,
+	);
+	const displayAccount = (label: string): string => accountMasker(normalizeLabel(label));
 	const latestFetchedAt = Math.max(...reports.map(report => report.fetchedAt ?? 0));
 	const lines = [`Usage${latestFetchedAt ? ` (${formatDuration(nowMs - latestFetchedAt)} ago)` : ""}`];
 	const grouped = new Map<string, UsageReport[]>();
@@ -85,14 +98,9 @@ function renderUsageReports(
 			const inUse = reportMatchesActiveAccount(report, activeAccount);
 			const savedResets = report.resetCredits?.availableCount ?? 0;
 			if (savedResets > 0) {
-				const resetLabel =
-					typeof report.metadata?.email === "string"
-						? report.metadata.email
-						: typeof report.metadata?.accountId === "string"
-							? report.metadata.accountId
-							: "account";
+				const resetLabel = formatUsageReportAccount(report, undefined, 0);
 				lines.push(
-					`- ${resetLabel}: ${savedResets} saved rate-limit reset${savedResets === 1 ? "" : "s"} available — /usage reset to spend`,
+					`- ${displayAccount(resetLabel)}: ${savedResets} saved rate-limit reset${savedResets === 1 ? "" : "s"} available — /usage reset to spend`,
 				);
 				const credits = report.resetCredits?.credits;
 				if (credits) {
@@ -112,29 +120,26 @@ function renderUsageReports(
 				}
 			}
 			if (report.limits.length === 0) {
-				const email = typeof report.metadata?.email === "string" ? report.metadata.email : "account";
-				lines.push(`- ${email}: no limits reported`);
+				const account = formatUsageReportAccount(report, undefined, 0);
+				lines.push(`- ${displayAccount(account)}: no limits reported`);
 				continue;
 			}
 			for (let index = 0; index < report.limits.length; index++) {
 				const limit = report.limits[index]!;
 				const window = limit.window?.label ?? limit.scope.windowId;
-				// Skip the tier suffix when the label already names it (e.g. Anthropic's
-				// "Claude 7 Day (Fable)" with scope.tier "fable") — mirrors limitTitle in usage-cli.
 				const tier =
 					limit.scope.tier && !limit.label.toLowerCase().includes(limit.scope.tier.toLowerCase())
 						? ` (${limit.scope.tier})`
 						: "";
 				lines.push(`- ${limit.label}${tier}${formatWindowSuffix(limit.label, window)}`);
 				lines.push(
-					`  ${formatUsageReportAccount(report, limit, index)}: ${formatUsageAmount(limit)}${inUse ? "  ← in use by this session" : ""}`,
+					`  ${displayAccount(formatUsageReportAccount(report, limit, index))}: ${formatUsageAmount(limit)}${inUse ? "  ← in use by this session" : ""}`,
 				);
 				lines.push(`  ${renderAsciiBar(limit.amount.usedFraction)}`);
-				if (limit.window?.resetsAt && limit.window.resetsAt > nowMs) {
+				if (limit.window?.resetsAt && limit.window.resetsAt > nowMs)
 					lines.push(
 						`  ${limit.window.resetLabel ?? "resets"} in ${formatDuration(limit.window.resetsAt - nowMs)}`,
 					);
-				}
 				if (limit.notes && limit.notes.length > 0)
 					lines.push(
 						`  ${limit.notes.map(n => sanitizeText(n.replace(/[\r\n]+/g, " ").replace(/\t/g, "  "))).join(" • ")}`,
@@ -171,6 +176,7 @@ export async function buildUsageReportText(runtime: SlashCommandRuntime): Promis
 				Date.now(),
 				providerId => (providerId === currentProvider ? activeAccount : undefined),
 				usageModelSelectors,
+				runtime.settings.get("usage.maskAccountLabels") === true,
 			);
 		}
 	}
