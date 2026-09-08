@@ -2824,6 +2824,11 @@ export class Markdown implements Component {
 		const start = this.#copySourceSearchCursor;
 		const exactStart = this.#expandedSourceText.indexOf(raw, start);
 		if (exactStart >= 0) return { start: exactStart, end: exactStart + raw.length };
+		const suffix = this.#expandedSourceText.slice(start);
+		OSC8_ST_PREFIX_REGEX.lastIndex = 0;
+		const hasStTerminatedOsc = OSC8_ST_PREFIX_REGEX.test(suffix);
+		OSC8_ST_PREFIX_REGEX.lastIndex = 0;
+		if (!hasStTerminatedOsc) return undefined;
 		return findNormalizedOsc8Span(this.#expandedSourceText, raw, start);
 	}
 
@@ -4030,6 +4035,29 @@ export class Markdown implements Component {
 				// copy target. They must still consume this token's source span
 				// before a later nested fence searches for its own source.
 				if (this.#copySourceSearchCursor === sourceCursorBefore) this.#originalCodeBody(token);
+			} else if (token.type === "blockquote") {
+				const quoteInlineStyleContext: InlineStyleContext = {
+					applyText: (text: string) => text,
+					stylePrefix: "",
+				};
+				const quoteContentWidth = Math.max(1, frameWidth - 2);
+				const renderedQuoteLines: RenderedLine[] = [];
+				const quoteTokens = token.tokens || [];
+				for (let index = 0; index < quoteTokens.length; index++) {
+					const quoteToken = quoteTokens[index]!;
+					renderedQuoteLines.push(
+						...this.#renderToken(
+							quoteToken,
+							quoteContentWidth,
+							quoteTokens[index + 1]?.type,
+							quoteInlineStyleContext,
+						),
+					);
+				}
+				while (renderedQuoteLines.length > 0 && renderedQuoteLines.at(-1)!.text === "") renderedQuoteLines.pop();
+				for (const line of this.#applyQuoteBorder(renderedQuoteLines, frameWidth)) {
+					lines.push({ ...line, nested: false });
+				}
 			} else if (isMathToken(token)) {
 				// Display math block inside a list item: stack fractions / matrix rows.
 				const apply = styleContext?.applyText ?? ((t: string) => this.#applyDefaultStyle(t));

@@ -3072,6 +3072,31 @@ describe("framed code review follow-ups", () => {
 		}
 	});
 
+	it("frames a blockquote fence nested in a list and copies its source body", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			const rendered = new Markdown("- > ```js\n  > code\n  > ```", 0, 0, theme).render(40);
+			const plainLines = rendered.map(line => stripVTControlCharacters(line).trimEnd());
+
+			expect(plainLines.some(line => line.startsWith("- │ +") && line.includes("[js]"))).toBe(true);
+			expect(plainLines.some(line => line.startsWith("  │ | 1 | code |"))).toBe(true);
+			expect(captured).toBe("code");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
 	it("keeps nested list frames on the containing width budget", () => {
 		const source = "- outer\n  - inner\n    ```js\n    const value = 1;\n    ```";
 		const rendered = new Markdown(source, 0, 0, defaultMarkdownTheme).render(24);
@@ -3309,6 +3334,27 @@ describe("framed code review follow-ups", () => {
 			new Markdown(`\`\`\`sh\nprintf '${st}'\n\`\`\``, 0, 0, theme).render(80);
 			new Markdown(`\`\`\`sh\nprintf '\x07'\n\`\`\``, 0, 0, theme).render(80);
 			expect(captured).toEqual([`printf '${st}'`, "printf '\x07'"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("keeps copy recovery exact when source has no ST-terminated OSC", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("```js\nconst right = true;\n```", 0, 0, theme).render(80);
+			expect(captured).toBe("const right = true;");
 		} finally {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
