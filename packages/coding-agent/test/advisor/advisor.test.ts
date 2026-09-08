@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { type AgentMessage, type AgentTelemetryConfig, Tokenizer } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import {
 	AdviseTool,
@@ -26,7 +27,7 @@ import {
 	type WatchdogConfigDoc,
 } from "../../src/advisor";
 import type { ModelRegistry } from "../../src/config/model-registry";
-import type { Settings } from "../../src/config/settings";
+import { Settings } from "../../src/config/settings";
 import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../../src/modes/components/advisor-config";
 import { createAdvisorMessageCard } from "../../src/modes/components/advisor-message";
 import { getThemeByName, setThemeInstance } from "../../src/modes/theme/theme";
@@ -6196,6 +6197,63 @@ describe("advisor", () => {
 			overlay.render(200);
 			overlay.handleInput("\x1b[B"); // arrow down → highlight Security
 			expect(strip(overlay.render(200))).toContain("read, web_search");
+		});
+
+		it("preserves an unsaved name draft when pointer motion hovers over the roster", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const overlay = make({
+				advisors: [{ name: "Architecture" }, { name: "Security" }],
+			});
+			const frame = overlay.render(120);
+			const architectureRow = frame.findIndex(line => strip([line]).includes("Architecture"));
+			expect(architectureRow).toBeGreaterThanOrEqual(0);
+
+			overlay.handleInput("\x1b[C");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\r");
+			overlay.handleInput(" draft");
+			expect(strip(overlay.render(120))).toContain("Architecture draft");
+
+			overlay.handleInput(`\x1b[<32;4;${architectureRow + 1}M`);
+
+			expect(strip(overlay.render(120))).toContain("Architecture draft");
+		});
+
+		it("selects the exact current model when its literal id contains a colon", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const makeModel = (id: string): Model =>
+				buildModel({
+					id,
+					name: id,
+					api: "ollama-chat",
+					provider: "openrouter",
+					baseUrl: "https://example.com",
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 128_000,
+					maxTokens: 1024,
+				});
+			const models = [makeModel("a-first"), makeModel("z-route:free")];
+			const doc: WatchdogConfigDoc = {
+				advisors: [{ name: "Architecture", model: "openrouter/z-route:free" }],
+			};
+			const overlay = make(doc, {
+				settings: Settings.isolated({}),
+				scopedModels: models.map(model => ({ model })),
+			});
+			overlay.render(120);
+			overlay.handleInput("\x1b[C");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\r");
+			overlay.handleInput("\r");
+
+			expect(doc.advisors[0]?.model).toBe("openrouter/z-route:free");
 		});
 
 		it("saves an enabled toggle only for the clicked advisor and scope", async () => {

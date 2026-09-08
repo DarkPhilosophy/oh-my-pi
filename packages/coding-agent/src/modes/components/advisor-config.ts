@@ -40,7 +40,7 @@ import {
 	type WatchdogConfigDoc,
 } from "../../advisor";
 import type { ModelRegistry } from "../../config/model-registry";
-import { formatModelSelectorValue } from "../../config/model-resolver";
+import { formatModelSelectorValue, resolveModelFromString } from "../../config/model-resolver";
 import type { Settings } from "../../config/settings";
 import type { PerAdvisorStat } from "../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
@@ -462,7 +462,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const inUser = event.row >= this.#userRowStart && event.row < this.#userRowStart + this.#userRows;
 		const scope: AdvisorConfigScope | undefined = inProject ? "project" : inUser ? "user" : undefined;
 		if (!scope) return false;
-		if (event.wheel === null && this.#focus !== scope) {
+		if (event.leftClick && this.#focus !== scope) {
 			this.#focus = scope;
 			this.#showFields();
 		}
@@ -686,7 +686,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const items = buildBrowserItems(models);
 		sortModelItems(items, { roles, mruOrder });
 		const current = this.#scopes[scope].doc.advisors[index].model?.trim();
-		const currentSelector = current ? current.split(":", 1)[0] : undefined;
+		const currentModel = current ? resolveModelFromString(current, [...models]) : undefined;
+		const currentSelector = currentModel ? `${currentModel.provider}/${currentModel.id}` : undefined;
 		const picker = new ModelBrowser(this.#settings, {});
 		picker.setRoles(roles);
 		picker.setMruOrder(mruOrder);
