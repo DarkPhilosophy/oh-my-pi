@@ -362,37 +362,35 @@ describe("recentOutput event-sequence equivalence (deferred reconstruction)", ()
 		}
 	});
 
-	it("extracts file locations from actual freeform edits without exposing patch bodies", async () => {
-		const result = await runScenario([], {
-			events: [
-				{
-					type: "tool_execution_start",
-					toolCallId: "edit-1",
-					toolName: "edit",
-					args: {
-						input: "*** Begin Patch\n[src/one.ts#A1B2]\nPUT 1.=1:\n+private body\n[src/two.ts#C3D4]\nCUT 2.=2\n*** End Patch",
+	it("extracts file locations from both freeform edit modes without exposing patch bodies", async () => {
+		for (const input of [
+			"*** Begin Patch\n[src/one.ts#A1B2]\nPUT 1.=1:\n+private body\n[src/two.ts#C3D4]\nCUT 2.=2\n*** End Patch",
+			"*** Begin Patch\n*** Update File: src/one.ts\n@@\n-old body\n+private body\n*** Delete File: src/two.ts\n*** End Patch",
+		]) {
+			const result = await runScenario([], {
+				events: [
+					{ type: "tool_execution_start", toolCallId: "edit-1", toolName: "edit", args: { input } },
+					{
+						type: "tool_execution_end",
+						toolCallId: "edit-1",
+						toolName: "edit",
+						result: { content: [] },
+						isError: false,
 					},
-				},
-				{
-					type: "tool_execution_end",
-					toolCallId: "edit-1",
-					toolName: "edit",
-					result: { content: [] },
-					isError: false,
-				},
-			],
-		});
-		expect(result.exitCode).toBe(0);
-		expect(result.toolSnapshots.find(snapshot => snapshot.currentTool === "edit")?.currentToolArgs).toBe(
-			"src/one.ts, src/two.ts",
-		);
-		expect(
-			result.toolSnapshots.find(snapshot => snapshot.recentTools[0]?.tool === "edit")?.recentTools[0],
-		).toMatchObject({
-			tool: "edit",
-			args: "src/one.ts, src/two.ts",
-			argsKey: "path",
-		});
+				],
+			});
+			expect(result.exitCode).toBe(0);
+			expect(result.toolSnapshots.find(snapshot => snapshot.currentTool === "edit")?.currentToolArgs).toBe(
+				"src/one.ts, src/two.ts",
+			);
+			expect(
+				result.toolSnapshots.find(snapshot => snapshot.recentTools[0]?.tool === "edit")?.recentTools[0],
+			).toMatchObject({
+				tool: "edit",
+				args: "src/one.ts, src/two.ts",
+				argsKey: "path",
+			});
+		}
 	});
 
 	it("matches the reference across arbitrary chunk boundaries and blank lines", async () => {

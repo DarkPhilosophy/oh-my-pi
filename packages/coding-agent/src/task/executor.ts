@@ -67,7 +67,7 @@ import { type EventBus, emitSubagentFrame } from "../utils/event-bus";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { WorkspaceTree } from "../workspace-tree";
-import { getHashlineInputSections } from "../edit/renderer";
+import { getEditInputPaths } from "../edit/renderer";
 import { attributeSubagentError } from "./error-attribution";
 import { generateTaskLabel } from "./label";
 import { resolveAgentPrewalkDefault } from "./prewalk";
@@ -819,9 +819,7 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 function extractToolArgsPreview(args: Record<string, unknown>): { value: string; key: string } | undefined {
 	const previewKeys = ["command", "file_path", "path", "pattern", "query", "url", "task", "prompt"];
 	if (typeof args.input === "string") {
-		const paths = getHashlineInputSections(args.input)
-			.map(entry => entry.path)
-			.filter(Boolean);
+		const paths = getEditInputPaths(args.input);
 		if (paths.length > 0) return { value: paths.join(", "), key: "path" };
 	}
 	const compoundEdits = args.edits;

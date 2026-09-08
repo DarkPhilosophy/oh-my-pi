@@ -631,7 +631,7 @@ const HL_LINE_OP_HEADER = /^(?:PUT|CUT)\b/;
  * and whether a line edit precedes it. Tolerant of partial input so the call
  * preview can label a delete/move before the payload finishes streaming.
  */
-export function getHashlineInputSections(input: string): HashlineInputEntry[] {
+function getHashlineInputSections(input: string): HashlineInputEntry[] {
 	const stripped = input.startsWith("\uFEFF") ? input.slice(1) : input;
 	const entries: HashlineInputEntry[] = [];
 	let current: HashlineInputEntry | undefined;
@@ -654,6 +654,19 @@ export function getHashlineInputSections(input: string): HashlineInputEntry[] {
 		}
 	}
 	return entries;
+}
+
+/** Extract display targets using the existing parsers for both freeform edit modes. */
+export function getEditInputPaths(input: string): readonly string[] {
+	const paths = getHashlineInputSections(input)
+		.map(entry => entry.path)
+		.filter(Boolean);
+	if (paths.length > 0) return paths;
+	try {
+		return editInspect("apply_patch", JSON.stringify({ input })).paths;
+	} catch {
+		return [];
+	}
 }
 
 function getHashlineInputRenderSummary(
