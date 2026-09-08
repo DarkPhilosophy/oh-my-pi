@@ -1781,6 +1781,8 @@ interface StreamPrefixLineCache extends RenderSignature {
 	text: string;
 	/** Raw source prefix backing `text`; normalized-equal edits must not reuse rows. */
 	sourceText: string;
+	/** Cursor in tab-expanded original source after the cached prefix. */
+	copySourceCursor: number;
 	tokenCount: number;
 	lines: readonly string[];
 }
@@ -2527,20 +2529,8 @@ export class Markdown implements Component {
 		if (reusablePrefix && reusablePrefix.tokenCount <= stableTokenCount) {
 			contentLines.push(...reusablePrefix.lines);
 			renderedUntil = reusablePrefix.tokenCount;
-			// Cached rows bypass token rendering, so derive the cursor from the
-			// original source span rather than summing normalized token lengths.
-			// OSC-8 ST terminators occupy two raw source bytes but one normalized
-			// token byte; the span helper preserves that distinction.
-			if (TERMINAL.hyperlinks && this.#theme.copyChipTarget !== undefined) {
-				const expandedSourceText = (this.#expandedSourceText ??= replaceTabs(this.#sourceText));
-				const reusedSpan = findNormalizedOsc8Span(expandedSourceText, stableText, 0);
-				if (reusedSpan) {
-					this.#copySourceSearchCursor = reusedSpan.end;
-				} else {
-					const exactPrefix = expandedSourceText.startsWith(stableText) ? stableText.length : 0;
-					this.#copySourceSearchCursor = exactPrefix;
-				}
-			}
+			// Reuse the cursor captured with these rows, including raw OSC/tab offsets.
+			this.#copySourceSearchCursor = reusablePrefix.copySourceCursor;
 		}
 		if (renderedUntil < stableTokenCount) {
 			// Stable tokens render with full fidelity (syntax highlighting on)
@@ -2559,7 +2549,11 @@ export class Markdown implements Component {
 		this.#streamPrefixLineCache = {
 			...signature,
 			text: stableText,
-			sourceText: this.#sourceText.slice(0, sourceOffsetAtExpandedBoundary(this.#sourceText, stableText.length)),
+			sourceText:
+				reusablePrefix?.text === stableText
+					? reusablePrefix.sourceText
+					: this.#sourceText.slice(0, sourceOffsetAtExpandedBoundary(this.#sourceText, stableText.length)),
+			copySourceCursor: this.#copySourceSearchCursor,
 			tokenCount: stableTokenCount,
 			lines: contentLines.slice(),
 		};
