@@ -1864,13 +1864,24 @@ function expandSourceText(source: string): ExpandedSource {
 	return { text: replaceTabs(source), sourceOffsets };
 }
 
-/** Translate one expanded-text boundary without retaining a dense document map. */
+/** Translate a normalized (tabs expanded, OSC ST collapsed) boundary to raw source. */
 function sourceOffsetAtExpandedBoundary(source: string, boundary: number): number {
 	if (boundary <= 0) return 0;
-	let expandedOffset = 0;
-	for (let sourceOffset = 0; sourceOffset < source.length; sourceOffset++) {
-		expandedOffset += source[sourceOffset] === "\t" ? DEFAULT_TAB_WIDTH : 1;
-		if (expandedOffset >= boundary) return sourceOffset + 1;
+	let normalizedOffset = 0;
+	let nextOscMatch: RegExpExecArray | null = null;
+	OSC8_ST_PREFIX_REGEX.lastIndex = 0;
+	nextOscMatch = OSC8_ST_PREFIX_REGEX.exec(source);
+	for (let sourceOffset = 0; sourceOffset < source.length;) {
+		if (nextOscMatch?.index === sourceOffset) {
+			normalizedOffset += replaceTabs(`${nextOscMatch[1]}\x07`).length;
+			sourceOffset += nextOscMatch[0].length;
+			if (normalizedOffset >= boundary) return sourceOffset;
+			nextOscMatch = OSC8_ST_PREFIX_REGEX.exec(source);
+			continue;
+		}
+		normalizedOffset += source[sourceOffset] === "\t" ? DEFAULT_TAB_WIDTH : 1;
+		sourceOffset++;
+		if (normalizedOffset >= boundary) return sourceOffset;
 	}
 	return source.length;
 }

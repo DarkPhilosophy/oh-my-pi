@@ -535,6 +535,27 @@ describe("Markdown OSC 8 tail normalization across streaming appends", () => {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
 	});
+	it("keeps copy recovery after many frozen OSC contractions", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const targets: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = { ...THEME, copyChip: "copy", copyChipTarget: (code: string) => (targets.push(code), "copy") };
+			const prefix = `${LINK}${ST}`.repeat(16) + "\n\n";
+			const suffix = "```ts\nconst newest = true;\n```\n";
+			const streaming = new Markdown("", 0, 0, theme);
+			streaming.transientRenderCache = true;
+			streaming.setText(prefix);
+			streaming.render(80);
+			clearRenderCache();
+			streaming.setText(prefix + suffix);
+			streaming.render(80);
+			expect(targets.at(-1)).toBe("const newest = true;");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
 	it("refreshes frozen copy payloads after a normalized-equal raw edit", () => {
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;
@@ -550,8 +571,12 @@ describe("Markdown OSC 8 tail normalization across streaming appends", () => {
 				},
 			};
 			const st = "\x1b\\";
-			const rawSt = `\x1b]8;;https://example.com${st}linked\x1b]8;;${st}`;
-			const rawBel = "\x1b]8;;https://example.com\x07linked\x1b]8;;\x07";
+			const rawSt = Array.from(
+				{ length: 16 },
+				(_, index) => `\x1b]8;;https://example.com/${index}${st}linked-${index}\x1b]8;;${st}`,
+			).join("");
+			const lastSt = rawSt.lastIndexOf(st);
+			const rawBel = `${rawSt.slice(0, lastSt)}\x07${rawSt.slice(lastSt + st.length)}`;
 			const initial = `\`\`\`text\n${rawSt}\n\`\`\`\n\ntail`;
 			const edited = `\`\`\`text\n${rawBel}\n\`\`\`\n\ntail`;
 			const streaming = new Markdown(initial, 0, 0, theme);
