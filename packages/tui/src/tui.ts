@@ -2319,6 +2319,19 @@ export class TUI extends Container {
 		if (
 			plan.history === undefined &&
 			borrowed.length > 0 &&
+			logicalViewport.length < this.#providerLogicalCommitted &&
+			!logicalViewport.every((row, index) => borrowed[index] === row)
+		) {
+			// A genuinely different shortened frame is a replacement, not a
+			// suffix of the old frame. Release only the logical watermark: the
+			// native rows are already scrollback and must remain untouched.
+			this.#providerLogicalCommitted = 0;
+			this.#providerHasTransientHistory = false;
+			this.#providerTransientRows = [];
+		}
+		if (
+			plan.history === undefined &&
+			borrowed.length > 0 &&
 			overflow > borrowed.length &&
 			!borrowed.every((row, index) => logicalViewport[index] === row)
 		) {
