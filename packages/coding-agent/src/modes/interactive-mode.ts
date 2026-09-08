@@ -505,12 +505,15 @@ const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
  * eval `agent()` spawns are rendered by their own eval cell tree.
  * Returns an empty array when nothing is running so the container can clear.
  */
-export function renderSubagentHudLines(sessions: ObservableSession[], columns: number): string[] {
+export function renderSubagentHudLines(
+	sessions: ObservableSession[],
+	columns: number,
+	showResolvedModelBadge = false,
+): string[] {
 	const running = sessions.filter(
 		session => session.kind === "subagent" && session.status === "active" && session.detached === true,
 	);
 	if (running.length === 0) return [];
-
 	const dot = theme.styledSymbol("status.done", "accent");
 	const visible = running.slice(0, SUBAGENT_HUD_VISIBLE_LIMIT);
 	const hiddenCount = running.length - visible.length;
@@ -522,34 +525,43 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 				const displayId = formatTaskId(session.id);
 				const role = session.agent ?? session.progress?.agent;
 				const badge = agentTypeBadge(role, theme);
+				const resolvedModel =
+					showResolvedModelBadge && session.progress?.resolvedModel?.trim()
+						? session.progress.resolvedModel.trim()
+						: undefined;
 				let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}${badge}`;
-				const description = session.description?.trim() || session.progress?.description?.trim();
-				const distinctDescription =
-					description && !labelEchoesHandle(session.id, description) ? description : undefined;
-				if (distinctDescription) {
-					const budget = Math.max(
-						TRUNCATE_LENGTHS.SHORT,
-						columns - visibleWidth(displayId) - visibleWidth(Bun.stripANSI(badge)) - 10,
-					);
-					const formatted = replaceTabs(distinctDescription).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-					line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(formatted, budget))}`;
-				} else {
-					// No spawn description: fall back to a muted task preview, same as
-					// the inline task rows when a row has no label.
-					const taskPreview = session.progress?.task?.trim();
-					if (taskPreview && !labelEchoesHandle(session.id, taskPreview)) {
-						const formatted = replaceTabs(taskPreview).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-						line += ` ${theme.fg("muted", truncateToWidth(formatted, TRUNCATE_LENGTHS.SHORT))}`;
-					}
+				if (resolvedModel)
+					line += `:${theme.fg("dim", truncateToWidth(replaceTabs(sanitizeText(resolvedModel)).replace(/[\r\n]+/g, " "), 30))}`;
+				const rawDescription =
+					session.progress?.lastIntent?.trim() ||
+					session.progress?.task?.trim() ||
+					session.description?.trim() ||
+					session.progress?.description?.trim();
+				const description =
+					rawDescription && !labelEchoesHandle(session.id, rawDescription) ? rawDescription : undefined;
+				if (description) {
+					const budget = Math.max(1, columns - visibleWidth(Bun.stripANSI(line)) - 8);
+					const formatted = replaceTabs(sanitizeText(description)).replace(/\s*[\r\n]+\s*/g, " ");
+					line += `${theme.sep.dot}${theme.fg("accent", truncateToWidth(formatted, budget))}`;
 				}
-				return line;
+				const currentTool = session.progress?.currentTool?.trim();
+				if (currentTool) {
+					const args = session.progress?.currentToolArgs?.trim();
+					const toolText = replaceTabs(sanitizeText(args ? `${currentTool}(${args})` : currentTool)).replace(
+						/\s*[\r\n]+\s*/g,
+						" ",
+					);
+					return [
+						truncateToWidth(line, Math.max(1, columns - 6)),
+						`${theme.tree.hook} ${theme.fg("dim", truncateToWidth(toolText, Math.max(1, columns - 8)))}`,
+					];
+				}
+				return truncateToWidth(line, Math.max(1, columns - 6));
 			},
 		},
 		theme,
 	);
-	if (hiddenCount > 0) {
-		rows.push(theme.fg("dim", `… ${hiddenCount} more running — open Agent Hub for full list`));
-	}
+	if (hiddenCount > 0) rows.push(theme.fg("dim", `… ${hiddenCount} more running — open Agent Hub for full list`));
 	return ["", theme.bold(theme.fg("accent", "Subagents")), ...rows.map(line => ` ${line}`)];
 }
 
@@ -2788,17 +2800,21 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	/**
-	 * Anchored HUD of in-flight subagents, mirroring the Todos block above the
+  * Anchored HUD of in-flight subagents, mirroring the Todos block above the
 
-	/**
-	 * Anchored HUD of in-flight subagents, mirroring the Todos block above the
-	 * editor. Driven entirely by observer-registry change events, so rows appear
-	 * on spawn and the whole block clears itself once the last subagent leaves
-	 * the "active" state.
-	 */
+ /**
+  * Anchored HUD of in-flight subagents, mirroring the Todos block above the
+  * editor. Driven entirely by observer-registry change events, so rows appear
+  * on spawn and the whole block clears itself once the last subagent leaves
+  * the "active" state.
+  */
 	#renderSubagentList(): void {
 		this.subagentContainer.clear();
-		const lines = renderSubagentHudLines(this.#observerRegistry.getSessions(), this.ui.terminal.columns);
+		const lines = renderSubagentHudLines(
+			this.#observerRegistry.getSessions(),
+			this.ui.terminal.columns,
+			this.settings.get("task.showResolvedModelBadge"),
+		);
 		if (lines.length === 0) return;
 		this.subagentContainer.addChild(new Text(lines.join("\n"), 1, 0));
 	}
