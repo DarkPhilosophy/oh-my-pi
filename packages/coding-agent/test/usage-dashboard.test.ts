@@ -168,9 +168,41 @@ describe("buildProviderCards split + privacy", () => {
 	it("masks split-card account labels and keeps colliding prefixes distinguishable", () => {
 		const labels = reports.map(r => String(r.metadata?.email));
 		const cards = buildProviderCards(reports, now, { merge: false, mask: createAccountMasker(labels, true) });
+
 		const masked = cards.map(card => card.account);
 		expect(masked.every(label => label !== undefined && !label.includes("@x.test"))).toBe(true);
 		expect(new Set(masked).size).toBe(2);
+	});
+	it("keeps organization qualifiers visible in narrow split-card headers", () => {
+		const email = "shared-account-with-a-long-address@example.test";
+		const reports = [
+			report("anthropic", email, [limit("anthropic", "east", "7d", "Claude 7 Day", 0.8, "warning")], {
+				orgId: "org-east",
+				orgName: "East",
+			}),
+			report("anthropic", email, [limit("anthropic", "west", "7d", "Claude 7 Day", 0.2, "ok")], {
+				orgId: "org-west",
+				orgName: "West",
+			}),
+		];
+		const dashboard = new UsageDashboardComponent({
+			reports,
+			renderDetail: () => "",
+			createMasker: createAccountMasker,
+			maskAccountLabels: false,
+			mergeAccounts: false,
+			labelPlacement: "moving",
+			loadActivity: async () => {},
+			requestRender: () => {},
+			onClose: () => {},
+		});
+		const headers = Bun.stripANSI(dashboard.render(36).join("\n"))
+			.split("\n")
+			.filter(line => line.includes("(East)") || line.includes("(West)"));
+		expect(headers).toHaveLength(2);
+		expect(headers.some(line => line.includes("(East)"))).toBe(true);
+		expect(headers.some(line => line.includes("(West)"))).toBe(true);
+		expect(headers.every(line => line.length <= 36)).toBe(true);
 	});
 });
 

@@ -395,6 +395,17 @@ export function formatActivityErrorDetail(error: string, homeDir = os.homedir())
 	return text.replace(/\.+$/, "");
 }
 
+function fitAccountLabel(label: string, width: number): string {
+	if (width <= 0) return "";
+	const qualifierStart = label.lastIndexOf(" (");
+	if (qualifierStart <= 0 || !label.endsWith(")")) return truncateToWidth(label, width);
+	const base = label.slice(0, qualifierStart);
+	const qualifier = label.slice(qualifierStart);
+	const qualifierWidth = visibleWidth(qualifier);
+	if (qualifierWidth >= width) return truncateToWidth(qualifier, width);
+	return `${truncateToWidth(base, Math.max(1, width - qualifierWidth))}${qualifier}`;
+}
+
 const CARD_MIN_WIDTH = 32;
 const CARD_GUTTER = 1;
 const CARD_MAX_WINDOWS = 4;
@@ -479,15 +490,15 @@ export class UsageDashboardComponent implements Component {
 		const cardStatus = card.unlimited ? "ok" : aggregateRowStatus(card.windows);
 		const accountsText =
 			card.account !== undefined
-				? this.#styleMask(theme.fg("dim", card.account))
+				? this.#styleMask(theme.fg("dim", fitAccountLabel(card.account, Math.max(1, width - 2 - 4 - 1))))
 				: card.accounts > 1
 					? theme.fg("dim", `${card.accounts} accts`)
 					: "";
 		const titleBudget = width - 2 - visibleWidth(accountsText) - (accountsText ? 1 : 0);
 		const title = theme.bold(truncateToWidth(card.name, Math.max(4, titleBudget)));
 		const titlePad = Math.max(0, width - 2 - visibleWidth(title) - visibleWidth(accountsText));
-		lines.push(`${this.#statusIcon(cardStatus)} ${title}${" ".repeat(titlePad)}${accountsText}`);
 
+		lines.push(`${this.#statusIcon(cardStatus)} ${title}${" ".repeat(titlePad)}${accountsText}`);
 		if (card.unlimited) {
 			lines.push(`  ${theme.fg("dim", "no limits")}`);
 			return lines;
