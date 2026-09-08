@@ -311,6 +311,38 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
+	it("replays borrowed history when a live frame prepends rows before it", () => {
+		const terminal = new VirtualTerminal(20, 3);
+		const viewport = ["a", "b", "live", "editor", "extra"];
+		let plan: TerminalFramePlan = { viewport };
+		let replays = 0;
+		const acknowledged: number[] = [];
+		const provider: TerminalFrameProvider = {
+			renderFrame: () => plan,
+			beginHistoryReplay: () => {
+				replays++;
+				plan = { history: { id: 1, rows: [], kind: "replay" }, viewport: plan.viewport };
+			},
+			acknowledgeHistory: id => {
+				acknowledged.push(id);
+				plan = { viewport: plan.viewport };
+			},
+		};
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+
+		plan = { viewport: ["new", ...viewport] };
+		tui.requestRender(true);
+
+		expect(replays).toBe(1);
+		expect(acknowledged).toEqual([1]);
+		expect(plainBuffer(terminal)).toEqual(["new", "a", "b", "live", "editor", "extra"]);
+		const replayed = plainBuffer(terminal);
+		tui.requestRender(true);
+		expect(plainBuffer(terminal)).toEqual(replayed);
+		tui.stop();
+	});
+
 	it("accepts re-offered borrowed rows without a destructive replay", () => {
 		const terminal = new VirtualTerminal(20, 4);
 		let replays = 0;
@@ -368,7 +400,7 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
-	it("keeps a shortened or prepended mutable frame visible without clearing native history", () => {
+	it("preserves shortened views and replays actual prepends in order", () => {
 		const terminal = new CountingTerminal(30, 3);
 		const provider = new Provider({ viewport: ["header", "editor", "s1", "s2", "s3", "s4"] });
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
@@ -378,14 +410,14 @@ describe("terminal frame plans", () => {
 			provider.plan = { viewport: ["header", "editor"] };
 			tui.requestRender(true);
 			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["header", "editor", ""]);
+			expect(terminal.writes.join("")).not.toMatch(/\x1b\[[23]J/);
 			provider.plan = { viewport: ["new", "header", "editor", "s1", "s2", "s3", "s4"] };
 			tui.requestRender(true);
 			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["s2", "s3", "s4"]);
-			expect(plainBuffer(terminal)).toContain("new");
+			expect(plainBuffer(terminal)).toEqual(["new", "header", "editor", "s1", "s2", "s3", "s4"]);
 			const snapshot = plainBuffer(terminal);
 			tui.requestRender(true);
 			expect(plainBuffer(terminal)).toEqual(snapshot);
-			expect(terminal.writes.join("")).not.toMatch(/\x1b\[[23]J/);
 		} finally {
 			tui.stop();
 		}

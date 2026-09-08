@@ -2475,7 +2475,6 @@ export class TUI extends Container {
 		if (!flushing && this.#maybeDeferGhosttyInitialImagePaint()) return false;
 		const logicalViewport = Array.from(plan.viewport);
 		const overflow = Math.max(0, logicalViewport.length - height);
-		let prependedRows: string[] = [];
 		const borrowed = this.#providerTransientRows;
 		if (
 			plan.history === undefined &&
@@ -2498,12 +2497,11 @@ export class TUI extends Container {
 		) {
 			for (let offset = 1; offset + borrowed.length <= overflow; offset++) {
 				if (!borrowed.every((row, index) => logicalViewport[offset + index] === row)) continue;
-				// Native rows cannot be reordered. Publish only the newly inserted
-				// prefix, then keep the already-owned suffix out of subsequent paints.
-				prependedRows = logicalViewport.slice(0, offset);
-				this.#providerTransientRows = [...prependedRows, ...borrowed];
-				this.#providerLogicalCommitted += offset;
-				break;
+				// Native rows cannot be reordered. A true prepend requires the
+				// provider's existing complete replay protocol; never append the
+				// new prefix after rows already borrowed into native scrollback.
+				this.#prepareForcedRender(true);
+				return this.#renderProviderFrame(width, height, flushing);
 			}
 		}
 		// Borrowed rows are immutable native history. Animation may change their
@@ -2524,7 +2522,7 @@ export class TUI extends Container {
 			plan.history === undefined && overflow > this.#providerLogicalCommitted
 				? logicalViewport.slice(this.#providerLogicalCommitted, overflow)
 				: [];
-		const inferredHistory = prependedRows.length > 0 ? [...prependedRows, ...newlyOverflowed] : newlyOverflowed;
+		const inferredHistory = newlyOverflowed;
 		if (newlyOverflowed.length > 0) this.#providerTransientRows.push(...newlyOverflowed);
 		let history = plan.history;
 		if (history !== undefined && history.kind !== "replay" && this.#providerHasTransientHistory) {
