@@ -206,9 +206,15 @@ function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
 		return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
 	}
 	if (entry.type !== "message") return undefined;
-	const message = entry.message as { role?: string; toolName?: string; details?: unknown; isError?: boolean };
+	const message = entry.message as {
+		role?: string;
+		toolName?: string;
+		details?: { op?: unknown; phases?: unknown };
+		isError?: boolean;
+	};
 	if (message.role !== "toolResult" || message.toolName !== "todo" || message.isError) return undefined;
-	const phases = (message.details as { phases?: unknown } | undefined)?.phases;
+	if (message.details?.op === "view") return undefined;
+	const phases = message.details?.phases;
 	return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
 }
 

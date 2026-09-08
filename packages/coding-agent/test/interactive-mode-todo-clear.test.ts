@@ -211,18 +211,18 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(renderTodos(mode)).not.toContain("done task");
 	});
 
-	it("marks todos complete when subagent reconciliation reports a finished agent", async () => {
+	it("marks reconciled todos complete and auto-dismisses the durable plan", async () => {
 		await replaceMode();
-		setTodoClearDelay(-1);
+		setTodoClearDelay(0);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		session.sessionManager.appendCustomEntry("user_todo_edit", {
+			phases: [{ name: "Implementation", tasks: [{ content: "Fix review comments", status: "pending" }] }],
+		});
 		session.setTodoPhases([
 			{ name: "Implementation", tasks: [{ content: "Fix review comments", status: "pending" }] },
 		]);
 		mode.setTodos(session.getTodoPhases());
-
 		await mode.init();
-		// Subagent lifecycle changes coalesce behind a 100ms observer UI sync
-		// timer before todo reconciliation runs; flush it deterministically.
 		vi.useFakeTimers();
 		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
 			id: "ReviewFixer",
@@ -233,8 +233,11 @@ describe("InteractiveMode todo HUD persistence", () => {
 			detached: true,
 		});
 		vi.advanceTimersByTime(100);
-
+		vi.advanceTimersByTime(0);
+		await session.settleInFlightMessagePersistence();
+		await session.sessionManager.flush();
 		expect(session.getTodoPhases()[0]?.tasks[0]?.status).toBe("completed");
+		expect(renderTodos(mode)).toBe("");
 	});
 
 	it("reconciles focused worker todos without overwriting the main session", async () => {
