@@ -165,6 +165,50 @@ describe("buildProviderCards split + privacy", () => {
 		expect(merged[0].windows[0].fraction).toBeCloseTo(0.5);
 	});
 
+	it("splits same-base accounts by organization name when ids are absent", () => {
+		const sameEmail = "shared@x.test";
+		const reports = ["East", "West"].map((orgName, index) =>
+			report("anthropic", sameEmail, [limit("anthropic", "shared", "7d", "Claude 7 Day", index / 10, "ok")], {
+				orgId: "",
+				orgName,
+			}),
+		);
+		const cards = buildProviderCards(reports, now, { merge: false });
+		expect(cards).toHaveLength(2);
+		expect(Object.fromEntries(cards.map(card => [card.account, card.windows[0].fraction]))).toEqual({
+			[`${sameEmail} (East)`]: 0,
+			[`${sameEmail} (West)`]: 0.1,
+		});
+	});
+
+	it("neutralizes terminal controls in split-card account labels before fitting", () => {
+		const reports = [
+			report("anthropic", "alice\t\x1b[31m@x.test", [limit("anthropic", "a", "7d", "Claude 7 Day", 0.2, "ok")], {
+				orgId: "org-a",
+				orgName: "East\t\x1b[2J",
+			}),
+		];
+		const dashboard = new UsageDashboardComponent({
+			reports,
+			renderDetail: () => "",
+			createMasker: createAccountMasker,
+			maskAccountLabels: false,
+			mergeAccounts: false,
+			labelPlacement: "moving",
+			loadActivity: async () => {},
+			requestRender: () => {},
+			onClose: () => {},
+		});
+		const rendered = dashboard.render(36).join("\n");
+		expect(rendered).not.toContain("\x1b[31m");
+		expect(rendered).not.toContain("\x1b[2J");
+		expect(
+			Bun.stripANSI(rendered)
+				.split("\n")
+				.every(line => line.length <= 36),
+		).toBe(true);
+	});
+
 	it("masks split-card account labels and keeps colliding prefixes distinguishable", () => {
 		const labels = reports.map(r => String(r.metadata?.email));
 		const cards = buildProviderCards(reports, now, { merge: false, mask: createAccountMasker(labels, true) });

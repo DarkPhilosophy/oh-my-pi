@@ -96,6 +96,65 @@ describe("renderUsageReports content", () => {
 		expect(output).toContain(`expired (${expiredIso.slice(0, 10)})`);
 	});
 
+	it("marks the saved reset row when its report matches the active account", () => {
+		const now = Date.now();
+		const reports: UsageReport[] = [
+			{
+				provider: "openai-codex",
+				fetchedAt: now,
+				limits: [
+					{
+						id: "weekly",
+						label: "Weekly",
+						scope: { provider: "openai-codex", accountId: "acct-active" },
+						window: { id: "weekly", label: "weekly" },
+						amount: { usedFraction: 0.2, unit: "percent" },
+						status: "ok",
+					},
+				],
+				metadata: { email: "active@example.com", accountId: "acct-active" },
+				resetCredits: { availableCount: 1 },
+			},
+		];
+		const output = stripVTControlCharacters(
+			renderUsageReports(reports, theme, now, 98, () => ({ accountId: "acct-active" })),
+		);
+		expect(output).toContain("active@example.com: 1 saved reset (active)");
+	});
+
+	it("disambiguates a reportless active account against a colliding reported sibling", () => {
+		const now = Date.now();
+		const reports: UsageReport[] = [
+			{
+				provider: "openai-codex",
+				fetchedAt: now,
+				limits: [
+					{
+						id: "weekly",
+						label: "Weekly",
+						scope: { provider: "openai-codex", accountId: "acct-sibling" },
+						window: { id: "weekly", label: "weekly" },
+						amount: { usedFraction: 0.2, unit: "percent" },
+						status: "ok",
+					},
+				],
+				metadata: { email: "main-one@example.com", accountId: "acct-sibling" },
+			},
+		];
+		const output = stripVTControlCharacters(
+			renderUsageReports(
+				reports,
+				theme,
+				now,
+				98,
+				() => ({ email: "main-two@example.com", accountId: "acct-active" }),
+				{ maskAccountLabels: true },
+			),
+		);
+		expect(output).toContain("in use by this session: mai*** (2)");
+		expect(output).toContain("  mai***");
+	});
+
 	it("keeps combined fractional quota rows within narrow report widths", () => {
 		const reports: UsageReport[] = ["acct-1", "acct-2"].map((accountId, index) => ({
 			provider: "openai-codex",

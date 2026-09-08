@@ -2113,18 +2113,20 @@ export function renderUsageReports(
 		lines.push(uiTheme.bold(uiTheme.fg("accent", providerName)));
 		// One masker per provider so colliding masks (`mai1@` vs `mai2@`) get
 		// ordinals consistently across the header, reset lines and unlimited rows.
-		const mask = createAccountMasker(
-			providerReports.flatMap((report, index) => [
-				...report.limits.map(limit => formatAccountLabel(limit, report, index)),
-				formatUnlimitedReportLabel(report, index),
-				typeof report.metadata?.email === "string" && report.metadata.email
-					? `${report.metadata.email}${orgSuffix(report)}`
-					: typeof report.metadata?.accountId === "string" && report.metadata.accountId
-						? `${report.metadata.accountId}${orgSuffix(report)}`
-						: "account",
-			]),
-			maskAccountLabels,
-		);
+		const maskInputs = providerReports.flatMap((report, index) => [
+			...report.limits.map(limit => formatAccountLabel(limit, report, index)),
+			formatUnlimitedReportLabel(report, index),
+			typeof report.metadata?.email === "string" && report.metadata.email
+				? `${report.metadata.email}${orgSuffix(report)}`
+				: typeof report.metadata?.accountId === "string" && report.metadata.accountId
+					? `${report.metadata.accountId}${orgSuffix(report)}`
+					: "account",
+		]);
+		if (activeAccount) {
+			const activeLabel = formatActiveAccountLabel(activeAccount);
+			if (activeLabel) maskInputs.push(activeLabel);
+		}
+		const mask = createAccountMasker(maskInputs, maskAccountLabels);
 		const activeAccountLabel = mask(formatActiveAccountLabel(activeAccount) ?? "");
 		if (activeAccountLabel) {
 			lines.push(
@@ -2158,8 +2160,12 @@ export function renderUsageReports(
 					: typeof report.metadata?.accountId === "string" && report.metadata.accountId
 						? `${report.metadata.accountId}${orgSuffix(report)}`
 						: "account";
+			const isActive =
+				!!activeAccount && report.limits.some(limit => limitMatchesActiveAccount(report, limit, activeAccount));
 			const label = styleAccountMask(mask(rawLabel), uiTheme);
-			resetAccountLines.push(`    • ${label}: ${count} saved reset${count === 1 ? "" : "s"}`);
+			resetAccountLines.push(
+				`    • ${label}: ${count} saved reset${count === 1 ? "" : "s"}${isActive ? " (active)" : ""}`,
+			);
 			for (const credit of report.resetCredits?.credits ?? []) {
 				if (!credit.expiresAt) continue;
 				const expiryMs = Date.parse(credit.expiresAt);
