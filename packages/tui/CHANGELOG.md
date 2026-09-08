@@ -1,15 +1,18 @@
 # Changelog
 
 ## [Unreleased]
-### Fixed
-
-- Stopped long flicker when moving or resizing an omp pane in Warp. Resize repaints in place there after the drag settles (override with `PI_TUI_RESIZE_IN_PLACE=0`), with no alternate-screen borrow, no scrollback replay, blanked live rows so shrink drags cannot archive unfinished rows, and overlay toggle echoes repainting the modal instead of probing ([#11247](https://github.com/can1357/oh-my-pi/pull/11247) by [@H4vC](https://github.com/H4vC)).
 
 ### Fixed
 
 - Fixed lost or duplicated transcript rows across live viewport overflow, repeated command suggestions, and session replacement.
 - Fixed prepended live transcript rows appearing after previously displayed rows instead of in their original order.
 - Fixed deferred initial image paints losing overflowing provider rows.
+
+## [18.1.15] - 2026-09-08
+
+### Fixed
+
+- Stopped long flicker when moving or resizing an omp pane in Warp. Resize repaints in place there after the drag settles (override with `PI_TUI_RESIZE_IN_PLACE=0`), with no alternate-screen borrow, no scrollback replay, blanked live rows so shrink drags cannot archive unfinished rows, and overlay toggle echoes repainting the modal instead of probing ([#11247](https://github.com/can1357/oh-my-pi/pull/11247) by [@H4vC](https://github.com/H4vC)).
 
 ## [18.1.14] - 2026-09-07
 
