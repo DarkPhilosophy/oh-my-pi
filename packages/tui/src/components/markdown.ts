@@ -3544,9 +3544,12 @@ export class Markdown implements Component {
 				} else if (fenced) {
 					// An open streamed fence must retain its delimiter rows until it
 					// closes; transcript scrollback depends on those stable rows.
-					lines.push(renderedLine(this.#theme.codeBlockBorder(`\`\`\`${token.lang || ""}`)));
+					const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
+					const openingLine = raw.slice(0, raw.indexOf("\n") >= 0 ? raw.indexOf("\n") : raw.length);
+					const delimiter = MARKDOWN_FENCE_LINE.exec(openingLine)?.[1] ?? "```";
+					lines.push(renderedLine(this.#theme.codeBlockBorder(`${delimiter}${token.lang || ""}`)));
 					for (const bodyLine of bodyLines) lines.push(bodyLine);
-					lines.push(renderedLine(this.#theme.codeBlockBorder("```")));
+					lines.push(renderedLine(this.#theme.codeBlockBorder(delimiter)));
 				} else {
 					for (const bodyLine of bodyLines) lines.push(bodyLine);
 				}

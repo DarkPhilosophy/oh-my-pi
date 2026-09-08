@@ -2176,6 +2176,36 @@ describe("Module-level LRU render cache", () => {
 		expect(plain).not.toContain("HIGHLIGHTED");
 	});
 
+	it("preserves a tilde fence delimiter across partial streamed content", () => {
+		const markdown = new Markdown(["~~~~js", 'const marker = "~~~";'].join("\n"), 0, 0, defaultMarkdownTheme);
+		markdown.transientRenderCache = true;
+
+		const first = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+		expect(first[0]).toBe("~~~~js");
+		expect(first.at(-1)).toBe("~~~~");
+		expect(first.some(line => line.includes('const marker = "~~~";'))).toBe(true);
+
+		markdown.setText(["~~~~js", 'const marker = "~~~";', "console.log(marker);"].join("\n"));
+		const second = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+		expect(second[0]).toBe("~~~~js");
+		expect(second.at(-1)).toBe("~~~~");
+	});
+
+	it("preserves a long backtick fence delimiter across partial streamed content", () => {
+		const markdown = new Markdown(["`````ts", 'const marker = "````";'].join("\n"), 0, 0, defaultMarkdownTheme);
+		markdown.transientRenderCache = true;
+
+		const first = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+		expect(first[0]).toBe("`````ts");
+		expect(first.at(-1)).toBe("`````");
+		expect(first.some(line => line.includes('const marker = "````";'))).toBe(true);
+
+		markdown.setText(["`````ts", 'const marker = "````";', "console.log(marker);"].join("\n"));
+		const second = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+		expect(second[0]).toBe("`````ts");
+		expect(second.at(-1)).toBe("`````");
+	});
+
 	it("highlights a fence whole-block once it closes, even during transient renders", () => {
 		// Rows of a closed fence can enter native scrollback before the token
 		// freezes; they must carry the same bytes the finalized render emits.
