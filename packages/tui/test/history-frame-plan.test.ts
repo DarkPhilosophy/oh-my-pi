@@ -14,6 +14,7 @@ class Provider implements TerminalFrameProvider {
 	plan: TerminalFramePlan;
 	resizeRows: readonly string[] | undefined;
 	acknowledged: number[] = [];
+	borrowed: number[] = [];
 
 	constructor(plan: TerminalFramePlan) {
 		this.plan = plan;
@@ -29,6 +30,9 @@ class Provider implements TerminalFrameProvider {
 	acknowledgeHistory(id: number): void {
 		this.acknowledged.push(id);
 		this.plan = { viewport: this.plan.viewport };
+	}
+	onViewportBorrowed(rows: number): void {
+		this.borrowed.push(rows);
 	}
 }
 
@@ -297,6 +301,43 @@ describe("terminal frame plans", () => {
 			"live five",
 			"editor",
 		]);
+		tui.stop();
+	});
+
+	it("consumes a finalized prefix without re-appending the still-borrowed suffix", () => {
+		const terminal = new CountingTerminal(20, 3);
+		const provider = new Provider({ viewport: ["a", "b", "tool-1", "tool-2", "tool-3", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		const initial = plainBuffer(terminal);
+		provider.plan = { history: { id: 1, rows: ["a", "b"] }, viewport: ["tool-1", "tool-2", "tool-3", "editor"] };
+		tui.requestRender(true);
+		expect(plainBuffer(terminal)).toEqual(initial);
+		expect(provider.borrowed.at(-1)).toBe(1);
+		provider.plan = { history: { id: 2, rows: ["tool-1"] }, viewport: ["tool-2", "tool-3", "editor"] };
+		tui.requestRender(true);
+		expect(plainBuffer(terminal)).toEqual(initial);
+		expect(provider.acknowledged).toEqual([1, 2]);
+		expect(provider.borrowed.at(-1)).toBe(0);
+		tui.stop();
+	});
+
+	it("keeps the live suffix aligned after overflow shrinks without duplicating native rows", () => {
+		const terminal = new CountingTerminal(20, 4);
+		const initial = ["a", "b", "c", "d", "editor", "suggest-1", "suggest-2"];
+		const provider = new Provider({ viewport: initial });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		const oldHistory = plainBuffer(terminal).slice(0, terminal.getBufferPosition().baseY);
+		terminal.writes.length = 0;
+		provider.plan = { viewport: ["a", "b", "c", "d", "editor"] };
+		tui.requestRender(true);
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["", "", "d", "editor"]);
+		expect(plainBuffer(terminal).slice(0, terminal.getBufferPosition().baseY)).toEqual(oldHistory);
+		provider.plan = { viewport: initial };
+		tui.requestRender(true);
+		expect(plainBuffer(terminal)).toEqual(initial);
+		expect(terminal.writes.join("")).not.toMatch(/\x1b\[[23]J/);
 		tui.stop();
 	});
 

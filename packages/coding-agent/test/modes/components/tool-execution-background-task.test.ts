@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
+import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { AgentProgress, SingleResult, TaskToolDetails } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { TUI } from "@oh-my-pi/pi-tui";
@@ -85,6 +86,33 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 	beforeAll(async () => {
 		await Settings.init({ inMemory: true, cwd: process.cwd() });
 		await initTheme();
+	});
+
+	it("freezes progress and animation when any task rows are borrowed into history", () => {
+		vi.useFakeTimers();
+		const transcript = new TranscriptContainer();
+		const component = new ToolExecutionComponent(
+			"task",
+			{ agent: "scout", id: "Anna", description: "scout auth" },
+			{ liveRegion: transcript },
+			undefined,
+			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
+		);
+		try {
+			transcript.addChild(component);
+			component.updateResult(asyncSnapshot("initial progress"), true);
+			component.parkAsBackground();
+			transcript.renderViewport(100, 10, { now: 0, tick: 0 });
+			const before = component.render(100).join("\n");
+			transcript.setBorrowedViewportRows(1);
+			component.updateResult(asyncSnapshot("late shape-changing progress"), true);
+			vi.advanceTimersByTime(1000);
+			expect(component.render(100).join("\n")).toBe(before);
+			expect(transcript.canRemoveBlock(component)).toBe(false);
+		} finally {
+			component.seal();
+			vi.useRealTimers();
+		}
 	});
 
 	it("keeps accepting live progress snapshots until settlement", () => {

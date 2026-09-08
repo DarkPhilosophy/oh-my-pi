@@ -128,6 +128,31 @@ describe("Composer prepaint", () => {
 		composer.ui.stop();
 		expect(terminal.stops).toBe(1);
 	});
+	it("reports physically borrowed transcript ownership without retiring live blocks", async () => {
+		const terminal = new CountingTerminal(80, 12);
+		const composer = new Composer({ preferences: { ...config, quiet: true }, terminal });
+		const transcript = new TranscriptContainer();
+		const tall = new GrowingBlock();
+		for (let index = 0; index < 30; index++) tall.append(`row ${index}`);
+		const later = new GrowingBlock();
+		later.append("still live");
+		transcript.addChild(tall);
+		transcript.addChild(later);
+		composer.setRuntimeChildren([transcript, composer.editor]);
+		composer.start();
+		try {
+			composer.ui.requestRender(true);
+			await terminal.waitForRender();
+			expect(transcript.isBlockUncommitted(tall)).toBe(false);
+			expect(transcript.canRemoveBlock(tall)).toBe(false);
+			expect(transcript.isBlockUncommitted(later)).toBe(true);
+			expect(transcript.canRemoveBlock(later)).toBe(true);
+			expect(transcript.blockStates()).toEqual(["active", "active"]);
+		} finally {
+			composer.stop();
+		}
+	});
+
 	it("preserves every numbered row when the logical viewport grows beyond terminal height", async () => {
 		const terminal = new CountingTerminal(80, 32);
 		const composer = new Composer({ preferences: config, terminal });

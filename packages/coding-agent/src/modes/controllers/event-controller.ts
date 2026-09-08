@@ -1038,7 +1038,7 @@ export class EventController {
 		if (!components) return;
 		let removed = false;
 		for (const component of components) {
-			if (!this.ctx.ui.hasTransientProviderHistory() && this.ctx.chatContainer.canRemoveBlock(component)) {
+			if (this.ctx.chatContainer.canRemoveBlock(component)) {
 				this.ctx.chatContainer.removeChild(component);
 				removed = true;
 			}
@@ -1073,12 +1073,7 @@ export class EventController {
 		const previous = this.#displaceablePollComponent;
 		if (!previous) return;
 		this.#displaceablePollComponent = undefined;
-		if (
-			nextToolName === "hub" &&
-			previous.isDisplaceableBlock() &&
-			!this.ctx.ui.hasTransientProviderHistory() &&
-			this.ctx.chatContainer.canRemoveBlock(previous)
-		) {
+		if (nextToolName === "hub" && previous.isDisplaceableBlock() && this.ctx.chatContainer.canRemoveBlock(previous)) {
 			this.ctx.chatContainer.removeChild(previous);
 		}
 		// Sealing stops the waiting-poll spinner and freezes the block (for a
@@ -1096,7 +1091,7 @@ export class EventController {
 		}
 		if (previous.canBeDisplacedBy(nextToolName)) {
 			this.#displaceableTodoComponent = undefined;
-			if (!this.ctx.ui.hasTransientProviderHistory() && this.ctx.chatContainer.canRemoveBlock(previous)) {
+			if (this.ctx.chatContainer.canRemoveBlock(previous)) {
 				this.ctx.chatContainer.removeChild(previous);
 			}
 			previous.seal();
@@ -1706,7 +1701,7 @@ export class EventController {
 			const previous = this.#displaceableTodoComponent;
 			if (previous && previous !== component && previous.isDisplaceableBlock()) {
 				this.#displaceableTodoComponent = undefined;
-				if (!this.ctx.ui.hasTransientProviderHistory() && this.ctx.chatContainer.canRemoveBlock(previous)) {
+				if (this.ctx.chatContainer.canRemoveBlock(previous)) {
 					this.ctx.chatContainer.removeChild(previous);
 				}
 				previous.seal();
@@ -1813,10 +1808,7 @@ export class EventController {
 						const previous = this.#displaceableTodoComponent;
 						if (previous && previous !== component && previous.isDisplaceableBlock()) {
 							this.#displaceableTodoComponent = undefined;
-							if (
-								!this.ctx.ui.hasTransientProviderHistory() &&
-								this.ctx.chatContainer.canRemoveBlock(previous)
-							) {
+							if (this.ctx.chatContainer.canRemoveBlock(previous)) {
 								this.ctx.chatContainer.removeChild(previous);
 							}
 							previous.seal();
