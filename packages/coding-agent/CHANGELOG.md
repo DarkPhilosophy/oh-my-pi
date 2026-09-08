@@ -24,6 +24,10 @@
 - Fixed the `providers.openai-codex.useReserve` setting being unreachable because its group was missing from the settings Providers tab.
 - Fixed Mermaid code-fence fallback headers showing an icon instead of the `[mermaid]` language label when rendering is disabled or fails.
 - Fixed tool-activity and tool-expansion toggles not repainting the transcript, and the terminal title staying busy after an agent turn ended.
+### Fixed
+
+- GitHub Copilot model-policy 403s (plan, model policy, org restriction) no longer delete stored credentials, so the provider stays listed in `/model` after a per-model access denial instead of disappearing until the next `/login` ([#11280](https://github.com/can1357/oh-my-pi/pull/11280) by [@H4vC](https://github.com/H4vC)).
+
 ### Added
 
 - Added `advisor.maxNotesPerUpdate` setting and `WATCHDOG.yml` configuration (default `4`): allows reasoning verifiers to batch findings in a single review update without being rate-limited.
@@ -111,6 +115,7 @@
 - Report oversized selected lines that cannot fit after read context, with a working raw recovery selector instead of a looping continuation hint ([#10775](https://github.com/can1357/oh-my-pi/issues/10775)).
 - Fixed WorkPool child sessions crashing during startup while constructing their incremental `yield` tool schema.
 - Commit summaries written in Vietnamese, Korean, and other accented scripts are no longer rejected for exceeding the length limit, and keep their accents as typed.
+- Tool-scoped TTSR rules now match finalized arguments reliably when providers stream short or throttled tool calls ([#10910](https://github.com/can1357/oh-my-pi/issues/10910)).
 
 ## [18.1.10] - 2026-09-04
 
