@@ -1369,7 +1369,7 @@ export class EventController {
 					owner.sessionManager.getSessionId() === sessionId &&
 					owner.sessionManager.getSessionFile() === sessionFile
 				) {
-					this.ctx.setTodos(details.phases);
+					this.ctx.setTodos(owner.getTodoPhases());
 				}
 			}
 		}
