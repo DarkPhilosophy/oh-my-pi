@@ -448,6 +448,47 @@ describe("Firefox WebDriver BiDi relay", () => {
 		await forceKillTab(busy.name, "test cleanup", { sharedFirefoxWorker: true });
 	});
 
+	it("aborts nested host tools before force-killing the shared worker", async () => {
+		const worker = {
+			mode: "inline",
+			send: () => undefined,
+			onMessage: () => () => undefined,
+			onError: () => () => undefined,
+			terminate: async () => undefined,
+		} satisfies WorkerHandle;
+		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
+		endpoint.refCount = 2;
+		const controller = new AbortController();
+		let rejectedAfterAbort = false;
+		const pending = new Map([
+			[
+				"busy-run",
+				{
+					resolve: () => undefined,
+					reject: () => {
+						rejectedAfterAbort = controller.signal.aborted;
+					},
+					session: {},
+					toolCalls: new Map([["nested-host-tool", controller]]),
+				},
+			],
+		]) as unknown as WorkerTabSession["pending"];
+		const first = createFirefoxTab("firefox-force-first", endpoint, worker);
+		const second = createFirefoxTab("firefox-force-second", endpoint, worker);
+		first.pending = pending;
+		second.pending = pending;
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(first.name, first);
+		tabs.set(second.name, second);
+
+		await forceKillTab(first.name, "shared worker failed", { sharedFirefoxWorker: true });
+
+		expect(controller.signal.aborted).toBe(true);
+		expect(rejectedAfterAbort).toBe(true);
+		expect(tabs.has(first.name)).toBe(false);
+		expect(tabs.has(second.name)).toBe(false);
+	});
+
 	it("repoints every Firefox alias when its shared worker is recycled", async () => {
 		const oldWorker = {
 			mode: "worker",

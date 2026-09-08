@@ -392,6 +392,9 @@ async function acquireTabImpl(
 			tabs.set(name, tab);
 			return { tab, created: true };
 		} catch (error) {
+			if (error instanceof RecoverableWorkerError) {
+				await invalidateFirefoxWorker(firefoxSharedTab.worker, "Firefox tab selection failed recoverably");
+			}
 			if (tempHold || browser.refCount === 0) await releaseBrowser(browser, { kill: false });
 			throw error;
 		}
@@ -1142,6 +1145,9 @@ export async function selectFirefoxWorkerTab(
 						GRACE_MS,
 						"Timed out cancelling Firefox browser tab selection",
 					);
+					if (selectionOptions.url) {
+						await invalidateFirefoxWorker(worker, "Firefox tab selection navigation timed out");
+					}
 				} catch {
 					await invalidateFirefoxWorker(worker, "Firefox tab selection did not acknowledge cancellation");
 				}
@@ -1164,6 +1170,19 @@ async function invalidateFirefoxWorker(worker: WorkerHandle, reason: string): Pr
 		return;
 	}
 	await terminateWorker(worker);
+}
+
+export async function handleFirefoxSelectionErrorForTest(tab: WorkerTabSession, error: unknown): Promise<void> {
+	if (error instanceof RecoverableWorkerError) {
+		await invalidateFirefoxWorker(tab.worker, "Firefox tab selection failed recoverably");
+	}
+}
+
+export function selectFirefoxWorkerTabForTest(
+	worker: WorkerHandle,
+	options: Parameters<typeof selectFirefoxWorkerTab>[1],
+): Promise<ReadyInfo> {
+	return selectFirefoxWorkerTab(worker, options);
 }
 
 function safeSend(tab: WorkerTabSession, msg: WorkerInbound): void {
@@ -1266,10 +1285,28 @@ export async function forceKillTab(
 ): Promise<void> {
 	const tab = tabs.get(name);
 	if (!tab) return;
+	if (tab.backend === "worker" && tab.kindTag === "firefox-relay") {
+		tab.state = "dead";
+		const aliases = [...tabs.entries()].filter(
+			([, candidate]) => candidate.backend === "worker" && candidate.worker === tab.worker,
+		);
+		if (!options.sharedFirefoxWorker && aliases.length > 1) {
+			tab.worker.send({ type: "release-runtime", name });
+			const survivor = aliases.find(([aliasName]) => aliasName !== name)?.[1];
+			tabs.delete(name);
+			if (survivor?.backend === "worker") firefoxSharedTabs.set(survivor);
+			await releaseBrowser(tab.browser, { kill: false });
+			return;
+		}
+	}
 	killedTabs.set(name, reason);
 	tab.state = "dead";
 	const error = postmortem.markExpectedCleanupError(new ToolError(reason));
-	for (const pending of tab.pending.values()) pending.reject(error);
+	for (const pending of tab.pending.values()) {
+		for (const ctrl of pending.toolCalls.values()) ctrl.abort(error);
+		pending.closeAc?.abort(error);
+		pending.reject(error);
+	}
 	tab.pending.clear();
 	if (tab.backend === "cmux") {
 		await releaseBrowser(tab.browser, { kill: false });
