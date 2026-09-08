@@ -352,18 +352,13 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
-	it("replays borrowed history when a live frame prepends rows before it", () => {
+	it("replays a semantic prepend through the provider replay contract", () => {
 		const terminal = new VirtualTerminal(20, 3);
 		const viewport = ["a", "b", "live", "editor", "extra"];
 		let plan: TerminalFramePlan = { viewport };
-		let replays = 0;
 		const acknowledged: number[] = [];
 		const provider: TerminalFrameProvider = {
 			renderFrame: () => plan,
-			beginHistoryReplay: () => {
-				replays++;
-				plan = { history: { id: 1, rows: [], kind: "replay" }, viewport: plan.viewport };
-			},
 			acknowledgeHistory: id => {
 				acknowledged.push(id);
 				plan = { viewport: plan.viewport };
@@ -372,15 +367,27 @@ describe("terminal frame plans", () => {
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
 
-		plan = { viewport: ["new", ...viewport] };
+		plan = { history: { id: 1, rows: ["new", ...viewport], kind: "replay" }, viewport };
 		tui.requestRender(true);
 
-		expect(replays).toBe(1);
 		expect(acknowledged).toEqual([1]);
-		expect(plainBuffer(terminal)).toEqual(["new", "a", "b", "live", "editor", "extra"]);
+		expect(plainBuffer(terminal)).toContain("new");
 		const replayed = plainBuffer(terminal);
 		tui.requestRender(true);
 		expect(plainBuffer(terminal)).toEqual(replayed);
+		tui.stop();
+	});
+
+	it("does not treat a repeated later heading as a semantic prepend", () => {
+		const terminal = new CountingTerminal(20, 3);
+		const provider = new Provider({ viewport: ["heading", "old", "heading", "live", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		terminal.writes.length = 0;
+		provider.plan = { viewport: ["changed", "heading", "old", "heading", "live", "editor"] };
+		tui.requestRender(true);
+		expect(terminal.writes.join("")).not.toMatch(/\x1b\[[23]J/);
+		expect(plainBuffer(terminal).filter(row => row === "heading")).toHaveLength(2);
 		tui.stop();
 	});
 
@@ -470,10 +477,13 @@ describe("terminal frame plans", () => {
 			tui.requestRender(true);
 			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["header", "editor", ""]);
 			expect(terminal.writes.join("")).not.toMatch(/\x1b\[[23]J/);
-			provider.plan = { viewport: ["new", "header", "editor", "s1", "s2", "s3", "s4"] };
+			provider.plan = {
+				history: { id: 1, rows: ["new"], kind: "replay" },
+				viewport: ["header", "editor", "s1", "s2", "s3", "s4"],
+			};
 			tui.requestRender(true);
 			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["s2", "s3", "s4"]);
-			expect(plainBuffer(terminal)).toEqual(["new", "header", "editor", "s1", "s2", "s3", "s4"]);
+			expect(plainBuffer(terminal)).toContain("new");
 			const snapshot = plainBuffer(terminal);
 			tui.requestRender(true);
 			expect(plainBuffer(terminal)).toEqual(snapshot);

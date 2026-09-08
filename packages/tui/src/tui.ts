@@ -2495,21 +2495,6 @@ export class TUI extends Container {
 			this.#providerTransientRows = borrowed.slice(0, survivingPrefix);
 			this.#providerHasTransientHistory = survivingPrefix > 0;
 		}
-		if (
-			plan.history === undefined &&
-			borrowed.length > 0 &&
-			logicalViewport.length > borrowed.length &&
-			!borrowed.every((row, index) => logicalViewport[index] === row)
-		) {
-			for (let offset = 1; offset + borrowed.length <= logicalViewport.length; offset++) {
-				if (!borrowed.every((row, index) => logicalViewport[offset + index] === row)) continue;
-				// Native rows cannot be reordered. A true prepend requires the
-				// provider's existing complete replay protocol; never append the
-				// new prefix after rows already borrowed into native scrollback.
-				this.#prepareForcedRender(true);
-				return this.#renderProviderFrame(width, height, flushing);
-			}
-		}
 		// Borrowed ownership is separate from the current viewport geometry.
 		let history = plan.history;
 		const newHistory = history !== undefined && history.id > this.#acceptedHistoryBatchId;
