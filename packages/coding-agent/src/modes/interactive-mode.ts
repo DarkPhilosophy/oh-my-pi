@@ -548,15 +548,8 @@ export function renderSubagentHudLines(
 				const currentTool = session.progress?.currentTool?.trim();
 				if (currentTool) {
 					const args = session.progress?.currentToolArgs?.trim();
-					const pathTool =
-						currentTool === "read" ||
-						currentTool === "write" ||
-						currentTool === "edit" ||
-						currentTool === "glob" ||
-						currentTool === "grep" ||
-						currentTool === "find" ||
-						currentTool === "ls";
-					const displayArgs = pathTool ? shortenPath(args) : args;
+					const displayArgs =
+						currentTool === "bash" || currentTool === "eval" || currentTool === "ssh" ? args : shortenPath(args);
 					const toolText = replaceTabs(
 						sanitizeText(displayArgs ? `${currentTool}(${displayArgs})` : currentTool),
 					).replace(/\s*[\r\n]+\s*/g, " ");

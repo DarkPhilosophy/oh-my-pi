@@ -160,10 +160,10 @@ describe("subagent HUD lines", () => {
 		const readOut = render([
 			makeSession({
 				id: "Reader",
-				progress: makeProgress({ id: "Reader", currentTool: "read", currentToolArgs: homePath }),
+				progress: makeProgress({ id: "Reader", currentTool: "ast_grep", currentToolArgs: homePath }),
 			}),
 		]);
-		expect(readOut).toContain("read(~/private-project/secret.ts)");
+		expect(readOut).toContain("ast_grep(~/private-project/secret.ts)");
 		expect(readOut).not.toContain(process.env.HOME!);
 
 		const command = `${homePath} --check`;
