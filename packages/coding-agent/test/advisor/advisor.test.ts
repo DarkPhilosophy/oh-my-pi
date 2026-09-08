@@ -6299,6 +6299,19 @@ describe("advisor", () => {
 			expect(strip(overlay.render(200))).toContain("read, web_search");
 		});
 
+		it("keeps roster focus when pointer motion or the wheel is routed over the editor", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			for (const mouseInput of ["\x1b[<32;80;3M", "\x1b[<65;80;3M"]) {
+				const overlay = make({ advisors: [{ name: "Architecture" }, { name: "Security", tools: ["web_search"] }] });
+				overlay.render(120);
+				overlay.handleInput(mouseInput);
+				overlay.handleInput("\x1b[B");
+				expect(strip(overlay.render(120))).toContain("web_search");
+			}
+		});
+
 		it("preserves an unsaved name draft when pointer motion hovers over the roster", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");

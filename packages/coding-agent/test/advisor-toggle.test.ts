@@ -480,6 +480,7 @@ describe("AgentSession advisor toggle", () => {
 		}
 	});
 	it("removes inherited advisor queue entries while retaining user steering", async () => {
+		session.setAdvisorEnabled(true);
 		const child = new AgentSession({
 			agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
 			sessionManager: SessionManager.inMemory(),
@@ -492,25 +493,24 @@ describe("AgentSession advisor toggle", () => {
 			advisorScope: session.advisorScope,
 		});
 		try {
-			await child.sendCustomMessage({ role: "custom", customType: "advisor", content: "queued concern" } as never, {
-				deliverAs: "steer",
-				triggerTurn: false,
-			});
-			await child.sendCustomMessage({ role: "user", content: "queued user request" } as never, {
-				deliverAs: "steer",
-				triggerTurn: false,
-			});
+			const advice = {
+				role: "custom",
+				customType: "advisor",
+				content: "queued concern",
+				display: true,
+				timestamp: 1,
+			} as AgentMessage;
+			const userSteer: AgentMessage = { role: "user", content: "queued user request", timestamp: 2 };
+			const userFollowUp: AgentMessage = { role: "user", content: "next user request", timestamp: 3 };
+			child.agent.steer(advice);
+			child.agent.steer(userSteer);
+			child.agent.followUp(advice);
+			child.agent.followUp(userFollowUp);
+			expect(child.agent.peekSteeringQueue()).toEqual([advice, userSteer]);
+			expect(child.agent.peekFollowUpQueue()).toEqual([advice, userFollowUp]);
 			session.setAdvisorEnabled(false);
-			expect(
-				child.agent.peekSteeringQueue().some(message => {
-					return (
-						typeof message === "object" &&
-						message !== null &&
-						"customType" in message &&
-						message.customType === "advisor"
-					);
-				}),
-			).toBe(false);
+			expect(child.agent.peekSteeringQueue()).toEqual([userSteer]);
+			expect(child.agent.peekFollowUpQueue()).toEqual([userFollowUp]);
 		} finally {
 			await child.dispose();
 		}
