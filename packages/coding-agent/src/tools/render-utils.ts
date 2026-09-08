@@ -736,7 +736,7 @@ export function shortenEmbeddedPaths(text: string, homeDir?: string): string {
 	const escapedHome = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const flags = /^[A-Za-z]:[\\/]|^\\\\/.test(home) ? "gi" : "g";
 	const tokenBoundary = String.raw`[\s"'` + "`" + String.raw`=(:,;]`;
-	return text.replace(new RegExp(`(^|${tokenBoundary})${escapedHome}(?=$|[/\\\\\\s"'\\]),;])`, flags), "$1~");
+	return text.replace(new RegExp(`(^|${tokenBoundary})${escapedHome}(?=$|[/\\\\\\s"'\\]),;:])`, flags), "$1~");
 }
 
 export function formatToolWorkingDirectory(workdir: string | undefined, projectDir: string): string | undefined {

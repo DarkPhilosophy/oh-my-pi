@@ -273,6 +273,21 @@ describe("subagent HUD lines", () => {
 		expect(text).toContain(`glob(src/**/*.ts; ~/private/*.ts; /mnt${home}/keep.ts)`);
 	});
 
+	it("shortens a home-directory entry in colon-separated command paths", () => {
+		const text = render([
+			makeSession({
+				id: "Runner",
+				progress: makeProgress({
+					id: "Runner",
+					currentTool: "bash",
+					currentToolArgs: `PYTHONPATH=${process.env.HOME!}:/opt/lib python`,
+					currentToolArgsKey: "command",
+				}),
+			}),
+		]);
+		expect(text).toContain("PYTHONPATH=~:/opt/lib python");
+	});
+
 	it("preserves model revision and effort in a roomy HUD badge", () => {
 		const selector = "anthropic/claude-sonnet-4-20250514:high";
 		const text = Bun.stripANSI(
