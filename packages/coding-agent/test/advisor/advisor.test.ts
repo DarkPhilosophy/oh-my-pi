@@ -28,6 +28,7 @@ import {
 } from "../../src/advisor";
 import type { ModelRegistry } from "../../src/config/model-registry";
 import { Settings } from "../../src/config/settings";
+import { loadTheme } from "../../src/modes/theme/loader";
 import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../../src/modes/components/advisor-config";
 import { createAdvisorMessageCard } from "../../src/modes/components/advisor-message";
 import { getThemeByName, setThemeInstance } from "../../src/modes/theme/theme";
@@ -6306,11 +6307,11 @@ describe("advisor", () => {
 				],
 			});
 			const text = strip(overlay.render(200));
-			// The list shows ● for enabled and ○ for disabled.
-			expect(text).toContain("● Active");
-			expect(text).toContain("○ Disabled");
+			// The list and preview use the active theme's enabled/disabled markers.
+			expect(text).toContain(`${uiTheme.symbol("status.enabled")} Active`);
+			expect(text).toContain(`${uiTheme.symbol("status.disabled")} Disabled`);
 			// The preview of the highlighted (first) advisor shows its enabled status.
-			expect(text).toContain("● on");
+			expect(text).toContain(`${uiTheme.symbol("status.enabled")} on`);
 		});
 
 		it("sanitizes project names and blocks global actions while loading", async () => {
@@ -6335,6 +6336,16 @@ describe("advisor", () => {
 			resolveLoad({ advisors: [{ name: "Loaded global" }] });
 			await loading;
 			expect(strip(overlay.render(120))).toContain("Loaded global");
+		});
+		it("uses ASCII preset markers for roster and dirty state", async () => {
+			const asciiTheme = await loadTheme("dark", { symbolPresetOverride: "ascii" });
+			setThemeInstance(asciiTheme);
+			const overlay = make({ advisors: [{ name: "Active" }, { name: "Disabled", enabled: false }] });
+			const text = strip(overlay.render(120));
+			expect(text).toContain("[x] Active");
+			expect(text).toContain("[ ] Disabled");
+			expect(text).not.toMatch(/[●○]/);
+			setThemeInstance((await getThemeByName("dark"))!);
 		});
 	});
 });

@@ -246,7 +246,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		left.push(...this.#padTo(this.#scopes.user.list.render(this.#sidebarWidth), userRows));
 
 		const dirty = this.#scopes.project.dirty || this.#scopes.user.dirty;
-		const title = `${this.#paneTitle("project")}${dirty ? "  ● unsaved" : ""}`;
+		const title = `${this.#paneTitle("project")}${dirty ? `  ${theme.symbol("status.pending")} unsaved` : ""}`;
 		const right = this.#editorWindow(bodyWidth, bodyRows);
 
 		const out: string[] = [];
@@ -451,7 +451,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 				this.#cb.requestRender();
 				return true;
 			}
-			this.#focusEditor();
+			if (event.leftClick) this.#focusEditor();
 			const el = this.#editor as Partial<MouseRoutable>;
 			// Editor content starts 2 rows below the body top (header + blank).
 			if (typeof el.routeMouse === "function")
@@ -487,14 +487,17 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const state = this.#scopes[scope];
 		const items: SelectItem[] = state.doc.advisors.map((advisor, index) => ({
 			value: `advisor:${index}`,
-			label: `${advisor.enabled === false ? "○" : "●"} ${advisor.name || "(unnamed)"}`,
+			label: `${theme.symbol(advisor.enabled === false ? "status.disabled" : "status.enabled")} ${advisor.name || "(unnamed)"}`,
 			description: this.#advisorSummary(advisor),
 		}));
 		if (items.length === 0)
 			items.push({ value: "empty", label: "(no advisors)", description: "role default applies" });
 		items.push({ value: "add", label: "+ Add advisor" });
 		items.push({ value: "shared", label: "Shared instructions", description: previewLine(state.doc.instructions) });
-		items.push({ value: "save", label: state.dirty ? "Save & apply ●" : "Save & apply" });
+		items.push({
+			value: "save",
+			label: state.dirty ? `Save & apply ${theme.symbol("status.pending")}` : "Save & apply",
+		});
 		const list = new SelectList(items, Math.max(1, items.length), getSelectListTheme());
 		const remembered = state.cursor ? items.findIndex(item => item.value === state.cursor) : -1;
 		if (remembered >= 0) list.setSelectedIndex(remembered);
@@ -585,7 +588,14 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const { scope, index, advisor } = target;
 		const modelDescription = advisor.model?.trim() || this.#defaultModelLabel || "advisor role default";
 		const items: SelectItem[] = [
-			{ value: "toggleEnabled", label: "Enabled", description: advisor.enabled === false ? "○ off" : "● on" },
+			{
+				value: "toggleEnabled",
+				label: "Enabled",
+				description:
+					advisor.enabled === false
+						? `${theme.symbol("status.disabled")} off`
+						: `${theme.symbol("status.enabled")} on`,
+			},
 			{ value: "name", label: "Name", description: advisor.name },
 			{ value: "model", label: "Model", description: modelDescription },
 		];
