@@ -70,7 +70,7 @@ import {
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
-import { type AccountMasker, createAccountMasker, MASK_STARS } from "../utils/usage-mask";
+import { type AccountMasker, createAccountMasker, MASK_STARS, normalizeUsageAccountLabel } from "../utils/usage-mask";
 import { renderFractionBar } from "../utils/usage-bar";
 
 function formatCreditValue(value: number): string {
@@ -2130,7 +2130,8 @@ export function renderUsageReports(
 			const activeLabel = formatActiveAccountLabel(activeAccount);
 			if (activeLabel) maskInputs.push(activeLabel);
 		}
-		const mask = createAccountMasker(maskInputs, maskAccountLabels);
+		const accountMasker = createAccountMasker(maskInputs.map(normalizeUsageAccountLabel), maskAccountLabels);
+		const mask: AccountMasker = label => accountMasker(normalizeUsageAccountLabel(label));
 		const activeAccountLabel = mask(formatActiveAccountLabel(activeAccount) ?? "");
 		if (activeAccountLabel) {
 			lines.push(
@@ -2167,7 +2168,7 @@ export function renderUsageReports(
 			const isActive = reportMatchesActiveAccount(report, activeAccount);
 			const suffix = `: ${count} saved reset${count === 1 ? "" : "s"}${isActive ? " (active)" : ""}`;
 			const labelBudget = Math.max(1, availableWidth - visibleWidth(`    • ${suffix}`));
-			const safeLabel = replaceTabs(sanitizeText(rawLabel));
+			const safeLabel = normalizeUsageAccountLabel(rawLabel);
 			const label = styleAccountMask(truncateToWidth(mask(safeLabel), labelBudget), uiTheme);
 			resetAccountLines.push(`    • ${label}${suffix}`);
 			for (const credit of report.resetCredits?.credits ?? []) {

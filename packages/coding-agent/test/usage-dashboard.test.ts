@@ -248,6 +248,31 @@ describe("buildProviderCards split + privacy", () => {
 		expect(headers.some(line => line.includes("(West)"))).toBe(true);
 		expect(headers.every(line => line.length <= 36)).toBe(true);
 	});
+
+	it("renders normalized masked short account IDs without embedded line breaks", () => {
+		const dashboard = new UsageDashboardComponent({
+			reports: [
+				{
+					provider: "openai-codex",
+					fetchedAt: Date.now(),
+					limits: [limit("openai-codex", "ab\r\ncd", "5h", "5 hours", 0.2, "ok")],
+					metadata: { accountId: "ab\r\ncd", orgName: "Org\tName" },
+				},
+			],
+			renderDetail: () => "",
+			createMasker: createAccountMasker,
+			maskAccountLabels: true,
+			mergeAccounts: false,
+			labelPlacement: "moving",
+			loadActivity: async () => {},
+			requestRender: () => {},
+			onClose: () => {},
+		});
+		const rendered = dashboard.render(48).join("\n");
+		expect(rendered).not.toContain("\r");
+		expect(rendered).not.toContain("\t");
+		expect(Bun.stripANSI(rendered)).toContain("a*** cd (Org   Name)");
+	});
 });
 
 describe("UsageDashboardComponent session toggles", () => {

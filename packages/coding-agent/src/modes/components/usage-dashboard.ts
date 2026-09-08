@@ -29,6 +29,7 @@ import {
 	matchesSelectPageUp,
 	matchesSelectUp,
 } from "../utils/keybinding-matchers";
+import { normalizeUsageAccountLabel } from "../utils/usage-mask";
 import type { AccountMasker } from "../utils/usage-mask";
 import { renderFractionBar } from "../utils/usage-bar";
 import { bottomBorder, divider, row, topBorder } from "./overlay-box";
@@ -155,7 +156,7 @@ export interface BuildCardsOptions {
 }
 
 function sanitizeAccountLabelPart(value: string): string {
-	return replaceTabs(sanitizeText(value));
+	return normalizeUsageAccountLabel(value);
 }
 
 /** Best-effort identity for one report's account: email, organization, account id, project id, or ordinal. */
