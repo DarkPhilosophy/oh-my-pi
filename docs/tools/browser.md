@@ -17,6 +17,7 @@ The prelude exists only while Eval and `browser.enabled` are enabled. It is not 
 
 ## JavaScript API
 
+```js
 const tab = await browser.open({
   name: "main",
   url: "https://example.com",

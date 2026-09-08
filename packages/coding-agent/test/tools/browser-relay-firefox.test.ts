@@ -9,6 +9,7 @@ import {
 	handleTabMessage,
 	publishRecycledWorker,
 	releaseTab,
+	runInTab,
 	selectFirefoxWorkerTab,
 	type WorkerHandle,
 	type WorkerTabSession,
@@ -380,6 +381,69 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(sent).toEqual(["select"]);
 	});
 
+	it("invalidates every Firefox alias after an inline recoverable worker failure", async () => {
+		const listeners = new Set<Parameters<WorkerHandle["onMessage"]>[0]>();
+		let terminations = 0;
+		const worker: WorkerHandle = {
+			mode: "inline",
+			send: msg => {
+				if (msg.type === "run") {
+					queueMicrotask(() => {
+						handleTabMessage(first, {
+							type: "result",
+							id: msg.id,
+							ok: false,
+							error: {
+								name: "ToolError",
+								message: "request interception cleanup failed",
+								isAbort: false,
+								isToolError: true,
+								recoverTab: true,
+							},
+						});
+					});
+				} else if (msg.type === "close") {
+					queueMicrotask(() => {
+						for (const listener of listeners) listener({ type: "closed" });
+					});
+				}
+			},
+			onMessage: listener => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			onError: () => () => undefined,
+			terminate: async () => {
+				terminations++;
+			},
+		};
+		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
+		endpoint.refCount = 2;
+		const first = createFirefoxTab("firefox-recoverable-first", endpoint, worker);
+		const second = createFirefoxTab("firefox-recoverable-second", endpoint, worker);
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(first.name, first);
+		tabs.set(second.name, second);
+
+		await expect(
+			runInTab(first.name, {
+				code: "return 1",
+				timeoutMs: 1_000,
+				session: {
+					cwd: "/tmp",
+					settings: { get: () => undefined },
+				} as never,
+			}),
+		).rejects.toThrow("request interception cleanup failed");
+
+		expect(terminations).toBe(1);
+		expect(first.state).toBe("dead");
+		expect(second.state).toBe("dead");
+		expect(tabs.has(first.name)).toBe(false);
+		expect(tabs.has(second.name)).toBe(false);
+		expect(endpoint.refCount).toBe(0);
+	});
+
 	it("force-kills one Firefox alias without terminating its shared worker", async () => {
 		let terminations = 0;
 		const sent: string[] = [];
@@ -467,6 +531,65 @@ describe("Firefox WebDriver BiDi relay", () => {
 			if (tabs.has(surviving.name))
 				await forceKillTab(surviving.name, "test cleanup", { sharedFirefoxWorker: true });
 		}
+	});
+
+	it("times out while waiting for a sibling reservation without later closing the alias", async () => {
+		const listeners = new Set<Parameters<WorkerHandle["onMessage"]>[0]>();
+		const sent: string[] = [];
+		let selectedId: string | undefined;
+		const worker: WorkerHandle = {
+			mode: "inline",
+			send: msg => {
+				sent.push(msg.type);
+				if (msg.type === "select") selectedId = msg.id;
+				if (msg.type === "close") {
+					queueMicrotask(() => {
+						for (const listener of listeners) listener({ type: "closed" });
+					});
+				}
+			},
+			onMessage: listener => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			onError: () => () => undefined,
+			terminate: async () => undefined,
+		};
+		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
+		endpoint.refCount = 2;
+		const closing = createFirefoxTab("firefox-timeout-close", endpoint, worker);
+		const busy = createFirefoxTab("firefox-timeout-busy", endpoint, worker);
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(closing.name, closing);
+		tabs.set(busy.name, busy);
+		const selection = selectFirefoxWorkerTab(worker, {
+			name: busy.name,
+			targetId: busy.targetId,
+			timeoutMs: 1_000,
+		});
+		await Bun.sleep(0);
+
+		const startedAt = performance.now();
+		await expect(releaseTab(closing.name, { timeoutMs: 10 })).rejects.toThrow("Timed out");
+		expect(performance.now() - startedAt).toBeLessThan(250);
+		expect(tabs.has(closing.name)).toBe(true);
+		expect(closing.state).toBe("alive");
+		expect(sent).not.toContain("release-runtime");
+
+		for (const listener of listeners) {
+			listener({
+				type: "selected",
+				id: selectedId!,
+				info: busy.info,
+			});
+		}
+		await selection;
+		await Bun.sleep(20);
+
+		expect(tabs.has(closing.name)).toBe(true);
+		expect(closing.state).toBe("alive");
+		expect(sent).not.toContain("release-runtime");
+		await forceKillTab(closing.name, "test cleanup", { sharedFirefoxWorker: true });
 	});
 
 	it("releases an idle Firefox alias while its sibling owns the shared run", async () => {

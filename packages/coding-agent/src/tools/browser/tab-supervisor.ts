@@ -586,16 +586,30 @@ export async function runInTab(name: string, opts: RunInTabOptions): Promise<Run
 	);
 }
 
-async function reserveFirefoxWorker(worker: WorkerHandle, signal?: AbortSignal): Promise<() => void> {
+async function reserveFirefoxWorker(
+	worker: WorkerHandle,
+	signal?: AbortSignal,
+	timeoutMs?: number,
+): Promise<() => void> {
 	const previous = firefoxOperationChains.get(worker) ?? Promise.resolve();
 	const released = Promise.withResolvers<void>();
 	const current = previous.catch(() => undefined).then(() => released.promise);
 	firefoxOperationChains.set(worker, current);
+	const controller = timeoutMs === undefined ? undefined : new AbortController();
+	const timeout = timeoutMs === undefined ? undefined : setTimeout(() => controller?.abort(), timeoutMs);
 	try {
-		await untilAborted(signal, () => previous.catch(() => undefined));
+		await untilAborted(
+			controller ? (signal ? AbortSignal.any([signal, controller.signal]) : controller.signal) : signal,
+			() => previous.catch(() => undefined),
+		);
 	} catch (error) {
 		released.resolve();
+		if (controller?.signal.aborted && !signal?.aborted) {
+			throw new ToolError(`Timed out after ${timeoutMs}ms waiting for Firefox worker reservation`);
+		}
 		throw error;
+	} finally {
+		clearTimeout(timeout);
 	}
 	return () => {
 		released.resolve();
@@ -721,7 +735,7 @@ async function runInTabWithSnapshotUnlocked(
 						const reason = runTimedOut
 							? "Browser code execution timed out; tab killed"
 							: "Browser request interception cleanup failed; tab killed";
-						await forceKillTab(name, reason);
+						await forceKillTab(name, reason, { sharedFirefoxWorker: tab.kindTag === "firefox-relay" });
 					} else {
 						await recycleTimedOutWorkerTab(tab, opts.timeoutMs + GRACE_MS);
 					}
@@ -746,7 +760,7 @@ export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Pr
 	const initial = tabs.get(name);
 	const releaseReservation =
 		initial?.backend === "worker" && initial.kindTag === "firefox-relay"
-			? await reserveFirefoxWorker(initial.worker)
+			? await reserveFirefoxWorker(initial.worker, undefined, opts.timeoutMs)
 			: undefined;
 	try {
 		return await releaseTabUnlocked(name, opts);
