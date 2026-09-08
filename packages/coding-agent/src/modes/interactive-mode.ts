@@ -125,7 +125,14 @@ import { tinyTitleClient } from "../tiny/title-client";
 import { isMCPToolName } from "../tools/builtin-names";
 import type { LspStartupServerInfo } from "../tools";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
-import { formatMoreItems, replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
+import {
+	formatMoreItems,
+	replaceTabs,
+	shortenEmbeddedPaths,
+	shortenPath,
+	TRUNCATE_LENGTHS,
+	truncateToWidth,
+} from "../tools/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
 import {
 	createTodoHudStateData,
@@ -521,21 +528,31 @@ export function renderSubagentHudLines(
 					description && !labelEchoesHandle(session.id, description) ? description : undefined;
 				if (distinctDescription) {
 					const budget = Math.max(1, columns - visibleWidth(Bun.stripANSI(line)) - 8);
-					const formatted = replaceTabs(sanitizeText(distinctDescription)).replace(/\s*[\r\n]+\s*/g, " ");
+					const formatted = replaceTabs(sanitizeText(shortenEmbeddedPaths(distinctDescription))).replace(
+						/\s*[\r\n]+\s*/g,
+						" ",
+					);
 					line += `${theme.sep.dot}${theme.fg("accent", truncateToWidth(formatted, budget))}`;
 				}
 				const currentTool = session.progress?.currentTool?.trim();
-				if (currentTool) {
-					const args = session.progress?.currentToolArgs?.trim();
-					const argsKey = session.progress?.currentToolArgsKey;
+				const lastTool = currentTool ? undefined : session.progress?.recentTools[0];
+				const toolName = currentTool || lastTool?.tool;
+				if (toolName) {
+					const args = currentTool ? session.progress?.currentToolArgs?.trim() : lastTool?.args.trim();
+					const argsKey = currentTool ? session.progress?.currentToolArgsKey : lastTool?.argsKey;
 					const displayArgs =
-						argsKey === "path" || argsKey === "file_path" || argsKey === "command" ? shortenPath(args) : args;
+						argsKey === "command"
+							? shortenEmbeddedPaths(args ?? "")
+							: argsKey === "path" || argsKey === "file_path"
+								? shortenPath(args)
+								: args;
 					const toolText = replaceTabs(
-						sanitizeText(displayArgs ? `${currentTool}(${displayArgs})` : currentTool),
+						sanitizeText(displayArgs ? `${toolName}(${displayArgs})` : toolName),
 					).replace(/\s*[\r\n]+\s*/g, " ");
+					const toolLabel = lastTool ? `${lastTool.isError ? "failed" : "done"} ${toolText}` : toolText;
 					return [
 						truncateToWidth(line, Math.max(1, columns - 6)),
-						`${theme.tree.hook} ${theme.fg("dim", truncateToWidth(toolText, Math.max(1, columns - 8)))}`,
+						`${theme.tree.hook} ${theme.fg("dim", truncateToWidth(toolLabel, Math.max(1, columns - 8)))}`,
 					];
 				}
 				return truncateToWidth(line, Math.max(1, columns - 6));
@@ -2804,6 +2821,14 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#scheduleObserverUiSync(kind: SessionObserverChangeKind): void {
+		if (kind === "tool") {
+			if (this.#observerUiSyncTimer) {
+				clearTimeout(this.#observerUiSyncTimer);
+				this.#observerUiSyncTimer = undefined;
+			}
+			this.#flushObserverUiSync();
+			return;
+		}
 		if (kind !== "progress") {
 			this.#observerUiSyncNeedsTodoReconcile = true;
 		}

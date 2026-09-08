@@ -201,7 +201,7 @@ const firefoxAcquireChains = new Map<string, Promise<void>>();
 const firefoxOperationChains = new WeakMap<WorkerHandle, Promise<void>>();
 const firefoxSharedTabs = new FirefoxSharedTabRegistry();
 const DEFAULT_TAB_CLOSE_TIMEOUT_MS = 5_000;
-class RecoverableWorkerError extends ToolError {}
+class RecoverableWorkerError extends ToolError { }
 const REPORTED_INIT_FAILURE = Symbol("reported-init-failure");
 
 type ReportedInitFailure = Error & { [REPORTED_INIT_FAILURE]?: true };
@@ -734,43 +734,44 @@ async function runInTabWithSnapshotUnlocked(
 			targetId: tab.kindTag === "firefox-relay" ? tab.targetId : undefined,
 			dialogs: tab.dialogPolicy,
 		});
-		try {
-			return await raceWithTimeout(
-				promise,
-				opts.timeoutMs + GRACE_MS,
-				"Browser code execution hung past grace; tab killed",
-				async reason => await forceKillTab(name, reason, { sharedFirefoxWorker: tab.kindTag === "firefox-relay" }),
-			);
-		} catch (error) {
-			const runTimedOut =
-				error instanceof ToolError && error.message.startsWith("Browser code execution timed out after ");
-			if (tab.kindTag === "firefox-relay" && (runTimedOut || error instanceof ToolAbortError)) {
-				const reason = runTimedOut
-					? "Firefox browser operation timed out; shared relay worker killed"
-					: "Firefox browser operation aborted; shared relay worker killed";
-				await forceKillTab(name, reason, { sharedFirefoxWorker: true });
-			} else if (runTimedOut || error instanceof RecoverableWorkerError) {
-				try {
-					if (tab.worker.mode === "inline") {
-						const reason = runTimedOut
-							? "Browser code execution timed out; tab killed"
-							: "Browser request interception cleanup failed; tab killed";
-						await forceKillTab(name, reason, { sharedFirefoxWorker: tab.kindTag === "firefox-relay" });
-					} else {
-						await recycleTimedOutWorkerTab(tab, opts.timeoutMs + GRACE_MS);
-					}
-				} catch (recycleError) {
-					logger.warn("Failed to recycle browser tab worker; killing tab", {
-						error: recycleError instanceof Error ? recycleError.message : String(recycleError),
-					});
-					await forceKillTab(name, "Browser tab worker recovery failed; tab killed", {
-						sharedFirefoxWorker: tab.kindTag === "firefox-relay",
-					});
+		const result = await raceWithTimeout(
+			promise,
+			opts.timeoutMs + GRACE_MS,
+			"Browser code execution hung past grace; tab killed",
+			async reason => await forceKillTab(name, reason, { sharedFirefoxWorker: tab.kindTag === "firefox-relay" }),
+		);
+		if (result.recoverTab) await recycleTimedOutWorkerTab(tab, opts.timeoutMs + GRACE_MS);
+		return result;
+	} catch (error) {
+		const runTimedOut =
+			error instanceof ToolError && error.message.startsWith("Browser code execution timed out after ");
+		if (tab.kindTag === "firefox-relay" && (runTimedOut || error instanceof ToolAbortError)) {
+			const reason = runTimedOut
+				? "Firefox browser operation timed out; shared relay worker killed"
+				: "Firefox browser operation aborted; shared relay worker killed";
+			await forceKillTab(name, reason, { sharedFirefoxWorker: true });
+		} else if (runTimedOut || error instanceof RecoverableWorkerError) {
+			try {
+				if (tab.worker.mode === "inline") {
+					const reason = runTimedOut
+						? "Browser code execution timed out; tab killed"
+						: "Browser request interception cleanup failed; tab killed";
+					await forceKillTab(name, reason, { sharedFirefoxWorker: tab.kindTag === "firefox-relay" });
+				} else {
+					await recycleTimedOutWorkerTab(tab, opts.timeoutMs + GRACE_MS);
 				}
+			} catch (recycleError) {
+				logger.warn("Failed to recycle browser tab worker; killing tab", {
+					error: recycleError instanceof Error ? recycleError.message : String(recycleError),
+				});
+				await forceKillTab(name, "Browser tab worker recovery failed; tab killed", {
+					sharedFirefoxWorker: tab.kindTag === "firefox-relay",
+				});
 			}
-			throw error;
 		}
-	} finally {
+		throw error;
+	}
+	finally {
 		opts.signal?.removeEventListener("abort", abort);
 		tab.pending.delete(id);
 	}
@@ -823,7 +824,7 @@ async function releaseTabUnlocked(name: string, opts: ReleaseTabOptions = {}): P
 		if (tab.backend === "worker") {
 			try {
 				tab.worker.send({ type: "abort", id, expectedCleanup: true });
-			} catch {}
+			} catch { }
 		}
 		for (const ctrl of pending.toolCalls.values()) ctrl.abort(closeError);
 		// Propagate the closure into the cmux run's abort signal so
@@ -1607,7 +1608,7 @@ async function spawnInlineWorker(): Promise<WorkerHandle> {
 			workerListeners.add(typed);
 			return () => workerListeners.delete(typed);
 		},
-		close: () => {},
+		close: () => { },
 	};
 	const { WorkerCore } = await import("./tab-worker");
 	new WorkerCore(workerTransport, false);
@@ -1621,8 +1622,8 @@ async function spawnInlineWorker(): Promise<WorkerHandle> {
 			hostListeners.add(handler);
 			return () => hostListeners.delete(handler);
 		},
-		onError: () => () => {},
-		async terminate() {},
+		onError: () => () => { },
+		async terminate() { },
 	};
 }
 

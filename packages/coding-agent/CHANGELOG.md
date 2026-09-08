@@ -8,6 +8,9 @@
 
 ### Fixed
 
+- Fixed completed subagent jobs and IRC replies displaying internal XML/JSON wrappers instead of readable results.
+- Fixed fast subagent tool transitions being dropped by progress and HUD update batching.
+- Kept the last completed subagent tool visible as `done` or `failed` until the next tool starts, so fast operations remain readable.
 - Fixed Firefox relay aliases losing their target or sharing unsafe work after timeouts, with bounded run and close waits.
 - Fixed resumed background task cards freezing on their first progress update and read-only TODO inspection reopening dismissed lists.
 - Fixed advisor configuration edits racing scope loading and quota cards combining distinct organizations.

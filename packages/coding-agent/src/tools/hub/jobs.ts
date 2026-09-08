@@ -14,6 +14,7 @@ import { shimmerEnabled, shimmerText } from "../../modes/theme/shimmer";
 import type { Theme } from "../../modes/theme/theme";
 import { renderStructuredJson } from "../../session/async-job-delivery";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
+import { formatTaskResultPreview } from "../../task/result-preview";
 import type { StructuredSubagentOutput } from "../../task/types";
 import { Ellipsis, Hasher, type RenderCache, renderStatusLine, renderTreeList, truncateToWidth } from "../../tui";
 import type { ToolSession } from "..";
@@ -510,18 +511,6 @@ function statusToColor(status: JobSnapshot["status"]): ToolUIColor {
 }
 
 /**
- * Task job results are delivered in the model-facing `<task-result>` envelope
- * (prompts/tools/task-summary.md) so the parent agent can parse status and the
- * `agent://` pointer. The wrapper markup is noise to a human — preview the
- * inner <output>/<preview> body instead.
- */
-function stripTaskResultEnvelope(text: string): string {
-	if (!text.startsWith("<task-result")) return text;
-	const body = /<(output|preview)(?:\s[^>]*)?>\n?([\s\S]*?)\n?<\/\1>/.exec(text)?.[2];
-	return body?.trim() || text;
-}
-
-/**
  * Pretty-printed JSON output wastes the collapsed one-line preview on a lone
  * "{" — flatten structured-looking bodies onto a single line. Slice first:
  * downstream truncation keeps at most a few hundred columns, so collapsing
@@ -705,8 +694,9 @@ export function jobsRenderResult(
 							lines.push(`  ${uiTheme.fg("toolOutput", visibleLabelLines[i]!)}`);
 						}
 
+						const rawPreview = job.errorText?.trim() || job.resultText?.trim() || "";
 						const preview = flattenStructuredPreview(
-							stripTaskResultEnvelope(job.errorText?.trim() || job.resultText?.trim() || ""),
+							job.type === "task" && !job.errorText ? formatTaskResultPreview(rawPreview) : rawPreview,
 						);
 						if (preview) {
 							const maxLines = expanded ? PREVIEW_LINES_EXPANDED : PREVIEW_LINES_COLLAPSED;

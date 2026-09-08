@@ -1508,6 +1508,9 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				progress.currentToolArgs = preview?.value;
 				progress.currentToolArgsKey = preview?.key;
 				progress.currentToolStartMs = now;
+				// A fast tool may finish before the coalesced update fires.
+				// Publish both lifecycle edges rather than dropping its start.
+				flushProgress = true;
 				const intent = event.intent?.trim();
 				if (intent) {
 					progress.lastIntent = intent;
@@ -1528,6 +1531,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					progress.recentTools.unshift({
 						tool: progress.currentTool,
 						args: progress.currentToolArgs || "",
+						argsKey: progress.currentToolArgsKey,
+						isError: event.isError,
 						endMs: now,
 					});
 					// Keep only last 5

@@ -183,7 +183,7 @@ export class AdvisorScope {
 	#suppressed = false;
 	readonly #listeners = new Set<() => void>();
 
-	constructor(readonly parent?: AdvisorScope) {}
+	constructor(readonly parent?: AdvisorScope) { }
 
 	get suppressed(): boolean {
 		return this.#suppressed || (this.parent?.suppressed ?? false);
@@ -643,7 +643,7 @@ export class SessionAdvisors {
 	/** Tracks persistence of a visible advisor card emitted outside the primary loop. */
 	trackCardEvent(processing: Promise<void>): void {
 		this.#pendingAdvisorCardEvents.add(processing);
-		void processing.finally(() => this.#pendingAdvisorCardEvents.delete(processing)).catch(() => {});
+		void processing.finally(() => this.#pendingAdvisorCardEvents.delete(processing)).catch(() => { });
 	}
 
 	/** Waits for all advisor-card persistence handlers currently in flight. */
@@ -937,14 +937,14 @@ export class SessionAdvisors {
 			// the UUIDv7 provider session id, not the local `-advisor` label.
 			const advisorTelemetry = this.#host.agent.telemetry
 				? {
-						...this.#host.agent.telemetry,
-						agent: {
-							id: advisorSessionLabel,
-							name: slug ? `${MODEL_ROLES.advisor.name}: ${advisorName}` : MODEL_ROLES.advisor.name,
-							description: formatModelString(advisorModel),
-						},
-						conversationId: undefined,
-					}
+					...this.#host.agent.telemetry,
+					agent: {
+						id: advisorSessionLabel,
+						name: slug ? `${MODEL_ROLES.advisor.name}: ${advisorName}` : MODEL_ROLES.advisor.name,
+						description: formatModelString(advisorModel),
+					},
+					conversationId: undefined,
+				}
 				: undefined;
 			// Mirror the SDK's provider-shaping options (streamFn/onPayload/...,
 			// providerSessionState, promptCacheKey, transformProviderContext) so each
@@ -1214,14 +1214,14 @@ export class SessionAdvisors {
 					entries.length === 0
 						? null
 						: ({
-								role: "custom",
-								customType: "advisor",
-								display: true,
-								attribution: "agent",
-								timestamp: Date.now(),
-								content: formatAdvisorBatchContent(entries),
-								details: { notes: entries } satisfies AdvisorMessageDetails,
-							} satisfies CustomMessage),
+							role: "custom",
+							customType: "advisor",
+							display: true,
+							attribution: "agent",
+							timestamp: Date.now(),
+							content: formatAdvisorBatchContent(entries),
+							details: { notes: entries } satisfies AdvisorMessageDetails,
+						} satisfies CustomMessage),
 				skipIdleFlush: true,
 			});
 		}
@@ -1356,7 +1356,7 @@ export class SessionAdvisors {
 			a.recorderClosed = a.recorder.close();
 			closes.push(a.recorderClosed);
 		}
-		this.#advisorRecorderClosed = Promise.all(closes).then(() => {});
+		this.#advisorRecorderClosed = Promise.all(closes).then(() => { });
 		this.#advisors = [];
 		this.#advisorYieldQueueUnsubscribe?.();
 		this.#advisorYieldQueueUnsubscribe = undefined;
@@ -1461,25 +1461,25 @@ export class SessionAdvisors {
 		const message = assistantFailure?.errorMessage ?? (error instanceof Error ? error.message : String(error));
 		const errorId = assistantFailure
 			? AIError.classifyMessage({
-					api: currentModel.api,
-					// Provider + model identity are REQUIRED for the provider-scoped
-					// account-policy patterns (e.g. Codex refusing a model on a ChatGPT
-					// account). Without them the denial classifies as a plain invalid
-					// request, so the advisor never rotates to a sibling credential that
-					// does have the model and stays stuck on the first account.
-					provider: currentModel.provider,
-					model: currentModel.id,
-					errorId: assistantFailure.errorId,
-					errorMessage: message,
-					errorStatus: assistantFailure.errorStatus,
-				})
+				api: currentModel.api,
+				// Provider + model identity are REQUIRED for the provider-scoped
+				// account-policy patterns (e.g. Codex refusing a model on a ChatGPT
+				// account). Without them the denial classifies as a plain invalid
+				// request, so the advisor never rotates to a sibling credential that
+				// does have the model and stays stuck on the first account.
+				provider: currentModel.provider,
+				model: currentModel.id,
+				errorId: assistantFailure.errorId,
+				errorMessage: message,
+				errorStatus: assistantFailure.errorStatus,
+			})
 			: // Same provider/model identity requirement as above: a denial that
-				// arrives as a raw error (no assistant message was committed) must
-				// still classify as an account policy so the advisor rotates.
-				AIError.classify(error, currentModel.api, {
-					provider: currentModel.provider,
-					modelId: currentModel.id,
-				});
+			// arrives as a raw error (no assistant message was committed) must
+			// still classify as an account policy so the advisor rotates.
+			AIError.classify(error, currentModel.api, {
+				provider: currentModel.provider,
+				modelId: currentModel.id,
+			});
 		if (AIError.is(errorId, AIError.Flag.Abort) || AIError.is(errorId, AIError.Flag.UserInterrupt)) return false;
 		if (
 			AIError.is(errorId, AIError.Flag.ContextOverflow) ||
@@ -1869,8 +1869,10 @@ export class SessionAdvisors {
 			return this.#buildAdvisorRuntime(true);
 		}
 		if (this.#advisors.length > 0) this.#stopAdvisorRuntime();
+		// Effective suppression also fires for an inherited parent veto; remove
+		// advisor cards already queued on the primary while retaining user input.
+		this.#host.extractQueuedAdvisorCards();
 		this.#host.dropPendingAdvisorCards();
-		return false;
 	}
 
 	/**
@@ -2214,12 +2216,12 @@ export class SessionAdvisors {
 			options?.compact
 				? formatSessionHistoryMarkdown(a.agent.state.messages)
 				: formatSessionDumpText({
-						messages: a.agent.state.messages,
-						systemPrompt: a.agent.state.systemPrompt,
-						model: a.agent.state.model,
-						thinkingLevel: a.agent.state.thinkingLevel,
-						tools: a.agent.state.tools,
-					});
+					messages: a.agent.state.messages,
+					systemPrompt: a.agent.state.systemPrompt,
+					model: a.agent.state.model,
+					thinkingLevel: a.agent.state.thinkingLevel,
+					tools: a.agent.state.tools,
+				});
 		if (this.#advisors.length === 1) return dump(this.#advisors[0]);
 		return this.#advisors
 			.map(a => `### Advisor: ${a.name} (${a.agent.state.model.provider}/${a.agent.state.model.id})\n\n${dump(a)}`)

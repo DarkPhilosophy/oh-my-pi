@@ -45,41 +45,41 @@ export interface SessionSnapshot {
 
 export type WorkerInitPayload =
 	| {
-			mode: "headless";
-			browserWSEndpoint: string;
-			safeDir: string;
-			/** Keep the page tied to an OMP-owned worker without pinning a visible window's layout viewport. */
-			emulateViewport?: boolean;
-			viewport?: { width: number; height: number; deviceScaleFactor?: number };
-			dialogs?: "accept" | "dismiss";
-			url?: string;
-			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
-			timeoutMs: number;
-	  }
+		mode: "headless";
+		browserWSEndpoint: string;
+		safeDir: string;
+		/** Keep the page tied to an OMP-owned worker without pinning a visible window's layout viewport. */
+		emulateViewport?: boolean;
+		viewport?: { width: number; height: number; deviceScaleFactor?: number };
+		dialogs?: "accept" | "dismiss";
+		url?: string;
+		waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
+		timeoutMs: number;
+	}
 	| {
-			mode: "attach";
-			browserWSEndpoint: string;
-			safeDir: string;
-			/** Connect through Puppeteer's native WebDriver BiDi transport instead of CDP. */
-			protocol?: "webDriverBiDi";
-			targetId: string;
-			targetMatcher?: string;
-			dialogs?: "accept" | "dismiss";
-			url?: string;
-			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
-			timeoutMs: number;
-			/**
-			 * Post-timeout recycle: before adopting the page, dismiss any open JS dialog and
-			 * stop a pending navigation so a blocked target cannot stall worker init (which
-			 * previously force-killed the tab). Never set for first-time Electron attach.
-			 */
-			recover?: boolean;
-			/**
-			 * Whether the worker may raise this tab before capturing a screenshot. Unset
-			 * behaves as `true`; the supervisor clears it for browsers we did not launch.
-			 */
-			activateForScreenshot?: boolean;
-	  };
+		mode: "attach";
+		browserWSEndpoint: string;
+		safeDir: string;
+		/** Connect through Puppeteer's native WebDriver BiDi transport instead of CDP. */
+		protocol?: "webDriverBiDi";
+		targetId: string;
+		targetMatcher?: string;
+		dialogs?: "accept" | "dismiss";
+		url?: string;
+		waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
+		timeoutMs: number;
+		/**
+		 * Post-timeout recycle: before adopting the page, dismiss any open JS dialog and
+		 * stop a pending navigation so a blocked target cannot stall worker init (which
+		 * previously force-killed the tab). Never set for first-time Electron attach.
+		 */
+		recover?: boolean;
+		/**
+		 * Whether the worker may raise this tab before capturing a screenshot. Unset
+		 * behaves as `true`; the supervisor clears it for browsers we did not launch.
+		 */
+		activateForScreenshot?: boolean;
+	};
 
 /** Result of one host tool requested by browser-run JavaScript. */
 export type ToolReply = { ok: true; value: unknown } | { ok: false; error: RunErrorPayload };
@@ -87,29 +87,29 @@ export type ToolReply = { ok: true; value: unknown } | { ok: false; error: RunEr
 export type WorkerInbound =
 	| { type: "init"; payload: WorkerInitPayload }
 	| {
-			type: "select";
-			id: string;
-			name: string;
-			targetId?: string;
-			targetMatcher?: string;
-			url?: string;
-			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
-			timeoutMs: number;
-			dialogs?: "accept" | "dismiss";
-	  }
+		type: "select";
+		id: string;
+		name: string;
+		targetId?: string;
+		targetMatcher?: string;
+		url?: string;
+		waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
+		timeoutMs: number;
+		dialogs?: "accept" | "dismiss";
+	}
 	| { type: "abort-select"; id: string }
 	| { type: "release-runtime"; name: string }
 	| {
-			type: "run";
-			id: string;
-			name: string;
-			code: string;
-			timeoutMs: number;
-			session: SessionSnapshot;
-			targetId?: string;
-			targetMatcher?: string;
-			dialogs?: "accept" | "dismiss";
-	  }
+		type: "run";
+		id: string;
+		name: string;
+		code: string;
+		timeoutMs: number;
+		session: SessionSnapshot;
+		targetId?: string;
+		targetMatcher?: string;
+		dialogs?: "accept" | "dismiss";
+	}
 	| { type: "abort"; id: string; expectedCleanup?: boolean }
 	| { type: "tool-reply"; id: string; reply: ToolReply }
 	| { type: "close" };
@@ -125,6 +125,7 @@ export interface RunResultOk {
 	displays: Array<TextContent | ImageContent>;
 	returnValue: unknown;
 	screenshots: ScreenshotResult[];
+	recoverTab?: boolean;
 }
 
 export interface RunErrorPayload {
@@ -139,22 +140,22 @@ export interface RunErrorPayload {
 
 export type WorkerOutbound =
 	| {
-			/**
-			 * Puppeteer loaded, browser connected. Sent before page acquisition so the supervisor's cold-start budget
-			 * bounds only the realm setup (cold import + connect); page creation and the first navigation run under the
-			 * ready wait.
-			 */
-			type: "setup";
-	  }
+		/**
+		 * Puppeteer loaded, browser connected. Sent before page acquisition so the supervisor's cold-start budget
+		 * bounds only the realm setup (cold import + connect); page creation and the first navigation run under the
+		 * ready wait.
+		 */
+		type: "setup";
+	}
 	| {
-			/**
-			 * The headless page was created (before the potentially slow post-creation CDP work such as stealth and
-			 * viewport). Lets the supervisor close exactly this target if it kills the worker during init — a killed
-			 * worker can't clean up after itself.
-			 */
-			type: "page-created";
-			targetId: string;
-	  }
+		/**
+		 * The headless page was created (before the potentially slow post-creation CDP work such as stealth and
+		 * viewport). Lets the supervisor close exactly this target if it kills the worker during init — a killed
+		 * worker can't clean up after itself.
+		 */
+		type: "page-created";
+		targetId: string;
+	}
 	| { type: "ready"; info: ReadyInfo }
 	| { type: "init-failed"; error: RunErrorPayload }
 	| { type: "selected"; id: string; info: ReadyInfo }

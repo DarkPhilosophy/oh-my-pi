@@ -146,4 +146,41 @@ describe("renderUsageReports content", () => {
 		expect(output).toContain("mai*** (First org): 1 saved reset");
 		expect(output).toContain("mai*** (Second org): 1 saved reset");
 	});
+
+	it("marks the active saved reset and disambiguates a reportless active identity", () => {
+		const reports: UsageReport[] = [
+			{
+				provider: "openai-codex",
+				fetchedAt: Date.now(),
+				limits: [
+					{
+						id: "weekly",
+						label: "Weekly",
+						scope: { provider: "openai-codex", accountId: "acct-a" },
+						window: { id: "weekly", label: "weekly" },
+						amount: { usedFraction: 0.1, unit: "requests" },
+						status: "ok",
+					},
+				],
+				metadata: { email: "main-one@example.com", orgId: "org-a", orgName: "Team A" },
+				resetCredits: { availableCount: 1 },
+			},
+			{
+				provider: "openai-codex",
+				fetchedAt: Date.now(),
+				limits: [],
+				metadata: { email: "main-two@example.com", orgName: "Team B" },
+				resetCredits: { availableCount: 1 },
+			},
+		];
+		const output = stripVTControlCharacters(
+			renderUsageReports(reports, theme, Date.now(), 98, () => ({
+				email: "main-one@example.com",
+				orgId: "org-a",
+				orgName: "Team A",
+			})),
+		);
+		expect(output).toContain("main-one@example.com (Team A): 1 saved reset (active)");
+		expect(output).toContain("main-two@example.com (Team B): 1 saved reset");
+	});
 });

@@ -729,6 +729,16 @@ export function shortenPath(filePath: unknown, homeDir?: string): string {
 	return filePath;
 }
 
+/** Shortens home-directory prefixes embedded in display-only text. */
+export function shortenEmbeddedPaths(text: string, homeDir?: string): string {
+	if (!text) return text;
+	const home = homeDir ?? os.homedir();
+	if (!home) return text;
+	const escapedHome = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const flags = /^[A-Za-z]:[\\/]|^\\\\/.test(home) ? "gi" : "g";
+	return text.replace(new RegExp(`${escapedHome}(?=$|[/\\\\ "'\\)])`, flags), "~");
+}
+
 export function formatToolWorkingDirectory(workdir: string | undefined, projectDir: string): string | undefined {
 	if (!workdir) return undefined;
 	const resolvedProjectDir = path.resolve(projectDir);
@@ -795,7 +805,7 @@ export function formatParseErrors(errors: string[], total?: number): string[] {
 	if (deduped.length === 0) return [];
 	const fullCount = total ?? deduped.length;
 	const capped = deduped.slice(0, PARSE_ERRORS_LIMIT);
-	const header = fullCount > capped.length ? `Parse issues (${capped.length} / ${fullCount}):` : "Parse issues:";
+	const header = fullCount > capped.length ? `Parse issues(${capped.length} / ${fullCount}):` : "Parse issues:";
 	return [header, ...capped.map(err => `- ${err}`)];
 }
 

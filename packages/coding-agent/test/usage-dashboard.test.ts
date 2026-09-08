@@ -160,6 +160,22 @@ describe("buildProviderCards split + privacy", () => {
 		expect(merged[0].accounts).toBe(2);
 		expect(merged[0].windows[0].fraction).toBeCloseTo(0.5);
 	});
+
+	it("uses orgName to keep split accounts distinct when orgId is unavailable", () => {
+		const sameEmail = "shared@x.test";
+		const reports = ["East", "West"].map((orgName, index) =>
+			report(
+				"anthropic",
+				sameEmail,
+				[limit("anthropic", "shared", "7d", "Claude 7 Day", 0.8 - index * 0.6, index === 0 ? "warning" : "ok")],
+				{ orgId: "", orgName },
+			),
+		);
+
+		const split = buildProviderCards(reports, now, { merge: false });
+		expect(split.map(card => card.account)).toEqual([`${sameEmail} (East)`, `${sameEmail} (West)`]);
+		expect(split.map(card => card.windows[0].fraction)).toEqual([0.8, 0.2]);
+	});
 	it("masks split-card account labels and keeps colliding prefixes distinguishable", () => {
 		const labels = reports.map(r => String(r.metadata?.email));
 		const cards = buildProviderCards(reports, now, { merge: false, mask: createAccountMasker(labels, true) });
@@ -187,9 +203,9 @@ describe("buildProviderCards split + privacy", () => {
 			maskAccountLabels: false,
 			mergeAccounts: false,
 			labelPlacement: "moving",
-			loadActivity: async () => {},
-			requestRender: () => {},
-			onClose: () => {},
+			loadActivity: async () => { },
+			requestRender: () => { },
+			onClose: () => { },
 		});
 
 		const headers = Bun.stripANSI(dashboard.render(36).join("\n"))
@@ -215,9 +231,9 @@ describe("UsageDashboardComponent session toggles", () => {
 			maskAccountLabels,
 			mergeAccounts,
 			labelPlacement: "moving",
-			loadActivity: async () => {},
-			requestRender: () => {},
-			onClose: () => {},
+			loadActivity: async () => { },
+			requestRender: () => { },
+			onClose: () => { },
 		});
 	}
 

@@ -133,7 +133,7 @@ describe("subagent HUD lines", () => {
 		expectSameRow(withModel, "AuthLoader", "openai/gpt-5.6-sol", "Refactoring the auth flow");
 	});
 
-	it("shows only the current tool on a bounded second row", () => {
+	it("keeps the last finished tool visible until the next tool starts", () => {
 		const active = makeSession({
 			id: "Reader",
 			description: "Inspecting renderer behavior",
@@ -162,8 +162,37 @@ describe("subagent HUD lines", () => {
 			}),
 		});
 		const settledLines = renderSubagentHudLines([settled], 40);
-		expect(settledLines).toHaveLength(3);
-		expect(Bun.stripANSI(settledLines.join("\n"))).not.toContain("read(");
+		expect(settledLines).toHaveLength(4);
+		expectSameRow(Bun.stripANSI(settledLines.join("\n")), "done", "read(");
+		const next = makeSession({
+			...settled,
+			progress: makeProgress({
+				id: "Reader",
+				currentTool: "grep",
+				currentToolArgs: "symbol",
+				recentTools: settled.progress!.recentTools,
+			}),
+		});
+		const nextText = render([next]);
+		expect(nextText).toContain("grep(symbol)");
+		expect(nextText).not.toContain("read(");
+		expect(nextText).not.toContain("done");
+	});
+
+	it("retains failure status and path privacy in the completed tool row", () => {
+		const homePath = path.join(process.env.HOME!, "private-project", "missing.ts");
+		const text = render([
+			makeSession({
+				id: "Reader",
+				progress: makeProgress({
+					id: "Reader",
+					recentTools: [{ tool: "read", args: homePath, argsKey: "path", isError: true, endMs: 1 }],
+				}),
+			}),
+		]);
+		expectSameRow(text, "failed", "read(~/private-project/missing.ts)");
+		expect(text).not.toContain(homePath);
+		expect(text).not.toContain("done");
 	});
 
 	it("formats selected tool arguments by semantic key without changing raw command text", () => {
@@ -195,8 +224,7 @@ describe("subagent HUD lines", () => {
 		]);
 		expect(patternOut).toContain(`grep(${homePath})`);
 
-		const command = `${homePath} --check`;
-		const rawInvocation = { command };
+		const command = `MODE=check cat "${homePath}"`;
 		const bashOut = render([
 			makeSession({
 				id: "Runner",
@@ -208,8 +236,19 @@ describe("subagent HUD lines", () => {
 				}),
 			}),
 		]);
-		expect(bashOut).toContain("bash(~/private-project/secret.ts --check)");
-		expect(rawInvocation).toEqual({ command });
+		expect(bashOut).toContain('bash(MODE=check cat "~/private-project/secret.ts")');
+	});
+
+	it("shortens home paths in live activity labels", () => {
+		const homePath = path.join(process.env.HOME!, "private-project", "source.ts");
+		const text = render([
+			makeSession({
+				id: "Reader",
+				progress: makeProgress({ id: "Reader", lastIntent: `${homePath} checking imports` }),
+			}),
+		]);
+		expect(text).toContain("~/private-project/source.ts checking imports");
+		expect(text).not.toContain(homePath);
 	});
 
 	it("prefers generated progress labels over wrapped task text", () => {
@@ -491,6 +530,26 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 		resetSettingsForTest();
+	});
+
+	it("renders tool lifecycle changes without waiting for the progress debounce", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		vi.useFakeTimers();
+		const payload = makeProgressPayload("FastReader", 0, "Inspecting source", true);
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
+			...payload,
+			progress: { ...payload.progress, currentTool: "read", currentToolArgs: "package.json", currentToolStartMs: 1 },
+		});
+		await Promise.resolve();
+		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("read(package.json)");
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
+			...payload,
+			progress: { ...payload.progress, recentTools: [{ tool: "read", args: "package.json", endMs: 2 }] },
+		});
+		await Promise.resolve();
+		const settled = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
+		expect(settled).toContain("FastReader");
+		expectSameRow(settled, "done", "read(package.json)");
 	});
 
 	it("coalesces a burst of progress observer changes into one HUD rebuild and render request", async () => {

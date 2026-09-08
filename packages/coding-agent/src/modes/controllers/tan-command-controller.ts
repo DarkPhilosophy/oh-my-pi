@@ -38,7 +38,7 @@ async function removeCloneSession(cloneFile: string): Promise<void> {
 }
 
 export class TanCommandController {
-	constructor(private readonly ctx: InteractiveModeContext) {}
+	constructor(private readonly ctx: InteractiveModeContext) { }
 
 	async start(work: string): Promise<void> {
 		const trimmedWork = work.trim();
@@ -159,6 +159,7 @@ export class TanCommandController {
 							agentDisplayName: "tan",
 							parentTaskPrefix: cloneId,
 							parentAgentId: ownerId,
+							advisorScope: session.advisorScope,
 							agentRegistry,
 							disableExtensionDiscovery: true,
 							// `[]` is truthy and would make the child pick bindPreparedExtensions([])
