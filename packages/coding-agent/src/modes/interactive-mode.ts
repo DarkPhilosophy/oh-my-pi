@@ -130,12 +130,16 @@ import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
 import { formatMoreItems, replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
 import {
+	createTodoHudStateData,
 	formatPhaseDisplayName,
+	getTodoHudVisibility,
 	isClosedTodo,
 	nextActionableTask,
 	selectCollapsedTodos,
 	setActiveTodoDescriptionsProvider,
+	TODO_HUD_STATE_CUSTOM_TYPE,
 	todoMatchesAnyDescription,
+	type TodoHudStateEntryData,
 } from "../tools/todo";
 import { vocalizer } from "../tts/vocalizer";
 import { applyHyperlinkSetting } from "../tui/hyperlink";
@@ -606,6 +610,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	loopLimit: LoopLimitRuntime | undefined = undefined;
 	#loopAutoSubmitTimer: NodeJS.Timeout | undefined;
 	#todoAutoClearTimer: NodeJS.Timeout | undefined;
+	#todoAutoClearGeneration = 0;
 	#modelCycleClearTimer: NodeJS.Timeout | undefined;
 	#nextAppearanceRequestToken = 1;
 	#appearanceRefreshRequest: { token: TerminalAppearanceRequestToken; deadline: number } | undefined;
@@ -617,6 +622,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * focus attach.
 	 */
 	#todoPhasesOwner?: AgentSession;
+	#todoHudHidden = false;
 	hideThinkingBlock = false;
 	#sessionsWithDisplayableThinkingContent = new WeakSet<AgentSession>();
 	/** Whether the visible session has produced thinking content the user can reveal. */
@@ -2481,53 +2487,56 @@ export class InteractiveMode implements InteractiveModeContext {
 		const owner = this.#todoPhasesOwner ?? this.session;
 		owner.setTodoPhases(next);
 		this.todoPhases = next;
-		this.#syncTodoAutoClearTimer();
+		this.#syncTodoHudState(owner);
 		this.#renderTodoList();
 		this.ui.requestRender();
 	}
 
 	#cancelTodoAutoClearTimer(): void {
-		if (!this.#todoAutoClearTimer) return;
-		clearTimeout(this.#todoAutoClearTimer);
-		this.#todoAutoClearTimer = undefined;
-	}
-
-	/**
-	 * Whether every todo is closed, so the HUD has nothing left to track.
-	 *
-	 * The auto-clear only fires on a settled list. Scrubbing closed tasks while
-	 * open work remains is destructive: the walking viewport already hides all but
-	 * the newest closed row, and those tasks are what the phase progress counters
-	 * and the stage roman numerals are computed from — dropping them mid-run reset
-	 * an in-flight phase to `0/n` and renumbered the stages, so a plan the agent
-	 * was four tasks into rendered as untouched until the next `todo` call
-	 * restored the real snapshot.
-	 */
-	#isTodoListSettled(phases: TodoPhase[]): boolean {
-		let seenTask = false;
-		for (const phase of phases) {
-			for (const task of phase.tasks) {
-				if (!isClosedTodo(task)) return false;
-				seenTask = true;
-			}
-		}
-		return seenTask;
-	}
-
-	#syncTodoAutoClearTimer(): void {
-		this.#cancelTodoAutoClearTimer();
-		const delaySeconds = this.settings.get("tasks.todoClearDelay");
-		if (!Number.isFinite(delaySeconds) || delaySeconds < 0 || !this.#isTodoListSettled(this.todoPhases)) return;
-		if (delaySeconds === 0) {
-			this.todoPhases = [];
-			return;
-		}
-
-		this.#todoAutoClearTimer = setTimeout(() => {
+		this.#todoAutoClearGeneration++;
+		if (this.#todoAutoClearTimer) {
+			clearTimeout(this.#todoAutoClearTimer);
 			this.#todoAutoClearTimer = undefined;
-			this.todoPhases = [];
+		}
+	}
+
+	#syncTodoHudState(owner: AgentSession): void {
+		this.#cancelTodoAutoClearTimer();
+		const phases = this.todoPhases;
+		const persisted = getTodoHudVisibility(owner.sessionManager.getBranch(), phases);
+		this.#todoHudHidden = persisted === "dismissed";
+		if (persisted || phases.length === 0) return;
+		const tasks = phases.flatMap(phase => phase.tasks);
+		if (tasks.length === 0 || tasks.some(task => !isClosedTodo(task))) return;
+		const delaySeconds = owner.settings.get("tasks.todoClearDelay");
+		if (!Number.isFinite(delaySeconds) || delaySeconds < 0) return;
+		const generation = this.#todoAutoClearGeneration;
+		const snapshotKey = JSON.stringify(phases);
+		const sessionId = owner.sessionManager.getSessionId();
+		const sessionFile = owner.sessionManager.getSessionFile();
+		const isCurrent = (): boolean =>
+			generation === this.#todoAutoClearGeneration &&
+			this.#todoPhasesOwner === owner &&
+			owner.sessionManager.getSessionId() === sessionId &&
+			owner.sessionManager.getSessionFile() === sessionFile &&
+			JSON.stringify(this.todoPhases) === snapshotKey;
+		const persistAndHide = async (): Promise<void> => {
+			this.#todoAutoClearTimer = undefined;
+			await owner.settleInFlightMessagePersistence();
+			if (!isCurrent()) return;
+			const data = createTodoHudStateData(owner.sessionManager.getBranch(), this.todoPhases, "dismissed");
+			if (!data) return;
+			owner.sessionManager.appendCustomEntry(TODO_HUD_STATE_CUSTOM_TYPE, data);
+			await owner.sessionManager.flush();
+			if (!isCurrent()) return;
+			this.#todoHudHidden = true;
 			this.#renderTodoList();
 			this.ui.requestRender();
+		};
+		this.#todoAutoClearTimer = setTimeout(() => {
+			void persistAndHide().catch(error => {
+				logger.warn("Failed to persist TODO HUD dismissal", { error });
+			});
 		}, delaySeconds * 1000);
 		this.#todoAutoClearTimer.unref?.();
 	}
@@ -2593,7 +2602,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#observerUiSyncNeedsTodoReconcile = false;
 			this.#reconcileTodosWithSubagents();
 		}
-		this.#syncTodoAutoClearTimer();
+		this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
 		this.#renderTodoList();
 		this.#renderSubagentList();
 		this.ui.requestRender();
@@ -2609,6 +2618,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#renderTodoList(): void {
 		this.todoContainer.clear();
+		if (this.#todoHudHidden) return;
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
 		if (phases.length === 0) return;
 		const expanded = this.todoExpanded;
@@ -2788,14 +2798,14 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	/**
-	 * Anchored HUD of in-flight subagents, mirroring the Todos block above the
+  * Anchored HUD of in-flight subagents, mirroring the Todos block above the
 
-	/**
-	 * Anchored HUD of in-flight subagents, mirroring the Todos block above the
-	 * editor. Driven entirely by observer-registry change events, so rows appear
-	 * on spawn and the whole block clears itself once the last subagent leaves
-	 * the "active" state.
-	 */
+ /**
+  * Anchored HUD of in-flight subagents, mirroring the Todos block above the
+  * editor. Driven entirely by observer-registry change events, so rows appear
+  * on spawn and the whole block clears itself once the last subagent leaves
+  * the "active" state.
+  */
 	#renderSubagentList(): void {
 		this.subagentContainer.clear();
 		const lines = renderSubagentHudLines(this.#observerRegistry.getSessions(), this.ui.terminal.columns);
@@ -2806,7 +2816,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	async #loadTodoList(source: AgentSession = this.session): Promise<void> {
 		this.todoPhases = source.getTodoPhases();
 		this.#todoPhasesOwner = source;
-		this.#syncTodoAutoClearTimer();
+		this.#syncTodoHudState(source);
 		this.#renderTodoList();
 	}
 
@@ -5490,7 +5500,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#prepareSessionSwitch(): void {
-		this.#btwController.dispose();
 		this.#omfgController.dispose();
 		this.#cleanseController.dispose();
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
@@ -5948,7 +5957,51 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	toggleTodoExpansion(): void {
-		this.todoExpanded = !this.todoExpanded;
+		this.setTodoExpanded(!this.todoExpanded);
+	}
+
+	setTodoExpanded(expanded: boolean): void {
+		this.todoExpanded = expanded;
+		if (expanded) {
+			const owner = this.#todoPhasesOwner ?? this.viewSession;
+			this.#cancelTodoAutoClearTimer();
+			this.#todoHudHidden = false;
+			const appendReveal = (data: TodoHudStateEntryData): void => {
+				owner.sessionManager.appendCustomEntry(TODO_HUD_STATE_CUSTOM_TYPE, data);
+			};
+			const data = createTodoHudStateData(owner.sessionManager.getBranch(), this.todoPhases, "revealed");
+			if (data) {
+				try {
+					appendReveal(data);
+				} catch (error) {
+					logger.warn("Failed to persist TODO HUD reveal", { error });
+				}
+			} else {
+				const generation = this.#todoAutoClearGeneration;
+				const snapshotKey = JSON.stringify(this.todoPhases);
+				const sessionId = owner.sessionManager.getSessionId();
+				const sessionFile = owner.sessionManager.getSessionFile();
+				void owner
+					.settleInFlightMessagePersistence()
+					.then(() => {
+						if (
+							generation !== this.#todoAutoClearGeneration ||
+							this.#todoPhasesOwner !== owner ||
+							owner.sessionManager.getSessionId() !== sessionId ||
+							owner.sessionManager.getSessionFile() !== sessionFile ||
+							JSON.stringify(this.todoPhases) !== snapshotKey
+						)
+							return;
+						const settledData = createTodoHudStateData(
+							owner.sessionManager.getBranch(),
+							this.todoPhases,
+							"revealed",
+						);
+						if (settledData) appendReveal(settledData);
+					})
+					.catch(error => logger.warn("Failed to persist TODO HUD reveal", { error }));
+			}
+		}
 		this.#renderTodoList();
 		this.ui.requestRender();
 	}
@@ -5965,7 +6018,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			];
 		}
 		this.#todoPhasesOwner = this.viewSession;
-		this.#syncTodoAutoClearTimer();
+		this.#syncTodoHudState(this.viewSession);
 		this.#renderTodoList();
 		this.ui.requestRender();
 	}
