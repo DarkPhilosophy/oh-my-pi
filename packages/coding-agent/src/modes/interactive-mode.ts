@@ -2798,14 +2798,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	/**
-  * Anchored HUD of in-flight subagents, mirroring the Todos block above the
-
- /**
-  * Anchored HUD of in-flight subagents, mirroring the Todos block above the
-  * editor. Driven entirely by observer-registry change events, so rows appear
-  * on spawn and the whole block clears itself once the last subagent leaves
-  * the "active" state.
-  */
+	 * Anchored HUD of in-flight subagents, mirroring the Todos block above the
+	 * editor. Driven entirely by observer-registry change events, so rows appear
+	 * on spawn and the whole block clears itself once the last subagent leaves
+	 * the "active" state.
+	 */
 	#renderSubagentList(): void {
 		this.subagentContainer.clear();
 		const lines = renderSubagentHudLines(this.#observerRegistry.getSessions(), this.ui.terminal.columns);
@@ -5500,6 +5497,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#prepareSessionSwitch(): void {
+		this.#btwController.dispose();
 		this.#omfgController.dispose();
 		this.#cleanseController.dispose();
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
