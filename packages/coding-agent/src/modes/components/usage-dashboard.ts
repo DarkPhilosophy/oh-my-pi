@@ -168,6 +168,23 @@ export function formatReportAccountLabel(report: UsageReport, index: number): st
 	return organization && organization !== base ? `${base} (${organization})` : base;
 }
 
+/** Stable split-card identity; display labels intentionally remain human-readable. */
+function formatReportAccountKey(report: UsageReport, index: number): string {
+	const meta = report.metadata;
+	const base =
+		typeof meta?.email === "string" && meta.email
+			? meta.email
+			: typeof meta?.accountId === "string" && meta.accountId
+				? meta.accountId
+				: report.limits[0]?.scope.accountId ||
+					(typeof meta?.projectId === "string" && meta.projectId
+						? meta.projectId
+						: report.limits[0]?.scope.projectId) ||
+					`account-${index + 1}`;
+	const orgId = typeof meta?.orgId === "string" && meta.orgId ? meta.orgId : undefined;
+	return orgId ? `${base}\u0000org:${orgId}` : base;
+}
+
 export function buildProviderCards(
 	reports: UsageReport[],
 	nowMs: number,
@@ -177,7 +194,8 @@ export function buildProviderCards(
 	const grouped = new Map<string, { provider: string; account?: string; reports: UsageReport[] }>();
 	reports.forEach((report, index) => {
 		const account = merge ? undefined : formatReportAccountLabel(report, index);
-		const key = account === undefined ? report.provider : `${report.provider}\u0000${account}`;
+		const identity = merge ? undefined : formatReportAccountKey(report, index);
+		const key = identity === undefined ? report.provider : `${report.provider}\u0000${identity}`;
 		const entry = grouped.get(key) ?? { provider: report.provider, account, reports: [] };
 		entry.reports.push(report);
 		grouped.set(key, entry);

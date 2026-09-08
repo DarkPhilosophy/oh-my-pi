@@ -139,25 +139,28 @@ describe("buildProviderCards split + privacy", () => {
 		expect(cards.map(card => card.windows[0].fraction)).toEqual([1, 0]);
 	});
 
-	it("keeps same-email accounts in different organizations on distinct cards", () => {
+	it("keeps same-label organizations distinct when split and aggregates them when merged", () => {
 		const sameEmail = "shared@x.test";
-		const cards = buildProviderCards(
-			[
-				report("anthropic", sameEmail, [limit("anthropic", "shared", "7d", "Claude 7 Day", 0.8, "warning")], {
-					orgId: "org-team",
-					orgName: "Team",
-				}),
-				report("anthropic", sameEmail, [limit("anthropic", "shared", "7d", "Claude 7 Day", 0.2, "ok")], {
-					orgId: "org-max",
-					orgName: "Max",
-				}),
-			],
-			now,
-			{ merge: false },
-		);
+		const reports = [
+			report("anthropic", sameEmail, [limit("anthropic", "shared", "7d", "Claude 7 Day", 0.8, "warning")], {
+				orgId: "org-team-east",
+				orgName: "Team",
+			}),
+			report("anthropic", sameEmail, [limit("anthropic", "shared", "7d", "Claude 7 Day", 0.2, "ok")], {
+				orgId: "org-team-west",
+				orgName: "Team",
+			}),
+		];
 
-		expect(cards.map(card => card.account)).toEqual([`${sameEmail} (Team)`, `${sameEmail} (Max)`]);
-		expect(cards.map(card => card.windows[0].fraction)).toEqual([0.8, 0.2]);
+		const split = buildProviderCards(reports, now, { merge: false });
+		expect(split).toHaveLength(2);
+		expect(split.map(card => card.account)).toEqual([`${sameEmail} (Team)`, `${sameEmail} (Team)`]);
+		expect(split.map(card => card.windows[0].fraction)).toEqual([0.8, 0.2]);
+
+		const merged = buildProviderCards(reports, now, { merge: true });
+		expect(merged).toHaveLength(1);
+		expect(merged[0].accounts).toBe(2);
+		expect(merged[0].windows[0].fraction).toBeCloseTo(0.5);
 	});
 
 	it("masks split-card account labels and keeps colliding prefixes distinguishable", () => {
