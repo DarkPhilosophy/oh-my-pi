@@ -2117,6 +2117,11 @@ export function renderUsageReports(
 			providerReports.flatMap((report, index) => [
 				...report.limits.map(limit => formatAccountLabel(limit, report, index)),
 				formatUnlimitedReportLabel(report, index),
+				typeof report.metadata?.email === "string" && report.metadata.email
+					? `${report.metadata.email}${orgSuffix(report)}`
+					: typeof report.metadata?.accountId === "string" && report.metadata.accountId
+						? `${report.metadata.accountId}${orgSuffix(report)}`
+						: "account",
 			]),
 			maskAccountLabels,
 		);
@@ -2149,34 +2154,23 @@ export function renderUsageReports(
 			if (count <= 0) continue;
 			const rawLabel =
 				typeof report.metadata?.email === "string" && report.metadata.email
-					? report.metadata.email
+					? `${report.metadata.email}${orgSuffix(report)}`
 					: typeof report.metadata?.accountId === "string" && report.metadata.accountId
-						? report.metadata.accountId
+						? `${report.metadata.accountId}${orgSuffix(report)}`
 						: "account";
 			const label = styleAccountMask(mask(rawLabel), uiTheme);
-			const isActive =
-				!!activeAccount &&
-				((!!activeAccount.accountId && activeAccount.accountId === report.metadata?.accountId) ||
-					(!!activeAccount.email && activeAccount.email === report.metadata?.email));
-			resetAccountLines.push(
-				`    • ${label}: ${count} saved reset${count === 1 ? "" : "s"}${isActive ? " (active)" : ""}`,
-			);
-			const credits = report.resetCredits?.credits;
-			if (credits) {
-				for (const credit of credits) {
-					if (credit.expiresAt) {
-						const expiryMs = Date.parse(credit.expiresAt);
-						if (!Number.isNaN(expiryMs)) {
-							const remaining = expiryMs - nowMs;
-							const expiryDate = credit.expiresAt.slice(0, 10);
-							if (remaining > 0) {
-								resetAccountLines.push(`        expires in ${formatDuration(remaining)} (${expiryDate})`);
-							} else {
-								resetAccountLines.push(`        expired (${expiryDate})`);
-							}
-						}
-					}
-				}
+			resetAccountLines.push(`    • ${label}: ${count} saved reset${count === 1 ? "" : "s"}`);
+			for (const credit of report.resetCredits?.credits ?? []) {
+				if (!credit.expiresAt) continue;
+				const expiryMs = Date.parse(credit.expiresAt);
+				if (Number.isNaN(expiryMs)) continue;
+				const remaining = expiryMs - nowMs;
+				const expiryDate = credit.expiresAt.slice(0, 10);
+				resetAccountLines.push(
+					remaining > 0
+						? `        expires in ${formatDuration(remaining)} (${expiryDate})`
+						: `        expired (${expiryDate})`,
+				);
 			}
 		}
 		if (resetAccountLines.length > 0) {
@@ -2273,7 +2267,10 @@ export function renderUsageReports(
 				const bars = chunkLimits.map(limit =>
 					padColumn(renderUsageBar(limit, uiTheme, sectionBarWidth, labelPlacement), sectionColumnWidth),
 				);
-				const trailingAmount = offset + sectionColumnsPerRow >= sortedLimits.length ? ` ${amountText}` : "";
+				const trailingAmount =
+					offset + sectionColumnsPerRow >= sortedLimits.length
+						? ` ${truncateToWidth(amountText, Math.max(0, availableWidth - 2 - sectionColumnWidth * chunkLimits.length - chunkLimits.length))}`
+						: "";
 				lines.push(`  ${bars.join(" ")}${trailingAmount}`.trimEnd());
 			}
 			const resetText = sortedLimits.length <= 1 ? resolveResetRange(sortedLimits, nowMs) : null;
