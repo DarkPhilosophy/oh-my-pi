@@ -1780,6 +1780,7 @@ export function publishRecycledWorker(
 			if (firefoxOperationChains.get(worker) === reservationChain) firefoxOperationChains.delete(worker);
 		});
 	}
+	const previousTargetId = tab.targetId;
 	for (const alias of tabs.values()) {
 		if (alias.backend !== "worker" || alias.worker !== oldWorker) continue;
 		alias.worker = worker;
@@ -1787,7 +1788,7 @@ export function publishRecycledWorker(
 		// A shared Firefox browsing context is represented by multiple aliases;
 		// refresh metadata for aliases that point at the recycled context, while
 		// leaving unrelated targets on the same worker untouched.
-		if (alias.targetId === tab.targetId) {
+		if (alias.targetId === previousTargetId) {
 			alias.info = info;
 			alias.targetId = info.targetId;
 		}

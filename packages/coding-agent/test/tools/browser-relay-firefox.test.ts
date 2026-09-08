@@ -799,7 +799,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 			url: "https://updated.example/recycled",
 			title: "Updated after recycle",
 			viewport: { width: 1280, height: 720 },
-			targetId: "shared-context",
+			targetId: "replacement-context",
 		};
 
 		publishRecycledWorker(first, oldWorker, replacement, recycledInfo);
