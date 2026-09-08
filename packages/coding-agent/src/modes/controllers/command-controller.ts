@@ -52,7 +52,11 @@ import {
 	type SessionWorktree,
 } from "../../session/session-worktree";
 import { formatShakeSummary, type ShakeMode, type ShakeResult } from "../../session/shake-types";
-import { formatActiveAccountLabel, limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
+import {
+	formatActiveAccountLabel,
+	limitMatchesActiveAccount,
+	reportMatchesActiveAccount,
+} from "../../slash-commands/helpers/active-oauth-account";
 import { formatProviderName } from "../../slash-commands/helpers/format";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
@@ -2160,12 +2164,12 @@ export function renderUsageReports(
 					: typeof report.metadata?.accountId === "string" && report.metadata.accountId
 						? `${report.metadata.accountId}${orgSuffix(report)}`
 						: "account";
-			const isActive =
-				!!activeAccount && report.limits.some(limit => limitMatchesActiveAccount(report, limit, activeAccount));
-			const label = styleAccountMask(mask(rawLabel), uiTheme);
-			resetAccountLines.push(
-				`    • ${label}: ${count} saved reset${count === 1 ? "" : "s"}${isActive ? " (active)" : ""}`,
-			);
+			const isActive = reportMatchesActiveAccount(report, activeAccount);
+			const suffix = `: ${count} saved reset${count === 1 ? "" : "s"}${isActive ? " (active)" : ""}`;
+			const labelBudget = Math.max(1, availableWidth - visibleWidth(`    • ${suffix}`));
+			const safeLabel = replaceTabs(sanitizeText(rawLabel));
+			const label = styleAccountMask(truncateToWidth(mask(safeLabel), labelBudget), uiTheme);
+			resetAccountLines.push(`    • ${label}${suffix}`);
 			for (const credit of report.resetCredits?.credits ?? []) {
 				if (!credit.expiresAt) continue;
 				const expiryMs = Date.parse(credit.expiresAt);
