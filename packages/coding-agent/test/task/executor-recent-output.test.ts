@@ -85,6 +85,7 @@ interface Observation {
 interface ScenarioResult {
 	observations: Observation[];
 	tools: Array<string | undefined>;
+	toolSnapshots: Array<Pick<AgentProgress, "currentTool" | "currentToolArgs" | "recentTools">>;
 	/** Snapshot arrays captured by reference + a deep copy taken at observation time. */
 	immutability: Array<{ live: string[]; copy: string[] }>;
 	exitCode: number;
@@ -212,10 +213,14 @@ const agent: AgentDefinition = {
 	source: "bundled",
 };
 
-async function runScenario(ops: Op[], options?: { abortAfterOps?: boolean }): Promise<ScenarioResult> {
+async function runScenario(
+	ops: Op[],
+	options?: { abortAfterOps?: boolean; events?: AgentSessionEvent[] },
+): Promise<ScenarioResult> {
 	const ref = new RecentOutputReference();
 	const observations: Observation[] = [];
 	const tools: Array<string | undefined> = [];
+	const toolSnapshots: ScenarioResult["toolSnapshots"] = [];
 	const immutability: Array<{ live: string[]; copy: string[] }> = [];
 	const abortController = new AbortController();
 
@@ -241,6 +246,7 @@ async function runScenario(ops: Op[], options?: { abortAfterOps?: boolean }): Pr
 					break;
 			}
 		}
+		for (const event of options?.events ?? []) emit(event);
 		if (options?.abortAfterOps) {
 			abortController.abort();
 			return;
@@ -264,12 +270,17 @@ async function runScenario(ops: Op[], options?: { abortAfterOps?: boolean }): Pr
 		eventBus: new EventBus(),
 		onProgress: (progress: AgentProgress) => {
 			tools.push(progress.currentTool);
+			toolSnapshots.push({
+				currentTool: progress.currentTool,
+				currentToolArgs: progress.currentToolArgs,
+				recentTools: progress.recentTools.slice(),
+			});
 			observations.push({ got: [...progress.recentOutput], want: ref.expected() });
 			immutability.push({ live: progress.recentOutput, copy: [...progress.recentOutput] });
 		},
 	});
 
-	return { observations, tools, immutability, exitCode: result.exitCode, finalWant: ref.expected() };
+	return { observations, tools, toolSnapshots, immutability, exitCode: result.exitCode, finalWant: ref.expected() };
 }
 
 function expectAllMatch(result: ScenarioResult, minObservations: number): void {
@@ -310,6 +321,75 @@ describe("recentOutput event-sequence equivalence (deferred reconstruction)", ()
 		expect(result.tools.filter(tool => tool === "read")).toHaveLength(2);
 		for (let index = 0; index < result.tools.length; index++) {
 			if (result.tools[index] === "read") expect(result.tools[index + 1]).toBeUndefined();
+		}
+	});
+
+	it("keeps another concurrent tool running and attributes each completion to its call", async () => {
+		for (const finishReadFirst of [true, false]) {
+			const readEvents = toolPair(1);
+			readEvents[0] = {
+				type: "tool_execution_start",
+				toolCallId: "obs-1",
+				toolName: "read",
+				args: { path: "src/one.ts" },
+			};
+			const searchEvents: AgentSessionEvent[] = [
+				{ type: "tool_execution_start", toolCallId: "search-2", toolName: "grep", args: { pattern: "needle" } },
+				{
+					type: "tool_execution_end",
+					toolCallId: "search-2",
+					toolName: "grep",
+					result: { content: [] },
+					isError: true,
+				},
+			];
+			const events = [
+				readEvents[0],
+				searchEvents[0],
+				...(finishReadFirst ? [readEvents[1], searchEvents[1]] : [searchEvents[1], readEvents[1]]),
+			];
+			const result = await runScenario([], { events });
+			expect(result.exitCode).toBe(0);
+			const finishedName = finishReadFirst ? "read" : "grep";
+			const afterFirst = result.toolSnapshots.find(snapshot => snapshot.recentTools[0]?.tool === finishedName);
+			expect(afterFirst?.currentTool).toBe(finishReadFirst ? "grep" : "read");
+			expect(afterFirst?.currentToolArgs).toBe(finishReadFirst ? "needle" : "src/one.ts");
+			expect(afterFirst?.recentTools[0]).toMatchObject({
+				tool: finishedName,
+				args: finishReadFirst ? "src/one.ts" : "needle",
+				isError: !finishReadFirst,
+			});
+		}
+	});
+
+	it("extracts file locations from both freeform edit modes without exposing patch bodies", async () => {
+		for (const input of [
+			"*** Begin Patch\n[src/one.ts#A1B2]\nPUT 1.=1:\n+private body\n[src/two.ts#C3D4]\nCUT 2.=2\n*** End Patch",
+			"*** Begin Patch\n*** Update File: src/one.ts\n@@\n-old body\n+private body\n*** Delete File: src/two.ts\n*** End Patch",
+		]) {
+			const result = await runScenario([], {
+				events: [
+					{ type: "tool_execution_start", toolCallId: "edit-1", toolName: "edit", args: { input } },
+					{
+						type: "tool_execution_end",
+						toolCallId: "edit-1",
+						toolName: "edit",
+						result: { content: [] },
+						isError: false,
+					},
+				],
+			});
+			expect(result.exitCode).toBe(0);
+			expect(result.toolSnapshots.find(snapshot => snapshot.currentTool === "edit")?.currentToolArgs).toBe(
+				"src/one.ts, src/two.ts",
+			);
+			expect(
+				result.toolSnapshots.find(snapshot => snapshot.recentTools[0]?.tool === "edit")?.recentTools[0],
+			).toMatchObject({
+				tool: "edit",
+				args: "src/one.ts, src/two.ts",
+				argsKey: "path",
+			});
 		}
 	});
 

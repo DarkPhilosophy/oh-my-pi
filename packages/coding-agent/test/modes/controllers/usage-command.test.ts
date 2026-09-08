@@ -127,6 +127,33 @@ describe("renderUsageReports content", () => {
 		expect(width16QuotaLines.every(line => [...line].length <= 16)).toBe(true);
 	});
 
+	it("marks metadata-only saved resets active and bounds sanitized organization labels", () => {
+		const width = 48;
+		const reports: UsageReport[] = [
+			{
+				provider: "openai-codex",
+				fetchedAt: Date.now(),
+				limits: [],
+				metadata: {
+					email: "active@example.com",
+					accountId: "acct-active",
+					orgName: `Team\t\x1b[2J${" very-long".repeat(12)}`,
+				},
+				resetCredits: { availableCount: 1 },
+			},
+		];
+		const rendered = renderUsageReports(reports, theme, Date.now(), width, () => ({
+			email: "active@example.com",
+			accountId: "acct-active",
+		}));
+		const output = stripVTControlCharacters(rendered);
+		const resetLine = output.split("\n").find(line => line.includes("saved reset"));
+		expect(resetLine).toBeDefined();
+		expect(resetLine).toContain("(active)");
+		expect(resetLine).not.toContain("\t");
+		expect(resetLine!.length).toBeLessThanOrEqual(width);
+	});
+
 	it("distinguishes masked saved reset labels whose qualified account labels differ", () => {
 		const reports: UsageReport[] = ["First org", "Second org"].map((orgName, index) => ({
 			provider: "openai-codex",

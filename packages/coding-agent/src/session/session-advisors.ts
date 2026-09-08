@@ -35,12 +35,22 @@ import type {
 import { isUsageLimitOutcome, resolveModelServiceTier, streamSimple } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { extractHttpStatusFromError, extractRetryHint, logger, popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils";
+import {
+	extractHttpStatusFromError,
+	extractRetryHint,
+	logger,
+	popLoopPhase,
+	prompt,
+	pushLoopPhase,
+} from "@oh-my-pi/pi-utils";
 import {
 	ADVISOR_DEFAULT_TOOL_NAMES,
+	ADVISOR_DEFAULT_BUDGET_PER_UPDATE,
+	ADVISOR_MAX_BUDGET_PER_UPDATE,
 	AdviseTool,
 	type AdvisorAgent,
 	type AdvisorConfig,
+	type AdvisorEmissionDecision,
 	AdvisorEmissionGuard,
 	AdvisorLoopGuard,
 	type AdvisorMessageDetails,
@@ -183,7 +193,7 @@ export class AdvisorScope {
 	#suppressed = false;
 	readonly #listeners = new Set<() => void>();
 
-	constructor(readonly parent?: AdvisorScope) { }
+	constructor(readonly parent?: AdvisorScope) {}
 
 	get suppressed(): boolean {
 		return this.#suppressed || (this.parent?.suppressed ?? false);
@@ -245,6 +255,7 @@ export interface SessionAdvisorsOptions {
 	mcpResources?: CursorMcpResourceAdapter;
 	watchdogPrompt?: string;
 	sharedInstructions?: string;
+	sharedMaxNotesPerUpdate?: number;
 	contextPrompt?: string;
 	/** Active memory backend's developer instructions, wrapped for advisors. */
 	memoryPrompt?: string;
@@ -347,6 +358,7 @@ export class SessionAdvisors {
 	#advisorMcpResources: SessionAdvisorsOptions["mcpResources"];
 	#advisorWatchdogPrompt: string | undefined;
 	#advisorSharedInstructions: string | undefined;
+	#advisorSharedMaxNotesPerUpdate: number | undefined;
 	#advisorContextPrompt: string | undefined;
 	#advisorMemoryPrompt: string | undefined;
 	#advisorStreamFn: StreamFn | undefined;
@@ -368,6 +380,7 @@ export class SessionAdvisors {
 	#advisorCostSnapshotBarrier: Promise<void> | undefined;
 	#advisorAutoResumeSuppressed = false;
 	#preserveAdvisorAdvice = false;
+	#preserveTerminalYieldAdvice = false;
 	#advisorPrimaryTurnsCompleted = 0;
 	#advisorInterruptImmuneTurnStart: number | undefined;
 	#pendingAdvisorCardEvents = new Set<Promise<void>>();
@@ -384,6 +397,7 @@ export class SessionAdvisors {
 		this.#advisorMcpResources = options.mcpResources;
 		this.#advisorWatchdogPrompt = options.watchdogPrompt;
 		this.#advisorSharedInstructions = options.sharedInstructions;
+		this.#advisorSharedMaxNotesPerUpdate = options.sharedMaxNotesPerUpdate;
 		this.#advisorContextPrompt = options.contextPrompt;
 		this.#advisorMemoryPrompt = options.memoryPrompt;
 		this.#advisorConfigs = options.configs;
@@ -403,6 +417,9 @@ export class SessionAdvisors {
 		for (const advisor of this.#advisors) {
 			if (advisor.runtime.disposed) continue;
 			pushLoopPhase(`advisor:turn-end:${advisor.name}`);
+			// Only the terminal primary boundary owns the deferred flush. Continuing
+			// tool turns must keep partial-work critiques withheld.
+			if (willContinue !== true) advisor.adviseTool.beginUpdate(false);
 			try {
 				advisor.runtime.onTurnEnd(messages, { willContinue });
 			} catch (error) {
@@ -643,7 +660,7 @@ export class SessionAdvisors {
 	/** Tracks persistence of a visible advisor card emitted outside the primary loop. */
 	trackCardEvent(processing: Promise<void>): void {
 		this.#pendingAdvisorCardEvents.add(processing);
-		void processing.finally(() => this.#pendingAdvisorCardEvents.delete(processing)).catch(() => { });
+		void processing.finally(() => this.#pendingAdvisorCardEvents.delete(processing)).catch(() => {});
 	}
 
 	/** Waits for all advisor-card persistence handlers currently in flight. */
@@ -657,6 +674,19 @@ export class SessionAdvisors {
 		const immuneTurns = this.#host.settings.get("advisor.immuneTurns") as number;
 		if (!Number.isFinite(immuneTurns) || immuneTurns <= 0) return 0;
 		return Math.trunc(immuneTurns);
+	}
+	#advisorMaxNotesPerUpdate(config?: AdvisorConfig): number {
+		const clamp = (value: unknown): number | undefined =>
+			typeof value === "number" && Number.isFinite(value) && value >= 1
+				? Math.min(ADVISOR_MAX_BUDGET_PER_UPDATE, Math.trunc(value))
+				: undefined;
+
+		return (
+			clamp(config?.maxNotesPerUpdate) ??
+			clamp(this.#advisorSharedMaxNotesPerUpdate) ??
+			clamp(this.#host.settings.get("advisor.maxNotesPerUpdate")) ??
+			ADVISOR_DEFAULT_BUDGET_PER_UPDATE
+		);
 	}
 
 	#isAdvisorInterruptImmuneTurnActive(): boolean {
@@ -832,7 +862,8 @@ export class SessionAdvisors {
 	#advisorRuntimeSignature(config: AdvisorConfig, slug: string, model: Model, thinkingLevel: ThinkingLevel): string {
 		const tools = config.tools?.length ? config.tools.join("\u001e") : "";
 		const instructions = config.instructions?.trim() ?? "";
-		return [config.name, slug, formatModelStringWithRouting(model), thinkingLevel, tools, instructions].join(
+		const budget = this.#advisorMaxNotesPerUpdate(config);
+		return [config.name, slug, formatModelStringWithRouting(model), thinkingLevel, tools, instructions, budget].join(
 			"\u001f",
 		);
 	}
@@ -883,15 +914,16 @@ export class SessionAdvisors {
 				signature,
 			} = descriptor;
 
-			const emissionGuard = new AdvisorEmissionGuard();
+			const budgetPerUpdate = this.#advisorMaxNotesPerUpdate(config);
+			const emissionGuard = new AdvisorEmissionGuard({ budgetPerUpdate });
 			const adviseTool = new AdviseTool(
 				(note, severity) => this.#routeAdvice(advisorRef, note, severity),
-				note => this.#acceptAdvice(advisorRef, note),
+				(note, severity) => this.#acceptAdvice(advisorRef, note, severity),
 			);
 
 			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared
 			// instructions; `config.instructions` adds this advisor's specialization.
-			const systemPrompt = [advisorSystemPrompt];
+			const systemPrompt = [prompt.render(advisorSystemPrompt, { max_notes_per_update: budgetPerUpdate })];
 			if (this.#advisorContextPrompt) systemPrompt.push(this.#advisorContextPrompt);
 			if (this.#advisorMemoryPrompt) systemPrompt.push(this.#advisorMemoryPrompt);
 			if (this.#advisorWatchdogPrompt) systemPrompt.push(this.#advisorWatchdogPrompt);
@@ -937,14 +969,14 @@ export class SessionAdvisors {
 			// the UUIDv7 provider session id, not the local `-advisor` label.
 			const advisorTelemetry = this.#host.agent.telemetry
 				? {
-					...this.#host.agent.telemetry,
-					agent: {
-						id: advisorSessionLabel,
-						name: slug ? `${MODEL_ROLES.advisor.name}: ${advisorName}` : MODEL_ROLES.advisor.name,
-						description: formatModelString(advisorModel),
-					},
-					conversationId: undefined,
-				}
+						...this.#host.agent.telemetry,
+						agent: {
+							id: advisorSessionLabel,
+							name: slug ? `${MODEL_ROLES.advisor.name}: ${advisorName}` : MODEL_ROLES.advisor.name,
+							description: formatModelString(advisorModel),
+						},
+						conversationId: undefined,
+					}
 				: undefined;
 			// Mirror the SDK's provider-shaping options (streamFn/onPayload/...,
 			// providerSessionState, promptCacheKey, transformProviderContext) so each
@@ -1214,14 +1246,14 @@ export class SessionAdvisors {
 					entries.length === 0
 						? null
 						: ({
-							role: "custom",
-							customType: "advisor",
-							display: true,
-							attribution: "agent",
-							timestamp: Date.now(),
-							content: formatAdvisorBatchContent(entries),
-							details: { notes: entries } satisfies AdvisorMessageDetails,
-						} satisfies CustomMessage),
+								role: "custom",
+								customType: "advisor",
+								display: true,
+								attribution: "agent",
+								timestamp: Date.now(),
+								content: formatAdvisorBatchContent(entries),
+								details: { notes: entries } satisfies AdvisorMessageDetails,
+							} satisfies CustomMessage),
 				skipIdleFlush: true,
 			});
 		}
@@ -1238,9 +1270,8 @@ export class SessionAdvisors {
 	 * After a deliberate user interrupt auto-resume is suppressed while idle/unwinding
 	 * (the note becomes a preserved card re-entering on resume); a live-streaming turn is
 	 * steered in directly. A plain nit always rides the non-interrupting YieldQueue
-	 * aside. Suppression by the per-advisor emission guard drops the note silently —
-	 * the model still saw `Recorded.`, so it isn't tempted to rephrase the same note
-	 * past the dedupe.
+	 * aside. The emission guard has already accepted the note; rejected calls never
+	 * enter this route and receive their specific policy outcome from `AdviseTool`.
 	 */
 	#hasTerminalTextAnswerWithoutQueuedWork(): boolean {
 		if (this.#host.agent.hasQueuedMessages() || this.#host.hasPendingNextTurnMessages()) return false;
@@ -1250,15 +1281,14 @@ export class SessionAdvisors {
 		return isTerminalTextAssistantAnswer(messages[tail]);
 	}
 
-	/** Emission-guard gate: the noise/empty/dedupe filter plus the
-	 *  one-advise-per-update budget, consumed the moment a note is emitted —
-	 *  whether it is delivered live or held for a deferred flush. A suppressed
-	 *  note never consumes the budget, so it cannot burn an update's slot ahead
-	 *  of a substantive concern. Returns whether the note may reach the primary. */
-	#acceptAdvice(advisor: ActiveAdvisor, note: string, severity?: AdvisorSeverity): boolean {
-		if (advisor.emissionGuard.accept(note)) return true;
-		logger.debug("advisor advice suppressed by emission guard", { severity, advisor: advisor.name });
-		return false;
+	/** Emission-guard gate: classify noise, duplicates, and over-budget notes so
+	 *  AdviseTool can report the exact outcome instead of claiming every rejection
+	 *  is a duplicate. Accepted notes consume the current update's budget. */
+	#acceptAdvice(advisor: ActiveAdvisor, note: string, severity?: AdvisorSeverity): AdvisorEmissionDecision {
+		const decision = advisor.emissionGuard.accept(note, severity);
+		if (decision !== "accepted")
+			logger.debug("advisor advice suppressed by emission guard", { decision, severity, advisor: advisor.name });
+		return decision;
 	}
 
 	/** Route an already-accepted advice note to the primary. Never re-runs the
@@ -1276,7 +1306,7 @@ export class SessionAdvisors {
 			// Key on the live agent-core loop, not session `isStreaming` (which also
 			// counts `#promptInFlightCount` during post-turn unwind). Only a running
 			// loop consumes a steer at its next boundary.
-			streaming: this.#host.agent.state.isStreaming,
+			streaming: this.#host.agent.state.isStreaming && !this.#preserveTerminalYieldAdvice,
 			aborting: this.#host.abortInProgress(),
 			terminalAnswerNoQueuedWork: this.#hasTerminalTextAnswerWithoutQueuedWork(),
 			interruptImmuneTurnActive: interrupting && this.#isAdvisorInterruptImmuneTurnActive(),
@@ -1356,7 +1386,7 @@ export class SessionAdvisors {
 			a.recorderClosed = a.recorder.close();
 			closes.push(a.recorderClosed);
 		}
-		this.#advisorRecorderClosed = Promise.all(closes).then(() => { });
+		this.#advisorRecorderClosed = Promise.all(closes).then(() => {});
 		this.#advisors = [];
 		this.#advisorYieldQueueUnsubscribe?.();
 		this.#advisorYieldQueueUnsubscribe = undefined;
@@ -1461,25 +1491,25 @@ export class SessionAdvisors {
 		const message = assistantFailure?.errorMessage ?? (error instanceof Error ? error.message : String(error));
 		const errorId = assistantFailure
 			? AIError.classifyMessage({
-				api: currentModel.api,
-				// Provider + model identity are REQUIRED for the provider-scoped
-				// account-policy patterns (e.g. Codex refusing a model on a ChatGPT
-				// account). Without them the denial classifies as a plain invalid
-				// request, so the advisor never rotates to a sibling credential that
-				// does have the model and stays stuck on the first account.
-				provider: currentModel.provider,
-				model: currentModel.id,
-				errorId: assistantFailure.errorId,
-				errorMessage: message,
-				errorStatus: assistantFailure.errorStatus,
-			})
+					api: currentModel.api,
+					// Provider + model identity are REQUIRED for the provider-scoped
+					// account-policy patterns (e.g. Codex refusing a model on a ChatGPT
+					// account). Without them the denial classifies as a plain invalid
+					// request, so the advisor never rotates to a sibling credential that
+					// does have the model and stays stuck on the first account.
+					provider: currentModel.provider,
+					model: currentModel.id,
+					errorId: assistantFailure.errorId,
+					errorMessage: message,
+					errorStatus: assistantFailure.errorStatus,
+				})
 			: // Same provider/model identity requirement as above: a denial that
-			// arrives as a raw error (no assistant message was committed) must
-			// still classify as an account policy so the advisor rotates.
-			AIError.classify(error, currentModel.api, {
-				provider: currentModel.provider,
-				modelId: currentModel.id,
-			});
+				// arrives as a raw error (no assistant message was committed) must
+				// still classify as an account policy so the advisor rotates.
+				AIError.classify(error, currentModel.api, {
+					provider: currentModel.provider,
+					modelId: currentModel.id,
+				});
 		if (AIError.is(errorId, AIError.Flag.Abort) || AIError.is(errorId, AIError.Flag.UserInterrupt)) return false;
 		if (
 			AIError.is(errorId, AIError.Flag.ContextOverflow) ||
@@ -1811,6 +1841,19 @@ export class SessionAdvisors {
 		this.#preserveAdvisorAdvice = true;
 	}
 
+	/** Preserve advisor output for a terminal yield whose loop is unwinding. */
+	prepareForTerminalYieldAdvisorDrain(): void {
+		this.#preserveAdvisorAdvice = true;
+		this.#preserveTerminalYieldAdvice = true;
+	}
+
+	/** Restore normal advisor routing when a kept-alive subagent starts new work. */
+	onPrimaryTurnStart(): void {
+		if (!this.#preserveTerminalYieldAdvice) return;
+		this.#preserveTerminalYieldAdvice = false;
+		this.#preserveAdvisorAdvice = false;
+	}
+
 	async #waitForPendingAdvisorCardEvents(timeoutMs: number): Promise<boolean> {
 		const deadline = Date.now() + Math.max(0, timeoutMs);
 		while (this.#pendingAdvisorCardEvents.size > 0) {
@@ -1858,8 +1901,8 @@ export class SessionAdvisors {
 	 */
 	setAdvisorEnabled(enabled: boolean): boolean {
 		this.#advisorRequested = enabled;
-		if (!this.scope.setSuppressed(!enabled)) return this.#applyAdvisorEnabled();
-		return this.#advisors.length > 0;
+		this.scope.setSuppressed(!enabled);
+		return this.#applyAdvisorEnabled();
 	}
 
 	#applyAdvisorEnabled(): boolean {
@@ -1873,6 +1916,7 @@ export class SessionAdvisors {
 		// advisor cards already queued on the primary while retaining user input.
 		this.#host.extractQueuedAdvisorCards();
 		this.#host.dropPendingAdvisorCards();
+		return false;
 	}
 
 	/**
@@ -1892,10 +1936,14 @@ export class SessionAdvisors {
 	 *
 	 * @returns the number of advisors active after the rebuild.
 	 */
-	applyAdvisorConfigs(advisors: AdvisorConfig[], sharedInstructions: string | undefined): number {
+	applyAdvisorConfigs(
+		advisors: AdvisorConfig[],
+		sharedInstructions: string | undefined,
+		sharedMaxNotesPerUpdate?: number,
+	): number {
 		this.#advisorConfigs = advisors;
 		this.#advisorSharedInstructions = sharedInstructions;
-		if (!this.#advisorEnabled) return 0;
+		this.#advisorSharedMaxNotesPerUpdate = sharedMaxNotesPerUpdate;
 		this.#stopAdvisorRuntime();
 		this.#buildAdvisorRuntime(true);
 		return this.#advisors.length;
@@ -2216,12 +2264,12 @@ export class SessionAdvisors {
 			options?.compact
 				? formatSessionHistoryMarkdown(a.agent.state.messages)
 				: formatSessionDumpText({
-					messages: a.agent.state.messages,
-					systemPrompt: a.agent.state.systemPrompt,
-					model: a.agent.state.model,
-					thinkingLevel: a.agent.state.thinkingLevel,
-					tools: a.agent.state.tools,
-				});
+						messages: a.agent.state.messages,
+						systemPrompt: a.agent.state.systemPrompt,
+						model: a.agent.state.model,
+						thinkingLevel: a.agent.state.thinkingLevel,
+						tools: a.agent.state.tools,
+					});
 		if (this.#advisors.length === 1) return dump(this.#advisors[0]);
 		return this.#advisors
 			.map(a => `### Advisor: ${a.name} (${a.agent.state.model.provider}/${a.agent.state.model.id})\n\n${dump(a)}`)

@@ -74,6 +74,8 @@ export const DEFAULT_TERMINAL_PREVIEW_LINES = 10;
 
 /** Truncation lengths for different content types */
 export const TRUNCATE_LENGTHS = {
+	/** Resolved provider/model identity, including revision and effort. */
+	MODEL: 48,
 	/** Short titles, labels */
 	TITLE: 60,
 	/** Medium-length content (messages, previews) */
@@ -729,14 +731,15 @@ export function shortenPath(filePath: unknown, homeDir?: string): string {
 	return filePath;
 }
 
-/** Shortens home-directory prefixes embedded in display-only text. */
+/** Shortens home-directory prefixes embedded in display-only path tokens. */
 export function shortenEmbeddedPaths(text: string, homeDir?: string): string {
 	if (!text) return text;
 	const home = homeDir ?? os.homedir();
 	if (!home) return text;
 	const escapedHome = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const flags = /^[A-Za-z]:[\\/]|^\\\\/.test(home) ? "gi" : "g";
-	return text.replace(new RegExp(`${escapedHome}(?=$|[/\\\\ "'\\)])`, flags), "~");
+	const tokenBoundary = String.raw`[\s"'` + "`" + String.raw`=(:,;]`;
+	return text.replace(new RegExp(`(^|${tokenBoundary})${escapedHome}(?=$|[/\\\\\\s"'\\]),;:])`, flags), "$1~");
 }
 
 export function formatToolWorkingDirectory(workdir: string | undefined, projectDir: string): string | undefined {

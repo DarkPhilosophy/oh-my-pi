@@ -656,6 +656,19 @@ function getHashlineInputSections(input: string): HashlineInputEntry[] {
 	return entries;
 }
 
+/** Extract display targets using the existing parsers for both freeform edit modes. */
+export function getEditInputPaths(input: string): readonly string[] {
+	const paths = getHashlineInputSections(input)
+		.map(entry => entry.path)
+		.filter(Boolean);
+	if (paths.length > 0) return paths;
+	try {
+		return editInspect("apply_patch", JSON.stringify({ input })).paths;
+	} catch {
+		return [];
+	}
+}
+
 function getHashlineInputRenderSummary(
 	args: EditRenderArgs,
 	editMode: EditMode | undefined,

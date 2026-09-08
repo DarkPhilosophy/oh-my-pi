@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Fixed
+
+- Stopped long flicker when moving or resizing an omp pane in Warp. Resize repaints in place there after the drag settles (override with `PI_TUI_RESIZE_IN_PLACE=0`), with no alternate-screen borrow, no scrollback replay, blanked live rows so shrink drags cannot archive unfinished rows, and overlay toggle echoes repainting the modal instead of probing ([#11247](https://github.com/can1357/oh-my-pi/pull/11247) by [@H4vC](https://github.com/H4vC)).
 
 ### Added
 
@@ -9,6 +12,7 @@
 ### Fixed
 
 - Fixed animated and shortened provider frames duplicating history or hiding replacement content.
+- Fixed prepended live transcript rows appearing after previously displayed rows instead of in their original order.
 - Fixed overflowing session replacement frames duplicating history on the next redraw, including when completed TODOs disappear.
 - Fixed the transcript getting stuck in the live viewport with no scrollable history: frame providers now report live-region pinning per frame instead of permanently, so settled rows reach native scrollback again.
 - Fixed unnecessary scrollback clears when finalized history batches are still being retired during tool completion.

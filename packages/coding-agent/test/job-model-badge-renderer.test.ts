@@ -83,6 +83,33 @@ describe("hub jobs task model badges", () => {
 		}
 	});
 
+	it("neutralizes terminal commands materialized by task result JSON decoding", () => {
+		const envelope = `<task-result id="Reader"><output>\n${JSON.stringify({ summary: "Read \x1b[2Jcompleted.\x00" })}\n</output></task-result>`;
+		const jobText = renderJobText(
+			{
+				jobs: [
+					{
+						id: "Reader",
+						type: "task",
+						status: "completed",
+						label: "Reader",
+						durationMs: 1,
+						resultText: envelope,
+					},
+				],
+			},
+			true,
+		);
+		const cardText = createIrcMessageCard({ kind: "incoming", from: "Reader", body: envelope }, () => true, uiTheme)
+			.render(160)
+			.join("\n");
+		for (const text of [jobText, cardText]) {
+			expect(text).toContain("Read completed.");
+			expect(text).not.toContain("\x1b[2J");
+			expect(text).not.toContain("\x00");
+		}
+	});
+
 	it("does not reinterpret JSON emitted by shell jobs or ordinary IRC messages", () => {
 		const body = '{"summary":"literal data"}';
 		const text = renderJobText({

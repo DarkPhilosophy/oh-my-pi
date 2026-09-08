@@ -41,9 +41,9 @@ export function formatActiveAccountLabel(identity: OAuthAccountIdentity | undefi
  * - `projectId` ↔ report metadata `projectId` or `limit.scope.projectId`
  *   (Google-style providers key usage on the GCP project, not an account id)
  */
-export function limitMatchesActiveAccount(
+function matchesActiveAccount(
 	report: UsageReport,
-	limit: UsageLimit,
+	limit: UsageLimit | undefined,
 	identity: OAuthAccountIdentity | undefined,
 ): boolean {
 	if (!identity) return false;
@@ -63,18 +63,29 @@ export function limitMatchesActiveAccount(
 	if (activeAccountId) {
 		const reportAccountId = normalizeIdentityValue(metadata.accountId) ?? normalizeIdentityValue(metadata.account_id);
 		if (reportAccountId === activeAccountId) return true;
-		if (normalizeIdentityValue(limit.scope.accountId) === activeAccountId) return true;
+		if (normalizeIdentityValue(limit?.scope.accountId) === activeAccountId) return true;
 	}
 	if (activeEmail && normalizeIdentityValue(metadata.email) === activeEmail) return true;
 	if (activeProjectId) {
 		if (normalizeIdentityValue(metadata.projectId) === activeProjectId) return true;
-		if (normalizeIdentityValue(limit.scope.projectId) === activeProjectId) return true;
+		if (normalizeIdentityValue(limit?.scope.projectId) === activeProjectId) return true;
 	}
 	return false;
 }
 
-/** True when any limit column in `report` belongs to the given OAuth identity. */
+/** True when a single usage-limit column belongs to the given OAuth identity. */
+export function limitMatchesActiveAccount(
+	report: UsageReport,
+	limit: UsageLimit,
+	identity: OAuthAccountIdentity | undefined,
+): boolean {
+	return matchesActiveAccount(report, limit, identity);
+}
+
+/** True when report metadata or any limit column belongs to the given OAuth identity. */
 export function reportMatchesActiveAccount(report: UsageReport, identity: OAuthAccountIdentity | undefined): boolean {
 	if (!identity) return false;
-	return report.limits.some(limit => limitMatchesActiveAccount(report, limit, identity));
+	return report.limits.length === 0
+		? matchesActiveAccount(report, undefined, identity)
+		: report.limits.some(limit => matchesActiveAccount(report, limit, identity));
 }

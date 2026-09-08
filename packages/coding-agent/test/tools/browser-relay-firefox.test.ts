@@ -69,6 +69,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 					'- checkbox "Bracketed" [ref=e14] [checked=false]',
 					"- paragraph:",
 					"  - text: Hello",
+					'  - text: "Hello: \\"world\\""',
 					'    - /url: "/ignored"',
 					'    - /placeholder: "Ignored hint"',
 					'    - /value: "Ignored value"',
@@ -85,6 +86,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 			{ ref: "e14", role: "checkbox", name: "Bracketed", states: ["checked=false"] },
 			{ ref: undefined, role: "paragraph", name: undefined, states: [] },
 			{ ref: undefined, role: "text", name: "Hello", states: [] },
+			{ ref: undefined, role: "text", name: 'Hello: "world"', states: [] },
 		]);
 	});
 
@@ -366,68 +368,75 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(sent).toEqual(["select"]);
 	});
 
-	it("invalidates every Firefox alias after an inline recoverable worker failure", async () => {
-		const listeners = new Set<Parameters<WorkerHandle["onMessage"]>[0]>();
-		let terminations = 0;
-		const worker: WorkerHandle = {
-			mode: "inline",
-			send: msg => {
-				if (msg.type === "run") {
-					queueMicrotask(() => {
-						handleTabMessage(first, {
-							type: "result",
-							id: msg.id,
-							ok: false,
-							error: {
-								name: "ToolError",
-								message: "request interception cleanup failed",
-								isAbort: false,
-								isToolError: true,
-								recoverTab: true,
-							},
+	for (const caughtResult of [false, true])
+		it(`invalidates Firefox aliases after ${caughtResult ? "caught navigation cleanup" : "an inline recoverable worker failure"}`, async () => {
+			const listeners = new Set<Parameters<WorkerHandle["onMessage"]>[0]>();
+			let terminations = 0;
+			const worker: WorkerHandle = {
+				mode: caughtResult ? "worker" : "inline",
+				send: msg => {
+					if (msg.type === "run") {
+						queueMicrotask(() => {
+							if (caughtResult) {
+								handleTabMessage(first, {
+									type: "result",
+									id: msg.id,
+									ok: true,
+									payload: { returnValue: 1, displays: [], screenshots: [], recoverTab: true },
+								});
+								return;
+							}
+							handleTabMessage(first, {
+								type: "result",
+								id: msg.id,
+								ok: false,
+								error: {
+									name: "ToolError",
+									message: "request interception cleanup failed",
+									isAbort: false,
+									isToolError: true,
+									recoverTab: true,
+								},
+							});
 						});
-					});
-				} else if (msg.type === "close") {
-					queueMicrotask(() => {
-						for (const listener of listeners) listener({ type: "closed" });
-					});
-				}
-			},
-			onMessage: listener => {
-				listeners.add(listener);
-				return () => listeners.delete(listener);
-			},
-			onError: () => () => undefined,
-			terminate: async () => {
-				terminations++;
-			},
-		};
-		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
-		endpoint.refCount = 2;
-		const first = createFirefoxTab("firefox-recoverable-first", endpoint, worker);
-		const second = createFirefoxTab("firefox-recoverable-second", endpoint, worker);
-		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
-		tabs.set(first.name, first);
-		tabs.set(second.name, second);
+					} else if (msg.type === "close") {
+						queueMicrotask(() => {
+							for (const listener of listeners) listener({ type: "closed" });
+						});
+					}
+				},
+				onMessage: listener => {
+					listeners.add(listener);
+					return () => listeners.delete(listener);
+				},
+				onError: () => () => undefined,
+				terminate: async () => {
+					terminations++;
+				},
+			};
+			const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
+			endpoint.refCount = 2;
+			const first = createFirefoxTab("firefox-recoverable-first", endpoint, worker);
+			const second = createFirefoxTab("firefox-recoverable-second", endpoint, worker);
+			const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+			tabs.set(first.name, first);
+			tabs.set(second.name, second);
 
-		await expect(
-			runInTab(first.name, {
+			const run = runInTab(first.name, {
 				code: "return 1",
 				timeoutMs: 1_000,
-				session: {
-					cwd: "/tmp",
-					settings: { get: () => undefined },
-				} as never,
-			}),
-		).rejects.toThrow("request interception cleanup failed");
+				session: { cwd: "/tmp", settings: { get: () => undefined } } as never,
+			});
+			if (caughtResult) await expect(run).resolves.toMatchObject({ returnValue: 1 });
+			else await expect(run).rejects.toThrow("request interception cleanup failed");
 
-		expect(terminations).toBe(1);
-		expect(first.state).toBe("dead");
-		expect(second.state).toBe("dead");
-		expect(tabs.has(first.name)).toBe(false);
-		expect(tabs.has(second.name)).toBe(false);
-		expect(endpoint.refCount).toBe(0);
-	});
+			expect(terminations).toBe(1);
+			expect(first.state).toBe("dead");
+			expect(second.state).toBe("dead");
+			expect(tabs.has(first.name)).toBe(false);
+			expect(tabs.has(second.name)).toBe(false);
+			expect(endpoint.refCount).toBe(0);
+		});
 
 	it("force-kills one Firefox alias without terminating its shared worker", async () => {
 		let terminations = 0;
@@ -777,14 +786,29 @@ describe("Firefox WebDriver BiDi relay", () => {
 		endpoint.refCount = 2;
 		const first = createFirefoxTab("firefox-recycle-first", endpoint, oldWorker);
 		const second = createFirefoxTab("firefox-recycle-second", endpoint, oldWorker);
+		first.targetId = "shared-context";
+		second.targetId = "shared-context";
+		const unrelated = createFirefoxTab("firefox-recycle-unrelated", endpoint, oldWorker);
+		unrelated.targetId = "other-context";
+		const unrelatedInfo = unrelated.info;
 		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
 		tabs.set(first.name, first);
 		tabs.set(second.name, second);
+		tabs.set(unrelated.name, unrelated);
+		const recycledInfo = {
+			url: "https://updated.example/recycled",
+			title: "Updated after recycle",
+			viewport: { width: 1280, height: 720 },
+			targetId: "replacement-context",
+		};
 
-		publishRecycledWorker(first, oldWorker, replacement, first.info);
+		publishRecycledWorker(first, oldWorker, replacement, recycledInfo);
 
 		expect(tabs.get(first.name)?.worker).toBe(replacement);
 		expect(tabs.get(second.name)?.worker).toBe(replacement);
+		expect(first.info).toBe(recycledInfo);
+		expect(second.info).toBe(recycledInfo);
+		expect(unrelated.info).toBe(unrelatedInfo);
 		await forceKillTab(first.name, "test cleanup", { sharedFirefoxWorker: true });
 	});
 

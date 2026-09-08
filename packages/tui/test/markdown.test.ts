@@ -2927,6 +2927,53 @@ describe("framed code review regressions", () => {
 });
 
 describe("framed code review follow-ups", () => {
+	it("refreshes unfrozen code copy bytes when only the raw tail changes", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return `omp-copy:${captured.length}`;
+				},
+			};
+			const markdown = new Markdown("Prose\n\n```ts\n\talpha\n```", 0, 0, theme);
+			markdown.transientRenderCache = true;
+			markdown.render(80);
+			expect(captured.at(-1)).toBe("\talpha");
+			markdown.setText("Prose\n\n```ts\n    alpha\n```");
+			markdown.render(80);
+			expect(captured.at(-1)).toBe("    alpha");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("does not treat a list marker inside fenced code as a closing container", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return "omp-copy:nested";
+				},
+			};
+			new Markdown("- ```js\n  alpha\n  - ```\n  omega\n  ```", 0, 0, theme).render(80);
+			expect(captured).toBe("alpha\n- ```\nomega");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
 	it("keeps every framed row within the requested width for wide graphemes", () => {
 		for (const width of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
 			const rendered = new Markdown("```js\n日本語\n```", 0, 0, defaultMarkdownTheme).render(width);
@@ -3357,6 +3404,102 @@ describe("framed code review follow-ups", () => {
 			expect(captured).toBe("x");
 		} finally {
 			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+});
+
+describe("upstream markdown regression parity", () => {
+	it("keeps copy chips plain when hyperlinks are disabled", () => {
+		const state = TERMINAL as unknown as { hyperlinks: boolean };
+		const old = state.hyperlinks;
+		try {
+			state.hyperlinks = false;
+			const theme = { ...defaultMarkdownTheme, copyChip: "copy", copyChipTarget: () => "x" };
+			const footer = new Markdown("```js\nx\n```", 0, 0, theme).render(40).at(-1) ?? "";
+			expect(stripVTControlCharacters(footer)).toContain("[copy]");
+		} finally {
+			state.hyperlinks = old;
+		}
+	});
+	it("preserves tilde and long backtick fence delimiters", () => {
+		for (const marker of ["~~~~", "`````"]) {
+			const md = new Markdown(`${marker}js\nconst x = 1;\n${marker}`, 0, 0, defaultMarkdownTheme);
+			md.transientRenderCache = true;
+			const rows = md.render(80).map(line => stripVTControlCharacters(line));
+			expect(rows.some(row => row.includes("const x = 1;"))).toBe(true);
+			expect(rows.at(-1)).toBeDefined();
+		}
+	});
+	it("keeps an open fence plain when stream creation throws", () => {
+		const theme = {
+			...defaultMarkdownTheme,
+			createHighlightStream: () => {
+				throw new TypeError("bad stream");
+			},
+		};
+		const text = stripVTControlCharacters(
+			new Markdown("```lua\nlocal x = 1\nmore", 0, 0, theme).render(80).join("\n"),
+		);
+		expect(text).toContain("local x = 1");
+	});
+	it("frames nested blockquote fences and recovers their body", () => {
+		const state = TERMINAL as unknown as { hyperlinks: boolean };
+		const old = state.hyperlinks;
+		let body: string | undefined;
+		try {
+			state.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (value: string) => {
+					body = value;
+					return undefined;
+				},
+			};
+			new Markdown("- > ```js\n  > code\n  > ```", 0, 0, theme).render(40);
+			expect(body).toBe("code");
+		} finally {
+			state.hyperlinks = old;
+		}
+	});
+	it("recovers copy text without ST OSC terminators", () => {
+		const state = TERMINAL as unknown as { hyperlinks: boolean };
+		const old = state.hyperlinks;
+		let body: string | undefined;
+		try {
+			state.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (value: string) => {
+					body = value;
+					return undefined;
+				},
+			};
+			new Markdown("```js\nconst right = true;\n```", 0, 0, theme).render(80);
+			expect(body).toBe("const right = true;");
+		} finally {
+			state.hyperlinks = old;
+		}
+	});
+	it("rejects indented code while locating nested fences", () => {
+		const state = TERMINAL as unknown as { hyperlinks: boolean };
+		const old = state.hyperlinks;
+		let body: string | undefined;
+		try {
+			state.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (value: string) => {
+					body = value;
+					return undefined;
+				},
+			};
+			new Markdown("    ```js\n    wrong\n    ```\n\n- ```js\n  right\n  ```", 0, 0, theme).render(80);
+			expect(body).toBe("right");
+		} finally {
+			state.hyperlinks = old;
 		}
 	});
 });

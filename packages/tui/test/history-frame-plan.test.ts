@@ -371,6 +371,38 @@ describe("terminal frame plans", () => {
 		}
 	});
 
+	it("replays borrowed history when a live frame prepends rows before it", () => {
+		const terminal = new VirtualTerminal(20, 3);
+		const viewport = ["a", "b", "live", "editor", "extra"];
+		let plan: TerminalFramePlan = { viewport };
+		let replays = 0;
+		const acknowledged: number[] = [];
+		const provider: TerminalFrameProvider = {
+			renderFrame: () => plan,
+			beginHistoryReplay: () => {
+				replays++;
+				plan = { history: { id: 1, rows: [], kind: "replay" }, viewport: plan.viewport };
+			},
+			acknowledgeHistory: id => {
+				acknowledged.push(id);
+				plan = { viewport: plan.viewport };
+			},
+		};
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+
+		plan = { viewport: ["new", ...viewport] };
+		tui.requestRender(true);
+
+		expect(replays).toBe(1);
+		expect(acknowledged).toEqual([1]);
+		expect(plainBuffer(terminal)).toEqual(["new", "a", "b", "live", "editor", "extra"]);
+		const replayed = plainBuffer(terminal);
+		tui.requestRender(true);
+		expect(plainBuffer(terminal)).toEqual(replayed);
+		tui.stop();
+	});
+
 	it("accepts a finalized batch that re-offers already-borrowed rows without a destructive replay", () => {
 		// A live overflowing frame lends its scrolled-off rows to native
 		// scrollback. When the transcript later finalizes that same prefix, the

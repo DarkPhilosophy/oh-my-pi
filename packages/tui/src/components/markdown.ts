@@ -165,13 +165,22 @@ function repairOrphanClosingFence(text: string): string {
 	return text;
 }
 
-function isMarkdownContainerPrefix(prefix: string): boolean {
+function isClosingFencePrefix(line: string, fenceAt: number, quoteDepth: number): boolean {
+	for (let index = 0; index < fenceAt; index++) {
+		if (line[index] === ">") quoteDepth--;
+		else if (line[index] !== " ") return false;
+	}
+	return quoteDepth === 0;
+}
+
+function isMarkdownFencePrefix(prefix: string): boolean {
 	let remaining = prefix;
 	while (remaining.length > 0) {
-		remaining = remaining.replace(/^[ \t]+/, "");
+		const indent = /^ {0,3}/.exec(remaining)?.[0] ?? "";
+		remaining = remaining.slice(indent.length);
 		if (remaining.length === 0) return true;
 		if (remaining.startsWith(">")) {
-			remaining = remaining.slice(1);
+			remaining = remaining.slice(1).replace(/^[ \t]/, "");
 			continue;
 		}
 		const listMarker = /^(?:[-+*]|\d+[.)])[ \t]+/.exec(remaining);
@@ -182,6 +191,9 @@ function isMarkdownContainerPrefix(prefix: string): boolean {
 		return false;
 	}
 	return true;
+}
+function isMarkdownContainerPrefix(prefix: string): boolean {
+	return isMarkdownFencePrefix(prefix);
 }
 
 function isGfmTableDelimiter(line: string, headerLine: string | undefined): boolean {
@@ -1646,6 +1658,8 @@ interface StreamPrefixLineCache extends RenderSignature {
 	text: string;
 	/** Raw source prefix backing `text`; normalized-equal edits must not reuse rows. */
 	sourceText: string;
+	/** Cursor in tab-expanded original source after the cached prefix. */
+	copySourceCursor: number;
 	tokenCount: number;
 	lines: readonly string[];
 	tables: readonly TableRenderSpec[];
@@ -1671,6 +1685,17 @@ interface TableLayoutLock {
 interface ExpandedSource {
 	text: string;
 	sourceOffsets: number[];
+}
+
+/** Translate one expanded-text boundary without retaining a dense document map. */
+function sourceOffsetAtExpandedBoundary(source: string, boundary: number): number {
+	if (boundary <= 0) return 0;
+	let expandedOffset = 0;
+	for (let sourceOffset = 0; sourceOffset < source.length; sourceOffset++) {
+		expandedOffset += source[sourceOffset] === "\t" ? DEFAULT_TAB_WIDTH : 1;
+		if (expandedOffset >= boundary) return sourceOffset + 1;
+	}
+	return source.length;
 }
 
 /** Expand display tabs once and retain O(1) expanded-to-source offset lookup. */
@@ -1704,10 +1729,10 @@ export class Markdown implements Component {
 	#text: string;
 	/** Original input retained for copy-chip payloads (before display tab expansion). */
 	#sourceText: string;
-	/** Source bytes with display tabs expanded; shared by token-span lookups. */
-	#expandedSourceText: string;
-	/** Source offset at each expanded-text boundary; extended on append-only updates. */
-	#expandedSourceOffsets: number[];
+	/** Tab-expanded raw source, allocated only when fenced copy recovery runs. */
+	#expandedSourceText?: string;
+	/** Dense expanded-to-source offsets, allocated with the copy-recovery source. */
+	#expandedSourceOffsets?: number[];
 	/** Expanded-source cursor used to disambiguate repeated fenced blocks. */
 	#copySourceSearchCursor = 0;
 	// Suffix of #text that a future append could complete into an OSC 8 match.
@@ -1812,9 +1837,6 @@ export class Markdown implements Component {
 		codeBlockIndent: number = 2,
 	) {
 		this.#sourceText = normalizeOsc8Terminators(text);
-		const expandedSource = expandSourceText(this.#sourceText);
-		this.#expandedSourceText = expandedSource.text;
-		this.#expandedSourceOffsets = expandedSource.sourceOffsets;
 		this.#text = this.#sourceText;
 		this.#oscPartialEscape = trailingOsc8Partial(this.#text);
 		this.#paddingX = paddingX;
@@ -1859,7 +1881,11 @@ export class Markdown implements Component {
 				text = this.#text.slice(0, this.#text.length - (memoized?.length ?? 0)) + normalized;
 			}
 			this.#oscPartialEscape = trailingOsc8Partial(normalized);
-			if (normalized === pending) {
+			if (
+				normalized === pending &&
+				this.#expandedSourceText !== undefined &&
+				this.#expandedSourceOffsets !== undefined
+			) {
 				const delta = text.slice(this.#sourceText.length);
 				let expandedLength = this.#expandedSourceText.length;
 				for (let deltaOffset = 0; deltaOffset < delta.length; deltaOffset++) {
@@ -1871,9 +1897,8 @@ export class Markdown implements Component {
 				}
 				this.#expandedSourceText += replaceTabs(delta);
 			} else {
-				const expandedSource = expandSourceText(text);
-				this.#expandedSourceText = expandedSource.text;
-				this.#expandedSourceOffsets = expandedSource.sourceOffsets;
+				this.#expandedSourceText = undefined;
+				this.#expandedSourceOffsets = undefined;
 			}
 			this.#sourceText = text;
 			this.#text = text;
@@ -1896,9 +1921,8 @@ export class Markdown implements Component {
 		}
 		if (!text.startsWith(this.#text)) this.#clearTableLayouts();
 		this.#sourceText = text;
-		const expandedSource = expandSourceText(text);
-		this.#expandedSourceText = expandedSource.text;
-		this.#expandedSourceOffsets = expandedSource.sourceOffsets;
+		this.#expandedSourceText = undefined;
+		this.#expandedSourceOffsets = undefined;
 		this.#text = text;
 		if (!text.trim()) {
 			// Blank replacement: render() early-returns before #lexTokens can see
@@ -2312,19 +2336,14 @@ export class Markdown implements Component {
 		const contentLines: string[] = [];
 		const reusablePrefix = this.#matchingStreamPrefixLineCache(normalizedText, frozenText, signature);
 		let renderedUntil = 0;
-		const renderedSourceOffset = 0;
+		let renderedSourceOffset = 0;
 		if (reusablePrefix && reusablePrefix.tokenCount <= frozenTokenCount) {
 			contentLines.push(...reusablePrefix.lines);
 			this.#activeTableRenderSpecs?.push(...reusablePrefix.tables);
 			renderedUntil = reusablePrefix.tokenCount;
-			// Only rows from the matched cache entry were reused. Tokens newly
-			// admitted to the stable prefix still render below and must recover
-			// copy payloads from their own source spans.
-			let reusedSourceLength = 0;
-			for (let index = 0; index < reusablePrefix.tokenCount; index++) {
-				reusedSourceLength += tokens[index]?.raw.length ?? 0;
-			}
-			this.#copySourceSearchCursor = reusedSourceLength;
+			// Reuse the cursor captured with these rows, including raw OSC/tab offsets.
+			renderedSourceOffset = reusablePrefix.copySourceCursor;
+			this.#copySourceSearchCursor = renderedSourceOffset;
 		}
 
 		if (renderedUntil < frozenTokenCount) {
@@ -2352,10 +2371,11 @@ export class Markdown implements Component {
 		this.#streamPrefixLineCache = {
 			...signature,
 			text: frozenText,
-			sourceText: this.#sourceText.slice(
-				0,
-				this.#expandedSourceOffsets[frozenText.length] ?? this.#sourceText.length,
-			),
+			sourceText:
+				reusablePrefix?.text === frozenText
+					? reusablePrefix.sourceText
+					: this.#sourceText.slice(0, sourceOffsetAtExpandedBoundary(this.#sourceText, frozenText.length)),
+			copySourceCursor: this.#copySourceSearchCursor,
 			tokenCount: frozenTokenCount,
 			lines: contentLines.slice(),
 			tables: this.#activeTableRenderSpecs?.slice() ?? [],
@@ -2553,16 +2573,25 @@ export class Markdown implements Component {
 		return MARKDOWN_FENCE_LINE.test(firstLine);
 	}
 
+	#ensureExpandedSource(): ExpandedSource {
+		if (this.#expandedSourceText === undefined || this.#expandedSourceOffsets === undefined) {
+			const expandedSource = expandSourceText(this.#sourceText);
+			this.#expandedSourceText = expandedSource.text;
+			this.#expandedSourceOffsets = expandedSource.sourceOffsets;
+		}
+		return { text: this.#expandedSourceText, sourceOffsets: this.#expandedSourceOffsets };
+	}
 	#findCopySourceSpan(raw: string): { start: number; end: number } | undefined {
 		const start = this.#copySourceSearchCursor;
-		const exactStart = this.#expandedSourceText.indexOf(raw, start);
+		const expandedSourceText = (this.#expandedSourceText ??= replaceTabs(this.#sourceText));
+		const exactStart = expandedSourceText.indexOf(raw, start);
 		if (exactStart >= 0) return { start: exactStart, end: exactStart + raw.length };
-		const suffix = this.#expandedSourceText.slice(start);
+		const suffix = expandedSourceText.slice(start);
 		OSC8_ST_PREFIX_REGEX.lastIndex = 0;
 		const hasStTerminatedOsc = OSC8_ST_PREFIX_REGEX.test(suffix);
 		OSC8_ST_PREFIX_REGEX.lastIndex = 0;
 		if (!hasStTerminatedOsc) return undefined;
-		return findNormalizedOsc8Span(this.#expandedSourceText, raw, start);
+		return findNormalizedOsc8Span(expandedSourceText, raw, start);
 	}
 
 	/**
@@ -2571,6 +2600,7 @@ export class Markdown implements Component {
 	 * resolved by #originalCodeBody().
 	 */
 	#advanceCopySourceCursor(token: Token): void {
+		if (!TERMINAL.hyperlinks || this.#theme.copyChipTarget === undefined) return;
 		if (token.type === "code" || token.type === "list" || token.type === "blockquote") return;
 		const raw = "raw" in token && typeof token.raw === "string" ? replaceTabs(token.raw) : "";
 		if (!raw) return;
@@ -2580,6 +2610,7 @@ export class Markdown implements Component {
 	/** Recover the source body for copy targets after display tab expansion. */
 	#originalCodeBody(token: Token): string {
 		const fallback = "text" in token && typeof token.text === "string" ? token.text : "";
+		if (!TERMINAL.hyperlinks || this.#theme.copyChipTarget === undefined) return fallback;
 		const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
 		if (!raw) return fallback;
 		// Marked may include the newline after a closing fence in token.raw. It
@@ -2587,7 +2618,7 @@ export class Markdown implements Component {
 		// delimiter-adjacent newlines used for locating this token.
 		const rawForSpan = raw.replace(/^(?:\r?\n)+|(?:\r?\n)+$/g, "");
 		if (!rawForSpan) return fallback;
-		const expandedSource = this.#expandedSourceText;
+		const { text: expandedSource, sourceOffsets } = this.#ensureExpandedSource();
 		const searchStart = this.#copySourceSearchCursor;
 		const sourceSpan = this.#findCopySourceSpan(rawForSpan);
 		let expandedStart = sourceSpan?.start ?? -1;
@@ -2622,6 +2653,10 @@ export class Markdown implements Component {
 			}
 			if (openAt < 0) return fallback;
 			const openingFenceColumn = openAt - openingLineStart;
+			let openingQuoteDepth = 0;
+			for (let index = openingLineStart; index < openAt; index++) {
+				if (expandedSource[index] === ">") openingQuoteDepth++;
+			}
 			const fenceChar = openingFence.charAt(0);
 			const fenceLength = openingFence.length;
 			let lineStart = expandedSource.indexOf("\n", openAt + openLine.length);
@@ -2637,7 +2672,7 @@ export class Markdown implements Component {
 				if (fenceAt >= 0 && fenceAt <= openingFenceColumn + 3) {
 					let candidateLength = 0;
 					while (sourceLine.charAt(fenceAt + candidateLength) === fenceChar) candidateLength++;
-					const legalPrefix = isMarkdownContainerPrefix(sourceLine.slice(0, fenceAt));
+					const legalPrefix = isClosingFencePrefix(sourceLine, fenceAt, openingQuoteDepth);
 					if (
 						legalPrefix &&
 						candidateLength >= fenceLength &&
@@ -2658,8 +2693,8 @@ export class Markdown implements Component {
 			expandedEnd = closeAt + closeLength;
 		}
 		this.#copySourceSearchCursor = Math.max(this.#copySourceSearchCursor, expandedEnd);
-		const sourceStart = this.#expandedSourceOffsets[expandedStart] ?? this.#sourceText.length;
-		const sourceEnd = this.#expandedSourceOffsets[expandedEnd] ?? this.#sourceText.length;
+		const sourceStart = sourceOffsets[expandedStart] ?? this.#sourceText.length;
+		const sourceEnd = sourceOffsets[expandedEnd] ?? this.#sourceText.length;
 		const sourceRaw = this.#sourceText.slice(sourceStart, sourceEnd);
 		const firstLineEnd = sourceRaw.indexOf("\n");
 		const lastLineStart = sourceRaw.lastIndexOf("\n");
@@ -3107,6 +3142,7 @@ export class Markdown implements Component {
 		tokenKey = "root",
 	): RenderedLine[] {
 		const lines: RenderedLine[] = [];
+		const sourceCursorBefore = this.#copySourceSearchCursor;
 		this.#advanceCopySourceCursor(token);
 
 		// Display math block (own-line `$$…$$` / `\[…\]`): stack `\frac` vertically
@@ -3323,6 +3359,9 @@ export class Markdown implements Component {
 				if ("text" in token && typeof token.text === "string") {
 					lines.push(renderedLine(token.text));
 				}
+		}
+		if (token.type === "code" && this.#copySourceSearchCursor === sourceCursorBefore) {
+			this.#originalCodeBody(token);
 		}
 
 		return lines;

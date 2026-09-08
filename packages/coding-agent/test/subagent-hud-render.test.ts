@@ -15,7 +15,8 @@ import {
 	type ObservableSession,
 	SessionObserverRegistry,
 } from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { loadTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/loader";
+import { initTheme, setThemeInstance, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -163,7 +164,7 @@ describe("subagent HUD lines", () => {
 		});
 		const settledLines = renderSubagentHudLines([settled], 40);
 		expect(settledLines).toHaveLength(4);
-		expectSameRow(Bun.stripANSI(settledLines.join("\n")), "done", "read(");
+		expectSameRow(Bun.stripANSI(settledLines.join("\n")), theme.symbol("status.success"), "read(");
 		const next = makeSession({
 			...settled,
 			progress: makeProgress({
@@ -176,7 +177,6 @@ describe("subagent HUD lines", () => {
 		const nextText = render([next]);
 		expect(nextText).toContain("grep(symbol)");
 		expect(nextText).not.toContain("read(");
-		expect(nextText).not.toContain("done");
 	});
 
 	it("retains failure status and path privacy in the completed tool row", () => {
@@ -190,9 +190,8 @@ describe("subagent HUD lines", () => {
 				}),
 			}),
 		]);
-		expectSameRow(text, "failed", "read(~/private-project/missing.ts)");
+		expectSameRow(text, theme.symbol("status.error"), "read(~/private-project/missing.ts)");
 		expect(text).not.toContain(homePath);
-		expect(text).not.toContain("done");
 	});
 
 	it("formats selected tool arguments by semantic key without changing raw command text", () => {
@@ -237,6 +236,87 @@ describe("subagent HUD lines", () => {
 			}),
 		]);
 		expect(bashOut).toContain('bash(MODE=check cat "~/private-project/secret.ts")');
+	});
+
+	it("uses configured status glyphs for completed edits without hiding file locations", async () => {
+		const previousTheme = theme;
+		try {
+			for (const preset of ["ascii", "nerd"] as const) {
+				setThemeInstance(await loadTheme("dark", { symbolPresetOverride: preset }));
+				for (const isError of [false, true]) {
+					const text = render([
+						makeSession({
+							id: "Editor",
+							progress: makeProgress({
+								id: "Editor",
+								recentTools: [
+									{ tool: "edit", args: "src/one.ts, src/two.ts", argsKey: "path", isError, endMs: 1 },
+								],
+							}),
+						}),
+					]);
+					expectSameRow(
+						text,
+						theme.symbol(isError ? "status.error" : "status.success"),
+						"edit(src/one.ts, src/two.ts)",
+					);
+				}
+			}
+		} finally {
+			setThemeInstance(previousTheme);
+		}
+	});
+
+	it("shortens compound path tokens without rewriting unrelated absolute paths", () => {
+		const home = process.env.HOME!;
+		const args = `src/**/*.ts; ${home}/private/*.ts; /mnt${home}/keep.ts`;
+		const text = render(
+			[
+				makeSession({
+					id: "Locator",
+					progress: makeProgress({
+						id: "Locator",
+						currentTool: "glob",
+						currentToolArgs: args,
+						currentToolArgsKey: "path",
+					}),
+				}),
+			],
+			240,
+		);
+		expect(text).toContain(`glob(src/**/*.ts; ~/private/*.ts; /mnt${home}/keep.ts)`);
+	});
+
+	it("shortens a home-directory entry in colon-separated command paths", () => {
+		const text = render([
+			makeSession({
+				id: "Runner",
+				progress: makeProgress({
+					id: "Runner",
+					currentTool: "bash",
+					currentToolArgs: `PYTHONPATH=${process.env.HOME!}:/opt/lib python`,
+					currentToolArgsKey: "command",
+				}),
+			}),
+		]);
+		expect(text).toContain("PYTHONPATH=~:/opt/lib python");
+	});
+
+	it("preserves model revision and effort in a roomy HUD badge", () => {
+		const selector = "anthropic/claude-sonnet-4-20250514:high";
+		const text = Bun.stripANSI(
+			renderSubagentHudLines(
+				[
+					makeSession({
+						id: "Worker",
+						progress: makeProgress({ id: "Worker", resolvedModel: selector }),
+					}),
+				],
+				160,
+				true,
+			).join("\n"),
+		);
+		expect(text).toContain(selector);
 	});
 
 	it("shortens home paths in live activity labels", () => {
@@ -549,7 +629,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		await Promise.resolve();
 		const settled = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
 		expect(settled).toContain("FastReader");
-		expectSameRow(settled, "done", "read(package.json)");
+		expectSameRow(settled, theme.symbol("status.success"), "read(package.json)");
 	});
 
 	it("coalesces a burst of progress observer changes into one HUD rebuild and render request", async () => {

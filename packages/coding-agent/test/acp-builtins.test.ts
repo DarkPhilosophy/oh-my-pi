@@ -283,6 +283,7 @@ describe("ACP builtin slash commands", () => {
 
 	it("renders provider usage reports when the session can fetch them", async () => {
 		const { output, runtime } = createRuntime();
+		runtime.settings.set("usage.maskAccountLabels", false);
 		runtime.session.fetchUsageReports = async () => [
 			{
 				provider: "openai-codex",
@@ -307,6 +308,38 @@ describe("ACP builtin slash commands", () => {
 		expect(output[0]).toContain("5 hours (prolite)");
 		expect(output[0]).toContain("user@example.com: 0.24 unknown used (76.0% left)");
 		expect(output[0]).toContain("resets in");
+	});
+	it("applies collision-aware account masking consistently in text usage output", async () => {
+		const { output, runtime } = createRuntime();
+		runtime.settings.set("usage.maskAccountLabels", true);
+		runtime.session.fetchUsageReports = async () => [
+			...["alice@example.com", "alina@example.com"].map((email, index) => ({
+				provider: "openai-codex",
+				fetchedAt: Date.now(),
+				limits: [
+					{
+						id: String(index),
+						label: "5 hours",
+						scope: { provider: "openai-codex", accountId: `account-${index}` },
+						amount: { used: 1, unit: "requests" as const },
+					},
+				],
+				metadata: { email, orgName: "Team" },
+			})),
+			{
+				provider: "openai-codex",
+				fetchedAt: Date.now(),
+				limits: [],
+				metadata: { email: "alice2@example.com", orgName: "Team" },
+				resetCredits: { availableCount: 2 },
+			},
+		];
+		await executeAcpBuiltinSlashCommand("/usage", runtime);
+		expect(output[0]).toContain("ali*** (Team)");
+		expect(output[0]).toContain("ali*** (2) (Team)");
+		expect(output[0]).toContain("ali*** (3) (Team): 2 saved rate-limit resets");
+		expect(output[0]).toContain("ali*** (3) (Team): no limits reported");
+		expect(output[0]).not.toContain("@example.com");
 	});
 
 	it("suppresses redundant usage window suffixes while retaining legitimate ones", async () => {

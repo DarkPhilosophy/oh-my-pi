@@ -79,7 +79,6 @@ describe("bashToolRenderer", () => {
 		expect(rendered).not.toContain("\t");
 	});
 
-
 	it("renders the pending call as a bordered block with the command in the body", async () => {
 		const component = bashToolRenderer.renderCall(
 			{ command: "sleep 30" },
