@@ -1225,6 +1225,7 @@ export class WorkerCore {
 	#activateForScreenshot = true;
 	#webDriverBiDi = false;
 	#dialogPolicy?: DialogPolicy;
+	#dialogPolicyOwner?: string;
 	#dialogHandler?: (dialog: Dialog) => void;
 	#dialogObserver?: (dialog: Dialog) => void;
 	#frameNavigationObserver?: (frame: Frame) => void;
@@ -1330,6 +1331,11 @@ export class WorkerCore {
 				const runtime = this.#runtimes.get(msg.name);
 				this.#runtimes.delete(msg.name);
 				runtime?.dispose();
+				if (this.#dialogPolicyOwner === msg.name) {
+					// Keep the passive observer so Puppeteer does not auto-dismiss prompts.
+					this.#applyDialogPolicy(undefined);
+					this.#dialogPolicyOwner = undefined;
+				}
 				this.#clearElementCache(msg.name);
 				return;
 			}
@@ -1466,6 +1472,7 @@ export class WorkerCore {
 			this.#observeDialogs();
 		}
 		this.#applyDialogPolicy(dialogs);
+		this.#dialogPolicyOwner = cacheKey;
 	}
 
 	async #findAttachedTarget(targetId: string): Promise<Target> {
