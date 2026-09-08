@@ -409,9 +409,6 @@ async function acquireTabImpl(
 	const firefoxSharedTab = "webSocketUrl" in browser ? firefoxSharedTabs.get(browser) : undefined;
 	if (firefoxSharedTab?.state === "alive") {
 		try {
-			if (firefoxSharedTab.pending.size > 0) {
-				throw new ToolError("Firefox Browser Relay is busy with another tab operation");
-			}
 			const info = await selectFirefoxWorkerTab(firefoxSharedTab.worker, {
 				name,
 				targetMatcher: opts.target,

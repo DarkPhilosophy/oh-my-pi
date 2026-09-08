@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import type { Page } from "puppeteer-core";
 import type { FirefoxRelayBrowserHandle } from "../../src/tools/browser/registry";
+import type { WorkerInbound, WorkerOutbound } from "../../src/tools/browser/tab-protocol";
 import { DEFAULT_FIREFOX_BIDI_URL, validateFirefoxWebSocketUrl } from "../../src/tools/browser/relay/firefox";
 import {
+	acquireTab,
 	FirefoxSharedTabRegistry,
 	forceKillTab,
 	getTabsMapForTest,
@@ -45,6 +47,71 @@ function createFirefoxTab(name: string, browser: FirefoxRelayBrowserHandle, work
 	} as unknown as WorkerTabSession;
 }
 describe("Firefox WebDriver BiDi relay", () => {
+	it("queues a sibling Firefox open until the active run releases the worker", async () => {
+		const listeners = new Set<(message: WorkerOutbound) => void>();
+		const started = Promise.withResolvers<void>();
+		const order: string[] = [];
+		let runMessage: Extract<WorkerInbound, { type: "run" }> | undefined;
+		const browser = createFirefoxHandle("ws://127.0.0.1:9337/session");
+		browser.refCount = 1;
+		const info = { url: "about:blank", viewport: { width: 1280, height: 720 }, targetId: "shared" };
+		const worker: WorkerHandle = {
+			mode: "inline",
+			send(message) {
+				if (message.type === "select") {
+					if (message.name === "waiting-open") order.push("select");
+					queueMicrotask(() => {
+						for (const listener of listeners) listener({ type: "selected", id: message.id, info });
+					});
+				} else if (message.type === "run") {
+					runMessage = message;
+					order.push("run");
+					started.resolve();
+				} else if (message.type === "close") {
+					queueMicrotask(() => {
+						for (const listener of listeners) listener({ type: "closed" });
+					});
+				}
+			},
+			onMessage(listener) {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			onError: () => () => {},
+			async terminate() {},
+		};
+		const first = createFirefoxTab("active-open", browser, worker);
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(first.name, first);
+		publishRecycledWorker(first, worker, worker, info);
+		try {
+			const running = runInTab(first.name, {
+				code: "return 1",
+				timeoutMs: 1000,
+				session: { cwd: "/tmp", settings: { get: () => undefined } } as never,
+			});
+			void running.catch(() => {});
+			await started.promise;
+			const opening = acquireTab("waiting-open", browser, { timeoutMs: 1000 });
+			void opening.catch(() => {});
+			await Bun.sleep(0);
+			expect(order).toEqual(["run"]);
+			if (!runMessage) throw new Error("Expected run to start");
+			order.push("finished");
+			handleTabMessage(first, {
+				type: "result",
+				id: runMessage.id,
+				ok: true,
+				payload: { returnValue: 1, displays: [], screenshots: [] },
+			});
+			await running;
+			await expect(opening).resolves.toMatchObject({ created: true });
+			expect(order).toEqual(["run", "finished", "select"]);
+		} finally {
+			await forceKillTab(first.name, "test cleanup", { sharedFirefoxWorker: true });
+		}
+	});
+
 	it("accepts local WebSocket endpoints used by Firefox-family browsers", () => {
 		expect(validateFirefoxWebSocketUrl(DEFAULT_FIREFOX_BIDI_URL)).toBe(DEFAULT_FIREFOX_BIDI_URL);
 		expect(validateFirefoxWebSocketUrl("ws://localhost:9333/session/")).toBe("ws://localhost:9333/session");
