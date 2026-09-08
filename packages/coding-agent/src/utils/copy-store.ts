@@ -23,7 +23,9 @@ export function supportsCopyUrlHandler(
 		!env.SSH_TTY &&
 		!env.MOSH_IP &&
 		!env.WSL_DISTRO_NAME &&
-		!env.WSL_INTEROP
+		!env.WSL_INTEROP &&
+		!env.CODESPACES &&
+		!env.REMOTE_CONTAINERS_IPC
 	);
 }
 
