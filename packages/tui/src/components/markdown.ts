@@ -2574,6 +2574,7 @@ export class Markdown implements Component {
 		if (!cache) return undefined;
 		if (!this.#sourceText.startsWith(cache.sourceText)) return undefined;
 		if (!normalizedText.startsWith(cache.text) || !stableText.startsWith(cache.text)) return undefined;
+		if (cache.width !== signature.width) return undefined;
 		if (cache.paddingX !== signature.paddingX) return undefined;
 		if (cache.paddingY !== signature.paddingY) return undefined;
 		if (cache.codeBlockIndent !== signature.codeBlockIndent) return undefined;
