@@ -94,6 +94,35 @@ describe("TranscriptContainer", () => {
 		expect(transcript.peekFinalizedBatch(80, 30)).toBeUndefined();
 	});
 
+	it("replays a mutable settled prefix before rendering its live suffix", () => {
+		const transcript = new TranscriptContainer();
+		const block = new Block(
+			Array.from({ length: 40 }, (_value, index) => `row-${index}`),
+			false,
+		);
+		block.setSettledRows(40);
+		transcript.addChild(block);
+
+		const first = transcript.peekFinalizedBatch(80, 30);
+		expect(first?.rows).toEqual(Array.from({ length: 10 }, (_value, index) => `row-${index}`));
+		transcript.acknowledgeFinalizedBatch(first!.id);
+		expect(transcript.renderViewport(80, 30, frame)).toEqual(
+			Array.from({ length: 30 }, (_value, index) => `row-${index + 10}`),
+		);
+
+		transcript.beginReplay();
+		const replay = transcript.peekReplayBatch(80);
+		expect(replay?.rows).toEqual(Array.from({ length: 10 }, (_value, index) => `row-${index}`));
+		expect(transcript.renderViewport(80, 30, frame)).toEqual(
+			Array.from({ length: 30 }, (_value, index) => `row-${index + 10}`),
+		);
+		transcript.acknowledgeFinalizedBatch(replay!.id);
+		expect(transcript.peekReplayBatch(80)).toBeUndefined();
+		expect(transcript.renderViewport(80, 30, frame)).toEqual(
+			Array.from({ length: 30 }, (_value, index) => `row-${index + 10}`),
+		);
+	});
+
 	it("retires the settled prefix only under capacity pressure, in order", () => {
 		const transcript = new TranscriptContainer();
 		const first = new Block(["first final"], true);

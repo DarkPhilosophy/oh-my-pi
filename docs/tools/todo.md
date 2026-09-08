@@ -121,9 +121,8 @@ The same file also exposes non-tool helpers used by `/todo`:
   - Transcript block is rendered by `todoToolRenderer` and merged with the call line.
   - `event-controller` updates the visible todo panel from successful results.
   - On error, `event-controller` shows `Todo update failed...`; the visible panel may stay stale until a later successful call.
-  - `/todo expand` shows every phase and task in the sticky HUD; `/todo collapse` restores its bounded preview. Both are display-only and leave todo state unchanged.
-- Background work / cancellation
-  - Completed and abandoned tasks remain in both the session plan and the TUI HUD until an explicit TODO update replaces them. No idle auto-clear timer mutates the plan or removes HUD rows.
+- `/todo expand` shows every phase and task in the sticky HUD; `/todo collapse` restores its bounded preview. Expand explicitly reveals a retained dismissed snapshot; collapse only changes the preview and never dismisses canonical state.
+- Completed and abandoned tasks remain canonical. The HUD may visually auto-dismiss a settled plan after `tasks.todoClearDelay` (60 seconds by default; 0 immediately; negative disables auto-dismissal). Dismissal is persisted as HUD-only custom metadata, so resume retains the tasks while hiding the same snapshot; changed or unfinished plans show again.
 
 ## Limits & Caps
 - `init.list`: applies to a single op (`todoSchema`). The params object carries exactly one op.
@@ -131,9 +130,6 @@ The same file also exposes non-tool helpers used by `/todo`:
 - Flat `init.items` and `append.items`: the shared schema allows any array length, but op-specific execution rejects missing/empty lists.
 - Renderer collapsed preview: `PREVIEW_LIMITS.COLLAPSED_ITEMS = 8` (`packages/coding-agent/src/tools/render-utils.ts`).
 - Execution-time repair: an omitted `op` is inferred only for the unambiguous payloads described above; the schema itself still requires `op`.
-- The former `tasks.todoClearDelay` setting has been removed; completed tasks no longer disappear automatically.
-- Tool execution mode: `concurrency = "exclusive"`, `strict = true`, `loadMode = "discoverable"`.
-
 ## Errors
 - Ordinary bad op payloads are accumulated as human-readable strings in `errors`; the result is marked `isError: true` and the mutation is discarded — the returned and persisted state stay at the pre-call list.
 - Error strings come from the helpers in `packages/coding-agent/src/tools/todo.ts`, including:

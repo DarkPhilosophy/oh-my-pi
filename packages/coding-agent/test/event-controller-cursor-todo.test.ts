@@ -22,6 +22,7 @@ afterAll(() => {
 function createFixture() {
 	const ctx = createInteractiveModeContext({
 		streamingComponent: new AssistantMessageComponent(),
+		session: { settleInFlightMessagePersistence: vi.fn(async () => {}) },
 	});
 	const blocks: Component[] = [];
 	const addChild = ctx.chatContainer.addChild.bind(ctx.chatContainer);
@@ -103,6 +104,15 @@ function todoFailure(text: string): Extract<AgentSessionEvent, { type: "tool_exe
 	} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>;
 }
 
+function todoMessageEnd(
+	phases: { name: string; tasks: { content: string; status: string }[] }[],
+): Extract<AgentSessionEvent, { type: "message_end" }> {
+	return {
+		type: "message_end",
+		message: { role: "toolResult", toolName: "todo", content: [{ type: "text", text: "" }], details: { phases } },
+	} as Extract<AgentSessionEvent, { type: "message_end" }>;
+}
+
 describe("EventController + Cursor todo bridge", () => {
 	it("sanitizes provider error text before it reaches the status line", async () => {
 		// The bridge forwards the server's error string verbatim, so this text is
@@ -152,17 +162,14 @@ describe("EventController + Cursor todo bridge", () => {
 		const phases = [{ name: "Tasks", tasks: [{ content: "step one", status: "completed" }] }];
 
 		await f.controller.handleEvent(todoEnd("cursor-call-1", phases));
-		// Completion held: nothing rendered yet, nothing pending.
 		expect(f.blocks).toHaveLength(0);
 		expect(f.ctx.pendingTools.size).toBe(0);
 
 		await f.controller.handleEvent(streamedTodoBlock("cursor-call-1"));
-
-		// Exactly one card, created by the stream and immediately settled by the
-		// held completion — not left pending.
 		expect(f.blocks).toHaveLength(1);
 		expect(f.ctx.pendingTools.size).toBe(0);
-		// The mirror still ran: settling must not cost the panel refresh.
+		expect(f.ctx.setTodos).not.toHaveBeenCalled();
+		await f.controller.handleEvent(todoMessageEnd(phases));
 		expect(f.ctx.setTodos).toHaveBeenCalledWith(phases);
 	});
 
@@ -196,10 +203,6 @@ describe("EventController + Cursor todo bridge", () => {
 		expectRetirableResult(block);
 	});
 	it("fires the failure warning exactly once when a failed completion is replayed", async () => {
-		// The held completion is replayed through the full end handler to settle
-		// the late-created card. Its user-facing side effects (failure warning,
-		// panel refresh) already ran on first arrival — the replay must only
-		// settle the component, not repeat them.
 		const f = createFixture();
 
 		await f.controller.handleEvent(todoFailure("boom"));
@@ -218,7 +221,8 @@ describe("EventController + Cursor todo bridge", () => {
 
 		await f.controller.handleEvent(todoEnd("cursor-call-1", phases));
 		await f.controller.handleEvent(streamedTodoBlock("cursor-call-1"));
-
+		expect(f.ctx.setTodos).not.toHaveBeenCalled();
+		await f.controller.handleEvent(todoMessageEnd(phases));
 		expect(f.ctx.setTodos).toHaveBeenCalledTimes(1);
 	});
 
@@ -240,18 +244,17 @@ describe("EventController + Cursor todo bridge", () => {
 	});
 
 	it("still settles normally when the start precedes the completion", async () => {
-		// The common ordering (start delivered first) must keep working: the
-		// orphan path only exists for the packed-chunk race.
 		const f = createFixture();
 		const phases = [{ name: "Tasks", tasks: [{ content: "step one", status: "completed" }] }];
 
 		await f.controller.handleEvent(streamedTodoBlock("cursor-call-1"));
 		expect(f.ctx.pendingTools.size).toBe(1);
-
 		await f.controller.handleEvent(todoEnd("cursor-call-1", phases));
 
 		expect(f.blocks).toHaveLength(1);
 		expect(f.ctx.pendingTools.size).toBe(0);
+		expect(f.ctx.setTodos).not.toHaveBeenCalled();
+		await f.controller.handleEvent(todoMessageEnd(phases));
 		expect(f.ctx.setTodos).toHaveBeenCalledWith(phases);
 	});
 });

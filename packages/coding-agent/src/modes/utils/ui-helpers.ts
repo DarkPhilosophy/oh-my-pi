@@ -859,7 +859,13 @@ export class UiHelpers {
 	 * everything after it are no longer part of the view session's transcript.
 	 */
 	truncateTranscriptFromMessage(message: AgentMessage): boolean {
-		if (!this.ctx.initialChatRendered || this.ctx.focusedAgentId || this.ctx.viewSession.isStreaming) return false;
+		if (
+			!this.ctx.initialChatRendered ||
+			this.ctx.focusedAgentId ||
+			this.ctx.viewSession.isStreaming ||
+			this.ctx.ui.hasTransientProviderHistory()
+		)
+			return false;
 		// In-flight blocks route future events into their components; a rewind
 		// with any of them live takes the full-replay path instead.
 		if (
@@ -1155,6 +1161,15 @@ export class UiHelpers {
 		);
 	}
 
+	/**
+	 * Park the loop when drain dispatch consumes the armed body locally (void
+	 * custom command) instead of starting a turn. The drain otherwise discards
+	 * prompt()'s result, and the next idle tick would resubmit a local action.
+	 */
+	#parkLoopOnLocalConsume(text: string, forwarded: boolean): void {
+		if (!forwarded && this.ctx.loopPrompt === text) this.ctx.pauseLoop();
+	}
+
 	async #deliverQueuedMessage(message: CompactionQueuedMessage): Promise<void> {
 		if (
 			await invokeSkillCommandFromText(this.ctx, message.text, message.mode, {
@@ -1166,7 +1181,8 @@ export class UiHelpers {
 			return;
 		}
 		if (this.ctx.isKnownSlashCommand(message.text)) {
-			await this.ctx.session.prompt(message.text);
+			const forwarded = await this.ctx.session.prompt(message.text);
+			this.#parkLoopOnLocalConsume(message.text, forwarded);
 			return;
 		}
 		await this.ctx.withLocalSubmission(
@@ -1236,7 +1252,8 @@ export class UiHelpers {
 			}
 			if (firstPromptIndex === -1) {
 				for (const message of queuedMessages) {
-					await this.ctx.session.prompt(message.text);
+					const forwarded = await this.ctx.session.prompt(message.text);
+					this.#parkLoopOnLocalConsume(message.text, forwarded);
 				}
 				return;
 			}

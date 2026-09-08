@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { streamBedrock } from "@oh-my-pi/pi-ai/providers/amazon-bedrock";
+import { setBedrockProviderModule } from "@oh-my-pi/pi-ai/providers/register-builtins";
 import { streamSimple } from "@oh-my-pi/pi-ai/stream";
 import type { Model } from "@oh-my-pi/pi-ai/types";
 import { USER_AGENT } from "@oh-my-pi/pi-utils";
@@ -143,6 +144,7 @@ describe("amazon-bedrock user-agent default", () => {
 	});
 
 	it("carries per-call headers from streamSimple through the option mapper", async () => {
+		setBedrockProviderModule({ streamBedrock });
 		const seen: BedrockCapture = {};
 		await withSkippedBedrockAuth(async () => {
 			await streamSimple(bedrockTestModel(), BEDROCK_TEST_CONTEXT, {

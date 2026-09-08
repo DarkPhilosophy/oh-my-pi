@@ -677,7 +677,7 @@ export class TranscriptContainer extends Container {
 	#renderReplay(width: number): readonly string[] {
 		const rows = Array.from(this.#renderRange(0, this.#frontier, width, true));
 		const head = this.#entries[this.#frontier];
-		if (head?.mode === "appendOnly" && head.emitted > 0) {
+		if (head !== undefined && head.emitted > 0) {
 			this.#setAllocation(head.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			this.#renderEntry(head, width);
 			rows.push(...this.#renderStablePrefix(head, head.emitted, width));
@@ -701,7 +701,7 @@ export class TranscriptContainer extends Container {
 
 	#startReplay(): void {
 		const head = this.#entries[this.#frontier];
-		this.#replayPending = this.#frontier > 0 || (head?.mode === "appendOnly" && head.emitted > 0);
+		this.#replayPending = this.#frontier > 0 || (head !== undefined && head.emitted > 0);
 		this.#replayRequested = false;
 	}
 

@@ -23,6 +23,7 @@ function createContext(cwd: string, phases: TodoPhase[]): InteractiveModeContext
 			getCwd: () => cwd,
 		},
 		setTodos: vi.fn(),
+		setTodoExpanded: vi.fn(),
 		showError: vi.fn(),
 		showStatus: vi.fn(),
 		showWarning: vi.fn(),

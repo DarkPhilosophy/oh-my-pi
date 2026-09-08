@@ -4244,6 +4244,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"tasks.todoClearDelay": {
+		type: "number",
+		default: 60,
+		ui: {
+			tab: "tools",
+			group: "Todos",
+			label: "Todo HUD Auto-Clear Delay",
+			description:
+				"Seconds before a completed todo HUD is visually dismissed; 0 is immediate and negative disables auto-dismissal",
+		},
+	},
+
 	// Grep, glob, and AST tools
 	"glob.enabled": {
 		type: "boolean",

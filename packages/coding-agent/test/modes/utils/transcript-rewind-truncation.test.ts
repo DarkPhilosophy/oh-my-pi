@@ -90,7 +90,7 @@ function createHarness() {
 		lastAssistantUsage: undefined,
 		statusLine: { invalidate: vi.fn() },
 		updateEditorBorderColor: vi.fn(),
-		ui: { requestRender: vi.fn() },
+		ui: { requestRender: vi.fn(), hasTransientProviderHistory: () => false },
 	} as unknown as InteractiveModeContext;
 
 	return {

@@ -1065,9 +1065,10 @@ export class EventController {
 		if (!components) return;
 		let removed = false;
 		for (const component of components) {
-			if (!this.ctx.chatContainer.canRemoveBlock(component)) continue;
-			this.ctx.chatContainer.removeChild(component);
-			removed = true;
+			if (!this.ctx.ui.hasTransientProviderHistory() && this.ctx.chatContainer.canRemoveBlock(component)) {
+				this.ctx.chatContainer.removeChild(component);
+				removed = true;
+			}
 		}
 		if (removed) this.ctx.ui.requestRender();
 	}
@@ -1099,7 +1100,12 @@ export class EventController {
 		const previous = this.#displaceablePollComponent;
 		if (!previous) return;
 		this.#displaceablePollComponent = undefined;
-		if (nextToolName === "hub" && previous.isDisplaceableBlock() && this.ctx.chatContainer.canRemoveBlock(previous)) {
+		if (
+			nextToolName === "hub" &&
+			previous.isDisplaceableBlock() &&
+			!this.ctx.ui.hasTransientProviderHistory() &&
+			this.ctx.chatContainer.canRemoveBlock(previous)
+		) {
 			this.ctx.chatContainer.removeChild(previous);
 		}
 		// Sealing stops the waiting-poll spinner and freezes the block (for a
@@ -1112,12 +1118,10 @@ export class EventController {
 		const previous = this.#displaceableTodoComponent;
 		if (!previous) return;
 		if (!previous.isDisplaceableBlock()) {
-			this.#displaceableTodoComponent = undefined;
-			return;
 		}
 		if (previous.canBeDisplacedBy(nextToolName)) {
 			this.#displaceableTodoComponent = undefined;
-			if (this.ctx.chatContainer.canRemoveBlock(previous)) {
+			if (!this.ctx.ui.hasTransientProviderHistory() && this.ctx.chatContainer.canRemoveBlock(previous)) {
 				this.ctx.chatContainer.removeChild(previous);
 			}
 			previous.seal();
@@ -1408,6 +1412,25 @@ export class EventController {
 	}
 
 	async #handleMessageEnd(event: Extract<AgentSessionEvent, { type: "message_end" }>): Promise<void> {
+		// Canonical todo snapshots are persisted after message_end listeners run.
+		// Wait for that slot before updating HUD state so source identity resolves
+		// against the authoritative session branch rather than the prior entry.
+		if (event.message.role === "toolResult" && event.message.toolName === "todo" && !event.message.isError) {
+			const details = event.message.details as { phases?: TodoPhase[] } | undefined;
+			if (details?.phases) {
+				const owner = this.ctx.viewSession;
+				const sessionId = owner.sessionManager.getSessionId();
+				const sessionFile = owner.sessionManager.getSessionFile();
+				await owner.settleInFlightMessagePersistence();
+				if (
+					this.ctx.viewSession === owner &&
+					owner.sessionManager.getSessionId() === sessionId &&
+					owner.sessionManager.getSessionFile() === sessionFile
+				) {
+					this.ctx.setTodos(details.phases);
+				}
+			}
+		}
 		if (event.message.role === "user") return;
 		const unlockedThinkingVisibility =
 			event.message.role === "assistant" && this.ctx.noteDisplayableThinkingContent(event.message);
@@ -1852,13 +1875,13 @@ export class EventController {
 						// Remember the waiting poll so the next `hub` call can displace it.
 						this.#displaceablePollComponent = component;
 					} else if (event.toolName === "todo" && component.canBeDisplacedBy("todo")) {
-						// Successful todo update supersedes the prior live snapshot. A failed
-						// follow-up never reaches this branch (canBeDisplacedBy("todo") returns
-						// false for errored results), so the last-good panel stays on screen.
 						const previous = this.#displaceableTodoComponent;
 						if (previous && previous !== component && previous.isDisplaceableBlock()) {
 							this.#displaceableTodoComponent = undefined;
-							if (this.ctx.chatContainer.canRemoveBlock(previous)) {
+							if (
+								!this.ctx.ui.hasTransientProviderHistory() &&
+								this.ctx.chatContainer.canRemoveBlock(previous)
+							) {
 								this.ctx.chatContainer.removeChild(previous);
 							}
 							previous.seal();
@@ -1877,13 +1900,7 @@ export class EventController {
 			}
 		}
 		if (syntheticFailureCard) this.#syntheticFailureCards.set(event.toolCallId, syntheticFailureCard);
-		// Update todo display when todo tool completes
-		if (event.toolName === "todo" && !event.isError) {
-			const details = event.result.details as { phases?: TodoPhase[] } | undefined;
-			if (details?.phases) {
-				this.ctx.setTodos(details.phases);
-			}
-		} else if (event.toolName === "todo" && event.isError) {
+		if (event.toolName === "todo" && event.isError) {
 			const textContent = event.result.content.find(
 				(content: { type: string; text?: string }) => content.type === "text",
 			)?.text;

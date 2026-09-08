@@ -936,6 +936,11 @@ export class TUI extends Container {
 		this.requestRender(true);
 	}
 
+	/** Whether native scrollback currently contains unfinalized provider rows. */
+	hasTransientProviderHistory(): boolean {
+		return this.#providerHasTransientHistory;
+	}
+
 	#syncTerminalCursorMode(component: Component | null): void {
 		if (isFocusable(component)) {
 			component.setUseTerminalCursor?.(this.#showHardwareCursor);
@@ -1718,20 +1723,8 @@ export class TUI extends Container {
 		const height = this.terminal.rows;
 		if (width <= 0 || height <= 0) return;
 		provider.beginHistoryFlush();
-		while (true) {
-			let plan: TerminalFramePlan;
-			do {
-				this.#imageBudget.beginPass();
-				plan = provider.renderFrame({ columns: width, rows: height });
-			} while (this.#imageBudget.endPass());
-			if (plan.history === undefined) return;
-			let viewport = Array.from(plan.viewport);
-			if (viewport.length > height) viewport = viewport.slice(0, height);
-			const acceptedBefore = this.#acceptedHistoryBatchId;
-			this.#emitPlanFrame(width, height, viewport, plan.history, provider);
-			if (plan.history.id > acceptedBefore && this.#acceptedHistoryBatchId === acceptedBefore) {
-				throw new Error("History flush did not accept the offered batch");
-			}
+		while (this.#renderProviderFrame(width, height, true)) {
+			// Drain acknowledged batches, then paint the final live suffix.
 		}
 	}
 
@@ -2531,9 +2524,9 @@ export class TUI extends Container {
 		const coalesced = coalesceAdjacentSgr(line);
 		return coalesced + (line.includes("\x1b]8;") ? LINE_TERMINATOR : SEGMENT_RESET);
 	}
-	#renderProviderFrame(width: number, height: number): void {
+	#renderProviderFrame(width: number, height: number, flushing = false): boolean {
 		const provider = this.#frameProvider;
-		if (!provider || width <= 0 || height <= 0) return;
+		if (!provider || width <= 0 || height <= 0) return false;
 		if (this.#clearScrollbackOnNextRender) {
 			this.#providerLogicalCommitted = 0;
 			this.#providerHasTransientHistory = false;
@@ -2545,11 +2538,18 @@ export class TUI extends Container {
 			this.#imageBudget.beginPass();
 			plan = provider.renderFrame({ columns: width, rows: height });
 		} while (this.#imageBudget.endPass());
+		if (!flushing && this.#maybeDeferGhosttyInitialImagePaint()) return false;
 		const logicalViewport = Array.from(plan.viewport);
 		const overflow = Math.max(0, logicalViewport.length - height);
 		// Native history already owns this prefix. Closing temporary editor
 		// chrome must not paint it again as mutable viewport content.
 		const viewportStart = plan.history === undefined ? Math.max(overflow, this.#providerLogicalCommitted) : overflow;
+		if (plan.history?.kind === "replay" && overflow > 0) {
+			plan = {
+				...plan,
+				history: { ...plan.history, rows: [...plan.history.rows, ...logicalViewport.slice(0, overflow)] },
+			};
+		}
 		// Segments arrive in logical-frame coordinates while the emitted viewport
 		// is only the bottom `height` rows. Rebase them exactly like the children
 		// path does (see `#renderChildrenFrame`), so the right panel resolves its
@@ -2596,20 +2596,38 @@ export class TUI extends Container {
 				this.#providerHasTransientHistory = false;
 				this.#providerTransientRows = [];
 				this.#prepareForcedRender(true);
-				this.requestRender(true);
-				return;
+				if (!flushing) this.requestRender(true);
+				return true;
 			}
 		}
 		// An offered batch owns retirement. Its remaining viewport can still
 		// overflow while the next finalized batch waits for acknowledgement.
 		// Borrowing those same rows into native history would turn the next
 		// ordinary append into a destructive replay.
-		this.#providerLogicalCommitted = history === undefined ? Math.max(this.#providerLogicalCommitted, overflow) : 0;
-		if (history !== undefined) this.#providerTransientRows = [];
-		this.#providerHasTransientHistory ||= inferredHistory.length > 0;
+		if (history?.kind === "replay") {
+			// The replay includes this logical prefix, but the provider still owns
+			// it as live content. Retain its watermark for subsequent redraws.
+			this.#providerLogicalCommitted = overflow;
+			this.#providerTransientRows = logicalViewport.slice(0, overflow);
+			this.#providerHasTransientHistory = overflow > 0;
+		} else {
+			this.#providerLogicalCommitted =
+				history === undefined ? Math.max(this.#providerLogicalCommitted, overflow) : 0;
+			if (history !== undefined) this.#providerTransientRows = [];
+			this.#providerHasTransientHistory ||= inferredHistory.length > 0;
+		}
 		const viewport = logicalViewport.slice(viewportStart);
-		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
+		const acceptedBefore = this.#acceptedHistoryBatchId;
 		this.#emitPlanFrame(width, height, viewport, history, provider, inferredHistory);
+		if (
+			flushing &&
+			history !== undefined &&
+			history.id > acceptedBefore &&
+			this.#acceptedHistoryBatchId === acceptedBefore
+		) {
+			throw new Error("History flush did not accept the offered batch");
+		}
+		return plan.history !== undefined;
 	}
 	/**
 	 * Re-offer finalized history once after a settled resize.
