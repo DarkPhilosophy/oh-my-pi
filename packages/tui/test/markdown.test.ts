@@ -2974,6 +2974,53 @@ describe("framed code review regressions", () => {
 });
 
 describe("framed code review follow-ups", () => {
+	it("refreshes unfrozen code copy bytes when only the raw tail changes", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return `omp-copy:${captured.length}`;
+				},
+			};
+			const markdown = new Markdown("Prose\n\n```ts\n\talpha\n```", 0, 0, theme);
+			markdown.transientRenderCache = true;
+			markdown.render(80);
+			expect(captured.at(-1)).toBe("\talpha");
+			markdown.setText("Prose\n\n```ts\n    alpha\n```");
+			markdown.render(80);
+			expect(captured.at(-1)).toBe("    alpha");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("does not treat a list marker inside fenced code as a closing container", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return "omp-copy:nested";
+				},
+			};
+			new Markdown("- ```js\n  alpha\n  - ```\n  omega\n  ```", 0, 0, theme).render(80);
+			expect(captured).toBe("alpha\n- ```\nomega");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
 	it("keeps every framed row within the requested width for wide graphemes", () => {
 		for (const width of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
 			const rendered = new Markdown("```js\n日本語\n```", 0, 0, defaultMarkdownTheme).render(width);

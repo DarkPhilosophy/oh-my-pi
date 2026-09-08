@@ -125,10 +125,10 @@ const MARKDOWN_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
 const MARKDOWN_HEADING_LINE = /^ {0,3}#{1,6}[ \t]+\S/;
 const FENCED_SOURCE_INTRO = /\b(?:code|example|markdown|output|snippet|source)\s*:?\s*$/i;
 
-function isMarkdownFencePrefix(prefix: string, maxLeadingSpaces = 3): boolean {
+function isMarkdownFencePrefix(prefix: string): boolean {
 	let remaining = prefix;
 	while (remaining.length > 0) {
-		const indent = new RegExp(`^ {0,${maxLeadingSpaces}}`).exec(remaining)?.[0] ?? "";
+		const indent = /^ {0,3}/.exec(remaining)?.[0] ?? "";
 		remaining = remaining.slice(indent.length);
 		if (remaining.length === 0) return true;
 		if (remaining.startsWith(">")) {
@@ -143,6 +143,14 @@ function isMarkdownFencePrefix(prefix: string, maxLeadingSpaces = 3): boolean {
 		return false;
 	}
 	return true;
+}
+
+function isClosingFencePrefix(line: string, fenceAt: number, quoteDepth: number): boolean {
+	for (let index = 0; index < fenceAt; index++) {
+		if (line[index] === ">") quoteDepth--;
+		else if (line[index] !== " ") return false;
+	}
+	return quoteDepth === 0;
 }
 
 function isGfmTableDelimiter(line: string, headerLine: string | undefined): boolean {
@@ -1812,6 +1820,8 @@ interface TailRowCache extends RenderSignature {
 	rows: (readonly string[] | undefined)[];
 	// Raw snapshot per token (string value gate).
 	raws: (string | undefined)[];
+	// Raw input backing cached rows; append-only extensions retain valid token prefixes.
+	sourceText: string;
 	// type of token[i+1] when the rows were produced (blank/spacing gate).
 	nextTypes: (string | undefined)[];
 }
@@ -2650,6 +2660,7 @@ export class Markdown implements Component {
 			cachedThrough,
 			rows,
 			raws,
+			sourceText: this.#sourceText,
 			nextTypes,
 		};
 		return out;
@@ -2662,6 +2673,7 @@ export class Markdown implements Component {
 	// token), or a following-token type change.
 	#tailSpliceEnd(cache: TailRowCache, start: number, signature: RenderSignature, tokens: Token[]): number {
 		if (cache.tokenStart !== start) return start;
+		if (!this.#sourceText.startsWith(cache.sourceText)) return start;
 		if (cache.width !== signature.width) return start;
 		if (cache.paddingX !== signature.paddingX) return start;
 		if (cache.paddingY !== signature.paddingY) return start;
@@ -2965,6 +2977,10 @@ export class Markdown implements Component {
 			}
 			if (openAt < 0) return fallback;
 			const openingFenceColumn = openAt - openingLineStart;
+			let openingQuoteDepth = 0;
+			for (let index = openingLineStart; index < openAt; index++) {
+				if (expandedSource[index] === ">") openingQuoteDepth++;
+			}
 			const fenceChar = openingFence.charAt(0);
 			const fenceLength = openingFence.length;
 			let lineStart = expandedSource.indexOf("\n", openAt + openLine.length);
@@ -2980,7 +2996,7 @@ export class Markdown implements Component {
 				if (fenceAt >= 0 && fenceAt <= openingFenceColumn + 3) {
 					let candidateLength = 0;
 					while (sourceLine.charAt(fenceAt + candidateLength) === fenceChar) candidateLength++;
-					const legalPrefix = isMarkdownFencePrefix(sourceLine.slice(0, fenceAt), openingFenceColumn);
+					const legalPrefix = isClosingFencePrefix(sourceLine, fenceAt, openingQuoteDepth);
 					if (
 						legalPrefix &&
 						candidateLength >= fenceLength &&
