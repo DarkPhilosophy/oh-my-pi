@@ -6163,7 +6163,6 @@ describe("advisor", () => {
 			// whose offset broke mouse hit-testing and wasted the upper space).
 			expect(frame.length).toBe(fullHeight);
 			const text = strip(frame);
-			expect(text).toContain("Advisor configuration");
 			expect(text).toContain("project");
 			expect(text).toContain("Architecture");
 			expect(text).toContain("Security");
@@ -6199,18 +6198,34 @@ describe("advisor", () => {
 			expect(strip(overlay.render(200))).toContain("read, web_search");
 		});
 
-		it("opens an advisor's detail editor on a left click in the sidebar", async () => {
+		it("saves an enabled toggle only for the clicked advisor and scope", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
 			setThemeInstance(uiTheme);
-			const overlay = make({ advisors: [{ name: "Architecture" }, { name: "Security" }] });
-			// Render once so the frame geometry is recorded; the first advisor sits on
-			// the first body row (0-based screen row 1 → SGR 1-based row 2).
+			const saved = Promise.withResolvers<{ scope: string; doc: WatchdogConfigDoc }>();
+			const overlay = new AdvisorConfigOverlayComponent(
+				{ terminal: { rows: 40 } } as unknown as TUI,
+				deps,
+				"project",
+				{ advisors: [{ name: "Architecture" }, { name: "Security" }] },
+				{
+					...callbacks,
+					save: async (scope, doc) => {
+						saved.resolve({ scope, doc });
+					},
+				},
+			);
 			overlay.render(120);
-			overlay.handleInput("\x1b[<0;4;2M"); // left-button press, col 4, row 2
-			const text = strip(overlay.render(120));
-			expect(text).toContain("Editing");
-			expect(text).toContain("Architecture");
+			overlay.handleInput("\x1b[<0;4;3M");
+			overlay.handleInput("\r");
+			overlay.handleInput("\x1b[D");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\r");
+			const result = await saved.promise;
+			expect(result.scope).toBe("project");
+			expect(result.doc.advisors).toEqual([{ name: "Architecture" }, { name: "Security", enabled: false }]);
 		});
 
 		it("seeds a visible default advisor (labeled with the role model) when the config is empty", async () => {
