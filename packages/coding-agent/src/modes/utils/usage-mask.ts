@@ -7,7 +7,7 @@ import { getSegmenter, replaceTabs } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 
 export const MASK_STARS = "***";
-const PLACEHOLDER_LABEL = /^account \d+$/;
+const PLACEHOLDER_LABEL = /^account(?: \d+)?$/;
 
 /** Normalize provider-controlled account metadata for single-line display. */
 export function normalizeUsageAccountLabel(label: string): string {

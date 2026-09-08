@@ -340,6 +340,24 @@ describe("ACP builtin slash commands", () => {
 		expect(output[0]).toContain("ali*** (3) (Team): no limits reported");
 		expect(output[0]).not.toContain("@example.com");
 	});
+	it("preserves the generated bare account placeholder when masking no-identity reports", async () => {
+		const { output, runtime } = createRuntime();
+		runtime.settings.set("usage.maskAccountLabels", true);
+		runtime.session.fetchUsageReports = async () => [
+			{
+				provider: "openai-codex",
+				fetchedAt: Date.now(),
+				limits: [],
+				metadata: {},
+				resetCredits: { availableCount: 1 },
+			},
+		];
+
+		await executeAcpBuiltinSlashCommand("/usage", runtime);
+
+		expect(output[0]).toContain("account: 1 saved rate-limit reset");
+		expect(output[0]).not.toContain("acc***");
+	});
 
 	it("suppresses redundant usage window suffixes while retaining legitimate ones", async () => {
 		const { output, runtime } = createRuntime();
