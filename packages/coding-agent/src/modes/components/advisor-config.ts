@@ -24,6 +24,7 @@ import {
 	type Component,
 	Input,
 	type MouseRoutable,
+	replaceTabs,
 	routeSgrMouseInput,
 	type SelectItem,
 	SelectList,
@@ -31,6 +32,7 @@ import {
 	type TUI,
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import {
 	ADVISOR_DEFAULT_TOOL_NAMES,
 	type AdvisorConfig,
@@ -120,6 +122,7 @@ interface ScopeState {
 	doc: WatchdogConfigDoc;
 	list: SelectList;
 	dirty: boolean;
+	loading: boolean;
 	/** Remembered roster row value so rebuilds keep the cursor. */
 	cursor: string | undefined;
 }
@@ -170,7 +173,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#scopedModels = deps.scopedModels;
 		this.#availableToolNames = deps.availableToolNames;
 		this.#defaultModelLabel = deps.defaultModelLabel;
-		this.#projectName = deps.projectName;
+		this.#projectName =
+			deps.projectName === undefined ? undefined : replaceTabs(sanitizeText(deps.projectName)).replace(/\s+/g, " ");
 		this.#cb = callbacks;
 		this.#focus = initialScope;
 		const empty = (): WatchdogConfigDoc => ({ advisors: [] });
@@ -179,13 +183,21 @@ export class AdvisorConfigOverlayComponent implements Component {
 			user: this.#newScope(initialScope === "user" ? initialDoc : empty()),
 		};
 		const other: AdvisorConfigScope = initialScope === "project" ? "user" : "project";
+		this.#scopes[other].loading = true;
 		callbacks
 			.loadDoc(other)
 			.then(doc => {
 				this.#scopes[other].doc = doc;
+				this.#scopes[other].loading = false;
 				this.#rebuildRoster(other);
+				if (this.#focus === other) this.#showFields();
+				this.#cb.requestRender();
 			})
-			.catch(err => callbacks.notify(`Advisor config: ${err instanceof Error ? err.message : String(err)}`));
+			.catch(err => {
+				this.#scopes[other].loading = false;
+				callbacks.notify(`Advisor config: ${err instanceof Error ? err.message : String(err)}`);
+				this.#cb.requestRender();
+			});
 		this.#rebuildRoster("project");
 		this.#rebuildRoster("user");
 		this.#showFields();
@@ -201,7 +213,13 @@ export class AdvisorConfigOverlayComponent implements Component {
 	}
 
 	#newScope(doc: WatchdogConfigDoc): ScopeState {
-		return { doc, list: new SelectList([], 1, getSelectListTheme()), dirty: false, cursor: undefined };
+		return {
+			doc,
+			list: new SelectList([], 1, getSelectListTheme()),
+			dirty: false,
+			loading: false,
+			cursor: undefined,
+		};
 	}
 
 	// ───────────────────────────── render ─────────────────────────────
@@ -509,6 +527,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 
 	async #onRosterSelect(scope: AdvisorConfigScope, value: string): Promise<void> {
 		const state = this.#scopes[scope];
+		if (state.loading) return;
 		if (value === "add") {
 			state.doc.advisors.push({ name: `Advisor ${state.doc.advisors.length + 1}` });
 			state.cursor = `advisor:${state.doc.advisors.length - 1}`;

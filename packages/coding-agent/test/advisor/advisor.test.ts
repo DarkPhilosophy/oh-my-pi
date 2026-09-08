@@ -6254,5 +6254,29 @@ describe("advisor", () => {
 			// The preview of the highlighted (first) advisor shows its enabled status.
 			expect(text).toContain("● on");
 		});
+
+		it("sanitizes project names and blocks global actions while loading", async () => {
+			const { promise: loading, resolve: resolveLoad } = Promise.withResolvers<WatchdogConfigDoc>();
+			let saves = 0;
+			const overlay = new AdvisorConfigOverlayComponent(
+				{ terminal: { rows: 20 } } as unknown as TUI,
+				{ ...deps, projectName: "bad\tname\ninjected\x1b[31m" },
+				"project",
+				{ advisors: [{ name: "Project" }] },
+				{ ...callbacks, loadDoc: () => loading, save: async () => void saves++ },
+			);
+			const renderedName = strip(overlay.render(120));
+			expect(renderedName).toContain("bad name injected");
+			expect(renderedName).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f]/);
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\r");
+			expect(saves).toBe(0);
+			resolveLoad({ advisors: [{ name: "Loaded global" }] });
+			await loading;
+			expect(strip(overlay.render(120))).toContain("Loaded global");
+		});
 	});
 });

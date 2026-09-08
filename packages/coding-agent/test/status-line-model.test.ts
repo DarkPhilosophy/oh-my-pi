@@ -98,6 +98,23 @@ describe("status line model segment advisor glyphs", () => {
 	});
 });
 
+describe("status line model segment real symbol presets", () => {
+	it("uses preset-backed glyphs for yielded advisors", async () => {
+		for (const preset of ["ascii", "nerd"] as const) {
+			await initTheme(false, preset);
+			const ctx = createModelContext(true);
+			ctx.session.getAdvisorStatusOverview = () => ({
+				configured: true,
+				advisors: [{ name: "yielded", status: "paused", yielded: true }],
+			});
+			const plain = Bun.stripANSI(renderSegment("model", ctx).content);
+			const expected = preset === "ascii" ? "-" : theme.icon.advisorClosed;
+			expect(plain).toContain(expected);
+		}
+		await initTheme(false);
+	});
+});
+
 describe("status line model segment compact thinking level", () => {
 	function createThinkingContext(compactThinkingLevel: boolean): SegmentContext {
 		return {

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `SelectList` now keeps keyboard focus on the intended item after a focus transition.
+
 ## [18.1.14] - 2026-09-07
 
 ### Fixed

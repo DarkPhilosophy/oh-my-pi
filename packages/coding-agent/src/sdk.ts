@@ -3724,6 +3724,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorMemoryPrompt,
 			advisorSharedInstructions: discoveredAdvisors.sharedInstructions,
 			advisorConfigs: discoveredAdvisors.advisors,
+			advisorScope: options.advisorScope,
 			agent,
 			pruneToolDescriptions: inlineToolDescriptors,
 			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,

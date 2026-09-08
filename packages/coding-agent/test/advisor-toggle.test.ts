@@ -479,6 +479,45 @@ describe("AgentSession advisor toggle", () => {
 			await Promise.all(children.map(child => child.dispose()));
 		}
 	});
+	it("forwards an inherited advisor scope through SDK session construction", async () => {
+		const settings = Settings.isolated({
+			"async.enabled": false,
+			"advisor.enabled": true,
+			"compaction.enabled": false,
+		});
+		settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+		const result = await createAgentSession({
+			cwd: tempDir.path(),
+			agentDir: tempDir.path(),
+			sessionManager: SessionManager.inMemory(tempDir.path()),
+			authStorage,
+			modelRegistry,
+			settings,
+			model,
+			advisorScope: session.advisorScope,
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			workspaceTree: {
+				rootPath: tempDir.path(),
+				rendered: "",
+				truncated: false,
+				totalLines: 0,
+				agentsMdFiles: [],
+			},
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		});
+		try {
+			expect(result.session.isAdvisorActive()).toBe(true);
+			session.setAdvisorEnabled(false);
+			expect(result.session.isAdvisorActive()).toBe(false);
+		} finally {
+			await result.session.dispose();
+		}
+	});
 
 	it("exposes provider sessionId on live advisor stats", () => {
 		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
