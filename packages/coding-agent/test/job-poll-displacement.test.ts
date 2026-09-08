@@ -224,12 +224,12 @@ describe("EventController displaces consecutive waiting polls", () => {
 		expect(first.isTranscriptBlockFinalized()).toBe(true);
 	});
 
-	it("retains the previous poll while provider history is borrowed", async () => {
+	it("still displaces an unborrowed poll despite unrelated provider history", async () => {
 		const { controller, children, ctx } = createFixture();
 		const first = await runPoll(controller, children, "borrowed-1");
 		(ctx.ui as unknown as { hasTransientProviderHistory: () => boolean }).hasTransientProviderHistory = () => true;
 		const second = await runPoll(controller, children, "borrowed-2");
-		expect(children).toContain(first);
+		expect(children).not.toContain(first);
 		expect(children).toContain(second);
 	});
 
