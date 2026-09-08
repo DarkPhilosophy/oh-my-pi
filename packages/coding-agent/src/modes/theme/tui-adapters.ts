@@ -5,7 +5,14 @@ import {
 	supportsLanguage as nativeSupportsLanguage,
 	warmHighlighter as nativeWarmHighlighter,
 } from "@oh-my-pi/pi-natives";
-import type { EditorTheme, MarkdownTheme, SelectListTheme, SettingsListTheme, SymbolTheme } from "@oh-my-pi/pi-tui";
+import {
+	clearRenderCache,
+	type EditorTheme,
+	type MarkdownTheme,
+	type SelectListTheme,
+	type SettingsListTheme,
+	type SymbolTheme,
+} from "@oh-my-pi/pi-tui";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { copyUrlTarget } from "../../utils/copy-store";
@@ -43,7 +50,9 @@ function getHighlightColors(t: Theme): NativeHighlightColors {
 	return cachedHighlightColors;
 }
 export function setCopyUrlHandlerReady(ready: boolean): void {
+	if (copyUrlHandlerReady === ready) return;
 	copyUrlHandlerReady = ready;
+	clearRenderCache();
 }
 
 /**
