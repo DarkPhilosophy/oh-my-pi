@@ -1209,7 +1209,7 @@ export class WorkerCore {
 	#browser?: Browser;
 	#page?: Page;
 	#targetId?: string;
-	#elementCaches = new Map<string, { handles: Map<number, ElementHandle>; counter: number }>();
+	#elementCaches = new Map<string, { handles: Map<number, ElementHandle>; counter: number; targetId?: string }>();
 	#activeElementCacheKey = "default";
 	#active: ActiveRun | null = null;
 	#activeSelection?: { id: string; ac: AbortController };
@@ -1289,10 +1289,10 @@ export class WorkerCore {
 		return failure;
 	}
 
-	#elementCacheState(): { handles: Map<number, ElementHandle>; counter: number } {
+	#elementCacheState(): { handles: Map<number, ElementHandle>; counter: number; targetId?: string } {
 		let state = this.#elementCaches.get(this.#activeElementCacheKey);
 		if (!state) {
-			state = { handles: new Map(), counter: 0 };
+			state = { handles: new Map(), counter: 0, targetId: this.#targetId };
 			this.#elementCaches.set(this.#activeElementCacheKey, state);
 		}
 		return state;
@@ -1423,6 +1423,7 @@ export class WorkerCore {
 			}
 			await this.#selectBiDiPage(msg.name, msg.targetId, msg.targetMatcher, msg.dialogs);
 			throwIfAborted(ac.signal);
+			if (msg.url) this.#clearElementCache(msg.name);
 			if (msg.url) {
 				await this.#requirePage().goto(msg.url, {
 					waitUntil: msg.waitUntil ?? "load",
@@ -1450,12 +1451,14 @@ export class WorkerCore {
 			matcher: targetMatcher,
 			preferVisible: true,
 		});
+		const selectedTargetId = await targetIdForPage(page, false);
+		const cache = this.#elementCaches.get(cacheKey);
+		if (cache?.targetId !== undefined && cache.targetId !== selectedTargetId) this.#clearElementCache(cacheKey);
 		if (this.#page !== page) {
 			this.#detachDialogListeners();
 			this.#dialogPolicy = undefined;
-			this.#clearElementCache(cacheKey);
 			this.#page = page;
-			this.#targetId = await targetIdForPage(page, false);
+			this.#targetId = selectedTargetId;
 			this.#observeDialogs();
 		}
 		this.#applyDialogPolicy(dialogs);

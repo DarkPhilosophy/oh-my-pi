@@ -965,6 +965,11 @@ export function getTabsMapForTest(): ReadonlyMap<string, TabSession> {
 	return tabs;
 }
 
+/** Test-only accessor for seeding the module-global Firefox alias registry. */
+export function getFirefoxSharedTabsForTest(): FirefoxSharedTabRegistry {
+	return firefoxSharedTabs;
+}
+
 function isLastSurfaceCloseError(err: unknown): boolean {
 	const message = err instanceof Error ? err.message : String(err);
 	return /last/i.test(message);
@@ -1213,19 +1218,6 @@ async function invalidateFirefoxWorker(worker: WorkerHandle, reason: string): Pr
 		return;
 	}
 	await terminateWorker(worker);
-}
-
-export async function handleFirefoxSelectionErrorForTest(tab: WorkerTabSession, error: unknown): Promise<void> {
-	if (error instanceof RecoverableWorkerError) {
-		await invalidateFirefoxWorker(tab.worker, "Firefox tab selection failed recoverably");
-	}
-}
-
-export function selectFirefoxWorkerTabForTest(
-	worker: WorkerHandle,
-	options: Parameters<typeof selectFirefoxWorkerTab>[1],
-): Promise<ReadyInfo> {
-	return selectFirefoxWorkerTab(worker, options);
 }
 
 function safeSend(tab: WorkerTabSession, msg: WorkerInbound): void {
