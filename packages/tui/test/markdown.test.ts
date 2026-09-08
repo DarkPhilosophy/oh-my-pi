@@ -2943,6 +2943,12 @@ describe("framed code review regressions", () => {
 		expect(plainLines.some(line => line.includes("const value = 1"))).toBe(true);
 	});
 
+	it("uses the exact opener delimiter to complete an unclosed fence inside a list", () => {
+		const rendered = new Markdown("- ~~~~js\n  value", 0, 0, defaultMarkdownTheme).render(60);
+		const plainLines = rendered.map(line => stripVTControlCharacters(line).trimEnd());
+		expect(plainLines.at(-1)).toContain("~~~~");
+	});
+
 	it("passes the raw nested-list code body to the copy target", () => {
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;

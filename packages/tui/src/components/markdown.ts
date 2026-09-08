@@ -125,10 +125,10 @@ const MARKDOWN_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
 const MARKDOWN_HEADING_LINE = /^ {0,3}#{1,6}[ \t]+\S/;
 const FENCED_SOURCE_INTRO = /\b(?:code|example|markdown|output|snippet|source)\s*:?\s*$/i;
 
-function isMarkdownFencePrefix(prefix: string): boolean {
+function isMarkdownFencePrefix(prefix: string, maxLeadingSpaces = 3): boolean {
 	let remaining = prefix;
 	while (remaining.length > 0) {
-		const indent = /^ {0,3}/.exec(remaining)?.[0] ?? "";
+		const indent = new RegExp(`^ {0,${maxLeadingSpaces}}`).exec(remaining)?.[0] ?? "";
 		remaining = remaining.slice(indent.length);
 		if (remaining.length === 0) return true;
 		if (remaining.startsWith(">")) {
@@ -2941,7 +2941,7 @@ export class Markdown implements Component {
 				if (fenceAt >= 0 && fenceAt <= openingFenceColumn + 3) {
 					let candidateLength = 0;
 					while (sourceLine.charAt(fenceAt + candidateLength) === fenceChar) candidateLength++;
-					const legalPrefix = isMarkdownFencePrefix(sourceLine.slice(0, fenceAt));
+					const legalPrefix = isMarkdownFencePrefix(sourceLine.slice(0, fenceAt), openingFenceColumn);
 					if (
 						legalPrefix &&
 						candidateLength >= fenceLength &&
@@ -4008,6 +4008,7 @@ export class Markdown implements Component {
 				const fenced = this.#isFencedCodeToken(token);
 				const closedFence = fenced && this.#codeTokenHasClosingFence(token);
 				const bodyLines = this.#renderCodeBodyLines(token, closedFence ? "" : codeIndent, closedFence);
+				const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
 				if (closedFence) {
 					const framed = this.#boxFencedCodeLines(token, bodyLines, frameWidth);
 					for (const line of framed) lines.push({ ...line, nested: false });
@@ -4015,12 +4016,13 @@ export class Markdown implements Component {
 					// An open fence inside a list keeps its delimiters as literal
 					// code rows (same contract as the top-level path) instead of
 					// being silently swallowed by the framed renderer.
-					const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
+					const delimiter = raw.match(/(`{3,}|~{3,})/)?.[1] ?? "```";
 					for (const rawLine of raw.split("\n")) {
 						// Keep open-fence rows in the list-aware noWrap path so the
 						// bullet and continuation rail remain attached before closure.
 						lines.push({ text: replaceTabs(rawLine), noWrap: true, nested: false });
 					}
+					lines.push({ text: replaceTabs(delimiter), noWrap: true, nested: false });
 				}
 				// Some render paths (too-narrow frames, Mermaid) do not need a
 				// copy target. They must still consume this token's source span
