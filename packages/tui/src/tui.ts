@@ -2314,31 +2314,44 @@ export class TUI extends Container {
 		if (!flushing && this.#maybeDeferGhosttyInitialImagePaint()) return false;
 		const logicalViewport = Array.from(plan.viewport);
 		const overflow = Math.max(0, logicalViewport.length - height);
-		if (plan.history === undefined && this.#providerTransientRows.length > 0) {
-			const borrowed = this.#providerTransientRows;
-			if (
-				logicalViewport.length < borrowed.length ||
-				borrowed.some((row, index) => logicalViewport[index] !== row)
-			) {
-				// A mutable prefix changed or disappeared. Keep the terminal's old
-				// scrollback, but do not apply its row offsets to this new frame.
-				this.#providerLogicalCommitted = 0;
-				this.#providerHasTransientHistory = false;
-				this.#providerTransientRows = [];
+		let prependedRows: string[] = [];
+		const borrowed = this.#providerTransientRows;
+		if (
+			plan.history === undefined &&
+			borrowed.length > 0 &&
+			overflow > borrowed.length &&
+			!borrowed.every((row, index) => logicalViewport[index] === row)
+		) {
+			for (let offset = 1; offset + borrowed.length <= overflow; offset++) {
+				if (!borrowed.every((row, index) => logicalViewport[offset + index] === row)) continue;
+				// Native rows cannot be reordered. Publish only the newly inserted
+				// prefix, then keep the already-owned suffix out of subsequent paints.
+				prependedRows = logicalViewport.slice(0, offset);
+				this.#providerTransientRows = [...prependedRows, ...borrowed];
+				this.#providerLogicalCommitted += offset;
+				break;
 			}
 		}
-		const viewportStart = plan.history === undefined ? Math.max(overflow, this.#providerLogicalCommitted) : overflow;
+		// Borrowed rows are immutable native history. Animation may change their
+		// bytes without changing their logical ownership; never borrow them again.
+		// A frame shorter than that prefix is a replacement view, not an indexable
+		// suffix of it, and must remain visible.
+		const viewportStart =
+			plan.history === undefined && logicalViewport.length > this.#providerLogicalCommitted
+				? Math.max(overflow, this.#providerLogicalCommitted)
+				: overflow;
 		if (plan.history?.kind === "replay" && overflow > 0) {
 			plan = {
 				...plan,
 				history: { ...plan.history, rows: [...plan.history.rows, ...logicalViewport.slice(0, overflow)] },
 			};
 		}
-		const inferredHistory =
+		const newlyOverflowed =
 			plan.history === undefined && overflow > this.#providerLogicalCommitted
 				? logicalViewport.slice(this.#providerLogicalCommitted, overflow)
 				: [];
-		if (inferredHistory.length > 0) this.#providerTransientRows.push(...inferredHistory);
+		const inferredHistory = prependedRows.length > 0 ? [...prependedRows, ...newlyOverflowed] : newlyOverflowed;
+		if (newlyOverflowed.length > 0) this.#providerTransientRows.push(...newlyOverflowed);
 		let history = plan.history;
 		if (history !== undefined && history.kind !== "replay" && this.#providerHasTransientHistory) {
 			const borrowed = this.#providerTransientRows;

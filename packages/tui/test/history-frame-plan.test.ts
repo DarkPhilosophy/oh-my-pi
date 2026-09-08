@@ -391,6 +391,36 @@ describe("terminal frame plans", () => {
 		}
 	});
 
+	it("freezes a changing single-row prefix while the live body grows", () => {
+		const terminal = new VirtualTerminal(40, 4);
+		const provider = new Provider({
+			viewport: ["spinner-0", "1. numbered row", "2. numbered row", "3. numbered row", "4. numbered row", "editor"],
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		try {
+			for (let step = 1; step <= 12; step++) {
+				provider.plan = {
+					viewport: [
+						`spinner-${step}`,
+						...Array.from({ length: step + 2 }, (_value, index) => `${index + 1}. numbered row`),
+						"editor",
+					],
+				};
+				tui.requestRender(true);
+			}
+			const buffer = plainBuffer(terminal);
+			expect(buffer.filter(row => row === "spinner-0")).toHaveLength(1);
+			for (let index = 1; index <= 14; index++) {
+				expect(buffer.filter(row => row === `${index}. numbered row`)).toHaveLength(1);
+			}
+			for (let step = 1; step <= 12; step++) {
+				expect(buffer.filter(row => row === `spinner-${step}`)).toHaveLength(0);
+			}
+		} finally {
+			tui.stop();
+		}
+	});
 	it("does not repaint scrolled rows when suggestions repeatedly open and close", () => {
 		const terminal = new VirtualTerminal(30, 5);
 		const header = ["HEADER-A", "HEADER-B", "HEADER-C", "HEADER-D"];

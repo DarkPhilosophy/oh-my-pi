@@ -235,16 +235,32 @@ Average Latency: 1,240 ms
 		expect(rendered).toContain("keep me");
 	});
 
-	it("withholds stable thinking publication when a marker may prepend", () => {
+	it("publishes stable thinking ahead of a trailing cache invalidation marker", () => {
 		const component = new AssistantMessageComponent();
-		component.setMayPrependMarker(true);
+		const prefix = "first reasoning ".repeat(20);
 		component.updateContent(
-			msg([{ type: "thinking", thinking: "long reasoning that should remain live" }], {
-				stopReason: "length",
-			}),
+			msg([
+				{ type: "thinking", thinking: prefix },
+				{ type: "text", text: "a" },
+			]),
 			{ transient: true },
 		);
 		component.render(W);
-		expect(component.getTranscriptStableRows()).toEqual([]);
+		component.setCacheInvalidation({ reprocessedTokens: 50_000 });
+		component.updateContent(
+			msg([
+				{ type: "thinking", thinking: prefix },
+				{ type: "text", text: "ab" },
+			]),
+			{ transient: true },
+		);
+
+		const rendered = Bun.stripANSI(component.render(W).join("\n"));
+		const stableRows = component.getTranscriptStableRows();
+		const stablePrefix = Bun.stripANSI(component.renderTranscriptStableRows(stableRows.length, W).join("\n"));
+		expect(stableRows.length).toBeGreaterThan(0);
+		expect(stablePrefix).toContain("first reasoning");
+		expect(rendered.startsWith(stablePrefix)).toBe(true);
+		expect(rendered.indexOf("first reasoning")).toBeLessThan(rendered.indexOf("cache miss"));
 	});
 });

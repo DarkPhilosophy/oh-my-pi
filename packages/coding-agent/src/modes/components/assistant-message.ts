@@ -184,7 +184,6 @@ function lerpHex(from: string, to: string, t: number): string {
 export class AssistantMessageComponent extends Container {
 	readonly transcriptBlockMode = "appendOnly" as const;
 	#contentContainer: Container;
-	#mayPrependMarker = false;
 	#markerSlot: Container;
 	#lastMessage?: AssistantMessage;
 	#emergencyText?: Markdown;
@@ -417,11 +416,6 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
-	/** Cache-miss markers may be inserted before this block during rebuild. */
-	setMayPrependMarker(mayPrepend: boolean): void {
-		this.#mayPrependMarker = mayPrepend;
-	}
-
 	setHideThinkingBlock(hide: boolean): void {
 		this.hideThinkingBlock = hide;
 	}
@@ -630,7 +624,7 @@ export class AssistantMessageComponent extends Container {
 	 */
 	#currentStableSnapshot(): ThinkingStableSnapshot | undefined {
 		if (this.#transcriptBlockFinalized || !this.#lastUpdateTransient) return undefined;
-		if (this.#mayPrependMarker || this.#markerSlot.children.length > 0) return undefined;
+		if (this.#markerSlot.children.length > 0) return undefined;
 		const items = this.#fastPathItems;
 		if (!items || items.length === 0) return undefined;
 		const parts: StableThinkingPart[] = [];
