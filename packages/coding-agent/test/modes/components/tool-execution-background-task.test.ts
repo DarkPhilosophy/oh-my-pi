@@ -70,12 +70,12 @@ function finalSnapshot(output: string): {
 	};
 }
 
-function makeComponent(): ToolExecutionComponent {
+function makeComponent(live = true): ToolExecutionComponent {
 	const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
 	return new ToolExecutionComponent(
 		"task",
 		{ agent: "scout", id: "Anna", description: "scout auth", assignment: "investigate the auth flow" },
-		{},
+		{ liveRegion: { isBlockInLiveRegion: () => live, isBlockUncommitted: () => live } },
 		undefined,
 		ui,
 	);
@@ -104,5 +104,23 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 
 		const rendered = stripVTControlCharacters(component.render(100).join("\n"));
 		expect(rendered).toContain("found it in src/auth.ts");
+	});
+
+	it("freezes a parked task after its block leaves the live region", () => {
+		let live = true;
+		const component = new ToolExecutionComponent(
+			"task",
+			{ agent: "scout", id: "Anna", description: "scout auth", assignment: "investigate the auth flow" },
+			{ liveRegion: { isBlockInLiveRegion: () => live, isBlockUncommitted: () => live } },
+			undefined,
+			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
+		);
+		component.updateResult(asyncSnapshot("initial progress"), true);
+		component.parkAsBackground();
+		live = false;
+		component.updateResult(asyncSnapshot("late progress"), true);
+		const rendered = stripVTControlCharacters(component.render(100).join("\n"));
+		expect(rendered).toContain("initial progress");
+		expect(rendered).not.toContain("late progress");
 	});
 });

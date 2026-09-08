@@ -247,7 +247,7 @@ export class Composer implements TerminalFrameProvider {
 		this.ui.addChild(this.#statusHost);
 		this.ui.setFocus(this.editor);
 	}
-	/** Compose the bounded mutable viewport and the next ordered history append. */
+	/** Compose the complete logical viewport and the next ordered history append. */
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {
 		if (!this.#started || this.#stopped) return { viewport: [] };
 		const width = Math.max(1, viewport.columns);
@@ -277,16 +277,13 @@ export class Composer implements TerminalFrameProvider {
 		const before = [...headerRows, ...preRoots];
 		const now = performance.now();
 		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
-		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - after.length), frame);
+		const active = transcript.renderViewport(width, Number.MAX_SAFE_INTEGER, frame);
 		const composed = [...before, ...active, ...after];
 		if (history !== undefined && this.#offeredHistory?.source === "header") {
 			const visibleHeaderRows = Math.max(0, rows - composed.length);
 			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
 		}
-		return {
-			history,
-			viewport: composed.length <= rows ? composed : composed.slice(-rows),
-		};
+		return { history, viewport: composed };
 	}
 
 	/** Acknowledges one accepted header, replay, or transcript batch. */
@@ -405,12 +402,12 @@ export class Composer implements TerminalFrameProvider {
 		if (!this.#headerRetired) {
 			const welcome = this.#welcome;
 			if (welcome !== undefined && !welcome.isTranscriptBlockFinalized()) return undefined;
-			// The header stays live viewport chrome until the screen fills; then it
-			// retires first so transcript prefixes can follow in order.
+			// Retire the header only once it is entirely off screen. Transient
+			// editor chrome must not freeze its still-visible tail into history.
 			const renderedHeader = this.#header.render(width);
 			if (renderedHeader.length > 0) {
 				const liveRows = transcript.liveRowCount(width);
-				if (!this.#historyFlush && renderedHeader.length + chromeRows + liveRows <= rows) return undefined;
+				if (!this.#historyFlush && chromeRows + liveRows < rows) return undefined;
 				this.#offeredHistory = {
 					id: this.#nextHistoryId++,
 					rows: [...renderedHeader, ""],

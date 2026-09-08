@@ -234,4 +234,17 @@ Average Latency: 1,240 ms
 		const rendered = Bun.stripANSI(component.render(W).join("\n"));
 		expect(rendered).toContain("keep me");
 	});
+
+	it("withholds stable thinking publication when a marker may prepend", () => {
+		const component = new AssistantMessageComponent();
+		component.setMayPrependMarker(true);
+		component.updateContent(
+			msg([{ type: "thinking", thinking: "long reasoning that should remain live" }], {
+				stopReason: "length",
+			}),
+			{ transient: true },
+		);
+		component.render(W);
+		expect(component.getTranscriptStableRows()).toEqual([]);
+	});
 });

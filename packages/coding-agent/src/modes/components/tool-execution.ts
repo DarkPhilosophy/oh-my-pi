@@ -151,6 +151,15 @@ class SafeToolRendererComponent implements Component {
 	}
 }
 
+/**
+ * Transcript seam probe used by long-lived task cards. Injected instead of
+ * importing TranscriptContainer so this component remains reusable.
+ */
+export interface TranscriptLiveRegionProbe {
+	isBlockInLiveRegion(component: Component): boolean;
+	isBlockUncommitted(component: Component): boolean;
+}
+
 /** Minimal TUI surface ToolExecutionComponent uses to schedule repaints and share image budget. */
 export interface ToolExecutionUi {
 	requestRender(): void;
@@ -163,6 +172,8 @@ export interface ToolExecutionOptions {
 	showImages?: boolean; // default: true (only used if terminal supports images)
 	/** Allow the name-keyed renderer registry only when the active tool is the built-in implementation. */
 	useBuiltInRenderer?: boolean;
+	/** Owning transcript used to freeze detached task cards before retirement. */
+	liveRegion?: TranscriptLiveRegionProbe;
 }
 
 export interface ToolExecutionHandle extends Component {
@@ -334,6 +345,16 @@ export class ToolExecutionComponent extends Container {
 	// same domain as AnimationFrame.now supplied by the transcript allocator).
 	#executionStartedAtNow: number | undefined;
 	// Wall clock captured whenever a task card is rebuilt.
+	/** Owning transcript's mutable-region probe. */
+	#liveRegion?: TranscriptLiveRegionProbe;
+	/**
+	 * One-way latch for a detached task card whose rows left the repaintable
+	 * viewport. Further partial snapshots must not mutate immutable history.
+	 */
+	#backgroundTaskFrozen = false;
+	/** A frozen card may restyle only while none of its rows were committed. */
+	#backgroundTaskFrozenStyled = false;
+
 	#taskRenderNowMs = Date.now();
 	// Set on each `render()` when the last painted pending shape must be
 	// replayed wholesale when the first result arrives. Reset gates key off
@@ -369,6 +390,7 @@ export class ToolExecutionComponent extends Container {
 		this.#toolLabel = tool?.label ?? toolName;
 		this.#renderer = options.useBuiltInRenderer === false ? undefined : toolRenderers[toolName];
 		this.#showImages = options.showImages ?? true;
+		this.#liveRegion = options.liveRegion;
 		this.#tool = tool;
 		this.#ui = ui;
 		this.#args = args;
@@ -508,6 +530,12 @@ export class ToolExecutionComponent extends Container {
 		isPartial = false,
 		_toolCallId?: string,
 	): void {
+		// A detached task may already be immutable history. Drop subsequent
+		// streaming snapshots; its eventual result is delivered separately.
+		if (this.#toolName === "task" && this.#maybeFreezeBackgroundTask()) {
+			if (isPartial) return;
+			if (!(this.#liveRegion?.isBlockUncommitted?.(this) ?? true)) return;
+		}
 		const hadNoResult = this.#result === undefined;
 		const wasPartialResult = this.#result !== undefined && this.#isPartial;
 		const firstResultRepaintShapePainted = this.#firstResultViewportRepaintShapePainted;
@@ -647,9 +675,31 @@ export class ToolExecutionComponent extends Container {
 	 * component-scoped so the TUI reuses every other root subtree (issue #4377).
 	 */
 	tickSpinner(frame: number): void {
+		if (this.#maybeFreezeBackgroundTask()) return;
 		this.#spinnerFrame = frame;
 		this.#renderState.spinnerFrame = frame;
 		this.#ui.requestComponentRender(this);
+	}
+
+	/**
+	 * Freeze a detached running task once it can no longer be repainted safely.
+	 * Returns true after the one-way latch has fired.
+	 */
+	#maybeFreezeBackgroundTask(): boolean {
+		if (this.#backgroundTaskFrozen) return true;
+		if (this.#toolName !== "task" || this.#liveRegion === undefined) return false;
+		const asyncState = (this.#result?.details as { async?: { state?: string } } | undefined)?.async?.state;
+		if (asyncState !== "running") return false;
+		const uncommitted = this.#liveRegion.isBlockUncommitted?.(this) ?? true;
+		if (uncommitted && (!this.#toolActivityVisible || this.#liveRegion.isBlockInLiveRegion(this))) return false;
+		this.#backgroundTaskFrozen = true;
+		this.#updateSpinnerAnimation();
+		if (uncommitted) {
+			this.#backgroundTaskFrozenStyled = true;
+			this.#updateDisplay();
+			this.#ui.requestRender();
+		}
+		return true;
 	}
 
 	#updateTodoStrikeAnimation(): void {
@@ -719,6 +769,15 @@ export class ToolExecutionComponent extends Container {
 	 * abandoned it) and stop animating so the container can retire it.
 	 */
 	seal(): void {
+		// Settle a detached task on static bytes. Recolor only while no row has
+		// entered immutable history.
+		if (this.#toolName === "task") {
+			this.#backgroundTaskFrozen = true;
+			if (this.#liveRegion?.isBlockUncommitted?.(this) ?? true) {
+				this.#backgroundTaskFrozenStyled = true;
+			}
+		}
+
 		if (this.#sealed) return;
 		this.#sealed = true;
 		this.#blockVersion++;
@@ -802,7 +861,7 @@ export class ToolExecutionComponent extends Container {
 		// TUI startup, so a result rendered before it lands must re-shape once it
 		// does (it gates Image children vs text fallback in #rebuildDisplay); keyed
 		// here for the same reason markdown.ts keys its render cache on it.
-		const key = `${this.#resultVersion}|${this.#expanded}|${this.#isPartial}|${this.#argsComplete ? "1" : "0"}|${this.#executionStarted ? "1" : "0"}|${this.#spinnerFrame ?? "-"}|${this.#showImages}|${getThemeEpoch()}|${this.#displayInputVersion}|${TERMINAL.imageProtocol ?? "-"}|${this.#imageSizeKey()}`;
+		const key = `${this.#resultVersion}|${this.#expanded}|${this.#isPartial}|${this.#argsComplete ? "1" : "0"}|${this.#executionStarted ? "1" : "0"}|${this.#backgroundTaskFrozenStyled ? "1" : "0"}|${this.#spinnerFrame ?? "-"}|${this.#showImages}|${getThemeEpoch()}|${this.#displayInputVersion}|${TERMINAL.imageProtocol ?? "-"}|${this.#imageSizeKey()}`;
 		if (key === this.#lastDisplayKey && this.#displayBuilt) return;
 		this.#lastDisplayKey = key;
 
@@ -1273,11 +1332,14 @@ export class ToolExecutionComponent extends Container {
 			context.expanded = this.#expanded;
 			context.previewLines = EVAL_DEFAULT_PREVIEW_LINES;
 		} else if (this.#toolName === "task") {
-			// Once a result snapshot exists the task renderer's `renderResult`
-			// draws every dispatched agent as a progress/result line, so tell
-			// `renderCall` to drop its duplicate streaming preview list.
+			// Once a result snapshot exists the task renderer draws every agent,
+			// so the call renderer must drop its duplicate streaming preview.
 			context.hasResult = Boolean(this.#result);
-			this.#taskRenderNowMs = Date.now();
+			// Freeze the render clock with the card before any row retires.
+			if (!this.#backgroundTaskFrozen && (this.#liveRegion?.isBlockUncommitted?.(this) ?? true)) {
+				this.#taskRenderNowMs = Date.now();
+			}
+			context.frozen = this.#backgroundTaskFrozenStyled;
 			context.nowMs = this.#taskRenderNowMs;
 		} else if (isEditLikeToolName(this.#toolName)) {
 			context.editMode = this.#editMode;

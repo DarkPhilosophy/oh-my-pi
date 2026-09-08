@@ -1038,9 +1038,10 @@ export class EventController {
 		if (!components) return;
 		let removed = false;
 		for (const component of components) {
-			if (!this.ctx.chatContainer.canRemoveBlock(component)) continue;
-			this.ctx.chatContainer.removeChild(component);
-			removed = true;
+			if (!this.ctx.ui.hasTransientProviderHistory() && this.ctx.chatContainer.canRemoveBlock(component)) {
+				this.ctx.chatContainer.removeChild(component);
+				removed = true;
+			}
 		}
 		if (removed) this.ctx.ui.requestRender();
 	}
@@ -1072,7 +1073,12 @@ export class EventController {
 		const previous = this.#displaceablePollComponent;
 		if (!previous) return;
 		this.#displaceablePollComponent = undefined;
-		if (nextToolName === "hub" && previous.isDisplaceableBlock() && this.ctx.chatContainer.canRemoveBlock(previous)) {
+		if (
+			nextToolName === "hub" &&
+			previous.isDisplaceableBlock() &&
+			!this.ctx.ui.hasTransientProviderHistory() &&
+			this.ctx.chatContainer.canRemoveBlock(previous)
+		) {
 			this.ctx.chatContainer.removeChild(previous);
 		}
 		// Sealing stops the waiting-poll spinner and freezes the block (for a
@@ -1090,7 +1096,7 @@ export class EventController {
 		}
 		if (previous.canBeDisplacedBy(nextToolName)) {
 			this.#displaceableTodoComponent = undefined;
-			if (this.ctx.chatContainer.canRemoveBlock(previous)) {
+			if (!this.ctx.ui.hasTransientProviderHistory() && this.ctx.chatContainer.canRemoveBlock(previous)) {
 				this.ctx.chatContainer.removeChild(previous);
 			}
 			previous.seal();
@@ -1298,6 +1304,7 @@ export class EventController {
 						{
 							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(renderToolName),
 							showImages: settings.get("terminal.showImages"),
+							liveRegion: this.ctx.chatContainer,
 						},
 						tool,
 						this.ctx.ui,
@@ -1350,7 +1357,7 @@ export class EventController {
 				}
 			}
 
-			this.ctx.ui.requestRender();
+			this.ctx.ui.requestLiveRender();
 		}
 	}
 
@@ -1523,9 +1530,9 @@ export class EventController {
 				if (!recoverableEmptyOutput) this.ctx.showPinnedError(event.message.errorMessage);
 			}
 			this.ctx.statusLine.invalidate();
-			this.ctx.ui.requestRender();
+			this.ctx.ui.requestLiveRender();
 		}
-		this.ctx.ui.requestRender();
+		this.ctx.ui.requestLiveRender();
 	}
 
 	async #handleToolExecutionStart(event: Extract<AgentSessionEvent, { type: "tool_execution_start" }>): Promise<void> {
@@ -1571,6 +1578,7 @@ export class EventController {
 				{
 					useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(renderToolName),
 					showImages: settings.get("terminal.showImages"),
+					liveRegion: this.ctx.chatContainer,
 				},
 				tool,
 				this.ctx.ui,
@@ -1698,7 +1706,7 @@ export class EventController {
 			const previous = this.#displaceableTodoComponent;
 			if (previous && previous !== component && previous.isDisplaceableBlock()) {
 				this.#displaceableTodoComponent = undefined;
-				if (this.ctx.chatContainer.canRemoveBlock(previous)) {
+				if (!this.ctx.ui.hasTransientProviderHistory() && this.ctx.chatContainer.canRemoveBlock(previous)) {
 					this.ctx.chatContainer.removeChild(previous);
 				}
 				previous.seal();
@@ -1805,7 +1813,10 @@ export class EventController {
 						const previous = this.#displaceableTodoComponent;
 						if (previous && previous !== component && previous.isDisplaceableBlock()) {
 							this.#displaceableTodoComponent = undefined;
-							if (this.ctx.chatContainer.canRemoveBlock(previous)) {
+							if (
+								!this.ctx.ui.hasTransientProviderHistory() &&
+								this.ctx.chatContainer.canRemoveBlock(previous)
+							) {
 								this.ctx.chatContainer.removeChild(previous);
 							}
 							previous.seal();

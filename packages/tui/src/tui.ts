@@ -14,7 +14,7 @@
  */
 import * as fs from "node:fs";
 import { performance } from "node:perf_hooks";
-import { $flag, getDebugLogPath, logger, postmortem } from "@oh-my-pi/pi-utils";
+import { $flag, getDebugLogPath, postmortem } from "@oh-my-pi/pi-utils";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { TuiDebugServer } from "./debug-server";
 import { isKeyRelease, matchesKey } from "./keys";
@@ -127,10 +127,11 @@ export interface HistoryBatch {
 /** One history append or complete replay plus the mutable viewport for a terminal frame. */
 export interface TerminalFramePlan {
 	readonly history?: HistoryBatch;
+	/** Complete logical live rows; the writer splits overflow at the physical terminal boundary. */
 	readonly viewport: readonly string[];
 }
 
-/** Produces bounded terminal frames and retires acknowledged history batches. */
+/** Produces logical live frames and retires acknowledged history batches. */
 export interface TerminalFrameProvider {
 	renderFrame(viewport: ViewportSize): TerminalFramePlan;
 	acknowledgeHistory(id: number): void;
@@ -653,6 +654,11 @@ export class TUI extends Container {
 	// Screen row where the provider's mutable viewport begins (0-based); rows
 	// above it hold history still visible on the physical screen.
 	#providerViewportTop = 0;
+	#providerLogicalCommitted = 0;
+	/** Whether physical scrollback currently contains inferred rows from a live, unfinalized frame. */
+	#providerHasTransientHistory = false;
+	/** Exact rows borrowed into native scrollback, in order. */
+	#providerTransientRows: string[] = [];
 	// Viewport-relative row of the hardware cursor after the last normal paint
 	// (0 = parked at the viewport top). A resize reflows the normal buffer
 	// before the app hears about it; terminals keep the cursor attached to its
@@ -727,6 +733,7 @@ export class TUI extends Container {
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	onDebug?: () => void;
 	#renderRequested = false;
+	#pendingLiveRender = false;
 	#renderTimer: RenderTimer | undefined;
 	#renderScheduler: RenderScheduler;
 	#lastRenderAt = 0;
@@ -761,6 +768,8 @@ export class TUI extends Container {
 	 * watchdog armed across exactly the range where frames are deferred (#10434).
 	 */
 	static readonly #MAX_PENDING_OUTPUT_BYTES = STDOUT_BACKLOG_CLEAR_BYTES;
+	/** Live paints may exceed the ordinary threshold, but remain bounded. */
+	static readonly #MAX_LIVE_PENDING_OUTPUT_BYTES = 1024 * 1024;
 	/** Retry cadence while the output backlog gate is holding renders back. */
 	static readonly #OUTPUT_BACKLOG_RETRY_MS = 10;
 	/** Quiet window before restoring the normal buffer after resize. */
@@ -848,12 +857,20 @@ export class TUI extends Container {
 		return mode === "append" || mode === "rebuild" || mode === "preserve" ? mode : "preserve";
 	}
 
-	/** Install the product-owned bounded frame provider. */
+	/** Install the product-owned logical frame provider. */
 	setFrameProvider(provider: TerminalFrameProvider | undefined): void {
 		this.#frameProvider = provider;
 		this.#providerWindow = [];
+		this.#providerLogicalCommitted = 0;
+		this.#providerHasTransientHistory = false;
+		this.#providerTransientRows = [];
 		this.#resizeReplaySize = undefined;
 		this.requestRender(true);
+	}
+
+	/** Whether native scrollback currently contains unfinalized provider rows. */
+	hasTransientProviderHistory(): boolean {
+		return this.#providerHasTransientHistory;
 	}
 
 	#syncTerminalCursorMode(component: Component | null): void {
@@ -1616,20 +1633,8 @@ export class TUI extends Container {
 		const height = this.terminal.rows;
 		if (width <= 0 || height <= 0) return;
 		provider.beginHistoryFlush();
-		while (true) {
-			let plan: TerminalFramePlan;
-			do {
-				this.#imageBudget.beginPass();
-				plan = provider.renderFrame({ columns: width, rows: height });
-			} while (this.#imageBudget.endPass());
-			if (plan.history === undefined) return;
-			let viewport = Array.from(plan.viewport);
-			if (viewport.length > height) viewport = viewport.slice(0, height);
-			const acceptedBefore = this.#acceptedHistoryBatchId;
-			this.#emitPlanFrame(width, height, viewport, plan.history, provider);
-			if (plan.history.id > acceptedBefore && this.#acceptedHistoryBatchId === acceptedBefore) {
-				throw new Error("History flush did not accept the offered batch");
-			}
+		while (this.#renderProviderFrame(width, height, true)) {
+			// Drain acknowledged batches, then paint the final live suffix.
 		}
 	}
 
@@ -1733,6 +1738,19 @@ export class TUI extends Container {
 			});
 			return;
 		}
+		this.#requestOrdinaryRender();
+	}
+
+	/**
+	 * Schedule a full compose that contains live streaming state.
+	 *
+	 * Live frames may pass through a larger, still-bounded output backlog so
+	 * streaming progress remains visible. The intent stays pending when either
+	 * backlog gate defers the frame and is consumed only when rendering begins.
+	 */
+	requestLiveRender(): void {
+		if (this.#stopped) return;
+		this.#pendingLiveRender = true;
 		this.#requestOrdinaryRender();
 	}
 
@@ -1858,7 +1876,8 @@ export class TUI extends Container {
 	 */
 	#deferRenderForOutputBacklog(): boolean {
 		const pending = this.terminal.pendingOutputBytes;
-		if (pending === undefined || pending <= TUI.#MAX_PENDING_OUTPUT_BYTES) return false;
+		const maximum = this.#pendingLiveRender ? TUI.#MAX_LIVE_PENDING_OUTPUT_BYTES : TUI.#MAX_PENDING_OUTPUT_BYTES;
+		if (pending === undefined || pending <= maximum) return false;
 		this.#renderRequested = true;
 		this.#renderTimer ??= this.#renderScheduler.scheduleRender(
 			this.#runScheduledRender,
@@ -2279,24 +2298,77 @@ export class TUI extends Container {
 		const coalesced = coalesceAdjacentSgr(line);
 		return coalesced + (line.includes("\x1b]8;") ? LINE_TERMINATOR : SEGMENT_RESET);
 	}
-	#renderProviderFrame(width: number, height: number): void {
+	#renderProviderFrame(width: number, height: number, flushing = false): boolean {
 		const provider = this.#frameProvider;
-		if (!provider || width <= 0 || height <= 0) return;
-		this.#debugNextWindowTop = 0;
+		if (!provider || width <= 0 || height <= 0) return false;
+		if (this.#clearScrollbackOnNextRender) {
+			this.#providerLogicalCommitted = 0;
+			this.#providerHasTransientHistory = false;
+			this.#providerTransientRows = [];
+		}
 		let plan: TerminalFramePlan;
 		do {
 			this.#imageBudget.beginPass();
 			plan = provider.renderFrame({ columns: width, rows: height });
 		} while (this.#imageBudget.endPass());
-		let viewport = Array.from(plan.viewport);
-		if (viewport.length > height) {
-			const message = `Frame provider returned ${viewport.length} rows for a ${height}-row viewport`;
-			if (Bun.env.NODE_ENV === "test" || Bun.env.NODE_ENV === "development") throw new Error(message);
-			logger.error("TUI layout contract violated", { rows: viewport.length, height });
-			viewport = viewport.slice(0, height);
+		if (!flushing && this.#maybeDeferGhosttyInitialImagePaint()) return false;
+		const logicalViewport = Array.from(plan.viewport);
+		const overflow = Math.max(0, logicalViewport.length - height);
+		const viewportStart = plan.history === undefined ? Math.max(overflow, this.#providerLogicalCommitted) : overflow;
+		if (plan.history?.kind === "replay" && overflow > 0) {
+			plan = {
+				...plan,
+				history: { ...plan.history, rows: [...plan.history.rows, ...logicalViewport.slice(0, overflow)] },
+			};
 		}
-		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
-		this.#emitPlanFrame(width, height, viewport, plan.history, provider);
+		const inferredHistory =
+			plan.history === undefined && overflow > this.#providerLogicalCommitted
+				? logicalViewport.slice(this.#providerLogicalCommitted, overflow)
+				: [];
+		if (inferredHistory.length > 0) this.#providerTransientRows.push(...inferredHistory);
+		let history = plan.history;
+		if (history !== undefined && history.kind !== "replay" && this.#providerHasTransientHistory) {
+			const borrowed = this.#providerTransientRows;
+			const matches =
+				history.rows.length >= borrowed.length && borrowed.every((row, index) => history!.rows[index] === row);
+			if (matches) {
+				history = { ...history, rows: history.rows.slice(borrowed.length) };
+				this.#providerTransientRows = [];
+				this.#providerHasTransientHistory = false;
+			} else {
+				provider.acknowledgeHistory(history.id);
+				this.#providerLogicalCommitted = 0;
+				this.#providerHasTransientHistory = false;
+				this.#providerTransientRows = [];
+				this.#prepareForcedRender(true);
+				if (!flushing) this.requestRender(true);
+				return true;
+			}
+		}
+		if (history?.kind === "replay") {
+			// The replay includes this logical prefix, but the provider still owns
+			// it as live content. Retain its watermark for subsequent redraws.
+			this.#providerLogicalCommitted = overflow;
+			this.#providerTransientRows = logicalViewport.slice(0, overflow);
+			this.#providerHasTransientHistory = overflow > 0;
+		} else {
+			this.#providerLogicalCommitted =
+				history === undefined ? Math.max(this.#providerLogicalCommitted, overflow) : 0;
+			if (history !== undefined) this.#providerTransientRows = [];
+			this.#providerHasTransientHistory ||= inferredHistory.length > 0;
+		}
+		const viewport = logicalViewport.slice(viewportStart);
+		const acceptedBefore = this.#acceptedHistoryBatchId;
+		this.#emitPlanFrame(width, height, viewport, history, provider, inferredHistory);
+		if (
+			flushing &&
+			history !== undefined &&
+			history.id > acceptedBefore &&
+			this.#acceptedHistoryBatchId === acceptedBefore
+		) {
+			throw new Error("History flush did not accept the offered batch");
+		}
+		return plan.history !== undefined;
 	}
 	/**
 	 * Re-offer finalized history once after a settled resize.
@@ -2391,6 +2463,7 @@ export class TUI extends Container {
 		viewportRows: string[],
 		offered: HistoryBatch | undefined,
 		provider: TerminalFrameProvider | undefined,
+		inferredHistory: readonly string[] = [],
 	): void {
 		let viewport = viewportRows;
 		if (this.#getTopmostVisibleOverlay() !== undefined) {
@@ -2400,7 +2473,7 @@ export class TUI extends Container {
 		const history = offered !== undefined && offered.id > this.#acceptedHistoryBatchId ? offered : undefined;
 		if (offered !== undefined && offered.id <= this.#acceptedHistoryBatchId) provider?.acknowledgeHistory(offered.id);
 
-		let historyRows = history?.rows ?? [];
+		let historyRows = [...inferredHistory, ...(history?.rows ?? [])];
 		let replayViewportRows = 0;
 		if (history?.kind === "replay") {
 			// Providers may omit unused leading rows from a short viewport. Make
@@ -2574,6 +2647,7 @@ export class TUI extends Container {
 	/** Render one frame: alt-screen modal, provider plan, or children fallback. */
 	#doRender(): void {
 		if (this.#stopped) return;
+		this.#pendingLiveRender = false;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
 		if (this.#resizeAltActive) {

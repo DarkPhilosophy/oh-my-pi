@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed long responses being clipped at the history boundary and still-visible content retiring when command suggestions open.
+- Fixed replay omitting already-emitted rows from a partially settled response.
+
 ## [18.1.14] - 2026-09-07
 
 ### Fixed

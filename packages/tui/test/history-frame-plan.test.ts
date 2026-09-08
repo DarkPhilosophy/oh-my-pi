@@ -3,6 +3,7 @@ import {
 	type Component,
 	type TerminalFramePlan,
 	type TerminalFrameProvider,
+	Text,
 	TUI,
 	type ViewportSize,
 } from "@oh-my-pi/pi-tui";
@@ -153,7 +154,7 @@ class FlushProvider implements TerminalFrameProvider {
 		const row = this.#flushing ? this.#pending[0] : undefined;
 		return {
 			history: row === undefined ? undefined : { id: this.#nextId, rows: [row] },
-			viewport: ["editor"],
+			viewport: this.#flushing ? ["live one", "live two", "editor"] : ["editor"],
 		};
 	}
 
@@ -262,6 +263,122 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
+	it("preserves an oversized logical viewport during complete replay", () => {
+		const terminal = new VirtualTerminal(20, 4);
+		const provider = new Provider({ viewport: ["old"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+
+		provider.plan = {
+			history: { id: 1, rows: ["history one", "history two"], kind: "replay" },
+			viewport: ["live one", "live two", "live three", "live four", "live five", "editor"],
+		};
+		tui.requestRender(true);
+
+		expect(provider.acknowledged).toEqual([1]);
+		expect(plainBuffer(terminal).filter(Boolean)).toEqual([
+			"history one",
+			"history two",
+			"live one",
+			"live two",
+			"live three",
+			"live four",
+			"live five",
+			"editor",
+		]);
+		const replayed = plainBuffer(terminal);
+		for (let redraw = 0; redraw < 3; redraw++) {
+			tui.requestRender(true);
+			expect(plainBuffer(terminal)).toEqual(replayed);
+		}
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual([
+			"live three",
+			"live four",
+			"live five",
+			"editor",
+		]);
+		tui.stop();
+	});
+
+	it("bottom-splits a logical frame taller than the terminal", () => {
+		const terminal = new VirtualTerminal(20, 4);
+		const provider = new Provider({ viewport: ["one", "two", "three", "four", "five", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+
+		expect(plainBuffer(terminal)).toEqual(["one", "two", "three", "four", "five", "editor"]);
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["three", "four", "five", "editor"]);
+		tui.stop();
+	});
+
+	it("accepts re-offered borrowed rows without a destructive replay", () => {
+		const terminal = new VirtualTerminal(20, 4);
+		let replays = 0;
+		const provider = new Provider({ viewport: ["a", "b", "live", "editor", "extra"] });
+		const replayingProvider: TerminalFrameProvider = {
+			renderFrame: size => provider.renderFrame(size),
+			acknowledgeHistory: id => provider.acknowledgeHistory(id),
+			beginHistoryReplay: () => {
+				replays++;
+			},
+		};
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(replayingProvider);
+		expect(terminal.getBufferPosition().baseY).toBe(1);
+
+		provider.plan = { history: { id: 1, rows: ["a", "b"] }, viewport: ["live", "editor", "extra"] };
+		tui.requestRender(true);
+
+		expect(replays).toBe(0);
+		expect(provider.acknowledged).toEqual([1]);
+		expect(plainBuffer(terminal).filter(row => row === "a")).toHaveLength(1);
+		expect(plainBuffer(terminal).filter(row => row === "b")).toHaveLength(1);
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["b", "live", "editor", "extra"]);
+		tui.stop();
+	});
+
+	it("does not repaint scrolled rows when suggestions repeatedly open and close", () => {
+		const terminal = new VirtualTerminal(30, 5);
+		const header = ["HEADER-A", "HEADER-B", "HEADER-C", "HEADER-D"];
+		const provider = new Provider({ viewport: [...header, "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		try {
+			for (let cycle = 0; cycle < 3; cycle++) {
+				provider.plan = { viewport: [...header, "editor", "choice-1", "choice-2"] };
+				tui.requestRender(true);
+				provider.plan = { viewport: [...header, "editor"] };
+				tui.requestRender(true);
+				const buffer = plainBuffer(terminal);
+				for (const row of header) expect(buffer.filter(line => line === row)).toHaveLength(1);
+				expect(buffer.filter(line => line === "editor")).toHaveLength(1);
+			}
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("keeps replacement overflow owned across idle repaint and shrinking HUD", () => {
+		const terminal = new VirtualTerminal(30, 5);
+		const provider = new Provider({ viewport: ["old session"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		const transcript = ["row-a", "row-b", "row-c", "row-d", "resumed"];
+		try {
+			provider.plan = { viewport: [...transcript, "TODO", "done", "editor"] };
+			tui.requestRender(true, { clearScrollback: true });
+			tui.requestRender(true);
+			for (const row of transcript) expect(plainBuffer(terminal).filter(line => line === row)).toHaveLength(1);
+			provider.plan = { viewport: [...transcript, "editor"] };
+			tui.requestRender(true);
+			for (const row of transcript) expect(plainBuffer(terminal).filter(line => line === row)).toHaveLength(1);
+			expect(plainBuffer(terminal)).not.toContain("old session");
+			expect(plainBuffer(terminal)).not.toContain("TODO");
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("fuses fullscreen overlay exit into a session replacement paint", () => {
 		const terminal = new CountingTerminal(171, 39);
 		const provider = new Provider({ viewport: ["old session"] });
@@ -304,7 +421,7 @@ describe("terminal frame plans", () => {
 	});
 
 	it("flushes every eligible history batch before terminal handoff", () => {
-		const terminal = new VirtualTerminal(20, 3);
+		const terminal = new VirtualTerminal(20, 2);
 		const provider = new FlushProvider();
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
@@ -312,8 +429,15 @@ describe("terminal frame plans", () => {
 		tui.stop();
 
 		expect(provider.acknowledged).toEqual([1, 2]);
-		expect(plainBuffer(terminal)).toContain("final one");
-		expect(plainBuffer(terminal)).toContain("final two");
+		expect(plainBuffer(terminal).filter(Boolean)).toEqual([
+			"final one",
+			"final two",
+			"live one",
+			"live two",
+			"editor",
+		]);
+		// Handoff leaves the shell cursor below the editor, scrolling once.
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["editor", ""]);
 	});
 
 	it("keeps visible history above the anchored viewport while room remains", () => {
@@ -395,6 +519,32 @@ describe("terminal frame plans", () => {
 		expect(scrollback).toEqual(["real-todo-block", "real-read-block", "real-bash-block"]);
 		expect(provider.resetCount).toBe(1);
 		tui.stop();
+	});
+
+	it("recomputes borrowed row ownership when preserve-mode width changes", async () => {
+		const terminal = new VirtualTerminal(10, 3);
+		const renderScheduler = new VirtualRenderScheduler();
+		const text = new Text("abcdefghijklmnopqrstu", 0, 0);
+		const provider: TerminalFrameProvider = {
+			renderFrame: ({ columns }) => ({ viewport: ["pre0", "pre1", ...text.render(columns), "tail"] }),
+			acknowledgeHistory() {},
+		};
+		const tui = new TUI(terminal, undefined, { renderScheduler });
+		tui.setResizeScrollback("preserve");
+		tui.setFrameProvider(provider);
+		tui.start();
+		try {
+			await renderScheduler.settle(terminal);
+			terminal.resize(20, 3);
+			await renderScheduler.settle(terminal);
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["abcdefghijklmnopqrst", "u", "tail"]);
+			const afterResize = plainBuffer(terminal);
+			tui.requestRender();
+			await renderScheduler.settle(terminal);
+			expect(plainBuffer(terminal)).toEqual(afterResize);
+		} finally {
+			tui.stop();
+		}
 	});
 
 	it("appends a current-width replay after settled resize", async () => {

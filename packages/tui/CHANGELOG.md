@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed lost or duplicated transcript rows across live viewport overflow, repeated command suggestions, and session replacement.
+- Fixed deferred initial image paints losing overflowing provider rows.
+
 ## [18.1.14] - 2026-09-07
 
 ### Fixed

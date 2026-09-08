@@ -3,6 +3,7 @@ import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getDefault } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import { COMPOSER_DEFAULTS, Composer, type ComposerPreferences } from "@oh-my-pi/pi-coding-agent/modes/composer";
+import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import {
 	applyStartupComposerPreferences,
@@ -13,6 +14,7 @@ import {
 	takeStartupComposerLease,
 } from "@oh-my-pi/pi-coding-agent/modes/startup-composer";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { Component } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { createTestSession } from "./utilities";
 
@@ -51,6 +53,26 @@ class InputTrackingTerminal extends CountingTerminal {
 
 	enableInput(): void {
 		this.inputEnables += 1;
+	}
+}
+class GrowingBlock implements Component {
+	#lines: string[] = [];
+	#finalized = false;
+
+	append(line: string): void {
+		this.#lines.push(line);
+	}
+
+	finalize(): void {
+		this.#finalized = true;
+	}
+
+	isTranscriptBlockFinalized(): boolean {
+		return this.#finalized;
+	}
+
+	render(): readonly string[] {
+		return this.#lines;
 	}
 }
 
@@ -105,6 +127,36 @@ describe("Composer prepaint", () => {
 
 		composer.ui.stop();
 		expect(terminal.stops).toBe(1);
+	});
+	it("preserves every numbered row when the logical viewport grows beyond terminal height", async () => {
+		const terminal = new CountingTerminal(80, 32);
+		const composer = new Composer({ preferences: config, terminal });
+		const transcript = new TranscriptContainer();
+		const block = new GrowingBlock();
+		transcript.addChild(block);
+		composer.setRuntimeChildren([transcript, composer.editor]);
+		composer.start();
+
+		const lines = Array.from({ length: 60 }, (_value, index) => `${index + 1}. numbered row`);
+		for (const line of lines) {
+			block.append(line);
+			composer.ui.requestRender(true);
+			await terminal.waitForRender();
+		}
+
+		const tape = terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimStart());
+		expect(lines.map(line => tape.filter(row => row === line).length)).toEqual(lines.map(() => 1));
+
+		const next = new GrowingBlock();
+		next.append("next live row");
+		transcript.addChild(next);
+		block.finalize();
+		composer.ui.requestRender(true);
+		await terminal.waitForRender();
+		const finalizedTape = terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimStart());
+		expect(lines.map(line => finalizedTape.filter(row => row === line).length)).toEqual(lines.map(() => 1));
+		expect(finalizedTape.filter(row => row === "next live row")).toHaveLength(1);
+		composer.ui.stop();
 	});
 
 	it("adopts the live draft with final theme, keybindings, and submit behavior", async () => {

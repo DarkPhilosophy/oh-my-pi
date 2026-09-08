@@ -107,6 +107,27 @@ describe("TUI output-backpressure render gate", () => {
 		}
 	});
 
+	it("allows live frames through the bounded live backlog budget", () => {
+		const term = new BackloggedTerminal(40, 6);
+		const scheduler = new DeferredRenderScheduler();
+		const text = new Text("initial", 0, 0);
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		tui.addChild(text);
+
+		try {
+			tui.start();
+			stepRender(scheduler);
+			term.written.length = 0;
+			term.pendingBytes = 512 * 1024;
+			text.setText("live-update");
+			tui.requestLiveRender();
+			stepRender(scheduler);
+			expect(term.written.join("")).toContain("live-update");
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("never gates terminals that do not report an output backlog", () => {
 		const term = new VirtualTerminal(40, 6);
 		const scheduler = new DeferredRenderScheduler();
