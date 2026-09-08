@@ -1839,7 +1839,6 @@ interface ExpandedSource {
 	sourceOffsets: number[];
 }
 
-/** Expand display tabs once and retain O(1) expanded-to-source offset lookup. */
 function expandSourceText(source: string): ExpandedSource {
 	const sourceOffsets: number[] = [0];
 	let expandedLength = 0;
@@ -1851,6 +1850,17 @@ function expandSourceText(source: string): ExpandedSource {
 		}
 	}
 	return { text: replaceTabs(source), sourceOffsets };
+}
+
+/** Translate one expanded-text boundary without retaining a dense document map. */
+function sourceOffsetAtExpandedBoundary(source: string, boundary: number): number {
+	if (boundary <= 0) return 0;
+	let expandedOffset = 0;
+	for (let sourceOffset = 0; sourceOffset < source.length; sourceOffset++) {
+		expandedOffset += source[sourceOffset] === "\t" ? DEFAULT_TAB_WIDTH : 1;
+		if (expandedOffset >= boundary) return sourceOffset + 1;
+	}
+	return source.length;
 }
 
 /**
@@ -1867,10 +1877,10 @@ export class Markdown implements Component {
 	#text: string;
 	/** Original input retained for copy-chip payloads (before display tab expansion). */
 	#sourceText: string;
-	/** Source bytes with display tabs expanded; shared by token-span lookups. */
-	#expandedSourceText: string;
-	/** Source offset at each expanded-text boundary; extended on append-only updates. */
-	#expandedSourceOffsets: number[];
+	/** Tab-expanded raw source, allocated only when fenced copy recovery runs. */
+	#expandedSourceText?: string;
+	/** Dense expanded-to-source offsets, allocated with the copy-recovery source. */
+	#expandedSourceOffsets?: number[];
 	/** Expanded-source cursor used to disambiguate repeated fenced blocks. */
 	#copySourceSearchCursor = 0;
 	// Suffix of #text a future append could still complete into a match
@@ -1956,9 +1966,6 @@ export class Markdown implements Component {
 		codeBlockIndent: number = 2,
 	) {
 		this.#sourceText = text;
-		const expandedSource = expandSourceText(text);
-		this.#expandedSourceText = expandedSource.text;
-		this.#expandedSourceOffsets = expandedSource.sourceOffsets;
 		this.#text = normalizeOsc8Terminators(text);
 		this.#oscPartialEscape = trailingOsc8Partial(this.#text);
 		this.#paddingX = paddingX;
@@ -2007,21 +2014,31 @@ export class Markdown implements Component {
 				text = this.#text.slice(0, this.#text.length - (memoized?.length ?? 0)) + normalized;
 			}
 			this.#oscPartialEscape = trailingOsc8Partial(normalized);
-			if (normalized === pending) {
-				const delta = sourceText.slice(this.#sourceText.length);
-				let expandedLength = this.#expandedSourceText.length;
-				for (let deltaOffset = 0; deltaOffset < delta.length; deltaOffset++) {
-					const sourceOffset = this.#sourceText.length + deltaOffset;
-					expandedLength += delta[deltaOffset] === "\t" ? DEFAULT_TAB_WIDTH : 1;
-					for (let offset = this.#expandedSourceOffsets.length; offset <= expandedLength; offset++) {
-						this.#expandedSourceOffsets.push(sourceOffset + 1);
+			if (
+				TERMINAL.hyperlinks &&
+				this.#theme.copyChipTarget !== undefined &&
+				this.#expandedSourceText !== undefined &&
+				this.#expandedSourceOffsets !== undefined
+			) {
+				if (normalized === pending) {
+					const delta = sourceText.slice(this.#sourceText.length);
+					let expandedLength = this.#expandedSourceText.length;
+					for (let deltaOffset = 0; deltaOffset < delta.length; deltaOffset++) {
+						const sourceOffset = this.#sourceText.length + deltaOffset;
+						expandedLength += delta[deltaOffset] === "\t" ? DEFAULT_TAB_WIDTH : 1;
+						for (let offset = this.#expandedSourceOffsets.length; offset <= expandedLength; offset++) {
+							this.#expandedSourceOffsets.push(sourceOffset + 1);
+						}
 					}
+					this.#expandedSourceText += replaceTabs(delta);
+				} else {
+					const expandedSource = expandSourceText(sourceText);
+					this.#expandedSourceText = expandedSource.text;
+					this.#expandedSourceOffsets = expandedSource.sourceOffsets;
 				}
-				this.#expandedSourceText += replaceTabs(delta);
-			} else {
-				const expandedSource = expandSourceText(sourceText);
-				this.#expandedSourceText = expandedSource.text;
-				this.#expandedSourceOffsets = expandedSource.sourceOffsets;
+			} else if (!TERMINAL.hyperlinks || this.#theme.copyChipTarget === undefined) {
+				this.#expandedSourceText = undefined;
+				this.#expandedSourceOffsets = undefined;
 			}
 			this.#sourceText = sourceText;
 			this.#text = text;
@@ -2039,9 +2056,8 @@ export class Markdown implements Component {
 			this.#appendOnlySinceLastScan = false;
 		}
 		this.#sourceText = sourceText;
-		const expandedSource = expandSourceText(sourceText);
-		this.#expandedSourceText = expandedSource.text;
-		this.#expandedSourceOffsets = expandedSource.sourceOffsets;
+		this.#expandedSourceText = undefined;
+		this.#expandedSourceOffsets = undefined;
 		this.#text = text;
 		if (!text.trim()) {
 			// Blank replacement: render() early-returns before #lexTokens can see
@@ -2505,12 +2521,15 @@ export class Markdown implements Component {
 			// original source span rather than summing normalized token lengths.
 			// OSC-8 ST terminators occupy two raw source bytes but one normalized
 			// token byte; the span helper preserves that distinction.
-			const reusedSpan = findNormalizedOsc8Span(this.#expandedSourceText, stableText, 0);
-			if (reusedSpan) {
-				this.#copySourceSearchCursor = reusedSpan.end;
-			} else {
-				const exactPrefix = this.#expandedSourceText.startsWith(stableText) ? stableText.length : 0;
-				this.#copySourceSearchCursor = exactPrefix;
+			if (TERMINAL.hyperlinks && this.#theme.copyChipTarget !== undefined) {
+				const expandedSourceText = (this.#expandedSourceText ??= replaceTabs(this.#sourceText));
+				const reusedSpan = findNormalizedOsc8Span(expandedSourceText, stableText, 0);
+				if (reusedSpan) {
+					this.#copySourceSearchCursor = reusedSpan.end;
+				} else {
+					const exactPrefix = expandedSourceText.startsWith(stableText) ? stableText.length : 0;
+					this.#copySourceSearchCursor = exactPrefix;
+				}
 			}
 		}
 		if (renderedUntil < stableTokenCount) {
@@ -2530,10 +2549,7 @@ export class Markdown implements Component {
 		this.#streamPrefixLineCache = {
 			...signature,
 			text: stableText,
-			sourceText: this.#sourceText.slice(
-				0,
-				this.#expandedSourceOffsets[stableText.length] ?? this.#sourceText.length,
-			),
+			sourceText: this.#sourceText.slice(0, sourceOffsetAtExpandedBoundary(this.#sourceText, stableText.length)),
 			tokenCount: stableTokenCount,
 			lines: contentLines.slice(),
 		};
@@ -2826,44 +2842,51 @@ export class Markdown implements Component {
 		return MARKDOWN_FENCE_LINE.test(firstLine);
 	}
 
+	#ensureExpandedSource(): ExpandedSource {
+		if (this.#expandedSourceText === undefined || this.#expandedSourceOffsets === undefined) {
+			const expandedSource = expandSourceText(this.#sourceText);
+			this.#expandedSourceText = expandedSource.text;
+			this.#expandedSourceOffsets = expandedSource.sourceOffsets;
+		}
+		return { text: this.#expandedSourceText, sourceOffsets: this.#expandedSourceOffsets };
+	}
+
 	#findCopySourceSpan(raw: string): { start: number; end: number } | undefined {
+		const expandedSourceText = (this.#expandedSourceText ??= replaceTabs(this.#sourceText));
 		const start = this.#copySourceSearchCursor;
-		const exactStart = this.#expandedSourceText.indexOf(raw, start);
+		const exactStart = expandedSourceText.indexOf(raw, start);
 		if (exactStart >= 0) return { start: exactStart, end: exactStart + raw.length };
-		const suffix = this.#expandedSourceText.slice(start);
+		const suffix = expandedSourceText.slice(start);
 		OSC8_ST_PREFIX_REGEX.lastIndex = 0;
 		const hasStTerminatedOsc = OSC8_ST_PREFIX_REGEX.test(suffix);
 		OSC8_ST_PREFIX_REGEX.lastIndex = 0;
 		if (!hasStTerminatedOsc) return undefined;
-		return findNormalizedOsc8Span(this.#expandedSourceText, raw, start);
+		return findNormalizedOsc8Span(expandedSourceText, raw, start);
 	}
 
 	#findContainerSourceSpan(raw: string): { start: number; end: number } | undefined {
+		const expandedSourceText = (this.#expandedSourceText ??= replaceTabs(this.#sourceText));
 		const lines = raw.split("\n");
 		const first = lines[0];
 		if (!first) return undefined;
 		let lineStart = this.#copySourceSearchCursor;
-		while (lineStart <= this.#expandedSourceText.length) {
-			const lineEnd = this.#expandedSourceText.indexOf("\n", lineStart);
+		while (lineStart <= expandedSourceText.length) {
+			const lineEnd = expandedSourceText.indexOf("\n", lineStart);
 			const sourceLine =
-				lineEnd >= 0
-					? this.#expandedSourceText.slice(lineStart, lineEnd)
-					: this.#expandedSourceText.slice(lineStart);
+				lineEnd >= 0 ? expandedSourceText.slice(lineStart, lineEnd) : expandedSourceText.slice(lineStart);
 			const contentAt = sourceLine.endsWith(first) ? sourceLine.length - first.length : -1;
 			if (contentAt >= 0 && isMarkdownFencePrefix(sourceLine.slice(0, contentAt))) {
-				let cursor = lineEnd >= 0 ? lineEnd + 1 : this.#expandedSourceText.length;
+				let cursor = lineEnd >= 0 ? lineEnd + 1 : expandedSourceText.length;
 				let matched = true;
 				for (let index = 1; index < lines.length; index++) {
-					const nextEnd = this.#expandedSourceText.indexOf("\n", cursor);
+					const nextEnd = expandedSourceText.indexOf("\n", cursor);
 					const nextLine =
-						nextEnd >= 0
-							? this.#expandedSourceText.slice(cursor, nextEnd)
-							: this.#expandedSourceText.slice(cursor);
+						nextEnd >= 0 ? expandedSourceText.slice(cursor, nextEnd) : expandedSourceText.slice(cursor);
 					if (!nextLine.endsWith(lines[index]!)) {
 						matched = false;
 						break;
 					}
-					cursor = nextEnd >= 0 ? nextEnd + 1 : this.#expandedSourceText.length;
+					cursor = nextEnd >= 0 ? nextEnd + 1 : expandedSourceText.length;
 				}
 				if (matched) return { start: lineStart + contentAt, end: cursor > 0 ? cursor - 1 : cursor };
 			}
@@ -2879,6 +2902,7 @@ export class Markdown implements Component {
 	 * resolved by #originalCodeBody().
 	 */
 	#advanceCopySourceCursor(token: Token): void {
+		if (!TERMINAL.hyperlinks || this.#theme.copyChipTarget === undefined) return;
 		if (token.type === "code" || token.type === "list" || token.type === "blockquote") return;
 		const raw = "raw" in token && typeof token.raw === "string" ? replaceTabs(token.raw) : "";
 		if (!raw) return;
@@ -2888,6 +2912,7 @@ export class Markdown implements Component {
 
 	/** Advance across a cached top-level token whose nested rows were spliced. */
 	#advanceSplicedCopySourceCursor(token: Token): void {
+		if (!TERMINAL.hyperlinks || this.#theme.copyChipTarget === undefined) return;
 		const raw = "raw" in token && typeof token.raw === "string" ? replaceTabs(token.raw) : "";
 		if (!raw) return;
 		const span = this.#findCopySourceSpan(raw) ?? this.#findContainerSourceSpan(raw);
@@ -2897,6 +2922,7 @@ export class Markdown implements Component {
 	/** Recover the source body for copy targets after display tab expansion. */
 	#originalCodeBody(token: Token): string {
 		const fallback = "text" in token && typeof token.text === "string" ? token.text : "";
+		if (!TERMINAL.hyperlinks || this.#theme.copyChipTarget === undefined) return fallback;
 		const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
 		if (!raw) return fallback;
 		// Marked may include the newline after a closing fence in token.raw. It
@@ -2904,7 +2930,7 @@ export class Markdown implements Component {
 		// delimiter-adjacent newlines used for locating this token.
 		const rawForSpan = raw.replace(/^(?:\r?\n)+|(?:\r?\n)+$/g, "");
 		if (!rawForSpan) return fallback;
-		const expandedSource = this.#expandedSourceText;
+		const { text: expandedSource, sourceOffsets } = this.#ensureExpandedSource();
 		const searchStart = this.#copySourceSearchCursor;
 		const sourceSpan = this.#findCopySourceSpan(rawForSpan);
 		let expandedStart = sourceSpan?.start ?? -1;
@@ -2975,8 +3001,8 @@ export class Markdown implements Component {
 			expandedEnd = closeAt + closeLength;
 		}
 		this.#copySourceSearchCursor = Math.max(this.#copySourceSearchCursor, expandedEnd);
-		const sourceStart = this.#expandedSourceOffsets[expandedStart] ?? this.#sourceText.length;
-		const sourceEnd = this.#expandedSourceOffsets[expandedEnd] ?? this.#sourceText.length;
+		const sourceStart = sourceOffsets[expandedStart] ?? this.#sourceText.length;
+		const sourceEnd = sourceOffsets[expandedEnd] ?? this.#sourceText.length;
 		const sourceRaw = this.#sourceText.slice(sourceStart, sourceEnd);
 		const firstLineEnd = sourceRaw.indexOf("\n");
 		const lastLineStart = sourceRaw.lastIndexOf("\n");
@@ -3162,8 +3188,9 @@ export class Markdown implements Component {
 		if (copyLabel && visibleWidth(copyLabel) > 0) {
 			const chipWidth = visibleWidth(copyLabel);
 			const fill = Math.max(0, innerWidth - chipWidth - 1);
-			const code = this.#originalCodeBody(token);
-			const target = TERMINAL.hyperlinks && code ? this.#theme.copyChipTarget?.(code) : undefined;
+			const code =
+				TERMINAL.hyperlinks && this.#theme.copyChipTarget !== undefined ? this.#originalCodeBody(token) : "";
+			const target = code ? this.#theme.copyChipTarget?.(code) : undefined;
 			const chip = target
 				? `\x1b]8;;${target.replaceAll("\x1b", "").replaceAll("\x07", "")}\x07${border(copyLabel)}\x1b]8;;\x07`
 				: border(copyLabel);
