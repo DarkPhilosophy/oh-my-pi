@@ -382,6 +382,36 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(renderTodos(mode)).toContain("new");
 	});
 
+	it("keeps a newer canonical TODO edit after an older result finishes persisting", async () => {
+		await replaceMode();
+		const settle = Promise.withResolvers<void>();
+		vi.spyOn(session, "settleInFlightMessagePersistence").mockReturnValue(settle.promise);
+		const older: TodoPhase[] = [{ name: "Old", tasks: [{ content: "old task", status: "in_progress" }] }];
+		const newer: TodoPhase[] = [{ name: "New", tasks: [{ content: "new task", status: "in_progress" }] }];
+		session.setTodoPhases(older);
+		mode.setTodos(older);
+		const pending = mode.eventController.handleEvent({
+			type: "message_end",
+			message: {
+				role: "toolResult",
+				toolName: "todo",
+				toolCallId: "old-todo",
+				content: [],
+				isError: false,
+				timestamp: Date.now(),
+				details: { phases: older },
+			},
+		});
+		session.sessionManager.appendCustomEntry("user_todo_edit", { phases: newer });
+		session.setTodoPhases(newer);
+		mode.setTodos(newer);
+		settle.resolve();
+		await pending;
+		expect(session.getTodoPhases()).toEqual(newer);
+		expect(renderTodos(mode)).toContain("new task");
+		expect(renderTodos(mode)).not.toContain("old task");
+	});
+
 	it("cancels an old dismissal timer when a replacement plan becomes visible", async () => {
 		await replaceMode();
 		vi.useFakeTimers();

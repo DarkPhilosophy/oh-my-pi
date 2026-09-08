@@ -62,6 +62,23 @@ class AllocationAwareBlock implements Component {
 const frame = { tick: 0, now: 0 };
 
 describe("TranscriptContainer", () => {
+	it("protects physically borrowed blocks without freezing later live blocks", () => {
+		const transcript = new TranscriptContainer();
+		const borrowed = new Block(["first", "second"], false);
+		const live = new Block(["later"], false);
+		transcript.addChild(borrowed);
+		transcript.addChild(live);
+		transcript.renderViewport(40, 10, frame);
+		transcript.setBorrowedViewportRows(1);
+		expect(transcript.isBlockUncommitted(borrowed)).toBe(false);
+		expect(transcript.canRemoveBlock(borrowed)).toBe(false);
+		expect(transcript.isBlockUncommitted(live)).toBe(true);
+		expect(transcript.canRemoveBlock(live)).toBe(true);
+		transcript.removeChild(borrowed);
+		transcript.removeChild(live);
+		expect(transcript.children).toEqual([borrowed]);
+	});
+
 	it("keeps settled blocks live while the viewport has room", () => {
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["settled"], true));

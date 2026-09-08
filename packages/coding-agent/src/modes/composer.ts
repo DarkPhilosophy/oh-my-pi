@@ -197,6 +197,8 @@ export class Composer implements TerminalFrameProvider {
 	#retiredHeaderStart = 0;
 	#resizeRetiredHeaderStart: number | undefined;
 	#lastNormalRows = 0;
+	#viewportTranscript?: TranscriptContainer;
+	#viewportTranscriptStart = 0;
 	#lastInterruptAt = 0;
 	#started = false;
 	#stopped = false;
@@ -265,6 +267,7 @@ export class Composer implements TerminalFrameProvider {
 			: [this.#header, this.#bootstrapInputGap, this.editor, this.#statusHost];
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) {
+			this.#viewportTranscript = undefined;
 			return this.#planWithSegments(roots.map(root => ({ component: root, rows: root.render(width) })));
 		}
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
@@ -280,6 +283,8 @@ export class Composer implements TerminalFrameProvider {
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
 		const before = [...headerRows, ...preRoots];
+		this.#viewportTranscript = transcript;
+		this.#viewportTranscriptStart = before.length;
 		const now = performance.now();
 		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
 		const active = transcript.renderViewport(width, Number.MAX_SAFE_INTEGER, frame);
@@ -295,6 +300,10 @@ export class Composer implements TerminalFrameProvider {
 			...afterChunks,
 		]);
 		return { history, viewport: plan.viewport, segments: plan.segments };
+	}
+
+	onViewportBorrowed(rows: number): void {
+		this.#viewportTranscript?.setBorrowedViewportRows(Math.max(0, rows - this.#viewportTranscriptStart));
 	}
 
 	/** Publish component ownership for every row in the complete logical frame. */

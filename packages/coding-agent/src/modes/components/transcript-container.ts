@@ -73,6 +73,9 @@ interface TranscriptEntry {
 	stableRows: readonly TranscriptStableRow[];
 	renderedStableByWidth: Map<number, readonly string[]>;
 	emitted: number;
+	/** Position in the last logical live viewport; independent of durable retirement. */
+	viewportStart?: number;
+	borrowed?: boolean;
 	/**
 	 * Set when a published stable row drifted (retraction, byte change within a
 	 * width epoch, or no longer a render prefix). Rows already in native
@@ -210,6 +213,8 @@ export class TranscriptContainer extends Container {
 		this.#syncEntries();
 		if (this.#offered?.kind === "append") this.#offered = undefined;
 		for (const entry of this.#entries) {
+			entry.borrowed = false;
+			entry.viewportStart = undefined;
 			entry.emitted = 0;
 			entry.stableRows = EMPTY_STABLE_ROWS;
 			entry.renderedStableByWidth = new Map();
@@ -231,7 +236,7 @@ export class TranscriptContainer extends Container {
 		const index = this.#entries.findIndex(entry => entry.component === component);
 		if (index < 0) return false;
 		const entry = this.#entries[index]!;
-		if (entry.state === "committed" || entry.emitted > 0) return false;
+		if (entry.state === "committed" || entry.emitted > 0 || entry.borrowed) return false;
 		if (this.#offered?.kind === "commit" && index < this.#offered.end) return false;
 		if (this.#offered?.kind === "append" && index === this.#offered.entry) return false;
 		return true;
@@ -260,7 +265,7 @@ export class TranscriptContainer extends Container {
 		const index = this.#entries.findIndex(entry => entry.component === component);
 		if (index < 0) return true;
 		const entry = this.#entries[index]!;
-		if (entry.state === "committed" || entry.emitted > 0) return false;
+		if (entry.state === "committed" || entry.emitted > 0 || entry.borrowed) return false;
 		if (this.#offered?.kind === "commit" && index < this.#offered.end) return false;
 		if (this.#offered?.kind === "append" && index === this.#offered.entry) return false;
 		return true;
@@ -346,13 +351,22 @@ export class TranscriptContainer extends Container {
 		this.#settleFinalized();
 		const output: string[] = [];
 		for (const { entry, index } of this.#liveEntries()) {
+			entry.viewportStart = undefined;
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, frame);
 			const rendered = this.#renderEntry(entry, width).slice(this.#projectedEmitted(entry, index, width));
 			if (rendered.length === 0) continue;
 			if (output.length > 0) output.push("");
+			entry.viewportStart = output.length;
 			output.push(...rendered);
 		}
 		return output;
+	}
+
+	/** Track immutable borrowed rows without advancing the canonical emission ledger. */
+	setBorrowedViewportRows(rows: number): void {
+		for (const { entry } of this.#liveEntries()) {
+			entry.borrowed = entry.viewportStart !== undefined && entry.viewportStart < rows;
+		}
 	}
 
 	/** Offers stable-head emission or the shortest finalized prefix needed under pressure. */

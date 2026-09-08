@@ -182,6 +182,8 @@ export interface TerminalFramePlan {
 export interface TerminalFrameProvider {
 	renderFrame(viewport: ViewportSize): TerminalFramePlan;
 	acknowledgeHistory(id: number): void;
+	/** Leading logical viewport rows already owned by native history, reported after paint. */
+	onViewportBorrowed?(rows: number): void;
 	/** Full semantic viewport used only on the transient resize buffer. */
 	renderResizeFrame?(viewport: ViewportSize): readonly string[];
 	/** Re-offer finalized history after a display reset or resize replay. */
@@ -2717,10 +2719,10 @@ export class TUI extends Container {
 		if (
 			plan.history === undefined &&
 			borrowed.length > 0 &&
-			overflow > borrowed.length &&
+			logicalViewport.length > borrowed.length &&
 			!borrowed.every((row, index) => logicalViewport[index] === row)
 		) {
-			for (let offset = 1; offset + borrowed.length <= overflow; offset++) {
+			for (let offset = 1; offset + borrowed.length <= logicalViewport.length; offset++) {
 				if (!borrowed.every((row, index) => logicalViewport[offset + index] === row)) continue;
 				// Native rows cannot be reordered. A true prepend requires the
 				// provider's existing complete replay protocol; never append the
@@ -2729,17 +2731,7 @@ export class TUI extends Container {
 				return this.#renderProviderFrame(width, height, flushing);
 			}
 		}
-		// Animation can change borrowed bytes without changing their ownership.
-		const viewportStart =
-			plan.history === undefined && logicalViewport.length > this.#providerLogicalCommitted
-				? Math.max(overflow, this.#providerLogicalCommitted)
-				: overflow;
-		if (plan.history?.kind === "replay" && overflow > 0) {
-			plan = {
-				...plan,
-				history: { ...plan.history, rows: [...plan.history.rows, ...logicalViewport.slice(0, overflow)] },
-			};
-		}
+		const viewportStart = overflow;
 		// Segments arrive in logical-frame coordinates while the emitted viewport
 		// is only the bottom `height` rows. Rebase them exactly like the children
 		// path does (see `#renderChildrenFrame`), so the right panel resolves its
@@ -2756,47 +2748,45 @@ export class TUI extends Container {
 						rowCount: segment.rowCount,
 					}));
 		this.#rightPanelRowsAbove = logicalViewport.slice(0, viewportStart);
-		const newlyOverflowed =
-			plan.history === undefined && overflow > this.#providerLogicalCommitted
-				? logicalViewport.slice(this.#providerLogicalCommitted, overflow)
-				: [];
-		const inferredHistory = newlyOverflowed;
-		if (newlyOverflowed.length > 0) this.#providerTransientRows.push(...newlyOverflowed);
 		let history = plan.history;
-		if (history !== undefined && history.kind !== "replay" && this.#providerHasTransientHistory) {
-			const borrowed = this.#providerTransientRows;
-			const offeredRows = history.rows;
-			const matches =
-				offeredRows.length >= borrowed.length && borrowed.every((row, index) => offeredRows[index] === row);
-			if (matches) {
-				history = { ...history, rows: history.rows.slice(borrowed.length) };
-				this.#providerTransientRows = [];
-				this.#providerHasTransientHistory = false;
-			} else {
-				// Diverged borrowed rows are already native scrollback. Preserve
-				// them and append the finalized batch once, without clearing.
-				this.#providerLogicalCommitted = 0;
-				this.#providerHasTransientHistory = false;
-				this.#providerTransientRows = [];
-			}
-		}
-		// An offered batch owns retirement. Its remaining viewport can still
-		// overflow while the next finalized batch waits for acknowledgement.
-		// Borrowing those same rows into native history would turn the next
-		// ordinary append into a destructive replay.
-		if (history?.kind === "replay") {
-			// The replay includes this logical prefix, but the provider still owns
-			// it as live content. Retain its watermark for subsequent redraws.
+		const newHistory = history !== undefined && history.id > this.#acceptedHistoryBatchId;
+		let inferredHistory: string[] = [];
+		if (newHistory && history?.kind === "replay") {
+			history = { ...history, rows: [...history.rows, ...logicalViewport.slice(0, overflow)] };
 			this.#providerLogicalCommitted = overflow;
 			this.#providerTransientRows = logicalViewport.slice(0, overflow);
-			this.#providerHasTransientHistory = overflow > 0;
 		} else {
-			this.#providerLogicalCommitted =
-				history === undefined ? Math.max(this.#providerLogicalCommitted, overflow) : 0;
-			if (history !== undefined) this.#providerTransientRows = [];
-			this.#providerHasTransientHistory ||= inferredHistory.length > 0;
+			if (newHistory && history !== undefined) {
+				const prior = this.#providerTransientRows;
+				const overlap = Math.min(history.rows.length, prior.length);
+				let matches = true;
+				for (let index = 0; index < overlap; index++) {
+					if (prior[index] !== history.rows[index]) {
+						matches = false;
+						break;
+					}
+				}
+				if (matches) {
+					history = { ...history, rows: history.rows.slice(overlap) };
+					this.#providerTransientRows = prior.slice(overlap);
+					this.#providerLogicalCommitted = Math.max(0, this.#providerLogicalCommitted - overlap);
+				} else {
+					this.#providerTransientRows = [];
+					this.#providerLogicalCommitted = 0;
+				}
+			}
+			if (history === undefined && overflow > this.#providerLogicalCommitted) {
+				inferredHistory = logicalViewport.slice(this.#providerLogicalCommitted, overflow);
+				this.#providerTransientRows.push(...inferredHistory);
+			}
+			if (history === undefined) this.#providerLogicalCommitted = Math.max(this.#providerLogicalCommitted, overflow);
 		}
+		this.#providerHasTransientHistory = this.#providerTransientRows.length > 0;
 		const viewport = logicalViewport.slice(viewportStart);
+		if (logicalViewport.length > this.#providerLogicalCommitted) {
+			const reserved = Math.max(0, this.#providerLogicalCommitted - overflow);
+			for (let index = 0; index < reserved; index++) viewport[index] = "";
+		}
 		const acceptedBefore = this.#acceptedHistoryBatchId;
 		this.#emitPlanFrame(width, height, viewport, history, provider, inferredHistory);
 		if (
@@ -2918,7 +2908,7 @@ export class TUI extends Container {
 		const history = offered !== undefined && offered.id > this.#acceptedHistoryBatchId ? offered : undefined;
 		if (offered !== undefined && offered.id <= this.#acceptedHistoryBatchId) provider?.acknowledgeHistory(offered.id);
 
-		let historyRows = [...inferredHistory, ...(history?.rows ?? [])];
+		let historyRows = [...(history?.rows ?? []), ...inferredHistory];
 		let replayViewportRows = 0;
 		if (history?.kind === "replay") {
 			// Providers may omit unused leading rows from a short viewport. Make
@@ -3081,6 +3071,7 @@ export class TUI extends Container {
 		this.#forceViewportRepaintOnNextRender = false;
 		this.#hasEverRendered = true;
 		this.#resizeReplaySize = undefined;
+		provider?.onViewportBorrowed?.(this.#providerLogicalCommitted);
 		if (history !== undefined) {
 			this.#acceptedHistoryBatchId = history.id;
 			provider?.acknowledgeHistory(history.id);
