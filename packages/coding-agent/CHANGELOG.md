@@ -5,6 +5,10 @@
 ### Changed
 
 - Subagents now show their current activity and a separate, width-bounded current-tool row; resolved model labels follow the model badge setting.
+### Fixed
+
+- Fixed worker subprocesses failing to declare themselves as worker hosts before dispatching selectors, which prevented nested thread worker spawns during `/usage` stats sync on multi-core systems.
+- Fixed `/usage` displaying a misleading generic database read failure when activity loading fails; the error detail is now sanitized, collapsed to a single line with shortened paths, and surfaced in the dashboard.
 
 ## [18.1.14] - 2026-09-07
 
