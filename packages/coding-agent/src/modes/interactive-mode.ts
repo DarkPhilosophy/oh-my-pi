@@ -538,7 +538,13 @@ export function renderSubagentHudLines(
 						: undefined;
 				let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}${badge}`;
 				if (resolvedModel)
-					line += `:${theme.fg("dim", truncateToWidth(replaceTabs(sanitizeText(resolvedModel)).replace(/[\r\n]+/g, " "), 30))}`;
+					line += `:${theme.fg(
+						"dim",
+						truncateToWidth(
+							replaceTabs(sanitizeText(resolvedModel)).replace(/[\r\n]+/g, " "),
+							TRUNCATE_LENGTHS.MODEL,
+						),
+					)}`;
 				const rawDescription =
 					session.progress?.lastIntent?.trim() ||
 					session.progress?.description?.trim() ||
@@ -562,15 +568,15 @@ export function renderSubagentHudLines(
 					const args = currentTool ? session.progress?.currentToolArgs?.trim() : lastTool?.args.trim();
 					const argsKey = currentTool ? session.progress?.currentToolArgsKey : lastTool?.argsKey;
 					const displayArgs =
-						argsKey === "path" || argsKey === "file_path"
-							? shortenPath(args ?? "")
-							: argsKey === "command"
-								? shortenEmbeddedPaths(args ?? "")
-								: args;
+						argsKey === "path" || argsKey === "file_path" || argsKey === "command"
+							? shortenEmbeddedPaths(args ?? "")
+							: args;
 					const toolText = replaceTabs(
 						sanitizeText(displayArgs ? `${toolName}(${displayArgs})` : toolName),
 					).replace(/\s*[\r\n]+\s*/g, " ");
-					const toolLabel = lastTool ? `${lastTool.isError ? "failed" : "done"} ${toolText}` : toolText;
+					const toolLabel = lastTool
+						? `${theme.styledSymbol(lastTool.isError ? "status.error" : "status.success", lastTool.isError ? "error" : "success")} ${toolText}`
+						: toolText;
 					return [
 						truncateToWidth(line, Math.max(1, columns - 6)),
 						`${theme.tree.hook} ${theme.fg("dim", truncateToWidth(toolLabel, Math.max(1, columns - 8)))}`,

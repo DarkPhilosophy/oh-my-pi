@@ -82,7 +82,7 @@ export const TRUNCATE_LENGTHS = {
 	LONG: 100,
 	/** Full line content */
 	LINE: 110,
-	/** Very short (task previews, badges) */
+	MODEL: 48,
 	SHORT: 40,
 	/** Idle recap status line (~40-word LLM reply) */
 	RECAP: 280,
@@ -728,14 +728,15 @@ export function shortenPath(filePath: unknown, homeDir?: string): string {
 	}
 	return filePath;
 }
-/** Shortens home-directory prefixes embedded in display-only text. */
+/** Shortens home-directory prefixes embedded in display-only path tokens. */
 export function shortenEmbeddedPaths(text: string, homeDir?: string): string {
 	if (!text) return text;
 	const home = homeDir ?? os.homedir();
 	if (!home) return text;
 	const escapedHome = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const flags = /^[A-Za-z]:[\\/]|^\\\\/.test(home) ? "gi" : "g";
-	return text.replace(new RegExp(`${escapedHome}(?=$|[/\\\\ "'\\)])`, flags), "~");
+	const tokenBoundary = String.raw`[\s"'` + "`" + String.raw`=(:,;]`;
+	return text.replace(new RegExp(`(^|${tokenBoundary})${escapedHome}(?=$|[/\\\\\\s"'\\]),;])`, flags), "$1~");
 }
 
 export function formatToolWorkingDirectory(workdir: string | undefined, projectDir: string): string | undefined {

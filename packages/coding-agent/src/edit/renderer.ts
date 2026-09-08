@@ -631,7 +631,7 @@ const HL_LINE_OP_HEADER = /^(?:PUT|CUT)\b/;
  * and whether a line edit precedes it. Tolerant of partial input so the call
  * preview can label a delete/move before the payload finishes streaming.
  */
-function getHashlineInputSections(input: string): HashlineInputEntry[] {
+export function getHashlineInputSections(input: string): HashlineInputEntry[] {
 	const stripped = input.startsWith("\uFEFF") ? input.slice(1) : input;
 	const entries: HashlineInputEntry[] = [];
 	let current: HashlineInputEntry | undefined;

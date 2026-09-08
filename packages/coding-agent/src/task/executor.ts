@@ -67,6 +67,7 @@ import { type EventBus, emitSubagentFrame } from "../utils/event-bus";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { WorkspaceTree } from "../workspace-tree";
+import { getHashlineInputSections } from "../edit/renderer";
 import { attributeSubagentError } from "./error-attribution";
 import { generateTaskLabel } from "./label";
 import { resolveAgentPrewalkDefault } from "./prewalk";
@@ -817,6 +818,19 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
  */
 function extractToolArgsPreview(args: Record<string, unknown>): { value: string; key: string } | undefined {
 	const previewKeys = ["command", "file_path", "path", "pattern", "query", "url", "task", "prompt"];
+	if (typeof args.input === "string") {
+		const paths = getHashlineInputSections(args.input)
+			.map(entry => entry.path)
+			.filter(Boolean);
+		if (paths.length > 0) return { value: paths.join(", "), key: "path" };
+	}
+	const compoundEdits = args.edits;
+	if (Array.isArray(compoundEdits)) {
+		const paths = compoundEdits
+			.map(edit => (edit && typeof edit === "object" ? (edit as Record<string, unknown>).path : undefined))
+			.filter((value): value is string => typeof value === "string" && value.length > 0);
+		if (paths.length > 0) return { value: paths.join(", "), key: "path" };
+	}
 	for (const key of previewKeys) {
 		if (typeof args[key] === "string" && args[key]) {
 			const value = args[key] as string;
@@ -1468,6 +1482,9 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		}
 	};
 
+	const activeTools = new Map<string, { tool: string; args?: string; argsKey?: string; startMs: number }>();
+	let visibleToolCallId: string | undefined;
+
 	const processEvent = (event: AgentEvent) => {
 		if (resolved) return;
 		const now = Date.now();
@@ -1503,6 +1520,13 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				progress.currentToolArgs = preview?.value;
 				progress.currentToolArgsKey = preview?.key;
 				progress.currentToolStartMs = now;
+				activeTools.set(event.toolCallId, {
+					tool: event.toolName,
+					args: preview?.value,
+					argsKey: preview?.key,
+					startMs: now,
+				});
+				visibleToolCallId = event.toolCallId;
 				// A fast tool may finish before the coalesced update fires.
 				// Publish both lifecycle edges rather than dropping its start.
 				flushProgress = true;
@@ -1522,11 +1546,13 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			}
 
 			case "tool_execution_end": {
-				if (progress.currentTool) {
+				const finished = activeTools.get(event.toolCallId);
+				activeTools.delete(event.toolCallId);
+				if (finished) {
 					progress.recentTools.unshift({
-						tool: progress.currentTool,
-						args: progress.currentToolArgs || "",
-						argsKey: progress.currentToolArgsKey,
+						tool: finished.tool,
+						args: finished.args ?? "",
+						argsKey: finished.argsKey,
 						isError: event.isError,
 						endMs: now,
 					});
@@ -1535,10 +1561,15 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 						progress.recentTools.pop();
 					}
 				}
-				progress.currentTool = undefined;
-				progress.currentToolArgs = undefined;
-				progress.currentToolArgsKey = undefined;
-				progress.currentToolStartMs = undefined;
+				if (visibleToolCallId === event.toolCallId) {
+					const remaining = activeTools.entries().next().value;
+					visibleToolCallId = remaining?.[0];
+					const visible = remaining?.[1];
+					progress.currentTool = visible?.tool;
+					progress.currentToolArgs = visible?.args;
+					progress.currentToolArgsKey = visible?.argsKey;
+					progress.currentToolStartMs = visible?.startMs;
+				}
 				// The finalized TaskToolDetails will be captured below into
 				// `extractedToolData.task`; drop the in-flight snapshot so the
 				// renderer doesn't double-count it against the final entry.

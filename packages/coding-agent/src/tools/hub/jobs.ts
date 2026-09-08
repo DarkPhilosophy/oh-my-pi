@@ -25,6 +25,7 @@ import {
 	formatStatusIcon,
 	getPreviewLines,
 	PREVIEW_LIMITS,
+	TRUNCATE_LENGTHS,
 	replaceTabs,
 	type ToolUIColor,
 	type ToolUIStatus,
@@ -482,7 +483,6 @@ const PREVIEW_LINES_EXPANDED = 4;
 const LABEL_LINES_COLLAPSED = 1;
 const LABEL_LINES_EXPANDED = 3;
 const PREVIEW_LINE_WIDTH = 80;
-const MODEL_BADGE_MAX_WIDTH = 48;
 
 function statusToIcon(status: JobSnapshot["status"]): ToolUIStatus {
 	switch (status) {
@@ -671,7 +671,7 @@ export function jobsRenderResult(
 										"dim",
 										truncateToWidth(
 											replaceTabs(job.resolvedModel.trim()),
-											MODEL_BADGE_MAX_WIDTH,
+											TRUNCATE_LENGTHS.MODEL,
 											Ellipsis.Unicode,
 										),
 									)}`
