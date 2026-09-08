@@ -469,8 +469,14 @@ async function acquireTabImpl(
 	const initBudgetMs = opts.timeoutMs + GRACE_MS;
 	let info: ReadyInfo;
 	try {
-		info = await initializeTabWorker(worker, initPayload, initBudgetMs, startedAt);
+		info = await untilAborted(opts.signal, () => initializeTabWorker(worker, initPayload, initBudgetMs, startedAt));
 	} catch (error) {
+		if (opts.signal?.aborted) {
+			await terminateWorker(worker, browser.kind.kind === "firefox-relay");
+			if ("browser" in browser) closeAbandonedWorkerPage(browser, worker);
+			if (tempHold || browser.refCount === 0) await releaseBrowser(browser, { kill: false }).catch(() => undefined);
+			throw error instanceof ToolAbortError ? error : new ToolAbortError(undefined, { cause: error });
+		}
 		// `BuildMessage`-class failures arrive asynchronously via the worker's `error` event,
 		// after `spawnTabWorker`'s synchronous try/catch has already returned. Fall back to
 		// the inline worker here so module-resolution failures don't poison every tab open.

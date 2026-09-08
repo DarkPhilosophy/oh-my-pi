@@ -555,16 +555,18 @@ interface RunPageScope {
  * Puppeteer's Page wraps an internal emitter, so `removeAllListeners("request")`
  * would also remove its forwarding listener; the facade removes only user handlers.
  */
-function createRunPageScope(page: Page): RunPageScope {
+function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPageScope {
 	const requestHandlers: unknown[] = [];
 	const on = page.on;
 	const off = page.off;
 	const once = page.once;
 	const removeAllListeners = page.removeAllListeners;
+	const goto = page.goto;
 	const onDescriptor = Object.getOwnPropertyDescriptor(page, "on");
 	const offDescriptor = Object.getOwnPropertyDescriptor(page, "off");
 	const onceDescriptor = Object.getOwnPropertyDescriptor(page, "once");
 	const removeAllDescriptor = Object.getOwnPropertyDescriptor(page, "removeAllListeners");
+	const gotoDescriptor = Object.getOwnPropertyDescriptor(page, "goto");
 
 	Object.defineProperties(page, {
 		on: {
@@ -610,9 +612,22 @@ function createRunPageScope(page: Page): RunPageScope {
 		removeAllListeners: {
 			configurable: true,
 			value: (type?: unknown): Page => {
-				Reflect.apply(removeAllListeners, page, [type]);
-				if (type === undefined || type === "request") requestHandlers.length = 0;
+				if (type === undefined || type === "request") {
+					for (const handler of requestHandlers) Reflect.apply(off, page, ["request", handler]);
+					requestHandlers.length = 0;
+				} else Reflect.apply(removeAllListeners, page, [type]);
 				return page;
+			},
+		},
+		goto: {
+			configurable: true,
+			value: async (...args: Parameters<Page["goto"]>) => {
+				try {
+					return await Reflect.apply(goto, page, args);
+				} catch (error) {
+					if (error instanceof Error && error.name === "TimeoutError") onNavigationTimeout?.();
+					throw error;
+				}
 			},
 		},
 	});
@@ -628,6 +643,8 @@ function createRunPageScope(page: Page): RunPageScope {
 			else Reflect.deleteProperty(page, "once");
 			if (removeAllDescriptor) Object.defineProperty(page, "removeAllListeners", removeAllDescriptor);
 			else Reflect.deleteProperty(page, "removeAllListeners");
+			if (gotoDescriptor) Object.defineProperty(page, "goto", gotoDescriptor);
+			else Reflect.deleteProperty(page, "goto");
 			for (const handler of requestHandlers) Reflect.apply(off, page, ["request", handler]);
 			requestHandlers.length = 0;
 			try {
@@ -1446,7 +1463,11 @@ export class WorkerCore {
 			throwIfAborted(ac.signal);
 			this.#transport.send({ type: "selected", id: msg.id, info: await this.#currentReadyInfo() });
 		} catch (error) {
-			this.#transport.send({ type: "select-failed", id: msg.id, error: errorPayload(error) });
+			const reported =
+				error instanceof Error && error.name === "TimeoutError"
+					? new NavigationCleanupError(error.message, { cause: error })
+					: error;
+			this.#transport.send({ type: "select-failed", id: msg.id, error: errorPayload(reported) });
 		} finally {
 			if (this.#activeSelection?.id === msg.id) this.#activeSelection = undefined;
 		}
@@ -1649,7 +1670,10 @@ export class WorkerCore {
 				await this.#selectBiDiPage(msg.name, msg.targetId, msg.targetMatcher, msg.dialogs);
 			}
 			throwIfAborted(signal);
-			runPage = createRunPageScope(this.#requirePage());
+			runPage = createRunPageScope(
+				this.#requirePage(),
+				this.#webDriverBiDi ? () => (this.#cleanupRequired = true) : undefined,
+			);
 			const browser = this.#requireBrowser();
 			const tabApi = this.#createTabApi(msg.name, msg.timeoutMs, signal, msg.session, output, screenshots, active);
 			const runtime = this.#ensureRuntime(msg.name, msg.session);
