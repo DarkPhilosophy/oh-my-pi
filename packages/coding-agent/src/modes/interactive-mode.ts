@@ -128,7 +128,10 @@ import { isMCPToolName } from "../tools/builtin-names";
 import type { LspStartupServerInfo } from "../tools";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
 import {
+	FEED_MODEL_BADGE_WIDTH,
+	formatFeedModelBadge,
 	formatMoreItems,
+	isFeedModelBadgeEnabled,
 	replaceTabs,
 	shortenEmbeddedPaths,
 	shortenPath,
@@ -515,7 +518,7 @@ const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
 export function renderSubagentHudLines(
 	sessions: ObservableSession[],
 	columns: number,
-	showResolvedModelBadge = false,
+	showResolvedModelBadge = isFeedModelBadgeEnabled(),
 ): string[] {
 	const running = sessions.filter(
 		session => session.kind === "subagent" && session.status === "active" && session.detached === true,
@@ -524,27 +527,35 @@ export function renderSubagentHudLines(
 	const dot = theme.styledSymbol("status.done", "accent");
 	const visible = running.slice(0, SUBAGENT_HUD_VISIBLE_LIMIT);
 	const hiddenCount = running.length - visible.length;
+	const showModelBadge = showResolvedModelBadge;
+	const outerIndent = " ";
 	const rows = renderTreeList(
 		{
 			items: visible,
 			expanded: true,
-			renderItem: session => {
-				const displayId = formatTaskId(session.id);
+			renderItem: (session, context) => {
+				const rowWidth = Math.max(0, columns - visibleWidth(outerIndent) - (context.prefixWidth ?? 0));
 				const role = session.agent ?? session.progress?.agent;
-				const badge = agentTypeBadge(role, theme);
-				const resolvedModel =
-					showResolvedModelBadge && session.progress?.resolvedModel?.trim()
-						? session.progress.resolvedModel.trim()
-						: undefined;
-				let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}${badge}`;
-				if (resolvedModel)
-					line += `:${theme.fg(
-						"dim",
-						truncateToWidth(
-							replaceTabs(sanitizeText(resolvedModel)).replace(/[\r\n]+/g, " "),
-							TRUNCATE_LENGTHS.MODEL,
-						),
-					)}`;
+				const displayId = truncateToWidth(
+					formatTaskId(session.id),
+					Math.max(0, rowWidth - visibleWidth(`${dot} `)),
+				);
+				const badge = truncateToWidth(
+					agentTypeBadge(role, theme),
+					Math.max(0, rowWidth - visibleWidth(`${dot} ${displayId}`)),
+				);
+				const titleBudget = Math.max(0, rowWidth - visibleWidth(`${dot} ${displayId}${badge}`));
+				const modelBadge = showModelBadge
+					? formatFeedModelBadge(
+							session.progress?.resolvedModelIdentity ?? session.progress?.resolvedModel,
+							session.progress?.resolvedThinkingLevel,
+							session.progress?.advisor,
+							theme,
+							Math.min(FEED_MODEL_BADGE_WIDTH, Math.max(0, titleBudget - 1)),
+						)
+					: "";
+				const modelLead = modelBadge ? `${modelBadge} ` : "";
+				let line = `${dot} ${modelLead}${theme.fg("accent", theme.bold(displayId))}${badge}`;
 				const rawDescription =
 					session.progress?.lastIntent?.trim() ||
 					session.progress?.description?.trim() ||
@@ -554,41 +565,50 @@ export function renderSubagentHudLines(
 				const description =
 					rawDescription && !labelEchoesHandle(session.id, rawDescription) ? rawDescription : undefined;
 				if (description) {
-					const budget = Math.max(1, columns - visibleWidth(Bun.stripANSI(line)) - 8);
-					const formatted = replaceTabs(sanitizeText(shortenEmbeddedPaths(description))).replace(
+					const budget = Math.max(0, rowWidth - visibleWidth(line) - visibleWidth(": "));
+					const formatted = replaceTabs(shortenEmbeddedPaths(sanitizeText(description))).replace(
 						/\s*[\r\n]+\s*/g,
 						" ",
 					);
-					line += `${theme.sep.dot}${theme.fg("accent", truncateToWidth(formatted, budget))}`;
+					if (budget > 0)
+						line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(formatted, budget))}`;
 				}
 				const currentTool = session.progress?.currentTool?.trim();
 				const lastTool = currentTool ? undefined : session.progress?.recentTools[0];
 				const toolName = currentTool || lastTool?.tool;
 				if (toolName) {
-					const args = currentTool ? session.progress?.currentToolArgs?.trim() : lastTool?.args.trim();
+					const rawArgs = currentTool ? session.progress?.currentToolArgs?.trim() : lastTool?.args.trim();
+					const args =
+						rawArgs === undefined ? undefined : replaceTabs(sanitizeText(rawArgs)).replace(/\s*[\r\n]+\s*/g, " ");
 					const argsKey = currentTool ? session.progress?.currentToolArgsKey : lastTool?.argsKey;
 					const displayArgs =
 						argsKey === "path" || argsKey === "file_path" || argsKey === "command"
 							? shortenEmbeddedPaths(args ?? "")
 							: args;
-					const toolText = replaceTabs(
-						sanitizeText(displayArgs ? `${toolName}(${displayArgs})` : toolName),
-					).replace(/\s*[\r\n]+\s*/g, " ");
+					const cleanName = replaceTabs(sanitizeText(toolName)).replace(/\s*[\r\n]+\s*/g, " ");
+					const toolText = displayArgs ? `${cleanName}(${displayArgs})` : cleanName;
 					const toolLabel = lastTool
 						? `${theme.styledSymbol(lastTool.isError ? "status.error" : "status.success", lastTool.isError ? "error" : "success")} ${toolText}`
 						: toolText;
+					const lead = `${theme.tree.hook} `;
 					return [
-						truncateToWidth(line, Math.max(1, columns - 6)),
-						`${theme.tree.hook} ${theme.fg("dim", truncateToWidth(toolLabel, Math.max(1, columns - 8)))}`,
+						truncateToWidth(line, rowWidth, ""),
+						`${lead}${theme.fg("dim", truncateToWidth(toolLabel, Math.max(0, rowWidth - visibleWidth(lead)), ""))}`,
 					];
 				}
-				return truncateToWidth(line, Math.max(1, columns - 6));
+				return truncateToWidth(line, rowWidth, "");
 			},
 		},
 		theme,
 	);
-	if (hiddenCount > 0) rows.push(theme.fg("dim", `… ${hiddenCount} more running — open Agent Hub for full list`));
-	return ["", theme.bold(theme.fg("accent", "Subagents")), ...rows.map(line => ` ${line}`)];
+	if (hiddenCount > 0) {
+		rows.push(theme.fg("dim", `… ${hiddenCount} more running — open Agent Hub for full list`));
+	}
+	return [
+		"",
+		truncateToWidth(theme.bold(theme.fg("accent", "Subagents")), columns),
+		...rows.map(line => truncateToWidth(`${outerIndent}${line}`, columns, "")),
+	];
 }
 
 const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;

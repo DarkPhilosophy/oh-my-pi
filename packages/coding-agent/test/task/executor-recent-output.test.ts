@@ -24,6 +24,7 @@ import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition, AgentProgress } from "@oh-my-pi/pi-coding-agent/task/types";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import { createSessionDefaults } from "../helpers/session-defaults";
 
 const TAIL_BYTES = 8 * 1024;
 
@@ -169,6 +170,7 @@ function createScriptedSession(
 	const emittedGate = Promise.withResolvers<void>();
 	let aborted = false;
 	const session = {
+		...createSessionDefaults(),
 		state: { messages: [] },
 		agent: { state: { systemPrompt: ["test"] } },
 		model: undefined,
@@ -176,7 +178,6 @@ function createScriptedSession(
 		sessionManager: { appendSessionInit: () => {} },
 		getActiveToolNames: () => ["read", "yield"],
 		getEnabledToolNames: () => ["read", "yield"],
-		setActiveToolsByName: async (_toolNames: string[]) => {},
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			listeners.push(listener);
 			return () => {
@@ -188,17 +189,10 @@ function createScriptedSession(
 			await script(emit);
 			emittedGate.resolve();
 		},
-		waitForIdle: async () => {},
-		prepareForHeadlessAdvisorDrain: () => {},
-		waitForAdvisorCatchup: async () => true,
-		getLastAssistantMessage: () => undefined,
 		abort: async () => {
 			aborted = true;
 		},
 		isAborted: () => aborted,
-		dispose: async () => {},
-		setIrcWakeTurnObserver: () => {},
-		subscribeRunState: () => () => {},
 	};
 	// AgentSession is a concrete class; the executor consumes only this
 	// structural subset. Deliberate documented test-double escape hatch,
@@ -362,10 +356,11 @@ describe("recentOutput event-sequence equivalence (deferred reconstruction)", ()
 		}
 	});
 
-	it("extracts file locations from both freeform edit modes without exposing patch bodies", async () => {
+	it("extracts file locations from supported freeform edit modes without exposing patch bodies", async () => {
 		for (const input of [
 			"*** Begin Patch\n[src/one.ts#A1B2]\nPUT 1.=1:\n+private body\n[src/two.ts#C3D4]\nCUT 2.=2\n*** End Patch",
 			"*** Begin Patch\n*** Update File: src/one.ts\n@@\n-old body\n+private body\n*** Delete File: src/two.ts\n*** End Patch",
+			'<SM:EDIT path="src/one.ts">\n<SM:FIND>\nold body\n</SM:FIND>\n<SM:PUT>\nprivate body\n</SM:PUT>\n<SM:EDIT path="src/two.ts">\n<SM:FIND>\nold\n</SM:FIND>\n<SM:PUT>\nnew\n</SM:PUT>',
 		]) {
 			const result = await runScenario([], {
 				events: [

@@ -7,7 +7,7 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
-import { Agent } from "@oh-my-pi/pi-agent-core";
+import { Agent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode, renderSubagentHudLines } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
@@ -110,7 +110,148 @@ describe("subagent HUD lines", () => {
 		await initTheme();
 	});
 
-	it("renders running subagent ids and descriptions together under a Subagents header", () => {
+	describe("model badges", () => {
+		beforeEach(async () => {
+			resetSettingsForTest();
+			await Settings.init({ inMemory: true, overrides: { "task.showResolvedModelBadge": true } });
+		});
+
+		afterEach(() => {
+			resetSettingsForTest();
+		});
+
+		it("places thinking, model and optional advisor before the detached agent name", () => {
+			const session = makeSession({
+				id: "BadgeWorker",
+				agent: "scout",
+				description: "Inspect rendering",
+				progress: makeProgress({
+					id: "BadgeWorker",
+					resolvedModel: "openai/gpt-5:high",
+					resolvedModelIdentity: "openai/gpt-5",
+					resolvedThinkingLevel: ThinkingLevel.High,
+					advisor: true,
+				}),
+			});
+			const out = render([session]);
+			expect(out).toContain(`${theme.thinking.high.split(" ")[0]} openai/gpt-5 ${theme.icon.advisor} BadgeWorker`);
+			expect(out).toContain(`BadgeWorker ${theme.format.bracketLeft}scout${theme.format.bracketRight}`);
+			expect(out).toContain(": Inspect rendering");
+
+			session.progress = makeProgress({
+				id: "BadgeWorker",
+				resolvedModel: "openai/gpt-5:high",
+				resolvedModelIdentity: "openai/gpt-5",
+				resolvedThinkingLevel: ThinkingLevel.High,
+				advisor: false,
+			});
+			const withoutAdvisor = render([session]);
+			expect(withoutAdvisor).toContain("openai/gpt-5 BadgeWorker");
+			expect(withoutAdvisor).not.toContain(theme.icon.advisor);
+		});
+
+		it("keeps metadata hidden when disabled or settings have not initialized", () => {
+			const sessions = [
+				makeSession({
+					id: "HiddenBadge",
+					description: "Inspect rendering",
+					progress: makeProgress({
+						id: "HiddenBadge",
+						resolvedModel: "openai/gpt-5:high",
+						resolvedModelIdentity: "openai/gpt-5",
+						resolvedThinkingLevel: ThinkingLevel.High,
+						advisor: true,
+					}),
+				}),
+			];
+			Settings.instance.override("task.showResolvedModelBadge", false);
+			const disabled = render(sessions);
+			expect(disabled).toContain(`${theme.status.done} HiddenBadge: Inspect rendering`);
+			expect(disabled).not.toContain("openai/gpt-5");
+			expect(disabled).not.toContain(theme.icon.advisor);
+
+			resetSettingsForTest();
+			expect(render(sessions)).toBe(disabled);
+		});
+
+		it("preserves model identity and the agent name while fitting descriptions and task previews", () => {
+			const metadata = {
+				resolvedModel: `provider/${"shared-prefix-".repeat(8)}variant-z:high`,
+				resolvedModelIdentity: `provider/${"shared-prefix-".repeat(8)}variant-z`,
+				resolvedThinkingLevel: ThinkingLevel.High,
+				advisor: true,
+			};
+			const sessions = [
+				makeSession({
+					id: "Description",
+					description: "Inspect rendering ".repeat(20),
+					progress: makeProgress({ id: "Description", ...metadata }),
+				}),
+				makeSession({
+					id: "TaskPreview",
+					progress: makeProgress({ id: "TaskPreview", task: "Inspect rendering ".repeat(20), ...metadata }),
+				}),
+			];
+			const lines = render(sessions, 60).split("\n");
+			for (const id of ["Description", "TaskPreview"]) {
+				const row = lines.find(line => line.includes(id))!;
+				expect(row).toContain(`variant-z ${theme.icon.advisor} ${id}`);
+				expect(row.indexOf("variant-z")).toBeLessThan(row.indexOf(id));
+				expect(row).not.toContain(":high");
+			}
+			for (const line of lines) {
+				expect(Bun.stringWidth(line)).toBeLessThanOrEqual(60);
+			}
+		});
+
+		it("reserves custom tree prefixes, outer indent and roles before optional details", () => {
+			const priorTree = Object.getOwnPropertyDescriptor(theme, "tree");
+			try {
+				Object.defineProperty(theme, "tree", {
+					configurable: true,
+					value: { ...theme.tree, branch: "界├", last: "界界└", vertical: "界界│" },
+				});
+				const sessions = [
+					makeSession({
+						id: `LongWorker${"界".repeat(30)}`,
+						agent: `custom-role-${"extended-".repeat(10)}`,
+						description: "Every available column ".repeat(10),
+						progress: makeProgress({ id: "LongWorker", resolvedModelIdentity: "provider/model", advisor: true }),
+					}),
+					makeSession({ id: "ShortWorker", agent: "scout", description: "Every available column ".repeat(10) }),
+				];
+				for (const enabled of [true, false]) {
+					Settings.instance.override("task.showResolvedModelBadge", enabled);
+					for (const width of [40, 120, 40]) {
+						const rows = render(sessions, width).split("\n");
+						expect(rows.find(row => row.includes("LongWorker"))).toStartWith(" 界├ ");
+						expect(rows.find(row => row.includes("ShortWorker"))).toStartWith(" 界界└ ");
+						for (const row of rows) expect(Bun.stringWidth(row)).toBeLessThanOrEqual(width);
+						expect(rows.find(row => row.includes("LongWorker"))).toContain("LongWorker");
+						expect(rows.find(row => row.includes("ShortWorker"))).toContain(
+							`${theme.format.bracketLeft}scout${theme.format.bracketRight}`,
+						);
+					}
+				}
+			} finally {
+				if (priorTree) Object.defineProperty(theme, "tree", priorTree);
+				else Reflect.deleteProperty(theme, "tree");
+			}
+		});
+
+		it("preserves a legacy selector without inventing a thinking glyph", () => {
+			const out = render([
+				makeSession({
+					id: "LegacyWorker",
+					progress: makeProgress({ id: "LegacyWorker", resolvedModel: "custom/model:high" }),
+				}),
+			]);
+			expect(out).toContain(`${theme.status.done} custom/model:high LegacyWorker`);
+			expect(out).not.toContain(theme.thinking.high.split(" ")[0]);
+		});
+	});
+
+	it("renders running subagents as Id: description under a Subagents header", () => {
 		const out = render([
 			makeSession({ id: "AuthLoader", description: "Refactoring the auth flow" }),
 			makeSession({ id: "SchemaMigrator", description: "Migrating the users table" }),
@@ -302,7 +443,8 @@ describe("subagent HUD lines", () => {
 				true,
 			).join("\n"),
 		);
-		expect(text).toContain(selector);
+		expect(text).toContain("anthropic/");
+		expect(text).toContain("20250514:high");
 	});
 
 	it("shortens home paths in live activity labels", () => {
