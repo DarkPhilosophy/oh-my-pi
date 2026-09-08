@@ -543,6 +543,7 @@ function redactUrlCredentials(url: string): string {
 }
 
 class RequestInterceptionCleanupError extends ToolError {}
+class NavigationCleanupError extends ToolError {}
 
 interface RunPageScope {
 	page: Page;
@@ -648,7 +649,8 @@ function createRunPageScope(page: Page): RunPageScope {
 }
 
 function errorPayload(error: unknown): RunErrorPayload {
-	const recoverTab = error instanceof RequestInterceptionCleanupError || undefined;
+	const recoverTab =
+		error instanceof RequestInterceptionCleanupError || error instanceof NavigationCleanupError || undefined;
 	if (error instanceof ToolAbortError) {
 		return { name: error.name, message: error.message, stack: error.stack, isToolError: false, isAbort: true };
 	}
@@ -1374,10 +1376,12 @@ export class WorkerCore {
 				if (payload.emulateViewport !== false) await applyViewport(this.#page, payload.viewport);
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
 			} else if (this.#webDriverBiDi) {
-				this.#page = await pickElectronTarget(this.#browser, {
-					matcher: payload.targetMatcher,
-					preferVisible: payload.activateForScreenshot === false,
-				});
+				this.#page = payload.targetId
+					? await findBiDiPageByTargetId(await this.#browser.pages(), payload.targetId)
+					: await pickElectronTarget(this.#browser, {
+							matcher: payload.targetMatcher,
+							preferVisible: payload.activateForScreenshot === false,
+						});
 				this.#observeDialogs();
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
 			} else {
@@ -1955,9 +1959,11 @@ export class WorkerCore {
 							// Abandon the hung navigation NOW — a still-pending load stalls every
 							// later op on this page and cascades into more opaque timeouts.
 							await this.#stopLoading();
-							throw new ToolError(
-								`tab.goto(${JSON.stringify(url)}) timed out after ${budgetBound}ms; pending navigation stopped — retry with a longer tool timeout or waitUntil:"domcontentloaded"`,
-							);
+							const message = `tab.goto(${JSON.stringify(url)}) timed out after ${budgetBound}ms; pending navigation stopped — retry with a longer tool timeout or waitUntil:"domcontentloaded"`;
+							// Firefox WebDriver BiDi has no stop-loading command. Mark its shared
+							// worker for recycling so the abandoned navigation cannot interfere
+							// with a later alias; attach-mode recycling never closes user tabs.
+							throw this.#webDriverBiDi ? new NavigationCleanupError(message) : new ToolError(message);
 						}
 						throw err;
 					}
@@ -2526,8 +2532,9 @@ export class WorkerCore {
 		for (const key of [...this.#elementCaches.keys()]) this.#clearElementCache(key);
 	}
 
-	/** Best-effort `Page.stopLoading` so an abandoned navigation cannot stall later ops. */
+	/** Best-effort `Page.stopLoading` so an abandoned Chromium navigation cannot stall later ops. */
 	async #stopLoading(): Promise<void> {
+		if (this.#webDriverBiDi) return;
 		try {
 			const session = await this.#requirePage().createCDPSession();
 			try {

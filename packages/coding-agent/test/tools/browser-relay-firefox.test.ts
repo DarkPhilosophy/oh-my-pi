@@ -354,6 +354,61 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(tabs.has(second.name)).toBe(false);
 		expect(endpoint.refCount).toBe(0);
 	});
+	it("keeps a registered sibling selectable after alias close", async () => {
+		const listeners = new Set<Parameters<WorkerHandle["onMessage"]>[0]>();
+		let terminated = false;
+		let terminations = 0;
+		const worker: WorkerHandle = {
+			mode: "inline",
+			send: msg => {
+				if (terminated) throw new Error("worker terminated");
+				if (msg.type !== "select") return;
+				queueMicrotask(() => {
+					for (const listener of listeners) {
+						listener({
+							type: "selected",
+							id: msg.id,
+							info: {
+								url: `https://${msg.targetMatcher}.example`,
+								viewport: { width: 1280, height: 720 },
+								targetId: msg.targetMatcher ?? "",
+							},
+						});
+					}
+				});
+			},
+			onMessage: listener => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			onError: () => () => undefined,
+			terminate: async () => {
+				terminated = true;
+				terminations++;
+			},
+		};
+		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
+		endpoint.refCount = 2;
+		const closed = createFirefoxTab("firefox-closed-alias", endpoint, worker);
+		const surviving = createFirefoxTab("firefox-surviving-alias", endpoint, worker);
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(closed.name, closed);
+		tabs.set(surviving.name, surviving);
+		try {
+			await releaseTab(closed.name);
+			expect(tabs.has(closed.name)).toBe(false);
+			const selected = await selectFirefoxWorkerTab(worker, {
+				name: surviving.name,
+				targetMatcher: "surviving",
+				timeoutMs: 1_000,
+			});
+			expect(selected.targetId).toBe("surviving");
+			expect(terminations).toBe(0);
+		} finally {
+			if (tabs.has(surviving.name))
+				await forceKillTab(surviving.name, "test cleanup", { sharedFirefoxWorker: true });
+		}
+	});
 
 	it("releases an idle Firefox alias while its sibling owns the shared run", async () => {
 		const worker = {
