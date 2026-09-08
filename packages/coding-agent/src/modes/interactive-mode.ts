@@ -556,9 +556,11 @@ export function renderSubagentHudLines(
 					line += `${theme.sep.dot}${theme.fg("accent", truncateToWidth(formatted, budget))}`;
 				}
 				const currentTool = session.progress?.currentTool?.trim();
-				if (currentTool) {
-					const args = session.progress?.currentToolArgs?.trim();
-					const argsKey = session.progress?.currentToolArgsKey;
+				const lastTool = currentTool ? undefined : session.progress?.recentTools[0];
+				const toolName = currentTool || lastTool?.tool;
+				if (toolName) {
+					const args = currentTool ? session.progress?.currentToolArgs?.trim() : lastTool?.args.trim();
+					const argsKey = currentTool ? session.progress?.currentToolArgsKey : lastTool?.argsKey;
 					const displayArgs =
 						argsKey === "path" || argsKey === "file_path"
 							? shortenPath(args ?? "")
@@ -566,11 +568,12 @@ export function renderSubagentHudLines(
 								? shortenEmbeddedPaths(args ?? "")
 								: args;
 					const toolText = replaceTabs(
-						sanitizeText(displayArgs ? `${currentTool}(${displayArgs})` : currentTool),
+						sanitizeText(displayArgs ? `${toolName}(${displayArgs})` : toolName),
 					).replace(/\s*[\r\n]+\s*/g, " ");
+					const toolLabel = lastTool ? `${lastTool.isError ? "failed" : "done"} ${toolText}` : toolText;
 					return [
 						truncateToWidth(line, Math.max(1, columns - 6)),
-						`${theme.tree.hook} ${theme.fg("dim", truncateToWidth(toolText, Math.max(1, columns - 8)))}`,
+						`${theme.tree.hook} ${theme.fg("dim", truncateToWidth(toolLabel, Math.max(1, columns - 8)))}`,
 					];
 				}
 				return truncateToWidth(line, Math.max(1, columns - 6));

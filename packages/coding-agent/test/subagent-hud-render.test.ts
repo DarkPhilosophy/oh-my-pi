@@ -119,7 +119,7 @@ describe("subagent HUD lines", () => {
 		expectSameRow(out, "SchemaMigrator", "Migrating the users table");
 	});
 
-	it("shows resolved models only when configured and clears completed tools", () => {
+	it("keeps the last finished tool visible until the next tool starts", () => {
 		const active = makeSession({
 			id: "Reader",
 			description: "Inspecting renderer behavior",
@@ -148,11 +148,40 @@ describe("subagent HUD lines", () => {
 			progress: makeProgress({
 				id: "Reader",
 				lastIntent: "Inspecting renderer behavior",
-				recentTools: [{ tool: "read", args: "old", endMs: Date.now() }],
+				recentTools: [{ tool: "read", args: "package.json", endMs: Date.now() }],
 			}),
 		});
 		const settledText = Bun.stripANSI(renderSubagentHudLines([settled], 40, true).join("\n"));
-		expect(settledText).not.toContain("read(");
+		expectSameRow(settledText, "done", "read(package.json)");
+		const next = makeSession({
+			...settled,
+			progress: makeProgress({
+				id: "Reader",
+				currentTool: "grep",
+				currentToolArgs: "symbol",
+				recentTools: settled.progress!.recentTools,
+			}),
+		});
+		const nextText = render([next]);
+		expect(nextText).toContain("grep(symbol)");
+		expect(nextText).not.toContain("read(");
+		expect(nextText).not.toContain("done");
+	});
+
+	it("retains failure status and path privacy in the completed tool row", () => {
+		const homePath = path.join(process.env.HOME!, "private-project", "missing.ts");
+		const text = render([
+			makeSession({
+				id: "Reader",
+				progress: makeProgress({
+					id: "Reader",
+					recentTools: [{ tool: "read", args: homePath, argsKey: "path", isError: true, endMs: 1 }],
+				}),
+			}),
+		]);
+		expectSameRow(text, "failed", "read(~/private-project/missing.ts)");
+		expect(text).not.toContain(homePath);
+		expect(text).not.toContain("done");
 	});
 
 	it("formats selected tool arguments by semantic key without changing raw command text", () => {
@@ -498,11 +527,14 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		});
 		await Promise.resolve();
 		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("read(package.json)");
-		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, payload);
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
+			...payload,
+			progress: { ...payload.progress, recentTools: [{ tool: "read", args: "package.json", endMs: 2 }] },
+		});
 		await Promise.resolve();
 		const settled = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
 		expect(settled).toContain("FastReader");
-		expect(settled).not.toContain("read(package.json)");
+		expectSameRow(settled, "done", "read(package.json)");
 	});
 
 	it("coalesces a burst of progress observer changes into one HUD rebuild and render request", async () => {

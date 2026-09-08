@@ -1526,6 +1526,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					progress.recentTools.unshift({
 						tool: progress.currentTool,
 						args: progress.currentToolArgs || "",
+						argsKey: progress.currentToolArgsKey,
+						isError: event.isError,
 						endMs: now,
 					});
 					// Keep only last 5
