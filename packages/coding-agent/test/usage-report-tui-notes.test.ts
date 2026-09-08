@@ -74,7 +74,9 @@ describe("renderUsageReports (#3268 TUI aggregate)", () => {
 			report("github-copilot", "acct@example.test", [limit("Copilot", "monthly", 30 * 24 * HOUR, 0.4)]),
 		];
 		const models = ["github-copilot/gpt-5.6", "github-copilot/claude-sonnet-4.6"];
-		const text = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 120, undefined, models));
+		const text = stripVTControlCharacters(
+			renderUsageReports(reports, theme, Date.now(), 120, undefined, { usageModelSelectors: models }),
+		);
 		expect(text).toContain("Models with usage data");
 		expect(text).toContain(models[0]);
 		expect(text).toContain(models[1]);

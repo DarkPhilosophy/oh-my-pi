@@ -1,7 +1,19 @@
-import { describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it } from "bun:test";
 import type { DailyActivityPoint } from "@oh-my-pi/omp-stats/shared-types";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
-import { buildHeatmapLayout, buildProviderCards } from "@oh-my-pi/pi-coding-agent/modes/components/usage-dashboard";
+import {
+	buildHeatmapLayout,
+	buildProviderCards,
+	UsageDashboardComponent,
+} from "@oh-my-pi/pi-coding-agent/modes/components/usage-dashboard";
+import { createAccountMasker } from "@oh-my-pi/pi-coding-agent/modes/utils/usage-mask";
+import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+
+beforeAll(async () => {
+	const uiTheme = await getThemeByName("dark");
+	if (!uiTheme) throw new Error("theme unavailable");
+	setThemeInstance(uiTheme);
+});
 
 function day(day: string, cost: number, requests = 1): DailyActivityPoint {
 	return { day, cost, requests, totalTokens: 0 };
@@ -169,4 +181,28 @@ describe("UsageDashboardComponent session toggles", () => {
 		expect(text).not.toContain("alice@x.test");
 		expect(text).toContain("***");
 	});
+});
+
+it("aborts the activity load when the dashboard closes", () => {
+	let activitySignal: AbortSignal | undefined;
+	const dashboard = new UsageDashboardComponent({
+		reports: [],
+		renderDetail: () => "",
+		createMasker: createAccountMasker,
+		maskAccountLabels: true,
+		mergeAccounts: true,
+		labelPlacement: "moving",
+		loadActivity: async (_push, signal) => {
+			activitySignal = signal;
+			const closed = Promise.withResolvers<void>();
+			signal.addEventListener("abort", () => closed.resolve(), { once: true });
+			await closed.promise;
+		},
+		requestRender: () => {},
+		onClose: () => {},
+	});
+
+	expect(activitySignal?.aborted).toBe(false);
+	dashboard.dispose();
+	expect(activitySignal?.aborted).toBe(true);
 });
