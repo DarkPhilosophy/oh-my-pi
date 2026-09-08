@@ -302,12 +302,13 @@ describe("renderUsageReports terminal width", () => {
 		expect(barLine(0.2)?.indexOf("80% free")).toBeGreaterThan(barLine(0.8)?.indexOf("20% free") ?? Number.MAX_VALUE);
 	});
 
-	it("uses a gradual red-to-green fill and lets the boundary cross the label only near exhaustion", () => {
+	it("uses a gradual red-to-green fill and lets the boundary cross the label only near exhaustion", async () => {
+		const truecolorTheme = await loadTheme("dark", { mode: "truecolor" });
 		const renderBarLine = (usedFraction: number) => {
 			const reports = [
 				report("anthropic", "account@example.test", [limit("Claude 7 Day", "weekly", 7 * 24 * HOUR, usedFraction)]),
 			];
-			return renderUsageReports(reports, theme, Date.now(), 80)
+			return renderUsageReports(reports, truecolorTheme, Date.now(), 80)
 				.split("\n")
 				.find(line => line.includes("% free"));
 		};

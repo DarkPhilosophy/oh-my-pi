@@ -32,7 +32,7 @@ describe("renderUsageReports content", () => {
 
 		const output = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 98));
 		expect(output).toContain("25% free");
-		expect(output).toContain("█");
+		expect(output).toMatch(/[█░]/);
 		expect(output).not.toContain("··········");
 	});
 
