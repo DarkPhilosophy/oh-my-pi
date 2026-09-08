@@ -160,6 +160,8 @@ export interface RunInTabOptions {
 	timeoutMs: number;
 	signal?: AbortSignal;
 	session: ToolSession;
+	/** Start of the caller's full operation deadline. */
+	deadlineStartMs?: number;
 }
 
 export interface ReleaseTabOptions {
@@ -577,7 +579,13 @@ async function acquireCmuxTab(
 export async function runInTab(name: string, opts: RunInTabOptions): Promise<RunResultOk> {
 	return await runInTabWithSnapshot(
 		name,
-		{ code: opts.code, timeoutMs: opts.timeoutMs, signal: opts.signal, session: opts.session },
+		{
+			code: opts.code,
+			timeoutMs: opts.timeoutMs,
+			signal: opts.signal,
+			session: opts.session,
+			deadlineStartMs: opts.deadlineStartMs,
+		},
 		{
 			cwd: opts.session.cwd,
 			browserScreenshotDir: expandBrowserScreenshotDir(opts.session),
@@ -619,13 +627,23 @@ async function reserveFirefoxWorker(
 
 async function runInTabWithSnapshot(
 	name: string,
-	opts: { code: string; timeoutMs: number; signal?: AbortSignal; session?: ToolSession },
+	opts: {
+		code: string;
+		timeoutMs: number;
+		signal?: AbortSignal;
+		session?: ToolSession;
+		deadlineStartMs?: number;
+	},
 	snapshot: SessionSnapshot,
 ): Promise<RunResultOk> {
 	const initial = tabs.get(name);
+	const remainingMs =
+		opts.deadlineStartMs === undefined
+			? opts.timeoutMs
+			: Math.max(0, opts.timeoutMs - (performance.now() - opts.deadlineStartMs));
 	const releaseReservation =
 		initial?.backend === "worker" && initial.kindTag === "firefox-relay"
-			? await reserveFirefoxWorker(initial.worker, opts.signal)
+			? await reserveFirefoxWorker(initial.worker, opts.signal, remainingMs)
 			: undefined;
 	try {
 		return await runInTabWithSnapshotUnlocked(name, opts, snapshot);

@@ -805,7 +805,7 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 		}
 		const roleMatch = /^([^\s[":]+):?/.exec(content);
 		const role = roleMatch?.[1];
-		if (!role || role === "/url") continue;
+		if (!role || role.startsWith("/")) continue;
 		const quotedNameMatch = /^[^\s["]+\s+"((?:[^"\\]|\\.)*)"/.exec(content);
 		const slashNameMatch = quotedNameMatch ? null : /^[^\s["]+\s+(\/(?:[^/\\]|\\.)*\/)/.exec(content);
 		const nameMatch = quotedNameMatch ?? slashNameMatch;

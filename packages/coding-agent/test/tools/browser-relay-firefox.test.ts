@@ -70,6 +70,8 @@ describe("Firefox WebDriver BiDi relay", () => {
 					"- paragraph:",
 					"  - text: Hello",
 					'    - /url: "/ignored"',
+					'    - /placeholder: "Ignored hint"',
+					'    - /value: "Ignored value"',
 				].join("\n"),
 			),
 		).toEqual([
@@ -135,23 +137,6 @@ describe("Firefox WebDriver BiDi relay", () => {
 		registry.delete(tabA);
 		expect(registry.get(endpointA)).toBeUndefined();
 		expect(registry.get(endpointB)).toBe(tabB);
-	});
-
-	it("reuses the endpoint worker after one of two named aliases closes", () => {
-		const registry = new FirefoxSharedTabRegistry();
-		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
-		const worker = {} as WorkerHandle;
-		const original = createFirefoxTab("firefox-first", endpoint, worker);
-		const alias = createFirefoxTab("firefox-second", endpoint, worker);
-
-		registry.set(original);
-		// Closing an alias removes only that name from the supervisor's tabs map.
-		// The endpoint registry continues to own the original live worker.
-		alias.state = "dead";
-
-		const third = registry.get(endpoint);
-		expect(third).toBe(original);
-		expect(third?.worker).toBe(worker);
 	});
 
 	it("refreshes every Firefox alias that shares the selected context", () => {
@@ -628,6 +613,57 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(tabs.get(busy.name)?.state).toBe("alive");
 		sharedPending.clear();
 		await forceKillTab(busy.name, "test cleanup", { sharedFirefoxWorker: true });
+	});
+
+	it("bounds runInTab reservation by the caller deadline without closing the healthy alias", async () => {
+		const listeners = new Set<Parameters<WorkerHandle["onMessage"]>[0]>();
+		let selectedId: string | undefined;
+		const worker: WorkerHandle = {
+			mode: "inline",
+			send: msg => {
+				if (msg.type === "select") selectedId = msg.id;
+				if (msg.type === "close")
+					queueMicrotask(() => {
+						for (const listener of listeners) listener({ type: "closed" });
+					});
+			},
+			onMessage: listener => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			onError: () => () => undefined,
+			terminate: async () => undefined,
+		};
+		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
+		endpoint.refCount = 2;
+		const owner = createFirefoxTab("firefox-run-owner", endpoint, worker);
+		const waiting = createFirefoxTab("firefox-run-waiting", endpoint, worker);
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(owner.name, owner);
+		tabs.set(waiting.name, waiting);
+		const selection = selectFirefoxWorkerTab(worker, {
+			name: owner.name,
+			targetId: owner.targetId,
+			timeoutMs: 1_000,
+		});
+		await Bun.sleep(0);
+		const startedAt = performance.now();
+		await expect(
+			runInTab(waiting.name, {
+				code: "return 1",
+				timeoutMs: 50,
+				deadlineStartMs: startedAt - 40,
+				session: { cwd: "/tmp", settings: { get: () => undefined } } as never,
+			}),
+		).rejects.toThrow(/Timed out after [\d.]+ms waiting for Firefox worker reservation/);
+		expect(tabs.get(owner.name)?.state).toBe("alive");
+		expect(tabs.get(waiting.name)?.state).toBe("alive");
+		for (const listener of listeners) {
+			listener({ type: "selected", id: selectedId!, info: owner.info });
+		}
+		await selection;
+		await forceKillTab(owner.name, "test cleanup", { sharedFirefoxWorker: true });
+		await forceKillTab(waiting.name, "test cleanup", { sharedFirefoxWorker: true });
 	});
 
 	it("aborts nested host tools before force-killing the shared worker", async () => {

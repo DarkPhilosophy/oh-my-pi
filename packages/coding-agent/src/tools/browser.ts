@@ -345,18 +345,19 @@ async function runBrowser(
 	timeoutMs: number,
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<unknown>> {
+	const deadlineStartMs = performance.now();
 	const code = resolveBrowserRunCode(params);
 	const tab = getTab(name);
 	if (tab) {
 		details.browser = tab.browser.kind.kind;
 		details.url = tab.info.url;
 	}
-
 	const { displays, returnValue, screenshots } = await runInTab(name, {
 		code,
 		timeoutMs,
 		signal,
 		session,
+		deadlineStartMs,
 	});
 
 	if (screenshots.length) details.screenshots = screenshots;
