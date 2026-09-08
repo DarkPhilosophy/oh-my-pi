@@ -2499,16 +2499,18 @@ export class Markdown implements Component {
 		if (reusablePrefix && reusablePrefix.tokenCount <= stableTokenCount) {
 			contentLines.push(...reusablePrefix.lines);
 			renderedUntil = reusablePrefix.tokenCount;
-			// Only rows from the matched cache entry were reused. Tokens newly
-			// admitted to the stable prefix still render below and must recover
-			// copy payloads from their own source spans.
-			let reusedSourceLength = 0;
-			for (let index = 0; index < reusablePrefix.tokenCount; index++) {
-				reusedSourceLength += tokens[index]?.raw.length ?? 0;
+			// Cached rows bypass token rendering, so derive the cursor from the
+			// original source span rather than summing normalized token lengths.
+			// OSC-8 ST terminators occupy two raw source bytes but one normalized
+			// token byte; the span helper preserves that distinction.
+			const reusedSpan = findNormalizedOsc8Span(this.#expandedSourceText, stableText, 0);
+			if (reusedSpan) {
+				this.#copySourceSearchCursor = reusedSpan.end;
+			} else {
+				const exactPrefix = this.#expandedSourceText.startsWith(stableText) ? stableText.length : 0;
+				this.#copySourceSearchCursor = exactPrefix;
 			}
-			this.#copySourceSearchCursor = reusedSourceLength;
 		}
-
 		if (renderedUntil < stableTokenCount) {
 			// Stable tokens render with full fidelity (syntax highlighting on)
 			// so these cached rows byte-match the finalized render.
