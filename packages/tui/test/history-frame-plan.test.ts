@@ -313,7 +313,7 @@ describe("terminal frame plans", () => {
 		provider.plan = { history: { id: 1, rows: ["a", "b"] }, viewport: ["tool-1", "tool-2", "tool-3", "editor"] };
 		tui.requestRender(true);
 		expect(plainBuffer(terminal)).toEqual(initial);
-		expect(provider.borrowed.at(-1)).toBe(1);
+		expect(provider.borrowed).toContain(1);
 		provider.plan = { history: { id: 2, rows: ["tool-1"] }, viewport: ["tool-2", "tool-3", "editor"] };
 		tui.requestRender(true);
 		expect(plainBuffer(terminal)).toEqual(initial);
@@ -438,6 +438,24 @@ describe("terminal frame plans", () => {
 			"live three",
 			"editor",
 		]);
+		tui.stop();
+	});
+
+	it("retains borrowed live suffix when finalized block drifts", () => {
+		const terminal = new CountingTerminal(20, 4);
+		const provider = new Provider({ viewport: ["final old", "live one", "live two", "live three", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		provider.plan = {
+			history: { id: 1, rows: ["final new"] },
+			viewport: ["live one", "live two", "live three", "editor"],
+		};
+		tui.requestRender(true);
+		provider.plan = { viewport: ["live one", "live two", "live three", "editor"] };
+		tui.requestRender(true);
+		expect(provider.borrowed).toContain(1);
+		expect(plainBuffer(terminal).filter(row => row === "live one")).toHaveLength(1);
+		expect(plainBuffer(terminal).filter(row => row === "live two")).toHaveLength(1);
 		tui.stop();
 	});
 

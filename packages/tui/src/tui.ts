@@ -2530,10 +2530,26 @@ export class TUI extends Container {
 					this.#providerTransientRows = prior.slice(overlap);
 					this.#providerLogicalCommitted = Math.max(0, this.#providerLogicalCommitted - overlap);
 				} else {
-					// A genuinely changed finalized prefix cannot retract older native
-					// rows. Preserve them and append the new authoritative version.
-					this.#providerTransientRows = [];
-					this.#providerLogicalCommitted = 0;
+					// Finalized rows may drift while later live rows remain borrowed.
+					// Retain the exact borrowed suffix matching the new viewport.
+					let suffix = 0;
+					for (let offset = 1; offset < prior.length; offset++) {
+						const length = prior.length - offset;
+						if (length > logicalViewport.length) continue;
+						let suffixMatches = true;
+						for (let index = 0; index < length; index++) {
+							if (prior[offset + index] !== logicalViewport[index]) {
+								suffixMatches = false;
+								break;
+							}
+						}
+						if (suffixMatches) {
+							suffix = length;
+							break;
+						}
+					}
+					this.#providerTransientRows = suffix > 0 ? prior.slice(prior.length - suffix) : [];
+					this.#providerLogicalCommitted = suffix;
 				}
 			}
 			if (history === undefined && overflow > this.#providerLogicalCommitted) {
