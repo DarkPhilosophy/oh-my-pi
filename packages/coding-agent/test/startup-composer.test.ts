@@ -103,6 +103,51 @@ describe("Composer prepaint", () => {
 		resetSettingsForTest();
 	});
 
+	it("preserves the virtual transcript across extra layout rows during and after streaming", () => {
+		const terminal = new CountingTerminal(40, 10);
+		const composer = new Composer({ preferences: { ...config, quiet: true }, terminal });
+		const transcript = new TranscriptContainer();
+		const stream = new GrowingBlock();
+		let extra = 0;
+		const input: Component = {
+			render: () => [...Array.from({ length: extra }, (_, index) => `TEMP ${index}`), "INPUT"],
+		};
+		transcript.addChild(stream);
+		composer.setRuntimeChildren([transcript, input]);
+		composer.start();
+		try {
+			for (let index = 1; index <= 20; index++) {
+				stream.append(`ROW ${index}`);
+				composer.ui.renderNow();
+			}
+			const historyBefore = terminal.getBufferPosition().baseY;
+			extra = 4;
+			composer.ui.renderNow();
+			expect(terminal.getBufferPosition().baseY).toBe(historyBefore);
+			for (let index = 21; index <= 25; index++) {
+				stream.append(`ROW ${index}`);
+				composer.ui.renderNow();
+			}
+			extra = 0;
+			composer.ui.renderNow();
+			const expected = [...Array.from({ length: 9 }, (_, index) => `ROW ${17 + index}`), "INPUT"];
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(expected);
+			stream.finalize();
+			composer.ui.renderNow();
+			for (let cycle = 0; cycle < 3; cycle++) {
+				const history = terminal.getBufferPosition().baseY;
+				extra = 4;
+				composer.ui.renderNow();
+				extra = 0;
+				composer.ui.renderNow();
+				expect(terminal.getBufferPosition().baseY).toBe(history);
+				expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(expected);
+			}
+		} finally {
+			composer.stop();
+		}
+	});
+
 	it("keeps one live editor and terminal across handoff", () => {
 		const terminal = new CountingTerminal();
 		const composer = new Composer({ preferences: config, terminal });

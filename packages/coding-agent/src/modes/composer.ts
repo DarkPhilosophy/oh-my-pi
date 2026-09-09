@@ -194,6 +194,7 @@ export class Composer implements TerminalFrameProvider {
 	#retiredHeaderStart = 0;
 	#resizeRetiredHeaderStart: number | undefined;
 	#lastNormalRows = 0;
+	#minimumChromeRows: number | undefined;
 	#viewportTranscript?: TranscriptContainer;
 	#viewportTranscriptStart = 0;
 	#lastInterruptAt = 0;
@@ -274,7 +275,10 @@ export class Composer implements TerminalFrameProvider {
 		// reflowing to the current width) while the screen has room. A batch
 		// leaves the mutable viewport in the same frame it is appended, so its
 		// rows are never painted twice.
-		const history = this.#offerHistory(transcript, width, rows, preRoots.length + after.length);
+		const chromeRows = preRoots.length + after.length;
+		this.#minimumChromeRows = Math.min(this.#minimumChromeRows ?? chromeRows, chromeRows);
+		const viewportExpansionRows = chromeRows - this.#minimumChromeRows;
+		const history = this.#offerHistory(transcript, width, rows + viewportExpansionRows, chromeRows);
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
 		const before = [...headerRows, ...preRoots];
@@ -293,6 +297,7 @@ export class Composer implements TerminalFrameProvider {
 		return {
 			history,
 			borrowableRows,
+			viewportExpansionRows,
 			viewport: composed,
 			borrowedViewportRows: borrowedViewportRows > 0 ? before.length + borrowedViewportRows : 0,
 		};

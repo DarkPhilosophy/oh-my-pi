@@ -149,6 +149,8 @@ export interface TerminalFramePlan {
 	readonly borrowedViewportRows?: number;
 	/** Only this leading portion may enter native history; trailing anchored UI remains mutable. */
 	readonly borrowableRows?: number;
+	/** Reversible layout growth extends the virtual window, never the native history boundary. */
+	readonly viewportExpansionRows?: number;
 }
 
 /** Produces logical live frames and retires acknowledged history batches. */
@@ -2499,7 +2501,8 @@ export class TUI extends Container {
 		if (!flushing && this.#maybeDeferGhosttyInitialImagePaint()) return false;
 		const logicalViewport = Array.from(plan.viewport);
 		const overflow = Math.max(0, logicalViewport.length - height);
-		const borrowOverflow = Math.min(overflow, Math.max(0, plan.borrowableRows ?? logicalViewport.length));
+		const historyOverflow = Math.max(0, overflow - Math.max(0, plan.viewportExpansionRows ?? 0));
+		const borrowOverflow = Math.min(historyOverflow, Math.max(0, plan.borrowableRows ?? logicalViewport.length));
 		const borrowed = this.#providerTransientRows;
 		if (
 			plan.history === undefined &&

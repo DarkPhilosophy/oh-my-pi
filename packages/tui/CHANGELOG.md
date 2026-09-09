@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Reversible layout growth no longer advances native history or leaves blank viewport rows when it contracts.
 - Fixed lost or duplicated transcript rows across live viewport overflow, repeated command suggestions, and session replacement.
 - Fixed prepended live transcript rows appearing after previously displayed rows instead of in their original order.
 - Fixed deferred initial image paints losing overflowing provider rows.

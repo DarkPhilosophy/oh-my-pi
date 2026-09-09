@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Closing questions or command suggestions and shrinking multiline input now restores the transcript without blank gaps during or after streaming.
 - Fixed long responses being clipped at the history boundary and still-visible content retiring when command suggestions open.
 - Fixed replay omitting already-emitted rows from a partially settled response.
 - Read error and preview rendering now sanitizes tabs and Windows-style CRLF (e.g. ssh host-key failures, tab-indented fetched content) so raw output can no longer tear the result frame.
