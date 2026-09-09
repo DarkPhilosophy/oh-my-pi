@@ -1990,6 +1990,7 @@ export class TUI extends Container {
 		return true;
 	}
 	#prepareForcedRender(clearScrollback: boolean): void {
+		this.#pendingLiveRender = false;
 		if (clearScrollback && !this.#clearScrollbackOnNextRender) {
 			this.#frameProvider?.beginHistoryReplay?.();
 			if (TERMINAL.imageProtocol === ImageProtocol.Kitty) this.#imageBudget.forgetTransmitted();
@@ -2054,7 +2055,8 @@ export class TUI extends Container {
 	 */
 	#deferRenderForOutputBacklog(): boolean {
 		const pending = this.terminal.pendingOutputBytes;
-		const maximum = this.#pendingLiveRender ? TUI.#MAX_LIVE_PENDING_OUTPUT_BYTES : TUI.#MAX_PENDING_OUTPUT_BYTES;
+		const liveFrame = this.#pendingLiveRender && !this.#forceViewportRepaintOnNextRender;
+		const maximum = liveFrame ? TUI.#MAX_LIVE_PENDING_OUTPUT_BYTES : TUI.#MAX_PENDING_OUTPUT_BYTES;
 		if (pending === undefined || pending <= maximum) return false;
 		this.#renderRequested = true;
 		this.#renderTimer ??= this.#renderScheduler.scheduleRender(

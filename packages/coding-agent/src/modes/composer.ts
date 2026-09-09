@@ -419,7 +419,10 @@ export class Composer implements TerminalFrameProvider {
 			const welcome = this.#welcome;
 			let renderedHeader = this.#header.render(width);
 			const liveRows = transcript.liveRowCount(width);
-			if (!this.#historyFlush && renderedHeader.length + chromeRows + liveRows <= rows) return undefined;
+			// Editor-only growth is reversible chrome, not transcript progression.
+			if (!this.#historyFlush && (liveRows === 0 || renderedHeader.length + chromeRows + liveRows <= rows)) {
+				return undefined;
+			}
 			if (welcome !== undefined && !welcome.isTranscriptBlockFinalized()) {
 				// Settle before preserving a header whose top would leave the viewport.
 				welcome.stopIntro();
