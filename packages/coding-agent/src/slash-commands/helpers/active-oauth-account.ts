@@ -1,6 +1,6 @@
 import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
-import type { AccountLabel } from "../../modes/utils/usage-mask";
+import { type AccountLabel, usageIdentityKey } from "../../modes/utils/usage-mask";
 
 function normalizeIdentityValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;
@@ -24,7 +24,11 @@ export function getActiveAccountLabelParts(identity: OAuthAccountIdentity | unde
 	const base = identity.email || identity.accountId || identity.projectId;
 	if (!base) return undefined;
 	const org = identity.orgName || identity.orgId;
-	return { identity: base, qualifier: org && org !== base ? ` (${org})` : undefined };
+	return {
+		identity: base,
+		qualifier: org && org !== base ? ` (${org})` : undefined,
+		accountKey: usageIdentityKey(identity.accountId, identity.projectId),
+	};
 }
 
 /**
@@ -74,17 +78,21 @@ function matchesActiveAccount(
 			if (!activeAccountId && !activeEmail && !activeProjectId) return true;
 		}
 	}
-	if (activeAccountId) {
-		const reportAccountId = normalizeIdentityValue(metadata.accountId) ?? normalizeIdentityValue(metadata.account_id);
-		if (reportAccountId === activeAccountId) return true;
-		if (normalizeIdentityValue(limit?.scope.accountId) === activeAccountId) return true;
+	const reportAccountId =
+		normalizeIdentityValue(metadata.accountId) ??
+		normalizeIdentityValue(metadata.account_id) ??
+		normalizeIdentityValue(limit?.scope.accountId);
+	const reportProjectId = normalizeIdentityValue(metadata.projectId) ?? normalizeIdentityValue(limit?.scope.projectId);
+	let matchedStableId = false;
+	if (activeAccountId && reportAccountId) {
+		if (activeAccountId !== reportAccountId) return false;
+		matchedStableId = true;
 	}
-	if (activeEmail && normalizeIdentityValue(metadata.email) === activeEmail) return true;
-	if (activeProjectId) {
-		if (normalizeIdentityValue(metadata.projectId) === activeProjectId) return true;
-		if (normalizeIdentityValue(limit?.scope.projectId) === activeProjectId) return true;
+	if (activeProjectId && reportProjectId) {
+		if (activeProjectId !== reportProjectId) return false;
+		matchedStableId = true;
 	}
-	return false;
+	return matchedStableId || !!(activeEmail && normalizeIdentityValue(metadata.email) === activeEmail);
 }
 
 /** True when a single usage-limit column belongs to the given OAuth identity. */

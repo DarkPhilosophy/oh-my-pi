@@ -12,6 +12,16 @@ export interface AccountLabel {
 	accountKey?: string;
 }
 
+export function usageIdentityKey(
+	accountId: unknown,
+	projectId: unknown,
+	fallback?: { accountId?: string; projectId?: string },
+): string | undefined {
+	const account = typeof accountId === "string" && accountId ? accountId : fallback?.accountId;
+	const project = typeof projectId === "string" && projectId ? projectId : fallback?.projectId;
+	return account || project ? JSON.stringify([account ?? "", project ?? ""]) : undefined;
+}
+
 export function normalizeUsageAccountLabel(label: string): string {
 	return replaceTabs(sanitizeText(label)).replace(/[\r\n]+/g, " ");
 }

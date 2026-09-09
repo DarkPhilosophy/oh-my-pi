@@ -312,7 +312,7 @@ describe("ACP builtin slash commands", () => {
 		const { output, runtime } = createRuntime();
 		runtime.settings.set("usage.maskAccountLabels", true);
 		runtime.session.fetchUsageReports = async () => [
-			...["alice@example.com", "alina@example.com"].map((email, index) => ({
+			...["alice@example.com", "alice@example.com"].map((email, index) => ({
 				provider: "openai-codex",
 				fetchedAt: Date.now(),
 				limits: [
@@ -329,7 +329,7 @@ describe("ACP builtin slash commands", () => {
 				provider: "openai-codex",
 				fetchedAt: Date.now(),
 				limits: [],
-				metadata: { email: "alice2@example.com", orgName: "Team" },
+				metadata: { email: "alice@example.com", accountId: "account-2", orgName: "Team" },
 				resetCredits: { availableCount: 2 },
 			},
 		];

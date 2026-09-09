@@ -184,7 +184,7 @@ describe("renderUsageReports content", () => {
 						status: "ok",
 					},
 				],
-				metadata: { email: "main-one@example.com", accountId: "acct-sibling" },
+				metadata: { email: "shared@example.com", accountId: "acct-sibling" },
 			},
 		];
 		const output = stripVTControlCharacters(
@@ -193,12 +193,12 @@ describe("renderUsageReports content", () => {
 				theme,
 				now,
 				98,
-				() => ({ email: "main-two@example.com", accountId: "acct-active" }),
+				() => ({ email: "shared@example.com", accountId: "acct-active" }),
 				{ maskAccountLabels: true },
 			),
 		);
-		expect(output).toContain("in use by this session: mai*** (2)");
-		expect(output).toContain("  mai***");
+		expect(output).toContain("in use by this session: sha*** (2)");
+		expect(output).toContain("  sha***");
 	});
 
 	it("keeps combined fractional quota rows within narrow report widths", () => {

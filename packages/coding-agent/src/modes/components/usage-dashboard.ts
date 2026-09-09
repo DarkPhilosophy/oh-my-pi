@@ -35,6 +35,7 @@ import {
 	type AccountMasker,
 	formatAccountLabelText,
 	normalizeUsageAccountLabel,
+	usageIdentityKey,
 } from "../utils/usage-mask";
 import { renderFractionBar } from "../utils/usage-bar";
 import { bottomBorder, divider, row, topBorder } from "./overlay-box";
@@ -179,8 +180,7 @@ export function formatReportAccountLabel(report: UsageReport, index: number): Ac
 						: report.limits[0]?.scope.projectId
 							? sanitizeAccountLabelPart(report.limits[0].scope.projectId)
 							: undefined;
-	if (!base)
-		return { identity: `account ${index + 1}`, placeholder: true, accountKey: formatReportAccountKey(report, index) };
+	if (!base) return { identity: `account ${index + 1}`, placeholder: true };
 	const organization =
 		typeof meta?.orgName === "string" && meta.orgName
 			? sanitizeAccountLabelPart(meta.orgName)
@@ -190,7 +190,7 @@ export function formatReportAccountLabel(report: UsageReport, index: number): Ac
 	return {
 		identity: base,
 		qualifier: organization && organization !== base ? ` (${organization})` : undefined,
-		accountKey: formatReportAccountKey(report, index),
+		accountKey: usageIdentityKey(meta?.accountId, meta?.projectId, report.limits[0]?.scope),
 	};
 }
 

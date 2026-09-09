@@ -70,7 +70,13 @@ import {
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
-import { type AccountLabel, type AccountMasker, createAccountMasker, MASK_STARS } from "../utils/usage-mask";
+import {
+	type AccountLabel,
+	type AccountMasker,
+	createAccountMasker,
+	MASK_STARS,
+	usageIdentityKey,
+} from "../utils/usage-mask";
 import { renderFractionBar } from "../utils/usage-bar";
 
 function formatCreditValue(value: number): string {
@@ -1769,37 +1775,43 @@ function styleAccountMask(label: string, uiTheme: typeof theme): string {
 }
 
 function formatAccountLabel(limit: UsageLimit, report: UsageReport, index: number): AccountLabel {
+	const accountKey = usageIdentityKey(report.metadata?.accountId, report.metadata?.projectId, limit.scope);
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return { identity: email, qualifier: orgSuffix(report) };
+	if (typeof email === "string" && email) return { identity: email, qualifier: orgSuffix(report), accountKey };
 	const accountId =
 		typeof report.metadata?.accountId === "string" && report.metadata.accountId
 			? report.metadata.accountId
 			: limit.scope.accountId || undefined;
-	if (accountId) return { identity: accountId, qualifier: orgSuffix(report) };
+	if (accountId) return { identity: accountId, qualifier: orgSuffix(report), accountKey };
 	const projectId =
 		typeof report.metadata?.projectId === "string" && report.metadata.projectId
 			? report.metadata.projectId
 			: limit.scope.projectId || undefined;
-	if (projectId) return { identity: projectId };
+	if (projectId) return { identity: projectId, accountKey };
 	return { identity: `account ${index + 1}`, placeholder: true };
 }
 
 function formatUnlimitedReportLabel(report: UsageReport, index: number): AccountLabel {
+	const accountKey = usageIdentityKey(report.metadata?.accountId, report.metadata?.projectId, report.limits[0]?.scope);
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return { identity: email, qualifier: orgSuffix(report) };
+	if (typeof email === "string" && email) return { identity: email, qualifier: orgSuffix(report), accountKey };
 	const accountId = report.metadata?.accountId;
-	if (typeof accountId === "string" && accountId) return { identity: accountId, qualifier: orgSuffix(report) };
+	if (typeof accountId === "string" && accountId)
+		return { identity: accountId, qualifier: orgSuffix(report), accountKey };
 	const projectId = report.metadata?.projectId;
-	if (typeof projectId === "string" && projectId) return { identity: projectId };
+	if (typeof projectId === "string" && projectId) return { identity: projectId, accountKey };
 	return { identity: `account ${index + 1}`, placeholder: true };
 }
 
 function formatResetAccountLabel(report: UsageReport): AccountLabel {
+	const accountKey = usageIdentityKey(report.metadata?.accountId, report.metadata?.projectId, report.limits[0]?.scope);
 	const email = report.metadata?.email;
 	const accountId = report.metadata?.accountId;
 	const identity =
 		typeof email === "string" && email ? email : typeof accountId === "string" && accountId ? accountId : undefined;
-	return identity ? { identity, qualifier: orgSuffix(report) } : { identity: "account", placeholder: true };
+	return identity
+		? { identity, qualifier: orgSuffix(report), accountKey }
+		: { identity: "account", placeholder: true };
 }
 
 function formatResetShort(limit: UsageLimit, nowMs: number): string | undefined {
