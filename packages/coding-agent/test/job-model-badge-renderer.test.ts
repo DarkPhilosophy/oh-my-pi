@@ -206,11 +206,33 @@ describe("hub jobs task model badges", () => {
 			)
 				.render(160)
 				.join("\n");
+			const collapsedJobText =
+				tag === "preview"
+					? renderJobText(
+							{
+								jobs: [
+									{
+										id: "Reader",
+										type: "task",
+										status: "completed",
+										label: "Reader",
+										durationMs: 1,
+										resultText: envelope,
+									},
+								],
+							},
+							false,
+						)
+					: undefined;
 			for (const text of [jobText, cardText]) {
 				expect(text).toContain("</output>");
 				expect(text).toContain("</preview>");
 				expect(text).toContain("Tail intact.");
-				if (tag === "preview") expect(text).toContain("agent://Reader");
+				if (tag === "preview") {
+					expect(collapsedJobText).toContain("Literal </output>");
+					expect(text).toContain("agent://Reader");
+					expect(text.indexOf("Tail intact.")).toBeLessThan(text.indexOf("Full output: agent://Reader"));
+				}
 				expect(text).not.toContain("<task-result");
 			}
 		}

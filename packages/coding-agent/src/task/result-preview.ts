@@ -28,7 +28,7 @@ export function formatTaskResultPreview(text: string, includeStatus = true): str
 	} catch {
 		// Prose, incomplete previews and arbitrary tool data retain their contents.
 	}
-	if (fullOutput) body = `Full output: ${fullOutput}\n\n${body}`;
+	if (fullOutput) body = `${body}\n\nFull output: ${fullOutput}`;
 	if (abortReason) body = `${abortReason}\n\n${body}`;
 	if (includeStatus && status && status !== "completed") body = `Task ${status}\n\n${body}`;
 	return replaceTabs(sanitizeText(body));
