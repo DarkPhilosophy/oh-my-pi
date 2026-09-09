@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { getMarkdownTheme, setCopyUrlHandlerReady } from "@oh-my-pi/pi-coding-agent/modes/theme/tui-adapters";
-import { resolveCopyBlock, supportsCopyUrlHandler } from "@oh-my-pi/pi-coding-agent/utils/copy-store";
+import { copyUrlTarget, resolveCopyBlock, supportsCopyUrlHandler } from "@oh-my-pi/pi-coding-agent/utils/copy-store";
 import { Markdown, TERMINAL } from "@oh-my-pi/pi-tui";
 
 const originalHyperlinks = TERMINAL.hyperlinks;
@@ -68,6 +68,18 @@ describe("Markdown copy link", () => {
 		const footer = new Markdown(source, 0, 0, getMarkdownTheme()).render(80).at(-1) ?? "";
 		const target = footer.match(/\x1b]8;;(omp-copy:[^\x07]+)\x07/)?.[1];
 
+		expect(target).toBeDefined();
+		expect(resolveCopyBlock(target!)).toBe("right");
+	});
+	it("round-trips an empty fenced body through the copy URL", () => {
+		const target = copyUrlTarget("", true);
+		expect(target).toBe("omp-copy:0.");
+		expect(resolveCopyBlock(target!)).toBe("");
+	});
+	it("recovers the visible CRLF fence after a hidden comment fence", () => {
+		const source = "<!--\r\n```js\r\nwrong\r\n```\r\n-->\r\n\r\n```js\r\nright\r\n```";
+		const footer = new Markdown(source, 0, 0, getMarkdownTheme()).render(80).at(-1) ?? "";
+		const target = footer.match(/\x1b]8;;(omp-copy:[^\x07]+)\x07/)?.[1];
 		expect(target).toBeDefined();
 		expect(resolveCopyBlock(target!)).toBe("right");
 	});

@@ -47,7 +47,7 @@ export function resolveCopyBlock(arg: string): string | undefined {
 	const dot = payload.indexOf(".");
 	if (dot <= 0) return undefined;
 	const declaredLength = Number(payload.slice(0, dot));
-	if (!Number.isInteger(declaredLength) || declaredLength <= 0) return undefined;
+	if (!Number.isInteger(declaredLength) || declaredLength < 0) return undefined;
 	const bytes = Buffer.from(payload.slice(dot + 1), "base64url");
 	if (bytes.length !== declaredLength) return undefined;
 	const decoded = bytes.toString("utf8");

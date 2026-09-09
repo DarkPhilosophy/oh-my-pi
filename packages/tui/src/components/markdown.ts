@@ -1866,16 +1866,17 @@ interface ExpandedSource {
 }
 
 function expandSourceText(source: string): ExpandedSource {
+	const text: string[] = [];
 	const sourceOffsets: number[] = [0];
-	let expandedLength = 0;
 	for (let sourceOffset = 0; sourceOffset < source.length; sourceOffset++) {
-		const width = source[sourceOffset] === "\t" ? DEFAULT_TAB_WIDTH : 1;
-		expandedLength += width;
-		for (let offset = sourceOffsets.length; offset <= expandedLength; offset++) {
-			sourceOffsets.push(sourceOffset + 1);
-		}
+		const char = source[sourceOffset]!;
+		const isCrLf = char === "\r" && source[sourceOffset + 1] === "\n";
+		const expanded = isCrLf ? "\n" : char === "\t" ? " ".repeat(DEFAULT_TAB_WIDTH) : char;
+		if (isCrLf) sourceOffset++;
+		text.push(expanded);
+		for (let offset = 0; offset < expanded.length; offset++) sourceOffsets.push(sourceOffset + 1);
 	}
-	return { text: replaceTabs(source), sourceOffsets };
+	return { text: text.join(""), sourceOffsets };
 }
 
 /** Translate a normalized (tabs expanded, OSC ST collapsed) boundary to raw source. */
@@ -1893,8 +1894,9 @@ function sourceOffsetAtExpandedBoundary(source: string, boundary: number): numbe
 			nextOscMatch = OSC8_ST_PREFIX_REGEX.exec(source);
 			continue;
 		}
+		const isCrLf = source[sourceOffset] === "\r" && source[sourceOffset + 1] === "\n";
 		normalizedOffset += source[sourceOffset] === "\t" ? DEFAULT_TAB_WIDTH : 1;
-		sourceOffset++;
+		sourceOffset += isCrLf ? 2 : 1;
 		if (normalizedOffset >= boundary) return sourceOffset;
 	}
 	return source.length;
@@ -2884,21 +2886,22 @@ export class Markdown implements Component {
 	}
 
 	#findCopySourceSpan(raw: string): { start: number; end: number } | undefined {
-		const expandedSourceText = (this.#expandedSourceText ??= replaceTabs(this.#sourceText));
+		const expandedSourceText = this.#ensureExpandedSource().text;
+		const canonicalRaw = replaceTabs(raw.replaceAll("\r\n", "\n"));
 		const start = this.#copySourceSearchCursor;
-		const exactStart = expandedSourceText.indexOf(raw, start);
-		if (exactStart >= 0) return { start: exactStart, end: exactStart + raw.length };
+		const exactStart = expandedSourceText.indexOf(canonicalRaw, start);
+		if (exactStart >= 0) return { start: exactStart, end: exactStart + canonicalRaw.length };
 		const suffix = expandedSourceText.slice(start);
 		OSC8_ST_PREFIX_REGEX.lastIndex = 0;
 		const hasStTerminatedOsc = OSC8_ST_PREFIX_REGEX.test(suffix);
 		OSC8_ST_PREFIX_REGEX.lastIndex = 0;
 		if (!hasStTerminatedOsc) return undefined;
-		return findNormalizedOsc8Span(expandedSourceText, raw, start);
+		return findNormalizedOsc8Span(expandedSourceText, canonicalRaw, start);
 	}
 
 	#findContainerSourceSpan(raw: string): { start: number; end: number } | undefined {
-		const expandedSourceText = (this.#expandedSourceText ??= replaceTabs(this.#sourceText));
-		const lines = raw.split("\n");
+		const expandedSourceText = this.#ensureExpandedSource().text;
+		const lines = raw.replaceAll("\r\n", "\n").split("\n");
 		const first = lines[0];
 		if (!first) return undefined;
 		let lineStart = this.#copySourceSearchCursor;
@@ -3244,9 +3247,9 @@ export class Markdown implements Component {
 		if (copyLabel && visibleWidth(copyLabel) > 0) {
 			const chipWidth = visibleWidth(copyLabel);
 			const fill = Math.max(0, innerWidth - chipWidth - 1);
-			const code =
-				TERMINAL.hyperlinks && this.#theme.copyChipTarget !== undefined ? this.#originalCodeBody(token) : "";
-			const target = code ? this.#theme.copyChipTarget?.(code) : undefined;
+			const copyTarget = TERMINAL.hyperlinks ? this.#theme.copyChipTarget : undefined;
+			const code = copyTarget !== undefined ? this.#originalCodeBody(token) : "";
+			const target = copyTarget?.(code);
 			const chip = target
 				? `\x1b]8;;${target.replaceAll("\x1b", "").replaceAll("\x07", "")}\x07${border(copyLabel)}\x1b]8;;\x07`
 				: border(copyLabel);
