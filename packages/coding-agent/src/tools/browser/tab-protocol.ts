@@ -96,6 +96,7 @@ export type WorkerInbound =
 			targetMatcher?: string;
 			url?: string;
 			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
+			viewport?: { width: number; height: number; deviceScaleFactor?: number };
 			timeoutMs: number;
 			dialogs?: "accept" | "dismiss";
 	  }

@@ -1501,6 +1501,8 @@ export class WorkerCore {
 				});
 			}
 			throwIfAborted(ac.signal);
+			if (msg.viewport) await applyViewport(this.#requirePage(), msg.viewport);
+			throwIfAborted(ac.signal);
 			this.#transport.send({ type: "selected", id: msg.id, info: await this.#currentReadyInfo() });
 		} catch (error) {
 			const reported =

@@ -93,6 +93,26 @@ describe("Firefox shared worker selection recovery", () => {
 		expect(primary.state).toBe("alive");
 	});
 
+	it("releases an unpublished alias after an ordinary navigation failure", async () => {
+		const worker = new FakeSelectionWorker();
+		const browser = makeBrowser();
+		const primary = makeTab("primary", browser, worker);
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(primary.name, primary);
+		getFirefoxSharedTabsForTest().set(primary);
+		const opening = acquireTab("failed-alias", browser, {
+			dialogs: "accept",
+			url: "https://invalid.test",
+			timeoutMs: 1000,
+		});
+		await Bun.sleep(0);
+		worker.failSelection({ name: "Error", message: "DNS lookup failed", isToolError: false, isAbort: false });
+		await expect(opening).rejects.toThrow("DNS lookup failed");
+		expect(worker.sent).toContainEqual({ type: "release-runtime", name: "failed-alias" });
+		expect(tabs.has("failed-alias")).toBe(false);
+		expect(primary.state).toBe("alive");
+	});
+
 	it("invalidates every alias when acquireTab selection fails recoverably", async () => {
 		const worker = new FakeSelectionWorker();
 		const browser = makeBrowser();

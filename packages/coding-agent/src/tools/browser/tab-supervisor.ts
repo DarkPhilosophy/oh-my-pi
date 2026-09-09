@@ -317,7 +317,9 @@ async function acquireTabImpl(
 	const releaseExistingTab = async (): Promise<void> => {
 		try {
 			if (browser.kind.kind === "firefox-relay" && tabs.get(name)?.browser.key === browser.key) {
-				await releaseTabWithWorkerReservation(name, { kill: false });
+				const remainingMs = opts.timeoutMs - (performance.now() - startedAt);
+				if (remainingMs <= 0) throw new ToolError("Browser tab open timed out before replacing the existing alias");
+				await releaseTabWithWorkerReservation(name, { kill: false, signal: opts.signal, timeoutMs: remainingMs });
 			} else {
 				await releaseTab(name, { kill: false });
 			}
@@ -414,6 +416,7 @@ async function acquireTabImpl(
 			const info = await selectFirefoxWorkerTab(firefoxSharedTab.worker, {
 				name,
 				targetMatcher: opts.target,
+				viewport: opts.viewport,
 				url: opts.url,
 				waitUntil: opts.waitUntil,
 				timeoutMs: opts.timeoutMs,
@@ -442,9 +445,7 @@ async function acquireTabImpl(
 			tabs.set(name, tab);
 			return { tab, created: true };
 		} catch (error) {
-			if (opts.signal?.aborted || error instanceof ToolAbortError) {
-				safeSend(firefoxSharedTab, { type: "release-runtime", name });
-			}
+			safeSend(firefoxSharedTab, { type: "release-runtime", name });
 			if (error instanceof RecoverableWorkerError) {
 				await invalidateFirefoxWorker(firefoxSharedTab.worker, "Firefox tab selection failed recoverably");
 			}
@@ -1635,6 +1636,7 @@ export async function selectFirefoxWorkerTab(
 		targetMatcher?: string;
 		url?: string;
 		waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
+		viewport?: { width: number; height: number; deviceScaleFactor?: number };
 		timeoutMs: number;
 		dialogs?: DialogPolicy;
 		signal?: AbortSignal;
