@@ -3006,6 +3006,24 @@ describe("framed code review regressions", () => {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
 	});
+	it("copies quote-fenced rows without leaking a partial structural tab", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => (captured.push(body), undefined),
+			};
+			new Markdown("> ```js\n>\tfoo\n> ```", 0, 0, theme).render(80);
+			new Markdown(">\t```js\n>\tfoo\n>\t```", 0, 0, theme).render(80);
+			expect(captured).toEqual(["  foo", "  foo"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
 });
 
 describe("framed code review follow-ups", () => {

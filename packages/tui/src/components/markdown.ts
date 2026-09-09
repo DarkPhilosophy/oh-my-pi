@@ -3077,6 +3077,21 @@ export class Markdown implements Component {
 					const structuralPrefix = prefixes.find(candidate => line.startsWith(candidate));
 					if (structuralPrefix) return line.slice(structuralPrefix.length);
 				}
+				if (parsed !== undefined && hasStructuralContainer) {
+					const structuralPrefix = prefixes
+						.map(prefix => prefix.replace(/[ \t]+$/, ""))
+						.find(prefix => prefix.length > 0 && line.startsWith(prefix));
+					if (structuralPrefix) {
+						const remainder = line.slice(structuralPrefix.length);
+						if (
+							remainder.startsWith("\t") &&
+							/^[ ]/.test(parsed) &&
+							replaceTabs(remainder).endsWith(replaceTabs(parsed))
+						) {
+							return parsed;
+						}
+					}
+				}
 				if (parsed !== undefined) {
 					if (
 						hasStructuralContainer &&
