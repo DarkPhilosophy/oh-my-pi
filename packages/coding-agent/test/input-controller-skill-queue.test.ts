@@ -753,7 +753,7 @@ function createStubInteractiveModeContextForUiHelpers(session: AgentSession) {
 
 	const ctx = {
 		editor,
-		ui: { requestRender, terminal: { columns: 80 } },
+		ui: { requestRender, requestComponentRender, terminal: { columns: 80 } },
 		pendingMessagesContainer,
 		session,
 		viewSession: session,
@@ -800,7 +800,7 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		uiHelpers.updatePendingMessagesDisplay();
 
 		const rendered = stripAnsi(pendingMessagesContainer.render(120).join("\n"));
-		expect(rendered).toContain("Steering");
+		expect(rendered).toContain("Steer");
 		expect(rendered).toContain("└─ /skill:test-skill arg1 arg2");
 		expect(rendered).toContain("Alt+Up (or Up) to edit");
 	});
@@ -824,26 +824,10 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		uiHelpers.updatePendingMessagesDisplay();
 
 		const rendered = stripAnsi(pendingMessagesContainer.render(120).join("\n"));
-		expect(rendered.match(/ Steering /g)?.length).toBe(1);
+		expect(rendered.match(/ Steer /g)?.length).toBe(1);
 		expect(rendered).toContain("├─ [Image #1] describe");
 		expect(rendered).toContain("└─ more context");
 		expect(rendered).toContain("Alt+Up (or Up) to edit");
-	});
-
-	it("renders steering from agent and compaction queues in one box", async () => {
-		fixture = await createRealSession();
-		const { session } = fixture;
-		queueCustomSteer(session, "first steering");
-		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session);
-		ctx.compactionQueuedMessages.push({ text: "second steering", mode: "steer" });
-
-		const uiHelpers = new UiHelpers(ctx);
-		uiHelpers.updatePendingMessagesDisplay();
-
-		const rendered = stripAnsi(pendingMessagesContainer.render(120).join("\n"));
-		expect(rendered.match(/ Steering /g)?.length).toBe(1);
-		expect(rendered).toContain("├─ first steering");
-		expect(rendered).toContain("└─ second steering");
 	});
 
 	it("collapses queued steering text with a row and character footer", async () => {

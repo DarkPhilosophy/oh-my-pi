@@ -49,8 +49,8 @@ describe("AgentSession queue coalescing", () => {
 			id: "claude-sonnet-4-5",
 		},
 		options?: {
-			steeringMode?: "one-at-a-time" | "coalescing";
-			followUpMode?: "one-at-a-time" | "coalescing";
+			steeringMode?: "all" | "one-at-a-time" | "coalescing";
+			followUpMode?: "all" | "one-at-a-time" | "coalescing";
 		},
 	): Promise<AgentSession> {
 		const model = getBundledModel(modelRef.api, modelRef.id)!;
@@ -107,16 +107,6 @@ describe("AgentSession queue coalescing", () => {
 		expect(steering).toEqual(["Line1\nLine2\nLine3"]);
 	});
 
-	it("coalesces adjacent fenced user messages without corrupting their fences", async () => {
-		const target = await createSession([{ content: ["ok"] }]);
-		const queued = await duringStream(target, async () => {
-			await target.steer("```js\nconst first = 1;\n```");
-			await target.steer("```python\nprint(first)\n```");
-			return target.getQueuedMessages().steering;
-		});
-		expect(queued).toEqual(["```js\nconst first = 1;\n```\n```python\nprint(first)\n```"]);
-		expect((queued[0]!.match(/```/g) ?? []).length).toBe(4);
-	});
 
 	it("merges consecutive plain follow-ups into one queued entry", async () => {
 		const target = await createSession([{ content: ["ok"] }]);

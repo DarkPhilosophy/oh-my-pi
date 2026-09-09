@@ -1106,16 +1106,15 @@ export class UiHelpers {
 		this.ctx.pendingMessagesContainer.disposeChildren();
 		const queuedMessages = this.ctx.viewSession.getQueuedMessages() as QueuedMessages;
 
-		const steeringText = [
-			...queuedMessages.steering,
-			...(this.ctx.compactionQueuedMessages as CompactionQueuedMessage[])
-				.filter(entry => entry.mode === "steer")
-				.map(entry => entry.text),
-		].join("\n");
-		const steeringMessages: Array<{ message: string; label: string; shimmer?: boolean }> =
-			steeringText.length > 0 ? [{ message: steeringText, label: "Steering", shimmer: true }] : [];
+		const steeringMessages: Array<{ message: string; label: string }> = [];
+		for (const message of queuedMessages.steering) {
+			steeringMessages.push({ message, label: "Steer" });
+		}
+		for (const entry of this.ctx.compactionQueuedMessages as CompactionQueuedMessage[]) {
+			if (entry.mode === "steer") steeringMessages.push({ message: entry.text, label: "Steer" });
+		}
 
-		const followUpMessages: Array<{ message: string; label: string; shimmer?: boolean }> = [];
+		const followUpMessages: Array<{ message: string; label: string }> = [];
 		for (const message of queuedMessages.followUp) {
 			followUpMessages.push({ message, label: "Follow-up" });
 		}
@@ -1125,7 +1124,6 @@ export class UiHelpers {
 
 		const allMessages = [...steeringMessages, ...followUpMessages];
 		if (allMessages.length === 0) return;
-
 		this.ctx.pendingMessagesContainer.addChild(new Spacer(1));
 		const expanded = this.ctx.pendingQueueExpanded;
 		const collapseLines = Math.max(1, this.ctx.settings?.get("pendingQueueCollapseLines") ?? 5);
@@ -1143,13 +1141,7 @@ export class UiHelpers {
 			const safeAll = entry.message.split("\n").map(line => sanitizeText(line.replace(/\t/g, "    ")));
 			const footerText = idx === allMessages.length - 1 ? hint : undefined;
 			this.ctx.pendingMessagesContainer.addChild(
-				new QueuedMessageBox(entry.label, safeAll, {
-					collapseLines,
-					expanded,
-					footerText,
-					shimmerTitle: entry.shimmer,
-					ui: this.ctx.ui,
-				}),
+				new QueuedMessageBox(entry.label, safeAll, { collapseLines, expanded, footerText }),
 			);
 		}
 	}

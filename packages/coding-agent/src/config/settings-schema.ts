@@ -2000,25 +2000,25 @@ export const SETTINGS_SCHEMA = {
 	// Conversation flow
 	steeringMode: {
 		type: "enum",
-		values: ["one-at-a-time", "coalescing"] as const,
-		default: "coalescing",
+		values: ["all", "one-at-a-time", "coalescing"] as const,
+		default: "one-at-a-time",
 		ui: {
 			tab: "interaction",
 			group: "Input",
 			label: "Steering Mode",
-			description: "How to process your queued steering messages while the agent is working",
+			description: "How to process queued steering messages while the agent is working",
 		},
 	},
 
 	followUpMode: {
 		type: "enum",
-		values: ["one-at-a-time", "coalescing"] as const,
-		default: "coalescing",
+		values: ["all", "one-at-a-time", "coalescing"] as const,
+		default: "one-at-a-time",
 		ui: {
 			tab: "interaction",
 			group: "Input",
 			label: "Follow-Up Mode",
-			description: "How to drain your queued follow-up messages after a turn completes",
+			description: "How to drain queued follow-up messages after a turn completes",
 		},
 	},
 

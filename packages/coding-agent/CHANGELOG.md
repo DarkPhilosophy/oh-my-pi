@@ -32,6 +32,7 @@
 
 - Fixed long responses being clipped at the history boundary and still-visible content retiring when command suggestions open.
 - Fixed replay omitting already-emitted rows from a partially settled response.
+- Fixed rapid queued steer/follow-up image submissions racing into split or dropped pending entries by serializing queue mutations; added opt-in `coalescing` queue mode to merge rapid consecutive queued user entries while preserving attachments, hidden magic-keyword companions, restore behavior, delivery, and `[Image #N]` marker numbering.
 - Read error and preview rendering now sanitizes tabs and Windows-style CRLF (e.g. ssh host-key failures, tab-indented fetched content) so raw output can no longer tear the result frame.
 ### Added
 

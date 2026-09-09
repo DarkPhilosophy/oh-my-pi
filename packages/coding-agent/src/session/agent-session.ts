@@ -345,8 +345,7 @@ import {
 	isUserQueuedMessage,
 	queueChipText,
 	queuedImageContent,
-	queuedUserDraftText,
-	shiftQueuedImageMarkers,
+
 	toRestoredQueuedMessage,
 	withQueuedUserContent,
 } from "./queued-messages";
@@ -438,6 +437,47 @@ const noOpUIContext: ExtensionUIContext = {
 // ============================================================================
 // AgentSession Class
 // ============================================================================
+
+type UserQueueMessage = Extract<AgentMessage, { role: "user" }>;
+type QueuedUserMessageListener = (text: string, imageCount: number, replacedText?: string) => void;
+export type QueueMode = "all" | "one-at-a-time" | "coalescing";
+
+function coreQueueMode(mode: QueueMode): "all" | "one-at-a-time" {
+	return mode === "all" ? "all" : "one-at-a-time";
+}
+export type LocalQueueCoalescedListener = (
+	perSendText: string,
+	mergedText: string,
+	replacedText: string,
+	perSendImageCount: number,
+	mergedImageCount: number,
+	replacedImageCount: number,
+) => void;
+
+const VISION_MARKER_REGEX = /\[(Image|Video) #([1-9]\d*)((?:,[^\]\n]*)?)\]/g;
+
+function shiftQueuedImageMarkers(text: string, offset: number): string {
+	if (offset === 0) return text;
+	return text.replace(
+		VISION_MARKER_REGEX,
+		(_match, kind: string, idx: string, tail: string) => `[${kind} #${Number(idx) + offset}${tail}]`,
+	);
+}
+
+function queuedUserDraftText(message: AgentMessage): string | undefined {
+	if (message.role !== "user" || message.attribution === "agent") return undefined;
+	if (!("content" in message)) return undefined;
+	if (typeof message.content === "string") return message.content;
+	const text = message.content.find((part): part is TextContent => part.type === "text")?.text ?? "";
+	if (text) return text;
+	return queuedImageContent(message) ? "[Image]" : "";
+}
+
+function withQueuedUserContent(message: UserQueueMessage, text: string, images?: ImageContent[]): AgentMessage {
+	const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
+	if (images?.length) content.push(...images);
+	return { ...message, content, timestamp: Date.now() };
+}
 
 type MessageEndPersistenceSlot = {
 	readonly promise: Promise<void>;
@@ -627,6 +667,7 @@ export class AgentSession {
 	readonly #advisors: SessionAdvisors;
 	/** Resolves once the resume-time advisor spend backfill settles. */
 	#advisorCostRestore: Promise<void> = Promise.resolve();
+	onLocalQueueCoalesced: LocalQueueCoalescedListener | undefined;
 	#goalTurnCounter = 0;
 	#planReferenceSent = false;
 	#planReferencePath = "local://PLAN.md";
@@ -6149,14 +6190,22 @@ export class AgentSession {
 		if (this.isStreaming) {
 			const streamingBehavior = options?.streamingBehavior;
 			if (!streamingBehavior) throw new AgentBusyError();
-			const queueMode = streamingBehavior === "followUp" ? "followUp" : "steer";
-			await this.#queueUserMessageWithCompanions(
-				expandedText,
-				options?.images,
-				queueMode,
-				keywordNotices,
-				options.onQueued,
-			);
+			if (streamingBehavior === "aside") {
+				// Aside notices must precede the user record in the same non-interrupting queue.
+				for (const notice of keywordNotices) {
+					await this.#queueCustomMessage(notice, streamingBehavior);
+				}
+				await this.#queueUserMessage(expandedText, options?.images, streamingBehavior, submittedAt);
+			} else {
+				await this.#queueUserMessageWithCompanions(
+					expandedText,
+					options?.images,
+					streamingBehavior,
+					keywordNotices,
+					options.onQueued,
+					submittedAt,
+				);
+			}
 			return true;
 		}
 
@@ -6202,7 +6251,7 @@ export class AgentSession {
 			for (const notice of keywordNotices) {
 				await this.#queueCustomMessage(notice, streamingBehavior);
 			}
-			await this.#queueUserMessage(expandedText, options?.images, streamingBehavior, submittedAt, undefined, {
+			await this.#queueUserMessage(expandedText, options?.images, streamingBehavior, submittedAt, options.onQueued, {
 				images: normalizedImages,
 				descriptionNotice: imageDescriptionNotice,
 			});
@@ -6936,11 +6985,111 @@ export class AgentSession {
 		}
 	}
 
+	async #withQueuedUserMessageLock<T>(fn: () => Promise<T>): Promise<T> {
+		const previous = this.#queuedUserMessageTail;
+		const gate = Promise.withResolvers<void>();
+		this.#queuedUserMessageTail = previous.catch(() => undefined).then(() => gate.promise);
+		await previous.catch(() => undefined);
+		try {
+			return await fn();
+		} finally {
+			gate.resolve();
+		}
+	}
+
+	async #queueUserMessageWithCompanions(
+		text: string,
+		images: ImageContent[] | undefined,
+		mode: "steer" | "followUp",
+		companionMessages: readonly CustomMessage[],
+		onQueued: QueuedUserMessageListener | undefined,
+		timestamp?: number,
+	): Promise<void> {
+		await this.#withQueuedUserMessageLock(async () => {
+			for (const companion of companionMessages) {
+				await this.#queueCustomMessage(companion, mode);
+			}
+			await this.#queueUserMessageLocked(text, images, mode, timestamp, onQueued);
+		});
+	}
+
+	#tryCoalesceQueuedUserMessage(
+		text: string,
+		images: ImageContent[] | undefined,
+		mode: "steer" | "followUp",
+		companionMessages: readonly CustomMessage[],
+		onQueued: QueuedUserMessageListener | undefined,
+	): boolean {
+		const steering = [...this.agent.peekSteeringQueue()];
+		const followUp = [...this.agent.peekFollowUpQueue()];
+		const queue = mode === "steer" ? steering : followUp;
+		if (queue.length === 0) return false;
+		const perSendText = text || (images?.length ? "[Image]" : "");
+		if (!perSendText) return false;
+
+		let suffixCompanionStart = queue.length;
+		while (suffixCompanionStart > 0 && isHiddenUserCompanion(queue[suffixCompanionStart - 1])) {
+			suffixCompanionStart--;
+		}
+		const userIndex = suffixCompanionStart - 1;
+		const tail = queue[userIndex];
+		if (tail?.role !== "user") return false;
+		const replacedText = queuedUserDraftText(tail);
+		if (replacedText === undefined) return false;
+
+		let prefixCompanionStart = userIndex;
+		while (prefixCompanionStart > 0 && isHiddenUserCompanion(queue[prefixCompanionStart - 1])) {
+			prefixCompanionStart--;
+		}
+		const tailImages = queuedImageContent(tail);
+		const imageOffset = tailImages?.length ?? 0;
+		const shiftedPerSendText = shiftQueuedImageMarkers(perSendText, imageOffset);
+		const mergedImages = [...(tailImages ?? []), ...(images ?? [])];
+		const mergedText = `${replacedText}\n${shiftedPerSendText}`;
+		const replacement = withQueuedUserContent(tail, mergedText, mergedImages.length > 0 ? mergedImages : undefined);
+		const shiftedCompanions = companionMessages.map(companion => ({
+			...companion,
+			content:
+				typeof companion.content === "string"
+					? shiftQueuedImageMarkers(companion.content, imageOffset)
+					: companion.content.map(block =>
+							block.type === "text"
+								? { ...block, text: shiftQueuedImageMarkers(block.text, imageOffset) }
+								: block,
+						),
+		}));
+		const nextQueue = [
+			...queue.slice(0, prefixCompanionStart),
+			...queue.slice(prefixCompanionStart, userIndex),
+			...queue.slice(userIndex + 1),
+			...shiftedCompanions,
+			replacement,
+		];
+		this.agent.replaceQueues(
+			mode === "steer" ? nextQueue : [...steering],
+			mode === "followUp" ? nextQueue : [...followUp],
+		);
+		const perSendImageCount = images?.length ?? 0;
+		const replacedImageCount = tailImages?.length ?? 0;
+		const mergedImageCount = mergedImages.length;
+		onQueued?.(mergedText, mergedImageCount, replacedText);
+		if (!onQueued) {
+			this.onLocalQueueCoalesced?.(
+				perSendText,
+				mergedText,
+				replacedText,
+				perSendImageCount,
+				mergedImageCount,
+				replacedImageCount,
+			);
+		}
+		return true;
+	}
 	async #queueUserMessage(
 		text: string,
 		images: ImageContent[] | undefined,
 		mode: "steer" | "followUp" | "aside",
-		timestamp = Date.now(),
+		timestamp?: number,
 		onQueued?: QueuedUserMessageListener,
 		preprocessed?: { images: ImageContent[] | undefined; descriptionNotice: CustomMessage | undefined },
 	): Promise<void> {
@@ -6953,7 +7102,7 @@ export class AgentSession {
 		text: string,
 		images: ImageContent[] | undefined,
 		mode: "steer" | "followUp" | "aside",
-		timestamp: number,
+		timestamp?: number,
 		onQueued?: QueuedUserMessageListener,
 		preprocessed?: { images: ImageContent[] | undefined; descriptionNotice: CustomMessage | undefined },
 	): Promise<void> {
@@ -6992,11 +7141,17 @@ export class AgentSession {
 			if (imageDescriptionNotice) records.push(imageDescriptionNotice);
 			records.push({ role: "user", content, attribution: "user", timestamp: timestamp ?? Date.now() });
 			this.#irc.queueAside(records);
-			// The awaits above (image normalization / vision description) can span the run's
-			// settle, so the run may already be idle by the time the record lands in the aside
-			// queue with no loop left to drain it. Resuming here is a no-op while streaming and
-			// wakes/folds correctly once idle (see #resumeStrandedIrcAsides).
+			// The awaits above can span run settlement; wake/fold the aside once idle.
 			this.#resumeStrandedIrcAsides();
+			return;
+		}
+		const companionMessages = imageDescriptionNotice ? [imageDescriptionNotice] : [];
+		const queueMode = mode === "followUp" ? this.settings.get("followUpMode") : this.settings.get("steeringMode");
+		if (
+			queueMode === "coalescing" &&
+			this.#tryCoalesceQueuedUserMessage(text, normalizedImages, mode, companionMessages, onQueued)
+		) {
+			this.#scheduleIdleQueueDrain();
 			return;
 		}
 		this.#allowQueuedMessageDrainRetry();
@@ -8278,7 +8433,7 @@ export class AgentSession {
 	 * Saves to settings.
 	 */
 	setSteeringMode(mode: QueueMode): void {
-		this.agent.setSteeringMode(CORE_QUEUE_MODE);
+		this.agent.setSteeringMode(coreQueueMode(mode));
 		this.settings.set("steeringMode", mode);
 	}
 
@@ -8287,7 +8442,7 @@ export class AgentSession {
 	 * Saves to settings.
 	 */
 	setFollowUpMode(mode: QueueMode): void {
-		this.agent.setFollowUpMode(CORE_QUEUE_MODE);
+		this.agent.setFollowUpMode(coreQueueMode(mode));
 		this.settings.set("followUpMode", mode);
 	}
 
