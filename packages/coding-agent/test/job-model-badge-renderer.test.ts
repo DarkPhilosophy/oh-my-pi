@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as os from "node:os";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { AsyncJobManager } from "../src/async/job-manager";
@@ -152,7 +153,7 @@ describe("hub jobs task model badges", () => {
 	});
 
 	it("preserves cancellation reasons and resumability in relayed task previews", () => {
-		const reason = "Cancelled by user — the agent is still live; resume through hub.";
+		const reason = `Cancelled by user — ${os.homedir()}/private/file.txt; resume through hub.`;
 		const envelope = `<task-result id="Reader" status="aborted"><abort-reason>${reason}</abort-reason><output>\n(no output)\n</output></task-result>`;
 		const jobText = renderJobText(
 			{
@@ -175,6 +176,8 @@ describe("hub jobs task model badges", () => {
 		for (const text of [jobText, cardText]) {
 			expect(text).toContain("Cancelled by user");
 			expect(text).toContain("resume through hub");
+			expect(text).toContain("~/private/file.txt");
+			expect(text).not.toContain(os.homedir());
 			expect(text).not.toContain("<abort-reason>");
 		}
 	});

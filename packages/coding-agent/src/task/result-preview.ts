@@ -1,5 +1,6 @@
 import { replaceTabs } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { shortenEmbeddedPaths } from "../tools/render-utils";
 
 /** Unwrap transport-only task results for existing transcript preview renderers. */
 export function formatTaskResultPreview(text: string, includeStatus = true): string {
@@ -31,5 +32,5 @@ export function formatTaskResultPreview(text: string, includeStatus = true): str
 	if (fullOutput) body = `${body}\n\nFull output: ${fullOutput}`;
 	if (abortReason) body = `${abortReason}\n\n${body}`;
 	if (includeStatus && status && status !== "completed") body = `Task ${status}\n\n${body}`;
-	return replaceTabs(sanitizeText(body));
+	return replaceTabs(shortenEmbeddedPaths(sanitizeText(body)));
 }
