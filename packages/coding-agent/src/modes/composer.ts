@@ -288,7 +288,7 @@ export class Composer implements TerminalFrameProvider {
 			const visibleHeaderRows = Math.max(0, rows - composed.length);
 			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
 		}
-		const borrowableRows = before.length + active.length;
+		const borrowableRows = headerVisible ? 0 : before.length + active.length;
 		const borrowedViewportRows = transcript.borrowedViewportRowCount();
 		return {
 			history,
@@ -417,7 +417,11 @@ export class Composer implements TerminalFrameProvider {
 		}
 		if (!this.#headerRetired) {
 			const welcome = this.#welcome;
-			if (welcome !== undefined && !welcome.isTranscriptBlockFinalized()) return undefined;
+			if (welcome !== undefined && !welcome.isTranscriptBlockFinalized()) {
+				if (!this.#historyFlush && chromeRows + transcript.liveRowCount(width) < rows) return undefined;
+				// An off-screen intro cannot remain mutable ahead of transcript history.
+				welcome.stopIntro();
+			}
 			// Retire the header only once it is entirely off screen. Transient
 			// editor chrome must not freeze its still-visible tail into history.
 			const renderedHeader = this.#header.render(width);
