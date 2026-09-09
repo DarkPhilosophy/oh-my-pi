@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import type { FirefoxRelayBrowserHandle } from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
 import type {
+	ReadyInfo,
 	RunErrorPayload,
 	WorkerInbound,
 	WorkerOutbound,
@@ -38,6 +39,11 @@ class FakeSelectionWorker implements WorkerHandle {
 		if (!request || request.type !== "select") throw new Error("Expected pending selection");
 		for (const handler of this.#handlers) handler({ type: "select-failed", id: request.id, error });
 	}
+	completeSelection(info: ReadyInfo): void {
+		const request = this.sent.at(-1);
+		if (!request || request.type !== "select") throw new Error("Expected pending selection");
+		for (const handler of this.#handlers) handler({ type: "selected", id: request.id, info });
+	}
 }
 function makeBrowser(): FirefoxRelayBrowserHandle {
 	return {
@@ -65,6 +71,28 @@ describe("Firefox shared worker selection recovery", () => {
 	afterEach(() => {
 		(getTabsMapForTest() as Map<string, WorkerTabSession>).clear();
 	});
+	it("releases an unpublished selected alias when its caller cancels", async () => {
+		const worker = new FakeSelectionWorker();
+		const browser = makeBrowser();
+		const primary = makeTab("primary", browser, worker);
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(primary.name, primary);
+		getFirefoxSharedTabsForTest().set(primary);
+		const abort = new AbortController();
+		const opening = acquireTab("unpublished", browser, {
+			timeoutMs: 1000,
+			dialogs: "accept",
+			signal: abort.signal,
+		});
+		await Bun.sleep(0);
+		worker.completeSelection(primary.info);
+		abort.abort();
+		await expect(opening).rejects.toThrow();
+		expect(worker.sent).toContainEqual({ type: "release-runtime", name: "unpublished" });
+		expect(tabs.has("unpublished")).toBe(false);
+		expect(primary.state).toBe("alive");
+	});
+
 	it("invalidates every alias when acquireTab selection fails recoverably", async () => {
 		const worker = new FakeSelectionWorker();
 		const browser = makeBrowser();

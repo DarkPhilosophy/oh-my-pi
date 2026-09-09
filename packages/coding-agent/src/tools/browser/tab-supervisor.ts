@@ -442,6 +442,9 @@ async function acquireTabImpl(
 			tabs.set(name, tab);
 			return { tab, created: true };
 		} catch (error) {
+			if (opts.signal?.aborted || error instanceof ToolAbortError) {
+				safeSend(firefoxSharedTab, { type: "release-runtime", name });
+			}
 			if (error instanceof RecoverableWorkerError) {
 				await invalidateFirefoxWorker(firefoxSharedTab.worker, "Firefox tab selection failed recoverably");
 			}
