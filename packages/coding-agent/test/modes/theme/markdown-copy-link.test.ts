@@ -90,6 +90,22 @@ describe("Markdown copy link", () => {
 		expect(target).toBeDefined();
 		expect(resolveCopyBlock(target!)).toBe("\tfoo");
 	});
+	it("uses the earliest normalized OSC source before a later exact BEL match", () => {
+		const st = "\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\";
+		const bel = st.replaceAll("\x1b\\", "\x07");
+		const source = `\`\`\`txt\n${st}\n\`\`\`\n\n\`\`\`txt\n${bel}\n\`\`\``;
+		const text = new Markdown(source, 0, 0, getMarkdownTheme()).render(80).join("\n");
+		const copied = [...text.matchAll(/\x1b]8;;(omp-copy:[^\x07]+)\x07/g)].map(match => resolveCopyBlock(match[1]));
+		expect(copied).toEqual([st, bel]);
+	});
+
+	it("strips every quote prefix while preserving lone-CR body line endings", () => {
+		const footer = new Markdown("> ```js\r> a\r> b\r> ```", 0, 0, getMarkdownTheme()).render(80).at(-1) ?? "";
+		const target = footer.match(/\x1b]8;;(omp-copy:[^\x07]+)\x07/)?.[1];
+		expect(target).toBeDefined();
+		expect(resolveCopyBlock(target!)).toBe("a\rb");
+	});
+
 	it("emits clickable copy targets only on platforms with an installed handler path", () => {
 		expect(supportsCopyUrlHandler("linux", {}, "/usr/bin/xdg-mime")).toBe(true);
 		expect(supportsCopyUrlHandler("darwin")).toBe(false);

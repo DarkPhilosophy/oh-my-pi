@@ -2890,13 +2890,16 @@ export class Markdown implements Component {
 		const canonicalRaw = replaceTabs(raw.replace(/\r\n?/g, "\n"));
 		const start = this.#copySourceSearchCursor;
 		const exactStart = expandedSourceText.indexOf(canonicalRaw, start);
-		if (exactStart >= 0) return { start: exactStart, end: exactStart + canonicalRaw.length };
 		const suffix = expandedSourceText.slice(start);
 		OSC8_ST_PREFIX_REGEX.lastIndex = 0;
 		const hasStTerminatedOsc = OSC8_ST_PREFIX_REGEX.test(suffix);
 		OSC8_ST_PREFIX_REGEX.lastIndex = 0;
-		if (!hasStTerminatedOsc) return undefined;
-		return findNormalizedOsc8Span(expandedSourceText, canonicalRaw, start);
+		if (!hasStTerminatedOsc) {
+			return exactStart >= 0 ? { start: exactStart, end: exactStart + canonicalRaw.length } : undefined;
+		}
+		const normalizedSpan = findNormalizedOsc8Span(expandedSourceText, canonicalRaw, start);
+		if (normalizedSpan && (exactStart < 0 || normalizedSpan.start < exactStart)) return normalizedSpan;
+		return exactStart >= 0 ? { start: exactStart, end: exactStart + canonicalRaw.length } : normalizedSpan;
 	}
 
 	#findContainerSourceSpan(raw: string): { start: number; end: number } | undefined {
@@ -2963,7 +2966,7 @@ export class Markdown implements Component {
 		// Marked may include the newline after a closing fence in token.raw. It
 		// belongs to the following block, not to the copy payload; trim only
 		// delimiter-adjacent newlines used for locating this token.
-		const rawForSpan = raw.replace(/^(?:\r?\n)+|(?:\r?\n)+$/g, "");
+		const rawForSpan = raw.replace(/^(?:(?:\r\n?|\n))+|(?:(?:\r\n?|\n))+$/g, "");
 		if (!rawForSpan) return fallback;
 		const { text: expandedSource, sourceOffsets } = this.#ensureExpandedSource();
 		const searchStart = this.#copySourceSearchCursor;
@@ -2974,7 +2977,7 @@ export class Markdown implements Component {
 			// Nested tokens lose their container prefixes, so `raw` is not a
 			// contiguous substring of the source. Locate the opening and actual
 			// closing fence lines instead, preserving the source span's tabs.
-			const rawLines = rawForSpan.split("\n");
+			const rawLines = rawForSpan.split(/\r\n?|\n/);
 			const openLine = rawLines[0]?.trim() ?? "";
 			const openingFence = MARKDOWN_FENCE_LINE.exec(openLine)?.[1];
 			if (!openLine || !openingFence) return fallback;
@@ -3070,10 +3073,12 @@ export class Markdown implements Component {
 		const bodyEnd = sourceRaw[lastLineStart - 1] === "\r" ? lastLineStart - 1 : lastLineStart;
 		const body = sourceRaw.slice(firstLineEnd + firstLineBreakLength, bodyEnd);
 		if (prefixes.length === 0) return body;
-		const parsedLines = fallback.split("\n");
-		return body
-			.split("\n")
-			.map((line, index) => {
+		const parsedLines = fallback.split(/\r\n?|\n/);
+		const bodyParts = body.split(/(\r\n?|\n)/);
+		return bodyParts
+			.map((line, partIndex) => {
+				if (partIndex % 2 === 1) return line;
+				const index = partIndex / 2;
 				// Match Marked's parsed row before accepting an exact recovered
 				// prefix: a shorter closing-fence prefix may also match the body
 				// while leaving container indentation behind.
@@ -3110,7 +3115,6 @@ export class Markdown implements Component {
 						if (replaceTabs(line.slice(offset)) === replaceTabs(parsed)) return line.slice(offset);
 					}
 				}
-
 				const prefix = prefixes.find(candidate => line.startsWith(candidate));
 				if (prefix) return line.slice(prefix.length);
 				if (hasStructuralContainer) return line;
@@ -3118,7 +3122,7 @@ export class Markdown implements Component {
 				const leadingWhitespace = /^[ \t]*/.exec(line)?.[0].length ?? 0;
 				return line.slice(Math.min(leadingWhitespace, whitespaceBudget));
 			})
-			.join("\n");
+			.join("");
 	}
 	/**
 	 * Frame fenced code in the same rounded-box language as the welcome screen.
