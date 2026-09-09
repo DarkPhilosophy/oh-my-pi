@@ -75,7 +75,13 @@ describe("InteractiveMode todo HUD persistence", () => {
 		resetSettingsForTest();
 	});
 
-	it("preserves completed and abandoned tasks in the HUD and session history", () => {
+	function setTodoClearDelay(todoClearDelay: number): void {
+		session.settings.override("tasks.todoClearDelay", todoClearDelay);
+	}
+
+	it("clears closed todos from the panel instantly without mutating session history", async () => {
+		vi.useFakeTimers();
+		setTodoClearDelay(0);
 		const phases: TodoPhase[] = [
 			{
 				name: "Implementation",
@@ -85,11 +91,14 @@ describe("InteractiveMode todo HUD persistence", () => {
 				],
 			},
 		];
+		session.sessionManager.appendCustomEntry("user_todo_edit", { phases });
 		session.setTodoPhases(phases);
-
 		mode.setTodos(session.getTodoPhases());
-		expect(renderTodos(mode)).toContain("done task");
-		expect(renderTodos(mode)).toContain("abandoned task");
+		vi.advanceTimersByTime(0);
+		await session.settleInFlightMessagePersistence();
+		await session.sessionManager.flush();
+		expect(renderTodos(mode)).not.toContain("done task");
+		expect(renderTodos(mode)).not.toContain("abandoned task");
 		expect(session.getTodoPhases()).toEqual(phases);
 		expect(mode.todoPhases).toEqual(phases);
 		mode.toggleTodoExpansion();
@@ -165,33 +174,38 @@ describe("InteractiveMode todo HUD persistence", () => {
 		}
 	});
 
-	it("keeps an unpersisted plan visible rather than dismissing an unrelated snapshot", () => {
+	it("clears closed todos after the configured delay", async () => {
+		setTodoClearDelay(1);
 		vi.useFakeTimers();
 
-		mode.setTodos([{ name: "Implementation", tasks: [{ content: "done task", status: "completed" }] }]);
+		const phases: TodoPhase[] = [{ name: "Implementation", tasks: [{ content: "done task", status: "completed" }] }];
+		session.sessionManager.appendCustomEntry("user_todo_edit", { phases });
+		session.setTodoPhases(phases);
+		mode.setTodos(session.getTodoPhases());
 		expect(renderTodos(mode)).toContain("done task");
 
 		vi.advanceTimersByTime(999);
 		expect(renderTodos(mode)).toContain("done task");
 		expect(renderTodos(mode)).toContain("TODO");
-		vi.advanceTimersByTime(60_000);
-		expect(renderTodos(mode)).toContain("done task");
-		expect(mode.todoPhases.flatMap(phase => phase.tasks).map(task => task.status)).toEqual(["completed"]);
-		mode.toggleTodoExpansion();
-		expect(renderTodos(mode)).toContain("done task");
+
+		vi.advanceTimersByTime(1);
+		await session.settleInFlightMessagePersistence();
+		await session.sessionManager.flush();
+		expect(renderTodos(mode)).not.toContain("done task");
 	});
 
-	it("marks todos complete when subagent reconciliation reports a finished agent", async () => {
+	it("marks reconciled todos complete and auto-dismisses the durable plan", async () => {
 		await replaceMode();
+		setTodoClearDelay(0);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		session.sessionManager.appendCustomEntry("user_todo_edit", {
+			phases: [{ name: "Implementation", tasks: [{ content: "Fix review comments", status: "pending" }] }],
+		});
 		session.setTodoPhases([
 			{ name: "Implementation", tasks: [{ content: "Fix review comments", status: "pending" }] },
 		]);
 		mode.setTodos(session.getTodoPhases());
-
 		await mode.init();
-		// Subagent lifecycle changes coalesce behind a 100ms observer UI sync
-		// timer before todo reconciliation runs; flush it deterministically.
 		vi.useFakeTimers();
 		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
 			id: "ReviewFixer",
@@ -202,8 +216,11 @@ describe("InteractiveMode todo HUD persistence", () => {
 			detached: true,
 		});
 		vi.advanceTimersByTime(100);
-
+		vi.advanceTimersByTime(0);
+		await session.settleInFlightMessagePersistence();
+		await session.sessionManager.flush();
 		expect(session.getTodoPhases()[0]?.tasks[0]?.status).toBe("completed");
+		expect(renderTodos(mode)).toBe("");
 	});
 
 	it("reconciles focused worker todos without overwriting the main session", async () => {
@@ -431,7 +448,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 	it("treats identical canonical todo edits as new snapshots after dismissal", async () => {
 		await replaceMode();
 		vi.useFakeTimers();
-		session.settings.override("tasks.todoClearDelay", 1);
+		setTodoClearDelay(1);
 		const phases: TodoPhase[] = [{ name: "Done", tasks: [{ content: "same task", status: "completed" }] }];
 		const oldSourceEntryId = session.sessionManager.appendCustomEntry("user_todo_edit", { phases });
 		session.setTodoPhases(phases);
@@ -463,7 +480,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 	it("does not carry a pending dismissal into a new session with identical todos", async () => {
 		await replaceMode();
 		vi.useFakeTimers();
-		session.settings.override("tasks.todoClearDelay", 1);
+		setTodoClearDelay(1);
 		const settle = Promise.withResolvers<void>();
 		vi.spyOn(session, "settleInFlightMessagePersistence").mockReturnValue(settle.promise);
 		const phases: TodoPhase[] = [{ name: "Done", tasks: [{ content: "same task", status: "completed" }] }];

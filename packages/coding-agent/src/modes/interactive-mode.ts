@@ -149,6 +149,9 @@ import {
 	todoMatchesAnyDescription,
 	type TodoHudStateEntryData,
 	USER_TODO_EDIT_CUSTOM_TYPE,
+	USER_TODO_EDIT_CUSTOM_TYPE,
+	todoMatchesAnyDescription,
+	type TodoHudStateEntryData,
 } from "../tools/todo";
 import { vocalizer } from "../tts/vocalizer";
 import { applyHyperlinkSetting } from "../tui/hyperlink";
@@ -646,6 +649,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	loopPrompt: string | undefined = undefined;
 	loopLimit: LoopLimitRuntime | undefined = undefined;
 	#loopAutoSubmitTimer: NodeJS.Timeout | undefined;
+	#todoAutoClearTimer: NodeJS.Timeout | undefined;
+	#todoAutoClearGeneration = 0;
 	#modelCycleClearTimer: NodeJS.Timeout | undefined;
 	#nextAppearanceRequestToken = 1;
 	#appearanceRefreshRequest: { token: TerminalAppearanceRequestToken; deadline: number } | undefined;
@@ -2747,6 +2752,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// bound (rather than routing through `setTodos`, which rebinds it to
 		// `viewSession`) keeps a follow-up reconcile in the same window correct.
 		const owner = this.#todoPhasesOwner ?? this.session;
+		owner.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: next });
 		owner.setTodoPhases(next);
 		owner.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: next });
 		this.todoPhases = next;
@@ -2872,6 +2878,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#observerUiSyncNeedsTodoReconcile = false;
 			this.#reconcileTodosWithSubagents();
 		}
+		this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
 		this.#renderTodoList();
 		this.#renderSubagentList();
 		this.ui.requestRender();

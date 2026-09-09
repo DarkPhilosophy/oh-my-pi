@@ -186,6 +186,7 @@ export interface TodoSnapshotIdentity {
 export interface TodoHudStateEntryData extends TodoSnapshotIdentity {
 	visibility: TodoHudVisibility;
 }
+
 function todoPhasesFingerprint(phases: readonly TodoPhase[]): string {
 	return JSON.stringify(
 		phases.map(phase => ({
