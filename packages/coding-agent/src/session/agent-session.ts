@@ -11000,11 +11000,16 @@ export class AgentSession {
 	}
 
 	/**
+	 * Runtime advisor veto inherited by newly spawned and revived descendants.
+	 */
+	get advisorScope(): AdvisorScope {
+		return this.#advisors.scope;
+	}
+
+	/**
 	 * Whether a live advisor agent is attached to this session. True only when
-	 * `advisor.enabled` is set for this session (subagents opt in per agent via
-	 * frontmatter `advisor` / `task.agentAdvisor`) AND a model resolved for the
-	 * `advisor` role — i.e. the actual runtime exists, not merely the setting.
-	 * Drives the status-line badge and `/dump advisor`.
+	 * advisor use is enabled for this session, no ancestor has vetoed it, and a
+	 * model resolved for the `advisor` role.
 	 */
 	isAdvisorActive(): boolean {
 		return this.#advisors.isAdvisorActive();

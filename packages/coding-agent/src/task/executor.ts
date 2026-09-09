@@ -397,6 +397,8 @@ export interface ExecutorOptions {
 	getApiKey?: CreateAgentSessionOptions["getApiKey"];
 	worktree?: string;
 	agent: AgentDefinition;
+	/** Live parent advisor veto, retained across parking and revival. */
+	advisorScope?: CreateAgentSessionOptions["advisorScope"];
 	task: string;
 	assignment?: string;
 	/** Shared background from the task call (`task.batch`), rendered into the subagent's system prompt. */
@@ -3475,6 +3477,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				cwd: worktree ?? cwd,
 				additionalDirectories: worktree !== undefined ? undefined : options.additionalDirectories,
 				authStorage,
+				advisorScope: options.advisorScope,
 				modelRegistry,
 				getApiKey: options.getApiKey,
 				settings: subagentSettings,

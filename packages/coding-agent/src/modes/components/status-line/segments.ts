@@ -274,14 +274,10 @@ const modelSegment: StatusLineSegment = {
 			const eyeOpen = theme.icon.advisor;
 			const eyeClosed = theme.icon.advisorClosed || theme.icon.advisor;
 			if (!nerd) {
-				// Closed eye once every advisor has finished reviewing the yielded
-				// turn — no more comments until a new primary turn starts.
 				const allYielded = advisorStats.advisors.every(a => a.yielded);
 				const advisorIcon = allYielded ? eyeClosed : eyeOpen;
 				if (advisorIcon) content += theme.fg(badgeColor, ` ${advisorIcon}`);
 			}
-			// Per-advisor roster detail: one glyph per advisor, capped at four,
-			// space-separated inside parentheses: `( )`.
 			const advisorGlyphs: string[] = [];
 			for (const a of advisorStats.advisors.slice(0, 4)) {
 				switch (a.status) {
@@ -433,13 +429,6 @@ const pathSegment: StatusLineSegment = {
 	id: "path",
 	render(ctx) {
 		const opts = ctx.options.path ?? {};
-		if (ctx.startupPlaceholder) {
-			return {
-				content: theme.fg("statusLinePath", withIcon(theme.icon.folder, STARTUP_PLACEHOLDER)),
-				visible: true,
-			};
-		}
-
 		const stripPrefix = opts.stripWorkPrefix !== false;
 
 		// Linked git worktree: the on-disk path nests the worktree base, the
@@ -449,12 +438,14 @@ const pathSegment: StatusLineSegment = {
 		if (stripPrefix && ctx.worktree) {
 			const { projectName, worktreeName } = ctx.worktree;
 			const label = ctx.git.branch === worktreeName ? projectName : `${projectName}/${worktreeName}`;
-			const text = fileHyperlink(getProjectDir(), clampPathLength(label, opts.maxLength ?? 40));
+			const text = ctx.startupPlaceholder
+				? STARTUP_PLACEHOLDER
+				: fileHyperlink(getProjectDir(), clampPathLength(label, opts.maxLength ?? 40));
 			const content = withIcon(theme.icon.worktree, text);
 			return { content: theme.fg("statusLinePath", content), visible: true };
 		}
 
-		const projectDir = ctx.activeRepo?.cwd ?? ctx.projectDir;
+		const projectDir = ctx.activeRepo?.cwd ?? getProjectDir();
 		const { scratch, relative } = classifyProjectDir(projectDir);
 		let pwd = projectDir;
 
@@ -474,7 +465,7 @@ const pathSegment: StatusLineSegment = {
 
 		const showScratchIcon = scratch && stripPrefix;
 		const icon = showScratchIcon ? theme.icon.scratchFolder : theme.icon.folder;
-		const text = `${fileHyperlink(projectDir, pwd)}${repoSuffix}`;
+		const text = ctx.startupPlaceholder ? STARTUP_PLACEHOLDER : `${fileHyperlink(projectDir, pwd)}${repoSuffix}`;
 		const content = withIcon(icon, text);
 		return { content: theme.fg("statusLinePath", content), visible: true };
 	},

@@ -35,14 +35,7 @@ import type {
 import { isUsageLimitOutcome, resolveModelServiceTier, streamSimple } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import {
-	extractHttpStatusFromError,
-	extractRetryHint,
-	logger,
-	popLoopPhase,
-	prompt,
-	pushLoopPhase,
-} from "@oh-my-pi/pi-utils";
+import { extractHttpStatusFromError, extractRetryHint, logger, prompt } from "@oh-my-pi/pi-utils";
 import {
 	ADVISOR_DEFAULT_TOOL_NAMES,
 	ADVISOR_DEFAULT_BUDGET_PER_UPDATE,
@@ -208,8 +201,6 @@ export class AdvisorScope {
 
 	subscribe(listener: () => void): () => void {
 		this.#listeners.add(listener);
-		// Subscribe through ancestors directly: parking a parent must not detach
-		// its still-live descendants from the root's veto.
 		const unsubscribeParent = this.parent?.subscribe(listener);
 		return () => {
 			this.#listeners.delete(listener);
@@ -346,12 +337,11 @@ export class SessionAdvisors {
 	readonly #host: SessionAdvisorsHost;
 	#advisorRequested: boolean;
 	readonly scope: AdvisorScope;
-	readonly #unsubscribeScope: () => void;
-
 	get #advisorEnabled(): boolean {
 		return this.#advisorRequested && !this.scope.suppressed;
 	}
-	#advisorTools: AgentTool[] | undefined;
+	readonly #unsubscribeScope: () => void;
+	#advisorTools: SessionAdvisorsOptions["tools"];
 	#advisorCreateGrepTool: SessionAdvisorsOptions["createGrepTool"];
 	#advisorCreateEditTool: SessionAdvisorsOptions["createEditTool"];
 	#advisorGetToolContext: SessionAdvisorsOptions["getToolContext"];
@@ -416,7 +406,6 @@ export class SessionAdvisors {
 		this.#advisorPrimaryTurnsCompleted++;
 		for (const advisor of this.#advisors) {
 			if (advisor.runtime.disposed) continue;
-			pushLoopPhase(`advisor:turn-end:${advisor.name}`);
 			// Only the terminal primary boundary owns the deferred flush. Continuing
 			// tool turns must keep partial-work critiques withheld.
 			if (willContinue !== true) advisor.adviseTool.beginUpdate(false);
@@ -424,8 +413,6 @@ export class SessionAdvisors {
 				advisor.runtime.onTurnEnd(messages, { willContinue });
 			} catch (error) {
 				logger.warn("advisor onTurnEnd threw; delta dropped", { advisor: advisor.name, err: String(error) });
-			} finally {
-				popLoopPhase();
 			}
 		}
 		const syncBacklog = this.#host.settings.get("advisor.syncBacklog");
@@ -483,12 +470,6 @@ export class SessionAdvisors {
 		this.#stopAdvisorRuntime();
 	}
 
-	dispose(): void {
-		this.#unsubscribeScope();
-		// An inherited off may already be closing recorders; retain that barrier.
-		if (this.#advisors.length > 0) this.#stopAdvisorRuntime();
-	}
-
 	/**
 	 * Pause advisor work while old-session recorder feeds remain attached, then
 	 * detach only after any active prompt has settled.
@@ -508,6 +489,10 @@ export class SessionAdvisors {
 			closes.push(advisor.recorderClosed);
 		}
 		await Promise.all(closes);
+	}
+	dispose(): void {
+		this.#unsubscribeScope();
+		if (this.#advisors.length > 0) this.#stopAdvisorRuntime();
 	}
 
 	/** Reattach recorder feeds and resume work after a rolled-back or preserving transition. */
@@ -1492,29 +1477,19 @@ export class SessionAdvisors {
 		const errorId = assistantFailure
 			? AIError.classifyMessage({
 					api: currentModel.api,
-					// Provider + model identity are REQUIRED for the provider-scoped
-					// account-policy patterns (e.g. Codex refusing a model on a ChatGPT
-					// account). Without them the denial classifies as a plain invalid
-					// request, so the advisor never rotates to a sibling credential that
-					// does have the model and stays stuck on the first account.
-					provider: currentModel.provider,
-					model: currentModel.id,
 					errorId: assistantFailure.errorId,
 					errorMessage: message,
 					errorStatus: assistantFailure.errorStatus,
 				})
-			: // Same provider/model identity requirement as above: a denial that
-				// arrives as a raw error (no assistant message was committed) must
-				// still classify as an account policy so the advisor rotates.
-				AIError.classify(error, currentModel.api, {
-					provider: currentModel.provider,
-					modelId: currentModel.id,
-				});
+			: AIError.classify(error, currentModel.api);
 		if (AIError.is(errorId, AIError.Flag.Abort) || AIError.is(errorId, AIError.Flag.UserInterrupt)) return false;
-		if (
-			AIError.is(errorId, AIError.Flag.ContextOverflow) ||
-			(assistantFailure && AIError.isContextOverflow(assistantFailure, currentModel.contextWindow ?? 0))
-		) {
+		// Text-ambiguous overflows waive the veto; usage-backed do not — see AIError.isTextAmbiguousContextOverflow (#9235).
+		const contextWindow = currentModel.contextWindow ?? 0;
+		const overflowVeto =
+			(AIError.is(errorId, AIError.Flag.ContextOverflow) ||
+				(assistantFailure !== undefined && AIError.isContextOverflow(assistantFailure, contextWindow))) &&
+			!AIError.isTextAmbiguousContextOverflow(errorId, assistantFailure, contextWindow);
+		if (overflowVeto) {
 			return false;
 		}
 
@@ -1894,10 +1869,7 @@ export class SessionAdvisors {
 		return true;
 	}
 	/**
-	 * Enable or disable the advisor for this session. The setting is overridden for the session,
-	 * and the runtime is started or stopped to match.
-	 *
-	 * @returns true when the advisor is actively running after the call.
+	 * Enable or disable the advisor for this session, subject to ancestor veto.
 	 */
 	setAdvisorEnabled(enabled: boolean): boolean {
 		this.#advisorRequested = enabled;
@@ -1912,8 +1884,6 @@ export class SessionAdvisors {
 			return this.#buildAdvisorRuntime(true);
 		}
 		if (this.#advisors.length > 0) this.#stopAdvisorRuntime();
-		// Effective suppression also fires for an inherited parent veto; remove
-		// advisor cards already queued on the primary while retaining user input.
 		this.#host.extractQueuedAdvisorCards();
 		this.#host.dropPendingAdvisorCards();
 		return false;

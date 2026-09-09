@@ -124,6 +124,7 @@ export function createPersistedSubagentReviverFactory(
 			const mcpManager = restrictToolNames ? undefined : MCPManager.instance();
 			const mcpProxyTools = mcpManager ? createMCPProxyTools(mcpManager) : [];
 			const { session } = await createAgentSession({
+				advisorScope: ctx.session.advisorScope,
 				cwd: ctx.session.sessionManager.getCwd(),
 				authStorage: ctx.authStorage,
 				// Revived agents join the root session tree, so their observability

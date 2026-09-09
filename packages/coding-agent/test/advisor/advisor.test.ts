@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { type AgentMessage, type AgentTelemetryConfig, Tokenizer } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import {
 	AdviseTool,
@@ -27,9 +28,8 @@ import {
 } from "../../src/advisor";
 import type { ModelRegistry } from "../../src/config/model-registry";
 import { Settings } from "../../src/config/settings";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../../src/modes/components/advisor-config";
 import { loadTheme } from "../../src/modes/theme/loader";
+import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../../src/modes/components/advisor-config";
 import { createAdvisorMessageCard } from "../../src/modes/components/advisor-message";
 import { getThemeByName, setThemeInstance } from "../../src/modes/theme/theme";
 import { SecretObfuscator } from "../../src/secrets/obfuscator";
@@ -580,20 +580,20 @@ describe("advisor", () => {
 				injectIdle: async messages => {
 					injected.push(...messages);
 				},
-				scheduleIdleFlush: () => { },
+				scheduleIdleFlush: () => {},
 			});
 			yq.register<AdvisorNote>("advisor", {
 				build: entries =>
 					entries.length === 0
 						? null
 						: ({
-							role: "custom",
-							customType: "advisor",
-							display: true,
-							attribution: "agent",
-							timestamp: Date.now(),
-							content: formatAdvisorBatchContent(entries),
-						} as AgentMessage),
+								role: "custom",
+								customType: "advisor",
+								display: true,
+								attribution: "agent",
+								timestamp: Date.now(),
+								content: formatAdvisorBatchContent(entries),
+							} as AgentMessage),
 			});
 
 			yq.enqueue("advisor", { note: "first note" });
@@ -614,7 +614,7 @@ describe("advisor", () => {
 			let scheduled = 0;
 			const yq = new YieldQueue({
 				isStreaming: () => false,
-				injectIdle: async () => { },
+				injectIdle: async () => {},
 				scheduleIdleFlush: () => {
 					scheduled++;
 				},
@@ -636,8 +636,8 @@ describe("advisor", () => {
 		it("clear(kind) drops only that kind's queued entries", () => {
 			const yq = new YieldQueue({
 				isStreaming: () => false,
-				injectIdle: async () => { },
-				scheduleIdleFlush: () => { },
+				injectIdle: async () => {},
+				scheduleIdleFlush: () => {},
 			});
 			yq.register<{ note: string }>("advisor", {
 				build: entries => (entries.length === 0 ? null : ({ role: "custom", content: "x" } as AgentMessage)),
@@ -1435,8 +1435,8 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(input);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 		}
@@ -1453,14 +1453,14 @@ describe("advisor", () => {
 					if (promptCalls === 1) await firstPromptPromise;
 					else finishSecondPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "first", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 
@@ -1499,14 +1499,14 @@ describe("advisor", () => {
 						stopReason: "stop",
 					} as AssistantMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "work", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				notifyIdle: () => idleNotifications.push(1),
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -1533,13 +1533,13 @@ describe("advisor", () => {
 					promptStarted.resolve();
 					await releasePrompt.promise;
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			});
 
 			runtime.onTurnEnd();
@@ -1565,13 +1565,13 @@ describe("advisor", () => {
 					promptStarted.resolve();
 					await releasePrompt.promise;
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			});
 
 			runtime.onTurnEnd();
@@ -1598,7 +1598,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 
@@ -1652,14 +1652,14 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "first", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				maintainContext: async () => {
 					maintainCalls++;
 					if (maintainCalls === 1) {
@@ -1703,8 +1703,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [
@@ -1712,7 +1712,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 				maintainContext: async () => {
 					maintainCalls++;
@@ -1739,378 +1739,6 @@ describe("advisor", () => {
 			expect(promptText(promptInputs[0])).not.toContain("tok_abc123");
 		});
 
-		it("renders a DEFERRED large late delta before coalescing it into the batch", async () => {
-			// Regression for the codex finding on the size-gated defer path: a
-			// large delta (>100 messages) arriving while an earlier batch awaits
-			// maintainContext ships with a stale renderRevision and EMPTY text.
-			// The coalescing merge used to concatenate that placeholder text
-			// verbatim — the advisor prompt silently omitted the whole turn while
-			// its turns were counted and drained. The late delta must be
-			// chunk-rendered from its raw messages before merging.
-			const promptInputs: string[] = [];
-			const { promise: firstMaintainStarted, resolve: startFirstMaintain } = Promise.withResolvers<void>();
-			const { promise: finishFirstMaintain, resolve: releaseFirstMaintain } = Promise.withResolvers<boolean>();
-			const { promise: promptStarted, resolve: startPrompt } = Promise.withResolvers<void>();
-			let maintainCalls = 0;
-			const agent: AdvisorAgent = {
-				prompt: async input => {
-					promptInputs.push(promptText(input));
-					startPrompt();
-				},
-				abort: () => { },
-				reset: () => { },
-				state: { messages: [] },
-			};
-			const messages: AgentMessage[] = [{ role: "user", content: "first", timestamp: 1 } as AgentMessage];
-			const host: AdvisorRuntimeHost = {
-				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
-				maintainContext: async () => {
-					maintainCalls++;
-					if (maintainCalls === 1) {
-						startFirstMaintain();
-						return await finishFirstMaintain;
-					}
-					return false;
-				},
-			};
-			const runtime = new AdvisorRuntime(agent, host);
-
-			runtime.onTurnEnd();
-			await firstMaintainStarted;
-
-			// A LARGE turn (count > RENDER_CHUNK_MESSAGES) arrives while the
-			// first maintainContext is still awaiting: it queues deferred.
-			for (let i = 0; i < 120; i++) {
-				messages.push({ role: "user", content: `late-large-${i}`, timestamp: 2 + i } as AgentMessage);
-			}
-			runtime.onTurnEnd();
-
-			releaseFirstMaintain(false);
-			await promptStarted;
-
-			// One coalesced prompt containing BOTH the first delta and the full
-			// content of the deferred large delta — nothing silently dropped.
-			expect(promptInputs).toHaveLength(1);
-			expect(promptInputs[0]).toContain("first");
-			expect(promptInputs[0]).toContain("late-large-0");
-			expect(promptInputs[0]).toContain("late-large-119");
-			await settleUntil(() => runtime.backlog === 0);
-			expect(runtime.backlog).toBe(0);
-		});
-
-		it("defers and slices a large MULTIBYTE delta with secrets configured, delivering it intact", async () => {
-			// Pins the slice-bound contract for non-ASCII payloads: the size
-			// probe measures string length (UTF-16 code units) — the unit
-			// synchronous regex scanning and formatting actually cost in — so a
-			// CJK-heavy delta (~3 UTF-8 bytes per unit) still trips the deferred
-			// path, gets obfuscated and formatted in bounded slices, and arrives
-			// complete: first and last messages, secret redacted throughout.
-			const promptInputs: string[] = [];
-			const agent: AdvisorAgent = {
-				prompt: async input => {
-					promptInputs.push(promptText(input));
-				},
-				abort: () => { },
-				reset: () => { },
-				state: { messages: [] },
-			};
-			// 12 messages x ~40K CJK units ≈ 480K units total: > FAST_RENDER_MAX_CHARS
-			// while staying far under the 100-message count gate.
-			const cjk = "秘密のデータ漏洩防止テスト".repeat(3_400);
-			const messages: AgentMessage[] = Array.from(
-				{ length: 12 },
-				(_, i) =>
-					({
-						role: "user",
-						content: `multibyte-${i} sk-supersecret-token ${cjk}`,
-						timestamp: i + 1,
-					}) as AgentMessage,
-			);
-			const obfuscator = {
-				hasSecrets: () => true,
-				obfuscate: (text: string) => text.replaceAll("sk-supersecret-token", "[REDACTED]"),
-				collectRegexSecretValuesForObfuscation: () => [],
-				stripUnsafeFriendlyPlaceholderPrefixes: (text: string) => text,
-			} as unknown as NonNullable<AdvisorRuntimeHost["obfuscator"]>;
-			const host: AdvisorRuntimeHost = {
-				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
-				obfuscator,
-			};
-			const runtime = new AdvisorRuntime(agent, host, 0);
-			runtime.onTurnEnd(messages);
-			// The deferred path renders in the drain loop; nothing prompts
-			// synchronously at this tick.
-			expect(promptInputs).toHaveLength(0);
-			await settleUntil(() => promptInputs.length >= 1, 10_000);
-			expect(promptInputs).toHaveLength(1);
-			expect(promptInputs[0]).toContain("multibyte-0 ");
-			expect(promptInputs[0]).toContain("multibyte-11 ");
-			// Secrets redacted across every slice; raw token never leaks.
-			expect(promptInputs[0]).toContain("[REDACTED]");
-			expect(promptInputs[0]).not.toContain("sk-supersecret-token");
-			runtime.dispose();
-		}, 15_000);
-
-		it("defers a delta whose bulk hides in NESTED tool-call arguments", async () => {
-			// Regression: the size probe used a depth cutoff that skipped
-			// arrays/objects below `arguments`, so a batch-edit style call with
-			// multi-MB `arguments.edits[].newText` payloads was classified as
-			// small and serialized synchronously by the formatter's
-			// primaryArg() JSON.stringify fallback. The probe is now
-			// depth-unbounded (with a cycle guard): the nested payload must
-			// trip the deferred path and still arrive rendered.
-			const promptInputs: string[] = [];
-			const agent: AdvisorAgent = {
-				prompt: async input => {
-					promptInputs.push(promptText(input));
-				},
-				abort: () => { },
-				reset: () => { },
-				state: { messages: [] },
-			};
-			const edits = Array.from({ length: 8 }, (_, i) => ({
-				path: `src/file-${i}.ts`,
-				newText: `nested-payload-${i} ${"x".repeat(64 * 1024)}`,
-			}));
-			const messages: AgentMessage[] = [
-				{
-					role: "assistant",
-					content: [{ type: "toolCall", id: "batch-1", name: "batch_edit", arguments: { edits } }],
-					timestamp: 1,
-				} as unknown as AgentMessage,
-			];
-			const host: AdvisorRuntimeHost = {
-				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
-			};
-			const runtime = new AdvisorRuntime(agent, host, 0);
-			runtime.onTurnEnd(messages);
-			// The nested bulk must be visible to the probe: no synchronous
-			// render at this tick.
-			expect(promptInputs).toHaveLength(0);
-			await settleUntil(() => promptInputs.length >= 1, 10_000);
-			expect(promptInputs).toHaveLength(1);
-			expect(promptInputs[0]).toContain("batch_edit");
-			runtime.dispose();
-		}, 15_000);
-
-		it("defers a delta whose bulk is a NON-STRING numeric argument payload", async () => {
-			// Regression: the size probe charged zero for numbers/booleans/null,
-			// so a tool call like `{ values: [1, 2, ...] }` with a multi-MB
-			// numeric payload and no primary string arg was classified small —
-			// and primaryArg()'s JSON.stringify fallback serialized it
-			// synchronously on the turn-end path. Primitives now charge their
-			// conservative JSON width: the payload must defer (no synchronous
-			// render at the turn-end tick) and still deliver.
-			const promptInputs: string[] = [];
-			const agent: AdvisorAgent = {
-				prompt: async input => {
-					promptInputs.push(promptText(input));
-				},
-				abort: () => { },
-				reset: () => { },
-				state: { messages: [] },
-			};
-			// 40K numbers x 25 chars conservative width = ~1M estimated units.
-			const values = Array.from({ length: 40_000 }, (_, i) => i * 1_000_003);
-			const messages: AgentMessage[] = [
-				{
-					role: "assistant",
-					content: [{ type: "toolCall", id: "num-1", name: "bulk_ingest", arguments: { values } }],
-					timestamp: 1,
-				} as unknown as AgentMessage,
-			];
-			const host: AdvisorRuntimeHost = {
-				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
-			};
-			const runtime = new AdvisorRuntime(agent, host, 0);
-			runtime.onTurnEnd(messages);
-			expect(promptInputs).toHaveLength(0);
-			await settleUntil(() => promptInputs.length >= 1, 10_000);
-			expect(promptInputs).toHaveLength(1);
-			expect(promptInputs[0]).toContain("bulk_ingest");
-			runtime.dispose();
-		}, 15_000);
-
-		it("defers a delta whose bulk is one SHARED object referenced by two arguments", async () => {
-			// Regression: the probe's visited-set skipped already-seen objects,
-			// but the formatter's JSON fallback serializes EVERY occurrence of
-			// a shared (acyclic) reference. A ~150K-unit object hung on two
-			// argument keys was estimated once (~150K < budget) while the sync
-			// format cost ~300K — over the stall gate. Shared refs now charge
-			// per occurrence (only true cycles are conservatively oversized),
-			// so this delta must defer and still deliver exactly once.
-			const promptInputs: string[] = [];
-			const agent: AdvisorAgent = {
-				prompt: async input => {
-					promptInputs.push(promptText(input));
-				},
-				abort: () => { },
-				reset: () => { },
-				state: { messages: [] },
-			};
-			const shared = { blob: "s".repeat(150 * 1024) };
-			const messages: AgentMessage[] = [
-				{
-					role: "assistant",
-					content: [
-						{
-							type: "toolCall",
-							id: "shared-1",
-							name: "dual_ref",
-							arguments: { first: shared, second: shared },
-						},
-					],
-					timestamp: 1,
-				} as unknown as AgentMessage,
-			];
-			const host: AdvisorRuntimeHost = {
-				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
-			};
-			const runtime = new AdvisorRuntime(agent, host, 0);
-			runtime.onTurnEnd(messages);
-			expect(promptInputs).toHaveLength(0);
-			await settleUntil(() => promptInputs.length >= 1, 10_000);
-			expect(promptInputs).toHaveLength(1);
-			expect(promptInputs[0]).toContain("dual_ref");
-			runtime.dispose();
-		}, 15_000);
-
-		it("defers a delta whose bulk is a WIDE object of keys with empty values", async () => {
-			// Regression: the probe charged only values, but the JSON fallback
-			// serializes keys and syntax too — 30K keys mapping to empty
-			// strings cost ~0 in the old probe while stringifying well past
-			// the stall gate. Keys now charge `key.length + 4`; the delta must
-			// defer and still deliver.
-			const promptInputs: string[] = [];
-			const agent: AdvisorAgent = {
-				prompt: async input => {
-					promptInputs.push(promptText(input));
-				},
-				abort: () => { },
-				reset: () => { },
-				state: { messages: [] },
-			};
-			const wide = Object.fromEntries(Array.from({ length: 30_000 }, (_, i) => [`config_key_${i}`, ""]));
-			const messages: AgentMessage[] = [
-				{
-					role: "assistant",
-					content: [{ type: "toolCall", id: "wide-1", name: "wide_config", arguments: { entries: wide } }],
-					timestamp: 1,
-				} as unknown as AgentMessage,
-			];
-			const host: AdvisorRuntimeHost = {
-				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
-			};
-			const runtime = new AdvisorRuntime(agent, host, 0);
-			runtime.onTurnEnd(messages);
-			expect(promptInputs).toHaveLength(0);
-			await settleUntil(() => promptInputs.length >= 1, 10_000);
-			expect(promptInputs).toHaveLength(1);
-			expect(promptInputs[0]).toContain("wide_config");
-			runtime.dispose();
-		}, 15_000);
-
-		it("defers a delta whose bulk is a wide array of EMPTY strings", async () => {
-			// Regression: array elements paid no separator cost, so 200K empty
-			// strings estimated ~0 while join(', ')/JSON output several
-			// hundred KB on the sync path. Elements now charge a flat
-			// separator width; the delta must defer and still deliver.
-			const promptInputs: string[] = [];
-			const agent: AdvisorAgent = {
-				prompt: async input => {
-					promptInputs.push(promptText(input));
-				},
-				abort: () => { },
-				reset: () => { },
-				state: { messages: [] },
-			};
-			const values = Array.from({ length: 200_000 }, () => "");
-			const messages: AgentMessage[] = [
-				{
-					role: "assistant",
-					content: [{ type: "toolCall", id: "empties-1", name: "bulk_list", arguments: { values } }],
-					timestamp: 1,
-				} as unknown as AgentMessage,
-			];
-			const host: AdvisorRuntimeHost = {
-				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
-			};
-			const runtime = new AdvisorRuntime(agent, host, 0);
-			runtime.onTurnEnd(messages);
-			expect(promptInputs).toHaveLength(0);
-			await settleUntil(() => promptInputs.length >= 1, 10_000);
-			expect(promptInputs).toHaveLength(1);
-			expect(promptInputs[0]).toContain("bulk_list");
-			runtime.dispose();
-		}, 15_000);
-
-		it("delivers a small prefix plus an oversized delayed EXPANDED EDIT DIFF exactly once", async () => {
-			// Regression for slice-budget accounting: a tiny edit toolCall
-			// inlines its (much later, multi-hundred-KB) toolResult via the
-			// shared cross-slice index. Only `details.diff` renders verbatim
-			// (under expandEditDiffs) — plain result content stays a summary
-			// line — so the payload rides the diff. The result's cost is
-			// charged to the calling slice and the accumulated prefix is
-			// flushed BEFORE the over-budget pair is admitted; the output must
-			// contain the prefix, the call line, and the diff payload exactly
-			// once (inlined at the call, consumed at its own position).
-			const promptInputs: string[] = [];
-			const agent: AdvisorAgent = {
-				prompt: async input => {
-					promptInputs.push(promptText(input));
-				},
-				abort: () => { },
-				reset: () => { },
-				state: { messages: [] },
-			};
-			const prefix: AgentMessage[] = Array.from(
-				{ length: 110 },
-				(_, i) => ({ role: "user", content: `prefix-${i}`, timestamp: i + 1 }) as AgentMessage,
-			);
-			const call = {
-				role: "assistant",
-				content: [{ type: "toolCall", id: "huge-1", name: "edit", arguments: { path: "big.ts" } }],
-				timestamp: 200,
-			} as unknown as AgentMessage;
-			// An edit result whose expanded diff (rendered verbatim under
-			// expandEditDiffs) carries the multi-hundred-KB payload.
-			const result = {
-				role: "toolResult",
-				toolCallId: "huge-1",
-				toolName: "edit",
-				content: [{ type: "text", text: "ok" }],
-				details: { diff: `RESULT-MARKER-ONCE\n+${"y".repeat(400 * 1024)}` },
-				isError: false,
-				timestamp: 201,
-			} as unknown as AgentMessage;
-			const messages: AgentMessage[] = [...prefix, call, result];
-			const host: AdvisorRuntimeHost = {
-				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
-			};
-			const runtime = new AdvisorRuntime(agent, host, 0);
-			runtime.onTurnEnd(messages);
-			expect(promptInputs).toHaveLength(0);
-			await settleUntil(() => promptInputs.length >= 1, 10_000);
-			expect(promptInputs).toHaveLength(1);
-			const rendered = promptInputs[0]!;
-			expect(rendered).toContain("prefix-0");
-			expect(rendered).toContain("prefix-109");
-			// The call renders as a tool line with the diff fenced beneath it.
-			expect(rendered).toContain("→ edit(");
-			expect(rendered).toContain("```diff");
-			const occurrences = rendered.split("RESULT-MARKER-ONCE").length - 1;
-			expect(occurrences).toBe(1);
-			runtime.dispose();
-		}, 15_000);
-
 		it("caps maintainContext calls per drain cycle when arrivals never go stable", async () => {
 			// Regression guard for MAX_COALESCE_ROUNDS=3: during the first drain cycle,
 			// each maintainContext call pushes a new turn (queue never goes stable on its
@@ -2122,7 +1750,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "t0", timestamp: 0 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				maintainContext: async () => {
 					maintainCalls++;
 					// Only push new turns during the FIRST drain cycle (first 3 calls)
@@ -2143,8 +1771,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					if (promptInputs.length === 1) startPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2173,7 +1801,7 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					resetCount++;
 				},
@@ -2182,7 +1810,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "turn1", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				maintainContext: async () => {
 					maintainCalls++;
 					if (maintainCalls === 1) {
@@ -2228,14 +1856,14 @@ describe("advisor", () => {
 				prompt: async () => {
 					finishPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "t1", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				maintainContext: async () => {
 					maintainCalls++;
 					if (maintainCalls === 1) {
@@ -2286,14 +1914,14 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "hello", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				beginAdvisorUpdate: inProgress => updateStates.push(inProgress),
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2315,14 +1943,14 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "done", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				beginAdvisorUpdate: inProgress => updateStates.push(inProgress),
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2344,14 +1972,14 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "first", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				maintainContext: async () => {
 					throw new Error("maintenance failed");
 				},
@@ -2373,8 +2001,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [
@@ -2383,7 +2011,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 			runtime.onTurnEnd();
@@ -2402,7 +2030,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: `token ${secret}`, timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2425,7 +2053,7 @@ describe("advisor", () => {
 			];
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			});
 
@@ -2455,7 +2083,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2484,7 +2112,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2516,7 +2144,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2553,7 +2181,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2594,7 +2222,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2626,7 +2254,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2657,7 +2285,7 @@ describe("advisor", () => {
 			];
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			});
 
@@ -2688,7 +2316,7 @@ describe("advisor", () => {
 			];
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			});
 			runtime.onTurnEnd();
@@ -2717,7 +2345,7 @@ describe("advisor", () => {
 			];
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			});
 			runtime.onTurnEnd();
@@ -2752,7 +2380,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2789,7 +2417,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2820,7 +2448,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2855,7 +2483,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2907,7 +2535,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2942,7 +2570,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "first tok_abc123", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2981,7 +2609,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -3040,7 +2668,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -3077,7 +2705,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "later tok_abc123", timestamp: 2 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -3118,7 +2746,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -3151,7 +2779,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -3185,7 +2813,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -3212,8 +2840,8 @@ describe("advisor", () => {
 					if (promptCalls === 1) finishFirst();
 					else finishSecond();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const rule =
@@ -3221,7 +2849,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 
@@ -3274,8 +2902,8 @@ describe("advisor", () => {
 					promptCalls++;
 					state.error = promptCalls === 1 ? "transient provider 500" : undefined;
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state,
 			};
 			const rule =
@@ -3283,7 +2911,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 
@@ -3338,7 +2966,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 			runtime.onTurnEnd();
@@ -3364,7 +2992,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 			runtime.onTurnEnd();
@@ -3386,14 +3014,14 @@ describe("advisor", () => {
 					promptCalls++;
 					if (promptCalls === 2) finishSecond();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 			runtime.onTurnEnd();
@@ -3426,7 +3054,7 @@ describe("advisor", () => {
 					if (promptCalls === 1) finishFirst();
 					else finishSecond();
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					resetCount++;
 				},
@@ -3436,7 +3064,7 @@ describe("advisor", () => {
 			let shouldResetContext = false;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				maintainContext: async incoming => {
 					// The host receives the pending update itself and sizes it with its
 					// own model's tokenizer, so it must arrive as a non-empty message.
@@ -3471,7 +3099,7 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(input);
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					resetCount++;
 				},
@@ -3483,7 +3111,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "bbb", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				maintainContext: async () => {
 					maintenanceCalls++;
 					if (maintenanceCalls !== 1) return false;
@@ -3526,7 +3154,7 @@ describe("advisor", () => {
 			let shouldResetContext = false;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				maintainContext: async () => shouldResetContext,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -3568,7 +3196,7 @@ describe("advisor", () => {
 					promptCalls++;
 					state.error = promptCalls === 1 ? overflowMessage : undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					resetCount++;
 					state.messages.length = 0;
@@ -3586,7 +3214,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			runtime.seedTo(messages.length);
@@ -3615,70 +3243,6 @@ describe("advisor", () => {
 			expect(resetCount).toBe(1);
 		});
 
-		it("preserves an OVERSIZED batch intact across a provider-overflow recovery retry", async () => {
-			// The recovery branch re-renders the same bounded raw batch after a
-			// context reset; that batch can carry the same multi-hundred-KB
-			// payloads the chunked path exists for. This test pins the OUTPUT
-			// contract (retry delivered, payload exactly once, no seeded
-			// history replay); the recovery render routing through
-			// #formatRawDeltaChunked is a source-level guarantee — a sync
-			// re-render would produce identical output, just with a stall.
-			const overflowMessage = "context_length_exceeded: Your input exceeds the context window of this model.";
-			const promptInputs: Array<string | AgentMessage[]> = [];
-			const state: { messages: AgentMessage[]; error?: string } = {
-				messages: [{ role: "user", content: "existing advisor context", timestamp: 1 } as AgentMessage],
-			};
-			let promptCalls = 0;
-			const agent: AdvisorAgent = {
-				prompt: async input => {
-					promptInputs.push(input);
-					promptCalls++;
-					state.error = promptCalls === 1 ? overflowMessage : undefined;
-				},
-				abort: () => { },
-				reset: () => {
-					state.messages.length = 0;
-					state.error = undefined;
-				},
-				state,
-			};
-			const messages: AgentMessage[] = [{ role: "user", content: "seeded-primary", timestamp: 1 } as AgentMessage];
-			const host: AdvisorRuntimeHost = {
-				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
-			};
-			const runtime = new AdvisorRuntime(agent, host, 0);
-			runtime.seedTo(messages.length);
-
-			messages.push(
-				{
-					role: "assistant",
-					content: [{ type: "toolCall", id: "ov-1", name: "edit", arguments: { path: "big.ts" } }],
-					timestamp: 2,
-				} as unknown as AgentMessage,
-				{
-					role: "toolResult",
-					toolCallId: "ov-1",
-					toolName: "edit",
-					content: [{ type: "text", text: "ok" }],
-					details: { diff: `OVERSIZED-RECOVERY-MARKER\n+${"z".repeat(400 * 1024)}` },
-					isError: false,
-					timestamp: 3,
-				} as unknown as AgentMessage,
-			);
-			runtime.onTurnEnd(messages);
-			await settleUntil(() => promptInputs.length >= 2 && runtime.backlog === 0, 10_000);
-
-			expect(promptInputs).toHaveLength(2);
-			// The recovery retry re-rendered the same oversized batch: marker
-			// present exactly once in each attempt, seeded history absent.
-			for (const input of promptInputs) {
-				const inputText = promptText(input);
-				expect(inputText.split("OVERSIZED-RECOVERY-MARKER").length - 1).toBe(1);
-				expect(inputText).not.toContain("seeded-primary");
-			}
-		}, 15_000);
-
 		it("re-renders a queued primary context before its maintenance budget after overflow resets advisor context", async () => {
 			const overflowMessage = "context_length_exceeded: Your input exceeds the context window of this model.";
 			const firstOverflowPromptStarted = Promise.withResolvers<void>();
@@ -3694,17 +3258,17 @@ describe("advisor", () => {
 						typeof input === "string"
 							? input
 							: input
-								.map(message => {
-									if (!("content" in message)) return "";
-									if (typeof message.content === "string") return message.content;
-									const textParts: string[] = [];
-									for (const block of message.content) {
-										if (block.type === "text") textParts.push(block.text);
-									}
-									return textParts.join("");
-								})
-								.filter(Boolean)
-								.join("\n\n");
+									.map(message => {
+										if (!("content" in message)) return "";
+										if (typeof message.content === "string") return message.content;
+										const textParts: string[] = [];
+										for (const block of message.content) {
+											if (block.type === "text") textParts.push(block.text);
+										}
+										return textParts.join("");
+									})
+									.filter(Boolean)
+									.join("\n\n");
 					state.messages.push({ role: "user", content, timestamp: Date.now() } as AgentMessage);
 					if (promptCalls === 2) {
 						firstOverflowPromptStarted.resolve();
@@ -3719,7 +3283,7 @@ describe("advisor", () => {
 						} as AgentMessage);
 					}
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -3741,7 +3305,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 					maintainContext: async incoming => {
 						maintenanceTokens.push(new Tokenizer().countMessage(incoming));
 						if (maintenanceTokens.length === 4) fourthMaintenance.resolve();
@@ -3789,7 +3353,7 @@ describe("advisor", () => {
 					promptCalls++;
 					state.error = promptCalls === 1 ? overflowMessage : undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -3799,7 +3363,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "seed-primary", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			runtime.seedTo(messages.length);
@@ -3860,7 +3424,7 @@ describe("advisor", () => {
 					state.messages.push(failure);
 					state.error = "opaque provider rejection";
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					resetCount++;
 					state.messages.length = 0;
@@ -3875,7 +3439,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "ancient-primary", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			runtime.seedTo(messages.length);
@@ -3916,7 +3480,7 @@ describe("advisor", () => {
 					}
 					state.error = overflowMessage;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -3926,7 +3490,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "ancient-history", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				notifyFailure: error => failures.push(error),
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
@@ -3971,14 +3535,14 @@ describe("advisor", () => {
 					startPrompt();
 					await promptFinish;
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 
@@ -4025,14 +3589,14 @@ describe("advisor", () => {
 					startPrompt();
 					await promptFinish;
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 			const controller = new AbortController();
@@ -4067,14 +3631,14 @@ describe("advisor", () => {
 						throw new Error("fail");
 					}
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 
@@ -4092,14 +3656,14 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					throw new Error("fail");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 
@@ -4121,14 +3685,14 @@ describe("advisor", () => {
 						throw new Error("404 No endpoints available matching your guardrail restrictions and data policy.");
 					}
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				notifyFailure: error => failures.push(error),
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
@@ -4178,14 +3742,14 @@ describe("advisor", () => {
 						"Codex error event: The 'gpt-5.3-codex-spark' model is not supported when using Codex with a ChatGPT account. (code=invalid_request_error)",
 					);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				notifyFailure: error => failures.push(error),
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
@@ -4219,15 +3783,15 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					if (shouldFail) throw new Error("socket hang up");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "t1", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
-				notifyFailure: () => { },
+				enqueueAdvice: () => {},
+				notifyFailure: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 
@@ -4268,15 +3832,15 @@ describe("advisor", () => {
 				prompt: async () => {
 					throw new Error("socket hang up");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
-				onTurnError: () => new Promise<undefined>(() => { }),
+				enqueueAdvice: () => {},
+				onTurnError: () => new Promise<undefined>(() => {}),
 			};
 			const runtime = new AdvisorRuntime(agent, host, 60_000);
 
@@ -4303,14 +3867,14 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(input);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			runtime.onTurnEnd(messages);
@@ -4331,83 +3895,17 @@ describe("advisor", () => {
 			const started = performance.now();
 			await runtime.waitForCatchup(60_000, 1);
 			expect(performance.now() - started).toBeLessThan(2_000);
-			expect(runtime.backlog).toBe(1);
+			await settleUntil(() => runtime.backlog === 0);
 
 			// Replace the poison with a healthy message: the cursor was restored,
 			// so the next turn re-renders from the failed position.
 			messages[1] = { role: "user", content: "bbb-recovered", timestamp: 2 } as AgentMessage;
 			messages.push({ role: "user", content: "ccc", timestamp: 3 } as AgentMessage);
 			runtime.onTurnEnd(messages);
-			await settleUntil(() => promptInputs.length >= 2 && runtime.backlog === 0);
+			await settleUntil(() => promptInputs.length >= 2);
 			expect(promptInputs).toHaveLength(2);
 			expect(promptText(promptInputs[1])).toContain("bbb-recovered");
 			expect(promptText(promptInputs[1])).toContain("ccc");
-			runtime.dispose();
-		}, 10_000);
-
-		it("replays a failed batch together with a late delta left by the coalescing cap", async () => {
-			const promptInputs: Array<string | AgentMessage[]> = [];
-			const agent: AdvisorAgent = {
-				prompt: async input => {
-					promptInputs.push(input);
-				},
-				abort: () => { },
-				reset: () => { },
-				state: { messages: [] },
-			};
-			let poisonThrows = false;
-			const poisoned = {
-				role: "user",
-				get content(): string {
-					if (poisonThrows) throw new Error("poisoned message");
-					return "bbb";
-				},
-				timestamp: 2,
-			} as AgentMessage;
-			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
-			let injectLate = false;
-			let maintenanceCalls = 0;
-			const host: AdvisorRuntimeHost = {
-				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
-				maintainContext: async () => {
-					if (!injectLate) return false;
-					maintenanceCalls++;
-					const marker = {
-						role: "user",
-						content: `late-marker-${maintenanceCalls}`,
-						timestamp: messages.length + 1,
-					} as AgentMessage;
-					messages.push(marker);
-					runtime.onTurnEnd(messages);
-					if (maintenanceCalls === 3) poisonThrows = true;
-					return false;
-				},
-			};
-			const runtime: AdvisorRuntime = new AdvisorRuntime(agent, host, 0);
-			runtime.onTurnEnd(messages);
-			await settleUntil(() => promptInputs.length >= 1);
-
-			messages.push(poisoned);
-			injectLate = true;
-			runtime.onTurnEnd(messages);
-			await runtime.waitForCatchup(60_000, 1);
-			await settleUntil(() => maintenanceCalls === 3);
-			expect(runtime.backlog).toBe(4);
-			expect(promptInputs).toHaveLength(1);
-
-			injectLate = false;
-			poisonThrows = false;
-			messages.push({ role: "user", content: "final-marker", timestamp: messages.length + 1 } as AgentMessage);
-			runtime.onTurnEnd(messages);
-			await settleUntil(() => promptInputs.length >= 2);
-			const recovered = promptText(promptInputs[1]);
-			expect(recovered).toContain("bbb");
-			expect(recovered).toContain("late-marker-1");
-			expect(recovered).toContain("late-marker-2");
-			expect(recovered).toContain("late-marker-3");
-			expect(recovered).toContain("final-marker");
-			await settleUntil(() => runtime.backlog === 0);
 			runtime.dispose();
 		}, 10_000);
 
@@ -4438,15 +3936,15 @@ describe("advisor", () => {
 					prompt: async input => {
 						promptInputs.push(input);
 					},
-					abort: () => { },
-					reset: () => { },
+					abort: () => {},
+					reset: () => {},
 					state: { messages: [] },
 				};
 				// ~2000 × 5KB ≈ 10MB replay — the post-reset/first-enable shape.
 				const messages = Array.from({ length: 2000 }, (_, i) => bigMessage(i));
 				const host: AdvisorRuntimeHost = {
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
 				runtime.onTurnEnd(messages);
@@ -4464,8 +3962,8 @@ describe("advisor", () => {
 					prompt: async input => {
 						promptInputs.push(input);
 					},
-					abort: () => { },
-					reset: () => { },
+					abort: () => {},
+					reset: () => {},
 					state: { messages: [] },
 				};
 				// The toolCall sits at index 99 and its result arrives 49 messages
@@ -4491,7 +3989,7 @@ describe("advisor", () => {
 				} as AgentMessage;
 				const host: AdvisorRuntimeHost = {
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
 				runtime.onTurnEnd(messages);
@@ -4511,14 +4009,14 @@ describe("advisor", () => {
 					prompt: async input => {
 						promptInputs.push(input);
 					},
-					abort: () => { },
-					reset: () => { },
+					abort: () => {},
+					reset: () => {},
 					state: { messages: [] },
 				};
 				const messages: AgentMessage[] = [{ role: "user", content: "before", timestamp: 1 } as AgentMessage];
 				const host: AdvisorRuntimeHost = {
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
 				runtime.onTurnEnd(messages);
@@ -4545,14 +4043,14 @@ describe("advisor", () => {
 					prompt: async input => {
 						promptInputs.push(input);
 					},
-					abort: () => { },
-					reset: () => { },
+					abort: () => {},
+					reset: () => {},
 					state: { messages: [] },
 				};
 				const messages = Array.from({ length: 400 }, (_, i) => bigMessage(i));
 				const host: AdvisorRuntimeHost = {
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
 				runtime.onTurnEnd(messages);
@@ -4574,14 +4072,14 @@ describe("advisor", () => {
 					prompt: async input => {
 						promptInputs.push(input);
 					},
-					abort: () => { },
-					reset: () => { },
+					abort: () => {},
+					reset: () => {},
 					state: { messages: [] },
 				};
 				const messages = Array.from({ length: 300 }, (_, i) => bigMessage(i));
 				const host: AdvisorRuntimeHost = {
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
 				runtime.onTurnEnd(messages);
@@ -4621,7 +4119,7 @@ describe("advisor", () => {
 						? "404 No endpoints available matching your guardrail restrictions and data policy."
 						: undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.error = undefined;
 				},
@@ -4630,7 +4128,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				notifyFailure: error => failures.push(error),
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
@@ -4682,7 +4180,7 @@ describe("advisor", () => {
 					} as unknown as AgentMessage);
 					state.error = undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -4742,7 +4240,7 @@ describe("advisor", () => {
 					} as unknown as AgentMessage);
 					state.error = undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -4756,7 +4254,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "turn-0", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				onTurnError: error => {
 					turnErrors.push(error);
 				},
@@ -4813,7 +4311,7 @@ describe("advisor", () => {
 					} as unknown as AgentMessage);
 					state.error = undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -4879,8 +4377,8 @@ describe("advisor", () => {
 						timestamp: 3,
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -4901,7 +4399,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 					notifyFailure: error => failures.push(error),
 				},
 				0,
@@ -4934,8 +4432,8 @@ describe("advisor", () => {
 						timestamp: promptInputs.length + 1,
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -4956,7 +4454,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 					notifyFailure: error => failures.push(error),
 				},
 				0,
@@ -5001,8 +4499,8 @@ describe("advisor", () => {
 						timestamp: promptInputs.length + 1,
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -5024,7 +4522,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 					notifyFailure: error => failures.push(error),
 					onTurnError: async () => {
 						fallbackCalls++;
@@ -5062,8 +4560,8 @@ describe("advisor", () => {
 						timestamp: promptInputs.length + 1,
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -5084,7 +4582,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 					notifyFailure: error => failures.push(error),
 					onTurnError: async () => {
 						fallbackCalls++;
@@ -5135,8 +4633,8 @@ describe("advisor", () => {
 						timestamp: promptInputs.length + 1,
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -5159,7 +4657,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 					notifyFailure: error => failures.push(error),
 					getModelIdentity: () => identity,
 					onTurnError: async () => {
@@ -5201,8 +4699,8 @@ describe("advisor", () => {
 						timestamp: promptInputs.length + 1,
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -5224,7 +4722,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 					notifyFailure: error => failures.push(error),
 					getModelIdentity: () => identity,
 					onTurnError: async () => {
@@ -5273,8 +4771,8 @@ describe("advisor", () => {
 						timestamp: 3,
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -5295,7 +4793,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 					notifyFailure: error => failures.push(error),
 				},
 				0,
@@ -5323,7 +4821,7 @@ describe("advisor", () => {
 					events.push(`prompt:${promptCalls}`);
 					state.error = promptCalls === 1 ? "provider failed" : undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.error = undefined;
 				},
@@ -5332,7 +4830,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				onTurnError: error => {
 					turnErrors.push(error);
 					events.push(`hook:${error instanceof Error ? error.message : String(error)}`);
@@ -5366,7 +4864,7 @@ describe("advisor", () => {
 					events.push(`prompt:${promptCalls}`);
 					state.error = `provider failed ${promptCalls}`;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.error = undefined;
 				},
@@ -5375,7 +4873,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				onTurnError: error => {
 					turnErrors.push(error);
 					events.push(`hook:${error instanceof Error ? error.message : String(error)}`);
@@ -5425,7 +4923,7 @@ describe("advisor", () => {
 					events.push(`prompt:${promptCalls}`);
 					state.error = promptCalls === 1 ? "provider failed" : undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.error = undefined;
 				},
@@ -5434,7 +4932,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				onTurnError: async error => {
 					turnErrors.push(error);
 					events.push(`hook:${error instanceof Error ? error.message : String(error)}`);
@@ -5488,7 +4986,7 @@ describe("advisor", () => {
 					state.messages.push(failure);
 					state.error = errorMessage;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -5503,7 +5001,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				onTurnError: error => {
 					turnErrors.push(error);
 				},
@@ -5557,7 +5055,7 @@ describe("advisor", () => {
 						state.error = undefined;
 					}
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -5572,7 +5070,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				onTurnAbandoned: () => {
 					abandonedTurns++;
 				},
@@ -5638,7 +5136,7 @@ describe("advisor", () => {
 						timestamp: Date.now(),
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					resetCalls++;
 					state.messages.length = 0;
@@ -5653,7 +5151,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 
@@ -5689,8 +5187,8 @@ describe("advisor", () => {
 					}
 					return Promise.resolve();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
@@ -5698,7 +5196,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 				},
 				0,
 			);
@@ -5743,7 +5241,7 @@ describe("advisor", () => {
 						timestamp: Date.now(),
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -5758,7 +5256,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				notifyFailure: err => notifyFailures.push(err instanceof Error ? err.message : String(err)),
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
@@ -5805,13 +5303,13 @@ describe("advisor", () => {
 				// AdvisorRuntime.reset() calls agent.reset() then agent.abort(); the real
 				// Agent.abort rejects the awaited prompt, so model that rejection here.
 				abort: () => rejectInFlight?.(new Error("advisor reset")),
-				reset: () => { },
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "old-conversation", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 
@@ -5854,13 +5352,13 @@ describe("advisor", () => {
 					return gate.promise;
 				},
 				abort: () => rejectInFlight?.(new Error("session transition")),
-				reset: () => { },
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "keep me", timestamp: 1 } as AgentMessage];
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 			});
 
 			runtime.onTurnEnd(messages);
@@ -5885,8 +5383,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					prompted.resolve();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [
@@ -5901,7 +5399,7 @@ describe("advisor", () => {
 			];
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				maintainContext: async () => {
 					if (++maintenanceCalls === 1) {
 						void runtime.pauseForSessionTransition();
@@ -5939,21 +5437,21 @@ describe("advisor", () => {
 						if (promptCalls === 1 && hookKind === "error") throw new Error("provider failure");
 						if (promptCalls === 2) replacementPromptStarted.resolve();
 					},
-					abort: () => { },
-					reset: () => { },
+					abort: () => {},
+					reset: () => {},
 					state: { messages: [] },
 				};
 				const runtime = new AdvisorRuntime(agent, {
 					snapshotMessages: () => [],
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 					...(hookKind === "success"
 						? { onTurnSuccess: blockHook }
 						: {
-							onTurnError: async () => {
-								await blockHook();
-								return false;
-							},
-						}),
+								onTurnError: async () => {
+									await blockHook();
+									return false;
+								},
+							}),
 				});
 
 				runtime.onTurnEnd([{ role: "user", content: "old session", timestamp: 1 } as AgentMessage]);
@@ -5975,15 +5473,15 @@ describe("advisor", () => {
 				prompt: async () => {
 					throw new Error("provider failure");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(
 				agent,
 				{
 					snapshotMessages: () => [],
-					enqueueAdvice: () => { },
+					enqueueAdvice: () => {},
 					onTurnError: () => {
 						recoveryStarted.resolve();
 						return false;
@@ -6011,13 +5509,13 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					throw new Error("resource_exhausted");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				notifyFailure: () => {
 					failureNotified = true;
 				},
@@ -6051,13 +5549,13 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					throw new Error("overloaded: server is at capacity");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				notifyFailure: error => failures.push(error),
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
@@ -6079,14 +5577,14 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					if (shouldFail) throw new Error("insufficient_quota: rate limit exceeded");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => { },
-				notifyQuotaExhausted: () => { },
+				enqueueAdvice: () => {},
+				notifyQuotaExhausted: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			const messages: AgentMessage[] = [{ role: "user", content: "quota-turn", timestamp: 1 } as AgentMessage];
@@ -6119,14 +5617,14 @@ describe("advisor", () => {
 				prompt: async () => {
 					throw new Error("insufficient_quota");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => { },
-				notifyQuotaExhausted: () => { },
+				enqueueAdvice: () => {},
+				notifyQuotaExhausted: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			const messages: AgentMessage[] = [{ role: "user", content: "turn", timestamp: 1 } as AgentMessage];
@@ -6151,14 +5649,14 @@ describe("advisor", () => {
 						throw new Error("insufficient_quota: you have exceeded your rate limit");
 					}
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			let quotaNotified = false;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				onTurnError: async () => true,
 				notifyQuotaExhausted: () => {
 					quotaNotified = true;
@@ -6190,15 +5688,15 @@ describe("advisor", () => {
 						state.messages.push({ role: "user", content: input, timestamp: Date.now() } as AgentMessage);
 					}
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => state.messages.splice(count),
 				state,
 			};
 			const hookErrors: unknown[] = [];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				onTurnError: async error => {
 					hookErrors.push(error);
 					return hookErrors.length === 1;
@@ -6221,14 +5719,14 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					throw new Error("insufficient_quota: you have exceeded your rate limit");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			let quotaNotified = false;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				onTurnError: async () => false,
 				notifyQuotaExhausted: () => {
 					quotaNotified = true;
@@ -6254,8 +5752,8 @@ describe("advisor", () => {
 						throw new Error("insufficient_quota: you have exceeded your rate limit");
 					}
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			let quotaNotified = 0;
@@ -6264,7 +5762,7 @@ describe("advisor", () => {
 			const { promise: hookEntered, resolve: allowHook } = Promise.withResolvers<void>();
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				maintainContext: async (_incoming, signal) => {
 					maintenanceSignals.push(signal);
 					return false;
@@ -6308,13 +5806,13 @@ describe("advisor", () => {
 				prompt: async () => {
 					throw new Error("provider failure");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				onTurnError: async (_error, _failedMessages, signal) => {
 					recoverySignal = signal;
 					hookEntered.resolve();
@@ -6346,15 +5844,15 @@ describe("advisor", () => {
 					}
 					// callCount >= 3: success
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const hookErrors: unknown[] = [];
 			let quotaNotified = false;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				onTurnError: async error => {
 					hookErrors.push(error);
 					return hookErrors.length === 1 ? true : undefined;
@@ -6392,15 +5890,15 @@ describe("advisor", () => {
 					}
 					throw new Error("429 Too Many Requests: quota exceeded");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const hookErrors: unknown[] = [];
 			let quotaNotified = false;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				onTurnError: async error => {
 					hookErrors.push(error);
 					return hookErrors.length === 1 ? true : undefined;
@@ -6435,15 +5933,15 @@ describe("advisor", () => {
 						throw new Error("429 Too Many Requests: quota exceeded");
 					}
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const hookErrors: unknown[] = [];
 			let quotaNotified = false;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => { },
+				enqueueAdvice: () => {},
 				onTurnError: async error => {
 					hookErrors.push(error);
 					return true;
@@ -6740,24 +6238,14 @@ describe("advisor", () => {
 		};
 		const callbacks = {
 			loadDoc: async () => ({ advisors: [] }),
-			save: async () => { },
-			close: () => { },
-			requestRender: () => { },
-			notify: () => { },
+			save: async () => {},
+			close: () => {},
+			requestRender: () => {},
+			notify: () => {},
 		};
 		const strip = (lines: readonly string[]): string => lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-		const make = (
-			doc: WatchdogConfigDoc,
-			extra?: Partial<AdvisorConfigDeps>,
-			terminalRows?: number,
-		): AdvisorConfigOverlayComponent =>
-			new AdvisorConfigOverlayComponent(
-				{ terminal: terminalRows === undefined ? undefined : { rows: terminalRows } } as unknown as TUI,
-				{ ...deps, ...extra },
-				"project",
-				doc,
-				callbacks,
-			);
+		const make = (doc: WatchdogConfigDoc, extra?: Partial<AdvisorConfigDeps>): AdvisorConfigOverlayComponent =>
+			new AdvisorConfigOverlayComponent({} as unknown as TUI, { ...deps, ...extra }, "project", doc, callbacks);
 		const fullHeight = Math.max(14, process.stdout.rows || 40);
 
 		it("paints a full-screen split frame: roster sidebar + selected-advisor preview", async () => {
@@ -6775,11 +6263,8 @@ describe("advisor", () => {
 			// Fills the screen top-to-bottom (the fix for the bottom-anchored frame
 			// whose offset broke mouse hit-testing and wasted the upper space).
 			expect(frame.length).toBe(fullHeight);
-
 			const text = strip(frame);
-			// Both rosters are visible at once: project on top, global below.
-			expect(text).toContain("Project · project");
-			expect(text).toContain("Global");
+			expect(text).toContain("project");
 			expect(text).toContain("Architecture");
 			expect(text).toContain("Security");
 			expect(text).toContain("+ Add advisor");
@@ -6787,14 +6272,6 @@ describe("advisor", () => {
 			// Right preview reflects the highlighted (first) advisor.
 			expect(text).toContain("x-ai/grok-code-fast:high");
 			expect(text).toContain("read, grep, glob (default)");
-		});
-		it("uses the hosted client viewport height instead of the daemon stdout fallback", async () => {
-			const uiTheme = await getThemeByName("dark");
-			if (!uiTheme) throw new Error("theme unavailable");
-			setThemeInstance(uiTheme);
-			const overlay = make({ advisors: [] }, undefined, 20);
-
-			expect(overlay.render(100)).toHaveLength(20);
 		});
 
 		it("renders an explicit no-tools advisor distinctly from the omitted default", async () => {
@@ -6820,6 +6297,97 @@ describe("advisor", () => {
 			overlay.render(200);
 			overlay.handleInput("\x1b[B"); // arrow down → highlight Security
 			expect(strip(overlay.render(200))).toContain("read, web_search");
+		});
+
+		it("keeps roster focus when pointer motion or the wheel is routed over the editor", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			for (const mouseInput of ["\x1b[<32;80;3M", "\x1b[<65;80;3M"]) {
+				const overlay = make({ advisors: [{ name: "Architecture" }, { name: "Security", tools: ["web_search"] }] });
+				overlay.render(120);
+				overlay.handleInput(mouseInput);
+				overlay.handleInput("\x1b[B");
+				expect(strip(overlay.render(120))).toContain("web_search");
+			}
+		});
+
+		it("preserves an unsaved name draft when pointer motion hovers over the roster", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const overlay = make({
+				advisors: [{ name: "Architecture" }, { name: "Security" }],
+			});
+			const frame = overlay.render(120);
+			const architectureRow = frame.findIndex(line => strip([line]).includes("Architecture"));
+			expect(architectureRow).toBeGreaterThanOrEqual(0);
+
+			overlay.handleInput("\x1b[C");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\r");
+			overlay.handleInput(" draft");
+			expect(strip(overlay.render(120))).toContain("Architecture draft");
+
+			overlay.handleInput(`\x1b[<32;4;${architectureRow + 1}M`);
+
+			expect(strip(overlay.render(120))).toContain("Architecture draft");
+		});
+		it("rebinds the editor after changing advisors before a right-pane click", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const overlay = make(
+				{
+					advisors: [{ name: "Architecture" }, { name: "Security", tools: ["read"] }],
+				},
+				{ settings: Settings.isolated({}) },
+			);
+			overlay.render(120);
+			overlay.handleInput("\x1b[C"); // open Architecture fields
+			overlay.handleInput("\x1b[B"); // name
+			overlay.handleInput("\x1b[B"); // model
+			overlay.handleInput("\x1b[B"); // tools
+			overlay.handleInput("\r"); // open tools editor
+			overlay.handleInput("\x1b[D"); // return to roster
+			overlay.handleInput("\x1b[B"); // select Security
+			overlay.handleInput("\x1b[<0;80;10M"); // click the right pane
+			expect(strip(overlay.render(120))).toContain("Security  · Project");
+		});
+
+		it("selects the exact current model when its literal id contains a colon", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const makeModel = (id: string): Model =>
+				buildModel({
+					id,
+					name: id,
+					api: "ollama-chat",
+					provider: "openrouter",
+					baseUrl: "https://example.com",
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 128_000,
+					maxTokens: 1024,
+				});
+			const models = [makeModel("a-first"), makeModel("z-route:free")];
+			const doc: WatchdogConfigDoc = {
+				advisors: [{ name: "Architecture", model: "openrouter/z-route:free" }],
+			};
+			const overlay = make(doc, {
+				settings: Settings.isolated({}),
+				scopedModels: models.map(model => ({ model })),
+			});
+			overlay.render(120);
+			overlay.handleInput("\x1b[C");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\r");
+			overlay.handleInput("\r");
+
+			expect(doc.advisors[0]?.model).toBe("openrouter/z-route:free");
 		});
 
 		it("preserves routed model identity and explicit effort through Enter on both pickers", async () => {
@@ -6852,51 +6420,38 @@ describe("advisor", () => {
 			overlay.handleInput("\r");
 			overlay.handleInput("\r");
 			overlay.handleInput("\r");
+
 			expect(doc.advisors[0]?.model).toBe("openrouter/z-route:free:high");
 		});
-		it("keeps roster focus when pointer motion or the wheel is routed over the editor", async () => {
+
+		it("saves an enabled toggle only for the clicked advisor and scope", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
 			setThemeInstance(uiTheme);
-
-			for (const mouseInput of ["\x1b[<32;80;3M", "\x1b[<65;80;3M"]) {
-				const overlay = make({ advisors: [{ name: "Architecture" }, { name: "Security", tools: ["web_search"] }] });
-				overlay.render(120);
-				overlay.handleInput(mouseInput);
-				overlay.handleInput("\x1b[B");
-
-				expect(strip(overlay.render(120))).toContain("web_search");
-			}
-		});
-
-		it("focuses the clicked advisor and edits it inline in the right pane", async () => {
-			const uiTheme = await getThemeByName("dark");
-			if (!uiTheme) throw new Error("theme unavailable");
-			setThemeInstance(uiTheme);
-			const overlay = make({ advisors: [{ name: "Architecture" }, { name: "Security" }] });
-			// Render once so the frame geometry is recorded; the second advisor sits on
-			// the second body row (0-based screen row 2 → SGR 1-based row 3).
+			const saved = Promise.withResolvers<{ scope: string; doc: WatchdogConfigDoc }>();
+			const overlay = new AdvisorConfigOverlayComponent(
+				{ terminal: { rows: 40 } } as unknown as TUI,
+				deps,
+				"project",
+				{ advisors: [{ name: "Architecture" }, { name: "Security" }] },
+				{
+					...callbacks,
+					save: async (scope, doc) => {
+						saved.resolve({ scope, doc });
+					},
+				},
+			);
 			overlay.render(120);
-			overlay.handleInput("\x1b[<0;4;3M"); // left-button press, col 4, row 3
-			const text = strip(overlay.render(120));
-			// Right pane header names the clicked advisor; its fields are editable in place.
-			expect(text).toContain("Security  · Project");
-			expect(text).toContain("Enabled");
-			expect(text).toContain("Model");
-			expect(text).toContain("Instructions");
-		});
-
-		it("↓ past the project roster's end moves the cursor into the global roster", async () => {
-			const uiTheme = await getThemeByName("dark");
-			if (!uiTheme) throw new Error("theme unavailable");
-			setThemeInstance(uiTheme);
-			const overlay = make({ advisors: [{ name: "Only" }] });
-			overlay.render(200);
-			// Only → + Add advisor → Shared instructions → Save & apply → (edge) → global roster.
-			for (let i = 0; i < 4; i++) overlay.handleInput("\x1b[B");
-			const text = strip(overlay.render(200));
-			// The editor pane header now describes the Global roster's cursor row.
-			expect(text).toContain("No advisors configured in Global");
+			overlay.handleInput("\x1b[<0;4;3M");
+			overlay.handleInput("\r");
+			overlay.handleInput("\x1b[D");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\r");
+			const result = await saved.promise;
+			expect(result.scope).toBe("project");
+			expect(result.doc.advisors).toEqual([{ name: "Architecture" }, { name: "Security", enabled: false }]);
 		});
 
 		it("seeds a visible default advisor (labeled with the role model) when the config is empty", async () => {
@@ -6908,29 +6463,6 @@ describe("advisor", () => {
 			expect(text).toContain("default");
 			expect(text).toContain("anthropic/claude-opus");
 		});
-		it("uses ASCII preset markers for roster state, enabled state, and dirty state", async () => {
-			const previousTheme = await loadTheme("dark");
-			const asciiTheme = await loadTheme("dark", { symbolPresetOverride: "ascii" });
-			setThemeInstance(asciiTheme);
-			try {
-				const overlay = make({
-					advisors: [{ name: "Active" }, { name: "Disabled", enabled: false }],
-				});
-				overlay.render(120);
-				overlay.handleInput("\x1b[C");
-				overlay.handleInput("\r");
-				const text = strip(overlay.render(120));
-
-				expect(text).toContain("[ ] Active");
-				expect(text).toContain("[ ] Disabled");
-				expect(text).toContain("[ ] off");
-				expect(text.match(/\*/g)?.length).toBeGreaterThanOrEqual(2);
-				expect(text).not.toMatch(/[●○]/);
-			} finally {
-				setThemeInstance(previousTheme);
-			}
-		});
-
 		it("shows disabled advisors with a dim circle marker and toggles them in the detail editor", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
@@ -6942,11 +6474,13 @@ describe("advisor", () => {
 				],
 			});
 			const text = strip(overlay.render(200));
+			// The list and preview use the active theme's enabled/disabled markers.
 			expect(text).toContain(`${uiTheme.symbol("status.enabled")} Active`);
 			expect(text).toContain(`${uiTheme.symbol("status.disabled")} Disabled`);
 			// The preview of the highlighted (first) advisor shows its enabled status.
 			expect(text).toContain(`${uiTheme.symbol("status.enabled")} on`);
 		});
+
 		it("sanitizes project names and blocks global editing while loading", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
@@ -6973,6 +6507,16 @@ describe("advisor", () => {
 			await loading;
 			expect(strip(overlay.render(120))).toContain("Loaded global");
 		});
+		it("uses ASCII preset markers for roster and dirty state", async () => {
+			const asciiTheme = await loadTheme("dark", { symbolPresetOverride: "ascii" });
+			setThemeInstance(asciiTheme);
+			const overlay = make({ advisors: [{ name: "Active" }, { name: "Disabled", enabled: false }] });
+			const text = strip(overlay.render(120));
+			expect(text).toContain("[x] Active");
+			expect(text).toContain("[ ] Disabled");
+			expect(text).not.toMatch(/[●○]/);
+			setThemeInstance((await getThemeByName("dark"))!);
+		});
 
 		it("preserves top-level maxNotesPerUpdate while stripping the synthetic default advisor on save", async () => {
 			let savedDoc: WatchdogConfigDoc | undefined;
@@ -6989,11 +6533,12 @@ describe("advisor", () => {
 				},
 			);
 			overlay.render(200);
-			// Select Save & apply in the project roster.
+			// Arrow down 4 times to "Save & apply" (advisor:0, add, shared, scope, save)
 			overlay.handleInput("\x1b[B");
 			overlay.handleInput("\x1b[B");
 			overlay.handleInput("\x1b[B");
 			overlay.handleInput("\r");
+			await Promise.resolve();
 			await Promise.resolve();
 			expect(savedDoc).toBeDefined();
 			expect(savedDoc?.maxNotesPerUpdate).toBe(3);
@@ -7015,11 +6560,12 @@ describe("advisor", () => {
 				},
 			);
 			overlay.render(200);
-			// Select Save & apply in the project roster.
+			// Arrow down 4 times to "Save & apply" (advisor:0, add, shared, scope, save)
 			overlay.handleInput("\x1b[B");
 			overlay.handleInput("\x1b[B");
 			overlay.handleInput("\x1b[B");
 			overlay.handleInput("\r");
+			await Promise.resolve();
 			await Promise.resolve();
 			expect(savedDoc).toBeDefined();
 			expect(savedDoc?.maxNotesPerUpdate).toBe(3);
@@ -7041,11 +6587,12 @@ describe("advisor", () => {
 				},
 			);
 			overlay.render(200);
-			// Select Save & apply in the project roster.
+			// Arrow down 4 times to "Save & apply" (advisor:0, add, shared, scope, save)
 			overlay.handleInput("\x1b[B");
 			overlay.handleInput("\x1b[B");
 			overlay.handleInput("\x1b[B");
 			overlay.handleInput("\r");
+			await Promise.resolve();
 			await Promise.resolve();
 			expect(savedDoc).toBeDefined();
 			expect(savedDoc?.instructions).toBe("baseline rules");

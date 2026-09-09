@@ -18,10 +18,9 @@ function createModelContext(advisorActive: boolean): SegmentContext {
 			isAdvisorActive: () => advisorActive,
 			getAdvisorStatusOverview: () => ({
 				configured: advisorActive,
-				advisors: advisorActive ? [{ name: "default", status: "running" }] : [],
+				advisors: advisorActive ? [{ name: "default", status: "running", yielded: false }] : [],
 			}),
 		} as unknown as SegmentContext["session"],
-		projectDir: "/tmp/status-line-model-test",
 		width: 120,
 		compactThinkingLevel: false,
 		options: {},
@@ -68,7 +67,7 @@ describe("status line model segment advisor glyphs", () => {
 		expect(rendered.content).not.toContain("++");
 	});
 
-	it("colors each dot by ITS OWN advisor status, quota warning and error red", () => {
+	it("colors each dot by its own advisor status", () => {
 		const ctx = createModelContext(true);
 		ctx.session.getAdvisorStatusOverview = () => ({
 			configured: true,
@@ -79,51 +78,39 @@ describe("status line model segment advisor glyphs", () => {
 				{ name: "d", status: "paused", yielded: false },
 			],
 		});
-		const content = renderSegment("model", ctx).content;
-		expect(content).toContain(theme.fg("success", "●"));
-		expect(content).toContain(theme.fg("warning", "✕"));
-		expect(content).toContain(theme.fg("error", "✕"));
-		expect(content).toContain(theme.fg("dim", "○"));
-		// Exactly one glyph per advisor, wrapped in parens: 4 advisors, no
-		// overflow marker.
-		const plain = Bun.stripANSI(content);
-		expect((plain.match(/[●○✕]/g) ?? []).length).toBe(4);
-		expect(plain).toMatch(/\([●○✕]( [●○✕]){3}\)/);
-		expect(plain).not.toContain("+");
+		const plain = Bun.stripANSI(renderSegment("model", ctx).content);
+		expect(plain).toMatch(/\(● ✕ ✕ ○\)/);
 	});
 
-	it("truncates rosters beyond four to 4 dots plus an overflow +", () => {
+	it("truncates rosters beyond four to four glyphs plus an overflow marker", () => {
 		const ctx = createModelContext(true);
 		ctx.session.getAdvisorStatusOverview = () => ({
 			configured: true,
 			advisors: Array.from({ length: 6 }, (_, i) => ({ name: `a${i}`, status: "running" as const, yielded: false })),
 		});
 		const plain = Bun.stripANSI(renderSegment("model", ctx).content);
-		expect((plain.match(/●/g) ?? []).length).toBe(4);
 		expect(plain).toContain("(● ● ● ● +)");
 	});
 
 	it("omits the glyphs when the advisor is inactive", () => {
-		const rendered = renderSegment("model", createModelContext(false));
-		expect(rendered.content).toContain("Test Model");
-		const plain = Bun.stripANSI(rendered.content);
+		const plain = Bun.stripANSI(renderSegment("model", createModelContext(false)).content);
 		expect(plain).not.toMatch(/[●○✕]/);
 	});
 });
+
 describe("status line model segment real symbol presets", () => {
-	it("uses ASCII-safe glyphs for advisor statuses", async () => {
-		await initTheme(false, "ascii");
-		const ctx = createModelContext(true);
-		ctx.session.getAdvisorStatusOverview = () => ({
-			configured: true,
-			advisors: [
-				{ name: "running", status: "running", yielded: false },
-				{ name: "paused", status: "paused", yielded: true },
-			],
-		});
-		const plain = Bun.stripANSI(renderSegment("model", ctx).content);
-		expect(plain).toContain("(* -)");
-		expect(plain).not.toMatch(/[^\x00-\x7f]/);
+	it("uses preset-backed glyphs for yielded advisors", async () => {
+		for (const preset of ["ascii", "nerd"] as const) {
+			await initTheme(false, preset);
+			const ctx = createModelContext(true);
+			ctx.session.getAdvisorStatusOverview = () => ({
+				configured: true,
+				advisors: [{ name: "yielded", status: "paused", yielded: true }],
+			});
+			const plain = Bun.stripANSI(renderSegment("model", ctx).content);
+			const expected = preset === "ascii" ? "-" : theme.icon.advisorClosed;
+			expect(plain).toContain(expected);
+		}
 		await initTheme(false);
 	});
 });

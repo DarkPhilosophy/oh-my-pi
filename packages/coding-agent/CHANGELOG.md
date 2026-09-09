@@ -40,6 +40,7 @@
 - Fenced code blocks now expose a clickable `copy` link that copies their original source text.
 - Added opt-in experimental notes-backed context windows with persistent branch-local notes, searchable original session history, retained latest user requests, and a model-callable rollover tool, including in Code Mode.
 - Added Model Hub controls for editing thinking levels on concrete retry fallback rows.
+- Added project/global `/advisor configure` editing with per-advisor enablement, compact per-advisor status glyphs, and ancestor-aware advisor inheritance for spawned sessions.
 
 ## [18.1.15] - 2026-09-08
 
