@@ -284,11 +284,12 @@ export class Composer implements TerminalFrameProvider {
 		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
 		const active = transcript.renderViewport(width, Number.MAX_SAFE_INTEGER, frame);
 		const composed = [...before, ...active, ...after];
-		if (history !== undefined && this.#offeredHistory?.source === "header") {
-			const visibleHeaderRows = Math.max(0, rows - composed.length);
-			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
-		}
-		return { history, viewport: composed };
+		const borrowedViewportRows = transcript.borrowedViewportRowCount();
+		return {
+			history,
+			viewport: composed,
+			borrowedViewportRows: borrowedViewportRows > 0 ? before.length + borrowedViewportRows : 0,
+		};
 	}
 
 	onViewportBorrowed(rows: number): void {

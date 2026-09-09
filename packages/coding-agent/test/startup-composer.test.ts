@@ -148,6 +148,8 @@ describe("Composer prepaint", () => {
 			expect(transcript.isBlockUncommitted(later)).toBe(true);
 			expect(transcript.canRemoveBlock(later)).toBe(true);
 			expect(transcript.blockStates()).toEqual(["active", "active"]);
+			const plan = composer.renderFrame({ columns: 80, rows: 12 });
+			expect(plan.borrowedViewportRows).toBe(Math.max(0, plan.viewport.length - 12));
 		} finally {
 			composer.stop();
 		}

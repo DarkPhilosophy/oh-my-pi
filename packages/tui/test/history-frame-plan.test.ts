@@ -316,6 +316,22 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
+	it("does not hide a new live row whose bytes match a finalized borrowed owner", () => {
+		const terminal = new CountingTerminal(20, 3);
+		const provider = new Provider({ viewport: ["old", "same", "same", "live", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		provider.plan = {
+			history: { id: 1, rows: ["new", "same"] },
+			viewport: ["same", "live", "editor"],
+			borrowedViewportRows: 0,
+		};
+		tui.requestRender(true);
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["same", "live", "editor"]);
+		expect(provider.borrowed.at(-1)).toBe(0);
+		tui.stop();
+	});
+
 	it("consumes a finalized prefix without re-appending the still-borrowed suffix", () => {
 		const terminal = new CountingTerminal(20, 3);
 		const provider = new Provider({

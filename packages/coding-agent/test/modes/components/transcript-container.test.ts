@@ -139,6 +139,24 @@ describe("TranscriptContainer", () => {
 		expect(transcript.children).toEqual([borrowed]);
 	});
 
+	it("retains only the actual borrowed rows of surviving owners after finalized drift", () => {
+		for (const borrowedRows of [2, 4]) {
+			const transcript = new TranscriptContainer();
+			const finalized = new Block(["old", "same"], false);
+			const live = new Block(["same", "live", "editor"], false);
+			transcript.addChild(finalized);
+			transcript.addChild(live);
+			transcript.renderViewport(80, 10, frame);
+			transcript.setBorrowedViewportRows(borrowedRows);
+			finalized.finalize(["new", "same"]);
+			const history = transcript.peekFinalizedBatch(80, 0);
+			expect(history?.rows).toEqual(["new", "same", ""]);
+			expect(transcript.renderViewport(80, 10, frame)).toEqual(["same", "live", "editor"]);
+			expect(transcript.borrowedViewportRowCount()).toBe(borrowedRows === 4 ? 1 : 0);
+			expect(transcript.canRemoveBlock(live)).toBe(borrowedRows === 2);
+		}
+	});
+
 	it("captures mutable by default and append-only declarations permanently", () => {
 		const transcript = new TranscriptContainer();
 		const mutable = new Block(["mutable"], false) as Block & {

@@ -141,6 +141,12 @@ export interface TerminalFramePlan {
 	readonly history?: HistoryBatch;
 	/** Complete logical live rows; the writer splits overflow at the physical terminal boundary. */
 	readonly viewport: readonly string[];
+	/**
+	 * Leading rows in this viewport that remain owned by native history after
+	 * applying `history`. Providers with semantic ownership tracking supply this
+	 * when a history batch changes the live boundary.
+	 */
+	readonly borrowedViewportRows?: number;
 }
 
 /** Produces logical live frames and retires acknowledged history batches. */
@@ -2521,7 +2527,12 @@ export class TUI extends Container {
 		} else {
 			if (newHistory && history !== undefined) {
 				const prior = this.#providerTransientRows;
-				const overlap = Math.min(history.rows.length, prior.length);
+				const retained =
+					plan.borrowedViewportRows === undefined
+						? undefined
+						: Math.max(0, Math.min(plan.borrowedViewportRows, logicalViewport.length, prior.length));
+				const consumed = retained === undefined ? prior.length : prior.length - retained;
+				const overlap = Math.min(history.rows.length, consumed);
 				let matches = true;
 				for (let index = 0; index < overlap; index++) {
 					if (prior[index] !== history.rows[index]) {
@@ -2529,31 +2540,18 @@ export class TUI extends Container {
 						break;
 					}
 				}
-				if (matches) {
-					history = { ...history, rows: history.rows.slice(overlap) };
+				if (matches) history = { ...history, rows: history.rows.slice(overlap) };
+				if (retained !== undefined) {
+					// Keep the original native bytes belonging to surviving owners,
+					// rather than attributing equal text from a new block to them.
+					this.#providerTransientRows = prior.slice(prior.length - retained);
+					this.#providerLogicalCommitted = retained;
+				} else if (matches) {
 					this.#providerTransientRows = prior.slice(overlap);
 					this.#providerLogicalCommitted = Math.max(0, this.#providerLogicalCommitted - overlap);
 				} else {
-					// Finalized rows may drift while later live rows remain borrowed.
-					// Retain the exact borrowed suffix matching the new viewport.
-					let suffix = 0;
-					for (let offset = 1; offset < prior.length; offset++) {
-						const length = prior.length - offset;
-						if (length > logicalViewport.length) continue;
-						let suffixMatches = true;
-						for (let index = 0; index < length; index++) {
-							if (prior[offset + index] !== logicalViewport[index]) {
-								suffixMatches = false;
-								break;
-							}
-						}
-						if (suffixMatches) {
-							suffix = length;
-							break;
-						}
-					}
-					this.#providerTransientRows = suffix > 0 ? prior.slice(prior.length - suffix) : [];
-					this.#providerLogicalCommitted = suffix;
+					this.#providerTransientRows = [];
+					this.#providerLogicalCommitted = 0;
 				}
 			}
 			if (history === undefined && overflow > this.#providerLogicalCommitted) {
