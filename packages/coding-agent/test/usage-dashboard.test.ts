@@ -96,6 +96,18 @@ describe("buildHeatmapLayout", () => {
 describe("buildProviderCards", () => {
 	const now = Date.now();
 
+	it("does not merge anonymous reports with real identifiers matching fallback labels", () => {
+		const reports: UsageReport[] = [0.2, 0.8].map((fraction, index) => ({
+			provider: "openai",
+			fetchedAt: now,
+			metadata: index === 0 ? {} : { accountId: "account-1" },
+			limits: [{ ...limit("openai", "", "weekly", "Weekly", fraction, "ok"), scope: { provider: "openai" } }],
+		}));
+		const cards = buildProviderCards(reports, now, { merge: false });
+		expect(cards.map(card => card.accounts)).toEqual([1, 1]);
+		expect(cards.map(card => card.windows[0].fraction).sort()).toEqual([0.2, 0.8]);
+	});
+
 	it("averages a window across accounts instead of showing the worst account", () => {
 		// One exhausted + one barely-used account: the classic report shows the
 		// aggregate (~50% free), so the card must not read 0% free.

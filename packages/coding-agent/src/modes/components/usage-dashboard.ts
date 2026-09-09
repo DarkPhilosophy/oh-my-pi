@@ -201,14 +201,14 @@ function formatReportAccountKey(report: UsageReport, index: number): string {
 					(typeof meta?.projectId === "string" && meta.projectId
 						? meta.projectId
 						: report.limits[0]?.scope.projectId) ||
-					`account-${index + 1}`;
+					undefined;
 	const organization =
 		typeof meta?.orgId === "string" && meta.orgId
 			? meta.orgId
 			: typeof meta?.orgName === "string" && meta.orgName
 				? meta.orgName
 				: undefined;
-	return organization ? `${base}\u0000org:${organization}` : base;
+	return base ? JSON.stringify(["identity", base, organization ?? ""]) : JSON.stringify(["anonymous", index]);
 }
 
 export function buildProviderCards(

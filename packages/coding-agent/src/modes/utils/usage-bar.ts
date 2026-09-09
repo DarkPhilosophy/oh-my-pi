@@ -7,7 +7,7 @@
  */
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { rgbToHex } from "@oh-my-pi/pi-utils";
-import { colorToAnsi } from "../theme/color";
+import { bgAnsi, colorToAnsi } from "../theme/color";
 import { theme } from "../theme/theme";
 const PERCENT_FORMAT = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
 
@@ -50,7 +50,7 @@ export function renderFractionBar(
 	const rgb = resolveUsageGradientRgb(remaining).split(";").map(Number);
 	const hex = rgbToHex({ r: rgb[0]!, g: rgb[1]!, b: rgb[2]! });
 	const foreground = colorToAnsi(hex, uiTheme.getColorMode());
-	const background = colorToAnsi(hex, uiTheme.getColorMode()).replace("\x1b[38;", "\x1b[48;");
+	const background = bgAnsi(hex, uiTheme.getColorMode());
 	if (labelWidth > barWidth) {
 		const filled = "█".repeat(filledCells);
 		const empty = "░".repeat(Math.max(0, barWidth - filledCells));
