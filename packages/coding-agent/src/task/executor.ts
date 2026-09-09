@@ -833,10 +833,14 @@ function extractToolArgsPreview(
 	}
 	const compoundEdits = args.edits;
 	if (toolName === "edit" && Array.isArray(compoundEdits)) {
-		const paths = compoundEdits
-			.map(edit => (edit && typeof edit === "object" ? (edit as Record<string, unknown>).path : undefined))
-			.filter((value): value is string => typeof value === "string" && value.length > 0);
-		if (paths.length > 0) return formatToolArgsPreview(paths.join(", "), "path");
+		const paths = new Set<string>();
+		if (typeof args.path === "string" && args.path) paths.add(args.path);
+		for (const edit of compoundEdits) {
+			if (!isRecord(edit)) continue;
+			if (typeof edit.path === "string" && edit.path) paths.add(edit.path);
+			if (typeof edit.rename === "string" && edit.rename) paths.add(edit.rename);
+		}
+		if (paths.size > 0) return formatToolArgsPreview([...paths].join(", "), "path");
 	}
 	for (const key of previewKeys) {
 		if (typeof args[key] === "string" && args[key]) {
