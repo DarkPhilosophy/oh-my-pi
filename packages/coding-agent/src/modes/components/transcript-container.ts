@@ -812,4 +812,4 @@ export class TranscriptContainer extends Container {
 }
 
 /** Groups sibling rows into one conservative mutable semantic transcript block. */
-export class TranscriptBlock extends Container { }
+export class TranscriptBlock extends Container {}

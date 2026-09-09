@@ -287,7 +287,7 @@ interface UiBase {
 	condition?: string;
 }
 
-interface UiBoolean extends UiBase { }
+interface UiBoolean extends UiBase {}
 
 interface UiEnum<T extends readonly string[]> extends UiBase {
 	/** Submenu options. When omitted, the enum renders as an inline toggle derived from `values`. */
@@ -2042,6 +2042,24 @@ export const SETTINGS_SCHEMA = {
 					description: "Compact the session context, then re-submit the prompt",
 				},
 				{ value: "reset", label: "Reset", description: "Start a new session, then re-submit the prompt" },
+			],
+		},
+	},
+
+	"loop.conditionTimeoutMs": {
+		type: "number",
+		default: 30_000,
+		ui: {
+			tab: "interaction",
+			group: "Input",
+			label: "Loop Condition Timeout (ms)",
+			description:
+				"Max wait for a `/loop --while` / `--until` condition command before treating it as broken and stopping the loop. Set to 0 to wait indefinitely",
+			options: [
+				{ value: "0", label: "Unlimited" },
+				{ value: "10000", label: "10 seconds" },
+				{ value: "30000", label: "30 seconds" },
+				{ value: "120000", label: "2 minutes" },
 			],
 		},
 	},
@@ -6177,22 +6195,22 @@ export type SettingPath = keyof Schema;
 export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boolean"; default: undefined }
 	? boolean | undefined
 	: Schema[P] extends { type: "boolean" }
-	? boolean
-	: Schema[P] extends { type: "string" }
-	? string | undefined
-	: Schema[P] extends { type: "number"; default: undefined }
-	? number | undefined
-	: Schema[P] extends { type: "number" }
-	? number
-	: Schema[P] extends { type: "enum"; values: infer V }
-	? V extends readonly string[]
-	? V[number]
-	: never
-	: Schema[P] extends { type: "array"; default: infer D }
-	? D
-	: Schema[P] extends { type: "record"; default: infer D }
-	? D
-	: never;
+		? boolean
+		: Schema[P] extends { type: "string" }
+			? string | undefined
+			: Schema[P] extends { type: "number"; default: undefined }
+				? number | undefined
+				: Schema[P] extends { type: "number" }
+					? number
+					: Schema[P] extends { type: "enum"; values: infer V }
+						? V extends readonly string[]
+							? V[number]
+							: never
+						: Schema[P] extends { type: "array"; default: infer D }
+							? D
+							: Schema[P] extends { type: "record"; default: infer D }
+								? D
+								: never;
 
 /** Get the default value for a setting path */
 export function getDefault<P extends SettingPath>(path: P): SettingValue<P> {
