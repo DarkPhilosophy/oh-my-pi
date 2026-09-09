@@ -1,10 +1,9 @@
-import { replaceTabs } from "@oh-my-pi/pi-tui";
 import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
 import type { SlashCommandRuntime } from "../types";
 import { reportMatchesActiveAccount } from "./active-oauth-account";
-import { createAccountMasker } from "../../modes/utils/usage-mask";
+import { createAccountMasker, normalizeUsageAccountLabel } from "../../modes/utils/usage-mask";
 import { formatDuration, formatProviderName, renderAsciiBar } from "./format";
 function formatWindowSuffix(label: string, windowLabel: string | undefined): string {
 	if (!windowLabel) return "";
@@ -60,7 +59,7 @@ function renderUsageReports(
 	usageModelSelectors: readonly string[] = [],
 	maskAccountLabels = false,
 ): string {
-	const normalizeLabel = (label: string): string => replaceTabs(sanitizeText(label)).replace(/[\r\n]+/g, " ");
+	const normalizeLabel = normalizeUsageAccountLabel;
 	const accountMasker = createAccountMasker(
 		reports
 			.flatMap(report => [
@@ -166,9 +165,9 @@ export async function buildUsageReportText(runtime: SlashCommandRuntime): Promis
 			const currentProvider = runtime.session.model?.provider;
 			const activeAccount = currentProvider
 				? runtime.session.modelRegistry.authStorage.getOAuthAccountIdentity(
-						currentProvider,
-						runtime.session.sessionId,
-					)
+					currentProvider,
+					runtime.session.sessionId,
+				)
 				: undefined;
 			const usageModelSelectors = provider.getUsageReportingModelSelectors?.(reports) ?? [];
 			return renderUsageReports(

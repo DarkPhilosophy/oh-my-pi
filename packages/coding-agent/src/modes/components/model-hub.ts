@@ -40,11 +40,8 @@ import {
 import { getKnownRoleIds, getRoleInfo } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
 import { AUTO_THINKING, type ConfiguredThinkingLevel, getConfiguredThinkingLevelMetadata } from "../../thinking";
-<<<<<<< HEAD
 import { isRetryFallbackWildcardKey, parseRetryFallbackSelector } from "../../session/retry-fallback-chains";
-=======
 import { thinkingLevelGlyph } from "../../tools/render-utils";
->>>>>>> a33cc26824e3c91edd9fa42d681f10dceb4ac2f0
 import { theme } from "../theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import {
@@ -1013,7 +1010,7 @@ export class ModelHubComponent implements Component {
 		const options = this.#thinkingOptionsFor(model).filter(level => level !== AUTO_THINKING);
 		const chips = options.map(level => {
 			const label = getConfiguredThinkingLevelMetadata(level).label;
-			const glyph = thinkingLevelGlyph(level);
+			const glyph = thinkingLevelGlyph(level, theme);
 			return {
 				label,
 				styled: glyph ? `${theme.fg("accent", glyph)} ${label}` : label,

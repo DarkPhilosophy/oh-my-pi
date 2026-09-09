@@ -189,6 +189,8 @@ export interface ReleaseTabOptions {
 	kill?: boolean;
 	/** Maximum time for each asynchronous cleanup resource before close fails with diagnostics. */
 	timeoutMs?: number;
+	/** Caller cancellation for an explicit close. Omit for mandatory cleanup paths. */
+	signal?: AbortSignal;
 }
 
 const tabs = new Map<string, TabSession>();
@@ -222,7 +224,7 @@ const firefoxAcquireChains = new Map<string, Promise<void>>();
 const firefoxOperationChains = new WeakMap<WorkerHandle, Promise<void>>();
 const firefoxSharedTabs = new FirefoxSharedTabRegistry();
 const DEFAULT_TAB_CLOSE_TIMEOUT_MS = 5_000;
-class RecoverableWorkerError extends ToolError {}
+class RecoverableWorkerError extends ToolError { }
 const REPORTED_INIT_FAILURE = Symbol("reported-init-failure");
 
 type ReportedInitFailure = Error & { [REPORTED_INIT_FAILURE]?: true };
@@ -904,7 +906,10 @@ export async function releaseTab(name: string, opts: ReleaseTabOptions = {}): Pr
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_TAB_CLOSE_TIMEOUT_MS;
 	const startedAt = performance.now();
 	const operation = (async () => {
-		await withTimeout(prior, timeoutMs, "Timed out waiting for Firefox endpoint acquisition before close");
+		await untilAborted(opts.signal, () =>
+			withTimeout(prior, timeoutMs, "Timed out waiting for Firefox endpoint acquisition before close"),
+		);
+		if (opts.signal?.aborted) throw new ToolAbortError();
 		return releaseTabWithWorkerReservation(name, {
 			...opts,
 			timeoutMs: Math.max(1, timeoutMs - (performance.now() - startedAt)),
@@ -922,9 +927,13 @@ async function releaseTabWithWorkerReservation(name: string, opts: ReleaseTabOpt
 	const initial = tabs.get(name);
 	const releaseReservation =
 		initial?.backend === "worker" && initial.kindTag === "firefox-relay"
-			? await reserveFirefoxWorker(initial.worker, undefined, opts.timeoutMs)
+			? await reserveFirefoxWorker(initial.worker, opts.signal, opts.timeoutMs)
 			: undefined;
 	try {
+		// Reservation waits are abortable, but the queued predecessor may settle
+		// in the same turn as cancellation. Recheck at the mutation boundary so
+		// a canceled explicit close can never tear down the later-live alias.
+		if (opts.signal?.aborted) throw new ToolAbortError();
 		return await releaseTabUnlocked(name, opts);
 	} finally {
 		releaseReservation?.();
@@ -982,7 +991,7 @@ async function releaseTabInner(tab: TabSession, name: string, opts: ReleaseTabOp
 		if (tab.backend === "worker") {
 			try {
 				tab.worker.send({ type: "abort", id, expectedCleanup: true });
-			} catch {}
+			} catch { }
 		}
 		for (const ctrl of pending.toolCalls.values()) ctrl.abort(closeError);
 		// Propagate the closure into the cmux run's abort signal so
@@ -2059,7 +2068,7 @@ async function spawnInlineWorker(): Promise<WorkerHandle> {
 			workerListeners.add(typed);
 			return () => workerListeners.delete(typed);
 		},
-		close: () => {},
+		close: () => { },
 	};
 	const { WorkerCore } = await import("./tab-worker");
 	new WorkerCore(workerTransport, false);
@@ -2073,8 +2082,8 @@ async function spawnInlineWorker(): Promise<WorkerHandle> {
 			hostListeners.add(handler);
 			return () => hostListeners.delete(handler);
 		},
-		onError: () => () => {},
-		async terminate() {},
+		onError: () => () => { },
+		async terminate() { },
 	};
 }
 

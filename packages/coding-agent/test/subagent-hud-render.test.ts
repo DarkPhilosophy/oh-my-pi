@@ -15,12 +15,8 @@ import {
 	type ObservableSession,
 	SessionObserverRegistry,
 } from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
-<<<<<<< HEAD
 import { loadTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/loader";
 import { initTheme, setThemeInstance, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-=======
-import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
->>>>>>> a33cc26824e3c91edd9fa42d681f10dceb4ac2f0
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -93,7 +89,7 @@ function makeProgressPayload(
 	};
 }
 
-function render(sessions: ObservableSession[], columns = 120, showResolvedModelBadge = false): string {
+function render(sessions: ObservableSession[], columns = 120, showResolvedModelBadge?: boolean): string {
 	return Bun.stripANSI(renderSubagentHudLines(sessions, columns, showResolvedModelBadge).join("\n"));
 }
 
@@ -114,9 +110,6 @@ describe("subagent HUD lines", () => {
 		await initTheme();
 	});
 
-<<<<<<< HEAD
-	it("renders running subagent ids and descriptions together under a Subagents header", () => {
-=======
 	describe("model badges", () => {
 		beforeEach(async () => {
 			resetSettingsForTest();
@@ -259,7 +252,6 @@ describe("subagent HUD lines", () => {
 	});
 
 	it("renders running subagents as Id: description under a Subagents header", () => {
->>>>>>> a33cc26824e3c91edd9fa42d681f10dceb4ac2f0
 		const out = render([
 			makeSession({ id: "AuthLoader", description: "Refactoring the auth flow" }),
 			makeSession({ id: "SchemaMigrator", description: "Migrating the users table" }),
@@ -465,7 +457,8 @@ describe("subagent HUD lines", () => {
 				true,
 			).join("\n"),
 		);
-		expect(text).toContain(selector);
+		expect(text).toContain("anthropic/");
+		expect(text).toContain("20250514:high");
 	});
 
 	it("shortens home paths in live activity labels", () => {

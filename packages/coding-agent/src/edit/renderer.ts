@@ -656,17 +656,22 @@ function getHashlineInputSections(input: string): HashlineInputEntry[] {
 	return entries;
 }
 
-/** Extract display targets using the existing parsers for both freeform edit modes. */
+/** Extract display targets using the existing parsers for supported freeform edit modes. */
 export function getEditInputPaths(input: string): readonly string[] {
 	const paths = getHashlineInputSections(input)
 		.map(entry => entry.path)
 		.filter(Boolean);
 	if (paths.length > 0) return paths;
+	const args = JSON.stringify({ input });
+	for (const mode of ["apply_patch", "sloppy"] as const) {
 	try {
-		return editInspect("apply_patch", JSON.stringify({ input })).paths;
+			const inspected = editInspect(mode, args).paths;
+			if (inspected.length > 0) return inspected;
 	} catch {
-		return [];
+			// Try the next supported syntax; incomplete input has no preview yet.
+		}
 	}
+	return [];
 }
 
 function getHashlineInputRenderSummary(

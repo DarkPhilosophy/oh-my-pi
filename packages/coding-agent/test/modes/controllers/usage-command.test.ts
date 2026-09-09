@@ -210,4 +210,21 @@ describe("renderUsageReports content", () => {
 		expect(output).toContain("main-one@example.com (Team A): 1 saved reset (active)");
 		expect(output).toContain("main-two@example.com (Team B): 1 saved reset");
 	});
+
+	it("normalizes CRLF account labels and masks short opaque identities", () => {
+		const reports: UsageReport[] = [{
+			provider: "openai-codex",
+			fetchedAt: Date.now(),
+			limits: [],
+			metadata: { accountId: "ab\r\ncd", orgName: "Org\tName" },
+			resetCredits: { availableCount: 1 },
+		}];
+		const output = stripVTControlCharacters(
+			renderUsageReports(reports, theme, Date.now(), 80, undefined, { maskAccountLabels: true }),
+		);
+		const resetLine = output.split("\n").find(line => line.includes("saved reset"));
+		expect(resetLine).toContain("a*** cd (Org   Name): 1 saved reset");
+		expect(output).not.toContain("\r");
+		expect(output).not.toContain("\t");
+	});
 });

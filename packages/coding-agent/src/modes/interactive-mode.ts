@@ -126,17 +126,12 @@ import { isMCPToolName } from "../tools/builtin-names";
 import type { LspStartupServerInfo } from "../tools";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
 import {
-<<<<<<< HEAD
-	formatMoreItems,
-	replaceTabs,
-	shortenEmbeddedPaths,
-=======
 	FEED_MODEL_BADGE_WIDTH,
 	formatFeedModelBadge,
 	formatMoreItems,
 	isFeedModelBadgeEnabled,
 	replaceTabs,
->>>>>>> a33cc26824e3c91edd9fa42d681f10dceb4ac2f0
+	shortenEmbeddedPaths,
 	shortenPath,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
@@ -502,7 +497,7 @@ const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
 export function renderSubagentHudLines(
 	sessions: ObservableSession[],
 	columns: number,
-	showResolvedModelBadge = false,
+	showResolvedModelBadge = isFeedModelBadgeEnabled(),
 ): string[] {
 	const running = sessions.filter(
 		session => session.kind === "subagent" && session.status === "active" && session.detached === true,
@@ -511,7 +506,7 @@ export function renderSubagentHudLines(
 	const dot = theme.styledSymbol("status.done", "accent");
 	const visible = running.slice(0, SUBAGENT_HUD_VISIBLE_LIMIT);
 	const hiddenCount = running.length - visible.length;
-	const showModelBadge = isFeedModelBadgeEnabled();
+	const showModelBadge = showResolvedModelBadge;
 	const outerIndent = " ";
 	const rows = renderTreeList(
 		{
@@ -520,54 +515,6 @@ export function renderSubagentHudLines(
 			renderItem: (session, context) => {
 				const rowWidth = Math.max(0, columns - visibleWidth(outerIndent) - (context.prefixWidth ?? 0));
 				const role = session.agent ?? session.progress?.agent;
-<<<<<<< HEAD
-				const badge = agentTypeBadge(role, theme);
-				const resolvedModel =
-					showResolvedModelBadge && session.progress?.resolvedModel?.trim()
-						? session.progress.resolvedModel.trim()
-						: undefined;
-				let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}${badge}`;
-				if (resolvedModel)
-					line += `:${theme.fg("dim", truncateToWidth(replaceTabs(sanitizeText(resolvedModel)).replace(/[\r\n]+/g, " "), TRUNCATE_LENGTHS.MODEL))}`;
-				const description =
-					session.progress?.lastIntent?.trim() ||
-					session.progress?.description?.trim() ||
-					session.description?.trim() ||
-					session.progress?.assignment?.trim() ||
-					session.progress?.task?.trim();
-				const distinctDescription =
-					description && !labelEchoesHandle(session.id, description) ? description : undefined;
-				if (distinctDescription) {
-					const budget = Math.max(1, columns - visibleWidth(Bun.stripANSI(line)) - 8);
-					const formatted = replaceTabs(sanitizeText(shortenEmbeddedPaths(distinctDescription))).replace(
-						/\s*[\r\n]+\s*/g,
-						" ",
-					);
-					line += `${theme.sep.dot}${theme.fg("accent", truncateToWidth(formatted, budget))}`;
-				}
-				const currentTool = session.progress?.currentTool?.trim();
-				const lastTool = currentTool ? undefined : session.progress?.recentTools[0];
-				const toolName = currentTool || lastTool?.tool;
-				if (toolName) {
-					const args = currentTool ? session.progress?.currentToolArgs?.trim() : lastTool?.args.trim();
-					const argsKey = currentTool ? session.progress?.currentToolArgsKey : lastTool?.argsKey;
-					const displayArgs =
-						argsKey === "command" || argsKey === "path" || argsKey === "file_path"
-							? shortenEmbeddedPaths(args ?? "")
-							: args;
-					const toolText = replaceTabs(
-						sanitizeText(displayArgs ? `${toolName}(${displayArgs})` : toolName),
-					).replace(/\s*[\r\n]+\s*/g, " ");
-					const toolLabel = lastTool
-						? `${theme.styledSymbol(lastTool.isError ? "status.error" : "status.success", lastTool.isError ? "error" : "success")} ${toolText}`
-						: toolText;
-					return [
-						truncateToWidth(line, Math.max(1, columns - 6)),
-						`${theme.tree.hook} ${theme.fg("dim", truncateToWidth(toolLabel, Math.max(1, columns - 8)))}`,
-					];
-				}
-				return truncateToWidth(line, Math.max(1, columns - 6));
-=======
 				const displayId = truncateToWidth(
 					formatTaskId(session.id),
 					Math.max(0, rowWidth - visibleWidth(`${dot} `)),
@@ -588,35 +535,51 @@ export function renderSubagentHudLines(
 					: "";
 				const modelLead = modelBadge ? `${modelBadge} ` : "";
 				let line = `${dot} ${modelLead}${theme.fg("accent", theme.bold(displayId))}${badge}`;
-				const description = session.description?.trim() || session.progress?.description?.trim();
-				const distinctDescription =
-					description && !labelEchoesHandle(session.id, description) ? description : undefined;
-				if (distinctDescription) {
+				const rawDescription =
+					session.progress?.lastIntent?.trim() ||
+					session.progress?.description?.trim() ||
+					session.description?.trim() ||
+					session.progress?.assignment?.trim() ||
+					session.progress?.task?.trim();
+				const description =
+					rawDescription && !labelEchoesHandle(session.id, rawDescription) ? rawDescription : undefined;
+				if (description) {
 					const budget = Math.max(0, rowWidth - visibleWidth(line) - visibleWidth(": "));
-					const formatted = replaceTabs(distinctDescription).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-					if (budget > 0) {
+					const formatted = replaceTabs(shortenEmbeddedPaths(sanitizeText(description))).replace(
+						/\s*[\r\n]+\s*/g,
+						" ",
+					);
+					if (budget > 0)
 						line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(formatted, budget))}`;
-					}
-				} else {
-					// No spawn description: fall back to a muted task preview, same as
-					// the inline task rows when a row has no label.
-					const taskPreview = session.progress?.task?.trim();
-					if (taskPreview && !labelEchoesHandle(session.id, taskPreview)) {
-						const formatted = replaceTabs(taskPreview).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-						const budget = Math.min(TRUNCATE_LENGTHS.SHORT, Math.max(0, rowWidth - visibleWidth(line) - 1));
-						if (budget > 0) line += ` ${theme.fg("muted", truncateToWidth(formatted, budget))}`;
-					}
+				}
+				const currentTool = session.progress?.currentTool?.trim();
+				const lastTool = currentTool ? undefined : session.progress?.recentTools[0];
+				const toolName = currentTool || lastTool?.tool;
+				if (toolName) {
+					const rawArgs = currentTool ? session.progress?.currentToolArgs?.trim() : lastTool?.args.trim();
+					const args =
+						rawArgs === undefined ? undefined : replaceTabs(sanitizeText(rawArgs)).replace(/\s*[\r\n]+\s*/g, " ");
+					const argsKey = currentTool ? session.progress?.currentToolArgsKey : lastTool?.argsKey;
+					const displayArgs =
+						argsKey === "path" || argsKey === "file_path" || argsKey === "command"
+							? shortenEmbeddedPaths(args ?? "")
+							: args;
+					const cleanName = replaceTabs(sanitizeText(toolName)).replace(/\s*[\r\n]+\s*/g, " ");
+					const toolText = displayArgs ? `${cleanName}(${displayArgs})` : cleanName;
+					const toolLabel = lastTool
+						? `${theme.styledSymbol(lastTool.isError ? "status.error" : "status.success", lastTool.isError ? "error" : "success")} ${toolText}`
+						: toolText;
+					const lead = `${theme.tree.hook} `;
+					return [
+						truncateToWidth(line, rowWidth, ""),
+						`${lead}${theme.fg("dim", truncateToWidth(toolLabel, Math.max(0, rowWidth - visibleWidth(lead)), ""))}`,
+					];
 				}
 				return truncateToWidth(line, rowWidth, "");
->>>>>>> a33cc26824e3c91edd9fa42d681f10dceb4ac2f0
 			},
 		},
 		theme,
 	);
-<<<<<<< HEAD
-	if (hiddenCount > 0) rows.push(theme.fg("dim", `… ${hiddenCount} more running — open Agent Hub for full list`));
-	return ["", theme.bold(theme.fg("accent", "Subagents")), ...rows.map(line => ` ${line}`)];
-=======
 	if (hiddenCount > 0) {
 		rows.push(theme.fg("dim", `… ${hiddenCount} more running — open Agent Hub for full list`));
 	}
@@ -625,7 +588,6 @@ export function renderSubagentHudLines(
 		truncateToWidth(theme.bold(theme.fg("accent", "Subagents")), columns),
 		...rows.map(line => truncateToWidth(`${outerIndent}${line}`, columns, "")),
 	];
->>>>>>> a33cc26824e3c91edd9fa42d681f10dceb4ac2f0
 }
 
 const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;

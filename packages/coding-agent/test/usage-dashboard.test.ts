@@ -204,9 +204,9 @@ describe("buildProviderCards split + privacy", () => {
 			maskAccountLabels: false,
 			mergeAccounts: false,
 			labelPlacement: "moving",
-			loadActivity: async () => {},
-			requestRender: () => {},
-			onClose: () => {},
+			loadActivity: async () => { },
+			requestRender: () => { },
+			onClose: () => { },
 		});
 
 		const headers = Bun.stripANSI(dashboard.render(36).join("\n"))
@@ -217,6 +217,27 @@ describe("buildProviderCards split + privacy", () => {
 		expect(headers.some(line => line.includes("(West)"))).toBe(true);
 		expect(headers.every(line => line.length <= 36)).toBe(true);
 	});
+});
+
+it("renders normalized masked short account IDs without embedded line breaks", () => {
+	const dashboard = new UsageDashboardComponent({
+		reports: [{
+			provider: "openai-codex",
+			fetchedAt: Date.now(),
+			limits: [limit("openai-codex", "ab\r\ncd", "5h", "5 hours", 0.2, "ok")],
+			metadata: { accountId: "ab\r\ncd", orgName: "Org\tName" },
+		}],
+		renderDetail: () => "",
+		createMasker: createAccountMasker,
+		maskAccountLabels: true,
+		mergeAccounts: false,
+		labelPlacement: "moving",
+		loadActivity: async () => { },
+		requestRender: () => { },
+		onClose: () => { },
+	});
+	const rendered = dashboard.render(48).join("\n");
+	expect(Bun.stripANSI(rendered)).toContain("*** cd (Org   Name)");
 });
 
 describe("UsageDashboardComponent session toggles", () => {
@@ -232,9 +253,9 @@ describe("UsageDashboardComponent session toggles", () => {
 			maskAccountLabels,
 			mergeAccounts,
 			labelPlacement: "moving",
-			loadActivity: async () => {},
-			requestRender: () => {},
-			onClose: () => {},
+			loadActivity: async () => { },
+			requestRender: () => { },
+			onClose: () => { },
 		});
 	}
 

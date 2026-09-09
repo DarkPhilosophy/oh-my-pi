@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [18.1.15] - 2026-09-08
-
-### Fixed
-
-- Stopped long flicker when moving or resizing an omp pane in Warp. Resize repaints in place there after the drag settles (override with `PI_TUI_RESIZE_IN_PLACE=0`), with no alternate-screen borrow, no scrollback replay, blanked live rows so shrink drags cannot archive unfinished rows, and overlay toggle echoes repainting the modal instead of probing ([#11247](https://github.com/can1357/oh-my-pi/pull/11247) by [@H4vC](https://github.com/H4vC)).
-
 ### Added
 
 - Added right-side negative-space panels with independent block placement and `top`/`bottom` vertical alignment.
@@ -21,6 +15,13 @@
 - Fixed unnecessary scrollback clears when finalized history batches are still being retired during tool completion.
 - Fixed the right-side widget panel disappearing once the transcript grew past one screen: panel placement now resolves segment rows against the visible viewport instead of the taller logical frame.
 - Fixed the viewport collapsing to a couple of rows (taking the right-side widgets with it) shortly after startup: a finalized history batch that merely re-offers rows already borrowed into native scrollback is now accepted in place instead of forcing a scrollback-clearing replay.
+
+## [18.1.15] - 2026-09-08
+
+### Fixed
+
+- Stopped long flicker when moving or resizing an omp pane in Warp. Resize repaints in place there after the drag settles (override with `PI_TUI_RESIZE_IN_PLACE=0`), with no alternate-screen borrow, no scrollback replay, blanked live rows so shrink drags cannot archive unfinished rows, and overlay toggle echoes repainting the modal instead of probing ([#11247](https://github.com/can1357/oh-my-pi/pull/11247) by [@H4vC](https://github.com/H4vC)).
+
 ## [18.1.14] - 2026-09-07
 
 ### Fixed

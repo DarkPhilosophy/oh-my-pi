@@ -167,6 +167,21 @@ describe("Markdown incremental streaming lex (E2)", () => {
 		assertIdenticalGrowthTransient(MIXED, 80, 29);
 	});
 
+	it("a transient width change mid-stream still matches cold renders", () => {
+		const streaming = new Markdown("", 0, 0, THEME);
+		streaming.transientRenderCache = true;
+		for (let len = 1; len <= MIXED.length; len += 41) {
+			clearRenderCache();
+			streaming.setText(MIXED.slice(0, len));
+			streaming.render(80);
+		}
+		clearRenderCache();
+		streaming.setText(MIXED);
+		expect(streaming.render(40)).toEqual(renderColdTransient(MIXED, 40));
+		clearRenderCache();
+		expect(streaming.render(100)).toEqual(renderColdTransient(MIXED, 100));
+	});
+
 	it("a width change mid-stream still matches a cold render at the new width", () => {
 		const streaming = new Markdown("", 0, 0, THEME);
 		// Warm the stream cache at width 80 across the whole message.

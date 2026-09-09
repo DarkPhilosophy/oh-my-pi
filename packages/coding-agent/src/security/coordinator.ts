@@ -14,6 +14,7 @@ import securityRequestPrompt from "../prompts/security/scan-request.md" with { t
 import securityPublishDescription from "../prompts/tools/security-publish.md" with { type: "text" };
 import { createAgentSession } from "../sdk";
 import type { AgentSession } from "../session/agent-session";
+import type { AdvisorScope } from "../session/session-advisors";
 import type { AuthStorage } from "../session/auth-storage";
 import { SessionManager } from "../session/session-manager";
 import { createExactSecurityOAuthResolver, selectSecurityAccount } from "./auth";
@@ -80,6 +81,7 @@ export interface SecurityCoordinatorHost {
 	activeModel?: Model;
 	sessionId?: string;
 	agentId?: string;
+	getAdvisorScope?: () => AdvisorScope | undefined;
 	asyncJobManager?: AsyncJobManager;
 }
 
@@ -243,6 +245,7 @@ async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInp
 		authStorage: input.host.authStorage,
 		modelRegistry: input.host.modelRegistry,
 		settings: scanSettings,
+		advisorScope: input.host.getAdvisorScope?.(),
 		model: input.model,
 		getApiKey: createExactSecurityOAuthResolver({
 			authStorage: input.host.authStorage,
@@ -639,10 +642,10 @@ export class SecurityCoordinator {
 						runtimeMs: Math.max(0, this.#now().getTime() - new Date(startedAt).getTime()),
 						...(stats
 							? {
-									tokenUsage: { ...stats.tokens },
-									cost: stats.cost,
-									premiumRequests: stats.premiumRequests,
-								}
+								tokenUsage: { ...stats.tokens },
+								cost: stats.cost,
+								premiumRequests: stats.premiumRequests,
+							}
 							: {}),
 					};
 					await writeSecurityBundleToDirectory(plan.output.root, publishedBundle);

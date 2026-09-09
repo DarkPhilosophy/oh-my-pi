@@ -19,11 +19,7 @@ import { parseConfiguredThinkingLevel } from "../../thinking";
 import { Ellipsis, Hasher, type RenderCache, renderStatusLine, renderTreeList, truncateToWidth } from "../../tui";
 import type { ToolSession } from "..";
 import {
-<<<<<<< HEAD
-	TRUNCATE_LENGTHS,
-=======
 	FEED_MODEL_BADGE_WIDTH,
->>>>>>> a33cc26824e3c91edd9fa42d681f10dceb4ac2f0
 	formatBadge,
 	formatDuration,
 	formatEmptyMessage,
@@ -694,20 +690,6 @@ export function jobsRenderResult(
 							const last = visibleLabelLines[visibleLabelLines.length - 1]!;
 							visibleLabelLines[visibleLabelLines.length - 1] = `${last} …`;
 						}
-<<<<<<< HEAD
-						const durationText = uiTheme.fg("dim", formatDuration(job.durationMs));
-						const modelText =
-							job.type === "task" &&
-							typeof job.resolvedModel === "string" &&
-							job.resolvedModel.trim() &&
-							settings.get("task.showResolvedModelBadge")
-								? `${uiTheme.sep.dot}${uiTheme.fg(
-										"dim",
-										truncateToWidth(
-											replaceTabs(job.resolvedModel.trim()),
-											TRUNCATE_LENGTHS.MODEL,
-											Ellipsis.Unicode,
-=======
 						const rowPrefix = `${icon} ${typeBadge} `;
 						const modelIdentity = job.resolvedModelIdentity ?? job.resolvedModel;
 						const modelBadge =
@@ -720,7 +702,6 @@ export function jobsRenderResult(
 										Math.min(
 											FEED_MODEL_BADGE_WIDTH,
 											Math.max(0, rowWidth - visibleWidth(`${rowPrefix}${displayId}${durationSuffix}`) - 1),
->>>>>>> a33cc26824e3c91edd9fa42d681f10dceb4ac2f0
 										),
 									)
 								: "";
@@ -752,7 +733,7 @@ export function jobsRenderResult(
 
 						const rawPreview = job.errorText?.trim() || job.resultText?.trim() || "";
 						const preview = flattenStructuredPreview(
-							job.type === "task" && !job.errorText ? formatTaskResultPreview(rawPreview) : rawPreview,
+							job.type === "task" ? formatTaskResultPreview(rawPreview) : rawPreview,
 						);
 						if (preview) {
 							const maxLines = expanded ? PREVIEW_LINES_EXPANDED : PREVIEW_LINES_COLLAPSED;

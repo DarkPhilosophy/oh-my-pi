@@ -26,7 +26,8 @@ import {
 	type WatchdogConfigDoc,
 } from "../../src/advisor";
 import type { ModelRegistry } from "../../src/config/model-registry";
-import type { Settings } from "../../src/config/settings";
+import { Settings } from "../../src/config/settings";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../../src/modes/components/advisor-config";
 import { loadTheme } from "../../src/modes/theme/loader";
 import { createAdvisorMessageCard } from "../../src/modes/components/advisor-message";
@@ -579,20 +580,20 @@ describe("advisor", () => {
 				injectIdle: async messages => {
 					injected.push(...messages);
 				},
-				scheduleIdleFlush: () => {},
+				scheduleIdleFlush: () => { },
 			});
 			yq.register<AdvisorNote>("advisor", {
 				build: entries =>
 					entries.length === 0
 						? null
 						: ({
-								role: "custom",
-								customType: "advisor",
-								display: true,
-								attribution: "agent",
-								timestamp: Date.now(),
-								content: formatAdvisorBatchContent(entries),
-							} as AgentMessage),
+							role: "custom",
+							customType: "advisor",
+							display: true,
+							attribution: "agent",
+							timestamp: Date.now(),
+							content: formatAdvisorBatchContent(entries),
+						} as AgentMessage),
 			});
 
 			yq.enqueue("advisor", { note: "first note" });
@@ -613,7 +614,7 @@ describe("advisor", () => {
 			let scheduled = 0;
 			const yq = new YieldQueue({
 				isStreaming: () => false,
-				injectIdle: async () => {},
+				injectIdle: async () => { },
 				scheduleIdleFlush: () => {
 					scheduled++;
 				},
@@ -635,8 +636,8 @@ describe("advisor", () => {
 		it("clear(kind) drops only that kind's queued entries", () => {
 			const yq = new YieldQueue({
 				isStreaming: () => false,
-				injectIdle: async () => {},
-				scheduleIdleFlush: () => {},
+				injectIdle: async () => { },
+				scheduleIdleFlush: () => { },
 			});
 			yq.register<{ note: string }>("advisor", {
 				build: entries => (entries.length === 0 ? null : ({ role: "custom", content: "x" } as AgentMessage)),
@@ -1434,8 +1435,8 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(input);
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 		}
@@ -1452,14 +1453,14 @@ describe("advisor", () => {
 					if (promptCalls === 1) await firstPromptPromise;
 					else finishSecondPrompt();
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "first", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 
@@ -1498,14 +1499,14 @@ describe("advisor", () => {
 						stopReason: "stop",
 					} as AssistantMessage);
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "work", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				notifyIdle: () => idleNotifications.push(1),
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -1532,13 +1533,13 @@ describe("advisor", () => {
 					promptStarted.resolve();
 					await releasePrompt.promise;
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			});
 
 			runtime.onTurnEnd();
@@ -1564,13 +1565,13 @@ describe("advisor", () => {
 					promptStarted.resolve();
 					await releasePrompt.promise;
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			});
 
 			runtime.onTurnEnd();
@@ -1597,7 +1598,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 
@@ -1651,14 +1652,14 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "first", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				maintainContext: async () => {
 					maintainCalls++;
 					if (maintainCalls === 1) {
@@ -1702,8 +1703,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [
@@ -1711,7 +1712,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 				maintainContext: async () => {
 					maintainCalls++;
@@ -1756,14 +1757,14 @@ describe("advisor", () => {
 					promptInputs.push(promptText(input));
 					startPrompt();
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "first", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				maintainContext: async () => {
 					maintainCalls++;
 					if (maintainCalls === 1) {
@@ -1810,8 +1811,8 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(promptText(input));
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			// 12 messages x ~40K CJK units ≈ 480K units total: > FAST_RENDER_MAX_CHARS
@@ -1834,7 +1835,7 @@ describe("advisor", () => {
 			} as unknown as NonNullable<AdvisorRuntimeHost["obfuscator"]>;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
@@ -1865,8 +1866,8 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(promptText(input));
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const edits = Array.from({ length: 8 }, (_, i) => ({
@@ -1882,7 +1883,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			runtime.onTurnEnd(messages);
@@ -1908,8 +1909,8 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(promptText(input));
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			// 40K numbers x 25 chars conservative width = ~1M estimated units.
@@ -1923,7 +1924,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			runtime.onTurnEnd(messages);
@@ -1947,8 +1948,8 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(promptText(input));
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const shared = { blob: "s".repeat(150 * 1024) };
@@ -1968,7 +1969,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			runtime.onTurnEnd(messages);
@@ -1990,8 +1991,8 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(promptText(input));
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const wide = Object.fromEntries(Array.from({ length: 30_000 }, (_, i) => [`config_key_${i}`, ""]));
@@ -2004,7 +2005,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			runtime.onTurnEnd(messages);
@@ -2025,8 +2026,8 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(promptText(input));
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const values = Array.from({ length: 200_000 }, () => "");
@@ -2039,7 +2040,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			runtime.onTurnEnd(messages);
@@ -2065,8 +2066,8 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(promptText(input));
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const prefix: AgentMessage[] = Array.from(
@@ -2092,7 +2093,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [...prefix, call, result];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			runtime.onTurnEnd(messages);
@@ -2121,7 +2122,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "t0", timestamp: 0 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				maintainContext: async () => {
 					maintainCalls++;
 					// Only push new turns during the FIRST drain cycle (first 3 calls)
@@ -2142,8 +2143,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					if (promptInputs.length === 1) startPrompt();
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2172,7 +2173,7 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					resetCount++;
 				},
@@ -2181,7 +2182,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "turn1", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				maintainContext: async () => {
 					maintainCalls++;
 					if (maintainCalls === 1) {
@@ -2227,14 +2228,14 @@ describe("advisor", () => {
 				prompt: async () => {
 					finishPrompt();
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "t1", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				maintainContext: async () => {
 					maintainCalls++;
 					if (maintainCalls === 1) {
@@ -2285,14 +2286,14 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "hello", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				beginAdvisorUpdate: inProgress => updateStates.push(inProgress),
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2314,14 +2315,14 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "done", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				beginAdvisorUpdate: inProgress => updateStates.push(inProgress),
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2343,14 +2344,14 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "first", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				maintainContext: async () => {
 					throw new Error("maintenance failed");
 				},
@@ -2372,8 +2373,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [
@@ -2382,7 +2383,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 			runtime.onTurnEnd();
@@ -2401,7 +2402,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: `token ${secret}`, timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2424,7 +2425,7 @@ describe("advisor", () => {
 			];
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			});
 
@@ -2454,7 +2455,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2483,7 +2484,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2515,7 +2516,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2552,7 +2553,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2593,7 +2594,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2625,7 +2626,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2656,7 +2657,7 @@ describe("advisor", () => {
 			];
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			});
 
@@ -2687,7 +2688,7 @@ describe("advisor", () => {
 			];
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			});
 			runtime.onTurnEnd();
@@ -2716,7 +2717,7 @@ describe("advisor", () => {
 			];
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			});
 			runtime.onTurnEnd();
@@ -2751,7 +2752,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2788,7 +2789,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2819,7 +2820,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2854,7 +2855,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2906,7 +2907,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2941,7 +2942,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "first tok_abc123", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -2980,7 +2981,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -3039,7 +3040,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -3076,7 +3077,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "later tok_abc123", timestamp: 2 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -3117,7 +3118,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -3150,7 +3151,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -3184,7 +3185,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				obfuscator,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -3211,8 +3212,8 @@ describe("advisor", () => {
 					if (promptCalls === 1) finishFirst();
 					else finishSecond();
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const rule =
@@ -3220,7 +3221,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 
@@ -3273,8 +3274,8 @@ describe("advisor", () => {
 					promptCalls++;
 					state.error = promptCalls === 1 ? "transient provider 500" : undefined;
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state,
 			};
 			const rule =
@@ -3282,7 +3283,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 
@@ -3337,7 +3338,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 			runtime.onTurnEnd();
@@ -3363,7 +3364,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 			runtime.onTurnEnd();
@@ -3385,14 +3386,14 @@ describe("advisor", () => {
 					promptCalls++;
 					if (promptCalls === 2) finishSecond();
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 			runtime.onTurnEnd();
@@ -3425,7 +3426,7 @@ describe("advisor", () => {
 					if (promptCalls === 1) finishFirst();
 					else finishSecond();
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					resetCount++;
 				},
@@ -3435,7 +3436,7 @@ describe("advisor", () => {
 			let shouldResetContext = false;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				maintainContext: async incoming => {
 					// The host receives the pending update itself and sizes it with its
 					// own model's tokenizer, so it must arrive as a non-empty message.
@@ -3470,7 +3471,7 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(input);
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					resetCount++;
 				},
@@ -3482,7 +3483,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "bbb", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				maintainContext: async () => {
 					maintenanceCalls++;
 					if (maintenanceCalls !== 1) return false;
@@ -3525,7 +3526,7 @@ describe("advisor", () => {
 			let shouldResetContext = false;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				maintainContext: async () => shouldResetContext,
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -3567,7 +3568,7 @@ describe("advisor", () => {
 					promptCalls++;
 					state.error = promptCalls === 1 ? overflowMessage : undefined;
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					resetCount++;
 					state.messages.length = 0;
@@ -3585,7 +3586,7 @@ describe("advisor", () => {
 			];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			runtime.seedTo(messages.length);
@@ -3634,7 +3635,7 @@ describe("advisor", () => {
 					promptCalls++;
 					state.error = promptCalls === 1 ? overflowMessage : undefined;
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -3644,7 +3645,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "seeded-primary", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			runtime.seedTo(messages.length);
@@ -3693,17 +3694,17 @@ describe("advisor", () => {
 						typeof input === "string"
 							? input
 							: input
-									.map(message => {
-										if (!("content" in message)) return "";
-										if (typeof message.content === "string") return message.content;
-										const textParts: string[] = [];
-										for (const block of message.content) {
-											if (block.type === "text") textParts.push(block.text);
-										}
-										return textParts.join("");
-									})
-									.filter(Boolean)
-									.join("\n\n");
+								.map(message => {
+									if (!("content" in message)) return "";
+									if (typeof message.content === "string") return message.content;
+									const textParts: string[] = [];
+									for (const block of message.content) {
+										if (block.type === "text") textParts.push(block.text);
+									}
+									return textParts.join("");
+								})
+								.filter(Boolean)
+								.join("\n\n");
 					state.messages.push({ role: "user", content, timestamp: Date.now() } as AgentMessage);
 					if (promptCalls === 2) {
 						firstOverflowPromptStarted.resolve();
@@ -3718,7 +3719,7 @@ describe("advisor", () => {
 						} as AgentMessage);
 					}
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -3740,7 +3741,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 					maintainContext: async incoming => {
 						maintenanceTokens.push(new Tokenizer().countMessage(incoming));
 						if (maintenanceTokens.length === 4) fourthMaintenance.resolve();
@@ -3788,7 +3789,7 @@ describe("advisor", () => {
 					promptCalls++;
 					state.error = promptCalls === 1 ? overflowMessage : undefined;
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -3798,7 +3799,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "seed-primary", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			runtime.seedTo(messages.length);
@@ -3859,7 +3860,7 @@ describe("advisor", () => {
 					state.messages.push(failure);
 					state.error = "opaque provider rejection";
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					resetCount++;
 					state.messages.length = 0;
@@ -3874,7 +3875,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "ancient-primary", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			runtime.seedTo(messages.length);
@@ -3915,7 +3916,7 @@ describe("advisor", () => {
 					}
 					state.error = overflowMessage;
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -3925,7 +3926,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "ancient-history", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				notifyFailure: error => failures.push(error),
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
@@ -3970,14 +3971,14 @@ describe("advisor", () => {
 					startPrompt();
 					await promptFinish;
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 
@@ -4024,14 +4025,14 @@ describe("advisor", () => {
 					startPrompt();
 					await promptFinish;
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 			const controller = new AbortController();
@@ -4066,14 +4067,14 @@ describe("advisor", () => {
 						throw new Error("fail");
 					}
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 
@@ -4091,14 +4092,14 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					throw new Error("fail");
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 
@@ -4120,14 +4121,14 @@ describe("advisor", () => {
 						throw new Error("404 No endpoints available matching your guardrail restrictions and data policy.");
 					}
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				notifyFailure: error => failures.push(error),
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
@@ -4177,14 +4178,14 @@ describe("advisor", () => {
 						"Codex error event: The 'gpt-5.3-codex-spark' model is not supported when using Codex with a ChatGPT account. (code=invalid_request_error)",
 					);
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				notifyFailure: error => failures.push(error),
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
@@ -4218,15 +4219,15 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					if (shouldFail) throw new Error("socket hang up");
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "t1", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
-				notifyFailure: () => {},
+				enqueueAdvice: () => { },
+				notifyFailure: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 
@@ -4267,15 +4268,15 @@ describe("advisor", () => {
 				prompt: async () => {
 					throw new Error("socket hang up");
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
-				onTurnError: () => new Promise<undefined>(() => {}),
+				enqueueAdvice: () => { },
+				onTurnError: () => new Promise<undefined>(() => { }),
 			};
 			const runtime = new AdvisorRuntime(agent, host, 60_000);
 
@@ -4302,14 +4303,14 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(input);
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			runtime.onTurnEnd(messages);
@@ -4350,8 +4351,8 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(input);
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			let poisonThrows = false;
@@ -4368,7 +4369,7 @@ describe("advisor", () => {
 			let maintenanceCalls = 0;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				maintainContext: async () => {
 					if (!injectLate) return false;
 					maintenanceCalls++;
@@ -4437,15 +4438,15 @@ describe("advisor", () => {
 					prompt: async input => {
 						promptInputs.push(input);
 					},
-					abort: () => {},
-					reset: () => {},
+					abort: () => { },
+					reset: () => { },
 					state: { messages: [] },
 				};
 				// ~2000 × 5KB ≈ 10MB replay — the post-reset/first-enable shape.
 				const messages = Array.from({ length: 2000 }, (_, i) => bigMessage(i));
 				const host: AdvisorRuntimeHost = {
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
 				runtime.onTurnEnd(messages);
@@ -4463,8 +4464,8 @@ describe("advisor", () => {
 					prompt: async input => {
 						promptInputs.push(input);
 					},
-					abort: () => {},
-					reset: () => {},
+					abort: () => { },
+					reset: () => { },
 					state: { messages: [] },
 				};
 				// The toolCall sits at index 99 and its result arrives 49 messages
@@ -4490,7 +4491,7 @@ describe("advisor", () => {
 				} as AgentMessage;
 				const host: AdvisorRuntimeHost = {
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
 				runtime.onTurnEnd(messages);
@@ -4510,14 +4511,14 @@ describe("advisor", () => {
 					prompt: async input => {
 						promptInputs.push(input);
 					},
-					abort: () => {},
-					reset: () => {},
+					abort: () => { },
+					reset: () => { },
 					state: { messages: [] },
 				};
 				const messages: AgentMessage[] = [{ role: "user", content: "before", timestamp: 1 } as AgentMessage];
 				const host: AdvisorRuntimeHost = {
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
 				runtime.onTurnEnd(messages);
@@ -4544,14 +4545,14 @@ describe("advisor", () => {
 					prompt: async input => {
 						promptInputs.push(input);
 					},
-					abort: () => {},
-					reset: () => {},
+					abort: () => { },
+					reset: () => { },
 					state: { messages: [] },
 				};
 				const messages = Array.from({ length: 400 }, (_, i) => bigMessage(i));
 				const host: AdvisorRuntimeHost = {
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
 				runtime.onTurnEnd(messages);
@@ -4573,14 +4574,14 @@ describe("advisor", () => {
 					prompt: async input => {
 						promptInputs.push(input);
 					},
-					abort: () => {},
-					reset: () => {},
+					abort: () => { },
+					reset: () => { },
 					state: { messages: [] },
 				};
 				const messages = Array.from({ length: 300 }, (_, i) => bigMessage(i));
 				const host: AdvisorRuntimeHost = {
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 				};
 				const runtime = new AdvisorRuntime(agent, host, 0);
 				runtime.onTurnEnd(messages);
@@ -4620,7 +4621,7 @@ describe("advisor", () => {
 						? "404 No endpoints available matching your guardrail restrictions and data policy."
 						: undefined;
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					state.error = undefined;
 				},
@@ -4629,7 +4630,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				notifyFailure: error => failures.push(error),
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
@@ -4681,7 +4682,7 @@ describe("advisor", () => {
 					} as unknown as AgentMessage);
 					state.error = undefined;
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -4741,7 +4742,7 @@ describe("advisor", () => {
 					} as unknown as AgentMessage);
 					state.error = undefined;
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -4755,7 +4756,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "turn-0", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				onTurnError: error => {
 					turnErrors.push(error);
 				},
@@ -4812,7 +4813,7 @@ describe("advisor", () => {
 					} as unknown as AgentMessage);
 					state.error = undefined;
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -4878,8 +4879,8 @@ describe("advisor", () => {
 						timestamp: 3,
 					} as unknown as AgentMessage);
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -4900,7 +4901,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 					notifyFailure: error => failures.push(error),
 				},
 				0,
@@ -4933,8 +4934,8 @@ describe("advisor", () => {
 						timestamp: promptInputs.length + 1,
 					} as unknown as AgentMessage);
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -4955,7 +4956,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 					notifyFailure: error => failures.push(error),
 				},
 				0,
@@ -5000,8 +5001,8 @@ describe("advisor", () => {
 						timestamp: promptInputs.length + 1,
 					} as unknown as AgentMessage);
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -5023,7 +5024,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 					notifyFailure: error => failures.push(error),
 					onTurnError: async () => {
 						fallbackCalls++;
@@ -5061,8 +5062,8 @@ describe("advisor", () => {
 						timestamp: promptInputs.length + 1,
 					} as unknown as AgentMessage);
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -5083,7 +5084,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 					notifyFailure: error => failures.push(error),
 					onTurnError: async () => {
 						fallbackCalls++;
@@ -5134,8 +5135,8 @@ describe("advisor", () => {
 						timestamp: promptInputs.length + 1,
 					} as unknown as AgentMessage);
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -5158,7 +5159,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 					notifyFailure: error => failures.push(error),
 					getModelIdentity: () => identity,
 					onTurnError: async () => {
@@ -5200,8 +5201,8 @@ describe("advisor", () => {
 						timestamp: promptInputs.length + 1,
 					} as unknown as AgentMessage);
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -5223,7 +5224,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 					notifyFailure: error => failures.push(error),
 					getModelIdentity: () => identity,
 					onTurnError: async () => {
@@ -5272,8 +5273,8 @@ describe("advisor", () => {
 						timestamp: 3,
 					} as unknown as AgentMessage);
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -5294,7 +5295,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 					notifyFailure: error => failures.push(error),
 				},
 				0,
@@ -5322,7 +5323,7 @@ describe("advisor", () => {
 					events.push(`prompt:${promptCalls}`);
 					state.error = promptCalls === 1 ? "provider failed" : undefined;
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					state.error = undefined;
 				},
@@ -5331,7 +5332,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				onTurnError: error => {
 					turnErrors.push(error);
 					events.push(`hook:${error instanceof Error ? error.message : String(error)}`);
@@ -5365,7 +5366,7 @@ describe("advisor", () => {
 					events.push(`prompt:${promptCalls}`);
 					state.error = `provider failed ${promptCalls}`;
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					state.error = undefined;
 				},
@@ -5374,7 +5375,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				onTurnError: error => {
 					turnErrors.push(error);
 					events.push(`hook:${error instanceof Error ? error.message : String(error)}`);
@@ -5424,7 +5425,7 @@ describe("advisor", () => {
 					events.push(`prompt:${promptCalls}`);
 					state.error = promptCalls === 1 ? "provider failed" : undefined;
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					state.error = undefined;
 				},
@@ -5433,7 +5434,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				onTurnError: async error => {
 					turnErrors.push(error);
 					events.push(`hook:${error instanceof Error ? error.message : String(error)}`);
@@ -5487,7 +5488,7 @@ describe("advisor", () => {
 					state.messages.push(failure);
 					state.error = errorMessage;
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -5502,7 +5503,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				onTurnError: error => {
 					turnErrors.push(error);
 				},
@@ -5556,7 +5557,7 @@ describe("advisor", () => {
 						state.error = undefined;
 					}
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -5571,7 +5572,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				onTurnAbandoned: () => {
 					abandonedTurns++;
 				},
@@ -5637,7 +5638,7 @@ describe("advisor", () => {
 						timestamp: Date.now(),
 					} as unknown as AgentMessage);
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					resetCalls++;
 					state.messages.length = 0;
@@ -5652,7 +5653,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 
@@ -5688,8 +5689,8 @@ describe("advisor", () => {
 					}
 					return Promise.resolve();
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
@@ -5697,7 +5698,7 @@ describe("advisor", () => {
 				agent,
 				{
 					snapshotMessages: () => messages,
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 				},
 				0,
 			);
@@ -5742,7 +5743,7 @@ describe("advisor", () => {
 						timestamp: Date.now(),
 					} as unknown as AgentMessage);
 				},
-				abort: () => {},
+				abort: () => { },
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -5757,7 +5758,7 @@ describe("advisor", () => {
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				notifyFailure: err => notifyFailures.push(err instanceof Error ? err.message : String(err)),
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
@@ -5804,13 +5805,13 @@ describe("advisor", () => {
 				// AdvisorRuntime.reset() calls agent.reset() then agent.abort(); the real
 				// Agent.abort rejects the awaited prompt, so model that rejection here.
 				abort: () => rejectInFlight?.(new Error("advisor reset")),
-				reset: () => {},
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "old-conversation", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 
@@ -5853,13 +5854,13 @@ describe("advisor", () => {
 					return gate.promise;
 				},
 				abort: () => rejectInFlight?.(new Error("session transition")),
-				reset: () => {},
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "keep me", timestamp: 1 } as AgentMessage];
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 			});
 
 			runtime.onTurnEnd(messages);
@@ -5884,8 +5885,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					prompted.resolve();
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [
@@ -5900,7 +5901,7 @@ describe("advisor", () => {
 			];
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				maintainContext: async () => {
 					if (++maintenanceCalls === 1) {
 						void runtime.pauseForSessionTransition();
@@ -5938,21 +5939,21 @@ describe("advisor", () => {
 						if (promptCalls === 1 && hookKind === "error") throw new Error("provider failure");
 						if (promptCalls === 2) replacementPromptStarted.resolve();
 					},
-					abort: () => {},
-					reset: () => {},
+					abort: () => { },
+					reset: () => { },
 					state: { messages: [] },
 				};
 				const runtime = new AdvisorRuntime(agent, {
 					snapshotMessages: () => [],
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 					...(hookKind === "success"
 						? { onTurnSuccess: blockHook }
 						: {
-								onTurnError: async () => {
-									await blockHook();
-									return false;
-								},
-							}),
+							onTurnError: async () => {
+								await blockHook();
+								return false;
+							},
+						}),
 				});
 
 				runtime.onTurnEnd([{ role: "user", content: "old session", timestamp: 1 } as AgentMessage]);
@@ -5974,15 +5975,15 @@ describe("advisor", () => {
 				prompt: async () => {
 					throw new Error("provider failure");
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(
 				agent,
 				{
 					snapshotMessages: () => [],
-					enqueueAdvice: () => {},
+					enqueueAdvice: () => { },
 					onTurnError: () => {
 						recoveryStarted.resolve();
 						return false;
@@ -6010,13 +6011,13 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					throw new Error("resource_exhausted");
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				notifyFailure: () => {
 					failureNotified = true;
 				},
@@ -6050,13 +6051,13 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					throw new Error("overloaded: server is at capacity");
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				notifyFailure: error => failures.push(error),
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
@@ -6078,14 +6079,14 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					if (shouldFail) throw new Error("insufficient_quota: rate limit exceeded");
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => {},
-				notifyQuotaExhausted: () => {},
+				enqueueAdvice: () => { },
+				notifyQuotaExhausted: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			const messages: AgentMessage[] = [{ role: "user", content: "quota-turn", timestamp: 1 } as AgentMessage];
@@ -6118,14 +6119,14 @@ describe("advisor", () => {
 				prompt: async () => {
 					throw new Error("insufficient_quota");
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => {},
-				notifyQuotaExhausted: () => {},
+				enqueueAdvice: () => { },
+				notifyQuotaExhausted: () => { },
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			const messages: AgentMessage[] = [{ role: "user", content: "turn", timestamp: 1 } as AgentMessage];
@@ -6150,14 +6151,14 @@ describe("advisor", () => {
 						throw new Error("insufficient_quota: you have exceeded your rate limit");
 					}
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			let quotaNotified = false;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				onTurnError: async () => true,
 				notifyQuotaExhausted: () => {
 					quotaNotified = true;
@@ -6189,15 +6190,15 @@ describe("advisor", () => {
 						state.messages.push({ role: "user", content: input, timestamp: Date.now() } as AgentMessage);
 					}
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				rollbackTo: count => state.messages.splice(count),
 				state,
 			};
 			const hookErrors: unknown[] = [];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				onTurnError: async error => {
 					hookErrors.push(error);
 					return hookErrors.length === 1;
@@ -6220,14 +6221,14 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					throw new Error("insufficient_quota: you have exceeded your rate limit");
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			let quotaNotified = false;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				onTurnError: async () => false,
 				notifyQuotaExhausted: () => {
 					quotaNotified = true;
@@ -6253,8 +6254,8 @@ describe("advisor", () => {
 						throw new Error("insufficient_quota: you have exceeded your rate limit");
 					}
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			let quotaNotified = 0;
@@ -6263,7 +6264,7 @@ describe("advisor", () => {
 			const { promise: hookEntered, resolve: allowHook } = Promise.withResolvers<void>();
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				maintainContext: async (_incoming, signal) => {
 					maintenanceSignals.push(signal);
 					return false;
@@ -6307,13 +6308,13 @@ describe("advisor", () => {
 				prompt: async () => {
 					throw new Error("provider failure");
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				onTurnError: async (_error, _failedMessages, signal) => {
 					recoverySignal = signal;
 					hookEntered.resolve();
@@ -6345,15 +6346,15 @@ describe("advisor", () => {
 					}
 					// callCount >= 3: success
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const hookErrors: unknown[] = [];
 			let quotaNotified = false;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				onTurnError: async error => {
 					hookErrors.push(error);
 					return hookErrors.length === 1 ? true : undefined;
@@ -6391,15 +6392,15 @@ describe("advisor", () => {
 					}
 					throw new Error("429 Too Many Requests: quota exceeded");
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const hookErrors: unknown[] = [];
 			let quotaNotified = false;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				onTurnError: async error => {
 					hookErrors.push(error);
 					return hookErrors.length === 1 ? true : undefined;
@@ -6434,15 +6435,15 @@ describe("advisor", () => {
 						throw new Error("429 Too Many Requests: quota exceeded");
 					}
 				},
-				abort: () => {},
-				reset: () => {},
+				abort: () => { },
+				reset: () => { },
 				state: { messages: [] },
 			};
 			const hookErrors: unknown[] = [];
 			let quotaNotified = false;
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				enqueueAdvice: () => {},
+				enqueueAdvice: () => { },
 				onTurnError: async error => {
 					hookErrors.push(error);
 					return true;
@@ -6739,10 +6740,10 @@ describe("advisor", () => {
 		};
 		const callbacks = {
 			loadDoc: async () => ({ advisors: [] }),
-			save: async () => {},
-			close: () => {},
-			requestRender: () => {},
-			notify: () => {},
+			save: async () => { },
+			close: () => { },
+			requestRender: () => { },
+			notify: () => { },
 		};
 		const strip = (lines: readonly string[]): string => lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
 		const make = (
@@ -6821,6 +6822,38 @@ describe("advisor", () => {
 			expect(strip(overlay.render(200))).toContain("read, web_search");
 		});
 
+		it("preserves routed model identity and explicit effort through Enter on both pickers", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const model = buildModel({
+				id: "z-route:free",
+				name: "z-route:free",
+				api: "openai-completions",
+				provider: "openrouter",
+				baseUrl: "https://example.com",
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128_000,
+				maxTokens: 1024,
+			});
+			const doc: WatchdogConfigDoc = {
+				advisors: [{ name: "Architecture", model: "openrouter/z-route:free:high" }],
+			};
+			const overlay = make(doc, {
+				settings: Settings.isolated({}),
+				scopedModels: [{ model }],
+			});
+			overlay.render(120);
+			overlay.handleInput("\x1b[C");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("\r");
+			overlay.handleInput("\r");
+			overlay.handleInput("\r");
+			expect(doc.advisors[0]?.model).toBe("openrouter/z-route:free:high");
+		});
 		it("keeps roster focus when pointer motion or the wheel is routed over the editor", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");

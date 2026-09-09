@@ -42,6 +42,7 @@ function coordinatorFor(runtime: SlashCommandRuntime) {
 		activeModel: runtime.session.model,
 		sessionId: runtime.session.sessionId,
 		agentId: runtime.session.getAgentId(),
+		getAdvisorScope: () => runtime.session.advisorScope,
 		asyncJobManager: runtime.session.asyncJobManager,
 	});
 }
@@ -108,11 +109,11 @@ function parsePlanOptions(rest: string): SecurityPlanCliOptions {
 	const target: SecurityTargetRequest =
 		kind === "ref_diff"
 			? {
-					kind,
-					baseRevision: baseRevision ?? "",
-					headRevision: headRevision ?? "",
-					...common,
-				}
+				kind,
+				baseRevision: baseRevision ?? "",
+				headRevision: headRevision ?? "",
+				...common,
+			}
 			: kind === "working_tree"
 				? { kind, ...common }
 				: kind === "scoped_path"
@@ -276,20 +277,20 @@ async function handleCloudCommand(runtime: SlashCommandRuntime, rest: string): P
 				configurations.length === 0
 					? "No Codex Security cloud scan configurations are available for this account."
 					: configurations
-							.map(item =>
-								[
-									item.id,
-									item.state ?? "unknown",
-									item.currentStep ?? "unknown",
-									`repo=${item.repositoryId}`,
-									`environment=${item.environmentId}`,
-									item.repositoryUrl,
-									item.remainingScans === undefined ? "" : `${item.remainingScans} scan(s) remaining`,
-								]
-									.filter(Boolean)
-									.join(" "),
-							)
-							.join("\n"),
+						.map(item =>
+							[
+								item.id,
+								item.state ?? "unknown",
+								item.currentStep ?? "unknown",
+								`repo=${item.repositoryId}`,
+								`environment=${item.environmentId}`,
+								item.repositoryUrl,
+								item.remainingScans === undefined ? "" : `${item.remainingScans} scan(s) remaining`,
+							]
+								.filter(Boolean)
+								.join(" "),
+						)
+						.join("\n"),
 			);
 			return;
 		}
@@ -399,8 +400,8 @@ export async function handleSecurityCommand(
 					scans.length === 0
 						? "No security scans are stored for this project."
 						: scans
-								.map(scan => `${scan.id} ${scan.status} ${scan.findingCount} finding(s) ${scan.producer.name}`)
-								.join("\n"),
+							.map(scan => `${scan.id} ${scan.status} ${scan.findingCount} finding(s) ${scan.producer.name}`)
+							.join("\n"),
 				);
 				return commandConsumed();
 			}

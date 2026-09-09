@@ -48,7 +48,6 @@ describe("hub jobs task model badges", () => {
 		vi.restoreAllMocks();
 	});
 
-<<<<<<< HEAD
 	it("displays yielded prose without transport markup in settled jobs and IRC replies", () => {
 		const envelope =
 			'<task-result id="Reader" status="completed">\n<meta lines="3" />\n<output>\n{"summary":"Read completed.\\nNo files changed."}\n</output>\n</task-result>';
@@ -114,6 +113,29 @@ describe("hub jobs task model badges", () => {
 		}
 	});
 
+	it("unwraps failed task delivery envelopes while keeping the failure state", () => {
+		const text = renderJobText(
+			{
+				jobs: [
+					{
+						id: "Reader",
+						type: "task",
+						status: "failed",
+						label: "Reader",
+						durationMs: 1,
+						errorText:
+							'<task-result id="Reader" status="failed"><output>\n{"summary":"Could not read the requested file."}\n</output></task-result>',
+					},
+				],
+			},
+			true,
+		);
+		expect(text).toContain("failed");
+		expect(text).toContain("Could not read the requested file.");
+		expect(text).not.toContain("<task-result");
+		expect(text).not.toContain('"summary"');
+	});
+
 	it("does not reinterpret JSON emitted by shell jobs or ordinary IRC messages", () => {
 		const body = '{"summary":"literal data"}';
 		const text = renderJobText({
@@ -133,10 +155,7 @@ describe("hub jobs task model badges", () => {
 		expect(card.render(160).join("\n").replace(ansiPattern, "")).toContain(body);
 	});
 
-	it("renders a task job's resolved model selector with its explicit reasoning suffix exactly once when enabled", () => {
-=======
 	it("keeps a literal thinking suffix in a completed task's identity with a separate thinking glyph", () => {
->>>>>>> a33cc26824e3c91edd9fa42d681f10dceb4ac2f0
 		settings.override("task.showResolvedModelBadge", true);
 		const identity = "p/model:high";
 		const text = renderJobText({
