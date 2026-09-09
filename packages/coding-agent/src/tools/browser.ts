@@ -430,7 +430,7 @@ async function saveBrowserOutputArtifact(session: ToolSession, fullText: string)
 
 function describeBrowser(handle: BrowserHandle): string {
 	if ("client" in handle) return `cmux browser (${handle.kind.surface ?? "split"})`;
-	if ("webSocketUrl" in handle) return `Firefox relay (${handle.webSocketUrl})`;
+	if ("webSocketUrl" in handle) return "Firefox relay";
 	switch (handle.kind.kind) {
 		case "headless":
 			return `headless browser (${handle.kind.headless ? "hidden" : "visible"}${handle.sharedDaemon ? ", shared" : ""})`;
@@ -454,7 +454,7 @@ function describeKind(kind: BrowserKind): string {
 		case "relay":
 			return `relay:${kind.cdpUrl}`;
 		case "firefox-relay":
-			return `firefox-relay:${kind.webSocketUrl}`;
+			return "firefox-relay";
 		case "cmux":
 			return `cmux:${kind.surface ?? "split"}`;
 	}

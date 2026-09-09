@@ -565,6 +565,7 @@ function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPa
 	const reload = page.reload;
 	const goBack = page.goBack;
 	const goForward = page.goForward;
+	const setContent = page.setContent;
 	const onDescriptor = Object.getOwnPropertyDescriptor(page, "on");
 	const offDescriptor = Object.getOwnPropertyDescriptor(page, "off");
 	const onceDescriptor = Object.getOwnPropertyDescriptor(page, "once");
@@ -573,6 +574,7 @@ function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPa
 	const reloadDescriptor = Object.getOwnPropertyDescriptor(page, "reload");
 	const goBackDescriptor = Object.getOwnPropertyDescriptor(page, "goBack");
 	const goForwardDescriptor = Object.getOwnPropertyDescriptor(page, "goForward");
+	const setContentDescriptor = Object.getOwnPropertyDescriptor(page, "setContent");
 
 	Object.defineProperties(page, {
 		on: {
@@ -641,6 +643,7 @@ function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPa
 		["reload", reload],
 		["goBack", goBack],
 		["goForward", goForward],
+		["setContent", setContent],
 	] as const) {
 		Object.defineProperty(page, name, {
 			configurable: true,
@@ -671,6 +674,8 @@ function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPa
 			else Reflect.deleteProperty(page, "goBack");
 			if (goForwardDescriptor) Object.defineProperty(page, "goForward", goForwardDescriptor);
 			else Reflect.deleteProperty(page, "goForward");
+			if (setContentDescriptor) Object.defineProperty(page, "setContent", setContentDescriptor);
+			else Reflect.deleteProperty(page, "setContent");
 			for (const handler of requestHandlers) Reflect.apply(off, page, ["request", handler]);
 			requestHandlers.length = 0;
 			try {
