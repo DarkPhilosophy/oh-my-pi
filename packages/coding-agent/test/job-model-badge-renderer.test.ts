@@ -138,6 +138,19 @@ describe("hub jobs task model badges", () => {
 		expect(text).not.toContain('"summary"');
 	});
 
+	it("keeps failed task status visible in IRC cards without a separate job status", () => {
+		const body =
+			'<task-result id="Reader" status="failed (exit 1)"><output>\nPartial findings\n</output></task-result>';
+		const text = Bun.stripANSI(
+			createIrcMessageCard({ kind: "incoming", from: "Reader", body }, () => true, uiTheme)
+				.render(160)
+				.join("\n"),
+		);
+		expect(text).toContain("failed (exit 1)");
+		expect(text).toContain("Partial findings");
+		expect(text).not.toContain("<task-result");
+	});
+
 	it("preserves cancellation reasons and resumability in relayed task previews", () => {
 		const reason = "Cancelled by user — the agent is still live; resume through hub.";
 		const envelope = `<task-result id="Reader" status="aborted"><abort-reason>${reason}</abort-reason><output>\n(no output)\n</output></task-result>`;

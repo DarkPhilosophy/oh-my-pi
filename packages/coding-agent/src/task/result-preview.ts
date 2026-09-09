@@ -6,7 +6,10 @@ export function formatTaskResultPreview(text: string): string {
 	let body = text;
 	let abortReason: string | undefined;
 	let fullOutput: string | undefined;
+	let status: string | undefined;
 	if (text.trimStart().startsWith("<task-result ")) {
+		const attributes = /^\s*<task-result\b([^>]*)>/.exec(text)?.[1] ?? "";
+		status = /\bstatus="([^"]+)"/.exec(attributes)?.[1];
 		const output = /<(output|preview)(\s[^>]*)?>\n?([\s\S]*)\n?<\/\1>/.exec(text);
 		if (output) {
 			body = output[3].trim();
@@ -27,5 +30,6 @@ export function formatTaskResultPreview(text: string): string {
 	}
 	if (fullOutput) body = `Full output: ${fullOutput}\n\n${body}`;
 	if (abortReason) body = `${abortReason}\n\n${body}`;
+	if (status && status !== "completed") body = `Task ${status}\n\n${body}`;
 	return replaceTabs(sanitizeText(body));
 }
