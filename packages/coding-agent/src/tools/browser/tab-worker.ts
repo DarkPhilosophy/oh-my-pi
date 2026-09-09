@@ -562,11 +562,17 @@ function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPa
 	const once = page.once;
 	const removeAllListeners = page.removeAllListeners;
 	const goto = page.goto;
+	const reload = page.reload;
+	const goBack = page.goBack;
+	const goForward = page.goForward;
 	const onDescriptor = Object.getOwnPropertyDescriptor(page, "on");
 	const offDescriptor = Object.getOwnPropertyDescriptor(page, "off");
 	const onceDescriptor = Object.getOwnPropertyDescriptor(page, "once");
 	const removeAllDescriptor = Object.getOwnPropertyDescriptor(page, "removeAllListeners");
 	const gotoDescriptor = Object.getOwnPropertyDescriptor(page, "goto");
+	const reloadDescriptor = Object.getOwnPropertyDescriptor(page, "reload");
+	const goBackDescriptor = Object.getOwnPropertyDescriptor(page, "goBack");
+	const goForwardDescriptor = Object.getOwnPropertyDescriptor(page, "goForward");
 
 	Object.defineProperties(page, {
 		on: {
@@ -631,6 +637,20 @@ function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPa
 			},
 		},
 	});
+	for (const [name, method] of [
+		["reload", reload],
+		["goBack", goBack],
+		["goForward", goForward],
+	] as const) {
+		Object.defineProperty(page, name, {
+			configurable: true,
+			value: (...args: unknown[]) =>
+				Reflect.apply(method, page, args).catch((error: unknown) => {
+					if (error instanceof Error && error.name === "TimeoutError") onNavigationTimeout?.();
+					throw error;
+				}),
+		});
+	}
 
 	return {
 		page,
@@ -645,6 +665,12 @@ function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPa
 			else Reflect.deleteProperty(page, "removeAllListeners");
 			if (gotoDescriptor) Object.defineProperty(page, "goto", gotoDescriptor);
 			else Reflect.deleteProperty(page, "goto");
+			if (reloadDescriptor) Object.defineProperty(page, "reload", reloadDescriptor);
+			else Reflect.deleteProperty(page, "reload");
+			if (goBackDescriptor) Object.defineProperty(page, "goBack", goBackDescriptor);
+			else Reflect.deleteProperty(page, "goBack");
+			if (goForwardDescriptor) Object.defineProperty(page, "goForward", goForwardDescriptor);
+			else Reflect.deleteProperty(page, "goForward");
 			for (const handler of requestHandlers) Reflect.apply(off, page, ["request", handler]);
 			requestHandlers.length = 0;
 			try {
@@ -1247,6 +1273,9 @@ export class WorkerCore {
 	#dialogObserver?: (dialog: Dialog) => void;
 	#frameNavigationObserver?: (frame: Frame) => void;
 	#openDialog?: OpenDialogInfo;
+	#initializing?: Promise<void>;
+	#closing = false;
+	#closed = false;
 
 	constructor(transport: Transport, isolated: boolean) {
 		this.#transport = transport;
@@ -1332,9 +1361,12 @@ export class WorkerCore {
 
 	async #handleMessage(msg: WorkerInbound): Promise<void> {
 		switch (msg.type) {
-			case "init":
-				await this.#init(msg.payload);
+			case "init": {
+				const initializing = this.#init(msg.payload);
+				this.#initializing = initializing;
+				await initializing;
 				return;
+			}
 			case "run":
 				await this.#run(msg);
 				return;
@@ -1368,6 +1400,10 @@ export class WorkerCore {
 				this.#deliverToolReply(msg.id, msg.reply);
 				return;
 			case "close":
+				this.#closing = true;
+				await this.#browser?.disconnect().catch(() => undefined);
+				this.#browser = undefined;
+				await this.#initializing?.catch(() => undefined);
 				await this.#close();
 				return;
 		}
@@ -1385,7 +1421,11 @@ export class WorkerCore {
 				defaultViewport: null,
 				protocolTimeout: BROWSER_PROTOCOL_TIMEOUT_MS,
 			});
-
+			if (this.#closing || this.#closed) {
+				await this.#browser.disconnect().catch(() => undefined);
+				this.#browser = undefined;
+				return;
+			}
 			// Realm setup is done: puppeteer loaded and browser connected. Sent before
 			// page acquisition so the supervisor's cold-start budget bounds only the
 			// realm setup; page creation and the first navigation run under the ready
@@ -2594,6 +2634,8 @@ export class WorkerCore {
 	}
 
 	async #close(): Promise<void> {
+		if (this.#closed) return;
+		this.#closed = true;
 		this.#unsub();
 		for (const runtime of this.#runtimes.values()) runtime.dispose();
 		this.#runtimes.clear();

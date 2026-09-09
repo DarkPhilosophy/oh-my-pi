@@ -2126,6 +2126,7 @@ async function spawnInlineWorker(): Promise<WorkerHandle> {
 	};
 	const { WorkerCore } = await import("./tab-worker");
 	new WorkerCore(workerTransport, false);
+	let termination: Promise<void> | undefined;
 	return {
 		mode: "inline",
 		send: msg =>
@@ -2137,7 +2138,21 @@ async function spawnInlineWorker(): Promise<WorkerHandle> {
 			return () => hostListeners.delete(handler);
 		},
 		onError: () => () => {},
-		async terminate() {},
+		terminate() {
+			if (termination) return termination;
+			termination = new Promise<void>(resolve => {
+				const listener = (message: WorkerOutbound): void => {
+					if (message.type !== "closed") return;
+					hostListeners.delete(listener);
+					resolve();
+				};
+				hostListeners.add(listener);
+				queueMicrotask(() => {
+					for (const workerListener of workerListeners) workerListener({ type: "close" });
+				});
+			});
+			return termination;
+		},
 	};
 }
 
