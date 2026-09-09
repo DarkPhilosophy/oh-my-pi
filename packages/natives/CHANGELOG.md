@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added persistent clipboard-write and clipboard-read APIs through the public `@oh-my-pi/pi-natives/clipboard` entry point.
 ## [18.1.15] - 2026-09-08
 
 ### Fixed

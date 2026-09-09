@@ -37,6 +37,7 @@
 ### Added
 
 - Added connect-only Browser Relay support for Firefox-family browsers through local WebDriver BiDi endpoints.
+- Fenced code blocks now expose a clickable `copy` link that copies their original source text.
 - Added opt-in experimental notes-backed context windows with persistent branch-local notes, searchable original session history, retained latest user requests, and a model-callable rollover tool, including in Code Mode.
 - Added Model Hub controls for editing thinking levels on concrete retry fallback rows.
 

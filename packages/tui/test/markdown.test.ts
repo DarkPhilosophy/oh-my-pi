@@ -1,11 +1,10 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import {
 	autolinkSchemeScanIndex,
 	clearRenderCache,
 	extractMarkdownLinks,
 	Markdown,
-	mathStartIndex,
 	renderInlineMarkdown,
 	urlTokenPossible,
 } from "@oh-my-pi/pi-tui/components/markdown";
@@ -13,6 +12,7 @@ import { setTerminalTextSizing, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capab
 import { type Component, TUI } from "@oh-my-pi/pi-tui/tui";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import { Chalk } from "@oh-my-pi/pi-utils/chalk";
+import { mathStartIndex } from "@oh-my-pi/pi-utils/math-delimiters";
 import { defaultMarkdownTheme } from "./test-themes.js";
 import { VirtualTerminal } from "./virtual-terminal.js";
 
@@ -185,6 +185,16 @@ describe("Markdown component", () => {
 
 			expect(plainLines.every(line => visibleWidth(line) <= 8)).toBe(true);
 			expect(plainLines.join("")).toContain("x");
+		});
+		it("wraps the body of an unfinished fenced block inside a list", () => {
+			const body = "alpha bravo charlie delta echo foxtrot golf hotel india";
+			const markdown = new Markdown(`- \`\`\`\n  ${body}`, 0, 0, defaultMarkdownTheme);
+			const plainLines = markdown.render(24).map(line => stripVTControlCharacters(line).trimEnd());
+			const flattened = plainLines.join(" ").replace(/\s+/g, " ");
+
+			expect(flattened).toContain(body);
+			expect(plainLines.every(line => visibleWidth(line) <= 24)).toBe(true);
+			expect(plainLines.some(line => line.startsWith("  "))).toBe(true);
 		});
 
 		it("should maintain numbering when code blocks are not indented (LLM output)", () => {
@@ -928,7 +938,7 @@ console.log(answer);`;
 				terminalState.hyperlinks = originalHyperlinks;
 			}
 		});
-		it("keeps the explicit copy action linked when generic hyperlink detection is disabled", () => {
+		it("keeps the copy chip plain when hyperlink support is disabled", () => {
 			const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 			const originalHyperlinks = terminalState.hyperlinks;
 			let targetCalls = 0;
@@ -943,8 +953,8 @@ console.log(answer);`;
 					},
 				};
 				const footer = new Markdown("```js\nconst x = 1\n```", 0, 0, copyTheme).render(40).at(-1) ?? "";
-				expect(targetCalls).toBe(1);
-				expect(footer).toContain("\x1b]8;;omp-copy:explicit\x07");
+				expect(targetCalls).toBe(0);
+				expect(footer).not.toContain("\x1b]8;;");
 				expect(stripVTControlCharacters(footer)).toContain("[copy]");
 			} finally {
 				terminalState.hyperlinks = originalHyperlinks;
@@ -1667,14 +1677,14 @@ bar`,
 
 	describe("Links", () => {
 		// CI environments often resolve to the "base" terminal which has hyperlinks
-		// disabled; force them on so OSC 8 assertions are deterministic. The render
-		// cache keys on TERMINAL.hyperlinks, so flipping the bit invalidates entries.
+		// disabled; scope the capability override to each test so shared-process
+		// suites cannot observe it between cases.
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;
-		beforeAll(() => {
+		beforeEach(() => {
 			terminalState.hyperlinks = true;
 		});
-		afterAll(() => {
+		afterEach(() => {
 			terminalState.hyperlinks = originalHyperlinks;
 		});
 
@@ -2108,7 +2118,7 @@ describe("Inline color swatches", () => {
 });
 
 describe("Module-level LRU render cache", () => {
-	it("invokes highlightCode only once for two distinct instances with identical (text, width, theme)", () => {
+	it("reuses large identical source without repeating highlighting on another instance", () => {
 		// Build a theme with a spy on highlightCode. The theme object reference
 		// is stable across both instances so objectId() returns the same ID,
 		// meaning the L2 cache key is identical for both renders.
@@ -2121,7 +2131,7 @@ describe("Module-level LRU render cache", () => {
 			},
 		};
 
-		const text = "```js\nconst x = 1;\n```";
+		const text = "paragraph ".repeat(9_000) + "\n\n```js\nconst x = 1;\n```";
 		const width = 80;
 
 		// First instance: cold cache → highlightCode MUST be called.
@@ -2174,6 +2184,36 @@ describe("Module-level LRU render cache", () => {
 		expect(highlightCallCount).toBe(0);
 		expect(plain).toContain("const streamed = true;");
 		expect(plain).not.toContain("HIGHLIGHTED");
+	});
+
+	it("preserves a tilde fence delimiter across partial streamed content", () => {
+		const markdown = new Markdown(["~~~~js", 'const marker = "~~~";'].join("\n"), 0, 0, defaultMarkdownTheme);
+		markdown.transientRenderCache = true;
+
+		const first = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+		expect(first[0]).toBe("~~~~js");
+		expect(first.at(-1)).toBe("~~~~");
+		expect(first.some(line => line.includes('const marker = "~~~";'))).toBe(true);
+
+		markdown.setText(["~~~~js", 'const marker = "~~~";', "console.log(marker);"].join("\n"));
+		const second = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+		expect(second[0]).toBe("~~~~js");
+		expect(second.at(-1)).toBe("~~~~");
+	});
+
+	it("preserves a long backtick fence delimiter across partial streamed content", () => {
+		const markdown = new Markdown(["`````ts", 'const marker = "````";'].join("\n"), 0, 0, defaultMarkdownTheme);
+		markdown.transientRenderCache = true;
+
+		const first = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+		expect(first[0]).toBe("`````ts");
+		expect(first.at(-1)).toBe("`````");
+		expect(first.some(line => line.includes('const marker = "````";'))).toBe(true);
+
+		markdown.setText(["`````ts", 'const marker = "````";', "console.log(marker);"].join("\n"));
+		const second = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+		expect(second[0]).toBe("`````ts");
+		expect(second.at(-1)).toBe("`````");
 	});
 
 	it("highlights a fence whole-block once it closes, even during transient renders", () => {
@@ -2259,6 +2299,23 @@ describe("Module-level LRU render cache", () => {
 		const plain = stripVTControlCharacters(markdown.render(80).join("\n"));
 		expect(plain).toContain("plain text line");
 		expect(plain).not.toContain("S<");
+		expect(plain).not.toContain("F<");
+	});
+
+	it("keeps an open fence plain when the highlight stream factory throws", () => {
+		clearRenderCache();
+		const themeWithStream = {
+			...defaultMarkdownTheme,
+			highlightCode: (code: string, _lang?: string): string[] => [`F<${code}>`],
+			createHighlightStream: (_lang?: string) => {
+				throw new TypeError("undefined is not a constructor");
+			},
+		};
+
+		const markdown = new Markdown("```lua\nlocal x = 1\nmore", 0, 0, themeWithStream);
+		markdown.transientRenderCache = true;
+		const plain = stripVTControlCharacters(markdown.render(80).join("\n"));
+		expect(plain).toContain("local x = 1");
 		expect(plain).not.toContain("F<");
 	});
 });
@@ -2902,10 +2959,10 @@ describe("framed code review regressions", () => {
 		expect(plainLines.at(-1)).toContain("~~~~");
 	});
 
-	it("passes the raw nested-list code body to the copy target", () => {
+	it("recovers the current nested continuation fence rather than a later matching fence", () => {
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;
-		let captured: string | undefined;
+		const captured: string[] = [];
 		try {
 			// The copy target is only consulted when OSC 8 links are supported;
 			// force that capability so this source-recovery assertion is portable
@@ -2914,12 +2971,55 @@ describe("framed code review regressions", () => {
 			const theme = { ...defaultMarkdownTheme, copyChip: "copy" };
 			Object.defineProperty(theme, "copyChipTarget", {
 				value: (body: string) => {
-					captured = body;
+					captured.push(body);
 				},
 				configurable: true,
 			});
-			new Markdown("- item\n\n  ```make\n  \tall\n  ```", 0, 0, theme as typeof defaultMarkdownTheme).render(60);
-			expect(captured).toContain("\t");
+			new Markdown(
+				"- outer\n  - text\n    ```make\n    \tfirst\n    ```\n\n```make\nsecond\n```",
+				0,
+				0,
+				theme as typeof defaultMarkdownTheme,
+			).render(60);
+			expect(captured).toEqual(["\tfirst", "second"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+	it("copies blank and indented rows from a list fence exactly", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			new Markdown("- ```js\n  \n    const value = 1;\n  \n  ```", 0, 0, theme).render(80);
+			expect(captured).toEqual(["\n  const value = 1;\n"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+	it("copies quote-fenced rows without leaking a partial structural tab", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => (captured.push(body), undefined),
+			};
+			new Markdown("> ```js\n>\tfoo\n> ```", 0, 0, theme).render(80);
+			new Markdown(">\t```js\n>\tfoo\n>\t```", 0, 0, theme).render(80);
+			expect(captured).toEqual(["  foo", "  foo"]);
 		} finally {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
@@ -3067,6 +3167,31 @@ describe("framed code review follow-ups", () => {
 			};
 			new Markdown("- ```js\n  abc\n ```", 0, 0, theme).render(80);
 			expect(captured).toBe("abc");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("frames a blockquote fence nested in a list and copies its source body", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			const rendered = new Markdown("- > ```js\n  > code\n  > ```", 0, 0, theme).render(40);
+			const plainLines = rendered.map(line => stripVTControlCharacters(line).trimEnd());
+
+			expect(plainLines.some(line => line.startsWith("- │ +") && line.includes("[js]"))).toBe(true);
+			expect(plainLines.some(line => line.startsWith("  │ | 1 | code |"))).toBe(true);
+			expect(captured).toBe("code");
 		} finally {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
@@ -3224,7 +3349,7 @@ describe("framed code review follow-ups", () => {
 			.map(line => stripVTControlCharacters(line).trimEnd());
 		expect(rows.filter(line => line.includes("```"))).toHaveLength(1);
 		expect(rows.some(line => line.includes("literal"))).toBe(true);
-		expect(rows.some(line => line.startsWith("+-"))).toBe(false);
+		expect(rows.some(line => /^\+-/.test(line))).toBe(false);
 	});
 
 	it("matches the actual closing fence line when code contains delimiter text", () => {
@@ -3314,6 +3439,27 @@ describe("framed code review follow-ups", () => {
 		}
 	});
 
+	it("keeps copy recovery exact when source has no ST-terminated OSC", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("```js\nconst right = true;\n```", 0, 0, theme).render(80);
+			expect(captured).toBe("const right = true;");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
 	it("advances copy recovery past leaves whose OSC terminators normalize", () => {
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;
@@ -3359,6 +3505,7 @@ describe("framed code review follow-ups", () => {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
 	});
+
 	it("anchors nested opening-fence recovery to a real fence line", () => {
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;
@@ -3376,6 +3523,27 @@ describe("framed code review follow-ups", () => {
 			const source = "> mention ```js here\n> continued\n>\n> ```js\n> const answer = 42\n> ```";
 			new Markdown(source, 0, 0, theme).render(80);
 			expect(captured).toBe("const answer = 42");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+	it("rejects indented-code rows while locating nested opening fences", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			const source = "    ```js\n    wrong\n    ```\n\n- ```js\n  right\n  ```";
+			new Markdown(source, 0, 0, theme).render(80);
+			expect(captured).toBe("right");
 		} finally {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
@@ -3404,102 +3572,6 @@ describe("framed code review follow-ups", () => {
 			expect(captured).toBe("x");
 		} finally {
 			terminalState.hyperlinks = originalHyperlinks;
-		}
-	});
-});
-
-describe("upstream markdown regression parity", () => {
-	it("keeps copy chips plain when hyperlinks are disabled", () => {
-		const state = TERMINAL as unknown as { hyperlinks: boolean };
-		const old = state.hyperlinks;
-		try {
-			state.hyperlinks = false;
-			const theme = { ...defaultMarkdownTheme, copyChip: "copy", copyChipTarget: () => "x" };
-			const footer = new Markdown("```js\nx\n```", 0, 0, theme).render(40).at(-1) ?? "";
-			expect(stripVTControlCharacters(footer)).toContain("[copy]");
-		} finally {
-			state.hyperlinks = old;
-		}
-	});
-	it("preserves tilde and long backtick fence delimiters", () => {
-		for (const marker of ["~~~~", "`````"]) {
-			const md = new Markdown(`${marker}js\nconst x = 1;\n${marker}`, 0, 0, defaultMarkdownTheme);
-			md.transientRenderCache = true;
-			const rows = md.render(80).map(line => stripVTControlCharacters(line));
-			expect(rows.some(row => row.includes("const x = 1;"))).toBe(true);
-			expect(rows.at(-1)).toBeDefined();
-		}
-	});
-	it("keeps an open fence plain when stream creation throws", () => {
-		const theme = {
-			...defaultMarkdownTheme,
-			createHighlightStream: () => {
-				throw new TypeError("bad stream");
-			},
-		};
-		const text = stripVTControlCharacters(
-			new Markdown("```lua\nlocal x = 1\nmore", 0, 0, theme).render(80).join("\n"),
-		);
-		expect(text).toContain("local x = 1");
-	});
-	it("frames nested blockquote fences and recovers their body", () => {
-		const state = TERMINAL as unknown as { hyperlinks: boolean };
-		const old = state.hyperlinks;
-		let body: string | undefined;
-		try {
-			state.hyperlinks = true;
-			const theme = {
-				...defaultMarkdownTheme,
-				copyChip: "copy",
-				copyChipTarget: (value: string) => {
-					body = value;
-					return undefined;
-				},
-			};
-			new Markdown("- > ```js\n  > code\n  > ```", 0, 0, theme).render(40);
-			expect(body).toBe("code");
-		} finally {
-			state.hyperlinks = old;
-		}
-	});
-	it("recovers copy text without ST OSC terminators", () => {
-		const state = TERMINAL as unknown as { hyperlinks: boolean };
-		const old = state.hyperlinks;
-		let body: string | undefined;
-		try {
-			state.hyperlinks = true;
-			const theme = {
-				...defaultMarkdownTheme,
-				copyChip: "copy",
-				copyChipTarget: (value: string) => {
-					body = value;
-					return undefined;
-				},
-			};
-			new Markdown("```js\nconst right = true;\n```", 0, 0, theme).render(80);
-			expect(body).toBe("const right = true;");
-		} finally {
-			state.hyperlinks = old;
-		}
-	});
-	it("rejects indented code while locating nested fences", () => {
-		const state = TERMINAL as unknown as { hyperlinks: boolean };
-		const old = state.hyperlinks;
-		let body: string | undefined;
-		try {
-			state.hyperlinks = true;
-			const theme = {
-				...defaultMarkdownTheme,
-				copyChip: "copy",
-				copyChipTarget: (value: string) => {
-					body = value;
-					return undefined;
-				},
-			};
-			new Markdown("    ```js\n    wrong\n    ```\n\n- ```js\n  right\n  ```", 0, 0, theme).render(80);
-			expect(body).toBe("right");
-		} finally {
-			state.hyperlinks = old;
 		}
 	});
 });

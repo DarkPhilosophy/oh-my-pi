@@ -21,6 +21,8 @@
 - Fixed prepended live transcript rows appearing after previously displayed rows instead of in their original order.
 - Fixed deferred initial image paints losing overflowing provider rows.
 
+- Fixed narrow and nested framed Markdown code blocks so wide graphemes stay within the requested width and copy targets preserve raw source boundaries without cache collisions.
+
 ## [18.1.15] - 2026-09-08
 
 ### Fixed

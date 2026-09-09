@@ -11,6 +11,8 @@ describe("copy URL handler", () => {
 		expect(supportsCopyUrlHandler("linux", { SSH_CONNECTION: "client server" }, "/usr/bin/xdg-mime")).toBe(false);
 		expect(supportsCopyUrlHandler("linux", { MOSH_IP: "203.0.113.7" }, "/usr/bin/xdg-mime")).toBe(false);
 		expect(supportsCopyUrlHandler("linux", { WSL_DISTRO_NAME: "Ubuntu" }, "/usr/bin/xdg-mime")).toBe(false);
+		expect(supportsCopyUrlHandler("linux", { CODESPACES: "true" }, "/usr/bin/xdg-mime")).toBe(false);
+		expect(supportsCopyUrlHandler("linux", { REMOTE_CONTAINERS_IPC: "1" }, "/usr/bin/xdg-mime")).toBe(false);
 		expect(supportsCopyUrlHandler("linux", {}, null)).toBe(false);
 		expect(supportsCopyUrlHandler("darwin", {}, "/usr/bin/xdg-mime")).toBe(false);
 		expect(supportsCopyUrlHandler("linux", {}, "/usr/bin/xdg-mime")).toBe(true);
