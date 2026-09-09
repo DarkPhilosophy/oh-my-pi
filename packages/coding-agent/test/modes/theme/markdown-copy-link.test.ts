@@ -83,6 +83,13 @@ describe("Markdown copy link", () => {
 		expect(target).toBeDefined();
 		expect(resolveCopyBlock(target!)).toBe("right");
 	});
+	it("recovers a lone-CR tabbed fence after a hidden earlier fence", () => {
+		const source = "<!--\r```js\rwrong\r```\r-->\r\r```js\r\tfoo\r```";
+		const footer = new Markdown(source, 0, 0, getMarkdownTheme()).render(80).at(-1) ?? "";
+		const target = footer.match(/\x1b]8;;(omp-copy:[^\x07]+)\x07/)?.[1];
+		expect(target).toBeDefined();
+		expect(resolveCopyBlock(target!)).toBe("\tfoo");
+	});
 	it("emits clickable copy targets only on platforms with an installed handler path", () => {
 		expect(supportsCopyUrlHandler("linux", {}, "/usr/bin/xdg-mime")).toBe(true);
 		expect(supportsCopyUrlHandler("darwin")).toBe(false);

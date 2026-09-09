@@ -1871,7 +1871,7 @@ function expandSourceText(source: string): ExpandedSource {
 	for (let sourceOffset = 0; sourceOffset < source.length; sourceOffset++) {
 		const char = source[sourceOffset]!;
 		const isCrLf = char === "\r" && source[sourceOffset + 1] === "\n";
-		const expanded = isCrLf ? "\n" : char === "\t" ? " ".repeat(DEFAULT_TAB_WIDTH) : char;
+		const expanded = char === "\r" ? "\n" : char === "\t" ? " ".repeat(DEFAULT_TAB_WIDTH) : char;
 		if (isCrLf) sourceOffset++;
 		text.push(expanded);
 		for (let offset = 0; offset < expanded.length; offset++) sourceOffsets.push(sourceOffset + 1);
@@ -2059,8 +2059,8 @@ export class Markdown implements Component {
 				this.#expandedSourceText !== undefined &&
 				this.#expandedSourceOffsets !== undefined
 			) {
-				if (normalized === pending) {
-					const delta = sourceText.slice(this.#sourceText.length);
+				const delta = sourceText.slice(this.#sourceText.length);
+				if (normalized === pending && !delta.includes("\r") && !this.#sourceText.endsWith("\r")) {
 					let expandedLength = this.#expandedSourceText.length;
 					for (let deltaOffset = 0; deltaOffset < delta.length; deltaOffset++) {
 						const sourceOffset = this.#sourceText.length + deltaOffset;
@@ -2887,7 +2887,7 @@ export class Markdown implements Component {
 
 	#findCopySourceSpan(raw: string): { start: number; end: number } | undefined {
 		const expandedSourceText = this.#ensureExpandedSource().text;
-		const canonicalRaw = replaceTabs(raw.replaceAll("\r\n", "\n"));
+		const canonicalRaw = replaceTabs(raw.replace(/\r\n?/g, "\n"));
 		const start = this.#copySourceSearchCursor;
 		const exactStart = expandedSourceText.indexOf(canonicalRaw, start);
 		if (exactStart >= 0) return { start: exactStart, end: exactStart + canonicalRaw.length };
@@ -2901,7 +2901,7 @@ export class Markdown implements Component {
 
 	#findContainerSourceSpan(raw: string): { start: number; end: number } | undefined {
 		const expandedSourceText = this.#ensureExpandedSource().text;
-		const lines = raw.replaceAll("\r\n", "\n").split("\n");
+		const lines = raw.replace(/\r\n?/g, "\n").split("\n");
 		const first = lines[0];
 		if (!first) return undefined;
 		let lineStart = this.#copySourceSearchCursor;
@@ -3044,8 +3044,10 @@ export class Markdown implements Component {
 		const sourceStart = sourceOffsets[expandedStart] ?? this.#sourceText.length;
 		const sourceEnd = sourceOffsets[expandedEnd] ?? this.#sourceText.length;
 		const sourceRaw = this.#sourceText.slice(sourceStart, sourceEnd);
-		const firstLineEnd = sourceRaw.indexOf("\n");
-		const lastLineStart = sourceRaw.lastIndexOf("\n");
+		const firstLineMatch = /\r\n|\r|\n/.exec(sourceRaw);
+		const firstLineEnd = firstLineMatch?.index ?? -1;
+		const firstLineBreakLength = firstLineMatch?.[0].length ?? 0;
+		const lastLineStart = Math.max(sourceRaw.lastIndexOf("\n"), sourceRaw.lastIndexOf("\r"));
 		if (firstLineEnd < 0 || lastLineStart <= firstLineEnd) return fallback;
 		const openingLine = sourceRaw.slice(0, firstLineEnd);
 		const closingLine = sourceRaw.slice(lastLineStart + 1);
@@ -3066,7 +3068,7 @@ export class Markdown implements Component {
 			0,
 		);
 		const bodyEnd = sourceRaw[lastLineStart - 1] === "\r" ? lastLineStart - 1 : lastLineStart;
-		const body = sourceRaw.slice(firstLineEnd + 1, bodyEnd);
+		const body = sourceRaw.slice(firstLineEnd + firstLineBreakLength, bodyEnd);
 		if (prefixes.length === 0) return body;
 		const parsedLines = fallback.split("\n");
 		return body
