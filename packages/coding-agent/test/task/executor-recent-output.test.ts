@@ -430,6 +430,7 @@ describe("recentOutput event-sequence equivalence (deferred reconstruction)", ()
 	it("extracts file locations from supported freeform edit modes without exposing patch bodies", async () => {
 		for (const input of [
 			"*** Begin Patch\n[src/one.ts#A1B2]\nPUT 1.=1:\n+private body\n[src/two.ts#C3D4]\nCUT 2.=2\n*** End Patch",
+			"*** Begin Patch\n[src/one.ts#A1B2]\nMV src/two.ts\n*** End Patch",
 			"*** Begin Patch\n*** Update File: src/one.ts\n@@\n [draft]\n-old body\n+private body\n*** Delete File: src/two.ts\n*** End Patch",
 			'<SM:EDIT path="src/one.ts">\n<SM:FIND>\n[draft]\n</SM:FIND>\n<SM:PUT>\nprivate body\n</SM:PUT>\n<SM:EDIT path="src/two.ts">\n<SM:FIND>\nold\n</SM:FIND>\n<SM:PUT>\nnew\n</SM:PUT>',
 		]) {

@@ -138,6 +138,34 @@ describe("hub jobs task model badges", () => {
 		expect(text).not.toContain('"summary"');
 	});
 
+	it("preserves cancellation reasons and resumability in relayed task previews", () => {
+		const reason = "Cancelled by user — the agent is still live; resume through hub.";
+		const envelope = `<task-result id="Reader" status="aborted"><abort-reason>${reason}</abort-reason><output>\n(no output)\n</output></task-result>`;
+		const jobText = renderJobText(
+			{
+				jobs: [
+					{
+						id: "Reader",
+						type: "task",
+						status: "failed",
+						label: "Reader",
+						durationMs: 1,
+						errorText: envelope,
+					},
+				],
+			},
+			true,
+		);
+		const cardText = createIrcMessageCard({ kind: "incoming", from: "Reader", body: envelope }, () => true, uiTheme)
+			.render(180)
+			.join("\n");
+		for (const text of [jobText, cardText]) {
+			expect(text).toContain("Cancelled by user");
+			expect(text).toContain("resume through hub");
+			expect(text).not.toContain("<abort-reason>");
+		}
+	});
+
 	it("retains literal closing tags inside task output and preview envelopes", () => {
 		for (const tag of ["output", "preview"]) {
 			const body = "Literal </output> and </preview> remain. Tail intact.";

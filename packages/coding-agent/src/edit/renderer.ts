@@ -670,9 +670,12 @@ export function getEditInputPaths(input: string): readonly string[] {
 			return [];
 		}
 	}
-	return getHashlineInputSections(input)
-		.map(entry => entry.path)
-		.filter(Boolean);
+	const paths: string[] = [];
+	for (const entry of getHashlineInputSections(input)) {
+		if (entry.path) paths.push(entry.path);
+		if (entry.rename && entry.rename !== entry.path) paths.push(entry.rename);
+	}
+	return paths;
 }
 
 function getHashlineInputRenderSummary(
