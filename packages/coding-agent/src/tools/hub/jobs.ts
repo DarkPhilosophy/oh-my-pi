@@ -733,7 +733,7 @@ export function jobsRenderResult(
 
 						const rawPreview = job.errorText?.trim() || job.resultText?.trim() || "";
 						const preview = flattenStructuredPreview(
-							job.type === "task" ? formatTaskResultPreview(rawPreview) : rawPreview,
+							job.type === "task" ? formatTaskResultPreview(rawPreview, false) : rawPreview,
 						);
 						if (preview) {
 							const maxLines = expanded ? PREVIEW_LINES_EXPANDED : PREVIEW_LINES_COLLAPSED;

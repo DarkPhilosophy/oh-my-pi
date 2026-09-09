@@ -20,6 +20,7 @@
 ### Fixed
 
 - Fixed completed subagent jobs and IRC replies displaying internal XML/JSON wrappers instead of readable results.
+- Collapsed failed subagent jobs now show the error details instead of repeating the job status.
 - Fixed fast subagent tool transitions being dropped by progress and HUD update batching.
 - Kept the last completed subagent tool visible with the configured success/error symbol until the next tool starts; edit previews include affected file paths.
 

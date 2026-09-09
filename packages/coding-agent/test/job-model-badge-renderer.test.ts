@@ -115,7 +115,7 @@ describe("hub jobs task model badges", () => {
 		}
 	});
 
-	it("unwraps failed task delivery envelopes while keeping the failure state", () => {
+	it("shows the failure detail beside the failed status in a collapsed job", () => {
 		const text = renderJobText(
 			{
 				jobs: [
@@ -130,7 +130,7 @@ describe("hub jobs task model badges", () => {
 					},
 				],
 			},
-			true,
+			false,
 		);
 		expect(text).toContain("failed");
 		expect(text).toContain("Could not read the requested file.");
