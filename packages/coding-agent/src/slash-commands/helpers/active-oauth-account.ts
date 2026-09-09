@@ -27,7 +27,7 @@ export function getActiveAccountLabelParts(identity: OAuthAccountIdentity | unde
 	return {
 		identity: base,
 		qualifier: org && org !== base ? ` (${org})` : undefined,
-		accountKey: usageIdentityKey(identity.accountId, identity.projectId),
+		accountKey: usageIdentityKey(identity.accountId, identity.projectId, undefined, identity.orgId),
 	};
 }
 

@@ -188,6 +188,14 @@ describe("buildProviderCards split + privacy", () => {
 		expect(split).toHaveLength(2);
 		expect(split.map(card => card.account)).toEqual([`${sameEmail} (Team)`, `${sameEmail} (Team)`]);
 		expect(split.map(card => card.windows[0].fraction)).toEqual([0.8, 0.2]);
+		for (const enabled of [false, true]) {
+			const labeled = buildProviderCards(reports, now, {
+				merge: false,
+				mask: createAccountMasker(reports.map(formatReportAccountLabel), enabled),
+			});
+			expect(new Set(labeled.map(card => card.account)).size).toBe(2);
+			expect(labeled.every(card => card.account?.includes("Team"))).toBe(true);
+		}
 
 		const merged = buildProviderCards(reports, now, { merge: true });
 		expect(merged).toHaveLength(1);

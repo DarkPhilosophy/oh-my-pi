@@ -190,7 +190,7 @@ export function formatReportAccountLabel(report: UsageReport, index: number): Ac
 	return {
 		identity: base,
 		qualifier: organization && organization !== base ? ` (${organization})` : undefined,
-		accountKey: usageIdentityKey(meta?.accountId, meta?.projectId, report.limits[0]?.scope),
+		accountKey: usageIdentityKey(meta?.accountId, meta?.projectId, report.limits[0]?.scope, meta?.orgId),
 	};
 }
 

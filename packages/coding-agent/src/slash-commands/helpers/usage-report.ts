@@ -30,6 +30,7 @@ function formatUsageReportAccount(report: UsageReport, limit: UsageLimit | undef
 		report.metadata?.accountId,
 		report.metadata?.projectId,
 		limit?.scope ?? report.limits[0]?.scope,
+		report.metadata?.orgId,
 	);
 	const metaOrgName = report.metadata?.orgName;
 	const metaOrgId = report.metadata?.orgId;

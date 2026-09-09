@@ -1775,7 +1775,12 @@ function styleAccountMask(label: string, uiTheme: typeof theme): string {
 }
 
 function formatAccountLabel(limit: UsageLimit, report: UsageReport, index: number): AccountLabel {
-	const accountKey = usageIdentityKey(report.metadata?.accountId, report.metadata?.projectId, limit.scope);
+	const accountKey = usageIdentityKey(
+		report.metadata?.accountId,
+		report.metadata?.projectId,
+		limit.scope,
+		report.metadata?.orgId,
+	);
 	const email = report.metadata?.email;
 	if (typeof email === "string" && email) return { identity: email, qualifier: orgSuffix(report), accountKey };
 	const accountId =
@@ -1792,7 +1797,12 @@ function formatAccountLabel(limit: UsageLimit, report: UsageReport, index: numbe
 }
 
 function formatUnlimitedReportLabel(report: UsageReport, index: number): AccountLabel {
-	const accountKey = usageIdentityKey(report.metadata?.accountId, report.metadata?.projectId, report.limits[0]?.scope);
+	const accountKey = usageIdentityKey(
+		report.metadata?.accountId,
+		report.metadata?.projectId,
+		report.limits[0]?.scope,
+		report.metadata?.orgId,
+	);
 	const email = report.metadata?.email;
 	if (typeof email === "string" && email) return { identity: email, qualifier: orgSuffix(report), accountKey };
 	const accountId = report.metadata?.accountId;
@@ -1804,7 +1814,12 @@ function formatUnlimitedReportLabel(report: UsageReport, index: number): Account
 }
 
 function formatResetAccountLabel(report: UsageReport): AccountLabel {
-	const accountKey = usageIdentityKey(report.metadata?.accountId, report.metadata?.projectId, report.limits[0]?.scope);
+	const accountKey = usageIdentityKey(
+		report.metadata?.accountId,
+		report.metadata?.projectId,
+		report.limits[0]?.scope,
+		report.metadata?.orgId,
+	);
 	const email = report.metadata?.email;
 	const accountId = report.metadata?.accountId;
 	const identity =

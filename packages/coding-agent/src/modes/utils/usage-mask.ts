@@ -16,10 +16,12 @@ export function usageIdentityKey(
 	accountId: unknown,
 	projectId: unknown,
 	fallback?: { accountId?: string; projectId?: string },
+	organizationId?: unknown,
 ): string | undefined {
 	const account = typeof accountId === "string" && accountId ? accountId : fallback?.accountId;
 	const project = typeof projectId === "string" && projectId ? projectId : fallback?.projectId;
-	return account || project ? JSON.stringify([account ?? "", project ?? ""]) : undefined;
+	const organization = typeof organizationId === "string" ? organizationId : "";
+	return account || project || organization ? JSON.stringify([account ?? "", project ?? "", organization]) : undefined;
 }
 
 export function normalizeUsageAccountLabel(label: string): string {
