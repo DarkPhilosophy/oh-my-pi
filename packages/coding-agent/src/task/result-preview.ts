@@ -5,10 +5,12 @@ import { sanitizeText } from "@oh-my-pi/pi-utils";
 export function formatTaskResultPreview(text: string): string {
 	let body = text;
 	let abortReason: string | undefined;
+	let fullOutput: string | undefined;
 	if (text.trimStart().startsWith("<task-result ")) {
-		const output = /<(output|preview)(?:\s[^>]*)?>\n?([\s\S]*)\n?<\/\1>/.exec(text);
+		const output = /<(output|preview)(\s[^>]*)?>\n?([\s\S]*)\n?<\/\1>/.exec(text);
 		if (output) {
-			body = output[2].trim();
+			body = output[3].trim();
+			if (output[1] === "preview") fullOutput = /\bfull-output="([^"]+)"/.exec(output[2] ?? "")?.[1];
 			abortReason = /<abort-reason>([\s\S]*)<\/abort-reason>/.exec(text.slice(0, output.index))?.[1].trim();
 		}
 	}
@@ -23,6 +25,7 @@ export function formatTaskResultPreview(text: string): string {
 	} catch {
 		// Prose, incomplete previews and arbitrary tool data retain their contents.
 	}
+	if (fullOutput) body = `Full output: ${fullOutput}\n\n${body}`;
 	if (abortReason) body = `${abortReason}\n\n${body}`;
 	return replaceTabs(sanitizeText(body));
 }

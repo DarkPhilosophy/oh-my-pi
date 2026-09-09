@@ -169,7 +169,8 @@ describe("hub jobs task model badges", () => {
 	it("retains literal closing tags inside task output and preview envelopes", () => {
 		for (const tag of ["output", "preview"]) {
 			const body = "Literal </output> and </preview> remain. Tail intact.";
-			const envelope = `<task-result id="Reader"><${tag}>\n${body}\n</${tag}></task-result>`;
+			const attributes = tag === "preview" ? ' full-output="agent://Reader"' : "";
+			const envelope = `<task-result id="Reader"><${tag}${attributes}>\n${body}\n</${tag}></task-result>`;
 			const jobText = renderJobText(
 				{
 					jobs: [
@@ -196,6 +197,7 @@ describe("hub jobs task model badges", () => {
 				expect(text).toContain("</output>");
 				expect(text).toContain("</preview>");
 				expect(text).toContain("Tail intact.");
+				if (tag === "preview") expect(text).toContain("agent://Reader");
 				expect(text).not.toContain("<task-result");
 			}
 		}
