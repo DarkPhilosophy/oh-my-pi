@@ -65,6 +65,14 @@ function matchesActiveAccount(
 	if (activeOrgId || reportOrgId) {
 		if (activeOrgId !== reportOrgId) return false;
 		if (!activeAccountId && !activeEmail && !activeProjectId) return true;
+	} else {
+		// Names qualify the identity only when neither side provides an org ID.
+		const activeOrgName = normalizeIdentityValue(identity.orgName);
+		const reportOrgName = normalizeIdentityValue(metadata.orgName);
+		if (activeOrgName || reportOrgName) {
+			if (activeOrgName !== reportOrgName) return false;
+			if (!activeAccountId && !activeEmail && !activeProjectId) return true;
+		}
 	}
 	if (activeAccountId) {
 		const reportAccountId = normalizeIdentityValue(metadata.accountId) ?? normalizeIdentityValue(metadata.account_id);

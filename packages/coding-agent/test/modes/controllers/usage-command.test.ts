@@ -11,6 +11,25 @@ describe("renderUsageReports content", () => {
 		setThemeInstance(darkTheme);
 	});
 
+	it("marks only the matching organization name active on metadata-only reset rows", () => {
+		const reports: UsageReport[] = ["East", "West"].map(orgName => ({
+			provider: "openai",
+			fetchedAt: 1,
+			limits: [],
+			metadata: { email: "shared@example.test", orgName },
+			resetCredits: { availableCount: 1 },
+		}));
+		const text = stripVTControlCharacters(
+			renderUsageReports(reports, theme, 1, 120, () => ({
+				email: "shared@example.test",
+				orgName: "East",
+			})),
+		);
+		const resetRows = text.split("\n").filter(line => line.includes("saved reset"));
+		expect(resetRows.find(line => line.includes("(East)"))).toContain("(active)");
+		expect(resetRows.find(line => line.includes("(West)"))).not.toContain("(active)");
+	});
+
 	it("separates opaque parentheses from trusted reset and active-account qualifiers", () => {
 		const reports: UsageReport[] = [
 			{
@@ -210,6 +229,7 @@ describe("renderUsageReports content", () => {
 
 	it("marks metadata-only saved resets active and bounds sanitized organization labels", () => {
 		const width = 48;
+		const orgName = `Team\t\x1b[2J${" very-long".repeat(12)}`;
 		const reports: UsageReport[] = [
 			{
 				provider: "openai-codex",
@@ -218,7 +238,7 @@ describe("renderUsageReports content", () => {
 				metadata: {
 					email: "active@example.com",
 					accountId: "acct-active",
-					orgName: `Team\t\x1b[2J${" very-long".repeat(12)}`,
+					orgName,
 				},
 				resetCredits: { availableCount: 1 },
 			},
@@ -226,6 +246,7 @@ describe("renderUsageReports content", () => {
 		const rendered = renderUsageReports(reports, theme, Date.now(), width, () => ({
 			email: "active@example.com",
 			accountId: "acct-active",
+			orgName,
 		}));
 		const output = stripVTControlCharacters(rendered);
 		const resetLine = output.split("\n").find(line => line.includes("saved reset"));
