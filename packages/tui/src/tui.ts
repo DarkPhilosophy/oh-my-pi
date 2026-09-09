@@ -147,6 +147,8 @@ export interface TerminalFramePlan {
 	 * when a history batch changes the live boundary.
 	 */
 	readonly borrowedViewportRows?: number;
+	/** Only this leading portion may enter native history; trailing anchored UI remains mutable. */
+	readonly borrowableRows?: number;
 }
 
 /** Produces logical live frames and retires acknowledged history batches. */
@@ -2495,6 +2497,7 @@ export class TUI extends Container {
 		if (!flushing && this.#maybeDeferGhosttyInitialImagePaint()) return false;
 		const logicalViewport = Array.from(plan.viewport);
 		const overflow = Math.max(0, logicalViewport.length - height);
+		const borrowOverflow = Math.min(overflow, Math.max(0, plan.borrowableRows ?? logicalViewport.length));
 		const borrowed = this.#providerTransientRows;
 		if (
 			plan.history === undefined &&
@@ -2520,10 +2523,10 @@ export class TUI extends Container {
 		if (newHistory && history?.kind === "replay") {
 			history = {
 				...history,
-				rows: [...history.rows, ...logicalViewport.slice(0, overflow)],
+				rows: [...history.rows, ...logicalViewport.slice(0, borrowOverflow)],
 			};
-			this.#providerLogicalCommitted = overflow;
-			this.#providerTransientRows = logicalViewport.slice(0, overflow);
+			this.#providerLogicalCommitted = borrowOverflow;
+			this.#providerTransientRows = logicalViewport.slice(0, borrowOverflow);
 		} else {
 			if (newHistory && history !== undefined) {
 				const prior = this.#providerTransientRows;
@@ -2554,11 +2557,12 @@ export class TUI extends Container {
 					this.#providerLogicalCommitted = 0;
 				}
 			}
-			if (history === undefined && overflow > this.#providerLogicalCommitted) {
-				inferredHistory = logicalViewport.slice(this.#providerLogicalCommitted, overflow);
+			if (history === undefined && borrowOverflow > this.#providerLogicalCommitted) {
+				inferredHistory = logicalViewport.slice(this.#providerLogicalCommitted, borrowOverflow);
 				this.#providerTransientRows.push(...inferredHistory);
 			}
-			if (history === undefined) this.#providerLogicalCommitted = Math.max(this.#providerLogicalCommitted, overflow);
+			if (history === undefined)
+				this.#providerLogicalCommitted = Math.max(this.#providerLogicalCommitted, borrowOverflow);
 		}
 		this.#providerHasTransientHistory = this.#providerTransientRows.length > 0;
 		const viewport = logicalViewport.slice(overflow);

@@ -316,6 +316,22 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
+	it("does not borrow mutable anchored chrome when it exceeds terminal height", () => {
+		const terminal = new CountingTerminal(30, 2);
+		const provider = new Provider({
+			viewport: ["transcript-a", "transcript-b", "old HUD", "visible HUD", "editor"],
+			borrowableRows: 2,
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		expect(plainBuffer(terminal)).not.toContain("old HUD");
+		provider.plan = { viewport: ["transcript-a", "transcript-b", "new HUD", "editor"], borrowableRows: 2 };
+		tui.requestRender(true);
+		expect(plainBuffer(terminal)).toEqual(["transcript-a", "transcript-b", "new HUD", "editor"]);
+		expect(provider.borrowed.at(-1)).toBe(2);
+		tui.stop();
+	});
+
 	it("does not hide a new live row whose bytes match a finalized borrowed owner", () => {
 		const terminal = new CountingTerminal(20, 3);
 		const provider = new Provider({ viewport: ["old", "same", "same", "live", "editor"] });

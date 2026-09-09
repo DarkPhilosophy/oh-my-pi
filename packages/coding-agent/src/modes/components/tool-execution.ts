@@ -440,6 +440,27 @@ export class ToolExecutionComponent extends Container {
 		this.#liveRegion = liveRegion;
 	}
 
+	/** Start a terminal result card without repainting this immutable snapshot. */
+	createResultContinuation(): ToolExecutionComponent {
+		this.#backgroundTaskFrozen = true;
+		this.#sealed = true;
+		this.#blockVersion++;
+		this.#updateSpinnerAnimation();
+		const continuation = new ToolExecutionComponent(
+			this.#toolName,
+			this.#args,
+			{
+				showImages: this.#showImages,
+				useBuiltInRenderer: this.#renderer !== undefined,
+				liveRegion: this.#liveRegion,
+			},
+			this.#tool,
+			this.#ui,
+		);
+		continuation.setExpanded(this.#expanded);
+		return continuation;
+	}
+
 	updateArgs(args: any, _toolCallId?: string): void {
 		// Reference-equality short-circuit before any further work. Callers
 		// always allocate a new arg object on each streamed delta (see
