@@ -3058,6 +3058,10 @@ export class Markdown implements Component {
 				// prefix: a shorter closing-fence prefix may also match the body
 				// while leaving container indentation behind.
 				const parsed = parsedLines[index];
+				if (parsed !== undefined && parsed.trim().length === 0) {
+					const structuralPrefix = prefixes.find(candidate => line.startsWith(candidate));
+					if (structuralPrefix) return line.slice(structuralPrefix.length);
+				}
 				if (parsed !== undefined) {
 					if (
 						hasStructuralContainer &&

@@ -2981,6 +2981,26 @@ describe("framed code review regressions", () => {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
 	});
+	it("copies blank and indented rows from a list fence exactly", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			new Markdown("- ```js\n  \n    const value = 1;\n  \n  ```", 0, 0, theme).render(80);
+			expect(captured).toEqual(["\n  const value = 1;\n"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
 });
 
 describe("framed code review follow-ups", () => {
