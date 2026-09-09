@@ -1038,7 +1038,12 @@ export class TUI extends Container {
 	 */
 	showOverlay(component: Component, options?: OverlayOptions): OverlayHandle {
 		component.setIgnoreTight?.(true);
-		const entry = { component, options, preFocus: this.#focusedComponent, hidden: false };
+		const entry = {
+			component,
+			options,
+			preFocus: this.#focusedComponent,
+			hidden: false,
+		};
 		this.overlayStack.push(entry);
 		// Only focus if overlay is actually visible
 		if (this.#isOverlayVisible(entry)) {
@@ -1234,7 +1239,9 @@ export class TUI extends Container {
 			this.#querySixelSupport();
 			this.#queryCellSize();
 		}
-		this.requestRender(true, { clearScrollback: options?.clearScrollback === true });
+		this.requestRender(true, {
+			clearScrollback: options?.clearScrollback === true,
+		});
 	}
 	/**
 	 * Whether a resize repaints the visible window in place — no alternate-screen
@@ -2187,7 +2194,12 @@ export class TUI extends Container {
 		// Parse margin (clamp to non-negative)
 		const margin =
 			typeof opt.margin === "number"
-				? { top: opt.margin, right: opt.margin, bottom: opt.margin, left: opt.margin }
+				? {
+						top: opt.margin,
+						right: opt.margin,
+						bottom: opt.margin,
+						left: opt.margin,
+					}
 				: (opt.margin ?? {});
 		const marginTop = Math.max(0, margin.top ?? 0);
 		const marginRight = Math.max(0, margin.right ?? 0);
@@ -2500,7 +2512,10 @@ export class TUI extends Container {
 		const newHistory = history !== undefined && history.id > this.#acceptedHistoryBatchId;
 		let inferredHistory: string[] = [];
 		if (newHistory && history?.kind === "replay") {
-			history = { ...history, rows: [...history.rows, ...logicalViewport.slice(0, overflow)] };
+			history = {
+				...history,
+				rows: [...history.rows, ...logicalViewport.slice(0, overflow)],
+			};
 			this.#providerLogicalCommitted = overflow;
 			this.#providerTransientRows = logicalViewport.slice(0, overflow);
 		} else {
@@ -2816,7 +2831,11 @@ export class TUI extends Container {
 			lines: prepared,
 			windowTop: this.#debugNextWindowTop,
 			altScreen: false,
-			...(target === null ? {} : { cursor: { x: target.col, y: target.row, visible: target.visible } }),
+			...(target === null
+				? {}
+				: {
+						cursor: { x: target.col, y: target.row, visible: target.visible },
+					}),
 		};
 		if (pendingAltExit) {
 			this.#noteAltBufferToggle();
@@ -3214,7 +3233,10 @@ export class TUI extends Container {
 
 	#recordHardwareCursorHidden(): void {
 		if (!this.#hardwareCursorState) return;
-		this.#hardwareCursorState = { ...this.#hardwareCursorState, visible: false };
+		this.#hardwareCursorState = {
+			...this.#hardwareCursorState,
+			visible: false,
+		};
 	}
 
 	#forgetHardwareCursorState(): void {

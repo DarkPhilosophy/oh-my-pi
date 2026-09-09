@@ -447,6 +447,7 @@ export class ToolExecutionComponent extends Container {
 		// signals "nothing meaningful changed" and the renderer can skip.
 		if (args === this.#args) return;
 		this.#args = args;
+		if (this.#freezeTaskPresentationIfBorrowed()) return;
 		this.#displayInputVersion++;
 		this.#updateSpinnerAnimation();
 		this.#updateDisplay();
@@ -459,6 +460,7 @@ export class ToolExecutionComponent extends Container {
 	setArgsComplete(_toolCallId?: string): void {
 		const alreadyComplete = this.#argsComplete;
 		this.#argsComplete = true;
+		if (this.#freezeTaskPresentationIfBorrowed()) return;
 		this.#updateSpinnerAnimation();
 		if (alreadyComplete) return;
 		this.#displayInputVersion++;
@@ -554,8 +556,19 @@ export class ToolExecutionComponent extends Container {
 		isPartial = false,
 		_toolCallId?: string,
 	): void {
-		// A detached task may already be immutable history. Drop subsequent
-		// streaming snapshots; its eventual result is delivered separately.
+		// A task card already borrowed into native history keeps its presentation
+		// immutable. Preserve terminal result data for lifecycle consumers; the
+		// eventual result is rendered separately from the borrowed card.
+		if (this.#toolName === "task" && this.#freezeTaskPresentationIfBorrowed()) {
+			this.#result = result;
+			this.#isPartial = isPartial;
+			this.#displaceableByToolName = displaceableToolName(this.#toolName, result, isPartial);
+			if (!isPartial) {
+				this.#argsComplete = true;
+				this.#previewReady?.resolve();
+			}
+			return;
+		}
 		if (this.#toolName === "task" && this.#maybeFreezeBackgroundTask(result)) {
 			if (isPartial) return;
 			if (!(this.#liveRegion?.isBlockUncommitted?.(this) ?? true)) return;
@@ -713,6 +726,16 @@ export class ToolExecutionComponent extends Container {
 	 * Freeze a detached running task once it can no longer be repainted safely.
 	 * Returns true after the one-way latch has fired.
 	 */
+	/** Freeze a task whose rendered rows are already owned by native history. */
+	#freezeTaskPresentationIfBorrowed(): boolean {
+		if (this.#backgroundTaskFrozen) return true;
+		if (this.#toolName !== "task" || this.#liveRegion === undefined) return false;
+		if (this.#liveRegion.isBlockUncommitted?.(this) ?? true) return false;
+		this.#backgroundTaskFrozen = true;
+		this.#updateSpinnerAnimation();
+		return true;
+	}
+
 	#maybeFreezeBackgroundTask(incomingResult?: { details?: unknown }): boolean {
 		if (this.#backgroundTaskFrozen) return true;
 		if (this.#toolName !== "task" || this.#liveRegion === undefined) return false;

@@ -101,7 +101,10 @@ class WidthReplayProvider implements TerminalFrameProvider {
 		return {
 			history: this.#retired
 				? undefined
-				: { id: this.#nextHistoryId, rows: this.#historyRows.map(row => `${row}@${width}`) },
+				: {
+						id: this.#nextHistoryId,
+						rows: this.#historyRows.map(row => `${row}@${width}`),
+					},
 			viewport: [`editor@${width}`],
 		};
 	}
@@ -127,7 +130,10 @@ class HeightReplayProvider implements TerminalFrameProvider {
 		return {
 			history: this.#retired
 				? undefined
-				: { id: this.#nextHistoryId, rows: ["real-todo-block", "real-read-block", "real-bash-block"] },
+				: {
+						id: this.#nextHistoryId,
+						rows: ["real-todo-block", "real-read-block", "real-bash-block"],
+					},
 			viewport: ["dot-live-one", "dot-live-two", "editor"].slice(-viewport.rows),
 		};
 	}
@@ -213,7 +219,9 @@ describe("terminal frame plans", () => {
 		// Viewport at row 0 fills the screen: the protective erase is emitted
 		// full-screen, which tmux would archive as the #9780 duplication.
 		const terminal = new TmuxPreservedClearTerminal(20, 4);
-		const provider = new Provider({ viewport: ["live-1", "live-2", "live-3", "editor"] });
+		const provider = new Provider({
+			viewport: ["live-1", "live-2", "live-3", "editor"],
+		});
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
 		expect(terminal.getBufferPosition().baseY).toBe(0);
@@ -239,7 +247,11 @@ describe("terminal frame plans", () => {
 		terminal.writes.length = 0;
 
 		provider.plan = {
-			history: { id: 1, rows: ["history one", "history two", "history three", "history four"], kind: "replay" },
+			history: {
+				id: 1,
+				rows: ["history one", "history two", "history three", "history four"],
+				kind: "replay",
+			},
 			viewport: ["live", "editor"],
 		};
 		tui.requestRender(true);
@@ -306,15 +318,23 @@ describe("terminal frame plans", () => {
 
 	it("consumes a finalized prefix without re-appending the still-borrowed suffix", () => {
 		const terminal = new CountingTerminal(20, 3);
-		const provider = new Provider({ viewport: ["a", "b", "tool-1", "tool-2", "tool-3", "editor"] });
+		const provider = new Provider({
+			viewport: ["a", "b", "tool-1", "tool-2", "tool-3", "editor"],
+		});
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
 		const initial = plainBuffer(terminal);
-		provider.plan = { history: { id: 1, rows: ["a", "b"] }, viewport: ["tool-1", "tool-2", "tool-3", "editor"] };
+		provider.plan = {
+			history: { id: 1, rows: ["a", "b"] },
+			viewport: ["tool-1", "tool-2", "tool-3", "editor"],
+		};
 		tui.requestRender(true);
 		expect(plainBuffer(terminal)).toEqual(initial);
 		expect(provider.borrowed).toContain(1);
-		provider.plan = { history: { id: 2, rows: ["tool-1"] }, viewport: ["tool-2", "tool-3", "editor"] };
+		provider.plan = {
+			history: { id: 2, rows: ["tool-1"] },
+			viewport: ["tool-2", "tool-3", "editor"],
+		};
 		tui.requestRender(true);
 		expect(plainBuffer(terminal)).toEqual(initial);
 		expect(provider.acknowledged).toEqual([1, 2]);
@@ -343,7 +363,9 @@ describe("terminal frame plans", () => {
 
 	it("bottom-splits a logical frame taller than the terminal", () => {
 		const terminal = new VirtualTerminal(20, 4);
-		const provider = new Provider({ viewport: ["one", "two", "three", "four", "five", "editor"] });
+		const provider = new Provider({
+			viewport: ["one", "two", "three", "four", "five", "editor"],
+		});
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
 
@@ -367,7 +389,10 @@ describe("terminal frame plans", () => {
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
 
-		plan = { history: { id: 1, rows: ["new", ...viewport], kind: "replay" }, viewport };
+		plan = {
+			history: { id: 1, rows: ["new", ...viewport], kind: "replay" },
+			viewport,
+		};
 		tui.requestRender(true);
 
 		expect(acknowledged).toEqual([1]);
@@ -380,11 +405,15 @@ describe("terminal frame plans", () => {
 
 	it("does not treat a repeated later heading as a semantic prepend", () => {
 		const terminal = new CountingTerminal(20, 3);
-		const provider = new Provider({ viewport: ["heading", "old", "heading", "live", "editor"] });
+		const provider = new Provider({
+			viewport: ["heading", "old", "heading", "live", "editor"],
+		});
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
 		terminal.writes.length = 0;
-		provider.plan = { viewport: ["changed", "heading", "old", "heading", "live", "editor"] };
+		provider.plan = {
+			viewport: ["changed", "heading", "old", "heading", "live", "editor"],
+		};
 		tui.requestRender(true);
 		expect(terminal.writes.join("")).not.toMatch(/\x1b\[[23]J/);
 		expect(plainBuffer(terminal).filter(row => row === "heading")).toHaveLength(2);
@@ -394,7 +423,9 @@ describe("terminal frame plans", () => {
 	it("accepts re-offered borrowed rows without a destructive replay", () => {
 		const terminal = new VirtualTerminal(20, 4);
 		let replays = 0;
-		const provider = new Provider({ viewport: ["a", "b", "live", "editor", "extra"] });
+		const provider = new Provider({
+			viewport: ["a", "b", "live", "editor", "extra"],
+		});
 		const replayingProvider: TerminalFrameProvider = {
 			renderFrame: size => provider.renderFrame(size),
 			acknowledgeHistory: id => provider.acknowledgeHistory(id),
@@ -406,7 +437,10 @@ describe("terminal frame plans", () => {
 		tui.setFrameProvider(replayingProvider);
 		expect(terminal.getBufferPosition().baseY).toBe(1);
 
-		provider.plan = { history: { id: 1, rows: ["a", "b"] }, viewport: ["live", "editor", "extra"] };
+		provider.plan = {
+			history: { id: 1, rows: ["a", "b"] },
+			viewport: ["live", "editor", "extra"],
+		};
 		tui.requestRender(true);
 
 		expect(replays).toBe(0);
@@ -450,7 +484,9 @@ describe("terminal frame plans", () => {
 
 	it("retains borrowed live suffix when finalized block drifts", () => {
 		const terminal = new CountingTerminal(20, 4);
-		const provider = new Provider({ viewport: ["final old", "live one", "live two", "live three", "editor"] });
+		const provider = new Provider({
+			viewport: ["final old", "live one", "live two", "live three", "editor"],
+		});
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
 		provider.plan = {
@@ -458,7 +494,9 @@ describe("terminal frame plans", () => {
 			viewport: ["live one", "live two", "live three", "editor"],
 		};
 		tui.requestRender(true);
-		provider.plan = { viewport: ["live one", "live two", "live three", "editor"] };
+		provider.plan = {
+			viewport: ["live one", "live two", "live three", "editor"],
+		};
 		tui.requestRender(true);
 		expect(provider.borrowed).toContain(1);
 		expect(plainBuffer(terminal).filter(row => row === "live one")).toHaveLength(1);
@@ -468,7 +506,9 @@ describe("terminal frame plans", () => {
 
 	it("preserves shortened views and replays actual prepends in order", () => {
 		const terminal = new CountingTerminal(30, 3);
-		const provider = new Provider({ viewport: ["header", "editor", "s1", "s2", "s3", "s4"] });
+		const provider = new Provider({
+			viewport: ["header", "editor", "s1", "s2", "s3", "s4"],
+		});
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
 		terminal.writes.length = 0;
@@ -577,7 +617,9 @@ describe("terminal frame plans", () => {
 		tui.setFrameProvider(provider);
 		try {
 			for (let cycle = 0; cycle < 3; cycle++) {
-				provider.plan = { viewport: [...header, "editor", "choice-1", "choice-2"] };
+				provider.plan = {
+					viewport: [...header, "editor", "choice-1", "choice-2"],
+				};
 				tui.requestRender(true);
 				provider.plan = { viewport: [...header, "editor"] };
 				tui.requestRender(true);
@@ -674,11 +716,17 @@ describe("terminal frame plans", () => {
 
 	it("keeps visible history above the anchored viewport while room remains", () => {
 		const terminal = new VirtualTerminal(20, 6);
-		const provider = new Provider({ history: { id: 1, rows: ["block one"] }, viewport: ["editor"] });
+		const provider = new Provider({
+			history: { id: 1, rows: ["block one"] },
+			viewport: ["editor"],
+		});
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
 
-		provider.plan = { history: { id: 2, rows: ["block two"] }, viewport: ["editor"] };
+		provider.plan = {
+			history: { id: 2, rows: ["block two"] },
+			viewport: ["editor"],
+		};
 		tui.requestRender(true);
 		expect(terminal.getBufferPosition().baseY).toBe(0);
 		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual([
@@ -694,7 +742,10 @@ describe("terminal frame plans", () => {
 
 	it("uses the alternate buffer during resize and restores anchored history", () => {
 		const terminal = new VirtualTerminal(20, 4);
-		const provider = new Provider({ history: { id: 1, rows: ["welcome"] }, viewport: ["editor"] });
+		const provider = new Provider({
+			history: { id: 1, rows: ["welcome"] },
+			viewport: ["editor"],
+		});
 		provider.resizeRows = ["welcome", "editor"];
 		const renderScheduler = new ResizeScheduler();
 		const tui = new TUI(terminal, undefined, { renderScheduler });
@@ -758,7 +809,9 @@ describe("terminal frame plans", () => {
 		const renderScheduler = new VirtualRenderScheduler();
 		const text = new Text("abcdefghijklmnopqrstu", 0, 0);
 		const provider: TerminalFrameProvider = {
-			renderFrame: ({ columns }) => ({ viewport: ["pre0", "pre1", ...text.render(columns), "tail"] }),
+			renderFrame: ({ columns }) => ({
+				viewport: ["pre0", "pre1", ...text.render(columns), "tail"],
+			}),
 			acknowledgeHistory() {},
 		};
 		const tui = new TUI(terminal, undefined, { renderScheduler });
@@ -834,7 +887,9 @@ describe("terminal frame plans", () => {
 		tui.start();
 		await renderScheduler.settle(terminal);
 
-		const overlay = tui.showOverlay(new FullscreenOverlay(), { fullscreen: true });
+		const overlay = tui.showOverlay(new FullscreenOverlay(), {
+			fullscreen: true,
+		});
 		await renderScheduler.settle(terminal);
 		terminal.resize(20, 12);
 		await renderScheduler.settle(terminal);

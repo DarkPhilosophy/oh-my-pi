@@ -183,6 +183,66 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 		}
 	});
 
+	it("keeps borrowed partial arguments immutable through completion", () => {
+		const transcript = new TranscriptContainer();
+		const component = new ToolExecutionComponent(
+			"task",
+			{
+				agent: "scout",
+				id: "Anna",
+				description: "scout auth",
+				assignment: "partial",
+			},
+			{ liveRegion: transcript },
+			undefined,
+			{
+				requestRender: vi.fn(),
+				requestComponentRender: vi.fn(),
+			} as unknown as TUI,
+		);
+		try {
+			transcript.addChild(component);
+			transcript.renderViewport(100, 10, { now: 0, tick: 0 });
+			const before = component.render(100).join("\n");
+			transcript.setBorrowedViewportRows(1);
+			component.updateArgs({ assignment: "more" });
+			component.setArgsComplete();
+			expect(component.render(100).join("\n")).toBe(before);
+		} finally {
+			component.seal();
+		}
+	});
+
+	it("keeps borrowed synchronous task presentation while retaining final result", () => {
+		const transcript = new TranscriptContainer();
+		const component = new ToolExecutionComponent(
+			"task",
+			{
+				agent: "scout",
+				id: "Anna",
+				description: "scout auth",
+				assignment: "sync",
+			},
+			{ liveRegion: transcript },
+			undefined,
+			{
+				requestRender: vi.fn(),
+				requestComponentRender: vi.fn(),
+			} as unknown as TUI,
+		);
+		try {
+			transcript.addChild(component);
+			transcript.renderViewport(100, 10, { now: 0, tick: 0 });
+			const before = component.render(100).join("\n");
+			transcript.setBorrowedViewportRows(1);
+			component.updateResult(finalSnapshot("canonical final"), false);
+			expect(component.render(100).join("\n")).toBe(before);
+			expect(component.isTranscriptBlockFinalized()).toBe(true);
+		} finally {
+			component.seal();
+		}
+	});
+
 	it("keeps accepting live progress snapshots until settlement", () => {
 		const component = makeComponent();
 		component.updateResult(asyncSnapshot("initial progress"), true);
