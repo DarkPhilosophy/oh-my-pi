@@ -2,7 +2,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-
+import { resolveCliEntryCmd } from "../subprocess/worker-client";
 export const COPY_URL_SCHEME = "omp-copy";
 
 // Linux caps one argv entry near 128 KiB. Leave headroom for desktop-launcher
@@ -69,9 +69,10 @@ export interface CopyHandlerResult {
 	error?: string;
 }
 
-function resolveOmpBinary(): string | undefined {
-	if (process.env.PI_COMPILED === "true") return process.execPath;
-	return Bun.which("omp") ?? undefined;
+function resolveOmpCommand(): string[] | undefined {
+	if (process.env.PI_COMPILED === "true") return [process.execPath];
+	const command = resolveCliEntryCmd();
+	return command.length > 0 ? command : undefined;
 }
 
 function quoteDesktopExecArgument(value: string): string {
@@ -84,12 +85,13 @@ function quoteDesktopExecArgument(value: string): string {
 	return `"${escaped}"`;
 }
 
-export function createCopyDesktopEntry(binary: string): string {
+export function createCopyDesktopEntry(binary: string | readonly string[]): string {
+	const command = Array.isArray(binary) ? binary : [binary];
 	return [
 		"[Desktop Entry]",
 		"Type=Application",
 		"Name=OMP Copy",
-		`Exec=${quoteDesktopExecArgument(binary)} copy %u`,
+		`Exec=${command.map(quoteDesktopExecArgument).join(" ")} copy %u`,
 		"NoDisplay=true",
 		"Terminal=false",
 		`MimeType=${COPY_SCHEME_MIME};`,
@@ -106,9 +108,9 @@ export async function isCopyUrlHandlerRegistered(): Promise<boolean> {
 		});
 		const out = (await new Response(proc.stdout).text()).trim();
 		if ((await proc.exited) !== 0 || out !== COPY_DESKTOP_ENTRY) return false;
-		const binary = resolveOmpBinary();
-		if (binary === undefined) return false;
-		const expectedEntry = createCopyDesktopEntry(binary);
+		const command = resolveOmpCommand();
+		if (command === undefined) return false;
+		const expectedEntry = createCopyDesktopEntry(command);
 		return (await Bun.file(copyDesktopPath()).text()) === expectedEntry;
 	} catch {
 		return false;
@@ -119,10 +121,10 @@ export async function registerCopyUrlHandler(): Promise<CopyHandlerResult> {
 	const desktopPath = copyDesktopPath();
 	const appsDir = path.dirname(desktopPath);
 	if (!supportsCopyUrlHandler()) return { ok: false, desktopPath, error: "only supported on Linux (xdg)" };
-	const binary = resolveOmpBinary();
-	if (binary === undefined) return { ok: false, desktopPath, error: "omp executable not found" };
+	const command = resolveOmpCommand();
+	if (command === undefined) return { ok: false, desktopPath, error: "omp executable not found" };
 	await fs.mkdir(appsDir, { recursive: true });
-	const entry = createCopyDesktopEntry(binary);
+	const entry = createCopyDesktopEntry(command);
 	await Bun.write(desktopPath, entry);
 	const xdg = Bun.spawn(["xdg-mime", "default", COPY_DESKTOP_ENTRY, COPY_SCHEME_MIME], {
 		stdout: "ignore",
