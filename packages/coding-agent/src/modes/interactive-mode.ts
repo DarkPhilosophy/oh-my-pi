@@ -569,14 +569,15 @@ export function renderSubagentHudLines(
 					: "";
 				const modelLead = modelBadge ? `${modelBadge} ` : "";
 				let line = `${dot} ${modelLead}${theme.fg("accent", theme.bold(displayId))}${badge}`;
-				const rawDescription =
-					session.progress?.lastIntent?.trim() ||
-					session.progress?.description?.trim() ||
-					session.description?.trim() ||
-					session.progress?.assignment?.trim() ||
-					session.progress?.task?.trim();
-				const description =
-					rawDescription && !labelEchoesHandle(session.id, rawDescription) ? rawDescription : undefined;
+				let description = session.progress?.lastIntent?.trim();
+				if (!description || labelEchoesHandle(session.id, description))
+					description = session.progress?.description?.trim();
+				if (!description || labelEchoesHandle(session.id, description)) description = session.description?.trim();
+				if (!description || labelEchoesHandle(session.id, description))
+					description = session.progress?.assignment?.trim();
+				if (!description || labelEchoesHandle(session.id, description))
+					description = session.progress?.task?.trim();
+				if (description && labelEchoesHandle(session.id, description)) description = undefined;
 				if (description) {
 					const budget = Math.max(0, rowWidth - visibleWidth(line) - visibleWidth(": "));
 					const formatted = replaceTabs(shortenEmbeddedPaths(sanitizeText(description))).replace(

@@ -569,6 +569,21 @@ describe("subagent HUD lines", () => {
 		expectSameRow(generatedOverWrappedTask, "Worker", "Generated progress label");
 		expect(generatedOverWrappedTask).not.toContain("Complete assignment thoroughly");
 
+		const assignmentAfterHandleEcho = render([
+			makeSession({
+				id: "Worker",
+				progress: makeProgress({
+					id: "Worker",
+					lastIntent: "Worker",
+					description: "worker",
+					assignment: "Inspect HUD fallback",
+					task: "Complete assignment thoroughly",
+				}),
+			}),
+		]);
+		expectSameRow(assignmentAfterHandleEcho, "Worker", "Inspect HUD fallback");
+		expect(assignmentAfterHandleEcho).not.toContain("Complete assignment thoroughly");
+
 		const multiLineTask = render([
 			makeSession({
 				id: "ReviewShell",
