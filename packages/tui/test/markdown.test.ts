@@ -2959,10 +2959,10 @@ describe("framed code review regressions", () => {
 		expect(plainLines.at(-1)).toContain("~~~~");
 	});
 
-	it("passes the raw nested-list code body to the copy target", () => {
+	it("recovers the current nested continuation fence rather than a later matching fence", () => {
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;
-		let captured: string | undefined;
+		const captured: string[] = [];
 		try {
 			// The copy target is only consulted when OSC 8 links are supported;
 			// force that capability so this source-recovery assertion is portable
@@ -2971,12 +2971,17 @@ describe("framed code review regressions", () => {
 			const theme = { ...defaultMarkdownTheme, copyChip: "copy" };
 			Object.defineProperty(theme, "copyChipTarget", {
 				value: (body: string) => {
-					captured = body;
+					captured.push(body);
 				},
 				configurable: true,
 			});
-			new Markdown("- item\n\n  ```make\n  \tall\n  ```", 0, 0, theme as typeof defaultMarkdownTheme).render(60);
-			expect(captured).toContain("\t");
+			new Markdown(
+				"- outer\n  - text\n    ```make\n    \tfirst\n    ```\n\n```make\nsecond\n```",
+				0,
+				0,
+				theme as typeof defaultMarkdownTheme,
+			).render(60);
+			expect(captured).toEqual(["\tfirst", "second"]);
 		} finally {
 			terminalState.hyperlinks = originalHyperlinks;
 		}

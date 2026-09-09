@@ -144,6 +144,20 @@ function isMarkdownFencePrefix(prefix: string): boolean {
 	}
 	return true;
 }
+function listContinuationIndentBefore(source: string, lineStart: number): number | undefined {
+	let cursor = lineStart;
+	while (cursor > 0) {
+		const previousEnd = cursor - 1;
+		const previousStart = source.lastIndexOf("\n", Math.max(0, previousEnd - 1)) + 1;
+		const line = source.slice(previousStart, previousEnd);
+		if (line.trim().length > 0) {
+			const marker = /^( *)(?:[-+*]|\d+[.)])([ \t]+)/.exec(line);
+			if (marker) return marker[1]!.length + marker[0].length - marker[1]!.length;
+		}
+		cursor = previousStart;
+	}
+	return undefined;
+}
 
 function isClosingFencePrefix(line: string, fenceAt: number, quoteDepth: number): boolean {
 	for (let index = 0; index < fenceAt; index++) {
@@ -2963,6 +2977,7 @@ export class Markdown implements Component {
 			if (!openLine || !openingFence) return fallback;
 			let openingLineStart = expandedSource.lastIndexOf("\n", Math.max(0, searchStart - 1)) + 1;
 			let openAt = -1;
+			const allowedContinuationIndent = listContinuationIndentBefore(expandedSource, openingLineStart);
 			while (openingLineStart <= expandedSource.length) {
 				const openingLineEnd = expandedSource.indexOf("\n", openingLineStart);
 				const sourceLine =
@@ -2970,11 +2985,11 @@ export class Markdown implements Component {
 						? expandedSource.slice(openingLineStart, openingLineEnd)
 						: expandedSource.slice(openingLineStart);
 				const fenceAt = sourceLine.indexOf(openLine);
-				if (
-					fenceAt >= 0 &&
-					sourceLine.slice(fenceAt).trim() === openLine &&
-					isMarkdownFencePrefix(sourceLine.slice(0, fenceAt))
-				) {
+				const prefix = fenceAt >= 0 ? sourceLine.slice(0, fenceAt) : "";
+				const validPrefix =
+					isMarkdownFencePrefix(prefix) ||
+					(allowedContinuationIndent !== undefined && prefix === " ".repeat(allowedContinuationIndent));
+				if (fenceAt >= 0 && sourceLine.slice(fenceAt).trim() === openLine && validPrefix) {
 					openAt = openingLineStart + fenceAt;
 					break;
 				}
