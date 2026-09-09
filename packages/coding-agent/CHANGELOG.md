@@ -14,6 +14,15 @@
 
 - Applied account masking consistently to text-mode and ACP `/usage` output, including reset-credit labels.
 
+### Changed
+
+- Subagents now show their current activity and a separate, width-bounded current-tool row; resolved model labels follow the model badge setting.
+### Fixed
+
+- Fixed completed subagent jobs and IRC replies displaying internal XML/JSON wrappers instead of readable results.
+- Fixed fast subagent tool transitions being dropped by progress and HUD update batching.
+- Kept the last completed subagent tool visible with the configured success/error symbol until the next tool starts; edit previews include affected file paths.
+
 ### Fixed
 
 - Fixed completed subagent jobs and IRC replies displaying internal XML/JSON wrappers instead of readable results.

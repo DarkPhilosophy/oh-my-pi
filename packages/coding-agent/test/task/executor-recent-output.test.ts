@@ -23,6 +23,7 @@ import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition, AgentProgress } from "@oh-my-pi/pi-coding-agent/task/types";
+import { shortenToolArgumentPaths, TRUNCATE_LENGTHS } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { createSessionDefaults } from "../helpers/session-defaults";
 
@@ -86,7 +87,7 @@ interface Observation {
 interface ScenarioResult {
 	observations: Observation[];
 	tools: Array<string | undefined>;
-	toolSnapshots: Array<Pick<AgentProgress, "currentTool" | "currentToolArgs" | "recentTools">>;
+	toolSnapshots: Array<Pick<AgentProgress, "currentTool" | "currentToolArgs" | "lastIntent" | "recentTools">>;
 	/** Snapshot arrays captured by reference + a deep copy taken at observation time. */
 	immutability: Array<{ live: string[]; copy: string[] }>;
 	exitCode: number;
@@ -267,6 +268,7 @@ async function runScenario(
 			toolSnapshots.push({
 				currentTool: progress.currentTool,
 				currentToolArgs: progress.currentToolArgs,
+				lastIntent: progress.lastIntent,
 				recentTools: progress.recentTools.slice(),
 			});
 			observations.push({ got: [...progress.recentOutput], want: ref.expected() });
@@ -302,6 +304,67 @@ function mulberry32(seed: number): () => number {
 		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 	};
 }
+describe("tool argument preview semantics", () => {
+	afterEach(() => vi.restoreAllMocks());
+
+	it("does not reinterpret another tool's input as an edit path", async () => {
+		const result = await runScenario([], {
+			events: [
+				{
+					type: "tool_execution_start",
+					toolCallId: "custom-1",
+					toolName: "custom-search",
+					args: { input: "[draft]", query: "real query" },
+				},
+			],
+		});
+		expect(result.toolSnapshots.find(p => p.currentTool === "custom-search")?.currentToolArgs).toBe("real query");
+	});
+
+	it("keeps complete home path boundaries until the display sanitizer runs", async () => {
+		const home = process.env.HOME!;
+		const command = `echo ${"x".repeat(Math.max(0, 53 - home.length))} ${home}/private/file`;
+		const result = await runScenario([], {
+			events: [
+				{
+					type: "tool_execution_start",
+					toolCallId: "bash-1",
+					toolName: "bash",
+					args: { command },
+				},
+			],
+		});
+		const args = result.toolSnapshots.find(p => p.currentTool === "bash")?.currentToolArgs ?? "";
+		const preview = shortenToolArgumentPaths(args, "command");
+		expect(preview).toContain("~/private/file");
+		expect(preview).not.toContain(home);
+	});
+
+	it("bounds large arguments in both active and completed progress snapshots", async () => {
+		const result = await runScenario([], {
+			events: [
+				{
+					type: "tool_execution_start",
+					toolCallId: "large",
+					toolName: "bash",
+					args: { command: `echo ${"payload ".repeat(20_000)}` },
+				},
+				{
+					type: "tool_execution_end",
+					toolCallId: "large",
+					toolName: "bash",
+					result: { content: [] },
+					isError: false,
+				},
+			],
+		});
+		const active = result.toolSnapshots.find(p => p.currentTool === "bash")!;
+		const completed = result.toolSnapshots.find(p => p.recentTools[0]?.tool === "bash")!;
+		expect(active.currentToolArgs).toContain("echo payload");
+		expect(active.currentToolArgs!.length).toBeLessThanOrEqual(TRUNCATE_LENGTHS.CONTENT);
+		expect(completed.recentTools[0].args.length).toBeLessThanOrEqual(TRUNCATE_LENGTHS.CONTENT);
+	});
+});
 
 describe("recentOutput event-sequence equivalence (deferred reconstruction)", () => {
 	afterEach(() => {
@@ -326,9 +389,16 @@ describe("recentOutput event-sequence equivalence (deferred reconstruction)", ()
 				toolCallId: "obs-1",
 				toolName: "read",
 				args: { path: "src/one.ts" },
+				intent: "Reading the first file",
 			};
 			const searchEvents: AgentSessionEvent[] = [
-				{ type: "tool_execution_start", toolCallId: "search-2", toolName: "grep", args: { pattern: "needle" } },
+				{
+					type: "tool_execution_start",
+					toolCallId: "search-2",
+					toolName: "grep",
+					args: { pattern: "needle" },
+					intent: "Searching for the symbol",
+				},
 				{
 					type: "tool_execution_end",
 					toolCallId: "search-2",
@@ -348,6 +418,7 @@ describe("recentOutput event-sequence equivalence (deferred reconstruction)", ()
 			const afterFirst = result.toolSnapshots.find(snapshot => snapshot.recentTools[0]?.tool === finishedName);
 			expect(afterFirst?.currentTool).toBe(finishReadFirst ? "grep" : "read");
 			expect(afterFirst?.currentToolArgs).toBe(finishReadFirst ? "needle" : "src/one.ts");
+			expect(afterFirst?.lastIntent).toBe(finishReadFirst ? "Searching for the symbol" : "Reading the first file");
 			expect(afterFirst?.recentTools[0]).toMatchObject({
 				tool: finishedName,
 				args: finishReadFirst ? "src/one.ts" : "needle",
@@ -356,15 +427,26 @@ describe("recentOutput event-sequence equivalence (deferred reconstruction)", ()
 		}
 	});
 
-	it("extracts file locations from supported freeform edit modes without exposing patch bodies", async () => {
-		for (const input of [
-			"*** Begin Patch\n[src/one.ts#A1B2]\nPUT 1.=1:\n+private body\n[src/two.ts#C3D4]\nCUT 2.=2\n*** End Patch",
-			"*** Begin Patch\n*** Update File: src/one.ts\n@@\n-old body\n+private body\n*** Delete File: src/two.ts\n*** End Patch",
-			'<SM:EDIT path="src/one.ts">\n<SM:FIND>\nold body\n</SM:FIND>\n<SM:PUT>\nprivate body\n</SM:PUT>\n<SM:EDIT path="src/two.ts">\n<SM:FIND>\nold\n</SM:FIND>\n<SM:PUT>\nnew\n</SM:PUT>',
+	it("extracts source and destination paths across supported edit modes", async () => {
+		for (const args of [
+			{
+				input: "*** Begin Patch\n[src/one.ts#A1B2]\nPUT 1.=1:\n+private body\n[src/two.ts#C3D4]\nCUT 2.=2\n*** End Patch",
+			},
+			{ input: "*** Begin Patch\n[src/one.ts#A1B2]\nMV src/two.ts\n*** End Patch" },
+			{
+				input: "*** Begin Patch\n*** Update File: src/one.ts\n@@\n [draft]\n-old body\n+private body\n*** Delete File: src/two.ts\n*** End Patch",
+			},
+			{
+				input: "*** Begin Patch\n*** Update File: src/one.ts\n*** Move to: src/two.ts\n@@\n-old\n+new\n*** End Patch",
+			},
+			{
+				input: '<sm:edit path="src/one.ts">\n<SM:FIND>\n[draft]\n</SM:FIND>\n<SM:PUT>\nprivate body\n</SM:PUT>\n<Sm:Edit path="src/two.ts">\n<SM:FIND>\nold\n</SM:FIND>\n<SM:PUT>\nnew\n</SM:PUT>',
+			},
+			{ path: "src/one.ts", edits: [{ op: "update", rename: "src/two.ts", diff: "@@\n-old\n+new" }] },
 		]) {
 			const result = await runScenario([], {
 				events: [
-					{ type: "tool_execution_start", toolCallId: "edit-1", toolName: "edit", args: { input } },
+					{ type: "tool_execution_start", toolCallId: "edit-1", toolName: "edit", args },
 					{
 						type: "tool_execution_end",
 						toolCallId: "edit-1",

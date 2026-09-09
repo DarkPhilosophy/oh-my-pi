@@ -658,20 +658,22 @@ function getHashlineInputSections(input: string): HashlineInputEntry[] {
 
 /** Extract display targets using the existing parsers for supported freeform edit modes. */
 export function getEditInputPaths(input: string): readonly string[] {
-	const paths = getHashlineInputSections(input)
-		.map(entry => entry.path)
-		.filter(Boolean);
-	if (paths.length > 0) return paths;
-	const args = JSON.stringify({ input });
-	for (const mode of ["apply_patch", "sloppy"] as const) {
+	const mode = /^\s*<SM:/i.test(input)
+		? "sloppy"
+		: /^\*\*\* (?:Add|Update|Delete) File:/m.test(input)
+			? "apply_patch"
+			: undefined;
 	try {
-			const inspected = editInspect(mode, args).paths;
-			if (inspected.length > 0) return inspected;
-	} catch {
-			// Try the next supported syntax; incomplete input has no preview yet.
+		const entries = mode ? inspectInputEntries(mode, input) : getHashlineInputSections(input);
+		const paths: string[] = [];
+		for (const entry of entries) {
+			if (entry.path) paths.push(entry.path);
+			if (entry.rename && entry.rename !== entry.path) paths.push(entry.rename);
 		}
+		return paths;
+	} catch {
+		return [];
 	}
-	return [];
 }
 
 function getHashlineInputRenderSummary(

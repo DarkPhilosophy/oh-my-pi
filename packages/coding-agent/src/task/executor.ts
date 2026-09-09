@@ -9,7 +9,7 @@ import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
 import { AgentBusyError, EventLoopKeepalive, recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
-import { logger, popLoopPhase, prompt, pushLoopPhase, untilAborted } from "@oh-my-pi/pi-utils";
+import { logger, popLoopPhase, prompt, pushLoopPhase, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobManager } from "../async";
 import type { Rule } from "../capability/rule";
 import type { EffectiveExtensionRoots } from "../capability/types";
@@ -62,6 +62,7 @@ import { LIST_STATUS_ORDER } from "../tools/hub/messaging";
 import { DEFAULT_HUB_LIST_LIMIT } from "../tools/hub/types";
 import { normalizeSchema } from "../tools/jtd-to-json-schema";
 import { buildOutputValidator, summarizeValidationFailure } from "../tools/output-schema-validator";
+import { previewLine, replaceTabs, shortenToolArgumentPaths, TRUNCATE_LENGTHS } from "../tools/render-utils";
 import { ToolAbortError } from "../tools/tool-errors";
 import { type EventBus, emitSubagentFrame } from "../utils/event-bus";
 import { trackLateCleanup } from "../utils/late-cleanup";
@@ -388,8 +389,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Options for subagent execution */
 export interface ExecutorOptions {
-	/** Live parent advisor veto, retained across parking and revival. */
-	advisorScope?: CreateAgentSessionOptions["advisorScope"];
 	cwd: string;
 	/** Additional workspace directories to seed on the subagent session (multi-root). */
 	additionalDirectories?: string[];
@@ -397,8 +396,6 @@ export interface ExecutorOptions {
 	getApiKey?: CreateAgentSessionOptions["getApiKey"];
 	worktree?: string;
 	agent: AgentDefinition;
-	/** Live parent advisor veto, retained across parking and revival. */
-	advisorScope?: CreateAgentSessionOptions["advisorScope"];
 	task: string;
 	assignment?: string;
 	/** Shared background from the task call (`task.batch`), rendered into the subagent's system prompt. */
@@ -817,29 +814,38 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 	return { rawOutput, exitCode, stderr, abortedViaYield, hasYield, structuredOutput };
 }
 
+function formatToolArgsPreview(value: string, key: string): { value: string; key: string } {
+	const safe = shortenToolArgumentPaths(replaceTabs(sanitizeText(value)), key);
+	return { value: previewLine(safe, TRUNCATE_LENGTHS.CONTENT), key };
+}
+
 /**
- * Extract a short preview from tool args for display.
+ * Extract bounded display arguments after path and terminal sanitation.
  */
-function extractToolArgsPreview(args: Record<string, unknown>): { value: string; key: string } | undefined {
-	// Priority order for preview. Keep the key so renderers can distinguish
-	// filesystem paths from literal patterns/commands.
+function extractToolArgsPreview(
+	args: Record<string, unknown>,
+	toolName: string,
+): { value: string; key: string } | undefined {
 	const previewKeys = ["command", "file_path", "path", "pattern", "query", "url", "task", "prompt"];
-	if (typeof args.input === "string") {
+	if (toolName === "edit" && typeof args.input === "string") {
 		const paths = getEditInputPaths(args.input);
-		if (paths.length > 0) return { value: paths.join(", "), key: "path" };
+		if (paths.length > 0) return formatToolArgsPreview(paths.join(", "), "path");
 	}
 	const compoundEdits = args.edits;
-	if (Array.isArray(compoundEdits)) {
-		const paths = compoundEdits
-			.map(edit => (edit && typeof edit === "object" ? (edit as Record<string, unknown>).path : undefined))
-			.filter((value): value is string => typeof value === "string" && value.length > 0);
-		if (paths.length > 0) return { value: paths.join(", "), key: "path" };
+	if (toolName === "edit" && Array.isArray(compoundEdits)) {
+		const paths = new Set<string>();
+		if (typeof args.path === "string" && args.path) paths.add(args.path);
+		for (const edit of compoundEdits) {
+			if (!isRecord(edit)) continue;
+			if (typeof edit.path === "string" && edit.path) paths.add(edit.path);
+			if (typeof edit.rename === "string" && edit.rename) paths.add(edit.rename);
+		}
+		if (paths.size > 0) return formatToolArgsPreview([...paths].join(", "), "path");
 	}
-
 	for (const key of previewKeys) {
-		if (args[key] && typeof args[key] === "string") {
+		if (typeof args[key] === "string" && args[key]) {
 			const value = args[key] as string;
-			return { value: value.length > 60 ? `${value.slice(0, 59)}…` : value, key };
+			return formatToolArgsPreview(value, key);
 		}
 	}
 	return undefined;
@@ -1487,7 +1493,10 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		}
 	};
 
-	const activeTools = new Map<string, { tool: string; args?: string; argsKey?: string; startMs: number }>();
+	const activeTools = new Map<
+		string,
+		{ tool: string; args?: string; argsKey?: string; intent?: string; startMs: number }
+	>();
 	let visibleToolCallId: string | undefined;
 
 	const processEvent = (event: AgentEvent) => {
@@ -1521,7 +1530,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				} else if (isRecord(event.args)) {
 					startArgs = event.args;
 				}
-				const preview = extractToolArgsPreview(startArgs);
+				const preview = extractToolArgsPreview(startArgs, event.toolName);
 				progress.currentToolArgs = preview?.value;
 				progress.currentToolArgsKey = preview?.key;
 				progress.currentToolStartMs = now;
@@ -1529,6 +1538,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					tool: event.toolName,
 					args: preview?.value,
 					argsKey: preview?.key,
+					intent: event.intent?.trim() || progress.lastIntent,
 					startMs: now,
 				});
 				visibleToolCallId = event.toolCallId;
@@ -1574,6 +1584,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					progress.currentToolArgs = visible?.args;
 					progress.currentToolArgsKey = visible?.argsKey;
 					progress.currentToolStartMs = visible?.startMs;
+					if (visible) progress.lastIntent = visible.intent;
 				}
 				// The finalized TaskToolDetails will be captured below into
 				// `extractedToolData.task`; drop the in-flight snapshot so the
@@ -3477,11 +3488,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				cwd: worktree ?? cwd,
 				additionalDirectories: worktree !== undefined ? undefined : options.additionalDirectories,
 				authStorage,
-				advisorScope: options.advisorScope,
 				modelRegistry,
 				getApiKey: options.getApiKey,
 				settings: subagentSettings,
-				advisorScope: options.advisorScope,
 				model,
 				modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,
 				modelPatternAuthFallback:

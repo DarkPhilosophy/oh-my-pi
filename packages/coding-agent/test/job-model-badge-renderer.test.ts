@@ -87,7 +87,7 @@ describe("hub jobs task model badges", () => {
 	});
 
 	it("neutralizes terminal commands materialized by task result JSON decoding", () => {
-		const envelope = `<task-result id="Reader"><output>\n${JSON.stringify({ summary: "Read \x1b[2Jcompleted.\x00" })}\n</output></task-result>`;
+		const envelope = `<task-result id="Reader"><output>\n${JSON.stringify({ summary: "Read \x1b[2Jcompleted.\x00\tNext" })}\n</output></task-result>`;
 		const jobText = renderJobText(
 			{
 				jobs: [
@@ -110,6 +110,8 @@ describe("hub jobs task model badges", () => {
 			expect(text).toContain("Read completed.");
 			expect(text).not.toContain("\x1b[2J");
 			expect(text).not.toContain("\x00");
+			expect(text).not.toContain("\t");
+			expect(text).toContain("Next");
 		}
 	});
 
@@ -134,6 +136,112 @@ describe("hub jobs task model badges", () => {
 		expect(text).toContain("Could not read the requested file.");
 		expect(text).not.toContain("<task-result");
 		expect(text).not.toContain('"summary"');
+	});
+
+	it("keeps failed task status visible in IRC cards without a separate job status", () => {
+		const body =
+			'<task-result id="Reader" status="failed (exit 1)"><output>\nPartial findings\n</output></task-result>';
+		const text = Bun.stripANSI(
+			createIrcMessageCard({ kind: "incoming", from: "Reader", body }, () => true, uiTheme)
+				.render(160)
+				.join("\n"),
+		);
+		expect(text).toContain("failed (exit 1)");
+		expect(text).toContain("Partial findings");
+		expect(text).not.toContain("<task-result");
+	});
+
+	it("preserves cancellation reasons and resumability in relayed task previews", () => {
+		const reason = "Cancelled by user — the agent is still live; resume through hub.";
+		const envelope = `<task-result id="Reader" status="aborted"><abort-reason>${reason}</abort-reason><output>\n(no output)\n</output></task-result>`;
+		const jobText = renderJobText(
+			{
+				jobs: [
+					{
+						id: "Reader",
+						type: "task",
+						status: "failed",
+						label: "Reader",
+						durationMs: 1,
+						errorText: envelope,
+					},
+				],
+			},
+			true,
+		);
+		const cardText = createIrcMessageCard({ kind: "incoming", from: "Reader", body: envelope }, () => true, uiTheme)
+			.render(180)
+			.join("\n");
+		for (const text of [jobText, cardText]) {
+			expect(text).toContain("Cancelled by user");
+			expect(text).toContain("resume through hub");
+			expect(text).not.toContain("<abort-reason>");
+		}
+	});
+
+	it("retains literal closing tags inside task output and preview envelopes", () => {
+		for (const tag of ["output", "preview"]) {
+			const body = "Literal </output> and </preview> remain. Tail intact.";
+			const attributes = tag === "preview" ? ' full-output="agent://Reader"' : "";
+			const envelope = `<task-result id="Reader"><${tag}${attributes}>\n${body}\n</${tag}></task-result>`;
+			const jobText = renderJobText(
+				{
+					jobs: [
+						{
+							id: "Reader",
+							type: "task",
+							status: "completed",
+							label: "Reader",
+							durationMs: 1,
+							resultText: envelope,
+						},
+					],
+				},
+				true,
+			);
+			const cardText = createIrcMessageCard(
+				{ kind: "incoming", from: "Reader", body: envelope },
+				() => true,
+				uiTheme,
+			)
+				.render(160)
+				.join("\n");
+			for (const text of [jobText, cardText]) {
+				expect(text).toContain("</output>");
+				expect(text).toContain("</preview>");
+				expect(text).toContain("Tail intact.");
+				if (tag === "preview") expect(text).toContain("agent://Reader");
+				expect(text).not.toContain("<task-result");
+			}
+		}
+	});
+
+	it("retains arbitrary single-field schemas in task job and IRC previews", () => {
+		const body = '{"report":"No issues"}';
+		const envelope = `<task-result id="Reader"><output>\n${body}\n</output></task-result>`;
+		const jobText = renderJobText(
+			{
+				jobs: [
+					{
+						id: "Reader",
+						type: "task",
+						status: "completed",
+						label: "Reader",
+						durationMs: 1,
+						resultText: envelope,
+					},
+				],
+			},
+			true,
+		);
+		const cardText = createIrcMessageCard({ kind: "incoming", from: "Reader", body: envelope }, () => true, uiTheme)
+			.render(160)
+			.join("\n");
+		for (const text of [jobText, cardText]) {
+			expect(text).toContain('"report"');
+			expect(text).toContain("No issues");
+			expect(text).not.toContain("<task-result");
+		}
 	});
 
 	it("does not reinterpret JSON emitted by shell jobs or ordinary IRC messages", () => {

@@ -1,21 +1,35 @@
+import { replaceTabs } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 
 /** Unwrap transport-only task results for existing transcript preview renderers. */
 export function formatTaskResultPreview(text: string): string {
 	let body = text;
+	let abortReason: string | undefined;
+	let fullOutput: string | undefined;
+	let status: string | undefined;
 	if (text.trimStart().startsWith("<task-result ")) {
-		const output = /<(output|preview)(?:\s[^>]*)?>\n?([\s\S]*?)\n?<\/\1>/.exec(text)?.[2];
-		if (output !== undefined) body = output.trim();
+		const attributes = /^\s*<task-result\b([^>]*)>/.exec(text)?.[1] ?? "";
+		status = /\bstatus="([^"]+)"/.exec(attributes)?.[1];
+		const output = /<(output|preview)(\s[^>]*)?>\n?([\s\S]*)\n?<\/\1>/.exec(text);
+		if (output) {
+			body = output[3].trim();
+			if (output[1] === "preview") fullOutput = /\bfull-output="([^"]+)"/.exec(output[2] ?? "")?.[1];
+			abortReason = /<abort-reason>([\s\S]*)<\/abort-reason>/.exec(text.slice(0, output.index))?.[1].trim();
+		}
 	}
 	try {
 		const value: unknown = JSON.parse(body);
-		if (typeof value === "string") return sanitizeText(value);
-		if (value && typeof value === "object" && !Array.isArray(value)) {
+		if (typeof value === "string") body = value;
+		else if (value && typeof value === "object" && !Array.isArray(value)) {
 			const entries = Object.entries(value);
-			if (entries.length === 1 && typeof entries[0][1] === "string") return sanitizeText(entries[0][1]);
+			if (entries.length === 1 && entries[0][0] === "summary" && typeof entries[0][1] === "string")
+				body = entries[0][1];
 		}
 	} catch {
 		// Prose, incomplete previews and arbitrary tool data retain their contents.
 	}
-	return body;
+	if (fullOutput) body = `Full output: ${fullOutput}\n\n${body}`;
+	if (abortReason) body = `${abortReason}\n\n${body}`;
+	if (status && status !== "completed") body = `Task ${status}\n\n${body}`;
+	return replaceTabs(sanitizeText(body));
 }

@@ -213,7 +213,10 @@ export class SessionObserverRegistry {
 						const existing = this.#sessions.get(id);
 						const toolChanged =
 							existing?.progress?.currentTool !== progress.currentTool ||
-							existing?.progress?.currentToolStartMs !== progress.currentToolStartMs;
+							existing?.progress?.currentToolStartMs !== progress.currentToolStartMs ||
+							existing?.progress?.currentToolArgs !== progress.currentToolArgs ||
+							existing?.progress?.currentToolArgsKey !== progress.currentToolArgsKey ||
+							existing?.progress?.lastIntent !== progress.lastIntent;
 
 						const sortOrder = this.#ensureSortOrder(id);
 						this.#ensureParentSortOrder(payload.parentToolCallId, sortOrder);
