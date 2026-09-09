@@ -53,7 +53,7 @@ import {
 } from "../../session/session-worktree";
 import { formatShakeSummary, type ShakeMode, type ShakeResult } from "../../session/shake-types";
 import {
-	formatActiveAccountLabel,
+	getActiveAccountLabelParts,
 	limitMatchesActiveAccount,
 	reportMatchesActiveAccount,
 } from "../../slash-commands/helpers/active-oauth-account";
@@ -70,7 +70,7 @@ import {
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
-import { type AccountMasker, createAccountMasker, MASK_STARS, normalizeUsageAccountLabel } from "../utils/usage-mask";
+import { type AccountLabel, type AccountMasker, createAccountMasker, MASK_STARS } from "../utils/usage-mask";
 import { renderFractionBar } from "../utils/usage-bar";
 
 function formatCreditValue(value: number): string {
@@ -1768,30 +1768,38 @@ function styleAccountMask(label: string, uiTheme: typeof theme): string {
 	return label.replace(MASK_STARS, uiTheme.fg("warning", MASK_STARS));
 }
 
-function formatAccountLabel(limit: UsageLimit, report: UsageReport, index: number): string {
+function formatAccountLabel(limit: UsageLimit, report: UsageReport, index: number): AccountLabel {
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return `${email}${orgSuffix(report)}`;
+	if (typeof email === "string" && email) return { identity: email, qualifier: orgSuffix(report) };
 	const accountId =
 		typeof report.metadata?.accountId === "string" && report.metadata.accountId
 			? report.metadata.accountId
 			: limit.scope.accountId || undefined;
-	if (accountId) return `${accountId}${orgSuffix(report)}`;
+	if (accountId) return { identity: accountId, qualifier: orgSuffix(report) };
 	const projectId =
 		typeof report.metadata?.projectId === "string" && report.metadata.projectId
 			? report.metadata.projectId
 			: limit.scope.projectId || undefined;
-	if (projectId) return projectId;
-	return `account ${index + 1}`;
+	if (projectId) return { identity: projectId };
+	return { identity: `account ${index + 1}`, placeholder: true };
 }
 
-function formatUnlimitedReportLabel(report: UsageReport, index: number): string {
+function formatUnlimitedReportLabel(report: UsageReport, index: number): AccountLabel {
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return `${email}${orgSuffix(report)}`;
+	if (typeof email === "string" && email) return { identity: email, qualifier: orgSuffix(report) };
 	const accountId = report.metadata?.accountId;
-	if (typeof accountId === "string" && accountId) return `${accountId}${orgSuffix(report)}`;
+	if (typeof accountId === "string" && accountId) return { identity: accountId, qualifier: orgSuffix(report) };
 	const projectId = report.metadata?.projectId;
-	if (typeof projectId === "string" && projectId) return projectId;
-	return `account ${index + 1}`;
+	if (typeof projectId === "string" && projectId) return { identity: projectId };
+	return { identity: `account ${index + 1}`, placeholder: true };
+}
+
+function formatResetAccountLabel(report: UsageReport): AccountLabel {
+	const email = report.metadata?.email;
+	const accountId = report.metadata?.accountId;
+	const identity =
+		typeof email === "string" && email ? email : typeof accountId === "string" && accountId ? accountId : undefined;
+	return identity ? { identity, qualifier: orgSuffix(report) } : { identity: "account", placeholder: true };
 }
 
 function formatResetShort(limit: UsageLimit, nowMs: number): string | undefined {
@@ -2120,19 +2128,12 @@ export function renderUsageReports(
 		const maskInputs = providerReports.flatMap((report, index) => [
 			...report.limits.map(limit => formatAccountLabel(limit, report, index)),
 			formatUnlimitedReportLabel(report, index),
-			typeof report.metadata?.email === "string" && report.metadata.email
-				? `${report.metadata.email}${orgSuffix(report)}`
-				: typeof report.metadata?.accountId === "string" && report.metadata.accountId
-					? `${report.metadata.accountId}${orgSuffix(report)}`
-					: "account",
+			formatResetAccountLabel(report),
 		]);
-		if (activeAccount) {
-			const activeLabel = formatActiveAccountLabel(activeAccount);
-			if (activeLabel) maskInputs.push(activeLabel);
-		}
-		const accountMasker = createAccountMasker(maskInputs.map(normalizeUsageAccountLabel), maskAccountLabels);
-		const mask: AccountMasker = label => accountMasker(normalizeUsageAccountLabel(label));
-		const activeAccountLabel = mask(formatActiveAccountLabel(activeAccount) ?? "");
+		const activeLabel = getActiveAccountLabelParts(activeAccount);
+		if (activeLabel) maskInputs.push(activeLabel);
+		const mask = createAccountMasker(maskInputs, maskAccountLabels);
+		const activeAccountLabel = activeLabel ? mask(activeLabel) : "";
 		if (activeAccountLabel) {
 			lines.push(
 				`  ${uiTheme.fg("accent", "in use by this session:")} ${styleAccountMask(activeAccountLabel, uiTheme)}`,
@@ -2159,16 +2160,10 @@ export function renderUsageReports(
 		for (const report of providerReports) {
 			const count = report.resetCredits?.availableCount ?? 0;
 			if (count <= 0) continue;
-			const rawLabel =
-				typeof report.metadata?.email === "string" && report.metadata.email
-					? `${report.metadata.email}${orgSuffix(report)}`
-					: typeof report.metadata?.accountId === "string" && report.metadata.accountId
-						? `${report.metadata.accountId}${orgSuffix(report)}`
-						: "account";
+			const labelParts = formatResetAccountLabel(report);
 			const isActive = reportMatchesActiveAccount(report, activeAccount);
 			const suffix = `: ${count} saved reset${count === 1 ? "" : "s"}${isActive ? " (active)" : ""}`;
-			const safeLabel = normalizeUsageAccountLabel(rawLabel);
-			const maskedLabel = mask(safeLabel);
+			const maskedLabel = mask(labelParts);
 			const fixedWidth = visibleWidth(`    • ${suffix}`);
 			if (fixedWidth < availableWidth) {
 				const labelBudget = availableWidth - fixedWidth;

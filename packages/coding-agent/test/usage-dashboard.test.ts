@@ -6,6 +6,7 @@ import {
 	buildHeatmapLayout,
 	buildProviderCards,
 	formatActivityErrorDetail,
+	formatReportAccountLabel,
 	UsageDashboardComponent,
 } from "@oh-my-pi/pi-coding-agent/modes/components/usage-dashboard";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -181,6 +182,32 @@ describe("buildProviderCards split + privacy", () => {
 		});
 	});
 
+	it("masks opaque parentheses while preserving only metadata-attributed organization labels", () => {
+		const reports: UsageReport[] = [
+			{ provider: "openai", fetchedAt: 1, limits: [], metadata: { accountId: "Jane Doe (finance)" } },
+			{ provider: "openai", fetchedAt: 1, limits: [], metadata: { accountId: "Jane Doe", orgName: "finance" } },
+		];
+		const cards = buildProviderCards(reports, 1, {
+			merge: false,
+			mask: createAccountMasker(reports.map(formatReportAccountLabel), true),
+		});
+		expect(cards.map(card => card.account).sort()).toEqual(["Jan***", "Jan*** (finance)"]);
+		const dashboard = new UsageDashboardComponent({
+			reports,
+			renderDetail: () => "",
+			createMasker: createAccountMasker,
+			maskAccountLabels: true,
+			mergeAccounts: false,
+			labelPlacement: "moving",
+			loadActivity: async () => {},
+			requestRender: () => {},
+			onClose: () => {},
+		});
+		const text = Bun.stripANSI(dashboard.render(160).join("\n"));
+		expect(text).not.toContain("Jane Doe");
+		expect(text).toContain("Jan*** (finance)");
+	});
+
 	it("neutralizes terminal controls in split-card account labels before fitting", () => {
 		const reports = [
 			report("anthropic", "alice\t\x1b[31m@x.test", [limit("anthropic", "a", "7d", "Claude 7 Day", 0.2, "ok")], {
@@ -210,7 +237,7 @@ describe("buildProviderCards split + privacy", () => {
 	});
 
 	it("masks split-card account labels and keeps colliding prefixes distinguishable", () => {
-		const labels = reports.map(r => String(r.metadata?.email));
+		const labels = reports.map(r => ({ identity: String(r.metadata?.email) }));
 		const cards = buildProviderCards(reports, now, { merge: false, mask: createAccountMasker(labels, true) });
 
 		const masked = cards.map(card => card.account);

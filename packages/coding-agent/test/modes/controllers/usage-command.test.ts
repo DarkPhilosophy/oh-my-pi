@@ -11,6 +11,33 @@ describe("renderUsageReports content", () => {
 		setThemeInstance(darkTheme);
 	});
 
+	it("separates opaque parentheses from trusted reset and active-account qualifiers", () => {
+		const reports: UsageReport[] = [
+			{
+				provider: "openai",
+				fetchedAt: 1,
+				limits: [],
+				metadata: { accountId: "Jane Doe (finance)" },
+				resetCredits: { availableCount: 1 },
+			},
+			{
+				provider: "openai",
+				fetchedAt: 1,
+				limits: [],
+				metadata: { accountId: "Jane Doe", orgName: "finance" },
+				resetCredits: { availableCount: 2 },
+			},
+		];
+		const text = stripVTControlCharacters(
+			renderUsageReports(reports, theme, 1, 120, () => ({ accountId: "Jane Doe (finance)" }), {
+				maskAccountLabels: true,
+			}),
+		);
+		expect(text).toContain("Jan***: 1 saved reset");
+		expect(text).toContain("Jan*** (finance): 2 saved resets");
+		expect(text).not.toContain("Jane Doe");
+	});
+
 	it("renders bars and free percentage for limits that only report remainingFraction", () => {
 		const reports: UsageReport[] = [
 			{

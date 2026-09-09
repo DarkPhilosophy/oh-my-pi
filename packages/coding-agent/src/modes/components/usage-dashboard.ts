@@ -29,8 +29,12 @@ import {
 	matchesSelectPageUp,
 	matchesSelectUp,
 } from "../utils/keybinding-matchers";
-import { normalizeUsageAccountLabel } from "../utils/usage-mask";
-import type { AccountMasker } from "../utils/usage-mask";
+import {
+	type AccountLabel,
+	type AccountMasker,
+	formatAccountLabelText,
+	normalizeUsageAccountLabel,
+} from "../utils/usage-mask";
 import { renderFractionBar } from "../utils/usage-bar";
 import { bottomBorder, divider, row, topBorder } from "./overlay-box";
 
@@ -160,7 +164,7 @@ function sanitizeAccountLabelPart(value: string): string {
 }
 
 /** Best-effort identity for one report's account: email, organization, account id, project id, or ordinal. */
-export function formatReportAccountLabel(report: UsageReport, index: number): string {
+export function formatReportAccountLabel(report: UsageReport, index: number): AccountLabel {
 	const meta = report.metadata;
 	const base =
 		typeof meta?.email === "string" && meta.email
@@ -174,14 +178,14 @@ export function formatReportAccountLabel(report: UsageReport, index: number): st
 						: report.limits[0]?.scope.projectId
 							? sanitizeAccountLabelPart(report.limits[0].scope.projectId)
 							: undefined;
-	if (!base) return `account ${index + 1}`;
+	if (!base) return { identity: `account ${index + 1}`, placeholder: true };
 	const organization =
 		typeof meta?.orgName === "string" && meta.orgName
 			? sanitizeAccountLabelPart(meta.orgName)
 			: typeof meta?.orgId === "string" && meta.orgId
 				? sanitizeAccountLabelPart(meta.orgId)
 				: undefined;
-	return organization && organization !== base ? `${base} (${organization})` : base;
+	return { identity: base, qualifier: organization && organization !== base ? ` (${organization})` : undefined };
 }
 
 /** Stable split-card identity; display labels intentionally remain human-readable. */
@@ -211,8 +215,8 @@ export function buildProviderCards(
 	nowMs: number,
 	options: BuildCardsOptions = {},
 ): ProviderCard[] {
-	const { merge = true, mask = label => label } = options;
-	const grouped = new Map<string, { provider: string; account?: string; reports: UsageReport[] }>();
+	const { merge = true, mask = formatAccountLabelText } = options;
+	const grouped = new Map<string, { provider: string; account?: AccountLabel; reports: UsageReport[] }>();
 	reports.forEach((report, index) => {
 		const account = merge ? undefined : formatReportAccountLabel(report, index);
 		const identity = merge ? undefined : formatReportAccountKey(report, index);
@@ -376,7 +380,7 @@ export interface UsageDashboardOptions {
 	 */
 	renderDetail: (width: number, view: { maskAccountLabels: boolean }) => string;
 	/** Privacy masker factory for the given toggle state (collision-aware ordinals). */
-	createMasker: (labels: Iterable<string>, enabled: boolean) => AccountMasker;
+	createMasker: (labels: Iterable<AccountLabel>, enabled: boolean) => AccountMasker;
 	/** Initial privacy state, read from settings on open; toggling never persists. */
 	maskAccountLabels: boolean;
 	/** Initial merge state (one card per provider), read from settings on open; toggling never persists. */

@@ -1,5 +1,6 @@
 import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
+import type { AccountLabel } from "../../modes/utils/usage-mask";
 
 function normalizeIdentityValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;
@@ -14,11 +15,16 @@ function normalizeIdentityValue(value: unknown): string | undefined {
  * Returns `undefined` when no identifier is recoverable.
  */
 export function formatActiveAccountLabel(identity: OAuthAccountIdentity | undefined): string | undefined {
+	const label = getActiveAccountLabelParts(identity);
+	return label ? label.identity + (label.qualifier ?? "") : undefined;
+}
+
+export function getActiveAccountLabelParts(identity: OAuthAccountIdentity | undefined): AccountLabel | undefined {
 	if (!identity) return undefined;
 	const base = identity.email || identity.accountId || identity.projectId;
 	if (!base) return undefined;
 	const org = identity.orgName || identity.orgId;
-	return org && org !== base ? `${base} (${org})` : base;
+	return { identity: base, qualifier: org && org !== base ? ` (${org})` : undefined };
 }
 
 /**
