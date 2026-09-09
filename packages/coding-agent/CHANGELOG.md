@@ -7,6 +7,13 @@
 
 - Subagents now show their current activity and a separate, width-bounded current-tool row; resolved model labels follow the model badge setting.
 
+### Changed
+
+- Improved `/usage` with provider/account cards, temporary privacy and account-grouping controls, and configurable quota-bar labels.
+### Fixed
+
+- Applied account masking consistently to text-mode and ACP `/usage` output, including reset-credit labels.
+
 ### Fixed
 
 - Fixed completed subagent jobs and IRC replies displaying internal XML/JSON wrappers instead of readable results.

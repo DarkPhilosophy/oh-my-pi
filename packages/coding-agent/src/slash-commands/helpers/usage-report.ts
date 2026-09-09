@@ -3,7 +3,7 @@ import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
 import type { SlashCommandRuntime } from "../types";
 import { reportMatchesActiveAccount } from "./active-oauth-account";
-import { createAccountMasker, normalizeUsageAccountLabel } from "../../modes/utils/usage-mask";
+import { type AccountLabel, createAccountMasker, usageIdentityKey } from "../../modes/utils/usage-mask";
 import { formatDuration, formatProviderName, renderAsciiBar } from "./format";
 function formatWindowSuffix(label: string, windowLabel: string | undefined): string {
 	if (!windowLabel) return "";
@@ -25,7 +25,13 @@ function formatUsageAmount(limit: UsageLimit): string {
 	return `${usedText}${remainingText}`;
 }
 
-function formatUsageReportAccount(report: UsageReport, limit: UsageLimit | undefined, index: number): string {
+function formatUsageReportAccount(report: UsageReport, limit: UsageLimit | undefined, index: number): AccountLabel {
+	const accountKey = usageIdentityKey(
+		report.metadata?.accountId,
+		report.metadata?.projectId,
+		limit?.scope ?? report.limits[0]?.scope,
+		report.metadata?.orgId,
+	);
 	const metaOrgName = report.metadata?.orgName;
 	const metaOrgId = report.metadata?.orgId;
 	const org =
@@ -37,19 +43,20 @@ function formatUsageReportAccount(report: UsageReport, limit: UsageLimit | undef
 	// Two subscriptions (orgs) can share one email — suffix the org so the rows
 	// are tellable apart.
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return org ? `${email} (${org})` : email;
+	if (typeof email === "string" && email)
+		return { identity: email, qualifier: org ? ` (${org})` : undefined, accountKey };
 	// Guard metadata values for truthiness before using, then fall back to scope.
 	// ?? won't help here: empty string is not null/undefined, so it would suppress
 	// a valid scoped fallback (e.g. metadata.accountId="" hides limit.scope.accountId).
 	const metaAccountId = report.metadata?.accountId;
 	const accountId = typeof metaAccountId === "string" && metaAccountId ? metaAccountId : limit?.scope.accountId;
 	if (typeof accountId === "string" && accountId) {
-		return org && org !== accountId ? `${accountId} (${org})` : accountId;
+		return { identity: accountId, qualifier: org && org !== accountId ? ` (${org})` : undefined, accountKey };
 	}
 	const metaProjectId = report.metadata?.projectId;
 	const projectId = typeof metaProjectId === "string" && metaProjectId ? metaProjectId : limit?.scope.projectId;
-	if (typeof projectId === "string" && projectId) return projectId;
-	return limit ? `account ${index + 1}` : "account";
+	if (typeof projectId === "string" && projectId) return { identity: projectId, accountKey };
+	return { identity: limit ? `account ${index + 1}` : "account", placeholder: true };
 }
 
 function renderUsageReports(
@@ -59,17 +66,14 @@ function renderUsageReports(
 	usageModelSelectors: readonly string[] = [],
 	maskAccountLabels = false,
 ): string {
-	const normalizeLabel = normalizeUsageAccountLabel;
 	const accountMasker = createAccountMasker(
-		reports
-			.flatMap(report => [
-				formatUsageReportAccount(report, undefined, 0),
-				...report.limits.map((limit, index) => formatUsageReportAccount(report, limit, index)),
-			])
-			.map(normalizeLabel),
+		reports.flatMap(report => [
+			formatUsageReportAccount(report, undefined, 0),
+			...report.limits.map((limit, index) => formatUsageReportAccount(report, limit, index)),
+		]),
 		maskAccountLabels,
 	);
-	const displayAccount = (label: string): string => accountMasker(normalizeLabel(label));
+	const displayAccount = accountMasker;
 	const latestFetchedAt = Math.max(...reports.map(report => report.fetchedAt ?? 0));
 	const lines = [`Usage${latestFetchedAt ? ` (${formatDuration(nowMs - latestFetchedAt)} ago)` : ""}`];
 	const grouped = new Map<string, UsageReport[]>();
@@ -165,9 +169,9 @@ export async function buildUsageReportText(runtime: SlashCommandRuntime): Promis
 			const currentProvider = runtime.session.model?.provider;
 			const activeAccount = currentProvider
 				? runtime.session.modelRegistry.authStorage.getOAuthAccountIdentity(
-					currentProvider,
-					runtime.session.sessionId,
-				)
+						currentProvider,
+						runtime.session.sessionId,
+					)
 				: undefined;
 			const usageModelSelectors = provider.getUsageReportingModelSelectors?.(reports) ?? [];
 			return renderUsageReports(

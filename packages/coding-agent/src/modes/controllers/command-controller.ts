@@ -10,7 +10,7 @@ import {
 	type UsageLimit,
 	type UsageReport,
 } from "@oh-my-pi/pi-ai";
-import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
+import { Loader, Markdown, padding, Spacer, Text, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { formatDuration, logger, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
@@ -43,7 +43,6 @@ import { buildToolsMarkdown } from "../../modes/utils/tools-markdown";
 import type { AsyncJobSnapshotItem } from "../../session/agent-session";
 import type { AuthStorage, OAuthAccountIdentity } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
-import { sessionActionMessage } from "../../session/session-action-message";
 import type { NewSessionOptions } from "../../session/session-entries";
 import {
 	cleanSourceCheckoutIfConfigured,
@@ -54,7 +53,7 @@ import {
 } from "../../session/session-worktree";
 import { formatShakeSummary, type ShakeMode, type ShakeResult } from "../../session/shake-types";
 import {
-	formatActiveAccountLabel,
+	getActiveAccountLabelParts,
 	limitMatchesActiveAccount,
 	reportMatchesActiveAccount,
 } from "../../slash-commands/helpers/active-oauth-account";
@@ -72,10 +71,11 @@ import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
 import {
+	type AccountLabel,
 	type AccountMasker,
 	createAccountMasker,
 	MASK_STARS,
-	normalizeUsageAccountLabel,
+	usageIdentityKey,
 } from "../utils/usage-mask";
 import { renderFractionBar } from "../utils/usage-bar";
 
@@ -94,7 +94,7 @@ function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown:
 }
 
 export class CommandController {
-	constructor(private readonly ctx: InteractiveModeContext) { }
+	constructor(private readonly ctx: InteractiveModeContext) {}
 
 	async #restoreAfterMoveFailure(
 		previousState: Parameters<InteractiveModeContext["sessionManager"]["rollbackMove"]>[0],
@@ -113,7 +113,7 @@ export class CommandController {
 			let realigned = false;
 			try {
 				realigned = await this.ctx.applyCwdChange(actual);
-			} catch { }
+			} catch {}
 			if (!realigned) {
 				this.ctx.showError(
 					`Failed to roll back move: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)} (failed to re-align workspace to ${actual})`,
@@ -130,14 +130,14 @@ export class CommandController {
 		let sourceRestored = false;
 		try {
 			sourceRestored = await this.ctx.applyCwdChange(previousState.cwd);
-		} catch { }
+		} catch {}
 		if (sourceRestored) return;
 
 		const actual = this.ctx.sessionManager.getCwd();
 		let realigned = false;
 		try {
 			realigned = await this.ctx.applyCwdChange(actual);
-		} catch { }
+		} catch {}
 		if (!realigned) {
 			this.ctx.showError(`Failed to restore source workspace after rollback: workspace remains at ${actual}`);
 			await this.ctx.shutdown();
@@ -306,7 +306,7 @@ export class CommandController {
 					this.ctx.showError(`Custom share failed: ${err instanceof Error ? err.message : String(err)}`);
 				}
 			} finally {
-				await fs.rm(tmpFile, { force: true }).catch(() => { });
+				await fs.rm(tmpFile, { force: true }).catch(() => {});
 			}
 			return;
 		}
@@ -1141,20 +1141,11 @@ export class CommandController {
 		this.ctx.statusLine.invalidate();
 		this.ctx.ui.requestRender();
 
+		const sessionFile = this.ctx.session.sessionFile;
+		const shortPath = sessionFile ? sessionFile.split("/").pop() : "new session";
 		this.ctx.present([
 			new Spacer(1),
-			new Text(
-				`${theme.fg(
-					"accent",
-					`${theme.status.success} ${sessionActionMessage(
-						"forked",
-						this.ctx.sessionManager.getSessionId(),
-						this.ctx.sessionManager.getCwd(),
-					)}`,
-				)}`,
-				1,
-				1,
-			),
+			new Text(`${theme.fg("accent", `${theme.status.success} Session forked to ${shortPath}`)}`, 1, 1),
 		]);
 	}
 
@@ -1319,22 +1310,6 @@ export class CommandController {
 		this.ctx.updateEditorBorderColor();
 		await this.ctx.reloadTodos();
 		this.ctx.ui.requestRender();
-
-		this.ctx.present([
-			new Spacer(1),
-			new Text(
-				`${theme.fg(
-					"accent",
-					`${theme.status.success} ${sessionActionMessage(
-						"moved",
-						this.ctx.sessionManager.getSessionId(),
-						resolvedPath,
-					)}`,
-				)}`,
-				1,
-				1,
-			),
-		]);
 		return true;
 	}
 
@@ -1402,7 +1377,8 @@ export class CommandController {
 				if (shouldPersistCwd) await this.#applyBashResultCwd(result);
 			} catch (error) {
 				this.ctx.showError(
-					`Bash command completed, but OMP failed to update its working directory: ${error instanceof Error ? error.message : "Unknown error"
+					`Bash command completed, but OMP failed to update its working directory: ${
+						error instanceof Error ? error.message : "Unknown error"
 					}`,
 				);
 			}
@@ -1798,30 +1774,59 @@ function styleAccountMask(label: string, uiTheme: typeof theme): string {
 	return label.replace(MASK_STARS, uiTheme.fg("warning", MASK_STARS));
 }
 
-function formatAccountLabel(limit: UsageLimit, report: UsageReport, index: number): string {
+function formatAccountLabel(limit: UsageLimit, report: UsageReport, index: number): AccountLabel {
+	const accountKey = usageIdentityKey(
+		report.metadata?.accountId,
+		report.metadata?.projectId,
+		limit.scope,
+		report.metadata?.orgId,
+	);
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return `${email}${orgSuffix(report)}`;
+	if (typeof email === "string" && email) return { identity: email, qualifier: orgSuffix(report), accountKey };
 	const accountId =
 		typeof report.metadata?.accountId === "string" && report.metadata.accountId
 			? report.metadata.accountId
 			: limit.scope.accountId || undefined;
-	if (accountId) return `${accountId}${orgSuffix(report)}`;
+	if (accountId) return { identity: accountId, qualifier: orgSuffix(report), accountKey };
 	const projectId =
 		typeof report.metadata?.projectId === "string" && report.metadata.projectId
 			? report.metadata.projectId
 			: limit.scope.projectId || undefined;
-	if (projectId) return projectId;
-	return `account ${index + 1}`;
+	if (projectId) return { identity: projectId, accountKey };
+	return { identity: `account ${index + 1}`, placeholder: true };
 }
 
-function formatUnlimitedReportLabel(report: UsageReport, index: number): string {
+function formatUnlimitedReportLabel(report: UsageReport, index: number): AccountLabel {
+	const accountKey = usageIdentityKey(
+		report.metadata?.accountId,
+		report.metadata?.projectId,
+		report.limits[0]?.scope,
+		report.metadata?.orgId,
+	);
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return `${email}${orgSuffix(report)}`;
+	if (typeof email === "string" && email) return { identity: email, qualifier: orgSuffix(report), accountKey };
 	const accountId = report.metadata?.accountId;
-	if (typeof accountId === "string" && accountId) return `${accountId}${orgSuffix(report)}`;
+	if (typeof accountId === "string" && accountId)
+		return { identity: accountId, qualifier: orgSuffix(report), accountKey };
 	const projectId = report.metadata?.projectId;
-	if (typeof projectId === "string" && projectId) return projectId;
-	return `account ${index + 1}`;
+	if (typeof projectId === "string" && projectId) return { identity: projectId, accountKey };
+	return { identity: `account ${index + 1}`, placeholder: true };
+}
+
+function formatResetAccountLabel(report: UsageReport): AccountLabel {
+	const accountKey = usageIdentityKey(
+		report.metadata?.accountId,
+		report.metadata?.projectId,
+		report.limits[0]?.scope,
+		report.metadata?.orgId,
+	);
+	const email = report.metadata?.email;
+	const accountId = report.metadata?.accountId;
+	const identity =
+		typeof email === "string" && email ? email : typeof accountId === "string" && accountId ? accountId : undefined;
+	return identity
+		? { identity, qualifier: orgSuffix(report), accountKey }
+		: { identity: "account", placeholder: true };
 }
 
 function formatResetShort(limit: UsageLimit, nowMs: number): string | undefined {
@@ -2150,19 +2155,12 @@ export function renderUsageReports(
 		const maskInputs = providerReports.flatMap((report, index) => [
 			...report.limits.map(limit => formatAccountLabel(limit, report, index)),
 			formatUnlimitedReportLabel(report, index),
-			typeof report.metadata?.email === "string" && report.metadata.email
-				? `${report.metadata.email}${orgSuffix(report)}`
-				: typeof report.metadata?.accountId === "string" && report.metadata.accountId
-					? `${report.metadata.accountId}${orgSuffix(report)}`
-					: "account",
+			formatResetAccountLabel(report),
 		]);
-		if (activeAccount) {
-			const activeLabel = formatActiveAccountLabel(activeAccount);
-			if (activeLabel) maskInputs.push(activeLabel);
-		}
-		const accountMasker = createAccountMasker(maskInputs.map(normalizeUsageAccountLabel), maskAccountLabels);
-		const mask: AccountMasker = label => accountMasker(normalizeUsageAccountLabel(label));
-		const activeAccountLabel = mask(formatActiveAccountLabel(activeAccount) ?? "");
+		const activeLabel = getActiveAccountLabelParts(activeAccount);
+		if (activeLabel) maskInputs.push(activeLabel);
+		const mask = createAccountMasker(maskInputs, maskAccountLabels);
+		const activeAccountLabel = activeLabel ? mask(activeLabel) : "";
 		if (activeAccountLabel) {
 			lines.push(
 				`  ${uiTheme.fg("accent", "in use by this session:")} ${styleAccountMask(activeAccountLabel, uiTheme)}`,
@@ -2189,34 +2187,34 @@ export function renderUsageReports(
 		for (const report of providerReports) {
 			const count = report.resetCredits?.availableCount ?? 0;
 			if (count <= 0) continue;
-			const rawLabel =
-				typeof report.metadata?.email === "string" && report.metadata.email
-					? `${report.metadata.email}${orgSuffix(report)}`
-					: typeof report.metadata?.accountId === "string" && report.metadata.accountId
-						? `${report.metadata.accountId}${orgSuffix(report)}`
-						: "account";
+			const labelParts = formatResetAccountLabel(report);
 			const isActive = reportMatchesActiveAccount(report, activeAccount);
 			const suffix = `: ${count} saved reset${count === 1 ? "" : "s"}${isActive ? " (active)" : ""}`;
-			const labelBudget = Math.max(1, availableWidth - visibleWidth(`    • ${suffix}`));
-			const safeLabel = normalizeUsageAccountLabel(rawLabel);
-			const label = styleAccountMask(truncateToWidth(mask(safeLabel), labelBudget), uiTheme);
-			resetAccountLines.push(`    • ${label}${suffix}`);
-			const credits = report.resetCredits?.credits;
-			if (credits) {
-				for (const credit of credits) {
-					if (credit.expiresAt) {
-						const expiryMs = Date.parse(credit.expiresAt);
-						if (!Number.isNaN(expiryMs)) {
-							const remaining = expiryMs - nowMs;
-							const expiryDate = credit.expiresAt.slice(0, 10);
-							if (remaining > 0) {
-								resetAccountLines.push(`        expires in ${formatDuration(remaining)} (${expiryDate})`);
-							} else {
-								resetAccountLines.push(`        expired (${expiryDate})`);
-							}
-						}
-					}
+			const maskedLabel = mask(labelParts);
+			const fixedWidth = visibleWidth(`    • ${suffix}`);
+			if (fixedWidth < availableWidth) {
+				const labelBudget = availableWidth - fixedWidth;
+				const label = styleAccountMask(truncateToWidth(maskedLabel, labelBudget), uiTheme);
+				resetAccountLines.push(`    • ${label}${suffix}`);
+			} else {
+				const label = styleAccountMask(truncateToWidth(maskedLabel, Math.max(1, availableWidth - 6)), uiTheme);
+				resetAccountLines.push(`    • ${label}`);
+				const compact = `${count} reset${count === 1 ? "" : "s"}${isActive ? " (active)" : ""}`;
+				for (const detail of wrapTextWithAnsi(compact, Math.max(1, availableWidth - 4))) {
+					resetAccountLines.push(`    ${detail}`);
 				}
+			}
+			for (const credit of report.resetCredits?.credits ?? []) {
+				if (!credit.expiresAt) continue;
+				const expiryMs = Date.parse(credit.expiresAt);
+				if (Number.isNaN(expiryMs)) continue;
+				const remaining = expiryMs - nowMs;
+				const expiryDate = credit.expiresAt.slice(0, 10);
+				resetAccountLines.push(
+					remaining > 0
+						? `        expires in ${formatDuration(remaining)} (${expiryDate})`
+						: `        expired (${expiryDate})`,
+				);
 			}
 		}
 		if (resetAccountLines.length > 0) {

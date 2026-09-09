@@ -330,6 +330,17 @@ describe("renderUsageReports terminal width", () => {
 		expect(mid).toMatch(/\x1b\[38;2;\d+;\d+;\d+m/);
 		expect(mid).toMatch(/\x1b\[48;2;\d+;\d+;\d+m50% free\x1b\[39;49m/);
 	});
+
+	it("can anchor the embedded percentage at the right edge while the fill crosses through it", () => {
+		const reports = [
+			report("anthropic", "account@example.test", [limit("Claude 7 Day", "weekly", 7 * 24 * HOUR, 0.5)]),
+		];
+		const line = renderUsageReports(reports, theme, Date.now(), 80, undefined, { labelPlacement: "right" })
+			.split("\n")
+			.find(candidate => candidate.includes("% free"));
+		expect(Bun.stripANSI(line ?? "")).toMatch(/50% free$/);
+	});
+
 	it("keeps a fully free narrow bar within its requested width", () => {
 		for (const width of [1, 2, 9, 10, 12]) {
 			const rendered = renderFractionBar(1, width, theme);
@@ -342,16 +353,5 @@ describe("renderUsageReports terminal width", () => {
 		expect(rendered).toMatch(/\x1b\[38;5;\d+m/);
 		expect(rendered).toMatch(/\x1b\[48;5;\d+m/);
 		expect(rendered).not.toMatch(/\x1b\[(?:38|48);2;/);
-	});
-
-	it("can anchor the embedded percentage at the right edge while the fill crosses through it", () => {
-		const reports = [
-			report("anthropic", "account@example.test", [limit("Claude 7 Day", "weekly", 7 * 24 * HOUR, 0.5)]),
-		];
-		const line = renderUsageReports(reports, theme, Date.now(), 80, undefined, { labelPlacement: "right" })
-			.split("\n")
-			.find(candidate => candidate.includes("% free"));
-
-		expect(Bun.stripANSI(line ?? "")).toMatch(/50% free$/);
 	});
 });

@@ -1,4 +1,3 @@
-import * as path from "node:path";
 import { type AgentMessage, type AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import { type Model, PASTE_CODE_LOGIN_PROVIDERS, type UsageReport } from "@oh-my-pi/pi-ai";
@@ -37,7 +36,6 @@ import {
 	getAvailableThemes,
 	getSymbolTheme,
 	previewTheme,
-	setCodeGuidanceTrail,
 	setColorBlindMode,
 	setMarkdownMermaidRendering,
 	setSymbolPreset,
@@ -54,7 +52,6 @@ import {
 	persistForeignSession,
 } from "../../session/foreign-session-import";
 import type { ForeignSessionInfo, ForeignSessionSource } from "../../session/foreign-session-store";
-import { sessionActionMessage } from "../../session/session-action-message";
 import type { SessionEntry, SessionMessageEntry, SessionTreeNode } from "../../session/session-entries";
 import type { SessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
@@ -82,6 +79,7 @@ import {
 	type ToolSession,
 } from "../../tools";
 import { AskTool, type AskToolDetails, type AskToolInput } from "../../tools/ask";
+import { shortenPath } from "../../tools/render-utils";
 import { ToolAbortError } from "../../tools/tool-errors";
 import { applyHyperlinkSetting } from "../../tui/hyperlink";
 import { copyToClipboard } from "../../utils/clipboard";
@@ -316,7 +314,7 @@ export class SelectorController {
 			maskAccountLabels: settings.get("usage.maskAccountLabels"),
 			mergeAccounts: settings.get("usage.mergeAccounts"),
 			labelPlacement: settings.get("usage.labelPlacement"),
-			loadActivity: loadDailyActivity,
+			loadActivity: (push, signal) => loadDailyActivity(push, signal),
 			requestRender: () => this.ctx.ui.requestRender(),
 			onClose: done,
 		});
@@ -360,7 +358,6 @@ export class SelectorController {
 				defaultModelLabel: defaultAdvisorModel
 					? `${defaultAdvisorModel.provider}/${defaultAdvisorModel.id}`
 					: undefined,
-				projectName: path.basename(projectDir),
 			};
 			const overlay = new AdvisorConfigOverlayComponent(this.ctx.ui, deps, initialScope, initialDoc, {
 				loadDoc: async scope => loadWatchdogConfigFile(await resolveAdvisorConfigEditPath(scope, dirs)),
@@ -506,7 +503,6 @@ export class SelectorController {
 				modelRegistry: this.ctx.session.modelRegistry,
 				activeModelPattern,
 				defaultModelPattern,
-				advisorScope: this.ctx.session.advisorScope,
 				extensionRoots: () => this.ctx.session.effectiveExtensionRoots,
 			},
 			{ onCancel: () => done() },
@@ -552,10 +548,10 @@ export class SelectorController {
 				}
 				break;
 			case "steeringMode":
-				this.ctx.session.setSteeringMode(value as "all" | "one-at-a-time" | "coalescing");
+				this.ctx.session.setSteeringMode(value as "all" | "one-at-a-time");
 				break;
 			case "followUpMode":
-				this.ctx.session.setFollowUpMode(value as "all" | "one-at-a-time" | "coalescing");
+				this.ctx.session.setFollowUpMode(value as "all" | "one-at-a-time");
 				break;
 			case "interruptMode":
 				this.ctx.session.setInterruptMode(value as "immediate" | "wait");
@@ -695,12 +691,6 @@ export class SelectorController {
 				this.ctx.session.refreshBaseSystemPrompt().catch(err => {
 					this.ctx.showError(`Failed to apply Mermaid rendering setting: ${err}`);
 				});
-				this.ctx.rebuildChatFromMessages();
-				this.ctx.ui.resetDisplay();
-				break;
-
-			case "tui.codeGuidanceTrail":
-				setCodeGuidanceTrail(value as boolean);
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
 				break;
@@ -1920,6 +1910,7 @@ export class SelectorController {
 	}
 
 	async handleResumeSession(sessionPath: string, options?: { settingsFlushed?: boolean }): Promise<boolean> {
+		const previousCwd = this.ctx.sessionManager.getCwd();
 		// Flush pending settings writes before switching sessions so a save
 		// failure leaves the session, process project dir, and Settings in the
 		// source scope.
@@ -1945,13 +1936,14 @@ export class SelectorController {
 		}
 		this.ctx.clearTransientSessionUi();
 		const newCwd = this.ctx.sessionManager.getCwd();
+		const movedProject = normalizePathForComparison(newCwd) !== normalizePathForComparison(previousCwd);
 		this.#refreshSessionTerminalTitle();
 		this.ctx.updateEditorBorderColor();
 
 		// Clear and re-render the chat
 		await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 		await this.ctx.reloadTodos();
-		this.ctx.showStatus(sessionActionMessage("resumed", this.ctx.sessionManager.getSessionId(), newCwd));
+		this.ctx.showStatus(movedProject ? `Resumed session in ${shortenPath(newCwd)}` : "Resumed session");
 		return true;
 	}
 

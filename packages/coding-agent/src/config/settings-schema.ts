@@ -233,7 +233,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Developer",
 	],
 	tasks: ["Modes", "Subagents", "Isolation", "Commands & Skills"],
-	providers: ["Services", "Fireworks", "OpenAI Codex", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
+	providers: ["Services", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
 };
 
 /** Status line segment identifiers */
@@ -1166,6 +1166,34 @@ export const SETTINGS_SCHEMA = {
 		description:
 			"Maximum number of inline images kept as live terminal graphics (default 8). Older images fall back to a text placeholder via a full redraw once the limit is exceeded. Set to 0 to keep every image (no limit).",
 	},
+	"tui.resizeScrollback": {
+		type: "enum",
+		values: ["append", "rebuild", "preserve"] as const,
+		default: "rebuild",
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Resize Scrollback",
+			description: "How a settled terminal resize refreshes transcript rows retained in terminal scrollback",
+			options: [
+				{
+					value: "append",
+					label: "Append",
+					description: "Replay the transcript at the new width below retained history",
+				},
+				{
+					value: "rebuild",
+					label: "Rebuild",
+					description: "Erase all terminal scrollback, then replay one current-width transcript",
+				},
+				{
+					value: "preserve",
+					label: "Preserve",
+					description: "Repaint only the viewport and keep history wrapped at its old width",
+				},
+			],
+		},
+	},
 
 	"terminal.showProgress": {
 		type: "boolean",
@@ -1256,47 +1284,6 @@ export const SETTINGS_SCHEMA = {
 			group: "Display",
 			label: "Tight Layout",
 			description: "Remove the 1-character horizontal padding from the left and right of the terminal output",
-		},
-	},
-	"tui.codeGuidanceTrail": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "appearance",
-			group: "Display",
-			label: "Code Guidance Trail",
-			description:
-				"Show the steering-style gutter inside fenced code blocks: ├─ / └─ connectors per logical line and the │ rail on wrapped continuation rows. Off renders plain numbered lines.",
-		},
-	},
-	"tui.resizeScrollback": {
-		type: "enum",
-		values: ["append", "rebuild", "preserve"] as const,
-		default: "rebuild",
-		ui: {
-			tab: "appearance",
-			group: "Display",
-			label: "Resize Scrollback",
-			description:
-				"How a settled width resize refreshes terminal scrollback when the pane repaints in place (tmux/screen/zellij, or in-place direct terminals). The host rewraps old output naively on resize; these modes decide whether the transcript is re-emitted at the new width.",
-			options: [
-				{
-					value: "append",
-					label: "Append",
-					description: "Replay the transcript at the new width below the old history (one fresh copy per resize)",
-				},
-				{
-					value: "rebuild",
-					label: "Rebuild",
-					description:
-						"DESTRUCTIVE: erases the pane's ENTIRE scrollback (including pre-session shell output) and replays the transcript, leaving exactly one current-width copy. Needs a host that honors ED3: tmux does; when nested, the innermost honoring host clears; hosts that ignore it (GNU screen) behave like Append",
-				},
-				{
-					value: "preserve",
-					label: "Preserve",
-					description: "Repaint the viewport only; history keeps its old-width wrap (zero growth)",
-				},
-			],
 		},
 	},
 
@@ -2000,25 +1987,25 @@ export const SETTINGS_SCHEMA = {
 	// Conversation flow
 	steeringMode: {
 		type: "enum",
-		values: ["all", "one-at-a-time", "coalescing"] as const,
+		values: ["all", "one-at-a-time"] as const,
 		default: "one-at-a-time",
 		ui: {
 			tab: "interaction",
 			group: "Input",
 			label: "Steering Mode",
-			description: "How to process queued steering messages while the agent is working",
+			description: "How to process queued messages while agent is working",
 		},
 	},
 
 	followUpMode: {
 		type: "enum",
-		values: ["all", "one-at-a-time", "coalescing"] as const,
+		values: ["all", "one-at-a-time"] as const,
 		default: "one-at-a-time",
 		ui: {
 			tab: "interaction",
 			group: "Input",
 			label: "Follow-Up Mode",
-			description: "How to drain queued follow-up messages after a turn completes",
+			description: "How to drain follow-up messages after a turn completes",
 		},
 	},
 
@@ -2031,23 +2018,6 @@ export const SETTINGS_SCHEMA = {
 			group: "Input",
 			label: "Interrupt Mode",
 			description: "When steering messages interrupt tool execution",
-		},
-	},
-	pendingQueueCollapseLines: {
-		type: "number",
-		default: 5,
-		ui: {
-			tab: "interaction",
-			group: "Input",
-			label: "Queued Message Preview Lines",
-			description:
-				"How many leading lines of each queued steer/follow-up message the pending bar shows before collapsing the rest to `(+N)`. Alt+O expands every entry to its full text and toggles back to this collapsed preview.",
-			options: [
-				{ value: "1", label: "1 line" },
-				{ value: "3", label: "3 lines" },
-				{ value: "5", label: "5 lines" },
-				{ value: "10", label: "10 lines" },
-			],
 		},
 	},
 
@@ -2229,17 +2199,6 @@ export const SETTINGS_SCHEMA = {
 			group: "Startup & Updates",
 			label: "Check for Updates",
 			description: "Check for omp updates on startup",
-		},
-	},
-	"daemon.enabled": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "interaction",
-			group: "Startup & Updates",
-			label: "Daemon Mode",
-			description:
-				"Host interactive sessions in a shared per-profile daemon (opt-in; --daemon / --no-daemon override)",
 		},
 	},
 	"update.channel": {
@@ -4002,16 +3961,6 @@ export const SETTINGS_SCHEMA = {
 			description: "Block shell commands that have dedicated tools",
 		},
 	},
-	"bashInterceptor.forwardSimpleCommands": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "shell",
-			group: "Bash",
-			label: "Bash Interceptor Forward Simple Commands",
-			description: "Forward safe simple matches to the built-in read, grep, or glob tool instead of blocking them",
-		},
-	},
 	"bashInterceptor.patterns": { type: "array", default: DEFAULT_BASH_INTERCEPTOR_RULES },
 
 	"bash.direnv": {
@@ -4272,18 +4221,6 @@ export const SETTINGS_SCHEMA = {
 				},
 				{ value: "always", label: "Always", description: "Forces a comprehensive todo list on the first message" },
 			],
-		},
-	},
-
-	"tasks.todoClearDelay": {
-		type: "number",
-		default: 60,
-		ui: {
-			tab: "tools",
-			group: "Todos",
-			label: "Todo HUD Auto-Clear Delay",
-			description:
-				"Seconds before a completed todo HUD is visually dismissed; 0 is immediate and negative disables auto-dismissal",
 		},
 	},
 
@@ -4629,28 +4566,14 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"browser.relayBrowser": {
-		type: "enum",
-		values: ["chromium", "firefox"] as const,
-		default: "chromium",
-		ui: {
-			tab: "tools",
-			group: "Grep & Browser",
-			label: "Browser Relay Browser",
-			description:
-				"Browser controlled by relay mode. Chromium uses the extension relay; Firefox connects to an existing local WebDriver BiDi endpoint.",
-		},
-	},
-
 	"browser.relayUrl": {
 		type: "string",
 		default: undefined,
 		ui: {
 			tab: "tools",
 			group: "Grep & Browser",
-			label: "Browser Relay Endpoint",
-			description:
-				"Relay endpoint: Chromium HTTP discovery URL (default http://127.0.0.1:9224) or Firefox WebDriver BiDi WebSocket URL (default ws://127.0.0.1:9222/session).",
+			label: "Browser Relay URL",
+			description: "omp browser relay endpoint (default http://127.0.0.1:9224).",
 		},
 	},
 
@@ -5311,6 +5234,26 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"tasks.todoClearDelay": {
+		type: "number",
+		default: 60,
+		ui: {
+			tab: "tools",
+			group: "Todos",
+			label: "Todo Auto-Clear Delay",
+			description: "Delay before completed or abandoned todos are removed from the todo widget",
+			options: [
+				{ value: "0", label: "Instant" },
+				{ value: "60", label: "1 minute", description: "Default" },
+				{ value: "300", label: "5 minutes" },
+				{ value: "900", label: "15 minutes" },
+				{ value: "1800", label: "30 minutes" },
+				{ value: "3600", label: "1 hour" },
+				{ value: "-1", label: "Never" },
+			],
+		},
+	},
+
 	"task.showResolvedModelBadge": {
 		type: "boolean",
 		default: false,
@@ -5318,7 +5261,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "appearance",
 			group: "Display",
 			label: "Show Resolved Model Badge",
-			description: "Display the actual model ID in task widgets and the Subagents HUD",
+			description: "Display the actual model ID used by each subagent in the task widget status line",
 		},
 	},
 
@@ -5419,7 +5362,7 @@ export const SETTINGS_SCHEMA = {
 
 	"usage.maskAccountLabels": {
 		type: "boolean",
-		default: true,
+		default: false,
 		ui: {
 			tab: "providers",
 			group: "Privacy",
@@ -5448,7 +5391,6 @@ export const SETTINGS_SCHEMA = {
 			description: "Move the percentage with the filled bar or anchor it at the right edge",
 		},
 	},
-
 	// Provider selection
 	"providers.ollama-cloud.maxConcurrency": {
 		type: "number",
@@ -5813,20 +5755,6 @@ export const SETTINGS_SCHEMA = {
 			options: TINY_MEMORY_MODEL_OPTIONS,
 		},
 	},
-	"providers.unexpectedStopFallbackModel": {
-		type: "enum",
-		values: TINY_MEMORY_MODEL_VALUES,
-		default: "qwen2.5-1.5b",
-		ui: {
-			tab: "providers",
-			group: "Tiny Model",
-			label: "Unexpected Stop Fallback Model",
-			description:
-				"Local model to use only when the online unexpected-stop classifier fails; local-primary configurations do not need this setting.",
-			condition: "unexpectedStopDetection",
-			options: TINY_MEMORY_MODEL_OPTIONS,
-		},
-	},
 
 	"providers.kimiApiFormat": {
 		type: "enum",
@@ -5842,17 +5770,6 @@ export const SETTINGS_SCHEMA = {
 				{ value: "openai", label: "OpenAI", description: "api.kimi.com" },
 				{ value: "anthropic", label: "Anthropic", description: "api.moonshot.ai" },
 			],
-		},
-	},
-
-	"providers.openai-codex.useReserve": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "providers",
-			group: "OpenAI Codex",
-			label: "Use Luna Reserve",
-			description: "Use gpt-reserve for Luna when an account has reserve quota; fall back to Luna when unavailable.",
 		},
 	},
 

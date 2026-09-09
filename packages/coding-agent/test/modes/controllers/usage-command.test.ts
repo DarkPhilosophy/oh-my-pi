@@ -11,6 +11,52 @@ describe("renderUsageReports content", () => {
 		setThemeInstance(darkTheme);
 	});
 
+	it("marks only the matching organization name active on metadata-only reset rows", () => {
+		const reports: UsageReport[] = ["East", "West"].map(orgName => ({
+			provider: "openai",
+			fetchedAt: 1,
+			limits: [],
+			metadata: { email: "shared@example.test", orgName },
+			resetCredits: { availableCount: 1 },
+		}));
+		const text = stripVTControlCharacters(
+			renderUsageReports(reports, theme, 1, 120, () => ({
+				email: "shared@example.test",
+				orgName: "East",
+			})),
+		);
+		const resetRows = text.split("\n").filter(line => line.includes("saved reset"));
+		expect(resetRows.find(line => line.includes("(East)"))).toContain("(active)");
+		expect(resetRows.find(line => line.includes("(West)"))).not.toContain("(active)");
+	});
+
+	it("separates opaque parentheses from trusted reset and active-account qualifiers", () => {
+		const reports: UsageReport[] = [
+			{
+				provider: "openai",
+				fetchedAt: 1,
+				limits: [],
+				metadata: { accountId: "Jane Doe (finance)" },
+				resetCredits: { availableCount: 1 },
+			},
+			{
+				provider: "openai",
+				fetchedAt: 1,
+				limits: [],
+				metadata: { accountId: "Jane Doe", orgName: "finance" },
+				resetCredits: { availableCount: 2 },
+			},
+		];
+		const text = stripVTControlCharacters(
+			renderUsageReports(reports, theme, 1, 120, () => ({ accountId: "Jane Doe (finance)" }), {
+				maskAccountLabels: true,
+			}),
+		);
+		expect(text).toContain("Jan***: 1 saved reset");
+		expect(text).toContain("Jan*** (finance): 2 saved resets");
+		expect(text).not.toContain("Jane Doe");
+	});
+
 	it("renders bars and free percentage for limits that only report remainingFraction", () => {
 		const reports: UsageReport[] = [
 			{
@@ -96,6 +142,65 @@ describe("renderUsageReports content", () => {
 		expect(output).toContain(`expired (${expiredIso.slice(0, 10)})`);
 	});
 
+	it("marks the saved reset row when its report matches the active account", () => {
+		const now = Date.now();
+		const reports: UsageReport[] = [
+			{
+				provider: "openai-codex",
+				fetchedAt: now,
+				limits: [
+					{
+						id: "weekly",
+						label: "Weekly",
+						scope: { provider: "openai-codex", accountId: "acct-active" },
+						window: { id: "weekly", label: "weekly" },
+						amount: { usedFraction: 0.2, unit: "percent" },
+						status: "ok",
+					},
+				],
+				metadata: { email: "active@example.com", accountId: "acct-active" },
+				resetCredits: { availableCount: 1 },
+			},
+		];
+		const output = stripVTControlCharacters(
+			renderUsageReports(reports, theme, now, 98, () => ({ accountId: "acct-active" })),
+		);
+		expect(output).toContain("active@example.com: 1 saved reset (active)");
+	});
+
+	it("disambiguates a reportless active account against a colliding reported sibling", () => {
+		const now = Date.now();
+		const reports: UsageReport[] = [
+			{
+				provider: "openai-codex",
+				fetchedAt: now,
+				limits: [
+					{
+						id: "weekly",
+						label: "Weekly",
+						scope: { provider: "openai-codex", accountId: "acct-sibling" },
+						window: { id: "weekly", label: "weekly" },
+						amount: { usedFraction: 0.2, unit: "percent" },
+						status: "ok",
+					},
+				],
+				metadata: { email: "shared@example.com", accountId: "acct-sibling" },
+			},
+		];
+		const output = stripVTControlCharacters(
+			renderUsageReports(
+				reports,
+				theme,
+				now,
+				98,
+				() => ({ email: "shared@example.com", accountId: "acct-active" }),
+				{ maskAccountLabels: true },
+			),
+		);
+		expect(output).toContain("in use by this session: sha*** (2)");
+		expect(output).toContain("  sha***");
+	});
+
 	it("keeps combined fractional quota rows within narrow report widths", () => {
 		const reports: UsageReport[] = ["acct-1", "acct-2"].map((accountId, index) => ({
 			provider: "openai-codex",
@@ -113,22 +218,18 @@ describe("renderUsageReports content", () => {
 			metadata: { email: `user${index + 1}@example.com`, accountId },
 		}));
 
-		const width20Output = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 20));
-		const width20QuotaLines = width20Output
-			.split("\n")
-			.filter(line => line.includes("free") || line.includes("combined"));
-		expect(width20QuotaLines.every(line => [...line].length <= 20)).toBe(true);
-		expect(width20Output).toContain("combined");
-
-		const width16Output = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 16));
-		const width16QuotaLines = width16Output
-			.split("\n")
-			.filter(line => line.includes("free") || line.includes("combined"));
-		expect(width16QuotaLines.every(line => [...line].length <= 16)).toBe(true);
+		for (const width of [20, 16]) {
+			const output = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), width));
+			const quotaLines = output.split("\n").filter(line => line.includes("free") || line.includes("combined"));
+			expect(quotaLines.every(line => [...line].length <= width)).toBe(true);
+			if (width === 20) expect(output).toContain("combined");
+			else expect(output).not.toContain("combined 50% free");
+		}
 	});
 
 	it("marks metadata-only saved resets active and bounds sanitized organization labels", () => {
 		const width = 48;
+		const orgName = `Team\t\x1b[2J${" very-long".repeat(12)}`;
 		const reports: UsageReport[] = [
 			{
 				provider: "openai-codex",
@@ -137,7 +238,7 @@ describe("renderUsageReports content", () => {
 				metadata: {
 					email: "active@example.com",
 					accountId: "acct-active",
-					orgName: `Team\t\x1b[2J${" very-long".repeat(12)}`,
+					orgName,
 				},
 				resetCredits: { availableCount: 1 },
 			},
@@ -145,6 +246,7 @@ describe("renderUsageReports content", () => {
 		const rendered = renderUsageReports(reports, theme, Date.now(), width, () => ({
 			email: "active@example.com",
 			accountId: "acct-active",
+			orgName,
 		}));
 		const output = stripVTControlCharacters(rendered);
 		const resetLine = output.split("\n").find(line => line.includes("saved reset"));
@@ -174,57 +276,53 @@ describe("renderUsageReports content", () => {
 		expect(output).toContain("mai*** (Second org): 1 saved reset");
 	});
 
-	it("marks the active saved reset and disambiguates a reportless active identity", () => {
+	it("normalizes CRLF account labels and masks short opaque identities", () => {
 		const reports: UsageReport[] = [
 			{
 				provider: "openai-codex",
 				fetchedAt: Date.now(),
-				limits: [
-					{
-						id: "weekly",
-						label: "Weekly",
-						scope: { provider: "openai-codex", accountId: "acct-a" },
-						window: { id: "weekly", label: "weekly" },
-						amount: { usedFraction: 0.1, unit: "requests" },
-						status: "ok",
-					},
-				],
-				metadata: { email: "main-one@example.com", orgId: "org-a", orgName: "Team A" },
+				limits: [],
+				metadata: { accountId: "ab\r\ncd", orgName: "Org\tName" },
+				resetCredits: { availableCount: 1 },
+			},
+		];
+		const output = stripVTControlCharacters(
+			renderUsageReports(reports, theme, Date.now(), 80, undefined, { maskAccountLabels: true }),
+		);
+		const resetLine = output.split("\n").find(line => line.includes("saved reset"));
+		expect(resetLine).toContain("ab *** (Org   Name): 1 saved reset");
+		expect(output).not.toContain("\r");
+		expect(output).not.toContain("\t");
+	});
+
+	it("preserves reset count and active marker at minimum width", () => {
+		const reports: UsageReport[] = [
+			{
+				provider: "openai-codex",
+				fetchedAt: Date.now(),
+				limits: [],
+				metadata: { email: "active@example.com" },
 				resetCredits: { availableCount: 1 },
 			},
 			{
 				provider: "openai-codex",
 				fetchedAt: Date.now(),
 				limits: [],
-				metadata: { email: "main-two@example.com", orgName: "Team B" },
-				resetCredits: { availableCount: 1 },
+				metadata: { email: "other@example.com" },
+				resetCredits: { availableCount: 2 },
 			},
 		];
+		const width = 20;
 		const output = stripVTControlCharacters(
-			renderUsageReports(reports, theme, Date.now(), 98, () => ({
-				email: "main-one@example.com",
-				orgId: "org-a",
-				orgName: "Team A",
-			})),
+			renderUsageReports(reports, theme, Date.now(), width, () => ({ email: "active@example.com" })),
 		);
-		expect(output).toContain("main-one@example.com (Team A): 1 saved reset (active)");
-		expect(output).toContain("main-two@example.com (Team B): 1 saved reset");
-	});
-
-	it("normalizes CRLF account labels and masks short opaque identities", () => {
-		const reports: UsageReport[] = [{
-			provider: "openai-codex",
-			fetchedAt: Date.now(),
-			limits: [],
-			metadata: { accountId: "ab\r\ncd", orgName: "Org\tName" },
-			resetCredits: { availableCount: 1 },
-		}];
-		const output = stripVTControlCharacters(
-			renderUsageReports(reports, theme, Date.now(), 80, undefined, { maskAccountLabels: true }),
+		const resetLines = output
+			.split("\n")
+			.filter(line => line.includes("saved reset") || /\d+ resets?(?: \(|$)/.test(line));
+		expect(resetLines.some(line => line.includes("1 reset") && line.includes("(active)"))).toBe(true);
+		expect(resetLines.some(line => line.includes("2 resets"))).toBe(true);
+		expect(resetLines.filter(line => line.includes("saved reset")).every(line => [...line].length <= width)).toBe(
+			true,
 		);
-		const resetLine = output.split("\n").find(line => line.includes("saved reset"));
-		expect(resetLine).toContain("a*** cd (Org   Name): 1 saved reset");
-		expect(output).not.toContain("\r");
-		expect(output).not.toContain("\t");
 	});
 });
