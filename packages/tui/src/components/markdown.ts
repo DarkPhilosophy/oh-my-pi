@@ -4079,10 +4079,13 @@ export class Markdown implements Component {
 					// code rows (same contract as the top-level path) instead of
 					// being silently swallowed by the framed renderer.
 					const delimiter = raw.match(/(`{3,}|~{3,})/)?.[1] ?? "```";
-					for (const rawLine of raw.split("\n")) {
-						// Keep open-fence rows in the list-aware noWrap path so the
-						// bullet and continuation rail remain attached before closure.
-						lines.push({ text: replaceTabs(rawLine), noWrap: true, nested: false });
+					const rawLines = raw.split("\n");
+					for (let index = 0; index < rawLines.length; index++) {
+						const text = replaceTabs(rawLines[index]!);
+						// Only the opening delimiter needs the list-aware noWrap path.
+						// Body rows must wrap inside the continuation width rather than
+						// losing their suffix to noWrap truncation.
+						lines.push({ text, noWrap: index === 0 ? true : undefined, nested: false });
 					}
 					lines.push({ text: replaceTabs(delimiter), noWrap: true, nested: false });
 				}

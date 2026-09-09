@@ -186,6 +186,16 @@ describe("Markdown component", () => {
 			expect(plainLines.every(line => visibleWidth(line) <= 8)).toBe(true);
 			expect(plainLines.join("")).toContain("x");
 		});
+		it("wraps the body of an unfinished fenced block inside a list", () => {
+			const body = "alpha bravo charlie delta echo foxtrot golf hotel india";
+			const markdown = new Markdown(`- \`\`\`\n  ${body}`, 0, 0, defaultMarkdownTheme);
+			const plainLines = markdown.render(24).map(line => stripVTControlCharacters(line).trimEnd());
+			const flattened = plainLines.join(" ").replace(/\s+/g, " ");
+
+			expect(flattened).toContain(body);
+			expect(plainLines.every(line => visibleWidth(line) <= 24)).toBe(true);
+			expect(plainLines.some(line => line.startsWith("  "))).toBe(true);
+		});
 
 		it("should maintain numbering when code blocks are not indented (LLM output)", () => {
 			// When code blocks aren't indented, marked parses each item as a separate list.
