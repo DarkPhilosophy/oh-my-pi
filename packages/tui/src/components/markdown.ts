@@ -146,13 +146,18 @@ function isMarkdownFencePrefix(prefix: string): boolean {
 }
 function listContinuationIndentBefore(source: string, lineStart: number): number | undefined {
 	let cursor = lineStart;
+	let activeIndent = Number.POSITIVE_INFINITY;
 	while (cursor > 0) {
 		const previousEnd = cursor - 1;
 		const previousStart = source.lastIndexOf("\n", Math.max(0, previousEnd - 1)) + 1;
 		const line = source.slice(previousStart, previousEnd);
 		if (line.trim().length > 0) {
+			const leadingIndent = /^ */.exec(line)![0].length;
 			const marker = /^( *)(?:[-+*]|\d+[.)])([ \t]+)/.exec(line);
-			if (marker) return marker[1]!.length + marker[0].length - marker[1]!.length;
+			if (marker && marker[0].length <= activeIndent) return marker[0].length;
+			// A dedented continuation closes deeper child levels. Keep walking
+			// until a marker belongs to the remaining active ancestor.
+			activeIndent = Math.min(activeIndent, leadingIndent);
 		}
 		cursor = previousStart;
 	}

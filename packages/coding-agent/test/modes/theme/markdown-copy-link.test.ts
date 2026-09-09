@@ -63,6 +63,13 @@ describe("Markdown copy link", () => {
 		expect(resolveCopyBlock(target!)).toBe("\tfoo");
 	});
 
+	it("preserves tabs after an outer list resumes below its child", () => {
+		const source = "10. outer\n    - child\n    back in outer\n    ```js\n    \tfoo\n    ```";
+		const footer = new Markdown(source, 0, 0, getMarkdownTheme()).render(80).at(-1) ?? "";
+		const target = footer.match(/\x1b]8;;(omp-copy:[^\x07]+)\x07/)?.[1];
+		expect(resolveCopyBlock(target!)).toBe("\tfoo");
+	});
+
 	it("skips container-prefixed comment leaves before a later fenced copy", () => {
 		const source = "- <!--\n  ```js\n  wrong\n  ```\n  -->\n- ```js\n  right\n  ```";
 		const footer = new Markdown(source, 0, 0, getMarkdownTheme()).render(80).at(-1) ?? "";
