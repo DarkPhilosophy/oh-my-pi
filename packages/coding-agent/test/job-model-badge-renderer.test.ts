@@ -138,6 +138,41 @@ describe("hub jobs task model badges", () => {
 		expect(text).not.toContain('"summary"');
 	});
 
+	it("retains literal closing tags inside task output and preview envelopes", () => {
+		for (const tag of ["output", "preview"]) {
+			const body = "Literal </output> and </preview> remain. Tail intact.";
+			const envelope = `<task-result id="Reader"><${tag}>\n${body}\n</${tag}></task-result>`;
+			const jobText = renderJobText(
+				{
+					jobs: [
+						{
+							id: "Reader",
+							type: "task",
+							status: "completed",
+							label: "Reader",
+							durationMs: 1,
+							resultText: envelope,
+						},
+					],
+				},
+				true,
+			);
+			const cardText = createIrcMessageCard(
+				{ kind: "incoming", from: "Reader", body: envelope },
+				() => true,
+				uiTheme,
+			)
+				.render(160)
+				.join("\n");
+			for (const text of [jobText, cardText]) {
+				expect(text).toContain("</output>");
+				expect(text).toContain("</preview>");
+				expect(text).toContain("Tail intact.");
+				expect(text).not.toContain("<task-result");
+			}
+		}
+	});
+
 	it("retains arbitrary single-field schemas in task job and IRC previews", () => {
 		const body = '{"report":"No issues"}';
 		const envelope = `<task-result id="Reader"><output>\n${body}\n</output></task-result>`;

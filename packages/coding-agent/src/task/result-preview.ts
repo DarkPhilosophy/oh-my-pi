@@ -5,7 +5,7 @@ import { sanitizeText } from "@oh-my-pi/pi-utils";
 export function formatTaskResultPreview(text: string): string {
 	let body = text;
 	if (text.trimStart().startsWith("<task-result ")) {
-		const output = /<(output|preview)(?:\s[^>]*)?>\n?([\s\S]*?)\n?<\/\1>/.exec(text)?.[2];
+		const output = /<(output|preview)(?:\s[^>]*)?>\n?([\s\S]*)\n?<\/\1>/.exec(text)?.[2];
 		if (output !== undefined) body = output.trim();
 	}
 	try {
