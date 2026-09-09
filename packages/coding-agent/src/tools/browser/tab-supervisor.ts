@@ -1120,11 +1120,40 @@ export async function releaseAllTabs(opts: ReleaseTabOptions = {}): Promise<numb
 		if (opts.signal?.aborted) throw new ToolAbortError();
 		if (tab.backend !== "worker" || tab.kindTag !== "firefox-relay" || sharedFirefoxWorkers.has(tab.worker)) continue;
 		sharedFirefoxWorkers.add(tab.worker);
-		const aliasCount = [...tabs.values()].filter(
-			candidate => candidate.backend === "worker" && candidate.worker === tab.worker,
-		).length;
-		await forceKillTab(tab.name, "All Firefox relay aliases closed", { sharedFirefoxWorker: true });
-		count += aliasCount;
+		const key = tab.browser.key;
+		const prior = firefoxAcquireChains.get(key) ?? Promise.resolve();
+		const timeoutMs = opts.timeoutMs ?? DEFAULT_TAB_CLOSE_TIMEOUT_MS;
+		const startedAt = performance.now();
+		const operation = (async () => {
+			await untilAborted(opts.signal, () =>
+				withTimeout(prior, timeoutMs, "Timed out waiting for Firefox endpoint acquisition before close-all"),
+			);
+			if (opts.signal?.aborted) throw new ToolAbortError();
+			const current = [...tabs.values()].find(
+				candidate =>
+					candidate.backend === "worker" &&
+					candidate.kindTag === "firefox-relay" &&
+					candidate.worker === tab.worker &&
+					candidate.browser.key === key,
+			);
+			if (!current || !("worker" in current)) return 0;
+			const aliasCount = [...tabs.values()].filter(
+				candidate =>
+					"worker" in candidate &&
+					candidate.backend === "worker" &&
+					candidate.kindTag === "firefox-relay" &&
+					candidate.worker === current.worker,
+			).length;
+			await forceKillTab(current.name, "All Firefox relay aliases closed", { sharedFirefoxWorker: true });
+			return aliasCount;
+		})();
+		const tail = Promise.all([prior, operation.catch(() => undefined)]).then(() => undefined);
+		firefoxAcquireChains.set(key, tail);
+		void tail.then(() => {
+			if (firefoxAcquireChains.get(key) === tail) firefoxAcquireChains.delete(key);
+		});
+		count += await operation;
+		if (performance.now() - startedAt >= timeoutMs) opts.signal?.throwIfAborted();
 	}
 	for (const name of [...tabs.keys()]) {
 		if (await releaseTab(name, opts)) count++;

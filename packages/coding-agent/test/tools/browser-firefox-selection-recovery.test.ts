@@ -7,12 +7,14 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-protocol";
 import {
 	acquireTab,
+	forceKillTab,
 	getFirefoxSharedTabsForTest,
 	getTabsMapForTest,
+	releaseAllTabs,
+	type AcquireTabResult,
 	type WorkerHandle,
 	type WorkerTabSession,
 } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
-
 class FakeSelectionWorker implements WorkerHandle {
 	readonly mode = "inline" as const;
 	readonly sent: WorkerInbound[] = [];
@@ -88,5 +90,124 @@ describe("Firefox shared worker selection recovery", () => {
 		expect(tabs.has("primary")).toBe(false);
 		expect(tabs.has("alias")).toBe(false);
 		expect(browser.refCount).toBe(0);
+	});
+	it("blocks a same-endpoint acquisition until close-all finishes shared worker teardown", async () => {
+		const teardown = Promise.withResolvers<void>();
+		const terminationStarted = Promise.withResolvers<void>();
+		const order: string[] = [];
+		const oldSent: WorkerInbound[] = [];
+		const replacementSent: WorkerInbound[] = [];
+		const replacementHandlers = new Set<(message: WorkerOutbound) => void>();
+		const browser = makeBrowser();
+		let replacementPublished = false;
+		let replacementAnchor: WorkerTabSession | undefined;
+		const replacementWorker: WorkerHandle = {
+			mode: "inline",
+			send(message) {
+				replacementSent.push(message);
+				if (message.type !== "select") return;
+				order.push("replacement-select");
+				queueMicrotask(() => {
+					for (const handler of replacementHandlers) {
+						handler({
+							type: "selected",
+							id: message.id,
+							info: {
+								url: "about:blank",
+								title: "replacement",
+								viewport: { width: 1280, height: 720 },
+								targetId: "replacement-target",
+							},
+						});
+					}
+				});
+			},
+			onMessage(handler) {
+				replacementHandlers.add(handler);
+				return () => replacementHandlers.delete(handler);
+			},
+			onError: () => () => undefined,
+			terminate: async () => undefined,
+		};
+		const oldHandlers = new Set<(message: WorkerOutbound) => void>();
+		const oldWorker: WorkerHandle = {
+			mode: "inline",
+			send(message) {
+				oldSent.push(message);
+				if (message.type !== "close") return;
+				order.push("old-close");
+				queueMicrotask(() => {
+					for (const handler of oldHandlers) handler({ type: "closed" });
+				});
+			},
+			onMessage(handler) {
+				oldHandlers.add(handler);
+				return () => oldHandlers.delete(handler);
+			},
+			onError: () => () => undefined,
+			async terminate() {
+				order.push("old-terminate-start");
+				terminationStarted.resolve();
+				await teardown.promise;
+				replacementPublished = true;
+				order.push("replacement-published");
+				replacementAnchor = makeTab("replacement-anchor", browser, replacementWorker);
+				getFirefoxSharedTabsForTest().set(replacementAnchor);
+			},
+		};
+		const primary = makeTab("close-all-primary", browser, oldWorker);
+		const alias = makeTab("close-all-alias", browser, oldWorker);
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(primary.name, primary);
+		tabs.set(alias.name, alias);
+		getFirefoxSharedTabsForTest().set(primary);
+		let closing: Promise<number> | undefined;
+		let opening: Promise<AcquireTabResult> | undefined;
+		try {
+			closing = releaseAllTabs({ timeoutMs: 1_000 });
+			await terminationStarted.promise;
+			expect(oldSent.map(message => message.type)).toEqual(["close"]);
+			expect(primary.state).toBe("dead");
+			expect(alias.state).toBe("alive");
+			expect(getFirefoxSharedTabsForTest().get(browser)).toBeUndefined();
+
+			let openingSettled = false;
+			opening = acquireTab("post-close-all", browser, { timeoutMs: 1_000 });
+			void opening.then(
+				() => {
+					openingSettled = true;
+				},
+				() => {
+					openingSettled = true;
+				},
+			);
+			await Promise.resolve();
+
+			expect(openingSettled).toBe(false);
+			expect(replacementPublished).toBe(false);
+			expect(replacementSent).toEqual([]);
+			expect(oldSent.map(message => message.type)).toEqual(["close"]);
+
+			teardown.resolve();
+			await expect(closing).resolves.toBe(2);
+			await expect(opening).resolves.toMatchObject({ created: true });
+
+			expect(order).toEqual(["old-close", "old-terminate-start", "replacement-published", "replacement-select"]);
+			expect(tabs.has(primary.name)).toBe(false);
+			expect(tabs.has(alias.name)).toBe(false);
+			expect(tabs.get("post-close-all")).toMatchObject({
+				state: "alive",
+				worker: replacementWorker,
+				targetId: "replacement-target",
+			});
+		} finally {
+			teardown.resolve();
+			await closing?.catch(() => undefined);
+			await opening?.catch(() => undefined);
+			await forceKillTab("post-close-all", "test cleanup", { sharedFirefoxWorker: true });
+			if (replacementAnchor) getFirefoxSharedTabsForTest().delete(replacementAnchor);
+			tabs.delete(primary.name);
+			tabs.delete(alias.name);
+		}
 	});
 });
