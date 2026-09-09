@@ -814,8 +814,11 @@ export function shortenEmbeddedPaths(text: string, homeDir?: string): string {
 				.join("[\\\\/]")
 		: home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const flags = windowsHome ? "gi" : "g";
-	const tokenBoundary = String.raw`[\s"'\x60([{=(:,;<>]`;
-	return text.replace(new RegExp(`(^|${tokenBoundary})${escapedHome}(?=$|[/\\\\\\s"'\\]),;:\\x60])`, flags), "$1~");
+	const tokenBoundary = String.raw`[\s"'\x60([{=(:,;<>&|]`;
+	return text.replace(
+		new RegExp(`(^|${tokenBoundary})${escapedHome}(?=$|[/\\\\\\s"'\\]),;:\\x60<>&|])`, flags),
+		"$1~",
+	);
 }
 
 /** Shorten filesystem and command arguments without rewriting literal search patterns. */

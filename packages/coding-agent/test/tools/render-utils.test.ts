@@ -27,6 +27,13 @@ import {
 } from "@oh-my-pi/pi-tui";
 
 describe("embedded home path normalization", () => {
+	it("recognizes compact shell control operators around home-directory tokens", () => {
+		expect(shortenEmbeddedPaths("cd /home/alice&& pwd", "/home/alice")).toBe("cd ~&& pwd");
+		expect(shortenEmbeddedPaths("cd /home/alice||/home/alice/bin/fallback", "/home/alice")).toBe(
+			"cd ~||~/bin/fallback",
+		);
+	});
+
 	it("recognizes mixed Windows separators without rewriting unrelated prefixes", () => {
 		const home = String.raw`C:\Users\Alice`;
 		expect(shortenEmbeddedPaths("type C:/Users/Alice/private.txt", home)).toBe("type ~/private.txt");
