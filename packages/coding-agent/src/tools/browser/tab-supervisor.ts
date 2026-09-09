@@ -1864,6 +1864,10 @@ export async function forceKillTab(
 			await releaseBrowser(tab.browser, { kill: false });
 			return;
 		}
+		for (const [aliasName, alias] of aliases) {
+			alias.state = "dead";
+			killedTabs.set(aliasName, reason);
+		}
 	}
 	killedTabs.set(name, reason);
 	tab.state = "dead";
@@ -1883,19 +1887,9 @@ export async function forceKillTab(
 		const aliases = [...tabs.entries()].filter(
 			([, candidate]) => candidate.backend === "worker" && candidate.worker === tab.worker,
 		);
-		if (!options.sharedFirefoxWorker && aliases.length > 1) {
-			tab.worker.send({ type: "release-runtime", name });
-			const survivor = aliases.find(([aliasName]) => aliasName !== name)?.[1];
-			tabs.delete(name);
-			if (survivor?.backend === "worker") firefoxSharedTabs.set(survivor);
-			await releaseBrowser(tab.browser, { kill: false });
-			return;
-		}
 		firefoxSharedTabs.delete(tab);
 		await terminateWorker(tab.worker, true);
 		for (const [aliasName, alias] of aliases) {
-			killedTabs.set(aliasName, reason);
-			alias.state = "dead";
 			await releaseBrowser(alias.browser, { kill: false });
 			tabs.delete(aliasName);
 		}
@@ -2130,6 +2124,13 @@ async function spawnInlineWorker(): Promise<WorkerHandle> {
 	const { WorkerCore } = await import("./tab-worker");
 	new WorkerCore(workerTransport, false);
 	let termination: Promise<void> | undefined;
+	const closed = Promise.withResolvers<void>();
+	const observeClosed = (message: WorkerOutbound): void => {
+		if (message.type !== "closed") return;
+		hostListeners.delete(observeClosed);
+		closed.resolve();
+	};
+	hostListeners.add(observeClosed);
 	return {
 		mode: "inline",
 		send: msg =>
@@ -2143,16 +2144,9 @@ async function spawnInlineWorker(): Promise<WorkerHandle> {
 		onError: () => () => {},
 		terminate() {
 			if (termination) return termination;
-			termination = new Promise<void>(resolve => {
-				const listener = (message: WorkerOutbound): void => {
-					if (message.type !== "closed") return;
-					hostListeners.delete(listener);
-					resolve();
-				};
-				hostListeners.add(listener);
-				queueMicrotask(() => {
-					for (const workerListener of workerListeners) workerListener({ type: "close" });
-				});
+			termination = closed.promise;
+			queueMicrotask(() => {
+				for (const workerListener of workerListeners) workerListener({ type: "close" });
 			});
 			return termination;
 		},

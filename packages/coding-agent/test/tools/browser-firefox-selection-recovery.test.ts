@@ -196,7 +196,7 @@ describe("Firefox shared worker selection recovery", () => {
 			await terminationStarted.promise;
 			expect(oldSent.map(message => message.type)).toEqual(["close"]);
 			expect(primary.state).toBe("dead");
-			expect(alias.state).toBe("alive");
+			expect(alias.state).toBe("dead");
 			expect(getFirefoxSharedTabsForTest().get(browser)).toBeUndefined();
 
 			let openingSettled = false;
