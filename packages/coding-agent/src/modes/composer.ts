@@ -417,17 +417,17 @@ export class Composer implements TerminalFrameProvider {
 		}
 		if (!this.#headerRetired) {
 			const welcome = this.#welcome;
+			let renderedHeader = this.#header.render(width);
+			const liveRows = transcript.liveRowCount(width);
+			if (!this.#historyFlush && renderedHeader.length + chromeRows + liveRows <= rows) return undefined;
 			if (welcome !== undefined && !welcome.isTranscriptBlockFinalized()) {
-				if (!this.#historyFlush && chromeRows + transcript.liveRowCount(width) < rows) return undefined;
-				// An off-screen intro cannot remain mutable ahead of transcript history.
+				// Settle before preserving a header whose top would leave the viewport.
 				welcome.stopIntro();
+				renderedHeader = this.#header.render(width);
 			}
-			// Retire the header only once it is entirely off screen. Transient
-			// editor chrome must not freeze its still-visible tail into history.
-			const renderedHeader = this.#header.render(width);
+			// Archive the complete header before any part is clipped. It is not a
+			// borrowable transcript prefix, so clipping alone would lose its top.
 			if (renderedHeader.length > 0) {
-				const liveRows = transcript.liveRowCount(width);
-				if (!this.#historyFlush && chromeRows + liveRows < rows) return undefined;
 				this.#offeredHistory = {
 					id: this.#nextHistoryId++,
 					rows: [...renderedHeader, ""],
