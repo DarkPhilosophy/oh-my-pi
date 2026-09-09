@@ -2918,7 +2918,8 @@ export class Markdown implements Component {
 		const canonicalRaw = replaceTabs(raw.replace(/\r\n?/g, "\n"));
 		const start = this.#copySourceSearchCursor;
 		const exactStart = expandedSourceText.indexOf(canonicalRaw, start);
-		const suffix = expandedSourceText.slice(start);
+		// Only normalization before an exact match can produce an earlier match.
+		const suffix = expandedSourceText.slice(start, exactStart < 0 ? undefined : exactStart);
 		OSC8_ST_PREFIX_REGEX.lastIndex = 0;
 		const hasStTerminatedOsc = OSC8_ST_PREFIX_REGEX.test(suffix);
 		OSC8_ST_PREFIX_REGEX.lastIndex = 0;
