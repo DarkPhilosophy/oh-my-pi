@@ -76,6 +76,9 @@ interface TranscriptEntry {
 	/** Position in the last logical live viewport; independent of durable retirement. */
 	viewportStart?: number;
 	borrowed?: boolean;
+	viewportOffset?: number;
+	viewportExtent?: number;
+	borrowedEnd?: number;
 	/**
 	 * Set when a published stable row drifted (retraction, byte change within a
 	 * width epoch, or no longer a render prefix). Rows already in native
@@ -282,6 +285,32 @@ export class TranscriptContainer extends Container {
 		return index >= 0 && index >= this.#frontier;
 	}
 
+	/**
+	 * Whether none of `component`'s rows have entered immutable transcript
+	 * history. A never-rendered component is still safe to mutate.
+	 */
+	isBlockUncommitted(component: Component): boolean {
+		this.#syncEntries();
+		const index = this.#entries.findIndex(entry => entry.component === component);
+		if (index < 0) return true;
+		const entry = this.#entries[index]!;
+		if (entry.state === "committed" || entry.emitted > 0 || entry.borrowed) return false;
+		if (this.#offered?.kind === "commit" && index < this.#offered.end) return false;
+		if (this.#offered?.kind === "append" && index === this.#offered.entry) return false;
+		return true;
+	}
+
+	/**
+	 * Whether `component` still sits in the live (repaintable) region: at or
+	 * after the retirement frontier. Long-lived finalized blocks use this seam
+	 * to stop mutating once their rows become eligible for immutable history.
+	 */
+	isBlockInLiveRegion(component: Component): boolean {
+		this.#syncEntries();
+		const index = this.#entries.findIndex(entry => entry.component === component);
+		return index >= 0 && index >= this.#frontier;
+	}
+
 	/** Lifecycle state per block in transcript order (diagnostics and tests). */
 	blockStates(): readonly BlockState[] {
 		this.#syncEntries();
@@ -350,13 +379,21 @@ export class TranscriptContainer extends Container {
 		this.#syncEntries();
 		this.#settleFinalized();
 		const output: string[] = [];
+		let previous: TranscriptEntry | undefined;
 		for (const { entry, index } of this.#liveEntries()) {
 			entry.viewportStart = undefined;
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, frame);
-			const rendered = this.#renderEntry(entry, width).slice(this.#projectedEmitted(entry, index, width));
+			const offset = this.#projectedEmitted(entry, index, width);
+			const rendered = this.#renderEntry(entry, width).slice(offset);
 			if (rendered.length === 0) continue;
-			if (output.length > 0) output.push("");
+			if (output.length > 0) {
+				output.push("");
+				if (previous) previous.viewportExtent = (previous.viewportExtent ?? 0) + 1;
+			}
 			entry.viewportStart = output.length;
+			entry.viewportOffset = offset;
+			entry.viewportExtent = rendered.length;
+			previous = entry;
 			output.push(...rendered);
 		}
 		return output;
@@ -365,8 +402,26 @@ export class TranscriptContainer extends Container {
 	/** Track immutable borrowed rows without advancing the canonical emission ledger. */
 	setBorrowedViewportRows(rows: number): void {
 		for (const { entry } of this.#liveEntries()) {
-			entry.borrowed = entry.viewportStart !== undefined && entry.viewportStart < rows;
+			const count =
+				entry.viewportStart === undefined
+					? 0
+					: Math.max(0, Math.min(rows - entry.viewportStart, entry.viewportExtent ?? 0));
+			entry.borrowed = count > 0;
+			entry.borrowedEnd = count > 0 ? (entry.viewportOffset ?? 0) + count : 0;
 		}
+	}
+	/** Leading current viewport rows still owned by previously borrowed entries. */
+	borrowedViewportRowCount(): number {
+		let count = 0;
+		for (const { entry } of this.#liveEntries()) {
+			if (entry.viewportStart === undefined) continue;
+			if (entry.viewportStart !== count || !entry.borrowed) break;
+			const extent = entry.viewportExtent ?? 0;
+			const retained = Math.max(0, Math.min((entry.borrowedEnd ?? 0) - (entry.viewportOffset ?? 0), extent));
+			count += retained;
+			if (retained < extent) break;
+		}
+		return count;
 	}
 
 	/** Offers stable-head emission or the shortest finalized prefix needed under pressure. */

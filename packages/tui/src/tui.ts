@@ -169,6 +169,7 @@ export interface TerminalFrameSegment {
 /** One history append or complete replay plus the mutable viewport for a terminal frame. */
 export interface TerminalFramePlan {
 	readonly history?: HistoryBatch;
+	/** Complete logical live rows; the writer splits overflow at the physical terminal boundary. */
 	readonly viewport: readonly string[];
 	/**
 	 * Component ownership of the viewport rows, relative to `viewport[0]`.
@@ -176,9 +177,17 @@ export interface TerminalFramePlan {
 	 * viewport row ineligible for a targeted panel.
 	 */
 	readonly segments?: readonly TerminalFrameSegment[];
+	/**
+	 * Leading rows in this viewport that remain owned by native history after
+	 * applying `history`. Providers with semantic ownership tracking supply this
+	 * when a history batch changes the live boundary.
+	 */
+	readonly borrowedViewportRows?: number;
+	/** Only this leading portion may enter native history; trailing anchored UI remains mutable. */
+	readonly borrowableRows?: number;
 }
 
-/** Produces bounded terminal frames and retires acknowledged history batches. */
+/** Produces logical live frames and retires acknowledged history batches. */
 export interface TerminalFrameProvider {
 	renderFrame(viewport: ViewportSize): TerminalFramePlan;
 	acknowledgeHistory(id: number): void;
@@ -720,7 +729,7 @@ export class TUI extends Container {
 	#providerLogicalCommitted = 0;
 	/** Whether physical scrollback currently contains inferred rows from a live, unfinalized frame. */
 	#providerHasTransientHistory = false;
-	/** The exact rows borrowed into native scrollback by those live frames, in order. */
+	/** Exact rows borrowed into native scrollback, in order. */
 	#providerTransientRows: string[] = [];
 	// Viewport-relative row of the hardware cursor after the last normal paint
 	// (0 = parked at the viewport top). A resize reflows the normal buffer
@@ -1106,7 +1115,12 @@ export class TUI extends Container {
 	 */
 	showOverlay(component: Component, options?: OverlayOptions): OverlayHandle {
 		component.setIgnoreTight?.(true);
-		const entry = { component, options, preFocus: this.#focusedComponent, hidden: false };
+		const entry = {
+			component,
+			options,
+			preFocus: this.#focusedComponent,
+			hidden: false,
+		};
 		this.overlayStack.push(entry);
 		// Only focus if overlay is actually visible
 		if (this.#isOverlayVisible(entry)) {
@@ -1316,7 +1330,9 @@ export class TUI extends Container {
 			this.#querySixelSupport();
 			this.#queryCellSize();
 		}
-		this.requestRender(true, { clearScrollback: options?.clearScrollback === true });
+		this.requestRender(true, {
+			clearScrollback: options?.clearScrollback === true,
+		});
 	}
 	/**
 	 * Whether a resize repaints the visible window in place — no alternate-screen
@@ -1995,6 +2011,19 @@ export class TUI extends Container {
 	}
 
 	/**
+	 * Schedule a full compose that contains live streaming state.
+	 *
+	 * Live frames may pass through a larger, still-bounded output backlog so
+	 * streaming progress remains visible. The intent stays pending when either
+	 * backlog gate defers the frame and is consumed only when rendering begins.
+	 */
+	requestLiveRender(): void {
+		if (this.#stopped) return;
+		this.#pendingLiveRender = true;
+		this.#requestOrdinaryRender();
+	}
+
+	/**
 	 * Paint a forced frame synchronously when startup must hand off an already
 	 * visible component tree before further async initialization. Same as
 	 * {@link requestRender} minus the `setImmediate` hop.
@@ -2068,6 +2097,7 @@ export class TUI extends Container {
 		return true;
 	}
 	#prepareForcedRender(clearScrollback: boolean): void {
+		this.#pendingLiveRender = false;
 		if (clearScrollback && !this.#clearScrollbackOnNextRender) {
 			this.#frameProvider?.beginHistoryReplay?.();
 			if (TERMINAL.imageProtocol === ImageProtocol.Kitty) this.#imageBudget.forgetTransmitted();
@@ -2133,7 +2163,8 @@ export class TUI extends Container {
 	 */
 	#deferRenderForOutputBacklog(): boolean {
 		const pending = this.terminal.pendingOutputBytes;
-		const maximum = this.#pendingLiveRender ? TUI.#MAX_LIVE_PENDING_OUTPUT_BYTES : TUI.#MAX_PENDING_OUTPUT_BYTES;
+		const liveFrame = this.#pendingLiveRender && !this.#forceViewportRepaintOnNextRender;
+		const maximum = liveFrame ? TUI.#MAX_LIVE_PENDING_OUTPUT_BYTES : TUI.#MAX_PENDING_OUTPUT_BYTES;
 		if (pending === undefined || pending <= maximum) return false;
 		this.#renderRequested = true;
 		this.#renderTimer ??= this.#renderScheduler.scheduleRender(
@@ -2281,7 +2312,12 @@ export class TUI extends Container {
 		// Parse margin (clamp to non-negative)
 		const margin =
 			typeof opt.margin === "number"
-				? { top: opt.margin, right: opt.margin, bottom: opt.margin, left: opt.margin }
+				? {
+						top: opt.margin,
+						right: opt.margin,
+						bottom: opt.margin,
+						left: opt.margin,
+					}
 				: (opt.margin ?? {});
 		const marginTop = Math.max(0, margin.top ?? 0);
 		const marginRight = Math.max(0, margin.right ?? 0);
@@ -2704,40 +2740,28 @@ export class TUI extends Container {
 		if (!flushing && this.#maybeDeferGhosttyInitialImagePaint()) return false;
 		const logicalViewport = Array.from(plan.viewport);
 		const overflow = Math.max(0, logicalViewport.length - height);
+		const borrowOverflow = Math.min(overflow, Math.max(0, plan.borrowableRows ?? logicalViewport.length));
 		const borrowed = this.#providerTransientRows;
 		if (
 			plan.history === undefined &&
 			borrowed.length > 0 &&
-			logicalViewport.length < this.#providerLogicalCommitted &&
-			!logicalViewport.every((row, index) => borrowed[index] === row)
+			logicalViewport.length < this.#providerLogicalCommitted
 		) {
-			// A replacement releases logical ownership, never native scrollback.
-			this.#providerLogicalCommitted = 0;
-			this.#providerHasTransientHistory = false;
-			this.#providerTransientRows = [];
-		}
-		if (
-			plan.history === undefined &&
-			borrowed.length > 0 &&
-			logicalViewport.length > borrowed.length &&
-			!borrowed.every((row, index) => logicalViewport[index] === row)
-		) {
-			for (let offset = 1; offset + borrowed.length <= logicalViewport.length; offset++) {
-				if (!borrowed.every((row, index) => logicalViewport[offset + index] === row)) continue;
-				// Native rows cannot be reordered. A true prepend requires the
-				// provider's existing complete replay protocol; never append the
-				// new prefix after rows already borrowed into native scrollback.
-				this.#prepareForcedRender(true);
-				return this.#renderProviderFrame(width, height, flushing);
+			let survivingPrefix = 0;
+			const limit = Math.min(logicalViewport.length, borrowed.length);
+			while (survivingPrefix < limit && logicalViewport[survivingPrefix] === borrowed[survivingPrefix]) {
+				survivingPrefix++;
 			}
+			// A shortened frame retains ownership only for the exact prefix still
+			// present. Native rows beyond it remain scrollback, but cannot reserve
+			// screen positions if a later frame grows with different live rows.
+			this.#providerLogicalCommitted = survivingPrefix;
+			this.#providerTransientRows = borrowed.slice(0, survivingPrefix);
+			this.#providerHasTransientHistory = survivingPrefix > 0;
 		}
+		// Borrowed ownership is separate from the current viewport geometry.
 		const viewportStart = overflow;
-		// Segments arrive in logical-frame coordinates while the emitted viewport
-		// is only the bottom `height` rows. Rebase them exactly like the children
-		// path does (see `#renderChildrenFrame`), so the right panel resolves its
-		// target/exclusion rows against on-screen rows. Left unshifted, a frame
-		// taller than the terminal pushed every eligible row past the viewport and
-		// the panel hid itself entirely.
+		// Rebase component segments from logical-frame to visible viewport rows.
 		const planSegments = plan.segments ?? [];
 		this.#planSegments =
 			viewportStart === 0
@@ -2752,13 +2776,21 @@ export class TUI extends Container {
 		const newHistory = history !== undefined && history.id > this.#acceptedHistoryBatchId;
 		let inferredHistory: string[] = [];
 		if (newHistory && history?.kind === "replay") {
-			history = { ...history, rows: [...history.rows, ...logicalViewport.slice(0, overflow)] };
-			this.#providerLogicalCommitted = overflow;
-			this.#providerTransientRows = logicalViewport.slice(0, overflow);
+			history = {
+				...history,
+				rows: [...history.rows, ...logicalViewport.slice(0, borrowOverflow)],
+			};
+			this.#providerLogicalCommitted = borrowOverflow;
+			this.#providerTransientRows = logicalViewport.slice(0, borrowOverflow);
 		} else {
 			if (newHistory && history !== undefined) {
 				const prior = this.#providerTransientRows;
-				const overlap = Math.min(history.rows.length, prior.length);
+				const retained =
+					plan.borrowedViewportRows === undefined
+						? undefined
+						: Math.max(0, Math.min(plan.borrowedViewportRows, logicalViewport.length, prior.length));
+				const consumed = retained === undefined ? prior.length : prior.length - retained;
+				const overlap = Math.min(history.rows.length, consumed);
 				let matches = true;
 				for (let index = 0; index < overlap; index++) {
 					if (prior[index] !== history.rows[index]) {
@@ -2766,8 +2798,13 @@ export class TUI extends Container {
 						break;
 					}
 				}
-				if (matches) {
-					history = { ...history, rows: history.rows.slice(overlap) };
+				if (matches) history = { ...history, rows: history.rows.slice(overlap) };
+				if (retained !== undefined) {
+					// Keep the original native bytes belonging to surviving owners,
+					// rather than attributing equal text from a new block to them.
+					this.#providerTransientRows = prior.slice(prior.length - retained);
+					this.#providerLogicalCommitted = retained;
+				} else if (matches) {
 					this.#providerTransientRows = prior.slice(overlap);
 					this.#providerLogicalCommitted = Math.max(0, this.#providerLogicalCommitted - overlap);
 				} else {
@@ -2775,15 +2812,28 @@ export class TUI extends Container {
 					this.#providerLogicalCommitted = 0;
 				}
 			}
-			if (history === undefined && overflow > this.#providerLogicalCommitted) {
-				inferredHistory = logicalViewport.slice(this.#providerLogicalCommitted, overflow);
+			if (history === undefined && plan.borrowedViewportRows !== undefined) {
+				const retained = Math.max(
+					0,
+					Math.min(plan.borrowedViewportRows, this.#providerTransientRows.length, logicalViewport.length),
+				);
+				if (retained !== this.#providerTransientRows.length) {
+					this.#providerTransientRows = logicalViewport.slice(0, retained);
+					this.#providerLogicalCommitted = retained;
+				}
+			}
+			if (history === undefined && borrowOverflow > this.#providerLogicalCommitted) {
+				inferredHistory = logicalViewport.slice(this.#providerLogicalCommitted, borrowOverflow);
 				this.#providerTransientRows.push(...inferredHistory);
 			}
-			if (history === undefined) this.#providerLogicalCommitted = Math.max(this.#providerLogicalCommitted, overflow);
+			if (history === undefined)
+				this.#providerLogicalCommitted = Math.max(this.#providerLogicalCommitted, borrowOverflow);
 		}
 		this.#providerHasTransientHistory = this.#providerTransientRows.length > 0;
-		const viewport = logicalViewport.slice(viewportStart);
+		const viewport = logicalViewport.slice(overflow);
 		if (logicalViewport.length > this.#providerLogicalCommitted) {
+			// Keep the live suffix at its logical screen rows without duplicating
+			// immutable native rows in the visible projection.
 			const reserved = Math.max(0, this.#providerLogicalCommitted - overflow);
 			for (let index = 0; index < reserved; index++) viewport[index] = "";
 		}
@@ -3050,7 +3100,11 @@ export class TUI extends Container {
 			lines: prepared,
 			windowTop: this.#debugNextWindowTop,
 			altScreen: false,
-			...(target === null ? {} : { cursor: { x: target.col, y: target.row, visible: target.visible } }),
+			...(target === null
+				? {}
+				: {
+						cursor: { x: target.col, y: target.row, visible: target.visible },
+					}),
 		};
 		if (pendingAltExit) {
 			this.#noteAltBufferToggle();
@@ -3084,6 +3138,7 @@ export class TUI extends Container {
 	/** Render one frame: alt-screen modal, provider plan, or children fallback. */
 	#doRender(): void {
 		if (this.#stopped) return;
+		this.#pendingLiveRender = false;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
 		if (this.#resizeAltActive) {
@@ -3465,7 +3520,10 @@ export class TUI extends Container {
 
 	#recordHardwareCursorHidden(): void {
 		if (!this.#hardwareCursorState) return;
-		this.#hardwareCursorState = { ...this.#hardwareCursorState, visible: false };
+		this.#hardwareCursorState = {
+			...this.#hardwareCursorState,
+			visible: false,
+		};
 	}
 
 	#forgetHardwareCursorState(): void {

@@ -14,6 +14,7 @@ import {
 	takeStartupComposerLease,
 } from "@oh-my-pi/pi-coding-agent/modes/startup-composer";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { Component } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { createTestSession } from "./utilities";
@@ -74,8 +75,6 @@ class GrowingBlock implements Component {
 	render(): readonly string[] {
 		return this.#lines;
 	}
-
-	invalidate(): void {}
 }
 
 describe("Composer prepaint", () => {
@@ -129,6 +128,63 @@ describe("Composer prepaint", () => {
 
 		composer.ui.stop();
 		expect(terminal.stops).toBe(1);
+	});
+	it("reports physically borrowed transcript ownership without retiring live blocks", async () => {
+		const terminal = new CountingTerminal(80, 12);
+		const composer = new Composer({ preferences: { ...config, quiet: true }, terminal });
+		const transcript = new TranscriptContainer();
+		const tall = new GrowingBlock();
+		for (let index = 0; index < 30; index++) tall.append(`row ${index}`);
+		const later = new GrowingBlock();
+		later.append("still live");
+		transcript.addChild(tall);
+		transcript.addChild(later);
+		composer.setRuntimeChildren([transcript, composer.editor]);
+		composer.start();
+		try {
+			composer.ui.requestRender(true);
+			await terminal.waitForRender();
+			expect(transcript.isBlockUncommitted(tall)).toBe(false);
+			expect(transcript.canRemoveBlock(tall)).toBe(false);
+			expect(transcript.isBlockUncommitted(later)).toBe(true);
+			expect(transcript.canRemoveBlock(later)).toBe(true);
+			expect(transcript.blockStates()).toEqual(["active", "active"]);
+			const plan = composer.renderFrame({ columns: 80, rows: 12 });
+			expect(plan.borrowedViewportRows).toBe(Math.max(0, plan.viewport.length - 12));
+		} finally {
+			composer.stop();
+		}
+	});
+
+	it("preserves every numbered row when the logical viewport grows beyond terminal height", async () => {
+		const terminal = new CountingTerminal(80, 32);
+		const composer = new Composer({ preferences: config, terminal });
+		const transcript = new TranscriptContainer();
+		const block = new GrowingBlock();
+		transcript.addChild(block);
+		composer.setRuntimeChildren([transcript, composer.editor]);
+		composer.start();
+
+		const lines = Array.from({ length: 60 }, (_value, index) => `${index + 1}. numbered row`);
+		for (const line of lines) {
+			block.append(line);
+			composer.ui.requestRender(true);
+			await terminal.waitForRender();
+		}
+
+		const tape = terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimStart());
+		expect(lines.map(line => tape.filter(row => row === line).length)).toEqual(lines.map(() => 1));
+
+		const next = new GrowingBlock();
+		next.append("next live row");
+		transcript.addChild(next);
+		block.finalize();
+		composer.ui.requestRender(true);
+		await terminal.waitForRender();
+		const finalizedTape = terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimStart());
+		expect(lines.map(line => finalizedTape.filter(row => row === line).length)).toEqual(lines.map(() => 1));
+		expect(finalizedTape.filter(row => row === "next live row")).toHaveLength(1);
+		composer.ui.stop();
 	});
 
 	it("reports physically borrowed transcript ownership without retiring live blocks", async () => {

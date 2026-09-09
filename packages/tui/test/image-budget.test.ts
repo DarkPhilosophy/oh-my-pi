@@ -983,6 +983,7 @@ describe("TUI inline-image budget", () => {
 			setKittyGraphics(originalGraphics);
 		}
 	});
+
 	it("defers an overflowing provider image without losing borrowed rows", () => {
 		const originalId = terminal.id;
 		const originalGraphics = { ...getKittyGraphics() };

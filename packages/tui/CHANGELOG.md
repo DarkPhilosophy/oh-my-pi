@@ -15,6 +15,11 @@
 - Fixed unnecessary scrollback clears when finalized history batches are still being retired during tool completion.
 - Fixed the right-side widget panel disappearing once the transcript grew past one screen: panel placement now resolves segment rows against the visible viewport instead of the taller logical frame.
 - Fixed the viewport collapsing to a couple of rows (taking the right-side widgets with it) shortly after startup: a finalized history batch that merely re-offers rows already borrowed into native scrollback is now accepted in place instead of forcing a scrollback-clearing replay.
+### Fixed
+
+- Fixed lost or duplicated transcript rows across live viewport overflow, repeated command suggestions, and session replacement.
+- Fixed prepended live transcript rows appearing after previously displayed rows instead of in their original order.
+- Fixed deferred initial image paints losing overflowing provider rows.
 
 ## [18.1.15] - 2026-09-08
 

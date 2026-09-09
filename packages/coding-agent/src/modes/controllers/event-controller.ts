@@ -1343,6 +1343,7 @@ export class EventController {
 						{
 							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(renderToolName),
 							showImages: settings.get("terminal.showImages"),
+							liveRegion: this.ctx.chatContainer,
 						},
 						tool,
 						this.ctx.ui,
@@ -1642,6 +1643,7 @@ export class EventController {
 				{
 					useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(renderToolName),
 					showImages: settings.get("terminal.showImages"),
+					liveRegion: this.ctx.chatContainer,
 				},
 				tool,
 				this.ctx.ui,
@@ -1707,11 +1709,26 @@ export class EventController {
 		return resolveApproval(tool, args, mode, userPolicies).policy === "prompt";
 	}
 
+	#terminalResultTarget(toolCallId: string, toolName: string, component: ToolExecutionHandle): ToolExecutionHandle {
+		if (
+			toolName !== "task" ||
+			!(component instanceof ToolExecutionComponent) ||
+			this.ctx.chatContainer.isBlockUncommitted(component)
+		) {
+			return component;
+		}
+		const continuation = component.createResultContinuation();
+		this.ctx.chatContainer.addChild(continuation);
+		this.ctx.pendingTools.set(toolCallId, continuation);
+		this.#toolTimelineComponents.set(toolCallId, continuation);
+		return continuation;
+	}
+
 	async #handleToolExecutionUpdate(
 		event: Extract<AgentSessionEvent, { type: "tool_execution_update" }>,
 	): Promise<void> {
 		this.#ensureWorkingLoaderWhileStreaming();
-		const component = this.ctx.pendingTools.get(event.toolCallId);
+		let component = this.ctx.pendingTools.get(event.toolCallId);
 		if (component) {
 			const asyncState = (event.partialResult.details as { async?: { state?: string } } | undefined)?.async?.state;
 			const isFinalAsyncState = asyncState === "completed" || asyncState === "failed";
@@ -1721,6 +1738,7 @@ export class EventController {
 			// call whose jobs settle before its blocking subset — treat it as a
 			// partial frame: `tool_execution_end` still owns the terminal result.
 			const isTerminal = isFinalAsyncState && this.#backgroundTaskCallIds.has(event.toolCallId);
+			if (isTerminal) component = this.#terminalResultTarget(event.toolCallId, event.toolName, component);
 			component.updateResult(
 				{ ...event.partialResult, isError: asyncState === "failed" },
 				!isTerminal,
@@ -1756,6 +1774,7 @@ export class EventController {
 		component: ToolExecutionHandle,
 		event: Extract<AgentSessionEvent, { type: "tool_execution_end" }>,
 	): void {
+		component = this.#terminalResultTarget(event.toolCallId, event.toolName, component);
 		component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
 		this.ctx.pendingTools.delete(event.toolCallId);
 		if (
@@ -1853,10 +1872,11 @@ export class EventController {
 				this.ctx.ui.requestRender();
 			}
 		} else {
-			const component = this.ctx.pendingTools.get(event.toolCallId);
+			let component = this.ctx.pendingTools.get(event.toolCallId);
 			if (component) {
 				const asyncState = (event.result.details as { async?: { state?: string } } | undefined)?.async?.state;
 				const isBackgroundTask = event.toolName === "task" && asyncState === "running";
+				if (!isBackgroundTask) component = this.#terminalResultTarget(event.toolCallId, event.toolName, component);
 				component.updateResult({ ...event.result, isError: event.isError }, isBackgroundTask, event.toolCallId);
 				if (isBackgroundTask) {
 					component.parkAsBackground();

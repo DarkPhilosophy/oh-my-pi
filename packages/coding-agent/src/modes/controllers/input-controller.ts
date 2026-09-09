@@ -2195,12 +2195,12 @@ export class InputController {
 	setToolsExpanded(expanded: boolean): void {
 		this.ctx.toolOutputExpanded = expanded;
 		for (const child of this.ctx.chatContainer.children) {
-			if (isExpandable(child)) {
+			if (isExpandable(child) && this.ctx.chatContainer.isBlockUncommitted(child)) {
 				child.setExpanded(expanded);
 			}
 		}
-		// Toggling expansion mutates every live block; force a full repaint so
-		// each block is rendered again at its new height in the same frame.
+		// Expansion changes only mutable blocks. Borrowed rows already belong to
+		// native history even when their block remains behind an active frontier.
 		this.ctx.ui.requestRender(true);
 	}
 

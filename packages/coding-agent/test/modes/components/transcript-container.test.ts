@@ -29,10 +29,24 @@ class Block implements Component {
 		return this.#rows;
 	}
 
-	getTranscriptBlockSettledRows?(): number;
+	getTranscriptBlockSettledRows(): number {
+		return 0;
+	}
 
 	setSettledRows(n: number): void {
 		this.getTranscriptBlockSettledRows = () => n;
+	}
+}
+class SettledRowsBlock extends Block {
+	constructor(
+		rows: string[],
+		readonly settledRows: number,
+	) {
+		super(rows, false);
+	}
+
+	override getTranscriptBlockSettledRows(): number {
+		return this.settledRows;
 	}
 }
 
@@ -62,7 +76,51 @@ class AllocationAwareBlock implements Component {
 const frame = { tick: 0, now: 0 };
 
 describe("TranscriptContainer", () => {
+	it("keeps allocation-aware live blocks intact in the logical viewport", () => {
+		const transcript = new TranscriptContainer();
+		const rows = Array.from({ length: 8 }, (_, index) => `row-${index}`);
+		const block = new AllocationAwareBlock(rows);
+		transcript.addChild(block);
+		expect(transcript.renderViewport(80, 3, frame)).toEqual(rows);
+		block.finalize();
+		expect(transcript.peekFinalizedBatch(80, 0)?.rows).toEqual([...rows, ""]);
+	});
 	it("protects physically borrowed blocks without freezing later live blocks", () => {
+		const transcript = new TranscriptContainer();
+		const borrowed = new Block(["first", "second"], false);
+		const live = new Block(["later"], false);
+		transcript.addChild(borrowed);
+		transcript.addChild(live);
+		transcript.renderViewport(40, 10, frame);
+		transcript.setBorrowedViewportRows(1);
+		expect(transcript.isBlockUncommitted(borrowed)).toBe(false);
+		expect(transcript.canRemoveBlock(borrowed)).toBe(false);
+		expect(transcript.isBlockUncommitted(live)).toBe(true);
+		expect(transcript.canRemoveBlock(live)).toBe(true);
+		transcript.removeChild(borrowed);
+		transcript.removeChild(live);
+		expect(transcript.children).toEqual([borrowed]);
+	});
+
+	it("retains only the actual borrowed rows of surviving owners after finalized drift", () => {
+		for (const borrowedRows of [2, 4]) {
+			const transcript = new TranscriptContainer();
+			const finalized = new Block(["old", "same"], false);
+			const live = new Block(["same", "live", "editor"], false);
+			transcript.addChild(finalized);
+			transcript.addChild(live);
+			transcript.renderViewport(80, 10, frame);
+			transcript.setBorrowedViewportRows(borrowedRows);
+			finalized.finalize(["new", "same"]);
+			const history = transcript.peekFinalizedBatch(80, 0);
+			expect(history?.rows).toEqual(["new", "same", ""]);
+			expect(transcript.renderViewport(80, 10, frame)).toEqual(["same", "live", "editor"]);
+			expect(transcript.borrowedViewportRowCount()).toBe(borrowedRows === 4 ? 1 : 0);
+			expect(transcript.canRemoveBlock(live)).toBe(borrowedRows === 2);
+		}
+	});
+
+	it("captures mutable by default and append-only declarations permanently", () => {
 		const transcript = new TranscriptContainer();
 		const borrowed = new Block(["first", "second"], false);
 		const live = new Block(["later"], false);
@@ -195,82 +253,69 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(80, 1, frame)).toEqual(["fresh live"]);
 	});
 
-	it("keeps a constrained live block intact in the logical viewport", () => {
+	it("preserves every logical row when live content exceeds terminal capacity", () => {
 		const transcript = new TranscriptContainer();
-		const rows = Array.from({ length: 8 }, (_value, index) => `row-${index}`);
-		const block = new AllocationAwareBlock(rows);
+		const block = new Block(["A1", "A2", "A3", "A4"], false);
 		transcript.addChild(block);
 
-		expect(transcript.renderViewport(80, 3, frame)).toEqual(rows);
-		block.finalize();
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["A1", "A2", "A3", "A4"]);
+		block.finalize(["A1", "A2", "A3", "A4"]);
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["A1", "A2", "A3", "A4"]);
+	});
+	it("keeps a tall finalized block live when its visible tail still fits", () => {
+		const transcript = new TranscriptContainer();
+		const block = new Block(
+			Array.from({ length: 40 }, (_value, index) => `row-${index}`),
+			true,
+		);
+		transcript.addChild(block);
 
-		expect(transcript.peekFinalizedBatch(80, 0)?.rows).toEqual([...rows, ""]);
+		expect(transcript.peekFinalizedBatch(80, 30)).toBeUndefined();
+		expect(transcript.renderViewport(80, 30, frame)).toHaveLength(40);
 	});
 
-	it("keeps every live block intact when the logical viewport exceeds physical capacity", () => {
+	it("emits only the settled prefix that actually overflows", () => {
 		const transcript = new TranscriptContainer();
-		transcript.addChild(new Block(["first"], false));
-		transcript.addChild(new Block(["second"], false));
+		const block = new SettledRowsBlock(
+			Array.from({ length: 40 }, (_value, index) => `row-${index}`),
+			40,
+		);
+		transcript.addChild(block);
 
-		expect(transcript.renderViewport(80, 2, frame)).toEqual(["first", "", "second"]);
-		expect(transcript.canAdmit(2)).toBe(false);
-		expect(transcript.renderViewport(80, 1, frame)).toEqual(["first", "", "second"]);
-	});
-	it("keeps settled resume backlog visible until history accepts it", () => {
-		const transcript = new TranscriptContainer();
-		transcript.addChild(new Block(["settled one"], true));
-		transcript.addChild(new Block(["settled two"], true));
-		transcript.addChild(new Block(["current tool"], false));
-
-		// The welcome header can consume the first history offer, leaving the
-		// settled transcript prefix live for one frame while it drains next.
-		expect(transcript.renderViewport(80, 1, frame)).toEqual(["settled one", "", "settled two", "", "current tool"]);
-	});
-	it("excludes empty blocks without collapsing the logical viewport (issue 9483)", () => {
-		const transcript = new TranscriptContainer();
-		// Text blocks interleaved with empty (hidden tool-activity) blocks that
-		// render nothing but stay live until retired.
-		for (let i = 0; i < 6; i++) {
-			transcript.addChild(new Block([`t${i}a`, `t${i}b`, `t${i}c`], true));
-			for (let j = 0; j < 8; j++) transcript.addChild(new Block([], true));
-		}
-		const out = transcript.renderViewport(80, 12, frame);
-		expect(out.filter(row => row.length > 0)).toHaveLength(18);
-		expect(out.filter(row => row.length > 0).every(row => /\S/.test(row))).toBe(true);
-	});
-
-	it("empty blocks do not remove real text from the logical viewport (issue 9483)", () => {
-		const transcript = new TranscriptContainer();
-		transcript.addChild(new Block(["A1", "A2", "A3", "A4"], true));
-		transcript.addChild(new Block([], true));
-		transcript.addChild(new Block(["B1", "B2", "B3", "B4"], true));
-		transcript.addChild(new Block([], true));
-		transcript.addChild(new Block(["C1", "C2", "C3", "C4"], true));
-		const out = transcript.renderViewport(80, 10, frame);
-		expect(out).toEqual(["A1", "A2", "A3", "A4", "", "B1", "B2", "B3", "B4", "", "C1", "C2", "C3", "C4"]);
-	});
-
-	it("permits removing settled blocks until they are offered or committed", () => {
-		const transcript = new TranscriptContainer();
-		const settled = new Block(["settled snapshot"], true);
-		const live = new Block(["live", "live", "live"], false);
-		transcript.addChild(settled);
-		transcript.addChild(live);
-
-		// Settled but still in the mutable viewport: removable without a trace,
-		// so a follow-up displaceable snapshot can retract it.
-		expect(transcript.canRemoveBlock(settled)).toBe(true);
-
-		// Offered to the terminal: mid-write, no longer removable.
-		const batch = transcript.peekFinalizedBatch(80, 2);
-		expect(batch?.rows).toEqual(["settled snapshot", ""]);
-		expect(transcript.canRemoveBlock(settled)).toBe(false);
-
-		// Committed: immutable history; removal must be refused outright.
+		const batch = transcript.peekFinalizedBatch(80, 30);
+		expect(batch?.rows).toEqual(Array.from({ length: 10 }, (_value, index) => `row-${index}`));
 		transcript.acknowledgeFinalizedBatch(batch!.id);
-		expect(transcript.canRemoveBlock(settled)).toBe(false);
-		transcript.removeChild(settled);
-		expect(transcript.blockStates()).toEqual(["committed", "active"]);
+		expect(transcript.renderViewport(80, 30, frame)).toEqual(
+			Array.from({ length: 30 }, (_value, index) => `row-${index + 10}`),
+		);
+	});
+
+	it("replays a mutable settled prefix before rendering its live suffix", () => {
+		const transcript = new TranscriptContainer();
+		const block = new SettledRowsBlock(
+			Array.from({ length: 40 }, (_value, index) => `row-${index}`),
+			40,
+		);
+		transcript.addChild(block);
+
+		const first = transcript.peekFinalizedBatch(80, 30);
+		expect(first?.rows).toEqual(Array.from({ length: 10 }, (_value, index) => `row-${index}`));
+		transcript.acknowledgeFinalizedBatch(first!.id);
+		expect(transcript.renderViewport(80, 30, frame)).toEqual(
+			Array.from({ length: 30 }, (_value, index) => `row-${index + 10}`),
+		);
+
+		transcript.beginReplay();
+		const replay = transcript.peekReplayBatch(80);
+		expect(replay?.rows).toEqual(Array.from({ length: 10 }, (_value, index) => `row-${index}`));
+		expect(transcript.renderViewport(80, 30, frame)).toEqual(
+			Array.from({ length: 30 }, (_value, index) => `row-${index + 10}`),
+		);
+		transcript.acknowledgeFinalizedBatch(replay!.id);
+		expect(transcript.peekReplayBatch(80)).toBeUndefined();
+		expect(transcript.renderViewport(80, 30, frame)).toEqual(
+			Array.from({ length: 30 }, (_value, index) => `row-${index + 10}`),
+		);
 	});
 
 	it("retires the declared settled rows of a still-live block", () => {

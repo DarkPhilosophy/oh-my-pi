@@ -299,11 +299,15 @@ export class Composer implements TerminalFrameProvider {
 			{ component: transcript, rows: active },
 			...afterChunks,
 		]);
-		return { history, viewport: plan.viewport, segments: plan.segments };
-	}
-
-	onViewportBorrowed(rows: number): void {
-		this.#viewportTranscript?.setBorrowedViewportRows(Math.max(0, rows - this.#viewportTranscriptStart));
+		const borrowableRows = headerVisible ? 0 : before.length + active.length;
+		const borrowedViewportRows = transcript.borrowedViewportRowCount();
+		return {
+			history,
+			borrowableRows,
+			viewport: plan.viewport,
+			segments: plan.segments,
+			borrowedViewportRows: borrowedViewportRows > 0 ? before.length + borrowedViewportRows : 0,
+		};
 	}
 
 	/** Publish component ownership for every row in the complete logical frame. */
@@ -318,6 +322,10 @@ export class Composer implements TerminalFrameProvider {
 			viewport.push(...chunk.rows);
 		}
 		return { viewport, segments };
+	}
+
+	onViewportBorrowed(rows: number): void {
+		this.#viewportTranscript?.setBorrowedViewportRows(Math.max(0, rows - this.#viewportTranscriptStart));
 	}
 
 	/** Acknowledges one accepted header, replay, or transcript batch. */
@@ -435,13 +443,20 @@ export class Composer implements TerminalFrameProvider {
 		}
 		if (!this.#headerRetired) {
 			const welcome = this.#welcome;
-			if (welcome !== undefined && !welcome.isTranscriptBlockFinalized()) return undefined;
-			// Retire the header only once it is entirely off screen. Transient
-			// editor chrome must not freeze its still-visible tail into history.
-			const renderedHeader = this.#header.render(width);
+			let renderedHeader = this.#header.render(width);
+			const liveRows = transcript.liveRowCount(width);
+			// Editor-only growth is reversible chrome, not transcript progression.
+			if (!this.#historyFlush && (liveRows === 0 || renderedHeader.length + chromeRows + liveRows <= rows)) {
+				return undefined;
+			}
+			if (welcome !== undefined && !welcome.isTranscriptBlockFinalized()) {
+				// Settle before preserving a header whose top would leave the viewport.
+				welcome.stopIntro();
+				renderedHeader = this.#header.render(width);
+			}
+			// Archive the complete header before any part is clipped. It is not a
+			// borrowable transcript prefix, so clipping alone would lose its top.
 			if (renderedHeader.length > 0) {
-				const liveRows = transcript.liveRowCount(width);
-				if (!this.#historyFlush && chromeRows + liveRows < rows) return undefined;
 				this.#offeredHistory = {
 					id: this.#nextHistoryId++,
 					rows: [...renderedHeader, ""],

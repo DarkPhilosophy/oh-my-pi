@@ -107,36 +107,50 @@ describe("TUI output-backpressure render gate", () => {
 		}
 	});
 
-	it("keeps a queued full compose live through moderate backlog without narrowing it", () => {
+	it("allows live frames through the bounded live backlog budget", () => {
 		const term = new BackloggedTerminal(40, 6);
 		const scheduler = new DeferredRenderScheduler();
-		const live = new Text("live-initial", 0, 0);
-		const sibling = new Text("sibling-initial", 0, 0);
+		const text = new Text("initial", 0, 0);
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.addChild(live);
-		tui.addChild(sibling);
+		tui.addChild(text);
 
 		try {
 			tui.start();
 			stepRender(scheduler);
 			term.written.length = 0;
 			term.pendingBytes = 512 * 1024;
-
-			sibling.setText("sibling-full-update");
-			tui.requestRender();
-			live.setText("live-delta");
-			tui.requestComponentRender(live);
+			text.setText("live-update");
+			tui.requestLiveRender();
 			stepRender(scheduler);
+			expect(term.written.join("")).toContain("live-update");
+		} finally {
+			tui.stop();
+		}
+	});
 
-			const output = term.written.join("");
-			expect(output).toContain("live-delta");
-			expect(output).toContain("sibling-full-update");
-
+	it("keeps destructive replay behind the ordinary gate when live requests surround it", () => {
+		const term = new BackloggedTerminal(40, 6);
+		const scheduler = new DeferredRenderScheduler();
+		const text = new Text("initial", 0, 0);
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		tui.addChild(text);
+		try {
+			tui.start();
+			stepRender(scheduler);
 			term.written.length = 0;
-			sibling.setText("ordinary-full-update");
-			tui.requestRender();
+			term.pendingBytes = 512 * 1024;
+			text.setText("replayed-state");
+			tui.requestLiveRender();
+			tui.resetDisplay();
+			expect(term.written).toEqual([]);
+			tui.requestLiveRender();
 			stepRender(scheduler);
 			expect(term.written).toEqual([]);
+			term.pendingBytes = 0;
+			while (stepRender(scheduler) !== null) {
+				if (term.written.length > 0) break;
+			}
+			expect(term.written.join("")).toContain("replayed-state");
 		} finally {
 			tui.stop();
 		}

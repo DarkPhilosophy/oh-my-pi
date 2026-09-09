@@ -511,15 +511,11 @@ async function runInteractiveMode(
 	// Consume failures immediately, but defer any banner until the transcript is stable.
 	const checkedVersionPromise = versionCheckPromise.catch(() => undefined);
 
-	// The resumed transcript replay owns the authoritative paint: it must
-	// request its own scrollback clear so the whole transcript is emitted as
-	// real lines, exactly like the in-process `/resume` path and the daemon
-	// runtime. Gating this on the environment left cold `--resume` repainting
-	// in place, so the replayed history never reached native scrollback.
+	// Startup already cleared native history. Installing the restored transcript
+	// refreshes its ownership ledger without a second destructive terminal reset.
 	await logger.time("InteractiveMode.renderInitialMessages", () =>
 		mode.renderInitialMessages({
 			preserveExistingChat: true,
-			clearTerminalHistory: resuming,
 		}),
 	);
 	// A resolved version check must not insert its banner into a partial transcript.
