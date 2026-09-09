@@ -285,32 +285,6 @@ export class TranscriptContainer extends Container {
 		return index >= 0 && index >= this.#frontier;
 	}
 
-	/**
-	 * Whether none of `component`'s rows have entered immutable transcript
-	 * history. A never-rendered component is still safe to mutate.
-	 */
-	isBlockUncommitted(component: Component): boolean {
-		this.#syncEntries();
-		const index = this.#entries.findIndex(entry => entry.component === component);
-		if (index < 0) return true;
-		const entry = this.#entries[index]!;
-		if (entry.state === "committed" || entry.emitted > 0 || entry.borrowed) return false;
-		if (this.#offered?.kind === "commit" && index < this.#offered.end) return false;
-		if (this.#offered?.kind === "append" && index === this.#offered.entry) return false;
-		return true;
-	}
-
-	/**
-	 * Whether `component` still sits in the live (repaintable) region: at or
-	 * after the retirement frontier. Long-lived finalized blocks use this seam
-	 * to stop mutating once their rows become eligible for immutable history.
-	 */
-	isBlockInLiveRegion(component: Component): boolean {
-		this.#syncEntries();
-		const index = this.#entries.findIndex(entry => entry.component === component);
-		return index >= 0 && index >= this.#frontier;
-	}
-
 	/** Lifecycle state per block in transcript order (diagnostics and tests). */
 	blockStates(): readonly BlockState[] {
 		this.#syncEntries();
@@ -838,4 +812,4 @@ export class TranscriptContainer extends Container {
 }
 
 /** Groups sibling rows into one conservative mutable semantic transcript block. */
-export class TranscriptBlock extends Container {}
+export class TranscriptBlock extends Container { }

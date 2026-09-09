@@ -287,7 +287,7 @@ interface UiBase {
 	condition?: string;
 }
 
-interface UiBoolean extends UiBase {}
+interface UiBoolean extends UiBase { }
 
 interface UiEnum<T extends readonly string[]> extends UiBase {
 	/** Submenu options. When omitted, the enum renders as an inline toggle derived from `values`. */
@@ -4566,14 +4566,28 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"browser.relayBrowser": {
+		type: "enum",
+		values: ["chromium", "firefox"] as const,
+		default: "chromium",
+		ui: {
+			tab: "tools",
+			group: "Grep & Browser",
+			label: "Browser Relay Browser",
+			description:
+				"Browser controlled by relay mode. Chromium uses the extension relay; Firefox connects to an existing local WebDriver BiDi endpoint.",
+		},
+	},
+
 	"browser.relayUrl": {
 		type: "string",
 		default: undefined,
 		ui: {
 			tab: "tools",
 			group: "Grep & Browser",
-			label: "Browser Relay URL",
-			description: "omp browser relay endpoint (default http://127.0.0.1:9224).",
+			label: "Browser Relay Endpoint",
+			description:
+				"Relay endpoint: Chromium HTTP discovery URL (default http://127.0.0.1:9224) or Firefox WebDriver BiDi WebSocket URL (default ws://127.0.0.1:9222/session).",
 		},
 	},
 
@@ -5362,7 +5376,7 @@ export const SETTINGS_SCHEMA = {
 
 	"usage.maskAccountLabels": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "providers",
 			group: "Privacy",
@@ -6163,22 +6177,22 @@ export type SettingPath = keyof Schema;
 export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boolean"; default: undefined }
 	? boolean | undefined
 	: Schema[P] extends { type: "boolean" }
-		? boolean
-		: Schema[P] extends { type: "string" }
-			? string | undefined
-			: Schema[P] extends { type: "number"; default: undefined }
-				? number | undefined
-				: Schema[P] extends { type: "number" }
-					? number
-					: Schema[P] extends { type: "enum"; values: infer V }
-						? V extends readonly string[]
-							? V[number]
-							: never
-						: Schema[P] extends { type: "array"; default: infer D }
-							? D
-							: Schema[P] extends { type: "record"; default: infer D }
-								? D
-								: never;
+	? boolean
+	: Schema[P] extends { type: "string" }
+	? string | undefined
+	: Schema[P] extends { type: "number"; default: undefined }
+	? number | undefined
+	: Schema[P] extends { type: "number" }
+	? number
+	: Schema[P] extends { type: "enum"; values: infer V }
+	? V extends readonly string[]
+	? V[number]
+	: never
+	: Schema[P] extends { type: "array"; default: infer D }
+	? D
+	: Schema[P] extends { type: "record"; default: infer D }
+	? D
+	: never;
 
 /** Get the default value for a setting path */
 export function getDefault<P extends SettingPath>(path: P): SettingValue<P> {
