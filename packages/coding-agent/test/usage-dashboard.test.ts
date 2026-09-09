@@ -182,6 +182,30 @@ describe("buildProviderCards split + privacy", () => {
 		});
 	});
 
+	it("retains distinguishing organization tails in narrow split-card headers", () => {
+		const reports: UsageReport[] = ["East", "West"].map(region => ({
+			provider: "openai",
+			fetchedAt: 1,
+			limits: [],
+			metadata: { email: "shared@example.test", orgName: `Acme Corporation Workspace ${region}` },
+		}));
+		const dashboard = new UsageDashboardComponent({
+			reports,
+			renderDetail: () => "",
+			createMasker: createAccountMasker,
+			maskAccountLabels: true,
+			mergeAccounts: false,
+			labelPlacement: "moving",
+			loadActivity: async () => {},
+			requestRender: () => {},
+			onClose: () => {},
+		});
+		const lines = dashboard.render(80).map(line => Bun.stripANSI(line));
+		expect(lines.join("\n")).toContain("East");
+		expect(lines.join("\n")).toContain("West");
+		expect(lines.every(line => Bun.stringWidth(line) <= 80)).toBe(true);
+	});
+
 	it("masks opaque parentheses while preserving only metadata-attributed organization labels", () => {
 		const reports: UsageReport[] = [
 			{ provider: "openai", fetchedAt: 1, limits: [], metadata: { accountId: "Jane Doe (finance)" } },

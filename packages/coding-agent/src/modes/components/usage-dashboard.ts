@@ -15,6 +15,7 @@ import {
 	matchesKey,
 	replaceTabs,
 	routeSgrMouseInput,
+	sliceByColumn,
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
@@ -425,7 +426,12 @@ function fitAccountLabel(label: string, width: number): string {
 	const mandatory = `${ordinalSuffix}${qualifier}`;
 	const mandatoryWidth = visibleWidth(mandatory);
 	if (mandatoryWidth >= width) {
-		return truncateToWidth(`${ordinalSuffix}${qualifier}`, width);
+		const prefix = ordinal ? `${ordinal} ` : "";
+		const budget = Math.max(0, width - visibleWidth(prefix));
+		if (budget < 3) return truncateToWidth(prefix || qualifier, width);
+		const left = Math.ceil((budget - 1) / 2);
+		const right = budget - left - 1;
+		return `${prefix}${truncateToWidth(qualifier, left, "")}…${sliceByColumn(qualifier, visibleWidth(qualifier) - right, right, true)}`;
 	}
 	return `${truncateToWidth(base, Math.max(1, width - mandatoryWidth))}${mandatory}`;
 }
