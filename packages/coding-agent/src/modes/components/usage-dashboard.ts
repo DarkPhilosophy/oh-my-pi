@@ -179,14 +179,19 @@ export function formatReportAccountLabel(report: UsageReport, index: number): Ac
 						: report.limits[0]?.scope.projectId
 							? sanitizeAccountLabelPart(report.limits[0].scope.projectId)
 							: undefined;
-	if (!base) return { identity: `account ${index + 1}`, placeholder: true };
+	if (!base)
+		return { identity: `account ${index + 1}`, placeholder: true, accountKey: formatReportAccountKey(report, index) };
 	const organization =
 		typeof meta?.orgName === "string" && meta.orgName
 			? sanitizeAccountLabelPart(meta.orgName)
 			: typeof meta?.orgId === "string" && meta.orgId
 				? sanitizeAccountLabelPart(meta.orgId)
 				: undefined;
-	return { identity: base, qualifier: organization && organization !== base ? ` (${organization})` : undefined };
+	return {
+		identity: base,
+		qualifier: organization && organization !== base ? ` (${organization})` : undefined,
+		accountKey: formatReportAccountKey(report, index),
+	};
 }
 
 /** Stable split-card identity; display labels intentionally remain human-readable. */
@@ -208,7 +213,13 @@ function formatReportAccountKey(report: UsageReport, index: number): string {
 			: typeof meta?.orgName === "string" && meta.orgName
 				? meta.orgName
 				: undefined;
-	return base ? JSON.stringify(["identity", base, organization ?? ""]) : JSON.stringify(["anonymous", index]);
+	const accountId =
+		typeof meta?.accountId === "string" && meta.accountId ? meta.accountId : report.limits[0]?.scope.accountId;
+	const projectId =
+		typeof meta?.projectId === "string" && meta.projectId ? meta.projectId : report.limits[0]?.scope.projectId;
+	return base
+		? JSON.stringify(["identity", base, accountId ?? "", projectId ?? "", organization ?? ""])
+		: JSON.stringify(["anonymous", index]);
 }
 
 export function buildProviderCards(

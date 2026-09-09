@@ -96,6 +96,23 @@ describe("buildHeatmapLayout", () => {
 describe("buildProviderCards", () => {
 	const now = Date.now();
 
+	it("keeps same-email organization accounts separate by their account IDs", () => {
+		const reports = ["first-id", "second-id"].map((id, index) =>
+			report("openai", "shared@example.test", [limit("openai", id, "weekly", "Weekly", index ? 0.8 : 0.2, "ok")], {
+				orgId: "shared-org",
+			}),
+		);
+		for (const enabled of [false, true]) {
+			const cards = buildProviderCards(reports, now, {
+				merge: false,
+				mask: createAccountMasker(reports.map(formatReportAccountLabel), enabled),
+			});
+			expect(cards.map(card => card.accounts)).toEqual([1, 1]);
+			expect(cards.map(card => card.windows[0].fraction).sort()).toEqual([0.2, 0.8]);
+			expect(new Set(cards.map(card => card.account)).size).toBe(2);
+		}
+	});
+
 	it("does not merge anonymous reports with real identifiers matching fallback labels", () => {
 		const reports: UsageReport[] = [0.2, 0.8].map((fraction, index) => ({
 			provider: "openai",
@@ -273,7 +290,7 @@ describe("buildProviderCards split + privacy", () => {
 	});
 
 	it("masks split-card account labels and keeps colliding prefixes distinguishable", () => {
-		const labels = reports.map(r => ({ identity: String(r.metadata?.email) }));
+		const labels = reports.map(formatReportAccountLabel);
 		const cards = buildProviderCards(reports, now, { merge: false, mask: createAccountMasker(labels, true) });
 
 		const masked = cards.map(card => card.account);
