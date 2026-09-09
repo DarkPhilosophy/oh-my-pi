@@ -2118,7 +2118,7 @@ describe("Inline color swatches", () => {
 });
 
 describe("Module-level LRU render cache", () => {
-	it("invokes highlightCode only once for two distinct instances with identical (text, width, theme)", () => {
+	it("reuses large identical source without repeating highlighting on another instance", () => {
 		// Build a theme with a spy on highlightCode. The theme object reference
 		// is stable across both instances so objectId() returns the same ID,
 		// meaning the L2 cache key is identical for both renders.
@@ -2131,7 +2131,7 @@ describe("Module-level LRU render cache", () => {
 			},
 		};
 
-		const text = "```js\nconst x = 1;\n```";
+		const text = "paragraph ".repeat(9_000) + "\n\n```js\nconst x = 1;\n```";
 		const width = 80;
 
 		// First instance: cold cache → highlightCode MUST be called.

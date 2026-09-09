@@ -70,6 +70,15 @@ describe("Markdown copy link", () => {
 		expect(resolveCopyBlock(target!)).toBe("\tfoo");
 	});
 
+	it("keeps quoted ordered-list code paired with its own raw source", () => {
+		const source = "> 10. item\n>     ```make\n>     \tfoo\n>     ```\n\n```make\nlater\n```";
+		const rendered = new Markdown(source, 0, 0, getMarkdownTheme()).render(80).join("\n");
+		const targets = [...rendered.matchAll(/\x1b]8;;(omp-copy:[^\x07]+)\x07/g)].map(match =>
+			resolveCopyBlock(match[1]!),
+		);
+		expect(targets).toEqual(["\tfoo", "later"]);
+	});
+
 	it("skips container-prefixed comment leaves before a later fenced copy", () => {
 		const source = "- <!--\n  ```js\n  wrong\n  ```\n  -->\n- ```js\n  right\n  ```";
 		const footer = new Markdown(source, 0, 0, getMarkdownTheme()).render(80).at(-1) ?? "";

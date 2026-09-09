@@ -144,24 +144,46 @@ function isMarkdownFencePrefix(prefix: string): boolean {
 	}
 	return true;
 }
-function listContinuationIndentBefore(source: string, lineStart: number): number | undefined {
+function markdownQuotePrefix(line: string): { length: number; depth: number } {
+	let length = 0;
+	let depth = 0;
+	for (;;) {
+		let cursor = length;
+		while (cursor < length + 3 && line[cursor] === " ") cursor++;
+		if (line[cursor] !== ">") return { length, depth };
+		cursor++;
+		if (line[cursor] === " ") cursor++;
+		length = cursor;
+		depth++;
+	}
+}
+
+function isListContinuationFencePrefix(source: string, lineStart: number, prefix: string): boolean {
+	const quote = markdownQuotePrefix(prefix);
+	const indent = prefix.length - quote.length;
+	if (!/^ *$/.test(prefix.slice(quote.length))) return false;
 	let cursor = lineStart;
-	let activeIndent = Number.POSITIVE_INFINITY;
+	let activeIndent = indent;
 	while (cursor > 0) {
 		const previousEnd = cursor - 1;
-		const previousStart = source.lastIndexOf("\n", Math.max(0, previousEnd - 1)) + 1;
+		const previousStart = previousEnd > 0 ? source.lastIndexOf("\n", previousEnd - 1) + 1 : 0;
 		const line = source.slice(previousStart, previousEnd);
-		if (line.trim().length > 0) {
-			const leadingIndent = /^ */.exec(line)![0].length;
-			const marker = /^( *)(?:[-+*]|\d+[.)])([ \t]+)/.exec(line);
-			if (marker && marker[0].length <= activeIndent) return marker[0].length;
-			// A dedented continuation closes deeper child levels. Keep walking
-			// until a marker belongs to the remaining active ancestor.
-			activeIndent = Math.min(activeIndent, leadingIndent);
-		}
 		cursor = previousStart;
+		const enclosingQuote = markdownQuotePrefix(line);
+		if (line.trim().length === 0 || enclosingQuote.depth > quote.depth) continue;
+		if (enclosingQuote.depth < quote.depth) return false;
+		const content = line.slice(enclosingQuote.length);
+		if (content.trim().length === 0) continue;
+		const leadingIndent = /^ */.exec(content)![0].length;
+		const marker = /^( *)(?:[-+*]|\d+[.)])([ \t]+)/.exec(content);
+		if (marker && marker[0].length <= activeIndent) {
+			return indent - marker[0].length <= 3;
+		}
+		// A dedented continuation closes deeper child levels. Keep walking
+		// until a marker belongs to the remaining active ancestor.
+		activeIndent = Math.min(activeIndent, leadingIndent);
 	}
-	return undefined;
+	return false;
 }
 
 function isClosingFencePrefix(line: string, fenceAt: number, quoteDepth: number): boolean {
@@ -2540,7 +2562,8 @@ export class Markdown implements Component {
 		// The display lexer expands tabs, but copy-chip targets must preserve the
 		// original source bytes. Keep the raw source in the cache identity so two
 		// documents that render identically can never reuse the other's target.
-		return `${normalizedText.length}:${normalizedText}\x00${sourceText.length}:${sourceText}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}`;
+		const sourceKey = sourceText === normalizedText ? "=" : `${sourceText.length}:${sourceText}`;
+		return `${normalizedText.length}:${normalizedText}\x00${sourceKey}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}`;
 	}
 
 	#renderStreamingContentLines(
@@ -2988,7 +3011,6 @@ export class Markdown implements Component {
 			if (!openLine || !openingFence) return fallback;
 			let openingLineStart = expandedSource.lastIndexOf("\n", Math.max(0, searchStart - 1)) + 1;
 			let openAt = -1;
-			const allowedContinuationIndent = listContinuationIndentBefore(expandedSource, openingLineStart);
 			while (openingLineStart <= expandedSource.length) {
 				const openingLineEnd = expandedSource.indexOf("\n", openingLineStart);
 				const sourceLine =
@@ -2999,7 +3021,7 @@ export class Markdown implements Component {
 				const prefix = fenceAt >= 0 ? sourceLine.slice(0, fenceAt) : "";
 				const validPrefix =
 					isMarkdownFencePrefix(prefix) ||
-					(allowedContinuationIndent !== undefined && prefix === " ".repeat(allowedContinuationIndent));
+					(fenceAt >= 0 && isListContinuationFencePrefix(expandedSource, openingLineStart, prefix));
 				if (fenceAt >= 0 && sourceLine.slice(fenceAt).trim() === openLine && validPrefix) {
 					openAt = openingLineStart + fenceAt;
 					break;
