@@ -207,6 +207,8 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 			transcript.setBorrowedViewportRows(1);
 			component.updateArgs({ assignment: "more" });
 			component.setArgsComplete();
+			component.setExecutionStarted();
+			component.invalidate();
 			expect(component.render(100).join("\n")).toBe(before);
 		} finally {
 			component.seal();

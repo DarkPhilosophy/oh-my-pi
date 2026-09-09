@@ -933,6 +933,15 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	#updateDisplay(): void {
+		if (
+			this.#displayBuilt &&
+			this.#toolName === "task" &&
+			this.#liveRegion !== undefined &&
+			!(this.#liveRegion.isBlockUncommitted?.(this) ?? true)
+		) {
+			this.#freezeTaskPresentationIfBorrowed();
+			return;
+		}
 		// `TERMINAL.imageProtocol` is resolved by an async capability probe during
 		// TUI startup, so a result rendered before it lands must re-shape once it
 		// does (it gates Image children vs text fallback in #rebuildDisplay); keyed
