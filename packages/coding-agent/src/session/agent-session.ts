@@ -344,6 +344,8 @@ import {
 	isUserQueuedMessage,
 	queueChipText,
 	queuedImageContent,
+	queuedUserDraftText,
+	shiftQueuedImageMarkers,
 	toRestoredQueuedMessage,
 	withQueuedUserContent,
 } from "./queued-messages";
@@ -435,46 +437,8 @@ const noOpUIContext: ExtensionUIContext = {
 // ============================================================================
 // AgentSession Class
 // ============================================================================
-
-type UserQueueMessage = Extract<AgentMessage, { role: "user" }>;
-type QueuedUserMessageListener = (text: string, imageCount: number, replacedText?: string) => void;
-export type QueueMode = "all" | "one-at-a-time" | "coalescing";
-
 function coreQueueMode(mode: QueueMode): "all" | "one-at-a-time" {
 	return mode === "all" ? "all" : "one-at-a-time";
-}
-export type LocalQueueCoalescedListener = (
-	perSendText: string,
-	mergedText: string,
-	replacedText: string,
-	perSendImageCount: number,
-	mergedImageCount: number,
-	replacedImageCount: number,
-) => void;
-
-const VISION_MARKER_REGEX = /\[(Image|Video) #([1-9]\d*)((?:,[^\]\n]*)?)\]/g;
-
-function shiftQueuedImageMarkers(text: string, offset: number): string {
-	if (offset === 0) return text;
-	return text.replace(
-		VISION_MARKER_REGEX,
-		(_match, kind: string, idx: string, tail: string) => `[${kind} #${Number(idx) + offset}${tail}]`,
-	);
-}
-
-function queuedUserDraftText(message: AgentMessage): string | undefined {
-	if (message.role !== "user" || message.attribution === "agent") return undefined;
-	if (!("content" in message)) return undefined;
-	if (typeof message.content === "string") return message.content;
-	const text = message.content.find((part): part is TextContent => part.type === "text")?.text ?? "";
-	if (text) return text;
-	return queuedImageContent(message) ? "[Image]" : "";
-}
-
-function withQueuedUserContent(message: UserQueueMessage, text: string, images?: ImageContent[]): AgentMessage {
-	const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
-	if (images?.length) content.push(...images);
-	return { ...message, content, timestamp: Date.now() };
 }
 
 type MessageEndPersistenceSlot = {

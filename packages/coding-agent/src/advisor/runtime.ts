@@ -1540,7 +1540,15 @@ export class AdvisorRuntime {
 					// retaining the stale batch would reintroduce content the reset
 					// deliberately discarded.
 					if (this.#epoch !== epoch) continue;
+					// Retain the raw deltas for a later re-render, but release their
+					// catch-up accounting now: this failed attempt cannot make progress
+					// until a later primary turn replaces/fixes the malformed input.
+					// Zeroing `turns` prevents a later successful retry from consuming
+					// backlog belonging to newer deltas.
+					const releasedTurns = popped.reduce((sum, delta) => sum + delta.turns, 0);
+					for (const delta of popped) delta.turns = 0;
 					this.#pending.unshift(...popped);
+					this.#backlog = Math.max(0, this.#backlog - releasedTurns);
 					this.#failing = true;
 					this.#wakeAllWaiters();
 					logger.warn("advisor batch render failed; retaining batch for a later turn", { err: String(err) });

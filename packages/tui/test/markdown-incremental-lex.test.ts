@@ -519,7 +519,7 @@ describe("Markdown incremental streaming lex (E2)", () => {
 		try {
 			terminalState.hyperlinks = true;
 			const theme = { ...THEME, copyChip: "copy", copyChipTarget: (code: string) => (targets.push(code), "copy") };
-			const prefix = `${LINK}${ST}`.repeat(16) + "\n\n";
+			const prefix = "\x1b]8;;https://example.com\x1b\\".repeat(16) + "\n\n";
 			const suffix = "```ts\nconst newest = true;\n```\n";
 			const streaming = new Markdown("", 0, 0, theme);
 			streaming.transientRenderCache = true;

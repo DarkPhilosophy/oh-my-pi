@@ -112,7 +112,7 @@ export class SecurityScanTool implements AgentTool<typeof securityScanSchema, Se
 	readonly parameters = securityScanSchema;
 	readonly strict = true;
 
-	constructor(readonly session: ToolSession) { }
+	constructor(readonly session: ToolSession) {}
 
 	async execute(
 		_toolCallId: string,
@@ -198,11 +198,11 @@ export class SecurityScanTool implements AgentTool<typeof securityScanSchema, Se
 					configurations.length === 0
 						? "No Codex Security cloud scan configurations are available."
 						: configurations
-							.map(
-								item =>
-									`${item.id} ${item.currentStep ?? "unknown"} repo=${item.repositoryId} environment=${item.environmentId} ${item.repositoryUrl}`,
-							)
-							.join("\n"),
+								.map(
+									item =>
+										`${item.id} ${item.currentStep ?? "unknown"} repo=${item.repositoryId} environment=${item.environmentId} ${item.repositoryUrl}`,
+								)
+								.join("\n"),
 					{ action: params.action, cloudConfigurations: configurations },
 				);
 			}

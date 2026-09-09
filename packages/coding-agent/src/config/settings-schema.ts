@@ -1263,6 +1263,17 @@ export const SETTINGS_SCHEMA = {
 				"Show the agent run state in the terminal title's separator — an animated spinner while working (a static ':' on Windows), '>' when it's your turn, '!' when the agent is waiting on you",
 		},
 	},
+	"tui.codeGuidanceTrail": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Code Guidance Trail",
+			description:
+				"Show the steering-style gutter inside fenced code blocks: ├─ / └─ connectors per logical line and the │ rail on wrapped continuation rows. Off renders plain numbered lines.",
+		},
+	},
 
 	"tui.hyperlinks": {
 		type: "enum",
@@ -1987,7 +1998,7 @@ export const SETTINGS_SCHEMA = {
 	// Conversation flow
 	steeringMode: {
 		type: "enum",
-		values: ["all", "one-at-a-time"] as const,
+		values: ["all", "one-at-a-time", "coalescing"] as const,
 		default: "one-at-a-time",
 		ui: {
 			tab: "interaction",
@@ -1999,7 +2010,7 @@ export const SETTINGS_SCHEMA = {
 
 	followUpMode: {
 		type: "enum",
-		values: ["all", "one-at-a-time"] as const,
+		values: ["all", "one-at-a-time", "coalescing"] as const,
 		default: "one-at-a-time",
 		ui: {
 			tab: "interaction",
@@ -2018,6 +2029,23 @@ export const SETTINGS_SCHEMA = {
 			group: "Input",
 			label: "Interrupt Mode",
 			description: "When steering messages interrupt tool execution",
+		},
+	},
+	pendingQueueCollapseLines: {
+		type: "number",
+		default: 5,
+		ui: {
+			tab: "interaction",
+			group: "Input",
+			label: "Queued Message Preview Lines",
+			description:
+				"How many leading lines of each queued steer/follow-up message the pending bar shows before collapsing the rest to `(+N)`. Alt+O expands every entry to its full text and toggles back to this collapsed preview.",
+			options: [
+				{ value: "1", label: "1 line" },
+				{ value: "3", label: "3 lines" },
+				{ value: "5", label: "5 lines" },
+				{ value: "10", label: "10 lines" },
+			],
 		},
 	},
 
@@ -2217,6 +2245,17 @@ export const SETTINGS_SCHEMA = {
 			group: "Startup & Updates",
 			label: "Check for Updates",
 			description: "Check for omp updates on startup",
+		},
+	},
+	"daemon.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "interaction",
+			group: "Startup & Updates",
+			label: "Daemon Mode",
+			description:
+				"Host interactive sessions in a shared per-profile daemon (opt-in; --daemon / --no-daemon override)",
 		},
 	},
 	"update.channel": {
@@ -3977,6 +4016,16 @@ export const SETTINGS_SCHEMA = {
 			group: "Bash",
 			label: "Bash Interceptor",
 			description: "Block shell commands that have dedicated tools",
+		},
+	},
+	"bashInterceptor.forwardSimpleCommands": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "shell",
+			group: "Bash",
+			label: "Bash Interceptor Forward Simple Commands",
+			description: "Forward safe simple matches to the built-in read, grep, or glob tool instead of blocking them",
 		},
 	},
 	"bashInterceptor.patterns": { type: "array", default: DEFAULT_BASH_INTERCEPTOR_RULES },
@@ -5785,6 +5834,31 @@ export const SETTINGS_SCHEMA = {
 				"Classifier for Smart unexpected-stop detection: online (the TINY role from /models, else smol) by default, or a local on-device model.",
 			condition: "unexpectedStopSmart",
 			options: TINY_MEMORY_MODEL_OPTIONS,
+		},
+	},
+	"providers.unexpectedStopFallbackModel": {
+		type: "enum",
+		values: TINY_MEMORY_MODEL_VALUES,
+		default: "qwen2.5-1.5b",
+		ui: {
+			tab: "providers",
+			group: "Tiny Model",
+			label: "Unexpected Stop Fallback Model",
+			description:
+				"Local model to use only when the online unexpected-stop classifier fails; local-primary configurations do not need this setting.",
+			condition: "unexpectedStopDetection",
+			options: TINY_MEMORY_MODEL_OPTIONS,
+		},
+	},
+
+	"providers.openai-codex.useReserve": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "providers",
+			group: "OpenAI Codex",
+			label: "Use Luna Reserve",
+			description: "Use gpt-reserve for Luna when an account has reserve quota; fall back to Luna when unavailable.",
 		},
 	},
 

@@ -8,6 +8,7 @@ import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/eve
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { Component } from "@oh-my-pi/pi-tui";
 import { createInteractiveModeContext } from "./helpers/interactive-mode-context";
 
 const TOOL_CALL_A_ID = "toolu_mixed_text_order_a";

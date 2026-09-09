@@ -22,6 +22,7 @@ function createModelContext(advisorActive: boolean): SegmentContext {
 			}),
 		} as unknown as SegmentContext["session"],
 		width: 120,
+		projectDir: "/tmp/project",
 		compactThinkingLevel: false,
 		options: {},
 		planMode: null,

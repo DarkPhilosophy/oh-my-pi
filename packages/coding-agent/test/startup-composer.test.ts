@@ -16,7 +16,6 @@ import {
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
-import type { Component } from "@oh-my-pi/pi-tui";
 import { createTestSession } from "./utilities";
 
 class CountingTerminal extends VirtualTerminal {

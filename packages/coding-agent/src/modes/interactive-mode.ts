@@ -21,7 +21,9 @@ import type {
 	EditorTheme,
 	LoaderMessageColorFn,
 	OverlayHandle,
+	PanelLayoutResult,
 	SlashCommand,
+	Terminal,
 } from "@oh-my-pi/pi-tui";
 import {
 	Container,
@@ -60,13 +62,8 @@ import type { CollabHost } from "../collab/host";
 import { formatKeyHint, KeybindingsManager } from "../config/keybindings";
 import { formatModelString, type ResolvedModelRoleValue } from "../config/model-resolver";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
-import {
-	isSettingsInitialized,
-	onModelRolesChanged,
-	onStatusLineSessionAccentChanged,
-	Settings,
-	settings,
-} from "../config/settings";
+import { onModelRolesChanged, onStatusLineSessionAccentChanged, Settings } from "../config/settings";
+import type { DaemonConnectionSnapshot } from "../daemon/status";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {
 	AutocompleteProviderFactory,
@@ -141,11 +138,16 @@ import {
 } from "../tools/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
 import {
+	createTodoHudStateData,
+	getTodoHudVisibility,
 	formatPhaseDisplayName,
 	isClosedTodo,
 	nextActionableTask,
 	selectCollapsedTodos,
 	setActiveTodoDescriptionsProvider,
+	TODO_HUD_STATE_CUSTOM_TYPE,
+	type TodoHudStateEntryData,
+	USER_TODO_EDIT_CUSTOM_TYPE,
 	todoMatchesAnyDescription,
 } from "../tools/todo";
 import { vocalizer } from "../tts/vocalizer";
@@ -163,7 +165,9 @@ import {
 	popTerminalTitle,
 	pushTerminalTitle,
 	setSessionTerminalTitle,
+	setTerminalTitleState,
 	setTerminalTitleStateEnabled,
+	TerminalTitleController,
 } from "../utils/title-generator";
 import {
 	aggregateVibeWorkerTokensPerSecond,
@@ -255,6 +259,7 @@ import type {
 	InteractiveModeInitOptions,
 	InteractiveSelectorDialogOptions,
 	RenderSessionContextOptions,
+	RightInfoProvider,
 	SubmittedUserInput,
 	TodoItem,
 	TodoPhase,
@@ -626,6 +631,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	keybindings: KeybindingsManager;
 	agent: Agent;
 	historyStorage?: HistoryStorage;
+	readonly #hostedTerminal: Terminal | undefined;
+	readonly #hostedDetach: ((reason: "detach" | "exit" | "error", error?: string) => void) | undefined;
+	readonly #hostedCwdChange: ((cwd: string) => void) | undefined;
+	readonly #terminalTitleController: TerminalTitleController | undefined;
+	#hostedTitlePushed = false;
 
 	/** Canonical composer shared by cold prepaint and the session-aware runtime. */
 	readonly composer: Composer;
@@ -688,6 +698,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * focus attach.
 	 */
 	#todoPhasesOwner?: AgentSession;
+	#todoHudHidden = false;
+	#todoAutoClearGeneration = 0;
 	hideThinkingBlock = false;
 	#sessionsWithDisplayableThinkingContent = new WeakSet<AgentSession>();
 	/** Whether the visible session has produced thinking content the user can reveal. */
@@ -714,6 +726,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.hideThinkingBlock || (thinkingOff && !this.hasDisplayableThinkingContent);
 	}
 	proseOnlyThinking = true;
+	pendingQueueExpanded = false;
 	compactionQueuedMessages: CompactionQueuedMessage[] = [];
 	pendingTools = new Map<string, ToolExecutionHandle>();
 	transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
@@ -736,7 +749,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** Band composer: the status band hides `session_name`, so the title docks
 	 * onto the working row instead — right-aligned, dim, italic. */
 	#workingTitleTrailer(): string | undefined {
-		if (settings.get("composer.shape") !== "band") return undefined;
+		if (this.settings.get("composer.shape") !== "band") return undefined;
 		const name = this.sessionManager.getSessionName();
 		if (!name) return undefined;
 		return `\x1b[2;3m${sanitizeStatusText(name)}\x1b[23;22m`;
@@ -770,6 +783,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** True once `shutdown()` has begun teardown. Surfaced to the input
 	 *  controller so a Ctrl+C arriving while teardown is in flight can hard-
 	 *  abort the remaining work instead of stacking another no-op call. */
+	#rightInfoBlocks: string[][] = [];
+	#staticRightInfoProvider = (_width: number): readonly (readonly string[])[] => this.#rightInfoBlocks;
+	#rightInfoProvider: RightInfoProvider = this.#staticRightInfoProvider;
+	#rightInfoLayoutCallback: ((result: PanelLayoutResult) => void) | null = null;
 	get isShuttingDown(): boolean {
 		return this.#isShuttingDown;
 	}
@@ -924,28 +941,37 @@ export class InteractiveMode implements InteractiveModeContext {
 		lspServers: LspStartupServerInfo[] | undefined = undefined,
 		mcpManager?: MCPManager,
 		eventBus?: EventBus,
-		composer?: Composer,
+		hostOrComposer?:
+			| {
+					terminal: Terminal;
+					onDetach(reason: "detach" | "exit" | "error", error?: string): void;
+					onCwdChange?(cwd: string): void;
+			  }
+			| Composer,
 		subagentEventBus?: EventBus,
 	) {
 		this.session = session;
 		this.sessionManager = session.sessionManager;
 		this.settings = session.settings;
 		const preferences = {
-			quiet: settings.get("startup.quiet"),
-			composerShape: settings.get("composer.shape") ?? "band",
-			showHardwareCursor: settings.get("showHardwareCursor"),
-			maxInlineImages: settings.get("tui.maxInlineImages"),
-			resizeScrollback: settings.get("tui.resizeScrollback"),
-			imeSafeCursor: settings.get("tui.imeSafeCursor"),
-			autocompleteMaxVisible: settings.get("autocompleteMaxVisible"),
-			spellingTypoDetection: settings.get("spelling.typoDetection"),
-			spellingAutocomplete: settings.get("spelling.autocomplete"),
-			spellingAutocorrect: settings.get("spelling.autocorrect"),
+			quiet: this.settings.get("startup.quiet"),
+			composerShape: this.settings.get("composer.shape") ?? "band",
+			showHardwareCursor: this.settings.get("showHardwareCursor"),
+			maxInlineImages: this.settings.get("tui.maxInlineImages"),
+			resizeScrollback: this.settings.get("tui.resizeScrollback"),
+			imeSafeCursor: this.settings.get("tui.imeSafeCursor"),
+			autocompleteMaxVisible: this.settings.get("autocompleteMaxVisible"),
+			spellingTypoDetection: this.settings.get("spelling.typoDetection"),
+			spellingAutocomplete: this.settings.get("spelling.autocomplete"),
+			spellingAutocorrect: this.settings.get("spelling.autocorrect"),
 		};
+		const host = hostOrComposer instanceof Composer ? undefined : hostOrComposer;
+		const composer = hostOrComposer instanceof Composer ? hostOrComposer : undefined;
 		const wasStarted = composer?.started ?? false;
 		this.composer =
 			composer ??
 			new Composer({
+				terminal: host?.terminal,
 				preferences,
 				welcome: {
 					version,
@@ -960,6 +986,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			});
 		this.composer.setPreferences(preferences);
 		this.ui = this.composer.ui;
+		this.#hostedTerminal = host?.terminal;
+		this.#terminalTitleController = host?.terminal ? new TerminalTitleController(host.terminal) : undefined;
 		this.editor = this.composer.editor;
 		this.editor.magicKeywordsEnabled = () => this.settings.get("magicKeywords.enabled");
 		this.editor.imageReferenceHyperlink = imageReferenceHyperlink;
@@ -975,6 +1003,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			new MCPCommandController(this).handleMCPAuthChallenge(serverName, challenge),
 		);
 		this.#eventBus = eventBus;
+		this.#hostedDetach = host?.onDetach;
+		this.#hostedCwdChange = host?.onCwdChange;
 		this.#subagentEventBus = subagentEventBus;
 		if (eventBus) {
 			this.#eventBusUnsubscribers.push(
@@ -994,18 +1024,18 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 		}
 
-		setTuiTight(settings.get("tui.tight"));
-		setMarkdownMermaidRendering(settings.get("tui.renderMermaid"));
+		setTuiTight(this.settings.get("tui.tight"));
+		setMarkdownMermaidRendering(this.settings.get("tui.renderMermaid"));
 		// A cold-start composer already owns the terminal. Reuse it so input
 		// buffered during startup remains in the same editor instance.
-		this.ui.setMaxInlineImages(settings.get("tui.maxInlineImages"));
-		this.ui.setShowHardwareCursor(settings.get("showHardwareCursor"));
+		this.ui.setMaxInlineImages(this.settings.get("tui.maxInlineImages"));
+		this.ui.setShowHardwareCursor(this.settings.get("showHardwareCursor"));
 		// OSC 66 text-sizing is Kitty-only; resolve the setting against the terminal's
 		// capability (`TERMINAL.supportsTextSizing` defaults on for Kitty) so it stays off
 		// unless the user opts in, and never emits raw escapes on other terminals.
-		setTerminalTextSizing(settings.get("tui.textSizing") && TERMINAL.supportsTextSizing);
+		setTerminalTextSizing(this.settings.get("tui.textSizing") && TERMINAL.supportsTextSizing);
 		// Keep generic pi-tui renderers aligned with the coding-agent setting.
-		applyHyperlinkSetting();
+		applyHyperlinkSetting(this.settings.get("tui.hyperlinks"));
 		this.chatContainer = new TranscriptContainer();
 		this.pendingMessagesContainer = new AnchoredLiveContainer();
 		this.statusContainer = new StatusHudContainer(this);
@@ -1018,8 +1048,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.modelCycleContainer = new AnchoredLiveContainer();
 		this.deferredCommandContainer = new AnchoredLiveContainer();
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
-		this.editor.setImeSafeCursorLayout(settings.get("tui.imeSafeCursor"));
-		this.editor.setAutocompleteMaxVisible(settings.get("autocompleteMaxVisible"));
+		this.editor.setImeSafeCursorLayout(this.settings.get("tui.imeSafeCursor"));
+		this.editor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
 		this.syncEditorSpelling();
 		this.editor.viewportRowsProvider = () => this.ui.terminal.rows;
 		this.editor.onAutocompleteCancel = () => {
@@ -1044,7 +1074,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			logger.warn("History storage unavailable", { error: String(error) });
 		}
 		this.hookWidgetContainerAbove = new Container();
-		this.hookWidgetContainerAbove.addChild(new EditorTopGap(() => this.statusRowOccupied));
+		this.hookWidgetContainerAbove.addChild(
+			new EditorTopGap(
+				() => this.statusRowOccupied,
+				() => this.settings.get("composer.shape"),
+			),
+		);
 		this.hookWidgetContainerBelow = new Container();
 		this.attachmentChipsContainer = new Container();
 		this.attachmentChipsContainer.addChild(
@@ -1070,10 +1105,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			aggregateVibeWorkerTokensPerSecond(this.session.getAgentId() ?? MAIN_AGENT_ID),
 		);
 
-		this.hideToolActivity = settings.get("display.hideToolActivity");
+		this.hideToolActivity = this.settings.get("display.hideToolActivity");
 		this.chatContainer.setToolActivityVisible(!this.hideToolActivity);
-		this.hideThinkingBlock = settings.get("hideThinkingBlock");
-		this.proseOnlyThinking = settings.get("proseOnlyThinking");
+		this.hideThinkingBlock = this.settings.get("hideThinkingBlock");
+		this.proseOnlyThinking = this.settings.get("proseOnlyThinking");
 
 		const hookCommands: SlashCommand[] = (
 			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
@@ -1158,6 +1193,23 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 		if (message) this.showStatus(message);
 	}
+	setDaemonSnapshot(snapshot: DaemonConnectionSnapshot): void {
+		this.composer.welcome?.setServerStatus(snapshot);
+		this.statusLine.setServerStatus(snapshot);
+		this.ui.requestRender();
+	}
+	setRightInfo(
+		blocks: string[][] | RightInfoProvider | undefined,
+		onLayout?: (result: PanelLayoutResult) => void,
+	): void {
+		if (onLayout !== undefined) this.#rightInfoLayoutCallback = onLayout;
+		if (typeof blocks === "function") this.#rightInfoProvider = blocks;
+		else {
+			this.#rightInfoBlocks = blocks ?? [];
+			this.#rightInfoProvider = this.#staticRightInfoProvider;
+		}
+		this.ui.requestRender();
+	}
 
 	#trackMcpStatusServer(serverName: string): void {
 		if (!this.#mcpStatusOrder.includes(serverName)) {
@@ -1212,10 +1264,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Wire the report_tool_issue consent gate to the Yes/No dialog popup.
 		// The handler is process-global — subagent tools (which can't reach
 		// `showHookSelector` on their own) resolve through this exact closure.
-		// `Settings.instance` is the disk-backed singleton; passing it explicitly
-		// guarantees the decision persists even when the prompt is triggered
-		// from a subagent whose own `Settings` is an in-memory snapshot.
-		setAutoQaConsentHandler(() => this.#promptAutoQaConsent(), Settings.instance);
+		// Persist against the UI owner's settings, including hosted sessions that
+		// deliberately do not install a process-global Settings singleton.
+		setAutoQaConsentHandler(() => this.#promptAutoQaConsent(), this.settings);
 
 		await logger.time(
 			"InteractiveMode.init:slashCommands",
@@ -1237,7 +1288,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			const sessions = await getRecentSessions(this.sessionManager.getSessionDir());
 			return sessions.map(s => ({ name: s.name, timeAgo: s.timeAgo }));
 		});
-		const startupQuiet = settings.get("startup.quiet");
+		const startupQuiet = this.settings.get("startup.quiet");
 		this.composer.setPreferences({ quiet: startupQuiet });
 		this.composer.updateWelcome({
 			version: this.#version,
@@ -1249,13 +1300,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#persistComposerWelcome(modelName, providerName);
 		const headerBefore = this.#buildConfigWarningComponents();
 		const headerAfter: Component[] = [];
-		if (!startupQuiet && this.#startupChangelog && settings.get("startup.changelogMode") !== "hidden") {
+		if (!startupQuiet && this.#startupChangelog && this.settings.get("startup.changelogMode") !== "hidden") {
 			headerAfter.push(
 				new DynamicBorder(),
 				new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0),
 				new Spacer(1),
 			);
-			if (settings.get("startup.changelogMode") === "summary") {
+			if (this.settings.get("startup.changelogMode") === "summary") {
 				const summary = formatStartupChangelogSummary(this.#startupChangelog).replace(
 					/\/changelog(?: full)?/g,
 					command => theme.bold(command),
@@ -1329,9 +1380,28 @@ export class InteractiveMode implements InteractiveModeContext {
 			});
 			this.#ownsStartedUi = true;
 		}
-		pushTerminalTitle();
-		setTerminalTitleStateEnabled(this.settings.get("tui.titleState"));
-		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+		this.ui.setRightPanel(
+			width => this.#rightInfoProvider(width),
+			[this.composer.rightPanelHeaderTarget, this.chatContainer, this.todoContainer],
+			result => this.#rightInfoLayoutCallback?.(result),
+			[this.editorContainer],
+		);
+		if (this.#hostedTerminal) {
+			this.#hostedTerminal.write("\x1b[22;2t");
+			this.#hostedTitlePushed = true;
+		} else {
+			pushTerminalTitle();
+		}
+		if (this.#terminalTitleController) {
+			this.#terminalTitleController.setEnabled(this.settings.get("tui.titleState"));
+			this.#terminalTitleController.setSessionTitle(
+				this.sessionManager.getSessionName(),
+				this.sessionManager.getCwd(),
+			);
+		} else {
+			setTerminalTitleStateEnabled(this.settings.get("tui.titleState"));
+			setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+		}
 		this.updateEditorBorderColor();
 		// Single side-effect point for title changes: every setSessionName caller
 		// (first-input titling, /rename, extension renames, plan seeding, replan
@@ -1349,7 +1419,14 @@ export class InteractiveMode implements InteractiveModeContext {
 				);
 			}),
 			this.sessionManager.onSessionNameChanged(() => {
-				setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+				if (this.#terminalTitleController) {
+					this.#terminalTitleController.setSessionTitle(
+						this.sessionManager.getSessionName(),
+						this.sessionManager.getCwd(),
+					);
+				} else {
+					setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+				}
 				this.#handleSessionAccentInputsChanged();
 			}),
 		);
@@ -1529,6 +1606,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		// other's turn instead of dying.
 		this.editor.disableSubmit = false;
 	}
+	setTerminalTitleState(state: "idle" | "working" | "attention"): void {
+		if (this.#terminalTitleController) this.#terminalTitleController.setState(state);
+		else setTerminalTitleState(state);
+	}
 
 	/** Reload the title-generation system prompt override for the provided working
 	 *  directory and stash it on the session so first-input titling
@@ -1671,14 +1752,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			// Re-scope project settings (`.claude/settings.yml` etc.) to the new
 			// directory in place so the active session and every settings reader pick
 			// up the destination project's configuration.
-			if (isSettingsInitialized()) {
-				await settings.reloadForCwd(newCwd);
-				// Reapply provider preferences from the newly-loaded settings so the
-				// module-level search/image provider state reflects the destination
-				// project's configuration. Without this, the previous project's
-				// exclusions leak and newly-excluded providers are still used.
-				applyProviderGlobalsFromSettings(settings);
-			}
+			await this.settings.reloadForCwd(newCwd);
+			// Reapply provider preferences from the newly-loaded session settings.
+			applyProviderGlobalsFromSettings(this.settings);
 			// Re-warm plugin roots, capabilities, slash commands, and the ssh tool so
 			// the next prompt sees everything scoped to the new project directory.
 			clearClaudePluginRootsCache();
@@ -1694,10 +1770,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.sessionManager.setCwdWithoutRelocation(previousCwd);
 			try {
 				setProjectDir(previousCwd);
-				if (isSettingsInitialized()) {
-					await settings.reloadForCwd(previousCwd);
-					applyProviderGlobalsFromSettings(settings);
-				}
+				await this.settings.reloadForCwd(previousCwd);
+				applyProviderGlobalsFromSettings(this.settings);
 				clearClaudePluginRootsCache();
 				await this.refreshTitleSystemPrompt(previousCwd);
 				resetCapabilities();
@@ -1707,10 +1781,8 @@ export class InteractiveMode implements InteractiveModeContext {
 				const actual = this.sessionManager.getCwd();
 				try {
 					setProjectDir(actual);
-					if (isSettingsInitialized()) {
-						await settings.reloadForCwd(actual);
-						applyProviderGlobalsFromSettings(settings);
-					}
+					await this.settings.reloadForCwd(actual);
+					applyProviderGlobalsFromSettings(this.settings);
 					clearClaudePluginRootsCache();
 					await this.refreshTitleSystemPrompt(actual);
 					resetCapabilities();
@@ -1729,8 +1801,16 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 			return false;
 		}
-		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+		if (this.#terminalTitleController) {
+			this.#terminalTitleController.setSessionTitle(
+				this.sessionManager.getSessionName(),
+				this.sessionManager.getCwd(),
+			);
+		} else {
+			setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+		}
 		this.statusLine.applyCwdChange();
+		this.#hostedCwdChange?.(getProjectDir());
 		return true;
 	}
 
@@ -1754,7 +1834,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#cancelLoopAutoSubmit();
 		if (!this.loopModeEnabled || !this.loopPrompt) return;
 		const prompt = this.loopPrompt;
-		const loopAction = settings.get("loop.mode");
+		const loopAction = this.settings.get("loop.mode");
 		this.#deferLoopAutoSubmit(() => {
 			void this.#runLoopIteration(loopAction, prompt);
 		});
@@ -1935,7 +2015,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		try {
 			verdict = await evaluateLoopCondition(condition, {
 				cwd: this.sessionManager.getCwd(),
-				timeoutMs: settings.get("loop.conditionTimeoutMs"),
+				timeoutMs: this.settings.get("loop.conditionTimeoutMs"),
 				signal: controller.signal,
 				sessionId: this.sessionManager.getSessionId(),
 			});
@@ -2299,20 +2379,20 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#syncStatusLineSettings(): void {
 		this.statusLine.updateSettings({
-			preset: settings.get("statusLine.preset"),
-			leftSegments: settings.get("statusLine.leftSegments"),
-			rightSegments: settings.get("statusLine.rightSegments"),
-			separator: settings.get("statusLine.separator"),
-			showHookStatus: settings.get("statusLine.showHookStatus"),
-			sessionAccent: settings.get("statusLine.sessionAccent"),
-			transparent: settings.get("statusLine.transparent"),
-			segmentOptions: settings.get("statusLine.segmentOptions"),
-			compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
-			contextLine: settings.get("statusLine.contextLine"),
+			preset: this.settings.get("statusLine.preset"),
+			leftSegments: this.settings.get("statusLine.leftSegments"),
+			rightSegments: this.settings.get("statusLine.rightSegments"),
+			separator: this.settings.get("statusLine.separator"),
+			showHookStatus: this.settings.get("statusLine.showHookStatus"),
+			sessionAccent: this.settings.get("statusLine.sessionAccent"),
+			transparent: this.settings.get("statusLine.transparent"),
+			segmentOptions: this.settings.get("statusLine.segmentOptions"),
+			compactThinkingLevel: this.settings.get("statusLine.compactThinkingLevel"),
+			contextLine: this.settings.get("statusLine.contextLine"),
 		});
 	}
 	syncComposerShape(): void {
-		const shape = settings.get("composer.shape") ?? "band";
+		const shape = this.settings.get("composer.shape") ?? "band";
 		const style = getComposerStyle(shape);
 		this.composer.setPreferences({ composerShape: shape });
 		this.statusLine.setAutocompleteActiveProbe(() => this.editor.isAutocompleteActive());
@@ -2343,7 +2423,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 */
 	#persistComposerStatus(): void {
 		if (!this.sessionManager.getSessionFile()) return;
-		const shape = settings.get("composer.shape") ?? "band";
+		const shape = this.settings.get("composer.shape") ?? "band";
 		const style = getComposerStyle(shape);
 		const terminalWidth = this.ui.terminal.columns;
 		const availableWidth = this.editor.getTopBorderAvailableWidth(terminalWidth);
@@ -2396,7 +2476,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		} else if (this.isPythonMode) {
 			this.editor.borderColor = theme.getPythonModeBorderColor();
 		} else {
-			const accentEnabled = !isSettingsInitialized() || settings.get("statusLine.sessionAccent") !== false;
+			const accentEnabled = this.settings.get("statusLine.sessionAccent") !== false;
 			const sessionName = accentEnabled ? this.sessionManager.getSessionName() : undefined;
 			const hex = sessionName ? getSessionAccentHex(sessionName, theme.sessionAccentInputs) : undefined;
 			const ansi = getSessionAccentAnsi(hex);
@@ -2462,7 +2542,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// user opted into the full inline history; export/resume callers choose
 		// their own mode.
 		const context = this.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: settings.get("display.collapseCompacted"),
+			collapseCompactedHistory: this.settings.get("display.collapseCompacted"),
 		});
 		const preservedLiveToolCallIds = new Set<string>();
 		// A preserved pending-tool component whose result has already landed in
@@ -2647,55 +2727,59 @@ export class InteractiveMode implements InteractiveModeContext {
 		// bound (rather than routing through `setTodos`, which rebinds it to
 		// `viewSession`) keeps a follow-up reconcile in the same window correct.
 		const owner = this.#todoPhasesOwner ?? this.session;
+		owner.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: next });
 		owner.setTodoPhases(next);
 		this.todoPhases = next;
-		this.#syncTodoAutoClearTimer();
+		this.#syncTodoHudState(owner);
 		this.#renderTodoList();
 		this.ui.requestRender();
 	}
 
 	#cancelTodoAutoClearTimer(): void {
-		if (!this.#todoAutoClearTimer) return;
-		clearTimeout(this.#todoAutoClearTimer);
-		this.#todoAutoClearTimer = undefined;
-	}
-
-	/**
-	 * Whether every todo is closed, so the HUD has nothing left to track.
-	 *
-	 * The auto-clear only fires on a settled list. Scrubbing closed tasks while
-	 * open work remains is destructive: the walking viewport already hides all but
-	 * the newest closed row, and those tasks are what the phase progress counters
-	 * and the stage roman numerals are computed from — dropping them mid-run reset
-	 * an in-flight phase to `0/n` and renumbered the stages, so a plan the agent
-	 * was four tasks into rendered as untouched until the next `todo` call
-	 * restored the real snapshot.
-	 */
-	#isTodoListSettled(phases: TodoPhase[]): boolean {
-		let seenTask = false;
-		for (const phase of phases) {
-			for (const task of phase.tasks) {
-				if (!isClosedTodo(task)) return false;
-				seenTask = true;
-			}
-		}
-		return seenTask;
-	}
-
-	#syncTodoAutoClearTimer(): void {
-		this.#cancelTodoAutoClearTimer();
-		const delaySeconds = this.settings.get("tasks.todoClearDelay");
-		if (!Number.isFinite(delaySeconds) || delaySeconds < 0 || !this.#isTodoListSettled(this.todoPhases)) return;
-		if (delaySeconds === 0) {
-			this.todoPhases = [];
-			return;
-		}
-
-		this.#todoAutoClearTimer = setTimeout(() => {
+		this.#todoAutoClearGeneration++;
+		if (this.#todoAutoClearTimer) {
+			clearTimeout(this.#todoAutoClearTimer);
 			this.#todoAutoClearTimer = undefined;
-			this.todoPhases = [];
+		}
+	}
+
+	#syncTodoHudState(owner: AgentSession): void {
+		this.#cancelTodoAutoClearTimer();
+		const phases = this.todoPhases;
+		const persisted = getTodoHudVisibility(owner.sessionManager.getBranch(), phases);
+		this.#todoHudHidden = persisted === "dismissed";
+		if (persisted || phases.length === 0) return;
+		const tasks = phases.flatMap(phase => phase.tasks);
+		if (tasks.length === 0 || tasks.some(task => !isClosedTodo(task))) return;
+		const delaySeconds = owner.settings.get("tasks.todoClearDelay");
+		if (!Number.isFinite(delaySeconds) || delaySeconds < 0) return;
+		const generation = this.#todoAutoClearGeneration;
+		const snapshotKey = JSON.stringify(phases);
+		const sessionId = owner.sessionManager.getSessionId();
+		const sessionFile = owner.sessionManager.getSessionFile();
+		const isCurrent = (): boolean =>
+			generation === this.#todoAutoClearGeneration &&
+			this.#todoPhasesOwner === owner &&
+			owner.sessionManager.getSessionId() === sessionId &&
+			owner.sessionManager.getSessionFile() === sessionFile &&
+			JSON.stringify(this.todoPhases) === snapshotKey;
+		const persistAndHide = async (): Promise<void> => {
+			this.#todoAutoClearTimer = undefined;
+			await owner.settleInFlightMessagePersistence();
+			if (!isCurrent()) return;
+			const data = createTodoHudStateData(owner.sessionManager.getBranch(), this.todoPhases, "dismissed");
+			if (!data) return;
+			owner.sessionManager.appendCustomEntry(TODO_HUD_STATE_CUSTOM_TYPE, data);
+			await owner.sessionManager.flush();
+			if (!isCurrent()) return;
+			this.#todoHudHidden = true;
 			this.#renderTodoList();
 			this.ui.requestRender();
+		};
+		this.#todoAutoClearTimer = setTimeout(() => {
+			void persistAndHide().catch(error => {
+				logger.warn("Failed to persist TODO HUD dismissal", { error });
+			});
 		}, delaySeconds * 1000);
 		this.#todoAutoClearTimer.unref?.();
 	}
@@ -2769,7 +2853,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#observerUiSyncNeedsTodoReconcile = false;
 			this.#reconcileTodosWithSubagents();
 		}
-		this.#syncTodoAutoClearTimer();
+		this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
 		this.#renderTodoList();
 		this.#renderSubagentList();
 		this.ui.requestRender();
@@ -2785,6 +2869,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#renderTodoList(): void {
 		this.todoContainer.clear();
+		if (this.#todoHudHidden) return;
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
 		if (phases.length === 0) return;
 		const expanded = this.todoExpanded;
@@ -2983,7 +3068,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	async #loadTodoList(source: AgentSession = this.session): Promise<void> {
 		this.todoPhases = source.getTodoPhases();
 		this.#todoPhasesOwner = source;
-		this.#syncTodoAutoClearTimer();
+		this.#syncTodoHudState(source);
 		this.#renderTodoList();
 	}
 
@@ -4946,6 +5031,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		stopSharedSpinnerTicker();
 		this.#liveCommandController.dispose();
 		this.#cancelTodoAutoClearTimer();
+		this.#terminalTitleController?.dispose();
+		if (this.#hostedTerminal && this.#hostedTitlePushed) {
+			this.#hostedTerminal.write("\x1b[23;2t");
+			this.#hostedTitlePushed = false;
+		}
 		this.#cancelObserverUiSyncTimer();
 		this.#cancelGoalContinuation();
 		if (this.#sttController) {
@@ -4987,10 +5077,23 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.isInitialized = false;
 	}
 
+	detachHosted(reason: "detach" | "exit" | "error" = "detach", error?: string): void {
+		if (!this.#hostedDetach || this.#isShuttingDown) return;
+		this.#isShuttingDown = true;
+		const callback = this.onInputCallback;
+		this.onInputCallback = undefined;
+		callback?.({ text: "", cancelled: true, started: false });
+		this.stop();
+		this.#hostedDetach(reason, error);
+	}
 	async shutdown(): Promise<void> {
 		if (this.#isShuttingDown) return;
 		this.#isShuttingDown = true;
 		await this.#teardown();
+		if (this.#hostedDetach) {
+			this.#hostedDetach("exit");
+			return;
+		}
 
 		// Print resumption hint only if the session was actually materialized to
 		// durable storage — `--resume <id>` fails on a never-written file (see
@@ -5067,6 +5170,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// event loop, giving requestRender() a tick to paint the status before
 		// dispose blocks.
 		this.showStatus("Closing session…");
+		this.ui.renderNow();
 
 		// Persist the draft and dispose the session through the shared teardown
 		// so a signal that arrives mid-shutdown cannot fire a second dispose.
@@ -5097,8 +5201,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Stop the run-state spinner interval BEFORE restoring the shell title, so a
 		// pending tick cannot re-emit an OSC title after `popTerminalTitle` hands the
 		// terminal back (which would leave the parent shell with a `π ⠋ …` tab).
-		disposeTerminalTitleState();
-		popTerminalTitle();
+		if (!this.#hostedTerminal) {
+			disposeTerminalTitleState();
+			popTerminalTitle();
+		}
 		this.stop();
 	}
 
@@ -5382,7 +5488,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#buildWorkingMessageAccentCacheKey(): WorkingMessageAccentCacheKey {
-		const sessionAccentEnabled = !isSettingsInitialized() || settings.get("statusLine.sessionAccent") !== false;
+		const sessionAccentEnabled = this.settings.get("statusLine.sessionAccent") !== false;
 		return {
 			sessionAccentEnabled,
 			sessionName: sessionAccentEnabled ? this.sessionManager.getSessionName() : undefined,
@@ -5735,7 +5841,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("End live mode before using push-to-talk speech input.");
 			return;
 		}
-		if (!settings.get("stt.enabled")) {
+		if (!this.settings.get("stt.enabled")) {
 			this.showWarning("Speech-to-text is disabled. Enable it in settings: stt.enabled");
 			return;
 		}
@@ -6134,7 +6240,51 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	toggleTodoExpansion(): void {
-		this.todoExpanded = !this.todoExpanded;
+		this.setTodoExpanded(!this.todoExpanded);
+	}
+
+	setTodoExpanded(expanded: boolean): void {
+		this.todoExpanded = expanded;
+		if (expanded) {
+			const owner = this.#todoPhasesOwner ?? this.viewSession;
+			this.#cancelTodoAutoClearTimer();
+			this.#todoHudHidden = false;
+			const appendReveal = (data: TodoHudStateEntryData): void => {
+				owner.sessionManager.appendCustomEntry(TODO_HUD_STATE_CUSTOM_TYPE, data);
+			};
+			const data = createTodoHudStateData(owner.sessionManager.getBranch(), this.todoPhases, "revealed");
+			if (data) {
+				try {
+					appendReveal(data);
+				} catch (error) {
+					logger.warn("Failed to persist TODO HUD reveal", { error });
+				}
+			} else {
+				const generation = this.#todoAutoClearGeneration;
+				const snapshotKey = JSON.stringify(this.todoPhases);
+				const sessionId = owner.sessionManager.getSessionId();
+				const sessionFile = owner.sessionManager.getSessionFile();
+				void owner
+					.settleInFlightMessagePersistence()
+					.then(() => {
+						if (
+							generation !== this.#todoAutoClearGeneration ||
+							this.#todoPhasesOwner !== owner ||
+							owner.sessionManager.getSessionId() !== sessionId ||
+							owner.sessionManager.getSessionFile() !== sessionFile ||
+							JSON.stringify(this.todoPhases) !== snapshotKey
+						)
+							return;
+						const settledData = createTodoHudStateData(
+							owner.sessionManager.getBranch(),
+							this.todoPhases,
+							"revealed",
+						);
+						if (settledData) appendReveal(settledData);
+					})
+					.catch(error => logger.warn("Failed to persist TODO HUD reveal", { error }));
+			}
+		}
 		this.#renderTodoList();
 		this.ui.requestRender();
 	}
@@ -6151,7 +6301,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			];
 		}
 		this.#todoPhasesOwner = this.viewSession;
-		this.#syncTodoAutoClearTimer();
+		this.#syncTodoHudState(this.#todoPhasesOwner);
 		this.#renderTodoList();
 		this.ui.requestRender();
 	}
@@ -6251,6 +6401,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#extensionUiController.showToolError(toolName, error);
 	}
 
+	reloadHooksAndCustomTools(): Promise<void> {
+		this.#autocompleteProviderFactories.length = 0;
+		this.#applyAutocompleteProvider();
+		return this.#extensionUiController.reloadHooksAndCustomTools();
+	}
 	#subscribeToAgent(): void {
 		this.#eventController.subscribeToAgent();
 	}

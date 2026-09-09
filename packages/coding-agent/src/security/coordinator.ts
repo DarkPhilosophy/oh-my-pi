@@ -642,10 +642,10 @@ export class SecurityCoordinator {
 						runtimeMs: Math.max(0, this.#now().getTime() - new Date(startedAt).getTime()),
 						...(stats
 							? {
-								tokenUsage: { ...stats.tokens },
-								cost: stats.cost,
-								premiumRequests: stats.premiumRequests,
-							}
+									tokenUsage: { ...stats.tokens },
+									cost: stats.cost,
+									premiumRequests: stats.premiumRequests,
+								}
 							: {}),
 					};
 					await writeSecurityBundleToDirectory(plan.output.root, publishedBundle);

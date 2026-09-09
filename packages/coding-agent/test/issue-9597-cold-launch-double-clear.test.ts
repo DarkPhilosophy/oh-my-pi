@@ -136,6 +136,6 @@ describe("issue #9597 — cold-launch welcome duplication", () => {
 		const { resets, scrollBuffer, welcomeRows } = await coldLaunch(true, 20);
 		expect(resets).toBe(1);
 		expect(scrollBuffer).toContain("resume marker answer");
-		expect(welcomeRows).toBe(1);
+		expect(welcomeRows, scrollBuffer).toBe(1);
 	});
 });

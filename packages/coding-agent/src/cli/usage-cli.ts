@@ -496,9 +496,9 @@ export interface ProviderWindowStat {
 function meterForLimit(report: UsageReport, limit: UsageLimit): string | undefined {
 	if (report.provider !== "openai-codex") return undefined;
 	const tier = limit.scope.tier?.trim().toLowerCase();
-	if (tier) return tier;
-	const slug = limit.id.toLowerCase().split(":")[1];
-	return slug && slug !== "primary" && slug !== "secondary" ? slug : "chat";
+	if (!tier) return undefined;
+	const parts = limit.id.toLowerCase().split(":");
+	return parts.length === 3 && parts[0] === report.provider && parts[1] === tier ? tier : undefined;
 }
 
 /**
@@ -511,15 +511,17 @@ function meterForLimit(report: UsageReport, limit: UsageLimit): string | undefin
 export function computeProviderWindowStats(reports: UsageReport[]): ProviderWindowStat[] {
 	const buckets = new Map<string, { window: string; durationMs?: number; meter?: string; fractions: number[] }>();
 	for (const report of reports) {
+		const hasScopedMeters = report.limits.some(limit => meterForLimit(report, limit) !== undefined);
 		const accountMax = new Map<string, number>();
 		for (const limit of report.limits) {
-			if (limit.scope.tier !== undefined) continue;
+			const scopedMeter = meterForLimit(report, limit);
+			if (limit.scope.tier !== undefined && scopedMeter === undefined) continue;
 			const fraction = resolveUsedFraction(limit);
 			if (fraction === undefined) continue;
 			const durationMs = limit.window?.durationMs;
 			const windowKey =
 				durationMs !== undefined ? `d:${durationMs}` : (limit.scope.windowId ?? limit.window?.label ?? limit.label);
-			const meter = meterForLimit(report, limit);
+			const meter = scopedMeter ?? (hasScopedMeters && limit.scope.tier === undefined ? "chat" : undefined);
 			const key = meter === undefined ? windowKey : `m:${meter}\0${windowKey}`;
 			const previous = accountMax.get(key);
 			if (previous === undefined || fraction > previous) accountMax.set(key, fraction);

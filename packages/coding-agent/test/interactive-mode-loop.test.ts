@@ -366,7 +366,7 @@ describe("InteractiveMode loop auto-submit", () => {
 		// warn while the iteration still submitted without resetting.
 		it("disables a reset loop when vibe is enabled while the condition is in flight", async () => {
 			vi.useFakeTimers();
-			settings.set("loop.mode", "reset");
+			session.settings.set("loop.mode", "reset");
 			idleSession();
 			const pending = Promise.withResolvers<LoopConditionVerdict>();
 			vi.spyOn(loopCondition, "evaluateLoopCondition").mockImplementation(async () => await pending.promise);

@@ -1371,7 +1371,6 @@ export class VibeSessionRegistry {
 			parentTelemetry: session.getTelemetry?.(),
 			parentEvalSessionId: session.getEvalSessionId?.() ?? undefined,
 			parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,
-			advisorScope: session.getAdvisorScope?.(),
 			parentServiceTier: session.getServiceTierByFamily ? (session.getServiceTierByFamily() ?? null) : undefined,
 			keepAlive: true,
 		};

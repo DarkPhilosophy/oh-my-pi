@@ -194,7 +194,6 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		requestRender: vi.fn(),
 		requestLiveRender: vi.fn(),
 		requestComponentRender: vi.fn(),
-		requestLiveRender: vi.fn(),
 		setFocus: vi.fn(),
 		hasTransientProviderHistory: () => false,
 		terminal: { setProgress: vi.fn() },

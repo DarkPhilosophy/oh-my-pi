@@ -13,6 +13,9 @@
 ### Fixed
 
 - Applied account masking consistently to text-mode and ACP `/usage` output, including reset-credit labels.
+- Hosted sessions use their own settings and finish graceful teardown before disconnecting.
+- Advisor failures caused by malformed messages no longer leave catch-up waiting blocked.
+- CLI usage totals retain independent Spark capacity alongside shared chat quotas.
 
 ### Changed
 

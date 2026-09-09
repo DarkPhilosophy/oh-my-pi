@@ -753,7 +753,7 @@ function createStubInteractiveModeContextForUiHelpers(session: AgentSession) {
 
 	const ctx = {
 		editor,
-		ui: { requestRender, requestComponentRender, terminal: { columns: 80 } },
+		ui: { requestRender, requestComponentRender: vi.fn(), terminal: { columns: 80 } },
 		pendingMessagesContainer,
 		session,
 		viewSession: session,

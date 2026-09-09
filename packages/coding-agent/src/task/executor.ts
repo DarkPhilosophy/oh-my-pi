@@ -92,6 +92,7 @@ import {
 	type YieldItem,
 } from "./types";
 import { arrayValuedLabels, assembleYieldResult } from "./yield-assembly";
+import type { AdvisorScope } from "../session/session-advisors";
 
 export type { YieldItem } from "./types";
 
@@ -528,6 +529,8 @@ export interface ExecutorOptions {
 	 * artifacts directory (no per-subagent subdir).
 	 */
 	parentArtifactManager?: ArtifactManager;
+	/** Parent runtime advisor veto inherited by spawned and revived sessions. */
+	advisorScope?: AdvisorScope;
 	parentHindsightSessionState?: HindsightSessionState;
 	parentMnemopiSessionState?: MnemopiSessionState;
 	/** Parent agent's eval executor session id. Subagents reuse it so eval state is shared. */
@@ -3491,6 +3494,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				modelRegistry,
 				getApiKey: options.getApiKey,
 				settings: subagentSettings,
+				advisorScope: options.advisorScope,
 				model,
 				modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,
 				modelPatternAuthFallback:

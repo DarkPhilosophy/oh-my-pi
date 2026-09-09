@@ -268,7 +268,11 @@ export class Composer implements TerminalFrameProvider {
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) {
 			this.#viewportTranscript = undefined;
-			return this.#planWithSegments(roots.map(root => ({ component: root, rows: root.render(width) })));
+			// Bootstrap chrome is mutable and must not be borrowed into native history.
+			return this.#planWithSegments(
+				roots.map(root => ({ component: root, rows: root.render(width) })),
+				0,
+			);
 		}
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
 		const preChunks = roots.slice(0, transcriptIndex).map(root => ({ component: root, rows: root.render(width) }));
@@ -311,9 +315,13 @@ export class Composer implements TerminalFrameProvider {
 	}
 
 	/** Publish component ownership for every row in the complete logical frame. */
-	#planWithSegments(chunks: readonly { component: Component; rows: readonly string[] }[]): {
+	#planWithSegments(
+		chunks: readonly { component: Component; rows: readonly string[] }[],
+		borrowableRows?: number,
+	): {
 		viewport: string[];
 		segments: TerminalFrameSegment[];
+		borrowableRows?: number;
 	} {
 		const viewport: string[] = [];
 		const segments: TerminalFrameSegment[] = [];
@@ -321,7 +329,7 @@ export class Composer implements TerminalFrameProvider {
 			segments.push({ component: chunk.component, start: viewport.length, rowCount: chunk.rows.length });
 			viewport.push(...chunk.rows);
 		}
-		return { viewport, segments };
+		return { viewport, segments, borrowableRows };
 	}
 
 	onViewportBorrowed(rows: number): void {

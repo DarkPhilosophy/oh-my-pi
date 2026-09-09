@@ -345,7 +345,6 @@ export interface PromptOptions {
 	 *  AgentSession.sendUserMessage's `deliverAs: "aside"`). */
 	streamingBehavior?: "steer" | "followUp" | "aside";
 	/** Called when a streaming prompt is queued or coalesced. */
-	onQueued?: (text: string, imageCount: number, replacedText?: string) => void;
 	/** Optional tool choice override for the next LLM call. */
 	toolChoice?: ToolChoice;
 	/** Send as a developer/system message instead of user. */
@@ -485,7 +484,7 @@ export interface ResetSessionContextResult {
 export type RestoredQueuedMessage = { text: string; images?: ImageContent[] };
 
 /** Queue behavior while streaming. */
-export type QueueMode = "one-at-a-time" | "coalescing";
+export type QueueMode = "all" | "one-at-a-time" | "coalescing";
 
 /**
  * Queue draining at the agent core. "coalescing" merges rapid consecutive
