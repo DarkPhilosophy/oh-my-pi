@@ -36,6 +36,7 @@
 ### Added
 
 - Added opt-in experimental notes-backed context windows with persistent branch-local notes, searchable original session history, retained latest user requests, and a model-callable rollover tool, including in Code Mode.
+- Added Model Hub controls for editing thinking levels on concrete retry fallback rows.
 
 ## [18.1.15] - 2026-09-08
 
