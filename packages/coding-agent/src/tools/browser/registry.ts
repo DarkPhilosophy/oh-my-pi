@@ -92,8 +92,13 @@ function browserKey(kind: BrowserKind): string {
 			return `connected:${kind.cdpUrl}`;
 		case "relay":
 			return `relay:${kind.cdpUrl}`;
-		case "firefox-relay":
-			return `firefox-relay:${kind.webSocketUrl}`;
+		case "firefox-relay": {
+			const endpoint = new URL(kind.webSocketUrl);
+			// Share the loopback listener without rewriting the connection URL
+			// (notably the hostname used for TLS certificate validation).
+			if (endpoint.hostname === "localhost") endpoint.hostname = "127.0.0.1";
+			return `firefox-relay:${endpoint.href.replace(/\/$/, "")}`;
+		}
 		case "cmux":
 			return `cmux:${kind.socketPath}`;
 	}

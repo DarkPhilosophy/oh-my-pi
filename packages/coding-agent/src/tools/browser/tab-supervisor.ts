@@ -1772,15 +1772,14 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 	// must not restart the recycle's init budget.
 	const startedAt = performance.now();
 	const oldWorker = tab.worker;
-	await terminateWorker(oldWorker, tab.kindTag === "firefox-relay");
-	const browserWSEndpoint =
-		"webSocketUrl" in tab.browser ? tab.browser.webSocketUrl : tab.browser.browser.wsEndpoint();
+	if (!("browser" in tab.browser)) throw new ToolError("Only CDP tab workers can be recycled");
+	await terminateWorker(oldWorker);
+	const browserWSEndpoint = tab.browser.browser.wsEndpoint();
 	if (!browserWSEndpoint) throw new ToolError("Browser websocket endpoint is unavailable");
 	const payload: WorkerInitPayload = {
 		mode: "attach",
 		browserWSEndpoint,
 		safeDir: getPuppeteerDir(),
-		protocol: tab.kindTag === "firefox-relay" ? "webDriverBiDi" : undefined,
 		targetId: tab.targetId,
 		dialogs: tab.dialogPolicy,
 		// Unblock a wedged page (open JS dialog, hung navigation) before adopting it —
@@ -1792,9 +1791,9 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 	let worker = await spawnTabWorker();
 	try {
 		const info = await initializeTabWorker(worker, payload, timeoutMs, startedAt);
-		publishRecycledWorker(tab, oldWorker, worker, info);
+		publishRecycledWorker(tab, worker, info);
 	} catch (error) {
-		await terminateWorker(worker, tab.kindTag === "firefox-relay");
+		await terminateWorker(worker);
 		// The recycle's budget is exhausted: the run caller already timed out, so a
 		// retried init can't beat its deadline — fail fast and let the caller
 		// force-kill the tab instead of spending the phase floors' excess.
@@ -1804,9 +1803,9 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 		worker = await spawnInlineWorker();
 		try {
 			const info = await initializeTabWorker(worker, payload, timeoutMs, startedAt);
-			publishRecycledWorker(tab, oldWorker, worker, info);
+			publishRecycledWorker(tab, worker, info);
 		} catch (inlineError) {
-			await terminateWorker(worker, tab.kindTag === "firefox-relay");
+			await terminateWorker(worker);
 			const finalError = new ToolError(
 				`Failed to recycle timed-out browser tab worker (inline fallback also failed): ${inlineError instanceof Error ? inlineError.message : String(inlineError)}`,
 			);
@@ -1816,33 +1815,11 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 	}
 }
 
-export function publishRecycledWorker(
-	tab: WorkerTabSession,
-	oldWorker: WorkerHandle,
-	worker: WorkerHandle,
-	info: ReadyInfo,
-): void {
-	const reservationChain = firefoxOperationChains.get(oldWorker);
-	if (reservationChain) {
-		firefoxOperationChains.set(worker, reservationChain);
-		void reservationChain.finally(() => {
-			if (firefoxOperationChains.get(worker) === reservationChain) firefoxOperationChains.delete(worker);
-		});
-	}
-	const previousTargetId = tab.targetId;
-	for (const alias of tabs.values()) {
-		if (alias.backend !== "worker" || alias.worker !== oldWorker) continue;
-		alias.worker = worker;
-		alias.state = "alive";
-		// A shared Firefox browsing context is represented by multiple aliases;
-		// refresh metadata for aliases that point at the recycled context, while
-		// leaving unrelated targets on the same worker untouched.
-		if (alias.targetId === previousTargetId) {
-			alias.info = info;
-			alias.targetId = info.targetId;
-		}
-	}
-	firefoxSharedTabs.set(tab);
+function publishRecycledWorker(tab: WorkerTabSession, worker: WorkerHandle, info: ReadyInfo): void {
+	tab.worker = worker;
+	tab.state = "alive";
+	tab.info = info;
+	tab.targetId = info.targetId;
 	worker.onMessage(msg => handleTabMessage(tab, msg));
 }
 

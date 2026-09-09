@@ -1,15 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import type { Page } from "puppeteer-core";
-import type { FirefoxRelayBrowserHandle } from "../../src/tools/browser/registry";
+import { acquireBrowser, releaseBrowser, type FirefoxRelayBrowserHandle } from "../../src/tools/browser/registry";
 import type { WorkerInbound, WorkerOutbound } from "../../src/tools/browser/tab-protocol";
 import { DEFAULT_FIREFOX_BIDI_URL, validateFirefoxWebSocketUrl } from "../../src/tools/browser/relay/firefox";
 import {
 	acquireTab,
 	FirefoxSharedTabRegistry,
 	forceKillTab,
+	getFirefoxSharedTabsForTest,
 	getTabsMapForTest,
 	handleTabMessage,
-	publishRecycledWorker,
 	releaseTab,
 	runInTab,
 	selectFirefoxWorkerTab,
@@ -47,12 +47,19 @@ function createFirefoxTab(name: string, browser: FirefoxRelayBrowserHandle, work
 	} as unknown as WorkerTabSession;
 }
 describe("Firefox WebDriver BiDi relay", () => {
-	it("queues a sibling Firefox open until the active run releases the worker", async () => {
+	it("serializes sibling aliases using localhost and its IPv4 loopback endpoint", async () => {
 		const listeners = new Set<(message: WorkerOutbound) => void>();
 		const started = Promise.withResolvers<void>();
 		const order: string[] = [];
 		let runMessage: Extract<WorkerInbound, { type: "run" }> | undefined;
-		const browser = createFirefoxHandle("ws://127.0.0.1:9337/session");
+		const browser = (await acquireBrowser(
+			{ kind: "firefox-relay", webSocketUrl: "ws://127.0.0.1:9337/session" },
+			{ cwd: "/tmp" },
+		)) as FirefoxRelayBrowserHandle;
+		const siblingBrowser = await acquireBrowser(
+			{ kind: "firefox-relay", webSocketUrl: "ws://localhost:9337/session" },
+			{ cwd: "/tmp" },
+		);
 		browser.refCount = 1;
 		const info = { url: "about:blank", viewport: { width: 1280, height: 720 }, targetId: "shared" };
 		const worker: WorkerHandle = {
@@ -83,7 +90,8 @@ describe("Firefox WebDriver BiDi relay", () => {
 		const first = createFirefoxTab("active-open", browser, worker);
 		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
 		tabs.set(first.name, first);
-		publishRecycledWorker(first, worker, worker, info);
+		worker.onMessage(message => handleTabMessage(first, message));
+		getFirefoxSharedTabsForTest().set(first);
 		try {
 			const running = runInTab(first.name, {
 				code: "return 1",
@@ -92,7 +100,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 			});
 			void running.catch(() => {});
 			await started.promise;
-			const opening = acquireTab("waiting-open", browser, { timeoutMs: 1000 });
+			const opening = acquireTab("waiting-open", siblingBrowser, { timeoutMs: 1000 });
 			void opening.catch(() => {});
 			await Bun.sleep(0);
 			expect(order).toEqual(["run"]);
@@ -109,6 +117,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 			expect(order).toEqual(["run", "finished", "select"]);
 		} finally {
 			await forceKillTab(first.name, "test cleanup", { sharedFirefoxWorker: true });
+			await releaseBrowser(siblingBrowser, { kill: false });
 		}
 	});
 
@@ -886,48 +895,6 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(rejectedAfterAbort).toBe(true);
 		expect(tabs.has(first.name)).toBe(false);
 		expect(tabs.has(second.name)).toBe(false);
-	});
-
-	it("repoints every Firefox alias when its shared worker is recycled", async () => {
-		const oldWorker = {
-			mode: "worker",
-			send: () => undefined,
-			onMessage: () => () => undefined,
-			onError: () => () => undefined,
-			terminate: async () => undefined,
-		} satisfies WorkerHandle;
-		const replacement = {
-			...oldWorker,
-			onMessage: () => () => undefined,
-		} satisfies WorkerHandle;
-		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
-		endpoint.refCount = 2;
-		const first = createFirefoxTab("firefox-recycle-first", endpoint, oldWorker);
-		const second = createFirefoxTab("firefox-recycle-second", endpoint, oldWorker);
-		first.targetId = "shared-context";
-		second.targetId = "shared-context";
-		const unrelated = createFirefoxTab("firefox-recycle-unrelated", endpoint, oldWorker);
-		unrelated.targetId = "other-context";
-		const unrelatedInfo = unrelated.info;
-		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
-		tabs.set(first.name, first);
-		tabs.set(second.name, second);
-		tabs.set(unrelated.name, unrelated);
-		const recycledInfo = {
-			url: "https://updated.example/recycled",
-			title: "Updated after recycle",
-			viewport: { width: 1280, height: 720 },
-			targetId: "replacement-context",
-		};
-
-		publishRecycledWorker(first, oldWorker, replacement, recycledInfo);
-
-		expect(tabs.get(first.name)?.worker).toBe(replacement);
-		expect(tabs.get(second.name)?.worker).toBe(replacement);
-		expect(first.info).toBe(recycledInfo);
-		expect(second.info).toBe(recycledInfo);
-		expect(unrelated.info).toBe(unrelatedInfo);
-		await forceKillTab(first.name, "test cleanup", { sharedFirefoxWorker: true });
 	});
 
 	it("gracefully closes an inline Firefox worker before invalidating every alias", async () => {
