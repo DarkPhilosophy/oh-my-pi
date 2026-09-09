@@ -913,7 +913,7 @@ async function collectBiDiObservationEntries(
 	core: WorkerCore,
 	page: Page,
 	snapshot: string,
-	options: { viewportOnly: boolean; includeAll: boolean },
+	options: { viewportOnly: boolean; includeAll: boolean; refOwner: string },
 ): Promise<ObservationEntry[]> {
 	const entries: ObservationEntry[] = [];
 	for (const node of parseAriaSnapshotLines(snapshot)) {
@@ -928,7 +928,7 @@ async function collectBiDiObservationEntries(
 			});
 			continue;
 		}
-		const handle = await resolveAriaRefHandle(page, node.ref);
+		const handle = await resolveAriaRefHandle(page, node.ref, options.refOwner);
 		if (!handle) continue;
 		let inViewport = true;
 		if (options.viewportOnly) {
@@ -1257,6 +1257,7 @@ export class WorkerCore {
 	#targetId?: string;
 	#elementCaches = new Map<string, { handles: Map<number, ElementHandle>; counter: number; targetId?: string }>();
 	#activeElementCacheKey = "default";
+	readonly #ariaRefOwnerPrefix = crypto.randomUUID();
 	#active: ActiveRun | null = null;
 	#cleanupRequired = false;
 	#activeSelection?: { id: string; ac: AbortController };
@@ -1276,6 +1277,10 @@ export class WorkerCore {
 	#initializing?: Promise<void>;
 	#closing = false;
 	#closed = false;
+
+	get #ariaRefOwner(): string {
+		return `${this.#ariaRefOwnerPrefix}:${this.#activeElementCacheKey}`;
+	}
 
 	constructor(transport: Transport, isolated: boolean) {
 		this.#transport = transport;
@@ -2071,7 +2076,7 @@ export class WorkerCore {
 								);
 						}
 						try {
-							return await untilAborted(sig, () => captureAriaSnapshot(page, root, opts));
+							return await untilAborted(sig, () => captureAriaSnapshot(page, root, opts, this.#ariaRefOwner));
 						} finally {
 							await root?.dispose().catch(() => undefined);
 						}
@@ -2286,8 +2291,13 @@ export class WorkerCore {
 		const viewportOnly = options.viewportOnly ?? false;
 		let entries: ObservationEntry[];
 		if (this.#webDriverBiDi) {
-			const ariaSnapshot = await untilAborted(options.signal, () => captureAriaSnapshot(page, null));
-			entries = await collectBiDiObservationEntries(this, page, ariaSnapshot, { includeAll, viewportOnly });
+			const refOwner = this.#ariaRefOwner;
+			const ariaSnapshot = await untilAborted(options.signal, () => captureAriaSnapshot(page, null, {}, refOwner));
+			entries = await collectBiDiObservationEntries(this, page, ariaSnapshot, {
+				includeAll,
+				viewportOnly,
+				refOwner,
+			});
 		} else {
 			const snapshot = (await untilAborted(options.signal, () =>
 				page.accessibility.snapshot({ interestingOnly: !includeAll }),
@@ -2587,7 +2597,7 @@ export class WorkerCore {
 
 	async #resolveAriaRef(id: string): Promise<ElementHandle> {
 		const ref = parseAriaRefSelector(id) ?? id.trim();
-		const handle = await resolveAriaRefHandle(this.#requirePage(), ref);
+		const handle = await resolveAriaRefHandle(this.#requirePage(), ref, this.#ariaRefOwner);
 		if (!handle) {
 			throw new ToolError(
 				`Unknown ARIA ref ${JSON.stringify(ref)}. Run tab.ariaSnapshot() to refresh refs (they renumber each snapshot).`,
