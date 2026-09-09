@@ -582,11 +582,10 @@ async function runInteractiveMode(
 	// Consume failures immediately, but defer any banner until the transcript is stable.
 	const checkedVersionPromise = versionCheckPromise.catch(() => undefined);
 
-	// Resuming replaces the startup frame with the authoritative transcript.
-	// Reset ownership before replay so subsequent redraws cannot retain startup
-	// rows as part of the restored session.
+	// Startup already cleared native history. Installing the restored transcript
+	// refreshes its ownership ledger without a second destructive terminal reset.
 	await logger.time("InteractiveMode.renderInitialMessages", () =>
-		mode.renderInitialMessages({ preserveExistingChat: true, clearTerminalHistory: resuming }),
+		mode.renderInitialMessages({ preserveExistingChat: true }),
 	);
 	// A resolved version check must not insert its banner into a partial transcript.
 	checkedVersionPromise.then(newVersion => {
