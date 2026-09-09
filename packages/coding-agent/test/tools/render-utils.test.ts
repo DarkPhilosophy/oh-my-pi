@@ -15,6 +15,7 @@ import {
 	formatFeedModelBadge,
 	formatScreenshot,
 	sanitizeDisplayLines,
+	shortenEmbeddedPaths,
 	shortenPath,
 	truncateDiffByHunk,
 } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
@@ -24,6 +25,23 @@ import {
 	setKeybindings,
 	type KeybindingsManager as TuiKeybindingsManager,
 } from "@oh-my-pi/pi-tui";
+
+describe("embedded home path normalization", () => {
+	it("recognizes mixed Windows separators without rewriting unrelated prefixes", () => {
+		const home = String.raw`C:\Users\Alice`;
+		expect(shortenEmbeddedPaths("type C:/Users/Alice/private.txt", home)).toBe("type ~/private.txt");
+		expect(shortenEmbeddedPaths(String.raw`type c:\users\ALICE/private.txt`, home)).toBe("type ~/private.txt");
+		expect(shortenEmbeddedPaths("type D:/backup/C:/Users/Alice/private.txt", home)).toBe(
+			"type D:/backup/C:/Users/Alice/private.txt",
+		);
+	});
+
+	it("recognizes slash-form UNC home paths", () => {
+		expect(shortenEmbeddedPaths("type //server/share/alice/private.txt", String.raw`\\SERVER\share\Alice`)).toBe(
+			"type ~/private.txt",
+		);
+	});
+});
 
 describe("feed model badges", () => {
 	let uiTheme: Theme;

@@ -806,15 +806,23 @@ export function shortenEmbeddedPaths(text: string, homeDir?: string): string {
 	if (!text) return text;
 	const home = homeDir ?? os.homedir();
 	if (!home) return text;
-	const escapedHome = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const flags = /^[A-Za-z]:[\\/]|^\\\\/.test(home) ? "gi" : "g";
+	const windowsHome = /^[A-Za-z]:[\\/]|^\\\\/.test(home);
+	const escapedHome = windowsHome
+		? home
+				.split(/[\\/]/)
+				.map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+				.join("[\\\\/]")
+		: home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const flags = windowsHome ? "gi" : "g";
 	const tokenBoundary = String.raw`[\s"'\x60([{=(:,;<>]`;
 	return text.replace(new RegExp(`(^|${tokenBoundary})${escapedHome}(?=$|[/\\\\\\s"'\\]),;:\\x60])`, flags), "$1~");
 }
 
 /** Shorten filesystem and command arguments without rewriting literal search patterns. */
 export function shortenToolArgumentPaths(text: string, key: string | undefined): string {
-	return key === "path" || key === "file_path" || key === "command" ? shortenEmbeddedPaths(text) : text;
+	return key === "path" || key === "file_path" || key === "command" || key === "task" || key === "prompt"
+		? shortenEmbeddedPaths(text)
+		: text;
 }
 
 export function formatToolWorkingDirectory(workdir: string | undefined, projectDir: string): string | undefined {
