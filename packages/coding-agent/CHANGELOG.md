@@ -36,6 +36,7 @@
 - Read error and preview rendering now sanitizes tabs and Windows-style CRLF (e.g. ssh host-key failures, tab-indented fetched content) so raw output can no longer tear the result frame.
 ### Added
 
+- Added connect-only Browser Relay support for Firefox-family browsers through local WebDriver BiDi endpoints.
 - Added opt-in experimental notes-backed context windows with persistent branch-local notes, searchable original session history, retained latest user requests, and a model-callable rollover tool, including in Code Mode.
 - Added Model Hub controls for editing thinking levels on concrete retry fallback rows.
 

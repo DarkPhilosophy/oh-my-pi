@@ -261,10 +261,10 @@ async function openBrowser(
 				cwd: session.cwd,
 				viewport: params.viewport
 					? {
-						width: params.viewport.width,
-						height: params.viewport.height,
-						deviceScaleFactor: params.viewport.scale,
-					}
+							width: params.viewport.width,
+							height: params.viewport.height,
+							deviceScaleFactor: params.viewport.scale,
+						}
 					: undefined,
 				appArgs: params.app?.args,
 				signal: openSignal,
@@ -288,10 +288,10 @@ async function openBrowser(
 					waitUntil: params.wait_until,
 					viewport: params.viewport
 						? {
-							width: params.viewport.width,
-							height: params.viewport.height,
-							deviceScaleFactor: params.viewport.scale,
-						}
+								width: params.viewport.width,
+								height: params.viewport.height,
+								deviceScaleFactor: params.viewport.scale,
+							}
 						: undefined,
 					target: params.app?.target,
 					timeoutMs,
@@ -386,7 +386,6 @@ async function runBrowser(
 		details.browser = tab.browser.kind.kind;
 		details.url = tab.info.url;
 	}
-
 	const { displays, returnValue, screenshots } = await runInTab(name, {
 		code,
 		timeoutMs,
@@ -431,7 +430,7 @@ async function saveBrowserOutputArtifact(session: ToolSession, fullText: string)
 
 function describeBrowser(handle: BrowserHandle): string {
 	if ("client" in handle) return `cmux browser (${handle.kind.surface ?? "split"})`;
-	if ("webSocketUrl" in handle) return `Firefox relay (${handle.webSocketUrl})`;
+	if ("webSocketUrl" in handle) return "Firefox relay";
 	switch (handle.kind.kind) {
 		case "headless":
 			return `headless browser (${handle.kind.headless ? "hidden" : "visible"}${handle.sharedDaemon ? ", shared" : ""})`;
@@ -455,7 +454,7 @@ function describeKind(kind: BrowserKind): string {
 		case "relay":
 			return `relay:${kind.cdpUrl}`;
 		case "firefox-relay":
-			return `firefox-relay:${kind.webSocketUrl}`;
+			return "firefox-relay";
 		case "cmux":
 			return `cmux:${kind.surface ?? "split"}`;
 	}

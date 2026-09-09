@@ -555,16 +555,26 @@ interface RunPageScope {
  * Puppeteer's Page wraps an internal emitter, so `removeAllListeners("request")`
  * would also remove its forwarding listener; the facade removes only user handlers.
  */
-function createRunPageScope(page: Page): RunPageScope {
+function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPageScope {
 	const requestHandlers: unknown[] = [];
 	const on = page.on;
 	const off = page.off;
 	const once = page.once;
 	const removeAllListeners = page.removeAllListeners;
+	const goto = page.goto;
+	const reload = page.reload;
+	const goBack = page.goBack;
+	const goForward = page.goForward;
+	const setContent = page.setContent;
 	const onDescriptor = Object.getOwnPropertyDescriptor(page, "on");
 	const offDescriptor = Object.getOwnPropertyDescriptor(page, "off");
 	const onceDescriptor = Object.getOwnPropertyDescriptor(page, "once");
 	const removeAllDescriptor = Object.getOwnPropertyDescriptor(page, "removeAllListeners");
+	const gotoDescriptor = Object.getOwnPropertyDescriptor(page, "goto");
+	const reloadDescriptor = Object.getOwnPropertyDescriptor(page, "reload");
+	const goBackDescriptor = Object.getOwnPropertyDescriptor(page, "goBack");
+	const goForwardDescriptor = Object.getOwnPropertyDescriptor(page, "goForward");
+	const setContentDescriptor = Object.getOwnPropertyDescriptor(page, "setContent");
 
 	Object.defineProperties(page, {
 		on: {
@@ -610,12 +620,40 @@ function createRunPageScope(page: Page): RunPageScope {
 		removeAllListeners: {
 			configurable: true,
 			value: (type?: unknown): Page => {
-				Reflect.apply(removeAllListeners, page, [type]);
-				if (type === undefined || type === "request") requestHandlers.length = 0;
+				if (type === undefined || type === "request") {
+					for (const handler of requestHandlers) Reflect.apply(off, page, ["request", handler]);
+					requestHandlers.length = 0;
+				} else Reflect.apply(removeAllListeners, page, [type]);
 				return page;
 			},
 		},
+		goto: {
+			configurable: true,
+			value: async (...args: Parameters<Page["goto"]>) => {
+				try {
+					return await Reflect.apply(goto, page, args);
+				} catch (error) {
+					if (error instanceof Error && error.name === "TimeoutError") onNavigationTimeout?.();
+					throw error;
+				}
+			},
+		},
 	});
+	for (const [name, method] of [
+		["reload", reload],
+		["goBack", goBack],
+		["goForward", goForward],
+		["setContent", setContent],
+	] as const) {
+		Object.defineProperty(page, name, {
+			configurable: true,
+			value: (...args: unknown[]) =>
+				Reflect.apply(method, page, args).catch((error: unknown) => {
+					if (error instanceof Error && error.name === "TimeoutError") onNavigationTimeout?.();
+					throw error;
+				}),
+		});
+	}
 
 	return {
 		page,
@@ -628,6 +666,16 @@ function createRunPageScope(page: Page): RunPageScope {
 			else Reflect.deleteProperty(page, "once");
 			if (removeAllDescriptor) Object.defineProperty(page, "removeAllListeners", removeAllDescriptor);
 			else Reflect.deleteProperty(page, "removeAllListeners");
+			if (gotoDescriptor) Object.defineProperty(page, "goto", gotoDescriptor);
+			else Reflect.deleteProperty(page, "goto");
+			if (reloadDescriptor) Object.defineProperty(page, "reload", reloadDescriptor);
+			else Reflect.deleteProperty(page, "reload");
+			if (goBackDescriptor) Object.defineProperty(page, "goBack", goBackDescriptor);
+			else Reflect.deleteProperty(page, "goBack");
+			if (goForwardDescriptor) Object.defineProperty(page, "goForward", goForwardDescriptor);
+			else Reflect.deleteProperty(page, "goForward");
+			if (setContentDescriptor) Object.defineProperty(page, "setContent", setContentDescriptor);
+			else Reflect.deleteProperty(page, "setContent");
 			for (const handler of requestHandlers) Reflect.apply(off, page, ["request", handler]);
 			requestHandlers.length = 0;
 			try {
@@ -870,7 +918,7 @@ async function collectBiDiObservationEntries(
 	core: WorkerCore,
 	page: Page,
 	snapshot: string,
-	options: { viewportOnly: boolean; includeAll: boolean },
+	options: { viewportOnly: boolean; includeAll: boolean; refOwner: string },
 ): Promise<ObservationEntry[]> {
 	const entries: ObservationEntry[] = [];
 	for (const node of parseAriaSnapshotLines(snapshot)) {
@@ -885,7 +933,7 @@ async function collectBiDiObservationEntries(
 			});
 			continue;
 		}
-		const handle = await resolveAriaRefHandle(page, node.ref);
+		const handle = await resolveAriaRefHandle(page, node.ref, options.refOwner);
 		if (!handle) continue;
 		let inViewport = true;
 		if (options.viewportOnly) {
@@ -1214,6 +1262,7 @@ export class WorkerCore {
 	#targetId?: string;
 	#elementCaches = new Map<string, { handles: Map<number, ElementHandle>; counter: number; targetId?: string }>();
 	#activeElementCacheKey = "default";
+	readonly #ariaRefOwnerPrefix = crypto.randomUUID();
 	#active: ActiveRun | null = null;
 	#cleanupRequired = false;
 	#activeSelection?: { id: string; ac: AbortController };
@@ -1230,6 +1279,13 @@ export class WorkerCore {
 	#dialogObserver?: (dialog: Dialog) => void;
 	#frameNavigationObserver?: (frame: Frame) => void;
 	#openDialog?: OpenDialogInfo;
+	#initializing?: Promise<void>;
+	#closing = false;
+	#closed = false;
+
+	get #ariaRefOwner(): string {
+		return `${this.#ariaRefOwnerPrefix}:${this.#activeElementCacheKey}`;
+	}
 
 	constructor(transport: Transport, isolated: boolean) {
 		this.#transport = transport;
@@ -1315,9 +1371,12 @@ export class WorkerCore {
 
 	async #handleMessage(msg: WorkerInbound): Promise<void> {
 		switch (msg.type) {
-			case "init":
-				await this.#init(msg.payload);
+			case "init": {
+				const initializing = this.#init(msg.payload);
+				this.#initializing = initializing;
+				await initializing;
 				return;
+			}
 			case "run":
 				await this.#run(msg);
 				return;
@@ -1351,6 +1410,10 @@ export class WorkerCore {
 				this.#deliverToolReply(msg.id, msg.reply);
 				return;
 			case "close":
+				this.#closing = true;
+				await this.#browser?.disconnect().catch(() => undefined);
+				this.#browser = undefined;
+				await this.#initializing?.catch(() => undefined);
 				await this.#close();
 				return;
 		}
@@ -1368,7 +1431,11 @@ export class WorkerCore {
 				defaultViewport: null,
 				protocolTimeout: BROWSER_PROTOCOL_TIMEOUT_MS,
 			});
-
+			if (this.#closing || this.#closed) {
+				await this.#browser.disconnect().catch(() => undefined);
+				this.#browser = undefined;
+				return;
+			}
 			// Realm setup is done: puppeteer loaded and browser connected. Sent before
 			// page acquisition so the supervisor's cold-start budget bounds only the
 			// realm setup; page creation and the first navigation run under the ready
@@ -1411,6 +1478,9 @@ export class WorkerCore {
 					timeout: payload.timeoutMs,
 				});
 			}
+			// Firefox's initial about:home page is privileged; apply an explicitly
+			// requested viewport after navigation reaches the requested document.
+			if (this.#webDriverBiDi && payload.viewport) await applyViewport(this.#page, payload.viewport);
 			this.#targetId = await targetIdForPage(this.#page, !this.#webDriverBiDi);
 			this.#transport.send({ type: "ready", info: await this.#currentReadyInfo() });
 		} catch (error) {
@@ -1431,9 +1501,9 @@ export class WorkerCore {
 			if (!this.#webDriverBiDi || !this.#browser) {
 				throw new ToolError("Tab selection is available only for Firefox WebDriver BiDi");
 			}
-			if (msg.url) this.#clearElementCache(msg.name);
 			await this.#selectBiDiPage(msg.name, msg.targetId, msg.targetMatcher, msg.dialogs);
 			throwIfAborted(ac.signal);
+			if (msg.url) this.#clearElementCache(msg.name);
 			if (msg.url) {
 				await this.#requirePage().goto(msg.url, {
 					waitUntil: msg.waitUntil ?? "load",
@@ -1441,9 +1511,15 @@ export class WorkerCore {
 				});
 			}
 			throwIfAborted(ac.signal);
+			if (msg.viewport) await applyViewport(this.#requirePage(), msg.viewport);
+			throwIfAborted(ac.signal);
 			this.#transport.send({ type: "selected", id: msg.id, info: await this.#currentReadyInfo() });
 		} catch (error) {
-			this.#transport.send({ type: "select-failed", id: msg.id, error: errorPayload(error) });
+			const reported =
+				error instanceof Error && error.name === "TimeoutError"
+					? new NavigationCleanupError(error.message, { cause: error })
+					: error;
+			this.#transport.send({ type: "select-failed", id: msg.id, error: errorPayload(reported) });
 		} finally {
 			if (this.#activeSelection?.id === msg.id) this.#activeSelection = undefined;
 		}
@@ -1646,7 +1722,10 @@ export class WorkerCore {
 				await this.#selectBiDiPage(msg.name, msg.targetId, msg.targetMatcher, msg.dialogs);
 			}
 			throwIfAborted(signal);
-			runPage = createRunPageScope(this.#requirePage());
+			runPage = createRunPageScope(
+				this.#requirePage(),
+				this.#webDriverBiDi ? () => (this.#cleanupRequired = true) : undefined,
+			);
 			const browser = this.#requireBrowser();
 			const tabApi = this.#createTabApi(msg.name, msg.timeoutMs, signal, msg.session, output, screenshots, active);
 			const runtime = this.#ensureRuntime(msg.name, msg.session);
@@ -1977,8 +2056,6 @@ export class WorkerCore {
 						);
 					} catch (err) {
 						if (err instanceof Error && err.name === "TimeoutError") {
-							// Abandon the hung navigation NOW — a still-pending load stalls every
-							// later op on this page and cascades into more opaque timeouts.
 							await this.#stopLoading();
 							if (this.#webDriverBiDi) this.#cleanupRequired = true;
 							const message = `tab.goto(${JSON.stringify(url)}) timed out after ${budgetBound}ms; pending navigation stopped — retry with a longer tool timeout or waitUntil:"domcontentloaded"`;
@@ -2004,7 +2081,7 @@ export class WorkerCore {
 								);
 						}
 						try {
-							return await untilAborted(sig, () => captureAriaSnapshot(page, root, opts));
+							return await untilAborted(sig, () => captureAriaSnapshot(page, root, opts, this.#ariaRefOwner));
 						} finally {
 							await root?.dispose().catch(() => undefined);
 						}
@@ -2219,8 +2296,13 @@ export class WorkerCore {
 		const viewportOnly = options.viewportOnly ?? false;
 		let entries: ObservationEntry[];
 		if (this.#webDriverBiDi) {
-			const ariaSnapshot = await untilAborted(options.signal, () => captureAriaSnapshot(page, null));
-			entries = await collectBiDiObservationEntries(this, page, ariaSnapshot, { includeAll, viewportOnly });
+			const refOwner = this.#ariaRefOwner;
+			const ariaSnapshot = await untilAborted(options.signal, () => captureAriaSnapshot(page, null, {}, refOwner));
+			entries = await collectBiDiObservationEntries(this, page, ariaSnapshot, {
+				includeAll,
+				viewportOnly,
+				refOwner,
+			});
 		} else {
 			const snapshot = (await untilAborted(options.signal, () =>
 				page.accessibility.snapshot({ interestingOnly: !includeAll }),
@@ -2520,7 +2602,7 @@ export class WorkerCore {
 
 	async #resolveAriaRef(id: string): Promise<ElementHandle> {
 		const ref = parseAriaRefSelector(id) ?? id.trim();
-		const handle = await resolveAriaRefHandle(this.#requirePage(), ref);
+		const handle = await resolveAriaRefHandle(this.#requirePage(), ref, this.#ariaRefOwner);
 		if (!handle) {
 			throw new ToolError(
 				`Unknown ARIA ref ${JSON.stringify(ref)}. Run tab.ariaSnapshot() to refresh refs (they renumber each snapshot).`,
@@ -2569,6 +2651,8 @@ export class WorkerCore {
 	}
 
 	async #close(): Promise<void> {
+		if (this.#closed) return;
+		this.#closed = true;
 		this.#unsub();
 		for (const runtime of this.#runtimes.values()) runtime.dispose();
 		this.#runtimes.clear();

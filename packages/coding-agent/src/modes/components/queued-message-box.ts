@@ -41,7 +41,6 @@ export interface QueuedMessageBoxOptions {
 	showTopBorder?: boolean;
 	/** Optional footer text inset into the bottom rule (e.g. the queue hint). */
 	footerText?: string;
-
 }
 
 export class QueuedMessageBox implements Component {
@@ -69,7 +68,6 @@ export class QueuedMessageBox implements Component {
 		this.#expanded = opts.expanded;
 		this.#showTopBorder = opts.showTopBorder ?? true;
 		this.#footerText = opts.footerText;
-
 	}
 
 	invalidate(): void {
@@ -78,7 +76,6 @@ export class QueuedMessageBox implements Component {
 	}
 
 	render(width: number): readonly string[] {
-
 		if (this.#cachedLines && this.#cachedWidth === width) return this.#cachedLines;
 		// Below this the frame has no room; fall back to plain indented rows so a
 		// very narrow terminal still shows something without breaking layout.

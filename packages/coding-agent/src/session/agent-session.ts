@@ -345,7 +345,6 @@ import {
 	isUserQueuedMessage,
 	queueChipText,
 	queuedImageContent,
-
 	toRestoredQueuedMessage,
 	withQueuedUserContent,
 } from "./queued-messages";

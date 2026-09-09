@@ -64,6 +64,8 @@ export type WorkerInitPayload =
 			protocol?: "webDriverBiDi";
 			targetId: string;
 			targetMatcher?: string;
+			/** Optional viewport requested for the initial Firefox WebDriver BiDi tab. */
+			viewport?: { width: number; height: number; deviceScaleFactor?: number };
 			dialogs?: "accept" | "dismiss";
 			url?: string;
 			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
@@ -94,6 +96,7 @@ export type WorkerInbound =
 			targetMatcher?: string;
 			url?: string;
 			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
+			viewport?: { width: number; height: number; deviceScaleFactor?: number };
 			timeoutMs: number;
 			dialogs?: "accept" | "dismiss";
 	  }
@@ -125,6 +128,7 @@ export interface RunResultOk {
 	displays: Array<TextContent | ImageContent>;
 	returnValue: unknown;
 	screenshots: ScreenshotResult[];
+	/** The run caught a cleanup failure; the backend must discard or recover its worker before reuse. */
 	recoverTab?: boolean;
 }
 

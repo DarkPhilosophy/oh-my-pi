@@ -107,7 +107,6 @@ describe("AgentSession queue coalescing", () => {
 		expect(steering).toEqual(["Line1\nLine2\nLine3"]);
 	});
 
-
 	it("merges consecutive plain follow-ups into one queued entry", async () => {
 		const target = await createSession([{ content: ["ok"] }]);
 		const followUp = await duringStream(target, async () => {
