@@ -316,6 +316,24 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
+	it("drops obsolete borrowed ownership when tools disappear without a history batch", () => {
+		const terminal = new CountingTerminal(30, 4);
+		const chrome = ["HUD one", "HUD two", "editor", "status"];
+		const provider = new Provider({
+			viewport: ["tool one", "tool two", "tool three", ...chrome],
+			borrowableRows: 3,
+			borrowedViewportRows: 0,
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		expect(provider.borrowed.at(-1)).toBe(3);
+		provider.plan = { viewport: chrome, borrowableRows: 0, borrowedViewportRows: 0 };
+		tui.requestRender(true);
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(chrome);
+		expect(provider.borrowed.at(-1)).toBe(0);
+		tui.stop();
+	});
+
 	it("does not borrow mutable anchored chrome when it exceeds terminal height", () => {
 		const terminal = new CountingTerminal(30, 2);
 		const provider = new Provider({

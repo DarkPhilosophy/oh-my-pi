@@ -2557,6 +2557,16 @@ export class TUI extends Container {
 					this.#providerLogicalCommitted = 0;
 				}
 			}
+			if (history === undefined && plan.borrowedViewportRows !== undefined) {
+				const retained = Math.max(
+					0,
+					Math.min(plan.borrowedViewportRows, this.#providerTransientRows.length, logicalViewport.length),
+				);
+				if (retained !== this.#providerTransientRows.length) {
+					this.#providerTransientRows = logicalViewport.slice(0, retained);
+					this.#providerLogicalCommitted = retained;
+				}
+			}
 			if (history === undefined && borrowOverflow > this.#providerLogicalCommitted) {
 				inferredHistory = logicalViewport.slice(this.#providerLogicalCommitted, borrowOverflow);
 				this.#providerTransientRows.push(...inferredHistory);
