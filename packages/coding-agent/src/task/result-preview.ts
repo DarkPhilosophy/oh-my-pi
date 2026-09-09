@@ -2,7 +2,7 @@ import { replaceTabs } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 
 /** Unwrap transport-only task results for existing transcript preview renderers. */
-export function formatTaskResultPreview(text: string): string {
+export function formatTaskResultPreview(text: string, includeStatus = true): string {
 	let body = text;
 	let abortReason: string | undefined;
 	let fullOutput: string | undefined;
@@ -30,6 +30,6 @@ export function formatTaskResultPreview(text: string): string {
 	}
 	if (fullOutput) body = `Full output: ${fullOutput}\n\n${body}`;
 	if (abortReason) body = `${abortReason}\n\n${body}`;
-	if (status && status !== "completed") body = `Task ${status}\n\n${body}`;
+	if (includeStatus && status && status !== "completed") body = `Task ${status}\n\n${body}`;
 	return replaceTabs(sanitizeText(body));
 }
