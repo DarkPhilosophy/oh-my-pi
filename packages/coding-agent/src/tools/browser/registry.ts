@@ -82,7 +82,7 @@ const browsers = new Map<string, BrowserHandle>();
 /** In-flight opens by browser key, so concurrent acquisitions share one launch instead of storming Chromium. */
 const pendingOpens = new Map<string, Promise<BrowserHandle>>();
 
-function browserKey(kind: BrowserKind): string {
+export function browserKey(kind: BrowserKind): string {
 	switch (kind.kind) {
 		case "headless":
 			return `headless:${kind.headless ? "1" : "0"}`;
