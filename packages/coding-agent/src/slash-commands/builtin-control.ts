@@ -19,21 +19,6 @@ export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		description: "Exercise thinking, long text, Markdown, real reads/edits and interactive questions without tokens",
 		allowArgs: true,
 		inlineHint: "[repeat=1] [chunk-delay-ms=25]",
-		handle: async (command, runtime) => {
-			const run = async (): Promise<void> => {
-				try {
-					await runtime.session.runRenderTest(parseRenderTestArgs(command.args));
-				} catch (error) {
-					await runtime.output(errorMessage(error));
-				}
-			};
-			if (runtime.runCommandInBackground) {
-				runtime.runCommandInBackground(run);
-				return commandConsumed();
-			}
-			await run();
-			return commandConsumed({ agentInvoked: true });
-		},
 		handleTui: async (command, { ctx }) => {
 			ctx.editor.setText("");
 			try {
