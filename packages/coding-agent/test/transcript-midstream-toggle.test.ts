@@ -2,9 +2,43 @@ import { describe, expect, it } from "bun:test";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { Composer } from "@oh-my-pi/pi-coding-agent/modes/composer";
-import { CombinedAutocompleteProvider, type Component } from "@oh-my-pi/pi-tui";
+import { CombinedAutocompleteProvider, type Component, Container } from "@oh-my-pi/pi-tui";
 import { assistantMsg, createTestSession } from "./utilities";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
+
+it.each([9, 10])("restores a %i-row transcript after a temporary dialog replaces the editor", async rowCount => {
+	createTestSession();
+	const terminal = new VirtualTerminal(80, 12);
+	const composer = new Composer({ preferences: { quiet: true }, terminal });
+	const transcript = new TranscriptContainer();
+	const slot = new Container();
+	slot.addChild(composer.editor);
+	transcript.addChild({ render: () => Array.from({ length: rowCount }, (_, index) => `HISTORY_${index + 1}`) });
+	composer.setRuntimeChildren([transcript, slot]);
+	composer.start();
+	composer.ui.setFocus(composer.editor);
+	try {
+		composer.ui.renderNow();
+		await terminal.waitForRender();
+		const before = terminal.getViewport().map(row => row.trimEnd());
+		const position = terminal.getBufferPosition();
+		const dialog = { render: () => Array.from({ length: 8 }, (_, index) => `QUESTION_${index}`) };
+		slot.clear();
+		slot.addChild(dialog);
+		composer.ui.setFocus(dialog);
+		composer.ui.renderNow();
+		await terminal.waitForRender();
+		slot.clear();
+		slot.addChild(composer.editor);
+		composer.ui.setFocus(composer.editor);
+		composer.ui.renderNow();
+		await terminal.waitForRender();
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(before);
+		expect(terminal.getBufferPosition()).toEqual(position);
+	} finally {
+		composer.stop();
+	}
+});
 
 it("reconciles a shrinking mutable tool against the rows actually written to history", async () => {
 	createTestSession();

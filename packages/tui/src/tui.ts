@@ -730,6 +730,8 @@ export class TUI extends Container {
 	#providerViewportTop = 0;
 	/** Producer-declared reversible rows present in the last painted frame. */
 	#providerViewportExpansionRows = 0;
+	/** Physical origin to restore after reversible chrome closes without history advancing. */
+	#providerUnexpandedTop: number | undefined;
 	#providerLogicalCommitted = 0;
 	/** Whether physical scrollback currently contains inferred rows from a live, unfinalized frame. */
 	#providerHasTransientHistory = false;
@@ -2978,7 +2980,7 @@ export class TUI extends Container {
 			offered === undefined &&
 			inferredHistory.length === 0 &&
 			viewport.length < height &&
-			(viewportExpansionRows > 0 || this.#providerViewportExpansionRows > 0) &&
+			viewportExpansionRows > 0 &&
 			this.#providerVisibleHistory.length > 0 &&
 			this.#previousWidth === width &&
 			this.#previousHeight === height
@@ -2998,7 +3000,10 @@ export class TUI extends Container {
 		let retainedHistory: string[] | undefined;
 		if (
 			(flushing && this.#providerVisibleHistory.length > 0) ||
-			(history !== undefined && (viewportExpansionRows > 0 || this.#providerViewportExpansionRows > 0))
+			(history !== undefined && (viewportExpansionRows > 0 || this.#providerViewportExpansionRows > 0)) ||
+			(viewportExpansionRows === 0 &&
+				this.#providerViewportExpansionRows > 0 &&
+				this.#providerVisibleHistory.length > 0)
 		) {
 			// Temporary UI may cover accepted history, but must not push its
 			// otherwise-visible tail into native scrollback.
@@ -3058,18 +3063,27 @@ export class TUI extends Container {
 		const previousTop = this.#providerViewportTop;
 		const expansionRows = Math.max(0, viewportExpansionRows);
 		const releasedExpansionRows = Math.max(0, this.#providerViewportExpansionRows - expansionRows);
+		if (!geometryStable || destructiveReset || historyRows.length > 0) this.#providerUnexpandedTop = undefined;
+		if (geometryStable && expansionRows > 0 && this.#providerViewportExpansionRows === 0) {
+			this.#providerUnexpandedTop = previousTop;
+		}
+		const restoredTop = expansionRows === 0 ? this.#providerUnexpandedTop : undefined;
+		if (expansionRows === 0) this.#providerUnexpandedTop = undefined;
 		const startTop =
 			destructiveReset || retainedHistory !== undefined
 				? 0
-				: geometryStable &&
-					  historyRows.length === 0 &&
-					  rows > 0 &&
-					  this.#providerWindow.length > 0 &&
-					  previousTop + this.#providerWindow.length === height
-					? Math.max(0, height - rows)
-					: geometryStable && (expansionRows > 0 || releasedExpansionRows > 0)
-						? Math.min(previousTop + releasedExpansionRows, Math.max(0, height - rows))
-						: Math.min(previousTop, Math.max(0, height - 1));
+				: restoredTop !== undefined
+					? Math.min(restoredTop, Math.max(0, height - rows))
+					: geometryStable &&
+						  historyRows.length === 0 &&
+						  rows > 0 &&
+						  this.#providerWindow.length > 0 &&
+						  (rows <= this.#providerWindow.length || this.#providerVisibleHistory.length === 0) &&
+						  previousTop + this.#providerWindow.length === height
+						? Math.max(0, height - rows)
+						: geometryStable && (expansionRows > 0 || releasedExpansionRows > 0)
+							? Math.min(previousTop + releasedExpansionRows, Math.max(0, height - rows))
+							: Math.min(previousTop, Math.max(0, height - 1));
 		const newTop = Math.max(0, Math.min(startTop + historyRows.length, height - rows));
 		const pendingAltExit = this.#pendingAltExit;
 		let buffer = this.#paintBeginSequence + pendingAltExit;
@@ -3204,6 +3218,8 @@ export class TUI extends Container {
 				...viewport.slice(0, replayViewportRows),
 			];
 			this.#providerVisibleHistory = mutableTop > 0 ? visibleHistory.slice(-mutableTop) : [];
+		} else if (expansionRows === 0 && this.#providerViewportExpansionRows === 0) {
+			this.#providerVisibleHistory = this.#providerVisibleHistory.slice(0, mutableTop);
 		}
 		this.#providerWindow = mutablePrepared;
 		this.#providerViewportTop = mutableTop;

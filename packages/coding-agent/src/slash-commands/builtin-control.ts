@@ -6,10 +6,10 @@ import type { SlashCommandSpec } from "./types";
 
 function parseRenderTestArgs(args: string): RenderTestOptions {
 	const parts = args.trim().split(/\s+/);
-	if (parts[0] !== "test" || parts.length > 3) {
-		throw new Error("Usage: /render test [lines=100] [chunk-delay-ms=25]");
+	if ((parts[0] !== "test" && parts[0] !== "workflow") || parts.length > 3) {
+		throw new Error("Usage: /render test|workflow [lines=100] [chunk-delay-ms=25]");
 	}
-	return { lines: Number(parts[1] ?? 100), delayMs: Number(parts[2] ?? 25) };
+	return { lines: Number(parts[1] ?? 100), delayMs: Number(parts[2] ?? 25), workflow: parts[0] === "workflow" };
 }
 
 export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
@@ -19,6 +19,11 @@ export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		subcommands: [
 			{ name: "test", description: "Simulate 100 numbered streaming lines", usage: "[lines] [chunk-delay-ms]" },
+			{
+				name: "workflow",
+				description: "Run real TODO, read, edit and ask tools on disposable files",
+				usage: "[lines] [chunk-delay-ms]",
+			},
 		],
 		handle: async (command, runtime) => {
 			const run = async (): Promise<void> => {
@@ -38,7 +43,7 @@ export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (command, { ctx }) => {
 			ctx.editor.setText("");
 			try {
-				await ctx.session.runRenderTest(parseRenderTestArgs(command.args));
+				await ctx.session.runRenderTest(parseRenderTestArgs(command.args), ctx.getToolUIContext());
 			} catch (error) {
 				ctx.showError(errorMessage(error));
 			}

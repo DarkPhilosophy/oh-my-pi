@@ -261,6 +261,31 @@ describe("terminal frame plans", () => {
 		}
 	});
 
+	it("preserves retired assistant rows when the next live frame grows", () => {
+		const terminal = new VirtualTerminal(40, 6);
+		const provider = new Provider({
+			history: { id: 1, kind: "append", rows: ["MESSAGE_001", "MESSAGE_002", "MESSAGE_003"] },
+			viewport: ["tool", "editor"],
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		try {
+			for (let count = 1; count <= 4; count++) {
+				provider.plan = {
+					viewport: ["tool", ...Array.from({ length: count }, (_, i) => `NEXT_${i + 1}`), "editor"],
+				};
+				tui.renderNow();
+				expect(plainBuffer(terminal).filter(row => row.startsWith("MESSAGE_"))).toEqual([
+					"MESSAGE_001",
+					"MESSAGE_002",
+					"MESSAGE_003",
+				]);
+			}
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("does not commit reversible viewport growth during an expand-contract cycle", () => {
 		const terminal = new CountingTerminal(20, 4);
 		const base = ["a", "b", "c", "d", "editor"];
