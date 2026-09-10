@@ -14,6 +14,7 @@ import { resolveCmuxKind } from "./browser/cmux/rpc";
 import {
 	acquireBrowser,
 	type BrowserHandle,
+	browserKey,
 	type BrowserKind,
 	type BrowserKindTag,
 	holdBrowser,
@@ -461,12 +462,5 @@ function describeKind(kind: BrowserKind): string {
 }
 
 function sameBrowserKind(a: BrowserKind, b: BrowserKind): boolean {
-	if (a.kind !== b.kind) return false;
-	if (a.kind === "headless" && b.kind === "headless") return a.headless === b.headless;
-	if (a.kind === "spawned" && b.kind === "spawned") return a.path === b.path;
-	if (a.kind === "connected" && b.kind === "connected") return a.cdpUrl === b.cdpUrl;
-	if (a.kind === "relay" && b.kind === "relay") return a.cdpUrl === b.cdpUrl;
-	if (a.kind === "firefox-relay" && b.kind === "firefox-relay") return a.webSocketUrl === b.webSocketUrl;
-	if (a.kind === "cmux" && b.kind === "cmux") return a.socketPath === b.socketPath;
-	return false;
+	return browserKey(a) === browserKey(b);
 }
