@@ -120,7 +120,7 @@ export function createRenderTestAgent(model: Model, options: RenderTestOptions, 
 						);
 					}
 					await emitBlock("text", markdown.join(""));
-				} else {
+				} else if (!step?.silent) {
 					await emitBlock(
 						"text",
 						`\n\`\`\`text\nSTEP_${++outputRow}: ${step ? `repetition ${step.repetition}, ${step.calls.map(call => call.name).join(" → ")}` : "workflow complete"}\n\`\`\`\n`,

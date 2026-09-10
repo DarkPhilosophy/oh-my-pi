@@ -65,7 +65,7 @@ beforeEach(async () => {
 		modelRegistry,
 		extensionRunner: new ExtensionRunner([extension], runtime, directory.path(), sessionManager, modelRegistry),
 	});
-	terminal = new VirtualTerminal(110, 20);
+	terminal = new VirtualTerminal(110, 20, 10_000);
 	const composer = new Composer({ terminal, preferences: { quiet: true } });
 	mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
 	vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
@@ -137,6 +137,8 @@ it("runs complete repeated workflows through real tools and interactive renderin
 		).toMatch(/snapshot|hash|stale/i);
 	}
 	expect(results.filter(result => result.toolName === "ask" && !result.isError)).toHaveLength(2);
+	expect(results.filter(result => result.toolName === "bash" && !result.isError)).toHaveLength(22);
+	expect(results.filter(result => result.toolName === "hub" && !result.isError)).toHaveLength(8);
 	for (const repetition of [1, 2]) {
 		expect(
 			assistants.some(
