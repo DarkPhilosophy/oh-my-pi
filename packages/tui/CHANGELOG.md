@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Fixed shrinking tool output moving the editor upward, hiding replacement text, or leaving stale rows in history.
+- Fixed closing command suggestions after a streamed reply finishes hiding its visible tail or misaligning right-side widgets.
 - Fixed animated and shortened provider frames duplicating history or hiding replacement content.
 - Fixed prepended live transcript rows appearing after previously displayed rows instead of in their original order.
 - Fixed overflowing session replacement frames duplicating history on the next redraw, including when completed TODOs disappear.

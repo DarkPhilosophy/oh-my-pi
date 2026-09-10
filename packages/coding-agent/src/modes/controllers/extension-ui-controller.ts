@@ -58,8 +58,18 @@ interface RightWidgetPanelBlock {
 }
 
 type RightWidgetEntry =
-	| { kind: "blocks"; blocks: RightWidgetPanelBlock[]; priority?: number; alignment?: WidgetAlignment }
-	| { kind: "component"; component: ExtensionUiComponent; priority?: number; alignment?: WidgetAlignment };
+	| {
+			kind: "blocks";
+			blocks: RightWidgetPanelBlock[];
+			priority?: number;
+			alignment?: WidgetAlignment;
+	  }
+	| {
+			kind: "component";
+			component: ExtensionUiComponent;
+			priority?: number;
+			alignment?: WidgetAlignment;
+	  };
 
 function isWidgetBlock(value: unknown): value is ExtensionWidgetBlock {
 	return typeof value === "object" && value !== null && Array.isArray((value as { lines?: unknown }).lines);
@@ -108,11 +118,13 @@ export class ExtensionUiController {
 	// Per-widget cached layout state — only emit widget_layout on change.
 	#widgetLayoutCache = new Map<
 		string,
-		{ visible: boolean; availableWidth: number; visibleRows: number; hiddenBlocks: string[] }
+		{
+			visible: boolean;
+			availableWidth: number;
+			visibleRows: number;
+			hiddenBlocks: string[];
+		}
 	>();
-	// Emitter set by the mode (which owns the extension runner). Fire-and-forget;
-	// the mode catches handler errors.
-	#emitWidgetLayout: ((event: WidgetLayoutEvent) => void) | null = null;
 	// Single-file dialog surface (`editorContainer` + focus) is shared by the
 	// selector / input / editor modals, so only one may be presented at a time;
 	// the rest queue. See `#presentDialog`.
@@ -176,14 +188,21 @@ export class ExtensionUiController {
 			get theme() {
 				return theme;
 			},
-			getAllThemes: async () => (await getAvailableThemesWithPaths()).map(t => ({ name: t.name, path: t.path })),
+			getAllThemes: async () =>
+				(await getAvailableThemesWithPaths()).map(t => ({
+					name: t.name,
+					path: t.path,
+				})),
 			getTheme: name => getThemeByName(name),
 			setTheme: async themeArg => {
 				if (typeof themeArg === "string") {
 					return await setTheme(themeArg, true);
 				}
 				// Theme object passed directly - not supported in current implementation
-				return Promise.resolve({ success: false, error: "Direct theme object not supported" });
+				return Promise.resolve({
+					success: false,
+					error: "Direct theme object not supported",
+				});
 			},
 			setFooter: () => {},
 			setHeader: () => {},
@@ -278,7 +297,9 @@ export class ExtensionUiController {
 				// Create new session
 				this.clearExtensionTerminalInputListeners();
 				this.clearHookWidgets();
-				const success = await this.ctx.session.newSession({ parentSession: options?.parentSession });
+				const success = await this.ctx.session.newSession({
+					parentSession: options?.parentSession,
+				});
 				if (!success) {
 					return { cancelled: true };
 				}
@@ -319,7 +340,9 @@ export class ExtensionUiController {
 				return { cancelled: false };
 			},
 			navigateTree: async (targetId, options) => {
-				const result = await this.ctx.session.navigateTree(targetId, { summarize: options?.summarize });
+				const result = await this.ctx.session.navigateTree(targetId, {
+					summarize: options?.summarize,
+				});
 				if (result.cancelled) {
 					return { cancelled: true };
 				}
@@ -459,10 +482,20 @@ export class ExtensionUiController {
 					alignment,
 				};
 			}
-			return { kind: "blocks", blocks: [{ lines: content.map(line => String(line)) }], priority, alignment };
+			return {
+				kind: "blocks",
+				blocks: [{ lines: content.map(line => String(line)) }],
+				priority,
+				alignment,
+			};
 		}
 		if (content === undefined) return { kind: "blocks", blocks: [], priority, alignment };
-		return { kind: "component", component: this.#createRightWidgetComponent(content), priority, alignment };
+		return {
+			kind: "component",
+			component: this.#createRightWidgetComponent(content),
+			priority,
+			alignment,
+		};
 	}
 
 	#rightWidgetBlocks(entry: RightWidgetEntry, width: number): RightWidgetPanelBlock[] {
@@ -538,7 +571,10 @@ export class ExtensionUiController {
 		this.#lastBlockWidgetKeys = blocks.map(b => b.widgetKey);
 		this.#lastBlockIds = blocks.map(b => b.blockId);
 		this.#lastBlockSizes = blocks.map(b => b.lines.length);
-		return blocks.map(block => ({ lines: block.lines, alignment: block.alignment }));
+		return blocks.map(block => ({
+			lines: block.lines,
+			alignment: block.alignment,
+		}));
 	}
 
 	/**
@@ -547,7 +583,8 @@ export class ExtensionUiController {
 	 * only on state change, not every paint).
 	 */
 	#handlePanelLayout(result: PanelLayoutResult): void {
-		if (!this.#emitWidgetLayout || this.#lastBlockWidgetKeys.length === 0) return;
+		const runner = this.ctx.session.extensionRunner;
+		if (!runner?.hasHandlers("widget_layout") || this.#lastBlockWidgetKeys.length === 0) return;
 
 		const placedSet = new Set(result.placedBlockIndices);
 		const widgetState = new Map<string, { visible: boolean; visibleRows: number; hiddenBlocks: string[] }>();
@@ -555,7 +592,11 @@ export class ExtensionUiController {
 		for (let i = 0; i < this.#lastBlockWidgetKeys.length; i++) {
 			const key = this.#lastBlockWidgetKeys[i];
 			const isPlaced = placedSet.has(i);
-			const state = widgetState.get(key) ?? { visible: false, visibleRows: 0, hiddenBlocks: [] };
+			const state = widgetState.get(key) ?? {
+				visible: false,
+				visibleRows: 0,
+				hiddenBlocks: [],
+			};
 			if (isPlaced) {
 				state.visible = true;
 				state.visibleRows += this.#lastBlockSizes[i] ?? 0;
@@ -597,13 +638,15 @@ export class ExtensionUiController {
 			// Deferred emit: the paint stack is synchronous; queueMicrotask runs
 			// after it completes so handler calls (setWidget → requestRender)
 			// schedule the next frame instead of re-entering the current paint.
-			queueMicrotask(() => this.#emitWidgetLayout?.(event));
+			queueMicrotask(() => {
+				if (this.ctx.session.extensionRunner !== runner || !this.#rightWidgets.has(key)) return;
+				void runner.emit(event).catch((error: unknown) => {
+					this.ctx.showError(
+						`Extension widget_layout failed: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				});
+			});
 		}
-	}
-
-	/** Set the callback used to emit widget_layout events. The mode owns the runner. */
-	setWidgetLayoutEmitter(emit: ((event: WidgetLayoutEvent) => void) | null): void {
-		this.#emitWidgetLayout = emit;
 	}
 
 	#createHookWidget(content: ExtensionWidgetContent): ExtensionUiComponent {
@@ -731,7 +774,9 @@ export class ExtensionUiController {
 				// Create new session
 				this.clearExtensionTerminalInputListeners();
 				this.clearHookWidgets();
-				const success = await this.ctx.session.newSession({ parentSession: options?.parentSession });
+				const success = await this.ctx.session.newSession({
+					parentSession: options?.parentSession,
+				});
 				if (!success) {
 					return { cancelled: true };
 				}
@@ -769,7 +814,9 @@ export class ExtensionUiController {
 				return { cancelled: false };
 			},
 			navigateTree: async (targetId, options) => {
-				const result = await this.ctx.session.navigateTree(targetId, { summarize: options?.summarize });
+				const result = await this.ctx.session.navigateTree(targetId, {
+					summarize: options?.summarize,
+				});
 				if (result.cancelled) {
 					return { cancelled: true };
 				}
@@ -890,9 +937,10 @@ export class ExtensionUiController {
 		const parentSignal = dialogOptions?.signal;
 		const localSignal = parentSignal ? AbortSignal.any([parentSignal, localAbort.signal]) : localAbort.signal;
 		const remoteSignal = parentSignal ? AbortSignal.any([parentSignal, remoteAbort.signal]) : remoteAbort.signal;
-		const localWinner = this.#showLocalAskDialog(questions, { ...dialogOptions, signal: localSignal }).then(
-			(value): CollabAskDialogWinner => ({ source: "local", value }),
-		);
+		const localWinner = this.#showLocalAskDialog(questions, {
+			...dialogOptions,
+			signal: localSignal,
+		}).then((value): CollabAskDialogWinner => ({ source: "local", value }));
 		const remoteWinner: Promise<CollabAskDialogWinner> = this.#runGuestAskDialog(questions, remoteSignal).then(
 			result => (result === "unavailable" ? localWinner : { source: "remote", value: result }),
 		);
@@ -1091,7 +1139,10 @@ export class ExtensionUiController {
 				if (choice.value === ASK_NEXT_OPTION) break;
 				if (choice.value === ASK_OTHER_OPTION) {
 					const input = await this.#requestGuestUiString(
-						{ kind: "editor", title: boundPromptTitle("Custom answer: ", question.question) },
+						{
+							kind: "editor",
+							title: boundPromptTitle("Custom answer: ", question.question),
+						},
 						signal,
 					);
 					if (input.kind === "unavailable") return "unavailable";
@@ -1128,7 +1179,10 @@ export class ExtensionUiController {
 				if (choice.value === ASK_CHAT_OPTION) return "chat";
 				if (choice.value === ASK_OTHER_OPTION) {
 					const input = await this.#requestGuestUiString(
-						{ kind: "editor", title: boundPromptTitle("Custom answer: ", question.question) },
+						{
+							kind: "editor",
+							title: boundPromptTitle("Custom answer: ", question.question),
+						},
 						signal,
 					);
 					if (input.kind === "unavailable") return "unavailable";

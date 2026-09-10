@@ -3,6 +3,10 @@
 ## [Unreleased]
 - Fixed the TODO HUD auto-dismiss lifecycle: completed plans now persist their hidden state, survive session reopen, and can be explicitly revealed without stale timers hiding replacement plans.
 
+### Added
+
+- Added `/render test` for cancellable, token-free streaming of a numbered Markdown code block, with configurable line count and chunk delay.
+
 ### Changed
 
 - Subagents now show their current activity and a separate, width-bounded current-tool row; resolved model labels follow the model badge setting.
@@ -12,6 +16,7 @@
 - Improved `/usage` with provider/account cards, temporary privacy and account-grouping controls, and configurable quota-bar labels.
 ### Fixed
 
+- Fixed ordinary status and editor height changes incorrectly leaving gaps in streamed transcript output.
 - Applied account masking consistently to text-mode and ACP `/usage` output, including reset-credit labels.
 - Hosted sessions use their own settings and finish graceful teardown before disconnecting.
 - Advisor failures caused by malformed messages no longer leave catch-up waiting blocked.

@@ -238,6 +238,70 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
+	it("keeps a full-screen live frame bottom-anchored when a tool shrinks and grows", () => {
+		const terminal = new CountingTerminal(30, 5);
+		const provider = new Provider({ viewport: ["tool-1", "tool-2", "tool-3", "tool-4", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		const position = terminal.getBufferPosition();
+		try {
+			for (const viewport of [
+				["failed", "editor"],
+				["failed", "next", "editor"],
+			]) {
+				provider.plan = { viewport };
+				tui.requestRender(true);
+				const visible = terminal.getViewport().map(row => row.trimEnd());
+				expect(visible.slice(-viewport.length)).toEqual(viewport);
+				expect(visible.slice(0, -viewport.length).every(row => row === "")).toBeTrue();
+				expect(terminal.getBufferPosition()).toEqual(position);
+			}
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("does not commit reversible viewport growth during an expand-contract cycle", () => {
+		const terminal = new CountingTerminal(20, 4);
+		const base = ["a", "b", "c", "d", "editor"];
+		const provider = new Provider({ viewport: base });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		const before = terminal.getBufferPosition();
+		provider.plan = {
+			viewport: [...base, "suggest-1", "suggest-2", "suggest-3", "suggest-4"],
+			viewportExpansionRows: 4,
+		};
+		tui.requestRender(true);
+		expect(terminal.getBufferPosition()).toEqual(before);
+		provider.plan = { viewport: base };
+		tui.requestRender(true);
+		expect(terminal.getBufferPosition()).toEqual(before);
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["b", "c", "d", "editor"]);
+		expect(plainBuffer(terminal)).toEqual(base);
+		tui.stop();
+	});
+
+	it("repaints unchanged mutable rows when contraction moves their physical anchor", () => {
+		const terminal = new CountingTerminal(30, 8);
+		const provider = new Provider({
+			history: { id: 1, kind: "append", rows: ["history-a", "history-b", "history-c"] },
+			viewport: ["status", "suggestion", "editor"],
+			viewportExpansionRows: 1,
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		provider.plan = { viewport: ["status", "suggestion", "editor"], viewportExpansionRows: 1 };
+		tui.renderNow();
+		provider.plan = { viewport: ["status", "editor"] };
+		tui.renderNow();
+		const visible = terminal.getViewport().map(row => row.trimEnd());
+		expect(visible.filter(row => row === "status")).toHaveLength(1);
+		expect(visible.filter(row => row === "editor")).toHaveLength(1);
+		expect(visible).not.toContain("suggestion");
+		tui.stop();
+	});
+
 	it("appends finalized history once and leaves the requested mutable viewport intact", () => {
 		const terminal = new VirtualTerminal(20, 3);
 		const provider = new Provider({
@@ -602,7 +666,7 @@ describe("terminal frame plans", () => {
 		try {
 			provider.plan = { viewport: ["header", "editor"] };
 			tui.requestRender(true);
-			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["header", "editor", ""]);
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["", "header", "editor"]);
 			expect(terminal.writes.join("")).not.toMatch(/\x1b\[[23]J/);
 			provider.plan = {
 				history: { id: 1, rows: ["new"], kind: "replay" },

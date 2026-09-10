@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { Container, type RightPanelBlockInput } from "@oh-my-pi/pi-tui";
-import type { ExtensionUiComponentFactory } from "../src/extensibility/extensions";
+import type { ExtensionUiComponentFactory, WidgetLayoutEvent } from "../src/extensibility/extensions";
 import { ExtensionUiController } from "../src/modes/controllers/extension-ui-controller";
 import type { InteractiveModeContext } from "../src/modes/types";
 
@@ -67,7 +67,10 @@ describe("ExtensionUiController rightEditor widgets", () => {
 			],
 			{ placement: "rightEditor", priority: 0 },
 		);
-		c.setHookWidget("memory", ["mem"], { placement: "rightEditor", priority: -1 });
+		c.setHookWidget("memory", ["mem"], {
+			placement: "rightEditor",
+			priority: -1,
+		});
 
 		expect(rightInfo.at(-1)).toEqual([["high"], ["mem"], ["low"]]);
 	});
@@ -87,7 +90,10 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		const { ctx, rightInfo } = makeCtx();
 		const c = new ExtensionUiController(ctx);
 
-		c.setHookWidget("tall", ["t1", "t2", "t3"], { placement: "rightEditor", priority: 0 });
+		c.setHookWidget("tall", ["t1", "t2", "t3"], {
+			placement: "rightEditor",
+			priority: 0,
+		});
 		c.setHookWidget("short", ["s1"], { placement: "rightEditor", priority: 1 });
 
 		expect(rightInfo.at(-1)).toEqual([["t1", "t2", "t3"], ["s1"]]);
@@ -342,6 +348,14 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		let provider: ((width: number) => string[][]) | undefined;
 		let layoutCb: ((result: { placedBlockIndices: number[]; availableWidth: number }) => void) | undefined;
 		const ctx = {
+			session: {
+				extensionRunner: {
+					hasHandlers: (type: string) => type === "widget_layout",
+					emit: async (event: WidgetLayoutEvent) => {
+						layouts.push(event.key);
+					},
+				},
+			},
 			hookWidgetContainerAbove: new Container(),
 			hookWidgetContainerBelow: new Container(),
 			ui: { requestRender: () => {} },
@@ -355,7 +369,6 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		} as unknown as InteractiveModeContext;
 		const c = new ExtensionUiController(ctx);
 		const layouts: string[] = [];
-		c.setWidgetLayoutEmitter(event => layouts.push(event.key));
 
 		// Add widget → invoke provider (populates block tracking) + trigger layout
 		c.setHookWidget("w", ["line1", "line2"], { placement: "rightEditor" });
@@ -381,6 +394,14 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		let provider: ((width: number) => string[][]) | undefined;
 		let layoutCb: ((result: { placedBlockIndices: number[]; availableWidth: number }) => void) | undefined;
 		const ctx = {
+			session: {
+				extensionRunner: {
+					hasHandlers: (type: string) => type === "widget_layout",
+					emit: async (event: WidgetLayoutEvent) => {
+						layouts.push(event.key);
+					},
+				},
+			},
 			hookWidgetContainerAbove: new Container(),
 			hookWidgetContainerBelow: new Container(),
 			ui: { requestRender: () => {} },
@@ -394,7 +415,6 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		} as unknown as InteractiveModeContext;
 		const c = new ExtensionUiController(ctx);
 		const layouts: string[] = [];
-		c.setWidgetLayoutEmitter(event => layouts.push(event.key));
 
 		const visibleBlocks = [{ id: "section", lines: ["line"] }];
 		c.setHookWidget("w", visibleBlocks, { placement: "rightEditor" });
@@ -403,7 +423,9 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		await Promise.resolve();
 		expect(layouts).toEqual(["w"]);
 
-		c.setHookWidget("w", [{ id: "section", lines: [] }], { placement: "rightEditor" });
+		c.setHookWidget("w", [{ id: "section", lines: [] }], {
+			placement: "rightEditor",
+		});
 		provider?.(80);
 		layoutCb?.({ placedBlockIndices: [], availableWidth: 30 });
 
@@ -418,6 +440,14 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		let provider: ((width: number) => string[][]) | undefined;
 		let layoutCb: ((result: { placedBlockIndices: number[]; availableWidth: number }) => void) | undefined;
 		const ctx = {
+			session: {
+				extensionRunner: {
+					hasHandlers: (type: string) => type === "widget_layout",
+					emit: async (event: WidgetLayoutEvent) => {
+						layouts.push(event.key);
+					},
+				},
+			},
 			hookWidgetContainerAbove: new Container(),
 			hookWidgetContainerBelow: new Container(),
 			ui: { requestRender: () => {} },
@@ -431,7 +461,6 @@ describe("ExtensionUiController rightEditor widgets", () => {
 		} as unknown as InteractiveModeContext;
 		const c = new ExtensionUiController(ctx);
 		const layouts: string[] = [];
-		c.setWidgetLayoutEmitter(event => layouts.push(event.key));
 
 		// Add as rightEditor → trigger layout
 		c.setHookWidget("w", ["line1"], { placement: "rightEditor" });

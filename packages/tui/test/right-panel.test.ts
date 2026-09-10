@@ -539,6 +539,52 @@ describe("TUI.setRightPanel", () => {
 		}
 	});
 
+	it("keeps widget rows aligned when temporary UI uncovers retained history", async () => {
+		const term = new VirtualTerminal(100, 12);
+		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });
+		const chat = new Lines(["status-one", "status-two", "status-three", "status-four", "status-five", "status-six"]);
+		const editor = new Lines(["EDITOR"]);
+		let extra = 0;
+		let pending = true;
+		const provider: TerminalFrameProvider = {
+			renderFrame: () => ({
+				history: pending ? { id: 1, rows: ["history-one", "history-two", "history-three"] } : undefined,
+				viewport: [...chat.render(), ...Array.from({ length: extra }, () => "suggestion"), ...editor.render()],
+				viewportExpansionRows: extra,
+				borrowableRows: 0,
+				segments: [
+					{ component: chat, start: 0, rowCount: 6 },
+					{ component: editor, start: 6 + extra, rowCount: 1 },
+				],
+			}),
+			acknowledgeHistory: () => {
+				pending = false;
+			},
+		};
+		tui.setRightPanel(() => [["<W0>", "<W1>"]], [chat]);
+		tui.start();
+		tui.setFrameProvider(provider);
+		await settle(term);
+		try {
+			extra = 3;
+			tui.renderNow();
+			await settle(term);
+			extra = 0;
+			tui.renderNow();
+			await settle(term);
+			const viewport = term.getViewport();
+			expect(viewport.find(row => row.startsWith("status-one"))).toContain("<W0>");
+			expect(viewport.find(row => row.startsWith("status-two"))).toContain("<W1>");
+			expect(viewport.at(-1)?.trimEnd(), JSON.stringify(viewport)).toBe("EDITOR");
+			const tape = term.getScrollBuffer();
+			for (const history of ["history-one", "history-two", "history-three"]) {
+				expect(tape.filter(row => row.trimEnd() === history)).toHaveLength(1);
+			}
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("reports right-panel blocks hidden while overlay rows cover their placement", async () => {
 		const term = new VirtualTerminal(80, 12);
 		const tui = new TUI(term, false, { renderScheduler: immediateScheduler() });

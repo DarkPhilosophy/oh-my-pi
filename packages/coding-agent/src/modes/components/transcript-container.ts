@@ -384,6 +384,7 @@ export class TranscriptContainer extends Container {
 			entry.borrowedEnd = count > 0 ? (entry.viewportOffset ?? 0) + count : 0;
 		}
 	}
+
 	/** Leading current viewport rows still owned by previously borrowed entries. */
 	borrowedViewportRowCount(): number {
 		let count = 0;
@@ -545,6 +546,7 @@ export class TranscriptContainer extends Container {
 			// Do not retire its visible tail merely because its first rows overflow.
 			if (
 				policy === "pressure" &&
+				!this.#entries[end]!.borrowed &&
 				room > 0 &&
 				total - freed - (heights[index]! > 0 ? heights[index]! + 1 : 0) < room &&
 				this.#liveCount() - (end - this.#frontier) < MAX_LIVE_BLOCKS

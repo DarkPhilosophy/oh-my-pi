@@ -197,6 +197,8 @@ export class Composer implements TerminalFrameProvider {
 	#retiredHeaderStart = 0;
 	#resizeRetiredHeaderStart: number | undefined;
 	#lastNormalRows = 0;
+	/** Current non-dropdown chrome footprint, not a session-wide minimum. */
+	#chromeRowsWithoutAutocomplete: number | undefined;
 	#viewportTranscript?: TranscriptContainer;
 	#viewportTranscriptStart = 0;
 	#lastInterruptAt = 0;
@@ -283,7 +285,13 @@ export class Composer implements TerminalFrameProvider {
 		// reflowing to the current width) while the screen has room. A batch
 		// leaves the mutable viewport in the same frame it is appended, so its
 		// rows are never painted twice.
-		const history = this.#offerHistory(transcript, width, rows, preRoots.length + after.length);
+		const chromeRows = preRoots.length + after.length;
+		const autocompleteVisible = this.editor.focused && this.editor.isAutocompleteActive();
+		if (!autocompleteVisible) this.#chromeRowsWithoutAutocomplete = chromeRows;
+		const viewportExpansionRows = autocompleteVisible
+			? Math.max(0, chromeRows - (this.#chromeRowsWithoutAutocomplete ?? chromeRows))
+			: 0;
+		const history = this.#offerHistory(transcript, width, rows + viewportExpansionRows, chromeRows);
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
 		const before = [...headerRows, ...preRoots];
@@ -308,6 +316,7 @@ export class Composer implements TerminalFrameProvider {
 		return {
 			history,
 			borrowableRows,
+			viewportExpansionRows,
 			viewport: plan.viewport,
 			segments: plan.segments,
 			borrowedViewportRows: borrowedViewportRows > 0 ? before.length + borrowedViewportRows : 0,
