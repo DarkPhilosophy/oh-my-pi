@@ -658,7 +658,7 @@ function getHashlineInputSections(input: string): HashlineInputEntry[] {
 
 /** Extract display targets using the existing parsers for supported freeform edit modes. */
 export function getEditInputPaths(input: string): readonly string[] {
-	const mode = /^\s*<SM:/i.test(input)
+	const mode = /^\s*<SM:/im.test(input)
 		? "sloppy"
 		: /^\*\*\* (?:Add|Update|Delete) File:/m.test(input)
 			? "apply_patch"
