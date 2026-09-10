@@ -3,13 +3,18 @@ import * as path from "node:path";
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import type { Context, ToolCall } from "@oh-my-pi/pi-ai";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { AsyncJobManager } from "../async";
+import { Settings } from "../config/settings";
 import { EditTool } from "../edit";
 import type { ToolSession } from "../tools";
 import { AskTool } from "../tools/ask";
+import { BashTool } from "../tools/bash";
+import { HubTool } from "../tools/hub";
 import { ReadTool } from "../tools/read";
 import { TodoTool } from "../tools/todo";
 
 export interface RenderWorkflowStep {
+	silent?: boolean;
 	calls: ToolCall[];
 	repetition: number;
 	introduction: boolean;
@@ -17,7 +22,7 @@ export interface RenderWorkflowStep {
 
 export interface RenderWorkflow {
 	context: AgentToolContext;
-	tools: Array<ReadTool | EditTool | TodoTool | AskTool>;
+	tools: Array<ReadTool | EditTool | TodoTool | AskTool | BashTool | HubTool>;
 	next(context: Context): Promise<RenderWorkflowStep | undefined>;
 	dispose(): Promise<void>;
 }
@@ -27,6 +32,18 @@ export function createRenderWorkflow(session: ToolSession, context: AgentToolCon
 	if (!context.hasUI || !context.ui?.askDialog) throw new Error("Render workflow requires interactive ask support.");
 	const directory = TempDir.createSync(path.join(os.tmpdir(), "omp-render-workflow-"));
 	const localSession: ToolSession = { ...session, cwd: directory.path(), hasEditTool: true };
+	const jobs = new AsyncJobManager({ maxRunningJobs: 11 });
+	const jobOwner = `render-workflow-${crypto.randomUUID()}`;
+	const jobSession: ToolSession = {
+		...localSession,
+		asyncJobManager: jobs,
+		getAgentId: () => jobOwner,
+		settings: Settings.isolated({
+			"bash.autoBackground.enabled": true,
+			"bash.autoBackground.thresholdMs": 500,
+		}),
+	};
+	let jobIds: string[] = [];
 	const files = Array.from({ length: 3 }, (_, index) => directory.path() + `/sample-${index + 1}.txt`);
 	let initialized = false;
 	let stage = 0;
@@ -78,6 +95,33 @@ export function createRenderWorkflow(session: ToolSession, context: AgentToolCon
 	read(0);
 	actions.push({ name: "todo", args: () => ({ op: "done", task: tasks[1] }) });
 	actions.push({
+		name: "bash",
+		args: () => {
+			jobIds = [];
+			return { command: "cat sample-1.txt && sleep 8", timeout: 15 };
+		},
+	});
+	const backgroundStage = actions.length;
+	for (let index = 0; index < 10; index++) {
+		actions.push({
+			name: "bash",
+			args: () => ({
+				command: `sleep 8 && printf 'Background job ${index + 1} completed\\n'`,
+				timeout: 15,
+				async: true,
+			}),
+		});
+	}
+	for (const timeoutMs of [250, 250, 10_000, 10_000]) {
+		actions.push({
+			name: "hub",
+			args: () => {
+				if (jobIds.length === 0) jobIds = jobs.getRunningJobs().map(job => job.id);
+				return { op: "wait", ids: jobIds, timeoutMs };
+			},
+		});
+	}
+	actions.push({
 		name: "ask",
 		args: () => ({
 			questions: [
@@ -103,6 +147,8 @@ export function createRenderWorkflow(session: ToolSession, context: AgentToolCon
 			new EditTool(localSession, "hashline"),
 			new TodoTool(localSession),
 			new AskTool(localSession),
+			new BashTool(jobSession),
+			new HubTool(jobSession),
 		],
 		context,
 		async next(providerContext) {
@@ -127,7 +173,7 @@ export function createRenderWorkflow(session: ToolSession, context: AgentToolCon
 				stage = 0;
 			}
 			const introduction = stage === 0;
-			const count = stage === 1 || stage === 4 ? 3 : 1;
+			const count = stage === backgroundStage ? 10 : stage === 1 || stage === 4 ? 3 : 1;
 			const calls = actions.slice(stage, stage + count).map((action, offset): ToolCall => ({
 				type: "toolCall",
 				id: `render-workflow-${repetition}-${stage + offset + 1}`,
@@ -135,8 +181,11 @@ export function createRenderWorkflow(session: ToolSession, context: AgentToolCon
 				arguments: action.args(),
 			}));
 			stage += count;
-			return { calls, repetition, introduction };
+			return { calls, repetition, introduction, silent: calls.every(call => call.name === "hub") };
 		},
-		dispose: () => directory.remove(),
+		dispose: async () => {
+			await jobs.dispose({ timeoutMs: 3_000 });
+			await directory.remove();
+		},
 	};
 }
