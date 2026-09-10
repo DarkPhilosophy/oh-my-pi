@@ -100,6 +100,16 @@ export function createRenderTestAgent(model: Model, options: RenderTestOptions, 
 						).join(""),
 					);
 					const markdown: string[] = [`\n## Repetition ${step.repetition}: varied Markdown\n\n`];
+					for (let row = 0; row < 60; row++)
+						markdown.push(
+							`> QUOTE_${++outputRow}: **Long streamed quotation**, *emphasis*, and \`inline code\`.  \n`,
+						);
+					markdown.push("\n```typescript\n");
+					for (let row = 0; row < 60; row++)
+						markdown.push(
+							`const marker${++outputRow} = "CODE_${outputRow}: narrow and wide terminal wrapping — diacritice șțîâă";\n`,
+						);
+					markdown.push("```\n\n");
 					for (let section = 0; section < 6; section++) {
 						markdown.push(
 							`### Section ${section + 1}\n\n`,
@@ -108,14 +118,6 @@ export function createRenderTestAgent(model: Model, options: RenderTestOptions, 
 						markdown.push(
 							"| Marker | State |\n| --- | --- |\n",
 							`| TABLE_${++outputRow} | streaming |\n\n`,
-							"```typescript\n",
-						);
-						for (let row = 0; row < 10; row++)
-							markdown.push(
-								`const marker${++outputRow} = "CODE_${outputRow}: narrow and wide terminal wrapping — diacritice șțîâă";\n`,
-							);
-						markdown.push(
-							"```\n\n",
 							`- LIST_${++outputRow}: first item\n  - nested item with **formatting**\n\n`,
 						);
 					}
