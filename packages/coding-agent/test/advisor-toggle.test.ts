@@ -16,6 +16,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { SessionProviderBoundary } from "../src/session/session-provider-boundary";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import * as advisorModule from "../src/advisor";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
@@ -477,6 +478,58 @@ describe("AgentSession advisor toggle", () => {
 			expect(session.settings.get("advisor.enabled")).toBe(false);
 		} finally {
 			await Promise.all(children.map(child => child.dispose()));
+		}
+	});
+	it.each([false, true])("cancels inherited advice awaiting normalization (streaming=%s)", async streaming => {
+		session.setAdvisorEnabled(true);
+		const child = new AgentSession({
+			agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({
+				"advisor.enabled": true,
+				modelRoles: { advisor: `${model.provider}/${model.id}` },
+			}),
+			modelRegistry,
+			advisorTools: [],
+			advisorScope: session.advisorScope,
+		});
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const normalization = vi
+			.spyOn(SessionProviderBoundary.prototype, "normalizeAgentMessageImages")
+			.mockImplementation(async message => {
+				entered.resolve();
+				await release.promise;
+				return message;
+			});
+		const send = child.sendCustomMessage.bind(child);
+		let delivery: Promise<boolean> | undefined;
+		const sendSpy = vi.spyOn(child, "sendCustomMessage").mockImplementation((message, options) => {
+			delivery = send(message, options);
+			return delivery;
+		});
+		try {
+			child.agent.state.isStreaming = streaming;
+			const tool = child.getAdvisorAgent()?.state.tools.find(tool => tool.name === "advise");
+			if (!(tool instanceof advisorModule.AdviseTool)) throw new Error("Missing advise tool");
+			await tool.execute("scope-race", {
+				note: "The asynchronous delivery can resurrect cancelled work.",
+				severity: "blocker",
+			});
+			await entered.promise;
+			session.setAdvisorEnabled(false);
+			session.setAdvisorEnabled(true);
+			release.resolve();
+			await delivery;
+			expect(child.agent.peekSteeringQueue()).toEqual([]);
+			expect(child.agent.state.messages).toEqual([]);
+			expect(child.agent.state.isStreaming).toBe(streaming);
+		} finally {
+			release.resolve();
+			normalization.mockRestore();
+			sendSpy.mockRestore();
+			child.agent.state.isStreaming = false;
+			await child.dispose();
 		}
 	});
 	it("removes inherited advisor queue entries while retaining user steering", async () => {

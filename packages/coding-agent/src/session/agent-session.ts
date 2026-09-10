@@ -7198,6 +7198,7 @@ export class AgentSession {
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
 			queueChipText?: string;
 			acceptTerminalEmptyStop?: boolean;
+			signal?: AbortSignal;
 		},
 	): Promise<boolean> {
 		// Captured before the normalization await below — see #sessionGeneration's doc comment.
@@ -7223,6 +7224,7 @@ export class AgentSession {
 			timestamp: Date.now(),
 		};
 		const normalizedAppMessage = await this.#normalizeAgentMessageImages(appMessage);
+		if (options?.signal?.aborted) return false;
 		if (this.isStreaming) {
 			if (options?.deliverAs === "nextTurn") {
 				this.#queueHiddenNextTurnMessage(normalizedAppMessage, options?.triggerTurn ?? false);

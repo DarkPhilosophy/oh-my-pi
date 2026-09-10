@@ -238,8 +238,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 		// Left column: project roster on top, global roster below, each half the body.
 		const projectRows = Math.max(2, Math.floor((bodyRows - 1) / 2));
 		const userRows = Math.max(2, bodyRows - 1 - projectRows);
-		this.#scopes.project.list.setMaxVisible(projectRows);
-		this.#scopes.user.list.setMaxVisible(userRows);
+		this.#scopes.project.list.setMaxVisible(Math.max(1, projectRows - 1));
+		this.#scopes.user.list.setMaxVisible(Math.max(1, userRows - 1));
 		// Only the focused pane shows a cursor; the others keep their selection silently.
 		this.#scopes.project.list.setFocused(this.#focus === "project");
 		this.#scopes.user.list.setFocused(this.#focus === "user");

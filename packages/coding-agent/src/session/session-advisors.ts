@@ -261,6 +261,7 @@ export interface AdvisorMessageDeliveryOptions {
 	deliverAs?: "steer" | "followUp" | "nextTurn";
 	queueChipText?: string;
 	acceptTerminalEmptyStop?: boolean;
+	signal?: AbortSignal;
 }
 
 /** Session capabilities borrowed by the advisor controller. */
@@ -341,6 +342,7 @@ export class SessionAdvisors {
 		return this.#advisorRequested && !this.scope.suppressed;
 	}
 	readonly #unsubscribeScope: () => void;
+	#deliveryAbort = new AbortController();
 	#advisorTools: SessionAdvisorsOptions["tools"];
 	#advisorCreateGrepTool: SessionAdvisorsOptions["createGrepTool"];
 	#advisorCreateEditTool: SessionAdvisorsOptions["createEditTool"];
@@ -1347,7 +1349,7 @@ export class SessionAdvisors {
 		void this.#host
 			.sendCustomMessage(
 				{ customType: "advisor", content, display: true, attribution: "agent", details },
-				{ deliverAs: "steer", triggerTurn: true },
+				{ deliverAs: "steer", triggerTurn: true, signal: this.#deliveryAbort.signal },
 			)
 			.catch(err => logger.debug("advisor delivery failed", { err: String(err) }));
 	}
@@ -1883,6 +1885,8 @@ export class SessionAdvisors {
 			if (this.#advisors.length > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) this.#stopAdvisorRuntime();
 			return this.#buildAdvisorRuntime(true);
 		}
+		this.#deliveryAbort.abort();
+		this.#deliveryAbort = new AbortController();
 		if (this.#advisors.length > 0) this.#stopAdvisorRuntime();
 		this.#host.extractQueuedAdvisorCards();
 		this.#host.dropPendingAdvisorCards();
