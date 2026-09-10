@@ -349,7 +349,7 @@ import {
 	toRestoredQueuedMessage,
 	withQueuedUserContent,
 } from "./queued-messages";
-import { createRenderTestAgent, type RenderTestOptions } from "./render-test";
+import { createRenderTestAgent, type RenderTestOptions, validateRenderTestOptions } from "./render-test";
 import { createRenderWorkflow } from "./render-workflow";
 import type { ServingModel } from "./retry-fallback-chains";
 import {
@@ -5124,33 +5124,33 @@ export class AgentSession {
 
 	/** Stream a local provider fixture through agent-core and the active session's normal event transport. */
 	async runRenderTest(
-		options: RenderTestOptions = { lines: 100, delayMs: 25 },
+		options: RenderTestOptions = { repeat: 1, delayMs: 25 },
 		uiContext?: ExtensionUIContext,
 	): Promise<void> {
 		if (this.#isDisposed) throw new Error("Session is disposed");
 		if (this.isStreaming) throw new AgentBusyError();
+		validateRenderTestOptions(options);
 		const model = this.model;
 		if (!model) throw new Error("No active model on session");
 		const previousTodo = this.getTodoPhases();
-		const workflow = options.workflow
-			? createRenderWorkflow(
-					{
-						cwd: this.sessionManager.getCwd(),
-						hasUI: uiContext !== undefined,
-						settings: this.settings,
-						getSessionFile: () => null,
-						getSessionSpawns: () => null,
-						getTodoPhases: () => this.getTodoPhases(),
-						setTodoPhases: phases => this.setTodoPhases(phases),
-					},
-					{
-						...this.buildAskReanswerContext(uiContext ?? noOpUIContext),
-						abort: () => {
-							void this.abort();
-						},
-					},
-				)
-			: undefined;
+		const workflow = createRenderWorkflow(
+			{
+				cwd: this.sessionManager.getCwd(),
+				hasUI: uiContext !== undefined,
+				settings: this.settings,
+				getSessionFile: () => null,
+				getSessionSpawns: () => null,
+				getTodoPhases: () => this.getTodoPhases(),
+				setTodoPhases: phases => this.setTodoPhases(phases),
+			},
+			{
+				...this.buildAskReanswerContext(uiContext ?? noOpUIContext),
+				abort: () => {
+					void this.abort();
+				},
+			},
+			options.repeat,
+		);
 		const producer = createRenderTestAgent(model, options, workflow);
 		const completion = Promise.withResolvers<void>();
 		this.#renderTestRun = { agent: producer, completion: completion.promise };
@@ -5165,19 +5165,20 @@ export class AgentSession {
 			this.agent.emitExternalEvent(event);
 		});
 		try {
-			await producer.prompt(`/render test ${options.lines} ${options.delayMs}`);
+			await producer.prompt(`/render ${options.repeat} ${options.delayMs}`);
 		} finally {
 			unsubscribe();
-			this.#renderTestRun = undefined;
-			this.#renderTestEvents = undefined;
-			if (workflow) {
+			try {
 				this.setTodoPhases(previousTodo);
 				await workflow.dispose();
-			}
-			try {
-				if (endEvent) this.#emit({ ...endEvent, isTerminal: true });
 			} finally {
-				completion.resolve();
+				this.#renderTestRun = undefined;
+				this.#renderTestEvents = undefined;
+				try {
+					if (endEvent) this.#emit({ ...endEvent, isTerminal: true });
+				} finally {
+					completion.resolve();
+				}
 			}
 		}
 	}

@@ -15,7 +15,7 @@ import {
 	takeStartupComposerLease,
 } from "@oh-my-pi/pi-coding-agent/modes/startup-composer";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { Component } from "@oh-my-pi/pi-tui";
+import { CombinedAutocompleteProvider, type Component } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { assistantMsg, createTestSession } from "./utilities";
 
@@ -111,12 +111,12 @@ describe("Composer prepaint", () => {
 			const composer = new Composer({ preferences: { ...config, quiet: true }, terminal });
 			const transcript = new TranscriptContainer();
 			const message = new AssistantMessageComponent(undefined, false);
-			let extra = 0;
-			const input: Component = {
-				render: () => [...Array.from({ length: extra }, (_, index) => `EXTRA ${index}`), "INPUT"],
-			};
+			let expanded = false;
+			composer.editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider(Array.from({ length: 12 }, (_, index) => ({ name: `command${index}` }))),
+			);
 			transcript.addChild(message);
-			composer.setRuntimeChildren([transcript, input]);
+			composer.setRuntimeChildren([transcript, composer.editor]);
 			composer.start();
 			const markers = Array.from({ length: 30 }, (_, index) => `MARKER_${String(index + 1).padStart(2, "0")}`);
 			let text = "```text\n";
@@ -127,7 +127,11 @@ describe("Composer prepaint", () => {
 						mode === "varied" ? "Șir cu diacritice ".repeat((streamed.length % 3) + 1) : "x".repeat(42);
 					text += `${marker} ${suffix}\n`;
 					streamed.push(marker);
-					if ((mode === "expanded" || mode === "varied") && marker === "MARKER_10") extra = 4;
+					if ((mode === "expanded" || mode === "varied") && marker === "MARKER_10") {
+						expanded = true;
+						composer.editor.handleInput("/");
+						await terminal.waitForRender();
+					}
 					message.updateContent(assistantMsg(text), { transient: true });
 					composer.ui.renderNow();
 					const liveTape = terminal
@@ -142,7 +146,7 @@ describe("Composer prepaint", () => {
 					// With no transient expansion open, every streamed row is on the
 					// scrollback-backed buffer. While expanded, clipped rows must still
 					// be recoverable — asserted immediately after contraction below.
-					if (extra === 0) expect(liveMarkers).toEqual(streamed);
+					if (!expanded) expect(liveMarkers).toEqual(streamed);
 				}
 				text += "```";
 				message.updateContent(assistantMsg(text), { transient: true });
@@ -158,16 +162,18 @@ describe("Composer prepaint", () => {
 					composer.ui.renderNow();
 					await terminal.waitForRender();
 					composer.ui.renderNow();
-					extra = 0;
+					if (expanded) composer.editor.handleInput("\x7f");
+					expanded = false;
 					composer.ui.renderNow();
 					await terminal.waitForRender();
 					const finalViewport = terminal.getViewport().map(row => row.trimEnd());
-					expect(finalViewport.at(-1), JSON.stringify(finalViewport)).toBe("INPUT");
+					expect(terminal.getCursor().row, JSON.stringify(finalViewport)).toBe(11);
 					if (mode === "expanded" || mode === "varied") {
 						const settledViewport = terminal.getViewport().map(row => row.trimEnd());
 						const states = transcript.blockStates();
 						for (let cycle = 0; cycle < 3; cycle++) {
-							extra = 4;
+							composer.editor.handleInput("/");
+							await terminal.waitForRender();
 							composer.ui.renderNow();
 							await terminal.waitForRender();
 							const expandedTape = terminal
@@ -175,11 +181,20 @@ describe("Composer prepaint", () => {
 								.map(row => Bun.stripANSI(row))
 								.join("\n");
 							const visibleMarkers = Array.from(expandedTape.match(/MARKER_\d{2}/g) ?? []);
-							expect(visibleMarkers).toEqual(markers);
-							extra = 0;
+							// Suggestions may cover rows; closing must recover every marker exactly once.
+							expect(visibleMarkers).toEqual(markers.filter(marker => visibleMarkers.includes(marker)));
+							composer.editor.handleInput("\x7f");
 							composer.ui.renderNow();
 							await terminal.waitForRender();
 							expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(settledViewport);
+							expect(
+								Array.from(
+									terminal
+										.getScrollBuffer()
+										.join("\n")
+										.match(/MARKER_\d{2}/g) ?? [],
+								),
+							).toEqual(markers);
 							expect(transcript.blockStates()).toEqual(states);
 						}
 					}

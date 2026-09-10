@@ -5,26 +5,19 @@ import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import type { SlashCommandSpec } from "./types";
 
 function parseRenderTestArgs(args: string): RenderTestOptions {
-	const parts = args.trim().split(/\s+/);
-	if ((parts[0] !== "test" && parts[0] !== "workflow") || parts.length > 3) {
-		throw new Error("Usage: /render test|workflow [lines=100] [chunk-delay-ms=25]");
+	const parts = args.trim() ? args.trim().split(/\s+/) : [];
+	if (parts.length > 2 || parts.some(part => !/^\d+$/.test(part))) {
+		throw new Error("Usage: /render [repeat=1] [chunk-delay-ms=25]");
 	}
-	return { lines: Number(parts[1] ?? 100), delayMs: Number(parts[2] ?? 25), workflow: parts[0] === "workflow" };
+	return { repeat: Number(parts[0] ?? 1), delayMs: Number(parts[1] ?? 25) };
 }
 
 export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "render",
-		description: "Stream local rendering test output without model requests or tokens",
+		description: "Exercise thinking, long text, Markdown, real reads/edits and interactive questions without tokens",
 		allowArgs: true,
-		subcommands: [
-			{ name: "test", description: "Simulate 100 numbered streaming lines", usage: "[lines] [chunk-delay-ms]" },
-			{
-				name: "workflow",
-				description: "Run real TODO, read, edit and ask tools on disposable files",
-				usage: "[lines] [chunk-delay-ms]",
-			},
-		],
+		inlineHint: "[repeat=1] [chunk-delay-ms=25]",
 		handle: async (command, runtime) => {
 			const run = async (): Promise<void> => {
 				try {

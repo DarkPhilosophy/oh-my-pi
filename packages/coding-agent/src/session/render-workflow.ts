@@ -9,21 +9,28 @@ import { AskTool } from "../tools/ask";
 import { ReadTool } from "../tools/read";
 import { TodoTool } from "../tools/todo";
 
+export interface RenderWorkflowStep {
+	calls: ToolCall[];
+	repetition: number;
+	introduction: boolean;
+}
+
 export interface RenderWorkflow {
 	context: AgentToolContext;
 	tools: Array<ReadTool | EditTool | TodoTool | AskTool>;
-	next(context: Context): Promise<ToolCall | undefined>;
+	next(context: Context): Promise<RenderWorkflowStep | undefined>;
 	dispose(): Promise<void>;
 }
 
 /** Real tools, restricted to owned disposable files; the provider only scripts their calls. */
-export function createRenderWorkflow(session: ToolSession, context: AgentToolContext): RenderWorkflow {
+export function createRenderWorkflow(session: ToolSession, context: AgentToolContext, repeat: number): RenderWorkflow {
 	if (!context.hasUI || !context.ui?.askDialog) throw new Error("Render workflow requires interactive ask support.");
 	const directory = TempDir.createSync(path.join(os.tmpdir(), "omp-render-workflow-"));
 	const localSession: ToolSession = { ...session, cwd: directory.path(), hasEditTool: true };
 	const files = Array.from({ length: 3 }, (_, index) => directory.path() + `/sample-${index + 1}.txt`);
 	let initialized = false;
 	let stage = 0;
+	let repetition = 1;
 	const tasks = [
 		"Read disposable workflow fixtures",
 		"Edit disposable workflow fixtures",
@@ -49,7 +56,7 @@ export function createRenderWorkflow(session: ToolSession, context: AgentToolCon
 				if (!header) throw new Error("Workflow read did not provide a snapshot for the edit.");
 				const tag = invalid ? (header[2] === "FFFF" ? "0000" : "FFFF") : header[2];
 				return {
-					input: `*** Begin Patch\n[${file}#${tag}]\nPUT 2.=2:\n+Workflow edit ${index + 1} completed.\n*** End Patch\n`,
+					input: `*** Begin Patch\n[${file}#${tag}]\nPUT 2.=2:\n+Workflow repetition ${repetition}, edit ${index + 1} completed.\n*** End Patch\n`,
 				};
 			},
 		});
@@ -58,19 +65,25 @@ export function createRenderWorkflow(session: ToolSession, context: AgentToolCon
 	read(1);
 	read(2);
 	edit(0);
+	edit(1, true);
+	edit(2);
 	read(0);
 	read(1);
-	edit(1, true);
-	read(1);
+	read(2);
 	edit(1);
 	actions.push({ name: "todo", args: () => ({ op: "done", task: tasks[0] }) });
+	read(0);
+	read(1);
+	read(2);
+	read(0);
+	actions.push({ name: "todo", args: () => ({ op: "done", task: tasks[1] }) });
 	actions.push({
 		name: "ask",
 		args: () => ({
 			questions: [
 				{
 					id: "render-workflow",
-					question: "Continue the rendering workflow after dismissing this dialog?",
+					question: `Repetition ${repetition}/${repeat}: continue after inspecting the rendering?`,
 					options: [
 						{ label: "Continue", description: "Resume reads, edits and streamed output." },
 						{
@@ -83,12 +96,6 @@ export function createRenderWorkflow(session: ToolSession, context: AgentToolCon
 			],
 		}),
 	});
-	read(2);
-	edit(2);
-	read(0);
-	read(1);
-	read(2);
-	actions.push({ name: "todo", args: () => ({ op: "done", task: tasks[1] }) });
 	actions.push({ name: "todo", args: () => ({ op: "done", task: tasks[2] }) });
 	return {
 		tools: [
@@ -114,10 +121,21 @@ export function createRenderWorkflow(session: ToolSession, context: AgentToolCon
 				);
 				initialized = true;
 			}
-			const action = actions[stage++];
-			return action
-				? { type: "toolCall", id: `render-workflow-${stage}`, name: action.name, arguments: action.args() }
-				: undefined;
+			if (stage === actions.length) {
+				if (repetition === repeat) return undefined;
+				repetition++;
+				stage = 0;
+			}
+			const introduction = stage === 0;
+			const count = stage === 1 || stage === 4 ? 3 : 1;
+			const calls = actions.slice(stage, stage + count).map((action, offset): ToolCall => ({
+				type: "toolCall",
+				id: `render-workflow-${repetition}-${stage + offset + 1}`,
+				name: action.name,
+				arguments: action.args(),
+			}));
+			stage += count;
+			return { calls, repetition, introduction };
 		},
 		dispose: () => directory.remove(),
 	};
