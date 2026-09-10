@@ -28,7 +28,45 @@ const deps: AdvisorConfigDeps = {
 	availableToolNames: [],
 };
 
-describe("advisor config editor warnings and synthetic default row", () => {
+describe("advisor review mode picker", () => {
+	beforeAll(async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("theme unavailable");
+		setThemeInstance(theme);
+	});
+
+	it("preserves configured mode when accepting current selection and saving", async () => {
+		let saved: WatchdogConfigDoc | undefined;
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			deps,
+			"project",
+			{ advisors: [{ name: "Reviewer", reviewMode: "agent-end", reviewInterval: 3 }] },
+			{
+				loadDoc: async () => ({ advisors: [] }),
+				save: async (_scope, doc) => {
+					saved = structuredClone(doc);
+				},
+				close: () => {},
+				requestRender: () => {},
+				notify: () => {},
+			},
+		);
+
+		overlay.handleInput("\r"); // Advisor detail.
+		for (let i = 0; i < 3; i++) overlay.handleInput("\x1b[B");
+		overlay.handleInput("\r"); // Review mode.
+		overlay.handleInput("\r"); // Accept current mode without navigating.
+		overlay.handleInput("\x1b"); // Back to roster.
+		for (let i = 0; i < 4; i++) overlay.handleInput("\x1b[B");
+		overlay.handleInput("\r"); // Save & apply.
+		await Promise.resolve();
+
+		expect(saved?.advisors).toEqual([{ name: "Reviewer", reviewMode: "agent-end", reviewInterval: 3 }]);
+	});
+});
+
+describe("advisor sync backlog picker", () => {
 	beforeAll(async () => {
 		const theme = await getThemeByName("dark");
 		if (!theme) throw new Error("theme unavailable");
