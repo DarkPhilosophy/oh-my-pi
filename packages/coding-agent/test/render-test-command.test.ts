@@ -93,6 +93,8 @@ it("runs complete repeated workflows through real tools and interactive renderin
 		{ name: "Existing", tasks: [{ content: "Keep the user's original plan", status: "pending" as const }] },
 	];
 	session.setTodoPhases(savedTodo);
+	const runStates: string[] = [];
+	session.subscribeRunState(state => runStates.push(state));
 	session.subscribe(event => {
 		if (event.type === "message_update") {
 			if (event.assistantMessageEvent.type === "thinking_delta") thinkingDeltas++;
@@ -118,6 +120,7 @@ it("runs complete repeated workflows through real tools and interactive renderin
 	mode.ui.renderNow();
 	await terminal.waitForRender();
 	expect(session.isStreaming).toBeFalse();
+	expect(runStates).toEqual(["running", "idle"]);
 	expect(session.getTodoPhases()).toEqual(savedTodo);
 	expect(thinkingDeltas).toBeGreaterThan(2);
 	expect(textDeltas).toBeGreaterThan(100);
@@ -163,6 +166,8 @@ it("runs complete repeated workflows through real tools and interactive renderin
 it("cancels paced output and rejects an overlapping run without starting a provider", async () => {
 	const firstDelta = Promise.withResolvers<void>();
 	let final: AssistantMessage | undefined;
+	const runStates: string[] = [];
+	session.subscribeRunState(state => runStates.push(state));
 	session.subscribe(event => {
 		if (event.type === "message_update") firstDelta.resolve();
 		if (event.type === "message_end" && event.message.role === "assistant") final = event.message;
@@ -173,6 +178,7 @@ it("cancels paced output and rejects an overlapping run without starting a provi
 	await session.abort();
 	await running;
 	expect(session.isStreaming).toBeFalse();
+	expect(runStates).toEqual(["running", "idle"]);
 	expect(final?.stopReason).toBe("aborted");
 	expect(final?.content.some(block => block.type === "text")).toBeFalse();
 	expect(providerCalls).toBe(0);

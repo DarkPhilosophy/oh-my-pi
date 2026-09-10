@@ -5182,6 +5182,7 @@ export class AgentSession {
 				this.#renderTestEvents = undefined;
 				this.#renderTestPendingEvents = undefined;
 				try {
+					this.#emitRunState("idle");
 					if (endEvent) await this.#emitSessionEvent({ ...endEvent, isTerminal: true });
 				} finally {
 					completion.resolve();
