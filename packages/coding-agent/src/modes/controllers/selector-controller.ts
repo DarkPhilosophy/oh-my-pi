@@ -306,14 +306,14 @@ export class SelectorController {
 					{
 						usageModelSelectors,
 						maskAccountLabels: view.maskAccountLabels,
-						labelPlacement: settings.get("usage.labelPlacement"),
+						labelPlacement: this.ctx.settings.get("usage.labelPlacement"),
 					},
 				),
 			createMasker: createAccountMasker,
 			// Read on every open; the overlay's p/m toggles never write back.
-			maskAccountLabels: settings.get("usage.maskAccountLabels"),
-			mergeAccounts: settings.get("usage.mergeAccounts"),
-			labelPlacement: settings.get("usage.labelPlacement"),
+			maskAccountLabels: this.ctx.settings.get("usage.maskAccountLabels"),
+			mergeAccounts: this.ctx.settings.get("usage.mergeAccounts"),
+			labelPlacement: this.ctx.settings.get("usage.labelPlacement"),
 			loadActivity: (push, signal) => loadDailyActivity(push, signal),
 			requestRender: () => this.ctx.ui.requestRender(),
 			onClose: done,
