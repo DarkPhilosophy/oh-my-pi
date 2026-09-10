@@ -1,10 +1,16 @@
 import type { CollabSessionState } from "../../../collab/protocol";
-import type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "../../../config/settings-schema";
+import type {
+	ContextLineMode,
+	StatusLinePreset,
+	StatusLineSegmentId,
+	StatusLineSeparatorStyle,
+} from "../../../config/settings-schema";
 import type { AgentSession } from "../../../session/agent-session";
 import type { ActiveRepoContext } from "../../../utils/active-repo-context";
+import type { LoopConditionConfig } from "../../loop-condition";
 import type { LoopLimitRuntime } from "../../loop-limit";
 
-export type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
+export type { ContextLineMode, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
 
 /** Collab session indicator + (guest-only) host-state override for segments. */
 export interface CollabStatus {
@@ -35,6 +41,10 @@ export interface StatusLineSettings {
 	/** Replace the model-segment icon with the thinking-level glyph and drop the
 	 *  " · <level>" suffix, so the thinking level reads as a single compact icon. */
 	compactThinkingLevel?: boolean;
+	/** How the gap line between the left and right groups reacts to context
+	 *  usage. `embedded` moves configured context segments into the annotated
+	 *  gauge as percentage and window labels. Box composer only. */
+	contextLine?: ContextLineMode;
 }
 
 export type EffectiveStatusLineSettings = Required<
@@ -50,13 +60,25 @@ export type RGB = readonly [number, number, number];
 
 export interface SegmentContext {
 	session: AgentSession;
+	/** Deterministic wall clock for previews/tests; production omits it. */
+	now?: Date;
+	/** Deterministic host label for previews/tests; production omits it. */
+	hostname?: string;
 	/** Focused subagent id while the view is proxied at its session, undefined otherwise. */
 	focusedAgentId?: string | undefined;
+	/** Effective `statusLine.sessionAccent`; `false` disables hash-derived accent colors, while `true` or omission enables them. */
+	sessionAccent?: boolean;
+	/** Stand-in session title for previews; `session_name` renders it when the session is unnamed. */
+	previewTitle?: string;
+	/** Replace dynamic values with ellipses while preserving each segment's icon, color, and static text. */
+	startupPlaceholder?: boolean;
 	activeRepo: ActiveRepoContext | null;
 	width: number;
 	options: StatusLineSegmentOptions;
 	/** Render the model segment's thinking level as a compact leading glyph. */
 	compactThinkingLevel: boolean;
+	/** Key-sorted extension/hook status values. Segment renderers sanitize before display. */
+	hookStatuses?: readonly string[];
 	planMode: {
 		enabled: boolean;
 		paused: boolean;
@@ -67,6 +89,7 @@ export interface SegmentContext {
 	loopMode: {
 		state: "waiting" | "running" | "paused";
 		limit?: LoopLimitRuntime;
+		condition?: LoopConditionConfig;
 	} | null;
 	goalMode: {
 		enabled: boolean;
@@ -74,6 +97,16 @@ export interface SegmentContext {
 	} | null;
 	vibeMode: {
 		enabled: boolean;
+	} | null;
+	/** Modal editing state, or null when `tui.vimMode` is off. */
+	vim: {
+		mode: "insert" | "normal" | "visual" | "visual-line";
+		/** Half-typed operator/count (`"2d"`), empty when nothing is pending. */
+		pending: string;
+		/** Lines spanned by the active Visual selection; 0 outside Visual modes. */
+		selectedLines: number;
+		/** `tui.vimModeDisplay`: how the mode renders in the status line. */
+		display: "text" | "icon" | "none";
 	} | null;
 	collab: CollabStatus | null;
 	// Cached values for performance (computed once per render)
@@ -95,6 +128,10 @@ export interface SegmentContext {
 	contextTokens: number;
 	contextWindow: number;
 	autoCompactEnabled: boolean;
+	/** Background speculative-compaction state (async compaction). */
+	compactionSpeculation: "idle" | "running" | "armed";
+	/** Blink phase for the running-speculation pulse; toggled by the component's timer. */
+	speculationBlinkOn: boolean;
 	subagentCount: number;
 	/**
 	 * Active processing time accumulated this session, in ms — the union of
@@ -104,6 +141,19 @@ export interface SegmentContext {
 	 * `Date.now() - sessionStart`.
 	 */
 	activeMs: number;
+	/**
+	 * Elapsed ms of the currently-running turn (the open `agent_start` window),
+	 * or null when the agent is idle. Drives the `pi` segment's working
+	 * spinner + turn timer.
+	 */
+	turnElapsedMs: number | null;
+	/**
+	 * Sampled foreground ANSI for the `pi` brand segment — tweened between dim
+	 * gray (idle) and the accent (working) across turn edges (rust omp's
+	 * status-band brand fade). Absent in direct-segment fixtures and previews,
+	 * which fall back to the static dim color.
+	 */
+	brandFgAnsi?: string;
 	git: {
 		branch: string | null;
 		status: { staged: number; unstaged: number; untracked: number } | null;
@@ -119,7 +169,9 @@ export interface SegmentContext {
 	usage: {
 		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };
+		daily?: { percent: number; resetMinutes?: number };
 		sevenDay?: { percent: number; resetHours?: number };
+		monthly?: { percent: number; resetHours?: number };
 	} | null;
 }
 

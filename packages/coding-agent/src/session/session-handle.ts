@@ -2,6 +2,7 @@ import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import type { DaemonClient } from "../daemon/client";
+import { calculateTokensPerSecond } from "../utils/token-rate";
 import {
 	type DaemonEvent,
 	type DaemonEventDelivery,
@@ -144,6 +145,9 @@ function defaultState(sessionId: string): RpcSessionState {
 		messageCount: 0,
 		queuedMessageCount: 0,
 		todoPhases: [],
+		fastModeEnabled: false,
+		fastModeActive: false,
+		tokensPerSecond: null,
 	};
 }
 
@@ -163,6 +167,9 @@ function stateFromLocal(session: AgentSession): RpcSessionState {
 		messageCount: session.state.messages.length,
 		queuedMessageCount: session.queuedMessageCount,
 		todoPhases: session.getTodoPhases(),
+		fastModeEnabled: session.isFastModeEnabled(),
+		fastModeActive: session.isFastModeActive(),
+		tokensPerSecond: calculateTokensPerSecond(session.messages, session.isStreaming),
 		contextUsage: session.getContextUsage(),
 	});
 }

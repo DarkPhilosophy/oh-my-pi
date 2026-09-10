@@ -1,5 +1,5 @@
 import * as os from "node:os";
-import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { logger, type postmortem, setProjectDir, VERSION } from "@oh-my-pi/pi-utils";
 import { createProjectDirScope, getActiveProfile, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
@@ -45,7 +45,8 @@ import { lookupBuiltinSlashCommand } from "../slash-commands/builtin-registry";
 import { parseSlashCommand } from "../slash-commands/helpers/parse";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
 import type { TodoPhase } from "../tools/todo";
-import { loadStartupChangelog } from "../utils/changelog";
+import { resolveStartupChangelogForDisplay } from "../utils/changelog";
+import { calculateTokensPerSecond } from "../utils/token-rate";
 import { DAEMON_PROTOCOL_MAJOR } from "./protocol";
 import type { DaemonConnectionSnapshot } from "./status";
 import { HostedTerminal, type HostedTerminalDescriptor } from "./terminal-bridge";
@@ -61,14 +62,14 @@ export type DaemonSession = {
 	readonly sessionId: string;
 	readonly agent?: {
 		state?: {
-			messages?: readonly unknown[];
+			messages?: readonly AgentMessage[];
 			systemPrompt?: string[];
 			tools?: readonly unknown[];
 		};
 		setTools?: (tools: readonly unknown[]) => void;
 	};
 	readonly sessionManager?: SessionManager;
-	readonly state?: { messages?: readonly unknown[] };
+	readonly state?: { messages?: readonly AgentMessage[] };
 	readonly model?: Model;
 	readonly thinkingLevel?: ThinkingLevel;
 	readonly isStreaming?: boolean;
@@ -94,6 +95,8 @@ export type DaemonSession = {
 	readonly setInterruptMode?: (mode: "immediate" | "wait") => void;
 	readonly setTodoPhases?: (phases: TodoPhase[]) => void;
 	readonly getTodoPhases?: () => TodoPhase[];
+	readonly isFastModeEnabled?: AgentSession["isFastModeEnabled"];
+	readonly isFastModeActive?: AgentSession["isFastModeActive"];
 };
 
 export type DaemonSessionSnapshot = {
@@ -194,6 +197,9 @@ function sessionState(
 		messageCount: messages?.length ?? 0,
 		queuedMessageCount: session.queuedMessageCount ?? 0,
 		todoPhases: session.getTodoPhases?.() ?? [],
+		fastModeEnabled: session.isFastModeEnabled?.() ?? false,
+		fastModeActive: session.isFastModeActive?.() ?? false,
+		tokensPerSecond: calculateTokensPerSecond(messages ?? [], session.isStreaming ?? false),
 		systemPrompt: session.systemPrompt ?? session.agent?.state?.systemPrompt,
 		contextUsage: session.getContextUsage?.(),
 		cwd,
@@ -608,16 +614,23 @@ async function createAgentSessionRuntimeInScope(
 			sessionSettings.get("theme.light"),
 		);
 		setProjectDir(result.session.sessionManager.getCwd());
-		const changelogMarkdown = await loadStartupChangelog(skipStartupChangelog);
+		const startupChangelog = skipStartupChangelog
+			? undefined
+			: await resolveStartupChangelogForDisplay({
+					mode: sessionSettings.get("startup.changelogMode"),
+					currentVersion: VERSION,
+				});
 		let mode!: InteractiveMode;
 		mode = new InteractiveMode(
 			result.session,
 			VERSION,
-			changelogMarkdown,
+			startupChangelog,
 			result.setToolUIContext,
 			result.lspServers,
 			result.mcpManager,
 			result.eventBus,
+			undefined,
+			result.subagentEventBus,
 			{
 				terminal,
 				onDetach: (reason, error) => {

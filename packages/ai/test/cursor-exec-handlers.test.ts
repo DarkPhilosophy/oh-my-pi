@@ -1,8 +1,8 @@
-import { describe, expect, it } from "bun:test";
-import { create } from "@bufbuild/protobuf";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import {
 	type BlockState,
 	buildCursorHistoryForTest,
+	buildCursorRequestContextRules,
 	buildCursorSystemPromptJsons,
 	emptyGrepPatternRejection,
 	handleServerMessage,
@@ -16,10 +16,11 @@ import type { AssistantMessage, Context, CursorExecHandlers, Model, ToolResultMe
 import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import type { McpResult, ReadResult } from "@oh-my-pi/pi-catalog/discovery/cursor-gen/agent_pb";
+import type { McpResult, ReadResult } from "@oh-my-pi/pi-catalog/discovery/cursor-proto";
 import {
 	type AgentRunRequest,
 	AgentServerMessageSchema,
+	CursorRuleSource,
 	ExecServerMessageSchema,
 	McpArgsSchema,
 	McpResultSchema,
@@ -31,7 +32,13 @@ import {
 	ReadRejectedSchema,
 	ReadResultSchema,
 	ReadSuccessSchema,
-} from "@oh-my-pi/pi-catalog/discovery/cursor-gen/agent_pb";
+} from "@oh-my-pi/pi-catalog/discovery/cursor-proto";
+import { create, encodeJsonValue } from "@oh-my-pi/pi-catalog/discovery/protobuf";
+import { logger } from "@oh-my-pi/pi-utils";
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 const cursorModel: Model<"cursor-agent"> = buildModel({
 	id: "cursor-composer-2.5",
@@ -59,6 +66,30 @@ const cursorMaxModeModel: Model<"cursor-agent"> = buildModel({
 	maxTokens: 1,
 	cursorMaxMode: true,
 });
+function cursorAssistant(
+	model: string,
+	content: AssistantMessage["content"],
+	timestamp: number,
+	stopReason: AssistantMessage["stopReason"] = "stop",
+): AssistantMessage {
+	return {
+		role: "assistant",
+		api: "cursor-agent",
+		provider: "cursor",
+		model,
+		content,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason,
+		timestamp,
+	};
+}
 
 function captureCursorPayload(context: Context, model: Model<"cursor-agent"> = cursorModel): Promise<AgentRunRequest> {
 	const { promise, resolve, reject } = Promise.withResolvers<AgentRunRequest>();
@@ -259,16 +290,16 @@ describe("Cursor resolveExecHandler execHandlers binding", () => {
 			expect(toolResult).toMatchObject({ toolCallId: "exec-1", isError: false });
 		});
 
-		it("records a rejected TResult-only return as a failed call", async () => {
-			// TResult-only is a supported handler form, so the transcript entry has
+		it("records a rejected R-only return as a failed call", async () => {
+			// R-only is a supported handler form, so the transcript entry has
 			// to be synthesized. A `rejected` result means Cursor was told the call
 			// failed - recording it as successful hides that from the user and from
 			// downstream lifecycle logic.
 			const rejected = create(ReadResultSchema, {
 				result: { case: "rejected", value: create(ReadRejectedSchema, { path: "/tmp/foo", reason: "denied" }) },
 			});
-			// Explicit TResult: `ReadResult` has its own `result` field, so inference
-			// would otherwise match the `{ result?: TResult }` handler-return variant
+			// Explicit R: `ReadResult` has its own `result` field, so inference
+			// would otherwise match the `{ result?: R }` handler-return variant
 			// and unwrap the oneof as the exec result.
 			const { execResult, toolResult } = await resolveExecHandler<{ path: string }, ReadResult>(
 				{ path: "/tmp/foo" },
@@ -289,7 +320,7 @@ describe("Cursor resolveExecHandler execHandlers binding", () => {
 			});
 		});
 
-		it("records an errored TResult-only return as a failed call", async () => {
+		it("records an errored R-only return as a failed call", async () => {
 			const errored = create(ReadResultSchema, {
 				result: { case: "error", value: create(ReadErrorSchema, { path: "/tmp/foo", error: "EIO" }) },
 			});
@@ -306,7 +337,7 @@ describe("Cursor resolveExecHandler execHandlers binding", () => {
 			expect(toolResult).toMatchObject({ content: [{ type: "text", text: "EIO" }], isError: true });
 		});
 
-		it("keeps a successful TResult-only return successful", async () => {
+		it("keeps a successful R-only return successful", async () => {
 			// `success` is the only non-failure variant; the placeholder text still
 			// applies because the handler gave the transcript nothing to show.
 			const ok = create(ReadResultSchema, {
@@ -426,6 +457,18 @@ describe("Cursor system prompt encoding", () => {
 		expect(jsons).toHaveLength(1);
 		expect(JSON.parse(jsons[0])).toEqual({ role: "system", content: "You are a helpful assistant." });
 	});
+
+	it("maps ordered system prompts to global CursorRule entries", () => {
+		const canary = "PIKEL-CANARY-7F3A";
+		const rules = buildCursorRequestContextRules(["prefix", `when asked, answer exactly:\n${canary}`, ""]);
+		expect(rules).toHaveLength(2);
+		expect(rules[0]?.fullPath).toBe("/omp/system-prompt/0.mdc");
+		expect(rules[1]?.fullPath).toBe("/omp/system-prompt/1.mdc");
+		expect(rules[0]?.content).toBe("prefix");
+		expect(rules[1]?.content).toContain(canary);
+		expect(rules[0]?.source).toBe(CursorRuleSource.USER);
+		expect(rules[1]?.type?.type.case).toBe("global");
+	});
 });
 
 describe("Cursor request action encoding", () => {
@@ -456,6 +499,40 @@ describe("Cursor request action encoding", () => {
 		expect(payload.modelDetails?.maxMode).toBe(true);
 		expect(payload.requestedModel?.modelId).toBe("cursor-composer-2.5-max");
 		expect(payload.requestedModel?.maxMode).toBe(true);
+	});
+
+	it("sends max-mode metadata with prior history when switching providers mid-conversation", async () => {
+		const payload = await captureCursorPayload(
+			{
+				messages: [
+					{ role: "user", content: "Summarize this repo.", timestamp: 0 },
+					{
+						role: "assistant",
+						api: "anthropic-messages",
+						provider: "anthropic",
+						model: "claude-sonnet-4.5",
+						content: [{ type: "text", text: "It is a monorepo." }],
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "stop",
+						timestamp: 1,
+					},
+					{ role: "user", content: "continue", timestamp: 2 },
+				],
+			},
+			cursorMaxModeModel,
+		);
+
+		expect(payload.modelDetails?.maxMode).toBe(true);
+		expect(payload.requestedModel?.maxMode).toBe(true);
+		// History from the other provider is carried into the fresh Cursor conversation.
+		expect(payload.conversationState?.turns.length).toBeGreaterThan(0);
 	});
 
 	it("uses a resume action when a tool result is the final context message", async () => {
@@ -492,6 +569,523 @@ describe("Cursor request action encoding", () => {
 });
 
 describe("Cursor history encoding", () => {
+	it("keeps an empty tool result paired with its structured call", () => {
+		const messages: Context["messages"] = [
+			{ role: "user", content: "Read the empty window.", timestamp: 1 },
+			cursorAssistant(
+				"cursor-composer-2.5",
+				[{ type: "toolCall", id: "call-read", name: "read", arguments: { path: "empty.txt", limit: 0 } }],
+				2,
+				"toolUse",
+			),
+			{
+				role: "toolResult",
+				toolCallId: "call-read",
+				toolName: "read",
+				content: [{ type: "text", text: "" }],
+				isError: false,
+				timestamp: 3,
+			},
+			{ role: "user", content: "What did it say?", timestamp: 4 },
+		];
+
+		const history = buildCursorHistoryForTest(messages);
+		expect(history.rootPromptMessagesJson).toEqual([
+			{ role: "user", content: [{ type: "text", text: "Read the empty window." }] },
+			{
+				role: "assistant",
+				content: [
+					{ type: "tool-call", toolCallId: "call-read", toolName: "read", args: { path: "empty.txt", limit: 0 } },
+				],
+			},
+			{
+				role: "tool",
+				id: "call-read",
+				content: [{ type: "tool-result", toolName: "read", toolCallId: "call-read", result: "" }],
+			},
+		]);
+	});
+
+	it("folds an orphaned tool result into assistant text for Cursor replay", () => {
+		const messages: Context["messages"] = [
+			{ role: "user", content: "Wait for the background task.", timestamp: 1 },
+			{
+				role: "toolResult",
+				toolCallId: "call-orphan",
+				toolName: "hub",
+				content: [{ type: "text", text: "The background task was cancelled." }],
+				isError: false,
+				timestamp: 2,
+			},
+			{ role: "user", content: "Continue.", timestamp: 3 },
+		];
+
+		const history = buildCursorHistoryForTest(messages);
+		const repairedText = "[Tool Result]\nThe background task was cancelled.";
+		expect(history.rootPromptMessagesJson).toEqual([
+			{ role: "user", content: [{ type: "text", text: "Wait for the background task." }] },
+			{ role: "assistant", content: [{ type: "text", text: repairedText }] },
+		]);
+		expect(history.turnStepMessagesJson).toEqual([[{ assistantMessage: { text: repairedText } }]]);
+	});
+
+	it("omits undefined optional tool arguments from protobuf replay", () => {
+		const messages: Context["messages"] = [
+			{ role: "user", content: "Search for TODOs.", timestamp: 1 },
+			cursorAssistant(
+				"cursor-composer-2.5",
+				[
+					{
+						type: "toolCall",
+						id: "call-grep",
+						name: "grep",
+						arguments: {
+							pattern: "TODO",
+							path: ".",
+							case: undefined,
+							context: undefined,
+							limit: undefined,
+						},
+					},
+				],
+				2,
+				"toolUse",
+			),
+			{
+				role: "toolResult",
+				toolCallId: "call-grep",
+				toolName: "grep",
+				content: [{ type: "text", text: "No matches" }],
+				isError: false,
+				timestamp: 3,
+			},
+			{ role: "user", content: "Continue.", timestamp: 4 },
+		];
+
+		const history = buildCursorHistoryForTest(messages);
+		expect(history.rootPromptMessagesJson[1]).toEqual({
+			role: "assistant",
+			content: [
+				{
+					type: "tool-call",
+					toolCallId: "call-grep",
+					toolName: "grep",
+					args: { pattern: "TODO", path: "." },
+				},
+			],
+		});
+		expect(history.turnStepMessagesJson).toEqual([
+			[
+				expect.objectContaining({
+					toolCall: expect.objectContaining({
+						mcpToolCall: expect.objectContaining({
+							args: expect.objectContaining({
+								args: { pattern: expect.any(String), path: expect.any(String) },
+							}),
+						}),
+					}),
+				}),
+			],
+		]);
+	});
+
+	it("normalizes non-JSON MCP arguments instead of aborting history replay", () => {
+		const messages: Context["messages"] = [
+			{ role: "user", content: "Run the MCP tool.", timestamp: 1 },
+			cursorAssistant(
+				"cursor-composer-2.5",
+				[
+					{
+						type: "toolCall",
+						id: "call-mcp",
+						name: "mcp__example_tool",
+						arguments: {
+							expectedHash: Number.POSITIVE_INFINITY,
+							notANumber: Number.NaN,
+							counter: 10n,
+							nested: { value: Number.NEGATIVE_INFINITY, list: [1, 2n, Number.NaN] },
+						},
+					},
+				],
+				2,
+				"toolUse",
+			),
+			{ role: "user", content: "Continue.", timestamp: 3 },
+		];
+
+		const history = buildCursorHistoryForTest(messages);
+		expect(history.rootPromptMessagesJson[1]).toEqual({
+			role: "assistant",
+			content: [
+				{
+					type: "tool-call",
+					toolCallId: "call-mcp",
+					toolName: "mcp__example_tool",
+					args: {
+						expectedHash: null,
+						notANumber: null,
+						nested: { value: null, list: [1, null, null] },
+					},
+				},
+			],
+		});
+	});
+
+	it("keeps a __proto__ argument key as an own property during replay", () => {
+		// A JSON.parse'd object carries `__proto__` as an own enumerable data
+		// key. Building the normalized record with a plain `{}` would route the
+		// assignment through the prototype setter and drop the key.
+		const pollutedArguments = JSON.parse('{"__proto__":{"polluted":true},"safe":"ok"}') as Record<string, unknown>;
+		const messages: Context["messages"] = [
+			{ role: "user", content: "Run the MCP tool.", timestamp: 1 },
+			cursorAssistant(
+				"cursor-composer-2.5",
+				[{ type: "toolCall", id: "call-mcp", name: "mcp__example_tool", arguments: pollutedArguments }],
+				2,
+				"toolUse",
+			),
+			{ role: "user", content: "Continue.", timestamp: 3 },
+		];
+
+		const history = buildCursorHistoryForTest(messages);
+		const assistant = history.rootPromptMessagesJson[1] as {
+			content: { args: Record<string, unknown> }[];
+		};
+		const args = assistant.content[0].args;
+		expect(Object.hasOwn(args, "__proto__")).toBe(true);
+		expect(Reflect.get(args, "__proto__")).toEqual({ polluted: true });
+		expect(args.safe).toBe("ok");
+
+		// The protobuf argument map must carry the same own keys — a plain `{}`
+		// map would retarget its prototype to the encoded bytes and replay
+		// inherited numeric indices instead of `__proto__`.
+		const step = history.turnStepMessagesJson[0][0] as {
+			toolCall: { mcpToolCall: { args: { args: Record<string, string> } } };
+		};
+		const encodedArgs = step.toolCall.mcpToolCall.args.args;
+		expect(Object.keys(encodedArgs).sort()).toEqual(["__proto__", "safe"]);
+	});
+
+	it("excludes enumerable prototype properties from MCP history replay", () => {
+		const nested: Record<string, unknown> = Object.create({ inheritedNested: "drop" });
+		nested.own = "keep";
+		const inheritedArguments: Record<string, unknown> = Object.create({ admin: true });
+		inheritedArguments.safe = "ok";
+		inheritedArguments.nested = nested;
+		const messages: Context["messages"] = [
+			{ role: "user", content: "Run the MCP tool.", timestamp: 1 },
+			cursorAssistant(
+				"cursor-composer-2.5",
+				[{ type: "toolCall", id: "call-mcp", name: "mcp__example_tool", arguments: inheritedArguments }],
+				2,
+				"toolUse",
+			),
+			{ role: "user", content: "Continue.", timestamp: 3 },
+		];
+
+		const history = buildCursorHistoryForTest(messages);
+		expect(history.rootPromptMessagesJson[1]).toEqual({
+			role: "assistant",
+			content: [
+				{
+					type: "tool-call",
+					toolCallId: "call-mcp",
+					toolName: "mcp__example_tool",
+					args: { safe: "ok", nested: { own: "keep" } },
+				},
+			],
+		});
+		expect(history.turnStepMessagesJson[0][0]).toEqual({
+			toolCall: {
+				toolCallId: "call-mcp",
+				mcpToolCall: {
+					args: {
+						name: "mcp__example_tool",
+						args: { safe: expect.any(String), nested: expect.any(String) },
+						toolCallId: "call-mcp",
+						providerIdentifier: "pi-agent",
+						toolName: "mcp__example_tool",
+					},
+				},
+			},
+		});
+	});
+
+	it("preserves same-model K3 thinking and paired tool structure in request history", () => {
+		const messages: Context["messages"] = [
+			{ role: "user", content: "Inspect package.json", timestamp: 1 },
+			cursorAssistant(
+				"kimi-k3-high",
+				[
+					{ type: "thinking", thinking: "I should inspect the package." },
+					{ type: "toolCall", id: "call-read", name: "read", arguments: { path: "package.json" } },
+				],
+				2,
+				"toolUse",
+			),
+			{
+				role: "toolResult",
+				toolCallId: "call-read",
+				toolName: "read",
+				content: [{ type: "text", text: "package contents" }],
+				isError: false,
+				timestamp: 3,
+			},
+			cursorAssistant(
+				"kimi-k3-high",
+				[
+					{ type: "thinking", thinking: "The package is valid." },
+					{ type: "text", text: "Verified." },
+				],
+				4,
+			),
+			{ role: "user", content: "What did you verify?", timestamp: 5 },
+		];
+
+		const history = buildCursorHistoryForTest(messages, undefined, "kimi-k3-high");
+
+		expect(history.rootPromptMessagesJson).toEqual([
+			{ role: "user", content: [{ type: "text", text: "Inspect package.json" }] },
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "reasoning",
+						text: "I should inspect the package.",
+						providerOptions: { cursor: { modelName: "kimi-k3-high" } },
+					},
+					{
+						type: "tool-call",
+						toolCallId: "call-read",
+						toolName: "read",
+						args: { path: "package.json" },
+					},
+				],
+			},
+			{
+				role: "tool",
+				id: "call-read",
+				content: [
+					{
+						type: "tool-result",
+						toolName: "read",
+						toolCallId: "call-read",
+						result: "package contents",
+					},
+				],
+			},
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "reasoning",
+						text: "The package is valid.",
+						providerOptions: { cursor: { modelName: "kimi-k3-high" } },
+					},
+					{ type: "text", text: "Verified." },
+				],
+			},
+		]);
+		expect(history.turnStepMessagesJson).toEqual([
+			[
+				expect.objectContaining({ thinkingMessage: { text: "I should inspect the package." } }),
+				expect.objectContaining({
+					toolCall: expect.objectContaining({
+						toolCallId: "call-read",
+						mcpToolCall: expect.objectContaining({
+							args: expect.objectContaining({ toolCallId: "call-read", toolName: "read" }),
+							result: { success: { content: [{ text: { text: "package contents" } }] } },
+						}),
+					}),
+				}),
+				expect.objectContaining({ thinkingMessage: { text: "The package is valid." } }),
+				expect.objectContaining({ assistantMessage: { text: "Verified." } }),
+			],
+		]);
+		expect(buildCursorHistoryForTest(messages, undefined, "kimi-k3-high")).toEqual(history);
+	});
+
+	it("rejects switching existing foreign history to K3", () => {
+		const messages: Context["messages"] = [
+			{ role: "user", content: "Plan this change.", timestamp: 1 },
+			{
+				...cursorAssistant(
+					"claude-4.6-opus-high",
+					[{ type: "thinking", thinking: "Foreign signed reasoning.", thinkingSignature: "signature" }],
+					2,
+				),
+				api: "anthropic-messages",
+				provider: "anthropic",
+			},
+			{ role: "user", content: "Continue with K3.", timestamp: 3 },
+		];
+
+		expect(() => buildCursorHistoryForTest(messages, undefined, "kimi-k3-high")).toThrow(
+			"cannot continue history from a different model (anthropic/claude-4.6-opus-high)",
+		);
+	});
+
+	it("replays a same-model K3 turn missing thinking instead of bricking the session", () => {
+		const messages: Context["messages"] = [
+			{ role: "user", content: "Do a big multi-tool task", timestamp: 1 },
+			cursorAssistant(
+				"kimi-k3-high",
+				[{ type: "toolCall", id: "call-read", name: "read", arguments: { path: "package.json" } }],
+				2,
+				"toolUse",
+			),
+			{
+				role: "toolResult",
+				toolCallId: "call-read",
+				toolName: "read",
+				content: [{ type: "text", text: "package contents" }],
+				isError: false,
+				timestamp: 3,
+			},
+			cursorAssistant("kimi-k3-high", [{ type: "text", text: "Done." }], 4),
+			{ role: "user", content: "Continue the same session", timestamp: 5 },
+		];
+
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const history = buildCursorHistoryForTest(messages, undefined, "kimi-k3-high");
+		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("assistant turn(s) 1, 2"), {
+			model: "kimi-k3-high",
+			assistantTurns: [1, 2],
+		});
+		buildCursorHistoryForTest(messages, undefined, "kimi-k3-high");
+		expect(warnSpy).toHaveBeenCalledTimes(1);
+
+		expect(history.rootPromptMessagesJson).toEqual([
+			{ role: "user", content: [{ type: "text", text: "Do a big multi-tool task" }] },
+			{
+				role: "assistant",
+				content: [{ type: "tool-call", toolCallId: "call-read", toolName: "read", args: { path: "package.json" } }],
+			},
+			{
+				role: "tool",
+				id: "call-read",
+				content: [{ type: "tool-result", toolName: "read", toolCallId: "call-read", result: "package contents" }],
+			},
+			{ role: "assistant", content: [{ type: "text", text: "Done." }] },
+		]);
+	});
+
+	it("keeps non-K3 Cursor thinking out of model-facing history", () => {
+		const messages: Context["messages"] = [
+			{ role: "user", content: "Inspect package.json", timestamp: 1 },
+			cursorAssistant(
+				"cursor-composer-2.5",
+				[
+					{ type: "thinking", thinking: "Internal reasoning." },
+					{ type: "text", text: "Visible answer." },
+				],
+				2,
+			),
+			{ role: "user", content: "Continue.", timestamp: 3 },
+		];
+
+		const history = buildCursorHistoryForTest(messages, undefined, "cursor-composer-2.5");
+		expect(history.rootPromptMessagesJson).toEqual([
+			{ role: "user", content: [{ type: "text", text: "Inspect package.json" }] },
+			{ role: "assistant", content: [{ type: "text", text: "Visible answer." }] },
+		]);
+		expect(history.turnStepMessagesJson).toEqual([
+			[expect.objectContaining({ assistantMessage: { text: "Visible answer." } })],
+		]);
+	});
+
+	it("keeps foreign thinking out of turns when switching to a non-K3 Cursor model", () => {
+		const messages: Context["messages"] = [
+			{ role: "user", content: "Plan this change.", timestamp: 1 },
+			{
+				...cursorAssistant(
+					"claude-4.6-opus-high",
+					[
+						{ type: "thinking", thinking: "Foreign signed reasoning.", thinkingSignature: "signature" },
+						{ type: "text", text: "Here is the plan." },
+					],
+					2,
+				),
+				api: "anthropic-messages",
+				provider: "anthropic",
+			},
+			{ role: "user", content: "Continue.", timestamp: 3 },
+		];
+
+		const history = buildCursorHistoryForTest(messages, undefined, "cursor-composer-2.5");
+		expect(history.rootPromptMessagesJson).toEqual([
+			{ role: "user", content: [{ type: "text", text: "Plan this change." }] },
+			{ role: "assistant", content: [{ type: "text", text: "Here is the plan." }] },
+		]);
+		expect(history.turnStepMessagesJson).toEqual([
+			[expect.objectContaining({ assistantMessage: { text: "Here is the plan." } })],
+		]);
+		for (const steps of history.turnStepMessagesJson) {
+			for (const step of steps) {
+				expect(step).not.toHaveProperty("thinkingMessage");
+			}
+		}
+	});
+
+	it("sanitizes foreign responses composite tool-call ids for Cursor replay", () => {
+		// openai-codex/responses history stores composite `"{callId}|{itemId}"`
+		// tool-call ids (encodeResponsesToolCallId). The `|` is invalid for
+		// Cursor's tool-call-id charset and gets the whole Run rejected as
+		// resource_exhausted, so it must be normalized identically on the call
+		// and result sides.
+		const compositeId = "call_abc123|fc_def456";
+		const sanitizedId = "call_abc123_fc_def456";
+		const messages: Context["messages"] = [
+			{ role: "user", content: "Read package.json", timestamp: 1 },
+			{
+				...cursorAssistant(
+					"gpt-5.6-sol",
+					[{ type: "toolCall", id: compositeId, name: "read", arguments: { path: "package.json" } }],
+					2,
+					"toolUse",
+				),
+				api: "openai-codex-responses",
+				provider: "openai-codex",
+			},
+			{
+				role: "toolResult",
+				toolCallId: compositeId,
+				toolName: "read",
+				content: [{ type: "text", text: "{}" }],
+				isError: false,
+				timestamp: 3,
+			},
+			{ role: "user", content: "Continue.", timestamp: 4 },
+		];
+
+		const history = buildCursorHistoryForTest(messages, undefined, "cursor-composer-2.5");
+		expect(history.rootPromptMessagesJson).toEqual([
+			{ role: "user", content: [{ type: "text", text: "Read package.json" }] },
+			{
+				role: "assistant",
+				content: [{ type: "tool-call", toolCallId: sanitizedId, toolName: "read", args: { path: "package.json" } }],
+			},
+			{
+				role: "tool",
+				id: sanitizedId,
+				content: [{ type: "tool-result", toolName: "read", toolCallId: sanitizedId, result: "{}" }],
+			},
+		]);
+		expect(history.turnStepMessagesJson).toEqual([
+			[
+				expect.objectContaining({
+					toolCall: expect.objectContaining({
+						toolCallId: sanitizedId,
+						mcpToolCall: expect.objectContaining({
+							args: expect.objectContaining({ toolCallId: sanitizedId }),
+						}),
+					}),
+				}),
+			],
+		]);
+		expect(JSON.stringify(history)).not.toContain("|");
+	});
+
 	it("preserves image-only user turns in root prompt history and conversation turns", () => {
 		const imageData = "aW1hZ2U=";
 		const history = buildCursorHistoryForTest([
@@ -553,17 +1147,45 @@ describe("Cursor history encoding", () => {
 				content: [{ type: "text", text: "Use the read tool." }],
 			},
 			{
-				role: "user",
-				content: [{ type: "text", text: "[Tool Result]\npackage contents" }],
+				role: "assistant",
+				content: [
+					{
+						type: "tool-call",
+						toolCallId: "call-read",
+						toolName: "read",
+						args: { path: "package.json" },
+					},
+				],
+			},
+			{
+				role: "tool",
+				id: "call-read",
+				content: [
+					{
+						type: "tool-result",
+						toolName: "read",
+						toolCallId: "call-read",
+						result: "package contents",
+					},
+				],
 			},
 		]);
 		expect(history.turnUserMessagesJson).toEqual([expect.objectContaining({ text: "Use the read tool." })]);
 		expect(history.turnStepMessagesJson).toEqual([
-			[expect.objectContaining({ assistantMessage: { text: "[Tool Result]\npackage contents" } })],
+			[
+				expect.objectContaining({
+					toolCall: expect.objectContaining({
+						toolCallId: "call-read",
+						mcpToolCall: expect.objectContaining({
+							result: { success: { content: [{ text: { text: "package contents" } }] } },
+						}),
+					}),
+				}),
+			],
 		]);
 	});
 
-	it("formats tool errors with [Tool Error] prefix", () => {
+	it("preserves structured tool errors", () => {
 		const errorContext: Context = {
 			messages: [
 				{
@@ -614,12 +1236,41 @@ describe("Cursor history encoding", () => {
 				content: [{ type: "text", text: "Search for nothing." }],
 			},
 			{
-				role: "user",
-				content: [{ type: "text", text: "[Tool Error]\nPattern must not be empty" }],
+				role: "assistant",
+				content: [
+					{
+						type: "tool-call",
+						toolCallId: "call-search",
+						toolName: "search",
+						args: { pattern: "" },
+					},
+				],
+			},
+			{
+				role: "tool",
+				id: "call-search",
+				content: [
+					{
+						type: "tool-result",
+						toolName: "search",
+						toolCallId: "call-search",
+						result: "Pattern must not be empty",
+						isError: true,
+					},
+				],
 			},
 		]);
 		expect(history.turnStepMessagesJson).toEqual([
-			[expect.objectContaining({ assistantMessage: { text: "[Tool Error]\nPattern must not be empty" } })],
+			[
+				expect.objectContaining({
+					toolCall: expect.objectContaining({
+						toolCallId: "call-search",
+						mcpToolCall: expect.objectContaining({
+							result: { error: { error: "Pattern must not be empty" } },
+						}),
+					}),
+				}),
+			],
 		]);
 	});
 });
@@ -636,7 +1287,6 @@ describe("Cursor grepArgs empty-pattern guard (issue #4574)", () => {
 
 	it("rejects an empty pattern with a glob-aware hint when only a glob is present", () => {
 		const message = emptyGrepPatternRejection("", "**/*snapcompact*");
-		expect(message).not.toBeNull();
 		expect(message).toContain("grep pattern is required");
 		expect(message).toContain('"**/*snapcompact*"');
 		expect(message).toContain("ls/read tool");
@@ -689,6 +1339,7 @@ function newBlockState(): BlockState {
 		get currentToolCall() {
 			return toolCall;
 		},
+		openToolCalls: new Map(),
 		resolvedMcpToolCallIds: new Set(),
 		firstTokenTime: undefined,
 		setTextBlock: b => {
@@ -703,6 +1354,28 @@ function newBlockState(): BlockState {
 		setFirstTokenTime: () => {},
 	};
 }
+
+describe("Cursor K3 completion warnings", () => {
+	it("warns when a K3 turn ends without thinking blocks", () => {
+		const output = cursorAssistantMessage();
+		output.model = "kimi-k3-high";
+		output.timestamp = 7516;
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+		processInteractionUpdate(
+			{ message: { case: "turnEnded", value: {} } },
+			output,
+			new AssistantMessageEventStream(),
+			newBlockState(),
+			{ sawTokenDelta: false },
+		);
+
+		expect(warnSpy).toHaveBeenCalledWith(
+			"Cursor kimi-k3 turn completed without thinking blocks; persisted history will replay this turn without reasoning",
+			{ model: "kimi-k3-high", messageTimestamp: 7516 },
+		);
+	});
+});
 
 describe("Cursor exec local-work tracking (issue #4593)", () => {
 	it("marks the stream busy for the duration of a local exec handler", async () => {
@@ -770,7 +1443,7 @@ describe("Cursor exec local-work tracking (issue #4593)", () => {
 		expect(written.length).toBe(1);
 	});
 
-	it("synthesizes an MCP call when the exec frame precedes its streamed block", async () => {
+	it("synthesizes an MCP call while preserving opaque string arguments", async () => {
 		const output = cursorAssistantMessage();
 		const stream = new AssistantMessageEventStream();
 		const state = newBlockState();
@@ -788,7 +1461,16 @@ describe("Cursor exec local-work tracking (issue #4593)", () => {
 							toolName: "mcp__fixture_report",
 							toolCallId: "call-mcp-1",
 							providerIdentifier: "pi-agent",
-							args: { query: new TextEncoder().encode(JSON.stringify("latest chess news")) },
+							args: {
+								query: new TextEncoder().encode(JSON.stringify("latest chess news")),
+								numericHash: encodeJsonValue("57785654"),
+								exponentHash: encodeJsonValue("1e234567"),
+								booleanToken: encodeJsonValue("true"),
+								nullToken: encodeJsonValue("null"),
+								nested: encodeJsonValue('{"enabled":true}'),
+								array: encodeJsonValue("[1,2]"),
+								quoted: encodeJsonValue('"label"'),
+							},
 						}),
 					},
 				}),
@@ -835,7 +1517,16 @@ describe("Cursor exec local-work tracking (issue #4593)", () => {
 			type: "toolCall",
 			id: "call-mcp-1",
 			name: "mcp__fixture_report",
-			arguments: { query: "latest chess news" },
+			arguments: {
+				query: "latest chess news",
+				numericHash: "57785654",
+				exponentHash: "1e234567",
+				booleanToken: "true",
+				nullToken: "null",
+				nested: { enabled: true },
+				array: [1, 2],
+				quoted: "label",
+			},
 		});
 		expect(output.content[1]).toMatchObject({ type: "text", text: "Final synthesized answer" });
 		expect(state.resolvedMcpToolCallIds.has("call-mcp-1")).toBe(true);

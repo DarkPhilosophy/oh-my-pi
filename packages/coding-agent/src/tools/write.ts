@@ -2,19 +2,26 @@ import { Database } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import { formatHashlineHeader, stripHashlinePrefixes } from "@oh-my-pi/hashline";
+import { type } from "@oh-my-pi/omptype";
 import type {
 	AgentTool,
 	AgentToolContext,
 	AgentToolResult,
 	AgentToolUpdateCallback,
-	ToolTier,
+	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
+import type { HighlightStream } from "@oh-my-pi/pi-natives";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { isEnoent, isRecord, prompt, untilAborted } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
-
-import { canonicalSnapshotKey, getFileSnapshotStore } from "../edit/file-snapshot-store";
+import {
+	type ArchiveMemberContent,
+	archiveFormatFromPath,
+	isWritableArchiveFormat,
+	parseArchivePathCandidates,
+	readArchiveEntries,
+	writeArchive,
+} from "@oh-my-pi/pi-utils/ar";
+import { getEditStore } from "../edit/store";
 import { normalizeToLF } from "../edit/normalize";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
@@ -23,21 +30,16 @@ import { couldBecomeXdUrl, parseXdUrl } from "../internal-urls/xd-protocol";
 import { createLspWritethrough, type FileDiagnosticsResult, type WritethroughCallback, writethroughNoop } from "../lsp";
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
-import { getLanguageFromPath, highlightCode, type Theme } from "../modes/theme/theme";
+import { createHighlightStream, getLanguageFromPath, highlightCode, type Theme } from "../modes/theme/theme";
 import writeDescription from "../prompts/tools/write.md" with { type: "text" };
+import writeDeviceOnlyDescription from "../prompts/tools/write-device-only.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import { fileHyperlink, framedBlock, renderStatusLine } from "../tui";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
-import {
-	type ArchiveMemberContent,
-	archiveFormatFromPath,
-	parseArchivePathCandidates,
-	readArchiveEntries,
-	writeArchive,
-} from "../utils/zip";
 import { routeWriteThroughBridge } from "./acp-bridge";
 import { resolveToolTier, truncateForPrompt } from "./approval";
 import { assertEditableFile } from "./auto-generated-guard";
+import { formatHashlineHeader, stripHashlinePrefixes } from "./hashline-format";
 import {
 	type ConflictEntry,
 	conflictRegionPresent,
@@ -51,13 +53,18 @@ import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import { type OutputMeta, outputMeta } from "./output-meta";
 import {
 	formatPathRelativeToCwd,
-	isInternalUrlPath,
 	pathTargetsSsh,
 	peelWriteUrlSelector,
 	probeLiteralPathExists,
+	resolveFileWriteApprovalTier,
 	splitPathAndSel,
 } from "./path-utils";
-import { enforcePlanModeWrite, resolvePlanPath, unwrapHashlineHeaderPath } from "./plan-mode-guard";
+import {
+	enforcePlanModeWrite,
+	resolvePlanPath,
+	targetsLocalSandbox,
+	unwrapHashlineHeaderPath,
+} from "./plan-mode-guard";
 import {
 	cachedRenderedString,
 	createRenderedStringCache,
@@ -74,6 +81,7 @@ import {
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "./render-utils";
+import type { ToolActivityContext, ToolActivitySummary } from "./renderers";
 import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME, renderReportIssueDeviceCall } from "./report-tool-issue";
 import { dispatchResolutionDevice, isResolutionDeviceName, renderResolutionDeviceCall } from "./resolve";
 import {
@@ -88,7 +96,15 @@ import {
 } from "./sqlite-reader";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
-import { renderXdevCall, renderXdevResult, type XdevDispatch } from "./xdev";
+import {
+	dispatchXdevTool,
+	renderXdevCall,
+	renderXdevResult,
+	resolveXdevTool,
+	type XdevDispatch,
+	xdevActivitySummary,
+	xdevListing,
+} from "./xdev";
 
 const LOOSE_HASHLINE_HEADER_RE = /^\s*\[[^#\r\n]+#[^ \t\r\n]*\]\s*$/;
 const EXECUTABLE_NOTICE = "[Notice: Made executable via chmod +x]";
@@ -153,7 +169,42 @@ function throwReadSelectorMisfire(target: string, sel: string): never {
 	);
 }
 
+/**
+ * Recognize a semicolon-joined list of read-tool selectors mis-dispatched as a
+ * single write target — the multi-file read expression the scout emitted in
+ * issue #6809 (`a.txt:1-2;b/c.txt:3-4`). Every `;`-segment must be non-empty and
+ * carry its own read selector ({@link splitPathAndSel} peels a `:N-M`, `:raw`,
+ * or `:conflicts` tail). No real call targets such a list: `read` accepts one
+ * path, `write` writes one file. Unlike {@link readSelectorForEmptyWrite} this
+ * fires regardless of `content` — the non-empty-content escape hatch exists for
+ * a lone selector-shaped *filename*, never a `;`-list, and honoring it here
+ * silently creates a nested directory tree (`a.txt:1-2;b/`) in the workspace.
+ * The caller still probes the literal target first, so an existing POSIX file
+ * by that exact name stays writable (same escape as the single-selector guard).
+ */
+function readSelectorListMisfire(target: string): number | undefined {
+	if (!target.includes(";")) return undefined;
+	const segments = target.split(";");
+	if (segments.length < 2) return undefined;
+	for (const segment of segments) {
+		const trimmed = segment.trim();
+		if (trimmed.length === 0 || splitPathAndSel(trimmed).sel === undefined) return undefined;
+	}
+	return segments.length;
+}
+
+function throwReadSelectorListMisfire(target: string, count: number): never {
+	throw new ToolError(
+		`write target '${target}' is a semicolon-joined list of ${count} read-tool selectors, not a filesystem path — refusing to create it. ` +
+			`write creates a single file; issue one read() per path to read these ranges (e.g. read({ path: "<one path>:<range>" })).`,
+	);
+}
+
 async function assertNotReadSelectorMisfire(target: string, content: string, cwd: string): Promise<void> {
+	const listCount = readSelectorListMisfire(target);
+	if (listCount !== undefined && (await probeLiteralPathExists(target, cwd)) === "missing") {
+		throwReadSelectorListMisfire(target, listCount);
+	}
 	const sel = readSelectorForEmptyWrite(target, content);
 	if (sel === undefined) return;
 	if ((await probeLiteralPathExists(target, cwd)) !== "missing") return;
@@ -280,9 +331,10 @@ export interface WriteToolDetails {
  * line-number prefixes (for example legacy or malformed hashline echoes).
  */
 function stripWriteContentWithPotentialLooseHeader(lines: string[]): { text: string; stripped: boolean } {
-	const cleaned = stripHashlinePrefixes(lines);
-	if (cleaned !== lines) {
-		return { text: cleaned.join("\n"), stripped: true };
+	const originalText = lines.join("\n");
+	const cleanedText = stripHashlinePrefixes(lines).join("\n");
+	if (cleanedText !== originalText) {
+		return { text: cleanedText, stripped: true };
 	}
 
 	const headerIndex = lines.findIndex(line => line.trim().length > 0);
@@ -291,11 +343,12 @@ function stripWriteContentWithPotentialLooseHeader(lines: string[]): { text: str
 	}
 
 	const linesWithoutHeader = lines.slice(0, headerIndex).concat(lines.slice(headerIndex + 1));
-	const cleanedWithoutHeader = stripHashlinePrefixes(linesWithoutHeader);
-	if (cleanedWithoutHeader === linesWithoutHeader) {
-		return { text: lines.join("\n"), stripped: false };
+	const textWithoutHeader = linesWithoutHeader.join("\n");
+	const cleanedWithoutHeader = stripHashlinePrefixes(linesWithoutHeader).join("\n");
+	if (cleanedWithoutHeader === textWithoutHeader) {
+		return { text: originalText, stripped: false };
 	}
-	return { text: cleanedWithoutHeader.join("\n"), stripped: true };
+	return { text: cleanedWithoutHeader, stripped: true };
 }
 
 /**
@@ -318,12 +371,16 @@ function stripWriteContent(session: ToolSession, content: string): { text: strin
  * when the session is not in hashline mode so callers can no-op cheaply.
  *
  * Mirrors the post-commit snapshot recording the hashline patcher performs
- * after a successful edit: the model gets a tag without an extra `read`.
+ * after a successful edit — the model gets a tag without an extra `read` —
+ * but with EMPTY seen-line provenance: a write displays no numbered lines,
+ * so anchored edits against this tag must first see the anchor content (the
+ * patcher rejects them with an inline reveal). Authoring content is not
+ * knowing its line numbers.
  */
 function maybeWriteSnapshotHeader(session: ToolSession, absolutePath: string, content: string): string | undefined {
 	if (!resolveFileDisplayMode(session).hashLines) return undefined;
 	const normalized = normalizeToLF(content);
-	const tag = getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalized);
+	const tag = getEditStore(session).recordSnapshot(absolutePath, normalized, []);
 	return formatHashlineHeader(formatPathRelativeToCwd(absolutePath, session.cwd), tag);
 }
 
@@ -458,7 +515,7 @@ function parseSqliteWriteTarget(subPath: string, queryString: string): { table: 
  */
 export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails> {
 	readonly name = "write";
-	readonly approval = (args: unknown): ToolTier => {
+	readonly approval = (args: unknown): ToolApprovalDecision => {
 		const rawPath = (args as Partial<WriteParams>).path;
 		if (typeof rawPath !== "string") return "write";
 		// Unwrap a hashline `[path#TAG]` wrapper first (parity with execute) so a
@@ -471,7 +528,8 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		if (xdevTarget) {
 			if (xdevTarget.name === REPORT_ISSUE_DEVICE_NAME) return "write";
 			if (xdevTarget.name && isResolutionDeviceName(xdevTarget.name)) return "read";
-			const inst = xdevTarget.name ? this.session.xdevRegistry?.get(xdevTarget.name) : undefined;
+			const inst =
+				xdevTarget.name && this.session.xdev ? resolveXdevTool(this.session.xdev, xdevTarget.name) : undefined;
 			if (!inst) return "exec";
 			// Decode the device JSON payload and evaluate the mounted tool's own
 			// approval (which may be argument-dependent, e.g. ast_edit is read-tier
@@ -489,7 +547,11 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			}
 			if (!isRecord(parsed)) return "exec";
 			try {
-				return resolveToolTier(inst, parsed);
+				// The tier is the mounted tool's own (argument-dependent) approval; the
+				// policyKey makes the outer gate consult `tools.approval.<device>` for
+				// this dispatch before falling back to `tools.approval.write`, so users
+				// can scope allow/deny/prompt to a single device (issue #7923).
+				return { tier: resolveToolTier(inst, parsed), policyKey: xdevTarget.name! };
 			} catch {
 				return "exec";
 			}
@@ -498,14 +560,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		// gate them like the exec-tier `ssh` tool, ahead of the handler-write
 		// logic. Substring match also covers selector-suffixed targets.
 		if (pathTargetsSsh(path)) return "exec";
-		if (!isInternalUrlPath(path)) return "write";
-		// Internal URLs are usually session-local artifacts (read tier), but a
-		// scheme whose handler exposes a `write` hook mutates handler-owned user
-		// data (e.g. vault:// notes) and must take the write tier so always-ask
-		// mode actually prompts.
-		const match = /^([a-z][a-z0-9+.-]*):\/\//i.exec(path.trim());
-		const handler = match ? InternalUrlRouter.instance().getHandler(match[1]!.toLowerCase()) : undefined;
-		return handler?.write ? "write" : "read";
+		return resolveFileWriteApprovalTier(path);
 	};
 	readonly formatApprovalDetails = (args: unknown): string[] => {
 		const params = args as Partial<WriteParams>;
@@ -514,7 +569,10 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		return [`Path: ${truncateForPrompt(targetPath)}`, `Content:\n${truncateForPrompt(content)}`];
 	};
 	readonly label = "Write";
-	readonly description: string;
+	get description(): string {
+		const deviceOnly = this.session.deviceOnlyWrite === true && this.session.pendingFullWriteDescription !== true;
+		return prompt.render(deviceOnly ? writeDeviceOnlyDescription : writeDescription);
+	}
 	readonly parameters = writeSchema;
 	readonly strict = true;
 	readonly concurrency = "exclusive";
@@ -545,7 +603,6 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 						: undefined,
 				})
 			: writethroughNoop;
-		this.description = prompt.render(writeDescription);
 	}
 
 	async #resolveArchiveWritePath(writePath: string): Promise<ResolvedArchiveWritePath | null> {
@@ -597,9 +654,12 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			? await fs.realpath(resolvedArchivePath.absolutePath).catch(() => resolvedArchivePath.absolutePath)
 			: resolvedArchivePath.absolutePath;
 		// A realpath swap can land on a name without an archive extension; a
-		// whole-archive rewrite then defaults to an uncompressed tar, matching the
-		// previous `isZip`/`isGzip`/else fallthrough.
-		const format = archiveFormatFromPath(finalPath) ?? "tar";
+		// whole-archive rewrite then defaults to an uncompressed tar.
+		const inferredFormat = archiveFormatFromPath(finalPath);
+		const format = inferredFormat ?? "tar";
+		if (!isWritableArchiveFormat(format)) {
+			throw new ToolError(`Writing entries inside ${format} archives is not supported (read-only format).`);
+		}
 		// Rewrites are whole-archive: write to a temp file and rename so a
 		// crash/disk-full mid-write can't destroy the original archive.
 		const tmpPath = `${finalPath}.tmp-${process.pid}`;
@@ -612,7 +672,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		const entries = new Map<string, ArchiveMemberContent>();
 		if (resolvedArchivePath.exists) {
 			try {
-				const existing = await readArchiveEntries({ bytes: await Bun.file(finalPath).bytes(), format });
+				const existing = await readArchiveEntries({ path: finalPath, format });
 				for (const [entryPath, data] of existing) {
 					entries.set(entryPath, data);
 				}
@@ -805,7 +865,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		await writethroughNoop(absolutePath, newContent, signal);
 		invalidateFsScanAfterWrite(absolutePath);
 		this.session.bumpFileMutationVersion?.(absolutePath);
-		this.session.fileSnapshotStore?.invalidate(absolutePath);
+		getEditStore(this.session).invalidate(absolutePath);
 		const history = this.session.conflictHistory;
 		history?.invalidate(entry.id);
 		if (history) {
@@ -984,7 +1044,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			await writethroughNoop(absolutePath, text, signal);
 			invalidateFsScanAfterWrite(absolutePath);
 			this.session.bumpFileMutationVersion?.(absolutePath);
-			this.session.fileSnapshotStore?.invalidate(absolutePath);
+			getEditStore(this.session).invalidate(absolutePath);
 			for (const entry of resolvedEntries) history.invalidate(entry.id);
 			for (const entry of staleEntries) history.invalidate(entry.id);
 			const header = maybeWriteSnapshotHeader(this.session, absolutePath, text);
@@ -1062,6 +1122,20 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		// Peel a read-tool selector (`:raw`, `:1-20`, …) so the write target matches
 		// what `read` resolves for the same URL; line-range/malformed selectors throw.
 		const path = peelWriteUrlSelector(unwrapHashlineHeaderPath(rawPath));
+		// A device-only session grants `write` purely as the xd:// transport (see
+		// createTools): device dispatches proceed, every other target is rejected
+		// before any handler, guard, conflict resolver, or bridge sees it. Active
+		// plan mode additionally permits its local artifact sandbox, but does not
+		// relax the restriction for working-tree or non-xd internal URLs.
+		if (
+			this.session.deviceOnlyWrite === true &&
+			!parseXdUrl(path) &&
+			!(this.session.getPlanModeState?.()?.enabled === true && targetsLocalSandbox(this.session, path))
+		) {
+			throw new ToolError(
+				"This `write` tool is limited to the xd:// device transport: call it with path `xd://<tool>` and the device's JSON arguments in `content` (`read xd://` lists mounted devices). Active plan mode additionally permits local:// sandbox drafts. Filesystem writes are not available elsewhere.",
+			);
+		}
 		return untilAborted(signal, async () => {
 			// Strip hashline display prefixes ([PATH#HASH] + LINE:) if the model copied them from read output
 			const { text: cleanContent, stripped } = stripWriteContent(this.session, content);
@@ -1104,14 +1178,15 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 									};
 									return;
 								}
-								const registry = this.session.xdevRegistry;
-								if (!registry || registry.size === 0) {
+								const xdev = this.session.xdev;
+								if (!xdev) {
 									throw new ToolError("xd:// is not mounted in this session.");
 								}
 								if (!name) {
-									throw new ToolError(`Cannot write to xd:// itself — pick a device:\n${registry.listing()}`);
+									throw new ToolError(`Cannot write to xd:// itself — pick a device:\n${xdevListing(xdev)}`);
 								}
-								const { result, xdev } = await registry.dispatch(
+								const { result, xdev: dispatch } = await dispatchXdevTool(
+									xdev,
 									name,
 									deviceContent,
 									_toolCallId,
@@ -1124,7 +1199,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 								);
 								xdResult = {
 									content: result.content,
-									details: { xdev },
+									details: { xdev: dispatch },
 									isError: result.isError,
 									useless: result.useless,
 								};
@@ -1223,9 +1298,15 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 			// Try ACP bridge first for editor-visible filesystem paths. Internal
 			// artifacts such as local:// plans are owned by OMP, not the editor.
-			if (await routeWriteThroughBridge(this.session, path, absolutePath, cleanContent, signal)) {
-				const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, cleanContent);
-				const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent);
+			const bridgeWrite = await routeWriteThroughBridge(this.session, path, absolutePath, cleanContent, signal);
+			if (bridgeWrite) {
+				// `write` always replaces the whole file, so (unlike hashline's
+				// hunk-scoped diff) there's no size cost to keying the header/
+				// executable-bit check on the verified post-write content —
+				// use it so a drifted write (e.g. client format-on-save) still
+				// hands back a tag that matches what's actually on disk.
+				const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, bridgeWrite.text);
+				const header = maybeWriteSnapshotHeader(this.session, absolutePath, bridgeWrite.text);
 				const writeLine = `Successfully wrote ${cleanContent.length} bytes to ${displayPath}`;
 				let resultText = header ? `${header}\n${writeLine}` : writeLine;
 				if (stripped) {
@@ -1252,10 +1333,11 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			if (!this.#deferredDiagnostics || batchRequest?.flush === false) {
 				this.session.bumpFileMutationVersion?.(absolutePath);
 			}
-			const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, cleanContent);
+			const finalContent = diagnostics.finalContent;
+			const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, finalContent);
 
-			const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent);
-			const writeLine = `Successfully wrote ${cleanContent.length} bytes to ${displayPath}`;
+			const header = maybeWriteSnapshotHeader(this.session, absolutePath, finalContent);
+			const writeLine = `Successfully wrote ${finalContent.length} bytes to ${displayPath}`;
 			let resultText = header ? `${header}\n${writeLine}` : writeLine;
 			if (stripped) {
 				resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
@@ -1263,7 +1345,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			if (madeExecutable) {
 				resultText += `\n${EXECUTABLE_NOTICE}`;
 			}
-			if (!diagnostics) {
+			if (!diagnostics.diagnostics) {
 				return {
 					content: [{ type: "text", text: resultText }],
 					details: { resolvedPath: absolutePath, madeExecutable: madeExecutable || undefined },
@@ -1274,10 +1356,10 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				content: [{ type: "text", text: resultText }],
 				details: {
 					resolvedPath: absolutePath,
-					diagnostics,
+					diagnostics: diagnostics.diagnostics,
 					madeExecutable: madeExecutable || undefined,
 					meta: outputMeta()
-						.diagnostics(diagnostics.summary, diagnostics.messages ?? [])
+						.diagnostics(diagnostics.diagnostics.summary, diagnostics.diagnostics.messages ?? [])
 						.get(),
 				},
 			};
@@ -1340,12 +1422,128 @@ function normalizeDisplayText(text: unknown): string {
  * Minimum line-number gutter width for write previews. The streaming preview's
  * gutter must stay byte-stable as the line count grows: a width derived purely
  * from `String(totalLines).length` widens at the 10/100/1000-line crossings,
- * rewriting every already-rendered row — which forces the transcript's commit
- * audit to recommit the block's committed prefix (a full duplicate in native
- * scrollback). Reserving 3 digits keeps the gutter constant through 999 lines
- * and keeps the streamed rows byte-identical to the final result render.
+ * causing the live preview to jitter. Reserving 3 digits keeps the gutter
+ * constant through 999 lines and keeps the streamed rows aligned with the
+ * final result render.
  */
 const WRITE_GUTTER_MIN_WIDTH = 3;
+
+const writeStreamingPreviewStateKey = Symbol("writeStreamingPreviewState");
+
+/**
+ * Per-component state for incrementally rendering a streamed write.
+ * The ToolExecutionComponent's persistent render options carry the state, so
+ * it lives exactly as long as the component and cannot leak across tool calls.
+ */
+interface WriteStreamingPreviewState {
+	/** Prior full content; append-only growth is validated with an exact prefix check. */
+	previous: string;
+	/** `1 + count("\n")` over the scanned content. */
+	lineCount: number;
+	/** Raw offset immediately after the last newline consumed by `highlighter`. */
+	completeLength: number;
+	/** Highlighted, complete logical lines; the unfinished trailing line is rendered plain. */
+	highlightedLines: string[];
+	/** Stateful parser carrying syntax scopes across appended complete lines. */
+	highlighter: HighlightStream | null;
+	language: string | undefined;
+	uiTheme: Theme;
+	/** Content length for which the trailing line was flushed as final (`argsComplete`); -1 when none. */
+	finalFlushedLength: number;
+	/** Highlighted trailing line from the final flush; rendered in place of the plain tail. */
+	finalTrailing: string;
+}
+
+interface WriteStreamingPreviewStateCarrier {
+	[writeStreamingPreviewStateKey]?: WriteStreamingPreviewState;
+}
+
+function createWriteStreamingPreviewState(language: string | undefined, uiTheme: Theme): WriteStreamingPreviewState {
+	return {
+		previous: "",
+		lineCount: 1,
+		completeLength: 0,
+		highlightedLines: [],
+		highlighter: createHighlightStream(language, uiTheme),
+		language,
+		uiTheme,
+		finalFlushedLength: -1,
+		finalTrailing: "",
+	};
+}
+
+/**
+ * Advance line counting and syntax highlighting only across newly appended
+ * content. Complete lines are retained because Ctrl+O can expand the preview;
+ * the current partial line stays plain until its terminating newline arrives.
+ * Once args are final, the trailing line is flushed through the highlighter
+ * (its only push without a trailing newline) so a settled-but-queued preview
+ * keeps syntax colors, including for one-line files.
+ */
+function updateStreamingPreview(
+	streamKey: WriteStreamingPreviewStateCarrier | undefined,
+	content: string,
+	language: string | undefined,
+	uiTheme: Theme,
+	argsComplete = false,
+): WriteStreamingPreviewState | undefined {
+	if (streamKey === undefined) return undefined;
+
+	let state = streamKey[writeStreamingPreviewStateKey];
+	if (
+		state === undefined ||
+		state.language !== language ||
+		state.uiTheme !== uiTheme ||
+		content.length < state.previous.length ||
+		!content.startsWith(state.previous) ||
+		// A final flush consumed the trailing partial line; later growth would
+		// re-feed it, so restart the parser instead of corrupting its state.
+		(state.finalFlushedLength !== -1 && content.length !== state.finalFlushedLength)
+	) {
+		state = createWriteStreamingPreviewState(language, uiTheme);
+		streamKey[writeStreamingPreviewStateKey] = state;
+	}
+
+	let completeLength = state.completeLength;
+	for (let i = state.previous.length; i < content.length; i++) {
+		if (content.charCodeAt(i) === 10) {
+			state.lineCount++;
+			completeLength = i + 1;
+		}
+	}
+	if (completeLength > state.completeLength) {
+		const chunk = content.slice(state.completeLength, completeLength).replace(/\r/g, "");
+		let chunkHighlighted = chunk;
+		if (state.highlighter) {
+			try {
+				chunkHighlighted = state.highlighter.push(chunk);
+			} catch {
+				state.highlighter = null;
+			}
+		}
+		const lines = chunkHighlighted.split("\n");
+		lines.pop();
+		state.highlightedLines.push(...lines);
+		state.completeLength = completeLength;
+	}
+	if (argsComplete && state.finalFlushedLength !== content.length && !content.endsWith("\n")) {
+		const trailing = content.slice(state.completeLength).replace(/\r/g, "");
+		if (trailing.length > 0) {
+			let trailingHighlighted = trailing;
+			if (state.highlighter) {
+				try {
+					trailingHighlighted = state.highlighter.push(trailing);
+				} catch {
+					state.highlighter = null;
+				}
+			}
+			state.finalTrailing = trailingHighlighted;
+			state.finalFlushedLength = content.length;
+		}
+	}
+	state.previous = content;
+	return state;
+}
 
 function formatStreamingContent(
 	content: string,
@@ -1354,33 +1552,46 @@ function formatStreamingContent(
 	uiTheme: Theme,
 	spinnerFrame?: number,
 	cache?: RenderedStringCache,
+	streamKey?: WriteStreamingPreviewStateCarrier,
+	argsComplete?: boolean,
 ): string {
 	if (!content) return "";
 	const bodyText = cachedRenderedString(cache, uiTheme, expanded, language ?? "", content, () => {
-		const lines = normalizeDisplayText(content).split("\n");
-		const totalLines = lines.length;
-		// Collapsed: follow the streaming edge with a bounded tail window so the box
-		// stays short enough not to strand its scrolled-off head above the viewport
-		// while the block is volatile. `Ctrl+O` (expanded) lifts the cap for a
-		// deliberate full view — matching the eval streaming preview.
-		const startIndex = expanded ? 0 : Math.max(0, totalLines - WRITE_STREAMING_PREVIEW_LINES);
-		const visibleLines = lines.slice(startIndex);
+		const state = updateStreamingPreview(streamKey, content, language, uiTheme, argsComplete === true);
+		let totalLines: number;
+		let startIndex: number;
+		let visibleLines: string[];
+		if (state) {
+			totalLines = state.lineCount;
+			startIndex = expanded ? 0 : Math.max(0, totalLines - WRITE_STREAMING_PREVIEW_LINES);
+			const flushed = argsComplete === true && state.finalFlushedLength === content.length;
+			const trailingLine = flushed ? state.finalTrailing : content.slice(state.completeLength).replace(/\r/g, "");
+			if (totalLines === 1 && trailingLine.length === 0) return "";
+			visibleLines = [...state.highlightedLines.slice(startIndex), trailingLine];
+		} else {
+			const normalized = normalizeDisplayText(content);
+			if (normalized.length === 0) return "";
+			const lines = normalized.split("\n");
+			totalLines = lines.length;
+			startIndex = expanded ? 0 : Math.max(0, totalLines - WRITE_STREAMING_PREVIEW_LINES);
+			visibleLines = highlightCode(lines.slice(startIndex).join("\n"), language);
+		}
 		const hidden = startIndex;
-		const highlighted = highlightCode(visibleLines.join("\n"), language);
 		const lineNumberWidth = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length);
 
 		let text = "\n\n";
 		if (hidden > 0) {
 			text += `${uiTheme.fg("dim", `… (${hidden} earlier line${hidden === 1 ? "" : "s"})`)}\n`;
 		}
-		for (let i = 0; i < highlighted.length; i++) {
+		for (let i = 0; i < visibleLines.length; i++) {
 			const lineNum = startIndex + i + 1;
 			const gutter = uiTheme.fg("dim", `${String(lineNum).padStart(lineNumberWidth, " ")} `);
-			const body = replaceTabs(highlighted[i] ?? "");
+			const body = replaceTabs(visibleLines[i] ?? "");
 			text += `${gutter}${body}\n`;
 		}
 		return text;
 	});
+	if (bodyText.length === 0) return "";
 	// The animated glyph lives on this trailing line — inside the transcript's
 	// volatile-tail holdback — never in the header: an animating head row pins
 	// the native-scrollback commit boundary at the top of the block, so a long
@@ -1428,15 +1639,34 @@ export interface WriteRenderContext {
 }
 
 export const writeToolRenderer = {
+	/** Compact one-line activity: device writes read as the mounted tool (`LSP · references foo`), file writes as `Write · <path>`. */
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const writeArgs = (args ?? {}) as WriteRenderArgs;
+		const rawPath =
+			typeof writeArgs.file_path === "string"
+				? writeArgs.file_path
+				: typeof writeArgs.path === "string"
+					? writeArgs.path
+					: "";
+		if (!rawPath) return { label: "Write" };
+		const xdev = parseXdUrl(rawPath);
+		if (xdev?.name) {
+			const resolveMounted = (context.renderContext as WriteRenderContext | undefined)?.resolveXdevMounted;
+			return xdevActivitySummary(xdev.name, writeArgs.content, resolveMounted);
+		}
+		return { label: "Write", detail: shortenPath(rawPath) };
+	},
+
 	renderCall(
 		args: WriteRenderArgs,
-		options: RenderResultOptions & { renderContext?: WriteRenderContext },
+		options: RenderResultOptions & WriteStreamingPreviewStateCarrier & { renderContext?: WriteRenderContext },
 		uiTheme: Theme,
 	): Component | undefined {
 		const rawPath =
 			typeof args.file_path === "string" ? args.file_path : typeof args.path === "string" ? args.path : "";
 		// Render NOTHING until the streamed path arrives and provably is not an
-		// xd:// device; xd:// writes then delegate to the mounted tool's renderer.
+		// xd:// device. Device writes then render as queued until execution starts,
+		// after which they delegate to the mounted tool's renderer.
 		// A present-but-malformed path (array/object from a bad provider parse)
 		// is definitively not xd:// — fall through to the legacy frame.
 		if (args.path === undefined && args.file_path === undefined) return undefined;
@@ -1464,7 +1694,12 @@ export const writeToolRenderer = {
 			},
 			uiTheme,
 		);
-		const content = normalizeDisplayText(args.content);
+		// Raw content, not normalizeDisplayText(args.content): the collapsed
+		// streaming path normalizes only its tail window, so a full-payload
+		// normalize on every reveal tick would re-introduce the O(n²) streaming
+		// cost formatStreamingContent avoids. Non-string content still falls
+		// back to the normalizing stringify.
+		const content = typeof args.content === "string" ? args.content : normalizeDisplayText(args.content);
 		const streamingCache = createRenderedStringCache();
 		return framedBlock(uiTheme, width => {
 			const body = content
@@ -1475,6 +1710,12 @@ export const writeToolRenderer = {
 						uiTheme,
 						options?.spinnerFrame,
 						streamingCache,
+						// `options` is the ToolExecutionComponent's persistent
+						// render-state object — a stable identity across reveal ticks
+						// that keys the incremental preview state. `argsComplete`
+						// flushes the trailing line through the highlighter once.
+						options,
+						options?.argsComplete,
 					)
 				: "";
 			const bodyLines = body ? body.split("\n") : [];

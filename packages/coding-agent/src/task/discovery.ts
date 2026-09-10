@@ -21,7 +21,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
-import { isProviderEnabled } from "../capability";
+import { isProviderEnabled, isUserSourceEnabled } from "../capability";
+import type { EffectiveExtensionRoots } from "../capability/types";
 import { findAllNearestProjectConfigDirs, getConfigDirs } from "../config";
 import { listClaudePluginRoots } from "../discovery/helpers";
 import { listOmpExtensionRoots } from "../discovery/omp-extension-roots";
@@ -36,10 +37,16 @@ export interface DiscoveryResult {
 	projectAgentsDir: string | null;
 }
 
+interface AgentDirectory {
+	dir: string;
+	source: AgentSource;
+	ignoreModel?: boolean;
+}
+
 /**
  * Load agents from a directory.
  */
-async function loadAgentsFromDir(dir: string, source: AgentSource): Promise<AgentDefinition[]> {
+async function loadAgentsFromDir({ dir, source, ignoreModel }: AgentDirectory): Promise<AgentDefinition[]> {
 	const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
 	const files = entries
 		.filter(entry => (entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".md"))
@@ -48,7 +55,11 @@ async function loadAgentsFromDir(dir: string, source: AgentSource): Promise<Agen
 			const filePath = path.join(dir, file.name);
 			return fs
 				.readFile(filePath, "utf-8")
-				.then(content => parseAgent(filePath, content, source, "warn"))
+				.then(content => {
+					const agent = parseAgent(filePath, content, source, "warn");
+					if (ignoreModel) agent.model = undefined;
+					return agent;
+				})
 				.catch(error => {
 					logger.warn("Failed to read agent file", { filePath, error });
 					return null;
@@ -61,13 +72,18 @@ async function loadAgentsFromDir(dir: string, source: AgentSource): Promise<Agen
 /**
  * Discover agents from filesystem and merge with bundled agents.
  * Precedence (highest wins): project `.omp/agents`, user `.omp/agents`,
- * OMP extension-package agents in `listOmpExtensionRoots` source order
- * (CLI roots > project `extensions:` settings > user `extensions:` settings >
- * installed npm/link plugins), Claude marketplace plugin agents (project
- * scope before user), then bundled.
+ * OMP extension-package agents from the effective `extensions` setting,
+ * installed npm/link plugins, Claude marketplace plugin agents (project scope
+ * before user), then bundled.
  * @param cwd - Current working directory for project agent discovery
+ * @param home - Home directory for user and marketplace discovery
+ * @param extensionRoots - Session-local extension roots (explicit + mode + configured)
  */
-export async function discoverAgents(cwd: string, home: string = os.homedir()): Promise<DiscoveryResult> {
+export async function discoverAgents(
+	cwd: string,
+	home: string = os.homedir(),
+	extensionRoots?: EffectiveExtensionRoots,
+): Promise<DiscoveryResult> {
 	const resolvedCwd = path.resolve(cwd);
 
 	const userDirs = getConfigDirs("agents", { project: false })
@@ -84,47 +100,54 @@ export async function discoverAgents(cwd: string, home: string = os.homedir()): 
 			path: path.resolve(entry.path),
 		}));
 
-	const orderedDirs: Array<{ dir: string; source: AgentSource }> = [];
+	const orderedDirs: AgentDirectory[] = [];
 	const project = projectDirs[0];
 	if (project) orderedDirs.push({ dir: project.path, source: "project" });
 	const user = userDirs[0];
 	if (user) orderedDirs.push({ dir: user.path, source: "user" });
 
-	// OMP extension-package agents/ dirs. `listOmpExtensionRoots` returns roots in
-	// source-precedence order (CLI > project `extensions:` settings > user
-	// `extensions:` settings > installed npm/link plugins, with marketplace
-	// installs already excluded by realpath) — consume that order verbatim so the
-	// `task` agent surface dedups identically to the sibling skills/hooks/tools
-	// surface in `discovery/omp-plugins.ts`. Gate on `omp-plugins` so
-	// disabledProviders suppresses the whole extension-package surface.
-	const extensionRoots = isProviderEnabled("omp-plugins")
-		? await listOmpExtensionRoots({ cwd: resolvedCwd, home, repoRoot: null })
+	// Extension-package agents use the same effective root set as sibling
+	// skills/hooks/tools, threaded whole so explicit roots and mode survive.
+	const packageRoots = isProviderEnabled("omp-plugins")
+		? await listOmpExtensionRoots({ cwd: resolvedCwd, home, repoRoot: null, extensionRoots })
 		: [];
-	for (const root of extensionRoots) {
+	for (const root of packageRoots) {
 		orderedDirs.push({ dir: path.join(root.path, "agents"), source: root.level });
 	}
 
-	// Load agents from Claude Code marketplace plugins (respects disabledProviders)
+	// Load agents from Claude Code marketplace plugins (respects disabledProviders and opt-in).
+	// User-scope roots whose origin is not the foreign ~/.claude/plugins tree (omp's own
+	// installs and `--plugin-dir` roots) survive the claude-plugins opt-in gate, mirroring
+	// isSourceEnabled in extensibility/skills.ts (#10743). Without this, `--plugin-dir` and
+	// omp-installed agents are dropped at user scope whenever the Claude source is disabled.
+	const claudePluginsUserEnabled = isUserSourceEnabled("claude-plugins") || isUserSourceEnabled("claude");
 	const { roots: pluginRoots } = isProviderEnabled("claude-plugins")
 		? await listClaudePluginRoots(home, resolvedCwd)
 		: { roots: [] };
-	const sortedPluginRoots = [...pluginRoots].sort((a, b) => {
+	const filteredPluginRoots = pluginRoots.filter(
+		r => r.scope === "project" || claudePluginsUserEnabled || r.origin !== "claude",
+	);
+	const sortedPluginRoots = [...filteredPluginRoots].sort((a, b) => {
 		if (a.scope === b.scope) return 0;
 		return a.scope === "project" ? -1 : 1;
 	});
 	for (const plugin of sortedPluginRoots) {
+		// Claude aliases such as "sonnet" and "opus" are not OMP model selectors.
+		// Leave the model unset so settings overrides or the parent session choose it.
 		const agentsDir = path.join(plugin.path, "agents");
-		orderedDirs.push({ dir: agentsDir, source: plugin.scope === "project" ? "project" : "user" });
+		orderedDirs.push({
+			dir: agentsDir,
+			source: plugin.scope === "project" ? "project" : "user",
+			ignoreModel: true,
+		});
 	}
 
 	const seen = new Set<string>();
-	const loadedAgents = (await Promise.all(orderedDirs.map(({ dir, source }) => loadAgentsFromDir(dir, source))))
-		.flat()
-		.filter(agent => {
-			if (seen.has(agent.name)) return false;
-			seen.add(agent.name);
-			return true;
-		});
+	const loadedAgents = (await Promise.all(orderedDirs.map(loadAgentsFromDir))).flat().filter(agent => {
+		if (seen.has(agent.name)) return false;
+		seen.add(agent.name);
+		return true;
+	});
 
 	const bundledAgents = loadBundledAgents().filter(agent => {
 		if (seen.has(agent.name)) return false;

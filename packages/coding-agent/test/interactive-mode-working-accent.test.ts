@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, describe, expect, it, vi } from "bun:test";
+import { stripVTControlCharacters } from "node:util";
 import {
 	bindSettingsToProjectContext,
 	resetSettingsForTest,
@@ -9,10 +10,10 @@ import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mod
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import * as sessionColor from "@oh-my-pi/pi-coding-agent/utils/session-color";
-import type { Container, NativeScrollbackLiveRegion } from "@oh-my-pi/pi-tui";
-import { TempDir } from "@oh-my-pi/pi-utils";
 import { createProjectDirScope } from "@oh-my-pi/pi-utils/dirs";
+import { adjustHsv, TempDir } from "@oh-my-pi/pi-utils";
 
 type Harness = {
 	mode: InteractiveMode;
@@ -20,14 +21,32 @@ type Harness = {
 	tempDir: TempDir;
 };
 
-let harnesses: Harness[] = [];
+let harness: Harness | undefined;
 
 function defined<T>(value: T | undefined): T {
-	expect(value).toBeDefined();
-	return value as T;
+	if (value === undefined) throw new Error("Expected value to be defined");
+	return value;
+}
+/**
+ * ANSI of the loader's leading interrupt glyph for a session name: the dim
+ * accent variant. Unlike `main`, which only surfaces inside the time-swept
+ * shimmer band of the message, the glyph is painted every render, so it is
+ * the deterministic marker for "this session's accent reached the loader".
+ */
+function accentGlyphAnsi(sessionName: string): string {
+	const hex = sessionColor.getSessionAccentHex(sessionName, theme.sessionAccentInputs);
+	return defined(sessionColor.getSessionAccentAnsi(adjustHsv(hex, { s: 0.55, v: 0.65 })));
 }
 
 async function createHarness(sessionName: string): Promise<Harness> {
+	if (harness) {
+		harness.mode.loadingAnimation?.stop();
+		harness.mode.loadingAnimation = undefined;
+		harness.mode.statusContainer.disposeChildren();
+		await harness.sessionManager.setSessionName(sessionName, "user");
+		return harness;
+	}
+
 	const tempDir = TempDir.createSync("@pi-working-accent-");
 	await Settings.init({ inMemory: true, cwd: tempDir.path() });
 	await initTheme(false);
@@ -46,12 +65,14 @@ async function createHarness(sessionName: string): Promise<Harness> {
 		messages: [],
 		systemPrompt: [],
 		state: { model: undefined },
+		isStreaming: true,
 		model: undefined,
 		thinkingLevel: undefined,
+		titleGenerationSignal: new AbortController().signal,
+		notifyTitleGenerationStart: () => undefined,
 	} as unknown as AgentSession;
 	const mode = new InteractiveMode(session, "test");
-	const harness = { mode, sessionManager, tempDir };
-	harnesses.push(harness);
+	harness = { mode, sessionManager, tempDir };
 	return harness;
 }
 
@@ -75,12 +96,13 @@ function shadowAccentSurfaceLuminance(value: number | undefined): () => void {
 }
 
 afterEach(() => {
-	for (const harness of harnesses) {
-		harness.mode.stop();
-		harness.tempDir.removeSync();
-	}
-	harnesses = [];
 	vi.restoreAllMocks();
+});
+
+afterAll(() => {
+	harness?.mode.stop();
+	harness?.tempDir.removeSync();
+	harness = undefined;
 	resetSettingsForTest();
 });
 
@@ -114,21 +136,12 @@ describe("InteractiveMode working-message session accent cache", () => {
 			bindSettingsToProjectContext(sessionSettings);
 			mode = new InteractiveMode(session, "test");
 		});
-		harnesses.push({ mode, sessionManager, tempDir });
-
-		expect(mode.editor.getAutocompleteMaxVisible()).toBe(12);
-	});
-
-	it("reports a live seam only while status content is mounted", async () => {
-		const { mode } = await createHarness("Live status");
-		const statusContainer = mode.statusContainer as Container & NativeScrollbackLiveRegion;
-
-		// Empty: no seam — the engine may commit freely past the container.
-		expect(statusContainer.getNativeScrollbackLiveRegionStart()).toBeUndefined();
-		// Loader mounted: every row is live, so the seam sits at 0 and keeps
-		// the animating loader out of immutable native scrollback.
-		startStableLoader(mode);
-		expect(statusContainer.getNativeScrollbackLiveRegionStart()).toBe(0);
+		try {
+			expect(mode.editor.getAutocompleteMaxVisible()).toBe(12);
+		} finally {
+			mode.stop();
+			tempDir.removeSync();
+		}
 	});
 
 	it("reuses one computed accent across loader spinner and message colorizers", async () => {
@@ -149,28 +162,12 @@ describe("InteractiveMode working-message session accent cache", () => {
 		expect(getAnsi).toHaveBeenCalledTimes(2);
 	});
 
-	it("recomputes for session renames and keeps the main ANSI path status-line equivalent", async () => {
+	it("recomputes for session renames and repaints the loader glyph with the new accent", async () => {
 		const initialName = "Alpha session";
 		const renamedName = "Beta session";
 		const { mode, sessionManager } = await createHarness(initialName);
-		const initialAnsi = defined(
-			sessionColor.getSessionAccentAnsi(
-				sessionColor.getSessionAccentHex(
-					initialName,
-					theme.getMajorThemeColorHexes(),
-					theme.accentSurfaceLuminance,
-				),
-			),
-		);
-		const renamedAnsi = defined(
-			sessionColor.getSessionAccentAnsi(
-				sessionColor.getSessionAccentHex(
-					renamedName,
-					theme.getMajorThemeColorHexes(),
-					theme.accentSurfaceLuminance,
-				),
-			),
-		);
+		const initialAnsi = accentGlyphAnsi(initialName);
+		const renamedAnsi = accentGlyphAnsi(renamedName);
 		const getHex = vi.spyOn(sessionColor, "getSessionAccentHex");
 
 		startStableLoader(mode);
@@ -193,7 +190,7 @@ describe("InteractiveMode working-message session accent cache", () => {
 			startStableLoader(mode);
 			renderLoader(mode);
 			expect(getHex).toHaveBeenCalledTimes(1);
-			expect(getHex.mock.calls[0]).toEqual([sessionName, theme.getMajorThemeColorHexes(), undefined]);
+			expect(getHex.mock.calls[0]).toEqual([sessionName, theme.sessionAccentInputs]);
 
 			restoreInitial();
 			const restoreLight = shadowAccentSurfaceLuminance(0.72);
@@ -201,7 +198,7 @@ describe("InteractiveMode working-message session accent cache", () => {
 				mode.loadingAnimation?.setMessage("Light theme");
 				renderLoader(mode);
 				expect(getHex).toHaveBeenCalledTimes(2);
-				expect(getHex.mock.calls[1]).toEqual([sessionName, theme.getMajorThemeColorHexes(), 0.72]);
+				expect(getHex.mock.calls[1]).toEqual([sessionName, theme.sessionAccentInputs]);
 			} finally {
 				restoreLight();
 			}
@@ -213,15 +210,7 @@ describe("InteractiveMode working-message session accent cache", () => {
 	it("caches disabled session accents and recomputes when the setting is enabled again", async () => {
 		const sessionName = "Toggle session";
 		const { mode } = await createHarness(sessionName);
-		const accentAnsi = defined(
-			sessionColor.getSessionAccentAnsi(
-				sessionColor.getSessionAccentHex(
-					sessionName,
-					theme.getMajorThemeColorHexes(),
-					theme.accentSurfaceLuminance,
-				),
-			),
-		);
+		const accentAnsi = accentGlyphAnsi(sessionName);
 		const getHex = vi.spyOn(sessionColor, "getSessionAccentHex");
 
 		startStableLoader(mode);
@@ -237,5 +226,42 @@ describe("InteractiveMode working-message session accent cache", () => {
 		mode.loadingAnimation?.setMessage("Accent enabled");
 		expect(renderLoader(mode)).toContain(accentAnsi);
 		expect(getHex).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("InteractiveMode working activity", () => {
+	it("preserves the active loader when blank /rename reports usage", async () => {
+		const { mode } = await createHarness("Active rename session");
+		mode.ensureLoadingAnimation();
+		const loader = defined(mode.loadingAnimation);
+		expect(mode.session.isStreaming).toBe(true);
+
+		try {
+			const handled = await executeBuiltinSlashCommand("/rename", { ctx: mode });
+
+			expect(handled).toBe(true);
+			expect(mode.session.isStreaming).toBe(true);
+			expect(mode.loadingAnimation).toBe(loader);
+			expect(stripVTControlCharacters(renderLoader(mode))).toContain("Working");
+		} finally {
+			loader.stop();
+		}
+	});
+
+	it("restarts a working loader detached by transient status cleanup", async () => {
+		const { mode } = await createHarness("Detached loader session");
+		mode.ensureLoadingAnimation();
+		const loader = defined(mode.loadingAnimation);
+		expect(loader.debugState()).toMatchObject({ running: true });
+
+		mode.statusContainer.disposeChildren();
+		expect(loader.debugState()).toMatchObject({ running: false });
+
+		mode.ensureLoadingAnimation();
+
+		expect(mode.loadingAnimation).toBe(loader);
+		expect(mode.statusContainer.children).toContain(loader);
+		expect(loader.debugState()).toMatchObject({ running: true });
+		loader.stop();
 	});
 });

@@ -40,6 +40,7 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| { id?: string; type: "set_fast_mode"; enabled: boolean }
 	| { id?: string; type: "get_available_commands" }
 	| { id?: string; type: "execute_slash_command"; text: string }
 	| { id?: string; type: "set_todos"; phases: TodoPhase[] }
@@ -114,6 +115,9 @@ export interface RpcSessionState {
 	sessionId: string;
 	sessionName?: string;
 	autoCompactionEnabled: boolean;
+	fastModeEnabled: boolean;
+	fastModeActive: boolean;
+	tokensPerSecond: number | null;
 	messageCount: number;
 	queuedMessageCount: number;
 	todoPhases: TodoPhase[];
@@ -228,6 +232,13 @@ export type RpcResponse =
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_fast_mode";
+			success: true;
+			data: { enabled: boolean; active: boolean };
+	  }
 	| {
 			id?: string;
 			type: "response";
@@ -375,10 +386,22 @@ export type RpcSessionEventFrame = AgentSessionEvent | RpcSubagentFrame;
 // ============================================================================
 // Extension UI Events (stdout)
 // ============================================================================
+/** Positional presentation metadata for an RPC select option. */
+export interface RpcExtensionUISelectOptionDetail {
+	description?: string;
+}
 
 /** Emitted when an extension needs user input */
 export type RpcExtensionUIRequest =
-	| { type: "extension_ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "select";
+			title: string;
+			options: string[];
+			optionDetails?: RpcExtensionUISelectOptionDetail[];
+			timeout?: number;
+	  }
 	| { type: "extension_ui_request"; id: string; method: "confirm"; title: string; message: string; timeout?: number }
 	| {
 			type: "extension_ui_request";
