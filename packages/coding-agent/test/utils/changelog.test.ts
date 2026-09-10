@@ -351,9 +351,9 @@ describe.skipIf(!hasPtyHarness)("interactive startup changelog PTY smoke", () =>
 					delete env.OMP_PROFILE;
 					delete env.PI_PROFILE;
 					delete env.PI_CONFIG_DIR;
-					const command = [cliEntry, ...argv].map(arg => JSON.stringify(arg)).join(" ");
+					const command = [process.execPath, cliEntry, ...argv].map(arg => JSON.stringify(arg)).join(" ");
 
-					const proc = Bun.spawn(["timeout", "20s", "script", "-q", "-c", `bun ${command}`, "/dev/null"], {
+					const proc = Bun.spawn(["timeout", "20s", "script", "-e", "-q", "-c", command, "/dev/null"], {
 						cwd: repoRoot,
 						stdin: "pipe",
 						stdout: "pipe",
