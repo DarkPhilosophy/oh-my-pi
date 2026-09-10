@@ -620,8 +620,7 @@ async function createAgentSessionRuntimeInScope(
 					mode: sessionSettings.get("startup.changelogMode"),
 					currentVersion: VERSION,
 				});
-		let mode!: InteractiveMode;
-		mode = new InteractiveMode(
+		const mode = new InteractiveMode(
 			result.session,
 			VERSION,
 			startupChangelog,

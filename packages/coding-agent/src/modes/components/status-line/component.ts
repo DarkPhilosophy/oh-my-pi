@@ -2493,6 +2493,9 @@ export class StatusLineComponent implements Component {
 
 	render(width: number): readonly string[] {
 		const lines: string[] = [];
+		if (this.#serverStatus.state !== "direct" && this.#serverStatus.state !== "connected") {
+			lines.push(formatDaemonWelcomeStatus(this.#serverStatus, width)[0] ?? "");
+		}
 		if (this.#standalone && !this.#autocompleteActiveProbe?.()) {
 			const content = this.renderBottomBar(width, this.#standalone === "left-only" ? "left" : "full");
 			if (content) {

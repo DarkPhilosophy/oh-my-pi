@@ -897,7 +897,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	#mcpConnectedServers = new Set<string>();
 	readonly #hostedTerminal: Terminal | undefined;
 	readonly #hostedDetach: ((reason: "detach" | "exit" | "error", error?: string) => void) | undefined;
-	#daemonSnapshot: DaemonConnectionSnapshot = { state: "direct" };
 	#mcpFailedServers = new Map<string, { error: string; sourcePath?: string }>();
 	readonly #chatHost: ChatBlockHost = { requestRender: () => this.ui.requestRender() };
 
@@ -1176,7 +1175,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.composer.playWelcomeIntro();
 	}
 	setDaemonSnapshot(snapshot: DaemonConnectionSnapshot): void {
-		this.#daemonSnapshot = snapshot;
 		this.composer.welcome?.setServerStatus(snapshot);
 		this.statusLine.setServerStatus(snapshot);
 		this.ui.requestRender();

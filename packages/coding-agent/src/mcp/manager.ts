@@ -12,7 +12,7 @@ import type { EffectiveExtensionRoots, SourceMeta } from "../capability/types";
 import { resolveConfigValue } from "../config/resolve-config-value";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import { AgentRegistry } from "../registry/agent-registry";
-import { type AuthStorage, REMOTE_REFRESH_SENTINEL } from "../session/auth-storage";
+import type { AuthStorage } from "../session/auth-storage";
 import {
 	MCPConnectionTimeoutError,
 	connectToServer,
@@ -419,8 +419,8 @@ export class MCPManager {
 		return () => this.#promptsChangedSubscribers.delete(handler);
 	}
 
-	#emitToolsChanged(): void {
-		this.#onToolsChanged?.(this.#tools);
+	async #emitToolsChanged(): Promise<void> {
+		await this.#onToolsChanged?.(this.#tools);
 		for (const handler of this.#toolsChangedSubscribers) handler(this.#tools);
 	}
 
@@ -743,7 +743,7 @@ export class MCPManager {
 						this.reconnectServer(name, options);
 					const customTools = MCPTool.fromTools(connection, serverTools, reconnect);
 					this.#replaceServerTools(name, customTools);
-					this.#emitToolsChanged();
+					await this.#emitToolsChanged();
 					void this.toolCache?.set(name, config, serverTools);
 
 					notify({ type: "connected", serverName: name });
@@ -1108,7 +1108,7 @@ export class MCPManager {
 		// Remove tools from this server and notify consumers
 		const hadTools = this.#tools.some(t => t.mcpServerName === name);
 		this.#tools = this.#tools.filter(t => t.mcpServerName !== name);
-		if (hadTools) this.#emitToolsChanged();
+		if (hadTools) await this.#emitToolsChanged();
 
 		// Notify prompt consumers so stale commands are cleared
 		if (connection?.prompts?.length) this.#emitPromptsChanged(name);
@@ -1352,7 +1352,7 @@ export class MCPManager {
 			const customTools = MCPTool.fromTools(connection, serverTools, reconnect);
 			void this.toolCache?.set(name, config, serverTools);
 			this.#replaceServerTools(name, customTools);
-			this.#emitToolsChanged();
+			await this.#emitToolsChanged();
 			void this.#loadServerResourcesAndPrompts(name, connection);
 			return connection;
 		} catch (error) {
@@ -1404,7 +1404,7 @@ export class MCPManager {
 
 		// Replace tools from this server
 		this.#replaceServerTools(name, customTools);
-		this.#emitToolsChanged();
+		await this.#emitToolsChanged();
 	}
 
 	/**

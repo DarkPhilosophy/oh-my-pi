@@ -355,6 +355,7 @@ describe.skipIf(!hasPtyHarness)("interactive startup changelog PTY smoke", () =>
 
 					const proc = Bun.spawn(["timeout", "20s", "script", "-q", "-c", `bun ${command}`, "/dev/null"], {
 						cwd: repoRoot,
+						stdin: "pipe",
 						stdout: "pipe",
 						stderr: "pipe",
 						env: {
