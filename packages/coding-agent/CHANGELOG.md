@@ -10,6 +10,7 @@
 - Added provider-supplied model metadata to the `/models` detail line: `new`, `beta`, and `recommended` badges beside the model name, and the upstream description after the context, cost, and perf facts ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
 - Standalone `CLAUDE.md` files in the project root (and ancestor directories) are now loaded as context, mirroring `AGENTS.md` discovery; config-directory context files still take precedence per scope.
 - Added `rightEditor` extension widgets with independent blocks, placement priority, and `top`/`bottom` vertical alignment, including RPC layout feedback.
+- Unsent prompts cleared with Ctrl+C can now be recalled with Up, including pastes and images; disable Recall Cleared Drafts in settings to discard future clears instead ([#11524](https://github.com/can1357/oh-my-pi/pull/11524) by [@camjac251](https://github.com/camjac251)).
 - Added `tui.vimMode`, an opt-in modal editing layer for the prompt, off by default ([#3299](https://github.com/can1357/oh-my-pi/issues/3299)). Escape leaves Insert; Normal mode has `hjkl`, `0`, `^`, `$`, `w`, `b`, `e`, `gg`, `G`, count prefixes, `x`/`D`/`C`, `dd`/`yy`, `p`/`P` and `u`; `v`/`V` start a Visual selection that `y` copies and `d` deletes.
 - Added a `vim` status-line segment showing the current Vim mode (`NORMAL`/`INSERT`/`VISUAL`/`V-LINE`), the half-typed command beside it (Vim's `showcmd`, e.g. `2d`), and the Visual selection height (`V-LINE 4L`). Included in every built-in preset and hidden entirely unless `tui.vimMode` is on; `custom` preset users can add `"vim"` to `statusLine.leftSegments`.
 - The cursor now changes shape with the Vim mode: block in Normal/Visual, thin/underline in Insert. Applies to the software cursor, and to the real terminal cursor (DECSCUSR) when `PI_HARDWARE_CURSOR` is set.
@@ -25,6 +26,7 @@
 - Read error and preview rendering now sanitizes tabs and Windows-style CRLF (e.g. ssh host-key failures, tab-indented fetched content) so raw output can no longer tear the result frame.
 - Streaming edit guard (`edit.streamingAbort`) no longer aborts on no-op preview results when replacement content produces no file changes, and carries the native patch diagnostic through the abort reason on genuine preview failures.
 - Repeated soft compaction now includes messages retained by the previous pass instead of silently dropping them from model context.
+- `omp models` now reports whether a model's images actually reach the provider, so an id stripped by a text-only catalog rule no longer shows `images: yes` ([#9697](https://github.com/can1357/oh-my-pi/issues/9697)).
 
 ## [18.1.16] - 2026-09-09
 
