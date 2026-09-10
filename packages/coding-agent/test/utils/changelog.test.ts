@@ -372,11 +372,14 @@ describe.skipIf(!hasPtyHarness)("interactive startup changelog PTY smoke", () =>
 						},
 					});
 
+					// Keep the pipe writer alive until the PTY exits; EOF ends `script`.
+					const input = proc.stdin;
 					const [stdout, stderr, exitCode] = await Promise.all([
 						new Response(proc.stdout).arrayBuffer(),
 						new Response(proc.stderr).text(),
 						proc.exited,
 					]);
+					input.end();
 					daemonPid = await readDaemonOwnerPid(runtimeDir);
 					if (argv.includes("--daemon")) expect(daemonPid).toBeDefined();
 					const output = Buffer.from(stdout).toString("utf8");
