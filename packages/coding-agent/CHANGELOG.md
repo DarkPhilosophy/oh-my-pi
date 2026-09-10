@@ -5,6 +5,7 @@
 
 ### Fixed
 
+- Temporary tool progress and background-job waits no longer leave blank bands when they shrink or disappear.
 - Marketplace plugins that share a repository root now load only their declared skills instead of every skill in the repository ([#11513](https://github.com/can1357/oh-my-pi/issues/11513)).
 ### Added
 

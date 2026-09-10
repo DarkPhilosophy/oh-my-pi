@@ -80,6 +80,43 @@ it("reconciles a shrinking mutable tool against the rows actually written to his
 	}
 });
 
+it("restores the transcript after a temporary job wait is removed", async () => {
+	createTestSession();
+	const terminal = new VirtualTerminal(80, 20, 1000);
+	const composer = new Composer({ preferences: { quiet: true }, terminal });
+	const transcript = new TranscriptContainer();
+	const history = {
+		render: () => Array.from({ length: 40 }, (_, index) => `HISTORY_${index + 1}`),
+		isTranscriptBlockFinalized: () => true,
+	};
+	const wait = {
+		render: () => Array.from({ length: 7 }, (_, index) => `WAIT_${index + 1}`),
+		isTranscriptBlockFinalized: () => false,
+		isTranscriptBlockTransient: () => true,
+	};
+	transcript.addChild(history);
+	composer.setRuntimeChildren([transcript, { render: () => ["INPUT"] }]);
+	composer.start();
+	try {
+		composer.ui.renderNow();
+		await terminal.waitForRender();
+		composer.ui.renderNow();
+		await terminal.waitForRender();
+		const before = terminal.getViewport().map(row => row.trimEnd());
+		const tape = terminal.getScrollBuffer().map(row => row.trimEnd());
+		transcript.addChild(wait);
+		composer.ui.renderNow();
+		await terminal.waitForRender();
+		transcript.removeChild(wait);
+		composer.ui.renderNow();
+		await terminal.waitForRender();
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(before);
+		expect(terminal.getScrollBuffer().map(row => row.trimEnd())).toEqual(tape);
+	} finally {
+		composer.stop();
+	}
+});
+
 it("retains the visible transcript tail when a five-row frame finalizes behind temporary UI", async () => {
 	createTestSession();
 	const terminal = new VirtualTerminal(80, 5);

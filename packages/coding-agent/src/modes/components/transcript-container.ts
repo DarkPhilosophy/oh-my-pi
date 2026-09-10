@@ -52,6 +52,8 @@ export interface AppendOnlyTranscriptBlock {
 
 interface FinalizableBlock {
 	isTranscriptBlockFinalized?(): boolean;
+	/** Temporary progress rows may cover history but must not retire it. */
+	isTranscriptBlockTransient?(): boolean;
 	/** Render the row that must remain represented under emergency viewport pressure. */
 	renderTranscriptBlockEmergencyRow?(width: number): string | undefined;
 	/** Number of leading raw rows whose bytes are final while the block remains active. */
@@ -338,6 +340,22 @@ export class TranscriptContainer extends Container {
 			const rendered = this.#renderEntry(entry, width);
 			const block = rendered.slice(this.#projectedEmitted(entry, index, width));
 			if (block.length > 0) total += block.length + (total > 0 ? 1 : 0);
+		}
+		return total;
+	}
+
+	/** Height contributed by temporary tool progress, including its separator. */
+	transientRowCount(width: number): number {
+		this.#syncEntries();
+		let total = 0;
+		let hasRows = false;
+		for (const { entry, index } of this.#liveEntries()) {
+			const rows = this.#renderEntry(entry, width).length - this.#projectedEmitted(entry, index, width);
+			if (rows <= 0) continue;
+			if ((entry.component as Component & FinalizableBlock).isTranscriptBlockTransient?.()) {
+				total += rows + (hasRows ? 1 : 0);
+			}
+			hasRows = true;
 		}
 		return total;
 	}
