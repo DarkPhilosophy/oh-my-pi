@@ -666,7 +666,7 @@ export class AgentSession {
 	 *  generation path. Refresh via {@link AgentSession.setTitleSystemPrompt} when
 	 *  the session cwd changes. */
 	#titleSystemPrompt: string | undefined;
-	#titleGenerationStart: (() => void) | undefined;
+	#titleGenerationStart: (() => (() => void) | void) | undefined;
 	#titleGenerationInFlightFor: string | undefined;
 	#titleProviderSessionId: string | undefined;
 	#titleProviderParentSessionId: string | undefined;
@@ -790,6 +790,7 @@ export class AgentSession {
 	#abortInProgress = false;
 	#renderTestRun: { agent: Agent; completion: Promise<void> } | undefined;
 	#renderTestEvents: WeakSet<AgentEvent> | undefined;
+	#renderTestPendingEvents: Promise<void>[] | undefined;
 	// Wire-level agent_end emission deferred until #promptInFlightCount drops to 0.
 	// Internal extension hooks and post-emit work (auto-retry, auto-compaction, todo
 	// checks in #handleAgentEvent) still fire on the original schedule — only the
@@ -2608,7 +2609,9 @@ export class AgentSession {
 	 * everything it schedules — settles. */
 	#dispatchAgentEvent = async (event: AgentEvent): Promise<void> => {
 		if (this.#renderTestEvents?.delete(event)) {
-			return this.#processAgentEvent(event, true);
+			const processing = this.#processAgentEvent(event, true);
+			this.#renderTestPendingEvents?.push(processing);
+			return processing;
 		}
 		if (event.type === "tool_execution_end" && this.#isTerminalYieldToolResult(event)) {
 			const alreadyTerminated = this.#synchronouslyTerminatedYieldToolCallIds.delete(event.toolCallId);
@@ -5155,6 +5158,7 @@ export class AgentSession {
 		const completion = Promise.withResolvers<void>();
 		this.#renderTestRun = { agent: producer, completion: completion.promise };
 		this.#renderTestEvents = new WeakSet<AgentEvent>();
+		this.#renderTestPendingEvents = [];
 		let endEvent: Extract<AgentEvent, { type: "agent_end" }> | undefined;
 		const unsubscribe = producer.subscribe(event => {
 			if (event.type === "agent_end") {
@@ -5168,14 +5172,17 @@ export class AgentSession {
 			await producer.prompt(`/render ${options.repeat} ${options.delayMs}`);
 		} finally {
 			unsubscribe();
+			const pendingEvents = this.#renderTestPendingEvents ?? [];
+			await Promise.allSettled(pendingEvents);
 			try {
 				this.setTodoPhases(previousTodo);
 				await workflow.dispose();
 			} finally {
 				this.#renderTestRun = undefined;
 				this.#renderTestEvents = undefined;
+				this.#renderTestPendingEvents = undefined;
 				try {
-					if (endEvent) this.#emit({ ...endEvent, isTerminal: true });
+					if (endEvent) await this.#emitSessionEvent({ ...endEvent, isTerminal: true });
 				} finally {
 					completion.resolve();
 				}
@@ -7797,7 +7804,7 @@ export class AgentSession {
 	 * user message persists titles with the same environment, signal, and local
 	 * extension-command policy.
 	 */
-	maybeStartTitleGeneration(firstMessage: string, onStart?: () => void): void {
+	maybeStartTitleGeneration(firstMessage: string, onStart?: () => (() => void) | void): void {
 		const extensionCommandSpace = firstMessage.indexOf(" ");
 		const isLocalExtensionCommand =
 			firstMessage.startsWith("/") &&
@@ -7815,8 +7822,9 @@ export class AgentSession {
 			return;
 		}
 		this.#titleGenerationInFlightFor = sessionId;
+		let cleanupProgress: (() => void) | void;
 		try {
-			(onStart ?? this.#titleGenerationStart)?.();
+			cleanupProgress = (onStart ?? this.#titleGenerationStart)?.();
 		} catch (error) {
 			if (this.#titleGenerationInFlightFor === sessionId) {
 				this.#titleGenerationInFlightFor = undefined;
@@ -7844,6 +7852,7 @@ export class AgentSession {
 				if (this.#titleGenerationInFlightFor === sessionId) {
 					this.#titleGenerationInFlightFor = undefined;
 				}
+				cleanupProgress?.();
 			});
 	}
 
@@ -7859,17 +7868,26 @@ export class AgentSession {
 
 	/**
 	 * Generate an automatic session title tied to this session's lifecycle.
-	 * Input and replan callers share the signal so disposal cancels provider and
-	 * local-worker requests instead of leaving background inference alive.
+	 * Input and replan callers share the signal so interruption and disposal cancel
+	 * provider and local-worker requests instead of leaving background inference alive.
 	 * Online calls use a stable side-request identity so they cannot advance the
 	 * foreground provider session while its request is waiting.
 	 * `customSystemPrompt` swaps the title prompt for special-purpose titling
 	 * (e.g. plan-save filename topics) without touching the session override.
 	 */
-	generateTitle(firstMessage: string, customSystemPrompt?: string): Promise<string | null> {
+	async generateTitle(
+		firstMessage: string,
+		customSystemPrompt?: string,
+		signal?: AbortSignal,
+	): Promise<string | null> {
 		const parentSessionId = this.sessionId;
+		const sessionGeneration = this.#sessionGeneration;
 		const sessionId = this.#resolveTitleProviderSessionId(parentSessionId);
-		return generateSessionTitle(
+		const titleSignal = signal
+			? AbortSignal.any([signal, this.#titleGenerationAbortController.signal])
+			: this.#titleGenerationAbortController.signal;
+		if (titleSignal.aborted) return null;
+		const title = await generateSessionTitle(
 			firstMessage,
 			this.#modelRegistry,
 			this.settings,
@@ -7877,9 +7895,16 @@ export class AgentSession {
 			this.model,
 			provider => buildSessionMetadata(sessionId, provider, this.#modelRegistry.authStorage),
 			customSystemPrompt ?? this.#titleSystemPrompt,
-			this.#titleGenerationAbortController.signal,
+			titleSignal,
 			parentSessionId,
 		);
+		if (await this.#sessionGenerationChanged(sessionGeneration)) return null;
+		return !titleSignal.aborted && this.sessionId === parentSessionId ? title : null;
+	}
+
+	/** Capture before generation to detect interruption or disposal of a title request. */
+	get titleGenerationSignal(): AbortSignal {
+		return this.#titleGenerationAbortController.signal;
 	}
 
 	async #refreshTitleAfterReplan(context: string, sessionId: string): Promise<void> {
@@ -7908,9 +7933,15 @@ export class AgentSession {
 	}
 
 	/** Install the interactive title-download UI hook. Used when `/skill:` starts
-	 *  titling from {@link promptCustomMessage} without the input-controller callback. */
-	setTitleGenerationStart(handler: (() => void) | undefined): void {
+	 *  titling from {@link promptCustomMessage} without the input-controller callback.
+	 *  The hook may return cleanup to run when generation settles. */
+	setTitleGenerationStart(handler: (() => (() => void) | void) | undefined): void {
 		this.#titleGenerationStart = handler;
+	}
+
+	/** Notify the host before a user-requested title generation; return its cleanup. */
+	notifyTitleGenerationStart(): (() => void) | void {
+		return this.#titleGenerationStart?.();
 	}
 
 	/** Install the host hook that receives a typed user prompt dropped before
@@ -7949,6 +7980,8 @@ export class AgentSession {
 		// auto-starting a fresh turn during cleanup.
 		this.#abortInProgress = true;
 		try {
+			this.#titleGenerationAbortController.abort();
+			if (!this.#isDisposed) this.#titleGenerationAbortController = new AbortController();
 			this.#abortAutolearnCapture();
 			for (const controller of this.#usagePreflightAbortControllers) controller.abort();
 			this.abortRetry();

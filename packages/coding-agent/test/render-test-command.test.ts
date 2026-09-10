@@ -6,11 +6,14 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { ModelRegistry } from "../src/config/model-registry";
 import { resetSettingsForTest, Settings } from "../src/config/settings";
+import { ExtensionRuntime, loadExtensionFromFactory } from "../src/extensibility/extensions/loader";
+import { ExtensionRunner } from "../src/extensibility/extensions/runner";
 import { Composer } from "../src/modes/composer";
 import { InteractiveMode } from "../src/modes/interactive-mode";
 import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
 import { SessionManager } from "../src/session/session-manager";
+import { EventBus } from "../src/utils/event-bus";
 
 let directory: TempDir;
 let auth: AuthStorage;
@@ -19,6 +22,7 @@ let mode: InteractiveMode;
 let terminal: VirtualTerminal;
 let providerCalls: number;
 let credentialCalls: number;
+let beforeAssistantEnd: (() => Promise<void>) | undefined;
 
 beforeEach(async () => {
 	directory = await TempDir.create("omp-render-test-");
@@ -39,11 +43,27 @@ beforeEach(async () => {
 			throw new Error("Render contacted a provider");
 		},
 	});
+	beforeAssistantEnd = undefined;
+	const sessionManager = SessionManager.inMemory(directory.path());
+	const modelRegistry = new ModelRegistry(auth, directory.join("models.yml"));
+	const runtime = new ExtensionRuntime();
+	const extension = await loadExtensionFromFactory(
+		api => {
+			api.on("message_end", async event => {
+				if (event.message.role === "assistant") await beforeAssistantEnd?.();
+			});
+		},
+		directory.path(),
+		new EventBus(),
+		runtime,
+		"render-event-ordering",
+	);
 	session = new AgentSession({
 		agent,
-		sessionManager: SessionManager.inMemory(directory.path()),
+		sessionManager,
 		settings: Settings.isolated({ "startup.quiet": true, "compaction.enabled": false }),
-		modelRegistry: new ModelRegistry(auth, directory.join("models.yml")),
+		modelRegistry,
+		extensionRunner: new ExtensionRunner([extension], runtime, directory.path(), sessionManager, modelRegistry),
 	});
 	terminal = new VirtualTerminal(110, 20);
 	const composer = new Composer({ terminal, preferences: { quiet: true } });
@@ -157,4 +177,34 @@ it("cancels paced output and rejects an overlapping run without starting a provi
 	expect(final?.content.some(block => block.type === "text")).toBeFalse();
 	expect(providerCalls).toBe(0);
 	expect(credentialCalls).toBe(0);
+});
+
+it("keeps terminal completion behind an asynchronous assistant message-end handler", async () => {
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const delta = Promise.withResolvers<void>();
+	const delivered: string[] = [];
+	beforeAssistantEnd = async () => {
+		entered.resolve();
+		await release.promise;
+	};
+	session.subscribe(event => {
+		if (event.type === "message_update") delta.resolve();
+		if (event.type === "message_end" && event.message.role === "assistant") delivered.push("message_end");
+		if (event.type === "agent_end") delivered.push("agent_end");
+	});
+	const running = session.runRenderTest({ repeat: 1, delayMs: 5 }, mode.getToolUIContext());
+	await delta.promise;
+	const aborting = session.abort();
+	try {
+		await entered.promise;
+		await Bun.sleep(20);
+		expect(delivered).toEqual([]);
+		expect(session.isStreaming).toBeTrue();
+	} finally {
+		release.resolve();
+		await Promise.all([running, aborting]);
+	}
+	expect(delivered).toEqual(["message_end", "agent_end"]);
+	expect(session.isStreaming).toBeFalse();
 });
