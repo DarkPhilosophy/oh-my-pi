@@ -575,6 +575,11 @@ export class SelectorController {
 					this.ctx.showError(`Failed to apply external thinking: ${err}`);
 				});
 				break;
+			case "compaction.idleEnabled":
+			case "compaction.idleThresholdTokens":
+			case "compaction.idleTimeoutSeconds":
+				this.ctx.eventController.refreshIdleCompactionTimer();
+				break;
 
 			case "autocompleteMaxVisible":
 				this.ctx.editor.setAutocompleteMaxVisible(typeof value === "number" ? value : Number(value));
@@ -584,6 +589,11 @@ export class SelectorController {
 			case "spelling.autocorrect":
 				this.ctx.syncEditorSpelling();
 				this.ctx.ui.requestRender();
+				break;
+
+			case "tui.vimMode":
+			case "tui.vimModeDisplay":
+				this.ctx.applyVimModeSetting();
 				break;
 
 			// Settings with UI side effects
