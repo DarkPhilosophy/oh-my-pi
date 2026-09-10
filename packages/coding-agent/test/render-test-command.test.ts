@@ -1,23 +1,29 @@
-import { afterEach, beforeEach, expect, it } from "bun:test";
+import { afterEach, beforeEach, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { ModelRegistry } from "../src/config/model-registry";
-import { Settings } from "../src/config/settings";
+import { resetSettingsForTest, Settings } from "../src/config/settings";
+import { Composer } from "../src/modes/composer";
+import { InteractiveMode } from "../src/modes/interactive-mode";
 import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
 import { SessionManager } from "../src/session/session-manager";
-import { BUILTIN_CONTROL_SLASH_COMMANDS } from "../src/slash-commands/builtin-control";
 
 let directory: TempDir;
 let auth: AuthStorage;
 let session: AgentSession;
+let mode: InteractiveMode;
+let terminal: VirtualTerminal;
 let providerCalls: number;
 let credentialCalls: number;
 
 beforeEach(async () => {
-	directory = TempDir.createSync("omp-render-test-");
+	directory = await TempDir.create("omp-render-test-");
+	resetSettingsForTest();
+	await Settings.init({ inMemory: true, cwd: directory.path(), agentDir: directory.path() });
 	auth = await AuthStorage.create(":memory:");
 	providerCalls = 0;
 	credentialCalls = 0;
@@ -26,95 +32,129 @@ beforeEach(async () => {
 		initialState: { model, tools: [] },
 		getApiKey: () => {
 			credentialCalls++;
-			throw new Error("Render test requested credentials");
+			throw new Error("Render requested credentials");
 		},
 		streamFn: () => {
 			providerCalls++;
-			throw new Error("Render test contacted a provider");
+			throw new Error("Render contacted a provider");
 		},
 	});
 	session = new AgentSession({
 		agent,
 		sessionManager: SessionManager.inMemory(directory.path()),
-		settings: Settings.isolated(),
+		settings: Settings.isolated({ "startup.quiet": true, "compaction.enabled": false }),
 		modelRegistry: new ModelRegistry(auth, directory.join("models.yml")),
 	});
+	terminal = new VirtualTerminal(110, 20);
+	const composer = new Composer({ terminal, preferences: { quiet: true } });
+	mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+	vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+	await mode.init({ suppressWelcomeIntro: true });
 });
 
 afterEach(async () => {
+	await session?.abort();
+	mode?.stop();
 	await session?.dispose();
 	auth?.close();
 	await directory?.remove();
+	vi.restoreAllMocks();
+	resetSettingsForTest();
 });
 
-it("streams the render command incrementally through session events and persists its completed assistant message", async () => {
-	const firstDelta = Promise.withResolvers<void>();
-	let partial = "";
-	let final: AssistantMessage | undefined;
-	let idleAtEnd = false;
+it("runs complete repeated workflows through real tools and interactive rendering without provider calls", async () => {
+	const results: ToolResultMessage[] = [];
+	const assistants: AssistantMessage[] = [];
+	const questions = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+	let questionCount = 0;
+	let thinkingDeltas = 0;
+	let textDeltas = 0;
+	const savedTodo = [
+		{ name: "Existing", tasks: [{ content: "Keep the user's original plan", status: "pending" as const }] },
+	];
+	session.setTodoPhases(savedTodo);
 	session.subscribe(event => {
-		if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-			partial += event.assistantMessageEvent.delta;
-			firstDelta.resolve();
+		if (event.type === "message_update") {
+			if (event.assistantMessageEvent.type === "thinking_delta") thinkingDeltas++;
+			if (event.assistantMessageEvent.type === "text_delta") textDeltas++;
 		}
-		if (event.type === "message_end" && event.message.role === "assistant") final = event.message;
-		if (event.type === "agent_end") idleAtEnd = !session.isStreaming;
+		if (event.type === "tool_execution_start" && event.toolName === "ask") questions[questionCount++]?.resolve();
+		if (event.type === "message_end" && event.message.role === "toolResult") results.push(event.message);
+		if (event.type === "message_end" && event.message.role === "assistant") assistants.push(event.message);
 	});
-	const command = BUILTIN_CONTROL_SLASH_COMMANDS.find(candidate => candidate.name === "render");
-	if (!command?.handle) throw new Error("Missing /render command");
-	const errors: string[] = [];
-	const running = command.handle(
-		{ name: "render", args: "test 3 1", text: "/render test 3 1" },
-		{
-			session,
-			sessionManager: session.sessionManager,
-			settings: session.settings,
-			cwd: directory.path(),
-			output: text => {
-				errors.push(text);
-			},
-			refreshCommands: () => {},
-			reloadPlugins: async () => {},
-		},
-	);
-	await firstDelta.promise;
-	expect(session.isStreaming).toBeTrue();
-	expect(final).toBeUndefined();
-	expect(partial).not.toContain("message 003");
+	const running = session.runRenderTest({ repeat: 2, delayMs: 1 }, mode.getToolUIContext());
+	for (let repetition = 0; repetition < 2; repetition++) {
+		await questions[repetition]!.promise;
+		await terminal.waitForRender(() => terminal.getViewport().some(row => row.includes("Enter select")));
+		const count = assistants.length;
+		await Bun.sleep(100);
+		expect(assistants.length).toBe(count);
+		expect(questionCount).toBe(repetition + 1);
+		expect(session.isStreaming).toBeTrue();
+		terminal.sendInput("\r");
+	}
 	await running;
 	await session.waitForIdle();
-	expect(errors).toEqual([]);
-	expect(Array.from(partial.match(/message \d{3}/g) ?? [])).toEqual(["message 001", "message 002", "message 003"]);
-	expect(final?.stopReason).toBe("stop");
-	expect(final?.usage.totalTokens).toBe(0);
-	expect(idleAtEnd).toBeTrue();
-	const restored = session.sessionManager.buildSessionContext().messages;
-	expect(
-		restored.some(
-			message =>
-				message.role === "assistant" &&
-				message.content.some(block => block.type === "text" && block.text === partial),
-		),
-	).toBeTrue();
+	mode.ui.renderNow();
+	await terminal.waitForRender();
+	expect(session.isStreaming).toBeFalse();
+	expect(session.getTodoPhases()).toEqual(savedTodo);
+	expect(thinkingDeltas).toBeGreaterThan(2);
+	expect(textDeltas).toBeGreaterThan(100);
+	expect(results.filter(result => result.toolName === "read")).toHaveLength(20);
+	const edits = results.filter(result => result.toolName === "edit");
+	expect(edits).toHaveLength(8);
+	expect(edits.filter(result => result.isError)).toHaveLength(2);
+	for (const error of edits.filter(result => result.isError)) {
+		expect(
+			error.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n"),
+		).toMatch(/snapshot|hash|stale/i);
+	}
+	expect(results.filter(result => result.toolName === "ask" && !result.isError)).toHaveLength(2);
+	for (const repetition of [1, 2]) {
+		expect(
+			assistants.some(
+				message =>
+					message.content
+						.filter(block => block.type === "toolCall")
+						.filter(call => call.name === "edit" && call.id.startsWith(`render-workflow-${repetition}-`))
+						.length === 3,
+			),
+		).toBeTrue();
+	}
+	const text = assistants
+		.flatMap(message => message.content.flatMap(block => (block.type === "text" ? [block.text] : [])))
+		.join("\n");
+	const expected = Array.from(text.matchAll(/(?:PLAIN|QUOTE|TABLE|CODE|LIST|STEP)_\d+/g), match => match[0]);
+	const tape = terminal
+		.getScrollBuffer()
+		.map(row => Bun.stripANSI(row))
+		.join("\n");
+	expect(Array.from(tape.matchAll(/(?:PLAIN|QUOTE|TABLE|CODE|LIST|STEP)_\d+/g), match => match[0])).toEqual(expected);
+	expect(expected.filter(marker => marker.startsWith("PLAIN_"))).toHaveLength(120);
+	expect(expected.filter(marker => marker.startsWith("CODE_"))).toHaveLength(120);
 	expect(providerCalls).toBe(0);
 	expect(credentialCalls).toBe(0);
-});
+}, 60_000);
 
-it("uses normal session cancellation and rejects overlapping render runs", async () => {
+it("cancels paced output and rejects an overlapping run without starting a provider", async () => {
 	const firstDelta = Promise.withResolvers<void>();
 	let final: AssistantMessage | undefined;
 	session.subscribe(event => {
 		if (event.type === "message_update") firstDelta.resolve();
 		if (event.type === "message_end" && event.message.role === "assistant") final = event.message;
 	});
-	const running = session.runRenderTest({ lines: 100, delayMs: 5 });
+	const running = session.runRenderTest({ repeat: 2, delayMs: 5 }, mode.getToolUIContext());
 	await firstDelta.promise;
-	await expect(session.runRenderTest({ lines: 1, delayMs: 1 })).rejects.toThrow();
+	await expect(session.runRenderTest({ repeat: 1, delayMs: 1 }, mode.getToolUIContext())).rejects.toThrow();
 	await session.abort();
 	await running;
 	expect(session.isStreaming).toBeFalse();
 	expect(final?.stopReason).toBe("aborted");
-	expect(final?.content.some(block => block.type === "text" && block.text.includes("message 100"))).toBeFalse();
+	expect(final?.content.some(block => block.type === "text")).toBeFalse();
 	expect(providerCalls).toBe(0);
 	expect(credentialCalls).toBe(0);
 });

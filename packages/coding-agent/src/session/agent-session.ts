@@ -342,7 +342,8 @@ import {
 	queueChipText,
 	toRestoredQueuedMessage,
 } from "./queued-messages";
-import { createRenderTestAgent, type RenderTestOptions } from "./render-test";
+import { createRenderTestAgent, type RenderTestOptions, validateRenderTestOptions } from "./render-test";
+import { createRenderWorkflow } from "./render-workflow";
 import type { ServingModel } from "./retry-fallback-chains";
 import {
 	type AdvisorStats,
@@ -2591,11 +2592,7 @@ export class AgentSession {
 	 * everything it schedules — settles. */
 	#dispatchAgentEvent = async (event: AgentEvent): Promise<void> => {
 		if (this.#renderTestEvents?.delete(event)) {
-			// Exercise the same persisted message and subscriber/daemon transport
-			// path without invoking provider-backed hooks, advisors or maintenance.
-			if (event.type === "message_end") this.#persistMessageEnd(event.message, this.#promptGeneration);
-			this.#emit(event);
-			return;
+			return this.#processAgentEvent(event, true);
 		}
 		if (event.type === "tool_execution_end" && this.#isTerminalYieldToolResult(event)) {
 			const alreadyTerminated = this.#synchronouslyTerminatedYieldToolCallIds.delete(event.toolCallId);
@@ -2922,7 +2919,7 @@ export class AgentSession {
 		return true;
 	}
 
-	#processAgentEvent = async (event: AgentEvent): Promise<void> => {
+	#processAgentEvent = async (event: AgentEvent, renderSimulation = false): Promise<void> => {
 		const eventPromptGeneration = this.#promptGeneration;
 		// A fresh run supersedes the previously settled (and pruned) refusal
 		// turn: state-based lookups take over again.
@@ -3057,7 +3054,7 @@ export class AgentSession {
 			}
 		}
 
-		if (event.type === "turn_start") {
+		if (event.type === "turn_start" && !renderSimulation) {
 			this.#advisors.onPrimaryTurnStart();
 			const usage = this.getSessionStats().tokens;
 			this.#goalRuntime.onTurnStart(`turn-${++this.#goalTurnCounter}`, {
@@ -3093,6 +3090,16 @@ export class AgentSession {
 				}
 				throw error;
 			}
+		}
+		if (renderSimulation) {
+			if (event.type === "message_end") {
+				if (messageEndPersistence) {
+					await messageEndPersistence.persist(() => this.#persistMessageEnd(event.message, eventPromptGeneration));
+				} else {
+					this.#persistMessageEnd(event.message, eventPromptGeneration);
+				}
+			}
+			return;
 		}
 
 		if (event.type === "turn_start") this.#ttsr.onTurnStart();
@@ -5134,12 +5141,35 @@ export class AgentSession {
 	}
 
 	/** Stream a local provider fixture through agent-core and the active session's normal event transport. */
-	async runRenderTest(options: RenderTestOptions = { lines: 100, delayMs: 25 }): Promise<void> {
+	async runRenderTest(
+		options: RenderTestOptions = { repeat: 1, delayMs: 25 },
+		uiContext?: ExtensionUIContext,
+	): Promise<void> {
 		if (this.#isDisposed) throw new Error("Session is disposed");
 		if (this.isStreaming) throw new AgentBusyError();
+		validateRenderTestOptions(options);
 		const model = this.model;
 		if (!model) throw new Error("No active model on session");
-		const producer = createRenderTestAgent(model, options);
+		const previousTodo = this.getTodoPhases();
+		const workflow = createRenderWorkflow(
+			{
+				cwd: this.sessionManager.getCwd(),
+				hasUI: uiContext !== undefined,
+				settings: this.settings,
+				getSessionFile: () => null,
+				getSessionSpawns: () => null,
+				getTodoPhases: () => this.getTodoPhases(),
+				setTodoPhases: phases => this.setTodoPhases(phases),
+			},
+			{
+				...this.buildAskReanswerContext(uiContext ?? noOpUIContext),
+				abort: () => {
+					void this.abort();
+				},
+			},
+			options.repeat,
+		);
+		const producer = createRenderTestAgent(model, options, workflow);
 		const completion = Promise.withResolvers<void>();
 		this.#renderTestRun = { agent: producer, completion: completion.promise };
 		this.#renderTestEvents = new WeakSet<AgentEvent>();
@@ -5153,15 +5183,20 @@ export class AgentSession {
 			this.agent.emitExternalEvent(event);
 		});
 		try {
-			await producer.prompt(`/render test ${options.lines} ${options.delayMs}`);
+			await producer.prompt(`/render ${options.repeat} ${options.delayMs}`);
 		} finally {
 			unsubscribe();
-			this.#renderTestRun = undefined;
-			this.#renderTestEvents = undefined;
 			try {
-				if (endEvent) this.#emit({ ...endEvent, isTerminal: true });
+				this.setTodoPhases(previousTodo);
+				await workflow.dispose();
 			} finally {
-				completion.resolve();
+				this.#renderTestRun = undefined;
+				this.#renderTestEvents = undefined;
+				try {
+					if (endEvent) this.#emit({ ...endEvent, isTerminal: true });
+				} finally {
+					completion.resolve();
+				}
 			}
 		}
 	}

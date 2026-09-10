@@ -196,6 +196,7 @@ export class Composer implements TerminalFrameProvider {
 	#lastNormalRows = 0;
 	/** Current non-dropdown chrome footprint, not a session-wide minimum. */
 	#chromeRowsWithoutAutocomplete: number | undefined;
+	#editorHost: Container | undefined;
 	#viewportTranscript?: TranscriptContainer;
 	#viewportTranscriptStart = 0;
 	#lastInterruptAt = 0;
@@ -277,9 +278,11 @@ export class Composer implements TerminalFrameProvider {
 		// leaves the mutable viewport in the same frame it is appended, so its
 		// rows are never painted twice.
 		const chromeRows = preRoots.length + after.length;
-		const autocompleteVisible = this.editor.focused && this.editor.isAutocompleteActive();
-		if (!autocompleteVisible) this.#chromeRowsWithoutAutocomplete = chromeRows;
-		const viewportExpansionRows = autocompleteVisible
+		const temporaryEditorVisible =
+			(this.editor.focused && this.editor.isAutocompleteActive()) ||
+			(this.#editorHost !== undefined && !this.#editorHost.children.includes(this.editor));
+		if (!temporaryEditorVisible) this.#chromeRowsWithoutAutocomplete = chromeRows;
+		const viewportExpansionRows = temporaryEditorVisible
 			? Math.max(0, chromeRows - (this.#chromeRowsWithoutAutocomplete ?? chromeRows))
 			: 0;
 		const history = this.#offerHistory(transcript, width, rows + viewportExpansionRows, chromeRows);
@@ -683,9 +686,20 @@ export class Composer implements TerminalFrameProvider {
 			this.#runtimeMounted = true;
 		}
 		this.#runtimeChildren = children;
+		this.#editorHost = this.#findEditorHost(children);
 		for (const child of children) this.ui.addChild(child);
 		this.ui.addChild(this.#statusHost);
 		this.ui.requestRender();
+	}
+
+	#findEditorHost(children: readonly Component[]): Container | undefined {
+		for (const child of children) {
+			if (!(child instanceof Container) || child instanceof TranscriptContainer) continue;
+			if (child.children.includes(this.editor)) return child;
+			const host = this.#findEditorHost(child.children);
+			if (host) return host;
+		}
+		return undefined;
 	}
 
 	/** Play or replay the welcome intro against the stable header render target. */

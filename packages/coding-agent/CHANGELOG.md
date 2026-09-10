@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added `/render test` for cancellable, token-free streaming of numbered Markdown with configurable line count and chunk delay.
+- Added `/render <repeat> <chunk-delay-ms>` for cancellable, token-free workflows with streamed thinking, long text and Markdown, real reads and edits on disposable files, and interactive questions.
 
 ### Fixed
 
