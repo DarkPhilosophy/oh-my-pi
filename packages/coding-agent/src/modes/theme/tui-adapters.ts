@@ -27,6 +27,7 @@ import type { Theme } from "./theme-class";
 
 let cachedHighlightColorsFor: Theme | undefined;
 let copyUrlHandlerReady = false;
+const readyCopyChipTarget = (code: string) => copyUrlTarget(code, true);
 
 let cachedHighlightColors: NativeHighlightColors | undefined;
 
@@ -220,7 +221,9 @@ export function getMarkdownTheme(): MarkdownTheme {
 		codeBlock: (text: string) => theme.fg("mdCodeBlock", text),
 		codeBlockBorder: (text: string) => theme.fg("mdCodeBlockBorder", text),
 		copyChip: "copy",
-		copyChipTarget: code => copyUrlTarget(code, copyUrlHandlerReady),
+		get copyChipTarget() {
+			return copyUrlHandlerReady ? readyCopyChipTarget : undefined;
+		},
 		quote: (text: string) => theme.fg("mdQuote", text),
 		quoteBorder: (text: string) => theme.fg("mdQuoteBorder", text),
 		hr: (text: string) => theme.fg("mdHr", text),
