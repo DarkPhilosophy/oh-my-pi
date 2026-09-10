@@ -201,6 +201,107 @@ class TmuxPreservedClearTerminal extends VirtualTerminal {
 }
 
 describe("terminal frame plans", () => {
+	it("consumes a finalized prefix without re-appending the still-borrowed suffix", () => {
+		const terminal = new CountingTerminal(20, 3);
+		const provider = new Provider({ viewport: ["a", "b", "tool-1", "tool-2", "tool-3", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		const initial = plainBuffer(terminal);
+		provider.plan = { history: { id: 1, rows: ["a", "b"] }, viewport: ["tool-1", "tool-2", "tool-3", "editor"] };
+		tui.requestRender(true);
+		expect(plainBuffer(terminal)).toEqual(initial);
+		expect(provider.borrowed.at(-1)).toBe(1);
+		provider.plan = { history: { id: 2, rows: ["tool-1"] }, viewport: ["tool-2", "tool-3", "editor"] };
+		tui.requestRender(true);
+		expect(plainBuffer(terminal)).toEqual(initial);
+		expect(provider.acknowledged).toEqual([1, 2]);
+		expect(provider.borrowed.at(-1)).toBe(0);
+		tui.stop();
+	});
+
+	it("keeps the live suffix aligned after overflow shrinks without duplicating native rows", () => {
+		const terminal = new CountingTerminal(20, 4);
+		const initial = ["a", "b", "c", "d", "editor", "suggest-1", "suggest-2"];
+		const provider = new Provider({ viewport: initial });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		const oldHistory = plainBuffer(terminal).slice(0, terminal.getBufferPosition().baseY);
+		terminal.writes.length = 0;
+		provider.plan = { viewport: ["a", "b", "c", "d", "editor"] };
+		tui.requestRender(true);
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["", "", "d", "editor"]);
+		expect(plainBuffer(terminal).slice(0, terminal.getBufferPosition().baseY)).toEqual(oldHistory);
+		provider.plan = { viewport: initial };
+		tui.requestRender(true);
+		expect(plainBuffer(terminal)).toEqual(initial);
+		expect(terminal.writes.join("")).not.toMatch(/\x1b\[[23]J/);
+		tui.stop();
+	});
+
+	it("keeps a full-screen live frame bottom-anchored when a tool shrinks and grows", () => {
+		const terminal = new CountingTerminal(30, 5);
+		const provider = new Provider({ viewport: ["tool-1", "tool-2", "tool-3", "tool-4", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		const position = terminal.getBufferPosition();
+		try {
+			for (const viewport of [
+				["failed", "editor"],
+				["failed", "next", "editor"],
+			]) {
+				provider.plan = { viewport };
+				tui.requestRender(true);
+				const visible = terminal.getViewport().map(row => row.trimEnd());
+				expect(visible.slice(-viewport.length)).toEqual(viewport);
+				expect(visible.slice(0, -viewport.length).every(row => row === "")).toBeTrue();
+				expect(terminal.getBufferPosition()).toEqual(position);
+			}
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("does not commit reversible viewport growth during an expand-contract cycle", () => {
+		const terminal = new CountingTerminal(20, 4);
+		const base = ["a", "b", "c", "d", "editor"];
+		const provider = new Provider({ viewport: base });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		const before = terminal.getBufferPosition();
+		provider.plan = {
+			viewport: [...base, "suggest-1", "suggest-2", "suggest-3", "suggest-4"],
+			viewportExpansionRows: 4,
+		};
+		tui.requestRender(true);
+		expect(terminal.getBufferPosition()).toEqual(before);
+		provider.plan = { viewport: base };
+		tui.requestRender(true);
+		expect(terminal.getBufferPosition()).toEqual(before);
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["b", "c", "d", "editor"]);
+		expect(plainBuffer(terminal)).toEqual(base);
+		tui.stop();
+	});
+
+	it("repaints unchanged mutable rows when contraction moves their physical anchor", () => {
+		const terminal = new CountingTerminal(30, 8);
+		const provider = new Provider({
+			history: { id: 1, kind: "append", rows: ["history-a", "history-b", "history-c"] },
+			viewport: ["status", "suggestion", "editor"],
+			viewportExpansionRows: 1,
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		provider.plan = { viewport: ["status", "suggestion", "editor"], viewportExpansionRows: 1 };
+		tui.renderNow();
+		provider.plan = { viewport: ["status", "editor"] };
+		tui.renderNow();
+		const visible = terminal.getViewport().map(row => row.trimEnd());
+		expect(visible.filter(row => row === "status")).toHaveLength(1);
+		expect(visible.filter(row => row === "editor")).toHaveLength(1);
+		expect(visible).not.toContain("suggestion");
+		tui.stop();
+	});
+
 	it("appends finalized history once and leaves the requested mutable viewport intact", () => {
 		const terminal = new VirtualTerminal(20, 3);
 		const provider = new Provider({
@@ -565,7 +666,7 @@ describe("terminal frame plans", () => {
 		try {
 			provider.plan = { viewport: ["header", "editor"] };
 			tui.requestRender(true);
-			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["header", "editor", ""]);
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["", "header", "editor"]);
 			expect(terminal.writes.join("")).not.toMatch(/\x1b\[[23]J/);
 			provider.plan = {
 				history: { id: 1, rows: ["new"], kind: "replay" },

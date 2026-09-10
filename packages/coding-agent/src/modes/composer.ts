@@ -194,7 +194,8 @@ export class Composer implements TerminalFrameProvider {
 	#retiredHeaderStart = 0;
 	#resizeRetiredHeaderStart: number | undefined;
 	#lastNormalRows = 0;
-	#minimumChromeRows: number | undefined;
+	/** Current non-dropdown chrome footprint, not a session-wide minimum. */
+	#chromeRowsWithoutAutocomplete: number | undefined;
 	#viewportTranscript?: TranscriptContainer;
 	#viewportTranscriptStart = 0;
 	#lastInterruptAt = 0;
@@ -276,8 +277,11 @@ export class Composer implements TerminalFrameProvider {
 		// leaves the mutable viewport in the same frame it is appended, so its
 		// rows are never painted twice.
 		const chromeRows = preRoots.length + after.length;
-		this.#minimumChromeRows = Math.min(this.#minimumChromeRows ?? chromeRows, chromeRows);
-		const viewportExpansionRows = chromeRows - this.#minimumChromeRows;
+		const autocompleteVisible = this.editor.focused && this.editor.isAutocompleteActive();
+		if (!autocompleteVisible) this.#chromeRowsWithoutAutocomplete = chromeRows;
+		const viewportExpansionRows = autocompleteVisible
+			? Math.max(0, chromeRows - (this.#chromeRowsWithoutAutocomplete ?? chromeRows))
+			: 0;
 		const history = this.#offerHistory(transcript, width, rows + viewportExpansionRows, chromeRows);
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];

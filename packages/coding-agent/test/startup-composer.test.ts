@@ -3,6 +3,7 @@ import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getDefault } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import { COMPOSER_DEFAULTS, Composer, type ComposerPreferences } from "@oh-my-pi/pi-coding-agent/modes/composer";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import {
@@ -16,7 +17,7 @@ import {
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
-import { createTestSession } from "./utilities";
+import { assistantMsg, createTestSession } from "./utilities";
 
 class CountingTerminal extends VirtualTerminal {
 	starts = 0;
@@ -103,50 +104,97 @@ describe("Composer prepaint", () => {
 		resetSettingsForTest();
 	});
 
-	it("preserves the virtual transcript across extra layout rows during and after streaming", () => {
-		const terminal = new CountingTerminal(40, 10);
-		const composer = new Composer({ preferences: { ...config, quiet: true }, terminal });
-		const transcript = new TranscriptContainer();
-		const stream = new GrowingBlock();
-		let extra = 0;
-		const input: Component = {
-			render: () => [...Array.from({ length: extra }, (_, index) => `TEMP ${index}`), "INPUT"],
-		};
-		transcript.addChild(stream);
-		composer.setRuntimeChildren([transcript, input]);
-		composer.start();
-		try {
-			for (let index = 1; index <= 20; index++) {
-				stream.append(`ROW ${index}`);
+	it.each(["normal", "expanded", "varied", "flush"])(
+		"preserves streamed fenced-code history through %s finalization",
+		async mode => {
+			const terminal = new CountingTerminal(60, 12);
+			const composer = new Composer({ preferences: { ...config, quiet: true }, terminal });
+			const transcript = new TranscriptContainer();
+			const message = new AssistantMessageComponent(undefined, false);
+			let extra = 0;
+			const input: Component = {
+				render: () => [...Array.from({ length: extra }, (_, index) => `EXTRA ${index}`), "INPUT"],
+			};
+			transcript.addChild(message);
+			composer.setRuntimeChildren([transcript, input]);
+			composer.start();
+			const markers = Array.from({ length: 30 }, (_, index) => `MARKER_${String(index + 1).padStart(2, "0")}`);
+			let text = "```text\n";
+			const streamed: string[] = [];
+			try {
+				for (const marker of markers) {
+					const suffix =
+						mode === "varied" ? "Șir cu diacritice ".repeat((streamed.length % 3) + 1) : "x".repeat(42);
+					text += `${marker} ${suffix}\n`;
+					streamed.push(marker);
+					if ((mode === "expanded" || mode === "varied") && marker === "MARKER_10") extra = 4;
+					message.updateContent(assistantMsg(text), { transient: true });
+					composer.ui.renderNow();
+					const liveTape = terminal
+						.getScrollBuffer()
+						.map(row => Bun.stripANSI(row))
+						.join("\n");
+					const liveMarkers = Array.from(liveTape.match(/MARKER_\d{2}/g) ?? []);
+					// A streamed marker may never appear twice, and the visible order
+					// must follow the stream — never "1,2,6,7" or a duplicated row.
+					expect(liveMarkers).toEqual([...new Set(liveMarkers)]);
+					expect(liveMarkers).toEqual(streamed.filter(marker => liveMarkers.includes(marker)));
+					// With no transient expansion open, every streamed row is on the
+					// scrollback-backed buffer. While expanded, clipped rows must still
+					// be recoverable — asserted immediately after contraction below.
+					if (extra === 0) expect(liveMarkers).toEqual(streamed);
+				}
+				text += "```";
+				message.updateContent(assistantMsg(text), { transient: true });
 				composer.ui.renderNow();
+				text += "\n\nFinished.";
+				message.updateContent(assistantMsg(text), { transient: true });
+				composer.ui.renderNow();
+				message.updateContent(assistantMsg(text), { transient: false });
+				message.markTranscriptBlockFinalized();
+				if (mode === "flush") {
+					composer.stop();
+				} else {
+					composer.ui.renderNow();
+					await terminal.waitForRender();
+					composer.ui.renderNow();
+					extra = 0;
+					composer.ui.renderNow();
+					await terminal.waitForRender();
+					const finalViewport = terminal.getViewport().map(row => row.trimEnd());
+					expect(finalViewport.at(-1), JSON.stringify(finalViewport)).toBe("INPUT");
+					if (mode === "expanded" || mode === "varied") {
+						const settledViewport = terminal.getViewport().map(row => row.trimEnd());
+						const states = transcript.blockStates();
+						for (let cycle = 0; cycle < 3; cycle++) {
+							extra = 4;
+							composer.ui.renderNow();
+							await terminal.waitForRender();
+							const expandedTape = terminal
+								.getScrollBuffer()
+								.map(row => Bun.stripANSI(row))
+								.join("\n");
+							const visibleMarkers = Array.from(expandedTape.match(/MARKER_\d{2}/g) ?? []);
+							expect(visibleMarkers).toEqual(markers);
+							extra = 0;
+							composer.ui.renderNow();
+							await terminal.waitForRender();
+							expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(settledViewport);
+							expect(transcript.blockStates()).toEqual(states);
+						}
+					}
+				}
+				const tape = terminal
+					.getScrollBuffer()
+					.map(line => Bun.stripANSI(line))
+					.join("\n");
+				expect(Array.from(tape.match(/MARKER_\d{2}/g) ?? [])).toEqual(markers);
+			} finally {
+				composer.stop();
+				message.dispose();
 			}
-			const historyBefore = terminal.getBufferPosition().baseY;
-			extra = 4;
-			composer.ui.renderNow();
-			expect(terminal.getBufferPosition().baseY).toBe(historyBefore);
-			for (let index = 21; index <= 25; index++) {
-				stream.append(`ROW ${index}`);
-				composer.ui.renderNow();
-			}
-			extra = 0;
-			composer.ui.renderNow();
-			const expected = [...Array.from({ length: 9 }, (_, index) => `ROW ${17 + index}`), "INPUT"];
-			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(expected);
-			stream.finalize();
-			composer.ui.renderNow();
-			for (let cycle = 0; cycle < 3; cycle++) {
-				const history = terminal.getBufferPosition().baseY;
-				extra = 4;
-				composer.ui.renderNow();
-				extra = 0;
-				composer.ui.renderNow();
-				expect(terminal.getBufferPosition().baseY).toBe(history);
-				expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(expected);
-			}
-		} finally {
-			composer.stop();
-		}
-	});
+		},
+	);
 
 	it("keeps one live editor and terminal across handoff", () => {
 		const terminal = new CountingTerminal();

@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `/render test` for cancellable, token-free streaming of numbered Markdown with configurable line count and chunk delay.
+
 ### Fixed
 
+- Fixed ordinary status and editor height changes leaving gaps in streamed transcript output.
 - Closing questions or command suggestions and shrinking multiline input now restores the transcript without blank gaps during or after streaming.
 - Fixed long responses being clipped at the history boundary and still-visible content retiring when command suggestions open.
 - Fixed replay omitting already-emitted rows from a partially settled response.
