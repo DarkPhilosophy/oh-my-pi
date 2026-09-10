@@ -45,6 +45,9 @@ export type SymbolKey =
 	| "boxRound.bottomRight"
 	| "boxRound.horizontal"
 	| "boxRound.vertical"
+	// Box Drawing - Dotted (selection outlines)
+	| "boxDotted.horizontal"
+	| "boxDotted.vertical"
 	// Box Drawing - Sharp
 	| "boxSharp.topLeft"
 	| "boxSharp.topRight"
@@ -93,6 +96,7 @@ export type SymbolKey =
 	| "icon.cost"
 	| "icon.subscription"
 	| "icon.advisor"
+	| "icon.advisorClosed"
 	| "icon.time"
 	| "icon.omp"
 	| "icon.esc"
@@ -104,6 +108,7 @@ export type SymbolKey =
 	| "icon.input"
 	| "icon.output"
 	| "icon.throughput"
+	| "icon.intelligence"
 	| "icon.host"
 	| "icon.session"
 	| "icon.package"
@@ -120,6 +125,11 @@ export type SymbolKey =
 	| "icon.extensionPrompt"
 	| "icon.extensionContextFile"
 	| "icon.extensionInstruction"
+	// Vim modes
+	| "icon.vimNormal"
+	| "icon.vimInsert"
+	| "icon.vimVisual"
+	| "icon.vimVisualLine"
 	// Slash-command type indicators (autocomplete); names without an existing
 	// icon.* equivalent — see SlashCommandIconName for the full vocabulary.
 	| "cmd.action"
@@ -234,8 +244,9 @@ export type SymbolKey =
 	| "lang.pdf"
 	| "lang.archive"
 	| "lang.binary"
-	// Composer attachment chips (image paste / large text paste)
+	// Composer attachment chips (image/video paste / large text paste)
 	| "chip.image"
+	| "chip.video"
 	| "chip.paste"
 	// Settings tab icons
 	| "tab.appearance"
@@ -269,7 +280,6 @@ export type SymbolKey =
 	| "tool.ask"
 	| "tool.resolve"
 	| "tool.review"
-	| "tool.inspectImage"
 	| "tool.goal"
 	| "tool.irc"
 	| "tool.delete"
@@ -392,6 +402,9 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"boxRound.bottomRight": "╯",
 	"boxRound.horizontal": "─",
 	"boxRound.vertical": "│",
+	// Box (dotted)
+	"boxDotted.horizontal": "┄",
+	"boxDotted.vertical": "┆",
 	// Box (sharp)
 	"boxSharp.topLeft": "┌",
 	"boxSharp.topRight": "┐",
@@ -441,6 +454,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.cost": "💲",
 	"icon.subscription": "(sub)",
 	"icon.advisor": "👁",
+	"icon.advisorClosed": "🙈",
 	"icon.time": "⏱",
 	"icon.omp": "π",
 	"icon.esc": "⎋",
@@ -452,6 +466,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.input": "⤵",
 	"icon.output": "⤴",
 	"icon.throughput": "⚡",
+	"icon.intelligence": "🧠",
 	"icon.host": "🖥",
 	"icon.session": "🆔",
 	"icon.package": "📦",
@@ -468,6 +483,13 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.extensionPrompt": "✎",
 	"icon.extensionContextFile": "📎",
 	"icon.extensionInstruction": "📘",
+	// Vim modes — shape-distinct so Normal and Visual stay legible even when the
+	// theme's accent and warning colours sit in the same hue family. Insert and
+	// Normal echo the cursor each mode draws (a bar and a block).
+	"icon.vimNormal": "■",
+	"icon.vimInsert": "▎",
+	"icon.vimVisual": "◉",
+	"icon.vimVisualLine": "≡",
 	// Slash-command type indicators
 	"cmd.action": "❯",
 	"cmd.prompt": "✎",
@@ -583,6 +605,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"lang.binary": "⚙",
 	// Composer attachment chips
 	"chip.image": "🖼",
+	"chip.video": "🎞",
 	"chip.paste": "📄",
 	// Settings tabs
 	"tab.appearance": "🎨",
@@ -616,7 +639,6 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"tool.ask": "?",
 	"tool.resolve": "✓",
 	"tool.review": "◉",
-	"tool.inspectImage": "🖼",
 	"tool.goal": "◎",
 	"tool.irc": "✉",
 	"tool.delete": "🗑",
@@ -690,6 +712,11 @@ const NERD_SYMBOLS: SymbolMap = {
 	"boxRound.horizontal": "─",
 	// pick: │ | alt: ┃ ║ ▏
 	"boxRound.vertical": "│",
+	// Box Drawing - Dotted (same as unicode)
+	// pick: ┄ | alt: ╌ ┈ ⋯
+	"boxDotted.horizontal": "┄",
+	// pick: ┆ | alt: ╎ ┊ ⋮
+	"boxDotted.vertical": "┆",
 	// Box Drawing - Sharp (same as unicode)
 	// pick: ┌ | alt: ┏ ╭ ╔
 	"boxSharp.topLeft": "┌",
@@ -773,7 +800,9 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.pin": "\uf08d",
 	// pick:  | alt: ⊛ ◍ 
 	"icon.tokens": "\ue26b",
-	// pick:  | alt: ◫ ▦
+	// pick:  (nf-dev-windows) | alt:  (nf-cod-window) ◫ ▦
+	// INTENTIONAL: the Windows logo is the chosen glyph here. It has been "fixed"
+	// to nf-cod-window before (739d5a3947) and reverted; do not swap it again.
 	"icon.context": "\ue70f",
 	// pick:  | alt: $ ¢
 	"icon.cost": "\uf155",
@@ -781,6 +810,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.subscription": "\u{f067a}",
 	// pick:  (nf-cod-eye)
 	"icon.advisor": "\uea70",
+	// pick:  (nf-oct-eye_closed)
+	"icon.advisorClosed": "\ueae7",
 	// pick:  | alt: ◷ ◴
 	"icon.time": "\uf017",
 	// pick: 󰵗 (nf-md-pi) | alt:  π ∏ ∑
@@ -803,6 +834,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.output": "\uf08b",
 	// pick:  (nf-fa-tachometer) | alt:  ⚡ ↬
 	"icon.throughput": "\uf0e4",
+	// findnerd brain:  (nf-fa-brain)
+	"icon.intelligence": "\uee9c",
 	// pick:  | alt:  
 	"icon.host": "\uf109",
 	// pick: 󰁑 (nf-md-arrow_left_bold_hexagon_outline) | alt:  
@@ -833,6 +866,19 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.extensionContextFile": "\uf0f6",
 	// pick:  | alt:  
 	"icon.extensionInstruction": "\uf02d",
+	// Vim modes — fa-square / fa-pencil / fa-eye / fa-bars. Normal takes the filled
+	// block its cursor draws; Insert the pencil, Visual the eye, V-Line the stacked rules.
+	// Nerd Fonts scale the tall-and-narrow FA glyphs (fa-i-cursor, fa-caret-*) to the full
+	// ascender-to-descender box, so terminals with a tighter row shave their serifs (#3299);
+	// every glyph here stays inside the same normalised box the other icons use.
+	// pick:  (nf-fa-square) | alt:  (nf-fa-square_o)
+	"icon.vimNormal": "\uf0c8",
+	// pick:  (nf-fa-pencil) | alt:  (nf-fa-i_cursor, clipped by short rows)
+	"icon.vimInsert": "\uf040",
+	// pick:  (nf-fa-eye) | alt:  (nf-fa-dot_circle)
+	"icon.vimVisual": "\uf06e",
+	// pick:  (nf-fa-bars) | alt:  (nf-fa-align_left)
+	"icon.vimVisualLine": "\uf0c9",
 	// Slash-command type indicators
 	// pick:  (nf-cod-terminal) | alt:  (nf-fa-terminal)
 	"cmd.action": "\uea85",
@@ -1005,6 +1051,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	// Composer attachment chips
 	// pick:  (fa-image, matches omp2) | alt: 󰋩 (md-image) 󰈟 (md-file_image)
 	"chip.image": "\uf03e",
+	// pick:  (fa-film)
+	"chip.video": "\uf008",
 	// pick:  (fa-file_text, matches omp2) | alt: 󰈙 (md-file_document)  (cod-file)
 	"chip.paste": "\uf15c",
 	// Settings tab icons
@@ -1039,7 +1087,6 @@ const NERD_SYMBOLS: SymbolMap = {
 	"tool.ask": "\uEAC7",
 	"tool.resolve": "\uEBB1",
 	"tool.review": "\uEA70",
-	"tool.inspectImage": "\uEAEA",
 	"tool.goal": "\uEBF8",
 	"tool.irc": "\uF086",
 	"tool.delete": "\uf12d",
@@ -1084,6 +1131,9 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"boxRound.bottomRight": "+",
 	"boxRound.horizontal": "-",
 	"boxRound.vertical": "|",
+	// Box Drawing - Dotted (ASCII fallback)
+	"boxDotted.horizontal": "-",
+	"boxDotted.vertical": ":",
 	// Box Drawing - Sharp (ASCII fallback)
 	"boxSharp.topLeft": "+",
 	"boxSharp.topRight": "+",
@@ -1132,6 +1182,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"icon.cost": "$",
 	"icon.subscription": "(sub)",
 	"icon.advisor": "(adv)",
+	"icon.advisorClosed": "(adv)",
 	"icon.time": "t:",
 	"icon.omp": "pi",
 	"icon.esc": "esc",
@@ -1140,6 +1191,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"icon.job": "bg",
 	"icon.output": "out:",
 	"icon.throughput": "tok/s:",
+	"icon.intelligence": "IQ",
 	"icon.cache": "cache",
 	"icon.cacheMiss": "!",
 	"icon.input": "in:",
@@ -1159,6 +1211,11 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"icon.extensionPrompt": "PR",
 	"icon.extensionContextFile": "CF",
 	"icon.extensionInstruction": "IN",
+	// Vim modes
+	"icon.vimNormal": "N",
+	"icon.vimInsert": "I",
+	"icon.vimVisual": "V",
+	"icon.vimVisualLine": "L",
 	// Slash-command type indicators — unused; the icon column is disabled in ASCII mode
 	"cmd.action": "",
 	"cmd.prompt": "",
@@ -1271,6 +1328,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"lang.binary": "bin",
 	// Composer attachment chips
 	"chip.image": "img",
+	"chip.video": "vid",
 	"chip.paste": "txt",
 	// Settings tab icons
 	"tab.appearance": "[A]",
@@ -1304,9 +1362,8 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"tool.ask": "[?]",
 	"tool.resolve": "[v]",
 	"tool.review": "rev",
-	"tool.inspectImage": "[i]",
 	"tool.goal": "(o)",
-	"tool.irc": "irc",
+	"tool.irc": "#",
 	"tool.delete": "rm",
 	"tool.move": "mv",
 };

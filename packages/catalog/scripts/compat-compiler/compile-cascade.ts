@@ -2,12 +2,11 @@
  * Compiles `rules/classes/*.kdl` + `rules/providers/*.kdl` into
  * {@link CompiledCascade}.
  *
- * Faithful port of the o2 reference (`cascade.rs`): nested selector scopes
- * (`class` / `provider` / `on` / `family` / `revision` / `models`) collapse
- * into flat conjunction rules; axis directives are validated against the
- * closed vocabulary in `src/compat/axes.ts` and emitted keyed by resolved
- * camelCase field. Duplicate axes in one block and misplaced selectors are
- * hard errors.
+ * Nested selector scopes (`class` / `provider` / `on` / `on-api` / `family` /
+ * `revision` / `models`) collapse into flat conjunction rules; axis directives
+ * are validated against the closed vocabulary in `src/compat/axes.ts` and
+ * emitted keyed by resolved camelCase field. Duplicate axes in one block and
+ * misplaced selectors are hard errors.
  */
 import { AXES, type AxisDef } from "../../src/compat/axes";
 import { parseRevisionConstraint } from "../../src/compat/revision";
@@ -19,8 +18,9 @@ const CHILD_CLASS = 1 << 1;
 const CHILD_FAMILY = 1 << 2;
 const CHILD_REVISION = 1 << 3;
 const CHILD_MODELS = 1 << 4;
-const CLASS_CHILDREN = CHILD_ON | CHILD_FAMILY | CHILD_REVISION | CHILD_MODELS;
-const CLASS_ON_CHILDREN = CHILD_FAMILY | CHILD_REVISION | CHILD_MODELS;
+const CHILD_API = 1 << 5;
+const CLASS_CHILDREN = CHILD_ON | CHILD_API | CHILD_FAMILY | CHILD_REVISION | CHILD_MODELS;
+const CLASS_FILTER_CHILDREN = CHILD_FAMILY | CHILD_REVISION | CHILD_MODELS;
 const PROVIDER_CHILDREN = CHILD_CLASS | CHILD_MODELS;
 const FAMILY_CHILDREN = CHILD_REVISION | CHILD_MODELS;
 const REVISION_CHILDREN = CHILD_MODELS;
@@ -28,6 +28,7 @@ const REVISION_CHILDREN = CHILD_MODELS;
 interface RuleScope {
 	class?: string;
 	providers?: string[];
+	apis?: string[];
 	family?: string;
 	revision?: CompiledRule["revision"];
 	models?: CompiledSelector[];
@@ -44,15 +45,34 @@ function scalarValue(node: KdlNodeView, value: KdlScalar): unknown {
 	return value;
 }
 
-/** Nested payload node → JSON: verbatim keys, scalars or deeper objects. */
-function objectValue(children: KdlNodeView[]): Record<string, unknown> {
+/**
+ * Object-payload child name → resolved JSON key. Authored names are
+ * kebab-case; an axis-directive spelling maps to its resolved axis key
+ * (`template-reasoning-effort` → `qwenTemplateReasoningEffort`), anything else
+ * converts mechanically (`input-threshold` → `inputThreshold`).
+ */
+function payloadKey(child: KdlNodeView): string {
+	if (/[A-Z]/.test(child.name)) {
+		throw new CompatCompileError(child.file, child.line, `object payload key \`${child.name}\` must be kebab-case`);
+	}
+	return AXES[child.name]?.key ?? child.name.replace(/-([a-z0-9])/g, (_, first: string) => first.toUpperCase());
+}
+
+/**
+ * Nested payload node → JSON. `verbatim` copies child names as literal wire
+ * keys (`extra-body` payloads); otherwise kebab-case names compile to
+ * camelCase resolved keys, and a nested `extra-body` child switches its
+ * subtree back to verbatim wire keys.
+ */
+function objectValue(children: KdlNodeView[], verbatim: boolean): Record<string, unknown> {
 	const object: Record<string, unknown> = {};
 	for (const child of children) {
 		if (child.props.length > 0) malformed(child);
+		const key = verbatim ? child.name : payloadKey(child);
 		if (child.args.length === 1 && !child.children) {
-			object[child.name] = scalarValue(child, child.args[0]);
+			object[key] = scalarValue(child, child.args[0]);
 		} else if (child.args.length === 0 && child.children) {
-			object[child.name] = objectValue(child.children);
+			object[key] = objectValue(child.children, verbatim || child.name === "extra-body");
 		} else {
 			malformed(child);
 		}
@@ -83,7 +103,7 @@ function axisValue(node: KdlNodeView, axis: AxisDef): unknown {
 		}
 		case "object":
 			if (node.args.length > 0 || !node.children) malformed(node);
-			return objectValue(node.children);
+			return objectValue(node.children, axis.verbatimKeys === true);
 	}
 }
 
@@ -150,11 +170,15 @@ function parseScope(node: KdlNodeView, scope: RuleScope, allowed: number, rules:
 		switch (child.name) {
 			case "on":
 				kind = CHILD_ON;
-				nextAllowed = CLASS_ON_CHILDREN;
+				nextAllowed = CLASS_FILTER_CHILDREN;
+				break;
+			case "on-api":
+				kind = CHILD_API;
+				nextAllowed = CLASS_FILTER_CHILDREN;
 				break;
 			case "class":
 				kind = CHILD_CLASS;
-				nextAllowed = CLASS_ON_CHILDREN;
+				nextAllowed = CLASS_FILTER_CHILDREN;
 				break;
 			case "family":
 				kind = CHILD_FAMILY;
@@ -180,6 +204,9 @@ function parseScope(node: KdlNodeView, scope: RuleScope, allowed: number, rules:
 				break;
 			case CHILD_CLASS:
 				nested.class = requiredName(child);
+				break;
+			case CHILD_API:
+				nested.apis = stringArguments(child);
 				break;
 			case CHILD_FAMILY:
 				nested.family = requiredName(child);
@@ -209,6 +236,7 @@ function parseScope(node: KdlNodeView, scope: RuleScope, allowed: number, rules:
 	const rule: CompiledRule = { source: `${node.file}:${node.line}` };
 	if (scope.class !== undefined) rule.class = scope.class;
 	if (scope.providers !== undefined) rule.providers = scope.providers;
+	if (scope.apis !== undefined) rule.apis = scope.apis;
 	if (scope.family !== undefined) rule.family = scope.family;
 	if (scope.revision !== undefined) rule.revision = scope.revision;
 	if (scope.models !== undefined) rule.models = scope.models;
