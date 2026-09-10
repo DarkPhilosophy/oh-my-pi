@@ -15,6 +15,7 @@ function parseRenderTestArgs(args: string): RenderTestOptions {
 export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "render",
+		icon: "bug",
 		description: "Exercise thinking, long text, Markdown, real reads/edits and interactive questions without tokens",
 		allowArgs: true,
 		inlineHint: "[repeat=1] [chunk-delay-ms=25]",

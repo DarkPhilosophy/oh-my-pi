@@ -775,6 +775,7 @@ export class AgentSession {
 	#abortInProgress = false;
 	#renderTestRun: { agent: Agent; completion: Promise<void> } | undefined;
 	#renderTestEvents: WeakSet<AgentEvent> | undefined;
+	#renderTestPendingEvents: Promise<void>[] | undefined;
 	// Wire-level agent_end emission deferred until #promptInFlightCount drops to 0.
 	// Internal extension hooks and post-emit work (auto-retry, auto-compaction, todo
 	// checks in #handleAgentEvent) still fire on the original schedule — only the
@@ -2592,7 +2593,9 @@ export class AgentSession {
 	 * everything it schedules — settles. */
 	#dispatchAgentEvent = async (event: AgentEvent): Promise<void> => {
 		if (this.#renderTestEvents?.delete(event)) {
-			return this.#processAgentEvent(event, true);
+			const processing = this.#processAgentEvent(event, true);
+			this.#renderTestPendingEvents?.push(processing);
+			return processing;
 		}
 		if (event.type === "tool_execution_end" && this.#isTerminalYieldToolResult(event)) {
 			const alreadyTerminated = this.#synchronouslyTerminatedYieldToolCallIds.delete(event.toolCallId);
@@ -5173,6 +5176,7 @@ export class AgentSession {
 		const completion = Promise.withResolvers<void>();
 		this.#renderTestRun = { agent: producer, completion: completion.promise };
 		this.#renderTestEvents = new WeakSet<AgentEvent>();
+		this.#renderTestPendingEvents = [];
 		let endEvent: Extract<AgentEvent, { type: "agent_end" }> | undefined;
 		const unsubscribe = producer.subscribe(event => {
 			if (event.type === "agent_end") {
@@ -5186,14 +5190,17 @@ export class AgentSession {
 			await producer.prompt(`/render ${options.repeat} ${options.delayMs}`);
 		} finally {
 			unsubscribe();
+			const pendingEvents = this.#renderTestPendingEvents ?? [];
+			await Promise.allSettled(pendingEvents);
 			try {
 				this.setTodoPhases(previousTodo);
 				await workflow.dispose();
 			} finally {
 				this.#renderTestRun = undefined;
 				this.#renderTestEvents = undefined;
+				this.#renderTestPendingEvents = undefined;
 				try {
-					if (endEvent) this.#emit({ ...endEvent, isTerminal: true });
+					if (endEvent) await this.#emitSessionEvent({ ...endEvent, isTerminal: true });
 				} finally {
 					completion.resolve();
 				}
