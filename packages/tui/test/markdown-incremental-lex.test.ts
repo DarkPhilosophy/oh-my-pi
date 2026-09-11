@@ -452,7 +452,6 @@ describe("Markdown incremental streaming lex (E2)", () => {
 		}
 	});
 
-
 	it("maps cached ST-normalized prefixes to the later nested fence copy body", () => {
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;

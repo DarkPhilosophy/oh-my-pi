@@ -72,8 +72,8 @@ beforeEach(async () => {
 	});
 	terminal = new VirtualTerminal(110, 20, 10_000);
 	const composer = new Composer({ terminal, preferences: { quiet: true } });
-	mode = new InteractiveMode(session, "test", undefined, () => { }, undefined, undefined, undefined, composer);
-	vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => { });
+	mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+	vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 	await mode.init({ suppressWelcomeIntro: true });
 });
 
