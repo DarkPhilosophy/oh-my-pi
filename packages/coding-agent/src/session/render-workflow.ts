@@ -28,8 +28,15 @@ export interface RenderWorkflow {
 }
 
 /** Real tools, restricted to owned disposable files; the provider only scripts their calls. */
-export function createRenderWorkflow(session: ToolSession, context: AgentToolContext, repeat: number): RenderWorkflow {
-	if (!context.hasUI || !context.ui?.askDialog) throw new Error("Render workflow requires interactive ask support.");
+export function createRenderWorkflow(
+	session: ToolSession,
+	context: AgentToolContext,
+	repeat: number,
+	scenario?: "ask" | "job" | "markdown",
+): RenderWorkflow {
+	if ((!scenario || scenario === "ask") && (!context.hasUI || !context.ui?.askDialog)) {
+		throw new Error("Render workflow requires interactive ask support.");
+	}
 	const directory = TempDir.createSync(path.join(os.tmpdir(), "omp-render-workflow-"));
 	const localSession: ToolSession = { ...session, cwd: directory.path(), hasEditTool: true };
 	const jobs = new AsyncJobManager({ maxRunningJobs: 11 });
@@ -129,7 +136,13 @@ export function createRenderWorkflow(session: ToolSession, context: AgentToolCon
 					id: "render-workflow",
 					question: `Repetition ${repetition}/${repeat}: continue after inspecting the rendering?`,
 					options: [
-						{ label: "Continue", description: "Resume reads, edits and streamed output." },
+						{
+							label: "Continue",
+							description:
+								scenario === "ask"
+									? "Close the question and stream a short continuation."
+									: "Resume reads, edits and streamed output.",
+						},
 						{
 							label: "Continue with another selection",
 							description: "Exercise a different selection before resuming.",
@@ -141,6 +154,12 @@ export function createRenderWorkflow(session: ToolSession, context: AgentToolCon
 		}),
 	});
 	actions.push({ name: "todo", args: () => ({ op: "done", task: tasks[2] }) });
+	if (scenario) {
+		const selected = actions.filter(action =>
+			scenario === "ask" ? action.name === "ask" : scenario === "job" && ["bash", "hub"].includes(action.name),
+		);
+		actions.splice(0, actions.length, ...selected);
+	}
 	return {
 		tools: [
 			new ReadTool(localSession),
@@ -168,12 +187,20 @@ export function createRenderWorkflow(session: ToolSession, context: AgentToolCon
 				initialized = true;
 			}
 			if (stage === actions.length) {
-				if (repetition === repeat) return undefined;
+				if (repetition === repeat || scenario === "markdown") return undefined;
 				repetition++;
 				stage = 0;
 			}
 			const introduction = stage === 0;
-			const count = stage === backgroundStage ? 10 : stage === 1 || stage === 4 ? 3 : 1;
+			const nextName = actions[stage]!.name;
+			let count = 1;
+			// Keep related reads and explicit background launches in one response.
+			// Foreground handoff and consecutive waits remain distinct transitions.
+			if (nextName === "read" || (nextName === "bash" && (scenario ? stage === 1 : stage === backgroundStage))) {
+				while (actions[stage + count]?.name === nextName) count++;
+			} else if (!scenario && stage === 4) {
+				count = 3;
+			}
 			const calls = actions.slice(stage, stage + count).map((action, offset): ToolCall => ({
 				type: "toolCall",
 				id: `render-workflow-${repetition}-${stage + offset + 1}`,

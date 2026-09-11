@@ -286,6 +286,37 @@ describe("terminal frame plans", () => {
 		}
 	});
 
+	it("keeps retired text adjacent to a shrinking job and its next response", () => {
+		const terminal = new CountingTerminal(40, 6);
+		const provider = new Provider({
+			history: { id: 1, kind: "append", rows: ["PREVIOUS_1", "PREVIOUS_2"] },
+			viewport: ["JOB_1", "JOB_2", "JOB_3", "editor"],
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		try {
+			provider.plan = { viewport: ["JOB_DONE", "editor"] };
+			tui.renderNow();
+			const closed = plainBuffer(terminal);
+			const previous = closed.indexOf("PREVIOUS_2");
+			expect(closed[previous + 1]).toBe("JOB_DONE");
+			provider.plan = { viewport: ["JOB_DONE", "NEXT_1", "NEXT_2", "NEXT_3", "editor"] };
+			tui.renderNow();
+			const grown = plainBuffer(terminal);
+			expect(grown.slice(grown.indexOf("PREVIOUS_1"), grown.indexOf("NEXT_3") + 1)).toEqual([
+				"PREVIOUS_1",
+				"PREVIOUS_2",
+				"JOB_DONE",
+				"NEXT_1",
+				"NEXT_2",
+				"NEXT_3",
+			]);
+			expect(terminal.writes.join("")).not.toContain("\x1b[3J");
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("does not commit reversible viewport growth during an expand-contract cycle", () => {
 		const terminal = new CountingTerminal(20, 4);
 		const base = ["a", "b", "c", "d", "editor"];

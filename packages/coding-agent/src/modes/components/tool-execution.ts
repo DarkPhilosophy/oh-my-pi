@@ -832,11 +832,6 @@ export class ToolExecutionComponent extends Container {
 		return !this.#isPartial;
 	}
 
-	/** Progress and waiting polls temporarily cover, rather than retire, earlier content. */
-	isTranscriptBlockTransient(): boolean {
-		return !this.isTranscriptBlockFinalized();
-	}
-
 	getTranscriptBlockVersion(): number {
 		return this.#blockVersion;
 	}

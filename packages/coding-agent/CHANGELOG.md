@@ -5,14 +5,19 @@
 
 ### Fixed
 
+- Questions opened alongside a draft no longer retire the covered transcript or leave blank bands after the draft is submitted and the question closes.
+- Starting tools no longer hides or cuts preceding replies and read previews at the live viewport–scrollback boundary.
 - Temporary tool progress and background-job waits no longer leave blank bands when they shrink or disappear.
 - Marketplace plugins that share a repository root now load only their declared skills instead of every skill in the repository ([#11513](https://github.com/can1357/oh-my-pi/issues/11513)).
 ### Added
 
 - Added `/render <repeat> <chunk-delay-ms>` for cancellable, token-free workflows with streamed thinking, long text and Markdown, real reads and edits on disposable files, and interactive questions.
+- Added isolated `/render --ask`, `--job`, and `--markdown` scenarios; the Markdown case contains a 50-line code body.
 
 ### Changed
 
+- `/render` now explains each numbered response batch, marks its text boundaries, and pauses 1.5–2 seconds between responses separately from chunk pacing.
+- `/render` groups consecutive inspection reads instead of repeating visually identical single-read response stages.
 - Subagents now show their current activity and a separate, width-bounded current-tool row; resolved model labels follow the model badge setting.
 
 ### Changed

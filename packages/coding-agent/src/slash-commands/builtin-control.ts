@@ -6,10 +6,20 @@ import type { SlashCommandSpec } from "./types";
 
 function parseRenderTestArgs(args: string): RenderTestOptions {
 	const parts = args.trim() ? args.trim().split(/\s+/) : [];
-	if (parts.length > 2 || parts.some(part => !/^\d+$/.test(part))) {
-		throw new Error("Usage: /render [repeat=1] [chunk-delay-ms=25]");
+	let scenario: RenderTestOptions["scenario"];
+	const positional: string[] = [];
+	for (const part of parts) {
+		if (part === "--ask" || part === "--job" || part === "--markdown") {
+			if (scenario) throw new Error("Choose only one render scenario: --ask, --job or --markdown.");
+			scenario = part.slice(2) as NonNullable<RenderTestOptions["scenario"]>;
+		} else {
+			positional.push(part);
+		}
 	}
-	return { repeat: Number(parts[0] ?? 1), delayMs: Number(parts[1] ?? 25) };
+	if (positional.length > 2 || positional.some(part => !/^\d+$/.test(part))) {
+		throw new Error("Usage: /render [--ask|--job|--markdown] [repeat=1] [chunk-delay-ms=25]");
+	}
+	return { repeat: Number(positional[0] ?? 1), delayMs: Number(positional[1] ?? 25), scenario };
 }
 
 export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
@@ -18,7 +28,7 @@ export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		icon: "bug",
 		description: "Exercise thinking, long text, Markdown, real reads/edits and interactive questions without tokens",
 		allowArgs: true,
-		inlineHint: "[repeat=1] [chunk-delay-ms=25]",
+		inlineHint: "[--ask|--job|--markdown] [repeat=1] [chunk-delay-ms=25]",
 		handleTui: async (command, { ctx }) => {
 			ctx.editor.setText("");
 			try {

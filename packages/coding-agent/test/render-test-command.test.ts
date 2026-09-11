@@ -61,14 +61,19 @@ beforeEach(async () => {
 	session = new AgentSession({
 		agent,
 		sessionManager,
-		settings: Settings.isolated({ "startup.quiet": true, "compaction.enabled": false }),
+		builtInToolNames: ["read", "edit", "todo", "ask", "bash", "hub"],
+		settings: Settings.isolated({
+			"startup.quiet": true,
+			"compaction.enabled": false,
+			"read.toolResultPreview": true,
+		}),
 		modelRegistry,
 		extensionRunner: new ExtensionRunner([extension], runtime, directory.path(), sessionManager, modelRegistry),
 	});
 	terminal = new VirtualTerminal(110, 20, 10_000);
 	const composer = new Composer({ terminal, preferences: { quiet: true } });
-	mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
-	vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+	mode = new InteractiveMode(session, "test", undefined, () => { }, undefined, undefined, undefined, composer);
+	vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => { });
 	await mode.init({ suppressWelcomeIntro: true });
 });
 
@@ -82,88 +87,191 @@ afterEach(async () => {
 	resetSettingsForTest();
 });
 
-it("runs complete repeated workflows through real tools and interactive rendering without provider calls", async () => {
-	const results: ToolResultMessage[] = [];
-	const assistants: AssistantMessage[] = [];
-	const questions = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
-	let questionCount = 0;
-	let thinkingDeltas = 0;
-	let textDeltas = 0;
-	const savedTodo = [
-		{ name: "Existing", tasks: [{ content: "Keep the user's original plan", status: "pending" as const }] },
-	];
-	session.setTodoPhases(savedTodo);
-	const runStates: string[] = [];
-	session.subscribeRunState(state => runStates.push(state));
-	session.subscribe(event => {
-		if (event.type === "message_update") {
-			if (event.assistantMessageEvent.type === "thinking_delta") thinkingDeltas++;
-			if (event.assistantMessageEvent.type === "text_delta") textDeltas++;
+it.each(["ask", "job", "markdown"] as const)(
+	"runs the isolated %s scenario without unrelated tools",
+	async scenario => {
+		const calls: string[] = [];
+		const output: string[] = [];
+		const question = Promise.withResolvers<void>();
+		const unsubscribe = session.subscribe(event => {
+			if (event.type === "tool_execution_start") {
+				calls.push(event.toolName);
+				if (event.toolName === "ask") question.resolve();
+			}
+			if (event.type === "message_end" && event.message.role === "assistant") {
+				for (const block of event.message.content) if (block.type === "text") output.push(block.text);
+			}
+		});
+		try {
+			const running = session.runRenderTest({ repeat: 1, delayMs: 1, scenario }, mode.getToolUIContext());
+			if (scenario === "ask") {
+				await question.promise;
+				await terminal.waitForRender(() => terminal.getViewport().some(row => row.includes("Enter select")));
+				expect(terminal.getViewport().some(row => row.includes("Enter select"))).toBeTrue();
+				terminal.sendInput("\r");
+			}
+			await running;
+			await session.waitForIdle();
+			if (scenario === "ask") expect(calls).toEqual(["ask"]);
+			else if (scenario === "job")
+				expect(calls).toEqual([...Array<string>(11).fill("bash"), ...Array<string>(4).fill("hub")]);
+			else {
+				expect(calls).toEqual([]);
+				const body = output.join("").split("\n").slice(1, -1);
+				expect(body).toHaveLength(50);
+				expect(body.map(line => line.slice(0, 11))).toEqual(
+					Array.from({ length: 50 }, (_, index) => `MARKDOWN_${String(index + 1).padStart(2, "0")}`),
+				);
+				mode.ui.renderNow();
+				await terminal.waitForRender();
+				const tape = terminal
+					.getScrollBuffer()
+					.map(row => Bun.stripANSI(row))
+					.join("\n");
+				expect(Array.from(tape.matchAll(/MARKDOWN_\d+/g), match => match[0])).toEqual(
+					body.map(line => line.slice(0, 11)),
+				);
+			}
+			expect(providerCalls).toBe(0);
+			expect(credentialCalls).toBe(0);
+		} finally {
+			unsubscribe();
 		}
-		if (event.type === "tool_execution_start" && event.toolName === "ask") questions[questionCount++]?.resolve();
-		if (event.type === "message_end" && event.message.role === "toolResult") results.push(event.message);
-		if (event.type === "message_end" && event.message.role === "assistant") assistants.push(event.message);
-	});
-	const running = session.runRenderTest({ repeat: 2, delayMs: 1 }, mode.getToolUIContext());
-	for (let repetition = 0; repetition < 2; repetition++) {
-		await questions[repetition]!.promise;
-		await terminal.waitForRender(() => terminal.getViewport().some(row => row.includes("Enter select")));
-		const count = assistants.length;
-		await Bun.sleep(100);
-		expect(assistants.length).toBe(count);
-		expect(questionCount).toBe(repetition + 1);
-		expect(session.isStreaming).toBeTrue();
-		terminal.sendInput("\r");
-	}
-	await running;
-	await session.waitForIdle();
-	mode.ui.renderNow();
-	await terminal.waitForRender();
-	expect(session.isStreaming).toBeFalse();
-	expect(runStates).toEqual(["running", "idle"]);
-	expect(session.getTodoPhases()).toEqual(savedTodo);
-	expect(thinkingDeltas).toBeGreaterThan(2);
-	expect(textDeltas).toBeGreaterThan(100);
-	expect(results.filter(result => result.toolName === "read")).toHaveLength(20);
-	const edits = results.filter(result => result.toolName === "edit");
-	expect(edits).toHaveLength(8);
-	expect(edits.filter(result => result.isError)).toHaveLength(2);
-	for (const error of edits.filter(result => result.isError)) {
+	},
+	60_000,
+);
+
+it.each([20, 40])(
+	"runs complete workflows in a %i-row terminal through real tools without provider calls",
+	async rows => {
+		terminal.resize(110, rows);
+		mode.ui.requestRender(true);
+		await terminal.waitForRender();
+		const duplicateFrames: string[] = [];
+		const write = terminal.write.bind(terminal);
+		vi.spyOn(terminal, "write").mockImplementation(data => {
+			write(data);
+			if (duplicateFrames.length > 0) return;
+			const frame = terminal
+				.getScrollBuffer()
+				.slice(-200)
+				.map(row => Bun.stripANSI(row))
+				.join("\n");
+			const starts = Array.from(frame.matchAll(/Streaming \d+ — BEGIN/g), match => match[0]);
+			if (new Set(starts).size !== starts.length) duplicateFrames.push(frame);
+		});
+		const results: ToolResultMessage[] = [];
+		const assistants: AssistantMessage[] = [];
+		const questions = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+		const streamingStarted = Promise.withResolvers<void>();
+		let questionCount = 0;
+		let assistantStarts = 0;
+		let thinkingDeltas = 0;
+		let textDeltas = 0;
+		const savedTodo = [
+			{ name: "Existing", tasks: [{ content: "Keep the user's original plan", status: "pending" as const }] },
+		];
+		session.setTodoPhases(savedTodo);
+		const runStates: string[] = [];
+		session.subscribeRunState(state => runStates.push(state));
+		session.subscribe(event => {
+			if (event.type === "message_start" && event.message.role === "assistant") assistantStarts++;
+			if (event.type === "message_update") {
+				if (event.assistantMessageEvent.type === "thinking_delta") thinkingDeltas++;
+				if (event.assistantMessageEvent.type === "text_delta") {
+					textDeltas++;
+					streamingStarted.resolve();
+				}
+			}
+			if (event.type === "tool_execution_start" && event.toolName === "ask") questions[questionCount++]?.resolve();
+			if (event.type === "message_end" && event.message.role === "toolResult") results.push(event.message);
+			if (event.type === "message_end" && event.message.role === "assistant") assistants.push(event.message);
+		});
+		const running = session.runRenderTest({ repeat: 2, delayMs: 1 }, mode.getToolUIContext());
+		await streamingStarted.promise;
+		terminal.sendInput("draft");
+		for (let repetition = 0; repetition < 2; repetition++) {
+			await questions[repetition]!.promise;
+			if (repetition === 0) {
+				await terminal.waitForRender(() =>
+					terminal.getViewport().some(row => row.includes("Finish or clear the current prompt")),
+				);
+				expect(terminal.getViewport().some(row => row.includes("Finish or clear the current prompt"))).toBeTrue();
+				terminal.sendInput("\r");
+			}
+			await terminal.waitForRender(() => terminal.getViewport().some(row => row.includes("Enter select")));
+			expect(terminal.getViewport().some(row => row.includes("Enter select"))).toBeTrue();
+			const count = assistantStarts;
+			await Bun.sleep(100);
+			expect(assistantStarts).toBe(count);
+			expect(questionCount).toBe(repetition + 1);
+			expect(session.isStreaming).toBeTrue();
+			terminal.sendInput("\r");
+		}
+		await running;
+		await session.waitForIdle();
+		mode.ui.renderNow();
+		await terminal.waitForRender();
+		expect(session.isStreaming).toBeFalse();
+		expect(runStates).toEqual(["running", "idle"]);
+		expect(session.getTodoPhases()).toEqual(savedTodo);
+		expect(duplicateFrames).toEqual([]);
+		expect(thinkingDeltas).toBeGreaterThan(2);
+		expect(textDeltas).toBeGreaterThan(100);
+		expect(results.filter(result => result.toolName === "read")).toHaveLength(20);
+		const edits = results.filter(result => result.toolName === "edit");
+		expect(edits).toHaveLength(8);
+		expect(edits.filter(result => result.isError)).toHaveLength(2);
+		for (const error of edits.filter(result => result.isError)) {
+			expect(
+				error.content
+					.filter(block => block.type === "text")
+					.map(block => block.text)
+					.join("\n"),
+			).toMatch(/snapshot|hash|stale/i);
+		}
+		expect(results.filter(result => result.toolName === "ask" && !result.isError)).toHaveLength(2);
+		expect(results.filter(result => result.toolName === "bash" && !result.isError)).toHaveLength(22);
+		expect(results.filter(result => result.toolName === "hub" && !result.isError)).toHaveLength(8);
+		for (const repetition of [1, 2]) {
+			expect(
+				assistants.some(
+					message =>
+						message.content
+							.filter(block => block.type === "toolCall")
+							.filter(call => call.name === "edit" && call.id.startsWith(`render-workflow-${repetition}-`))
+							.length === 3,
+				),
+			).toBeTrue();
+		}
+		const text = assistants
+			.flatMap(message => message.content.flatMap(block => (block.type === "text" ? [block.text] : [])))
+			.join("\n");
+		const expected = Array.from(text.matchAll(/(?:PLAIN|QUOTE|TABLE|CODE|LIST|STEP)_\d+/g), match => match[0]);
+		const tape = terminal
+			.getScrollBuffer()
+			.map(row => Bun.stripANSI(row))
+			.join("\n");
 		expect(
-			error.content
-				.filter(block => block.type === "text")
-				.map(block => block.text)
-				.join("\n"),
-		).toMatch(/snapshot|hash|stale/i);
-	}
-	expect(results.filter(result => result.toolName === "ask" && !result.isError)).toHaveLength(2);
-	expect(results.filter(result => result.toolName === "bash" && !result.isError)).toHaveLength(22);
-	expect(results.filter(result => result.toolName === "hub" && !result.isError)).toHaveLength(8);
-	for (const repetition of [1, 2]) {
-		expect(
-			assistants.some(
-				message =>
-					message.content
-						.filter(block => block.type === "toolCall")
-						.filter(call => call.name === "edit" && call.id.startsWith(`render-workflow-${repetition}-`))
-						.length === 3,
-			),
-		).toBeTrue();
-	}
-	const text = assistants
-		.flatMap(message => message.content.flatMap(block => (block.type === "text" ? [block.text] : [])))
-		.join("\n");
-	const expected = Array.from(text.matchAll(/(?:PLAIN|QUOTE|TABLE|CODE|LIST|STEP)_\d+/g), match => match[0]);
-	const tape = terminal
-		.getScrollBuffer()
-		.map(row => Bun.stripANSI(row))
-		.join("\n");
-	expect(Array.from(tape.matchAll(/(?:PLAIN|QUOTE|TABLE|CODE|LIST|STEP)_\d+/g), match => match[0])).toEqual(expected);
-	expect(expected.filter(marker => marker.startsWith("PLAIN_"))).toHaveLength(120);
-	expect(expected.filter(marker => marker.startsWith("CODE_"))).toHaveLength(120);
-	expect(providerCalls).toBe(0);
-	expect(credentialCalls).toBe(0);
-}, 60_000);
+			Array.from(tape.matchAll(/(?:PLAIN|QUOTE|TABLE|CODE|LIST|STEP)_\d+/g), match => match[0]),
+			tape.slice(tape.indexOf("STEP_130"), tape.indexOf("STEP_132") + 200),
+		).toEqual(expected);
+		const boundaries = /Streaming \d+ — (?:BEGIN|END)/g;
+		expect(Array.from(tape.matchAll(boundaries), match => match[0])).toEqual(
+			Array.from(text.matchAll(boundaries), match => match[0]),
+		);
+		const firstReads = tape.slice(tape.indexOf("Streaming 2 — BEGIN"), tape.indexOf("Streaming 3 — BEGIN"));
+		for (const file of [1, 2, 3]) {
+			expect(firstReads).toContain(`Fixture ${file}, row 1:`);
+			expect(firstReads).toContain(`Fixture ${file}, row 3:`);
+		}
+		expect(expected.filter(marker => marker.startsWith("PLAIN_"))).toHaveLength(120);
+		expect(expected.filter(marker => marker.startsWith("CODE_"))).toHaveLength(120);
+		expect(providerCalls).toBe(0);
+		expect(credentialCalls).toBe(0);
+	},
+	180_000,
+);
 
 it("cancels paced output and rejects an overlapping run without starting a provider", async () => {
 	const firstDelta = Promise.withResolvers<void>();

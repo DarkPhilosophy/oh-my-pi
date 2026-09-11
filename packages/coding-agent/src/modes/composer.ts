@@ -289,11 +289,11 @@ export class Composer implements TerminalFrameProvider {
 		const chromeRows = preRoots.length + after.length;
 		const temporaryEditorVisible =
 			(this.editor.focused && this.editor.isAutocompleteActive()) ||
-			(this.#editorHost !== undefined && !this.#editorHost.children.includes(this.editor));
+			(this.#editorHost !== undefined && this.#editorHost.children.some(child => child !== this.editor));
 		if (!temporaryEditorVisible) this.#chromeRowsWithoutAutocomplete = chromeRows;
-		const viewportExpansionRows =
-			transcript.transientRowCount(width) +
-			(temporaryEditorVisible ? Math.max(0, chromeRows - (this.#chromeRowsWithoutAutocomplete ?? chromeRows)) : 0);
+		const viewportExpansionRows = temporaryEditorVisible
+			? Math.max(0, chromeRows - (this.#chromeRowsWithoutAutocomplete ?? chromeRows))
+			: 0;
 		const history = this.#offerHistory(transcript, width, rows + viewportExpansionRows, chromeRows);
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];

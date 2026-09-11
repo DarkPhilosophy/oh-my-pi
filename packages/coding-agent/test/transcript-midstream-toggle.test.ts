@@ -6,39 +6,47 @@ import { CombinedAutocompleteProvider, type Component, Container } from "@oh-my-
 import { assistantMsg, createTestSession } from "./utilities";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
-it.each([9, 10])("restores a %i-row transcript after a temporary dialog replaces the editor", async rowCount => {
-	createTestSession();
-	const terminal = new VirtualTerminal(80, 12);
-	const composer = new Composer({ preferences: { quiet: true }, terminal });
-	const transcript = new TranscriptContainer();
-	const slot = new Container();
-	slot.addChild(composer.editor);
-	transcript.addChild({ render: () => Array.from({ length: rowCount }, (_, index) => `HISTORY_${index + 1}`) });
-	composer.setRuntimeChildren([transcript, slot]);
-	composer.start();
-	composer.ui.setFocus(composer.editor);
-	try {
-		composer.ui.renderNow();
-		await terminal.waitForRender();
-		const before = terminal.getViewport().map(row => row.trimEnd());
-		const position = terminal.getBufferPosition();
-		const dialog = { render: () => Array.from({ length: 8 }, (_, index) => `QUESTION_${index}`) };
-		slot.clear();
-		slot.addChild(dialog);
-		composer.ui.setFocus(dialog);
-		composer.ui.renderNow();
-		await terminal.waitForRender();
-		slot.clear();
+it.each([
+	[9, false],
+	[10, false],
+	[10, true],
+] as const)(
+	"restores a %i-row transcript after a temporary dialog (draft mounted: %s)",
+	async (rowCount, draftMounted) => {
+		createTestSession();
+		const terminal = new VirtualTerminal(80, 12);
+		const composer = new Composer({ preferences: { quiet: true }, terminal });
+		const transcript = new TranscriptContainer();
+		const slot = new Container();
 		slot.addChild(composer.editor);
+		transcript.addChild({ render: () => Array.from({ length: rowCount }, (_, index) => `HISTORY_${index + 1}`) });
+		composer.setRuntimeChildren([transcript, slot]);
+		composer.start();
 		composer.ui.setFocus(composer.editor);
-		composer.ui.renderNow();
-		await terminal.waitForRender();
-		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(before);
-		expect(terminal.getBufferPosition()).toEqual(position);
-	} finally {
-		composer.stop();
-	}
-});
+		try {
+			composer.ui.renderNow();
+			await terminal.waitForRender();
+			const before = terminal.getViewport().map(row => row.trimEnd());
+			const position = terminal.getBufferPosition();
+			const dialog = { render: () => Array.from({ length: 8 }, (_, index) => `QUESTION_${index}`) };
+			slot.clear();
+			slot.addChild(dialog);
+			if (draftMounted) slot.addChild(composer.editor);
+			composer.ui.setFocus(dialog);
+			composer.ui.renderNow();
+			await terminal.waitForRender();
+			slot.clear();
+			slot.addChild(composer.editor);
+			composer.ui.setFocus(composer.editor);
+			composer.ui.renderNow();
+			await terminal.waitForRender();
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(before);
+			expect(terminal.getBufferPosition()).toEqual(position);
+		} finally {
+			composer.stop();
+		}
+	},
+);
 
 it("reconciles a shrinking mutable tool against the rows actually written to history", async () => {
 	createTestSession();
