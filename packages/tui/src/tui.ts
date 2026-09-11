@@ -810,6 +810,7 @@ export class TUI extends Container {
 	#cprProbeSeq = 0;
 	// Prepared rows painted by the previous provider frame, for row diffing.
 	#providerWindow: string[] = [];
+
 	#previousFrameLength = 0;
 	#previousWidth = 0;
 	#previousHeight = 0;
@@ -2841,6 +2842,7 @@ export class TUI extends Container {
 				this.#providerLogicalCommitted = Math.max(this.#providerLogicalCommitted, borrowOverflow);
 		}
 		this.#providerHasTransientHistory = this.#providerTransientRows.length > 0;
+
 		const viewport = logicalViewport.slice(overflow);
 		if (logicalViewport.length > this.#providerLogicalCommitted) {
 			// Keep the live suffix at its logical screen rows without duplicating
@@ -3192,6 +3194,7 @@ export class TUI extends Container {
 		}
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);
+
 		this.#debugPaint = {
 			lines: prepared,
 			windowTop: this.#debugNextWindowTop,

@@ -33,6 +33,7 @@ export function createRenderWorkflow(
 	context: AgentToolContext,
 	repeat: number,
 	scenario?: "ask" | "job" | "markdown",
+	segment?: number,
 ): RenderWorkflow {
 	if ((!scenario || scenario === "ask") && (!context.hasUI || !context.ui?.askDialog)) {
 		throw new Error("Render workflow requires interactive ask support.");
@@ -160,6 +161,26 @@ export function createRenderWorkflow(
 		);
 		actions.splice(0, actions.length, ...selected);
 	}
+	// One group is one scripted response. Related reads and explicit background
+	// launches share a response; foreground handoff and waits stay separate.
+	const groups: Array<Array<{ name: string; args: () => Record<string, unknown> }>> = [];
+	for (let cursor = 0; cursor < actions.length;) {
+		const name = actions[cursor]!.name;
+		let count = 1;
+		if (name === "read" || (name === "bash" && (scenario ? cursor === 1 : cursor === backgroundStage))) {
+			while (actions[cursor + count]?.name === name) count++;
+		} else if (!scenario && cursor === 4) {
+			count = 3;
+		}
+		groups.push(actions.slice(cursor, cursor + count));
+		cursor += count;
+	}
+	if (segment !== undefined) {
+		if (segment < 1 || segment > groups.length) {
+			throw new RangeError(`Render segment must be between 1 and ${groups.length}.`);
+		}
+		groups.splice(0, groups.length, groups[segment - 1]!);
+	}
 	return {
 		tools: [
 			new ReadTool(localSession),
@@ -184,30 +205,29 @@ export function createRenderWorkflow(
 						),
 					),
 				);
+				// An isolated segment runs without the earlier responses that created
+				// the todo list, so seed it here; otherwise its `done` call fails.
+				if (segment !== undefined) {
+					localSession.setTodoPhases?.([
+						{ name: "Tasks", tasks: tasks.map(content => ({ content: content!, status: "pending" })) },
+					]);
+				}
 				initialized = true;
 			}
-			if (stage === actions.length) {
+			if (stage === groups.length) {
 				if (repetition === repeat || scenario === "markdown") return undefined;
 				repetition++;
 				stage = 0;
 			}
-			const introduction = stage === 0;
-			const nextName = actions[stage]!.name;
-			let count = 1;
-			// Keep related reads and explicit background launches in one response.
-			// Foreground handoff and consecutive waits remain distinct transitions.
-			if (nextName === "read" || (nextName === "bash" && (scenario ? stage === 1 : stage === backgroundStage))) {
-				while (actions[stage + count]?.name === nextName) count++;
-			} else if (!scenario && stage === 4) {
-				count = 3;
-			}
-			const calls = actions.slice(stage, stage + count).map((action, offset): ToolCall => ({
+			const group = groups[stage]!;
+			const introduction = stage === 0 && segment === undefined;
+			const calls = group.map((action, offset): ToolCall => ({
 				type: "toolCall",
-				id: `render-workflow-${repetition}-${stage + offset + 1}`,
+				id: `render-workflow-${repetition}-${stage + 1}-${offset + 1}`,
 				name: action.name,
 				arguments: action.args(),
 			}));
-			stage += count;
+			stage += 1;
 			return { calls, repetition, introduction, silent: calls.every(call => call.name === "hub") };
 		},
 		dispose: async () => {

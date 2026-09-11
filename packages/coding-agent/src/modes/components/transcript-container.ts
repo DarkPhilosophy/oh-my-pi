@@ -52,6 +52,12 @@ export interface AppendOnlyTranscriptBlock {
 
 interface FinalizableBlock {
 	isTranscriptBlockFinalized?(): boolean;
+	/**
+	 * Whether the block's height is still reversible: it grows while it runs and
+	 * collapses when it settles or disappears. Those rows must expand the
+	 * viewport budget instead of retiring transcript rows they will hand back.
+	 */
+	isTranscriptBlockTransient?(): boolean;
 	/** Render the row that must remain represented under emergency viewport pressure. */
 	renderTranscriptBlockEmergencyRow?(width: number): string | undefined;
 	/** Number of leading raw rows whose bytes are final while the block remains active. */
@@ -103,6 +109,10 @@ const EMPTY_STABLE_ROWS: readonly TranscriptStableRow[] = [];
 function isFinalized(component: Component): boolean {
 	const block = component as Component & FinalizableBlock;
 	return block.isTranscriptBlockFinalized?.() ?? true;
+}
+
+function isTransient(component: Component): boolean {
+	return (component as Component & FinalizableBlock).isTranscriptBlockTransient?.() ?? false;
 }
 
 function blockMode(component: Component): TranscriptBlockMode {
@@ -243,6 +253,33 @@ export class TranscriptContainer extends Container {
 		if (this.#offered?.kind === "commit" && index < this.#offered.end) return false;
 		if (this.#offered?.kind === "append" && index === this.#offered.entry) return false;
 		return true;
+	}
+
+	/**
+	 * Rows currently held by blocks whose height is reversible. The frame budget
+	 * grows by exactly this count so a temporary insertion never retires
+	 * transcript rows it will hand back when it collapses or disappears.
+	 */
+	transientRowCount(width: number): number {
+		let count = 0;
+		for (const block of this.transientBlocks(width)) count += block.rows;
+		return count;
+	}
+
+	/**
+	 * Per-block breakdown of {@link transientRowCount}, for render debugging:
+	 * which live block currently holds back how many rows.
+	 */
+	transientBlocks(width: number): readonly { label: string; rows: number }[] {
+		this.#syncEntries();
+		const blocks: { label: string; rows: number }[] = [];
+		for (const entry of this.#entries) {
+			if (entry.state === "committed" || entry.emitted > 0) continue;
+			if (!isTransient(entry.component)) continue;
+			const rows = this.#renderEntry(entry, width).length;
+			if (rows > 0) blocks.push({ label: entry.component.constructor.name, rows });
+		}
+		return blocks;
 	}
 	/**
 	 * Insert a finalized block just above the live region — before the first

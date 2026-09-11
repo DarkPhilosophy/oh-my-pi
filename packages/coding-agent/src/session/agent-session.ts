@@ -5154,6 +5154,7 @@ export class AgentSession {
 			},
 			options.repeat,
 			options.scenario,
+			options.segment,
 		);
 		const producer = createRenderTestAgent(model, options, workflow);
 		const completion = Promise.withResolvers<void>();
@@ -5171,7 +5172,9 @@ export class AgentSession {
 		});
 		try {
 			await producer.prompt(
-				`/render${options.scenario ? ` --${options.scenario}` : ""} ${options.repeat} ${options.delayMs}`,
+				`/render${options.scenario ? ` --${options.scenario}` : ""}${
+					options.segment !== undefined ? ` --segment=${options.segment}` : ""
+				} ${options.repeat} ${options.delayMs}`,
 			);
 		} finally {
 			unsubscribe();

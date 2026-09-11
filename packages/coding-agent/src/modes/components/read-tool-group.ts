@@ -567,11 +567,15 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			return;
 		}
 
-		const header = `${theme.fg("toolTitle", theme.bold("Read"))}${theme.fg("dim", ` (${displayRows.length})`)}`;
-		const lines = [` ${theme.format.bullet} ${header}`];
 		const entriesWithoutPreview = entries.filter(entry => !this.#shouldRenderPreview(entry));
+		const previewEntries = entries.filter(entry => this.#shouldRenderPreview(entry));
 		const summaryTargets = this.#displayTargetsForEntries(entriesWithoutPreview);
 		const rows = this.#buildSummaryRows(summaryTargets);
+		// The count names what the reader can see: one line per summary row plus
+		// one card per previewed read. Merged summary rows must not hide a card.
+		const shownCount = rows.length + previewEntries.length;
+		const header = `${theme.fg("toolTitle", theme.bold("Read"))}${theme.fg("dim", ` (${shownCount})`)}`;
+		const lines = [` ${theme.format.bullet} ${header}`];
 		const usageRowsBySummaryRow = this.#usageRowsBySummaryRow(rows);
 		for (const [index, row] of rows.entries()) {
 			this.#appendSummaryRow(lines, row, index, rows.length, usageRowsBySummaryRow.get(index) ?? []);
@@ -580,11 +584,9 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		this.#text.setText(lines.join("\n"));
 		this.addChild(this.#text);
 
-		for (const entry of entries) {
-			if (this.#shouldRenderPreview(entry)) {
-				this.#addContentPreview(entry);
-				this.#addPreviewUsage(entry);
-			}
+		for (const entry of previewEntries) {
+			this.#addContentPreview(entry);
+			this.#addPreviewUsage(entry);
 		}
 	}
 

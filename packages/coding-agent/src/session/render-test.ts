@@ -8,6 +8,8 @@ export interface RenderTestOptions {
 	/** Delay between simulated provider chunks, in milliseconds. */
 	delayMs: number;
 	scenario?: "ask" | "job" | "markdown";
+	/** Isolate a single scripted response (1-based); labels keep the original number. */
+	segment?: number;
 }
 
 export function validateRenderTestOptions(options: RenderTestOptions): void {
@@ -17,13 +19,16 @@ export function validateRenderTestOptions(options: RenderTestOptions): void {
 	if (!Number.isInteger(options.delayMs) || options.delayMs < 1 || options.delayMs > 1000) {
 		throw new RangeError("Render delay must be an integer between 1 and 1000 ms.");
 	}
+	if (options.segment !== undefined && (!Number.isInteger(options.segment) || options.segment < 1)) {
+		throw new RangeError("Render segment must be a positive integer.");
+	}
 }
 
 /** Scripted provider deltas decoded by agent-core, followed by real sandboxed tool execution. */
 export function createRenderTestAgent(model: Model, options: RenderTestOptions, workflow: RenderWorkflow): Agent {
 	validateRenderTestOptions(options);
 	let outputRow = 0;
-	let streamNumber = 0;
+	let streamNumber = options.segment !== undefined ? options.segment - 1 : 0;
 	return new Agent({
 		initialState: { model, tools: workflow.tools, systemPrompt: [] },
 		getToolContext: () => workflow.context,

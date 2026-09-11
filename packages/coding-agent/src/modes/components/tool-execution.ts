@@ -832,6 +832,16 @@ export class ToolExecutionComponent extends Container {
 		return !this.#isPartial;
 	}
 
+	/**
+	 * A still-running call and a parked background task both keep resizing: the
+	 * card grows while output streams and collapses when it settles, so its rows
+	 * must expand the viewport instead of retiring transcript rows it gives back.
+	 */
+	isTranscriptBlockTransient(): boolean {
+		if (this.#sealed || !this.#toolActivityVisible) return false;
+		return this.#parkedBackground;
+	}
+
 	getTranscriptBlockVersion(): number {
 		return this.#blockVersion;
 	}

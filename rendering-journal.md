@@ -99,3 +99,34 @@
 
 - User assessment: this tree renders history/overflow/transcript/live streaming almost correctly. Remaining defect: when a temporarily rendered tool (background job, ask, sometimes read/edit) grows the viewport by +size and then retracts by -size, the viewport does not recover; the displaced text is neither flushed to history (correct) nor repainted, leaving blank rows.
 - Committed as a checkpoint: renderer files restored from bc6f4293, ask-with-draft insertion accounting in composer.ts, `/render --ask/--job/--markdown` scenarios (markdown = 50 numbered lines), retained regression tests. Throwaway probes, backups, and Bazel artifacts are excluded.
+
+## Transient-block accounting round (local only, no git operations)
+
+- Kept locally: generic transient-block API (`isTranscriptBlockTransient`), `transientRowCount` viewport budget in composer.ts, and tool cards reporting themselves transient while still mutable. This is the direction the user endorsed.
+- Reverted: every experiment in `packages/tui/src/tui.ts` this round. Restoring the retained history tail on retraction, clamping `retainedCount` to the expanded frame, and dropping the withholding of committed history all traded the black band for lost or duplicated history rows (probe: `history-one` disappeared, or `history-two/three` painted twice).
+- Root cause located, not yet fixed: committed history rows are deliberately withheld from native scrollback (`retainedHistory`) and live only on screen. When a temporary insertion expands the frame upward, those rows are overwritten and exist nowhere; on retraction the renderer has nothing to repaint, so blanks remain. A real fix must write committed rows to scrollback at the moment they retire, not hold them on screen.
+- Verification after revert: tui history-frame-plan + right-panel 69 pass / 1 fail (`keeps retired text adjacent to a shrinking job and its next response` — the unfixed defect); coding-agent transcript-midstream-toggle 8 pass / 0 fail; type check clean. No commit, no push.
+
+## Transient budget bounded to free screen rows
+
+- Root cause of the `/render` cut (STEP_127 missing at 20 rows): treating every unfinalized tool card as transient inflated the retirement budget past the physical screen, so rows were held back that the terminal could neither display nor retire. Confirmed by bisection — restricting transient to parked jobs made the 20-row workflow pass, restoring pending cards made it fail again.
+- Fix (composer.ts): expansion = chrome insertion rows + min(transientRows, free screen rows), free = rows - chrome - non-transient live rows. Pending tool cards stay transient (write/read grow-then-collapse accounted) but never expand beyond what fits on screen.
+- `/render` gained `--segment=<n>` to isolate one scripted response; isolated segments seed the todo list so their `done` call succeeds. Read groups now emit summary rows for entries without previews (grouped-read duplicate).
+- Verification: render-test-command 7 pass / 0 fail (20- and 40-row workflows), transcript-midstream-toggle 8 pass / 0 fail, type check clean; tui history-frame-plan + right-panel 69 pass / 1 fail (`keeps retired text adjacent to a shrinking job and its next response` — the still-unfixed blackbar path in tui.ts). No commit, no push.
+- Still open: the todo HUD that expires on idle is ordinary chrome, so its removal is not accounted as an insertion release; same released-row path in tui.ts as the failing test.
+
+## Reverted the pending-card transient experiment
+
+- User evidence: marking every still-mutating tool card transient (plus the free-rows-bounded budget) made things worse — black bars between background-job cards and persistent live/history cuts at segments 5, 8 and 10, and it broke job rendering that previously worked.
+- Reverted both hunks: `isTranscriptBlockTransient()` is parked-background only again, and the expansion is back to chrome insertion rows + min(transientRowCount, rows - 1).
+- Kept: read-group summary rows only for entries without previews (the duplicate), and `/render --segment=<n>`.
+- Verification after revert: render-test-command 7 pass / 0 fail, transcript-midstream-toggle 8 pass / 0 fail, type check clean, tui history-frame-plan + right-panel 69 pass / 1 fail (the known unfixed shrinking-job blackbar). No commit, no push.
+
+## Reverted the self-clearing-chrome insertion experiment
+
+- Attempt: treat chrome that mounts/unmounts on its own (todo HUD) as an insertion — `isChromeInsertion()` in composer.ts plus `isTranscriptBlockTransient()` on `TodoHudContainer` — so the HUD expiring at idle would release rows instead of leaving a black bar.
+- Result: adding the HUD rows to the expansion budget broke the five-row finalize-behind-temporary-UI case and both 20/40-row `/render` workflows (marker dropped from the tape). Bounding the sum under `rows - 1` fixed the composer tests but the workflow tape still lost a marker.
+- Reverted all three hunks (helper, HUD marker, budget shape); expansion is again `autocomplete delta + min(transcript.transientRowCount, rows - 1)`. Removed the HUD test that encoded behavior the renderer cannot yet deliver.
+- Verification after revert: render-test-command 7 pass / 0 fail, transcript-midstream-toggle + tui history-frame-plan + right-panel 77 pass / 1 fail (the known shrinking-job blackbar), type check clean. No commit, no push.
+- Conclusion unchanged: the real fix belongs in `tui.ts` — released rows must be written to native scrollback at retraction time; holding them on screen leaves nothing to repaint on contraction.
+- Checkpoint status for commit/push: the known transient-tool retraction blackbar remains unresolved. Earlier rendering was largely correct except for a smaller tool contraction bug; subsequent transient accounting experiments expanded the regression, were reverted, and this tree preserves the current flow fixes while documenting the remaining bug. User explicitly requested committing this work despite the open bug.

@@ -7,19 +7,24 @@ import type { SlashCommandSpec } from "./types";
 function parseRenderTestArgs(args: string): RenderTestOptions {
 	const parts = args.trim() ? args.trim().split(/\s+/) : [];
 	let scenario: RenderTestOptions["scenario"];
+	let segment: number | undefined;
 	const positional: string[] = [];
 	for (const part of parts) {
 		if (part === "--ask" || part === "--job" || part === "--markdown") {
 			if (scenario) throw new Error("Choose only one render scenario: --ask, --job or --markdown.");
 			scenario = part.slice(2) as NonNullable<RenderTestOptions["scenario"]>;
+		} else if (part.startsWith("--segment")) {
+			const value = part.includes("=") ? part.slice(part.indexOf("=") + 1) : "";
+			if (!/^\d+$/.test(value)) throw new Error("Usage: --segment=<n> selects a single scripted response.");
+			segment = Number(value);
 		} else {
 			positional.push(part);
 		}
 	}
 	if (positional.length > 2 || positional.some(part => !/^\d+$/.test(part))) {
-		throw new Error("Usage: /render [--ask|--job|--markdown] [repeat=1] [chunk-delay-ms=25]");
+		throw new Error("Usage: /render [--ask|--job|--markdown] [--segment=<n>] [repeat=1] [chunk-delay-ms=25]");
 	}
-	return { repeat: Number(positional[0] ?? 1), delayMs: Number(positional[1] ?? 25), scenario };
+	return { repeat: Number(positional[0] ?? 1), delayMs: Number(positional[1] ?? 25), scenario, segment };
 }
 
 export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
@@ -28,7 +33,7 @@ export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		icon: "bug",
 		description: "Exercise thinking, long text, Markdown, real reads/edits and interactive questions without tokens",
 		allowArgs: true,
-		inlineHint: "[--ask|--job|--markdown] [repeat=1] [chunk-delay-ms=25]",
+		inlineHint: "[--ask|--job|--markdown] [--segment=<n>] [repeat=1] [chunk-delay-ms=25]",
 		handleTui: async (command, { ctx }) => {
 			ctx.editor.setText("");
 			try {

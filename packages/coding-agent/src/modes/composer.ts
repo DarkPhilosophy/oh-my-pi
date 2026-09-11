@@ -265,8 +265,9 @@ export class Composer implements TerminalFrameProvider {
 			this.#resizeRetiredHeaderStart = undefined;
 		}
 		this.#lastNormalRows = rows;
+		const runtimeRoots = [...this.#runtimeChildren, this.#statusHost];
 		const roots = this.#runtimeMounted
-			? [...this.#runtimeChildren, this.#statusHost]
+			? runtimeRoots
 			: [this.#header, this.#bootstrapInputGap, this.editor, this.#statusHost];
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) {
@@ -287,13 +288,22 @@ export class Composer implements TerminalFrameProvider {
 		// leaves the mutable viewport in the same frame it is appended, so its
 		// rows are never painted twice.
 		const chromeRows = preRoots.length + after.length;
+		// Only chrome that hosts a temporary UI (autocomplete dropdown, ask
+		// dialog) is an insertion; ordinary chrome growth must keep retiring rows.
 		const temporaryEditorVisible =
 			(this.editor.focused && this.editor.isAutocompleteActive()) ||
 			(this.#editorHost !== undefined && this.#editorHost.children.some(child => child !== this.editor));
 		if (!temporaryEditorVisible) this.#chromeRowsWithoutAutocomplete = chromeRows;
-		const viewportExpansionRows = temporaryEditorVisible
+		const transientBlocks = transcript.transientBlocks(width);
+		const transientRows = transientBlocks.reduce((total, block) => total + block.rows, 0);
+		const chromeInsertionRows = temporaryEditorVisible
 			? Math.max(0, chromeRows - (this.#chromeRowsWithoutAutocomplete ?? chromeRows))
 			: 0;
+		const viewportExpansionRows =
+			chromeInsertionRows +
+			// An insertion taller than the screen cannot be held back: the
+			// transcript must keep retiring rows or the tail stops advancing.
+			Math.min(transientRows, Math.max(0, rows - 1));
 		const history = this.#offerHistory(transcript, width, rows + viewportExpansionRows, chromeRows);
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
@@ -304,6 +314,7 @@ export class Composer implements TerminalFrameProvider {
 		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
 		const active = transcript.renderViewport(width, Number.MAX_SAFE_INTEGER, frame);
 		const composed = [...before, ...active, ...after];
+
 		if (history !== undefined && this.#offeredHistory?.source === "header") {
 			const visibleHeaderRows = Math.max(0, rows - composed.length);
 			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
