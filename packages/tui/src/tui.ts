@@ -2853,7 +2853,9 @@ export class TUI extends Container {
 			const reserved = Math.max(0, this.#providerLogicalCommitted - overflow);
 			for (let index = 0; index < reserved; index++) logicalViewport[overflow + index] = "";
 		}
-		const viewport = logicalViewport.slice(overflow);
+		const viewport = logicalViewport.slice(
+			plan.retainedLiveViewport ? Math.max(overflow, this.#providerLogicalCommitted) : overflow,
+		);
 		const acceptedBefore = this.#acceptedHistoryBatchId;
 		this.#emitPlanFrame(
 			width,
@@ -2862,10 +2864,8 @@ export class TUI extends Container {
 			history,
 			provider,
 			inferredHistory,
-			plan.retainedLiveViewport ? 0 : plan.viewportExpansionRows,
-			plan.retainedLiveViewport
-				? logicalViewport.length
-				: Math.max(0, logicalViewport.length - (plan.viewportExpansionRows ?? 0)),
+			plan.viewportExpansionRows,
+			Math.max(0, logicalViewport.length - (plan.viewportExpansionRows ?? 0)),
 			flushing,
 			plan.retainedLiveViewport ?? false,
 		);
@@ -3152,11 +3152,7 @@ export class TUI extends Container {
 			// viewport rows are not — erase them first so a scroll can only push
 			// committed rows and blanks, never an unfinished frame.
 			const pushed = Math.max(0, startTop + preparedHistory.length + rows - height);
-			if (
-				startTop > previousTop &&
-				this.#providerWindow.length > 0 &&
-				(!retainedLiveViewport || this.#providerLogicalCommitted === 0)
-			) {
+			if (startTop > previousTop && this.#providerWindow.length > 0) {
 				// A reversible UI contraction pans the mutable frame back to the
 				// bottom. Erase its old cells without scrolling them into history.
 				buffer += this.#eraseBelowRow(previousTop, height);

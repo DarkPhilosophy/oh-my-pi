@@ -167,19 +167,19 @@ export class Composer implements TerminalFrameProvider {
 	#nextHistoryId = 1;
 	#offeredHistory:
 		| {
-			id: number;
-			rows: readonly string[];
-			kind: "append" | "replay";
-			source:
-			| "header"
-			| {
-				transcript: TranscriptContainer;
-				transcriptId?: number;
-				header: "none" | "replay";
-				/** Recomposed header rows to accept as the new retired-header bytes. */
-				headerRows?: readonly string[];
-			};
-		}
+				id: number;
+				rows: readonly string[];
+				kind: "append" | "replay";
+				source:
+					| "header"
+					| {
+							transcript: TranscriptContainer;
+							transcriptId?: number;
+							header: "none" | "replay";
+							/** Recomposed header rows to accept as the new retired-header bytes. */
+							headerRows?: readonly string[];
+					  };
+		  }
 		| undefined;
 	#historyReplayRequested = false;
 	#headerReplayPending = false;
@@ -304,7 +304,7 @@ export class Composer implements TerminalFrameProvider {
 			// An insertion taller than the screen cannot be held back: the
 			// transcript must keep retiring rows or the tail stops advancing.
 			Math.min(transientRows, Math.max(0, rows - 1));
-		const history = this.#offerHistory(transcript, width, rows * 2, chromeRows);
+		const history = this.#offerHistory(transcript, width, rows, chromeRows);
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
 		const before = [...headerRows, ...preRoots];
@@ -326,7 +326,9 @@ export class Composer implements TerminalFrameProvider {
 			{ component: transcript, rows: active },
 			...afterChunks,
 		]);
-		const borrowableRows = headerVisible ? 0 : before.length + active.length;
+		const borrowableRows = headerVisible
+			? 0
+			: Math.min(before.length + active.length, Math.max(0, composed.length - rows - chromeInsertionRows));
 		const borrowedViewportRows = transcript.borrowedViewportRowCount();
 		return {
 			history,
@@ -507,7 +509,7 @@ export class Composer implements TerminalFrameProvider {
 		}
 		const batch = this.#historyFlush
 			? transcript.peekFlushBatch(width)
-			: transcript.peekFinalizedBatch(width, Math.max(0, rows - chromeRows));
+			: transcript.peekFinalizedBatch(width, Math.max(0, rows * 2 - chromeRows));
 		if (batch === undefined) return undefined;
 		this.#offeredHistory = {
 			id: this.#nextHistoryId++,

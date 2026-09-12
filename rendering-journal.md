@@ -288,3 +288,26 @@
 - This checkpoint is experimental work in progress. Live cuts, duplicates, and gaps are not claimed resolved.
 - Latest full verification reported 42 passes and 8 failures across production rendering, transcript transitions, and right-panel tests. After isolating legacy prefix padding from retained-live handling, history-frame-plan and right-panel pass 74 tests; the production failures have not been demonstrated resolved.
 - Preserve the current implementation and regression tests. Exclude local backups, temporary model databases, and the diagnostic live-card probe from the commit; leave those files untouched locally.
+
+## Local repair after experimental checkpoint
+
+- Captured the real job transition: logical rows contract from 38 to 31 while 18 rows remain borrowed and native baseY stays unchanged. Slicing only at physical overflow repainted a borrowed card into the viewport a second time.
+- Retained-mode projection now begins after both physical overflow and the already-borrowed prefix. Temporary chrome coverage is passed through to the writer, and chrome-only displacement is excluded from new borrowing.
+- Separated physical header retirement from the two-screen transcript retention capacity. Header ownership now advances before physical clipping can drop the first streamed row.
+- Restored erase-before-reposition for old mutable cells. The complete eight-test midstream suite now passes without changing assertions.
+- Current complete production/history/right-panel gate: 84 pass, 1 fail. The remaining observed failure is an extra blank row between job cards at 60 terminal rows. Capturing that transition next; this is not completion.
+- All changes remain local. No commit or push.
+- The 60-row capture isolates the remaining gap to working-indicator removal after the final streamed response: logical frame 110→109, borrowed prefix 41→50, no new native scroll (baseY remains 79). The preceding card ends at tape row 78; its one separator becomes two because the 59-row suffix is reanchored one row lower. This is not the earlier duplicated-Output transition, which the current max(overflow, committed) projection already handles. No additional source change was made on the stale advisor hypothesis.
+
+## Requested coherent chrome checkpoint
+
+- User reports improved overall rendering but remaining menu-open scroll gaps, raised input after contraction, and blank space when the todo HUD expires. These remain required behavior, not accepted compromises.
+- Tested a retained-mode bottom-anchor override with existing borrowed rows. The production gate reported 57 passes and 5 failures: all four job geometries gained blank bands, and the 40-row workflow lost a streaming boundary. The candidate is preserved locally under `.backup/tui-bottom-anchor-candidate.ts` but excluded from active source and publication.
+- The pre-existing local progress is preserved. No universal chrome-removal fix is claimed; command-menu scroll accessibility and todo-idle contraction remain unresolved.
+
+## Preserve progress before further chrome work
+
+- User clarified that the immediate request is to commit the preceding working progress, not delay preservation while attempting a universal fix.
+- Active rendering changes are the pre-chrome-experiment changes documented above: retained-prefix projection, physical header retirement, chrome borrowing bound, and erase-before-reposition. The added bottom-anchor override is not in the active source.
+- Latest focused verification after excluding that override: 51 tests passed across history-frame-plan and transcript-midstream-toggle. This is not a claim that all production rendering defects are fixed.
+- Publish only the two rendering source files and this journal. Preserve all local backups and diagnostic files without staging or deleting them.
