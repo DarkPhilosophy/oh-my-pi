@@ -311,3 +311,10 @@
 - Active rendering changes are the pre-chrome-experiment changes documented above: retained-prefix projection, physical header retirement, chrome borrowing bound, and erase-before-reposition. The added bottom-anchor override is not in the active source.
 - Latest focused verification after excluding that override: 51 tests passed across history-frame-plan and transcript-midstream-toggle. This is not a claim that all production rendering defects are fixed.
 - Publish only the two rendering source files and this journal. Preserve all local backups and diagnostic files without staging or deleting them.
+
+## User-requested command-menu checkpoint
+
+- User requests committing and publishing the current candidate, then pausing all work. Their mini live tests show no duplicates, black bars, or cutting; the chat still does not stay at the bottom. Broader live testing remains pending.
+- Composer now includes chrome-displaced transcript overflow in the borrowable row bound. The new regression exercises continued streaming while command suggestions remain open.
+- Latest automated midstream run: 4 pass, 5 fail. The new open-menu streaming case passes; remaining failures cover dialog restoration, visible-tail restoration, and menu-close restoration. Preserve these assertions and record this as experimental progress, not a completed fix.
+- Publish only the scoped Composer change, its regression test, and this journal. Leave backups, temporary databases, and the diagnostic probe untouched. No further rendering changes are part of this checkpoint.

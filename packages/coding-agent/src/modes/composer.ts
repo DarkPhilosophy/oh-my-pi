@@ -167,19 +167,19 @@ export class Composer implements TerminalFrameProvider {
 	#nextHistoryId = 1;
 	#offeredHistory:
 		| {
-				id: number;
-				rows: readonly string[];
-				kind: "append" | "replay";
-				source:
-					| "header"
-					| {
-							transcript: TranscriptContainer;
-							transcriptId?: number;
-							header: "none" | "replay";
-							/** Recomposed header rows to accept as the new retired-header bytes. */
-							headerRows?: readonly string[];
-					  };
-		  }
+			id: number;
+			rows: readonly string[];
+			kind: "append" | "replay";
+			source:
+			| "header"
+			| {
+				transcript: TranscriptContainer;
+				transcriptId?: number;
+				header: "none" | "replay";
+				/** Recomposed header rows to accept as the new retired-header bytes. */
+				headerRows?: readonly string[];
+			};
+		}
 		| undefined;
 	#historyReplayRequested = false;
 	#headerReplayPending = false;
@@ -328,7 +328,7 @@ export class Composer implements TerminalFrameProvider {
 		]);
 		const borrowableRows = headerVisible
 			? 0
-			: Math.min(before.length + active.length, Math.max(0, composed.length - rows - chromeInsertionRows));
+			: Math.min(before.length + active.length, Math.max(0, composed.length - rows));
 		const borrowedViewportRows = transcript.borrowedViewportRowCount();
 		return {
 			history,

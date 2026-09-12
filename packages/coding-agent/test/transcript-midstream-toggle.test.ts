@@ -221,6 +221,53 @@ describe("midstream toggle", () => {
 		message.dispose();
 	});
 
+	it("keeps transcript context accessible while command suggestions are open", async () => {
+		createTestSession();
+		const terminal = new VirtualTerminal(60, 12);
+		const composer = new Composer({ preferences: { quiet: true }, terminal });
+		const transcript = new TranscriptContainer();
+		const message = new AssistantMessageComponent(undefined, false);
+		composer.editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider(Array.from({ length: 12 }, (_, index) => ({ name: `command${index}` }))),
+		);
+		transcript.addChild(message);
+		composer.setRuntimeChildren([transcript, composer.editor]);
+		composer.start();
+		try {
+			for (let count = 1; count <= 20; count++) {
+				message.updateContent(
+					assistantMsg(Array.from({ length: count }, (_, index) => `CONTEXT_${index + 1} ${"x".repeat(42)}\n`).join("")),
+					{ transient: true },
+				);
+				composer.ui.renderNow();
+				await terminal.waitForRender();
+			}
+			composer.editor.handleInput("/");
+			composer.ui.renderNow();
+			await terminal.waitForRender();
+			expect(composer.editor.isAutocompleteActive()).toBe(true);
+			const tape = terminal.getScrollBuffer().map(row => Bun.stripANSI(row)).join("\n");
+			expect(Array.from(tape.matchAll(/CONTEXT_\d+/g), match => match[0])).toEqual(
+				Array.from({ length: 20 }, (_, index) => `CONTEXT_${index + 1}`),
+			);
+			for (let count = 21; count <= 40; count++) {
+				message.updateContent(
+					assistantMsg(Array.from({ length: count }, (_, index) => `CONTEXT_${index + 1} ${"x".repeat(42)}\n`).join("")),
+					{ transient: true },
+				);
+				composer.ui.renderNow();
+				await terminal.waitForRender();
+				expect(Array.from(
+					terminal.getScrollBuffer().map(row => Bun.stripANSI(row)).join("\n").matchAll(/CONTEXT_\d+/g),
+					match => match[0],
+				)).toEqual(Array.from({ length: count }, (_, index) => `CONTEXT_${index + 1}`));
+			}
+		} finally {
+			composer.stop();
+			message.dispose();
+		}
+	});
+
 	it("keeps every streamed row when ordinary non-dropdown chrome grows and shrinks", async () => {
 		createTestSession();
 		const terminal = new VirtualTerminal(60, 12);
