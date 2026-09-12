@@ -201,6 +201,69 @@ class TmuxPreservedClearTerminal extends VirtualTerminal {
 }
 
 describe("terminal frame plans", () => {
+	it("keeps the retained live reserve after temporary rows leave a full two-screen frame", () => {
+		const terminal = new CountingTerminal(30, 5);
+		const context = Array.from({ length: 9 }, (_, index) => `CONTEXT_${index + 1}`);
+		const provider = new Provider({
+			viewport: [...context, "editor"],
+			viewportExpansionRows: 5,
+			borrowableRows: context.length,
+		});
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		try {
+			tui.setFrameProvider(provider);
+			const base = terminal.getBufferPosition().baseY;
+			provider.plan = {
+				viewport: [...context, "TEMP_1", "TEMP_2", "editor"],
+				viewportExpansionRows: 5,
+				borrowableRows: context.length,
+			};
+			tui.requestRender(true);
+			expect(terminal.getBufferPosition().baseY - base).toBe(2);
+			const committed = plainBuffer(terminal).slice(0, terminal.getBufferPosition().baseY);
+			provider.plan = {
+				viewport: [...context.slice(2), "editor"],
+				viewportExpansionRows: 5,
+				borrowableRows: context.length - 2,
+				borrowedViewportRows: 0,
+			};
+			tui.requestRender(true);
+			expect(plainBuffer(terminal).slice(0, terminal.getBufferPosition().baseY)).toEqual(committed);
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual([...context.slice(-4), "editor"]);
+			// A second live contraction must expose the reserve that was outside
+			// the physical window, without changing terminal dimensions.
+			provider.plan = {
+				viewport: [...context.slice(2, 6), "editor"],
+				viewportExpansionRows: 5,
+				borrowableRows: 4,
+				borrowedViewportRows: 0,
+			};
+			tui.requestRender(true);
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual([...context.slice(2, 6), "editor"]);
+			expect(plainBuffer(terminal).slice(0, terminal.getBufferPosition().baseY)).toEqual(committed);
+			expect(terminal.writes.join("")).not.toContain("\x1b[3J");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("preserves newly overflowing live rows beside a finalized history batch", () => {
+		const terminal = new CountingTerminal(30, 4);
+		const provider = new Provider({ viewport: ["previous", "one", "two", "editor"] });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		provider.plan = {
+			history: { id: 1, rows: ["previous"] },
+			viewport: ["one", "two", "three", "four", "editor"],
+			borrowedViewportRows: 0,
+		};
+		tui.requestRender(true);
+		expect(plainBuffer(terminal)).toEqual(["previous", "one", "two", "three", "four", "editor"]);
+		tui.requestRender();
+		expect(plainBuffer(terminal)).toEqual(["previous", "one", "two", "three", "four", "editor"]);
+		tui.stop();
+	});
+
 	it("consumes a finalized prefix without re-appending the still-borrowed suffix", () => {
 		const terminal = new CountingTerminal(20, 3);
 		const provider = new Provider({ viewport: ["a", "b", "tool-1", "tool-2", "tool-3", "editor"] });
@@ -289,23 +352,38 @@ describe("terminal frame plans", () => {
 	it("keeps retired text adjacent to a shrinking job and its next response", () => {
 		const terminal = new CountingTerminal(40, 6);
 		const provider = new Provider({
-			history: { id: 1, kind: "append", rows: ["PREVIOUS_1", "PREVIOUS_2"] },
+			history: {
+				id: 1,
+				kind: "append",
+				rows: ["PREVIOUS_0", "PREVIOUS_1", "PREVIOUS_2", "PREVIOUS_3", "PREVIOUS_4", "PREVIOUS_5"],
+			},
 			viewport: ["JOB_1", "JOB_2", "JOB_3", "editor"],
 		});
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
 		try {
-			provider.plan = { viewport: ["JOB_DONE", "editor"] };
+			provider.plan = { viewport: ["JOB_1", "JOB_2", "JOB_3", "editor"], viewportExpansionRows: 2 };
+			tui.renderNow();
+			provider.plan = {
+				viewport: ["PREVIOUS_4", "PREVIOUS_5", "JOB_DONE", "editor"],
+				borrowedViewportRows: 2,
+			};
 			tui.renderNow();
 			const closed = plainBuffer(terminal);
-			const previous = closed.indexOf("PREVIOUS_2");
-			expect(closed[previous + 1]).toBe("JOB_DONE");
+			const jobDone = closed.indexOf("JOB_DONE");
+			expect(closed.at(-1)).toBe("editor");
+			expect(jobDone).toBeGreaterThan(0);
+			expect(closed[jobDone - 1]?.trim()).not.toBe("");
+			expect(closed.every(row => row.trim() !== "")).toBe(true);
 			provider.plan = { viewport: ["JOB_DONE", "NEXT_1", "NEXT_2", "NEXT_3", "editor"] };
 			tui.renderNow();
 			const grown = plainBuffer(terminal);
 			expect(grown.slice(grown.indexOf("PREVIOUS_1"), grown.indexOf("NEXT_3") + 1)).toEqual([
 				"PREVIOUS_1",
 				"PREVIOUS_2",
+				"PREVIOUS_3",
+				"PREVIOUS_4",
+				"PREVIOUS_5",
 				"JOB_DONE",
 				"NEXT_1",
 				"NEXT_2",
@@ -336,6 +414,61 @@ describe("terminal frame plans", () => {
 		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["b", "c", "d", "editor"]);
 		expect(plainBuffer(terminal)).toEqual(base);
 		tui.stop();
+	});
+
+	it("keeps temporary viewport growth out of history and restores it on contraction", () => {
+		const terminal = new CountingTerminal(40, 10);
+		const base = Array.from({ length: 10 }, (_, index) => `ROW_${index + 1}`);
+		const provider = new Provider({ viewport: base });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		try {
+			tui.renderNow();
+			const writesBeforeGrowth = terminal.writes.length;
+			const baseYBeforeGrowth = terminal.getBufferPosition().baseY;
+			provider.plan = {
+				viewport: [...base, ...Array.from({ length: 10 }, (_, index) => `TEMP_${index + 1}`)],
+				viewportExpansionRows: 10,
+			};
+			tui.renderNow();
+			expect(terminal.getBufferPosition().baseY).toBe(baseYBeforeGrowth);
+			expect(terminal.writes.length).toBeGreaterThan(writesBeforeGrowth);
+			provider.plan = { viewport: base };
+			tui.renderNow();
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(base);
+			expect(terminal.getViewport().every(row => row.trim() !== "")).toBe(true);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("keeps three-row transient growth reversible across the next frame", () => {
+		const terminal = new CountingTerminal(80, 12);
+		const base = Array.from({ length: 12 }, (_, index) => `BASE_${index + 1}`);
+		const provider = new Provider({ viewport: base });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		try {
+			tui.renderNow();
+			const baseYBeforeGrowth = terminal.getBufferPosition().baseY;
+			const writesBeforeGrowth = terminal.writes.length;
+			provider.plan = {
+				viewport: [...base, "TEMP_1", "TEMP_2", "TEMP_3"],
+				viewportExpansionRows: 3,
+			};
+			tui.renderNow();
+			expect(terminal.getBufferPosition().baseY).toBe(baseYBeforeGrowth);
+			expect(terminal.writes.length).toBe(writesBeforeGrowth + 1);
+			provider.plan = { viewport: base };
+			tui.renderNow();
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(base);
+			expect(terminal.getViewport().every(row => row.trim() !== "")).toBe(true);
+			provider.plan = { viewport: [...base, "NEXT_1", "NEXT_2", "NEXT_3"] };
+			tui.renderNow();
+			expect(terminal.getViewport().some(row => row.includes("NEXT_3"))).toBe(true);
+		} finally {
+			tui.stop();
+		}
 	});
 
 	it("repaints unchanged mutable rows when contraction moves their physical anchor", () => {

@@ -151,6 +151,13 @@ export function trimBlankEdges(rows: readonly string[]): readonly string[] {
 	return start === 0 && end === rows.length ? rows : rows.slice(start, end);
 }
 
+export interface LiveViewportFrame {
+	/** Complete editable rows, including the reserve outside the physical window. */
+	readonly rows: readonly string[];
+	readonly capacity: number;
+	readonly physicalRows: number;
+}
+
 /** Owns transcript order, live capacity, and ordered immutable retirement. */
 export class TranscriptContainer extends Container {
 	#entries: TranscriptEntry[] = [];
@@ -161,6 +168,7 @@ export class TranscriptContainer extends Container {
 	#replayRequested = false;
 	#toolActivityVisible = true;
 	#lastFrame: AnimationFrame = { tick: 0, now: 0 };
+	#liveViewport: LiveViewportFrame = { rows: [], capacity: 0, physicalRows: 0 };
 	// Start rows from the last full render(), keyed by child component (transcript deep-links).
 	#childStartRows = new Map<Component, number>();
 	// Watchdog for the wedge where an unfinalized frontier block pins pressure
@@ -199,6 +207,7 @@ export class TranscriptContainer extends Container {
 		this.#pinnedFrontier = undefined;
 		this.#replayPending = false;
 		this.#replayRequested = false;
+		this.#liveViewport = { rows: [], capacity: 0, physicalRows: 0 };
 	}
 
 	setToolActivityVisible(visible: boolean): void {
@@ -377,6 +386,18 @@ export class TranscriptContainer extends Container {
 			if (block.length > 0) total += block.length + (total > 0 ? 1 : 0);
 		}
 		return total;
+	}
+
+	/** The retained live frame is distinct from the terminal's physical projection. */
+	get liveViewport(): LiveViewportFrame {
+		return this.#liveViewport;
+	}
+
+	renderLiveViewport(width: number, physicalRows: number, frame: AnimationFrame): LiveViewportFrame {
+		const height = Math.max(0, Math.trunc(physicalRows));
+		const rows = this.renderViewport(width, Number.MAX_SAFE_INTEGER, frame);
+		this.#liveViewport = { rows, capacity: height * 2, physicalRows: height };
+		return this.#liveViewport;
 	}
 
 	/** Render the complete logical live transcript.
@@ -851,4 +872,4 @@ export class TranscriptContainer extends Container {
 }
 
 /** Groups sibling rows into one conservative mutable semantic transcript block. */
-export class TranscriptBlock extends Container {}
+export class TranscriptBlock extends Container { }

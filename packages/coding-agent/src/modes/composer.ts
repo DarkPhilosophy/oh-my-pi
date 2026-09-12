@@ -167,19 +167,19 @@ export class Composer implements TerminalFrameProvider {
 	#nextHistoryId = 1;
 	#offeredHistory:
 		| {
-				id: number;
-				rows: readonly string[];
-				kind: "append" | "replay";
-				source:
-					| "header"
-					| {
-							transcript: TranscriptContainer;
-							transcriptId?: number;
-							header: "none" | "replay";
-							/** Recomposed header rows to accept as the new retired-header bytes. */
-							headerRows?: readonly string[];
-					  };
-		  }
+			id: number;
+			rows: readonly string[];
+			kind: "append" | "replay";
+			source:
+			| "header"
+			| {
+				transcript: TranscriptContainer;
+				transcriptId?: number;
+				header: "none" | "replay";
+				/** Recomposed header rows to accept as the new retired-header bytes. */
+				headerRows?: readonly string[];
+			};
+		}
 		| undefined;
 	#historyReplayRequested = false;
 	#headerReplayPending = false;
@@ -304,7 +304,7 @@ export class Composer implements TerminalFrameProvider {
 			// An insertion taller than the screen cannot be held back: the
 			// transcript must keep retiring rows or the tail stops advancing.
 			Math.min(transientRows, Math.max(0, rows - 1));
-		const history = this.#offerHistory(transcript, width, rows + viewportExpansionRows, chromeRows);
+		const history = this.#offerHistory(transcript, width, rows * 2, chromeRows);
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
 		const before = [...headerRows, ...preRoots];
@@ -312,7 +312,8 @@ export class Composer implements TerminalFrameProvider {
 		this.#viewportTranscriptStart = before.length;
 		const now = performance.now();
 		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
-		const active = transcript.renderViewport(width, Number.MAX_SAFE_INTEGER, frame);
+		const liveViewport = transcript.renderLiveViewport(width, rows, frame);
+		const active = liveViewport.rows;
 		const composed = [...before, ...active, ...after];
 
 		if (history !== undefined && this.#offeredHistory?.source === "header") {
@@ -330,6 +331,7 @@ export class Composer implements TerminalFrameProvider {
 		return {
 			history,
 			borrowableRows,
+			retainedLiveViewport: true,
 			viewportExpansionRows,
 			viewport: plan.viewport,
 			segments: plan.segments,

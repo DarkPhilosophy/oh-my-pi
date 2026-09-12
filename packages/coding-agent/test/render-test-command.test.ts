@@ -141,6 +141,56 @@ it.each(["ask", "job", "markdown"] as const)(
 	60_000,
 );
 
+it.each([20, 30, 40, 60])(
+	"keeps concurrent job cards adjacent in a %i-row terminal",
+	async height => {
+		terminal.resize(110, height);
+		mode.ui.requestRender(true);
+		const gaps: string[] = [];
+		const duplicatedSections: string[] = [];
+		const write = terminal.write.bind(terminal);
+		vi.spyOn(terminal, "write").mockImplementation(data => {
+			write(data);
+			const rows = terminal
+				.getScrollBuffer()
+				.slice(-200)
+				.map(row => Bun.stripANSI(row).trimEnd());
+			let cardStart = -1;
+			let outputSections = 0;
+			for (let index = 0; index < rows.length; index++) {
+				if (rows[index]?.startsWith("╭")) {
+					cardStart = index;
+					outputSections = 0;
+				}
+				if (cardStart >= 0 && rows[index]?.startsWith("├─── Output")) {
+					outputSections++;
+					if (outputSections > 1) duplicatedSections.push(rows.slice(cardStart, index + 1).join("\n"));
+				}
+				if (rows[index]?.startsWith("╰")) cardStart = -1;
+			}
+			for (let index = 0; index < rows.length; index++) {
+				if (!rows[index]?.startsWith("╰")) continue;
+				let next = index + 1;
+				while (next < rows.length && rows[next] === "") next++;
+				if (next - index > 2 && rows[next]?.startsWith("╭")) {
+					gaps.push(rows.slice(index, next + 1).join("\n"));
+				}
+			}
+		});
+		await session.runRenderTest({ repeat: 1, delayMs: 5, scenario: "job" }, mode.getToolUIContext());
+		await session.waitForIdle();
+		await terminal.waitForRender();
+		expect(gaps).toEqual([]);
+		expect(duplicatedSections).toEqual([]);
+		const tape = terminal
+			.getScrollBuffer()
+			.map(row => Bun.stripANSI(row))
+			.join("\n");
+		expect(Array.from(tape.matchAll(/STEP_\d+/g), match => match[0])).toEqual(["STEP_1", "STEP_2", "STEP_3"]);
+	},
+	60_000,
+);
+
 it.each([20, 40])(
 	"runs complete workflows in a %i-row terminal through real tools without provider calls",
 	async rows => {

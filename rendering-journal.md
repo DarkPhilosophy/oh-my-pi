@@ -2,7 +2,7 @@
 
 ## Scope and safeguards
 
-- User-selected rendering baseline: `bc6f42937aaf89f34ede0c836c5a25ba68f6a541`.
+- User-selected rendering baseline: `bc6f42937aaf34ede0c836c5a25ba68f6a541`.
 - Investigate blank bands associated with background-job updates and closing `ask`.
 - Preserve working long-message streaming, Markdown icons/Copy, and `/render`.
 - No commit or push is authorized for this investigation.
@@ -130,3 +130,161 @@
 - Verification after revert: render-test-command 7 pass / 0 fail, transcript-midstream-toggle + tui history-frame-plan + right-panel 77 pass / 1 fail (the known shrinking-job blackbar), type check clean. No commit, no push.
 - Conclusion unchanged: the real fix belongs in `tui.ts` — released rows must be written to native scrollback at retraction time; holding them on screen leaves nothing to repaint on contraction.
 - Checkpoint status for commit/push: the known transient-tool retraction blackbar remains unresolved. Earlier rendering was largely correct except for a smaller tool contraction bug; subsequent transient accounting experiments expanded the regression, were reverted, and this tree preserves the current flow fixes while documenting the remaining bug. User explicitly requested committing this work despite the open bug.
+
+## Current contraction finding
+
+- User reports the latest local behavior is more stable during streaming, but the current contraction handling is still a mask: when a temporary job/ask/tool loses rows (`-size`), the chat is moved upward instead of restoring the full logical viewport and keeping all context available.
+- The black bar remains subtly visible for `ask`; the same pattern is visible for background jobs.
+- Required model: temporary UI/tool growth must be tracked from the beginning as virtual viewport growth (`base viewport + inserted rows`), then the exact inserted rows are removed on contraction while the original context remains available. Rows displaced by the temporary expansion must not be silently flushed without a corresponding visible/owned replacement.
+- Current `tui.ts` still has a `startTop` contraction branch that changes placement based on retained visible history. This can hide the hole by moving the chat rather than reconciling the rows released by the shrinking tool.
+- This is an open bug; no fix is claimed yet.
+- Tried a shared retraction reconciliation in `tui.ts`: temporarily flushed retained visible rows when `viewportExpansionRows` changed from positive to zero, while keeping bottom anchoring.
+- The shrinking-job fixture passed, but the ask/job transition suite regressed (`2` failures, including transcript restoration and missing `ROW_10`). The experiment was immediately reverted; no source behavior from it remains.
+- After rollback, `transcript-midstream-toggle` returned to `8 pass / 0 fail`. The root issue remains that retained rows are not reconciled with the real tool-owned transient lifetime; the chat must not be moved upward as a substitute.
+
+## Contraction placement experiment
+
+- Restored the exact `startTop` condition from `bc6f4293`; the baseline comparison showed no other renderer logic difference.
+- Added one narrow contraction branch only when visible retained history exists and the new mutable frame is shorter than the previous one; it keeps the new frame adjacent to retained history instead of inserting a blank seam.
+- Verification: the shrinking-job regression and the combined history/transcript suites pass (`47/47`).
+- This is a local experiment, not a final root fix: the branch preserves adjacency but does not yet implement the required atomic scrollback commit plus viewport repaint for every real tool contraction.
+
+## Semantic transient viewport implementation attempt
+
+- The first proposed `tui.ts`-only replacement of `""` padding was tested against the shrinking-job regression and failed because the semantic prefix had already been committed to native scrollback.
+- The attempted Composer ownership adjustment was reverted because borrowing every active transcript row would suppress normal streaming retirement.
+- Current conclusion: transient ownership must be supplied by the actual transcript entries that remain logically live; it must not be inferred from total active rows or reconstructed with blank padding.
+
+## Semantic prefix contraction fix
+
+- The contraction fixture now supplies the still-live prefix through `viewport` together with `borrowedViewportRows`, matching the Composer/TUI ownership contract.
+- `tui.ts` no longer pads the retained prefix with synthetic empty rows; it reuses only real retained rows and leaves rows outside the physical viewport for normal history handling.
+- Verification: shrinking-job regression passes; combined history and transcript suites pass (`47/47`).
+
+## Contraction guard experiment
+
+- Re-enabled the surviving-prefix reconciliation when a history batch is emitted in the same frame as borrowed ownership drops (`borrowed 20 → 0`, `history 26`).
+- Exact current-checkout tests: shrinking-job 1/1, temporary-job-wait 1/1, complete transcript-midstream 8/8.
+- The 20-row and 40-row workflow gates exceeded the 30-second command limit before producing a result; no visual success is claimed.
+
+## Current transient-growth verification
+
+- The transient-growth checks now assert native scrollback ownership through `baseY`, rather than comparing the combined scrollback-plus-viewport projection (which necessarily changes when the visible grid is repainted).
+- Verification: `history-frame-plan.test.ts` plus `transcript-midstream-toggle.test.ts` passed `49/49`; the complete `/render` workflow at 20 and 40 rows passed `2/2`.
+- No GitHub operation was performed. The real job/ask contraction behavior remains covered by the existing transition tests and requires live confirmation for final visual acceptance.
+
+## Partial-result contraction investigation
+
+- Reproduced `/render --job 1 5` through real local tools and captured every terminal write together with the Composer plan. With only parked tasks marked transient, contraction left six empty rows between completed job cards.
+- The existing isolated-scenario test only checked tool execution, not this geometry. Added a regression that checks card adjacency after every write and preserves the ordered continuation markers. It fails without the candidate change.
+- Broadening transient ownership to every unfinished call or keeping finalized displaceable snapshots transient removed the job gap but lost streaming markers in the complete workflow. Both variants were withdrawn. The final predicate does not reserve rows for argument-only calls or finalized per-turn snapshots.
+- The narrower candidate marks existing partial-result snapshots transient, in addition to parked tasks. Argument-only calls retain their previous behavior. The isolated job trace has no inter-card gap and emits no scrollback-clear sequence; a fresh real PTY run also preserves adjacent cards.
+- Final verification: 88 tests passed across the complete render workflow, transcript-midstream, history-frame-plan and right-panel suites. The full workflow includes both 20-row and 40-row terminals. Package type checking and scoped lint/format checking passed.
+- A fresh 110×20 real PTY ran `/render --job 1 5`, followed by `/render --ask 1 5` and an actual answer. Completed job cards remained adjacent; the question continuation appeared directly after the result card. The editor remained in its normal bottom chrome position. This verifies those exercised paths, not every possible tool/idle transition or the user's own terminal.
+- Removed the owned diagnostic probe after retaining the regression test, stopped the owned PTYs, and narrowed the changelog claim to the demonstrated partial-result job gap. No geometry, padding, anchoring, right-panel, Copy or `/render` implementation changes were made in this round. Existing local work is preserved; no commit or remote operation was performed.
+
+## Simultaneous history retirement and live overflow
+
+- User live testing invalidated the previous broad readiness claim: job gaps and partially repeated/cut Read cards remained. Preserved the partial-result lifecycle improvement instead of reverting it.
+- Expanded the real-tool job geometry regression to 20, 30, 40 and 60 rows. The 40-row case reproduced an extra blank row between cards before this correction.
+- Captured the producer plan and physical terminal tape after each write. A frame can retire a finalized history batch and also have newly overflowing live rows. The old mutually exclusive history/no-history branches skipped borrowing those new rows before `slice(overflow)`, losing the prefix from that physical frame.
+- Corrected that shared accounting: first reconcile the finalized batch, then account for newly overflowing live rows in the same frame. Shutdown draining deliberately does not borrow new live rows while finalized batches remain. No new padding, chat-position heuristic, widget change, or tool-specific renderer branch was introduced.
+- Added a regression asserting exact ordered text across simultaneous retirement/overflow and the following frame. An initial variant duplicated a row during terminal handoff; the shutdown guard corrected that failure without weakening its assertion.
+- Verification: history-frame-plan, right-panel and transcript-midstream passed 81/81; job geometry at all four heights passed 4/4; complete workflows at 20/40 rows passed 2/2. A new 441-frame job capture included four simultaneous history/overflow frames and zero missing command-card prefixes. Its sole scrollback clear occurred during initial empty workflow setup, not a job transition.
+- A fresh 110×40 PTY exercised `/render --job 1 5`; the captured completed cards and continuation were contiguous. These are measured local paths, not a claim of exhaustive live acceptance. Everything remains local, with no commit or push.
+
+## Live feedback and varied Read fixture sizes
+
+- User reports that the latest local candidate still cuts/repeats live Read cards and leaves job gaps at the viewport/history boundary. The previous readiness report is not evidence that this live defect is resolved; preserve the feedback as the current acceptance result.
+- Expanded `/render` input fixtures without changing segment order: small (24 lines), medium (64 lines), and large (128 lines). Medium/large rows contain distinct numbered cells and values rather than repeated short text; large rows are hundreds of characters wide. Reads now request each fixture's full line range.
+- The existing collapsed Read preview still shows its normal first three source lines; expanding the card exposes the full large fixture. No production preview limits or renderer geometry were changed for this fixture update.
+- Verification: the complete 40-row workflow passed with the varied fixtures. A full 150×40 captured workflow completed with 970 terminal writes and no unfinished Read border followed by another Read header in that particular run. This does not invalidate the user's live reproductions.
+
+## Collapsed-tool boundary duplication confirmed
+
+- User clarifies that all live failures were observed with normal collapsed tools, without Ctrl+O. Expansion toggles are an additional case, not a prerequisite or an explanation for this bug.
+- Re-analyzed the captured complete 150×40 workflow for repeated Output sections inside one card, instead of merely searching for missing borders or gaps. Nine frames contain a duplicated Output separator in the same background-job card.
+- First observed transition: frame 798 has native baseY=421 and 37 logical viewport rows; frame 799 keeps native baseY=421, grows to 48 logical rows, and reports expansion=10 with borrowed=0. Its write starts at physical row 1 with an Output separator, directly below another separator already in native history. Thus a complete outer border is insufficient as an integrity assertion.
+- This reproduces the user's boundary-cut/duplicate symptom with collapsed cards and identifies a concrete transition for further investigation. No new renderer patch has been applied on the basis of this observation.
+
+## Visible waiting interval in isolated job scenario
+
+- At the user's request, `/render --job` now launches background jobs lasting 20 seconds and uses five-second timeouts for its first two wait calls instead of 250 milliseconds. Later waits allow completion; the general workflow retains its existing timings.
+- The isolated real-tool job scenario completed successfully in 30 seconds. This timing change enables visual inspection of waiting transitions; it is not a renderer fix.
+
+## Scroll accessibility while temporary UI remains open
+
+- User live testing confirms that command suggestions also hide previously accessible content while `/` remains open; closing the menu restores it. Restoration alone is not acceptance: displaced content must remain reachable through scrolling during the insertion.
+- A new isolated job capture also reproduced duplicated Output sections while waiting was active. The observed transition keeps native scrollback position unchanged while the logical frame grows from 37 to 48 rows and reports 10 expansion rows; this occurrence does not involve a new history batch.
+- The current expansion count is not a complete virtual viewport or a scroll-accessible backing store. The proposed extensible buffer with an initial two-screen reserve requires explicit row ownership and scroll projection; multiplying a height alone would not expose application-retained rows to native terminal scrolling.
+- This round records observations and an architectural suggestion only. No buffer redesign, renderer behavior change, commit, or remote operation was performed. The renderer defect remains unresolved.
+
+## Isolated reversible-buffer experiment
+
+- Added a standalone interactive experiment in `packages/tui/examples/reversible-viewport-experiment.ts`; production rendering sources were not changed.
+- Model: stable row identities, application-owned finalized history, a reversible live buffer, identified temporary insertions, an initial 2H capacity reserve that grows when needed, and a reader anchor. Removal and terminal resize do not commit content; permanent append may retire a stable prefix when no insertion pins it.
+- Verification runs the emitted terminal bytes through VirtualTerminal: 65 frames at heights 1, 12, 20, 40 and 100 cover insertion/removal, covered-context scrolling, nested insertions, streaming beyond 2H, reader anchoring, mutable-block contraction and height reduction. All assertions pass; native scrollback remains unchanged.
+- An initial normal-screen resize moved rows into native scrollback. The experiment therefore explicitly uses the alternate screen in both its interactive entry and verification. This is an architectural difference, not an existing OMP renderer fix: finalized history and scrolling are owned by the application. Native mouse-wheel scrollback, production tool lifecycles, width reflow, persistence, and bounded-memory retirement during indefinitely active insertions are not demonstrated here.
+- Started the interactive program in an owned PTY, exercised waiting insertion and removal, and exited normally. Final verification passed after formatting. No commit, push, or replacement of the current renderer was performed.
+
+## Production OMP boundary regression
+
+- Extended the existing real-tool `/render --job` test to reject repeated Output sections within a single card after every terminal write. This runs the actual AgentSession, Composer, tool execution and TUI path, not a standalone viewport model.
+- The 40-row run fails with two consecutive Output separators inside the same background-job card, reproducing the reported defect that the previous adjacency-only assertion missed.
+- Tested borrowing the complete overflow instead of subtracting reversible expansion. The actual job run then failed with six blank rows between cards. Reverted that source change; retained the stronger regression assertion.
+- The captured offending transition has 37 to 48 logical rows, expansion 0 to 10, unchanged native baseY 64, and no new history batch. The source defect remains unresolved. No commit or GitHub operation was performed.
+
+## Clarified A/B/C ownership contract
+
+- A is the physical live window; B is an additional application-retained live window; C is immutable native history. Overflow from A enters B, not C. Only eligible overflow from B enters C.
+- User example, newest first: A=[1,2,3], B=[], C=[]; inserting 0 produces A=[0,1,2], B=[3], C=[]; inserting [9,8,7] then produces A=[9,8,7], B=[0,1,2], C=[3].
+- Removing temporary rows refills A from B without reading, clearing, or rewriting C. A and B need actual semantic rows and ownership, not empty padding or a height counter. The current Composer expansion budget and native borrowed-row bookkeeping do not establish this contract.
+- The latest erase-before-repaint experiment still reproduced the duplicate Output separator in the actual 40-row job workflow. Removed that unsuccessful hunk and restored source formatting. This is negative evidence against stale uncleared viewport cells as the sole cause; no fix or live readiness is claimed.
+
+## A/B/C clarification: projection rather than disjoint windows
+
+- User corrected the preceding interpretation: A is a dynamic live projection, not a fixed-capacity store independent of B. B retains real uncommitted context that A can display; their content must not be counted as separate copies.
+- The intended retained live extent grows toward two terminal heights once enough content exists. Temporary UI occupies projection space without deleting displaced context from B or committing it to C. Removing temporary UI restores context from B; the temporary rows themselves do not enter B or permanent history.
+- Distinguish visual displacement, live retention, and irreversible history commitment. A temporary insertion/removal alone must not advance the permanent boundary. Short initial content must not be padded with fabricated context merely to reach the target extent.
+- This clarification supersedes the fixed, disjoint A/B interpretation above. It records the requested contract, not a completed implementation or verification.
+
+## Superseding clarification: controlled live/history boundary
+
+- The user subsequently rejected the no-commit-on-temporary-insertion restriction in lines 247–248. Insertion may displace context through B into C when the retained live capacity is full. Removing that insertion does not retrieve committed context from C, does not cause another flush, and does not insert blank replacements.
+- Example with terminal height five: ten retained rows plus two temporary rows can commit two old context rows; removal leaves eight retained context rows, still more than the physical screen. A later temporary row fits and disappears without another commit; permanent additions refill available capacity before further overflow.
+- The essential requirement is a dynamic live projection backed by actual intermediate retained rows and one explicit permanent-commit boundary. Physical height determines painting, not independently the lifetime of retained content. History and the displayed live continuation must remain ordered without cuts or duplicate rows during growth, replacement, and removal.
+- These are clarified requirements, not evidence of an implemented or verified fix. Preserve native interaction and existing local work; no separate alternate-screen demo or remote operation is requested.
+
+## Current full-overflow candidate — retained locally
+
+- Preserved the current changes as explicitly requested by the user; no undo, commit, or remote operation.
+- TUI now accounts for full borrowable overflow, skips reserved-slot blanking during expansion, removes already borrowed slots instead of painting empty rows after expansion, and limits replay prefixes to real retained rows.
+- The actual 40-row `/render --job` regression now passes, including inter-card gaps and duplicated Output sections. The captured preceding failure showed borrowed=5, expansion 10→0, and six empty painted rows.
+- Broader verification is not green: 75 passed and 7 failed across history-frame-plan, right-panel, and transcript-midstream-toggle. Failures include reversible expansion ownership, command-menu restoration, and bottom placement. This candidate is not ready for user testing or a completed fix. Tests were not weakened.
+
+## Production retained-live integration
+
+- Added a retained live-frame snapshot to TranscriptContainer. It holds the complete editable row sequence, including rows outside the physical terminal window, and is reset with the transcript.
+- Composer now obtains its live rows from this snapshot and offers retirement against two terminal heights rather than a single screen plus a temporary-growth counter.
+- Added an explicit retainedLiveViewport plan contract: off-screen rows remain producer-owned rather than being implicitly borrowed into native history by the writer.
+- The transcript insertion/removal regression passes, including off-screen context retention; the coding-agent type check passes. Production job and full-workflow verification remain in progress. No completion or live-readiness claim is made.
+- Existing local work remains in place. No commit, push, or other remote operation was performed.
+
+## Resumed after interrupted instance
+
+- Resumed verification of the existing retained-live candidate without reverting local work or performing remote operations.
+- The production 40-row concurrent-job test passes on the current source (30.12 seconds).
+- The shared geometry gate reports 72 passes and 10 failures. These include duplicated native rows, missing live transcript rows after menu removal, and editor placement; they are not treated as obsolete assertions or a completed fix.
+- Full production workflow verification is running against the same source. Readiness remains unconfirmed.
+- User live report confirms inaccessible history and explains that the candidate still cuts the displayed context. The `Fixture 1, row 1` text originates in the job scenario's existing `cat sample-1.txt && sleep 8` action, not a renderer debug overlay.
+- Full resumed production gate failed (6 passed, 5 failed), including missing Markdown lines, missing STEP markers, and 60-row job geometry.
+- Corrected the retained-mode transport: off-screen producer-owned rows are now included in the existing borrowed-row transfer rather than discarded by physical clipping with a zero borrow count. This preserves the separate producer retirement ledger while making those rows reachable in terminal output.
+- Focused verification after this change passes for isolated Markdown and 60-row jobs (2 tests); full and shared gates are being rerun. This does not yet establish complete reversible behavior.
+
+## Experimental rendering progress checkpoint
+
+- User requested preserving and publishing the current progress, not declaring the renderer fixed.
+- Latest user live assessment: final output of `/render` and `/render --job` is satisfactory, with coherent history and a consistent final viewport/history boundary. Rendering during execution, especially `/render --job`, remains incorrect.
+- This checkpoint is experimental work in progress. Live cuts, duplicates, and gaps are not claimed resolved.
+- Latest full verification reported 42 passes and 8 failures across production rendering, transcript transitions, and right-panel tests. After isolating legacy prefix padding from retained-live handling, history-frame-plan and right-panel pass 74 tests; the production failures have not been demonstrated resolved.
+- Preserve the current implementation and regression tests. Exclude local backups, temporary model databases, and the diagnostic live-card probe from the commit; leave those files untouched locally.

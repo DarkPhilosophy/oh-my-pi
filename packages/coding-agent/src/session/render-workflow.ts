@@ -53,6 +53,7 @@ export function createRenderWorkflow(
 	};
 	let jobIds: string[] = [];
 	const files = Array.from({ length: 3 }, (_, index) => directory.path() + `/sample-${index + 1}.txt`);
+	const fixtureRows = [24, 64, 128];
 	let initialized = false;
 	let stage = 0;
 	let repetition = 1;
@@ -62,7 +63,8 @@ export function createRenderWorkflow(
 		"Answer interactive workflow question",
 	];
 	const actions: Array<{ name: string; args: () => Record<string, unknown> }> = [];
-	const read = (index: number) => actions.push({ name: "read", args: () => ({ path: files[index] + ":1-24" }) });
+	const read = (index: number) =>
+		actions.push({ name: "read", args: () => ({ path: `${files[index]}:1-${fixtureRows[index]}` }) });
 	let currentContext: Context;
 	const edit = (index: number, invalid = false) =>
 		actions.push({
@@ -110,17 +112,18 @@ export function createRenderWorkflow(
 		},
 	});
 	const backgroundStage = actions.length;
+	const backgroundSeconds = scenario === "job" ? 20 : 8;
 	for (let index = 0; index < 10; index++) {
 		actions.push({
 			name: "bash",
 			args: () => ({
-				command: `sleep 8 && printf 'Background job ${index + 1} completed\\n'`,
-				timeout: 15,
+				command: `sleep ${backgroundSeconds} && printf 'Background job ${index + 1} completed\\n'`,
+				timeout: backgroundSeconds + 7,
 				async: true,
 			}),
 		});
 	}
-	for (const timeoutMs of [250, 250, 10_000, 10_000]) {
+	for (const timeoutMs of scenario === "job" ? [5_000, 5_000, 30_000, 30_000] : [250, 250, 10_000, 10_000]) {
 		actions.push({
 			name: "hub",
 			args: () => {
@@ -198,10 +201,14 @@ export function createRenderWorkflow(
 					files.map((file, index) =>
 						Bun.write(
 							file,
-							Array.from(
-								{ length: 24 },
-								(_, row) => `Fixture ${index + 1}, row ${row + 1}: disposable rendering workflow content.`,
-							).join("\n") + "\n",
+							Array.from({ length: fixtureRows[index]! }, (_, row) => {
+								const prefix = `Fixture ${index + 1}, row ${row + 1}: disposable rendering workflow content.`;
+								if (index === 0) return prefix;
+								return `${prefix} ${Array.from(
+									{ length: index === 1 ? 4 : 24 },
+									(_, column) => `cell-${row + 1}-${column + 1}=${(row + 1) * (column + 3)}`,
+								).join(" | ")}`;
+							}).join("\n") + "\n",
 						),
 					),
 				);

@@ -54,7 +54,7 @@ class AllocationAwareBlock implements Component {
 	#allocation = Number.MAX_SAFE_INTEGER;
 	#finalized = false;
 
-	constructor(private readonly rows: readonly string[]) {}
+	constructor(private readonly rows: readonly string[]) { }
 
 	finalize(): void {
 		this.#finalized = true;
@@ -76,6 +76,22 @@ class AllocationAwareBlock implements Component {
 const frame = { tick: 0, now: 0 };
 
 describe("TranscriptContainer", () => {
+	it("retains off-screen live context across insertion removal", () => {
+		const transcript = new TranscriptContainer();
+		const context = Array.from({ length: 8 }, (_, index) => `context-${index}`);
+		transcript.addChild(new Block(context, true));
+		const waiting = new Block(["waiting-one", "waiting-two"], false);
+		const initial = transcript.renderLiveViewport(80, 5, frame);
+		transcript.addChild(waiting);
+		const inserted = transcript.renderLiveViewport(80, 5, frame);
+		expect(inserted.rows).toEqual([...context, "", "waiting-one", "waiting-two"]);
+		transcript.removeChild(waiting);
+		const removed = transcript.renderLiveViewport(80, 5, frame);
+		expect(removed.rows).toEqual(initial.rows);
+		expect(transcript.peekFinalizedBatch(80, removed.capacity)).toBeUndefined();
+		expect(transcript.liveViewport.rows.slice(0, 3)).toEqual(context.slice(0, 3));
+	});
+
 	it("keeps allocation-aware live blocks intact in the logical viewport", () => {
 		const transcript = new TranscriptContainer();
 		const rows = Array.from({ length: 8 }, (_, index) => `row-${index}`);

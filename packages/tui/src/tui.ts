@@ -187,6 +187,8 @@ export interface TerminalFramePlan {
 	readonly borrowableRows?: number;
 	/** Reversible producer growth that must not advance native history ownership. */
 	readonly viewportExpansionRows?: number;
+	/** Producer retains off-screen live rows; only explicit history batches may commit them. */
+	readonly retainedLiveViewport?: boolean;
 }
 
 /** Produces logical live frames and retires acknowledged history batches. */
@@ -2739,16 +2741,14 @@ export class TUI extends Container {
 		if (!flushing && this.#maybeDeferGhosttyInitialImagePaint()) return false;
 		const logicalViewport = Array.from(plan.viewport);
 		const overflow = Math.max(0, logicalViewport.length - height);
-		const borrowOverflow = Math.min(
-			Math.max(0, overflow - Math.max(0, plan.viewportExpansionRows ?? 0)),
-			Math.max(0, plan.borrowableRows ?? logicalViewport.length),
-		);
+		const borrowOverflow = plan.retainedLiveViewport
+			? Math.min(overflow, Math.max(0, plan.borrowableRows ?? logicalViewport.length))
+			: Math.min(
+					Math.max(0, overflow - Math.max(0, plan.viewportExpansionRows ?? 0)),
+					Math.max(0, plan.borrowableRows ?? logicalViewport.length),
+				);
 		const borrowed = this.#providerTransientRows;
-		if (
-			plan.history === undefined &&
-			this.#providerLogicalCommitted > 0 &&
-			logicalViewport.length < this.#providerLogicalCommitted
-		) {
+		if (this.#providerLogicalCommitted > 0 && logicalViewport.length < this.#providerLogicalCommitted) {
 			let survivingPrefix = 0;
 			const limit = Math.min(logicalViewport.length, this.#providerLogicalCommitted);
 			const nativeOffset = borrowed.length - this.#providerLogicalCommitted;
@@ -2834,22 +2834,26 @@ export class TUI extends Container {
 				);
 				this.#providerLogicalCommitted = retained;
 			}
-			if (history === undefined && borrowOverflow > this.#providerLogicalCommitted) {
+			// Retirement and new live overflow can occur in the same frame.
+			// Account for both before slicing the viewport; otherwise the sliced
+			// prefix disappears and is emitted again on a later frame.
+			// Shutdown flushes drain finalized batches without borrowing new live rows.
+			if ((!flushing || history === undefined) && borrowOverflow > this.#providerLogicalCommitted) {
 				inferredHistory = logicalViewport.slice(this.#providerLogicalCommitted, borrowOverflow);
 				this.#providerTransientRows.push(...inferredHistory);
 			}
-			if (history === undefined)
+			if (!flushing || history === undefined)
 				this.#providerLogicalCommitted = Math.max(this.#providerLogicalCommitted, borrowOverflow);
 		}
 		this.#providerHasTransientHistory = this.#providerTransientRows.length > 0;
 
-		const viewport = logicalViewport.slice(overflow);
-		if (logicalViewport.length > this.#providerLogicalCommitted) {
-			// Keep the live suffix at its logical screen rows without duplicating
-			// immutable native rows in the visible projection.
+		// Legacy providers expose their already-borrowed prefix in the logical
+		// frame; those native rows must not be painted a second time.
+		if (!plan.retainedLiveViewport && logicalViewport.length > this.#providerLogicalCommitted) {
 			const reserved = Math.max(0, this.#providerLogicalCommitted - overflow);
-			for (let index = 0; index < reserved; index++) viewport[index] = "";
+			for (let index = 0; index < reserved; index++) logicalViewport[overflow + index] = "";
 		}
+		const viewport = logicalViewport.slice(overflow);
 		const acceptedBefore = this.#acceptedHistoryBatchId;
 		this.#emitPlanFrame(
 			width,
@@ -2858,9 +2862,12 @@ export class TUI extends Container {
 			history,
 			provider,
 			inferredHistory,
-			plan.viewportExpansionRows,
-			Math.max(0, logicalViewport.length - (plan.viewportExpansionRows ?? 0)),
+			plan.retainedLiveViewport ? 0 : plan.viewportExpansionRows,
+			plan.retainedLiveViewport
+				? logicalViewport.length
+				: Math.max(0, logicalViewport.length - (plan.viewportExpansionRows ?? 0)),
 			flushing,
+			plan.retainedLiveViewport ?? false,
 		);
 		if (
 			flushing &&
@@ -2973,6 +2980,7 @@ export class TUI extends Container {
 		viewportExpansionRows = 0,
 		unexpandedViewportRows = viewportRows.length,
 		flushing = false,
+		retainedLiveViewport = false,
 	): void {
 		if (this.#previousWidth !== width || this.#previousHeight !== height) this.#providerVisibleHistory = [];
 		let viewport = viewportRows;
@@ -3013,9 +3021,13 @@ export class TUI extends Container {
 			const retainedCount = flushing ? 0 : Math.min(combined.length, Math.max(0, height - unexpandedViewportRows));
 			retainedHistory = retainedCount > 0 ? combined.slice(-retainedCount) : [];
 			historyRows = combined.slice(0, combined.length - retainedCount);
-			replayViewportRows = Math.max(0, height - viewport.length);
+			replayViewportRows = retainedLiveViewport
+				? Math.min(retainedHistory.length, Math.max(0, height - viewport.length))
+				: Math.max(0, height - viewport.length);
 			const prefix = replayViewportRows > 0 ? retainedHistory.slice(-replayViewportRows) : [];
-			while (prefix.length < replayViewportRows) prefix.push("");
+			if (!retainedLiveViewport) {
+				while (prefix.length < replayViewportRows) prefix.push("");
+			}
 			viewport = [...prefix, ...viewport];
 		}
 		if (history?.kind === "replay" && retainedHistory === undefined) {
@@ -3140,11 +3152,19 @@ export class TUI extends Container {
 			// viewport rows are not — erase them first so a scroll can only push
 			// committed rows and blanks, never an unfinished frame.
 			const pushed = Math.max(0, startTop + preparedHistory.length + rows - height);
-			if (startTop > previousTop && this.#providerWindow.length > 0) {
+			if (
+				startTop > previousTop &&
+				this.#providerWindow.length > 0 &&
+				(!retainedLiveViewport || this.#providerLogicalCommitted === 0)
+			) {
 				// A reversible UI contraction pans the mutable frame back to the
 				// bottom. Erase its old cells without scrolling them into history.
 				buffer += this.#eraseBelowRow(previousTop, height);
-			} else if (pushed > previousTop && this.#providerWindow.length > 0) {
+			} else if (
+				pushed > previousTop &&
+				pushed > this.#providerLogicalCommitted &&
+				this.#providerWindow.length > 0
+			) {
 				buffer += this.#eraseBelowRow(previousTop, height);
 			}
 			buffer += `\x1b[${startTop + 1};1H`;

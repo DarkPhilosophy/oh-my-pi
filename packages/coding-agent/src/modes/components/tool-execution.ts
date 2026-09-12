@@ -833,13 +833,13 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	/**
-	 * A still-running call and a parked background task both keep resizing: the
-	 * card grows while output streams and collapses when it settles, so its rows
-	 * must expand the viewport instead of retiring transcript rows it gives back.
+	 * Partial-result snapshots and parked background tasks can contract before
+	 * their final presentation is known. Keep their current rows reversible;
+	 * argument-only calls must not reserve space belonging to preceding text.
 	 */
 	isTranscriptBlockTransient(): boolean {
 		if (this.#sealed || !this.#toolActivityVisible) return false;
-		return this.#parkedBackground;
+		return this.#parkedBackground || (this.#result !== undefined && this.#isPartial);
 	}
 
 	getTranscriptBlockVersion(): number {

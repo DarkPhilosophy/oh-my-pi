@@ -7,7 +7,7 @@
 
 - Questions opened alongside a draft no longer retire the covered transcript or leave blank bands after the draft is submitted and the question closes.
 - Starting tools no longer hides or cuts preceding replies and read previews at the live viewport–scrollback boundary.
-- Temporary tool progress and background-job waits no longer leave blank bands when they shrink or disappear.
+- Background-job waits no longer leave blank bands between tool cards when partial results shrink before completion.
 - Marketplace plugins that share a repository root now load only their declared skills instead of every skill in the repository ([#11513](https://github.com/can1357/oh-my-pi/issues/11513)).
 ### Added
 
