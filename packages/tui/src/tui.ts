@@ -1140,14 +1140,19 @@ export class TUI extends Container {
 	 * The origin is in composer rows: a replay paint replaces leading composer
 	 * blanks with history rows and prepends blanks for a short viewport, so
 	 * the painted top is backed out by that net pad.
+	 * With a hit-test row, returns an empty window only when that row is covered
+	 * by the passive popup; visible targets elsewhere remain interactive.
 	 */
-	getMutableViewport(): { top: number; length: number } {
+	getMutableViewport(screenRow?: number): { top: number; length: number } {
 		if (
 			this.#altActive ||
 			this.#resizeAltActive ||
 			this.#resizeProbe !== undefined ||
 			this.#resizeInPlaceActive ||
-			this.#cursorOverlayBacking !== undefined ||
+			(screenRow !== undefined &&
+				this.#cursorOverlayBacking !== undefined &&
+				screenRow >= this.#cursorOverlayBacking.top &&
+				screenRow < this.#cursorOverlayBacking.top + this.#cursorOverlayBacking.painted.length) ||
 			this.#ghosttyInitialImageDelayTimer !== undefined
 		) {
 			return { top: 0, length: 0 };
