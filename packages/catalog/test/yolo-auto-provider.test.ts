@@ -48,6 +48,8 @@ describe("Yolo-Auto provider discovery", () => {
 			input: ["text", "image"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 131072,
+			// Canonical DeepSeek Flash family cap clamped to the provider-specific contextWindow.
+			maxTokens: 131072,
 		});
 		// The documented wire surface flows from the bundled reference into
 		// discovered models: generic chat-template thinking, effort steering, and
