@@ -2818,7 +2818,7 @@ export class TUI extends Container {
 		if (!destructiveReset && this.#cursorOverlayHiddenImages.size > 0) {
 			for (let row = 0; row < this.#providerScreen.length; row++) {
 				const line = this.#providerScreen[row]!;
-				const image = parseKittyDirectPlacementLine(line);
+				const image = parseKittyDirectPlacementLine(line, true);
 				if (image && this.#cursorOverlayHiddenImages.has(image.imageId)) {
 					buffer += `\x1b[${row + 1};1H${this.#imageLineSequence(line, row, -1, -1)}`;
 				}
@@ -2921,9 +2921,12 @@ export class TUI extends Container {
 			// Hide only intersecting direct placements; retain their image data
 			// and restore them on the next paint without imposing a cell fill.
 			for (let row = 0; row < this.#providerScreen.length; row++) {
-				const image = parseKittyDirectPlacementLine(this.#providerScreen[row]!);
+				const line = this.#providerScreen[row]!;
+				const image = parseKittyDirectPlacementLine(line, true);
 				if (!image || row < overlayTop || row - image.rows + 1 >= overlayTop + overlayCount) continue;
-				const placement = this.#imageBudget.resolvePlacementEmit(image.imageId, -1, -1);
+				const placement = line.includes("\x1bPtmux;")
+					? undefined
+					: this.#imageBudget.resolvePlacementEmit(image.imageId, -1, -1);
 				buffer += encodeKittyDeletePlacement(image.imageId, placement?.placementId ?? image.placementId ?? 0);
 				this.#cursorOverlayHiddenImages.add(image.imageId);
 			}
