@@ -562,6 +562,14 @@ export class ModelBrowser implements Component {
 		this.#focused = focused;
 	}
 
+	setSearchFocused(focused: boolean): void {
+		this.#searchInput.focused = focused;
+	}
+
+	setUseTerminalCursor(useTerminalCursor: boolean): void {
+		this.#searchInput.setUseTerminalCursor(useTerminalCursor);
+	}
+
 	/** Total rendered height for the current `maxVisible` (host layout budgeting). */
 	get renderedRows(): number {
 		return LIST_ROW_START + this.#maxVisible + DETAIL_ROWS;

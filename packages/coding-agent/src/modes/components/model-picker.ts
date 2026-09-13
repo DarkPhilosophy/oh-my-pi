@@ -6,7 +6,8 @@ import type { Model } from "@oh-my-pi/pi-ai";
 import {
 	addKeyAliases,
 	applyBackgroundToLine,
-	type Component,
+	CURSOR_MARKER,
+	type Focusable,
 	canonicalKeyId,
 	type KeyId,
 	parseKey,
@@ -49,7 +50,7 @@ export interface ModelPickerCallbacks {
 export interface ModelPickerOptions {
 	/** Replace only the existing editor rows; paint the list through the slash-popup path. */
 	editorRows?: number;
-	/** Preserve the editor's existing status chrome while replacing its input row. */
+	/** Preserve editor chrome; mark the input row with CURSOR_MARKER even while unfocused. */
 	renderEditorRows?: (width: number) => readonly string[];
 	/** Session token count; models with smaller context windows are grayed and compact-first on pick. */
 	currentContextTokens?: number;
@@ -86,7 +87,7 @@ const QUICK_ROLE_FOOTER_HINT = "↑/↓ roles · Enter apply role model · type 
 const TASK_FOOTER_HINT = "↑/↓ models · Enter use for Task subagents · type to search · Esc close";
 
 /** Search occupies the editor slot; results use the passive slash-popup renderer. */
-export class ModelPickerComponent implements Component {
+export class ModelPickerComponent implements Focusable {
 	#tui: TUI;
 	#settings: Settings;
 	#registry: ModelRegistry;
@@ -105,6 +106,21 @@ export class ModelPickerComponent implements Component {
 	#taskSelector: string | undefined;
 	#editorRows: number | undefined;
 	#renderEditorRows: ((width: number) => readonly string[]) | undefined;
+	#focused = false;
+
+	get focused(): boolean {
+		return this.#focused;
+	}
+
+	set focused(focused: boolean) {
+		this.#focused = focused;
+		this.#browser.setFocused(focused);
+		this.#browser.setSearchFocused(focused);
+	}
+
+	setUseTerminalCursor(useTerminalCursor: boolean): void {
+		this.#browser.setUseTerminalCursor(useTerminalCursor);
+	}
 
 	constructor(
 		tui: TUI,
@@ -277,6 +293,8 @@ export class ModelPickerComponent implements Component {
 		if (this.#editorRows !== undefined) {
 			const editorRows = this.#renderEditorRows?.(width);
 			const count = Math.max(1, editorRows?.length ?? this.#editorRows);
+			const markedRow = editorRows?.findIndex(line => line.includes(CURSOR_MARKER)) ?? -1;
+			const inputRow = markedRow >= 0 ? markedRow : count - 1;
 			const rendered = this.#renderPicker(width, this.#tui.terminal.rows);
 			const search = rendered.pop() ?? "";
 			this.#tui.setCursorOverlay(
@@ -287,10 +305,12 @@ export class ModelPickerComponent implements Component {
 						.slice(-available)
 						.map(line => applyBackgroundToLine(line, popupWidth, text => theme.bgFill("userMessageBg", text)));
 				},
-				count - 1,
+				inputRow,
 				count,
 			);
-			return [...(editorRows?.slice(0, -1) ?? Array.from({ length: count - 1 }, () => "")), search];
+			const rows = editorRows ? Array.from(editorRows) : Array<string>(count).fill("");
+			rows[inputRow] = search;
+			return rows;
 		}
 		return this.#renderPicker(width, this.#tui.terminal.rows);
 	}

@@ -1187,7 +1187,7 @@ export class Editor implements Component, Focusable {
 		this.#scrollOffset = Math.min(this.#scrollOffset, maxOffset);
 	}
 
-	render(width: number): readonly string[] {
+	render(width: number, emitCursorMarker = this.focused): readonly string[] {
 		const style = this.#effectiveStyle();
 		const paddingX = this.#getEditorPaddingX();
 		const isSideBordered = style.sideBorders;
@@ -1252,7 +1252,6 @@ export class Editor implements Component, Focusable {
 		// Render each layout line
 		// Keep the hardware cursor at the text insertion point while autocomplete
 		// rows render below it; terminals use that position to anchor IME candidates.
-		const emitCursorMarker = this.focused;
 		const lineContentWidth = contentAreaWidth;
 
 		// Compute inline hint text (dim ghost text after cursor)

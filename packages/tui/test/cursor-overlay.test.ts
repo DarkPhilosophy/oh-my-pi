@@ -1,6 +1,9 @@
 import { expect, it } from "bun:test";
 import { CURSOR_MARKER, TUI, type TerminalFramePlan, type TerminalFrameProvider } from "../src/tui";
+import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 import { VirtualTerminal } from "./virtual-terminal";
+
+withoutTerminalMultiplexer();
 
 class Provider implements TerminalFrameProvider {
 	#history: readonly string[] = [];

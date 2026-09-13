@@ -968,7 +968,7 @@ export class SelectorController {
 			},
 			{
 				editorRows: inline ? editor.render(this.ctx.ui.terminal.columns).length : undefined,
-				renderEditorRows: inline ? width => editor.render(width) : undefined,
+				renderEditorRows: inline ? width => editor.render(width, true) : undefined,
 				currentContextTokens,
 				currentSelector,
 				taskModeKeys: this.ctx.keybindings.getKeys("app.model.selectTemporary"),

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "bun:test";
-import { CombinedAutocompleteProvider, Container, Text } from "@oh-my-pi/pi-tui";
+import { CombinedAutocompleteProvider, Container, CURSOR_MARKER, Text } from "@oh-my-pi/pi-tui";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";
@@ -77,7 +77,7 @@ it("keeps the statusline, extension content and draft while searching and select
 			},
 			onCancel: close,
 		},
-		{ editorRows: editor.render(100).length, renderEditorRows: width => editor.render(width) },
+		{ editorRows: editor.render(100).length, renderEditorRows: width => editor.render(width, true) },
 	);
 	const writes: string[] = [];
 	const write = terminal.write.bind(terminal);
@@ -102,61 +102,73 @@ it("keeps the statusline, extension content and draft while searching and select
 	expect(writes.join("")).not.toMatch(/\x1b\[(?:2|3)J|\x1b\[\?1049h|\x1b\[\?1003h/);
 });
 
-it("replaces active completion rows with model search in the existing input slot", async () => {
-	const terminal = new VirtualTerminal(80, 16);
-	composer = new Composer({ preferences: { quiet: true }, terminal });
-	const editor = composer.editor;
-	const slot = new Container();
-	slot.addChild(editor);
-	const transcript = new TranscriptContainer();
-	const block = {
-		render: () => Array.from({ length: 30 }, (_, i) => `CHAT_${i}`),
-		isTranscriptBlockFinalized: () => true,
-	};
-	transcript.addChild(block);
-	composer.setRuntimeChildren([transcript, slot, new Text("EXTENSION BELOW INPUT", 0, 0)]);
-	editor.setAutocompleteProvider(
-		new CombinedAutocompleteProvider([{ name: "completion-only", description: "Completion description" }], "/tmp"),
-	);
-	const updated = Promise.withResolvers<void>();
-	editor.onAutocompleteUpdate = updated.resolve;
-	editor.handleInput("/");
-	await updated.promise;
-	expect(editor.render(80).join("\n")).toContain("completion-only");
-	composer.start();
-	composer.ui.setFocus(editor);
-	await terminal.waitForRender();
-	const showError = vi.fn();
-	const controller = new SelectorController({
-		ui: composer.ui,
-		editor,
-		editorContainer: slot,
-		settings: Settings.isolated({ "display.inlineModelPicker": true }),
-		session: {
-			modelRegistry: {
-				getAll: () => [],
-				getAvailable: () => [],
-				getError: () => undefined,
-				refresh: async () => {},
+it.each(["box", "pi", "claude"])(
+	"replaces completion rows without losing %s editor chrome or duplicating the cursor",
+	async style => {
+		const terminal = new VirtualTerminal(80, 16);
+		composer = new Composer({ preferences: { quiet: true }, terminal });
+		const editor = composer.editor;
+		editor.setBorderStyle(style);
+		const slot = new Container();
+		slot.addChild(editor);
+		const transcript = new TranscriptContainer();
+		const block = {
+			render: () => Array.from({ length: 30 }, (_, i) => `CHAT_${i}`),
+			isTranscriptBlockFinalized: () => true,
+		};
+		transcript.addChild(block);
+		composer.setRuntimeChildren([transcript, slot, new Text("EXTENSION BELOW INPUT", 0, 0)]);
+		editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider([{ name: "completion-only", description: "Completion description" }], "/tmp"),
+		);
+		const updated = Promise.withResolvers<void>();
+		editor.onAutocompleteUpdate = updated.resolve;
+		editor.handleInput("/");
+		await updated.promise;
+		expect(editor.render(80).join("\n")).toContain("completion-only");
+		composer.start();
+		composer.ui.setFocus(editor);
+		await terminal.waitForRender();
+		const showError = vi.fn();
+		const controller = new SelectorController({
+			ui: composer.ui,
+			editor,
+			editorContainer: slot,
+			settings: Settings.isolated({ "display.inlineModelPicker": true }),
+			session: {
+				modelRegistry: {
+					getAll: () => [],
+					getAvailable: () => [],
+					getError: () => undefined,
+					refresh: async () => {},
+				},
+				scopedModels: [],
+				getContextUsage: () => undefined,
+				getRoleModelCycle: () => undefined,
 			},
-			scopedModels: [],
-			getContextUsage: () => undefined,
-			getRoleModelCycle: () => undefined,
-		},
-		keybindings: { getKeys: () => [], getDisplayString: () => "" },
-		showError,
-	} as unknown as InteractiveModeContext);
-	controller.showModelSelector({ temporaryOnly: true });
-	await terminal.waitForRender();
-	const viewport = terminal.getViewport();
-	expect(viewport.join("\n")).not.toContain("completion-only");
-	const footerRow = viewport.findIndex(line => line.includes("EXTENSION BELOW INPUT"));
-	expect(footerRow).toBeGreaterThan(0);
-	expect(viewport[footerRow - 1]).toContain("Search model");
-	const picker = slot.children[0] as ModelPickerComponent;
-	picker.handleInput("\x1b");
-	await terminal.waitForRender();
-	expect(editor.getText()).toBe("/");
-	expect(terminal.getViewport()[footerRow - 1]).toContain("/");
-	expect(showError).not.toHaveBeenCalled();
-});
+			keybindings: { getKeys: () => [], getDisplayString: () => "" },
+			showError,
+		} as unknown as InteractiveModeContext);
+		controller.showModelSelector({ temporaryOnly: true });
+		await terminal.waitForRender();
+		const viewport = terminal.getViewport();
+		expect(viewport.join("\n")).not.toContain("completion-only");
+		const footerRow = viewport.findIndex(line => line.includes("EXTENSION BELOW INPUT"));
+		expect(footerRow).toBeGreaterThan(0);
+		const editorRows = editor.render(80, true);
+		const inputRow = editorRows.findIndex(line => line.includes(CURSOR_MARKER));
+		const screenInputRow = footerRow - editorRows.length + inputRow;
+		expect(viewport[screenInputRow]).toContain("Search model");
+		const picker = slot.children[0] as ModelPickerComponent;
+		if (inputRow < editorRows.length - 1) expect(picker.render(80).at(-1)).toBe(editorRows.at(-1));
+		composer.ui.setShowHardwareCursor(true);
+		expect(picker.render(80)[inputRow]).not.toContain("\x1b[7m");
+		composer.ui.setShowHardwareCursor(false);
+		expect(picker.render(80)[inputRow]).toContain("\x1b[7m");
+		picker.handleInput("\x1b");
+		await terminal.waitForRender();
+		expect(editor.getText()).toBe("/");
+		expect(terminal.getViewport()[screenInputRow]).toContain("/");
+		expect(showError).not.toHaveBeenCalled();
+	},
+);
