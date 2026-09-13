@@ -840,12 +840,13 @@ function extractToolArgsPreview(
 	editMode?: EditMode,
 ): { value: string; key: string } | undefined {
 	const previewKeys = ["command", "file_path", "path", "pattern", "query", "url", "task", "prompt"];
-	if (toolName === "edit" && typeof args.input === "string") {
+	const isEdit = toolName === "edit" || toolName === "apply_patch";
+	if (isEdit && typeof args.input === "string") {
 		const paths = getEditInputPaths(args.input, editMode);
 		if (paths.length > 0) return formatToolArgsPreview(paths.join(", "), "path");
 	}
 	const compoundEdits = args.edits;
-	if (toolName === "edit" && Array.isArray(compoundEdits)) {
+	if (isEdit && Array.isArray(compoundEdits)) {
 		const paths = new Set<string>();
 		if (typeof args.path === "string" && args.path) paths.add(args.path);
 		for (const edit of compoundEdits) {

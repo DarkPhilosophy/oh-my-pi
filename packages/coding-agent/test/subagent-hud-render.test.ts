@@ -752,6 +752,47 @@ describe("SubagentHudComponent click rows", () => {
 		await initTheme();
 	});
 
+	it.each([false, true])("maps multiline agent rows and the visible toggle when expanded=%s", expanded => {
+		const sessions = [
+			makeSession({
+				id: "Alpha",
+				progress: makeProgress({
+					id: "Alpha",
+					lastIntent: "Inspecting a deliberately long description that wraps at the text mount",
+					currentTool: "read",
+					currentToolArgs: "first.ts",
+				}),
+			}),
+			makeSession({
+				id: "Beta",
+				progress: makeProgress({
+					id: "Beta",
+					recentTools: [{ tool: "grep", args: "second.ts", endMs: 1 }],
+				}),
+			}),
+			makeSession({ id: "Gamma" }),
+			makeSession({ id: "Delta" }),
+		];
+		const lines = renderSubagentHudLines(sessions, 40, expanded, false);
+		const hud = new SubagentHudComponent(
+			lines,
+			sessions.map(session => session.id),
+		);
+		const rendered = hud.render(40).map(Bun.stripANSI);
+		const alphaRow = rendered.findIndex(line => line.includes("Alpha"));
+		const firstToolRow = rendered.findIndex(line => line.includes("read(first.ts)"));
+		expect(firstToolRow).toBeGreaterThan(alphaRow);
+		for (let row = alphaRow; row <= firstToolRow; row++) expect(hud.getClickAgentAtRow(row)).toBe("Alpha");
+		const betaToolRow = rendered.findIndex(line => line.includes("grep(second.ts)"));
+		expect(betaToolRow).toBeGreaterThan(firstToolRow);
+		expect(hud.getClickAgentAtRow(betaToolRow)).toBe("Beta");
+		const gammaRow = rendered.findIndex(line => line.includes("Gamma"));
+		expect(hud.getClickAgentAtRow(gammaRow)).toBe("Gamma");
+		const toggleRow = rendered.findIndex(line => line.includes(expanded ? "show less" : "more — expand"));
+		expect(toggleRow).toBeGreaterThan(gammaRow);
+		expect(hud.getClickAgentAtRow(toggleRow)).toBe(PINNED_HUD_TOGGLE_ID);
+	});
+
 	it("maps item rows to session ids and chrome rows nowhere", () => {
 		const lines = renderSubagentHudLines([makeSession({ id: "Alpha" }), makeSession({ id: "Beta" })], 120);
 		const hud = new SubagentHudComponent(lines, ["Alpha", "Beta"]);

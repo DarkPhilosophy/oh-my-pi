@@ -512,17 +512,28 @@ function isHudSubagent(session: ObservableSession): boolean {
  * from measured wrapped heights: continuation rows belong to the agent (or
  * toggle) whose logical row started them.
  */
+export interface SubagentHudLines extends Array<string> {
+	owners?: readonly (string | undefined)[];
+}
+
 export class SubagentHudComponent implements Component {
 	readonly #text: Text;
 	readonly #lines: readonly string[];
 	readonly #order: readonly string[];
 	readonly #toggleLine: number | undefined;
+	readonly #lineOwners: readonly (string | undefined)[] | undefined;
 	#physicalOwner: (string | undefined)[] = [];
-	constructor(lines: readonly string[], order: readonly string[], toggleRow?: number) {
+	constructor(
+		lines: readonly string[] & { readonly owners?: readonly (string | undefined)[] },
+		order: readonly string[],
+		toggleRow?: number,
+		lineOwners?: readonly (string | undefined)[],
+	) {
 		this.#text = new Text(lines.join("\n"), 1, 0);
 		this.#lines = lines;
 		this.#order = order;
 		this.#toggleLine = toggleRow;
+		this.#lineOwners = lineOwners ?? lines.owners;
 	}
 	render(width: number): readonly string[] {
 		const rows = this.#text.render(width);
@@ -532,32 +543,29 @@ export class SubagentHudComponent implements Component {
 	getClickAgentAtRow(row: number): string | undefined {
 		return row >= 0 && row < this.#physicalOwner.length ? this.#physicalOwner[row] : undefined;
 	}
-	// Native wrap splits paragraphs independently, so per-line wrapped
-	// heights compose exactly to the rendered row count. A length mismatch
-	// means the wrap contract drifted: fall back to one row per line (the
-	// old mapping) rather than misrouting clicks.
 	#rebuildHitMap(width: number, renderedRows: number): void {
 		const contentWidth = Math.max(1, width - getPaddingX(1) * 2);
 		const owner: (string | undefined)[] = [];
 		for (let index = 0; index < this.#lines.length; index++) {
 			const height = wrapTextWithAnsi(replaceTabs(this.#lines[index]!), contentWidth).length;
-			let id: string | undefined;
-			if (this.#toggleLine !== undefined && index === this.#toggleLine) id = PINNED_HUD_TOGGLE_ID;
-			else {
+			let id = this.#lineOwners?.[index];
+			if (id === undefined && this.#toggleLine !== undefined && index === this.#toggleLine)
+				id = PINNED_HUD_TOGGLE_ID;
+			if (id === undefined && this.#lineOwners === undefined) {
 				const orderIndex = index - 2;
 				id = orderIndex >= 0 && orderIndex < this.#order.length ? this.#order[orderIndex] : undefined;
 			}
 			for (let row = 0; row < height; row++) owner.push(id);
 		}
-		if (owner.length !== renderedRows) {
-			this.#physicalOwner = this.#lines.map((_line, index) => {
-				if (this.#toggleLine !== undefined && index === this.#toggleLine) return PINNED_HUD_TOGGLE_ID;
-				const orderIndex = index - 2;
-				return orderIndex >= 0 && orderIndex < this.#order.length ? this.#order[orderIndex] : undefined;
-			});
-			return;
-		}
-		this.#physicalOwner = owner;
+		this.#physicalOwner =
+			owner.length === renderedRows
+				? owner
+				: this.#lines.map((_line, index) => {
+						if (this.#lineOwners?.[index] !== undefined) return this.#lineOwners[index];
+						if (this.#toggleLine !== undefined && index === this.#toggleLine) return PINNED_HUD_TOGGLE_ID;
+						const orderIndex = index - 2;
+						return orderIndex >= 0 && orderIndex < this.#order.length ? this.#order[orderIndex] : undefined;
+					});
 	}
 }
 
@@ -572,7 +580,7 @@ export interface PinnedHudLayout {
 	itemRows: number;
 	/** Expander direction, or undefined when the list fits without one. */
 	toggle: "expand" | "collapse" | undefined;
-	/** Viewport row of the expander within HUD lines (2 header rows + items). */
+	/** Toggle row for single-line items; multiline renderers provide explicit row ownership. */
 	toggleRow: number | undefined;
 }
 
@@ -607,7 +615,7 @@ export function renderSubagentHudLines(
 	columns: number,
 	expanded = false,
 	showResolvedModelBadge = isFeedModelBadgeEnabled(),
-): string[] {
+): SubagentHudLines {
 	const running = sessions.filter(isHudSubagent);
 	if (running.length === 0) return [];
 	const layout = layoutPinnedHud(running.length, expanded);
@@ -615,6 +623,7 @@ export function renderSubagentHudLines(
 	const items = running.slice(0, layout.itemRows);
 	const showModelBadge = showResolvedModelBadge;
 	const outerIndent = " ";
+	const lineOwners: (string | undefined)[] = [undefined, undefined];
 	const rows = renderTreeList(
 		{
 			items,
@@ -675,11 +684,14 @@ export function renderSubagentHudLines(
 						? `${theme.styledSymbol(lastTool.isError ? "status.error" : "status.success", lastTool.isError ? "error" : "success")} ${toolText}`
 						: toolText;
 					const lead = `${theme.tree.hook} `;
-					return [
+					const itemRows = [
 						truncateToWidth(line, rowWidth, ""),
 						`${lead}${theme.fg("dim", truncateToWidth(toolLabel, Math.max(0, rowWidth - visibleWidth(lead)), ""))}`,
 					];
+					lineOwners.push(session.id, session.id);
+					return itemRows;
 				}
+				lineOwners.push(session.id);
 				return truncateToWidth(line, rowWidth, "");
 			},
 		},
@@ -698,12 +710,15 @@ export function renderSubagentHudLines(
 						"",
 					),
 				];
-	return [
+	const result: SubagentHudLines = [
 		"",
 		truncateToWidth(theme.bold(theme.fg("accent", "Subagents")), columns),
 		...rows.map(line => truncateToWidth(`${outerIndent}${line}`, columns, "")),
 		...toggleRow,
 	];
+	if (toggleRow.length > 0) lineOwners.push(PINNED_HUD_TOGGLE_ID);
+	result.owners = lineOwners;
+	return result;
 }
 
 const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
@@ -3218,9 +3233,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.settings.get("task.showResolvedModelBadge"),
 		);
 		if (lines.length === 0) return;
-		const layout = layoutPinnedHud(running.length, expanded);
 		const order = running.map(session => session.id);
-		this.subagentContainer.addChild(new SubagentHudComponent(lines, order, layout.toggleRow));
+		this.subagentContainer.addChild(new SubagentHudComponent(lines, order));
 	}
 
 	#vibeParentSession(): VibeParentSession {

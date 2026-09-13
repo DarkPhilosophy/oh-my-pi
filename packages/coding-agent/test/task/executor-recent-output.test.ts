@@ -179,6 +179,7 @@ function createScriptedSession(
 		sessionManager: { appendSessionInit: () => {} },
 		getActiveToolNames: () => ["read", "yield"],
 		getEnabledToolNames: () => ["read", "yield"],
+		getToolByName: () => undefined,
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			listeners.push(listener);
 			return () => {
@@ -319,6 +320,25 @@ describe("tool argument preview semantics", () => {
 			],
 		});
 		expect(result.toolSnapshots.find(p => p.currentTool === "custom-search")?.currentToolArgs).toBe("real query");
+	});
+
+	it("extracts apply_patch wire-alias paths in executor progress", async () => {
+		const input = ["*** Begin Patch", "*** Update File: src/aliased.ts", "@@", "-old", "+new", "*** End Patch"].join(
+			"\n",
+		);
+		const result = await runScenario([], {
+			events: [
+				{
+					type: "tool_execution_start",
+					toolCallId: "apply-patch-1",
+					toolName: "apply_patch",
+					args: { input },
+				},
+			],
+		});
+
+		const active = result.toolSnapshots.find(snapshot => snapshot.currentTool === "apply_patch");
+		expect(active?.currentToolArgs).toBe("src/aliased.ts");
 	});
 
 	it("keeps complete home path boundaries until the display sanitizer runs", async () => {
