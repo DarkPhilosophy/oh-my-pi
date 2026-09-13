@@ -1859,6 +1859,9 @@ export class TUI extends Container {
 		const height = this.terminal.rows;
 		if (width <= 0 || height <= 0) return;
 		provider.beginHistoryFlush?.();
+		// Flush normally cancels replay. Recover resize-damaged popup backing
+		// afterward, before any new-geometry output can discard the saved rows.
+		if (this.#cursorOverlayResizePending) this.#prepareResizeReplay(width, height);
 		while (true) {
 			let plan: TerminalFramePlan;
 			do {
