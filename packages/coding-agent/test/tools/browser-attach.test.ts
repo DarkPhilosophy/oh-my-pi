@@ -284,7 +284,9 @@ describe("pickElectronTarget", () => {
 			const exe = await ensureChromiumExecutable();
 			if (!exe) throw new Error("Expected a Chromium executable");
 			const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-profile-isolation-"));
-			const borrowedProfile = path.join(root, "borrowed");
+			const borrowedProfile = path.join(root, "borrowed profile");
+			const launchPath = process.platform === "linux" ? path.join(root, "chrome") : exe;
+			if (launchPath !== exe) await fs.symlink(exe, launchPath);
 			const port = await findFreeCdpPort();
 			const flags = ["--headless=new", "--no-sandbox", "--no-first-run", "--no-default-browser-check"];
 			const child = Bun.spawn(
@@ -303,13 +305,13 @@ describe("pickElectronTarget", () => {
 					action: "open",
 					name: borrowedName,
 					url: "data:text/html,<title>Borrowed</title>",
-					app: { path: exe, args: [...flags, "--user-data-dir", borrowedProfile] },
+					app: { path: launchPath, args: [...flags, "--user-data-dir", borrowedProfile] },
 				});
 				await invoke({
 					action: "open",
 					name: ownedName,
 					url: "data:text/html,<title>Owned</title>",
-					app: { path: exe, args: [...flags, "--user-data-dir", path.join(root, "owned")] },
+					app: { path: launchPath, args: [...flags, "--user-data-dir", path.join(root, "owned")] },
 				});
 				const title = await invoke({ action: "run", name: borrowedName, code: "return await tab.title();" });
 				expect(title.details).toMatchObject({ value: "Borrowed" });
