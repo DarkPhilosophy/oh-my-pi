@@ -174,3 +174,33 @@ it("restores popup backing on stop without an optional history flush hook", asyn
 	}
 	expect(terminal.getScrollBuffer()).toEqual(reference.getScrollBuffer());
 });
+
+it("restores normal history after a fullscreen selector resizes over a passive popup", async () => {
+	const terminal = new VirtualTerminal(40, 12);
+	const ui = new TUI(terminal);
+	ui.setFrameProvider(new Provider());
+	ui.start();
+	try {
+		await terminal.waitForRender();
+		ui.setCursorOverlay(() => ["MENU_1", "MENU_2", "MENU_3", "MENU_4"], 0, 1);
+		ui.requestRender();
+		await terminal.waitForRender();
+		const selector = ui.showOverlay({ render: () => ["SELECTOR"] }, { fullscreen: true, mouseTracking: false });
+		await terminal.waitForRender();
+		terminal.resize(40, 4);
+		await terminal.waitForRender();
+		selector.hide();
+		ui.setCursorOverlay(undefined, 0, 0);
+		ui.requestRender();
+		await terminal.waitForRender();
+		await Bun.sleep(300);
+		await terminal.waitForRender();
+		const rows = terminal.getScrollBuffer();
+		expect(rows.filter(row => row.startsWith("HISTORY_"))).toEqual(
+			Array.from({ length: 30 }, (_, i) => `HISTORY_${i}`),
+		);
+		expect(rows.join("\n")).not.toContain("MENU_");
+	} finally {
+		ui.stop();
+	}
+});

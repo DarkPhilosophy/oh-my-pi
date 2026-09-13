@@ -1253,6 +1253,7 @@ export class TUI extends Container {
 					return;
 				}
 				if (this.#altActive) {
+					if (this.#cursorOverlayBacking) this.#cursorOverlayResizePending = true;
 					// A fullscreen overlay owns the alt buffer: repaint the modal at
 					// the new size. Never snapshot the normal window or probe its
 					// anchor against the alternate grid — not even for a toggle echo.

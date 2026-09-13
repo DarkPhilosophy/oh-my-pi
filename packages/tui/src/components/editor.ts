@@ -1517,6 +1517,7 @@ export class Editor implements Component, Focusable {
 					result.length,
 				);
 			} else {
+				this.onAutocompleteRender?.(undefined, 0, result.length);
 				const viewportRows = this.viewportRowsProvider?.() || process.stdout.rows || Number(Bun.env.LINES) || 24;
 				this.#autocompleteList.setMaxVisible(
 					Math.max(3, Math.min(this.#autocompleteMaxVisible, viewportRows - result.length - 2)),
