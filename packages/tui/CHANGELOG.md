@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added passive cursor-adjacent popup rendering for command suggestions without allocating transcript rows.
+- Added passive cursor-adjacent popup rendering for command suggestions without allocating transcript rows ([#11946](https://github.com/can1357/oh-my-pi/pull/11946) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 
 ## [18.1.17] - 2026-09-10
 
