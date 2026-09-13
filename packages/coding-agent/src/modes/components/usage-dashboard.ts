@@ -163,7 +163,7 @@ export function formatReportAccountLabel(report: UsageReport, index: number): Ac
 						: report.limits[0]?.scope.projectId
 							? sanitizeAccountLabelPart(report.limits[0].scope.projectId)
 							: undefined;
-	if (!base) return { identity: `account ${index + 1}`, placeholder: true };
+	if (!base) return { identity: `account ${index + 1}`, placeholder: true, provider: report.provider };
 	const organization =
 		typeof meta?.orgName === "string" && meta.orgName
 			? sanitizeAccountLabelPart(meta.orgName)
@@ -174,6 +174,7 @@ export function formatReportAccountLabel(report: UsageReport, index: number): Ac
 		identity: base,
 		qualifier: organization && organization !== base ? ` (${organization})` : undefined,
 		accountKey: usageIdentityKey(meta?.accountId, meta?.projectId, report.limits[0]?.scope, meta?.orgId),
+		provider: report.provider,
 	};
 }
 

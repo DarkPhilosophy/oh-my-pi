@@ -8,6 +8,8 @@ export interface AccountLabel {
 	identity: string;
 	qualifier?: string;
 	placeholder?: boolean;
+	/** Provider partition for display-mask collision ordinals. */
+	provider?: string;
 	/** Provider identity used to distinguish accounts sharing one display name. */
 	accountKey?: string;
 }
@@ -54,7 +56,13 @@ export function maskAccountLabel(label: AccountLabel, enabled: boolean): string 
 export type AccountMasker = (label: AccountLabel) => string;
 
 function accountLabelKey(label: AccountLabel): string {
-	return JSON.stringify([label.accountKey ?? "", label.identity, label.qualifier ?? "", label.placeholder === true]);
+	return JSON.stringify([
+		label.provider ?? "",
+		label.accountKey ?? "",
+		label.identity,
+		label.qualifier ?? "",
+		label.placeholder === true,
+	]);
 }
 
 export function createAccountMasker(labels: Iterable<AccountLabel>, enabled: boolean): AccountMasker {
@@ -64,10 +72,11 @@ export function createAccountMasker(labels: Iterable<AccountLabel>, enabled: boo
 		const key = accountLabelKey(label);
 		if (resolved.has(key)) continue;
 		const masked = maskAccountLabel(label, enabled);
-		const count = (seen.get(masked) ?? 0) + 1;
-		seen.set(masked, count);
 		const qualifier = normalizeUsageAccountLabel(label.qualifier ?? "");
 		const base = masked.slice(0, masked.length - qualifier.length);
+		const collisionKey = JSON.stringify([label.provider ?? "", masked]);
+		const count = (seen.get(collisionKey) ?? 0) + 1;
+		seen.set(collisionKey, count);
 		resolved.set(key, count === 1 ? masked : `${base} (${count})${qualifier}`);
 	}
 	return label => resolved.get(accountLabelKey(label)) ?? maskAccountLabel(label, enabled);

@@ -229,6 +229,30 @@ describe("renderUsageReports content", () => {
 		expect(output).not.toContain("alice@example.test");
 	});
 
+	it.each(["accountId", "projectId"])("retains the matching scoped %s in the active-session banner", field => {
+		const active = field === "accountId" ? { accountId: "active-account" } : { projectId: "active-project" };
+		const other = field === "accountId" ? { accountId: "other-account" } : { projectId: "other-project" };
+		const reports: UsageReport[] = [
+			{
+				provider: "openai-codex",
+				fetchedAt: 1,
+				limits: [other, active].map((identity, index) => ({
+					id: `weekly-${index}`,
+					label: "Weekly",
+					scope: { provider: "openai-codex", ...identity },
+					window: { id: "weekly", label: "weekly" },
+					amount: { usedFraction: 0.2, unit: "percent" },
+					status: "ok",
+				})),
+			},
+		];
+		const output = stripVTControlCharacters(renderUsageReports(reports, theme, 1, 120, () => active));
+		expect(output).toContain(
+			`in use by this session: ${field === "accountId" ? active.accountId : active.projectId}`,
+		);
+		expect(output).not.toContain("in use by this session: account ");
+	});
+
 	it("keeps combined fractional quota rows within narrow report widths", () => {
 		const reports: UsageReport[] = ["acct-1", "acct-2"].map((accountId, index) => ({
 			provider: "openai-codex",

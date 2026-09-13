@@ -79,10 +79,10 @@ function matchesActiveAccount(
 		}
 	}
 	const reportAccountId =
+		normalizeIdentityValue(limit?.scope.accountId) ??
 		normalizeIdentityValue(metadata.accountId) ??
-		normalizeIdentityValue(metadata.account_id) ??
-		normalizeIdentityValue(limit?.scope.accountId);
-	const reportProjectId = normalizeIdentityValue(metadata.projectId) ?? normalizeIdentityValue(limit?.scope.projectId);
+		normalizeIdentityValue(metadata.account_id);
+	const reportProjectId = normalizeIdentityValue(limit?.scope.projectId) ?? normalizeIdentityValue(metadata.projectId);
 	let matchedStableId = false;
 	if (activeAccountId && reportAccountId) {
 		if (activeAccountId !== reportAccountId) return false;

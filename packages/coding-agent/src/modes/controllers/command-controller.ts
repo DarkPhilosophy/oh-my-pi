@@ -1835,18 +1835,21 @@ function formatAccountLabel(limit: UsageLimit, report: UsageReport, index: numbe
 		report.metadata?.orgId,
 	);
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return { identity: email, qualifier: orgSuffix(report), accountKey };
+	if (typeof email === "string" && email)
+		return { identity: email, qualifier: orgSuffix(report), accountKey, provider: report.provider };
 	const accountId =
-		typeof report.metadata?.accountId === "string" && report.metadata.accountId
+		limit.scope.accountId ||
+		(typeof report.metadata?.accountId === "string" && report.metadata.accountId
 			? report.metadata.accountId
-			: limit.scope.accountId || undefined;
-	if (accountId) return { identity: accountId, qualifier: orgSuffix(report), accountKey };
+			: undefined);
+	if (accountId) return { identity: accountId, qualifier: orgSuffix(report), accountKey, provider: report.provider };
 	const projectId =
-		typeof report.metadata?.projectId === "string" && report.metadata.projectId
+		limit.scope.projectId ||
+		(typeof report.metadata?.projectId === "string" && report.metadata.projectId
 			? report.metadata.projectId
-			: limit.scope.projectId || undefined;
-	if (projectId) return { identity: projectId, accountKey };
-	return { identity: `account ${index + 1}`, placeholder: true };
+			: undefined);
+	if (projectId) return { identity: projectId, accountKey, provider: report.provider };
+	return { identity: `account ${index + 1}`, placeholder: true, provider: report.provider };
 }
 
 function formatUnlimitedReportLabel(report: UsageReport, index: number): AccountLabel {
@@ -1857,13 +1860,15 @@ function formatUnlimitedReportLabel(report: UsageReport, index: number): Account
 		report.metadata?.orgId,
 	);
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return { identity: email, qualifier: orgSuffix(report), accountKey };
+	if (typeof email === "string" && email)
+		return { identity: email, qualifier: orgSuffix(report), accountKey, provider: report.provider };
 	const accountId = report.metadata?.accountId;
 	if (typeof accountId === "string" && accountId)
-		return { identity: accountId, qualifier: orgSuffix(report), accountKey };
+		return { identity: accountId, qualifier: orgSuffix(report), accountKey, provider: report.provider };
 	const projectId = report.metadata?.projectId;
-	if (typeof projectId === "string" && projectId) return { identity: projectId, accountKey };
-	return { identity: `account ${index + 1}`, placeholder: true };
+	if (typeof projectId === "string" && projectId)
+		return { identity: projectId, accountKey, provider: report.provider };
+	return { identity: `account ${index + 1}`, placeholder: true, provider: report.provider };
 }
 
 function formatResetAccountLabel(report: UsageReport): AccountLabel {
@@ -1878,8 +1883,8 @@ function formatResetAccountLabel(report: UsageReport): AccountLabel {
 	const identity =
 		typeof email === "string" && email ? email : typeof accountId === "string" && accountId ? accountId : undefined;
 	return identity
-		? { identity, qualifier: orgSuffix(report), accountKey }
-		: { identity: "account", placeholder: true };
+		? { identity, qualifier: orgSuffix(report), accountKey, provider: report.provider }
+		: { identity: "account", placeholder: true, provider: report.provider };
 }
 
 function formatResetShort(limit: UsageLimit, nowMs: number): string | undefined {
@@ -2207,10 +2212,14 @@ export function renderUsageReports(
 		const activeReportIndex = activeLabelParts
 			? providerReports.findIndex(report => reportMatchesActiveAccount(report, activeAccount))
 			: -1;
-		const activeLabel =
-			activeReportIndex >= 0
-				? formatUnlimitedReportLabel(providerReports[activeReportIndex]!, activeReportIndex)
-				: activeLabelParts;
+		let activeLabel: AccountLabel | undefined = activeLabelParts ? { ...activeLabelParts, provider } : undefined;
+		if (activeReportIndex >= 0) {
+			const report = providerReports[activeReportIndex]!;
+			const limit = report.limits.find(candidate => limitMatchesActiveAccount(report, candidate, activeAccount));
+			activeLabel = limit
+				? formatAccountLabel(limit, report, activeReportIndex)
+				: formatUnlimitedReportLabel(report, activeReportIndex);
+		}
 		if (activeLabel) maskInputs.push(activeLabel);
 		const mask = createAccountMasker(maskInputs, maskAccountLabels);
 		const activeAccountLabel = activeLabel ? mask(activeLabel) : "";
