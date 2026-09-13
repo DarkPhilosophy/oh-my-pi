@@ -13,8 +13,8 @@ import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 let composer: Composer | undefined;
 afterEach(() => composer?.stop());
 
-it("keeps the statusline, extension content and draft while searching and selecting inline", async () => {
-	const terminal = new VirtualTerminal(100, 24);
+it.each([24, 8, 5])("keeps model results selectable with %i terminal rows and restores the draft", async height => {
+	const terminal = new VirtualTerminal(100, height);
 	composer = new Composer({ preferences: { quiet: true }, terminal });
 	const editor = composer.editor;
 	editor.setText("draft to preserve");
@@ -93,6 +93,7 @@ it("keeps the statusline, extension content and draft while searching and select
 	expect(terminal.getViewport().at(-1)).toContain("EXTENSION BELOW INPUT");
 	picker.handleInput("beta");
 	await paint();
+	expect(terminal.getViewport().join("\n")).toContain("beta");
 	expect(terminal.getScrollBuffer().slice(0, -terminal.rows)).toEqual(history);
 	picker.handleInput("\r");
 	await paint();

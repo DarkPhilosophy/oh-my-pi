@@ -303,11 +303,11 @@ export class ModelPickerComponent implements Focusable {
 					rows.pop();
 					return this.#settings.get("display.popupFill")
 						? rows
-								.slice(-available)
+								.slice(0, available)
 								.map(line =>
 									applyBackgroundToLine(line, popupWidth, text => theme.bgFill("userMessageBg", text)),
 								)
-						: rows.slice(-available);
+						: rows.slice(0, available);
 				},
 				inputRow,
 				count,
@@ -358,9 +358,11 @@ export class ModelPickerComponent implements Focusable {
 		const title = this.#taskMode ? "Switch Task Model" : "Switch Model";
 		const scope =
 			this.#roleMode || this.#taskMode || this.#configError ? status : "Session-only — role models stay unchanged";
-		out.push(topBorder(width, `${title} · ${scope}`, borderColor));
-		const [searchRow = "", ...browserRows] = this.#browser.render(inner);
-		for (const line of browserRows) out.push(row(line, width, borderColor));
+		const [searchRow = "", , ...browserRows] = this.#browser.render(inner);
+		if (termRows >= 5) out.push(topBorder(width, `${title} · ${scope}`, borderColor));
+		for (const line of browserRows.slice(0, Math.max(0, termRows - 1 - out.length))) {
+			out.push(row(line, width, borderColor));
+		}
 		out.push(
 			topBorder(width, footer, borderColor)
 				.replace(theme.boxRound.topLeft, theme.boxRound.bottomLeft)

@@ -1308,7 +1308,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "appearance",
 			group: "Display",
 			label: "Popup Background Fill",
-			description: "Fill command and inline model popups with the message surface color",
+			description: "Fill inline model popups with the message surface color",
 		},
 	},
 
