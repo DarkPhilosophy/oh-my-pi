@@ -1152,7 +1152,7 @@ export class TUI extends Container {
 			(screenRow !== undefined &&
 				this.#cursorOverlayBacking !== undefined &&
 				screenRow >= this.#cursorOverlayBacking.top &&
-				screenRow < this.#cursorOverlayBacking.top + this.#cursorOverlayBacking.painted.length) ||
+				screenRow < this.#cursorOverlayBacking.top + this.#cursorOverlayBacking.rows.length) ||
 			this.#ghosttyInitialImageDelayTimer !== undefined
 		) {
 			return { top: 0, length: 0 };
