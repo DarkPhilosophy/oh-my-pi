@@ -130,6 +130,9 @@ type InputListenerResult = { consume?: boolean; data?: string } | undefined;
 type InputListener = (data: string) => InputListenerResult;
 type StartListener = () => void;
 
+/** Render a passive cursor-adjacent layer within the available physical rows. */
+export type CursorOverlayRenderer = (width: number, maxRows: number) => readonly string[];
+
 export interface RenderTimer {
 	cancel(): void;
 }
@@ -746,6 +749,10 @@ export class TUI extends Container {
 	#providerTransientRows: string[] = [];
 	/** Exact on-screen history rows, retained while temporary UI covers them. */
 	#providerVisibleHistory: string[] = [];
+	#cursorOverlayRender: CursorOverlayRenderer | undefined;
+	#cursorOverlayOffset = 0;
+	#cursorOverlayEditorRows = 0;
+	#cursorOverlayBacking: { top: number; rows: string[]; painted: readonly string[] } | undefined;
 	// Net composer-space offset of the published hit-test origin behind the
 	// painted top, from the last paint: replay-replaced rows minus viewport
 	// rows the paint prepended for a short viewport. Negative while prepended
@@ -983,6 +990,13 @@ export class TUI extends Container {
 		return mode === "append" || mode === "rebuild" || mode === "preserve" ? mode : "preserve";
 	}
 
+	/** Set a non-focus-stealing overlay next to the editor during frame composition. */
+	setCursorOverlay(render: CursorOverlayRenderer | undefined, cursorOffset: number, editorRows: number): void {
+		this.#cursorOverlayRender = render;
+		this.#cursorOverlayOffset = cursorOffset;
+		this.#cursorOverlayEditorRows = editorRows;
+	}
+
 	/** Install the product-owned logical frame provider. */
 	setFrameProvider(provider: TerminalFrameProvider | undefined): void {
 		this.#frameProvider = provider;
@@ -993,6 +1007,8 @@ export class TUI extends Container {
 		this.#providerHasTransientHistory = false;
 		this.#providerTransientRows = [];
 		this.#providerVisibleHistory = [];
+		this.#cursorOverlayRender = undefined;
+		this.#cursorOverlayBacking = undefined;
 		this.#resizeReplaySize = undefined;
 		this.requestRender(true);
 	}
@@ -1232,6 +1248,7 @@ export class TUI extends Container {
 			this.#resizeAltActive ||
 			this.#resizeProbe !== undefined ||
 			this.#resizeInPlaceActive ||
+			this.#cursorOverlayBacking !== undefined ||
 			this.#ghosttyInitialImageDelayTimer !== undefined
 		) {
 			return { top: 0, length: 0 };
@@ -2831,7 +2848,8 @@ export class TUI extends Container {
 			!this.#clearScrollbackOnNextRender &&
 			this.#providerExpansionBorrowed &&
 			(overflow < this.#providerLogicalCommitted || logicalViewport.length < height) &&
-			(plan.viewportExpansionRows ?? 0) < this.#providerViewportExpansionRows &&
+			(plan.viewportExpansionRows ?? 0) === 0 &&
+			this.#providerViewportExpansionRows > 0 &&
 			provider.beginHistoryReplay !== undefined
 		) {
 			// Contracting temporary UI brings borrowed live rows back on screen.
@@ -2849,6 +2867,8 @@ export class TUI extends Container {
 			!flushing &&
 			plan.retainedLiveViewport &&
 			plan.history === undefined &&
+			(plan.viewportExpansionRows ?? 0) === 0 &&
+			this.#providerViewportExpansionRows === 0 &&
 			logicalViewport.length >= this.#providerLogicalCommitted &&
 			!this.#clearScrollbackOnNextRender &&
 			provider.beginHistoryReplay !== undefined
@@ -3250,13 +3270,6 @@ export class TUI extends Container {
 			geometryStable && !destructiveReset && historyRows.length === 0 && expansionRows > 0
 				? Math.max(0, previousTop - (newTop + replayViewportRows))
 				: 0;
-		if (displacedHistoryRows > 0) {
-			// Moving the live origin upward must scroll the accepted rows first;
-			// absolute repaint alone would overwrite them at the top of the screen.
-			buffer += `\x1b[${height};1H${"\r\n".repeat(displacedHistoryRows)}`;
-			this.#providerVisibleHistory = this.#providerVisibleHistory.slice(displacedHistoryRows);
-			this.#providerExpansionBorrowed = true;
-		}
 		const diffable =
 			geometryStable &&
 			historyRows.length === 0 &&
@@ -3265,8 +3278,38 @@ export class TUI extends Container {
 			!this.#forceViewportRepaintOnNextRender &&
 			!destructiveReset &&
 			this.#providerWindow.length > 0;
+		const marker = markers[0];
+		const editorTop = Math.max(0, newTop + (marker?.row ?? 0) - this.#cursorOverlayOffset);
+		const editorBottom = Math.min(height, editorTop + this.#cursorOverlayEditorRows);
+		const above = editorTop >= height - editorBottom;
+		const availableOverlayRows = above ? editorTop : height - editorBottom;
+		const overlayRows =
+			marker && !flushing && !this.hasOverlay() && availableOverlayRows > 0
+				? (this.#cursorOverlayRender?.(width, availableOverlayRows) ?? [])
+				: [];
+		const overlayCount = Math.min(overlayRows.length, availableOverlayRows);
+		const overlayTop = above ? editorTop - overlayCount : editorBottom;
+		const previousOverlay = this.#cursorOverlayBacking;
+		// Before a scrolling transaction restore the covered cells, never the
+		// scrollback. In a differential paint restore only newly uncovered rows.
+		if (previousOverlay && geometryStable && !destructiveReset && !pendingAltExit) {
+			for (let index = 0; index < previousOverlay.rows.length; index++) {
+				const row = previousOverlay.top + index;
+				if (diffable && row >= overlayTop && row < overlayTop + overlayCount) continue;
+				buffer += `\x1b[${row + 1};1H${this.#lineRewriteSequence(previousOverlay.rows[index]!, width, row)}`;
+			}
+		}
+		this.#cursorOverlayBacking = undefined;
+		if (displacedHistoryRows > 0) {
+			// Moving the live origin upward must scroll the accepted rows first;
+			// absolute repaint alone would overwrite them at the top of the screen.
+			buffer += `\x1b[${height};1H${"\r\n".repeat(displacedHistoryRows)}`;
+			this.#providerVisibleHistory = this.#providerVisibleHistory.slice(displacedHistoryRows);
+			this.#providerExpansionBorrowed = true;
+		}
 		if (diffable) {
 			for (let index = 0; index < rows; index++) {
+				if (newTop + index >= overlayTop && newTop + index < overlayTop + overlayCount) continue;
 				if (this.#providerWindow[index] === prepared[index]) continue;
 				buffer += `\x1b[${newTop + index + 1};1H${this.#lineRewriteSequence(
 					prepared[index] ?? "",
@@ -3328,11 +3371,37 @@ export class TUI extends Container {
 		}
 		const mutableTop = newTop + replayViewportRows;
 		const mutablePrepared = replayViewportRows > 0 ? prepared.slice(replayViewportRows) : prepared;
-		const marker = markers[0];
 		const target =
 			marker !== undefined && rows > 0
 				? this.#targetHardwareCursorState({ row: newTop + Math.min(marker.row, rows - 1), col: marker.col }, height)
 				: null;
+		if (retainedHistory !== undefined) {
+			this.#providerVisibleHistory = retainedHistory;
+		} else if (historyRows.length > 0 || history?.kind === "replay") {
+			const visibleHistory = [
+				...this.#providerVisibleHistory.slice(0, previousTop),
+				...historyRows,
+				...viewport.slice(0, replayViewportRows),
+			];
+			this.#providerVisibleHistory = mutableTop > 0 ? visibleHistory.slice(-mutableTop) : [];
+		} else if (expansionRows === 0 && this.#providerViewportExpansionRows === 0) {
+			this.#providerVisibleHistory = this.#providerVisibleHistory.slice(0, mutableTop);
+		}
+		if (overlayCount > 0) {
+			const covered: string[] = [];
+			for (let index = 0; index < overlayCount; index++) {
+				const row = overlayTop + index;
+				covered.push(row >= newTop ? (prepared[row - newTop] ?? "") : (this.#providerVisibleHistory[row] ?? ""));
+				if (
+					diffable &&
+					this.#providerWindow.length === rows &&
+					previousOverlay?.painted[row - previousOverlay.top] === overlayRows[index]
+				)
+					continue;
+				buffer += `\x1b[${row + 1};1H${this.#lineRewriteSequence(overlayRows[index]!, width, row)}`;
+			}
+			this.#cursorOverlayBacking = { top: overlayTop, rows: covered, painted: overlayRows };
+		}
 		if (target) {
 			buffer += `\x1b[${target.row + 1};${target.col + 1}H${target.visible ? "\x1b[?25h" : "\x1b[?25l"}`;
 			this.#parkedViewportOffset = Math.max(0, target.row - mutableTop);
@@ -3363,18 +3432,6 @@ export class TUI extends Container {
 		}
 		if (target) this.#recordHardwareCursorState(target);
 		else this.#recordHardwareCursorHidden();
-		if (retainedHistory !== undefined) {
-			this.#providerVisibleHistory = retainedHistory;
-		} else if (historyRows.length > 0 || history?.kind === "replay") {
-			const visibleHistory = [
-				...this.#providerVisibleHistory.slice(0, previousTop),
-				...historyRows,
-				...viewport.slice(0, replayViewportRows),
-			];
-			this.#providerVisibleHistory = mutableTop > 0 ? visibleHistory.slice(-mutableTop) : [];
-		} else if (expansionRows === 0 && this.#providerViewportExpansionRows === 0) {
-			this.#providerVisibleHistory = this.#providerVisibleHistory.slice(0, mutableTop);
-		}
 		this.#providerWindow = mutablePrepared;
 		this.#providerViewportTop = mutableTop;
 		this.#providerViewportExpansionRows = expansionRows;

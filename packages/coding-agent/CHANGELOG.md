@@ -10,6 +10,7 @@
 ### Changed
 
 - Idle embedding workers now release their loaded model after five minutes and restart on the next request ([#10043](https://github.com/can1357/oh-my-pi/pull/10043) by [@iacore](https://github.com/iacore)).
+- Slash-command suggestions now temporarily cover nearby chat instead of pushing it into scrollback, preventing menu filtering and deletion from resetting the transcript.
 
 ### Fixed
 

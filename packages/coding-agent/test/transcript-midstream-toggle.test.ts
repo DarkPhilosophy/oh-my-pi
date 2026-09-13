@@ -251,7 +251,7 @@ describe("midstream toggle", () => {
 		message.dispose();
 	});
 
-	it("keeps finalized chat reachable when slash suggestions displace it above the screen", async () => {
+	it("filters and deletes slash suggestions without scrolling, resetting, or losing covered chat", async () => {
 		await createTestSession();
 		const terminal = new VirtualTerminal(60, 12);
 		const composer = new Composer({ preferences: { quiet: true }, terminal });
@@ -265,29 +265,61 @@ describe("midstream toggle", () => {
 		composer.setRuntimeChildren([transcript, composer.editor]);
 		composer.start();
 		composer.ui.setFocus(composer.editor);
+		composer.editor.onAutocompleteUpdate = () => composer.ui.requestRender();
+		composer.editor.onAutocompleteCancel = () => composer.ui.requestRender(true);
+		const write = terminal.write.bind(terminal);
+		const writes: string[] = [];
+		terminal.write = data => {
+			writes.push(data);
+			write(data);
+		};
 		try {
 			composer.ui.requestRender();
 			await terminal.waitForRender();
-			for (const input of ["/", "command1", "\x1b"]) {
+			composer.ui.requestRender();
+			await terminal.waitForRender();
+			const nativeHistory = () => terminal.getScrollBuffer().slice(0, -terminal.rows);
+			const savedHistory = nativeHistory();
+			const before = terminal.getViewport().map(row => row.trimEnd());
+			writes.length = 0;
+			for (const input of ["/", "command1", "\x7f", "\x1b"]) {
 				composer.editor.handleInput(input);
 				composer.ui.requestRender();
 				await terminal.waitForRender();
-				expect(
-					Array.from(
-						terminal
-							.getScrollBuffer()
-							.join("\n")
-							.matchAll(/FINAL_\d+/g),
-						match => match[0],
-					),
-				).toEqual(rows);
+				if (input === "/")
+					await terminal.waitForRender(() => terminal.getViewport().some(row => row.includes("command0")));
+				expect(nativeHistory()).toEqual(savedHistory);
+				expect(terminal.getCursor().row).toBe(terminal.rows - 1);
+				expect(writes.join("")).not.toMatch(/\x1b\[(?:2|3)J|\x1b\[\?1049h|\x1b\[\?100[023]h/);
 			}
+			composer.editor.setText("");
+			composer.ui.requestRender();
+			await terminal.waitForRender();
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(before);
+			expect(
+				Array.from(
+					terminal
+						.getScrollBuffer()
+						.join("\n")
+						.matchAll(/FINAL_\d+/g),
+					match => match[0],
+				),
+			).toEqual(rows);
+			composer.editor.handleInput("/");
+			composer.ui.requestRender();
+			await terminal.waitForRender();
+			composer.editor.handleInput("\x7f");
+			composer.ui.requestRender();
+			await terminal.waitForRender();
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(before);
+			expect(nativeHistory()).toEqual(savedHistory);
+			expect(writes.join("")).not.toMatch(/\x1b\[(?:2|3)J|\x1b\[\?1049h|\x1b\[\?100[023]h/);
 		} finally {
 			composer.stop();
 		}
 	});
 
-	it("keeps transcript context accessible while command suggestions are open", async () => {
+	it("preserves streamed chat beneath suggestions and restores it after deletion", async () => {
 		createTestSession();
 		const terminal = new VirtualTerminal(60, 12);
 		const composer = new Composer({ preferences: { quiet: true }, terminal });
@@ -314,13 +346,7 @@ describe("midstream toggle", () => {
 			composer.ui.renderNow();
 			await terminal.waitForRender();
 			expect(composer.editor.isAutocompleteActive()).toBe(true);
-			const tape = terminal
-				.getScrollBuffer()
-				.map(row => Bun.stripANSI(row))
-				.join("\n");
-			expect(Array.from(tape.matchAll(/CONTEXT_\d+/g), match => match[0])).toEqual(
-				Array.from({ length: 20 }, (_, index) => `CONTEXT_${index + 1}`),
-			);
+			const committed = terminal.getScrollBuffer().slice(0, -terminal.rows);
 			for (let count = 21; count <= 40; count++) {
 				message.updateContent(
 					assistantMsg(
@@ -330,16 +356,9 @@ describe("midstream toggle", () => {
 				);
 				composer.ui.renderNow();
 				await terminal.waitForRender();
-				expect(
-					Array.from(
-						terminal
-							.getScrollBuffer()
-							.map(row => Bun.stripANSI(row))
-							.join("\n")
-							.matchAll(/CONTEXT_\d+/g),
-						match => match[0],
-					),
-				).toEqual(Array.from({ length: count }, (_, index) => `CONTEXT_${index + 1}`));
+				const history = terminal.getScrollBuffer().slice(0, -terminal.rows);
+				expect(history.slice(0, committed.length)).toEqual(committed);
+				expect(history.join("\n")).not.toContain("command0");
 			}
 			composer.editor.handleInput("\x7f");
 			composer.ui.renderNow();

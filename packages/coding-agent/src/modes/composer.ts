@@ -224,19 +224,19 @@ export class Composer implements TerminalFrameProvider {
 	#nextHistoryId = 1;
 	#offeredHistory:
 		| {
-			id: number;
-			rows: readonly string[];
-			kind: "append" | "replay";
-			source:
-			| "header"
-			| {
-				transcript: TranscriptContainer;
-				transcriptId?: number;
-				header: "none" | "replay";
-				/** Recomposed header rows to accept as the new retired-header bytes. */
-				headerRows?: readonly string[];
-			};
-		}
+				id: number;
+				rows: readonly string[];
+				kind: "append" | "replay";
+				source:
+					| "header"
+					| {
+							transcript: TranscriptContainer;
+							transcriptId?: number;
+							header: "none" | "replay";
+							/** Recomposed header rows to accept as the new retired-header bytes. */
+							headerRows?: readonly string[];
+					  };
+		  }
 		| undefined;
 	#historyReplayRequested = false;
 	#headerReplayPending = false;
@@ -288,6 +288,8 @@ export class Composer implements TerminalFrameProvider {
 		this.ui.setResizeScrollback(this.#preferences.resizeScrollback);
 
 		this.#editor = new CustomEditor(getEditorTheme());
+		this.editor.onAutocompleteRender = (rows, cursorOffset, editorRows) =>
+			this.ui.setCursorOverlay(rows, cursorOffset, editorRows);
 		this.editor.disableSubmit = true;
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		this.editor.setImeSafeCursorLayout(this.#preferences.imeSafeCursor);
@@ -321,6 +323,7 @@ export class Composer implements TerminalFrameProvider {
 	/** Compose the complete logical viewport and the next ordered history append. */
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {
 		if (!this.#started || this.#stopped) return { viewport: [] };
+		this.ui.setCursorOverlay(undefined, 0, 0);
 		const width = Math.max(1, viewport.columns);
 		const rows = Math.max(0, viewport.rows);
 		if (this.#resizeRetiredHeaderStart !== undefined) {
@@ -396,11 +399,10 @@ export class Composer implements TerminalFrameProvider {
 		// leaves the mutable viewport in the same frame it is appended, so its
 		// rows are never painted twice.
 		const chromeRows = preRoots.length + after.length;
-		// Only chrome that hosts a temporary UI (autocomplete dropdown, ask
-		// dialog) is an insertion; ordinary chrome growth must keep retiring rows.
+		// Ask dialogs allocate temporary rows. Autocomplete is painted over
+		// existing cells and never changes the live/history boundary.
 		const temporaryEditorVisible =
-			(this.editor.focused && this.editor.isAutocompleteActive()) ||
-			(this.#editorHost !== undefined && this.#editorHost.children.some(child => child !== this.editor));
+			this.#editorHost !== undefined && this.#editorHost.children.some(child => child !== this.editor);
 		if (!temporaryEditorVisible) this.#chromeRowsWithoutAutocomplete = chromeRows;
 		const transientBlocks = transcript.transientBlocks(width);
 		const transientRows = transientBlocks.reduce((total, block) => total + block.rows, 0);

@@ -4,8 +4,7 @@
 
 ### Fixed
 
-- Closing temporary command suggestions restores the chat at the bottom without blank bands or losing text that remained accessible while the menu was open.
-- Opening slash-command suggestions preserves finalized chat pushed above the screen in terminal scrollback instead of cutting it off.
+- Command suggestions appear in a bordered popup over screen cells without moving the live/history boundary; filtering and dismissal restore covered text without rebuilding scrollback.
 
 ## [18.1.17] - 2026-09-10
 
