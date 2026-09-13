@@ -69,6 +69,7 @@ import { trackLateCleanup } from "../utils/late-cleanup";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { WorkspaceTree } from "../workspace-tree";
 import { getEditInputPaths } from "../edit/renderer";
+import type { EditMode } from "../utils/edit-mode";
 import { attributeSubagentError } from "./error-attribution";
 import { generateTaskLabel } from "./label";
 import { resolveAgentPrewalkDefault } from "./prewalk";
@@ -825,10 +826,11 @@ function formatToolArgsPreview(value: string, key: string): { value: string; key
 function extractToolArgsPreview(
 	args: Record<string, unknown>,
 	toolName: string,
+	editMode?: EditMode,
 ): { value: string; key: string } | undefined {
 	const previewKeys = ["command", "file_path", "path", "pattern", "query", "url", "task", "prompt"];
 	if (toolName === "edit" && typeof args.input === "string") {
-		const paths = getEditInputPaths(args.input);
+		const paths = getEditInputPaths(args.input, editMode);
 		if (paths.length > 0) return formatToolArgsPreview(paths.join(", "), "path");
 	}
 	const compoundEdits = args.edits;
@@ -1530,7 +1532,12 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				} else if (isRecord(event.args)) {
 					startArgs = event.args;
 				}
-				const preview = extractToolArgsPreview(startArgs, event.toolName);
+				const editMode =
+					event.toolName === "apply_patch"
+						? "apply_patch"
+						: ((activeSession?.getToolByName(event.toolName) as { mode?: EditMode } | undefined)?.mode ??
+							undefined);
+				const preview = extractToolArgsPreview(startArgs, event.toolName, editMode);
 				progress.currentToolArgs = preview?.value;
 				progress.currentToolArgsKey = preview?.key;
 				progress.currentToolStartMs = now;

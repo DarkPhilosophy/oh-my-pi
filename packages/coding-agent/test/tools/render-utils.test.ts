@@ -34,6 +34,14 @@ describe("embedded home path normalization", () => {
 		);
 	});
 
+	it("shortens a sentence-ending home path without rewriting dotted sibling names", () => {
+		expect(shortenEmbeddedPaths("Working in /home/alice. Next command.", "/home/alice")).toBe(
+			"Working in ~. Next command.",
+		);
+		expect(shortenEmbeddedPaths("Working in /home/alice.", "/home/alice")).toBe("Working in ~.");
+		expect(shortenEmbeddedPaths("cd /home/alice.backup", "/home/alice")).toBe("cd /home/alice.backup");
+	});
+
 	it("recognizes mixed Windows separators without rewriting unrelated prefixes", () => {
 		const home = String.raw`C:\Users\Alice`;
 		expect(shortenEmbeddedPaths("type C:/Users/Alice/private.txt", home)).toBe("type ~/private.txt");
