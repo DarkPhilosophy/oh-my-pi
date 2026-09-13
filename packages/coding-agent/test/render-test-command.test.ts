@@ -87,6 +87,24 @@ afterEach(async () => {
 	resetSettingsForTest();
 });
 
+it("restores bottom-anchored chat after the TODO scenario dismisses its completed panel", async () => {
+	session.settings.override("tasks.todoClearDelay", 4);
+	await session.runRenderTest({ repeat: 1, delayMs: 1, scenario: "todo" }, mode.getToolUIContext());
+	await session.waitForIdle();
+	await terminal.waitForRender(() => mode.todoContainer.children.length === 0);
+	const viewport = terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+	expect(viewport.at(-1)).toContain("╰─");
+	const tape = terminal
+		.getScrollBuffer()
+		.map(row => Bun.stripANSI(row))
+		.join("\n");
+	expect(Array.from(tape.matchAll(/TODO_CONTEXT_\d+/g), match => match[0])).toEqual(
+		Array.from({ length: 40 }, (_, index) => `TODO_CONTEXT_${index + 1}`),
+	);
+	expect(providerCalls).toBe(0);
+	expect(credentialCalls).toBe(0);
+}, 30_000);
+
 it.each(["ask", "job", "markdown"] as const)(
 	"runs the isolated %s scenario without unrelated tools",
 	async scenario => {
@@ -198,9 +216,22 @@ it.each([20, 40])(
 		mode.ui.requestRender(true);
 		await terminal.waitForRender();
 		const duplicateFrames: string[] = [];
+		const splitCards: string[] = [];
 		const write = terminal.write.bind(terminal);
 		vi.spyOn(terminal, "write").mockImplementation(data => {
 			write(data);
+			const paintedRows = terminal
+				.getScrollBuffer()
+				.slice(-200)
+				.map(row => Bun.stripANSI(row).trimEnd());
+			for (let index = 1; index < paintedRows.length - 1; index++) {
+				if (paintedRows[index] !== "" || !/^[│├╭]/.test(paintedRows[index - 1]!)) continue;
+				let next = index + 1;
+				while (paintedRows[next] === "") next++;
+				if (/^[│├╰]/.test(paintedRows[next] ?? "")) {
+					splitCards.push(paintedRows.slice(Math.max(0, index - 3), next + 3).join("\n"));
+				}
+			}
 			if (duplicateFrames.length > 0) return;
 			const frame = terminal
 				.getScrollBuffer()
@@ -266,6 +297,7 @@ it.each([20, 40])(
 		expect(runStates).toEqual(["running", "idle"]);
 		expect(session.getTodoPhases()).toEqual(savedTodo);
 		expect(duplicateFrames).toEqual([]);
+		expect(splitCards).toEqual([]);
 		expect(thinkingDeltas).toBeGreaterThan(2);
 		expect(textDeltas).toBeGreaterThan(100);
 		expect(results.filter(result => result.toolName === "read")).toHaveLength(20);

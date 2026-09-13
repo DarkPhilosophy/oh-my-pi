@@ -32,7 +32,7 @@ export function createRenderWorkflow(
 	session: ToolSession,
 	context: AgentToolContext,
 	repeat: number,
-	scenario?: "ask" | "job" | "markdown",
+	scenario?: "ask" | "job" | "markdown" | "todo",
 	segment?: number,
 ): RenderWorkflow {
 	if ((!scenario || scenario === "ask") && (!context.hasUI || !context.ui?.askDialog)) {
@@ -160,7 +160,11 @@ export function createRenderWorkflow(
 	actions.push({ name: "todo", args: () => ({ op: "done", task: tasks[2] }) });
 	if (scenario) {
 		const selected = actions.filter(action =>
-			scenario === "ask" ? action.name === "ask" : scenario === "job" && ["bash", "hub"].includes(action.name),
+			scenario === "todo"
+				? action.name === "todo"
+				: scenario === "ask"
+					? action.name === "ask"
+					: scenario === "job" && ["bash", "hub"].includes(action.name),
 		);
 		actions.splice(0, actions.length, ...selected);
 	}

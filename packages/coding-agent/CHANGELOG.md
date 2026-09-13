@@ -3,12 +3,17 @@
 ## [Unreleased]
 - Fixed the TODO HUD auto-dismiss lifecycle: completed plans now persist their hidden state, survive session reopen, and can be explicitly revealed without stale timers hiding replacement plans.
 
+### Added
+
+- Added `/render --todo` to exercise completed TODO auto-dismissal without provider calls.
+
 ### Changed
 
 - Idle embedding workers now release their loaded model after five minutes and restart on the next request ([#10043](https://github.com/can1357/oh-my-pi/pull/10043) by [@iacore](https://github.com/iacore)).
 
 ### Fixed
 
+- Dismissing a completed TODO panel restores the chat at the bottom instead of leaving a blank gap.
 - Advisor acknowledgments distinguish acceptance, deferral, and suppression; higher-priority findings replace only pending notes from the same review ([#11881](https://github.com/can1357/oh-my-pi/pull/11881) by [@olegpulatov](https://github.com/olegpulatov)).
 
 ## [18.1.19] - 2026-09-12

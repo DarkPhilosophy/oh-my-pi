@@ -2951,7 +2951,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (!isCurrent()) return;
 			this.#todoHudHidden = true;
 			this.#renderTodoList();
-			this.ui.requestRender();
+			this.ui.requestRender(true, { clearScrollback: true });
 		};
 		this.#todoAutoClearTimer = setTimeout(() => {
 			void persistAndHide().catch(error => {

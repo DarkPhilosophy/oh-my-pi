@@ -7,7 +7,7 @@ export interface RenderTestOptions {
 	repeat: number;
 	/** Delay between simulated provider chunks, in milliseconds. */
 	delayMs: number;
-	scenario?: "ask" | "job" | "markdown";
+	scenario?: "ask" | "job" | "markdown" | "todo";
 	/** Isolate a single scripted response (1-based); labels keep the original number. */
 	segment?: number;
 }
@@ -119,6 +119,11 @@ export function createRenderTestAgent(model: Model, options: RenderTestOptions, 
 					textParts.push(
 						`\n## Streaming ${currentStream} — BEGIN · ${step ? `Repetition ${step.repetition}` : "Summary"}\n\n**Batch: ${batch}.**\n\n`,
 					);
+				}
+				if (options.scenario === "todo" && step?.introduction) {
+					for (let row = 1; row <= 40; row++) {
+						textParts.push(`TODO_CONTEXT_${row}: chat retained through TODO dismissal.\n\n`);
+					}
 				}
 				if (options.scenario === "markdown") {
 					// Fifty distinct lines make missing or duplicated rows visible during streaming.

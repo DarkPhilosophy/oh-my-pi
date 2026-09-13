@@ -2834,8 +2834,8 @@ export class TUI extends Container {
 			(plan.viewportExpansionRows ?? 0) < this.#providerViewportExpansionRows &&
 			provider.beginHistoryReplay !== undefined
 		) {
-			// Contracting temporary UI brings borrowed rows back on screen.
-			// Reconcile their native copy through the same replay path used
+			// Contracting temporary UI brings borrowed live rows back on screen.
+			// Reconcile them with the existing complete-history replay, as we do
 			// when a mutable tool shrinks, rather than dropping the live tail.
 			this.#prepareForcedRender(true);
 			this.requestRender(true);
@@ -3113,10 +3113,15 @@ export class TUI extends Container {
 				this.#providerViewportExpansionRows > 0 &&
 				this.#providerVisibleHistory.length > 0)
 		) {
-			// Temporary UI may cover accepted history, but must not push its
-			// otherwise-visible tail into native scrollback.
+			// Keep only the history that fits above the current live viewport.
+			// Rows displaced by temporary UI must remain in native scrollback.
 			const combined = history?.kind === "replay" ? historyRows : [...this.#providerVisibleHistory, ...historyRows];
-			const retainedCount = flushing ? 0 : Math.min(combined.length, Math.max(0, height - unexpandedViewportRows));
+			const retainedCount = flushing
+				? 0
+				: Math.min(
+						combined.length,
+						Math.max(0, height - (retainedLiveViewport ? viewport.length : unexpandedViewportRows)),
+					);
 			retainedHistory = retainedCount > 0 ? combined.slice(-retainedCount) : [];
 			historyRows = combined.slice(0, combined.length - retainedCount);
 			replayViewportRows = retainedLiveViewport
@@ -3222,6 +3227,17 @@ export class TUI extends Container {
 		// push. On xterm-family terminals the two erases are independent and
 		// the order is irrelevant.
 		if (destructiveReset) buffer += "\x1b[H\x1b[2J\x1b[3J";
+		const displacedHistoryRows =
+			geometryStable && !destructiveReset && historyRows.length === 0 && expansionRows > 0
+				? Math.max(0, previousTop - (newTop + replayViewportRows))
+				: 0;
+		if (displacedHistoryRows > 0) {
+			// Moving the live origin upward must scroll the accepted rows first;
+			// absolute repaint alone would overwrite them at the top of the screen.
+			buffer += `\x1b[${height};1H${"\r\n".repeat(displacedHistoryRows)}`;
+			this.#providerVisibleHistory = this.#providerVisibleHistory.slice(displacedHistoryRows);
+			this.#providerExpansionBorrowed = true;
+		}
 		const diffable =
 			geometryStable &&
 			historyRows.length === 0 &&

@@ -221,6 +221,42 @@ describe("midstream toggle", () => {
 		message.dispose();
 	});
 
+	it("keeps finalized chat reachable when slash suggestions displace it above the screen", async () => {
+		await createTestSession();
+		const terminal = new VirtualTerminal(60, 12);
+		const composer = new Composer({ preferences: { quiet: true }, terminal });
+		const transcript = new TranscriptContainer();
+		const rows = Array.from({ length: 40 }, (_, index) => `FINAL_${index + 1}`);
+		const block = { render: () => rows, isTranscriptBlockFinalized: () => true };
+		transcript.addChild(block);
+		composer.editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider(Array.from({ length: 12 }, (_, index) => ({ name: `command${index}` }))),
+		);
+		composer.setRuntimeChildren([transcript, composer.editor]);
+		composer.start();
+		composer.ui.setFocus(composer.editor);
+		try {
+			composer.ui.requestRender();
+			await terminal.waitForRender();
+			for (const input of ["/", "command1", "\x1b"]) {
+				composer.editor.handleInput(input);
+				composer.ui.requestRender();
+				await terminal.waitForRender();
+				expect(
+					Array.from(
+						terminal
+							.getScrollBuffer()
+							.join("\n")
+							.matchAll(/FINAL_\d+/g),
+						match => match[0],
+					),
+				).toEqual(rows);
+			}
+		} finally {
+			composer.stop();
+		}
+	});
+
 	it("keeps transcript context accessible while command suggestions are open", async () => {
 		createTestSession();
 		const terminal = new VirtualTerminal(60, 12);
@@ -292,6 +328,38 @@ describe("midstream toggle", () => {
 		} finally {
 			composer.stop();
 			message.dispose();
+		}
+	});
+
+	it("reconciles borrowed chat when a TODO panel disappears without new output", async () => {
+		await createTestSession();
+		const terminal = new VirtualTerminal(60, 12);
+		const composer = new Composer({ preferences: { quiet: true }, terminal });
+		const transcript = new TranscriptContainer();
+		const rows = Array.from({ length: 40 }, (_, index) => `DISMISS_${index + 1}`);
+		transcript.addChild({ render: () => rows });
+		const todo = new Container();
+		todo.addChild({ render: () => ["TODO", "completed one", "completed two", "completed three"] });
+		composer.setRuntimeChildren([transcript, todo, { render: () => ["INPUT"] }]);
+		composer.start();
+		try {
+			composer.ui.requestRender();
+			await terminal.waitForRender();
+			todo.clear();
+			composer.ui.requestRender(true, { clearScrollback: true });
+			await terminal.waitForRender();
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual([...rows.slice(-11), "INPUT"]);
+			expect(
+				Array.from(
+					terminal
+						.getScrollBuffer()
+						.join("\n")
+						.matchAll(/DISMISS_\d+/g),
+					match => match[0],
+				),
+			).toEqual(rows);
+		} finally {
+			composer.stop();
 		}
 	});
 
