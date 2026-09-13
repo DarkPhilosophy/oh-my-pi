@@ -916,7 +916,7 @@ export class SelectorController {
 				this.ctx.editorContainer.removeChild(picker);
 				this.ctx.editorContainer.addChild(editor);
 			}
-			this.ctx.ui.setCursorOverlay(undefined, 0, 0);
+			if (inline) this.ctx.ui.setCursorOverlay(undefined, 0, 0);
 			this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
