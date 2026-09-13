@@ -224,3 +224,64 @@ it("recovers popup rows when stopping before resize settles", async () => {
 	expect(rows.filter(row => row.startsWith("HISTORY_"))).toEqual(Array.from({ length: 30 }, (_, i) => `HISTORY_${i}`));
 	expect(rows.join("\n")).not.toContain("MENU_");
 });
+
+it.each([
+	[40, 14],
+	[40, 10],
+	[60, 12],
+])("preserves native history when popup backing remains addressable at %ix%i", async (columns, rows) => {
+	const terminal = new VirtualTerminal(40, 12);
+	const reference = new VirtualTerminal(40, 12);
+	const ui = new TUI(terminal);
+	const referenceUi = new TUI(reference);
+	for (const target of [terminal, reference]) {
+		target.write(Array.from({ length: 20 }, (_, i) => `EXTERNAL_${i}\r\n`).join(""));
+	}
+	ui.setFrameProvider(new Provider());
+	referenceUi.setFrameProvider(new Provider());
+	ui.start();
+	referenceUi.start();
+	try {
+		await terminal.waitForRender();
+		await reference.waitForRender();
+		ui.setCursorOverlay(() => ["MENU_1", "MENU_2", "MENU_3", "MENU_4"], 0, 1);
+		ui.requestRender();
+		await terminal.waitForRender();
+		terminal.resize(columns!, rows!);
+		reference.resize(columns!, rows!);
+		await Bun.sleep(400);
+		ui.setCursorOverlay(undefined, 0, 0);
+		ui.requestRender();
+		referenceUi.requestRender();
+		await terminal.waitForRender();
+		await reference.waitForRender();
+		expect(terminal.getScrollBuffer()).toEqual(reference.getScrollBuffer());
+		expect(terminal.getScrollBuffer().join("\n")).not.toContain("MENU_");
+	} finally {
+		ui.stop();
+		referenceUi.stop();
+	}
+});
+
+it("keeps external scrollback on stop during a non-damaging resize", async () => {
+	const terminal = new VirtualTerminal(40, 12);
+	terminal.write(Array.from({ length: 20 }, (_, i) => `EXTERNAL_${i}\r\n`).join(""));
+	const ui = new TUI(terminal);
+	ui.setFrameProvider(new Provider());
+	ui.start();
+	await terminal.waitForRender();
+	const external = terminal.getScrollBuffer().filter(row => row.startsWith("EXTERNAL_"));
+	try {
+		ui.setCursorOverlay(() => ["MENU_1", "MENU_2", "MENU_3", "MENU_4"], 0, 1);
+		ui.requestRender();
+		await terminal.waitForRender();
+		terminal.resize(40, 10);
+	} finally {
+		ui.stop();
+	}
+	await terminal.flush();
+	const rows = terminal.getScrollBuffer();
+	expect(rows.filter(row => row.startsWith("EXTERNAL_"))).toEqual(external);
+	expect(rows.filter(row => row.startsWith("HISTORY_"))).toEqual(Array.from({ length: 30 }, (_, i) => `HISTORY_${i}`));
+	expect(rows.join("\n")).not.toContain("MENU_");
+});
