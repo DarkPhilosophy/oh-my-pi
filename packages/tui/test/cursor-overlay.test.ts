@@ -1,4 +1,5 @@
 import { expect, it } from "bun:test";
+import { wrapTmuxPassthrough } from "../src/tmux";
 import { CURSOR_MARKER, TUI, type TerminalFramePlan, type TerminalFrameProvider } from "../src/tui";
 import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 import { VirtualTerminal } from "./virtual-terminal";
@@ -326,11 +327,13 @@ it("keeps uncovered click targets available while blocking popup-covered rows", 
 	}
 });
 
-it("hides intersecting Kitty placements without filling cells or freeing image data", async () => {
+it.each([false, true])("hides intersecting Kitty placements without fill or data loss (tmux=%s)", async tmux => {
+	if (tmux) Bun.env.TMUX = "/tmp/omp-test-tmux,1,0";
 	const terminal = new VirtualTerminal(40, 12);
 	const ui = new TUI(terminal);
 	const provider = new Provider();
-	const placement = "\x1b7\x1b[7A\x1b_Ga=p,q=2,C=1,i=713,p=713,c=40,r=8,z=-2147483648\x1b\\\x1b8";
+	const apc = "\x1b_Ga=p,q=2,C=1,i=713,p=713,c=40,r=8,z=-2147483648\x1b\\";
+	const placement = "\x1b7\x1b[7A" + (tmux ? wrapTmuxPassthrough(apc) : apc) + "\x1b8";
 	provider.frame = { viewport: [...Array<string>(7).fill(""), placement, `${CURSOR_MARKER}input`] };
 	ui.setFrameProvider(provider);
 	const writes: string[] = [];
@@ -346,7 +349,8 @@ it("hides intersecting Kitty placements without filling cells or freeing image d
 		ui.setCursorOverlay(() => ["MODEL_RESULT"], 0, 1);
 		ui.requestRender();
 		await terminal.waitForRender();
-		expect(writes.join("")).toContain("\x1b_Ga=d,d=i,i=713,p=713,q=2\x1b\\");
+		const hide = "\x1b_Ga=d,d=i,i=713,p=713,q=2\x1b\\";
+		expect(writes.join("")).toContain(tmux ? wrapTmuxPassthrough(hide) : hide);
 		expect(terminal.getViewport().join("\n")).toContain("MODEL_RESULT");
 		expect(terminal.getViewportRowBackgroundColumns(7)).toEqual([]);
 		writes.length = 0;
