@@ -262,12 +262,16 @@ describe("pickElectronTarget", () => {
 	test("does not reuse a live CDP endpoint belonging to a different profile", async () => {
 		const cdp = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("{}") });
 		const profile = path.join(os.tmpdir(), `omp-cdp-profile-${crypto.randomUUID()}`);
+		const otherProfile = await fs.mkdtemp(path.join(os.tmpdir(), "omp-cdp-other-"));
 		const existing = await spawnDisposableExecutable([
 			`--user-data-dir=${profile}`,
 			`--remote-debugging-port=${cdp.port}`,
 		]);
 		try {
-			expect(await findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${profile}-other`] })).toBeNull();
+			if (process.platform === "linux") {
+				await fs.symlink(`${os.hostname()}-${existing.pid}`, path.join(otherProfile, "SingletonLock"));
+			}
+			expect(await findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${otherProfile}`] })).toBeNull();
 			expect(await findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${profile}`] })).toEqual({
 				cdpUrl: `http://127.0.0.1:${cdp.port}`,
 				pid: existing.pid,
@@ -275,6 +279,7 @@ describe("pickElectronTarget", () => {
 		} finally {
 			await existing.close();
 			cdp.stop(true);
+			await fs.rm(otherProfile, { recursive: true, force: true });
 		}
 	});
 
@@ -286,7 +291,15 @@ describe("pickElectronTarget", () => {
 			const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-profile-isolation-"));
 			const borrowedProfile = path.join(root, "borrowed profile");
 			const launchPath = process.platform === "linux" ? path.join(root, "chrome") : exe;
-			if (launchPath !== exe) await fs.symlink(exe, launchPath);
+			if (launchPath !== exe) {
+				const wrapperPath = path.join(root, "chrome-launcher");
+				await Bun.write(
+					wrapperPath,
+					`#!${process.execPath}\nprocess.execve(${JSON.stringify(exe)}, [${JSON.stringify(exe)}, ...process.argv.slice(2)], process.env);\n`,
+				);
+				await fs.chmod(wrapperPath, 0o700);
+				await fs.symlink(wrapperPath, launchPath);
+			}
 			const port = await findFreeCdpPort();
 			const flags = ["--headless=new", "--no-sandbox", "--no-first-run", "--no-default-browser-check"];
 			const child = Bun.spawn(
@@ -301,6 +314,11 @@ describe("pickElectronTarget", () => {
 			const ownedName = `owned-${crypto.randomUUID()}`;
 			try {
 				await waitForCdp(`http://127.0.0.1:${port}`, 15_000);
+				expect(
+					await findReusableCdp(launchPath, {
+						appArgs: resolveSpawnArgs(launchPath, [...flags, "--user-data-dir", borrowedProfile]),
+					}),
+				).toEqual({ cdpUrl: `http://127.0.0.1:${port}`, pid: child.pid });
 				await invoke({
 					action: "open",
 					name: borrowedName,

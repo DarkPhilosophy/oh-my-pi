@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
+import * as os from "node:os";
 import * as path from "node:path";
 import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
 import { getBrowserProfilesDir } from "@oh-my-pi/pi-utils";
@@ -244,6 +245,20 @@ export async function findReusableCdp(
 	// Process paths use the executable's real path, not its launcher symlink.
 	const executablePath = await fs.realpath(exe).catch(() => exe);
 	const candidates = Process.fromPath(executablePath).filter(process => process.status() === ProcessStatus.Running);
+	if (process.platform === "linux" && normalizedRequestedUserDataDir !== null) {
+		// Distribution launchers may exec a different binary. Chromium records
+		// its local profile owner in this lock; still validate that PID's live
+		// profile arguments and CDP endpoint below before borrowing it.
+		const lock = await fs.readlink(path.join(normalizedRequestedUserDataDir, "SingletonLock")).catch(() => undefined);
+		const localPrefix = `${os.hostname()}-`;
+		if (lock?.startsWith(localPrefix)) {
+			const pidText = lock.slice(localPrefix.length);
+			const owner = /^\d+$/.test(pidText) ? Process.fromPid(Number(pidText)) : null;
+			if (owner?.status() === ProcessStatus.Running && !candidates.some(candidate => candidate.pid === owner.pid)) {
+				candidates.push(owner);
+			}
+		}
+	}
 	const candidateArgs: string[][] = [];
 	let hasUnreadableCandidate = false;
 	for (const process of candidates) {
