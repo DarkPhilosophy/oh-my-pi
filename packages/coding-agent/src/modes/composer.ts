@@ -422,7 +422,11 @@ export class Composer implements TerminalFrameProvider {
 		this.#viewportTranscriptStart = before.length;
 		const now = performance.now();
 		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
-		const liveViewport = transcript.renderLiveViewport(width, rows, frame);
+		const liveViewport = transcript.renderLiveViewport(
+			width,
+			Math.max(0, rows - before.length - after.length),
+			frame,
+		);
 		const active = liveViewport.rows;
 		const composed = [...before, ...active, ...after];
 		this.#lastClickFrameRows = composed.length;
@@ -461,7 +465,10 @@ export class Composer implements TerminalFrameProvider {
 		]);
 		const borrowableRows = headerVisible
 			? 0
-			: Math.min(before.length + active.length, Math.max(0, composed.length - rows));
+			: Math.min(
+					before.length + (liveViewport.borrowableRows ?? active.length),
+					Math.max(0, composed.length - rows),
+				);
 		const borrowedViewportRows = transcript.borrowedViewportRowCount();
 		return {
 			history,

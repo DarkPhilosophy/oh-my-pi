@@ -156,6 +156,8 @@ export interface LiveViewportFrame {
 	readonly rows: readonly string[];
 	readonly capacity: number;
 	readonly physicalRows: number;
+	/** Prefix safe to append; active tool previews remain replaceable on screen. */
+	readonly borrowableRows?: number;
 }
 
 /** One live block's row span in the last `renderViewport` output (half-open `[start, end)`). */
@@ -405,18 +407,28 @@ export class TranscriptContainer extends Container {
 
 	renderLiveViewport(width: number, physicalRows: number, frame: AnimationFrame): LiveViewportFrame {
 		const height = Math.max(0, Math.trunc(physicalRows));
-		const rows = this.renderViewport(width, Number.MAX_SAFE_INTEGER, frame);
-		this.#liveViewport = { rows, capacity: height * 2, physicalRows: height };
+		const rows = this.#renderViewport(width, height, frame);
+		let borrowableRows = rows.length;
+		for (const { entry } of this.#liveEntries()) {
+			if (
+				entry.state === "active" &&
+				(entry.component as TranscriptPresentationTarget).setTranscriptAllocation !== undefined &&
+				entry.viewportStart !== undefined
+			) {
+				borrowableRows = Math.min(borrowableRows, entry.viewportStart);
+				break;
+			}
+		}
+		this.#liveViewport = { rows, capacity: height * 2, physicalRows: height, borrowableRows };
 		return this.#liveViewport;
 	}
 
-	/** Render the complete logical live transcript.
-	 *
-	 * Physical terminal height is deliberately not applied here. The TUI owns
-	 * the physical window and scrollback; clipping semantic rows here makes them
-	 * unreachable to both channels.
-	 */
+	/** Complete semantic live rows; physical clipping belongs to the frame renderer. */
 	renderViewport(width: number, _rows: number, frame: AnimationFrame): readonly string[] {
+		return this.#renderViewport(width, Number.MAX_SAFE_INTEGER, frame);
+	}
+
+	#renderViewport(width: number, rows: number, frame: AnimationFrame): readonly string[] {
 		this.#lastFrame = frame;
 		this.#syncEntries();
 		this.#settleFinalized();
@@ -425,7 +437,10 @@ export class TranscriptContainer extends Container {
 		let previous: TranscriptEntry | undefined;
 		for (const { entry, index } of this.#liveEntries()) {
 			entry.viewportStart = undefined;
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, frame);
+			const mutableTool =
+				entry.state === "active" &&
+				(entry.component as TranscriptPresentationTarget).setTranscriptAllocation !== undefined;
+			this.#setAllocation(entry.component, mutableTool ? rows : Number.MAX_SAFE_INTEGER, frame);
 			const offset = this.#projectedEmitted(entry, index, width);
 			const rendered = this.#renderEntry(entry, width).slice(offset);
 			if (rendered.length === 0) continue;

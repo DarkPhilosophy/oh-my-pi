@@ -5,7 +5,15 @@
  * exposes the configured ctrl+p quick roles.
  */
 import type { Model } from "@oh-my-pi/pi-ai";
-import { addKeyAliases, type Component, canonicalKeyId, type KeyId, parseKey, type TUI } from "@oh-my-pi/pi-tui";
+import {
+	addKeyAliases,
+	type Component,
+	canonicalKeyId,
+	type KeyId,
+	parseKey,
+	truncateToWidth,
+	type TUI,
+} from "@oh-my-pi/pi-tui";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { Settings } from "../../config/settings";
 import type { ResolvedRoleModel } from "../../session/agent-session";
@@ -18,7 +26,7 @@ import {
 	sortModelItems,
 } from "./model-browser";
 import type { ScopedModelItem } from "./model-hub";
-import { bottomBorder, row, topBorder } from "./overlay-box";
+import { row, topBorder } from "./overlay-box";
 import { resolveSegmentPalette } from "./segment-track";
 
 export interface ModelPickerCallbacks {
@@ -40,6 +48,10 @@ export interface ModelPickerCallbacks {
 }
 
 export interface ModelPickerOptions {
+	/** Replace only the existing editor rows; paint the list through the slash-popup path. */
+	editorRows?: number;
+	/** Preserve the editor's existing status chrome while replacing its input row. */
+	renderEditorRows?: (width: number) => readonly string[];
 	/** Session token count; models with smaller context windows are grayed and compact-first on pick. */
 	currentContextTokens?: number;
 	/** `provider/id` of the session's active model; highlighted and preselected. */
@@ -58,8 +70,8 @@ export interface ModelPickerOptions {
 	taskSelector?: string;
 }
 
-/** Fixed chrome rows: top border, status row, footer, bottom border. */
-const CHROME_ROWS = 4;
+/** Fixed chrome rows: top border, status row, and footer. */
+const CHROME_ROWS = 3;
 /** Rows the browser renders around its list window (search + blank, blank + two detail rows). */
 const BROWSER_FRAME_ROWS = 5;
 /** Minimum rows for the browser list window on short terminals. */
@@ -67,18 +79,14 @@ const MIN_VISIBLE = 5;
 /** Fraction of the terminal height the floating overlay occupies. */
 const HEIGHT_FRACTION = 0.4;
 
-const STATUS_HINT = "Session-only switch — role models stay unchanged";
+const STATUS_HINT = "Session-only — role models stay unchanged";
 const QUICK_ROLE_STATUS_HINT = "Quick role switch — applies its model and thinking for this session";
 const TASK_STATUS_HINT = "Task subagent switch — spawned task agents use this model (session-only)";
 const FOOTER_HINT = "↑/↓ models · Enter use for this session · type to search · @ quick roles · Esc close";
 const QUICK_ROLE_FOOTER_HINT = "↑/↓ roles · Enter apply role model · type to search · Esc close";
 const TASK_FOOTER_HINT = "↑/↓ models · Enter use for Task subagents · type to search · Esc close";
 
-/**
- * The alt+p picker component. Hosted as a non-fullscreen bottom-anchored
- * overlay (`ui.showOverlay(..., { anchor: "bottom-center" })`); keyboard-only,
- * since mouse tracking is reserved for fullscreen overlays.
- */
+/** Search occupies the editor slot; results use the passive slash-popup renderer. */
 export class ModelPickerComponent implements Component {
 	#tui: TUI;
 	#settings: Settings;
@@ -96,6 +104,8 @@ export class ModelPickerComponent implements Component {
 	#taskMatchKeys = new Set<string>();
 	#taskModeKeyLabel: string;
 	#taskSelector: string | undefined;
+	#editorRows: number | undefined;
+	#renderEditorRows: ((width: number) => readonly string[]) | undefined;
 
 	constructor(
 		tui: TUI,
@@ -106,6 +116,8 @@ export class ModelPickerComponent implements Component {
 		options: ModelPickerOptions = {},
 	) {
 		this.#tui = tui;
+		this.#editorRows = options.editorRows;
+		this.#renderEditorRows = options.renderEditorRows;
 		this.#settings = settings;
 		this.#registry = registry;
 		this.#scopedModels = scopedModels;
@@ -122,6 +134,9 @@ export class ModelPickerComponent implements Component {
 		);
 
 		this.#browser = new ModelBrowser(settings, {
+			searchPrompt: "",
+			searchFocused: options.editorRows !== undefined,
+			searchIcon: "⌕",
 			currentContextTokens: options.currentContextTokens,
 			markOverContext: true,
 			emptyText: () => (this.#roleMode ? "  No quick roles in the Ctrl+P cycle" : undefined),
@@ -261,16 +276,44 @@ export class ModelPickerComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		const termRows = Math.max(16, this.#tui.terminal?.rows || process.stdout.rows || 40);
-		const listBudget = Math.floor(termRows * HEIGHT_FRACTION) - CHROME_ROWS - BROWSER_FRAME_ROWS;
-		this.#browser.setMaxVisible(Math.max(MIN_VISIBLE, listBudget));
+		if (this.#editorRows !== undefined) {
+			const editorRows = this.#renderEditorRows?.(width);
+			const count = Math.max(1, editorRows?.length ?? this.#editorRows);
+			const rendered = this.#renderPicker(width, this.#tui.terminal.rows);
+			const search = rendered.pop() ?? "";
+			this.#tui.setCursorOverlay(
+				(popupWidth, available) => {
+					const rows = this.#renderPicker(popupWidth, available + 1);
+					rows.pop();
+					return rows.slice(-available);
+				},
+				count - 1,
+				count,
+			);
+			return [...(editorRows?.slice(0, -1) ?? Array.from({ length: count - 1 }, () => "")), search];
+		}
+		return this.#renderPicker(width, this.#tui.terminal.rows);
+	}
+
+	#renderPicker(width: number, availableRows: number): string[] {
+		const termRows = Math.max(1, availableRows);
+		const listBudget = Math.min(
+			Math.max(
+				MIN_VISIBLE,
+				Math.floor(this.#tui.terminal.rows * HEIGHT_FRACTION) - CHROME_ROWS - BROWSER_FRAME_ROWS,
+			),
+			termRows - CHROME_ROWS - BROWSER_FRAME_ROWS,
+		);
+		this.#browser.setMaxVisible(Math.max(1, listBudget));
 
 		const inner = Math.max(1, width - 4);
 		const status = this.#configError
-			? theme.fg("error", ` ${this.#configError}`)
+			? this.#configError
 			: this.#taskMode
-				? theme.fg("error", ` ${TASK_STATUS_HINT}`)
-				: theme.fg("muted", ` ${this.#roleMode ? QUICK_ROLE_STATUS_HINT : STATUS_HINT}`);
+				? TASK_STATUS_HINT
+				: this.#roleMode
+					? QUICK_ROLE_STATUS_HINT
+					: STATUS_HINT;
 
 		const borderColor: ThemeColor | undefined = this.#taskMode ? "error" : undefined;
 		let footer = this.#taskMode ? TASK_FOOTER_HINT : this.#roleMode ? QUICK_ROLE_FOOTER_HINT : FOOTER_HINT;
@@ -279,13 +322,21 @@ export class ModelPickerComponent implements Component {
 		}
 
 		const out: string[] = [];
-		out.push(topBorder(width, this.#taskMode ? "Switch Task Model" : "Switch Model", borderColor));
-		out.push(row(status, width, borderColor));
-		for (const line of this.#browser.render(inner)) {
+		out.push(
+			topBorder(width, `${this.#taskMode ? "Switch Task Model" : "Switch Model"} · ${status.trim()}`, borderColor),
+		);
+		const [searchRow = "", ...browserRows] = this.#browser.render(inner);
+		for (const line of browserRows) {
 			out.push(row(line, width, borderColor));
 		}
-		out.push(row(theme.fg("dim", footer), width, borderColor));
-		out.push(bottomBorder(width, borderColor));
+		out.push(
+			topBorder(width, footer, borderColor)
+				.replace(theme.boxRound.topLeft, theme.boxRound.bottomLeft)
+				.replace(theme.boxRound.topRight, theme.boxRound.bottomRight),
+		);
+		const search = searchRow.trim();
+		const placeholder = this.#browser.query ? "" : theme.fg("dim", "Search model…");
+		out.push(truncateToWidth(`${theme.fg(borderColor ?? "border", "╰─")}${search}${placeholder}`, width));
 		return out;
 	}
 }

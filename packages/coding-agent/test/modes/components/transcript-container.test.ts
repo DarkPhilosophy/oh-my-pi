@@ -54,7 +54,7 @@ class AllocationAwareBlock implements Component {
 	#allocation = Number.MAX_SAFE_INTEGER;
 	#finalized = false;
 
-	constructor(private readonly rows: readonly string[]) { }
+	constructor(private readonly rows: readonly string[]) {}
 
 	finalize(): void {
 		this.#finalized = true;
@@ -414,28 +414,18 @@ describe("TranscriptContainer viewport click spans", () => {
 		]);
 	});
 
-	it("maps allocation-clipped rows to their surviving tails", () => {
+	it("maps complete logical rows even beyond physical viewport height", () => {
 		const transcript = new TranscriptContainer();
 		const first = new Block(["a1", "a2", "a3", "a4"], false);
 		const second = new Block(["b1", "b2", "b3", "b4"], false);
 		transcript.addChild(first);
 		transcript.addChild(second);
 
-		expect(transcript.renderViewport(80, 5, frame)).toEqual(["a4", "b1", "b2", "b3", "b4"]);
+		expect(transcript.renderViewport(80, 5, frame)).toEqual(["a1", "a2", "a3", "a4", "", "b1", "b2", "b3", "b4"]);
 		expect(transcript.getLastViewportSpans()).toEqual([
-			{ component: first, start: 0, end: 1 },
-			{ component: second, start: 1, end: 5 },
+			{ component: first, start: 0, end: 4 },
+			{ component: second, start: 5, end: 9 },
 		]);
-	});
-
-	it("leaves the emergency summary row unmapped", () => {
-		const transcript = new TranscriptContainer();
-		transcript.addChild(new Block(["a1"], false));
-		transcript.addChild(new Block(["b1"], false));
-		transcript.addChild(new Block(["c1"], false));
-
-		expect(transcript.renderViewport(80, 1, frame)).toEqual(["2 more transcript blocks active"]);
-		expect(transcript.getLastViewportSpans()).toEqual([]);
 	});
 
 	it("clears spans when the tail is empty or cleared", () => {
@@ -445,9 +435,11 @@ describe("TranscriptContainer viewport click spans", () => {
 		transcript.renderViewport(80, 10, frame);
 		expect(transcript.getLastViewportSpans()).toHaveLength(1);
 
+		transcript.removeChild(block);
 		expect(transcript.renderViewport(80, 0, frame)).toEqual([]);
 		expect(transcript.getLastViewportSpans()).toEqual([]);
 
+		transcript.addChild(block);
 		transcript.renderViewport(80, 10, frame);
 		transcript.clear();
 		expect(transcript.getLastViewportSpans()).toEqual([]);

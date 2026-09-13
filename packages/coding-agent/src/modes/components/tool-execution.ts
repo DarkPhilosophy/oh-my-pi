@@ -1022,6 +1022,17 @@ export class ToolExecutionComponent extends Container {
 			if (trimmed.length > this.#allocation) return this.#renderCompact(width);
 			lines = trimmed;
 		}
+		if (!this.isTranscriptBlockFinalized() && Number.isFinite(this.#allocation)) {
+			const trimmed = trimBlankEdges(lines);
+			if (trimmed.length > this.#allocation) {
+				if (this.#allocation < 4) return this.#renderCompact(width);
+				lines = [
+					trimmed[0]!,
+					truncateToWidth(theme.fg("dim", "│ … earlier preview rows hidden while running"), width),
+					...trimmed.slice(-(this.#allocation - 2)),
+				];
+			}
+		}
 		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
 		this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
 		return lines;

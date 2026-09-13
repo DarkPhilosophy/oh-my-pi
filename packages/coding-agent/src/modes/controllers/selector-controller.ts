@@ -918,7 +918,8 @@ export class SelectorController {
 		const done = () => {
 			if (closed) return;
 			closed = true;
-			overlayHandle?.hide();
+			this.ctx.editorContainer.removeChild(picker);
+			this.ctx.editorContainer.addChild(this.ctx.editor);
 			this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
@@ -968,6 +969,8 @@ export class SelectorController {
 				onCancel: done,
 			},
 			{
+				editorRows: this.ctx.editor.render(this.ctx.ui.terminal.columns).length,
+				renderEditorRows: width => this.ctx.editor.render(width),
 				currentContextTokens,
 				currentSelector,
 				taskModeKeys: this.ctx.keybindings.getKeys("app.model.selectTemporary"),
@@ -978,12 +981,8 @@ export class SelectorController {
 				currentQuickRole: quickRoleCycle?.models[quickRoleCycle.currentIndex]?.role,
 			},
 		);
-		const overlayHandle = this.ctx.ui.showOverlay(picker, {
-			anchor: "bottom-center",
-			width: "100%",
-			maxHeight: "100%",
-			margin: 0,
-		});
+		this.ctx.editorContainer.removeChild(this.ctx.editor);
+		this.ctx.editorContainer.addChild(picker);
 		this.ctx.ui.setFocus(picker);
 		this.ctx.ui.requestRender();
 	}
