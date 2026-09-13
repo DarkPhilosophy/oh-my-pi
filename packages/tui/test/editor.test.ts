@@ -6,6 +6,7 @@ import { stripVTControlCharacters } from "node:util";
 import {
 	type ComposerStyle,
 	CURSOR_MARKER,
+	type CursorOverlayRenderer,
 	Editor,
 	type EditorTheme,
 	registerComposerStyle,
@@ -447,6 +448,33 @@ describe("Editor component", () => {
 	});
 
 	describe("autocomplete triggers", () => {
+		it.each([1, 3, 4, 6])("keeps an overflowing popup inside its %i-row budget", async maxRows => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.focused = true;
+			editor.commandSuggestionsPopup = true;
+			let overlay: CursorOverlayRenderer | undefined;
+			editor.onAutocompleteRender = render => {
+				overlay = render;
+			};
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider(Array.from({ length: 30 }, (_, index) => ({ name: `command${index}` }))),
+			);
+			const updated = Promise.withResolvers<void>();
+			editor.onAutocompleteUpdate = updated.resolve;
+			editor.handleInput("/");
+			await updated.promise;
+			editor.render(40);
+			if (!overlay) throw new Error("Expected a command popup renderer");
+			const rows = overlay(40, maxRows).map(stripVTControlCharacters);
+			expect(rows.length).toBeLessThanOrEqual(maxRows);
+			expect(rows.join("\n")).toContain("command0");
+			if (maxRows >= 3) {
+				const border = defaultEditorTheme.symbols.boxRound;
+				expect(rows[0]).toBe(border.topLeft + border.horizontal.repeat(38) + border.topRight);
+				expect(rows.at(-1)).toBe(border.bottomLeft + border.horizontal.repeat(38) + border.bottomRight);
+			}
+		});
+
 		it("removes the previous passive popup when completion switches to an absolute path", async () => {
 			const editor = new Editor(defaultEditorTheme);
 			editor.focused = true;

@@ -763,7 +763,7 @@ export class Editor implements Component, Focusable {
 	#renderAutocompleteOverlay: CursorOverlayRenderer = (width, maxRows) => {
 		if (!this.#autocompleteList || maxRows < 1) return [];
 		const framed = maxRows >= 3 && width >= 3;
-		this.#autocompleteList.setMaxVisible(Math.min(this.#autocompleteMaxVisible, maxRows - (framed ? 2 : 0)));
+		this.#autocompleteList.setMaxVisible(Math.min(this.#autocompleteMaxVisible, maxRows - (framed ? 2 : 0)), true);
 
 		if (!framed) {
 			return this.popupFill
