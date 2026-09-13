@@ -285,3 +285,29 @@ it("keeps external scrollback on stop during a non-damaging resize", async () =>
 	expect(rows.filter(row => row.startsWith("HISTORY_"))).toEqual(Array.from({ length: 30 }, (_, i) => `HISTORY_${i}`));
 	expect(rows.join("\n")).not.toContain("MENU_");
 });
+
+it("keeps uncovered click targets available while blocking popup-covered rows", async () => {
+	const terminal = new VirtualTerminal(40, 8);
+	const ui = new TUI(terminal);
+	const provider = new Provider();
+	provider.frame = {
+		viewport: ["CARD", "row1", "row2", "row3", "row4", "COVERED", `${CURSOR_MARKER}input`, "footer"],
+	};
+	ui.setFrameProvider(provider);
+	ui.start();
+	try {
+		await terminal.waitForRender();
+		ui.setCursorOverlay(() => ["MENU"], 0, 1);
+		ui.requestRender();
+		await terminal.waitForRender();
+		expect(terminal.getViewport()[5]).toBe("MENU");
+		expect(ui.getMutableViewport(0)).toEqual({ top: 0, length: 8 });
+		expect(ui.getMutableViewport(5)).toEqual({ top: 0, length: 0 });
+		ui.setCursorOverlay(undefined, 0, 0);
+		ui.requestRender();
+		await terminal.waitForRender();
+		expect(ui.getMutableViewport(5)).toEqual({ top: 0, length: 8 });
+	} finally {
+		ui.stop();
+	}
+});
