@@ -201,6 +201,34 @@ describe("renderUsageReports content", () => {
 		expect(output).toContain("  sha***");
 	});
 
+	it("uses the reported account mask for an email-only active credential", () => {
+		const reports: UsageReport[] = [
+			{
+				provider: "openai-codex",
+				fetchedAt: 1,
+				limits: [
+					{
+						id: "weekly",
+						label: "Weekly",
+						scope: { provider: "openai-codex", accountId: "reported-account" },
+						window: { id: "weekly", label: "weekly" },
+						amount: { usedFraction: 0.2, unit: "percent" },
+						status: "ok",
+					},
+				],
+				metadata: { email: "alice@example.test", accountId: "reported-account" },
+			},
+		];
+		const output = stripVTControlCharacters(
+			renderUsageReports(reports, theme, 1, 98, () => ({ email: "alice@example.test" }), {
+				maskAccountLabels: true,
+			}),
+		);
+		expect(output).toContain("in use by this session: ali***");
+		expect(output).not.toContain("ali*** (2)");
+		expect(output).not.toContain("alice@example.test");
+	});
+
 	it("keeps combined fractional quota rows within narrow report widths", () => {
 		const reports: UsageReport[] = ["acct-1", "acct-2"].map((accountId, index) => ({
 			provider: "openai-codex",
@@ -324,5 +352,33 @@ describe("renderUsageReports content", () => {
 		expect(resetLines.filter(line => line.includes("saved reset")).every(line => [...line].length <= width)).toBe(
 			true,
 		);
+	});
+
+	it("shows one prepaid balance for a provider whose keys share an account pool", () => {
+		// Production shape: `fetchCharmHyperUsage` emits no accountId and marks
+		// the limit shared, because Hyper's balance is account-wide — spending
+		// through one key moves every key's reported balance. AuthStorage still
+		// probes once per stored key, so two keys yield two identical rows.
+		// Summing them would claim 200 credits the account never had.
+		const now = Date.now();
+		const keyReport = (remaining: number): UsageReport => ({
+			provider: "charm-hyper",
+			fetchedAt: now,
+			limits: [
+				{
+					id: "charm-hyper:credits",
+					label: "Credit balance",
+					scope: { provider: "charm-hyper", windowId: "balance", shared: true },
+					amount: { remaining, unit: "credits" },
+				},
+			],
+		});
+
+		const output = stripVTControlCharacters(renderUsageReports([keyReport(100), keyReport(100)], theme, now, 98));
+		expect(output).toContain("100 credits left");
+		expect(output).not.toContain("200 credits left");
+		// The balance must reach the user at all: a remaining-only limit used
+		// to fall through to a bare account count.
+		expect(output).not.toContain("accts");
 	});
 });

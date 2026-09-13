@@ -156,6 +156,53 @@ describe("buildProviderCards", () => {
 		const unlimited = cards.find(card => card.provider === "ollama-cloud");
 		expect(unlimited?.unlimited).toBe(true);
 	});
+
+	it("shows a prepaid balance on the card instead of falling back to no data", () => {
+		// Balance-only limits carry no fraction, so the card used to render the
+		// literal "no data" for providers that sell prepaid credits.
+		const reports = [
+			report("charm-hyper", "a@x.test", [
+				{
+					id: "charm-hyper:credits",
+					label: "Credit balance",
+					scope: { provider: "charm-hyper", windowId: "balance", shared: true },
+					amount: { remaining: 100, unit: "credits" },
+				},
+			]),
+		];
+		const cards = buildProviderCards(reports, now);
+		expect(cards[0].windows[0].usedText).toBe("100 credits left");
+		expect(cards[0].windows[0].fraction).toBeUndefined();
+		// Untouched providers collapse into a tick; a live balance must not.
+		expect(cards[0].idle).toBe(false);
+	});
+
+	it("collapses an account-wide balance reported once per key, whatever the order", () => {
+		// AuthStorage probes every stored key, so a two-key Charm Hyper account
+		// yields two shared rows for one pool. The two probes fire moments
+		// apart against a moving balance, so they rarely agree exactly — the
+		// values differ here deliberately, or reversing them would prove
+		// nothing and a first-wins implementation would still pass.
+		const balance = (remaining: number) => ({
+			id: "charm-hyper:credits",
+			label: "Credit balance",
+			scope: { provider: "charm-hyper" as const, windowId: "balance", shared: true },
+			amount: { remaining, unit: "credits" as const },
+		});
+		const forward = buildProviderCards(
+			[report("charm-hyper", "a@x.test", [balance(100)]), report("charm-hyper", "b@x.test", [balance(95)])],
+			now,
+		);
+		const reversed = buildProviderCards(
+			[report("charm-hyper", "b@x.test", [balance(95)]), report("charm-hyper", "a@x.test", [balance(100)])],
+			now,
+		);
+
+		// One pool, so never the 195 a sum would claim, and never dependent on
+		// which credential happened to be probed first.
+		expect(forward[0].windows[0].usedText).toBe("100 credits left");
+		expect(reversed[0].windows[0].usedText).toBe("100 credits left");
+	});
 });
 
 describe("buildProviderCards split + privacy", () => {
@@ -305,16 +352,16 @@ describe("buildProviderCards split + privacy", () => {
 		expect(masked.every(label => label !== undefined && !label.includes("@x.test"))).toBe(true);
 		expect(new Set(masked).size).toBe(2);
 	});
-	it("keeps organization qualifiers visible in narrow split-card headers", () => {
+	it.each(["", " (US)"])("keeps organization qualifiers visible in narrow split-card headers: %s", suffix => {
 		const email = "shared-account-with-a-long-address@example.test";
 		const reports = [
 			report("anthropic", email, [limit("anthropic", "east", "7d", "Claude 7 Day", 0.8, "warning")], {
 				orgId: "org-east",
-				orgName: "East",
+				orgName: `East${suffix}`,
 			}),
 			report("anthropic", email, [limit("anthropic", "west", "7d", "Claude 7 Day", 0.2, "ok")], {
 				orgId: "org-west",
-				orgName: "West",
+				orgName: `West${suffix}`,
 			}),
 		];
 		const dashboard = new UsageDashboardComponent({
@@ -330,10 +377,10 @@ describe("buildProviderCards split + privacy", () => {
 		});
 		const headers = Bun.stripANSI(dashboard.render(36).join("\n"))
 			.split("\n")
-			.filter(line => line.includes("(East)") || line.includes("(West)"));
+			.filter(line => line.includes(`(East${suffix})`) || line.includes(`(West${suffix})`));
 		expect(headers).toHaveLength(2);
-		expect(headers.some(line => line.includes("(East)"))).toBe(true);
-		expect(headers.some(line => line.includes("(West)"))).toBe(true);
+		expect(headers.some(line => line.includes(`(East${suffix})`))).toBe(true);
+		expect(headers.some(line => line.includes(`(West${suffix})`))).toBe(true);
 		expect(headers.every(line => line.length <= 36)).toBe(true);
 	});
 	it("keeps collision ordinals visible for narrow same-organization split cards", () => {

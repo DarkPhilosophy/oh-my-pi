@@ -23,6 +23,7 @@ import { colorLuma, formatDuration, hexToRgb, rgbToHex, sanitizeText } from "@oh
 import { formatProviderName } from "../../slash-commands/helpers/format";
 import { colorToAnsi } from "../theme/color";
 import { theme } from "../theme/theme";
+import { formatAbsoluteOnlyAmount } from "../usage-amounts";
 import {
 	matchesSelectCancel,
 	matchesSelectDown,
@@ -55,7 +56,7 @@ export interface CardWindowRow {
 	status: UsageLimit["status"];
 	/** Reset countdown of the worst account, ms from now, when in the future. */
 	resetMs?: number;
-	/** Absolute used amount (e.g. `$12.34 used`) for limits without a fraction. */
+	/** Absolute one-sided amount (e.g. `$12.34 used`, `100 credits left`) for limits without a fraction. */
 	usedText?: string;
 }
 
@@ -65,6 +66,8 @@ export interface ProviderCard {
 	name: string;
 	/** Account label (already privacy-masked) when cards are split per account. */
 	account?: string;
+	/** Metadata-attributed organization suffix, kept separate for narrow headers. */
+	accountQualifier?: string;
 	/** Number of accounts reporting for this provider. */
 	accounts: number;
 	/** Window rows sorted most-pressing first. */
@@ -81,26 +84,6 @@ function formatLimitTitle(limit: UsageLimit): string {
 		return `${limit.label} (${tier})`;
 	}
 	return limit.label;
-}
-
-function isUsedOnlyAbsoluteAmount(limit: UsageLimit): boolean {
-	const amount = limit.amount;
-	return (
-		amount.unit !== "percent" &&
-		amount.unit !== "unknown" &&
-		amount.used !== undefined &&
-		Number.isFinite(amount.used) &&
-		amount.limit === undefined &&
-		amount.remaining === undefined &&
-		resolveUsedFraction(limit) === undefined
-	);
-}
-
-function formatUsedOnlyAmount(limit: UsageLimit): string {
-	const used = limit.amount.used ?? 0;
-	if (limit.amount.unit === "usd") return `$${used.toFixed(2)} used`;
-	const formatted = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(used);
-	return `${formatted} ${limit.amount.unit} used`;
 }
 
 /**
@@ -267,8 +250,7 @@ export function buildProviderCards(
 				fraction,
 				status: aggregateStatus(bucket.limits),
 				resetMs: resetsAt !== undefined && resetsAt > nowMs ? resetsAt - nowMs : undefined,
-				usedText:
-					fraction === undefined && isUsedOnlyAbsoluteAmount(worst) ? formatUsedOnlyAmount(worst) : undefined,
+				usedText: fraction === undefined ? formatAbsoluteOnlyAmount(bucket.limits) : undefined,
 			};
 		});
 		windows.sort((a, b) => (b.fraction ?? -1) - (a.fraction ?? -1));
@@ -283,6 +265,7 @@ export function buildProviderCards(
 			provider,
 			name: formatProviderName(provider),
 			account: account === undefined ? undefined : mask(account),
+			accountQualifier: account?.qualifier,
 			accounts: providerReports.length,
 			windows,
 			unlimited: windows.length === 0,
@@ -424,12 +407,10 @@ export function formatActivityErrorDetail(error: string, homeDir = os.homedir())
 	return text.replace(/\.+$/, "");
 }
 
-function fitAccountLabel(label: string, width: number): string {
+function fitAccountLabel(label: string, width: number, qualifier = ""): string {
 	if (width <= 0) return "";
-	const qualifierStart = label.lastIndexOf(" (");
-	if (qualifierStart <= 0 || !label.endsWith(")")) return truncateToWidth(label, width);
-	const rawBase = label.slice(0, qualifierStart);
-	const qualifier = label.slice(qualifierStart);
+	if (!qualifier || !label.endsWith(qualifier)) return truncateToWidth(label, width);
+	const rawBase = label.slice(0, -qualifier.length);
 	const ordinalMatch = rawBase.match(/^(.*) (\(\d+\))$/);
 	const base = ordinalMatch?.[1] ?? rawBase;
 	const ordinal = ordinalMatch?.[2] ?? "";
@@ -531,7 +512,9 @@ export class UsageDashboardComponent implements Component {
 		const cardStatus = card.unlimited ? "ok" : aggregateRowStatus(card.windows);
 		const accountsText =
 			card.account !== undefined
-				? this.#styleMask(theme.fg("dim", fitAccountLabel(card.account, Math.max(1, width - 2 - 4 - 1))))
+				? this.#styleMask(
+						theme.fg("dim", fitAccountLabel(card.account, Math.max(1, width - 2 - 4 - 1), card.accountQualifier)),
+					)
 				: card.accounts > 1
 					? theme.fg("dim", `${card.accounts} accts`)
 					: "";
