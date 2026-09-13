@@ -1001,14 +1001,7 @@ export class ModelHubComponent implements Component {
 	 * exists, so the strip changes no scope.
 	 */
 	#findFallbackModel(provider: string, id: string): ModelBrowserItem | undefined {
-		const model =
-			this.#registry
-				.getAll()
-				.find(
-					candidate =>
-						candidate.provider.toLowerCase() === provider.toLowerCase() &&
-						candidate.id.toLowerCase() === id.toLowerCase(),
-				) ?? this.#registry.find(provider, id);
+		const model = this.#registry.find(provider, id);
 		if (!model) return undefined;
 		return { provider: model.provider, id: model.id, model, selector: `${model.provider}/${model.id}` };
 	}
