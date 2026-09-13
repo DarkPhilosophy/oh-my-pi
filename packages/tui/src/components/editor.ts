@@ -4051,6 +4051,12 @@ export class Editor implements Component, Focusable {
 		}
 	}
 
+	/** Dismiss pending and visible completions without changing the draft or cursor. */
+	dismissAutocomplete(): void {
+		this.#cancelAutocomplete();
+		this.onAutocompleteUpdate?.();
+	}
+
 	isShowingAutocomplete(): boolean {
 		return this.#autocompleteState !== null;
 	}

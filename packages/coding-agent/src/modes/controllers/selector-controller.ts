@@ -907,6 +907,7 @@ export class SelectorController {
 		const editor = this.ctx.editor;
 		const inline =
 			this.ctx.settings.get("display.inlineModelPicker") && this.ctx.editorContainer.children.includes(editor);
+		if (inline) editor.dismissAutocomplete();
 		let closed = false;
 		const done = () => {
 			if (closed) return;

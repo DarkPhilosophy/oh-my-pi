@@ -5,6 +5,7 @@
 import type { Model } from "@oh-my-pi/pi-ai";
 import {
 	addKeyAliases,
+	applyBackgroundToLine,
 	type Component,
 	canonicalKeyId,
 	type KeyId,
@@ -134,7 +135,6 @@ export class ModelPickerComponent implements Component {
 		this.#browser = new ModelBrowser(settings, {
 			searchPrompt: options.editorRows === undefined ? undefined : "",
 			searchFocused: options.editorRows !== undefined,
-			searchIcon: options.editorRows === undefined ? undefined : "⌕",
 			currentContextTokens: options.currentContextTokens,
 			markOverContext: true,
 			emptyText: () => (this.#roleMode ? "  No quick roles in the Ctrl+P cycle" : undefined),
@@ -283,7 +283,9 @@ export class ModelPickerComponent implements Component {
 				(popupWidth, available) => {
 					const rows = this.#renderPicker(popupWidth, available + 1);
 					rows.pop();
-					return rows.slice(-available);
+					return rows
+						.slice(-available)
+						.map(line => applyBackgroundToLine(line, popupWidth, text => theme.bgFill("userMessageBg", text)));
 				},
 				count - 1,
 				count,
@@ -341,7 +343,8 @@ export class ModelPickerComponent implements Component {
 				.replace(theme.boxRound.topRight, theme.boxRound.bottomRight),
 		);
 		const placeholder = this.#browser.query ? "" : theme.fg("dim", "Search model…");
-		out.push(truncateToWidth(`${theme.fg(borderColor ?? "border", "╰─")}${searchRow.trim()}${placeholder}`, width));
+		const prefix = `${theme.boxRound.bottomLeft}${theme.boxRound.horizontal}`;
+		out.push(truncateToWidth(`${theme.fg(borderColor ?? "border", prefix)}${searchRow.trim()}${placeholder}`, width));
 		return out;
 	}
 }

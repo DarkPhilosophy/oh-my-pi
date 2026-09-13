@@ -1,11 +1,13 @@
-import { afterEach, expect, it } from "bun:test";
-import { Container, Text } from "@oh-my-pi/pi-tui";
+import { afterEach, expect, it, vi } from "bun:test";
+import { CombinedAutocompleteProvider, Container, Text } from "@oh-my-pi/pi-tui";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";
 import { Composer } from "../src/modes/composer";
 import { ModelPickerComponent } from "../src/modes/components/model-picker";
 import { TranscriptContainer } from "../src/modes/components/transcript-container";
+import { SelectorController } from "../src/modes/controllers/selector-controller";
+import type { InteractiveModeContext } from "../src/modes/types";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
 let composer: Composer | undefined;
@@ -98,4 +100,63 @@ it("keeps the statusline, extension content and draft while searching and select
 	expect(editor.getText()).toBe("draft to preserve");
 	expect(terminal.getViewport().map(Bun.stripANSI)).toEqual(screen);
 	expect(writes.join("")).not.toMatch(/\x1b\[(?:2|3)J|\x1b\[\?1049h|\x1b\[\?1003h/);
+});
+
+it("replaces active completion rows with model search in the existing input slot", async () => {
+	const terminal = new VirtualTerminal(80, 16);
+	composer = new Composer({ preferences: { quiet: true }, terminal });
+	const editor = composer.editor;
+	const slot = new Container();
+	slot.addChild(editor);
+	const transcript = new TranscriptContainer();
+	const block = {
+		render: () => Array.from({ length: 30 }, (_, i) => `CHAT_${i}`),
+		isTranscriptBlockFinalized: () => true,
+	};
+	transcript.addChild(block);
+	composer.setRuntimeChildren([transcript, slot, new Text("EXTENSION BELOW INPUT", 0, 0)]);
+	editor.setAutocompleteProvider(
+		new CombinedAutocompleteProvider([{ name: "completion-only", description: "Completion description" }], "/tmp"),
+	);
+	const updated = Promise.withResolvers<void>();
+	editor.onAutocompleteUpdate = updated.resolve;
+	editor.handleInput("/");
+	await updated.promise;
+	expect(editor.render(80).join("\n")).toContain("completion-only");
+	composer.start();
+	composer.ui.setFocus(editor);
+	await terminal.waitForRender();
+	const showError = vi.fn();
+	const controller = new SelectorController({
+		ui: composer.ui,
+		editor,
+		editorContainer: slot,
+		settings: Settings.isolated({ "display.inlineModelPicker": true }),
+		session: {
+			modelRegistry: {
+				getAll: () => [],
+				getAvailable: () => [],
+				getError: () => undefined,
+				refresh: async () => {},
+			},
+			scopedModels: [],
+			getContextUsage: () => undefined,
+			getRoleModelCycle: () => undefined,
+		},
+		keybindings: { getKeys: () => [], getDisplayString: () => "" },
+		showError,
+	} as unknown as InteractiveModeContext);
+	controller.showModelSelector({ temporaryOnly: true });
+	await terminal.waitForRender();
+	const viewport = terminal.getViewport();
+	expect(viewport.join("\n")).not.toContain("completion-only");
+	const footerRow = viewport.findIndex(line => line.includes("EXTENSION BELOW INPUT"));
+	expect(footerRow).toBeGreaterThan(0);
+	expect(viewport[footerRow - 1]).toContain("Search model");
+	const picker = slot.children[0] as ModelPickerComponent;
+	picker.handleInput("\x1b");
+	await terminal.waitForRender();
+	expect(editor.getText()).toBe("/");
+	expect(terminal.getViewport()[footerRow - 1]).toContain("/");
+	expect(showError).not.toHaveBeenCalled();
 });
