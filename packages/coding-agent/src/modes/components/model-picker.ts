@@ -301,9 +301,13 @@ export class ModelPickerComponent implements Focusable {
 				(popupWidth, available) => {
 					const rows = this.#renderPicker(popupWidth, available + 1);
 					rows.pop();
-					return rows
-						.slice(-available)
-						.map(line => applyBackgroundToLine(line, popupWidth, text => theme.bgFill("userMessageBg", text)));
+					return this.#settings.get("display.popupFill")
+						? rows
+								.slice(-available)
+								.map(line =>
+									applyBackgroundToLine(line, popupWidth, text => theme.bgFill("userMessageBg", text)),
+								)
+						: rows.slice(-available);
 				},
 				inputRow,
 				count,

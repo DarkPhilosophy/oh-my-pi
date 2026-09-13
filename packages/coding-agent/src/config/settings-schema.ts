@@ -1301,6 +1301,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"display.popupFill": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Popup Background Fill",
+			description: "Fill command and inline model popups with the message surface color",
+		},
+	},
+
 	"display.inlineModelPicker": {
 		type: "boolean",
 		default: false,
