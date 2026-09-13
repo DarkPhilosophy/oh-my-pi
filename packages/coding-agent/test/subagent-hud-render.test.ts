@@ -1,16 +1,21 @@
 /**
  * Contract: the anchored subagent HUD (rendered above the editor, next to the
- * Todos block) lists exactly the running *detached* subagents as paired ID and
- * activity rows and yields no output once nothing qualifies, so the block
- * self-clears. Sync task spawns and eval `agent()` spawns are excluded:
- * their progress is already rendered inline (tool block / eval cell).
+ * Todos block) lists every running subagent — detached background spawns and
+ * sync task calls alike — as numbered `N Id: description` jump-list rows and
+ * yields no output once nothing qualifies, so the block self-clears.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { InteractiveMode, renderSubagentHudLines } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
+import { PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-coding-agent/modes/composer";
+import {
+	InteractiveMode,
+	layoutPinnedHud,
+	renderSubagentHudLines,
+	SubagentHudComponent,
+} from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import {
 	type ObservableSession,
 	SessionObserverRegistry,
@@ -278,7 +283,7 @@ describe("subagent HUD lines", () => {
 		const activeLines = renderSubagentHudLines([active], 40, true);
 		const activeText = Bun.stripANSI(activeLines.join("\n"));
 		expectSameRow(
-			Bun.stripANSI(renderSubagentHudLines([active], 120, true).join("\n")),
+			Bun.stripANSI(renderSubagentHudLines([active], 120, true, true).join("\n")),
 			"Reader",
 			"openai/gpt-5.6-sol",
 			"Inspecting renderer behavior",
@@ -459,6 +464,7 @@ describe("subagent HUD lines", () => {
 					}),
 				],
 				160,
+				false,
 				true,
 			).join("\n"),
 		);
@@ -610,21 +616,28 @@ describe("subagent HUD lines", () => {
 		expectSameRow(multiLineDesc, "ReviewShell", "First line", "Second line");
 		expect(multiLineDesc).not.toContain("\nSecond line");
 	});
-	it("hides non-detached spawns: sync task calls and eval agent() helpers", () => {
+	it("lists sync and detached spawns alike", () => {
 		// Sync task spawn (parent blocked on the call) and eval `agent()` spawn
-		// (no detached flag at all) both stay off the HUD.
+		// (no detached flag at all) join the pinned jump list.
 		const sessions = [
 			makeSession({ id: "SyncSpawn", description: "inline task work", detached: false }),
 			makeSession({ id: "EvalSpawn", description: "eval cell work", detached: undefined }),
+			makeSession({ id: "BackgroundSpawn", description: "detached work" }),
 		];
-		expect(renderSubagentHudLines(sessions, 120)).toEqual([]);
-
-		const out = render([...sessions, makeSession({ id: "BackgroundSpawn", description: "detached work" })]);
-		expectSameRow(out, "BackgroundSpawn", "detached work");
-		expect(out).not.toContain("SyncSpawn");
-		expect(out).not.toContain("EvalSpawn");
+		const out = render(sessions);
+		expect(out).toContain("BackgroundSpawn: detached work");
+		expect(out).toContain("SyncSpawn: inline task work");
+		expect(out).toContain("EvalSpawn: eval cell work");
+		const hud = new SubagentHudComponent(renderSubagentHudLines(sessions, 120), [
+			"SyncSpawn",
+			"EvalSpawn",
+			"BackgroundSpawn",
+		]);
+		hud.render(120);
+		expect(hud.getClickAgentAtRow(2)).toBe("SyncSpawn");
+		expect(hud.getClickAgentAtRow(3)).toBe("EvalSpawn");
+		expect(hud.getClickAgentAtRow(4)).toBe("BackgroundSpawn");
 	});
-
 	it("threads the detached flag from lifecycle and progress payloads", () => {
 		const eventBus = new EventBus();
 		const registry = new SessionObserverRegistry();
@@ -635,9 +648,9 @@ describe("subagent HUD lines", () => {
 		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, makeProgressPayload("FromProgress", 2, "background work", true));
 
 		const out = render(registry.getSessions());
-		expectSameRow(out, "Detached", "background work");
-		expectSameRow(out, "FromProgress", "background work");
-		expect(out).not.toContain("Inline");
+		expect(out).toContain("Detached: background work");
+		expect(out).toContain("FromProgress: background work");
+		expect(out).toContain("Inline: sync work");
 	});
 
 	it("renders nested ids as a breadcrumb and truncates long descriptions to the viewport", () => {
@@ -700,7 +713,24 @@ describe("subagent HUD lines", () => {
 		expect(activeIds()).toEqual(["SelectorSurfaces", "BlastRadius", "VariantsSurvey"]);
 	});
 
-	it("renders the first eight active detached subagents and summarizes the rest", () => {
+	it("renders every live agent when expanded, with a collapse row", () => {
+		const active = Array.from({ length: 10 }, (_, index) =>
+			makeSession({
+				id: `Worker${index}`,
+				description: `job ${index}`,
+			}),
+		);
+
+		const out = Bun.stripANSI(renderSubagentHudLines(active, 120, true).join("\n"));
+
+		for (const session of active) {
+			expect(out).toContain(`${session.id}: ${session.description}`);
+		}
+		expect(out).not.toContain("more running");
+		expect(out).toContain("show less");
+	});
+
+	it("collapses to a few rows with an expander by default", () => {
 		const active = Array.from({ length: 10 }, (_, index) =>
 			makeSession({
 				id: `Worker${index}`,
@@ -709,16 +739,72 @@ describe("subagent HUD lines", () => {
 		);
 
 		const out = render(active, 120);
+		expect(out).toContain("Worker0: job 0");
+		expect(out).toContain("Worker2: job 2");
+		expect(out).not.toContain("Worker3: job 3");
+		expect(out).toContain("7 more — expand");
+		expect(out).not.toContain("show less");
+	});
+});
 
-		for (const session of active.slice(0, 8)) {
-			expectSameRow(out, session.id, session.description!);
-		}
-		for (const session of active.slice(8)) {
-			expect(out.split("\n").some(line => line.includes(session.id) && line.includes(session.description!))).toBe(
-				false,
-			);
-		}
-		expect(out).toContain("2 more running");
+describe("SubagentHudComponent click rows", () => {
+	beforeAll(async () => {
+		await initTheme();
+	});
+
+	it("maps item rows to session ids and chrome rows nowhere", () => {
+		const lines = renderSubagentHudLines([makeSession({ id: "Alpha" }), makeSession({ id: "Beta" })], 120);
+		const hud = new SubagentHudComponent(lines, ["Alpha", "Beta"]);
+
+		const rendered = hud.render(120);
+		expect(rendered).toHaveLength(lines.length);
+		expect(Bun.stripANSI(rendered[2] ?? "")).toContain("Alpha");
+		expect(Bun.stripANSI(rendered[3] ?? "")).toContain("Beta");
+
+		expect(hud.getClickAgentAtRow(0)).toBeUndefined();
+		expect(hud.getClickAgentAtRow(1)).toBeUndefined();
+		expect(hud.getClickAgentAtRow(2)).toBe("Alpha");
+		expect(hud.getClickAgentAtRow(3)).toBe("Beta");
+		expect(hud.getClickAgentAtRow(4)).toBeUndefined();
+		expect(hud.getClickAgentAtRow(-1)).toBeUndefined();
+	});
+
+	it("resolves the expander row to the toggle sentinel", () => {
+		const hud = new SubagentHudComponent(["", "Subagents", "row", "toggle"], ["Only"], 3);
+		hud.render(120);
+		expect(hud.getClickAgentAtRow(3)).toBe(PINNED_HUD_TOGGLE_ID);
+		expect(hud.getClickAgentAtRow(2)).toBe("Only");
+	});
+
+	it("maps wrapped continuation rows to the agent that started them", () => {
+		const long = ` ${"x".repeat(200)}`;
+		const hud = new SubagentHudComponent(["", "Subagents", long, "short"], ["Long", "Short"]);
+		const rendered = hud.render(40);
+		expect(rendered.length).toBeGreaterThan(4);
+		const shortRow = rendered.findIndex(line => Bun.stripANSI(line).includes("short"));
+		expect(shortRow).toBeGreaterThan(3);
+		expect(hud.getClickAgentAtRow(2)).toBe("Long");
+		expect(hud.getClickAgentAtRow(3)).toBe("Long");
+		expect(hud.getClickAgentAtRow(shortRow)).toBe("Short");
+		expect(hud.getClickAgentAtRow(shortRow + 1)).toBeUndefined();
+	});
+});
+
+describe("layoutPinnedHud", () => {
+	it("fits small lists without an expander", () => {
+		expect(layoutPinnedHud(0, false)).toEqual({ itemRows: 0, toggle: undefined, toggleRow: undefined });
+		expect(layoutPinnedHud(3, false)).toEqual({ itemRows: 3, toggle: undefined, toggleRow: undefined });
+		expect(layoutPinnedHud(3, true)).toEqual({ itemRows: 3, toggle: undefined, toggleRow: undefined });
+	});
+
+	it("collapses longer lists behind an expander", () => {
+		expect(layoutPinnedHud(4, false)).toEqual({ itemRows: 3, toggle: "expand", toggleRow: 5 });
+		expect(layoutPinnedHud(10, false)).toEqual({ itemRows: 3, toggle: "expand", toggleRow: 5 });
+	});
+
+	it("expands to every row with a collapse row", () => {
+		expect(layoutPinnedHud(5, true)).toEqual({ itemRows: 5, toggle: "collapse", toggleRow: 7 });
+		expect(layoutPinnedHud(10, true)).toEqual({ itemRows: 10, toggle: "collapse", toggleRow: 12 });
 	});
 });
 
@@ -817,28 +903,27 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		await Promise.resolve();
 
 		const hud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
-		expectSameRow(hud, "BurstAgent0", "Burst job 0");
-		expectSameRow(hud, "BurstAgent5", "Burst job 5");
+		expect(hud).toContain("BurstAgent0: Burst job 0");
+		expect(hud).toContain("BurstAgent2: Burst job 2");
+		expect(hud).not.toContain("BurstAgent3: Burst job 3");
+		expect(hud).toContain("3 more — expand");
 		expect(rebuildHud).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
-	it("rebuilds HUD immediately when badge setting changes", async () => {
+
+	it("applies the setting over a clicked expand override", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
-		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
-			...makeProgressPayload("LongRunner", 0, "Long-running work", true),
-			progress: makeProgress({
-				id: "LongRunner",
-				description: "Long-running work",
-				task: "Long-running work",
-				resolvedModel: "openai/gpt-5.6-sol",
-			}),
-		});
-		vi.useFakeTimers();
+		for (let index = 0; index < 5; index++) {
+			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle(`Override${index}`, index, `job ${index}`));
+		}
 		await Promise.resolve();
-		vi.runAllTimers();
-		await Promise.resolve();
-		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).not.toContain("openai/gpt-5.6-sol");
-		session.settings.override("task.showResolvedModelBadge", true);
-		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("openai/gpt-5.6-sol");
+		const hudText = () => Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
+
+		mode.togglePinnedHudExpanded();
+		expect(hudText()).toContain("Override4");
+
+		mode.applyPinnedAgentsSetting();
+		expect(hudText()).not.toContain("Override4");
+		expect(hudText()).toContain("more — expand");
 	});
 });
