@@ -66,6 +66,8 @@ export interface AdvisorConfigCallbacks {
 	/** Surface a transient status/warning line to the user. */
 	notify: (message: string) => void;
 	/** Live advisor usage stats; lets the editor show tokens/cost per advisor. */
+	/** Surface a transient warning from scope/config loading. */
+	warn?: (message: string) => void;
 	getAdvisorStats?: () => PerAdvisorStat[];
 	getUsageReports?: () => Promise<UsageReport[] | null>;
 	/** Resolve the active OAuth identity for quota filtering (per-advisor account stickiness). */

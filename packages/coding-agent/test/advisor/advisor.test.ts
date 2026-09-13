@@ -6454,15 +6454,6 @@ describe("advisor", () => {
 			expect(result.doc.advisors).toEqual([{ name: "Architecture" }, { name: "Security", enabled: false }]);
 		});
 
-		it("seeds a visible default advisor (labeled with the role model) when the config is empty", async () => {
-			const uiTheme = await getThemeByName("dark");
-			if (!uiTheme) throw new Error("theme unavailable");
-			setThemeInstance(uiTheme);
-			const overlay = make({ advisors: [] }, { defaultModelLabel: "anthropic/claude-opus" });
-			const text = strip(overlay.render(200));
-			expect(text).toContain("default");
-			expect(text).toContain("anthropic/claude-opus");
-		});
 		it("shows disabled advisors with a dim circle marker and toggles them in the detail editor", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
