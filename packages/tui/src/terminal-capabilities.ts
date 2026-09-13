@@ -892,15 +892,10 @@ export interface ParsedKittyPlacementLine {
 /**
  * Parse a frame line that consists solely of a Kitty direct placement (the
  * last line of an {@link Image} block). Returns null for anything else —
- * placeholder grids and sixel/iTerm2 payloads. Tmux envelopes are excluded
- * unless explicitly requested for occlusion; placement rewriting must leave them intact.
+ * placeholder grids, tmux-wrapped placements, sixel/iTerm2 payloads — so
+ * callers fall back to writing the line verbatim.
  */
-export function parseKittyDirectPlacementLine(line: string, includeTmux = false): ParsedKittyPlacementLine | null {
-	if (includeTmux && line.includes("\x1bPtmux;")) {
-		line = line.replace(/\x1bPtmux;((?:\x1b\x1b|[^\x1b])*)\x1b\\/g, (_envelope, payload: string) =>
-			payload.replaceAll("\x1b\x1b", "\x1b"),
-		);
-	}
+export function parseKittyDirectPlacementLine(line: string): ParsedKittyPlacementLine | null {
 	const m = KITTY_DIRECT_PLACEMENT_LINE.exec(line);
 	if (!m) return null;
 	const columns = m[4] !== undefined ? Number(m[4]) : 0;
