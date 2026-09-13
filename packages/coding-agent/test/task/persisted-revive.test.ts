@@ -13,6 +13,7 @@ import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { AdvisorScope } from "@oh-my-pi/pi-coding-agent/session/session-advisors";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { IrcBus, type IrcMessage } from "@oh-my-pi/pi-coding-agent/irc/bus";
@@ -384,6 +385,32 @@ describe("persisted subagent revival", () => {
 		expect(roleAdvised.get("advisor.enabled")).toBe(true);
 		expect(roleAdvised.getModelRole("advisor")).toBeUndefined();
 		expect(unadvised.get("advisor.enabled")).toBe(false);
+	});
+
+	it("inherits the nearest live parent's advisor scope on cold revival", async () => {
+		AgentRegistry.resetGlobalForTests();
+		const cwd = makeTempDir("@pi-advisor-scope-revive-");
+		const sessionFile = await createPersistedSession(cwd, undefined, undefined, "on");
+		const parentScope = new AdvisorScope();
+		const parentSession = { ...createSessionDefaults(), advisorScope: parentScope } as unknown as AgentSession;
+		AgentRegistry.global().register({
+			id: "revived-parent",
+			displayName: "Revived Parent",
+			kind: "sub",
+			parentId: "Main",
+			status: "idle",
+			session: parentSession,
+		});
+		let capturedOptions: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			capturedOptions = options;
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+		});
+		const ref = { ...createRef(sessionFile), parentId: "revived-parent" };
+		const reviver = await createFactory(cwd)(ref);
+		if (!reviver) throw new Error("Expected a persisted reviver");
+		await reviver(ref);
+		expect(capturedOptions?.advisorScope).toBe(parentScope);
 	});
 
 	it("restores the persisted custom model role before reopening the session", async () => {
