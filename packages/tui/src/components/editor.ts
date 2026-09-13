@@ -16,6 +16,7 @@ import type { SymbolTheme } from "../symbols";
 import { type Component, CURSOR_MARKER, type CursorOverlayRenderer, type Focusable } from "../tui";
 import { Box } from "./box";
 import {
+	applyBackgroundToLine,
 	getSegmenter,
 	getWidthConfigEpoch,
 	getWordNavKind,
@@ -761,14 +762,17 @@ export class Editor implements Component, Focusable {
 		if (!this.#autocompleteList || maxRows < 1) return [];
 		const framed = maxRows >= 3 && width >= 3;
 		this.#autocompleteList.setMaxVisible(Math.min(this.#autocompleteMaxVisible, maxRows - (framed ? 2 : 0)));
-		if (!framed) return this.#autocompleteList.render(width);
+		const background = this.#theme.surfaceColor ?? PASSTHROUGH_COLOR;
+		if (!framed) {
+			return this.#autocompleteList.render(width).map(line => applyBackgroundToLine(line, width, background));
+		}
 		this.#autocompleteBox.setBorder({
 			chars: this.#theme.symbols.boxRound,
 			color: this.#theme.accentColor ?? this.borderColor,
 		});
 		this.#autocompleteBox.clear();
 		this.#autocompleteBox.addChild(this.#autocompleteList);
-		return this.#autocompleteBox.render(width);
+		return this.#autocompleteBox.render(width).map(line => applyBackgroundToLine(line, width, background));
 	};
 
 	/**
@@ -1498,7 +1502,11 @@ export class Editor implements Component, Focusable {
 
 		// Add autocomplete list if active
 		if (this.#autocompleteState && this.#autocompleteList) {
-			if (this.commandSuggestionsPopup && this.#autocompletePrefix.startsWith("/") && this.onAutocompleteRender) {
+			if (
+				this.commandSuggestionsPopup &&
+				findLeadingSlashCommandStart(this.#autocompletePrefix) !== null &&
+				this.onAutocompleteRender
+			) {
 				this.onAutocompleteRender(
 					this.focused ? this.#renderAutocompleteOverlay : undefined,
 					Math.max(
