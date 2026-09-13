@@ -50,6 +50,7 @@ import type { PerAdvisorStat } from "../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
 import { formatCompactQuota } from "../controllers/command-controller";
 import { getSelectListTheme, theme } from "../theme/theme";
+import { sanitizeDisplayWarnings } from "../../tools/render-utils";
 import { HookEditorComponent } from "./hook-editor";
 import { buildBrowserItems, ModelBrowser, resolveRoleAssignments, sortModelItems } from "./model-browser";
 import { bottomBorder, fit, row, splitBodyWidth, splitRow, topBorderSplit } from "./overlay-box";
@@ -65,6 +66,11 @@ export interface AdvisorConfigCallbacks {
 	requestRender: () => void;
 	/** Surface a transient status/warning line to the user. */
 	notify: (message: string) => void;
+	/**
+	 * Surface a sticky warning (e.g. malformed entries in the file just made
+	 * active by a scope switch). Falls back to `notify` when omitted.
+	 */
+	warn?: (message: string) => void;
 	/** Live advisor usage stats; lets the editor show tokens/cost per advisor. */
 	getAdvisorStats?: () => PerAdvisorStat[];
 	getUsageReports?: () => Promise<UsageReport[] | null>;
@@ -155,6 +161,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 	/** Remembered field-list row so returning from a field editor lands on it. */
 	#fieldCursor: string | undefined;
 	#editorScroll = 0;
+	#editorContentOffset = 2;
 
 	// Frame geometry from the last render (frame paints from screen row 0).
 	#sidebarWidth = 0;
@@ -192,6 +199,11 @@ export class AdvisorConfigOverlayComponent implements Component {
 			.loadDoc(other)
 			.then(doc => {
 				this.#scopes[other].doc = doc;
+				if (doc.warnings?.length) {
+					const message = `WATCHDOG.yml: ${sanitizeDisplayWarnings(doc.warnings).join("; ")}`;
+					if (this.#cb.warn) this.#cb.warn(message);
+					else this.#cb.notify(message);
+				}
 				this.#scopes[other].loading = false;
 				this.#rebuildRoster(other);
 				if (this.#focus === other) this.#showFields();
@@ -330,7 +342,20 @@ export class AdvisorConfigOverlayComponent implements Component {
 					`${target.advisor.name || "(unnamed)"}  ${theme.fg("dim", `· ${this.#scopeLabel(target.scope)}`)}`,
 				)
 			: theme.bold(this.#focus === "editor" ? "Advisor" : this.#scopeLabel(this.#focus));
-		const lines: string[] = [header, ""];
+		const scope = target?.scope ?? (this.#focus === "editor" ? this.#lastRosterFocus : this.#focus);
+		const warnings = this.#scopes[scope].doc.warnings;
+		const lines: string[] = warnings?.length
+			? [
+					theme.fg("warning", "Config problems — dropped while loading:"),
+					...sanitizeDisplayWarnings(warnings).flatMap(warning =>
+						wrap(warning, bodyWidth).map(line => theme.fg("warning", line)),
+					),
+					"",
+					header,
+					"",
+				]
+			: [header, ""];
+		this.#editorContentOffset = lines.length;
 		if (this.#mode === "fields") {
 			if (target) {
 				lines.push(...this.#editor.render(bodyWidth));
@@ -450,7 +475,11 @@ export class AdvisorConfigOverlayComponent implements Component {
 			if (event.wheel !== null) {
 				const el = this.#editor as Partial<MouseRoutable>;
 				if (this.#mode !== "fields" && typeof el.routeMouse === "function") {
-					el.routeMouse(event, event.row - 3, event.col - this.#dividerCol - 1);
+					el.routeMouse(
+						event,
+						event.row - 1 - this.#editorContentOffset + this.#editorScroll,
+						event.col - this.#dividerCol - 1,
+					);
 				} else {
 					this.#editorScroll = Math.max(0, this.#editorScroll + event.wheel);
 				}
@@ -462,9 +491,13 @@ export class AdvisorConfigOverlayComponent implements Component {
 				this.#focusEditor();
 			}
 			const el = this.#editor as Partial<MouseRoutable>;
-			// Editor content starts 2 rows below the body top (header + blank).
+			// Warning rows and the heading precede the editor content.
 			if (typeof el.routeMouse === "function")
-				el.routeMouse(event, event.row - 1 - 2 + this.#editorScroll, event.col - this.#dividerCol - 1);
+				el.routeMouse(
+					event,
+					event.row - 1 - this.#editorContentOffset + this.#editorScroll,
+					event.col - this.#dividerCol - 1,
+				);
 			return true;
 		}
 		const inProject = event.row >= this.#projectRowStart && event.row < this.#projectRowStart + this.#projectRows;
@@ -569,6 +602,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		if (value === "save") {
 			const doc = this.#hasSyntheticDefaultAdvisor(state.doc) ? { ...state.doc, advisors: [] } : state.doc;
 			await this.#cb.save(scope, doc);
+			state.doc.warnings = undefined;
 			state.dirty = false;
 			this.#rebuildRoster(scope);
 			this.#cb.notify(`Saved ${this.#scopeLabel(scope)} advisors`);

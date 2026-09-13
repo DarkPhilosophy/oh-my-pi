@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.17] - 2026-09-10
+
 ### Added
 
 - Added right-side negative-space panels with independent block placement and `top`/`bottom` vertical alignment.

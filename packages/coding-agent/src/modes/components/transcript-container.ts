@@ -158,6 +158,13 @@ export interface LiveViewportFrame {
 	readonly physicalRows: number;
 }
 
+/** One live block's row span in the last `renderViewport` output (half-open `[start, end)`). */
+export interface TranscriptViewportSpan {
+	component: Component;
+	start: number;
+	end: number;
+}
+
 /** Owns transcript order, live capacity, and ordered immutable retirement. */
 export class TranscriptContainer extends Container {
 	#entries: TranscriptEntry[] = [];
@@ -175,6 +182,8 @@ export class TranscriptContainer extends Container {
 	// retirement: everything behind it stays live and degrades to one-line
 	// allocations. Logs once per pinned episode after a grace period.
 	#pinnedFrontier: { index: number; since: number; logged: boolean } | undefined;
+	/** Block spans of the last `renderViewport` output, for click hit-testing. */
+	#lastViewportSpans: TranscriptViewportSpan[] = [];
 
 	override addChild(component: Component): void {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
@@ -208,6 +217,7 @@ export class TranscriptContainer extends Container {
 		this.#replayPending = false;
 		this.#replayRequested = false;
 		this.#liveViewport = { rows: [], capacity: 0, physicalRows: 0 };
+		this.#lastViewportSpans = [];
 	}
 
 	setToolActivityVisible(visible: boolean): void {
@@ -411,6 +421,7 @@ export class TranscriptContainer extends Container {
 		this.#syncEntries();
 		this.#settleFinalized();
 		const output: string[] = [];
+		this.#lastViewportSpans = [];
 		let previous: TranscriptEntry | undefined;
 		for (const { entry, index } of this.#liveEntries()) {
 			entry.viewportStart = undefined;
@@ -425,6 +436,11 @@ export class TranscriptContainer extends Container {
 			entry.viewportStart = output.length;
 			entry.viewportOffset = offset;
 			entry.viewportExtent = rendered.length;
+			this.#lastViewportSpans.push({
+				component: entry.component,
+				start: output.length,
+				end: output.length + rendered.length,
+			});
 			previous = entry;
 			output.push(...rendered);
 		}
@@ -455,6 +471,11 @@ export class TranscriptContainer extends Container {
 			if (retained < extent) break;
 		}
 		return count;
+	}
+
+	/** Block spans of the last `renderViewport` output, in output coordinates. Empty when the tail is empty. */
+	getLastViewportSpans(): readonly TranscriptViewportSpan[] {
+		return this.#lastViewportSpans;
 	}
 
 	/** Offers stable-head emission or the shortest finalized prefix needed under pressure. */
@@ -872,4 +893,4 @@ export class TranscriptContainer extends Container {
 }
 
 /** Groups sibling rows into one conservative mutable semantic transcript block. */
-export class TranscriptBlock extends Container { }
+export class TranscriptBlock extends Container {}

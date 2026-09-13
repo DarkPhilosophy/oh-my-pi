@@ -10,6 +10,7 @@
 import { resolveModelPolicy } from "./compat/resolve";
 import type { ModelIdentity } from "./compat/types";
 import { resolveModelTokenizer } from "./model-tokenizer";
+import { materializeTimeBasedCost } from "./pricing";
 import type { Api, Model, ModelSpec } from "./types";
 import { cleanModelName } from "./utils";
 
@@ -33,8 +34,8 @@ function isInputModalities(value: unknown): value is ("text" | "image")[] {
  * corrections (`cost-patch`, `limits-patch`, `long-context-cost`,
  * `context-window-floor`) overwrite upstream values; selection metadata
  * (`priority`, `apply-patch-tool-type`, `service-tier-cost`,
- * `requires-cursor-tool-schema-projection`) is rule-owned;
- * `context-promotion-target` fills only when the spec left it unset.
+ * `requires-cursor-tool-schema-projection`, `requires-tool-result-image-hoisting`)
+ * is rule-owned; `context-promotion-target` fills only when the spec left it unset.
  */
 function applyCatalogAssignments<TApi extends Api>(model: Model<TApi>, catalog: Record<string, unknown>): void {
 	const serviceTierCost = objectPayload(catalog.serviceTierCost);
@@ -69,6 +70,12 @@ function applyCatalogAssignments<TApi extends Api>(model: Model<TApi>, catalog: 
 		if (typeof reserveModel === "string" && typeof tier === "string") {
 			model.reserveRoute = { model: reserveModel, tier };
 		}
+	}
+	const requiresToolResultImageHoisting = catalog.requiresToolResultImageHoisting;
+	if (requiresToolResultImageHoisting === true) {
+		model.requiresToolResultImageHoisting = true;
+	} else {
+		delete model.requiresToolResultImageHoisting;
 	}
 	const contextPromotionTarget = catalog.contextPromotionTarget;
 	if (typeof contextPromotionTarget === "string" && model.contextPromotionTarget === undefined) {
@@ -133,6 +140,9 @@ export function applyCatalogCorrections(
 		if (cacheRead !== undefined) model.cost.cacheRead = cacheRead;
 		const cacheWrite = numberField(patch, "cacheWrite");
 		if (cacheWrite !== undefined) model.cost.cacheWrite = cacheWrite;
+	}
+	if (catalog.timeBased !== undefined) {
+		model.cost = { ...model.cost, timeBased: materializeTimeBasedCost(catalog.timeBased) };
 	}
 	const limitsPatch = objectPayload(catalog.limitsPatch);
 	if (limitsPatch !== undefined) {
@@ -216,6 +226,10 @@ export function buildModel<TApi extends Api>(spec: ModelSpec<TApi>): Model<TApi>
 	const supportsComputerUseConfig = explicitComputerUseConfig(spec);
 	const model: Model<TApi> = {
 		...spec,
+		// An exact `thinking-efforts` rule upgrades a stale `reasoning: false`
+		// discovery default (see `resolveThinkingPolicy`); materialize the
+		// correction so transports and the picker see a reasoning-capable model.
+		reasoning: spec.reasoning || policy.thinking !== undefined,
 		name: cleanModelName(spec.name),
 		identity: policy.identity,
 		requiresGlyphTokenization: policy.identity.class === "anthropic",

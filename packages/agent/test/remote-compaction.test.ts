@@ -1209,7 +1209,7 @@ describe("Responses Lite remote compaction", () => {
 	});
 
 	test.each([false, true])(
-		"V2 compaction preserves Codex input and disabled reasoning (Lite: %s)",
+		"V2 compaction preserves Codex input and model-specific reasoning-off configuration (Lite: %s)",
 		async responsesLite => {
 			const model = makeCodexLiteModel({ useResponsesLite: responsesLite });
 			const systemPrompt = ["base instructions", "workspace instructions"];
@@ -1251,7 +1251,6 @@ describe("Responses Lite remote compaction", () => {
 			expect(JSON.stringify(captured?.body.input?.slice(0, -1))).toBe(JSON.stringify(normalBody.input));
 			expect(captured?.body.instructions).toEqual(normalBody.instructions);
 			expect(captured?.body.reasoning).toEqual(normalBody.reasoning);
-			expect(captured?.body.reasoning?.effort).toBe("none");
 		},
 	);
 

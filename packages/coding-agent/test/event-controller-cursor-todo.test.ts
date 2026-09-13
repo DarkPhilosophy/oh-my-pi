@@ -22,7 +22,7 @@ afterAll(() => {
 function createFixture() {
 	const ctx = createInteractiveModeContext({
 		streamingComponent: new AssistantMessageComponent(),
-		session: { settleInFlightMessagePersistence: vi.fn(async () => {}) },
+		session: { settleInFlightMessagePersistence: vi.fn(async () => { }) },
 	});
 	const blocks: Component[] = [];
 	const addChild = ctx.chatContainer.addChild.bind(ctx.chatContainer);
@@ -104,14 +104,6 @@ function todoFailure(text: string): Extract<AgentSessionEvent, { type: "tool_exe
 	} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>;
 }
 
-function todoMessageEnd(
-	phases: { name: string; tasks: { content: string; status: string }[] }[],
-): Extract<AgentSessionEvent, { type: "message_end" }> {
-	return {
-		type: "message_end",
-		message: { role: "toolResult", toolName: "todo", content: [{ type: "text", text: "" }], details: { phases } },
-	} as Extract<AgentSessionEvent, { type: "message_end" }>;
-}
 
 describe("EventController + Cursor todo bridge", () => {
 	it("sanitizes provider error text before it reaches the status line", async () => {
@@ -168,8 +160,6 @@ describe("EventController + Cursor todo bridge", () => {
 		await f.controller.handleEvent(streamedTodoBlock("cursor-call-1"));
 		expect(f.blocks).toHaveLength(1);
 		expect(f.ctx.pendingTools.size).toBe(0);
-		expect(f.ctx.setTodos).not.toHaveBeenCalled();
-		await f.controller.handleEvent(todoMessageEnd(phases));
 		expect(f.ctx.setTodos).toHaveBeenCalledWith(phases);
 	});
 
@@ -215,16 +205,6 @@ describe("EventController + Cursor todo bridge", () => {
 		expect(f.showWarning).toHaveBeenCalledTimes(1);
 	});
 
-	it("refreshes the panel exactly once when a successful completion is replayed", async () => {
-		const f = createFixture();
-		const phases = [{ name: "Tasks", tasks: [{ content: "step one", status: "completed" }] }];
-
-		await f.controller.handleEvent(todoEnd("cursor-call-1", phases));
-		await f.controller.handleEvent(streamedTodoBlock("cursor-call-1"));
-		expect(f.ctx.setTodos).not.toHaveBeenCalled();
-		await f.controller.handleEvent(todoMessageEnd(phases));
-		expect(f.ctx.setTodos).toHaveBeenCalledTimes(1);
-	});
 
 	it("does not recreate the card on later cumulative stream updates", async () => {
 		// `message_update` is cumulative: every subsequent update re-lists the
@@ -253,8 +233,76 @@ describe("EventController + Cursor todo bridge", () => {
 
 		expect(f.blocks).toHaveLength(1);
 		expect(f.ctx.pendingTools.size).toBe(0);
-		expect(f.ctx.setTodos).not.toHaveBeenCalled();
-		await f.controller.handleEvent(todoMessageEnd(phases));
 		expect(f.ctx.setTodos).toHaveBeenCalledWith(phases);
+	});
+
+	it("restores buffered results as held completions after transcript reset", async () => {
+		const pending = {
+			role: "toolResult" as const,
+			toolCallId: "grep-restore-1",
+			toolName: "grep",
+			content: [{ type: "text" as const, text: "RESTORE_MATCH_LINE" }],
+			isError: false,
+			timestamp: 1,
+		};
+		const ctx = createInteractiveModeContext({
+			streamingComponent: new AssistantMessageComponent(),
+			session: {
+				agent: {
+					getPendingToolResults: () => [pending],
+				},
+			},
+		});
+		const blocks: Component[] = [];
+		const addChild = ctx.chatContainer.addChild.bind(ctx.chatContainer);
+		vi.spyOn(ctx.chatContainer, "addChild").mockImplementation(block => {
+			blocks.push(block);
+			addChild(block);
+		});
+		const controller = new EventController(ctx);
+		const showWarning = vi.spyOn(ctx, "showWarning");
+
+		controller.resetTranscriptAnchors();
+		await controller.handleEvent(streamedToolBlock("grep-restore-1", "grep", { pattern: "restore" }));
+		await controller.handleEvent(streamedToolBlock("grep-restore-1", "grep", { pattern: "restore" }));
+
+		expect(blocks).toHaveLength(1);
+		expect(ctx.pendingTools.size).toBe(0);
+		expect(Bun.stripANSI(blocks[0]!.render(120).join("\n"))).toContain("RESTORE_MATCH_LINE");
+		expect(showWarning).not.toHaveBeenCalled();
+	});
+
+	it("reseeds held completions from buffered results at agent_start", async () => {
+		const pending = {
+			role: "toolResult" as const,
+			toolCallId: "grep-restore-2",
+			toolName: "grep",
+			content: [{ type: "text" as const, text: "AGENT_START_MATCH" }],
+			isError: false,
+			timestamp: 1,
+		};
+		const ctx = createInteractiveModeContext({
+			streamingComponent: new AssistantMessageComponent(),
+			session: {
+				agent: {
+					getPendingToolResults: () => [pending],
+				},
+			},
+		});
+		const blocks: Component[] = [];
+		const addChild = ctx.chatContainer.addChild.bind(ctx.chatContainer);
+		vi.spyOn(ctx.chatContainer, "addChild").mockImplementation(block => {
+			blocks.push(block);
+			addChild(block);
+		});
+		const controller = new EventController(ctx);
+
+		await controller.handleEvent({ type: "agent_start" } as Extract<AgentSessionEvent, { type: "agent_start" }>);
+		await controller.handleEvent(streamedToolBlock("grep-restore-2", "grep", { pattern: "start" }));
+		await controller.handleEvent(streamedToolBlock("grep-restore-2", "grep", { pattern: "start" }));
+
+		expect(blocks).toHaveLength(1);
+		expect(ctx.pendingTools.size).toBe(0);
+		expect(Bun.stripANSI(blocks[0]!.render(120).join("\n"))).toContain("AGENT_START_MATCH");
 	});
 });

@@ -17,6 +17,7 @@ import { getProjectDir, isRecord, logger, sanitizeText } from "@oh-my-pi/pi-util
 import { type PerFileDiffPreview, renderStreamingFallback } from "../../edit/renderer";
 import type { Theme } from "../../modes/theme/theme";
 import { getThemeEpoch, theme } from "../../modes/theme/theme";
+import { taskCardAgentIds } from "../../task/render";
 import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
 import { formatDefaultToolExecution } from "../../tools/default-renderer";
 import { EVAL_DEFAULT_PREVIEW_LINES } from "../../tools/eval";
@@ -840,6 +841,16 @@ export class ToolExecutionComponent extends Container {
 	isTranscriptBlockTransient(): boolean {
 		if (this.#sealed || !this.#toolActivityVisible) return false;
 		return this.#parkedBackground || (this.#result !== undefined && this.#isPartial);
+	}
+
+	/**
+	 * Subagent ids visible on this card for click-to-focus hit-testing. Empty
+	 * unless this is a task card whose details already name spawned agents.
+	 * Callers intersect with the live registry, which decides focusability.
+	 */
+	getClickFocusAgentIds(): string[] {
+		if (this.#toolName !== "task") return [];
+		return taskCardAgentIds(this.#result?.details);
 	}
 
 	getTranscriptBlockVersion(): number {

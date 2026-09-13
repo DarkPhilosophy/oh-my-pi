@@ -10,7 +10,13 @@ import * as path from "node:path";
 import { Agent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { InteractiveMode, renderSubagentHudLines } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
+import { PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-coding-agent/modes/composer";
+import {
+	InteractiveMode,
+	layoutPinnedHud,
+	renderSubagentHudLines,
+	SubagentHudComponent,
+} from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import {
 	type ObservableSession,
 	SessionObserverRegistry,
@@ -611,8 +617,6 @@ describe("subagent HUD lines", () => {
 		expect(multiLineDesc).not.toContain("\nSecond line");
 	});
 	it("hides non-detached spawns: sync task calls and eval agent() helpers", () => {
-		// Sync task spawn (parent blocked on the call) and eval `agent()` spawn
-		// (no detached flag at all) both stay off the HUD.
 		const sessions = [
 			makeSession({ id: "SyncSpawn", description: "inline task work", detached: false }),
 			makeSession({ id: "EvalSpawn", description: "eval cell work", detached: undefined }),
@@ -624,7 +628,6 @@ describe("subagent HUD lines", () => {
 		expect(out).not.toContain("SyncSpawn");
 		expect(out).not.toContain("EvalSpawn");
 	});
-
 	it("threads the detached flag from lifecycle and progress payloads", () => {
 		const eventBus = new EventBus();
 		const registry = new SessionObserverRegistry();
@@ -700,6 +703,23 @@ describe("subagent HUD lines", () => {
 		expect(activeIds()).toEqual(["SelectorSurfaces", "BlastRadius", "VariantsSurvey"]);
 	});
 
+	it("renders every live agent when expanded, with a collapse row", () => {
+		const active = Array.from({ length: 10 }, (_, index) =>
+			makeSession({
+				id: `Worker${index}`,
+				description: `job ${index}`,
+			}),
+		);
+
+		const out = Bun.stripANSI(renderSubagentHudLines(active, 120, true, true).join("\n"));
+
+		for (const session of active) {
+			expect(out).toContain(`${session.id}: ${session.description}`);
+		}
+		expect(out).not.toContain("more running");
+		expect(out).toContain("show less");
+	});
+
 	it("renders the first eight active detached subagents and summarizes the rest", () => {
 		const active = Array.from({ length: 10 }, (_, index) =>
 			makeSession({
@@ -709,7 +729,6 @@ describe("subagent HUD lines", () => {
 		);
 
 		const out = render(active, 120);
-
 		for (const session of active.slice(0, 8)) {
 			expectSameRow(out, session.id, session.description!);
 		}
@@ -718,7 +737,7 @@ describe("subagent HUD lines", () => {
 				false,
 			);
 		}
-		expect(out).toContain("2 more running");
+		expect(out).toContain("2 more — expand");
 	});
 });
 
