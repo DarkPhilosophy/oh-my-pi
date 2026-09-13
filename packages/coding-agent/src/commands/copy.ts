@@ -1,5 +1,6 @@
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { copyHelp as commandHelp } from "../cli/command-help";
+import { resolveCliEntryCmd } from "../subprocess/worker-client";
 import { copyTextPersistent } from "../utils/clipboard";
 import { registerCopyUrlHandler, resolveCopyBlock } from "../utils/copy-store";
 
@@ -10,6 +11,7 @@ export default class Copy extends Command {
 	};
 	static flags = {
 		"install-handler": Flags.boolean({ description: "Register the omp-copy: URL scheme handler (Linux xdg)" }),
+		stdin: Flags.boolean({ description: "Read code from standard input instead of a copy URL" }),
 	};
 
 	async run(): Promise<void> {
@@ -23,6 +25,10 @@ export default class Copy extends Command {
 			}
 			return;
 		}
+		if (flags.stdin) {
+			await copyTextPersistent(await Bun.stdin.text());
+			return;
+		}
 		if (!args.url) {
 			process.stderr.write("usage: omp copy <omp-copy:payload> | omp copy --install-handler\n");
 			process.exitCode = 2;
@@ -34,6 +40,21 @@ export default class Copy extends Command {
 			process.exitCode = 1;
 			return;
 		}
-		await copyTextPersistent(code);
+		// The URL contains source code. Only the short-lived launcher may carry it
+		// in argv; the clipboard owner receives bytes through an anonymous pipe.
+		const owner = Bun.spawn([...resolveCliEntryCmd(), "copy", "--stdin"], {
+			stdin: "pipe",
+			stdout: "ignore",
+			stderr: "inherit",
+		});
+		try {
+			owner.stdin.write(code);
+			await owner.stdin.end();
+			owner.unref();
+		} catch (error) {
+			owner.kill();
+			await owner.exited;
+			throw error;
+		}
 	}
 }
