@@ -180,11 +180,13 @@ it("restores popup backing on stop without an optional history flush hook", asyn
 });
 
 it.each([
-	{ height: 4, historyCount: 30, stop: false },
-	{ height: 16, historyCount: 30, stop: false },
-	{ height: 20, historyCount: 12, stop: false },
-	{ height: 20, historyCount: 12, stop: true },
-])("restores popup history without cursor reports: %j", async ({ height, historyCount, stop }) => {
+	{ width: 40, height: 4, historyCount: 30, stop: false, keepOpen: false },
+	{ width: 40, height: 16, historyCount: 30, stop: false, keepOpen: false },
+	{ width: 40, height: 20, historyCount: 12, stop: false, keepOpen: false },
+	{ width: 40, height: 20, historyCount: 12, stop: true, keepOpen: false },
+	{ width: 60, height: 20, historyCount: 12, stop: false, keepOpen: true },
+	{ width: 40, height: 20, historyCount: 12, stop: false, keepOpen: true },
+])("restores popup history without cursor reports: %j", async ({ width, height, historyCount, stop, keepOpen }) => {
 	const terminal = new VirtualTerminal(40, 12);
 	const start = terminal.start.bind(terminal);
 	terminal.start = (_input, resize) => start(() => {}, resize);
@@ -213,11 +215,17 @@ it.each([
 		await terminal.waitForRender();
 		const selector = ui.showOverlay({ render: () => ["SELECTOR"] }, { fullscreen: true, mouseTracking: false });
 		await terminal.waitForRender();
-		terminal.resize(40, height);
+		terminal.resize(width, height);
 		await terminal.waitForRender();
 		if (stop) ui.stop();
 		else {
 			selector.hide();
+			if (keepOpen) {
+				ui.requestRender();
+				await Bun.sleep(600);
+				await terminal.waitForRender();
+				expect(terminal.getViewport().join("\n")).toContain("MENU_1");
+			}
 			ui.setCursorOverlay(undefined, 0, 0);
 			ui.requestRender();
 			await terminal.waitForRender();

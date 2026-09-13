@@ -1673,20 +1673,12 @@ export class TUI extends Container {
 		this.#cursorOverlayResizePending = false;
 		const backing = this.#cursorOverlayBacking;
 		if (!backing) return;
-		if (!anchorKnown && this.#resizeBurstGrew && width === this.#previousWidth && height >= this.#previousHeight) {
-			// A grow can pull fewer history rows than requested. The restored
-			// hardware cursor still tracks the old frame, so restore relative
-			// to it rather than treating the fallback's upper bound as exact.
-			const parkedRow = this.#providerViewportTop + this.#parkedViewportOffset;
-			let buffer = this.#paintBeginSequence + "\x1b7";
-			for (let index = 0; index < backing.rows.length; index++) {
-				const delta = backing.top + index - parkedRow;
-				buffer += "\x1b8";
-				if (delta !== 0) buffer += `\x1b[${Math.abs(delta)}${delta < 0 ? "A" : "B"}`;
-				buffer += `\r${this.#lineRewriteSequence(backing.rows[index]!, width)}`;
-			}
-			this.terminal.write(buffer + "\x1b8" + this.#paintEndSequence);
-			this.#cursorOverlayBacking = undefined;
+		if (!anchorKnown && this.#resizeBurstGrew) {
+			// Growth can pull fewer native history rows than requested, with
+			// or without width reflow. Neither backing nor the screen ledger
+			// can be remapped from that upper bound; rebuild both from the
+			// provider before painting another popup frame.
+			this.#cursorOverlayHistoryDamaged = true;
 			return;
 		}
 		const paintedScreen = Array.from(this.#providerScreen);

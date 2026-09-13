@@ -1308,8 +1308,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "appearance",
 			group: "Display",
 			label: "Popup Background Fill",
-			description:
-				"Fill bordered command suggestion popups with the message surface color; inline completion lists are unchanged",
+			description: "Fill bordered command and argument suggestion popups with the message surface color",
 		},
 	},
 
@@ -1321,7 +1320,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Display",
 			label: "Command Suggestions Popup",
 			description:
-				"Show slash-command suggestions in a bordered popup without moving the chat or changing native scrolling",
+				"Show slash-command and argument suggestions in a bordered popup without moving the chat or changing native scrolling",
 		},
 	},
 
