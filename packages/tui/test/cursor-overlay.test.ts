@@ -151,3 +151,26 @@ it("replays authoritative history after a popup is resized into native scrollbac
 		ui.stop();
 	}
 });
+
+it("restores popup backing on stop without an optional history flush hook", async () => {
+	const terminal = new VirtualTerminal(40, 12);
+	const reference = new VirtualTerminal(40, 12);
+	const ui = new TUI(terminal);
+	const referenceUi = new TUI(reference);
+	ui.setFrameProvider(new Provider());
+	referenceUi.setFrameProvider(new Provider());
+	ui.start();
+	referenceUi.start();
+	try {
+		await terminal.waitForRender();
+		await reference.waitForRender();
+		ui.setCursorOverlay(() => ["MENU_1", "MENU_2", "MENU_3", "MENU_4"], 0, 1);
+		ui.requestRender();
+		await terminal.waitForRender();
+		expect(terminal.getViewport().join("\n")).toContain("MENU_1");
+	} finally {
+		ui.stop();
+		referenceUi.stop();
+	}
+	expect(terminal.getScrollBuffer()).toEqual(reference.getScrollBuffer());
+});

@@ -1853,11 +1853,11 @@ export class TUI extends Container {
 
 	#flushHistoryBeforeStop(): void {
 		const provider = this.#frameProvider;
-		if (provider?.beginHistoryFlush === undefined) return;
+		if (!provider || (!provider.beginHistoryFlush && !this.#cursorOverlayBacking)) return;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
 		if (width <= 0 || height <= 0) return;
-		provider.beginHistoryFlush();
+		provider.beginHistoryFlush?.();
 		while (true) {
 			let plan: TerminalFramePlan;
 			do {
@@ -1884,6 +1884,7 @@ export class TUI extends Container {
 			if (plan.history.id > acceptedBefore && this.#acceptedHistoryBatchId === acceptedBefore) {
 				throw new Error("History flush did not accept the offered batch");
 			}
+			if (!provider.beginHistoryFlush) return;
 		}
 	}
 
