@@ -22,7 +22,7 @@ afterAll(() => {
 function createFixture() {
 	const ctx = createInteractiveModeContext({
 		streamingComponent: new AssistantMessageComponent(),
-		session: { settleInFlightMessagePersistence: vi.fn(async () => { }) },
+		session: { settleInFlightMessagePersistence: vi.fn(async () => {}) },
 	});
 	const blocks: Component[] = [];
 	const addChild = ctx.chatContainer.addChild.bind(ctx.chatContainer);
@@ -103,7 +103,6 @@ function todoFailure(text: string): Extract<AgentSessionEvent, { type: "tool_exe
 		result: { content: [{ type: "text", text }] },
 	} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>;
 }
-
 
 describe("EventController + Cursor todo bridge", () => {
 	it("sanitizes provider error text before it reaches the status line", async () => {
@@ -204,7 +203,6 @@ describe("EventController + Cursor todo bridge", () => {
 		expect(f.ctx.pendingTools.size).toBe(0);
 		expect(f.showWarning).toHaveBeenCalledTimes(1);
 	});
-
 
 	it("does not recreate the card on later cumulative stream updates", async () => {
 		// `message_update` is cumulative: every subsequent update re-lists the

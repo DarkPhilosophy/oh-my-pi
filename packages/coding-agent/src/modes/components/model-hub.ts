@@ -40,7 +40,7 @@ import {
 import { getKnownRoleIds, getRoleInfo } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
 import { AUTO_THINKING, type ConfiguredThinkingLevel, getConfiguredThinkingLevelMetadata } from "../../thinking";
-import { isRetryFallbackWildcardKey, parseRetryFallbackSelector } from "../../session/retry-fallback-chains";
+import { parseRetryFallbackSelector } from "../../session/retry-fallback-chains";
 import { thinkingLevelGlyph } from "../../tools/render-utils";
 import { theme } from "../theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
