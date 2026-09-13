@@ -735,6 +735,8 @@ export class TUI extends Container {
 	#providerViewportTop = 0;
 	/** Producer-declared reversible rows present in the last painted frame. */
 	#providerViewportExpansionRows = 0;
+	/** Temporary growth has displaced live rows into native history. */
+	#providerExpansionBorrowed = false;
 	/** Physical origin to restore after reversible chrome closes without history advancing. */
 	#providerUnexpandedTop: number | undefined;
 	#providerLogicalCommitted = 0;
@@ -986,6 +988,7 @@ export class TUI extends Container {
 		this.#frameProvider = provider;
 		this.#providerWindow = [];
 		this.#providerViewportExpansionRows = 0;
+		this.#providerExpansionBorrowed = false;
 		this.#providerLogicalCommitted = 0;
 		this.#providerHasTransientHistory = false;
 		this.#providerTransientRows = [];
@@ -2802,6 +2805,7 @@ export class TUI extends Container {
 		if (!provider || width <= 0 || height <= 0) return false;
 		if (this.#clearScrollbackOnNextRender) {
 			this.#providerLogicalCommitted = 0;
+			this.#providerExpansionBorrowed = false;
 			this.#providerHasTransientHistory = false;
 			this.#providerTransientRows = [];
 			provider.onViewportBorrowed?.(0);
@@ -2821,6 +2825,25 @@ export class TUI extends Container {
 					Math.max(0, overflow - Math.max(0, plan.viewportExpansionRows ?? 0)),
 					Math.max(0, plan.borrowableRows ?? logicalViewport.length),
 				);
+		if (
+			!flushing &&
+			plan.retainedLiveViewport &&
+			!this.#clearScrollbackOnNextRender &&
+			this.#providerExpansionBorrowed &&
+			(overflow < this.#providerLogicalCommitted || logicalViewport.length < height) &&
+			(plan.viewportExpansionRows ?? 0) < this.#providerViewportExpansionRows &&
+			provider.beginHistoryReplay !== undefined
+		) {
+			// Contracting temporary UI brings borrowed rows back on screen.
+			// Reconcile their native copy through the same replay path used
+			// when a mutable tool shrinks, rather than dropping the live tail.
+			this.#prepareForcedRender(true);
+			this.requestRender(true);
+			return false;
+		}
+		if (borrowOverflow > Math.max(0, overflow - (plan.viewportExpansionRows ?? 0))) {
+			this.#providerExpansionBorrowed = true;
+		}
 		const borrowed = this.#providerTransientRows;
 		if (this.#providerLogicalCommitted > 0 && logicalViewport.length < this.#providerLogicalCommitted) {
 			let survivingPrefix = 0;
@@ -2943,6 +2966,7 @@ export class TUI extends Container {
 			flushing,
 			plan.retainedLiveViewport ?? false,
 		);
+		if ((plan.viewportExpansionRows ?? 0) === 0) this.#providerExpansionBorrowed = false;
 		if (
 			flushing &&
 			history !== undefined &&

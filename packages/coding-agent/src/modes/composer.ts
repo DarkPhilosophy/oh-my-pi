@@ -224,19 +224,19 @@ export class Composer implements TerminalFrameProvider {
 	#nextHistoryId = 1;
 	#offeredHistory:
 		| {
-				id: number;
-				rows: readonly string[];
-				kind: "append" | "replay";
-				source:
-					| "header"
-					| {
-							transcript: TranscriptContainer;
-							transcriptId?: number;
-							header: "none" | "replay";
-							/** Recomposed header rows to accept as the new retired-header bytes. */
-							headerRows?: readonly string[];
-					  };
-		  }
+			id: number;
+			rows: readonly string[];
+			kind: "append" | "replay";
+			source:
+			| "header"
+			| {
+				transcript: TranscriptContainer;
+				transcriptId?: number;
+				header: "none" | "replay";
+				/** Recomposed header rows to accept as the new retired-header bytes. */
+				headerRows?: readonly string[];
+			};
+		}
 		| undefined;
 	#historyReplayRequested = false;
 	#headerReplayPending = false;

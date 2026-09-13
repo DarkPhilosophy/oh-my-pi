@@ -236,7 +236,9 @@ describe("midstream toggle", () => {
 		try {
 			for (let count = 1; count <= 20; count++) {
 				message.updateContent(
-					assistantMsg(Array.from({ length: count }, (_, index) => `CONTEXT_${index + 1} ${"x".repeat(42)}\n`).join("")),
+					assistantMsg(
+						Array.from({ length: count }, (_, index) => `CONTEXT_${index + 1} ${"x".repeat(42)}\n`).join(""),
+					),
 					{ transient: true },
 				);
 				composer.ui.renderNow();
@@ -246,22 +248,47 @@ describe("midstream toggle", () => {
 			composer.ui.renderNow();
 			await terminal.waitForRender();
 			expect(composer.editor.isAutocompleteActive()).toBe(true);
-			const tape = terminal.getScrollBuffer().map(row => Bun.stripANSI(row)).join("\n");
+			const tape = terminal
+				.getScrollBuffer()
+				.map(row => Bun.stripANSI(row))
+				.join("\n");
 			expect(Array.from(tape.matchAll(/CONTEXT_\d+/g), match => match[0])).toEqual(
 				Array.from({ length: 20 }, (_, index) => `CONTEXT_${index + 1}`),
 			);
 			for (let count = 21; count <= 40; count++) {
 				message.updateContent(
-					assistantMsg(Array.from({ length: count }, (_, index) => `CONTEXT_${index + 1} ${"x".repeat(42)}\n`).join("")),
+					assistantMsg(
+						Array.from({ length: count }, (_, index) => `CONTEXT_${index + 1} ${"x".repeat(42)}\n`).join(""),
+					),
 					{ transient: true },
 				);
 				composer.ui.renderNow();
 				await terminal.waitForRender();
-				expect(Array.from(
-					terminal.getScrollBuffer().map(row => Bun.stripANSI(row)).join("\n").matchAll(/CONTEXT_\d+/g),
-					match => match[0],
-				)).toEqual(Array.from({ length: count }, (_, index) => `CONTEXT_${index + 1}`));
+				expect(
+					Array.from(
+						terminal
+							.getScrollBuffer()
+							.map(row => Bun.stripANSI(row))
+							.join("\n")
+							.matchAll(/CONTEXT_\d+/g),
+						match => match[0],
+					),
+				).toEqual(Array.from({ length: count }, (_, index) => `CONTEXT_${index + 1}`));
 			}
+			composer.editor.handleInput("\x7f");
+			composer.ui.renderNow();
+			await terminal.waitForRender();
+			expect(terminal.getViewport().join("\n")).toContain("CONTEXT_40");
+			expect(
+				Array.from(
+					terminal
+						.getScrollBuffer()
+						.map(row => Bun.stripANSI(row))
+						.join("\n")
+						.matchAll(/CONTEXT_\d+/g),
+					match => match[0],
+				),
+			).toEqual(Array.from({ length: 40 }, (_, index) => `CONTEXT_${index + 1}`));
 		} finally {
 			composer.stop();
 			message.dispose();

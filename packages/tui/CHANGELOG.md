@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Closing temporary command suggestions restores the chat at the bottom without blank bands or losing text that remained accessible while the menu was open.
+
 ## [18.1.17] - 2026-09-10
 
 ### Added
