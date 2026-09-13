@@ -13,7 +13,12 @@ import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 let composer: Composer | undefined;
 afterEach(() => composer?.stop());
 
-it.each([24, 8, 5])("keeps model results selectable with %i terminal rows and restores the draft", async height => {
+it.each([
+	[24, 1],
+	[24, 14],
+	[8, 1],
+	[5, 1],
+])("keeps results visible in %i rows with %i extension rows", async (height, extensionRows) => {
 	const terminal = new VirtualTerminal(100, height);
 	composer = new Composer({ preferences: { quiet: true }, terminal });
 	const editor = composer.editor;
@@ -27,7 +32,11 @@ it.each([24, 8, 5])("keeps model results selectable with %i terminal rows and re
 	transcript.addChild(block);
 	const slot = new Container();
 	slot.addChild(editor);
-	composer.setRuntimeChildren([transcript, slot, new Text("EXTENSION BELOW INPUT", 0, 0)]);
+	composer.setRuntimeChildren([
+		transcript,
+		slot,
+		new Text(Array<string>(extensionRows).fill("EXTENSION BELOW INPUT").join("\n"), 0, 0),
+	]);
 	composer.start();
 	composer.ui.setFocus(editor);
 	const paint = async () => {
@@ -91,9 +100,10 @@ it.each([24, 8, 5])("keeps model results selectable with %i terminal rows and re
 	await paint();
 	expect(terminal.getViewport().join("\n")).toContain("MODEL STATUS");
 	expect(terminal.getViewport().at(-1)).toContain("EXTENSION BELOW INPUT");
+	expect(terminal.getViewport().filter(line => line.includes("EXTENSION BELOW INPUT"))).toHaveLength(extensionRows);
 	picker.handleInput("beta");
 	await paint();
-	expect(terminal.getViewport().join("\n")).toContain("beta");
+	expect(terminal.getViewport().filter(line => line.includes("beta")).length).toBeGreaterThanOrEqual(2);
 	expect(terminal.getScrollBuffer().slice(0, -terminal.rows)).toEqual(history);
 	picker.handleInput("\r");
 	await paint();

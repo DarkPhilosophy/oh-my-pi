@@ -311,6 +311,7 @@ export class ModelPickerComponent implements Focusable {
 				},
 				inputRow,
 				count,
+				"above",
 			);
 			const rows = editorRows ? Array.from(editorRows) : Array<string>(count).fill("");
 			rows[inputRow] = search;

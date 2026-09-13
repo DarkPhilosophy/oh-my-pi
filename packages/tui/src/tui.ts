@@ -676,6 +676,7 @@ export class TUI extends Container {
 	#cursorOverlayHiddenImages = new Set<number>();
 	#cursorOverlayOffset = 0;
 	#cursorOverlayEditorRows = 0;
+	#cursorOverlayPlacement: "auto" | "above" = "auto";
 	#cursorOverlayBacking:
 		| { top: number; rows: string[]; painted: readonly string[]; width?: number; height?: number }
 		| undefined;
@@ -902,13 +903,19 @@ export class TUI extends Container {
 	 * The frame provider must support complete history replay: a resize can
 	 * archive painted overlay cells before SIGWINCH reaches the application.
 	 */
-	setCursorOverlay(render: CursorOverlayRenderer | undefined, cursorOffset: number, editorRows: number): void {
+	setCursorOverlay(
+		render: CursorOverlayRenderer | undefined,
+		cursorOffset: number,
+		editorRows: number,
+		placement: "auto" | "above" = "auto",
+	): void {
 		if (render && !this.#frameProvider?.beginHistoryReplay) {
 			throw new Error("Cursor overlays require a frame provider with history replay support");
 		}
 		this.#cursorOverlayRender = render;
 		this.#cursorOverlayOffset = cursorOffset;
 		this.#cursorOverlayEditorRows = editorRows;
+		this.#cursorOverlayPlacement = placement;
 	}
 
 	/** Install the product-owned bounded frame provider. */
@@ -2797,7 +2804,7 @@ export class TUI extends Container {
 		const marker = markers[0];
 		const editorTop = Math.max(0, newTop + (marker?.row ?? 0) - this.#cursorOverlayOffset);
 		const editorBottom = Math.min(height, editorTop + this.#cursorOverlayEditorRows);
-		const above = editorTop >= height - editorBottom;
+		const above = this.#cursorOverlayPlacement === "above" || editorTop >= height - editorBottom;
 		const available = above ? editorTop : height - editorBottom;
 		const overlayRows =
 			marker && !flushing && !this.hasOverlay() && available > 0
