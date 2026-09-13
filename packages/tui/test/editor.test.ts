@@ -507,7 +507,7 @@ describe("Editor component", () => {
 			expect(editor.render(80).some(line => line.includes(CURSOR_MARKER))).toBe(true);
 		});
 
-		it("caps wrapped slash-command descriptions at two rows with an ellipsis", async () => {
+		it.each(["/", "  /"])("caps wrapped command descriptions for prefix %j at two rows", async prefix => {
 			const editor = new Editor(defaultEditorTheme);
 			const longDescription =
 				"Plan and execute non-trivial architectural improvements to the codebase. Use this skill when you need to refactor existing systems and it keeps rambling on far past what two popup rows can hold.";
@@ -521,7 +521,7 @@ describe("Editor component", () => {
 			const { promise: autocompleteUpdated, resolve: resolveAutocompleteUpdated } = Promise.withResolvers<void>();
 			editor.onAutocompleteUpdate = resolveAutocompleteUpdated;
 
-			editor.handleInput("/");
+			editor.handleInput(prefix);
 			await autocompleteUpdated;
 
 			const rendered = editor.render(80).map(line => stripVTControlCharacters(line));
