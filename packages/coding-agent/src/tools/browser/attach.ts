@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as path from "node:path";
 import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
@@ -240,13 +241,21 @@ export async function findReusableCdp(
 		requestedUserDataDir !== null && path.isAbsolute(requestedUserDataDir)
 			? normalizeUserDataDir(requestedUserDataDir)
 			: null;
-	const candidates = Process.fromPath(exe).filter(process => process.status() === ProcessStatus.Running);
+	// Process paths use the executable's real path, not its launcher symlink.
+	const executablePath = await fs.realpath(exe).catch(() => exe);
+	const candidates = Process.fromPath(executablePath).filter(process => process.status() === ProcessStatus.Running);
 	const candidateArgs: string[][] = [];
 	let hasUnreadableCandidate = false;
 	for (const process of candidates) {
 		let args: string[];
 		try {
-			args = process.args();
+			const processArgs = process.args();
+			// Chromium's Linux setproctitle joins argv with spaces. Keep switch
+			// values together (including spaces in profile paths), not word-split.
+			args =
+				globalThis.process.platform === "linux" && processArgs.length === 1
+					? processArgs[0]!.split(/ (?=--)/)
+					: processArgs;
 		} catch {
 			hasUnreadableCandidate = true;
 			continue;
