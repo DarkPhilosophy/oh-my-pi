@@ -23,6 +23,7 @@ import { STDOUT_BACKLOG_CLEAR_BYTES, setAltScreenActive, type Terminal } from ".
 import {
 	encodeKittyDeleteAllImages,
 	encodeKittyDeleteImage,
+	encodeKittyDeletePlacement,
 	encodeKittyPlacementLine,
 	ImageProtocol,
 	isImageProtocolForced,
@@ -672,6 +673,7 @@ export class TUI extends Container {
 	// above it hold history still visible on the physical screen.
 	#providerViewportTop = 0;
 	#cursorOverlayRender: CursorOverlayRenderer | undefined;
+	#cursorOverlayHiddenImages = new Set<number>();
 	#cursorOverlayOffset = 0;
 	#cursorOverlayEditorRows = 0;
 	#cursorOverlayBacking:
@@ -1262,7 +1264,7 @@ export class TUI extends Container {
 					return;
 				}
 				if (this.#altActive) {
-					if (this.#cursorOverlayBacking) this.#cursorOverlayResizePending = true;
+					this.#trackResizeBurst();
 					// A fullscreen overlay owns the alt buffer: repaint the modal at
 					// the new size. Never snapshot the normal window or probe its
 					// anchor against the alternate grid — not even for a toggle echo.
@@ -2805,6 +2807,17 @@ export class TUI extends Container {
 		const overlayTop = above ? editorTop - overlayCount : editorBottom;
 		const previousOverlay = this.#cursorOverlayBacking;
 		const remappedBacking = previousOverlay?.width === width && previousOverlay?.height === height;
+		// Restore hidden placements before any transcript writes can scroll them.
+		if (!destructiveReset && this.#cursorOverlayHiddenImages.size > 0) {
+			for (let row = 0; row < this.#providerScreen.length; row++) {
+				const line = this.#providerScreen[row]!;
+				const image = parseKittyDirectPlacementLine(line);
+				if (image && this.#cursorOverlayHiddenImages.has(image.imageId)) {
+					buffer += `\x1b[${row + 1};1H${this.#imageLineSequence(line, row, -1, -1)}`;
+				}
+			}
+		}
+		this.#cursorOverlayHiddenImages.clear();
 		// A partial multicell overwrite destroys the whole glyph, not only the
 		// covered row. Restore its anchor and all reserved rows as one unit.
 		let restoredScaledBacking = false;
@@ -2898,6 +2911,15 @@ export class TUI extends Container {
 		while (screenPrefix.length < startTop) screenPrefix.push("");
 		this.#providerScreen = [...screenPrefix, ...preparedHistory.slice(-height), ...prepared].slice(-height);
 		if (overlayCount > 0) {
+			// Hide only intersecting direct placements; retain their image data
+			// and restore them on the next paint without imposing a cell fill.
+			for (let row = 0; row < this.#providerScreen.length; row++) {
+				const image = parseKittyDirectPlacementLine(this.#providerScreen[row]!);
+				if (!image || row < overlayTop || row - image.rows + 1 >= overlayTop + overlayCount) continue;
+				const placement = this.#imageBudget.resolvePlacementEmit(image.imageId, -1, -1);
+				buffer += encodeKittyDeletePlacement(image.imageId, placement?.placementId ?? image.placementId ?? 0);
+				this.#cursorOverlayHiddenImages.add(image.imageId);
+			}
 			const covered: string[] = [];
 			for (let index = 0; index < overlayCount; index++) {
 				const row = overlayTop + index;

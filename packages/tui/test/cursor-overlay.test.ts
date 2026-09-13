@@ -178,8 +178,19 @@ it("restores popup backing on stop without an optional history flush hook", asyn
 	expect(terminal.getScrollBuffer()).toEqual(reference.getScrollBuffer());
 });
 
-it("restores normal history after a fullscreen selector resizes over a passive popup", async () => {
+it.each([4, 16])("restores history after fullscreen resize to %i rows without cursor reports", async height => {
 	const terminal = new VirtualTerminal(40, 12);
+	const start = terminal.start.bind(terminal);
+	terminal.start = (_input, resize) => start(() => {}, resize);
+	const write = terminal.write.bind(terminal);
+	terminal.write = data => {
+		write(data);
+		// VirtualTerminal's Kitty core does not pull the inactive normal
+		// buffer on growth. Emulate the xterm-style pull on its restoration.
+		if (height > 12 && data.includes("\x1b[?1049l")) {
+			write(`\x1b[${height - 12}+T\x1b[${height - 12}B`);
+		}
+	};
 	const ui = new TUI(terminal);
 	ui.setFrameProvider(new Provider());
 	ui.start();
@@ -190,13 +201,13 @@ it("restores normal history after a fullscreen selector resizes over a passive p
 		await terminal.waitForRender();
 		const selector = ui.showOverlay({ render: () => ["SELECTOR"] }, { fullscreen: true, mouseTracking: false });
 		await terminal.waitForRender();
-		terminal.resize(40, 4);
+		terminal.resize(40, height);
 		await terminal.waitForRender();
 		selector.hide();
 		ui.setCursorOverlay(undefined, 0, 0);
 		ui.requestRender();
 		await terminal.waitForRender();
-		await Bun.sleep(300);
+		await Bun.sleep(600);
 		await terminal.waitForRender();
 		const rows = terminal.getScrollBuffer();
 		expect(rows.filter(row => row.startsWith("HISTORY_"))).toEqual(
@@ -310,6 +321,40 @@ it("keeps uncovered click targets available while blocking popup-covered rows", 
 		ui.requestRender();
 		await terminal.waitForRender();
 		expect(ui.getMutableViewport(5)).toEqual({ top: 0, length: 8 });
+	} finally {
+		ui.stop();
+	}
+});
+
+it("hides intersecting Kitty placements without filling cells or freeing image data", async () => {
+	const terminal = new VirtualTerminal(40, 12);
+	const ui = new TUI(terminal);
+	const provider = new Provider();
+	const placement = "\x1b7\x1b[7A\x1b_Ga=p,q=2,C=1,i=713,p=713,c=40,r=8,z=-2147483648\x1b\\\x1b8";
+	provider.frame = { viewport: [...Array<string>(7).fill(""), placement, `${CURSOR_MARKER}input`] };
+	ui.setFrameProvider(provider);
+	const writes: string[] = [];
+	const write = terminal.write.bind(terminal);
+	terminal.write = data => {
+		writes.push(data);
+		write(data);
+	};
+	ui.start();
+	try {
+		await terminal.waitForRender();
+		writes.length = 0;
+		ui.setCursorOverlay(() => ["MODEL_RESULT"], 0, 1);
+		ui.requestRender();
+		await terminal.waitForRender();
+		expect(writes.join("")).toContain("\x1b_Ga=d,d=i,i=713,p=713,q=2\x1b\\");
+		expect(terminal.getViewport().join("\n")).toContain("MODEL_RESULT");
+		expect(terminal.getViewportRowBackgroundColumns(7)).toEqual([]);
+		writes.length = 0;
+		ui.setCursorOverlay(undefined, 0, 0);
+		ui.requestRender();
+		await terminal.waitForRender();
+		expect(writes.join("")).toContain(placement);
+		expect(writes.join("")).not.toMatch(/\x1b_Ga=d,d=[AI],/);
 	} finally {
 		ui.stop();
 	}

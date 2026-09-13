@@ -60,7 +60,7 @@ it.each([false, true])("applies popup background only when fill is enabled (%s),
 	const terminal = new VirtualTerminal(40, 12);
 	composer = new Composer({ preferences: { quiet: true }, terminal });
 	const placement = encodeKittyPlacement({ imageId: 713, placementId: 713, columns: 40, rows: 8 });
-	const image = { render: () => ["\x1b7" + placement + "\x1b8", ...Array<string>(7).fill("")] };
+	const image = { render: () => [...Array<string>(7).fill(""), "\x1b7\x1b[7A" + placement + "\x1b8"] };
 	composer.setRuntimeChildren([image, composer.editor]);
 	composer.editor.commandSuggestionsPopup = true;
 	composer.editor.popupFill = fill;
@@ -86,16 +86,18 @@ it.each([false, true])("applies popup background only when fill is enabled (%s),
 	composer.ui.requestRender();
 	await terminal.waitForRender();
 	expect(terminal.getViewport().join("\n")).toContain("command0");
-	// Kitty draws this placement below non-default cell backgrounds. The popup
-	// must emit an opaque fill, not only foreground text over a default cell.
+	// Hiding placements must not add a background when fill is disabled.
 	for (let row = 0; row < 8; row++) {
 		if (fill)
 			expect(terminal.getViewportRowBackgroundColumns(row)).toEqual(Array.from({ length: 40 }, (_, col) => col));
 		else if (row === 0) expect(terminal.getViewportRowBackgroundColumns(row)).toEqual([]);
 	}
+	expect(writes.join("")).toContain("\x1b_Ga=d,d=i,i=713,p=713,q=2\x1b\\");
+	writes.length = 0;
 	composer.editor.handleInput("\x1b");
 	composer.ui.requestRender();
 	await terminal.waitForRender();
 	expect(terminal.getViewport().join("\n")).not.toContain("command0");
-	expect(writes.join("")).not.toMatch(/\x1b_Ga=d,/);
+	expect(writes.join("")).toMatch(/\x1b_Ga=p,[^\x1b]*i=713,/);
+	expect(writes.join("")).not.toMatch(/\x1b_Ga=d,d=[AI],/);
 });
