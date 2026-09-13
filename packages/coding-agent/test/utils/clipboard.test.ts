@@ -303,6 +303,20 @@ describe("copyTextPersistent", () => {
 
 		expect(nativeCopy).toHaveBeenCalledWith("persistent");
 	});
+
+	it("uses X11 tools when Wayland copy fails in a mixed display session", async () => {
+		setPlatform("linux");
+		process.env.WAYLAND_DISPLAY = "wayland-0";
+		process.env.DISPLAY = ":0";
+		const calls: SpawnCall[] = [];
+		spySpawn(calls, ["", "", ""], [1, 1, 0]);
+		const nativeCopy = vi.spyOn(native, "copyToClipboardPersistent").mockImplementation(() => {});
+
+		await copyTextPersistent("persistent");
+
+		expect(calls.map(call => call.cmd)).toEqual([["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-ib"]]);
+		expect(nativeCopy).not.toHaveBeenCalled();
+	});
 });
 
 describe("readTextFromClipboard", () => {

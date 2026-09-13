@@ -18,6 +18,7 @@ export function supportsCopyUrlHandler(
 	return (
 		platform === "linux" &&
 		Boolean(xdgMime) &&
+		!env.SUDO_USER &&
 		!env.SSH_CLIENT &&
 		!env.SSH_CONNECTION &&
 		!env.SSH_TTY &&

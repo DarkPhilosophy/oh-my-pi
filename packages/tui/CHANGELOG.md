@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.1.17] - 2026-09-10
+
 ### Added
 
 - Added compact framed rendering for completed fenced Markdown code blocks, with width-aware wrapping and language labels while preserving raw delimiters for still-streaming fences.
