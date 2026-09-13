@@ -262,6 +262,48 @@ it("recovers popup rows when stopping before resize settles", async () => {
 	expect(rows.join("\n")).not.toContain("MENU_");
 });
 
+it("waits for a queued complete replay before clearing damaged popup history at stop", async () => {
+	class DelayedReplayProvider extends Provider {
+		#replayQueued = false;
+		beginHistoryFlush(): void {}
+		override beginHistoryReplay(): void {
+			if (this.frame.history) this.#replayQueued = true;
+			else super.beginHistoryReplay();
+		}
+		override acknowledgeHistory(): void {
+			super.acknowledgeHistory();
+			if (this.#replayQueued) {
+				this.#replayQueued = false;
+				super.beginHistoryReplay();
+			}
+		}
+	}
+	const terminal = new VirtualTerminal(40, 12);
+	const ui = new TUI(terminal);
+	const provider = new DelayedReplayProvider();
+	ui.setFrameProvider(provider);
+	ui.start();
+	try {
+		await terminal.waitForRender();
+		ui.setCursorOverlay(() => ["MENU_1", "MENU_2", "MENU_3", "MENU_4"], 0, 1);
+		ui.requestRender();
+		await terminal.waitForRender();
+		// Model an offered append whose paint was deferred before acknowledgement.
+		provider.frame = {
+			history: { id: 2, kind: "append", rows: ["HISTORY_30"] },
+			viewport: provider.frame.viewport,
+		};
+		terminal.resize(40, 4);
+	} finally {
+		ui.stop();
+	}
+	await terminal.flush();
+	expect(terminal.getScrollBuffer().filter(row => row.startsWith("HISTORY_"))).toEqual(
+		Array.from({ length: 31 }, (_, index) => `HISTORY_${index}`),
+	);
+	expect(terminal.getScrollBuffer().join("\n")).not.toContain("MENU_");
+});
+
 it.each([
 	[40, 14],
 	[40, 10],

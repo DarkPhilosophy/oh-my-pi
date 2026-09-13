@@ -827,6 +827,7 @@ export class TUI extends Container {
 	#ghosttyInitialImageDelayTimer: RenderTimer | undefined;
 	#ghosttyImageReadyAtMs = 0;
 	#clearScrollbackOnNextRender = false;
+	#clearScrollbackWaitsForReplay = false;
 	// Consumed by the next frame: a user-driven redraw gesture (resetDisplay,
 	// requestRender(true)) that must rewrite the viewport even when the diff
 	// believes nothing changed.
@@ -1928,7 +1929,7 @@ export class TUI extends Container {
 			if (plan.history.id > acceptedBefore && this.#acceptedHistoryBatchId === acceptedBefore) {
 				throw new Error("History flush did not accept the offered batch");
 			}
-			if (!provider.beginHistoryFlush) return;
+			if (!provider.beginHistoryFlush && !this.#clearScrollbackOnNextRender) return;
 		}
 	}
 
@@ -2116,6 +2117,7 @@ export class TUI extends Container {
 		return true;
 	}
 	#prepareForcedRender(clearScrollback: boolean): void {
+		if (clearScrollback) this.#clearScrollbackWaitsForReplay = false;
 		if (clearScrollback && !this.#clearScrollbackOnNextRender) {
 			this.#frameProvider?.beginHistoryReplay?.();
 			if (TERMINAL.imageProtocol === ImageProtocol.Kitty) this.#imageBudget.forgetTransmitted();
@@ -2647,6 +2649,7 @@ export class TUI extends Container {
 		if (this.#cursorOverlayHistoryDamaged) {
 			this.#cursorOverlayHistoryDamaged = false;
 			this.#prepareForcedRender(true);
+			this.#clearScrollbackWaitsForReplay = true;
 			return;
 		}
 		const size = `${width}x${height}`;
@@ -2766,7 +2769,10 @@ export class TUI extends Container {
 		// Destructive reset (session replace, /tree, explicit clear, or a settled
 		// resize in rebuild mode): erase native history and the viewport,
 		// then repaint from row zero.
-		const destructiveReset = this.#clearScrollbackOnNextRender;
+		// A provider may queue the complete replay behind an already offered
+		// append. Acknowledge that batch without consuming the paired clear.
+		const destructiveReset =
+			this.#clearScrollbackOnNextRender && (!this.#clearScrollbackWaitsForReplay || history?.kind !== "append");
 		if (destructiveReset) {
 			this.#providerViewportTop = 0;
 			this.#providerWindow = [];
@@ -2964,7 +2970,10 @@ export class TUI extends Container {
 		this.#resizeBurstLastHeight = undefined;
 		this.#resizeBurstPull = 0;
 		this.#previousFrameLength = mutablePrepared.length;
-		this.#clearScrollbackOnNextRender = false;
+		if (destructiveReset) {
+			this.#clearScrollbackOnNextRender = false;
+			this.#clearScrollbackWaitsForReplay = false;
+		}
 		this.#forceViewportRepaintOnNextRender = false;
 		this.#hasEverRendered = true;
 		this.#resizeReplaySize = undefined;
