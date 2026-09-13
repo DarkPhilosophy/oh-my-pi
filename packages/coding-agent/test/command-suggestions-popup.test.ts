@@ -102,55 +102,66 @@ it.each([false, true])("applies popup background only when fill is enabled (%s),
 	expect(writes.join("")).not.toMatch(/\x1b_Ga=d,/);
 });
 
-it("keeps command arguments above the editor while filtering and accepting them", async () => {
-	const terminal = new VirtualTerminal(44, 18);
-	composer = new Composer({ preferences: { quiet: true }, terminal });
-	const transcript = new TranscriptContainer();
-	const block = {
-		render: () => Array.from({ length: 30 }, (_, i) => `CHAT_${i}`),
-		isTranscriptBlockFinalized: () => true,
-	};
-	transcript.addChild(block);
-	composer.setRuntimeChildren([transcript, composer.editor, { render: () => ["BELOW_EDITOR"] }]);
-	composer.editor.commandSuggestionsPopup = true;
-	composer.editor.onAutocompleteRender = (render, offset, rows) => composer!.ui.setCursorOverlay(render, offset, rows);
-	composer.editor.setAutocompleteProvider(
-		new CombinedAutocompleteProvider([
-			{
-				name: "advisor",
-				getArgumentCompletions: prefix =>
-					["on", "off", "status", "dump", "configure"]
-						.filter(value => value.startsWith(prefix))
-						.map(value => ({ value, label: value })),
-			},
-		]),
-	);
-	composer.editor.onAutocompleteUpdate = () => composer!.ui.requestRender();
-	composer.editor.onAutocompleteCancel = () => composer!.ui.requestRender();
-	composer.start();
-	composer.ui.setFocus(composer.editor);
-	const paint = async () => {
-		await Bun.sleep(150);
-		composer!.ui.requestRender();
-		await terminal.waitForRender();
-	};
-	await paint();
-	const history = terminal.getScrollBuffer().slice(0, -terminal.rows);
-	for (const input of ["/advisor ", "o"]) {
-		composer.editor.handleInput(input);
+it.each([
+	{
+		command: "advisor",
+		values: ["on", "off", "status", "dump", "configure"],
+		filter: "o",
+		option: "off",
+		selected: "on",
+	},
+	{ command: "move", values: ["/tmp/one/", "/tmp/two/"], filter: "/tmp/", option: "/tmp/two/", selected: "/tmp/one/" },
+])(
+	"keeps $command arguments above the editor while filtering and accepting them",
+	async ({ command, values, filter, option, selected }) => {
+		const terminal = new VirtualTerminal(44, 18);
+		composer = new Composer({ preferences: { quiet: true }, terminal });
+		const transcript = new TranscriptContainer();
+		const block = {
+			render: () => Array.from({ length: 30 }, (_, i) => `CHAT_${i}`),
+			isTranscriptBlockFinalized: () => true,
+		};
+		transcript.addChild(block);
+		composer.setRuntimeChildren([transcript, composer.editor, { render: () => ["BELOW_EDITOR"] }]);
+		composer.editor.commandSuggestionsPopup = true;
+		composer.editor.onAutocompleteRender = (render, offset, rows) =>
+			composer!.ui.setCursorOverlay(render, offset, rows);
+		composer.editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider([
+				{
+					name: command,
+					getArgumentCompletions: prefix =>
+						values.filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
+				},
+			]),
+		);
+		composer.editor.onAutocompleteUpdate = () => composer!.ui.requestRender();
+		composer.editor.onAutocompleteCancel = () => composer!.ui.requestRender();
+		composer.start();
+		composer.ui.setFocus(composer.editor);
+		const paint = async () => {
+			await Bun.sleep(150);
+			composer!.ui.requestRender();
+			await terminal.waitForRender();
+		};
 		await paint();
-		const rows = terminal.getViewport().map(Bun.stripANSI);
-		const editorRow = rows.findIndex(row => row.includes("/advisor"));
-		const optionRow = rows.findIndex(row => /\boff\b/.test(row));
-		expect(optionRow).toBeGreaterThanOrEqual(0);
-		expect(optionRow).toBeLessThan(editorRow);
-		expect(rows.findIndex(row => row.includes("BELOW_EDITOR"))).toBeGreaterThan(editorRow);
-		expect(terminal.getScrollBuffer().slice(0, -terminal.rows)).toEqual(history);
-	}
-	composer.editor.handleInput("\t");
-	await paint();
-	expect(composer.editor.getText()).toBe("/advisor on");
-	composer.editor.handleInput("\x1b");
-	await paint();
-	expect(terminal.getViewport().join("\n")).not.toMatch(/\boff\b/);
-});
+		const history = terminal.getScrollBuffer().slice(0, -terminal.rows);
+		for (const input of [`/${command} `, filter]) {
+			composer.editor.handleInput(input);
+			await paint();
+			const rows = terminal.getViewport().map(Bun.stripANSI);
+			const editorRow = rows.findIndex(row => row.includes(`/${command}`));
+			const optionRow = rows.findIndex(row => row.includes(option));
+			expect(optionRow).toBeGreaterThanOrEqual(0);
+			expect(optionRow).toBeLessThan(editorRow);
+			expect(rows.findIndex(row => row.includes("BELOW_EDITOR"))).toBeGreaterThan(editorRow);
+			expect(terminal.getScrollBuffer().slice(0, -terminal.rows)).toEqual(history);
+		}
+		composer.editor.handleInput("\t");
+		await paint();
+		expect(composer.editor.getText().trimEnd()).toBe(`/${command} ${selected}`);
+		composer.editor.handleInput("\x1b");
+		await paint();
+		expect(terminal.getViewport().join("\n")).not.toContain(option);
+	},
+);

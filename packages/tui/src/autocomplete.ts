@@ -220,6 +220,8 @@ export interface AutocompleteProvider {
 	): Promise<{
 		items: AutocompleteItem[];
 		prefix: string; // What we're matching against (e.g., "/" or "src/")
+		/** Suggestions supplied by a matched slash command's argument provider. */
+		commandArgument?: boolean;
 	} | null>;
 
 	/** Apply the selected item and return new text + cursor position */
@@ -533,7 +535,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		cursorLine: number,
 		cursorCol: number,
 		signal?: AbortSignal,
-	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
+	): Promise<{ items: AutocompleteItem[]; prefix: string; commandArgument?: boolean } | null> {
 		if (signal?.aborted) return null;
 		const currentLine = lines[cursorLine] || "";
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
@@ -607,6 +609,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 						return {
 							items: argumentSuggestions,
 							prefix: argumentText,
+							commandArgument: true,
 						};
 					}
 				}

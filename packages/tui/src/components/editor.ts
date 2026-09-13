@@ -584,6 +584,7 @@ export class Editor implements Component, Focusable {
 		| { line: number; startCol: number; endCol: number; original: string; cursorOffset: number }
 		| undefined;
 	#autocompletePrefix: string = "";
+	#autocompleteCommandArgument = false;
 	#autocompleteRequestId: number = 0;
 	#autocompletePendingRequest: AutocompleteRequest | undefined;
 	#autocompleteRequestRunning = false;
@@ -1515,7 +1516,7 @@ export class Editor implements Component, Focusable {
 				this.commandSuggestionsPopup &&
 				(this.#isInSubmittedSlashCommandContext() ||
 					findLeadingSlashCommandStart(this.#autocompletePrefix) !== null) &&
-				!this.#selectedCompletionIsPath() &&
+				(!this.#selectedCompletionIsPath() || this.#autocompleteCommandArgument) &&
 				this.onAutocompleteRender
 			) {
 				this.onAutocompleteRender(
@@ -4040,6 +4041,7 @@ export class Editor implements Component, Focusable {
 		if (replacements.endCol > line.length) return;
 		const original = line.slice(replacements.startCol, replacements.endCol);
 		this.#autocompletePrefix = original;
+		this.#autocompleteCommandArgument = false;
 		this.#autocompleteList = this.#createAutocompleteList(
 			original,
 			replacements.items.map(value => ({ value, label: value })),
@@ -4099,6 +4101,7 @@ export class Editor implements Component, Focusable {
 		this.#autocompleteList = undefined;
 		this.#textAssistReplacement = undefined;
 		this.#autocompletePrefix = "";
+		this.#autocompleteCommandArgument = false;
 		if (notifyCancel && wasAutocompleting) {
 			this.onAutocompleteCancel?.();
 		}
@@ -4155,7 +4158,7 @@ export class Editor implements Component, Focusable {
 		const lines = [...this.#state.lines];
 		const cursorLine = this.#state.cursorLine;
 		const cursorCol = this.#state.cursorCol;
-		let suggestions: { items: AutocompleteItem[]; prefix: string } | null;
+		let suggestions: { items: AutocompleteItem[]; prefix: string; commandArgument?: boolean } | null;
 		try {
 			if (request.kind === "force") {
 				const getForceFileSuggestions = provider.getForceFileSuggestions;
@@ -4185,6 +4188,7 @@ export class Editor implements Component, Focusable {
 
 		if (suggestions && Array.isArray(suggestions.items) && suggestions.items.length > 0) {
 			this.#autocompletePrefix = suggestions.prefix;
+			this.#autocompleteCommandArgument = suggestions.commandArgument === true;
 			this.#autocompleteList = this.#createAutocompleteList(suggestions.prefix, suggestions.items);
 			this.#autocompleteState = request.kind === "force" ? "force" : "regular";
 			this.onAutocompleteUpdate?.();
