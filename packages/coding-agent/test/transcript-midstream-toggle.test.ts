@@ -88,6 +88,36 @@ it("reconciles a shrinking mutable tool against the rows actually written to his
 	}
 });
 
+it("updates borrowed tool output before the tool finishes", async () => {
+	await createTestSession();
+	const terminal = new VirtualTerminal(60, 8);
+	const composer = new Composer({ preferences: { quiet: true }, terminal });
+	const transcript = new TranscriptContainer();
+	let output = "EVAL_PROGRESS_1";
+	const rows = Array.from({ length: 20 }, (_, index) => `EVAL_ROW_${index}`);
+	const tool = {
+		render: () => [output, ...rows],
+		isTranscriptBlockFinalized: () => false,
+	};
+	transcript.addChild(tool);
+	composer.setRuntimeChildren([transcript, { render: () => ["INPUT"] }]);
+	composer.start();
+	try {
+		composer.ui.requestRender();
+		await terminal.waitForRender();
+		output = "EVAL_PROGRESS_2";
+		composer.ui.requestRender();
+		await terminal.waitForRender();
+		const tape = terminal
+			.getScrollBuffer()
+			.map(row => Bun.stripANSI(row).trimEnd())
+			.filter(Boolean);
+		expect(tape).toEqual([output, ...rows, "INPUT"]);
+	} finally {
+		composer.stop();
+	}
+});
+
 it("restores the transcript after a temporary job wait is removed", async () => {
 	createTestSession();
 	const terminal = new VirtualTerminal(80, 20, 1000);

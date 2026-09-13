@@ -318,3 +318,13 @@
 - Composer now includes chrome-displaced transcript overflow in the borrowable row bound. The new regression exercises continued streaming while command suggestions remain open.
 - Latest automated midstream run: 4 pass, 5 fail. The new open-menu streaming case passes; remaining failures cover dialog restoration, visible-tail restoration, and menu-close restoration. Preserve these assertions and record this as experimental progress, not a completed fix.
 - Publish only the scoped Composer change, its regression test, and this journal. Leave backups, temporary databases, and the diagnostic probe untouched. No further rendering changes are part of this checkpoint.
+
+## User correction: preserve terminal history
+
+- The user rejects the later destructive-replay patches as symptom masking, not a correct implementation of viewport expansion and contraction. Earlier passing tests and completion claims did not establish preservation of the terminal scroll position.
+- MUST NOT use `clearScrollback`, `#prepareForcedRender(true)`, or an equivalent history wipe/rebuild to repair ordinary rendering: slash suggestions, TODO dismissal, waiting/ask transitions, or streaming tool updates.
+- Existing terminal history MUST remain intact during ordinary rendering. Fix logical viewport capacity, mutable-row ownership, clipping, and expansion/contraction instead of resetting history to hide gaps or stale output.
+- Resize or another specifically justified reset operation may have a dedicated reset path; these exceptions MUST NOT become automatic fallback reconciliation for ordinary frames.
+- Appending a replay of the whole history without clearing is not a substitute: it can duplicate history and disturb scrolling. Preserve existing history, not merely avoid the ED3 sequence.
+- Acceptance must include preserved history content/order, no duplicate or missing rows, correct bottom anchoring when following live output, and no forced scroll-position jump, alongside slash, TODO, ask/wait, and long mutable-tool scenarios.
+- This entry records the required constraint only. It does not remove the existing destructive replay paths or claim the rendering defects are fixed.

@@ -2845,6 +2845,25 @@ export class TUI extends Container {
 			this.#providerExpansionBorrowed = true;
 		}
 		const borrowed = this.#providerTransientRows;
+		if (
+			!flushing &&
+			plan.retainedLiveViewport &&
+			plan.history === undefined &&
+			logicalViewport.length >= this.#providerLogicalCommitted &&
+			!this.#clearScrollbackOnNextRender &&
+			provider.beginHistoryReplay !== undefined
+		) {
+			const limit = Math.min(logicalViewport.length, this.#providerLogicalCommitted);
+			const nativeOffset = borrowed.length - this.#providerLogicalCommitted;
+			for (let index = 0; index < limit; index++) {
+				if (logicalViewport[index] === borrowed[nativeOffset + index]) continue;
+				// Native scrollback cannot be repainted in place. Replace its stale
+				// borrowed snapshot before drawing the continuation of a mutable tool.
+				this.#prepareForcedRender(true);
+				this.requestRender(true);
+				return false;
+			}
+		}
 		if (this.#providerLogicalCommitted > 0 && logicalViewport.length < this.#providerLogicalCommitted) {
 			let survivingPrefix = 0;
 			const limit = Math.min(logicalViewport.length, this.#providerLogicalCommitted);
