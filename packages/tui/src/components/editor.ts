@@ -1093,10 +1093,10 @@ export class Editor implements Component, Focusable {
 			CURSOR_MARKER +
 			(afterLength > 0
 				? decorate(after.slice(0, afterLength), {
-					...context,
-					startCol: cursorCol,
-					endCol: cursorCol + afterLength,
-				})
+						...context,
+						startCol: cursorCol,
+						endCol: cursorCol + afterLength,
+					})
 				: "") +
 			after.slice(afterLength)
 		);
@@ -1356,10 +1356,10 @@ export class Editor implements Component, Focusable {
 				vimSelection === null
 					? null
 					: this.#selectionSpanFor(
-						layoutLine,
-						vimSelection,
-						layoutLines[this.#scrollOffset + visibleIndex + 1]?.logicalLine !== layoutLine.logicalLine,
-					);
+							layoutLine,
+							vimSelection,
+							layoutLines[this.#scrollOffset + visibleIndex + 1]?.logicalLine !== layoutLine.logicalLine,
+						);
 
 			if (selectionSpan !== null) {
 				displayText = this.#renderSelectedLine(
@@ -2278,10 +2278,10 @@ export class Editor implements Component, Focusable {
 				from >= start && from < end
 					? `\x1b[7m${segment}\x1b[27m`
 					: this.#decorate(segment, {
-						...context,
-						startCol: context.startCol + from,
-						endCol: context.startCol + to,
-					});
+							...context,
+							startCol: context.startCol + from,
+							endCol: context.startCol + to,
+						});
 		}
 		if (marker && markerPos !== undefined && markerPos >= text.length) out += marker;
 		if (span.trailingNewline) out += "\x1b[7m \x1b[27m";
@@ -2756,7 +2756,7 @@ export class Editor implements Component, Focusable {
 							this.onTextAssistApplied?.();
 						}
 					})
-					.catch(() => { });
+					.catch(() => {});
 			} else if (autocorrection && this.#applyInlineReplacement(autocorrection)) {
 				return;
 			}
@@ -2992,7 +2992,7 @@ export class Editor implements Component, Focusable {
 		const re = this.#getAtomicTokenRe();
 		if (re === undefined) return undefined;
 		re.lastIndex = 0;
-		for (; ;) {
+		for (;;) {
 			const match = re.exec(line);
 			if (match === null) break;
 			if (match[0].length === 0) {
