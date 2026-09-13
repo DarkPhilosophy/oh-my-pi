@@ -179,7 +179,12 @@ it("restores popup backing on stop without an optional history flush hook", asyn
 	expect(terminal.getScrollBuffer()).toEqual(reference.getScrollBuffer());
 });
 
-it.each([4, 16])("restores history after fullscreen resize to %i rows without cursor reports", async height => {
+it.each([
+	{ height: 4, historyCount: 30, stop: false },
+	{ height: 16, historyCount: 30, stop: false },
+	{ height: 20, historyCount: 12, stop: false },
+	{ height: 20, historyCount: 12, stop: true },
+])("restores popup history without cursor reports: %j", async ({ height, historyCount, stop }) => {
 	const terminal = new VirtualTerminal(40, 12);
 	const start = terminal.start.bind(terminal);
 	terminal.start = (_input, resize) => start(() => {}, resize);
@@ -189,11 +194,17 @@ it.each([4, 16])("restores history after fullscreen resize to %i rows without cu
 		// VirtualTerminal's Kitty core does not pull the inactive normal
 		// buffer on growth. Emulate the xterm-style pull on its restoration.
 		if (height > 12 && data.includes("\x1b[?1049l")) {
-			write(`\x1b[${height - 12}+T\x1b[${height - 12}B`);
+			const pull = Math.min(height - 12, Math.max(0, historyCount + 2 - 12));
+			if (pull > 0) write(`\x1b[${pull}+T\x1b[${pull}B`);
 		}
 	};
 	const ui = new TUI(terminal);
-	ui.setFrameProvider(new Provider());
+	const provider = new Provider();
+	provider.frame = {
+		history: { id: 1, kind: "append", rows: Array.from({ length: historyCount }, (_, i) => `HISTORY_${i}`) },
+		viewport: provider.frame.viewport,
+	};
+	ui.setFrameProvider(provider);
 	ui.start();
 	try {
 		await terminal.waitForRender();
@@ -204,15 +215,18 @@ it.each([4, 16])("restores history after fullscreen resize to %i rows without cu
 		await terminal.waitForRender();
 		terminal.resize(40, height);
 		await terminal.waitForRender();
-		selector.hide();
-		ui.setCursorOverlay(undefined, 0, 0);
-		ui.requestRender();
-		await terminal.waitForRender();
-		await Bun.sleep(600);
-		await terminal.waitForRender();
+		if (stop) ui.stop();
+		else {
+			selector.hide();
+			ui.setCursorOverlay(undefined, 0, 0);
+			ui.requestRender();
+			await terminal.waitForRender();
+			await Bun.sleep(600);
+			await terminal.waitForRender();
+		}
 		const rows = terminal.getScrollBuffer();
 		expect(rows.filter(row => row.startsWith("HISTORY_"))).toEqual(
-			Array.from({ length: 30 }, (_, i) => `HISTORY_${i}`),
+			Array.from({ length: historyCount }, (_, i) => `HISTORY_${i}`),
 		);
 		expect(rows.join("\n")).not.toContain("MENU_");
 	} finally {
@@ -327,7 +341,7 @@ it("keeps uncovered click targets available while blocking popup-covered rows", 
 	}
 });
 
-it.each([false, true])("hides intersecting Kitty placements without fill or data loss (tmux=%s)", async tmux => {
+it.each([false, true])("preserves image placement IDs when history scrolls under a popup (tmux=%s)", async tmux => {
 	if (tmux) Bun.env.TMUX = "/tmp/omp-test-tmux,1,0";
 	const terminal = new VirtualTerminal(40, 12);
 	const ui = new TUI(terminal);
@@ -349,16 +363,38 @@ it.each([false, true])("hides intersecting Kitty placements without fill or data
 		ui.setCursorOverlay(() => ["MODEL_RESULT"], 0, 1);
 		ui.requestRender();
 		await terminal.waitForRender();
-		const hide = "\x1b_Ga=d,d=i,i=713,p=713,q=2\x1b\\";
-		expect(writes.join("")).toContain(tmux ? wrapTmuxPassthrough(hide) : hide);
+		expect(writes.join("")).not.toMatch(/\x1b_Ga=d,/);
 		expect(terminal.getViewport().join("\n")).toContain("MODEL_RESULT");
 		expect(terminal.getViewportRowBackgroundColumns(7)).toEqual([]);
-		writes.length = 0;
+		provider.frame = {
+			history: { id: 2, kind: "append", rows: Array<string>(6).fill("APPENDED") },
+			viewport: provider.frame.viewport,
+		};
+		ui.requestRender();
+		await terminal.waitForRender();
 		ui.setCursorOverlay(undefined, 0, 0);
 		ui.requestRender();
 		await terminal.waitForRender();
 		expect(writes.join("")).toContain(placement);
-		expect(writes.join("")).not.toMatch(/\x1b_Ga=d,d=[AI],/);
+		expect(writes.join("")).not.toMatch(/\x1b_Ga=d,/);
+	} finally {
+		ui.stop();
+	}
+});
+
+it("places suggestions immediately after the visible tail of a clipped editor", async () => {
+	const terminal = new VirtualTerminal(40, 8);
+	const ui = new TUI(terminal);
+	const provider = new Provider();
+	provider.frame = { viewport: [`${CURSOR_MARKER}input`, "editor bottom", ...Array<string>(6).fill("footer")] };
+	ui.setFrameProvider(provider);
+	ui.setCursorOverlay(() => ["MENU_1", "MENU_2"], 2, 4);
+	ui.start();
+	try {
+		await terminal.waitForRender();
+		expect(terminal.getViewport()[1]).toBe("editor bottom");
+		expect(terminal.getViewport()[2]).toBe("MENU_1");
+		expect(terminal.getViewport()[3]).toBe("MENU_2");
 	} finally {
 		ui.stop();
 	}

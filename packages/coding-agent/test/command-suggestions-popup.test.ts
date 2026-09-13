@@ -86,18 +86,18 @@ it.each([false, true])("applies popup background only when fill is enabled (%s),
 	composer.ui.requestRender();
 	await terminal.waitForRender();
 	expect(terminal.getViewport().join("\n")).toContain("command0");
-	// Hiding placements must not add a background when fill is disabled.
+	// Background styling is opt-in and must never delete transcript graphics.
 	for (let row = 0; row < 8; row++) {
 		if (fill)
 			expect(terminal.getViewportRowBackgroundColumns(row)).toEqual(Array.from({ length: 40 }, (_, col) => col));
 		else if (row === 0) expect(terminal.getViewportRowBackgroundColumns(row)).toEqual([]);
 	}
-	expect(writes.join("")).toContain("\x1b_Ga=d,d=i,i=713,p=713,q=2\x1b\\");
+	expect(writes.join("")).not.toMatch(/\x1b_Ga=d,/);
 	writes.length = 0;
 	composer.editor.handleInput("\x1b");
 	composer.ui.requestRender();
 	await terminal.waitForRender();
 	expect(terminal.getViewport().join("\n")).not.toContain("command0");
 	expect(writes.join("")).toMatch(/\x1b_Ga=p,[^\x1b]*i=713,/);
-	expect(writes.join("")).not.toMatch(/\x1b_Ga=d,d=[AI],/);
+	expect(writes.join("")).not.toMatch(/\x1b_Ga=d,/);
 });

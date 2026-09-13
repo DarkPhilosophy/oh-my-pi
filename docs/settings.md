@@ -713,6 +713,8 @@ tui:
 
 Command popup interactions do not rebuild scrollback. After a resize, popup backing that remains addressable is restored in place. If covered rows have left the viewport or reflow has changed their physical extent, recovery rebuilds the application's complete history. This exceptional recovery also applies in `preserve`/`append` mode and can remove pre-existing shell or pane scrollback that the application does not own.
 
+Popup fill is intentionally opt-in. With fill disabled, Kitty images can remain visible through unfilled popup cells; enable `display.popupFill` when opaque image occlusion is needed. Popup interaction never deletes image placements, including through tmux: deleting a partially archived placement would also remove its scrollback cells. A terminal-default background reset alone does not hide Kitty images.
+
 For a custom status line, set `statusLine.preset: custom` and configure `statusLine.leftSegments`, `statusLine.rightSegments`, and `statusLine.segmentOptions`. Include `status` in either segment list to render extension statuses registered through `ctx.ui.setStatus()`, ordered by key and joined inline. Set `statusLine.showHookStatus: false` to suppress the same statuses in the footer.
 
 The `cost` segment shows recorded session costs. For an active provider/model with scheduled pricing, it appends `↑` during peak hours or `↓` off-peak, refreshing at boundaries even while idle. The arrow reflects the current tariff, not past spending; flat-price models and explicit cost overrides have no arrow. See [usage costs and time-based pricing](models.md#usage-costs-and-time-based-pricing) for the UTC schedule and estimation semantics.

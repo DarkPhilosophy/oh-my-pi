@@ -23,7 +23,6 @@ import { STDOUT_BACKLOG_CLEAR_BYTES, setAltScreenActive, type Terminal } from ".
 import {
 	encodeKittyDeleteAllImages,
 	encodeKittyDeleteImage,
-	encodeKittyDeletePlacement,
 	encodeKittyPlacementLine,
 	ImageProtocol,
 	isImageProtocolForced,
@@ -673,7 +672,6 @@ export class TUI extends Container {
 	// above it hold history still visible on the physical screen.
 	#providerViewportTop = 0;
 	#cursorOverlayRender: CursorOverlayRenderer | undefined;
-	#cursorOverlayHiddenImages = new Set<number>();
 	#cursorOverlayOffset = 0;
 	#cursorOverlayEditorRows = 0;
 	#cursorOverlayPlacement: "auto" | "above" = "auto";
@@ -1624,7 +1622,8 @@ export class TUI extends Container {
 			const msg = `[${new Date().toISOString()}] resize anchor: size=${width}x${height} cpr=${reportedRow ?? "timeout"} park=${probe.offset} stale=${staleRows} old=${this.#providerViewportTop} top=${top}\n`;
 			fs.appendFileSync(getDebugLogPath(), msg);
 		}
-		if (this.#cursorOverlayResizePending) this.#remapCursorOverlayBacking(width, height, top);
+		if (this.#cursorOverlayResizePending)
+			this.#remapCursorOverlayBacking(width, height, top, reportedRow !== undefined);
 		this.#providerViewportTop = Math.min(top, Math.max(0, height - 1));
 		// Resolved geometry invalidates the replay offset with the old anchor;
 		// the forced repaint recomputes it (usually zero).
@@ -1670,10 +1669,26 @@ export class TUI extends Container {
 	}
 
 	/** Reconcile saved cells against the measured post-resize viewport anchor. */
-	#remapCursorOverlayBacking(width: number, height: number, viewportTop: number): void {
+	#remapCursorOverlayBacking(width: number, height: number, viewportTop: number, anchorKnown = true): void {
 		this.#cursorOverlayResizePending = false;
 		const backing = this.#cursorOverlayBacking;
 		if (!backing) return;
+		if (!anchorKnown && this.#resizeBurstGrew && width === this.#previousWidth && height >= this.#previousHeight) {
+			// A grow can pull fewer history rows than requested. The restored
+			// hardware cursor still tracks the old frame, so restore relative
+			// to it rather than treating the fallback's upper bound as exact.
+			const parkedRow = this.#providerViewportTop + this.#parkedViewportOffset;
+			let buffer = this.#paintBeginSequence + "\x1b7";
+			for (let index = 0; index < backing.rows.length; index++) {
+				const delta = backing.top + index - parkedRow;
+				buffer += "\x1b8";
+				if (delta !== 0) buffer += `\x1b[${Math.abs(delta)}${delta < 0 ? "A" : "B"}`;
+				buffer += `\r${this.#lineRewriteSequence(backing.rows[index]!, width)}`;
+			}
+			this.terminal.write(buffer + "\x1b8" + this.#paintEndSequence);
+			this.#cursorOverlayBacking = undefined;
+			return;
+		}
 		const paintedScreen = Array.from(this.#providerScreen);
 		for (let index = 0; index < backing.painted.length; index++) {
 			paintedScreen[backing.top + index] = backing.painted[index]!;
@@ -2634,7 +2649,7 @@ export class TUI extends Container {
 			const window = this.#providerWindow.length > 0 ? this.#providerWindow : this.#resizeProbeWindow;
 			const offset = this.#resizeProbe?.offset ?? this.#parkedViewportOffset;
 			const top = this.#fallbackResizeAnchor(window, offset, width, height);
-			this.#remapCursorOverlayBacking(width, height, top);
+			this.#remapCursorOverlayBacking(width, height, top, false);
 			this.#providerViewportTop = top;
 		}
 		if (this.#cursorOverlayHistoryDamaged) {
@@ -2802,8 +2817,9 @@ export class TUI extends Container {
 			!destructiveReset &&
 			this.#providerWindow.length > 0;
 		const marker = markers[0];
-		const editorTop = Math.max(0, newTop + (marker?.row ?? 0) - this.#cursorOverlayOffset);
-		const editorBottom = Math.min(height, editorTop + this.#cursorOverlayEditorRows);
+		const logicalEditorTop = newTop + (marker?.row ?? 0) - this.#cursorOverlayOffset;
+		const editorTop = Math.max(0, logicalEditorTop);
+		const editorBottom = Math.max(0, Math.min(height, logicalEditorTop + this.#cursorOverlayEditorRows));
 		const above = this.#cursorOverlayPlacement === "above" || editorTop >= height - editorBottom;
 		const available = above ? editorTop : height - editorBottom;
 		const overlayRows =
@@ -2814,17 +2830,6 @@ export class TUI extends Container {
 		const overlayTop = above ? editorTop - overlayCount : editorBottom;
 		const previousOverlay = this.#cursorOverlayBacking;
 		const remappedBacking = previousOverlay?.width === width && previousOverlay?.height === height;
-		// Restore hidden placements before any transcript writes can scroll them.
-		if (!destructiveReset && this.#cursorOverlayHiddenImages.size > 0) {
-			for (let row = 0; row < this.#providerScreen.length; row++) {
-				const line = this.#providerScreen[row]!;
-				const image = parseKittyDirectPlacementLine(line, true);
-				if (image && this.#cursorOverlayHiddenImages.has(image.imageId)) {
-					buffer += `\x1b[${row + 1};1H${this.#imageLineSequence(line, row, -1, -1)}`;
-				}
-			}
-		}
-		this.#cursorOverlayHiddenImages.clear();
 		// A partial multicell overwrite destroys the whole glyph, not only the
 		// covered row. Restore its anchor and all reserved rows as one unit.
 		let restoredScaledBacking = false;
@@ -2918,18 +2923,6 @@ export class TUI extends Container {
 		while (screenPrefix.length < startTop) screenPrefix.push("");
 		this.#providerScreen = [...screenPrefix, ...preparedHistory.slice(-height), ...prepared].slice(-height);
 		if (overlayCount > 0) {
-			// Hide only intersecting direct placements; retain their image data
-			// and restore them on the next paint without imposing a cell fill.
-			for (let row = 0; row < this.#providerScreen.length; row++) {
-				const line = this.#providerScreen[row]!;
-				const image = parseKittyDirectPlacementLine(line, true);
-				if (!image || row < overlayTop || row - image.rows + 1 >= overlayTop + overlayCount) continue;
-				const placement = line.includes("\x1bPtmux;")
-					? undefined
-					: this.#imageBudget.resolvePlacementEmit(image.imageId, -1, -1);
-				buffer += encodeKittyDeletePlacement(image.imageId, placement?.placementId ?? image.placementId ?? 0);
-				this.#cursorOverlayHiddenImages.add(image.imageId);
-			}
 			const covered: string[] = [];
 			for (let index = 0; index < overlayCount; index++) {
 				const row = overlayTop + index;
