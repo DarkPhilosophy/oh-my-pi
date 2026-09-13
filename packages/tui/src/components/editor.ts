@@ -593,6 +593,7 @@ export class Editor implements Component, Focusable {
 	onAutocompleteUpdate?: () => void;
 	/** Opt in to passive slash suggestions when a host supplies a popup renderer. */
 	commandSuggestionsPopup = false;
+	popupFill = false;
 	/** A frame host may paint suggestions over existing cells instead of allocating layout rows. */
 	onAutocompleteRender?: (render: CursorOverlayRenderer | undefined, cursorOffset: number, editorRows: number) => void;
 	/** Called after an async text-assist result mutates the document outside an input event, so hosts can schedule a repaint. */
@@ -762,9 +763,13 @@ export class Editor implements Component, Focusable {
 		if (!this.#autocompleteList || maxRows < 1) return [];
 		const framed = maxRows >= 3 && width >= 3;
 		this.#autocompleteList.setMaxVisible(Math.min(this.#autocompleteMaxVisible, maxRows - (framed ? 2 : 0)));
-		const background = this.#theme.surfaceColor ?? PASSTHROUGH_COLOR;
+
 		if (!framed) {
-			return this.#autocompleteList.render(width).map(line => applyBackgroundToLine(line, width, background));
+			return this.popupFill
+				? this.#autocompleteList
+						.render(width)
+						.map(line => applyBackgroundToLine(line, width, this.#theme.surfaceColor ?? PASSTHROUGH_COLOR))
+				: this.#autocompleteList.render(width);
 		}
 		this.#autocompleteBox.setBorder({
 			chars: this.#theme.symbols.boxRound,
@@ -772,7 +777,11 @@ export class Editor implements Component, Focusable {
 		});
 		this.#autocompleteBox.clear();
 		this.#autocompleteBox.addChild(this.#autocompleteList);
-		return this.#autocompleteBox.render(width).map(line => applyBackgroundToLine(line, width, background));
+		return this.popupFill
+			? this.#autocompleteBox
+					.render(width)
+					.map(line => applyBackgroundToLine(line, width, this.#theme.surfaceColor ?? PASSTHROUGH_COLOR))
+			: this.#autocompleteBox.render(width);
 	};
 
 	/**

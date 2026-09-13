@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added an opt-in Popup Background Fill setting; command and inline model popups keep their unfilled appearance by default.
+
 - Added an optional Command Suggestions Popup in Appearance → Display that keeps the chat stationary while suggestions open, filter, and close ([#11946](https://github.com/can1357/oh-my-pi/pull/11946) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 
 ### Changed

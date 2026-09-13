@@ -56,13 +56,14 @@ it.each(["", "  "])("restores chat and history through popup filtering with pref
 	expect(writes.join("")).not.toMatch(/\x1b\[(?:2|3)J|\x1b\[\?1049h|\x1b\[\?1003h/);
 });
 
-it("covers intersecting direct graphics with opaque popup cells without deleting image data", async () => {
+it.each([false, true])("applies popup background only when fill is enabled (%s), retaining image data", async fill => {
 	const terminal = new VirtualTerminal(40, 12);
 	composer = new Composer({ preferences: { quiet: true }, terminal });
 	const placement = encodeKittyPlacement({ imageId: 713, placementId: 713, columns: 40, rows: 8 });
 	const image = { render: () => ["\x1b7" + placement + "\x1b8", ...Array<string>(7).fill("")] };
 	composer.setRuntimeChildren([image, composer.editor]);
 	composer.editor.commandSuggestionsPopup = true;
+	composer.editor.popupFill = fill;
 	composer.editor.onAutocompleteRender = (render, offset, rows) => composer!.ui.setCursorOverlay(render, offset, rows);
 	composer.editor.setAutocompleteProvider(
 		new CombinedAutocompleteProvider(Array.from({ length: 12 }, (_, i) => ({ name: `command${i}` }))),
@@ -88,7 +89,9 @@ it("covers intersecting direct graphics with opaque popup cells without deleting
 	// Kitty draws this placement below non-default cell backgrounds. The popup
 	// must emit an opaque fill, not only foreground text over a default cell.
 	for (let row = 0; row < 8; row++) {
-		expect(terminal.getViewportRowBackgroundColumns(row)).toEqual(Array.from({ length: 40 }, (_, col) => col));
+		if (fill)
+			expect(terminal.getViewportRowBackgroundColumns(row)).toEqual(Array.from({ length: 40 }, (_, col) => col));
+		else if (row === 0) expect(terminal.getViewportRowBackgroundColumns(row)).toEqual([]);
 	}
 	composer.editor.handleInput("\x1b");
 	composer.ui.requestRender();

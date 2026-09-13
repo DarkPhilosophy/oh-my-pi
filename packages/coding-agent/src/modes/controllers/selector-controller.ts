@@ -587,6 +587,10 @@ export class SelectorController {
 				this.ctx.eventController.refreshIdleCompactionTimer();
 				break;
 
+			case "display.popupFill":
+				this.ctx.editor.popupFill = value as boolean;
+				this.ctx.ui.requestRender();
+				break;
 			case "display.commandSuggestionsPopup":
 				this.ctx.editor.commandSuggestionsPopup = value as boolean;
 				this.ctx.ui.requestRender();

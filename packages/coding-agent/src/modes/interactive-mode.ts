@@ -1163,6 +1163,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#applyVimMode(this.editor);
 		this.editor.setAutocompleteMaxVisible(settings.get("autocompleteMaxVisible"));
 		this.editor.commandSuggestionsPopup = settings.get("display.commandSuggestionsPopup");
+		this.editor.popupFill = settings.get("display.popupFill");
 		this.editor.onAutocompleteRender = (render, offset, rows) => this.ui.setCursorOverlay(render, offset, rows);
 		this.syncEditorSpelling();
 		this.editor.viewportRowsProvider = () => this.ui.terminal.rows;
@@ -5459,6 +5460,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#applyVimMode(nextEditor);
 		nextEditor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
 		nextEditor.commandSuggestionsPopup = this.settings.get("display.commandSuggestionsPopup");
+		nextEditor.popupFill = this.settings.get("display.popupFill");
 		nextEditor.onAutocompleteRender = (render, offset, rows) => this.ui.setCursorOverlay(render, offset, rows);
 		nextEditor.setSpellingFeatures({
 			typoDetection: this.settings.get("spelling.typoDetection"),
