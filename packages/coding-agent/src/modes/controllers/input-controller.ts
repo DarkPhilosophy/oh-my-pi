@@ -14,6 +14,7 @@ import { resolveLocalRoot } from "../../internal-urls";
 import { AskDialogComponent } from "../../modes/components/ask-dialog";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { extractImagePathFromText } from "../../modes/components/custom-editor";
+import { ModelPickerComponent } from "../../modes/components/model-picker";
 import { ReadToolGroupComponent } from "../../modes/components/read-tool-group";
 import { renderSegmentTrack } from "../../modes/components/segment-track";
 import { TinyTitleDownloadProgressComponent } from "../../modes/components/tiny-title-download-progress";
@@ -340,6 +341,7 @@ export class InputController {
 				if (this.ctx.ui.getFocused() instanceof TreeSelectorComponent && matchesKey(data, "ctrl+o"))
 					return undefined;
 				const focused = this.ctx.ui.getFocused();
+				if (focused instanceof ModelPickerComponent) return undefined;
 				// A truncated ask question lives in the editor slot, not chat
 				// transcript, so expand it in-place instead of (or before)
 				// toggling tool-output previews.
