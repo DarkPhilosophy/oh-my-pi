@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added an optional Inline Model Picker in Appearance → Display that keeps model search in the chat input area while preserving the statusline and extension content.
+- Added an optional Inline Model Picker in Appearance → Display that keeps model search in the chat input area while preserving the statusline and extension content ([#11958](https://github.com/can1357/oh-my-pi/pull/11958) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 
 ### Changed
 
