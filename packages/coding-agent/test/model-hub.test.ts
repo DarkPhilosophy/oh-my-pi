@@ -1144,8 +1144,8 @@ describe("ModelHub", () => {
 			expect(normalize(hub.render(220))).not.toContain(`${selector}:off`);
 		});
 
-		test("t on a routed fallback entry preserves @upstream when setting effort", () => {
-			const model = makeModel("openrouter", "z-ai/glm-4.7");
+		test.each(["z-ai/glm-4.7", "acme/router:high"])("t preserves routed fallback identity %s", id => {
+			const model = makeModel("openrouter", id);
 			const routed = `${model.provider}/${model.id}@fireworks`;
 			const settings = Settings.isolated({ "retry.fallbackChains": { default: [routed] } });
 			const { hub, onFallbackChainChange } = createHub({ models: [model], scoped: true, settings });
@@ -1161,8 +1161,8 @@ describe("ModelHub", () => {
 			expect(normalize(hub.render(220))).toContain(`↳ ${routed}:off`);
 		});
 
-		test("t on a routed+suffixed entry clears back to the bare route", () => {
-			const model = makeModel("openrouter", "z-ai/glm-4.7");
+		test.each(["z-ai/glm-4.7", "acme/router:high"])("t clears effort without changing routed identity %s", id => {
+			const model = makeModel("openrouter", id);
 			const routed = `${model.provider}/${model.id}@fireworks`;
 			const settings = Settings.isolated({ "retry.fallbackChains": { default: [`${routed}:off`] } });
 			const { hub, onFallbackChainChange } = createHub({ models: [model], scoped: true, settings });

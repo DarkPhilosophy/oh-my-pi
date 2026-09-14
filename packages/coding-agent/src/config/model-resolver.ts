@@ -405,20 +405,20 @@ export function parseExactModelSelectorWithRouting(
 	pattern: string,
 	findModel: (provider: string, id: string) => Model<Api> | undefined,
 ): { provider: string; id: string; thinkingLevel?: ConfiguredThinkingLevel; upstream: string | undefined } | undefined {
-	const parse = (value: string) =>
-		parseModelString(value, {
+	const parse = (value: string) => {
+		// Apply the same literal-ID precedence to plain and routed selectors.
+		const separator = value.indexOf("/");
+		if (separator > 0) {
+			const exact = findModel(value.slice(0, separator), value.slice(separator + 1));
+			if (exact) return { provider: exact.provider, id: exact.id };
+		}
+		return parseModelString(value, {
 			allowMaxSuffix: true,
 			allowAutoAlias: true,
 			isLiteralModelId: (provider, id) => findModel(provider, id) !== undefined,
 		});
+	};
 	const trimmed = pattern.trim();
-	// A registered ID may itself end in an effort name; resolve the complete
-	// selector before allowing suffix parsing to reinterpret that identity.
-	const separator = trimmed.indexOf("/");
-	if (separator > 0) {
-		const exact = findModel(trimmed.slice(0, separator), trimmed.slice(separator + 1));
-		if (exact) return { provider: exact.provider, id: exact.id, upstream: undefined };
-	}
 	const literal = parse(trimmed);
 	if (literal && findModel(literal.provider, literal.id)) return { ...literal, upstream: undefined };
 	const routing = splitUpstreamRouting(trimmed);
