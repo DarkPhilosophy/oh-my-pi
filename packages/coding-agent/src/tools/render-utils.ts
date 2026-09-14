@@ -7,7 +7,6 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 import { ThinkingLevel, type ToolCallContext } from "@oh-my-pi/pi-agent-core";
 import type { Ellipsis } from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
@@ -852,7 +851,7 @@ export function shortenEmbeddedPaths(text: string, homeDir?: string): string {
 	const tokenBoundary = String.raw`[\s"'\x60([{=(:,;<>&|*_]`;
 	return text.replace(
 		new RegExp(
-			`(^|${tokenBoundary})${escapedHome}(?=$|[/\\\\\\s"'\\]),;:\\x60<>&|]|\\.(?=$|[\\s"'\\]),;:\\x60<>&|]))([/\\\\][^\\s"'\\x60<>&|]*)?`,
+			`(^|${tokenBoundary})${escapedHome}(?=$|[/\\\\\\s"'\\]),;:\\x60<>&|]|\\.(?=$|[\\s"'\\]),;:\\x60<>&|]))([/\\\\][^\\s"'\\x60<>&|:;]*)?`,
 			flags,
 		),
 		(_match, boundary: string, suffix = "") =>
@@ -866,12 +865,17 @@ export function shortenToolArgumentPaths(text: string, key: string | undefined, 
 		try {
 			const url = new URL(text);
 			if (url.protocol === "file:") {
-				const decodedPath = decodeURIComponent(url.pathname);
+				let decodedPath = url.pathname;
+				try {
+					decodedPath = decodeURIComponent(decodedPath);
+				} catch {
+					/* Retain malformed percent escapes as literal path bytes. */
+				}
 				const filePath = url.hostname
 					? `//${url.hostname}${decodedPath}`
 					: /^[A-Za-z]:$/.test(decodedPath.slice(1, 3))
 						? decodedPath.slice(1)
-						: fileURLToPath(url);
+						: decodedPath;
 				return shortenEmbeddedPaths(filePath, homeDir);
 			}
 		} catch {

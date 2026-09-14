@@ -32,6 +32,15 @@ import {
 } from "@oh-my-pi/pi-tui";
 
 describe("embedded home path normalization", () => {
+	it("shortens every adjacent home path in path lists", () => {
+		expect(shortenEmbeddedPaths("PATH=/home/alice/bin:/home/alice/.local/bin", "/home/alice")).toBe(
+			"PATH=~/bin:~/.local/bin",
+		);
+	});
+	it("shortens local file URLs containing invalid percent escapes", () => {
+		expect(shortenToolArgumentPaths("file:///home/alice/100%.txt", "url", "/home/alice")).toBe("~/100%.txt");
+	});
+
 	it("shortens home paths enclosed in Markdown emphasis", () => {
 		expect(shortenEmbeddedPaths("Inspect **/home/alice/private/file**", "/home/alice")).toBe(
 			"Inspect **~/private/file**",
