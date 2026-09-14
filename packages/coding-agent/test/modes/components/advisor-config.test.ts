@@ -33,6 +33,93 @@ describe("advisor config editor warnings and synthetic default row", () => {
 			},
 		);
 
+	const clickSave = (overlay: AdvisorConfigOverlayComponent, scope: "project" | "user") => {
+		const rows = overlay.render(100).map(Bun.stripANSI);
+		const saveRows = rows.flatMap((row, index) => (row.slice(0, 35).includes("Save & apply") ? [index] : []));
+		const row = saveRows[scope === "project" ? 0 : 1];
+		if (row === undefined) throw new Error(`Missing ${scope} save row`);
+		overlay.handleInput(`\x1b[<0;5;${row + 1}M`);
+	};
+
+	it("serializes project and global saves, then permits the blocked scope after completion", async () => {
+		let finishFirst!: () => void;
+		const firstSave = new Promise<void>(resolve => {
+			finishFirst = resolve;
+		});
+		const saves: string[] = [];
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			{ modelRegistry: {} as ModelRegistry, settings, scopedModels: [], availableToolNames: [] },
+			"project",
+			{ advisors: [] },
+			{
+				loadDoc: async () => ({ advisors: [] }),
+				save: async scope => {
+					saves.push(scope);
+					if (saves.length === 1) await firstSave;
+				},
+				close: () => {},
+				requestRender: () => {},
+				notify: () => {},
+			},
+		);
+		await Promise.resolve();
+		await Promise.resolve();
+		clickSave(overlay, "project");
+		clickSave(overlay, "user");
+		expect(saves).toEqual(["project"]);
+
+		finishFirst();
+		await Promise.resolve();
+		await Promise.resolve();
+		clickSave(overlay, "user");
+		await Promise.resolve();
+		expect(saves).toEqual(["project", "user"]);
+	});
+
+	it("releases the save guard after rejection without discarding pending edits", async () => {
+		const attempts: Array<{ scope: string; doc: WatchdogConfigDoc }> = [];
+		const notifications: string[] = [];
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			{ modelRegistry: {} as ModelRegistry, settings, scopedModels: [], availableToolNames: [] },
+			"project",
+			{ advisors: [{ name: "Reviewer" }] },
+			{
+				loadDoc: async () => ({ advisors: [] }),
+				save: async (scope, doc) => {
+					attempts.push({ scope, doc: structuredClone(doc) });
+					if (attempts.length === 1) throw new Error("disk full");
+				},
+				close: () => {},
+				requestRender: () => {},
+				notify: message => notifications.push(message),
+			},
+		);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		overlay.handleInput("\x1b[C");
+		overlay.handleInput("\r");
+		overlay.handleInput("\x1b[D");
+		for (let i = 0; i < 3; i++) overlay.handleInput("\x1b[B");
+		overlay.handleInput("\r");
+		for (let i = 0; i < 5; i++) await Promise.resolve();
+
+		expect(notifications).toContain("Advisor config: disk full");
+		expect(Bun.stripANSI(overlay.render(100).join("\n"))).toContain("unsaved");
+
+		clickSave(overlay, "project");
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(attempts).toEqual([
+			{ scope: "project", doc: { advisors: [{ name: "Reviewer", enabled: false }] } },
+			{ scope: "project", doc: { advisors: [{ name: "Reviewer", enabled: false }] } },
+		]);
+		expect(notifications).toContain("Saved Project · project advisors");
+		expect(Bun.stripANSI(overlay.render(100).join("\n"))).not.toContain("unsaved");
+	});
+
 	it("still drops the untouched seeded default row on save", async () => {
 		let saved: WatchdogConfigDoc | undefined;
 		const overlay = buildOverlay({ advisors: [] }, doc => {

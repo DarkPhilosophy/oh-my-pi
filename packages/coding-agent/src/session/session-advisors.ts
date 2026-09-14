@@ -1928,6 +1928,11 @@ export class SessionAdvisors {
 		this.#deliveryAbort.abort();
 		this.#deliveryAbort = new AbortController();
 		if (this.#advisors.length > 0) this.#stopAdvisorRuntime();
+		for (const [slug, entry] of this.#advisorStatuses) {
+			if (entry.status === "running" || entry.status === "error" || entry.status === "quota_exhausted") {
+				this.#advisorStatuses.set(slug, { ...entry, status: "paused" });
+			}
+		}
 		this.#host.extractQueuedAdvisorCards();
 		this.#host.dropPendingAdvisorCards();
 		return false;

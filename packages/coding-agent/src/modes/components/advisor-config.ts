@@ -152,6 +152,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 	#cb: AdvisorConfigCallbacks;
 	#cachedReports: UsageReport[] | null = null;
 
+	#savePending = false;
 	#scopes: Record<AdvisorConfigScope, ScopeState>;
 	#focus: Pane;
 	#mode: EditorMode = "fields";
@@ -612,13 +613,19 @@ export class AdvisorConfigOverlayComponent implements Component {
 			return;
 		}
 		if (value === "save") {
-			const doc = this.#hasSyntheticDefaultAdvisor(state.doc) ? { ...state.doc, advisors: [] } : state.doc;
-			await this.#cb.save(scope, doc);
-			delete state.doc.warnings;
-			state.dirty = false;
-			this.#rebuildRoster(scope);
-			this.#cb.notify(`Saved ${this.#scopeLabel(scope)} advisors`);
-			this.#cb.requestRender();
+			if (this.#savePending) return;
+			this.#savePending = true;
+			try {
+				const doc = this.#hasSyntheticDefaultAdvisor(state.doc) ? { ...state.doc, advisors: [] } : state.doc;
+				await this.#cb.save(scope, doc);
+				delete state.doc.warnings;
+				state.dirty = false;
+				this.#rebuildRoster(scope);
+				this.#cb.notify(`Saved ${this.#scopeLabel(scope)} advisors`);
+				this.#cb.requestRender();
+			} finally {
+				this.#savePending = false;
+			}
 			return;
 		}
 		if (value === "empty") return;
