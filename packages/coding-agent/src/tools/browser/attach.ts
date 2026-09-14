@@ -270,6 +270,10 @@ export async function findReusableCdp(
 		let ambiguousProfile = false;
 		try {
 			const processArgs = process.args();
+			if (processArgs.length === 0) {
+				hasUnreadableCandidate = true;
+				continue;
+			}
 			if (globalThis.process.platform === "linux" && processArgs.length === 1) {
 				let title = processArgs[0]!;
 				let matchedProfile = false;
