@@ -27,8 +27,8 @@ function formatUsageAmount(limit: UsageLimit): string {
 
 function formatUsageReportAccount(report: UsageReport, limit: UsageLimit | undefined, index: number): AccountLabel {
 	const accountKey = usageIdentityKey(
-		report.metadata?.accountId,
-		report.metadata?.projectId,
+		(limit?.scope ?? report.limits[0]?.scope)?.accountId || report.metadata?.accountId,
+		(limit?.scope ?? report.limits[0]?.scope)?.projectId || report.metadata?.projectId,
 		limit?.scope ?? report.limits[0]?.scope,
 		report.metadata?.orgId,
 	);

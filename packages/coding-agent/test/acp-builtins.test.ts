@@ -325,7 +325,7 @@ describe("ACP builtin slash commands", () => {
 						amount: { used: 1, unit: "requests" as const },
 					},
 				],
-				metadata: { email, orgName: "Team" },
+				metadata: { email, accountId: "stale-retained-account", orgName: "Team" },
 			})),
 			{
 				provider: "openai-codex",

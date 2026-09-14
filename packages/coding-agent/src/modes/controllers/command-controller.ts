@@ -1829,8 +1829,8 @@ function styleAccountMask(label: string, uiTheme: typeof theme): string {
 
 function formatAccountLabel(limit: UsageLimit, report: UsageReport, index: number): AccountLabel {
 	const accountKey = usageIdentityKey(
-		report.metadata?.accountId,
-		report.metadata?.projectId,
+		limit.scope.accountId || report.metadata?.accountId,
+		limit.scope.projectId || report.metadata?.projectId,
 		limit.scope,
 		report.metadata?.orgId,
 	);

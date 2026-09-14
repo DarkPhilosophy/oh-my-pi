@@ -229,6 +229,31 @@ describe("renderUsageReports content", () => {
 		expect(output).not.toContain("alice@example.test");
 	});
 
+	it("distinguishes scoped sibling masks despite retained report metadata", () => {
+		const reports: UsageReport[] = [
+			{
+				provider: "openai-codex",
+				fetchedAt: 1,
+				metadata: { email: "alice@example.test", accountId: "retained-account" },
+				limits: ["first", "second"].map(accountId => ({
+					id: accountId,
+					label: "Weekly",
+					scope: { provider: "openai-codex", accountId },
+					window: { id: "weekly", label: "weekly" },
+					amount: { usedFraction: 0.2, unit: "percent" },
+					status: "ok",
+				})),
+			},
+		];
+		const output = stripVTControlCharacters(
+			renderUsageReports(reports, theme, 1, 120, undefined, {
+				maskAccountLabels: true,
+			}),
+		);
+		expect(output).toContain("ali*** (2)");
+		expect(output).not.toContain("alice@example.test");
+	});
+
 	it.each(["accountId", "projectId"])("retains the matching scoped %s in the active-session banner", field => {
 		const active = field === "accountId" ? { accountId: "active-account" } : { projectId: "active-project" };
 		const other = field === "accountId" ? { accountId: "other-account" } : { projectId: "other-project" };
