@@ -20,6 +20,7 @@ import {
 	sanitizeDisplayWarnings,
 	shortenEmbeddedPaths,
 	shortenPath,
+	shortenToolArgumentPaths,
 	TRUNCATE_LENGTHS,
 	truncateDiffByHunk,
 } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
@@ -595,6 +596,21 @@ describe("shortenEmbeddedPaths", () => {
 		const home = String.raw`C:\Users\Jane`;
 		const filePath = String.raw`C:\Users\Jane\projects\demo: failed`;
 		expect(shortenEmbeddedPaths(filePath, home)).toBe("~/projects/demo: failed");
+	});
+});
+
+describe("shortenToolArgumentPaths", () => {
+	it("decodes and shortens local file URL paths", () => {
+		const home = os.homedir();
+		const url = `file://${home}/private/encoded%20space.txt`;
+
+		expect(shortenToolArgumentPaths(url, "url")).toBe("~/private/encoded space.txt");
+	});
+
+	it("leaves network URLs unchanged", () => {
+		const url = "https://example.com/private/encoded%20space.txt";
+
+		expect(shortenToolArgumentPaths(url, "url")).toBe(url);
 	});
 });
 

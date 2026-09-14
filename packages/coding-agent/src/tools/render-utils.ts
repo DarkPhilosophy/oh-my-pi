@@ -861,6 +861,15 @@ export function shortenEmbeddedPaths(text: string, homeDir?: string): string {
 
 /** Shorten filesystem and command arguments without rewriting literal search patterns. */
 export function shortenToolArgumentPaths(text: string, key: string | undefined): string {
+	if (key === "url") {
+		try {
+			const url = new URL(text);
+			if (url.protocol === "file:") return shortenEmbeddedPaths(decodeURIComponent(url.pathname));
+		} catch {
+			// Preserve malformed and non-file URL arguments verbatim.
+		}
+		return text;
+	}
 	return key === "path" || key === "file_path" || key === "command" || key === "task" || key === "prompt"
 		? shortenEmbeddedPaths(text)
 		: text;

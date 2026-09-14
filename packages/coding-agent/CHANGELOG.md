@@ -10,6 +10,17 @@
 - Browser startup reuses a successful system-Chrome fallback instead of retrying an unavailable download during the same open.
 - Browser clicks and other interactions no longer stall when OMP-owned tabs are in the background, including after worker timeout recovery.
 
+### Changed
+
+- Subagents now show their current activity and a separate, width-bounded current-tool row; resolved model labels follow the model badge setting.
+
+### Fixed
+
+- Fixed completed subagent jobs and IRC replies displaying internal XML/JSON wrappers instead of readable results.
+- Collapsed failed subagent jobs now show the error details instead of repeating the job status.
+- Fixed fast subagent tool transitions being dropped by progress and HUD update batching.
+- Kept the last completed subagent tool visible with the configured success/error symbol until the next tool starts; edit previews include affected file paths.
+
 ## [18.1.20] - 2026-09-13
 
 ### Added
@@ -20,16 +31,6 @@
 ### Changed
 
 - Documented that native JS/TS hook factories must live in `.omp/hooks/pre/` or `.omp/hooks/post/` (not directly in `.omp/hooks/`), and cross-linked the hooks and extension-loading docs ([#11942](https://github.com/can1357/oh-my-pi/issues/11942)).
-
-### Changed
-
-- Subagents now show their current activity and a separate, width-bounded current-tool row; resolved model labels follow the model badge setting.
-### Fixed
-
-- Fixed completed subagent jobs and IRC replies displaying internal XML/JSON wrappers instead of readable results.
-- Collapsed failed subagent jobs now show the error details instead of repeating the job status.
-- Fixed fast subagent tool transitions being dropped by progress and HUD update batching.
-- Kept the last completed subagent tool visible with the configured success/error symbol until the next tool starts; edit previews include affected file paths.
 
 ### Fixed
 
