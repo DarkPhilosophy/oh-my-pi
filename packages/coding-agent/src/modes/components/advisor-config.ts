@@ -155,6 +155,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 	#mode: EditorMode = "fields";
 	/** Right-pane component (field list or an open field editor). */
 	#editor: Component = new SelectList([], 1, getSelectListTheme());
+	#applyPendingTools: (() => void) | undefined;
 	/** Remembered field-list row so returning from a field editor lands on it. */
 	#fieldCursor: string | undefined;
 	#editorScroll = 0;
@@ -441,6 +442,13 @@ export class AdvisorConfigOverlayComponent implements Component {
 			return;
 		}
 		// Editor pane: ← returns to the rosters unless a text editor is open.
+		if (data === "\x1b[D" && this.#mode === "tools") {
+			this.#applyPendingTools?.();
+			this.#applyPendingTools = undefined;
+			this.#focus = this.#lastRosterFocus;
+			this.#showFields();
+			return;
+		}
 		if (data === "\x1b[D" && this.#mode !== "name" && this.#mode !== "instructions" && this.#mode !== "model") {
 			this.#focus = this.#lastRosterFocus;
 			this.#cb.requestRender();
@@ -489,6 +497,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const scope: AdvisorConfigScope | undefined = inProject ? "project" : inUser ? "user" : undefined;
 		if (!scope) return false;
 		if (event.leftClick && this.#focus !== scope) {
+			this.#applyPendingTools?.();
 			this.#focus = scope;
 			this.#showFields();
 		}
@@ -805,8 +814,10 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const apply = (): void => {
 			this.#scopes[scope].doc.advisors[index].tools = commitTools(selected, all);
 			this.#markDirty(scope);
+			this.#applyPendingTools = undefined;
 			this.#showFields();
 		};
+		this.#applyPendingTools = apply;
 		list.onSelect = item => {
 			if (item.value === "__done") {
 				apply();

@@ -46,6 +46,45 @@ describe("advisor config editor warnings and synthetic default row", () => {
 		expect(saved?.advisors).toEqual([]);
 	});
 
+	it.each(["left", "click"])("preserves toggled tools across %s roster navigation", async navigation => {
+		let saved: WatchdogConfigDoc | undefined;
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			{ modelRegistry: {} as ModelRegistry, settings, scopedModels: [], availableToolNames: ["read", "bash"] },
+			"project",
+			{ advisors: [{ name: "Reviewer", tools: [] }] },
+			{
+				loadDoc: async () => ({ advisors: [] }),
+				save: async (_scope, doc) => {
+					saved = structuredClone(doc);
+				},
+				close: () => {},
+				requestRender: () => {},
+				notify: () => {},
+			},
+		);
+		overlay.handleInput("\x1b[C");
+		let rows = overlay.render(100).map(Bun.stripANSI);
+		const toolsRow = rows.findIndex(row => row.includes("Tools"));
+		expect(toolsRow).toBeGreaterThan(0);
+		overlay.handleInput(`\x1b[<0;60;${toolsRow + 1}M`);
+		overlay.handleInput("\r");
+		if (navigation === "left") overlay.handleInput("\x1b[D");
+		else {
+			rows = overlay.render(100).map(Bun.stripANSI);
+			const advisorRow = rows.findIndex(row => row.slice(0, 35).includes("Reviewer"));
+			overlay.handleInput(`\x1b[<0;5;${advisorRow + 1}M`);
+		}
+		overlay.handleInput("\x1b[C");
+		overlay.handleInput("\x1b[D");
+		rows = overlay.render(100).map(Bun.stripANSI);
+		const saveRow = rows.findIndex(row => row.slice(0, 35).includes("Save & apply"));
+		expect(saveRow).toBeGreaterThan(0);
+		overlay.handleInput(`\x1b[<0;5;${saveRow + 1}M`);
+		await Promise.resolve();
+		expect(saved?.advisors[0].tools).toEqual(["read"]);
+	});
+
 	it("clears the saved scope's load warnings after normalization succeeds", async () => {
 		const overlay = buildOverlay({ advisors: [], warnings: ["Malformed entry dropped"] }, () => {});
 		expect(Bun.stripANSI(overlay.render(100).join("\n"))).toContain("Malformed entry dropped");
