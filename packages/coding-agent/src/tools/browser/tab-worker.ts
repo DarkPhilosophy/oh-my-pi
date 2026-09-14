@@ -835,6 +835,7 @@ interface AriaSnapshotLine {
 	role: string;
 	name?: string;
 	states: string[];
+	box?: { x: number; y: number; width: number; height: number };
 }
 
 function decodeAriaSnapshotName(value: string): string {
@@ -844,7 +845,9 @@ function decodeAriaSnapshotName(value: string): string {
 
 export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 	const entries: AriaSnapshotLine[] = [];
+	const boxesByDepth = new Map<number, NonNullable<AriaSnapshotLine["box"]>>();
 	for (const rawLine of snapshot.split("\n")) {
+		const indent = rawLine.match(/^\s*/)?.[0].length ?? 0;
 		const prefix = /^\s*-\s+/.exec(rawLine)?.[0];
 		if (!prefix) continue;
 		let content = rawLine.slice(prefix.length);
@@ -859,6 +862,24 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 		const nameMatch = quotedNameMatch ?? slashNameMatch;
 		const metadata = content.slice(nameMatch?.[0].length ?? roleMatch![0].length);
 		const ref = /\[ref=(e\d+)\]/.exec(metadata)?.[1];
+		const boxMatch = /\[box=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\]/.exec(metadata);
+		const box = boxMatch
+			? {
+					x: Number(boxMatch[1]),
+					y: Number(boxMatch[2]),
+					width: Number(boxMatch[3]),
+					height: Number(boxMatch[4]),
+				}
+			: undefined;
+		for (const depth of boxesByDepth.keys()) {
+			if (depth >= indent) boxesByDepth.delete(depth);
+		}
+		let inheritedBox: AriaSnapshotLine["box"];
+		if (box) {
+			boxesByDepth.set(indent, box);
+		} else if (role === "text") {
+			for (const ancestorBox of boxesByDepth.values()) inheritedBox = ancestorBox;
+		}
 		const bareMetadata = metadata.replace(/\[[^\]]*\]/g, " ");
 		const states = [
 			...[...metadata.matchAll(/\[([^\]]+)\]/g)]
@@ -872,8 +893,10 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 			quotedNameMatch !== null
 				? decodeAriaSnapshotName(quotedNameMatch[1]!)
 				: (slashNameMatch?.[1]?.replace(/\\\//g, "/") ??
-					(role === "text" ? content.slice(roleMatch![0].length).trim() || undefined : undefined));
-		entries.push({ ref, role, name, states });
+					(role === "text"
+						? content.slice(roleMatch![0].length).trim() || undefined
+						: /^\s*:\s+(.+)$/.exec(bareMetadata)?.[1]));
+		entries.push({ ref, role, name, states, box: box ?? inheritedBox });
 	}
 	return entries;
 }
@@ -914,17 +937,34 @@ export function normalizeAriaSnapshotStates(states: readonly string[]): string[]
 	return [...new Set(normalized)];
 }
 
-async function collectBiDiObservationEntries(
+export async function collectBiDiObservationEntries(
 	core: WorkerCore,
 	page: Page,
 	snapshot: string,
 	options: { viewportOnly: boolean; includeAll: boolean; refOwner: string },
 ): Promise<ObservationEntry[]> {
 	const entries: ObservationEntry[] = [];
+	const viewport = options.viewportOnly
+		? ((await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))) as {
+				width: number;
+				height: number;
+			})
+		: undefined;
 	for (const node of parseAriaSnapshotLines(snapshot)) {
 		if (!options.includeAll && !isInteractiveAriaSnapshotNode(node.role, node.states)) continue;
 		if (!node.ref) {
-			if (options.viewportOnly) continue;
+			if (
+				options.viewportOnly &&
+				(!node.box ||
+					node.box.width <= 0 ||
+					node.box.height <= 0 ||
+					node.box.x + node.box.width <= 0 ||
+					node.box.y + node.box.height <= 0 ||
+					node.box.x >= viewport!.width ||
+					node.box.y >= viewport!.height)
+			) {
+				continue;
+			}
 			entries.push({
 				role: node.role,
 				name: node.name,
@@ -2303,7 +2343,9 @@ export class WorkerCore {
 		let entries: ObservationEntry[];
 		if (this.#webDriverBiDi) {
 			const refOwner = this.#ariaRefOwner;
-			const ariaSnapshot = await untilAborted(options.signal, () => captureAriaSnapshot(page, null, {}, refOwner));
+			const ariaSnapshot = await untilAborted(options.signal, () =>
+				captureAriaSnapshot(page, null, { boxes: viewportOnly }, refOwner),
+			);
 			entries = await collectBiDiObservationEntries(this, page, ariaSnapshot, {
 				includeAll,
 				viewportOnly,

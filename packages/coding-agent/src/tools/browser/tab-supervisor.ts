@@ -1951,19 +1951,24 @@ async function waitForClosed(tab: WorkerTabSession): Promise<void> {
 }
 
 async function terminateWorker(worker: WorkerHandle, graceful = false): Promise<void> {
-	if (worker.mode === "inline" || graceful) {
-		const { promise, resolve } = Promise.withResolvers<void>();
-		const unsubscribe = worker.onMessage(msg => {
-			if (msg.type === "closed") resolve();
-		});
-		try {
-			worker.send({ type: "close" });
-			await raceWithTimeout(promise, GRACE_MS, "Timed out closing browser worker").catch(() => undefined);
-		} finally {
-			unsubscribe();
+	try {
+		if (worker.mode === "inline" || graceful) {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			const unsubscribe = worker.onMessage(msg => {
+				if (msg.type === "closed") resolve();
+			});
+			try {
+				worker.send({ type: "close" });
+				await raceWithTimeout(promise, GRACE_MS, "Timed out closing browser worker");
+			} finally {
+				unsubscribe();
+			}
 		}
+	} catch {
+		// A failed transport must not prevent forced cleanup of the worker and its aliases.
+	} finally {
+		await worker.terminate().catch(() => undefined);
 	}
-	await worker.terminate().catch(() => undefined);
 }
 
 function expandBrowserScreenshotDir(session: ToolSession): string | undefined {

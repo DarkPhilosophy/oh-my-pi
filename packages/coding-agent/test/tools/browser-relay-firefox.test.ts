@@ -897,34 +897,40 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(tabs.has(second.name)).toBe(false);
 	});
 
-	it("gracefully closes an inline Firefox worker before invalidating every alias", async () => {
-		let terminations = 0;
-		const sent: string[] = [];
-		const worker = {
-			mode: "inline",
-			send: msg => sent.push(msg.type),
-			onMessage: () => () => undefined,
-			onError: () => () => undefined,
-			terminate: async () => {
-				terminations++;
-			},
-		} satisfies WorkerHandle;
-		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
-		endpoint.refCount = 2;
-		const first = createFirefoxTab("firefox-kill-first", endpoint, worker);
-		const second = createFirefoxTab("firefox-kill-second", endpoint, worker);
-		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
-		tabs.set(first.name, first);
-		tabs.set(second.name, second);
+	it.each([false, true])(
+		"terminates the shared Firefox worker and releases every alias when close send fails=%s",
+		async sendFails => {
+			let terminations = 0;
+			const sent: string[] = [];
+			const worker = {
+				mode: "inline",
+				send: msg => {
+					sent.push(msg.type);
+					if (sendFails) throw new Error("Worker transport closed");
+				},
+				onMessage: () => () => undefined,
+				onError: () => () => undefined,
+				terminate: async () => {
+					terminations++;
+				},
+			} satisfies WorkerHandle;
+			const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
+			endpoint.refCount = 2;
+			const first = createFirefoxTab("firefox-kill-first", endpoint, worker);
+			const second = createFirefoxTab("firefox-kill-second", endpoint, worker);
+			const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+			tabs.set(first.name, first);
+			tabs.set(second.name, second);
 
-		await forceKillTab(first.name, "shared Firefox worker failed", { sharedFirefoxWorker: true });
+			await forceKillTab(first.name, "shared Firefox worker failed", { sharedFirefoxWorker: true });
 
-		expect(sent).toContain("close");
-		expect(terminations).toBe(1);
-		expect(first.state).toBe("dead");
-		expect(second.state).toBe("dead");
-		expect(tabs.has(first.name)).toBe(false);
-		expect(tabs.has(second.name)).toBe(false);
-		expect(endpoint.refCount).toBe(0);
-	});
+			expect(sent).toContain("close");
+			expect(terminations).toBe(1);
+			expect(first.state).toBe("dead");
+			expect(second.state).toBe("dead");
+			expect(tabs.has(first.name)).toBe(false);
+			expect(tabs.has(second.name)).toBe(false);
+			expect(endpoint.refCount).toBe(0);
+		},
+	);
 });
