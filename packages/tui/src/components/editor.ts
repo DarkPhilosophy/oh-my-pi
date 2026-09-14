@@ -2790,7 +2790,7 @@ export class Editor implements Component, Focusable {
 
 		// If pasting a file path (starts with /, ~, or .) and the character before
 		// the cursor is a word character, prepend a space for better readability.
-		if (/^ [/~.]/.test(filteredText)) {
+		if (/^[/~.]/.test(filteredText)) {
 			const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 			const charBeforeCursor = this.#state.cursorCol > 0 ? currentLine[this.#state.cursorCol - 1] : "";
 			if (charBeforeCursor && /\w/.test(charBeforeCursor)) {
