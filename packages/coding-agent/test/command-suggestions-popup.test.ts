@@ -1,4 +1,7 @@
 import { afterEach, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { CombinedAutocompleteProvider } from "@oh-my-pi/pi-tui";
 import { encodeKittyPlacement } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { Composer } from "../src/modes/composer";
@@ -165,3 +168,46 @@ it.each([
 		expect(terminal.getViewport().join("\n")).not.toContain(option);
 	},
 );
+
+it.each([false, true])("keeps fallback file arguments above the editor (empty provider=%s)", async emptyProvider => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "popup-path-"));
+	try {
+		await fs.writeFile(path.join(directory, "candidate.txt"), "");
+		const terminal = new VirtualTerminal(80, 18);
+		composer = new Composer({ preferences: { quiet: true }, terminal });
+		const transcript = new TranscriptContainer();
+		const block = {
+			render: () => Array.from({ length: 30 }, (_, i) => `CHAT_${i}`),
+			isTranscriptBlockFinalized: () => true,
+		};
+		transcript.addChild(block);
+		composer.setRuntimeChildren([transcript, composer.editor]);
+		composer.editor.commandSuggestionsPopup = true;
+		composer.editor.onAutocompleteRender = (render, offset, rows) =>
+			composer!.ui.setCursorOverlay(render, offset, rows);
+		composer.editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider([
+				{
+					name: "review",
+					...(emptyProvider ? { getArgumentCompletions: () => [] } : {}),
+				},
+			]),
+		);
+		composer.editor.onAutocompleteUpdate = () => composer!.ui.requestRender();
+		composer.start();
+		composer.ui.setFocus(composer.editor);
+		composer.editor.handleInput(`/review ${directory}/cand`);
+		await Bun.sleep(200);
+		composer.ui.requestRender();
+		await terminal.waitForRender();
+		const rows = terminal.getViewport().map(Bun.stripANSI);
+		const optionRow = rows.findIndex(row => row.includes("candidate.txt"));
+		expect(optionRow).toBeGreaterThanOrEqual(0);
+		expect(optionRow).toBeLessThan(rows.findIndex(row => row.includes("/review")));
+		composer.editor.handleInput("\t");
+		expect(composer.editor.getText().trimEnd()).toBe(`/review ${directory}/candidate.txt`);
+	} finally {
+		composer?.stop();
+		await fs.rm(directory, { recursive: true, force: true });
+	}
+});
