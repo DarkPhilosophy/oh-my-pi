@@ -158,6 +158,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 	/** Remembered field-list row so returning from a field editor lands on it. */
 	#fieldCursor: string | undefined;
 	#editorScroll = 0;
+	#editorContentOffset = 2;
 
 	// Frame geometry from the last render (frame paints from screen row 0).
 	#sidebarWidth = 0;
@@ -346,6 +347,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 			for (const warning of warnings) lines.push(...wrap(warning, bodyWidth).map(line => theme.fg("warning", line)));
 			lines.push("");
 		}
+		this.#editorContentOffset = lines.length;
 		if (this.#mode === "fields") {
 			if (target) {
 				lines.push(...this.#editor.render(bodyWidth));
@@ -462,24 +464,24 @@ export class AdvisorConfigOverlayComponent implements Component {
 
 	#routeMouseEvent(event: SgrMouseEvent): boolean {
 		if (event.col >= this.#dividerCol) {
+			const editorRow = event.row - 1 - this.#editorContentOffset + this.#editorScroll;
 			if (event.wheel !== null) {
 				const el = this.#editor as Partial<MouseRoutable>;
 				if (this.#mode !== "fields" && typeof el.routeMouse === "function") {
-					el.routeMouse(event, event.row - 3, event.col - this.#dividerCol - 1);
+					el.routeMouse(event, editorRow, event.col - this.#dividerCol - 1);
 				} else {
 					this.#editorScroll = Math.max(0, this.#editorScroll + event.wheel);
 				}
 				this.#cb.requestRender();
 				return true;
 			}
+			if (editorRow < 0) return true;
 			if (event.leftClick) {
 				if (this.#focus !== "editor") this.#showFields();
 				this.#focusEditor();
 			}
 			const el = this.#editor as Partial<MouseRoutable>;
-			// Editor content starts 2 rows below the body top (header + blank).
-			if (typeof el.routeMouse === "function")
-				el.routeMouse(event, event.row - 1 - 2 + this.#editorScroll, event.col - this.#dividerCol - 1);
+			if (typeof el.routeMouse === "function") el.routeMouse(event, editorRow, event.col - this.#dividerCol - 1);
 			return true;
 		}
 		const inProject = event.row >= this.#projectRowStart && event.row < this.#projectRowStart + this.#projectRows;
@@ -584,6 +586,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		if (value === "save") {
 			const doc = this.#hasSyntheticDefaultAdvisor(state.doc) ? { ...state.doc, advisors: [] } : state.doc;
 			await this.#cb.save(scope, doc);
+			delete state.doc.warnings;
 			state.dirty = false;
 			this.#rebuildRoster(scope);
 			this.#cb.notify(`Saved ${this.#scopeLabel(scope)} advisors`);

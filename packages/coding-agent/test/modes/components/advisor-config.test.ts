@@ -46,6 +46,29 @@ describe("advisor config editor warnings and synthetic default row", () => {
 		expect(saved?.advisors).toEqual([]);
 	});
 
+	it("clears the saved scope's load warnings after normalization succeeds", async () => {
+		const overlay = buildOverlay({ advisors: [], warnings: ["Malformed entry dropped"] }, () => {});
+		expect(Bun.stripANSI(overlay.render(100).join("\n"))).toContain("Malformed entry dropped");
+		for (let i = 0; i < 3; i++) overlay.handleInput("\x1b[B");
+		overlay.handleInput("\r");
+		await Bun.sleep(0);
+		expect(Bun.stripANSI(overlay.render(100).join("\n"))).not.toContain("Malformed entry dropped");
+	});
+
+	it("maps a visible field click below wrapped warnings to that field", async () => {
+		const overlay = buildOverlay(
+			{ advisors: [{ name: "Reviewer" }], warnings: ["Malformed configuration entry was dropped. ".repeat(3)] },
+			() => {},
+		);
+		await Bun.sleep(0);
+		overlay.handleInput("\r");
+		const rows = overlay.render(100).map(Bun.stripANSI);
+		const nameRow = rows.findIndex(row => row.includes("Name") && row.includes("Reviewer"));
+		expect(nameRow).toBeGreaterThan(3);
+		overlay.handleInput(`\x1b[<0;60;${nameRow + 1}M`);
+		expect(Bun.stripANSI(overlay.render(100).join("\n"))).toContain("Type a name");
+	});
+
 	it("surfaces sanitized warnings when the background scope finishes loading", async () => {
 		const warnings: string[] = [];
 		let pendingLoad: Promise<WatchdogConfigDoc> | undefined;
