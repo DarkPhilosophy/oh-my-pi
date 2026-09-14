@@ -320,7 +320,10 @@ export class ModelPickerComponent implements Focusable {
 			);
 			const rows = editorRows ? Array.from(editorRows) : Array<string>(count).fill("");
 			rows[inputRow] = search;
-			return rows;
+			// Preserve the draft's existing footprint without counting its blank
+			// replacement rows as editor chrome: they remain available to results.
+			const padding = Math.max(0, Math.min(this.#editorRows, this.#tui.terminal.rows) - rows.length);
+			return [...Array<string>(padding).fill(""), ...rows];
 		}
 		return this.#renderPicker(width, this.#tui.terminal.rows);
 	}

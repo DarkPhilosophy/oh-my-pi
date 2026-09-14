@@ -826,6 +826,19 @@ export class Editor implements Component, Focusable {
 		// Don't reset scrollOffset — #updateScrollOffset will clamp it on next render
 	}
 
+	/** Render temporary compact chrome without changing the draft's scroll position or height limit. */
+	renderWithMaxContentRows(width: number, contentRows: number, emitCursorMarker = this.focused): readonly string[] {
+		const previousMaxHeight = this.#maxHeight;
+		const previousScrollOffset = this.#scrollOffset;
+		this.#maxHeight = this.#effectiveStyle().verticalChrome + Math.max(1, contentRows);
+		try {
+			return this.render(width, emitCursorMarker);
+		} finally {
+			this.#maxHeight = previousMaxHeight;
+			this.#scrollOffset = previousScrollOffset;
+		}
+	}
+
 	/** Enable/disable the right-border scrollbar. Only shown when content overflows. */
 	setScrollbarVisible(visible: boolean): void {
 		this.#scrollbarVisible = visible;
@@ -2777,7 +2790,7 @@ export class Editor implements Component, Focusable {
 
 		// If pasting a file path (starts with /, ~, or .) and the character before
 		// the cursor is a word character, prepend a space for better readability.
-		if (/^[/~.]/.test(filteredText)) {
+		if (/^ [/~.]/.test(filteredText)) {
 			const currentLine = this.#state.lines[this.#state.cursorLine] || "";
 			const charBeforeCursor = this.#state.cursorCol > 0 ? currentLine[this.#state.cursorCol - 1] : "";
 			if (charBeforeCursor && /\w/.test(charBeforeCursor)) {

@@ -14,18 +14,20 @@ let composer: Composer | undefined;
 afterEach(() => composer?.stop());
 
 it.each([
-	[24, 1, false],
-	[24, 14, false],
-	[8, 1, false],
-	[5, 1, false],
-	[24, 1, true],
+	[24, 1, false, 1],
+	[24, 14, false, 1],
+	[8, 1, false, 1],
+	[5, 1, false, 1],
+	[24, 1, true, 1],
+	[24, 14, false, 18],
 ] as const)(
-	"keeps results visible in %i rows with %i extension rows (clipboard=%s)",
-	async (height, extensionRows, clipboard) => {
+	"keeps results visible in %i rows with %i extension rows (clipboard=%s, draft lines=%i)",
+	async (height, extensionRows, clipboard, draftLines) => {
 		const terminal = new VirtualTerminal(100, height);
 		composer = new Composer({ preferences: { quiet: true }, terminal });
 		const editor = composer.editor;
-		editor.setText("draft to preserve");
+		const draft = Array.from({ length: draftLines }, (_, index) => `draft line ${index}`).join("\n");
+		editor.setText(draft);
 		editor.setTopBorder({ content: "MODEL STATUS", width: 12 });
 		const transcript = new TranscriptContainer();
 		const block = {
@@ -89,7 +91,10 @@ it.each([
 				},
 				onCancel: close,
 			},
-			{ editorRows: editor.render(100).length, renderEditorRows: width => editor.render(width, true) },
+			{
+				editorRows: editor.render(100).length,
+				renderEditorRows: width => editor.renderWithMaxContentRows(width, 1, true),
+			},
 		);
 		const writes: string[] = [];
 		const write = terminal.write.bind(terminal);
@@ -102,17 +107,20 @@ it.each([
 		composer.ui.setFocus(picker);
 		await paint();
 		expect(terminal.getViewport().join("\n")).toContain("MODEL STATUS");
-		expect(terminal.getViewport().at(-1)).toContain("EXTENSION BELOW INPUT");
+		expect(terminal.getViewport().join("\n")).toMatch(/EXTENSION BELOW INPUT$/);
 		expect(terminal.getViewport().filter(line => line.includes("EXTENSION BELOW INPUT"))).toHaveLength(extensionRows);
 		if (clipboard) picker.pasteText("beta");
 		else picker.handleInput("beta");
 		await paint();
 		expect(terminal.getViewport().filter(line => line.includes("beta")).length).toBeGreaterThanOrEqual(2);
 		expect(terminal.getScrollBuffer().slice(0, -terminal.rows)).toEqual(history);
-		picker.handleInput("\r");
+		if (draftLines > 1) {
+			picker.handleInput("\x1b"); // Clear the query before dismissing.
+			picker.handleInput("\x1b");
+		} else picker.handleInput("\r");
 		await paint();
-		expect(selected).toBe("demo/beta");
-		expect(editor.getText()).toBe("draft to preserve");
+		expect(selected).toBe(draftLines > 1 ? undefined : "demo/beta");
+		expect(editor.getText()).toBe(draft);
 		expect(terminal.getViewport().map(Bun.stripANSI)).toEqual(screen);
 		expect(writes.join("")).not.toMatch(/\x1b\[(?:2|3)J|\x1b\[\?1049h|\x1b\[\?1003h/);
 	},

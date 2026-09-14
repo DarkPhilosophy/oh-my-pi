@@ -908,6 +908,7 @@ export class SelectorController {
 		const inline =
 			this.ctx.settings.get("display.inlineModelPicker") && this.ctx.editorContainer.children.includes(editor);
 		if (inline) editor.dismissAutocomplete();
+		const renderInlineEditorRows = (width: number) => editor.renderWithMaxContentRows(width, 1, true);
 		let closed = false;
 		const done = () => {
 			if (closed) return;
@@ -968,7 +969,7 @@ export class SelectorController {
 			},
 			{
 				editorRows: inline ? editor.render(this.ctx.ui.terminal.columns).length : undefined,
-				renderEditorRows: inline ? width => editor.render(width, true) : undefined,
+				renderEditorRows: inline ? renderInlineEditorRows : undefined,
 				currentContextTokens,
 				currentSelector,
 				taskModeKeys: this.ctx.keybindings.getKeys("app.model.selectTemporary"),
