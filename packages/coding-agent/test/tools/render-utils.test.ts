@@ -36,6 +36,12 @@ describe("embedded home path normalization", () => {
 		expect(shortenEmbeddedPaths("PATH=/home/alice/bin:/home/alice/.local/bin", "/home/alice")).toBe(
 			"PATH=~/bin:~/.local/bin",
 		);
+		expect(shortenEmbeddedPaths("Compare /home/alice/a,/home/alice/b=/home/alice/c", "/home/alice")).toBe(
+			"Compare ~/a,~/b=~/c",
+		);
+		expect(shortenEmbeddedPaths("Compare /home/alice/a(/home/alice/b[/home/alice/c", "/home/alice")).toBe(
+			"Compare ~/a(~/b[~/c",
+		);
 	});
 	it("shortens local file URLs containing invalid percent escapes", () => {
 		expect(shortenToolArgumentPaths("file:///home/alice/100%.txt", "url", "/home/alice")).toBe("~/100%.txt");

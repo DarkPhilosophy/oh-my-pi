@@ -851,7 +851,7 @@ export function shortenEmbeddedPaths(text: string, homeDir?: string): string {
 	const tokenBoundary = String.raw`[\s"'\x60([{=(:,;<>&|*_]`;
 	return text.replace(
 		new RegExp(
-			`(^|${tokenBoundary})${escapedHome}(?=$|[/\\\\\\s"'\\]),;:\\x60<>&|*_]|\\.(?=$|[\\s"'\\]),;:\\x60<>&|*_]))([/\\\\][^\\s"'\\x60<>&|:;]*)?`,
+			`(^|${tokenBoundary})${escapedHome}(?=$|[/\\\\\\s"'\\]),;:\\x60<>&|*_]|\\.(?=$|[\\s"'\\]),;:\\x60<>&|*_]))([/\\\\][^\\s"'\\x60<>&|:;,=([{*_]*)?`,
 			flags,
 		),
 		(_match, boundary: string, suffix = "") =>
