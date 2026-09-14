@@ -34,7 +34,7 @@ export function formatTaskResultPreview(text: string, includeStatus = true): str
 		// Prose, incomplete previews and arbitrary tool data retain their contents.
 	}
 	if (mergeSummary?.trim()) body = `${body}\n\n${mergeSummary.trim()}`;
-	if (fullOutput) body = `${body}\n\nFull output: ${fullOutput}`;
+	if (fullOutput) body = `Full output: ${fullOutput}\n\n${body}`;
 	if (abortReason) body = `${abortReason}\n\n${body}`;
 	if (includeStatus && status && status !== "completed") body = `Task ${status}\n\n${body}`;
 	return replaceTabs(shortenEmbeddedPaths(sanitizeText(body)));

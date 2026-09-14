@@ -48,6 +48,8 @@ describe("embedded home path normalization", () => {
 		expect(shortenEmbeddedPaths("Inspect _/home/alice/private/file_", "/home/alice")).toBe(
 			"Inspect _~/private/file_",
 		);
+		expect(shortenEmbeddedPaths("Inspect **/home/alice**", "/home/alice")).toBe("Inspect **~**");
+		expect(shortenEmbeddedPaths("Inspect _/home/alice_", "/home/alice")).toBe("Inspect _~_");
 	});
 
 	it("recognizes compact shell control operators around home-directory tokens", () => {

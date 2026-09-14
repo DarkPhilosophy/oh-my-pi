@@ -232,13 +232,26 @@ describe("hub jobs task model badges", () => {
 				expect(text).toContain("</preview>");
 				expect(text).toContain("Tail intact.");
 				if (tag === "preview") {
-					expect(collapsedJobText).toContain("Literal </output>");
+					expect(collapsedJobText).toContain("Full output: agent://Reader");
 					expect(text).toContain("agent://Reader");
-					expect(text.indexOf("Tail intact.")).toBeLessThan(text.indexOf("Full output: agent://Reader"));
+					expect(text.indexOf("Full output: agent://Reader")).toBeLessThan(text.indexOf("Tail intact."));
 				}
 				expect(text).not.toContain("<task-result");
 			}
 		}
+	});
+
+	it("keeps truncated task full-output references inside the expanded IRC line budget", () => {
+		const body = Array.from({ length: 12 }, (_, index) => `Preview line ${index + 1}`).join("\n");
+		const envelope = `<task-result id="Reader"><preview full-output="agent://Reader">\n${body}\n</preview></task-result>`;
+		const text = Bun.stripANSI(
+			createIrcMessageCard({ kind: "incoming", from: "Reader", body: envelope }, () => true, uiTheme)
+				.render(160)
+				.join("\n"),
+		);
+		expect(text).toContain("Full output: agent://Reader");
+		expect(text).toContain("Preview line 11");
+		expect(text).not.toContain("Preview line 12");
 	});
 
 	it("retains arbitrary single-field schemas in task job and IRC previews", () => {
