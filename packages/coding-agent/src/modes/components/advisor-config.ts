@@ -48,6 +48,7 @@ import {
 import type { Settings } from "../../config/settings";
 import type { PerAdvisorStat } from "../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
+import { sanitizeDisplayWarnings } from "../../tools/render-utils";
 import { formatCompactQuota } from "../controllers/command-controller";
 import { getSelectListTheme, theme } from "../theme/theme";
 import { HookEditorComponent } from "./hook-editor";
@@ -196,6 +197,11 @@ export class AdvisorConfigOverlayComponent implements Component {
 				this.#scopes[other].doc = doc;
 				this.#scopes[other].loading = false;
 				this.#rebuildRoster(other);
+				if (doc.warnings?.length) {
+					for (const warning of sanitizeDisplayWarnings(doc.warnings)) {
+						this.#cb.warn?.(`WATCHDOG.yml: ${warning}`);
+					}
+				}
 				if (this.#focus === other) this.#showFields();
 				this.#cb.requestRender();
 			})
@@ -333,6 +339,13 @@ export class AdvisorConfigOverlayComponent implements Component {
 				)
 			: theme.bold(this.#focus === "editor" ? "Advisor" : this.#scopeLabel(this.#focus));
 		const lines: string[] = [header, ""];
+		for (const scope of ["project", "user"] as const) {
+			const warnings = sanitizeDisplayWarnings(this.#scopes[scope].doc.warnings ?? []);
+			if (warnings.length === 0) continue;
+			lines.push(theme.fg("warning", `${this.#scopeLabel(scope)} · WATCHDOG.yml`));
+			for (const warning of warnings) lines.push(...wrap(warning, bodyWidth).map(line => theme.fg("warning", line)));
+			lines.push("");
+		}
 		if (this.#mode === "fields") {
 			if (target) {
 				lines.push(...this.#editor.render(bodyWidth));

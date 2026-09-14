@@ -39,14 +39,14 @@ describe("advisor config editor warnings and synthetic default row", () => {
 			saved = structuredClone(doc);
 		});
 
-		for (let i = 0; i < 4; i++) overlay.handleInput("\x1b[B");
+		for (let i = 0; i < 3; i++) overlay.handleInput("\x1b[B");
 		overlay.handleInput("\r"); // Save & apply without touching the seeded row.
 		await Promise.resolve();
 
 		expect(saved?.advisors).toEqual([]);
 	});
 
-	it("surfaces the newly active file's warnings on scope switch, and only there", async () => {
+	it("surfaces sanitized warnings when the background scope finishes loading", async () => {
 		const warnings: string[] = [];
 		let pendingLoad: Promise<WatchdogConfigDoc> | undefined;
 		const overlay = new AdvisorConfigOverlayComponent(
@@ -75,8 +75,6 @@ describe("advisor config editor warnings and synthetic default row", () => {
 		// Opening the project file shows nothing — the host owns initial warnings.
 		expect(warnings).toEqual([]);
 
-		for (let i = 0; i < 3; i++) overlay.handleInput("\x1b[B");
-		overlay.handleInput("\r"); // Switch scope to user.
 		// The overlay awaits the same promise; awaiting it here runs after its continuation.
 		await pendingLoad;
 
