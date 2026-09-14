@@ -356,6 +356,7 @@ describe("pickElectronTarget", () => {
 			const ownedName = `owned-${crypto.randomUUID()}`;
 			try {
 				await waitForCdp(`http://127.0.0.1:${port}`, 15_000);
+				const runningExecutable = process.platform === "linux" ? await fs.realpath(`/proc/${child.pid}/exe`) : exe;
 				if (launchPath !== exe) {
 					await expect(
 						findReusableCdp(launchPath, {
@@ -364,15 +365,15 @@ describe("pickElectronTarget", () => {
 					).rejects.toThrow("occupied by an unverified application");
 				}
 				expect(
-					await findReusableCdp(exe, {
-						appArgs: resolveSpawnArgs(exe, [...flags, "--user-data-dir", borrowedProfile]),
+					await findReusableCdp(runningExecutable, {
+						appArgs: resolveSpawnArgs(runningExecutable, [...flags, "--user-data-dir", borrowedProfile]),
 					}),
 				).toEqual({ cdpUrl: `http://127.0.0.1:${port}`, pid: child.pid });
 				await invoke({
 					action: "open",
 					name: borrowedName,
 					url: "data:text/html,<title>Borrowed</title>",
-					app: { path: exe, args: [...flags, "--user-data-dir", borrowedProfile] },
+					app: { path: runningExecutable, args: [...flags, "--user-data-dir", borrowedProfile] },
 				});
 				await invoke({
 					action: "open",
