@@ -218,6 +218,47 @@ describe("buildProviderCards split + privacy", () => {
 		expect(cards.map(card => card.windows[0].fraction)).toEqual([1, 0]);
 	});
 
+	it("partitions one combined report by scoped account IDs without averaging matching windows", () => {
+		const combined = report("anthropic", "shared@x.test", [
+			limit("anthropic", "account-a", "7d", "Claude 7 Day", 0.2, "ok"),
+			limit("anthropic", "account-a", "5h", "Claude 5 Hour", 0.4, "ok"),
+			limit("anthropic", "account-b", "7d", "Claude 7 Day", 0.8, "warning"),
+		]);
+		combined.metadata = { ...combined.metadata, accountId: "stale-report-account" };
+
+		const cards = buildProviderCards([combined], now, { merge: false });
+
+		expect(cards).toHaveLength(2);
+		expect(cards.map(card => card.windows.length).sort()).toEqual([1, 2]);
+		expect(
+			cards
+				.flatMap(card => card.windows)
+				.filter(window => window.label === "Claude 7 Day")
+				.map(window => window.fraction)
+				.sort(),
+		).toEqual([0.2, 0.8]);
+	});
+
+	it("partitions one combined report by scoped project IDs", () => {
+		const projectLimit = (projectId: string, usedFraction: number): UsageReport["limits"][number] => ({
+			...limit("google-gemini-cli", "", "daily", "Gemini Daily", usedFraction, "ok"),
+			scope: { provider: "google-gemini-cli", projectId, windowId: "daily" },
+		});
+		const combined = report("google-gemini-cli", "shared@x.test", [
+			projectLimit("project-a", 0.1),
+			projectLimit("project-b", 0.9),
+		]);
+		combined.metadata = { ...combined.metadata, projectId: "stale-report-project" };
+
+		const split = buildProviderCards([combined], now, { merge: false });
+		expect(split).toHaveLength(2);
+		expect(split.map(card => card.windows[0].fraction).sort()).toEqual([0.1, 0.9]);
+
+		const merged = buildProviderCards([combined], now, { merge: true });
+		expect(merged).toHaveLength(1);
+		expect(merged[0].windows[0].fraction).toBeCloseTo(0.5);
+	});
+
 	it("keeps same-label organizations distinct when split and aggregates them when merged", () => {
 		const sameEmail = "shared@x.test";
 		const reports = [

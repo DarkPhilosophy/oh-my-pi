@@ -206,6 +206,34 @@ function formatReportAccountKey(report: UsageReport, index: number): string {
 		: JSON.stringify(["anonymous", index]);
 }
 
+/** Providers may combine several account scopes in a single fetched report. */
+function partitionAccountReports(reports: UsageReport[]): UsageReport[] {
+	return reports.flatMap(report => {
+		const groups = new Map<string | undefined, UsageLimit[]>();
+		for (const limit of report.limits) {
+			const key = usageIdentityKey(
+				limit.scope.accountId || report.metadata?.accountId,
+				limit.scope.projectId || report.metadata?.projectId,
+				limit.scope,
+				report.metadata?.orgId,
+			);
+			const limits = groups.get(key) ?? [];
+			limits.push(limit);
+			groups.set(key, limits);
+		}
+		if (groups.size === 0) return [report];
+		return [...groups.values()].map(limits => ({
+			...report,
+			limits,
+			metadata: {
+				...report.metadata,
+				accountId: limits[0]!.scope.accountId || report.metadata?.accountId,
+				projectId: limits[0]!.scope.projectId || report.metadata?.projectId,
+			},
+		}));
+	});
+}
+
 export function buildProviderCards(
 	reports: UsageReport[],
 	nowMs: number,
@@ -213,7 +241,7 @@ export function buildProviderCards(
 ): ProviderCard[] {
 	const { merge = true, mask = formatAccountLabelText } = options;
 	const grouped = new Map<string, { provider: string; account?: AccountLabel; reports: UsageReport[] }>();
-	reports.forEach((report, index) => {
+	(merge ? reports : partitionAccountReports(reports)).forEach((report, index) => {
 		const account = merge ? undefined : formatReportAccountLabel(report, index);
 		const identity = merge ? undefined : formatReportAccountKey(report, index);
 		const key = identity === undefined ? report.provider : `${report.provider}\u0000${identity}`;
@@ -464,7 +492,8 @@ export class UsageDashboardComponent implements Component {
 	}
 
 	#rebuildCards(): void {
-		const labels = this.#options.reports.map((report, index) => formatReportAccountLabel(report, index));
+		const reports = this.#merge ? this.#options.reports : partitionAccountReports(this.#options.reports);
+		const labels = reports.map((report, index) => formatReportAccountLabel(report, index));
 		this.#cards = buildProviderCards(this.#options.reports, this.#nowMs, {
 			merge: this.#merge,
 			mask: this.#options.createMasker(labels, this.#mask),
