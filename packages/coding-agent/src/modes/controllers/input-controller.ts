@@ -675,6 +675,7 @@ export class InputController {
 		if (!data.startsWith("\x1b[<")) return undefined;
 		if (!settings.get("tui.mouse")) return undefined;
 		if (this.ctx.ui.hasOverlay()) return undefined;
+		if (this.ctx.ui.getFocused() instanceof ModelPickerComponent) return { consume: true };
 		const event = parseSgrMouse(data);
 		if (!event) return undefined;
 		if (event.motion) this.#updateHoverHighlight(event.row);
