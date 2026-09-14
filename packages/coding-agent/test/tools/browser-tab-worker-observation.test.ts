@@ -194,6 +194,58 @@ describe("Firefox BiDi viewport observation", () => {
 	});
 
 	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"recovers caught navigation timeouts on existing and newly returned pages",
+		async () => {
+			const puppeteer = await loadPuppeteer();
+			const browser = await puppeteer.launch({
+				executablePath: await ensureChromiumExecutable(),
+				headless: true,
+				args: ["--no-sandbox"],
+			});
+			const server = Bun.serve({
+				port: 0,
+				hostname: "127.0.0.1",
+				async fetch() {
+					await Bun.sleep(200);
+					return new Response("loaded");
+				},
+			});
+			try {
+				const primary = await browser.newPage();
+				const existing = await browser.newPage();
+				for (const source of ["existing", "new"] as const) {
+					let recoveryRequired = false;
+					const scope = createRunPageScope(primary, () => {
+						recoveryRequired = true;
+					});
+					scope.instrumentBrowser(browser);
+					try {
+						const secondary =
+							source === "existing"
+								? (await browser.pages()).find(candidate => candidate === existing)!
+								: await browser.newPage();
+						await secondary.goto(server.url.href, { timeout: 30 }).catch(() => {});
+						expect(recoveryRequired).toBe(true);
+						await secondary.setRequestInterception(true);
+						secondary.on("request", request => {
+							void request.continue();
+						});
+						await scope.cleanup();
+						await secondary.goto("data:text/html,<title>After cleanup</title>", { timeout: 2000 });
+						expect(await secondary.title()).toBe("After cleanup");
+					} finally {
+						await scope.cleanup();
+					}
+				}
+			} finally {
+				server.stop(true);
+				await browser.close();
+			}
+		},
+		15_000,
+	);
+
+	it.skipIf(!CHROMIUM_AVAILABLE)(
 		"filters real serialized page content without dropping visible headings",
 		async () => {
 			const puppeteer = await loadPuppeteer();

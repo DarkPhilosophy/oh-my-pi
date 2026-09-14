@@ -541,6 +541,7 @@ class NavigationCleanupError extends ToolError {}
 
 interface RunPageScope {
 	page: Page;
+	instrumentBrowser(browser: Browser): void;
 	cleanup(): Promise<void>;
 }
 
@@ -550,170 +551,180 @@ interface RunPageScope {
  * would also remove its forwarding listener; the facade removes only user handlers.
  */
 export function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPageScope {
-	const requestHandlers: unknown[] = [];
-	const on = page.on;
-	const off = page.off;
-	const once = page.once;
-	const removeAllListeners = page.removeAllListeners;
-	const goto = page.goto;
-	const reload = page.reload;
-	const goBack = page.goBack;
-	const goForward = page.goForward;
-	const setContent = page.setContent;
-	const onDescriptor = Object.getOwnPropertyDescriptor(page, "on");
-	const offDescriptor = Object.getOwnPropertyDescriptor(page, "off");
-	const onceDescriptor = Object.getOwnPropertyDescriptor(page, "once");
-	const removeAllDescriptor = Object.getOwnPropertyDescriptor(page, "removeAllListeners");
-	const gotoDescriptor = Object.getOwnPropertyDescriptor(page, "goto");
-	const reloadDescriptor = Object.getOwnPropertyDescriptor(page, "reload");
-	const goBackDescriptor = Object.getOwnPropertyDescriptor(page, "goBack");
-	const goForwardDescriptor = Object.getOwnPropertyDescriptor(page, "goForward");
-	const setContentDescriptor = Object.getOwnPropertyDescriptor(page, "setContent");
-	const frameRestorers: Array<() => void> = [];
-	const instrumentedFrames = new WeakSet<Frame>();
-	const instrumentFrame = (frame: Frame): void => {
-		if (instrumentedFrames.has(frame)) return;
-		instrumentedFrames.add(frame);
-		for (const name of ["goto", "setContent"] as const) {
-			const method = frame[name];
-			const descriptor = Object.getOwnPropertyDescriptor(frame, name);
-			Object.defineProperty(frame, name, {
+	let disposed = false;
+	const pageRestorers = new Map<Page, () => void>();
+	const instrumentPage = (target: Page): void => {
+		if (disposed || pageRestorers.has(target)) return;
+		const handlers: unknown[] = [];
+		const on = target.on;
+		const off = target.off;
+		const once = target.once;
+		const removeAllListeners = target.removeAllListeners;
+		const originals = new Map<string, PropertyDescriptor | undefined>(
+			["on", "off", "once", "removeAllListeners", "goto", "reload", "goBack", "goForward", "setContent"].map(
+				name => [name, Object.getOwnPropertyDescriptor(target, name)],
+			),
+		);
+		const frameRestorers: Array<() => void> = [];
+		const instrumentedFrames = new WeakSet<Frame>();
+		const instrumentFrame = (frame: Frame): void => {
+			if (instrumentedFrames.has(frame)) return;
+			instrumentedFrames.add(frame);
+			for (const name of ["goto", "setContent"] as const) {
+				const method = frame[name];
+				const descriptor = Object.getOwnPropertyDescriptor(frame, name);
+				Object.defineProperty(frame, name, {
+					configurable: true,
+					value: (...args: unknown[]) =>
+						Reflect.apply(method, frame, args).catch((error: unknown) => {
+							if (error instanceof Error && error.name === "TimeoutError") onNavigationTimeout?.();
+							throw error;
+						}),
+				});
+				frameRestorers.push(() => {
+					if (descriptor) Object.defineProperty(frame, name, descriptor);
+					else Reflect.deleteProperty(frame, name);
+				});
+			}
+		};
+		if (onNavigationTimeout) {
+			for (const frame of target.frames()) instrumentFrame(frame);
+			Reflect.apply(on, target, ["frameattached", instrumentFrame]);
+		}
+		Object.defineProperties(target, {
+			on: {
+				configurable: true,
+				value: (type: unknown, handler: unknown): Page => {
+					Reflect.apply(on, target, [type, handler]);
+					if (type === "request") handlers.push(handler);
+					return target;
+				},
+			},
+			once: {
+				configurable: true,
+				value: (type: unknown, handler: unknown): Page => {
+					if (type !== "request" || typeof handler !== "function") {
+						Reflect.apply(once, target, [type, handler]);
+						return target;
+					}
+					const wrapper = (event: unknown): void => {
+						const index = handlers.lastIndexOf(wrapper);
+						if (index >= 0) handlers.splice(index, 1);
+						Reflect.apply(off, target, ["request", wrapper]);
+						Reflect.apply(handler, target, [event]);
+					};
+					handlers.push(wrapper);
+					Reflect.apply(on, target, [type, wrapper]);
+					return target;
+				},
+			},
+			off: {
+				configurable: true,
+				value: (type: unknown, handler?: unknown): Page => {
+					Reflect.apply(off, target, [type, handler]);
+					if (type === "request") {
+						if (handler === undefined) handlers.length = 0;
+						else {
+							const index = handlers.lastIndexOf(handler);
+							if (index >= 0) handlers.splice(index, 1);
+						}
+					}
+					return target;
+				},
+			},
+			removeAllListeners: {
+				configurable: true,
+				value: (type?: unknown): Page => {
+					if (type === undefined || type === "request") {
+						for (const handler of handlers) Reflect.apply(off, target, ["request", handler]);
+						handlers.length = 0;
+					} else Reflect.apply(removeAllListeners, target, [type]);
+					return target;
+				},
+			},
+		});
+		for (const [name, method] of [
+			["goto", target.goto],
+			["reload", target.reload],
+			["goBack", target.goBack],
+			["goForward", target.goForward],
+			["setContent", target.setContent],
+		] as const) {
+			Object.defineProperty(target, name, {
 				configurable: true,
 				value: (...args: unknown[]) =>
-					Reflect.apply(method, frame, args).catch((error: unknown) => {
+					Reflect.apply(method, target, args).catch((error: unknown) => {
 						if (error instanceof Error && error.name === "TimeoutError") onNavigationTimeout?.();
 						throw error;
 					}),
 			});
-			frameRestorers.push(() => {
-				if (descriptor) Object.defineProperty(frame, name, descriptor);
-				else Reflect.deleteProperty(frame, name);
-			});
 		}
-	};
-	if (onNavigationTimeout) {
-		for (const frame of page.frames()) instrumentFrame(frame);
-		Reflect.apply(on, page, ["frameattached", instrumentFrame]);
-	}
-
-	Object.defineProperties(page, {
-		on: {
-			configurable: true,
-			value: (type: unknown, handler: unknown): Page => {
-				Reflect.apply(on, page, [type, handler]);
-				if (type === "request") requestHandlers.push(handler);
-				return page;
-			},
-		},
-		once: {
-			configurable: true,
-			value: (type: unknown, handler: unknown): Page => {
-				if (type !== "request" || typeof handler !== "function") {
-					Reflect.apply(once, page, [type, handler]);
-					return page;
-				}
-				const wrapper = (event: unknown): void => {
-					const index = requestHandlers.lastIndexOf(wrapper);
-					if (index >= 0) requestHandlers.splice(index, 1);
-					Reflect.apply(off, page, ["request", wrapper]);
-					Reflect.apply(handler, page, [event]);
-				};
-				requestHandlers.push(wrapper);
-				Reflect.apply(on, page, [type, wrapper]);
-				return page;
-			},
-		},
-		off: {
-			configurable: true,
-			value: (type: unknown, handler?: unknown): Page => {
-				Reflect.apply(off, page, [type, handler]);
-				if (type === "request") {
-					if (handler === undefined) requestHandlers.length = 0;
-					else {
-						const index = requestHandlers.lastIndexOf(handler);
-						if (index >= 0) requestHandlers.splice(index, 1);
-					}
-				}
-				return page;
-			},
-		},
-		removeAllListeners: {
-			configurable: true,
-			value: (type?: unknown): Page => {
-				if (type === undefined || type === "request") {
-					for (const handler of requestHandlers) Reflect.apply(off, page, ["request", handler]);
-					requestHandlers.length = 0;
-				} else Reflect.apply(removeAllListeners, page, [type]);
-				return page;
-			},
-		},
-		goto: {
-			configurable: true,
-			value: async (...args: Parameters<Page["goto"]>) => {
-				try {
-					return await Reflect.apply(goto, page, args);
-				} catch (error) {
-					if (error instanceof Error && error.name === "TimeoutError") onNavigationTimeout?.();
-					throw error;
-				}
-			},
-		},
-	});
-	for (const [name, method] of [
-		["reload", reload],
-		["goBack", goBack],
-		["goForward", goForward],
-		["setContent", setContent],
-	] as const) {
-		Object.defineProperty(page, name, {
-			configurable: true,
-			value: (...args: unknown[]) =>
-				Reflect.apply(method, page, args).catch((error: unknown) => {
-					if (error instanceof Error && error.name === "TimeoutError") onNavigationTimeout?.();
-					throw error;
-				}),
-		});
-	}
-
-	return {
-		page,
-		async cleanup() {
+		pageRestorers.set(target, () => {
 			if (onNavigationTimeout) {
-				Reflect.apply(off, page, ["frameattached", instrumentFrame]);
+				Reflect.apply(off, target, ["frameattached", instrumentFrame]);
 				for (const restore of frameRestorers) restore();
 			}
-			if (onDescriptor) Object.defineProperty(page, "on", onDescriptor);
-			else Reflect.deleteProperty(page, "on");
-			if (offDescriptor) Object.defineProperty(page, "off", offDescriptor);
-			else Reflect.deleteProperty(page, "off");
-			if (onceDescriptor) Object.defineProperty(page, "once", onceDescriptor);
-			else Reflect.deleteProperty(page, "once");
-			if (removeAllDescriptor) Object.defineProperty(page, "removeAllListeners", removeAllDescriptor);
-			else Reflect.deleteProperty(page, "removeAllListeners");
-			if (gotoDescriptor) Object.defineProperty(page, "goto", gotoDescriptor);
-			else Reflect.deleteProperty(page, "goto");
-			if (reloadDescriptor) Object.defineProperty(page, "reload", reloadDescriptor);
-			else Reflect.deleteProperty(page, "reload");
-			if (goBackDescriptor) Object.defineProperty(page, "goBack", goBackDescriptor);
-			else Reflect.deleteProperty(page, "goBack");
-			if (goForwardDescriptor) Object.defineProperty(page, "goForward", goForwardDescriptor);
-			else Reflect.deleteProperty(page, "goForward");
-			if (setContentDescriptor) Object.defineProperty(page, "setContent", setContentDescriptor);
-			else Reflect.deleteProperty(page, "setContent");
-			for (const handler of requestHandlers) Reflect.apply(off, page, ["request", handler]);
-			requestHandlers.length = 0;
+			for (const [name, descriptor] of originals) {
+				if (descriptor) Object.defineProperty(target, name, descriptor);
+				else Reflect.deleteProperty(target, name);
+			}
+			for (const handler of handlers) Reflect.apply(off, target, ["request", handler]);
+			handlers.length = 0;
+		});
+	};
+	instrumentPage(page);
+	let browserRestorer: (() => void) | undefined;
+	return {
+		page,
+		instrumentBrowser(browser: Browser) {
+			if (browserRestorer) return;
+			const pages = browser.pages;
+			const newPage = browser.newPage;
+			const pagesDescriptor = Object.getOwnPropertyDescriptor(browser, "pages");
+			const newPageDescriptor = Object.getOwnPropertyDescriptor(browser, "newPage");
+			Object.defineProperties(browser, {
+				pages: {
+					configurable: true,
+					value: async (...args: Parameters<Browser["pages"]>) => {
+						const result = await Reflect.apply(pages, browser, args);
+						result.forEach(instrumentPage);
+						return result;
+					},
+				},
+				newPage: {
+					configurable: true,
+					value: async (...args: Parameters<Browser["newPage"]>) => {
+						const result = await Reflect.apply(newPage, browser, args);
+						instrumentPage(result);
+						return result;
+					},
+				},
+			});
+			browserRestorer = () => {
+				if (pagesDescriptor) Object.defineProperty(browser, "pages", pagesDescriptor);
+				else Reflect.deleteProperty(browser, "pages");
+				if (newPageDescriptor) Object.defineProperty(browser, "newPage", newPageDescriptor);
+				else Reflect.deleteProperty(browser, "newPage");
+			};
+		},
+		async cleanup() {
+			disposed = true;
+			browserRestorer?.();
+			const pages = [...pageRestorers.keys()];
+			for (const restore of pageRestorers.values()) restore();
+			pageRestorers.clear();
 			try {
 				await withTimeout(
-					page.setRequestInterception(false),
+					Promise.all(
+						pages.filter(target => !target.isClosed()).map(target => target.setRequestInterception(false)),
+					),
 					REQUEST_INTERCEPTION_CLEANUP_TIMEOUT_MS,
 					"Timed out clearing browser request interception",
 				);
 			} catch (error) {
 				throw new RequestInterceptionCleanupError(
 					"Failed to clear browser request interception after browser.run",
-					{
-						error: error instanceof Error ? error.message : String(error),
-					},
+					{ error: error instanceof Error ? error.message : String(error) },
 				);
 			}
 		},
@@ -1817,15 +1828,12 @@ export class WorkerCore {
 		let runPage: RunPageScope | undefined;
 		this.#activeElementCacheKey = msg.name;
 		try {
-			if (this.#webDriverBiDi && (msg.targetId || msg.targetMatcher)) {
-				await this.#selectBiDiPage(msg.name, msg.targetId, msg.targetMatcher, msg.dialogs);
-			}
-			throwIfAborted(signal);
 			runPage = createRunPageScope(
 				this.#requirePage(),
 				this.#webDriverBiDi ? () => (this.#cleanupRequired = true) : undefined,
 			);
 			const browser = this.#requireBrowser();
+			runPage.instrumentBrowser(browser);
 			const tabApi = this.#createTabApi(msg.name, msg.timeoutMs, signal, msg.session, output, screenshots, active);
 			const runtime = this.#ensureRuntime(msg.name, msg.session);
 			runtime.setCwd(msg.session.cwd);
