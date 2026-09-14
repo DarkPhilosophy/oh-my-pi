@@ -5,6 +5,12 @@
 ### Changed
 
 - Improved `/usage` with provider/account cards, temporary privacy and account-grouping controls, and configurable quota-bar labels.
+
+### Fixed
+
+- Applied account masking consistently to text-mode and ACP `/usage` output, including reset-credit labels.
+- Read error and preview rendering now sanitizes tabs and Windows-style CRLF (e.g. ssh host-key failures, tab-indented fetched content) so raw output can no longer tear the result frame.
+
 ## [18.1.21] - 2026-09-14
 
 ### Fixed
@@ -15,7 +21,6 @@
 - First-use Chromium installation and browser operations no longer consume Eval's runtime timeout or reset its kernel while waiting.
 - Browser startup reuses a successful system-Chrome fallback instead of retrying an unavailable download during the same open.
 - Browser clicks and other interactions no longer stall when OMP-owned tabs are in the background, including after worker timeout recovery.
-- Applied account masking consistently to text-mode and ACP `/usage` output, including reset-credit labels.
 
 
 ## [18.1.20] - 2026-09-13
@@ -29,9 +34,6 @@
 
 - Documented that native JS/TS hook factories must live in `.omp/hooks/pre/` or `.omp/hooks/post/` (not directly in `.omp/hooks/`), and cross-linked the hooks and extension-loading docs ([#11942](https://github.com/can1357/oh-my-pi/issues/11942)).
 
-### Fixed
-
-- Read error and preview rendering now sanitizes tabs and Windows-style CRLF (e.g. ssh host-key failures, tab-indented fetched content) so raw output can no longer tear the result frame.
 ### Fixed
 
 - The hidden notice announcing a mid-session tool-availability change now states that it lists only what changed, so an additions-only notice no longer reads as the complete tool set and the model keeps using tools that are still callable ([#11824](https://github.com/can1357/oh-my-pi/issues/11824) by [@camjac251](https://github.com/camjac251)).
