@@ -306,7 +306,10 @@ export async function findReusableCdp(
 			hasUnreadableCandidate = true;
 			continue;
 		}
-		if (ambiguousProfile) continue;
+		if (ambiguousProfile) {
+			hasUnreadableCandidate = true;
+			continue;
+		}
 		candidateArgs.push(args);
 		const candidateProfile = findUserDataDirInArgs(args);
 		if (
