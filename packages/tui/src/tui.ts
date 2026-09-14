@@ -1994,6 +1994,10 @@ export class TUI extends Container {
 		// ED3 with a complete-ledger replay. Running that pair during stop would
 		// erase native history and re-stream the whole transcript at quit; drop
 		// the latch so the flush below writes only un-retired rows.
+		// Popup recovery must survive a deferred frame and flush cancellation.
+		// Re-arm it after beginHistoryFlush, even when resize already consumed
+		// the original damage flag or an offered append has been acknowledged.
+		this.#cursorOverlayHistoryDamaged ||= this.#clearScrollbackWaitsForReplay;
 		this.#clearScrollbackOnNextRender = false;
 		this.#flushHistoryBeforeStop();
 		// Deliberately leave transmitted images in the terminal's graphics store:
@@ -2848,12 +2852,7 @@ export class TUI extends Container {
 		// A partial multicell overwrite destroys the whole glyph, not only the
 		// covered row. Restore its anchor and all reserved rows as one unit.
 		let restoredScaledBacking = false;
-		if (
-			previousOverlay &&
-			(geometryStable || remappedBacking) &&
-			!destructiveReset &&
-			(!pendingAltExit || remappedBacking)
-		) {
+		if (previousOverlay && (geometryStable || remappedBacking) && !destructiveReset) {
 			let restoreTop = previousOverlay.top;
 			let restoreEnd = restoreTop + previousOverlay.rows.length;
 			while (this.#osc66SpacerGlyphWidth(this.#providerScreen, restoreTop) >= 0) restoreTop--;
