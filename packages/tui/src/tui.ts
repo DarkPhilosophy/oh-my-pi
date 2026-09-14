@@ -680,6 +680,8 @@ export class TUI extends Container {
 		| undefined;
 	/** Only the current physical screen, never native scrollback. */
 	#providerScreen: readonly string[] = [];
+	/** Rows above this boundary are external history, not restorable blank cells. */
+	#providerScreenKnownTop = 0;
 	// Net composer-space offset of the published hit-test origin behind the
 	// painted top, from the last paint: replay-replaced rows minus viewport
 	// rows the paint prepended for a short viewport. Negative while prepended
@@ -922,6 +924,7 @@ export class TUI extends Container {
 		this.#frameProvider = provider;
 		this.#providerWindow = [];
 		this.#providerScreen = [];
+		this.#providerScreenKnownTop = 0;
 		this.#cursorOverlayRender = undefined;
 		this.#cursorOverlayBacking = undefined;
 		this.#cursorOverlayResizePending = false;
@@ -1157,6 +1160,8 @@ export class TUI extends Container {
 			this.#resizeAltActive ||
 			this.#resizeProbe !== undefined ||
 			this.#resizeInPlaceActive ||
+			this.#cursorOverlayHistoryDamaged ||
+			this.#clearScrollbackWaitsForReplay ||
 			(screenRow !== undefined &&
 				this.#cursorOverlayBacking !== undefined &&
 				screenRow >= this.#cursorOverlayBacking.top &&
@@ -1367,7 +1372,7 @@ export class TUI extends Container {
 	 * in-flight CPR tag so a rewrap-invalidated reply cannot anchor a new geometry.
 	 */
 	#trackResizeBurst(): void {
-		if (this.#cursorOverlayBacking) this.#cursorOverlayResizePending = true;
+		this.#cursorOverlayResizePending = this.#providerScreen.length > 0 || this.#cursorOverlayBacking !== undefined;
 		const burstLastHeight = this.#resizeBurstLastHeight ?? this.#previousHeight;
 		if (this.terminal.rows > burstLastHeight) this.#resizeBurstGrew = true;
 		this.#resizeBurstLastHeight = this.terminal.rows;
@@ -1673,25 +1678,29 @@ export class TUI extends Container {
 	#remapCursorOverlayBacking(width: number, height: number, viewportTop: number, anchorKnown = true): void {
 		this.#cursorOverlayResizePending = false;
 		const backing = this.#cursorOverlayBacking;
-		if (!backing) return;
 		if (!anchorKnown && this.#resizeBurstGrew) {
-			// Growth can pull fewer native history rows than requested, with
-			// or without width reflow. Neither backing nor the screen ledger
-			// can be remapped from that upper bound; rebuild both from the
-			// provider before painting another popup frame.
-			this.#cursorOverlayHistoryDamaged = true;
+			if (backing) {
+				this.#cursorOverlayHistoryDamaged = true;
+			} else {
+				// Unknown scrollback pull cannot be reconstructed without a cursor
+				// report. Only newly painted provider rows may back a later popup.
+				this.#providerScreen = [];
+				this.#providerScreenKnownTop = height;
+			}
 			return;
 		}
 		const paintedScreen = Array.from(this.#providerScreen);
-		for (let index = 0; index < backing.painted.length; index++) {
-			paintedScreen[backing.top + index] = backing.painted[index]!;
+		if (backing) {
+			for (let index = 0; index < backing.painted.length; index++) {
+				paintedScreen[backing.top + index] = backing.painted[index]!;
+			}
 		}
 		const screenTop = viewportTop - this.#reflowedRowCount(paintedScreen, 0, this.#providerViewportTop, width);
-		const top = screenTop + this.#reflowedRowCount(paintedScreen, 0, backing.top, width);
-		const end = top + this.#reflowedRowCount(paintedScreen, backing.top, backing.top + backing.rows.length, width);
-		// These covered cells have crossed the addressable screen boundary.
-		// Only this case needs the exceptional complete-ledger recovery.
-		if (top < 0 || end > height) {
+		const top = backing ? screenTop + this.#reflowedRowCount(paintedScreen, 0, backing.top, width) : 0;
+		const end = backing
+			? top + this.#reflowedRowCount(paintedScreen, backing.top, backing.top + backing.rows.length, width)
+			: 0;
+		if (backing && (top < 0 || end > height)) {
 			this.#cursorOverlayHistoryDamaged = true;
 			return;
 		}
@@ -1700,10 +1709,8 @@ export class TUI extends Container {
 		for (let index = 0; index < paintedScreen.length; index++) {
 			const source = this.#providerScreen[index] ?? "";
 			const count = this.#reflowedRowCount(paintedScreen, index, index + 1, width);
-			const covered = index >= backing.top && index < backing.top + backing.rows.length;
+			const covered = backing !== undefined && index >= backing.top && index < backing.top + backing.rows.length;
 			if (covered && this.#reflowedRowCount(this.#providerScreen, index, index + 1, width) !== count) {
-				// Reflow changed this overwritten row's physical extent; its
-				// original cells no longer fit in the retained terminal rows.
 				this.#cursorOverlayHistoryDamaged = true;
 				return;
 			}
@@ -1712,8 +1719,12 @@ export class TUI extends Container {
 				screen[targetRow] = count === 1 ? source : sliceByColumn(source, part * width, width);
 			}
 		}
+		this.#providerScreenKnownTop = Math.max(
+			0,
+			Math.min(height, screenTop + this.#reflowedRowCount(paintedScreen, 0, this.#providerScreenKnownTop, width)),
+		);
 		this.#providerScreen = screen;
-		this.#cursorOverlayBacking = { top, rows: screen.slice(top, end), painted: [], width, height };
+		if (backing) this.#cursorOverlayBacking = { top, rows: screen.slice(top, end), painted: [], width, height };
 	}
 
 	/** Paint the full semantic tail on the borrowed resize buffer. */
@@ -2772,7 +2783,7 @@ export class TUI extends Container {
 		// A provider may queue the complete replay behind an already offered
 		// append. Acknowledge that batch without consuming the paired clear.
 		const destructiveReset =
-			this.#clearScrollbackOnNextRender && (!this.#clearScrollbackWaitsForReplay || history?.kind !== "append");
+			this.#clearScrollbackOnNextRender && (!this.#clearScrollbackWaitsForReplay || history?.kind === "replay");
 		if (destructiveReset) {
 			this.#providerViewportTop = 0;
 			this.#providerWindow = [];
@@ -2784,6 +2795,10 @@ export class TUI extends Container {
 		const geometryStable = this.#hasEverRendered && this.#previousWidth === width && this.#previousHeight === height;
 		const startTop = destructiveReset ? 0 : Math.min(this.#providerViewportTop, Math.max(0, height - 1));
 		const newTop = Math.max(0, Math.min(startTop + historyRows.length, height - rows));
+		const knownTop = destructiveReset
+			? 0
+			: Math.min(startTop, this.#providerScreen.length > 0 ? this.#providerScreenKnownTop : startTop);
+		const nextKnownTop = Math.max(0, knownTop - Math.max(0, startTop + historyRows.length + rows - height));
 		const pendingAltExit = this.#pendingAltExit;
 		let buffer = this.#paintBeginSequence + pendingAltExit;
 		if (destructiveReset && TERMINAL.imageProtocol === ImageProtocol.Kitty) {
@@ -2819,7 +2834,7 @@ export class TUI extends Container {
 		const editorTop = Math.max(0, logicalEditorTop);
 		const editorBottom = Math.max(0, Math.min(height, logicalEditorTop + this.#cursorOverlayEditorRows));
 		const above = this.#cursorOverlayPlacement === "above" || editorTop >= height - editorBottom;
-		const available = above ? editorTop : height - editorBottom;
+		const available = above ? Math.max(0, editorTop - nextKnownTop) : height - editorBottom;
 		const overlayRows =
 			marker && !flushing && !this.hasOverlay() && available > 0
 				? this.#prepareLinesArray(this.#cursorOverlayRender?.(width, available) ?? [], width)
@@ -2920,6 +2935,7 @@ export class TUI extends Container {
 		const screenPrefix = destructiveReset ? [] : this.#providerScreen.slice(0, startTop);
 		while (screenPrefix.length < startTop) screenPrefix.push("");
 		this.#providerScreen = [...screenPrefix, ...preparedHistory.slice(-height), ...prepared].slice(-height);
+		this.#providerScreenKnownTop = nextKnownTop;
 		if (overlayCount > 0) {
 			const covered: string[] = [];
 			for (let index = 0; index < overlayCount; index++) {

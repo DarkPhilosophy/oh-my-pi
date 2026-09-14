@@ -262,46 +262,90 @@ it("recovers popup rows when stopping before resize settles", async () => {
 	expect(rows.join("\n")).not.toContain("MENU_");
 });
 
-it("waits for a queued complete replay before clearing damaged popup history at stop", async () => {
-	class DelayedReplayProvider extends Provider {
-		#replayQueued = false;
-		beginHistoryFlush(): void {}
-		override beginHistoryReplay(): void {
-			if (this.frame.history) this.#replayQueued = true;
-			else super.beginHistoryReplay();
-		}
-		override acknowledgeHistory(): void {
-			super.acknowledgeHistory();
-			if (this.#replayQueued) {
-				this.#replayQueued = false;
-				super.beginHistoryReplay();
+it.each(["append", undefined] as const)(
+	"waits for queued %s history before clearing damaged popup history at stop",
+	async kind => {
+		class DelayedReplayProvider extends Provider {
+			#replayQueued = false;
+			beginHistoryFlush(): void {}
+			override renderFrame(): TerminalFramePlan {
+				if (this.#replayQueued) expect(ui.getMutableViewport().length).toBe(0);
+				return super.renderFrame();
+			}
+			override beginHistoryReplay(): void {
+				if (this.frame.history) this.#replayQueued = true;
+				else super.beginHistoryReplay();
+			}
+			override acknowledgeHistory(): void {
+				super.acknowledgeHistory();
+				if (this.#replayQueued) {
+					this.#replayQueued = false;
+					super.beginHistoryReplay();
+				}
 			}
 		}
-	}
+		const terminal = new VirtualTerminal(40, 12);
+		const ui = new TUI(terminal);
+		const provider = new DelayedReplayProvider();
+		ui.setFrameProvider(provider);
+		ui.start();
+		try {
+			await terminal.waitForRender();
+			ui.setCursorOverlay(() => ["MENU_1", "MENU_2", "MENU_3", "MENU_4"], 0, 1);
+			ui.requestRender();
+			await terminal.waitForRender();
+			// Model an offered append whose paint was deferred before acknowledgement.
+			provider.frame = {
+				history: { id: 2, kind, rows: ["HISTORY_30"] },
+				viewport: provider.frame.viewport,
+			};
+			terminal.resize(40, 4);
+		} finally {
+			ui.stop();
+		}
+		await terminal.flush();
+		expect(terminal.getScrollBuffer().filter(row => row.startsWith("HISTORY_"))).toEqual(
+			Array.from({ length: 31 }, (_, index) => `HISTORY_${index}`),
+		);
+		expect(terminal.getScrollBuffer().join("\n")).not.toContain("MENU_");
+	},
+);
+
+it.each([false, true])("preserves pulled external history when popup predates growth=%s", async openBeforeResize => {
 	const terminal = new VirtualTerminal(40, 12);
+	terminal.write(Array.from({ length: 50 }, (_, index) => `SHELL_${index}\r\n`).join(""));
 	const ui = new TUI(terminal);
-	const provider = new DelayedReplayProvider();
+	const provider = new Provider();
+	provider.frame = {
+		history: { id: 1, rows: Array.from({ length: 12 }, (_, index) => `HISTORY_${index}`) },
+		viewport: provider.frame.viewport,
+	};
 	ui.setFrameProvider(provider);
 	ui.start();
+	const open = () =>
+		ui.setCursorOverlay((_width, rows) => Array.from({ length: rows }, (_, index) => `MENU_${index}`), 0, 1, "above");
 	try {
 		await terminal.waitForRender();
-		ui.setCursorOverlay(() => ["MENU_1", "MENU_2", "MENU_3", "MENU_4"], 0, 1);
+		const original = terminal.getScrollBuffer().filter(row => /^(SHELL|HISTORY)_/.test(row));
+		if (openBeforeResize) {
+			open();
+			ui.requestRender();
+			await terminal.waitForRender();
+		}
+		terminal.resize(40, 20);
+		await Bun.sleep(600);
+		await terminal.waitForRender();
+		if (!openBeforeResize) open();
 		ui.requestRender();
 		await terminal.waitForRender();
-		// Model an offered append whose paint was deferred before acknowledgement.
-		provider.frame = {
-			history: { id: 2, kind: "append", rows: ["HISTORY_30"] },
-			viewport: provider.frame.viewport,
-		};
-		terminal.resize(40, 4);
+		expect(terminal.getViewport().join("\n")).toContain("MENU_");
+		ui.setCursorOverlay(undefined, 0, 0);
+		ui.requestRender();
+		await terminal.waitForRender();
+		expect(terminal.getScrollBuffer().filter(row => /^(SHELL|HISTORY)_/.test(row))).toEqual(original);
 	} finally {
 		ui.stop();
 	}
-	await terminal.flush();
-	expect(terminal.getScrollBuffer().filter(row => row.startsWith("HISTORY_"))).toEqual(
-		Array.from({ length: 31 }, (_, index) => `HISTORY_${index}`),
-	);
-	expect(terminal.getScrollBuffer().join("\n")).not.toContain("MENU_");
 });
 
 it.each([
