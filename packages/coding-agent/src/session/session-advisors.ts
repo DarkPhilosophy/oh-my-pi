@@ -2240,7 +2240,7 @@ export class SessionAdvisors {
 			if (!s.model || s.status !== "running") return `Advisor "${s.name}" is ${s.status.replace("_", " ")}.`;
 			return `Advisor is enabled (${s.model.provider}/${s.model.id}). ${contextLine}. ${spendLine}.`;
 		}
-		const lines = [`Advisors enabled (${stats.advisors.length}):`];
+		const lines = [`Advisors ${stats.configured ? "enabled" : "disabled"} (${stats.advisors.length}):`];
 		for (const s of stats.advisors) {
 			const ctx =
 				s.contextWindow > 0

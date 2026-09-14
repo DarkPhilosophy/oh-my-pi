@@ -368,7 +368,7 @@ async function prepareSecurityExecutionTarget(
 }
 
 export class SecurityCoordinator {
-	readonly #host: SecurityCoordinatorHost;
+	#host: SecurityCoordinatorHost;
 	readonly #createSession: SecurityScanSessionFactory;
 	readonly #openStore: (repositoryRoot: string) => Promise<SecurityStore>;
 	readonly #gitAdapter: SecurityGitAdapter;
@@ -384,6 +384,11 @@ export class SecurityCoordinator {
 		this.#gitAdapter = dependencies.gitAdapter ?? DEFAULT_SECURITY_GIT_ADAPTER;
 		this.#now = dependencies.now ?? (() => new Date());
 		this.#createOperationId = dependencies.createOperationId ?? createOperationId;
+	}
+
+	/** Refresh host-bound credentials, settings, and advisor scope on reuse. */
+	updateHost(host: SecurityCoordinatorHost): void {
+		this.#host = host;
 	}
 	async #ensureRecovered(): Promise<void> {
 		this.#recovery ??= this.#recoverInterruptedOperations();
@@ -707,11 +712,13 @@ export class SecurityCoordinator {
 }
 
 const COORDINATORS = new Map<string, SecurityCoordinator>();
-
 export function getSecurityCoordinator(host: SecurityCoordinatorHost): SecurityCoordinator {
 	const key = `${path.resolve(host.cwd)}\u0000${host.sessionId ?? "sessionless"}`;
 	const existing = COORDINATORS.get(key);
-	if (existing) return existing;
+	if (existing) {
+		existing.updateHost(host);
+		return existing;
+	}
 	const coordinator = new SecurityCoordinator(host);
 	COORDINATORS.set(key, coordinator);
 	return coordinator;

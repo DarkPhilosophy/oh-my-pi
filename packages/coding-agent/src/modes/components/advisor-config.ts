@@ -129,8 +129,8 @@ interface ScopeState {
 	doc: WatchdogConfigDoc;
 	list: SelectList;
 	dirty: boolean;
+	revision: number;
 	loading: boolean;
-	/** Set after a background load fails; the scope remains read-only until reloaded. */
 	failed: boolean;
 	/** Remembered roster row value so rebuilds keep the cursor. */
 	cursor: string | undefined;
@@ -236,6 +236,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 			doc,
 			list: new SelectList([], 1, getSelectListTheme()),
 			dirty: false,
+			revision: 0,
 			loading: false,
 			failed: false,
 			cursor: undefined,
@@ -592,7 +593,9 @@ export class AdvisorConfigOverlayComponent implements Component {
 	}
 
 	#markDirty(scope: AdvisorConfigScope): void {
-		this.#scopes[scope].dirty = true;
+		const state = this.#scopes[scope];
+		state.dirty = true;
+		state.revision++;
 		this.#rebuildRoster(scope);
 	}
 
@@ -615,13 +618,16 @@ export class AdvisorConfigOverlayComponent implements Component {
 		if (value === "save") {
 			if (this.#savePending) return;
 			this.#savePending = true;
+			const revision = state.revision;
 			try {
 				const doc = this.#hasSyntheticDefaultAdvisor(state.doc) ? { ...state.doc, advisors: [] } : state.doc;
 				await this.#cb.save(scope, doc);
-				delete state.doc.warnings;
-				state.dirty = false;
-				this.#rebuildRoster(scope);
-				this.#cb.notify(`Saved ${this.#scopeLabel(scope)} advisors`);
+				if (state.revision === revision) {
+					delete state.doc.warnings;
+					state.dirty = false;
+					this.#rebuildRoster(scope);
+					this.#cb.notify(`Saved ${this.#scopeLabel(scope)} advisors`);
+				}
 				this.#cb.requestRender();
 			} finally {
 				this.#savePending = false;

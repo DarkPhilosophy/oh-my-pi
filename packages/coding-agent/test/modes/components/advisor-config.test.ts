@@ -77,6 +77,56 @@ describe("advisor config editor warnings and synthetic default row", () => {
 		expect(saves).toEqual(["project", "user"]);
 	});
 
+	it("preserves edits made while a save is pending", async () => {
+		const finishSave = Promise.withResolvers<void>();
+		const saves: WatchdogConfigDoc[] = [];
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			{ modelRegistry: {} as ModelRegistry, settings, scopedModels: [], availableToolNames: [] },
+			"project",
+			{ advisors: [{ name: "Reviewer" }] },
+			{
+				loadDoc: async () => ({ advisors: [] }),
+				save: async (_scope, doc) => {
+					saves.push(structuredClone(doc));
+					if (saves.length === 1) await finishSave.promise;
+				},
+				close: () => {},
+				requestRender: () => {},
+				notify: () => {},
+			},
+		);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		clickSave(overlay, "project");
+		const rows = overlay.render(100).map(Bun.stripANSI);
+		const advisorRow = rows.findIndex(row => row.slice(0, 35).includes("Reviewer"));
+		expect(advisorRow).toBeGreaterThan(0);
+		overlay.handleInput(`\x1b[<0;5;${advisorRow + 1}M`);
+		await Promise.resolve();
+		overlay.handleInput("\x1b[C");
+		await Promise.resolve();
+		const fieldRows = overlay.render(100).map(Bun.stripANSI);
+		const enabledRow = fieldRows.findIndex(row => row.includes("Enabled"));
+		expect(enabledRow).toBeGreaterThan(0);
+		overlay.handleInput(`\x1b[<0;60;${enabledRow + 1}M`);
+		overlay.handleInput("\r");
+
+		finishSave.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(saves).toEqual([{ advisors: [{ name: "Reviewer" }] }]);
+		expect(Bun.stripANSI(overlay.render(100).join("\n"))).toContain("unsaved");
+
+		overlay.handleInput("\x1b[D");
+		clickSave(overlay, "project");
+		await Promise.resolve();
+		expect(saves).toHaveLength(2);
+		expect(saves[1]?.advisors[0]).toMatchObject({ name: "Reviewer" });
+		expect(saves[1]?.advisors[0].enabled).toBeUndefined();
+	});
+
 	it("releases the save guard after rejection without discarding pending edits", async () => {
 		const attempts: Array<{ scope: string; doc: WatchdogConfigDoc }> = [];
 		const notifications: string[] = [];
