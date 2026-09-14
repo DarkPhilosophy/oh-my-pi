@@ -161,6 +161,8 @@ async function initializeBiDiWorker(pages: ControlledBiDiPage[]): Promise<{ tran
 	const browser = {
 		connected: true,
 		pages: async () => pages as unknown as Page[],
+		browserContexts: () => [],
+		targets: () => [],
 		disconnect: async () => {},
 	} as unknown as Browser;
 	vi.spyOn(puppeteer, "connect").mockResolvedValue(browser);

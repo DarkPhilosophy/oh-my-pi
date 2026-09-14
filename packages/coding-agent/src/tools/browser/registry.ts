@@ -3,7 +3,7 @@ import * as path from "node:path";
 import {
 	acquireFileLock,
 	type FileLockHandle,
-	getBrowserProfilesDir,
+	getBaseConfigRoot,
 	isCompiledBinary,
 	logger,
 	withTimeout,
@@ -238,7 +238,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 	if (kind.kind === "firefox-relay") {
 		// Firefox permits one BiDi session across all OMP processes, not merely
 		// one worker in this registry. OS ownership also releases after a crash.
-		const leaseDir = path.join(getBrowserProfilesDir(), "firefox-leases");
+		const leaseDir = path.join(getBaseConfigRoot(), "run", "firefox-leases");
 		await fs.mkdir(leaseDir, { recursive: true });
 		const endpointKey = Bun.hash(browserKey(kind)).toString(16);
 		let endpointLease: FileLockHandle;

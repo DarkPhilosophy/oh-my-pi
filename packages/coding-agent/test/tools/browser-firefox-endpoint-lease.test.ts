@@ -9,14 +9,18 @@ it.each([false, true])(
 		const handle = await acquireBrowser(kind, { cwd: process.cwd() });
 		const cleanup = Promise.withResolvers<void>();
 		if (pendingCleanup && "webSocketUrl" in handle) handle.connectionCleanup = cleanup.promise;
-		const probe = async () => {
+		const probe = async (profile = `lease-probe-${crypto.randomUUID()}`) => {
 			const child = Bun.spawn(
 				[
 					process.execPath,
 					`${import.meta.dir}/../fixtures/firefox-endpoint-lease-probe.ts`,
 					webSocketUrl.replace("localhost", "127.0.0.1"),
 				],
-				{ stdout: "pipe", stderr: "pipe" },
+				{
+					env: { ...process.env, OMP_PROFILE: profile, PI_PROFILE: profile },
+					stdout: "pipe",
+					stderr: "pipe",
+				},
 			);
 			const [exitCode, stdout, stderr] = await Promise.all([
 				child.exited,
@@ -27,7 +31,7 @@ it.each([false, true])(
 			return { exitCode, stdout: stdout.trim() };
 		};
 		try {
-			expect(await probe()).toEqual({ exitCode: 0, stdout: "contended" });
+			expect(await probe("separate-named-profile")).toEqual({ exitCode: 0, stdout: "contended" });
 		} finally {
 			await releaseBrowser(handle, { kill: false });
 			if (pendingCleanup) {

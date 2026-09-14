@@ -213,17 +213,33 @@ describe("Firefox BiDi viewport observation", () => {
 			try {
 				const primary = await browser.newPage();
 				const existing = await browser.newPage();
-				for (const source of ["existing", "new"] as const) {
+				for (const source of [
+					"existing",
+					"new",
+					"context-new",
+					"context-pages",
+					"target-page",
+					"target-as-page",
+				] as const) {
 					let recoveryRequired = false;
 					const scope = createRunPageScope(primary, () => {
 						recoveryRequired = true;
 					});
 					scope.instrumentBrowser(browser);
 					try {
-						const secondary =
-							source === "existing"
-								? (await browser.pages()).find(candidate => candidate === existing)!
-								: await browser.newPage();
+						let secondary: Page;
+						if (source === "existing")
+							secondary = (await browser.pages()).find(candidate => candidate === existing)!;
+						else if (source === "new") secondary = await browser.newPage();
+						else if (source === "context-new") secondary = await browser.defaultBrowserContext().newPage();
+						else if (source === "context-pages")
+							secondary = (await browser.defaultBrowserContext().pages()).find(
+								candidate => candidate === existing,
+							)!;
+						else {
+							const target = browser.targets().find(candidate => candidate === existing.target())!;
+							secondary = source === "target-page" ? (await target.page())! : await target.asPage();
+						}
 						await secondary.goto(server.url.href, { timeout: 30 }).catch(() => {});
 						expect(recoveryRequired).toBe(true);
 						await secondary.setRequestInterception(true);
@@ -244,6 +260,45 @@ describe("Firefox BiDi viewport observation", () => {
 		},
 		15_000,
 	);
+
+	it.skipIf(!CHROMIUM_AVAILABLE)("removes user listeners without breaking internal page events", async () => {
+		const puppeteer = await loadPuppeteer();
+		const browser = await puppeteer.launch({
+			executablePath: await ensureChromiumExecutable(),
+			headless: true,
+			args: ["--no-sandbox"],
+		});
+		try {
+			const page = await browser.newPage();
+			let internalCalls = 0;
+			const retained = () => {
+				internalCalls++;
+			};
+			page.on("domcontentloaded", retained);
+			const scope = createRunPageScope(page);
+			const removed = vi.fn();
+			const oneShot = vi.fn();
+			page.on("domcontentloaded", removed);
+			page.once("domcontentloaded", oneShot);
+			page.off("domcontentloaded", oneShot);
+			page.removeAllListeners();
+			await page.goto("data:text/html,first");
+			expect(internalCalls).toBe(1);
+			expect(removed).not.toHaveBeenCalled();
+			expect(oneShot).not.toHaveBeenCalled();
+			page.once("domcontentloaded", oneShot);
+			await page.goto("data:text/html,second");
+			await page.goto("data:text/html,third");
+			expect(oneShot).toHaveBeenCalledTimes(1);
+			page.on("domcontentloaded", removed);
+			await scope.cleanup();
+			await page.goto("data:text/html,after");
+			expect(internalCalls).toBe(4);
+			expect(removed).not.toHaveBeenCalled();
+		} finally {
+			await browser.close();
+		}
+	});
 
 	it.skipIf(!CHROMIUM_AVAILABLE)(
 		"filters real serialized page content without dropping visible headings",

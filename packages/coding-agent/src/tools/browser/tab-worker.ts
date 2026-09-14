@@ -6,6 +6,7 @@ import { postmortem, Snowflake, untilAborted, withTimeout } from "@oh-my-pi/pi-u
 import type { HTMLElement } from "@oh-my-pi/pi-utils/dom";
 import type {
 	Browser,
+	BrowserContext,
 	CDPSession,
 	Dialog,
 	ElementHandle,
@@ -555,11 +556,10 @@ export function createRunPageScope(page: Page, onNavigationTimeout?: () => void)
 	const pageRestorers = new Map<Page, () => void>();
 	const instrumentPage = (target: Page): void => {
 		if (disposed || pageRestorers.has(target)) return;
-		const handlers: unknown[] = [];
+		const handlers: Array<{ type: string; handler: unknown; original?: unknown }> = [];
 		const on = target.on;
 		const off = target.off;
 		const once = target.once;
-		const removeAllListeners = target.removeAllListeners;
 		const originals = new Map<string, PropertyDescriptor | undefined>(
 			["on", "off", "once", "removeAllListeners", "goto", "reload", "goBack", "goForward", "setContent"].map(
 				name => [name, Object.getOwnPropertyDescriptor(target, name)],
@@ -596,24 +596,24 @@ export function createRunPageScope(page: Page, onNavigationTimeout?: () => void)
 				configurable: true,
 				value: (type: unknown, handler: unknown): Page => {
 					Reflect.apply(on, target, [type, handler]);
-					if (type === "request") handlers.push(handler);
+					if (typeof type === "string") handlers.push({ type, handler });
 					return target;
 				},
 			},
 			once: {
 				configurable: true,
 				value: (type: unknown, handler: unknown): Page => {
-					if (type !== "request" || typeof handler !== "function") {
+					if (typeof type !== "string" || typeof handler !== "function") {
 						Reflect.apply(once, target, [type, handler]);
 						return target;
 					}
 					const wrapper = (event: unknown): void => {
-						const index = handlers.lastIndexOf(wrapper);
+						Reflect.apply(off, target, [type, wrapper]);
+						const index = handlers.findIndex(entry => entry.handler === wrapper);
 						if (index >= 0) handlers.splice(index, 1);
-						Reflect.apply(off, target, ["request", wrapper]);
 						Reflect.apply(handler, target, [event]);
 					};
-					handlers.push(wrapper);
+					handlers.push({ type, handler: wrapper, original: handler });
 					Reflect.apply(on, target, [type, wrapper]);
 					return target;
 				},
@@ -621,12 +621,14 @@ export function createRunPageScope(page: Page, onNavigationTimeout?: () => void)
 			off: {
 				configurable: true,
 				value: (type: unknown, handler?: unknown): Page => {
-					Reflect.apply(off, target, [type, handler]);
-					if (type === "request") {
-						if (handler === undefined) handlers.length = 0;
-						else {
-							const index = handlers.lastIndexOf(handler);
-							if (index >= 0) handlers.splice(index, 1);
+					for (let i = handlers.length - 1; i >= 0; i--) {
+						const entry = handlers[i];
+						if (
+							entry.type === type &&
+							(handler === undefined || entry.handler === handler || entry.original === handler)
+						) {
+							Reflect.apply(off, target, [entry.type, entry.handler]);
+							handlers.splice(i, 1);
 						}
 					}
 					return target;
@@ -635,10 +637,14 @@ export function createRunPageScope(page: Page, onNavigationTimeout?: () => void)
 			removeAllListeners: {
 				configurable: true,
 				value: (type?: unknown): Page => {
-					if (type === undefined || type === "request") {
-						for (const handler of handlers) Reflect.apply(off, target, ["request", handler]);
+					if (type === undefined) {
+						for (const entry of handlers) Reflect.apply(off, target, [entry.type, entry.handler]);
 						handlers.length = 0;
-					} else Reflect.apply(removeAllListeners, target, [type]);
+					} else {
+						for (const entry of handlers)
+							if (entry.type === type) Reflect.apply(off, target, [entry.type, entry.handler]);
+						for (let i = handlers.length - 1; i >= 0; i--) if (handlers[i].type === type) handlers.splice(i, 1);
+					}
 					return target;
 				},
 			},
@@ -659,6 +665,8 @@ export function createRunPageScope(page: Page, onNavigationTimeout?: () => void)
 					}),
 			});
 		}
+		wrapAcquisition(target, "target", result => instrumentTarget(result as Target));
+		wrapAcquisition(target, "browserContext", result => instrumentContext(result as BrowserContext));
 		pageRestorers.set(target, () => {
 			if (onNavigationTimeout) {
 				Reflect.apply(off, target, ["frameattached", instrumentFrame]);
@@ -668,48 +676,76 @@ export function createRunPageScope(page: Page, onNavigationTimeout?: () => void)
 				if (descriptor) Object.defineProperty(target, name, descriptor);
 				else Reflect.deleteProperty(target, name);
 			}
-			for (const handler of handlers) Reflect.apply(off, target, ["request", handler]);
+			for (const entry of handlers) Reflect.apply(off, target, [entry.type, entry.handler]);
 			handlers.length = 0;
 		});
 	};
+	const acquisitionRestorers: Array<() => void> = [];
+	const instrumentedObjects = new WeakSet<object>();
+	const wrapAcquisition = (owner: object, name: string, receive: (result: unknown) => void): void => {
+		const method: unknown = Reflect.get(owner, name);
+		if (typeof method !== "function") return;
+		const descriptor = Object.getOwnPropertyDescriptor(owner, name);
+		Object.defineProperty(owner, name, {
+			configurable: true,
+			value: (...args: unknown[]) => {
+				const result: unknown = Reflect.apply(method, owner, args);
+				if (result instanceof Promise)
+					return result.then(value => {
+						if (!disposed) receive(value);
+						return value;
+					});
+				if (!disposed) receive(result);
+				return result;
+			},
+		});
+		acquisitionRestorers.push(() => {
+			if (descriptor) Object.defineProperty(owner, name, descriptor);
+			else Reflect.deleteProperty(owner, name);
+		});
+	};
+	const receivePage = (result: unknown): void => {
+		if (result) instrumentPage(result as Page);
+	};
+	const receivePages = (result: unknown): void => {
+		for (const target of result as Page[]) instrumentPage(target);
+	};
+	const instrumentTarget = (target: Target): void => {
+		if (instrumentedObjects.has(target)) return;
+		instrumentedObjects.add(target);
+		wrapAcquisition(target, "page", receivePage);
+		wrapAcquisition(target, "asPage", receivePage);
+		wrapAcquisition(target, "browserContext", result => instrumentContext(result as BrowserContext));
+	};
+	const instrumentContext = (context: BrowserContext): void => {
+		if (instrumentedObjects.has(context)) return;
+		instrumentedObjects.add(context);
+		wrapAcquisition(context, "pages", receivePages);
+		wrapAcquisition(context, "newPage", receivePage);
+		wrapAcquisition(context, "targets", result => (result as Target[]).forEach(instrumentTarget));
+		wrapAcquisition(context, "waitForTarget", result => instrumentTarget(result as Target));
+		for (const target of context.targets()) instrumentTarget(target);
+	};
 	instrumentPage(page);
-	let browserRestorer: (() => void) | undefined;
 	return {
 		page,
 		instrumentBrowser(browser: Browser) {
-			if (browserRestorer) return;
-			const pages = browser.pages;
-			const newPage = browser.newPage;
-			const pagesDescriptor = Object.getOwnPropertyDescriptor(browser, "pages");
-			const newPageDescriptor = Object.getOwnPropertyDescriptor(browser, "newPage");
-			Object.defineProperties(browser, {
-				pages: {
-					configurable: true,
-					value: async (...args: Parameters<Browser["pages"]>) => {
-						const result = await Reflect.apply(pages, browser, args);
-						result.forEach(instrumentPage);
-						return result;
-					},
-				},
-				newPage: {
-					configurable: true,
-					value: async (...args: Parameters<Browser["newPage"]>) => {
-						const result = await Reflect.apply(newPage, browser, args);
-						instrumentPage(result);
-						return result;
-					},
-				},
-			});
-			browserRestorer = () => {
-				if (pagesDescriptor) Object.defineProperty(browser, "pages", pagesDescriptor);
-				else Reflect.deleteProperty(browser, "pages");
-				if (newPageDescriptor) Object.defineProperty(browser, "newPage", newPageDescriptor);
-				else Reflect.deleteProperty(browser, "newPage");
-			};
+			if (instrumentedObjects.has(browser)) return;
+			instrumentedObjects.add(browser);
+			wrapAcquisition(browser, "pages", receivePages);
+			wrapAcquisition(browser, "newPage", receivePage);
+			wrapAcquisition(browser, "browserContexts", result => (result as BrowserContext[]).forEach(instrumentContext));
+			wrapAcquisition(browser, "defaultBrowserContext", result => instrumentContext(result as BrowserContext));
+			wrapAcquisition(browser, "createBrowserContext", result => instrumentContext(result as BrowserContext));
+			wrapAcquisition(browser, "targets", result => (result as Target[]).forEach(instrumentTarget));
+			wrapAcquisition(browser, "target", result => instrumentTarget(result as Target));
+			wrapAcquisition(browser, "waitForTarget", result => instrumentTarget(result as Target));
+			for (const context of browser.browserContexts()) instrumentContext(context);
+			for (const target of browser.targets()) instrumentTarget(target);
 		},
 		async cleanup() {
 			disposed = true;
-			browserRestorer?.();
+			for (const restore of acquisitionRestorers.reverse()) restore();
 			const pages = [...pageRestorers.keys()];
 			for (const restore of pageRestorers.values()) restore();
 			pageRestorers.clear();
