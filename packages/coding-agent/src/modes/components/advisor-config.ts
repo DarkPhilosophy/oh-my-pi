@@ -130,6 +130,8 @@ interface ScopeState {
 	list: SelectList;
 	dirty: boolean;
 	loading: boolean;
+	/** Set after a background load fails; the scope remains read-only until reloaded. */
+	failed: boolean;
 	/** Remembered roster row value so rebuilds keep the cursor. */
 	cursor: string | undefined;
 }
@@ -209,6 +211,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 			})
 			.catch(err => {
 				this.#scopes[other].loading = false;
+				this.#scopes[other].failed = true;
+				this.#rebuildRoster(other);
 				callbacks.notify(`Advisor config: ${err instanceof Error ? err.message : String(err)}`);
 				this.#cb.requestRender();
 			});
@@ -232,6 +236,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 			list: new SelectList([], 1, getSelectListTheme()),
 			dirty: false,
 			loading: false,
+			failed: false,
 			cursor: undefined,
 		};
 	}
@@ -520,6 +525,20 @@ export class AdvisorConfigOverlayComponent implements Component {
 
 	#rebuildRoster(scope: AdvisorConfigScope): void {
 		const state = this.#scopes[scope];
+		if (state.failed) {
+			state.list = new SelectList(
+				[
+					{
+						value: "load-failed",
+						label: "Unable to load configuration",
+						description: "Read-only until the file loads successfully",
+					},
+				],
+				1,
+				getSelectListTheme(),
+			);
+			return;
+		}
 		const items: SelectItem[] = state.doc.advisors.map((advisor, index) => ({
 			value: `advisor:${index}`,
 			label: `${theme.symbol(advisor.enabled === false ? "status.disabled" : "status.enabled")} ${advisor.name || "(unnamed)"}`,
@@ -578,7 +597,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 
 	async #onRosterSelect(scope: AdvisorConfigScope, value: string): Promise<void> {
 		const state = this.#scopes[scope];
-		if (state.loading) return;
+		if (state.loading || state.failed) return;
 		if (value === "add") {
 			state.doc.advisors.push({ name: `Advisor ${state.doc.advisors.length + 1}` });
 			state.cursor = `advisor:${state.doc.advisors.length - 1}`;

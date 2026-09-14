@@ -150,6 +150,48 @@ describe("advisor config editor warnings and synthetic default row", () => {
 		expect(frame).toContain('advisor "Bad   Name" dropped');
 	});
 
+	it("keeps a background scope read-only after loading fails", async () => {
+		const notifications: string[] = [];
+		const saves: Array<{ scope: string; doc: WatchdogConfigDoc }> = [];
+		const projectDoc: WatchdogConfigDoc = { advisors: [{ name: "Reviewer" }] };
+		const loadFailure = Promise.reject<WatchdogConfigDoc>(new Error("permission denied"));
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			{ modelRegistry: {} as ModelRegistry, settings, scopedModels: [], availableToolNames: [] },
+			"project",
+			projectDoc,
+			{
+				loadDoc: () => loadFailure,
+				save: async (scope, doc) => {
+					saves.push({ scope, doc: structuredClone(doc) });
+				},
+				close: () => {},
+				requestRender: () => {},
+				notify: message => notifications.push(message),
+			},
+		);
+
+		await loadFailure.catch(() => {});
+		await Promise.resolve();
+
+		expect(notifications).toContain("Advisor config: permission denied");
+		for (let i = 0; i < 4; i++) overlay.handleInput("\x1b[B");
+		overlay.handleInput("\r");
+		overlay.handleInput("\x1b[C");
+		overlay.handleInput("\r");
+		expect(saves).toEqual([]);
+
+		for (let i = 0; i < 4; i++) overlay.handleInput("\x1b[A");
+		overlay.handleInput("\x1b[C");
+		overlay.handleInput("\r");
+		overlay.handleInput("\x1b[D");
+		for (let i = 0; i < 3; i++) overlay.handleInput("\x1b[B");
+		overlay.handleInput("\r");
+		await Promise.resolve();
+
+		expect(saves).toEqual([{ scope: "project", doc: { advisors: [{ name: "Reviewer", enabled: false }] } }]);
+	});
+
 	it("renders the opening file's warnings inside the overlay without re-notifying", () => {
 		const warnings: string[] = [];
 		const overlay = new AdvisorConfigOverlayComponent(
