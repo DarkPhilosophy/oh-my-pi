@@ -1514,9 +1514,9 @@ export class Editor implements Component, Focusable {
 		if (this.#autocompleteState && this.#autocompleteList) {
 			if (
 				this.commandSuggestionsPopup &&
-				(this.#isInSubmittedSlashCommandContext() ||
-					findLeadingSlashCommandStart(this.#autocompletePrefix) !== null) &&
-				(!this.#selectedCompletionIsPath() || this.#autocompleteCommandArgument) &&
+				(this.#autocompleteCommandArgument ||
+					(findLeadingSlashCommandStart(this.#autocompletePrefix) !== null &&
+						!this.#selectedCompletionIsPath())) &&
 				this.onAutocompleteRender
 			) {
 				this.onAutocompleteRender(

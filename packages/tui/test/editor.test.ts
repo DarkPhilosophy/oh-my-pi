@@ -508,6 +508,37 @@ describe("Editor component", () => {
 			}
 		});
 
+		it("keeps relative file completions inline when they are not command arguments", async () => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.focused = true;
+			editor.commandSuggestionsPopup = true;
+			let popupVisible = false;
+			editor.onAutocompleteRender = render => {
+				popupVisible = render !== undefined;
+			};
+			editor.setAutocompleteProvider({
+				async getSuggestions() {
+					return {
+						prefix: "./cand",
+						commandArgument: false,
+						items: [{ label: "candidate.txt", value: "./candidate.txt" }],
+					};
+				},
+				applyCompletion(lines, cursorLine, cursorCol) {
+					return { lines, cursorLine, cursorCol };
+				},
+			});
+			const updated = Promise.withResolvers<void>();
+			editor.onAutocompleteUpdate = updated.resolve;
+			editor.handleInput("/quit ./cand");
+			await updated.promise;
+			const rows = editor.render(80);
+			expect(rows.findIndex(row => row.includes("candidate.txt"))).toBeGreaterThan(
+				rows.findIndex(row => row.includes("/quit")),
+			);
+			expect(popupVisible).toBe(false);
+		});
+
 		it("triggers slash-command autocomplete without losing the hardware cursor anchor", async () => {
 			const editor = new Editor(defaultEditorTheme);
 			editor.focused = true;

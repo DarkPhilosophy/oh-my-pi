@@ -1148,7 +1148,11 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const commandArgument =
 			!lines.slice(0, cursorLine).some(line => line.trim() !== "") &&
 			commandName !== undefined &&
-			this.#commands.some(command => command.allowArgs !== false && commandMatchesNameOrAlias(command, commandName));
+			this.#commands.some(
+				command =>
+					(!("allowArgs" in command) || command.allowArgs !== false) &&
+					commandMatchesNameOrAlias(command, commandName),
+			);
 
 		// Don't trigger if we're typing a slash command at the start of the line
 		if (textBeforeCursor.trim().startsWith("/") && !textBeforeCursor.trim().includes(" ")) {
