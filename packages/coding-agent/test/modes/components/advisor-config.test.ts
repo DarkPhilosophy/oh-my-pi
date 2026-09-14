@@ -1,6 +1,8 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import type { WatchdogConfigDoc } from "../../../src/advisor/config";
 import type { ModelRegistry } from "../../../src/config/model-registry";
@@ -277,6 +279,81 @@ describe("advisor config editor warnings and synthetic default row", () => {
 		overlay.handleInput(`\x1b[<0;60;${markerRow + 1}M`);
 
 		expect(Bun.stripANSI(overlay.render(100).join("\n"))).not.toContain("Type a name");
+	});
+
+	it.each([
+		["name", 1, false],
+		["instructions", 4, false],
+		["model", 2, false],
+		["thinking", 2, true],
+		["tools", 3, false],
+	] as const)(
+		"keeps the %s editor bound to its advisor when either roster is wheeled",
+		async (_mode, fieldIndex, openThinking) => {
+			const model = buildModel({
+				id: "thinking-model",
+				name: "Thinking model",
+				api: "openai-completions",
+				provider: "test",
+				baseUrl: "https://example.com",
+				reasoning: true,
+				thinking: { efforts: [Effort.Low, Effort.High], mode: "effort" },
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128_000,
+				maxTokens: 1024,
+			});
+
+			for (const advisorName of ["First", "Global First"] as const) {
+				const overlay = new AdvisorConfigOverlayComponent(
+					{} as TUI,
+					{
+						modelRegistry: {} as ModelRegistry,
+						settings,
+						scopedModels: [{ model }],
+						availableToolNames: ["read", "bash"],
+					},
+					"project",
+					{ advisors: [{ name: "First" }, { name: "Second" }] },
+					{
+						loadDoc: async () => ({ advisors: [{ name: "Global First" }, { name: "Global Second" }] }),
+						save: async () => {},
+						close: () => {},
+						requestRender: () => {},
+						notify: () => {},
+					},
+				);
+				await Bun.sleep(0);
+
+				let rows = overlay.render(100).map(Bun.stripANSI);
+				const advisorRow = rows.findIndex(row => row.slice(0, 35).includes(advisorName));
+				expect(advisorRow).toBeGreaterThan(0);
+				overlay.handleInput(`\x1b[<0;5;${advisorRow + 1}M`);
+				overlay.handleInput("\x1b[C");
+				for (let i = 0; i < fieldIndex; i++) overlay.handleInput("\x1b[B");
+				overlay.handleInput("\r");
+				if (openThinking) overlay.handleInput("\r");
+
+				rows = overlay.render(100).map(Bun.stripANSI);
+				const editorHeader = rows[1]?.slice(38);
+				overlay.handleInput(`\x1b[<65;5;${advisorRow + 1}M`);
+				expect(overlay.render(100).map(Bun.stripANSI)[1]?.slice(38)).toBe(editorHeader);
+			}
+		},
+	);
+
+	it("still scrolls a roster when no field editor is open", async () => {
+		const overlay = buildOverlay({ advisors: [{ name: "First" }, { name: "Second" }] }, () => {});
+		await Bun.sleep(0);
+		const rows = overlay.render(100).map(Bun.stripANSI);
+		const firstRow = rows.findIndex(row => row.slice(0, 35).includes("First"));
+		const before = rows[1]?.slice(38);
+
+		overlay.handleInput(`\x1b[<65;5;${firstRow + 1}M`);
+
+		const after = overlay.render(100).map(Bun.stripANSI)[1]?.slice(38);
+		expect(after).not.toBe(before);
+		expect(after).toContain("Second");
 	});
 
 	it.each(["name", "instructions"] as const)("keeps an unsubmitted %s draft when the roster is clicked", mode => {

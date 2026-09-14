@@ -1948,7 +1948,7 @@ export class SessionAdvisors {
 	 * @returns true when the advisor is actively running after the call.
 	 */
 	toggleAdvisorEnabled(): boolean {
-		return this.setAdvisorEnabled(!this.#advisorEnabled);
+		return this.setAdvisorEnabled(!this.#advisorRequested);
 	}
 
 	/**

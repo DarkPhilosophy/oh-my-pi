@@ -477,6 +477,8 @@ describe("AgentSession advisor toggle", () => {
 			const optedOut = makeChild(session, false);
 			const explicitlyOff = makeChild(session);
 			explicitlyOff.setAdvisorEnabled(false);
+			const toggledOff = makeChild(session);
+			expect(toggledOff.toggleAdvisorEnabled()).toBe(false);
 			session.setAdvisorEnabled(true);
 			expect(fresh.isAdvisorActive()).toBe(true);
 			expect(fresh.isAdvisorSuppressedByParent()).toBe(false);
@@ -490,6 +492,9 @@ describe("AgentSession advisor toggle", () => {
 			expect(live.formatAdvisorStatus()).toBe('Advisor "default" is paused.');
 			expect(optedOut.isAdvisorActive()).toBe(false);
 			expect(explicitlyOff.isAdvisorActive()).toBe(false);
+			expect(toggledOff.isAdvisorActive()).toBe(false);
+			expect(toggledOff.toggleAdvisorEnabled()).toBe(true);
+			expect(toggledOff.isAdvisorActive()).toBe(true);
 			expect(session.settings.get("advisor.enabled")).toBe(false);
 		} finally {
 			await Promise.all(children.map(child => child.dispose()));

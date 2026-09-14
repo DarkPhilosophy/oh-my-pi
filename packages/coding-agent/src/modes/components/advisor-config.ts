@@ -522,6 +522,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const inUser = event.row >= this.#userRowStart && event.row < this.#userRowStart + this.#userRows;
 		const scope: AdvisorConfigScope | undefined = inProject ? "project" : inUser ? "user" : undefined;
 		if (!scope) return false;
+		if (event.wheel !== null && this.#focus === "editor" && this.#mode !== "fields") return true;
 		if (event.leftClick && this.#focus === "editor" && (this.#mode === "name" || this.#mode === "instructions"))
 			return true;
 		if (event.leftClick && this.#focus !== scope) {
