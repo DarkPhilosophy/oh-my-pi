@@ -305,9 +305,13 @@ describe("pickElectronTarget", () => {
 					pid: existing.pid,
 				});
 				expect(await findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${profile}-other`] })).toBeNull();
-				expect(
-					await findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${requestedPrefix}`] }),
-				).toBeNull();
+				await expect(
+					findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${requestedPrefix}`] }),
+				).rejects.toThrow("already running");
+				await fs.unlink(path.join(profile, "SingletonLock"));
+				await expect(findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${profile}`] })).rejects.toThrow(
+					"already running",
+				);
 			} finally {
 				spy.mockRestore();
 				await existing.close();
