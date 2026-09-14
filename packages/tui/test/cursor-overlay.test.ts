@@ -2,6 +2,7 @@ import { expect, it } from "bun:test";
 import { wrapTmuxPassthrough } from "../src/tmux";
 import { CURSOR_MARKER, TUI, type TerminalFramePlan, type TerminalFrameProvider } from "../src/tui";
 import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
+import { VirtualRenderScheduler } from "./virtual-render-scheduler";
 import { VirtualTerminal } from "./virtual-terminal";
 
 withoutTerminalMultiplexer();
@@ -33,6 +34,14 @@ class Provider implements TerminalFrameProvider {
 	renderResizeFrame(): readonly string[] {
 		return this.frame.viewport;
 	}
+}
+
+function expectCleanAuthoritativeHistory(terminal: VirtualTerminal, count: number): void {
+	const rows = terminal.getScrollBuffer();
+	expect(rows.filter(row => row.startsWith("HISTORY_"))).toEqual(
+		Array.from({ length: count }, (_, index) => `HISTORY_${index}`),
+	);
+	expect(rows.join("\n")).not.toContain("MENU_");
 }
 
 it("restores covered screen cells before new history is appended", async () => {
@@ -244,35 +253,66 @@ it.each([
 	}
 });
 
-it("recovers popup rows when stopping before resize settles", async () => {
+it.each(["clear", "shrink"] as const)("restores popup backing changed during fullscreen: %s", async action => {
 	const terminal = new VirtualTerminal(40, 12);
+	const reference = new VirtualTerminal(40, 12);
 	const ui = new TUI(terminal);
+	const referenceUi = new TUI(reference);
 	ui.setFrameProvider(new Provider());
+	referenceUi.setFrameProvider(new Provider());
 	ui.start();
+	referenceUi.start();
 	try {
 		await terminal.waitForRender();
+		await reference.waitForRender();
 		ui.setCursorOverlay(() => ["MENU_1", "MENU_2", "MENU_3", "MENU_4"], 0, 1);
 		ui.requestRender();
 		await terminal.waitForRender();
+		const selector = ui.showOverlay({ render: () => ["SELECTOR"] }, { fullscreen: true });
+		await terminal.waitForRender();
+		const popup = action === "clear" ? undefined : () => ["SMALL_MENU"];
+		ui.setCursorOverlay(popup, 0, 1);
+		referenceUi.setCursorOverlay(popup, 0, 1);
+		referenceUi.requestRender();
+		selector.hide();
+		await terminal.waitForRender();
+		await reference.waitForRender();
+		expect(terminal.getScrollBuffer()).toEqual(reference.getScrollBuffer());
+	} finally {
+		ui.stop();
+		referenceUi.stop();
+	}
+});
+
+it("recovers popup rows when stopping before resize settles", async () => {
+	const terminal = new VirtualTerminal(40, 12);
+	const scheduler = new VirtualRenderScheduler();
+	const ui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+	ui.setFrameProvider(new Provider());
+	ui.start();
+	try {
+		await scheduler.settle(terminal);
+		ui.setCursorOverlay(() => ["MENU_1", "MENU_2", "MENU_3", "MENU_4"], 0, 1);
+		ui.requestRender();
+		await scheduler.settle(terminal);
 		terminal.resize(40, 8);
 	} finally {
 		ui.stop();
 	}
 	await terminal.flush();
-	const rows = terminal.getScrollBuffer();
-	expect(rows.filter(row => row.startsWith("HISTORY_"))).toEqual(Array.from({ length: 30 }, (_, i) => `HISTORY_${i}`));
-	expect(rows.join("\n")).not.toContain("MENU_");
+	expectCleanAuthoritativeHistory(terminal, 30);
+	expect(terminal.getViewport().join("\n")).not.toContain("MENU_");
 });
 
 it.each(["append", undefined] as const)(
-	"waits for queued %s history before clearing damaged popup history at stop",
+	"recovers after acknowledging queued %s history before shutdown cancels replay",
 	async kind => {
+		let stoppedAfterAppend = false;
 		class DelayedReplayProvider extends Provider {
 			#replayQueued = false;
-			beginHistoryFlush(): void {}
-			override renderFrame(): TerminalFramePlan {
-				if (this.#replayQueued) expect(ui.getMutableViewport().length).toBe(0);
-				return super.renderFrame();
+			beginHistoryFlush(): void {
+				this.#replayQueued = false;
+				if (this.frame.history?.kind === "replay") this.frame = { viewport: this.frame.viewport };
 			}
 			override beginHistoryReplay(): void {
 				if (this.frame.history) this.#replayQueued = true;
@@ -283,33 +323,37 @@ it.each(["append", undefined] as const)(
 				if (this.#replayQueued) {
 					this.#replayQueued = false;
 					super.beginHistoryReplay();
+					queueMicrotask(() => {
+						stoppedAfterAppend = true;
+						ui.stop();
+					});
 				}
 			}
 		}
 		const terminal = new VirtualTerminal(40, 12);
-		const ui = new TUI(terminal);
+		const scheduler = new VirtualRenderScheduler();
+		const ui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		const provider = new DelayedReplayProvider();
 		ui.setFrameProvider(provider);
 		ui.start();
 		try {
-			await terminal.waitForRender();
+			await scheduler.settle(terminal);
 			ui.setCursorOverlay(() => ["MENU_1", "MENU_2", "MENU_3", "MENU_4"], 0, 1);
 			ui.requestRender();
-			await terminal.waitForRender();
-			// Model an offered append whose paint was deferred before acknowledgement.
+			await scheduler.settle(terminal);
 			provider.frame = {
 				history: { id: 2, kind, rows: ["HISTORY_30"] },
 				viewport: provider.frame.viewport,
 			};
 			terminal.resize(40, 4);
+			await scheduler.advance(terminal, 120);
+			expect(stoppedAfterAppend).toBe(true);
 		} finally {
 			ui.stop();
 		}
 		await terminal.flush();
-		expect(terminal.getScrollBuffer().filter(row => row.startsWith("HISTORY_"))).toEqual(
-			Array.from({ length: 31 }, (_, index) => `HISTORY_${index}`),
-		);
-		expect(terminal.getScrollBuffer().join("\n")).not.toContain("MENU_");
+		expectCleanAuthoritativeHistory(terminal, 31);
+		expect(terminal.getViewport().join("\n")).not.toContain("MENU_");
 	},
 );
 
