@@ -23,6 +23,34 @@ function getCellItalic(terminal: VirtualTerminal, row: number, col: number): boo
 	return terminal.getCellItalic(row, col);
 }
 
+describe("code block completion grammar", () => {
+	it.each(["\u00a0```", "```\u00a0"])("keeps a non-ASCII fence-shaped code row unfinished: %s", closing => {
+		const captured: string[] = [];
+		const theme = {
+			...defaultMarkdownTheme,
+			copyChip: "copy",
+			copyChipTarget: (code: string) => {
+				captured.push(code);
+				return "omp-copy:test";
+			},
+		};
+		const markdown = new Markdown(`\`\`\`text\nbody\n${closing}\nlast code row`, 0, 0, theme);
+		const rows = markdown.render(60).map(stripVTControlCharacters).join("\n");
+		expect(rows).toContain("last code row");
+		expect(rows).toContain("```text");
+		expect(captured).toEqual([]);
+	});
+
+	it("renders indented list code without synthetic fence delimiters", () => {
+		const rows = new Markdown("- item\n\n      indented code\n", 0, 0, defaultMarkdownTheme)
+			.render(60)
+			.map(stripVTControlCharacters)
+			.join("\n");
+		expect(rows).toContain("indented code");
+		expect(rows).not.toContain("```");
+	});
+});
+
 describe("renderInlineMarkdown", () => {
 	it("preserves ST-terminated OSC 8 links before inline lexing", () => {
 		const st = "\x1b\\";

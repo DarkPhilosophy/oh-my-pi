@@ -3408,7 +3408,7 @@ export class Markdown implements Component {
 		const firstLineEnd = raw.indexOf("\n");
 		if (firstLineEnd < 0) return false;
 		const openingLine = raw.slice(0, firstLineEnd);
-		const openingTrimmed = openingLine.trimStart();
+		const openingTrimmed = openingLine.replace(/^[ \t]+/, "");
 		const openingIndent = openingLine.length - openingTrimmed.length;
 		if (openingIndent > 3) return false;
 		const fenceChar = openingTrimmed.charAt(0);
@@ -3421,11 +3421,11 @@ export class Markdown implements Component {
 		while (lineStart <= raw.length) {
 			const lineEnd = raw.indexOf("\n", lineStart);
 			const line = lineEnd >= 0 ? raw.slice(lineStart, lineEnd) : raw.slice(lineStart);
-			const trimmed = line.trimStart();
+			const trimmed = line.replace(/^[ \t]+/, "");
 			const indent = line.length - trimmed.length;
 			let closingLength = 0;
 			while (trimmed.charAt(closingLength) === fenceChar) closingLength++;
-			if (indent <= 3 && closingLength >= fenceLength && trimmed.slice(closingLength).trim().length === 0) {
+			if (indent <= 3 && closingLength >= fenceLength && /^[ \t]*$/.test(trimmed.slice(closingLength))) {
 				return true;
 			}
 			if (lineEnd < 0) break;
@@ -4184,20 +4184,17 @@ export class Markdown implements Component {
 				if (closedFence) {
 					const framed = this.#boxFencedCodeLines(token, bodyLines, frameWidth);
 					for (const line of framed) lines.push({ ...line, nested: false });
-				} else {
-					// An open fence inside a list keeps its delimiters as literal
-					// code rows (same contract as the top-level path) instead of
-					// being silently swallowed by the framed renderer.
+				} else if (fenced) {
+					// Unfinished fences retain their original delimiters.
 					const delimiter = raw.match(/(`{3,}|~{3,})/)?.[1] ?? "```";
 					const rawLines = raw.split("\n");
 					for (let index = 0; index < rawLines.length; index++) {
 						const text = replaceTabs(rawLines[index]!);
-						// Only the opening delimiter needs the list-aware noWrap path.
-						// Body rows must wrap inside the continuation width rather than
-						// losing their suffix to noWrap truncation.
 						lines.push({ text, noWrap: index === 0 ? true : undefined, nested: false });
 					}
 					lines.push({ text: replaceTabs(delimiter), noWrap: true, nested: false });
+				} else {
+					for (const line of bodyLines) lines.push({ ...line, nested: false });
 				}
 				// Some render paths (too-narrow frames, Mermaid) do not need a
 				// copy target. They must still consume this token's source span
