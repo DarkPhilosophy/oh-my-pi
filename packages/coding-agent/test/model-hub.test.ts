@@ -1191,8 +1191,8 @@ describe("ModelHub", () => {
 			expect(footerLine(hub.render(220))).not.toContain("inherit");
 		});
 
-		test("t on a literal @-suffixed id does not strip it as routing", () => {
-			const model = makeModel("test", "model@default");
+		test.each(["model@default", "nanogpt/coding-router:high"])("t preserves literal model ID %s", id => {
+			const model = makeModel("test", id);
 			const selector = `${model.provider}/${model.id}`;
 			const settings = Settings.isolated({ "retry.fallbackChains": { default: [selector] } });
 			const { hub, onFallbackChainChange } = createHub({ models: [model], scoped: true, settings });
