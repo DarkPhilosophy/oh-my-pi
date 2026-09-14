@@ -1913,13 +1913,13 @@ function expandSourceText(source: string): ExpandedSource {
 }
 
 /** Translate a normalized (tabs expanded, OSC ST collapsed) boundary to raw source. */
-function sourceOffsetAtExpandedBoundary(source: string, boundary: number): number {
-	if (boundary <= 0) return 0;
-	let normalizedOffset = 0;
+function sourceOffsetAtExpandedBoundary(source: string, boundary: number, rawStart = 0, expandedStart = 0): number {
+	if (boundary <= expandedStart) return rawStart;
+	let normalizedOffset = expandedStart;
 	let nextOscMatch: RegExpExecArray | null = null;
-	OSC8_ST_PREFIX_REGEX.lastIndex = 0;
+	OSC8_ST_PREFIX_REGEX.lastIndex = rawStart;
 	nextOscMatch = OSC8_ST_PREFIX_REGEX.exec(source);
-	for (let sourceOffset = 0; sourceOffset < source.length;) {
+	for (let sourceOffset = rawStart; sourceOffset < source.length;) {
 		if (nextOscMatch?.index === sourceOffset) {
 			normalizedOffset += replaceTabs(`${nextOscMatch[1]}\x07`).length;
 			sourceOffset += nextOscMatch[0].length;
@@ -1954,6 +1954,8 @@ export class Markdown implements Component {
 	/** Dense expanded-to-source offsets, allocated with the copy-recovery source. */
 	#expandedSourceOffsets?: number[];
 	/** Expanded-source cursor used to disambiguate repeated fenced blocks. */
+	#sourceOffsetRawBoundary = 0;
+	#sourceOffsetExpandedBoundary = 0;
 	#copySourceSearchCursor = 0;
 	// Suffix of #text a future append could still complete into a match
 	// (see trailingOsc8Partial); drives the append-only fast path.
@@ -2131,6 +2133,8 @@ export class Markdown implements Component {
 		this.#sourceText = sourceText;
 		this.#expandedSourceText = undefined;
 		this.#expandedSourceOffsets = undefined;
+		this.#sourceOffsetRawBoundary = 0;
+		this.#sourceOffsetExpandedBoundary = 0;
 		this.#text = text;
 		if (!text.trim()) {
 			// Blank replacement: render() early-returns before #lexTokens can see
@@ -2479,6 +2483,7 @@ export class Markdown implements Component {
 				// Populate L1 so subsequent calls from this instance are O(1) map lookup.
 				this.#cachedText = this.#text;
 				this.#cachedWidth = width;
+				this.#cachedCopyTargetAvailable = copyTargetAvailable;
 				this.#cachedLines = cached;
 				return cached;
 			}
@@ -2496,6 +2501,7 @@ export class Markdown implements Component {
 		} finally {
 			this.#activeRenderSignature = undefined;
 		}
+
 		const emptyLines = this.#renderEmptyPaddingLines(signature);
 
 		// Combine top padding, content, and bottom padding
@@ -2621,7 +2627,22 @@ export class Markdown implements Component {
 			sourceText:
 				reusablePrefix?.text === stableText
 					? reusablePrefix.sourceText
-					: this.#sourceText.slice(0, sourceOffsetAtExpandedBoundary(this.#sourceText, stableText.length)),
+					: (() => {
+							const sourceText = this.#sourceText;
+							const rawStart =
+								stableText.length >= this.#sourceOffsetExpandedBoundary ? this.#sourceOffsetRawBoundary : 0;
+							const expandedStart =
+								rawStart === this.#sourceOffsetRawBoundary ? this.#sourceOffsetExpandedBoundary : 0;
+							const rawBoundary = sourceOffsetAtExpandedBoundary(
+								sourceText,
+								stableText.length,
+								rawStart,
+								expandedStart,
+							);
+							this.#sourceOffsetRawBoundary = rawBoundary;
+							this.#sourceOffsetExpandedBoundary = stableText.length;
+							return sourceText.slice(0, rawBoundary);
+						})(),
 			copySourceCursor: this.#copySourceSearchCursor,
 			tokenCount: stableTokenCount,
 			lines: contentLines.slice(),
@@ -3302,9 +3323,7 @@ export class Markdown implements Component {
 			const copyTarget = TERMINAL.hyperlinks ? this.#theme.copyChipTarget : undefined;
 			const code = copyTarget !== undefined ? this.#originalCodeBody(token) : "";
 			const target = copyTarget?.(code);
-			const chip = target
-				? `\x1b]8;;${target.replaceAll("\x1b", "").replaceAll("\x07", "")}\x07${border(copyLabel)}\x1b]8;;\x07`
-				: border(copyLabel);
+			const chip = formatHyperlink(border(copyLabel), target ?? "");
 			framed.push({
 				text: `${border(`${box.bottomLeft}${box.horizontal.repeat(fill)}`)}${chip}${border(`${box.horizontal}${box.bottomRight}`)}`,
 				noWrap: true,

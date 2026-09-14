@@ -938,6 +938,25 @@ console.log(answer);`;
 				terminalState.hyperlinks = originalHyperlinks;
 			}
 		});
+		it("keeps the copy chip plain when its target contains only OSC terminators", () => {
+			const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+			const originalHyperlinks = terminalState.hyperlinks;
+			try {
+				terminalState.hyperlinks = true;
+				for (const target of ["\x1b", "\x07", "\x1b\x07"]) {
+					const theme = {
+						...defaultMarkdownTheme,
+						copyChip: "copy",
+						copyChipTarget: () => target,
+					};
+					const footer = new Markdown("```js\nconst x = 1;\n```", 0, 0, theme).render(40).at(-1) ?? "";
+					expect(footer).not.toContain("\x1b]8;;");
+					expect(stripVTControlCharacters(footer)).toContain("[copy]");
+				}
+			} finally {
+				terminalState.hyperlinks = originalHyperlinks;
+			}
+		});
 		it("keeps the copy chip plain when hyperlink support is disabled", () => {
 			const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 			const originalHyperlinks = terminalState.hyperlinks;
@@ -2166,6 +2185,35 @@ describe("Module-level LRU render cache", () => {
 		expect(l2Markdown.render(width)).toBe(first);
 	});
 
+	it("promotes an L2 hit to L1 when copy-target availability changes", () => {
+		clearRenderCache();
+		let headingCalls = 0;
+		const theme = {
+			...defaultMarkdownTheme,
+			copyChip: "copy",
+			copyChipTarget: undefined as ((body: string) => string | undefined) | undefined,
+			heading: (...args: Parameters<typeof defaultMarkdownTheme.heading>) => {
+				headingCalls++;
+				return defaultMarkdownTheme.heading(...args);
+			},
+		};
+		const text = "Cache availability sentinel\n\n```js\nconst x = 1;\n```";
+		const width = 80;
+
+		new Markdown(text, 0, 0, theme).render(width);
+		const markdown = new Markdown(text, 0, 0, theme);
+		markdown.render(width);
+
+		theme.copyChipTarget = () => "omp-copy:cached";
+		markdown.render(width);
+
+		theme.copyChipTarget = undefined;
+		markdown.render(width);
+		const afterL2 = headingCalls;
+		markdown.render(width);
+		expect(headingCalls, "unchanged render after the L2 hit must take L1").toBe(afterL2);
+	});
+
 	it("keeps an open non-diff fence plain during transient renders without a highlight stream", () => {
 		clearRenderCache();
 		let highlightCallCount = 0;
@@ -3321,6 +3369,37 @@ describe("framed code review follow-ups", () => {
 			markdown.setText("prose\n\n```make\n\tall\n```\n\n");
 			markdown.render(60);
 			expect(captured).toEqual(["\tall"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("recovers raw tabs as the stable prefix grows across multiple fences", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			const markdown = new Markdown("intro\n\n", 0, 0, theme);
+			markdown.transientRenderCache = true;
+			markdown.render(60);
+
+			markdown.setText("intro\n\n```make\n\tfirst\n```\n\n");
+			markdown.render(60);
+			expect(captured).toEqual(["\tfirst"]);
+
+			captured.length = 0;
+			markdown.setText("intro\n\n```make\n\tfirst\n```\n\n```sh\n\tsecond\n```\n\n");
+			markdown.render(60);
+			expect(captured).toEqual(["\tfirst", "\tsecond"]);
 		} finally {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
