@@ -14,104 +14,109 @@ let composer: Composer | undefined;
 afterEach(() => composer?.stop());
 
 it.each([
-	[24, 1],
-	[24, 14],
-	[8, 1],
-	[5, 1],
-])("keeps results visible in %i rows with %i extension rows", async (height, extensionRows) => {
-	const terminal = new VirtualTerminal(100, height);
-	composer = new Composer({ preferences: { quiet: true }, terminal });
-	const editor = composer.editor;
-	editor.setText("draft to preserve");
-	editor.setTopBorder({ content: "MODEL STATUS", width: 12 });
-	const transcript = new TranscriptContainer();
-	const block = {
-		render: () => Array.from({ length: 40 }, (_, i) => `CHAT_${i}`),
-		isTranscriptBlockFinalized: () => true,
-	};
-	transcript.addChild(block);
-	const slot = new Container();
-	slot.addChild(editor);
-	composer.setRuntimeChildren([
-		transcript,
-		slot,
-		new Text(Array<string>(extensionRows).fill("EXTENSION BELOW INPUT").join("\n"), 0, 0),
-	]);
-	composer.start();
-	composer.ui.setFocus(editor);
-	const paint = async () => {
-		await Bun.sleep(40);
-		composer!.ui.requestRender();
-		await terminal.waitForRender();
-	};
-	await paint();
-	await paint();
-	const history = terminal.getScrollBuffer().slice(0, -terminal.rows);
-	const screen = terminal.getViewport().map(Bun.stripANSI);
-	const models = ["alpha", "beta"].map(id =>
-		buildModel({
-			id,
-			name: id,
-			provider: "demo",
-			api: "ollama-chat",
-			baseUrl: "https://example.com",
-			reasoning: false,
-			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 128000,
-			maxTokens: 4096,
-		}),
-	);
-	const registry = {
-		getAvailable: () => models,
-		getAll: () => models,
-		getError: () => undefined,
-		refresh: async () => {},
-	} as unknown as ModelRegistry;
-	let selected: string | undefined;
-	const close = () => {
-		slot.removeChild(picker);
+	[24, 1, false],
+	[24, 14, false],
+	[8, 1, false],
+	[5, 1, false],
+	[24, 1, true],
+] as const)(
+	"keeps results visible in %i rows with %i extension rows (clipboard=%s)",
+	async (height, extensionRows, clipboard) => {
+		const terminal = new VirtualTerminal(100, height);
+		composer = new Composer({ preferences: { quiet: true }, terminal });
+		const editor = composer.editor;
+		editor.setText("draft to preserve");
+		editor.setTopBorder({ content: "MODEL STATUS", width: 12 });
+		const transcript = new TranscriptContainer();
+		const block = {
+			render: () => Array.from({ length: 40 }, (_, i) => `CHAT_${i}`),
+			isTranscriptBlockFinalized: () => true,
+		};
+		transcript.addChild(block);
+		const slot = new Container();
 		slot.addChild(editor);
-		composer!.ui.setFocus(editor);
-	};
-	const picker = new ModelPickerComponent(
-		composer.ui,
-		Settings.isolated(),
-		registry,
-		[],
-		{
-			onPick: (_model, id) => {
-				selected = id;
-				close();
+		composer.setRuntimeChildren([
+			transcript,
+			slot,
+			new Text(Array<string>(extensionRows).fill("EXTENSION BELOW INPUT").join("\n"), 0, 0),
+		]);
+		composer.start();
+		composer.ui.setFocus(editor);
+		const paint = async () => {
+			await Bun.sleep(40);
+			composer!.ui.requestRender();
+			await terminal.waitForRender();
+		};
+		await paint();
+		await paint();
+		const history = terminal.getScrollBuffer().slice(0, -terminal.rows);
+		const screen = terminal.getViewport().map(Bun.stripANSI);
+		const models = ["alpha", "beta"].map(id =>
+			buildModel({
+				id,
+				name: id,
+				provider: "demo",
+				api: "ollama-chat",
+				baseUrl: "https://example.com",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128000,
+				maxTokens: 4096,
+			}),
+		);
+		const registry = {
+			getAvailable: () => models,
+			getAll: () => models,
+			getError: () => undefined,
+			refresh: async () => {},
+		} as unknown as ModelRegistry;
+		let selected: string | undefined;
+		const close = () => {
+			slot.removeChild(picker);
+			slot.addChild(editor);
+			composer!.ui.setFocus(editor);
+		};
+		const picker = new ModelPickerComponent(
+			composer.ui,
+			Settings.isolated(),
+			registry,
+			[],
+			{
+				onPick: (_model, id) => {
+					selected = id;
+					close();
+				},
+				onCancel: close,
 			},
-			onCancel: close,
-		},
-		{ editorRows: editor.render(100).length, renderEditorRows: width => editor.render(width, true) },
-	);
-	const writes: string[] = [];
-	const write = terminal.write.bind(terminal);
-	terminal.write = data => {
-		writes.push(data);
-		write(data);
-	};
-	slot.removeChild(editor);
-	slot.addChild(picker);
-	composer.ui.setFocus(picker);
-	await paint();
-	expect(terminal.getViewport().join("\n")).toContain("MODEL STATUS");
-	expect(terminal.getViewport().at(-1)).toContain("EXTENSION BELOW INPUT");
-	expect(terminal.getViewport().filter(line => line.includes("EXTENSION BELOW INPUT"))).toHaveLength(extensionRows);
-	picker.handleInput("beta");
-	await paint();
-	expect(terminal.getViewport().filter(line => line.includes("beta")).length).toBeGreaterThanOrEqual(2);
-	expect(terminal.getScrollBuffer().slice(0, -terminal.rows)).toEqual(history);
-	picker.handleInput("\r");
-	await paint();
-	expect(selected).toBe("demo/beta");
-	expect(editor.getText()).toBe("draft to preserve");
-	expect(terminal.getViewport().map(Bun.stripANSI)).toEqual(screen);
-	expect(writes.join("")).not.toMatch(/\x1b\[(?:2|3)J|\x1b\[\?1049h|\x1b\[\?1003h/);
-});
+			{ editorRows: editor.render(100).length, renderEditorRows: width => editor.render(width, true) },
+		);
+		const writes: string[] = [];
+		const write = terminal.write.bind(terminal);
+		terminal.write = data => {
+			writes.push(data);
+			write(data);
+		};
+		slot.removeChild(editor);
+		slot.addChild(picker);
+		composer.ui.setFocus(picker);
+		await paint();
+		expect(terminal.getViewport().join("\n")).toContain("MODEL STATUS");
+		expect(terminal.getViewport().at(-1)).toContain("EXTENSION BELOW INPUT");
+		expect(terminal.getViewport().filter(line => line.includes("EXTENSION BELOW INPUT"))).toHaveLength(extensionRows);
+		if (clipboard) picker.pasteText("beta");
+		else picker.handleInput("beta");
+		await paint();
+		expect(terminal.getViewport().filter(line => line.includes("beta")).length).toBeGreaterThanOrEqual(2);
+		expect(terminal.getScrollBuffer().slice(0, -terminal.rows)).toEqual(history);
+		picker.handleInput("\r");
+		await paint();
+		expect(selected).toBe("demo/beta");
+		expect(editor.getText()).toBe("draft to preserve");
+		expect(terminal.getViewport().map(Bun.stripANSI)).toEqual(screen);
+		expect(writes.join("")).not.toMatch(/\x1b\[(?:2|3)J|\x1b\[\?1049h|\x1b\[\?1003h/);
+	},
+);
 
 it.each(["box", "pi", "claude"])(
 	"replaces completion rows without losing %s editor chrome or duplicating the cursor",

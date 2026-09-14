@@ -280,6 +280,11 @@ export class ModelPickerComponent implements Focusable {
 		}
 		this.#browser.handleInput(data);
 	}
+
+	/** Clipboard payloads edit search rather than the hidden conversation draft. */
+	pasteText(text: string): void {
+		this.#browser.pasteText(text);
+	}
 	/** Flip between session-model and Task-subagent targets, repointing the highlight. */
 	#toggleTaskMode(): void {
 		this.#taskMode = !this.#taskMode;
