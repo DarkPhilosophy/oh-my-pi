@@ -1,9 +1,10 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
 import type { ElementHandle, Page } from "puppeteer-core";
 import { captureAriaSnapshot } from "@oh-my-pi/pi-coding-agent/tools/browser/aria/aria-snapshot";
 import { ensureChromiumExecutable, loadPuppeteer } from "@oh-my-pi/pi-coding-agent/tools/browser/launch";
 import {
 	collectBiDiObservationEntries,
+	createRunPageScope,
 	parseAriaSnapshotLines,
 	resolvePageViewport,
 	type WorkerCore,
@@ -206,10 +207,10 @@ describe("Firefox BiDi viewport observation", () => {
 				await page.setViewport({ width: 800, height: 600 });
 				await page.setContent(
 					"<h2>Visible heading</h2><p>Visible paragraph</p><button>Submit</button>" +
-						'<p style="position:absolute;top:1500px">Offscreen paragraph</p>',
+						'<div id="keyboard" tabindex="0">Keyboard control</div><div id="ordinary">Not focusable</div><p style="position:absolute;top:1500px">Offscreen paragraph</p>',
 				);
 				const snapshot = await captureAriaSnapshot(page, null, { boxes: true }, "viewport-test");
-				const { core } = observationHarness({ width: 800, height: 600 });
+				const { core, cached } = observationHarness({ width: 800, height: 600 });
 				const entries = await collectBiDiObservationEntries(core, page, snapshot, {
 					includeAll: true,
 					viewportOnly: true,
@@ -222,6 +223,38 @@ describe("Firefox BiDi viewport observation", () => {
 				).toBe(true);
 				expect(entries.some(entry => entry.role === "button" && entry.name === "Submit")).toBe(true);
 				expect(entries.some(entry => entry.name === "Offscreen paragraph")).toBe(false);
+				const interactive = await collectBiDiObservationEntries(core, page, snapshot, {
+					includeAll: false,
+					viewportOnly: true,
+					refOwner: "viewport-test",
+				});
+				const elementIds = await Promise.all(
+					interactive
+						.filter(entry => entry.actionable !== false)
+						.map(entry => cached.get(entry.id)!.evaluate(element => element.id)),
+				);
+				expect(elementIds).toContain("keyboard");
+				expect(elementIds).not.toContain("ordinary");
+				for (const method of ["goto", "setContent"] as const) {
+					const frame = page.mainFrame();
+					const timeout = new Error("navigation timeout");
+					timeout.name = "TimeoutError";
+					const mock = vi.spyOn(frame, method).mockRejectedValue(timeout);
+					let cleanupRequired = false;
+					const scope = createRunPageScope(page, () => {
+						cleanupRequired = true;
+					});
+					try {
+						await page
+							.mainFrame()
+							[method]("about:blank")
+							.catch(() => undefined);
+						expect(cleanupRequired).toBe(true);
+					} finally {
+						await scope.cleanup();
+						mock.mockRestore();
+					}
+				}
 			} finally {
 				await browser.close();
 			}

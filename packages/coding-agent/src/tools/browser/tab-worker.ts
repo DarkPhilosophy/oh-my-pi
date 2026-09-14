@@ -549,7 +549,7 @@ interface RunPageScope {
  * Puppeteer's Page wraps an internal emitter, so `removeAllListeners("request")`
  * would also remove its forwarding listener; the facade removes only user handlers.
  */
-function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPageScope {
+export function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPageScope {
 	const requestHandlers: unknown[] = [];
 	const on = page.on;
 	const off = page.off;
@@ -569,6 +569,32 @@ function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPa
 	const goBackDescriptor = Object.getOwnPropertyDescriptor(page, "goBack");
 	const goForwardDescriptor = Object.getOwnPropertyDescriptor(page, "goForward");
 	const setContentDescriptor = Object.getOwnPropertyDescriptor(page, "setContent");
+	const frameRestorers: Array<() => void> = [];
+	const instrumentedFrames = new WeakSet<Frame>();
+	const instrumentFrame = (frame: Frame): void => {
+		if (instrumentedFrames.has(frame)) return;
+		instrumentedFrames.add(frame);
+		for (const name of ["goto", "setContent"] as const) {
+			const method = frame[name];
+			const descriptor = Object.getOwnPropertyDescriptor(frame, name);
+			Object.defineProperty(frame, name, {
+				configurable: true,
+				value: (...args: unknown[]) =>
+					Reflect.apply(method, frame, args).catch((error: unknown) => {
+						if (error instanceof Error && error.name === "TimeoutError") onNavigationTimeout?.();
+						throw error;
+					}),
+			});
+			frameRestorers.push(() => {
+				if (descriptor) Object.defineProperty(frame, name, descriptor);
+				else Reflect.deleteProperty(frame, name);
+			});
+		}
+	};
+	if (onNavigationTimeout) {
+		for (const frame of page.frames()) instrumentFrame(frame);
+		Reflect.apply(on, page, ["frameattached", instrumentFrame]);
+	}
 
 	Object.defineProperties(page, {
 		on: {
@@ -652,6 +678,10 @@ function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPa
 	return {
 		page,
 		async cleanup() {
+			if (onNavigationTimeout) {
+				Reflect.apply(off, page, ["frameattached", instrumentFrame]);
+				for (const restore of frameRestorers) restore();
+			}
 			if (onDescriptor) Object.defineProperty(page, "on", onDescriptor);
 			else Reflect.deleteProperty(page, "on");
 			if (offDescriptor) Object.defineProperty(page, "off", offDescriptor);
@@ -956,7 +986,8 @@ export async function collectBiDiObservationEntries(
 			})
 		: undefined;
 	for (const node of parseAriaSnapshotLines(snapshot)) {
-		if (!options.includeAll && !isInteractiveAriaSnapshotNode(node.role, node.states)) continue;
+		const requiresFocusCheck = !options.includeAll && !isInteractiveAriaSnapshotNode(node.role, node.states);
+		if (requiresFocusCheck && (!node.ref || node.role !== "generic")) continue;
 		if (!node.ref) {
 			if (
 				options.viewportOnly &&
@@ -980,6 +1011,19 @@ export async function collectBiDiObservationEntries(
 		}
 		const handle = await resolveAriaRefHandle(page, node.ref, options.refOwner);
 		if (!handle) continue;
+		if (
+			requiresFocusCheck &&
+			!(await handle.evaluate(
+				element =>
+					"tabIndex" in element &&
+					typeof element.tabIndex === "number" &&
+					element.tabIndex >= 0 &&
+					!element.matches(":disabled, [inert], [inert] *"),
+			))
+		) {
+			await handle.dispose().catch(() => undefined);
+			continue;
+		}
 		let inViewport = true;
 		if (options.viewportOnly) {
 			try {

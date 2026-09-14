@@ -73,6 +73,8 @@ export interface FirefoxRelayBrowserHandle extends BrowserHandleCommon<FirefoxRe
 	webSocketUrl: string;
 	/** OS-backed endpoint ownership; released after the last worker alias closes. */
 	endpointLease?: FileLockHandle;
+	/** Actual inline worker disconnection, which may outlive bounded caller cleanup. */
+	connectionCleanup?: Promise<void>;
 }
 
 export interface CmuxBrowserHandle extends BrowserHandleCommon<CmuxKind> {
@@ -378,7 +380,13 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: ReleaseBrowserO
 		return;
 	}
 	if ("webSocketUrl" in handle) {
-		handle.endpointLease?.release();
+		const lease = handle.endpointLease;
+		handle.endpointLease = undefined;
+		if (handle.connectionCleanup) {
+			void handle.connectionCleanup.then(() => lease?.release());
+		} else {
+			lease?.release();
+		}
 		return;
 	}
 	if (handle.kind.kind === "headless") {

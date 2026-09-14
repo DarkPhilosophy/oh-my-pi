@@ -503,7 +503,7 @@ async function acquireTabImpl(
 		logger.warn("Tab worker init failed; retrying with inline tab worker (no sync-loop guard)", {
 			error: error instanceof Error ? error.message : String(error),
 		});
-		worker = await spawnInlineWorker();
+		worker = await spawnInlineWorker(browser);
 		try {
 			info = await initializeTabWorker(worker, initPayload, initBudgetMs, startedAt);
 		} catch (inlineError) {
@@ -2105,7 +2105,7 @@ function wrapBunWorker(worker: Worker): WorkerHandle {
  * entry. This preserves normal browser behavior but cannot interrupt synchronous
  * infinite loops because user code runs on the main thread.
  */
-async function spawnInlineWorker(): Promise<WorkerHandle> {
+async function spawnInlineWorker(browser?: BrowserHandle): Promise<WorkerHandle> {
 	const hostListeners = new Set<(message: WorkerOutbound) => void>();
 	const workerListeners = new Set<(message: WorkerInbound) => void>();
 	const workerTransport: Transport = {
@@ -2124,6 +2124,7 @@ async function spawnInlineWorker(): Promise<WorkerHandle> {
 	new WorkerCore(workerTransport, false);
 	let termination: Promise<void> | undefined;
 	const closed = Promise.withResolvers<void>();
+	if (browser && "webSocketUrl" in browser) browser.connectionCleanup = closed.promise;
 	const observeClosed = (message: WorkerOutbound): void => {
 		if (message.type !== "closed") return;
 		hostListeners.delete(observeClosed);
