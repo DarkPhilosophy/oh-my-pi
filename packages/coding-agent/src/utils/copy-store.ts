@@ -123,11 +123,9 @@ export async function isCopyUrlHandlerRegistered(): Promise<boolean> {
 
 export async function registerCopyUrlHandler(): Promise<CopyHandlerResult> {
 	const desktopPath = copyDesktopPath();
-	const appsDir = path.dirname(desktopPath);
 	if (!supportsCopyUrlHandler()) return { ok: false, desktopPath, error: "only supported on Linux (xdg)" };
 	const command = resolveOmpCommand();
 	if (command === undefined) return { ok: false, desktopPath, error: "omp executable not found" };
-	await fs.promises.mkdir(appsDir, { recursive: true });
 	const entry = createCopyDesktopEntry(command);
 	await Bun.write(desktopPath, entry);
 	let result: ptree.ExecResult;
