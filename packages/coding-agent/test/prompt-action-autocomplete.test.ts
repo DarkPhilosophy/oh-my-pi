@@ -213,6 +213,7 @@ describe("prompt action autocomplete", () => {
 
 		expect(suggestions).not.toBeNull();
 		expect(suggestions?.prefix).toBe("omp://");
+		expect(suggestions?.commandArgument).toBe(true);
 		expect(suggestions?.items.length).toBeGreaterThan(0);
 	});
 
@@ -242,6 +243,7 @@ describe("prompt action autocomplete", () => {
 
 		expect(suggestions).not.toBeNull();
 		expect(suggestions?.prefix).toBe("omp://");
+		expect(suggestions?.commandArgument).toBe(true);
 		expect(suggestions?.items.length).toBeGreaterThan(0);
 	});
 

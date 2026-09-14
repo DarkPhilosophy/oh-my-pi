@@ -1678,7 +1678,7 @@ export class TUI extends Container {
 	#remapCursorOverlayBacking(width: number, height: number, viewportTop: number, anchorKnown = true): void {
 		this.#cursorOverlayResizePending = false;
 		const backing = this.#cursorOverlayBacking;
-		if (!anchorKnown && this.#resizeBurstGrew) {
+		if (!anchorKnown && (this.#resizeBurstGrew || width !== this.#previousWidth)) {
 			if (backing) {
 				this.#cursorOverlayHistoryDamaged = true;
 			} else {
