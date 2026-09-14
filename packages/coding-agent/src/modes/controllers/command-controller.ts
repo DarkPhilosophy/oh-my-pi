@@ -35,6 +35,7 @@ import { DynamicBorder } from "../../modes/components/dynamic-border";
 import { EvalExecutionComponent } from "../../modes/components/eval-execution";
 import { MoveOverlay, type MoveOverlayResult } from "../../modes/components/move-overlay";
 import { TranscriptBlock } from "../../modes/components/transcript-container";
+import { fitAccountLabel } from "../../modes/components/usage-dashboard";
 import { getMarkdownTheme, getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
 import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/context-usage";
@@ -1910,9 +1911,11 @@ function formatAccountHeaderRow(
 		const reset = formatResetShort(limit, nowMs);
 		const report = reports[index];
 		const active = report !== undefined && limitMatchesActiveAccount(report, limit, activeAccount);
-		const label = mask(formatAccountLabel(limit, report, index + startIndex));
+		const accountLabel = formatAccountLabel(limit, report, index + startIndex);
+		const label = mask(accountLabel);
 		return {
 			label: active ? `● ${label}` : label,
+			qualifier: accountLabel.qualifier || label.match(/ \(\d+\)$/)?.[0] || "",
 			suffix: reset ? `(${reset})` : "",
 			active,
 		};
@@ -1921,17 +1924,21 @@ function formatAccountHeaderRow(
 	const gap = maxSuffixWidth > 0 ? 1 : 0;
 	const prefixBudget = columnWidth - maxSuffixWidth - gap;
 
-	// If suffix can't share the cell with at least `x…`, fall back to whole-label truncation.
+	// When reset text cannot share the cell, preserve the account qualifier or
+	// collision ordinal instead; identical truncated prefixes are not identities.
 	if (prefixBudget < 2) {
 		return parts.map(p => {
-			const full = p.suffix ? `${p.label} ${p.suffix}` : p.label;
-			const cell = padColumn(truncateJobLabel(full, columnWidth), columnWidth);
+			if (/^ \(\d+\)$/.test(p.qualifier) && visibleWidth(p.qualifier) >= columnWidth) {
+				const cell = padColumn(p.qualifier.trim(), columnWidth);
+				return styleAccountMask(p.active ? uiTheme.fg("accent", cell) : cell, uiTheme);
+			}
+			const cell = padColumn(fitAccountLabel(p.label, columnWidth, p.qualifier), columnWidth);
 			return styleAccountMask(p.active ? uiTheme.fg("accent", cell) : cell, uiTheme);
 		});
 	}
 
 	return parts.map(p => {
-		const prefix = truncateJobLabel(p.label, prefixBudget);
+		const prefix = fitAccountLabel(p.label, prefixBudget, p.qualifier);
 		const prefixCell = prefix + " ".repeat(prefixBudget - visibleWidth(prefix));
 		const styledPrefix = styleAccountMask(p.active ? uiTheme.fg("accent", prefixCell) : prefixCell, uiTheme);
 		if (!p.suffix) return styledPrefix + " ".repeat(maxSuffixWidth + gap);

@@ -436,7 +436,7 @@ export function formatActivityErrorDetail(error: string, homeDir = os.homedir())
 	return text.replace(/\.+$/, "");
 }
 
-function fitAccountLabel(label: string, width: number, qualifier = ""): string {
+export function fitAccountLabel(label: string, width: number, qualifier = ""): string {
 	if (width <= 0) return "";
 	if (!qualifier || !label.endsWith(qualifier)) return truncateToWidth(label, width);
 	const rawBase = label.slice(0, -qualifier.length);
