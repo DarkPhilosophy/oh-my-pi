@@ -9,6 +9,7 @@
 - First-use Chromium installation and browser operations no longer consume Eval's runtime timeout or reset its kernel while waiting.
 - Browser startup reuses a successful system-Chrome fallback instead of retrying an unavailable download during the same open.
 - Browser clicks and other interactions no longer stall when OMP-owned tabs are in the background, including after worker timeout recovery.
+- Read error and preview rendering now sanitizes tabs and Windows-style CRLF (e.g. ssh host-key failures, tab-indented fetched content) so raw output can no longer tear the result frame.
 
 ### Changed
 
@@ -34,7 +35,6 @@
 
 ### Fixed
 
-- Read error and preview rendering now sanitizes tabs and Windows-style CRLF (e.g. ssh host-key failures, tab-indented fetched content) so raw output can no longer tear the result frame.
 ### Fixed
 
 - The hidden notice announcing a mid-session tool-availability change now states that it lists only what changed, so an additions-only notice no longer reads as the complete tool set and the model keeps using tools that are still callable ([#11824](https://github.com/can1357/oh-my-pi/issues/11824) by [@camjac251](https://github.com/camjac251)).

@@ -600,17 +600,31 @@ describe("shortenEmbeddedPaths", () => {
 });
 
 describe("shortenToolArgumentPaths", () => {
-	it("decodes and shortens local file URL paths", () => {
-		const home = os.homedir();
-		const url = `file://${home}/private/encoded%20space.txt`;
+	it("normalizes and shortens Windows drive file URLs", () => {
+		const home = String.raw`C:\Users\Alice`;
 
-		expect(shortenToolArgumentPaths(url, "url")).toBe("~/private/encoded space.txt");
+		expect(shortenToolArgumentPaths("file:///C:/Users/Alice/private.txt", "url", home)).toBe("~/private.txt");
+	});
+
+	it("normalizes and shortens POSIX file URLs", () => {
+		const home = "/home/alice";
+
+		expect(shortenToolArgumentPaths("file:///home/alice/private/encoded%20space.txt", "url", home)).toBe(
+			"~/private/encoded space.txt",
+		);
+	});
+
+	it("preserves UNC authority while shortening file URLs", () => {
+		const home = String.raw`\\server\share\Alice`;
+
+		expect(shortenToolArgumentPaths("file://server/share/Alice/private.txt", "url", home)).toBe("~/private.txt");
 	});
 
 	it("leaves network URLs unchanged", () => {
+		const home = "/example.com/private";
 		const url = "https://example.com/private/encoded%20space.txt";
 
-		expect(shortenToolArgumentPaths(url, "url")).toBe(url);
+		expect(shortenToolArgumentPaths(url, "url", home)).toBe(url);
 	});
 });
 

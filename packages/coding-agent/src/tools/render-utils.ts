@@ -7,6 +7,7 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { ThinkingLevel, type ToolCallContext } from "@oh-my-pi/pi-agent-core";
 import type { Ellipsis } from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
@@ -860,18 +861,26 @@ export function shortenEmbeddedPaths(text: string, homeDir?: string): string {
 }
 
 /** Shorten filesystem and command arguments without rewriting literal search patterns. */
-export function shortenToolArgumentPaths(text: string, key: string | undefined): string {
+export function shortenToolArgumentPaths(text: string, key: string | undefined, homeDir?: string): string {
 	if (key === "url") {
 		try {
 			const url = new URL(text);
-			if (url.protocol === "file:") return shortenEmbeddedPaths(decodeURIComponent(url.pathname));
+			if (url.protocol === "file:") {
+				const decodedPath = decodeURIComponent(url.pathname);
+				const filePath = url.hostname
+					? `//${url.hostname}${decodedPath}`
+					: /^[A-Za-z]:$/.test(decodedPath.slice(1, 3))
+						? decodedPath.slice(1)
+						: fileURLToPath(url);
+				return shortenEmbeddedPaths(filePath, homeDir);
+			}
 		} catch {
 			// Preserve malformed and non-file URL arguments verbatim.
 		}
 		return text;
 	}
 	return key === "path" || key === "file_path" || key === "command" || key === "task" || key === "prompt"
-		? shortenEmbeddedPaths(text)
+		? shortenEmbeddedPaths(text, homeDir)
 		: text;
 }
 
