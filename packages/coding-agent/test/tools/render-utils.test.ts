@@ -32,6 +32,15 @@ import {
 } from "@oh-my-pi/pi-tui";
 
 describe("embedded home path normalization", () => {
+	it("shortens home paths enclosed in Markdown emphasis", () => {
+		expect(shortenEmbeddedPaths("Inspect **/home/alice/private/file**", "/home/alice")).toBe(
+			"Inspect **~/private/file**",
+		);
+		expect(shortenEmbeddedPaths("Inspect _/home/alice/private/file_", "/home/alice")).toBe(
+			"Inspect _~/private/file_",
+		);
+	});
+
 	it("recognizes compact shell control operators around home-directory tokens", () => {
 		expect(shortenEmbeddedPaths("cd /home/alice&& pwd", "/home/alice")).toBe("cd ~&& pwd");
 		expect(shortenEmbeddedPaths("cd /home/alice||/home/alice/bin/fallback", "/home/alice")).toBe(

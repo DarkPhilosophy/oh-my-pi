@@ -849,7 +849,7 @@ export function shortenEmbeddedPaths(text: string, homeDir?: string): string {
 				.join("[\\\\/]")
 		: home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const flags = windowsHome ? "gi" : "g";
-	const tokenBoundary = String.raw`[\s"'\x60([{=(:,;<>&|]`;
+	const tokenBoundary = String.raw`[\s"'\x60([{=(:,;<>&|*_]`;
 	return text.replace(
 		new RegExp(
 			`(^|${tokenBoundary})${escapedHome}(?=$|[/\\\\\\s"'\\]),;:\\x60<>&|]|\\.(?=$|[\\s"'\\]),;:\\x60<>&|]))([/\\\\][^\\s"'\\x60<>&|]*)?`,
