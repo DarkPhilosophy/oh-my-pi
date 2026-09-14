@@ -382,6 +382,7 @@ describe("CombinedAutocompleteProvider", () => {
 
 				expect(result).toEqual({
 					prefix: "repro @",
+					commandArgument: true,
 					items: [{ value: "repro @literal", label: "Keep @ in the title" }],
 				});
 			} finally {

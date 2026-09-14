@@ -189,6 +189,7 @@ describe("prompt action autocomplete", () => {
 
 		expect(suggestions).toEqual({
 			prefix: "repro #copy",
+			commandArgument: true,
 			items: [{ value: "repro #copy-title", label: "Keep #copy in the title" }],
 		});
 	});
