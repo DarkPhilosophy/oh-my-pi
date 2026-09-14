@@ -16,7 +16,17 @@ describe("copy URL handler", () => {
 		expect(supportsCopyUrlHandler("linux", { SUDO_USER: "desktop-user" }, "/usr/bin/xdg-mime")).toBe(false);
 		expect(supportsCopyUrlHandler("linux", {}, null)).toBe(false);
 		expect(supportsCopyUrlHandler("darwin", {}, "/usr/bin/xdg-mime")).toBe(false);
-		expect(supportsCopyUrlHandler("linux", {}, "/usr/bin/xdg-mime")).toBe(true);
+		expect(supportsCopyUrlHandler("linux", {}, "/usr/bin/xdg-mime", () => false)).toBe(true);
+	});
+
+	it("does not advertise a client-local copy link inside generic containers", () => {
+		const noMarkers = () => false;
+		expect(supportsCopyUrlHandler("linux", { container: "podman" }, "/usr/bin/xdg-mime", noMarkers)).toBe(false);
+		expect(supportsCopyUrlHandler("linux", {}, "/usr/bin/xdg-mime", path => path === "/.dockerenv")).toBe(false);
+		expect(supportsCopyUrlHandler("linux", {}, "/usr/bin/xdg-mime", path => path === "/run/.containerenv")).toBe(
+			false,
+		);
+		expect(supportsCopyUrlHandler("linux", {}, "/usr/bin/xdg-mime", noMarkers)).toBe(true);
 	});
 
 	it("emits a self-contained OSC target only after handler readiness", () => {

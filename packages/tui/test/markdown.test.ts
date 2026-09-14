@@ -3197,6 +3197,53 @@ describe("framed code review follow-ups", () => {
 		}
 	});
 
+	it("preserves raw tabs in a quoted fence inside a two-digit ordered list", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("10. item\n    > ```make\n    > \tall\n    > ```", 0, 0, theme).render(80);
+			expect(captured).toBe("\tall");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("refreshes a streaming copy footer when target readiness changes without new text", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let ready = false;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				get copyChipTarget() {
+					return ready ? () => "omp-copy:ready" : undefined;
+				},
+			};
+			const markdown = new Markdown("Intro\n\n```js\nconst value = 1;\n```\n\nTail", 0, 0, theme);
+			markdown.transientRenderCache = true;
+			const plainFooter = markdown.render(80).find(line => stripVTControlCharacters(line).includes("[copy]")) ?? "";
+			expect(plainFooter).not.toContain("\x1b]8;;");
+
+			ready = true;
+			const linkedFooter = markdown.render(80).find(line => stripVTControlCharacters(line).includes("[copy]")) ?? "";
+			expect(linkedFooter).toContain("\x1b]8;;omp-copy:ready");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
 	it("keeps nested list frames on the containing width budget", () => {
 		const source = "- outer\n  - inner\n    ```js\n    const value = 1;\n    ```";
 		const rendered = new Markdown(source, 0, 0, defaultMarkdownTheme).render(24);

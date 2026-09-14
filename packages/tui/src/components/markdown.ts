@@ -128,6 +128,11 @@ const FENCED_SOURCE_INTRO = /\b(?:code|example|markdown|output|snippet|source)\s
 function isMarkdownFencePrefix(prefix: string): boolean {
 	let remaining = prefix;
 	while (remaining.length > 0) {
+		const listContinuation = /^ {4}(?=>)/.exec(remaining)?.[0] ?? "";
+		if (listContinuation) {
+			remaining = remaining.slice(listContinuation.length);
+			continue;
+		}
 		const indent = /^ {0,3}/.exec(remaining)?.[0] ?? "";
 		remaining = remaining.slice(indent.length);
 		if (remaining.length === 0) return true;
@@ -1813,6 +1818,7 @@ interface RenderSignature {
 	defaultTextStyleId: number;
 	imageProtocol: string;
 	hyperlinks: boolean;
+	copyTargetAvailable: boolean;
 	textSizing: boolean;
 	bgColorProbe: string;
 	headingProbe: string;
@@ -1965,6 +1971,7 @@ export class Markdown implements Component {
 	// callers); the L2 LRU may hand the same array to multiple instances.
 	#cachedText?: string;
 	#cachedWidth?: number;
+	#cachedCopyTargetAvailable?: boolean;
 	#cachedLines?: readonly string[];
 	#transientRenderCache = false;
 
@@ -2288,11 +2295,15 @@ export class Markdown implements Component {
 	}
 
 	render(width: number): readonly string[] {
+		const copyTargetAvailable = this.#theme.copyChipTarget !== undefined;
 		// L1: per-instance cache — fastest path for repeated renders of the same
-		// instance at the same width (e.g. resize debounce, repeated redraws).
-		// Returning the cached reference is load-bearing: parents memoize their
-		// concatenation on reference equality.
-		if (this.#cachedLines && this.#cachedText === this.#text && this.#cachedWidth === width) {
+		// instance at the same width and capability state.
+		if (
+			this.#cachedLines &&
+			this.#cachedText === this.#text &&
+			this.#cachedWidth === width &&
+			this.#cachedCopyTargetAvailable === copyTargetAvailable
+		) {
 			return this.#cachedLines;
 		}
 
@@ -2304,6 +2315,7 @@ export class Markdown implements Component {
 		if (!this.#text || this.#text.trim() === "") {
 			this.#cachedText = this.#text;
 			this.#cachedWidth = width;
+			this.#cachedCopyTargetAvailable = copyTargetAvailable;
 			this.#cachedLines = EMPTY_RENDER_LINES;
 			return EMPTY_RENDER_LINES;
 		}
@@ -2494,6 +2506,7 @@ export class Markdown implements Component {
 		// mutate it (Component render contract); the L2 entry is shared across
 		// instances keyed on identical inputs.
 		this.#cachedText = this.#text;
+		this.#cachedCopyTargetAvailable = copyTargetAvailable;
 		this.#cachedWidth = width;
 		this.#cachedLines = result;
 
@@ -2551,6 +2564,7 @@ export class Markdown implements Component {
 			textSizing: TERMINAL.textSizing,
 			bgColorProbe,
 			headingProbe,
+			copyTargetAvailable: this.#theme.copyChipTarget !== undefined,
 		};
 	}
 	// All-primitive signature — compare via the canonical render-cache encoding.
@@ -2563,7 +2577,7 @@ export class Markdown implements Component {
 		// original source bytes. Keep the raw source in the cache identity so two
 		// documents that render identically can never reuse the other's target.
 		const sourceKey = sourceText === normalizedText ? "=" : `${sourceText.length}:${sourceText}`;
-		return `${normalizedText.length}:${normalizedText}\x00${sourceKey}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}`;
+		return `${normalizedText.length}:${normalizedText}\x00${sourceKey}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.copyTargetAvailable ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}`;
 	}
 
 	#renderStreamingContentLines(
@@ -2627,6 +2641,7 @@ export class Markdown implements Component {
 	): StreamPrefixLineCache | undefined {
 		const cache = this.#streamPrefixLineCache;
 		if (!cache) return undefined;
+		if (!this.#signatureEquals(cache, signature)) return undefined;
 		if (!this.#sourceText.startsWith(cache.sourceText)) return undefined;
 		if (!normalizedText.startsWith(cache.text) || !stableText.startsWith(cache.text)) return undefined;
 		if (cache.width !== signature.width) return undefined;
@@ -2637,6 +2652,7 @@ export class Markdown implements Component {
 		if (cache.defaultTextStyleId !== signature.defaultTextStyleId) return undefined;
 		if (cache.imageProtocol !== signature.imageProtocol) return undefined;
 		if (cache.hyperlinks !== signature.hyperlinks) return undefined;
+		if (cache.copyTargetAvailable !== signature.copyTargetAvailable) return undefined;
 		if (cache.textSizing !== signature.textSizing) return undefined;
 		if (cache.bgColorProbe !== signature.bgColorProbe) return undefined;
 		if (cache.headingProbe !== signature.headingProbe) return undefined;
@@ -2723,6 +2739,7 @@ export class Markdown implements Component {
 	// token), or a following-token type change.
 	#tailSpliceEnd(cache: TailRowCache, start: number, signature: RenderSignature, tokens: Token[]): number {
 		if (cache.tokenStart !== start) return start;
+		if (!this.#signatureEquals(cache, signature)) return start;
 		if (!this.#sourceText.startsWith(cache.sourceText)) return start;
 		if (cache.width !== signature.width) return start;
 		if (cache.paddingX !== signature.paddingX) return start;
@@ -2732,6 +2749,7 @@ export class Markdown implements Component {
 		if (cache.defaultTextStyleId !== signature.defaultTextStyleId) return start;
 		if (cache.imageProtocol !== signature.imageProtocol) return start;
 		if (cache.hyperlinks !== signature.hyperlinks) return start;
+		if (cache.copyTargetAvailable !== signature.copyTargetAvailable) return start;
 		if (cache.textSizing !== signature.textSizing) return start;
 		if (cache.bgColorProbe !== signature.bgColorProbe) return start;
 		if (cache.headingProbe !== signature.headingProbe) return start;
@@ -3422,6 +3440,7 @@ export class Markdown implements Component {
 			cache.imageProtocol === signature.imageProtocol &&
 			cache.hyperlinks === signature.hyperlinks &&
 			cache.textSizing === signature.textSizing &&
+			cache.copyTargetAvailable === signature.copyTargetAvailable &&
 			cache.bgColorProbe === signature.bgColorProbe &&
 			cache.headingProbe === signature.headingProbe
 		) {

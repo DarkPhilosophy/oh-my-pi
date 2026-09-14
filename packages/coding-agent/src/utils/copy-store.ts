@@ -1,5 +1,5 @@
 /** Self-contained OSC 8 copy targets for fenced code blocks. */
-import * as fs from "node:fs/promises";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
@@ -14,6 +14,7 @@ export function supportsCopyUrlHandler(
 	platform: NodeJS.Platform = process.platform,
 	env: NodeJS.ProcessEnv = process.env,
 	xdgMime: string | null = Bun.which("xdg-mime"),
+	markerExists: (path: string) => boolean = fs.existsSync,
 ): boolean {
 	return (
 		platform === "linux" &&
@@ -26,7 +27,10 @@ export function supportsCopyUrlHandler(
 		!env.WSL_DISTRO_NAME &&
 		!env.WSL_INTEROP &&
 		!env.CODESPACES &&
-		!env.REMOTE_CONTAINERS_IPC
+		!env.REMOTE_CONTAINERS_IPC &&
+		!env.container &&
+		!markerExists("/.dockerenv") &&
+		!markerExists("/run/.containerenv")
 	);
 }
 
@@ -124,7 +128,7 @@ export async function registerCopyUrlHandler(): Promise<CopyHandlerResult> {
 	if (!supportsCopyUrlHandler()) return { ok: false, desktopPath, error: "only supported on Linux (xdg)" };
 	const command = resolveOmpCommand();
 	if (command === undefined) return { ok: false, desktopPath, error: "omp executable not found" };
-	await fs.mkdir(appsDir, { recursive: true });
+	await fs.promises.mkdir(appsDir, { recursive: true });
 	const entry = createCopyDesktopEntry(command);
 	await Bun.write(desktopPath, entry);
 	const xdg = Bun.spawn(["xdg-mime", "default", COPY_DESKTOP_ENTRY, COPY_SCHEME_MIME], {
