@@ -39,8 +39,10 @@ describe("copy URL handler", () => {
 		expect(copyUrlTarget("echo ready", true)).toMatch(/^omp-copy:/);
 	});
 
-	it("does not advertise a copy target that exceeds Linux's argument limit", () => {
-		expect(copyUrlTarget("x".repeat(100 * 1024), true)).toBeUndefined();
+	it("does not advertise copy targets beyond the portable OSC URI boundary", () => {
+		const accepted = copyUrlTarget("x".repeat(1551), true);
+		expect(Buffer.byteLength(accepted!)).toBe(2082);
+		expect(copyUrlTarget("x".repeat(1552), true)).toBeUndefined();
 	});
 
 	it("installs the handler beneath XDG_DATA_HOME when configured", () => {

@@ -6,9 +6,8 @@ import { ptree } from "@oh-my-pi/pi-utils";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
 export const COPY_URL_SCHEME = "omp-copy";
 
-// Linux caps one argv entry near 128 KiB. Leave headroom for desktop-launcher
-// bookkeeping rather than emitting an OSC action that can only fail with E2BIG.
-const MAX_COPY_URL_BYTES = 120 * 1024;
+// Keep self-contained targets below the portable OSC 8 URI limit.
+const MAX_COPY_URL_BYTES = 2082;
 
 /** Whether this process can install a client-local custom URL handler. */
 export function supportsCopyUrlHandler(
@@ -40,7 +39,7 @@ export function registerCopyBlock(code: string): string {
 	return `${COPY_URL_SCHEME}:${bytes.length}.${bytes.toString("base64url")}`;
 }
 
-/** Create a self-contained OSC 8 target after handler validation and within Linux's argv limit. */
+/** Create a self-contained OSC 8 target within the portable terminal URI limit. */
 export function copyUrlTarget(code: string, handlerReady: boolean): string | undefined {
 	if (!handlerReady) return undefined;
 	const target = registerCopyBlock(code);
