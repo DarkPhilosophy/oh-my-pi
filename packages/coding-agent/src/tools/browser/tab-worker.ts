@@ -1828,6 +1828,10 @@ export class WorkerCore {
 		let runPage: RunPageScope | undefined;
 		this.#activeElementCacheKey = msg.name;
 		try {
+			if (this.#webDriverBiDi) {
+				await this.#selectBiDiPage(msg.name, msg.targetId, undefined, msg.dialogs);
+				throwIfAborted(signal);
+			}
 			runPage = createRunPageScope(
 				this.#requirePage(),
 				this.#webDriverBiDi ? () => (this.#cleanupRequired = true) : undefined,
