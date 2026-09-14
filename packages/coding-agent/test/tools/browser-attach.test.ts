@@ -312,6 +312,10 @@ describe("pickElectronTarget", () => {
 				await expect(findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${profile}`] })).rejects.toThrow(
 					"already running",
 				);
+				spy.mockReturnValue([]);
+				await expect(findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${profile}`] })).rejects.toThrow(
+					"already running",
+				);
 			} finally {
 				spy.mockRestore();
 				await existing.close();
