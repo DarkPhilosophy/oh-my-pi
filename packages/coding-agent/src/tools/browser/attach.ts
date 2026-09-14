@@ -267,11 +267,10 @@ export async function findReusableCdp(
 	let hasUnreadableCandidate = false;
 	for (const process of candidates) {
 		let args: string[];
+		let ambiguousProfile = false;
 		try {
 			const processArgs = process.args();
 			if (globalThis.process.platform === "linux" && processArgs.length === 1) {
-				// Linux process titles flatten argv. Preserve the caller's exact
-				// profile value before splitting switches, including " --" in paths.
 				let title = processArgs[0]!;
 				let matchedProfile = false;
 				if (requestedUserDataDir !== null) {
@@ -281,6 +280,18 @@ export async function findReusableCdp(
 						if (offset < 0) continue;
 						const end = offset + token.length;
 						if (end !== title.length && !title.startsWith(" --", end)) continue;
+						if (end !== title.length) {
+							const lock = await fs
+								.readlink(path.join(normalizedRequestedUserDataDir ?? "", "SingletonLock"))
+								.catch(() => undefined);
+							const ownerPid = lock?.startsWith(`${os.hostname()}-`)
+								? Number(lock.slice(os.hostname().length + 1))
+								: NaN;
+							if (ownerPid !== process.pid) {
+								ambiguousProfile = true;
+								continue;
+							}
+						}
 						title = title.slice(0, offset) + title.slice(end);
 						matchedProfile = true;
 						break;
@@ -295,6 +306,7 @@ export async function findReusableCdp(
 			hasUnreadableCandidate = true;
 			continue;
 		}
+		if (ambiguousProfile) continue;
 		candidateArgs.push(args);
 		const candidateProfile = findUserDataDirInArgs(args);
 		if (
