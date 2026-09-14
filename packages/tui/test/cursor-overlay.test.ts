@@ -186,6 +186,8 @@ it.each([
 	{ width: 40, height: 20, historyCount: 12, stop: true, keepOpen: false },
 	{ width: 60, height: 20, historyCount: 12, stop: false, keepOpen: true },
 	{ width: 40, height: 20, historyCount: 12, stop: false, keepOpen: true },
+	{ width: 30, height: 12, historyCount: 30, stop: false, keepOpen: true },
+	{ width: 30, height: 12, historyCount: 30, stop: true, keepOpen: false },
 ])("restores popup history without cursor reports: %j", async ({ width, height, historyCount, stop, keepOpen }) => {
 	const terminal = new VirtualTerminal(40, 12);
 	const start = terminal.start.bind(terminal);
