@@ -250,15 +250,21 @@ export async function findReusableCdp(
 	const executablePath = await fs.realpath(exe).catch(() => exe);
 	const candidates = Process.fromPath(executablePath).filter(process => process.status() === ProcessStatus.Running);
 	if (process.platform === "linux" && normalizedRequestedUserDataDir !== null) {
-		// Distribution launchers may exec a different binary. Chromium records
-		// its local profile owner in this lock; still validate that PID's live
-		// profile arguments and CDP endpoint below before borrowing it.
+		// Profile ownership does not imply application identity. A wrapper can
+		// launch a fresh profile, but an occupied profile needs a verified binary
+		// match (or an explicitly selected CDP endpoint).
 		const lock = await fs.readlink(path.join(normalizedRequestedUserDataDir, "SingletonLock")).catch(() => undefined);
 		const localPrefix = `${os.hostname()}-`;
 		if (lock?.startsWith(localPrefix)) {
 			const pidText = lock.slice(localPrefix.length);
 			const owner = /^\d+$/.test(pidText) ? Process.fromPid(Number(pidText)) : null;
 			if (owner?.status() === ProcessStatus.Running && !candidates.some(candidate => candidate.pid === owner.pid)) {
+				const ownerExecutable = await fs.realpath(`/proc/${owner.pid}/exe`).catch(() => undefined);
+				if (ownerExecutable !== executablePath) {
+					throw new ToolError(
+						"The requested profile is occupied by an unverified application. Use its executable path or explicitly select app.cdp_url.",
+					);
+				}
 				candidates.push(owner);
 			}
 		}
