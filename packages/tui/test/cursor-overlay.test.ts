@@ -348,6 +348,30 @@ it.each([false, true])("preserves pulled external history when popup predates gr
 	}
 });
 
+it("chooses available safe space below an editor after external history is pulled down", async () => {
+	const terminal = new VirtualTerminal(40, 12);
+	terminal.write(Array.from({ length: 40 }, (_, index) => `SHELL_${index}\r\n`).join(""));
+	const ui = new TUI(terminal);
+	const provider = new Provider();
+	provider.frame = { viewport: [`${CURSOR_MARKER}EDITOR`, "STATUS", "EXTENSION"] };
+	ui.setFrameProvider(provider);
+	ui.start();
+	try {
+		await terminal.waitForRender();
+		terminal.resize(40, 20);
+		await Bun.sleep(600);
+		await terminal.waitForRender();
+		ui.setCursorOverlay(() => ["SAFE_MENU"], 0, 1);
+		ui.requestRender();
+		await terminal.waitForRender();
+		const rows = terminal.getViewport();
+		const menu = rows.findIndex(row => row.includes("SAFE_MENU"));
+		expect(menu).toBeGreaterThan(rows.findIndex(row => row.includes("EDITOR")));
+	} finally {
+		ui.stop();
+	}
+});
+
 it.each([
 	[40, 14],
 	[40, 10],

@@ -2833,8 +2833,10 @@ export class TUI extends Container {
 		const logicalEditorTop = newTop + (marker?.row ?? 0) - this.#cursorOverlayOffset;
 		const editorTop = Math.max(0, logicalEditorTop);
 		const editorBottom = Math.max(0, Math.min(height, logicalEditorTop + this.#cursorOverlayEditorRows));
-		const above = this.#cursorOverlayPlacement === "above" || editorTop >= height - editorBottom;
-		const available = above ? Math.max(0, editorTop - nextKnownTop) : height - editorBottom;
+		const safeAbove = Math.max(0, editorTop - nextKnownTop);
+		const below = height - editorBottom;
+		const above = this.#cursorOverlayPlacement === "above" || safeAbove >= below;
+		const available = above ? safeAbove : below;
 		const overlayRows =
 			marker && !flushing && !this.hasOverlay() && available > 0
 				? this.#prepareLinesArray(this.#cursorOverlayRender?.(width, available) ?? [], width)
