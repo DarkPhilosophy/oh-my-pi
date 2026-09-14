@@ -287,8 +287,12 @@ describe("pickElectronTarget", () => {
 		"reuses separate switch values without splitting flag-like profile segments",
 		async () => {
 			const cdp = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("{}") });
-			const profile = path.join(os.tmpdir(), `omp spaced --archive/profile ${crypto.randomUUID()}`);
+			const profileRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp spaced "));
+			const requestedPrefix = path.join(profileRoot, "profile");
+			const profile = `${requestedPrefix} --archive/${crypto.randomUUID()}`;
+			await fs.mkdir(profile, { recursive: true });
 			const existing = await spawnDisposableExecutable([]);
+			await fs.symlink(`${os.hostname()}-${existing.pid}`, path.join(profile, "SingletonLock"));
 			const originalArgs = Process.prototype.args;
 			const spy = vi.spyOn(Process.prototype, "args").mockImplementation(function (this: Process) {
 				return this.pid === existing.pid
@@ -301,10 +305,14 @@ describe("pickElectronTarget", () => {
 					pid: existing.pid,
 				});
 				expect(await findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${profile}-other`] })).toBeNull();
+				expect(
+					await findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${requestedPrefix}`] }),
+				).toBeNull();
 			} finally {
 				spy.mockRestore();
 				await existing.close();
 				cdp.stop(true);
+				await fs.rm(profileRoot, { recursive: true, force: true });
 			}
 		},
 	);
