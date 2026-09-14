@@ -12,7 +12,6 @@
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
-import { modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { getCatalogProviderEntry } from "@oh-my-pi/pi-catalog/provider-models";
 import {
@@ -33,8 +32,7 @@ import {
 	formatModelSelectorValue,
 	parseModelPattern,
 	type ModelRoleLookup,
-	parseModelString,
-	splitUpstreamRouting,
+	parseExactModelSelectorWithRouting,
 	type ResolvedModelRoleValue,
 	resolveModelRoleValue,
 } from "../../config/model-resolver";
@@ -1022,26 +1020,7 @@ export class ModelHubComponent implements Component {
 				upstream: string | undefined;
 		  }
 		| undefined {
-		const trimmed = raw.trim();
-		const parse = (pattern: string) =>
-			parseModelString(pattern, {
-				allowMaxSuffix: true,
-				allowAutoAlias: true,
-				isLiteralModelId: (provider, id) => this.#findFallbackModel(provider, id) !== undefined,
-			});
-		const literal = parse(trimmed);
-		if (literal && this.#findFallbackModel(literal.provider, literal.id)) return { ...literal, upstream: undefined };
-		const routing = splitUpstreamRouting(trimmed);
-		if (!routing) {
-			if (!literal) return undefined;
-			return { ...literal, upstream: undefined };
-		}
-		const parsed = parse(routing.base.trim());
-		if (!parsed) return undefined;
-		const model = this.#findFallbackModel(parsed.provider, parsed.id)?.model;
-		if (!model || (!modelMatchesHost(model, "openrouter") && !modelMatchesHost(model, "vercelAIGateway")))
-			return undefined;
-		return { ...parsed, upstream: routing.upstream };
+		return parseExactModelSelectorWithRouting(raw, (provider, id) => this.#registry.find(provider, id));
 	}
 
 	/**

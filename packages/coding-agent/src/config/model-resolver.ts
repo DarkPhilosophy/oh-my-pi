@@ -400,6 +400,28 @@ function supportsUpstreamRouting(model: Model<Api>): boolean {
 	return modelMatchesHost(model, "openrouter") || modelMatchesHost(model, "vercelAIGateway");
 }
 
+/** Parse a registry-backed exact selector without falling back to fuzzy model matches. */
+export function parseExactModelSelectorWithRouting(
+	pattern: string,
+	findModel: (provider: string, id: string) => Model<Api> | undefined,
+): { provider: string; id: string; thinkingLevel?: ConfiguredThinkingLevel; upstream: string | undefined } | undefined {
+	const parse = (value: string) =>
+		parseModelString(value, {
+			allowMaxSuffix: true,
+			allowAutoAlias: true,
+			isLiteralModelId: (provider, id) => findModel(provider, id) !== undefined,
+		});
+	const trimmed = pattern.trim();
+	const literal = parse(trimmed);
+	if (literal && findModel(literal.provider, literal.id)) return { ...literal, upstream: undefined };
+	const routing = splitUpstreamRouting(trimmed);
+	if (!routing) return literal ? { ...literal, upstream: undefined } : undefined;
+	const parsed = parse(routing.base.trim());
+	if (!parsed) return undefined;
+	const model = findModel(parsed.provider, parsed.id);
+	return model && supportsUpstreamRouting(model) ? { ...parsed, upstream: routing.upstream } : undefined;
+}
+
 /** Pin a resolved aggregator model to a single upstream provider via its compat routing block. */
 function applyUpstreamRouting(model: Model<Api>, upstream: string): Model<Api> {
 	const aggregatorModel = model as Model<"openai-completions">;
