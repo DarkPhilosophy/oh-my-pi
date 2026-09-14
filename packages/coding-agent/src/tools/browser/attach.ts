@@ -269,12 +269,28 @@ export async function findReusableCdp(
 		let args: string[];
 		try {
 			const processArgs = process.args();
-			// Chromium's Linux setproctitle joins argv with spaces. Keep switch
-			// values together (including spaces in profile paths), not word-split.
-			args =
-				globalThis.process.platform === "linux" && processArgs.length === 1
-					? processArgs[0]!.split(/ (?=--)/)
-					: processArgs;
+			if (globalThis.process.platform === "linux" && processArgs.length === 1) {
+				// Linux process titles flatten argv. Preserve the caller's exact
+				// profile value before splitting switches, including " --" in paths.
+				let title = processArgs[0]!;
+				let matchedProfile = false;
+				if (requestedUserDataDir !== null) {
+					for (const separator of ["=", " "]) {
+						const token = ` --user-data-dir${separator}${requestedUserDataDir}`;
+						const offset = title.indexOf(token);
+						if (offset < 0) continue;
+						const end = offset + token.length;
+						if (end !== title.length && !title.startsWith(" --", end)) continue;
+						title = title.slice(0, offset) + title.slice(end);
+						matchedProfile = true;
+						break;
+					}
+				}
+				args = title.split(/ (?=--)/);
+				if (matchedProfile) args.push(`--user-data-dir=${requestedUserDataDir}`);
+			} else {
+				args = processArgs;
+			}
 		} catch {
 			hasUnreadableCandidate = true;
 			continue;
