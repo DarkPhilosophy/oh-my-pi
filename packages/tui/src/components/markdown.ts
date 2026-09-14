@@ -165,8 +165,9 @@ function markdownQuotePrefix(line: string): { length: number; depth: number } {
 
 function isListContinuationFencePrefix(source: string, lineStart: number, prefix: string): boolean {
 	const quote = markdownQuotePrefix(prefix);
-	const indent = prefix.length - quote.length;
-	if (!/^ *$/.test(prefix.slice(quote.length))) return false;
+	const looseQuote = quote.depth === 0 ? /^ *(?=>)/.exec(prefix) : undefined;
+	const indent = looseQuote ? looseQuote[0].length : prefix.length - quote.length;
+	if (looseQuote ? !prefix.slice(indent).startsWith(">") : !/^ *$/.test(prefix.slice(quote.length))) return false;
 	let cursor = lineStart;
 	let activeIndent = indent;
 	while (cursor > 0) {

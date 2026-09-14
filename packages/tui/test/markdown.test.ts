@@ -3266,6 +3266,53 @@ describe("framed code review follow-ups", () => {
 		}
 	});
 
+	it("preserves raw tabs in a quoted fence inside a child list continuation", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("10. item\n    - child\n      > ```make\n      > \tall\n      > ```", 0, 0, theme).render(80);
+			expect(captured).toBe("\tall");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("does not recover an indented-code quote as a child-list fence", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown(
+				"10. item\n    - child\n          > ```make\n          > \tall\n          > ```",
+				0,
+				0,
+				theme,
+			).render(80);
+			expect(captured).toBeUndefined();
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
 	it("refreshes a streaming copy footer when target readiness changes without new text", () => {
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;
