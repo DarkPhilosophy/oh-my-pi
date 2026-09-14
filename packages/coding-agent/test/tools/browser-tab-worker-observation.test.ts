@@ -5,21 +5,34 @@ import { ensureChromiumExecutable, loadPuppeteer } from "@oh-my-pi/pi-coding-age
 import {
 	collectBiDiObservationEntries,
 	parseAriaSnapshotLines,
+	resolvePageViewport,
 	type WorkerCore,
 } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-worker";
 import { chromiumAvailable } from "./chromium-probe";
 
 const CHROMIUM_AVAILABLE = await chromiumAvailable();
 
-function fakeActionableHandle(): ElementHandle {
+function fakeActionableHandle(
+	options: {
+		tagName?: string;
+		type?: string | null;
+		checked?: boolean;
+		ariaChecked?: string | null;
+	} = {},
+): ElementHandle {
 	const element = {
 		disabled: false,
 		required: false,
 		readOnly: false,
 		multiple: false,
-		tagName: "BUTTON",
+		tagName: options.tagName ?? "BUTTON",
+		checked: options.checked,
 		ownerDocument: { getElementById: () => null },
-		getAttribute: () => null,
+		getAttribute: (name: string) => {
+			if (name === "type") return options.type ?? null;
+			if (name === "aria-checked") return options.ariaChecked ?? null;
+			return null;
+		},
 		matches: () => false,
 	};
 	return {
@@ -29,8 +42,10 @@ function fakeActionableHandle(): ElementHandle {
 	} as unknown as ElementHandle;
 }
 
-function observationHarness(viewport: { width: number; height: number }) {
-	const handle = fakeActionableHandle();
+function observationHarness(
+	viewport: { width: number; height: number },
+	handle: ElementHandle = fakeActionableHandle(),
+) {
 	const cached = new Map<number, ElementHandle>();
 	let nextId = 0;
 	const core = {
@@ -43,6 +58,17 @@ function observationHarness(viewport: { width: number; height: number }) {
 	} as unknown as Page;
 	return { core, page, cached };
 }
+
+describe("attached Firefox viewport metadata", () => {
+	it("uses the live layout viewport when Puppeteer has no emulated viewport", async () => {
+		const page = {
+			viewport: () => null,
+			evaluate: async () => ({ width: 1440, height: 812 }),
+		} as unknown as Page;
+
+		expect(await resolvePageViewport(page)).toEqual({ width: 1440, height: 812 });
+	});
+});
 
 describe("Firefox BiDi viewport observation", () => {
 	it("keeps visible reference-less content using serialized viewport-relative boxes", async () => {
@@ -105,6 +131,58 @@ describe("Firefox BiDi viewport observation", () => {
 
 		expect(entries).toEqual([{ id: 1, role: "button", name: "Submit", states: [] }]);
 		expect(cached.has(1)).toBe(true);
+	});
+
+	it("does not synthesize checked=false for an ordinary textbox", async () => {
+		const handle = fakeActionableHandle({ tagName: "INPUT", type: "text", checked: false });
+		const { core, page } = observationHarness({ width: 800, height: 600 }, handle);
+
+		const entries = await collectBiDiObservationEntries(core, page, '- textbox "Name" [ref=e1]', {
+			includeAll: true,
+			viewportOnly: false,
+			refOwner: "test-owner",
+		});
+
+		expect(entries[0]?.states).toEqual([]);
+	});
+
+	it("retains native checkbox and radio checked states", async () => {
+		const checkbox = observationHarness(
+			{ width: 800, height: 600 },
+			fakeActionableHandle({ tagName: "INPUT", type: "checkbox", checked: false }),
+		);
+		const radio = observationHarness(
+			{ width: 800, height: 600 },
+			fakeActionableHandle({ tagName: "INPUT", type: "radio", checked: true }),
+		);
+
+		const checkboxEntries = await collectBiDiObservationEntries(
+			checkbox.core,
+			checkbox.page,
+			'- checkbox "Email updates" [ref=e1]',
+			{ includeAll: true, viewportOnly: false, refOwner: "test-owner" },
+		);
+		const radioEntries = await collectBiDiObservationEntries(radio.core, radio.page, '- radio "Daily" [ref=e2]', {
+			includeAll: true,
+			viewportOnly: false,
+			refOwner: "test-owner",
+		});
+
+		expect(checkboxEntries[0]?.states).toEqual(["checked=false"]);
+		expect(radioEntries[0]?.states).toEqual(["checked=true"]);
+	});
+
+	it("retains authored aria-checked on custom widgets", async () => {
+		const handle = fakeActionableHandle({ tagName: "DIV", ariaChecked: "mixed" });
+		const { core, page } = observationHarness({ width: 800, height: 600 }, handle);
+
+		const entries = await collectBiDiObservationEntries(core, page, '- checkbox "Select all" [ref=e1]', {
+			includeAll: true,
+			viewportOnly: false,
+			refOwner: "test-owner",
+		});
+
+		expect(entries[0]?.states).toEqual(["checked=mixed"]);
 	});
 
 	it("parses serialized getBoundingClientRect coordinates and inherits ancestor boxes for text", () => {

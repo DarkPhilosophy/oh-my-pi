@@ -44,13 +44,7 @@ import {
 	resolveAriaRefHandle,
 } from "./aria/aria-snapshot";
 import { pickElectronTarget } from "./attach";
-import {
-	applyStealthPatches,
-	applyViewport,
-	BROWSER_PROTOCOL_TIMEOUT_MS,
-	DEFAULT_VIEWPORT,
-	loadPuppeteerInWorker,
-} from "./launch";
+import { applyStealthPatches, applyViewport, BROWSER_PROTOCOL_TIMEOUT_MS, loadPuppeteerInWorker } from "./launch";
 import { extractReadableFromHtml, type ReadableFormat } from "./readable";
 
 import { cloneSafe, RunOutput } from "./run-output";
@@ -918,6 +912,17 @@ export function isInteractiveAriaSnapshotNode(role: string, states: readonly str
 	);
 }
 
+export async function resolvePageViewport(
+	page: Pick<Page, "viewport" | "evaluate">,
+): Promise<{ width: number; height: number; deviceScaleFactor?: number }> {
+	const viewport = page.viewport();
+	if (viewport) return viewport;
+	return (await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))) as {
+		width: number;
+		height: number;
+	};
+}
+
 export function resolveAriaState(nativeValue: unknown, ariaValue: string | null): boolean | "mixed" | undefined {
 	if (typeof nativeValue === "boolean") return nativeValue;
 	if (ariaValue === "true") return true;
@@ -1011,6 +1016,7 @@ export async function collectBiDiObservationEntries(
 			const nativeValue =
 				typeof input.value === "string" || typeof input.value === "number" ? input.value : undefined;
 			const selectedOptionLabel = input.selectedOptions?.[0]?.textContent?.trim();
+			const inputType = input.getAttribute("type")?.toLowerCase();
 			const describedBy = input.getAttribute("aria-describedby");
 			const description = describedBy
 				?.split(/\s+/)
@@ -1033,7 +1039,10 @@ export async function collectBiDiObservationEntries(
 				ariaMultiline: input.getAttribute("aria-multiline"),
 				ariaMultiselectable: input.getAttribute("aria-multiselectable"),
 				readonly: input.readOnly === true || input.getAttribute("aria-readonly") === "true",
-				checked: input.checked,
+				checked:
+					input.tagName === "INPUT" && (inputType === "checkbox" || inputType === "radio")
+						? input.checked
+						: undefined,
 				pressed: input.pressed,
 				selected: input.selected,
 				expanded: input.expanded,
@@ -1687,7 +1696,7 @@ export class WorkerCore {
 		return {
 			url: redactUrlCredentials(page.url()),
 			title: await page.title().catch(() => undefined),
-			viewport: page.viewport() ?? DEFAULT_VIEWPORT,
+			viewport: await resolvePageViewport(page),
 			targetId,
 		};
 	}
@@ -2382,7 +2391,7 @@ export class WorkerCore {
 		return {
 			url: page.url(),
 			title: (await untilAborted(options.signal, () => page.title())) as string,
-			viewport: page.viewport() ?? DEFAULT_VIEWPORT,
+			viewport: await resolvePageViewport(page),
 			scroll,
 			elements: entries,
 		};

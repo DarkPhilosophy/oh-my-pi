@@ -1,5 +1,14 @@
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { isCompiledBinary, logger, withTimeout, workerHostEntry } from "@oh-my-pi/pi-utils";
+import {
+	acquireFileLock,
+	type FileLockHandle,
+	getBrowserProfilesDir,
+	isCompiledBinary,
+	logger,
+	withTimeout,
+	workerHostEntry,
+} from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 import type { Browser, CDPSession } from "puppeteer-core";
 import { ToolAbortError, ToolError } from "../tool-errors";
@@ -62,6 +71,8 @@ export interface PuppeteerBrowserHandle extends BrowserHandleCommon<PuppeteerBro
 
 export interface FirefoxRelayBrowserHandle extends BrowserHandleCommon<FirefoxRelayKind> {
 	webSocketUrl: string;
+	/** OS-backed endpoint ownership; released after the last worker alias closes. */
+	endpointLease?: FileLockHandle;
 }
 
 export interface CmuxBrowserHandle extends BrowserHandleCommon<CmuxKind> {
@@ -223,12 +234,24 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		};
 	}
 	if (kind.kind === "firefox-relay") {
-		// Firefox permits exactly one active WebDriver BiDi session. The tab
-		// worker is its sole owner; the registry stores only the endpoint.
+		// Firefox permits one BiDi session across all OMP processes, not merely
+		// one worker in this registry. OS ownership also releases after a crash.
+		const leaseDir = path.join(getBrowserProfilesDir(), "firefox-leases");
+		await fs.mkdir(leaseDir, { recursive: true });
+		const endpointKey = Bun.hash(browserKey(kind)).toString(16);
+		let endpointLease: FileLockHandle;
+		try {
+			endpointLease = await acquireFileLock(path.join(leaseDir, endpointKey), { retries: 1 });
+		} catch {
+			throw new ToolError(
+				"This Firefox endpoint is already owned by another OMP process. Close its Firefox tabs before opening it here.",
+			);
+		}
 		return {
 			key: browserKey(kind),
 			kind,
 			webSocketUrl: kind.webSocketUrl,
+			endpointLease,
 			refCount: 0,
 		};
 	}
@@ -354,7 +377,10 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: ReleaseBrowserO
 		handle.client.close();
 		return;
 	}
-	if ("webSocketUrl" in handle) return;
+	if ("webSocketUrl" in handle) {
+		handle.endpointLease?.release();
+		return;
+	}
 	if (handle.kind.kind === "headless") {
 		if (handle.sharedDaemon) {
 			// The broker owns the Chromium; this process only drops its CDP

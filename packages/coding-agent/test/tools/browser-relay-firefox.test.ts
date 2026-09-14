@@ -547,6 +547,35 @@ describe("Firefox WebDriver BiDi relay", () => {
 		expect(tabs.has(second.name)).toBe(false);
 		expect(endpoint.refCount).toBe(0);
 	});
+
+	it("cleans up a Firefox alias when release-runtime transport throws", async () => {
+		const sent: string[] = [];
+		const worker = {
+			mode: "inline",
+			send: (message: WorkerInbound) => {
+				sent.push(message.type);
+				if (message.type === "release-runtime") throw new Error("transport closed");
+			},
+			onMessage: () => () => undefined,
+			onError: () => () => undefined,
+			terminate: async () => undefined,
+		} satisfies WorkerHandle;
+		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
+		endpoint.refCount = 2;
+		const closing = createFirefoxTab("firefox-throwing-alias", endpoint, worker);
+		const survivor = createFirefoxTab("firefox-throwing-survivor", endpoint, worker);
+		const tabs = getTabsMapForTest() as Map<string, WorkerTabSession>;
+		tabs.set(closing.name, closing);
+		tabs.set(survivor.name, survivor);
+
+		await expect(releaseTab(closing.name)).resolves.toBe(true);
+		expect(sent).toContain("release-runtime");
+		expect(closing.state).toBe("dead");
+		expect(tabs.has(closing.name)).toBe(false);
+		expect(tabs.has(survivor.name)).toBe(true);
+		expect(endpoint.refCount).toBe(1);
+		await forceKillTab(survivor.name, "test cleanup", { sharedFirefoxWorker: true });
+	});
 	it("keeps a registered sibling selectable after alias close", async () => {
 		const listeners = new Set<Parameters<WorkerHandle["onMessage"]>[0]>();
 		let terminated = false;

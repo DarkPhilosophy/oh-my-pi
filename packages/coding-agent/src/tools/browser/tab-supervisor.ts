@@ -1005,7 +1005,14 @@ async function releaseTabInner(tab: TabSession, name: string, opts: ReleaseTabOp
 		if (aliases.length > 1) {
 			const aliasIsBusy = [...tab.pending.values()].some(pending => pending.tabName === name);
 			if (aliasIsBusy) throw new ToolError("Cannot close a Firefox tab alias while it is busy");
-			tab.worker.send({ type: "release-runtime", name });
+			try {
+				tab.worker.send({ type: "release-runtime", name });
+			} catch (error) {
+				logger.debug("Failed to release Firefox tab alias runtime", {
+					name,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 			const survivor = aliases.find(([aliasName]) => aliasName !== name)?.[1];
 			tabs.delete(name);
 			tab.state = "dead";
@@ -1837,7 +1844,14 @@ export async function forceKillTab(
 			([, candidate]) => candidate.backend === "worker" && candidate.worker === tab.worker,
 		);
 		if (!options.sharedFirefoxWorker && aliases.length > 1) {
-			tab.worker.send({ type: "release-runtime", name });
+			try {
+				tab.worker.send({ type: "release-runtime", name });
+			} catch (error) {
+				logger.debug("Failed to release Firefox tab alias runtime", {
+					name,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 			const survivor = aliases.find(([aliasName]) => aliasName !== name)?.[1];
 			tabs.delete(name);
 			if (survivor?.backend === "worker") firefoxSharedTabs.set(survivor);
@@ -2129,13 +2143,20 @@ async function spawnInlineWorker(): Promise<WorkerHandle> {
 		onError: () => () => {},
 		terminate() {
 			if (termination) return termination;
-			termination = closed.promise;
+			termination = raceWithTimeout(closed.promise, GRACE_MS, "Timed out closing inline browser worker").catch(
+				() => undefined,
+			);
 			queueMicrotask(() => {
 				for (const workerListener of workerListeners) workerListener({ type: "close" });
 			});
 			return termination;
 		},
 	};
+}
+
+/** Exercise the inline transport lifecycle without spawning an isolated worker. */
+export function spawnInlineWorkerForTest(): Promise<WorkerHandle> {
+	return spawnInlineWorker();
 }
 
 /**

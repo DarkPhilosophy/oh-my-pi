@@ -1,6 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+
+### Added
+
+- Added connect-only Browser Relay support for Firefox-family browsers through local WebDriver BiDi endpoints ([#10295](https://github.com/can1357/oh-my-pi/pull/10295) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
 ### Fixed
 
 - Fixed Flatpak Chromium launcher executables (including `com.google.Chrome`, `org.chromium.Chromium`, and `io.github.ungoogled_software.ungoogled_chromium`) so `app.path` is treated as a browser and gets managed Chromium profile handling
@@ -153,7 +158,6 @@
 
 ### Added
 
-- Added connect-only Browser Relay support for Firefox-family browsers through local WebDriver BiDi endpoints.
 - `/rename` without a title now generates a session name from recent conversation using the configured tiny model.
 - Added opt-in experimental notes-backed context windows with persistent branch-local notes, searchable original session history, retained latest user requests, and a model-callable rollover tool, including in Code Mode.
 - The `/resume` picker (Ctrl+L when bound to `app.session.resume`) marks the live session with a `current` label on its metadata line and focuses that row on open. ([#11381](https://github.com/can1357/oh-my-pi/pull/11381) by [@tkossak](https://github.com/tkossak))
