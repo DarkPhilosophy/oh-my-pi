@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -282,6 +282,32 @@ describe("pickElectronTarget", () => {
 			await fs.rm(otherProfile, { recursive: true, force: true });
 		}
 	});
+
+	test.skipIf(process.platform !== "linux")(
+		"reuses a collapsed title with separate switch values and a spaced profile",
+		async () => {
+			const cdp = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("{}") });
+			const profile = path.join(os.tmpdir(), `omp spaced profile ${crypto.randomUUID()}`);
+			const existing = await spawnDisposableExecutable([]);
+			const originalArgs = Process.prototype.args;
+			const spy = vi.spyOn(Process.prototype, "args").mockImplementation(function (this: Process) {
+				return this.pid === existing.pid
+					? [`${existing.path} --user-data-dir ${profile} --remote-debugging-port ${cdp.port}`]
+					: originalArgs.call(this);
+			});
+			try {
+				expect(await findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${profile}`] })).toEqual({
+					cdpUrl: `http://127.0.0.1:${cdp.port}`,
+					pid: existing.pid,
+				});
+				expect(await findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${profile}-other`] })).toBeNull();
+			} finally {
+				spy.mockRestore();
+				await existing.close();
+				cdp.stop(true);
+			}
+		},
+	);
 
 	test.skipIf(!CHROMIUM_AVAILABLE)(
 		"keeps profile tabs isolated and never kills a borrowed Chrome on close",
