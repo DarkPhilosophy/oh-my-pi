@@ -71,33 +71,44 @@ function findNormalizedOsc8Span(
 	source: string,
 	needle: string,
 	start: number,
+	exactStart: number,
 ): { start: number; end: number } | undefined {
 	const normalizedNeedle = normalizeOsc8Terminators(needle);
-	const suffix = source.slice(start);
-	const normalizedParts: string[] = [];
-	const rawBoundaries: number[] = [start];
-	let rawCursor = 0;
-	OSC8_ST_PREFIX_REGEX.lastIndex = 0;
-	for (let match = OSC8_ST_PREFIX_REGEX.exec(suffix); match; match = OSC8_ST_PREFIX_REGEX.exec(suffix)) {
-		const unchanged = suffix.slice(rawCursor, match.index);
-		normalizedParts.push(unchanged);
-		for (let index = 0; index < unchanged.length; index++) rawBoundaries.push(start + rawCursor + index + 1);
-		const prefix = match[1]!;
-		normalizedParts.push(prefix, "\x07");
-		for (let index = 0; index < prefix.length; index++) rawBoundaries.push(start + match.index + index + 1);
-		rawBoundaries.push(start + match.index + match[0].length);
-		rawCursor = match.index + match[0].length;
+	if (!normalizedNeedle.length) return { start, end: start };
+	// Stream KMP over normalized characters, retaining only the current
+	// needle-sized raw offset window rather than copying the document suffix.
+	const fallback = new Uint32Array(normalizedNeedle.length);
+	for (let index = 1, matched = 0; index < normalizedNeedle.length; index++) {
+		while (matched && normalizedNeedle[index] !== normalizedNeedle[matched]) matched = fallback[matched - 1]!;
+		if (normalizedNeedle[index] === normalizedNeedle[matched]) matched++;
+		fallback[index] = matched;
 	}
-	const tail = suffix.slice(rawCursor);
-	normalizedParts.push(tail);
-	for (let index = 0; index < tail.length; index++) rawBoundaries.push(start + rawCursor + index + 1);
-	const normalizedSource = normalizedParts.join("");
-	const normalizedStart = normalizedSource.indexOf(normalizedNeedle);
-	if (normalizedStart < 0) return undefined;
-	return {
-		start: rawBoundaries[normalizedStart]!,
-		end: rawBoundaries[normalizedStart + normalizedNeedle.length]!,
-	};
+	const rawStarts = new Array<number>(normalizedNeedle.length);
+	// Normalization consumes at most two raw code units per emitted unit.
+	const end = exactStart < 0 ? source.length : Math.min(source.length, exactStart + normalizedNeedle.length * 2);
+	let oscBodyStart = -1;
+	let matched = 0;
+	let emitted = 0;
+	for (let raw = start; raw < end; raw++) {
+		const rawStart = raw;
+		let character = source[raw]!;
+		if (oscBodyStart >= 0 && raw >= oscBodyStart && (character === "\x07" || character === "\x1b")) {
+			if (character === "\x1b" && source[raw + 1] === "\\") {
+				character = "\x07";
+				raw++;
+			}
+			oscBodyStart = -1;
+		}
+		if (character === "\x1b" && source.startsWith("\x1b]8;", raw)) oscBodyStart = raw + 4;
+		rawStarts[emitted % normalizedNeedle.length] = rawStart;
+		while (matched && character !== normalizedNeedle[matched]) matched = fallback[matched - 1]!;
+		if (character === normalizedNeedle[matched]) matched++;
+		emitted++;
+		if (matched === normalizedNeedle.length) {
+			return { start: rawStarts[(emitted - matched) % normalizedNeedle.length]!, end: raw + 1 };
+		}
+	}
+	return undefined;
 }
 
 /** The longest suffix of `text` a future append could still complete into a
@@ -2966,7 +2977,7 @@ export class Markdown implements Component {
 		if (!hasStTerminatedOsc) {
 			return exactStart >= 0 ? { start: exactStart, end: exactStart + canonicalRaw.length } : undefined;
 		}
-		const normalizedSpan = findNormalizedOsc8Span(expandedSourceText, canonicalRaw, start);
+		const normalizedSpan = findNormalizedOsc8Span(expandedSourceText, canonicalRaw, start, exactStart);
 		if (normalizedSpan && (exactStart < 0 || normalizedSpan.start < exactStart)) return normalizedSpan;
 		return exactStart >= 0 ? { start: exactStart, end: exactStart + canonicalRaw.length } : normalizedSpan;
 	}

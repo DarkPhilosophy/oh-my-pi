@@ -3684,6 +3684,33 @@ describe("framed code review follow-ups", () => {
 		}
 	});
 
+	it("keeps raw copy boundaries after repeated normalized OSC leaves", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const bodies = Array.from({ length: 64 }, (_, index) => `right_${index}`);
+			const source = bodies
+				.map(
+					body =>
+						`<!-- \x1b]8;;https://example.com\x1b\\\n\`\`\`js\nwrong\n\`\`\`\n-->\n- \`\`\`js\n  ${body}\n  \`\`\`\n\n`,
+				)
+				.join("");
+			new Markdown(source, 0, 0, {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: body => {
+					captured.push(body);
+					return undefined;
+				},
+			}).render(80);
+			expect(captured).toEqual(bodies);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
 	it("advances copy recovery past Mermaid code without a copy target", () => {
 		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
 		const originalHyperlinks = terminalState.hyperlinks;
