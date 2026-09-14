@@ -1,11 +1,16 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs";
+import { ptree } from "@oh-my-pi/pi-utils";
 import {
 	copyDesktopPath,
 	copyUrlTarget,
 	createCopyDesktopEntry,
+	isCopyUrlHandlerRegistered,
+	registerCopyUrlHandler,
 	supportsCopyUrlHandler,
 } from "@oh-my-pi/pi-coding-agent/utils/copy-store";
 
+afterEach(() => vi.restoreAllMocks());
 describe("copy URL handler", () => {
 	it("does not advertise a client-local copy link in remote or unsupported sessions", () => {
 		expect(supportsCopyUrlHandler("linux", { SSH_CONNECTION: "client server" }, "/usr/bin/xdg-mime")).toBe(false);
@@ -49,4 +54,28 @@ describe("copy URL handler", () => {
 		const entry = createCopyDesktopEntry('/opt/Oh My $Pi/omp"dev');
 		expect(entry).toContain('Exec="/opt/Oh My \\$Pi/omp\\"dev" copy %u');
 	});
+
+	it.skipIf(process.platform !== "linux")(
+		"fails closed and reaps timed-out query and registration helpers",
+		async () => {
+			vi.spyOn(Bun, "which").mockReturnValue("/test/xdg-mime");
+			vi.spyOn(fs, "existsSync").mockReturnValue(false);
+			vi.spyOn(fs.promises, "mkdir").mockResolvedValue(undefined);
+			vi.spyOn(Bun, "write").mockResolvedValue(0);
+			const exec = ptree.exec;
+			let timeouts = 0;
+			vi.spyOn(ptree, "exec").mockImplementation(async (_command, options) => {
+				try {
+					return await exec([process.execPath, "-e", "await Bun.sleep(60_000)"], options);
+				} catch (error) {
+					timeouts++;
+					throw error;
+				}
+			});
+			expect(await isCopyUrlHandlerRegistered()).toBe(false);
+			expect((await registerCopyUrlHandler()).ok).toBe(false);
+			expect(timeouts).toBe(2);
+		},
+		10_000,
+	);
 });
