@@ -264,7 +264,7 @@ export interface AutocompleteProvider {
 		cursorLine: number,
 		cursorCol: number,
 		signal?: AbortSignal,
-	): Promise<{ items: AutocompleteItem[]; prefix: string } | null>;
+	): Promise<{ items: AutocompleteItem[]; prefix: string; commandArgument?: boolean } | null>;
 
 	/** Whether a Tab press should attempt file completion at the cursor. */
 	shouldTriggerFileCompletion?(lines: string[], cursorLine: number, cursorCol: number): boolean;
@@ -1140,10 +1140,15 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		cursorLine: number,
 		cursorCol: number,
 		signal?: AbortSignal,
-	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
+	): Promise<{ items: AutocompleteItem[]; prefix: string; commandArgument?: boolean } | null> {
 		if (signal?.aborted) return null;
 		const currentLine = lines[cursorLine] || "";
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
+		const commandName = /^\s*\/(\S+) /.exec(textBeforeCursor)?.[1];
+		const commandArgument =
+			!lines.slice(0, cursorLine).some(line => line.trim() !== "") &&
+			commandName !== undefined &&
+			this.#commands.some(command => commandMatchesNameOrAlias(command, commandName));
 
 		// Don't trigger if we're typing a slash command at the start of the line
 		if (textBeforeCursor.trim().startsWith("/") && !textBeforeCursor.trim().includes(" ")) {
@@ -1159,6 +1164,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			return {
 				items: suggestions,
 				prefix: pathMatch,
+				...(commandArgument ? { commandArgument: true } : {}),
 			};
 		}
 

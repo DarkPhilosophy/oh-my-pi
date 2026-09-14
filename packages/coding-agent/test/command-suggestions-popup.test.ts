@@ -169,10 +169,15 @@ it.each([
 	},
 );
 
-it.each([false, true])("keeps fallback file arguments above the editor (empty provider=%s)", async emptyProvider => {
+it.each([
+	{ emptyProvider: false, force: false },
+	{ emptyProvider: true, force: false },
+	{ emptyProvider: false, force: true },
+])("keeps fallback file arguments above the editor (%j)", async ({ emptyProvider, force }) => {
 	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "popup-path-"));
 	try {
 		await fs.writeFile(path.join(directory, "candidate.txt"), "");
+		if (force) await fs.writeFile(path.join(directory, "candidate2.txt"), "");
 		const terminal = new VirtualTerminal(80, 18);
 		composer = new Composer({ preferences: { quiet: true }, terminal });
 		const transcript = new TranscriptContainer();
@@ -197,6 +202,7 @@ it.each([false, true])("keeps fallback file arguments above the editor (empty pr
 		composer.start();
 		composer.ui.setFocus(composer.editor);
 		composer.editor.handleInput(`/review ${directory}/cand`);
+		if (force) composer.editor.handleInput("\t");
 		await Bun.sleep(200);
 		composer.ui.requestRender();
 		await terminal.waitForRender();
