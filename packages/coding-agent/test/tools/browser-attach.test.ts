@@ -284,10 +284,10 @@ describe("pickElectronTarget", () => {
 	});
 
 	test.skipIf(process.platform !== "linux")(
-		"reuses a collapsed title with separate switch values and a spaced profile",
+		"reuses separate switch values without splitting flag-like profile segments",
 		async () => {
 			const cdp = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("{}") });
-			const profile = path.join(os.tmpdir(), `omp spaced profile ${crypto.randomUUID()}`);
+			const profile = path.join(os.tmpdir(), `omp spaced --archive/profile ${crypto.randomUUID()}`);
 			const existing = await spawnDisposableExecutable([]);
 			const originalArgs = Process.prototype.args;
 			const spy = vi.spyOn(Process.prototype, "args").mockImplementation(function (this: Process) {
