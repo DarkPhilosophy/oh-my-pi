@@ -245,6 +245,103 @@ describe("advisor config editor warnings and synthetic default row", () => {
 		expect(Bun.stripANSI(overlay.render(100).join("\n"))).toContain("Type a name");
 	});
 
+	it("does not activate a hidden field through the editor overflow marker", async () => {
+		const overlay = new AdvisorConfigOverlayComponent(
+			{ terminal: { rows: 14 } } as unknown as TUI,
+			{ modelRegistry: {} as ModelRegistry, settings, scopedModels: [], availableToolNames: [] },
+			"project",
+			{ advisors: [{ name: "Reviewer" }], warnings: Array.from({ length: 5 }, (_, i) => `Warning ${i + 1}`) },
+			{
+				loadDoc: async () => ({ advisors: [] }),
+				save: async () => {},
+				close: () => {},
+				requestRender: () => {},
+				notify: () => {},
+			},
+		);
+		await Bun.sleep(0);
+		overlay.handleInput("\x1b[C");
+		const rows = overlay.render(100).map(Bun.stripANSI);
+		const markerRow = rows.findIndex(row => row.includes("more") || row.includes("(end)"));
+		expect(markerRow).toBeGreaterThan(0);
+
+		overlay.handleInput(`\x1b[<0;60;${markerRow + 1}M`);
+
+		expect(Bun.stripANSI(overlay.render(100).join("\n"))).not.toContain("Type a name");
+	});
+
+	it.each(["name", "instructions"] as const)("keeps an unsubmitted %s draft when the roster is clicked", mode => {
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			{ modelRegistry: {} as ModelRegistry, settings, scopedModels: [], availableToolNames: [] },
+			"project",
+			{ advisors: [{ name: "First" }, { name: "Second" }] },
+			{
+				loadDoc: async () => ({ advisors: [] }),
+				save: async () => {},
+				close: () => {},
+				requestRender: () => {},
+				notify: () => {},
+			},
+		);
+		overlay.handleInput("\x1b[C");
+		const fieldIndex = mode === "name" ? 1 : 4;
+		for (let i = 0; i < fieldIndex; i++) overlay.handleInput("\x1b[B");
+		overlay.handleInput("\r");
+		if (mode === "name") overlay.handleInput(" Draft");
+		else overlay.pasteText("Draft instructions");
+
+		const rows = overlay.render(100).map(Bun.stripANSI);
+		const secondRow = rows.findIndex(row => row.slice(0, 35).includes("Second"));
+		expect(secondRow).toBeGreaterThan(0);
+		overlay.handleInput(`\x1b[<0;5;${secondRow + 1}M`);
+
+		const afterClick = Bun.stripANSI(overlay.render(100).join("\n"));
+		expect(afterClick).toContain(mode === "name" ? "Type a name" : "Instructions — First");
+		overlay.handleInput(mode === "name" ? "\r" : "\x11");
+		const afterSave = Bun.stripANSI(overlay.render(100).join("\n"));
+		expect(afterSave).toContain(mode === "name" ? "First Draft" : "Draft instructions");
+	});
+
+	it("scrolls the outer editor when warnings clip the nested tools editor", async () => {
+		let saved: WatchdogConfigDoc | undefined;
+		const overlay = new AdvisorConfigOverlayComponent(
+			{ terminal: { rows: 14 } } as unknown as TUI,
+			{ modelRegistry: {} as ModelRegistry, settings, scopedModels: [], availableToolNames: ["read", "bash"] },
+			"project",
+			{
+				advisors: [{ name: "Reviewer", tools: [] }],
+				warnings: Array.from({ length: 8 }, (_, i) => `Warning ${i + 1}`),
+			},
+			{
+				loadDoc: async () => ({ advisors: [] }),
+				save: async (_scope, doc) => {
+					saved = structuredClone(doc);
+				},
+				close: () => {},
+				requestRender: () => {},
+				notify: () => {},
+			},
+		);
+		await Bun.sleep(0);
+		overlay.handleInput("\x1b[C");
+		for (let i = 0; i < 3; i++) overlay.handleInput("\x1b[B");
+		overlay.handleInput("\r");
+		const beforeWheel = Bun.stripANSI(overlay.render(100).join("\n"));
+		expect(beforeWheel).not.toContain("[ ] read");
+
+		overlay.handleInput("\x1b[<65;60;5M");
+		const afterWheel = Bun.stripANSI(overlay.render(100).join("\n"));
+		expect(afterWheel).not.toBe(beforeWheel);
+		overlay.handleInput("\r");
+		overlay.handleInput("\x1b[D");
+		for (let i = 0; i < 3; i++) overlay.handleInput("\x1b[B");
+		overlay.handleInput("\r");
+		await Promise.resolve();
+
+		expect(saved?.advisors[0].tools).toEqual(["read"]);
+	});
+
 	it("surfaces sanitized warnings when the background scope finishes loading", async () => {
 		const warnings: string[] = [];
 		let pendingLoad: Promise<WatchdogConfigDoc> | undefined;

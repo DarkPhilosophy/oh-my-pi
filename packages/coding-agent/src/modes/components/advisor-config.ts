@@ -163,6 +163,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 	#fieldCursor: string | undefined;
 	#editorScroll = 0;
 	#editorContentOffset = 2;
+	#editorWindowRows = 0;
+	#editorHasOverflow = false;
 
 	// Frame geometry from the last render (frame paints from screen row 0).
 	#sidebarWidth = 0;
@@ -326,11 +328,13 @@ export class AdvisorConfigOverlayComponent implements Component {
 	}
 
 	#editorWindow(bodyWidth: number, rows: number): string[] {
+		this.#editorWindowRows = rows;
 		const lines = this.#editorContent(bodyWidth);
 		const maxScroll = Math.max(0, lines.length - rows);
 		this.#editorScroll = Math.min(this.#editorScroll, maxScroll);
 		const window = lines.slice(this.#editorScroll, this.#editorScroll + rows);
-		if (lines.length > rows) {
+		this.#editorHasOverflow = lines.length > rows;
+		if (this.#editorHasOverflow) {
 			const marker =
 				this.#editorScroll + rows < lines.length
 					? theme.fg("dim", `  ↓ ${lines.length - this.#editorScroll - rows} more`)
@@ -480,17 +484,26 @@ export class AdvisorConfigOverlayComponent implements Component {
 	#routeMouseEvent(event: SgrMouseEvent): boolean {
 		if (event.col >= this.#dividerCol) {
 			const editorRow = event.row - 1 - this.#editorContentOffset + this.#editorScroll;
+			const markerRow = this.#editorWindowRows;
+			const inEditorWindow = event.row >= 1 && event.row <= markerRow;
+			const onOverflowMarker = this.#editorHasOverflow && event.row === markerRow;
 			if (event.wheel !== null) {
 				const el = this.#editor as Partial<MouseRoutable>;
-				if (this.#mode !== "fields" && typeof el.routeMouse === "function") {
-					el.routeMouse(event, editorRow, event.col - this.#dividerCol - 1);
+				const nestedVisible =
+					this.#mode !== "fields" &&
+					typeof el.routeMouse === "function" &&
+					inEditorWindow &&
+					event.row > this.#editorContentOffset - this.#editorScroll &&
+					event.row < markerRow;
+				if (nestedVisible) {
+					el.routeMouse?.(event, editorRow, event.col - this.#dividerCol - 1);
 				} else {
 					this.#editorScroll = Math.max(0, this.#editorScroll + event.wheel);
 				}
 				this.#cb.requestRender();
 				return true;
 			}
-			if (editorRow < 0) return true;
+			if (!inEditorWindow || onOverflowMarker || editorRow < 0) return true;
 			if (event.leftClick) {
 				if (this.#focus !== "editor") this.#showFields();
 				this.#focusEditor();
@@ -503,6 +516,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const inUser = event.row >= this.#userRowStart && event.row < this.#userRowStart + this.#userRows;
 		const scope: AdvisorConfigScope | undefined = inProject ? "project" : inUser ? "user" : undefined;
 		if (!scope) return false;
+		if (event.leftClick && this.#focus === "editor" && (this.#mode === "name" || this.#mode === "instructions"))
+			return true;
 		if (event.leftClick && this.#focus !== scope) {
 			this.#applyPendingTools?.();
 			this.#focus = scope;
@@ -512,7 +527,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#scopes[scope].list.routeMouse(event, event.row - start, event.col - 2);
 		return true;
 	}
-
 	// ───────────────────────────── rosters ───────────────────────────
 
 	#selected(): { scope: AdvisorConfigScope; index: number; advisor: AdvisorConfig } | undefined {
