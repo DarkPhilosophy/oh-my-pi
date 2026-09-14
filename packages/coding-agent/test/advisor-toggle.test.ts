@@ -466,6 +466,9 @@ describe("AgentSession advisor toggle", () => {
 			expect(live.formatAdvisorStatus()).toBe('Advisor "default" is paused.');
 			expect(unrelated.isAdvisorActive()).toBe(true);
 			expect(live.setAdvisorEnabled(true)).toBe(false);
+			expect(live.isAdvisorSuppressedByParent()).toBe(true);
+			expect(nested.isAdvisorSuppressedByParent()).toBe(true);
+			expect(unrelated.isAdvisorSuppressedByParent()).toBe(false);
 			const fresh = makeChild(session);
 			expect(fresh.isAdvisorActive()).toBe(false);
 			await live.dispose();
@@ -476,6 +479,7 @@ describe("AgentSession advisor toggle", () => {
 			explicitlyOff.setAdvisorEnabled(false);
 			session.setAdvisorEnabled(true);
 			expect(fresh.isAdvisorActive()).toBe(true);
+			expect(fresh.isAdvisorSuppressedByParent()).toBe(false);
 			expect(restored.isAdvisorActive()).toBe(true);
 			expect(nested.isAdvisorActive()).toBe(true);
 			expect(live.isAdvisorActive()).toBe(false);

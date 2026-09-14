@@ -42,10 +42,7 @@ describe("advisor config editor warnings and synthetic default row", () => {
 	};
 
 	it("serializes project and global saves, then permits the blocked scope after completion", async () => {
-		let finishFirst!: () => void;
-		const firstSave = new Promise<void>(resolve => {
-			finishFirst = resolve;
-		});
+		const firstSave = Promise.withResolvers<void>();
 		const saves: string[] = [];
 		const overlay = new AdvisorConfigOverlayComponent(
 			{} as TUI,
@@ -56,7 +53,7 @@ describe("advisor config editor warnings and synthetic default row", () => {
 				loadDoc: async () => ({ advisors: [] }),
 				save: async scope => {
 					saves.push(scope);
-					if (saves.length === 1) await firstSave;
+					if (saves.length === 1) await firstSave.promise;
 				},
 				close: () => {},
 				requestRender: () => {},
@@ -69,7 +66,7 @@ describe("advisor config editor warnings and synthetic default row", () => {
 		clickSave(overlay, "user");
 		expect(saves).toEqual(["project"]);
 
-		finishFirst();
+		firstSave.resolve();
 		await Promise.resolve();
 		await Promise.resolve();
 		clickSave(overlay, "user");
@@ -241,6 +238,18 @@ describe("advisor config editor warnings and synthetic default row", () => {
 		const rows = overlay.render(100).map(Bun.stripANSI);
 		const nameRow = rows.findIndex(row => row.includes("Name") && row.includes("Reviewer"));
 		expect(nameRow).toBeGreaterThan(3);
+		overlay.handleInput(`\x1b[<0;60;${nameRow + 1}M`);
+		expect(Bun.stripANSI(overlay.render(100).join("\n"))).toContain("Type a name");
+	});
+
+	it("recomputes the clicked field after restoring a scrolled editor from roster focus", async () => {
+		const overlay = buildOverlay({ advisors: [{ name: "Reviewer" }] }, () => {});
+		await Bun.sleep(0);
+		overlay.handleInput("\x1b[C");
+		const original = overlay.render(100).map(Bun.stripANSI);
+		const nameRow = original.findIndex(row => row.includes("Name") && row.includes("Reviewer"));
+		overlay.handleInput("\x1b[<65;60;5M");
+		overlay.handleInput("\x1b[D");
 		overlay.handleInput(`\x1b[<0;60;${nameRow + 1}M`);
 		expect(Bun.stripANSI(overlay.render(100).join("\n"))).toContain("Type a name");
 	});

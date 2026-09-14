@@ -200,6 +200,10 @@ export class AdvisorScope {
 		return this.#suppressed || (this.parent?.suppressed ?? false);
 	}
 
+	get suppressedByParent(): boolean {
+		return !this.#suppressed && (this.parent?.suppressed ?? false);
+	}
+
 	setSuppressed(suppressed: boolean): boolean {
 		if (this.#suppressed === suppressed) return false;
 		this.#suppressed = suppressed;
@@ -2009,6 +2013,11 @@ export class SessionAdvisors {
 	 */
 	isAdvisorEnabled(): boolean {
 		return this.#advisorEnabled;
+	}
+
+	/** Whether an ancestor scope vetoes advisor activation. */
+	isAdvisorSuppressedByParent(): boolean {
+		return this.scope.suppressedByParent;
 	}
 
 	/**

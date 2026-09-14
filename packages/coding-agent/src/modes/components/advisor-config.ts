@@ -164,6 +164,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 	#editorScroll = 0;
 	#editorContentOffset = 2;
 	#editorWindowRows = 0;
+	#editorWindowWidth = 0;
 	#editorHasOverflow = false;
 
 	// Frame geometry from the last render (frame paints from screen row 0).
@@ -328,6 +329,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 	}
 
 	#editorWindow(bodyWidth: number, rows: number): string[] {
+		this.#editorWindowWidth = bodyWidth;
 		this.#editorWindowRows = rows;
 		const lines = this.#editorContent(bodyWidth);
 		const maxScroll = Math.max(0, lines.length - rows);
@@ -483,7 +485,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 
 	#routeMouseEvent(event: SgrMouseEvent): boolean {
 		if (event.col >= this.#dividerCol) {
-			const editorRow = event.row - 1 - this.#editorContentOffset + this.#editorScroll;
+			let editorRow = event.row - 1 - this.#editorContentOffset + this.#editorScroll;
 			const markerRow = this.#editorWindowRows;
 			const inEditorWindow = event.row >= 1 && event.row <= markerRow;
 			const onOverflowMarker = this.#editorHasOverflow && event.row === markerRow;
@@ -505,7 +507,11 @@ export class AdvisorConfigOverlayComponent implements Component {
 			}
 			if (!inEditorWindow || onOverflowMarker || editorRow < 0) return true;
 			if (event.leftClick) {
-				if (this.#focus !== "editor") this.#showFields();
+				if (this.#focus !== "editor") {
+					this.#showFields();
+					this.#editorWindow(this.#editorWindowWidth, this.#editorWindowRows);
+					editorRow = event.row - 1 - this.#editorContentOffset + this.#editorScroll;
+				}
 				this.#focusEditor();
 			}
 			const el = this.#editor as Partial<MouseRoutable>;
