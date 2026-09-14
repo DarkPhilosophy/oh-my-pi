@@ -130,7 +130,7 @@ export async function waitForCdp(cdpUrl: string, timeoutMs: number, signal?: Abo
  */
 function findCdpPortInArgs(args: string[]): number | null {
 	for (const arg of args) {
-		const m = /^--remote-debugging-port=(\d+)$/.exec(arg);
+		const m = /^--remote-debugging-port(?:=| +)(\d+)$/.exec(arg);
 		if (m) {
 			const port = Number.parseInt(m[1]!, 10);
 			if (Number.isFinite(port) && port > 0) return port;
@@ -153,6 +153,10 @@ function findUserDataDirInArgs(args: string[] | undefined): string | null {
 		const arg = args[index]!;
 		if (arg.startsWith(inlinePrefix)) {
 			result = arg.length > inlinePrefix.length ? arg.slice(inlinePrefix.length) : null;
+			continue;
+		}
+		if (arg.startsWith("--user-data-dir ")) {
+			result = arg.slice("--user-data-dir ".length).trimStart() || null;
 			continue;
 		}
 		if (arg !== "--user-data-dir") continue;
