@@ -12,7 +12,7 @@ export function formatTaskResultPreview(text: string, includeStatus = true): str
 	if (text.trimStart().startsWith("<task-result ")) {
 		const attributes = /^\s*<task-result\b([^>]*)>/.exec(text)?.[1] ?? "";
 		status = /\bstatus="([^"]+)"/.exec(attributes)?.[1];
-		const output = /<(output|preview)(\s[^>]*)?>\n?([\s\S]*?)\n?<\/\1>/.exec(text);
+		const output = /<(output|preview)(\s[^>]*)?>\n?([\s\S]*)\n?<\/\1>/.exec(text);
 		if (output) {
 			body = output[3].trim();
 			if (output[1] === "preview") fullOutput = /\bfull-output="([^"]+)"/.exec(output[2] ?? "")?.[1];
