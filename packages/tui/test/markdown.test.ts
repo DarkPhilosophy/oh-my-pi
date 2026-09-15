@@ -23,6 +23,34 @@ function getCellItalic(terminal: VirtualTerminal, row: number, col: number): boo
 	return terminal.getCellItalic(row, col);
 }
 
+describe("code block completion grammar", () => {
+	it.each(["\u00a0```", "```\u00a0"])("keeps a non-ASCII fence-shaped code row unfinished: %s", closing => {
+		const captured: string[] = [];
+		const theme = {
+			...defaultMarkdownTheme,
+			copyChip: "copy",
+			copyChipTarget: (code: string) => {
+				captured.push(code);
+				return "omp-copy:test";
+			},
+		};
+		const markdown = new Markdown(`\`\`\`text\nbody\n${closing}\nlast code row`, 0, 0, theme);
+		const rows = markdown.render(60).map(stripVTControlCharacters).join("\n");
+		expect(rows).toContain("last code row");
+		expect(rows).toContain("```text");
+		expect(captured).toEqual([]);
+	});
+
+	it("renders indented list code without synthetic fence delimiters", () => {
+		const rows = new Markdown("- item\n\n      indented code\n", 0, 0, defaultMarkdownTheme)
+			.render(60)
+			.map(stripVTControlCharacters)
+			.join("\n");
+		expect(rows).toContain("indented code");
+		expect(rows).not.toContain("```");
+	});
+});
+
 describe("renderInlineMarkdown", () => {
 	it("preserves ST-terminated OSC 8 links before inline lexing", () => {
 		const st = "\x1b\\";
@@ -934,6 +962,25 @@ console.log(answer);`;
 				// Plain footer shape is unchanged: one bottom rule ending in the chip.
 				const plain = stripVTControlCharacters(footer).trimEnd();
 				expect(plain).toMatch(/^\+-+\[copy\]-\+$/);
+			} finally {
+				terminalState.hyperlinks = originalHyperlinks;
+			}
+		});
+		it("keeps the copy chip plain when its target contains only OSC terminators", () => {
+			const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+			const originalHyperlinks = terminalState.hyperlinks;
+			try {
+				terminalState.hyperlinks = true;
+				for (const target of ["\x1b", "\x07", "\x1b\x07"]) {
+					const theme = {
+						...defaultMarkdownTheme,
+						copyChip: "copy",
+						copyChipTarget: () => target,
+					};
+					const footer = new Markdown("```js\nconst x = 1;\n```", 0, 0, theme).render(40).at(-1) ?? "";
+					expect(footer).not.toContain("\x1b]8;;");
+					expect(stripVTControlCharacters(footer)).toContain("[copy]");
+				}
 			} finally {
 				terminalState.hyperlinks = originalHyperlinks;
 			}
@@ -2166,6 +2213,35 @@ describe("Module-level LRU render cache", () => {
 		expect(l2Markdown.render(width)).toBe(first);
 	});
 
+	it("promotes an L2 hit to L1 when copy-target availability changes", () => {
+		clearRenderCache();
+		let headingCalls = 0;
+		const theme = {
+			...defaultMarkdownTheme,
+			copyChip: "copy",
+			copyChipTarget: undefined as ((body: string) => string | undefined) | undefined,
+			heading: (...args: Parameters<typeof defaultMarkdownTheme.heading>) => {
+				headingCalls++;
+				return defaultMarkdownTheme.heading(...args);
+			},
+		};
+		const text = "Cache availability sentinel\n\n```js\nconst x = 1;\n```";
+		const width = 80;
+
+		new Markdown(text, 0, 0, theme).render(width);
+		const markdown = new Markdown(text, 0, 0, theme);
+		markdown.render(width);
+
+		theme.copyChipTarget = () => "omp-copy:cached";
+		markdown.render(width);
+
+		theme.copyChipTarget = undefined;
+		markdown.render(width);
+		const afterL2 = headingCalls;
+		markdown.render(width);
+		expect(headingCalls, "unchanged render after the L2 hit must take L1").toBe(afterL2);
+	});
+
 	it("keeps an open non-diff fence plain during transient renders without a highlight stream", () => {
 		clearRenderCache();
 		let highlightCallCount = 0;
@@ -3197,6 +3273,100 @@ describe("framed code review follow-ups", () => {
 		}
 	});
 
+	it("preserves raw tabs in a quoted fence inside a two-digit ordered list", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("10. item\n    > ```make\n    > \tall\n    > ```", 0, 0, theme).render(80);
+			expect(captured).toBe("\tall");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("preserves raw tabs in a quoted fence inside a child list continuation", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown("10. item\n    - child\n      > ```make\n      > \tall\n      > ```", 0, 0, theme).render(80);
+			expect(captured).toBe("\tall");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("does not recover an indented-code quote as a child-list fence", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let captured: string | undefined;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured = body;
+					return undefined;
+				},
+			};
+			new Markdown(
+				"10. item\n    - child\n          > ```make\n          > \tall\n          > ```",
+				0,
+				0,
+				theme,
+			).render(80);
+			expect(captured).toBeUndefined();
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("refreshes a streaming copy footer when target readiness changes without new text", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		let ready = false;
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				get copyChipTarget() {
+					return ready ? () => "omp-copy:ready" : undefined;
+				},
+			};
+			const markdown = new Markdown("Intro\n\n```js\nconst value = 1;\n```\n\nTail", 0, 0, theme);
+			markdown.transientRenderCache = true;
+			const plainFooter = markdown.render(80).find(line => stripVTControlCharacters(line).includes("[copy]")) ?? "";
+			expect(plainFooter).not.toContain("\x1b]8;;");
+
+			ready = true;
+			const linkedFooter = markdown.render(80).find(line => stripVTControlCharacters(line).includes("[copy]")) ?? "";
+			expect(linkedFooter).toContain("\x1b]8;;omp-copy:ready");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
 	it("keeps nested list frames on the containing width budget", () => {
 		const source = "- outer\n  - inner\n    ```js\n    const value = 1;\n    ```";
 		const rendered = new Markdown(source, 0, 0, defaultMarkdownTheme).render(24);
@@ -3274,6 +3444,37 @@ describe("framed code review follow-ups", () => {
 			markdown.setText("prose\n\n```make\n\tall\n```\n\n");
 			markdown.render(60);
 			expect(captured).toEqual(["\tall"]);
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("recovers raw tabs as the stable prefix grows across multiple fences", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const theme = {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: (body: string) => {
+					captured.push(body);
+					return undefined;
+				},
+			};
+			const markdown = new Markdown("intro\n\n", 0, 0, theme);
+			markdown.transientRenderCache = true;
+			markdown.render(60);
+
+			markdown.setText("intro\n\n```make\n\tfirst\n```\n\n");
+			markdown.render(60);
+			expect(captured).toEqual(["\tfirst"]);
+
+			captured.length = 0;
+			markdown.setText("intro\n\n```make\n\tfirst\n```\n\n```sh\n\tsecond\n```\n\n");
+			markdown.render(60);
+			expect(captured).toEqual(["\tfirst", "\tsecond"]);
 		} finally {
 			terminalState.hyperlinks = originalHyperlinks;
 		}
@@ -3478,6 +3679,33 @@ describe("framed code review follow-ups", () => {
 			const source = `<!-- \x1b]8;;https://example.com${st}\n\`\`\`js\nwrong\n\`\`\`\n-->\n- \`\`\`js\n  right\n  \`\`\``;
 			new Markdown(source, 0, 0, theme).render(80);
 			expect(captured).toBe("right");
+		} finally {
+			terminalState.hyperlinks = originalHyperlinks;
+		}
+	});
+
+	it("keeps raw copy boundaries after repeated normalized OSC leaves", () => {
+		const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+		const originalHyperlinks = terminalState.hyperlinks;
+		const captured: string[] = [];
+		try {
+			terminalState.hyperlinks = true;
+			const bodies = Array.from({ length: 64 }, (_, index) => `right_${index}`);
+			const source = bodies
+				.map(
+					body =>
+						`<!-- \x1b]8;;https://example.com\x1b\\\n\`\`\`js\nwrong\n\`\`\`\n-->\n- \`\`\`js\n  ${body}\n  \`\`\`\n\n`,
+				)
+				.join("");
+			new Markdown(source, 0, 0, {
+				...defaultMarkdownTheme,
+				copyChip: "copy",
+				copyChipTarget: body => {
+					captured.push(body);
+					return undefined;
+				},
+			}).render(80);
+			expect(captured).toEqual(bodies);
 		} finally {
 			terminalState.hyperlinks = originalHyperlinks;
 		}

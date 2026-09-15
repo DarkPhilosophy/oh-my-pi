@@ -1103,6 +1103,28 @@ describe("ModelHub", () => {
 				expect(onFallbackChainChange).not.toHaveBeenCalled();
 			},
 		);
+		test("t on a fallback entry sets an explicit effort suffix", () => {
+			const model = getBundledModel("openai", "gpt-5.5");
+			if (!model) throw new Error("Expected bundled model openai/gpt-5.5");
+			const selector = `${model.provider}/${model.id}`;
+			const settings = Settings.isolated({ "retry.fallbackChains": { default: [selector] } });
+			const { hub, onFallbackChainChange } = createHub({ models: [model], scoped: true, settings });
+
+			enterRolesView(hub);
+			hub.handleInput(DOWN); // default → its fallback entry
+			expect(footerLine(hub.render(220))).toContain("t thinking");
+
+			hub.handleInput("t");
+			const strip = footerLine(hub.render(220));
+			expect(strip).toContain("inherit");
+			expect(strip).toContain("off");
+			expect(strip).not.toContain("auto");
+
+			hub.handleInput("\x1b[C"); // inherit → off
+			hub.handleInput("\n");
+			expect(onFallbackChainChange).toHaveBeenLastCalledWith("default", [`${selector}:off`]);
+			expect(normalize(hub.render(220))).toContain(`↳ ${selector}:off`);
+		});
 
 		test("t on a suffixed fallback entry clears back to inherit", () => {
 			const model = getBundledModel("openai", "gpt-5.5");
@@ -1122,8 +1144,25 @@ describe("ModelHub", () => {
 			expect(normalize(hub.render(220))).not.toContain(`${selector}:off`);
 		});
 
-		test("t on a routed+suffixed entry clears back to the bare route", () => {
-			const model = makeModel("openrouter", "z-ai/glm-4.7");
+		test.each(["z-ai/glm-4.7", "acme/router:high"])("t preserves routed fallback identity %s", id => {
+			const model = makeModel("openrouter", id);
+			const routed = `${model.provider}/${model.id}@fireworks`;
+			const settings = Settings.isolated({ "retry.fallbackChains": { default: [routed] } });
+			const { hub, onFallbackChainChange } = createHub({ models: [model], scoped: true, settings });
+
+			enterRolesView(hub);
+			hub.handleInput(DOWN); // default → its fallback entry
+			expect(normalize(hub.render(220))).toContain(`↳ ${routed}`);
+
+			hub.handleInput("t");
+			hub.handleInput("\x1b[C"); // inherit → off
+			hub.handleInput("\n");
+			expect(onFallbackChainChange).toHaveBeenLastCalledWith("default", [`${routed}:off`]);
+			expect(normalize(hub.render(220))).toContain(`↳ ${routed}:off`);
+		});
+
+		test.each(["z-ai/glm-4.7", "acme/router:high"])("t clears effort without changing routed identity %s", id => {
+			const model = makeModel("openrouter", id);
 			const routed = `${model.provider}/${model.id}@fireworks`;
 			const settings = Settings.isolated({ "retry.fallbackChains": { default: [`${routed}:off`] } });
 			const { hub, onFallbackChainChange } = createHub({ models: [model], scoped: true, settings });
@@ -1137,8 +1176,23 @@ describe("ModelHub", () => {
 			expect(normalize(hub.render(220))).not.toContain(`${routed}:off`);
 		});
 
-		test("t on a literal @-suffixed id does not strip it as routing", () => {
-			const model = makeModel("test", "model@default");
+		test("wildcard fallback rows hide the thinking hint and ignore t", () => {
+			const a = makeModel("test", "model-a");
+			const settings = Settings.isolated({ "retry.fallbackChains": { default: ["test/*"] } });
+			const { hub, onFallbackChainChange } = createHub({ models: [a], scoped: true, settings });
+
+			enterRolesView(hub);
+			hub.handleInput(DOWN); // default → its wildcard entry
+			expect(normalize(hub.render(220))).toContain("↳ test/*");
+			expect(footerLine(hub.render(220))).not.toContain("t thinking");
+
+			hub.handleInput("t"); // inert: no strip, no chain write
+			expect(onFallbackChainChange).not.toHaveBeenCalled();
+			expect(footerLine(hub.render(220))).not.toContain("inherit");
+		});
+
+		test.each(["model@default", "nanogpt/coding-router:high"])("t preserves literal model ID %s", id => {
+			const model = makeModel("test", id);
 			const selector = `${model.provider}/${model.id}`;
 			const settings = Settings.isolated({ "retry.fallbackChains": { default: [selector] } });
 			const { hub, onFallbackChainChange } = createHub({ models: [model], scoped: true, settings });

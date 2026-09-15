@@ -108,7 +108,8 @@ function readProfileFromEnvSafe(): string | undefined {
 	}
 }
 
-function getBaseConfigRoot(): string {
+/** Profile-independent config root, shared by every named profile. */
+export function getBaseConfigRoot(): string {
 	return path.join(os.homedir(), getConfigDirName());
 }
 
@@ -647,6 +648,11 @@ export function getProjectAgentDir(cwd: string = getProjectDir()): string {
 // =============================================================================
 // Config-root subdirectories (~/.omp/*)
 // =============================================================================
+
+/** Get the profile root for Chromium browsers the browser tool spawns via `app.path` (~/.omp/browser-profiles). */
+export function getBrowserProfilesDir(): string {
+	return dirs.rootSubdir("browser-profiles", "state");
+}
 
 /** Get the reports directory (~/.omp/reports). */
 export function getReportsDir(): string {

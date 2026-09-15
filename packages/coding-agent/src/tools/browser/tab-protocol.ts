@@ -2,16 +2,17 @@ import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 
 export type Transferable = Bun.Transferable;
 
-export interface ObservationEntry {
-	id?: number;
+interface ObservationEntryBase {
 	role: string;
 	name?: string;
 	value?: string | number;
 	description?: string;
 	keyshortcuts?: string;
 	states: string[];
-	actionable?: false;
 }
+
+export type ObservationEntry = ObservationEntryBase &
+	({ id: number; actionable?: true } | { id?: never; actionable: false });
 
 export interface Observation {
 	url: string;
@@ -76,6 +77,7 @@ export type WorkerInitPayload =
 			 * previously force-killed the tab). Never set for first-time Electron attach.
 			 */
 			recover?: boolean;
+			emulateFocus?: boolean;
 			/**
 			 * Whether the worker may raise this tab before capturing a screenshot. Unset
 			 * behaves as `true`; the supervisor clears it for browsers we did not launch.

@@ -660,7 +660,8 @@ export class Composer implements TerminalFrameProvider {
 				kind: this.#offeredHistory.kind,
 			};
 		}
-		if (!this.#headerRetired) {
+		const replay = transcript.peekReplayBatch(width);
+		if (!this.#headerRetired && replay === undefined) {
 			const welcome = this.#welcome;
 			let renderedHeader = this.#header.render(width);
 			const liveRows = transcript.liveRowCount(width);
@@ -691,9 +692,11 @@ export class Composer implements TerminalFrameProvider {
 			this.#headerRetired = true;
 			this.#retiredHeaderRows = [];
 		}
-		const batch = this.#historyFlush
-			? transcript.peekFlushBatch(width)
-			: transcript.peekFinalizedBatch(width, Math.max(0, rows * 2 - chromeRows));
+		const batch =
+			replay ??
+			(this.#historyFlush
+				? transcript.peekFlushBatch(width)
+				: transcript.peekFinalizedBatch(width, Math.max(0, rows * 2 - chromeRows)));
 		if (batch === undefined) return undefined;
 		this.#offeredHistory = {
 			id: this.#nextHistoryId++,

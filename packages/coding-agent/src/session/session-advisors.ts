@@ -198,6 +198,10 @@ export class AdvisorScope {
 		return this.#suppressed || (this.parent?.suppressed ?? false);
 	}
 
+	get suppressedByParent(): boolean {
+		return !this.#suppressed && (this.parent?.suppressed ?? false);
+	}
+
 	setSuppressed(suppressed: boolean): boolean {
 		if (this.#suppressed === suppressed) return false;
 		this.#suppressed = suppressed;
@@ -1919,6 +1923,11 @@ export class SessionAdvisors {
 		this.#deliveryAbort.abort();
 		this.#deliveryAbort = new AbortController();
 		if (this.#advisors.length > 0) this.#stopAdvisorRuntime();
+		for (const [slug, entry] of this.#advisorStatuses) {
+			if (entry.status === "running" || entry.status === "error" || entry.status === "quota_exhausted") {
+				this.#advisorStatuses.set(slug, { ...entry, status: "paused" });
+			}
+		}
 		this.#host.extractQueuedAdvisorCards();
 		this.#host.dropPendingAdvisorCards();
 		return false;
@@ -1930,7 +1939,7 @@ export class SessionAdvisors {
 	 * @returns true when the advisor is actively running after the call.
 	 */
 	toggleAdvisorEnabled(): boolean {
-		return this.setAdvisorEnabled(!this.#advisorEnabled);
+		return this.setAdvisorEnabled(!this.#advisorRequested);
 	}
 
 	/**
@@ -1995,6 +2004,11 @@ export class SessionAdvisors {
 	 */
 	isAdvisorEnabled(): boolean {
 		return this.#advisorEnabled;
+	}
+
+	/** Whether an ancestor scope vetoes advisor activation. */
+	isAdvisorSuppressedByParent(): boolean {
+		return this.scope.suppressedByParent;
 	}
 
 	/**
@@ -2226,7 +2240,7 @@ export class SessionAdvisors {
 			if (!s.model || s.status !== "running") return `Advisor "${s.name}" is ${s.status.replace("_", " ")}.`;
 			return `Advisor is enabled (${s.model.provider}/${s.model.id}). ${contextLine}. ${spendLine}.`;
 		}
-		const lines = [`Advisors enabled (${stats.advisors.length}):`];
+		const lines = [`Advisors ${stats.configured ? "enabled" : "disabled"} (${stats.advisors.length}):`];
 		for (const s of stats.advisors) {
 			const ctx =
 				s.contextWindow > 0

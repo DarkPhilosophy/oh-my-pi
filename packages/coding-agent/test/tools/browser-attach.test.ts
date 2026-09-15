@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,10 +7,14 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { createBrowserPrelude } from "@oh-my-pi/pi-coding-agent/tools/browser";
 import {
 	findFreeCdpPort,
+	findReusableCdp,
 	pickElectronTarget,
 	probeCdpStatus,
+	resolveSpawnArgs,
 	shouldPreserveConnectedBrowserFocus,
+	waitForCdp,
 } from "@oh-my-pi/pi-coding-agent/tools/browser/attach";
+import { ensureChromiumExecutable } from "@oh-my-pi/pi-coding-agent/tools/browser/launch";
 import {
 	acquireBrowser,
 	type BrowserHandle,
@@ -196,10 +200,9 @@ describe("pickElectronTarget", () => {
 		try {
 			await expect(
 				acquireBrowser(
-					{ kind: "spawned", path: existing.path },
+					{ kind: "spawned", path: existing.path, args: [`--user-data-dir=${profile}`] },
 					{
 						cwd: process.cwd(),
-						appArgs: [`--user-data-dir=${profile}`],
 						signal: AbortSignal.timeout(2_000),
 					},
 				),
@@ -224,10 +227,13 @@ describe("pickElectronTarget", () => {
 		const controller = new AbortController();
 		const childScript = `await fetch(${JSON.stringify(marker.url.href)}); Bun.serve({ port: 0, fetch: () => new Response("ok") });`;
 		const openError = acquireBrowser(
-			{ kind: "spawned", path: existing.path },
+			{
+				kind: "spawned",
+				path: existing.path,
+				args: ["--eval", childScript, `--user-data-dir=${path.join(path.dirname(existing.path), "profile")}`],
+			},
 			{
 				cwd: process.cwd(),
-				appArgs: ["--eval", childScript, `--user-data-dir=${path.join(path.dirname(existing.path), "profile")}`],
 				signal: controller.signal,
 			},
 		).then(
@@ -252,6 +258,143 @@ describe("pickElectronTarget", () => {
 			await existing.close();
 		}
 	}, 10_000);
+
+	test("does not reuse a live CDP endpoint belonging to a different profile", async () => {
+		const cdp = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("{}") });
+		const profile = path.join(os.tmpdir(), `omp-cdp-profile-${crypto.randomUUID()}`);
+		const otherProfile = await fs.mkdtemp(path.join(os.tmpdir(), "omp-cdp-other-"));
+		const existing = await spawnDisposableExecutable([
+			`--user-data-dir=${profile}`,
+			`--remote-debugging-port=${cdp.port}`,
+		]);
+		try {
+			if (process.platform === "linux") {
+				await fs.symlink(`${os.hostname()}-${existing.pid}`, path.join(otherProfile, "SingletonLock"));
+			}
+			expect(await findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${otherProfile}`] })).toBeNull();
+			expect(await findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${profile}`] })).toEqual({
+				cdpUrl: `http://127.0.0.1:${cdp.port}`,
+				pid: existing.pid,
+			});
+		} finally {
+			await existing.close();
+			cdp.stop(true);
+			await fs.rm(otherProfile, { recursive: true, force: true });
+		}
+	});
+
+	test.skipIf(process.platform !== "linux")(
+		"reuses separate switch values without splitting flag-like profile segments",
+		async () => {
+			const cdp = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("{}") });
+			const profileRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp spaced "));
+			const requestedPrefix = path.join(profileRoot, "profile");
+			const profile = `${requestedPrefix} --archive/${crypto.randomUUID()}`;
+			await fs.mkdir(profile, { recursive: true });
+			const existing = await spawnDisposableExecutable([]);
+			await fs.symlink(`${os.hostname()}-${existing.pid}`, path.join(profile, "SingletonLock"));
+			const originalArgs = Process.prototype.args;
+			const spy = vi.spyOn(Process.prototype, "args").mockImplementation(function (this: Process) {
+				return this.pid === existing.pid
+					? [`${existing.path} --user-data-dir ${profile} --remote-debugging-port ${cdp.port}`]
+					: originalArgs.call(this);
+			});
+			try {
+				expect(await findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${profile}`] })).toEqual({
+					cdpUrl: `http://127.0.0.1:${cdp.port}`,
+					pid: existing.pid,
+				});
+				expect(await findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${profile}-other`] })).toBeNull();
+				await expect(
+					findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${requestedPrefix}`] }),
+				).rejects.toThrow("already running");
+				await fs.unlink(path.join(profile, "SingletonLock"));
+				await expect(findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${profile}`] })).rejects.toThrow(
+					"already running",
+				);
+				spy.mockReturnValue([]);
+				await expect(findReusableCdp(existing.path, { appArgs: [`--user-data-dir=${profile}`] })).rejects.toThrow(
+					"already running",
+				);
+			} finally {
+				spy.mockRestore();
+				await existing.close();
+				cdp.stop(true);
+				await fs.rm(profileRoot, { recursive: true, force: true });
+			}
+		},
+	);
+
+	test.skipIf(!CHROMIUM_AVAILABLE)(
+		"keeps profile tabs isolated and never kills a borrowed Chrome on close",
+		async () => {
+			const exe = await ensureChromiumExecutable();
+			if (!exe) throw new Error("Expected a Chromium executable");
+			const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-profile-isolation-"));
+			const borrowedProfile = path.join(root, "borrowed profile");
+			const launchPath = process.platform === "linux" ? path.join(root, "chrome") : exe;
+			if (launchPath !== exe) {
+				const wrapperPath = path.join(root, "chrome-launcher");
+				await Bun.write(
+					wrapperPath,
+					`#!${process.execPath}\nprocess.execve(${JSON.stringify(exe)}, [${JSON.stringify(exe)}, ...process.argv.slice(2)], process.env);\n`,
+				);
+				await fs.chmod(wrapperPath, 0o700);
+				await fs.symlink(wrapperPath, launchPath);
+			}
+			const port = await findFreeCdpPort();
+			const flags = ["--headless=new", "--no-sandbox", "--no-first-run", "--no-default-browser-check"];
+			const child = Bun.spawn(
+				[exe, ...flags, `--user-data-dir=${borrowedProfile}`, `--remote-debugging-port=${port}`],
+				{ stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+			);
+			const session = makeSession();
+			const prelude = createBrowserPrelude(session);
+			const invoke = (parameters: unknown) =>
+				prelude.invoke(parameters, { session, toolCallId: "profile-isolation" });
+			const borrowedName = `borrowed-${crypto.randomUUID()}`;
+			const ownedName = `owned-${crypto.randomUUID()}`;
+			try {
+				await waitForCdp(`http://127.0.0.1:${port}`, 15_000);
+				const runningExecutable = process.platform === "linux" ? await fs.realpath(`/proc/${child.pid}/exe`) : exe;
+				if (launchPath !== exe) {
+					await expect(
+						findReusableCdp(launchPath, {
+							appArgs: resolveSpawnArgs(launchPath, [...flags, "--user-data-dir", borrowedProfile]),
+						}),
+					).rejects.toThrow("occupied by an unverified application");
+				}
+				expect(
+					await findReusableCdp(runningExecutable, {
+						appArgs: resolveSpawnArgs(runningExecutable, [...flags, "--user-data-dir", borrowedProfile]),
+					}),
+				).toEqual({ cdpUrl: `http://127.0.0.1:${port}`, pid: child.pid });
+				await invoke({
+					action: "open",
+					name: borrowedName,
+					url: "data:text/html,<title>Borrowed</title>",
+					app: { path: runningExecutable, args: [...flags, "--user-data-dir", borrowedProfile] },
+				});
+				await invoke({
+					action: "open",
+					name: ownedName,
+					url: "data:text/html,<title>Owned</title>",
+					app: { path: launchPath, args: [...flags, "--user-data-dir", path.join(root, "owned")] },
+				});
+				const title = await invoke({ action: "run", name: borrowedName, code: "return await tab.title();" });
+				expect(title.details).toMatchObject({ value: "Borrowed" });
+				await invoke({ action: "close", name: borrowedName, kill: true });
+				expect(await probeCdpStatus(`http://127.0.0.1:${port}/json/version`, { timeoutMs: 1500 })).toBe(200);
+			} finally {
+				await invoke({ action: "close", name: ownedName, kill: true }).catch(() => {});
+				await invoke({ action: "close", name: borrowedName, kill: true }).catch(() => {});
+				child.kill();
+				await child.exited;
+				await fs.rm(root, { recursive: true, force: true });
+			}
+		},
+		30_000,
+	);
 
 	// Launches real headless Chromium; skipped where Chrome's system libraries are absent.
 	test.skipIf(!CHROMIUM_AVAILABLE)(
@@ -343,6 +486,23 @@ describe("pickElectronTarget", () => {
 		},
 		30_000,
 	);
+});
+
+describe("resolveSpawnArgs", () => {
+	test("normalizes separated and relative Chromium profiles into an absolute switch value", () => {
+		const args = resolveSpawnArgs(
+			"/usr/bin/google-chrome-stable",
+			["--user-data-dir", "profile", "--incognito"],
+			"/tmp",
+		);
+		expect(args).toEqual(["--incognito", `--user-data-dir=${path.resolve("/tmp", "profile")}`]);
+	});
+
+	test("isolates a Flatpak Chromium launcher without treating unrelated apps as browsers", () => {
+		const args = resolveSpawnArgs("/var/lib/flatpak/exports/bin/com.google.Chrome", []);
+		expect(args.some(arg => arg.startsWith("--user-data-dir="))).toBe(true);
+		expect(resolveSpawnArgs("/Applications/Slack.app/Contents/MacOS/Slack", ["--foo"])).toEqual(["--foo"]);
+	});
 });
 
 describe("probeCdpStatus", () => {

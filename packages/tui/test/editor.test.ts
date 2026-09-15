@@ -6,6 +6,7 @@ import { stripVTControlCharacters } from "node:util";
 import {
 	type ComposerStyle,
 	CURSOR_MARKER,
+	type CursorOverlayRenderer,
 	Editor,
 	type EditorTheme,
 	registerComposerStyle,
@@ -447,6 +448,97 @@ describe("Editor component", () => {
 	});
 
 	describe("autocomplete triggers", () => {
+		it.each([1, 3, 4, 6])("keeps an overflowing popup inside its %i-row budget", async maxRows => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.focused = true;
+			editor.commandSuggestionsPopup = true;
+			let overlay: CursorOverlayRenderer | undefined;
+			editor.onAutocompleteRender = render => {
+				overlay = render;
+			};
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider(Array.from({ length: 30 }, (_, index) => ({ name: `command${index}` }))),
+			);
+			const updated = Promise.withResolvers<void>();
+			editor.onAutocompleteUpdate = updated.resolve;
+			editor.handleInput("/");
+			await updated.promise;
+			editor.render(40);
+			if (!overlay) throw new Error("Expected a command popup renderer");
+			const rows = overlay(40, maxRows).map(stripVTControlCharacters);
+			expect(rows.length).toBeLessThanOrEqual(maxRows);
+			expect(rows.join("\n")).toContain("command0");
+			if (maxRows >= 3) {
+				const border = defaultEditorTheme.symbols.boxRound;
+				expect(rows[0]).toBe(border.topLeft + border.horizontal.repeat(38) + border.topRight);
+				expect(rows.at(-1)).toBe(border.bottomLeft + border.horizontal.repeat(38) + border.bottomRight);
+			}
+		});
+
+		it("removes the previous passive popup when completion switches to an absolute path", async () => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.focused = true;
+			editor.commandSuggestionsPopup = true;
+			let popupVisible = false;
+			editor.onAutocompleteRender = render => {
+				popupVisible = render !== undefined;
+			};
+			editor.setAutocompleteProvider({
+				async getSuggestions(lines, cursorLine, cursorCol) {
+					const prefix = lines[cursorLine]!.slice(0, cursorCol);
+					return { prefix, items: [{ label: "candidate", value: prefix === "/" ? "help" : "/tmp/file" }] };
+				},
+				applyCompletion(lines, cursorLine, cursorCol) {
+					return { lines, cursorLine, cursorCol };
+				},
+			});
+			for (const input of ["/", "tmp/f"]) {
+				const updated = Promise.withResolvers<void>();
+				editor.onAutocompleteUpdate = updated.resolve;
+				editor.handleInput(input);
+				await updated.promise;
+				const rows = editor.render(80).join("\n");
+				if (input === "/") {
+					expect(popupVisible).toBe(true);
+					expect(rows).not.toContain("candidate");
+				} else {
+					expect(rows).toContain("candidate");
+					expect(popupVisible).toBe(false);
+				}
+			}
+		});
+
+		it("keeps relative file completions inline when they are not command arguments", async () => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.focused = true;
+			editor.commandSuggestionsPopup = true;
+			let popupVisible = false;
+			editor.onAutocompleteRender = render => {
+				popupVisible = render !== undefined;
+			};
+			editor.setAutocompleteProvider({
+				async getSuggestions() {
+					return {
+						prefix: "./cand",
+						commandArgument: false,
+						items: [{ label: "candidate.txt", value: "./candidate.txt" }],
+					};
+				},
+				applyCompletion(lines, cursorLine, cursorCol) {
+					return { lines, cursorLine, cursorCol };
+				},
+			});
+			const updated = Promise.withResolvers<void>();
+			editor.onAutocompleteUpdate = updated.resolve;
+			editor.handleInput("/quit ./cand");
+			await updated.promise;
+			const rows = editor.render(80);
+			expect(rows.findIndex(row => row.includes("candidate.txt"))).toBeGreaterThan(
+				rows.findIndex(row => row.includes("/quit")),
+			);
+			expect(popupVisible).toBe(false);
+		});
+
 		it("triggers slash-command autocomplete without losing the hardware cursor anchor", async () => {
 			const editor = new Editor(defaultEditorTheme);
 			editor.focused = true;
@@ -2643,6 +2735,16 @@ describe("Editor component", () => {
 		// and subsequent input renders into the wrong row. The earlier fix
 		// landed on the legacy `Input` component; OMP's interactive prompt
 		// uses `Editor`, so the fix has to live here too.
+
+		it("separates pasted path prefixes from the preceding word without doubling whitespace", () => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.handleInput("inspect");
+			editor.handleInput("\x1b[200~/tmp/file\x1b[201~");
+			editor.handleInput("\x1b[200~~/project\x1b[201~");
+			editor.handleInput("\x1b[200~.env\x1b[201~");
+			editor.handleInput("\x1b[200~ /already-spaced\x1b[201~");
+			expect(editor.getText()).toBe("inspect /tmp/file ~/project .env /already-spaced");
+		});
 
 		it("normalizes NFD Korean bracketed-paste to NFC", () => {
 			const editor = new Editor(defaultEditorTheme);

@@ -5,6 +5,10 @@
 ### Fixed
 
 - Command suggestions appear in a bordered popup over screen cells without moving the live/history boundary; filtering and dismissal restore covered text without rebuilding scrollback.
+### Added
+
+- Added passive cursor-adjacent popups and completion dismissal that preserves the editor draft and cursor ([#11958](https://github.com/can1357/oh-my-pi/pull/11958) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- `SelectList` now keeps keyboard focus on the intended item after a focus transition.
 
 ## [18.1.17] - 2026-09-10
 
@@ -40,10 +44,6 @@
 ### Changed
 
 - The software cursor now reflects the Vim mode: a reverse-video block in Normal/Visual and an underline in Insert. Both occupy one cell, so layout is unchanged, and non-modal editors keep the reverse-video block they always had.
-
-### Fixed
-
-- `SelectList` now keeps keyboard focus on the intended item after a focus transition.
 
 ## [18.1.15] - 2026-09-08
 

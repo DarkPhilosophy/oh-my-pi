@@ -220,6 +220,8 @@ export interface AutocompleteProvider {
 	): Promise<{
 		items: AutocompleteItem[];
 		prefix: string; // What we're matching against (e.g., "/" or "src/")
+		/** Suggestions supplied by a matched slash command's argument provider. */
+		commandArgument?: boolean;
 	} | null>;
 
 	/** Apply the selected item and return new text + cursor position */
@@ -262,7 +264,7 @@ export interface AutocompleteProvider {
 		cursorLine: number,
 		cursorCol: number,
 		signal?: AbortSignal,
-	): Promise<{ items: AutocompleteItem[]; prefix: string } | null>;
+	): Promise<{ items: AutocompleteItem[]; prefix: string; commandArgument?: boolean } | null>;
 
 	/** Whether a Tab press should attempt file completion at the cursor. */
 	shouldTriggerFileCompletion?(lines: string[], cursorLine: number, cursorCol: number): boolean;
@@ -491,10 +493,11 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		cursorLine: number,
 		cursorCol: number,
 		signal?: AbortSignal,
-	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
+	): Promise<{ items: AutocompleteItem[]; prefix: string; commandArgument?: boolean } | null> {
 		if (signal?.aborted) return null;
 		const currentLine = lines[cursorLine] || "";
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
+		let commandArgument = false;
 
 		const leadingSlashStart = findLeadingSlashCommandStart(textBeforeCursor);
 		const trailingSlashStart = findTrailingSlashCommandStart(textBeforeCursor);
@@ -551,6 +554,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				const argumentText = commandText.slice(spaceIndex + 1); // Text after space
 
 				const command = this.#commands.find(cmd => commandMatchesNameOrAlias(cmd, commandName));
+				commandArgument = command !== undefined && (!("allowArgs" in command) || command.allowArgs !== false);
 				if (command && "allowArgs" in command && command.allowArgs === false && !/\S/.test(argumentText)) {
 					return null;
 				}
@@ -565,6 +569,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 						return {
 							items: argumentSuggestions,
 							prefix: argumentText,
+							commandArgument: true,
 						};
 					}
 				}
@@ -584,7 +589,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			if (rawPrefix.length > 0 && this.#isOutsideCwd(rawPrefix)) {
 				const items = await this.#getFileSuggestions(atPrefix);
 				if (items.length === 0) return null;
-				return { items, prefix: atPrefix };
+				return { items, prefix: atPrefix, ...(commandArgument ? { commandArgument: true } : {}) };
 			}
 			const suggestions =
 				rawPrefix.length > 0
@@ -593,13 +598,14 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			if (suggestions.length === 0 && rawPrefix.length > 0) {
 				const fallback = await this.#getFileSuggestions(atPrefix);
 				if (fallback.length === 0) return null;
-				return { items: fallback, prefix: atPrefix };
+				return { items: fallback, prefix: atPrefix, ...(commandArgument ? { commandArgument: true } : {}) };
 			}
 			if (suggestions.length === 0) return null;
 
 			return {
 				items: suggestions,
 				prefix: atPrefix,
+				...(commandArgument ? { commandArgument: true } : {}),
 			};
 		}
 
@@ -619,12 +625,14 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				return {
 					items: suggestions,
 					prefix: pathMatch,
+					...(commandArgument ? { commandArgument: true } : {}),
 				};
 			}
 
 			return {
 				items: suggestions,
 				prefix: pathMatch,
+				...(commandArgument ? { commandArgument: true } : {}),
 			};
 		}
 
@@ -1090,10 +1098,19 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		cursorLine: number,
 		cursorCol: number,
 		signal?: AbortSignal,
-	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
+	): Promise<{ items: AutocompleteItem[]; prefix: string; commandArgument?: boolean } | null> {
 		if (signal?.aborted) return null;
 		const currentLine = lines[cursorLine] || "";
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
+		const commandName = /^\s*\/(\S+) /.exec(textBeforeCursor)?.[1];
+		const commandArgument =
+			!lines.slice(0, cursorLine).some(line => line.trim() !== "") &&
+			commandName !== undefined &&
+			this.#commands.some(
+				command =>
+					(!("allowArgs" in command) || command.allowArgs !== false) &&
+					commandMatchesNameOrAlias(command, commandName),
+			);
 
 		// Don't trigger if we're typing a slash command at the start of the line
 		if (textBeforeCursor.trim().startsWith("/") && !textBeforeCursor.trim().includes(" ")) {
@@ -1109,6 +1126,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			return {
 				items: suggestions,
 				prefix: pathMatch,
+				...(commandArgument ? { commandArgument: true } : {}),
 			};
 		}
 

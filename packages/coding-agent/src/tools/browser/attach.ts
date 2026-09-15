@@ -1,6 +1,9 @@
+import * as fs from "node:fs/promises";
 import * as net from "node:net";
+import * as os from "node:os";
 import * as path from "node:path";
 import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
+import { getBrowserProfilesDir } from "@oh-my-pi/pi-utils";
 import type { Socket } from "bun";
 import type { Browser, Page } from "puppeteer-core";
 import { ToolError, throwIfAborted } from "../tool-errors";
@@ -127,7 +130,7 @@ export async function waitForCdp(cdpUrl: string, timeoutMs: number, signal?: Abo
  */
 function findCdpPortInArgs(args: string[]): number | null {
 	for (const arg of args) {
-		const m = /^--remote-debugging-port=(\d+)$/.exec(arg);
+		const m = /^--remote-debugging-port(?:=| +)(\d+)$/.exec(arg);
 		if (m) {
 			const port = Number.parseInt(m[1]!, 10);
 			if (Number.isFinite(port) && port > 0) return port;
@@ -152,12 +155,70 @@ function findUserDataDirInArgs(args: string[] | undefined): string | null {
 			result = arg.length > inlinePrefix.length ? arg.slice(inlinePrefix.length) : null;
 			continue;
 		}
+		if (arg.startsWith("--user-data-dir ")) {
+			result = arg.slice("--user-data-dir ".length).trimStart() || null;
+			continue;
+		}
 		if (arg !== "--user-data-dir") continue;
 		const value = args[index + 1];
 		result = value !== undefined && value.length > 0 && !value.startsWith("--") ? value : null;
 		if (result !== null) index++;
 	}
 	return result;
+}
+
+/**
+ * Executable basenames of Chromium-family browsers (release channels and
+ * vendor suffixes included), as opposed to Electron apps that also speak CDP.
+ * Matched against the basename without `.exe`.
+ */
+const CHROMIUM_BROWSER_BASENAME =
+	/^(?:google[ -]chrome|chrome|chromium|microsoft[ -]edge|msedge|brave|vivaldi|opera|thorium|ungoogled[ -]chromium)(?:[ -](?:beta|dev|canary|unstable|stable|nightly|snapshot|browser|gx|for[ -]testing))*$/i;
+const CHROMIUM_FLATPAK_IDS: Record<string, true> = {
+	"com.google.Chrome": true,
+	"org.chromium.Chromium": true,
+	"io.github.ungoogled_software.ungoogled_chromium": true,
+};
+
+/**
+ * Launch argv for a spawned executable. Chrome 136+ silently ignores
+ * `--remote-debugging-port` when the default user-data-dir is in use: the
+ * browser opens as usual, nothing listens, and attach waits out its timeout.
+ * Chromium-family browsers therefore get a stable omp-owned profile under
+ * `~/.omp/browser-profiles/<exe slug>` unless the caller already picked one.
+ * That profile is also what lets a second instance start beside the user's
+ * running default-profile browser instead of handing off to it. Electron apps
+ * are left untouched: `--user-data-dir` would relocate their app data.
+ */
+export function resolveSpawnArgs(exe: string, appArgs: string[] | undefined, cwd = process.cwd()): string[] {
+	const args = appArgs ?? [];
+	const base = path.basename(exe).replace(/\.exe$/i, "");
+	if (!CHROMIUM_BROWSER_BASENAME.test(base) && !Object.hasOwn(CHROMIUM_FLATPAK_IDS, base)) return args;
+	const requestedProfile = findUserDataDirInArgs(args);
+	if (requestedProfile !== null) {
+		// Chromium accepts switch values as --name=value, not a separate argv
+		// item. Canonicalize both spellings so reuse and process launch agree.
+		const launchArgs: string[] = [];
+		for (let index = 0; index < args.length; index++) {
+			const arg = args[index]!;
+			if (arg === "--user-data-dir") {
+				if (args[index + 1] && !args[index + 1]!.startsWith("--")) index++;
+			} else if (!arg.startsWith("--user-data-dir=")) {
+				launchArgs.push(arg);
+			}
+		}
+		launchArgs.push(`--user-data-dir=${path.resolve(cwd, requestedProfile)}`);
+		return launchArgs;
+	}
+	const slug = base.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+	const hash = Bun.hash.wyhash(exe).toString(16).padStart(16, "0");
+	const launchArgs = [...args];
+	// A fresh profile otherwise opens the welcome tour and default-browser
+	// prompt as extra page targets, which attach may adopt instead of ours.
+	if (!args.includes("--no-first-run")) launchArgs.push("--no-first-run");
+	if (!args.includes("--no-default-browser-check")) launchArgs.push("--no-default-browser-check");
+	launchArgs.push(`--user-data-dir=${path.join(getBrowserProfilesDir(), `${slug}-${hash}`)}`);
+	return launchArgs;
 }
 
 function normalizeUserDataDir(userDataDir: string): string {
@@ -180,29 +241,102 @@ export async function findReusableCdp(
 	exe: string,
 	options: { signal?: AbortSignal; appArgs?: string[] } = {},
 ): Promise<{ cdpUrl: string; pid: number } | null> {
-	const candidates = Process.fromPath(exe).filter(process => process.status() === ProcessStatus.Running);
+	const requestedUserDataDir = findUserDataDirInArgs(options.appArgs);
+	const normalizedRequestedUserDataDir =
+		requestedUserDataDir !== null && path.isAbsolute(requestedUserDataDir)
+			? normalizeUserDataDir(requestedUserDataDir)
+			: null;
+	// Process paths use the executable's real path, not its launcher symlink.
+	const executablePath = await fs.realpath(exe).catch(() => exe);
+	const candidates = Process.fromPath(executablePath).filter(process => process.status() === ProcessStatus.Running);
+	if (process.platform === "linux" && normalizedRequestedUserDataDir !== null) {
+		// Profile ownership does not imply application identity. A wrapper can
+		// launch a fresh profile, but an occupied profile needs a verified binary
+		// match (or an explicitly selected CDP endpoint).
+		const lock = await fs.readlink(path.join(normalizedRequestedUserDataDir, "SingletonLock")).catch(() => undefined);
+		const localPrefix = `${os.hostname()}-`;
+		if (lock?.startsWith(localPrefix)) {
+			const pidText = lock.slice(localPrefix.length);
+			const owner = /^\d+$/.test(pidText) ? Process.fromPid(Number(pidText)) : null;
+			if (owner?.status() === ProcessStatus.Running && !candidates.some(candidate => candidate.pid === owner.pid)) {
+				const ownerExecutable = await fs.realpath(`/proc/${owner.pid}/exe`).catch(() => undefined);
+				if (ownerExecutable !== executablePath) {
+					throw new ToolError(
+						"The requested profile is occupied by an unverified application. Use its executable path or explicitly select app.cdp_url.",
+					);
+				}
+				candidates.push(owner);
+			}
+		}
+	}
 	const candidateArgs: string[][] = [];
 	let hasUnreadableCandidate = false;
 	for (const process of candidates) {
 		let args: string[];
+		let ambiguousProfile = false;
 		try {
-			args = process.args();
+			const processArgs = process.args();
+			if (processArgs.length === 0) {
+				hasUnreadableCandidate = true;
+				continue;
+			}
+			if (globalThis.process.platform === "linux" && processArgs.length === 1) {
+				let title = processArgs[0]!;
+				let matchedProfile = false;
+				if (requestedUserDataDir !== null) {
+					for (const separator of ["=", " "]) {
+						const token = ` --user-data-dir${separator}${requestedUserDataDir}`;
+						const offset = title.indexOf(token);
+						if (offset < 0) continue;
+						const end = offset + token.length;
+						if (end !== title.length && !title.startsWith(" --", end)) continue;
+						if (end !== title.length) {
+							const lock = await fs
+								.readlink(path.join(normalizedRequestedUserDataDir ?? "", "SingletonLock"))
+								.catch(() => undefined);
+							const ownerPid = lock?.startsWith(`${os.hostname()}-`)
+								? Number(lock.slice(os.hostname().length + 1))
+								: NaN;
+							if (ownerPid !== process.pid) {
+								ambiguousProfile = true;
+								continue;
+							}
+						}
+						title = title.slice(0, offset) + title.slice(end);
+						matchedProfile = true;
+						break;
+					}
+				}
+				args = title.split(/ (?=--)/);
+				if (matchedProfile) args.push(`--user-data-dir=${requestedUserDataDir}`);
+			} else {
+				args = processArgs;
+			}
 		} catch {
 			hasUnreadableCandidate = true;
 			continue;
 		}
+		if (ambiguousProfile) {
+			hasUnreadableCandidate = true;
+			continue;
+		}
 		candidateArgs.push(args);
+		const candidateProfile = findUserDataDirInArgs(args);
+		if (
+			requestedUserDataDir !== null &&
+			(normalizedRequestedUserDataDir === null ||
+				candidateProfile === null ||
+				!path.isAbsolute(candidateProfile) ||
+				normalizeUserDataDir(candidateProfile) !== normalizedRequestedUserDataDir)
+		) {
+			continue;
+		}
 		const port = findCdpPortInArgs(args);
 		if (port === null) continue;
 		if (await probeCdpAt(port, options.signal)) {
 			return { cdpUrl: `http://127.0.0.1:${port}`, pid: process.pid };
 		}
 	}
-	const requestedUserDataDir = findUserDataDirInArgs(options.appArgs);
-	const normalizedRequestedUserDataDir =
-		requestedUserDataDir !== null && path.isAbsolute(requestedUserDataDir)
-			? normalizeUserDataDir(requestedUserDataDir)
-			: null;
 	const canLaunchIsolatedProfile =
 		normalizedRequestedUserDataDir !== null &&
 		!hasUnreadableCandidate &&

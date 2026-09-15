@@ -76,5 +76,18 @@ describe("EventController todo reminder", () => {
 			},
 		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
 		expect(ctx.setTodos).not.toHaveBeenCalled();
+		await controller.handleEvent({
+			type: "message_end",
+			message: {
+				role: "toolResult",
+				toolName: "todo",
+				toolCallId: "todo-view",
+				content: [],
+				isError: false,
+				timestamp: 1,
+				details: { op: "view", phases: [{ name: "Done", tasks: [{ content: "ship", status: "completed" }] }] },
+			},
+		} as Extract<AgentSessionEvent, { type: "message_end" }>);
+		expect(ctx.setTodos).not.toHaveBeenCalled();
 	});
 });

@@ -1,5 +1,14 @@
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { isCompiledBinary, logger, withTimeout, workerHostEntry } from "@oh-my-pi/pi-utils";
+import {
+	acquireFileLock,
+	type FileLockHandle,
+	getBaseConfigRoot,
+	isCompiledBinary,
+	logger,
+	withTimeout,
+	workerHostEntry,
+} from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 import type { Browser, CDPSession } from "puppeteer-core";
 import { ToolAbortError, ToolError } from "../tool-errors";
@@ -21,7 +30,7 @@ import { ensureSharedBrowser } from "./shared-daemon";
 
 export type PuppeteerBrowserKind =
 	| { kind: "headless"; headless: boolean }
-	| { kind: "spawned"; path: string }
+	| { kind: "spawned"; path: string; args?: string[] }
 	| { kind: "connected"; cdpUrl: string }
 	| RelayKind;
 
@@ -62,6 +71,10 @@ export interface PuppeteerBrowserHandle extends BrowserHandleCommon<PuppeteerBro
 
 export interface FirefoxRelayBrowserHandle extends BrowserHandleCommon<FirefoxRelayKind> {
 	webSocketUrl: string;
+	/** OS-backed endpoint ownership; released after the last worker alias closes. */
+	endpointLease?: FileLockHandle;
+	/** Actual inline worker disconnection, which may outlive bounded caller cleanup. */
+	connectionCleanup?: Promise<void>;
 }
 
 export interface CmuxBrowserHandle extends BrowserHandleCommon<CmuxKind> {
@@ -87,7 +100,7 @@ export function browserKey(kind: BrowserKind): string {
 		case "headless":
 			return `headless:${kind.headless ? "1" : "0"}`;
 		case "spawned":
-			return `spawned:${kind.path}`;
+			return `spawned:${JSON.stringify([kind.path, kind.args ?? []])}`;
 		case "connected":
 			return `connected:${kind.cdpUrl}`;
 		case "relay":
@@ -223,12 +236,24 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		};
 	}
 	if (kind.kind === "firefox-relay") {
-		// Firefox permits exactly one active WebDriver BiDi session. The tab
-		// worker is its sole owner; the registry stores only the endpoint.
+		// Firefox permits one BiDi session across all OMP processes, not merely
+		// one worker in this registry. OS ownership also releases after a crash.
+		const leaseDir = path.join(getBaseConfigRoot(), "run", "firefox-leases");
+		await fs.mkdir(leaseDir, { recursive: true });
+		const endpointKey = Bun.hash(browserKey(kind)).toString(16);
+		let endpointLease: FileLockHandle;
+		try {
+			endpointLease = await acquireFileLock(path.join(leaseDir, endpointKey), { retries: 1 });
+		} catch {
+			throw new ToolError(
+				"This Firefox endpoint is already owned by another OMP process. Close its Firefox tabs before opening it here.",
+			);
+		}
 		return {
 			key: browserKey(kind),
 			kind,
 			webSocketUrl: kind.webSocketUrl,
+			endpointLease,
 			refCount: 0,
 		};
 	}
@@ -278,9 +303,10 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 			`app.path must be absolute (got ${JSON.stringify(exe)}). Pass the binary inside Foo.app/Contents/MacOS/, not the .app bundle.`,
 		);
 	}
+	const appArgs = kind.args ?? [];
 	const reused = await findReusableCdp(exe, {
 		signal: opts.signal,
-		appArgs: opts.appArgs,
+		appArgs,
 	});
 	let cdpUrl: string;
 	let pid: number;
@@ -291,8 +317,9 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		pid = reused.pid;
 	} else {
 		const port = await findFreeCdpPort();
-		const launchArgs = [...(opts.appArgs ?? []), `--remote-debugging-port=${port}`];
+		const launchArgs = [...appArgs, `--remote-debugging-port=${port}`];
 		const child = Bun.spawn([exe, ...launchArgs], {
+			cwd: opts.cwd,
 			stdout: "ignore",
 			stderr: "ignore",
 			stdin: "ignore",
@@ -355,7 +382,16 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: ReleaseBrowserO
 		handle.client.close();
 		return;
 	}
-	if ("webSocketUrl" in handle) return;
+	if ("webSocketUrl" in handle) {
+		const lease = handle.endpointLease;
+		handle.endpointLease = undefined;
+		if (handle.connectionCleanup) {
+			void handle.connectionCleanup.then(() => lease?.release());
+		} else {
+			lease?.release();
+		}
+		return;
+	}
 	if (handle.kind.kind === "headless") {
 		if (handle.sharedDaemon) {
 			// The broker owns the Chromium; this process only drops its CDP
@@ -410,7 +446,9 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: ReleaseBrowserO
 			logger.debug("Failed to disconnect from spawned browser", { error: (err as Error).message });
 		}
 	}
-	if (opts.kill && handle.pid !== undefined) await gracefulKillTreeOnce(handle.pid);
+	if (opts.kill && handle.subprocess && handle.subprocess.exitCode === null) {
+		await gracefulKillTreeOnce(handle.subprocess.pid);
+	}
 }
 
 /**

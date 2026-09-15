@@ -66,6 +66,8 @@ export interface ProviderCard {
 	name: string;
 	/** Account label (already privacy-masked) when cards are split per account. */
 	account?: string;
+	/** Metadata-attributed organization suffix, kept separate for narrow headers. */
+	accountQualifier?: string;
 	/** Number of accounts reporting for this provider. */
 	accounts: number;
 	/** Window rows sorted most-pressing first. */
@@ -161,7 +163,7 @@ export function formatReportAccountLabel(report: UsageReport, index: number): Ac
 						: report.limits[0]?.scope.projectId
 							? sanitizeAccountLabelPart(report.limits[0].scope.projectId)
 							: undefined;
-	if (!base) return { identity: `account ${index + 1}`, placeholder: true };
+	if (!base) return { identity: `account ${index + 1}`, placeholder: true, provider: report.provider };
 	const organization =
 		typeof meta?.orgName === "string" && meta.orgName
 			? sanitizeAccountLabelPart(meta.orgName)
@@ -172,6 +174,7 @@ export function formatReportAccountLabel(report: UsageReport, index: number): Ac
 		identity: base,
 		qualifier: organization && organization !== base ? ` (${organization})` : undefined,
 		accountKey: usageIdentityKey(meta?.accountId, meta?.projectId, report.limits[0]?.scope, meta?.orgId),
+		provider: report.provider,
 	};
 }
 
@@ -203,6 +206,34 @@ function formatReportAccountKey(report: UsageReport, index: number): string {
 		: JSON.stringify(["anonymous", index]);
 }
 
+/** Providers may combine several account scopes in a single fetched report. */
+function partitionAccountReports(reports: UsageReport[]): UsageReport[] {
+	return reports.flatMap(report => {
+		const groups = new Map<string | undefined, UsageLimit[]>();
+		for (const limit of report.limits) {
+			const key = usageIdentityKey(
+				limit.scope.accountId || report.metadata?.accountId,
+				limit.scope.projectId || report.metadata?.projectId,
+				limit.scope,
+				report.metadata?.orgId,
+			);
+			const limits = groups.get(key) ?? [];
+			limits.push(limit);
+			groups.set(key, limits);
+		}
+		if (groups.size === 0) return [report];
+		return [...groups.values()].map(limits => ({
+			...report,
+			limits,
+			metadata: {
+				...report.metadata,
+				accountId: limits[0]!.scope.accountId || report.metadata?.accountId,
+				projectId: limits[0]!.scope.projectId || report.metadata?.projectId,
+			},
+		}));
+	});
+}
+
 export function buildProviderCards(
 	reports: UsageReport[],
 	nowMs: number,
@@ -210,7 +241,7 @@ export function buildProviderCards(
 ): ProviderCard[] {
 	const { merge = true, mask = formatAccountLabelText } = options;
 	const grouped = new Map<string, { provider: string; account?: AccountLabel; reports: UsageReport[] }>();
-	reports.forEach((report, index) => {
+	(merge ? reports : partitionAccountReports(reports)).forEach((report, index) => {
 		const account = merge ? undefined : formatReportAccountLabel(report, index);
 		const identity = merge ? undefined : formatReportAccountKey(report, index);
 		const key = identity === undefined ? report.provider : `${report.provider}\u0000${identity}`;
@@ -263,6 +294,7 @@ export function buildProviderCards(
 			provider,
 			name: formatProviderName(provider),
 			account: account === undefined ? undefined : mask(account),
+			accountQualifier: account?.qualifier,
 			accounts: providerReports.length,
 			windows,
 			unlimited: windows.length === 0,
@@ -404,12 +436,10 @@ export function formatActivityErrorDetail(error: string, homeDir = os.homedir())
 	return text.replace(/\.+$/, "");
 }
 
-function fitAccountLabel(label: string, width: number): string {
+export function fitAccountLabel(label: string, width: number, qualifier = ""): string {
 	if (width <= 0) return "";
-	const qualifierStart = label.lastIndexOf(" (");
-	if (qualifierStart <= 0 || !label.endsWith(")")) return truncateToWidth(label, width);
-	const rawBase = label.slice(0, qualifierStart);
-	const qualifier = label.slice(qualifierStart);
+	if (!qualifier || !label.endsWith(qualifier)) return truncateToWidth(label, width);
+	const rawBase = label.slice(0, -qualifier.length);
 	const ordinalMatch = rawBase.match(/^(.*) (\(\d+\))$/);
 	const base = ordinalMatch?.[1] ?? rawBase;
 	const ordinal = ordinalMatch?.[2] ?? "";
@@ -462,7 +492,8 @@ export class UsageDashboardComponent implements Component {
 	}
 
 	#rebuildCards(): void {
-		const labels = this.#options.reports.map((report, index) => formatReportAccountLabel(report, index));
+		const reports = this.#merge ? this.#options.reports : partitionAccountReports(this.#options.reports);
+		const labels = reports.map((report, index) => formatReportAccountLabel(report, index));
 		this.#cards = buildProviderCards(this.#options.reports, this.#nowMs, {
 			merge: this.#merge,
 			mask: this.#options.createMasker(labels, this.#mask),
@@ -511,7 +542,9 @@ export class UsageDashboardComponent implements Component {
 		const cardStatus = card.unlimited ? "ok" : aggregateRowStatus(card.windows);
 		const accountsText =
 			card.account !== undefined
-				? this.#styleMask(theme.fg("dim", fitAccountLabel(card.account, Math.max(1, width - 2 - 4 - 1))))
+				? this.#styleMask(
+						theme.fg("dim", fitAccountLabel(card.account, Math.max(1, width - 2 - 4 - 1), card.accountQualifier)),
+					)
 				: card.accounts > 1
 					? theme.fg("dim", `${card.accounts} accts`)
 					: "";

@@ -71,33 +71,44 @@ function findNormalizedOsc8Span(
 	source: string,
 	needle: string,
 	start: number,
+	exactStart: number,
 ): { start: number; end: number } | undefined {
 	const normalizedNeedle = normalizeOsc8Terminators(needle);
-	const suffix = source.slice(start);
-	const normalizedParts: string[] = [];
-	const rawBoundaries: number[] = [start];
-	let rawCursor = 0;
-	OSC8_ST_PREFIX_REGEX.lastIndex = 0;
-	for (let match = OSC8_ST_PREFIX_REGEX.exec(suffix); match; match = OSC8_ST_PREFIX_REGEX.exec(suffix)) {
-		const unchanged = suffix.slice(rawCursor, match.index);
-		normalizedParts.push(unchanged);
-		for (let index = 0; index < unchanged.length; index++) rawBoundaries.push(start + rawCursor + index + 1);
-		const prefix = match[1]!;
-		normalizedParts.push(prefix, "\x07");
-		for (let index = 0; index < prefix.length; index++) rawBoundaries.push(start + match.index + index + 1);
-		rawBoundaries.push(start + match.index + match[0].length);
-		rawCursor = match.index + match[0].length;
+	if (!normalizedNeedle.length) return { start, end: start };
+	// Stream KMP over normalized characters, retaining only the current
+	// needle-sized raw offset window rather than copying the document suffix.
+	const fallback = new Uint32Array(normalizedNeedle.length);
+	for (let index = 1, matched = 0; index < normalizedNeedle.length; index++) {
+		while (matched && normalizedNeedle[index] !== normalizedNeedle[matched]) matched = fallback[matched - 1]!;
+		if (normalizedNeedle[index] === normalizedNeedle[matched]) matched++;
+		fallback[index] = matched;
 	}
-	const tail = suffix.slice(rawCursor);
-	normalizedParts.push(tail);
-	for (let index = 0; index < tail.length; index++) rawBoundaries.push(start + rawCursor + index + 1);
-	const normalizedSource = normalizedParts.join("");
-	const normalizedStart = normalizedSource.indexOf(normalizedNeedle);
-	if (normalizedStart < 0) return undefined;
-	return {
-		start: rawBoundaries[normalizedStart]!,
-		end: rawBoundaries[normalizedStart + normalizedNeedle.length]!,
-	};
+	const rawStarts = new Array<number>(normalizedNeedle.length);
+	// Normalization consumes at most two raw code units per emitted unit.
+	const end = exactStart < 0 ? source.length : Math.min(source.length, exactStart + normalizedNeedle.length * 2);
+	let oscBodyStart = -1;
+	let matched = 0;
+	let emitted = 0;
+	for (let raw = start; raw < end; raw++) {
+		const rawStart = raw;
+		let character = source[raw]!;
+		if (oscBodyStart >= 0 && raw >= oscBodyStart && (character === "\x07" || character === "\x1b")) {
+			if (character === "\x1b" && source[raw + 1] === "\\") {
+				character = "\x07";
+				raw++;
+			}
+			oscBodyStart = -1;
+		}
+		if (character === "\x1b" && source.startsWith("\x1b]8;", raw)) oscBodyStart = raw + 4;
+		rawStarts[emitted % normalizedNeedle.length] = rawStart;
+		while (matched && character !== normalizedNeedle[matched]) matched = fallback[matched - 1]!;
+		if (character === normalizedNeedle[matched]) matched++;
+		emitted++;
+		if (matched === normalizedNeedle.length) {
+			return { start: rawStarts[(emitted - matched) % normalizedNeedle.length]!, end: raw + 1 };
+		}
+	}
+	return undefined;
 }
 
 /** The longest suffix of `text` a future append could still complete into a
@@ -128,6 +139,11 @@ const FENCED_SOURCE_INTRO = /\b(?:code|example|markdown|output|snippet|source)\s
 function isMarkdownFencePrefix(prefix: string): boolean {
 	let remaining = prefix;
 	while (remaining.length > 0) {
+		const listContinuation = /^ {4}(?=>)/.exec(remaining)?.[0] ?? "";
+		if (listContinuation) {
+			remaining = remaining.slice(listContinuation.length);
+			continue;
+		}
 		const indent = /^ {0,3}/.exec(remaining)?.[0] ?? "";
 		remaining = remaining.slice(indent.length);
 		if (remaining.length === 0) return true;
@@ -160,8 +176,9 @@ function markdownQuotePrefix(line: string): { length: number; depth: number } {
 
 function isListContinuationFencePrefix(source: string, lineStart: number, prefix: string): boolean {
 	const quote = markdownQuotePrefix(prefix);
-	const indent = prefix.length - quote.length;
-	if (!/^ *$/.test(prefix.slice(quote.length))) return false;
+	const looseQuote = quote.depth === 0 ? /^ *(?=>)/.exec(prefix) : undefined;
+	const indent = looseQuote ? looseQuote[0].length : prefix.length - quote.length;
+	if (looseQuote ? !prefix.slice(indent).startsWith(">") : !/^ *$/.test(prefix.slice(quote.length))) return false;
 	let cursor = lineStart;
 	let activeIndent = indent;
 	while (cursor > 0) {
@@ -1813,6 +1830,7 @@ interface RenderSignature {
 	defaultTextStyleId: number;
 	imageProtocol: string;
 	hyperlinks: boolean;
+	copyTargetAvailable: boolean;
 	textSizing: boolean;
 	bgColorProbe: string;
 	headingProbe: string;
@@ -1907,13 +1925,13 @@ function expandSourceText(source: string): ExpandedSource {
 }
 
 /** Translate a normalized (tabs expanded, OSC ST collapsed) boundary to raw source. */
-function sourceOffsetAtExpandedBoundary(source: string, boundary: number): number {
-	if (boundary <= 0) return 0;
-	let normalizedOffset = 0;
+function sourceOffsetAtExpandedBoundary(source: string, boundary: number, rawStart = 0, expandedStart = 0): number {
+	if (boundary <= expandedStart) return rawStart;
+	let normalizedOffset = expandedStart;
 	let nextOscMatch: RegExpExecArray | null = null;
-	OSC8_ST_PREFIX_REGEX.lastIndex = 0;
+	OSC8_ST_PREFIX_REGEX.lastIndex = rawStart;
 	nextOscMatch = OSC8_ST_PREFIX_REGEX.exec(source);
-	for (let sourceOffset = 0; sourceOffset < source.length;) {
+	for (let sourceOffset = rawStart; sourceOffset < source.length;) {
 		if (nextOscMatch?.index === sourceOffset) {
 			normalizedOffset += replaceTabs(`${nextOscMatch[1]}\x07`).length;
 			sourceOffset += nextOscMatch[0].length;
@@ -1948,6 +1966,8 @@ export class Markdown implements Component {
 	/** Dense expanded-to-source offsets, allocated with the copy-recovery source. */
 	#expandedSourceOffsets?: number[];
 	/** Expanded-source cursor used to disambiguate repeated fenced blocks. */
+	#sourceOffsetRawBoundary = 0;
+	#sourceOffsetExpandedBoundary = 0;
 	#copySourceSearchCursor = 0;
 	// Suffix of #text a future append could still complete into a match
 	// (see trailingOsc8Partial); drives the append-only fast path.
@@ -1965,6 +1985,7 @@ export class Markdown implements Component {
 	// callers); the L2 LRU may hand the same array to multiple instances.
 	#cachedText?: string;
 	#cachedWidth?: number;
+	#cachedCopyTargetAvailable?: boolean;
 	#cachedLines?: readonly string[];
 	#transientRenderCache = false;
 
@@ -2124,6 +2145,8 @@ export class Markdown implements Component {
 		this.#sourceText = sourceText;
 		this.#expandedSourceText = undefined;
 		this.#expandedSourceOffsets = undefined;
+		this.#sourceOffsetRawBoundary = 0;
+		this.#sourceOffsetExpandedBoundary = 0;
 		this.#text = text;
 		if (!text.trim()) {
 			// Blank replacement: render() early-returns before #lexTokens can see
@@ -2288,11 +2311,15 @@ export class Markdown implements Component {
 	}
 
 	render(width: number): readonly string[] {
+		const copyTargetAvailable = this.#theme.copyChipTarget !== undefined;
 		// L1: per-instance cache — fastest path for repeated renders of the same
-		// instance at the same width (e.g. resize debounce, repeated redraws).
-		// Returning the cached reference is load-bearing: parents memoize their
-		// concatenation on reference equality.
-		if (this.#cachedLines && this.#cachedText === this.#text && this.#cachedWidth === width) {
+		// instance at the same width and capability state.
+		if (
+			this.#cachedLines &&
+			this.#cachedText === this.#text &&
+			this.#cachedWidth === width &&
+			this.#cachedCopyTargetAvailable === copyTargetAvailable
+		) {
 			return this.#cachedLines;
 		}
 
@@ -2304,6 +2331,7 @@ export class Markdown implements Component {
 		if (!this.#text || this.#text.trim() === "") {
 			this.#cachedText = this.#text;
 			this.#cachedWidth = width;
+			this.#cachedCopyTargetAvailable = copyTargetAvailable;
 			this.#cachedLines = EMPTY_RENDER_LINES;
 			return EMPTY_RENDER_LINES;
 		}
@@ -2467,6 +2495,7 @@ export class Markdown implements Component {
 				// Populate L1 so subsequent calls from this instance are O(1) map lookup.
 				this.#cachedText = this.#text;
 				this.#cachedWidth = width;
+				this.#cachedCopyTargetAvailable = copyTargetAvailable;
 				this.#cachedLines = cached;
 				return cached;
 			}
@@ -2484,6 +2513,7 @@ export class Markdown implements Component {
 		} finally {
 			this.#activeRenderSignature = undefined;
 		}
+
 		const emptyLines = this.#renderEmptyPaddingLines(signature);
 
 		// Combine top padding, content, and bottom padding
@@ -2494,6 +2524,7 @@ export class Markdown implements Component {
 		// mutate it (Component render contract); the L2 entry is shared across
 		// instances keyed on identical inputs.
 		this.#cachedText = this.#text;
+		this.#cachedCopyTargetAvailable = copyTargetAvailable;
 		this.#cachedWidth = width;
 		this.#cachedLines = result;
 
@@ -2551,6 +2582,7 @@ export class Markdown implements Component {
 			textSizing: TERMINAL.textSizing,
 			bgColorProbe,
 			headingProbe,
+			copyTargetAvailable: this.#theme.copyChipTarget !== undefined,
 		};
 	}
 	// All-primitive signature — compare via the canonical render-cache encoding.
@@ -2563,7 +2595,7 @@ export class Markdown implements Component {
 		// original source bytes. Keep the raw source in the cache identity so two
 		// documents that render identically can never reuse the other's target.
 		const sourceKey = sourceText === normalizedText ? "=" : `${sourceText.length}:${sourceText}`;
-		return `${normalizedText.length}:${normalizedText}\x00${sourceKey}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}`;
+		return `${normalizedText.length}:${normalizedText}\x00${sourceKey}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.copyTargetAvailable ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}`;
 	}
 
 	#renderStreamingContentLines(
@@ -2607,7 +2639,22 @@ export class Markdown implements Component {
 			sourceText:
 				reusablePrefix?.text === stableText
 					? reusablePrefix.sourceText
-					: this.#sourceText.slice(0, sourceOffsetAtExpandedBoundary(this.#sourceText, stableText.length)),
+					: (() => {
+							const sourceText = this.#sourceText;
+							const rawStart =
+								stableText.length >= this.#sourceOffsetExpandedBoundary ? this.#sourceOffsetRawBoundary : 0;
+							const expandedStart =
+								rawStart === this.#sourceOffsetRawBoundary ? this.#sourceOffsetExpandedBoundary : 0;
+							const rawBoundary = sourceOffsetAtExpandedBoundary(
+								sourceText,
+								stableText.length,
+								rawStart,
+								expandedStart,
+							);
+							this.#sourceOffsetRawBoundary = rawBoundary;
+							this.#sourceOffsetExpandedBoundary = stableText.length;
+							return sourceText.slice(0, rawBoundary);
+						})(),
 			copySourceCursor: this.#copySourceSearchCursor,
 			tokenCount: stableTokenCount,
 			lines: contentLines.slice(),
@@ -2627,6 +2674,7 @@ export class Markdown implements Component {
 	): StreamPrefixLineCache | undefined {
 		const cache = this.#streamPrefixLineCache;
 		if (!cache) return undefined;
+		if (!this.#signatureEquals(cache, signature)) return undefined;
 		if (!this.#sourceText.startsWith(cache.sourceText)) return undefined;
 		if (!normalizedText.startsWith(cache.text) || !stableText.startsWith(cache.text)) return undefined;
 		if (cache.width !== signature.width) return undefined;
@@ -2637,6 +2685,7 @@ export class Markdown implements Component {
 		if (cache.defaultTextStyleId !== signature.defaultTextStyleId) return undefined;
 		if (cache.imageProtocol !== signature.imageProtocol) return undefined;
 		if (cache.hyperlinks !== signature.hyperlinks) return undefined;
+		if (cache.copyTargetAvailable !== signature.copyTargetAvailable) return undefined;
 		if (cache.textSizing !== signature.textSizing) return undefined;
 		if (cache.bgColorProbe !== signature.bgColorProbe) return undefined;
 		if (cache.headingProbe !== signature.headingProbe) return undefined;
@@ -2723,6 +2772,7 @@ export class Markdown implements Component {
 	// token), or a following-token type change.
 	#tailSpliceEnd(cache: TailRowCache, start: number, signature: RenderSignature, tokens: Token[]): number {
 		if (cache.tokenStart !== start) return start;
+		if (!this.#signatureEquals(cache, signature)) return start;
 		if (!this.#sourceText.startsWith(cache.sourceText)) return start;
 		if (cache.width !== signature.width) return start;
 		if (cache.paddingX !== signature.paddingX) return start;
@@ -2732,6 +2782,7 @@ export class Markdown implements Component {
 		if (cache.defaultTextStyleId !== signature.defaultTextStyleId) return start;
 		if (cache.imageProtocol !== signature.imageProtocol) return start;
 		if (cache.hyperlinks !== signature.hyperlinks) return start;
+		if (cache.copyTargetAvailable !== signature.copyTargetAvailable) return start;
 		if (cache.textSizing !== signature.textSizing) return start;
 		if (cache.bgColorProbe !== signature.bgColorProbe) return start;
 		if (cache.headingProbe !== signature.headingProbe) return start;
@@ -2926,7 +2977,7 @@ export class Markdown implements Component {
 		if (!hasStTerminatedOsc) {
 			return exactStart >= 0 ? { start: exactStart, end: exactStart + canonicalRaw.length } : undefined;
 		}
-		const normalizedSpan = findNormalizedOsc8Span(expandedSourceText, canonicalRaw, start);
+		const normalizedSpan = findNormalizedOsc8Span(expandedSourceText, canonicalRaw, start, exactStart);
 		if (normalizedSpan && (exactStart < 0 || normalizedSpan.start < exactStart)) return normalizedSpan;
 		return exactStart >= 0 ? { start: exactStart, end: exactStart + canonicalRaw.length } : normalizedSpan;
 	}
@@ -3284,9 +3335,7 @@ export class Markdown implements Component {
 			const copyTarget = TERMINAL.hyperlinks ? this.#theme.copyChipTarget : undefined;
 			const code = copyTarget !== undefined ? this.#originalCodeBody(token) : "";
 			const target = copyTarget?.(code);
-			const chip = target
-				? `\x1b]8;;${target.replaceAll("\x1b", "").replaceAll("\x07", "")}\x07${border(copyLabel)}\x1b]8;;\x07`
-				: border(copyLabel);
+			const chip = formatHyperlink(border(copyLabel), target ?? "");
 			framed.push({
 				text: `${border(`${box.bottomLeft}${box.horizontal.repeat(fill)}`)}${chip}${border(`${box.horizontal}${box.bottomRight}`)}`,
 				noWrap: true,
@@ -3370,7 +3419,7 @@ export class Markdown implements Component {
 		const firstLineEnd = raw.indexOf("\n");
 		if (firstLineEnd < 0) return false;
 		const openingLine = raw.slice(0, firstLineEnd);
-		const openingTrimmed = openingLine.trimStart();
+		const openingTrimmed = openingLine.replace(/^[ \t]+/, "");
 		const openingIndent = openingLine.length - openingTrimmed.length;
 		if (openingIndent > 3) return false;
 		const fenceChar = openingTrimmed.charAt(0);
@@ -3383,11 +3432,11 @@ export class Markdown implements Component {
 		while (lineStart <= raw.length) {
 			const lineEnd = raw.indexOf("\n", lineStart);
 			const line = lineEnd >= 0 ? raw.slice(lineStart, lineEnd) : raw.slice(lineStart);
-			const trimmed = line.trimStart();
+			const trimmed = line.replace(/^[ \t]+/, "");
 			const indent = line.length - trimmed.length;
 			let closingLength = 0;
 			while (trimmed.charAt(closingLength) === fenceChar) closingLength++;
-			if (indent <= 3 && closingLength >= fenceLength && trimmed.slice(closingLength).trim().length === 0) {
+			if (indent <= 3 && closingLength >= fenceLength && /^[ \t]*$/.test(trimmed.slice(closingLength))) {
 				return true;
 			}
 			if (lineEnd < 0) break;
@@ -3422,6 +3471,7 @@ export class Markdown implements Component {
 			cache.imageProtocol === signature.imageProtocol &&
 			cache.hyperlinks === signature.hyperlinks &&
 			cache.textSizing === signature.textSizing &&
+			cache.copyTargetAvailable === signature.copyTargetAvailable &&
 			cache.bgColorProbe === signature.bgColorProbe &&
 			cache.headingProbe === signature.headingProbe
 		) {
@@ -4145,20 +4195,17 @@ export class Markdown implements Component {
 				if (closedFence) {
 					const framed = this.#boxFencedCodeLines(token, bodyLines, frameWidth);
 					for (const line of framed) lines.push({ ...line, nested: false });
-				} else {
-					// An open fence inside a list keeps its delimiters as literal
-					// code rows (same contract as the top-level path) instead of
-					// being silently swallowed by the framed renderer.
+				} else if (fenced) {
+					// Unfinished fences retain their original delimiters.
 					const delimiter = raw.match(/(`{3,}|~{3,})/)?.[1] ?? "```";
 					const rawLines = raw.split("\n");
 					for (let index = 0; index < rawLines.length; index++) {
 						const text = replaceTabs(rawLines[index]!);
-						// Only the opening delimiter needs the list-aware noWrap path.
-						// Body rows must wrap inside the continuation width rather than
-						// losing their suffix to noWrap truncation.
 						lines.push({ text, noWrap: index === 0 ? true : undefined, nested: false });
 					}
 					lines.push({ text: replaceTabs(delimiter), noWrap: true, nested: false });
+				} else {
+					for (const line of bodyLines) lines.push({ ...line, nested: false });
 				}
 				// Some render paths (too-narrow frames, Mermaid) do not need a
 				// copy target. They must still consume this token's source span

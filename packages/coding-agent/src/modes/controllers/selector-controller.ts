@@ -611,6 +611,14 @@ export class SelectorController {
 			case "tui.vimModeDisplay":
 				this.ctx.applyVimModeSetting();
 				break;
+			case "display.popupFill":
+				this.ctx.editor.popupFill = value as boolean;
+				this.ctx.ui.requestRender();
+				break;
+			case "display.commandSuggestionsPopup":
+				this.ctx.editor.commandSuggestionsPopup = value as boolean;
+				this.ctx.ui.requestRender();
+				break;
 			case "display.pinnedAgents":
 				this.ctx.applyPinnedAgentsSetting();
 				break;
@@ -914,12 +922,21 @@ export class SelectorController {
 		// else the session model (the bundled task agent inherits it by default).
 		const taskOverride = this.ctx.settings.get("task.agentModelOverrides").task;
 		const taskSelector = (Array.isArray(taskOverride) ? taskOverride[0] : taskOverride) ?? currentSelector;
+		const editor = this.ctx.editor;
+		const inline =
+			this.ctx.settings.get("display.inlineModelPicker") && this.ctx.editorContainer.children.includes(editor);
+		if (inline) editor.dismissAutocomplete();
+		const renderInlineEditorRows = (width: number) => editor.renderWithMaxContentRows(width, 1, true);
 		let closed = false;
 		const done = () => {
 			if (closed) return;
 			closed = true;
-			this.ctx.editorContainer.removeChild(picker);
-			this.ctx.editorContainer.addChild(this.ctx.editor);
+			overlayHandle?.hide();
+			if (inline && this.ctx.editorContainer.children.includes(picker)) {
+				this.ctx.editorContainer.removeChild(picker);
+				this.ctx.editorContainer.addChild(editor);
+			}
+			if (inline) this.ctx.ui.setCursorOverlay(undefined, 0, 0);
 			this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
@@ -969,8 +986,8 @@ export class SelectorController {
 				onCancel: done,
 			},
 			{
-				editorRows: this.ctx.editor.render(this.ctx.ui.terminal.columns).length,
-				renderEditorRows: width => this.ctx.editor.render(width),
+				editorRows: inline ? editor.render(this.ctx.ui.terminal.columns).length : undefined,
+				renderEditorRows: inline ? renderInlineEditorRows : undefined,
 				currentContextTokens,
 				currentSelector,
 				taskModeKeys: this.ctx.keybindings.getKeys("app.model.selectTemporary"),
@@ -981,8 +998,18 @@ export class SelectorController {
 				currentQuickRole: quickRoleCycle?.models[quickRoleCycle.currentIndex]?.role,
 			},
 		);
-		this.ctx.editorContainer.removeChild(this.ctx.editor);
-		this.ctx.editorContainer.addChild(picker);
+		const overlayHandle = inline
+			? undefined
+			: this.ctx.ui.showOverlay(picker, {
+					anchor: "bottom-center",
+					width: "100%",
+					maxHeight: "100%",
+					margin: 0,
+				});
+		if (inline) {
+			this.ctx.editorContainer.removeChild(editor);
+			this.ctx.editorContainer.addChild(picker);
+		}
 		this.ctx.ui.setFocus(picker);
 		this.ctx.ui.requestRender();
 	}

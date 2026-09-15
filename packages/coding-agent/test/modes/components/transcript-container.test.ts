@@ -136,7 +136,7 @@ describe("TranscriptContainer", () => {
 		}
 	});
 
-	it("captures mutable by default and append-only declarations permanently", () => {
+	it("retains borrowed blocks while allowing uncommitted blocks to be removed", () => {
 		const transcript = new TranscriptContainer();
 		const borrowed = new Block(["first", "second"], false);
 		const live = new Block(["later"], false);
@@ -151,6 +151,15 @@ describe("TranscriptContainer", () => {
 		transcript.removeChild(borrowed);
 		transcript.removeChild(live);
 		expect(transcript.children).toEqual([borrowed]);
+	});
+
+	it("offers an acknowledged empty replay when the committed ledger is empty", () => {
+		const transcript = new TranscriptContainer();
+		transcript.beginReplay();
+		const replay = transcript.peekReplayBatch(80);
+		expect(replay).toEqual({ id: 1, rows: [], kind: "replay" });
+		transcript.acknowledgeFinalizedBatch(replay!.id);
+		expect(transcript.peekReplayBatch(80)).toBeUndefined();
 	});
 
 	it("keeps settled blocks live while the viewport has room", () => {

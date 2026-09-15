@@ -12,7 +12,6 @@
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
-import { modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { getCatalogProviderEntry } from "@oh-my-pi/pi-catalog/provider-models";
 import {
@@ -31,9 +30,9 @@ import {
 import type { ModelRegistry } from "../../config/model-registry";
 import {
 	formatModelSelectorValue,
+	parseModelPattern,
 	type ModelRoleLookup,
-	parseModelString,
-	splitUpstreamRouting,
+	parseExactModelSelectorWithRouting,
 	type ResolvedModelRoleValue,
 	resolveModelRoleValue,
 } from "../../config/model-resolver";
@@ -1021,23 +1020,7 @@ export class ModelHubComponent implements Component {
 				upstream: string | undefined;
 		  }
 		| undefined {
-		const trimmed = raw.trim();
-		const parse = (pattern: string) =>
-			parseModelString(pattern, {
-				allowMaxSuffix: true,
-				allowAutoAlias: true,
-				isLiteralModelId: (provider, id) => this.#findFallbackModel(provider, id) !== undefined,
-			});
-		const literal = parse(trimmed);
-		if (literal && this.#findFallbackModel(literal.provider, literal.id)) return { ...literal, upstream: undefined };
-		const routing = splitUpstreamRouting(trimmed);
-		if (!routing) {
-			if (!literal) return undefined;
-			return { ...literal, upstream: undefined };
-		}
-		const parsed = parse(routing.base.trim());
-		if (!parsed) return undefined;
-		return { ...parsed, upstream: routing.upstream };
+		return parseExactModelSelectorWithRouting(raw, (provider, id) => this.#registry.find(provider, id));
 	}
 
 	/**
@@ -1057,13 +1040,6 @@ export class ModelHubComponent implements Component {
 		if (!parsed) return undefined;
 		const item = this.#findFallbackModel(parsed.provider, parsed.id);
 		if (!item) return undefined;
-		if (
-			parsed.upstream &&
-			!modelMatchesHost(item.model, "openrouter") &&
-			!modelMatchesHost(item.model, "vercelAIGateway")
-		) {
-			return undefined;
-		}
 		return { item, thinkingLevel: parsed.thinkingLevel, upstream: parsed.upstream };
 	}
 
@@ -1106,19 +1082,25 @@ export class ModelHubComponent implements Component {
 		if (index >= chain.length) return;
 		const resolved = this.#resolveFallbackEntry(role, index);
 		if (!resolved) return;
+		// Save the registry-canonical spelling (`OpenAI/GPT-5.5` persists as
+		// `openai/gpt-5.5:off`), re-attaching `@upstream` routing ahead of the
+		// effort suffix (`id@up:low` is the canonical order).
 		const base = `${resolved.item.provider}/${resolved.item.id}`;
 		const routed = resolved.upstream ? `${base}@${resolved.upstream}` : base;
-		const normalizedLevel = level === ThinkingLevel.Inherit || level === AUTO_THINKING ? undefined : level;
-		const next = formatModelSelectorValue(routed, normalizedLevel);
+		const next = formatModelSelectorValue(routed, level);
+		const normalizedNext = parseRetryFallbackSelector(next, this.#registry)?.raw ?? next;
 		const primaryRaw = role.includes("/") ? role : this.#settings.getModelRole(role);
-		const primary = primaryRaw ? parseRetryFallbackSelector(primaryRaw, this.#registry)?.raw : undefined;
-		const edited = parseRetryFallbackSelector(next, this.#registry)?.raw;
-		if (role !== "default" && primary && edited === primary) {
+		const normalizedPrimary = primaryRaw ? parseRetryFallbackSelector(primaryRaw, this.#registry)?.raw : undefined;
+		if (role !== "default" && normalizedPrimary === normalizedNext) {
 			chain.splice(index, 1);
 		} else {
 			chain[index] = next;
 			for (let i = chain.length - 1; i >= 0; i--) {
-				if (i !== index && parseRetryFallbackSelector(chain[i], this.#registry)?.raw === edited) chain.splice(i, 1);
+				if (
+					i !== index &&
+					(parseRetryFallbackSelector(chain[i], this.#registry)?.raw ?? chain[i]) === normalizedNext
+				)
+					chain.splice(i, 1);
 			}
 		}
 		this.#setFallbackChain(role, chain);
@@ -1127,7 +1109,6 @@ export class ModelHubComponent implements Component {
 		);
 		if (rowIndex >= 0) this.#roleIndex = rowIndex;
 	}
-
 	#closeStrip(): void {
 		const strip = this.#strip;
 		this.#strip = null;
@@ -2180,10 +2161,12 @@ export class ModelHubComponent implements Component {
 			}
 			const row = this.#rolesRows[this.#roleIndex];
 			if (row?.kind === "fallback") {
+				// Advertise `t` only when the entry resolves: wildcards always
+				// inherit and unknown models have no ladder to offer, so the
+				// action would be inert there.
 				const editable = this.#resolveFallbackEntry(row.role, row.chainIndex) !== undefined;
-				return editable
-					? "↑/↓ rows · Enter replace · f add another · x remove · t thinking · [/] reorder · ← providers"
-					: "↑/↓ rows · Enter replace · f add another · x remove · thinking n/a · [/] reorder · ← providers";
+				const thinking = editable ? " · t thinking" : " · thinking n/a";
+				return `↑/↓ rows · Enter replace · f add another · x remove${thinking} · [/] reorder · ← providers`;
 			}
 			if (row?.kind === "chainKey") {
 				return "↑/↓ rows · Enter/f add fallback · x clear chain · ← providers";

@@ -503,7 +503,7 @@ async function acquireTabImpl(
 		logger.warn("Tab worker init failed; retrying with inline tab worker (no sync-loop guard)", {
 			error: error instanceof Error ? error.message : String(error),
 		});
-		worker = await spawnInlineWorker();
+		worker = await spawnInlineWorker(browser);
 		try {
 			info = await initializeTabWorker(worker, initPayload, initBudgetMs, startedAt);
 		} catch (inlineError) {
@@ -1005,7 +1005,14 @@ async function releaseTabInner(tab: TabSession, name: string, opts: ReleaseTabOp
 		if (aliases.length > 1) {
 			const aliasIsBusy = [...tab.pending.values()].some(pending => pending.tabName === name);
 			if (aliasIsBusy) throw new ToolError("Cannot close a Firefox tab alias while it is busy");
-			tab.worker.send({ type: "release-runtime", name });
+			try {
+				tab.worker.send({ type: "release-runtime", name });
+			} catch (error) {
+				logger.debug("Failed to release Firefox tab alias runtime", {
+					name,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 			const survivor = aliases.find(([aliasName]) => aliasName !== name)?.[1];
 			tabs.delete(name);
 			tab.state = "dead";
@@ -1785,6 +1792,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 		// Unblock a wedged page (open JS dialog, hung navigation) before adopting it —
 		// otherwise init stalls, times out, and the tab gets force-killed.
 		recover: true,
+		emulateFocus: tab.kindTag === "headless",
 		timeoutMs,
 		activateForScreenshot: tab.activateForScreenshot,
 	};
@@ -1836,7 +1844,14 @@ export async function forceKillTab(
 			([, candidate]) => candidate.backend === "worker" && candidate.worker === tab.worker,
 		);
 		if (!options.sharedFirefoxWorker && aliases.length > 1) {
-			tab.worker.send({ type: "release-runtime", name });
+			try {
+				tab.worker.send({ type: "release-runtime", name });
+			} catch (error) {
+				logger.debug("Failed to release Firefox tab alias runtime", {
+					name,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 			const survivor = aliases.find(([aliasName]) => aliasName !== name)?.[1];
 			tabs.delete(name);
 			if (survivor?.backend === "worker") firefoxSharedTabs.set(survivor);
@@ -1950,19 +1965,24 @@ async function waitForClosed(tab: WorkerTabSession): Promise<void> {
 }
 
 async function terminateWorker(worker: WorkerHandle, graceful = false): Promise<void> {
-	if (worker.mode === "inline" || graceful) {
-		const { promise, resolve } = Promise.withResolvers<void>();
-		const unsubscribe = worker.onMessage(msg => {
-			if (msg.type === "closed") resolve();
-		});
-		try {
-			worker.send({ type: "close" });
-			await raceWithTimeout(promise, GRACE_MS, "Timed out closing browser worker").catch(() => undefined);
-		} finally {
-			unsubscribe();
+	try {
+		if (worker.mode === "inline" || graceful) {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			const unsubscribe = worker.onMessage(msg => {
+				if (msg.type === "closed") resolve();
+			});
+			try {
+				worker.send({ type: "close" });
+				await raceWithTimeout(promise, GRACE_MS, "Timed out closing browser worker");
+			} finally {
+				unsubscribe();
+			}
 		}
+	} catch {
+		// A failed transport must not prevent forced cleanup of the worker and its aliases.
+	} finally {
+		await worker.terminate().catch(() => undefined);
 	}
-	await worker.terminate().catch(() => undefined);
 }
 
 function expandBrowserScreenshotDir(session: ToolSession): string | undefined {
@@ -2085,7 +2105,7 @@ function wrapBunWorker(worker: Worker): WorkerHandle {
  * entry. This preserves normal browser behavior but cannot interrupt synchronous
  * infinite loops because user code runs on the main thread.
  */
-async function spawnInlineWorker(): Promise<WorkerHandle> {
+async function spawnInlineWorker(browser?: BrowserHandle): Promise<WorkerHandle> {
 	const hostListeners = new Set<(message: WorkerOutbound) => void>();
 	const workerListeners = new Set<(message: WorkerInbound) => void>();
 	const workerTransport: Transport = {
@@ -2104,6 +2124,7 @@ async function spawnInlineWorker(): Promise<WorkerHandle> {
 	new WorkerCore(workerTransport, false);
 	let termination: Promise<void> | undefined;
 	const closed = Promise.withResolvers<void>();
+	if (browser && "webSocketUrl" in browser) browser.connectionCleanup = closed.promise;
 	const observeClosed = (message: WorkerOutbound): void => {
 		if (message.type !== "closed") return;
 		hostListeners.delete(observeClosed);
@@ -2123,13 +2144,20 @@ async function spawnInlineWorker(): Promise<WorkerHandle> {
 		onError: () => () => {},
 		terminate() {
 			if (termination) return termination;
-			termination = closed.promise;
+			termination = raceWithTimeout(closed.promise, GRACE_MS, "Timed out closing inline browser worker").catch(
+				() => undefined,
+			);
 			queueMicrotask(() => {
 				for (const workerListener of workerListeners) workerListener({ type: "close" });
 			});
 			return termination;
 		},
 	};
+}
+
+/** Exercise the inline transport lifecycle without spawning an isolated worker. */
+export function spawnInlineWorkerForTest(): Promise<WorkerHandle> {
+	return spawnInlineWorker();
 }
 
 /**

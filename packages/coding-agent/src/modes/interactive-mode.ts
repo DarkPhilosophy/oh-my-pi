@@ -1211,6 +1211,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
 		this.syncEditorSpelling();
 		this.editor.viewportRowsProvider = () => this.ui.terminal.rows;
+		this.editor.commandSuggestionsPopup = this.settings.get("display.commandSuggestionsPopup");
+		this.editor.popupFill = this.settings.get("display.popupFill");
+		this.editor.onAutocompleteRender = (render, offset, rows) => this.ui.setCursorOverlay(render, offset, rows);
 		this.editor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
 		};
@@ -5611,6 +5614,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			autocorrect: this.settings.get("spelling.autocorrect"),
 		});
 		nextEditor.viewportRowsProvider = () => this.ui.terminal.rows;
+		nextEditor.commandSuggestionsPopup = this.settings.get("display.commandSuggestionsPopup");
+		nextEditor.popupFill = this.settings.get("display.popupFill");
+		nextEditor.onAutocompleteRender = (render, offset, rows) => this.ui.setCursorOverlay(render, offset, rows);
 		nextEditor.magicKeywordsEnabled = () => this.settings.get("magicKeywords.enabled");
 		nextEditor.imageReferenceHyperlink = imageReferenceHyperlink;
 		nextEditor.onAutocompleteCancel = () => {

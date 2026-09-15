@@ -24,6 +24,11 @@ interface AcpEventMapperOptions {
 	getToolArgs?: (toolCallId: string) => unknown;
 	resolveImageData?: (data: string, mimeType: string | undefined) => string;
 	/**
+	 * Expose the private `think` tool's thoughts as ACP thought chunks.
+	 * Disabled by default because this makes the content visible to the ACP client.
+	 */
+	exposeThinkTool?: boolean;
+	/**
 	 * Session cwd. Tool call locations sent to ACP clients must be absolute
 	 * (the editor host needs them to open or focus files). When provided,
 	 * the mapper resolves raw `path`/`file`/etc. args against this cwd
@@ -179,6 +184,22 @@ function isInternalHubMessageTool(toolName: string, args: unknown): boolean {
 	}
 }
 
+function mapThinkToolToThoughtChunk(
+	event: Extract<AgentSessionEvent, { type: "tool_execution_start" }>,
+	sessionId: string,
+): SessionNotification[] {
+	if (!event.args || typeof event.args !== "object" || !("thoughts" in event.args)) return [];
+	const thoughts = Reflect.get(event.args, "thoughts");
+	if (typeof thoughts !== "string" || thoughts.trim().length === 0) return [];
+	return [
+		toSessionNotification(sessionId, {
+			sessionUpdate: "agent_thought_chunk",
+			content: { type: "text", text: thoughts },
+			messageId: event.toolCallId,
+		}),
+	];
+}
+
 export function mapToolKind(toolName: string, args?: unknown): ToolKind {
 	// An xd:// device write executes the mounted tool — "edit" would make ACP
 	// clients render it as a file modification to a nonexistent path (and
@@ -212,7 +233,6 @@ export function mapToolKind(toolName: string, args?: unknown): ToolKind {
 			return "other";
 	}
 }
-
 export function mapAgentSessionEventToAcpSessionUpdates(
 	event: AgentSessionEvent,
 	sessionId: string,
@@ -225,6 +245,9 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 			return mapAssistantMessageEnd(event, sessionId, options);
 		case "tool_execution_start": {
 			if (isInternalHubMessageTool(event.toolName, event.args)) return [];
+			if (options.exposeThinkTool && event.toolName === "think") {
+				return mapThinkToolToThoughtChunk(event, sessionId);
+			}
 			const update = buildToolCallStartUpdate({
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
@@ -236,6 +259,7 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 		}
 		case "tool_execution_update": {
 			if (isInternalHubMessageTool(event.toolName, event.args)) return [];
+			if (options.exposeThinkTool && event.toolName === "think") return [];
 			const content = mergeToolUpdateContent(
 				buildToolStartContent(event.toolName, event.args),
 				extractToolCallContent(event.partialResult, options),
@@ -257,6 +281,7 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 		}
 		case "tool_execution_end": {
 			const args = getToolExecutionEndArgs(event, options);
+			if (options.exposeThinkTool && event.toolName === "think") return [];
 			if (isInternalHubMessageTool(event.toolName, args)) return [];
 			const resultContent = [
 				...extractDiffToolCallContent(event.result),

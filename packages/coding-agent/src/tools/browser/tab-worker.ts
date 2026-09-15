@@ -6,6 +6,7 @@ import { postmortem, Snowflake, untilAborted, withTimeout } from "@oh-my-pi/pi-u
 import type { HTMLElement } from "@oh-my-pi/pi-utils/dom";
 import type {
 	Browser,
+	BrowserContext,
 	CDPSession,
 	Dialog,
 	ElementHandle,
@@ -44,13 +45,7 @@ import {
 	resolveAriaRefHandle,
 } from "./aria/aria-snapshot";
 import { pickElectronTarget } from "./attach";
-import {
-	applyStealthPatches,
-	applyViewport,
-	BROWSER_PROTOCOL_TIMEOUT_MS,
-	DEFAULT_VIEWPORT,
-	loadPuppeteerInWorker,
-} from "./launch";
+import { applyStealthPatches, applyViewport, BROWSER_PROTOCOL_TIMEOUT_MS, loadPuppeteerInWorker } from "./launch";
 import { extractReadableFromHtml, type ReadableFormat } from "./readable";
 
 import { cloneSafe, RunOutput } from "./run-output";
@@ -547,6 +542,7 @@ class NavigationCleanupError extends ToolError {}
 
 interface RunPageScope {
 	page: Page;
+	instrumentBrowser(browser: Browser): void;
 	cleanup(): Promise<void>;
 }
 
@@ -555,141 +551,216 @@ interface RunPageScope {
  * Puppeteer's Page wraps an internal emitter, so `removeAllListeners("request")`
  * would also remove its forwarding listener; the facade removes only user handlers.
  */
-function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPageScope {
-	const requestHandlers: unknown[] = [];
-	const on = page.on;
-	const off = page.off;
-	const once = page.once;
-	const removeAllListeners = page.removeAllListeners;
-	const goto = page.goto;
-	const reload = page.reload;
-	const goBack = page.goBack;
-	const goForward = page.goForward;
-	const setContent = page.setContent;
-	const onDescriptor = Object.getOwnPropertyDescriptor(page, "on");
-	const offDescriptor = Object.getOwnPropertyDescriptor(page, "off");
-	const onceDescriptor = Object.getOwnPropertyDescriptor(page, "once");
-	const removeAllDescriptor = Object.getOwnPropertyDescriptor(page, "removeAllListeners");
-	const gotoDescriptor = Object.getOwnPropertyDescriptor(page, "goto");
-	const reloadDescriptor = Object.getOwnPropertyDescriptor(page, "reload");
-	const goBackDescriptor = Object.getOwnPropertyDescriptor(page, "goBack");
-	const goForwardDescriptor = Object.getOwnPropertyDescriptor(page, "goForward");
-	const setContentDescriptor = Object.getOwnPropertyDescriptor(page, "setContent");
-
-	Object.defineProperties(page, {
-		on: {
-			configurable: true,
-			value: (type: unknown, handler: unknown): Page => {
-				Reflect.apply(on, page, [type, handler]);
-				if (type === "request") requestHandlers.push(handler);
-				return page;
+export function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPageScope {
+	let disposed = false;
+	const pageRestorers = new Map<Page, () => void>();
+	const instrumentPage = (target: Page): void => {
+		if (disposed || pageRestorers.has(target)) return;
+		const handlers: Array<{ type: string; handler: unknown; original?: unknown }> = [];
+		const on = target.on;
+		const off = target.off;
+		const once = target.once;
+		const originals = new Map<string, PropertyDescriptor | undefined>(
+			["on", "off", "once", "removeAllListeners", "goto", "reload", "goBack", "goForward", "setContent"].map(
+				name => [name, Object.getOwnPropertyDescriptor(target, name)],
+			),
+		);
+		const frameRestorers: Array<() => void> = [];
+		const instrumentedFrames = new WeakSet<Frame>();
+		const instrumentFrame = (frame: Frame): void => {
+			if (instrumentedFrames.has(frame)) return;
+			instrumentedFrames.add(frame);
+			for (const name of ["goto", "setContent"] as const) {
+				const method = frame[name];
+				const descriptor = Object.getOwnPropertyDescriptor(frame, name);
+				Object.defineProperty(frame, name, {
+					configurable: true,
+					value: (...args: unknown[]) =>
+						Reflect.apply(method, frame, args).catch((error: unknown) => {
+							if (error instanceof Error && error.name === "TimeoutError") onNavigationTimeout?.();
+							throw error;
+						}),
+				});
+				frameRestorers.push(() => {
+					if (descriptor) Object.defineProperty(frame, name, descriptor);
+					else Reflect.deleteProperty(frame, name);
+				});
+			}
+		};
+		if (onNavigationTimeout) {
+			for (const frame of target.frames()) instrumentFrame(frame);
+			Reflect.apply(on, target, ["frameattached", instrumentFrame]);
+		}
+		Object.defineProperties(target, {
+			on: {
+				configurable: true,
+				value: (type: unknown, handler: unknown): Page => {
+					Reflect.apply(on, target, [type, handler]);
+					if (typeof type === "string") handlers.push({ type, handler });
+					return target;
+				},
 			},
-		},
-		once: {
-			configurable: true,
-			value: (type: unknown, handler: unknown): Page => {
-				if (type !== "request" || typeof handler !== "function") {
-					Reflect.apply(once, page, [type, handler]);
-					return page;
-				}
-				const wrapper = (event: unknown): void => {
-					const index = requestHandlers.lastIndexOf(wrapper);
-					if (index >= 0) requestHandlers.splice(index, 1);
-					Reflect.apply(off, page, ["request", wrapper]);
-					Reflect.apply(handler, page, [event]);
-				};
-				requestHandlers.push(wrapper);
-				Reflect.apply(on, page, [type, wrapper]);
-				return page;
-			},
-		},
-		off: {
-			configurable: true,
-			value: (type: unknown, handler?: unknown): Page => {
-				Reflect.apply(off, page, [type, handler]);
-				if (type === "request") {
-					if (handler === undefined) requestHandlers.length = 0;
-					else {
-						const index = requestHandlers.lastIndexOf(handler);
-						if (index >= 0) requestHandlers.splice(index, 1);
+			once: {
+				configurable: true,
+				value: (type: unknown, handler: unknown): Page => {
+					if (typeof type !== "string" || typeof handler !== "function") {
+						Reflect.apply(once, target, [type, handler]);
+						return target;
 					}
-				}
-				return page;
+					const wrapper = (event: unknown): void => {
+						Reflect.apply(off, target, [type, wrapper]);
+						const index = handlers.findIndex(entry => entry.handler === wrapper);
+						if (index >= 0) handlers.splice(index, 1);
+						Reflect.apply(handler, target, [event]);
+					};
+					handlers.push({ type, handler: wrapper, original: handler });
+					Reflect.apply(on, target, [type, wrapper]);
+					return target;
+				},
 			},
-		},
-		removeAllListeners: {
-			configurable: true,
-			value: (type?: unknown): Page => {
-				if (type === undefined || type === "request") {
-					for (const handler of requestHandlers) Reflect.apply(off, page, ["request", handler]);
-					requestHandlers.length = 0;
-				} else Reflect.apply(removeAllListeners, page, [type]);
-				return page;
+			off: {
+				configurable: true,
+				value: (type: unknown, handler?: unknown): Page => {
+					for (let i = handlers.length - 1; i >= 0; i--) {
+						const entry = handlers[i];
+						if (
+							entry.type === type &&
+							(handler === undefined || entry.handler === handler || entry.original === handler)
+						) {
+							Reflect.apply(off, target, [entry.type, entry.handler]);
+							handlers.splice(i, 1);
+						}
+					}
+					return target;
+				},
 			},
-		},
-		goto: {
-			configurable: true,
-			value: async (...args: Parameters<Page["goto"]>) => {
-				try {
-					return await Reflect.apply(goto, page, args);
-				} catch (error) {
-					if (error instanceof Error && error.name === "TimeoutError") onNavigationTimeout?.();
-					throw error;
-				}
+			removeAllListeners: {
+				configurable: true,
+				value: (type?: unknown): Page => {
+					if (type === undefined) {
+						for (const entry of handlers) Reflect.apply(off, target, [entry.type, entry.handler]);
+						handlers.length = 0;
+					} else {
+						for (const entry of handlers)
+							if (entry.type === type) Reflect.apply(off, target, [entry.type, entry.handler]);
+						for (let i = handlers.length - 1; i >= 0; i--) if (handlers[i].type === type) handlers.splice(i, 1);
+					}
+					return target;
+				},
 			},
-		},
-	});
-	for (const [name, method] of [
-		["reload", reload],
-		["goBack", goBack],
-		["goForward", goForward],
-		["setContent", setContent],
-	] as const) {
-		Object.defineProperty(page, name, {
-			configurable: true,
-			value: (...args: unknown[]) =>
-				Reflect.apply(method, page, args).catch((error: unknown) => {
-					if (error instanceof Error && error.name === "TimeoutError") onNavigationTimeout?.();
-					throw error;
-				}),
 		});
-	}
-
+		for (const [name, method] of [
+			["goto", target.goto],
+			["reload", target.reload],
+			["goBack", target.goBack],
+			["goForward", target.goForward],
+			["setContent", target.setContent],
+		] as const) {
+			Object.defineProperty(target, name, {
+				configurable: true,
+				value: (...args: unknown[]) =>
+					Reflect.apply(method, target, args).catch((error: unknown) => {
+						if (error instanceof Error && error.name === "TimeoutError") onNavigationTimeout?.();
+						throw error;
+					}),
+			});
+		}
+		wrapAcquisition(target, "target", result => instrumentTarget(result as Target));
+		wrapAcquisition(target, "browserContext", result => instrumentContext(result as BrowserContext));
+		pageRestorers.set(target, () => {
+			if (onNavigationTimeout) {
+				Reflect.apply(off, target, ["frameattached", instrumentFrame]);
+				for (const restore of frameRestorers) restore();
+			}
+			for (const [name, descriptor] of originals) {
+				if (descriptor) Object.defineProperty(target, name, descriptor);
+				else Reflect.deleteProperty(target, name);
+			}
+			for (const entry of handlers) Reflect.apply(off, target, [entry.type, entry.handler]);
+			handlers.length = 0;
+		});
+	};
+	const acquisitionRestorers: Array<() => void> = [];
+	const instrumentedObjects = new WeakSet<object>();
+	const wrapAcquisition = (owner: object, name: string, receive: (result: unknown) => void): void => {
+		const method: unknown = Reflect.get(owner, name);
+		if (typeof method !== "function") return;
+		const descriptor = Object.getOwnPropertyDescriptor(owner, name);
+		Object.defineProperty(owner, name, {
+			configurable: true,
+			value: (...args: unknown[]) => {
+				const result: unknown = Reflect.apply(method, owner, args);
+				if (result instanceof Promise)
+					return result.then(value => {
+						if (!disposed) receive(value);
+						return value;
+					});
+				if (!disposed) receive(result);
+				return result;
+			},
+		});
+		acquisitionRestorers.push(() => {
+			if (descriptor) Object.defineProperty(owner, name, descriptor);
+			else Reflect.deleteProperty(owner, name);
+		});
+	};
+	const receivePage = (result: unknown): void => {
+		if (result) instrumentPage(result as Page);
+	};
+	const receivePages = (result: unknown): void => {
+		for (const target of result as Page[]) instrumentPage(target);
+	};
+	const instrumentTarget = (target: Target): void => {
+		if (instrumentedObjects.has(target)) return;
+		instrumentedObjects.add(target);
+		wrapAcquisition(target, "page", receivePage);
+		wrapAcquisition(target, "asPage", receivePage);
+		wrapAcquisition(target, "browserContext", result => instrumentContext(result as BrowserContext));
+	};
+	const instrumentContext = (context: BrowserContext): void => {
+		if (instrumentedObjects.has(context)) return;
+		instrumentedObjects.add(context);
+		wrapAcquisition(context, "pages", receivePages);
+		wrapAcquisition(context, "newPage", receivePage);
+		wrapAcquisition(context, "targets", result => (result as Target[]).forEach(instrumentTarget));
+		wrapAcquisition(context, "waitForTarget", result => instrumentTarget(result as Target));
+		for (const target of context.targets()) instrumentTarget(target);
+	};
+	instrumentPage(page);
 	return {
 		page,
+		instrumentBrowser(browser: Browser) {
+			if (instrumentedObjects.has(browser)) return;
+			instrumentedObjects.add(browser);
+			wrapAcquisition(browser, "pages", receivePages);
+			wrapAcquisition(browser, "newPage", receivePage);
+			wrapAcquisition(browser, "browserContexts", result => (result as BrowserContext[]).forEach(instrumentContext));
+			wrapAcquisition(browser, "defaultBrowserContext", result => instrumentContext(result as BrowserContext));
+			wrapAcquisition(browser, "createBrowserContext", result => instrumentContext(result as BrowserContext));
+			wrapAcquisition(browser, "targets", result => (result as Target[]).forEach(instrumentTarget));
+			wrapAcquisition(browser, "target", result => instrumentTarget(result as Target));
+			wrapAcquisition(browser, "waitForTarget", result => instrumentTarget(result as Target));
+			for (const context of browser.browserContexts()) instrumentContext(context);
+			for (const target of browser.targets()) instrumentTarget(target);
+		},
 		async cleanup() {
-			if (onDescriptor) Object.defineProperty(page, "on", onDescriptor);
-			else Reflect.deleteProperty(page, "on");
-			if (offDescriptor) Object.defineProperty(page, "off", offDescriptor);
-			else Reflect.deleteProperty(page, "off");
-			if (onceDescriptor) Object.defineProperty(page, "once", onceDescriptor);
-			else Reflect.deleteProperty(page, "once");
-			if (removeAllDescriptor) Object.defineProperty(page, "removeAllListeners", removeAllDescriptor);
-			else Reflect.deleteProperty(page, "removeAllListeners");
-			if (gotoDescriptor) Object.defineProperty(page, "goto", gotoDescriptor);
-			else Reflect.deleteProperty(page, "goto");
-			if (reloadDescriptor) Object.defineProperty(page, "reload", reloadDescriptor);
-			else Reflect.deleteProperty(page, "reload");
-			if (goBackDescriptor) Object.defineProperty(page, "goBack", goBackDescriptor);
-			else Reflect.deleteProperty(page, "goBack");
-			if (goForwardDescriptor) Object.defineProperty(page, "goForward", goForwardDescriptor);
-			else Reflect.deleteProperty(page, "goForward");
-			if (setContentDescriptor) Object.defineProperty(page, "setContent", setContentDescriptor);
-			else Reflect.deleteProperty(page, "setContent");
-			for (const handler of requestHandlers) Reflect.apply(off, page, ["request", handler]);
-			requestHandlers.length = 0;
+			disposed = true;
+			for (const restore of acquisitionRestorers.reverse()) restore();
+			const pages = [...pageRestorers.keys()];
+			for (const restore of pageRestorers.values()) restore();
+			pageRestorers.clear();
 			try {
 				await withTimeout(
-					page.setRequestInterception(false),
+					Promise.all(
+						pages.filter(target => !target.isClosed()).map(target => target.setRequestInterception(false)),
+					),
 					REQUEST_INTERCEPTION_CLEANUP_TIMEOUT_MS,
 					"Timed out clearing browser request interception",
 				);
 			} catch (error) {
 				throw new RequestInterceptionCleanupError(
 					"Failed to clear browser request interception after browser.run",
-					{
-						error: error instanceof Error ? error.message : String(error),
-					},
+					{ error: error instanceof Error ? error.message : String(error) },
 				);
 			}
 		},
@@ -835,6 +906,7 @@ interface AriaSnapshotLine {
 	role: string;
 	name?: string;
 	states: string[];
+	box?: { x: number; y: number; width: number; height: number };
 }
 
 function decodeAriaSnapshotName(value: string): string {
@@ -844,7 +916,9 @@ function decodeAriaSnapshotName(value: string): string {
 
 export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 	const entries: AriaSnapshotLine[] = [];
+	const boxesByDepth = new Map<number, NonNullable<AriaSnapshotLine["box"]>>();
 	for (const rawLine of snapshot.split("\n")) {
+		const indent = rawLine.match(/^\s*/)?.[0].length ?? 0;
 		const prefix = /^\s*-\s+/.exec(rawLine)?.[0];
 		if (!prefix) continue;
 		let content = rawLine.slice(prefix.length);
@@ -859,6 +933,24 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 		const nameMatch = quotedNameMatch ?? slashNameMatch;
 		const metadata = content.slice(nameMatch?.[0].length ?? roleMatch![0].length);
 		const ref = /\[ref=(e\d+)\]/.exec(metadata)?.[1];
+		const boxMatch = /\[box=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\]/.exec(metadata);
+		const box = boxMatch
+			? {
+					x: Number(boxMatch[1]),
+					y: Number(boxMatch[2]),
+					width: Number(boxMatch[3]),
+					height: Number(boxMatch[4]),
+				}
+			: undefined;
+		for (const depth of boxesByDepth.keys()) {
+			if (depth >= indent) boxesByDepth.delete(depth);
+		}
+		let inheritedBox: AriaSnapshotLine["box"];
+		if (box) {
+			boxesByDepth.set(indent, box);
+		} else if (role === "text") {
+			for (const ancestorBox of boxesByDepth.values()) inheritedBox = ancestorBox;
+		}
 		const bareMetadata = metadata.replace(/\[[^\]]*\]/g, " ");
 		const states = [
 			...[...metadata.matchAll(/\[([^\]]+)\]/g)]
@@ -872,8 +964,10 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 			quotedNameMatch !== null
 				? decodeAriaSnapshotName(quotedNameMatch[1]!)
 				: (slashNameMatch?.[1]?.replace(/\\\//g, "/") ??
-					(role === "text" ? content.slice(roleMatch![0].length).trim() || undefined : undefined));
-		entries.push({ ref, role, name, states });
+					(role === "text"
+						? content.slice(roleMatch![0].length).trim() || undefined
+						: /^\s*:\s+(.+)$/.exec(bareMetadata)?.[1]));
+		entries.push({ ref, role, name, states, box: box ?? inheritedBox });
 	}
 	return entries;
 }
@@ -895,6 +989,17 @@ export function isInteractiveAriaSnapshotNode(role: string, states: readonly str
 	);
 }
 
+export async function resolvePageViewport(
+	page: Pick<Page, "viewport" | "evaluate">,
+): Promise<{ width: number; height: number; deviceScaleFactor?: number }> {
+	const viewport = page.viewport();
+	if (viewport) return viewport;
+	return (await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))) as {
+		width: number;
+		height: number;
+	};
+}
+
 export function resolveAriaState(nativeValue: unknown, ariaValue: string | null): boolean | "mixed" | undefined {
 	if (typeof nativeValue === "boolean") return nativeValue;
 	if (ariaValue === "true") return true;
@@ -914,17 +1019,35 @@ export function normalizeAriaSnapshotStates(states: readonly string[]): string[]
 	return [...new Set(normalized)];
 }
 
-async function collectBiDiObservationEntries(
+export async function collectBiDiObservationEntries(
 	core: WorkerCore,
 	page: Page,
 	snapshot: string,
 	options: { viewportOnly: boolean; includeAll: boolean; refOwner: string },
 ): Promise<ObservationEntry[]> {
 	const entries: ObservationEntry[] = [];
+	const viewport = options.viewportOnly
+		? ((await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))) as {
+				width: number;
+				height: number;
+			})
+		: undefined;
 	for (const node of parseAriaSnapshotLines(snapshot)) {
-		if (!options.includeAll && !isInteractiveAriaSnapshotNode(node.role, node.states)) continue;
+		const requiresFocusCheck = !options.includeAll && !isInteractiveAriaSnapshotNode(node.role, node.states);
+		if (requiresFocusCheck && (!node.ref || node.role !== "generic")) continue;
 		if (!node.ref) {
-			if (options.viewportOnly) continue;
+			if (
+				options.viewportOnly &&
+				(!node.box ||
+					node.box.width <= 0 ||
+					node.box.height <= 0 ||
+					node.box.x + node.box.width <= 0 ||
+					node.box.y + node.box.height <= 0 ||
+					node.box.x >= viewport!.width ||
+					node.box.y >= viewport!.height)
+			) {
+				continue;
+			}
 			entries.push({
 				role: node.role,
 				name: node.name,
@@ -935,6 +1058,19 @@ async function collectBiDiObservationEntries(
 		}
 		const handle = await resolveAriaRefHandle(page, node.ref, options.refOwner);
 		if (!handle) continue;
+		if (
+			requiresFocusCheck &&
+			!(await handle.evaluate(
+				element =>
+					"tabIndex" in element &&
+					typeof element.tabIndex === "number" &&
+					element.tabIndex >= 0 &&
+					!element.matches(":disabled, [inert], [inert] *"),
+			))
+		) {
+			await handle.dispose().catch(() => undefined);
+			continue;
+		}
 		let inViewport = true;
 		if (options.viewportOnly) {
 			try {
@@ -971,6 +1107,7 @@ async function collectBiDiObservationEntries(
 			const nativeValue =
 				typeof input.value === "string" || typeof input.value === "number" ? input.value : undefined;
 			const selectedOptionLabel = input.selectedOptions?.[0]?.textContent?.trim();
+			const inputType = input.getAttribute("type")?.toLowerCase();
 			const describedBy = input.getAttribute("aria-describedby");
 			const description = describedBy
 				?.split(/\s+/)
@@ -993,7 +1130,10 @@ async function collectBiDiObservationEntries(
 				ariaMultiline: input.getAttribute("aria-multiline"),
 				ariaMultiselectable: input.getAttribute("aria-multiselectable"),
 				readonly: input.readOnly === true || input.getAttribute("aria-readonly") === "true",
-				checked: input.checked,
+				checked:
+					input.tagName === "INPUT" && (inputType === "checkbox" || inputType === "radio")
+						? input.checked
+						: undefined,
 				pressed: input.pressed,
 				selected: input.selected,
 				expanded: input.expanded,
@@ -1471,6 +1611,12 @@ export class WorkerCore {
 				this.#observeDialogs();
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
 			}
+			if (payload.mode === "headless" || payload.emulateFocus) {
+				// Background Chromium tabs stop producing frames, stalling rAF,
+				// IntersectionObserver, and input acknowledgements. Keep owned tabs
+				// interactive without raising a window; explicit settle-freeze still applies.
+				await this.#page.emulateFocusedPage(true);
+			}
 			if (payload.url) {
 				await this.#page.goto(payload.url, {
 					// Default to "load" because dev servers with HMR/WS never reach networkidle.
@@ -1641,7 +1787,7 @@ export class WorkerCore {
 		return {
 			url: redactUrlCredentials(page.url()),
 			title: await page.title().catch(() => undefined),
-			viewport: page.viewport() ?? DEFAULT_VIEWPORT,
+			viewport: await resolvePageViewport(page),
 			targetId,
 		};
 	}
@@ -1718,15 +1864,16 @@ export class WorkerCore {
 		let runPage: RunPageScope | undefined;
 		this.#activeElementCacheKey = msg.name;
 		try {
-			if (this.#webDriverBiDi && (msg.targetId || msg.targetMatcher)) {
-				await this.#selectBiDiPage(msg.name, msg.targetId, msg.targetMatcher, msg.dialogs);
+			if (this.#webDriverBiDi) {
+				await this.#selectBiDiPage(msg.name, msg.targetId, undefined, msg.dialogs);
+				throwIfAborted(signal);
 			}
-			throwIfAborted(signal);
 			runPage = createRunPageScope(
 				this.#requirePage(),
 				this.#webDriverBiDi ? () => (this.#cleanupRequired = true) : undefined,
 			);
 			const browser = this.#requireBrowser();
+			runPage.instrumentBrowser(browser);
 			const tabApi = this.#createTabApi(msg.name, msg.timeoutMs, signal, msg.session, output, screenshots, active);
 			const runtime = this.#ensureRuntime(msg.name, msg.session);
 			runtime.setCwd(msg.session.cwd);
@@ -2297,7 +2444,9 @@ export class WorkerCore {
 		let entries: ObservationEntry[];
 		if (this.#webDriverBiDi) {
 			const refOwner = this.#ariaRefOwner;
-			const ariaSnapshot = await untilAborted(options.signal, () => captureAriaSnapshot(page, null, {}, refOwner));
+			const ariaSnapshot = await untilAborted(options.signal, () =>
+				captureAriaSnapshot(page, null, { boxes: viewportOnly }, refOwner),
+			);
 			entries = await collectBiDiObservationEntries(this, page, ariaSnapshot, {
 				includeAll,
 				viewportOnly,
@@ -2334,7 +2483,7 @@ export class WorkerCore {
 		return {
 			url: page.url(),
 			title: (await untilAborted(options.signal, () => page.title())) as string,
-			viewport: page.viewport() ?? DEFAULT_VIEWPORT,
+			viewport: await resolvePageViewport(page),
 			scroll,
 			elements: entries,
 		};

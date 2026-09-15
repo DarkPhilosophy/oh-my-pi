@@ -11024,6 +11024,11 @@ export class AgentSession {
 		return this.#advisors.isAdvisorEnabled();
 	}
 
+	/** Whether an ancestor session scope vetoes advisor activation. */
+	isAdvisorSuppressedByParent(): boolean {
+		return this.#advisors.isAdvisorSuppressedByParent();
+	}
+
 	/**
 	 * Runtime advisor veto inherited by newly spawned and revived descendants.
 	 */

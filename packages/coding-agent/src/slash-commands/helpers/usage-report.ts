@@ -27,8 +27,8 @@ function formatUsageAmount(limit: UsageLimit): string {
 
 function formatUsageReportAccount(report: UsageReport, limit: UsageLimit | undefined, index: number): AccountLabel {
 	const accountKey = usageIdentityKey(
-		report.metadata?.accountId,
-		report.metadata?.projectId,
+		(limit?.scope ?? report.limits[0]?.scope)?.accountId || report.metadata?.accountId,
+		(limit?.scope ?? report.limits[0]?.scope)?.projectId || report.metadata?.projectId,
 		limit?.scope ?? report.limits[0]?.scope,
 		report.metadata?.orgId,
 	);
@@ -44,19 +44,25 @@ function formatUsageReportAccount(report: UsageReport, limit: UsageLimit | undef
 	// are tellable apart.
 	const email = report.metadata?.email;
 	if (typeof email === "string" && email)
-		return { identity: email, qualifier: org ? ` (${org})` : undefined, accountKey };
+		return { identity: email, qualifier: org ? ` (${org})` : undefined, accountKey, provider: report.provider };
 	// Guard metadata values for truthiness before using, then fall back to scope.
 	// ?? won't help here: empty string is not null/undefined, so it would suppress
 	// a valid scoped fallback (e.g. metadata.accountId="" hides limit.scope.accountId).
 	const metaAccountId = report.metadata?.accountId;
 	const accountId = typeof metaAccountId === "string" && metaAccountId ? metaAccountId : limit?.scope.accountId;
 	if (typeof accountId === "string" && accountId) {
-		return { identity: accountId, qualifier: org && org !== accountId ? ` (${org})` : undefined, accountKey };
+		return {
+			identity: accountId,
+			qualifier: org && org !== accountId ? ` (${org})` : undefined,
+			accountKey,
+			provider: report.provider,
+		};
 	}
 	const metaProjectId = report.metadata?.projectId;
 	const projectId = typeof metaProjectId === "string" && metaProjectId ? metaProjectId : limit?.scope.projectId;
-	if (typeof projectId === "string" && projectId) return { identity: projectId, accountKey };
-	return { identity: limit ? `account ${index + 1}` : "account", placeholder: true };
+	if (typeof projectId === "string" && projectId)
+		return { identity: projectId, accountKey, provider: report.provider };
+	return { identity: limit ? `account ${index + 1}` : "account", placeholder: true, provider: report.provider };
 }
 
 function renderUsageReports(

@@ -1,23 +1,25 @@
 /** Self-contained OSC 8 copy targets for fenced code blocks. */
-import * as fs from "node:fs/promises";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { ptree } from "@oh-my-pi/pi-utils";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
 export const COPY_URL_SCHEME = "omp-copy";
 
-// Linux caps one argv entry near 128 KiB. Leave headroom for desktop-launcher
-// bookkeeping rather than emitting an OSC action that can only fail with E2BIG.
-const MAX_COPY_URL_BYTES = 120 * 1024;
+// Keep self-contained targets below the portable OSC 8 URI limit.
+const MAX_COPY_URL_BYTES = 2082;
 
 /** Whether this process can install a client-local custom URL handler. */
 export function supportsCopyUrlHandler(
 	platform: NodeJS.Platform = process.platform,
 	env: NodeJS.ProcessEnv = process.env,
 	xdgMime: string | null = Bun.which("xdg-mime"),
+	markerExists: (path: string) => boolean = fs.existsSync,
 ): boolean {
 	return (
 		platform === "linux" &&
 		Boolean(xdgMime) &&
+		!env.SUDO_USER &&
 		!env.SSH_CLIENT &&
 		!env.SSH_CONNECTION &&
 		!env.SSH_TTY &&
@@ -25,7 +27,10 @@ export function supportsCopyUrlHandler(
 		!env.WSL_DISTRO_NAME &&
 		!env.WSL_INTEROP &&
 		!env.CODESPACES &&
-		!env.REMOTE_CONTAINERS_IPC
+		!env.REMOTE_CONTAINERS_IPC &&
+		!env.container &&
+		!markerExists("/.dockerenv") &&
+		!markerExists("/run/.containerenv")
 	);
 }
 
@@ -34,7 +39,7 @@ export function registerCopyBlock(code: string): string {
 	return `${COPY_URL_SCHEME}:${bytes.length}.${bytes.toString("base64url")}`;
 }
 
-/** Create a self-contained OSC 8 target after handler validation and within Linux's argv limit. */
+/** Create a self-contained OSC 8 target within the portable terminal URI limit. */
 export function copyUrlTarget(code: string, handlerReady: boolean): string | undefined {
 	if (!handlerReady) return undefined;
 	const target = registerCopyBlock(code);
@@ -102,12 +107,11 @@ export function createCopyDesktopEntry(binary: string | readonly string[]): stri
 export async function isCopyUrlHandlerRegistered(): Promise<boolean> {
 	if (!supportsCopyUrlHandler()) return false;
 	try {
-		const proc = Bun.spawn(["xdg-mime", "query", "default", COPY_SCHEME_MIME], {
-			stdout: "pipe",
-			stderr: "ignore",
+		const result = await ptree.exec(["xdg-mime", "query", "default", COPY_SCHEME_MIME], {
+			timeout: 2_000,
+			allowNonZero: true,
 		});
-		const out = (await new Response(proc.stdout).text()).trim();
-		if ((await proc.exited) !== 0 || out !== COPY_DESKTOP_ENTRY) return false;
+		if (result.exitCode !== 0 || result.stdout.trim() !== COPY_DESKTOP_ENTRY) return false;
 		const command = resolveOmpCommand();
 		if (command === undefined) return false;
 		const expectedEntry = createCopyDesktopEntry(command);
@@ -119,24 +123,26 @@ export async function isCopyUrlHandlerRegistered(): Promise<boolean> {
 
 export async function registerCopyUrlHandler(): Promise<CopyHandlerResult> {
 	const desktopPath = copyDesktopPath();
-	const appsDir = path.dirname(desktopPath);
 	if (!supportsCopyUrlHandler()) return { ok: false, desktopPath, error: "only supported on Linux (xdg)" };
 	const command = resolveOmpCommand();
 	if (command === undefined) return { ok: false, desktopPath, error: "omp executable not found" };
-	await fs.mkdir(appsDir, { recursive: true });
 	const entry = createCopyDesktopEntry(command);
 	await Bun.write(desktopPath, entry);
-	const xdg = Bun.spawn(["xdg-mime", "default", COPY_DESKTOP_ENTRY, COPY_SCHEME_MIME], {
-		stdout: "ignore",
-		stderr: "pipe",
-	});
-	const code = await xdg.exited;
-	if (code !== 0) {
-		const error = (await new Response(xdg.stderr).text()).trim();
+	let result: ptree.ExecResult;
+	try {
+		result = await ptree.exec(["xdg-mime", "default", COPY_DESKTOP_ENTRY, COPY_SCHEME_MIME], {
+			timeout: 2_000,
+			allowNonZero: true,
+			stderr: "full",
+		});
+	} catch {
+		return { ok: false, desktopPath, error: "xdg-mime handler registration failed or timed out" };
+	}
+	if (result.exitCode !== 0) {
 		return {
 			ok: false,
 			desktopPath,
-			error: error || `xdg-mime exited ${code}`,
+			error: result.stderr?.trim() || `xdg-mime exited ${result.exitCode}`,
 		};
 	}
 	if (!(await isCopyUrlHandlerRegistered())) {

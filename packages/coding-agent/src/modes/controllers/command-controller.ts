@@ -35,6 +35,7 @@ import { DynamicBorder } from "../../modes/components/dynamic-border";
 import { EvalExecutionComponent } from "../../modes/components/eval-execution";
 import { MoveOverlay, type MoveOverlayResult } from "../../modes/components/move-overlay";
 import { TranscriptBlock } from "../../modes/components/transcript-container";
+import { fitAccountLabel } from "../../modes/components/usage-dashboard";
 import { getMarkdownTheme, getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
 import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/context-usage";
@@ -1829,24 +1830,27 @@ function styleAccountMask(label: string, uiTheme: typeof theme): string {
 
 function formatAccountLabel(limit: UsageLimit, report: UsageReport, index: number): AccountLabel {
 	const accountKey = usageIdentityKey(
-		report.metadata?.accountId,
-		report.metadata?.projectId,
+		limit.scope.accountId || report.metadata?.accountId,
+		limit.scope.projectId || report.metadata?.projectId,
 		limit.scope,
 		report.metadata?.orgId,
 	);
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return { identity: email, qualifier: orgSuffix(report), accountKey };
+	if (typeof email === "string" && email)
+		return { identity: email, qualifier: orgSuffix(report), accountKey, provider: report.provider };
 	const accountId =
-		typeof report.metadata?.accountId === "string" && report.metadata.accountId
+		limit.scope.accountId ||
+		(typeof report.metadata?.accountId === "string" && report.metadata.accountId
 			? report.metadata.accountId
-			: limit.scope.accountId || undefined;
-	if (accountId) return { identity: accountId, qualifier: orgSuffix(report), accountKey };
+			: undefined);
+	if (accountId) return { identity: accountId, qualifier: orgSuffix(report), accountKey, provider: report.provider };
 	const projectId =
-		typeof report.metadata?.projectId === "string" && report.metadata.projectId
+		limit.scope.projectId ||
+		(typeof report.metadata?.projectId === "string" && report.metadata.projectId
 			? report.metadata.projectId
-			: limit.scope.projectId || undefined;
-	if (projectId) return { identity: projectId, accountKey };
-	return { identity: `account ${index + 1}`, placeholder: true };
+			: undefined);
+	if (projectId) return { identity: projectId, accountKey, provider: report.provider };
+	return { identity: `account ${index + 1}`, placeholder: true, provider: report.provider };
 }
 
 function formatUnlimitedReportLabel(report: UsageReport, index: number): AccountLabel {
@@ -1857,13 +1861,15 @@ function formatUnlimitedReportLabel(report: UsageReport, index: number): Account
 		report.metadata?.orgId,
 	);
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return { identity: email, qualifier: orgSuffix(report), accountKey };
+	if (typeof email === "string" && email)
+		return { identity: email, qualifier: orgSuffix(report), accountKey, provider: report.provider };
 	const accountId = report.metadata?.accountId;
 	if (typeof accountId === "string" && accountId)
-		return { identity: accountId, qualifier: orgSuffix(report), accountKey };
+		return { identity: accountId, qualifier: orgSuffix(report), accountKey, provider: report.provider };
 	const projectId = report.metadata?.projectId;
-	if (typeof projectId === "string" && projectId) return { identity: projectId, accountKey };
-	return { identity: `account ${index + 1}`, placeholder: true };
+	if (typeof projectId === "string" && projectId)
+		return { identity: projectId, accountKey, provider: report.provider };
+	return { identity: `account ${index + 1}`, placeholder: true, provider: report.provider };
 }
 
 function formatResetAccountLabel(report: UsageReport): AccountLabel {
@@ -1878,8 +1884,8 @@ function formatResetAccountLabel(report: UsageReport): AccountLabel {
 	const identity =
 		typeof email === "string" && email ? email : typeof accountId === "string" && accountId ? accountId : undefined;
 	return identity
-		? { identity, qualifier: orgSuffix(report), accountKey }
-		: { identity: "account", placeholder: true };
+		? { identity, qualifier: orgSuffix(report), accountKey, provider: report.provider }
+		: { identity: "account", placeholder: true, provider: report.provider };
 }
 
 function formatResetShort(limit: UsageLimit, nowMs: number): string | undefined {
@@ -1905,9 +1911,11 @@ function formatAccountHeaderRow(
 		const reset = formatResetShort(limit, nowMs);
 		const report = reports[index];
 		const active = report !== undefined && limitMatchesActiveAccount(report, limit, activeAccount);
-		const label = mask(formatAccountLabel(limit, report, index + startIndex));
+		const accountLabel = formatAccountLabel(limit, report, index + startIndex);
+		const label = mask(accountLabel);
 		return {
 			label: active ? `● ${label}` : label,
+			qualifier: accountLabel.qualifier || label.match(/ \(\d+\)$/)?.[0] || "",
 			suffix: reset ? `(${reset})` : "",
 			active,
 		};
@@ -1916,17 +1924,21 @@ function formatAccountHeaderRow(
 	const gap = maxSuffixWidth > 0 ? 1 : 0;
 	const prefixBudget = columnWidth - maxSuffixWidth - gap;
 
-	// If suffix can't share the cell with at least `x…`, fall back to whole-label truncation.
+	// When reset text cannot share the cell, preserve the account qualifier or
+	// collision ordinal instead; identical truncated prefixes are not identities.
 	if (prefixBudget < 2) {
 		return parts.map(p => {
-			const full = p.suffix ? `${p.label} ${p.suffix}` : p.label;
-			const cell = padColumn(truncateJobLabel(full, columnWidth), columnWidth);
+			if (/^ \(\d+\)$/.test(p.qualifier) && visibleWidth(p.qualifier) >= columnWidth) {
+				const cell = padColumn(p.qualifier.trim(), columnWidth);
+				return styleAccountMask(p.active ? uiTheme.fg("accent", cell) : cell, uiTheme);
+			}
+			const cell = padColumn(fitAccountLabel(p.label, columnWidth, p.qualifier), columnWidth);
 			return styleAccountMask(p.active ? uiTheme.fg("accent", cell) : cell, uiTheme);
 		});
 	}
 
 	return parts.map(p => {
-		const prefix = truncateJobLabel(p.label, prefixBudget);
+		const prefix = fitAccountLabel(p.label, prefixBudget, p.qualifier);
 		const prefixCell = prefix + " ".repeat(prefixBudget - visibleWidth(prefix));
 		const styledPrefix = styleAccountMask(p.active ? uiTheme.fg("accent", prefixCell) : prefixCell, uiTheme);
 		if (!p.suffix) return styledPrefix + " ".repeat(maxSuffixWidth + gap);
@@ -2203,7 +2215,18 @@ export function renderUsageReports(
 			formatUnlimitedReportLabel(report, index),
 			formatResetAccountLabel(report),
 		]);
-		const activeLabel = getActiveAccountLabelParts(activeAccount);
+		const activeLabelParts = getActiveAccountLabelParts(activeAccount);
+		const activeReportIndex = activeLabelParts
+			? providerReports.findIndex(report => reportMatchesActiveAccount(report, activeAccount))
+			: -1;
+		let activeLabel: AccountLabel | undefined = activeLabelParts ? { ...activeLabelParts, provider } : undefined;
+		if (activeReportIndex >= 0) {
+			const report = providerReports[activeReportIndex]!;
+			const limit = report.limits.find(candidate => limitMatchesActiveAccount(report, candidate, activeAccount));
+			activeLabel = limit
+				? formatAccountLabel(limit, report, activeReportIndex)
+				: formatUnlimitedReportLabel(report, activeReportIndex);
+		}
 		if (activeLabel) maskInputs.push(activeLabel);
 		const mask = createAccountMasker(maskInputs, maskAccountLabels);
 		const activeAccountLabel = activeLabel ? mask(activeLabel) : "";

@@ -1466,8 +1466,8 @@ export class EventController {
 		// Wait for that slot before updating HUD state so source identity resolves
 		// against the authoritative session branch rather than the prior entry.
 		if (event.message.role === "toolResult" && event.message.toolName === "todo" && !event.message.isError) {
-			const details = event.message.details as { phases?: TodoPhase[] } | undefined;
-			if (details?.phases) {
+			const details = event.message.details as { op?: string; phases?: TodoPhase[] } | undefined;
+			if (details?.op !== "view" && details?.phases) {
 				const owner = this.ctx.viewSession;
 				const sessionId = owner.sessionManager.getSessionId();
 				const sessionFile = owner.sessionManager.getSessionFile();

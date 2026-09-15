@@ -459,8 +459,16 @@ describe("AgentSession advisor toggle", () => {
 			await reviewing;
 			expect(live.isAdvisorActive()).toBe(false);
 			expect(nested.isAdvisorActive()).toBe(false);
+			expect(live.getAdvisorStatusOverview()).toMatchObject({
+				configured: false,
+				advisors: [{ status: "paused" }],
+			});
+			expect(live.formatAdvisorStatus()).toBe('Advisor "default" is paused.');
 			expect(unrelated.isAdvisorActive()).toBe(true);
 			expect(live.setAdvisorEnabled(true)).toBe(false);
+			expect(live.isAdvisorSuppressedByParent()).toBe(true);
+			expect(nested.isAdvisorSuppressedByParent()).toBe(true);
+			expect(unrelated.isAdvisorSuppressedByParent()).toBe(false);
 			const fresh = makeChild(session);
 			expect(fresh.isAdvisorActive()).toBe(false);
 			await live.dispose();
@@ -469,12 +477,24 @@ describe("AgentSession advisor toggle", () => {
 			const optedOut = makeChild(session, false);
 			const explicitlyOff = makeChild(session);
 			explicitlyOff.setAdvisorEnabled(false);
+			const toggledOff = makeChild(session);
+			expect(toggledOff.toggleAdvisorEnabled()).toBe(false);
 			session.setAdvisorEnabled(true);
 			expect(fresh.isAdvisorActive()).toBe(true);
+			expect(fresh.isAdvisorSuppressedByParent()).toBe(false);
 			expect(restored.isAdvisorActive()).toBe(true);
 			expect(nested.isAdvisorActive()).toBe(true);
+			expect(live.isAdvisorActive()).toBe(false);
+			expect(live.getAdvisorStatusOverview()).toMatchObject({
+				configured: true,
+				advisors: [{ status: "paused" }],
+			});
+			expect(live.formatAdvisorStatus()).toBe('Advisor "default" is paused.');
 			expect(optedOut.isAdvisorActive()).toBe(false);
 			expect(explicitlyOff.isAdvisorActive()).toBe(false);
+			expect(toggledOff.isAdvisorActive()).toBe(false);
+			expect(toggledOff.toggleAdvisorEnabled()).toBe(true);
+			expect(toggledOff.isAdvisorActive()).toBe(true);
 			expect(session.settings.get("advisor.enabled")).toBe(false);
 		} finally {
 			await Promise.all(children.map(child => child.dispose()));

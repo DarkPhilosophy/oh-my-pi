@@ -11,6 +11,7 @@ import browserDeclarations from "./browser/declarations.d.ts" with { type: "text
 import browserJavascript from "./browser/prelude.js" with { type: "text" };
 import browserPython from "./browser/prelude.py" with { type: "text" };
 import { resolveCmuxKind } from "./browser/cmux/rpc";
+import { resolveSpawnArgs } from "./browser/attach";
 import {
 	acquireBrowser,
 	type BrowserHandle,
@@ -114,7 +115,7 @@ function resolveBrowserKind(params: BrowserParams, session: ToolSession): Browse
 	}
 	if (app?.path) {
 		const exe = resolveToCwd(app.path, session.cwd);
-		return { kind: "spawned", path: exe };
+		return { kind: "spawned", path: exe, args: resolveSpawnArgs(exe, app.args, session.cwd) };
 	}
 	const relayUrl = session.settings.get("browser.relayUrl");
 	const relayBrowser = session.settings.get("browser.relayBrowser");

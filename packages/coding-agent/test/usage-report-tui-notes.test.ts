@@ -263,6 +263,31 @@ describe("renderUsageReports terminal width", () => {
 		}
 	});
 
+	it("keeps colliding masked accounts distinct at width 20 with reset suffixes", () => {
+		const now = Date.now();
+		const reports = ["mailone@example.test", "mailtwo@example.test"].map((email, index) => {
+			const accountLimit: UsageReport["limits"][number] = limit(
+				"Copilot",
+				"monthly",
+				30 * 24 * HOUR,
+				0.4 + index * 0.1,
+			);
+			accountLimit.window!.resetsAt = now + 30 * 24 * HOUR;
+			return report("github-copilot", email, [accountLimit]);
+		});
+		const text = stripVTControlCharacters(
+			renderUsageReports(reports, theme, now, 20, undefined, { maskAccountLabels: true }),
+		);
+		const accountHeaders = text.split("\n").filter(line => line.includes("mai") || line.includes("(2)"));
+
+		expect(accountHeaders).toHaveLength(2);
+		expect(accountHeaders.some(line => line.includes("(2)"))).toBe(true);
+		expect(new Set(accountHeaders).size).toBe(2);
+		for (const line of text.split("\n")) {
+			expect(Bun.stringWidth(line)).toBeLessThanOrEqual(20);
+		}
+	});
+
 	it("does not stretch account blocks across surplus terminal width", () => {
 		const now = Date.now();
 		const reports: UsageReport[] = [

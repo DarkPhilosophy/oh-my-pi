@@ -285,6 +285,7 @@ describe("ACP builtin slash commands", () => {
 
 	it("renders provider usage reports when the session can fetch them", async () => {
 		const { output, runtime } = createRuntime();
+		runtime.settings.set("usage.maskAccountLabels", false);
 		runtime.session.fetchUsageReports = async () => [
 			{
 				provider: "openai-codex",
@@ -325,7 +326,7 @@ describe("ACP builtin slash commands", () => {
 						amount: { used: 1, unit: "requests" as const },
 					},
 				],
-				metadata: { email, orgName: "Team" },
+				metadata: { email, accountId: "stale-retained-account", orgName: "Team" },
 			})),
 			{
 				provider: "openai-codex",
@@ -341,6 +342,23 @@ describe("ACP builtin slash commands", () => {
 		expect(output[0]).toContain("ali*** (3) (Team): 2 saved rate-limit resets");
 		expect(output[0]).toContain("ali*** (3) (Team): no limits reported");
 		expect(output[0]).not.toContain("@example.com");
+	});
+
+	it("does not suffix masked identities that only collide across providers", async () => {
+		const { output, runtime } = createRuntime();
+		runtime.settings.set("usage.maskAccountLabels", true);
+		runtime.session.fetchUsageReports = async () =>
+			["openai-codex", "anthropic"].map(provider => ({
+				provider,
+				fetchedAt: Date.now(),
+				limits: [
+					{ id: "window", label: "Window", scope: { provider }, amount: { used: 1, unit: "requests" as const } },
+				],
+				metadata: { email: "alice@example.com" },
+			}));
+		await executeAcpBuiltinSlashCommand("/usage", runtime);
+		expect(output[0]?.match(/ali\*\*\*/g)?.length).toBe(2);
+		expect(output[0]).not.toContain("ali*** (2)");
 	});
 	it("masks opaque parenthesized identifiers without dropping real organization metadata", async () => {
 		const { output, runtime } = createRuntime();

@@ -1181,6 +1181,7 @@ export type CursorTodoSyncHandler = (
 	snapshot: CursorTodoSnapshot | null,
 	toolCallId: string,
 	error: string | null,
+	origin?: "read" | "update",
 ) => ToolResultMessage;
 
 export interface CursorShellStreamCallbacks {

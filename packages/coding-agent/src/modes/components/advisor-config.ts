@@ -48,9 +48,9 @@ import {
 import type { Settings } from "../../config/settings";
 import type { PerAdvisorStat } from "../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
+import { sanitizeDisplayWarnings } from "../../tools/render-utils";
 import { formatCompactQuota } from "../controllers/command-controller";
 import { getSelectListTheme, theme } from "../theme/theme";
-import { sanitizeDisplayWarnings } from "../../tools/render-utils";
 import { HookEditorComponent } from "./hook-editor";
 import { buildBrowserItems, ModelBrowser, resolveRoleAssignments, sortModelItems } from "./model-browser";
 import { bottomBorder, fit, row, splitBodyWidth, splitRow, topBorderSplit } from "./overlay-box";
@@ -132,7 +132,9 @@ interface ScopeState {
 	doc: WatchdogConfigDoc;
 	list: SelectList;
 	dirty: boolean;
+	revision: number;
 	loading: boolean;
+	failed: boolean;
 	/** Remembered roster row value so rebuilds keep the cursor. */
 	cursor: string | undefined;
 }
@@ -153,15 +155,20 @@ export class AdvisorConfigOverlayComponent implements Component {
 	#cb: AdvisorConfigCallbacks;
 	#cachedReports: UsageReport[] | null = null;
 
+	#savePending = false;
 	#scopes: Record<AdvisorConfigScope, ScopeState>;
 	#focus: Pane;
 	#mode: EditorMode = "fields";
 	/** Right-pane component (field list or an open field editor). */
 	#editor: Component = new SelectList([], 1, getSelectListTheme());
+	#applyPendingTools: (() => void) | undefined;
 	/** Remembered field-list row so returning from a field editor lands on it. */
 	#fieldCursor: string | undefined;
 	#editorScroll = 0;
 	#editorContentOffset = 2;
+	#editorWindowRows = 0;
+	#editorWindowWidth = 0;
+	#editorHasOverflow = false;
 
 	// Frame geometry from the last render (frame paints from screen row 0).
 	#sidebarWidth = 0;
@@ -211,6 +218,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 			})
 			.catch(err => {
 				this.#scopes[other].loading = false;
+				this.#scopes[other].failed = true;
+				this.#rebuildRoster(other);
 				callbacks.notify(`Advisor config: ${err instanceof Error ? err.message : String(err)}`);
 				this.#cb.requestRender();
 			});
@@ -233,7 +242,9 @@ export class AdvisorConfigOverlayComponent implements Component {
 			doc,
 			list: new SelectList([], 1, getSelectListTheme()),
 			dirty: false,
+			revision: 0,
 			loading: false,
+			failed: false,
 			cursor: undefined,
 		};
 	}
@@ -321,11 +332,14 @@ export class AdvisorConfigOverlayComponent implements Component {
 	}
 
 	#editorWindow(bodyWidth: number, rows: number): string[] {
+		this.#editorWindowWidth = bodyWidth;
+		this.#editorWindowRows = rows;
 		const lines = this.#editorContent(bodyWidth);
 		const maxScroll = Math.max(0, lines.length - rows);
 		this.#editorScroll = Math.min(this.#editorScroll, maxScroll);
 		const window = lines.slice(this.#editorScroll, this.#editorScroll + rows);
-		if (lines.length > rows) {
+		this.#editorHasOverflow = lines.length > rows;
+		if (this.#editorHasOverflow) {
 			const marker =
 				this.#editorScroll + rows < lines.length
 					? theme.fg("dim", `  ↓ ${lines.length - this.#editorScroll - rows} more`)
@@ -449,6 +463,13 @@ export class AdvisorConfigOverlayComponent implements Component {
 			return;
 		}
 		// Editor pane: ← returns to the rosters unless a text editor is open.
+		if (data === "\x1b[D" && this.#mode === "tools") {
+			this.#applyPendingTools?.();
+			this.#applyPendingTools = undefined;
+			this.#focus = this.#lastRosterFocus;
+			this.#showFields();
+			return;
+		}
 		if (data === "\x1b[D" && this.#mode !== "name" && this.#mode !== "instructions" && this.#mode !== "model") {
 			this.#focus = this.#lastRosterFocus;
 			this.#cb.requestRender();
@@ -472,39 +493,48 @@ export class AdvisorConfigOverlayComponent implements Component {
 
 	#routeMouseEvent(event: SgrMouseEvent): boolean {
 		if (event.col >= this.#dividerCol) {
+			let editorRow = event.row - 1 - this.#editorContentOffset + this.#editorScroll;
+			const markerRow = this.#editorWindowRows;
+			const inEditorWindow = event.row >= 1 && event.row <= markerRow;
+			const onOverflowMarker = this.#editorHasOverflow && event.row === markerRow;
 			if (event.wheel !== null) {
 				const el = this.#editor as Partial<MouseRoutable>;
-				if (this.#mode !== "fields" && typeof el.routeMouse === "function") {
-					el.routeMouse(
-						event,
-						event.row - 1 - this.#editorContentOffset + this.#editorScroll,
-						event.col - this.#dividerCol - 1,
-					);
+				const nestedVisible =
+					this.#mode !== "fields" &&
+					typeof el.routeMouse === "function" &&
+					inEditorWindow &&
+					event.row > this.#editorContentOffset - this.#editorScroll &&
+					event.row < markerRow;
+				if (nestedVisible) {
+					el.routeMouse?.(event, editorRow, event.col - this.#dividerCol - 1);
 				} else {
 					this.#editorScroll = Math.max(0, this.#editorScroll + event.wheel);
 				}
 				this.#cb.requestRender();
 				return true;
 			}
+			if (!inEditorWindow || onOverflowMarker || editorRow < 0) return true;
 			if (event.leftClick) {
-				if (this.#focus !== "editor") this.#showFields();
+				if (this.#focus !== "editor") {
+					this.#showFields();
+					this.#editorWindow(this.#editorWindowWidth, this.#editorWindowRows);
+					editorRow = event.row - 1 - this.#editorContentOffset + this.#editorScroll;
+				}
 				this.#focusEditor();
 			}
 			const el = this.#editor as Partial<MouseRoutable>;
-			// Warning rows and the heading precede the editor content.
-			if (typeof el.routeMouse === "function")
-				el.routeMouse(
-					event,
-					event.row - 1 - this.#editorContentOffset + this.#editorScroll,
-					event.col - this.#dividerCol - 1,
-				);
+			if (typeof el.routeMouse === "function") el.routeMouse(event, editorRow, event.col - this.#dividerCol - 1);
 			return true;
 		}
 		const inProject = event.row >= this.#projectRowStart && event.row < this.#projectRowStart + this.#projectRows;
 		const inUser = event.row >= this.#userRowStart && event.row < this.#userRowStart + this.#userRows;
 		const scope: AdvisorConfigScope | undefined = inProject ? "project" : inUser ? "user" : undefined;
 		if (!scope) return false;
+		if (event.wheel !== null && this.#focus === "editor" && this.#mode !== "fields") return true;
+		if (event.leftClick && this.#focus === "editor" && (this.#mode === "name" || this.#mode === "instructions"))
+			return true;
 		if (event.leftClick && this.#focus !== scope) {
+			this.#applyPendingTools?.();
 			this.#focus = scope;
 			this.#showFields();
 		}
@@ -512,7 +542,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#scopes[scope].list.routeMouse(event, event.row - start, event.col - 2);
 		return true;
 	}
-
 	// ───────────────────────────── rosters ───────────────────────────
 
 	#selected(): { scope: AdvisorConfigScope; index: number; advisor: AdvisorConfig } | undefined {
@@ -527,6 +556,20 @@ export class AdvisorConfigOverlayComponent implements Component {
 
 	#rebuildRoster(scope: AdvisorConfigScope): void {
 		const state = this.#scopes[scope];
+		if (state.failed) {
+			state.list = new SelectList(
+				[
+					{
+						value: "load-failed",
+						label: "Unable to load configuration",
+						description: "Read-only until the file loads successfully",
+					},
+				],
+				1,
+				getSelectListTheme(),
+			);
+			return;
+		}
 		const items: SelectItem[] = state.doc.advisors.map((advisor, index) => ({
 			value: `advisor:${index}`,
 			label: `${theme.symbol(advisor.enabled === false ? "status.disabled" : "status.enabled")} ${advisor.name || "(unnamed)"}`,
@@ -579,13 +622,15 @@ export class AdvisorConfigOverlayComponent implements Component {
 	}
 
 	#markDirty(scope: AdvisorConfigScope): void {
-		this.#scopes[scope].dirty = true;
+		const state = this.#scopes[scope];
+		state.dirty = true;
+		state.revision++;
 		this.#rebuildRoster(scope);
 	}
 
 	async #onRosterSelect(scope: AdvisorConfigScope, value: string): Promise<void> {
 		const state = this.#scopes[scope];
-		if (state.loading) return;
+		if (state.loading || state.failed) return;
 		if (value === "add") {
 			state.doc.advisors.push({ name: `Advisor ${state.doc.advisors.length + 1}` });
 			state.cursor = `advisor:${state.doc.advisors.length - 1}`;
@@ -600,13 +645,22 @@ export class AdvisorConfigOverlayComponent implements Component {
 			return;
 		}
 		if (value === "save") {
-			const doc = this.#hasSyntheticDefaultAdvisor(state.doc) ? { ...state.doc, advisors: [] } : state.doc;
-			await this.#cb.save(scope, doc);
-			state.doc.warnings = undefined;
-			state.dirty = false;
-			this.#rebuildRoster(scope);
-			this.#cb.notify(`Saved ${this.#scopeLabel(scope)} advisors`);
-			this.#cb.requestRender();
+			if (this.#savePending) return;
+			this.#savePending = true;
+			const revision = state.revision;
+			try {
+				const doc = this.#hasSyntheticDefaultAdvisor(state.doc) ? { ...state.doc, advisors: [] } : state.doc;
+				await this.#cb.save(scope, doc);
+				if (state.revision === revision) {
+					delete state.doc.warnings;
+					state.dirty = false;
+					this.#rebuildRoster(scope);
+					this.#cb.notify(`Saved ${this.#scopeLabel(scope)} advisors`);
+				}
+				this.#cb.requestRender();
+			} finally {
+				this.#savePending = false;
+			}
 			return;
 		}
 		if (value === "empty") return;
@@ -821,8 +875,10 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const apply = (): void => {
 			this.#scopes[scope].doc.advisors[index].tools = commitTools(selected, all);
 			this.#markDirty(scope);
+			this.#applyPendingTools = undefined;
 			this.#showFields();
 		};
+		this.#applyPendingTools = apply;
 		list.onSelect = item => {
 			if (item.value === "__done") {
 				apply();

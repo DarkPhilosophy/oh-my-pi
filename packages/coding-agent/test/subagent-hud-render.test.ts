@@ -10,7 +10,11 @@ import * as path from "node:path";
 import { Agent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { InteractiveMode, renderSubagentHudLines } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
+import {
+	InteractiveMode,
+	renderSubagentHudLines,
+	SubagentHudComponent,
+} from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import {
 	type ObservableSession,
 	SessionObserverRegistry,
@@ -784,6 +788,29 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 		resetSettingsForTest();
+	});
+
+	it("keeps activity rows attached to their agent in the mounted HUD", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		for (const [index, id] of ["Alpha", "Beta"].entries()) {
+			const payload = makeProgressPayload(id, index, `Inspect ${id}`, true);
+			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
+				...payload,
+				progress: { ...payload.progress, currentTool: "read", currentToolArgs: `${id}.ts`, currentToolStartMs: 1 },
+			});
+			await Promise.resolve();
+		}
+		const hud = mode.subagentContainer.children.find(child => child instanceof SubagentHudComponent);
+		if (!(hud instanceof SubagentHudComponent)) throw new Error("Expected mounted subagent HUD");
+		const rows = hud.render(120).map(row => Bun.stripANSI(row));
+		for (const id of ["Alpha", "Beta"]) {
+			const titleRow = rows.findIndex(row => row.includes(id) && !row.includes(`${id}.ts`));
+			const activityRow = rows.findIndex(row => row.includes(`read(${id}.ts)`));
+			expect(titleRow).toBeGreaterThanOrEqual(0);
+			expect(activityRow).toBeGreaterThan(titleRow);
+			expect(hud.getClickAgentAtRow(titleRow)).toBe(id);
+			expect(hud.getClickAgentAtRow(activityRow)).toBe(id);
+		}
 	});
 
 	it("renders tool lifecycle changes without waiting for the progress debounce", async () => {

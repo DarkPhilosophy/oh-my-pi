@@ -7,6 +7,7 @@ export function formatTaskResultPreview(text: string, includeStatus = true): str
 	let body = text;
 	let abortReason: string | undefined;
 	let fullOutput: string | undefined;
+	let mergeSummary: string | undefined;
 	let status: string | undefined;
 	if (text.trimStart().startsWith("<task-result ")) {
 		const attributes = /^\s*<task-result\b([^>]*)>/.exec(text)?.[1] ?? "";
@@ -16,6 +17,9 @@ export function formatTaskResultPreview(text: string, includeStatus = true): str
 			body = output[3].trim();
 			if (output[1] === "preview") fullOutput = /\bfull-output="([^"]+)"/.exec(output[2] ?? "")?.[1];
 			abortReason = /<abort-reason>([\s\S]*)<\/abort-reason>/.exec(text.slice(0, output.index))?.[1].trim();
+			mergeSummary = /<merge-summary>\s*([\s\S]*?)\s*<\/merge-summary>/.exec(
+				text.slice(output.index + output[0].length),
+			)?.[1];
 		}
 	}
 	try {
@@ -29,7 +33,8 @@ export function formatTaskResultPreview(text: string, includeStatus = true): str
 	} catch {
 		// Prose, incomplete previews and arbitrary tool data retain their contents.
 	}
-	if (fullOutput) body = `${body}\n\nFull output: ${fullOutput}`;
+	if (mergeSummary?.trim()) body = `${body}\n\n${mergeSummary.trim()}`;
+	if (fullOutput) body = `Full output: ${fullOutput}\n\n${body}`;
 	if (abortReason) body = `${abortReason}\n\n${body}`;
 	if (includeStatus && status && status !== "completed") body = `Task ${status}\n\n${body}`;
 	return replaceTabs(shortenEmbeddedPaths(sanitizeText(body)));

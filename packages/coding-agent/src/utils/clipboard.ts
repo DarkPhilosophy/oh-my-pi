@@ -148,12 +148,15 @@ export async function copyTextPersistent(text: string): Promise<void> {
 		await copyToClipboard(text);
 		return;
 	}
-	const candidates = process.env.WAYLAND_DISPLAY
-		? [["wl-copy"]]
-		: [
-				["xclip", "-selection", "clipboard"],
-				["xsel", "-ib"],
-			];
+	const candidates = [
+		...(process.env.WAYLAND_DISPLAY ? [["wl-copy"]] : []),
+		...(process.env.DISPLAY
+			? [
+					["xclip", "-selection", "clipboard"],
+					["xsel", "-ib"],
+				]
+			: []),
+	];
 	for (const command of candidates) {
 		try {
 			await spawnCapture(command, { input: text, timeoutMs: 5000 });

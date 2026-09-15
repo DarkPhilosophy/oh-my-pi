@@ -39,6 +39,14 @@ describe("limitMatchesActiveAccount", () => {
 		);
 	});
 
+	test("prefers matching scoped accountId over stale merged report metadata", () => {
+		const identity = { accountId: "active-account" };
+		const report = makeReport({ metadata: { accountId: "retained-account" } });
+
+		expect(limitMatchesActiveAccount(report, makeLimit({ accountId: "active-account" }), identity)).toBe(true);
+		expect(limitMatchesActiveAccount(report, makeLimit({ accountId: "other-account" }), identity)).toBe(false);
+	});
+
 	test("matches email against report metadata only — never against scope accountId", () => {
 		const identity = { email: "user@example.com" };
 		expect(
@@ -57,6 +65,14 @@ describe("limitMatchesActiveAccount", () => {
 			limitMatchesActiveAccount(makeReport({ metadata: { projectId: "gcp-proj-1" } }), makeLimit(), identity),
 		).toBe(true);
 		expect(limitMatchesActiveAccount(makeReport(), makeLimit({ projectId: "gcp-proj-2" }), identity)).toBe(false);
+	});
+
+	test("prefers matching scoped projectId over stale merged report metadata", () => {
+		const identity = { projectId: "active-project" };
+		const report = makeReport({ metadata: { projectId: "retained-project" } });
+
+		expect(limitMatchesActiveAccount(report, makeLimit({ projectId: "active-project" }), identity)).toBe(true);
+		expect(limitMatchesActiveAccount(report, makeLimit({ projectId: "other-project" }), identity)).toBe(false);
 	});
 
 	test("returns false without an identity or with an empty identity", () => {

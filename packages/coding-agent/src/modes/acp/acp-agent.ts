@@ -1444,6 +1444,7 @@ export class AcpAgent implements Agent {
 			getToolArgs: toolCallId => record.toolArgsById.get(toolCallId),
 			cwd: record.session.sessionManager.getCwd(),
 			resolveImageData: resolveImageDataForAcp,
+			exposeThinkTool: record.session.settings.get("acp.exposeThinkTool") === true,
 		})) {
 			const delivery = this.#connection.sessionUpdate(notification);
 			if (streamedAssistantError) {

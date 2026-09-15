@@ -848,19 +848,41 @@ export function shortenEmbeddedPaths(text: string, homeDir?: string): string {
 				.join("[\\\\/]")
 		: home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const flags = windowsHome ? "gi" : "g";
-	const tokenBoundary = String.raw`[\s"'\x60([{=(:,;<>&|]`;
-	const suffix = windowsHome ? String.raw`([\\/][^\s"'\x60<>&|),;:]*)?` : "";
+	const tokenBoundary = String.raw`[\s"'\x60([{=(:,;<>&|*_]`;
+	const suffix = windowsHome ? String.raw`([\\/][^\s"'\x60<>&|),;:=([{*_]*)?` : "";
 	return text.replace(
-		new RegExp(`(^|${tokenBoundary})${escapedHome}(?=$|[/\\\\\\s"'\\]),;:\\x60<>&|])${suffix}`, flags),
+		new RegExp(`(^|${tokenBoundary})${escapedHome}(?=$|[/\\\\\\s"'\\]),;:\\x60<>&|*_])${suffix}`, flags),
 		(_match: string, boundary: string, remainder: string | undefined) =>
 			windowsHome ? `${boundary}~${(remainder ?? "").replaceAll("\\", "/")}` : `${boundary}~`,
 	);
 }
 
 /** Shorten filesystem and command arguments without rewriting literal search patterns. */
-export function shortenToolArgumentPaths(text: string, key: string | undefined): string {
+export function shortenToolArgumentPaths(text: string, key: string | undefined, homeDir?: string): string {
+	if (key === "url") {
+		try {
+			const url = new URL(text);
+			if (url.protocol === "file:") {
+				let decodedPath = url.pathname;
+				try {
+					decodedPath = decodeURIComponent(decodedPath);
+				} catch {
+					/* Retain malformed percent escapes as literal path bytes. */
+				}
+				const filePath = url.hostname
+					? `//${url.hostname}${decodedPath}`
+					: /^[A-Za-z]:$/.test(decodedPath.slice(1, 3))
+						? decodedPath.slice(1)
+						: decodedPath;
+				return shortenEmbeddedPaths(filePath, homeDir);
+			}
+		} catch {
+			// Preserve malformed and non-file URL arguments verbatim.
+		}
+		return text;
+	}
 	return key === "path" || key === "file_path" || key === "command" || key === "task" || key === "prompt"
-		? shortenEmbeddedPaths(text)
+		? shortenEmbeddedPaths(text, homeDir)
 		: text;
 }
 

@@ -5,19 +5,74 @@
 
 ### Added
 
+- Added connect-only Browser Relay support for Firefox-family browsers through local WebDriver BiDi endpoints ([#10295](https://github.com/can1357/oh-my-pi/pull/10295) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
+### Changed
+
+- Improved `/usage` with provider/account cards, temporary privacy and account-grouping controls, and configurable quota-bar labels.
+
+### Fixed
+
+- Fixed Flatpak Chromium launcher executables (including `com.google.Chrome`, `org.chromium.Chromium`, and `io.github.ungoogled_software.ungoogled_chromium`) so `app.path` is treated as a browser and gets managed Chromium profile handling
+- Fixed Chromium `--user-data-dir` handling by normalizing `--user-data-dir <dir>` and relative profile paths to absolute `--user-data-dir=...` values before launch
+- Browser automation now works alongside an already-running Chrome using an isolated profile, keeps requested profiles separate, and never kills reused browser processes.
+- First-use Chromium installation and browser operations no longer consume Eval's runtime timeout or reset its kernel while waiting.
+- Browser startup reuses a successful system-Chrome fallback instead of retrying an unavailable download during the same open.
+- Browser clicks and other interactions no longer stall when OMP-owned tabs are in the background, including after worker timeout recovery.
+- Read error and preview rendering now sanitizes tabs and Windows-style CRLF (e.g. ssh host-key failures, tab-indented fetched content) so raw output can no longer tear the result frame.
+
+### Changed
+
+- Subagents now show their current activity and a separate, width-bounded current-tool row; resolved model labels follow the model badge setting.
+
+### Fixed
+
+- Fixed completed subagent jobs and IRC replies displaying internal XML/JSON wrappers instead of readable results.
+- Collapsed failed subagent jobs now show the error details instead of repeating the job status.
+- Fixed fast subagent tool transitions being dropped by progress and HUD update batching.
+- Kept the last completed subagent tool visible with the configured success/error symbol until the next tool starts; edit previews include affected file paths.
+- Applied account masking consistently to text-mode and ACP `/usage` output, including reset-credit labels.
+
+
+## [18.1.20] - 2026-09-13
+
+### Added
+
+- Added an opt-in Popup Background Fill setting; command and inline model popups keep their unfilled appearance by default ([#11946](https://github.com/can1357/oh-my-pi/pull/11946), [#11958](https://github.com/can1357/oh-my-pi/pull/11958) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
 - Added `/render --todo` to exercise completed TODO auto-dismissal without provider calls.
+
+### Added
+
+- Added an optional Inline Model Picker in Appearance → Display that keeps model search in the chat input area while preserving the statusline and extension content ([#11958](https://github.com/can1357/oh-my-pi/pull/11958) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 
 ### Changed
 
 - Idle embedding workers now release their loaded model after five minutes and restart on the next request ([#10043](https://github.com/can1357/oh-my-pi/pull/10043) by [@iacore](https://github.com/iacore)).
 - Slash-command suggestions now temporarily cover nearby chat instead of pushing it into scrollback, preventing menu filtering and deletion from resetting the transcript.
 - The temporary model selector keeps its search field at the bottom, beneath model details and keyboard hints.
+- Documented that native JS/TS hook factories must live in `.omp/hooks/pre/` or `.omp/hooks/post/` (not directly in `.omp/hooks/`), and cross-linked the hooks and extension-loading docs ([#11942](https://github.com/can1357/oh-my-pi/issues/11942)).
 
 ### Fixed
 
 - Active tool previews stay within the live viewport and publish their completed cards once, avoiding history resets and repeated rows during consecutive large read, edit, and write results.
 - Dismissing a completed TODO panel restores the chat at the bottom instead of leaving a blank gap.
 - Advisor acknowledgments distinguish acceptance, deferral, and suppression; higher-priority findings replace only pending notes from the same review ([#11881](https://github.com/can1357/oh-my-pi/pull/11881) by [@olegpulatov](https://github.com/olegpulatov)).
+- Read error and preview rendering now sanitizes tabs and Windows-style CRLF (e.g. ssh host-key failures, tab-indented fetched content) so raw output can no longer tear the result frame.
+### Fixed
+
+- The hidden notice announcing a mid-session tool-availability change now states that it lists only what changed, so an additions-only notice no longer reads as the complete tool set and the model keeps using tools that are still callable ([#11824](https://github.com/can1357/oh-my-pi/issues/11824) by [@camjac251](https://github.com/camjac251)).
+- TTSR stream buffers now reset at every assistant message boundary, not only at turn start, so a `scope: text` or tool-argument rule can no longer fire on a later message because of text streamed by an earlier response in the same turn ([#11957](https://github.com/can1357/oh-my-pi/pull/11957) by [@srobroek](https://github.com/srobroek)).
+- Eval `completion()` calls now use configured retry fallback chains when their role model fails ([#11989](https://github.com/can1357/oh-my-pi/issues/11989)).
+- Eval `completion()` fallback chains now also apply to unqualified role models, walk into a failed fallback's own model chain, stop at `retry.maxRetries`, and resolve session-sticky credentials with the session id ([#11989](https://github.com/can1357/oh-my-pi/issues/11989)).
+- Eval `completion()` fallbacks now keep depth-first chain order, inherit the failed candidate's effort for bare nested entries, and skip keyless candidates without spending `retry.maxRetries` budget ([#11989](https://github.com/can1357/oh-my-pi/issues/11989)).
+- Eval `completion()` fallbacks reached at different efforts now each walk their shared descendants instead of truncating the later effort's path ([#11989](https://github.com/can1357/oh-my-pi/issues/11989)).
+- Fixed ranged grep rejecting existing files with glob characters in their names ([#11977](https://github.com/can1357/oh-my-pi/issues/11977)).
+- Notified Collab guests when admitted prompts are discarded, including room retirement during a session change ([#11908](https://github.com/can1357/oh-my-pi/pull/11908) by [@alphastorm](https://github.com/alphastorm)).
+- Preserved pending Collab dialog answers across session-switch rollback without accepting them after commit, stop, or writer departure ([#11908](https://github.com/can1357/oh-my-pi/pull/11908) by [@alphastorm](https://github.com/alphastorm)).
+- Fixed prompts awaiting setup crossing a fork, branch, or tree-navigation commit, multi-question extension dialogs moving later questions to a replacement Collab room, and stale rooms blocking `/collab` or `/join` after a failed session change ([#11908](https://github.com/can1357/oh-my-pi/pull/11908) by [@alphastorm](https://github.com/alphastorm)).
+- Fixed background task cards missing their final completion or failure after an early result or live-session focus replay.
+- Ranged reads on Windows no longer intermittently open the selector-suffixed path when filesystem probes return transient errors ([#11284](https://github.com/can1357/oh-my-pi/issues/11284)).
 
 ## [18.1.19] - 2026-09-12
 

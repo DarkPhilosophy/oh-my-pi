@@ -1312,6 +1312,41 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"display.popupFill": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Popup Background Fill",
+			description: "Fill command, argument and inline model popups with the message surface color",
+		},
+	},
+
+	"display.inlineModelPicker": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Inline Model Picker",
+			description:
+				"Search models in the existing chat input area, with results in a bordered popup and the statusline kept visible",
+		},
+	},
+
+	"display.commandSuggestionsPopup": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Command Suggestions Popup",
+			description:
+				"Show slash-command and argument suggestions in a bordered popup without moving the chat or changing native scrolling",
+		},
+	},
+
 	"display.shimmer": {
 		type: "enum",
 		values: ["classic", "kitt", "disabled"] as const,
@@ -1485,6 +1520,17 @@ export const SETTINGS_SCHEMA = {
 			label: "Omit Thinking summaries",
 			description:
 				"Instruct upstream providers to completely omit thinking summaries from responses (where supported)",
+		},
+	},
+
+	"acp.exposeThinkTool": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "providers",
+			group: "Protocol",
+			label: "Expose ACP think tool",
+			description: "Expose private think-tool content to ACP clients as agent thought chunks (ACP only)",
 		},
 	},
 
