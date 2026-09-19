@@ -174,6 +174,8 @@ type RequestBodyReadTimeoutRecovery = "not-applicable" | "handled-retry" | "hand
 /** Capabilities borrowed from the owning AgentSession. */
 export interface TurnRecoveryHost {
 	agent: Agent;
+	/** Bearer the most recent request for this provider was actually sent with. */
+	lastRequestApiKey?(provider: string): string | undefined;
 	sessionManager: SessionManager;
 	settings: Settings;
 	modelRegistry: ModelRegistry;
@@ -638,6 +640,14 @@ export class TurnRecovery {
 						providerTimed: parsedRetryAfterMs !== undefined,
 						baseUrl: activeModel.baseUrl,
 						modelId: activeModel.id,
+						// Name the account that actually served the refused request.
+						// The session id alone does not: a subagent streams with the
+						// credential resolver its parent handed down, and a provider
+						// session re-minted mid-turn leaves nothing sticky under the
+						// id we mark here — the block then found no target, reported
+						// "no sibling", and the turn switched model while a healthy
+						// account sat idle.
+						apiKey: this.#host.lastRequestApiKey?.(activeModel.provider),
 					},
 				);
 				return {

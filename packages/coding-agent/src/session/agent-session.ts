@@ -393,6 +393,7 @@ import {
 	type SessionMaintenanceHost,
 } from "./session-maintenance";
 import { cleanupEmptyMoveSession, copySessionArtifacts, type SessionManager } from "./session-manager";
+import { RequestCredentialTracker } from "./request-credential-tracker";
 import { SessionMemory, type SessionMemoryHost } from "./session-memory";
 import { buildSessionMetadata } from "./session-metadata";
 import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./session-provider-boundary";
@@ -756,6 +757,7 @@ export class AgentSession {
 	#isDisposed = false;
 	#modelDiscoveryAbortController = new AbortController();
 	/** Process-wide by default (double-spend safety across sessions); injectable for tests. */
+	readonly #requestCredentials = new RequestCredentialTracker();
 	#codexResetCoordinator: CodexAutoRedeemCoordinator;
 	// Extension system
 	#extensionRunner: ExtensionRunner | undefined = undefined;
@@ -1312,6 +1314,10 @@ export class AgentSession {
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
+		// Record the bearer each request is sent with, so usage-limit recovery can
+		// name the account that refused it instead of guessing from session
+		// stickiness the request may never have written.
+		this.agent.getApiKey = this.#requestCredentials.wrap(this.agent.getApiKey);
 		this.tokenRate = new TokenRateMeter(text => this.agent.tokenizer.countTokens(text));
 		this.#reseedTokenRate();
 		this.#codeModeState = config.codeModeState ?? {};
@@ -1471,6 +1477,7 @@ export class AgentSession {
 			promptGeneration: () => this.#promptGeneration,
 			promptSequence: () => this.#promptSequence,
 			sessionId: () => this.sessionId,
+			lastRequestApiKey: provider => this.#requestCredentials.last(provider),
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			scheduleAgentContinue: options => this.#scheduleAgentContinue(options),
 			waitForSessionMessagePersistence: message => this.#waitForSessionMessagePersistence(message),

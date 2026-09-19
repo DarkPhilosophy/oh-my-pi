@@ -99,6 +99,7 @@ import type { ClientBridge } from "./client-bridge";
 import { resolveCompactionMethodOrder, resolveMethodSettings } from "./compaction-methods";
 import { type CustomMessage, type CustomMessagePayload, isUserTurnInitiator } from "./messages";
 import { isAdvisorCard, isTerminalTextAssistantAnswer } from "./queued-messages";
+import { RequestCredentialTracker } from "./request-credential-tracker";
 import {
 	calculateRetryBackoffDelayMs,
 	formatRetryFallbackSelector,
@@ -303,6 +304,8 @@ interface ActiveAdvisor {
 	model: Model;
 	thinkingLevel: ThinkingLevel;
 	providerSessionId: string | undefined;
+	/** Bearers this advisor's requests actually went out with, per provider. */
+	credentials: RequestCredentialTracker;
 	reviewMode: AdvisorReviewMode;
 	reviewInterval: number;
 	/** Per-advisor catch-up policy override; `undefined` inherits the global
@@ -965,7 +968,11 @@ export class SessionAdvisors {
 		advisor.providerSessionId = providerSessionId;
 		advisor.agent.sessionId = providerSessionId;
 		advisor.agent.promptCacheKey = this.#host.agent.promptCacheKey ?? providerSessionId;
-		advisor.agent.getApiKey = requestModel => this.#host.modelRegistry.resolver(requestModel, providerSessionId);
+		// Keep the rebind tracked: recovery attributes a refusal to the bearer the
+		// request went out with, and an untracked resolver would leave it unknown.
+		advisor.agent.getApiKey = advisor.credentials.wrap(requestModel =>
+			this.#host.modelRegistry.resolver(requestModel, providerSessionId),
+		);
 		advisor.agent.setMetadataResolver(
 			providerSessionId
 				? provider => buildSessionMetadata(providerSessionId, provider, this.#host.modelRegistry.authStorage)
@@ -1354,6 +1361,11 @@ export class SessionAdvisors {
 				}
 				return baseAdvisorStreamFn(requestModel, context, options);
 			};
+			// Same attribution rule as the main turn: remember the bearer each
+			// advisor request went out with, so a usage-limit refusal blocks the
+			// account that refused it instead of finding no target and latching the
+			// advisor off while a healthy sibling is available.
+			const advisorCredentials = new RequestCredentialTracker();
 			const advisorAgent = new Agent({
 				initialState: {
 					systemPrompt,
@@ -1368,7 +1380,9 @@ export class SessionAdvisors {
 				cursorExecHandlers: advisorCursorExecHandlers,
 				cwdResolver: () => this.#host.sessionManager.getCwd(),
 				preferWebsockets: this.#host.preferWebsockets,
-				getApiKey: requestModel => this.#host.modelRegistry.resolver(requestModel, advisorProviderSessionId),
+				getApiKey: advisorCredentials.wrap(requestModel =>
+					this.#host.modelRegistry.resolver(requestModel, advisorProviderSessionId),
+				),
 				streamFn: advisorStreamFn,
 				// Maintenance installs compactionSummary messages; the core Agent's
 				// default converter drops custom roles and would discard their replay.
@@ -1550,6 +1564,7 @@ export class SessionAdvisors {
 				model: advisorModel,
 				thinkingLevel: advisorThinkingLevel,
 				providerSessionId: advisorProviderSessionId,
+				credentials: advisorCredentials,
 				reviewMode: descriptor.reviewMode,
 				reviewInterval: descriptor.reviewInterval,
 				syncBacklog: descriptor.syncBacklog,
@@ -1938,7 +1953,12 @@ export class SessionAdvisors {
 			const switched = await this.#host.modelRegistry.authStorage.rotateSessionCredential(
 				currentModel.provider,
 				advisor.providerSessionId,
-				{ error: message, modelId: currentModel.id, signal },
+				{
+					error: message,
+					modelId: currentModel.id,
+					apiKey: advisor.credentials.last(currentModel.provider),
+					signal,
+				},
 			);
 			if (switched) return true;
 		}
@@ -1962,6 +1982,9 @@ export class SessionAdvisors {
 					providerTimed: retryAfterMs !== undefined,
 					baseUrl: currentModel.baseUrl,
 					modelId: currentModel.id,
+					// Name the account that refused this advisor request; the advisor's
+					// provider session id does not always carry a sticky selection.
+					apiKey: advisor.credentials.last(currentModel.provider),
 					signal,
 				},
 			);
