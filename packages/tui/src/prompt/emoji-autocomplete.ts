@@ -145,7 +145,7 @@ export function getEmojiSuggestions(textBeforeCursor: string): { items: Autocomp
 		if (items.length >= MAX_SUGGESTIONS) break;
 		if (pattern.length < wanted.length) continue;
 		if (pattern.toLowerCase().slice(0, wanted.length) !== wanted) continue;
-		items.push({ value: char, label: `${char}  ${pattern}` });
+		items.push({ value: char, label: `${char}  ${pattern}`, renderAboveEditor: true });
 	}
 
 	const bucket = BUCKETS[trigger.query[0]!];
@@ -156,6 +156,7 @@ export function getEmojiSuggestions(textBeforeCursor: string): { items: Autocomp
 			items.push({
 				value: char,
 				label: `${char}  :${name}:`,
+				renderAboveEditor: true,
 			});
 		}
 	}
@@ -201,20 +202,20 @@ function tryShortcodeInlineReplace(textBeforeCursor: string): { replaceLen: numb
 	const name = textBeforeCursor.slice(nameStart, closeIdx).toLowerCase();
 	const char = lookupExact(name);
 	if (!char) return null;
-	// Replace `:name:` (name + 2 colons) with the emoji character.
+	// Replace `: name:` (name + 2 colons) with the emoji character.
 	return { replaceLen: name.length + 2, insert: char };
 }
 
 // A trailing delimiter (space/tab/newline) confirms the user is done with the
-// token — that way typing `:PATH` doesn't turn into `😛ATH` halfway through.
+// token — that way typing `: PATH` doesn't turn into `😛ATH` halfway through.
 function isEmoticonTerminator(c: number): boolean {
 	return c === 0x20 || c === 0x09 || c === 0x0a || c === 0x0d;
 }
 
 // Western text emoticons fire only once a terminator follows the pattern
-// (e.g. typing space after `;)` rewrites `;) ` to `😉 `). The terminator is
+// (e.g. typing space after `;)` rewrites `;)` to `😉 `). The terminator is
 // preserved in the replacement so the user keeps typing without losing it.
-// EMOTICONS is sorted longest-first so `:-) ` wins over `:) `.
+// EMOTICONS is sorted longest-first so `: -)` wins over `:) `.
 function tryEmoticonInlineReplace(textBeforeCursor: string): { replaceLen: number; insert: string } | null {
 	const len = textBeforeCursor.length;
 	if (len < 2) return null;

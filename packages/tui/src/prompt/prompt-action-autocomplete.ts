@@ -41,6 +41,7 @@ interface PromptActionDefinition {
 interface PromptActionAutocompleteItem extends AutocompleteItem {
 	actionId: string;
 	execute: (prefix: string) => void;
+	renderAboveEditor: true;
 }
 
 interface PromptActionAutocompleteOptions {
@@ -184,6 +185,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 						description: action.description,
 						actionId: action.id,
 						execute: action.execute,
+						renderAboveEditor: true,
 						score: subsequenceScore(query, searchable),
 					} satisfies PromptActionAutocompleteItem & { score: number };
 				})

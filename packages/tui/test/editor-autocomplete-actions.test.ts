@@ -305,6 +305,34 @@ describe("Editor hash autocomplete actions", () => {
 		expect(editor.getText()).toBe("");
 		expect(provider.calls).toBe(1);
 	});
+
+	it.each([
+		["@", "@"],
+		["#", "#"],
+		["^", "^"],
+		[":", ":x"],
+	])("renders %s completion above the editor in popup mode", async (_label, input) => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.commandSuggestionsPopup = true;
+		editor.focused = true;
+		editor.setAutocompleteProvider({
+			getSuggestions: async (lines, _cursorLine, cursorCol) => {
+				const prefix = (lines[0] ?? "").slice(0, cursorCol);
+				return prefix === input
+					? { prefix, items: [{ value: "selection", label: "selection", renderAboveEditor: true }] }
+					: null;
+			},
+			applyCompletion: (lines, cursorLine, cursorCol) => ({ lines, cursorLine, cursorCol }),
+		});
+		const renders: Array<unknown> = [];
+		editor.onAutocompleteRender = render => renders.push(render);
+
+		for (const char of input) editor.handleInput(char);
+		await Bun.sleep(0);
+		editor.render(80);
+
+		expect(renders.at(-1)).toBeTypeOf("function");
+	});
 });
 
 describe("Editor slash autocomplete acceptance", () => {

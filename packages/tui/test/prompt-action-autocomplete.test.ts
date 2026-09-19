@@ -83,6 +83,7 @@ describe("prompt action autocomplete", () => {
 			"Move cursor to line start",
 			"Move cursor to line end",
 		]);
+		expect(suggestions?.items.every(item => item.renderAboveEditor)).toBeTrue();
 		const rendered = new SelectList(suggestions?.items ?? [], 10, getSelectListTheme()).render(80).join("\n");
 		for (const item of suggestions?.items ?? []) {
 			expect(rendered).toContain(item.label);
@@ -338,6 +339,7 @@ describe("prompt action autocomplete", () => {
 					label: "a/x",
 					description: "X One",
 					icon: theme.symbol("icon.model"),
+					renderAboveEditor: true,
 				},
 			],
 		});

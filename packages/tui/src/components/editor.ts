@@ -588,6 +588,7 @@ export class Editor implements Component, Focusable {
 		| undefined;
 	#autocompletePrefix: string = "";
 	#autocompleteCommandArgument = false;
+	#autocompleteRenderAboveEditor = false;
 	#autocompleteRequestId: number = 0;
 	#autocompletePendingRequest: AutocompleteRequest | undefined;
 	#autocompleteRequestRunning = false;
@@ -1518,8 +1519,9 @@ export class Editor implements Component, Focusable {
 			if (
 				this.commandSuggestionsPopup &&
 				(this.#autocompleteCommandArgument ||
-					(findLeadingSlashCommandStart(this.#autocompletePrefix) !== null &&
-						!this.#selectedCompletionIsPath())) &&
+					(findLeadingSlashCommandStart(this.#autocompletePrefix) !== null && !this.#selectedCompletionIsPath()) ||
+					this.#autocompletePrefix.startsWith("@") ||
+					this.#autocompleteRenderAboveEditor) &&
 				this.onAutocompleteRender
 			) {
 				this.onAutocompleteRender(
@@ -4128,6 +4130,7 @@ export class Editor implements Component, Focusable {
 		const original = line.slice(replacements.startCol, replacements.endCol);
 		this.#autocompletePrefix = original;
 		this.#autocompleteCommandArgument = false;
+		this.#autocompleteRenderAboveEditor = false;
 		this.#autocompleteList = this.#createAutocompleteList(
 			original,
 			replacements.items.map(value => ({ value, label: value })),
@@ -4188,6 +4191,7 @@ export class Editor implements Component, Focusable {
 		this.#textAssistReplacement = undefined;
 		this.#autocompletePrefix = "";
 		this.#autocompleteCommandArgument = false;
+		this.#autocompleteRenderAboveEditor = false;
 		if (notifyCancel && wasAutocompleting) {
 			this.onAutocompleteCancel?.();
 		}
@@ -4281,6 +4285,7 @@ export class Editor implements Component, Focusable {
 		if (suggestions && Array.isArray(suggestions.items) && suggestions.items.length > 0) {
 			this.#autocompletePrefix = suggestions.prefix;
 			this.#autocompleteCommandArgument = suggestions.commandArgument === true;
+			this.#autocompleteRenderAboveEditor = suggestions.items.some(item => item.renderAboveEditor === true);
 			this.#autocompleteList = this.#createAutocompleteList(suggestions.prefix, suggestions.items);
 			this.#autocompleteState = request.kind === "force" ? "force" : "regular";
 			this.onAutocompleteUpdate?.();

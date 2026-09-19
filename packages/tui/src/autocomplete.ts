@@ -182,6 +182,8 @@ export interface AutocompleteItem {
 	icon?: string;
 	/** Dim hint text shown inline after cursor when this item is selected */
 	hint?: string;
+	/** Render this completion menu through the editor's above-chat popup surface when enabled. */
+	renderAboveEditor?: boolean;
 }
 
 type Awaitable<T> = T | Promise<T>;
