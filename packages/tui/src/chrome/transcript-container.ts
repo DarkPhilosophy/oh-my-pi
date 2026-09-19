@@ -296,14 +296,28 @@ export class TranscriptContainer extends Container {
 
 	/**
 	 * Per-block breakdown of {@link transientRowCount}, for render debugging:
-	 * which live block currently holds back how many rows.
+	 * which live block currently holds back how many rows. When a physical
+	 * allocation is supplied, mutable blocks are first shaped for that same
+	 * frame so the reservation cannot retain their prior viewport height.
 	 */
-	transientBlocks(width: number): readonly { label: string; rows: number }[] {
+	transientBlocks(
+		width: number,
+		allocation?: number,
+		frame?: AnimationFrame,
+	): readonly { label: string; rows: number }[] {
 		this.#syncEntries();
 		const blocks: { label: string; rows: number }[] = [];
 		for (const entry of this.#entries) {
 			if (entry.state === "committed" || entry.emitted > 0) continue;
 			if (!isTransient(entry.component)) continue;
+			if (
+				allocation !== undefined &&
+				frame !== undefined &&
+				entry.state === "active" &&
+				(entry.component as TranscriptPresentationTarget).setTranscriptAllocation !== undefined
+			) {
+				this.#setAllocation(entry.component, allocation, frame);
+			}
 			const rows = this.#renderEntry(entry, width).length;
 			if (rows > 0) blocks.push({ label: entry.component.constructor.name, rows });
 		}

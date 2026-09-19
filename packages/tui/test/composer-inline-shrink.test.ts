@@ -23,6 +23,29 @@ class InlineWidget implements Component {
 	}
 }
 
+/** A live card whose visible tail follows the allocator's current frame budget. */
+class AllocationAwareTransientCard implements Component {
+	#allocation = Number.MAX_SAFE_INTEGER;
+
+	constructor(private readonly rows: readonly string[]) {}
+
+	isTranscriptBlockFinalized(): boolean {
+		return false;
+	}
+
+	isTranscriptBlockTransient(): boolean {
+		return true;
+	}
+
+	setTranscriptAllocation(rows: number): void {
+		this.#allocation = rows;
+	}
+
+	render(): readonly string[] {
+		return this.rows.slice(-this.#allocation);
+	}
+}
+
 interface Harness {
 	terminal: VirtualTerminal;
 	scheduler: VirtualRenderScheduler;
@@ -68,6 +91,35 @@ beforeAll(async () => {
 });
 
 describe("composer inline shrink (#11007)", () => {
+	it("reserves a mutable transient card at this frame's allocation after its live budget shrinks", () => {
+		const terminal = new VirtualTerminal(COLUMNS, ROWS);
+		const composer = new Composer({
+			terminal,
+			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
+		});
+		const transcript = new TranscriptContainer();
+		const card = new AllocationAwareTransientCard(Array.from({ length: ROWS * 2 }, (_, i) => `CARD ${i}`));
+		const editor = new Container();
+		const widget = new InlineWidget();
+		transcript.addChild(card);
+		editor.addChild(widget);
+		editor.addChild(new Text("EDITOR", 0, 0));
+		composer.setRuntimeChildren([transcript, editor]);
+		composer.start({ playWelcomeIntro: false });
+
+		const tall = composer.renderFrame({ columns: COLUMNS, rows: ROWS });
+		expect(tall.viewport.filter(row => row.includes("CARD"))).toHaveLength(ROWS - 1);
+
+		widget.rows = 30;
+		const short = composer.renderFrame({ columns: COLUMNS, rows: ROWS });
+		const cardRows = short.viewport.filter(row => row.includes("CARD"));
+		expect(cardRows).toHaveLength(ROWS - 31);
+		// The prior 39-row allocation must not reserve rows the 9-row card no
+		// longer occupies in this frame.
+		expect(short.viewportExpansionRows).toBe(cardRows.length);
+		composer.stop();
+	});
+
 	it("keeps the editor pinned to the bottom after transient below-transcript chrome shrinks", async () => {
 		const h = makeHarness();
 		await h.scheduler.settle(h.terminal);

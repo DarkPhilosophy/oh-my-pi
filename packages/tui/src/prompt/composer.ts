@@ -410,16 +410,9 @@ export class Composer implements TerminalFrameProvider {
 		const temporaryEditorVisible =
 			this.#editorHost !== undefined && this.#editorHost.children.some(child => child !== this.editor);
 		if (!temporaryEditorVisible) this.#chromeRowsWithoutAutocomplete = chromeRows;
-		const transientBlocks = transcript.transientBlocks(width);
-		const transientRows = transientBlocks.reduce((total, block) => total + block.rows, 0);
 		const chromeInsertionRows = temporaryEditorVisible
 			? Math.max(0, chromeRows - (this.#chromeRowsWithoutAutocomplete ?? chromeRows))
 			: 0;
-		const viewportExpansionRows =
-			chromeInsertionRows +
-			// An insertion taller than the screen cannot be held back: the
-			// transcript must keep retiring rows or the tail stops advancing.
-			Math.min(transientRows, Math.max(0, rows - 1));
 		const history = this.#offerHistory(transcript, width, rows, chromeRows);
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
@@ -428,11 +421,15 @@ export class Composer implements TerminalFrameProvider {
 		this.#viewportTranscriptStart = before.length;
 		const now = performance.now();
 		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
-		const liveViewport = transcript.renderLiveViewport(
-			width,
-			Math.max(0, rows - before.length - after.length),
-			frame,
-		);
+		const liveRows = Math.max(0, rows - before.length - after.length);
+		const transientBlocks = transcript.transientBlocks(width, liveRows, frame);
+		const transientRows = transientBlocks.reduce((total, block) => total + block.rows, 0);
+		const viewportExpansionRows =
+			chromeInsertionRows +
+			// An insertion taller than the screen cannot be held back: the
+			// transcript must keep retiring rows or the tail stops advancing.
+			Math.min(transientRows, Math.max(0, rows - 1));
+		const liveViewport = transcript.renderLiveViewport(width, liveRows, frame);
 		const active = liveViewport.rows;
 		const composed = [...before, ...active, ...after];
 		this.#lastClickFrameRows = composed.length;
