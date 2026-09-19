@@ -777,7 +777,7 @@ describe("AgentSession derived queued custom display", () => {
 	});
 });
 
-function createStubInteractiveModeContextForUiHelpers(session: AgentSession) {
+function createStubInteractiveModeContextForUiHelpers(session: AgentSession, collapseLines = 3) {
 	let editorText = "";
 	const editor: StubEditor = {
 		setText(text) {
@@ -819,7 +819,7 @@ function createStubInteractiveModeContextForUiHelpers(session: AgentSession) {
 			getDisplayString: (action: string) => (action === "app.message.expandQueue" ? "Alt+O" : "Alt+Up"),
 		},
 		settings: {
-			get: (path: string) => (path === "pendingQueueCollapseLines" ? 3 : undefined),
+			get: (path: string) => (path === "pendingQueueCollapseLines" ? collapseLines : undefined),
 		},
 		updatePendingMessagesDisplay,
 		locallySubmittedUserSignatures: new Set<string>(),
@@ -883,7 +883,7 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		const rendered = stripAnsi(pendingMessagesContainer.render(120).join("\n"));
 		expect(rendered.match(/ Steer /g)?.length).toBe(1);
 		expect(rendered).toContain("├─ [Image #1] describe");
-		expect(rendered).toContain("└─ more context");
+		expect(rendered).toContain("+1 rows · 12 chars");
 		expect(rendered).toContain("Alt+Up (or Up) to edit");
 	});
 
@@ -898,11 +898,33 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 
 		const rendered = stripAnsi(pendingMessagesContainer.render(120).join("\n"));
 		expect(rendered).toContain("├─ one");
-		expect(rendered).toContain("├─ two");
-		expect(rendered).toContain("├─ three");
+		expect(rendered).not.toContain("two");
+		expect(rendered).not.toContain("three");
 		expect(rendered).not.toContain("four");
 		expect(rendered).toContain("Alt+Up (or Up) to edit, Alt+O to expand");
-		expect(rendered).toContain("+1 rows · 4 chars");
+		expect(rendered).toContain("+3 rows · 12 chars");
+	});
+
+	it("advertises expansion when border chrome hides a four-row steer", async () => {
+		fixture = await createRealSession();
+		const { session } = fixture;
+		queueCustomSteer(session, "one\ntwo\nthree\nfour");
+
+		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session, 5);
+		const uiHelpers = new UiHelpers(ctx);
+		uiHelpers.updatePendingMessagesDisplay();
+
+		const collapsed = stripAnsi(pendingMessagesContainer.render(120).join("\n"));
+		expect(collapsed).toContain("+1 rows · 4 chars");
+		expect(collapsed).toContain("Alt+Up (or Up) to edit, Alt+O to expand");
+		expect(collapsed).not.toContain("four");
+
+		ctx.pendingQueueExpanded = true;
+		uiHelpers.updatePendingMessagesDisplay();
+
+		const expanded = stripAnsi(pendingMessagesContainer.render(120).join("\n"));
+		expect(expanded).toContain("└─ four");
+		expect(expanded).not.toContain("+1 rows · 4 chars");
 	});
 
 	it("shows the expand hint when a queued line wraps past the collapsed row limit", async () => {

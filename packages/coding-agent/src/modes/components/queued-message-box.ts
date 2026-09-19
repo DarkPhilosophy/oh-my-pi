@@ -12,8 +12,9 @@ import { theme } from "@oh-my-pi/pi-tui/theme";
  *  - Each logical line is word-wrapped to the content width (Bun.wrapAnsi),
  *    so a long line flows onto continuation rows instead of being truncated
  *    mid-word.
- *  - When collapsed, the box keeps at most `collapseLines` visual rows and
- *    reports the remainder in the bottom border as `+N rows · M chars`
+ *  - When collapsed, the box renders at most `collapseLines` total rows
+ *    (including its own border chrome) and reports the remainder in the
+ *    bottom border as `+N rows · M chars`
  *    (English), centered like the title sits in the top rule.
  *  - The horizontal rules use a light dashed glyph (`╌`) for the steering-box
  *    look; the vertical borders are dashed too (`╎`). This is local to queued
@@ -33,7 +34,7 @@ function wrapLine(line: string, width: number): string[] {
 }
 
 export interface QueuedMessageBoxOptions {
-	/** Max visual rows when not expanded (mirrors `pendingQueueCollapseLines`). */
+	/** Total rendered-row budget when not expanded (mirrors `pendingQueueCollapseLines`). */
 	collapseLines: number;
 	/** When true, show every visual row and no truncation hint. */
 	expanded: boolean;
@@ -99,13 +100,18 @@ export class QueuedMessageBox implements Component {
 				allRows.push({ li, vi, text: v });
 			});
 		});
+		// The consumer swaps this component with the editor, whose collapse setting
+		// is a total-height budget. Charge the frame to that same budget so adding
+		// the box does not grow the live region by its top and bottom rules.
+		const chromeRows = (this.#showTopBorder ? 1 : 0) + 1;
+		const bodyBudget = Math.max(0, this.#collapseLines - chromeRows);
 		let shown = allRows;
 		let hiddenRows = 0;
 		let hiddenChars = 0;
-		if (!this.#expanded && allRows.length > this.#collapseLines) {
-			shown = allRows.slice(0, this.#collapseLines);
-			hiddenRows = allRows.length - this.#collapseLines;
-			hiddenChars = allRows.slice(this.#collapseLines).reduce((a, r) => a + visibleWidth(r.text), 0);
+		if (!this.#expanded && allRows.length > bodyBudget) {
+			shown = allRows.slice(0, bodyBudget);
+			hiddenRows = allRows.length - bodyBudget;
+			hiddenChars = allRows.slice(bodyBudget).reduce((a, r) => a + visibleWidth(r.text), 0);
 		}
 		// `└─` marks a clean single-row end (last logical line, not wrapped, nothing
 		// truncated). A wrapped last line continues onto `│` rows, so its first row
@@ -118,7 +124,7 @@ export class QueuedMessageBox implements Component {
 				r.vi === 0 ? (r.li === lastLogical && !isTruncated && lineRowCount[r.li] === 1 ? "└─ " : "├─ ") : "│  ";
 			out.push(this.#bodyRow(gutter, r.text, width, gp));
 		}
-		if (allRows.length === 0) out.push(this.#bodyRow("│  ", "", width, gp));
+		if (allRows.length === 0 && (this.#expanded || bodyBudget > 0)) out.push(this.#bodyRow("│  ", "", width, gp));
 		out.push(this.#bottomBorder(width, hiddenRows, hiddenChars, this.#footerText));
 
 		this.#cachedWidth = width;

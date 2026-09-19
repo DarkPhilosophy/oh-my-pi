@@ -1135,7 +1135,7 @@ export class UiHelpers {
 		const collapseLines = Math.max(1, this.ctx.settings?.get("pendingQueueCollapseLines") ?? 5);
 		const queueBoxWidth = Math.max(1, this.ctx.ui.terminal?.columns ?? 80);
 		const canExpandQueue = allMessages.some(
-			entry => queuedMessageVisualRowCount(entry.message, queueBoxWidth) > collapseLines,
+			entry => queuedMessageVisualRowCount(entry.message, queueBoxWidth) + 2 > collapseLines,
 		);
 		const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
 		const expandKey = this.ctx.keybindings.getDisplayString("app.message.expandQueue") || "Alt+O";
