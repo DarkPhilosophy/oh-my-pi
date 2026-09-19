@@ -360,4 +360,101 @@ describe("issue #6516 — tool output appears twice", () => {
 		expect(mode.chatContainer.children.includes(group)).toBe(true);
 		expect(mode.chatContainer.children.filter(child => child instanceof ReadToolGroupComponent)).toHaveLength(1);
 	});
+
+	it("keeps a persisted-running background task at its replayed historical position", () => {
+		const runningDetails = { async: { state: "running", jobId: "job-1", type: "task" } };
+		const laterText = "later assistant content must remain after the task";
+		const entries: SessionEntry[] = [
+			{
+				type: "message",
+				id: "m1",
+				parentId: null,
+				timestamp: Date.now(),
+				message: { role: "user", content: [{ type: "text", text: "spawn it" }], timestamp: 1 },
+			},
+			{
+				type: "message",
+				id: "m2",
+				parentId: "m1",
+				timestamp: Date.now(),
+				message: {
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "call-1",
+							name: "task",
+							arguments: { description: "historical task", prompt: "go" },
+						},
+					],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-sonnet-4-5",
+					usage,
+					stopReason: "toolUse",
+					timestamp: 2,
+				},
+			},
+			{
+				type: "message",
+				id: "m3",
+				parentId: "m2",
+				timestamp: Date.now(),
+				message: {
+					role: "toolResult",
+					toolCallId: "call-1",
+					toolName: "task",
+					content: [{ type: "text", text: "historical task is running" }],
+					details: runningDetails,
+					isError: false,
+					timestamp: 3,
+				},
+			},
+			{
+				type: "message",
+				id: "m4",
+				parentId: "m3",
+				timestamp: Date.now(),
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: laterText }],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-sonnet-4-5",
+					usage,
+					stopReason: "stop",
+					timestamp: 4,
+				},
+			},
+		] as unknown as SessionEntry[];
+
+		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => true });
+		vi.spyOn(session, "buildTranscriptSessionContext").mockReturnValue(
+			buildSessionContext(entries, undefined, undefined, { transcript: true }),
+		);
+
+		const live = new ToolExecutionComponent(
+			"task",
+			{ description: "historical task", prompt: "go" },
+			{},
+			undefined,
+			mode.ui,
+			tempDir.path(),
+			"call-1",
+		);
+		live.updateResult(
+			{ content: [{ type: "text", text: "historical task is running" }], details: runningDetails, isError: false },
+			true,
+			"call-1",
+		);
+		created.push(live);
+		mode.chatContainer.addChild(live);
+		mode.pendingTools.set("call-1", live);
+
+		mode.rebuildChatFromMessages();
+
+		const rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+		expect(mode.pendingTools.get("call-1")).toBe(live);
+		expect(rendered.indexOf("historical task")).toBeLessThan(rendered.indexOf(laterText));
+	});
 });

@@ -2907,6 +2907,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			collapseCompactedHistory: this.settings.get("display.collapseCompacted"),
 		});
 		const preservedLiveToolCallIds = new Set<string>();
+		const replayedLiveToolResultIndices = new Map<string, number>();
 		// A preserved pending-tool component whose result has already landed in
 		// the replayed transcript is re-rendered by `renderSessionContext` itself
 		// (the toolResult message reconstructs the block with its output). Keeping
@@ -2919,7 +2920,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Drop the already-resolved ones and let the replay own them; only
 		// genuinely in-flight (dangling, replay-stripped) calls still need
 		// preserving.
-		for (const message of context.messages) {
+		for (const [messageIndex, message] of context.messages.entries()) {
 			if (message.role !== "toolResult") continue;
 			const resolved = livePendingTools.get(message.toolCallId);
 			if (!resolved) continue;
@@ -2934,6 +2935,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			const details = message.details as { async?: { state?: string } } | undefined;
 			if (details?.async?.state === "running") {
 				preservedLiveToolCallIds.add(message.toolCallId);
+				replayedLiveToolResultIndices.set(message.toolCallId, messageIndex);
 				continue;
 			}
 			livePendingTools.delete(message.toolCallId);
@@ -3055,6 +3057,20 @@ export class InteractiveMode implements InteractiveModeContext {
 				if (candidate && this.chatContainer.children.includes(candidate)) {
 					semanticAnchor = candidate;
 					break;
+				}
+			}
+			if (!semanticAnchor) {
+				for (const id of liveToolCallIdsByComponent.get(child) ?? []) {
+					const resultIndex = replayedLiveToolResultIndices.get(id);
+					if (resultIndex === undefined) continue;
+					for (let messageIndex = resultIndex + 1; messageIndex < context.messages.length; messageIndex++) {
+						const candidate = this.transcriptMessageComponents.get(context.messages[messageIndex]!);
+						if (candidate && this.chatContainer.children.includes(candidate)) {
+							semanticAnchor = candidate;
+							break;
+						}
+					}
+					if (semanticAnchor) break;
 				}
 			}
 			this.#mountSettledChatChild(child, semanticAnchor);
