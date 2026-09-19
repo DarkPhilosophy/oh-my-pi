@@ -28,6 +28,31 @@ const deps: AdvisorConfigDeps = {
 	availableToolNames: [],
 };
 
+/**
+ * Open a detail field by its rendered label. Row offsets shift whenever the
+ * field list grows (review cadence added three rows), so tests address fields
+ * the way a user does.
+ */
+function openField(overlay: AdvisorConfigOverlayComponent, label: string): void {
+	const rows = overlay.render(100).map(Bun.stripANSI);
+	const row = rows.findIndex(line =>
+		line
+			.slice(38)
+			.replace(/^\s*[^\s\w]?\s*/, "")
+			.startsWith(label),
+	);
+	expect(row).toBeGreaterThan(0);
+	overlay.handleInput(`\x1b[<0;60;${row + 1}M`);
+}
+
+/** Activate a roster row (advisor, "Save & apply", …) by its rendered label. */
+function clickRosterRow(overlay: AdvisorConfigOverlayComponent, label: string): void {
+	const rows = overlay.render(100).map(Bun.stripANSI);
+	const row = rows.findIndex(line => line.slice(0, 36).includes(label));
+	expect(row).toBeGreaterThan(0);
+	overlay.handleInput(`\x1b[<0;5;${row + 1}M`);
+}
+
 describe("advisor review mode picker", () => {
 	beforeAll(async () => {
 		const theme = await getThemeByName("dark");
@@ -54,12 +79,10 @@ describe("advisor review mode picker", () => {
 		);
 
 		overlay.handleInput("\r"); // Advisor detail.
-		for (let i = 0; i < 3; i++) overlay.handleInput("\x1b[B");
-		overlay.handleInput("\r"); // Review mode.
+		openField(overlay, "Review mode");
 		overlay.handleInput("\r"); // Accept current mode without navigating.
 		overlay.handleInput("\x1b"); // Back to roster.
-		for (let i = 0; i < 4; i++) overlay.handleInput("\x1b[B");
-		overlay.handleInput("\r"); // Save & apply.
+		clickRosterRow(overlay, "Save & apply");
 		await Promise.resolve();
 
 		expect(saved?.advisors).toEqual([{ name: "Reviewer", reviewMode: "agent-end", reviewInterval: 3 }]);
@@ -417,9 +440,7 @@ describe("advisor sync backlog picker", () => {
 			},
 		);
 		overlay.handleInput("\x1b[C");
-		const fieldIndex = mode === "name" ? 1 : 4;
-		for (let i = 0; i < fieldIndex; i++) overlay.handleInput("\x1b[B");
-		overlay.handleInput("\r");
+		openField(overlay, mode === "name" ? "Name" : "Instructions");
 		if (mode === "name") overlay.handleInput(" Draft");
 		else overlay.pasteText("Draft instructions");
 
@@ -457,7 +478,9 @@ describe("advisor sync backlog picker", () => {
 		);
 		await Bun.sleep(0);
 		overlay.handleInput("\x1b[C");
-		for (let i = 0; i < 3; i++) overlay.handleInput("\x1b[B");
+		// Warnings clip the field list here, so the Tools row is addressed by
+		// keyboard: Enabled, Name, Model, Review mode, Review interval, Sync backlog, Tools.
+		for (let i = 0; i < 6; i++) overlay.handleInput("\x1b[B");
 		overlay.handleInput("\r");
 		const beforeWheel = Bun.stripANSI(overlay.render(100).join("\n"));
 		expect(beforeWheel).not.toContain("[ ] read");
@@ -467,8 +490,7 @@ describe("advisor sync backlog picker", () => {
 		expect(afterWheel).not.toBe(beforeWheel);
 		overlay.handleInput("\r");
 		overlay.handleInput("\x1b[D");
-		for (let i = 0; i < 3; i++) overlay.handleInput("\x1b[B");
-		overlay.handleInput("\r");
+		clickRosterRow(overlay, "Save & apply");
 		await Promise.resolve();
 
 		expect(saved?.advisors[0].tools).toEqual(["read"]);

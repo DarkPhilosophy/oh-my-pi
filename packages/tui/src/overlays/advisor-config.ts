@@ -266,7 +266,16 @@ function wrap(text: string | undefined, width: number): string[] {
 
 type Pane = "project" | "user" | "editor";
 /** What the right pane currently hosts. */
-type EditorMode = "fields" | "name" | "model" | "thinking" | "tools" | "instructions";
+type EditorMode =
+	| "fields"
+	| "name"
+	| "model"
+	| "thinking"
+	| "tools"
+	| "instructions"
+	| "review-mode"
+	| "review-interval"
+	| "sync-backlog";
 
 interface ScopeState {
 	doc: WatchdogConfigDoc;
@@ -458,6 +467,12 @@ export class AdvisorConfigOverlayComponent implements Component {
 					return "Type to search · Enter / click twice picks · Esc back";
 				case "thinking":
 					return "Enter / click pick · Esc back";
+				case "review-mode":
+					return "Enter / click choose review mode · Esc back";
+				case "review-interval":
+					return "Positive integer · Enter save · Esc cancel";
+				case "sync-backlog":
+					return "Enter / click choose catch-up policy · Esc back";
 				case "tools":
 					return "Enter / click toggle · Done or Esc apply · ← rosters";
 				case "instructions":
@@ -841,6 +856,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 		}
 		const { scope, index, advisor } = target;
 		const modelDescription = advisor.model?.trim() || this.#defaultModelLabel || "advisor role default";
+		const reviewMode = advisor.reviewMode ?? ADVISOR_REVIEW_MODES[0];
+		const reviewInterval = advisor.reviewInterval ?? 1;
 
 		const items: SelectItem[] = [
 			{
@@ -898,13 +915,13 @@ export class AdvisorConfigOverlayComponent implements Component {
 				this.#showModelPicker(scope, index);
 				return;
 			case "reviewMode":
-				this.#showReviewModePicker(index);
+				this.#showReviewModePicker(scope, index);
 				return;
 			case "reviewInterval":
-				this.#showReviewIntervalEditor(index);
+				this.#showReviewIntervalEditor(scope, index);
 				return;
 			case "syncBacklog":
-				this.#showSyncBacklogPicker(index);
+				this.#showSyncBacklogPicker(scope, index);
 				return;
 			case "tools":
 				this.#showToolsEditor(
@@ -1015,10 +1032,11 @@ export class AdvisorConfigOverlayComponent implements Component {
 		list.onCancel = () => this.#showModelPicker(scope, index);
 		this.#setEditor("thinking", list);
 	}
-	#showReviewModePicker(index: number): void {
-		const advisor = this.#doc.advisors[index];
+
+	#showReviewModePicker(scope: AdvisorConfigScope, index: number): void {
+		const advisor = this.#scopes[scope].doc.advisors[index];
 		if (!advisor) {
-			this.#showList();
+			this.#showFields();
 			return;
 		}
 		const current = advisor.reviewMode ?? ADVISOR_REVIEW_MODES[0];
@@ -1034,17 +1052,17 @@ export class AdvisorConfigOverlayComponent implements Component {
 		list.setSelectedIndex(ADVISOR_REVIEW_MODES.indexOf(current));
 		list.onSelect = item => {
 			advisor.reviewMode = item.value === "turn" ? undefined : "agent-end";
-			this.#dirty = true;
-			this.#showDetail(index);
+			this.#markDirty(scope);
+			this.#showFields();
 		};
-		list.onCancel = () => this.#showDetail(index);
-		this.#setScreen("review-mode", list, "Enter / click choose review mode · Esc back");
+		list.onCancel = () => this.#showFields();
+		this.#setEditor("review-mode", list);
 	}
 
-	#showReviewIntervalEditor(index: number): void {
-		const advisor = this.#doc.advisors[index];
+	#showReviewIntervalEditor(scope: AdvisorConfigScope, index: number): void {
+		const advisor = this.#scopes[scope].doc.advisors[index];
 		if (!advisor) {
-			this.#showList();
+			this.#showFields();
 			return;
 		}
 		const input = new Input();
@@ -1056,17 +1074,17 @@ export class AdvisorConfigOverlayComponent implements Component {
 				return;
 			}
 			advisor.reviewInterval = interval === 1 ? undefined : interval;
-			this.#dirty = true;
-			this.#showDetail(index);
+			this.#markDirty(scope);
+			this.#showFields();
 		};
-		input.onEscape = () => this.#showDetail(index);
-		this.#setScreen("review-interval", input, "Enter positive integer · Enter save · Esc cancel");
+		input.onEscape = () => this.#showFields();
+		this.#setEditor("review-interval", input);
 	}
 
-	#showSyncBacklogPicker(index: number): void {
-		const advisor = this.#doc.advisors[index];
+	#showSyncBacklogPicker(scope: AdvisorConfigScope, index: number): void {
+		const advisor = this.#scopes[scope].doc.advisors[index];
 		if (!advisor) {
-			this.#showList();
+			this.#showFields();
 			return;
 		}
 		const global = this.#deps.syncBacklog ?? "off";
@@ -1088,11 +1106,11 @@ export class AdvisorConfigOverlayComponent implements Component {
 		list.onSelect = item => {
 			// "__inherit" matches no mode, so `find` yields undefined — the override clears.
 			advisor.syncBacklog = ADVISOR_SYNC_BACKLOG_MODES.find(mode => mode === item.value);
-			this.#dirty = true;
-			this.#showDetail(index);
+			this.#markDirty(scope);
+			this.#showFields();
 		};
-		list.onCancel = () => this.#showDetail(index);
-		this.#setScreen("sync-backlog", list, "Enter / click choose catch-up policy · Esc back");
+		list.onCancel = () => this.#showFields();
+		this.#setEditor("sync-backlog", list);
 	}
 
 	#showToolsEditor(scope: AdvisorConfigScope, index: number, selected: Set<string>, cursor: number): void {
