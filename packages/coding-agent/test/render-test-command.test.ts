@@ -135,9 +135,10 @@ it.each(["ask", "job", "markdown"] as const)(
 				expect(calls).toEqual([...Array<string>(11).fill("bash"), ...Array<string>(4).fill("hub")]);
 			else {
 				expect(calls).toEqual([]);
-				const body = output.join("").split("\n").slice(1, -1);
-				expect(body).toHaveLength(50);
-				expect(body.map(line => line.slice(0, 11))).toEqual(
+				const body = output.join("").split("\n");
+				const markers = body.filter(line => line.startsWith("MARKDOWN_"));
+				expect(markers).toHaveLength(50);
+				expect(markers.map(line => line.slice(0, 11))).toEqual(
 					Array.from({ length: 50 }, (_, index) => `MARKDOWN_${String(index + 1).padStart(2, "0")}`),
 				);
 				mode.ui.renderNow();
@@ -147,8 +148,38 @@ it.each(["ask", "job", "markdown"] as const)(
 					.map(row => Bun.stripANSI(row))
 					.join("\n");
 				expect(Array.from(tape.matchAll(/MARKDOWN_\d+/g), match => match[0])).toEqual(
-					body.map(line => line.slice(0, 11)),
+					markers.map(line => line.slice(0, 11)),
 				);
+			}
+			expect(providerCalls).toBe(0);
+			expect(credentialCalls).toBe(0);
+		} finally {
+			unsubscribe();
+		}
+	},
+	60_000,
+);
+it.each(["large-edit", "edit-error", "advisor"] as const)(
+	"runs the %s shrink-reproduction scenario without provider access",
+	async scenario => {
+		const events: string[] = [];
+		const unsubscribe = session.subscribe(event => {
+			if (event.type === "tool_execution_start") events.push(event.toolName);
+			if (event.type === "message_start" && event.message.role === "custom") events.push(event.message.customType);
+		});
+		try {
+			await session.runRenderTest({ repeat: 1, delayMs: 1, scenario }, mode.getToolUIContext());
+			await session.waitForIdle();
+			if (scenario === "advisor") {
+				expect(events).toEqual(["advisor"]);
+				expect(
+					session.agent.state.messages.some(
+						message => message.role === "custom" && message.customType === "advisor",
+					),
+				).toBeFalse();
+			} else {
+				expect(events).toContain("edit");
+				expect(events).toContain("read");
 			}
 			expect(providerCalls).toBe(0);
 			expect(credentialCalls).toBe(0);

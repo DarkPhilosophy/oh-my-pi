@@ -7,7 +7,7 @@ export interface RenderTestOptions {
 	repeat: number;
 	/** Delay between simulated provider chunks, in milliseconds. */
 	delayMs: number;
-	scenario?: "ask" | "job" | "markdown" | "todo";
+	scenario?: "ask" | "job" | "markdown" | "todo" | "large-edit" | "edit-error" | "advisor";
 	/** Isolate a single scripted response (1-based); labels keep the original number. */
 	segment?: number;
 }
@@ -128,11 +128,11 @@ export function createRenderTestAgent(model: Model, options: RenderTestOptions, 
 				if (options.scenario === "markdown") {
 					// Fifty distinct lines make missing or duplicated rows visible during streaming.
 					textParts.length = 0;
-					textParts.push("```text\n");
+					textParts.push("# Streaming markdown fixture\n\n```text\n");
 					for (let row = 1; row <= 50; row++) {
 						textParts.push(`MARKDOWN_${String(row).padStart(2, "0")}: 0123456789012345678901234567890123456\n`);
 					}
-					textParts.push("```");
+					textParts.push("```\n\n- Markdown only: no thinking blocks or prose filler.\n");
 				} else if (step?.introduction && !options.scenario) {
 					const operations = [
 						[
@@ -266,7 +266,7 @@ export function createRenderTestAgent(model: Model, options: RenderTestOptions, 
 											: "All stages finished. Review the transcript, including code finalization, job-card contraction and the answered question.";
 					textParts.push(`STEP_${++outputRow}: ${detail}\n`);
 				}
-				if (!step?.silent && options.scenario !== "markdown") {
+				if (!step?.silent && options.scenario !== "markdown" && options.scenario !== "advisor") {
 					textParts.push(
 						`\n**Streaming ${currentStream} — END.** ${step ? "Tool results follow; the next response starts after a 1.5–2 second pause." : "No further responses in this workflow."}\n`,
 					);

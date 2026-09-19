@@ -5357,6 +5357,23 @@ export class AgentSession {
 			this.#renderTestEvents?.add(event);
 			this.agent.emitExternalEvent(event);
 		});
+		if (options.scenario === "advisor") {
+			await this.#emitSessionEvent({
+				type: "message_start",
+				message: {
+					role: "custom",
+					content: "",
+					display: true,
+					customType: "advisor",
+					details: {
+						notes: [
+							{ note: "Simulated advisor card: display only; no live turn is affected.", severity: "concern" },
+						],
+					},
+					timestamp: Date.now(),
+				},
+			});
+		}
 		try {
 			await producer.prompt(
 				`/render${options.scenario ? ` --${options.scenario}` : ""}${

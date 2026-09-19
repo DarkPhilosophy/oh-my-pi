@@ -32,7 +32,7 @@ export function createRenderWorkflow(
 	session: ToolSession,
 	context: AgentToolContext,
 	repeat: number,
-	scenario?: "ask" | "job" | "markdown" | "todo",
+	scenario?: "ask" | "job" | "markdown" | "todo" | "large-edit" | "edit-error" | "advisor",
 	segment?: number,
 ): RenderWorkflow {
 	if ((!scenario || scenario === "ask") && (!context.hasUI || !context.ui?.askDialog)) {
@@ -66,7 +66,7 @@ export function createRenderWorkflow(
 	const read = (index: number) =>
 		actions.push({ name: "read", args: () => ({ path: `${files[index]}:1-${fixtureRows[index]}` }) });
 	let currentContext: Context;
-	const edit = (index: number, invalid = false) =>
+	const edit = (index: number, invalid = false, multiHunk = false) =>
 		actions.push({
 			name: "edit",
 			args: () => {
@@ -82,8 +82,15 @@ export function createRenderWorkflow(
 				const header = headers.reverse().find(match => match[1] === file || match[1] === path.basename(file));
 				if (!header) throw new Error("Workflow read did not provide a snapshot for the edit.");
 				const tag = invalid ? (header[2] === "FFFF" ? "0000" : "FFFF") : header[2];
+				const patch = multiHunk
+					? [2, 64, 120]
+							.map(
+								row => `PUT ${row}.=${row}:\n+Workflow repetition ${repetition}, wide multi-hunk edit ${row}.`,
+							)
+							.join("\n")
+					: `PUT 2.=2:\n+Workflow repetition ${repetition}, edit ${index + 1} completed.`;
 				return {
-					input: `*** Begin Patch\n[${file}#${tag}]\nPUT 2.=2:\n+Workflow repetition ${repetition}, edit ${index + 1} completed.\n*** End Patch\n`,
+					input: `*** Begin Patch\n[${file}#${tag}]\n${patch}\n*** End Patch\n`,
 				};
 			},
 		});
@@ -94,6 +101,8 @@ export function createRenderWorkflow(
 	edit(0);
 	edit(1, true);
 	edit(2);
+	if (scenario === "large-edit") edit(2, false, true);
+	if (scenario === "edit-error") edit(2, true, true);
 	read(0);
 	read(1);
 	read(2);
@@ -159,13 +168,20 @@ export function createRenderWorkflow(
 	});
 	actions.push({ name: "todo", args: () => ({ op: "done", task: tasks[2] }) });
 	if (scenario) {
-		const selected = actions.filter(action =>
-			scenario === "todo"
-				? action.name === "todo"
-				: scenario === "ask"
-					? action.name === "ask"
-					: scenario === "job" && ["bash", "hub"].includes(action.name),
-		);
+		const selected =
+			scenario === "large-edit"
+				? [actions[3]!, actions[7]!]
+				: scenario === "edit-error"
+					? [actions[3]!, actions[7]!]
+					: actions.filter(action =>
+							scenario === "todo"
+								? action.name === "todo"
+								: scenario === "ask"
+									? action.name === "ask"
+									: scenario === "job"
+										? ["bash", "hub"].includes(action.name)
+										: false,
+						);
 		actions.splice(0, actions.length, ...selected);
 	}
 	// One group is one scripted response. Related reads and explicit background
