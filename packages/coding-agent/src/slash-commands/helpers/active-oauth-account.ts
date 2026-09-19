@@ -1,6 +1,6 @@
 import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
-import { type AccountLabel, usageIdentityKey } from "../../modes/utils/usage-mask";
+import { type AccountLabel, usageIdentityKey } from "@oh-my-pi/pi-tui/overlays/usage-mask";
 
 function normalizeIdentityValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;

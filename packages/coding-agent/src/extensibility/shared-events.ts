@@ -17,9 +17,10 @@ import type { CompactionPreparation, CompactionResult } from "@oh-my-pi/pi-agent
 import type { AssistantRetryRecovery, ImageContent, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import type { postmortem } from "@oh-my-pi/pi-utils";
 import type { Rule } from "../capability/rule";
-import type { Goal, GoalModeState } from "../goals/state";
+import type { Goal } from "@oh-my-pi/pi-tui/tools/goal";
+import type { GoalModeState } from "../goals/state";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry } from "../session/session-entries";
-import type { TodoItem } from "../tools/todo";
+import type { TodoItem } from "@oh-my-pi/pi-tui/tools/todo";
 
 // ============================================================================
 // Session Events

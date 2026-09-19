@@ -35,7 +35,7 @@ import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "../
 import { isRpcHostUriResult, RpcHostUriBridge } from "../modes/rpc/host-uris";
 import type { RpcCommand, RpcSessionState } from "../modes/rpc/rpc-types";
 import { submitInteractiveInput } from "../modes/submit-interactive-input";
-import { initTheme, onTerminalAppearanceChange } from "../modes/theme/theme";
+import { initTheme, onTerminalAppearanceChange } from "@oh-my-pi/pi-tui/theme";
 import { type AgentRegistry, createAgentRegistryScope } from "../registry/agent-registry";
 import { MCPManagerPool } from "../mcp";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "../sdk";
@@ -53,8 +53,8 @@ import { buildAvailableSlashCommands } from "../slash-commands/available-command
 import { lookupBuiltinSlashCommand } from "../slash-commands/builtin-registry";
 import { parseSlashCommand } from "../slash-commands/helpers/parse";
 import { refreshAgentDiscovery } from "../task";
-import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
-import type { TodoPhase } from "../tools/todo";
+import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { calculateTokensPerSecond } from "../utils/token-rate";
 import { DAEMON_PROTOCOL_MAJOR } from "./protocol";
 import type { DaemonConnectionSnapshot } from "./status";
@@ -489,7 +489,7 @@ async function createAgentSessionRuntimeInScope(
 		if (!parsed) return false;
 		const skill = result.session.skills.find(candidate => candidate.name === parsed.name);
 		if (!skill) return false;
-		const built = await buildSkillPromptMessage(skill, parsed.args, "user");
+		const built = await buildSkillPromptMessage(skill, parsed, "user");
 		await result.session.promptCustomMessage(
 			{
 				customType: SKILL_PROMPT_MESSAGE_TYPE,

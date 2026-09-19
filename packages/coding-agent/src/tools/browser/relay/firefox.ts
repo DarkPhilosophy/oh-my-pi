@@ -1,4 +1,4 @@
-import { ToolError } from "../../tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { isLoopbackRelayUrl } from "./daemon";
 
 export const DEFAULT_FIREFOX_BIDI_URL = "ws://127.0.0.1:9222/session";

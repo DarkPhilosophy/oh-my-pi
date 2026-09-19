@@ -1261,6 +1261,76 @@ describe("AgentSession advisor toggle", () => {
 			await branchDir.remove().catch(() => {});
 		}
 	});
+	it("retries an advisor after a short authoritative usage-limit block", async () => {
+		const mock = createMockModel({ responses: [{ content: ["primary complete"] }] });
+		const primaryAgent = new Agent({
+			initialState: {
+				model,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: mock.stream,
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.enabled": true,
+			"retry.baseDelayMs": 0,
+			"retry.maxDelayMs": 100,
+			"retry.maxRetries": 1,
+			"retry.modelFallback": false,
+		});
+		settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+		const quotaSession = new AgentSession({
+			agent: primaryAgent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			advisorTools: [],
+		});
+
+		try {
+			expect(quotaSession.setAdvisorEnabled(true)).toBe(true);
+			const advisorAgent = quotaSession.getAdvisorAgent();
+			if (!advisorAgent) throw new Error("Expected advisor agent to exist");
+			const prompt = vi
+				.spyOn(advisorAgent, "prompt")
+				.mockRejectedValueOnce(
+					new AIError.ProviderHttpError("Generic provider failure", 429, {
+						code: "insufficient_quota",
+					}),
+				)
+				.mockResolvedValue(undefined);
+			const markUsageLimitReached = vi.spyOn(authStorage, "markUsageLimitReached").mockImplementation(async () => {
+				const deadline = Date.now() + 20;
+				return {
+					switched: false,
+					blockedUntilMs: deadline,
+					requestedBlockedUntilMs: deadline,
+					reportResetAtMs: deadline,
+				};
+			});
+			const advisorYielded = Promise.withResolvers<void>();
+			const unsubscribe = quotaSession.subscribe(event => {
+				if (event.type === "advisor_yielded") advisorYielded.resolve();
+			});
+
+			await quotaSession.prompt("Trigger advisor");
+			await quotaSession.waitForIdle();
+			await advisorYielded.promise;
+			unsubscribe();
+
+			expect(markUsageLimitReached).toHaveBeenCalledTimes(1);
+			expect(prompt).toHaveBeenCalledTimes(2);
+			expect(quotaSession.getAdvisorStatusOverview().advisors[0]).toMatchObject({
+				status: "running",
+				yielded: true,
+			});
+		} finally {
+			await quotaSession.dispose();
+			vi.restoreAllMocks();
+		}
+	});
 	it("marks structurally classified advisor usage limits", async () => {
 		const mock = createMockModel({
 			responses: [
@@ -1444,7 +1514,7 @@ describe("AgentSession advisor toggle", () => {
 					note: `${prefix} note ${i}`,
 					severity: "concern",
 				});
-				expect(JSON.stringify(result.content)).toContain("Deferred");
+				expect(JSON.stringify(result.content)).toContain("Queued for the end of the turn");
 			}
 			const rejected = await tool.execute(`${prefix}-${budget + 1}`, {
 				note: `${prefix} note ${budget + 1}`,
@@ -1467,41 +1537,5 @@ describe("AgentSession advisor toggle", () => {
 		// Settings (2) overrides the default (4) when shared and per-advisor are undefined.
 		expect(session.applyAdvisorConfigs([{ name: "SettingsOnly" }], undefined, undefined)).toBe(1);
 		await exerciseBudget("settings", 2);
-	});
-	it("removes inherited advisor queue entries while retaining user steering", async () => {
-		session.setAdvisorEnabled(true);
-		const child = new AgentSession({
-			agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
-			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({
-				"advisor.enabled": true,
-				modelRoles: { advisor: `${model.provider}/${model.id}` },
-			}),
-			modelRegistry,
-			advisorTools: [],
-			advisorScope: session.advisorScope,
-		});
-		try {
-			const advice = {
-				role: "custom",
-				customType: "advisor",
-				content: "queued concern",
-				display: true,
-				timestamp: 1,
-			} as AgentMessage;
-			const userSteer: AgentMessage = { role: "user", content: "queued user request", timestamp: 2 };
-			const userFollowUp: AgentMessage = { role: "user", content: "next user request", timestamp: 3 };
-			child.agent.steer(advice);
-			child.agent.steer(userSteer);
-			child.agent.followUp(advice);
-			child.agent.followUp(userFollowUp);
-			expect(child.agent.peekSteeringQueue()).toEqual([advice, userSteer]);
-			expect(child.agent.peekFollowUpQueue()).toEqual([advice, userFollowUp]);
-			session.setAdvisorEnabled(false);
-			expect(child.agent.peekSteeringQueue()).toEqual([userSteer]);
-			expect(child.agent.peekFollowUpQueue()).toEqual([userFollowUp]);
-		} finally {
-			await child.dispose();
-		}
 	});
 });

@@ -1,6 +1,6 @@
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { COLLAB_GUEST_ALLOWED_COMMANDS } from "../collab/guest";
-import type { DaemonConnectionSnapshot } from "../daemon/status";
+import type { DaemonConnectionSnapshot } from "@oh-my-pi/pi-tui/chrome/daemon-status";
 import type { InteractiveModeContext } from "../modes/types";
 import { BUILTIN_COLLABORATION_SLASH_COMMANDS } from "./builtin-collaboration";
 import {

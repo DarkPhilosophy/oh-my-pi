@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { getMarkdownTheme, setCopyUrlHandlerReady } from "@oh-my-pi/pi-coding-agent/modes/theme/tui-adapters";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import {
+	getMarkdownTheme,
+	setCopyUrlHandlerReady,
+	setCopyUrlTargetProvider,
+} from "@oh-my-pi/pi-tui/theme/tui-adapters";
 import { copyUrlTarget, resolveCopyBlock, supportsCopyUrlHandler } from "@oh-my-pi/pi-coding-agent/utils/copy-store";
 import { Markdown, TERMINAL } from "@oh-my-pi/pi-tui";
 
@@ -12,11 +16,13 @@ beforeEach(async () => {
 	await Settings.init({ inMemory: true });
 	await initTheme(false);
 	TERMINAL.hyperlinks = true;
+	setCopyUrlTargetProvider(copyUrlTarget);
 	setCopyUrlHandlerReady(true);
 });
 
 afterEach(() => {
 	setCopyUrlHandlerReady(false);
+	setCopyUrlTargetProvider(undefined);
 	TERMINAL.hyperlinks = originalHyperlinks;
 	resetSettingsForTest();
 });

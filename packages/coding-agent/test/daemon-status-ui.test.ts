@@ -5,9 +5,9 @@ import {
 	type DaemonConnectionSnapshot,
 	formatDaemonServerStatus,
 	formatDaemonWelcomeStatus,
-} from "@oh-my-pi/pi-coding-agent/daemon/status";
-import { WelcomeComponent } from "@oh-my-pi/pi-coding-agent/modes/components/welcome";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+} from "@oh-my-pi/pi-tui/chrome/daemon-status";
+import { WelcomeComponent } from "@oh-my-pi/pi-tui/prompt/welcome";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
 describe("daemon status presentation", () => {
 	it("feeds the same snapshot into welcome rendering", async () => {

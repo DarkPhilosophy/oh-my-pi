@@ -1,7 +1,9 @@
 import { classifyModel } from "@oh-my-pi/pi-catalog/identity";
 import { $env, $flag } from "@oh-my-pi/pi-utils";
 
-export type EditMode = "replace" | "patch" | "hashline" | "apply_patch" | "sloppy";
+import type { EditMode } from "@oh-my-pi/pi-tui/tools/edit";
+
+export type { EditMode };
 
 export const DEFAULT_EDIT_MODE: EditMode = "hashline";
 
@@ -45,8 +47,11 @@ export function resolveEditMode(session: EditModeSessionLike): EditMode {
 		if (
 			identity.class === "kimi" ||
 			identity.class === "mimo" ||
+			identity.class === "minimax" ||
 			identity.class === "deepseek" ||
-			identity.class === "stepfun"
+			identity.class === "stepfun" ||
+			identity.family === "codex-spark" ||
+			(identity.class === "glm" && identity.family === "flash" && identity.revision === "5.3.0")
 		) {
 			return "replace";
 		}

@@ -8,7 +8,7 @@ import { Settings } from "../src/config/settings";
 import { createAgentSessionRuntime } from "../src/daemon/session-runtime";
 import type { HostedTerminalDescriptor } from "../src/daemon/terminal-bridge";
 import * as interactiveModeModule from "../src/modes/interactive-mode";
-import * as themeModule from "../src/modes/theme/theme";
+import * as themeModule from "@oh-my-pi/pi-tui/theme";
 import { AgentRegistry } from "../src/registry/agent-registry";
 import type { CreateAgentSessionResult } from "../src/sdk";
 import {

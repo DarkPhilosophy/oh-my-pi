@@ -156,7 +156,7 @@ describe("AgentSession context promotion", () => {
 		await session.waitForIdle();
 	}
 	it("clears codex provider session state on manual setModel switch away from codex", async () => {
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.4");
+		const codexModel = modelRegistry.find("openai-codex", "gpt-5.5");
 		const nonCodexModel = modelRegistry.getAll().find(model => model.api !== "openai-codex-responses");
 		if (!codexModel || !nonCodexModel) {
 			throw new Error("Expected codex and non-codex models to exist");
@@ -193,7 +193,7 @@ describe("AgentSession context promotion", () => {
 	});
 
 	it("clears codex provider session state on manual temporary switch into codex", async () => {
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.4");
+		const codexModel = modelRegistry.find("openai-codex", "gpt-5.5");
 		const nonCodexModel = modelRegistry.getAll().find(model => model.api !== "openai-codex-responses");
 		if (!codexModel || !nonCodexModel) {
 			throw new Error("Expected codex and non-codex models to exist");
@@ -230,7 +230,7 @@ describe("AgentSession context promotion", () => {
 	});
 
 	it("clears codex provider session state when branching rewrites history", async () => {
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.4");
+		const codexModel = modelRegistry.find("openai-codex", "gpt-5.5");
 		if (!codexModel) {
 			throw new Error("Expected codex model to exist");
 		}
@@ -271,7 +271,7 @@ describe("AgentSession context promotion", () => {
 	});
 
 	it("clears codex provider session state when tree navigation rewrites history", async () => {
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.4");
+		const codexModel = modelRegistry.find("openai-codex", "gpt-5.5");
 		if (!codexModel) {
 			throw new Error("Expected codex model to exist");
 		}

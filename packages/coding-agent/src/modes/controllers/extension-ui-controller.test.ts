@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "bun:test";
 import { compositeRightPanelsInRange, Container, type PanelLayoutResult, type RightPanelBlock } from "@oh-my-pi/pi-tui";
 import type { ExtensionUIContext, WidgetLayoutEvent } from "../../extensibility/extensions";
-import { CustomEditor } from "../components/custom-editor";
-import { getEditorTheme } from "../theme/theme";
+import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
+import { getEditorTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "../types";
 import { ExtensionUiController } from "./extension-ui-controller";
 

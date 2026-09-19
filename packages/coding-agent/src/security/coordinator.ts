@@ -17,7 +17,7 @@ import type { AgentSession } from "../session/agent-session";
 import type { AdvisorScope } from "../session/session-advisors";
 import type { AuthStorage } from "../session/auth-storage";
 import { SessionManager } from "../session/session-manager";
-import { createExactSecurityOAuthResolver, selectSecurityAccount } from "./auth";
+import { createSecurityAuthResolver, selectSecurityAuth } from "./auth";
 import type {
 	SecurityCoverage,
 	SecurityModelRef,
@@ -240,6 +240,7 @@ async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInp
 		...scanSettings.get("task.agentPrewalk"),
 		"security-reviewer": "off",
 	});
+	const providerSessionId = `security:${input.scanId}`;
 	const { session } = await createAgentSession({
 		cwd: input.executionRoot,
 		authStorage: input.host.authStorage,
@@ -247,11 +248,12 @@ async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInp
 		settings: scanSettings,
 		advisorScope: input.host.getAdvisorScope?.(),
 		model: input.model,
-		getApiKey: createExactSecurityOAuthResolver({
+		getApiKey: createSecurityAuthResolver({
 			authStorage: input.host.authStorage,
-			account: input.plan.account,
+			auth: input.plan.account,
+			providerResolver: model => input.host.modelRegistry.resolver(model, providerSessionId),
 		}),
-		providerSessionId: `security:${input.scanId}`,
+		providerSessionId,
 		sessionManager: input.sessionManager,
 		customTools: [input.publicationTool],
 		toolNames: SECURITY_SESSION_TOOLS,
@@ -434,12 +436,7 @@ export class SecurityCoordinator {
 		}
 		const model = input.model ?? this.#host.activeModel;
 		if (!model) throw new Error("Security scan preflight requires an active model");
-		const account = selectSecurityAccount(
-			this.#host.authStorage,
-			model.provider,
-			input.credentialId,
-			this.#host.sessionId,
-		);
+		const account = selectSecurityAuth(this.#host.authStorage, model, input.credentialId, this.#host.sessionId);
 		const store = await this.#openStore(this.#host.cwd);
 		const workRoot = path.join(store.projectDirectory, "work");
 		await fs.mkdir(workRoot, { recursive: true, mode: 0o700 });
@@ -606,6 +603,10 @@ export class SecurityCoordinator {
 				scanId: record.snapshot.scanId,
 				store,
 				startedAt,
+				// Findings must be grounded against the tree the scan session actually
+				// reads: for ref_diff scans that is the detached worktree, not the
+				// live repository root (#7118).
+				resolutionRoot: executionTarget.cwd,
 				sessionId: `security:${record.snapshot.scanId}`,
 				operationId: record.snapshot.operationId,
 				onPublished: async bundle => {

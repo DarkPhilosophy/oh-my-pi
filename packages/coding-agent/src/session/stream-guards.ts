@@ -14,6 +14,7 @@ import type { EditMode } from "../utils/edit-mode";
 import type { LocalProtocolOptions } from "../internal-urls";
 import geminiToolReminderTemplate from "../prompts/system/gemini-tool-call-reminder.md" with { type: "text" };
 import type { SecretObfuscator } from "../secrets/obfuscator";
+
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 import {

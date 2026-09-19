@@ -5,9 +5,9 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import {
 	classifyUnexpectedStop,
 	isUnexpectedStopCandidate,
-	parseUnexpectedStopClassification,
 } from "@oh-my-pi/pi-coding-agent/session/unexpected-stop-classifier";
 import { tinyModelClient } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
+import { asGlobalFetch } from "./helpers/fetch-mock";
 
 function makeAssistantMessage(options: {
 	stopReason: AssistantMessage["stopReason"];
@@ -121,6 +121,7 @@ describe("classifyUnexpectedStop", () => {
 			},
 		} as never;
 		const registry = {
+			authStorage: { hasAuth: () => false },
 			getAvailable: () => [model],
 			getApiKey: async () => "test-key",
 			resolver: () => async () => "test-key",
@@ -147,142 +148,93 @@ describe("classifyUnexpectedStop", () => {
 		expect(options?.maxTokens).toBe(4096);
 		expect(options?.maxTokens).toBeGreaterThan(1024);
 	});
-});
 
-it("returns the online result without invoking the local fallback", async () => {
-	const baseModel = getBundledModel("anthropic", "claude-sonnet-4-5");
-	if (!baseModel) throw new Error("Expected bundled Claude Sonnet 4.5 model");
-	const settings = {
-		get(path: string) {
-			if (path === "providers.unexpectedStopModel") return "online";
-			if (path === "providers.unexpectedStopFallbackModel") return "qwen2.5-1.5b";
-			return undefined;
-		},
-		getModelRole(role: string) {
-			return role === "smol" ? `${baseModel.provider}/${baseModel.id}` : undefined;
-		},
-	} as never;
-	const registry = {
-		getAvailable: () => [baseModel],
-		getApiKey: async () => "test-key",
-		resolver: () => async () => "test-key",
-	} as never;
-	vi.spyOn(ai, "completeSimple").mockResolvedValue({
-		stopReason: "stop",
-		content: [{ type: "text", text: "YES" }],
-	} as never);
-	const localComplete = vi.spyOn(tinyModelClient, "complete");
+	it("routes to TypeSafe when a credential exists and thresholds the yes-probability", async () => {
+		const settings = {
+			get(path: string) {
+				if (path === "providers.unexpectedStopModel") return "online";
+				return undefined;
+			},
+			getModelRole() {
+				return undefined;
+			},
+			getStorage() {
+				return undefined;
+			},
+		} as never;
+		const registry = {
+			authStorage: { hasAuth: (provider: string) => provider === "typesafe", resolver: () => "ts-key" },
+			getAvailable: () => [],
+		} as never;
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple");
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
+			asGlobalFetch(async (_url, init) => {
+				const body = JSON.parse(String(init?.body)) as { questions: Record<string, { type: string }> };
+				expect(body.questions.stopped.type).toBe("noul");
+				expect(new Headers(init?.headers).get("authorization")).toBe("Bearer ts-key");
+				return Response.json({
+					model: "jev-latest",
+					answers: { stopped: { type: "noul", noul: 0.31 } },
+					usage: { input_tokens: 10, output_tokens: 1 },
+				});
+			}),
+		);
 
-	await expect(
-		classifyUnexpectedStop("I will continue.", { settings, registry, sessionId: "session-1" }),
-	).resolves.toBe(true);
-	expect(localComplete).not.toHaveBeenCalled();
-});
+		const result = await classifyUnexpectedStop("Let me run the tests next.", {
+			settings,
+			registry,
+			sessionId: "session-1",
+		});
 
-it("uses the configured local fallback after an online failure", async () => {
-	const baseModel = getBundledModel("anthropic", "claude-sonnet-4-5");
-	if (!baseModel) throw new Error("Expected bundled Claude Sonnet 4.5 model");
-	const settings = {
-		get(path: string) {
-			if (path === "providers.unexpectedStopModel") return "online";
-			if (path === "providers.unexpectedStopFallbackModel") return "qwen2.5-1.5b";
-			return undefined;
-		},
-		getModelRole(role: string) {
-			return role === "smol" ? `${baseModel.provider}/${baseModel.id}` : undefined;
-		},
-	} as never;
-	const registry = {
-		getAvailable: () => [baseModel],
-		getApiKey: async () => "test-key",
-		resolver: () => async () => "test-key",
-	} as never;
-	vi.spyOn(ai, "completeSimple").mockRejectedValue(new Error("online unavailable"));
-	const localComplete = vi.spyOn(tinyModelClient, "complete").mockResolvedValue("NO");
-
-	await expect(
-		classifyUnexpectedStop("I will continue.", { settings, registry, sessionId: "session-1" }),
-	).resolves.toBe(false);
-	expect(localComplete).toHaveBeenCalledWith(
-		"qwen2.5-1.5b",
-		expect.any(String),
-		expect.objectContaining({ maxTokens: 16 }),
-	);
-});
-
-it("does not use the fallback for an ambiguous online response", async () => {
-	const baseModel = getBundledModel("anthropic", "claude-sonnet-4-5");
-	if (!baseModel) throw new Error("Expected bundled Claude Sonnet 4.5 model");
-	const settings = {
-		get(path: string) {
-			if (path === "providers.unexpectedStopModel") return "online";
-			if (path === "providers.unexpectedStopFallbackModel") return "qwen2.5-1.5b";
-			return undefined;
-		},
-		getModelRole(role: string) {
-			return role === "smol" ? `${baseModel.provider}/${baseModel.id}` : undefined;
-		},
-	} as never;
-	const registry = {
-		getAvailable: () => [baseModel],
-		getApiKey: async () => "test-key",
-		resolver: () => async () => "test-key",
-	} as never;
-	vi.spyOn(ai, "completeSimple").mockResolvedValue({
-		stopReason: "stop",
-		content: [{ type: "text", text: "maybe" }],
-	} as never);
-	const localComplete = vi.spyOn(tinyModelClient, "complete");
-
-	await expect(
-		classifyUnexpectedStop("I will continue.", { settings, registry, sessionId: "session-1" }),
-	).resolves.toBeUndefined();
-	expect(localComplete).not.toHaveBeenCalled();
-});
-
-it("returns undefined when both online and fallback classification fail", async () => {
-	const baseModel = getBundledModel("anthropic", "claude-sonnet-4-5");
-	if (!baseModel) throw new Error("Expected bundled Claude Sonnet 4.5 model");
-	const settings = {
-		get(path: string) {
-			if (path === "providers.unexpectedStopModel") return "online";
-			if (path === "providers.unexpectedStopFallbackModel") return "qwen2.5-1.5b";
-			return undefined;
-		},
-		getModelRole(role: string) {
-			return role === "smol" ? `${baseModel.provider}/${baseModel.id}` : undefined;
-		},
-	} as never;
-	const registry = {
-		getAvailable: () => [baseModel],
-		getApiKey: async () => "test-key",
-		resolver: () => async () => "test-key",
-	} as never;
-	vi.spyOn(ai, "completeSimple").mockRejectedValue(new Error("online unavailable"));
-	const localComplete = vi.spyOn(tinyModelClient, "complete").mockRejectedValue(new Error("local unavailable"));
-
-	await expect(
-		classifyUnexpectedStop("I will continue.", { settings, registry, sessionId: "session-1" }),
-	).resolves.toBeUndefined();
-	expect(localComplete).toHaveBeenCalledTimes(1);
-});
-
-describe("parseUnexpectedStopClassification", () => {
-	it("returns true for YES output", () => {
-		expect(parseUnexpectedStopClassification("YES")).toBe(true);
-		expect(parseUnexpectedStopClassification("yes")).toBe(true);
-		expect(parseUnexpectedStopClassification("  Yes, this is unexpected  ")).toBe(true);
+		expect(result).toBe(false);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(completeSimpleMock).not.toHaveBeenCalled();
 	});
 
-	it("returns false for NO output", () => {
-		expect(parseUnexpectedStopClassification("NO")).toBe(false);
-		expect(parseUnexpectedStopClassification("no")).toBe(false);
-		expect(parseUnexpectedStopClassification("No, the task is complete.")).toBe(false);
+	it("returns undefined instead of throwing when every judge fails", async () => {
+		const settings = {
+			get(path: string) {
+				if (path === "providers.unexpectedStopModel") return "online";
+				return undefined;
+			},
+			getModelRole() {
+				return undefined;
+			},
+			getStorage() {
+				return undefined;
+			},
+		} as never;
+		const registry = { authStorage: { hasAuth: () => false }, getAvailable: () => [] } as never;
+
+		expect(await classifyUnexpectedStop("Doing that now.", { settings, registry, sessionId: "s" })).toBeUndefined();
 	});
 
-	it("returns undefined for unparseable output", () => {
-		expect(parseUnexpectedStopClassification("maybe")).toBeUndefined();
-		expect(parseUnexpectedStopClassification("")).toBeUndefined();
-		expect(parseUnexpectedStopClassification("I don't know")).toBeUndefined();
+	it("falls back to the configured local backend after the primary judge fails", async () => {
+		const settings = {
+			get(path: string) {
+				if (path === "providers.unexpectedStopModel") return "online";
+				if (path === "providers.unexpectedStopFallbackModel") return "qwen2.5-1.5b";
+				return undefined;
+			},
+			getModelRole() {
+				return undefined;
+			},
+			getStorage() {
+				return undefined;
+			},
+		} as never;
+		// No online candidate: the primary judge throws, so only the fork's
+		// configured fallback backend can answer.
+		const registry = { authStorage: { hasAuth: () => false }, getAvailable: () => [] } as never;
+		const localComplete = vi.spyOn(tinyModelClient, "complete").mockResolvedValue("yes");
+
+		const result = await classifyUnexpectedStop("Let me run the tests next.", {
+			settings,
+			registry,
+			sessionId: "session-1",
+		});
+
+		expect(result).toBe(true);
+		expect(localComplete.mock.calls[0]?.[0]).toBe("qwen2.5-1.5b");
 	});
 });

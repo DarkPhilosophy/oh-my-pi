@@ -17,9 +17,9 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
 import { renderUsageReports } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
-import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { loadTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/loader";
-import { renderFractionBar } from "@oh-my-pi/pi-coding-agent/modes/utils/usage-bar";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import { loadTheme } from "@oh-my-pi/pi-tui/theme/loader";
+import { renderFractionBar } from "@oh-my-pi/pi-tui/overlays/usage-bar";
 
 const HOUR = 3_600_000;
 

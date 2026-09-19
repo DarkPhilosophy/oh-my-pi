@@ -65,7 +65,7 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		restoreEnv("TMUX", originalTmux);
 	});
 
-	function setupTerminal() {
+	function setupTerminal({ conpty = false }: { conpty?: boolean } = {}) {
 		const writes: string[] = [];
 		const received: string[] = [];
 		vi.spyOn(process, "kill").mockReturnValue(true);
@@ -77,7 +77,7 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 			return true;
 		});
 
-		const terminal = new ProcessTerminal();
+		const terminal = new ProcessTerminal({ conpty });
 		terminal.start(
 			data => received.push(data),
 			() => {},
@@ -653,10 +653,12 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 	});
 
 	it("uses disambiguation-only keyboard reporting on ConPTY", () => {
+		// ConPTY hosting comes from the construction override, not ambient WSL env:
+		// the ambient platform is deliberately a plain Linux TTY here.
 		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
-		Bun.env.WSL_DISTRO_NAME = "Ubuntu";
+		delete Bun.env.WSL_DISTRO_NAME;
 
-		const { terminal, writes } = setupTerminal();
+		const { terminal, writes } = setupTerminal({ conpty: true });
 		writes.length = 0;
 		process.stdin.emit("data", "\x1b[?0u");
 
@@ -667,15 +669,31 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 
 	it("avoids alternate-key reporting on ConPTY while preserving parent event reporting", () => {
 		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
-		Bun.env.WSL_INTEROP = "/run/WSL/1_interop";
+		delete Bun.env.WSL_INTEROP;
 
-		const { terminal, writes } = setupTerminal();
+		const { terminal, writes } = setupTerminal({ conpty: true });
 		writes.length = 0;
 		process.stdin.emit("data", "\x1b[?3u");
 
 		expect(writes).toContain("\x1b[>3u");
 		expect(writes).not.toContain("\x1b[>7u");
 		terminal.stop();
+	});
+
+	it("routes resize by the injected ConPTY override, not the ambient platform", () => {
+		// The override must gate every ConPTY-dependent path uniformly. Reading
+		// isConPTYHosted() here instead made a { conpty: false } terminal report
+		// non-ConPTY writes and kitty flags but ConPTY resize routing on Windows
+		// and WSL, so no test could model the opposite host.
+		Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+		const posix = setupTerminal({ conpty: false });
+		expect(posix.terminal.hostOwnsGridOnResize).toBe(false);
+		posix.terminal.stop();
+
+		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+		const conpty = setupTerminal({ conpty: true });
+		expect(conpty.terminal.hostOwnsGridOnResize).toBe(true);
+		conpty.terminal.stop();
 	});
 
 	it("shutdown balances the single kitty push performed on detection", () => {

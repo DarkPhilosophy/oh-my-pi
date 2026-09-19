@@ -679,8 +679,8 @@ describe("AgentSession queue coalescing", () => {
 		const onQueued = (text: string, imageCount: number, replacedText?: string) =>
 			calls.push([text, imageCount, replacedText]);
 		await duringStream(target, async () => {
-			await target.steer("a", undefined, onQueued);
-			await target.steer("b", undefined, onQueued);
+			await target.steer("a", undefined, { onQueued });
+			await target.steer("b", undefined, { onQueued });
 			return null;
 		});
 		// session.steer (the compaction-delivery path) reports the merge the same way,

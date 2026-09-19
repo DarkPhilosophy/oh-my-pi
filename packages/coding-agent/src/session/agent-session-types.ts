@@ -19,14 +19,14 @@ import type {
 	ToolChoice,
 } from "@oh-my-pi/pi-ai";
 import type { postmortem } from "@oh-my-pi/pi-utils";
-import type { AdvisorConfig } from "../advisor";
+import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import type { AsyncJob, AsyncJobDeliveryState, AsyncJobManager } from "../async";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import type { ModelRegistry } from "../config/model-registry";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings, SkillsSettings } from "../config/settings";
 import type { CursorMcpResourceAdapter } from "../cursor";
-import type { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
+import type { RawSseDebugBuffer } from "@oh-my-pi/pi-tui/apps/debug/raw-sse-buffer";
 import type { EvalPreludeDefinition } from "../eval/preludes";
 import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
@@ -36,7 +36,8 @@ import type { ContextUsage } from "../extensibility/extensions/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
 import type { SecretObfuscator } from "../secrets/obfuscator";
-import type { ConfiguredThinkingLevel } from "../thinking";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { ToolSession } from "../tools";
 import type { XdevState } from "../tools/xdev";
 import type { AdvisorScope } from "./session-advisors";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
@@ -182,6 +183,8 @@ export interface AgentSessionConfig {
 	extensionRunner?: ExtensionRunner;
 	/** Returns the current enabled eval prelude definitions. */
 	getEvalPreludes?: () => readonly EvalPreludeDefinition[];
+	/** Tool bridge context used by user-initiated Python cells to project enabled eval preludes. */
+	evalToolSession?: ToolSession;
 	/** Loaded skills already discovered by the SDK. */
 	skills?: Skill[];
 	/** Skill loading warnings already captured by the SDK. */
@@ -191,6 +194,8 @@ export interface AgentSessionConfig {
 	/** Custom TypeScript slash commands. */
 	customCommands?: LoadedCustomCommand[];
 	skillsSettings?: SkillsSettings;
+	/** Whether this session may start memory backends. Defaults to true. */
+	memoryEnabled?: boolean;
 	/** Agent directory used when changing memory backends in a live session. */
 	memoryAgentDir?: string;
 	/** Recursion depth used to suppress live backend replacement in subagents. */
@@ -302,8 +307,8 @@ export interface AgentSessionConfig {
 	 *
 	 * `ExtensionToolWrapper` reads `tools.approvalMode`, per-tool
 	 * `tools.approval.<tool>` policies and `autoApprove` only from this context;
-	 * with none it defaults to `yolo` with empty policies, so a bridge tool would
-	 * run a native frame the user configured `ask` or `deny` for.
+	 * with none it fails closed to `always-ask` with empty policies (no user
+	 * grant), so a bridge tool that needs a prompt cannot run unattended.
 	 */
 	advisorGetToolContext?: () => AgentToolContext | undefined;
 	/**
@@ -381,6 +386,22 @@ export interface FollowUpOptions {
 	attribution?: MessageAttribution;
 }
 
+/** Options for AgentSession.steer(). */
+export interface SteerOptions {
+	/** Explicit billing/initiator attribution. */
+	attribution?: MessageAttribution;
+	/** Called when the steer is queued while streaming. */
+	onQueued?: QueuedUserMessageListener;
+}
+
+/** Options for AgentSession.sendUserMessage(). */
+export interface SendUserMessageOptions {
+	/** Queue behavior; omitted starts a turn when idle and steers while streaming. */
+	deliverAs?: "steer" | "followUp" | "aside";
+	/** Explicit billing/initiator attribution. */
+	attribution?: MessageAttribution;
+}
+
 /** Result from a handoff operation. */
 export interface HandoffResult {
 	document: string;
@@ -408,13 +429,8 @@ export interface RoleModelCycleResult {
 	role: string;
 }
 
-/** A configured role resolved to a concrete model. */
-export interface ResolvedRoleModel {
-	role: string;
-	model: Model;
-	thinkingLevel?: ConfiguredThinkingLevel;
-	explicitThinkingLevel: boolean;
-}
+import type { ResolvedRoleModel } from "@oh-my-pi/pi-tui/overlays/model-picker";
+export type { ResolvedRoleModel } from "@oh-my-pi/pi-tui/overlays/model-picker";
 
 /** Resolvable role models and the currently active index. */
 export interface RoleModelCycle {

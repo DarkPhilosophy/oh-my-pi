@@ -2,7 +2,7 @@ import { beforeAll, expect, it } from "bun:test";
 import { Text, TUI } from "@oh-my-pi/pi-tui";
 import { HostedTerminal } from "../../../src/daemon/terminal-bridge";
 import { EventController } from "../../../src/modes/controllers/event-controller";
-import { initTheme } from "../../../src/modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { createInteractiveModeContext } from "../../helpers/interactive-mode-context";
 
 beforeAll(() => initTheme());
@@ -21,7 +21,6 @@ it("does not repaint unchanged history when an optimistic submission is acknowle
 	const ctx = createInteractiveModeContext({
 		optimisticUserMessageSignature: "optimistic send\u00000",
 		locallySubmittedUserSignatures: new Set(["optimistic send\u00000"]),
-		getUserMessageText: () => "optimistic send",
 	});
 	ctx.ui = ui;
 	const controller = new EventController(ctx);

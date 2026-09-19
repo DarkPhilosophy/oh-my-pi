@@ -37,7 +37,7 @@ import {
 	type WriteTextAtomicOptions,
 } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { AgentProgress, SingleResult } from "@oh-my-pi/pi-coding-agent/task/types";
+import type { AgentProgress, SingleResult } from "@oh-my-pi/pi-tui/tools/task";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { VibeSessionRegistry } from "@oh-my-pi/pi-coding-agent/vibe/runtime";
 
@@ -274,6 +274,14 @@ function createFakeWorkerSession(options: { streaming?: boolean; onDispose?: () 
 		},
 		async steer(text: string): Promise<void> {
 			steers.push(text);
+		},
+		// Upstream's turn setup resets the yield tool's per-turn state before each
+		// prompt; the double has no tool registry, so report "no yield tool".
+		getToolByName(): undefined {
+			return undefined;
+		},
+		isAdvisorActive(): boolean {
+			return false;
 		},
 		setWorkPoolYieldItems(): void {},
 		async waitForIdle(): Promise<void> {},

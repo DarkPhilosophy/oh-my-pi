@@ -1,7 +1,7 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
-import { theme } from "../theme/theme";
-import { fit } from "./overlay-box";
+import { padToWidth as fit } from "@oh-my-pi/pi-tui/render/utils";
+import { theme } from "@oh-my-pi/pi-tui/theme";
 /**
  * A single queued steer / follow-up message rendered inside a bordered box.
  *

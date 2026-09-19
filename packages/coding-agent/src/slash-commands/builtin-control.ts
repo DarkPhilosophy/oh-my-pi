@@ -1,4 +1,4 @@
-import { runPauseScreen } from "../modes/components/pause-screen";
+import { runPauseScreen } from "@oh-my-pi/pi-tui/overlays/pause-screen";
 import type { RenderTestOptions } from "../session/render-test";
 import { shutdownHandlerTui } from "./builtin-lifecycle";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";

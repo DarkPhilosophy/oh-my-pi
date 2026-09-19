@@ -1,12 +1,20 @@
 import { EventLoopKeepalive } from "@oh-my-pi/pi-agent-core";
 import type { AgentSession } from "../session/agent-session";
 import type { InteractiveMode } from "./interactive-mode";
+import { invokeSkillCommandFromText, isKnownSkillCommand } from "./skill-command";
 import type { SubmittedUserInput } from "./types";
 
 export async function submitInteractiveInput(
 	mode: Pick<
 		InteractiveMode,
-		"markPendingSubmissionStarted" | "finishPendingSubmission" | "showError" | "checkShutdownRequested"
+		| "markPendingSubmissionStarted"
+		| "finishPendingSubmission"
+		| "showError"
+		| "checkShutdownRequested"
+		| "skillCommands"
+		| "renderOptimisticSkillMessage"
+		| "clearOptimisticSkillMessage"
+		| "optimisticSkillMessagePending"
 	> &
 		Partial<Pick<InteractiveMode, "loopPrompt" | "pauseLoop">>,
 	session: Pick<AgentSession, "prompt" | "promptCustomMessage" | "isStreaming">,
@@ -36,6 +44,16 @@ export async function submitInteractiveInput(
 		if (!input.started && !mode.markPendingSubmissionStarted(input)) {
 			return;
 		}
+		const skillHost = {
+			skillCommands: mode.skillCommands,
+			session,
+			showError: mode.showError.bind(mode),
+			renderOptimisticSkillMessage: mode.renderOptimisticSkillMessage.bind(mode),
+			clearOptimisticSkillMessage: mode.clearOptimisticSkillMessage.bind(mode),
+			get optimisticSkillMessagePending() {
+				return mode.optimisticSkillMessagePending;
+			},
+		};
 		if (input.customType) {
 			const message = {
 				customType: input.customType,
@@ -55,6 +73,15 @@ export async function submitInteractiveInput(
 				synthetic: true,
 				expandPromptTemplates: false,
 				userInitiated: input.userInitiated,
+			});
+		} else if (isKnownSkillCommand(skillHost, input.text)) {
+			// Resubmitted skill text must dispatch through the skill path, or the
+			// model receives a literal `/skill:` token.
+			await invokeSkillCommandFromText(skillHost, input.text, streamingBehavior, {
+				images: input.images,
+				imageLinks: input.imageLinks,
+				optimistic: true,
+				propagateErrors: true,
 			});
 		} else {
 			let forwarded = false;

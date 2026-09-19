@@ -20,7 +20,7 @@ function makeFakeWorker(): FakeWorker {
 		sent: [] as FakeWorker["sent"],
 		terminated: false,
 		handle: null as unknown,
-		reply: () => { },
+		reply: () => {},
 	};
 	const handlers = new Set<(message: unknown) => void>();
 	worker.handle = {
@@ -39,7 +39,7 @@ function makeFakeWorker(): FakeWorker {
 			return () => handlers.delete(handler);
 		},
 		onError() {
-			return () => { };
+			return () => {};
 		},
 		async terminate() {
 			worker.terminated = true;

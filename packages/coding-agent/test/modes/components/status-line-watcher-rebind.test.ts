@@ -11,9 +11,10 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { StatusLineSettings } from "@oh-my-pi/pi-coding-agent/modes/components/status-line";
-import { StatusLineComponent } from "@oh-my-pi/pi-coding-agent/modes/components/status-line";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { StatusLineSettings } from "@oh-my-pi/pi-tui/status-line";
+import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
+import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 
@@ -89,7 +90,7 @@ describe("StatusLineComponent git watcher rebind", () => {
 		});
 		vi.spyOn(vcs, "repo").mockImplementation(cwd => fakeRepo(cwd));
 
-		const component = new StatusLineComponent(makeSession("/repo-a"));
+		const component = new StatusLineComponent(makeSession("/repo-a"), statusLineHost);
 		component.updateSettings(gitSegmentSettings);
 		component.watchBranch(() => {});
 
@@ -127,7 +128,7 @@ describe("StatusLineComponent git watcher rebind", () => {
 		let cwd = "/repo-move-a";
 		const session = makeSession(cwd);
 		(session.sessionManager as unknown as Record<string, unknown>).getCwd = () => cwd;
-		const component = new StatusLineComponent(session);
+		const component = new StatusLineComponent(session, statusLineHost);
 		component.updateSettings(gitSegmentSettings);
 		component.watchBranch(() => {});
 

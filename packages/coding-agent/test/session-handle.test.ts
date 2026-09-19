@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Model } from "@oh-my-pi/pi-ai";
 import type { DaemonClient } from "../src/daemon/client";
 import type { DaemonEvent, DaemonSnapshotFrame } from "../src/daemon/protocol";
-import type { DaemonConnectionSnapshot } from "../src/daemon/status";
+import type { DaemonConnectionSnapshot } from "@oh-my-pi/pi-tui/chrome/daemon-status";
 import type { AgentSession } from "../src/session/agent-session";
 import type { SessionEntry } from "../src/session/session-entries";
 import { LocalSessionHandle, RemoteSessionHandle } from "../src/session/session-handle";

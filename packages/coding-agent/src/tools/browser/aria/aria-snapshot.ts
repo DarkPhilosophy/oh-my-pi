@@ -1,5 +1,5 @@
 import type { ElementHandle, JSHandle, Page } from "puppeteer-core";
-import { ToolError } from "../../tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import ariaBundle from "./aria-snapshot.bundle.txt" with { type: "text" };
 // `aria-snapshot.bundle.txt` is a generated, committed artifact: Playwright's
 // injected ARIA-snapshot sources (pinned, Apache-2.0) bundled to a CJS module.
@@ -69,8 +69,8 @@ export async function captureAriaSnapshot(
 
 /**
  * Resolve a `[ref=eN]` id from the latest snapshot to a live `ElementHandle`, or
- * null when the ref no longer matches any element. Runs in the main world so it
- * sees the `_ariaRef` expandos the snapshot wrote.
+ * null when the ref no longer matches any element. It uses the same isolated
+ * world as capture, where that snapshot wrote its `_ariaRef` expandos.
  */
 export async function resolveAriaRefHandle(page: Page, ref: string, owner?: string): Promise<ElementHandle | null> {
 	const handle = (await page.evaluateHandle(evaluateResolveRef as never, ref as never, owner as never)) as JSHandle;
@@ -137,7 +137,9 @@ export function parseAriaRefSelector(selector: string): string | null {
  * `browser.eval` RPC takes a script string and returns the completion value (it
  * has no ElementHandle to pass in). The script resolves `selector` via
  * `document.querySelector` in-page (CSS selectors only) or falls back to the
- * whole document. Like the puppeteer path it installs nothing on `window`.
+ * whole document. Like the puppeteer path it installs nothing on `window`, but
+ * cmux runs the expression in the page world and therefore has its own ref
+ * namespace.
  */
 export function buildAriaSnapshotScript(selector: string | undefined, options: AriaSnapshotOptions = {}): string {
 	const request = { depth: options.depth, boxes: options.boxes };

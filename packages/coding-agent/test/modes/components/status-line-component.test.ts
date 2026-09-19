@@ -1,8 +1,9 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { DaemonConnectionSnapshot } from "@oh-my-pi/pi-coding-agent/daemon/status";
-import { StatusLineComponent } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/component";
-import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { DaemonConnectionSnapshot } from "@oh-my-pi/pi-tui/chrome/daemon-status";
+import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line/component";
+import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
+import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { withProjectDir } from "@oh-my-pi/pi-utils";
 
@@ -87,6 +88,7 @@ describe("StatusLineComponent", () => {
 					},
 				],
 			}) as unknown as AgentSession,
+			statusLineHost,
 		);
 
 		expect(statusLine.getCachedContextBreakdown()).toEqual({ usedTokens: 42, contextWindow: 128000 });
@@ -104,7 +106,7 @@ describe("StatusLineComponent", () => {
 			flag: true,
 			extra: undefined as unknown,
 		});
-		const statusLine = new StatusLineComponent(counting.session);
+		const statusLine = new StatusLineComponent(counting.session, statusLineHost);
 
 		statusLine.getCachedContextBreakdown();
 		const baseline = counting.calls();
@@ -132,13 +134,16 @@ describe("StatusLineComponent", () => {
 		const circular: Record<string, unknown> = { name: "loop" };
 		circular.self = circular;
 		const counting = makeCountingSession(circular);
-		const statusLine = new StatusLineComponent(counting.session);
+		const statusLine = new StatusLineComponent(counting.session, statusLineHost);
 
 		expect(statusLine.getCachedContextBreakdown()).toEqual({ usedTokens: 42, contextWindow: 128000 });
 	});
 
 	it("renders Prewalk annotation when prewalk is armed", () => {
-		const statusLine = new StatusLineComponent(makeSessionWithLastMessage(null, true) as unknown as AgentSession);
+		const statusLine = new StatusLineComponent(
+			makeSessionWithLastMessage(null, true) as unknown as AgentSession,
+			statusLineHost,
+		);
 
 		// By default preset, 'mode' segment is included in left/right segments.
 		// Let's get the border and see if Prewalk is rendered.
@@ -152,7 +157,7 @@ describe("StatusLineComponent", () => {
 		expect(stripped).toContain("Prewalk");
 	});
 	it("renders an empty top border before a remote session projection is attached", () => {
-		const statusLine = new StatusLineComponent();
+		const statusLine = new StatusLineComponent(undefined as unknown as AgentSession, statusLineHost);
 
 		expect(statusLine.getTopBorder(100)).toEqual({ content: "", width: 0, revision: 0 });
 	});
@@ -165,7 +170,7 @@ describe("StatusLineComponent", () => {
 		// alternating sources is the "flickering 📂" bug.
 		const session = makeSessionWithLastMessage(null) as Record<string, unknown>;
 		(session.sessionManager as Record<string, unknown>).getCwd = () => "/tmp/flicker-session-project";
-		const statusLine = new StatusLineComponent(session as unknown as AgentSession);
+		const statusLine = new StatusLineComponent(session as unknown as AgentSession, statusLineHost);
 
 		const rendered = withProjectDir("/tmp/flicker-foreign-daemon-cwd", () =>
 			statusLine.getTopBorder(200).content.replace(/\x1b\[[0-9;]*m/g, ""),
@@ -178,7 +183,10 @@ describe("StatusLineComponent", () => {
 });
 
 it("renders daemon degradation from the supplied snapshot", () => {
-	const statusLine = new StatusLineComponent(makeSessionWithLastMessage(null) as unknown as AgentSession);
+	const statusLine = new StatusLineComponent(
+		makeSessionWithLastMessage(null) as unknown as AgentSession,
+		statusLineHost,
+	);
 	const snapshot: DaemonConnectionSnapshot = {
 		state: "reconnecting",
 		shard: { profile: null },

@@ -1,5 +1,5 @@
-import { type DaemonConnectionSnapshot, formatDaemonServerStatus } from "../../daemon/status";
-import { sanitizeStatusText } from "../../modes/shared";
+import { type DaemonConnectionSnapshot, formatDaemonServerStatus } from "@oh-my-pi/pi-tui/chrome/daemon-status";
+import { sanitizeStatusText } from "@oh-my-pi/pi-tui/chrome/shared";
 
 export type ServerCommand = "status" | "sessions" | "reconnect" | "stop" | "kill" | "refresh";
 

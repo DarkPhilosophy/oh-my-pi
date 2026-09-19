@@ -57,14 +57,17 @@ export type PersistedSubagentReviverFactory = (ref: AgentRef) => Promise<AgentRe
 export interface AdoptOptions {
 	/** TTL before an idle agent is parked. <= 0 disables parking. */
 	idleTtlMs: number;
-	/** Recreates a live AgentSession from the ref's sessionFile. Absent => not resumable after park (e.g. isolated runs). */
+	/** Recreates a live AgentSession from the ref's sessionFile after parking. */
 	revive?: AgentReviver;
+	/** Releases resources that must survive parking but end with the agent lifecycle. */
+	onRelease?: () => Promise<void>;
 }
 
 interface AdoptedAgent {
 	ref: AgentRef;
 	idleTtlMs: number;
 	revive?: AgentReviver;
+	onRelease?: () => Promise<void>;
 	timer?: NodeJS.Timeout;
 }
 
@@ -96,6 +99,11 @@ export class AgentLifecycleManager {
 	static #globals = new WeakMap<AgentRegistry, AgentLifecycleManager>();
 
 	static global(): AgentLifecycleManager {
+		// Registry-scoped: a swapped global registry (e.g.
+		// `AgentRegistry.resetGlobalForTests`) resolves to its own manager instead
+		// of stranding consumers on a manager subscribed to the dead instance
+		// (issue #11432). In production the registry is never reset, so this
+		// always returns the same singleton.
 		const registry = AgentRegistry.global();
 		let manager = AgentLifecycleManager.#globals.get(registry);
 		if (!manager) {
@@ -107,21 +115,22 @@ export class AgentLifecycleManager {
 
 	/** Reset the current registry-scoped manager. Test-only. */
 	static resetGlobalForTests(): void {
-		const registry = AgentRegistry.global();
-		const current = AgentLifecycleManager.#globals.get(registry);
-		if (current) {
-			current.#unsubscribe?.();
-			current.#unsubscribe = undefined;
-			for (const adopted of current.#adopted.values()) {
-				clearTimeout(adopted.timer);
-			}
-			current.#adopted.clear();
-			current.#revivals.clear();
-			current.#parks.clear();
-			current.#releases.clear();
-			current.#persistedReviverFactory = undefined;
-		}
+		const current = AgentLifecycleManager.#globals.get(AgentRegistry.global());
+		if (current) current.#retire();
 		AgentLifecycleManager.#globals = new WeakMap();
+	}
+
+	/** Detach from the registry and cancel every pending timer/park/revival. */
+	#retire(): void {
+		this.#unsubscribe?.();
+		this.#unsubscribe = undefined;
+		for (const adopted of this.#adopted.values()) {
+			clearTimeout(adopted.timer);
+		}
+		this.#adopted.clear();
+		this.#revivals.clear();
+		this.#parks.clear();
+		this.#persistedReviverFactory = undefined;
 	}
 
 	readonly #registry: AgentRegistry;
@@ -175,7 +184,12 @@ export class AgentLifecycleManager {
 		if (this.#releases.get(id)?.ref === ref) return;
 		const existing = this.#adopted.get(id);
 		clearTimeout(existing?.timer);
-		const adopted: AdoptedAgent = { ref, idleTtlMs: opts.idleTtlMs, revive: opts.revive };
+		const adopted: AdoptedAgent = {
+			ref,
+			idleTtlMs: opts.idleTtlMs,
+			revive: opts.revive,
+			onRelease: opts.onRelease,
+		};
 		this.#adopted.set(id, adopted);
 		this.#armTimer(id, adopted);
 	}
@@ -561,6 +575,14 @@ export class AgentLifecycleManager {
 				} catch (error) {
 					logger.warn("AgentLifecycleManager.release: session dispose failed", { id, error: String(error) });
 				}
+			}
+			try {
+				await adopted?.onRelease?.();
+			} catch (error) {
+				logger.warn("AgentLifecycleManager.release: owned resource cleanup failed", {
+					id,
+					error: String(error),
+				});
 			}
 		}
 		if (!options?.tombstone) this.#registry.unregister(id, ref);

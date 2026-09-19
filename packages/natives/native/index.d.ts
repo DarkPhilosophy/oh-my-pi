@@ -648,7 +648,7 @@ export declare function __ompInstallTokioRuntime(): void
  * `packages/natives/native/index.js` (which derives the name from
  * `package.json#version`).
  */
-export declare function __piNativesV18_1_19(): void
+export declare function __piNativesV18_2_6(): void
 
 /**
  * Apply ast-grep rewrite rules to matching files; honors `dryRun` and returns
@@ -1763,6 +1763,9 @@ export declare function hashlineFormatHeader(path: string, tag: string): string
 /** `N:line` numbered display rows starting at `startLine` (default 1). */
 export declare function hashlineFormatNumberedLines(text: string, startLine?: number | undefined | null): string
 
+/** Whether a row is a truncation notice emitted by `read`. */
+export declare function hashlineIsReadTruncationNotice(line: string): boolean
+
 /** Count of one canonical hashline op header shape in a payload. */
 export interface HashlineOpCount {
   label: string
@@ -2441,14 +2444,6 @@ export declare function rasterizeSvg(input: Uint8Array, maxWidthPx: number, maxH
 export declare function readImageFromClipboard(): Promise<ClipboardImage | undefined | null>
 
 /**
- * Read plain text from the system clipboard.
- *
- * # Errors
- * Returns an error if clipboard access fails or does not contain text.
- */
-export declare function readTextFromClipboard(): string
-
-/**
  * Render one snapcompact frame on a libuv worker: print pre-normalized text
  * onto a `size`-wide bitmap and encode it as PNG.
  *
@@ -2791,10 +2786,23 @@ export interface VcsDiffOptions {
   files?: Array<string>
   context?: number
   binary?: boolean
+  /**
+   * Fail with an `OutputTooLarge` `VcsError` once the rendered patch exceeds
+   * this many bytes, instead of buffering an arbitrarily large string.
+   * Carried as a double so a budget past 2^32 reaches the renderer intact
+   * (a `u32` field would wrap it); values beyond `usize` saturate.
+   */
+  maxBytes?: number
 }
 
 /** Discover the repository owning a directory. */
 export declare function vcsDiscover(dir: string): VcsRepo | null
+
+/**
+ * Discover the repository presenting a directory: equal-root jj+git ties
+ * prefer Jujutsu. Git-safe automation must keep using [`vcs_discover`].
+ */
+export declare function vcsDiscoverForDisplay(dir: string): VcsRepo | null
 
 /** Clone a Git repository. */
 export declare function vcsGitClone(url: string, target: string, options: VcsCloneOptions, signal?: unknown | undefined | null): Promise<void>

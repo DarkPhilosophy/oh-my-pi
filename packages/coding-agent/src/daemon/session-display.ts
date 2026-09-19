@@ -1,5 +1,5 @@
-import { sanitizeStatusText } from "../modes/shared";
-import { shortenPath } from "../tools/render-utils";
+import { sanitizeStatusText } from "@oh-my-pi/pi-tui/chrome/shared";
+import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { DaemonSessionDisplay } from "./status";
 
 /** Session inventory rendering is runtime-only, unlike the lightweight prepaint status. */

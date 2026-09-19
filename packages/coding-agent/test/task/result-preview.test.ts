@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { formatTaskResultPreview } from "../../src/task/result-preview";
+import { formatTaskResultPreview } from "@oh-my-pi/pi-tui/tools/task-result-preview";
 
 it.each(["output", "preview"])("retains literal closing %s tags inside task output", tag => {
 	const body = `Example </${tag}> remains in the result\nFinal result`;

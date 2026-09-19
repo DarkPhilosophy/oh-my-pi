@@ -1,7 +1,7 @@
 import { expect, it } from "bun:test";
-import { Composer } from "../src/modes/composer";
-import { ToolExecutionComponent } from "../src/modes/components/tool-execution";
-import { TranscriptContainer } from "../src/modes/components/transcript-container";
+import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { createTestSession } from "./utilities";
 

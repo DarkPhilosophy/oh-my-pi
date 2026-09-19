@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
-import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
-import { Composer } from "@oh-my-pi/pi-coding-agent/modes/composer";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { CombinedAutocompleteProvider, type Component, Container } from "@oh-my-pi/pi-tui";
 import { assistantMsg, createTestSession } from "./utilities";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
