@@ -75,7 +75,7 @@ afterAll(() => {
 });
 
 describe("InteractiveMode command output ordering", () => {
-	it("inserts every component of one command before the live block in original order", async () => {
+	it("mounts every component of one command after the live block in original order", async () => {
 		const { mode, setStreaming } = await createHarness();
 		setStreaming(true);
 		const live = addLiveReply(mode);
@@ -83,11 +83,12 @@ describe("InteractiveMode command output ordering", () => {
 		const panel = new Text("usage panel", 0, 0);
 
 		mode.presentCommandOutput([spacer, panel]);
+		mode.mountQueuedCommandOutput();
 
-		expect(mode.chatContainer.children).toEqual([spacer, panel, live]);
+		expect(mode.chatContainer.children).toEqual([live, spacer, panel]);
 	});
 
-	it("keeps separate mid-turn command outputs chronological above the same live block", async () => {
+	it("keeps separate mid-turn command outputs chronological after the same live block", async () => {
 		const { mode, setStreaming } = await createHarness();
 		setStreaming(true);
 		const live = addLiveReply(mode);
@@ -96,7 +97,8 @@ describe("InteractiveMode command output ordering", () => {
 
 		mode.presentCommandOutput(usage);
 		mode.presentCommandOutput(jobs);
+		mode.mountQueuedCommandOutput();
 
-		expect(mode.chatContainer.children).toEqual([usage, jobs, live]);
+		expect(mode.chatContainer.children).toEqual([live, usage, jobs]);
 	});
 });

@@ -1653,6 +1653,10 @@ export class EventController {
 			}
 			this.ctx.streamingComponent = undefined;
 			this.ctx.streamingMessage = undefined;
+			// The live block is closed here, so a command typed during this message
+			// lands right after it — in the order the user typed it, without waiting
+			// for a run that may continue for hours.
+			this.ctx.mountQueuedCommandOutput();
 			// Pin a turn-ending provider error above the editor so it survives
 			// transcript scroll and suppress its duplicate inline row. Empty-output
 			// errors are known intermediate attempts: hide them entirely while

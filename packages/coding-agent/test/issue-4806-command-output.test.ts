@@ -65,7 +65,7 @@ describe("issue #4806 command output during streaming", () => {
 		resetSettingsForTest();
 	});
 
-	it("mounts slash-command output immediately, above the live streaming region", async () => {
+	it("mounts slash-command output at the message boundary, after the block it was typed during", async () => {
 		const streamedReply = new Text("agent is streaming", 0, 0) as Text & {
 			isTranscriptBlockFinalized?: () => boolean;
 		};
@@ -74,11 +74,15 @@ describe("issue #4806 command output during streaming", () => {
 
 		mode.handleToolsCommand();
 
-		// The panel mounts right away — read-only commands never wait for the
-		// turn to end — and lands above the still-live streaming block so the
-		// transcript stays in event order.
+		// Queued while the reply streams: mounting above the block that started
+		// before the command would read as if it had been typed earlier.
+		expect(mode.chatContainer.children).toHaveLength(1);
+		expect(mode.chatContainer.render(80).join("\n")).not.toContain("Available Tools");
+
+		mode.mountQueuedCommandOutput();
+
 		expect(mode.chatContainer.children).toHaveLength(2);
-		expect(mode.chatContainer.children[1]).toBe(streamedReply);
+		expect(mode.chatContainer.children[0]).toBe(streamedReply);
 		let transcript = mode.chatContainer.render(80).join("\n");
 		expect(transcript.match(/Available Tools/g)).toHaveLength(1);
 
@@ -93,6 +97,7 @@ describe("issue #4806 command output during streaming", () => {
 
 	it("keeps mid-turn slash-command output through a transcript rebuild", () => {
 		mode.handleToolsCommand();
+		mode.mountQueuedCommandOutput();
 
 		// Compaction/auto-compaction rebuilds replay only state.messages, which
 		// never contains command panels; the mid-turn panel must survive anyway.
@@ -102,57 +107,64 @@ describe("issue #4806 command output during streaming", () => {
 		expect(transcript.match(/Available Tools/g)).toHaveLength(1);
 	});
 
-	it("keeps restored slash-command output above a replayed live todo", () => {
-		const commandPanel = (() => {
+	// A settled todo snapshot no longer counts as live: fork commit 1faadd6757
+	// ("preserve logical live frames and exact-once history") finalizes
+	// displaceable blocks, so the live region here is a tool call whose result
+	// has not landed yet.
+	it("keeps restored slash-command output after a replayed live tool call", () => {
+		const command = "printf still-running";
+		const pendingTool = new ToolExecutionComponent(
+			"bash",
+			{ command },
+			{},
+			undefined,
+			mode.ui,
+			tempDir.path(),
+			"live-anchor",
+		);
+		try {
+			mode.chatContainer.addChild(pendingTool);
+			mode.pendingTools.set("live-anchor", pendingTool);
 			mode.handleToolsCommand();
-			return mode.chatContainer.children[0];
-		})();
-		const usage = {
-			input: 1,
-			output: 1,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 2,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		};
-		const assistant = {
-			role: "assistant",
-			content: [{ type: "toolCall", id: "todo-live", name: "todo", arguments: { op: "view" } }],
-			api: "anthropic-messages",
-			provider: "anthropic",
-			model: "claude-sonnet-4-5",
-			stopReason: "stop",
-			usage,
-			timestamp: Date.now(),
-		} as unknown as Message;
-		const todoResult = {
-			role: "toolResult",
-			toolCallId: "todo-live",
-			toolName: "todo",
-			content: [{ type: "text", text: "" }],
-			details: {
-				phases: [{ name: "Work", tasks: [{ content: "Keep panel stable", status: "in_progress" }] }],
-			},
-			isError: false,
-			timestamp: Date.now(),
-		} as unknown as Message;
-		session.sessionManager.appendMessage(assistant);
-		session.sessionManager.appendMessage(todoResult);
-		session.agent.replaceMessages(session.sessionManager.buildSessionContext().messages);
+			mode.mountQueuedCommandOutput();
+			const commandPanel = mode.chatContainer.children[mode.chatContainer.children.length - 1]!;
 
-		mode.rebuildChatFromMessages();
+			const assistant = {
+				role: "assistant",
+				content: [{ type: "toolCall", id: "live-anchor", name: "bash", arguments: { command } }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				stopReason: "toolUse",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				timestamp: Date.now(),
+			} as unknown as Message;
+			session.sessionManager.appendMessage(assistant);
+			session.agent.replaceMessages(session.sessionManager.buildSessionContext().messages);
 
-		const commandPanelIndex = mode.chatContainer.children.indexOf(commandPanel);
-		const liveBlockIndex = mode.chatContainer.children.findIndex(child => {
-			const block = child as Text & { isTranscriptBlockFinalized?: () => boolean };
-			return block.isTranscriptBlockFinalized?.() === false;
-		});
-		expect(commandPanelIndex).toBeGreaterThanOrEqual(0);
-		expect(liveBlockIndex).toBeGreaterThanOrEqual(0);
-		expect(commandPanelIndex).toBeLessThan(liveBlockIndex);
+			mode.rebuildChatFromMessages();
+
+			const commandPanelIndex = mode.chatContainer.children.indexOf(commandPanel);
+			const liveBlockIndex = mode.chatContainer.children.findIndex(child => {
+				const block = child as Text & { isTranscriptBlockFinalized?: () => boolean };
+				return block.isTranscriptBlockFinalized?.() === false;
+			});
+			expect(commandPanelIndex).toBeGreaterThanOrEqual(0);
+			expect(liveBlockIndex).toBeGreaterThanOrEqual(0);
+			expect(commandPanelIndex).toBeGreaterThan(liveBlockIndex);
+		} finally {
+			pendingTool.stopAnimation();
+		}
 	});
 
-	it("keeps command output before a tool block that settles before the rebuild", () => {
+	it("keeps command output after a tool block that settles before the rebuild", () => {
 		const command = "printf command-anchor";
 		const pendingTool = new ToolExecutionComponent(
 			"bash",
@@ -167,8 +179,9 @@ describe("issue #4806 command output during streaming", () => {
 			mode.chatContainer.addChild(pendingTool);
 			mode.pendingTools.set("command-anchor", pendingTool);
 			mode.handleToolsCommand();
-			const commandPanel = mode.chatContainer.children[0];
-			expect(mode.chatContainer.children.indexOf(commandPanel)).toBeLessThan(
+			mode.mountQueuedCommandOutput();
+			const commandPanel = mode.chatContainer.children[mode.chatContainer.children.length - 1]!;
+			expect(mode.chatContainer.children.indexOf(commandPanel)).toBeGreaterThan(
 				mode.chatContainer.children.indexOf(pendingTool),
 			);
 
@@ -207,7 +220,7 @@ describe("issue #4806 command output during streaming", () => {
 				Bun.stripANSI(child.render(120).join("\n")).includes(command),
 			);
 			expect(settledToolIndex).toBeGreaterThanOrEqual(0);
-			expect(mode.chatContainer.children.indexOf(commandPanel)).toBeLessThan(settledToolIndex);
+			expect(mode.chatContainer.children.indexOf(commandPanel)).toBeGreaterThan(settledToolIndex);
 		} finally {
 			pendingTool.stopAnimation();
 		}
@@ -253,6 +266,7 @@ describe("issue #4806 command output during streaming", () => {
 			mode.chatContainer.addChild(pendingTool);
 			mode.pendingTools.set("compacted-command-anchor", pendingTool);
 			mode.handleToolsCommand();
+			mode.mountQueuedCommandOutput();
 			const commandPanel = mode.chatContainer.children.find(child =>
 				Bun.stripANSI(child.render(120).join("\n")).includes("Available Tools"),
 			);
@@ -301,13 +315,13 @@ describe("issue #4806 command output during streaming", () => {
 				Bun.stripANSI(child.render(120).join("\n")).includes(command),
 			);
 			expect(settledToolIndex).toBeGreaterThanOrEqual(0);
-			expect(mode.chatContainer.children.indexOf(commandPanel!)).toBeLessThan(settledToolIndex);
+			expect(mode.chatContainer.children.indexOf(commandPanel!)).toBeGreaterThan(settledToolIndex);
 		} finally {
 			pendingTool.stopAnimation();
 		}
 	});
 
-	it("keeps command output before a replayed sibling when its first anchor remains pending", () => {
+	it("keeps command output after a replayed sibling when its first anchor remains pending", () => {
 		session.settings.set("display.collapseCompacted", true);
 		session.sessionManager.appendMessage({
 			role: "user",
@@ -364,14 +378,15 @@ describe("issue #4806 command output during streaming", () => {
 			mode.pendingTools.set("preserved-pending-anchor", pendingTool);
 			mode.pendingTools.set("replayed-later-sibling", settledTool);
 			mode.handleToolsCommand();
+			mode.mountQueuedCommandOutput();
 			const commandPanel = mode.chatContainer.children.find(child =>
 				Bun.stripANSI(child.render(120).join("\n")).includes("Available Tools"),
 			);
 			expect(commandPanel).toBeDefined();
-			expect(mode.chatContainer.children.indexOf(commandPanel!)).toBeLessThan(
+			expect(mode.chatContainer.children.indexOf(commandPanel!)).toBeGreaterThan(
 				mode.chatContainer.children.indexOf(pendingTool),
 			);
-			expect(mode.chatContainer.children.indexOf(commandPanel!)).toBeLessThan(
+			expect(mode.chatContainer.children.indexOf(commandPanel!)).toBeGreaterThan(
 				mode.chatContainer.children.indexOf(settledTool),
 			);
 			mode.pendingTools.delete("replayed-later-sibling");
@@ -425,8 +440,8 @@ describe("issue #4806 command output during streaming", () => {
 			const commandPanelIndex = mode.chatContainer.children.indexOf(commandPanel!);
 			expect(replayedSettledIndex).toBeGreaterThanOrEqual(0);
 			expect(mode.chatContainer.children.indexOf(pendingTool)).toBeGreaterThanOrEqual(0);
-			expect(commandPanelIndex).toBeLessThan(replayedSettledIndex);
-			expect(commandPanelIndex).toBeLessThan(mode.chatContainer.children.indexOf(pendingTool));
+			expect(commandPanelIndex).toBeGreaterThan(replayedSettledIndex);
+			expect(commandPanelIndex).toBeGreaterThan(mode.chatContainer.children.indexOf(pendingTool));
 			expect(mode.chatContainer.children.indexOf(pendingTool)).toBeLessThan(replayedSettledIndex);
 		} finally {
 			pendingTool.stopAnimation();
@@ -434,7 +449,7 @@ describe("issue #4806 command output during streaming", () => {
 		}
 	});
 
-	it("restores command output before the exact tool in a multi-tool assistant turn", () => {
+	it("restores command output after the last tool of a multi-tool assistant turn", () => {
 		const earlierCommand = "printf earlier-tool";
 		const anchoredCommand = "printf exact-tool-anchor";
 		const earlierTool = new ToolExecutionComponent(
@@ -461,6 +476,7 @@ describe("issue #4806 command output during streaming", () => {
 			mode.chatContainer.addChild(pendingTool);
 			mode.pendingTools.set("exact-tool-anchor", pendingTool);
 			mode.handleToolsCommand();
+			mode.mountQueuedCommandOutput();
 			const commandPanel = mode.chatContainer.children.find(child =>
 				Bun.stripANSI(child.render(120).join("\n")).includes("Available Tools"),
 			);
@@ -468,8 +484,8 @@ describe("issue #4806 command output during streaming", () => {
 			expect(mode.chatContainer.children.indexOf(earlierTool)).toBeLessThan(
 				mode.chatContainer.children.indexOf(commandPanel!),
 			);
-			expect(mode.chatContainer.children.indexOf(commandPanel!)).toBeLessThan(
-				mode.chatContainer.children.indexOf(pendingTool),
+			expect(mode.chatContainer.children.indexOf(pendingTool)).toBeLessThan(
+				mode.chatContainer.children.indexOf(commandPanel!),
 			);
 
 			session.sessionManager.appendMessage({
@@ -527,7 +543,7 @@ describe("issue #4806 command output during streaming", () => {
 			expect(replayedEarlierToolIndex).toBeGreaterThanOrEqual(0);
 			expect(replayedAnchoredToolIndex).toBeGreaterThan(replayedEarlierToolIndex);
 			expect(commandPanelIndex).toBeGreaterThan(replayedEarlierToolIndex);
-			expect(commandPanelIndex).toBeLessThan(replayedAnchoredToolIndex);
+			expect(commandPanelIndex).toBeGreaterThan(replayedAnchoredToolIndex);
 		} finally {
 			earlierTool.stopAnimation();
 			pendingTool.stopAnimation();
@@ -536,6 +552,7 @@ describe("issue #4806 command output during streaming", () => {
 
 	it("drops slash-command output mounted for a previous session", async () => {
 		mode.handleToolsCommand();
+		mode.mountQueuedCommandOutput();
 		const previousSessionId = session.sessionManager.getSessionId();
 
 		await session.newSession();

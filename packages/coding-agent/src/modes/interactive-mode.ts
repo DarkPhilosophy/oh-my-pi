@@ -440,6 +440,18 @@ export const TODO_COMPACT_TERMINAL_ROWS_THRESHOLD = 18;
 /** Holds mutable HUD and editor-adjacent chrome outside transcript history. */
 class AnchoredLiveContainer extends Container {}
 
+/**
+ * Command output mounted during the active stream, paired with its original
+ * insertion boundary. Rebuilds need both values: the panel is not persisted,
+ * and a live block that originally followed it may settle into replayed
+ * history before the rebuild.
+ */
+interface StreamingCommandOutputEntry {
+	component: Component;
+	transcriptIndex: number;
+	anchorToolCallIds: string[];
+}
+
 class TodoHudContainer extends AnchoredLiveContainer {
 	constructor(private readonly mode: InteractiveMode) {
 		super();
@@ -477,45 +489,13 @@ class StatusHudContainer extends AnchoredLiveContainer {
 	}
 }
 
-/**
- * Preview of the command panels queued while the agent streams, rendered above
- * the editor so `/usage` and friends answer immediately mid-turn.
- *
- * Capped in height: the panels are shown in full in the transcript at the next
- * settle, so the preview only has to answer the question, not reproduce the
- * whole report. Rendering is delegated to the real panels at the real width, so
- * the preview cannot drift from what eventually lands in the transcript.
- */
-class DeferredCommandPreview implements Component {
-	constructor(
-		private readonly items: readonly Component[],
-		private readonly maxRows: number,
-		private readonly commandCount: number,
-	) {}
-
-	render(width: number): readonly string[] {
-		const rows: string[] = [];
-		for (const item of this.items) rows.push(...item.render(width));
-		const queued = this.commandCount === 1 ? "1 command output" : `${this.commandCount} command outputs`;
-		if (rows.length <= this.maxRows) {
-			rows.push(theme.fg("dim", `${queued} — repeated in the transcript when the agent pauses`));
-			return rows;
-		}
-		const shown = rows.slice(0, Math.max(1, this.maxRows - 1));
-		const hidden = rows.length - shown.length;
-		shown.push(theme.fg("dim", `… ${hidden} more rows — ${queued} shown in full when the agent pauses`));
-		return shown;
-	}
-}
-
-/** Never shrink the queued-output preview below this, even on a short terminal. */
-const DEFERRED_PREVIEW_MIN_ROWS = 6;
-/** Ceiling for the preview as a share of the viewport, so the prompt stays visible. */
-const DEFERRED_PREVIEW_VIEWPORT_FRACTION = 0.4;
-
 /** How long the ctrl+p model-role cycle chip track lingers above the editor
  *  before it auto-clears, mirroring the todo HUD's auto-clear timer. */
 const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
+/** How long a command panel must wait before the queued-command notice is worth
+ *  showing. Most assistant messages end well inside this window, so a shorter
+ *  delay would only flash a row the user cannot read. */
+const QUEUED_COMMAND_NOTICE_DELAY_MS = 2000;
 
 /** Active detached subagents in the anchored HUD; synchronous calls stay in the transcript. */
 function isHudSubagent(session: ObservableSession): boolean {
@@ -759,7 +739,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	cleanseContainer: Container;
 	errorBannerContainer: Container;
 	modelCycleContainer: Container;
-	deferredCommandContainer: Container;
+	queuedCommandContainer: Container;
 	editor: CustomEditor;
 	editorContainer: Container;
 	/** Composer attachment band (chip cards) rendered directly above the prompt box. */
@@ -951,10 +931,14 @@ export class InteractiveMode implements InteractiveModeContext {
 	collabGuest?: CollabGuestLink;
 	#streamPublisher: StreamPublisher | undefined;
 
-	#pendingCommandOutput: Component[] = [];
-	#pendingCommandOutputSessionId: string | undefined;
-	/** Commands (not components) queued while streaming, for the deferral hint. */
-	#pendingCommandOutputCommands = 0;
+	/** Command panels mounted mid-stream, preserved across transcript rebuilds. */
+	#streamingCommandOutput: StreamingCommandOutputEntry[] = [];
+	#streamingCommandOutputSessionId: string | undefined;
+	/** Panels typed during the current assistant message, mounted when it ends. */
+	#queuedCommandOutput: Component[] = [];
+	#queuedCommandOutputSessionId: string | undefined;
+	#queuedCommandOutputCount = 0;
+	#queuedCommandNoticeTimer: ReturnType<typeof setTimeout> | undefined;
 	#pendingSlashCommands: SlashCommand[] = [];
 	/** Built-in editor autocomplete provider, before extension wrapping. */
 	#baseAutocompleteProvider: AutocompleteProvider | undefined;
@@ -1116,10 +1100,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.pendingMessagesContainer.disposeChildren();
 		this.#cancelModelCycleClearTimer();
 		this.modelCycleContainer.disposeChildren();
-		this.deferredCommandContainer.disposeChildren();
-		this.#pendingCommandOutput = [];
-		this.#pendingCommandOutputSessionId = undefined;
-		this.#pendingCommandOutputCommands = 0;
+		this.queuedCommandContainer.disposeChildren();
+		this.#queuedCommandOutput = [];
+		this.#queuedCommandOutputSessionId = undefined;
+		this.#queuedCommandOutputCount = 0;
+		this.#cancelQueuedCommandNotice();
+		this.#renderQueuedCommandNotice();
+		this.#resetStreamingCommandOutputTracking();
 		this.compactionQueuedMessages = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
@@ -1289,7 +1276,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.cleanseContainer = new AnchoredLiveContainer();
 		this.errorBannerContainer = new AnchoredLiveContainer();
 		this.modelCycleContainer = new AnchoredLiveContainer();
-		this.deferredCommandContainer = new AnchoredLiveContainer();
+		this.queuedCommandContainer = new AnchoredLiveContainer();
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		this.editor.setImeSafeCursorLayout(this.settings.get("tui.imeSafeCursor"));
 		this.#applyVimMode(this.editor);
@@ -1588,7 +1575,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.cleanseContainer,
 			this.errorBannerContainer,
 			this.modelCycleContainer,
-			this.deferredCommandContainer,
+			this.queuedCommandContainer,
 			// Working loader / transient status sits below the sticky todo + subagent
 			// HUDs, just above the editor's hook-widget top margin — so it reads next to
 			// the prompt while keeping the one-line gap above the editor (the band
@@ -2872,10 +2859,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		// references — subsequent `message_update`/`message_end` events would then
 		// update orphaned components that never re-render and the live LLM output
 		// vanishes from the chat (#3656). Snapshot the in-flight components,
-		// clear+replay, then re-append them in their original chat-container order
-		// and restore the `pendingTools` map so streaming routes back into them.
+		// clear+replay, then restore them before their nearest surviving semantic
+		// successors and route future streaming updates back into them.
+		const sessionId = this.sessionManager.getSessionId();
+		const streamingCommandOutput =
+			this.#streamingCommandOutputSessionId === sessionId ? [...this.#streamingCommandOutput] : [];
+		if (this.#streamingCommandOutputSessionId !== sessionId) {
+			this.#resetStreamingCommandOutputTracking();
+		}
 		const liveComponents: Component[] = [];
 		const livePendingTools = new Map<string, ToolExecutionHandle>();
+		const liveComponentSuccessors = new Map<Component, (string | Component)[]>();
 		if (this.viewSession?.isStreaming) {
 			const liveSet = new Set<Component>();
 			if (this.streamingComponent) liveSet.add(this.streamingComponent);
@@ -2886,6 +2880,22 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (liveSet.size > 0) {
 				for (const child of this.chatContainer.children) {
 					if (liveSet.has(child)) liveComponents.push(child);
+				}
+				const successorCandidates: Array<{ anchor: string | Component; index: number }> = [];
+				for (const child of liveComponents) {
+					successorCandidates.push({ anchor: child, index: this.chatContainer.children.indexOf(child) });
+				}
+				for (const [id, component] of this.pendingTools) {
+					const index = this.chatContainer.children.indexOf(component as unknown as Component);
+					if (index >= 0) successorCandidates.push({ anchor: id, index });
+				}
+				successorCandidates.sort((left, right) => left.index - right.index);
+				for (const child of liveComponents) {
+					const index = this.chatContainer.children.indexOf(child);
+					liveComponentSuccessors.set(
+						child,
+						successorCandidates.filter(candidate => candidate.index > index).map(candidate => candidate.anchor),
+					);
 				}
 			}
 		}
@@ -2950,6 +2960,56 @@ export class InteractiveMode implements InteractiveModeContext {
 			const index = liveComponents.indexOf(resolved as unknown as Component);
 			if (index >= 0) liveComponents.splice(index, 1);
 		}
+		// A completed parallel sibling is removed from `pendingTools` before this
+		// rebuild starts, so the live component snapshot alone cannot remember
+		// that an earlier pending tool preceded it. Use the durable tool-call
+		// order from both the rebuilt transcript and command-panel anchors (which
+		// still include dangling calls stripped from that transcript), then replay
+		// can resolve the first visible semantic successor.
+		const transcriptToolCallOrder: string[] = [];
+		for (const message of context.messages) {
+			if (message.role !== "assistant") continue;
+			for (const content of message.content) {
+				if (content.type === "toolCall") transcriptToolCallOrder.push(content.id);
+			}
+		}
+		const semanticToolCallSequences: Array<readonly string[]> = [transcriptToolCallOrder];
+		for (const { anchorToolCallIds } of streamingCommandOutput) {
+			semanticToolCallSequences.push(anchorToolCallIds);
+		}
+		const liveToolCallIdsByComponent = new Map<Component, Set<string>>();
+		for (const [id, component] of livePendingTools) {
+			const child = component as unknown as Component;
+			const ids = liveToolCallIdsByComponent.get(child) ?? new Set<string>();
+			ids.add(id);
+			liveToolCallIdsByComponent.set(child, ids);
+		}
+		for (const [component, liveIds] of liveToolCallIdsByComponent) {
+			let semanticSuccessors: string[] = [];
+			for (const sequence of semanticToolCallSequences) {
+				let firstIndex = Number.POSITIVE_INFINITY;
+				for (const id of liveIds) {
+					const index = sequence.indexOf(id);
+					if (index >= 0 && index < firstIndex) firstIndex = index;
+				}
+				if (!Number.isFinite(firstIndex)) continue;
+				const candidates: string[] = [];
+				const candidateIds = new Set<string>();
+				for (let index = firstIndex + 1; index < sequence.length; index++) {
+					const id = sequence[index]!;
+					if (liveIds.has(id) || candidateIds.has(id)) continue;
+					candidateIds.add(id);
+					candidates.push(id);
+				}
+				if (candidates.length > semanticSuccessors.length) semanticSuccessors = candidates;
+			}
+			const seen = new Set(semanticSuccessors);
+			const structuralSuccessors = liveComponentSuccessors.get(component) ?? [];
+			liveComponentSuccessors.set(component, [
+				...semanticSuccessors,
+				...structuralSuccessors.filter(successor => typeof successor !== "string" || !seen.has(successor)),
+			]);
+		}
 		// Prune the settled-component cache to the messages this rebuild will
 		// actually render. Message objects stay strongly reachable through
 		// session entries for the whole session, so entries for compacted-away
@@ -2961,12 +3021,77 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (component) retained.set(message, component);
 		}
 		this.transcriptMessageComponents = retained;
+		const semanticToolCallIds = new Set<string>();
+		for (const { anchorToolCallIds } of streamingCommandOutput) {
+			for (const toolCallId of anchorToolCallIds) semanticToolCallIds.add(toolCallId);
+		}
+		for (const successors of liveComponentSuccessors.values()) {
+			for (const successor of successors) {
+				if (typeof successor === "string") semanticToolCallIds.add(successor);
+			}
+		}
+		const semanticToolAnchors = new Map<string, Component>();
 		this.renderSessionContext(context, {
 			reuseSettledComponents: options.reuseSettledComponents,
 			preservedLiveToolCallIds,
+			...(semanticToolCallIds.size > 0
+				? {
+						captureToolCallComponent: (toolCallId: string, component: Component) => {
+							if (semanticToolCallIds.has(toolCallId)) semanticToolAnchors.set(toolCallId, component);
+						},
+					}
+				: {}),
 		});
-		for (const child of liveComponents) {
-			this.chatContainer.addChild(child);
+		const replayedTranscript = [...this.chatContainer.children];
+		// Restore live components from the end so each earlier component can use
+		// its nearest surviving successor as a stable insertion boundary. A
+		// successor may itself remain live or may have settled into the replay
+		// while the rebuild was taking its snapshot.
+		for (let index = liveComponents.length - 1; index >= 0; index--) {
+			const child = liveComponents[index]!;
+			let semanticAnchor: Component | undefined;
+			for (const successor of liveComponentSuccessors.get(child) ?? []) {
+				const candidate = typeof successor === "string" ? semanticToolAnchors.get(successor) : successor;
+				if (candidate && this.chatContainer.children.includes(candidate)) {
+					semanticAnchor = candidate;
+					break;
+				}
+			}
+			this.#mountSettledChatChild(child, semanticAnchor);
+			for (const [id, component] of livePendingTools) {
+				if (component === child) semanticToolAnchors.set(id, child);
+			}
+		}
+		// Collapsed compaction can replace an arbitrarily long prefix with one
+		// summary block, invalidating the recorded numeric position. Capture every
+		// tool that originally preceded a command panel: the panel belongs right
+		// after the nearest one that survives replay, so it stays inside the
+		// message it was typed during even when the prefix is gone.
+		for (const { component, transcriptIndex, anchorToolCallIds } of streamingCommandOutput) {
+			// The panel follows every tool of its message, so the boundary is the
+			// LAST surviving predecessor: a dangling call restored after the
+			// replayed transcript still has to stay above the panel.
+			let semanticAnchor: Component | undefined;
+			let semanticAnchorIndex = -1;
+			for (const toolCallId of anchorToolCallIds) {
+				const candidate = semanticToolAnchors.get(toolCallId);
+				if (!candidate) continue;
+				const candidateIndex = this.chatContainer.children.indexOf(candidate);
+				if (candidateIndex > semanticAnchorIndex) {
+					semanticAnchor = candidate;
+					semanticAnchorIndex = candidateIndex;
+				}
+			}
+			if (semanticAnchor) {
+				// The panel follows its anchor; when the anchor is the transcript
+				// tail there is nothing to insert before, and a settled insert
+				// would drop the panel above the live blocks it was typed after.
+				const next = this.chatContainer.children[this.chatContainer.children.indexOf(semanticAnchor) + 1];
+				if (next) this.chatContainer.insertChildBefore(component, next);
+				else this.chatContainer.addChild(component);
+			} else {
+				this.#mountSettledChatChild(component, replayedTranscript[transcriptIndex]);
+			}
 		}
 		// `renderSessionContext` clears `pendingTools` at start AND end so the
 		// reconstructed historical tool components don't leak into live tracking.
@@ -5925,14 +6050,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.setFocus(nextEditor);
 
 		this.#inputController.setupKeyHandlers();
-		this.#inputController.setupEditorSubmitHandler();
-
-		void this.refreshSlashCommandState().catch(error => {
-			logger.warn("Failed to refresh slash command state for custom editor", { error: String(error) });
-		});
-
-		this.#syncVimStatus(nextEditor);
-		this.ui.requestRender();
 	}
 
 	// UI helpers
@@ -5946,35 +6063,88 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	/**
-	 * Defer transcript command panels while the agent is streaming, then mount
-	 * them at the next settle, terminal or not. A non-terminal settle is only a
-	 * scheduling pause, so resumed streaming can still land below a panel
-	 * flushed there. That is preferred over leaving it queued behind a command
-	 * the user runs during the pause, which mounts immediately and would put the
-	 * older panel out of order.
+	 * Print a command panel at the end of the assistant message being streamed
+	 * when it was typed — never at `agent_end`.
 	 *
-	 * The deferral is acknowledged in {@link deferredCommandContainer}, an
-	 * anchored container above the editor. Nothing is mounted into the
-	 * transcript: a mid-turn mount changes the active frame while streaming,
-	 * which is why the earlier `showStatus` acknowledgment was reverted. An
-	 * anchored container is cleared and rebuilt in place without adding history
-	 * rows — the same reason the ctrl+p role-cycle track lives there.
+	 * A run can last hours, so holding the panel until the whole turn finishes
+	 * delivers stale information. Mounting it instantly is not right either: the
+	 * live block started before the command, so inserting above it makes the
+	 * panel read as if it had been typed earlier in the conversation. The panel
+	 * therefore lands on the next boundary between streams, in the order the
+	 * user actually typed it. A one-row notice appears only once the wait is long
+	 * enough for a human to notice it: most responses end in well under a second,
+	 * and a row that flashes by is noise rather than information.
 	 */
 	presentCommandOutput(content: Component | readonly Component[]): void {
 		if (!this.session.isStreaming) {
 			this.present(content);
 			return;
 		}
-		const sessionId = this.sessionManager.getSessionId();
-		if (this.#pendingCommandOutput.length > 0 && this.#pendingCommandOutputSessionId !== sessionId) {
-			this.#pendingCommandOutput = [];
-			this.#pendingCommandOutputCommands = 0;
-		}
-		this.#pendingCommandOutputSessionId = sessionId;
 		const items = Array.isArray(content) ? content : [content as Component];
-		this.#pendingCommandOutput.push(...items);
-		this.#pendingCommandOutputCommands += 1;
-		this.#renderDeferredCommandNotice();
+		const sessionId = this.sessionManager.getSessionId();
+		if (this.#queuedCommandOutputSessionId !== sessionId) {
+			this.#queuedCommandOutput = [];
+			this.#queuedCommandOutputCount = 0;
+		}
+		this.#queuedCommandOutputSessionId = sessionId;
+		this.#queuedCommandOutput.push(...items);
+		this.#queuedCommandOutputCount += 1;
+		this.#armQueuedCommandNotice();
+		this.ui.requestRender();
+	}
+
+	/** Mount the panels queued during the assistant message that just ended. */
+	mountQueuedCommandOutput(): void {
+		if (this.#queuedCommandOutput.length === 0) return;
+		const queued = this.#queuedCommandOutput;
+		const queuedSessionId = this.#queuedCommandOutputSessionId;
+		this.#queuedCommandOutput = [];
+		this.#queuedCommandOutputCount = 0;
+		this.#queuedCommandOutputSessionId = undefined;
+		this.#cancelQueuedCommandNotice();
+		this.#renderQueuedCommandNotice();
+		if (queuedSessionId !== this.sessionManager.getSessionId()) return;
+		this.#trackStreamingCommandOutput(queued);
+	}
+
+	/**
+	 * Mount panels into the transcript and remember where they sit, so a
+	 * mid-turn rebuild (compaction, `/shake`, theme change) restores them in the
+	 * same place instead of dropping output that never existed in `messages`.
+	 */
+	#trackStreamingCommandOutput(items: readonly Component[]): void {
+		const sessionId = this.sessionManager.getSessionId();
+		if (this.#streamingCommandOutputSessionId !== sessionId) {
+			this.#resetStreamingCommandOutputTracking();
+		}
+		this.#streamingCommandOutputSessionId = sessionId;
+		const trackedComponents = new Set(this.#streamingCommandOutput.map(entry => entry.component));
+		for (const item of items) {
+			this.#mountChatChild(item);
+			const mountedIndex = this.chatContainer.children.indexOf(item);
+			let transcriptIndex = 0;
+			for (let index = 0; index < mountedIndex; index++) {
+				if (!trackedComponents.has(this.chatContainer.children[index]!)) transcriptIndex++;
+			}
+			const anchorToolCalls: Array<{ id: string; index: number }> = [];
+			// The panel is mounted at the message boundary, after that message's
+			// tool blocks, so its stable neighbours are the calls that precede
+			// it. Keep them in transcript order — replay also reads this list as
+			// a tool-call sequence — and let the restore pick the last survivor.
+			for (const [toolCallId, component] of this.pendingTools) {
+				const componentIndex = this.chatContainer.children.indexOf(component as unknown as Component);
+				if (componentIndex >= 0 && componentIndex < mountedIndex) {
+					anchorToolCalls.push({ id: toolCallId, index: componentIndex });
+				}
+			}
+			anchorToolCalls.sort((left, right) => left.index - right.index);
+			this.#streamingCommandOutput.push({
+				component: item,
+				transcriptIndex,
+				anchorToolCallIds: anchorToolCalls.map(({ id }) => id),
+			});
+			trackedComponents.add(item);
+		}
 		this.ui.requestRender();
 	}
 	showSessionInfo(info: string): void {
@@ -6003,37 +6173,61 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	/**
-	 * Preview the queued panels above the editor so a command answers straight
-	 * away, then clear at settle when the real panels enter the transcript.
-	 *
-	 * Height is capped against the viewport: a `/usage` report with several
-	 * providers is tall enough to push the prompt off screen, and the full text
-	 * is a moment away in the transcript either way.
+	 * The settled panels already live in the transcript. Once streaming pauses,
+	 * stop preserving them through rebuilds; from here they follow the same
+	 * ephemeral transcript lifecycle as command output mounted while idle.
 	 */
-	#renderDeferredCommandNotice(): void {
-		this.deferredCommandContainer.clear();
-		if (this.#pendingCommandOutput.length === 0) return;
-		const maxRows = Math.max(
-			DEFERRED_PREVIEW_MIN_ROWS,
-			Math.floor(this.ui.terminal.rows * DEFERRED_PREVIEW_VIEWPORT_FRACTION),
-		);
-		this.deferredCommandContainer.addChild(new Spacer(1));
-		this.deferredCommandContainer.addChild(
-			new DeferredCommandPreview([...this.#pendingCommandOutput], maxRows, this.#pendingCommandOutputCommands),
+	flushPendingCommandOutput(): void {
+		this.#resetStreamingCommandOutputTracking();
+	}
+
+	#resetStreamingCommandOutputTracking(): void {
+		this.#streamingCommandOutput = [];
+		this.#streamingCommandOutputSessionId = undefined;
+	}
+	/** Show the notice only once the wait outlasts {@link QUEUED_COMMAND_NOTICE_DELAY_MS}. */
+	#armQueuedCommandNotice(): void {
+		if (this.#queuedCommandNoticeTimer) return;
+		this.#queuedCommandNoticeTimer = setTimeout(() => {
+			this.#queuedCommandNoticeTimer = undefined;
+			this.#renderQueuedCommandNotice();
+			this.ui.requestRender();
+		}, QUEUED_COMMAND_NOTICE_DELAY_MS);
+		this.#queuedCommandNoticeTimer.unref?.();
+	}
+
+	#cancelQueuedCommandNotice(): void {
+		if (!this.#queuedCommandNoticeTimer) return;
+		clearTimeout(this.#queuedCommandNoticeTimer);
+		this.#queuedCommandNoticeTimer = undefined;
+	}
+
+	/**
+	 * One dim row while a panel waits for the current message to end. Never a
+	 * preview of the panel: a report parked above the prompt occludes the
+	 * session for as long as the agent keeps working. Rendered only after the
+	 * delay timer has elapsed, so short responses show nothing at all.
+	 */
+	#renderQueuedCommandNotice(): void {
+		this.queuedCommandContainer.clear();
+		if (this.#queuedCommandOutput.length === 0 || this.#queuedCommandNoticeTimer) return;
+		const queued =
+			this.#queuedCommandOutputCount === 1
+				? "1 command output"
+				: `${this.#queuedCommandOutputCount} command outputs`;
+		this.queuedCommandContainer.addChild(new Spacer(1));
+		this.queuedCommandContainer.addChild(
+			new Text(theme.fg("dim", `${queued} queued — printed when this response ends`), 1, 0),
 		);
 	}
 
-	/** Mount every command panel queued for the current session while the agent was streaming. */
-	flushPendingCommandOutput(): void {
-		if (this.#pendingCommandOutput.length === 0) return;
-		const pending = this.#pendingCommandOutput;
-		const pendingSessionId = this.#pendingCommandOutputSessionId;
-		this.#pendingCommandOutput = [];
-		this.#pendingCommandOutputSessionId = undefined;
-		this.#pendingCommandOutputCommands = 0;
-		this.#renderDeferredCommandNotice();
-		if (pendingSessionId !== this.sessionManager.getSessionId()) return;
-		this.present(pending);
+	#mountSettledChatChild(item: Component, before?: Component): void {
+		if (before) {
+			this.chatContainer.insertChildBefore(item, before);
+		} else {
+			this.chatContainer.insertSettledBlock(item);
+		}
+		if (item instanceof ChatBlock) item.mount(this.#chatHost);
 	}
 
 	#mountChatChild(item: Component): void {
@@ -6042,6 +6236,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	resetTranscript(): void {
+		this.#resetStreamingCommandOutputTracking();
 		this.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
 		this.chatContainer.dispose();
 		this.chatContainer.clear();

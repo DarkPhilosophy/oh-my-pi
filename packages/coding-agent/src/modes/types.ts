@@ -324,6 +324,8 @@ export interface InteractiveModeContext {
 	showSessionInfo(info: string): void;
 	/** Mount command output deferred by {@link presentCommandOutput}. */
 	flushPendingCommandOutput(): void;
+	/** Mount panels queued by {@link presentCommandOutput} during this message. */
+	mountQueuedCommandOutput(): void;
 	/**
 	 * Dispose every live block in the transcript (stopping timers/subscriptions)
 	 * and clear it. Used before a full rebuild so animated/streaming blocks do not
