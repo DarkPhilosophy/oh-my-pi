@@ -158,11 +158,9 @@ function isTextBlock(value: unknown): value is { type: "text"; text: string } {
  * primary reads one issue with its corroboration instead of the same point
  * restated by every advisor that noticed it.
  */
-export function applyAdvisorCuration<T extends { note: string; severity?: AdvisorSeverity; advisor?: string }>(
-	notes: readonly T[],
-	curated: readonly T[],
-	decisions: readonly AdvisorCuratorDecision[],
-): T[] {
+export function applyAdvisorCuration<
+	T extends { note: string; severity?: AdvisorSeverity; advisor?: string; curated?: boolean },
+>(notes: readonly T[], curated: readonly T[], decisions: readonly AdvisorCuratorDecision[]): T[] {
 	const byId = new Map(curated.map((note, index) => [String(index), note]));
 	const decisionFor = new Map(decisions.map(decision => [decision.candidateId, decision]));
 	const mergedSources = new Map<T, string[]>();
@@ -184,6 +182,8 @@ export function applyAdvisorCuration<T extends { note: string; severity?: Adviso
 		.filter(note => !removed.has(note))
 		.map(note => {
 			const sources = mergedSources.get(note);
-			return sources === undefined ? note : { ...note, note: attributeMergedAdvisorNote(note.note, sources) };
+			return sources === undefined
+				? note
+				: { ...note, note: attributeMergedAdvisorNote(note.note, sources), curated: true };
 		});
 }

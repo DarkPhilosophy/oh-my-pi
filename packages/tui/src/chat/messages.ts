@@ -298,6 +298,8 @@ export interface AdvisorNote {
 	turn?: number;
 	/** Primary turns elapsed before merged-batch delivery. */
 	turnsAgo?: number;
+	/** Set when the curator folded equivalent notes from other advisors into this one. */
+	curated?: boolean;
 }
 
 /** Details payload on the batched `advisor` custom message rendered in the transcript. */

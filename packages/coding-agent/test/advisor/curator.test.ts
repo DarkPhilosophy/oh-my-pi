@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import type { AdvisorNote } from "@oh-my-pi/pi-tui/chat/messages";
+import { formatAdvisorBatchContent } from "../../src/advisor/advise-tool";
 import {
 	type AdvisorCuratorCandidate,
+	applyAdvisorCuration,
 	attributeMergedAdvisorNote,
 	curateAdvisorCandidates,
 } from "../../src/advisor/curator";
@@ -145,6 +148,30 @@ describe("advisor curator", () => {
 		const { decisions } = await curateAdvisorCandidates({ settings: settingsStub(), registry, candidates, context });
 
 		expect(decisions).toEqual([{ candidateId: "a", action: "keep" }]);
+	});
+
+	it("marks only the surviving note as curated and renders it for the agent", () => {
+		const notes: AdvisorNote[] = [
+			{ note: "blocking failure", severity: "blocker", advisor: "Safety" },
+			{ note: "the retry loop never backs off", severity: "concern", advisor: "Reliability" },
+			{ note: "retries hammer the endpoint", severity: "nit", advisor: "Performance" },
+		];
+		const curatable = notes.slice(1);
+
+		const applied = applyAdvisorCuration(notes, curatable, [
+			{ candidateId: "0", action: "keep" },
+			{ candidateId: "1", action: "merge", mergeInto: "0" },
+		]);
+
+		// The blocker passes through untouched and unmarked; only the note that
+		// absorbed another advisor's report is flagged.
+		expect(applied.map(note => note.curated)).toEqual([undefined, true]);
+		const rendered = formatAdvisorBatchContent(applied);
+		expect(rendered).toContain('advisor="Reliability" severity="concern" curated="true"');
+		expect(rendered).not.toContain('advisor="Safety" severity="blocker" curated');
+		// Attribution stays inside the note; the curator never signs it.
+		expect(rendered).not.toContain("Curator");
+		expect(rendered).toContain("Also raised by Performance.");
 	});
 
 	it("attributes merged sources without restating their notes", () => {

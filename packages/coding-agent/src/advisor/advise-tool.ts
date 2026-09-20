@@ -52,7 +52,10 @@ export function formatAdvisorBatchContent(notes: readonly AdvisorNote[], opts?: 
 				opts?.currentTurn !== undefined && n.turn !== undefined && opts.currentTurn > n.turn
 					? ` turns_ago="${opts.currentTurn - n.turn}"`
 					: "";
-			return `<advisory${who}${severity}${age} guidance="${ADVISOR_GUIDANCE}">\n${escapeXmlText(n.note)}\n</advisory>`;
+			// Marks a note that absorbed equivalent notes from other advisors, so
+			// consumers can tell a single observation from a corroborated one.
+			const curated = n.curated ? ` curated="true"` : "";
+			return `<advisory${who}${severity}${age}${curated} guidance="${ADVISOR_GUIDANCE}">\n${escapeXmlText(n.note)}\n</advisory>`;
 		})
 		.join("\n");
 }
