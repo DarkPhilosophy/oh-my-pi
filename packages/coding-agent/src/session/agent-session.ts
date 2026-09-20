@@ -5349,15 +5349,34 @@ export class AgentSession {
 		this.#renderTestEvents = new WeakSet<AgentEvent>();
 		this.#renderTestPendingEvents = [];
 		let endEvent: Extract<AgentEvent, { type: "agent_end" }> | undefined;
-		const unsubscribe = producer.subscribe(event => {
-			if (event.type === "agent_end") {
-				endEvent = event;
-				return;
+		let assistantMessages = 0;
+		let advisorEmitted = false;
+		let transientIrcEmitted = false;
+		const emitTransientIrc = async (): Promise<void> => {
+			if (transientIrcEmitted || options.scenario !== undefined) return;
+			transientIrcEmitted = true;
+			for (let index = 0; index < 5; index++) {
+				await this.#emitSessionEvent({
+					type: "irc_message",
+					message: {
+						role: "custom",
+						content: `render transient IRC card ${index + 1}`,
+						display: true,
+						customType: "irc:incoming",
+						details: {
+							id: `render-transient-irc-${index}`,
+							from: "render-peer",
+							message: `Temporary IRC card ${index + 1}.`,
+						},
+						timestamp: Date.now() + index,
+					},
+				});
 			}
-			this.#renderTestEvents?.add(event);
-			this.agent.emitExternalEvent(event);
-		});
-		if (options.scenario === "advisor") {
+		};
+		const emitAdvisor = async (): Promise<void> => {
+			if (advisorEmitted || (options.scenario !== undefined && options.scenario !== "advisor")) return;
+			advisorEmitted = true;
+			// Display-only: bypasses persistence, queuing, steering, and agent wake-up.
 			await this.#emitSessionEvent({
 				type: "message_start",
 				message: {
@@ -5367,13 +5386,38 @@ export class AgentSession {
 					customType: "advisor",
 					details: {
 						notes: [
-							{ note: "Simulated advisor card: display only; no live turn is affected.", severity: "concern" },
+							{ note: "Inspect the streamed write card before its large preview settles.", severity: "concern" },
+							{
+								note: "The multi-hunk edit should replace the earlier card without a viewport gap.",
+								severity: "warning",
+							},
+							{
+								note: "The failed edit must collapse to its compact production error card.",
+								severity: "blocker",
+							},
+							{ note: "This advisor event is display-only; it cannot affect a live turn.", severity: "concern" },
 						],
 					},
 					timestamp: Date.now(),
 				},
 			});
-		}
+		};
+		const unsubscribe = producer.subscribe(event => {
+			if (event.type === "agent_end") {
+				endEvent = event;
+				return;
+			}
+			this.#renderTestEvents?.add(event);
+			this.agent.emitExternalEvent(event);
+			if (event.type === "message_end" && event.message.role === "assistant") {
+				assistantMessages++;
+				if (assistantMessages === 3 && options.scenario === undefined)
+					this.#renderTestPendingEvents?.push(emitTransientIrc());
+				if (assistantMessages === (options.scenario === "advisor" ? 1 : 3))
+					this.#renderTestPendingEvents?.push(emitAdvisor());
+			}
+		});
+
 		try {
 			await producer.prompt(
 				`/render${options.scenario ? ` --${options.scenario}` : ""}${

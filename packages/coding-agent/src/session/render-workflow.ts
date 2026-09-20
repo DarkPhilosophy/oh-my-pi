@@ -12,6 +12,7 @@ import { BashTool } from "../tools/bash";
 import { HubTool } from "../tools/hub";
 import { ReadTool } from "../tools/read";
 import { TodoTool } from "../tools/todo";
+import { WriteTool } from "../tools/write";
 
 export interface RenderWorkflowStep {
 	silent?: boolean;
@@ -22,7 +23,7 @@ export interface RenderWorkflowStep {
 
 export interface RenderWorkflow {
 	context: AgentToolContext;
-	tools: Array<ReadTool | EditTool | TodoTool | AskTool | BashTool | HubTool>;
+	tools: Array<ReadTool | EditTool | TodoTool | AskTool | BashTool | HubTool | WriteTool>;
 	next(context: Context): Promise<RenderWorkflowStep | undefined>;
 	dispose(): Promise<void>;
 }
@@ -63,6 +64,11 @@ export function createRenderWorkflow(
 		"Answer interactive workflow question",
 	];
 	const actions: Array<{ name: string; args: () => Record<string, unknown> }> = [];
+	const largeWriteContent =
+		Array.from(
+			{ length: 180 },
+			(_, row) => `Generated write fixture row ${row + 1}: ${"content ".repeat(18)}for streaming card geometry.`,
+		).join("\n") + "\n";
 	const read = (index: number) =>
 		actions.push({ name: "read", args: () => ({ path: `${files[index]}:1-${fixtureRows[index]}` }) });
 	let currentContext: Context;
@@ -81,7 +87,7 @@ export function createRenderWorkflow(
 				const headers = [...text.matchAll(/\[([^\]\n]+)#([0-9A-F]{4})\]/g)];
 				const header = headers.reverse().find(match => match[1] === file || match[1] === path.basename(file));
 				if (!header) throw new Error("Workflow read did not provide a snapshot for the edit.");
-				const tag = invalid ? (header[2] === "FFFF" ? "0000" : "FFFF") : header[2];
+				const tag = header[2];
 				const patch = multiHunk
 					? [2, 64, 120]
 							.map(
@@ -95,13 +101,18 @@ export function createRenderWorkflow(
 			},
 		});
 	actions.push({ name: "todo", args: () => ({ op: "init", items: tasks }) });
+	// A real write result grows from a streamed request into the production write card.
+	actions.push({ name: "write", args: () => ({ path: files[2], content: largeWriteContent }) });
 	read(0);
 	read(1);
 	read(2);
 	edit(0);
-	edit(1, true);
+	// Two valid hunks first render a real preview; the final out-of-range hunk fails
+	// execution, replacing that tall pending card with the compact error result.
+	edit(1, true, true);
 	edit(2);
-	if (scenario === "large-edit") edit(2, false, true);
+	// The plain workflow includes the same wide, multi-hunk edit as its focused stage.
+	edit(2, false, true);
 	if (scenario === "edit-error") edit(2, true, true);
 	read(0);
 	read(1);
@@ -170,9 +181,9 @@ export function createRenderWorkflow(
 	if (scenario) {
 		const selected =
 			scenario === "large-edit"
-				? [actions[3]!, actions[7]!]
+				? [actions[4]!, actions[8]!]
 				: scenario === "edit-error"
-					? [actions[3]!, actions[7]!]
+					? [actions[3]!, actions[6]!]
 					: actions.filter(action =>
 							scenario === "todo"
 								? action.name === "todo"
@@ -192,8 +203,6 @@ export function createRenderWorkflow(
 		let count = 1;
 		if (name === "read" || (name === "bash" && (scenario ? cursor === 1 : cursor === backgroundStage))) {
 			while (actions[cursor + count]?.name === name) count++;
-		} else if (!scenario && cursor === 4) {
-			count = 3;
 		}
 		groups.push(actions.slice(cursor, cursor + count));
 		cursor += count;
@@ -209,6 +218,7 @@ export function createRenderWorkflow(
 			new ReadTool(localSession),
 			new EditTool(localSession, "hashline"),
 			new TodoTool(localSession),
+			new WriteTool(localSession),
 			new AskTool(localSession),
 			new BashTool(jobSession),
 			new HubTool(jobSession),

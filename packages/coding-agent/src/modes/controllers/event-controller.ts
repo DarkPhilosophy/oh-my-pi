@@ -57,6 +57,12 @@ import { streamingStringKeysForTool, ToolArgsRevealController } from "./tool-arg
 type AgentSessionEventKind = AgentSessionEvent["type"];
 
 const IRC_MESSAGE_VISIBLE_TTL_MS = 10_000;
+let ircMessageVisibleTtlMs = IRC_MESSAGE_VISIBLE_TTL_MS;
+
+/** Test-only override for deterministic IRC expiry lifecycle coverage. */
+export function setIrcMessageVisibleTtlForTest(milliseconds: number | undefined): void {
+	ircMessageVisibleTtlMs = milliseconds === undefined ? IRC_MESSAGE_VISIBLE_TTL_MS : Math.max(0, milliseconds);
+}
 /**
  * Concurrent IRC cards allowed in the transcript's live region. Cards land
  * below a still-live block (a running task), where they cannot commit to
@@ -1088,7 +1094,7 @@ export class EventController {
 		const timer = setTimeout(() => {
 			this.#ircExpiryTimers.delete(signature);
 			this.#retireIrcCard(signature);
-		}, IRC_MESSAGE_VISIBLE_TTL_MS);
+		}, ircMessageVisibleTtlMs);
 		timer.unref?.();
 		this.#ircExpiryTimers.set(signature, timer);
 		this.#liveIrcCards.set(signature, components);

@@ -9,6 +9,7 @@ import { resetSettingsForTest, Settings } from "../src/config/settings";
 import { ExtensionRuntime, loadExtensionFromFactory } from "../src/extensibility/extensions/loader";
 import { ExtensionRunner } from "../src/extensibility/extensions/runner";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { setIrcMessageVisibleTtlForTest } from "../src/modes/controllers/event-controller";
 import { InteractiveMode } from "../src/modes/interactive-mode";
 import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
@@ -221,7 +222,9 @@ it.each([20, 30, 40, 60])(
 				if (!rows[index]?.startsWith("╰")) continue;
 				let next = index + 1;
 				while (next < rows.length && rows[next] === "") next++;
-				if (next - index > 2 && rows[next]?.startsWith("╭")) {
+				// TranscriptContainer.#renderViewport (packages/tui/src/chrome/transcript-container.ts)
+				// deliberately emits one live-block separator; >=2 is a dead band.
+				if (next < rows.length && next - index > 2 && rows[next] !== "") {
 					gaps.push(rows.slice(index, next + 1).join("\n"));
 				}
 			}
@@ -240,7 +243,7 @@ it.each([20, 30, 40, 60])(
 	60_000,
 );
 
-it.each([20, 40])(
+it.each([20, 40, 100])(
 	"runs complete workflows in a %i-row terminal through real tools without provider calls",
 	async rows => {
 		terminal.resize(110, rows);
@@ -248,6 +251,7 @@ it.each([20, 40])(
 		await terminal.waitForRender();
 		const duplicateFrames: string[] = [];
 		const splitCards: string[] = [];
+		const scrollbackHoles: string[] = [];
 		const write = terminal.write.bind(terminal);
 		vi.spyOn(terminal, "write").mockImplementation(data => {
 			write(data);
@@ -255,11 +259,24 @@ it.each([20, 40])(
 				.getScrollBuffer()
 				.slice(-200)
 				.map(row => Bun.stripANSI(row).trimEnd());
+			const surface = [...terminal.getScrollBuffer(), ...terminal.getViewport()].map(row =>
+				Bun.stripANSI(row).trimEnd(),
+			);
+			for (let index = 0; index < surface.length - 2; index++) {
+				if (surface[index] === "" || surface[index + 1] !== "") continue;
+				let next = index + 1;
+				while (next < surface.length && surface[next] === "") next++;
+				if (next < surface.length && next - index > 2)
+					scrollbackHoles.push(surface.slice(Math.max(0, index - 1), next + 2).join("\n"));
+			}
 			for (let index = 1; index < paintedRows.length - 1; index++) {
 				if (paintedRows[index] !== "" || !/^[│├╭]/.test(paintedRows[index - 1]!)) continue;
 				let next = index + 1;
 				while (paintedRows[next] === "") next++;
-				if (/^[│├╰]/.test(paintedRows[next] ?? "")) {
+				// packages/tui/src/chrome/transcript-container.ts#renderViewport
+				// emits exactly one separator row before a non-first live block;
+				// two or more are dead allocator rows.
+				if (next - index > 2 && /^[│├╰]/.test(paintedRows[next] ?? "")) {
 					splitCards.push(paintedRows.slice(Math.max(0, index - 3), next + 3).join("\n"));
 				}
 			}
@@ -274,8 +291,15 @@ it.each([20, 40])(
 		});
 		const results: ToolResultMessage[] = [];
 		const assistants: AssistantMessage[] = [];
+		const advisorNotes: Array<{ note: string; severity?: string }> = [];
 		const questions = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
 		const streamingStarted = Promise.withResolvers<void>();
+		const transientIrc = Promise.withResolvers<void>();
+		const rebuildTransientIrc = transientIrc.promise.then(async () => {
+			await terminal.waitForRender(() => terminal.getViewport().some(row => row.includes("Temporary IRC card 5")));
+			mode.rebuildChatFromMessages();
+			await terminal.waitForRender();
+		});
 		let questionCount = 0;
 		let assistantStarts = 0;
 		let thinkingDeltas = 0;
@@ -288,6 +312,17 @@ it.each([20, 40])(
 		session.subscribeRunState(state => runStates.push(state));
 		session.subscribe(event => {
 			if (event.type === "message_start" && event.message.role === "assistant") assistantStarts++;
+			if (event.type === "irc_message" && event.message.customType === "irc:incoming") transientIrc.resolve();
+			if (
+				event.type === "message_start" &&
+				event.message.role === "custom" &&
+				event.message.customType === "advisor"
+			) {
+				advisorNotes.push(
+					...((event.message.details as { notes?: Array<{ note: string; severity?: string }> } | undefined)
+						?.notes ?? []),
+				);
+			}
 			if (event.type === "message_update") {
 				if (event.assistantMessageEvent.type === "thinking_delta") thinkingDeltas++;
 				if (event.assistantMessageEvent.type === "text_delta") {
@@ -320,6 +355,7 @@ it.each([20, 40])(
 			expect(session.isStreaming).toBeTrue();
 			terminal.sendInput("\r");
 		}
+		await rebuildTransientIrc;
 		await running;
 		await session.waitForIdle();
 		mode.ui.renderNow();
@@ -329,11 +365,13 @@ it.each([20, 40])(
 		expect(session.getTodoPhases()).toEqual(savedTodo);
 		expect(duplicateFrames).toEqual([]);
 		expect(splitCards).toEqual([]);
+		expect(scrollbackHoles).toEqual([]);
 		expect(thinkingDeltas).toBeGreaterThan(2);
 		expect(textDeltas).toBeGreaterThan(100);
+		expect(results.filter(result => result.toolName === "write" && !result.isError)).toHaveLength(2);
 		expect(results.filter(result => result.toolName === "read")).toHaveLength(20);
 		const edits = results.filter(result => result.toolName === "edit");
-		expect(edits).toHaveLength(8);
+		expect(edits).toHaveLength(10);
 		expect(edits.filter(result => result.isError)).toHaveLength(2);
 		for (const error of edits.filter(result => result.isError)) {
 			expect(
@@ -341,22 +379,27 @@ it.each([20, 40])(
 					.filter(block => block.type === "text")
 					.map(block => block.text)
 					.join("\n"),
-			).toMatch(/snapshot|hash|stale/i);
+			).toMatch(/snapshot|hash|stale|line|range|bound|outside/i);
 		}
 		expect(results.filter(result => result.toolName === "ask" && !result.isError)).toHaveLength(2);
 		expect(results.filter(result => result.toolName === "bash" && !result.isError)).toHaveLength(22);
 		expect(results.filter(result => result.toolName === "hub" && !result.isError)).toHaveLength(8);
 		for (const repetition of [1, 2]) {
-			expect(
-				assistants.some(
-					message =>
-						message.content
-							.filter(block => block.type === "toolCall")
-							.filter(call => call.name === "edit" && call.id.startsWith(`render-workflow-${repetition}-`))
-							.length === 3,
-				),
-			).toBeTrue();
+			const calls = assistants
+				.filter(message =>
+					message.content.some(
+						block => block.type === "toolCall" && block.id.startsWith(`render-workflow-${repetition}-`),
+					),
+				)
+				.flatMap(message => message.content.filter(block => block.type === "toolCall"));
+			expect(calls.filter(call => call.name === "write")).toHaveLength(1);
+			expect(calls.filter(call => call.name === "edit")).toHaveLength(5);
 		}
+		expect(advisorNotes).toHaveLength(4);
+		expect(advisorNotes.map(note => note.severity)).toEqual(["concern", "warning", "blocker", "concern"]);
+		expect(
+			session.agent.state.messages.some(message => message.role === "custom" && message.customType === "advisor"),
+		).toBeFalse();
 		const text = assistants
 			.flatMap(message => message.content.flatMap(block => (block.type === "text" ? [block.text] : [])))
 			.join("\n");
@@ -373,11 +416,13 @@ it.each([20, 40])(
 		expect(Array.from(tape.matchAll(boundaries), match => match[0])).toEqual(
 			Array.from(text.matchAll(boundaries), match => match[0]),
 		);
-		const firstReads = tape.slice(tape.indexOf("Streaming 2 — BEGIN"), tape.indexOf("Streaming 3 — BEGIN"));
-		for (const file of [1, 2, 3]) {
+		const firstReads = tape.slice(tape.indexOf("Streaming 3 — BEGIN"), tape.indexOf("Streaming 4 — BEGIN"));
+		for (const file of [1, 2]) {
 			expect(firstReads).toContain(`Fixture ${file}, row 1:`);
 			expect(firstReads).toContain(`Fixture ${file}, row 3:`);
 		}
+		expect(firstReads).toContain("Generated write fixture row 1:");
+		expect(firstReads).toContain("Generated write fixture row 3:");
 		expect(expected.filter(marker => marker.startsWith("PLAIN_"))).toHaveLength(120);
 		expect(expected.filter(marker => marker.startsWith("CODE_"))).toHaveLength(120);
 		expect(providerCalls).toBe(0);
