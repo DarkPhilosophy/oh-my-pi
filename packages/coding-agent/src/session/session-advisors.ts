@@ -1785,9 +1785,10 @@ export class SessionAdvisors {
 	 * timeout all deliver the uncurated batch, so advice is never lost to it.
 	 */
 	#curateThenDeliver(notes: AdvisorNote[], showGuidance: boolean, steer: boolean): void {
-		const deliver = (batch: AdvisorNote[]): void => {
+		const deliver = (batch: AdvisorNote[], curation?: string): void => {
 			const rendered = formatAdvisorBatchContent(batch, { currentTurn: this.#advisorPrimaryTurnsCompleted });
-			this.#deliverAdvisorBatch(batch, showGuidance ? `${ADVISOR_BOUNDARY_GUIDANCE}\n${rendered}` : rendered, steer);
+			const head = showGuidance ? `${ADVISOR_BOUNDARY_GUIDANCE}\n` : "";
+			this.#deliverAdvisorBatch(batch, `${head}${rendered}${curation ?? ""}`, steer);
 		};
 		const curatable = notes.filter(note => note.severity !== "blocker");
 		if (curatable.length < 2 || this.#host.settings.get("advisor.curator") === "off") {
@@ -1818,7 +1819,15 @@ export class SessionAdvisors {
 				// A newer boundary already superseded this batch: its own curation
 				// owns delivery, so dropping here would duplicate the notes.
 				if (generation !== this.#advisorCuratorGeneration) return;
-				deliver(applyAdvisorCuration(notes, curatable, result.decisions));
+				const curated = applyAdvisorCuration(notes, curatable, result.decisions);
+				const merged = result.decisions.filter(decision => decision.action === "merge").length;
+				const dropped = result.decisions.filter(decision => decision.action === "drop").length;
+				logger.debug("advisor curation applied", { before: notes.length, after: curated.length, merged, dropped });
+				// Say what was withheld and why. Silent removal would make the
+				// curator impossible to trust or debug from the transcript alone.
+				const summary =
+					merged + dropped === 0 ? undefined : `\n<curation merged="${merged}" already-addressed="${dropped}" />`;
+				deliver(curated, summary);
 			},
 			error => {
 				logger.debug("advisor curation failed", { error: error instanceof Error ? error.message : String(error) });

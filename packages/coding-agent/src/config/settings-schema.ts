@@ -481,10 +481,14 @@ export const SETTINGS_SCHEMA = {
 			group: "Advisor",
 			label: "Advisor Curator",
 			description:
-				"Curate advisor notes before they reach the agent: collapse the same issue raised by several advisors into one note and drop what the agent already fixed. Falls through unchanged when no judgment backend is available.",
+				"Curate advisor notes before they reach the agent: collapse the same issue raised by several advisors into one note, and drop what the agent already fixed. The backend is NOT chosen here — it is whatever Providers › Judgment Provider resolves to (TypeSafe when a credential exists, otherwise the tiny/smol chat chain), and a TypeSafe failure falls back to that chain automatically. With no backend at all, notes are delivered uncurated.",
 			options: [
-				{ value: "auto", label: "Auto", description: "Curate when a judgment backend is available. Default." },
-				{ value: "off", label: "Off", description: "Deliver every admitted note as-is." },
+				{
+					value: "auto",
+					label: "Auto",
+					description: "Curate through Judgment Provider; deliver notes unchanged if it is unavailable. Default.",
+				},
+				{ value: "off", label: "Off", description: "Never curate: every admitted note is delivered as-is." },
 			],
 			condition: "advisorEnabled",
 		},
@@ -5870,7 +5874,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Tiny Model",
 			label: "Judgment Provider",
 			description:
-				"Preferred backend for typed judgments (auto-thinking difficulty, Smart unexpected-stop detection, git AI staging, eval judge()). Auto uses TypeSafe when authenticated; failed TypeSafe requests fall back through tiny, smol, default, then the active session model.",
+				"Preferred backend for typed judgments (auto-thinking difficulty, Smart unexpected-stop detection, git AI staging, the advisor curator, eval judge()). Auto uses TypeSafe when authenticated; failed TypeSafe requests fall back through tiny, smol, default, then the active session model.",
 			options: [
 				{ value: "auto", label: "Auto", description: "TypeSafe when authenticated, else the LLM bridge (default)" },
 				{
