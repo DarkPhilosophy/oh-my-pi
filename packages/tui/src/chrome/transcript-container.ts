@@ -192,6 +192,15 @@ export class TranscriptContainer extends Container {
 	#pinnedFrontier: { index: number; since: number; logged: boolean } | undefined;
 	/** Block spans of the last `renderViewport` output, for click hit-testing. */
 	#lastViewportSpans: TranscriptViewportSpan[] = [];
+	/** Width of the last terminal-facing render; the rebuild ledger is only comparable at this width. */
+	#lastWidth: number | undefined;
+	/**
+	 * What native scrollback holds from the transcript that {@link clear} threw
+	 * away: the committed blocks plus the frontier head's emitted prefix. The
+	 * next render at the same width reconciles the rebuilt entries against it
+	 * so rows already in native history are not offered as a fresh append.
+	 */
+	#rebuildLedger: { width: number; rows: readonly string[]; borrowed: readonly string[] } | undefined;
 	override addChild(component: Component): void {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
 		super.addChild(component);
@@ -216,6 +225,20 @@ export class TranscriptContainer extends Container {
 	}
 
 	override clear(): void {
+		// Rebuilds (`/shake`, compaction, cancel/restore of a submission) replace
+		// every block with a reconstructed equivalent. The ledger of what already
+		// reached native scrollback must survive the swap, or the reconstruction
+		// starts at emitted=0 and re-commits those rows a second time.
+		this.#syncEntries();
+		const width = this.#lastWidth;
+		const ledger =
+			width !== undefined && this.#entries.length > 0 && this.#offered?.kind !== "replay"
+				? this.#renderReplay(width)
+				: EMPTY_ROWS;
+		// Leading live rows the terminal already borrowed into native scrollback
+		// are just as unrepeatable as committed ones; keep them so the rebuilt
+		// live entries inherit their borrowed ownership.
+		const borrowed = this.#liveViewport.rows.slice(0, this.borrowedViewportRowCount());
 		super.clear();
 		this.#entries = [];
 		this.#frontier = 0;
@@ -226,6 +249,111 @@ export class TranscriptContainer extends Container {
 		this.#replayRequested = false;
 		this.#liveViewport = { rows: [], capacity: 0, physicalRows: 0 };
 		this.#lastViewportSpans = [];
+		this.#rebuildLedger =
+			width !== undefined && (ledger.length > 0 || borrowed.length > 0)
+				? { width, rows: ledger, borrowed }
+				: undefined;
+	}
+
+	/** Common prologue of every terminal-facing render at `width`. */
+	#enterFrame(width: number): void {
+		this.#syncEntries();
+		this.#lastWidth = width;
+		this.#reconcileRebuild(width);
+		this.#settleFinalized();
+	}
+
+	/**
+	 * After a rebuild, mark reconstructed blocks that render byte-identical to
+	 * the committed ledger as committed, and give a partially matching head the
+	 * emitted prefix native scrollback already holds. The first divergent block
+	 * and everything after it stay live, so only genuinely new rows are offered.
+	 */
+	#reconcileRebuild(width: number): void {
+		const ledger = this.#rebuildLedger;
+		if (ledger === undefined) return;
+		this.#rebuildLedger = undefined;
+		if (ledger.width !== width || this.#entries.length === 0) return;
+		const rows = ledger.rows;
+		let cursor = 0;
+		let index = 0;
+		for (; index < this.#entries.length; index++) {
+			const entry = this.#entries[index]!;
+			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			const block = trimBlankEdges(entry.component.render(width));
+			if (block.length === 0) continue;
+			const start = cursor > 0 ? cursor + 1 : 0;
+			if (cursor > 0 && rows[cursor] !== "") break;
+			if (start + block.length > rows.length) break;
+			let matched = 0;
+			while (matched < block.length && rows[start + matched] === block[matched]) matched++;
+			if (matched < block.length) {
+				// The head may have been emitted only partway; keep that prefix.
+				if (matched > 0) this.#adoptEmittedPrefix(entry, block, matched, width);
+				break;
+			}
+			// A complete match followed by more ledger rows is a committed block;
+			// a match that exhausts the ledger is the head's emitted prefix only
+			// when it was not closed by a separator.
+			cursor = start + block.length;
+			if (cursor === rows.length) {
+				this.#adoptEmittedPrefix(entry, block, block.length, width);
+				break;
+			}
+		}
+		for (let committed = 0; committed < index; committed++) {
+			const entry = this.#entries[committed]!;
+			entry.state = "committed";
+			entry.emitted = 0;
+		}
+		this.#frontier = index;
+		this.#adoptBorrowedRows(index, ledger.borrowed, width);
+	}
+
+	/** Re-flag the leading live rows that native scrollback already borrowed from the pre-rebuild viewport. */
+	#adoptBorrowedRows(start: number, borrowed: readonly string[], width: number): void {
+		let cursor = 0;
+		for (let index = start; index < this.#entries.length && cursor < borrowed.length; index++) {
+			const entry = this.#entries[index]!;
+			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			const offset = this.#renderStablePrefix(entry, entry.emitted, width).length;
+			const block = this.#renderEntry(entry, width).slice(offset);
+			if (block.length === 0) continue;
+			let matched = 0;
+			while (
+				matched < block.length &&
+				cursor + matched < borrowed.length &&
+				borrowed[cursor + matched] === block[matched]
+			)
+				matched++;
+			if (matched === 0) return;
+			cursor += matched;
+			// A fully borrowed block also owns the separator row that follows it,
+			// exactly as `setBorrowedViewportRows` counts it from the live extent.
+			const separator = matched === block.length && cursor < borrowed.length && borrowed[cursor] === "" ? 1 : 0;
+			cursor += separator;
+			entry.borrowed = true;
+			entry.borrowedEnd = offset + matched + separator;
+			entry.viewportOffset = offset;
+			if (matched < block.length) return;
+		}
+	}
+
+	#adoptEmittedPrefix(entry: TranscriptEntry, block: readonly string[], rowCount: number, width: number): void {
+		if (entry.mode === "mutable") {
+			entry.emitted = rowCount;
+			return;
+		}
+		// Append-only blocks count emitted rows in stable semantic units; adopt
+		// the largest published count whose render fits inside the matched rows.
+		this.#renderEntry(entry, width);
+		let count = 0;
+		while (count < entry.stableRows.length) {
+			const prefix = this.#renderStablePrefix(entry, count + 1, width);
+			if (prefix.length > rowCount || !isRowPrefix(prefix, block)) break;
+			count++;
+		}
+		entry.emitted = count;
 	}
 
 	setToolActivityVisible(visible: boolean): void {
@@ -409,8 +537,7 @@ export class TranscriptContainer extends Container {
 
 	/** Total rows the live, un-emitted tail occupies at `width`. */
 	liveRowCount(width: number): number {
-		this.#syncEntries();
-		this.#settleFinalized();
+		this.#enterFrame(width);
 		let total = 0;
 		for (const { entry, index } of this.#liveEntries()) {
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
@@ -451,8 +578,7 @@ export class TranscriptContainer extends Container {
 
 	#renderViewport(width: number, rows: number, frame: AnimationFrame): readonly string[] {
 		this.#lastFrame = frame;
-		this.#syncEntries();
-		this.#settleFinalized();
+		this.#enterFrame(width);
 		const output: string[] = [];
 		this.#lastViewportSpans = [];
 		let previous: TranscriptEntry | undefined;
@@ -521,8 +647,7 @@ export class TranscriptContainer extends Container {
 
 	/** Returns only a prepared complete replay, never a normal retirement offer. */
 	peekReplayBatch(width: number): HistoryBatch | undefined {
-		this.#syncEntries();
-		this.#settleFinalized();
+		this.#enterFrame(width);
 		return this.#peekReplayBatch(width);
 	}
 
@@ -567,8 +692,7 @@ export class TranscriptContainer extends Container {
 	}
 
 	#peekBatch(width: number, capacity: number, policy: RetirementPolicy): HistoryBatch | undefined {
-		this.#syncEntries();
-		this.#settleFinalized();
+		this.#enterFrame(width);
 		if (this.#offered !== undefined) return this.#offered.batch;
 		const replay = this.#peekReplayBatch(width);
 		if (replay !== undefined) return replay;
