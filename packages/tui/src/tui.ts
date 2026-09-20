@@ -3508,22 +3508,6 @@ export class TUI extends Container {
 					)
 				: startTopBase;
 		const newTop = Math.max(0, Math.min(startTop + historyRows.length, height - rows));
-		console.error(
-			"EMIT",
-			JSON.stringify({
-				previousTop,
-				startTopBase,
-				startTop,
-				newTop,
-				rows,
-				hist: historyRows.length,
-				height,
-				blank: this.#providerBlankTopRows,
-				win: this.#providerWindow.length,
-				geometryStable,
-				diffableIn: undefined,
-			}),
-		);
 		const knownTop = destructiveReset
 			? 0
 			: Math.min(startTop, this.#providerScreen.length > 0 ? this.#providerScreenKnownTop : startTop);
