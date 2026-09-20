@@ -773,9 +773,24 @@ const cacheHitSegment: StatusLineSegment = {
 	},
 };
 
+/**
+ * The session title, displaced by live advisor activity while any advisor is
+ * working. The title is read once and then carries no information for the rest
+ * of the session, whereas "who is reviewing right now" changes constantly and
+ * has nowhere else to appear.
+ *
+ * With several advisors the individual names are not cycled: a label that
+ * rewrites itself every frame is unreadable and makes the line jitter. One
+ * working advisor is named; beyond that only the count is, which is the part
+ * that actually varies.
+ */
 const sessionNameSegment: StatusLineSegment = {
 	id: "session_name",
 	render(ctx) {
+		const activity = advisorActivityLabel(ctx);
+		if (activity !== undefined) {
+			return { content: theme.fg("dim", sanitizeStatusText(activity)), visible: true };
+		}
 		const sessionManager = ctx.session.sessionManager;
 		const name = sessionManager?.getSessionName() || ctx.previewTitle;
 		if (!name) return { content: "", visible: false };
@@ -784,6 +799,23 @@ const sessionNameSegment: StatusLineSegment = {
 		return { content: accentFg(ctx, "accent", content), visible: true };
 	},
 };
+
+/** `undefined` when no advisor is working, so the session title keeps the slot. */
+function advisorActivityLabel(ctx: SegmentContext): string | undefined {
+	if (ctx.startupPlaceholder) return undefined;
+	const overview = ctx.session.getAdvisorStatusOverview?.();
+	if (!overview?.configured) return undefined;
+	const working = overview.advisors.filter(advisor => advisor.status === "running" && !advisor.yielded);
+	if (working.length === 0) return undefined;
+	const eye = theme.icon.advisor || "";
+	const prefix = eye ? `${eye} ` : "";
+	if (working.length === 1) {
+		// The implicit single advisor carries no configured name.
+		const only = working[0]!.name;
+		return `${prefix}${only ? `${only} reviewing` : "advisor reviewing"}`;
+	}
+	return `${prefix}${working.length} advisors reviewing`;
+}
 
 const collabSegment: StatusLineSegment = {
 	id: "collab",

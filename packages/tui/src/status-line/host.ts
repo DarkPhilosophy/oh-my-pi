@@ -61,7 +61,10 @@ export interface StatusLineSession {
 	getPrewalkState?(): unknown;
 	getAsyncJobSnapshot(): { running: readonly { type: string; agentId?: string }[] } | null | undefined;
 	getGoalModeState(): { goal?: { status: string; tokensUsed: number; tokenBudget?: number } } | undefined;
-	getAdvisorStatusOverview?(): { configured: boolean; advisors: readonly { status: string; yielded: boolean }[] };
+	getAdvisorStatusOverview?(): {
+		configured: boolean;
+		advisors: readonly { name?: string; status: string; yielded: boolean }[];
+	};
 	getAdvisorCost?(): number;
 	isAdvisorUsingSubscription?(): boolean;
 }
