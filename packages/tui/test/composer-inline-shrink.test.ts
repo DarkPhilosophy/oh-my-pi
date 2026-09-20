@@ -165,16 +165,21 @@ describe("composer inline shrink (#11007)", () => {
 		h.composer.stop();
 	});
 
-	// KNOWN FAILURE. A live-frame contraction erases from `previousTop` and writes
-	// its shorter frame at `startTop`, leaving the vacated rows blank and resident
-	// on screen; the next overflowing paint then scrolls those blanks into native
-	// scrollback, where they are permanent. Three repairs were tried and rejected:
-	// rebasing the frame to `previousTop` and deleting the vacated lines both break
-	// bottom anchoring (the editor stops being pinned to the last row), and reusing
-	// the forced history replay is O(entire transcript) and destroys native history.
-	// A real fix needs a provider capability to repaint a bounded slice of retained
-	// history into the vacated range; `TerminalFrameProvider` has no such operation
-	// today. Flip this to `it` once that lands.
+	// KNOWN FAILURE, now partial. A live-frame contraction erases from `previousTop`
+	// and re-anchors its shorter frame at `startTop`, leaving the vacated rows blank
+	// and resident; a later overflowing paint scrolls them into native scrollback,
+	// where they are permanent. Blank-top reclamation (see `#providerBlankTopRows`)
+	// removed the accumulation: this fixture used to strand four growing 23-row
+	// bands (scroll buffer 216 rows), and now strands one (150 rows). The residual
+	// band survives because bottom anchoring caps how far the origin may be pulled
+	// up when a paint commits history into a tiny live viewport.
+	// Rejected repairs: rebasing the frame to `previousTop` and deleting the vacated
+	// lines both break bottom anchoring (the editor stops being pinned to the last
+	// row, and deletion resurrects shifted rows above the frame); the forced history
+	// replay is O(entire transcript) and destroys native history. Closing the rest
+	// needs a provider capability to repaint a bounded slice of retained history
+	// into the vacated range; `TerminalFrameProvider` has no such operation today.
+	// Flip this to `it` once that lands.
 	it.failing(
 		"does not scroll erase-manufactured blank runs into native history while live content contracts",
 		async () => {

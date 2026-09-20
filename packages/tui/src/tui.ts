@@ -784,6 +784,12 @@ export class TUI extends Container {
 	#providerExpansionBorrowed = false;
 	/** Physical origin to restore after reversible chrome closes without history advancing. */
 	#providerUnexpandedTop: number | undefined;
+	/**
+	 * Rows a contraction vacated above the re-anchored frame. They are blank and
+	 * still resident, so the next scrolling paint reclaims them as origin rather
+	 * than pushing manufactured blanks into native scrollback.
+	 */
+	#providerBlankTopRows = 0;
 	#providerLogicalCommitted = 0;
 	/** Whether physical scrollback currently contains inferred rows from a live, unfinalized frame. */
 	#providerHasTransientHistory = false;
@@ -3469,7 +3475,7 @@ export class TUI extends Container {
 		}
 		const restoredTop = expansionRows === 0 ? this.#providerUnexpandedTop : undefined;
 		if (expansionRows === 0) this.#providerUnexpandedTop = undefined;
-		const startTop =
+		const startTopBase =
 			destructiveReset || retainedHistory !== undefined
 				? 0
 				: restoredTop !== undefined
@@ -3484,7 +3490,40 @@ export class TUI extends Container {
 						: geometryStable && (expansionRows > 0 || releasedExpansionRows > 0)
 							? Math.min(previousTop + releasedExpansionRows, Math.max(0, height - rows))
 							: Math.min(previousTop, Math.max(0, height - 1));
+		// A prior contraction erased its old cells in place and re-anchored the
+		// shorter frame at the bottom, so the rows it vacated are blank and still
+		// resident. Scrolling over them would push those blanks into native
+		// scrollback, where they are permanent (the black band users report).
+		// Reclaim them as frame origin instead, so only real rows ever scroll.
+		const reclaimableBlankTop =
+			geometryStable && !destructiveReset && retainedHistory === undefined ? this.#providerBlankTopRows : 0;
+		// Reclaim only as far as bottom anchoring allows: `newTop` must still land
+		// at `height - rows`, so the editor stays pinned to the last row.
+		const startTop =
+			reclaimableBlankTop > 0
+				? startTopBase -
+					Math.min(
+						reclaimableBlankTop,
+						Math.max(0, startTopBase - Math.max(0, height - rows - historyRows.length)),
+					)
+				: startTopBase;
 		const newTop = Math.max(0, Math.min(startTop + historyRows.length, height - rows));
+		console.error(
+			"EMIT",
+			JSON.stringify({
+				previousTop,
+				startTopBase,
+				startTop,
+				newTop,
+				rows,
+				hist: historyRows.length,
+				height,
+				blank: this.#providerBlankTopRows,
+				win: this.#providerWindow.length,
+				geometryStable,
+				diffableIn: undefined,
+			}),
+		);
 		const knownTop = destructiveReset
 			? 0
 			: Math.min(startTop, this.#providerScreen.length > 0 ? this.#providerScreenKnownTop : startTop);
@@ -3619,6 +3658,8 @@ export class TUI extends Container {
 			if (this.#providerWindow.length > rows && newTop + rows < height) {
 				buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
 			}
+			// A diffable paint keeps the same origin and never writes above it, so
+			// any vacated blank region above `newTop` is still resident.
 		} else {
 			// This write scrolls when history + viewport overflow the screen; the
 			// terminal pushes the physical top rows into scrollback. Rows above the
@@ -3664,6 +3705,14 @@ export class TUI extends Container {
 				screenRow++;
 			}
 			if (newTop + rows < height) buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
+			// Track the blank region above the frame origin. A contraction vacates
+			// `[previousTop, startTop)`, and a later paint that re-anchors higher
+			// without writing history leaves everything above its origin blank too.
+			// Writing history there, or scrolling, consumes the region.
+			this.#providerBlankTopRows =
+				pushed > 0 || preparedHistory.lines.length > 0 || this.#providerWindow.length === 0
+					? 0
+					: Math.min(startTop, this.#providerBlankTopRows + Math.max(0, startTop - previousTop));
 		}
 		const mutableTop = newTop + replayViewportRows;
 		const mutablePreparedLines = replayViewportRows > 0 ? prepared.lines.slice(replayViewportRows) : prepared.lines;
