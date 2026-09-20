@@ -214,6 +214,7 @@ import { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
 import { SessionInfoOverlay } from "@oh-my-pi/pi-tui/overlays/session-info-overlay";
 import { SkillMessageComponent } from "@oh-my-pi/pi-tui/chat/skill-message";
 import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
+import { advisorActivityLabel } from "@oh-my-pi/pi-tui/status-line/segments";
 import { statusLineHost } from "./status-line-host";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
@@ -835,12 +836,23 @@ export class InteractiveMode implements InteractiveModeContext {
 	#workingMessageAccentCacheValue?: WorkingMessageAccent;
 	#workingMessageAccentCacheHasValue = false;
 	/** Band composer: the status band hides `session_name`, so the title docks
-	 * onto the working row instead — right-aligned, dim, italic. */
+	 * onto the working row instead — right-aligned, dim, italic. While an advisor
+	 * is actually reviewing, that activity takes the slot: the title is read once
+	 * and then says nothing, whereas who is reviewing right now changes and has
+	 * nowhere else to appear. */
 	#workingTitleTrailer(): string | undefined {
 		if (this.settings.get("composer.shape") !== "band") return undefined;
-		const name = this.sessionManager.getSessionName();
-		if (!name) return undefined;
-		return `\x1b[2;3m${sanitizeStatusText(name)}\x1b[23;22m`;
+		const label = this.#advisorActivityLabel() ?? this.sessionManager.getSessionName();
+		if (!label) return undefined;
+		return `\x1b[2;3m${sanitizeStatusText(label)}\x1b[23;22m`;
+	}
+	/**
+	 * Live advisor activity, or `undefined` when none is working so the title
+	 * keeps the slot. Shares {@link advisorActivityLabel} with the status-line
+	 * segment so both surfaces blink and count identically.
+	 */
+	#advisorActivityLabel(): string | undefined {
+		return advisorActivityLabel(this.session.getAdvisorStatusOverview?.());
 	}
 	/** Live gen tok/s for the working row: the viewed session's own meter, so a
 	 * focused subagent shows its own reading and the main session's survives
