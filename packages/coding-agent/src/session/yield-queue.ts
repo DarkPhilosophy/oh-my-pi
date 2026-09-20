@@ -179,6 +179,11 @@ export class YieldQueue {
 		return thunks;
 	}
 
+	/** Atomically remove and return queued values of one kind without dispatching or settling them. */
+	drainKind<P>(kind: string): P[] {
+		return this.#drain(kind).map(entry => entry.value as P);
+	}
+
 	/** Drop queued entries. With `kind`, drop only that kind's entries (leaving
 	 *  any pending idle-flush for other kinds intact); otherwise drop everything. */
 	clear(kind?: string): void {

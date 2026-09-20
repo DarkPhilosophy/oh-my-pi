@@ -202,9 +202,12 @@ it.each(["concern", "nit", "blocker"] as const)(
 		await nextRun;
 		await session.waitForIdle();
 		expect(agentStarts).toBe(2);
-		// The live concern intentionally steers one continuation after the held
-		// next-user provider request; this is separate from the terminal-run guard.
-		expect(primaryCalls).toBe(terminalCalls + 2);
+		// The live concern steers one continuation after the held next-user
+		// provider request. After a terminal blocker it does not: that blocker
+		// already steered its own continuation, and the post-interrupt cooldown
+		// downgrades the following concern to an aside, which rides the running
+		// turn instead of starting another one.
+		expect(primaryCalls).toBe(severity === "blocker" ? terminalCalls + 1 : terminalCalls + 2);
 		expect(primaryContexts[terminalCalls]).toContain(nextUserMarker);
 	},
 );

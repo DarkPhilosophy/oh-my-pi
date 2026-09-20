@@ -1864,6 +1864,7 @@ export class AgentSession {
 			onResponse: this.#onResponse,
 			onSseEvent: this.#onSseEvent,
 			isDisposed: () => this.#isDisposed,
+			isAgentConnected: () => !this.#isDisposed,
 			abortInProgress: () => this.#abortInProgress,
 			allowAgentInitiatedTurns: () => this.#allowAcpAgentInitiatedTurns,
 			planModeState: () => this.getPlanModeState(),
@@ -4543,6 +4544,11 @@ export class AgentSession {
 	#reconnectToAgent(): void {
 		if (this.#unsubscribeAgent) return; // Already connected
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
+		// Advice queued while disconnected was never pollable by the loop, and
+		// `preserveQueuedAdvice` deliberately refuses to run while the agent is
+		// disconnected. Reconnecting is the only point that can rescue it, so a
+		// compaction or session switch does not silently swallow it (#10738).
+		this.#advisors.preserveQueuedAdvice();
 	}
 
 	#activeProviderSessionId(sessionId?: string): string {
@@ -8566,12 +8572,18 @@ export class AgentSession {
 			if (this.#toolChoiceQueue.hasInFlight) {
 				this.#toolChoiceQueue.reject("aborted");
 			}
+		} finally {
 			// Re-record advisor concerns the interrupt would otherwise strand, as
 			// visible/persisted advice without triggering a turn (the agent is idle
 			// now): cards steered into the queue before the user stopped, plus any
 			// that arrived via AdviseTool routing mid-abort and were parked hidden in
 			// #pendingNextTurnMessages while the turn was still tearing down. Other
 			// deferred next-turn context (non-advisor) stays queued, in order.
+			//
+			// This runs in `finally` because the cleanup above can reject — an
+			// extension's session-event emit is enough. Draining transfers the only
+			// ownership of those cards, so preserving them from the try block would
+			// lose them on exactly the error path that most needs them (#10738).
 			const parkedAdvisorCards = this.#pendingNextTurnMessages.filter(isAdvisorCard);
 			if (parkedAdvisorCards.length > 0) {
 				this.#pendingNextTurnMessages = this.#pendingNextTurnMessages.filter(m => !isAdvisorCard(m));
@@ -8579,7 +8591,8 @@ export class AgentSession {
 			for (const card of [...strandedAdvisorCards, ...parkedAdvisorCards]) {
 				this.#preserveAdvisorCard(card);
 			}
-		} finally {
+			// Asides that never reached the queue as cards are preserved too.
+			if (userInterrupt) this.#advisors.preserveQueuedAdvice();
 			this.#abortInProgress = false;
 			this.#drainStrandedQueuedMessages();
 		}

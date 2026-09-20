@@ -1542,7 +1542,9 @@ describe("AgentSession advisor toggle", () => {
 					note: `${prefix} note ${i}`,
 					severity: "concern",
 				});
-				expect(JSON.stringify(result.content)).toContain("Queued for the end of the turn");
+				// A concern raised mid-update is delivered live now; only the
+				// admission budget still gates it.
+				expect(JSON.stringify(result.content)).toContain("Delivered.");
 			}
 			const rejected = await tool.execute(`${prefix}-${budget + 1}`, {
 				note: `${prefix} note ${budget + 1}`,

@@ -62,6 +62,7 @@ import {
 	AdvisorTranscriptRecorder,
 	advisorTranscriptFilename,
 	buildAdvisorQuarantineSourceText,
+	boundAdvisorBatch,
 	compareAdvisorNotes,
 	formatAdvisorBatchContent,
 	getOrCreateAdvisorProviderSessionId,
@@ -450,6 +451,7 @@ export interface SessionAdvisorsHost {
 	onResponse: SimpleStreamOptions["onResponse"] | undefined;
 	onSseEvent: SimpleStreamOptions["onSseEvent"] | undefined;
 	isDisposed(): boolean;
+	isAgentConnected(): boolean;
 	abortInProgress(): boolean;
 	allowAgentInitiatedTurns(): boolean;
 	planModeState(): PlanModeState | undefined;
@@ -679,6 +681,9 @@ export class SessionAdvisors {
 			}
 			await Promise.all(waits);
 		} finally {
+			// Preserve asides that arrived after the loop's final poll, even when
+			// catch-up rejected or the terminal cleanup short-circuited.
+			if (terminalBoundary) this.preserveQueuedAdvice();
 			this.#advisorTerminalBoundaryOpen = false;
 			// Window closed: deliver everything buffered during flush + catch-up
 			// wait as one merged message (one steer at most, else one card).
@@ -760,6 +765,28 @@ export class SessionAdvisors {
 	dispose(): void {
 		this.#unsubscribeScope();
 		if (this.#advisors.length > 0) this.#stopAdvisorRuntime();
+	}
+	/**
+	 * Preserve advisor asides the primary loop never polled before a lifecycle
+	 * transition. Draining is destructive, so callers invoke this only from a
+	 * finally-safe path. While the agent is disconnected the queue must stay
+	 * intact: compaction reconnects and re-drains, and converting the notes to
+	 * cards here would strip them of their delivery chance.
+	 */
+	preserveQueuedAdvice(): void {
+		if (!this.#host.isAgentConnected()) return;
+		const notes = this.#host.yieldQueue.drainKind<AdvisorNote>("advisor");
+		if (notes.length === 0) return;
+		notes.sort(compareAdvisorNotes);
+		this.#host.preserveAdvisorCard({
+			role: "custom",
+			customType: "advisor",
+			display: true,
+			attribution: "agent",
+			timestamp: Date.now(),
+			content: formatAdvisorBatchContent(notes),
+			details: { notes } satisfies AdvisorMessageDetails,
+		} satisfies CustomMessage);
 	}
 
 	/** Reattach recorder feeds and resume work after a rolled-back or preserving transition. */
@@ -1695,8 +1722,12 @@ export class SessionAdvisors {
 		if (this.#advisorBoundaryNotes.length === 0) return;
 		// Newest turn first, then severity: the latest notes describe the current
 		// state of the work; older ones may already be resolved by it.
-		const notes = [...this.#advisorBoundaryNotes].sort(compareAdvisorNotes);
+		const merged = [...this.#advisorBoundaryNotes].sort(compareAdvisorNotes);
 		this.#advisorBoundaryNotes = [];
+		// A boundary merges several updates and turns, so the per-update budget
+		// does not bound it; apply the same number to the merged batch so the
+		// card stays readable instead of degenerating into "+17 more notes".
+		const notes: AdvisorNote[] = boundAdvisorBatch(merged, this.#advisorMaxNotesPerUpdate());
 		for (const n of notes) {
 			if (n.turn !== undefined && this.#advisorPrimaryTurnsCompleted > n.turn) {
 				n.turnsAgo = this.#advisorPrimaryTurnsCompleted - n.turn;

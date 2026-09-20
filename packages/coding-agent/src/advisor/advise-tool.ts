@@ -192,6 +192,31 @@ export function compareAdvisorNotes(a: AdvisorNote, b: AdvisorNote): number {
 	return advisorSeverityRank(b.severity) - advisorSeverityRank(a.severity);
 }
 
+/**
+ * Bound a merged batch to `limit` notes. `maxNotesPerUpdate` is an admission
+ * budget per advisor update, so a boundary batch that merges several updates
+ * and turns can far exceed it — that is how a single card ends up reading
+ * "20 notes … +17 more", where the tail is unreadable and mostly stale.
+ *
+ * Blockers are exempt: they are the notes that must never be silently dropped,
+ * so the batch grows past `limit` rather than lose one. Everything else is
+ * kept in {@link compareAdvisorNotes} order, which is newest turn first, so
+ * what survives describes the current state of the work.
+ */
+export function boundAdvisorBatch(notes: readonly AdvisorNote[], limit: number): AdvisorNote[] {
+	if (limit <= 0 || notes.length <= limit) return [...notes];
+	const kept: AdvisorNote[] = [];
+	const spill: AdvisorNote[] = [];
+	for (const note of notes) {
+		if (note.severity === "blocker" || kept.length < limit) kept.push(note);
+		else spill.push(note);
+	}
+	if (spill.length > 0) {
+		logger.debug("advisor batch truncated", { kept: kept.length, dropped: spill.length, limit });
+	}
+	return kept;
+}
+
 /** Admission acks: one line each — the advisor needs the verdict, not a policy essay. */
 const ADVISOR_ACK_SENT = "Delivered.";
 /** Held behind the in-progress primary turn; flushed when it completes. */
@@ -252,9 +277,10 @@ export class AdviseTool implements AgentTool<typeof adviseSchema, AdviseDetails>
 
 	/**
 	 * Start one advisor update: resets the guard's per-update budget and marks
-	 * whether the update reviews an in-progress primary turn. Non-blockers
-	 * emitted while in progress are withheld so partial work does not interrupt
-	 * the primary before it can finish its planned steps. Transitioning to a
+	 * whether the update reviews an in-progress primary turn. Nits emitted while
+	 * in progress are withheld so cosmetic feedback does not interrupt the
+	 * primary before it can finish its planned steps. Concerns are actionable and
+	 * route through the live aside channel at the next model step. Transitioning to a
 	 * completed update flushes the withheld backlog, oldest first — each note
 	 * was admitted when emitted, so the flush routes without re-admission and a
 	 * backlog of one note per originating update reaches the primary intact.
@@ -297,7 +323,7 @@ export class AdviseTool implements AgentTool<typeof adviseSchema, AdviseDetails>
 	): Promise<AgentToolResult<AdviseDetails>> {
 		const rank = advisorSeverityRank(args.severity);
 		const key = advisorNoteDedupeKey(args.note);
-		if (this.#inProgressUpdate && args.severity !== "blocker") {
+		if (this.#inProgressUpdate && args.severity === "nit") {
 			// Withheld, not delivered: reserve for the deterministic flush at the
 			// completed-update transition / terminal boundary.
 			const pending = this.#deferredNotes.find(item => item.key === key);
