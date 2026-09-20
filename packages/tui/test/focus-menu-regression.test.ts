@@ -70,10 +70,13 @@ describe("focus-changing menu teardown", () => {
 			tui.requestRender();
 			await term.waitForRender();
 
-			// Closing the menu must keep the focused tail at the terminal bottom,
-			// not move it to the top of a shorter logical frame.
-			expect(term.getViewport().map(line => line.trimEnd())).toEqual(["", "", "", "", "assistant", "prompt"]);
-			expect(term.getCursor()).toEqual({ row: 5, col: 6 });
+			// Closing the menu keeps the frame at its origin: the stale menu rows are
+			// cleared below it, and the focused tail follows the shorter logical
+			// frame. Re-anchoring it at the bottom would leave the four vacated
+			// rows blank above the frame, and the next overflow would scroll that
+			// band into native scrollback for good.
+			expect(term.getViewport().map(line => line.trimEnd())).toEqual(["assistant", "prompt", "", "", "", ""]);
+			expect(term.getCursor()).toEqual({ row: 1, col: 6 });
 		} finally {
 			tui.stop();
 		}

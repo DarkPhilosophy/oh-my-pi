@@ -324,13 +324,17 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
-	it("keeps a full-screen live frame bottom-anchored when a tool shrinks and grows", () => {
+	it("keeps a full-screen live frame at its origin when a tool shrinks and grows", () => {
 		const terminal = new CountingTerminal(30, 5);
 		const provider = new Provider({ viewport: ["tool-1", "tool-2", "tool-3", "tool-4", "editor"] });
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
 		const position = terminal.getBufferPosition();
 		try {
+			// Re-anchoring the shorter frame at the bottom would leave the vacated
+			// rows blank above it, and the next overflow would scroll that band
+			// into native scrollback. The frame keeps its origin and the freed
+			// rows fall below it, where the following growth reclaims them.
 			for (const viewport of [
 				["failed", "editor"],
 				["failed", "next", "editor"],
@@ -338,8 +342,8 @@ describe("terminal frame plans", () => {
 				provider.plan = { viewport };
 				tui.requestRender(true);
 				const visible = terminal.getViewport().map(row => row.trimEnd());
-				expect(visible.slice(-viewport.length)).toEqual(viewport);
-				expect(visible.slice(0, -viewport.length).every(row => row === "")).toBeTrue();
+				expect(visible.slice(0, viewport.length)).toEqual(viewport);
+				expect(visible.slice(viewport.length).every(row => row === "")).toBeTrue();
 				expect(terminal.getBufferPosition()).toEqual(position);
 			}
 		} finally {
@@ -896,7 +900,9 @@ describe("terminal frame plans", () => {
 		try {
 			provider.plan = { viewport: ["header", "editor"] };
 			tui.requestRender(true);
-			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["", "header", "editor"]);
+			// The shortened frame keeps its origin; the freed row trails it rather
+			// than opening a blank band above it.
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["header", "editor", ""]);
 			expect(terminal.writes.join("")).not.toMatch(/\x1b\[[23]J/);
 			provider.plan = {
 				history: { id: 1, rows: ["new"], kind: "replay" },

@@ -131,7 +131,7 @@ describe("composer inline shrink (#11007)", () => {
 		composer.stop();
 	});
 
-	it("keeps the editor pinned to the bottom after transient below-transcript chrome shrinks", async () => {
+	it("keeps the live frame in place after transient below-transcript chrome shrinks", async () => {
 		const h = makeHarness();
 		await h.scheduler.settle(h.terminal);
 		const before = h.terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
@@ -140,11 +140,16 @@ describe("composer inline shrink (#11007)", () => {
 		await cycleWidget(h);
 
 		const after = h.terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
-		// Regression: the editor used to strand ~24 blank rows below it after the
-		// shrink because retired transcript rows never returned to the live tail.
-		expect(after.findIndex(row => row.includes("EDITOR"))).toBe(ROWS - 1);
-		const lastContent = after.reduce((last, row, i) => (row.length > 0 ? i : last), -1);
-		expect(lastContent).toBe(ROWS - 1);
+		// Regression: the shrink used to re-anchor the shorter frame at the bottom
+		// and leave the 24 vacated rows blank *above* it, between committed
+		// history and the live frame. That band is what the next overflow scrolls
+		// into native scrollback for good. The frame keeps its origin instead, so
+		// the editor directly follows the last transcript row and the freed rows
+		// sit below the frame, where later growth reclaims them.
+		const editorRow = after.findIndex(row => row.includes("EDITOR"));
+		expect(after[editorRow - 1]).toBe(`${TRANSCRIPT_PREFIX}${TRANSCRIPT_ROWS - 1}`);
+		expect(hasBracketedBlankRun(after)).toBe(false);
+		expect(after.slice(editorRow + 1).every(row => row === "")).toBe(true);
 
 		h.composer.stop();
 	});
@@ -165,46 +170,34 @@ describe("composer inline shrink (#11007)", () => {
 		h.composer.stop();
 	});
 
-	// KNOWN FAILURE, now partial. A live-frame contraction erases from `previousTop`
-	// and re-anchors its shorter frame at `startTop`, leaving the vacated rows blank
-	// and resident; a later overflowing paint scrolls them into native scrollback,
-	// where they are permanent. Blank-top reclamation (see `#providerBlankTopRows`)
-	// removed the accumulation: this fixture used to strand four growing 23-row
-	// bands (scroll buffer 216 rows), and now strands one (150 rows). The residual
-	// band survives because bottom anchoring caps how far the origin may be pulled
-	// up when a paint commits history into a tiny live viewport.
-	// Rejected repairs: rebasing the frame to `previousTop` and deleting the vacated
-	// lines both break bottom anchoring (the editor stops being pinned to the last
-	// row, and deletion resurrects shifted rows above the frame); the forced history
-	// replay is O(entire transcript) and destroys native history. Closing the rest
-	// needs a provider capability to repaint a bounded slice of retained history
-	// into the vacated range; `TerminalFrameProvider` has no such operation today.
-	// Flip this to `it` once that lands.
-	it.failing(
-		"does not scroll erase-manufactured blank runs into native history while live content contracts",
-		async () => {
-			const h = makeHarness();
-			try {
+	// Regression for the black band users saw between scrollback and the live
+	// view. A contraction used to re-anchor the shorter frame at the bottom and
+	// leave the vacated rows blank and resident above it; the next overflowing
+	// paint then scrolled that band into native scrollback, where it is
+	// permanent, one fresh band per contraction. Keeping the frame origin on
+	// contraction removes the band at its source.
+	it("does not scroll erase-manufactured blank runs into native history while live content contracts", async () => {
+		const h = makeHarness();
+		try {
+			await h.scheduler.settle(h.terminal);
+			for (let iteration = 0; iteration < 4; iteration++) {
+				h.widget.rows = 24;
+				h.composer.ui.requestRender();
 				await h.scheduler.settle(h.terminal);
-				for (let iteration = 0; iteration < 4; iteration++) {
-					h.widget.rows = 24;
-					h.composer.ui.requestRender();
-					await h.scheduler.settle(h.terminal);
-					h.widget.rows = 0;
-					h.composer.ui.requestRender();
-					await h.scheduler.settle(h.terminal);
-					h.transcript.addChild({ render: () => [`Streamed transcript row ${iteration}`] });
-					h.composer.ui.requestRender();
-					await h.scheduler.settle(h.terminal);
-				}
-
-				const surface = h.terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
-				expect(hasBracketedBlankRun(surface)).toBe(false);
-			} finally {
-				h.composer.stop();
+				h.widget.rows = 0;
+				h.composer.ui.requestRender();
+				await h.scheduler.settle(h.terminal);
+				h.transcript.addChild({ render: () => [`Streamed transcript row ${iteration}`] });
+				h.composer.ui.requestRender();
+				await h.scheduler.settle(h.terminal);
 			}
-		},
-	);
+
+			const surface = h.terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
+			expect(hasBracketedBlankRun(surface)).toBe(false);
+		} finally {
+			h.composer.stop();
+		}
+	});
 
 	it("keeps the below-chrome baseline across a height resize while inline chrome is expanded", async () => {
 		const shorter = ROWS - 10;
@@ -229,9 +222,12 @@ describe("composer inline shrink (#11007)", () => {
 		await h.scheduler.settle(h.terminal);
 
 		const after = h.terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
-		expect(after.findIndex(row => row.includes("EDITOR"))).toBe(shorter - 1);
-		const lastContent = after.reduce((last, row, i) => (row.length > 0 ? i : last), -1);
-		expect(lastContent).toBe(shorter - 1);
+		// The shrink keeps the frame origin, so the editor follows the last
+		// transcript row directly and no vacated band opens above it.
+		const editorRow = after.findIndex(row => row.includes("EDITOR"));
+		expect(after[editorRow - 1]).toBe(`${TRANSCRIPT_PREFIX}${TRANSCRIPT_ROWS - 1}`);
+		expect(hasBracketedBlankRun(after)).toBe(false);
+		expect(after.slice(editorRow + 1).every(row => row === "")).toBe(true);
 
 		h.composer.stop();
 	});

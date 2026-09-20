@@ -3486,7 +3486,14 @@ export class TUI extends Container {
 						  this.#providerWindow.length > 0 &&
 						  (rows <= this.#providerWindow.length || this.#providerVisibleHistory.length === 0) &&
 						  previousTop + this.#providerWindow.length === height
-						? Math.max(0, height - rows)
+						? // Growth from the bottom edge moves the origin up so the frame
+							// still fits. Contraction keeps the origin: re-anchoring the
+							// shorter frame at the bottom would leave the vacated rows blank
+							// between committed history and the live frame, and the next
+							// overflowing paint would scroll that band into native
+							// scrollback for good. Vacated rows fall below the frame
+							// instead, where subsequent growth reclaims them.
+							Math.min(previousTop, Math.max(0, height - rows))
 						: geometryStable && (expansionRows > 0 || releasedExpansionRows > 0)
 							? Math.min(previousTop + releasedExpansionRows, Math.max(0, height - rows))
 							: Math.min(previousTop, Math.max(0, height - 1));
@@ -3642,8 +3649,9 @@ export class TUI extends Container {
 			if (this.#providerWindow.length > rows && newTop + rows < height) {
 				buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
 			}
-			// A diffable paint keeps the same origin and never writes above it, so
-			// any vacated blank region above `newTop` is still resident.
+			// A diffable paint keeps its origin and never writes above it, so the
+			// vacated region above `newTop`, if any, is still resident; the shared
+			// bookkeeping below carries it forward unchanged.
 		} else {
 			// This write scrolls when history + viewport overflow the screen; the
 			// terminal pushes the physical top rows into scrollback. Rows above the
@@ -3689,14 +3697,19 @@ export class TUI extends Container {
 				screenRow++;
 			}
 			if (newTop + rows < height) buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
-			// Track the blank region above the frame origin. A contraction vacates
-			// `[previousTop, startTop)`, and a later paint that re-anchors higher
-			// without writing history leaves everything above its origin blank too.
-			// Writing history there, or scrolling, consumes the region.
+		}
+		{
+			// Blank rows resident directly above the frame origin, as the region
+			// `[origin - n, origin)`. Before this paint it ended at `previousTop`; a
+			// contraction (`startTop > previousTop`) erases `[previousTop, startTop)`
+			// and extends it, an upward re-anchor (`startTop < previousTop`)
+			// overwrites its tail, and a scroll shifts it up by `pushed`, losing
+			// whatever crossed row 0 into native scrollback.
+			const pushed = diffable ? 0 : Math.max(0, startTop + preparedHistory.lines.length + rows - height);
+			const regionStart = previousTop - this.#providerBlankTopRows;
+			const resident = Math.max(0, startTop - pushed - Math.max(0, regionStart - pushed));
 			this.#providerBlankTopRows =
-				pushed > 0 || preparedHistory.lines.length > 0 || this.#providerWindow.length === 0
-					? 0
-					: Math.min(startTop, this.#providerBlankTopRows + Math.max(0, startTop - previousTop));
+				destructiveReset || retainedHistory !== undefined || this.#providerWindow.length === 0 ? 0 : resident;
 		}
 		const mutableTop = newTop + replayViewportRows;
 		const mutablePreparedLines = replayViewportRows > 0 ? prepared.lines.slice(replayViewportRows) : prepared.lines;
