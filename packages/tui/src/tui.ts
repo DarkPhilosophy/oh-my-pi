@@ -3704,12 +3704,20 @@ export class TUI extends Container {
 			// contraction (`startTop > previousTop`) erases `[previousTop, startTop)`
 			// and extends it, an upward re-anchor (`startTop < previousTop`)
 			// overwrites its tail, and a scroll shifts it up by `pushed`, losing
-			// whatever crossed row 0 into native scrollback.
+			// whatever crossed row 0 into native scrollback. History written this
+			// paint lands at `[startTop, newTop)`, between the region and the new
+			// origin; the count is only meaningful while the region touches the
+			// origin, so it is dropped rather than re-anchored over real rows.
 			const pushed = diffable ? 0 : Math.max(0, startTop + preparedHistory.lines.length + rows - height);
 			const regionStart = previousTop - this.#providerBlankTopRows;
 			const resident = Math.max(0, startTop - pushed - Math.max(0, regionStart - pushed));
 			this.#providerBlankTopRows =
-				destructiveReset || retainedHistory !== undefined || this.#providerWindow.length === 0 ? 0 : resident;
+				destructiveReset ||
+				retainedHistory !== undefined ||
+				preparedHistory.lines.length > 0 ||
+				this.#providerWindow.length === 0
+					? 0
+					: resident;
 		}
 		const mutableTop = newTop + replayViewportRows;
 		const mutablePreparedLines = replayViewportRows > 0 ? prepared.lines.slice(replayViewportRows) : prepared.lines;
