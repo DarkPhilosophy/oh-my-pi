@@ -60,10 +60,13 @@ import {
 	type AdvisorSeverity,
 	type AdvisorSyncBacklog,
 	AdvisorTranscriptRecorder,
+	advisorEvidenceText,
 	advisorTranscriptFilename,
+	applyAdvisorCuration,
 	buildAdvisorQuarantineSourceText,
 	boundAdvisorBatch,
 	compareAdvisorNotes,
+	curateAdvisorCandidates,
 	formatAdvisorBatchContent,
 	getOrCreateAdvisorProviderSessionId,
 	isAdvisorInterruptImmuneTurnActive,
@@ -582,6 +585,8 @@ export class SessionAdvisors {
 	 * simultaneous notes never force N separate cards or continuation turns.
 	 */
 	#advisorBoundaryNotes: AdvisorNote[] = [];
+	/** Bumped per curation request; a late result from a superseded batch is discarded. */
+	#advisorCuratorGeneration = 0;
 	/** Primary-turn count when the staleness header last shipped; `undefined`
 	 *  until the first merged delivery. Gates {@link ADVISOR_BOUNDARY_GUIDANCE}
 	 *  to at most once per {@link ADVISOR_BOUNDARY_GUIDANCE_TURNS} turns. */
@@ -1737,8 +1742,6 @@ export class SessionAdvisors {
 			this.#advisorBoundaryGuidanceLastTurn === undefined ||
 			this.#advisorPrimaryTurnsCompleted - this.#advisorBoundaryGuidanceLastTurn >= ADVISOR_BOUNDARY_GUIDANCE_TURNS;
 		if (showGuidance) this.#advisorBoundaryGuidanceLastTurn = this.#advisorPrimaryTurnsCompleted;
-		const batch = formatAdvisorBatchContent(notes, { currentTurn: this.#advisorPrimaryTurnsCompleted });
-		const content = showGuidance ? `${ADVISOR_BOUNDARY_GUIDANCE}\n${batch}` : batch;
 		// Snapshot the shared policy inputs once: they cannot change while this
 		// synchronous flush runs. `streaming` is forced false — the primary's turn
 		// IS final even though the loop still reports streaming during the
@@ -1767,7 +1770,85 @@ export class SessionAdvisors {
 				}) === "steer"
 			);
 		});
-		this.#deliverAdvisorBatch(notes, content, shouldSteer);
+		this.#curateThenDeliver(notes, showGuidance, shouldSteer);
+	}
+
+	/**
+	 * Curate a merged batch, then deliver it. Several advisors reviewing the
+	 * same work routinely raise one issue in several wordings, and the
+	 * per-advisor text dedupe in the emission guard cannot see that they match;
+	 * the curator collapses them into the highest-severity original, attributes
+	 * the rest, and drops notes the primary's recent work already resolved.
+	 *
+	 * Blockers never enter curation — they are delivered exactly as they are
+	 * today — and curation is fail-open: no judgment backend, an error, or the
+	 * timeout all deliver the uncurated batch, so advice is never lost to it.
+	 */
+	#curateThenDeliver(notes: AdvisorNote[], showGuidance: boolean, steer: boolean): void {
+		const deliver = (batch: AdvisorNote[]): void => {
+			const rendered = formatAdvisorBatchContent(batch, { currentTurn: this.#advisorPrimaryTurnsCompleted });
+			this.#deliverAdvisorBatch(batch, showGuidance ? `${ADVISOR_BOUNDARY_GUIDANCE}\n${rendered}` : rendered, steer);
+		};
+		const curatable = notes.filter(note => note.severity !== "blocker");
+		if (curatable.length < 2 || this.#host.settings.get("advisor.curator") === "off") {
+			deliver(notes);
+			return;
+		}
+		const registry = this.#host.modelRegistry;
+		const generation = ++this.#advisorCuratorGeneration;
+		const timeoutMs = this.#host.settings.get("advisor.curatorTimeoutMs");
+		void curateAdvisorCandidates({
+			settings: this.#host.settings,
+			registry,
+			candidates: curatable.map((note, index) => ({
+				id: String(index),
+				note: note.note,
+				severity: note.severity,
+				advisor: note.advisor,
+				coveredTurn: note.turn ?? this.#advisorPrimaryTurnsCompleted,
+			})),
+			context: {
+				revision: generation,
+				currentTurn: this.#advisorPrimaryTurnsCompleted,
+				recentPrimaryMessages: this.#recentPrimaryEvidence(),
+			},
+			signal: AbortSignal.timeout(typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : 250),
+		}).then(
+			result => {
+				// A newer boundary already superseded this batch: its own curation
+				// owns delivery, so dropping here would duplicate the notes.
+				if (generation !== this.#advisorCuratorGeneration) return;
+				deliver(applyAdvisorCuration(notes, curatable, result.decisions));
+			},
+			error => {
+				logger.debug("advisor curation failed", { error: error instanceof Error ? error.message : String(error) });
+				if (generation === this.#advisorCuratorGeneration) deliver(notes);
+			},
+		);
+	}
+
+	/**
+	 * The primary's recent work, as the curator's evidence for whether a note is
+	 * already addressed. Bounded by `advisor.curatorContextChars` and taken from
+	 * the tail, because the latest turns are what could have resolved the note.
+	 */
+	#recentPrimaryEvidence(): string {
+		const limit = this.#host.settings.get("advisor.curatorContextChars");
+		const budget = typeof limit === "number" && limit > 0 ? limit : 12_000;
+		const chunks: string[] = [];
+		let used = 0;
+		const messages = this.#host.agent.state.messages;
+		for (let index = messages.length - 1; index >= 0 && used < budget; index--) {
+			const message = messages[index];
+			if (message === undefined || isAdvisorCard(message)) continue;
+			const text = advisorEvidenceText(message);
+			if (text.length === 0) continue;
+			const slice = text.slice(0, Math.max(0, budget - used));
+			chunks.push(slice);
+			used += slice.length;
+		}
+		const evidence = chunks.reverse().join("\n");
+		return this.#host.obfuscator?.obfuscate(evidence) ?? evidence;
 	}
 
 	/** Whether the advisor that produced `sourceName` reviews only at agent end.

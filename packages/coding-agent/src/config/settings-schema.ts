@@ -472,6 +472,58 @@ export const SETTINGS_SCHEMA = {
 			condition: "advisorEnabled",
 		},
 	},
+	"advisor.curator": {
+		type: "string",
+		default: "auto",
+		enum: ["auto", "off"],
+		ui: {
+			tab: "model",
+			group: "Advisor",
+			label: "Advisor Curator",
+			description:
+				"Curate advisor notes before they reach the agent: collapse the same issue raised by several advisors into one note and drop what the agent already fixed. Falls through unchanged when no judgment backend is available.",
+			options: [
+				{ value: "auto", label: "Auto", description: "Curate when a judgment backend is available. Default." },
+				{ value: "off", label: "Off", description: "Deliver every admitted note as-is." },
+			],
+			condition: "advisorEnabled",
+		},
+	},
+	"advisor.curatorTimeoutMs": {
+		type: "number",
+		default: 250,
+		ui: {
+			tab: "model",
+			group: "Advisor",
+			label: "Advisor Curator Timeout",
+			description:
+				"Wall-clock budget for one curation pass. On timeout the notes are delivered uncurated, so this never delays advice.",
+			options: [
+				{ value: "100", label: "100 ms" },
+				{ value: "250", label: "250 ms", description: "Default." },
+				{ value: "500", label: "500 ms" },
+				{ value: "1000", label: "1 s" },
+			],
+			condition: "advisorEnabled",
+		},
+	},
+	"advisor.curatorContextChars": {
+		type: "number",
+		default: 12000,
+		ui: {
+			tab: "model",
+			group: "Advisor",
+			label: "Advisor Curator Context",
+			description:
+				"How much of the agent's recent work the curator reads when judging whether a note is already addressed.",
+			options: [
+				{ value: "6000", label: "6k chars" },
+				{ value: "12000", label: "12k chars", description: "Default." },
+				{ value: "24000", label: "24k chars" },
+			],
+			condition: "advisorEnabled",
+		},
+	},
 	shellPath: { type: "string", default: undefined },
 	"git.enabled": {
 		type: "boolean",
