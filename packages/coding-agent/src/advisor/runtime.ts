@@ -14,7 +14,12 @@ import {
 	formatSessionHistoryMarkdown,
 	PRIMARY_CONTEXT_CUSTOM_TYPES,
 } from "../session/session-history-format";
-import { ADVISOR_RENDER_OPTIONS, renderAdvisorDeltaChunks } from "./delta-split";
+import {
+	ADVISOR_RENDER_OPTIONS,
+	type RenderAdvisorDeltaChunksOptions,
+	renderAdvisorDeltaChunks,
+	renderAdvisorDeltaChunksSliced,
+} from "./delta-split";
 import { fingerprintMessage } from "./message-fingerprint";
 
 /**
@@ -832,41 +837,75 @@ export class AdvisorRuntime {
 		// splitting here never double-folds or leaks hidden messages.
 		const delta = preparedMessages;
 		if (delta.length === 0) return null;
-
 		const obfuscator = this.host.obfuscator;
-		// Side effects the pure renderer cannot own: collect secrets, scrub the
-		// advisor's own history and refresh pending placeholder prefixes (shared
-		// helper — see #collectAdvisorSecrets; idempotent for this drain's
-		// single-block pass over the same prepared list). The probe is a full
-		// synchronous render of the batch, so it only runs when there is
-		// something for it to find; without secrets it was pure UI-thread cost.
 		if (obfuscator?.hasSecrets()) {
 			pushLoopPhase("advisor:secret-probe");
 			try {
-				const probeMd = formatSessionHistoryMarkdown(delta, {
-					...ADVISOR_RENDER_OPTIONS,
-					includeThinking: this.#includeThinking,
-				});
-				this.#collectAdvisorSecrets(obfuscator, delta, probeMd);
+				this.#probeSecrets(obfuscator, delta);
 			} finally {
 				popLoopPhase();
 			}
 		}
+		return renderAdvisorDeltaChunks(this.#chunkRenderDelta(delta), this.#chunkRenderOptions(wip));
+	}
 
-		// Message-level obfuscation mirrors the old #formatRawDelta path EXACTLY:
-		// only primary-context custom messages are mapped (tool args, details.diff,
-		// structured fields), because the old path's contract is whole-delta text
-		// obfuscation as the final pass. Expanding to every role would mint
-		// different placeholders and break byte-equivalence with the old render.
-		const renderDelta = obfuscator?.hasSecrets() ? this.#obfuscatePrimaryContextMessages(obfuscator, delta) : delta;
+	/**
+	 * Large-batch twin of {@link #formatRawDeltaMessageChunks}: the secret probe
+	 * renders through the yielding slicer and the split yields between message
+	 * groups, so a long delta no longer freezes the UI for seconds after every
+	 * primary turn. Output is identical to the synchronous path.
+	 */
+	async #formatRawDeltaMessageChunksSliced(
+		preparedMessages: AgentMessage[],
+		wip: boolean,
+		epoch: number,
+	): Promise<AgentMessage[] | null> {
+		const delta = preparedMessages;
+		if (delta.length === 0) return null;
+		const obfuscator = this.host.obfuscator;
+		if (obfuscator?.hasSecrets()) {
+			const parts = await this.#formatDeltaSlices(delta, epoch);
+			if (parts === null) return null;
+			this.#collectAdvisorSecrets(obfuscator, delta, parts.join("\n"));
+		}
+		return renderAdvisorDeltaChunksSliced(
+			this.#chunkRenderDelta(delta),
+			this.#chunkRenderOptions(wip),
+			RENDER_CHUNK_MESSAGES,
+			() => this.disposed || this.#epoch !== epoch,
+		);
+	}
 
-		const chunks = renderAdvisorDeltaChunks(renderDelta, {
+	/** Side effects the pure renderer cannot own: collect secrets, scrub the
+	 *  advisor's own history and refresh pending placeholder prefixes. The probe
+	 *  is a full render of the batch, so it runs only when there is something
+	 *  to find; without secrets it was pure UI-thread cost. */
+	#probeSecrets(obfuscator: SecretObfuscator, delta: AgentMessage[]): void {
+		const probeMd = formatSessionHistoryMarkdown(delta, {
+			...ADVISOR_RENDER_OPTIONS,
+			includeThinking: this.#includeThinking,
+		});
+		this.#collectAdvisorSecrets(obfuscator, delta, probeMd);
+	}
+
+	// Message-level obfuscation mirrors the old #formatRawDelta path EXACTLY:
+	// only primary-context custom messages are mapped (tool args, details.diff,
+	// structured fields), because the old path's contract is whole-delta text
+	// obfuscation as the final pass. Expanding to every role would mint
+	// different placeholders and break byte-equivalence with the old render.
+	#chunkRenderDelta(delta: AgentMessage[]): AgentMessage[] {
+		const obfuscator = this.host.obfuscator;
+		return obfuscator?.hasSecrets() ? this.#obfuscatePrimaryContextMessages(obfuscator, delta) : delta;
+	}
+
+	#chunkRenderOptions(wip: boolean): RenderAdvisorDeltaChunksOptions {
+		const obfuscator = this.host.obfuscator;
+		return {
 			wip,
 			includeThinking: this.#includeThinking,
 			obfuscator: obfuscator?.hasSecrets() ? obfuscator : undefined,
 			advisorRegexSecretValues: this.#advisorRegexSecretValues,
-		});
-		return chunks;
+		};
 	}
 
 	#formatRawDelta(rawMessages: AgentMessage[], wip = false, updateSeenContext = true): string | null {
@@ -1685,7 +1724,18 @@ export class AdvisorRuntime {
 					// renderer cannot split (e.g. empty delta). The split is
 					// byte-equivalent to the old single-block render (equivalence
 					// tested), so the advisor sees identical context.
-					const splitMessages = this.#formatRawDeltaMessageChunks(preparedMessages, wip);
+					// A batch above the slice budget goes through the yielding split;
+					// the small path stays synchronous so a prompt leaves in the same
+					// microtask it always did.
+					const largeSplit =
+						preparedMessages.length > RENDER_CHUNK_MESSAGES ||
+						deltaExceedsSize(preparedMessages, 0, FAST_RENDER_MAX_CHARS);
+					const splitMessages = largeSplit
+						? await this.#formatRawDeltaMessageChunksSliced(preparedMessages, wip, epoch)
+						: this.#formatRawDeltaMessageChunks(preparedMessages, wip);
+					// The yield opened a second staleness window after the check at the
+					// loop head; a batch invalidated meanwhile must not be prompted.
+					if (this.disposed || this.#epoch !== epoch) continue;
 					const promptInput: string | AgentMessage[] = splitMessages ?? batch;
 					const prompt = this.agent.prompt(promptInput);
 					this.#promptInFlight = prompt;
