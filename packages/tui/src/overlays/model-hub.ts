@@ -14,6 +14,7 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
+import { modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
 import { providerEntry } from "@oh-my-pi/pi-catalog/compat/providers";
 import type { ModelKind } from "@oh-my-pi/pi-catalog/types";
 import type { Component, TUI } from "../tui";
@@ -1153,14 +1154,28 @@ export class ModelHubComponent implements Component {
   }
   | undefined {
   const trimmed = raw.trim();
-  const parse = (pattern: string) => parseModelString(pattern, { allowMaxSuffix: true, allowAutoAlias: true, isLiteralModelId: (provider, id) => this.#registry.find(provider, id) !== undefined });
+  const parse = (pattern: string) => {
+   const separator = pattern.indexOf("/");
+   if (separator > 0) {
+    const exact = this.#registry.find(pattern.slice(0, separator), pattern.slice(separator + 1));
+    if (exact) return { provider: exact.provider, id: exact.id };
+   }
+   return parseModelString(pattern, {
+    allowMaxSuffix: true,
+    allowAutoAlias: true,
+    isLiteralModelId: (provider, id) => this.#registry.find(provider, id) !== undefined,
+   });
+  };
   const literal = parse(trimmed);
   if (literal && this.#registry.find(literal.provider, literal.id)) return { ...literal, upstream: undefined };
   const routing = splitUpstreamRouting(trimmed);
   if (!routing) return literal ? { ...literal, upstream: undefined } : undefined;
   const parsed = parse(routing.base.trim());
   if (!parsed) return undefined;
-  return parsed ? { ...parsed, upstream: routing.upstream } : undefined
+  const model = this.#registry.find(parsed.provider, parsed.id);
+  return model && (modelMatchesHost(model, "openrouter") || modelMatchesHost(model, "vercelAIGateway"))
+   ? { ...parsed, upstream: routing.upstream }
+   : undefined;
  }
 
  /**
