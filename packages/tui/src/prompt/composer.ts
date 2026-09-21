@@ -413,6 +413,13 @@ export class Composer implements TerminalFrameProvider {
 		const chromeInsertionRows = temporaryEditorVisible
 			? Math.max(0, chromeRows - (this.#chromeRowsWithoutAutocomplete ?? chromeRows))
 			: 0;
+		// One paint, one render per block: the history offer, transient
+		// measurement and live viewport below all walk the live entries, and the
+		// transcript memoizes each entry for this frame between beginPaint and
+		// endPaint (closed in the finally at the end of this method).
+		const now = performance.now();
+		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
+		transcript.beginPaint(frame);
 		pushLoopPhase("ui:render:compose:history");
 		let history: { id: number; rows: readonly string[]; kind: "append" | "replay" } | undefined;
 		try {
@@ -425,8 +432,6 @@ export class Composer implements TerminalFrameProvider {
 		const before = [...headerRows, ...preRoots];
 		this.#viewportTranscript = transcript;
 		this.#viewportTranscriptStart = before.length;
-		const now = performance.now();
-		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
 		const liveRows = Math.max(0, rows - before.length - after.length);
 		pushLoopPhase("ui:render:compose:transient");
 		let transientRows = 0;
@@ -442,11 +447,14 @@ export class Composer implements TerminalFrameProvider {
 			// transcript must keep retiring rows or the tail stops advancing.
 			Math.min(transientRows, Math.max(0, rows - 1));
 		pushLoopPhase("ui:render:compose:live");
-		let liveViewport: ReturnType<TranscriptContainer["renderLiveViewport"]>;
+		let liveViewport: { rows: readonly string[]; borrowableRows?: number };
 		try {
 			liveViewport = transcript.renderLiveViewport(width, liveRows, frame);
 		} finally {
 			popLoopPhase();
+			// Last transcript walk of this paint; anything rendered after this
+			// must see fresh content, not this frame's memo.
+			transcript.endPaint();
 		}
 		const active = liveViewport.rows;
 		const composed = [...before, ...active, ...after];

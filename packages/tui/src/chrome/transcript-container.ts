@@ -98,6 +98,20 @@ interface TranscriptEntry {
 	 * state for emitted-row slicing but never emits another mid-stream row.
 	 */
 	stableFrozen: boolean;
+	/**
+	 * One render per frame. Composition walks the live entries several times
+	 * per paint (transient measurement, viewport render, history offer, row
+	 * count), and without this each walk re-rendered every live block - a cost
+	 * that grew with the session and froze the UI for seconds on long ones.
+	 * Keyed on the frame OBJECT, not its tick: a tick is an 80 ms bucket and
+	 * two paints can share one while a streaming block changed between them.
+	 * Every `renderFrame` builds a fresh frame object, so identity means "this
+	 * exact paint". Width and allocation complete the key because different
+	 * walks shape the same block differently.
+	 */
+	frameMemo?: { frame: AnimationFrame; width: number; allocation: number; rows: readonly string[] };
+	/** Allocation most recently applied through `#setAllocation`. */
+	allocation: number;
 }
 
 type RetirementPolicy = "pressure" | "flush";
@@ -183,6 +197,8 @@ export class TranscriptContainer extends Container {
 	#replayRequested = false;
 	#toolActivityVisible = true;
 	#lastFrame: AnimationFrame = { tick: 0, now: 0 };
+	/** The paint currently being composed, between beginPaint and endPaint; scopes the per-entry render memo. */
+	#paintFrame: AnimationFrame | undefined;
 	#liveViewport: LiveViewportFrame = { rows: [], capacity: 0, physicalRows: 0 };
 	// Start rows from the last full render(), keyed by child component (transcript deep-links).
 	#childStartRows = new Map<Component, number>();
@@ -213,6 +229,7 @@ export class TranscriptContainer extends Container {
 			stableRowCountByWidth: new Map(),
 			emitted: 0,
 			stableFrozen: false,
+			allocation: Number.POSITIVE_INFINITY,
 		});
 	}
 
@@ -279,7 +296,7 @@ export class TranscriptContainer extends Container {
 		let index = 0;
 		for (; index < this.#entries.length; index++) {
 			const entry = this.#entries[index]!;
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			this.#setAllocation(entry, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const block = trimBlankEdges(entry.component.render(width));
 			if (block.length === 0) continue;
 			const start = cursor > 0 ? cursor + 1 : 0;
@@ -315,7 +332,7 @@ export class TranscriptContainer extends Container {
 		let cursor = 0;
 		for (let index = start; index < this.#entries.length && cursor < borrowed.length; index++) {
 			const entry = this.#entries[index]!;
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			this.#setAllocation(entry, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const offset = this.#renderStablePrefix(entry, entry.emitted, width).length;
 			const block = this.#renderEntry(entry, width).slice(offset);
 			if (block.length === 0) continue;
@@ -423,6 +440,23 @@ export class TranscriptContainer extends Container {
 	}
 
 	/**
+	 * Open a composition: every entry rendered until {@link endPaint} is
+	 * memoized for this exact frame, so the history offer, transient
+	 * measurement, row count and live viewport walks of one paint render each
+	 * block once. Outside a paint every call renders fresh.
+	 */
+	beginPaint(frame: AnimationFrame): void {
+		// A new paint supersedes any earlier one, including a paint whose walk
+		// threw before reaching endPaint: its memo keyed a different frame object
+		// and can never be hit again, so no stale rows can leak across paints.
+		this.#paintFrame = frame;
+	}
+
+	endPaint(): void {
+		this.#paintFrame = undefined;
+	}
+
+	/**
 	 * Per-block breakdown of {@link transientRowCount}, for render debugging:
 	 * which live block currently holds back how many rows. When a physical
 	 * allocation is supplied, mutable blocks are first shaped for that same
@@ -444,9 +478,9 @@ export class TranscriptContainer extends Container {
 				entry.state === "active" &&
 				(entry.component as TranscriptPresentationTarget).setTranscriptAllocation !== undefined
 			) {
-				this.#setAllocation(entry.component, allocation, frame);
+				this.#setAllocation(entry, allocation, frame);
 			}
-			const rows = this.#renderEntry(entry, width).length;
+			const rows = this.#renderEntry(entry, width, frame).length;
 			if (rows > 0) blocks.push({ label: entry.component.constructor.name, rows });
 		}
 		return blocks;
@@ -540,7 +574,7 @@ export class TranscriptContainer extends Container {
 		this.#enterFrame(width);
 		let total = 0;
 		for (const { entry, index } of this.#liveEntries()) {
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			this.#setAllocation(entry, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const rendered = this.#renderEntry(entry, width);
 			const block = rendered.slice(this.#projectedEmittedRowCount(entry, index, width));
 			if (block.length > 0) total += block.length + (total > 0 ? 1 : 0);
@@ -587,9 +621,9 @@ export class TranscriptContainer extends Container {
 			const mutableTool =
 				entry.state === "active" &&
 				(entry.component as TranscriptPresentationTarget).setTranscriptAllocation !== undefined;
-			this.#setAllocation(entry.component, mutableTool ? rows : Number.MAX_SAFE_INTEGER, frame);
+			this.#setAllocation(entry, mutableTool ? rows : Number.MAX_SAFE_INTEGER, frame);
 			const offset = this.#projectedEmittedRowCount(entry, index, width);
-			const rendered = this.#renderEntry(entry, width).slice(offset);
+			const rendered = this.#renderEntry(entry, width, frame).slice(offset);
 			if (rendered.length === 0) continue;
 			if (output.length > 0) {
 				output.push("");
@@ -709,7 +743,7 @@ export class TranscriptContainer extends Container {
 		let visible = 0;
 		for (let index = 0; index < live.length; index++) {
 			const candidate = live[index]!;
-			this.#setAllocation(candidate.entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			this.#setAllocation(candidate.entry, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const renderedEntry = this.#renderEntry(candidate.entry, width);
 			const rows = renderedEntry.slice(
 				this.#renderStablePrefix(candidate.entry, candidate.entry.emitted, width).length,
@@ -860,7 +894,7 @@ export class TranscriptContainer extends Container {
 		const rows: string[] = [];
 		for (let index = this.#entries.length - 1; index >= 0; index--) {
 			const entry = this.#entries[index]!;
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			this.#setAllocation(entry, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const block = trimBlankEdges(entry.component.render(width));
 			if (block.length === 0) continue;
 			if (rows.length > 0) rows.unshift("");
@@ -876,7 +910,7 @@ export class TranscriptContainer extends Container {
 		this.#childStartRows.clear();
 		const rows: string[] = [];
 		for (const entry of this.#entries) {
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			this.#setAllocation(entry, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const block = this.#renderEntry(entry, width);
 			if (block.length === 0) continue;
 			if (rows.length > 0) rows.push("");
@@ -891,7 +925,27 @@ export class TranscriptContainer extends Container {
 		return this.#childStartRows.get(child);
 	}
 
-	#renderEntry(entry: TranscriptEntry, width: number): readonly string[] {
+	/**
+	 * Render one entry. With `frame` supplied the result is memoized for that
+	 * exact paint, so the transient-measurement and live-viewport walks of one
+	 * composition share a single render per block. Without a frame - direct
+	 * `render()`, batch peeks, row counts - the entry is rendered fresh, which
+	 * is both correct (content may have changed since any paint) and free (those
+	 * paths visit each entry once).
+	 */
+	#renderEntry(entry: TranscriptEntry, width: number, explicitFrame?: AnimationFrame): readonly string[] {
+		const frame = explicitFrame ?? this.#paintFrame;
+		if (frame === undefined) return this.#renderEntryUncached(entry, width);
+		const memo = entry.frameMemo;
+		if (memo !== undefined && memo.frame === frame && memo.width === width && memo.allocation === entry.allocation) {
+			return memo.rows;
+		}
+		const rendered = this.#renderEntryUncached(entry, width);
+		entry.frameMemo = { frame, width, allocation: entry.allocation, rows: rendered };
+		return rendered;
+	}
+
+	#renderEntryUncached(entry: TranscriptEntry, width: number): readonly string[] {
 		const rendered = trimBlankEdges(entry.component.render(width));
 		if (entry.mode === "mutable" || entry.stableFrozen) return rendered;
 		const appendOnly = entry.component as Component & AppendOnlyTranscriptBlock;
@@ -999,7 +1053,7 @@ export class TranscriptContainer extends Container {
 		const rows: string[] = [];
 		for (let index = start; index < end; index++) {
 			const entry = this.#entries[index]!;
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			this.#setAllocation(entry, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			// Only the range head is sliced by its emitted stable prefix; every other
 			// entry renders whole, so the append-only verification pass (a second
 			// full render of the block's stable prefix) is skipped for them. This
@@ -1020,7 +1074,7 @@ export class TranscriptContainer extends Container {
 		const rows = Array.from(this.#renderRange(0, this.#frontier, width, true));
 		const head = this.#entries[this.#frontier];
 		if (head !== undefined && head.emitted > 0) {
-			this.#setAllocation(head.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			this.#setAllocation(head, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			this.#renderEntry(head, width);
 			rows.push(...this.#renderStablePrefix(head, head.emitted, width));
 		}
@@ -1031,7 +1085,7 @@ export class TranscriptContainer extends Container {
 		while (this.#frontier < this.#entries.length) {
 			const entry = this.#entries[this.#frontier]!;
 			if (entry.mode !== "appendOnly" || entry.state !== "settled") return;
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			this.#setAllocation(entry, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const rendered = this.#renderEntry(entry, width);
 			if (entry.emitted !== entry.stableRows.length) return;
 			if (this.#renderStablePrefix(entry, entry.emitted, width).length !== rendered.length) return;
@@ -1046,8 +1100,9 @@ export class TranscriptContainer extends Container {
 		this.#replayRequested = false;
 	}
 
-	#setAllocation(component: Component, rows: number, frame: AnimationFrame): void {
-		(component as Component & TranscriptPresentationTarget).setTranscriptAllocation?.(rows, frame);
+	#setAllocation(entry: TranscriptEntry, rows: number, frame: AnimationFrame): void {
+		entry.allocation = rows;
+		(entry.component as Component & TranscriptPresentationTarget).setTranscriptAllocation?.(rows, frame);
 	}
 
 	#settleFinalized(): void {
@@ -1086,6 +1141,7 @@ export class TranscriptContainer extends Container {
 					stableRowCountByWidth: new Map(),
 					emitted: 0,
 					stableFrozen: false,
+					allocation: Number.POSITIVE_INFINITY,
 				},
 		);
 		this.#frontier = this.#entries.findIndex(entry => entry.state !== "committed");
