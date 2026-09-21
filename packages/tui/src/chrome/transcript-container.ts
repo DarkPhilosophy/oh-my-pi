@@ -970,25 +970,35 @@ export class TranscriptContainer extends Container {
 	 * terminal widens.
 	 */
 	#holdPeakHeight(entry: TranscriptEntry, width: number, whole: readonly string[], offset: number): readonly string[] {
-		const live = whole.slice(offset);
+		// Runs for every live entry on every walk of every frame, so it must not
+		// copy unless it has to: slice only when there is an emitted prefix, and
+		// build a padded array only when the block is actually short of its peak.
+		const liveLength = whole.length - offset;
 		// Held through completion: a finished card keeps the size it had while
 		// running for as long as it stays in the live region. Only leaving the
 		// region (commit to history) releases it - history carries the real rows.
-		if (entry.state === "committed" || live.length === 0) {
+		if (entry.state === "committed" || liveLength <= 0) {
 			entry.peakLiveRows = undefined;
-			return live;
+			return offset === 0 ? whole : whole.slice(offset);
 		}
 		// The peak is the block's WHOLE height. Rows leaving the live suffix
 		// because they were emitted to history are not a contraction of the
 		// card, so the pad is whatever the whole block is short of its peak.
-		const peak = entry.peakLiveRows?.width === width ? Math.max(entry.peakLiveRows.rows, whole.length) : whole.length;
-		entry.peakLiveRows = { width, rows: peak };
+		const previous = entry.peakLiveRows;
+		const peak =
+			previous !== undefined && previous.width === width ? Math.max(previous.rows, whole.length) : whole.length;
+		if (previous === undefined || previous.width !== width || previous.rows !== peak) {
+			entry.peakLiveRows = { width, rows: peak };
+		}
 		// Content never lowers the card, but the screen can: when the live budget
 		// shrinks (the editor grew), a mutable card is squeezed to its allocation
 		// so the frame still fits, and holding the old peak would overflow it.
-		const target = Math.min(peak, Number.isFinite(entry.allocation) ? Math.max(0, entry.allocation) : peak);
-		if (whole.length >= target) return live;
-		return [...live, ...Array.from({ length: target - whole.length }, () => "")];
+		const target = Number.isFinite(entry.allocation) ? Math.min(peak, Math.max(0, entry.allocation)) : peak;
+		if (whole.length >= target) return offset === 0 ? whole : whole.slice(offset);
+		const padded: string[] = new Array(liveLength + (target - whole.length));
+		for (let i = 0; i < liveLength; i++) padded[i] = whole[offset + i]!;
+		for (let i = liveLength; i < padded.length; i++) padded[i] = "";
+		return padded;
 	}
 
 	#renderEntryUncached(entry: TranscriptEntry, width: number): readonly string[] {

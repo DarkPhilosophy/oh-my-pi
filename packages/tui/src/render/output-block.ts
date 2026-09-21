@@ -293,11 +293,27 @@ export class CachedOutputBlock {
 			for (const s of options.sections) {
 				h.optional(s.label);
 				h.bool(s.separator ?? false);
-				for (const line of s.lines) {
-					h.str(line);
-				}
+				h.u64(sectionLinesDigest(s.lines));
 			}
 		}
 		return h.digest();
 	}
+}
+
+/**
+ * Digest of one section's lines, memoized by array identity. Callers hand a
+ * fresh options object to every render, so the reference fast path above
+ * rarely hits, and hashing every output line on every frame was a measurable
+ * share of a streaming tool card's paint. The line arrays themselves are
+ * usually reused between frames, so their digest can be.
+ */
+const sectionDigests = new WeakMap<readonly string[], bigint>();
+function sectionLinesDigest(lines: readonly string[]): bigint {
+	const memo = sectionDigests.get(lines);
+	if (memo !== undefined) return memo;
+	const h = new Hasher();
+	for (const line of lines) h.str(line);
+	const digest = h.digest();
+	sectionDigests.set(lines, digest);
+	return digest;
 }
