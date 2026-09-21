@@ -338,11 +338,20 @@ const PREVIEW_WINDOW_RESERVED_ROWS = 20;
 const PREVIEW_WINDOW_MIN_LINES = 6;
 /** Assumed viewport when rows are unknown (non-TTY, tests). */
 const PREVIEW_WINDOW_FALLBACK_ROWS = 30;
+/**
+ * Ceiling on the collapsed tail window. Scaling it with the terminal meant a
+ * 100-row terminal showed 80-row previews of every streaming command, code
+ * cell and diff, and each streamed chunk re-rendered and re-diffed all of it
+ * while the card's height swung with the content - the "rows up, rows down"
+ * churn during eval. A collapsed preview is a glimpse, not a viewport; the
+ * full body is one ctrl+o away.
+ */
+const PREVIEW_WINDOW_MAX_LINES = 16;
 
 /** Tail-window height for collapsed command/code previews. */
 export function previewWindowRows(): number {
 	const rows = process.stdout.rows || PREVIEW_WINDOW_FALLBACK_ROWS;
-	return Math.max(PREVIEW_WINDOW_MIN_LINES, rows - PREVIEW_WINDOW_RESERVED_ROWS);
+	return Math.min(PREVIEW_WINDOW_MAX_LINES, Math.max(PREVIEW_WINDOW_MIN_LINES, rows - PREVIEW_WINDOW_RESERVED_ROWS));
 }
 
 /**
