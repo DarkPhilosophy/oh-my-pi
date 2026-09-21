@@ -3,9 +3,10 @@ import { CombinedAutocompleteProvider, Container, CURSOR_MARKER, Text } from "@o
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";
-import { Composer } from "../src/modes/composer";
-import { ModelPickerComponent } from "../src/modes/components/model-picker";
-import { TranscriptContainer } from "../src/modes/components/transcript-container";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { ModelPickerComponent } from "@oh-my-pi/pi-tui/overlays/model-picker";
+import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { createModelBrowserSource } from "../src/modes/model-browser-source";
 import { SelectorController } from "../src/modes/controllers/selector-controller";
 import type { InteractiveModeContext } from "../src/modes/types";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
@@ -81,7 +82,7 @@ it.each([
 		};
 		const picker = new ModelPickerComponent(
 			composer.ui,
-			Settings.isolated(),
+			createModelBrowserSource(Settings.isolated()),
 			registry,
 			[],
 			{
