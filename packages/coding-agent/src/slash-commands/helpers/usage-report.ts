@@ -3,8 +3,8 @@ import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
 import type { SlashCommandRuntime } from "../types";
 import { reportMatchesActiveAccount } from "./active-oauth-account";
-import { type AccountLabel, createAccountMasker, usageIdentityKey } from "../../modes/utils/usage-mask";
-import { formatDuration, formatProviderName, renderAsciiBar } from "./format";
+import { type AccountLabel, createAccountMasker, usageIdentityKey } from "@oh-my-pi/pi-tui/overlays/usage-mask";
+import { formatCoarseDuration, formatProviderName, renderAsciiBar } from "@oh-my-pi/pi-tui/chrome/format";
 function formatWindowSuffix(label: string, windowLabel: string | undefined): string {
 	if (!windowLabel) return "";
 	const normalizedLabel = label.toLowerCase();
