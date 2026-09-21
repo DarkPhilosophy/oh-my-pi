@@ -14,7 +14,7 @@ import {
 	type ViewportSize,
 } from "../tui";
 import { sliceWithWidth, truncateToWidth, visibleWidth } from "../utils";
-import { postmortem } from "@oh-my-pi/pi-utils";
+import { popLoopPhase, postmortem, pushLoopPhase } from "@oh-my-pi/pi-utils";
 import { CustomEditor } from "./custom-editor";
 import { type AnimationFrame, TranscriptContainer } from "../chrome/transcript-container";
 import { type LspServerInfo, type RecentSession, WelcomeComponent } from "./welcome";
@@ -413,7 +413,13 @@ export class Composer implements TerminalFrameProvider {
 		const chromeInsertionRows = temporaryEditorVisible
 			? Math.max(0, chromeRows - (this.#chromeRowsWithoutAutocomplete ?? chromeRows))
 			: 0;
-		const history = this.#offerHistory(transcript, width, rows, chromeRows);
+		pushLoopPhase("ui:render:compose:history");
+		let history: { id: number; rows: readonly string[]; kind: "append" | "replay" } | undefined;
+		try {
+			history = this.#offerHistory(transcript, width, rows, chromeRows);
+		} finally {
+			popLoopPhase();
+		}
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
 		const before = [...headerRows, ...preRoots];
@@ -422,14 +428,26 @@ export class Composer implements TerminalFrameProvider {
 		const now = performance.now();
 		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
 		const liveRows = Math.max(0, rows - before.length - after.length);
-		const transientBlocks = transcript.transientBlocks(width, liveRows, frame);
-		const transientRows = transientBlocks.reduce((total, block) => total + block.rows, 0);
+		pushLoopPhase("ui:render:compose:transient");
+		let transientRows = 0;
+		try {
+			const transientBlocks = transcript.transientBlocks(width, liveRows, frame);
+			transientRows = transientBlocks.reduce((total, block) => total + block.rows, 0);
+		} finally {
+			popLoopPhase();
+		}
 		const viewportExpansionRows =
 			chromeInsertionRows +
 			// An insertion taller than the screen cannot be held back: the
 			// transcript must keep retiring rows or the tail stops advancing.
 			Math.min(transientRows, Math.max(0, rows - 1));
-		const liveViewport = transcript.renderLiveViewport(width, liveRows, frame);
+		pushLoopPhase("ui:render:compose:live");
+		let liveViewport: ReturnType<TranscriptContainer["renderLiveViewport"]>;
+		try {
+			liveViewport = transcript.renderLiveViewport(width, liveRows, frame);
+		} finally {
+			popLoopPhase();
+		}
 		const active = liveViewport.rows;
 		const composed = [...before, ...active, ...after];
 		this.#lastClickFrameRows = composed.length;
