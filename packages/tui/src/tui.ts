@@ -3064,18 +3064,27 @@ export class TUI extends Container {
 		}
 		this.#debugNextWindowTop = 0;
 		let plan: TerminalFramePlan;
-		do {
-			this.#imageBudget.beginPass();
-			plan = provider.renderFrame({ columns: width, rows: height });
-			// Borrowed-live viewports legitimately exceed the physical height; the
-			// ledger below slices them. Composite overlays here only so their
-			// images join this budget pass — the painted composite happens in
-			// #emitPlanFrame. A shutdown flush paints no overlay, so counting one
-			// would evict transcript placements that are still on screen.
-			if (!flushing && this.#getTopmostVisibleOverlay() !== undefined) {
-				this.#compositeVisibleOverlays(Array.from(plan.viewport).slice(-height), width, height);
-			}
-		} while (this.#imageBudget.endPass());
+		// Sub-phase: the provider composes the whole logical frame here (transcript
+		// blocks, editor, status chrome). On a long session this walk is the part
+		// of a paint whose cost grows with history, so it is named separately from
+		// the emit that follows.
+		pushLoopPhase("ui:render:compose");
+		try {
+			do {
+				this.#imageBudget.beginPass();
+				plan = provider.renderFrame({ columns: width, rows: height });
+				// Borrowed-live viewports legitimately exceed the physical height; the
+				// ledger below slices them. Composite overlays here only so their
+				// images join this budget pass — the painted composite happens in
+				// #emitPlanFrame. A shutdown flush paints no overlay, so counting one
+				// would evict transcript placements that are still on screen.
+				if (!flushing && this.#getTopmostVisibleOverlay() !== undefined) {
+					this.#compositeVisibleOverlays(Array.from(plan.viewport).slice(-height), width, height);
+				}
+			} while (this.#imageBudget.endPass());
+		} finally {
+			popLoopPhase();
+		}
 		if (!flushing && this.#maybeDeferGhosttyInitialImagePaint()) return false;
 		const logicalViewport = Array.from(plan.viewport);
 		const overflow = Math.max(0, logicalViewport.length - height);
@@ -3236,18 +3245,26 @@ export class TUI extends Container {
 			plan.retainedLiveViewport ? Math.max(overflow, this.#providerLogicalCommitted) : overflow,
 		);
 		const acceptedBefore = this.#acceptedHistoryBatchId;
-		this.#emitPlanFrame(
-			width,
-			height,
-			emitViewport,
-			history,
-			provider,
-			inferredHistory,
-			plan.viewportExpansionRows,
-			Math.max(0, logicalViewport.length - (plan.viewportExpansionRows ?? 0)),
-			flushing,
-			plan.retainedLiveViewport ?? false,
-		);
+		// Sub-phase: diffing the prepared rows against the previous frame and
+		// writing the bytes. Named apart from compose so the log says whether a
+		// slow paint was building the frame or pushing it to the terminal.
+		pushLoopPhase("ui:render:emit");
+		try {
+			this.#emitPlanFrame(
+				width,
+				height,
+				emitViewport,
+				history,
+				provider,
+				inferredHistory,
+				plan.viewportExpansionRows,
+				Math.max(0, logicalViewport.length - (plan.viewportExpansionRows ?? 0)),
+				flushing,
+				plan.retainedLiveViewport ?? false,
+			);
+		} finally {
+			popLoopPhase();
+		}
 		if ((plan.viewportExpansionRows ?? 0) === 0) this.#providerExpansionBorrowed = false;
 		if (
 			flushing &&
