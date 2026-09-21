@@ -77,13 +77,21 @@ export function setCopyUrlTargetProvider(
  * the 33ms frame budget and starving the spinner/render timers (the "TUI freeze").
  */
 const HIGHLIGHT_CACHE_MAX = 256;
+/**
+ * Largest code body highlighted synchronously. The native tokenizer scales
+ * linearly at roughly 0.7 ms per line on the UI thread: 5,000 lines cost
+ * ~3.7 s and 20,000 lines ~15 s, and a large write card finalizes exactly
+ * such a body in one paint. Past this size the body renders plain, which is
+ * readable; a multi-second freeze is not.
+ */
+const HIGHLIGHT_MAX_CHARS = 24_000;
 const highlightCache = new LRUCache<string, string>({
 	max: HIGHLIGHT_CACHE_MAX,
 });
 let highlightCacheTheme: Theme | undefined;
 
 function highlightCached(code: string, validLang: string | undefined, highlightTheme: Theme): string | null {
-	if (validLang === undefined) return code;
+	if (validLang === undefined || code.length > HIGHLIGHT_MAX_CHARS) return code;
 	if (highlightCacheTheme !== highlightTheme) {
 		highlightCache.clear();
 		highlightCacheTheme = highlightTheme;
