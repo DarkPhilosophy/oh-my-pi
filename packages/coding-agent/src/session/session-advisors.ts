@@ -508,6 +508,8 @@ export interface AdvisorStatusOverviewEntry {
 	name: string;
 	status: AdvisorRuntimeStatus;
 	yielded: boolean;
+	/** A review is queued or in flight right now; never masked by the primary's stream state. */
+	reviewing: boolean;
 }
 
 /** Owns advisor runtimes, delivery policy, context maintenance, and status reporting. */
@@ -2869,12 +2871,13 @@ export class SessionAdvisors {
 		// clear on reset() but #advisorStatuses lags until the next build.
 		const liveStatusBySlug = new Map<
 			string,
-			{ status: AdvisorRuntimeStatus; yielded: boolean; canReview: boolean }
+			{ status: AdvisorRuntimeStatus; yielded: boolean; reviewing: boolean; canReview: boolean }
 		>();
 		for (const a of this.#advisors) {
 			liveStatusBySlug.set(a.slug, {
 				status: a.runtime.quotaExhausted ? "quota_exhausted" : a.runtime.failureNotified ? "error" : "running",
 				yielded: a.runtime.yielded,
+				reviewing: a.runtime.reviewing,
 				canReview: !a.runtime.quotaExhausted && !a.runtime.halted && !a.runtime.disposed,
 			});
 		}
@@ -2890,6 +2893,10 @@ export class SessionAdvisors {
 				// (paused/no-model) or a quota-exhausted/halted runtime — stay
 				// yielded regardless of the primary's stream state.
 				yielded: live?.canReview && this.#host.agent.state.isStreaming ? false : (live?.yielded ?? true),
+				// Unlike the eye, "reviewing" is not masked by the primary's stream
+				// state: it is true only while a review is actually queued or in
+				// flight, so a fresh session with idle advisors reports none.
+				reviewing: live?.reviewing ?? false,
 			};
 		});
 		return { configured: this.#advisorEnabled, advisors };

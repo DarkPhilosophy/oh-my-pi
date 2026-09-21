@@ -63,7 +63,7 @@ export interface StatusLineSession {
 	getGoalModeState(): { goal?: { status: string; tokensUsed: number; tokenBudget?: number } } | undefined;
 	getAdvisorStatusOverview?(): {
 		configured: boolean;
-		advisors: readonly { name?: string; status: string; yielded: boolean }[];
+		advisors: readonly { name?: string; status: string; yielded: boolean; reviewing?: boolean }[];
 	};
 	getAdvisorCost?(): number;
 	isAdvisorUsingSubscription?(): boolean;

@@ -813,12 +813,18 @@ const sessionNameSegment: StatusLineSegment = {
  */
 export function advisorActivityLabel(
 	overview:
-		| { configured: boolean; advisors: readonly { name?: string; status: string; yielded: boolean }[] }
+		| {
+				configured: boolean;
+				advisors: readonly { name?: string; status: string; yielded: boolean; reviewing?: boolean }[];
+		  }
 		| undefined,
 	now = Date.now(),
 ): string | undefined {
 	if (!overview?.configured) return undefined;
-	const working = overview.advisors.filter(advisor => advisor.status === "running" && !advisor.yielded);
+	// `reviewing` is the only honest signal: the eye badge deliberately masks
+	// `yielded` to false while the primary streams, which would label idle
+	// advisors as reviewing from the first keystroke of a session.
+	const working = overview.advisors.filter(advisor => advisor.status === "running" && advisor.reviewing === true);
 	if (working.length === 0) return undefined;
 	const eye = advisorBlinkIcon(now);
 	const prefix = eye ? `${eye} ` : "";
@@ -830,17 +836,20 @@ export function advisorActivityLabel(
 	return `${prefix}${working.length} advisors reviewing`;
 }
 
-/** One blink per {@link ADVISOR_BLINK_PERIOD_MS}, closed for the last
- *  {@link ADVISOR_BLINK_CLOSED_MS}. The window is wide enough that the
- *  working-row repaint cadence cannot step over a blink entirely, and rare
- *  enough to read as an eye rather than a flashing alarm. Falls back to the
- *  open icon when the theme has no closed variant. */
+/**
+ * One blink per {@link ADVISOR_BLINK_PERIOD_MS}, "closed" for the last
+ * {@link ADVISOR_BLINK_CLOSED_MS}. The closed phase is a same-width blank,
+ * not the theme's closed-eye glyph: that glyph already means "this advisor is
+ * done or cannot run" on the status badge, and in some fonts it renders as a
+ * bare line that reads as an invalid icon. A blank reads unambiguously as a
+ * blink. The window is wide enough that the working-row repaint cadence
+ * cannot step over it, and rare enough to read as an eye, not an alarm.
+ */
 function advisorBlinkIcon(now: number): string {
 	const open = theme.icon.advisor;
-	const closed = theme.icon.advisorClosed;
 	if (!open) return "";
-	if (!closed) return open;
-	return now % ADVISOR_BLINK_PERIOD_MS >= ADVISOR_BLINK_PERIOD_MS - ADVISOR_BLINK_CLOSED_MS ? closed : open;
+	const closed = now % ADVISOR_BLINK_PERIOD_MS >= ADVISOR_BLINK_PERIOD_MS - ADVISOR_BLINK_CLOSED_MS;
+	return closed ? " ".repeat(Math.max(1, Bun.stringWidth(open))) : open;
 }
 
 const ADVISOR_BLINK_PERIOD_MS = 3200;

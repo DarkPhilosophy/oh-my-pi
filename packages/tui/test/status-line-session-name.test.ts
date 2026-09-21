@@ -12,6 +12,7 @@ interface AdvisorEntry {
 	name?: string;
 	status: string;
 	yielded: boolean;
+	reviewing?: boolean;
 }
 
 function ctxWith(sessionName: string, advisors?: AdvisorEntry[]): SegmentContext {
@@ -33,9 +34,21 @@ describe("session_name status-line segment", () => {
 		expect(plain(renderSegment("session_name", idle).content)).toContain("rework the advisor");
 	});
 
+	it("keeps the title for advisors whose eye is open but who have no review in flight", () => {
+		// Regression: at session start the overview masks `yielded` to false for
+		// every advisor that could review while the primary streams. That is the
+		// right signal for the eye badge and the wrong one for this label, which
+		// announced "2 advisors reviewing" before any review had been requested.
+		const idle = ctxWith("rework the advisor", [
+			{ name: "One", status: "running", yielded: false },
+			{ name: "Two", status: "running", yielded: false, reviewing: false },
+		]);
+		expect(plain(renderSegment("session_name", idle).content)).toContain("rework the advisor");
+	});
+
 	it("names the single advisor that is reviewing instead of the title", () => {
 		const ctx = ctxWith("rework the advisor", [
-			{ name: "Reliability", status: "running", yielded: false },
+			{ name: "Reliability", status: "running", yielded: false, reviewing: true },
 			{ name: "Performance", status: "running", yielded: true },
 		]);
 		const content = plain(renderSegment("session_name", ctx).content);
@@ -49,6 +62,7 @@ describe("session_name status-line segment", () => {
 			name: `Advisor${index}`,
 			status: "running",
 			yielded: index >= 3,
+			reviewing: index < 3,
 		}));
 		const content = plain(renderSegment("session_name", ctxWith("title", advisors)).content);
 		// Cycling names would rewrite the segment every frame and jitter the bar.
@@ -57,20 +71,23 @@ describe("session_name status-line segment", () => {
 	});
 
 	it("falls back to a generic label for the unnamed default advisor", () => {
-		const ctx = ctxWith("title", [{ status: "running", yielded: false }]);
+		const ctx = ctxWith("title", [{ status: "running", yielded: false, reviewing: true }]);
 		expect(plain(renderSegment("session_name", ctx).content)).toContain("advisor reviewing");
 	});
 
 	it("keeps the title when an advisor is failed or out of quota rather than working", () => {
 		const ctx = ctxWith("title", [
-			{ name: "Broken", status: "error", yielded: false },
-			{ name: "Spent", status: "quota_exhausted", yielded: false },
+			{ name: "Broken", status: "error", yielded: false, reviewing: true },
+			{ name: "Spent", status: "quota_exhausted", yielded: false, reviewing: true },
 		]);
 		expect(plain(renderSegment("session_name", ctx).content)).toContain("title");
 	});
 
 	it("blinks the eye on a slow cycle instead of holding one glyph", () => {
-		const overview = { configured: true, advisors: [{ name: "Reliability", status: "running", yielded: false }] };
+		const overview = {
+			configured: true,
+			advisors: [{ name: "Reliability", status: "running", yielded: false, reviewing: true }],
+		};
 		// Sample a full cycle at roughly the working row's repaint cadence: both
 		// glyphs must occur, and the closed one must stay rare enough to read as
 		// a blink rather than a flashing alarm.
@@ -78,9 +95,9 @@ describe("session_name status-line segment", () => {
 		let closed = 0;
 		for (let now = 0; now < 3200; now += 50) {
 			const label = advisorActivityLabel(overview, now) ?? "";
-			const glyph = label.slice(0, label.indexOf(" "));
+			const glyph = label.slice(0, Bun.stringWidth(theme.icon.advisor));
 			glyphs.add(glyph);
-			if (glyph === theme.icon.advisorClosed) closed++;
+			if (glyph.trim() === "") closed++;
 		}
 		expect(glyphs.size).toBe(2);
 		expect(closed).toBeGreaterThan(0);

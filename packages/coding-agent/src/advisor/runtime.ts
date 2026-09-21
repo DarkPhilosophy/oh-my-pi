@@ -221,10 +221,16 @@ const MAX_COALESCE_ROUNDS = 3;
 const MAX_QUARANTINE_RETRIES = 2;
 
 /** Messages formatted per event-loop slice in {@link AdvisorRuntime.#formatRawDeltaChunked}. */
-const RENDER_CHUNK_MESSAGES = 100;
+const RENDER_CHUNK_MESSAGES = 25;
 
-/** Char budget for one synchronous format call; larger deltas defer/chunk. */
-const FAST_RENDER_MAX_CHARS = 256 * 1024;
+/**
+ * Char budget for one synchronous format call; larger deltas defer/chunk.
+ * Formatting runs at roughly 10-15 ms per KB on the UI thread (measured:
+ * a 256 KB slice took 2.6-4.0 s and was logged by the loop watchdog as
+ * `advisor:render-slice:format`), so the slice must be small enough that one
+ * call stays under a frame budget's order of magnitude, not a second's.
+ */
+const FAST_RENDER_MAX_CHARS = 24 * 1024;
 
 /**
  * Cheap early-exit probe: the message's aggregate string payload, capped at
@@ -475,6 +481,17 @@ export class AdvisorRuntime {
 			this.#halted ||
 			(this.#hasReviewed && !this.#busy && this.#backlog === 0 && this.#pending.length === 0)
 		);
+	}
+
+	/**
+	 * True only while the advisor is actually doing review work: a model call in
+	 * flight, or deltas queued for one. Unlike {@link yielded}, a fresh runtime
+	 * that has never reviewed anything is NOT reviewing — nothing has been
+	 * handed to it yet. Drives the "reviewing" activity label.
+	 */
+	get reviewing(): boolean {
+		if (this.disposed || this.#quotaExhausted || this.#halted) return false;
+		return this.#busy || this.#backlog > 0 || this.#pending.length > 0;
 	}
 
 	/**
