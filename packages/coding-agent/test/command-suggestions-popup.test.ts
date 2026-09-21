@@ -3,9 +3,9 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { CombinedAutocompleteProvider } from "@oh-my-pi/pi-tui";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { encodeKittyPlacement } from "@oh-my-pi/pi-tui/terminal-capabilities";
-import { Composer } from "../src/modes/composer";
-import { TranscriptContainer } from "../src/modes/components/transcript-container";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
 let composer: Composer | undefined;

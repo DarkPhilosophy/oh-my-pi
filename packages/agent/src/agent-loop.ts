@@ -37,6 +37,7 @@ import {
 	getStreamingPartialJson,
 	kCursorExecResolved,
 } from "@oh-my-pi/pi-ai/utils/block-symbols";
+import { stamp } from "@oh-my-pi/pi-ai/utils/schema/stamps";
 import {
 	createHarmonyAuditEvent,
 	detectHarmonyLeakInAssistantMessage,
@@ -392,6 +393,64 @@ function snapshotAssistantMessage(message: AssistantMessage): AssistantMessage {
 		},
 		disabledFeatures: message.disabledFeatures ? [...message.disabledFeatures] : undefined,
 		toolCallAbortMessages: message.toolCallAbortMessages ? { ...message.toolCallAbortMessages } : undefined,
+	};
+}
+
+/**
+ * Incremental variant of `snapshotAssistantMessage` for per-delta
+ * `message_update` events.
+ *
+ * The stream contract guarantees that every content-block mutation a provider
+ * makes is paired with an event carrying that block's `contentIndex` (every
+ * provider mutates then pushes), and that `output.content` is append-only
+ * within a turn. A fresh snapshot therefore only needs to re-clone:
+ *
+ * - the block the current event targets (`changedIndex`),
+ * - blocks still open (started but not ended) — Cursor's edit block merges
+ *   `path`/`stream_content` into a live block without an event, so open blocks
+ *   are re-cloned on every delta,
+ * - blocks appended since the previous snapshot.
+ *
+ * Every other (finalized) block is carried over from the previous snapshot by
+ * reference: finalized blocks are never mutated after their end event, so
+ * sharing them is exact and turns the per-delta cost from O(turn content) into
+ * O(open blocks) — the difference between quadratic and linear streaming cost
+ * on long turns (issue #10605).
+ */
+function snapshotAssistantMessageIncremental(
+	live: AssistantMessage,
+	prev: AssistantMessage,
+	changedIndex: number,
+	openBlocks: ReadonlySet<number>,
+): AssistantMessage {
+	const liveContent = live.content;
+	const prevContent = prev.content;
+	const prevLen = prevContent.length;
+	// Reference-copy the previous snapshot's block array (native-speed), then
+	// patch in fresh clones only where the live state moved: the block this
+	// delta targeted, blocks still streaming, and blocks appended since the
+	// previous snapshot. Finalized blocks keep their existing snapshot clone.
+	const content = prevContent.slice();
+	for (let i = prevLen; i < liveContent.length; i++) {
+		content.push(snapshotAssistantContentBlock(liveContent[i]!));
+	}
+	if (changedIndex >= 0 && changedIndex < prevLen && changedIndex < liveContent.length) {
+		content[changedIndex] = snapshotAssistantContentBlock(liveContent[changedIndex]!);
+	}
+	for (const openIndex of openBlocks) {
+		if (openIndex !== changedIndex && openIndex >= 0 && openIndex < prevLen && openIndex < liveContent.length) {
+			content[openIndex] = snapshotAssistantContentBlock(liveContent[openIndex]!);
+		}
+	}
+	return {
+		...live,
+		content,
+		usage: {
+			...live.usage,
+			cost: { ...live.usage.cost },
+		},
+		disabledFeatures: live.disabledFeatures ? [...live.disabledFeatures] : undefined,
+		toolCallAbortMessages: live.toolCallAbortMessages ? { ...live.toolCallAbortMessages } : undefined,
 	};
 }
 
@@ -828,6 +887,29 @@ export function normalizeMessagesForProvider(
 const INTENT_FIELD_DESCRIPTION = "concise intent";
 const INTENT_SCHEMA_UNION_KEYS = ["anyOf", "oneOf"] as const;
 
+// Memoize injection per input schema identity: normalizeTools runs on every
+// model call and injectIntentIntoSchema mints a fresh root object each time,
+// which defeats the stamp-keyed schema memos downstream (toolWireSchema,
+// stripSchemaDescriptions, tryEnforceStrictSchema each deep-clone + re-walk
+// the whole catalog per request). The injected object is shared across
+// requests — the same profile as the intent-off path, where parameters IS the
+// shared memoized wire schema (see schema-immutability.test.ts). One stamp
+// key per (mode, describeIntent) variant; index 0 = bare, 1 = described.
+const INTENT_STAMPS = {
+	require: [Symbol("intent:require"), Symbol("intent:require:described")],
+	optional: [Symbol("intent:optional"), Symbol("intent:optional:described")],
+} as const;
+
+function memoizedInjectIntentIntoSchema(
+	schema: Record<string, unknown>,
+	mode: "require" | "optional",
+	describeIntent: boolean,
+): unknown {
+	return stamp(schema, INTENT_STAMPS[mode][describeIntent ? 1 : 0], host =>
+		injectIntentIntoSchema(host, mode, describeIntent),
+	);
+}
+
 function injectIntentIntoSchema(
 	schema: unknown,
 	mode: "require" | "optional" = "require",
@@ -907,12 +989,14 @@ export function normalizeTools(tools: AgentContext["tools"], options: NormalizeT
 		// re-inject `i` (without its hint, which `describeIntent: false` omits) so
 		// intent tracing keeps the field while no descriptions ride the wire.
 		if (pruneDescriptions) {
-			let parameters = stripSchemaDescriptions(toolWireSchema(t)) as TSchema;
-			if (doInjectIntent) parameters = injectIntentIntoSchema(parameters, intentMode, false) as TSchema;
+			const stripped = stripSchemaDescriptions(toolWireSchema(t));
+			const parameters = (
+				doInjectIntent ? memoizedInjectIntentIntoSchema(stripped, intentMode, false) : stripped
+			) as TSchema;
 			return { ...t, parameters, description: "" };
 		}
-		let parameters = toolWireSchema(t) as TSchema;
-		if (doInjectIntent) parameters = injectIntentIntoSchema(parameters, intentMode) as TSchema;
+		const wire = toolWireSchema(t);
+		const parameters = (doInjectIntent ? memoizedInjectIntentIntoSchema(wire, intentMode, true) : wire) as TSchema;
 		const description = t.description ?? "";
 		const examplesBlock = renderToolExamples({ ...t, parameters }, doInjectIntent ? INTENT_FIELD : undefined);
 		const finalDescription = examplesBlock ? `${description}\n\n${examplesBlock}` : description;
@@ -1813,6 +1897,13 @@ async function streamAssistantResponse(
 
 			let partialMessage: AssistantMessage | null = null;
 			let addedPartial = false;
+			// Previous `message_update` snapshot for the incremental rebuild below;
+			// null until the turn's `start` event seeds it.
+			let turnSnapshot: AssistantMessage | null = null;
+			// Content indices of blocks that started streaming but have not ended
+			// yet — re-cloned on every delta because live blocks may be patched
+			// without a paired event (Cursor's silent edit-block merge).
+			const openBlocks = new Set<number>();
 			const completedToolCallIds = new Set<string>();
 			const argStreams = new Map<number, { id: string; stream: AgentToolArgStream }>();
 			const cancelArgStreams = (): void => {
@@ -2037,6 +2128,8 @@ async function streamAssistantResponse(
 								// consumer treats both as read-only, so cloning the identical partial
 								// twice per delta was pure waste.
 								const messageSnapshot = snapshotAssistantMessage(partialMessage);
+								turnSnapshot = messageSnapshot;
+								openBlocks.clear();
 								stream.push({
 									type: "message_update",
 									assistantMessageEvent: snapshotAssistantMessageEvent(event, messageSnapshot),
@@ -2045,7 +2138,8 @@ async function streamAssistantResponse(
 							} else {
 								context.messages.push(partialMessage);
 								addedPartial = true;
-								stream.push({ type: "message_start", message: snapshotAssistantMessage(partialMessage) });
+								turnSnapshot = snapshotAssistantMessage(partialMessage);
+								stream.push({ type: "message_start", message: turnSnapshot });
 							}
 							break;
 
@@ -2127,11 +2221,34 @@ async function streamAssistantResponse(
 								partialMessage = event.partial;
 								context.messages[context.messages.length - 1] = partialMessage;
 								config.onAssistantMessageEvent?.(partialMessage, event);
-								// `message` and `assistantMessageEvent.partial` intentionally share one
-								// immutable snapshot of the streaming partial: every message_update
-								// consumer treats both as read-only, so cloning the identical partial
-								// twice per delta was pure waste.
-								const messageSnapshot = snapshotAssistantMessage(partialMessage);
+								// Track which blocks are still streaming: open blocks are
+								// re-cloned on every delta, finalized blocks are shared.
+								const contentIndex = (event as { contentIndex?: number }).contentIndex;
+								if (contentIndex !== undefined) {
+									if (event.type.endsWith("_start")) openBlocks.add(contentIndex);
+									else if (event.type.endsWith("_end")) openBlocks.delete(contentIndex);
+								}
+								// READ-ONLY-CONSUMER INVARIANT: `message` and
+								// `assistantMessageEvent.partial` intentionally share one snapshot,
+								// and the snapshot is rebuilt incrementally — only the delta's
+								// block, open blocks, and newly appended blocks are deep-cloned;
+								// finalized blocks are carried over from the previous snapshot by
+								// reference (see `snapshotAssistantMessageIncremental`), so they are
+								// shared across ALL message_update snapshots of the turn.
+								// Consumers MUST treat both fields — and every content block inside
+								// them — as read-only: mutating a snapshot would corrupt every
+								// earlier and later snapshot of the turn, not just this one. In
+								// exchange, per-delta work is proportional to the live stream
+								// instead of the whole turn (issue #10605).
+								const messageSnapshot: AssistantMessage = turnSnapshot
+									? snapshotAssistantMessageIncremental(
+											partialMessage,
+											turnSnapshot,
+											contentIndex ?? -1,
+											openBlocks,
+										)
+									: snapshotAssistantMessage(partialMessage);
+								turnSnapshot = messageSnapshot;
 								stream.push({
 									type: "message_update",
 									assistantMessageEvent: snapshotAssistantMessageEvent(event, messageSnapshot),
@@ -2722,6 +2839,7 @@ async function executeToolCalls(
 	const {
 		hasSteeringMessages,
 		hasIrcInterrupts,
+		hasBackgroundCompletions,
 		interruptMode = "immediate",
 		getToolContext,
 
@@ -2759,7 +2877,7 @@ async function executeToolCalls(
 	const interruptibleSignal: AbortSignal = signal
 		? AbortSignal.any([signal, steeringAbortController.signal, ircAbortController.signal])
 		: AbortSignal.any([steeringAbortController.signal, ircAbortController.signal]);
-	const interruptState: { triggered: boolean; source?: SteeringInterruptSource | "irc" } = { triggered: false };
+	const interruptState: { triggered: boolean; source?: AsideInterruptSource } = { triggered: false };
 
 	// Streamed messages were prepared (validation + `beforeToolCall`) before
 	// `message_end`, so hook revisions are already part of the message; anything
@@ -2810,19 +2928,22 @@ async function executeToolCalls(
 		};
 	});
 
-	const checkIrcInterrupts = async (): Promise<void> => {
-		// IRC only fires once: a peer interrupt already recorded on interruptState
+	const checkAsideInterrupts = async (): Promise<void> => {
+		// Asides only fire once: an interrupt already recorded on interruptState
 		// must not re-abort, and (unlike steering) never re-consumes a queue.
 		if (!shouldInterruptImmediately || signal?.aborted || interruptState.triggered) return;
-		if (hasIrcInterrupts && (await hasIrcInterrupts())) {
-			// Peer IRC hard-aborts interruptible waits only; foreground tools keep
-			// running (no partial side effects) but get the cooperative soft
-			// signal so backgroundable work can step aside for the peer message.
-			interruptState.triggered = true;
-			interruptState.source = "irc";
-			ircAbortController.abort();
-			steeringSoftController.abort();
-		}
+		// Peer IRC and background completions (finished jobs, exited supervised
+		// processes) hard-abort interruptible waits only; foreground tools keep
+		// running (no partial side effects) but get the cooperative soft signal
+		// so backgroundable work can step aside for the queued notice.
+		let source: AsideInterruptSource | undefined;
+		if (hasIrcInterrupts && (await hasIrcInterrupts())) source = "irc";
+		else if (hasBackgroundCompletions && (await hasBackgroundCompletions())) source = "background";
+		if (!source || interruptState.triggered) return;
+		interruptState.triggered = true;
+		interruptState.source = source;
+		ircAbortController.abort();
+		steeringSoftController.abort();
 	};
 
 	const checkSteering = async (): Promise<void> => {
@@ -2863,7 +2984,7 @@ async function executeToolCalls(
 			}
 			return;
 		}
-		await checkIrcInterrupts();
+		await checkAsideInterrupts();
 	};
 
 	const emitToolResult = (record: (typeof records)[number], result: AgentToolResult<any>, isError: boolean): void => {
@@ -3166,8 +3287,8 @@ async function executeToolCalls(
 	// and soft-signals cooperative tools (auto-background bash), so the boundary
 	// dequeue below injects the message promptly. Gated on immediate-interrupt
 	// mode; checkSteering is idempotent (no-op once triggered).
-	const watchSteeringWhileRunning =
-		shouldInterruptImmediately && (hasSteeringMessages !== undefined || hasIrcInterrupts !== undefined);
+	const hasAsidePeek = hasIrcInterrupts !== undefined || hasBackgroundCompletions !== undefined;
+	const watchSteeringWhileRunning = shouldInterruptImmediately && (hasSteeringMessages !== undefined || hasAsidePeek);
 	const eventDrivenSteeringWatch =
 		watchSteeringWhileRunning && config.waitForSteeringMessages !== undefined && hasSteeringMessages !== undefined;
 	const steeringWatchAbortController = new AbortController();
@@ -3206,13 +3327,13 @@ async function executeToolCalls(
 				}
 			})()
 		: undefined;
-	// IRC interrupt records have a separate session-owned queue and no wake
-	// callback. Keep its established timer fallback when that queue is present;
-	// system steering uses the event-driven path above and does not poll.
+	// IRC interrupt records and background completions live in session-owned
+	// queues with no wake callback. Keep the timer fallback when either peek is
+	// present; system steering uses the event-driven path above and does not poll.
 	const steeringWatchTimer =
-		watchSteeringWhileRunning && (!eventDrivenSteeringWatch || hasIrcInterrupts !== undefined)
+		watchSteeringWhileRunning && (!eventDrivenSteeringWatch || hasAsidePeek)
 			? setInterval(
-					() => void (eventDrivenSteeringWatch ? checkIrcInterrupts() : checkSteering()),
+					() => void (eventDrivenSteeringWatch ? checkAsideInterrupts() : checkSteering()),
 					STEERING_INTERRUPT_POLL_MS,
 				)
 			: undefined;
@@ -3421,8 +3542,11 @@ function createToolSignalAbortedResult(signal: AbortSignal): AgentToolResult<unk
 	};
 }
 
+/** Origin of a mid-batch interrupt: queued steering, a peer IRC, or a background completion notice. */
+type AsideInterruptSource = SteeringInterruptSource | "irc" | "background";
+
 function createSkippedToolResult(
-	source: SteeringInterruptSource | "irc" | undefined,
+	source: AsideInterruptSource | undefined,
 	executionStarted: boolean,
 ): AgentToolResult<SyntheticToolResultDetails | InterruptedToolResultDetails> {
 	let reason = "pending steering message";
@@ -3439,6 +3563,9 @@ function createSkippedToolResult(
 	} else if (source === "irc") {
 		reason = "pending peer interrupt";
 		blocker = "interrupt";
+	} else if (source === "background") {
+		reason = "a queued background completion (job or supervised process)";
+		blocker = "completion notice";
 	}
 	return {
 		content: [
