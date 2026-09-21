@@ -76,8 +76,12 @@ export function takeRecentLoopPhase(): string | undefined {
 	const at = now();
 	const totals = new Map(accrued);
 	const top = stack[stack.length - 1];
-	if (top !== undefined) {
-		totals.set(top.label, (totals.get(top.label) ?? 0) + top.exclusiveMs + (at - top.resumedAt));
+	// Every held entry contributes what it accrued while on top; a parent
+	// paused under a child must not lose that at the tick, or attribution
+	// would drift toward leaf labels. Only the live top is still counting.
+	for (const held of stack) {
+		const live = held === top ? at - held.resumedAt : 0;
+		totals.set(held.label, (totals.get(held.label) ?? 0) + held.exclusiveMs + live);
 	}
 	let best: string | undefined;
 	let bestMs = 0;

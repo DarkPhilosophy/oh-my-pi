@@ -104,4 +104,16 @@ describe("loop phase stack", () => {
 		// label would always win and sub-phases would be invisible.
 		expect(takeRecentLoopPhase()).toBe("ui:render:compose");
 	});
+
+	test("a parent paused under a child keeps its accrued time across a watchdog read", () => {
+		pushLoopPhase("ui:render");
+		Bun.sleepSync(12);
+		pushLoopPhase("ui:render:emit");
+		Bun.sleepSync(2);
+		// The tick lands while the child still holds the top. The parent did the
+		// work; zeroing only the top's ledger would hand the blame to the leaf.
+		expect(takeRecentLoopPhase()).toBe("ui:render");
+		popLoopPhase();
+		popLoopPhase();
+	});
 });
