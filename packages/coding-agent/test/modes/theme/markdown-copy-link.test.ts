@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { getMarkdownTheme, setCopyUrlHandlerReady } from "@oh-my-pi/pi-coding-agent/modes/theme/tui-adapters";
+import { getMarkdownTheme, initTheme, setCopyUrlHandlerReady } from "@oh-my-pi/pi-tui/theme";
 import { copyUrlTarget, resolveCopyBlock, supportsCopyUrlHandler } from "@oh-my-pi/pi-coding-agent/utils/copy-store";
 import { Markdown, TERMINAL } from "@oh-my-pi/pi-tui";
 
@@ -12,7 +11,7 @@ beforeEach(async () => {
 	await Settings.init({ inMemory: true });
 	await initTheme(false);
 	TERMINAL.hyperlinks = true;
-	setCopyUrlHandlerReady(true);
+	setCopyUrlHandlerReady(true, code => copyUrlTarget(code, true));
 });
 
 afterEach(() => {
@@ -40,7 +39,7 @@ describe("Markdown copy link", () => {
 		setCopyUrlHandlerReady(false);
 		expect(copyTarget(renderFooter())).toBeUndefined();
 
-		setCopyUrlHandlerReady(true);
+		setCopyUrlHandlerReady(true, code => copyUrlTarget(code, true));
 		expect(copyTarget(renderFooter())).toBeDefined();
 
 		setCopyUrlHandlerReady(false);
