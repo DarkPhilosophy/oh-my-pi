@@ -220,12 +220,14 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 			const baseUrl = (model.baseUrl || DEVIN_API_URL).replace(/\/+$/, "");
 			const auth = await fetchDevinAuthMetadata(options?.apiKey, baseUrl, fetchImpl, options?.signal);
 			const chatBaseUrl = auth.baseUrl ?? baseUrl;
+			const prepStart = performance.now();
 			const turn: DevinTurn = {
 				apiKey: options?.apiKey,
 				userJwt: auth.userJwt,
 				cascadeId: options?.conversationId ?? options?.sessionId ?? crypto.randomUUID(),
 				messages: transformMessages(context.messages, model),
 			};
+			const transformMs = performance.now() - prepStart;
 			// Router models (`adaptive`) are not valid chat model uids: the server
 			// resolves them through AssignModel and expects the returned uid plus
 			// assignment JWT on the chat request that shares the cascade id.
@@ -234,14 +236,25 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 				assignment = await assignDevinModel(model, turn, chatBaseUrl, fetchImpl, options?.signal);
 				output.upstreamModel = assignment.modelUid;
 			}
+			const buildStart = performance.now();
 			const request = buildDevinChatRequest(model, context, options, turn, assignment);
+			const buildMs = performance.now() - buildStart;
+			const encodeStart = performance.now();
 			const reqBytes = toBinary(GetChatMessageRequestSchema, request);
 			const gz = gzipSync(reqBytes);
+			const encodeMs = performance.now() - encodeStart;
+			// Every stage here runs synchronously on the UI thread, and a long
+			// transcript makes the request large; the per-stage timings attribute
+			// a stall to the stage that caused it instead of to the request as a whole.
 			logger.debug("devin: sending chat request", {
 				model: model.id,
 				tools: context.tools?.length ?? 0,
+				messages: context.messages.length,
 				requestBytes: reqBytes.byteLength,
 				compressedBytes: gz.byteLength,
+				transformMs: Math.round(transformMs),
+				buildMs: Math.round(buildMs),
+				encodeMs: Math.round(encodeMs),
 			});
 			const frame = Buffer.alloc(5 + gz.length);
 			frame[0] = CONNECT_COMPRESSED_FLAG;
