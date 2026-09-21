@@ -8,7 +8,6 @@ import type { Socket } from "bun";
 import type { Browser, Page } from "puppeteer-core";
 import { throwIfAborted } from "../tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 const ATTACH_TARGET_SKIP_PATTERN =
 	/request[\s_-]?handler|devtools|background[\s_-]?(?:page|host)|service[\s_-]?worker/i;
@@ -36,10 +35,22 @@ export async function findFreeCdpPort(): Promise<number> {
 	return promise;
 }
 
+/** Status line plus body of a {@link probeCdpResponse} answer. */
+export interface CdpProbeResponse {
+	status: number;
+	body: string;
+}
+
+interface RawGetOptions {
+	timeoutMs: number;
+	signal?: AbortSignal;
+	/** Resolve after the body arrives (Content-Length or peer close) instead of on the status line. */
+	readBody: boolean;
+}
+
 /**
- * Loopback HTTP/1.1 GET that never routes through a proxy, resolving to the
- * response status code (or null when the endpoint is unreachable, aborted,
- * malformed, or slow past `timeoutMs`).
+ * Loopback HTTP/1.1 GET that never routes through a proxy. Resolves null when
+ * the endpoint is unreachable, aborted, malformed, or slow past `timeoutMs`.
  *
  * Chrome's DevTools endpoint listens on loopback and speaks plain HTTP/1.1.
  * Both `fetch` and Bun's `node:http` honor `HTTP_PROXY`/`HTTPS_PROXY` and
@@ -48,10 +59,7 @@ export async function findFreeCdpPort(): Promise<number> {
  * dead and the CDP readiness checks tear it down (issue #8567). Talking to the
  * socket over raw TCP sidesteps proxy env entirely.
  */
-export async function probeCdpStatus(
-	url: string,
-	opts: { timeoutMs: number; signal?: AbortSignal },
-): Promise<number | null> {
+async function rawHttpGet(url: string, opts: RawGetOptions): Promise<CdpProbeResponse | null> {
 	let target: URL;
 	try {
 		target = new URL(url);
@@ -61,10 +69,10 @@ export async function probeCdpStatus(
 	if (opts.signal?.aborted) return null;
 	const port = target.port ? Number(target.port) : 80;
 	const requestPath = `${target.pathname}${target.search}` || "/";
-	const { promise, resolve } = Promise.withResolvers<number | null>();
+	const { promise, resolve } = Promise.withResolvers<CdpProbeResponse | null>();
 	let socket: Socket<undefined> | undefined;
 	let settled = false;
-	const finish = (status: number | null) => {
+	const finish = (response: CdpProbeResponse | null) => {
 		if (settled) return;
 		settled = true;
 		clearTimeout(timer);
@@ -74,12 +82,17 @@ export async function probeCdpStatus(
 		} catch {
 			// socket already torn down
 		}
-		resolve(status);
+		resolve(response);
 	};
 	const onAbort = () => finish(null);
 	const timer = setTimeout(() => finish(null), opts.timeoutMs);
 	opts.signal?.addEventListener("abort", onAbort, { once: true });
 	let buffered = "";
+	let status: number | null = null;
+	// Offset of the header/body separator once the header block is complete.
+	let headerEnd = -1;
+	let contentLength: number | null = null;
+	const bodySoFar = () => buffered.slice(headerEnd + 4);
 	try {
 		socket = await Bun.connect({
 			hostname: target.hostname,
@@ -90,14 +103,31 @@ export async function probeCdpStatus(
 				},
 				data(_s, chunk) {
 					buffered += chunk.toString("latin1");
-					const match = /^HTTP\/\d(?:\.\d)? (\d{3})/.exec(buffered);
-					if (match) finish(Number(match[1]));
+					if (status === null) {
+						const match = /^HTTP\/\d(?:\.\d)? (\d{3})/.exec(buffered);
+						if (!match) return;
+						status = Number(match[1]);
+						if (!opts.readBody) {
+							finish({ status, body: "" });
+							return;
+						}
+					}
+					if (headerEnd === -1) {
+						headerEnd = buffered.indexOf("\r\n\r\n");
+						if (headerEnd === -1) return;
+						const lengthHeader = /\r\ncontent-length:\s*(\d+)/i.exec(buffered.slice(0, headerEnd));
+						contentLength = lengthHeader ? Number(lengthHeader[1]) : null;
+					}
+					if (contentLength !== null && bodySoFar().length >= contentLength) {
+						finish({ status, body: bodySoFar().slice(0, contentLength) });
+					}
 				},
 				error() {
 					finish(null);
 				},
 				close() {
-					finish(null);
+					// Without Content-Length the peer's close delimits the body.
+					finish(status !== null && headerEnd !== -1 ? { status, body: bodySoFar() } : null);
 				},
 			},
 		});
@@ -105,6 +135,30 @@ export async function probeCdpStatus(
 		finish(null);
 	}
 	return promise;
+}
+
+/**
+ * Proxy-proof loopback probe resolving to the response status code, or null
+ * when the endpoint is unreachable, aborted, malformed, or slow past `timeoutMs`.
+ */
+export async function probeCdpStatus(
+	url: string,
+	opts: { timeoutMs: number; signal?: AbortSignal },
+): Promise<number | null> {
+	const response = await rawHttpGet(url, { ...opts, readBody: false });
+	return response?.status ?? null;
+}
+
+/**
+ * Proxy-proof loopback probe that also reads the response body (for endpoints
+ * whose non-2xx answer carries state, like the relay's 503). Null on the same
+ * conditions as {@link probeCdpStatus}.
+ */
+export function probeCdpResponse(
+	url: string,
+	opts: { timeoutMs: number; signal?: AbortSignal },
+): Promise<CdpProbeResponse | null> {
+	return rawHttpGet(url, { ...opts, readBody: true });
 }
 
 /** Poll `${cdpUrl}/json/version` until it responds with 200, with abort + timeout support. */
@@ -191,6 +245,13 @@ const CHROMIUM_FLATPAK_IDS: Record<string, true> = {
  * That profile is also what lets a second instance start beside the user's
  * running default-profile browser instead of handing off to it. Electron apps
  * are left untouched: `--user-data-dir` would relocate their app data.
+ *
+ * An omp-owned profile also bypasses the OS keystore (`--use-mock-keychain`,
+ * `--password-store=basic`, the same pair puppeteer's launcher sets): Chromium
+ * otherwise derives its cookie-encryption key from the login keychain and
+ * macOS blocks on a "wants to use your confidential information" dialog for
+ * every fresh binary. A caller-supplied profile keeps the real keystore; its
+ * existing cookies are encrypted with that key and a mock one would corrupt them.
  */
 export function resolveSpawnArgs(exe: string, appArgs: string[] | undefined, cwd = process.cwd()): string[] {
 	const args = appArgs ?? [];
@@ -217,8 +278,10 @@ export function resolveSpawnArgs(exe: string, appArgs: string[] | undefined, cwd
 	const launchArgs = [...args];
 	// A fresh profile otherwise opens the welcome tour and default-browser
 	// prompt as extra page targets, which attach may adopt instead of ours.
-	if (!args.includes("--no-first-run")) launchArgs.push("--no-first-run");
-	if (!args.includes("--no-default-browser-check")) launchArgs.push("--no-default-browser-check");
+	for (const flag of ["--no-first-run", "--no-default-browser-check", "--use-mock-keychain"]) {
+		if (!args.includes(flag)) launchArgs.push(flag);
+	}
+	if (!args.some(arg => arg.startsWith("--password-store"))) launchArgs.push("--password-store=basic");
 	launchArgs.push(`--user-data-dir=${path.join(getBrowserProfilesDir(), `${slug}-${hash}`)}`);
 	return launchArgs;
 }
@@ -235,6 +298,34 @@ async function probeCdpAt(port: number, signal?: AbortSignal): Promise<boolean> 
 }
 
 /**
+ * Resolve a distro wrapper script to its exec target (e.g.
+ * /opt/google/chrome/google-chrome is bash ending in
+ * `exec -a "$0" "$HERE/chrome" "$@"` with $HERE = dirname of the wrapper).
+ * Scans line-by-line for the final `exec ... $HERE/...` command so helper
+ * invocations are never mistaken for the application. Returns null for
+ * binaries and wrappers without an exec command. Size-guarded so real
+ * binaries are never read into memory.
+ */
+async function resolveWrapperTarget(wrapperPath: string): Promise<string | null> {
+	if (process.platform !== "linux") return null;
+	const stat = await fs.stat(wrapperPath).catch(() => null);
+	if (!stat || !stat.isFile() || stat.size > 65_536) return null;
+	const content = await Bun.file(wrapperPath)
+		.text()
+		.catch(() => null);
+	if (!content || content.charCodeAt(0) === 0x7f) return null;
+	let target: string | null = null;
+	const execRegex = /^\s*exec\s+(?:-a\s+(?:"[^"]*"|'[^']*'|\S+)\s+)?["']?\$(?:HERE|\{HERE\})\/([^\s"'`;}]+)/;
+	for (const line of content.split("\n")) {
+		const match = execRegex.exec(line);
+		if (match?.[1]) target = match[1];
+	}
+	if (!target) return null;
+	const joined = path.join(path.dirname(wrapperPath), target);
+	return fs.realpath(joined).catch(() => joined);
+}
+
+/**
  * Return a reusable CDP endpoint for `exe`, or null when no instance is
  * running. Refuse to replace an occupied instance unless the caller can
  * launch an isolated profile.
@@ -248,9 +339,16 @@ export async function findReusableCdp(
 		requestedUserDataDir !== null && path.isAbsolute(requestedUserDataDir)
 			? normalizeUserDataDir(requestedUserDataDir)
 			: null;
-	// Process paths use the executable's real path, not its launcher symlink.
+	// Process paths use the executable real path, not its launcher symlink. A distro
+	// wrapper script defeats realpath, so resolve through the wrapper exec target
+	// for Chromium-family browsers on Linux.
 	const executablePath = await fs.realpath(exe).catch(() => exe);
-	const candidates = Process.fromPath(executablePath).filter(process => process.status() === ProcessStatus.Running);
+	const base = path.basename(exe).replace(/\.exe$/i, "");
+	const isChromium = CHROMIUM_BROWSER_BASENAME.test(base) || Object.hasOwn(CHROMIUM_FLATPAK_IDS, base);
+	const wrapperTarget = process.platform === "linux" && isChromium ? await resolveWrapperTarget(executablePath) : null;
+	const candidates = Process.fromPath(wrapperTarget ?? executablePath).filter(
+		candidate => candidate.status() === ProcessStatus.Running,
+	);
 	if (process.platform === "linux" && normalizedRequestedUserDataDir !== null) {
 		// Profile ownership does not imply application identity. A wrapper can
 		// launch a fresh profile, but an occupied profile needs a verified binary
@@ -262,7 +360,7 @@ export async function findReusableCdp(
 			const owner = /^\d+$/.test(pidText) ? Process.fromPid(Number(pidText)) : null;
 			if (owner?.status() === ProcessStatus.Running && !candidates.some(candidate => candidate.pid === owner.pid)) {
 				const ownerExecutable = await fs.realpath(`/proc/${owner.pid}/exe`).catch(() => undefined);
-				if (ownerExecutable !== executablePath) {
+				if (ownerExecutable !== executablePath && ownerExecutable !== wrapperTarget) {
 					throw new ToolError(
 						"The requested profile is occupied by an unverified application. Use its executable path or explicitly select app.cdp_url.",
 					);
@@ -273,16 +371,23 @@ export async function findReusableCdp(
 	}
 	const candidateArgs: string[][] = [];
 	let hasUnreadableCandidate = false;
-	for (const process of candidates) {
+	for (const candidate of candidates) {
 		let args: string[];
 		let ambiguousProfile = false;
 		try {
-			const processArgs = process.args();
+			const processArgs = candidate.args();
 			if (processArgs.length === 0) {
 				hasUnreadableCandidate = true;
 				continue;
 			}
-			if (globalThis.process.platform === "linux" && processArgs.length === 1) {
+			if (process.platform === "linux" && processArgs.length === 1) {
+				// A flattened title cannot be split unambiguously when a switch
+				// value contains spaces (and may itself contain ` --`). Anchor on
+				// the requested profile: lift that exact value out of the title
+				// before splitting the rest. A longer value continuing past the
+				// requested one is only the same profile when the profile's
+				// SingletonLock is owned by this very process; otherwise treat the
+				// candidate as ambiguous instead of relaunching over a live profile.
 				let title = processArgs[0]!;
 				let matchedProfile = false;
 				if (requestedUserDataDir !== null) {
@@ -298,8 +403,8 @@ export async function findReusableCdp(
 								.catch(() => undefined);
 							const ownerPid = lock?.startsWith(`${os.hostname()}-`)
 								? Number(lock.slice(os.hostname().length + 1))
-								: NaN;
-							if (ownerPid !== process.pid) {
+								: Number.NaN;
+							if (ownerPid !== candidate.pid) {
 								ambiguousProfile = true;
 								continue;
 							}
@@ -309,6 +414,9 @@ export async function findReusableCdp(
 						break;
 					}
 				}
+				// A flattened title cannot be split on whitespace: switch values
+				// containing spaces would become separate argv items. Split on ` --`
+				// boundaries instead.
 				args = title.split(/ (?=--)/);
 				if (matchedProfile) args.push(`--user-data-dir=${requestedUserDataDir}`);
 			} else {
@@ -336,7 +444,7 @@ export async function findReusableCdp(
 		const port = findCdpPortInArgs(args);
 		if (port === null) continue;
 		if (await probeCdpAt(port, options.signal)) {
-			return { cdpUrl: `http://127.0.0.1:${port}`, pid: process.pid };
+			return { cdpUrl: `http://127.0.0.1:${port}`, pid: candidate.pid };
 		}
 	}
 	const canLaunchIsolatedProfile =
