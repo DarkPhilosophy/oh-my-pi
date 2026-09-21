@@ -150,6 +150,30 @@ describe("advisor curator", () => {
 		expect(decisions).toEqual([{ candidateId: "a", action: "keep" }]);
 	});
 
+	it("delivers every candidate unchanged when the judge exceeds the timeout", async () => {
+		const candidates = [candidate("a", "one", "One"), candidate("b", "two", "Two"), candidate("c", "three", "Three")];
+		spyOn(judgment, "resolveJudge").mockReturnValue({
+			label: "stub",
+			judge: (_request: unknown, options?: { signal?: AbortSignal }) => {
+				const { promise, reject } = Promise.withResolvers<never>();
+				options?.signal?.addEventListener("abort", () => reject(options.signal?.reason ?? new Error("aborted")));
+				return promise;
+			},
+		} as unknown as ReturnType<typeof judgment.resolveJudge>);
+
+		const { decisions } = await curateAdvisorCandidates({
+			settings: settingsStub(),
+			registry,
+			candidates,
+			context,
+			signal: AbortSignal.timeout(20),
+		});
+
+		// The point of the timeout is that advice still arrives: a slow judge may
+		// cost curation quality, never a note.
+		expect(decisions.map(decision => decision.action)).toEqual(["keep", "keep", "keep"]);
+	});
+
 	it("marks only the surviving note as curated and renders it for the agent", () => {
 		const notes: AdvisorNote[] = [
 			{ note: "blocking failure", severity: "blocker", advisor: "Safety" },
