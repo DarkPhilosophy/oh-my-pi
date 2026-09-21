@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { logger, takeRecentLoopPhase } from "@oh-my-pi/pi-utils";
+import { LoopProfiler } from "./loop-profile";
 
 export interface LoopWatchdogOptions {
 	/** How far ahead each probe tick is scheduled, in ms. Default 250. */
@@ -70,6 +71,7 @@ export class LoopWatchdog {
 	// cannot leave the pre-stop timer chain rescheduling itself in parallel.
 	#generation = 0;
 	#handle: LoopWatchdogTimer | undefined;
+	#profiler = new LoopProfiler();
 
 	constructor(options: LoopWatchdogOptions = {}) {
 		this.#intervalMs = options.intervalMs ?? 250;
@@ -93,6 +95,7 @@ export class LoopWatchdog {
 	start(): void {
 		if (this.#running) return;
 		this.#running = true;
+		this.#profiler.start();
 		this.#wasBlocked = false;
 		this.#armTick();
 	}
@@ -131,10 +134,14 @@ export class LoopWatchdog {
 					blockedMs: Math.round(blockedMs),
 					cpuMs: Math.round(cpuMs),
 					phase: phase ?? "unknown",
+					rssMb: Math.round(process.memoryUsage.rss() / 1_048_576),
+					heapMb: Math.round(process.memoryUsage().heapUsed / 1_048_576),
+					profile: this.#profiler.report(Math.round(blockedMs), phase ?? "unknown"),
 				});
 			}
 		} else {
 			this.#wasBlocked = false;
+			this.#profiler.discard();
 		}
 		this.#armTick();
 	}
