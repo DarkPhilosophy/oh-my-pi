@@ -386,7 +386,9 @@ export async function findReusableCdp(
 	const base = path.basename(exe).replace(/\.exe$/i, "");
 	const isChromium = CHROMIUM_BROWSER_BASENAME.test(base) || Object.hasOwn(CHROMIUM_FLATPAK_IDS, base);
 	const wrapperTarget = process.platform === "linux" && isChromium ? await resolveWrapperTarget(executablePath) : null;
-	const candidates = Process.fromPath(wrapperTarget ?? executablePath).filter(candidate => candidate.status() === ProcessStatus.Running);
+	const candidates = Process.fromPath(wrapperTarget ?? executablePath).filter(
+		candidate => candidate.status() === ProcessStatus.Running,
+	);
 	if (process.platform === "linux" && normalizedRequestedUserDataDir !== null) {
 		// Profile ownership does not imply application identity. A wrapper can launch a fresh profile,
 		// but an occupied profile needs a verified binary match or an explicitly selected CDP endpoint.
@@ -398,7 +400,9 @@ export async function findReusableCdp(
 			if (owner?.status() === ProcessStatus.Running && !candidates.some(candidate => candidate.pid === owner.pid)) {
 				const ownerExecutable = await fs.realpath(`/proc/${owner.pid}/exe`).catch(() => undefined);
 				if (ownerExecutable !== wrapperTarget && ownerExecutable !== executablePath) {
-					throw new ToolError("The requested profile is occupied by an unverified application. Use its executable path or explicitly select app.cdp_url.");
+					throw new ToolError(
+						"The requested profile is occupied by an unverified application. Use its executable path or explicitly select app.cdp_url.",
+					);
 				}
 				candidates.push(owner);
 			}
