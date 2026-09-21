@@ -23,6 +23,7 @@ import { TuiDebugServer } from "./debug-server";
 import { isKeyRelease, matchesKey } from "./keys";
 import { KITTY_PLACEHOLDER } from "./kitty-graphics";
 import { LoopWatchdog } from "./loop-watchdog";
+import { popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils";
 import {
 	compositeRightPanelsInRange,
 	type PanelLayoutResult,
@@ -2334,7 +2335,12 @@ export class TUI extends Container {
 		this.#renderRequested = false;
 		const start = this.#renderScheduler.now();
 		this.#lastRenderAt = start;
-		this.#doRender();
+		pushLoopPhase("ui:render");
+		try {
+			this.#doRender();
+		} finally {
+			popLoopPhase();
+		}
 		this.#lastFrameCostMs = this.#renderScheduler.now() - start;
 	}
 
@@ -2439,7 +2445,15 @@ export class TUI extends Container {
 		this.#pendingLiveRender = false;
 		const start = this.#renderScheduler.now();
 		this.#lastRenderAt = start;
-		this.#doRender();
+		// Phase breadcrumb: composing and emitting a frame is the largest piece
+		// of synchronous UI-thread work that ran unattributed, so a watchdog
+		// block here names the paint instead of reporting `unknown`.
+		pushLoopPhase("ui:render");
+		try {
+			this.#doRender();
+		} finally {
+			popLoopPhase();
+		}
 		this.#lastFrameCostMs = this.#renderScheduler.now() - start;
 	}
 	/**
@@ -2559,7 +2573,15 @@ export class TUI extends Container {
 			if (isKeyRelease(data) && !focused.wantsKeyRelease) {
 				return;
 			}
-			focused.handleInput(data);
+			// A keystroke's own handler runs here: editor mutation, autocomplete
+			// filtering, submit. Named so a stall between typing and echo is
+			// attributable to the handler rather than to the paint that follows.
+			pushLoopPhase("ui:input");
+			try {
+				focused.handleInput(data);
+			} finally {
+				popLoopPhase();
+			}
 			this.requestRender();
 		}
 	}

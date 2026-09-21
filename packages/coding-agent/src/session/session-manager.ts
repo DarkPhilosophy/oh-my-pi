@@ -23,6 +23,8 @@ import {
 	logger,
 	pathIsWithin,
 	stringifyJson,
+	popLoopPhase,
+	pushLoopPhase,
 	toError,
 } from "@oh-my-pi/pi-utils";
 import type { StructuredSubagentSchemaMode } from "@oh-my-pi/pi-tui/tools/task";
@@ -1189,6 +1191,10 @@ export class SessionManager {
 		const targetPath = this.#liveRelocationWritePath() ?? this.#sessionFile;
 		if (!targetPath) return;
 
+		// The whole transcript is serialized and written on the UI thread here;
+		// on a long session that is the single most expensive synchronous step
+		// persistence performs, so the watchdog must be able to name it.
+		pushLoopPhase("session:rewrite");
 		try {
 			const body = this.#fileBody();
 			this.#diskEpoch++;
@@ -1251,6 +1257,8 @@ export class SessionManager {
 			}
 		} catch (err) {
 			this.#noteDiskFailure(err);
+		} finally {
+			popLoopPhase();
 		}
 	}
 
@@ -1410,6 +1418,9 @@ export class SessionManager {
 		// to the OS page cache before return.
 		// A mid-close writer leaves `#writer` undefined, so `#appendWriter` simply
 		// opens a fresh append handle and the entry still lands.
+		// Phase breadcrumb: this is synchronous disk I/O on the UI thread, so a
+		// watchdog block here must say so instead of reporting as `unknown`.
+		pushLoopPhase("session:append");
 		try {
 			const writer = this.#appendWriter();
 			const line = this.#lineFor(entry);
@@ -1436,6 +1447,8 @@ export class SessionManager {
 			this.#fileIsCurrent = false;
 			this.#rewriteRequired = true;
 			this.#noteDiskFailure(err);
+		} finally {
+			popLoopPhase();
 		}
 	}
 
