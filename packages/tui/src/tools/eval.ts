@@ -229,19 +229,22 @@ function renderAgentProgressEvents(
 		);
 
 		if (status === "running") {
+			// The detail row is reserved for the whole time the agent runs. Between
+			// tool calls neither currentTool nor lastIntent is set, and emitting
+			// the row only when one exists toggled the card's height on every
+			// progress tick - one row per running agent, up and down - which
+			// re-diffed the whole frame each time. A placeholder keeps it stable.
+			let detailLine: string;
 			if (currentTool) {
-				let toolLine = `${cont}${theme.tree.hook} ${theme.fg("muted", currentTool)}`;
+				detailLine = `${cont}${theme.tree.hook} ${theme.fg("muted", currentTool)}`;
 				const detail = lastIntent ?? eventString(event.currentToolArgs);
-				if (detail) toolLine += `: ${theme.fg("dim", truncateToWidth(replaceTabs(detail), 48))}`;
-				lines.push(truncateToWidth(toolLine, width));
+				if (detail) detailLine += `: ${theme.fg("dim", truncateToWidth(replaceTabs(detail), 48))}`;
 			} else if (lastIntent) {
-				lines.push(
-					truncateToWidth(
-						`${cont}${theme.tree.hook} ${theme.fg("dim", truncateToWidth(replaceTabs(lastIntent), 48))}`,
-						width,
-					),
-				);
+				detailLine = `${cont}${theme.tree.hook} ${theme.fg("dim", truncateToWidth(replaceTabs(lastIntent), 48))}`;
+			} else {
+				detailLine = `${cont}${theme.tree.hook} ${theme.fg("dim", "…")}`;
 			}
+			lines.push(truncateToWidth(detailLine, width));
 		}
 	}
 	return lines;
