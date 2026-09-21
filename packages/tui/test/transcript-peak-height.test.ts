@@ -52,11 +52,12 @@ describe("live block peak height", () => {
 		card.rows = ["header", "done"];
 		expect(heightOf()).toEqual({ measured: 15, shown: 15 });
 
-		// Finishing must not lower it either: a completed card keeps the size
-		// it had while running for as long as it stays in the live region, and
-		// the planner's reservation must agree with what the viewport shows.
+		// Finishing releases the hold: the card's final collapse is a single
+		// contraction, and keeping the pad would leave a black band under the
+		// finished card until history commits it. Measurement still agrees
+		// with the viewport.
 		card.finalized = true;
-		expect(heightOf()).toEqual({ measured: 15, shown: 15 });
+		expect(heightOf()).toEqual({ measured: 2, shown: 2 });
 	});
 
 	it("forgets the peak when the terminal width changes", () => {

@@ -974,14 +974,16 @@ export class TranscriptContainer extends Container {
 		// copy unless it has to: slice only when there is an emitted prefix, and
 		// build a padded array only when the block is actually short of its peak.
 		const liveLength = whole.length - offset;
-		// Held through completion: a finished card keeps the size it had while
-		// running for as long as it stays in the live region. Only leaving the
-		// region (commit to history) releases it - history carries the real rows.
+		// Held while the card is running: that is when it grows and contracts
+		// frame to frame. A finished card is released immediately - its final
+		// collapse (a write card folding to its preview) is one contraction,
+		// not an oscillation, and holding it would leave the pad rows on screen
+		// as a black band under the card until history commits it.
 		// Scoped to blocks that emit no stable prefix (mutable tool cards, the
 		// class that grew and contracted): an append-only block retires rows to
 		// history mid-stream by design, and the planner's transient measurement
 		// excludes emitting blocks, so holding them would desynchronize the two.
-		if (entry.state === "committed" || entry.emitted > 0 || liveLength <= 0) {
+		if (entry.state !== "active" || isFinalized(entry.component) || entry.emitted > 0 || liveLength <= 0) {
 			entry.peakLiveRows = undefined;
 			return offset === 0 ? whole : whole.slice(offset);
 		}
