@@ -51,6 +51,9 @@ export interface AppendOnlyTranscriptBlock {
 
 interface FinalizableBlock {
 	isTranscriptBlockFinalized?(): boolean;
+	/** Retire this finalized block on the first eligible frame instead of
+	 * retaining it as mutable viewport tail until later pressure. */
+	commitToHistoryOnFinalize?: boolean;
 	/**
 	 * Whether the block's height is still reversible: it grows while it runs and
 	 * collapses when it settles or disappears. Those rows must expand the
@@ -762,8 +765,20 @@ export class TranscriptContainer extends Container {
 			heights[index] = rows.length;
 			if (rows.length > 0) total += rows.length + (visible++ > 0 ? 1 : 0);
 		}
+		// Some finalized blocks (tool cards) should cross into native history as
+		// soon as they settle. Find the last such block in the contiguous settled
+		// prefix before the no-overflow fast path: a completed card often shrinks
+		// below the pressure threshold on the very frame it becomes immutable.
+		let requiredEnd = this.#frontier;
+		for (let cursor = this.#frontier; cursor < this.#entries.length; cursor++) {
+			const entry = this.#entries[cursor]!;
+			if (entry.state !== "settled") break;
+			if ((entry.component as Component & FinalizableBlock).commitToHistoryOnFinalize === true)
+				requiredEnd = cursor + 1;
+		}
+
 		const overflowing = total > room || this.#liveCount() >= MAX_LIVE_BLOCKS;
-		if (policy === "pressure" && !overflowing) {
+		if (policy === "pressure" && !overflowing && requiredEnd === this.#frontier) {
 			this.#pinnedFrontier = undefined;
 			return undefined;
 		}
@@ -840,6 +855,7 @@ export class TranscriptContainer extends Container {
 		let index = 0;
 		while (end < this.#entries.length && this.#entries[end]!.state === "settled") {
 			if (
+				end >= requiredEnd &&
 				policy === "pressure" &&
 				total - freed <= room &&
 				this.#liveCount() - (end - this.#frontier) < MAX_LIVE_BLOCKS
@@ -848,6 +864,7 @@ export class TranscriptContainer extends Container {
 			// A finalized block can still occupy most of the physical screen.
 			// Do not retire its visible tail merely because its first rows overflow.
 			if (
+				end >= requiredEnd &&
 				policy === "pressure" &&
 				!this.#entries[end]!.borrowed &&
 				room > 0 &&
@@ -1212,4 +1229,4 @@ export class TranscriptContainer extends Container {
 }
 
 /** Groups sibling rows into one conservative mutable semantic transcript block. */
-export class TranscriptBlock extends Container {}
+export class TranscriptBlock extends Container { }

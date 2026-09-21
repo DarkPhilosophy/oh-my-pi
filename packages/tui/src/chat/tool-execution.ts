@@ -258,6 +258,9 @@ let toolExecutionInstanceSeq = 0;
  * Component that renders a tool call with its result (updateable)
  */
 export class ToolExecutionComponent extends Container {
+	/** Completed tool cards belong to native history immediately; keeping them
+	 * as live viewport tail makes completion appear delayed until later output. */
+	readonly commitToHistoryOnFinalize = true;
 	#contentBox: Box; // Used for custom tools and bash visual truncation
 	#contentText: WidthAwareText; // Generic fallback (no custom/built-in renderer)
 	// Which container the constructor mounted: bespoke/built-in renderers use
