@@ -112,6 +112,11 @@ interface TranscriptEntry {
 	frameMemo?: { frame: AnimationFrame; width: number; allocation: number; rows: readonly string[] };
 	/** Allocation most recently applied through `#setAllocation`. */
 	allocation: number;
+	/**
+	 * Tallest live height this block reached at a width. A live block is held
+	 * at this height until it settles so its card never contracts mid-run.
+	 */
+	peakLiveRows?: { width: number; rows: number };
 }
 
 type RetirementPolicy = "pressure" | "flush";
@@ -471,7 +476,10 @@ export class TranscriptContainer extends Container {
 		const blocks: { label: string; rows: number }[] = [];
 		for (const entry of this.#entries) {
 			if (entry.state === "committed" || entry.emitted > 0) continue;
-			if (!isTransient(entry.component)) continue;
+			// A finished block that still holds a peak is presented at that height
+			// until it leaves the live region, so the reservation must count it
+			// too, or the planner would release rows the viewport still shows.
+			if (!isTransient(entry.component) && entry.peakLiveRows === undefined) continue;
 			if (
 				allocation !== undefined &&
 				frame !== undefined &&
@@ -480,7 +488,9 @@ export class TranscriptContainer extends Container {
 			) {
 				this.#setAllocation(entry, allocation, frame);
 			}
-			const rows = this.#renderEntry(entry, width, frame).length;
+			// Measure at the same held height the viewport will present, or the
+			// reservation would swing with the raw render while the card does not.
+			const rows = this.#holdPeakHeight(entry, width, this.#renderEntry(entry, width, frame), 0).length;
 			if (rows > 0) blocks.push({ label: entry.component.constructor.name, rows });
 		}
 		return blocks;
@@ -623,7 +633,7 @@ export class TranscriptContainer extends Container {
 				(entry.component as TranscriptPresentationTarget).setTranscriptAllocation !== undefined;
 			this.#setAllocation(entry, mutableTool ? rows : Number.MAX_SAFE_INTEGER, frame);
 			const offset = this.#projectedEmittedRowCount(entry, index, width);
-			const rendered = this.#renderEntry(entry, width, frame).slice(offset);
+			const rendered = this.#holdPeakHeight(entry, width, this.#renderEntry(entry, width, frame), offset);
 			if (rendered.length === 0) continue;
 			if (output.length > 0) {
 				output.push("");
@@ -943,6 +953,42 @@ export class TranscriptContainer extends Container {
 		const rendered = this.#renderEntryUncached(entry, width);
 		entry.frameMemo = { frame, width, allocation: entry.allocation, rows: rendered };
 		return rendered;
+	}
+
+	/**
+	 * A live block never shrinks once it has grown. Streaming output, a tool
+	 * that clears a status section, a failing edit that collapses to an error
+	 * card: each used to change the card's height, and every change moved the
+	 * whole live region and re-diffed the frame. The block is held at the
+	 * tallest height it reached at this width for as long as it is live,
+	 * finished or not; leaving the live region releases it.
+	 *
+	 * Presentation only: applied to the live suffix AFTER the emitted stable
+	 * prefix is sliced off, so pad rows never enter stable rows, a history
+	 * batch or a replay, and never scroll into native scrollback as a band.
+	 * Keyed on width so a narrow reflow cannot pin excess padding after the
+	 * terminal widens.
+	 */
+	#holdPeakHeight(entry: TranscriptEntry, width: number, whole: readonly string[], offset: number): readonly string[] {
+		const live = whole.slice(offset);
+		// Held through completion: a finished card keeps the size it had while
+		// running for as long as it stays in the live region. Only leaving the
+		// region (commit to history) releases it - history carries the real rows.
+		if (entry.state === "committed" || live.length === 0) {
+			entry.peakLiveRows = undefined;
+			return live;
+		}
+		// The peak is the block's WHOLE height. Rows leaving the live suffix
+		// because they were emitted to history are not a contraction of the
+		// card, so the pad is whatever the whole block is short of its peak.
+		const peak = entry.peakLiveRows?.width === width ? Math.max(entry.peakLiveRows.rows, whole.length) : whole.length;
+		entry.peakLiveRows = { width, rows: peak };
+		// Content never lowers the card, but the screen can: when the live budget
+		// shrinks (the editor grew), a mutable card is squeezed to its allocation
+		// so the frame still fits, and holding the old peak would overflow it.
+		const target = Math.min(peak, Number.isFinite(entry.allocation) ? Math.max(0, entry.allocation) : peak);
+		if (whole.length >= target) return live;
+		return [...live, ...Array.from({ length: target - whole.length }, () => "")];
 	}
 
 	#renderEntryUncached(entry: TranscriptEntry, width: number): readonly string[] {
