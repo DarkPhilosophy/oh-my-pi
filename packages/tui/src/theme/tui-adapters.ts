@@ -176,14 +176,8 @@ let copyChipTarget: ((code: string) => string | undefined) | undefined;
 
 /** Configure the optional application-owned target resolver for Markdown copy chips. */
 export function setCopyUrlHandlerReady(ready: false): void;
-export function setCopyUrlHandlerReady(
-	ready: true,
-	resolver: (code: string) => string | undefined,
-): void;
-export function setCopyUrlHandlerReady(
-	ready: boolean,
-	resolver?: (code: string) => string | undefined,
-): void {
+export function setCopyUrlHandlerReady(ready: true, resolver: (code: string) => string | undefined): void;
+export function setCopyUrlHandlerReady(ready: boolean, resolver?: (code: string) => string | undefined): void {
 	copyChipTarget = ready ? resolver : undefined;
 }
 export function setMarkdownMermaidRendering(enabled: boolean): void {
@@ -199,20 +193,20 @@ export function getMarkdownTheme(): MarkdownTheme {
 	}
 	const mermaid = markdownMermaidRendering
 		? (() => {
-			// Diagram geometry is content, so keep every structural stroke on the
-			// theme's readable muted foreground instead of subtle UI chrome borders.
-			const mermaidColorMode =
-				theme.getColorMode() === "truecolor" ? ("truecolor" as const) : ("ansi256" as const);
-			const mermaidTheme = {
-				fg: theme.getColorHex("text"),
-				border: theme.getColorHex("muted"),
-				line: theme.getColorHex("muted"),
-				arrow: theme.getColorHex("accent"),
-				corner: theme.getColorHex("muted"),
-				junction: theme.getColorHex("muted"),
-			};
-			return { mermaidColorMode, mermaidTheme };
-		})()
+				// Diagram geometry is content, so keep every structural stroke on the
+				// theme's readable muted foreground instead of subtle UI chrome borders.
+				const mermaidColorMode =
+					theme.getColorMode() === "truecolor" ? ("truecolor" as const) : ("ansi256" as const);
+				const mermaidTheme = {
+					fg: theme.getColorHex("text"),
+					border: theme.getColorHex("muted"),
+					line: theme.getColorHex("muted"),
+					arrow: theme.getColorHex("accent"),
+					corner: theme.getColorHex("muted"),
+					junction: theme.getColorHex("muted"),
+				};
+				return { mermaidColorMode, mermaidTheme };
+			})()
 		: undefined;
 	const markdownTheme: MarkdownTheme = {
 		heading: (text: string) => theme.fg("mdHeading", text),
@@ -240,11 +234,11 @@ export function getMarkdownTheme(): MarkdownTheme {
 		symbols: getSymbolTheme(),
 		resolveMermaidAscii: mermaid
 			? (source, maxWidth) =>
-				resolveMermaidAscii(source, {
-					maxWidth,
-					theme: mermaid.mermaidTheme,
-					colorMode: mermaid.mermaidColorMode,
-				})
+					resolveMermaidAscii(source, {
+						maxWidth,
+						theme: mermaid.mermaidTheme,
+						colorMode: mermaid.mermaidColorMode,
+					})
 			: undefined,
 		highlightCode: (code: string, lang?: string): string[] => {
 			const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;

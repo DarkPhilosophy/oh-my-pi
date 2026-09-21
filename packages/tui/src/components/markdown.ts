@@ -83,7 +83,7 @@ function findNormalizedOsc8Span(
 		if (normalizedNeedle[index] === normalizedNeedle[matched]) matched++;
 		fallback[index] = matched;
 	}
-	const rawStarts = new Array<number>(normalizedNeedle.length);
+	const rawStarts = Array.from({ length: normalizedNeedle.length }, () => 0);
 	// Normalization consumes at most two raw code units per emitted unit.
 	const end = exactStart < 0 ? source.length : Math.min(source.length, exactStart + normalizedNeedle.length * 2);
 	let oscBodyStart = -1;
