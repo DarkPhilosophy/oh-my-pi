@@ -679,8 +679,8 @@ describe("AgentSession queue coalescing", () => {
 		const onQueued = (text: string, imageCount: number, replacedText?: string) =>
 			calls.push([text, imageCount, replacedText]);
 		await duringStream(target, async () => {
-			await target.steer("a", undefined, onQueued);
-			await target.steer("b", undefined, onQueued);
+			await target.steer("a", undefined, { onQueued });
+			await target.steer("b", undefined, { onQueued });
 			return null;
 		});
 		// session.steer (the compaction-delivery path) reports the merge the same way,
@@ -824,6 +824,39 @@ describe("AgentSession steering delivery contract", () => {
 			.find(m => Array.isArray(m.content) && m.content.some(part => part.type === "image"));
 		expect(deliveredImageTurn?.content).toContainEqual({ type: "image", data: "QUJD", mimeType: "image/png" });
 		expect(target.agent.peekSteeringQueue()).toEqual([]);
+		expect(target.getQueuedMessages().steering).toEqual([]);
+	});
+	it("does not coalesce a fresh steer into an asynchronously claimed delivery", async () => {
+		const target = await createSession([{ content: ["ok-1"] }, { content: ["ok-2"] }, { content: ["ok-3"] }]);
+		target.setSteeringMode("coalescing");
+		const claimed = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		target.agent.prepareQueuedMessages = async () => {
+			claimed.resolve();
+			await release.promise;
+			return { commit: () => [] };
+		};
+		let queued = false;
+		target.agent.setOnBeforeYield(async () => {
+			if (queued) return;
+			queued = true;
+			await target.steer("claimed steer");
+		});
+
+		const run = target.prompt("start");
+		await claimed.promise;
+		await target.steer("later steer");
+		release.resolve();
+		await run;
+
+		const delivered = target.agent.state.messages
+			.filter(message => message.role === "user")
+			.map(message =>
+				typeof message.content === "string"
+					? message.content
+					: message.content.map(block => (block.type === "text" ? block.text : "")).join(""),
+			);
+		expect(delivered).toEqual(["start", "claimed steer", "later steer"]);
 		expect(target.getQueuedMessages().steering).toEqual([]);
 	});
 });

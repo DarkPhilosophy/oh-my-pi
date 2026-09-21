@@ -16,6 +16,7 @@ import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
 // In-memory transport: FakeWebSocket + InMemoryRelay (see ./helpers/in-memory-relay)
@@ -289,6 +290,34 @@ describe("collab read-only links", () => {
 			if (replacement) await replacement;
 		}
 	});
+	for (const kind of ["advisor", "main", "sub"] as const) {
+		it(`${kind === "advisor" ? "denies" : "serves"} ${kind} transcripts requested by a view-link guest`, async () => {
+			await using dir = await TempDir.create("@pi-collab-transcript-");
+			const id = `transcript-${kind}-${crypto.randomUUID()}`;
+			const text = `${JSON.stringify({ type: "message", content: id })}\n`;
+			const file = dir.join("session.jsonl");
+			await Bun.write(file, text);
+			const registry = AgentRegistry.global();
+			const ref = registry.register({ id, displayName: id, kind, session: null, sessionFile: file });
+			try {
+				const guest = await joinAsGuest(host.viewLink, `reader-${kind}`);
+				guestCleanups.push(() => guest.socket.close());
+				const welcome = await guest.nextFrame();
+				if (welcome.t !== "welcome") throw new Error(`expected welcome, got ${welcome.t}`);
+				guest.socket.send({ t: "fetch-transcript", reqId: 1, agentId: id, fromByte: 0 });
+				const reply = await guest.nextFrame();
+				if (reply.t !== "transcript") throw new Error(`expected transcript, got ${reply.t}`);
+				if (kind === "advisor") {
+					expect(reply.text).not.toContain(id);
+					expect(reply).toMatchObject({ reqId: 1, text: "", newSize: 0, error: "no transcript available" });
+				} else {
+					expect(reply).toEqual({ t: "transcript", reqId: 1, text, newSize: Buffer.byteLength(text) });
+				}
+			} finally {
+				registry.unregister(id, ref);
+			}
+		});
+	}
 
 	it("welcomes view-link guests read-only and refuses their mutating frames", async () => {
 		const { prompts, aborts } = harness;
@@ -388,6 +417,41 @@ describe("collab read-only links", () => {
 		expect(await pending).toEqual({ kind: "answered", value: "Yes" });
 		const end = await guest.nextFrame();
 		expect(end).toEqual({ t: "ui-request-end", reqId: request.request.reqId });
+	});
+
+	it("acknowledges a late or duplicate writable response after the request settled", async () => {
+		const answerer = await joinAsGuest(host.link, "writer-answer");
+		guestCleanups.push(() => answerer.socket.close());
+		const answererWelcome = await answerer.nextFrame();
+		if (answererWelcome.t !== "welcome") throw new Error(`expected welcome, got ${answererWelcome.t}`);
+
+		const pending = host.requestGuestUi({ kind: "select", title: "Settle once?", options: ["Yes"] });
+		if (!pending) throw new Error("expected writable guest UI request");
+		const request = await answerer.nextFrame();
+		if (request.t !== "ui-request") throw new Error(`expected ui-request, got ${request.t}`);
+		const reqId = request.request.reqId;
+
+		answerer.socket.send({ t: "ui-response", reqId, value: "Yes" });
+		expect(await pending).toEqual({ kind: "answered", value: "Yes" });
+		expect(await answerer.nextFrame()).toEqual({ t: "ui-request-end", reqId });
+
+		// A writer that reconnects after settlement never saw the broadcast end frame
+		// and resends its answer. The barrier orders the reply: before the fix, the
+		// resend was dropped and the barrier error arrived first.
+		const late = await joinAsGuest(host.link, "writer-late");
+		guestCleanups.push(() => late.socket.close());
+		const lateWelcome = await late.nextFrame();
+		if (lateWelcome.t !== "welcome") throw new Error(`expected welcome, got ${lateWelcome.t}`);
+		late.socket.send({ t: "ui-response", reqId, value: "Yes" });
+		late.socket.send({ t: "agent-cmd", cmd: "chat", agentId: "barrier", text: "" });
+		expect(await late.nextFrame()).toEqual({ t: "ui-request-end", reqId });
+		const lateBarrier = await late.nextFrame();
+		if (lateBarrier.t !== "error") throw new Error(`expected error, got ${lateBarrier.t}`);
+
+		// The acknowledgement is targeted: the original writer sees only its own barrier reply.
+		answerer.socket.send({ t: "agent-cmd", cmd: "chat", agentId: "barrier", text: "" });
+		const answererBarrier = await answerer.nextFrame();
+		if (answererBarrier.t !== "error") throw new Error(`expected error, got ${answererBarrier.t}`);
 	});
 
 	it("treats a forged write token as read-only", async () => {
