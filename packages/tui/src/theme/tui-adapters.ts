@@ -78,20 +78,33 @@ export function setCopyUrlTargetProvider(
  */
 const HIGHLIGHT_CACHE_MAX = 256;
 /**
- * Largest code body highlighted synchronously. The native tokenizer scales
- * linearly at roughly 0.7 ms per line on the UI thread: 5,000 lines cost
- * ~3.7 s and 20,000 lines ~15 s, and a large write card finalizes exactly
- * such a body in one paint. Past this size the body renders plain, which is
- * readable; a multi-second freeze is not.
+ * Largest code body highlighted synchronously. The native tokenizer's cost is
+ * per LINE, roughly 0.7 ms each on the UI thread, almost regardless of line
+ * length: 5,000 lines cost ~3.7 s and 20,000 lines ~15 s, and a large write
+ * card finalizes exactly such a body in one paint. A character bound alone
+ * misses this — 5,000 one-character lines are 15k characters and still take
+ * ~1.5 s — so the gate is on lines, with a byte bound for pathological width.
+ * Past either the body renders plain, which is readable; a freeze is not.
  */
-const HIGHLIGHT_MAX_CHARS = 24_000;
+const HIGHLIGHT_MAX_LINES = 400;
+const HIGHLIGHT_MAX_CHARS = 64_000;
 const highlightCache = new LRUCache<string, string>({
 	max: HIGHLIGHT_CACHE_MAX,
 });
 let highlightCacheTheme: Theme | undefined;
 
+/** Whether a code body is small enough to tokenize on the UI thread. */
+export function canHighlightSynchronously(code: string): boolean {
+	if (code.length > HIGHLIGHT_MAX_CHARS) return false;
+	let lines = 1;
+	for (let index = code.indexOf("\n"); index !== -1; index = code.indexOf("\n", index + 1)) {
+		if (++lines > HIGHLIGHT_MAX_LINES) return false;
+	}
+	return true;
+}
+
 function highlightCached(code: string, validLang: string | undefined, highlightTheme: Theme): string | null {
-	if (validLang === undefined || code.length > HIGHLIGHT_MAX_CHARS) return code;
+	if (validLang === undefined || !canHighlightSynchronously(code)) return code;
 	if (highlightCacheTheme !== highlightTheme) {
 		highlightCache.clear();
 		highlightCacheTheme = highlightTheme;
