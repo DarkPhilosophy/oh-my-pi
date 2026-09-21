@@ -846,7 +846,7 @@ export function advisorActivityLabel(
  * cannot step over it, and rare enough to read as an eye, not an alarm.
  */
 function advisorBlinkIcon(now: number): string {
-	const open = theme.icon.advisor;
+	const open = theme.icon.advisorActivity;
 	if (!open) return "";
 	const closed = now % ADVISOR_BLINK_PERIOD_MS >= ADVISOR_BLINK_PERIOD_MS - ADVISOR_BLINK_CLOSED_MS;
 	return closed ? " ".repeat(Math.max(1, Bun.stringWidth(open))) : open;

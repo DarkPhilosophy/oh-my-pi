@@ -97,6 +97,7 @@ export type SymbolKey =
 	| "icon.subscription"
 	| "icon.advisor"
 	| "icon.advisorClosed"
+	| "icon.advisorActivity"
 	| "icon.time"
 	| "icon.omp"
 	| "icon.esc"
@@ -457,6 +458,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.subscription": "(sub)",
 	"icon.advisor": "👁",
 	"icon.advisorClosed": "🙈",
+	"icon.advisorActivity": "👁",
 	"icon.time": "⏱",
 	"icon.omp": "π",
 	"icon.esc": "⎋",
@@ -815,6 +817,11 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.advisor": "\uea70",
 	// pick:  (nf-oct-eye_closed)
 	"icon.advisorClosed": "\ueae7",
+	// Dedicated glyph for the "reviewing" activity label: never the status
+	// badge's eye nor the closed/denied eye. The label blinks by showing and
+	// hiding this one glyph, so no second glyph is needed.
+	// pick: 󰮔 (nf-md-eye_circle)
+	"icon.advisorActivity": "\u{f0b94}",
 	// pick:  | alt: ◷ ◴
 	"icon.time": "\uf017",
 	// pick: 󰵗 (nf-md-pi) | alt:  π ∏ ∑
@@ -1190,6 +1197,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"icon.subscription": "(sub)",
 	"icon.advisor": "(adv)",
 	"icon.advisorClosed": "(adv)",
+	"icon.advisorActivity": "(o)",
 	"icon.time": "t:",
 	"icon.omp": "pi",
 	"icon.esc": "esc",

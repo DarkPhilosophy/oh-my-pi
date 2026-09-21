@@ -95,7 +95,7 @@ describe("session_name status-line segment", () => {
 		let closed = 0;
 		for (let now = 0; now < 3200; now += 50) {
 			const label = advisorActivityLabel(overview, now) ?? "";
-			const glyph = label.slice(0, Bun.stringWidth(theme.icon.advisor));
+			const glyph = label.slice(0, Bun.stringWidth(theme.icon.advisorActivity));
 			glyphs.add(glyph);
 			if (glyph.trim() === "") closed++;
 		}
