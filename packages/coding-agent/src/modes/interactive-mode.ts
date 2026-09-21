@@ -213,8 +213,7 @@ import { PlanSaveOverlay, type PlanSaveOverlayResult } from "@oh-my-pi/pi-tui/ov
 import { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
 import { SessionInfoOverlay } from "@oh-my-pi/pi-tui/overlays/session-info-overlay";
 import { SkillMessageComponent } from "@oh-my-pi/pi-tui/chat/skill-message";
-import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
-import { advisorActivityLabel } from "@oh-my-pi/pi-tui/status-line/segments";
+import { advisorActivityLabel, StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "./status-line-host";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
@@ -840,19 +839,23 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * is actually reviewing, that activity takes the slot: the title is read once
 	 * and then says nothing, whereas who is reviewing right now changes and has
 	 * nowhere else to appear. */
-	#workingTitleTrailer(): string | undefined {
+	#workingTitleTrailer(animated: boolean): string | undefined {
 		if (this.settings.get("composer.shape") !== "band") return undefined;
-		const label = this.#advisorActivityLabel() ?? this.sessionManager.getSessionName();
+		const label = this.#advisorActivityLabel(animated) ?? this.sessionManager.getSessionName();
 		if (!label) return undefined;
 		return `\x1b[2;3m${sanitizeStatusText(label)}\x1b[23;22m`;
 	}
 	/**
 	 * Live advisor activity, or `undefined` when none is working so the title
 	 * keeps the slot. Shares {@link advisorActivityLabel} with the status-line
-	 * segment so both surfaces blink and count identically.
+	 * segment so both surfaces count and blink identically.
+	 *
+	 * The idle HUD renders once and is not repainted, so the blink phase is
+	 * pinned open there: a frozen half-closed eye would read as a rendering
+	 * fault rather than an animation.
 	 */
-	#advisorActivityLabel(): string | undefined {
-		return advisorActivityLabel(this.session.getAdvisorStatusOverview?.());
+	#advisorActivityLabel(animated: boolean): string | undefined {
+		return advisorActivityLabel(this.session.getAdvisorStatusOverview?.(), animated ? undefined : 0);
 	}
 	/** Live gen tok/s for the working row: the viewed session's own meter, so a
 	 * focused subagent shows its own reading and the main session's survives
@@ -869,17 +872,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		return theme.fg("dim", `${theme.icon.throughput} ${rate.toFixed(1)} tok/s`);
 	}
 	/** Right-docked suffix of the working row: the tok/s readout, then the band-mode title. */
-	#workingRowTrailer(): string | undefined {
+	#workingRowTrailer(animated: boolean): string | undefined {
 		const rate = this.#tokenRateLabel();
-		const title = this.#workingTitleTrailer();
+		const title = this.#workingTitleTrailer(animated);
 		if (rate && title) return `${rate}  ${title}`;
 		return rate ?? title;
 	}
 	/** Idle stand-in for the working row: the last tok/s reading and the
 	 * band-mode title stay readable between turns, docked where the loader's
-	 * trailer was. */
+	 * trailer was. Rendered once, so the advisor eye does not animate here. */
 	renderIdleStatusHud(width: number): readonly string[] | undefined {
-		const trailer = this.#workingRowTrailer();
+		const trailer = this.#workingRowTrailer(false);
 		if (!trailer) return undefined;
 		return ["", " ".repeat(Math.max(0, width - visibleWidth(trailer))) + trailer];
 	}
@@ -6445,7 +6448,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				// status rows so the interrupt glyph reads as indented.
 				[` ${theme.icon.esc}`],
 			);
-			this.loadingAnimation.setTrailer(() => this.#workingRowTrailer());
+			this.loadingAnimation.setTrailer(() => this.#workingRowTrailer(true));
 			this.statusContainer.addChild(this.loadingAnimation);
 		} else if (!this.statusContainer.children.includes(this.loadingAnimation)) {
 			this.statusContainer.disposeChildren();

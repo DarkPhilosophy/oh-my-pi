@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
-import { renderSegment } from "../src/status-line/segments";
+import { advisorActivityLabel, renderSegment } from "../src/status-line/segments";
 import type { SegmentContext } from "../src/status-line/types";
-import { initTheme } from "../src/theme";
+import { initTheme, theme } from "../src/theme";
 
 beforeAll(async () => {
 	await initTheme();
@@ -67,5 +67,23 @@ describe("session_name status-line segment", () => {
 			{ name: "Spent", status: "quota_exhausted", yielded: false },
 		]);
 		expect(plain(renderSegment("session_name", ctx).content)).toContain("title");
+	});
+
+	it("blinks the eye on a slow cycle instead of holding one glyph", () => {
+		const overview = { configured: true, advisors: [{ name: "Reliability", status: "running", yielded: false }] };
+		// Sample a full cycle at roughly the working row's repaint cadence: both
+		// glyphs must occur, and the closed one must stay rare enough to read as
+		// a blink rather than a flashing alarm.
+		const glyphs = new Set<string>();
+		let closed = 0;
+		for (let now = 0; now < 3200; now += 50) {
+			const label = advisorActivityLabel(overview, now) ?? "";
+			const glyph = label.slice(0, label.indexOf(" "));
+			glyphs.add(glyph);
+			if (glyph === theme.icon.advisorClosed) closed++;
+		}
+		expect(glyphs.size).toBe(2);
+		expect(closed).toBeGreaterThan(0);
+		expect(closed).toBeLessThan(8);
 	});
 });

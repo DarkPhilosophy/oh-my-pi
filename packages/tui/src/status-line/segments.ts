@@ -787,7 +787,9 @@ const cacheHitSegment: StatusLineSegment = {
 const sessionNameSegment: StatusLineSegment = {
 	id: "session_name",
 	render(ctx) {
-		const activity = advisorActivityLabel(ctx);
+		const activity = ctx.startupPlaceholder
+			? undefined
+			: advisorActivityLabel(ctx.session.getAdvisorStatusOverview?.());
 		if (activity !== undefined) {
 			return { content: theme.fg("dim", sanitizeStatusText(activity)), visible: true };
 		}
@@ -800,22 +802,49 @@ const sessionNameSegment: StatusLineSegment = {
 	},
 };
 
-/** `undefined` when no advisor is working, so the session title keeps the slot. */
-function advisorActivityLabel(ctx: SegmentContext): string | undefined {
-	if (ctx.startupPlaceholder) return undefined;
-	const overview = ctx.session.getAdvisorStatusOverview?.();
+/**
+ * Live advisor activity for the status line and the band composer's working
+ * row; `undefined` when no advisor is working, so the session title keeps the
+ * slot.
+ *
+ * With several advisors the names are not cycled: a label rewritten every frame
+ * is unreadable and makes the row jitter, so past the first only the count — the
+ * part that varies — is shown.
+ */
+export function advisorActivityLabel(
+	overview:
+		| { configured: boolean; advisors: readonly { name?: string; status: string; yielded: boolean }[] }
+		| undefined,
+	now = Date.now(),
+): string | undefined {
 	if (!overview?.configured) return undefined;
 	const working = overview.advisors.filter(advisor => advisor.status === "running" && !advisor.yielded);
 	if (working.length === 0) return undefined;
-	const eye = theme.icon.advisor || "";
+	const eye = advisorBlinkIcon(now);
 	const prefix = eye ? `${eye} ` : "";
 	if (working.length === 1) {
 		// The implicit single advisor carries no configured name.
-		const only = working[0]!.name;
+		const only = working[0]?.name;
 		return `${prefix}${only ? `${only} reviewing` : "advisor reviewing"}`;
 	}
 	return `${prefix}${working.length} advisors reviewing`;
 }
+
+/** One blink per {@link ADVISOR_BLINK_PERIOD_MS}, closed for the last
+ *  {@link ADVISOR_BLINK_CLOSED_MS}. The window is wide enough that the
+ *  working-row repaint cadence cannot step over a blink entirely, and rare
+ *  enough to read as an eye rather than a flashing alarm. Falls back to the
+ *  open icon when the theme has no closed variant. */
+function advisorBlinkIcon(now: number): string {
+	const open = theme.icon.advisor;
+	const closed = theme.icon.advisorClosed;
+	if (!open) return "";
+	if (!closed) return open;
+	return now % ADVISOR_BLINK_PERIOD_MS >= ADVISOR_BLINK_PERIOD_MS - ADVISOR_BLINK_CLOSED_MS ? closed : open;
+}
+
+const ADVISOR_BLINK_PERIOD_MS = 3200;
+const ADVISOR_BLINK_CLOSED_MS = 220;
 
 const collabSegment: StatusLineSegment = {
 	id: "collab",
