@@ -78,4 +78,30 @@ describe("loop phase stack", () => {
 		expect(takeRecentLoopPhase()).toBe("outer");
 		popLoopPhase();
 	});
+
+	test("blames the phase that consumed the interval, not the one pushed last", () => {
+		// Regression: a blocked interval spans several macrotasks. A long compose
+		// followed by a short emit used to be reported as the emit because it
+		// was pushed last, steering the investigation at the wrong half of a
+		// paint. Attribution goes to exclusive wall time.
+		pushLoopPhase("ui:render:compose");
+		Bun.sleepSync(12);
+		popLoopPhase();
+		pushLoopPhase("ui:render:emit");
+		Bun.sleepSync(2);
+		popLoopPhase();
+		expect(takeRecentLoopPhase()).toBe("ui:render:compose");
+	});
+
+	test("nested phases accrue exclusive time so a sub-phase can outweigh its parent", () => {
+		pushLoopPhase("ui:render");
+		Bun.sleepSync(2);
+		pushLoopPhase("ui:render:compose");
+		Bun.sleepSync(12);
+		popLoopPhase();
+		popLoopPhase();
+		// Without pausing the parent while the child holds the top, the outer
+		// label would always win and sub-phases would be invisible.
+		expect(takeRecentLoopPhase()).toBe("ui:render:compose");
+	});
 });

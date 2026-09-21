@@ -15,35 +15,91 @@
  * misattribute or leak phases. Instrument only synchronous spans; for async
  * work, push/pop around each synchronous chunk, not across the await.
  */
-const stack: string[] = [];
-// The most recent label pushed, retained after it is popped. A hot path pushes
-// and pops a phase entirely within one synchronous macrotask, so by the time
-// the watchdog's delayed tick runs the stack is already empty; this slot keeps
-// the culprit available for that one tick. Consumed (cleared) on read so it
-// only attributes the just-elapsed interval.
+interface HeldPhase {
+	label: string;
+	/** When this phase last became the top of the stack. */
+	resumedAt: number;
+	/** Exclusive time accrued so far while it was on top. */
+	exclusiveMs: number;
+}
+const stack: HeldPhase[] = [];
+// Exclusive wall time per label since the watchdog last consumed it. A blocked
+// interval spans several macrotasks, and the label pushed LAST is rarely the one
+// that consumed the interval: a 900 ms compose followed by a 50 ms emit must be
+// reported as the compose. Attribution therefore goes to the label with the
+// most exclusive time, not the most recent one.
+const accrued = new Map<string, number>();
 let recentPhase: string | undefined;
 
+function now(): number {
+	return performance.now();
+}
+
+function credit(label: string, ms: number): void {
+	if (ms <= 0) return;
+	accrued.set(label, (accrued.get(label) ?? 0) + ms);
+}
+
 export function pushLoopPhase(label: string): void {
-	stack.push(label);
+	const at = now();
+	const parent = stack[stack.length - 1];
+	if (parent !== undefined) {
+		// Nested phases accrue exclusively: pause the parent while a child holds
+		// the top, or the outer label would always win and sub-phases stay invisible.
+		parent.exclusiveMs += at - parent.resumedAt;
+	}
+	stack.push({ label, resumedAt: at, exclusiveMs: 0 });
 	recentPhase = label;
 }
 
 export function popLoopPhase(): void {
-	stack.pop();
+	const at = now();
+	const top = stack.pop();
+	if (top === undefined) return;
+	credit(top.label, top.exclusiveMs + (at - top.resumedAt));
+	const parent = stack[stack.length - 1];
+	if (parent !== undefined) parent.resumedAt = at;
 }
 
 export function currentLoopPhase(): string | undefined {
-	return stack[stack.length - 1];
+	return stack[stack.length - 1]?.label;
 }
 
 /**
- * Phase to blame for a just-detected loop block: the live top phase if one is
- * still held, else the most recent phase pushed since the last call. Clears the
- * recent slot so a block in a later, phase-less interval is not misattributed
- * to a phase that already finished.
+ * Phase to blame for a just-detected loop block: the label that accrued the
+ * most exclusive time since the last call, including whatever the live top
+ * phase has held so far. Falls back to the most recent label when nothing has
+ * accrued (a phase pushed but not yet measurable). Consumes the accounting so a
+ * later, phase-less interval is not blamed on work that already finished.
  */
 export function takeRecentLoopPhase(): string | undefined {
-	const phase = stack[stack.length - 1] ?? recentPhase;
+	const at = now();
+	const totals = new Map(accrued);
+	const top = stack[stack.length - 1];
+	if (top !== undefined) {
+		totals.set(top.label, (totals.get(top.label) ?? 0) + top.exclusiveMs + (at - top.resumedAt));
+	}
+	let best: string | undefined;
+	let bestMs = 0;
+	for (const [label, ms] of totals) {
+		if (ms > bestMs) {
+			best = label;
+			bestMs = ms;
+		}
+	}
+	// A still-held phase is where the block currently is; only a finished
+	// phase that clearly out-consumed it takes the blame away. Sub-millisecond
+	// differences are noise, not evidence.
+	let phase = best ?? top?.label ?? recentPhase;
+	if (top !== undefined && best !== top.label && bestMs - (totals.get(top.label) ?? 0) < 1) {
+		phase = top.label;
+	}
+	accrued.clear();
 	recentPhase = undefined;
+	// The live top keeps counting from now; what it held before is consumed.
+	for (const held of stack) {
+		held.exclusiveMs = 0;
+		held.resumedAt = at;
+	}
 	return phase;
 }
