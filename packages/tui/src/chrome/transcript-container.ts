@@ -639,7 +639,15 @@ export class TranscriptContainer extends Container {
 				entry.state === "active" &&
 				(entry.component as TranscriptPresentationTarget).setTranscriptAllocation !== undefined;
 			this.#setAllocation(entry, mutableTool ? rows : Number.MAX_SAFE_INTEGER, frame);
-			const offset = this.#projectedEmittedRowCount(entry, index, width);
+			// Only hide rows the terminal still owns verbatim. A card that reshaped
+			// after lending its head (status, spinner, partial result, width change)
+			// no longer matches those bytes, and slicing them would bite rows out of
+			// a card that fits the viewport.
+			const projected = this.#projectedEmittedRowCount(entry, index, width);
+			const offset =
+				projected > 0 && !this.#borrowedPrefixMatches(entry, this.#renderEntry(entry, width, frame))
+					? 0
+					: projected;
 			const rendered = this.#holdPeakHeight(entry, width, this.#renderEntry(entry, width, frame), offset);
 			if (rendered.length === 0) continue;
 			if (output.length > 0) {
