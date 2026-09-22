@@ -106,7 +106,7 @@ it("restores bottom-anchored chat after the TODO scenario dismisses its complete
 	expect(credentialCalls).toBe(0);
 }, 30_000);
 
-it.each(["ask", "job", "markdown"] as const)(
+it.each(["ask", "job", "markdown", "eval"] as const)(
 	"runs the isolated %s scenario without unrelated tools",
 	async scenario => {
 		const calls: string[] = [];
@@ -134,6 +134,7 @@ it.each(["ask", "job", "markdown"] as const)(
 			if (scenario === "ask") expect(calls).toEqual(["ask"]);
 			else if (scenario === "job")
 				expect(calls).toEqual([...Array<string>(11).fill("bash"), ...Array<string>(4).fill("hub")]);
+			else if (scenario === "eval") expect(calls).toEqual(["eval", "eval", "eval"]);
 			else {
 				expect(calls).toEqual([]);
 				const body = output.join("").split("\n");

@@ -51,8 +51,6 @@ export interface AppendOnlyTranscriptBlock {
 
 interface FinalizableBlock {
 	isTranscriptBlockFinalized?(): boolean;
-	/** Retire this finalized block on the first eligible frame instead of
-	 * retaining it as mutable viewport tail until later pressure. */
 	commitToHistoryOnFinalize?: boolean;
 	/**
 	 * Whether the block's height is still reversible: it grows while it runs and
@@ -93,6 +91,8 @@ interface TranscriptEntry {
 	borrowed?: boolean;
 	viewportOffset?: number;
 	viewportExtent?: number;
+	/** Actual viewport rows this entry already owns in native scrollback (including its trailing separator). */
+	borrowedRows?: readonly string[];
 	borrowedEnd?: number;
 	/**
 	 * Set when a published stable row drifted (retraction, byte change within a
@@ -344,6 +344,7 @@ export class TranscriptContainer extends Container {
 			const offset = this.#renderStablePrefix(entry, entry.emitted, width).length;
 			const block = this.#renderEntry(entry, width).slice(offset);
 			if (block.length === 0) continue;
+			const entryStart = cursor;
 			let matched = 0;
 			while (
 				matched < block.length &&
@@ -359,6 +360,7 @@ export class TranscriptContainer extends Container {
 			cursor += separator;
 			entry.borrowed = true;
 			entry.borrowedEnd = offset + matched + separator;
+			entry.borrowedRows = borrowed.slice(entryStart, cursor);
 			entry.viewportOffset = offset;
 			if (matched < block.length) return;
 		}
@@ -407,6 +409,8 @@ export class TranscriptContainer extends Container {
 		if (this.#offered?.kind === "append") this.#offered = undefined;
 		for (const entry of this.#entries) {
 			entry.borrowed = false;
+			entry.borrowedEnd = 0;
+			entry.borrowedRows = undefined;
 			entry.viewportStart = undefined;
 			entry.emitted = 0;
 			entry.stableRows = EMPTY_STABLE_ROWS;
@@ -665,6 +669,10 @@ export class TranscriptContainer extends Container {
 					: Math.max(0, Math.min(rows - entry.viewportStart, entry.viewportExtent ?? 0));
 			entry.borrowed = count > 0;
 			entry.borrowedEnd = count > 0 ? (entry.viewportOffset ?? 0) + count : 0;
+			entry.borrowedRows =
+				count > 0 && entry.viewportStart !== undefined
+					? this.#liveViewport.rows.slice(entry.viewportStart, entry.viewportStart + count)
+					: undefined;
 		}
 	}
 
@@ -765,18 +773,21 @@ export class TranscriptContainer extends Container {
 			heights[index] = rows.length;
 			if (rows.length > 0) total += rows.length + (visible++ > 0 ? 1 : 0);
 		}
-		// Some finalized blocks (tool cards) should cross into native history as
-		// soon as they settle. Find the last such block in the contiguous settled
-		// prefix before the no-overflow fast path: a completed card often shrinks
-		// below the pressure threshold on the very frame it becomes immutable.
 		let requiredEnd = this.#frontier;
 		for (let cursor = this.#frontier; cursor < this.#entries.length; cursor++) {
 			const entry = this.#entries[cursor]!;
 			if (entry.state !== "settled") break;
+			if (isTransient(entry.component)) break;
+			// Rows the terminal borrowed into native scrollback are immutable. A
+			// settled card whose current render diverges from those rows would be
+			// re-emitted from the first changed row (the documented stale seam),
+			// which under first-frame retirement shows up as a duplicated card the
+			// moment a tool finishes. Leave such a block to the ordinary pressure
+			// policy, which only retires once its borrowed prefix reconciles.
+			if (entry.borrowed && !this.#borrowedPrefixMatches(entry, rendered[cursor - this.#frontier])) break;
 			if ((entry.component as Component & FinalizableBlock).commitToHistoryOnFinalize === true)
 				requiredEnd = cursor + 1;
 		}
-
 		const overflowing = total > room || this.#liveCount() >= MAX_LIVE_BLOCKS;
 		if (policy === "pressure" && !overflowing && requiredEnd === this.#frontier) {
 			this.#pinnedFrontier = undefined;
@@ -864,8 +875,8 @@ export class TranscriptContainer extends Container {
 			// A finalized block can still occupy most of the physical screen.
 			// Do not retire its visible tail merely because its first rows overflow.
 			if (
-				end >= requiredEnd &&
 				policy === "pressure" &&
+				end >= requiredEnd &&
 				!this.#entries[end]!.borrowed &&
 				room > 0 &&
 				total - freed - (heights[index]! > 0 ? heights[index]! + 1 : 0) < room &&
@@ -900,8 +911,14 @@ export class TranscriptContainer extends Container {
 			entry.emitted = offered.emittedEnd;
 		} else if (offered.kind === "commit") {
 			for (let index = this.#frontier; index < offered.end; index++) {
-				this.#entries[index]!.state = "committed";
-				this.#entries[index]!.emitted = 0;
+				const entry = this.#entries[index]!;
+				entry.state = "committed";
+				entry.emitted = 0;
+				// Committed rows are durable history, not borrowed viewport residue:
+				// a later replay must re-render the whole block, not re-slice it.
+				entry.borrowed = false;
+				entry.borrowedEnd = 0;
+				entry.borrowedRows = undefined;
 			}
 			this.#frontier = offered.end;
 		}
@@ -1128,6 +1145,18 @@ export class TranscriptContainer extends Container {
 		});
 	}
 
+	/** Whether every row the terminal borrowed from `entry` still renders byte-identical. */
+	#borrowedPrefixMatches(entry: TranscriptEntry, rendered: readonly string[] | undefined): boolean {
+		const borrowedRows = entry.borrowedRows;
+		if (borrowedRows === undefined || borrowedRows.length === 0) return true;
+		if (rendered === undefined) return false;
+		const offset = entry.viewportOffset ?? 0;
+		for (let index = 0; index < borrowedRows.length; index++) {
+			if (rendered[offset + index] !== borrowedRows[index]) return false;
+		}
+		return true;
+	}
+
 	#renderRange(start: number, end: number, width: number, trailingBlank: boolean): readonly string[] {
 		const rows: string[] = [];
 		for (let index = start; index < end; index++) {
@@ -1139,8 +1168,24 @@ export class TranscriptContainer extends Container {
 			// keeps a complete-ledger replay at one render per block.
 			const rendered =
 				index === start ? this.#renderEntry(entry, width) : trimBlankEdges(entry.component.render(width));
-			const emittedRows = index === start ? this.#renderStablePrefix(entry, entry.emitted, width).length : 0;
-			const block = rendered.slice(emittedRows);
+			let skip = index === start ? this.#renderStablePrefix(entry, entry.emitted, width).length : 0;
+			// Rows the terminal already borrowed into native scrollback are immutable
+			// history: re-emitting them duplicates the card verbatim. Skip only the
+			// prefix that still renders byte-identical; a divergent card re-emits
+			// from the first changed row, preserving the documented stale seam.
+			const borrowedRows = entry.borrowedRows;
+			if (borrowedRows !== undefined && borrowedRows.length > 0) {
+				const offset = entry.viewportOffset ?? 0;
+				let matched = 0;
+				while (
+					matched < borrowedRows.length &&
+					offset + matched < rendered.length &&
+					rendered[offset + matched] === borrowedRows[matched]
+				)
+					matched++;
+				skip = Math.max(skip, offset + matched);
+			}
+			const block = rendered.slice(skip);
 			if (block.length === 0) continue;
 			if (rows.length > 0) rows.push("");
 			rows.push(...block);
@@ -1229,4 +1274,4 @@ export class TranscriptContainer extends Container {
 }
 
 /** Groups sibling rows into one conservative mutable semantic transcript block. */
-export class TranscriptBlock extends Container { }
+export class TranscriptBlock extends Container {}

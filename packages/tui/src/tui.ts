@@ -3190,26 +3190,11 @@ export class TUI extends Container {
 						break;
 					}
 				}
-				if (!matches && prior.length > 0 && provider.beginHistoryReplay !== undefined) {
-					// Native transient bytes differ from the authoritative finalized
-					// render. Accept once, then replay the producer ledger exactly once.
-					provider.acknowledgeHistory(history.id);
-					this.#providerTransientRows = [];
-					this.#providerLogicalCommitted = 0;
-					this.#providerHasTransientHistory = false;
-					this.#prepareForcedRender(true);
-					this.requestRender(true);
-					return flushing;
-				}
-				if (matches) history = { ...history, rows: history.rows.slice(overlap) };
-				if (retained !== undefined) {
-					// Keep the original native bytes belonging to surviving owners,
-					// rather than attributing equal text from a new block to them.
-					this.#providerTransientRows = prior.slice(prior.length - retained);
-					this.#providerLogicalCommitted = retained;
-				} else if (matches) {
-					this.#providerTransientRows = prior.slice(overlap);
-					this.#providerLogicalCommitted = Math.max(0, this.#providerLogicalCommitted - overlap);
+				if (matches) {
+					history = { ...history, rows: history.rows.slice(overlap) };
+					this.#providerTransientRows =
+						retained === undefined ? prior.slice(overlap) : prior.slice(prior.length - retained);
+					this.#providerLogicalCommitted = retained ?? Math.max(0, this.#providerLogicalCommitted - overlap);
 				} else {
 					this.#providerTransientRows = [];
 					this.#providerLogicalCommitted = 0;

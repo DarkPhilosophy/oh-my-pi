@@ -101,9 +101,9 @@ describe("SessionManager immediate JSONL persistence", () => {
 		if (!sessionFile) throw new Error("Expected a persisted session file path");
 
 		manager.appendMessage({ role: "user", content: "queued before assistant", timestamp: Date.now() });
-		expect(fs.existsSync(sessionFile)).toBe(false);
+		expect(fs.existsSync(sessionFile)).toBe(true);
 
-		// First assistant materializes the file via the synchronous rewrite path.
+		// The assistant appends to the user-materialized transcript.
 		manager.appendMessage(assistantMessage("hello"));
 		expect(fs.existsSync(sessionFile)).toBe(true);
 
@@ -248,7 +248,7 @@ describe("SessionManager immediate JSONL persistence", () => {
 		expect(fs.readFileSync(sessionFile)).toEqual(originalBytes);
 	});
 
-	it("keeps pre-assistant sessions out of history during shutdown", async () => {
+	it("materializes a user-only session even after an earlier empty close", async () => {
 		const cwd = makeTempDir("@pi-empty-session-cwd-");
 		const sessionDir = path.join(cwd, "sessions");
 		const manager = SessionManager.create(cwd, sessionDir);
@@ -264,8 +264,8 @@ describe("SessionManager immediate JSONL persistence", () => {
 		manager.appendMessage({ role: "user", content: "queued before assistant", timestamp: Date.now() });
 		manager.flushSync();
 
-		expect(fs.existsSync(sessionFile)).toBe(false);
-		expect(await SessionManager.list(cwd, sessionDir)).toHaveLength(0);
+		expect(fs.existsSync(sessionFile)).toBe(true);
+		expect(await SessionManager.list(cwd, sessionDir)).toHaveLength(1);
 	});
 
 	it("lets explicit rewrites materialize pre-assistant entries", async () => {

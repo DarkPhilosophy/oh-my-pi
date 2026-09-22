@@ -32,7 +32,15 @@ describe("AdvisorEmissionGuard", () => {
 		// none of these carry a concrete reason and they cannot be acted on, so
 		// the guard suppresses them regardless of severity.
 		const guard = new AdvisorEmissionGuard();
-		for (const note of ["Stop.", "Done.", "No issue; continue.", "LGTM", "No further watcher input needed."]) {
+		for (const note of [
+			"Stop.",
+			"Done.",
+			"No issue; continue.",
+			"LGTM",
+			"No further watcher input needed.",
+			"Stop advising.",
+			"No further advice this update.",
+		]) {
 			expect(guard.admit(note, { rank: 1, pending: false })).toEqual({ accepted: false, reason: "noise" });
 		}
 	});
@@ -102,10 +110,10 @@ describe("AdvisorEmissionGuard", () => {
 		expect(guard.admit("New concern: cache eviction never fires.", { rank: 2, pending: false }).accepted).toBe(true);
 	});
 
-	it("lets any number of blockers through while non-blockers share the budget", () => {
-		// The per-update budget exists to stop nit/concern floods (#3520). A
-		// blocker reports broken handoff — losing it because a concern was emitted
-		// first in the same cycle loses the one note that must always land.
+	it("admits one blocker per update without letting non-blockers hide it", () => {
+		// A blocker bypasses the ordinary note budget so it cannot be hidden by
+		// earlier concerns, but a malfunctioning advisor cannot label an unlimited
+		// stream of distinct control messages as blockers to flood the primary.
 		const guard = new AdvisorEmissionGuard({ budgetPerUpdate: 1 });
 		expect(guard.admit("Concern: only one of three reads done.", { rank: 2, pending: false })).toEqual({
 			accepted: true,
@@ -114,17 +122,12 @@ describe("AdvisorEmissionGuard", () => {
 			accepted: true,
 		});
 		expect(guard.admit("Blocker: the diff was never exercised end to end.", { rank: 3, pending: false })).toEqual({
-			accepted: true,
-		});
-		// The budget is still spent for non-blockers.
-		expect(guard.admit("Nit: consider a shorter loop.", { rank: 1, pending: false })).toEqual({
 			accepted: false,
 			reason: "rate-limit",
 		});
-		// Noise and dedupe still apply to blockers.
-		expect(guard.admit("Blocker: the run stopped before the third read.", { rank: 3, pending: false })).toEqual({
-			accepted: false,
-			reason: "duplicate",
+		guard.beginUpdate();
+		expect(guard.admit("Blocker: the diff was never exercised end to end.", { rank: 3, pending: false })).toEqual({
+			accepted: true,
 		});
 	});
 

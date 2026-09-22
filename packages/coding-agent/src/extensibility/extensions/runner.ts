@@ -1351,7 +1351,7 @@ export class ExtensionRunner {
 		}
 		if (handlerResult === EXTENSION_HANDLER_ABORTED) return undefined;
 		if (handlerResult === EXTENSION_HANDLER_TIMEOUT) {
-			const error = `handler timed out after ${timeoutMs}ms`;
+			const error = `event ${JSON.stringify(event.type)} did not finish within ${Math.round(timeoutMs / 1000)}s; the handler was interrupted. Check the extension log for the blocked operation, then update or disable this extension if it repeats.`;
 			logger.warn("Extension handler timed out", {
 				extensionPath: ext.path,
 				event: event.type,

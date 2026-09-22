@@ -10,6 +10,7 @@ import type { ToolSession } from "../tools";
 import { AskTool } from "../tools/ask";
 import { BashTool } from "../tools/bash";
 import { HubTool } from "../tools/hub";
+import { EvalTool } from "../tools/eval";
 import { ReadTool } from "../tools/read";
 import { TodoTool } from "../tools/todo";
 import { WriteTool } from "../tools/write";
@@ -23,7 +24,7 @@ export interface RenderWorkflowStep {
 
 export interface RenderWorkflow {
 	context: AgentToolContext;
-	tools: Array<ReadTool | EditTool | TodoTool | AskTool | BashTool | HubTool | WriteTool>;
+	tools: Array<ReadTool | EditTool | TodoTool | AskTool | BashTool | HubTool | WriteTool | EvalTool>;
 	next(context: Context): Promise<RenderWorkflowStep | undefined>;
 	dispose(): Promise<void>;
 }
@@ -33,7 +34,7 @@ export function createRenderWorkflow(
 	session: ToolSession,
 	context: AgentToolContext,
 	repeat: number,
-	scenario?: "ask" | "job" | "markdown" | "todo" | "large-edit" | "edit-error" | "advisor",
+	scenario?: "ask" | "job" | "markdown" | "todo" | "large-edit" | "edit-error" | "advisor" | "eval",
 	segment?: number,
 ): RenderWorkflow {
 	if ((!scenario || scenario === "ask") && (!context.hasUI || !context.ui?.askDialog)) {
@@ -69,6 +70,32 @@ export function createRenderWorkflow(
 			{ length: 180 },
 			(_, row) => `Generated write fixture row ${row + 1}: ${"content ".repeat(18)}for streaming card geometry.`,
 		).join("\n") + "\n";
+	if (scenario === "eval") {
+		actions.push(
+			{
+				name: "eval",
+				args: () => ({ language: "js", title: "Small eval", code: "display({ ok: true, rows: 3 })", timeout: 30 }),
+			},
+			{
+				name: "eval",
+				args: () => ({
+					language: "js",
+					title: "1200-line source",
+					code: `${Array.from({ length: 1200 }, (_, i) => `// SOURCE_${i + 1}`).join("\n")}\ndisplay("source complete")`,
+					timeout: 30,
+				}),
+			},
+			{
+				name: "eval",
+				args: () => ({
+					language: "js",
+					title: "Oversized output",
+					code: "display(Array.from({ length: 240 }, (_, i) => `OUTPUT_${i + 1}`))",
+					timeout: 30,
+				}),
+			},
+		);
+	}
 	const read = (index: number) =>
 		actions.push({ name: "read", args: () => ({ path: `${files[index]}:1-${fixtureRows[index]}` }) });
 	let currentContext: Context;
@@ -180,19 +207,21 @@ export function createRenderWorkflow(
 	actions.push({ name: "todo", args: () => ({ op: "done", task: tasks[2] }) });
 	if (scenario) {
 		const selected =
-			scenario === "large-edit"
-				? [actions[4]!, actions[8]!]
-				: scenario === "edit-error"
-					? [actions[3]!, actions[6]!]
-					: actions.filter(action =>
-							scenario === "todo"
-								? action.name === "todo"
-								: scenario === "ask"
-									? action.name === "ask"
-									: scenario === "job"
-										? ["bash", "hub"].includes(action.name)
-										: false,
-						);
+			scenario === "eval"
+				? actions.filter(action => action.name === "eval")
+				: scenario === "large-edit"
+					? [actions[4]!, actions[8]!]
+					: scenario === "edit-error"
+						? [actions[3]!, actions[6]!]
+						: actions.filter(action =>
+								scenario === "todo"
+									? action.name === "todo"
+									: scenario === "ask"
+										? action.name === "ask"
+										: scenario === "job"
+											? ["bash", "hub"].includes(action.name)
+											: false,
+							);
 		actions.splice(0, actions.length, ...selected);
 	}
 	// One group is one scripted response. Related reads and explicit background
@@ -222,6 +251,7 @@ export function createRenderWorkflow(
 			new AskTool(localSession),
 			new BashTool(jobSession),
 			new HubTool(jobSession),
+			...(scenario === "eval" ? [new EvalTool(localSession)] : []),
 		],
 		context,
 		async next(providerContext) {

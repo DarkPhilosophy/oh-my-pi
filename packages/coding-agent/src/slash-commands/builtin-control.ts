@@ -10,7 +10,11 @@ function parseRenderTestArgs(args: string): RenderTestOptions {
 	let segment: number | undefined;
 	const positional: string[] = [];
 	for (const part of parts) {
-		if (["--ask", "--job", "--markdown", "--todo", "--large-edit", "--edit-error", "--advisor"].includes(part)) {
+		if (
+			["--ask", "--job", "--markdown", "--todo", "--large-edit", "--edit-error", "--advisor", "--eval"].includes(
+				part,
+			)
+		) {
 			if (scenario) throw new Error("Choose only one render scenario.");
 			scenario = part.slice(2) as NonNullable<RenderTestOptions["scenario"]>;
 		} else if (part.startsWith("--segment")) {
@@ -23,7 +27,7 @@ function parseRenderTestArgs(args: string): RenderTestOptions {
 	}
 	if (positional.length > 2 || positional.some(part => !/^\d+$/.test(part))) {
 		throw new Error(
-			"Usage: /render [--ask|--job|--markdown|--todo|--large-edit|--edit-error|--advisor] [--segment=<n>] [repeat=1] [chunk-delay-ms=25]",
+			"Usage: /render [--ask|--job|--markdown|--todo|--large-edit|--edit-error|--advisor|--eval] [--segment=<n>] [repeat=1] [chunk-delay-ms=25]",
 		);
 	}
 	return { repeat: Number(positional[0] ?? 1), delayMs: Number(positional[1] ?? 25), scenario, segment };
@@ -37,7 +41,7 @@ export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			"Exercise streaming Markdown, large edits, edit failures, advisor display, and interactive cards without tokens",
 		allowArgs: true,
 		inlineHint:
-			"[--ask|--job|--markdown|--todo|--large-edit|--edit-error|--advisor] [--segment=<n>] [repeat=1] [chunk-delay-ms=25]",
+			"[--ask|--job|--markdown|--todo|--large-edit|--edit-error|--advisor|--eval] [--segment=<n>] [repeat=1] [chunk-delay-ms=25]",
 		handleTui: async (command, { ctx }) => {
 			ctx.editor.setText("");
 			try {

@@ -72,6 +72,11 @@ const SESSION_LIST_SUFFIX_BYTES = 32_768;
 const SESSION_LIST_PARALLEL_THRESHOLD = 64;
 const SESSION_LIST_MAX_WORKERS = 16;
 
+/** A small transcript whose complete contents contain no messages is safe to hide from user-facing pickers. */
+export function isDisplayableSession(info: SessionInfo): boolean {
+	return info.messageCount > 0 || info.size > SESSION_LIST_PREFIX_BYTES;
+}
+
 /**
  * Memoizes {@link scanSessionFile} results keyed by stat identity so listing
  * refreshes (resume picker opens, startup recent-sessions, cross-project
@@ -711,12 +716,17 @@ export async function getRecentSessions(
 		if (recent.length >= limit) break;
 		const id = useIndex ? sessionIdFromSessionPath(file) : undefined;
 		const indexed = id ? lookupSessionTitle(id) : undefined;
+		// Small files are fully covered by the listing prefix, so zero messages is
+		// conclusive even when the title index would otherwise bypass the scan.
+		const smallInfo =
+			stat.size <= SESSION_LIST_PREFIX_BYTES ? await scanSessionFile(file, storage, false, stat) : undefined;
+		if (stat.size <= SESSION_LIST_PREFIX_BYTES && (!smallInfo || !isDisplayableSession(smallInfo))) continue;
 		if (indexed) {
 			recent.push({ path: file, name: indexed, timeAgo: formatTimeAgo(stat.mtime) });
 			continue;
 		}
-		const info = await scanSessionFile(file, storage, false, stat);
-		if (!info) continue;
+		const info = smallInfo ?? (await scanSessionFile(file, storage, false, stat));
+		if (!info || !isDisplayableSession(info)) continue;
 		const title = sanitizeSessionName(info.title);
 		if (useIndex && title && info.id) recordSessionTitle(info.id, title);
 		recent.push({ path: file, name: sessionDisplayName(info), timeAgo: formatTimeAgo(info.modified) });

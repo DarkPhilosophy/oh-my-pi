@@ -1,10 +1,10 @@
 /**
  * Per-session policy gate for advisor `advise()` calls.
  *
- * The advisor system prompt tells the watcher model a per-update advice budget
- * (default 4 non-blockers, `blocker` exempt):
+ * The advisor system prompt gives each update a bounded advice budget:
+ * default 4 non-blockers plus one emergency `blocker`.
  *
- * > max N non-blockers/update (`blocker` exempt)
+ * > max N non-blockers + 1 blocker/update
  * > NEVER repeat advice you already gave, and NEVER send the same advice twice
  *
  * Real advisor models violate this. Issue #3520 captured a session where
@@ -93,6 +93,19 @@ const SUPPRESSED_NORMALIZED_PHRASES: Record<string, true> = {
 	"carry on": true,
 };
 
+const CONTROL_ONLY_ADVISOR_NOTE =
+	/^(?:(?:stop|halt|abort|cease|terminate|quit|finish|end|silent|enough)(?: (?:now|here|advice|advising|already|of|the|this|update|line))*)$/;
+const NO_MORE_ADVISOR_NOTE =
+	/^(?:no|nothing) further (?:advice|input|notes?)(?: (?:is )?(?:needed|required)| this update)?$/;
+
+function isSuppressedAdvisorNoise(key: string): boolean {
+	return (
+		SUPPRESSED_NORMALIZED_PHRASES[key] === true ||
+		CONTROL_ONLY_ADVISOR_NOTE.test(key) ||
+		NO_MORE_ADVISOR_NOTE.test(key)
+	);
+}
+
 /**
  * Bounds the dedupe history. Sessions with very long advisor activity could
  * otherwise grow the set without bound. The reporter's pathological session
@@ -134,12 +147,10 @@ export interface AdvisorAdmission {
  * Decides whether an advisor `advise()` call should reach the primary agent.
  *
  * Enforces — in this order — the noise filter, session-scoped rank-aware
- * dedupe (FIFO-evicted at {@link DEFAULT_HISTORY_CAPACITY}), and a per-update
- * budget of admitted non-blocker notes. Suppressed calls never consume the
- * budget — a noise call doesn't burn the slot for a real concern that follows
- * in the same update. A `blocker` is exempt from the budget: it must always
- * interrupt, so a lower-severity note emitted earlier in the same update can
- * never rate-limit it out.
+ * dedupe (FIFO-evicted at {@link DEFAULT_HISTORY_CAPACITY}), and per-update
+ * budgets. Suppressed calls never consume a slot. One distinct `blocker` may
+ * bypass the ordinary non-blocker budget, so an earlier concern cannot hide an
+ * emergency while a malfunctioning reviewer cannot emit unlimited blockers.
  *
  * Dedupe is rank-aware: re-raising the same text at a strictly higher
  * severity is a real escalation (nit → concern → blocker), not a repeat, and
@@ -147,14 +158,11 @@ export interface AdvisorAdmission {
  * interrupts. Equal or lower severity re-raises stay suppressed, so an
  * advisor cannot bypass dedupe by retagging the same text sideways.
  *
- * The budget is rank-aware within a single update: when it is full, a
- * strictly-higher-severity note displaces the lowest-rank STILL-PENDING slot
- * (a queued concern kicks out a queued nit) and the decision names the
- * displaced note via {@link AdvisorAdmission.displacedKey}. Routed notes
- * remain charged and cannot be displaced — delivery cannot be retracted to
- * free a slot. With a budget of 1 this collapses to one non-blocker per
- * update with concern-evicts-pending-nit; with the default budget 4, up to 4
- * non-blockers are admitted before displacement applies.
+ * The non-blocker budget is rank-aware within a single update: when it is
+ * full, a strictly-higher-severity note displaces the lowest-rank STILL-PENDING
+ * slot and names it via {@link AdvisorAdmission.displacedKey}. Routed notes
+ * remain charged because delivery cannot be retracted. With a budget of 1 this
+ * collapses to one non-blocker per update; the default admits up to 4.
  *
  * Reset on advisor reset (compaction, session switch, `/new`) via
  * {@link reset}. Per-update budget is cleared at the start of every advisor
@@ -174,6 +182,8 @@ export class AdvisorEmissionGuard {
 	 *  primary turn: only those may be displaced by a strictly-higher-rank
 	 *  admission; routed notes stay charged. */
 	#slots: { key: string; rank: number; pending: boolean }[] = [];
+	/** Whether this update already delivered its one emergency interrupt. */
+	#blockerAdmitted = false;
 	readonly #capacity: number;
 	readonly #budgetPerUpdate: number;
 
@@ -196,6 +206,7 @@ export class AdvisorEmissionGuard {
 		this.#seen.clear();
 		this.#seenOrder.length = 0;
 		this.#slots = [];
+		this.#blockerAdmitted = false;
 	}
 
 	/**
@@ -207,6 +218,7 @@ export class AdvisorEmissionGuard {
 	 */
 	beginUpdate(): void {
 		this.#slots = [];
+		this.#blockerAdmitted = false;
 	}
 
 	/**
@@ -279,7 +291,7 @@ export class AdvisorEmissionGuard {
 	admit(note: string, opts: { rank: number; pending: boolean }): AdvisorAdmission {
 		const key = normalizeAdvisorNote(note);
 		if (!key) return { accepted: false, reason: "empty" };
-		if (SUPPRESSED_NORMALIZED_PHRASES[key]) return { accepted: false, reason: "noise" };
+		if (key.length === 1 || isSuppressedAdvisorNoise(key)) return { accepted: false, reason: "noise" };
 		const rank = opts.rank;
 		const seenRank = this.#seen.get(key) ?? 0;
 		if (rank <= seenRank) return { accepted: false, reason: "duplicate" };
@@ -288,10 +300,11 @@ export class AdvisorEmissionGuard {
 		let displacedKey: string | undefined;
 		const ownSlot = this.#slots.find(s => s.key === key);
 		if (rank >= 3) {
-			// Blockers: unlimited per update — never dropped to the budget. A
-			// blocker escalation of a still-pending note releases its slot: the
-			// note now routes live, so the reservation will never flush. A
-			// routed slot stays charged — delivery cannot be retracted.
+			// A reviewer can always raise one blocker even after spending its ordinary
+			// budget, but cannot bypass all flood control by marking every distinct
+			// tool call as a blocker. Same-note escalation keeps its existing slot.
+			if (this.#blockerAdmitted && !ownSlot) return { accepted: false, reason: "rate-limit" };
+			this.#blockerAdmitted = true;
 			if (ownSlot?.pending) this.#slots.splice(this.#slots.indexOf(ownSlot), 1);
 		} else if (ownSlot) {
 			// Same-update severity escalation of an already-admitted note (e.g. a

@@ -7,10 +7,13 @@ export interface RenderTestOptions {
 	repeat: number;
 	/** Delay between simulated provider chunks, in milliseconds. */
 	delayMs: number;
-	scenario?: "ask" | "job" | "markdown" | "todo" | "large-edit" | "edit-error" | "advisor";
+	scenario?: "ask" | "job" | "markdown" | "todo" | "large-edit" | "edit-error" | "advisor" | "eval";
 	/** Isolate a single scripted response (1-based); labels keep the original number. */
 	segment?: number;
 }
+
+/** Upper bound on simulated tool-argument deltas so a large payload stays paced, not stalled. */
+const MAX_TOOL_ARG_DELTAS = 120;
 
 export function validateRenderTestOptions(options: RenderTestOptions): void {
 	if (!Number.isInteger(options.repeat) || options.repeat < 1 || options.repeat > 100) {
@@ -281,12 +284,16 @@ export function createRenderTestAgent(model: Model, options: RenderTestOptions, 
 					message.content.push(call);
 					stream.push({ type: "toolcall_start", contentIndex, partial: message });
 					const args = JSON.stringify(call.arguments);
-					for (let offset = 0; offset < args.length; offset += 48) {
+					// Stream in a bounded number of deltas. A fixed 48-byte chunk turns a
+					// ~36KB write payload into ~760 paced deltas (~19s at the default
+					// delay), which looks exactly like the write card freezing.
+					const chunk = Math.max(48, Math.ceil(args.length / MAX_TOOL_ARG_DELTAS));
+					for (let offset = 0; offset < args.length; offset += chunk) {
 						await pause(options.delayMs);
 						stream.push({
 							type: "toolcall_delta",
 							contentIndex,
-							delta: args.slice(offset, offset + 48),
+							delta: args.slice(offset, offset + chunk),
 							partial: message,
 						});
 					}

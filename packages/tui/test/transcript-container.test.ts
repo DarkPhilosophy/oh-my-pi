@@ -569,7 +569,22 @@ describe("TranscriptContainer", () => {
 			expect(transcript.canRemoveBlock(live)).toBe(borrowedRows === 2);
 		}
 	});
-
+	it("does not re-emit borrowed rows that still render identically at commit", () => {
+		const transcript = new TranscriptContainer();
+		const card = new Block(["one", "two", "three", "four"], false);
+		transcript.addChild(card);
+		transcript.renderLiveViewport(80, 10, frame);
+		// The top two rows scrolled into native scrollback while the card ran.
+		transcript.setBorrowedViewportRows(2);
+		card.finalize(["one", "two", "three", "four"]);
+		const history = transcript.peekFinalizedBatch(80, 0);
+		// Only the un-borrowed tail may be committed; "one"/"two" are already history.
+		expect(history?.rows).toEqual(["three", "four", ""]);
+		transcript.acknowledgeFinalizedBatch(history!.id);
+		// A later replay owns the whole committed block again, not a sliced copy.
+		transcript.beginReplay();
+		expect(transcript.peekReplayBatch(80)?.rows).toEqual(["one", "two", "three", "four", ""]);
+	});
 	it("retains borrowed blocks while allowing uncommitted blocks to be removed", () => {
 		const transcript = new TranscriptContainer();
 		const borrowed = new Block(["first", "second"], false);

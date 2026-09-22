@@ -46,6 +46,24 @@ class AllocationAwareTransientCard implements Component {
 	}
 }
 
+/** A mutable streaming card whose body grows between paints. */
+class GrowingMutableCard implements Component {
+	rows: string[] = [];
+	transient = true;
+
+	isTranscriptBlockFinalized(): boolean {
+		return false;
+	}
+
+	isTranscriptBlockTransient(): boolean {
+		return this.transient;
+	}
+
+	render(): readonly string[] {
+		return this.rows;
+	}
+}
+
 interface Harness {
 	terminal: VirtualTerminal;
 	scheduler: VirtualRenderScheduler;
@@ -97,11 +115,79 @@ function hasBracketedBlankRun(rows: readonly string[]): boolean {
 	return false;
 }
 
+function normalizedScrollBuffer(terminal: VirtualTerminal): string[] {
+	return terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
+}
+
+async function driveStreamingAttachmentCycle(rows: number): Promise<void> {
+	const terminal = new VirtualTerminal(COLUMNS, rows);
+	const scheduler = new VirtualRenderScheduler();
+	const composer = new Composer({
+		terminal,
+		tuiOptions: { renderScheduler: scheduler },
+		preferences: { ...COMPOSER_DEFAULTS, quiet: true },
+	});
+	const transcript = new TranscriptContainer();
+	for (let index = 0; index < rows * 3; index++) {
+		transcript.addChild({ render: () => [`Committed history ${index}`] });
+	}
+	const card = new GrowingMutableCard();
+	transcript.addChild(card);
+	const attachment = new InlineWidget();
+	const editor = new Container();
+	editor.addChild(attachment);
+	editor.addChild(composer.editor);
+	editor.addChild(new Text("EDITOR", 0, 0));
+	composer.setRuntimeChildren([transcript, editor]);
+	composer.start({ playWelcomeIntro: false });
+	composer.editor.setText("EDITOR");
+
+	try {
+		const paint = async (): Promise<void> => {
+			composer.ui.requestRender();
+			await scheduler.settle(terminal);
+			const viewport = terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+			const editorRow = viewport.findLastIndex(row => row.includes("EDITOR"));
+			expect(editorRow).toBeGreaterThanOrEqual(0);
+			expect(viewport.slice(editorRow + 1).every(row => row === "")).toBe(true);
+			expect(hasBracketedBlankRun(normalizedScrollBuffer(terminal))).toBe(false);
+		};
+
+		await paint();
+		for (let frame = 0; frame < 3; frame++) {
+			card.rows.push(...Array.from({ length: 3 }, (_, row) => `WRITE frame ${frame} row ${row}`));
+			await paint();
+		}
+		attachment.rows = Math.min(6, Math.max(3, Math.floor(rows / 5)));
+		await paint();
+		for (let frame = 3; frame < 6; frame++) {
+			card.rows.push(...Array.from({ length: 3 }, (_, row) => `WRITE frame ${frame} row ${row}`));
+			await paint();
+		}
+		attachment.rows = 0;
+		card.rows.push(...Array.from({ length: 3 }, (_, row) => `WRITE submit row ${row}`));
+		transcript.insertSettledBlock({ render: () => ["Committed on submit"] });
+		await paint();
+		for (let frame = 6; frame < 9; frame++) {
+			card.rows.push(...Array.from({ length: 3 }, (_, row) => `WRITE frame ${frame} row ${row}`));
+			transcript.insertSettledBlock({ render: () => [`Committed after submit ${frame}`] });
+			await paint();
+		}
+	} finally {
+		composer.stop();
+	}
+}
+
 beforeAll(async () => {
 	await initTheme();
 });
 
 describe("composer inline shrink (#11007)", () => {
+	it("keeps native history contiguous while a streaming write card outgrows an attached editor", async () => {
+		await driveStreamingAttachmentCycle(100);
+		await driveStreamingAttachmentCycle(30);
+	});
+
 	it("reserves a mutable transient card at this frame's allocation after its live budget shrinks", () => {
 		const terminal = new VirtualTerminal(COLUMNS, ROWS);
 		const composer = new Composer({

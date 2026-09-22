@@ -6,7 +6,7 @@ import { Spacer } from "../components/spacer";
 import { Text } from "../components/text";
 import { getImageDimensions, ImageProtocol, imageFallback, TERMINAL } from "../terminal-capabilities";
 import { type Component, Container, type TUI } from "../tui";
-import { truncateToWidth } from "../utils";
+import { applyBackgroundToLine, truncateToWidth } from "../utils";
 import { getProjectDir, isRecord, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { Theme } from "../theme/theme";
 import { ensureThemeSync, getThemeEpoch, theme } from "../theme/theme";
@@ -17,6 +17,7 @@ import {
 	toolRenderers,
 } from "../tools/index";
 import { BASH_DEFAULT_PREVIEW_LINES } from "../tools/bash";
+import { formatExpandHint } from "../render/render-utils";
 import { formatDefaultToolExecution } from "../tools/default-renderer";
 import { type EditMode, type PerFileDiffPreview, renderStreamingFallback } from "../tools/edit";
 import { EVAL_DEFAULT_PREVIEW_LINES } from "../tools/eval";
@@ -179,7 +180,12 @@ export interface ToolExecutionHandle extends Component {
 	updateStreamPreview?(update: unknown): void;
 	updateResult(
 		result: {
-			content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+			content: Array<{
+				type: string;
+				text?: string;
+				data?: string;
+				mimeType?: string;
+			}>;
 			details?: unknown;
 			isError?: boolean;
 		},
@@ -258,9 +264,10 @@ let toolExecutionInstanceSeq = 0;
  * Component that renders a tool call with its result (updateable)
  */
 export class ToolExecutionComponent extends Container {
-	/** Completed tool cards belong to native history immediately; keeping them
-	 * as live viewport tail makes completion appear delayed until later output. */
-	readonly commitToHistoryOnFinalize = true;
+	/** Eval results become immutable transcript history as soon as they finalize. */
+	get commitToHistoryOnFinalize(): boolean {
+		return this.#toolName === "eval";
+	}
 	#contentBox: Box; // Used for custom tools and bash visual truncation
 	#contentText: WidthAwareText; // Generic fallback (no custom/built-in renderer)
 	// Which container the constructor mounted: bespoke/built-in renderers use
@@ -331,6 +338,14 @@ export class ToolExecutionComponent extends Container {
 	// Track if args are still being streamed (for edit/write spinner)
 	#argsComplete = false;
 	#executionStarted = false;
+	// Streamed argument deltas arrive far faster than the screen refreshes: a
+	// 36KB write body streams as ~760 chunks, and rebuilding the whole card
+	// (re-highlighting every previewed row) per chunk is what makes a large
+	// streaming card appear stuck and freeze the transcript. While args stream,
+	// rebuilds coalesce: the pending delta is latched here and drained by the
+	// next render, so the card advances once per painted frame instead.
+	#pendingStreamRebuild = false;
+	#streamRebuildTimer: ReturnType<typeof setTimeout> | undefined;
 	// Sealed once the tool reaches a terminal state (result delivered, or the
 	// turn abandoned it without one). Until then the block remains active so a
 	// late result can update its streaming preview.
@@ -368,11 +383,11 @@ export class ToolExecutionComponent extends Container {
 		executionStarted?: boolean;
 		renderContext?: Record<string, unknown>;
 	} = {
-		expanded: false,
-		isPartial: true,
-		argsComplete: false,
-		executionStarted: false,
-	};
+			expanded: false,
+			isPartial: true,
+			argsComplete: false,
+			executionStarted: false,
+		};
 
 	constructor(
 		toolName: string,
@@ -454,6 +469,21 @@ export class ToolExecutionComponent extends Container {
 		if (this.#freezeTaskPresentationIfBorrowed()) return;
 		this.#displayInputVersion++;
 		this.#updateSpinnerAnimation();
+		if (!this.#argsComplete && this.#displayBuilt) {
+			// Coalesce streamed deltas on a timer, never inside render(): rebuilding
+			// from render() re-enters requestRender() and repaints every frame.
+			this.#pendingStreamRebuild = true;
+			if (this.#streamRebuildTimer === undefined) {
+				this.#streamRebuildTimer = setTimeout(() => {
+					this.#streamRebuildTimer = undefined;
+					if (!this.#pendingStreamRebuild) return;
+					this.#pendingStreamRebuild = false;
+					this.#updateDisplay();
+					this.#ui.requestComponentRender(this);
+				}, 65);
+			}
+			return;
+		}
 		this.#updateDisplay();
 	}
 
@@ -467,6 +497,7 @@ export class ToolExecutionComponent extends Container {
 		if (this.#freezeTaskPresentationIfBorrowed()) return;
 		this.#updateSpinnerAnimation();
 		if (alreadyComplete) return;
+		this.#pendingStreamRebuild = false;
 		this.#displayInputVersion++;
 		this.#updateDisplay();
 	}
@@ -482,6 +513,7 @@ export class ToolExecutionComponent extends Container {
 		this.#executionStartedAtNow = performance.now();
 		this.#argsComplete = true;
 		this.#updateSpinnerAnimation();
+		this.#pendingStreamRebuild = false;
 		this.#displayInputVersion++;
 		this.#updateDisplay();
 	}
@@ -548,7 +580,12 @@ export class ToolExecutionComponent extends Container {
 
 	updateResult(
 		result: {
-			content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+			content: Array<{
+				type: string;
+				text?: string;
+				data?: string;
+				mimeType?: string;
+			}>;
 			details?: unknown;
 			isError?: boolean;
 		},
@@ -670,9 +707,9 @@ export class ToolExecutionComponent extends Container {
 			this.#result === undefined &&
 			(renderer === undefined
 				? // Only the generic #formatToolExecution fallback consumes the frame;
-					// a custom renderCall/renderResult pair routes through the custom
-					// branch whose pending label is a static tool-name Text.
-					!this.#tool?.renderCall && !this.#tool?.renderResult
+				// a custom renderCall/renderResult pair routes through the custom
+				// branch whose pending label is a static tool-name Text.
+				!this.#tool?.renderCall && !this.#tool?.renderResult
 				: typeof pendingAnimation === "function"
 					? pendingAnimation(this.#args)
 					: pendingAnimation === true);
@@ -885,6 +922,10 @@ export class ToolExecutionComponent extends Container {
 	 * interval alive and keep being repainted.
 	 */
 	override dispose(): void {
+		if (this.#streamRebuildTimer !== undefined) {
+			clearTimeout(this.#streamRebuildTimer);
+			this.#streamRebuildTimer = undefined;
+		}
 		this.stopAnimation();
 		super.dispose();
 	}
@@ -944,7 +985,17 @@ export class ToolExecutionComponent extends Container {
 		// TUI startup, so a result rendered before it lands must re-shape once it
 		// does (it gates Image children vs text fallback in #rebuildDisplay); keyed
 		// here for the same reason markdown.ts keys its render cache on it.
-		const key = `${this.#resultVersion}|${this.#expanded}|${this.#isPartial}|${this.#argsComplete ? "1" : "0"}|${this.#executionStarted ? "1" : "0"}|${this.#backgroundTaskFrozenStyled ? "1" : "0"}|${this.#spinnerFrame ?? "-"}|${this.#showImages}|${getThemeEpoch()}|${this.#displayInputVersion}|${TERMINAL.imageProtocol ?? "-"}|${this.#imageSizeKey()}`;
+		//
+		// The spinner frame is deliberately NOT part of this key. The shared ticker
+		// advances it every 80ms, and keying on it rebuilt the entire card - a
+		// streaming write/eval preview of hundreds of highlighted rows - about
+		// twelve times a second, which is the "whole transcript rebuilds, freezes
+		// once a second" churn. Renderers that embed the glyph in built content
+		// (write's trailing "… (streaming)" row) already rebuild on every content
+		// delta through `#displayInputVersion`, so the glyph still animates while
+		// the call is actually streaming; the render-time paths (`#renderCompact`,
+		// `#activitySummary`) read `#spinnerFrame` directly and are unaffected.
+		const key = `${this.#resultVersion}|${this.#expanded}|${this.#isPartial}|${this.#argsComplete ? "1" : "0"}|${this.#executionStarted ? "1" : "0"}|${this.#backgroundTaskFrozenStyled ? "1" : "0"}|${this.#showImages}|${getThemeEpoch()}|${this.#displayInputVersion}|${TERMINAL.imageProtocol ?? "-"}|${this.#imageSizeKey()}`;
 		if (key === this.#lastDisplayKey && this.#displayBuilt) return;
 		this.#lastDisplayKey = key;
 
@@ -1003,11 +1054,13 @@ export class ToolExecutionComponent extends Container {
 			const trimmed = trimBlankEdges(lines);
 			if (trimmed.length > this.#allocation) {
 				if (this.#allocation < 4) return this.#renderCompact(width);
-				lines = [
-					trimmed[0]!,
-					truncateToWidth(theme.fg("dim", "│ … earlier preview rows hidden while running"), width),
-					...trimmed.slice(-(this.#allocation - 2)),
-				];
+				const hidden = trimmed.length - this.#allocation + 1;
+				const markerText = truncateToWidth(
+					`${theme.fg("dim", `│ … ${hidden} earlier line${hidden === 1 ? "" : "s"}`)} ${formatExpandHint(theme, false, true)}`,
+					width,
+				);
+				const marker = applyBackgroundToLine(markerText, width, text => theme.bg("toolPendingBg", text));
+				return [trimmed[0]!, marker, ...trimmed.slice(-(this.#allocation - 2))];
 			}
 		}
 		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
@@ -1023,9 +1076,9 @@ export class ToolExecutionComponent extends Container {
 		const elapsed =
 			this.#isRunning() && this.#executionStartedAtNow !== undefined
 				? theme.fg(
-						"dim",
-						` ${Math.max(0, Math.floor((this.#presentationFrame.now - this.#executionStartedAtNow) / 1000))}s`,
-					)
+					"dim",
+					` ${Math.max(0, Math.floor((this.#presentationFrame.now - this.#executionStartedAtNow) / 1000))}s`,
+				)
 				: "";
 		const text = truncateToWidth(
 			`${theme.fg("toolTitle", theme.bold(summary.label))}${detail}${elapsed}`,
@@ -1479,9 +1532,9 @@ export class ToolExecutionComponent extends Container {
 					context.editDiffPreview = first.error
 						? { error: first.error }
 						: {
-								diff: first.diff ?? "",
-								firstChangedLine: first.firstChangedLine,
-							};
+							diff: first.diff ?? "",
+							firstChangedLine: first.firstChangedLine,
+						};
 				}
 				if (previews.length > 1) {
 					context.perFileDiffPreview = previews;
@@ -1543,10 +1596,10 @@ export class ToolExecutionComponent extends Container {
 				args: this.#args,
 				result: this.#result
 					? {
-							output: this.#getTextOutput(),
-							isError: this.#result.isError,
-							skipped: this.#isBenignSkip(),
-						}
+						output: this.#getTextOutput(),
+						isError: this.#result.isError,
+						skipped: this.#isBenignSkip(),
+					}
 					: undefined,
 				options: this.#renderState,
 			},
@@ -1565,11 +1618,11 @@ export class ToolExecutionComponent extends Container {
 		if (this.#isPartial || !this.#result) return false;
 		const details = this.#result.details as
 			| {
-					__synthetic?: boolean;
-					__interrupted?: boolean;
-					source?: string;
-					execution?: string;
-			  }
+				__synthetic?: boolean;
+				__interrupted?: boolean;
+				source?: string;
+				execution?: string;
+			}
 			| undefined;
 		if (details?.source !== "interrupt_skipped") return false;
 		return details.__synthetic === true || (details.__interrupted === true && details.execution === "started");

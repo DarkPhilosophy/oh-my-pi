@@ -77,6 +77,15 @@ describe("InteractiveMode loop auto-submit", () => {
 		resetSettingsForTest();
 	});
 
+	it("reconciles optimistic Steer signatures when callback-less queue entries coalesce", () => {
+		mode.locallySubmittedUserSignatures.add("first steer\u00000");
+		mode.locallySubmittedUserSignatures.add("second steer\u00000");
+
+		session.onLocalQueueCoalesced?.("second steer", "first steer\nsecond steer", "first steer", 0, 0, 0);
+
+		expect([...mode.locallySubmittedUserSignatures]).toEqual(["first steer\nsecond steer\u00000"]);
+	});
+
 	it("does not resolve the next loop prompt while compaction is running", async () => {
 		vi.useFakeTimers();
 		let compacting = true;

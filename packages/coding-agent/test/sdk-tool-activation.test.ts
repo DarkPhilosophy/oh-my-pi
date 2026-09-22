@@ -651,7 +651,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 	it("keeps the stable MCP tool-name collision winner during late registration", async () => {
 		const tempDir = makeTempDir();
-		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => { });
 		const lateMcpCollisionExtension: ExtensionFactory = pi => {
 			pi.on("session_start", async () => {
 				await Promise.resolve();
@@ -1372,7 +1372,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			await runner.emit({ type: "session_start" });
 			unsubscribe();
 
-			expect(errors).toContain("handler timed out after 10ms");
+			expect(errors.some(error => error.includes('event "session_start" did not finish within 0s'))).toBe(true);
 			expect(session.getToolByName("stalled_registration_tool")).toBeUndefined();
 			expect(session.getToolByName("recovered_registration_tool")?.label).toBe("recovered_registration_tool");
 			expect(session.getEnabledToolNames()).toContain("recovered_registration_tool");
@@ -2004,7 +2004,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 	it("keeps the stable MCP tool-name collision winner during SDK startup and warns", async () => {
 		const tempDir = makeTempDir();
-		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => { });
 		const createMcpTool = (serverName: string, label: string): CustomTool => ({
 			name: "mcp__foo_bar_lookup",
 			label,

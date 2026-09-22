@@ -1076,7 +1076,7 @@ describe("ExtensionRunner", () => {
 				{
 					extensionPath,
 					event: "session_stop",
-					error: "handler timed out after 10ms",
+					error: 'event "session_stop" did not finish within 0s; the handler was interrupted. Check the extension log for the blocked operation, then update or disable this extension if it repeats.',
 				},
 			]);
 		});
@@ -1523,7 +1523,7 @@ describe("ExtensionRunner", () => {
 				{
 					extensionPath: hangExtensionPath,
 					event: "session_start",
-					error: "handler timed out after 10ms",
+					error: 'event "session_start" did not finish within 0s; the handler was interrupted. Check the extension log for the blocked operation, then update or disable this extension if it repeats.',
 				},
 			]);
 
@@ -1574,7 +1574,7 @@ describe("ExtensionRunner", () => {
 			expect(errors).toContainEqual({
 				extensionPath,
 				event: "session_shutdown",
-				error: "handler timed out after 10ms",
+				error: 'event "session_shutdown" did not finish within 0s; the handler was interrupted. Check the extension log for the blocked operation, then update or disable this extension if it repeats.',
 			});
 		});
 
@@ -1640,7 +1640,7 @@ describe("ExtensionRunner", () => {
 				{
 					extensionPath: hangExtensionPath,
 					event: "tool_call",
-					error: "handler timed out after 10ms",
+					error: 'event "tool_call" did not finish within 0s; the handler was interrupted. Check the extension log for the blocked operation, then update or disable this extension if it repeats.',
 				},
 			]);
 

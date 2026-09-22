@@ -452,4 +452,26 @@ describe("SessionManager legacy session migration persistence", () => {
 			await session.close();
 		}
 	});
+
+	it("hides proven metadata-only files while preserving real conversations", async () => {
+		const session = SessionManager.create(tempDir, tempDir);
+		await session.ensureOnDisk();
+		expect(await SessionManager.list(tempDir, tempDir)).toHaveLength(1);
+		expect(await SessionManager.listDisplayable(tempDir, tempDir)).toEqual([]);
+
+		session.appendMessage({ role: "user", content: "visible conversation", timestamp: 1 });
+		await session.flush();
+		expect(await SessionManager.listDisplayable(tempDir, tempDir)).toHaveLength(1);
+		await session.close();
+	});
+
+	it("keeps large zero-prefix-message transcripts visible when emptiness is ambiguous", async () => {
+		const session = SessionManager.create(tempDir, tempDir);
+		await session.ensureOnDisk();
+		session.appendCustomEntry("test-metadata", { payload: "x".repeat(5000) });
+		await session.flush();
+
+		expect(await SessionManager.listDisplayable(tempDir, tempDir)).toHaveLength(1);
+		await session.close();
+	});
 });

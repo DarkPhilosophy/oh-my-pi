@@ -64,4 +64,36 @@ describe("eval renderer: viewport tail window for cell code", () => {
 		expect(rendered).toContain("earlier line");
 		expect(rendered).not.toContain(firstLine);
 	});
+
+	it("hides a dangling one-character streamed line until eval arguments complete", () => {
+		const partial = evalToolRenderer.renderCall(
+			{ language: "js", code: "const value = 1;\nc" },
+			{ expanded: false, isPartial: true, argsComplete: false },
+			theme,
+		);
+		const complete = evalToolRenderer.renderCall(
+			{ language: "js", code: "const value = 1;\nc" },
+			{ expanded: false, isPartial: true, argsComplete: true },
+			theme,
+		);
+		expect(Bun.stripANSI(partial.render(120).join("\n"))).not.toContain("│ c ");
+		expect(Bun.stripANSI(complete.render(120).join("\n"))).toContain("│ c ");
+	});
+
+	it("keeps structured display previews inside the eval cell output section", () => {
+		const details: EvalToolDetails = {
+			language: "js",
+			languages: ["js"],
+			jsonOutputs: [{ preview: { ok: true } }],
+			cells: [{ index: 0, code: "display(r)", language: "js", output: "", status: "complete", statusEvents: [] }],
+		};
+		const rendered = evalToolRenderer
+			.renderResult({ content: [{ type: "text", text: "" }], details }, { expanded: false, isPartial: false }, theme)
+			.render(120)
+			.map(line => Bun.stripANSI(line));
+		const previewRow = rendered.findIndex(line => line.includes("preview"));
+		const bottomBorder = rendered.findIndex(line => line.startsWith("╰"));
+		expect(previewRow).toBeGreaterThan(0);
+		expect(previewRow).toBeLessThan(bottomBorder);
+	});
 });

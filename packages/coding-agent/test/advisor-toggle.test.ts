@@ -77,6 +77,15 @@ describe("AgentSession advisor toggle", () => {
 		} catch {}
 	});
 
+	async function createTempEmptySessionFile(): Promise<string> {
+		const manager = SessionManager.create(tempDir.path(), tempDir.path());
+		await manager.ensureOnDisk();
+		const file = manager.getSessionFile();
+		if (!file) throw new Error("Expected a persisted temporary session");
+		await manager.close();
+		return file;
+	}
+
 	function advisorMessage(cost: number, timestamp: number): AssistantMessage {
 		return {
 			role: "assistant",
@@ -890,7 +899,7 @@ describe("AgentSession advisor toggle", () => {
 		const advisor = enableAdvisor();
 		appendAdvisorCost(advisor, 0.5, 1);
 		const previousSessionFile = sessionManager.getSessionFile();
-		const targetSessionFile = SessionManager.createEmptySessionFile(tempDir.path());
+		const targetSessionFile = await createTempEmptySessionFile();
 		const failure = new Error("switch failed before advisor reset");
 		const setSessionFile = sessionManager.setSessionFile.bind(sessionManager);
 		vi.spyOn(sessionManager, "setSessionFile").mockImplementation(async file => {
@@ -911,7 +920,7 @@ describe("AgentSession advisor toggle", () => {
 	it("adopts only the target session's recorded advisor cost after a switch", async () => {
 		const advisor = enableAdvisor();
 		appendAdvisorCost(advisor, 0.5, 1);
-		const targetSessionFile = SessionManager.createEmptySessionFile(tempDir.path());
+		const targetSessionFile = await createTempEmptySessionFile();
 		await writeAdvisorTranscript(targetSessionFile, "__advisor.jsonl", [0.25]);
 		const setSessionFile = sessionManager.setSessionFile.bind(sessionManager);
 		vi.spyOn(sessionManager, "setSessionFile").mockImplementation(async file => {
@@ -926,7 +935,7 @@ describe("AgentSession advisor toggle", () => {
 		expect((await loadAdvisorTranscriptCosts(targetSessionFile)).get("")).toBeCloseTo(0.25, 8);
 	});
 	it("hydrates persisted advisor cost during SDK session startup", async () => {
-		const sessionFile = SessionManager.createEmptySessionFile(tempDir.path());
+		const sessionFile = await createTempEmptySessionFile();
 		await writeAdvisorTranscript(sessionFile, "__advisor.jsonl", [0.5]);
 		// A subagent advisor writes one directory deeper; its spend belongs to that
 		// subagent and must not inflate the resumed primary conversation.
@@ -1079,6 +1088,8 @@ describe("AgentSession advisor toggle", () => {
 		await session.newSession();
 		const replacementSessionFile = session.sessionFile;
 		if (!replacementSessionFile) throw new Error("Expected the replacement session to be persisted");
+		sessionManager.appendMessage({ role: "user", content: "start replacement session", timestamp: 3 });
+		await sessionManager.flush();
 		appendAdvisorCost(advisor, 0.25, 3);
 		expect(session.getAdvisorCost()).toBeCloseTo(0.25, 8);
 		await session.dispose();
@@ -1519,14 +1530,14 @@ describe("AgentSession advisor toggle", () => {
 		session.applyAdvisorConfigs([{ name: "Strict", maxNotesPerUpdate: 1 }], undefined);
 		let advisor = session.getAdvisorAgent();
 		if (!advisor) throw new Error("Expected advisor agent");
-		expect(advisor.state.systemPrompt.join("\n")).toContain("max 1 non-blockers/update (`blocker` exempt)");
+		expect(advisor.state.systemPrompt.join("\n")).toContain("max 1 non-blockers + 1 `blocker`/update");
 
 		session.settings.set("advisor.maxNotesPerUpdate", 3);
 		session.applyAdvisorConfigs([{ name: "Lenient" }], undefined, undefined);
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 		advisor = session.getAdvisorAgent();
 		if (!advisor) throw new Error("Expected advisor agent");
-		expect(advisor.state.systemPrompt.join("\n")).toContain("max 3 non-blockers/update (`blocker` exempt)");
+		expect(advisor.state.systemPrompt.join("\n")).toContain("max 3 non-blockers + 1 `blocker`/update");
 	});
 
 	it("enforces budget precedence through advisor calls: per-advisor > shared WATCHDOG.yml > settings > default", async () => {

@@ -63,7 +63,38 @@ describe("SessionManager.continueRecent /new boundary", () => {
 		}
 	});
 
-	it("keeps an explicit /new boundary when the relaunched process has a different terminal id", async () => {
+	it("materializes a lazy session when the first user message is submitted", async () => {
+		const session = SessionManager.create(cwd);
+		const sessionFile = session.getSessionFile();
+		if (!sessionFile) throw new Error("Expected an allocated session path");
+		expect(fs.existsSync(sessionFile)).toBe(false);
+
+		session.appendMessage({ role: "user", content: "start the conversation", timestamp: 1 });
+		await session.flush();
+
+		expect(fs.existsSync(sessionFile)).toBe(true);
+		await session.close();
+		expect(fs.existsSync(sessionFile)).toBe(true);
+	});
+
+	it("reaps an unused /new boundary before creating the next one", async () => {
+		const session = SessionManager.create(cwd);
+		await session.newSession();
+		const first = session.getSessionFile();
+		if (!first) throw new Error("Expected first boundary path");
+		expect(fs.existsSync(first)).toBe(true);
+
+		await session.newSession();
+		const second = session.getSessionFile();
+		if (!second) throw new Error("Expected second boundary path");
+		expect(fs.existsSync(first)).toBe(false);
+		expect(fs.existsSync(second)).toBe(true);
+
+		await session.close();
+		expect(fs.existsSync(second)).toBe(false);
+	});
+
+	it("keeps an active /new boundary across terminals, then removes it on clean close", async () => {
 		const old = SessionManager.create(cwd);
 		old.appendMessage({ role: "user", content: "pre-new work", timestamp: 1 });
 		old.appendMessage(makeAssistantMessage());
@@ -76,16 +107,11 @@ describe("SessionManager.continueRecent /new boundary", () => {
 		await resumed.newSession();
 		const freshFile = resumed.getSessionFile();
 		if (!freshFile) throw new Error("Expected a fresh session file path");
-		await resumed.close();
 
-		// Filesystems may assign both rapid writes the same mtime. Session-header
-		// creation time must still make the explicit boundary win deterministically.
 		const tiedMtime = new Date("2026-01-01T00:00:00.000Z");
 		fs.utimesSync(oldFile, tiedMtime, tiedMtime);
 		fs.utimesSync(freshFile, tiedMtime, tiedMtime);
 
-		// Closing a terminal tab/window changes its TTY identity, so the next
-		// process cannot rely on the old terminal-scoped breadcrumb.
 		process.env.TMUX_PANE = "%new-boundary-relaunched-terminal";
 		const relaunched = await SessionManager.continueRecent(cwd);
 		try {
@@ -95,6 +121,10 @@ describe("SessionManager.continueRecent /new boundary", () => {
 		} finally {
 			await relaunched.close();
 		}
+
+		expect(fs.existsSync(freshFile)).toBe(true);
+		await resumed.close();
+		expect(fs.existsSync(freshFile)).toBe(false);
 	});
 
 	it("still falls back to the most-recent session for a genuinely stale breadcrumb", async () => {

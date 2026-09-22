@@ -551,7 +551,7 @@ export const evalToolRenderer = {
 
 		return markFramedBlockComponent({
 			render: (width: number): readonly string[] => {
-				const key = `${options.expanded ? 1 : 0}|${options.spinnerFrame ?? "-"}|${previewWindowRows()}|${cells.map(c => `${c.language}:${c.title ?? ""}:${c.code.length}`).join("|")}`;
+				const key = `${options.expanded ? 1 : 0}|${options.argsComplete === false ? 0 : 1}|${options.spinnerFrame ?? "-"}|${previewWindowRows()}|${cells.map(c => `${c.language}:${c.title ?? ""}:${c.code.length}`).join("|")}`;
 				if (cached && cached.key === key && cached.width === width) {
 					return cached.result;
 				}
@@ -559,9 +559,13 @@ export const evalToolRenderer = {
 				const lines: string[] = [];
 				for (let i = 0; i < cells.length; i++) {
 					const cell = cells[i];
+					const code =
+						options.argsComplete === false && /\n[\p{L}_$]$/u.test(cell.code)
+							? cell.code.slice(0, -1)
+							: cell.code;
 					const cellLines = renderCodeCell(
 						{
-							code: cell.code,
+							code,
 							language: languageForHighlighter(cell.language),
 							showLanguage: true,
 							index: i,
@@ -674,6 +678,10 @@ export const evalToolRenderer = {
 							}
 							outputLines.push(...statusLines);
 						}
+						if (i === displayCells.length - 1 && jsonLines.length > 0) {
+							if (outputLines.length > 0) outputLines.push(uiTheme.fg("dim", "Display"));
+							outputLines.push(...jsonLines);
+						}
 						const cellLines = renderCodeCell(
 							{
 								code,
@@ -705,7 +713,6 @@ export const evalToolRenderer = {
 							lines.push("");
 						}
 					}
-					lines.push(...jsonLines);
 					if (timeoutLine) {
 						lines.push(timeoutLine);
 					}

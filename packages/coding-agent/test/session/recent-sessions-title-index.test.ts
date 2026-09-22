@@ -54,9 +54,9 @@ describe("recent sessions title index", () => {
 	it("resolves a titled session from the index without reading file contents", async () => {
 		const { sessionDir, sessionFile } = await createTitledSession("Indexed title");
 
-		// Truncate the file: a content scan can no longer produce a name, so a
-		// correct result proves the lookup came from the index.
-		fs.truncateSync(sessionFile, 0);
+		// Replace the transcript with an unparseable large payload. Its size keeps
+		// emptiness ambiguous, so a result proves the title came from the index.
+		fs.writeFileSync(sessionFile, "x".repeat(5000));
 
 		const recent = await getRecentSessions(sessionDir);
 		expect(recent).toHaveLength(1);
@@ -77,19 +77,24 @@ describe("recent sessions title index", () => {
 			cwd,
 			title: "Legacy title",
 		};
-		fs.writeFileSync(legacyFile, `${JSON.stringify(header)}\n`);
+		const message = {
+			type: "message",
+			id: Bun.randomUUIDv7(),
+			parentId: null,
+			timestamp: "2024-01-01T00:00:01.000Z",
+			message: { role: "user", content: "legacy prompt", timestamp: 1 },
+		};
+		fs.writeFileSync(legacyFile, `${JSON.stringify(header)}\n${JSON.stringify(message)}\n`);
 
 		// First call: no index row, name comes from the 4KB header scan.
 		const first = await getRecentSessions(sessionDir);
 		expect(first).toHaveLength(1);
 		expect(first[0].name).toBe("Legacy title");
 
-		// The scan must have backfilled the index: after truncation the file is
-		// unscannable, so the second call can only succeed via the stored row.
+		// The scan backfills the title, but an indexed file that later becomes
+		// provably empty must still disappear from the welcome list.
 		fs.truncateSync(legacyFile, 0);
-		const second = await getRecentSessions(sessionDir);
-		expect(second).toHaveLength(1);
-		expect(second[0].name).toBe("Legacy title");
+		expect(await getRecentSessions(sessionDir)).toEqual([]);
 	});
 
 	it("orders by file mtime, enforces the limit, and names untitled sessions from their first prompt", async () => {

@@ -54,7 +54,10 @@ describe("ToolExecutionComponent tool-result render memoization", () => {
 	it("re-shapes once per meaningful change, never per invalidate() frame", () => {
 		const tool = makeShapingTool();
 		const shapeSpy = vi.spyOn(tool, "renderResult");
-		const ui = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
+		const ui = {
+			requestRender() {},
+			requestComponentRender() {},
+		} as unknown as TUI;
 
 		const component = new ToolExecutionComponent(
 			"custom_render",
@@ -99,7 +102,7 @@ describe("ToolExecutionComponent tool-result render memoization", () => {
 	// new args object re-shapes the call preview instead of freezing it at the
 	// first render (the bug: key omitted #args, so once the display was built
 	// every streamed delta was swallowed by the guard).
-	it("re-shapes the call preview when streamed args change, not only on key fields", () => {
+	it("re-shapes the call preview when streamed args change, not only on key fields", async () => {
 		const tool = {
 			name: "custom_render",
 			label: "Custom",
@@ -108,7 +111,10 @@ describe("ToolExecutionComponent tool-result render memoization", () => {
 			},
 		};
 		const callSpy = vi.spyOn(tool, "renderCall");
-		const ui = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
+		const ui = {
+			requestRender() {},
+			requestComponentRender() {},
+		} as unknown as TUI;
 
 		const component = new ToolExecutionComponent(
 			"custom_render",
@@ -128,12 +134,25 @@ describe("ToolExecutionComponent tool-result render memoization", () => {
 		expect(callSpy.mock.calls.length).toBe(afterCtor);
 
 		// A NEW args object (streamed delta) MUST re-shape and reflect the change,
-		// even though no key field (result version, expanded, …) moved.
+		// even though no key field (result version, expanded, …) moved. While args
+		// stream, rebuilds coalesce onto a timer so hundreds of deltas collapse into
+		// one reshape - and never rebuild during paint, which re-enters rendering.
 		component.updateArgs({ cmd: "B" });
+		expect(callSpy.mock.calls.length).toBe(afterCtor);
+		expect(stripVTControlCharacters(component.render(80).join("\n"))).toContain("call:A");
+		expect(callSpy.mock.calls.length).toBe(afterCtor);
+
+		// A streamed body arrives as hundreds of deltas between two paints. Each
+		// one used to rebuild the whole card (re-highlighting every previewed
+		// row), which stalled large write/eval cards and froze the transcript.
+		for (let i = 0; i < 50; i++) component.updateArgs({ cmd: `S${i}` });
+		expect(callSpy.mock.calls.length).toBe(afterCtor);
+		await Bun.sleep(120);
 		expect(callSpy.mock.calls.length).toBe(afterCtor + 1);
-		const frame = stripVTControlCharacters(component.render(80).join("\n"));
-		expect(frame).toContain("call:B");
-		expect(frame).not.toContain("call:A");
+		const flooded = stripVTControlCharacters(component.render(80).join("\n"));
+		expect(callSpy.mock.calls.length).toBe(afterCtor + 1);
+		expect(flooded).toContain("call:S49");
+		expect(flooded).not.toContain("call:A");
 
 		// A same-reference updateArgs is the documented no-op and must not re-shape.
 		const sameArgs = { cmd: "C" };

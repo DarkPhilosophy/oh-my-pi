@@ -1175,6 +1175,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		subagentEventBus?: EventBus,
 	) {
 		this.session = session;
+		this.session.onLocalQueueCoalesced = (perSend, merged, replaced, perSendCount, mergedCount, replacedCount) => {
+			const droppedPerSend = this.locallySubmittedUserSignatures.delete(`${perSend}\u0000${perSendCount}`);
+			const droppedReplaced = this.locallySubmittedUserSignatures.delete(`${replaced}\u0000${replacedCount}`);
+			if (droppedPerSend || droppedReplaced) {
+				this.locallySubmittedUserSignatures.add(`${merged}\u0000${mergedCount}`);
+			}
+		};
 		this.sessionManager = session.sessionManager;
 		this.settings = session.settings;
 		const preferences = {

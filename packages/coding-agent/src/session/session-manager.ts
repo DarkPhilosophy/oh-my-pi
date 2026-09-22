@@ -69,7 +69,13 @@ import {
 	type TtsrInjectionEntry,
 	type UsageStatistics,
 } from "./session-entries";
-import { findMostRecentSession, listAllSessions, listSessions, type SessionInfo } from "./session-listing";
+import {
+	findMostRecentSession,
+	isDisplayableSession,
+	listAllSessions,
+	listSessions,
+	type SessionInfo,
+} from "./session-listing";
 import {
 	loadEntriesFromFile,
 	loadSessionFile,
@@ -373,10 +379,6 @@ function resetUsageCost(usage: Usage | undefined): void {
 	usage.cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
 	usage.credits = undefined;
 	usage.premiumRequests = undefined;
-}
-
-function isAssistantEntry(entry: SessionEntry): boolean {
-	return entry.type === "message" && entry.message.role === "assistant";
 }
 
 function isDraftOnlyMetadataEntry(entry: SessionEntry): boolean {
@@ -722,11 +724,11 @@ export class SessionManager {
 	/** Lazy gate crossed (ensureOnDisk / loaded file): every entry must persist from now on. */
 	#forceFileCreation = false;
 	/**
-	 * Armed only when this manager observed a draft sidecar lifecycle that
-	 * materialized an otherwise metadata-only session file. Explicit
+	 * Armed when this manager owns a transient metadata-only file created for
+	 * a draft or an active /new boundary. Explicit
 	 * ensureOnDisk() callers (ACP session/new, handoff) must survive close().
 	 */
-	#draftOnlySessionCleanupArmed = false;
+	#metadataOnlySessionCleanupArmed = false;
 
 	/**
 	 * Collab replication tap: invoked for every appended entry with the
@@ -1153,12 +1155,12 @@ export class SessionManager {
 		return body;
 	}
 
-	#historyContainsAssistantMessage(): boolean {
-		return this.#entries.some(isAssistantEntry);
+	#historyContainsConversation(): boolean {
+		return hasConversationalHistory(this.#entries);
 	}
 
 	#shouldHaveSessionFile(): boolean {
-		return this.#forceFileCreation || this.#fileIsCurrent || this.#historyContainsAssistantMessage();
+		return this.#forceFileCreation || this.#fileIsCurrent || this.#historyContainsConversation();
 	}
 
 	/**
@@ -1355,7 +1357,7 @@ export class SessionManager {
 			this.#rewriteRequired = true;
 		}
 
-		// Lazy gate: a brand-new session is not written until it has an assistant
+		// Lazy gate: a brand-new session is not written until it has a user or assistant
 		// message (or someone forced creation), so sessions that never produce
 		// output never create a file.
 		if (!this.#shouldHaveSessionFile()) {
@@ -1368,7 +1370,7 @@ export class SessionManager {
 		// durable entry exists, later appends cannot satisfy its delete predicate.
 		if (
 			this.#storage.withSessionFileLockSync &&
-			this.#draftOnlySessionCleanupArmed &&
+			this.#metadataOnlySessionCleanupArmed &&
 			!isDraftOnlyMetadataEntry(entry) &&
 			this.#entries.every(candidate => candidate === entry || isDraftOnlyMetadataEntry(candidate))
 		) {
@@ -1561,7 +1563,7 @@ export class SessionManager {
 		this.#fileIsCurrent = false;
 		this.#rewriteRequired = false;
 		this.#forceFileCreation = false;
-		this.#draftOnlySessionCleanupArmed = false;
+		this.#metadataOnlySessionCleanupArmed = false;
 		this.#turnBudgetTotal = null;
 		this.#turnBudgetHard = false;
 		this.#turnOutputBaseline = 0;
@@ -1734,7 +1736,7 @@ export class SessionManager {
 			expectedDiskSize: this.#expectedDiskSize,
 			onDisk: this.#fileIsCurrent,
 			needsRewrite: this.#rewriteRequired,
-			draftOnlySessionCleanupArmed: this.#draftOnlySessionCleanupArmed,
+			draftOnlySessionCleanupArmed: this.#metadataOnlySessionCleanupArmed,
 			fallbackRuntimeOnly: this.#fallbackRuntimeOnly,
 			// Entries are snapshotted by reference (switch/reload replaces the
 			// array wholesale). The header is cloned: moveTo mutates it in place
@@ -1778,7 +1780,7 @@ export class SessionManager {
 		this.#fileIsCurrent = snapshot.onDisk;
 		this.#rewriteRequired = snapshot.needsRewrite;
 		this.#forceFileCreation = snapshot.onDisk;
-		this.#draftOnlySessionCleanupArmed = snapshot.draftOnlySessionCleanupArmed;
+		this.#metadataOnlySessionCleanupArmed = snapshot.draftOnlySessionCleanupArmed;
 		this.#fallbackRuntimeOnly = snapshot.fallbackRuntimeOnly;
 		this.#applyEntries(snapshot.header, [...snapshot.entries]);
 		this.#additionalDirectories = snapshot.header.additionalDirectories ?? [];
@@ -1842,8 +1844,9 @@ export class SessionManager {
 		options?: { throwIfMissing?: boolean; newSession?: NewSessionOptions },
 	): Promise<void> {
 		await this.#drainAndCloseWriter();
+		await this.#dropIfEmptyAndNoDraft();
 		this.#clearDiskError();
-		this.#draftOnlySessionCleanupArmed = false;
+		this.#metadataOnlySessionCleanupArmed = false;
 
 		const resolvedSessionFile = path.resolve(sessionFile);
 		const loaded = loadedSession ?? (await loadSessionFile(resolvedSessionFile, this.#storage));
@@ -1929,8 +1932,12 @@ export class SessionManager {
 	 */
 	async newSession(options?: NewSessionOptions): Promise<string | undefined> {
 		await this.#drainAndCloseWriter();
+		await this.#dropIfEmptyAndNoDraft();
 		const sessionFile = this.#resetToNewSession(options);
 		await this.ensureOnDisk();
+		// Keep the boundary discoverable while this process owns it, but reap it
+		// on clean close if no conversation, draft, or durable extension state lands.
+		this.#metadataOnlySessionCleanupArmed = true;
 		return sessionFile;
 	}
 
@@ -1980,7 +1987,7 @@ export class SessionManager {
 		this.#fileIsCurrent = false;
 		this.#rewriteRequired = false;
 		this.#forceFileCreation = true;
-		this.#draftOnlySessionCleanupArmed = false;
+		this.#metadataOnlySessionCleanupArmed = false;
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
 		this.#rememberBreadcrumb(this.#cwd, this.#sessionFile);
@@ -2124,8 +2131,8 @@ export class SessionManager {
 
 			// Rewrite at the new location when the file already existed (update cwd) or
 			// there is in-memory output worth materializing; otherwise stay lazy.
-			const hasAssistant = this.#historyContainsAssistantMessage();
-			if (this.#persist && this.#sessionFile && (sessionFileExisted || hasAssistant)) {
+			const hasConversation = this.#historyContainsConversation();
+			if (this.#persist && this.#sessionFile && (sessionFileExisted || hasConversation)) {
 				this.#forceFileCreation = true;
 				await this.#rewriteAtomically();
 			}
@@ -2137,7 +2144,7 @@ export class SessionManager {
 	}
 
 	/**
-	 * Force the session onto disk even with no assistant message yet (ACP
+	 * Force the session onto disk even with no conversation messages yet (ACP
 	 * session/new must create a discoverable file immediately).
 	 */
 	async ensureOnDisk(): Promise<void> {
@@ -2292,22 +2299,22 @@ export class SessionManager {
 	}
 
 	/**
-	 * Drop only session files that this manager saw materialized for a draft and
-	 * that still contain no durable conversation or extension state. Explicit
-	 * ensureOnDisk() records (ACP session/new, handoff) stay resumable.
+	 * Drop only metadata-only files this manager owns through a draft or active
+	 * /new boundary. Files with durable conversation or extension state remain;
+	 * explicit ensureOnDisk() records (ACP session/new, handoff) stay resumable.
 	 */
 	async #dropIfEmptyAndNoDraft(): Promise<void> {
-		if (!this.#draftOnlySessionCleanupArmed) return;
+		if (!this.#metadataOnlySessionCleanupArmed) return;
 		const sessionFile = this.#sessionFile;
 		if (!sessionFile || !this.#storage.existsSync(sessionFile)) {
-			this.#draftOnlySessionCleanupArmed = false;
+			this.#metadataOnlySessionCleanupArmed = false;
 			return;
 		}
 		const draftPath = this.#draftPath();
 		if (draftPath && this.#storage.existsSync(draftPath)) return;
 		if (!this.#entries.every(isDraftOnlyMetadataEntry)) {
 			await this.#clearDraftOnlySessionMarker();
-			this.#draftOnlySessionCleanupArmed = false;
+			this.#metadataOnlySessionCleanupArmed = false;
 			return;
 		}
 		// Another process can consume the draft and append a real conversation
@@ -2326,13 +2333,13 @@ export class SessionManager {
 			});
 			if (!deleted) {
 				await this.#clearDraftOnlySessionMarker();
-				this.#draftOnlySessionCleanupArmed = false;
+				this.#metadataOnlySessionCleanupArmed = false;
 				return;
 			}
 			this.#fileIsCurrent = false;
 			this.#forceFileCreation = false;
 			this.#hasTitleSlot = false;
-			this.#draftOnlySessionCleanupArmed = false;
+			this.#metadataOnlySessionCleanupArmed = false;
 		} catch (err) {
 			if (!isEnoent(err)) {
 				logger.warn("Failed to drop empty session on close", { sessionFile, error: String(err) });
@@ -2574,7 +2581,7 @@ export class SessionManager {
 	 * storage (the JSONL exists on disk / in the active storage backend).
 	 *
 	 * Session persistence is lazy: the file is only written once the history
-	 * contains an assistant message (or an explicit {@link ensureOnDisk}
+	 * contains a user or assistant message (or an explicit {@link ensureOnDisk}
 	 * caller forces it). Until then {@link getSessionFile} returns an allocated
 	 * path that leads nowhere, so a `--resume <id>` hint built from it would
 	 * always fail. Consumers that advertise a resume command must gate on this
@@ -2638,7 +2645,7 @@ export class SessionManager {
 		await this.ensureOnDisk();
 		if (draftWillMaterializeMetadataOnlyFile) {
 			await this.#writeDraftOnlySessionMarker();
-			this.#draftOnlySessionCleanupArmed = true;
+			this.#metadataOnlySessionCleanupArmed = true;
 		}
 		await this.#storage.writeText(draftPath, text);
 	}
@@ -2661,7 +2668,7 @@ export class SessionManager {
 			if (!isEnoent(err)) throw err;
 		}
 		if (this.#entries.every(isDraftOnlyMetadataEntry) && this.#hasDraftOnlySessionMarker())
-			this.#draftOnlySessionCleanupArmed = true;
+			this.#metadataOnlySessionCleanupArmed = true;
 
 		return draft;
 	}
@@ -3705,10 +3712,24 @@ export class SessionManager {
 		return sortPinnedFirst(sessions, await loadPinnedSessionIds());
 	}
 
+	/** User-facing session list. Keeps ambiguous large transcripts visible, but hides proven metadata-only files. */
+	static async listDisplayable(
+		cwd: string,
+		sessionDir?: string,
+		storage: SessionStorage = new FileSessionStorage(),
+	): Promise<SessionInfo[]> {
+		return (await SessionManager.list(cwd, sessionDir, storage)).filter(isDisplayableSession);
+	}
+
 	/** List all sessions across all project directories, pinned sessions first. */
 	static async listAll(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
 		const sessions = await listAllSessions(storage);
 		return sortPinnedFirst(sessions, await loadPinnedSessionIds());
+	}
+
+	/** User-facing cross-project session list. Raw resume and recovery paths continue to use {@link listAll}. */
+	static async listAllDisplayable(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
+		return (await SessionManager.listAll(storage)).filter(isDisplayableSession);
 	}
 }
 
