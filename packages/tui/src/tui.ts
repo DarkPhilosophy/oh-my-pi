@@ -3767,7 +3767,15 @@ export class TUI extends Container {
 			];
 			this.#providerVisibleHistory = mutableTop > 0 ? visibleHistory.slice(-mutableTop) : [];
 		} else if (expansionRows === 0 && this.#providerViewportExpansionRows === 0) {
-			this.#providerVisibleHistory = this.#providerVisibleHistory.slice(0, mutableTop);
+			// A frame taller than the room below `startTop` scrolls the screen by
+			// `startTop - newTop`: the oldest visible history rows leave the top,
+			// and the newest ones stay on screen directly above the frame. Drop
+			// from the head, or the next expansion restores a history that lost its
+			// newest rows (a card's tail and bottom border) and still shows its head.
+			const scrolled = Math.max(0, startTop - newTop);
+			this.#providerVisibleHistory = this.#providerVisibleHistory
+				.slice(0, startTop)
+				.slice(scrolled, scrolled + mutableTop);
 		}
 		const screenPrefix = destructiveReset ? [] : this.#providerScreen.slice(0, startTop);
 		while (screenPrefix.length < startTop) screenPrefix.push("");
