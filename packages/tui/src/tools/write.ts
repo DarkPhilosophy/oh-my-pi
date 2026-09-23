@@ -12,7 +12,6 @@ import {
 	formatDiagnostics,
 	formatErrorDetail,
 	formatExpandHint,
-	formatMoreItems,
 	formatStatusIcon,
 	PREVIEW_LIMITS,
 	type RenderedStringCache,
@@ -54,29 +53,9 @@ interface WriteRenderArgs {
 	content?: unknown;
 }
 
-const WRITE_PREVIEW_LINES = 6;
-
 function countLines(text: string): number {
 	if (!text) return 0;
 	return text.split("\n").length;
-}
-
-/** Bounded newline scan: whether `text` spans more than `maxLines` lines.
- *  Runs on every live compose (the repaint predicate below), so it must not
- *  materialize the split the way `countLines` does. */
-function exceedsLineCount(text: string, maxLines: number): boolean {
-	if (!text) return false;
-	let lines = 1;
-	for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
-		if (++lines > maxLines) return true;
-	}
-	return false;
-}
-
-function writeContentOf(args: unknown): string {
-	if (args == null || typeof args !== "object" || !("content" in args)) return "";
-	const content = args.content;
-	return typeof content === "string" ? content : "";
 }
 
 function formatLineCountSuffix(lineCount: number, uiTheme: Theme): string {
@@ -287,23 +266,25 @@ function renderContentPreview(
 	return cachedRenderedString(cache, uiTheme, expanded, language ?? "", content, () => {
 		const rawLines = normalizeDisplayText(content).split("\n");
 		const totalLines = rawLines.length;
-		const maxLines = expanded ? totalLines : Math.min(totalLines, WRITE_PREVIEW_LINES);
-		const visibleLines = rawLines.slice(0, maxLines);
-		const highlighted = highlightCode(visibleLines.join("\n"), language);
+		// Collapsed, the finished card keeps the exact window the streaming
+		// preview ended on — `… (N earlier lines)` + the last rows, same gutter.
+		// A different (shorter, top-anchored) frame shrinks the card the moment
+		// the write lands, and its rows no longer match the ones already lent to
+		// native scrollback, so the change surfaces as a cut card and a blank gap.
+		const startIndex = expanded ? 0 : Math.max(0, totalLines - PREVIEW_LIMITS.EXPANDED_LINES);
+		const highlighted = highlightCode(rawLines.slice(startIndex).join("\n"), language);
 		const lineNumberWidth = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length);
-		const hidden = totalLines - maxLines;
 
 		let text = "\n\n";
+		if (startIndex > 0) {
+			const hint = formatExpandHint(uiTheme, expanded, true);
+			text += `${uiTheme.fg("dim", `… (${startIndex} earlier line${startIndex === 1 ? "" : "s"})${hint ? ` ${hint}` : ""}`)}\n`;
+		}
 		for (let i = 0; i < highlighted.length; i++) {
-			const lineNum = i + 1;
+			const lineNum = startIndex + i + 1;
 			const gutter = uiTheme.fg("dim", `${String(lineNum).padStart(lineNumberWidth, " ")} `);
 			const body = replaceTabs(highlighted[i] ?? "");
 			text += `${gutter}${body}\n`;
-		}
-		if (!expanded && hidden > 0) {
-			const hint = formatExpandHint(uiTheme, expanded, hidden > 0);
-			const moreLine = `${formatMoreItems(hidden, "line")}${hint ? ` ${hint}` : ""}`;
-			text += uiTheme.fg("dim", moreLine);
 		}
 		return text.trimEnd();
 	});
@@ -500,12 +481,4 @@ export const writeToolRenderer = {
 		});
 	},
 	mergeCallAndResult: true,
-	// The collapsed pending preview follows the streaming edge with a tail
-	// window once the content outgrows it (`… (N earlier lines)` + last rows);
-	// the first partial result re-anchors the frame to the top of the file, so
-	// tail rows already committed to viewport/native scrollback would survive
-	// as stale content above the new frame without a full replay. Expanded and
-	// short previews stay top-anchored and skip the (scrollback-wiping) reset.
-	forceFirstResultViewportRepaint: (args: unknown, options: RenderResultOptions) =>
-		!options.expanded && exceedsLineCount(writeContentOf(args), PREVIEW_LIMITS.EXPANDED_LINES),
 } satisfies ToolRenderer<WriteRenderArgs, WriteToolDetails>;

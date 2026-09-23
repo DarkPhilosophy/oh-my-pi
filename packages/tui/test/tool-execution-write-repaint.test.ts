@@ -29,22 +29,33 @@ describe("ToolExecutionComponent write repaint seam", () => {
 
 	function makeComponent(args: unknown) {
 		const requestRender = vi.fn();
-		const ui = { requestRender, requestComponentRender() {} } as unknown as TUI;
+		const ui = { requestRender, requestComponentRender() { } } as unknown as TUI;
 		const component = new ToolExecutionComponent("write", args, {}, undefined, ui);
 		components.push(component);
 		requestRender.mockClear();
 		return { component, requestRender };
 	}
 
-	it("forces a viewport repaint when a painted collapsed tail window receives its first result", () => {
-		// 20 lines > WRITE_STREAMING_PREVIEW_LINES (12): the pending preview is a
-		// tail window the first-result render re-anchors to the top of the file.
+	it("keeps the streamed tail window when a long write finishes", () => {
+		// The finished card must not shrink below what the stream showed: the
+		// collapsed result keeps the same `… (N earlier lines)` + tail rows, so
+		// no re-anchor happens and no scrollback-wiping repaint is needed.
 		const { component, requestRender } = makeComponent(writeArgs(20));
-		component.render(80);
+		component.setArgsComplete();
+		const streamed = component.render(80).map(row => Bun.stripANSI(row));
 
-		component.updateResult(partialWriteResult(), true);
+		component.updateResult(partialWriteResult("Saved notes.txt"), false);
+		const finished = component.render(80).map(row => Bun.stripANSI(row));
 
-		expect(requestRender).toHaveBeenCalledTimes(1);
+		expect(requestRender).not.toHaveBeenCalled();
+		// Only the transient "… (streaming)" status row goes away; every content
+		// row the stream showed stays visible, with the same earlier-lines marker.
+		const contentRows = (rows: string[]) =>
+			rows
+				.filter(row => /\bline \d+\b|earlier lines/.test(row))
+				.map(row => row.replace(/ ⟦.*⟧/, "").replace(/\s+│$/, ""));
+		expect(contentRows(finished)).toEqual(contentRows(streamed));
+		expect(contentRows(finished)).toHaveLength(13);
 	});
 
 	it("does not repaint when the pending tail window never reaches the terminal", () => {

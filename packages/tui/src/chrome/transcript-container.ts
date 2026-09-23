@@ -1198,21 +1198,19 @@ export class TranscriptContainer extends Container {
 			let skip = index === start ? this.#renderStablePrefix(entry, entry.emitted, width).length : 0;
 			let separatorBorrowed = false;
 			// Rows the terminal already borrowed into native scrollback are immutable
-			// history: re-emitting them duplicates the card verbatim. Skip only the
-			// prefix that still renders byte-identical; a divergent card re-emits
-			// from the first changed row, preserving the documented stale seam.
+			// history, whether or not the card still renders them byte-identical.
+			// Re-emitting a changed row cannot correct it — history rows land at the
+			// physical boundary, below every row borrowed since, so the "fix" shows
+			// up as a stray footer or a whole duplicated card under later blocks
+			// (parallel streaming previews diverge on every frame). Keep the stale
+			// borrowed copy and emit only what was never borrowed.
 			const borrowedRows = entry.borrowedRows;
 			if (borrowedRows !== undefined && borrowedRows.length > 0) {
-				const offset = entry.viewportOffset ?? 0;
-				let matched = 0;
-				while (
-					matched < borrowedRows.length &&
-					offset + matched < rendered.length &&
-					rendered[offset + matched] === borrowedRows[matched]
-				)
-					matched++;
-				skip = Math.max(skip, offset + matched);
-				separatorBorrowed = offset + borrowedRows.length > rendered.length;
+				// `borrowedEnd` is the absolute row fixed when the rows were lent;
+				// `viewportOffset` is rewritten by every later frame.
+				const borrowedEnd = entry.borrowedEnd ?? (entry.viewportOffset ?? 0) + borrowedRows.length;
+				skip = Math.max(skip, Math.min(rendered.length, borrowedEnd));
+				separatorBorrowed = borrowedEnd > rendered.length;
 			}
 			const block = rendered.slice(skip);
 			if (block.length === 0) {
