@@ -1180,6 +1180,12 @@ export class TranscriptContainer extends Container {
 
 	#renderRange(start: number, end: number, width: number, trailingBlank: boolean): readonly string[] {
 		const rows: string[] = [];
+		// A block already fully in scrollback (borrowed or emitted) contributes no
+		// rows, but the blank that separates it from the next block is only in
+		// scrollback when the terminal borrowed that row too. Otherwise the
+		// separator is still owed, and dropping it glues the next block onto the
+		// previous card — the seam bites a row out of the earlier viewport.
+		let separatorOwed = false;
 		for (let index = start; index < end; index++) {
 			const entry = this.#entries[index]!;
 			this.#setAllocation(entry, Number.MAX_SAFE_INTEGER, this.#lastFrame);
@@ -1190,6 +1196,7 @@ export class TranscriptContainer extends Container {
 			const rendered =
 				index === start ? this.#renderEntry(entry, width) : trimBlankEdges(entry.component.render(width));
 			let skip = index === start ? this.#renderStablePrefix(entry, entry.emitted, width).length : 0;
+			let separatorBorrowed = false;
 			// Rows the terminal already borrowed into native scrollback are immutable
 			// history: re-emitting them duplicates the card verbatim. Skip only the
 			// prefix that still renders byte-identical; a divergent card re-emits
@@ -1205,13 +1212,18 @@ export class TranscriptContainer extends Container {
 				)
 					matched++;
 				skip = Math.max(skip, offset + matched);
+				separatorBorrowed = offset + borrowedRows.length > rendered.length;
 			}
 			const block = rendered.slice(skip);
-			if (block.length === 0) continue;
-			if (rows.length > 0) rows.push("");
+			if (block.length === 0) {
+				if (rendered.length > 0) separatorOwed = !separatorBorrowed;
+				continue;
+			}
+			if (rows.length > 0 || separatorOwed) rows.push("");
+			separatorOwed = false;
 			rows.push(...block);
 		}
-		if (trailingBlank && rows.length > 0) rows.push("");
+		if (trailingBlank && (rows.length > 0 || separatorOwed)) rows.push("");
 		return rows;
 	}
 
