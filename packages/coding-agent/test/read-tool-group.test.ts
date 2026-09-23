@@ -332,6 +332,10 @@ describe("ReadToolGroupComponent", () => {
 			.filter(index => index >= 0);
 		expect(usageIndices).toHaveLength(1);
 		expect(usageIndices[0]).toBeGreaterThan(previewIndex);
+		// Like a standalone usage block, the metrics row sits one blank row below
+		// the card frame instead of touching its bottom border.
+		expect(lines[usageIndices[0]! - 1]!.trim()).toBe("");
+		expect(lines[usageIndices[0]! - 2]).toMatch(/╰/);
 	});
 
 	it("links grouped summary paths to resolved filesystem paths and selector lines", () => {

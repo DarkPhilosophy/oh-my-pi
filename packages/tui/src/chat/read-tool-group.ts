@@ -3,6 +3,7 @@ import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
 import { type Component } from "../tui";
 import { Container } from "../tui";
 import { Text } from "../components/text";
+import { Spacer } from "../components/spacer";
 import { XD_URL_PREFIX } from "../tools/xd-url";
 import { getLanguageFromPath, theme } from "../theme";
 import { parseLineRanges, selectorLineRanges } from "../tools/line-ranges";
@@ -838,6 +839,9 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#addPreviewUsage(entry: ReadEntry): void {
 		const usageRow = this.#usageRows.get(entry.toolCallId);
 		if (!usageRow) return;
+		// Same blank row a standalone usage block (createUsageRowBlock) leads
+		// with: without it the metrics line is glued to the preview card's frame.
+		this.addChild(new Spacer(1));
 		this.addChild(
 			new Text(
 				theme.fg(
