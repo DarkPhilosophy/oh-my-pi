@@ -110,8 +110,8 @@ export async function resolveDaemonInteractiveResume(
 			cwd: match.session.cwd || cwd,
 		};
 	}
-	const folderSessions = await SessionManager.listDisplayable(cwd, parsed.sessionDir);
-	const allSessions = folderSessions.length === 0 ? await SessionManager.listAllDisplayable() : undefined;
+	const folderSessions = await SessionManager.listForPicker(cwd, parsed.sessionDir);
+	const allSessions = folderSessions.length === 0 ? await SessionManager.listAllForPicker() : undefined;
 	await initTheme();
 	const selectSession = await loadSessionPicker();
 	const selected = await selectSession(folderSessions, { allSessions }).finally(stopThemeWatcher);

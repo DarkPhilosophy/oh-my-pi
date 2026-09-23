@@ -68,7 +68,6 @@ export async function curateAdvisorCandidates(options: CurateAdvisorCandidatesOp
 		const judge = resolveJudge({
 			settings: options.settings,
 			registry: options.registry,
-			backend: ONLINE_MEMORY_MODEL_KEY,
 			sessionModel: options.model,
 			sessionId: options.sessionId,
 		});

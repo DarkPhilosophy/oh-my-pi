@@ -31,6 +31,15 @@ const PROVIDER_META: Record<SearchProviderId, ProviderMeta> = {
 		label: SEARCH_PROVIDER_LABELS.perplexity,
 		load: async () => new (await import("./providers/perplexity")).PerplexityProvider(),
 	},
+
+	openrouter: {
+		id: "openrouter" as const,
+		label: "OpenRouter",
+		// Upstream's OpenRouter grounding is not part of this fork's provider set.
+		load: async () => {
+			throw new Error("OpenRouter grounded search is unavailable in this build");
+		},
+	},
 	gemini: {
 		id: "gemini",
 		label: SEARCH_PROVIDER_LABELS.gemini,

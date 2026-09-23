@@ -11,14 +11,13 @@ import {
 	type AuthStorage,
 	buildAnthropicAuthConfig,
 	buildAnthropicSearchHeaders,
-	buildAnthropicSystemBlocks,
 	buildAnthropicUrl,
 	type FetchImpl,
 	resolveAnthropicMetadataUserId,
 	stripClaudeToolPrefix,
 	withAuth,
-	wrapFetchForCch,
 } from "@oh-my-pi/pi-ai";
+import { buildAnthropicSystemBlocks, wrapFetchForCch } from "@oh-my-pi/pi-ai/providers/anthropic";
 import { classifyModel, compareRevision, parseRevision } from "@oh-my-pi/pi-catalog/identity";
 import { $env } from "@oh-my-pi/pi-utils";
 import type { AnthropicApiResponse, AnthropicCitation } from "../../../web/search/types";

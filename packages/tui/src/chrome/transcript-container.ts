@@ -1153,14 +1153,27 @@ export class TranscriptContainer extends Container {
 		});
 	}
 
-	/** Whether every row the terminal borrowed from `entry` still renders byte-identical. */
+	/**
+	 * Whether every row the terminal borrowed from `entry` still renders
+	 * byte-identical. A borrow can extend one row past the block: the viewport
+	 * attributes the blank separator that follows a block to that block's
+	 * extent, while `render` never emits it. Those trailing blanks are frame
+	 * separators, not card content, so they match by construction — comparing
+	 * them against `undefined` would mark every fully borrowed block divergent
+	 * and permanently pin both the emitted-offset reuse and retirement.
+	 */
 	#borrowedPrefixMatches(entry: TranscriptEntry, rendered: readonly string[] | undefined): boolean {
 		const borrowedRows = entry.borrowedRows;
 		if (borrowedRows === undefined || borrowedRows.length === 0) return true;
 		if (rendered === undefined) return false;
 		const offset = entry.viewportOffset ?? 0;
 		for (let index = 0; index < borrowedRows.length; index++) {
-			if (rendered[offset + index] !== borrowedRows[index]) return false;
+			const row = rendered[offset + index];
+			if (row === undefined) {
+				if (borrowedRows[index] !== "") return false;
+				continue;
+			}
+			if (row !== borrowedRows[index]) return false;
 		}
 		return true;
 	}
@@ -1282,4 +1295,4 @@ export class TranscriptContainer extends Container {
 }
 
 /** Groups sibling rows into one conservative mutable semantic transcript block. */
-export class TranscriptBlock extends Container {}
+export class TranscriptBlock extends Container { }

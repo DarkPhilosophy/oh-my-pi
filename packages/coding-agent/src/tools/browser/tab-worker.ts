@@ -6,12 +6,8 @@ import { postmortem, Snowflake, untilAborted, withTimeout } from "@oh-my-pi/pi-u
 import type { HTMLElement } from "@oh-my-pi/pi-utils/dom";
 import type {
 	Browser,
-	BrowserContext,
 	CDPSession,
-	Dialog,
 	ElementHandle,
-	ElementScreenshotOptions,
-	Frame,
 	HTTPResponse,
 	JSHandle,
 	KeyboardTypeOptions,
@@ -46,15 +42,164 @@ import {
 	parseAriaRefSelector,
 	resolveAriaRefHandle,
 } from "./aria/aria-snapshot";
-import { pickElectronTarget } from "./attach";
+import { type BrowserA11yOptions, type BrowserA11yResult, formatA11ySummary, runA11yAudit } from "./a11y/audit";
+import {
+	applyUserAgentOverride,
+	BrowserEmulationController,
+	type BrowserEmulateOptions,
+	type ClipboardActionResult,
+	type ClipboardReadResult,
+} from "./emulation";
 import {
 	applyStealthPatches,
 	applyViewport,
 	BROWSER_PROTOCOL_TIMEOUT_MS,
+	DEFAULT_VIEWPORT,
 	isPuppeteerHandle,
 	loadPuppeteerInWorker,
+	loadedKnownDevices,
+	loadedNetworkConditions,
 } from "./launch";
-import { extractReadableFromHtml, type ReadableFormat } from "./readable";
+import { extractReadableFromHtml, type ReadableExtractOptions, type ReadableFormat } from "./readable";
+import { assertTabPressArgs } from "./tab-arguments";
+import {
+	type BrowserCookie,
+	type ClearCookiesOptions,
+	clearPageCookies,
+	type CookieQueryOptions,
+	loadStorageState,
+	type LoadStateResult,
+	readCookies,
+	readStorage,
+	saveStorageState,
+	setPageCookies,
+	setPageStorage,
+	clearPageStorage,
+	type StorageKind,
+} from "./storage-state";
+import { enableReact, type ReactEnableResult } from "./react/devtools-hook";
+import { collectReactRenders, type ReactRendersAction, type ReactRendersResult } from "./react/renders";
+import { readReactSuspense, type ReactSuspenseBoundary, type ReactSuspenseOptions } from "./react/suspense";
+import {
+	inspectReactFiber,
+	type ReactInspectResult,
+	type ReactTreeNode,
+	type ReactTreeOptions,
+	readReactTree,
+} from "./react/tree";
+import { collectVitals, installVitalsObservers, type VitalsOptions, type VitalsResult } from "./react/vitals";
+import { registerSemanticQueryHandlers } from "./query-handlers";
+import {
+	type ElementQueryHelpers,
+	enrichElementQueries,
+	queryAttribute,
+	queryBox,
+	queryChecked,
+	queryCount,
+	queryEnabled,
+	queryHtml,
+	type QueryBox,
+	queryStyles,
+	queryText,
+	queryValue,
+	queryVisible,
+	waitForPageText,
+} from "./queries";
+import { DownloadManager, type BrowserDownload } from "./downloads";
+import { InitScriptManager, type InitScriptInfo } from "./init-scripts";
+import { applyIgnoreHttpsErrors } from "./open-options";
+import {
+	BrowserNetworkManager,
+	type HarContentPolicy,
+	type NetworkPattern,
+	type NetworkRequestDetail,
+	type NetworkRequestRecord,
+	type NetworkRequestsOptions,
+	type NetworkRouteDescription,
+	type NetworkRouteOptions,
+} from "./network";
+import {
+	type BrowserCaptureResult,
+	type BrowserConsoleEntry,
+	type BrowserConsoleOptions,
+	type BrowserErrorEntry,
+	type BrowserErrorOptions,
+	PageConsoleCapture,
+} from "./console-capture";
+import {
+	type BrowserMetrics,
+	type BrowserProfileStopOptions,
+	type BrowserTraceStartOptions,
+	type BrowserTraceStopOptions,
+	BrowserTracingController,
+} from "./tracing";
+import {
+	installWebMcp,
+	type WebMcpController,
+	type WebMcpEventsOptions,
+	type WebMcpEventsResult,
+	type WebMcpInvokeOptions,
+	type WebMcpInvokeResult,
+	type WebMcpListOptions,
+	type WebMcpListResult,
+} from "./webmcp";
+import {
+	RecordingController,
+	type RecordingOptions,
+	type RecordingStartResult,
+	type RecordingStatus,
+	type RecordingStopResult,
+} from "./recording";
+import {
+	type AriaSnapshotBaseline,
+	type AriaSnapshotDiffResult,
+	ariaSnapshotBaselineKey,
+	diffAriaSnapshot,
+} from "./snapshot-plus";
+import {
+	clickAt,
+	clickElement,
+	clickQueryHandlerText,
+	highlightElement,
+	type HighlightOptions,
+	type InteractionHandle,
+	keyDown,
+	keyUp,
+	mouseDown,
+	mouseMove,
+	mouseUp,
+	setElementChecked,
+	type ScrollOptions,
+	uploadFilesToElement,
+	wheel,
+} from "./interactions";
+import {
+	captureScreenshotBuffer,
+	createPngDiff,
+	type DiffScreenshotOptions,
+	type DiffScreenshotResult,
+	formatScreenshotLegend,
+	installScreenshotAnnotations,
+	type PdfOptions,
+	pngPixelChangeRatio,
+	type ScreenshotAnnotationTarget,
+	type ScreenshotChangeResult,
+	type ScreenshotHistory,
+	type ScreenshotOptions,
+	screenshotQuality,
+	screenshotScope,
+	screenshotThreshold,
+} from "./screenshot";
+import { RuntimeDialogController, type DialogPolicy, type DialogState } from "./dialogs";
+import {
+	type BrowserFrameApi,
+	type BrowserFrameInfo,
+	captureFrameScreenshot,
+	createFrameApi,
+	listFrames,
+	resolveFrame,
+} from "./frames";
+import { pushState, reloadPage, traverseHistory, type NavigationWaitUntil } from "./navigation";
 
 import { cloneSafe, RunOutput } from "./run-output";
 import type {
@@ -123,6 +268,12 @@ const SELECTOR_HANDLER_PREFIXES = [
 	"text/",
 	"xpath/",
 	"pierce/",
+	"label/",
+	"placeholder/",
+	"testid/",
+	"alt/",
+	"title/",
+	"role/",
 	"aria-ref=",
 	"aria-ref/",
 	"ariaref/",
@@ -138,14 +289,7 @@ const SELECTOR_HANDLER_PREFIXES = [
 const PLAYWRIGHT_ONLY_SELECTOR_RE =
 	/:has-text\(|:text\(|:text-is\(|:text-matches\(|:visible\b|:hidden\b|:nth-match\(|:near\(|:above\(|:below\(|:right-of\(|:left-of\(/;
 
-type DialogPolicy = "accept" | "dismiss";
 type DragTarget = string | { readonly x: number; readonly y: number };
-type ActionabilityResult = { ok: true; x: number; y: number } | { ok: false; reason: string };
-/** Last JS dialog seen on the page; kept for timeout attribution until handled or navigation. */
-interface OpenDialogInfo {
-	type: string;
-	message: string;
-}
 
 /**
  * Per-op fail-fast ceilings for `tab.*` helpers. All are kept strictly under the cell
@@ -236,12 +380,6 @@ export function resolveWaitTimeout(cellTimeoutMs: number, explicit?: number): nu
 	return actionOpMs;
 }
 
-interface ScreenshotOptions {
-	selector?: string;
-	fullPage?: boolean;
-	silent?: boolean;
-}
-
 interface TabApi {
 	readonly name: string;
 	readonly page: Page;
@@ -252,15 +390,22 @@ interface TabApi {
 		url: string,
 		opts?: { waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2" },
 	): Promise<void>;
-	observe(opts?: { includeAll?: boolean; viewportOnly?: boolean }): Promise<Observation>;
-	ariaSnapshot(selector?: string, opts?: AriaSnapshotOptions): Promise<string>;
-	screenshot(opts?: ScreenshotOptions): Promise<string>;
-	extract(format?: ReadableFormat): Promise<string>;
+	observe(opts?: {
+		includeAll?: boolean;
+		viewportOnly?: boolean;
+		selector?: string;
+		compact?: boolean;
+	}): Promise<Observation>;
+	ariaSnapshot(selector?: string, opts?: AriaSnapshotOptions): Promise<string | AriaSnapshotDiffResult>;
+	screenshot(opts?: ScreenshotOptions): Promise<string | ScreenshotChangeResult>;
+	diffScreenshot(baselinePath: string, opts?: DiffScreenshotOptions): Promise<DiffScreenshotResult>;
+	pdf(opts?: PdfOptions): Promise<string>;
+	extract(format?: ReadableFormat, opts?: ReadableExtractOptions): Promise<string>;
 	click(selector: string): Promise<void>;
 	type(selector: string, text: string): Promise<void>;
 	fill(selector: string, value: string): Promise<void>;
 	press(key: KeyInput, opts?: { selector?: string }): Promise<void>;
-	scroll(deltaX: number, deltaY: number): Promise<void>;
+	scroll(deltaX: number, deltaY: number, opts?: ScrollOptions): Promise<void>;
 	drag(from: DragTarget, to: DragTarget): Promise<void>;
 	waitFor(selector: string, opts?: { timeout?: number }): Promise<ActionableHandle>;
 	evaluate<R, TArgs extends unknown[]>(fn: string | ((...args: TArgs) => R | Promise<R>), ...args: TArgs): Promise<R>;
@@ -282,6 +427,96 @@ interface TabApi {
 	}): Promise<HTTPResponse | null>;
 	id(n: number): Promise<ActionableHandle>;
 	ref(id: string): Promise<ActionableHandle>;
+	cookies(opts?: CookieQueryOptions): Promise<BrowserCookie[]>;
+	setCookies(...cookies: unknown[]): Promise<void>;
+	clearCookies(opts?: ClearCookiesOptions): Promise<void>;
+	storage(kind: StorageKind, opts?: { key?: string }): Promise<Record<string, string> | string | null>;
+	setStorage(kind: StorageKind, keyOrEntries: string | Record<string, unknown>, value?: unknown): Promise<void>;
+	clearStorage(kind: StorageKind): Promise<void>;
+	saveState(filePath?: string): Promise<string>;
+	loadState(filePath: string): Promise<LoadStateResult>;
+	recordStart(path: string, opts?: RecordingOptions): Promise<RecordingStartResult>;
+	recordStop(): Promise<RecordingStopResult>;
+	recordRestart(path: string, opts?: RecordingOptions): Promise<RecordingStartResult>;
+	recording(): Promise<RecordingStatus>;
+	webmcpList(opts?: WebMcpListOptions): Promise<WebMcpListResult>;
+	webmcpInvoke(name: string, params: Record<string, unknown>, opts?: WebMcpInvokeOptions): Promise<WebMcpInvokeResult>;
+	webmcpEvents(opts?: WebMcpEventsOptions): Promise<WebMcpEventsResult>;
+	a11y(opts?: BrowserA11yOptions): Promise<BrowserA11yResult>;
+	vitals(opts?: VitalsOptions): Promise<VitalsResult>;
+	reactEnable(): Promise<ReactEnableResult>;
+	reactTree(opts?: ReactTreeOptions): Promise<ReactTreeNode[]>;
+	reactInspect(id: number): Promise<ReactInspectResult>;
+	reactRenders(opts: { action: ReactRendersAction }): Promise<ReactRendersResult>;
+	reactSuspense(opts?: ReactSuspenseOptions): Promise<ReactSuspenseBoundary[]>;
+	back(opts?: { waitUntil?: NavigationWaitUntil }): Promise<string>;
+	forward(opts?: { waitUntil?: NavigationWaitUntil }): Promise<string>;
+	reload(opts?: { waitUntil?: NavigationWaitUntil }): Promise<string>;
+	pushState(url: string): Promise<string>;
+	frames(): Promise<BrowserFrameInfo[]>;
+	frame(selectorOrNameOrUrl: string): Promise<BrowserFrameApi>;
+	dialog(): Promise<DialogState>;
+	handleDialog(opts: { accept: boolean; text?: string }): Promise<void>;
+	setDialogs(policy: DialogPolicy | null): Promise<void>;
+	text(selector: string): Promise<string | null>;
+	html(selector: string): Promise<string | null>;
+	value(selector: string): Promise<string | null>;
+	attr(selector: string, name: string): Promise<string | null>;
+	count(selector: string): Promise<number>;
+	box(selector: string): Promise<QueryBox | null>;
+	styles(selector: string, props?: string[]): Promise<Record<string, string> | null>;
+	isVisible(selector: string): Promise<boolean>;
+	isEnabled(selector: string): Promise<boolean>;
+	isChecked(selector: string): Promise<boolean>;
+	waitForText(text: string, opts?: { timeout?: number; selector?: string; exact?: boolean }): Promise<void>;
+	addInitScript(source: string): Promise<{ id: string }>;
+	removeInitScript(id: string): Promise<void>;
+	initScripts(): Promise<InitScriptInfo[]>;
+	waitForDownload(opts?: { timeout?: number }): Promise<BrowserDownload>;
+	downloads(): Promise<BrowserDownload[]>;
+	console(opts?: BrowserConsoleOptions): Promise<BrowserCaptureResult<BrowserConsoleEntry>>;
+	errors(opts?: BrowserErrorOptions): Promise<BrowserCaptureResult<BrowserErrorEntry>>;
+	clearConsole(): Promise<void>;
+	traceStart(opts?: BrowserTraceStartOptions): Promise<void>;
+	traceStop(opts?: BrowserTraceStopOptions): Promise<string>;
+	profileStart(): Promise<void>;
+	profileStop(opts?: BrowserProfileStopOptions): Promise<string>;
+	metrics(): Promise<BrowserMetrics>;
+	dblclick(selector: string): Promise<void>;
+	hover(selector: string): Promise<void>;
+	focus(selector: string): Promise<void>;
+	check(selector: string): Promise<void>;
+	uncheck(selector: string): Promise<void>;
+	keyDown(key: KeyInput): Promise<void>;
+	keyUp(key: KeyInput): Promise<void>;
+	mouseMove(x: number, y: number, opts?: { steps?: number }): Promise<void>;
+	mouseDown(opts?: { button?: "left" | "right" | "middle" | "back" | "forward" }): Promise<void>;
+	mouseUp(opts?: { button?: "left" | "right" | "middle" | "back" | "forward" }): Promise<void>;
+	clickAt(
+		x: number,
+		y: number,
+		opts?: {
+			button?: "left" | "right" | "middle" | "back" | "forward";
+			clickCount?: number;
+		},
+	): Promise<void>;
+	wheel(deltaX: number, deltaY: number): Promise<void>;
+	highlight(selector: string, opts?: HighlightOptions): Promise<void>;
+	emulate(opts?: BrowserEmulateOptions): Promise<BrowserEmulateOptions>;
+	devices(): Promise<string[]>;
+	clipboardRead(): Promise<ClipboardReadResult>;
+	clipboardWrite(text: string): Promise<ClipboardActionResult>;
+	clipboardCopy(): Promise<ClipboardActionResult>;
+	clipboardPaste(): Promise<ClipboardActionResult>;
+	route(pattern: NetworkPattern, opts?: NetworkRouteOptions): Promise<void>;
+	unroute(pattern?: NetworkPattern): Promise<void>;
+	routes(): Promise<NetworkRouteDescription[]>;
+	requests(opts?: NetworkRequestsOptions): Promise<NetworkRequestRecord[]>;
+	request(id: string | number): Promise<NetworkRequestDetail>;
+	clearRequests(): Promise<void>;
+	harStart(opts?: { content?: HarContentPolicy }): Promise<void>;
+	harStop(opts?: { path?: string }): Promise<string>;
+	allowedDomains(): Promise<string[]>;
 }
 
 export function normalizeSelector(selector: string): string {
@@ -329,8 +564,8 @@ function asElementHandle(handle: unknown): ElementHandle | null {
 	return handle ? (handle as ElementHandle) : null;
 }
 
-/** ElementHandle enriched with the `fill()` the tool docs promise on handles from `tab.id()`/`tab.ref()`/`tab.waitFor()`. */
-export type ActionableHandle = ElementHandle & { fill(value: string): Promise<void> };
+/** ElementHandle enriched with omp's additional direct interaction and query methods. */
+export type ActionableHandle = InteractionHandle & ElementQueryHelpers & { fill(value: string): Promise<void> };
 
 /**
  * A named per-op guard: runs `fn` inside the active run's fail-fast deadline and
@@ -491,7 +726,17 @@ export function toActionableHandle(
 			}
 		}
 		enriched.fill = value => fillViaHandle(enriched, value, undefined, preserved?.type);
-		return enriched;
+		enriched.click = options =>
+			clickElement(enriched, "handle.click()", undefined, {
+				button: options?.button,
+				clickCount: options?.count,
+			});
+		enriched.dblclick = () => clickElement(enriched, "handle.dblclick()", undefined, { clickCount: 2 });
+		enriched.check = () => setElementChecked(enriched, true, "handle.check()");
+		enriched.uncheck = () => setElementChecked(enriched, false, "handle.uncheck()");
+		enriched.highlight = options => highlightElement(enriched, options);
+		const controller = new AbortController();
+		return enrichElementQueries(enriched, (_label, fn) => fn(controller.signal));
 	}
 
 	let originals = preserved;
@@ -543,7 +788,66 @@ export function toActionableHandle(
 				invalidate,
 			),
 		);
-	return enriched;
+	enriched.click = options =>
+		guard<void>("handle.click()", signal =>
+			runGuardedHandleAction(
+				enriched,
+				originals,
+				"handle.click()",
+				signal,
+				() =>
+					clickElement(enriched, "handle.click()", signal, {
+						button: options?.button,
+						clickCount: options?.count,
+					}),
+				invalidate,
+			),
+		);
+	enriched.dblclick = () =>
+		guard<void>("handle.dblclick()", signal =>
+			runGuardedHandleAction(
+				enriched,
+				originals,
+				"handle.dblclick()",
+				signal,
+				() => clickElement(enriched, "handle.dblclick()", signal, { clickCount: 2 }),
+				invalidate,
+			),
+		);
+	enriched.check = () =>
+		guard<void>("handle.check()", signal =>
+			runGuardedHandleAction(
+				enriched,
+				originals,
+				"handle.check()",
+				signal,
+				() => setElementChecked(enriched, true, "handle.check()", signal),
+				invalidate,
+			),
+		);
+	enriched.uncheck = () =>
+		guard<void>("handle.uncheck()", signal =>
+			runGuardedHandleAction(
+				enriched,
+				originals,
+				"handle.uncheck()",
+				signal,
+				() => setElementChecked(enriched, false, "handle.uncheck()", signal),
+				invalidate,
+			),
+		);
+	enriched.highlight = (options?: HighlightOptions) =>
+		guard<void>("handle.highlight()", signal =>
+			runGuardedHandleAction(
+				enriched,
+				originals,
+				"handle.highlight()",
+				signal,
+				() => highlightElement(enriched, options, signal),
+				invalidate,
+			),
+		);
+	return enrichElementQueries(enriched, guard);
 }
 
 /** Focus once, then type one code point at a time so abort stops before the next key dispatch. */
@@ -602,229 +906,120 @@ function redactUrlCredentials(url: string): string {
 }
 
 class RequestInterceptionCleanupError extends ToolError {}
-class NavigationCleanupError extends ToolError {}
 
 interface RunPageScope {
 	page: Page;
-	instrumentBrowser(browser: Browser): void;
 	cleanup(): Promise<void>;
 }
 
 /**
- * Expose the tab page while retaining the request handlers created by this run.
- * Puppeteer's Page wraps an internal emitter, so `removeAllListeners("request")`
- * would also remove its forwarding listener; the facade removes only user handlers.
+ * Expose the tab page while retaining every event handler created by this run.
+ * The facade removes only run-owned listeners, preserving worker-level routing,
+ * request logging, dialogs, and console capture. Raw interception is restored
+ * to the tab's persistent route/allowlist state after the run.
  */
-export function createRunPageScope(page: Page, onNavigationTimeout?: () => void): RunPageScope {
-	let disposed = false;
-	const pageRestorers = new Map<Page, () => void>();
-	const instrumentPage = (target: Page): void => {
-		if (disposed || pageRestorers.has(target)) return;
-		const handlers: Array<{ type: string; handler: unknown; original?: unknown }> = [];
-		const on = target.on;
-		const off = target.off;
-		const once = target.once;
-		const originals = new Map<string, PropertyDescriptor | undefined>(
-			["on", "off", "once", "removeAllListeners", "goto", "reload", "goBack", "goForward", "setContent"].map(
-				name => [name, Object.getOwnPropertyDescriptor(target, name)],
-			),
-		);
-		const frameRestorers: Array<() => void> = [];
-		const instrumentedFrames = new WeakSet<Frame>();
-		const instrumentFrame = (frame: Frame): void => {
-			if (instrumentedFrames.has(frame)) return;
-			instrumentedFrames.add(frame);
-			for (const name of ["goto", "setContent"] as const) {
-				const method = frame[name];
-				const descriptor = Object.getOwnPropertyDescriptor(frame, name);
-				Object.defineProperty(frame, name, {
-					configurable: true,
-					value: (...args: unknown[]) =>
-						Reflect.apply(method, frame, args).catch((error: unknown) => {
-							if (error instanceof Error && error.name === "TimeoutError") onNavigationTimeout?.();
-							throw error;
-						}),
-				});
-				frameRestorers.push(() => {
-					if (descriptor) Object.defineProperty(frame, name, descriptor);
-					else Reflect.deleteProperty(frame, name);
-				});
-			}
-		};
-		if (onNavigationTimeout) {
-			for (const frame of target.frames()) instrumentFrame(frame);
-			Reflect.apply(on, target, ["frameattached", instrumentFrame]);
-		}
-		Object.defineProperties(target, {
-			on: {
-				configurable: true,
-				value: (type: unknown, handler: unknown): Page => {
-					Reflect.apply(on, target, [type, handler]);
-					if (typeof type === "string") handlers.push({ type, handler });
-					return target;
-				},
-			},
-			once: {
-				configurable: true,
-				value: (type: unknown, handler: unknown): Page => {
-					if (typeof type !== "string" || typeof handler !== "function") {
-						Reflect.apply(once, target, [type, handler]);
-						return target;
-					}
-					const wrapper = (event: unknown): void => {
-						Reflect.apply(off, target, [type, wrapper]);
-						const index = handlers.findIndex(entry => entry.handler === wrapper);
-						if (index >= 0) handlers.splice(index, 1);
-						Reflect.apply(handler, target, [event]);
-					};
-					handlers.push({ type, handler: wrapper, original: handler });
-					Reflect.apply(on, target, [type, wrapper]);
-					return target;
-				},
-			},
-			off: {
-				configurable: true,
-				value: (type: unknown, handler?: unknown): Page => {
-					for (let i = handlers.length - 1; i >= 0; i--) {
-						const entry = handlers[i];
-						if (
-							entry.type === type &&
-							(handler === undefined || entry.handler === handler || entry.original === handler)
-						) {
-							Reflect.apply(off, target, [entry.type, entry.handler]);
-							handlers.splice(i, 1);
-						}
-					}
-					return target;
-				},
-			},
-			removeAllListeners: {
-				configurable: true,
-				value: (type?: unknown): Page => {
-					if (type === undefined) {
-						for (const entry of handlers) Reflect.apply(off, target, [entry.type, entry.handler]);
-						handlers.length = 0;
-					} else {
-						for (const entry of handlers)
-							if (entry.type === type) Reflect.apply(off, target, [entry.type, entry.handler]);
-						for (let i = handlers.length - 1; i >= 0; i--) if (handlers[i].type === type) handlers.splice(i, 1);
-					}
-					return target;
-				},
-			},
-		});
-		for (const [name, method] of [
-			["goto", target.goto],
-			["reload", target.reload],
-			["goBack", target.goBack],
-			["goForward", target.goForward],
-			["setContent", target.setContent],
-		] as const) {
-			Object.defineProperty(target, name, {
-				configurable: true,
-				value: (...args: unknown[]) =>
-					Reflect.apply(method, target, args).catch((error: unknown) => {
-						if (error instanceof Error && error.name === "TimeoutError") onNavigationTimeout?.();
-						throw error;
-					}),
-			});
-		}
-		wrapAcquisition(target, "target", result => instrumentTarget(result as Target));
-		wrapAcquisition(target, "browserContext", result => instrumentContext(result as BrowserContext));
-		pageRestorers.set(target, () => {
-			if (onNavigationTimeout) {
-				Reflect.apply(off, target, ["frameattached", instrumentFrame]);
-				for (const restore of frameRestorers) restore();
-			}
-			for (const [name, descriptor] of originals) {
-				if (descriptor) Object.defineProperty(target, name, descriptor);
-				else Reflect.deleteProperty(target, name);
-			}
-			for (const entry of handlers) Reflect.apply(off, target, [entry.type, entry.handler]);
-			handlers.length = 0;
-		});
+export function createRunPageScope(page: Page, restoreInterception: () => Promise<void>): RunPageScope {
+	const handlers = new Map<unknown, unknown[]>();
+	const on = page.on;
+	const off = page.off;
+	const once = page.once;
+	const onDescriptor = Object.getOwnPropertyDescriptor(page, "on");
+	const offDescriptor = Object.getOwnPropertyDescriptor(page, "off");
+	const onceDescriptor = Object.getOwnPropertyDescriptor(page, "once");
+	const removeAllDescriptor = Object.getOwnPropertyDescriptor(page, "removeAllListeners");
+
+	const remember = (type: unknown, handler: unknown): void => {
+		const owned = handlers.get(type);
+		if (owned) owned.push(handler);
+		else handlers.set(type, [handler]);
 	};
-	const acquisitionRestorers: Array<() => void> = [];
-	const instrumentedObjects = new WeakSet<object>();
-	const wrapAcquisition = (owner: object, name: string, receive: (result: unknown) => void): void => {
-		const method: unknown = Reflect.get(owner, name);
-		if (typeof method !== "function") return;
-		const descriptor = Object.getOwnPropertyDescriptor(owner, name);
-		Object.defineProperty(owner, name, {
+	const forget = (type: unknown, handler?: unknown): void => {
+		const owned = handlers.get(type);
+		if (!owned) return;
+		if (handler === undefined) {
+			for (const registered of owned) Reflect.apply(off, page, [type, registered]);
+			handlers.delete(type);
+			return;
+		}
+		const index = owned.lastIndexOf(handler);
+		if (index < 0) return;
+		Reflect.apply(off, page, [type, handler]);
+		owned.splice(index, 1);
+		if (owned.length === 0) handlers.delete(type);
+	};
+
+	Object.defineProperties(page, {
+		on: {
 			configurable: true,
-			value: (...args: unknown[]) => {
-				const result: unknown = Reflect.apply(method, owner, args);
-				if (result instanceof Promise)
-					return result.then(value => {
-						if (!disposed) receive(value);
-						return value;
-					});
-				if (!disposed) receive(result);
-				return result;
+			value: (type: unknown, handler: unknown): Page => {
+				Reflect.apply(on, page, [type, handler]);
+				remember(type, handler);
+				return page;
 			},
-		});
-		acquisitionRestorers.push(() => {
-			if (descriptor) Object.defineProperty(owner, name, descriptor);
-			else Reflect.deleteProperty(owner, name);
-		});
-	};
-	const receivePage = (result: unknown): void => {
-		if (result) instrumentPage(result as Page);
-	};
-	const receivePages = (result: unknown): void => {
-		for (const target of result as Page[]) instrumentPage(target);
-	};
-	const instrumentTarget = (target: Target): void => {
-		if (instrumentedObjects.has(target)) return;
-		instrumentedObjects.add(target);
-		wrapAcquisition(target, "page", receivePage);
-		wrapAcquisition(target, "asPage", receivePage);
-		wrapAcquisition(target, "browserContext", result => instrumentContext(result as BrowserContext));
-	};
-	const instrumentContext = (context: BrowserContext): void => {
-		if (instrumentedObjects.has(context)) return;
-		instrumentedObjects.add(context);
-		wrapAcquisition(context, "pages", receivePages);
-		wrapAcquisition(context, "newPage", receivePage);
-		wrapAcquisition(context, "targets", result => (result as Target[]).forEach(instrumentTarget));
-		wrapAcquisition(context, "waitForTarget", result => instrumentTarget(result as Target));
-		for (const target of context.targets()) instrumentTarget(target);
-	};
-	instrumentPage(page);
+		},
+		once: {
+			configurable: true,
+			value: (type: unknown, handler: unknown): Page => {
+				if (typeof handler !== "function") {
+					Reflect.apply(once, page, [type, handler]);
+					return page;
+				}
+				const wrapper = (event: unknown): void => {
+					forget(type, wrapper);
+					Reflect.apply(handler, page, [event]);
+				};
+				remember(type, wrapper);
+				Reflect.apply(on, page, [type, wrapper]);
+				return page;
+			},
+		},
+		off: {
+			configurable: true,
+			value: (type: unknown, handler?: unknown): Page => {
+				forget(type, handler);
+				return page;
+			},
+		},
+		removeAllListeners: {
+			configurable: true,
+			value: (type?: unknown): Page => {
+				if (type !== undefined) forget(type);
+				else {
+					// Map iteration tolerates deletion of the current key by forget().
+					for (const ownedType of handlers.keys()) forget(ownedType);
+				}
+				return page;
+			},
+		},
+	});
+
 	return {
 		page,
-		instrumentBrowser(browser: Browser) {
-			if (instrumentedObjects.has(browser)) return;
-			instrumentedObjects.add(browser);
-			wrapAcquisition(browser, "pages", receivePages);
-			wrapAcquisition(browser, "newPage", receivePage);
-			wrapAcquisition(browser, "browserContexts", result => (result as BrowserContext[]).forEach(instrumentContext));
-			wrapAcquisition(browser, "defaultBrowserContext", result => instrumentContext(result as BrowserContext));
-			wrapAcquisition(browser, "createBrowserContext", result => instrumentContext(result as BrowserContext));
-			wrapAcquisition(browser, "targets", result => (result as Target[]).forEach(instrumentTarget));
-			wrapAcquisition(browser, "target", result => instrumentTarget(result as Target));
-			wrapAcquisition(browser, "waitForTarget", result => instrumentTarget(result as Target));
-			for (const context of browser.browserContexts()) instrumentContext(context);
-			for (const target of browser.targets()) instrumentTarget(target);
-		},
 		async cleanup() {
-			disposed = true;
-			for (const restore of acquisitionRestorers.reverse()) restore();
-			const pages = [...pageRestorers.keys()];
-			for (const restore of pageRestorers.values()) restore();
-			pageRestorers.clear();
+			if (onDescriptor) Object.defineProperty(page, "on", onDescriptor);
+			else Reflect.deleteProperty(page, "on");
+			if (offDescriptor) Object.defineProperty(page, "off", offDescriptor);
+			else Reflect.deleteProperty(page, "off");
+			if (onceDescriptor) Object.defineProperty(page, "once", onceDescriptor);
+			else Reflect.deleteProperty(page, "once");
+			if (removeAllDescriptor) Object.defineProperty(page, "removeAllListeners", removeAllDescriptor);
+			else Reflect.deleteProperty(page, "removeAllListeners");
+			for (const [type, owned] of handlers) {
+				for (const handler of owned) Reflect.apply(off, page, [type, handler]);
+			}
+			handlers.clear();
 			try {
 				await withTimeout(
-					Promise.all(
-						pages.filter(target => !target.isClosed()).map(target => target.setRequestInterception(false)),
-					),
+					restoreInterception(),
 					REQUEST_INTERCEPTION_CLEANUP_TIMEOUT_MS,
-					"Timed out clearing browser request interception",
+					"Timed out restoring browser request interception",
 				);
 			} catch (error) {
 				throw new RequestInterceptionCleanupError(
-					"Failed to clear browser request interception after browser.run",
-					{ error: error instanceof Error ? error.message : String(error) },
+					"Failed to restore browser request interception after browser.run",
+					{
+						error: error instanceof Error ? error.message : String(error),
+					},
 				);
 			}
 		},
@@ -832,8 +1027,7 @@ export function createRunPageScope(page: Page, onNavigationTimeout?: () => void)
 }
 
 function errorPayload(error: unknown): RunErrorPayload {
-	const recoverTab =
-		error instanceof RequestInterceptionCleanupError || error instanceof NavigationCleanupError || undefined;
+	const recoverTab = error instanceof RequestInterceptionCleanupError || undefined;
 	if (error instanceof ToolAbortError) {
 		return { name: error.name, message: error.message, stack: error.stack, isToolError: false, isAbort: true };
 	}
@@ -871,10 +1065,9 @@ function privateTargetId(target: Target): string | undefined {
 	return typeof raw._targetId === "string" ? raw._targetId : undefined;
 }
 
-async function targetIdForTarget(target: Target, allowCdp: boolean = true): Promise<string> {
+async function targetIdForTarget(target: Target): Promise<string> {
 	const fastTargetId = privateTargetId(target);
 	if (fastTargetId) return fastTargetId;
-	if (!allowCdp) throw new ToolError("Target id unavailable without CDP");
 	const session = await target.createCDPSession();
 	try {
 		const info = (await session.send("Target.getTargetInfo")) as { targetInfo?: { targetId?: string } };
@@ -885,13 +1078,24 @@ async function targetIdForTarget(target: Target, allowCdp: boolean = true): Prom
 	}
 }
 
-async function targetIdForPage(page: Page, allowCdp: boolean = true): Promise<string> {
+async function targetIdForPage(page: Page, allowCdp = true): Promise<string> {
 	if (!allowCdp) {
+		// Firefox WebDriver BiDi exposes no CDP target: the browsing-context id on
+		// the main frame is the stable identity the supervisor routes by.
 		const frame = page.mainFrame() as unknown as { _id?: unknown };
 		if (typeof frame._id === "string") return frame._id;
 		throw new ToolError("Browsing context id unavailable from Firefox WebDriver BiDi page");
 	}
 	return await targetIdForTarget(page.target());
+}
+
+/** Resolve a BiDi browsing context by id across the connection's pages. */
+export async function findBiDiPageByTargetId(pages: Page[], targetId: string): Promise<Page> {
+	for (const candidate of pages) {
+		const candidateId = await targetIdForPage(candidate, false).catch(() => "");
+		if (candidateId === targetId) return candidate;
+	}
+	throw new ToolError(`Browsing context ${JSON.stringify(targetId)} is no longer open`);
 }
 
 async function createTrackedHeadlessPage(browser: Browser, reportTarget: (targetId: string) => void): Promise<Page> {
@@ -914,13 +1118,32 @@ async function createTrackedHeadlessPage(browser: Browser, reportTarget: (target
 	return page;
 }
 
+function collectInteractiveObservationAncestors(node: SerializedAXNode, ancestors: Set<SerializedAXNode>): boolean {
+	let found = false;
+	for (const child of node.children ?? []) {
+		const descendantInteractive = collectInteractiveObservationAncestors(child, ancestors);
+		if (isInteractiveNode(child) || descendantInteractive) found = true;
+	}
+	if (found) ancestors.add(node);
+	return found;
+}
+
 async function collectObservationEntries(
 	core: WorkerCore,
 	node: SerializedAXNode,
 	entries: ObservationEntry[],
-	options: { viewportOnly: boolean; includeAll: boolean },
+	options: {
+		viewportOnly: boolean;
+		includeAll: boolean;
+		compact: boolean;
+		interactiveAncestors: Set<SerializedAXNode>;
+	},
 ): Promise<void> {
-	if (options.includeAll || isInteractiveNode(node)) {
+	const emptyStructural =
+		(node.role === "generic" || node.role === "none" || node.role === "group") &&
+		!node.name &&
+		!options.interactiveAncestors.has(node);
+	if ((options.includeAll || isInteractiveNode(node)) && !(options.compact && emptyStructural)) {
 		const handle = await node.elementHandle();
 		if (handle) {
 			let inViewport = true;
@@ -963,6 +1186,69 @@ async function collectObservationEntries(
 	for (const child of node.children ?? []) {
 		await collectObservationEntries(core, child, entries, options);
 	}
+}
+
+/**
+ * Hint appended to a selector op's fail-fast timeout, given the selector's current
+ * match count: a missing element (consent wall, wrong page) reads differently from
+ * a present-but-unactionable one.
+ */
+export function formatSelectorMatchHint(count: number): string {
+	return count === 0
+		? "; selector currently matches no elements — run tab.observe() or tab.ariaSnapshot() to inspect the page"
+		: `; selector currently matches ${count} element(s) but the action never became possible — the element may be hidden or covered (try tab.scrollIntoView() or a more specific selector)`;
+}
+
+export interface InflightOp {
+	label: string;
+	startedAt: number;
+}
+
+interface ActiveRun {
+	id: string;
+	ac: AbortController;
+	signal: AbortSignal;
+	output: RunOutput;
+	screenshots: ScreenshotResult[];
+	pendingTools: Map<string, { resolve(value: unknown): void; reject(error: Error): void }>;
+	rejectionOwner: object;
+	floatingRejections: unknown[];
+	floatingFailure: { promise: Promise<never>; reject(reason?: unknown): void };
+	/** Helper invocations currently awaiting the page/network, keyed by op id. */
+	inflight: Map<number, InflightOp>;
+	opCounter: number;
+}
+
+/** Human-readable label for a screenshot op, used in op tracking + timeout errors. */
+export function describeScreenshot(opts?: ScreenshotOptions): string {
+	if (opts?.selector) return `tab.screenshot({ selector: ${JSON.stringify(opts.selector)} })`;
+	if (opts?.fullPage) return "tab.screenshot({ fullPage: true })";
+	return "tab.screenshot()";
+}
+export async function preparePageForScreenshot(
+	page: Pick<Page, "bringToFront" | "evaluate">,
+	signal: AbortSignal | undefined,
+	activate: boolean,
+): Promise<void> {
+	if (activate) {
+		await untilAborted(signal, () => page.bringToFront()).catch(() => undefined);
+		return;
+	}
+	const visible = await untilAborted(signal, () => page.evaluate(() => document.visibilityState === "visible")).catch(
+		() => false,
+	);
+	if (!visible) {
+		throw new ToolError("The attached browser tab is not visible; switch to it before taking a screenshot");
+	}
+}
+
+/** Summarize still-running helpers (oldest first) so a cell timeout names what stalled. */
+export function describeInflight(inflight: Map<number, InflightOp>): string {
+	const now = Date.now();
+	return [...inflight.values()]
+		.sort((a, b) => a.startedAt - b.startedAt)
+		.map(op => `${op.label} (${((now - op.startedAt) / 1000).toFixed(1)}s)`)
+		.join(", ");
 }
 
 interface AriaSnapshotLine {
@@ -1318,178 +1604,39 @@ async function resolveActionableQueryHandlerClickTarget(handles: ElementHandle[]
 	return winner;
 }
 
-async function isClickActionable(handle: ElementHandle): Promise<ActionabilityResult> {
-	return (await handle.evaluate(el => {
-		const element = el as HTMLElement;
-		const style = globalThis.getComputedStyle(element);
-		if (style.display === "none") return { ok: false as const, reason: "display:none" };
-		if (style.visibility === "hidden") return { ok: false as const, reason: "visibility:hidden" };
-		if (style.pointerEvents === "none") return { ok: false as const, reason: "pointer-events:none" };
-		if (Number(style.opacity) === 0) return { ok: false as const, reason: "opacity:0" };
-		const r = element.getBoundingClientRect();
-		if (r.width < 1 || r.height < 1) return { ok: false as const, reason: "zero-size" };
-		const left = Math.max(0, Math.min(globalThis.innerWidth, r.left));
-		const right = Math.max(0, Math.min(globalThis.innerWidth, r.right));
-		const top = Math.max(0, Math.min(globalThis.innerHeight, r.top));
-		const bottom = Math.max(0, Math.min(globalThis.innerHeight, r.bottom));
-		if (right - left < 1 || bottom - top < 1) return { ok: false as const, reason: "off-viewport" };
-		const x = Math.floor((left + right) / 2);
-		const y = Math.floor((top + bottom) / 2);
-		const topEl = globalThis.document.elementFromPoint(x, y);
-		if (!topEl) return { ok: false as const, reason: "elementFromPoint-null" };
-		if (topEl === element || element.contains(topEl) || (topEl as Element).contains(element))
-			return { ok: true as const, x, y };
-		return { ok: false as const, reason: "obscured" };
-	})) as ActionabilityResult;
-}
 
-async function clickQueryHandlerText(
-	page: Page,
-	selector: string,
-	timeoutMs: number,
-	signal?: AbortSignal,
-): Promise<void> {
-	const timeoutSignal = AbortSignal.timeout(timeoutMs);
-	const clickSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-	const start = Date.now();
-	let lastSeen = 0;
-	let lastReason: string | null = null;
-	while (Date.now() - start < timeoutMs) {
-		throwIfAborted(clickSignal);
-		const handles = (await untilAborted(clickSignal, () => page.$$(selector))) as ElementHandle[];
-		try {
-			lastSeen = handles.length;
-			const target = await resolveActionableQueryHandlerClickTarget(handles);
-			if (!target) {
-				lastReason = handles.length ? "no-visible-candidate" : "no-matches";
-				await untilAborted(clickSignal, () => Bun.sleep(100));
-				continue;
-			}
-			const actionability = await isClickActionable(target);
-			if (!actionability.ok) {
-				lastReason = actionability.reason;
-				await untilAborted(clickSignal, () => Bun.sleep(100));
-				continue;
-			}
-			try {
-				await untilAborted(clickSignal, () => target.click());
-				return;
-			} catch (err) {
-				lastReason = err instanceof Error ? err.message : String(err);
-				await untilAborted(clickSignal, () => Bun.sleep(100));
-			}
-		} finally {
-			await Promise.all(handles.map(async handle => handle.dispose().catch(() => undefined)));
-		}
-	}
-	throw new ToolError(
-		`Timed out clicking ${selector} (seen ${lastSeen} matches; last reason: ${lastReason ?? "unknown"}). ` +
-			"If there are multiple matching elements, use observe + tab.id() or a more specific selector.",
-	);
-}
 
 /**
  * Hint appended to a selector op's fail-fast timeout, given the selector's current
  * match count: a missing element (consent wall, wrong page) reads differently from
  * a present-but-unactionable one.
  */
-export function formatSelectorMatchHint(count: number): string {
-	return count === 0
-		? "; selector currently matches no elements — run tab.observe() or tab.ariaSnapshot() to inspect the page"
-		: `; selector currently matches ${count} element(s) but the action never became possible — the element may be hidden or covered (try tab.scrollIntoView() or a more specific selector)`;
-}
-
-export interface InflightOp {
-	label: string;
-	startedAt: number;
-}
-
-interface ActiveRun {
-	id: string;
-	ac: AbortController;
-	signal: AbortSignal;
-	output: RunOutput;
-	screenshots: ScreenshotResult[];
-	pendingTools: Map<string, { resolve(value: unknown): void; reject(error: Error): void }>;
-	rejectionOwner: object;
-	floatingRejections: unknown[];
-	floatingFailure: { promise: Promise<never>; reject(reason?: unknown): void };
-	/** Helper invocations currently awaiting the page/network, keyed by op id. */
-	inflight: Map<number, InflightOp>;
-	opCounter: number;
-}
-
-/** Human-readable label for a screenshot op, used in op tracking + timeout errors. */
-export function describeScreenshot(opts?: ScreenshotOptions): string {
-	if (opts?.selector) return `tab.screenshot({ selector: ${JSON.stringify(opts.selector)} })`;
-	if (opts?.fullPage) return "tab.screenshot({ fullPage: true })";
-	return "tab.screenshot()";
-}
-export async function preparePageForScreenshot(
-	page: Pick<Page, "bringToFront" | "evaluate">,
-	signal: AbortSignal | undefined,
-	activate: boolean,
-): Promise<void> {
-	if (activate) {
-		await untilAborted(signal, () => page.bringToFront()).catch(() => undefined);
-		return;
-	}
-	const visible = await untilAborted(signal, () => page.evaluate(() => document.visibilityState === "visible")).catch(
-		() => false,
-	);
-	if (!visible) {
-		throw new ToolError("The attached browser tab is not visible; switch to it before taking a screenshot");
-	}
-}
-
-/** Summarize still-running helpers (oldest first) so a cell timeout names what stalled. */
-export function describeInflight(inflight: Map<number, InflightOp>): string {
-	const now = Date.now();
-	return [...inflight.values()]
-		.sort((a, b) => a.startedAt - b.startedAt)
-		.map(op => `${op.label} (${((now - op.startedAt) / 1000).toFixed(1)}s)`)
-		.join(", ");
-}
-
-export async function findBiDiPageByTargetId(pages: Page[], targetId: string): Promise<Page> {
-	for (const candidate of pages) {
-		const candidateId = await targetIdForPage(candidate, false).catch(() => "");
-		if (candidateId === targetId) return candidate;
-	}
-	throw new ToolError(`Target ${targetId} is no longer available on the attached Firefox browser`);
-}
 
 export class WorkerCore {
 	#transport: Transport;
 	#browser?: Browser;
 	#page?: Page;
 	#targetId?: string;
-	#elementCaches = new Map<string, { handles: Map<number, ElementHandle>; counter: number; targetId?: string }>();
-	#activeElementCacheKey = "default";
-	readonly #ariaRefOwnerPrefix = crypto.randomUUID();
+	#elementCache = new Map<number, ElementHandle>();
+	#elementCounter = 0;
 	#active: ActiveRun | null = null;
-	#cleanupRequired = false;
-	#activeSelection?: { id: string; ac: AbortController };
-	#runtimes = new Map<string, JsRuntime>();
+	#runtime: JsRuntime | null = null;
 	#unsub: () => void;
 	#isolated: boolean;
 	#uninstallRejectionGuard: () => void;
 	#mode?: WorkerInitPayload["mode"];
 	#activateForScreenshot = true;
-	#webDriverBiDi = false;
-	#dialogPolicy?: DialogPolicy;
-	#dialogPolicyOwner?: string;
-	#dialogHandler?: (dialog: Dialog) => void;
-	#dialogObserver?: (dialog: Dialog) => void;
-	#frameNavigationObserver?: (frame: Frame) => void;
-	#openDialog?: OpenDialogInfo;
-	#initializing?: Promise<void>;
-	#closing = false;
-	#closed = false;
-
-	get #ariaRefOwner(): string {
-		return `${this.#ariaRefOwnerPrefix}:${this.#activeElementCacheKey}`;
-	}
+	#dialogs?: RuntimeDialogController;
+	#network?: BrowserNetworkManager;
+	#initScripts?: InitScriptManager;
+	#downloads?: DownloadManager;
+	readonly #consoleCapture = new PageConsoleCapture();
+	#tracing?: BrowserTracingController;
+	#ariaSnapshotBaselines = new Map<string, AriaSnapshotBaseline>();
+	#emulation?: BrowserEmulationController;
+	#screenshotHistory = new Map<string, ScreenshotHistory>();
+	#webmcp?: WebMcpController;
+	readonly #recording = new RecordingController();
 
 	constructor(transport: Transport, isolated: boolean) {
 		this.#transport = transport;
@@ -1554,54 +1701,23 @@ export class WorkerCore {
 		return failure;
 	}
 
-	#elementCacheState(): { handles: Map<number, ElementHandle>; counter: number; targetId?: string } {
-		let state = this.#elementCaches.get(this.#activeElementCacheKey);
-		if (!state) {
-			state = { handles: new Map(), counter: 0, targetId: this.#targetId };
-			this.#elementCaches.set(this.#activeElementCacheKey, state);
-		}
-		return state;
-	}
-
 	nextElementId(): number {
-		const state = this.#elementCacheState();
-		state.counter += 1;
-		return state.counter;
+		this.#elementCounter += 1;
+		return this.#elementCounter;
 	}
 
 	cacheElement(id: number, handle: ElementHandle): void {
-		this.#elementCacheState().handles.set(id, handle);
+		this.#elementCache.set(id, handle);
 	}
 
 	async #handleMessage(msg: WorkerInbound): Promise<void> {
 		switch (msg.type) {
-			case "init": {
-				const initializing = this.#init(msg.payload);
-				this.#initializing = initializing;
-				await initializing;
+			case "init":
+				await this.#init(msg.payload);
 				return;
-			}
 			case "run":
 				await this.#run(msg);
 				return;
-			case "select":
-				await this.#selectBiDiContext(msg);
-				return;
-			case "abort-select":
-				if (this.#activeSelection?.id === msg.id) this.#activeSelection.ac.abort(new ToolAbortError());
-				return;
-			case "release-runtime": {
-				const runtime = this.#runtimes.get(msg.name);
-				this.#runtimes.delete(msg.name);
-				runtime?.dispose();
-				if (this.#dialogPolicyOwner === msg.name) {
-					// Keep the passive observer so Puppeteer does not auto-dismiss prompts.
-					this.#applyDialogPolicy(undefined);
-					this.#dialogPolicyOwner = undefined;
-				}
-				this.#clearElementCache(msg.name);
-				return;
-			}
 			case "abort":
 				if (this.#active?.id === msg.id) {
 					const reason = msg.expectedCleanup
@@ -1614,10 +1730,6 @@ export class WorkerCore {
 				this.#deliverToolReply(msg.id, msg.reply);
 				return;
 			case "close":
-				this.#closing = true;
-				await this.#browser?.disconnect().catch(() => undefined);
-				this.#browser = undefined;
-				await this.#initializing?.catch(() => undefined);
 				await this.#close();
 				return;
 		}
@@ -1626,20 +1738,15 @@ export class WorkerCore {
 	async #init(payload: WorkerInitPayload): Promise<void> {
 		try {
 			this.#mode = payload.mode;
-			this.#webDriverBiDi = payload.mode === "attach" && payload.protocol === "webDriverBiDi";
 			this.#activateForScreenshot = payload.mode === "headless" || payload.activateForScreenshot !== false;
 			const puppeteer = await loadPuppeteerInWorker(payload.safeDir);
+			registerSemanticQueryHandlers(puppeteer);
 			this.#browser = await puppeteer.connect({
 				browserWSEndpoint: payload.browserWSEndpoint,
-				protocol: this.#webDriverBiDi ? "webDriverBiDi" : undefined,
 				defaultViewport: null,
 				protocolTimeout: BROWSER_PROTOCOL_TIMEOUT_MS,
 			});
-			if (this.#closing || this.#closed) {
-				await this.#browser.disconnect().catch(() => undefined);
-				this.#browser = undefined;
-				return;
-			}
+
 			// Realm setup is done: puppeteer loaded and browser connected. Sent before
 			// page acquisition so the supervisor's cold-start budget bounds only the
 			// realm setup; page creation and the first navigation run under the ready
@@ -1656,17 +1763,11 @@ export class WorkerCore {
 				await applyStealthPatches(this.#browser, this.#page, { browserSession: null, override: null });
 				if (payload.emulateViewport !== false) await applyViewport(this.#page, payload.viewport);
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
-			} else if (this.#webDriverBiDi) {
-				this.#page = payload.targetId
-					? await findBiDiPageByTargetId(await this.#browser.pages(), payload.targetId)
-					: await pickElectronTarget(this.#browser, {
-							matcher: payload.targetMatcher,
-							preferVisible: payload.activateForScreenshot === false,
-						});
-				this.#observeDialogs();
-				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
 			} else {
 				const target = await this.#findAttachedTarget(payload.targetId);
+				// Post-timeout recycle: unblock the target BEFORE adopting the page — an open
+				// modal dialog or hung navigation can stall `target.page()` / ready info, and a
+				// stalled init used to time out and force-kill the tab.
 				if (payload.recover) await this.#recoverAttachedTarget(target);
 				const page = await target.page();
 				if (!page) throw new ToolError(`Target ${payload.targetId} is no longer available on the attached browser`);
@@ -1681,6 +1782,26 @@ export class WorkerCore {
 				// interactive without raising a window; explicit settle-freeze still applies.
 				await this.#page.emulateFocusedPage(true);
 			}
+			this.#webmcp = await installWebMcp(this.#page);
+			await installVitalsObservers(this.#page);
+			if (payload.userAgent !== undefined) await applyUserAgentOverride(this.#page, payload.userAgent);
+			if (payload.ignoreHttpsErrors) await applyIgnoreHttpsErrors(this.#page);
+			this.#targetId = await targetIdForPage(this.#page);
+			this.#initScripts = new InitScriptManager(this.#page);
+			for (const source of payload.initScripts ?? []) await this.#initScripts.add(source);
+			this.#downloads = new DownloadManager(this.#browser, this.#page, this.#targetId);
+			if (payload.downloadsPath) await this.#downloads.enable(payload.downloadsPath);
+			const baseUserAgent = await this.#page.evaluate(() => navigator.userAgent);
+			this.#emulation = new BrowserEmulationController(
+				this.#page,
+				loadedKnownDevices(),
+				loadedNetworkConditions(),
+				baseUserAgent,
+			);
+			await this.#consoleCapture.install(this.#page);
+			this.#tracing = new BrowserTracingController(this.#page);
+			this.#network = new BrowserNetworkManager(this.#page, payload.allowedDomains);
+			await this.#network.start();
 			if (payload.url) {
 				await this.#page.goto(payload.url, {
 					// Default to "load" because dev servers with HMR/WS never reach networkidle.
@@ -1688,77 +1809,20 @@ export class WorkerCore {
 					timeout: payload.timeoutMs,
 				});
 			}
-			// Firefox's initial about:home page is privileged; apply an explicitly
-			// requested viewport after navigation reaches the requested document.
-			if (this.#webDriverBiDi && payload.viewport) await applyViewport(this.#page, payload.viewport);
-			this.#targetId = await targetIdForPage(this.#page, !this.#webDriverBiDi);
+			this.#targetId = await targetIdForPage(this.#page);
 			this.#transport.send({ type: "ready", info: await this.#currentReadyInfo() });
 		} catch (error) {
 			// A failed headless init leaves the worker's page orphaned in the shared
 			// browser (the supervisor retries with a fresh worker), so close it before
 			// reporting. Attach mode adopts an existing target — never close it.
 			const page = this.#page;
+			await this.#webmcp?.dispose().catch(() => undefined);
+			this.#webmcp = undefined;
 			if (payload.mode === "headless" && page && !page.isClosed()) {
 				await page.close().catch(() => undefined);
 			}
 			this.#transport.send({ type: "init-failed", error: errorPayload(error) });
 		}
-	}
-	async #selectBiDiContext(msg: Extract<WorkerInbound, { type: "select" }>): Promise<void> {
-		const ac = new AbortController();
-		this.#activeSelection = { id: msg.id, ac };
-		try {
-			if (!this.#webDriverBiDi || !this.#browser) {
-				throw new ToolError("Tab selection is available only for Firefox WebDriver BiDi");
-			}
-			await this.#selectBiDiPage(msg.name, msg.targetId, msg.targetMatcher, msg.dialogs);
-			throwIfAborted(ac.signal);
-			if (msg.url) this.#clearElementCache(msg.name);
-			if (msg.url) {
-				await this.#requirePage().goto(msg.url, {
-					waitUntil: msg.waitUntil ?? "load",
-					timeout: msg.timeoutMs,
-				});
-			}
-			throwIfAborted(ac.signal);
-			if (msg.viewport) await applyViewport(this.#requirePage(), msg.viewport);
-			throwIfAborted(ac.signal);
-			this.#transport.send({ type: "selected", id: msg.id, info: await this.#currentReadyInfo() });
-		} catch (error) {
-			const reported =
-				error instanceof Error && error.name === "TimeoutError"
-					? new NavigationCleanupError(error.message, { cause: error })
-					: error;
-			this.#transport.send({ type: "select-failed", id: msg.id, error: errorPayload(reported) });
-		} finally {
-			if (this.#activeSelection?.id === msg.id) this.#activeSelection = undefined;
-		}
-	}
-
-	async #selectBiDiPage(
-		cacheKey: string,
-		targetId?: string,
-		targetMatcher?: string,
-		dialogs?: DialogPolicy,
-	): Promise<void> {
-		const browser = this.#requireBrowser();
-		let page = targetId ? await findBiDiPageByTargetId(await browser.pages(), targetId) : undefined;
-		page ??= await pickElectronTarget(browser, {
-			matcher: targetMatcher,
-			preferVisible: true,
-		});
-		const selectedTargetId = await targetIdForPage(page, false);
-		const cache = this.#elementCaches.get(cacheKey);
-		if (cache?.targetId !== undefined && cache.targetId !== selectedTargetId) this.#clearElementCache(cacheKey);
-		if (this.#page !== page) {
-			this.#detachDialogListeners();
-			this.#dialogPolicy = undefined;
-			this.#page = page;
-			this.#targetId = selectedTargetId;
-			this.#observeDialogs();
-		}
-		this.#applyDialogPolicy(dialogs);
-		this.#dialogPolicyOwner = cacheKey;
 	}
 
 	async #findAttachedTarget(targetId: string): Promise<Target> {
@@ -1813,72 +1877,37 @@ export class WorkerCore {
 		}
 	}
 
-	/**
-	 * Record JS dialogs for timeout attribution without handling them (semantics of an
-	 * unset `dialogs` policy are unchanged — the page stays blocked until user code or
-	 * the policy handler acts). Cleared when the policy handler settles the dialog or a
-	 * main-frame navigation proves the modal is gone.
-	 */
+	/** Install runtime dialog observation and default handling. */
 	#observeDialogs(): void {
 		const page = this.#requirePage();
-		this.#dialogObserver = dialog => {
-			this.#openDialog = { type: dialog.type(), message: dialog.message() };
-		};
-		this.#frameNavigationObserver = frame => {
-			if (frame === page.mainFrame()) this.#openDialog = undefined;
-		};
-		page.on("dialog", this.#dialogObserver);
-		page.on("framenavigated", this.#frameNavigationObserver);
-	}
-
-	#detachDialogListeners(): void {
-		const page = this.#page;
-		if (page && !page.isClosed()) {
-			if (this.#dialogHandler) page.off("dialog", this.#dialogHandler);
-			if (this.#dialogObserver) page.off("dialog", this.#dialogObserver);
-			if (this.#frameNavigationObserver) page.off("framenavigated", this.#frameNavigationObserver);
-		}
-		this.#dialogHandler = undefined;
-		this.#dialogObserver = undefined;
-		this.#frameNavigationObserver = undefined;
-		this.#openDialog = undefined;
+		this.#dialogs?.dispose();
+		this.#dialogs = new RuntimeDialogController(page, (message, details) => this.#log("debug", message, details));
+		this.#dialogs.observe();
 	}
 
 	async #currentReadyInfo(): Promise<ReadyInfo> {
 		const page = this.#requirePage();
-		const targetId = this.#targetId ?? (await targetIdForPage(page, !this.#webDriverBiDi));
+		const targetId = this.#targetId ?? (await targetIdForPage(page));
 		this.#targetId = targetId;
+		const dialogPending = this.#dialogs?.state().open ?? false;
 		return {
 			url: redactUrlCredentials(page.url()),
-			title: await page.title().catch(() => undefined),
-			viewport: await resolvePageViewport(page),
+			title: dialogPending ? undefined : await page.title().catch(() => undefined),
+			viewport: page.viewport() ?? DEFAULT_VIEWPORT,
 			targetId,
 		};
 	}
 
-	#applyDialogPolicy(policy?: DialogPolicy): void {
-		const page = this.#requirePage();
-		if (this.#dialogPolicy === policy && (policy === undefined || this.#dialogHandler)) return;
-		if (this.#dialogHandler) page.off("dialog", this.#dialogHandler);
-		this.#dialogPolicy = undefined;
-		this.#dialogHandler = undefined;
-		if (!policy) return;
-		const handler = (dialog: Dialog): void => {
-			const action = policy === "accept" ? dialog.accept() : dialog.dismiss();
-			void action.then(
-				() => {
-					this.#openDialog = undefined;
-				},
-				err =>
-					this.#log("debug", "Dialog auto-handler failed", {
-						policy,
-						error: err instanceof Error ? err.message : String(err),
-					}),
+	/** Apply an automatic dialog policy selected while opening the tab. */
+	#applyDialogPolicy(policy: DialogPolicy): void {
+		void this.#requireDialogs()
+			.setPolicy(policy)
+			.catch(error =>
+				this.#log("debug", "Dialog auto-handler failed", {
+					policy,
+					error: error instanceof Error ? error.message : String(error),
+				}),
 			);
-		};
-		page.on("dialog", handler);
-		this.#dialogPolicy = policy;
-		this.#dialogHandler = handler;
 	}
 
 	async #postReadyInfo(): Promise<void> {
@@ -1907,6 +1936,7 @@ export class WorkerCore {
 		const signal = AbortSignal.any([timeoutSignal, ac.signal, runAc.signal]);
 		const output = new RunOutput();
 		const screenshots: ScreenshotResult[] = [];
+		const runErrorStartSeq = this.#consoleCapture.nextSequence;
 		const floatingFailure = Promise.withResolvers<never>();
 		const active: ActiveRun = {
 			id: msg.id,
@@ -1926,20 +1956,13 @@ export class WorkerCore {
 		let returnValue: unknown;
 		let failure: { error: unknown } | undefined;
 		let runPage: RunPageScope | undefined;
-		this.#activeElementCacheKey = msg.name;
 		try {
-			if (this.#webDriverBiDi) {
-				await this.#selectBiDiPage(msg.name, msg.targetId, undefined, msg.dialogs);
-				throwIfAborted(signal);
-			}
-			runPage = createRunPageScope(
-				this.#requirePage(),
-				this.#webDriverBiDi ? () => (this.#cleanupRequired = true) : undefined,
-			);
+			throwIfAborted(signal);
+			await untilAborted(signal, () => this.#emulation?.reapply() ?? Promise.resolve());
+			runPage = createRunPageScope(this.#requirePage(), () => this.#requireNetwork().restoreInterception());
 			const browser = this.#requireBrowser();
-			runPage.instrumentBrowser(browser);
 			const tabApi = this.#createTabApi(msg.name, msg.timeoutMs, signal, msg.session, output, screenshots, active);
-			const runtime = this.#ensureRuntime(msg.name, msg.session);
+			const runtime = this.#ensureRuntime(msg.session);
 			runtime.setCwd(msg.session.cwd);
 			const onFloatingRejection = (reason: unknown): void => this.#recordFloatingRejection(active, reason);
 			runtime.setRunScope({
@@ -1974,13 +1997,16 @@ export class WorkerCore {
 						: new ToolAbortError(undefined, { cause: signal.reason });
 				if (timeoutSignal.aborted) {
 					const stalled = describeInflight(active.inflight);
-					const dialog = this.#openDialog;
-					const dialogNote = dialog
-						? `; a ${dialog.type}(${JSON.stringify(dialog.message.slice(0, 80))}) dialog opened during this run and may still block the page — reopen the tab with dialogs:"accept"|"dismiss" or handle page.on('dialog')`
+					const dialog = this.#dialogs?.state();
+					const dialogNote = dialog?.open
+						? `; a ${dialog.type}(${JSON.stringify(dialog.message?.slice(0, 80) ?? "")}) dialog opened during this run and may still block the page — use tab.handleDialog() or tab.setDialogs("accept"|"dismiss")`
 						: "";
+					const pageErrorCount = this.#consoleCapture.errorCountSince(runErrorStartSeq);
+					const pageErrorNote =
+						pageErrorCount > 0 ? `; ${pageErrorCount} page error(s) since run start — see tab.errors()` : "";
 					rejectCancel(
 						new ToolError(
-							`Browser code execution timed out after ${msg.timeoutMs}ms${stalled ? ` (stalled on ${stalled})` : ""}${dialogNote}`,
+							`Browser code execution timed out after ${msg.timeoutMs}ms${stalled ? ` (stalled on ${stalled})` : ""}${dialogNote}${pageErrorNote}`,
 						),
 					);
 				} else {
@@ -2031,36 +2057,27 @@ export class WorkerCore {
 			if (this.#active?.id === msg.id) this.#active = null;
 		}
 		if (failure) {
-			const error = errorPayload(failure.error);
-			if (this.#cleanupRequired) error.recoverTab = true;
-			this.#transport.send({ type: "result", id: msg.id, ok: false, error });
+			this.#transport.send({ type: "result", id: msg.id, ok: false, error: errorPayload(failure.error) });
 			return;
 		}
 		if (completed) {
-			if (!this.#cleanupRequired) await this.#postReadyInfo();
+			await this.#postReadyInfo();
 			this.#transport.send({
 				type: "result",
 				id: msg.id,
 				ok: true,
-				payload: {
-					displays: output.finish(),
-					returnValue: cloneSafe(returnValue),
-					screenshots,
-					recoverTab: this.#cleanupRequired,
-				},
+				payload: { displays: output.finish(), returnValue: cloneSafe(returnValue), screenshots },
 			});
 		}
 	}
 
-	#ensureRuntime(name: string, session: SessionSnapshot): JsRuntime {
-		const existing = this.#runtimes.get(name);
-		if (existing) return existing;
-		const runtime = new JsRuntime({
+	#ensureRuntime(session: SessionSnapshot): JsRuntime {
+		if (this.#runtime) return this.#runtime;
+		this.#runtime = new JsRuntime({
 			initialCwd: session.cwd,
-			sessionId: `browser-tab-${name}`,
+			sessionId: `browser-tab-${this.#targetId ?? "unknown"}`,
 		});
-		this.#runtimes.set(name, runtime);
-		return runtime;
+		return this.#runtime;
 	}
 
 	#hooksForActiveRun(): RuntimeHooks | null {
@@ -2227,6 +2244,8 @@ export class WorkerCore {
 		active: ActiveRun,
 	): TabApi {
 		const page = this.#requirePage();
+		const webmcp = this.#webmcp;
+		if (!webmcp) throw new ToolError("Tab worker WebMCP handling is not initialized");
 		const { budgetBound, quickOpMs, actionOpMs } = resolveOpTimeouts(timeoutMs);
 		const waitMs = (explicit?: number): number => resolveWaitTimeout(timeoutMs, explicit);
 		const INF = Number.POSITIVE_INFINITY;
@@ -2267,10 +2286,12 @@ export class WorkerCore {
 						);
 					} catch (err) {
 						if (err instanceof Error && err.name === "TimeoutError") {
+							// Abandon the hung navigation NOW — a still-pending load stalls every
+							// later op on this page and cascades into more opaque timeouts.
 							await this.#stopLoading();
-							if (this.#webDriverBiDi) this.#cleanupRequired = true;
-							const message = `tab.goto(${JSON.stringify(url)}) timed out after ${budgetBound}ms; pending navigation stopped — retry with a longer tool timeout or waitUntil:"domcontentloaded"`;
-							throw this.#webDriverBiDi ? new NavigationCleanupError(message) : new ToolError(message);
+							throw new ToolError(
+								`tab.goto(${JSON.stringify(url)}) timed out after ${budgetBound}ms; pending navigation stopped — retry with a longer tool timeout or waitUntil:"domcontentloaded"`,
+							);
 						}
 						throw err;
 					}
@@ -2292,7 +2313,10 @@ export class WorkerCore {
 								);
 						}
 						try {
-							return await untilAborted(sig, () => captureAriaSnapshot(page, root, opts, this.#ariaRefOwner));
+							const snapshot = await untilAborted(sig, () => captureAriaSnapshot(page, root, opts));
+							if (!opts?.diff) return snapshot;
+							const key = ariaSnapshotBaselineKey(selector, opts);
+							return diffAriaSnapshot(this.#ariaSnapshotBaselines, key, page.url(), snapshot);
 						} finally {
 							await root?.dispose().catch(() => undefined);
 						}
@@ -2302,10 +2326,10 @@ export class WorkerCore {
 				op(describeScreenshot(opts), quickOpMs, sig =>
 					this.#captureScreenshot(session, output, screenshots, sig, opts),
 				),
-			extract: (format = "markdown") =>
+			extract: (format = "markdown", opts) =>
 				op(`tab.extract(${JSON.stringify(format)})`, quickOpMs, async sig => {
 					const html = (await untilAborted(sig, () => page.content())) as string;
-					const result = await extractReadableFromHtml(html, page.url(), format);
+					const result = await extractReadableFromHtml(html, page.url(), format, opts);
 					if (!result) {
 						throw new ToolError(
 							`tab.extract(${JSON.stringify(format)}) found no readable content on ${page.url()}`,
@@ -2320,28 +2344,24 @@ export class WorkerCore {
 					return content;
 				}),
 			click: selector =>
-				op(
-					`tab.click(${JSON.stringify(selector)})`,
-					actionOpMs,
-					async sig => {
-						if (parseAriaRefSelector(selector) !== null) {
-							const handle = await this.#resolveAriaRef(selector);
-							try {
-								await untilAborted(sig, () => handle.click());
-							} finally {
-								await handle.dispose().catch(() => undefined);
-							}
-							return;
-						}
-						const resolved = normalizeSelector(selector);
-						if (resolved.startsWith("text/")) await clickQueryHandlerText(page, resolved, actionOpMs, sig);
-						else
-							await untilAborted(sig, () =>
-								page.locator(resolved).setTimeout(actionOpMs).click({ signal: sig }),
-							);
-					},
-					{ selector, zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS },
-				),
+				op(`tab.click(${JSON.stringify(selector)})`, actionOpMs, async sig => {
+					const label = `tab.click(${JSON.stringify(selector)})`;
+					const resolved = normalizeSelector(selector);
+					if (resolved.startsWith("text/") && parseAriaRefSelector(selector) === null) {
+						await clickQueryHandlerText(page, resolved, label, actionOpMs, sig);
+						return;
+					}
+					const handle =
+						parseAriaRefSelector(selector) !== null
+							? await this.#resolveAriaRef(selector)
+							: ((await untilAborted(sig, () => page.$(resolved))) as ElementHandle | null);
+					if (!handle) throw new ToolError(`${label} matched no visible element`);
+					try {
+						await clickElement(handle, label, sig);
+					} finally {
+						void handle.dispose().catch(() => undefined);
+					}
+				}),
 			type: (selector, text) =>
 				op(
 					`tab.type(${JSON.stringify(selector)})`,
@@ -2378,6 +2398,7 @@ export class WorkerCore {
 				),
 			press: (key, opts) =>
 				op(`tab.press(${JSON.stringify(key)})`, actionOpMs, async sig => {
+					assertTabPressArgs(key, opts);
 					const selector = opts?.selector;
 					if (selector) {
 						if (parseAriaRefSelector(selector) !== null) {
@@ -2391,10 +2412,30 @@ export class WorkerCore {
 					}
 					await untilAborted(sig, () => page.keyboard.press(key));
 				}),
-			scroll: (deltaX, deltaY) =>
-				op("tab.scroll()", actionOpMs, sig =>
-					untilAborted(sig, () => dispatchScroll(() => page.mouse.wheel({ deltaX, deltaY }))),
-				),
+			scroll: (deltaX, deltaY, opts) =>
+				op("tab.scroll()", actionOpMs, async sig => {
+					if (!opts?.selector) {
+						await untilAborted(sig, () => dispatchScroll(() => page.mouse.wheel({ deltaX, deltaY })));
+						return;
+					}
+					const handle = await this.#resolveActionHandle(opts.selector, actionOpMs, sig);
+					try {
+						await untilAborted(sig, () =>
+							handle.evaluate(
+								(el, dx, dy) => {
+									const target = el as unknown as {
+										scrollBy(opts: { left: number; top: number; behavior: string }): void;
+									};
+									target.scrollBy({ left: dx, top: dy, behavior: "instant" });
+								},
+								deltaX,
+								deltaY,
+							),
+						);
+					} finally {
+						await handle.dispose().catch(() => undefined);
+					}
+				}),
 			drag: (from, to) => op("tab.drag()", actionOpMs, sig => this.#drag(from, to, sig)),
 			waitFor: (selector, opts) => {
 				const w = waitMs(opts?.timeout);
@@ -2498,37 +2539,415 @@ export class WorkerCore {
 			},
 			id: async id => enrich(await this.#resolveCachedHandle(id)),
 			ref: async id => enrich(await this.#resolveAriaRef(id)),
+			cookies: opts => op("tab.cookies()", quickOpMs, sig => readCookies(page, opts, sig)),
+			setCookies: (...cookies) => op("tab.setCookies()", actionOpMs, sig => setPageCookies(page, cookies, sig)),
+			clearCookies: opts => op("tab.clearCookies()", actionOpMs, sig => clearPageCookies(page, opts, sig)),
+			storage: (kind, opts) => op("tab.storage()", quickOpMs, sig => readStorage(page, kind, opts, sig)),
+			setStorage: (kind, keyOrEntries, value) =>
+				op("tab.setStorage()", actionOpMs, sig => setPageStorage(page, kind, keyOrEntries, value, sig)),
+			clearStorage: kind => op("tab.clearStorage()", actionOpMs, sig => clearPageStorage(page, kind, sig)),
+			saveState: filePath =>
+				op("tab.saveState()", actionOpMs, sig => saveStorageState(page, name, filePath, session.cwd, sig)),
+			loadState: filePath =>
+				op("tab.loadState()", actionOpMs, sig =>
+					loadStorageState(page, filePath, session.cwd, {
+						allowOtherOrigins: this.#mode === "headless",
+						navigationTimeoutMs: actionOpMs,
+						signal: sig,
+					}),
+				),
+			recordStart: (destination, opts) =>
+				op(`tab.recordStart(${JSON.stringify(destination)})`, quickOpMs, sig =>
+					this.#recording.start(page, destination, session.cwd, opts, sig),
+				),
+			recordStop: () =>
+				op("tab.recordStop()", budgetBound, sig =>
+					this.#recording.stop({ signal: sig, output, excludeWebP: session.excludeWebP }),
+				),
+			recordRestart: (destination, opts) =>
+				op(`tab.recordRestart(${JSON.stringify(destination)})`, budgetBound, sig =>
+					this.#recording.restart(page, destination, session.cwd, opts, {
+						signal: sig,
+						output,
+						excludeWebP: session.excludeWebP,
+					}),
+				),
+			recording: () => op("tab.recording()", quickOpMs, () => Promise.resolve(this.#recording.status())),
+			webmcpList: opts => op("tab.webmcpList()", quickOpMs, sig => untilAborted(sig, () => webmcp.list(opts))),
+			webmcpInvoke: (toolName, params, opts) => {
+				const w = waitMs(opts?.timeout);
+				return op(`tab.webmcpInvoke(${JSON.stringify(toolName)})`, w, sig =>
+					untilAborted(sig, () => webmcp.invoke(toolName, params, opts)),
+				);
+			},
+			webmcpEvents: opts => op("tab.webmcpEvents()", quickOpMs, sig => untilAborted(sig, () => webmcp.events(opts))),
+			a11y: opts =>
+				op("tab.a11y()", budgetBound, async sig => {
+					const result = await untilAborted(sig, () => runA11yAudit(page, opts));
+					output.push({ type: "text", text: formatA11ySummary(result) });
+					return result;
+				}),
+			vitals: opts => op("tab.vitals()", INF, sig => collectVitals(page, opts, sig)),
+			reactEnable: () => op("tab.reactEnable()", INF, sig => enableReact(page, sig)),
+			reactTree: opts => op("tab.reactTree()", quickOpMs, sig => readReactTree(page, opts, sig)),
+			reactInspect: id => op(`tab.reactInspect(${id})`, quickOpMs, sig => inspectReactFiber(page, id, sig)),
+			reactRenders: opts => op("tab.reactRenders()", quickOpMs, sig => collectReactRenders(page, opts, sig)),
+			reactSuspense: opts => op("tab.reactSuspense()", quickOpMs, sig => readReactSuspense(page, opts, sig)),
+			back: opts =>
+				op("tab.back()", INF, async sig => {
+					this.#clearElementCache();
+					return await traverseHistory(page, "back", opts?.waitUntil ?? "load", budgetBound, sig);
+				}),
+			forward: opts =>
+				op("tab.forward()", INF, async sig => {
+					this.#clearElementCache();
+					return await traverseHistory(page, "forward", opts?.waitUntil ?? "load", budgetBound, sig);
+				}),
+			reload: opts =>
+				op("tab.reload()", INF, async sig => {
+					this.#clearElementCache();
+					return await reloadPage(page, opts?.waitUntil ?? "load", budgetBound, sig);
+				}),
+			pushState: url =>
+				op(`tab.pushState(${JSON.stringify(url)})`, actionOpMs, async sig => {
+					this.#clearElementCache();
+					return await pushState(page, url, sig);
+				}),
+			frames: () => op("tab.frames()", quickOpMs, sig => listFrames(page, sig)),
+			frame: selectorOrNameOrUrl =>
+				op(`tab.frame(${JSON.stringify(selectorOrNameOrUrl)})`, quickOpMs, async sig => {
+					const frame = await resolveFrame(page, selectorOrNameOrUrl, normalizeSelector, sig);
+					return createFrameApi(frame, {
+						quickOpMs,
+						actionOpMs,
+						zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS,
+						normalizeSelector,
+						waitMs,
+						op,
+						captureScreenshot: (target, selector, screenshotSignal) =>
+							captureFrameScreenshot(
+								target,
+								selector,
+								screenshotSignal,
+								normalizeSelector,
+								session,
+								output,
+								screenshots,
+							),
+					});
+				}),
+			dialog: () =>
+				op("tab.dialog()", quickOpMs, async sig => {
+					throwIfAborted(sig);
+					return this.#requireDialogs().state();
+				}),
+			handleDialog: opts =>
+				op("tab.handleDialog()", actionOpMs, sig => untilAborted(sig, () => this.#requireDialogs().handle(opts))),
+			setDialogs: policy =>
+				op("tab.setDialogs()", actionOpMs, sig =>
+					untilAborted(sig, () => this.#requireDialogs().setPolicy(policy)),
+				),
+			route: (pattern, opts) =>
+				op("tab.route()", actionOpMs, sig =>
+					untilAborted(sig, () => this.#requireNetwork().route(pattern, opts, sig)),
+				),
+			unroute: pattern =>
+				op("tab.unroute()", actionOpMs, sig =>
+					untilAborted(sig, () => this.#requireNetwork().unroute(pattern, sig)),
+				),
+			routes: () =>
+				op("tab.routes()", quickOpMs, async sig => {
+					throwIfAborted(sig);
+					return this.#requireNetwork().routes();
+				}),
+			requests: opts =>
+				op("tab.requests()", quickOpMs, async sig => {
+					throwIfAborted(sig);
+					return this.#requireNetwork().requests(opts);
+				}),
+			request: id =>
+				op("tab.request()", quickOpMs, sig => untilAborted(sig, () => this.#requireNetwork().request(id, sig))),
+			clearRequests: () =>
+				op("tab.clearRequests()", quickOpMs, async sig => {
+					throwIfAborted(sig);
+					this.#requireNetwork().clearRequests();
+				}),
+			harStart: opts =>
+				op("tab.harStart()", quickOpMs, async sig => {
+					throwIfAborted(sig);
+					this.#requireNetwork().harStart(opts?.content);
+				}),
+			harStop: opts =>
+				op("tab.harStop()", INF, sig => {
+					const destination = opts?.path
+						? resolveToCwd(opts.path, session.cwd)
+						: path.join(session.cwd, `browser-${name.replace(/[^a-z0-9_-]+/gi, "-")}-${Snowflake.next()}.har`);
+					return untilAborted(sig, () => this.#requireNetwork().harStop(destination, sig));
+				}),
+			allowedDomains: () =>
+				op("tab.allowedDomains()", quickOpMs, async sig => {
+					throwIfAborted(sig);
+					return this.#requireNetwork().allowedDomains();
+				}),
+			diffScreenshot: (baselinePath, opts) =>
+				op("tab.diffScreenshot()", quickOpMs, sig =>
+					this.#diffScreenshot(session, output, screenshots, sig, baselinePath, opts),
+				),
+			pdf: opts => op("tab.pdf()", quickOpMs, sig => this.#pdf(session, sig, opts)),
+			addInitScript: source =>
+				op("tab.addInitScript()", actionOpMs, sig =>
+					untilAborted(sig, () => this.#requireInitScripts().add(source)),
+				),
+			removeInitScript: id =>
+				op("tab.removeInitScript()", actionOpMs, sig =>
+					untilAborted(sig, () => this.#requireInitScripts().remove(id)),
+				),
+			initScripts: () =>
+				op("tab.initScripts()", quickOpMs, async sig => {
+					throwIfAborted(sig);
+					return this.#requireInitScripts().list();
+				}),
+			waitForDownload: opts => {
+				const w = waitMs(opts?.timeout);
+				return op("tab.waitForDownload()", w, sig => this.#requireDownloads().wait(sig));
+			},
+			downloads: () =>
+				op("tab.downloads()", quickOpMs, async sig => {
+					throwIfAborted(sig);
+					return this.#requireDownloads().list();
+				}),
+			text: selector =>
+				op(`tab.text(${JSON.stringify(selector)})`, quickOpMs, sig =>
+					queryText(page, normalizeSelector(selector), sig),
+				),
+			html: selector =>
+				op(`tab.html(${JSON.stringify(selector)})`, quickOpMs, sig =>
+					queryHtml(page, normalizeSelector(selector), sig),
+				),
+			value: selector =>
+				op(`tab.value(${JSON.stringify(selector)})`, quickOpMs, sig =>
+					queryValue(page, normalizeSelector(selector), sig),
+				),
+			attr: (selector, attribute) =>
+				op(`tab.attr(${JSON.stringify(selector)}, ${JSON.stringify(attribute)})`, quickOpMs, sig =>
+					queryAttribute(page, normalizeSelector(selector), attribute, sig),
+				),
+			count: selector =>
+				op(`tab.count(${JSON.stringify(selector)})`, quickOpMs, sig =>
+					queryCount(page, normalizeSelector(selector), sig),
+				),
+			box: selector =>
+				op(`tab.box(${JSON.stringify(selector)})`, quickOpMs, sig =>
+					queryBox(page, normalizeSelector(selector), sig),
+				),
+			styles: (selector, props) =>
+				op(`tab.styles(${JSON.stringify(selector)})`, quickOpMs, sig =>
+					queryStyles(page, normalizeSelector(selector), props, sig),
+				),
+			isVisible: selector =>
+				op(`tab.isVisible(${JSON.stringify(selector)})`, quickOpMs, sig =>
+					queryVisible(page, normalizeSelector(selector), sig),
+				),
+			isEnabled: selector =>
+				op(`tab.isEnabled(${JSON.stringify(selector)})`, quickOpMs, sig =>
+					queryEnabled(page, normalizeSelector(selector), sig),
+				),
+			isChecked: selector =>
+				op(`tab.isChecked(${JSON.stringify(selector)})`, quickOpMs, sig =>
+					queryChecked(page, normalizeSelector(selector), sig),
+				),
+			waitForText: (text, opts) => {
+				const w = waitMs(opts?.timeout);
+				return op(`tab.waitForText(${JSON.stringify(text)})`, w, sig =>
+					waitForPageText(page, text, {
+						timeout: w,
+						selector: opts?.selector ? normalizeSelector(opts.selector) : undefined,
+						exact: opts?.exact,
+						signal: sig,
+					}),
+				);
+			},
+			console: opts =>
+				op("tab.console()", quickOpMs, sig => untilAborted(sig, () => this.#consoleCapture.console(opts))),
+			errors: opts =>
+				op("tab.errors()", quickOpMs, sig => untilAborted(sig, () => this.#consoleCapture.errors(opts))),
+			clearConsole: () =>
+				op("tab.clearConsole()", quickOpMs, async sig => {
+					throwIfAborted(sig);
+					this.#consoleCapture.clear();
+				}),
+			traceStart: opts =>
+				op("tab.traceStart()", actionOpMs, sig => untilAborted(sig, () => this.#requireTracing().traceStart(opts))),
+			traceStop: opts =>
+				op("tab.traceStop()", actionOpMs, sig =>
+					untilAborted(sig, () => this.#requireTracing().traceStop(session.cwd, opts)),
+				),
+			profileStart: () =>
+				op("tab.profileStart()", actionOpMs, sig => untilAborted(sig, () => this.#requireTracing().profileStart())),
+			profileStop: opts =>
+				op("tab.profileStop()", actionOpMs, sig =>
+					untilAborted(sig, () => this.#requireTracing().profileStop(session.cwd, opts)),
+				),
+			metrics: () =>
+				op("tab.metrics()", quickOpMs, sig => untilAborted(sig, () => this.#requireTracing().metrics())),
+			dblclick: selector =>
+				op(
+					`tab.dblclick(${JSON.stringify(selector)})`,
+					actionOpMs,
+					async sig => {
+						const handle = await this.#resolveActionHandle(selector, actionOpMs, sig);
+						try {
+							await clickElement(handle, `tab.dblclick(${JSON.stringify(selector)})`, sig, { clickCount: 2 });
+						} finally {
+							await handle.dispose().catch(() => undefined);
+						}
+					},
+					{ selector, zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS },
+				),
+			hover: selector =>
+				op(
+					`tab.hover(${JSON.stringify(selector)})`,
+					actionOpMs,
+					async sig => {
+						const handle = await this.#resolveActionHandle(selector, actionOpMs, sig);
+						try {
+							await untilAborted(sig, () => handle.hover());
+						} finally {
+							await handle.dispose().catch(() => undefined);
+						}
+					},
+					{ selector, zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS },
+				),
+			focus: selector =>
+				op(
+					`tab.focus(${JSON.stringify(selector)})`,
+					actionOpMs,
+					async sig => {
+						const handle = await this.#resolveActionHandle(selector, actionOpMs, sig);
+						try {
+							await untilAborted(sig, () => handle.focus());
+						} finally {
+							await handle.dispose().catch(() => undefined);
+						}
+					},
+					{ selector, zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS },
+				),
+			check: selector =>
+				op(
+					`tab.check(${JSON.stringify(selector)})`,
+					actionOpMs,
+					async sig => {
+						const handle = await this.#resolveActionHandle(selector, actionOpMs, sig);
+						try {
+							await setElementChecked(handle, true, `tab.check(${JSON.stringify(selector)})`, sig);
+						} finally {
+							await handle.dispose().catch(() => undefined);
+						}
+					},
+					{ selector, zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS },
+				),
+			uncheck: selector =>
+				op(
+					`tab.uncheck(${JSON.stringify(selector)})`,
+					actionOpMs,
+					async sig => {
+						const handle = await this.#resolveActionHandle(selector, actionOpMs, sig);
+						try {
+							await setElementChecked(handle, false, `tab.uncheck(${JSON.stringify(selector)})`, sig);
+						} finally {
+							await handle.dispose().catch(() => undefined);
+						}
+					},
+					{ selector, zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS },
+				),
+			keyDown: key => op(`tab.keyDown(${JSON.stringify(key)})`, actionOpMs, sig => keyDown(page, key, sig)),
+			keyUp: key => op(`tab.keyUp(${JSON.stringify(key)})`, actionOpMs, sig => keyUp(page, key, sig)),
+			mouseMove: (x, y, opts) => op("tab.mouseMove()", actionOpMs, sig => mouseMove(page, x, y, opts, sig)),
+			mouseDown: opts => op("tab.mouseDown()", actionOpMs, sig => mouseDown(page, opts, sig)),
+			mouseUp: opts => op("tab.mouseUp()", actionOpMs, sig => mouseUp(page, opts, sig)),
+			clickAt: (x, y, opts) => op("tab.clickAt()", actionOpMs, sig => clickAt(page, x, y, opts, sig)),
+			wheel: (deltaX, deltaY) => op("tab.wheel()", actionOpMs, sig => wheel(page, deltaX, deltaY, sig)),
+			highlight: (selector, opts) =>
+				op(
+					`tab.highlight(${JSON.stringify(selector)})`,
+					actionOpMs,
+					async sig => {
+						const handle = await this.#resolveActionHandle(selector, actionOpMs, sig);
+						try {
+							await highlightElement(handle, opts, sig);
+						} finally {
+							await handle.dispose().catch(() => undefined);
+						}
+					},
+					{ selector, zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS },
+				),
+			emulate: opts =>
+				op("tab.emulate()", actionOpMs, sig => untilAborted(sig, () => this.#requireEmulation().emulate(opts))),
+			devices: () =>
+				op("tab.devices()", quickOpMs, async sig => {
+					throwIfAborted(sig);
+					return this.#requireEmulation().devices();
+				}),
+			clipboardRead: () =>
+				op("tab.clipboardRead()", actionOpMs, sig =>
+					untilAborted(sig, () => this.#requireEmulation().clipboardRead()),
+				),
+			clipboardWrite: text =>
+				op("tab.clipboardWrite()", actionOpMs, sig =>
+					untilAborted(sig, () => this.#requireEmulation().clipboardWrite(text)),
+				),
+			clipboardCopy: () =>
+				op("tab.clipboardCopy()", actionOpMs, sig =>
+					untilAborted(sig, () => this.#requireEmulation().clipboardCopy()),
+				),
+			clipboardPaste: () =>
+				op("tab.clipboardPaste()", actionOpMs, sig =>
+					untilAborted(sig, () => this.#requireEmulation().clipboardPaste()),
+				),
 		};
 	}
 
 	async #collectObservation(options: {
 		includeAll?: boolean;
 		viewportOnly?: boolean;
+		selector?: string;
+		compact?: boolean;
 		signal?: AbortSignal;
 	}): Promise<Observation> {
 		const page = this.#requirePage();
 		this.#clearElementCache();
 		const includeAll = options.includeAll ?? false;
 		const viewportOnly = options.viewportOnly ?? false;
-		let entries: ObservationEntry[];
-		if (this.#webDriverBiDi) {
-			const refOwner = this.#ariaRefOwner;
-			const ariaSnapshot = await untilAborted(options.signal, () =>
-				captureAriaSnapshot(page, null, { boxes: viewportOnly }, refOwner),
-			);
-			entries = await collectBiDiObservationEntries(this, page, ariaSnapshot, {
-				includeAll,
-				viewportOnly,
-				refOwner,
-			});
-		} else {
-			const snapshot = (await untilAborted(options.signal, () =>
-				page.accessibility.snapshot({ interestingOnly: !includeAll }),
-			)) as SerializedAXNode | null;
-			if (!snapshot) throw new ToolError("Accessibility snapshot unavailable");
-			entries = [];
-			await collectObservationEntries(this, snapshot, entries, { includeAll, viewportOnly });
+		let root: ElementHandle | null = null;
+		if (options.selector) {
+			root =
+				parseAriaRefSelector(options.selector) !== null
+					? await this.#resolveAriaRef(options.selector)
+					: ((await untilAborted(options.signal, () =>
+							page.$(normalizeSelector(options.selector!)),
+						)) as ElementHandle | null);
+			if (!root) {
+				throw new ToolError(`tab.observe: selector ${JSON.stringify(options.selector)} matched no element`);
+			}
 		}
+		let snapshot: SerializedAXNode | null;
+		try {
+			snapshot = (await untilAborted(options.signal, () =>
+				page.accessibility.snapshot({ interestingOnly: !includeAll, root: root ?? undefined }),
+			)) as SerializedAXNode | null;
+		} finally {
+			await root?.dispose().catch(() => undefined);
+		}
+		if (!snapshot) throw new ToolError("Accessibility snapshot unavailable");
+		const entries: ObservationEntry[] = [];
+		const interactiveAncestors = new Set<SerializedAXNode>();
+		if (options.compact) collectInteractiveObservationAncestors(snapshot, interactiveAncestors);
+		await collectObservationEntries(this, snapshot, entries, {
+			includeAll,
+			viewportOnly,
+			compact: options.compact ?? false,
+			interactiveAncestors,
+		});
 		const scroll = (await untilAborted(options.signal, () =>
 			page.evaluate(() => {
 				const win = globalThis as unknown as {
@@ -2552,7 +2971,7 @@ export class WorkerCore {
 		return {
 			url: page.url(),
 			title: (await untilAborted(options.signal, () => page.title())) as string,
-			viewport: await resolvePageViewport(page),
+			viewport: page.viewport() ?? DEFAULT_VIEWPORT,
 			scroll,
 			elements: entries,
 		};
@@ -2564,57 +2983,68 @@ export class WorkerCore {
 		screenshots: ScreenshotResult[],
 		signal: AbortSignal | undefined,
 		opts: ScreenshotOptions = {},
-	): Promise<string> {
+	): Promise<string | ScreenshotChangeResult> {
 		const page = this.#requirePage();
-		// Multiple tabs can share one Chromium (sibling headless tabs on a shared
-		// endpoint, cdp/app attach). CDP `Page.captureScreenshot` reads the
-		// compositor surface, which follows the *active* target: a backgrounded
-		// page can stall waiting for a fresh frame (the 20s screenshot timeouts)
-		// or hand back a sibling tab's pixels. Activate first; best-effort so an
-		// already-active or freshly-closed target never fails the capture.
-		//
-		// For a user-driven Chromium browser, redundant activation would steal
-		// focus, so a hidden adopted tab fails capture. WebDriver BiDi can activate
-		// the exact browsing context at the point of an explicit screenshot request;
-		// adoption itself remains non-intrusive.
-		await preparePageForScreenshot(page, signal, this.#activateForScreenshot || this.#webDriverBiDi);
-		const fullPage = opts.selector ? false : (opts.fullPage ?? false);
-		const captureType = "png";
-		const captureMime = "image/png" as const;
-		let buffer: Buffer;
-		if (opts.selector) {
-			const handle =
-				parseAriaRefSelector(opts.selector) !== null
-					? await this.#resolveAriaRef(opts.selector)
-					: asElementHandle(await untilAborted(signal, () => page.$(normalizeSelector(opts.selector!))));
-			if (!handle) throw new ToolError("Screenshot selector did not resolve to an element");
-			try {
-				// Bring the element into view with a single instant scroll instead of puppeteer's
-				// scrollIntoViewIfNeeded(), whose IntersectionObserver promise can stall indefinitely
-				// on continuously-animating pages (WebGL / backdrop-filter "glass" effects). Best-effort.
-				await untilAborted(signal, () =>
-					handle.evaluate(el => {
-						const target = el as unknown as {
-							scrollIntoView: (opts: { behavior: string; block: string; inline: string }) => void;
-						};
-						target.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
-					}),
-				).catch(() => undefined);
-				// scrollIntoView:false skips the same IntersectionObserver check inside screenshot();
-				// captureBeyondViewport (puppeteer's default) still renders the clipped region.
-				const shotOpts: ElementScreenshotOptions = { type: captureType, scrollIntoView: false };
-				buffer = (await untilAborted(signal, () => handle.screenshot(shotOpts))) as Buffer;
-			} finally {
-				await handle.dispose().catch(() => undefined);
+		await preparePageForScreenshot(page, signal, this.#activateForScreenshot);
+		screenshotQuality(opts);
+		const threshold = screenshotThreshold(opts.threshold);
+		const changeDetection = opts.ifChanged === true || opts.threshold !== undefined;
+		const captureFormat = opts.format ?? "png";
+		const captureMime = captureFormat === "jpeg" ? ("image/jpeg" as const) : ("image/png" as const);
+		const annotationTargets: ScreenshotAnnotationTarget[] = [];
+		if (opts.annotate) {
+			const observation = await this.#collectObservation({ signal });
+			for (const entry of observation.elements) {
+				if (entry.id === undefined) continue;
+				const handle = await this.#resolveCachedHandle(entry.id);
+				const box = await untilAborted(signal, () => handle.boundingBox()).catch(() => null);
+				if (!box || box.width <= 0 || box.height <= 0) continue;
+				annotationTargets.push({
+					id: entry.id,
+					role: entry.role,
+					name: entry.name,
+					x: box.x,
+					y: box.y,
+					width: box.width,
+					height: box.height,
+				});
 			}
-		} else {
-			buffer = (await untilAborted(signal, () => page.screenshot({ type: captureType, fullPage }))) as Buffer;
+		}
+		const cleanupAnnotations = opts.annotate
+			? await installScreenshotAnnotations(page, annotationTargets, signal)
+			: async (): Promise<void> => {};
+		const resolveSelector = async (selector: string): Promise<ElementHandle | null> =>
+			parseAriaRefSelector(selector) !== null
+				? await this.#resolveAriaRef(selector)
+				: asElementHandle(await untilAborted(signal, () => page.$(normalizeSelector(selector))));
+		let comparisonBuffer: Uint8Array;
+		let buffer: Uint8Array;
+		try {
+			comparisonBuffer = await captureScreenshotBuffer(page, opts, signal, resolveSelector, "png");
+			buffer =
+				captureFormat === "png"
+					? comparisonBuffer
+					: await captureScreenshotBuffer(page, opts, signal, resolveSelector, captureFormat);
+		} finally {
+			await cleanupAnnotations();
+		}
+		let changeResult: ScreenshotChangeResult | undefined;
+		if (changeDetection) {
+			const scope = screenshotScope(opts);
+			const previous = this.#screenshotHistory.get(scope);
+			const pixelChangeRatio = previous ? pngPixelChangeRatio(previous.png, comparisonBuffer) : 1;
+			const changed = !previous || pixelChangeRatio > threshold;
+			const revision = previous ? previous.revision + (changed ? 1 : 0) : 1;
+			this.#screenshotHistory.set(scope, { png: comparisonBuffer, revision });
+			changeResult = { changed, revision, pixelChangeRatio };
+			if (!changed) return changeResult;
 		}
 		const resized = await resizeImage(
 			{ type: "image", data: buffer.toBase64(), mimeType: captureMime },
 			{ maxWidth: 1024, maxHeight: 1024, maxBytes: 150 * 1024, jpegQuality: 70, excludeWebP: session.excludeWebP },
 		);
-		const saveFullRes = !!session.browserScreenshotDir;
+		const preserveFormat = opts.format !== undefined;
+		const saveFullRes = !!session.browserScreenshotDir || preserveFormat;
 		const savedBuffer = saveFullRes ? buffer : resized.buffer;
 		const savedMimeType = saveFullRes ? captureMime : resized.mimeType;
 		const ext = savedMimeType === "image/webp" ? "webp" : savedMimeType === "image/jpeg" ? "jpg" : "png";
@@ -2626,14 +3056,13 @@ export class WorkerCore {
 			: path.join(os.tmpdir(), `omp-sshots-${Snowflake.next()}.${ext}`);
 		await fs.promises.mkdir(path.dirname(dest), { recursive: true });
 		await Bun.write(dest, savedBuffer);
-		const info: ScreenshotResult = {
+		screenshots.push({
 			dest,
 			mimeType: savedMimeType,
 			bytes: savedBuffer.length,
 			width: resized.width,
 			height: resized.height,
-		};
-		screenshots.push(info);
+		});
 		if (!opts.silent) {
 			const lines = formatScreenshot({
 				saveFullRes,
@@ -2642,9 +3071,70 @@ export class WorkerCore {
 				dest,
 				resized,
 			});
+			if (opts.annotate) lines.push(formatScreenshotLegend(annotationTargets));
 			output.push({ type: "text", text: lines.join("\n") });
 			output.push({ type: "image", data: resized.data, mimeType: resized.mimeType });
 		}
+		if (changeResult) return { ...changeResult, path: dest };
+		return dest;
+	}
+
+	async #diffScreenshot(
+		session: SessionSnapshot,
+		output: RunOutput,
+		screenshots: ScreenshotResult[],
+		signal: AbortSignal | undefined,
+		baselinePath: string,
+		opts: DiffScreenshotOptions = {},
+	): Promise<DiffScreenshotResult> {
+		const page = this.#requirePage();
+		await preparePageForScreenshot(page, signal, this.#activateForScreenshot);
+		const absoluteBaseline = resolveToCwd(baselinePath, session.cwd);
+		const baseline = await untilAborted(signal, () => fs.promises.readFile(absoluteBaseline));
+		const current = await captureScreenshotBuffer(page, {}, signal, async () => null, "png");
+		const diff = createPngDiff(baseline, current);
+		const threshold = screenshotThreshold(opts.threshold);
+		const changed = diff.pixelChangeRatio > threshold;
+		const diffPath = opts.output
+			? resolveToCwd(opts.output, session.cwd)
+			: path.join(os.tmpdir(), `omp-screenshot-diff-${Snowflake.next()}.png`);
+		await fs.promises.mkdir(path.dirname(diffPath), { recursive: true });
+		await Bun.write(diffPath, diff.png);
+		const resized = await resizeImage(
+			{ type: "image", data: diff.png.toBase64(), mimeType: "image/png" },
+			{ maxWidth: 1024, maxHeight: 1024, maxBytes: 150 * 1024, jpegQuality: 70, excludeWebP: session.excludeWebP },
+		);
+		screenshots.push({
+			dest: diffPath,
+			mimeType: "image/png",
+			bytes: diff.png.length,
+			width: resized.width,
+			height: resized.height,
+		});
+		output.push({
+			type: "text",
+			text: `Screenshot diff: ${diff.pixelChangeRatio.toFixed(6)} changed-pixel ratio (${changed ? "changed" : "unchanged"}); saved to ${diffPath}`,
+		});
+		output.push({ type: "image", data: resized.data, mimeType: resized.mimeType });
+		return { pixelChangeRatio: diff.pixelChangeRatio, changed, diffPath };
+	}
+
+	async #pdf(session: SessionSnapshot, signal: AbortSignal | undefined, opts: PdfOptions = {}): Promise<string> {
+		const dest = opts.path
+			? resolveToCwd(opts.path, session.cwd)
+			: path.join(os.tmpdir(), `omp-browser-${Snowflake.next()}.pdf`);
+		await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+		await untilAborted(signal, () =>
+			this.#requirePage().pdf({
+				path: dest,
+				format: opts.format,
+				landscape: opts.landscape,
+				scale: opts.scale,
+				printBackground: opts.printBackground,
+				margin: opts.margin,
+				pageRanges: opts.pageRanges,
+			}),
+		);
 		return dest;
 	}
 
@@ -2752,15 +3242,13 @@ export class WorkerCore {
 		const handle = await this.#resolveActionHandle(selector, timeoutMs, signal);
 		try {
 			const absolute = filePaths.map(filePath => resolveToCwd(filePath, session.cwd));
-			const upload = handle as unknown as { uploadFile: (...paths: string[]) => Promise<void> };
-			const tagName = (await untilAborted(signal, () =>
-				handle.evaluate(el => (el as unknown as { tagName: string }).tagName),
-			)) as string;
-			if (tagName !== "INPUT")
-				throw new ToolError(
-					`tab.uploadFile() requires an <input type="file"> element (got <${tagName.toLowerCase()}>)`,
-				);
-			await untilAborted(signal, () => upload.uploadFile(...absolute));
+			await uploadFilesToElement(
+				this.#requirePage(),
+				handle,
+				absolute,
+				`tab.uploadFile(${JSON.stringify(selector)})`,
+				signal,
+			);
 		} finally {
 			await handle.dispose().catch(() => undefined);
 		}
@@ -2802,7 +3290,7 @@ export class WorkerCore {
 	}
 
 	async #resolveCachedHandle(id: number): Promise<ElementHandle> {
-		const handle = this.#elementCacheState().handles.get(id);
+		const handle = this.#elementCache.get(id);
 		if (!handle) throw new ToolError(`Unknown element id ${id}. Run tab.observe() to refresh the element list.`);
 		try {
 			const isConnected = (await handle.evaluate(el => el.isConnected)) as boolean;
@@ -2820,7 +3308,7 @@ export class WorkerCore {
 
 	async #resolveAriaRef(id: string): Promise<ElementHandle> {
 		const ref = parseAriaRefSelector(id) ?? id.trim();
-		const handle = await resolveAriaRefHandle(this.#requirePage(), ref, this.#ariaRefOwner);
+		const handle = await resolveAriaRefHandle(this.#requirePage(), ref);
 		if (!handle) {
 			throw new ToolError(
 				`Unknown ARIA ref ${JSON.stringify(ref)}. Run tab.ariaSnapshot() to refresh refs (they renumber each snapshot).`,
@@ -2840,20 +3328,19 @@ export class WorkerCore {
 			this.#requirePage().locator(normalizeSelector(selector)).setTimeout(timeoutMs).waitHandle({ signal: sig }),
 		)) as ElementHandle;
 	}
-	#clearElementCache(key: string = this.#activeElementCacheKey): void {
-		const state = this.#elementCaches.get(key);
-		if (!state) return;
-		this.#elementCaches.delete(key);
-		for (const handle of state.handles.values()) void handle.dispose().catch(() => undefined);
+	#clearElementCache(): void {
+		if (this.#elementCache.size === 0) {
+			this.#elementCounter = 0;
+			return;
+		}
+		const handles = [...this.#elementCache.values()];
+		this.#elementCache.clear();
+		this.#elementCounter = 0;
+		for (const handle of handles) void handle.dispose().catch(() => undefined);
 	}
 
-	#clearAllElementCaches(): void {
-		for (const key of [...this.#elementCaches.keys()]) this.#clearElementCache(key);
-	}
-
-	/** Best-effort `Page.stopLoading` so an abandoned Chromium navigation cannot stall later ops. */
+	/** Best-effort `Page.stopLoading` so an abandoned navigation cannot stall later ops. */
 	async #stopLoading(): Promise<void> {
-		if (this.#webDriverBiDi) return;
 		try {
 			const session = await this.#requirePage().createCDPSession();
 			try {
@@ -2869,17 +3356,25 @@ export class WorkerCore {
 	}
 
 	async #close(): Promise<void> {
-		if (this.#closed) return;
-		this.#closed = true;
 		this.#unsub();
-		for (const runtime of this.#runtimes.values()) runtime.dispose();
-		this.#runtimes.clear();
 		this.#uninstallRejectionGuard();
-		this.#clearAllElementCaches();
+		this.#clearElementCache();
 		const page = this.#page;
-		this.#detachDialogListeners();
+		await this.#recording.close().catch(error => {
+			this.#log("warn", "Failed to finalize active browser recording during tab close", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+		await this.#webmcp?.dispose().catch(() => undefined);
+		this.#webmcp = undefined;
+		this.#dialogs?.dispose();
+		await this.#network?.close();
+		await this.#downloads?.close();
+		await this.#tracing?.dispose();
+		await this.#consoleCapture.detach();
+		this.#emulation?.dispose();
 		if (this.#mode === "headless" && page && !page.isClosed()) await page.close().catch(() => undefined);
-		if (this.#browser?.connected) await this.#browser.disconnect();
+		if (this.#browser?.connected) this.#browser.disconnect();
 		this.#transport.send({ type: "closed" });
 		this.#transport.close();
 	}
@@ -2887,6 +3382,36 @@ export class WorkerCore {
 	#requirePage(): Page {
 		if (!this.#page) throw new ToolError("Tab worker is not initialized");
 		return this.#page;
+	}
+
+	#requireDialogs(): RuntimeDialogController {
+		if (!this.#dialogs) throw new ToolError("Tab worker dialog handling is not initialized");
+		return this.#dialogs;
+	}
+
+	#requireNetwork(): BrowserNetworkManager {
+		if (!this.#network) throw new ToolError("Tab worker network manager is not initialized");
+		return this.#network;
+	}
+
+	#requireTracing(): BrowserTracingController {
+		if (!this.#tracing) throw new ToolError("Tab worker tracing is not initialized");
+		return this.#tracing;
+	}
+
+	#requireInitScripts(): InitScriptManager {
+		if (!this.#initScripts) throw new ToolError("Tab worker init scripts are not initialized");
+		return this.#initScripts;
+	}
+
+	#requireDownloads(): DownloadManager {
+		if (!this.#downloads) throw new ToolError("Tab worker downloads are not initialized");
+		return this.#downloads;
+	}
+
+	#requireEmulation(): BrowserEmulationController {
+		if (!this.#emulation) throw new ToolError("Tab worker emulation is not initialized");
+		return this.#emulation;
 	}
 
 	#requireBrowser(): Browser {

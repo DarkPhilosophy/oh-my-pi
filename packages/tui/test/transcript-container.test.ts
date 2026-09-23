@@ -56,7 +56,7 @@ class AllocationAwareBlock implements Component {
 	#allocation = Number.MAX_SAFE_INTEGER;
 	#finalized = false;
 
-	constructor(private readonly rows: readonly string[]) {}
+	constructor(private readonly rows: readonly string[]) { }
 
 	finalize(): void {
 		this.#finalized = true;
@@ -584,6 +584,27 @@ describe("TranscriptContainer", () => {
 		// A later replay owns the whole committed block again, not a sliced copy.
 		transcript.beginReplay();
 		expect(transcript.peekReplayBatch(80)?.rows).toEqual(["one", "two", "three", "four", ""]);
+	});
+	it("still retires a block whose borrow reached its trailing separator", () => {
+		const transcript = new TranscriptContainer();
+		const finalized = new Block(["one", "two"], false) as Block & { commitToHistoryOnFinalize?: boolean };
+		finalized.commitToHistoryOnFinalize = true;
+		const live = new Block(["later"], false);
+		transcript.addChild(finalized);
+		transcript.addChild(live);
+		transcript.renderLiveViewport(80, 10, frame);
+		// The terminal borrowed the block and the blank row separating it from
+		// the next block — the separator belongs to no card's render output.
+		transcript.setBorrowedViewportRows(3);
+		finalized.finalize(["one", "two"]);
+		// No pressure: retirement must come from the finalize-commit path, which
+		// a separator-length borrow used to pin forever.
+		const batch = transcript.peekFinalizedBatch(80, 1000);
+		expect(batch).toBeDefined();
+		expect(batch?.rows).toEqual([]);
+		transcript.acknowledgeFinalizedBatch(batch!.id);
+		expect(transcript.isBlockUncommitted(finalized)).toBe(false);
+		expect(transcript.renderViewport(80, 10, frame)).toEqual(["later"]);
 	});
 	it("retains borrowed blocks while allowing uncommitted blocks to be removed", () => {
 		const transcript = new TranscriptContainer();

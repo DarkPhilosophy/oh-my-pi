@@ -302,6 +302,8 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 
 const DEFAULT_AGENT_MODEL_OVERRIDES: Record<string, string | string[]> = {};
 
+export type ResetAutoRedeemMode = "unset" | "yes" | "no";
+
 export const SETTINGS_SCHEMA = {
 	// ────────────────────────────────────────────────────────────────────────
 	// General settings (no UI)
@@ -2428,6 +2430,16 @@ export const SETTINGS_SCHEMA = {
 			group: "Magic Keywords",
 			label: "Workflow Keyword",
 			description: "Let standalone workflowz append its hidden eval workflow notice",
+		},
+	},
+	"magicKeywords.jevify": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: "Magic Keywords",
+			label: "Jevify Keyword",
+			description: "Let standalone jevifyz append its hidden eval jevify notice",
 		},
 	},
 
@@ -6432,6 +6444,71 @@ export const SETTINGS_SCHEMA = {
 	"thinkingBudgets.xhigh": { type: "number", default: 32768 },
 
 	"thinkingBudgets.max": { type: "number", default: 32768 },
+	"claudeResets.autoRedeem": {
+		type: "enum",
+		values: ["unset", "yes", "no"] as const,
+		default: "unset" as const,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Claude Auto-Redeem Resets",
+			description:
+				"Spend eligible Claude Cedar or Juniper resets automatically. Cedar is spent only for covered limits; Juniper can only recover a sole 5-hour block. unset asks before the first spend, yes spends without prompting, and no disables blocked recovery and expiry salvage.",
+			options: [
+				{
+					value: "unset",
+					label: "Unset",
+					description: "Check live eligibility, then ask before spending the first Claude reset.",
+				},
+				{ value: "yes", label: "Yes", description: "Spend eligible Claude resets without prompting." },
+				{ value: "no", label: "No", description: "Do not run Claude reset auto-redeem checks." },
+			],
+		},
+	},
+	"claudeResets.keepCredits": {
+		type: "number",
+		default: 0,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Claude Auto-Redeem Reserve",
+			description:
+				"Keep at least this many Claude resets banked (0 allows the last eligible reset to be spent automatically). The reserve also applies to expiry salvage.",
+		},
+	},
+	"claudeResets.minBlockedMinutes": {
+		type: "number",
+		default: 60,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Claude Auto-Redeem Min Block",
+			description:
+				"Only auto-redeem when the natural unblock — the latest reset among the exhausted covered windows — is at least this many minutes away. A 5-hour-only reset is never used for a weekly or model-scoped block.",
+		},
+	},
+	"claudeResets.salvageHorizonHours": {
+		type: "number",
+		default: 12,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Claude Reset Salvage Horizon",
+			description:
+				"Use a server-selected Cedar reset within this many hours of expiry only when its covered windows have meaningful usage to restore and the grant permits early use or a covered window is exhausted (0 disables salvage).",
+		},
+	},
+	"find.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Find (semantic grep)",
+			description:
+				"Enable the find tool: natural-language search for files and line ranges, judged by the judge model role",
+		},
+	},
 } as const;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -6734,6 +6811,7 @@ export interface GroupTypeMap {
 	cycleOrder: string[];
 	shellMinimizer: ShellMinimizerSettings;
 	codexResets: CodexResetsSettings;
+	claudeResets: CodexResetsSettings;
 	gc: GcSettings;
 }
 

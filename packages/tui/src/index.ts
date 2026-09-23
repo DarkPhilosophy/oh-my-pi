@@ -48,6 +48,8 @@ export * from "./fuzzy";
 export * from "./keybindings";
 // Kitty keyboard protocol helpers
 export * from "./keys";
+// Glyph Protocol: in-band icon registration (APC 25a1)
+export * from "./glyph-protocol";
 // Kitty graphics: Unicode placeholders
 export * from "./kitty-graphics";
 // LaTeX → Unicode/ANSI math rendering
@@ -55,8 +57,6 @@ export * from "./latex-block";
 export * from "./latex-to-unicode";
 // SGR mouse report parsing
 export * from "./mouse";
-// Right-side info panel compositing
-export * from "./right-panel";
 // Mermaid diagram support
 // Input buffering for batch splitting
 export * from "./stdin-buffer";
@@ -72,3 +72,4 @@ export * from "./ttyid";
 export * from "./tui";
 // Utilities
 export * from "./utils";
+export * from "./right-panel";

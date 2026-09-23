@@ -31,7 +31,6 @@ function createGuard(
 		resolveActiveEditMode: () => settings.get("edit.mode"),
 		isDisposed: () => false,
 		promptGeneration: () => 0,
-		localProtocolOptions: () => ({}),
 		emitNotice() {},
 		schedulePostPromptTask() {},
 		discardAssistantTurn() {},

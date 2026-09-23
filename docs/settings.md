@@ -339,7 +339,7 @@ The catalog below highlights common settings; it is not the complete schema. `om
 
 ### Models
 
-`modelRoles`, `modelTags`, and `cycleOrder` work together to define the models you can switch between. Role values may carry a thinking suffix (`:minimal`, `:low`, `:medium`, `:high`, `:xhigh`, `:max`).
+`modelRoles` assigns the primary selector for each workload. `retry.fallbackChains` supplies its ordered fallbacks; keep provider/backend choice out of service-specific settings. Chat-role values may carry a thinking suffix (`:minimal`, `:low`, `:medium`, `:high`, `:xhigh`, `:max`). Model-kind roles do not use chat thinking suffixes.
 
 ```yaml
 modelRoles:
@@ -349,6 +349,35 @@ modelRoles:
    vision: google/gemini-3.1-pro-preview
    plan: anthropic/claude-opus-4-5
    advisor: anthropic/claude-sonnet-4-5:medium
+
+  # Lightweight chat/tiny workloads
+  tiny: local/lfm2.5-230m
+  memory: local/lfm2-1.2b
+
+  # Model-kind workloads
+  image: openai/gpt-image-1
+  web: web/duckduckgo
+  speech: local/kokoro
+  dictation: local/parakeet-tdt-0.6b-v3
+  judge: typesafe/jev-latest
+
+retry:
+  fallbackChains:
+    tiny: [] # explicit empty chain: do not fall back
+    memory:
+      - openai/gpt-4.1-mini
+    web:
+      - web/parallel
+      - web/perplexity
+      - web/exa
+      - web/firecrawl
+    speech: []
+    dictation: []
+    judge:
+      - typesafe/jev-preview
+      - "@tiny"
+      - "@smol"
+      - "@default"
 
 cycleOrder:
    - smol
@@ -494,7 +523,7 @@ providers:
 | `providers.openai-codex.codeMode`            | enum    | `off`             | Codex Code Mode for `code_mode_only` models (GPT-5.6 Sol/Terra/Luna), mirroring codex-rs: the direct tool surface collapses to `eval`/`ask`/`todo` and every other session tool is invoked from `eval` cells via its `tool.<name>()` bridge, collapsing multi-step tool work into one model round trip. `auto` follows the model catalog's `tool_mode` flag; `on` forces it for any Codex model; `off` (default) leaves the full direct surface. The turn metadata carries codex-rs's `tool_namespaces_info` exposure snapshot while active. |
 | `providers.openai-codex.codeModeDirectTools` | array   | `[]`              | Extra tool names to keep directly callable alongside `eval`/`ask`/`todo` when Codex Code Mode is active; entries that are not enabled in the session are ignored.                                                                                                                                                                                                                                                                                                                                                                            |
 
-When the active model keeps failing (429s, quota walls, provider outages) and `retry.modelFallback` is on, the session picks the chain that owns the failing model, by specificity: an exact `provider/model-id` key, then a `provider/*` wildcard, then the current role's chain, then `default`. If several roles assign the same model, yaml key order does not decide: the live session role wins, and `default` wins over other matching roles when the session is not on those roles. It skips models whose selectors are still cooling down and switches for the rest of the turn. Subagents get their own per-spawn chains when their agent definition lists multiple model patterns — the first resolvable pattern is primary and the rest become its fallbacks; there is no `agent:<name>` key in `fallbackChains`.
+When the active chat model keeps failing (429s, quota walls, provider outages) and `retry.modelFallback` is on, the session picks the chain that owns the failing model, by specificity: an exact `provider/model-id` key, then a `provider/*` wildcard, then the current role's chain, then `default` — which also owns a live model that belongs to no role (`/model` switch, ephemeral hop). The effective chain is the owning role's primary followed by its configured entries, and a live selector that appears nowhere in it is offered the whole chain. If several roles assign the same model, yaml key order does not decide: the live session role wins, and `default` wins over other matching chat roles when the session is not on those roles. It skips chat candidates whose selectors are still cooling down and switches for the rest of the turn. Model-kind runners resolve their named role chain separately and never consume `default`. Subagents get their own per-spawn chains when their agent definition lists multiple model patterns — the first resolvable pattern is primary and the rest become its fallbacks; there is no `agent:<name>` key in `fallbackChains`.
 
 ### Tools and approvals
 
@@ -522,7 +551,7 @@ tools:
 | `tools.artifactTailBytes`      | number  | `20`    | KB of tail kept inline on spill.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `tools.artifactTailLines`      | number  | `500`   | Max tail lines kept inline on spill.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
-Individual built-in tools and Eval preludes are toggled by their own keys, e.g. `bash.enabled`, `launch.enabled`, `eval.py`, `eval.js`, `glob.enabled`, `grep.enabled`, `fetch.enabled`, `browser.enabled`, `computer.enabled`, `astEdit.enabled`, `astGrep.enabled`, and `web_search.enabled`. Image questions use `read <image>?q=<question>` and honor `images.questionTimeoutMs`.
+Individual built-in tools and Eval preludes are toggled by their own keys, e.g. `bash.enabled`, `launch.enabled`, `eval.py`, `eval.js`, `glob.enabled`, `grep.enabled`, `fetch.enabled`, `browser.enabled`, `computer.enabled`, `astEdit.enabled`, `astGrep.enabled`, `find.enabled`, and `web_search.enabled`. Image questions use `read <image>?q=<question>` and honor `images.questionTimeoutMs`.
 
 ### Window-scoped computer use
 
@@ -739,6 +768,8 @@ The `cost` segment shows recorded session costs. For an active provider/model wi
 
 ### Providers and services
 
+Model/backend ordering for image generation, web search, speech, dictation, and judgments is configured through the corresponding `modelRoles` and `retry.fallbackChains` entries in [Models](#models). This section contains transport and service behavior that remains independent of model selection.
+
 ```yaml
 providers:
    webSearchOrder: [perplexity, exa, gemini]
@@ -757,6 +788,18 @@ providers:
 
 provider:
    appendOnlyContext: auto # auto, on, off
+
+tts:
+  localVoice: af_heart
+
+speech:
+  enabled: false
+  voice: af_heart
+
+stt:
+  enabled: false
+  language: en
+  submitTrigger: never
 
 exa:
    enabled: true

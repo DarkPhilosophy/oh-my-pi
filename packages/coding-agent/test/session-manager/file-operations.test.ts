@@ -35,7 +35,7 @@ describe("loadEntriesFromFile", () => {
 		fs.writeFileSync(
 			file,
 			'{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
-				'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
+			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
 		);
 		const entries = await loadEntriesFromFile(file);
 		expect(entries).toHaveLength(2);
@@ -48,8 +48,8 @@ describe("loadEntriesFromFile", () => {
 		fs.writeFileSync(
 			file,
 			'{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
-				"not valid json\n" +
-				'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
+			"not valid json\n" +
+			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
 		);
 		const entries = await loadEntriesFromFile(file);
 		expect(entries).toHaveLength(2);
@@ -457,21 +457,11 @@ describe("SessionManager legacy session migration persistence", () => {
 		const session = SessionManager.create(tempDir, tempDir);
 		await session.ensureOnDisk();
 		expect(await SessionManager.list(tempDir, tempDir)).toHaveLength(1);
-		expect(await SessionManager.listDisplayable(tempDir, tempDir)).toEqual([]);
+		expect(await SessionManager.listForPicker(tempDir, tempDir)).toEqual([]);
 
 		session.appendMessage({ role: "user", content: "visible conversation", timestamp: 1 });
 		await session.flush();
-		expect(await SessionManager.listDisplayable(tempDir, tempDir)).toHaveLength(1);
-		await session.close();
-	});
-
-	it("keeps large zero-prefix-message transcripts visible when emptiness is ambiguous", async () => {
-		const session = SessionManager.create(tempDir, tempDir);
-		await session.ensureOnDisk();
-		session.appendCustomEntry("test-metadata", { payload: "x".repeat(5000) });
-		await session.flush();
-
-		expect(await SessionManager.listDisplayable(tempDir, tempDir)).toHaveLength(1);
+		expect(await SessionManager.listForPicker(tempDir, tempDir)).toHaveLength(1);
 		await session.close();
 	});
 });

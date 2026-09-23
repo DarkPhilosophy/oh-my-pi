@@ -79,13 +79,11 @@ export async function classifyUnexpectedStop(
 			} catch (fallbackError) {
 				logger.debug("unexpected-stop: fallback classification failed", {
 					error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
-					backend: fallback,
 				});
 			}
 		}
 		logger.debug("unexpected-stop: classification failed", {
 			error: error instanceof Error ? error.message : String(error),
-			backend,
 		});
 		return undefined;
 	}
@@ -95,7 +93,6 @@ async function judgeUnexpectedStop(text: string, backend: string, deps: Classify
 	const judge = resolveJudge({
 		settings: deps.settings,
 		registry: deps.registry,
-		backend,
 		sessionModel: deps.model,
 		sessionId: deps.sessionId,
 		metadataResolver: deps.metadataResolver,

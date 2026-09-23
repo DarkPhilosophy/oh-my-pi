@@ -9,6 +9,46 @@
 
 - Added passive cursor-adjacent popups and completion dismissal that preserves the editor draft and cursor ([#11958](https://github.com/can1357/oh-my-pi/pull/11958) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - `SelectList` now keeps keyboard focus on the intended item after a focus transition.
+## [18.2.9] - 2026-09-22
+
+### Added
+
+- Added Claude and Codex saved-reset counts, availability, and expiry to usage views, with provider-specific confirmation and uniquely identified account options.
+- Added terminal detection and capability support for otty and rio, including Kitty graphics and true-color support where available, plus otty hyperlinks and notifications.
+- Added the public `stripTerminalSequences` export for extensions that need to remove terminal control sequences.
+
+### Fixed
+
+- Composer shape previews now use the full available overlay width instead of being clipped at 96 columns.
+- Fixed cursor placement when recalling prompts from history, keeping single-line entries at the end and preserving the appropriate position for multi-line entries.
+- Restored modified-key handling and terminal notifications over SSH sessions running inside tmux.
+- Fixed typed Enter occasionally being interpreted as a literal newline when terminal input events are batched.
+
+## [18.2.8] - 2026-09-21
+
+### Changed
+
+- Improved Bash tool background-task notices by providing completed output as a follow-up and discouraging unnecessary polling.
+
+## [18.2.7] - 2026-09-21
+
+### Breaking Changes
+
+- Removed specialized keyword modules in favor of a centralized registration system
+
+### Added
+
+- Added `find` tool renderer to display search results with hit ranking and score visualization
+- Supported collapsing/expanding search hit details and range snippets
+- Enabled file hyperlinking for navigation to absolute paths in search results
+- Added streaming progress display for incomplete find tool operations
+- Added Glyph Protocol support for rendering icons without requiring patched fonts
+- Added `setMagicKeywords` for dynamic configuration of highlightable magic keywords
+
+### Fixed
+
+- Prevented magic keywords from triggering spelling autocorrect and underlining
+
 ## [18.2.5] - 2026-09-17
 
 ### Added

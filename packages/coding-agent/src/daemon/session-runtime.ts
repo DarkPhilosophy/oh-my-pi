@@ -2,7 +2,7 @@ import * as os from "node:os";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
-import { setTerminalEnvironment } from "@oh-my-pi/pi-tui";
+import { setTerminalEnvironment } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { logger, type postmortem, setProjectDir, VERSION } from "@oh-my-pi/pi-utils";
 import { setChalkEnvironment } from "@oh-my-pi/pi-utils/chalk";
 import { createProjectDirScope, getActiveProfile } from "@oh-my-pi/pi-utils/dirs";

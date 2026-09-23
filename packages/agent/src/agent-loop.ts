@@ -599,18 +599,18 @@ export function agentLoop(
 	const stream = createAgentStream();
 
 	(async () => {
-		const newMessages: AgentMessage[] = [...prompts];
-		const currentContext: AgentContext = {
-			...context,
-			messages: [...context.messages, ...prompts],
-		};
-		for (const prompt of prompts) {
-			(prompt as CommittableAsideMessage)[ASIDE_MESSAGE_COMMIT]?.();
-		}
-
-		stream.push({ type: "agent_start" });
-
 		try {
+			const newMessages: AgentMessage[] = [...prompts];
+			const currentContext: AgentContext = {
+				...context,
+				messages: [...context.messages, ...prompts],
+			};
+			for (const prompt of prompts) {
+				(prompt as CommittableAsideMessage)[ASIDE_MESSAGE_COMMIT]?.();
+			}
+
+			stream.push({ type: "agent_start" });
+
 			await runLoop(currentContext, newMessages, config, signal, stream, streamFn, prompts);
 		} catch (err) {
 			stream.fail(err);
@@ -668,12 +668,12 @@ export function agentLoopContinue(
 	const stream = createAgentStream();
 
 	(async () => {
-		const newMessages: AgentMessage[] = [];
-		const currentContext: AgentContext = { ...context, messages: [...context.messages] };
-
-		stream.push({ type: "agent_start" });
-
 		try {
+			const newMessages: AgentMessage[] = [];
+			const currentContext: AgentContext = { ...context, messages: [...context.messages] };
+
+			stream.push({ type: "agent_start" });
+
 			await runLoop(currentContext, newMessages, config, signal, stream, streamFn);
 		} catch (err) {
 			stream.fail(err);
@@ -1112,7 +1112,11 @@ function resolveAsides(entries: AsideMessage[] | undefined): AgentMessage[] {
 
 function discardAsides(messages: readonly AgentMessage[], error: Error): void {
 	for (const message of messages) {
-		(message as CommittableAsideMessage)[ASIDE_MESSAGE_DISCARD]?.(error);
+		try {
+			(message as CommittableAsideMessage)[ASIDE_MESSAGE_DISCARD]?.(error);
+		} catch (discardError) {
+			logger.error("Aside discard hook threw", { error: discardError });
+		}
 	}
 }
 
@@ -2331,8 +2335,11 @@ async function streamAssistantResponse(
 				}
 				if (addedPartial) {
 					context.messages[context.messages.length - 1] = trailing;
-					stream.push({ type: "message_end", message: snapshotAssistantMessage(trailing) });
+				} else {
+					context.messages.push(trailing);
+					stream.push({ type: "message_start", message: snapshotAssistantMessage(trailing) });
 				}
+				stream.push({ type: "message_end", message: snapshotAssistantMessage(trailing) });
 				await finishChat(trailing);
 				speculationSettled = true;
 				providerStreamSettled = true;
@@ -2839,6 +2846,7 @@ async function executeToolCalls(
 	const {
 		hasSteeringMessages,
 		hasIrcInterrupts,
+		hasBackgroundCompletions,
 		interruptMode = "immediate",
 		getToolContext,
 
@@ -2876,7 +2884,7 @@ async function executeToolCalls(
 	const interruptibleSignal: AbortSignal = signal
 		? AbortSignal.any([signal, steeringAbortController.signal, ircAbortController.signal])
 		: AbortSignal.any([steeringAbortController.signal, ircAbortController.signal]);
-	const interruptState: { triggered: boolean; source?: SteeringInterruptSource | "irc" } = { triggered: false };
+	const interruptState: { triggered: boolean; source?: AsideInterruptSource } = { triggered: false };
 
 	// Streamed messages were prepared (validation + `beforeToolCall`) before
 	// `message_end`, so hook revisions are already part of the message; anything
@@ -2927,19 +2935,22 @@ async function executeToolCalls(
 		};
 	});
 
-	const checkIrcInterrupts = async (): Promise<void> => {
-		// IRC only fires once: a peer interrupt already recorded on interruptState
+	const checkAsideInterrupts = async (): Promise<void> => {
+		// Asides only fire once: an interrupt already recorded on interruptState
 		// must not re-abort, and (unlike steering) never re-consumes a queue.
 		if (!shouldInterruptImmediately || signal?.aborted || interruptState.triggered) return;
-		if (hasIrcInterrupts && (await hasIrcInterrupts())) {
-			// Peer IRC hard-aborts interruptible waits only; foreground tools keep
-			// running (no partial side effects) but get the cooperative soft
-			// signal so backgroundable work can step aside for the peer message.
-			interruptState.triggered = true;
-			interruptState.source = "irc";
-			ircAbortController.abort();
-			steeringSoftController.abort();
-		}
+		// Peer IRC and background completions (finished jobs, exited supervised
+		// processes) hard-abort interruptible waits only; foreground tools keep
+		// running (no partial side effects) but get the cooperative soft signal
+		// so backgroundable work can step aside for the queued notice.
+		let source: AsideInterruptSource | undefined;
+		if (hasIrcInterrupts && (await hasIrcInterrupts())) source = "irc";
+		else if (hasBackgroundCompletions && (await hasBackgroundCompletions())) source = "background";
+		if (!source || interruptState.triggered) return;
+		interruptState.triggered = true;
+		interruptState.source = source;
+		ircAbortController.abort();
+		steeringSoftController.abort();
 	};
 
 	const checkSteering = async (): Promise<void> => {
@@ -2980,7 +2991,7 @@ async function executeToolCalls(
 			}
 			return;
 		}
-		await checkIrcInterrupts();
+		await checkAsideInterrupts();
 	};
 
 	const emitToolResult = (record: (typeof records)[number], result: AgentToolResult<any>, isError: boolean): void => {
@@ -3270,7 +3281,13 @@ async function executeToolCalls(
 			toolName: toolCall.name,
 		});
 
-		await checkSteering();
+		// Best-effort steering probe: its own failure is surfaced by the
+		// dedicated watch path (which guards the identical call), so a rejecting
+		// host `hasSteeringMessages`/`hasIrcInterrupts` callback must not reject
+		// this task. An unguarded rejection here fires after the tool already
+		// ran and poisons the `start.then(runTool)` ordering chain, skipping
+		// every later chained record with a phantom "pending steering" result.
+		await checkSteering().catch(() => undefined);
 	};
 
 	let lastExclusive: Promise<void> = Promise.resolve();
@@ -3283,8 +3300,8 @@ async function executeToolCalls(
 	// and soft-signals cooperative tools (auto-background bash), so the boundary
 	// dequeue below injects the message promptly. Gated on immediate-interrupt
 	// mode; checkSteering is idempotent (no-op once triggered).
-	const watchSteeringWhileRunning =
-		shouldInterruptImmediately && (hasSteeringMessages !== undefined || hasIrcInterrupts !== undefined);
+	const hasAsidePeek = hasIrcInterrupts !== undefined || hasBackgroundCompletions !== undefined;
+	const watchSteeringWhileRunning = shouldInterruptImmediately && (hasSteeringMessages !== undefined || hasAsidePeek);
 	const eventDrivenSteeringWatch =
 		watchSteeringWhileRunning && config.waitForSteeringMessages !== undefined && hasSteeringMessages !== undefined;
 	const steeringWatchAbortController = new AbortController();
@@ -3323,13 +3340,13 @@ async function executeToolCalls(
 				}
 			})()
 		: undefined;
-	// IRC interrupt records have a separate session-owned queue and no wake
-	// callback. Keep its established timer fallback when that queue is present;
-	// system steering uses the event-driven path above and does not poll.
+	// IRC interrupt records and background completions live in session-owned
+	// queues with no wake callback. Keep the timer fallback when either peek is
+	// present; system steering uses the event-driven path above and does not poll.
 	const steeringWatchTimer =
-		watchSteeringWhileRunning && (!eventDrivenSteeringWatch || hasIrcInterrupts !== undefined)
+		watchSteeringWhileRunning && (!eventDrivenSteeringWatch || hasAsidePeek)
 			? setInterval(
-					() => void (eventDrivenSteeringWatch ? checkIrcInterrupts() : checkSteering()),
+					() => void (eventDrivenSteeringWatch ? checkAsideInterrupts() : checkSteering()),
 					STEERING_INTERRUPT_POLL_MS,
 				)
 			: undefined;
@@ -3538,8 +3555,11 @@ function createToolSignalAbortedResult(signal: AbortSignal): AgentToolResult<unk
 	};
 }
 
+/** Origin of a mid-batch interrupt: queued steering, a peer IRC, or a background completion notice. */
+type AsideInterruptSource = SteeringInterruptSource | "irc" | "background";
+
 function createSkippedToolResult(
-	source: SteeringInterruptSource | "irc" | undefined,
+	source: AsideInterruptSource | undefined,
 	executionStarted: boolean,
 ): AgentToolResult<SyntheticToolResultDetails | InterruptedToolResultDetails> {
 	let reason = "pending steering message";
@@ -3556,6 +3576,9 @@ function createSkippedToolResult(
 	} else if (source === "irc") {
 		reason = "pending peer interrupt";
 		blocker = "interrupt";
+	} else if (source === "background") {
+		reason = "a queued background completion (job or supervised process)";
+		blocker = "completion notice";
 	}
 	return {
 		content: [

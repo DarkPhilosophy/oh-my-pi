@@ -5,7 +5,7 @@ import {
 	type AgentTurnEndContext,
 	createToolScopedAbortReason,
 } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, AssistantMessageEvent, Model, ToolCall } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, AssistantMessageEvent, Model } from "@oh-my-pi/pi-ai";
 import { GeminiHeaderRunDetector } from "@oh-my-pi/pi-ai/utils/thinking-loop";
 import { type RepeatedToolCallDetection, ToolCallLoopGuard } from "@oh-my-pi/pi-ai/utils/tool-call-loop-guard";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
@@ -42,7 +42,6 @@ export interface StreamGuardsHost {
 	resolveActiveEditMode(): EditMode;
 	isDisposed(): boolean;
 	promptGeneration(): number;
-	localProtocolOptions(): LocalProtocolOptions;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	schedulePostPromptTask(task: (signal: AbortSignal) => Promise<void>): void;
 	discardAssistantTurn(message: AssistantMessage): void;

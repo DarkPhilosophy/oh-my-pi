@@ -1,0 +1,110 @@
+diff a/packages/tui/src/tui.ts b/packages/tui/src/tui.ts	(rejected hunks)
+@@ -674,7 +674,9 @@ export class TUI extends Container {
+ 	#cursorOverlayRender: CursorOverlayRenderer | undefined;
+ 	#cursorOverlayOffset = 0;
+ 	#cursorOverlayEditorRows = 0;
+-	#cursorOverlayBacking: { top: number; rows: string[]; painted: readonly string[] } | undefined;
++	#cursorOverlayBacking:
++		| { top: number; rows: string[]; painted: readonly string[]; width?: number; height?: number }
++		| undefined;
+ 	/** Only the current physical screen, never native scrollback. */
+ 	#providerScreen: readonly string[] = [];
+ 	// Net composer-space offset of the published hit-test origin behind the
+@@ -891,8 +895,15 @@ export class TUI extends Container {
+ 		return mode === "append" || mode === "rebuild" || mode === "preserve" ? mode : "preserve";
+ 	}
+ 
+-	/** Set a passive, non-focus-stealing layer for the current composed frame. */
++	/**
++	 * Set a passive, non-focus-stealing layer for the current composed frame.
++	 * The frame provider must support complete history replay: a resize can
++	 * archive painted overlay cells before SIGWINCH reaches the application.
++	 */
+ 	setCursorOverlay(render: CursorOverlayRenderer | undefined, cursorOffset: number, editorRows: number): void {
++		if (render && !this.#frameProvider?.beginHistoryReplay) {
++			throw new Error("Cursor overlays require a frame provider with history replay support");
++		}
+ 		this.#cursorOverlayRender = render;
+ 		this.#cursorOverlayOffset = cursorOffset;
+ 		this.#cursorOverlayEditorRows = editorRows;
+@@ -1843,11 +1876,16 @@ export class TUI extends Container {
+ 
+ 	#flushHistoryBeforeStop(): void {
+ 		const provider = this.#frameProvider;
+-		if (provider?.beginHistoryFlush === undefined) return;
++		if (!provider || (!provider.beginHistoryFlush && !this.#cursorOverlayBacking)) return;
+ 		const width = this.terminal.columns;
+ 		const height = this.terminal.rows;
+ 		if (width <= 0 || height <= 0) return;
+-		provider.beginHistoryFlush();
++		provider.beginHistoryFlush?.();
++		// Flush normally cancels replay. Recover resize-damaged popup backing
++		// afterward, before any new-geometry output can discard the saved rows.
++		if (this.#cursorOverlayResizePending || this.#cursorOverlayHistoryDamaged) {
++			this.#prepareResizeReplay(width, height);
++		}
+ 		while (true) {
+ 			let plan: TerminalFramePlan;
+ 			do {
+@@ -1874,6 +1912,7 @@ export class TUI extends Container {
+ 			if (plan.history.id > acceptedBefore && this.#acceptedHistoryBatchId === acceptedBefore) {
+ 				throw new Error("History flush did not accept the offered batch");
+ 			}
++			if (!provider.beginHistoryFlush) return;
+ 		}
+ 	}
+ 
+@@ -2747,17 +2799,38 @@ export class TUI extends Container {
+ 		const available = above ? editorTop : height - editorBottom;
+ 		const overlayRows =
+ 			marker && !flushing && !this.hasOverlay() && available > 0
+-				? (this.#cursorOverlayRender?.(width, available) ?? [])
++				? this.#prepareLinesArray(this.#cursorOverlayRender?.(width, available) ?? [], width)
+ 				: [];
+ 		const overlayCount = Math.min(overlayRows.length, available);
+ 		const overlayTop = above ? editorTop - overlayCount : editorBottom;
+ 		const previousOverlay = this.#cursorOverlayBacking;
+-		// Restore physical cells before an append can scroll them into history.
+-		if (previousOverlay && geometryStable && !destructiveReset && !pendingAltExit) {
+-			for (let index = 0; index < previousOverlay.rows.length; index++) {
+-				const row = previousOverlay.top + index;
+-				if (diffable && row >= overlayTop && row < overlayTop + overlayCount) continue;
+-				buffer += `\x1b[${row + 1};1H${this.#lineRewriteSequence(previousOverlay.rows[index]!, width, row)}`;
++		const remappedBacking = previousOverlay?.width === width && previousOverlay?.height === height;
++		// A partial multicell overwrite destroys the whole glyph, not only the
++		// covered row. Restore its anchor and all reserved rows as one unit.
++		let restoredScaledBacking = false;
++		if (
++			previousOverlay &&
++			(geometryStable || remappedBacking) &&
++			!destructiveReset &&
++			(!pendingAltExit || remappedBacking)
++		) {
++			let restoreTop = previousOverlay.top;
++			let restoreEnd = restoreTop + previousOverlay.rows.length;
++			while (this.#osc66SpacerGlyphWidth(this.#providerScreen, restoreTop) >= 0) restoreTop--;
++			while (this.#osc66SpacerGlyphWidth(this.#providerScreen, restoreEnd) >= 0) restoreEnd++;
++			restoredScaledBacking =
++				restoreTop < previousOverlay.top || restoreEnd > previousOverlay.top + previousOverlay.rows.length;
++			// Restore physical cells before an append can scroll them into history.
++			for (let row = restoreTop; row < restoreEnd; row++) {
++				if (!restoredScaledBacking && diffable && row >= overlayTop && row < overlayTop + overlayCount) continue;
++				buffer += `\x1b[${row + 1};1H${this.#lineRewriteSequence(
++					this.#providerScreen[row] ?? "",
++					width,
++					row,
++					-1,
++					-1,
++					this.#osc66SpacerGlyphWidth(this.#providerScreen, row),
++				)}`;
+ 			}
+ 		}
+ 		this.#cursorOverlayBacking = undefined;
+@@ -2831,6 +2904,7 @@ export class TUI extends Container {
+ 				covered.push(this.#providerScreen[row] ?? "");
+ 				if (
+ 					diffable &&
++					!restoredScaledBacking &&
+ 					this.#providerWindow.length === rows &&
+ 					previousOverlay?.painted[row - previousOverlay.top] === overlayRows[index]
+ 				)
