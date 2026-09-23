@@ -59,6 +59,18 @@ provider "anthropic" {
 			thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 		}
 	}
+	// Opus 5.5 rejects forced selectors outright: `tool_choice: type "tool"`
+	// and `"any"` return HTTP 400 `not supported for this model` on the
+	// first-party API, so forced turns (judgments, forced yields) must fall
+	// back to the auto selector the model does accept. Scoped to this
+	// deployment because only api.anthropic.com is evidenced.
+	class "anthropic" {
+		family "opus" {
+			revision ">=5.5" {
+				supports-forced-tool-choice #false
+			}
+		}
+	}
 	// residue: taxonomy ranks and exact globs do not isolate these models.
 	models "*20240229" "claude-3-7-sonnet-20250219" {
 		disable-adaptive-thinking #false
