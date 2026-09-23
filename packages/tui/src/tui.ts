@@ -3106,6 +3106,10 @@ export class TUI extends Container {
 			plan.retainedLiveViewport &&
 			!this.#clearScrollbackOnNextRender &&
 			this.#providerExpansionBorrowed &&
+			// Only live rows still lent to native history need reconciling. When
+			// none remain, contraction just pulls visible history back down and a
+			// destructive replay would wipe and rewrite the whole scrollback.
+			this.#providerLogicalCommitted > 0 &&
 			(overflow < this.#providerLogicalCommitted || logicalViewport.length < height) &&
 			(plan.viewportExpansionRows ?? 0) === 0 &&
 			this.#providerViewportExpansionRows > 0 &&

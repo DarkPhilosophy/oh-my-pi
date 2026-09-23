@@ -1356,4 +1356,35 @@ describe("terminal frame plans", () => {
 		expect(resized).toEqual(["history-one@30", "history-two@30", "editor@30"]);
 		tui.stop();
 	});
+
+	it("replays once when contracting temporary UI brings still-borrowed live rows back", () => {
+		const terminal = new CountingTerminal(30, 5);
+		let replays = 0;
+		const provider = new Provider({ viewport: ["LIVE_1", "editor"], retainedLiveViewport: true });
+		const replayingProvider: TerminalFrameProvider = {
+			renderFrame: size => provider.renderFrame(size),
+			acknowledgeHistory: id => provider.acknowledgeHistory(id),
+			beginHistoryReplay: () => {
+				replays++;
+			},
+		};
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		try {
+			tui.setFrameProvider(replayingProvider);
+			provider.plan = {
+				viewport: ["LIVE_1", "LIVE_2", "LIVE_3", "TEMP_1", "TEMP_2", "TEMP_3", "editor"],
+				viewportExpansionRows: 3,
+				borrowableRows: 3,
+				retainedLiveViewport: true,
+			};
+			tui.requestRender(true);
+			// LIVE_1/LIVE_2 are still lent to native history and must return on screen.
+			provider.plan = { viewport: ["LIVE_1", "LIVE_2", "LIVE_3", "editor"], retainedLiveViewport: true };
+			tui.requestRender(true);
+
+			expect(replays).toBe(1);
+		} finally {
+			tui.stop();
+		}
+	});
 });
