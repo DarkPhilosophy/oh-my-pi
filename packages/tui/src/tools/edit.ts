@@ -16,6 +16,7 @@ import {
 	cachedRenderedString,
 	cappedHeadLines,
 	createRenderedStringCache,
+	diffCollapsedRows,
 	formatDiagnostics,
 	formatExpandHint,
 	formatStatusIcon,
@@ -441,7 +442,8 @@ function renderPlainTextPreview(text: string, uiTheme: Theme, _filePath?: string
 
 interface StreamingDiffTail {
 	content: string;
-	hidden: boolean;
+	/** Diff lines above the window; a native newline scan, cheap next to the wrap walk. */
+	hiddenLines: number;
 }
 
 /**
@@ -454,7 +456,7 @@ interface StreamingDiffTail {
 function sliceStreamingDiffTail(diff: string, innerWidth: number, budget: number): StreamingDiffTail {
 	let end = diff.length;
 	while (end > 0 && diff.charCodeAt(end - 1) === 10) end--;
-	if (end === 0) return { content: "", hidden: false };
+	if (end === 0) return { content: "", hiddenLines: 0 };
 
 	const rowLimit = Math.max(1, budget);
 	let start = end;
@@ -471,7 +473,9 @@ function sliceStreamingDiffTail(diff: string, innerWidth: number, budget: number
 		cursor = newline;
 	}
 
-	return { content: diff.slice(start, end), hidden: start > 0 };
+	let hiddenLines = 0;
+	for (let index = diff.indexOf("\n"); index >= 0 && index < start; index = diff.indexOf("\n", index + 1)) hiddenLines++;
+	return { content: diff.slice(start, end), hiddenLines };
 }
 
 function formatStreamingDiff(
@@ -506,10 +510,10 @@ function formatStreamingDiff(
 		// to the viewport; the full diff appears once the result finalizes.
 		const tail = sliceStreamingDiffTail(diff, innerWidth, budget);
 		let rendered = "\n\n";
-		if (tail.hidden) {
-			// Exact hidden line/hunk counts require scanning the discarded prefix,
-			// which would make every streaming update scale with the complete diff.
-			rendered += `${uiTheme.fg("dim", "… (content above)")}\n`;
+		// Same wording as the finished card's overflow marker, so the rows above
+		// the window read as what they are: diff lines, one ctrl+o away.
+		if (tail.hiddenLines > 0) {
+			rendered += `${uiTheme.fg("toolOutput", `… (${tail.hiddenLines} more line${tail.hiddenLines === 1 ? "" : "s"}) ${formatExpandHint(uiTheme)}`)}\n`;
 		}
 		rendered += renderDiffColored(tail.content, { filePath: rawPath, theme: uiTheme });
 		return rendered;
@@ -889,32 +893,39 @@ function renderDiffSection(
 	renderCache?: RenderedStringCache,
 	sectionCache?: RenderedStringCache,
 ): string {
-	return cachedRenderedString(sectionCache, uiTheme, expanded, `${rawPath}:${innerWidth}`, diff, () => {
-		const {
-			text: truncatedDiff,
-			hiddenHunks,
-			hiddenLines: logicallyHiddenLines,
-		} = expanded
-			? { text: diff, hiddenHunks: 0, hiddenLines: 0 }
-			: truncateDiffByHunk(diff, PREVIEW_LIMITS.DIFF_COLLAPSED_HUNKS, PREVIEW_LIMITS.DIFF_COLLAPSED_LINES);
+	return cachedRenderedString(
+		sectionCache,
+		uiTheme,
+		expanded,
+		`${rawPath}:${innerWidth}:${diffCollapsedRows()}`,
+		diff,
+		() => {
+			const {
+				text: truncatedDiff,
+				hiddenHunks,
+				hiddenLines: logicallyHiddenLines,
+			} = expanded
+				? { text: diff, hiddenHunks: 0, hiddenLines: 0 }
+				: truncateDiffByHunk(diff, PREVIEW_LIMITS.DIFF_COLLAPSED_HUNKS, diffCollapsedRows());
 
-		const renderedDiff = cachedRenderedString(renderCache, uiTheme, expanded, rawPath, truncatedDiff, () =>
-			renderDiffFn(truncatedDiff, { filePath: rawPath }),
-		);
-		const { text: visibleDiff, hiddenLines: visuallyHiddenLines } = expanded
-			? { text: renderedDiff, hiddenLines: 0 }
-			: sliceCollapsedDiffRows(renderedDiff, innerWidth, PREVIEW_LIMITS.DIFF_COLLAPSED_LINES);
-		const hiddenLines = logicallyHiddenLines + visuallyHiddenLines;
+			const renderedDiff = cachedRenderedString(renderCache, uiTheme, expanded, rawPath, truncatedDiff, () =>
+				renderDiffFn(truncatedDiff, { filePath: rawPath }),
+			);
+			const { text: visibleDiff, hiddenLines: visuallyHiddenLines } = expanded
+				? { text: renderedDiff, hiddenLines: 0 }
+				: sliceCollapsedDiffRows(renderedDiff, innerWidth, diffCollapsedRows());
+			const hiddenLines = logicallyHiddenLines + visuallyHiddenLines;
 
-		let text = `\n${visibleDiff}`;
-		if (!expanded && (hiddenHunks > 0 || hiddenLines > 0)) {
-			const remainder: string[] = [];
-			if (hiddenHunks > 0) remainder.push(`${hiddenHunks} more hunks`);
-			if (hiddenLines > 0) remainder.push(`${hiddenLines} more lines`);
-			text += uiTheme.fg("toolOutput", `\n… (${remainder.join(", ")}) ${formatExpandHint(uiTheme)}`);
-		}
-		return text;
-	});
+			let text = `\n${visibleDiff}`;
+			if (!expanded && (hiddenHunks > 0 || hiddenLines > 0)) {
+				const remainder: string[] = [];
+				if (hiddenHunks > 0) remainder.push(`${hiddenHunks} more hunks`);
+				if (hiddenLines > 0) remainder.push(`${hiddenLines} more lines`);
+				text += uiTheme.fg("toolOutput", `\n… (${remainder.join(", ")}) ${formatExpandHint(uiTheme)}`);
+			}
+			return text;
+		},
+	);
 }
 
 function wrapEditRendererLine(line: string, width: number): string[] {

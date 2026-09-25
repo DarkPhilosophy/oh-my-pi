@@ -84,14 +84,12 @@ describe("editToolRenderer", () => {
 			const collapsed = renderPreview(makeDiff(20), false);
 			expect(collapsed).toContain("tail-line-20");
 			expect(collapsed).not.toContain("head-line-1");
-			expect(collapsed).toContain("content above");
 			expect(collapsed).toContain("(preview)");
 
 			// Within the viewport window, expanded shows the whole diff.
 			const expanded = renderPreview(makeDiff(20), true);
 			expect(expanded).toContain("head-line-1");
 			expect(expanded).toContain("tail-line-20");
-			expect(expanded).not.toContain("content above");
 			expect(expanded).not.toContain("(preview)");
 
 			// Beyond it, expanded stays a viewport-sized tail window: an unbounded
@@ -100,7 +98,6 @@ describe("editToolRenderer", () => {
 			const expandedTall = renderPreview(makeDiff(40), true);
 			expect(expandedTall).toContain("tail-line-40");
 			expect(expandedTall).not.toContain("head-line-1");
-			expect(expandedTall).toContain("content above");
 		} finally {
 			if (originalRowsDescriptor) {
 				Object.defineProperty(process.stdout, "rows", originalRowsDescriptor);
@@ -110,25 +107,7 @@ describe("editToolRenderer", () => {
 		}
 	});
 
-	it("does not report a leading blank line as hidden content", async () => {
-		const uiTheme = await getUiTheme();
-		const rendered = Bun.stripANSI(
-			editToolRenderer
-				.renderCall(
-					{ file_path: "/tmp/leading-blank.ts", previewDiff: "\n+1|first-added\n+2|second-added" },
-					{ expanded: false, isPartial: true, spinnerFrame: 0, renderContext: { editMode: "replace" } },
-					uiTheme,
-				)
-				.render(200)
-				.join("\n"),
-		);
-
-		expect(rendered).toContain("first-added");
-		expect(rendered).toContain("second-added");
-		expect(rendered).not.toContain("content above");
-	});
-
-	it("uses a count-free marker for a discarded streaming prefix", async () => {
+	it("counts the diff lines above the streaming window", async () => {
 		const uiTheme = await getUiTheme();
 		const diff = [
 			"@@ -1,10000 +1,12 @@",
@@ -149,11 +128,10 @@ describe("editToolRenderer", () => {
 				.join("\n"),
 		);
 
-		expect(rendered).toContain("content above");
 		expect(rendered).toContain("visible-tail-12");
 		expect(rendered).not.toContain("hidden-line-10000");
-		expect(rendered).not.toContain("more hunks");
-		expect(rendered).not.toContain("more lines above");
+		// The rows above the window are counted like the finished card's marker.
+		expect(rendered).toMatch(/… \(10\d{3} more lines\)/);
 	});
 
 	it("uses hashline input headers for streaming call path without apply_patch errors", async () => {

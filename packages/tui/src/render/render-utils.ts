@@ -355,6 +355,16 @@ export function previewWindowRows(): number {
 }
 
 /**
+ * Line budget for a finished, collapsed diff: the fixed floor, raised to what
+ * the viewport can show so a diff that fits on screen is never hidden behind
+ * "… N more lines" while dozens of rows sit empty.
+ */
+export function diffCollapsedRows(): number {
+	const rows = process.stdout.rows || PREVIEW_WINDOW_FALLBACK_ROWS;
+	return Math.max(PREVIEW_LIMITS.DIFF_COLLAPSED_LINES, rows - PREVIEW_WINDOW_RESERVED_ROWS);
+}
+
+/**
  * Cap a pre-rendered command preview to a viewport-sized tail window: the end
  * of the command stays visible (it is the live edge while args stream) behind
  * an "… N earlier lines" marker on top. The same window applies while

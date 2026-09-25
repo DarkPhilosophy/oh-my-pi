@@ -245,6 +245,20 @@ interface XdevMountNoticeProjection {
 }
 
 /** Owns tool registration, presentation, prompt rebuilding, skills, and permissions. */
+/** Longest name list a mount notice spells out before collapsing to a count. */
+const XDEV_NOTICE_MAX_NAMES = 6;
+
+/**
+ * A full MCP startup mounts every tool of every server at once; listing them
+ * all filled the whole screen with one notice and pushed the welcome into
+ * scrollback. The model still receives the complete delta separately.
+ */
+function summarizeXdevNames(names: readonly string[]): string {
+	if (names.length <= XDEV_NOTICE_MAX_NAMES) return names.join(", ");
+	const shown = names.slice(0, XDEV_NOTICE_MAX_NAMES).join(", ");
+	return `${names.length} tools (${shown}, … +${names.length - XDEV_NOTICE_MAX_NAMES} more)`;
+}
+
 export class SessionTools {
 	readonly #host: SessionToolsHost;
 	#autoApprove: boolean;
@@ -1313,8 +1327,8 @@ export class SessionTools {
 		this.#pendingXdevMountDelta = pending.added.size > 0 || pending.removed.size > 0 ? pending : undefined;
 		if (cfgStartupQuiet.get(this.#host.settings)) return;
 		const parts: string[] = [];
-		if (addedNames.length > 0) parts.push(`mounted ${addedNames.join(", ")}`);
-		if (removedNames.length > 0) parts.push(`unmounted ${removedNames.join(", ")}`);
+		if (addedNames.length > 0) parts.push(`mounted ${summarizeXdevNames(addedNames)}`);
+		if (removedNames.length > 0) parts.push(`unmounted ${summarizeXdevNames(removedNames)}`);
 		this.#host.emitNotice("info", `xd://: ${parts.join("; ")}`, "xdev");
 	}
 

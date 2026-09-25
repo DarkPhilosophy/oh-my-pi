@@ -409,7 +409,10 @@ export class Composer implements TerminalFrameProvider {
 		pushLoopPhase("ui:render:compose:history");
 		let history: { id: number; rows: readonly string[]; kind: "append" | "replay"; divergent?: boolean } | undefined;
 		try {
-			history = this.#offerHistory(transcript, width, rows, chromeRows);
+			// A taller draft is reversible chrome: judged at its floor, or one Enter
+			// in the editor archives the whole welcome permanently even though the
+			// draft will shrink back.
+			history = this.#offerHistory(transcript, width, rows, chromeRows - chromeInsertionRows);
 		} finally {
 			popLoopPhase();
 		}

@@ -1487,6 +1487,25 @@ These tools became available:
 		expect(delivered).toHaveLength(1);
 		expect(delivered[0]).toContain("xd://mcp__nucleus_search");
 	});
+	it("collapses a large xd:// mount burst into one short notice", async () => {
+		const { session } = newSession(async toolNames => `tools:${toolNames.join(",")}`, {
+			xdev: createTestXdevState(),
+		});
+		const notices: string[] = [];
+		session.subscribe(event => {
+			if (event.type === "notice" && event.source === "xdev") notices.push(event.message);
+		});
+		const tools = Array.from({ length: 40 }, (_, i) =>
+			createMcpCustomTool(`mcp__big_tool${i}`, "big", `tool${i}`, `Tool ${i}`),
+		);
+		await session.refreshMCPTools(tools);
+
+		// Forty names used to render as one screen-filling notice at startup.
+		expect(notices).toHaveLength(1);
+		expect(notices[0]).toContain("40 tools");
+		expect(notices[0]).toContain("+34 more");
+		expect(notices[0]).not.toContain("mcp__big_tool39");
+	});
 	it("keeps device-only write access until a full-write activation commits", async () => {
 		let blockRebuild = false;
 		const rebuildStarted = Promise.withResolvers<void>();

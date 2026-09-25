@@ -45,3 +45,49 @@ it("makes an oversized startup changelog available in scrollback after the intro
 		composer.stop();
 	}
 });
+
+it("keeps the welcome on screen when a multi-line draft grows the editor", async () => {
+	const probe = new VirtualTerminal(60, 200);
+	const scheduler = new VirtualRenderScheduler();
+	const measure = new Composer({
+		terminal: probe,
+		tuiOptions: { renderScheduler: scheduler },
+		preferences: { spellingTypoDetection: false, spellingAutocomplete: false, spellingAutocorrect: false },
+	});
+	measure.setRuntimeChildren([new TranscriptContainer(), new Text("EDITOR", 0, 0)]);
+	measure.start();
+	await scheduler.settle(probe);
+	const headerRows = probe.getViewport().filter(row => row.trim().length > 0).length - 1;
+	measure.stop();
+
+	// Header + one live notice + a one-line editor fill the screen exactly.
+	const terminal = new VirtualTerminal(60, headerRows + 3);
+	const composer = new Composer({
+		terminal,
+		tuiOptions: { renderScheduler: scheduler },
+		preferences: { spellingTypoDetection: false, spellingAutocomplete: false, spellingAutocorrect: false },
+	});
+	const transcript = new TranscriptContainer();
+	const editor = new Text("EDITOR", 0, 0);
+	composer.setRuntimeChildren([transcript, editor], { transient: [editor] });
+	composer.start();
+	try {
+		transcript.addChild(new Text("Session-only model: x.", 0, 0));
+		composer.ui.requestRender();
+		await scheduler.settle(terminal);
+		expect(terminal.getViewport().some(row => row.includes("Welcome"))).toBe(true);
+
+		editor.setText("EDITOR\nsecond line");
+		composer.ui.requestRender();
+		await scheduler.settle(terminal);
+		editor.setText("EDITOR");
+		composer.ui.requestRender();
+		await scheduler.settle(terminal);
+
+		// The draft grew and shrank back: the welcome must still be painted,
+		// not archived to scrollback above a blank screen.
+		expect(terminal.getViewport().some(row => row.includes("Welcome"))).toBe(true);
+	} finally {
+		composer.stop();
+	}
+});

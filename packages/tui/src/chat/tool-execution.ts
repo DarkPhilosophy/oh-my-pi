@@ -1053,14 +1053,18 @@ export class ToolExecutionComponent extends Container {
 		if (!this.isTranscriptBlockFinalized() && Number.isFinite(this.#allocation)) {
 			const trimmed = trimBlankEdges(lines);
 			if (trimmed.length > this.#allocation) {
-				if (this.#allocation < 4) return this.#renderCompact(width);
+				// The head row of a framed card is its border; the title that names the
+				// tool sits one row below. Keep both so a clipped card still says what
+				// is running.
+				const headRows = Bun.stripANSI(trimmed[0]!).replace(/[\s╭╮─┌┐━┏┓│]/g, "") === "" ? 2 : 1;
+				if (this.#allocation < headRows + 3) return this.#renderCompact(width);
 				const hidden = trimmed.length - this.#allocation + 1;
 				const markerText = truncateToWidth(
 					`${theme.fg("dim", `│ … ${hidden} earlier line${hidden === 1 ? "" : "s"}`)} ${formatExpandHint(theme, false, true)}`,
 					width,
 				);
 				const marker = applyBackgroundToLine(markerText, width, text => theme.bg("toolPendingBg", text));
-				return [trimmed[0]!, marker, ...trimmed.slice(-(this.#allocation - 2))];
+				return [...trimmed.slice(0, headRows), marker, ...trimmed.slice(-(this.#allocation - headRows - 1))];
 			}
 		}
 		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
