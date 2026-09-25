@@ -18,10 +18,8 @@ import {
 	compactionContextTokens,
 	createCompactionSummaryMessage,
 	estimateTranscriptTokens,
-	findTranscriptUsageAnchor,
 	getAnthropicCompactionPayload,
 	isOpenAiRemoteCompactionApi,
-	isTranscriptUsageAnchor,
 	NativeCompactionError,
 	prepareCompaction,
 	type SessionMessageEntry,
@@ -131,6 +129,7 @@ import {
 	cfgAdvisorMaxNotesPerUpdate,
 	cfgAdvisorReviewInterval,
 	cfgAdvisorReviewMode,
+	cfgAdvisorEvictStaleResults,
 	cfgAdvisorSyncBacklog,
 } from "../advisor/settings";
 import { cfgCompaction, cfgContextPromotionEnabled } from "./context-settings";
@@ -358,7 +357,6 @@ interface ActiveAdvisor {
 	 * evicted bytes, so the anchored estimate subtracts this; reset whenever a
 	 * fresh anchor lands or the message array is replaced.
 	 */
-	evictedSinceAnchor: number;
 	signature: string;
 }
 /** First index whose provider usage may anchor the advisor's context estimate. */
@@ -1604,7 +1602,6 @@ export class SessionAdvisors {
 					advisorAgent.reset();
 					appendOnlyContext.log.clear();
 					// No anchor and no messages left to have evicted from.
-					advisorRef.evictedSinceAnchor = 0;
 				},
 				rollbackTo: count => {
 					// Drop the failed user batch + synthetic assistant-error turn
@@ -1615,7 +1612,6 @@ export class SessionAdvisors {
 					}
 					appendOnlyContext.resetSyncCursor();
 					advisorAgent.state.error = undefined;
-					advisorRef.evictedSinceAnchor = 0;
 				},
 				state: advisorAgent.state,
 			};
@@ -1720,7 +1716,6 @@ export class SessionAdvisors {
 				pendingCoveredTurn: 0,
 				retryFallbackPendingSuccess: false,
 				usageLimitRetries: 0,
-				evictedSinceAnchor: 0,
 				signature,
 			};
 			this.#refreshAdvisorProviderIdentity(advisorRef);
@@ -2170,7 +2165,6 @@ export class SessionAdvisors {
 				this.#recordAdvisorCost(advisor, event.message);
 				// A fresh provider usage anchor reports the context as it stands
 				// now — post-eviction — so the correction it carried is spent.
-				if (isTranscriptUsageAnchor(event.message)) advisor.evictedSinceAnchor = 0;
 			}
 			advisor.recorder.record(event.message);
 		});
@@ -2539,28 +2533,26 @@ export class SessionAdvisors {
 	): Promise<boolean> {
 		await this.#maybeRestoreAdvisorRetryFallbackPrimary(advisor, signal);
 		const agent = advisor.agent;
-		// Prior reviews' tool output is re-sent on every later request; the deltas
-		// the advisor reviews and the notes it wrote (carried in `advise` tool-call
-		// arguments) are never touched. Runs before the compaction gate, and
-		// regardless of whether compaction is enabled, because it is the advisor's
-		// own context hygiene, not a compaction method.
+		// Prior reviews' `read`/`grep`/`glob` output is re-sent on every later
+		// request; the deltas the advisor reviews and the notes it wrote (carried
+		// in `advise` tool-call arguments) are never touched, and the latest review
+		// is kept intact. Runs before the compaction gate because it is the
+		// advisor's own context hygiene, not a compaction method; it has its own
+		// `advisor.evictStaleResults` switch.
 		//
 		// On a prefix-bound thinking model the `prunedAt` marker also drops the
-		// signed thinking of every assistant after the cut. That region is the one
-		// the eviction rewrites anyway; what is lost is the advisor's reasoning
-		// from finished reviews, which its notes and the deltas already cover.
-		const evictionMessages = agent.state.messages;
-		const anchor = findTranscriptUsageAnchor(evictionMessages, advisorAnchorSearchStart(evictionMessages));
-		const eviction = evictStaleToolResults(evictionMessages, agent.tokenizer, anchor?.index ?? -1);
-		if (eviction.evicted > 0) {
-			// Only the anchor's stale usage still counts evicted bytes; results after
-			// it (or all of them, with no anchor) are counted locally, post-eviction.
-			advisor.evictedSinceAnchor += eviction.coveredTokensSaved;
-			logger.debug("advisor evicted stale tool results", {
-				advisor: advisor.name,
-				evicted: eviction.evicted,
-				tokensSaved: eviction.tokensSaved,
-			});
+		// signed thinking of every assistant after the cut, the latest review
+		// included. What is lost is reasoning its notes and the deltas already
+		// cover.
+		if (cfgAdvisorEvictStaleResults.get(this.#host.settings)) {
+			const eviction = evictStaleToolResults(agent.state.messages, agent.tokenizer);
+			if (eviction.evicted > 0) {
+				logger.debug("advisor evicted stale tool results", {
+					advisor: advisor.name,
+					evicted: eviction.evicted,
+					tokensSaved: eviction.tokensSaved,
+				});
+			}
 		}
 		const incomingTokens = agent.tokenizer.countMessage(incoming);
 
@@ -2833,7 +2825,6 @@ export class SessionAdvisors {
 		agent.replaceMessages([summaryMessage, ...recentMessages]);
 		// The retained tail's own anchors are gone with the replaced array; there
 		// is no stale provider usage left for the correction to offset.
-		advisor.evictedSinceAnchor = 0;
 		return false;
 	}
 	/**
@@ -3269,19 +3260,17 @@ export class SessionAdvisors {
 	 * generated output; only messages after that anchor are estimated. Usage from
 	 * retained pre-compaction messages is stale and must not immediately retrigger
 	 * maintenance on the newly compacted context.
-	 *
-	 * The anchor still counts tool-result bytes evicted after it was reported,
-	 * so its correction is subtracted: without it the compaction gate trips on a
-	 * stale-high number immediately after an eviction, spending a summarization
-	 * call and dropping the prompt cache the eviction was protecting.
+	 * Usage reported before the newest tool-result eviction is stale the same way.
 	 */
 	#estimateAdvisorContextTokens(advisor: ActiveAdvisor): number {
 		const messages = advisor.agent.state.messages;
-		const estimate = estimateTranscriptTokens(messages, advisor.agent.tokenizer, {
+		return estimateTranscriptTokens(messages, advisor.agent.tokenizer, {
 			anchorFromIndex: advisorAnchorSearchStart(messages),
+			// Evicted tool results were rewritten in place; usage reported before
+			// the newest eviction still counts the removed bytes.
+			skipPrunedAnchors: true,
 			excludeEncryptedReasoning: true,
 		});
-		return Math.max(0, estimate - advisor.evictedSinceAnchor);
 	}
 
 	/**

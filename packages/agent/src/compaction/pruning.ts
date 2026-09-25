@@ -120,7 +120,7 @@ function createPrunedNotice(tokens: number): string {
  * own rules: useless already drops no-savings candidates, superseded prunes for
  * correctness regardless of size.
  */
-const MIN_PRUNE_TOKENS = 50;
+export const MIN_PRUNE_TOKENS = 50;
 
 /**
  * Whether a tool result of `tokens` tokens meets the age-based pruning size

@@ -1,8 +1,8 @@
 // Unit tests for the advisor's stale tool-result eviction
 // (src/advisor/tool-result-eviction.ts). Covers what the advisor's context
-// maintenance depends on: only oversized, still-live tool results are blanked,
-// and the cut is the one that actually pays for the prompt-cache rewrite it
-// forces.
+// maintenance depends on: only oversized, still-live `read`/`grep`/`glob`
+// results from reviews before the latest one are blanked, and the cut is the
+// one that actually pays for the prompt-cache rewrite it forces.
 import { describe, expect, it } from "bun:test";
 import { type AgentMessage, Tokenizer } from "@oh-my-pi/pi-agent-core";
 
@@ -61,21 +61,25 @@ function view(message: AgentMessage): { content: unknown; prunedAt?: number } {
 }
 
 describe("evictStaleToolResults", () => {
-	it("blanks the tail review's oversized result and leaves everything else verbatim", () => {
-		const bigBody = text(2_000);
+	it("blanks an older review's read and keeps the latest review, recall output, and small results", () => {
 		const messages = [
 			userDelta("review 1 delta"),
 			assistantText("investigating"),
-			toolResult("t1", bigBody),
+			toolResult("t1", text(8_000)),
+			// Memory is not re-derivable from the deltas or notes, so it stays.
+			toolResult("t2", text(300), "recall"),
 			assistantText("done"),
-			// The advise acknowledgement is well under the 50-token floor: blanking
-			// it would cost more than it recovers.
-			toolResult("t2", "Note delivered to the primary agent.", "advise"),
+			// The advise acknowledgement is well under the 50-token floor.
+			toolResult("t3", "Note delivered to the primary agent.", "advise"),
+			userDelta("review 2 delta"),
+			assistantText("checking"),
+			// The review that just finished is protected.
+			toolResult("t4", text(300)),
 		];
 		const bigTokens = tokenizer.countMessage(messages[2]);
-		const ackTokens = tokenizer.countMessage(messages[4]);
-		expect(bigTokens).toBeGreaterThan(500);
-		expect(ackTokens).toBeLessThan(50);
+		expect(tokenizer.countMessage(messages[3])).toBeGreaterThan(50);
+		expect(tokenizer.countMessage(messages[5])).toBeLessThan(50);
+		expect(tokenizer.countMessage(messages[8])).toBeGreaterThan(50);
 
 		const result = evictStaleToolResults(messages, tokenizer);
 
@@ -83,11 +87,16 @@ describe("evictStaleToolResults", () => {
 		expect(result.tokensSaved).toBe(bigTokens - tokenizer.countTokens(stub(bigTokens)));
 		expect(view(messages[2]).content).toEqual([{ type: "text", text: stub(bigTokens) }]);
 		expect(view(messages[2]).prunedAt).toBeGreaterThan(0);
-		// Deltas, assistant turns and the sub-floor ack are untouched.
+		for (const index of [3, 5, 8]) expect(view(messages[index]).prunedAt).toBeUndefined();
 		expect(view(messages[0]).content).toBe("review 1 delta");
-		expect(view(messages[1]).content).toEqual([{ type: "text", text: "investigating" }]);
-		expect(view(messages[4]).content).toEqual([{ type: "text", text: "Note delivered to the primary agent." }]);
-		expect(view(messages[4]).prunedAt).toBeUndefined();
+		expect(view(messages[8]).content).toEqual([{ type: "text", text: text(300) }]);
+	});
+
+	it("never blanks the latest review, however large", () => {
+		const messages = [userDelta("review 1 delta"), assistantText("investigating"), toolResult("t1", text(8_000))];
+
+		expect(evictStaleToolResults(messages, tokenizer)).toEqual({ evicted: 0, tokensSaved: 0 });
+		expect(view(messages[2]).prunedAt).toBeUndefined();
 	});
 
 	it("does not reach back past a review's worth of rewrite for a small result", () => {
@@ -97,6 +106,8 @@ describe("evictStaleToolResults", () => {
 			userDelta(text(3_000)),
 			assistantText("ok"),
 			toolResult("new", text(5_000)),
+			userDelta("latest delta"),
+			assistantText("ok"),
 		];
 		const oldTokens = tokenizer.countMessage(messages[0]);
 		const newTokens = tokenizer.countMessage(messages[4]);
@@ -113,16 +124,26 @@ describe("evictStaleToolResults", () => {
 	});
 
 	it("leaves a result whose rewrite costs more than it saves", () => {
-		const messages = [assistantText(text(3_000)), toolResult("t1", text(60)), assistantText(text(3_000))];
+		const messages = [
+			assistantText(text(3_000)),
+			toolResult("t1", text(60)),
+			assistantText(text(3_000)),
+			userDelta("latest delta"),
+		];
 
 		const result = evictStaleToolResults(messages, tokenizer);
 
-		expect(result).toEqual({ evicted: 0, tokensSaved: 0, coveredTokensSaved: 0 });
+		expect(result).toEqual({ evicted: 0, tokensSaved: 0 });
 		expect(view(messages[1]).prunedAt).toBeUndefined();
 	});
 
 	it("is idempotent: an already-evicted context has nothing left to reclaim", () => {
-		const messages = [userDelta("review 1 delta"), assistantText("investigating"), toolResult("t1", text(2_000))];
+		const messages = [
+			userDelta("review 1 delta"),
+			assistantText("investigating"),
+			toolResult("t1", text(2_000)),
+			userDelta("review 2 delta"),
+		];
 		const first = evictStaleToolResults(messages, tokenizer);
 		expect(first.evicted).toBe(1);
 		const stubbed = view(messages[2]).content;
@@ -130,32 +151,8 @@ describe("evictStaleToolResults", () => {
 
 		const second = evictStaleToolResults(messages, tokenizer);
 
-		expect(second).toEqual({ evicted: 0, tokensSaved: 0, coveredTokensSaved: 0 });
+		expect(second).toEqual({ evicted: 0, tokensSaved: 0 });
 		expect(view(messages[2]).content).toBe(stubbed);
 		expect(view(messages[2]).prunedAt).toBe(prunedAt);
-	});
-
-	it("reports only savings the provider anchor still counts", () => {
-		const build = () => [
-			userDelta("review 1 delta"),
-			assistantText("investigating"),
-			toolResult("before", text(2_000)),
-			assistantText("anchor"),
-			userDelta("review 2 delta"),
-			toolResult("after", text(2_000)),
-		];
-
-		// No anchor: everything is counted locally, so nothing needs correcting.
-		const none = evictStaleToolResults(build(), tokenizer, -1);
-		expect(none.evicted).toBe(2);
-		expect(none.coveredTokensSaved).toBe(0);
-
-		// Anchor at index 3 covers the earlier result, not the later one.
-		const anchored = build();
-		const beforeTokens = tokenizer.countMessage(anchored[2]);
-		const some = evictStaleToolResults(anchored, tokenizer, 3);
-		expect(some.evicted).toBe(2);
-		expect(some.coveredTokensSaved).toBe(beforeTokens - tokenizer.countTokens(stub(beforeTokens)));
-		expect(some.coveredTokensSaved).toBeLessThan(some.tokensSaved);
 	});
 });

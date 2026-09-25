@@ -1,9 +1,8 @@
 /**
- * Contract: an advisor carries its own investigation output forever — measured
- * at ~48% of its context, re-sent on every later request. Maintenance evicts a
- * finished review's oversized tool results before the next review's prompt,
- * while the deltas it reviewed stay verbatim, and a byte-identical repeat call
- * inside one review collapses to a pointer at the copy already in context.
+ * Contract: an advisor re-sends its own investigation output on every later
+ * request. Before each review, maintenance evicts oversized `read`/`grep`/
+ * `glob` results from reviews older than the latest one, while the deltas it
+ * reviewed stay verbatim. `advisor.evictStaleResults: false` turns it off.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
@@ -41,7 +40,7 @@ describe("advisor stale tool-result eviction", () => {
 		await tempDir.remove();
 	});
 
-	function createAdvisor(advisorResponses: MockResponse[], primaryTurns: number) {
+	function createAdvisor(advisorResponses: MockResponse[], primaryTurns: number, evictStaleResults = true) {
 		const primaryMock = createMockModel({
 			provider: "anthropic",
 			responses: Array.from({ length: primaryTurns }, () => ({ content: ["primary complete"] })),
@@ -56,6 +55,7 @@ describe("advisor stale tool-result eviction", () => {
 		};
 		const settings = Settings.isolated({
 			"advisor.syncBacklog": "1",
+			"advisor.evictStaleResults": evictStaleResults,
 			"compaction.enabled": false,
 			"retry.enabled": false,
 			"todo.enabled": false,
@@ -96,31 +96,51 @@ describe("advisor stale tool-result eviction", () => {
 		return texts;
 	}
 
-	it("sends a stub instead of the finished review's file contents, keeping the delta", async () => {
+	async function runThreeReviews(evictStaleResults: boolean) {
 		const {
 			session: live,
 			advisor,
 			advisorMock,
 		} = createAdvisor(
-			[{ content: [READ_CALL] }, { content: ["Reviewed the retry path."] }, { content: ["Nothing new."] }],
-			2,
+			[
+				{ content: [READ_CALL] },
+				{ content: ["Reviewed the retry path."] },
+				{ content: ["Nothing new."] },
+				{ content: ["Still nothing."] },
+			],
+			3,
+			evictStaleResults,
 		);
 
 		await live.prompt("first update: change the retry budget");
 		expect(await live.waitForAdvisorCatchup(2_000)).toBe(true);
 		await live.prompt("second update: adjust the backoff");
 		expect(await live.waitForAdvisorCatchup(2_000)).toBe(true);
+		await live.prompt("third update: log the retry");
+		expect(await live.waitForAdvisorCatchup(2_000)).toBe(true);
 
-		expect(advisorMock.calls).toHaveLength(3);
+		expect(advisorMock.calls).toHaveLength(4);
 		expect(advisor.state.error).toBeUndefined();
+		return advisorMock.calls;
+	}
 
-		// Review 1 read the file verbatim; review 2 must not pay for it again.
-		expect(toolResultTexts(advisorMock.calls[1].context.messages)).toContain(FILE_CONTENTS);
-		const secondReview = advisorMock.calls[2].context.messages;
-		const results = toolResultTexts(secondReview);
+	it("keeps the latest review's file contents and stubs them one review later", async () => {
+		const calls = await runThreeReviews(true);
+
+		// Review 2 follows the review that read the file, so it keeps the contents.
+		expect(toolResultTexts(calls[2].context.messages)).toContain(FILE_CONTENTS);
+		// Review 3 no longer pays for review 1's read.
+		const thirdReview = calls[3].context.messages;
+		const results = toolResultTexts(thirdReview);
 		expect(results.some(text => text.startsWith("[Stale result elided - "))).toBe(true);
 		expect(results).not.toContain(FILE_CONTENTS);
-		// The work under review is never touched — only the advisor's own output.
-		expect(JSON.stringify(secondReview)).toContain("first update: change the retry budget");
+		// The work under review is never touched, only the advisor's own output.
+		expect(JSON.stringify(thirdReview)).toContain("first update: change the retry budget");
+	});
+
+	it("leaves every result in place when advisor.evictStaleResults is off", async () => {
+		const calls = await runThreeReviews(false);
+
+		expect(toolResultTexts(calls[3].context.messages)).toContain(FILE_CONTENTS);
 	});
 });
