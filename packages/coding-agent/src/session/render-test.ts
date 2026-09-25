@@ -13,7 +13,7 @@ export interface RenderTestOptions {
 }
 
 /** Upper bound on simulated tool-argument deltas so a large payload stays paced, not stalled. */
-const MAX_TOOL_ARG_DELTAS = 120;
+const MAX_TOOL_ARG_DELTAS = 60;
 
 export function validateRenderTestOptions(options: RenderTestOptions): void {
 	if (!Number.isInteger(options.repeat) || options.repeat < 1 || options.repeat > 100) {
@@ -107,18 +107,11 @@ export function createRenderTestAgent(model: Model, options: RenderTestOptions, 
 											? "Workflow progress"
 											: "Completed workflow";
 				// Separate provider responses from chunk pacing so tool results can settle visibly.
-				await pause(1500 + ((currentStream - 1) % 3) * 250);
+				await pause(300);
 				stream.push({ type: "start", partial: message });
-				if (step?.introduction && !options.scenario) {
-					await emitBlock(
-						"thinking",
-						`Streaming ${currentStream} — synthetic planning for repetition ${step.repetition}.\n` +
-							"Inspect three disposable files, attempt three edits together, then reread before retrying the deliberately stale edit. " +
-							"Keep background waits consecutive. Finish with a real question to exercise draft input and restoration.\n",
-					);
-				}
 				const textParts: string[] = [];
-				if (!step?.silent) {
+				const introduction = step?.introduction === true && !options.scenario;
+				if (!step?.silent && !introduction) {
 					textParts.push(
 						`\n## Streaming ${currentStream} — BEGIN · ${step ? `Repetition ${step.repetition}` : "Summary"}\n\n**Batch: ${batch}.**\n\n`,
 					);
@@ -136,123 +129,14 @@ export function createRenderTestAgent(model: Model, options: RenderTestOptions, 
 						textParts.push(`MARKDOWN_${String(row).padStart(2, "0")}: 0123456789012345678901234567890123456\n`);
 					}
 					textParts.push("```\n\n- Markdown only: no thinking blocks or prose filler.\n");
-				} else if (step?.introduction && !options.scenario) {
-					const operations = [
-						[
-							"Initial inspection",
-							"Read the three disposable files",
-							"Each read returns the current snapshot",
-							"No project files are changed",
-							"The next response may use those snapshots",
-							"The read cards should remain in order",
-						],
-						[
-							"Grouped edits",
-							"Submit three edits in one response",
-							"The middle edit uses a deliberately stale hash",
-							"The other two edits use valid snapshots",
-							"An error card is expected, not a renderer failure",
-							"The next response must inspect the failed file",
-						],
-						[
-							"Recovery",
-							"Read the file whose edit failed",
-							"Use the newly returned snapshot for the retry",
-							"Do not guess the replacement hash",
-							"The retry changes only the disposable fixture",
-							"The successful result should follow its read",
-						],
-						[
-							"Result inspection",
-							"Read the files after the edits",
-							"Compare their updated second lines",
-							"Keep long read previews separate from assistant prose",
-							"Tool results are not separate model responses",
-							"Their cards may change height when finalized",
-						],
-						[
-							"Foreground work",
-							"Start a command that prints before waiting",
-							"Its initial output occupies a live card",
-							"The command crosses the background threshold",
-							"The card changes while the process continues",
-							"Earlier transcript rows must remain recoverable",
-						],
-						[
-							"Concurrent work",
-							"Start ten additional finite background jobs",
-							"Each job has its own identifier",
-							"Completion order need not match launch order",
-							"All jobs run inside the disposable workflow",
-							"No network provider is involved",
-						],
-						[
-							"Waiting",
-							"Issue four consecutive wait responses",
-							"Those responses intentionally contain no assistant prose",
-							"A new wait may replace the preceding waiting card",
-							"The visible stream numbering therefore skips those responses",
-							"Inserting a heading there would change the reproduction",
-						],
-						[
-							"Question",
-							"Open an actual interactive ask dialog",
-							"Execution pauses until an answer or cancellation",
-							"A draft can coexist with the question",
-							"Submitting or clearing the draft changes the editor height",
-							"Closing the question must not leave a blank band",
-						],
-						[
-							"Continuation",
-							"Resume after the selected answer",
-							"Finish the workflow progress state",
-							"Restore the original task list",
-							"Dispose the sandbox and its background jobs",
-							"The next repetition starts a fresh sequence of responses",
-						],
-						[
-							"Finalization",
-							"The following code is one continuous sixty-line block",
-							"It is streamed in chunks, not appended as sixty messages",
-							"The closing fence arrives after the entire body",
-							"Line numbers and borders must remain consistent",
-							"Check the complete transcript for gaps and duplicates",
-						],
-					];
-					textParts.push(
-						operations
-							.map(lines => lines.map(line => `PLAIN_${++outputRow}: ${line}.  \n`).join("") + "\n")
-							.join(""),
+				} else if (introduction) {
+					// One fenced Markdown code block of 60 rows — taller than the viewport,
+					// so the stream has to move rows from the viewport into native history.
+					const body = Array.from(
+						{ length: 60 },
+						(_, row) => `CODE_${++outputRow}: context line ${row + 1} of 60 streamed into the viewport and history`,
 					);
-					const code = operations
-						.concat([
-							[
-								"Viewport",
-								"Preserve the bottom editor anchor",
-								"Keep live rows ordered",
-								"Allow temporary coverage",
-								"Restore covered rows",
-								"Do not duplicate scrollback",
-							],
-							[
-								"Audit",
-								"Count emitted markers",
-								"Compare complete terminal output",
-								"Check first and last code borders",
-								"Check the question transition",
-								"Report only exercised behavior",
-							],
-						])
-						.flatMap((lines, index) => [
-							`function inspectStage${index + 1}(observed: string[]): boolean {`,
-							`  // ${lines[0]}: ${lines[1]}.`,
-							`  const expected = ${JSON.stringify(lines.slice(2))};`,
-							"  return expected.every(item => observed.includes(item));",
-							"}",
-						]);
-					textParts.push(
-						"\n```typescript\n" + code.map(line => `${line} // CODE_${++outputRow}\n`).join("") + "```\n",
-					);
+					textParts.push(`\`\`\`markdown\n${body.join("\n")}\n\`\`\`\n`);
 				} else if (!step?.silent) {
 					const detail = tools.includes("ask")
 						? "The next tool opens the question. Try draft input and submission before answering; the workflow then resumes."
@@ -270,9 +154,10 @@ export function createRenderTestAgent(model: Model, options: RenderTestOptions, 
 					textParts.push(`STEP_${++outputRow}: ${detail}\n`);
 				}
 				if (!step?.silent && options.scenario !== "markdown" && options.scenario !== "advisor") {
-					textParts.push(
-						`\n**Streaming ${currentStream} — END.** ${step ? "Tool results follow; the next response starts after a 1.5–2 second pause." : "No further responses in this workflow."}\n`,
-					);
+					if (!introduction)
+						textParts.push(
+							`\n**Streaming ${currentStream} — END.** ${step ? "Tool results follow." : "No further responses in this workflow."}\n`,
+						);
 					await emitBlock("text", textParts.join(""));
 				}
 				if (options.scenario === "markdown") {

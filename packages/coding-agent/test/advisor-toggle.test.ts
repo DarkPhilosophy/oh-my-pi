@@ -264,7 +264,7 @@ describe("AgentSession advisor toggle", () => {
 
 		cfgAdvisorMaxNotesPerUpdate.set(session.settings, 3);
 		await Promise.resolve();
-		expect(session.getAdvisorAgent()?.state.systemPrompt.join("\n")).toContain("max 3 non-blockers/update");
+		expect(session.getAdvisorAgent()?.state.systemPrompt.join("\n")).toContain("max 3 non-blockers + 1 `blocker`/update");
 
 		// `/advisor` off is session-only: a later budget edit must not bring it back.
 		session.setAdvisorEnabled(false);

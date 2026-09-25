@@ -151,6 +151,18 @@ class ReflowingAppendBlock implements Component {
 const frame = { tick: 0, now: 0 };
 
 describe("TranscriptContainer", () => {
+	it("renders externally added children after removing another child", () => {
+		const transcript = new TranscriptContainer();
+		const first = new Block(["first"], false);
+		const removed = new Block(["removed"], false);
+		const external = new Block(["external"], false);
+		transcript.addChild(first);
+		transcript.addChild(removed);
+		transcript.children.push(external);
+		transcript.removeChild(removed);
+		expect(transcript.renderViewport(80, 10, frame)).toEqual(["first", "", "external"]);
+	});
+
 	it("preserves retirement while externally reordered and replaced live children settle", () => {
 		const transcript = new TranscriptContainer();
 		const archived = new Block(["archived"], true);
@@ -291,6 +303,9 @@ describe("TranscriptContainer", () => {
 		block.finalize(["complete"]);
 		expect(transcript.peekFinalizedBatch(80, 0)).toBeUndefined();
 		expect(transcript.blockStates()).toEqual(["committed"]);
+		expect(transcript.render(80)).toEqual(["complete"]);
+		transcript.beginReplay();
+		expect(transcript.peekReplayBatch(80)?.rows).toEqual(["complete", ""]);
 	});
 
 	it("replays and retires semantic stable rows after they reflow at a new width", () => {

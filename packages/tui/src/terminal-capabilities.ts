@@ -799,8 +799,8 @@ export interface RuntimeTerminal extends TerminalInfo {
 	glyphProtocol: boolean;
 }
 
-export const TERMINAL: RuntimeTerminal = (() => {
-	const resolved = getTerminalInfo(TERMINAL_ID).clone();
+function resolveRuntimeTerminal(env: NodeJS.ProcessEnv, id: TerminalId = detectTerminalId(env)): RuntimeTerminal {
+	const resolved = getTerminalInfo(id).clone();
 	// Detection records support; hosts opt into OSC 66 separately.
 	resolved.textSizing = false;
 
@@ -808,35 +808,52 @@ export const TERMINAL: RuntimeTerminal = (() => {
 	if (forcedImageProtocol !== undefined) {
 		resolved.imageProtocol = forcedImageProtocol;
 	} else {
-		resolved.imageProtocol = resolveImageProtocol(resolved.id, Bun.env, process.stdout.isTTY === true);
+		resolved.imageProtocol = resolveImageProtocol(resolved.id, env, process.stdout.isTTY === true);
 	}
 	// Hyperlink (OSC 8) capability. The static per-terminal flag lives on
 	// KNOWN_TERMINALS; shouldEnableHyperlinksByDefault folds in runtime context —
 	// PI_FORCE_HYPERLINKS / PI_NO_HYPERLINKS overrides plus a tmux>=3.4 gate so
 	// modern tmux forwards OSC 8 to outer terminals that opt in via
 	// `terminal-features "*:hyperlinks"`.
-	resolved.hyperlinks = shouldEnableHyperlinksByDefault(Bun.env, resolved.id);
+	resolved.hyperlinks = shouldEnableHyperlinksByDefault(env, resolved.id);
 	// DECCARA rectangular-SGR background fills. The static per-terminal capability
 	// lives on KNOWN_TERMINALS; here we fold in runtime context — multiplexer and
 	// the PI_NO_DECCARA kill switch via detectRectangularSgrSupport — and force it
 	// off inside the test runtime so the xterm.js-backed virtual terminal (which
 	// ignores DECCARA) exercises the padded-string fallback. Integration tests opt
 	// in explicitly through setTerminalDeccara.
-	resolved.deccara = detectRectangularSgrSupport(resolved.id, Bun.env) && !isBunTestRuntime();
+	resolved.deccara = detectRectangularSgrSupport(resolved.id, env) && !isBunTestRuntime();
 	// Styled-underline capability: colon-form curly underline + SGR 58/59 color.
 	// Keyed on the detected terminal (an underline-style capability, not a color
 	// depth), so Apple Terminal and other unproven hosts fall back to the flat
 	// CSI 4 m / CSI 24 m underline the typo renderer needs to avoid black bars.
-	resolved.styledUnderlines = detectStyledUnderlineSupport(resolved.id, Bun.env);
+	resolved.styledUnderlines = detectStyledUnderlineSupport(resolved.id, env);
 	resolved.glyphProtocol = false;
 	return resolved;
-})();
+}
+
+export const TERMINAL: RuntimeTerminal = resolveRuntimeTerminal(Bun.env, TERMINAL_ID);
 
 // Seed Kitty Unicode placeholder support from the resolved terminal id. Only
 // kitty/ghostty/otty are known to honor `U=1` placement; other Kitty-protocol paths
 // (wezterm, tmux/screen fallback) treat the placeholder cells as literal PUA
 // glyphs, which is the "ASCII artifact + laggy scrolling" reported in #1877.
 setKittyGraphics({ unicodePlaceholders: detectKittyUnicodePlaceholdersSupport(TERMINAL.id, Bun.env) });
+
+/**
+ * Re-resolve process-wide terminal capabilities for a hosted client without
+ * installing the client's environment into the daemon process.
+ */
+export function setTerminalEnvironment(env: NodeJS.ProcessEnv): void {
+	const resolved = resolveRuntimeTerminal(env);
+	// Settings and runtime probes own these mutable fields; preserve them across
+	// a reattach from another terminal client.
+	const textSizing = TERMINAL.textSizing;
+	const supportsScreenToScrollback = TERMINAL.supportsScreenToScrollback;
+	const glyphProtocol = TERMINAL.glyphProtocol;
+	Object.assign(TERMINAL, resolved, { textSizing, supportsScreenToScrollback, glyphProtocol });
+	setKittyGraphics({ unicodePlaceholders: detectKittyUnicodePlaceholdersSupport(TERMINAL.id, env) });
+}
 
 /**
  * Override terminal image protocol at runtime after capability probes complete.

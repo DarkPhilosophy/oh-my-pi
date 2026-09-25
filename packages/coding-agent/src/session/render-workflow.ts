@@ -37,7 +37,7 @@ export function createRenderWorkflow(
 	scenario?: "ask" | "job" | "markdown" | "todo" | "large-edit" | "edit-error" | "advisor" | "eval",
 	segment?: number,
 ): RenderWorkflow {
-	if ((!scenario || scenario === "ask") && (!context.hasUI || !context.ui?.askDialog)) {
+	if (scenario === "ask" && (!context.hasUI || !context.ui?.askDialog)) {
 		throw new Error("Render workflow requires interactive ask support.");
 	}
 	const directory = TempDir.createSync(path.join(os.tmpdir(), "omp-render-workflow-"));
@@ -217,7 +217,72 @@ export function createRenderWorkflow(
 	// One group is one scripted response. Related reads and explicit background
 	// launches share a response; foreground handoff and waits stay separate.
 	const groups: Array<Array<{ name: string; args: () => Record<string, unknown> }>> = [];
-	for (let cursor = 0; cursor < actions.length;) {
+	if (!scenario) {
+		// Default run: only what exercises viewport → history. Every stage is a
+		// long-streaming card taller than the viewport, then the error edge cases,
+		// then four cards streamed by one response. No sleeps, jobs or dialogs.
+		actions.splice(0, actions.length);
+		const longEval = {
+			name: "eval",
+			args: () => ({
+				language: "js",
+				title: "Long eval",
+				code: `${Array.from({ length: 120 }, (_, i) => `// SOURCE_${i + 1}`).join("\n")}\ndisplay(Array.from({ length: 80 }, (_, i) => \`OUTPUT_\${i + 1}\`))`,
+				timeout: 30,
+			}),
+		};
+		read(1);
+		read(2);
+		const [readSmall, readLarge] = actions.splice(0, 2) as [(typeof actions)[number], (typeof actions)[number]];
+		edit(2, false, true);
+		edit(1, true, true);
+		edit(1);
+		const [editLarge, editError, editCombined] = actions.splice(0, 3) as [
+			(typeof actions)[number],
+			(typeof actions)[number],
+			(typeof actions)[number],
+		];
+		const write = (target: string) => ({ name: "write", args: () => ({ path: target, content: largeWriteContent }) });
+		// Three short writes in one response: the case where every card stays
+		// mutable at once and none is tall enough to be clipped.
+		const smallWrite = (index: number) => ({
+			name: "write",
+			args: () => ({
+				path: `${files[index]}.small`,
+				content: Array.from({ length: 10 }, (_, row) => `SMALL_${index + 1}_${row + 1}: short streamed row`).join(
+					"\n",
+				),
+			}),
+		});
+		const todo = (args: Record<string, unknown>) => ({ name: "todo", args: () => args });
+		// Short background jobs: cards appear while running and retire when done.
+		const jobCalls = Array.from({ length: 4 }, (_, index) => ({
+			name: "bash",
+			args: () => ({
+				command: `sleep ${2 + index} && printf 'Background job ${index + 1} completed\\n'`,
+				timeout: 15,
+				async: true,
+			}),
+		}));
+		const jobWait = { name: "wait", args: () => ({}) };
+		groups.push(
+			[todo({ op: "init", items: tasks })],
+			[write(files[2]!)],
+			[readSmall, readLarge],
+			[editLarge],
+			[longEval],
+			[editError],
+			// Writing onto the workflow directory itself fails in the write tool.
+			[write(directory.path())],
+			[write(files[0]!), { name: "read", args: () => ({ path: `${files[2]}:1-180` }) }, editCombined, longEval],
+			[smallWrite(0), smallWrite(1), smallWrite(2)],
+			[todo({ op: "done", task: tasks[0] }), todo({ op: "done", task: tasks[1] })],
+			jobCalls,
+			[jobWait],
+			[todo({ op: "done", task: tasks[2] })],
+		);
+	}
+	for (let cursor = 0; scenario && cursor < actions.length;) {
 		const name = actions[cursor]!.name;
 		let count = 1;
 		if (name === "read" || (name === "bash" && (scenario ? cursor === 1 : cursor === backgroundStage))) {
@@ -241,7 +306,7 @@ export function createRenderWorkflow(
 			new AskTool(localSession),
 			new BashTool(jobSession),
 			new WaitTool(jobSession),
-			...(scenario === "eval" ? [new EvalTool(localSession)] : []),
+			...(scenario === "eval" || !scenario ? [new EvalTool(localSession)] : []),
 		],
 		context,
 		async next(providerContext) {

@@ -204,6 +204,9 @@ export interface TranscriptViewportSpan {
 /** Owns transcript order, live capacity, and ordered immutable retirement. */
 export class TranscriptContainer extends Container {
 	#entries: TranscriptEntry[] = [];
+	#trackedChildren: Component[];
+	#childrenDirty = false;
+	#childrenUntrusted = false;
 	#frontier = 0;
 	#nextBatchId = 1;
 	#offered: Offered | undefined;
@@ -231,7 +234,30 @@ export class TranscriptContainer extends Container {
 	 * so rows already in native history are not offered as a fresh append.
 	 */
 	#rebuildLedger: { width: number; rows: readonly string[]; borrowed: readonly string[] } | undefined;
+	constructor() {
+		super();
+		this.#trackedChildren = this.#trackChildren(this.children);
+		this.children = this.#trackedChildren;
+	}
+
+	#trackChildren(children: Component[]): Component[] {
+		return new Proxy(children, {
+			set: (target, key, value) => {
+				this.#childrenDirty = true;
+				return Reflect.set(target, key, value);
+			},
+			deleteProperty: (target, key) => {
+				this.#childrenDirty = true;
+				return Reflect.deleteProperty(target, key);
+			},
+			defineProperty: (target, key, descriptor) => {
+				this.#childrenDirty = true;
+				return Reflect.defineProperty(target, key, descriptor);
+			},
+		});
+	}
 	override addChild(component: Component): void {
+		this.#syncEntries();
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
 		super.addChild(component);
 		this.#entries.push({
@@ -245,6 +271,7 @@ export class TranscriptContainer extends Container {
 			stableFrozen: false,
 			allocation: Number.POSITIVE_INFINITY,
 		});
+		this.#childrenDirty = false;
 	}
 
 	override removeChild(component: Component): void {
@@ -253,6 +280,7 @@ export class TranscriptContainer extends Container {
 		this.#entries = this.#entries.filter(candidate => candidate.component !== component);
 		this.#frontier = Math.min(this.#frontier, this.#entries.length);
 		this.#childStartRows.delete(component);
+		this.#childrenDirty = false;
 	}
 
 	override clear(): void {
@@ -271,6 +299,10 @@ export class TranscriptContainer extends Container {
 		// live entries inherit their borrowed ownership.
 		const borrowed = this.#liveViewport.rows.slice(0, this.borrowedViewportRowCount());
 		super.clear();
+		this.#trackedChildren = this.#trackChildren(this.children);
+		this.children = this.#trackedChildren;
+		this.#childrenDirty = false;
+		this.#childrenUntrusted = false;
 		this.#entries = [];
 		this.#frontier = 0;
 		this.#offered = undefined;
@@ -592,8 +624,15 @@ export class TranscriptContainer extends Container {
 		this.#replayRequested = false;
 	}
 
-	/** Total rows the live, un-emitted tail occupies at `width`. */
-	liveRowCount(width: number): number {
+	/**
+	 * Total rows the live, un-emitted tail occupies at `width`.
+	 *
+	 * `limit` stops the walk once the total passes it: measuring a resumed
+	 * session's whole ledger costs one full render per block, and callers that
+	 * only compare the height against a viewport budget need no more. Past
+	 * `limit` the result is a lower bound, guaranteed only to exceed `limit`.
+	 */
+	liveRowCount(width: number, limit = Number.POSITIVE_INFINITY): number {
 		this.#enterFrame(width);
 		let total = 0;
 		for (const { entry, index } of this.#liveEntries()) {
@@ -601,6 +640,7 @@ export class TranscriptContainer extends Container {
 			const rendered = this.#renderEntry(entry, width);
 			const block = rendered.slice(this.#projectedEmittedRowCount(entry, index, width));
 			if (block.length > 0) total += block.length + (total > 0 ? 1 : 0);
+			if (total > limit) break;
 		}
 		return total;
 	}
@@ -946,8 +986,7 @@ export class TranscriptContainer extends Container {
 		} else if (offered.kind === "commit") {
 			for (let index = this.#frontier; index < offered.end; index++) {
 				const entry = this.#entries[index]!;
-				entry.state = "committed";
-				entry.emitted = 0;
+				this.#retireEntry(entry);
 				// Committed rows are durable history, not borrowed viewport residue:
 				// a later replay must re-render the whole block, not re-slice it.
 				entry.borrowed = false;
@@ -1078,7 +1117,7 @@ export class TranscriptContainer extends Container {
 
 	#renderEntryUncached(entry: TranscriptEntry, width: number): readonly string[] {
 		const rendered = trimBlankEdges(entry.component.render(width));
-		if (entry.mode === "mutable" || entry.stableFrozen) return rendered;
+		if (entry.state === "committed" || entry.mode === "mutable" || entry.stableFrozen) return rendered;
 		const appendOnly = entry.component as Component & AppendOnlyTranscriptBlock;
 		const stable = appendOnly.getTranscriptStableRows();
 		if (!isStablePrefix(entry.stableRows, stable)) {
@@ -1288,10 +1327,17 @@ export class TranscriptContainer extends Container {
 			const rendered = this.#renderEntry(entry, width);
 			if (entry.emitted !== entry.stableRows.length) return;
 			if (this.#renderStablePrefix(entry, entry.emitted, width).length !== rendered.length) return;
-			entry.state = "committed";
-			entry.emitted = 0;
+			this.#retireEntry(entry);
 			this.#frontier++;
 		}
+	}
+
+	#retireEntry(entry: TranscriptEntry): void {
+		entry.state = "committed";
+		entry.emitted = 0;
+		entry.stableRows = EMPTY_STABLE_ROWS;
+		entry.renderedStableByWidth = new Map();
+		entry.stableRowCountByWidth = new Map();
 	}
 
 	#startReplay(): void {
@@ -1323,6 +1369,10 @@ export class TranscriptContainer extends Container {
 	}
 
 	#syncEntries(): void {
+		// A replaced public array may still have a mutable external alias.
+		if (this.children !== this.#trackedChildren) this.#childrenUntrusted = true;
+		if (!this.#childrenDirty && !this.#childrenUntrusted) return;
+		this.#childrenDirty = false;
 		if (
 			this.#entries.length === this.children.length &&
 			this.#entries.every((entry, index) => entry.component === this.children[index])

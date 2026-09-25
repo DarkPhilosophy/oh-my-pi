@@ -153,18 +153,17 @@ export const cfgAdvisorCuratorTimeoutMs = register({
 	id: "advisor.curatorTimeoutMs",
 	protocolDefault: ["rpc", "acp"],
 	type: "number",
-	default: 250,
+	default: 1500,
 	ui: {
 		tab: "model",
 		group: "Advisor",
 		label: "Advisor Curator Timeout",
 		description:
-			"Wall-clock budget for one curation pass. On timeout the notes are delivered uncurated, so this never delays advice.",
+			"Budget for one curation judgment. On timeout the notes are delivered uncurated. A native judge typically answers in 0.3-0.8 s; shorter budgets make curation a no-op.",
 		options: [
-			{ value: "100", label: "100 ms" },
-			{ value: "250", label: "250 ms", description: "Default." },
-			{ value: "500", label: "500 ms" },
-			{ value: "1000", label: "1 s" },
+			{ value: "750", label: "750 ms" },
+			{ value: "1500", label: "1.5 s", description: "Default." },
+			{ value: "3000", label: "3 s" },
 		],
 		condition: "advisorEnabled",
 	},

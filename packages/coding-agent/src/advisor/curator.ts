@@ -1,11 +1,10 @@
 import { type ChoiceQuestion, type Model, type NoulQuestion } from "@oh-my-pi/pi-ai";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
 import { resolveJudge } from "../judgment";
 import curatorAddressedPrompt from "../prompts/advisor/curator-addressed.md" with { type: "text" };
 import curatorActionPrompt from "../prompts/advisor/curator-action.md" with { type: "text" };
-import { ONLINE_MEMORY_MODEL_KEY } from "../tiny/models";
 import type { AdvisorSeverity } from "@oh-my-pi/pi-tui/chat/messages";
 import { cfgAdvisorCurator } from "./settings";
 export interface AdvisorCuratorCandidate {
@@ -40,15 +39,49 @@ export interface CurateAdvisorCandidatesOptions {
 	sessionId?: string;
 	signal?: AbortSignal;
 }
-const ADDRESSED_QUESTION: NoulQuestion = { type: "noul", instructions: curatorAddressedPrompt.trim() };
-const GROUP_QUESTION: ChoiceQuestion<"keep" | "merge"> = {
-	type: "choice",
-	instructions: curatorActionPrompt.trim(),
-	criteria: {
-		keep: "This candidate raises a materially distinct issue and must remain separate.",
-		merge: "This candidate raises the same underlying issue as another candidate in the batch.",
-	},
-};
+/** Longest note text quoted into a question; notes are short, this only bounds outliers. */
+const MAX_QUOTED_NOTE_CHARS = 600;
+/**
+ * `addressed` probability at or above which a note is withheld. A concern
+ * dropped on a false positive silently loses real advice, so it needs a
+ * stronger signal than a nit. Measured on labeled batches, true cases scored
+ * >= 0.84 and false ones <= 0.13, so both bars sit inside that margin.
+ */
+const DROP_THRESHOLD: Record<AdvisorSeverity, number> = { blocker: Number.POSITIVE_INFINITY, concern: 0.7, nit: 0.5 };
+
+function quote(note: string): string {
+	const flat = note.replace(/\s+/g, " ").trim();
+	return flat.length > MAX_QUOTED_NOTE_CHARS ? `${flat.slice(0, MAX_QUOTED_NOTE_CHARS)}…` : flat;
+}
+/**
+ * Questions name the note they are about. A generic question repeated per id
+ * leaves the judge to guess which candidate it concerns; measured, that
+ * dropped unrelated notes and merged distinct issues.
+ */
+function addressedQuestion(candidate: AdvisorCuratorCandidate): NoulQuestion {
+	return {
+		type: "noul",
+		instructions: prompt.render(curatorAddressedPrompt, { id: candidate.id, note: quote(candidate.note) }).trim(),
+	};
+}
+function duplicateQuestion(
+	candidate: AdvisorCuratorCandidate,
+	candidates: readonly AdvisorCuratorCandidate[],
+): ChoiceQuestion<string> {
+	const criteria: Record<string, string> = {
+		none: `No other candidate raises the issue of candidate ${candidate.id}.`,
+	};
+	for (const other of candidates) {
+		if (other.id === candidate.id) continue;
+		criteria[`c${other.id}`] =
+			`Candidate ${other.id} ("${quote(other.note)}") raises the same underlying issue as candidate ${candidate.id}.`;
+	}
+	return {
+		type: "choice",
+		instructions: prompt.render(curatorActionPrompt, { id: candidate.id, note: quote(candidate.note) }).trim(),
+		criteria,
+	};
+}
 function severityRank(severity: AdvisorSeverity | undefined): number {
 	return severity === "concern" ? 2 : severity === "nit" ? 1 : 0;
 }
@@ -82,31 +115,52 @@ export async function curateAdvisorCandidates(options: CurateAdvisorCandidatesOp
 				covered_turn: candidate.coveredTurn,
 			})),
 		};
-		const questions: Record<string, NoulQuestion | ChoiceQuestion<"keep" | "merge">> = {};
+		const questions: Record<string, NoulQuestion | ChoiceQuestion<string>> = {};
 		for (const candidate of candidates) {
-			questions[`addressed:${candidate.id}`] = ADDRESSED_QUESTION;
-			questions[`group:${candidate.id}`] = GROUP_QUESTION;
+			questions[`addressed:${candidate.id}`] = addressedQuestion(candidate);
+			if (candidates.length > 1) questions[`duplicate:${candidate.id}`] = duplicateQuestion(candidate, candidates);
 		}
 		const result = await judge.judge({ state, questions }, { signal: options.signal });
-		const active = candidates.filter(candidate => {
-			const answer = result.answers[`addressed:${candidate.id}`];
-			return answer?.type !== "noul" || answer.noul < 0.5;
-		});
 		const decisions: AdvisorCuratorDecision[] = candidates.map(candidate => {
 			const answer = result.answers[`addressed:${candidate.id}`];
-			return { candidateId: candidate.id, action: answer?.type === "noul" && answer.noul >= 0.5 ? "drop" : "keep" };
+			const threshold = DROP_THRESHOLD[candidate.severity ?? "nit"];
+			return {
+				candidateId: candidate.id,
+				action: answer?.type === "noul" && answer.noul >= threshold ? "drop" : "keep",
+			};
 		});
-		// Every candidate the judge flags as a restatement joins ONE group. Doing
-		// this pairwise would let two candidates elect each other and produce a
-		// cycle with no surviving note, so the group's representative is chosen
-		// once and is the only member that stays.
-		const merging = active.filter(candidate => {
-			const answer = result.answers[`group:${candidate.id}`];
-			return answer?.type === "choice" && answer.choice === "merge";
-		});
-		if (merging.length > 1) {
-			const target = merging.reduce(representative);
-			for (const candidate of merging) {
+		// Duplicate links form groups by union-find over the notes still kept:
+		// each connected group keeps exactly one representative, so two notes
+		// naming each other cannot cycle into zero survivors, and two unrelated
+		// duplicate pairs stay two notes instead of collapsing into one.
+		const kept = new Map(
+			candidates
+				.filter((_, index) => decisions[index]!.action === "keep")
+				.map(candidate => [candidate.id, candidate]),
+		);
+		const parent = new Map([...kept.keys()].map(id => [id, id]));
+		const root = (id: string): string => {
+			let current = id;
+			while (parent.get(current) !== current) current = parent.get(current)!;
+			return current;
+		};
+		for (const candidate of kept.values()) {
+			const answer = result.answers[`duplicate:${candidate.id}`];
+			if (answer?.type !== "choice" || answer.choice === "none") continue;
+			const targetId = answer.choice.slice(1);
+			if (!kept.has(targetId)) continue;
+			parent.set(root(candidate.id), root(targetId));
+		}
+		const groups = new Map<string, AdvisorCuratorCandidate[]>();
+		for (const candidate of kept.values()) {
+			const group = groups.get(root(candidate.id));
+			if (group) group.push(candidate);
+			else groups.set(root(candidate.id), [candidate]);
+		}
+		for (const group of groups.values()) {
+			if (group.length < 2) continue;
+			const target = group.reduce(representative);
+			for (const candidate of group) {
 				if (candidate.id === target.id) continue;
 				const decision = decisions.find(entry => entry.candidateId === candidate.id)!;
 				decision.action = "merge";

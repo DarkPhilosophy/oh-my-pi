@@ -142,6 +142,7 @@ export class MnemopiEmbedClient {
 	#unsubscribeError: (() => void) | null = null;
 	#pending = new Map<string, PendingRequest>();
 	#nextRequestId = 0;
+	#requestTail: Promise<void> = Promise.resolve();
 	#refed = false;
 	#spawnWorker: () => MnemopiEmbedWorkerHandle;
 	#requestTimeoutMs: number;
@@ -214,7 +215,29 @@ export class MnemopiEmbedClient {
 		}
 	}
 
-	async #embed(
+	/**
+	 * The worker embeds one request at a time. Sending every request at once
+	 * started each timeout at send time, so a model-change rebuild (hundreds of
+	 * batches) timed out requests still waiting in the worker's queue, SIGKILLed
+	 * the worker, failed the whole rebuild and restarted it on the next launch —
+	 * pinning several cores forever. Requests now go out one after another, and
+	 * each timeout covers only its own embedding work.
+	 */
+	#embed(
+		model: MnemopiEmbedModelId,
+		cacheDir: string | undefined,
+		texts: string[],
+		batchSize: number | undefined,
+	): Promise<number[][]> {
+		const run = this.#requestTail.then(() => this.#embedNow(model, cacheDir, texts, batchSize));
+		this.#requestTail = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		return run;
+	}
+
+	async #embedNow(
 		model: MnemopiEmbedModelId,
 		cacheDir: string | undefined,
 		texts: string[],

@@ -122,6 +122,16 @@ function createPrunedNotice(tokens: number): string {
  */
 const MIN_PRUNE_TOKENS = 50;
 
+/**
+ * Whether a tool result of `tokens` tokens meets the age-based pruning size
+ * floor ({@link MIN_PRUNE_TOKENS}). Smaller results are left in place: the
+ * few tokens a placeholder saves are not worth the prompt-cache churn. This is
+ * shared policy, not a guarantee that a given placeholder saves tokens.
+ */
+export function isWorthPruning(tokens: number): boolean {
+	return tokens >= MIN_PRUNE_TOKENS;
+}
+
 function getToolResultMessage(entry: SessionEntry): ToolResultMessage | undefined {
 	if (entry.type !== "message") return undefined;
 	const message = entry.message as AgentMessage;
@@ -378,7 +388,7 @@ export function pruneToolOutputs(
 		// guard above already excluded deeper, still-cached copies.
 		const superseded = supersededMessages?.has(message) ?? false;
 		const useless = uselessMessages?.has(message) ?? false;
-		const tooSmall = tokens < MIN_PRUNE_TOKENS;
+		const tooSmall = !isWorthPruning(tokens);
 		if (!superseded && !useless && (accumulatedTokens < config.protectTokens || isProtected || tooSmall)) {
 			accumulatedTokens += tokens;
 			continue;

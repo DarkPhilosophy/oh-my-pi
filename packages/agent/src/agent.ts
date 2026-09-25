@@ -410,6 +410,14 @@ export class Agent {
 	#sentToolDefinitions = new SentToolDefinitions();
 	#steeringQueue: AgentMessage[] = [];
 	#followUpQueue: AgentMessage[] = [];
+ /**
+  * Queued messages that must be delivered in the same turn as the message
+  * after them (attachment/vision notices describing a user message). In
+  * "one-at-a-time" mode a lone notice used to reach the model a full turn
+  * before the message it describes, so the model acted on the attachment
+  * of a message the user had not sent yet.
+  */
+ #queuedWithNext = new WeakSet<AgentMessage>();
 	#queuedMessageClaims: Partial<Record<QueuedMessageQueue, QueuedMessageClaim>> = {};
 	/** Dequeued originals remain recoverable until their transcript events arrive. */
 	#queuedMessageDeliveries = new Set<{
@@ -1166,7 +1174,8 @@ export class Agent {
 	 * Queue a steering message to interrupt the agent mid-run.
 	 * Delivered after current tool execution, skips remaining tools.
 	 */
-	steer(m: AgentMessage) {
+ steer(m: AgentMessage, options?: { withNext?: boolean }) {
+  if (options?.withNext) this.#queuedWithNext.add(m);
 		this.#steeringQueue.push(m);
 		this.#notifySteeringWaiters();
 	}
@@ -1175,7 +1184,8 @@ export class Agent {
 	 * Queue a follow-up message to be processed after the agent finishes.
 	 * Delivered only when agent has no more tool calls or steering messages.
 	 */
-	followUp(m: AgentMessage) {
+ followUp(m: AgentMessage, options?: { withNext?: boolean }) {
+  if (options?.withNext) this.#queuedWithNext.add(m);
 		this.#followUpQueue.push(m);
 	}
 
@@ -1245,14 +1255,19 @@ export class Agent {
 		return this.#abortController?.signal.aborted === true && this.#state.isStreaming;
 	}
 
+ /** One queued unit: leading `withNext` companions plus the message they describe. */
+ #queuedUnitLength(queue: readonly AgentMessage[]): number {
+  let length = 0;
+  while (length < queue.length && this.#queuedWithNext.has(queue[length]!)) length++;
+  return Math.min(queue.length, length + 1);
+ }
+
 	#dequeueSteeringMessages(): AgentMessage[] {
 		if (this.#steeringMode === "one-at-a-time") {
-			if (this.#steeringQueue.length > 0) {
-				const first = this.#steeringQueue[0];
-				this.#steeringQueue = this.#steeringQueue.slice(1);
-				return [first];
-			}
-			return [];
+   const length = this.#queuedUnitLength(this.#steeringQueue);
+   const unit = this.#steeringQueue.slice(0, length);
+   this.#steeringQueue = this.#steeringQueue.slice(length);
+   return unit;
 		}
 		const steering = this.#steeringQueue.slice();
 		this.#steeringQueue = [];
@@ -1261,12 +1276,10 @@ export class Agent {
 
 	#dequeueFollowUpMessages(): AgentMessage[] {
 		if (this.#followUpMode === "one-at-a-time") {
-			if (this.#followUpQueue.length > 0) {
-				const first = this.#followUpQueue[0];
-				this.#followUpQueue = this.#followUpQueue.slice(1);
-				return [first];
-			}
-			return [];
+   const length = this.#queuedUnitLength(this.#followUpQueue);
+   const unit = this.#followUpQueue.slice(0, length);
+   this.#followUpQueue = this.#followUpQueue.slice(length);
+   return unit;
 		}
 		const followUp = this.#followUpQueue.slice();
 		this.#followUpQueue = [];

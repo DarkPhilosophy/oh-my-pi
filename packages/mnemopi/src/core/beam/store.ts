@@ -344,8 +344,11 @@ function rowToDict(row: Row): Row {
 }
 
 /** Re-embedding batch size for a model-change rebuild — bounds each background
- *  embedding request instead of embedding the whole corpus in one call. */
-const EMBED_REBUILD_BATCH = 128;
+ *  embedding request instead of embedding the whole corpus in one call. Sized
+ *  so one request of a large CPU model (multilingual-e5-large) finishes well
+ *  inside the embed worker's request timeout; 128 texts did not, so every
+ *  batch timed out and the rebuild restarted on each launch. */
+const EMBED_REBUILD_BATCH = 16;
 
 /**
  * Reconcile stored embeddings against the active embedding model at store open.

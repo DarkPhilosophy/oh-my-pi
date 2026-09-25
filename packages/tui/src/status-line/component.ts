@@ -48,6 +48,7 @@ import type {
 	StatusLineSettings,
 } from "./types";
 
+const GIT_STATUS_REFRESH_TTL_MS = 5_000;
 const JJ_REFRESH_TTL_MS = 5000;
 const JJ_COMMAND_TIMEOUT_MS = 5_000;
 const WATCHER_FAILURE_POLL_TTL_MS = 5000;
@@ -590,11 +591,12 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	#focusedAgentId: string | undefined;
 	#activeRepoCache: ActiveRepoCache | undefined;
 
-	// Git status caching (1s TTL)
+	// Git status caching; idle sessions retain their last snapshot.
 	#cachedGitStatus: { staged: number; unstaged: number; untracked: number } | null = null;
 	#cachedGitStatusCwd: string | undefined = undefined;
 	#gitStatusLastFetch = 0;
 	#gitStatusInFlightCwd: string | undefined = undefined;
+	#gitStatusSawStreaming = false;
 	#cachedJjBranch: string | null = null;
 	#jjBranchLastFetch = 0;
 	#jjResolveSeq = 0;
@@ -1529,9 +1531,19 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		if (this.#gitStatusInFlightCwd !== undefined) {
 			return this.#cachedGitStatusCwd === gitCwd ? this.#cachedGitStatus : null;
 		}
-		if (this.#cachedGitStatusCwd === gitCwd && Date.now() - this.#gitStatusLastFetch < 1000) {
+		// Idle sessions reuse the cached summary; the one exception is the first
+		// idle render after a turn, so edits from its final seconds still show.
+		const streaming = this.session.isStreaming === true;
+		const turnJustEnded = this.#gitStatusSawStreaming && !streaming;
+		if (streaming) this.#gitStatusSawStreaming = true;
+		if (
+			this.#cachedGitStatusCwd === gitCwd &&
+			!turnJustEnded &&
+			(!streaming || Date.now() - this.#gitStatusLastFetch < GIT_STATUS_REFRESH_TTL_MS)
+		) {
 			return this.#cachedGitStatus;
 		}
+		this.#gitStatusSawStreaming = streaming;
 
 		this.#gitStatusInFlightCwd = gitCwd;
 
@@ -2540,7 +2552,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			return Math.floor(nowMs / 60_000);
 		}
 		if (this.#gitEnabled() && (hasGitBackedSegment(leftSegments) || hasGitBackedSegment(rightSegments))) {
-			return Math.floor(nowMs / 1_000);
+			return Math.floor(nowMs / GIT_STATUS_REFRESH_TTL_MS);
 		}
 		if (this.#gitEnabled() && (hasPathSegment(leftSegments) || hasPathSegment(rightSegments))) {
 			return Math.floor(nowMs / WATCHER_FAILURE_POLL_TTL_MS);

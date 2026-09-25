@@ -727,7 +727,9 @@ export class Composer implements TerminalFrameProvider {
 		if (!this.#headerRetired && replay === undefined) {
 			const welcome = this.#welcome;
 			let renderedHeader = this.#header.render(width);
-			const liveRows = transcript.liveRowCount(width);
+			// Only the comparison below reads the height, so the walk stops at the
+			// budget instead of rendering every replayed block of a resumed session.
+			const liveRows = transcript.liveRowCount(width, Math.max(0, rows - renderedHeader.length - chromeRows));
 			// Editor-only growth is reversible chrome, not transcript progression.
 			if (!this.#historyFlush && (liveRows === 0 || renderedHeader.length + chromeRows + liveRows <= rows)) {
 				return undefined;

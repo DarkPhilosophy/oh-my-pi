@@ -1,2 +1,2 @@
-The state contains recent work by the primary agent and advisor candidates.
-Answer true only when the primary's recent work already fixed or directly resolved this candidate's underlying issue. Do not answer true merely because the primary mentioned it, investigated it, or made unrelated progress. Answer false when the issue remains actionable or uncertain.
+Advisor note {{id}}: "{{note}}"
+Probability that recent_primary_work shows this specific issue already resolved (the change was made, not merely promised, deferred, or reverted). Other candidates' issues are irrelevant to this question.

@@ -1,1 +1,2 @@
-The state contains several already-admitted, non-blocker advisor candidates. Compare each candidate with the others by underlying actionable issue, not wording, advisor name, or severity. Choose merge when two candidates describe the same issue or one is a restatement of the other; choose keep when the issues are materially distinct. Never invent replacement text: the application keeps an original note as representative.
+Candidate {{id}}: "{{note}}"
+Compare candidate {{id}} with the other candidates by underlying actionable issue, not wording, advisor name, or severity. Choose the candidate that raises the same issue as candidate {{id}} (or restates it), or "none" when no other candidate raises it.

@@ -10,6 +10,7 @@ import * as path from "node:path";
 import { Agent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetHangulCompatibilityJamoWidthForTests, setHangulCompatibilityJamoWidth } from "@oh-my-pi/pi-tui";
 import { PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-tui/prompt/composer";
 import {
 	InteractiveMode,
@@ -739,6 +740,86 @@ describe("subagent HUD lines", () => {
 	});
 });
 
+describe("SubagentHudComponent click rows", () => {
+	beforeAll(async () => {
+		await initTheme();
+	});
+
+	it("maps item rows to session ids and chrome rows nowhere", () => {
+		const lines = renderSubagentHudLines([makeSession({ id: "Alpha" }), makeSession({ id: "Beta" })], 120);
+		const hud = new SubagentHudComponent(lines, ["Alpha", "Beta"]);
+
+		const rendered = hud.render(120);
+		expect(rendered).toHaveLength(lines.length);
+		expect(Bun.stripANSI(rendered[2] ?? "")).toContain("Alpha");
+		expect(Bun.stripANSI(rendered[3] ?? "")).toContain("Beta");
+
+		expect(hud.getClickAgentAtRow(0)).toBeUndefined();
+		expect(hud.getClickAgentAtRow(1)).toBeUndefined();
+		expect(hud.getClickAgentAtRow(2)).toBe("Alpha");
+		expect(hud.getClickAgentAtRow(3)).toBe("Beta");
+		expect(hud.getClickAgentAtRow(4)).toBeUndefined();
+		expect(hud.getClickAgentAtRow(-1)).toBeUndefined();
+	});
+
+	it("resolves the expander row to the toggle sentinel", () => {
+		const hud = new SubagentHudComponent(["", "Subagents", "row", "toggle"], ["Only"], 3);
+		hud.render(120);
+		expect(hud.getClickAgentAtRow(3)).toBe(PINNED_HUD_TOGGLE_ID);
+		expect(hud.getClickAgentAtRow(2)).toBe("Only");
+	});
+
+	it("maps wrapped continuation rows to the agent that started them", () => {
+		const long = ` ${"x".repeat(200)}`;
+		const hud = new SubagentHudComponent(["", "Subagents", long, "short"], ["Long", "Short"]);
+		const rendered = hud.render(40);
+		expect(rendered.length).toBeGreaterThan(4);
+		const shortRow = rendered.findIndex(line => Bun.stripANSI(line).includes("short"));
+		expect(shortRow).toBeGreaterThan(3);
+		expect(hud.getClickAgentAtRow(2)).toBe("Long");
+		expect(hud.getClickAgentAtRow(3)).toBe("Long");
+		expect(hud.getClickAgentAtRow(shortRow)).toBe("Short");
+		expect(hud.getClickAgentAtRow(shortRow + 1)).toBeUndefined();
+	});
+
+	it("maps clicks after wrapping and resizing while leaving clicks before rendering unmapped", () => {
+		const hud = new SubagentHudComponent(["", "Subagents", ` ${"x".repeat(100)}`, "short"], ["Long", "Short"]);
+		expect(hud.getClickAgentAtRow(2)).toBeUndefined();
+
+		const narrowRows = hud.render(40);
+		const narrowShortRow = narrowRows.findIndex(line => Bun.stripANSI(line).includes("short"));
+		expect(narrowShortRow).toBeGreaterThan(3);
+		expect(hud.getClickAgentAtRow(narrowShortRow - 1)).toBe("Long");
+		expect(hud.getClickAgentAtRow(narrowShortRow)).toBe("Short");
+
+		const wideRows = hud.render(120);
+		expect(wideRows.length).toBeLessThan(narrowRows.length);
+		const wideShortRow = wideRows.findIndex(line => Bun.stripANSI(line).includes("short"));
+		expect(hud.getClickAgentAtRow(wideShortRow)).toBe("Short");
+		expect(hud.getClickAgentAtRow(wideShortRow + 1)).toBeUndefined();
+	});
+
+	it("remaps clicks when runtime character width changes", () => {
+		setHangulCompatibilityJamoWidth(1);
+		try {
+			const hud = new SubagentHudComponent(["", "Subagents", ` ${"ㅁ".repeat(25)}`, "next"], ["Jamo", "Next"]);
+			const narrowRows = hud.render(40);
+			const narrowNextRow = narrowRows.findIndex(line => Bun.stripANSI(line).includes("next"));
+			expect(hud.getClickAgentAtRow(narrowNextRow)).toBe("Next");
+
+			setHangulCompatibilityJamoWidth(2);
+			expect(hud.getClickAgentAtRow(narrowNextRow)).toBe("Next");
+			const wideRows = hud.render(40);
+			const wideNextRow = wideRows.findIndex(line => Bun.stripANSI(line).includes("next"));
+			expect(wideNextRow).toBeGreaterThan(narrowNextRow);
+			expect(hud.getClickAgentAtRow(wideNextRow - 1)).toBe("Jamo");
+			expect(hud.getClickAgentAtRow(wideNextRow)).toBe("Next");
+		} finally {
+			resetHangulCompatibilityJamoWidthForTests();
+		}
+	});
+});
+
 describe("InteractiveMode subagent observer UI sync", () => {
 	let tempDir: TempDir;
 	let authStorage: AuthStorage;
@@ -879,6 +960,8 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		await Promise.resolve();
 		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).not.toContain("openai/gpt-5.6-sol");
 		cfgTaskShowResolvedModelBadge.override(session.settings, true);
+		// Setting listeners coalesce per microtask; the rebuild lands before the next frame.
+		await Promise.resolve();
 		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("openai/gpt-5.6-sol");
 	});
 });

@@ -74,8 +74,8 @@ beforeEach(async () => {
 	});
 	terminal = new VirtualTerminal(110, 20, 10_000);
 	const composer = new Composer({ terminal, preferences: { quiet: true } });
-	mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
-	vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+	mode = new InteractiveMode(session, "test", undefined, () => { }, undefined, undefined, undefined, composer);
+	vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => { });
 	await mode.init({ suppressWelcomeIntro: true });
 });
 
@@ -425,8 +425,10 @@ it.each([20, 40, 100])(
 		}
 		expect(firstReads).toContain("Generated write fixture row 1:");
 		expect(firstReads).toContain("Generated write fixture row 3:");
-		expect(expected.filter(marker => marker.startsWith("PLAIN_"))).toHaveLength(120);
-		expect(expected.filter(marker => marker.startsWith("CODE_"))).toHaveLength(120);
+		// Two repetitions of the Markdown introduction: 10 list, 10 table, 3 quote, 15 code rows each.
+		expect(expected.filter(marker => marker.startsWith("LIST_"))).toHaveLength(20);
+		expect(expected.filter(marker => marker.startsWith("TABLE_"))).toHaveLength(20);
+		expect(expected.filter(marker => marker.startsWith("CODE_"))).toHaveLength(30);
 		expect(providerCalls).toBe(0);
 		expect(credentialCalls).toBe(0);
 	},

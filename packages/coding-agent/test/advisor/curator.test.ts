@@ -8,18 +8,11 @@ import {
 	curateAdvisorCandidates,
 } from "../../src/advisor/curator";
 import type { ModelRegistry } from "../../src/config/model-registry";
-import type { Settings } from "../../src/config/settings";
+import { Settings } from "../../src/config/settings";
 import * as judgment from "../../src/judgment";
 
 function settingsStub(curator: "auto" | "off" = "auto"): Settings {
-	return {
-		get: (key: string) => {
-			if (key === "advisor.curator") return curator;
-			if (key === "advisor.curatorTimeoutMs") return 250;
-			if (key === "advisor.curatorContextChars") return 12_000;
-			return undefined;
-		},
-	} as unknown as Settings;
+	return Settings.isolated({ "advisor.curator": curator });
 }
 
 const registry = {} as ModelRegistry;
@@ -58,9 +51,9 @@ describe("advisor curator", () => {
 			"addressed:a": { type: "noul", noul: 0.1 },
 			"addressed:b": { type: "noul", noul: 0.1 },
 			"addressed:c": { type: "noul", noul: 0.1 },
-			"group:a": { type: "choice", choice: "merge" },
-			"group:b": { type: "choice", choice: "merge" },
-			"group:c": { type: "choice", choice: "merge" },
+			"duplicate:a": { type: "choice", choice: "cb" },
+			"duplicate:b": { type: "choice", choice: "none" },
+			"duplicate:c": { type: "choice", choice: "ca" },
 		});
 
 		const { decisions } = await curateAdvisorCandidates({ settings: settingsStub(), registry, candidates, context });
@@ -79,8 +72,8 @@ describe("advisor curator", () => {
 		stubJudge({
 			"addressed:a": { type: "noul", noul: 0 },
 			"addressed:b": { type: "noul", noul: 0 },
-			"group:a": { type: "choice", choice: "merge" },
-			"group:b": { type: "choice", choice: "merge" },
+			"duplicate:a": { type: "choice", choice: "cb" },
+			"duplicate:b": { type: "choice", choice: "ca" },
 		});
 
 		const { decisions } = await curateAdvisorCandidates({ settings: settingsStub(), registry, candidates, context });
@@ -100,14 +93,61 @@ describe("advisor curator", () => {
 		stubJudge({
 			"addressed:a": { type: "noul", noul: 0.92 },
 			"addressed:b": { type: "noul", noul: 0.04 },
-			"group:a": { type: "choice", choice: "keep" },
-			"group:b": { type: "choice", choice: "keep" },
+			"duplicate:a": { type: "choice", choice: "none" },
+			"duplicate:b": { type: "choice", choice: "none" },
 		});
 
 		const { decisions } = await curateAdvisorCandidates({ settings: settingsStub(), registry, candidates, context });
 
 		expect(decisions.find(decision => decision.candidateId === "a")?.action).toBe("drop");
 		expect(decisions.find(decision => decision.candidateId === "b")?.action).toBe("keep");
+	});
+
+	it("keeps two unrelated duplicate pairs as two notes", async () => {
+		const candidates = [
+			candidate("a", "get() runs eviction on every read", "One"),
+			candidate("b", "reads cost O(n) because get() evicts", "Two", "nit"),
+			candidate("c", "no test covers TTL expiry", "One", "nit"),
+			candidate("d", "TTL expiry is untested", "Three", "nit"),
+		];
+		stubJudge({
+			"addressed:a": { type: "noul", noul: 0.1 },
+			"addressed:b": { type: "noul", noul: 0.1 },
+			"addressed:c": { type: "noul", noul: 0.1 },
+			"addressed:d": { type: "noul", noul: 0.1 },
+			"duplicate:a": { type: "choice", choice: "cb" },
+			"duplicate:b": { type: "choice", choice: "ca" },
+			"duplicate:c": { type: "choice", choice: "cd" },
+			"duplicate:d": { type: "choice", choice: "cc" },
+		});
+
+		const { decisions } = await curateAdvisorCandidates({ settings: settingsStub(), registry, candidates, context });
+
+		// One survivor per issue: collapsing every "duplicate" into a single
+		// group would silently lose the TTL issue.
+		expect(decisions.filter(decision => decision.action === "keep").map(decision => decision.candidateId)).toEqual([
+			"a",
+			"c",
+		]);
+		expect(decisions.find(decision => decision.candidateId === "b")?.mergeInto).toBe("a");
+		expect(decisions.find(decision => decision.candidateId === "d")?.mergeInto).toBe("c");
+	});
+
+	it("needs stronger evidence to drop a concern than a nit", async () => {
+		const candidates = [
+			candidate("a", "fetch has no timeout", "One", "concern"),
+			candidate("b", "rename the helper", "Two", "nit"),
+		];
+		stubJudge({
+			"addressed:a": { type: "noul", noul: 0.6 },
+			"addressed:b": { type: "noul", noul: 0.6 },
+		});
+
+		const { decisions } = await curateAdvisorCandidates({ settings: settingsStub(), registry, candidates, context });
+
+		// A false "already fixed" on a concern loses real advice, so the same
+		// middling signal withholds the nit but still delivers the concern.
+		expect(decisions.map(decision => decision.action)).toEqual(["keep", "drop"]);
 	});
 
 	it("delivers every candidate unchanged when curation is off", async () => {

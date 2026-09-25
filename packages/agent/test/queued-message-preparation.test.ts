@@ -79,6 +79,31 @@ describe("queued message preparation", () => {
 		]);
 	});
 
+	it("delivers attachment notices in the same one-at-a-time turn as their message", async () => {
+		// A notice naming an attachment used to reach the model a full turn before
+		// the user message it describes: the model read the attachment of a
+		// message the user had not visibly sent yet.
+		const mock = createMockModel({ handler: { content: ["done"] } });
+		const agent = new Agent({ streamFn: mock.stream, initialState: { model: mock.model } });
+		agent.replaceMessages([createAssistantMessage([{ type: "text", text: "ready" }])]);
+		const notice = createUserMessage("notice: attached image at /tmp/a.png");
+		const message = createUserMessage("look at this");
+		const later = createUserMessage("second message");
+		const batches: (readonly AgentMessage[])[] = [];
+		agent.prepareQueuedMessages = messages => {
+			batches.push(messages);
+			return { commit: () => [] };
+		};
+		agent.followUp(notice, { withNext: true });
+		agent.followUp(message);
+		agent.followUp(later);
+
+		await agent.continue();
+
+		expect(batches).toEqual([[notice, message], [later]]);
+		expect(userTexts(mock.calls[0]!.context.messages)).toEqual(["notice: attached image at /tmp/a.png", "look at this"]);
+	});
+
 	it("prepares live steering and follow-up delivery, but not the ordinary prompt", async () => {
 		const mock = createMockModel({ handler: { content: ["done"] } });
 		const agent = new Agent({ streamFn: mock.stream, initialState: { model: mock.model } });

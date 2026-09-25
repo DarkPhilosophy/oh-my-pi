@@ -9,6 +9,8 @@
  * in either process.
  */
 
+import * as os from "node:os";
+import { $which } from "@oh-my-pi/pi-utils";
 import { defaultLocalModelInitializer, type StandardEmbeddingModel } from "@oh-my-pi/pi-mnemopi/core";
 import type { MnemopiEmbedModelId, MnemopiEmbedTransport, MnemopiEmbedWorkerInbound } from "./embed-protocol";
 
@@ -98,6 +100,8 @@ async function handleInit(
 }
 
 export function startMnemopiEmbedWorker(transport: MnemopiEmbedTransport): void {
+	confineToHalfTheCpus();
+	capEmbeddingThreadPools();
 	transport.onMessage(message => {
 		switch (message.type) {
 			case "ping":
@@ -111,4 +115,37 @@ export function startMnemopiEmbedWorker(transport: MnemopiEmbedTransport): void 
 				return;
 		}
 	});
+}
+
+/**
+ * onnxruntime starts one inference thread per core and fastembed exposes no
+ * thread option, so a large CPU model (multilingual-e5-large) rebuilding
+ * thousands of memories pinned every core and froze the whole desktop and the
+ * TUI for minutes. On Linux, pin this worker subprocess to half the CPUs: the
+ * rebuild still runs to completion, the other half stays free for omp and the
+ * rest of the system. Runs only in the worker, never in the agent process.
+ */
+function confineToHalfTheCpus(): void {
+	if (process.platform !== "linux") return;
+	const cpus = os.availableParallelism();
+	if (cpus < 2) return;
+	const taskset = $which("taskset");
+	if (!taskset) return;
+	const allowed = Math.max(1, Math.floor(cpus / 2));
+	Bun.spawnSync([taskset, "-a", "-cp", `0-${allowed - 1}`, String(process.pid)], { stdout: "ignore", stderr: "ignore" });
+}
+
+/**
+ * onnxruntime sizes its intra-op pool from the machine's core count, so a large
+ * CPU model runs every core hot for the whole rebuild even when the process is
+ * pinned to half of them (the pinned threads just contend). fastembed exposes
+ * no session options, but the runtime reads these standard pool variables at
+ * load time, before the first session is created.
+ */
+function capEmbeddingThreadPools(): void {
+	const cpus = os.availableParallelism();
+	const threads = String(Math.max(1, Math.floor(cpus / 2)));
+	for (const name of ["OMP_NUM_THREADS", "ORT_INTRA_OP_NUM_THREADS", "ORT_INTER_OP_NUM_THREADS"]) {
+		if (!process.env[name]) process.env[name] = name === "ORT_INTER_OP_NUM_THREADS" ? "1" : threads;
+	}
 }
