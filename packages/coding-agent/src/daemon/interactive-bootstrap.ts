@@ -17,6 +17,7 @@ import { createDaemonClient, type DaemonClient } from "./client";
 import { DAEMON_PROTOCOL_MAJOR, type DaemonOperation, type DaemonServerStatus } from "./protocol";
 import type { DaemonConnectionSnapshot, DaemonProfile } from "./status";
 import { ClientTerminalBridge, clientTerminalEnvSnapshot } from "./terminal-bridge";
+import { cfgDaemonEnabled } from "../modes/settings";
 
 export { isDefaultInteractiveArgv } from "./interactive-route";
 
@@ -64,7 +65,7 @@ export function isDaemonModeOptedIn(argv: readonly string[], settingEnabled: boo
 export async function readDaemonModeSetting(): Promise<boolean> {
 	try {
 		const settings = await Settings.loadIsolated();
-		return settings.get("daemon.enabled") === true;
+		return cfgDaemonEnabled.get(settings) === true;
 	} catch {
 		return false;
 	}

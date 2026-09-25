@@ -9,7 +9,7 @@ import { EditTool } from "../edit";
 import type { ToolSession } from "../tools";
 import { AskTool } from "../tools/ask";
 import { BashTool } from "../tools/bash";
-import { HubTool } from "../tools/hub";
+import { WaitTool } from "../tools/wait";
 import { EvalTool } from "../tools/eval";
 import { ReadTool } from "../tools/read";
 import { TodoTool } from "../tools/todo";
@@ -24,7 +24,7 @@ export interface RenderWorkflowStep {
 
 export interface RenderWorkflow {
 	context: AgentToolContext;
-	tools: Array<ReadTool | EditTool | TodoTool | AskTool | BashTool | HubTool | WriteTool | EvalTool>;
+	tools: Array<ReadTool | EditTool | TodoTool | AskTool | BashTool | WaitTool | WriteTool | EvalTool>;
 	next(context: Context): Promise<RenderWorkflowStep | undefined>;
 	dispose(): Promise<void>;
 }
@@ -53,7 +53,6 @@ export function createRenderWorkflow(
 			"bash.autoBackground.thresholdMs": 500,
 		}),
 	};
-	let jobIds: string[] = [];
 	const files = Array.from({ length: 3 }, (_, index) => directory.path() + `/sample-${index + 1}.txt`);
 	const fixtureRows = [24, 64, 128];
 	let initialized = false;
@@ -153,10 +152,7 @@ export function createRenderWorkflow(
 	actions.push({ name: "todo", args: () => ({ op: "done", task: tasks[1] }) });
 	actions.push({
 		name: "bash",
-		args: () => {
-			jobIds = [];
-			return { command: "cat sample-1.txt && sleep 8", timeout: 15 };
-		},
+		args: () => ({ command: "cat sample-1.txt && sleep 8", timeout: 15 }),
 	});
 	const backgroundStage = actions.length;
 	const backgroundSeconds = scenario === "job" ? 20 : 8;
@@ -170,15 +166,9 @@ export function createRenderWorkflow(
 			}),
 		});
 	}
-	for (const timeoutMs of scenario === "job" ? [5_000, 5_000, 30_000, 30_000] : [250, 250, 10_000, 10_000]) {
-		actions.push({
-			name: "hub",
-			args: () => {
-				if (jobIds.length === 0) jobIds = jobs.getRunningJobs().map(job => job.id);
-				return { op: "wait", ids: jobIds, timeoutMs };
-			},
-		});
-	}
+	// `wait` blocks until the next background completion; four waits drain the
+	// completions as they land, like the scripted foreground/background mix.
+	for (let index = 0; index < 4; index++) actions.push({ name: "wait", args: () => ({}) });
 	actions.push({
 		name: "ask",
 		args: () => ({
@@ -219,7 +209,7 @@ export function createRenderWorkflow(
 									: scenario === "ask"
 										? action.name === "ask"
 										: scenario === "job"
-											? ["bash", "hub"].includes(action.name)
+											? ["bash", "wait"].includes(action.name)
 											: false,
 							);
 		actions.splice(0, actions.length, ...selected);
@@ -250,7 +240,7 @@ export function createRenderWorkflow(
 			new WriteTool(localSession),
 			new AskTool(localSession),
 			new BashTool(jobSession),
-			new HubTool(jobSession),
+			new WaitTool(jobSession),
 			...(scenario === "eval" ? [new EvalTool(localSession)] : []),
 		],
 		context,
@@ -295,7 +285,7 @@ export function createRenderWorkflow(
 				arguments: action.args(),
 			}));
 			stage += 1;
-			return { calls, repetition, introduction, silent: calls.every(call => call.name === "hub") };
+			return { calls, repetition, introduction, silent: calls.every(call => call.name === "wait") };
 		},
 		dispose: async () => {
 			await jobs.dispose({ timeoutMs: 3_000 });

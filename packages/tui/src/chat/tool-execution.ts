@@ -23,7 +23,7 @@ import { type EditMode, type PerFileDiffPreview, renderStreamingFallback } from 
 import { EVAL_DEFAULT_PREVIEW_LINES } from "../tools/eval";
 import { taskCardAgentIds } from "../tools/task";
 import { TODO_STRIKE_TOTAL_FRAMES, type TodoToolDetails } from "../tools/todo";
-import { isWaitingPollDetails } from "../tools/hub";
+import { isWaitingPollDetails } from "../tools/wait";
 import { formatStatusIcon, replaceTabs, resolveImageOptions } from "../render/render-utils";
 import type { XdevMountedState } from "../tools/xdev";
 import { isFramedBlockComponent, markFramedBlockComponent, renderStatusLine, WidthAwareText } from "../render/index";
@@ -36,7 +36,7 @@ import { type AnimationFrame, trimBlankEdges } from "../chrome/transcript-contai
 export function toolRenderName(wireName: string, tool: AgentTool | undefined): string {
 	return tool?.name ?? wireName;
 }
-type DisplaceableToolName = "hub" | "todo";
+type DisplaceableToolName = "wait" | "todo";
 
 function isTodoToolDetails(details: unknown): details is TodoToolDetails {
 	return (
@@ -68,7 +68,7 @@ function displaceableToolName(
 	isPartial: boolean,
 ): DisplaceableToolName | undefined {
 	if (result.isError === true) return undefined;
-	if (toolName === "hub" && isWaitingPollDetails(result.details)) return "hub";
+	if (toolName === "wait" && isWaitingPollDetails(result.details)) return "wait";
 	if (toolName === "todo" && !isPartial && isTodoToolDetails(result.details)) return "todo";
 	return undefined;
 }
@@ -351,7 +351,7 @@ export class ToolExecutionComponent extends Container {
 	// late result can update its streaming preview.
 	#sealed = false;
 	// Tool result snapshots that may be superseded by a later same-tool call
-	// while still in the mutable viewport. `hub` uses this for repeated all-running polls; `todo` uses
+	// while still in the mutable viewport. `wait` uses this for repeated all-running polls; `todo` uses
 	// it for per-turn state snapshots so only the latest list remains visible.
 	#displaceableByToolName: DisplaceableToolName | undefined;
 	// Execution start on the presentation clock (performance.now domain, the
@@ -383,11 +383,11 @@ export class ToolExecutionComponent extends Container {
 		executionStarted?: boolean;
 		renderContext?: Record<string, unknown>;
 	} = {
-			expanded: false,
-			isPartial: true,
-			argsComplete: false,
-			executionStarted: false,
-		};
+		expanded: false,
+		isPartial: true,
+		argsComplete: false,
+		executionStarted: false,
+	};
 
 	constructor(
 		toolName: string,
@@ -707,9 +707,9 @@ export class ToolExecutionComponent extends Container {
 			this.#result === undefined &&
 			(renderer === undefined
 				? // Only the generic #formatToolExecution fallback consumes the frame;
-				// a custom renderCall/renderResult pair routes through the custom
-				// branch whose pending label is a static tool-name Text.
-				!this.#tool?.renderCall && !this.#tool?.renderResult
+					// a custom renderCall/renderResult pair routes through the custom
+					// branch whose pending label is a static tool-name Text.
+					!this.#tool?.renderCall && !this.#tool?.renderResult
 				: typeof pendingAnimation === "function"
 					? pendingAnimation(this.#args)
 					: pendingAnimation === true);
@@ -725,7 +725,7 @@ export class ToolExecutionComponent extends Container {
 			this.#toolName !== "todo" &&
 			!isBackgroundAsyncRunning &&
 			(pendingCallConsumesSpinner || partialResultConsumesSpinner);
-		const needsSpinner = isStreamingArgs || isLivePartialTool || this.#displaceableByToolName === "hub";
+		const needsSpinner = isStreamingArgs || isLivePartialTool || this.#displaceableByToolName === "wait";
 		if (needsSpinner && !this.#spinnerActive) {
 			const frameCount = theme.spinnerFrames.length;
 			const frame = sharedSpinnerFrame(frameCount);
@@ -1043,8 +1043,8 @@ export class ToolExecutionComponent extends Container {
 		if (this.#allocation < 3) {
 			// A squeezed allocation degrades only blocks that genuinely overflow it.
 			// The allocator measures blocks by trimmed height and never squeezes one
-			// below that, so inline tools whose real content is 1-2 rows (hub
-			// receipts, one-line results) keep that content instead of an equally
+			// below that, so inline tools whose real content is 1-2 rows (wait
+			// results, one-line receipts) keep that content instead of an equally
 			// tall but contentless frame.
 			const trimmed = trimBlankEdges(lines);
 			if (trimmed.length > this.#allocation) return this.#renderCompact(width);
@@ -1076,9 +1076,9 @@ export class ToolExecutionComponent extends Container {
 		const elapsed =
 			this.#isRunning() && this.#executionStartedAtNow !== undefined
 				? theme.fg(
-					"dim",
-					` ${Math.max(0, Math.floor((this.#presentationFrame.now - this.#executionStartedAtNow) / 1000))}s`,
-				)
+						"dim",
+						` ${Math.max(0, Math.floor((this.#presentationFrame.now - this.#executionStartedAtNow) / 1000))}s`,
+					)
 				: "";
 		const text = truncateToWidth(
 			`${theme.fg("toolTitle", theme.bold(summary.label))}${detail}${elapsed}`,
@@ -1102,7 +1102,7 @@ export class ToolExecutionComponent extends Container {
 		});
 		if (summary !== undefined) {
 			if (summary.detail) return summary;
-			// A detail-less custom summary (e.g. hub before its streamed args
+			// A detail-less custom summary (e.g. wait before its result
 			// parse) must not fold to a bare `╭─ Label` frame under viewport
 			// pressure — keep the generic liveness hint for in-flight calls.
 			return this.#isRunning() ? { ...summary, detail: "running" } : summary;
@@ -1532,9 +1532,9 @@ export class ToolExecutionComponent extends Container {
 					context.editDiffPreview = first.error
 						? { error: first.error }
 						: {
-							diff: first.diff ?? "",
-							firstChangedLine: first.firstChangedLine,
-						};
+								diff: first.diff ?? "",
+								firstChangedLine: first.firstChangedLine,
+							};
 				}
 				if (previews.length > 1) {
 					context.perFileDiffPreview = previews;
@@ -1547,12 +1547,14 @@ export class ToolExecutionComponent extends Container {
 			}
 			context.renderDiff = renderDiff;
 		} else if (this.#toolName === "write") {
-			// Device-dispatch previews resolve renderers from the canonical tool map.
+			// Device-dispatch previews render through the host's canonical resolver,
+			// which covers mounted devices and active top-level tools (the `write`
+			// transport accepts both). Deciding the predicate here instead would
+			// leave a `write xd://<top-level tool>` card on the generic fallback.
 			const writeTool = this.#tool as { session?: { xdev?: XdevMountedState } } | undefined;
-			const xdev = writeTool?.session?.xdev;
-			if (xdev) {
-				context.resolveXdevMounted = (name: string) =>
-					xdev.mountedNames.has(name) ? xdev.tools.get(name) : undefined;
+			const resolveXdevMounted = writeTool?.session?.xdev?.resolve;
+			if (resolveXdevMounted) {
+				context.resolveXdevMounted = resolveXdevMounted;
 			}
 		}
 
@@ -1596,10 +1598,10 @@ export class ToolExecutionComponent extends Container {
 				args: this.#args,
 				result: this.#result
 					? {
-						output: this.#getTextOutput(),
-						isError: this.#result.isError,
-						skipped: this.#isBenignSkip(),
-					}
+							output: this.#getTextOutput(),
+							isError: this.#result.isError,
+							skipped: this.#isBenignSkip(),
+						}
 					: undefined,
 				options: this.#renderState,
 			},
@@ -1618,11 +1620,11 @@ export class ToolExecutionComponent extends Container {
 		if (this.#isPartial || !this.#result) return false;
 		const details = this.#result.details as
 			| {
-				__synthetic?: boolean;
-				__interrupted?: boolean;
-				source?: string;
-				execution?: string;
-			}
+					__synthetic?: boolean;
+					__interrupted?: boolean;
+					source?: string;
+					execution?: string;
+			  }
 			| undefined;
 		if (details?.source !== "interrupt_skipped") return false;
 		return details.__synthetic === true || (details.__interrupted === true && details.execution === "started");

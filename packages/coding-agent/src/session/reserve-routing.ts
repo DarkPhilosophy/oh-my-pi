@@ -4,12 +4,12 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
+import { cfgProvidersOpenaiCodexUseReserve } from "./settings";
 
 /** Only the credential store can bind quota evidence to the OAuth row used on the wire. */
-type ReserveCredentials = Pick<
-	AuthStorage,
-	"getReserveCredential" | "getOAuthAccessByCredentialId" | "rejectReserveCredential"
->;
+export interface ReserveCredentials {
+	oauth: Pick<AuthStorage["oauth"], "reserveCredential" | "accessById" | "rejectReserveCredential">;
+}
 
 /** Preserve the user's logical selection; only one request uses the equivalent reserve model. */
 export function createReserveRoutingStreamFn(
@@ -20,7 +20,7 @@ export function createReserveRoutingStreamFn(
 ): StreamFn {
 	return async (model, context, options) => {
 		const route = model.reserveRoute;
-		if (!route || model.id === route.model || !settings.get("providers.openai-codex.useReserve")) {
+		if (!route || model.id === route.model || !cfgProvidersOpenaiCodexUseReserve.get(settings)) {
 			return base(model, context, options);
 		}
 		const outer = new AssistantMessageEventStream();
@@ -38,7 +38,7 @@ export function createReserveRoutingStreamFn(
 				options?.signal?.throwIfAborted();
 				let observation: { credentialId: number; observedAt: number } | undefined;
 				try {
-					observation = await auth.getReserveCredential(model.provider, route, {
+					observation = await auth.oauth.reserveCredential(model.provider, route, {
 						sessionId: options?.sessionId,
 						signal: options?.signal,
 						excludeCredentialIds: attempted,
@@ -52,7 +52,7 @@ export function createReserveRoutingStreamFn(
 				attempted.add(observation.credentialId);
 				let access: OAuthAccessResolution | undefined;
 				try {
-					access = await auth.getOAuthAccessByCredentialId(model.provider, observation.credentialId);
+					access = await auth.oauth.accessById(model.provider, observation.credentialId);
 				} catch {
 					options?.signal?.throwIfAborted();
 					continue;
@@ -74,7 +74,7 @@ export function createReserveRoutingStreamFn(
 						!options?.signal?.aborted &&
 						(AIError.isAuthRetryableError(event.error) || AIError.status(event.error) === 404)
 					) {
-						auth.rejectReserveCredential(model.provider, route, observation);
+						auth.oauth.rejectReserveCredential(model.provider, route, observation);
 						if (!content) {
 							retry = true;
 							break;

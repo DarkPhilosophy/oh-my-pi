@@ -1,11 +1,12 @@
 import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
-import { collapseSharedUsageReports } from "@oh-my-pi/pi-tui/overlays/usage-display";
+import { collapseSharedUsageReports, summarizeUsageResetCredits } from "@oh-my-pi/pi-tui/overlays/usage-display";
 import type { SlashCommandRuntime } from "../types";
-import { reportMatchesActiveAccount } from "./active-oauth-account";
+import { formatCodexUsageReportLabel, reportMatchesActiveAccount } from "./active-oauth-account";
 import { type AccountLabel, createAccountMasker, usageIdentityKey } from "@oh-my-pi/pi-tui/overlays/usage-mask";
 import { formatCoarseDuration, formatProviderName, renderAsciiBar } from "@oh-my-pi/pi-tui/chrome/format";
+import { cfgUsageMaskAccountLabels } from "../../secrets/settings";
 
 function formatWindowSuffix(label: string, windowLabel: string | undefined): string {
 	if (!windowLabel) return "";
@@ -27,43 +28,44 @@ function formatUsageAmount(limit: UsageLimit): string {
 	return `${usedText}${remainingText}`;
 }
 
-function formatUsageReportAccount(report: UsageReport, limit: UsageLimit | undefined, index: number): AccountLabel {
+/**
+ * Maskable identity for one report's account. Codex's `orgName` is the
+ * login-time plan, not a workspace: Codex identities are qualified only when
+ * two reports share an email, followed by the live plan.
+ */
+function formatUsageReportAccount(
+	report: UsageReport,
+	peers: readonly UsageReport[],
+	limit: UsageLimit | undefined,
+	index: number,
+): AccountLabel {
+	const scope = limit?.scope ?? report.limits[0]?.scope;
 	const accountKey = usageIdentityKey(
-		(limit?.scope ?? report.limits[0]?.scope)?.accountId || report.metadata?.accountId,
-		(limit?.scope ?? report.limits[0]?.scope)?.projectId || report.metadata?.projectId,
-		limit?.scope ?? report.limits[0]?.scope,
+		scope?.accountId || report.metadata?.accountId,
+		scope?.projectId || report.metadata?.projectId,
+		scope,
 		report.metadata?.orgId,
 	);
+	const codex = report.provider === "openai-codex";
 	const metaOrgName = report.metadata?.orgName;
 	const metaOrgId = report.metadata?.orgId;
-	const org =
-		typeof metaOrgName === "string" && metaOrgName
-			? metaOrgName
-			: typeof metaOrgId === "string" && metaOrgId
-				? metaOrgId
-				: undefined;
-	// Two subscriptions (orgs) can share one email — suffix the org so the rows
-	// are tellable apart.
+	const org = typeof metaOrgName === "string" && metaOrgName ? metaOrgName : metaOrgId;
+	const qualifier = (identity: string, includeOrg: boolean): string | undefined => {
+		if (codex) return formatCodexUsageReportLabel(report, peers, "") || undefined;
+		return includeOrg && typeof org === "string" && org && org !== identity ? ` (${org})` : undefined;
+	};
 	const email = report.metadata?.email;
 	if (typeof email === "string" && email)
-		return { identity: email, qualifier: org ? ` (${org})` : undefined, accountKey, provider: report.provider };
-	// Guard metadata values for truthiness before using, then fall back to scope.
-	// ?? won't help here: empty string is not null/undefined, so it would suppress
-	// a valid scoped fallback (e.g. metadata.accountId="" hides limit.scope.accountId).
+		return { identity: email, qualifier: qualifier(email, true), accountKey, provider: report.provider };
+	// Empty metadata must not hide a valid scoped identity.
 	const metaAccountId = report.metadata?.accountId;
 	const accountId = typeof metaAccountId === "string" && metaAccountId ? metaAccountId : limit?.scope.accountId;
-	if (typeof accountId === "string" && accountId) {
-		return {
-			identity: accountId,
-			qualifier: org && org !== accountId ? ` (${org})` : undefined,
-			accountKey,
-			provider: report.provider,
-		};
-	}
+	if (typeof accountId === "string" && accountId)
+		return { identity: accountId, qualifier: qualifier(accountId, true), accountKey, provider: report.provider };
 	const metaProjectId = report.metadata?.projectId;
 	const projectId = typeof metaProjectId === "string" && metaProjectId ? metaProjectId : limit?.scope.projectId;
 	if (typeof projectId === "string" && projectId)
-		return { identity: projectId, accountKey, provider: report.provider };
+		return { identity: projectId, qualifier: qualifier(projectId, false), accountKey, provider: report.provider };
 	return { identity: limit ? `account ${index + 1}` : "account", placeholder: true, provider: report.provider };
 }
 
@@ -74,23 +76,25 @@ function renderUsageReports(
 	usageModelSelectors: readonly string[] = [],
 	maskAccountLabels = false,
 ): string {
-	const accountMasker = createAccountMasker(
-		reports.flatMap(report => [
-			formatUsageReportAccount(report, undefined, 0),
-			...report.limits.map((limit, index) => formatUsageReportAccount(report, limit, index)),
-		]),
-		maskAccountLabels,
-	);
-	const displayAccount = accountMasker;
 	const displayReports = collapseSharedUsageReports(reports);
 	const latestFetchedAt = Math.max(...displayReports.map(report => report.fetchedAt ?? 0));
-	const lines = [`Usage${latestFetchedAt ? ` (${formatCoarseDuration(nowMs - latestFetchedAt)} ago)` : ""}`];
 	const grouped = new Map<string, UsageReport[]>();
 	for (const report of displayReports) {
 		const providerReports = grouped.get(report.provider) ?? [];
 		providerReports.push(report);
 		grouped.set(report.provider, providerReports);
 	}
+	// One masker over every label rendered below, so colliding masks get stable ordinals.
+	const displayAccount = createAccountMasker(
+		[...grouped.values()].flatMap(providerReports =>
+			providerReports.flatMap(report => [
+				formatUsageReportAccount(report, providerReports, undefined, 0),
+				...report.limits.map((limit, index) => formatUsageReportAccount(report, providerReports, limit, index)),
+			]),
+		),
+		maskAccountLabels,
+	);
+	const lines = [`Usage${latestFetchedAt ? ` (${formatCoarseDuration(nowMs - latestFetchedAt)} ago)` : ""}`];
 
 	for (const [provider, providerReports] of [...grouped.entries()].sort(([left], [right]) =>
 		left.localeCompare(right),
@@ -108,11 +112,13 @@ function renderUsageReports(
 			lines.push(`  ${sanitizeText(note.replace(/[\r\n]+/g, " ").replace(/\t/g, "  "))}`);
 		for (const report of providerReports) {
 			const inUse = reportMatchesActiveAccount(report, activeAccount);
-			const savedResets = report.resetCredits?.availableCount ?? 0;
-			if (savedResets > 0) {
-				const resetLabel = formatUsageReportAccount(report, undefined, 0);
+			const resets = summarizeUsageResetCredits(report.resetCredits, nowMs);
+			if (resets && resets.bankedCount > 0) {
+				const resetLabel = formatUsageReportAccount(report, providerReports, undefined, 0);
+				const availability =
+					resets.redeemableCount === resets.bankedCount ? "available" : `${resets.redeemableCount} usable now`;
 				lines.push(
-					`- ${displayAccount(resetLabel)}: ${savedResets} saved rate-limit reset${savedResets === 1 ? "" : "s"} available — /usage reset to spend`,
+					`- ${displayAccount(resetLabel)}: ${resets.bankedCount} saved rate-limit reset${resets.bankedCount === 1 ? "" : "s"} ${availability} — /usage reset to spend`,
 				);
 				const credits = report.resetCredits?.credits;
 				if (credits) {
@@ -134,7 +140,7 @@ function renderUsageReports(
 				}
 			}
 			if (report.limits.length === 0) {
-				const account = formatUsageReportAccount(report, undefined, 0);
+				const account = formatUsageReportAccount(report, providerReports, undefined, 0);
 				lines.push(`- ${displayAccount(account)}: no limits reported`);
 				continue;
 			}
@@ -147,7 +153,7 @@ function renderUsageReports(
 						: "";
 				lines.push(`- ${limit.label}${tier}${formatWindowSuffix(limit.label, window)}`);
 				lines.push(
-					`  ${displayAccount(formatUsageReportAccount(report, limit, index))}: ${formatUsageAmount(limit)}${inUse ? "  ← in use by this session" : ""}`,
+					`  ${displayAccount(formatUsageReportAccount(report, providerReports, limit, index))}: ${formatUsageAmount(limit)}${inUse ? "  ← in use by this session" : ""}`,
 				);
 				lines.push(`  ${renderAsciiBar(limit.amount.usedFraction)}`);
 				if (limit.window?.resetsAt && limit.window.resetsAt > nowMs)
@@ -179,10 +185,7 @@ export async function buildUsageReportText(runtime: SlashCommandRuntime): Promis
 		if (reports && reports.length > 0) {
 			const currentProvider = runtime.session.model?.provider;
 			const activeAccount = currentProvider
-				? runtime.session.modelRegistry.authStorage.getOAuthAccountIdentity(
-						currentProvider,
-						runtime.session.sessionId,
-					)
+				? runtime.session.modelRegistry.authStorage.oauth.identity(currentProvider, runtime.session.sessionId)
 				: undefined;
 			const usageModelSelectors = provider.getUsageReportingModelSelectors?.(reports) ?? [];
 			return renderUsageReports(
@@ -190,7 +193,7 @@ export async function buildUsageReportText(runtime: SlashCommandRuntime): Promis
 				Date.now(),
 				providerId => (providerId === currentProvider ? activeAccount : undefined),
 				usageModelSelectors,
-				runtime.settings.get("usage.maskAccountLabels") === true,
+				cfgUsageMaskAccountLabels.get(runtime.settings) === true,
 			);
 		}
 	}

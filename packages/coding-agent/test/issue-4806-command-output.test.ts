@@ -14,6 +14,7 @@ import { HistoryStorage } from "@oh-my-pi/pi-coding-agent/session/history-storag
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Text } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { cfgDisplayCollapseCompacted } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
 describe("issue #4806 command output during streaming", () => {
 	let authStorage: AuthStorage;
@@ -227,7 +228,7 @@ describe("issue #4806 command output during streaming", () => {
 	});
 
 	it("keeps command output anchored when collapsed compaction removes its transcript prefix", () => {
-		session.settings.set("display.collapseCompacted", true);
+		cfgDisplayCollapseCompacted.set(session.settings, true);
 		session.sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "prefix removed by compaction" }],
@@ -322,7 +323,7 @@ describe("issue #4806 command output during streaming", () => {
 	});
 
 	it("keeps command output after a replayed sibling when its first anchor remains pending", () => {
-		session.settings.set("display.collapseCompacted", true);
+		cfgDisplayCollapseCompacted.set(session.settings, true);
 		session.sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "long prefix removed before pending anchor" }],

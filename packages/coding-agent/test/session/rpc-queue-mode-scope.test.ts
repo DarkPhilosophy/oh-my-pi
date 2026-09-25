@@ -7,10 +7,14 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { applyRpcQueueModeCommand } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
 import { SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets";
-import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AgentSession, coreQueueMode } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+
+import { cfgInterruptMode } from "@oh-my-pi/pi-coding-agent/modes/settings";
+import { cfgFollowUpMode } from "@oh-my-pi/pi-coding-agent/modes/settings";
+import { cfgSteeringMode } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
 /**
  * Regression guard for #11555: the RPC queue-mode path (`persist: false`)
@@ -35,7 +39,7 @@ describe("AgentSession queue-mode controls are session-scoped by default", () =>
 		configPath = path.join(agentDir, "config.yml");
 
 		authStorage = await AuthStorage.create(path.join(agentDir, "auth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 
 		model = getBundledModel("anthropic", "claude-sonnet-4-5") as Model;
@@ -66,9 +70,9 @@ describe("AgentSession queue-mode controls are session-scoped by default", () =>
 		expect(session.steeringMode).toBe("all");
 		expect(session.followUpMode).toBe("all");
 		expect(session.interruptMode).toBe("wait");
-		expect(settings.get("steeringMode")).toBe("one-at-a-time");
-		expect(settings.get("followUpMode")).toBe("one-at-a-time");
-		expect(settings.get("interruptMode")).toBe("immediate");
+		expect(cfgSteeringMode.get(settings)).toBe("one-at-a-time");
+		expect(cfgFollowUpMode.get(settings)).toBe("one-at-a-time");
+		expect(cfgInterruptMode.get(settings)).toBe("immediate");
 		expect(settings.getGlobalSettings()).toEqual({});
 		expect(await Bun.file(configPath).exists()).toBe(false);
 	});
@@ -83,9 +87,9 @@ describe("AgentSession queue-mode controls are session-scoped by default", () =>
 		const laterSession = new AgentSession({
 			agent: new Agent({
 				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
-				steeringMode: settings.get("steeringMode") === "all" ? "all" : "one-at-a-time",
-				followUpMode: settings.get("followUpMode") === "all" ? "all" : "one-at-a-time",
-				interruptMode: settings.get("interruptMode") ?? "immediate",
+				steeringMode: coreQueueMode(cfgSteeringMode.get(settings)),
+				followUpMode: coreQueueMode(cfgFollowUpMode.get(settings)),
+				interruptMode: cfgInterruptMode.get(settings) ?? "immediate",
 			}),
 			sessionManager: SessionManager.create(agentDir, agentDir),
 			settings,

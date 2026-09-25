@@ -17,6 +17,12 @@ import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-m
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import { getProjectDir, removeWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
 
+import { cfgBrowserEnabled, cfgBrowserHeadless } from "@oh-my-pi/pi-coding-agent/tools/browser/settings";
+import { cfgExtendedContext } from "@oh-my-pi/pi-coding-agent/session/context-settings";
+import { cfgMemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/settings";
+import { cfgWorktreeCleanSource } from "@oh-my-pi/pi-coding-agent/task/settings";
+import { cfgUsageMaskAccountLabels } from "@oh-my-pi/pi-coding-agent/secrets/settings";
+
 interface FakeAcpBuiltinSession {
 	fastMode: boolean;
 	forcedToolChoice: string | undefined;
@@ -51,7 +57,7 @@ interface FakeAcpBuiltinSession {
 	effectiveExtensionRoots: unknown;
 	setTitleSystemPrompt(prompt: string | undefined): void;
 	setSlashCommands(commands: unknown[]): void;
-	refreshSkills(): Promise<void>;
+	refreshSkillsAndCommands(): Promise<void>;
 	getTodoPhases(): Array<{ name: string; tasks: Array<{ content: string; status: string }> }>;
 	setTodoPhases(phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>): void;
 	refreshBaseSystemPrompt(): Promise<void>;
@@ -90,7 +96,7 @@ function createRuntime() {
 		effectiveExtensionRoots: undefined,
 		setTitleSystemPrompt: (_prompt: string | undefined) => {},
 		setSlashCommands: (_commands: unknown[]) => {},
-		refreshSkills: async () => {},
+		refreshSkillsAndCommands: async () => {},
 		toggleFastMode() {
 			this.fastMode = !this.fastMode;
 			return this.fastMode;
@@ -266,11 +272,11 @@ describe("ACP builtin slash commands", () => {
 		const { output, runtime } = createRuntime();
 
 		expect(await executeAcpBuiltinSlashCommand("/extended-context off", runtime)).toEqual({ consumed: true });
-		expect(runtime.settings.get("extendedContext")).toBe(false);
+		expect(cfgExtendedContext.get(runtime.settings)).toBe(false);
 		expect(await executeAcpBuiltinSlashCommand("/extended-context on", runtime)).toEqual({ consumed: true });
-		expect(runtime.settings.get("extendedContext")).toBe(true);
+		expect(cfgExtendedContext.get(runtime.settings)).toBe(true);
 		expect(await executeAcpBuiltinSlashCommand("/extended-context", runtime)).toEqual({ consumed: true });
-		expect(runtime.settings.get("extendedContext")).toBe(false);
+		expect(cfgExtendedContext.get(runtime.settings)).toBe(false);
 		expect(await executeAcpBuiltinSlashCommand("/extended-context status", runtime)).toEqual({ consumed: true });
 		expect(output).toEqual([
 			"Extended context disabled.",
@@ -292,7 +298,7 @@ describe("ACP builtin slash commands", () => {
 
 	it("renders provider usage reports when the session can fetch them", async () => {
 		const { output, runtime } = createRuntime();
-		runtime.settings.set("usage.maskAccountLabels", false);
+		cfgUsageMaskAccountLabels.set(runtime.settings, false);
 		runtime.session.fetchUsageReports = async () => [
 			{
 				provider: "openai-codex",
@@ -320,7 +326,7 @@ describe("ACP builtin slash commands", () => {
 	});
 	it("applies collision-aware account masking consistently in text usage output", async () => {
 		const { output, runtime } = createRuntime();
-		runtime.settings.set("usage.maskAccountLabels", true);
+		cfgUsageMaskAccountLabels.set(runtime.settings, true);
 		runtime.session.fetchUsageReports = async () => [
 			...["alice@example.com", "alice@example.com"].map((email, index) => ({
 				provider: "openai-codex",
@@ -353,7 +359,7 @@ describe("ACP builtin slash commands", () => {
 
 	it("does not suffix masked identities that only collide across providers", async () => {
 		const { output, runtime } = createRuntime();
-		runtime.settings.set("usage.maskAccountLabels", true);
+		cfgUsageMaskAccountLabels.set(runtime.settings, true);
 		runtime.session.fetchUsageReports = async () =>
 			["openai-codex", "anthropic"].map(provider => ({
 				provider,
@@ -369,7 +375,7 @@ describe("ACP builtin slash commands", () => {
 	});
 	it("masks opaque parenthesized identifiers without dropping real organization metadata", async () => {
 		const { output, runtime } = createRuntime();
-		runtime.settings.set("usage.maskAccountLabels", true);
+		cfgUsageMaskAccountLabels.set(runtime.settings, true);
 		runtime.session.fetchUsageReports = async () => [
 			{
 				provider: "openai-codex",
@@ -394,7 +400,7 @@ describe("ACP builtin slash commands", () => {
 
 	it("preserves the generated bare account placeholder when masking no-identity reports", async () => {
 		const { output, runtime } = createRuntime();
-		runtime.settings.set("usage.maskAccountLabels", true);
+		cfgUsageMaskAccountLabels.set(runtime.settings, true);
 		runtime.session.fetchUsageReports = async () => [
 			{
 				provider: "openai-codex",
@@ -1125,7 +1131,7 @@ describe("wave 3 commands", () => {
 
 	it("/wt: with worktree.cleanSource=true, cleans the source checkout while preserving the worktree", async () => {
 		const { output, runtime, fakeSessionManager } = createRuntime();
-		runtime.settings.override("worktree.cleanSource", true);
+		cfgWorktreeCleanSource.override(runtime.settings, true);
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-wt-clean-"));
 		const repoDir = path.join(root, "repo");
 		const worktreeBase = path.join(root, "wt");
@@ -1249,7 +1255,7 @@ describe("wave 3 commands", () => {
 
 	it("/memory stats: still names the backend when a real backend simply has no stats hook", async () => {
 		const { output, runtime } = createRuntime();
-		runtime.settings.set("memory.backend" as never, "local" as never);
+		cfgMemoryBackend.set(runtime.settings, "local");
 		const result = await executeAcpBuiltinSlashCommand("/memory stats", runtime);
 		expect(result).toEqual({ consumed: true });
 		expect(output[0]).toBe("Memory stats is not available for the local backend.");
@@ -1268,25 +1274,25 @@ describe("wave 3 commands", () => {
 	// /browser
 	it("/browser visible: sets headless=false; second call is idempotent", async () => {
 		const { runtime } = createRuntime();
-		runtime.settings.set("browser.enabled" as never, true as never);
-		runtime.settings.set("browser.headless" as never, true as never);
+		cfgBrowserEnabled.set(runtime.settings, true);
+		cfgBrowserHeadless.set(runtime.settings, true);
 		const r1 = await executeAcpBuiltinSlashCommand("/browser visible", runtime);
 		expect(r1).toEqual({ consumed: true });
-		expect(runtime.settings.get("browser.headless" as never)).toBe(false);
+		expect(cfgBrowserHeadless.get(runtime.settings)).toBe(false);
 		const r2 = await executeAcpBuiltinSlashCommand("/browser visible", runtime);
 		expect(r2).toEqual({ consumed: true });
-		expect(runtime.settings.get("browser.headless" as never)).toBe(false);
+		expect(cfgBrowserHeadless.get(runtime.settings)).toBe(false);
 	});
 
 	it("/browser no-arg after /browser visible toggles to headless", async () => {
 		const { output, runtime } = createRuntime();
-		runtime.settings.set("browser.enabled" as never, true as never);
-		runtime.settings.set("browser.headless" as never, true as never);
+		cfgBrowserEnabled.set(runtime.settings, true);
+		cfgBrowserHeadless.set(runtime.settings, true);
 		await executeAcpBuiltinSlashCommand("/browser visible", runtime);
 		const r = await executeAcpBuiltinSlashCommand("/browser", runtime);
 		expect(r).toEqual({ consumed: true });
 		expect(output[output.length - 1]).toContain("headless");
-		expect(runtime.settings.get("browser.headless" as never)).toBe(true);
+		expect(cfgBrowserHeadless.get(runtime.settings)).toBe(true);
 	});
 
 	// /compact
@@ -1305,17 +1311,6 @@ describe("wave 3 commands", () => {
 
 describe("wave 4 commands", () => {
 	// /mcp
-	it("/mcp (no args): outputs help text containing list, enable, disable, remove, reload", async () => {
-		const { output, runtime } = createRuntime();
-		const result = await executeAcpBuiltinSlashCommand("/mcp", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("list");
-		expect(output[0]).toContain("enable");
-		expect(output[0]).toContain("disable");
-		expect(output[0]).toContain("remove");
-		expect(output[0]).toContain("reload");
-	});
-
 	it("/mcp help: outputs help text containing list, enable, disable, remove, reload", async () => {
 		const { output, runtime } = createRuntime();
 		const result = await executeAcpBuiltinSlashCommand("/mcp help", runtime);

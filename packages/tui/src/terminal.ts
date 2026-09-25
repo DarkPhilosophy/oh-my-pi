@@ -25,6 +25,7 @@ import {
 } from "./terminal-capabilities";
 import { isInsideTmux, wrapTmuxPassthrough } from "./tmux";
 import { setHangulCompatibilityJamoWidth } from "./utils";
+import { translateWindowsAltGrSequence } from "./windows-altgr";
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
@@ -457,7 +458,6 @@ export interface TerminalStartOptions {
 	deferInput?: boolean;
 	/** Fork: focus-change reporting used by the daemon terminal bridge. */
 	onFocusChange?: (focused: boolean) => void;
-
 }
 /** Identity of an accepted explicit terminal appearance refresh request. */
 export type TerminalAppearanceRequestToken = number;
@@ -1466,7 +1466,13 @@ export class ProcessTerminal implements Terminal {
 				return;
 			}
 			if (this.#inputHandler) {
-				this.#inputHandler(sequence);
+				// Windows console hosts drop AltGr text under kitty (AltGr+F → `CSI 102;3u`);
+				// recover it from the active layout before any keybinding sees an Alt chord.
+				const altGrText =
+					this.#kittyProtocolActive && this.#conpty && process.platform === "win32"
+						? translateWindowsAltGrSequence(sequence)
+						: undefined;
+				this.#inputHandler(altGrText ?? sequence);
 			}
 		});
 

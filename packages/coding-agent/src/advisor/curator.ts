@@ -7,6 +7,7 @@ import curatorAddressedPrompt from "../prompts/advisor/curator-addressed.md" wit
 import curatorActionPrompt from "../prompts/advisor/curator-action.md" with { type: "text" };
 import { ONLINE_MEMORY_MODEL_KEY } from "../tiny/models";
 import type { AdvisorSeverity } from "@oh-my-pi/pi-tui/chat/messages";
+import { cfgAdvisorCurator } from "./settings";
 export interface AdvisorCuratorCandidate {
 	id: string;
 	note: string;
@@ -63,7 +64,7 @@ export async function curateAdvisorCandidates(options: CurateAdvisorCandidatesOp
 		revision: context.revision,
 		decisions: candidates.map(candidate => ({ candidateId: candidate.id, action: "keep" })),
 	});
-	if (candidates.length === 0 || options.settings.get("advisor.curator") === "off") return keep();
+	if (candidates.length === 0 || cfgAdvisorCurator.get(options.settings) === "off") return keep();
 	try {
 		const judge = resolveJudge({
 			settings: options.settings,

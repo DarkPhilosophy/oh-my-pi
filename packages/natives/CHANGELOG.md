@@ -5,6 +5,31 @@
 ### Added
 
 - Added persistent clipboard-write support through the public `@oh-my-pi/pi-natives/clipboard` entry point ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+## [18.3.1] - 2026-09-25
+
+### Added
+
+- Added support for asynchronous file I/O and custom filesystem providers in native shell execution, including resolving arbitrary `scheme://` paths through native operation options.
+
+### Fixed
+
+- Fixed shell access to standard and special file descriptors, including `/dev/stdin`, `/dev/stdout`, `/dev/stderr`, `/dev/fd/N`, and `/dev/tty`, preventing heredoc commands from hanging the TUI.
+- Fixed native operations such as grep, glob, AST, shell, and VCS calls to promptly honor an `AbortSignal` that was already aborted when the operation starts.
+- Fixed Windows path formatting in the shell’s `fd` and `find` builtins so POSIX path patterns match correctly.
+
+## [18.3.0] - 2026-09-24
+
+### Added
+
+- Added native bindings for Apple Foundation Models availability checks, text generation, and cancellation.
+- Added offline token counting support for TypeSafe Jev 1.13 `state` inputs via `Encoding.Jev` (excluding the request frame).
+
+## [18.2.11] - 2026-09-23
+
+### Changed
+
+- Improved `warmHighlighter()` so it prepares TypeScript, TSX, JavaScript, Bash, Python, Rust, and Markdown highlighting in the background, reducing delays on the first highlight for these languages.
+
 ## [18.2.9] - 2026-09-22
 
 ### Fixed

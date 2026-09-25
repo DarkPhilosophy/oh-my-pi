@@ -56,7 +56,7 @@ class AllocationAwareBlock implements Component {
 	#allocation = Number.MAX_SAFE_INTEGER;
 	#finalized = false;
 
-	constructor(private readonly rows: readonly string[]) { }
+	constructor(private readonly rows: readonly string[]) {}
 
 	finalize(): void {
 		this.#finalized = true;

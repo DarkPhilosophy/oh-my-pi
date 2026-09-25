@@ -56,6 +56,8 @@ import {
 } from "../../session/session-worktree";
 import { formatShakeSummary, type ShakeMode, type ShakeResult } from "../../session/shake-types";
 import {
+	codexUsagePlan,
+	formatCodexUsageReportLabel,
 	getActiveAccountLabelParts,
 	limitMatchesActiveAccount,
 	reportMatchesActiveAccount,
@@ -68,8 +70,9 @@ import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-uti
 import {
 	getChangelogPath,
 	parseChangelog,
-	RECENT_CHANGELOG_ENTRY_LIMIT,
+	parseChangelogView,
 	renderChangelogEntries,
+	selectChangelogEntries,
 } from "../../utils/changelog";
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
@@ -82,8 +85,16 @@ import {
 	usageIdentityKey,
 } from "@oh-my-pi/pi-tui/overlays/usage-mask";
 import { renderFractionBar } from "@oh-my-pi/pi-tui/overlays/usage-bar";
-import { collapseSharedUsageReports, formatLimitTitle } from "@oh-my-pi/pi-tui/overlays/usage-display";
+import {
+	collapseSharedUsageReports,
+	formatLimitTitle,
+	summarizeUsageResetCredits,
+} from "@oh-my-pi/pi-tui/overlays/usage-display";
 import { formatRemainingOnlyTotal, isUsedOnlyAbsoluteAmount } from "@oh-my-pi/pi-tui/prompt/usage-amounts";
+
+import { cfgDisplayCollapseCompacted, cfgTerminalShowImages } from "../settings";
+import { cfgProviderAppendOnlyContext } from "../../session/settings";
+import { cfgShareRedactSecrets, cfgShareServerUrl, cfgShareStore } from "../../commands/settings";
 
 function formatCreditValue(value: number): string {
 	return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
@@ -164,7 +175,9 @@ export class CommandController {
 				return;
 			}
 
-			const filePath = await this.ctx.session.exportToHtml(outputPath, useUserThemes);
+			// The viewed session: the focused subagent's transcript (plus its own
+			// subagents) from a focused view, otherwise the main session.
+			const filePath = await this.ctx.viewSession.exportToHtml(outputPath, useUserThemes);
 			this.ctx.showStatus(`Session exported to: ${filePath}`);
 			this.openInBrowser(filePath);
 		} catch (error: unknown) {
@@ -321,10 +334,10 @@ export class CommandController {
 		// server; the key rides in the link fragment and never leaves the client.
 		try {
 			const result = await shareSession(this.ctx.session.sessionManager, {
-				serverUrl: this.ctx.settings.get("share.serverUrl"),
-				store: this.ctx.settings.get("share.store"),
+				serverUrl: cfgShareServerUrl.get(this.ctx.settings),
+				store: cfgShareStore.get(this.ctx.settings),
 				state: this.ctx.session.state,
-				obfuscator: this.ctx.settings.get("share.redactSecrets") ? this.ctx.session.obfuscator : undefined,
+				obfuscator: cfgShareRedactSecrets.get(this.ctx.settings) ? this.ctx.session.obfuscator : undefined,
 			});
 			if (loader.signal.aborted) return;
 			restoreEditor();
@@ -359,10 +372,7 @@ export class CommandController {
 			info += `${theme.fg("dim", "No model selected")}\n`;
 		} else {
 			const authMode = resolveProviderAuthMode(this.ctx.session.modelRegistry.authStorage, model.provider);
-			const openaiWebsocketSetting = this.ctx.settings.get("providers.openaiWebsockets") ?? "auto";
-			const preferOpenAICodexWebsockets =
-				openaiWebsocketSetting === "on" ? true : openaiWebsocketSetting === "off" ? false : undefined;
-			const credentialSource = this.ctx.session.modelRegistry.authStorage.describeCredentialSource(
+			const credentialSource = this.ctx.session.modelRegistry.authStorage.keys.describe(
 				model.provider,
 				stats.sessionId,
 			);
@@ -371,7 +381,7 @@ export class CommandController {
 				sessionId: stats.sessionId,
 				authMode,
 				credentialSource,
-				preferWebsockets: preferOpenAICodexWebsockets,
+				preferWebsockets: this.ctx.session.preferWebsockets,
 				providerSessionState: this.ctx.session.providerSessionState,
 			});
 			info += renderProviderSection(providerDetails, theme);
@@ -393,7 +403,7 @@ export class CommandController {
 		info += `${theme.fg("dim", "Total:")} ${stats.totalMessages}\n\n`;
 		// Append-only context
 		{
-			const setting = this.ctx.settings.get("provider.appendOnlyContext") ?? "auto";
+			const setting = cfgProviderAppendOnlyContext.get(this.ctx.settings);
 			const model = this.ctx.session.model;
 			const mode = shouldEnableAppendOnlyContext(setting, model);
 			const activeLabel = mode ? theme.fg("success", "active") : theme.fg("dim", "inactive");
@@ -496,10 +506,7 @@ export class CommandController {
 		// Resolve the active OAuth identity for each advisor's provider so quota
 		// filtering matches the credential actually in use (not sibling accounts).
 		const resolveActiveAdvisorAccount = (provider: string, sessionId?: string): OAuthAccountIdentity | undefined =>
-			this.ctx.session.modelRegistry.authStorage.getOAuthAccountIdentity(
-				provider,
-				sessionId ?? this.ctx.session.sessionId,
-			);
+			this.ctx.session.modelRegistry.authStorage.oauth.identity(provider, sessionId ?? this.ctx.session.sessionId);
 		const nowMs = Date.now();
 		// Roster view: show every configured advisor with its status, even when
 		// none are live (all paused/no-model). The old code returned a generic
@@ -657,16 +664,31 @@ export class CommandController {
 		this.ctx.showUsageDashboard(usageReports);
 	}
 
-	async handleChangelogCommand(showFull = false): Promise<void> {
+	async handleChangelogCommand(args = ""): Promise<void> {
+		const view = parseChangelogView(args);
+		if ("error" in view) {
+			this.ctx.showWarning(view.error);
+			return;
+		}
 		const changelogPath = getChangelogPath();
 		const allEntries = await parseChangelog(changelogPath);
-		const entriesToShow = showFull ? allEntries : allEntries.slice(0, RECENT_CHANGELOG_ENTRY_LIMIT);
+		const entriesToShow = selectChangelogEntries(allEntries, view);
 		const changelogMarkdown =
 			entriesToShow.length > 0 ? renderChangelogEntries(entriesToShow).markdown : "No changelog entries found.";
-		const title = showFull ? "Full Changelog" : "Recent Changes";
-		const hint = showFull
-			? ""
-			: `\n\n${theme.fg("dim", "Use")} ${theme.bold("/changelog full")} ${theme.fg("dim", "to view the complete changelog.")}`;
+		const shown = entriesToShow.length;
+		const titleCount = shown > 0 ? shown : view.kind === "last" ? view.count : shown;
+		const title =
+			view.kind === "full"
+				? "Full Changelog"
+				: view.kind === "last"
+					? titleCount === 1
+						? "Last Release"
+						: `Last ${titleCount} Releases`
+					: "Recent Changes";
+		const hint =
+			view.kind === "full"
+				? ""
+				: `\n\n${theme.fg("dim", "Use")} ${theme.bold("/changelog full")} ${theme.fg("dim", "to view the complete changelog.")}`;
 
 		const block = new TranscriptBlock();
 		block.addChild(new DynamicBorder());
@@ -1423,7 +1445,7 @@ export class CommandController {
 					truncation: meta?.truncation,
 					artifactError: meta?.artifactError,
 					images: result.images,
-					showImages: this.ctx.settings.get("terminal.showImages"),
+					showImages: cfgTerminalShowImages.get(this.ctx.settings),
 				});
 			}
 			try {
@@ -1617,7 +1639,7 @@ export class CommandController {
 			// intentional replacement, so drop the stale pre-compaction scrollback
 			// instead of repainting the shrunken frame below it. With collapse
 			// disabled the full history stays inline and scrollback is kept.
-			if (this.ctx.settings.get("display.collapseCompacted")) {
+			if (cfgDisplayCollapseCompacted.get(this.ctx.settings)) {
 				this.ctx.ui.requestRender(true, { clearScrollback: true });
 			} else {
 				this.ctx.ui.requestRender();
@@ -1754,7 +1776,7 @@ const BAR_WIDTH_MAX = 24;
 const COLUMN_WIDTH_MIN = 4;
 
 function renderJobLine(job: AsyncJobSnapshotItem, now: number): string {
-	const duration = formatDuration(Math.max(0, now - job.startTime));
+	const duration = formatDuration(Math.max(0, (job.endTime ?? now) - job.startTime));
 	const status = formatJobStatus(job.status);
 	return `${theme.fg("dim", job.id)} ${theme.fg("dim", `[${job.type}]`)} ${status} ${theme.fg("dim", `(${duration})`)}`;
 }
@@ -1785,16 +1807,16 @@ function formatNumber(value: number, maxFractionDigits = 1): string {
 }
 
 function resolveProviderAuthMode(authStorage: AuthStorage, provider: string): string {
-	if (authStorage.hasOAuth(provider)) {
+	if (authStorage.credentials.hasOAuth(provider)) {
 		return "oauth";
 	}
-	if (authStorage.has(provider)) {
+	if (authStorage.credentials.has(provider)) {
 		return "api key";
 	}
 	if (getEnvApiKey(provider)) {
 		return "env api key";
 	}
-	if (authStorage.hasAuth(provider)) {
+	if (authStorage.keys.source(provider) !== undefined) {
 		return "runtime/fallback";
 	}
 	return "unknown";
@@ -1824,7 +1846,7 @@ function formatWindowSuffix(label: string, windowLabel: string, uiTheme: Theme):
 	return uiTheme.fg("dim", `(${windowLabel})`);
 }
 
-/** ` (org)` suffix when the report is org-attributed — two subscriptions can share one email. */
+/** ` (org)` suffix for providers whose orgName is an organization. */
 function orgSuffix(report: UsageReport): string {
 	const orgName = report.metadata?.orgName;
 	const orgId = report.metadata?.orgId;
@@ -1836,51 +1858,66 @@ function styleAccountMask(label: string, uiTheme: typeof theme): string {
 	return label.replace(MASK_STARS, uiTheme.fg("warning", MASK_STARS));
 }
 
-function formatAccountLabel(limit: UsageLimit, report: UsageReport, index: number): AccountLabel {
+/**
+ * Qualifier shown after an account identity. Codex's `orgName` is the
+ * login-time plan, not a workspace, so Codex labels carry a disambiguator only
+ * when two reports share an email, followed by the live usage plan.
+ */
+function accountQualifier(report: UsageReport, peers: readonly UsageReport[]): string {
+	if (report.provider !== "openai-codex") return orgSuffix(report);
+	const collision = formatCodexUsageReportLabel(report, peers, "", undefined, false);
+	const plan = codexUsagePlan(report);
+	return `${collision}${plan ? ` (${plan})` : ""}`;
+}
+
+function formatAccountLabel(
+	limit: UsageLimit,
+	report: UsageReport,
+	peers: readonly UsageReport[],
+	index: number,
+): AccountLabel {
 	const accountKey = usageIdentityKey(
 		limit.scope.accountId || report.metadata?.accountId,
 		limit.scope.projectId || report.metadata?.projectId,
 		limit.scope,
 		report.metadata?.orgId,
 	);
+	const qualifier = accountQualifier(report, peers);
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email)
-		return { identity: email, qualifier: orgSuffix(report), accountKey, provider: report.provider };
+	if (typeof email === "string" && email) return { identity: email, qualifier, accountKey, provider: report.provider };
 	const accountId =
-		limit.scope.accountId ||
-		(typeof report.metadata?.accountId === "string" && report.metadata.accountId
+		typeof report.metadata?.accountId === "string" && report.metadata.accountId
 			? report.metadata.accountId
-			: undefined);
-	if (accountId) return { identity: accountId, qualifier: orgSuffix(report), accountKey, provider: report.provider };
+			: limit.scope.accountId || undefined;
+	if (accountId) return { identity: accountId, qualifier, accountKey, provider: report.provider };
 	const projectId =
-		limit.scope.projectId ||
-		(typeof report.metadata?.projectId === "string" && report.metadata.projectId
+		typeof report.metadata?.projectId === "string" && report.metadata.projectId
 			? report.metadata.projectId
-			: undefined);
+			: limit.scope.projectId || undefined;
 	if (projectId) return { identity: projectId, accountKey, provider: report.provider };
 	return { identity: `account ${index + 1}`, placeholder: true, provider: report.provider };
 }
 
-function formatUnlimitedReportLabel(report: UsageReport, index: number): AccountLabel {
+function formatUnlimitedReportLabel(report: UsageReport, peers: readonly UsageReport[], index: number): AccountLabel {
 	const accountKey = usageIdentityKey(
 		report.metadata?.accountId,
 		report.metadata?.projectId,
 		report.limits[0]?.scope,
 		report.metadata?.orgId,
 	);
+	const qualifier = accountQualifier(report, peers);
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email)
-		return { identity: email, qualifier: orgSuffix(report), accountKey, provider: report.provider };
+	if (typeof email === "string" && email) return { identity: email, qualifier, accountKey, provider: report.provider };
 	const accountId = report.metadata?.accountId;
 	if (typeof accountId === "string" && accountId)
-		return { identity: accountId, qualifier: orgSuffix(report), accountKey, provider: report.provider };
+		return { identity: accountId, qualifier, accountKey, provider: report.provider };
 	const projectId = report.metadata?.projectId;
 	if (typeof projectId === "string" && projectId)
 		return { identity: projectId, accountKey, provider: report.provider };
 	return { identity: `account ${index + 1}`, placeholder: true, provider: report.provider };
 }
 
-function formatResetAccountLabel(report: UsageReport): AccountLabel {
+function formatResetAccountLabel(report: UsageReport, peers: readonly UsageReport[]): AccountLabel {
 	const accountKey = usageIdentityKey(
 		report.metadata?.accountId,
 		report.metadata?.projectId,
@@ -1892,7 +1929,7 @@ function formatResetAccountLabel(report: UsageReport): AccountLabel {
 	const identity =
 		typeof email === "string" && email ? email : typeof accountId === "string" && accountId ? accountId : undefined;
 	return identity
-		? { identity, qualifier: orgSuffix(report), accountKey, provider: report.provider }
+		? { identity, qualifier: accountQualifier(report, peers), accountKey, provider: report.provider }
 		: { identity: "account", placeholder: true, provider: report.provider };
 }
 
@@ -1908,6 +1945,7 @@ function formatResetShort(limit: UsageLimit, nowMs: number): string | undefined 
 function formatAccountHeaderRow(
 	limits: UsageLimit[],
 	reports: UsageReport[],
+	peers: readonly UsageReport[],
 	nowMs: number,
 	columnWidth: number,
 	uiTheme: Theme,
@@ -1919,13 +1957,14 @@ function formatAccountHeaderRow(
 		const reset = formatResetShort(limit, nowMs);
 		const report = reports[index];
 		const active = report !== undefined && limitMatchesActiveAccount(report, limit, activeAccount);
-		const accountLabel = formatAccountLabel(limit, report, index + startIndex);
+		const accountLabel = formatAccountLabel(limit, report, peers, index + startIndex);
 		const label = mask(accountLabel);
 		return {
 			label: active ? `● ${label}` : label,
 			qualifier: accountLabel.qualifier || label.match(/ \(\d+\)$/)?.[0] || "",
 			suffix: reset ? `(${reset})` : "",
 			active,
+			daybreak: report?.metadata?.daybreak === true,
 		};
 	});
 	const maxSuffixWidth = parts.reduce((max, p) => Math.max(max, visibleWidth(p.suffix)), 0);
@@ -1946,18 +1985,22 @@ function formatAccountHeaderRow(
 	}
 
 	return parts.map(p => {
-		const prefix = fitAccountLabel(p.label, prefixBudget, p.qualifier);
-		const prefixCell = prefix + " ".repeat(prefixBudget - visibleWidth(prefix));
-		const styledPrefix = styleAccountMask(p.active ? uiTheme.fg("accent", prefixCell) : prefixCell, uiTheme);
-		if (!p.suffix) return styledPrefix + " ".repeat(maxSuffixWidth + gap);
+		// Keep the full badge visible by taking its columns from the account label.
+		const badge = p.daybreak && prefixBudget >= 10 ? " daybreak" : "";
+		const prefix = fitAccountLabel(p.label, prefixBudget - visibleWidth(badge), p.qualifier);
+		const styledLabel = styleAccountMask(p.active ? uiTheme.fg("accent", prefix) : prefix, uiTheme);
+		const padding = " ".repeat(Math.max(0, prefixBudget - visibleWidth(prefix) - visibleWidth(badge)));
+		const prefixCell = `${styledLabel}${badge ? uiTheme.fg("success", badge) : ""}${padding}`;
+		if (!p.suffix) return prefixCell + " ".repeat(maxSuffixWidth + gap);
 		const suffixPad = " ".repeat(maxSuffixWidth - visibleWidth(p.suffix));
-		return `${styledPrefix} ${suffixPad}${uiTheme.fg("dim", p.suffix)}`;
+		return `${prefixCell} ${suffixPad}${uiTheme.fg("dim", p.suffix)}`;
 	});
 }
 
 function resolveAccountHeaderWidth(
 	limits: UsageLimit[],
 	reports: UsageReport[],
+	peers: readonly UsageReport[],
 	nowMs: number,
 	activeAccount: OAuthAccountIdentity | undefined,
 	mask: AccountMasker,
@@ -1966,7 +2009,7 @@ function resolveAccountHeaderWidth(
 	return limits.reduce((max, limit, index) => {
 		const report = reports[index];
 		const active = report !== undefined && limitMatchesActiveAccount(report, limit, activeAccount);
-		const label = `${active ? "● " : ""}${mask(formatAccountLabel(limit, report, index + startIndex))}`;
+		const label = `${active ? "● " : ""}${mask(formatAccountLabel(limit, report, peers, index + startIndex))}`;
 		const reset = formatResetShort(limit, nowMs);
 		const width = visibleWidth(reset ? `${label} (${reset})` : label);
 		return Math.max(max, width);
@@ -2169,9 +2212,9 @@ export function renderUsageReports(
 		// One masker per provider so colliding masks (`mai1@` vs `mai2@`) get
 		// ordinals consistently across the header, reset lines and unlimited rows.
 		const maskInputs = providerReports.flatMap((report, index) => [
-			...report.limits.map(limit => formatAccountLabel(limit, report, index)),
-			formatUnlimitedReportLabel(report, index),
-			formatResetAccountLabel(report),
+			...report.limits.map(limit => formatAccountLabel(limit, report, providerReports, index)),
+			formatUnlimitedReportLabel(report, providerReports, index),
+			formatResetAccountLabel(report, providerReports),
 		]);
 		const activeLabelParts = getActiveAccountLabelParts(activeAccount);
 		const activeReportIndex = activeLabelParts
@@ -2182,8 +2225,8 @@ export function renderUsageReports(
 			const report = providerReports[activeReportIndex]!;
 			const limit = report.limits.find(candidate => limitMatchesActiveAccount(report, candidate, activeAccount));
 			activeLabel = limit
-				? formatAccountLabel(limit, report, activeReportIndex)
-				: formatUnlimitedReportLabel(report, activeReportIndex);
+				? formatAccountLabel(limit, report, providerReports, activeReportIndex)
+				: formatUnlimitedReportLabel(report, providerReports, activeReportIndex);
 		}
 		if (activeLabel) maskInputs.push(activeLabel);
 		const mask = createAccountMasker(maskInputs, maskAccountLabels);
@@ -2212,11 +2255,13 @@ export function renderUsageReports(
 
 		const resetAccountLines: string[] = [];
 		for (const report of providerReports) {
-			const count = report.resetCredits?.availableCount ?? 0;
-			if (count <= 0) continue;
-			const labelParts = formatResetAccountLabel(report);
+			const resets = summarizeUsageResetCredits(report.resetCredits, nowMs);
+			if (!resets || resets.bankedCount <= 0) continue;
+			const labelParts = formatResetAccountLabel(report, providerReports);
 			const isActive = reportMatchesActiveAccount(report, activeAccount);
-			const suffix = `: ${count} saved reset${count === 1 ? "" : "s"}${isActive ? " (active)" : ""}`;
+			const availability =
+				resets.redeemableCount === resets.bankedCount ? "" : ` · ${resets.redeemableCount} usable now`;
+			const suffix = `: ${resets.bankedCount} saved reset${resets.bankedCount === 1 ? "" : "s"}${availability}${isActive ? " (active)" : ""}`;
 			const maskedLabel = mask(labelParts);
 			const fixedWidth = visibleWidth(`    • ${suffix}`);
 			if (fixedWidth < availableWidth) {
@@ -2226,9 +2271,19 @@ export function renderUsageReports(
 			} else {
 				const label = styleAccountMask(truncateToWidth(maskedLabel, Math.max(1, availableWidth - 6)), uiTheme);
 				resetAccountLines.push(`    • ${label}`);
-				const compact = `${count} reset${count === 1 ? "" : "s"}${isActive ? " (active)" : ""}`;
+				const compact = `${resets.bankedCount} reset${resets.bankedCount === 1 ? "" : "s"}${availability}${isActive ? " (active)" : ""}`;
 				for (const detail of wrapTextWithAnsi(compact, Math.max(1, availableWidth - 4))) {
 					resetAccountLines.push(`    ${detail}`);
+				}
+			}
+			if (resets.soonestExpiry) {
+				const expiryMs = Date.parse(resets.soonestExpiry);
+				const remaining = expiryMs - nowMs;
+				const expiryDate = resets.soonestExpiry.slice(0, 10);
+				if (remaining > 0) {
+					resetAccountLines.push(`        soonest expires in ${formatDuration(remaining)} (${expiryDate})`);
+				} else {
+					resetAccountLines.push(`        expired (${expiryDate})`);
 				}
 			}
 			for (const credit of report.resetCredits?.credits ?? []) {
@@ -2304,7 +2359,10 @@ export function renderUsageReports(
 		const sectionColumnsPerRow = resolveColumnsPerRow(sectionCount, availableWidth, sectionTrailing);
 		const preferredColumnWidth = renderableGroups.reduce(
 			(max, g) =>
-				Math.max(max, resolveAccountHeaderWidth(g.sortedLimits, g.sortedReports, nowMs, activeAccount, mask)),
+				Math.max(
+					max,
+					resolveAccountHeaderWidth(g.sortedLimits, g.sortedReports, providerReports, nowMs, activeAccount, mask),
+				),
 			BAR_WIDTH_MAX,
 		);
 		const sectionColumnWidth = resolveColumnWidth(
@@ -2327,6 +2385,7 @@ export function renderUsageReports(
 				const accountLabels = formatAccountHeaderRow(
 					chunkLimits,
 					chunkReports,
+					providerReports,
 					nowMs,
 					sectionColumnWidth,
 					uiTheme,
@@ -2359,11 +2418,12 @@ export function renderUsageReports(
 		// Render accounts with no rate limits (e.g. business/enterprise plans).
 		const unlimitedReports = providerReports.filter(report => report.limits.length === 0);
 		for (const report of unlimitedReports) {
-			const label = styleAccountMask(mask(formatUnlimitedReportLabel(report, 0)), uiTheme);
-			const tier = report.metadata?.planType;
+			const label = styleAccountMask(mask(formatUnlimitedReportLabel(report, providerReports, 0)), uiTheme);
+			const tier = report.provider === "openai-codex" ? undefined : report.metadata?.planType;
 			const tierSuffix = typeof tier === "string" && tier ? ` ${uiTheme.fg("dim", `(${tier})`)}` : "";
+			const daybreakSuffix = report.metadata?.daybreak === true ? uiTheme.fg("success", " daybreak") : "";
 			lines.push(
-				`${uiTheme.fg("success", uiTheme.status.success)} ${label}${tierSuffix} ${uiTheme.fg("dim", "-- no limits")}`,
+				`${uiTheme.fg("success", uiTheme.status.success)} ${label}${daybreakSuffix}${tierSuffix} ${uiTheme.fg("dim", "-- no limits")}`,
 			);
 		}
 		// No per-provider footer; global header shows last check.

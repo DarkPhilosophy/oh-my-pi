@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+## [18.3.1] - 2026-09-25
+
+### Added
+
+- Added live steering support for Codex WebSocket transports, allowing users to provide input while a response is in progress.
+- Added passive tool-call context support, allowing hooks and tools to supply additional context for subsequent model processing.
+- Improved context-window handling by automatically adjusting output-token limits and supporting models that truncate output at the context-window limit.
+
+### Changed
+
+- Improved prompt token counting for requests with anchored prefixes by using provider-reported usage and limiting local estimation to new message content.
+
+## [18.3.0] - 2026-09-24
+
+### Added
+
+- Added support for documenting agent tools on demand through the new `AgentTool.docTopics` method.
+- Added `TOOL_INTERRUPT_ABORT_REASON` so interruptible tools can distinguish queued steering, peer messages, or background completions from a full run abort.
+
+### Changed
+
+- Improved interrupt handling so tools respect wait mode and can be interrupted when appropriate.
+- Updated Anthropic compaction compatibility with signature verification.
+
+## [18.2.11] - 2026-09-23
+
+### Fixed
+
+- Fixed background job completions interrupting foreground Bash and eval calls, which could cause those calls to be repeatedly moved into the background.
+
 ## [18.2.9] - 2026-09-22
 
 ### Fixed

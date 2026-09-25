@@ -15,6 +15,7 @@ import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
 import { SessionManager } from "../src/session/session-manager";
 import { EventBus } from "../src/utils/event-bus";
+import { cfgTasksTodoClearDelay } from "@oh-my-pi/pi-coding-agent/tools/settings";
 
 let directory: TempDir;
 let auth: AuthStorage;
@@ -89,7 +90,7 @@ afterEach(async () => {
 });
 
 it("restores bottom-anchored chat after the TODO scenario dismisses its completed panel", async () => {
-	session.settings.override("tasks.todoClearDelay", 4);
+	cfgTasksTodoClearDelay.override(session.settings, 4);
 	await session.runRenderTest({ repeat: 1, delayMs: 1, scenario: "todo" }, mode.getToolUIContext());
 	await session.waitForIdle();
 	await terminal.waitForRender(() => mode.todoContainer.children.length === 0);

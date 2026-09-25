@@ -59,6 +59,8 @@ const runtimeFactory = async ({
 				autoCompactionEnabled: true,
 				messageCount: commands.length,
 				queuedMessageCount: 0,
+				hasPendingAsyncWork: false,
+				isSettled: true,
 				todoPhases: [],
 			},
 			cwd,

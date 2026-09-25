@@ -13,7 +13,7 @@ class WriteCard implements Component {
 	total = 0;
 	finalized = false;
 	version = 0;
-	constructor(readonly tag: string) { }
+	constructor(readonly tag: string) {}
 	getTranscriptBlockVersion = () => this.version;
 	render(): readonly string[] {
 		const start = Math.max(0, this.total - WINDOW);

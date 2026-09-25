@@ -37,7 +37,8 @@ export class RequestCredentialTracker {
 			if (!isApiKeyResolver(resolved)) return resolved;
 			return async ctx => {
 				const key = await resolved(ctx);
-				if (key) this.#lastByProvider.set(model.provider, key);
+				const bearer = typeof key === "string" ? key : key?.apiKey;
+				if (bearer) this.#lastByProvider.set(model.provider, bearer);
 				return key;
 			};
 		};

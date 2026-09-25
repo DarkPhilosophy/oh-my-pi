@@ -110,6 +110,8 @@ function fakeFactory(protectedJobCount = 0) {
 					autoCompactionEnabled: true,
 					messageCount: state.commands.length,
 					queuedMessageCount: 0,
+					hasPendingAsyncWork: false,
+					isSettled: true,
 					todoPhases: [],
 				},
 				cwd,
@@ -1702,6 +1704,8 @@ describe("daemon server and registry", () => {
 								autoCompactionEnabled: true,
 								messageCount: 0,
 								queuedMessageCount: 0,
+								hasPendingAsyncWork: false,
+								isSettled: true,
 								todoPhases: [],
 							},
 							cwd,
@@ -1787,6 +1791,8 @@ describe("daemon server and registry", () => {
 			interruptMode: "wait",
 			messageCount: 7,
 			queuedMessageCount: 2,
+			hasPendingAsyncWork: false,
+			isSettled: true,
 			todoPhases,
 			commands: [] as string[],
 		};
@@ -1831,6 +1837,8 @@ describe("daemon server and registry", () => {
 				tokensPerSecond: null,
 				messageCount: current.messageCount,
 				queuedMessageCount: current.queuedMessageCount,
+				hasPendingAsyncWork: false,
+				isSettled: true,
 				todoPhases: current.todoPhases,
 			});
 			return {

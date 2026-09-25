@@ -35,7 +35,7 @@ describe("loadEntriesFromFile", () => {
 		fs.writeFileSync(
 			file,
 			'{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
-			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
+				'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
 		);
 		const entries = await loadEntriesFromFile(file);
 		expect(entries).toHaveLength(2);
@@ -48,8 +48,8 @@ describe("loadEntriesFromFile", () => {
 		fs.writeFileSync(
 			file,
 			'{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
-			"not valid json\n" +
-			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
+				"not valid json\n" +
+				'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
 		);
 		const entries = await loadEntriesFromFile(file);
 		expect(entries).toHaveLength(2);

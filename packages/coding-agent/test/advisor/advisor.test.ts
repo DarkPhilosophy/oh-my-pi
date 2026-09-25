@@ -75,6 +75,23 @@ function promptText(input: string | AgentMessage[]): string {
 		.join("\n");
 }
 
+/** High-entropy secret with no repeated 8-char window, so any surviving window is a leak. */
+function distinctSecret(length: number): string {
+	let secret = "";
+	for (let i = 0; secret.length < length; i++) secret += Bun.hash(`secret-${i}`).toString(36);
+	return secret.slice(0, length);
+}
+
+/** 8-char windows of `secret` present in `text`: a truncation cut leaks a secret as fragments, not whole. */
+function leakedSecretPieces(text: string, secret: string): string[] {
+	const pieces: string[] = [];
+	for (let i = 0; i + 8 <= secret.length; i++) {
+		const piece = secret.slice(i, i + 8);
+		if (text.includes(piece)) pieces.push(piece);
+	}
+	return pieces;
+}
+
 describe("advisor", () => {
 	describe("advisor system prompt", () => {
 		it("forbids concrete claims about tool arguments hidden from the advisor transcript", () => {
@@ -596,20 +613,20 @@ describe("advisor", () => {
 				injectIdle: async messages => {
 					injected.push(...messages);
 				},
-				scheduleIdleFlush: () => { },
+				scheduleIdleFlush: () => {},
 			});
 			yq.register<AdvisorNote>("advisor", {
 				build: entries =>
 					entries.length === 0
 						? null
 						: ({
-							role: "custom",
-							customType: "advisor",
-							display: true,
-							attribution: "agent",
-							timestamp: Date.now(),
-							content: formatAdvisorBatchContent(entries),
-						} as AgentMessage),
+								role: "custom",
+								customType: "advisor",
+								display: true,
+								attribution: "agent",
+								timestamp: Date.now(),
+								content: formatAdvisorBatchContent(entries),
+							} as AgentMessage),
 			});
 
 			yq.enqueue("advisor", { note: "first note" });
@@ -630,7 +647,7 @@ describe("advisor", () => {
 			let scheduled = 0;
 			const yq = new YieldQueue({
 				isStreaming: () => false,
-				injectIdle: async () => { },
+				injectIdle: async () => {},
 				scheduleIdleFlush: () => {
 					scheduled++;
 				},
@@ -652,8 +669,8 @@ describe("advisor", () => {
 		it("clear(kind) drops only that kind's queued entries", () => {
 			const yq = new YieldQueue({
 				isStreaming: () => false,
-				injectIdle: async () => { },
-				scheduleIdleFlush: () => { },
+				injectIdle: async () => {},
+				scheduleIdleFlush: () => {},
 			});
 			yq.register<{ note: string }>("advisor", {
 				build: entries => (entries.length === 0 ? null : ({ role: "custom", content: "x" } as AgentMessage)),
@@ -1468,8 +1485,8 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(input);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 		}
@@ -1486,8 +1503,8 @@ describe("advisor", () => {
 					if (promptCalls === 1) await firstPromptPromise;
 					else finishSecondPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "first", timestamp: 1 } as AgentMessage];
@@ -1531,8 +1548,8 @@ describe("advisor", () => {
 						stopReason: "stop",
 					} as AssistantMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "work", timestamp: 1 } as AgentMessage];
@@ -1564,8 +1581,8 @@ describe("advisor", () => {
 					promptStarted.resolve();
 					await releasePrompt.promise;
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(agent, {
@@ -1595,8 +1612,8 @@ describe("advisor", () => {
 					promptStarted.resolve();
 					await releasePrompt.promise;
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(agent, {
@@ -1627,8 +1644,8 @@ describe("advisor", () => {
 					promptStarted.resolve();
 					await releasePrompt.promise;
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(agent, {
@@ -1719,8 +1736,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "first", timestamp: 1 } as AgentMessage];
@@ -1769,8 +1786,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [
@@ -1835,8 +1852,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					if (promptInputs.length === 1) startPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(agent, host);
@@ -1865,7 +1882,7 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					resetCount++;
 				},
@@ -1919,8 +1936,8 @@ describe("advisor", () => {
 				prompt: async () => {
 					finishPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "t1", timestamp: 1 } as AgentMessage];
@@ -1976,8 +1993,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "hello", timestamp: 1 } as AgentMessage];
@@ -2004,8 +2021,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "done", timestamp: 1 } as AgentMessage];
@@ -2032,8 +2049,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "first", timestamp: 1 } as AgentMessage];
@@ -2060,8 +2077,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					startPrompt();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [
@@ -2345,6 +2362,40 @@ describe("advisor", () => {
 			expect(rendered).toContain(placeholder);
 			expect(rendered).not.toContain("BEGIN_SECRET_");
 			expect(rendered).not.toContain("_END_SECRET");
+		});
+
+		it("redacts an expanded edit diff before middle truncation", async () => {
+			// One giant diff line; the secret straddles the tail window's cut, so
+			// truncating first would leave its suffix, which no redaction pass can match.
+			const secret = distinctSecret(2_000);
+			const obfuscator = new SecretObfuscator([{ type: "plain", content: secret }]);
+			const diff = `--- a/big.ts\n+++ b/big.ts\n@@ -1 +1 @@\n+${".".repeat(10_000)}${secret}${".".repeat(3_000)}`;
+			const promptInputs: Array<string | AgentMessage[]> = [];
+			const agent = makeAgent(promptInputs);
+			const messages: AgentMessage[] = [
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "c1", name: "edit", arguments: { path: "big.ts" } }],
+					timestamp: 1,
+				} as unknown as AgentMessage,
+				{
+					role: "toolResult",
+					toolCallId: "c1",
+					toolName: "edit",
+					content: "ok",
+					details: { diff },
+					isError: false,
+					timestamp: 2,
+				} as unknown as AgentMessage,
+			];
+			const runtime = new AdvisorRuntime(agent, { snapshotMessages: () => messages, obfuscator });
+
+			runtime.onTurnEnd();
+			await runtime.waitForCatchup(1_000, 1);
+
+			const rendered = promptText(promptInputs[0]);
+			expect(rendered).toContain("elided");
+			expect(leakedSecretPieces(rendered, secret)).toEqual([]);
 		});
 		it("does not scan tool-call arguments hidden by the primary-argument preview", async () => {
 			const obfuscator = new SecretObfuscator([
@@ -2712,48 +2763,48 @@ describe("advisor", () => {
 				const searchItemsFor = (
 					secret: string,
 				): Array<Omit<ResponseFileSearchToolCall, "id"> | Omit<ResponseFunctionWebSearch, "id">> => [
-						{
-							type: "file_search_call",
-							status: "completed",
-							queries: [`file query ${secret}`, "public query"],
-							results: [
-								{
-									file_id: staleToken,
-									filename: `${secret}.txt`,
-									text: `retrieved ${secret}`,
-									attributes: { label: secret, count: 3, enabled: true },
-									score: 0.75,
-								},
-								{
-									file_id: "file-public",
-									filename: "public.txt",
-									text: "public result",
-									attributes: null,
-									score: 0,
-								},
-							],
-						},
-						{
-							type: "web_search_call",
-							status: "completed",
-							action: {
-								type: "search",
-								queries: [`web query ${secret}`, "public query"],
-								query: `legacy ${secret}`,
-								sources: [{ type: "url", url: `https://example.test/${secret}` }],
+					{
+						type: "file_search_call",
+						status: "completed",
+						queries: [`file query ${secret}`, "public query"],
+						results: [
+							{
+								file_id: staleToken,
+								filename: `${secret}.txt`,
+								text: `retrieved ${secret}`,
+								attributes: { label: secret, count: 3, enabled: true },
+								score: 0.75,
 							},
+							{
+								file_id: "file-public",
+								filename: "public.txt",
+								text: "public result",
+								attributes: null,
+								score: 0,
+							},
+						],
+					},
+					{
+						type: "web_search_call",
+						status: "completed",
+						action: {
+							type: "search",
+							queries: [`web query ${secret}`, "public query"],
+							query: `legacy ${secret}`,
+							sources: [{ type: "url", url: `https://example.test/${secret}` }],
 						},
-						{
-							type: "web_search_call",
-							status: "completed",
-							action: { type: "open_page", url: `https://example.test/${secret}` },
-						},
-						{
-							type: "web_search_call",
-							status: "completed",
-							action: { type: "find_in_page", url: `https://example.test/${secret}`, pattern: `find ${secret}` },
-						},
-					];
+					},
+					{
+						type: "web_search_call",
+						status: "completed",
+						action: { type: "open_page", url: `https://example.test/${secret}` },
+					},
+					{
+						type: "web_search_call",
+						status: "completed",
+						action: { type: "find_in_page", url: `https://example.test/${secret}`, pattern: `find ${secret}` },
+					},
+				];
 				const searchItems = searchItemsFor(staleToken).map((item, index) => ({
 					...item,
 					id: `native-search-${index}`,
@@ -2844,29 +2895,29 @@ describe("advisor", () => {
 				const searchItemFor = (text: string) =>
 					kind === "file_search_call"
 						? ({ type: "file_search_call", status: "completed", queries: [text] } satisfies Omit<
-							ResponseFileSearchToolCall,
-							"id"
-						>)
+								ResponseFileSearchToolCall,
+								"id"
+							>)
 						: ({
-							type: "tool_search_output",
-							execution: "server",
-							status: "completed",
-							tools: [
-								{
-									type: "namespace",
-									name: "workspace",
-									description: "Workspace tools",
-									tools: [
-										{
-											type: "custom",
-											name: "lookup",
-											description: `Use ${text}`,
-											format: { type: "text" },
-										},
-									],
-								},
-							],
-						} satisfies ResponseToolSearchOutputItemParam);
+								type: "tool_search_output",
+								execution: "server",
+								status: "completed",
+								tools: [
+									{
+										type: "namespace",
+										name: "workspace",
+										description: "Workspace tools",
+										tools: [
+											{
+												type: "custom",
+												name: "lookup",
+												description: `Use ${text}`,
+												format: { type: "text" },
+											},
+										],
+									},
+								],
+							} satisfies ResponseToolSearchOutputItemParam);
 				const searchItem = { ...searchItemFor("tok_abc123"), id: "search-only-collision" };
 				const replacementHistory = buildOpenAiNativeHistory(
 					[{ role: "user", content: stalePrompt, timestamp: 1 }],
@@ -3292,8 +3343,8 @@ describe("advisor", () => {
 					if (promptCalls === 1) finishFirst();
 					else finishSecond();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const rule =
@@ -3353,8 +3404,8 @@ describe("advisor", () => {
 					promptCalls++;
 					state.error = promptCalls === 1 ? "transient provider 500" : undefined;
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state,
 			};
 			const rule =
@@ -3462,8 +3513,8 @@ describe("advisor", () => {
 					promptCalls++;
 					if (promptCalls === 2) finishSecond();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
@@ -3501,7 +3552,7 @@ describe("advisor", () => {
 					if (promptCalls === 1) finishFirst();
 					else finishSecond();
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					resetCount++;
 				},
@@ -3545,7 +3596,7 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(input);
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					resetCount++;
 				},
@@ -3640,7 +3691,7 @@ describe("advisor", () => {
 					promptCalls++;
 					state.error = promptCalls === 1 ? overflowMessage : undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					resetCount++;
 					state.messages.length = 0;
@@ -3701,17 +3752,17 @@ describe("advisor", () => {
 						typeof input === "string"
 							? input
 							: input
-								.map(message => {
-									if (!("content" in message)) return "";
-									if (typeof message.content === "string") return message.content;
-									const textParts: string[] = [];
-									for (const block of message.content) {
-										if (block.type === "text") textParts.push(block.text);
-									}
-									return textParts.join("");
-								})
-								.filter(Boolean)
-								.join("\n\n");
+									.map(message => {
+										if (!("content" in message)) return "";
+										if (typeof message.content === "string") return message.content;
+										const textParts: string[] = [];
+										for (const block of message.content) {
+											if (block.type === "text") textParts.push(block.text);
+										}
+										return textParts.join("");
+									})
+									.filter(Boolean)
+									.join("\n\n");
 					state.messages.push({ role: "user", content, timestamp: Date.now() } as AgentMessage);
 					if (promptCalls === 2) {
 						firstOverflowPromptStarted.resolve();
@@ -3726,7 +3777,7 @@ describe("advisor", () => {
 						} as AgentMessage);
 					}
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -3795,7 +3846,7 @@ describe("advisor", () => {
 					promptCalls++;
 					state.error = promptCalls === 1 ? overflowMessage : undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -3865,7 +3916,7 @@ describe("advisor", () => {
 					state.messages.push(failure);
 					state.error = "opaque provider rejection";
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					resetCount++;
 					state.messages.length = 0;
@@ -3920,7 +3971,7 @@ describe("advisor", () => {
 					}
 					state.error = overflowMessage;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -3974,8 +4025,8 @@ describe("advisor", () => {
 					startPrompt();
 					await promptFinish;
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
@@ -4027,8 +4078,8 @@ describe("advisor", () => {
 					startPrompt();
 					await promptFinish;
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
@@ -4068,8 +4119,8 @@ describe("advisor", () => {
 						throw new Error("fail");
 					}
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
@@ -4092,8 +4143,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					throw new Error("fail");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
@@ -4120,8 +4171,8 @@ describe("advisor", () => {
 						throw new Error("404 No endpoints available matching your guardrail restrictions and data policy.");
 					}
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
@@ -4176,8 +4227,8 @@ describe("advisor", () => {
 						"Codex error event: The 'gpt-5.3-codex-spark' model is not supported when using Codex with a ChatGPT account. (code=invalid_request_error)",
 					);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
@@ -4216,14 +4267,14 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					if (shouldFail) throw new Error("socket hang up");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "t1", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				notifyFailure: () => { },
+				notifyFailure: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 
@@ -4264,14 +4315,14 @@ describe("advisor", () => {
 				prompt: async () => {
 					throw new Error("socket hang up");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
-				onTurnError: () => new Promise<undefined>(() => { }),
+				onTurnError: () => new Promise<undefined>(() => {}),
 			};
 			const runtime = new AdvisorRuntime(agent, host, 60_000);
 
@@ -4288,6 +4339,82 @@ describe("advisor", () => {
 			runtime.dispose();
 		}, 10_000);
 
+		it("holds a recovery-aware catch-up through the failure but releases it on a terminal quota pause", async () => {
+			// Headless shutdown drains wait through a failing turn so disposal cannot
+			// abort the host's fallback switch. A recovery that ends in a quota pause
+			// can never drain, so the waiter must be released then — not held to its
+			// (ten-minute, in print mode) deadline.
+			const agent: AdvisorAgent = {
+				prompt: async () => {
+					throw new Error("insufficient_quota: you have exceeded your rate limit");
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "quota-turn", timestamp: 1 } as AgentMessage];
+			const recoveryStarted = Promise.withResolvers<void>();
+			const recoveryResult = Promise.withResolvers<boolean>();
+			const host: AdvisorRuntimeHost = {
+				snapshotMessages: () => messages,
+				onTurnError: () => {
+					recoveryStarted.resolve();
+					return recoveryResult.promise;
+				},
+				notifyQuotaExhausted: () => {},
+			};
+			const runtime = new AdvisorRuntime(agent, host, 0);
+
+			runtime.onTurnEnd(messages);
+			let settled = false;
+			const catchup = runtime.waitForCatchup(60_000, 1, undefined, { waitThroughRecovery: true }).then(caughtUp => {
+				settled = true;
+				return caughtUp;
+			});
+			// A failure-released waiter settles before onTurnError runs, so its
+			// continuation is already queued ahead of this one.
+			await recoveryStarted.promise;
+			expect(settled).toBe(false);
+
+			// No fallback available: the runtime latches its quota pause.
+			const released = performance.now();
+			recoveryResult.resolve(false);
+			expect(await catchup).toBe(false);
+			expect(performance.now() - released).toBeLessThan(2_000);
+			expect(runtime.quotaExhausted).toBe(true);
+			runtime.dispose();
+		}, 10_000);
+
+		it("releases a recovery-aware catch-up created while a session transition is paused", async () => {
+			// A paused runtime cannot drain until the transition resumes, which never
+			// happens on a shutdown path. A drain waiter created after the pause must
+			// release at once instead of parking for its (ten-minute) budget.
+			let abortPrompt: ((reason: unknown) => void) | undefined;
+			const agent: AdvisorAgent = {
+				prompt: () => {
+					const { promise, reject } = Promise.withResolvers<void>();
+					abortPrompt = reject;
+					return promise;
+				},
+				abort: reason => abortPrompt?.(new Error(String(reason))),
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "paused-turn", timestamp: 1 } as AgentMessage];
+			const host: AdvisorRuntimeHost = { snapshotMessages: () => messages };
+			const runtime = new AdvisorRuntime(agent, host, 0);
+
+			runtime.onTurnEnd(messages);
+			await settleUntil(() => abortPrompt !== undefined);
+			await runtime.pauseForSessionTransition();
+			expect(runtime.backlog).toBeGreaterThan(0);
+
+			const started = performance.now();
+			expect(await runtime.waitForCatchup(60_000, 1, undefined, { waitThroughRecovery: true })).toBe(false);
+			expect(performance.now() - started).toBeLessThan(100);
+			runtime.dispose();
+		}, 10_000);
+
 		it("survives a poisoned message without throwing into the caller or losing the delta", async () => {
 			// CRITICAL contract: an advisor render failure (throwing getter,
 			// formatter bug) must neither propagate into the primary agent's
@@ -4298,8 +4425,8 @@ describe("advisor", () => {
 				prompt: async input => {
 					promptInputs.push(input);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
@@ -4366,8 +4493,8 @@ describe("advisor", () => {
 					prompt: async input => {
 						promptInputs.push(input);
 					},
-					abort: () => { },
-					reset: () => { },
+					abort: () => {},
+					reset: () => {},
 					state: { messages: [] },
 				};
 				// ~2000 × 5KB ≈ 10MB replay — the post-reset/first-enable shape.
@@ -4391,8 +4518,8 @@ describe("advisor", () => {
 					prompt: async input => {
 						promptInputs.push(input);
 					},
-					abort: () => { },
-					reset: () => { },
+					abort: () => {},
+					reset: () => {},
 					state: { messages: [] },
 				};
 				// The toolCall sits at index 99 and its result arrives 49 messages
@@ -4437,8 +4564,8 @@ describe("advisor", () => {
 					prompt: async input => {
 						promptInputs.push(input);
 					},
-					abort: () => { },
-					reset: () => { },
+					abort: () => {},
+					reset: () => {},
 					state: { messages: [] },
 				};
 				const messages: AgentMessage[] = [{ role: "user", content: "before", timestamp: 1 } as AgentMessage];
@@ -4470,8 +4597,8 @@ describe("advisor", () => {
 					prompt: async input => {
 						promptInputs.push(input);
 					},
-					abort: () => { },
-					reset: () => { },
+					abort: () => {},
+					reset: () => {},
 					state: { messages: [] },
 				};
 				const messages = Array.from({ length: 400 }, (_, i) => bigMessage(i));
@@ -4498,8 +4625,8 @@ describe("advisor", () => {
 					prompt: async input => {
 						promptInputs.push(input);
 					},
-					abort: () => { },
-					reset: () => { },
+					abort: () => {},
+					reset: () => {},
 					state: { messages: [] },
 				};
 				const messages = Array.from({ length: 300 }, (_, i) => bigMessage(i));
@@ -4544,7 +4671,7 @@ describe("advisor", () => {
 						? "404 No endpoints available matching your guardrail restrictions and data policy."
 						: undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.error = undefined;
 				},
@@ -4603,7 +4730,7 @@ describe("advisor", () => {
 					} as unknown as AgentMessage);
 					state.error = undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -4661,7 +4788,7 @@ describe("advisor", () => {
 					} as unknown as AgentMessage);
 					state.error = undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -4730,7 +4857,7 @@ describe("advisor", () => {
 					} as unknown as AgentMessage);
 					state.error = undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -4794,8 +4921,8 @@ describe("advisor", () => {
 						timestamp: 3,
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -4848,8 +4975,8 @@ describe("advisor", () => {
 						timestamp: promptInputs.length + 1,
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -4914,8 +5041,8 @@ describe("advisor", () => {
 						timestamp: promptInputs.length + 1,
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -4974,8 +5101,8 @@ describe("advisor", () => {
 						timestamp: promptInputs.length + 1,
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -5046,8 +5173,8 @@ describe("advisor", () => {
 						timestamp: promptInputs.length + 1,
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -5111,8 +5238,8 @@ describe("advisor", () => {
 						timestamp: promptInputs.length + 1,
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -5182,8 +5309,8 @@ describe("advisor", () => {
 						timestamp: 3,
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => {
 					state.messages.length = count;
 					state.error = undefined;
@@ -5231,7 +5358,7 @@ describe("advisor", () => {
 					events.push(`prompt:${promptCalls}`);
 					state.error = promptCalls === 1 ? "provider failed" : undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.error = undefined;
 				},
@@ -5273,7 +5400,7 @@ describe("advisor", () => {
 					events.push(`prompt:${promptCalls}`);
 					state.error = `provider failed ${promptCalls}`;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.error = undefined;
 				},
@@ -5331,7 +5458,7 @@ describe("advisor", () => {
 					events.push(`prompt:${promptCalls}`);
 					state.error = promptCalls === 1 ? "provider failed" : undefined;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.error = undefined;
 				},
@@ -5393,7 +5520,7 @@ describe("advisor", () => {
 					state.messages.push(failure);
 					state.error = errorMessage;
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -5461,7 +5588,7 @@ describe("advisor", () => {
 						state.error = undefined;
 					}
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -5541,7 +5668,7 @@ describe("advisor", () => {
 						timestamp: Date.now(),
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					resetCalls++;
 					state.messages.length = 0;
@@ -5591,8 +5718,8 @@ describe("advisor", () => {
 					}
 					return Promise.resolve();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "aaa", timestamp: 1 } as AgentMessage];
@@ -5644,7 +5771,7 @@ describe("advisor", () => {
 						timestamp: Date.now(),
 					} as unknown as AgentMessage);
 				},
-				abort: () => { },
+				abort: () => {},
 				reset: () => {
 					state.messages.length = 0;
 					state.error = undefined;
@@ -5705,7 +5832,7 @@ describe("advisor", () => {
 				// AdvisorRuntime.reset() calls agent.reset() then agent.abort(); the real
 				// Agent.abort rejects the awaited prompt, so model that rejection here.
 				abort: () => rejectInFlight?.(new Error("advisor reset")),
-				reset: () => { },
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "old-conversation", timestamp: 1 } as AgentMessage];
@@ -5753,7 +5880,7 @@ describe("advisor", () => {
 					return gate.promise;
 				},
 				abort: () => rejectInFlight?.(new Error("session transition")),
-				reset: () => { },
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [{ role: "user", content: "keep me", timestamp: 1 } as AgentMessage];
@@ -5783,8 +5910,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					prompted.resolve();
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const messages: AgentMessage[] = [
@@ -5836,8 +5963,8 @@ describe("advisor", () => {
 						if (promptCalls === 1 && hookKind === "error") throw new Error("provider failure");
 						if (promptCalls === 2) replacementPromptStarted.resolve();
 					},
-					abort: () => { },
-					reset: () => { },
+					abort: () => {},
+					reset: () => {},
 					state: { messages: [] },
 				};
 				const runtime = new AdvisorRuntime(agent, {
@@ -5845,11 +5972,11 @@ describe("advisor", () => {
 					...(hookKind === "success"
 						? { onTurnSuccess: blockHook }
 						: {
-							onTurnError: async () => {
-								await blockHook();
-								return false;
-							},
-						}),
+								onTurnError: async () => {
+									await blockHook();
+									return false;
+								},
+							}),
 				});
 
 				runtime.onTurnEnd([{ role: "user", content: "old session", timestamp: 1 } as AgentMessage]);
@@ -5871,8 +5998,8 @@ describe("advisor", () => {
 				prompt: async () => {
 					throw new Error("provider failure");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(
@@ -5906,8 +6033,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					throw new Error("resource_exhausted");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const host: AdvisorRuntimeHost = {
@@ -5945,8 +6072,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					throw new Error("overloaded: server is at capacity");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const host: AdvisorRuntimeHost = {
@@ -5972,13 +6099,13 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					if (shouldFail) throw new Error("insufficient_quota: rate limit exceeded");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				notifyQuotaExhausted: () => { },
+				notifyQuotaExhausted: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			const messages: AgentMessage[] = [{ role: "user", content: "quota-turn", timestamp: 1 } as AgentMessage];
@@ -6011,13 +6138,13 @@ describe("advisor", () => {
 				prompt: async () => {
 					throw new Error("insufficient_quota");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
-				notifyQuotaExhausted: () => { },
+				notifyQuotaExhausted: () => {},
 			};
 			const runtime = new AdvisorRuntime(agent, host, 0);
 			const messages: AgentMessage[] = [{ role: "user", content: "turn", timestamp: 1 } as AgentMessage];
@@ -6042,8 +6169,8 @@ describe("advisor", () => {
 						throw new Error("insufficient_quota: you have exceeded your rate limit");
 					}
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			let quotaNotified = false;
@@ -6080,8 +6207,8 @@ describe("advisor", () => {
 						state.messages.push({ role: "user", content: input, timestamp: Date.now() } as AgentMessage);
 					}
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				rollbackTo: count => state.messages.splice(count),
 				state,
 			};
@@ -6110,8 +6237,8 @@ describe("advisor", () => {
 					promptInputs.push(input);
 					throw new Error("insufficient_quota: you have exceeded your rate limit");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			let quotaNotified = false;
@@ -6142,8 +6269,8 @@ describe("advisor", () => {
 						throw new Error("insufficient_quota: you have exceeded your rate limit");
 					}
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			let quotaNotified = 0;
@@ -6195,8 +6322,8 @@ describe("advisor", () => {
 				prompt: async () => {
 					throw new Error("provider failure");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const runtime = new AdvisorRuntime(agent, {
@@ -6232,8 +6359,8 @@ describe("advisor", () => {
 					}
 					// callCount >= 3: success
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const hookErrors: unknown[] = [];
@@ -6277,8 +6404,8 @@ describe("advisor", () => {
 					}
 					throw new Error("429 Too Many Requests: quota exceeded");
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const hookErrors: unknown[] = [];
@@ -6319,8 +6446,8 @@ describe("advisor", () => {
 						throw new Error("429 Too Many Requests: quota exceeded");
 					}
 				},
-				abort: () => { },
-				reset: () => { },
+				abort: () => {},
+				reset: () => {},
 				state: { messages: [] },
 			};
 			const hookErrors: unknown[] = [];
@@ -6685,10 +6812,10 @@ describe("advisor", () => {
 		};
 		const callbacks = {
 			loadDoc: async () => ({ advisors: [] }),
-			save: async () => { },
-			close: () => { },
-			requestRender: () => { },
-			notify: () => { },
+			save: async () => {},
+			close: () => {},
+			requestRender: () => {},
+			notify: () => {},
 		};
 		const strip = (lines: readonly string[]): string => lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
 		const make = (doc: WatchdogConfigDoc, extra?: Partial<AdvisorConfigDeps>): AdvisorConfigOverlayComponent =>

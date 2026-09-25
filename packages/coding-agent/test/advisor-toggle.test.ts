@@ -29,6 +29,14 @@ function restoreEnv(key: string, value: string | undefined): void {
 import * as advisorModule from "../src/advisor";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
+import {
+	cfgAdvisorEnabled,
+	cfgAdvisorMaxNotesPerUpdate,
+	cfgAdvisorReviewInterval,
+	cfgAdvisorReviewMode,
+} from "@oh-my-pi/pi-coding-agent/advisor/settings";
+import { cfgCompactionKeepRecentTokens } from "@oh-my-pi/pi-coding-agent/session/context-settings";
+
 describe("AgentSession advisor toggle", () => {
 	let authStorage: AuthStorage;
 	let modelRegistry: ModelRegistry;
@@ -41,9 +49,9 @@ describe("AgentSession advisor toggle", () => {
 
 	beforeAll(() => {
 		authStorage = createInMemoryAuthStorage();
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
-		authStorage.setRuntimeApiKey("openai", "test-key");
-		authStorage.setRuntimeApiKey("openrouter", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
+		authStorage.keys.setRuntime("openai", "test-key");
+		authStorage.keys.setRuntime("openrouter", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 		const bundled = getBundledModel("anthropic", "claude-sonnet-4-5");
 		const replacement = getBundledModel("openai", "gpt-4o-mini");
@@ -213,19 +221,21 @@ describe("AgentSession advisor toggle", () => {
 		expect(session.getAdvisorAgent()?.state.model.id).toBe(replacementModel.id);
 	});
 
-	it("refreshes the live advisor when the advisor role setting changes", () => {
+	it("refreshes the live advisor when the advisor role setting changes", async () => {
 		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 		expect(session.getAdvisorAgent()?.state.model.provider).toBe(model.provider);
 		expect(session.getAdvisorAgent()?.state.model.id).toBe(model.id);
 
 		session.settings.setModelRole("advisor", `${replacementModel.provider}/${replacementModel.id}`);
+		// Role listeners run on the next microtask.
+		await Promise.resolve();
 
 		expect(session.getAdvisorAgent()?.state.model.provider).toBe(replacementModel.provider);
 		expect(session.getAdvisorAgent()?.state.model.id).toBe(replacementModel.id);
 	});
 
-	it("refreshes the live advisor when only the advisor route changes", () => {
+	it("refreshes the live advisor when only the advisor route changes", async () => {
 		session.settings.setModelRole("advisor", "openrouter/z-ai/glm-4.7@cerebras");
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 		expect(session.getAdvisorAgent()?.state.model.provider).toBe("openrouter");
@@ -236,6 +246,7 @@ describe("AgentSession advisor toggle", () => {
 		).toEqual(["cerebras"]);
 
 		session.settings.setModelRole("advisor", "openrouter/z-ai/glm-4.7@fireworks");
+		await Promise.resolve();
 
 		expect(session.getAdvisorAgent()?.state.model.provider).toBe("openrouter");
 		expect(session.getAdvisorAgent()?.state.model.id).toBe("z-ai/glm-4.7");
@@ -243,6 +254,24 @@ describe("AgentSession advisor toggle", () => {
 			(session.getAdvisorAgent()?.state.model.compat as { openRouterRouting?: { only?: string[] } } | undefined)
 				?.openRouterRouting?.only,
 		).toEqual(["fireworks"]);
+	});
+
+	it("rebuilds a running advisor on budget edits without overriding a session-only disable", async () => {
+		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+		cfgAdvisorEnabled.set(session.settings, true);
+		await Promise.resolve();
+		expect(session.isAdvisorActive()).toBe(true);
+
+		cfgAdvisorMaxNotesPerUpdate.set(session.settings, 3);
+		await Promise.resolve();
+		expect(session.getAdvisorAgent()?.state.systemPrompt.join("\n")).toContain("max 3 non-blockers/update");
+
+		// `/advisor` off is session-only: a later budget edit must not bring it back.
+		session.setAdvisorEnabled(false);
+		cfgAdvisorMaxNotesPerUpdate.set(session.settings, 2);
+		await Promise.resolve();
+		expect(session.isAdvisorEnabled()).toBe(false);
+		expect(session.isAdvisorActive()).toBe(false);
 	});
 
 	it("refreshes the live advisor after project model-role reloads", async () => {
@@ -310,7 +339,7 @@ describe("AgentSession advisor toggle", () => {
 
 	it("explicit enable overrides default-off setting for the session only", () => {
 		session.settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
-		session.settings.override("advisor.enabled", false);
+		cfgAdvisorEnabled.override(session.settings, false);
 		const customSession = new AgentSession({
 			agent: session.agent,
 			sessionManager,
@@ -325,7 +354,7 @@ describe("AgentSession advisor toggle", () => {
 		expect(active).toBe(true);
 		expect(customSession.isAdvisorActive()).toBe(true);
 		expect(customSession.isAdvisorEnabled()).toBe(true);
-		expect(customSession.settings.get("advisor.enabled")).toBe(false);
+		expect(cfgAdvisorEnabled.get(customSession.settings)).toBe(false);
 	});
 
 	it("toggle disables the advisor and runtime", () => {
@@ -416,7 +445,7 @@ describe("AgentSession advisor toggle", () => {
 	it("keeps sessions isolated when sharing a Settings instance", async () => {
 		const sharedSettings = Settings.isolated({ "compaction.enabled": false });
 		sharedSettings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
-		expect(sharedSettings.get("advisor.enabled")).toBe(false);
+		expect(cfgAdvisorEnabled.get(sharedSettings)).toBe(false);
 
 		const sessionA = new AgentSession({
 			agent: session.agent,
@@ -530,7 +559,7 @@ describe("AgentSession advisor toggle", () => {
 			expect(toggledOff.isAdvisorActive()).toBe(false);
 			expect(toggledOff.toggleAdvisorEnabled()).toBe(true);
 			expect(toggledOff.isAdvisorActive()).toBe(true);
-			expect(session.settings.get("advisor.enabled")).toBe(false);
+			expect(cfgAdvisorEnabled.get(session.settings)).toBe(false);
 		} finally {
 			await Promise.all(children.map(child => child.dispose()));
 		}
@@ -717,7 +746,7 @@ describe("AgentSession advisor toggle", () => {
 			expect(nested.isAdvisorActive()).toBe(true);
 			expect(optedOut.isAdvisorActive()).toBe(false);
 			expect(explicitlyOff.isAdvisorActive()).toBe(false);
-			expect(session.settings.get("advisor.enabled")).toBe(false);
+			expect(cfgAdvisorEnabled.get(session.settings)).toBe(false);
 		} finally {
 			await Promise.all(children.map(child => child.dispose()));
 		}
@@ -868,13 +897,13 @@ describe("AgentSession advisor toggle", () => {
 	});
 	it("rebuilds the default advisor after advisor.reviewMode setting change", () => {
 		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
-		session.settings.set("advisor.reviewMode", "turn");
+		cfgAdvisorReviewMode.set(session.settings, "turn");
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 		const turnAgent = session.getAdvisorAgent();
 		expect(turnAgent).toBeDefined();
 
 		// Change reviewMode and re-enable — simulates selector-controller rebuild.
-		session.settings.set("advisor.reviewMode", "agent-end");
+		cfgAdvisorReviewMode.set(session.settings, "agent-end");
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 		const agentEndAgent = session.getAdvisorAgent();
 		expect(agentEndAgent).toBeDefined();
@@ -882,13 +911,13 @@ describe("AgentSession advisor toggle", () => {
 	});
 	it("rebuilds the default advisor after advisor.reviewInterval setting change", () => {
 		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
-		session.settings.set("advisor.reviewInterval", 1);
+		cfgAdvisorReviewInterval.set(session.settings, 1);
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 		const interval1Agent = session.getAdvisorAgent();
 		expect(interval1Agent).toBeDefined();
 
 		// Change reviewInterval and re-enable.
-		session.settings.set("advisor.reviewInterval", 3);
+		cfgAdvisorReviewInterval.set(session.settings, 3);
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 		const interval3Agent = session.getAdvisorAgent();
 		expect(interval3Agent).toBeDefined();
@@ -1017,7 +1046,9 @@ describe("AgentSession advisor toggle", () => {
 		// #10131 follow-up: with no live runtime, subscription attribution comes
 		// from the providers that billed the restored spend, re-derived via the
 		// current OAuth credentials — never a per-render getAvailable() scan.
-		const oauthSpy = vi.spyOn(authStorage, "hasOAuth").mockImplementation(provider => provider === "anthropic");
+		const oauthSpy = vi
+			.spyOn(authStorage.credentials, "hasOAuth")
+			.mockImplementation(provider => provider === "anthropic");
 		const scanSpy = vi.spyOn(modelRegistry, "getAvailable");
 		try {
 			session.restoreInitialAdvisorCosts(new Map([["", 0.5]]), new Map(), new Map([["", new Set(["anthropic"])]]));
@@ -1031,7 +1062,7 @@ describe("AgentSession advisor toggle", () => {
 		}
 	});
 	it("does not attribute restored advisor spend to a subscription without OAuth on its provider", () => {
-		const oauthSpy = vi.spyOn(authStorage, "hasOAuth").mockReturnValue(false);
+		const oauthSpy = vi.spyOn(authStorage.credentials, "hasOAuth").mockReturnValue(false);
 		try {
 			session.restoreInitialAdvisorCosts(new Map([["", 0.5]]), new Map(), new Map([["", new Set(["anthropic"])]]));
 			expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
@@ -1232,7 +1263,7 @@ describe("AgentSession advisor toggle", () => {
 		vi.spyOn(compactionModule, "generateHandoffFromContext").mockResolvedValue("## Goal\nContinue from here");
 		const advisor = enableAdvisor();
 		prepareHandoffConversation(advisor);
-		session.settings.set("compaction.keepRecentTokens", 1);
+		cfgCompactionKeepRecentTokens.set(session.settings, 1);
 		const sessionFile = session.sessionFile;
 
 		const result = await session.handoff();
@@ -1366,7 +1397,7 @@ describe("AgentSession advisor toggle", () => {
 					}),
 				)
 				.mockResolvedValue(undefined);
-			const markUsageLimitReached = vi.spyOn(authStorage, "markUsageLimitReached").mockImplementation(async () => {
+			const markUsageLimitReached = vi.spyOn(authStorage.limits, "markReached").mockImplementation(async () => {
 				const deadline = Date.now() + 20;
 				return {
 					switched: false,
@@ -1434,7 +1465,7 @@ describe("AgentSession advisor toggle", () => {
 				new AIError.ProviderHttpError("Generic provider failure", 429, { code: "insufficient_quota" }),
 			);
 			const markUsageLimitReached = vi
-				.spyOn(authStorage, "markUsageLimitReached")
+				.spyOn(authStorage.limits, "markReached")
 				.mockResolvedValue({ switched: false });
 			const advisorYielded = Promise.withResolvers<void>();
 			const unsubscribe = quotaSession.subscribe(event => {
@@ -1534,7 +1565,7 @@ describe("AgentSession advisor toggle", () => {
 			expect(AIError.isUsageLimit(thrown)).toBe(false);
 			vi.spyOn(advisorAgent, "prompt").mockRejectedValue(thrown);
 			const markUsageLimitReached = vi
-				.spyOn(authStorage, "markUsageLimitReached")
+				.spyOn(authStorage.limits, "markReached")
 				.mockResolvedValue({ switched: false });
 
 			await quotaSession.prompt("Trigger advisor");
@@ -1558,7 +1589,7 @@ describe("AgentSession advisor toggle", () => {
 		if (!advisor) throw new Error("Expected advisor agent");
 		expect(advisor.state.systemPrompt.join("\n")).toContain("max 1 non-blockers + 1 `blocker`/update");
 
-		session.settings.set("advisor.maxNotesPerUpdate", 3);
+		cfgAdvisorMaxNotesPerUpdate.set(session.settings, 3);
 		session.applyAdvisorConfigs([{ name: "Lenient" }], undefined, undefined);
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 		advisor = session.getAdvisorAgent();
@@ -1590,7 +1621,7 @@ describe("AgentSession advisor toggle", () => {
 			expect(JSON.stringify(rejected.content)).toContain("budget is spent");
 		};
 
-		session.settings.set("advisor.maxNotesPerUpdate", 2);
+		cfgAdvisorMaxNotesPerUpdate.set(session.settings, 2);
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 
 		// Per-advisor (5) overrides shared (3) and settings (2).

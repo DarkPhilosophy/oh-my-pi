@@ -1,8 +1,7 @@
 /**
  * Smart unexpected-stop detection: asks one {@link NoulQuestion} whether a
  * text-only assistant turn promised to act and then ended. The judge comes
- * from {@link resolveJudge} — TypeSafe, the tiny/smol chat chain, or the local
- * model named by `providers.unexpectedStopModel`.
+ * from the live `judge` role chain resolved by {@link resolveJudge}.
  */
 import type { AssistantMessage, Model, NoulQuestion } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -33,12 +32,13 @@ export interface ClassifyUnexpectedStopDeps {
 	settings: Settings;
 	registry: ModelRegistry;
 	sessionId: string;
-	/** Active session model; last resort of the chat judge chain. */
+	/** Active session model; last resort of the judge role chain. */
 	model?: Model;
 	metadataResolver?: (provider: string) => Record<string, unknown> | undefined;
 	signal?: AbortSignal;
 }
 
+/** Detects terminal turns eligible for mechanical recovery or smart classification. */
 export function isUnexpectedStopCandidate(message: AssistantMessage): boolean {
 	if (message.stopReason !== "stop") return false;
 	let hasContent = false;
@@ -65,41 +65,23 @@ export async function classifyUnexpectedStop(
 	text: string,
 	deps: ClassifyUnexpectedStopDeps,
 ): Promise<boolean | undefined> {
-	const backend = deps.settings.get("providers.unexpectedStopModel");
 	try {
-		return await judgeUnexpectedStop(text, backend, deps);
+		const judge = resolveJudge({
+			settings: deps.settings,
+			registry: deps.registry,
+			sessionModel: deps.model,
+			sessionId: deps.sessionId,
+			metadataResolver: deps.metadataResolver,
+		});
+		const { answers } = await judge.judge(
+			{ state: { message: text }, questions: { stopped: UNEXPECTED_STOP_QUESTION } },
+			{ signal: deps.signal },
+		);
+		return answers.stopped.noul >= UNEXPECTED_STOP_THRESHOLD;
 	} catch (error) {
-		if (deps.signal?.aborted) return undefined;
-		// Fork behaviour: a configured fallback backend gets one more attempt
-		// before the classifier gives up entirely.
-		const fallback = deps.settings.get("providers.unexpectedStopFallbackModel");
-		if (fallback && fallback !== backend) {
-			try {
-				return await judgeUnexpectedStop(text, fallback, deps);
-			} catch (fallbackError) {
-				logger.debug("unexpected-stop: fallback classification failed", {
-					error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
-				});
-			}
-		}
 		logger.debug("unexpected-stop: classification failed", {
 			error: error instanceof Error ? error.message : String(error),
 		});
 		return undefined;
 	}
-}
-
-async function judgeUnexpectedStop(text: string, backend: string, deps: ClassifyUnexpectedStopDeps): Promise<boolean> {
-	const judge = resolveJudge({
-		settings: deps.settings,
-		registry: deps.registry,
-		sessionModel: deps.model,
-		sessionId: deps.sessionId,
-		metadataResolver: deps.metadataResolver,
-	});
-	const { answers } = await judge.judge(
-		{ state: { message: text }, questions: { stopped: UNEXPECTED_STOP_QUESTION } },
-		{ signal: deps.signal },
-	);
-	return answers.stopped.noul >= UNEXPECTED_STOP_THRESHOLD;
 }

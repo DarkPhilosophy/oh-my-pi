@@ -56,6 +56,18 @@ const BRAND_FADE_MS = 450;
 /** Repaint cadence while the brand fade is in flight (rust omp's `FADE_FRAME`). */
 const BRAND_FADE_FRAME_MS = 40;
 
+/**
+ * Providers whose subscription quota is a single monthly bucket, so their
+ * `monthly`/`30d` window is the one the usage segment must show. Providers that
+ * merely report a monthly side-counter (GitHub Copilot's premium requests) stay
+ * out: their monthly row is not the session quota.
+ */
+const MONTHLY_SUBSCRIPTION_PROVIDERS: Record<string, true> = {
+	"alibaba-token-plan": true,
+	cursor: true,
+	"opencode-go": true,
+};
+
 /** A displayable limit after provider, account, model, and window filtering. */
 interface UsageWindowCandidate {
 	id?: string;
@@ -331,6 +343,7 @@ interface StatusLineExternalInputs {
 	isStreaming: boolean | undefined;
 	isAutoThinking: boolean | undefined;
 	isFastModeActive: boolean;
+	anthropicSlowModeLabel: string | undefined;
 	compactionSpeculation: unknown;
 }
 
@@ -573,6 +586,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	#collabStatus: CollabStatus | null = null;
 	#serverStatus: DaemonConnectionSnapshot = { state: "direct" };
 	#streamStatus: { viewers: number } | null = null;
+	#recording = false;
 	#focusedAgentId: string | undefined;
 	#activeRepoCache: ActiveRepoCache | undefined;
 
@@ -1004,6 +1018,13 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	setServerStatus(snapshot: DaemonConnectionSnapshot): void {
 		this.#serverStatus = snapshot;
 		this.invalidate();
+	}
+
+	/** Toggle the `● REC` badge shown while `/record` captures the screen. */
+	setRecording(recording: boolean): void {
+		if (this.#recording === recording) return;
+		this.#recording = recording;
+		this.#invalidateStatusLineRenderCache();
 	}
 
 	/** Set the callback that presents detected Codex reset celebrations, or clear it with `undefined`. */
@@ -1910,6 +1931,8 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		const activeModelId = normalizeUsageScopeValue(context.modelId);
 		const activeAntigravityCounter =
 			context.provider === "google-antigravity" ? getAntigravityCounterKeyForModel(context.modelId) : undefined;
+		const monthlySubscriptionProvider =
+			context.provider !== undefined && MONTHLY_SUBSCRIPTION_PROVIDERS[context.provider] === true;
 		const scopeGroups = new Map<string, UsageScopeGroup>();
 		for (const report of reports) {
 			if (!report || typeof report !== "object") continue;
@@ -1972,10 +1995,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 										: undefined;
 				const windowClass =
 					subscriptionWindow ??
-					((context.provider === "cursor" || context.provider === "opencode-go") &&
-					(windowId === "monthly" || windowId === "30d")
-						? "monthly"
-						: undefined);
+					(monthlySubscriptionProvider && (windowId === "monthly" || windowId === "30d") ? "monthly" : undefined);
 				if (!windowClass) continue;
 
 				const modelId = normalizeUsageScopeValue("modelId" in scope ? scope.modelId : undefined);
@@ -2251,6 +2271,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			vim: this.#vimStatus,
 			collab: this.#collabStatus,
 			stream: this.#streamStatus,
+			recording: this.#recording,
 			usageStats,
 			contextPercent,
 			contextTokens,
@@ -2427,6 +2448,10 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			isAutoThinking: this.session.isAutoThinking,
 			isFastModeActive:
 				typeof this.session.isFastModeActive === "function" ? this.session.isFastModeActive() : false,
+			anthropicSlowModeLabel:
+				typeof this.session.getAnthropicSlowModeLabel === "function"
+					? this.session.getAnthropicSlowModeLabel()
+					: undefined,
 			compactionSpeculation: this.session.compactionSpeculation,
 		};
 	}
@@ -2482,6 +2507,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			left.isStreaming === right.isStreaming &&
 			left.isAutoThinking === right.isAutoThinking &&
 			left.isFastModeActive === right.isFastModeActive &&
+			left.anthropicSlowModeLabel === right.anthropicSlowModeLabel &&
 			left.compactionSpeculation === right.compactionSpeculation
 		);
 	}

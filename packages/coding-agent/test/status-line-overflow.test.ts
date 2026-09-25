@@ -66,6 +66,7 @@ function createCtx(overrides?: {
 		vim: null,
 		collab: null,
 		stream: null,
+		recording: false,
 		usageStats: {
 			input: 0,
 			output: 0,

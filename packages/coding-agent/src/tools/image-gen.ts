@@ -40,6 +40,7 @@ import { resolveXAIHttpCredentials } from "../lib/xai-http";
 import imageGenDescription from "../prompts/tools/image-gen.md" with { type: "text" };
 import { AUTO_IMAGE_PROVIDER_ORDER, type ImageProvider, isImageProviderId } from "./image-providers";
 import { resolveReadPath } from "./path-utils";
+import { cfgProvidersAntigravityEndpoint } from "../session/settings";
 
 const DEFAULT_MODEL = "gemini-3-pro-image-preview";
 const DEFAULT_OPENROUTER_MODEL = "google/gemini-3-pro-image-preview";
@@ -623,7 +624,7 @@ async function findAntigravityCredentials(
 
 function resolveAntigravityEndpoints(): string[] {
 	try {
-		const mode = settings.get("providers.antigravityEndpoint");
+		const mode = cfgProvidersAntigravityEndpoint.get(settings);
 		if (mode === "production") {
 			return [DEFAULT_ANTIGRAVITY_ENDPOINT_PROD];
 		}

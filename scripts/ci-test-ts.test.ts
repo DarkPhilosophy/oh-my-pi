@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
 import { ptree, TempDir } from "@oh-my-pi/pi-utils";
+import { selectShard } from "./ci-test-ts";
 
 describe("test runner watchdog", () => {
 	// Parent fake timers cannot drive the real watchdog inside the isolated runner process.
@@ -65,5 +66,28 @@ describe("workspace test planning", () => {
 			expect(testFiles.length).toBeGreaterThan(0);
 			expect(testFiles.length).toBeLessThanOrEqual(20);
 		}
+	});
+});
+
+describe("OMP_TEST_SHARD", () => {
+	test("shards partition every chunk exactly once, balanced to within one", () => {
+		const chunks = Array.from({ length: 79 }, (_, i) => i);
+		const shards = [1, 2, 3].map(i => selectShard(chunks, `${i}/3`));
+		expect(shards.flat().sort((a, b) => a - b)).toEqual(chunks);
+		const sizes = shards.map(s => s.length);
+		expect(Math.max(...sizes) - Math.min(...sizes)).toBeLessThanOrEqual(1);
+		expect(selectShard(chunks, "1/1")).toEqual(chunks);
+		expect(selectShard(chunks, undefined)).toEqual(chunks);
+	});
+
+	test("rejects malformed specs instead of running an empty or partial shard", () => {
+		for (const spec of ["0/2", "3/2", "1/0", "2", "a/b", "1/2/3"]) {
+			expect(() => selectShard([1, 2, 3], spec)).toThrow("Invalid OMP_TEST_SHARD");
+		}
+	});
+
+	test("rejects a shard that selects no chunks", () => {
+		expect(() => selectShard([1], "2/2")).toThrow("selects no chunks");
+		expect(() => selectShard([], "1/1")).toThrow("selects no chunks");
 	});
 });

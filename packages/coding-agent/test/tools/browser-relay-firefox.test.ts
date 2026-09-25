@@ -1,3 +1,4 @@
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { describe, expect, it } from "bun:test";
 import type { Page } from "puppeteer-core";
 import { acquireBrowser, releaseBrowser, type FirefoxRelayBrowserHandle } from "../../src/tools/browser/registry";
@@ -96,7 +97,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 			const running = runInTab(first.name, {
 				code: "return 1",
 				timeoutMs: 1000,
-				session: { cwd: "/tmp", settings: { get: () => undefined } } as never,
+				session: { cwd: "/tmp", settings: Settings.isolated() } as never,
 			});
 			void running.catch(() => {});
 			await started.promise;
@@ -501,7 +502,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 			const run = runInTab(first.name, {
 				code: "return 1",
 				timeoutMs: 1_000,
-				session: { cwd: "/tmp", settings: { get: () => undefined } } as never,
+				session: { cwd: "/tmp", settings: Settings.isolated() } as never,
 			});
 			if (caughtResult) await expect(run).resolves.toMatchObject({ returnValue: 1 });
 			else await expect(run).rejects.toThrow("request interception cleanup failed");
@@ -818,7 +819,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 				code: "return 1",
 				timeoutMs: 50,
 				deadlineStartMs: startedAt - 40,
-				session: { cwd: "/tmp", settings: { get: () => undefined } } as never,
+				session: { cwd: "/tmp", settings: Settings.isolated() } as never,
 			}),
 		).rejects.toThrow(/Timed out after [\d.]+ms waiting for Firefox worker reservation/);
 		expect(tabs.get(owner.name)?.state).toBe("alive");
@@ -875,7 +876,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 			runInTab(waiting.name, {
 				code: "return 1",
 				timeoutMs: 100,
-				session: { cwd: "/tmp", settings: { get: () => undefined } } as never,
+				session: { cwd: "/tmp", settings: Settings.isolated() } as never,
 			}),
 		).resolves.toMatchObject({ returnValue: 1 });
 		expect(runTimeoutMs).toBeGreaterThan(0);

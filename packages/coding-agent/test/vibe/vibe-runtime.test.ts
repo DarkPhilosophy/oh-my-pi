@@ -409,20 +409,23 @@ describe("vibe session registry", () => {
 	}
 
 	function installPersistedReviver(capture: { sessionFile?: string; prompts?: string[] }): void {
-		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(async ref => {
-			if (!ref.sessionFile) return undefined;
-			const persisted = await SessionManager.peekSessionInit(ref.sessionFile);
-			if (!persisted?.init) return undefined;
-			const worker = createFakeWorkerSession();
-			worker.prompts.push(persisted.init.task);
-			worker.setScript({
-				events: yieldTurnEvents({ report: RESTORED_VIBE_RESPONSE }),
-				responseText: RESTORED_VIBE_RESPONSE,
-			});
-			capture.sessionFile = ref.sessionFile;
-			capture.prompts = worker.prompts;
-			return async () => worker.session;
-		}, 0);
+		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+			async ref => {
+				if (!ref.sessionFile) return undefined;
+				const persisted = await SessionManager.peekSessionInit(ref.sessionFile);
+				if (!persisted?.init) return undefined;
+				const worker = createFakeWorkerSession();
+				worker.prompts.push(persisted.init.task);
+				worker.setScript({
+					events: yieldTurnEvents({ report: RESTORED_VIBE_RESPONSE }),
+					responseText: RESTORED_VIBE_RESPONSE,
+				});
+				capture.sessionFile = ref.sessionFile;
+				capture.prompts = worker.prompts;
+				return async () => worker.session;
+			},
+			() => 0,
+		);
 	}
 
 	async function simulateProcessBoundary(): Promise<void> {

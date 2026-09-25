@@ -41,6 +41,8 @@ import type {
 	WorkerOutbound,
 } from "./tab-protocol";
 
+import { cfgBrowserScreenshotDir } from "./settings";
+
 // Coding-agent binary/bundle workers route through the CLI entrypoint with a
 // hidden argv mode, so compiled/npm builds only need one JavaScript entry.
 
@@ -81,6 +83,8 @@ interface TabSessionBase<TBrowser extends BrowserHandle = BrowserHandle> {
 	info: ReadyInfo;
 	pending: Map<string, PendingRun>;
 	dialogPolicy?: DialogPolicy;
+	/** Hostname patterns enforced by the worker across navigations and subresources. */
+	allowedDomains?: string[];
 	kindTag: BrowserKindTag;
 	/**
 	 * Session id of the caller that CREATED the tab. Preserved across reuse so
@@ -157,6 +161,16 @@ export interface AcquireTabOptions {
 	 */
 	deadlineStartMs?: number;
 	dialogs?: DialogPolicy;
+	/** Hostname patterns allowed for every tab request. */
+	allowedDomains?: string[];
+	/** Document-start JavaScript sources registered before initial navigation. */
+	initScripts?: string[];
+	/** Absolute directory used for downloads. */
+	downloadsPath?: string;
+	/** Explicit tab user agent override. */
+	userAgent?: string;
+	/** Ignore invalid HTTPS certificates for this page. */
+	ignoreHttpsErrors?: boolean;
 	cmuxSurface?: string;
 	/**
 	 * Session id of the acquirer. Recorded on the tab when created (never on
@@ -258,6 +272,36 @@ export function getTab(name: string): TabSession | undefined {
 	return tabs.get(name);
 }
 
+/** JSON-safe metadata for one managed browser tab. */
+export interface ManagedTabInfo {
+	/** Managed tab name. */
+	name: string;
+	/** Last reported page URL. */
+	url: string;
+	/** Last reported page title. */
+	title: string;
+	/** Browser target or cmux surface identifier. */
+	targetId: string;
+	/** Browser backend kind. */
+	kind: BrowserKindTag;
+	/** Whether settle and idle-close management are disabled. */
+	persist: boolean;
+}
+
+/** List the currently alive tabs in the managed-tab registry. */
+export function listTabs(): ManagedTabInfo[] {
+	return [...tabs.values()]
+		.filter(tab => tab.state === "alive")
+		.map(tab => ({
+			name: tab.name,
+			url: tab.info.url,
+			title: tab.info.title ?? "",
+			targetId: tab.targetId,
+			kind: tab.kindTag,
+			persist: tab.persist ?? false,
+		}));
+}
+
 export function acquireTab(name: string, browser: BrowserHandle, opts: AcquireTabOptions): Promise<AcquireTabResult> {
 	// Keep the supervisor's Puppeteer handle connected until initialization,
 	// worker termination, and abandoned-target cleanup have all been scheduled.
@@ -341,6 +385,13 @@ async function acquireTabImpl(
 				tempHold = true;
 				await releaseExistingTab();
 			} else if (opts.dialogs !== undefined && opts.dialogs !== existing.dialogPolicy) {
+				holdBrowser(browser);
+				tempHold = true;
+				await releaseExistingTab();
+			} else if (
+				opts.allowedDomains !== undefined &&
+				!sameAllowedDomains(opts.allowedDomains, existing.allowedDomains)
+			) {
 				holdBrowser(browser);
 				tempHold = true;
 				await releaseExistingTab();
@@ -545,6 +596,7 @@ async function acquireTabImpl(
 		info,
 		pending: new Map(),
 		dialogPolicy: opts.dialogs,
+		allowedDomains: opts.allowedDomains ? [...opts.allowedDomains] : undefined,
 		kindTag: browser.kind.kind,
 		activateForScreenshot: initPayload.mode === "headless" || initPayload.activateForScreenshot !== false,
 		ownerSessionId: opts.ownerSessionId,
@@ -567,6 +619,9 @@ async function acquireCmuxTab(
 	browser: CmuxBrowserHandle,
 	opts: AcquireTabOptions,
 ): Promise<AcquireTabResult> {
+	if (opts.allowedDomains?.length) {
+		throw new ToolError("browser.open allowed_domains is not supported on the cmux backend");
+	}
 	const attachedSurface = opts.cmuxSurface ?? browser.surface;
 	if (attachedSurface?.startsWith("surface:")) {
 		throw new ToolError(
@@ -1507,6 +1562,11 @@ function isLastSurfaceCloseError(err: unknown): boolean {
 	return /last/i.test(message);
 }
 
+function sameAllowedDomains(left: readonly string[], right: readonly string[] | undefined): boolean {
+	if (!right || left.length !== right.length) return false;
+	return left.every((domain, index) => domain === right[index]);
+}
+
 export async function buildInitPayload(
 	browser: PuppeteerBrowserHandle | FirefoxRelayBrowserHandle,
 	opts: AcquireTabOptions,
@@ -1540,6 +1600,11 @@ export async function buildInitPayload(
 			emulateViewport: browser.kind.headless,
 			viewport: opts.viewport,
 			dialogs: opts.dialogs,
+			allowedDomains: opts.allowedDomains,
+			initScripts: opts.initScripts,
+			downloadsPath: opts.downloadsPath,
+			userAgent: opts.userAgent,
+			ignoreHttpsErrors: opts.ignoreHttpsErrors,
 			url: opts.url,
 			waitUntil: opts.waitUntil,
 			timeoutMs: opts.timeoutMs,
@@ -1560,6 +1625,11 @@ export async function buildInitPayload(
 		safeDir,
 		targetId,
 		dialogs: opts.dialogs,
+		allowedDomains: opts.allowedDomains,
+		initScripts: opts.initScripts,
+		downloadsPath: opts.downloadsPath,
+		userAgent: opts.userAgent,
+		ignoreHttpsErrors: opts.ignoreHttpsErrors,
 		url: opts.url,
 		waitUntil: opts.waitUntil,
 		timeoutMs: opts.timeoutMs,
@@ -1790,6 +1860,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 		safeDir: getPuppeteerDir(),
 		targetId: tab.targetId,
 		dialogs: tab.dialogPolicy,
+		allowedDomains: tab.allowedDomains,
 		// Unblock a wedged page (open JS dialog, hung navigation) before adopting it —
 		// otherwise init stalls, times out, and the tab gets force-killed.
 		recover: true,
@@ -1987,7 +2058,7 @@ async function terminateWorker(worker: WorkerHandle, graceful = false): Promise<
 }
 
 function expandBrowserScreenshotDir(session: ToolSession): string | undefined {
-	const value = session.settings.get("browser.screenshotDir") as string | undefined;
+	const value = cfgBrowserScreenshotDir.get(session.settings);
 	return value ? expandPath(value) : undefined;
 }
 

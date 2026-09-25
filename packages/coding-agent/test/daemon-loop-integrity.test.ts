@@ -90,6 +90,8 @@ async function startHarness(): Promise<Harness> {
 					autoCompactionEnabled: true,
 					messageCount: commandCount,
 					queuedMessageCount: 0,
+					hasPendingAsyncWork: false,
+					isSettled: true,
 					todoPhases: [],
 				},
 				cwd: sessionCwd,

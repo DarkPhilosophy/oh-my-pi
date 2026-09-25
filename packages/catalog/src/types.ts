@@ -20,7 +20,8 @@ export type KnownApi =
 	| "ollama-chat"
 	| "cursor-agent"
 	| "gitlab-duo-agent"
-	| "devin-agent";
+	| "devin-agent"
+	| "apple-foundation-models";
 export type Api = KnownApi | (string & {});
 
 /** Catalog kinds used to isolate role-specific runners from session chat models. */
@@ -478,6 +479,13 @@ export interface OpenAICompat {
 	 * sent as the top-level `reasoning.effort`.
 	 */
 	supportsConfigurationUpdate?: boolean;
+	/**
+	 * Whether the Responses WebSocket accepts `response.steer`, which queues user
+	 * input into the in-flight response (GPT-6 family). Default: rule-detected.
+	 * Set `false` for proxies that reject the event; steering then waits for the
+	 * next request boundary.
+	 */
+	supportsSteering?: boolean;
 	/** Whether streamed reasoning deltas for the same field may repeat the full cumulative text snapshot. Default: false. */
 	reasoningDeltasMayBeCumulative?: boolean;
 	/** Strip leaked DeepSeek chat-template special tokens from visible content deltas. Default: auto-detected. */
@@ -519,17 +527,17 @@ export interface AnthropicCompat {
 	/** Whether thinking requests may include `context_management` and its beta header. Default: true. */
 	supportsContextManagement?: boolean;
 	/**
-	 * Whether the model lineage supports Anthropic server-side compaction
-	 * (`compact-2026-01-12`: the `compact_20260112` edit and replayed
-	 * `compaction` blocks). Rule-owned per model line; the beta covers the
-	 * adaptive-thinking generation onward and rejects older lines. Default: false.
+	 * Whether the model and host support Anthropic on-demand compaction
+	 * (`compact-2026-09-04` requests and signed replay). Enabled on Opus 4.6+,
+	 * Sonnet 4.6+, Fable/Mythos 5+ on supported hosts. Default: false.
 	 */
 	supportsServerCompaction?: boolean;
 	/**
 	 * Whether the model is served by the first-party Anthropic provider (its
 	 * default route is the official API). Rule-owned on the provider; the
 	 * compaction transport pairs it with a per-request effective-URL check
-	 * because reroutes leave it stale-true. Default: false.
+	 * because reroutes leave it stale-true. Vertex is selected by its provider
+	 * contract instead. Default: false.
 	 */
 	firstPartyProvider?: boolean;
 	/**
@@ -874,6 +882,7 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "strictResponsesPairing"
 			| "supportsImageDetailOriginal"
 			| "supportsConfigurationUpdate"
+			| "supportsSteering"
 			| "stripImageInput"
 			| "thinkingLoopGuard"
 			| "whenThinking"
@@ -913,6 +922,11 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 	 * the item type with 400.
 	 */
 	supportsConfigurationUpdate: boolean;
+	/**
+	 * Whether the WebSocket transport may send `response.steer` to deliver user
+	 * input into the in-flight response. Rule-owned: GPT-6 family.
+	 */
+	supportsSteering: boolean;
 	/** Inject the `# Juice: 0 !important` developer item when reasoning is forced off (gpt-5.6+). */
 	requiresReasoningOffJuiceInstruction: boolean;
 	/**
@@ -1163,6 +1177,16 @@ export type ModelTokenizer =
 	| "kimi-k2"
 	| "glm5";
 
+/** One account's discovered entitlements on a model; see {@link Model.accountAccess}. */
+export interface ModelAccountAccess {
+	/**
+	 * Codex `available_access_programs.cyber`: cyber access programs this account
+	 * may request on the model (`standard`, `daybreak_blue`, `daybreak_red`).
+	 * Absent when the backend reported no program metadata.
+	 */
+	cyberPrograms?: readonly string[];
+}
+
 // Model interface for the unified model system
 export interface Model<TApi extends Api = Api> {
 	id: string;
@@ -1257,6 +1281,15 @@ export interface Model<TApi extends Api = Api> {
 	 * their single wire id) and on bundled snapshots that predate discovery.
 	 */
 	cursorMaxModeRoutes?: Readonly<Record<string, boolean>>;
+	/**
+	 * Per-account availability recorded by multi-account discovery: provider
+	 * account id (Codex: ChatGPT `chatgpt_account_id`) → that account's
+	 * entitlements on this model. An account appears only when its own catalog
+	 * lists the model, so credential selection can route account-gated models
+	 * (e.g. `gpt-daybreak-blue-latest`) straight to eligible accounts. Absent on
+	 * bundled/config rows and on single-account discovery.
+	 */
+	accountAccess?: Readonly<Record<string, ModelAccountAccess>>;
 	cost: ModelCost;
 	/** Premium Copilot requests charged per user-initiated request (defaults to 1). */
 	premiumMultiplier?: number;

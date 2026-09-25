@@ -15,6 +15,8 @@ import {
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { mockSchedulerWaitWithClock } from "./helpers/mock-scheduler-clock";
 
+import { cfgClaudeResetsAutoRedeem } from "@oh-my-pi/pi-coding-agent/session/settings";
+
 const ACCOUNT_ID = "claude-account";
 const EMAIL = "claude@example.com";
 const ORG_ID = "11111111-1111-4111-8111-111111111111";
@@ -118,18 +120,18 @@ describe("Claude saved-reset trigger integration", () => {
 	}): { session: AgentSession; coordinator: CodexAutoRedeemCoordinator; targets: ResetCreditTarget[] } {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected bundled anthropic/claude-sonnet-4-5 to exist");
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
-		vi.spyOn(authStorage, "getOAuthAccountIdentity").mockReturnValue({
+		authStorage.keys.setRuntime("anthropic", "test-key");
+		vi.spyOn(authStorage.oauth, "identity").mockReturnValue({
 			accountId: ACCOUNT_ID,
 			email: EMAIL,
 			orgId: ORG_ID,
 		});
-		vi.spyOn(authStorage, "fetchUsageReports").mockImplementation(async () => [options.report]);
-		vi.spyOn(authStorage, "listResetCredits").mockImplementation(async request =>
+		vi.spyOn(authStorage.usage, "reports").mockImplementation(async () => [options.report]);
+		vi.spyOn(authStorage.resets, "list").mockImplementation(async request =>
 			request?.provider === "anthropic" ? [options.status] : [],
 		);
 		const targets: ResetCreditTarget[] = [];
-		vi.spyOn(authStorage, "redeemResetCredit").mockImplementation(async request => {
+		vi.spyOn(authStorage.resets, "redeem").mockImplementation(async request => {
 			targets.push(request.target);
 			return {
 				ok: true,
@@ -243,6 +245,6 @@ describe("Claude saved-reset trigger integration", () => {
 		await coordinator.sweepPromise;
 		expect(targets).toHaveLength(0);
 		expect(coordinator.attemptedKeys.size).toBe(0);
-		expect(session.settings.get("claudeResets.autoRedeem")).toBe("unset");
+		expect(cfgClaudeResetsAutoRedeem.get(session.settings)).toBe("unset");
 	});
 });

@@ -16,6 +16,8 @@ import type { LspStartupServerInfo } from "@oh-my-pi/pi-coding-agent/tools";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
 
+import { cfgStartupQuiet, cfgTuiTitleState } from "@oh-my-pi/pi-coding-agent/modes/settings";
+
 describe("InteractiveMode LSP startup welcome banner", () => {
 	let authStorage: AuthStorage;
 	let eventBus: EventBus;
@@ -156,7 +158,7 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 
 	it("forwards working and idle title states through a hosted daemon terminal", async () => {
 		mode.stop();
-		session.settings.set("tui.titleState", true);
+		cfgTuiTitleState.set(session.settings, true);
 		const terminal = new HostedTerminal({
 			columns: 120,
 			rows: 40,
@@ -224,7 +226,7 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 	});
 
 	it("does not render LSP startup warnings when startup.quiet is enabled", () => {
-		session.settings.set("startup.quiet", true);
+		cfgStartupQuiet.set(session.settings, true);
 		const showWarningSpy = vi.spyOn(mode, "showWarning").mockImplementation(() => {});
 		eventBus.emit(LSP_STARTUP_EVENT_CHANNEL, {
 			type: "failed",

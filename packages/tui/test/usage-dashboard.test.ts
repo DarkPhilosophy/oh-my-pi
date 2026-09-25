@@ -1,3 +1,4 @@
+import { visibleWidth } from "@oh-my-pi/pi-tui";
 import * as os from "node:os";
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { DailyActivityPoint } from "@oh-my-pi/pi-tui/overlays/usage-dashboard";
@@ -677,5 +678,50 @@ describe("formatActivityErrorDetail", () => {
 		const home = "/Users/testuser";
 		const input = `Error: failed to open ${home}/.omp/stats.db...`;
 		expect(formatActivityErrorDetail(input, home)).toBe("Error: failed to open ~/.omp/stats.db");
+	});
+});
+
+describe("UsageDashboardComponent quota labels", () => {
+	beforeAll(async () => {
+		await initTheme(false);
+	});
+	function dashboard(reports: UsageReport[]): UsageDashboardComponent {
+		return new UsageDashboardComponent({
+			reports,
+			renderDetail: () => "",
+			createMasker: createAccountMasker,
+			maskAccountLabels: true,
+			mergeAccounts: true,
+			labelPlacement: "moving",
+			loadActivity: async push => {
+				push([]);
+			},
+			requestRender: () => {},
+			onClose: () => {},
+		});
+	}
+
+	it("sanitizes provider labels and duplicate-window tags before rendering", () => {
+		const label = "Claude\t7 Day\x1b[2J\x07\r\n(Fable)";
+		const component = dashboard([
+			report("anthropic", "a@test", [
+				limit("anthropic", "a", "5\th", label, 0.4, "ok"),
+				limit("anthropic", "a", "7\nd", label, 0.2, "ok"),
+			]),
+		]);
+		try {
+			const lines = component.render(100);
+			for (const line of lines) {
+				expect(line).not.toMatch(/[\t\r\n\x07]/);
+				expect(line).not.toContain("\x1b[2J");
+				expect(visibleWidth(line)).toBeLessThanOrEqual(100);
+			}
+			const output = Bun.stripANSI(lines.join("\n"));
+			expect(output).toMatch(/Claude +7 Day +\(Fable\)/);
+			expect(output).toMatch(/5 +h/);
+			expect(output).toMatch(/7 +d/);
+		} finally {
+			component.dispose();
+		}
 	});
 });

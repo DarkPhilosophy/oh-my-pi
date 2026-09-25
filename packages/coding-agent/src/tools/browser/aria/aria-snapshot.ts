@@ -129,8 +129,8 @@ export function assertSelectorString(selector: unknown): asserts selector is str
 	}
 	throw new ToolError(
 		`Browser selector must be a string; got ${kind}. ` +
-		"tab.click/type/fill/waitFor take string selectors only — " +
-		'call the handle method directly (e.g. (await tab.id(n)).click()) or pass a string like "aria-ref=eN".',
+			"tab.click/type/fill/waitFor take string selectors only — " +
+			'call the handle method directly (e.g. (await tab.id(n)).click()) or pass a string like "aria-ref=eN".',
 	);
 }
 

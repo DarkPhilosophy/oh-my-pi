@@ -7,13 +7,17 @@ import { logger, type postmortem, setProjectDir, VERSION } from "@oh-my-pi/pi-ut
 import { setChalkEnvironment } from "@oh-my-pi/pi-utils/chalk";
 import { createProjectDirScope, getActiveProfile } from "@oh-my-pi/pi-utils/dirs";
 import { reset as resetCapabilities } from "../capability";
+import { cfgAdvisorEnabled } from "../advisor/settings";
+import { cfgEnabledModels } from "../config/model-settings";
+import { cfgColorBlindMode, cfgSymbolPreset, cfgThemeDark, cfgThemeLight } from "../modes/settings";
+import { cfgHideThinkingBlock } from "../session/settings";
+import { cfgToolsApprovalMode } from "../tools/settings";
 import { type Args, parseArgs } from "../cli/args";
 import { applyExtensionFlags } from "../cli/extension-flags";
 import { processFileArguments } from "../cli/file-processor";
 import { buildInitialMessage } from "../cli/initial-message";
 import { ModelRegistry } from "../config/model-registry";
 import { getModelMatchPreferences, resolveModelScope, type ScopedModel } from "../config/model-resolver";
-import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { bindSettingsToProjectContext, Settings } from "../config/settings";
 import {
 	clearPluginRootsAndCaches,
@@ -59,6 +63,7 @@ import { calculateTokensPerSecond } from "../utils/token-rate";
 import { DAEMON_PROTOCOL_MAJOR } from "./protocol";
 import type { DaemonConnectionSnapshot } from "./status";
 import { HostedTerminal, type HostedTerminalDescriptor } from "./terminal-bridge";
+import { cfgImagesAutoResize } from "../modes/settings";
 
 /** Narrow session surface owned by the daemon registry. */
 export type DaemonSession = {
@@ -93,6 +98,8 @@ export type DaemonSession = {
 	readonly sessionName?: string;
 	readonly autoCompactionEnabled?: boolean;
 	readonly queuedMessageCount?: number;
+	readonly hasAdmittedSubmission?: boolean;
+	readonly hasPendingAsyncWork?: () => boolean;
 	readonly systemPrompt?: string[];
 	readonly getContextUsage?: () => ContextUsage | undefined;
 	readonly setModel?: (model: Model) => Promise<void>;
@@ -246,6 +253,12 @@ function sessionState(
 		autoCompactionEnabled: session.autoCompactionEnabled ?? true,
 		messageCount: messages?.length ?? 0,
 		queuedMessageCount: session.queuedMessageCount ?? 0,
+		hasPendingAsyncWork: session.hasPendingAsyncWork?.() ?? false,
+		isSettled:
+			!(session.isStreaming ?? false) &&
+			!(session.hasAdmittedSubmission ?? false) &&
+			(session.queuedMessageCount ?? 0) === 0 &&
+			!(session.hasPendingAsyncWork?.() ?? false),
 		todoPhases: session.getTodoPhases?.() ?? [],
 		systemPrompt: session.systemPrompt ?? session.agent?.state?.systemPrompt,
 		contextUsage: session.getContextUsage?.(),
@@ -315,10 +328,10 @@ async function prepareCliLaunch(
 		configFiles: parsed.config,
 	});
 	bindSettingsToProjectContext(activeSettings);
-	if (parsed.approvalMode) activeSettings.override("tools.approvalMode", parsed.approvalMode);
-	else if (parsed.autoApprove) activeSettings.override("tools.approvalMode", "yolo");
-	if (parsed.hideThinking) activeSettings.override("hideThinkingBlock", true);
-	if (parsed.advisor) activeSettings.override("advisor.enabled", true);
+	if (parsed.approvalMode) cfgToolsApprovalMode.override(activeSettings, parsed.approvalMode);
+	else if (parsed.autoApprove) cfgToolsApprovalMode.override(activeSettings, "yolo");
+	if (parsed.hideThinking) cfgHideThinkingBlock.override(activeSettings, true);
+	if (parsed.advisor) cfgAdvisorEnabled.override(activeSettings, true);
 	if (parsed.smol || parsed.slow || parsed.plan) {
 		activeSettings.overrideModelRoles({
 			smol: parsed.smol,
@@ -357,7 +370,7 @@ async function prepareCliLaunch(
 		).cwd;
 	}
 	let scopedModels: ScopedModel[] = [];
-	const modelPatterns = parsed.models ?? activeSettings.get("enabledModels");
+	const modelPatterns = parsed.models ?? cfgEnabledModels.get(activeSettings);
 	if (modelPatterns && modelPatterns.length > 0) {
 		scopedModels = await resolveModelScope(
 			modelPatterns,
@@ -374,7 +387,7 @@ async function prepareCliLaunch(
 	if (canShareShardResources) createOptions.mcpManagerPool = baseOptions?.mcpManagerPool;
 	if (parsed.apiKey) {
 		if (!createOptions.model) throw new Error("--api-key requires an explicit model");
-		authStorage.setRuntimeApiKey(createOptions.model.provider, parsed.apiKey);
+		authStorage.keys.setRuntime(createOptions.model.provider, parsed.apiKey);
 	}
 	return { parsed, sessionManager, createOptions };
 }
@@ -465,7 +478,7 @@ async function createAgentSessionRuntimeInScope(
 		const processedFiles =
 			initialArgs.fileArgs.length > 0
 				? await processFileArguments(initialArgs.fileArgs, {
-						autoResizeImages: result.session.settings.get("images.autoResize"),
+						autoResizeImages: cfgImagesAutoResize.get(result.session.settings),
 					})
 				: undefined;
 		({ initialMessage, initialImages } = buildInitialMessage({
@@ -692,10 +705,10 @@ async function createAgentSessionRuntimeInScope(
 		}
 		await initTheme(
 			true,
-			sessionSettings.get("symbolPreset"),
-			sessionSettings.get("colorBlindMode"),
-			sessionSettings.get("theme.dark"),
-			sessionSettings.get("theme.light"),
+			cfgSymbolPreset.get(sessionSettings),
+			cfgColorBlindMode.get(sessionSettings),
+			cfgThemeDark.get(sessionSettings),
+			cfgThemeLight.get(sessionSettings),
 			descriptor.clientEnv,
 		);
 		setProjectDir(result.session.sessionManager.getCwd());
@@ -1035,7 +1048,6 @@ async function createAgentSessionRuntimeInScope(
 						const cwd = sessionManager.getCwd();
 						setProjectDir(cwd);
 						await result.session.settings.reloadForCwd(cwd);
-						applyProviderGlobalsFromSettings(result.session.settings);
 						await reloadPluginState();
 					}
 					return { cancelled: !switched };

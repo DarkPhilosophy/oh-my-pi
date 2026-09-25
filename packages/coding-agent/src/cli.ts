@@ -37,6 +37,7 @@ import {
 	BLOB_BROKER_WORKER_ARG,
 	COMPUTER_WORKER_ARG,
 	DAEMON_BROKER_WORKER_ARG,
+	IDA_HOST_WORKER_ARG,
 	LSP_MUX_WORKER_ARG,
 	STATS_ACTIVITY_WORKER_ARG,
 	TERMINAL_OUTPUT_WORKER_ARG,
@@ -146,6 +147,7 @@ async function runSmokeTest(): Promise<void> {
 	// Other smoke dependencies stay lazy so normal CLI startup does not load their worker clients.
 	const { smokeTestDaemonBroker } = await import("./launch/client");
 	const { smokeTestLspMux } = await import("./lsp/mux/daemon");
+	const { smokeTestIdaHost } = await import("./ida/client");
 	const { smokeTestBlobBroker } = await import("./blob-broker/daemon");
 	const { smokeTestTerminalOutputWorker } = await import("./launch/terminal-output-worker-client");
 	await smokeTestSyncWorker();
@@ -173,6 +175,7 @@ async function runSmokeTest(): Promise<void> {
 	await smokeTestDaemonBroker();
 	await smokeTestDaemonWorker();
 	await smokeTestLspMux();
+	await smokeTestIdaHost();
 	await smokeTestBlobBroker();
 	await smokeTestTerminalOutputWorker();
 	process.stdout.write("smoke-test: ok\n");
@@ -348,6 +351,11 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === LSP_MUX_WORKER_ARG) {
 		const { startLspMuxFromEnvironment } = await import("./lsp/mux/server");
 		await startLspMuxFromEnvironment();
+		return true;
+	}
+	if (arg === IDA_HOST_WORKER_ARG) {
+		const { startIdaHostFromEnvironment } = await import("./ida/host");
+		await startIdaHostFromEnvironment();
 		return true;
 	}
 	if (arg === BLOB_BROKER_WORKER_ARG) {

@@ -10,6 +10,7 @@ import { formatHashlineHeader } from "@oh-my-pi/pi-tui/tools/hashline-format";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { cfgEditMode } from "@oh-my-pi/pi-coding-agent/edit/settings";
 
 function createGuard(
 	streamingAbort: boolean,
@@ -26,9 +27,8 @@ function createGuard(
 		} as Agent,
 		settings,
 		sessionManager: { getCwd: () => cwd } as SessionManager,
-		obfuscator: undefined,
 		model: () => undefined,
-		resolveActiveEditMode: () => settings.get("edit.mode"),
+		resolveActiveEditMode: () => cfgEditMode.get(settings),
 		isDisposed: () => false,
 		promptGeneration: () => 0,
 		emitNotice() {},

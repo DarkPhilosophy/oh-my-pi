@@ -65,11 +65,11 @@ describe("advisor account-policy rotation", () => {
 		settings.setModelRole("advisor", "openai-codex/gpt-daybreak-blue-latest");
 		const authStorage = await AuthStorage.create(":memory:");
 		authStorages.push(authStorage);
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
-		authStorage.setRuntimeApiKey("openai-codex", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
+		authStorage.keys.setRuntime("openai-codex", "test-key");
 
 		const rotations: Array<{ provider: string; modelId: unknown }> = [];
-		authStorage.rotateSessionCredential = async (provider, _sessionId, options) => {
+		authStorage.limits.rotate = async (provider, _sessionId, options) => {
 			rotations.push({ provider, modelId: options?.modelId });
 			// A sibling account that does carry the model exists: report the switch
 			// so the advisor retries the SAME model on the rotated credential.

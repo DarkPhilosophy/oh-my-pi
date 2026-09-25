@@ -6,6 +6,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { createReserveApiKeyResolver } from "../src/config/api-key-resolver";
 import { Settings } from "../src/config/settings";
 import { createReserveRoutingStreamFn } from "../src/session/reserve-routing";
+import { cfgProvidersOpenaiCodexUseReserve } from "@oh-my-pi/pi-coding-agent/session/settings";
 
 const luna = buildModel({
 	id: "gpt-5.6-luna",
@@ -63,14 +64,21 @@ function fixture(failure?: "unavailable" | "partial" | "abort") {
 	const stream = createReserveRoutingStreamFn(
 		settings,
 		{
-			getReserveCredential: async () =>
-				available && observedAt > rejectedAt ? { credentialId: 7, observedAt } : undefined,
-			rejectReserveCredential: (_provider, _route, observation) => {
-				rejectedAt = observation.observedAt;
-			},
-			getOAuthAccessByCredentialId: async (_provider, id) => {
-				expect(id).toBe(7);
-				return { ok: true, accessToken: "reserve-account-token", accountId: "reserve-account", credentialId: id };
+			oauth: {
+				reserveCredential: async () =>
+					available && observedAt > rejectedAt ? { credentialId: 7, observedAt } : undefined,
+				rejectReserveCredential: (_provider, _route, observation) => {
+					rejectedAt = observation.observedAt;
+				},
+				accessById: async (_provider, id) => {
+					expect(id).toBe(7);
+					return {
+						ok: true,
+						accessToken: "reserve-account-token",
+						accountId: "reserve-account",
+						credentialId: id,
+					};
+				},
 			},
 		},
 		base,
@@ -101,18 +109,20 @@ describe("reserve-first routing", () => {
 		const rejected = new Set<number>();
 		const resolver = createReserveApiKeyResolver(
 			{
-				getReserveCredential: async (_provider, _route, options) => {
-					const credentialId = [7, 8].find(id => !rejected.has(id) && !options?.excludeCredentialIds?.has(id));
-					return credentialId === undefined ? undefined : { credentialId, observedAt: 1 };
+				oauth: {
+					reserveCredential: async (_provider, _route, options) => {
+						const credentialId = [7, 8].find(id => !rejected.has(id) && !options?.excludeCredentialIds?.has(id));
+						return credentialId === undefined ? undefined : { credentialId, observedAt: 1 };
+					},
+					rejectReserveCredential: (_provider, _route, observation) => {
+						rejected.add(observation.credentialId);
+					},
+					accessById: async (_provider, id) => ({
+						ok: true,
+						accessToken: `reserve-${id}`,
+						credentialId: id,
+					}),
 				},
-				rejectReserveCredential: (_provider, _route, observation) => {
-					rejected.add(observation.credentialId);
-				},
-				getOAuthAccessByCredentialId: async (_provider, id) => ({
-					ok: true,
-					accessToken: `reserve-${id}`,
-					credentialId: id,
-				}),
 			},
 			luna.provider,
 			{ model: "gpt-reserve", tier: "base-model-inference" },
@@ -128,18 +138,20 @@ describe("reserve-first routing", () => {
 		const stream = createReserveRoutingStreamFn(
 			settings,
 			{
-				getReserveCredential: async (_provider, _route, options) => {
-					const credentialId = [7, 8].find(id => !rejected.has(id) && !options?.excludeCredentialIds?.has(id));
-					return credentialId === undefined ? undefined : { credentialId, observedAt: 1 };
+				oauth: {
+					reserveCredential: async (_provider, _route, options) => {
+						const credentialId = [7, 8].find(id => !rejected.has(id) && !options?.excludeCredentialIds?.has(id));
+						return credentialId === undefined ? undefined : { credentialId, observedAt: 1 };
+					},
+					rejectReserveCredential: (_provider, _route, observation) => {
+						rejected.add(observation.credentialId);
+					},
+					accessById: async (_provider, id) => ({
+						ok: true,
+						accessToken: `account-${id}`,
+						credentialId: id,
+					}),
 				},
-				rejectReserveCredential: (_provider, _route, observation) => {
-					rejected.add(observation.credentialId);
-				},
-				getOAuthAccessByCredentialId: async (_provider, id) => ({
-					ok: true,
-					accessToken: `account-${id}`,
-					credentialId: id,
-				}),
 			},
 			(model, _context, options) => {
 				calls.push(options?.apiKey);
@@ -195,9 +207,9 @@ describe("reserve-first routing", () => {
 	});
 	it("respects the provider preference and leaves unrelated models alone", async () => {
 		const f = fixture();
-		f.settings.override("providers.openai-codex.useReserve", false);
+		cfgProvidersOpenaiCodexUseReserve.override(f.settings, false);
 		await run(f);
-		f.settings.override("providers.openai-codex.useReserve", true);
+		cfgProvidersOpenaiCodexUseReserve.override(f.settings, true);
 		const other = buildModel({ ...luna, id: "gpt-6-astra", reserveRoute: undefined });
 		await run(f, other);
 		expect(f.calls.map(call => call.model)).toEqual([luna.id, "gpt-6-astra"]);

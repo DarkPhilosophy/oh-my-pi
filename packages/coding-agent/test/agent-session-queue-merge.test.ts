@@ -69,7 +69,7 @@ describe("AgentSession queue coalescing", () => {
 		});
 		const authStorage = await AuthStorage.create(path.join(tempDir, `auth-${Snowflake.next()}.db`));
 		authStorages.push(authStorage);
-		authStorage.setRuntimeApiKey(modelRef.api, "test-key");
+		authStorage.keys.setRuntime(modelRef.api, "test-key");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry });
 		return session;
@@ -755,7 +755,7 @@ describe("AgentSession steering delivery contract", () => {
 		const settings = Settings.isolated({ "compaction.enabled": false });
 		const authStorage = await AuthStorage.create(path.join(tempDir, `auth-${Snowflake.next()}.db`));
 		authStorages.push(authStorage);
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry });
 		return session;

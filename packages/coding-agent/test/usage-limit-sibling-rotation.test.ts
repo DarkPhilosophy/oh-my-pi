@@ -55,7 +55,7 @@ describe("usage-limit sibling rotation", () => {
 		authStorage = await AuthStorage.create(":memory:");
 		// Two sibling accounts: the one serving the request is depleted, the other
 		// is healthy and must pick the same model up.
-		await authStorage.set(primaryModel.provider, [
+		await authStorage.credentials.set(primaryModel.provider, [
 			{ type: "api_key", key: "account-1" },
 			{ type: "api_key", key: "account-2" },
 		]);

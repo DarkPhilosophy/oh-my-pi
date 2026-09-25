@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { isRpcSessionSettled } from "../modes/rpc/rpc-session-settle";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import type { DaemonClient } from "../daemon/client";
@@ -175,6 +176,8 @@ function defaultState(sessionId: string): RpcSessionState {
 		autoCompactionEnabled: true,
 		messageCount: 0,
 		queuedMessageCount: 0,
+		hasPendingAsyncWork: false,
+		isSettled: true,
 		todoPhases: [],
 	};
 }
@@ -197,6 +200,8 @@ function stateFromLocal(session: AgentSession): RpcSessionState {
 		autoCompactionEnabled: session.autoCompactionEnabled,
 		messageCount: session.state.messages.length,
 		queuedMessageCount: session.queuedMessageCount,
+		hasPendingAsyncWork: session.hasPendingAsyncWork(),
+		isSettled: isRpcSessionSettled(session),
 		todoPhases: session.getTodoPhases(),
 		contextUsage: session.getContextUsage(),
 	});

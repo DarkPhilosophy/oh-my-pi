@@ -29,7 +29,7 @@ describe("ToolExecutionComponent write repaint seam", () => {
 
 	function makeComponent(args: unknown) {
 		const requestRender = vi.fn();
-		const ui = { requestRender, requestComponentRender() { } } as unknown as TUI;
+		const ui = { requestRender, requestComponentRender() {} } as unknown as TUI;
 		const component = new ToolExecutionComponent("write", args, {}, undefined, ui);
 		components.push(component);
 		requestRender.mockClear();

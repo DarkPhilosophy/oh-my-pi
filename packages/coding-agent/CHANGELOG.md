@@ -2,12 +2,146 @@
 
 ## [Unreleased]
 
+## [18.3.1] - 2026-09-25
+
+### Added
+
+- Added native filesystem support for `local://` and `omp://` URLs across file-search, content-search, AST, shell, and related tools, including support for virtual working directories.
+- Added a native `cp` builtin for filesystem copy operations.
+- Added IDA Pro integration for opening executables and IDA databases, browsing pseudocode, assembly, imports, exports, strings, and cross-references, and performing database-aware actions such as renaming, commenting, type editing, function creation, saving, and persistent Python execution.
+- Added shared, project-scoped IDA database access with broker-managed host processes, configurable concurrency and idle cleanup via `ida.maxOpen` and `ida.idleCloseSec`, automatic autosaving, and universal Mach-O architecture selection with `:@<arch>` syntax and host-architecture detection. IDA features can be configured with `ida.enabled`, `ida.python`, and `ida.installDir`.
+- Added the `/slow [on|off|status]` command for opting into lower-priority service tiers on OpenAI, Google, and Anthropic subscription sessions, including automatic continuation when Anthropic session limits are reached.
+- Added the `providers.openaiLiveSteering` setting to control whether input can be delivered while a response is in progress.
+- Added session-wide approval for configuration changes through an `Always for this session` option in `cfg://` prompts, with clear timeout handling for unanswered prompts.
+- Added the `cfg://` protocol and a configuration registry for reading, modifying, unsetting, and reactively managing layered agent settings with approval and precedence feedback.
+- Added paged reading for large files, with metadata that allows clients to recover and continue displaying results.
+- Added per-agent compaction thresholds for task and evaluation subagents, configurable as percentages or fixed token limits without changing the main session threshold.
+- Added trusted additional context for extension and hook tool results, including `ctx.addAdditionalContext()`, allowing instructions to reach the model without altering displayed tool results.
+- Added dictation support to `/btw` follow-up input.
+- Added support for multiple simultaneous browser instances, including concurrent Chrome and Edge connections.
+- Added detailed benchmark phases for measuring single-user throughput, parallel scaling, and prefill performance, with automatic prefill sizing based on model context limits.
+- Added opt-in CUDA support to the Nix package for tiny-model inference through ONNX Runtime.
+- Added reliable RPC prompt lifecycle reporting with `prompt_result`, structured provider errors, session-settled state, prompt identifiers, event filtering, and `--no-ui` support for non-interactive hosts.
+- Added RPC session management through `open_session`, plus corresponding TypeScript and Python client APIs including `openSession`, `setEventFilter`, `onPromptResult`, `onSessionSettled`, and `waitForSettled`.
+- Added `attachment://` and `conflict://` resource URL handlers.
+- Added a per-server MCP `instructions: false` option to keep a server's guidance out of the system prompt while retaining its tools.
+
+### Changed
+
+- Improved recovery from output-length and context-window limits so truncated but actionable turns can be retained and retries are handled more accurately.
+- Shortened the default system prompt by approximately 150 tokens while preserving its guidance.
+- Improved Anthropic fallback handling so credit tokens and signed thinking context are preserved across same-provider fallbacks.
+- Improved filesystem safety and path consistency across virtual URL protocols, including symlink and containment validation and correct Windows long-path reporting.
+- Improved IDA database resource management with project sharing, bounded concurrency, idle cleanup, autosave, and clearer database status in listings.
+- Improved runtime configuration behavior with type-safe layered settings, live updates, and safe sequential saves.
+- Improved authentication and credential management to support live broker and credential-store changes.
+
+### Fixed
+
+- Fixed concurrent project access by enforcing file locking across processes.
+- Fixed Windows file reads with line selectors such as `:1-40`.
+- Fixed `omp update` and startup update checks to honor configured npm registries, including scoped registries and authentication tokens.
+- Fixed invalid auto-QA grievance reports blocking the rest of the upload queue; rejected reports are now surfaced with the server error while other reports continue.
+- Fixed advisor reviews making unnecessary follow-up requests, losing context after pruning, using the wrong thinking effort, or sending excessively large edit diffs.
+- Fixed `/login` crashes in source-link and development installs after extension loading.
+- Fixed retry fallback loops that could continue indefinitely when the fallback resolved to the same effective request.
+- Fixed setup wizard detection for Gemini web search when Antigravity OAuth is active.
+- Fixed headless print mode failing to complete an advisor review when a configured fallback reviewer was available.
+- Fixed embedded shell startup when the inherited working directory had been deleted.
+- Fixed Codex usage displays showing stale subscription plans and corrected usage views that combined separate quota limits.
+- Fixed explicit model and provider selections bypassing `disabledProviders`; disabled providers are now refused and skipped during fallback.
+- Fixed memory storage errors so failed items and underlying storage failures are identified.
+- Fixed malformed user-level `mcp.json` files preventing valid MCP sources from loading.
+- Fixed Anthropic server-side fallback requests using invalid model names.
+- Fixed large-output model requests failing near the context limit by adjusting the output allowance to the remaining context.
+- Fixed tool references in system prompts for tools exposed only through `xd://` devices.
+- Fixed dictation remaining active after a recording restart during transcription.
+- Fixed automatic account sign-outs going unannounced; sessions now report the affected account and login action through interactive, print, JSON, and RPC output.
+- Fixed duplicate MCP tool listings in the system prompt.
+- Fixed supervised service exits being missed or repeatedly replayed instead of being delivered to the session that started the service.
+- Fixed memory backend failures to identify the affected item and underlying storage error.
+- Fixed `write xd://<tool>` validation behavior so devices can return precise schema-mismatch responses.
+
+## [18.3.0] - 2026-09-24
+
+### Breaking Changes
+
+- The `hub` tool is deprecated; use `wait`, `write`, and the `proc://` protocols instead.
+- The `irc.timeoutMs` configuration setting has been removed.
+- The edit mode syntax now uses `*** Edit File:`, `*** Find`, and `*** Replace` headers instead of `SM:` headers.
+- Cancelling a process through `write` now requires an explicit `proc://<id>/kill` target; other write targets validate content normally.
+
+### Added
+
+- Added `omp://` documentation scopes for `find` and `omp find`. Search all embedded harness documentation with `omp://` or a specific document with `omp://<file>.md`; results are returned as canonical URLs that `read` can open, including range selectors.
+- Added extension support for ephemeral, `/btw`-style side turns through `ctx.runEphemeralTurn()`, with optional tool suppression and output/context limits without adding the turn to session history.
+- Added background job and service management through the `wait` tool and `proc://` URLs, including supervised services in `bash` and direct agent messaging through `agent://` write targets.
+- Added `*** Insert Before` and `*** Insert After` edit operations for adding lines without replacing existing code.
+- Added the `toks` command for offline token counting, including support for Jev (TypeSafe Jev 1.13) encodings.
+- Added automatic discovery of Apple Foundation Models on supported Apple silicon devices.
+- Added `/changelog last [N]` for viewing the latest release or a selected number of recent releases.
+- Added terminal-based OAuth authentication with `omp login`, including browser-assisted login, account and organization details, and automatic model discovery refresh. Added provider support for `org-scoped-identity`, `oauth-token-env`, and per-account OAuth priority/reserve policies through `auth.accountPolicies`, with policy state shown by `omp usage`.
+- Added the `daybreak` badge to `omp usage` for enabled accounts.
+- Added `/export` and `/usage` to focused subagent views for exporting a focused transcript and viewing account usage without returning to the main session.
+- Pasted clipboard images are now saved in the session artifact directory, allowing agents to read, copy, or upload them by file path.
+- Added `/annotate` for attaching notes to diffs, replies, session messages, files, or quoted text and inserting or sending those notes in prompts and reviews.
+- Added configurable MCP startup behavior through `MCP_STARTUP_TIMEOUT_MS`/`mcp.startupTimeoutMs` and `OMP_MCP_REQUIRE_READY=1`, allowing headless runs to require MCP servers to become ready before the first turn.
+- Added native judgment usage reporting, including error stop reasons and messages, and added `openrouter/~typesafe/jev-latest` as a native judge candidate.
+
+### Changed
+
+- Session compaction now supports native Anthropic snapshot branches and rewinds.
+- The default `bash.autoBackground.strategy` is now `catalog`.
+- The `Launch` configuration group has been renamed to `Services`.
+- Terminal OAuth behavior is now consistent between `omp login` and `omp auth-broker login`.
+- Judgment fallback now uses only native candidates, preventing prompted models from replacing failed native judges.
+- Browser screenshot comparisons now tolerate minor rasterizer differences.
+
+### Fixed
+
+- Fixed credential-aware API key resolution during authentication rotation.
+- Fixed comma-separated line selectors in `read`, `grep` paths, and `fetch`; selectors now read the requested range, while a bare number selects only that line.
+- Fixed `write` reporting JavaScript character counts instead of UTF-8 byte counts.
+- Fixed background job and service status reporting, including incorrect durations, reused job IDs, stale logs after named-service restarts, and foreground calls incorrectly appearing as background jobs.
+- Fixed `wait` and agent messaging so completed subagent results and peer messages are delivered reliably, including when a wait is interrupted by an incoming message.
+- Fixed headless print mode dropping or silently ignoring MCP servers that start slowly; it now waits within the configured timeout and warns when a server is not ready.
+- Fixed reader-mode `fetch` sending inline SVG icons and base64 images as unreadable model input; alt text is retained instead.
+- Fixed long non-Latin judged TTSR output exceeding token limits by applying token-aware truncation.
+
+## [18.2.11] - 2026-09-23
+
+### Fixed
+
+- Fixed nested `eval` Todo updates not being reflected by the Todo tracker, including cases where a cell fails after committing an update.
+- Fixed strict-mode structured-output validation for JSON Schemas without a root `type`, preserving their `items` and `required` keywords.
+- Improved streamed TTSR whole-buffer matching to avoid repeated scans from the beginning of the buffer.
+- Fixed plural browser queries when compiled binaries provide shallow stack traces.
+- Fixed browser `tab.fill` timing out on pages whose animation frames stall.
+- Fixed the first LSP diagnostics request returning no results while a newly started language server is still analyzing.
+- `/shake thinking` now reports the number of tokens freed.
+
+## [18.2.10] - 2026-09-22
+
+### Added
+
+- Added live benchmark results table with real-time model ranking and per-kind performance metrics
+- Added dedicated prefill throughput reporting for prefill-focused benchmarks
+- Added `/record` slash command to capture terminal sessions as replayable `.ompcast` files
+- Added `omp play` CLI for terminal-based playback of session recordings
+- Added intent descriptions to judgment batching
+- Added live progress tracking for judgment batches in the TUI
+
+### Changed
+
+- Refined AI-assisted git staging verification to reduce false positives
+- Updated `omp bench` default profile to `chat` and improved CLI flag documentation
+- Coalesced judgment batch drain operations for better performance under high load
+
 ## [18.2.9] - 2026-09-22
 
 ### Added
 
 - Added Claude saved resets to usage views and `/usage reset`, with automatic blocked-limit recovery and expiring-reset redemption controlled by `claudeResets`.
-
 - Added support for searching embedded harness documentation with `find` and `omp find` using `omp://` scopes, including file-specific searches and `:start-end` selectors; results open directly through canonical `omp://` URLs.
 
 ### Changed
@@ -17461,3 +17595,4 @@ Older entries are archived in [packages\coding-agent\CHANGELOG.md@9effebbb192e](
 Older entries are archived in [packages\coding-agent\CHANGELOG.md@66783f3c68ba](https://github.com/can1357/oh-my-pi/blob/66783f3c68ba682828e684c33070fa2c905a55a4/packages\coding-agent\CHANGELOG.md).
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@4c6407864c6e](https://github.com/can1357/oh-my-pi/blob/4c6407864c6e2b66d3d1e7852beab736058abb0f/packages/coding-agent/CHANGELOG.md).
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@da359efe2858](https://github.com/can1357/oh-my-pi/blob/da359efe2858f68baa4ae290574c7c4c9c8da3c3/packages/coding-agent/CHANGELOG.md).
+Older entries are archived in [packages/coding-agent/CHANGELOG.md@d95ba9ea5e83](https://github.com/can1357/oh-my-pi/blob/d95ba9ea5e8370e1cc0e7fc83cef7c7db862b543/packages/coding-agent/CHANGELOG.md).

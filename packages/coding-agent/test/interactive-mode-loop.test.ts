@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import * as loopCondition from "@oh-my-pi/pi-coding-agent/modes/loop-condition";
@@ -13,6 +13,8 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+
+import { cfgLoopMode } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
 async function flushMicrotasks(): Promise<void> {
 	await Promise.resolve();
@@ -48,7 +50,7 @@ describe("InteractiveMode loop auto-submit", () => {
 	});
 
 	beforeEach(() => {
-		session.settings.set("loop.mode", "prompt");
+		cfgLoopMode.set(session.settings, "prompt");
 		vi.spyOn(mode, "addMessageToChat").mockReturnValue([]);
 		vi.spyOn(mode, "ensureLoadingAnimation").mockImplementation(() => {});
 	});
@@ -112,7 +114,7 @@ describe("InteractiveMode loop auto-submit", () => {
 
 	it("does not recompact when a compact loop turn starts another prompt before resubmitting", async () => {
 		vi.useFakeTimers();
-		session.settings.set("loop.mode", "compact");
+		cfgLoopMode.set(session.settings, "compact");
 		let streaming = false;
 		Object.defineProperty(session, "isCompacting", { configurable: true, get: () => false });
 		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => streaming });
@@ -170,7 +172,7 @@ describe("InteractiveMode loop auto-submit", () => {
 
 	it("disables reset loops when vibe blocks the session transition", async () => {
 		vi.useFakeTimers();
-		session.settings.set("loop.mode", "reset");
+		cfgLoopMode.set(session.settings, "reset");
 		mode.vibeModeEnabled = true;
 		mode.loopModeEnabled = true;
 		mode.loopPrompt = "do not resubmit";
@@ -378,7 +380,7 @@ describe("InteractiveMode loop auto-submit", () => {
 		// exercised instead of assigned directly.
 		it("disables a reset loop when vibe is enabled while the condition is in flight", async () => {
 			vi.useFakeTimers();
-			session.settings.set("loop.mode", "reset");
+			cfgLoopMode.set(session.settings, "reset");
 			idleSession();
 			const pending = Promise.withResolvers<LoopConditionVerdict>();
 			vi.spyOn(loopCondition, "evaluateLoopCondition").mockImplementation(async () => await pending.promise);
@@ -409,7 +411,7 @@ describe("InteractiveMode loop auto-submit", () => {
 		// entering transition, not just the settled flag.
 		it("disables a reset loop when the condition resolves during vibe activation", async () => {
 			vi.useFakeTimers();
-			session.settings.set("loop.mode", "reset");
+			cfgLoopMode.set(session.settings, "reset");
 			idleSession();
 			const pending = Promise.withResolvers<LoopConditionVerdict>();
 			vi.spyOn(loopCondition, "evaluateLoopCondition").mockImplementation(async () => await pending.promise);

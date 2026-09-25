@@ -92,6 +92,18 @@ export interface ComposerOptions {
 	readonly now?: () => number;
 }
 
+/** How {@link Composer.setRuntimeChildren} bills below-transcript roots against transcript retirement. */
+export interface RuntimeChildrenOptions {
+	/**
+	 * Below-transcript roots whose growth is momentary (inline dialogs, a tall
+	 * multi-line editor). They are billed at their smallest height so expansion
+	 * clips the live tail instead of retiring rows a later shrink could not
+	 * reclaim (#11007). Every other root is billed at its current height, so
+	 * settled rows it displaces retire to native scrollback.
+	 */
+	readonly transient?: readonly Component[];
+}
+
 /** Controls the first terminal paint for a composer that does not already own the terminal. */
 export interface ComposerStartOptions {
 	readonly clearScrollback?: boolean;
@@ -258,9 +270,18 @@ export class Composer implements TerminalFrameProvider {
 	#retiredHeaderStart = 0;
 	#resizeRetiredHeaderStart: number | undefined;
 	#lastNormalRows = 0;
-	/** Current non-dropdown chrome footprint, not a session-wide minimum. */
-	#chromeRowsWithoutAutocomplete: number | undefined;
-	#editorHost: Container | undefined;
+	// Roots from `RuntimeChildrenOptions.transient`, and the smallest height
+	// they have rendered at since mount. Retirement bills transient roots at
+	// this floor, never their peak, so a dialog or tall editor that later
+	// shrinks never leaves committed transcript rows the live viewport cannot
+	// reclaim (#11007). Persistent roots (loader, todo/subagent HUDs) bill at
+	// their current height: they stay up for a whole turn, and billing them at
+	// an idle floor hid the settled rows they displaced until the turn ended.
+	// The floor is terminal-height independent — editor and dialog heights do
+	// not scale with rows — so it is retained across resizes rather than
+	// rediscovered from whatever chrome is expanded when the height changes.
+	#transientChrome: ReadonlySet<Component> = new Set();
+	#transientChromeFloor: number | undefined;
 	#viewportTranscript?: TranscriptContainer;
 	#viewportTranscriptStart = 0;
 	#lastInterruptAt = 0;
@@ -358,61 +379,26 @@ export class Composer implements TerminalFrameProvider {
 		const afterChunks: { component: Component; rows: string[] }[] = [];
 		const after: string[] = [];
 		const afterSpans: ViewportClickSpan[] = [];
+		let transientChromeRows = 0;
 		for (const root of afterRoots) {
 			const start = after.length;
-			// Row targets usually nest one level down: chrome roots are plain
-			// containers (the HUD lives inside `subagentContainer`), and
-			// `Container.render` is a pure concatenation, so child spans tile
-			// the root span exactly. Render those children once and share the
-			// rows for composition and measurement — a second render per frame
-			// would duplicate render-time side effects (image placement
-			// registration). Roots with a custom render keep the composed
-			// output as the source of truth and measure up to the last target.
-			const plainContainer = root instanceof Container && root.render === Container.prototype.render;
-			const targets = root instanceof Container ? root.children : [root];
-			const resolves = targets.map(rowTargetCandidates);
-			const lastTarget = resolves.findLastIndex(resolve => resolve !== undefined);
-			if (plainContainer) {
-				let offset = start;
-				for (let index = 0; index < targets.length; index++) {
-					const childLines = targets[index]!.render(width);
-					after.push(...childLines);
-					if (index > lastTarget) continue;
-					const resolve = resolves[index];
-					if (resolve !== undefined && childLines.length > 0) {
-						afterSpans.push({ start: offset, end: offset + childLines.length, candidates: resolve });
-					}
-					offset += childLines.length;
-				}
-				afterChunks.push({ component: root, rows: after.slice(start) });
-				continue;
-			}
-			after.push(...root.render(width));
+			this.#renderBelowRoot(root, width, after, afterSpans);
 			afterChunks.push({ component: root, rows: after.slice(start) });
-			if (lastTarget === -1) continue;
-			let offset = start;
-			for (let index = 0; index <= lastTarget; index++) {
-				const childLines = targets[index] === root ? after.length - start : targets[index]!.render(width).length;
-				const resolve = resolves[index];
-				if (resolve !== undefined && childLines > 0) {
-					afterSpans.push({ start: offset, end: offset + childLines, candidates: resolve });
-				}
-				offset += childLines;
-			}
+			if (this.#transientChrome.has(root)) transientChromeRows += after.length - start;
 		}
 		// Offer history under capacity pressure only: blocks stay live (and keep
 		// reflowing to the current width) while the screen has room. A batch
 		// leaves the mutable viewport in the same frame it is appended, so its
 		// rows are never painted twice.
 		const chromeRows = preRoots.length + after.length;
-		// Ask dialogs allocate temporary rows. Autocomplete is painted over
-		// existing cells and never changes the live/history boundary.
-		const temporaryEditorVisible =
-			this.#editorHost !== undefined && this.#editorHost.children.some(child => child !== this.editor);
-		if (!temporaryEditorVisible) this.#chromeRowsWithoutAutocomplete = chromeRows;
-		const chromeInsertionRows = temporaryEditorVisible
-			? Math.max(0, chromeRows - (this.#chromeRowsWithoutAutocomplete ?? chromeRows))
-			: 0;
+		// Declared-transient roots (inline dialogs, a tall multi-line draft in
+		// the editor container) are measured against the smallest height they
+		// have rendered at. Their peak above that floor is a temporary insertion:
+		// the live viewport expands for it (borrowing rows the terminal can hand
+		// back on shrink) instead of retiring transcript rows a later shrink could
+		// not reclaim, which left the editor above a band of blank rows (#11007).
+		this.#transientChromeFloor = Math.min(this.#transientChromeFloor ?? transientChromeRows, transientChromeRows);
+		const chromeInsertionRows = transientChromeRows - this.#transientChromeFloor;
 		// One paint, one render per block: the history offer, transient
 		// measurement and live viewport below all walk the live entries, and the
 		// transcript memoizes each entry for this frame between beginPaint and
@@ -507,6 +493,52 @@ export class Composer implements TerminalFrameProvider {
 			segments: plan.segments,
 			borrowedViewportRows: borrowedViewportRows > 0 ? before.length + borrowedViewportRows : 0,
 		};
+	}
+
+	/**
+	 * Append one below-transcript root's rows to `after`, recording click spans
+	 * for its row targets in `after` coordinates.
+	 *
+	 * Row targets usually nest one level down: chrome roots are plain
+	 * containers (the HUD lives inside `subagentContainer`), and
+	 * `Container.render` is a pure concatenation, so child spans tile the root
+	 * span exactly. Render those children once and share the rows for
+	 * composition and measurement — a second render per frame would duplicate
+	 * render-time side effects (image placement registration). Roots with a
+	 * custom render keep the composed output as the source of truth and measure
+	 * up to the last target.
+	 */
+	#renderBelowRoot(root: Component, width: number, after: string[], spans: ViewportClickSpan[]): void {
+		const start = after.length;
+		const plainContainer = root instanceof Container && root.render === Container.prototype.render;
+		const targets = root instanceof Container ? root.children : [root];
+		const resolves = targets.map(rowTargetCandidates);
+		const lastTarget = resolves.findLastIndex(resolve => resolve !== undefined);
+		if (plainContainer) {
+			let offset = start;
+			for (let index = 0; index < targets.length; index++) {
+				const childLines = targets[index]!.render(width);
+				after.push(...childLines);
+				if (index > lastTarget) continue;
+				const resolve = resolves[index];
+				if (resolve !== undefined && childLines.length > 0) {
+					spans.push({ start: offset, end: offset + childLines.length, candidates: resolve });
+				}
+				offset += childLines.length;
+			}
+			return;
+		}
+		after.push(...root.render(width));
+		if (lastTarget === -1) return;
+		let offset = start;
+		for (let index = 0; index <= lastTarget; index++) {
+			const childLines = targets[index] === root ? after.length - start : targets[index]!.render(width).length;
+			const resolve = resolves[index];
+			if (resolve !== undefined && childLines > 0) {
+				spans.push({ start: offset, end: offset + childLines, candidates: resolve });
+			}
+			offset += childLines;
+		}
 	}
 
 	/**
@@ -947,8 +979,10 @@ export class Composer implements TerminalFrameProvider {
 	}
 
 	/** Mount or replace session-aware root children while preserving the header and status hosts. */
-	setRuntimeChildren(children: readonly Component[]): void {
+	setRuntimeChildren(children: readonly Component[], options: RuntimeChildrenOptions = {}): void {
 		if (this.#stopped) return;
+		this.#transientChrome = new Set(options.transient);
+		this.#transientChromeFloor = undefined;
 		this.ui.removeChild(this.#statusHost);
 		if (this.#runtimeMounted) {
 			for (const child of this.#runtimeChildren) this.ui.removeChild(child);
@@ -958,20 +992,9 @@ export class Composer implements TerminalFrameProvider {
 			this.#runtimeMounted = true;
 		}
 		this.#runtimeChildren = children;
-		this.#editorHost = this.#findEditorHost(children);
 		for (const child of children) this.ui.addChild(child);
 		this.ui.addChild(this.#statusHost);
 		this.ui.requestRender();
-	}
-
-	#findEditorHost(children: readonly Component[]): Container | undefined {
-		for (const child of children) {
-			if (!(child instanceof Container) || child instanceof TranscriptContainer) continue;
-			if (child.children.includes(this.editor)) return child;
-			const host = this.#findEditorHost(child.children);
-			if (host) return host;
-		}
-		return undefined;
 	}
 
 	/** Play or replay the welcome intro against the stable header render target. */

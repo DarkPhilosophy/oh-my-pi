@@ -48,7 +48,7 @@ function createAntigravityXAIContext(model: Model | undefined, fetchMock: typeof
 			resolveModelHeaders: ModelRegistry.prototype.resolveModelHeaders,
 			getAll: () => [],
 			authStorage: {
-				hasNonEnvCredential: (provider: string) => provider === "xai-oauth",
+				keys: { source: (provider: string) => (provider === "xai-oauth" ? { concrete: true } : undefined) },
 				rotateSessionCredential: async () => false,
 			},
 			resolver: (provider: string) => async () =>
@@ -141,7 +141,7 @@ describe("imageGenTool", () => {
 				getApiKey: async () => "test-openai-key",
 				getApiKeyForProvider: async () => undefined,
 				resolveModelHeaders: ModelRegistry.prototype.resolveModelHeaders,
-				authStorage: { rotateSessionCredential: async () => false },
+				authStorage: { keys: { source: () => undefined }, rotateSessionCredential: async () => false },
 				resolver: () => async () => "test-openai-key",
 			} as unknown as ModelRegistry,
 			model,
@@ -210,7 +210,7 @@ describe("imageGenTool", () => {
 				getApiKey: async () => "test-openai-key",
 				getApiKeyForProvider: async (provider: string) => (provider === "openai" ? "test-openai-key" : undefined),
 				resolveModelHeaders: ModelRegistry.prototype.resolveModelHeaders,
-				authStorage: { rotateSessionCredential: async () => false },
+				authStorage: { keys: { source: () => undefined }, rotateSessionCredential: async () => false },
 				resolver: () => async () => "test-openai-key",
 			} as unknown as ModelRegistry,
 			model,
@@ -306,7 +306,7 @@ describe("imageGenTool", () => {
 				getApiKey: async () => codexToken,
 				getApiKeyForProvider: async (provider: string) => (provider === "openai-codex" ? codexToken : undefined),
 				resolveModelHeaders: ModelRegistry.prototype.resolveModelHeaders,
-				authStorage: { rotateSessionCredential: async () => false },
+				authStorage: { keys: { source: () => undefined }, rotateSessionCredential: async () => false },
 				resolver: () => async () => codexToken,
 			} as unknown as ModelRegistry,
 			model: activeModel,
@@ -388,7 +388,7 @@ describe("imageGenTool", () => {
 					if (provider === "google-antigravity") return antigravityCredentials;
 					return undefined;
 				},
-				authStorage: { rotateSessionCredential: async () => false },
+				authStorage: { keys: { source: () => undefined }, rotateSessionCredential: async () => false },
 				resolver: (provider: string) => async () =>
 					provider === "google-antigravity" ? antigravityCredentials : "plain-openai-key",
 			} as unknown as ModelRegistry,
@@ -438,7 +438,7 @@ describe("imageGenTool", () => {
 				resolveModelHeaders: ModelRegistry.prototype.resolveModelHeaders,
 				getAll: () => [],
 				authStorage: {
-					hasNonEnvCredential: (provider: string) => provider === "xai-oauth",
+					keys: { source: (provider: string) => (provider === "xai-oauth" ? { concrete: true } : undefined) },
 					rotateSessionCredential: async () => false,
 				},
 				resolver: () => async () => "test-xai-token",
@@ -515,7 +515,7 @@ describe("imageGenTool", () => {
 					provider === "openai-codex" ? "opaque-proxy-key" : undefined,
 				resolveModelHeaders: ModelRegistry.prototype.resolveModelHeaders,
 				authStorage: {
-					hasNonEnvCredential: () => false,
+					keys: { source: () => undefined },
 					rotateSessionCredential: async () => false,
 				},
 				resolver: () => async () => "opaque-proxy-key",
@@ -593,7 +593,7 @@ describe("imageGenTool", () => {
 				getApiKey: async () => codexJwt,
 				getApiKeyForProvider: async () => undefined,
 				resolveModelHeaders: ModelRegistry.prototype.resolveModelHeaders,
-				authStorage: { rotateSessionCredential: async () => false },
+				authStorage: { keys: { source: () => undefined }, rotateSessionCredential: async () => false },
 				resolver: () => async () => codexJwt,
 			} as unknown as ModelRegistry,
 			model,
@@ -647,7 +647,7 @@ describe("imageGenTool", () => {
 				resolveModelHeaders: ModelRegistry.prototype.resolveModelHeaders,
 				getAll: () => [],
 				authStorage: {
-					hasNonEnvCredential: (provider: string) => provider === "xai-oauth",
+					keys: { source: (provider: string) => (provider === "xai-oauth" ? { concrete: true } : undefined) },
 					rotateSessionCredential: async () => false,
 				},
 				resolver: () => async () => "test-xai-token",
@@ -747,7 +747,7 @@ describe("imageGenTool", () => {
 				resolveModelHeaders: ModelRegistry.prototype.resolveModelHeaders,
 				getAll: () => [],
 				authStorage: {
-					hasNonEnvCredential: (provider: string) => provider === "xai-oauth",
+					keys: { source: (provider: string) => (provider === "xai-oauth" ? { concrete: true } : undefined) },
 					rotateSessionCredential: async () => false,
 				},
 				resolver: () => async () => "test-openai-key",
@@ -965,7 +965,7 @@ describe("imageGenTool", () => {
 				resolveModelHeaders: ModelRegistry.prototype.resolveModelHeaders,
 				getAll: () => [],
 				authStorage: {
-					hasNonEnvCredential: () => false,
+					keys: { source: () => undefined },
 					rotateSessionCredential: async () => false,
 				},
 				resolver: (provider: string) =>
@@ -1057,7 +1057,7 @@ describe("imageGenTool", () => {
 				resolveModelHeaders: ModelRegistry.prototype.resolveModelHeaders,
 				getAll: () => [],
 				authStorage: {
-					hasNonEnvCredential: (provider: string) => provider === "xai-oauth",
+					keys: { source: (provider: string) => (provider === "xai-oauth" ? { concrete: true } : undefined) },
 					rotateSessionCredential: async () => false,
 				},
 				resolver: (provider: string) => async () =>
@@ -1110,7 +1110,7 @@ describe("imageGenTool", () => {
 				getProviderHeaders: async () => undefined,
 				resolveModelHeaders: ModelRegistry.prototype.resolveModelHeaders,
 				getAll: () => [],
-				authStorage: { rotateSessionCredential: async () => false },
+				authStorage: { keys: { source: () => undefined }, rotateSessionCredential: async () => false },
 				resolver: () => async () => "test-deepinfra-key",
 			} as unknown as ModelRegistry,
 			model: undefined,
@@ -1167,7 +1167,7 @@ describe("imageGenTool", () => {
 				resolveModelHeaders: ModelRegistry.prototype.resolveModelHeaders,
 				getAll: () => [],
 				authStorage: {
-					hasNonEnvCredential: () => false,
+					keys: { source: () => undefined },
 					rotateSessionCredential: async () => false,
 				},
 				resolver: () => async () => "test-deepinfra-key",
