@@ -421,7 +421,7 @@ export class Composer implements TerminalFrameProvider {
 		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
 		transcript.beginPaint(frame);
 		pushLoopPhase("ui:render:compose:history");
-		let history: { id: number; rows: readonly string[]; kind: "append" | "replay" } | undefined;
+		let history: { id: number; rows: readonly string[]; kind: "append" | "replay"; divergent?: boolean } | undefined;
 		try {
 			history = this.#offerHistory(transcript, width, rows, chromeRows);
 		} finally {
@@ -657,7 +657,7 @@ export class Composer implements TerminalFrameProvider {
 		width: number,
 		rows: number,
 		chromeRows: number,
-	): { id: number; rows: readonly string[]; kind: "append" | "replay" } | undefined {
+	): { id: number; rows: readonly string[]; kind: "append" | "replay"; divergent?: boolean } | undefined {
 		if (this.#offeredHistory !== undefined) {
 			this.#rerenderOfferedHistory(width);
 			return {
@@ -739,6 +739,7 @@ export class Composer implements TerminalFrameProvider {
 			id: this.#offeredHistory.id,
 			rows: this.#offeredHistory.rows,
 			kind: this.#offeredHistory.kind,
+			divergent: batch.divergent,
 		};
 	}
 

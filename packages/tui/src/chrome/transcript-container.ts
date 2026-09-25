@@ -95,6 +95,12 @@ interface TranscriptEntry {
 	borrowedRows?: readonly string[];
 	borrowedEnd?: number;
 	/**
+	 * A streamed block re-rendered rows it had already lent to native history
+	 * (an open markdown fence closing into a frame). Native scrollback still
+	 * holds the old form, so the batch that retires the block must replay.
+	 */
+	historyDirty?: boolean;
+	/**
 	 * Set when a published stable row drifted (retraction, byte change within a
 	 * width epoch, or no longer a render prefix). Rows already in native
 	 * scrollback cannot be retracted, so the entry keeps its last good stable
@@ -675,12 +681,28 @@ export class TranscriptContainer extends Container {
 				entry.viewportStart === undefined
 					? 0
 					: Math.max(0, Math.min(rows - entry.viewportStart, entry.viewportExtent ?? 0));
+			const previous = entry.borrowedRows;
+			const previousOffset = entry.viewportOffset;
 			entry.borrowed = count > 0;
 			entry.borrowedEnd = count > 0 ? (entry.viewportOffset ?? 0) + count : 0;
 			entry.borrowedRows =
 				count > 0 && entry.viewportStart !== undefined
 					? this.#liveViewport.rows.slice(entry.viewportStart, entry.viewportStart + count)
 					: undefined;
+			if (
+				entry.mode === "appendOnly" &&
+				previous !== undefined &&
+				entry.borrowedRows !== undefined &&
+				previousOffset === entry.viewportOffset
+			) {
+				const overlap = Math.min(previous.length, entry.borrowedRows.length);
+				for (let index = 0; index < overlap; index++) {
+					if (previous[index] !== entry.borrowedRows[index]) {
+						entry.historyDirty = true;
+						break;
+					}
+				}
+			}
 		}
 	}
 
@@ -862,6 +884,7 @@ export class TranscriptContainer extends Container {
 					id: this.#nextBatchId++,
 					rows,
 					kind: "append",
+					divergent: head.historyDirty === true,
 				};
 				this.#offered = { batch, kind: "append", entry: this.#frontier, emittedEnd };
 				this.#pinnedFrontier = undefined;
@@ -904,6 +927,7 @@ export class TranscriptContainer extends Container {
 			id: this.#nextBatchId++,
 			rows: this.#renderRange(this.#frontier, end, width, true),
 			kind: "append",
+			divergent: this.#hasDivergentBorrowedStream(this.#frontier, end, width),
 		};
 		this.#offered = { batch, end, kind: "commit" };
 		return batch;
@@ -917,6 +941,8 @@ export class TranscriptContainer extends Container {
 			const entry = this.#entries[offered.entry];
 			if (entry === undefined || offered.entry !== this.#frontier || offered.emittedEnd <= entry.emitted) return;
 			entry.emitted = offered.emittedEnd;
+			// A divergent batch is followed by one ledger replay that rewrites it.
+			entry.historyDirty = false;
 		} else if (offered.kind === "commit") {
 			for (let index = this.#frontier; index < offered.end; index++) {
 				const entry = this.#entries[index]!;
@@ -927,6 +953,7 @@ export class TranscriptContainer extends Container {
 				entry.borrowed = false;
 				entry.borrowedEnd = 0;
 				entry.borrowedRows = undefined;
+				entry.historyDirty = false;
 			}
 			this.#frontier = offered.end;
 		}
@@ -1176,6 +1203,23 @@ export class TranscriptContainer extends Container {
 			if (row !== borrowedRows[index]) return false;
 		}
 		return true;
+	}
+
+	/**
+	 * Whether a streamed (append-only) block in `[start, end)` lent rows to
+	 * native history that its finalized render no longer reproduces: either an
+	 * earlier frame re-rendered them (`historyDirty`), or the block settles in
+	 * this very frame (a markdown fence closing as the reply ends). Mutable tool
+	 * cards keep their stale borrowed copy by design and never qualify.
+	 */
+	#hasDivergentBorrowedStream(start: number, end: number, width: number): boolean {
+		for (let index = start; index < end; index++) {
+			const entry = this.#entries[index]!;
+			if (entry.mode !== "appendOnly") continue;
+			if (entry.historyDirty === true) return true;
+			if (entry.borrowed && !this.#borrowedPrefixMatches(entry, this.#renderEntry(entry, width))) return true;
+		}
+		return false;
 	}
 
 	#renderRange(start: number, end: number, width: number, trailingBlank: boolean): readonly string[] {

@@ -1387,4 +1387,44 @@ describe("terminal frame plans", () => {
 			tui.stop();
 		}
 	});
+
+	it("scrolls visible history before borrowing new live rows when growth moves the origin up", () => {
+		const terminal = new CountingTerminal(40, 10);
+		const provider = new Provider({ viewport: ["editor"], retainedLiveViewport: true });
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		try {
+			tui.renderNow();
+			// A finalized card taller than the screen retires while temporary rows
+			// are open; its tail stays on screen as visible history.
+			const card = ["CARD_TOP", ...Array.from({ length: 12 }, (_, i) => `CARD_${i + 1}`), "CARD_BOTTOM"];
+			provider.plan = {
+				history: { id: 1, kind: "append", rows: card },
+				viewport: ["TEMP_1", "TEMP_2", "TEMP_3", "editor"],
+				viewportExpansionRows: 3,
+				retainedLiveViewport: true,
+			};
+			tui.renderNow();
+			provider.plan = { viewport: ["editor"], retainedLiveViewport: true };
+			tui.renderNow();
+			// The next reply grows past the screen in one paint: it borrows its head
+			// into history while temporary rows lift the origin over the card tail.
+			const reply = Array.from({ length: 12 }, (_, i) => `REPLY_${i + 1}`);
+			provider.plan = {
+				viewport: [...reply, "TEMP", "editor"],
+				viewportExpansionRows: 1,
+				borrowableRows: reply.length,
+				retainedLiveViewport: true,
+			};
+			tui.renderNow();
+
+			const buffer = plainBuffer(terminal);
+			const bottom = buffer.indexOf("CARD_BOTTOM");
+			expect(bottom, buffer.join("\n")).toBeGreaterThan(buffer.indexOf("CARD_12"));
+			expect(buffer.indexOf("REPLY_1")).toBeGreaterThan(bottom);
+			for (const row of card) expect(buffer.filter(line => line === row)).toHaveLength(1);
+		} finally {
+			tui.stop();
+		}
+	});
 });

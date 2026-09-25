@@ -185,6 +185,12 @@ export interface HistoryBatch {
 	 * one synchronous terminal write.
 	 */
 	readonly kind?: "append" | "replay";
+	/**
+	 * Native history holds rows this batch's blocks borrowed while streaming,
+	 * and the finalized render changed them (an open markdown fence that closed
+	 * into a frame). Appending cannot correct scrollback; the writer replays.
+	 */
+	readonly divergent?: boolean;
 }
 
 /** One component-owned row range inside the mutable viewport. */
@@ -3177,6 +3183,20 @@ export class TUI extends Container {
 		this.#rightPanelRowsAbove = logicalViewport.slice(0, viewportStart);
 		let history = plan.history;
 		const newHistory = history !== undefined && history.id > this.#acceptedHistoryBatchId;
+		if (
+			newHistory &&
+			!flushing &&
+			history?.divergent === true &&
+			history.kind !== "replay" &&
+			provider.beginHistoryReplay !== undefined
+		) {
+			// Accept the batch, then rewrite scrollback once from the ledger so the
+			// stale streamed form of its borrowed rows does not stay in history.
+			provider.acknowledgeHistory(history.id);
+			this.#prepareForcedRender(true);
+			this.requestRender(true);
+			return true;
+		}
 		let inferredHistory: string[] = [];
 		if (newHistory && history?.kind === "replay") {
 			history = {
@@ -3590,8 +3610,16 @@ export class TUI extends Container {
 		// image the terminal no longer had and every inline image vanished
 		// after a settled width resize.
 		if (destructiveReset) buffer += "\x1b[H\x1b[2J\x1b[3J";
+		// Moving the live origin upward over visible history must scroll those
+		// rows into native scrollback first. That holds for live rows borrowed in
+		// the same paint too: they are appended below the displaced rows, and
+		// repainting from the new origin would otherwise overwrite a card's tail
+		// that was still on screen and never reached scrollback.
 		const displacedHistoryRows =
-			geometryStable && !destructiveReset && historyRows.length === 0 && expansionRows > 0
+			geometryStable &&
+			!destructiveReset &&
+			expansionRows > 0 &&
+			(historyRows.length === 0 || (history === undefined && inferredHistory.length > 0))
 				? Math.max(0, previousTop - (newTop + replayViewportRows))
 				: 0;
 		for (const sequence of this.#imageBudget.takeTransmits()) buffer += sequence;
