@@ -656,12 +656,13 @@ export class Composer implements TerminalFrameProvider {
 	}
 
 	/** Replays committed presentation without changing logical retirement state. */
-	beginHistoryReplay(): void {
+	beginHistoryReplay(): "deferred" | undefined {
 		if (this.#offeredHistory !== undefined) {
 			this.#historyReplayRequested = true;
-			return;
+			return "deferred";
 		}
 		this.#startHistoryReplay();
+		return undefined;
 	}
 
 	/** Forces every currently eligible finalized prefix to retire before stop. */

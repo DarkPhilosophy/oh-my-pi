@@ -62,6 +62,14 @@ export function isUserQueuedMessage(message: AgentMessage): boolean {
 	return message.role === "custom" && message.attribution === "user" && message.display !== false;
 }
 
+/**
+ * Queued content the agent authored (advisor notes, async results, nudges):
+ * never restorable, and never a barrier between two user steers.
+ */
+export function isAgentQueuedMessage(message: AgentMessage): boolean {
+	return message.role === "custom" && message.attribution === "agent";
+}
+
 /** Hidden magic-keyword notices queued alongside a user prompt. */
 export const MAGIC_KEYWORD_NOTICE_TYPES: Record<string, true> = {
 	"ultrathink-notice": true,

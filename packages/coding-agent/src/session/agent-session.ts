@@ -375,6 +375,7 @@ import {
 } from "./prewalk";
 import {
 	isAdvisorCard,
+	isAgentQueuedMessage,
 	isDisplayableQueuedMessage,
 	isHiddenUserCompanion,
 	isUserQueuedMessage,
@@ -7842,6 +7843,11 @@ export class AgentSession implements SettingsScope {
 		companionMessages: readonly CustomMessage[],
 		onQueued: QueuedUserMessageListener | undefined,
 	): boolean {
+		// The peek views include batches already claimed for delivery. Merging
+		// into one would hand the model the original while the merged copy stays
+		// in the Steer box, so while any claim is active the new message queues
+		// normally and the claimed one finishes its own delivery.
+		if (this.agent.hasQueuedMessageClaim("steering") || this.agent.hasQueuedMessageClaim("followUp")) return false;
 		const steering = [...this.agent.peekSteeringQueue()];
 		const followUp = [...this.agent.peekFollowUpQueue()];
 		const queue = mode === "steer" ? steering : followUp;
@@ -7849,8 +7855,16 @@ export class AgentSession implements SettingsScope {
 		const perSendText = text || (images?.length ? "[Image]" : "");
 		if (!perSendText) return false;
 
+		// Merge into the user's last queued steer, stepping over everything the
+		// agent queued after it (advisor notes, async results, nudges, hidden
+		// companions). Stopping at the literal tail let one advisor note split a
+		// burst of steers into separate boxes.
 		let suffixCompanionStart = queue.length;
-		while (suffixCompanionStart > 0 && isHiddenUserCompanion(queue[suffixCompanionStart - 1])) {
+		while (
+			suffixCompanionStart > 0 &&
+			(isHiddenUserCompanion(queue[suffixCompanionStart - 1]) ||
+				isAgentQueuedMessage(queue[suffixCompanionStart - 1]))
+		) {
 			suffixCompanionStart--;
 		}
 		const userIndex = suffixCompanionStart - 1;

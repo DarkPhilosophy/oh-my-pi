@@ -1232,6 +1232,15 @@ export class Agent {
 	 *  this live view instead of a mirror, so the agent-core queue stays the
 	 *  single source of truth. Includes exclusively claimed originals while
 	 *  preparation is pending, so editor restoration can cancel their delivery. */
+	/**
+	 * Whether a queue has a batch claimed for asynchronous preparation. Claimed
+	 * messages stay visible through the peek views but are owned by the pending
+	 * delivery; rewriting them splits one message between the model and the UI.
+	 */
+	hasQueuedMessageClaim(queue: "steering" | "followUp"): boolean {
+		return this.#queuedMessageClaims[queue] !== undefined;
+	}
+
 	peekSteeringQueue(): readonly AgentMessage[] {
 		const claim = this.#queuedMessageClaims.steering;
 		return claim ? [...claim.messages, ...this.#steeringQueue] : this.#steeringQueue;
@@ -1262,28 +1271,41 @@ export class Agent {
   return Math.min(queue.length, length + 1);
  }
 
+	/**
+	 * Called after the loop takes queued messages. A taken steer is already on
+	 * its way to the model (live-steered into the stream or folded into the next
+	 * request) but its transcript row only lands at the next boundary; without
+	 * this signal the pending bar keeps showing it as editable, and a dequeue of
+	 * that stale chip "withdraws" a message the model still reads.
+	 */
+	onQueuedMessagesTaken?: () => void;
+
 	#dequeueSteeringMessages(): AgentMessage[] {
+		let taken: AgentMessage[];
 		if (this.#steeringMode === "one-at-a-time") {
-   const length = this.#queuedUnitLength(this.#steeringQueue);
-   const unit = this.#steeringQueue.slice(0, length);
-   this.#steeringQueue = this.#steeringQueue.slice(length);
-   return unit;
+			const length = this.#queuedUnitLength(this.#steeringQueue);
+			taken = this.#steeringQueue.slice(0, length);
+			this.#steeringQueue = this.#steeringQueue.slice(length);
+		} else {
+			taken = this.#steeringQueue.slice();
+			this.#steeringQueue = [];
 		}
-		const steering = this.#steeringQueue.slice();
-		this.#steeringQueue = [];
-		return steering;
+		if (taken.length > 0) this.onQueuedMessagesTaken?.();
+		return taken;
 	}
 
 	#dequeueFollowUpMessages(): AgentMessage[] {
+		let taken: AgentMessage[];
 		if (this.#followUpMode === "one-at-a-time") {
-   const length = this.#queuedUnitLength(this.#followUpQueue);
-   const unit = this.#followUpQueue.slice(0, length);
-   this.#followUpQueue = this.#followUpQueue.slice(length);
-   return unit;
+			const length = this.#queuedUnitLength(this.#followUpQueue);
+			taken = this.#followUpQueue.slice(0, length);
+			this.#followUpQueue = this.#followUpQueue.slice(length);
+		} else {
+			taken = this.#followUpQueue.slice();
+			this.#followUpQueue = [];
 		}
-		const followUp = this.#followUpQueue.slice();
-		this.#followUpQueue = [];
-		return followUp;
+		if (taken.length > 0) this.onQueuedMessagesTaken?.();
+		return taken;
 	}
 
 	/**

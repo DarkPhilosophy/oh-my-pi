@@ -47,6 +47,9 @@ it("makes an oversized startup changelog available in scrollback after the intro
 });
 
 it("keeps the welcome on screen when a multi-line draft grows the editor", async () => {
+	// The welcome rolls a random tip and nag; both composers must render the
+	// same header height or the exact-fit boundary moves between runs.
+	vi.spyOn(Math, "random").mockReturnValue(0.5);
 	const probe = new VirtualTerminal(60, 200);
 	const scheduler = new VirtualRenderScheduler();
 	const measure = new Composer({
@@ -55,7 +58,9 @@ it("keeps the welcome on screen when a multi-line draft grows the editor", async
 		preferences: { spellingTypoDetection: false, spellingAutocomplete: false, spellingAutocorrect: false },
 	});
 	measure.setRuntimeChildren([new TranscriptContainer(), new Text("EDITOR", 0, 0)]);
-	measure.start();
+	// The intro animates on the wall clock; measuring during it made the fit
+	// boundary depend on timing.
+	measure.start({ playWelcomeIntro: false });
 	await scheduler.settle(probe);
 	const headerRows = probe.getViewport().filter(row => row.trim().length > 0).length - 1;
 	measure.stop();
@@ -70,7 +75,7 @@ it("keeps the welcome on screen when a multi-line draft grows the editor", async
 	const transcript = new TranscriptContainer();
 	const editor = new Text("EDITOR", 0, 0);
 	composer.setRuntimeChildren([transcript, editor], { transient: [editor] });
-	composer.start();
+	composer.start({ playWelcomeIntro: false });
 	try {
 		transcript.addChild(new Text("Session-only model: x.", 0, 0));
 		composer.ui.requestRender();

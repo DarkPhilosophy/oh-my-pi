@@ -1444,6 +1444,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		subagentEventBus?: EventBus,
 	) {
 		this.session = session;
+		// The loop took queued messages: drop their chips now, not at the next
+		// transcript boundary, so a taken steer can't be "withdrawn" from the bar.
+		this.session.agent.onQueuedMessagesTaken = () => {
+			this.updatePendingMessagesDisplay();
+			this.ui.requestRender();
+		};
 		this.session.onLocalQueueCoalesced = (perSend, merged, replaced, perSendCount, mergedCount, replacedCount) => {
 			const droppedPerSend = this.locallySubmittedUserSignatures.delete(`${perSend}\u0000${perSendCount}`);
 			const droppedReplaced = this.locallySubmittedUserSignatures.delete(`${replaced}\u0000${replacedCount}`);

@@ -107,6 +107,69 @@ describe("AgentSession queue coalescing", () => {
 		expect(steering).toEqual(["Line1\nLine2\nLine3"]);
 	});
 
+	it("does not merge a new steer into one already claimed for delivery", async () => {
+		const target = await createSession([
+			{ content: ["ok"] },
+			{ content: ["after steer"] },
+			{ content: ["after late"] },
+		]);
+		const gate = Promise.withResolvers<void>();
+		const claimed = Promise.withResolvers<void>();
+		const original = target.agent.prepareQueuedMessages;
+		target.agent.prepareQueuedMessages = async (messages, signal) => {
+			claimed.resolve();
+			await gate.promise;
+			return original ? original(messages, signal) : undefined;
+		};
+		let queuedDuringClaim: readonly string[] = [];
+		let armed = false;
+		target.agent.setOnBeforeYield(async () => {
+			if (armed) return;
+			armed = true;
+			await target.steer("first");
+		});
+		const run = target.prompt("hello");
+		await claimed.promise;
+		await target.steer("late");
+		queuedDuringClaim = target.getQueuedMessages().steering.slice();
+		gate.resolve();
+		await run;
+		await target.waitForIdle?.();
+
+		// The claimed steer keeps its own delivery; the late one queues beside it
+		// instead of rewriting a message the model is already receiving.
+		expect(queuedDuringClaim).toEqual(["first", "late"]);
+		const delivered = target.agent.state.messages
+			.filter(m => m.role === "user")
+			.map(m =>
+				typeof m.content === "string" ? m.content : m.content.map(c => (c.type === "text" ? c.text : "")).join(""),
+			);
+		expect(delivered.filter(t => t.includes("first"))).toHaveLength(1);
+		expect(delivered.filter(t => t.includes("late"))).toHaveLength(1);
+		expect(target.getQueuedMessages().steering).toEqual([]);
+	});
+
+	it("merges a steer burst into one box across an advisor note queued between them", async () => {
+		const target = await createSession([{ content: ["ok"] }]);
+		const steering = await duringStream(target, async () => {
+			await target.steer("NU FACI BINE");
+			// An advisor note lands in the steering queue between two user steers.
+			target.agent.steer({
+				role: "custom",
+				customType: "advisor",
+				content: "advisor note",
+				display: true,
+				attribution: "agent",
+				timestamp: Date.now(),
+			});
+			await target.steer("Totul este perfect");
+			return target.getQueuedMessages().steering.slice();
+		});
+		// Regression: the note used to be the queue tail, so the second steer
+		// opened its own box instead of joining the first.
+		expect(steering).toEqual(["NU FACI BINE\nTotul este perfect"]);
+	});
+
 	it("merges consecutive plain follow-ups into one queued entry", async () => {
 		const target = await createSession([{ content: ["ok"] }]);
 		const followUp = await duringStream(target, async () => {

@@ -237,7 +237,8 @@ export interface TerminalFrameProvider {
 	/** Full semantic viewport used only on the transient resize buffer. */
 	renderResizeFrame?(viewport: ViewportSize): readonly string[];
 	/** Re-offer finalized history after a display reset or resize replay. */
-	beginHistoryReplay?(): void;
+	/** Returns "deferred" when an offered batch delays the replay past the next paint. */
+	beginHistoryReplay?(): "deferred" | undefined | void;
 	/** Force every currently eligible finalized prefix to retire before stop. */
 	beginHistoryFlush?(): void;
 }
@@ -2415,7 +2416,12 @@ export class TUI extends Container {
 		this.#pendingLiveRender = false;
 		if (clearScrollback) this.#clearScrollbackWaitsForReplay = false;
 		if (clearScrollback && !this.#clearScrollbackOnNextRender) {
-			this.#frameProvider?.beginHistoryReplay?.();
+			// The clear must land in the same paint as its replay. A provider with
+			// an offered batch defers the replay one frame; a clear consumed by that
+			// batch wipes history, writes the stale screen back, and the replay then
+			// lands below it with no clear: a duplicated card whose seam shows as an
+			// unpainted row.
+			if (this.#frameProvider?.beginHistoryReplay?.() === "deferred") this.#clearScrollbackWaitsForReplay = true;
 		}
 		this.#clearScrollbackOnNextRender ||= clearScrollback;
 		this.#forceViewportRepaintOnNextRender = true;

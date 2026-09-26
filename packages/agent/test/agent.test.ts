@@ -26,6 +26,41 @@ describe("Agent", () => {
 		expect(agent.state.messages).not.toContainEqual(message);
 	});
 
+	it("signals when the loop takes a queued steer so its pending chip can drop", async () => {
+		const toolSchema = type({ value: type("string") });
+		const agentRef = {} as { current: Agent };
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute() {
+				agentRef.current.steer({ role: "user", content: "user steer", timestamp: Date.now() });
+				return { content: [{ type: "text", text: "ok" }], details: { value: "ok" } };
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "x" } }] },
+				{ content: ["done"] },
+			],
+		});
+		const agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
+			streamFn: mock.stream,
+		});
+		agentRef.current = agent;
+		const queuedWhenSignalled: number[] = [];
+		agent.onQueuedMessagesTaken = () => queuedWhenSignalled.push(agent.peekSteeringQueue().length);
+
+		await agent.prompt("start");
+
+		// The steer left the queue before its transcript row landed; the signal
+		// fired at that moment, with nothing left for a dequeue to "withdraw".
+		expect(queuedWhenSignalled).toEqual([0]);
+		expect(agent.state.messages.some(m => m.role === "user" && m.content === "user steer")).toBe(true);
+	});
+
 	it("classifies agent-authored steering as a parent steering message", async () => {
 		const toolSchema = type({ value: type("string") });
 		const executed: string[] = [];

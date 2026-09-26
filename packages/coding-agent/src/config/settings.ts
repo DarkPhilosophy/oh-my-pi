@@ -3165,7 +3165,10 @@ export class Settings {
 				"providers.unexpectedStopFallbackModel",
 			);
 			const hasJudgeFallback =
-				typeof legacyUnexpectedStopFallbackModel === "string" && legacyUnexpectedStopFallbackModel.length > 0;
+				typeof legacyUnexpectedStopFallbackModel === "string" &&
+				legacyUnexpectedStopFallbackModel.length > 0 &&
+				// "online" names the hosted classifier, not a local model id.
+				legacyUnexpectedStopFallbackModel !== "online";
 			const nonDefaultJudge =
 				(typeof legacyJudgmentProvider === "string" && legacyJudgmentProvider !== "auto") ||
 				(typeof legacyAutoThinkingModel === "string" && legacyAutoThinkingModel !== "online") ||
