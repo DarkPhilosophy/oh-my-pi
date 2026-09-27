@@ -377,7 +377,10 @@ describe("bashToolRenderer", () => {
 		]) {
 			expect(rendered).toContain(`echo step_${total - 1}`);
 			expect(rendered).toContain("earlier line");
-			expect(rendered).not.toContain("echo step_0");
+			// The first line stays so the card still says what it runs.
+			expect(rendered).toContain("echo step_0");
+			expect(rendered).not.toContain("echo step_1\n");
+			expect(rendered).not.toContain("echo step_2");
 		}
 
 		const expandedFinal = render({ expanded: true, isPartial: false });

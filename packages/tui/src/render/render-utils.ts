@@ -379,16 +379,21 @@ export function diffCollapsedRows(): number {
 export function capPreviewLines(
 	lines: string[],
 	theme: Theme,
-	options: { max?: number; expanded?: boolean; prefix?: string; expandHint?: boolean } = {},
+	options: { max?: number; expanded?: boolean; prefix?: string; expandHint?: boolean; keepHead?: boolean } = {},
 ): string[] {
 	if (options.expanded) return lines;
 	const max = options.max ?? previewWindowRows();
 	if (lines.length <= max) return lines;
-	const visible = max <= 1 ? [] : lines.slice(lines.length - (max - 1));
-	const hidden = lines.length - visible.length;
+	// Keep the first line (the `$ command` head that says what is running)
+	// above the marker; the tail stays the live edge. Same height either way,
+	// so streaming and finished windows still match.
+	const head = options.keepHead && max >= 3 ? lines.slice(0, 1) : [];
+	const tailCount = Math.max(0, max - 1 - head.length);
+	const visible = tailCount === 0 ? [] : lines.slice(lines.length - tailCount);
+	const hidden = lines.length - visible.length - head.length;
 	const hint = options.expandHint === false ? "" : formatExpandHint(theme, false, true);
 	const marker = `… ${hidden} earlier ${pluralize("line", hidden)}${hint ? ` ${hint}` : ""}`;
-	return [`${options.prefix ?? ""}${theme.fg("dim", marker)}`, ...visible];
+	return [...head, `${options.prefix ?? ""}${theme.fg("dim", marker)}`, ...visible];
 }
 
 /** Join metadata with the theme separator and muted styling. */

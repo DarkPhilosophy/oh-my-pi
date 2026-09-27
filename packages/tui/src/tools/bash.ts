@@ -259,7 +259,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 				return {
 					header,
 					phase: options.spinnerFrame !== undefined ? "running" : "pending",
-					sections: [{ content: capPreviewLines(cmdLines, uiTheme, { expanded: options.expanded }) }],
+					sections: [
+						{ content: capPreviewLines(cmdLines, uiTheme, { expanded: options.expanded, keepHead: true }) },
+					],
 				};
 			});
 		},
@@ -438,7 +440,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							{
 								// Viewport-sized tail window in every state — streaming and final
 								// render identically; only ctrl+o uncaps.
-								content: capPreviewLines(cmdLines ?? [], uiTheme, { expanded }),
+								content: capPreviewLines(cmdLines ?? [], uiTheme, { expanded, keepHead: true }),
 							},
 							{ label: uiTheme.fg("toolTitle", "Output"), content: outputLines },
 						],
