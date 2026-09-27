@@ -3124,27 +3124,19 @@ export class TUI extends Container {
 					Math.max(0, overflow - Math.max(0, plan.viewportExpansionRows ?? 0)),
 					Math.max(0, plan.borrowableRows ?? logicalViewport.length),
 				);
-		if (
+		// Contracting temporary UI (a running card that held a peak finishing a
+		// row shorter, a transient chip leaving) brings rows back that were lent
+		// to native history. They are already there, unchanged, so the frame
+		// keeps them off screen and anchors the live rows to the bottom with a
+		// blank lead instead. The old full-history replay here wiped scrollback
+		// and jumped the terminal to the bottom after nearly every write/edit.
+		const contractedIntoHistory =
 			!flushing &&
-			plan.retainedLiveViewport &&
-			!this.#clearScrollbackOnNextRender &&
+			plan.retainedLiveViewport === true &&
 			this.#providerExpansionBorrowed &&
-			// Only live rows still lent to native history need reconciling. When
-			// none remain, contraction just pulls visible history back down and a
-			// destructive replay would wipe and rewrite the whole scrollback.
-			this.#providerLogicalCommitted > 0 &&
-			(overflow < this.#providerLogicalCommitted || logicalViewport.length < height) &&
+			this.#providerLogicalCommitted > overflow &&
 			(plan.viewportExpansionRows ?? 0) === 0 &&
-			this.#providerViewportExpansionRows > 0 &&
-			provider.beginHistoryReplay !== undefined
-		) {
-			// Contracting temporary UI brings borrowed live rows back on screen.
-			// Reconcile them with the existing complete-history replay, as we do
-			// when a mutable tool shrinks, rather than dropping the live tail.
-			this.#prepareForcedRender(true);
-			this.requestRender(true);
-			return false;
-		}
+			this.#providerViewportExpansionRows > 0;
 		if (borrowOverflow > Math.max(0, overflow - (plan.viewportExpansionRows ?? 0))) {
 			this.#providerExpansionBorrowed = true;
 		}
@@ -3274,9 +3266,17 @@ export class TUI extends Container {
 			const reserved = Math.max(0, this.#providerLogicalCommitted - overflow);
 			for (let index = 0; index < reserved; index++) logicalViewport[overflow + index] = "";
 		}
-		const emitViewport = logicalViewport.slice(
-			plan.retainedLiveViewport ? Math.max(overflow, this.#providerLogicalCommitted) : overflow,
-		);
+		const sliceStart = plan.retainedLiveViewport ? Math.max(overflow, this.#providerLogicalCommitted) : overflow;
+		let emitViewport = logicalViewport.slice(sliceStart);
+		if (contractedIntoHistory && emitViewport.length < height) {
+			const lead = height - emitViewport.length;
+			emitViewport = [...new Array<string>(lead).fill(""), ...emitViewport];
+			this.#planSegments = this.#planSegments.map(segment => ({
+				component: segment.component,
+				start: segment.start + overflow - sliceStart + lead,
+				rowCount: segment.rowCount,
+			}));
+		}
 		const acceptedBefore = this.#acceptedHistoryBatchId;
 		// Sub-phase: diffing the prepared rows against the previous frame and
 		// writing the bytes. Named apart from compose so the log says whether a

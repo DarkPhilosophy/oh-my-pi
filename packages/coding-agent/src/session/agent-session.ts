@@ -7894,10 +7894,14 @@ export class AgentSession implements SettingsScope {
 								: block,
 						),
 		}));
+		// Companions must stay contiguous and directly before the merged prompt:
+		// withdrawing it removes only the run of companions adjacent to it, so an
+		// agent entry left between them orphaned the old companion (e.g. an image
+		// description), which the model then received on its own.
 		const nextQueue = [
 			...queue.slice(0, prefixCompanionStart),
-			...queue.slice(prefixCompanionStart, userIndex),
 			...queue.slice(userIndex + 1),
+			...queue.slice(prefixCompanionStart, userIndex),
 			...shiftedCompanions,
 			replacement,
 		];

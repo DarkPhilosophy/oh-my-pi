@@ -2957,10 +2957,12 @@ export class SessionAdvisors {
 		sharedInstructions: string | undefined,
 		sharedMaxNotesPerUpdate?: number,
 	): number {
-		if (!this.#advisorEnabled) return 0;
+		// Store first: a roster edited while advisors are off must be the one a
+		// later `/advisor on` builds, not the stale startup roster.
 		this.#advisorConfigs = advisors;
 		this.#advisorSharedInstructions = sharedInstructions;
 		this.#advisorSharedMaxNotesPerUpdate = sharedMaxNotesPerUpdate;
+		if (!this.#advisorEnabled) return 0;
 		this.#stopAdvisorRuntime();
 		this.#buildAdvisorRuntime(true);
 		return this.#advisors.length;

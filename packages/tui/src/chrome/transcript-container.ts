@@ -658,7 +658,11 @@ export class TranscriptContainer extends Container {
 			if (
 				entry.state === "active" &&
 				(entry.component as TranscriptPresentationTarget).setTranscriptAllocation !== undefined &&
-				entry.viewportStart !== undefined
+				entry.viewportStart !== undefined &&
+				// A settled preview (args done, not yet running) lends its rows like
+				// text does; hiding them left the card's head nowhere until the
+				// reply ended.
+				(entry.component as { isTranscriptPreviewSettled?(): boolean }).isTranscriptPreviewSettled?.() !== true
 			) {
 				borrowableRows = Math.min(borrowableRows, entry.viewportStart);
 				break;

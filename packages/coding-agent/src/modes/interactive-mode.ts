@@ -2,6 +2,7 @@
  * Interactive mode for the coding agent.
  * Handles TUI rendering and user interaction, delegating business logic to AgentSession.
  */
+import { discoverAdvisorConfigs, watchAdvisorConfigs } from "../advisor/config";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
@@ -50,6 +51,7 @@ import {
 	adjustHsv,
 	formatDuration,
 	formatNumber,
+	getAgentDir,
 	getProjectDir,
 	isEnoent,
 	logger,
@@ -975,6 +977,7 @@ export function renderSubagentHudLines(
 const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
 
 export class InteractiveMode implements InteractiveModeContext {
+	#stopAdvisorConfigWatch: (() => void) | undefined;
 	#ownsStartedUi: boolean;
 	session: AgentSession;
 	sessionManager: SessionManager;
@@ -1450,6 +1453,29 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.updatePendingMessagesDisplay();
 			this.ui.requestRender();
 		};
+		// WATCHDOG.yml edited elsewhere (another omp, an editor, an agent) must
+		// reach this session's advisors; discovery otherwise runs only at startup
+		// and on the in-app editor's save.
+		this.#stopAdvisorConfigWatch?.();
+		this.#stopAdvisorConfigWatch = watchAdvisorConfigs(
+			this.session.sessionManager.getCwd(),
+			getAgentDir() ?? getProjectDir(),
+			() => {
+				void (async () => {
+					const discovered = await discoverAdvisorConfigs(
+						this.session.sessionManager.getCwd(),
+						getAgentDir() ?? getProjectDir(),
+					);
+					this.session.applyAdvisorConfigs(
+						discovered.advisors,
+						discovered.sharedInstructions,
+						discovered.sharedMaxNotesPerUpdate,
+					);
+					this.statusLine.invalidate();
+					this.ui.requestRender();
+				})().catch(error => logger.warn("Advisor config reload failed", { error: String(error) }));
+			},
+		);
 		this.session.onLocalQueueCoalesced = (perSend, merged, replaced, perSendCount, mergedCount, replacedCount) => {
 			const droppedPerSend = this.locallySubmittedUserSignatures.delete(`${perSend}\u0000${perSendCount}`);
 			const droppedReplaced = this.locallySubmittedUserSignatures.delete(`${replaced}\u0000${replacedCount}`);
@@ -1965,11 +1991,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#terminalTitleController.setEnabled(cfgTuiTitleState.get(this.settings));
 			this.#terminalTitleController.setSessionTitle(
 				this.sessionManager.getSessionName(),
-				this.sessionManager.getCwd(),
+				this.session.sessionManager.getCwd(),
 			);
 		} else {
 			setTerminalTitleStateEnabled(cfgTuiTitleState.get(this.settings));
-			setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+			setSessionTerminalTitle(this.sessionManager.getSessionName(), this.session.sessionManager.getCwd());
 		}
 		// Seeds the border, the status-line `vim` segment, and the cursor shape in one call.
 		// Deliberately here rather than beside #applyVimMode in the constructor: that runs before
@@ -1994,10 +2020,10 @@ export class InteractiveMode implements InteractiveModeContext {
 				if (this.#terminalTitleController) {
 					this.#terminalTitleController.setSessionTitle(
 						this.sessionManager.getSessionName(),
-						this.sessionManager.getCwd(),
+						this.session.sessionManager.getCwd(),
 					);
 				} else {
-					setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+					setSessionTerminalTitle(this.sessionManager.getSessionName(), this.session.sessionManager.getCwd());
 				}
 				this.#handleSessionAccentInputsChanged();
 			}),
@@ -2009,7 +2035,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// TUI's multiplexer, output-backlog, and image safety gates.
 		this.ui.renderNow();
 
-		const streamCwd = this.sessionManager.getCwd();
+		const streamCwd = this.session.sessionManager.getCwd();
 		this.#streamPublisher =
 			(await StreamPublisher.connectLazy({
 				cwd: streamCwd,
@@ -2156,7 +2182,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				// Skills/commands rediscovery (live `skills.*`/`commands.*`/extension edits,
 				// `/move`, manage_skill, MCP prompts) lands here; rebuild the picker from session state.
 				this.#pendingSlashCommands = this.#buildPendingSlashCommands();
-				this.#rebuildSlashCommandAutocomplete(this.sessionManager.getCwd());
+				this.#rebuildSlashCommandAutocomplete(this.session.sessionManager.getCwd());
 				this.ui.requestRender();
 			}),
 		);
@@ -2254,7 +2280,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 *  ({@link AgentSession.#refreshTitleAfterReplan}) share one source
 	 *  ({@link discoverTitleSystemPromptFile}; issue #3734). */
 	async refreshTitleSystemPrompt(cwd?: string): Promise<void> {
-		const basePath = cwd ?? this.sessionManager.getCwd();
+		const basePath = cwd ?? this.session.sessionManager.getCwd();
 		const titleSystemPromptSource = discoverTitleSystemPromptFile(basePath);
 		const resolved = await resolvePromptInput(titleSystemPromptSource, "title system prompt");
 		this.session.setTitleSystemPrompt(resolved);
@@ -2285,7 +2311,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				name: loaded.command.name,
 				description: `${loaded.command.description} (${loaded.source})`,
 				icon: getSlashCommandTypeIcon(loaded.path.startsWith("mcp:") ? "mcp" : "prompt"),
-				getArgumentCompletions: complete && (prefix => complete(prefix, this.sessionManager.getCwd())),
+				getArgumentCompletions: complete && (prefix => complete(prefix, this.session.sessionManager.getCwd())),
 			};
 		});
 
@@ -2315,7 +2341,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Reload slash commands and autocomplete for the provided working directory. */
 	async refreshSlashCommandState(cwd?: string, preloaded?: ReadonlyArray<FileSlashCommand>): Promise<void> {
-		const basePath = cwd ?? this.sessionManager.getCwd();
+		const basePath = cwd ?? this.session.sessionManager.getCwd();
 		// Session construction already ran slash-command discovery for this cwd;
 		// init passes that result through instead of re-walking the providers.
 		const fileCommands = preloaded
@@ -2462,7 +2488,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				await this.refreshTitleSystemPrompt(previousCwd);
 				await this.session.refreshSkillsAndCommands();
 			} catch (restoreError) {
-				const actual = this.sessionManager.getCwd();
+				const actual = this.session.sessionManager.getCwd();
 				try {
 					setProjectDir(actual);
 					if (isSettingsInitialized()) {
@@ -2488,10 +2514,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.#terminalTitleController) {
 			this.#terminalTitleController.setSessionTitle(
 				this.sessionManager.getSessionName(),
-				this.sessionManager.getCwd(),
+				this.session.sessionManager.getCwd(),
 			);
 		} else {
-			setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+			setSessionTerminalTitle(this.sessionManager.getSessionName(), this.session.sessionManager.getCwd());
 		}
 		this.statusLine.applyCwdChange();
 		this.#hostedCwdChange?.(getProjectDir());
@@ -2700,7 +2726,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		let verdict: LoopConditionVerdict;
 		try {
 			verdict = await evaluateLoopCondition(condition, {
-				cwd: this.sessionManager.getCwd(),
+				cwd: this.session.sessionManager.getCwd(),
 				timeoutMs: cfgLoopConditionTimeoutMs.get(this.settings),
 				signal: controller.signal,
 				sessionId: this.sessionManager.getSessionId(),
@@ -3347,7 +3373,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			topBorder: topContent ? { content: topContent, width: visibleWidth(topContent) } : undefined,
 			bottomLines,
 		};
-		void writeComposerStatusCache(this.sessionManager.getCwd(), snapshot).catch(error => {
+		void writeComposerStatusCache(this.session.sessionManager.getCwd(), snapshot).catch(error => {
 			logger.debug("composer status cache write failed", { error });
 		});
 	}
@@ -4124,7 +4150,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				getArtifactsDir: () => this.sessionManager.getArtifactsDir(),
 				getSessionId: () => this.sessionManager.getSessionId(),
 			},
-			cwd: this.sessionManager.getCwd(),
+			cwd: this.session.sessionManager.getCwd(),
 		});
 	}
 
@@ -5116,7 +5142,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		let destination: string;
 		try {
-			destination = resolveToCwd(selectedPath, this.sessionManager.getCwd());
+			destination = resolveToCwd(selectedPath, this.session.sessionManager.getCwd());
 		} catch (error) {
 			this.showError(`Invalid plan save path: ${error instanceof Error ? error.message : String(error)}`);
 			return;
@@ -5324,7 +5350,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		try {
 			const autosaved = await autosaveApprovedPlan({
 				settings: this.session.settings,
-				cwd: this.sessionManager.getCwd(),
+				cwd: this.session.sessionManager.getCwd(),
 				title: options.title,
 				planContent,
 			});
@@ -6383,6 +6409,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	stop(): void {
+		this.#stopAdvisorConfigWatch?.();
+		this.#stopAdvisorConfigWatch = undefined;
 		this.#appearanceRefreshRequest = undefined;
 		this.#streamPublisher?.dispose();
 		this.#streamPublisher = undefined;
@@ -7013,7 +7041,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#persistComposerWelcome(modelName: string, providerName: string): void {
 		if (!this.sessionManager.getSessionFile()) return;
-		void writeComposerWelcomeCache(this.sessionManager.getCwd(), {
+		void writeComposerWelcomeCache(this.session.sessionManager.getCwd(), {
 			modelName,
 			providerName,
 		}).catch(error => {
@@ -7451,7 +7479,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (this.#recorderStarting) return;
 		this.#recorderStarting = true;
-		const cwd = this.sessionManager.getCwd();
+		const cwd = this.session.sessionManager.getCwd();
 		try {
 			this.#recorder = await SessionRecorder.start({
 				tui: this.ui,

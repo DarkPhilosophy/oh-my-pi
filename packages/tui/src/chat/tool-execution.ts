@@ -852,6 +852,25 @@ export class ToolExecutionComponent extends Container {
 	 * their final presentation is known. Keep their current rows reversible;
 	 * argument-only calls must not reserve space belonging to preceding text.
 	 */
+	/**
+	 * Arguments are complete and the call has not started running: the rows are
+	 * fixed until execution, so rows scrolled above the screen may go to native
+	 * history now (a later change is reconciled by one history replay) instead
+	 * of being hidden until the whole reply finishes.
+	 */
+	isTranscriptPreviewSettled(): boolean {
+		// An animated pending preview (eval's spinner) changes rows every tick;
+		// lending those would replay history on each frame.
+		return (
+			this.#argsComplete &&
+			!this.#executionStarted &&
+			this.#result === undefined &&
+			!this.#sealed &&
+			!this.#spinnerActive &&
+			this.#renderer?.animatedPendingPreview !== true
+		);
+	}
+
 	isTranscriptBlockTransient(): boolean {
 		if (this.#sealed || !this.#toolActivityVisible) return false;
 		return this.#parkedBackground || (this.#result !== undefined && this.#isPartial);

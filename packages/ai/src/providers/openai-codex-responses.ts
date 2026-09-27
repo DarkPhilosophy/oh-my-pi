@@ -1543,7 +1543,12 @@ export async function buildTransformedCodexRequestBody(
 	// `{"detail":"Unsupported parameter: temperature"}` etc., so we drop
 	// everything from `StreamOptions` rather than forwarding any of them.
 	// (#3117 — codex-rs sends none of these either.)
-	applyOpenAIServiceTier(params, options?.serviceTier, model);
+	// A tier the Codex endpoint rejected for this model falls back to standard
+	// processing instead of failing every request (the account's `/slow` flex
+	// setting must not make the model unusable).
+	const rejectedTier =
+		options?.serviceTier && CODEX_REJECTED_SERVICE_TIERS.has(codexTierKey(model.id, options.serviceTier));
+	applyOpenAIServiceTier(params, rejectedTier ? undefined : options?.serviceTier, model);
 	if (context.tools && context.tools.length > 0) {
 		params.tools = convertOpenAICodexResponsesTools(context.tools, model);
 		if (options?.toolChoice) {
@@ -2738,6 +2743,9 @@ class CodexStreamProcessor {
 		if (await this.#tryDropRejectedAccessPrograms(error)) {
 			return true;
 		}
+		if (await this.#tryDropRejectedServiceTier(error)) {
+			return true;
+		}
 		if (await this.#tryRecoverWhitespaceToolCallLoop(error)) {
 			return true;
 		}
@@ -2900,6 +2908,37 @@ class CodexStreamProcessor {
 	 * requested cyber program (see `openai-codex/access-programs.ts`). A
 	 * rejection arrives before any output, so the replay is always safe.
 	 */
+	/**
+	 * The Codex endpoint rejects some service tiers outright ("Unsupported
+	 * service_tier: flex"). Drop the tier from this request and replay it on
+	 * standard processing; the rejection is remembered so later requests omit
+	 * the tier up front.
+	 */
+	async #tryDropRejectedServiceTier(error: unknown): Promise<boolean> {
+		const body = this.requestContext.transformedBody as { service_tier?: unknown };
+		if (
+			hasVisibleAssistantContent(this.output) ||
+			this.options?.signal?.aborted ||
+			!noteRejectedCodexServiceTier(error, this.model.id, body.service_tier)
+		) {
+			return false;
+		}
+		delete body.service_tier;
+		this.#closeOpenBlocksForReplay();
+		const websocketState = this.requestContext.websocketState;
+		if (websocketState) resetCodexWebSocketAppendState(websocketState);
+		this.runtime.resetAccumulators();
+		this.runtime.sawTerminalEvent = false;
+		resetOutputState(this.output);
+		this.firstTokenTime = undefined;
+		if (this.runtime.transport === "websocket" && websocketState) {
+			await this.#reopenWebSocketStream(websocketState);
+		} else {
+			await this.#reopenSseStream(websocketState);
+		}
+		return true;
+	}
+
 	async #tryDropRejectedAccessPrograms(error: unknown): Promise<boolean> {
 		if (
 			hasVisibleAssistantContent(this.output) ||
@@ -5169,6 +5208,24 @@ const codexFailureEventSchema = type("unknown").pipe(raw => {
 			}
 		: out;
 });
+
+/** `model:tier` pairs the Codex endpoint answered with "Unsupported service_tier". */
+const CODEX_REJECTED_SERVICE_TIERS = new Set<string>();
+
+function codexTierKey(modelId: string, tier: string): string {
+	return `${modelId}:${tier}`;
+}
+
+/**
+ * Records a rejected service tier so later requests omit it, and reports
+ * whether this failure is one (the caller then replays without the tier).
+ */
+function noteRejectedCodexServiceTier(error: unknown, modelId: string, requestTier: unknown): boolean {
+	if (!(error instanceof CodexProviderStreamError) || typeof requestTier !== "string") return false;
+	if (!/unsupported service_tier/i.test(error.message)) return false;
+	CODEX_REJECTED_SERVICE_TIERS.add(codexTierKey(modelId, requestTier));
+	return true;
+}
 
 export function isRetryableCodexFailureEvent(rawEvent: Record<string, unknown>): boolean {
 	const event = codexFailureEventSchema(rawEvent);

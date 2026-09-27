@@ -1,4 +1,6 @@
+import * as os from "node:os";
 import * as fs from "node:fs/promises";
+import { watch as watchDir, type FSWatcher } from "node:fs";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import { isEnoent, logger } from "@oh-my-pi/pi-utils";
@@ -438,4 +440,47 @@ export async function saveWatchdogConfigFile(filePath: string, doc: WatchdogConf
 		return;
 	}
 	await Bun.write(filePath, content);
+}
+
+/** Debounce for on-disk WATCHDOG edits; editors write in bursts (temp + rename). */
+const ADVISOR_CONFIG_WATCH_DEBOUNCE_MS = 300;
+
+/**
+ * Watch every directory that can hold a WATCHDOG file for this cwd and call
+ * `onChange` after an edit settles. Discovery otherwise ran only at startup and
+ * on the in-app editor's save, so a WATCHDOG.yml changed by another omp
+ * instance, an editor, or an agent left this session running the old advisor
+ * name and model indefinitely. Directories (not files) are watched so atomic
+ * rename-over writes are seen. Returns a disposer.
+ */
+export function watchAdvisorConfigs(cwd: string, agentDir: string, onChange: () => void): () => void {
+	const names = new Set(["WATCHDOG.yml", "WATCHDOG.yaml"]);
+	const dirs = new Set<string>([agentDir]);
+	for (let current = cwd; ;) {
+		dirs.add(current);
+		dirs.add(path.join(current, ".omp"));
+		const parent = path.dirname(current);
+		if (current === os.homedir() || parent === current) break;
+		current = parent;
+	}
+	let timer: NodeJS.Timeout | undefined;
+	const watchers: FSWatcher[] = [];
+	for (const dir of dirs) {
+		try {
+			const watcher = watchDir(dir, { persistent: false }, (_event, filename) => {
+				if (filename && !names.has(path.basename(filename.toString()))) return;
+				clearTimeout(timer);
+				timer = setTimeout(onChange, ADVISOR_CONFIG_WATCH_DEBOUNCE_MS);
+				timer.unref();
+			});
+			watcher.on("error", () => watcher.close());
+			watchers.push(watcher);
+		} catch {
+			// Missing directories cannot hold a config; nothing to watch.
+		}
+	}
+	return () => {
+		clearTimeout(timer);
+		for (const watcher of watchers) watcher.close();
+	};
 }

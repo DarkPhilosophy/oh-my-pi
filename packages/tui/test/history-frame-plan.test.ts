@@ -1357,7 +1357,7 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
-	it("replays once when contracting temporary UI brings still-borrowed live rows back", () => {
+	it("keeps rows lent to native history there when temporary UI contracts, without a replay", () => {
 		const terminal = new CountingTerminal(30, 5);
 		let replays = 0;
 		const provider = new Provider({ viewport: ["LIVE_1", "editor"], retainedLiveViewport: true });
@@ -1378,11 +1378,16 @@ describe("terminal frame plans", () => {
 				retainedLiveViewport: true,
 			};
 			tui.requestRender(true);
-			// LIVE_1/LIVE_2 are still lent to native history and must return on screen.
+			// LIVE_1/LIVE_2 are already in native history. A full replay here wiped
+			// scrollback and jumped the terminal to the bottom after every write.
 			provider.plan = { viewport: ["LIVE_1", "LIVE_2", "LIVE_3", "editor"], retainedLiveViewport: true };
 			tui.requestRender(true);
 
-			expect(replays).toBe(1);
+			expect(replays).toBe(0);
+			const buffer = plainBuffer(terminal);
+			for (const row of ["LIVE_1", "LIVE_2", "LIVE_3"]) expect(buffer.filter(line => line === row)).toHaveLength(1);
+			expect(buffer.indexOf("LIVE_3")).toBeGreaterThan(buffer.indexOf("LIVE_2"));
+			expect(buffer.filter(line => line.length > 0).at(-1)).toBe("editor");
 		} finally {
 			tui.stop();
 		}

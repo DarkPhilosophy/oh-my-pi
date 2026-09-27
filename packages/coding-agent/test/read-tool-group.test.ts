@@ -264,30 +264,44 @@ describe("ReadToolGroupComponent", () => {
 		expect(rendered).toContain("corrected from");
 	});
 
+	it("re-sizes the collapsed preview when only the terminal height changes", () => {
+		const rows = vi.spyOn(process.stdout, "rows", "get");
+		const component = new ReadToolGroupComponent({ showContentPreview: true });
+		const examplePath = path.resolve("/tmp/example.ts");
+		component.updateArgs({ path: examplePath }, "read-h");
+		const text = Array.from({ length: 200 }, (_, index) => `line ${index + 1}`).join("\n");
+		component.updateResult({ content: [{ type: "text", text }] }, false, "read-h");
+		const shown = () =>
+			Bun.stripANSI(component.render(120).join("\n"))
+				.split("\n")
+				.filter(l => /line \d+/.test(l)).length;
+
+		rows.mockReturnValue(100);
+		const tall = shown();
+		rows.mockReturnValue(30);
+		const short = shown();
+		rows.mockReturnValue(100);
+		// Same width throughout: a cache keyed on width alone kept the old height.
+		expect(short).toBeLessThan(tall);
+		expect(shown()).toBe(tall);
+	});
+
 	it("highlights only the collapsed preview lines", () => {
 		const highlightSpy = vi.spyOn(themeModule, "highlightCode");
 		const component = new ReadToolGroupComponent({ showContentPreview: true });
 		const examplePath = path.resolve("/tmp/example.ts");
 		component.updateArgs({ path: examplePath }, "read-2");
-		component.updateResult(
-			{
-				content: [
-					{
-						type: "text",
-						text: "line 1\nline 2\nline 3\nline 4\nline 5",
-					},
-				],
-			},
-			false,
-			"read-2",
-		);
+		const text = Array.from({ length: 200 }, (_, index) => `line ${index + 1}`).join("\n");
+		component.updateResult({ content: [{ type: "text", text }] }, false, "read-2");
 
 		const rendered = Bun.stripANSI(component.render(120).join("\n"));
-		const highlightedInput = highlightSpy.mock.calls[0]?.[0];
+		const highlighted = String(highlightSpy.mock.calls[0]?.[0]).split("\n");
 
-		expect(highlightedInput).toBe("line 1\nline 2\nline 3");
-		expect(rendered).toContain("line 1");
-		expect(rendered).not.toContain("line 4");
+		// Only the visible window is highlighted, never the whole file.
+		expect(highlighted[0]).toBe("line 1");
+		expect(highlighted.length).toBeGreaterThanOrEqual(3);
+		expect(highlighted.length).toBeLessThan(200);
+		expect(rendered).not.toContain("line 200");
 		expect(rendered.toLowerCase()).toContain("ctrl+o");
 	});
 

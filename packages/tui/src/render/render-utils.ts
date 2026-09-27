@@ -333,11 +333,11 @@ export function formatMoreItems(remaining: number, itemType: string): string {
  * transcript. This keeps a volatile streaming block from growing past the
  * viewport and stranding its top, while letting tall terminals show more.
  */
-const PREVIEW_WINDOW_RESERVED_ROWS = 20;
+export const PREVIEW_WINDOW_RESERVED_ROWS = 20;
 /** Floor so tiny or unknown viewports still show a useful window. */
 const PREVIEW_WINDOW_MIN_LINES = 6;
 /** Assumed viewport when rows are unknown (non-TTY, tests). */
-const PREVIEW_WINDOW_FALLBACK_ROWS = 30;
+export const PREVIEW_WINDOW_FALLBACK_ROWS = 30;
 /**
  * Ceiling on the collapsed tail window. Scaling it with the terminal meant a
  * 100-row terminal showed 80-row previews of every streaming command, code

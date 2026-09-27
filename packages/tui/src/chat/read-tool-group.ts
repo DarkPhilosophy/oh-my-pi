@@ -7,7 +7,12 @@ import { Spacer } from "../components/spacer";
 import { getLanguageFromPath, theme } from "../theme";
 import { parseLineRanges, selectorLineRanges } from "../tools/line-ranges";
 import { type ReadRenderArgs, type ReadToolDetails, readSourceFsPath, splitPathAndSel } from "../tools/read";
-import { PREVIEW_LIMITS, shortenPath } from "../render/render-utils";
+import {
+	PREVIEW_LIMITS,
+	PREVIEW_WINDOW_FALLBACK_ROWS,
+	PREVIEW_WINDOW_RESERVED_ROWS,
+	shortenPath,
+} from "../render/render-utils";
 import { fileHyperlink, renderCodeCell } from "../render";
 import { canonicalizeMessage } from "./thinking-display";
 import { internalUrlSchemeSpec, splitUrlScheme } from "../tools/url-scheme-host";
@@ -115,8 +120,22 @@ type ReadUsageRow = {
 	turnElapsedMs?: number;
 };
 
-/** Number of code lines to show in collapsed preview mode */
+/** Fewest code lines a collapsed preview shows, however crowded the group. */
 const COLLAPSED_PREVIEW_LINES = PREVIEW_LIMITS.OUTPUT_COLLAPSED;
+/** Rows each preview card spends on its frame, title and "more lines" hint. */
+const PREVIEW_CARD_CHROME_ROWS = 4;
+
+/**
+ * Collapsed line budget per preview card: the group shares the free viewport
+ * (screen minus the same reserve the edit card keeps), so one or two reads
+ * show their content instead of a fixed three lines, while many reads stay
+ * bounded in total. Never below {@link COLLAPSED_PREVIEW_LINES}.
+ */
+function groupPreviewLines(siblings: number): number {
+	const rows = process.stdout.rows || PREVIEW_WINDOW_FALLBACK_ROWS;
+	const free = rows - PREVIEW_WINDOW_RESERVED_ROWS - PREVIEW_CARD_CHROME_ROWS * Math.max(1, siblings);
+	return Math.max(COLLAPSED_PREVIEW_LINES, Math.floor(free / Math.max(1, siblings)));
+}
 
 type ReadDisplayTarget = {
 	entry: ReadEntry;
@@ -542,8 +561,9 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 				this.#text.setText(lines.join("\n"));
 				this.addChild(this.#text);
 			}
-			for (const entry of this.#previewEntriesForRow(row)) {
-				this.#addContentPreview(entry);
+			const rowPreviews = this.#previewEntriesForRow(row);
+			for (const entry of rowPreviews) {
+				this.#addContentPreview(entry, rowPreviews.length);
 				this.#addPreviewUsage(entry);
 			}
 			return;
@@ -567,7 +587,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		this.addChild(this.#text);
 
 		for (const entry of previewEntries) {
-			this.#addContentPreview(entry);
+			this.#addContentPreview(entry, previewEntries.length);
 			this.#addPreviewUsage(entry);
 		}
 	}
@@ -791,7 +811,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	 * When collapsed: shows first COLLAPSED_PREVIEW_LINES lines with a "… N more lines ⟨<key>: Expand⟩" hint.
 	 * When expanded: shows full content.
 	 */
-	#addContentPreview(entry: ReadEntry): void {
+	#addContentPreview(entry: ReadEntry, siblings: number): void {
 		const split = splitPathAndSel(entry.path);
 		const lang = getLanguageFromPath(split.path);
 		const pathValue = shortenPath(entry.path);
@@ -805,11 +825,15 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			: "";
 		const title = pathDisplay ? `Read ${pathDisplay}` : "Read";
 		let cachedWidth: number | undefined;
+		let cachedBudget: number | undefined;
 		let cachedLines: string[] | undefined;
 		const expanded = this.#expanded;
 		const component: Component = {
 			render: (width: number) => {
-				if (cachedLines && cachedWidth === width) return cachedLines;
+				// The budget follows terminal height, so a height-only resize must re-render.
+				const budget = expanded ? undefined : groupPreviewLines(siblings);
+				if (cachedLines && cachedWidth === width && cachedBudget === budget) return cachedLines;
+				cachedBudget = budget;
 				cachedLines = renderCodeCell(
 					{
 						code: entry.contentText ?? "",
@@ -817,7 +841,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 						title,
 						status: entry.status === "success" ? "complete" : entry.status,
 						expanded,
-						codeMaxLines: expanded ? undefined : COLLAPSED_PREVIEW_LINES,
+						codeMaxLines: budget,
 						codeStartLine: entry.codeStartLine,
 						codeLineNumbers: entry.codeLineNumbers,
 						width,

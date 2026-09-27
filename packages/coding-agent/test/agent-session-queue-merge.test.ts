@@ -170,6 +170,36 @@ describe("AgentSession queue coalescing", () => {
 		expect(steering).toEqual(["NU FACI BINE\nTotul este perfect"]);
 	});
 
+	it("withdrawing a merged steer also removes its companions across an advisor note", async () => {
+		const target = await createSession([{ content: ["ok"] }]);
+		const companion = (text: string) => ({
+			role: "custom" as const,
+			customType: "image-attachment-description",
+			content: text,
+			display: false,
+			attribution: "user" as const,
+			timestamp: Date.now(),
+		});
+		const remaining = await duringStream(target, async () => {
+			target.agent.steer(companion("image one described"));
+			await target.steer("first");
+			target.agent.steer({
+				role: "custom",
+				customType: "advisor",
+				content: "advisor note",
+				display: true,
+				attribution: "agent",
+				timestamp: Date.now(),
+			});
+			await target.steer("second");
+			target.popLastQueuedMessage();
+			return target.agent.peekSteeringQueue().map(m => (m.role === "custom" ? m.customType : m.role));
+		});
+		// Regression: the first image description stayed behind and reached the
+		// model although the user withdrew the whole steer.
+		expect(remaining).toEqual(["advisor"]);
+	});
+
 	it("merges consecutive plain follow-ups into one queued entry", async () => {
 		const target = await createSession([{ content: ["ok"] }]);
 		const followUp = await duringStream(target, async () => {
