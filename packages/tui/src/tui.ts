@@ -2414,7 +2414,23 @@ export class TUI extends Container {
 	}
 	#prepareForcedRender(clearScrollback: boolean): void {
 		this.#pendingLiveRender = false;
-		if (clearScrollback) this.#clearScrollbackWaitsForReplay = false;
+		if (clearScrollback) {
+			this.#clearScrollbackWaitsForReplay = false;
+			// Every full-history rewrite (scrollback wipe + jump to bottom) goes
+			// through here; log the caller and borrow state so a user-visible jump
+			// names the branch that forced it.
+			logger.warn("tui: full history replay", {
+				caller: new Error().stack
+					?.split("\n")
+					.slice(2, 6)
+					.map(line => line.trim()),
+				expansionBorrowed: this.#providerExpansionBorrowed,
+				viewportExpansionRows: this.#providerViewportExpansionRows,
+				logicalCommitted: this.#providerLogicalCommitted,
+				visibleHistoryRows: this.#providerVisibleHistory.length,
+				transientRows: this.#providerTransientRows.length,
+			});
+		}
 		if (clearScrollback && !this.#clearScrollbackOnNextRender) {
 			// The clear must land in the same paint as its replay. A provider with
 			// an offered batch defers the replay one frame; a clear consumed by that
