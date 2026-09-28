@@ -220,20 +220,20 @@ import { PlanSaveOverlay, type PlanSaveOverlayResult } from "@oh-my-pi/pi-tui/ov
 import { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
 import { SessionInfoOverlay } from "@oh-my-pi/pi-tui/overlays/session-info-overlay";
 import { SkillMessageComponent } from "@oh-my-pi/pi-tui/chat/skill-message";
-import { type StartupPlaceholderScope, StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
+import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "./status-line-host";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import type { LspServerInfo as WelcomeLspServerInfo } from "@oh-my-pi/pi-tui/prompt/welcome";
-import { Composer, type ComposerPreferences, PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-tui/prompt/composer";
+import {
+	Composer,
+	type ComposerPreferences,
+	type ComposerStatusCache,
+	PINNED_HUD_TOGGLE_ID,
+} from "@oh-my-pi/pi-tui/prompt/composer";
 import { setMagicKeywords } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
 import { MAGIC_KEYWORDS } from "./magic-keywords";
-import {
-	type ComposerStatusCache,
-	type ComposerStatusChrome,
-	writeComposerStatusCache,
-	writeComposerWelcomeCache,
-} from "@oh-my-pi/pi-tui/prompt/composer-cache";
+import { sharedComposerCache } from "@oh-my-pi/pi-tui/prompt/composer-cache";
 import { BtwController } from "./controllers/btw-controller";
 import { CleanseCommandController } from "./controllers/cleanse-command-controller";
 import { CommandController } from "./controllers/command-controller";
@@ -1347,11 +1347,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					version,
 					modelName: session.model?.name ?? "Unknown",
 					providerName: session.model?.provider ?? "Unknown",
-					lspServers: lspServers?.map(server => ({
-						name: server.name,
-						status: server.status,
-						fileTypes: server.fileTypes,
-					})),
+					lspServers: this.#getWelcomeLspServers(lspServers),
 				},
 			});
 		this.composer.setPreferences(preferences);
@@ -1735,10 +1731,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#headerAfter = headerAfter;
 		this.composer.setHeaderExtras(headerBefore, headerAfter);
-		this.statusLine.watchBranch(() => {
-			this.#persistComposerStatus();
-			this.ui.requestRender();
-		});
+		this.statusLine.watchBranch(() => this.ui.requestRender());
 		this.composer.setStatusComponent(this.statusLine);
 
 		this.composer.setRuntimeChildren(
@@ -3112,71 +3105,24 @@ export class InteractiveMode implements InteractiveModeContext {
 		const shape = cfgComposerShape.get(settings);
 		const style = getComposerStyle(shape);
 		this.composer.setPreferences({ composerShape: shape });
-		this.statusLine.setAutocompleteActiveProbe(() => this.editor.isAutocompleteActive());
-		switch (style.statusAttachment) {
-			case "top-border":
-				this.editor.setTopBorderProvider(availableWidth => this.statusLine.getTopBorder(availableWidth));
-				break;
-			case "top-band":
-				this.editor.setTopBorderProvider(availableWidth => this.statusLine.getBandTopBorder(availableWidth));
-				break;
-			case "top-rule-chip":
-				this.editor.setTopBorderProvider(availableWidth => this.statusLine.getStandaloneTopBorder(availableWidth));
-				break;
-			case "none":
-				this.editor.setTopBorderProvider(undefined);
-				this.editor.setTopBorder(undefined);
-				break;
-		}
-		this.statusLine.setComposerStyle(style);
+		this.statusLine.attachToEditor(this.editor, style);
 		this.updateEditorBorderColor();
 		this.#persistComposerStatus();
 		this.ui.requestRender();
 	}
 
 	/**
-	 * Cache status chrome so the next launch paints the row immediately: project
-	 * values (model, path, branch) filled in, session values from this session
-	 * elided, plus a fully elided fallback for when HEAD moves before relaunch.
+	 * Cache the inputs of a fresh session's status bar (settings, model, thinking
+	 * state) so the next launch renders it at first paint; see `createStartupStatusLine`.
 	 */
 	#persistComposerStatus(): void {
 		if (!this.sessionManager.getSessionFile()) return;
-		const shape = cfgComposerShape.get(settings);
-		const style = getComposerStyle(shape);
-		const terminalWidth = this.ui.terminal.columns;
-		const availableWidth = this.editor.getTopBorderAvailableWidth(terminalWidth);
-		const renderChrome = (scope: StartupPlaceholderScope): ComposerStatusChrome => {
-			const topContent =
-				style.statusAttachment === "top-border"
-					? this.statusLine.renderStartupPlaceholder(availableWidth, "box", scope)
-					: style.statusAttachment === "top-band"
-						? this.statusLine.renderStartupPlaceholder(availableWidth, "band", scope)
-						: style.statusAttachment === "top-rule-chip"
-							? this.statusLine.renderStartupPlaceholder(availableWidth, "plain-right", scope)
-							: undefined;
-			const bottomLines: string[] = [];
-			if (style.bottomBar !== "none") {
-				const content = this.statusLine.renderStartupPlaceholder(
-					terminalWidth,
-					style.bottomBar === "left" ? "plain-left" : "plain-full",
-					scope,
-				);
-				if (content) {
-					if (style.bottomBarGap) bottomLines.push("");
-					bottomLines.push(content);
-				}
-			}
-			return {
-				topBorder: topContent ? { content: topContent, width: visibleWidth(topContent) } : undefined,
-				bottomLines,
-			};
-		};
+		const model = this.session.model;
 		// Recover the border's ANSI wrapper by coloring a sentinel and splitting around it.
 		const marker = "\0";
 		const colored = this.editor.borderColor(marker);
 		const markerIndex = colored.indexOf(marker);
 		const status: ComposerStatusCache = {
-			shape,
 			borderColor:
 				markerIndex < 0
 					? undefined
@@ -3184,12 +3130,21 @@ export class InteractiveMode implements InteractiveModeContext {
 							prefix: colored.slice(0, markerIndex),
 							suffix: colored.slice(markerIndex + marker.length),
 						},
-			project: renderChrome("session"),
-			placeholder: renderChrome("all"),
+			statusLine: {
+				settings: statusLineHost.getSettings(),
+				gitEnabled: statusLineHost.gitEnabled(),
+				model,
+				thinkingLevel: this.session.thinkingLevel,
+				autoThinking: this.session.isAutoThinking,
+				fastMode: this.session.isFastModeActive(),
+				usingSubscription: model ? this.session.modelRegistry.isUsingOAuth(model) : false,
+				autoCompactEnabled: this.session.autoCompactionEnabled,
+				compactionBoundaries: model?.contextWindow
+					? statusLineHost.computeCompactionBoundaries(this.session, model.contextWindow, model)
+					: null,
+			},
 		};
-		void writeComposerStatusCache(this.sessionManager.getCwd(), status).catch(error => {
-			logger.debug("composer status cache write failed", { error });
-		});
+		sharedComposerCache()?.writeStatus(this.sessionManager.getCwd(), status);
 	}
 
 	#handleSessionAccentInputsChanged(): void {
@@ -6570,13 +6525,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
-	#getWelcomeLspServers(): WelcomeLspServerInfo[] {
+	/** Welcome rows for startup LSP servers; `null` (section hidden) when the session skipped LSP discovery. */
+	#getWelcomeLspServers(servers = this.lspServers): WelcomeLspServerInfo[] | null {
 		return (
-			this.lspServers?.map(server => ({
+			servers?.map(server => ({
 				name: server.name,
 				status: server.status,
 				fileTypes: server.fileTypes,
-			})) ?? []
+			})) ?? null
 		);
 	}
 
@@ -6606,12 +6562,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#persistComposerWelcome(modelName: string, providerName: string): void {
 		if (!this.sessionManager.getSessionFile()) return;
-		void writeComposerWelcomeCache(this.sessionManager.getCwd(), {
-			modelName,
-			providerName,
-		}).catch(error => {
-			logger.debug("composer welcome cache write failed", { error });
-		});
+		sharedComposerCache()?.writeWelcome(this.sessionManager.getCwd(), { modelName, providerName });
 	}
 
 	#updateWelcomeLspServers(): void {

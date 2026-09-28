@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `grep` retaining every matching line until the search finished: the new `onMatches` option streams bounded batches while the search runs, pauses the search while JS catches up, and returns only counts ([#13495](https://github.com/can1357/oh-my-pi/issues/13495))
 - Fixed omp crashing at startup on macOS when built from source with `SDKROOT` set (e.g. via Nix) on a host whose Command Line Tools ship the macOS 27 SDK ([#13168](https://github.com/can1357/oh-my-pi/pull/13168) by [@johnrichardrinehart](https://github.com/johnrichardrinehart)).
 - Hashline edit rejections for a tag issued for another file now name the path the tag belongs to ([#13464](https://github.com/can1357/oh-my-pi/pull/13464) by [@holny](https://github.com/holny)).
 - Fixed the native terminal output pump exiting on temporary nonblocking backpressure ([#13463](https://github.com/can1357/oh-my-pi/pull/13463) by [@hancens1024](https://github.com/hancens1024)).

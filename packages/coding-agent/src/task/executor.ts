@@ -3992,9 +3992,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						ircOmittedCount: ircRoster?.omittedCount ?? 0,
 						ircSelfId: ircEnabled ? id : "",
 					});
-					return defaultPrompt.length === 0
-						? [subagentPrompt]
-						: [...defaultPrompt.slice(0, -1), subagentPrompt, defaultPrompt[defaultPrompt.length - 1]];
+					// Per-spawn text (context, worktree, IRC roster) goes after the
+					// trailing `<project-context>` block so spawns of the same agent
+					// share the static prompt prefix as a cache hit.
+					return [...defaultPrompt, subagentPrompt];
 				},
 				sessionManager: sessionManagerForRun,
 				hasUI: false,

@@ -1,177 +1,153 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { Database } from "bun:sqlite";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { COMPOSER_DEFAULTS } from "@oh-my-pi/pi-tui/prompt/composer";
-import {
-	type ComposerStatusCache,
-	readComposerStartupCache,
-	writeComposerLspCache,
-	writeComposerRecentSessionsCache,
-	writeComposerStatusCache,
-	writeComposerUiCache,
-	writeComposerWelcomeCache,
-} from "@oh-my-pi/pi-tui/prompt/composer-cache";
-import { getComposerCacheDir } from "@oh-my-pi/pi-utils/dirs";
+import { COMPOSER_DEFAULTS, type ComposerStatusCache } from "@oh-my-pi/pi-tui/prompt/composer";
+import { ComposerCache } from "@oh-my-pi/pi-tui/prompt/composer-cache";
+
+function statusFor(thinkingLevel: ThinkingLevel): ComposerStatusCache {
+	return {
+		borderColor: { prefix: "\x1b[36m", suffix: "\x1b[39m" },
+		statusLine: {
+			settings: { leftSegments: ["model", "path", "git"], contextLine: "embedded" },
+			gitEnabled: true,
+			thinkingLevel,
+			autoThinking: false,
+			fastMode: false,
+			usingSubscription: true,
+			autoCompactEnabled: true,
+			compactionBoundaries: { thresholdPercent: 80, speculationPercent: null },
+		},
+	};
+}
 
 describe("composer startup cache", () => {
-	it("round-trips per-project UI, status, recent-session JSONL, and LSP speculation", async () => {
-		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-composer-cache-"));
-		const otherCwd = `${cwd}-other`;
-		const key = Bun.hash.wyhash(path.resolve(cwd)).toString(16).padStart(16, "0");
-		const cacheDir = path.join(getComposerCacheDir(), key);
-		try {
-			const preferences = { ...COMPOSER_DEFAULTS, composerShape: "rail", autocompleteMaxVisible: 7 };
-			const recentSessions = [{ name: "cached work", timeAgo: "3m ago" }];
-			const lspServers = [{ name: "rust-analyzer", status: "connecting" as const, fileTypes: [".rs"] }];
-			const status: ComposerStatusCache = {
-				shape: "rail",
-				project: { topBorder: { content: "Fable 5", width: 7 }, bottomLines: ["", "Fable 5"] },
-				placeholder: { topBorder: { content: "…", width: 1 }, bottomLines: ["", "…"] },
-			};
-			await Promise.all([
-				writeComposerUiCache(cwd, preferences, {
-					symbolPreset: "ascii",
-					colorBlindMode: true,
-					darkTheme: "dark",
-					lightTheme: "light",
-				}),
-				writeComposerRecentSessionsCache(cwd, recentSessions),
-				writeComposerLspCache(cwd, lspServers),
-				writeComposerStatusCache(cwd, status),
-				writeComposerWelcomeCache(cwd, { modelName: "Claude Fable 5", providerName: "anthropic" }),
-			]);
+	let root: string;
+	let dbPath: string;
 
-			expect(readComposerStartupCache(cwd)).toEqual({
-				preferences,
-				theme: {
-					symbolPreset: "ascii",
-					colorBlindMode: true,
-					darkTheme: "dark",
-					lightTheme: "light",
-				},
-				welcome: { modelName: "Claude Fable 5", providerName: "anthropic" },
-				recentSessions,
-				lspServers,
-				status: { shape: "rail", ...status.project },
-			});
-			expect(readComposerStartupCache(otherCwd)).toEqual({
-				preferences: undefined,
-				theme: undefined,
-				welcome: undefined,
-				recentSessions: [],
-				lspServers: [],
-			});
-			const jsonl: unknown = Bun.JSONL.parse(await Bun.file(path.join(cacheDir, "recent-sessions.jsonl")).text());
-			expect(jsonl).toEqual(recentSessions);
-		} finally {
-			await Promise.all([
-				fs.rm(cwd, { recursive: true, force: true }),
-				fs.rm(cacheDir, { recursive: true, force: true }),
-			]);
-		}
+	beforeEach(async () => {
+		root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-composer-cache-"));
+		dbPath = path.join(root, "cache", "composer.db");
 	});
 
-	it("falls back to fully elided status chrome once HEAD moved off the cached branch", async () => {
-		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-composer-cache-head-"));
-		const key = Bun.hash.wyhash(path.resolve(cwd)).toString(16).padStart(16, "0");
-		const cacheDir = path.join(getComposerCacheDir(), key);
-		const headFile = path.join(cwd, ".git", "HEAD");
-		try {
-			await Promise.all([
-				fs.mkdir(path.join(cwd, ".git", "objects"), { recursive: true }),
-				fs.mkdir(path.join(cwd, ".git", "refs", "heads"), { recursive: true }),
-			]);
-			await Bun.write(headFile, "ref: refs/heads/feature\n");
-			const status: ComposerStatusCache = {
-				shape: "band",
-				project: { bottomLines: ["Fable 5 | feature"] },
-				placeholder: { bottomLines: ["… | …"] },
-			};
-			await writeComposerStatusCache(cwd, status);
-
-			expect(readComposerStartupCache(cwd).status?.bottomLines).toEqual(["Fable 5 | feature"]);
-			await Bun.write(headFile, "ref: refs/heads/main\n");
-			expect(readComposerStartupCache(cwd).status?.bottomLines).toEqual(["… | …"]);
-		} finally {
-			await Promise.all([
-				fs.rm(cwd, { recursive: true, force: true }),
-				fs.rm(cacheDir, { recursive: true, force: true }),
-			]);
-		}
+	afterEach(async () => {
+		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	it("ignores legacy status snapshots", async () => {
-		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-composer-cache-legacy-status-"));
-		const key = Bun.hash.wyhash(path.resolve(cwd)).toString(16).padStart(16, "0");
-		const cacheDir = path.join(getComposerCacheDir(), key);
-		try {
-			await Bun.write(
-				path.join(cacheDir, "status.json"),
-				JSON.stringify({
-					version: 1,
-					shape: "band",
-					topBorder: { content: "Stale Model | stale-branch | /stale/location", width: 48 },
-					bottomLines: ["", "Stale Model | stale-branch | /stale/location"],
-				}),
-			);
+	it("round-trips per-project speculation and serves settings-derived rows to projects without their own", () => {
+		const project = path.join(root, "project");
+		const other = path.join(root, "other");
+		const preferences = { ...COMPOSER_DEFAULTS, composerShape: "rail", autocompleteMaxVisible: 7 };
+		const theme = { symbolPreset: "ascii" as const, colorBlindMode: true, darkTheme: "dark", lightTheme: "light" };
+		const sessions = ["a", "b", "c", "d", "e"].map(name => ({ name, timeAgo: "3m ago" }));
+		const lspServers = [{ name: "rust-analyzer", status: "connecting" as const, fileTypes: [".rs"] }];
+		const status = statusFor(ThinkingLevel.High);
 
-			expect(readComposerStartupCache(cwd).status).toBeUndefined();
-		} finally {
-			await Promise.all([
-				fs.rm(cwd, { recursive: true, force: true }),
-				fs.rm(cacheDir, { recursive: true, force: true }),
-			]);
-		}
+		const writer = ComposerCache.open(dbPath);
+		writer.writeUi(project, preferences, theme);
+		writer.writeWelcome(project, { modelName: "Claude Fable 5", providerName: "anthropic" });
+		writer.writeRecentSessions(project, sessions);
+		writer.writeLspServers(project, lspServers);
+		writer.writeStatus(project, status);
+		writer.close();
+
+		// A separate connection sees everything: the next launch reads what this one wrote.
+		const reader = ComposerCache.open(dbPath);
+		expect(reader.read(project)).toEqual({
+			preferences,
+			theme,
+			welcome: { modelName: "Claude Fable 5", providerName: "anthropic" },
+			recentSessions: sessions.slice(0, 4),
+			lspServers,
+			status,
+		});
+		// Theme, model labels, and status follow the user; sessions and LSP rows are project facts.
+		expect(reader.read(other)).toEqual({
+			preferences,
+			theme,
+			welcome: { modelName: "Claude Fable 5", providerName: "anthropic" },
+			recentSessions: [],
+			lspServers: [],
+			status,
+		});
+
+		// Disabling LSP must replace the cached rows so the next prepaint hides the section.
+		reader.writeLspServers(project, null);
+		expect(reader.read(project).lspServers).toBeNull();
+		reader.close();
+	});
+
+	it("prefers a project's own status over the last status written elsewhere", () => {
+		const cache = ComposerCache.open(dbPath);
+		cache.writeStatus(path.join(root, "a"), statusFor(ThinkingLevel.Low));
+		cache.writeStatus(path.join(root, "b"), statusFor(ThinkingLevel.High));
+
+		expect(cache.read(path.join(root, "a")).status?.statusLine.thinkingLevel).toBe(ThinkingLevel.Low);
+		expect(cache.read(path.join(root, "fresh")).status?.statusLine.thinkingLevel).toBe(ThinkingLevel.High);
+		cache.close();
+	});
+
+	it("drops a store written in an older payload format", async () => {
+		const project = path.join(root, "project");
+		await fs.mkdir(path.dirname(dbPath), { recursive: true });
+		const legacy = new Database(dbPath);
+		legacy.run(
+			"CREATE TABLE entries (project TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (project, kind)) WITHOUT ROWID",
+		);
+		legacy
+			.prepare("INSERT INTO entries VALUES (?, ?, ?)")
+			.run(project, "welcome", JSON.stringify({ modelName: "Stale", providerName: "stale" }));
+		legacy.close();
+
+		const cache = ComposerCache.open(dbPath);
+		expect(cache.read(project).welcome).toBeUndefined();
+		cache.close();
 	});
 
 	it("loads XDG_CACHE_HOME from the home .env before the first cache access", async () => {
 		if (process.platform === "win32") return;
 
-		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-composer-cache-dotenv-"));
 		const home = path.join(root, "home");
 		const xdgCache = path.join(root, "xdg-cache");
 		const project = path.join(root, "project");
-		try {
-			await Promise.all([
-				fs.mkdir(home, { recursive: true }),
-				fs.mkdir(path.join(xdgCache, "omp"), { recursive: true }),
-			]);
-			await Bun.write(path.join(home, ".env"), `XDG_CACHE_HOME=${xdgCache}\n`);
+		await Promise.all([
+			fs.mkdir(home, { recursive: true }),
+			fs.mkdir(path.join(xdgCache, "omp"), { recursive: true }),
+		]);
+		await Bun.write(path.join(home, ".env"), `XDG_CACHE_HOME=${xdgCache}\n`);
 
-			const composerCacheModule = Bun.resolveSync("@oh-my-pi/pi-tui/prompt/composer-cache", import.meta.dir);
-			const script = [
-				'import * as path from "node:path";',
-				`import { writeComposerWelcomeCache } from ${JSON.stringify(composerCacheModule)};`,
-				`const project = ${JSON.stringify(project)};`,
-				'await writeComposerWelcomeCache(project, { modelName: "model", providerName: "provider" });',
-				'const key = Bun.hash.wyhash(path.resolve(project)).toString(16).padStart(16, "0");',
-				`const expected = path.join(${JSON.stringify(xdgCache)}, "omp", "cache", "composer", key, "welcome.json");`,
-				"process.stdout.write(String(await Bun.file(expected).exists()));",
-			].join("\n");
-			const proc = Bun.spawn([process.execPath, "--no-env-file", "--no-install", "--eval", script], {
-				cwd: root,
-				env: {
-					...process.env,
-					HOME: home,
-					XDG_CACHE_HOME: undefined,
-					PI_CODING_AGENT_DIR: undefined,
-					OMP_PROFILE: undefined,
-					PI_PROFILE: undefined,
-				},
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			const [stdout, stderr, exitCode] = await Promise.all([
-				new Response(proc.stdout).text(),
-				new Response(proc.stderr).text(),
-				proc.exited,
-			]);
+		const composerCacheModule = Bun.resolveSync("@oh-my-pi/pi-tui/prompt/composer-cache", import.meta.dir);
+		const script = [
+			'import * as path from "node:path";',
+			`import { ComposerCache } from ${JSON.stringify(composerCacheModule)};`,
+			"const cache = ComposerCache.open();",
+			`cache.writeWelcome(${JSON.stringify(project)}, { modelName: "model", providerName: "provider" });`,
+			"cache.close();",
+			`const expected = path.join(${JSON.stringify(xdgCache)}, "omp", "cache", "composer.db");`,
+			"process.stdout.write(String(await Bun.file(expected).exists()));",
+		].join("\n");
+		const proc = Bun.spawn([process.execPath, "--no-env-file", "--no-install", "--eval", script], {
+			cwd: root,
+			env: {
+				...process.env,
+				HOME: home,
+				XDG_CACHE_HOME: undefined,
+				PI_CODING_AGENT_DIR: undefined,
+				OMP_PROFILE: undefined,
+				PI_PROFILE: undefined,
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
 
-			expect(exitCode, stderr).toBe(0);
-			expect(stdout).toBe("true");
-		} finally {
-			await fs.rm(root, { recursive: true, force: true });
-		}
+		expect(exitCode, stderr).toBe(0);
+		expect(stdout).toBe("true");
 	});
 });

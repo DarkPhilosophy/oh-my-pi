@@ -1,15 +1,57 @@
+/**
+ * Speculative composer state for the next first frame, kept in one SQLite store
+ * (`~/.omp/agent/cache/composer.db`).
+ *
+ * Each row is one JSON payload keyed by project (the resolved cwd) and kind.
+ * Settings-derived kinds (theme/composer preferences, welcome model labels,
+ * status-bar inputs) are also written under the empty project, so a folder that
+ * never ran omp still paints with the user's theme and status bar: those are
+ * rarely project-specific, and path/branch render live. Recent sessions and LSP
+ * rows stay per project.
+ *
+ * ```text
+ * entries (project TEXT, kind TEXT, value TEXT JSON, PRIMARY KEY (project, kind))
+ * ```
+ *
+ * Payload formats are versioned by `PRAGMA user_version`; a mismatch clears the
+ * store, which only ever holds speculation.
+ */
+import type { Database, Statement } from "bun:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import "@oh-my-pi/pi-utils/env";
-import { getComposerCacheDir } from "@oh-my-pi/pi-utils/dirs";
+import { getComposerCacheDbPath } from "@oh-my-pi/pi-utils/dirs";
+import { isBunTestRuntime } from "@oh-my-pi/pi-utils/env";
+import * as logger from "@oh-my-pi/pi-utils/logger";
+import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
+import { openSqliteDatabaseSync } from "@oh-my-pi/pi-utils/sqlite";
+import { isRecord } from "@oh-my-pi/pi-utils/type-guards";
 import type { LspServerInfo, RecentSession } from "./welcome";
-import type { ComposerPreferences, ComposerStatusSnapshot } from "./composer";
+import type { ComposerPreferences, ComposerStatusCache } from "./composer";
+import { readStatusLineStartupData } from "../status-line/startup";
 import type { SymbolPreset } from "../theme/theme";
 import { isWordCompletionMethod } from "./word-completion";
 
-const CACHE_VERSION = 1;
-const STATUS_CACHE_VERSION = 4;
+/** Bump whenever any payload format changes; older stores are cleared on open. */
+const FORMAT_VERSION = 1;
+/** Project key of rows that serve every project lacking its own. */
+const ANY_PROJECT = "";
+const RECENT_SESSION_LIMIT = 4;
+
+const SCHEMA = `
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
+CREATE TABLE IF NOT EXISTS entries (
+	project TEXT NOT NULL,
+	kind TEXT NOT NULL,
+	value TEXT NOT NULL,
+	PRIMARY KEY (project, kind)
+) WITHOUT ROWID;
+`;
+
+type EntryKind = "ui" | "welcome" | "recent-sessions" | "lsp-servers" | "status";
+/** Kinds mirrored under {@link ANY_PROJECT} as the fallback for projects without their own row. */
+type SharedEntryKind = "ui" | "welcome" | "status";
+
 /** Theme inputs cached from the last resolved settings load for stable prepaint colors. */
 export interface ComposerThemePreferences {
 	readonly symbolPreset?: SymbolPreset;
@@ -24,92 +66,50 @@ export interface ComposerWelcomeCache {
 	readonly providerName: string;
 }
 
-/** Rendered status rows for one speculation tier. */
-export type ComposerStatusChrome = Pick<ComposerStatusSnapshot, "topBorder" | "bottomLines">;
-
-/**
- * Status chrome persisted for the next prepaint. `project` shows project-stable
- * values (model, path, git branch) and stays truthful only while HEAD is on the
- * branch it was rendered with; `placeholder` elides every value and stands in
- * once the branch moved.
- */
-export interface ComposerStatusCache extends Pick<ComposerStatusSnapshot, "shape" | "borderColor"> {
-	readonly project: ComposerStatusChrome;
-	readonly placeholder: ComposerStatusChrome;
-}
-
 /** Speculative composer state read before the settings/session graph is available. */
 export interface ComposerStartupCache {
 	readonly preferences?: ComposerPreferences;
 	readonly theme?: ComposerThemePreferences;
 	readonly welcome?: ComposerWelcomeCache;
 	readonly recentSessions: RecentSession[];
-	readonly lspServers: LspServerInfo[];
-	readonly status?: ComposerStatusSnapshot;
+	/** `null` when the last run had LSP disabled. */
+	readonly lspServers: LspServerInfo[] | null;
+	readonly status?: ComposerStatusCache;
 }
 
-function projectCacheDir(cwd: string): string {
-	const key = Bun.hash.wyhash(path.resolve(cwd)).toString(16).padStart(16, "0");
-	return path.join(getComposerCacheDir(), key);
-}
-
-function readFile(file: string): string | undefined {
+function parseJson(value: string | undefined): unknown {
+	if (value === undefined) return undefined;
 	try {
-		return fs.readFileSync(file, "utf8");
+		return JSON.parse(value);
 	} catch {
 		return undefined;
 	}
 }
 
-function field(value: object, key: string): unknown {
-	return Reflect.get(value, key);
-}
-
-function readRecentSessions(file: string): RecentSession[] {
-	const content = readFile(file);
-	if (!content) return [];
-	let parsed: unknown;
-	try {
-		parsed = Bun.JSONL.parse(content);
-	} catch {
-		return [];
-	}
-	if (!Array.isArray(parsed)) return [];
+function parseRecentSessions(value: unknown): RecentSession[] {
+	if (!Array.isArray(value)) return [];
 	const sessions: RecentSession[] = [];
-	for (const value of parsed) {
-		if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
-		const name = field(value, "name");
-		const timeAgo = field(value, "timeAgo");
+	for (const item of value) {
+		if (!isRecord(item)) continue;
+		const { name, timeAgo } = item;
 		if (typeof name === "string" && typeof timeAgo === "string") sessions.push({ name, timeAgo });
-		if (sessions.length === 4) break;
+		if (sessions.length === RECENT_SESSION_LIMIT) break;
 	}
 	return sessions;
 }
 
-function readLspServers(file: string): LspServerInfo[] {
-	const content = readFile(file);
-	if (!content) return [];
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(content);
-	} catch {
-		return [];
-	}
-	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
-	if (field(parsed, "version") !== CACHE_VERSION) return [];
-	const values = field(parsed, "servers");
-	if (!Array.isArray(values)) return [];
+function parseLspServers(value: unknown): LspServerInfo[] | null {
+	if (value === null) return null;
+	if (!Array.isArray(value)) return [];
 	const servers: LspServerInfo[] = [];
-	for (const value of values) {
-		if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
-		const name = field(value, "name");
-		const status = field(value, "status");
-		const fileTypes = field(value, "fileTypes");
+	for (const item of value) {
+		if (!isRecord(item)) continue;
+		const { name, status, fileTypes } = item;
 		if (
 			typeof name !== "string" ||
 			(status !== "ready" && status !== "error" && status !== "connecting" && status !== "available") ||
 			!Array.isArray(fileTypes) ||
-			!fileTypes.every(item => typeof item === "string")
+			!fileTypes.every(fileType => typeof fileType === "string")
 		) {
 			continue;
 		}
@@ -118,116 +118,40 @@ function readLspServers(file: string): LspServerInfo[] {
 	return servers;
 }
 
-function readWelcome(file: string): ComposerWelcomeCache | undefined {
-	const content = readFile(file);
-	if (!content) return undefined;
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(content);
-	} catch {
-		return undefined;
-	}
-	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-	if (field(parsed, "version") !== CACHE_VERSION) return undefined;
-	const modelName = field(parsed, "modelName");
-	const providerName = field(parsed, "providerName");
+function parseWelcome(value: unknown): ComposerWelcomeCache | undefined {
+	if (!isRecord(value)) return undefined;
+	const { modelName, providerName } = value;
 	return typeof modelName === "string" && typeof providerName === "string" ? { modelName, providerName } : undefined;
 }
 
-/**
- * What the git segment keys on for `cwd`: the branch, or the commit while
- * detached. `undefined` outside git or on probe failure.
- */
-function probeHead(cwd: string): string | undefined {
-	try {
-		const head = vcs.git(cwd)?.headSync();
-		return head?.branch ?? head?.commit ?? undefined;
-	} catch {
-		return undefined;
-	}
+function parseStatus(value: unknown): ComposerStatusCache | undefined {
+	if (!isRecord(value)) return undefined;
+	const statusLine = readStatusLineStartupData(value.statusLine);
+	if (!statusLine) return undefined;
+	const rawBorderColor = value.borderColor;
+	if (rawBorderColor === undefined) return { statusLine };
+	if (!isRecord(rawBorderColor)) return undefined;
+	const { prefix, suffix } = rawBorderColor;
+	if (typeof prefix !== "string" || typeof suffix !== "string") return undefined;
+	return { borderColor: { prefix, suffix }, statusLine };
 }
 
-function readStatusChrome(value: unknown): ComposerStatusChrome | undefined {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-	const rawTopBorder = field(value, "topBorder");
-	const bottomLines = field(value, "bottomLines");
-	if (!Array.isArray(bottomLines) || !bottomLines.every(line => typeof line === "string")) return undefined;
-	if (rawTopBorder === undefined) return { bottomLines };
-	if (typeof rawTopBorder !== "object" || rawTopBorder === null || Array.isArray(rawTopBorder)) return undefined;
-	const content = field(rawTopBorder, "content");
-	const width = field(rawTopBorder, "width");
-	if (typeof content !== "string" || typeof width !== "number") return undefined;
-	return { topBorder: { content, width }, bottomLines };
-}
-
-/** Read the cached status and pick the tier that is still truthful for the live branch. */
-function readStatus(file: string, cwd: string): ComposerStatusSnapshot | undefined {
-	const content = readFile(file);
-	if (!content) return undefined;
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(content);
-	} catch {
-		return undefined;
-	}
-	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-	if (field(parsed, "version") !== CACHE_VERSION) return undefined;
-	if (field(parsed, "statusVersion") !== STATUS_CACHE_VERSION) return undefined;
-	const shape = field(parsed, "shape");
-	const rawBorderColor = field(parsed, "borderColor");
-	const head = field(parsed, "head");
-	const project = readStatusChrome(field(parsed, "project"));
-	const placeholder = readStatusChrome(field(parsed, "placeholder"));
-	if (typeof shape !== "string" || (head !== undefined && typeof head !== "string") || !project || !placeholder) {
-		return undefined;
-	}
-	let borderColor: ComposerStatusSnapshot["borderColor"];
-	if (rawBorderColor !== undefined) {
-		if (typeof rawBorderColor !== "object" || rawBorderColor === null || Array.isArray(rawBorderColor)) {
-			return undefined;
-		}
-		const prefix = field(rawBorderColor, "prefix");
-		const suffix = field(rawBorderColor, "suffix");
-		if (typeof prefix !== "string" || typeof suffix !== "string") return undefined;
-		borderColor = { prefix, suffix };
-	}
-	const chrome = head === probeHead(cwd) ? project : placeholder;
-	return { shape, borderColor, ...chrome };
-}
-
-function readUiState(file: string): { preferences: ComposerPreferences; theme: ComposerThemePreferences } | undefined {
-	const content = readFile(file);
-	if (!content) return undefined;
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(content);
-	} catch {
-		return undefined;
-	}
-	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-	if (field(parsed, "version") !== CACHE_VERSION) return undefined;
-	const rawPreferences = field(parsed, "preferences");
-	const rawTheme = field(parsed, "theme");
-	if (
-		typeof rawPreferences !== "object" ||
-		rawPreferences === null ||
-		Array.isArray(rawPreferences) ||
-		typeof rawTheme !== "object" ||
-		rawTheme === null ||
-		Array.isArray(rawTheme)
-	) {
-		return undefined;
-	}
-	const quiet = field(rawPreferences, "quiet");
-	const composerShape = field(rawPreferences, "composerShape");
-	const showHardwareCursor = field(rawPreferences, "showHardwareCursor");
-	const maxInlineImages = field(rawPreferences, "maxInlineImages");
-	const resizeScrollback = field(rawPreferences, "resizeScrollback");
-	const imeSafeCursor = field(rawPreferences, "imeSafeCursor");
-	const autocompleteMaxVisible = field(rawPreferences, "autocompleteMaxVisible");
-	const spellingTypoDetection = field(rawPreferences, "spellingTypoDetection");
-	const spellingAutocomplete = field(rawPreferences, "spellingAutocomplete");
-	const spellingAutocorrect = field(rawPreferences, "spellingAutocorrect");
+function parseUiState(
+	value: unknown,
+): { preferences: ComposerPreferences; theme: ComposerThemePreferences } | undefined {
+	if (!isRecord(value) || !isRecord(value.preferences) || !isRecord(value.theme)) return undefined;
+	const {
+		quiet,
+		composerShape,
+		showHardwareCursor,
+		maxInlineImages,
+		resizeScrollback,
+		imeSafeCursor,
+		autocompleteMaxVisible,
+		spellingTypoDetection,
+		spellingAutocomplete,
+		spellingAutocorrect,
+	} = value.preferences;
 	if (
 		typeof quiet !== "boolean" ||
 		typeof composerShape !== "string" ||
@@ -245,10 +169,7 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 	) {
 		return undefined;
 	}
-	const symbolPreset = field(rawTheme, "symbolPreset");
-	const colorBlindMode = field(rawTheme, "colorBlindMode");
-	const darkTheme = field(rawTheme, "darkTheme");
-	const lightTheme = field(rawTheme, "lightTheme");
+	const { symbolPreset, colorBlindMode, darkTheme, lightTheme } = value.theme;
 	if (
 		(symbolPreset !== undefined &&
 			symbolPreset !== "unicode" &&
@@ -266,10 +187,7 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 			composerShape,
 			showHardwareCursor,
 			maxInlineImages,
-			resizeScrollback:
-				resizeScrollback === "append" || resizeScrollback === "rebuild" || resizeScrollback === "preserve"
-					? resizeScrollback
-					: "rebuild",
+			resizeScrollback: resizeScrollback ?? "rebuild",
 			imeSafeCursor,
 			autocompleteMaxVisible,
 			spellingTypoDetection,
@@ -280,66 +198,129 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 	};
 }
 
-/** Read all speculative composer caches synchronously before the first terminal paint. */
-export function readComposerStartupCache(cwd: string): ComposerStartupCache {
-	const dir = projectCacheDir(cwd);
-	const ui = readUiState(path.join(dir, "ui.json"));
-	return {
-		preferences: ui?.preferences,
-		theme: ui?.theme,
-		welcome: readWelcome(path.join(dir, "welcome.json")),
-		recentSessions: readRecentSessions(path.join(dir, "recent-sessions.jsonl")),
-		lspServers: readLspServers(path.join(dir, "lsp-servers.json")),
-		status: readStatus(path.join(dir, "status.json"), cwd),
-	};
-}
-
-/** Persist resolved theme and composer settings for the next prepaint. */
-export async function writeComposerUiCache(
-	cwd: string,
-	preferences: ComposerPreferences,
-	theme: ComposerThemePreferences,
-): Promise<void> {
-	await Bun.write(
-		path.join(projectCacheDir(cwd), "ui.json"),
-		JSON.stringify({ version: CACHE_VERSION, preferences, theme }),
-	);
-}
-
-/** Persist authoritative model/provider labels for the next welcome prepaint. */
-export async function writeComposerWelcomeCache(cwd: string, welcome: ComposerWelcomeCache): Promise<void> {
-	await Bun.write(
-		path.join(projectCacheDir(cwd), "welcome.json"),
-		JSON.stringify({ version: CACHE_VERSION, ...welcome }),
-	);
-}
+let shared: ComposerCache | null | undefined;
 
 /**
- * Persist status chrome for speculative first-frame rendering, keyed to the
- * current HEAD so the next prepaint can tell whether `project` is stale.
- * Call synchronously after rendering: HEAD is probed before the write.
+ * Process-wide store at {@link getComposerCacheDbPath}, opened on first use and
+ * closed at exit. `undefined` when it cannot be opened (logged once; startup
+ * paints without speculation) and under the test runner, so tests never read
+ * or clobber the user's cache; tests open {@link ComposerCache.open} explicitly.
  */
-export async function writeComposerStatusCache(cwd: string, status: ComposerStatusCache): Promise<void> {
-	const head = probeHead(cwd);
-	await Bun.write(
-		path.join(projectCacheDir(cwd), "status.json"),
-		JSON.stringify({ version: CACHE_VERSION, statusVersion: STATUS_CACHE_VERSION, head, ...status }),
-	);
+export function sharedComposerCache(): ComposerCache | undefined {
+	if (isBunTestRuntime()) return undefined;
+	if (shared === undefined) {
+		try {
+			const cache = ComposerCache.open();
+			postmortem.register("composer-cache", () => cache.close(), { exitOnly: true });
+			shared = cache;
+		} catch (error) {
+			logger.debug("composer cache unavailable", { error: String(error) });
+			shared = null;
+		}
+	}
+	return shared ?? undefined;
 }
 
-/** Persist the latest recent-session rows as a compact JSONL speculation cache. */
-export async function writeComposerRecentSessionsCache(cwd: string, sessions: readonly RecentSession[]): Promise<void> {
-	const content = sessions
-		.slice(0, 4)
-		.map(session => JSON.stringify(session))
-		.join("\n");
-	await Bun.write(path.join(projectCacheDir(cwd), "recent-sessions.jsonl"), content ? `${content}\n` : "");
-}
+/** SQLite store of the composer state the next launch paints before its session exists. */
+export class ComposerCache {
+	readonly #db: Database;
+	readonly #select: Statement<{ project: string; kind: EntryKind; value: string }, [string, string]>;
+	readonly #upsert: Statement<unknown, [string, EntryKind, string]>;
 
-/** Persist the latest detected project LSP rows for the next prepaint. */
-export async function writeComposerLspCache(cwd: string, servers: readonly LspServerInfo[]): Promise<void> {
-	await Bun.write(
-		path.join(projectCacheDir(cwd), "lsp-servers.json"),
-		JSON.stringify({ version: CACHE_VERSION, servers }),
-	);
+	private constructor(db: Database) {
+		this.#db = db;
+		db.run(SCHEMA);
+		const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version;
+		if (version !== FORMAT_VERSION) {
+			db.run("DELETE FROM entries");
+			db.run(`PRAGMA user_version = ${FORMAT_VERSION}`);
+		}
+		this.#select = db.prepare("SELECT project, kind, value FROM entries WHERE project IN (?, ?)");
+		this.#upsert = db.prepare(
+			"INSERT INTO entries (project, kind, value) VALUES (?, ?, ?) ON CONFLICT (project, kind) DO UPDATE SET value = excluded.value",
+		);
+	}
+
+	/**
+	 * Open (creating if needed) the store at `dbPath`, quarantining a corrupt one once.
+	 * @throws when the directory or database cannot be created.
+	 */
+	static open(dbPath: string = getComposerCacheDbPath()): ComposerCache {
+		fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+		return openSqliteDatabaseSync(dbPath, db => new ComposerCache(db), { recoverCorruption: true });
+	}
+
+	/** Everything cached for `cwd`, with any-project rows as fallback for shared kinds. Never throws. */
+	read(cwd: string): ComposerStartupCache {
+		const project = path.resolve(cwd);
+		const own: Partial<Record<EntryKind, string>> = {};
+		const anyProject: Partial<Record<EntryKind, string>> = {};
+		try {
+			for (const row of this.#select.all(project, ANY_PROJECT)) {
+				(row.project === project ? own : anyProject)[row.kind] = row.value;
+			}
+		} catch (error) {
+			logger.debug("composer cache read failed", { error: String(error) });
+		}
+		const ui = parseUiState(parseJson(own.ui)) ?? parseUiState(parseJson(anyProject.ui));
+		return {
+			preferences: ui?.preferences,
+			theme: ui?.theme,
+			welcome: parseWelcome(parseJson(own.welcome)) ?? parseWelcome(parseJson(anyProject.welcome)),
+			recentSessions: parseRecentSessions(parseJson(own["recent-sessions"])),
+			lspServers: own["lsp-servers"] === undefined ? [] : parseLspServers(parseJson(own["lsp-servers"])),
+			status: parseStatus(parseJson(own.status)) ?? parseStatus(parseJson(anyProject.status)),
+		};
+	}
+
+	/** Resolved theme and composer settings for the next prepaint. */
+	writeUi(cwd: string, preferences: ComposerPreferences, theme: ComposerThemePreferences): void {
+		this.#putShared(cwd, "ui", { preferences, theme });
+	}
+
+	/** Authoritative model/provider labels for the next welcome prepaint. */
+	writeWelcome(cwd: string, welcome: ComposerWelcomeCache): void {
+		this.#putShared(cwd, "welcome", welcome);
+	}
+
+	/** The latest recent-session rows (first four). */
+	writeRecentSessions(cwd: string, sessions: readonly RecentSession[]): void {
+		this.#put(cwd, "recent-sessions", sessions.slice(0, RECENT_SESSION_LIMIT));
+	}
+
+	/** The latest detected project LSP rows; `null` records that LSP is disabled. */
+	writeLspServers(cwd: string, servers: readonly LspServerInfo[] | null): void {
+		this.#put(cwd, "lsp-servers", servers);
+	}
+
+	/** Status-bar inputs for the next prepaint's startup status line. */
+	writeStatus(cwd: string, status: ComposerStatusCache): void {
+		this.#putShared(cwd, "status", status);
+	}
+
+	close(): void {
+		this.#db.close();
+	}
+
+	/** Best-effort upsert: a failed write only costs the next launch its speculation. */
+	#put(cwd: string, kind: EntryKind, value: unknown): void {
+		try {
+			this.#upsert.run(path.resolve(cwd), kind, JSON.stringify(value));
+		} catch (error) {
+			logger.debug("composer cache write failed", { kind, error: String(error) });
+		}
+	}
+
+	/** {@link #put} for this project plus the any-project fallback row, atomically. */
+	#putShared(cwd: string, kind: SharedEntryKind, value: unknown): void {
+		const json = JSON.stringify(value);
+		try {
+			this.#db.transaction(() => {
+				this.#upsert.run(path.resolve(cwd), kind, json);
+				this.#upsert.run(ANY_PROJECT, kind, json);
+			})();
+		} catch (error) {
+			logger.debug("composer cache write failed", { kind, error: String(error) });
+		}
+	}
 }

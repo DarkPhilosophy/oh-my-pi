@@ -624,14 +624,15 @@ describe("anthropic head caching (general API-key path)", () => {
 		expect(countCacheBreakpoints(after)).toBeLessThanOrEqual(4);
 		// The boundary breakpoint sits on the last stable block: with 2 OAuth
 		// identity blocks + 2 stable prompt blocks + 1 recall suffix, the
-		// anchor is index 3 — not the pre-decorated identity block (index 1)
-		// and not the volatile suffix at the tail (index 4).
+		// anchor is index 3. The pre-decorated identity block (index 1) loses
+		// its breakpoint so the head stays at tool + system and both rolling
+		// message breakpoints survive.
 		const systemAfter = textSystemBlocks(after);
 		const cachedSystem = systemAfter
 			.map((block, index) => ("cache_control" in block && block.cache_control != null ? index : -1))
 			.filter(index => index >= 0);
-		expect(cachedSystem).toContain(systemAfter.length - 2);
-		expect(cachedSystem).not.toContain(systemAfter.length - 1);
+		expect(cachedSystem).toEqual([systemAfter.length - 2]);
+		expect(findCachedMessageIndices(after)).toHaveLength(2);
 		expect(textSystemBlocks(before).length).toBe(systemAfter.length);
 		// Stable prefix bytes survive the recall refresh: strip the volatile
 		// suffix and the per-turn cache_control, then compare.
@@ -640,6 +641,27 @@ describe("anthropic head caching (general API-key path)", () => {
 				.filter(block => !block.text.startsWith("<memories>"))
 				.map(block => block.text);
 		expect(stableText(after)).toEqual(stableText(before));
+	});
+
+	it("anchors before the first volatile segment so blocks appended behind it stay out of the cached head", async () => {
+		// Coding-agent layout: static prompt, cwd-derived `<project-context>`,
+		// per-spawn subagent role text, then per-turn recall.
+		const capture = (cwd: string, role: string) =>
+			captureWireBody(undefined, {
+				...CONTEXT,
+				systemPrompt: [
+					"Static agent prompt.",
+					`<project-context>\n<file path="${cwd}/AGENTS.md">rules</file>\n</project-context>`,
+					role,
+					"<memories>\nrecall\n</memories>",
+				],
+			});
+		const first = textSystemBlocks(await capture("/work/a", "Role: spawn 1"));
+		const second = textSystemBlocks(await capture("/work/b", "Role: spawn 2"));
+		for (const system of [first, second]) {
+			expect(system.flatMap((block, index) => (block.cache_control != null ? [index] : []))).toEqual([0]);
+		}
+		expect(second[0]).toEqual(first[0]);
 	});
 
 	it("spends the OAuth system breakpoint on the last system block without taking one from the messages", async () => {

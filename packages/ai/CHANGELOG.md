@@ -16,6 +16,7 @@
 - Fixed legacy Windsurf Enterprise API keys being rejected because they were always sent with the Devin session-token prefix ([#12960](https://github.com/can1357/oh-my-pi/pull/12960)).
 - Fixed an exhausted Cursor "Other Models" pool blocking Grok and Composer, which Cursor bills to its own pool ([#13198](https://github.com/can1357/oh-my-pi/issues/13198)).
 - Fixed Anthropic OAuth requests leaving the agent system prompt without its own cache breakpoint: the breakpoint on the short Claude Code identity block now moves to the last system block, so a request whose messages miss the cache (such as the first after a compaction) reads the cached system prompt instead of writing it again ([#13104](https://github.com/can1357/oh-my-pi/issues/13104), [#13556](https://github.com/can1357/oh-my-pi/pull/13556) by [@aktanazat](https://github.com/aktanazat)).
+- Fixed the Anthropic system cache breakpoint covering working-directory-specific system text: it now sits before the first `<project-context>` or `<memories>` block, and on OAuth it replaces the identity-block breakpoint instead of taking a message breakpoint ([#13104](https://github.com/can1357/oh-my-pi/issues/13104)).
 
 ## [18.4.0] - 2026-09-28
 

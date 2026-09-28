@@ -1739,7 +1739,8 @@ export interface GlobResult {
  *
  * # Arguments
  * - `options`: Pattern, path, filters, and output mode.
- * - `on_match`: Optional callback invoked per match/result.
+ * - `on_match`: Optional callback invoked per returned match/result, after the
+ *   search (never called when `options.onMatches` streams instead).
  *
  * # Returns
  * Aggregated results across matching files.
@@ -1816,6 +1817,16 @@ export interface GrepOptions {
    * absent).
    */
   filesystem?: ShellFilesystem
+  /**
+   * Stream results instead of returning them: called on the JS thread with
+   * batches (at most 1024 entries, files in no particular order) of what
+   * `matches` would hold, while the search runs. A slow callback pauses the
+   * search instead of buffering, every call returns before the promise
+   * settles, and the result then carries counts with empty `matches`.
+   * A throw rejects the search with it. Incompatible with `maxCount` and
+   * `offset`.
+   */
+  onMatches?: (matches: GrepMatch[]) => void
 }
 
 /** Output mode for [`search`] and [`grep`] (string values match JS callers). */

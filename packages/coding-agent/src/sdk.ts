@@ -348,7 +348,7 @@ import { cfgDisabledProviders, cfgEnabledModels, cfgEnabledProviders, cfgModelRo
 import { cfgEditRecoverInlineEdits } from "./edit/settings";
 import { cfgGoalEnabled } from "./goals/settings";
 import { cfgImagesBlockImages, cfgStartupQuiet, cfgTuiReactions, cfgTuiRenderMermaid } from "./modes/settings";
-import { cfgLspLazy, cfgLspShared } from "./lsp/settings";
+import { cfgLspEnabled, cfgLspLazy, cfgLspShared } from "./lsp/settings";
 import {
 	cfgMcpEnableProjectConfig,
 	cfgMcpNotificationDebounceMs,
@@ -4951,8 +4951,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// CPU parsing big `initialize` responses concurrently with the LLM stream consumer, jittering
 		// perceived latency.
 		// Turning `lsp.lazy` off mid-session kicks off the same warmup once.
+		// `lsp.enabled: false` skips discovery and warmup entirely; `lspServers` stays undefined so the
+		// welcome screen hides its LSP section.
 		let lspServers: CreateAgentSessionResult["lspServers"];
-		if (enableLsp && options.hasUI) {
+		if (enableLsp && cfgLspEnabled.get(settings) && options.hasUI) {
 			const startupLspServers = discoverStartupLspServers(
 				cwd,
 				cfgLspLazy.get(settings) ? "available" : "connecting",

@@ -69,13 +69,6 @@ describe("status line loop mode segment", () => {
 		expect(Bun.stripANSI(rendered.content)).toBe(withIcon(theme.icon.loop, "Loop: next prompt repeats 10/10"));
 	});
 
-	it("masks the armed label during startup placeholder rendering", () => {
-		const ctx = createContext({ state: "waiting" });
-		const rendered = renderSegment("mode", { ...ctx, startupPlaceholder: "session" });
-
-		expect(Bun.stripANSI(rendered.content)).toBe(withIcon(theme.icon.loop, "Loop: …"));
-	});
-
 	it("shows the live remaining duration while a loop is running", () => {
 		const now = Date.parse("2026-07-17T12:00:00Z");
 		vi.spyOn(Date, "now").mockReturnValue(now);

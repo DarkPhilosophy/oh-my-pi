@@ -6,15 +6,6 @@ import type { LoopConditionConfig, LoopLimitRuntime } from "./loop";
 
 export type { ContextLineMode, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
 
-/**
- * Values a startup placeholder render elides with `…`:
- * - `session`: only values scoped to the running session (usage, cost, context %,
- *   timers, session name, repo dirty counts). Project-stable values — model and
- *   thinking level, path, git branch, hostname, context window — render live.
- * - `all`: every dynamic value.
- */
-export type StartupPlaceholderScope = "session" | "all";
-
 /** Context-window occupancy shown by the status line and exposed to extensions. */
 export interface ContextUsage {
 	/** Estimated context tokens. */
@@ -93,8 +84,6 @@ export interface SegmentContext {
 	sessionAccent?: boolean;
 	/** Stand-in session title for previews; `session_name` renders it when the session is unnamed. */
 	previewTitle?: string;
-	/** Replace dynamic values in this scope with ellipses while preserving each segment's icon, color, and static text. */
-	startupPlaceholder?: StartupPlaceholderScope;
 	activeRepo: ActiveRepoContext | null;
 	width: number;
 	options: StatusLineSegmentOptions;

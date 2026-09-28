@@ -8,6 +8,7 @@
 
 ### Changed
 
+- LSP servers section is omitted from the welcome screen when LSP is disabled
 - Usage dashboards and provider cards can show connected accounts with unavailable usage separately from reported quotas, without treating missing reports as unused or unlimited ([#13476](https://github.com/can1357/oh-my-pi/pull/13476) by [@aktanazat](https://github.com/aktanazat)).
 
 ### Fixed
