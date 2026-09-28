@@ -3107,6 +3107,18 @@ export class TUI extends Container {
 		}
 	}
 
+	/** Whether the live rows lent to native history still head the logical frame unchanged. */
+	#lentRowsStillMatch(logicalViewport: readonly string[]): boolean {
+		const committed = this.#providerLogicalCommitted;
+		const borrowed = this.#providerTransientRows;
+		if (committed > logicalViewport.length || committed > borrowed.length) return false;
+		const offset = borrowed.length - committed;
+		for (let index = 0; index < committed; index++) {
+			if (logicalViewport[index] !== borrowed[offset + index]) return false;
+		}
+		return true;
+	}
+
 	#renderProviderFrame(width: number, height: number, flushing = false): boolean {
 		const provider = this.#frameProvider;
 		if (!provider || width <= 0 || height <= 0) return false;
@@ -3161,7 +3173,27 @@ export class TUI extends Container {
 			this.#providerExpansionBorrowed &&
 			this.#providerLogicalCommitted > overflow &&
 			(plan.viewportExpansionRows ?? 0) === 0 &&
-			this.#providerViewportExpansionRows > 0;
+			this.#providerViewportExpansionRows > 0 &&
+			this.#lentRowsStillMatch(logicalViewport);
+		if (
+			!flushing &&
+			!contractedIntoHistory &&
+			plan.retainedLiveViewport === true &&
+			!this.#clearScrollbackOnNextRender &&
+			this.#providerExpansionBorrowed &&
+			this.#providerLogicalCommitted > overflow &&
+			(plan.viewportExpansionRows ?? 0) === 0 &&
+			this.#providerViewportExpansionRows > 0 &&
+			provider.beginHistoryReplay !== undefined
+		) {
+			// The lent rows changed while they were in history (a Steer box replaced
+			// by its delivered message, a card that re-rendered): keeping them there
+			// and repainting the live rows below left a stale copy plus a blank band.
+			// Only a rewrite from the ledger can reconcile native history.
+			this.#prepareForcedRender(true);
+			this.requestRender(true);
+			return false;
+		}
 		if (borrowOverflow > Math.max(0, overflow - (plan.viewportExpansionRows ?? 0))) {
 			this.#providerExpansionBorrowed = true;
 		}

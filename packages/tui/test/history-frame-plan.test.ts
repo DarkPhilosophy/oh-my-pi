@@ -1397,6 +1397,39 @@ describe("terminal frame plans", () => {
 		}
 	});
 
+	it("rewrites history when rows lent during temporary UI changed before it contracts", () => {
+		const terminal = new CountingTerminal(30, 5);
+		let replays = 0;
+		const provider = new Provider({ viewport: ["LIVE_1", "editor"], retainedLiveViewport: true });
+		const replayingProvider: TerminalFrameProvider = {
+			renderFrame: size => provider.renderFrame(size),
+			acknowledgeHistory: id => provider.acknowledgeHistory(id),
+			beginHistoryReplay: () => {
+				replays++;
+			},
+		};
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		try {
+			tui.setFrameProvider(replayingProvider);
+			provider.plan = {
+				viewport: ["STEER_BOX", "LIVE_2", "LIVE_3", "TEMP_1", "TEMP_2", "TEMP_3", "editor"],
+				viewportExpansionRows: 3,
+				borrowableRows: 3,
+				retainedLiveViewport: true,
+			};
+			tui.requestRender(true);
+			// The lent Steer box became the delivered message while in history.
+			provider.plan = { viewport: ["USER_MSG", "LIVE_2", "LIVE_3", "editor"], retainedLiveViewport: true };
+			tui.requestRender(true);
+
+			// Regression: skipping the rewrite left the stale box in history plus a
+			// blank band and a second copy of the live rows below it.
+			expect(replays).toBe(1);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("keeps rows lent to native history there when temporary UI contracts, without a replay", () => {
 		const terminal = new CountingTerminal(30, 5);
 		let replays = 0;
