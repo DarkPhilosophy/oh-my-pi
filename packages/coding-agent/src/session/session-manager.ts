@@ -1207,6 +1207,12 @@ export class SessionManager {
 	#rewriteSynchronously(): void {
 		if (this.#released) return;
 		if (!this.#persist || !this.#shouldHaveSessionFile()) return;
+		// A foreign writer changed the file under us. Every retry would serialize
+		// the whole transcript on the UI thread only to hit the same size check
+		// (seconds per append on a large session, a freeze on every frame).
+		// The conflict is already reported; stop retrying until the session is
+		// reopened instead of clobbering the other writer.
+		if (this.#diskFailure instanceof SessionWriteConflictError) return;
 		const targetPath = this.#liveRelocationWritePath() ?? this.#sessionFile;
 		if (!targetPath) return;
 
