@@ -6,6 +6,15 @@ import type { LoopConditionConfig, LoopLimitRuntime } from "./loop";
 
 export type { ContextLineMode, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
 
+/**
+ * Values a startup placeholder render elides with `…`:
+ * - `session`: only values scoped to the running session (usage, cost, context %,
+ *   timers, session name, repo dirty counts). Project-stable values — model and
+ *   thinking level, path, git branch, hostname, context window — render live.
+ * - `all`: every dynamic value.
+ */
+export type StartupPlaceholderScope = "session" | "all";
+
 /** Context-window occupancy shown by the status line and exposed to extensions. */
 export interface ContextUsage {
 	/** Estimated context tokens. */
@@ -84,8 +93,8 @@ export interface SegmentContext {
 	sessionAccent?: boolean;
 	/** Stand-in session title for previews; `session_name` renders it when the session is unnamed. */
 	previewTitle?: string;
-	/** Replace dynamic values with ellipses while preserving each segment's icon, color, and static text. */
-	startupPlaceholder?: boolean;
+	/** Replace dynamic values in this scope with ellipses while preserving each segment's icon, color, and static text. */
+	startupPlaceholder?: StartupPlaceholderScope;
 	activeRepo: ActiveRepoContext | null;
 	width: number;
 	options: StatusLineSegmentOptions;
@@ -125,6 +134,8 @@ export interface SegmentContext {
 	} | null;
 	collab: CollabStatus | null;
 	stream: { viewers: number } | null;
+	/** A `/record` capture of this screen is running. */
+	recording: boolean;
 	// Cached values for performance (computed once per render)
 	usageStats: {
 		input: number;
@@ -188,6 +199,13 @@ export interface SegmentContext {
 		daily?: { percent: number; resetMinutes?: number };
 		sevenDay?: { percent: number; resetHours?: number };
 		monthly?: { percent: number; resetHours?: number };
+		resetCredits?: {
+			bankedCount: number;
+			redeemableCount: number;
+			expiryHours?: number;
+			expired?: boolean;
+			unavailableReason?: string;
+		};
 	} | null;
 }
 

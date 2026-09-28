@@ -69,6 +69,14 @@ const MAGIC_KEYWORD_NOTICE_TYPES: ReadonlySet<string> = new Set(MAGIC_KEYWORDS.m
 /** Hidden companion carrying vision descriptions for a text-only model. */
 export const IMAGE_ATTACHMENT_DESCRIPTION_TYPE = "image-attachment-description";
 
+/**
+ * Queued content the agent authored (advisor notes, async results, nudges):
+ * never restorable, and never a barrier between two user steers.
+ */
+export function isAgentQueuedMessage(message: AgentMessage): boolean {
+	return message.role === "custom" && message.attribution === "agent";
+}
+
 /** Whether a hidden queued message is a companion of an adjacent user prompt. */
 export function isHiddenUserCompanion(message: AgentMessage): boolean {
 	return (

@@ -2,8 +2,9 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { COMPOSER_DEFAULTS, type ComposerStatusSnapshot } from "@oh-my-pi/pi-tui/prompt/composer";
+import { COMPOSER_DEFAULTS } from "@oh-my-pi/pi-tui/prompt/composer";
 import {
+	type ComposerStatusCache,
 	readComposerStartupCache,
 	writeComposerLspCache,
 	writeComposerRecentSessionsCache,
@@ -23,10 +24,10 @@ describe("composer startup cache", () => {
 			const preferences = { ...COMPOSER_DEFAULTS, composerShape: "rail", autocompleteMaxVisible: 7 };
 			const recentSessions = [{ name: "cached work", timeAgo: "3m ago" }];
 			const lspServers = [{ name: "rust-analyzer", status: "connecting" as const, fileTypes: [".rs"] }];
-			const status: ComposerStatusSnapshot = {
+			const status: ComposerStatusCache = {
 				shape: "rail",
-				topBorder: { content: "placeholder", width: 11 },
-				bottomLines: ["", "placeholder"],
+				project: { topBorder: { content: "Fable 5", width: 7 }, bottomLines: ["", "Fable 5"] },
+				placeholder: { topBorder: { content: "…", width: 1 }, bottomLines: ["", "…"] },
 			};
 			await Promise.all([
 				writeComposerUiCache(cwd, preferences, {
@@ -52,7 +53,7 @@ describe("composer startup cache", () => {
 				welcome: { modelName: "Claude Fable 5", providerName: "anthropic" },
 				recentSessions,
 				lspServers,
-				status,
+				status: { shape: "rail", ...status.project },
 			});
 			expect(readComposerStartupCache(otherCwd)).toEqual({
 				preferences: undefined,
@@ -63,6 +64,35 @@ describe("composer startup cache", () => {
 			});
 			const jsonl: unknown = Bun.JSONL.parse(await Bun.file(path.join(cacheDir, "recent-sessions.jsonl")).text());
 			expect(jsonl).toEqual(recentSessions);
+		} finally {
+			await Promise.all([
+				fs.rm(cwd, { recursive: true, force: true }),
+				fs.rm(cacheDir, { recursive: true, force: true }),
+			]);
+		}
+	});
+
+	it("falls back to fully elided status chrome once HEAD moved off the cached branch", async () => {
+		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-composer-cache-head-"));
+		const key = Bun.hash.wyhash(path.resolve(cwd)).toString(16).padStart(16, "0");
+		const cacheDir = path.join(getComposerCacheDir(), key);
+		const headFile = path.join(cwd, ".git", "HEAD");
+		try {
+			await Promise.all([
+				fs.mkdir(path.join(cwd, ".git", "objects"), { recursive: true }),
+				fs.mkdir(path.join(cwd, ".git", "refs", "heads"), { recursive: true }),
+			]);
+			await Bun.write(headFile, "ref: refs/heads/feature\n");
+			const status: ComposerStatusCache = {
+				shape: "band",
+				project: { bottomLines: ["Fable 5 | feature"] },
+				placeholder: { bottomLines: ["… | …"] },
+			};
+			await writeComposerStatusCache(cwd, status);
+
+			expect(readComposerStartupCache(cwd).status?.bottomLines).toEqual(["Fable 5 | feature"]);
+			await Bun.write(headFile, "ref: refs/heads/main\n");
+			expect(readComposerStartupCache(cwd).status?.bottomLines).toEqual(["… | …"]);
 		} finally {
 			await Promise.all([
 				fs.rm(cwd, { recursive: true, force: true }),

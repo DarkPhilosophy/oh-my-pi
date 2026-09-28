@@ -69,7 +69,7 @@ describe("AgentSession queue coalescing", () => {
 		});
 		const authStorage = await AuthStorage.create(path.join(tempDir, `auth-${Snowflake.next()}.db`));
 		authStorages.push(authStorage);
-		authStorage.setRuntimeApiKey(modelRef.api, "test-key");
+		authStorage.keys.setRuntime(modelRef.api, "test-key");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry });
 		return session;
@@ -105,6 +105,57 @@ describe("AgentSession queue coalescing", () => {
 			return target.getQueuedMessages().steering.slice();
 		});
 		expect(steering).toEqual(["Line1\nLine2\nLine3"]);
+	});
+
+	it("merges a steer burst into one box across an advisor note queued between them", async () => {
+		const target = await createSession([{ content: ["ok"] }]);
+		const steering = await duringStream(target, async () => {
+			await target.steer("NU FACI BINE");
+			// An advisor note lands in the steering queue between two user steers.
+			target.agent.steer({
+				role: "custom",
+				customType: "advisor",
+				content: "advisor note",
+				display: true,
+				attribution: "agent",
+				timestamp: Date.now(),
+			});
+			await target.steer("Totul este perfect");
+			return target.getQueuedMessages().steering.slice();
+		});
+		// Regression: the note used to be the queue tail, so the second steer
+		// opened its own box instead of joining the first.
+		expect(steering).toEqual(["NU FACI BINE\nTotul este perfect"]);
+	});
+
+	it("withdrawing a merged steer also removes its companions across an advisor note", async () => {
+		const target = await createSession([{ content: ["ok"] }]);
+		const companion = (text: string) => ({
+			role: "custom" as const,
+			customType: "image-attachment-description",
+			content: text,
+			display: false,
+			attribution: "user" as const,
+			timestamp: Date.now(),
+		});
+		const remaining = await duringStream(target, async () => {
+			target.agent.steer(companion("image one described"));
+			await target.steer("first");
+			target.agent.steer({
+				role: "custom",
+				customType: "advisor",
+				content: "advisor note",
+				display: true,
+				attribution: "agent",
+				timestamp: Date.now(),
+			});
+			await target.steer("second");
+			target.popLastQueuedMessage();
+			return target.agent.peekSteeringQueue().map(m => (m.role === "custom" ? m.customType : m.role));
+		});
+		// Regression: the first image description stayed behind and reached the
+		// model although the user withdrew the whole steer.
+		expect(remaining).toEqual(["advisor"]);
 	});
 
 	it("merges consecutive plain follow-ups into one queued entry", async () => {
@@ -755,7 +806,7 @@ describe("AgentSession steering delivery contract", () => {
 		const settings = Settings.isolated({ "compaction.enabled": false });
 		const authStorage = await AuthStorage.create(path.join(tempDir, `auth-${Snowflake.next()}.db`));
 		authStorages.push(authStorage);
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry });
 		return session;

@@ -79,8 +79,10 @@ function createMockSession(
 		prompt: async (text: string, options?: PromptOptions) => {
 			promptIndex += 1;
 			await onPrompt({ text, options, promptIndex, emit, state });
+			return true;
 		},
 		getLastAssistantMessage: () => state.messages[state.messages.length - 1],
+		hasPendingAsyncWork: () => false,
 	};
 
 	return session as unknown as AgentSession;

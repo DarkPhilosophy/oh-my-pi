@@ -25,6 +25,7 @@ import {
 } from "./terminal-capabilities";
 import { isInsideTmux, wrapTmuxPassthrough } from "./tmux";
 import { setHangulCompatibilityJamoWidth } from "./utils";
+import { translateWindowsAltGrSequence } from "./windows-altgr";
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
@@ -170,10 +171,14 @@ export const STDOUT_BACKLOG_CLEAR_BYTES = 256 * 1024;
 /**
  * How long an armed backlog may go without any drain progress before the
  * consumer is declared gone. A slow-but-alive terminal keeps reaching new
- * low-water marks (so it never trips); a wedged one that flushes nothing is
- * torn down within this window.
+ * low-water marks (so it never trips), but a live one can also stop reading
+ * for seconds at a time: a busy tmux server holding a slow client, or a
+ * container's attach stream. Waiting costs no memory, because frames are
+ * deferred while the backlog is up (`TUI.#deferRenderForOutputBacklog`), so the
+ * window is long enough to ride those out; a reader that never comes back is
+ * still torn down within it.
  */
-const STDOUT_STALL_TIMEOUT_MS = 2_000;
+const STDOUT_STALL_TIMEOUT_MS = 60_000;
 
 /** Cadence at which {@link ProcessTerminal} re-samples the backlog while an episode is armed. */
 const STDOUT_STALL_POLL_MS = 250;
@@ -807,6 +812,11 @@ export class ProcessTerminal implements Terminal {
 	#reportedRows?: number;
 	#mode2031DebounceTimer?: Timer;
 	#windowsTerminalAppearancePollTimer?: Timer;
+	#progressActive = false;
+	// Ghostty expires OSC 9;4 state without a heartbeat. Persistent hosts such
+	// as Windows Terminal restart their indeterminate animation on every write.
+	readonly #keepProgressAlive = TERMINAL.id === "ghostty";
+	#bracketedPasteRefreshTimer?: Timer;
 	#progressTimer?: Timer;
 
 	constructor(options?: ProcessTerminalOptions) {
@@ -935,9 +945,8 @@ export class ProcessTerminal implements Terminal {
 			}
 		}
 
-		// Keep unmanaged fd-2 writes (macOS libmalloc/framework diagnostics) off
-		// the viewport while we own the terminal; released in stop(). See
-		// stderr-guard in pi-utils (mirrors openai/codex#24459).
+		// Keep unmanaged native fd-2 writes off the viewport while we own the
+		// terminal; released in stop(). See stderr-guard in pi-utils.
 		suppressTerminalStderr();
 
 		// Set up resize handler immediately. The OS refreshes process.stdout
@@ -1066,6 +1075,11 @@ export class ProcessTerminal implements Terminal {
 		this.#queryPrivateMode(2026);
 		this.#queryPrivateMode(2048);
 		this.#queryPrivateMode(2031);
+		// 2004 (bracketed paste) is queried only to confirm the terminal brackets
+		// pastes; once confirmed, the unbracketed raw-paste heuristic in
+		// StdinBuffer is disabled so keystrokes an event-loop stall batches into
+		// one read are never misclassified as a paste (#12540).
+		this.#queryPrivateMode(2004);
 		for (const mode of XTERM_SCROLL_TO_BOTTOM_MODES) {
 			this.#queryPrivateMode(mode);
 		}
@@ -1458,7 +1472,13 @@ export class ProcessTerminal implements Terminal {
 				return;
 			}
 			if (this.#inputHandler) {
-				this.#inputHandler(sequence);
+				// Windows console hosts drop AltGr text under kitty (AltGr+F → `CSI 102;3u`);
+				// recover it from the active layout before any keybinding sees an Alt chord.
+				const altGrText =
+					this.#kittyProtocolActive && this.#conpty && process.platform === "win32"
+						? translateWindowsAltGrSequence(sequence)
+						: undefined;
+				this.#inputHandler(altGrText ?? sequence);
 			}
 		});
 
@@ -1749,6 +1769,19 @@ export class ProcessTerminal implements Terminal {
 		}
 		if (mode === 2048 && supported) this.#enableInBandResize();
 		if (mode === 2031) this.#syncWindowsTerminalAppearancePolling(supported);
+		// Confirmed bracketed-paste support makes the unbracketed raw-paste
+		// heuristic pure downside — turn it off so stall-batched keystrokes are
+		// not misread as a paste (#12540). `supported` is only true here after an
+		// explicit DECRPM reply (the DA1-sentinel fallback resolves unsupported).
+		if (mode === 2004 && supported) {
+			this.#stdinBuffer?.setRawPasteClassification(false);
+			// A terminal can reset this mode after the initial probe (for example,
+			// iTerm2's Terminal State toggle). Keep the mode asserted while we own
+			// the TTY, since the raw fallback is disabled after confirmation.
+			this.#bracketedPasteRefreshTimer ??= setInterval(() => {
+				if (this.#active && !this.#dead) this.#safeWrite("\x1b[?2004h");
+			}, 1000);
+		}
 	}
 
 	#syncWindowsTerminalAppearancePolling(mode2031Supported: boolean): void {
@@ -1880,6 +1913,10 @@ export class ProcessTerminal implements Terminal {
 		// Suppress observer/timer callbacks before any teardown can yield or throw.
 		this.#active = false;
 		this.#inputDeferred = false;
+		if (this.#bracketedPasteRefreshTimer) {
+			clearInterval(this.#bracketedPasteRefreshTimer);
+			this.#bracketedPasteRefreshTimer = undefined;
+		}
 		if (this.#headless) return;
 		// Unregister from emergency cleanup
 		if (activeTerminal === this) {
@@ -1891,7 +1928,9 @@ export class ProcessTerminal implements Terminal {
 		// step throws.
 		restoreTerminalStderr();
 
-		if (this.#clearProgressTimer()) {
+		this.#clearProgressTimer();
+		if (this.#progressActive) {
+			this.#progressActive = false;
 			this.#safeWrite(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
 		}
 
@@ -2044,6 +2083,10 @@ export class ProcessTerminal implements Terminal {
 	#markTerminalDisconnected(reason: string, err?: unknown): void {
 		if (this.#dead) return;
 		this.#dead = true;
+		if (this.#bracketedPasteRefreshTimer) {
+			clearInterval(this.#bracketedPasteRefreshTimer);
+			this.#bracketedPasteRefreshTimer = undefined;
+		}
 		this.#disarmStdoutStallWatchdog();
 		logger.warn("terminal disconnected; stopping interactive rendering", { reason, err });
 
@@ -2280,14 +2323,17 @@ export class ProcessTerminal implements Terminal {
 	setProgress(active: boolean): void {
 		if (this.#headless) return;
 		if (active) {
+			if (this.#progressActive) return;
+			this.#progressActive = true;
 			this.#safeWrite(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
-			if (!this.#progressTimer) {
+			if (this.#keepProgressAlive && !this.#progressTimer) {
 				this.#progressTimer = setInterval(() => {
 					this.#safeWrite(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
 				}, TERMINAL_PROGRESS_KEEPALIVE_MS);
 				this.#progressTimer.unref?.();
 			}
 		} else {
+			this.#progressActive = false;
 			this.#clearProgressTimer();
 			this.#safeWrite(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
 		}

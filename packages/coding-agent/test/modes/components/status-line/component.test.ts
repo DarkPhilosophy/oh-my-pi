@@ -3,7 +3,7 @@ import { createGallerySegmentContext } from "../../../../src/cli/gallery-fixture
 import { Settings } from "../../../../src/config/settings";
 import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line/component";
 import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
-import { renderSegment } from "@oh-my-pi/pi-tui/status-line/segments";
+import { renderSegment, type SegmentContext } from "@oh-my-pi/pi-tui/status-line/segments";
 import { loadTheme } from "@oh-my-pi/pi-tui/theme/loader";
 import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSession } from "../../../../src/session/agent-session";
@@ -128,7 +128,7 @@ describe("StatusLineComponent", () => {
 		expect(stripped).toContain("Prewalk");
 	});
 
-	it("renders startup placeholders without values from the prior session", () => {
+	it("elides prior-session values from startup placeholders while session scope keeps project values", () => {
 		const statusLine = statusLines.track(
 			new StatusLineComponent(
 				makeSessionWithLastMessage(null, false, {
@@ -145,21 +145,30 @@ describe("StatusLineComponent", () => {
 		expect(live).toContain("stale-session");
 		expect(live).toContain("2.67");
 
-		const placeholder = Bun.stripANSI(statusLine.renderStartupPlaceholder(WIDE_ENOUGH_FOR_COST_SEGMENT, "box"));
-		expect(placeholder.match(/…/g)?.length).toBeGreaterThanOrEqual(3);
-		expect(placeholder).toContain(`${theme.icon.model} …`);
-		expect([theme.icon.folder, theme.icon.worktree].some(icon => placeholder.includes(`${icon} …`))).toBe(true);
-		expect(placeholder).toContain("$…");
-		expect(placeholder).not.toContain("Stale Model");
-		expect(placeholder).not.toContain("stale-session");
-		expect(placeholder).not.toContain("2.67");
+		const all = Bun.stripANSI(statusLine.renderStartupPlaceholder(WIDE_ENOUGH_FOR_COST_SEGMENT, "box", "all"));
+		expect(all.match(/…/g)?.length).toBeGreaterThanOrEqual(3);
+		expect(all).toContain(`${theme.icon.model} …`);
+		expect([theme.icon.folder, theme.icon.worktree].some(icon => all.includes(`${icon} …`))).toBe(true);
+		expect(all).toContain("$…");
+		expect(all).not.toContain("Stale Model");
+		expect(all).not.toContain("stale-session");
+		expect(all).not.toContain("2.67");
+
+		const session = Bun.stripANSI(
+			statusLine.renderStartupPlaceholder(WIDE_ENOUGH_FOR_COST_SEGMENT, "box", "session"),
+		);
+		expect(session).toContain("Stale Model");
+		expect([theme.icon.folder, theme.icon.worktree].some(icon => session.includes(`${icon} …`))).toBe(false);
+		expect(session).toContain("$…");
+		expect(session).not.toContain("stale-session");
+		expect(session).not.toContain("2.67");
 	});
 
 	it("preserves segment icons and colors while masking their values", () => {
-		const ctx = {
+		const ctx: SegmentContext = {
 			...createGallerySegmentContext(),
 			sessionAccent: false,
-			startupPlaceholder: true,
+			startupPlaceholder: "all",
 		};
 		const model = renderSegment("model", ctx);
 		const path = renderSegment("path", ctx);
@@ -178,6 +187,14 @@ describe("StatusLineComponent", () => {
 		expect(model.content).toContain(theme.getFgAnsi("statusLineModel"));
 		expect(path.content).toContain(theme.getFgAnsi("statusLinePath"));
 		expect(git.content).toContain(theme.getFgAnsi("statusLineGitDirty"));
+
+		const sessionCtx: SegmentContext = { ...ctx, startupPlaceholder: "session" };
+		const sessionText = Bun.stripANSI(
+			[renderSegment("model", sessionCtx), renderSegment("git", sessionCtx)].map(s => s.content).join(" "),
+		);
+		expect(sessionText).toContain("Sonnet 4.5");
+		expect(sessionText).toContain("gallery/reference");
+		expect(sessionText).toContain("*…");
 	});
 
 	it("renders primary and advisor costs separately with subscription indicator in Unicode preset", () => {

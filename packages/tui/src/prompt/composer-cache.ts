@@ -1,13 +1,15 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import "@oh-my-pi/pi-utils/env";
 import { getComposerCacheDir } from "@oh-my-pi/pi-utils/dirs";
 import type { LspServerInfo, RecentSession } from "./welcome";
 import type { ComposerPreferences, ComposerStatusSnapshot } from "./composer";
 import type { SymbolPreset } from "../theme/theme";
+import { isWordCompletionMethod } from "./word-completion";
 
 const CACHE_VERSION = 1;
-const STATUS_CACHE_VERSION = 3;
+const STATUS_CACHE_VERSION = 4;
 /** Theme inputs cached from the last resolved settings load for stable prepaint colors. */
 export interface ComposerThemePreferences {
 	readonly symbolPreset?: SymbolPreset;
@@ -20,6 +22,20 @@ export interface ComposerThemePreferences {
 export interface ComposerWelcomeCache {
 	readonly modelName: string;
 	readonly providerName: string;
+}
+
+/** Rendered status rows for one speculation tier. */
+export type ComposerStatusChrome = Pick<ComposerStatusSnapshot, "topBorder" | "bottomLines">;
+
+/**
+ * Status chrome persisted for the next prepaint. `project` shows project-stable
+ * values (model, path, git branch) and stays truthful only while HEAD is on the
+ * branch it was rendered with; `placeholder` elides every value and stands in
+ * once the branch moved.
+ */
+export interface ComposerStatusCache extends Pick<ComposerStatusSnapshot, "shape" | "borderColor"> {
+	readonly project: ComposerStatusChrome;
+	readonly placeholder: ComposerStatusChrome;
 }
 
 /** Speculative composer state read before the settings/session graph is available. */
@@ -118,7 +134,34 @@ function readWelcome(file: string): ComposerWelcomeCache | undefined {
 	return typeof modelName === "string" && typeof providerName === "string" ? { modelName, providerName } : undefined;
 }
 
-function readStatus(file: string): ComposerStatusSnapshot | undefined {
+/**
+ * What the git segment keys on for `cwd`: the branch, or the commit while
+ * detached. `undefined` outside git or on probe failure.
+ */
+function probeHead(cwd: string): string | undefined {
+	try {
+		const head = vcs.git(cwd)?.headSync();
+		return head?.branch ?? head?.commit ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function readStatusChrome(value: unknown): ComposerStatusChrome | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const rawTopBorder = field(value, "topBorder");
+	const bottomLines = field(value, "bottomLines");
+	if (!Array.isArray(bottomLines) || !bottomLines.every(line => typeof line === "string")) return undefined;
+	if (rawTopBorder === undefined) return { bottomLines };
+	if (typeof rawTopBorder !== "object" || rawTopBorder === null || Array.isArray(rawTopBorder)) return undefined;
+	const content = field(rawTopBorder, "content");
+	const width = field(rawTopBorder, "width");
+	if (typeof content !== "string" || typeof width !== "number") return undefined;
+	return { topBorder: { content, width }, bottomLines };
+}
+
+/** Read the cached status and pick the tier that is still truthful for the live branch. */
+function readStatus(file: string, cwd: string): ComposerStatusSnapshot | undefined {
 	const content = readFile(file);
 	if (!content) return undefined;
 	let parsed: unknown;
@@ -132,13 +175,10 @@ function readStatus(file: string): ComposerStatusSnapshot | undefined {
 	if (field(parsed, "statusVersion") !== STATUS_CACHE_VERSION) return undefined;
 	const shape = field(parsed, "shape");
 	const rawBorderColor = field(parsed, "borderColor");
-	const rawTopBorder = field(parsed, "topBorder");
-	const bottomLines = field(parsed, "bottomLines");
-	if (
-		typeof shape !== "string" ||
-		!Array.isArray(bottomLines) ||
-		!bottomLines.every(line => typeof line === "string")
-	) {
+	const head = field(parsed, "head");
+	const project = readStatusChrome(field(parsed, "project"));
+	const placeholder = readStatusChrome(field(parsed, "placeholder"));
+	if (typeof shape !== "string" || (head !== undefined && typeof head !== "string") || !project || !placeholder) {
 		return undefined;
 	}
 	let borderColor: ComposerStatusSnapshot["borderColor"];
@@ -151,12 +191,8 @@ function readStatus(file: string): ComposerStatusSnapshot | undefined {
 		if (typeof prefix !== "string" || typeof suffix !== "string") return undefined;
 		borderColor = { prefix, suffix };
 	}
-	if (rawTopBorder === undefined) return { shape, borderColor, bottomLines };
-	if (typeof rawTopBorder !== "object" || rawTopBorder === null || Array.isArray(rawTopBorder)) return undefined;
-	const borderContent = field(rawTopBorder, "content");
-	const borderWidth = field(rawTopBorder, "width");
-	if (typeof borderContent !== "string" || typeof borderWidth !== "number") return undefined;
-	return { shape, borderColor, topBorder: { content: borderContent, width: borderWidth }, bottomLines };
+	const chrome = head === probeHead(cwd) ? project : placeholder;
+	return { shape, borderColor, ...chrome };
 }
 
 function readUiState(file: string): { preferences: ComposerPreferences; theme: ComposerThemePreferences } | undefined {
@@ -204,7 +240,7 @@ function readUiState(file: string): { preferences: ComposerPreferences; theme: C
 		typeof imeSafeCursor !== "boolean" ||
 		typeof autocompleteMaxVisible !== "number" ||
 		typeof spellingTypoDetection !== "boolean" ||
-		typeof spellingAutocomplete !== "boolean" ||
+		!isWordCompletionMethod(spellingAutocomplete) ||
 		typeof spellingAutocorrect !== "boolean"
 	) {
 		return undefined;
@@ -254,7 +290,7 @@ export function readComposerStartupCache(cwd: string): ComposerStartupCache {
 		welcome: readWelcome(path.join(dir, "welcome.json")),
 		recentSessions: readRecentSessions(path.join(dir, "recent-sessions.jsonl")),
 		lspServers: readLspServers(path.join(dir, "lsp-servers.json")),
-		status: readStatus(path.join(dir, "status.json")),
+		status: readStatus(path.join(dir, "status.json"), cwd),
 	};
 }
 
@@ -278,11 +314,16 @@ export async function writeComposerWelcomeCache(cwd: string, welcome: ComposerWe
 	);
 }
 
-/** Persist placeholder-only status chrome for speculative first-frame rendering. */
-export async function writeComposerStatusCache(cwd: string, status: ComposerStatusSnapshot): Promise<void> {
+/**
+ * Persist status chrome for speculative first-frame rendering, keyed to the
+ * current HEAD so the next prepaint can tell whether `project` is stale.
+ * Call synchronously after rendering: HEAD is probed before the write.
+ */
+export async function writeComposerStatusCache(cwd: string, status: ComposerStatusCache): Promise<void> {
+	const head = probeHead(cwd);
 	await Bun.write(
 		path.join(projectCacheDir(cwd), "status.json"),
-		JSON.stringify({ version: CACHE_VERSION, statusVersion: STATUS_CACHE_VERSION, ...status }),
+		JSON.stringify({ version: CACHE_VERSION, statusVersion: STATUS_CACHE_VERSION, head, ...status }),
 	);
 }
 
