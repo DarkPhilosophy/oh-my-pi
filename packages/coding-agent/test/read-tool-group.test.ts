@@ -265,7 +265,10 @@ describe("ReadToolGroupComponent", () => {
 	});
 
 	it("re-sizes the collapsed preview when only the terminal height changes", () => {
-		const rows = vi.spyOn(process.stdout, "rows", "get");
+		const original = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+		let height = 100;
+		Object.defineProperty(process.stdout, "rows", { configurable: true, get: () => height });
+		const rows = { mockReturnValue: (value: number) => (height = value) };
 		const component = new ReadToolGroupComponent({ showContentPreview: true });
 		const examplePath = path.resolve("/tmp/example.ts");
 		component.updateArgs({ path: examplePath }, "read-h");
@@ -282,8 +285,13 @@ describe("ReadToolGroupComponent", () => {
 		const short = shown();
 		rows.mockReturnValue(100);
 		// Same width throughout: a cache keyed on width alone kept the old height.
-		expect(short).toBeLessThan(tall);
-		expect(shown()).toBe(tall);
+		try {
+			expect(short).toBeLessThan(tall);
+			expect(shown()).toBe(tall);
+		} finally {
+			if (original) Object.defineProperty(process.stdout, "rows", original);
+			else delete (process.stdout as { rows?: number }).rows;
+		}
 	});
 
 	it("highlights only the collapsed preview lines", () => {

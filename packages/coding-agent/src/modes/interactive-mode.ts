@@ -3562,6 +3562,34 @@ export class InteractiveMode implements InteractiveModeContext {
 				if (content.type === "toolCall") transcriptToolCallOrder.push(content.id);
 			}
 		}
+		// A background task's call stays in `pendingTools` (its persisted result
+		// says "running") long after the job finished. Once a collapsed compaction
+		// drops that call from the transcript, preserving the handle re-mounted
+		// the ancient Task card below the divider as if a new agent had spawned
+		// it. Only calls still in the rebuilt transcript, or in the message being
+		// streamed right now, are live; forget the rest.
+		const transcriptToolCallIds = new Set(transcriptToolCallOrder);
+		const streamingToolCallIds = new Set<string>();
+		for (const inFlight of [this.viewSession.agent?.state?.streamMessage, this.streamingMessage]) {
+			if (inFlight?.role !== "assistant") continue;
+			for (const content of inFlight.content) {
+				if (content.type === "toolCall") streamingToolCallIds.add(content.id);
+			}
+		}
+		for (const [id, component] of [...livePendingTools]) {
+			if (transcriptToolCallIds.has(id) || streamingToolCallIds.has(id)) continue;
+			// Only a call that already returned (a parked background handle) can
+			// be stale; a genuinely in-flight call has no result yet.
+			if ((component as { isTranscriptBlockFinalized?(): boolean }).isTranscriptBlockFinalized?.() !== true)
+				continue;
+			livePendingTools.delete(id);
+			this.pendingTools.delete(id);
+			let stillReferenced = false;
+			for (const other of livePendingTools.values()) if (other === component) stillReferenced = true;
+			if (stillReferenced) continue;
+			const index = liveComponents.indexOf(component as unknown as Component);
+			if (index >= 0) liveComponents.splice(index, 1);
+		}
 		const semanticToolCallSequences: Array<readonly string[]> = [transcriptToolCallOrder];
 		for (const { anchorToolCallIds } of streamingCommandOutput) {
 			semanticToolCallSequences.push(anchorToolCallIds);

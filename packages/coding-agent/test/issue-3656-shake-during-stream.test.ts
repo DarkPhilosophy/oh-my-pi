@@ -165,6 +165,40 @@ describe("issue #3656 /shake mid-stream preserves the in-flight assistant turn",
 		expect(pendingIdx).toBeGreaterThan(streamingIdx);
 	});
 
+	it("does not resurrect a finished background task compacted out of the transcript", () => {
+		makeStreamingFixture();
+		// An old background task: its persisted result said "running", so the
+		// handle stayed in pendingTools long after the job ended. Its call is no
+		// longer in the rebuilt transcript (compacted away) nor in the stream.
+		const oldTask = new ToolExecutionComponent(
+			"task",
+			{ tasks: [] },
+			{},
+			undefined,
+			mode.ui,
+			tempDir.path(),
+			"old-task",
+		);
+		oldTask.updateResult(
+			{
+				content: [{ type: "text", text: "started" }],
+				details: { async: { state: "running", jobId: "Old", type: "task" } },
+			} as never,
+			false,
+		);
+		oldTask.parkAsBackground();
+		mode.chatContainer.addChild(oldTask);
+		mode.pendingTools.set("old-task", oldTask);
+
+		mode.rebuildChatFromMessages();
+
+		// Regression: the ancient Task card was re-mounted below the compaction
+		// divider as if an agent had just spawned it.
+		expect(mode.chatContainer.children).not.toContain(oldTask);
+		expect(mode.pendingTools.has("old-task")).toBe(false);
+		expect(mode.pendingTools.has("call-1")).toBe(true);
+	});
+
 	it("uses the rendered view session when preserving a focused subagent stream", () => {
 		const { streamingComponent, pendingTool } = makeStreamingFixture(false);
 		Object.defineProperty(mode, "viewSession", {
