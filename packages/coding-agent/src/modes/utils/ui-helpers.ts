@@ -1,4 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
+import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { cfgPendingQueueCollapseLines } from "../settings";
 import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
@@ -1122,13 +1124,18 @@ export class UiHelpers {
 
 		this.ctx.pendingMessagesContainer.addChild(new Spacer(1));
 		const expanded = this.ctx.pendingQueueExpanded;
-		const collapseLines = Math.max(1, cfgPendingQueueCollapseLines.get(this.ctx.settings));
+		const collapseLines = Math.max(
+			1,
+			// Session-focus rebuilds run against a context whose settings may be
+			// absent (attached worker views); fall back to the registered default.
+			this.ctx.settings ? cfgPendingQueueCollapseLines.get(this.ctx.settings) : cfgPendingQueueCollapseLines.default,
+		);
 		const queueBoxWidth = Math.max(1, this.ctx.ui.terminal?.columns ?? 80);
 		const canExpandQueue = allMessages.some(
 			entry => queuedMessageVisualRowCount(entry.message, queueBoxWidth) > collapseLines,
 		);
-		const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
-		const expandKey = this.ctx.keybindings.getDisplayString("app.message.expandQueue") || "Alt+O";
+		const dequeueKey = appKey(this.ctx.keybindings, "app.message.dequeue") || formatKeyHint("alt+up");
+		const expandKey = appKey(this.ctx.keybindings, "app.message.expandQueue") || formatKeyHint("alt+o");
 		const expandHint = canExpandQueue ? `, ${expandKey} to ${expanded ? "collapse" : "expand"}` : "";
 		const hint = `${dequeueKey} (or Up) to edit${expandHint}`;
 

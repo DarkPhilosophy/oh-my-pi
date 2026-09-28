@@ -1,3 +1,4 @@
+import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
 /**
  * Skill/custom queued-message display contracts.
  *
@@ -809,7 +810,7 @@ function createStubInteractiveModeContextForUiHelpers(session: AgentSession) {
 		compactionQueuedMessages: [],
 		keybindings: {
 			getDisplayString: (action: string) => (action === "app.message.expandQueue" ? "Alt+O" : "Alt+Up"),
-			getKeys: (_action: string) => ["alt+up"],
+			getKeys: (action: string) => [action === "app.message.expandQueue" ? "alt+o" : "alt+up"],
 		},
 		settings: Settings.isolated({ pendingQueueCollapseLines: 3 }),
 		updatePendingMessagesDisplay,
@@ -850,7 +851,7 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		const rendered = stripAnsi(pendingMessagesContainer.render(120).join("\n"));
 		expect(rendered).toContain("Steer");
 		expect(rendered).toContain("└─ /skill:test-skill arg1 arg2");
-		expect(rendered).toContain("Alt+Up (or Up) to edit");
+		expect(rendered).toContain(`${formatKeyHint("alt+up")} (or Up) to edit`);
 	});
 
 	it("renders a coalesced image/text queue entry as one compact box", async () => {
@@ -875,7 +876,7 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		expect(rendered.match(/ Steer /g)?.length).toBe(1);
 		expect(rendered).toContain("├─ [Image #1] describe");
 		expect(rendered).toContain("└─ more context");
-		expect(rendered).toContain("Alt+Up (or Up) to edit");
+		expect(rendered).toContain(`${formatKeyHint("alt+up")} (or Up) to edit`);
 	});
 
 	it("collapses queued steering text with a row and character footer", async () => {
@@ -892,7 +893,7 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		expect(rendered).toContain("├─ two");
 		expect(rendered).toContain("├─ three");
 		expect(rendered).not.toContain("four");
-		expect(rendered).toContain("Alt+Up (or Up) to edit, Alt+O to expand");
+		expect(rendered).toContain(`${formatKeyHint("alt+up")} (or Up) to edit, ${formatKeyHint("alt+o")} to expand`);
 		expect(rendered).toContain("+1 rows · 4 chars");
 	});
 
@@ -906,7 +907,7 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		uiHelpers.updatePendingMessagesDisplay();
 
 		const rendered = stripAnsi(pendingMessagesContainer.render(80).join("\n"));
-		expect(rendered).toContain("Alt+Up (or Up) to edit, Alt+O to expand");
+		expect(rendered).toContain(`${formatKeyHint("alt+up")} (or Up) to edit, ${formatKeyHint("alt+o")} to expand`);
 	});
 
 	it("restores the compact slash form into the editor and clears the queue", async () => {
