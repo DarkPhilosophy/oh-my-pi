@@ -341,4 +341,17 @@ describe("EventController paces streamed tool args", () => {
 		expect(a.isTranscriptPreviewSettled()).toBe(true);
 		expect(b.isTranscriptPreviewSettled()).toBe(false);
 	});
+
+	it("keeps a just-opened call (empty partial JSON) streaming", async () => {
+		await Settings.init({ inMemory: true, cwd: process.cwd() });
+		const message = makeStreamingMessage([
+			{ type: "toolCall", id: "tc-open", name: "write", arguments: {}, [kStreamingPartialJson]: "" },
+		]);
+		const { controller, pendingTools } = createFixture(message);
+		await dispatch(controller, message);
+		// Regression: "" is falsy, so the call was marked complete before any
+		// argument arrived and its rows lent to history while still growing.
+		const card = pendingTools.get("tc-open") as unknown as { isTranscriptPreviewSettled(): boolean };
+		expect(card.isTranscriptPreviewSettled()).toBe(false);
+	});
 });

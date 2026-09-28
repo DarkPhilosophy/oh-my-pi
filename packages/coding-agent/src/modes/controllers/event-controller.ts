@@ -1500,7 +1500,9 @@ export class EventController {
 				// reply keeps streaming. Marking it now (not only at message_end)
 				// lets a finished preview hand the rows that scroll off the screen
 				// to history while later calls stream, instead of hiding them.
-				if (!partialJson) this.ctx.pendingTools.get(content.id)?.setArgsComplete?.(content.id);
+				// `""` means the stream opened with no bytes yet; only a cleared value
+				// (undefined) means the JSON closed.
+				if (partialJson === undefined) this.ctx.pendingTools.get(content.id)?.setArgsComplete?.(content.id);
 			}
 			for (const [toolCallId, segment] of timeline.afterToolCalls) {
 				if (this.#postToolAssistantComponents.get(toolCallId)?.isTranscriptBlockFinalized()) continue;
