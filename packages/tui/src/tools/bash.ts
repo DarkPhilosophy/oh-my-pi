@@ -477,24 +477,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 }
 
 /** Renders bash command previews and output. */
-/** Longest command excerpt shown in the card border. */
-const BASH_TITLE_COMMAND_CHARS = 72;
-
-/**
- * Border title: the call's name, else the command's first line, so a card
- * says what it runs even when its body is clipped or scrolled away.
- */
-function bashCardTitle(args: BashRenderArgs | undefined): string {
-	if (args?.name) return `Bash · ${String(args.name)}`;
-	const first = replaceTabs(String(args?.command ?? "").split("\n", 1)[0]!)
-		.replace(/\s+/g, " ")
-		.trim();
-	if (!first) return "Bash";
-	return `Bash · ${first.length > BASH_TITLE_COMMAND_CHARS ? `${first.slice(0, BASH_TITLE_COMMAND_CHARS - 1)}…` : first}`;
-}
-
 export const bashToolRenderer = createShellRenderer<BashRenderArgs>({
-	resolveTitle: args => bashCardTitle(args),
+	resolveTitle: args => (args?.name ? `Bash · ${String(args.name)}` : "Bash"),
 	resolveCommand: args => args?.command,
 	resolveCwd: args => args?.cwd,
 	resolveEnv: args => args?.env,

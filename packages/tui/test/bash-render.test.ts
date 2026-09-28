@@ -90,8 +90,9 @@ describe("bashToolRenderer", () => {
 		expect(lines.length).toBeGreaterThanOrEqual(3);
 		const header = lines[0]!;
 		const body = lines.slice(1, -1).join("\n");
-		// The border names the call by its command so a clipped card still says what runs.
-		expect(header).toContain("Bash · sleep 30");
+		// The border names the tool; the command stays in the body.
+		expect(header).toContain("Bash");
+		expect(header).not.toContain("sleep 30");
 		expect(body).toContain("$ sleep 30");
 	});
 
