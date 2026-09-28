@@ -3,7 +3,7 @@ MUST continue until current branch CI green; NEVER stop after one fix attempt.
 </critical>
 
 <instruction>
-SHOULD use `github` with `op: run_watch` and no other args, if available; else `gh` cli.
+SHOULD watch runs with the `github` tool, `op: run_watch`, no other args (it blocks until the runs finish and fast-fails on the first failed job). In sessions with xd:// devices it is mounted as `xd://github`: invoke it with `write xd://github` and content `{"op":"run_watch"}`. Use `gh` cli only when neither is available; NEVER hand-roll `sleep`/polling loops.
 Workflow runs for current HEAD: source of truth after each push.
 </instruction>
 
