@@ -994,6 +994,12 @@ export class TUI extends Container {
 	#ghosttyImageReadyAtMs = 0;
 	#clearScrollbackOnNextRender = false;
 	#clearScrollbackWaitsForReplay = false;
+	// Frames a deferred compaction/rebuild clear may still wait for its replay.
+	// The replay starts when the offered batch is acknowledged, so it lands in
+	// the next frame; a rebuilt transcript with nothing committed offers no
+	// replay at all, and an unbounded wait then never cleared: the stale
+	// pre-compaction scrollback stayed above the freshly painted transcript.
+	#clearScrollbackWaitFramesLeft: number | undefined;
 	// Consumed by the next frame: a user-driven redraw gesture (resetDisplay,
 	// requestRender(true)) that must rewrite the viewport even when the diff
 	// believes nothing changed.
@@ -2437,7 +2443,10 @@ export class TUI extends Container {
 			// batch wipes history, writes the stale screen back, and the replay then
 			// lands below it with no clear: a duplicated card whose seam shows as an
 			// unpainted row.
-			if (this.#frameProvider?.beginHistoryReplay?.() === "deferred") this.#clearScrollbackWaitsForReplay = true;
+			if (this.#frameProvider?.beginHistoryReplay?.() === "deferred") {
+				this.#clearScrollbackWaitsForReplay = true;
+				this.#clearScrollbackWaitFramesLeft = 2;
+			}
 		}
 		this.#clearScrollbackOnNextRender ||= clearScrollback;
 		this.#forceViewportRepaintOnNextRender = true;
@@ -3353,6 +3362,7 @@ export class TUI extends Container {
 			this.#cursorOverlayHistoryDamaged = false;
 			this.#prepareForcedRender(true);
 			this.#clearScrollbackWaitsForReplay = true;
+			this.#clearScrollbackWaitFramesLeft = undefined;
 			return;
 		}
 		const size = `${width}x${height}`;
@@ -3910,6 +3920,14 @@ export class TUI extends Container {
 		if (destructiveReset) {
 			this.#clearScrollbackOnNextRender = false;
 			this.#clearScrollbackWaitsForReplay = false;
+			this.#clearScrollbackWaitFramesLeft = undefined;
+		} else if (this.#clearScrollbackOnNextRender && this.#clearScrollbackWaitFramesLeft !== undefined) {
+			this.#clearScrollbackWaitFramesLeft--;
+			if (this.#clearScrollbackWaitFramesLeft <= 0) {
+				this.#clearScrollbackWaitsForReplay = false;
+				this.#clearScrollbackWaitFramesLeft = undefined;
+				this.requestRender(true);
+			}
 		}
 		this.#forceViewportRepaintOnNextRender = false;
 		this.#hasEverRendered = true;

@@ -1357,6 +1357,46 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
+	it("clears stale scrollback after a deferred replay that never arrives", () => {
+		const terminal = new CountingTerminal(30, 6);
+		const provider = new Provider({ viewport: ["editor"], retainedLiveViewport: true });
+		let deferred = false;
+		const deferringProvider: TerminalFrameProvider = {
+			renderFrame: size => provider.renderFrame(size),
+			acknowledgeHistory: id => provider.acknowledgeHistory(id),
+			// An offered batch is pending, so the replay is deferred; the rebuilt
+			// transcript then has nothing committed and never offers one.
+			beginHistoryReplay: () => {
+				deferred = true;
+				return "deferred";
+			},
+		};
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		try {
+			tui.setFrameProvider(deferringProvider);
+			provider.plan = {
+				history: { id: 1, kind: "append", rows: Array.from({ length: 12 }, (_, i) => `STALE_${i}`) },
+				viewport: ["editor"],
+				retainedLiveViewport: true,
+			};
+			tui.renderNow();
+			// Compaction replaces the transcript and asks for a clean scrollback.
+			provider.plan = { viewport: ["DIVIDER", "KEPT", "editor"], retainedLiveViewport: true };
+			tui.requestRender(true, { clearScrollback: true });
+			for (let i = 0; i < 4; i++) tui.renderNow();
+
+			expect(deferred).toBe(true);
+			const buffer = plainBuffer(terminal).filter(row => row.length > 0);
+			// Regression: the clear waited forever, leaving the old transcript
+			// above the freshly painted compacted one.
+			expect(buffer.some(row => row.startsWith("STALE_"))).toBe(false);
+			expect(buffer.at(-1)).toBe("editor");
+			expect(buffer).toContain("DIVIDER");
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("keeps rows lent to native history there when temporary UI contracts, without a replay", () => {
 		const terminal = new CountingTerminal(30, 5);
 		let replays = 0;
