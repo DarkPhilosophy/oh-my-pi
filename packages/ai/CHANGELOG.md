@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.4.1] - 2026-09-28
+
 ### Fixed
 
 - Fixed extension-provided usage reports missing from broker-connected clients when the broker does not have that provider ([#13579](https://github.com/can1357/oh-my-pi/issues/13579)).

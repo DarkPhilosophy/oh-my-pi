@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.4.1] - 2026-09-28
+
 ### Added
 
 - Added `resolveCatalogAxes` to `compat/resolve`, which resolves a model's catalog-axis policy without computing its full compat and thinking policy; context-window and catalog-policy lookups now use it, reducing model-catalog load time.

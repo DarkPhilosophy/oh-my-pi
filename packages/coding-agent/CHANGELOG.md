@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.4.1] - 2026-09-28
+
 ### Changed
 
 - With LSP disabled (`--no-lsp` or `lsp.enabled: false`), startup skips language-server discovery and warmup, and the welcome screen no longer shows the LSP Servers section

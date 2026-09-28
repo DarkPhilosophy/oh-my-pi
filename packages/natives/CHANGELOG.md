@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.4.1] - 2026-09-28
+
 ### Fixed
 
 - Fixed `grep` retaining every matching line until the search finished: the new `onMatches` option streams bounded batches while the search runs, pauses the search while JS catches up, and returns only counts ([#13495](https://github.com/can1357/oh-my-pi/issues/13495))
