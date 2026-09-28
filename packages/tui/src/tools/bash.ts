@@ -250,8 +250,11 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						? undefined
 						: renderStatusLine(
 								{
-									icon: options.spinnerFrame !== undefined ? "running" : "pending",
-									spinnerFrame: options.spinnerFrame,
+									// Static glyph: the head row is the card's first native-history
+									// row, and a spinner there would change it every frame.
+									// Same glyph as a successful result, so the head row is
+									// byte-identical before and after execution.
+									iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
 									title: config.resolveTitle(args, options),
 								},
 								uiTheme,
@@ -474,10 +477,25 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 }
 
 /** Renders bash command previews and output. */
+/** Longest command excerpt shown in the card border. */
+const BASH_TITLE_COMMAND_CHARS = 72;
+
+/**
+ * Border title: the call's name, else the command's first line, so a card
+ * says what it runs even when its body is clipped or scrolled away.
+ */
+function bashCardTitle(args: BashRenderArgs | undefined): string {
+	if (args?.name) return `Bash · ${String(args.name)}`;
+	const first = replaceTabs(String(args?.command ?? "").split("\n", 1)[0]!)
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!first) return "Bash";
+	return `Bash · ${first.length > BASH_TITLE_COMMAND_CHARS ? `${first.slice(0, BASH_TITLE_COMMAND_CHARS - 1)}…` : first}`;
+}
+
 export const bashToolRenderer = createShellRenderer<BashRenderArgs>({
-	resolveTitle: args => (args?.name ? `Bash · ${String(args.name)}` : "Bash"),
+	resolveTitle: args => bashCardTitle(args),
 	resolveCommand: args => args?.command,
 	resolveCwd: args => args?.cwd,
 	resolveEnv: args => args?.env,
-	showHeader: false,
 });

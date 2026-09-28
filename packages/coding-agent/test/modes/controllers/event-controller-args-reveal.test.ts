@@ -316,4 +316,29 @@ describe("EventController paces streamed tool args", () => {
 		expect(fixture.getApprovalWaiter()).toBeUndefined();
 		expect(workerWaiter).toBeFunction();
 	});
+
+	it("marks a call's args complete when its JSON closes, while a later call still streams", async () => {
+		await Settings.init({ inMemory: true, cwd: process.cwd() });
+		const first = { path: "/tmp/a.ts", content: "A" };
+		const message = makeStreamingMessage([
+			{ type: "toolCall", id: "tc-a", name: "write", arguments: first },
+			{
+				type: "toolCall",
+				id: "tc-b",
+				name: "write",
+				arguments: {},
+				[kStreamingPartialJson]: '{"path":"/tmp/b.ts","content":"B',
+			},
+		]);
+		const { controller, pendingTools } = createFixture(message);
+		await dispatch(controller, message);
+
+		// Before: args completed only at message_end, so the finished first card
+		// kept its streaming state and its rows could not reach history while the
+		// second call streamed.
+		const a = pendingTools.get("tc-a") as unknown as { isTranscriptPreviewSettled(): boolean };
+		const b = pendingTools.get("tc-b") as unknown as { isTranscriptPreviewSettled(): boolean };
+		expect(a.isTranscriptPreviewSettled()).toBe(true);
+		expect(b.isTranscriptPreviewSettled()).toBe(false);
+	});
 });

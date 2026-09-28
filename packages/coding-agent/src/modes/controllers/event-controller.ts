@@ -1496,6 +1496,11 @@ export class EventController {
 						this.#toolArgsReveal.bind(content.id, component);
 					}
 				}
+				// The call's JSON closed: its arguments are final even though the
+				// reply keeps streaming. Marking it now (not only at message_end)
+				// lets a finished preview hand the rows that scroll off the screen
+				// to history while later calls stream, instead of hiding them.
+				if (!partialJson) this.ctx.pendingTools.get(content.id)?.setArgsComplete?.(content.id);
 			}
 			for (const [toolCallId, segment] of timeline.afterToolCalls) {
 				if (this.#postToolAssistantComponents.get(toolCallId)?.isTranscriptBlockFinalized()) continue;

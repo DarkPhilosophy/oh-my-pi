@@ -90,10 +90,8 @@ describe("bashToolRenderer", () => {
 		expect(lines.length).toBeGreaterThanOrEqual(3);
 		const header = lines[0]!;
 		const body = lines.slice(1, -1).join("\n");
-		// Bash commands already carry a `$` prompt in the body, so the frame header
-		// stays a plain rule instead of repeating "Bash" in the title bar.
-		expect(header).not.toContain("Bash");
-		expect(header).not.toContain("sleep 30");
+		// The border names the call by its command so a clipped card still says what runs.
+		expect(header).toContain("Bash · sleep 30");
 		expect(body).toContain("$ sleep 30");
 	});
 
