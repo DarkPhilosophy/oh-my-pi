@@ -1432,6 +1432,41 @@ describe("terminal frame plans", () => {
 			tui.stop();
 		}
 	});
+	it("paints the live rows once, without a blank band, when the contracted frame no longer holds the lent rows", () => {
+		const terminal = new CountingTerminal(30, 5);
+		let replays = 0;
+		const provider = new Provider({ viewport: ["LIVE_1", "editor"], retainedLiveViewport: true });
+		const replayingProvider: TerminalFrameProvider = {
+			renderFrame: size => provider.renderFrame(size),
+			acknowledgeHistory: id => provider.acknowledgeHistory(id),
+			beginHistoryReplay: () => {
+				replays++;
+			},
+		};
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		try {
+			tui.setFrameProvider(replayingProvider);
+			provider.plan = {
+				viewport: ["LIVE_1", "LIVE_2", "LIVE_3", "TEMP_1", "TEMP_2", "TEMP_3", "editor"],
+				viewportExpansionRows: 3,
+				borrowableRows: 3,
+				retainedLiveViewport: true,
+			};
+			tui.requestRender(true);
+			// LIVE_1/LIVE_2 are already in native history. A full replay here wiped
+			// scrollback and jumped the terminal to the bottom after every write.
+			provider.plan = { viewport: ["LIVE_3", "editor"], retainedLiveViewport: true };
+			tui.requestRender(true);
+
+			expect(replays).toBe(0);
+			// Regression: a stale lent count sliced the live rows away (blank
+			// screen, empty message) or repainted them under a blank lead.
+			const buffer = plainBuffer(terminal).filter(row => row.length > 0);
+			expect(buffer).toEqual(["LIVE_1", "LIVE_2", "LIVE_3", "editor"]);
+		} finally {
+			tui.stop();
+		}
+	});
 
 	it("scrolls visible history before borrowing new live rows when growth moves the origin up", () => {
 		const terminal = new CountingTerminal(40, 10);

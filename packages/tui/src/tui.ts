@@ -3291,17 +3291,25 @@ export class TUI extends Container {
 			const reserved = Math.max(0, this.#providerLogicalCommitted - overflow);
 			for (let index = 0; index < reserved; index++) logicalViewport[overflow + index] = "";
 		}
-		const sliceStart = plan.retainedLiveViewport ? Math.max(overflow, this.#providerLogicalCommitted) : overflow;
-		let emitViewport = logicalViewport.slice(sliceStart);
-		if (contractedIntoHistory && emitViewport.length < height) {
-			const lead = height - emitViewport.length;
-			emitViewport = [...new Array<string>(lead).fill(""), ...emitViewport];
-			this.#planSegments = this.#planSegments.map(segment => ({
-				component: segment.component,
-				start: segment.start + overflow - sliceStart + lead,
-				rowCount: segment.rowCount,
-			}));
+		if (contractedIntoHistory) {
+			// Skip only the lent rows that still head the frame unchanged. Rows that
+			// left the frame or changed stay where they are in native history; the
+			// live rows after them are painted normally, not dropped behind a stale
+			// count (a blank screen) or re-painted below a blank lead (a gap).
+			const borrowedRows = this.#providerTransientRows;
+			const offset = borrowedRows.length - this.#providerLogicalCommitted;
+			let matched = 0;
+			while (
+				matched < this.#providerLogicalCommitted &&
+				matched < logicalViewport.length &&
+				logicalViewport[matched] === borrowedRows[offset + matched]
+			) {
+				matched++;
+			}
+			this.#providerLogicalCommitted = matched;
 		}
+		const sliceStart = plan.retainedLiveViewport ? Math.max(overflow, this.#providerLogicalCommitted) : overflow;
+		const emitViewport = logicalViewport.slice(sliceStart);
 		const acceptedBefore = this.#acceptedHistoryBatchId;
 		// Sub-phase: diffing the prepared rows against the previous frame and
 		// writing the bytes. Named apart from compose so the log says whether a
