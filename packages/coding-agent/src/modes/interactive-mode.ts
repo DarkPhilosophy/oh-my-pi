@@ -1447,12 +1447,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		subagentEventBus?: EventBus,
 	) {
 		this.session = session;
-		// The loop took queued messages: drop their chips now, not at the next
-		// transcript boundary, so a taken steer can't be "withdrawn" from the bar.
-		this.session.agent.onQueuedMessagesTaken = () => {
-			this.updatePendingMessagesDisplay();
-			this.ui.requestRender();
-		};
 		// WATCHDOG.yml edited elsewhere (another omp, an editor, an agent) must
 		// reach this session's advisors; discovery otherwise runs only at startup
 		// and on the in-app editor's save.

@@ -410,14 +410,14 @@ export class Agent {
 	#sentToolDefinitions = new SentToolDefinitions();
 	#steeringQueue: AgentMessage[] = [];
 	#followUpQueue: AgentMessage[] = [];
- /**
-  * Queued messages that must be delivered in the same turn as the message
-  * after them (attachment/vision notices describing a user message). In
-  * "one-at-a-time" mode a lone notice used to reach the model a full turn
-  * before the message it describes, so the model acted on the attachment
-  * of a message the user had not sent yet.
-  */
- #queuedWithNext = new WeakSet<AgentMessage>();
+	/**
+	 * Queued messages that must be delivered in the same turn as the message
+	 * after them (attachment/vision notices describing a user message). In
+	 * "one-at-a-time" mode a lone notice used to reach the model a full turn
+	 * before the message it describes, so the model acted on the attachment
+	 * of a message the user had not sent yet.
+	 */
+	#queuedWithNext = new WeakSet<AgentMessage>();
 	#queuedMessageClaims: Partial<Record<QueuedMessageQueue, QueuedMessageClaim>> = {};
 	/** Dequeued originals remain recoverable until their transcript events arrive. */
 	#queuedMessageDeliveries = new Set<{
@@ -1174,8 +1174,8 @@ export class Agent {
 	 * Queue a steering message to interrupt the agent mid-run.
 	 * Delivered after current tool execution, skips remaining tools.
 	 */
- steer(m: AgentMessage, options?: { withNext?: boolean }) {
-  if (options?.withNext) this.#queuedWithNext.add(m);
+	steer(m: AgentMessage, options?: { withNext?: boolean }) {
+		if (options?.withNext) this.#queuedWithNext.add(m);
 		this.#steeringQueue.push(m);
 		this.#notifySteeringWaiters();
 	}
@@ -1184,8 +1184,8 @@ export class Agent {
 	 * Queue a follow-up message to be processed after the agent finishes.
 	 * Delivered only when agent has no more tool calls or steering messages.
 	 */
- followUp(m: AgentMessage, options?: { withNext?: boolean }) {
-  if (options?.withNext) this.#queuedWithNext.add(m);
+	followUp(m: AgentMessage, options?: { withNext?: boolean }) {
+		if (options?.withNext) this.#queuedWithNext.add(m);
 		this.#followUpQueue.push(m);
 	}
 
@@ -1264,21 +1264,12 @@ export class Agent {
 		return this.#abortController?.signal.aborted === true && this.#state.isStreaming;
 	}
 
- /** One queued unit: leading `withNext` companions plus the message they describe. */
- #queuedUnitLength(queue: readonly AgentMessage[]): number {
-  let length = 0;
-  while (length < queue.length && this.#queuedWithNext.has(queue[length]!)) length++;
-  return Math.min(queue.length, length + 1);
- }
-
-	/**
-	 * Called after the loop takes queued messages. A taken steer is already on
-	 * its way to the model (live-steered into the stream or folded into the next
-	 * request) but its transcript row only lands at the next boundary; without
-	 * this signal the pending bar keeps showing it as editable, and a dequeue of
-	 * that stale chip "withdraws" a message the model still reads.
-	 */
-	onQueuedMessagesTaken?: () => void;
+	/** One queued unit: leading `withNext` companions plus the message they describe. */
+	#queuedUnitLength(queue: readonly AgentMessage[]): number {
+		let length = 0;
+		while (length < queue.length && this.#queuedWithNext.has(queue[length]!)) length++;
+		return Math.min(queue.length, length + 1);
+	}
 
 	#dequeueSteeringMessages(): AgentMessage[] {
 		let taken: AgentMessage[];
@@ -1290,7 +1281,6 @@ export class Agent {
 			taken = this.#steeringQueue.slice();
 			this.#steeringQueue = [];
 		}
-		if (taken.length > 0) this.onQueuedMessagesTaken?.();
 		return taken;
 	}
 
@@ -1304,7 +1294,6 @@ export class Agent {
 			taken = this.#followUpQueue.slice();
 			this.#followUpQueue = [];
 		}
-		if (taken.length > 0) this.onQueuedMessagesTaken?.();
 		return taken;
 	}
 
