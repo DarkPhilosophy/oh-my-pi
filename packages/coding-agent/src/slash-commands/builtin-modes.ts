@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
 import {
 	formatModelString,
 	getModelMatchPreferences,
@@ -155,21 +156,16 @@ function formatComputerUseStatus(session: AgentSession): string {
 }
 
 /**
- * Apply a session-scoped computer-use toggle and rebuild the current prompt.
+ * Apply a session-scoped computer-use toggle; the session's setting listener
+ * reconciles the prompt without a mid-session cache-busting rebuild.
  * The override is never persisted to settings.json.
  */
-async function applyComputerUseToggle(session: AgentSession, enable: boolean): Promise<string> {
+function applyComputerUseToggle(session: AgentSession, enable: boolean): string {
 	const previous = cfgComputerEnabled.get(session.settings);
 	cfgComputerEnabled.override(session.settings, enable);
 	if (enable && !session.getEvalPreludes().some(definition => definition.name === "computer")) {
 		cfgComputerEnabled.override(session.settings, previous);
 		return "Computer use is unavailable in this session.";
-	}
-	try {
-		await session.refreshBaseSystemPrompt();
-	} catch (error) {
-		cfgComputerEnabled.override(session.settings, previous);
-		throw error;
 	}
 	return enable
 		? `Computer use enabled for this session. ${formatComputerUseStatus(session)}`
@@ -327,8 +323,9 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "loop",
 		icon: "loop",
-		description:
-			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. Bound it with a count/duration, or gate it with `--until '<cmd>'` / `--while '<cmd>'` — the command's exit status decides whether the next iteration runs. Esc suspends the ongoing loop; /loop again to disable.",
+		get description() {
+			return `Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. Bound it with a count/duration, or gate it with \`--until '<cmd>'\` / \`--while '<cmd>'\` — the command's exit status decides whether the next iteration runs. ${formatKeyHint("escape")} suspends the ongoing loop; /loop again to disable.`;
+		},
 		inlineHint: "[count|duration] [--while|--until '<cmd>'] [prompt]",
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
@@ -407,7 +404,9 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "switch",
 		icon: "swap",
-		description: "Switch model for this session (same as alt+p); accepts fuzzy ids, provider/id, @role, :level",
+		get description() {
+			return `Switch model for this session (same as ${formatKeyHint("alt+p")}); accepts fuzzy ids, provider/id, @role, :level`;
+		},
 		acpDescription: "Switch model for this session only",
 		acpInputHint: "[model]",
 		inlineHint: "[model]",
@@ -656,7 +655,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			}
 			if (!arg || arg === "toggle" || arg === "on" || arg === "off") {
 				const enable = arg === "off" ? false : arg === "on" || !cfgComputerEnabled.get(runtime.session.settings);
-				await runtime.output(await applyComputerUseToggle(runtime.session, enable));
+				await runtime.output(applyComputerUseToggle(runtime.session, enable));
 				return commandConsumed();
 			}
 			return usage("Usage: /computer [on|off|status]", runtime);
@@ -671,7 +670,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			if (!arg || arg === "toggle" || arg === "on" || arg === "off") {
 				const enable =
 					arg === "off" ? false : arg === "on" || !cfgComputerEnabled.get(runtime.ctx.session.settings);
-				runtime.ctx.showStatus(await applyComputerUseToggle(runtime.ctx.session, enable));
+				runtime.ctx.showStatus(applyComputerUseToggle(runtime.ctx.session, enable));
 				runtime.ctx.editor.setText("");
 				return;
 			}

@@ -17,6 +17,7 @@ import {
 	sliceByColumn,
 	truncateToWidth,
 	visibleWidth,
+	wrapTextWithAnsi,
 } from "../index";
 import { colorLuma, formatDuration, hexToRgb, rgbToHex, sanitizeText } from "@oh-my-pi/pi-utils";
 import { formatProviderName } from "../chrome/format";
@@ -74,6 +75,12 @@ export interface CardWindowRow {
 	usedText?: string;
 }
 
+/** A connected account whose usage lookup produced no attributable report. */
+export interface UnavailableUsageAccount {
+	provider: string;
+	label: string;
+}
+
 /** Compact per-provider (or per-account when unmerged) summary backing one card in the grid. */
 export interface ProviderCard {
 	provider: string;
@@ -84,6 +91,7 @@ export interface ProviderCard {
 	accountQualifier?: string;
 	/** Number of accounts reporting for this provider. */
 	accounts: number;
+	unavailableAccounts: string[];
 	/** Window rows sorted most-pressing first. */
 	windows: CardWindowRow[];
 	/** True when every account reports no limits (e.g. enterprise plans). */
@@ -116,6 +124,15 @@ function aggregateStatus(limits: readonly { status?: UsageLimit["status"] }[]): 
 	return "unknown";
 }
 
+/**
+ * Card status when some connected accounts reported no usage: the missing
+ * report raises the card to a warning but never hides an exhausted quota.
+ */
+function statusWithUnavailableAccounts(windows: readonly { status?: UsageLimit["status"] }[]): UsageLimit["status"] {
+	if (windows.length === 0) return "unknown";
+	return aggregateStatus(windows) === "exhausted" ? "exhausted" : "warning";
+}
+
 /** Fraction below which a window counts as untouched (renders as 100% free). */
 const IDLE_FRACTION = 0.005;
 /**
@@ -146,6 +163,8 @@ export interface BuildCardsOptions {
 	merge?: boolean;
 	/** Privacy mask applied to account labels on split cards. */
 	mask?: AccountMasker;
+	/** Connected accounts whose usage lookup produced no report; counted on their provider's merged card. */
+	unavailableAccounts?: readonly UnavailableUsageAccount[];
 }
 
 function sanitizeAccountLabelPart(value: string): string {
@@ -243,7 +262,7 @@ export function buildProviderCards(
 	nowMs: number,
 	options: BuildCardsOptions = {},
 ): ProviderCard[] {
-	const { merge = true, mask = formatAccountLabelText } = options;
+	const { merge = true, mask = formatAccountLabelText, unavailableAccounts = [] } = options;
 	const grouped = new Map<string, { provider: string; account?: AccountLabel; reports: UsageReport[] }>();
 	// Merged cards fold provider-shared limit reports together first; split cards
 	// keep every account scope distinct, so they partition instead.
@@ -255,9 +274,19 @@ export function buildProviderCards(
 		entry.reports.push(report);
 		grouped.set(key, entry);
 	});
+	for (const account of unavailableAccounts) {
+		if (!grouped.has(account.provider)) grouped.set(account.provider, { provider: account.provider, reports: [] });
+	}
 
 	const cards: ProviderCard[] = [];
 	for (const { provider, account, reports: providerReports } of grouped.values()) {
+		// Split cards belong to one reporting account; unavailable lookups attach to the provider card.
+		const unavailable =
+			account === undefined
+				? unavailableAccounts
+						.filter(entry => entry.provider === provider)
+						.map(entry => mask({ identity: entry.label, provider }))
+				: [];
 		const buckets = new Map<string, { label: string; limits: UsageLimit[] }>();
 		for (const report of providerReports) {
 			for (const limit of report.limits) {
@@ -335,10 +364,12 @@ export function buildProviderCards(
 			name: formatProviderName(provider),
 			account: account === undefined ? undefined : mask(account),
 			accountQualifier: account?.qualifier,
-			accounts: providerReports.length,
+			accounts: providerReports.length + unavailable.length,
+			unavailableAccounts: unavailable,
 			windows,
-			unlimited: windows.length === 0,
+			unlimited: windows.length === 0 && unavailable.length === 0,
 			idle:
+				unavailable.length === 0 &&
 				!resetCredits &&
 				daybreakAccounts.length === 0 &&
 				windows.every(window => window.fraction !== undefined && window.fraction < IDLE_FRACTION),
@@ -443,6 +474,7 @@ export function buildHeatmapLayout(points: DailyActivityPoint[], weeks: number, 
 /** Callbacks and data sources for {@link UsageDashboardComponent}. */
 export interface UsageDashboardOptions {
 	reports: UsageReport[];
+	unavailableAccounts?: readonly UnavailableUsageAccount[];
 	/**
 	 * Full classic `/usage` report for the expanded detail view; re-invoked per
 	 * terminal width and per privacy toggle.
@@ -545,6 +577,7 @@ export class UsageDashboardComponent implements Component {
 		this.#cards = buildProviderCards(this.#options.reports, this.#nowMs, {
 			merge: this.#merge,
 			mask: this.#options.createMasker(labels, this.#mask),
+			unavailableAccounts: this.#options.unavailableAccounts,
 		});
 	}
 
@@ -591,7 +624,12 @@ export class UsageDashboardComponent implements Component {
 	/** Inner (borderless) lines of one card; the grid pads every card to the tallest. */
 	#renderCardLines(card: ProviderCard, width: number): string[] {
 		const lines: string[] = [];
-		const cardStatus = card.unlimited ? "ok" : aggregateStatus(card.windows);
+		const cardStatus =
+			card.unavailableAccounts.length > 0
+				? statusWithUnavailableAccounts(card.windows)
+				: card.unlimited
+					? "ok"
+					: aggregateStatus(card.windows);
 		const accountsText =
 			card.account !== undefined
 				? this.#styleMask(
@@ -625,6 +663,13 @@ export class UsageDashboardComponent implements Component {
 			if (resets.redeemableCount === 0 && resets.unavailableReasons.length > 0) {
 				const reason = sanitizeText(resets.unavailableReasons.join(" • ").replace(/[\r\n\t]+/g, " "));
 				lines.push(`  ${theme.fg("dim", truncateToWidth(`unavailable: ${reason}`, width - 2))}`);
+			}
+		}
+
+		for (const account of card.unavailableAccounts) {
+			const text = sanitizeDisplayLine(`${account} — usage unavailable`);
+			for (const line of wrapTextWithAnsi(text, Math.max(1, width - 2))) {
+				lines.push(`  ${theme.fg("dim", line)}`);
 			}
 		}
 

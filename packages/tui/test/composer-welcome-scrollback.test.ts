@@ -25,7 +25,7 @@ it("makes an oversized startup changelog available in scrollback after the intro
 	const composer = new Composer({
 		terminal,
 		tuiOptions: { renderScheduler: scheduler },
-		preferences: { spellingTypoDetection: false, spellingAutocomplete: false, spellingAutocorrect: false },
+		preferences: { spellingTypoDetection: false, spellingAutocomplete: "off", spellingAutocorrect: false },
 	});
 	const entries = Array.from({ length: 60 }, (_, i) => `Changelog entry ${i}`);
 	composer.setHeaderExtras([], [new Text(entries.join("\n"), 0, 0)]);
@@ -55,7 +55,7 @@ it("keeps the welcome on screen when a multi-line draft grows the editor", async
 	const measure = new Composer({
 		terminal: probe,
 		tuiOptions: { renderScheduler: scheduler },
-		preferences: { spellingTypoDetection: false, spellingAutocomplete: false, spellingAutocorrect: false },
+		preferences: { spellingTypoDetection: false, spellingAutocomplete: "off", spellingAutocorrect: false },
 	});
 	measure.setRuntimeChildren([new TranscriptContainer(), new Text("EDITOR", 0, 0)]);
 	// The intro animates on the wall clock; measuring during it made the fit
@@ -70,7 +70,7 @@ it("keeps the welcome on screen when a multi-line draft grows the editor", async
 	const composer = new Composer({
 		terminal,
 		tuiOptions: { renderScheduler: scheduler },
-		preferences: { spellingTypoDetection: false, spellingAutocomplete: false, spellingAutocorrect: false },
+		preferences: { spellingTypoDetection: false, spellingAutocomplete: "off", spellingAutocorrect: false },
 	});
 	const transcript = new TranscriptContainer();
 	const editor = new Text("EDITOR", 0, 0);

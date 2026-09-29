@@ -73,7 +73,7 @@ describe("advisor account-policy rotation", () => {
 			rotations.push({ provider, modelId: options?.modelId });
 			// A sibling account that does carry the model exists: report the switch
 			// so the advisor retries the SAME model on the rotated credential.
-			return true;
+			return { switched: true };
 		};
 
 		const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));

@@ -47,7 +47,7 @@ const capabilities: DesktopCapabilities = {
 	input: true,
 	ax: true,
 	backgroundWindowInput: true,
-	deliveryModes: ["background", "foreground"],
+	takeover: true,
 	capturePermission: "granted",
 	inputPermission: "granted",
 	axPermission: "granted",
@@ -647,7 +647,7 @@ describe("computer prelude", () => {
 				"print(repr(el))",
 				"await el.press()",
 				"await win.raise_()",
-				"await win.click(10, 20, button='right', delivery=None)",
+				"await win.click(10, 20, button='right', takeover=None)",
 			].join("\n"),
 			{
 				cwd: process.cwd(),

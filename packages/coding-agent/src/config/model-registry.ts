@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import type { ApiKeyResolver, FetchImpl, OAuthAccess, ResolvedApiKey, UsageProvider } from "@oh-my-pi/pi-ai";
 import { resolveApiKeyOnce } from "@oh-my-pi/pi-ai";
+import type { AuthApiKeyOptions } from "@oh-my-pi/pi-ai/auth-storage";
 import { registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
 import { registerOAuthProvider, unregisterOAuthProvider, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
@@ -556,10 +557,32 @@ export class ModelRegistry {
 	}
 
 	/**
+	 * Catch the catalog up for a view that just read it, rebuilding only when it
+	 * is actually stale: waits out an in-flight background refresh, then runs an
+	 * offline {@link refresh} if models.yml changed on disk since the last load.
+	 * Resolves `true` when either may have changed the catalog (the view should
+	 * re-read it), `false` without any rebuild when the in-memory catalog is
+	 * already current. Rejects when the offline rebuild fails.
+	 */
+	async refreshIfStale(): Promise<boolean> {
+		let changed = false;
+		if (this.#backgroundRefresh) {
+			await this.#backgroundRefresh;
+			changed = true;
+		}
+		if (this.#modelsConfigFile.getMtimeMs() !== this.#lastStaticLoadMtime) {
+			await this.refresh("offline");
+			changed = true;
+		}
+		return changed;
+	}
+
+	/**
 	 * Resolve once the initial background discovery has settled, arming a waiter
 	 * even when the refresh has not started yet. In the CLI path
-	 * {@link refreshInBackground} runs right after the session is constructed
-	 * (`main.ts`), so a consumer created in the constructor cannot rely on an
+	 * {@link refreshInBackground} runs after the session is constructed
+	 * (`main.ts`; interactive mode waits for the first frame), so a consumer
+	 * created in the constructor cannot rely on an
 	 * in-flight snapshot — it must observe the settle whenever it happens.
 	 * Resolves immediately once any background refresh has completed; never
 	 * rejects (discovery errors are swallowed by `refreshInBackground`). Stays
@@ -621,14 +644,10 @@ export class ModelRegistry {
 	}
 
 	/**
-	 * Refresh only the named discovery-backed providers, leaving every other
-	 * provider's discovered models and any in-flight runtime discovery untouched.
-	 *
-	 * Unlike {@link refreshProvider}, this does no static reload and never
-	 * re-fetches the other runtime managers, so restoring a saved
-	 * discovery-backed model (e.g. on `omp --resume`) cannot wait on — or
-	 * duplicate — an unrelated provider's network/OAuth work. Ids that are not
-	 * configured discovery providers are ignored by the underlying filter.
+	 * Refresh only named discovery providers (configured `models.yml` providers or
+	 * extension `fetchDynamicModels` managers). Unlike {@link refreshProvider},
+	 * this avoids a static reload and leaves unrelated runtime discovery alone.
+	 * Unknown ids have no effect.
 	 */
 	async refreshDiscoverableProviders(
 		providerIds: Iterable<string>,
@@ -2767,7 +2786,8 @@ export class ModelRegistry {
 		return (
 			keyConfig !== undefined ||
 			this.#keylessProviders.has(model.provider) ||
-			this.authStorage.keys.source(model.provider, { env: "aliases" }) !== undefined
+			this.authStorage.keys.source(model.provider, { env: "aliases" }) !== undefined ||
+			this.authStorage.keys.keyless(model.provider)
 		);
 	}
 
@@ -2785,7 +2805,8 @@ export class ModelRegistry {
 		return (
 			keyConfig !== undefined ||
 			this.#keylessProviders.has(provider) ||
-			this.authStorage.keys.source(provider)?.concrete === true
+			this.authStorage.keys.source(provider)?.concrete === true ||
+			this.authStorage.keys.keyless(provider)
 		);
 	}
 
@@ -2805,6 +2826,18 @@ export class ModelRegistry {
 		return this.#discoverableProviders
 			.filter(provider => !disabledProviders.has(provider.provider))
 			.map(provider => provider.provider);
+	}
+
+	/** Canonical id of a configured or extension-backed discovery provider. */
+	getDiscoveryProviderId(requestedId: string): string | undefined {
+		const normalized = requestedId.toLowerCase();
+		for (const { provider } of this.#discoverableProviders) {
+			if (provider.toLowerCase() === normalized) return provider;
+		}
+		for (const provider of this.#runtimeModelManagers.keys()) {
+			if (provider.toLowerCase() === normalized) return provider;
+		}
+		return undefined;
 	}
 
 	/**
@@ -2842,10 +2875,19 @@ export class ModelRegistry {
 	}
 
 	/**
-	 * Find a model by provider and ID.
+	 * Find a model by provider and ID. A provider disabled in settings has no
+	 * models to find: every caller that falls back to a literal lookup when
+	 * availability-filtered resolution misses (retry fallback candidates,
+	 * advisors, restored and CLI models) would otherwise reach it anyway.
 	 */
 	find(provider: string, modelId: string): Model<Api> | undefined {
+		if (this.#isProviderDisabled(provider)) return undefined;
 		return resolveProviderModelReference(provider, modelId, this.#modelsForProviderLookup(provider));
+	}
+
+	/** Whether settings disable `provider` (`disabledProviders`). */
+	#isProviderDisabled(provider: string): boolean {
+		return getDisabledProviderIdsFromSettings(this.#settings).has(provider);
 	}
 
 	/**
@@ -2897,18 +2939,26 @@ export class ModelRegistry {
 		return model.headers ? { ...model.headers } : undefined;
 	}
 
-	/**
-	 * Get API key for a model.
-	 */
+	#isKeylessProvider(provider: string): boolean {
+		return (
+			(this.#keylessProviders.has(provider) || this.authStorage.keys.keyless(provider)) &&
+			this.authStorage.keys.source(provider) === undefined
+		);
+	}
+
+	/** Resolve a model's request credential or the no-auth sentinel. */
 	async getApiKey(
 		model: Model<Api>,
 		sessionId?: string,
 		options?: { signal?: AbortSignal },
 	): Promise<string | undefined> {
+		// A disabled provider gets no credential, so no request reaches it however
+		// its model was obtained.
+		if (this.#isProviderDisabled(model.provider)) return undefined;
 		if (model.reserveRoute?.model === model.id) {
 			return resolveApiKeyOnce(this.resolver(model, sessionId), options?.signal);
 		}
-		if (this.#keylessProviders.has(model.provider) && this.authStorage.keys.source(model.provider) === undefined) {
+		if (this.#isKeylessProvider(model.provider)) {
 			return kNoAuth;
 		}
 		return this.authStorage.keys.get(model.provider, sessionId, {
@@ -2934,7 +2984,7 @@ export class ModelRegistry {
 	}
 
 	/**
-	 * Get API key for a provider (e.g., "openai").
+	 * Resolve a provider's request credential or the no-auth sentinel.
 	 *
 	 * `options.forceRefresh` powers step (b) of the auth-retry policy — it
 	 * re-mints the session-sticky OAuth token even when the cached copy still
@@ -2943,7 +2993,7 @@ export class ModelRegistry {
 	async getApiKeyForProvider(
 		provider: string,
 		sessionId?: string,
-		options?: { baseUrl?: string; modelId?: string; forceRefresh?: boolean; signal?: AbortSignal },
+		options?: AuthApiKeyOptions,
 	): Promise<string | undefined> {
 		return (await this.getApiKeyWithCredentialForProvider(provider, sessionId, options))?.apiKey;
 	}
@@ -2951,10 +3001,11 @@ export class ModelRegistry {
 	async getApiKeyWithCredentialForProvider(
 		provider: string,
 		sessionId?: string,
-		options?: { baseUrl?: string; modelId?: string; forceRefresh?: boolean; signal?: AbortSignal },
+		options?: AuthApiKeyOptions,
 	): Promise<ResolvedApiKey | undefined> {
+		if (this.#isProviderDisabled(provider)) return undefined;
 		if (options?.forceRefresh) this.#invalidateProviderCommandConfigs(provider);
-		if (this.#keylessProviders.has(provider) && this.authStorage.keys.source(provider) === undefined) {
+		if (this.#isKeylessProvider(provider)) {
 			return { apiKey: kNoAuth };
 		}
 		const accountAccess = options?.modelId ? this.find(provider, options.modelId)?.accountAccess : undefined;
@@ -2963,6 +3014,7 @@ export class ModelRegistry {
 			modelId: options?.modelId,
 			accountIds: accountAccess && Object.keys(accountAccess),
 			forceRefresh: options?.forceRefresh,
+			refreshReason: options?.refreshReason,
 			signal: options?.signal,
 		});
 	}

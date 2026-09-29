@@ -27,6 +27,7 @@ import { textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { ToolExecutionComponent, type ToolExecutionHandle, toolRenderName } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TtsrNotificationComponent } from "@oh-my-pi/pi-tui/chat/ttsr-notification";
 import { createUsageRowBlock, turnElapsedMs } from "@oh-my-pi/pi-tui/overlays/usage-row";
+import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { getSymbolTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "../../modes/types";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
@@ -65,7 +66,6 @@ import { streamingStringKeysForTool, ToolArgsRevealController } from "./tool-arg
 import {
 	cfgCompletionNotify,
 	cfgDisplayCacheMissMarker,
-	cfgDisplayCollapseCompacted,
 	cfgDisplayShowTokenUsage,
 	cfgDisplayShowTurnTime,
 	cfgDisplaySmoothStreaming,
@@ -243,6 +243,10 @@ export class EventController {
 	#prevHideThinking = false;
 	#handlers: AgentSessionEventHandlers;
 	#terminalProgressActive = false;
+	/** Bumped at every `agent_start`; an async-wait watch stands down once a new run begins. */
+	#runEpoch = 0;
+	/** Epoch of the in-flight {@link #finishWhenAsyncWorkDrains} watch, if any. */
+	#asyncDrainWatchEpoch: number | undefined = undefined;
 	// Coalescing window for `message_update` events at the subscription boundary.
 	// `message_update` carries the CUMULATIVE assistant message (every update
 	// re-lists all content blocks), so when a burst of deltas arrives faster than
@@ -941,6 +945,7 @@ export class EventController {
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
+		this.#runEpoch += 1;
 		// A run with no user prompt in it (synthetic-only: `/goal` kickoff,
 		// approved-plan execution) must not measure prompt→yield from an unrelated
 		// earlier prompt. Normal user turns reseed via message_start before
@@ -999,6 +1004,17 @@ export class EventController {
 	async #handleMessageStart(event: Extract<AgentSessionEvent, { type: "message_start" }>): Promise<void> {
 		this.#ensureWorkingLoaderWhileStreaming();
 		if (event.message.role === "hookMessage" || event.message.role === "custom") {
+			if (event.message.role === "custom" && !this.ctx.initialChatRendered && !this.ctx.viewSession.isStreaming) {
+				// Idle custom append while no transcript render has committed (e.g. a startup
+				// display:true sendMessage before renderInitialMessages): AgentSession persists the
+				// entry before emitting this event, so the replay owns the paint — a render not yet
+				// started reads it from session entries, and one in progress sees the entry count
+				// change and restarts. Painting live too would duplicate it, since
+				// renderInitialMessages({ preserveExistingChat: true }) re-appends existing chat
+				// children. Mirrors ExtensionUiController.#applyCustomMessageDisplay's gate.
+				// Streaming is excluded so live-turn rendering is unchanged.
+				return;
+			}
 			const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
 			if (this.#renderedCustomMessages.has(signature)) {
 				return;
@@ -1562,7 +1578,12 @@ export class EventController {
 				}
 			}
 		}
-		if (event.message.role === "user") return;
+		if (event.message.role === "user") {
+			// Live steering stays listed until the agent appends it, which follows
+			// message_start: drop its Steering chip now.
+			this.ctx.updatePendingMessagesDisplay();
+			return;
+		}
 		const unlockedThinkingVisibility =
 			event.message.role === "assistant" && this.ctx.noteDisplayableThinkingContent(event.message);
 		if (unlockedThinkingVisibility && this.ctx.streamingComponent) {
@@ -2148,6 +2169,17 @@ export class EventController {
 		// switch for the pause, and command panels mounted during the stream no
 		// longer need rebuild preservation once the transcript is quiescent.
 		if (event.isTerminal === false) {
+			// `awaitingAsyncWork`: the model handed control back and only a
+			// background-job result can resume it. The title tracks the model, so it
+			// goes idle now — before any await, so a wake landing mid-flush keeps the
+			// `working` its `agent_start` sets. That wake is not guaranteed (a
+			// cancelled job enqueues no delivery; acknowledged/watched ones are
+			// suppressed), so the loader/progress teardown waits out the background
+			// work instead of a terminal `agent_end` that may never come.
+			if (event.awaitingAsyncWork === true) {
+				setTerminalTitleState("idle");
+				void this.#finishWhenAsyncWorkDrains(event);
+			}
 			await this.ctx.flushPendingModelSwitch();
 			this.ctx.flushPendingCommandOutput();
 			return;
@@ -2159,6 +2191,39 @@ export class EventController {
 		// This settle may belong to an extension-started turn while the main
 		// input loop remains asleep. Do not await session-idle from its own event.
 		if (this.ctx.shutdownRequested) this.ctx.requestShutdown();
+	}
+
+	/**
+	 * Terminal teardown for an async-wait settle whose wake never arrives. Mirrors
+	 * `RpcSessionSettleWatcher`: wait out owner-scoped background work, then — if
+	 * no new run started and the session is quiet — run the same teardown a
+	 * terminal `agent_end` would. A real wake starts a run (bumping the epoch)
+	 * whose own `agent_end` finalizes it instead.
+	 */
+	async #finishWhenAsyncWorkDrains(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
+		const epoch = this.#runEpoch;
+		if (this.#asyncDrainWatchEpoch === epoch) return;
+		this.#asyncDrainWatchEpoch = epoch;
+		const session = this.ctx.session;
+		// No `hasAdmittedSubmission` gate: this very settle is emitted while the
+		// prompt that produced it is still admitted, and a new submission starts a
+		// run whose `agent_start` bumps the epoch anyway.
+		const superseded = () => this.#runEpoch !== epoch || this.ctx.session !== session || session.isStreaming;
+		try {
+			while (!superseded() && session.hasPendingAsyncWork()) {
+				await session.settleAsyncWork();
+			}
+			await this.#runSerialized(async () => {
+				if (superseded() || session.hasPendingAsyncWork()) return;
+				setTerminalTitleState("idle");
+				await this.#finishAgentEnd(event);
+				if (this.ctx.shutdownRequested) this.ctx.requestShutdown();
+			});
+		} catch (error) {
+			logger.warn("Async-wait settle teardown failed", { error: String(error) });
+		} finally {
+			if (this.#asyncDrainWatchEpoch === epoch) this.#asyncDrainWatchEpoch = undefined;
+		}
 	}
 
 	async #finishAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
@@ -2239,7 +2304,7 @@ export class EventController {
 	 * label carries no dangling whitespace.
 	 */
 	#maintenanceEscHint(): string {
-		return this.ctx.focusedAgentId ? "" : " (esc to cancel)";
+		return this.ctx.focusedAgentId ? "" : ` (${appKey(this.ctx.keybindings, "app.interrupt")} to cancel)`;
 	}
 
 	async #handleAutoCompactionStart(
@@ -2327,19 +2392,16 @@ export class EventController {
 			this.ctx.lastAssistantUsage = undefined;
 			this.ctx.rebuildChatFromMessages({ reuseSettledComponents: true });
 			this.ctx.statusLine.invalidate();
-			// When history collapses behind the summary divider, the frame
-			// shrinks far below the committed row count; without clearing, the
-			// differential renderer's "duplication, never loss" resync repaints
-			// the whole collapsed transcript (welcome box included) BELOW the
-			// stale pre-compaction scrollback. Compaction is an intentional
-			// transcript replacement then — same as auto-handoff below. With
-			// collapse disabled the rebuilt transcript keeps the full history,
-			// so the resync handles it and scrollback stays.
-			if (cfgDisplayCollapseCompacted.get(settings)) {
-				this.ctx.ui.requestRender(true, { clearScrollback: true });
-			} else {
-				this.ctx.ui.requestRender();
-			}
+			// rebuildChatFromMessages clears the container's emission ledger,
+			// so every block re-emits on this frame while the previous copy is
+			// still in native scrollback; the differential resync only ever
+			// adds rows, so without a clear the collapse-disabled arm
+			// duplicates the full transcript (#12140). Pair the rebuild with a
+			// forced scrollback-clearing repaint in both arms — the pairing
+			// transcript-container documents for ledger resets — so compaction
+			// replaces history instead of appending a second copy. The force
+			// matters too: post-clear the frame looks unchanged to the diff.
+			this.ctx.ui.requestRender(true, { clearScrollback: true });
 		} else if (event.errorMessage) {
 			this.ctx.showWarning(event.errorMessage);
 		} else if (isHandoffAction) {

@@ -6,6 +6,8 @@ import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
+import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
+import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { createBackgroundTanDispatchBlock } from "@oh-my-pi/pi-tui/chat/background-tan-message";
@@ -1154,8 +1156,8 @@ export class UiHelpers {
 		const canExpandQueue = allMessages.some(
 			entry => queuedMessageVisualRowCount(entry.message, queueBoxWidth) + 2 > collapseLines,
 		);
-		const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
-		const expandKey = this.ctx.keybindings.getDisplayString("app.message.expandQueue") || "Alt+O";
+		const dequeueKey = appKey(this.ctx.keybindings, "app.message.dequeue") || formatKeyHint("alt+up");
+		const expandKey = appKey(this.ctx.keybindings, "app.message.expandQueue") || formatKeyHint("alt+o");
 		const expandHint = canExpandQueue ? `, ${expandKey} to ${expanded ? "collapse" : "expand"}` : "";
 		const hint = `${dequeueKey} (or Up) to edit${expandHint}`;
 

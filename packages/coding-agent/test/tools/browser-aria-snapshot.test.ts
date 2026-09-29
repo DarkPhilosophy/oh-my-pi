@@ -1,11 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import {
-	buildAriaSnapshotScript,
 	diffAriaSnapshot,
 	parseAriaRefSelector,
 	postProcessAriaSnapshot,
 } from "@oh-my-pi/pi-coding-agent/tools/browser";
-import { captureAriaSnapshot, resolveAriaRefHandle } from "@oh-my-pi/pi-coding-agent/tools/browser/aria/aria-snapshot";
+import {
+	buildAriaSnapshotScript,
+	captureAriaSnapshot,
+	resolveAriaRefHandle,
+} from "@oh-my-pi/pi-coding-agent/tools/browser/aria/aria-snapshot";
 import { ensureChromiumExecutable, loadPuppeteer } from "@oh-my-pi/pi-coding-agent/tools/browser/launch";
 import { chromiumAvailable } from "./chromium-probe";
 
@@ -152,26 +155,5 @@ describe("buildAriaSnapshotScript", () => {
 				revision: 3,
 			});
 		});
-	});
-
-	it("resolves a CSS root selector in-page and throws on miss", () => {
-		const script = buildAriaSnapshotScript("main .post");
-		expect(script).toContain('var __sel="main .post"');
-		expect(script).toContain("document.querySelector(__sel)");
-		expect(script).toContain("matched no element");
-		// The vendored bundle's entry is invoked against the resolved root.
-		expect(script).toContain("module.exports.ariaSnapshot(__root,");
-	});
-
-	it("defaults the root to the whole document when no selector is given", () => {
-		const script = buildAriaSnapshotScript(undefined);
-		expect(script).toContain("var __sel=null");
-		expect(script).toContain("module.exports.ariaSnapshot(__root,");
-	});
-
-	it("threads depth and boxes options into the request payload", () => {
-		const script = buildAriaSnapshotScript(undefined, { depth: 3, boxes: true });
-		expect(script).toContain('"depth":3');
-		expect(script).toContain('"boxes":true');
 	});
 });

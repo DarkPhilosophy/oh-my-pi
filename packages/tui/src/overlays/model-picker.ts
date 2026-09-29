@@ -14,6 +14,8 @@ import type { ConfiguredThinkingLevel } from "../thinking";
 import type { ScopedModelItem } from "./model-hub";
 import { bottomBorder, row, topBorder } from "../chrome/overlay-box";
 import { resolveSegmentPalette } from "../chrome/segment-track";
+import { formatKeyHint } from "../app-keybindings";
+import { editorKey, editorKeys } from "../chrome/keybinding-hints";
 
 /** Configured role resolved to a concrete model. */
 export interface ResolvedRoleModel {
@@ -25,7 +27,8 @@ export interface ResolvedRoleModel {
 
 /** Catalog refresh capability used by the session picker. */
 export interface ModelPickerRegistry extends ModelBrowserRegistry {
-	refresh(strategy: "offline"): Promise<void>;
+	/** Bring the catalog up to date without rebuilding a current one; `true` when the picker must re-read it. */
+	refreshIfStale(): Promise<boolean>;
 }
 
 export interface ModelPickerCallbacks {
@@ -61,10 +64,8 @@ export interface ModelPickerOptions {
 	quickRoleOrder?: ReadonlyArray<string>;
 	/** Active quick role, highlighted when the search begins with `@`. */
 	currentQuickRole?: string;
-	/** Keys that toggle task-subagent mode while the picker is open; typically the alt+p binding. */
+	/** Keys that toggle task-subagent mode while the picker is open; the first is shown in the footer. */
 	taskModeKeys?: readonly KeyId[];
-	/** Human-readable label for the toggle key, shown in footer hints (e.g. "alt+p"). */
-	taskModeKeyLabel?: string;
 	/** `provider/id` highlighted and preselected in task mode (current Task subagent model). */
 	taskSelector?: string;
 }
@@ -81,9 +82,21 @@ const HEIGHT_FRACTION = 0.4;
 const STATUS_HINT = "Session-only — role models stay unchanged";
 const QUICK_ROLE_STATUS_HINT = "Quick role switch — applies its model and thinking for this session";
 const TASK_STATUS_HINT = "Task subagent switch — spawned task agents use this model (session-only)";
-const FOOTER_HINT = "↑/↓ models · Enter use for this session · type to search · @ quick roles · Esc close";
-const QUICK_ROLE_FOOTER_HINT = "↑/↓ roles · Enter apply role model · type to search · Esc close";
-const TASK_FOOTER_HINT = "↑/↓ models · Enter use for Task subagents · type to search · Esc close";
+
+/** Footer hint for the active mode; keys resolve at render time so theme/keybinding changes apply. */
+function footerHint(mode: "session" | "role" | "task"): string {
+	const upDown = editorKeys("tui.select.up", "tui.select.down");
+	const enter = formatKeyHint("enter");
+	const close = `${editorKey("tui.select.cancel")} close`;
+	switch (mode) {
+		case "role":
+			return `${upDown} roles · ${enter} apply role model · type to search · ${close}`;
+		case "task":
+			return `${upDown} models · ${enter} use for Task subagents · type to search · ${close}`;
+		default:
+			return `${upDown} models · ${enter} use for this session · type to search · @ quick roles · ${close}`;
+	}
+}
 
 /** Search occupies the editor slot; results use the passive slash-popup renderer. */
 export class ModelPickerComponent implements Focusable {
@@ -101,7 +114,7 @@ export class ModelPickerComponent implements Focusable {
 	#roleMode = false;
 	#taskMode = false;
 	#taskMatchKeys = new Set<string>();
-	#taskModeKeyLabel: string;
+	#taskModeKey: KeyId | undefined;
 	#taskSelector: string | undefined;
 	#editorRows: number | undefined;
 	#renderEditorRows: ((width: number) => readonly string[]) | undefined;
@@ -138,8 +151,8 @@ export class ModelPickerComponent implements Focusable {
 		this.#currentSelector = options.currentSelector;
 		this.#currentQuickRoleSelector = options.currentQuickRole ? `@${options.currentQuickRole}` : undefined;
 		this.#taskSelector = options.taskSelector;
-		this.#taskModeKeyLabel = options.taskModeKeyLabel ?? "alt+p";
 		if (callbacks.onPickTask) {
+			this.#taskModeKey = options.taskModeKeys?.[0];
 			for (const key of options.taskModeKeys ?? []) addKeyAliases(this.#taskMatchKeys, key);
 		}
 		this.#quickRoleItems = this.#buildQuickRoleItems(
@@ -152,7 +165,10 @@ export class ModelPickerComponent implements Focusable {
 			searchFocused: options.editorRows !== undefined,
 			currentContextTokens: options.currentContextTokens,
 			markOverContext: true,
-			emptyText: () => (this.#roleMode ? "  No quick roles in the Ctrl+P cycle" : undefined),
+			emptyText: () =>
+				this.#roleMode
+					? `  No quick roles in the ${editorKey("app.model.cycleForward") || formatKeyHint("ctrl+p")} cycle`
+					: undefined,
 		});
 		this.#browser.onActivate = item => {
 			const quickRole = this.#quickRoles.get(item.selector);
@@ -177,13 +193,15 @@ export class ModelPickerComponent implements Focusable {
 			this.#browser.selectSelector(options.currentSelector);
 		}
 
-		// Reconcile with cached discovery state in the background. A --models
-		// scope is registry-independent, so the offline reload would only repeat
-		// the synchronous hydration above.
+		// Re-read only if the catalog moves (startup discovery landing, a
+		// models.yml edit): rebuilding a current catalog on every open blocks
+		// the first paint for seconds. A --models scope is registry-independent.
 		if (this.#scopedModels.length === 0) {
 			this.#registry
-				.refresh("offline")
-				.then(() => this.#syncFromRegistryState())
+				.refreshIfStale()
+				.then(changed => {
+					if (changed) this.#syncFromRegistryState();
+				})
 				.catch(error => {
 					this.#configError = error instanceof Error ? error.message : String(error);
 				})
@@ -333,9 +351,9 @@ export class ModelPickerComponent implements Focusable {
 					: STATUS_HINT;
 
 		const borderColor: ThemeColor | undefined = this.#taskMode ? "error" : undefined;
-		let footer = this.#taskMode ? TASK_FOOTER_HINT : this.#roleMode ? QUICK_ROLE_FOOTER_HINT : FOOTER_HINT;
-		if (this.#taskMatchKeys.size > 0 && !this.#roleMode) {
-			footer += ` · ${this.#taskModeKeyLabel} ${this.#taskMode ? "session model" : "task model"}`;
+		let footer = footerHint(this.#taskMode ? "task" : this.#roleMode ? "role" : "session");
+		if (this.#taskModeKey !== undefined && !this.#roleMode) {
+			footer += ` · ${formatKeyHint(this.#taskModeKey)} ${this.#taskMode ? "session model" : "task model"}`;
 		}
 
 		const out: string[] = [];

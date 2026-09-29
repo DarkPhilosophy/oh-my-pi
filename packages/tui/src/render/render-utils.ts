@@ -9,8 +9,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Ellipsis } from "@oh-my-pi/pi-natives";
+import { expandWindowsLongPath, getWindowsShortPath } from "@oh-my-pi/pi-natives/path";
 import { pluralize, sanitizeText } from "@oh-my-pi/pi-utils";
-import { formatKeyHints, type KeyId } from "../app-keybindings";
+import { formatKeyHint, type KeyId } from "../app-keybindings";
 import { getKeybindings } from "../keybindings";
 import type { Theme } from "../theme/theme";
 import type { Component } from "../tui";
@@ -201,10 +202,10 @@ const EXPAND_ACTION = "app.tools.expand";
 /** Fallback key when no binding is resolvable (e.g. outside an interactive session). */
 const DEFAULT_EXPAND_KEY: KeyId = "ctrl+o";
 
-/** Human-readable key currently bound to tool-output expansion, e.g. `Ctrl+O`. */
+/** Human-readable primary key bound to tool-output expansion, e.g. `Ctrl+O`. */
 export function expandKeyHint(): string {
-	const keys = getKeybindings().getKeys(EXPAND_ACTION);
-	return formatKeyHints(keys.length > 0 ? keys : [DEFAULT_EXPAND_KEY]);
+	const [key = DEFAULT_EXPAND_KEY] = getKeybindings().getKeys(EXPAND_ACTION);
+	return formatKeyHint(key);
 }
 
 // =============================================================================
@@ -900,51 +901,92 @@ function defaultHomeDir(): string {
 	return cachedHomeDir;
 }
 
+interface HomePattern {
+	leading: RegExp;
+	embedded: RegExp;
+}
+
+const homePatternCache = new Map<string, HomePattern>();
+function homePatternFor(homeDir: string, windowsStyle: boolean): HomePattern {
+	const key = `${windowsStyle ? 1 : 0} ${homeDir}`;
+	let pattern = homePatternCache.get(key);
+	if (pattern === undefined) {
+		// A trailing separator (`C:\Users\me\`, `/home/me/`) must still match `<home>/child`;
+		// roots such as `/` and `C:\` keep theirs.
+		const home = homeDir.replace(/(?<=[^\\/:])[\\/]+$/, "");
+		let escapedHome = RegExp.escape(home);
+		if (windowsStyle) {
+			// Query only home, once per cached pattern: descendants need not exist,
+			// and rendering must neither resolve junctions nor probe output paths.
+			const parts = home.replaceAll("/", "\\").split("\\");
+			const longHome = expandWindowsLongPath(home);
+			const aliases = [longHome, getWindowsShortPath(longHome)]
+				.map(alias => alias.replaceAll("/", "\\").split("\\"))
+				.filter(alias => alias.length === parts.length);
+			escapedHome = parts
+				.map((part, index) => {
+					// Each component may independently use its long or short spelling.
+					const names = [...new Set([part, ...aliases.map(alias => alias[index]!)])].map(name =>
+						RegExp.escape(name),
+					);
+					return names.length === 1 ? names[0]! : `(?:${names.join("|")})`;
+				})
+				.join("[\\\\/]");
+		}
+		pattern = {
+			leading: new RegExp(`^${escapedHome}(?=$|[\\\\/])`, windowsStyle ? "i" : ""),
+			embedded: new RegExp(
+				`[a-zA-Z][a-zA-Z0-9+.-]*://[^\\s"'<>]+|(^|[\\s"'\\x60([{=,:;<>&|*_])(${escapedHome})(?=$|[\\\\/\\s"'\\x60)\\]},;:<>&|*_])`,
+				windowsStyle ? "gi" : "g",
+			),
+		};
+		if (homePatternCache.size >= 16) homePatternCache.clear();
+		homePatternCache.set(key, pattern);
+	}
+	return pattern;
+}
+
 /** Replace a leading home directory with a portable tilde prefix. */
 export function shortenPath(filePath: unknown, homeDir?: string): string {
 	if (typeof filePath !== "string") {
 		return "";
 	}
 	const home = homeDir ?? defaultHomeDir();
+	if (!home) return filePath;
 	const windowsStyle = /^[A-Za-z]:[\\/]/.test(home) || home.startsWith("\\\\");
-	const hasHomePrefix = windowsStyle
-		? filePath.toLowerCase().startsWith(home.toLowerCase())
-		: filePath.startsWith(home);
-	if (home && hasHomePrefix) {
-		const suffix = filePath.slice(home.length);
-		if (suffix === "" || suffix.startsWith(path.posix.sep) || suffix.startsWith(path.win32.sep)) {
-			return `~${suffix.replaceAll(path.win32.sep, path.posix.sep)}`;
-		}
+	const match = homePatternFor(home, windowsStyle).leading.exec(filePath);
+	if (match) {
+		const suffix = filePath.slice(match[0].length);
+		return `~${suffix.replaceAll(path.win32.sep, path.posix.sep)}`;
 	}
 	return filePath;
 }
-/**
- * Shortens home-directory prefixes embedded in display-only path tokens.
- * Windows suffixes are normalized to forward slashes unless the caller
- * preserves native separators (error text copied verbatim from the OS).
- */
+/** Shorten embedded home paths; normalize Windows separators unless the caller preserves native error text. */
 export function shortenEmbeddedPaths(text: string, homeDir?: string, preserveSeparators = false): string {
-	if (!text) return text;
-	const home = homeDir ?? defaultHomeDir();
-	if (!home || home.length <= 1) return text;
-	const windowsHome = /^[A-Za-z]:[\\/]|^\\\\/.test(home);
-	const escapedHome = windowsHome
-		? home
-				.split(/[\\/]/)
-				.map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-				.join("[\\\\/]")
-		: home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const flags = windowsHome ? "gi" : "g";
-	const tokenBoundary = String.raw`[\s"'\x60([{=(:,;<>&|*_]`;
-	const suffix = windowsHome ? String.raw`([\\/][^\s"'\x60<>&|),;:=([{*_]*)?` : "";
-	return text.replace(
-		new RegExp(`(^|${tokenBoundary})${escapedHome}(?=$|[/\\\\\\s"'\\]),;:\\x60<>&|*_])${suffix}`, flags),
-		(_match: string, boundary: string, remainder: string | undefined) => {
-			if (!windowsHome) return `${boundary}~`;
-			const tail = remainder ?? "";
-			return `${boundary}~${preserveSeparators ? tail : tail.replaceAll("\\", "/")}`;
-		},
+	const resolvedHome = homeDir ?? defaultHomeDir();
+	if (!resolvedHome || resolvedHome.length <= 1) return text;
+	const windowsStyle = /^[A-Za-z]:[\\/]/.test(resolvedHome) || resolvedHome.startsWith("\\\\");
+	const homePattern = homePatternFor(resolvedHome, windowsStyle);
+	const textWithShortenedHome = text.replace(
+		homePattern.embedded,
+		(match, boundary: string | undefined, candidate: string | undefined) =>
+			candidate === undefined ? match : `${boundary}~`,
 	);
+	if (preserveSeparators) return textWithShortenedHome;
+	return textWithShortenedHome
+		.split(" ")
+		.map(segment => {
+			const leading = segment.match(/^[("'`[]*/)?.[0] ?? "";
+			const trailing = segment.match(/[)"'`,.;:\]]*$/)?.[0] ?? "";
+			const end = segment.length - trailing.length;
+			if (leading.length >= end) return segment;
+			const shortened = shortenPath(segment.slice(leading.length, end), resolvedHome);
+			const normalized = shortened.startsWith("~")
+				? shortened.replaceAll(path.win32.sep, path.posix.sep)
+				: shortened;
+			return `${leading}${normalized}${trailing}`;
+		})
+		.join(" ");
 }
 
 /** Shorten filesystem and command arguments without rewriting literal search patterns. */

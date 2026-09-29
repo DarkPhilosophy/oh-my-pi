@@ -387,19 +387,50 @@ describe("Anthropic compaction replay", () => {
 		expect(budgetReplay.payload.output_config).toEqual({ task_budget: { type: "tokens", total: 4096 } });
 	});
 
-	it("moves context injected before the compaction message past the block (compaction_block_misplaced)", () => {
+	it("moves context injected before the compaction block past it, keeping tool pairing (compaction_block_misplaced)", () => {
 		const summary = summaryMessage({ signature: SIGNATURE });
-		const messages: Context["messages"] = [
-			{ role: "user", content: "<notes>kept</notes>", timestamp: 0 },
-			summary,
-			{ role: "user", content: "next", timestamp: 3 },
-		];
-		const wire = convertAnthropicMessages(messages, model, false, { replayCompaction: true });
-		expect(wire[0]).toEqual({
+		const retained: AssistantMessage = {
 			role: "assistant",
-			content: [{ type: "compaction", content: SUMMARY, signature: SIGNATURE }],
-		});
-		expect(JSON.stringify(wire.slice(1))).toContain("<notes>kept</notes>");
+			content: [{ type: "toolCall", id: "toolu_1", name: "bash", arguments: { command: "ls" } }],
+			timestamp: 2,
+			provider: "anthropic",
+			model: model.id,
+			api: "anthropic-messages",
+			stopReason: "toolUse",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		};
+		const cases: Context["messages"][] = [
+			[summary, retained],
+			[{ ...retained, providerPayload: summary.providerPayload }],
+		];
+		for (const tail of cases) {
+			const messages: Context["messages"] = [
+				{ role: "user", content: "<notes>kept</notes>", timestamp: 0 },
+				...tail,
+				{
+					role: "toolResult",
+					toolCallId: "toolu_1",
+					toolName: "bash",
+					content: [{ type: "text", text: "out" }],
+					isError: false,
+					timestamp: 3,
+				},
+			];
+			const wire = convertAnthropicMessages(messages, model, false, { replayCompaction: true });
+			const first = wire[0].content as Array<{ type: string }>;
+			expect(wire[0].role).toBe("assistant");
+			expect(first.map(block => block.type)).toEqual(["compaction", "tool_use"]);
+			const next = wire[1].content as Array<{ type: string; text?: string }>;
+			expect(next[0].type).toBe("tool_result");
+			expect(next.some(block => block.text === "<notes>kept</notes>")).toBe(true);
+		}
 	});
 
 	it("keeps legacy encrypted replay read-only with its beta and never-firing edit", async () => {
@@ -549,5 +580,41 @@ describe("Anthropic compaction replay", () => {
 		expect(control?.index).toBeGreaterThan(nextIndex);
 		const keptIndex = wire.findIndex(message => JSON.stringify(message).includes("sig_kept"));
 		expect(wire.slice(0, keptIndex).some(message => message.role === "system")).toBe(false);
+	});
+
+	it("keeps an effort change of the turn the block opened behind the compaction block", async () => {
+		const opened: AssistantMessage = {
+			...keptFrom({ message: {} as AssistantMessage }),
+			requestControls: { messageIndex: 1, effort: { topLevel: "high", tail: "low" } },
+		};
+		const request = await captureRequest(preserved, { ...options, thinkingEnabled: true, effort: "low" }, [
+			summaryMessage({ signature: SIGNATURE }),
+			opened,
+			{ role: "user", content: "next", timestamp: 3 },
+		]);
+		const wire = request.payload.messages;
+		if (!Array.isArray(wire)) throw new Error("Expected wire messages");
+		expect(wire[0]?.content?.[0]).toEqual({ type: "compaction", content: SUMMARY, signature: SIGNATURE });
+		const effortIndex = wire.findIndex(message => message.output_config?.effort === "low");
+		const nextIndex = wire.findIndex(message => JSON.stringify(message).includes('"next"'));
+		expect(effortIndex).toBe(1);
+		expect(nextIndex).toBe(2);
+	});
+
+	it("applies an effort change before a summary replayed as text", async () => {
+		const opened: AssistantMessage = {
+			...keptFrom({ message: {} as AssistantMessage }),
+			requestControls: { messageIndex: 1, effort: { topLevel: "high", tail: "low" } },
+		};
+		const request = await captureRequest(preserved, { ...options, thinkingEnabled: true, effort: "low" }, [
+			summaryMessage({ signature: SIGNATURE }, "different-provider"),
+			opened,
+			{ role: "user", content: "next", timestamp: 3 },
+		]);
+		const wire = request.payload.messages;
+		if (!Array.isArray(wire)) throw new Error("Expected wire messages");
+		expect(JSON.stringify(wire)).not.toContain('"type":"compaction"');
+		expect(wire.findIndex(message => message.output_config?.effort === "low")).toBe(0);
+		expect(JSON.stringify(wire[1])).toContain("<summary>");
 	});
 });

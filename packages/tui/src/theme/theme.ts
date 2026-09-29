@@ -6,6 +6,7 @@ import { colorLuma } from "@oh-my-pi/pi-utils/color";
 import { getCustomThemesDir } from "@oh-my-pi/pi-utils/dirs";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { ansi256ToHex, detectColorMode, resolveThemeColors, resolveVarRefs } from "./color";
+import { setActiveSymbolTheme } from "./active-symbols";
 import { type CreateThemeOptions, getBuiltinThemes, loadTheme, loadThemeJson, loadThemeSync } from "./loader";
 import type { ThemeColor, ThemeJson } from "./schema";
 import type { SymbolPreset } from "./symbols";
@@ -103,6 +104,7 @@ export function bindTheme(binding: ThemeBinding): () => void {
 
 function assignTheme(value: Theme): void {
 	theme = value;
+	setActiveSymbolTheme(value);
 	if (themeBindings) {
 		for (const binding of themeBindings) binding(value);
 	}

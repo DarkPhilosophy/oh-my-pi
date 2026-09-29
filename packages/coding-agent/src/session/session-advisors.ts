@@ -2313,7 +2313,7 @@ export class SessionAdvisors {
 
 		const accountPolicyDenial = AIError.is(errorId, AIError.Flag.AccountPolicy);
 		if (accountPolicyDenial) {
-			const switched = await this.#host.modelRegistry.authStorage.limits.rotate(
+			const rotation = await this.#host.modelRegistry.authStorage.limits.rotate(
 				currentModel.provider,
 				advisor.providerSessionId,
 				{
@@ -2323,7 +2323,7 @@ export class SessionAdvisors {
 					signal,
 				},
 			);
-			if (switched) return true;
+			if (rotation.switched) return true;
 		}
 
 		const retryAfterMs = extractProviderRetryHint(currentModel.provider, message);

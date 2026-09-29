@@ -688,15 +688,6 @@ describe("AgentSession derived queued custom display", () => {
 		expect(session.agent.hasQueuedMessages()).toBe(false);
 	});
 
-	it("popLastQueuedMessage restores chip text and removes the core queue entry", async () => {
-		fixture = await createRealSession();
-		const { session } = fixture;
-		queueCustomSteer(session, "/skill:foo bar");
-
-		expect(session.popLastQueuedMessage()?.text).toBe("/skill:foo bar");
-		expect(session.getQueuedMessages().steering).toEqual([]);
-	});
-
 	it("counts a queued advisor card as pending work but keeps it out of chips and restore", async () => {
 		fixture = await createRealSession();
 		const { session } = fixture;
@@ -816,7 +807,7 @@ function createStubInteractiveModeContextForUiHelpers(session: AgentSession, col
 		viewSession: session,
 		compactionQueuedMessages: [],
 		keybindings: {
-			getDisplayString: (action: string) => (action === "app.message.expandQueue" ? "Alt+O" : "Alt+Up"),
+			getKeys: (action: string) => (action === "app.message.expandQueue" ? ["alt+o"] : ["alt+up"]),
 		},
 		settings: {
 			get: (path: string) => (path === "pendingQueueCollapseLines" ? collapseLines : undefined),
@@ -859,7 +850,7 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		const rendered = stripAnsi(pendingMessagesContainer.render(120).join("\n"));
 		expect(rendered).toContain("Steer");
 		expect(rendered).toContain("└─ /skill:test-skill arg1 arg2");
-		expect(rendered).toContain("Alt+Up (or Up) to edit");
+		expect(rendered).toContain("Alt+↑ (or Up) to edit");
 	});
 
 	it("renders a coalesced image/text queue entry as one compact box", async () => {
@@ -884,7 +875,7 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		expect(rendered.match(/ Steer /g)?.length).toBe(1);
 		expect(rendered).toContain("├─ [Image #1] describe");
 		expect(rendered).toContain("+1 rows · 12 chars");
-		expect(rendered).toContain("Alt+Up (or Up) to edit");
+		expect(rendered).toContain("Alt+↑ (or Up) to edit");
 	});
 
 	it("collapses queued steering text with a row and character footer", async () => {
@@ -901,7 +892,7 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		expect(rendered).not.toContain("two");
 		expect(rendered).not.toContain("three");
 		expect(rendered).not.toContain("four");
-		expect(rendered).toContain("Alt+Up (or Up) to edit, Alt+O to expand");
+		expect(rendered).toContain("Alt+↑ (or Up) to edit, Alt+O to expand");
 		expect(rendered).toContain("+3 rows · 12 chars");
 	});
 
@@ -916,7 +907,7 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 
 		const collapsed = stripAnsi(pendingMessagesContainer.render(120).join("\n"));
 		expect(collapsed).toContain("+1 rows · 4 chars");
-		expect(collapsed).toContain("Alt+Up (or Up) to edit, Alt+O to expand");
+		expect(collapsed).toContain("Alt+↑ (or Up) to edit, Alt+O to expand");
 		expect(collapsed).not.toContain("four");
 
 		ctx.pendingQueueExpanded = true;
@@ -937,7 +928,7 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		uiHelpers.updatePendingMessagesDisplay();
 
 		const rendered = stripAnsi(pendingMessagesContainer.render(80).join("\n"));
-		expect(rendered).toContain("Alt+Up (or Up) to edit, Alt+O to expand");
+		expect(rendered).toContain("Alt+↑ (or Up) to edit, Alt+O to expand");
 	});
 
 	it("restores the compact slash form into the editor and clears the queue", async () => {

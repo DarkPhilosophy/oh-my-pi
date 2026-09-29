@@ -104,6 +104,7 @@ export async function curateAdvisorCandidates(options: CurateAdvisorCandidatesOp
 			registry: options.registry,
 			sessionModel: options.model,
 			sessionId: options.sessionId,
+			purpose: "advisor-curator",
 		});
 		const state = {
 			recent_primary_work: context.recentPrimaryMessages,
