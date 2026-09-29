@@ -749,6 +749,12 @@ export class SubagentHudComponent implements Component {
 
 const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
 
+/** Repaint cadence for the live tool row while a listed subagent is mid-call. */
+const SUBAGENT_PREVIEW_TICK_MS = 1000;
+
+/** A running call earns an elapsed marker once it outlasts this. */
+const SUBAGENT_PREVIEW_ELAPSED_MIN_MS = 5000;
+
 /** Item rows a collapsed jump list shows before the expander. */
 const SUBAGENT_HUD_COLLAPSED_LIMIT = 8;
 
@@ -801,6 +807,7 @@ export function renderSubagentHudLines(
 	columns: number,
 	showResolvedModelBadge = isFeedModelBadgeEnabled(),
 	expanded = false,
+	now = Date.now(),
 ): string[] {
 	const running = sessions.filter(isHudSubagent);
 	if (running.length === 0) return [];
@@ -809,12 +816,15 @@ export function renderSubagentHudLines(
 	const items = running.slice(0, layout.itemRows);
 	const showModelBadge = showResolvedModelBadge;
 	const outerIndent = " ";
+	// `SubagentHudComponent` renders through `Text` with horizontal padding, so rows that fill
+	// the full terminal width would wrap and push the elapsed marker onto its own line.
+	const contentColumns = Math.max(0, columns - getPaddingX(1) * 2);
 	const rows = renderTreeList(
 		{
 			items,
 			expanded: true,
 			renderItem: (session, context) => {
-				const rowWidth = Math.max(0, columns - visibleWidth(outerIndent) - (context.prefixWidth ?? 0));
+				const rowWidth = Math.max(0, contentColumns - visibleWidth(outerIndent) - (context.prefixWidth ?? 0));
 				const role = session.agent ?? session.progress?.agent;
 				const displayId = truncateToWidth(
 					formatTaskId(session.id),
@@ -864,15 +874,22 @@ export function renderSubagentHudLines(
 					const argsKey = currentTool ? session.progress?.currentToolArgsKey : lastTool?.argsKey;
 					const displayArgs = shortenToolArgumentPaths(args ?? "", argsKey);
 					const cleanName = replaceTabs(sanitizeText(toolName)).replace(/\s*[\r\n]+\s*/g, " ");
-					const toolText = displayArgs ? `${cleanName}(${displayArgs})` : cleanName;
-					const toolLabel = lastTool
-						? `${theme.styledSymbol(lastTool.isError ? "status.error" : "status.success", lastTool.isError ? "error" : "success")} ${toolText}`
-						: toolText;
+					const startMs = currentTool ? session.progress?.currentToolStartMs : undefined;
+					const elapsed = startMs === undefined ? 0 : now - startMs;
+					const elapsedLabel =
+						elapsed > SUBAGENT_PREVIEW_ELAPSED_MIN_MS
+							? ` ${theme.sep.dot} ${theme.fg("warning", formatDuration(elapsed))}`
+							: "";
 					const lead = `${theme.tree.hook} `;
-					return [
-						truncateToWidth(line, rowWidth, ""),
-						`${lead}${theme.fg("dim", truncateToWidth(toolLabel, Math.max(0, rowWidth - visibleWidth(lead)), ""))}`,
-					];
+					// Reserve the elapsed marker first so a long tool label can never truncate it away.
+					const labelBudget = Math.max(0, rowWidth - visibleWidth(lead) - visibleWidth(elapsedLabel));
+					const symbol = lastTool
+						? `${theme.styledSymbol(lastTool.isError ? "status.error" : "status.success", lastTool.isError ? "error" : "success")} `
+						: "";
+					const shownName = truncateToWidth(cleanName, Math.max(8, Math.floor(labelBudget / 2)), "");
+					const toolText = displayArgs ? `${shownName}(${displayArgs})` : shownName;
+					const toolLabel = truncateToWidth(`${symbol}${toolText}`, labelBudget, "");
+					return [truncateToWidth(line, rowWidth, ""), `${lead}${theme.fg("dim", toolLabel)}${elapsedLabel}`];
 				}
 				return truncateToWidth(line, rowWidth, "");
 			},
@@ -1335,6 +1352,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** Mirror of `tui.mouse`, read by the TUI's per-frame inline mouse tracking probe. */
 	#mouseCapture = false;
 	#observerUiSyncTimer?: NodeJS.Timeout;
+	/** Repaints the HUD so elapsed markers advance between progress events. */
+	#subagentPreviewTickTimer?: NodeJS.Timeout;
 	#observerUiSyncNeedsTodoReconcile = false;
 	#runningSubagentCount = 0;
 	#agentRegistryUnsubscribe?: () => void;
@@ -4134,7 +4153,14 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * on spawn and the whole block clears itself once the last subagent leaves
 	 * the "active" state.
 	 */
+	#cancelSubagentPreviewTick(): void {
+		if (!this.#subagentPreviewTickTimer) return;
+		clearTimeout(this.#subagentPreviewTickTimer);
+		this.#subagentPreviewTickTimer = undefined;
+	}
+
 	#renderSubagentList(): void {
+		this.#cancelSubagentPreviewTick();
 		this.subagentContainer.clear();
 		const mode = cfgDisplayPinnedAgents.get(this.settings);
 		if (mode === "off") return;
@@ -4155,6 +4181,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 		const toggleRow = layout.toggle === undefined ? undefined : lines.length - 1;
 		this.subagentContainer.addChild(new SubagentHudComponent(lines, order, toggleRow));
+		// A long quiet call (e.g. `sleep 40`) emits no progress events, so its
+		// elapsed marker only advances while this repaint tick is armed.
+		if (running.slice(0, layout.itemRows).some(session => session.progress?.currentToolStartMs !== undefined)) {
+			this.#subagentPreviewTickTimer = setTimeout(() => {
+				this.#subagentPreviewTickTimer = undefined;
+				this.#renderSubagentList();
+				this.ui.requestRender();
+			}, SUBAGENT_PREVIEW_TICK_MS);
+			this.#subagentPreviewTickTimer.unref?.();
+		}
 	}
 
 	#vibeParentSession(): VibeParentSession {
@@ -6405,6 +6441,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			unsubscribe();
 		}
 		this.#eventBusUnsubscribers = [];
+		this.#cancelSubagentPreviewTick();
 		this.#observerRegistry.dispose();
 		this.#agentRegistryUnsubscribe?.();
 		this.#agentRegistryUnsubscribe = undefined;

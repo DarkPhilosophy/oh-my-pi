@@ -1315,6 +1315,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						progress.currentTool = nextProgress.currentTool;
 						progress.currentToolArgs = nextProgress.currentToolArgs;
 						progress.currentToolArgsKey = nextProgress.currentToolArgsKey;
+						progress.currentToolStartMs = nextProgress.currentToolStartMs;
 						progress.lastIntent = nextProgress.lastIntent;
 						progress.recentTools = nextProgress.recentTools.slice();
 						progress.recentOutput = nextProgress.recentOutput.slice();

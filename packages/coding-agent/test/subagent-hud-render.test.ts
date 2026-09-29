@@ -740,6 +740,62 @@ describe("subagent HUD lines", () => {
 	});
 });
 
+describe("subagent HUD live tool row", () => {
+	const startMs = 1_000_000;
+	beforeAll(async () => {
+		await initTheme();
+	});
+	const runningSession = (overrides: Partial<AgentProgress> = {}) =>
+		makeSession({
+			id: "Runner",
+			progress: makeProgress({
+				id: "Runner",
+				currentTool: "bash",
+				currentToolArgs: "sleep 40",
+				currentToolArgsKey: "command",
+				currentToolStartMs: startMs,
+				...overrides,
+			}),
+		});
+	const hudText = (session: ObservableSession, now: number) =>
+		Bun.stripANSI(renderSubagentHudLines([session], 120, false, false, now).join("\n"));
+
+	it("shows the elapsed marker only once a call outlasts five seconds", () => {
+		expect(hudText(runningSession(), startMs + 4_000)).not.toContain("4.0s");
+		expect(hudText(runningSession(), startMs + 5_000)).not.toContain("5.0s");
+		expect(hudText(runningSession(), startMs + 6_000)).toContain("6.0s");
+	});
+
+	it("never shows an elapsed marker for a finished tool", () => {
+		const settled = runningSession({
+			currentTool: undefined,
+			currentToolStartMs: undefined,
+			recentTools: [{ tool: "read", args: "package.json", argsKey: "path", endMs: startMs }],
+		});
+		expect(hudText(settled, startMs + 60_000)).not.toMatch(/\d+(\.\d)?s\b/);
+	});
+
+	it("keeps the elapsed marker when a long tool name would overflow the row", () => {
+		const session = runningSession({ currentTool: `mcp__${"x".repeat(120)}`, currentToolArgs: "query" });
+		const lines = renderSubagentHudLines([session], 60, false, false, startMs + 30_000);
+		const rows = new SubagentHudComponent(lines, ["Runner", "Runner"]).render(60);
+		expect(rows).toHaveLength(lines.length);
+		for (const row of rows) expect(Bun.stringWidth(Bun.stripANSI(row))).toBeLessThanOrEqual(60);
+		expect(Bun.stripANSI(rows.join("\n"))).toContain("30.0s");
+	});
+
+	it("never wraps a full-width argument row or its elapsed marker at narrow widths", () => {
+		for (const columns of [40, 60, 80]) {
+			const session = runningSession({ currentToolArgs: "argument ".repeat(60) });
+			const lines = renderSubagentHudLines([session], columns, false, false, startMs + 30_000);
+			const rows = new SubagentHudComponent(lines, ["Runner", "Runner"]).render(columns);
+			expect(rows).toHaveLength(lines.length);
+			for (const row of rows) expect(Bun.stringWidth(Bun.stripANSI(row))).toBeLessThanOrEqual(columns);
+			expect(Bun.stripANSI(rows.join("\n"))).toContain("30.0s");
+		}
+	});
+});
+
 describe("SubagentHudComponent click rows", () => {
 	beforeAll(async () => {
 		await initTheme();
@@ -943,6 +999,38 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(rebuildHud).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
+	it("repaints the live tool row once a second only while a listed agent is mid-call", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		vi.useFakeTimers();
+		const requestRender = vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
+		const rebuildHud = vi.spyOn(mode.subagentContainer, "clear");
+		const payload = makeProgressPayload("QuietSleeper", 0, "Sleeping", true);
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
+			...payload,
+			progress: { ...payload.progress, currentTool: "bash", currentToolArgs: "sleep 40", currentToolStartMs: 1 },
+		});
+		await Promise.resolve();
+		vi.advanceTimersByTime(100);
+		rebuildHud.mockClear();
+		requestRender.mockClear();
+
+		vi.advanceTimersByTime(1000);
+		expect(rebuildHud).toHaveBeenCalledTimes(1);
+		expect(requestRender).toHaveBeenCalledTimes(1);
+		vi.advanceTimersByTime(1000);
+		expect(rebuildHud).toHaveBeenCalledTimes(2);
+
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
+			...payload,
+			progress: { ...payload.progress, currentTool: undefined, currentToolStartMs: undefined },
+		});
+		await Promise.resolve();
+		vi.advanceTimersByTime(100);
+		rebuildHud.mockClear();
+		vi.advanceTimersByTime(5000);
+		expect(rebuildHud).not.toHaveBeenCalled();
+	});
+
 	it("rebuilds HUD immediately when badge setting changes", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
 		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
