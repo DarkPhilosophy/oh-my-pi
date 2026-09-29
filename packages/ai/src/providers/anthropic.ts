@@ -4998,7 +4998,12 @@ export function convertAnthropicMessages(
 			// dropped message text received there.
 			params.push({ role: "user", content: redactSensitiveCredentials(filesText) });
 		}
+		// Context injected ahead of the compaction message (e.g. session notes)
+		// would sit before the block, which the API rejects
+		// (`compaction_block_misplaced`); it follows the block instead.
+		params.push(...pendingPreCompaction.splice(0));
 	};
+	const pendingPreCompaction: AnthropicMessageParam[] = [];
 
 	const transformedMessages = transformMessages(
 		messages,
@@ -5036,6 +5041,17 @@ export function convertAnthropicMessages(
 				content: [compactionBlockParam(msg.providerPayload)],
 			};
 			copyPerCallContextMessage(compactionParam, msg);
+			// The block must open the conversation: carry any earlier params
+			// (only system controls may precede it) past the block.
+			for (let p = params.length - 1; p >= 0; p--) {
+				if (params[p].role === "system" || controlParams.has(params[p])) continue;
+				const [moved] = params.splice(p, 1);
+				for (let d = developerParams.length - 1; d >= 0; d--) {
+					if (developerParams[d].index === p) developerParams.splice(d, 1);
+					else if (developerParams[d].index > p) developerParams[d].index--;
+				}
+				if (moved.role === "user") pendingPreCompaction.unshift(moved);
+			}
 			params.push(compactionParam);
 			// The block carries the verbatim API summary, so the message text
 			// (which holds the harness file lists) would be dropped with it.

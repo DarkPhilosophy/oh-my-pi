@@ -387,6 +387,21 @@ describe("Anthropic compaction replay", () => {
 		expect(budgetReplay.payload.output_config).toEqual({ task_budget: { type: "tokens", total: 4096 } });
 	});
 
+	it("moves context injected before the compaction message past the block (compaction_block_misplaced)", () => {
+		const summary = summaryMessage({ signature: SIGNATURE });
+		const messages: Context["messages"] = [
+			{ role: "user", content: "<notes>kept</notes>", timestamp: 0 },
+			summary,
+			{ role: "user", content: "next", timestamp: 3 },
+		];
+		const wire = convertAnthropicMessages(messages, model, false, { replayCompaction: true });
+		expect(wire[0]).toEqual({
+			role: "assistant",
+			content: [{ type: "compaction", content: SUMMARY, signature: SIGNATURE }],
+		});
+		expect(JSON.stringify(wire.slice(1))).toContain("<notes>kept</notes>");
+	});
+
 	it("keeps legacy encrypted replay read-only with its beta and never-firing edit", async () => {
 		const legacy = summaryMessage({ encryptedContent: ENCRYPTED });
 		const messages: Context["messages"] = [legacy, { role: "user", content: "next", timestamp: 2 }];
