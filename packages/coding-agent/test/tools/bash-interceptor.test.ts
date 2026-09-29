@@ -40,19 +40,14 @@ function createForwardingBashTool(options?: {
 		} as const);
 	const session = {
 		cwd: "/workspace",
-		settings: {
-			get(key: string) {
-				if (key === "bashInterceptor.enabled") return true;
-				if (key === "bashInterceptor.forwardSimpleCommands") return true;
-				if (key === "async.enabled") return options?.asyncEnabled ?? true;
-				if (key === "bash.autoBackground.enabled") return false;
-				if (key === "bash.autoBackground.thresholdMs") return 60_000;
-				return undefined;
-			},
-			getBashInterceptorRules() {
-				return DEFAULT_BASH_INTERCEPTOR_RULES;
-			},
-		},
+		settings: Settings.isolated({
+			"bashInterceptor.enabled": true,
+			"bashInterceptor.forwardSimpleCommands": true,
+			"bashInterceptor.patterns": DEFAULT_BASH_INTERCEPTOR_RULES,
+			"async.enabled": options?.asyncEnabled ?? true,
+			"bash.autoBackground.enabled": false,
+			"bash.autoBackground.thresholdMs": 60_000,
+		}),
 		getToolByName(name: string) {
 			return name === (options?.toolName ?? "grep") ? target : undefined;
 		},
