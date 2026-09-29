@@ -443,7 +443,7 @@ describe("recentOutput event-sequence equivalence (deferred reconstruction)", ()
 				input: "*** Begin Patch\n*** Update File: src/one.ts\n*** Move to: src/two.ts\n@@\n-old\n+new\n*** End Patch",
 			},
 			{
-				input: '*** Begin Patch\n<sm:edit path="src/one.ts">\n<SM:FIND>\n[draft]\n</SM:FIND>\n<SM:PUT>\nprivate body\n</SM:PUT>\n<Sm:Edit path="src/two.ts">\n<SM:FIND>\nold\n</SM:FIND>\n<SM:PUT>\nnew\n</SM:PUT>\n*** End Patch',
+				input: "*** Begin Patch\n*** Edit File: src/one.ts\n*** Find\n[draft]\n*** Replace\nprivate body\n*** Edit File: src/two.ts\n*** Find\nold\n*** Replace\nnew\n*** End Patch",
 			},
 			{ path: "src/one.ts", edits: [{ op: "update", rename: "src/two.ts", diff: "@@\n-old\n+new" }] },
 		]) {

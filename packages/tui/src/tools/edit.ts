@@ -690,7 +690,7 @@ export function getEditInputPaths(input: string, resolvedMode?: EditMode): reado
 		resolvedMode ??
 		(/^\*\*\* (?:Add|Update|Delete) File:/m.test(input)
 			? "apply_patch"
-			: /^\s*<SM:/im.test(input)
+			: /^[ \t]*\*{3}[ \t]+Edit[ \t]+File:/im.test(input)
 				? "sloppy"
 				: undefined);
 	try {
