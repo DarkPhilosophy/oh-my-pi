@@ -91,6 +91,7 @@ async function startHarness(hooks?: {
 					autoCompactionEnabled: true,
 					messageCount: commands.length,
 					queuedMessageCount: 0,
+					queuedMessages: { steering: [], followUp: [] },
 					hasPendingAsyncWork: false,
 					isSettled: true,
 					todoPhases: [],

@@ -35,10 +35,15 @@ import type {
 } from "../../extensibility/extensions";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
 import { emitSessionShutdownEvent } from "../../extensibility/extensions/runner";
-import { AskDialogComponent, boundPromptTitle, normalizeDialogQuestions } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
+import {
+	type AskDialogPromptValue,
+	AskDialogComponent,
+	boundPromptTitle,
+	normalizeDialogQuestions,
+} from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import { installExtensionComposerShape } from "@oh-my-pi/pi-tui/overlays/composer-shape-registry";
 import { EditorTopGap } from "@oh-my-pi/pi-tui/prompt/editor-top-gap";
-import { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
+import { HookEditorComponent, type HookEditorOptions } from "@oh-my-pi/pi-tui/overlays/hook-editor";
 import { HookInputComponent } from "@oh-my-pi/pi-tui/overlays/hook-input";
 import { HookSelectorComponent, type HookSelectorSlider } from "@oh-my-pi/pi-tui/overlays/hook-selector";
 import { getAvailableThemesWithPaths, getThemeByName, setTheme, type Theme, theme } from "@oh-my-pi/pi-tui/theme";
@@ -976,7 +981,7 @@ export class ExtensionUiController {
 	): Promise<ExtensionAskDialogResult | undefined> {
 		return this.#presentDialog<ExtensionAskDialogResult>(dialogOptions?.signal, settle => {
 			let promptEditor: HookEditorComponent | undefined;
-			let promptResolve: ((value: string | undefined) => void) | undefined;
+			let promptResolve: ((value: AskDialogPromptValue | undefined) => void) | undefined;
 			let closed = false;
 			const draftEditor = this.ctx.editor;
 			const inputGuard =
@@ -1006,7 +1011,7 @@ export class ExtensionUiController {
 				this.ctx.ui.requestRender();
 			};
 
-			const finishPrompt = (value: string | undefined): void => {
+			const finishPrompt = (value: AskDialogPromptValue | undefined): void => {
 				const resolvePrompt = promptResolve;
 				promptResolve = undefined;
 				promptEditor?.dispose();
@@ -1016,27 +1021,47 @@ export class ExtensionUiController {
 				// making the dialog visible and interactive again. This single-hop
 				// deferral relies on #promptForCustomInput/#promptForNote clearing
 				// #promptActive in the synchronous resume after their lone
-				// `await onPrompt(...)` (no await before the `finally`); adding one
+				// `await this.#openPrompt(...)` (no await before the `finally`); adding one
 				// there reopens the drop-Enter race, so revisit this deferral then.
 				queueMicrotask(restoreAskDialog);
 			};
 
-			const promptForText = (title: string, prefill?: string): Promise<string | undefined> => {
-				if (closed) return Promise.resolve(undefined);
-				const { promise, resolve } = Promise.withResolvers<string | undefined>();
-				promptResolve = resolve;
+			const openPrompt = (title: string, prefill: string | undefined, options: HookEditorOptions): void => {
 				promptEditor = new HookEditorComponent(
 					this.ctx.ui,
 					title,
 					prefill,
-					value => finishPrompt(value),
+					(text, images) => finishPrompt({ text, images }),
 					() => finishPrompt(undefined),
-					{ promptStyle: true, externalEditor: editDialogExternally },
+					{ promptStyle: true, externalEditor: editDialogExternally, ...options },
 				);
 				this.ctx.editorContainer.clear();
 				this.ctx.editorContainer.addChild(promptEditor);
 				this.ctx.ui.setFocus(promptEditor);
 				this.ctx.ui.requestRender();
+			};
+
+			const promptForText = (title: string, prefill?: string): Promise<string | undefined> => {
+				if (closed) return Promise.resolve(undefined);
+				const { promise, resolve } = Promise.withResolvers<string | undefined>();
+				promptResolve = value => resolve(value?.text);
+				openPrompt(title, prefill, {});
+				return promise;
+			};
+
+			const promptWithImages = (
+				title: string,
+				prefill: AskDialogPromptValue | undefined,
+			): Promise<AskDialogPromptValue | undefined> => {
+				if (closed) return Promise.resolve(undefined);
+				const { promise, resolve } = Promise.withResolvers<AskDialogPromptValue | undefined>();
+				promptResolve = resolve;
+				openPrompt(title, prefill?.text, {
+					acceptImages: true,
+					images: prefill?.images,
+					onPasteImage: () => this.ctx.handleImagePaste(),
+					onPasteImagePath: path => this.ctx.handleImagePathPaste(path),
+				});
 				return promise;
 			};
 
@@ -1046,6 +1071,7 @@ export class ExtensionUiController {
 					onSubmit: result => settle(result),
 					onCancel: () => settle(undefined),
 					onPrompt: promptForText,
+					onImagePrompt: dialogOptions?.acceptImages ? promptWithImages : undefined,
 				},
 				{
 					timeout: dialogOptions?.timeout,

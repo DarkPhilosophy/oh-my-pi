@@ -9,6 +9,7 @@ import type { SessionEntry, SessionMessageEntry } from "./entries";
 import { invalidateMessageCache } from "./message-cache";
 import {
 	collectToolCallsById,
+	getToolResultMessage,
 	isProtectedToolResult,
 	isSkillReadToolResult,
 	type ProtectedToolMatcher,
@@ -130,13 +131,6 @@ export const MIN_PRUNE_TOKENS = 50;
  */
 export function isWorthPruning(tokens: number): boolean {
 	return tokens >= MIN_PRUNE_TOKENS;
-}
-
-function getToolResultMessage(entry: SessionEntry): ToolResultMessage | undefined {
-	if (entry.type !== "message") return undefined;
-	const message = entry.message as AgentMessage;
-	if (message.role !== "toolResult") return undefined;
-	return message as ToolResultMessage;
 }
 
 function estimatePrunedSavings(tokens: number, notice: string): number {

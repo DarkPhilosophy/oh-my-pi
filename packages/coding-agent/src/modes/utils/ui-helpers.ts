@@ -2,12 +2,13 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, Spacer, Text } from "@oh-my-pi/pi-tui";
+import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
+import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
+import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
-import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
-import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { createBackgroundTanDispatchBlock } from "@oh-my-pi/pi-tui/chat/background-tan-message";
@@ -26,6 +27,7 @@ import { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
 import {
 	type LateDiagnosticsFile,
 	LateDiagnosticsMessageComponent,
+	routeLateDiagnostics,
 } from "@oh-my-pi/pi-tui/chat/late-diagnostics-message";
 import { QueuedMessageBox } from "../../modes/components/queued-message-box";
 import {
@@ -35,7 +37,7 @@ import {
 } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import { SkillMessageComponent } from "@oh-my-pi/pi-tui/chat/skill-message";
 import { StrippedToolCallsPlaceholder } from "@oh-my-pi/pi-tui/chat/stripped-tool-calls-placeholder";
-import { textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
+import { imageContent, textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { ToolActivityContainer } from "@oh-my-pi/pi-tui/chrome/tool-activity";
 import { ToolExecutionComponent, type ToolExecutionHandle, toolRenderName } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TranscriptBlock, TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
@@ -135,14 +137,10 @@ type AddMessageOptions = {
 };
 
 function imageLinksForMessage(
-	message: Extract<AgentMessage, { role: "developer" | "user" }>,
+	images: readonly ImageContent[],
 	putBlobSync: InteractiveModeContext["sessionManager"]["putBlobSync"],
 ): (string | undefined)[] | undefined {
-	if (typeof message.content === "string") return undefined;
-	const images = message.content.filter(
-		(content): content is ImageContent =>
-			content.type === "image" && typeof content.data === "string" && typeof content.mimeType === "string",
-	);
+	if (images.length === 0) return undefined;
 	const materialized = materializeImageReferenceLinksSync(images, putBlobSync);
 	return images.map((image, index) => imageAttachmentSource(image)?.path ?? materialized?.[index]);
 }
@@ -159,24 +157,20 @@ export class UiHelpers {
 	showStatus(message: string, options?: { dim?: boolean }): void {
 		const children = this.ctx.chatContainer.children;
 		const last = children.length > 0 ? children[children.length - 1] : undefined;
-		const secondLast = children.length > 1 ? children[children.length - 2] : undefined;
 		const useDim = options?.dim ?? true;
 		// Resolve the dim color lazily so a later theme change re-shapes the line
 		// instead of leaving the palette that was active when it was presented.
 		const styleFn = useDim ? (t: string) => theme.fg("dim", t) : undefined;
 
-		if (last && secondLast && last === this.ctx.lastStatusText && secondLast === this.ctx.lastStatusSpacer) {
-			this.ctx.lastStatusText.setStyleFn(styleFn);
-			this.ctx.lastStatusText.setText(message);
+		if (last && last === this.ctx.lastStatus) {
+			this.ctx.lastStatus.setMessage(message, styleFn);
 			this.ctx.ui.requestRender();
 			return;
 		}
 
-		const spacer = new Spacer(1);
-		const text = new Text(message, 1, 0).setStyleFn(styleFn);
-		this.ctx.present([spacer, text]);
-		this.ctx.lastStatusSpacer = spacer;
-		this.ctx.lastStatusText = text;
+		const notice = new StatusNotice(message, styleFn);
+		this.ctx.present([notice]);
+		this.ctx.lastStatus = notice;
 	}
 
 	addMessageToChat(message: AgentMessage, options?: AddMessageOptions): Component[] {
@@ -221,7 +215,10 @@ export class UiHelpers {
 								files?: LateDiagnosticsFile[];
 							}>
 						).details;
-						const component = new LateDiagnosticsMessageComponent(details?.files ?? []);
+						// Native: into the edit/write frames they belong to; the rest stand alone.
+						const files = routeLateDiagnostics(this.ctx.chatContainer.children, details?.files ?? []);
+						if (files.length === 0) break;
+						const component = new LateDiagnosticsMessageComponent(files);
 						component.setExpanded(this.ctx.toolOutputExpanded);
 						this.ctx.chatContainer.addChild(component);
 						break;
@@ -308,16 +305,19 @@ export class UiHelpers {
 					if (cached instanceof UserMessageComponent) {
 						userComponent = cached;
 					} else {
+						const images = imageContent(message.content);
 						const imageLinks =
 							options?.imageLinks ??
 							imageLinksForMessage(
-								message,
+								images,
 								this.ctx.viewSession.sessionManager.putBlobSync.bind(this.ctx.viewSession.sessionManager),
 							);
 						userComponent = new UserMessageComponent(userText, {
 							synthetic: isSynthetic,
 							imageLinks,
+							images,
 							liveSteered: message.role === "user" && message.liveSteered === true,
+							timestamp: message.timestamp,
 						});
 						this.ctx.transcriptMessageComponents.set(message, userComponent);
 					}
@@ -1171,10 +1171,16 @@ export class UiHelpers {
 		}
 	}
 
-	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void {
+	queueCompactionMessage(
+		text: string,
+		mode: "steer" | "followUp",
+		images?: ImageContent[],
+		options?: { preserveDraft?: boolean },
+	): void {
 		const queuedImages = images && images.length > 0 ? images : undefined;
 		this.ctx.compactionQueuedMessages.push({ text, mode, images: queuedImages } as CompactionQueuedMessage);
-		this.ctx.editor.clearDraft(text);
+		if (options?.preserveDraft) this.ctx.editor.addToHistory(text);
+		else this.ctx.editor.clearDraft(text);
 		this.ctx.updatePendingMessagesDisplay();
 		this.ctx.showStatus(
 			queuedImages ? "Queued message with image for after compaction" : "Queued message for after compaction",

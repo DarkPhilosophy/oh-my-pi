@@ -64,6 +64,7 @@ function localFactory() {
 					autoCompactionEnabled: true,
 					messageCount: recorded.length,
 					queuedMessageCount: 0,
+					queuedMessages: { steering: [], followUp: [] },
 					hasPendingAsyncWork: false,
 					isSettled: true,
 					todoPhases: [],

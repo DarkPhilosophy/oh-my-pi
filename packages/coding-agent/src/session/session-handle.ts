@@ -176,6 +176,7 @@ function defaultState(sessionId: string): RpcSessionState {
 		autoCompactionEnabled: true,
 		messageCount: 0,
 		queuedMessageCount: 0,
+		queuedMessages: { steering: [], followUp: [] },
 		hasPendingAsyncWork: false,
 		isSettled: true,
 		todoPhases: [],
@@ -183,6 +184,7 @@ function defaultState(sessionId: string): RpcSessionState {
 }
 
 function stateFromLocal(session: AgentSession): RpcSessionState {
+	const queued = session.getQueuedMessages();
 	return freezeState({
 		model: session.model,
 		fastModeEnabled: session.isFastModeEnabled(),
@@ -200,6 +202,7 @@ function stateFromLocal(session: AgentSession): RpcSessionState {
 		autoCompactionEnabled: session.autoCompactionEnabled,
 		messageCount: session.state.messages.length,
 		queuedMessageCount: session.queuedMessageCount,
+		queuedMessages: { steering: [...queued.steering], followUp: [...queued.followUp] },
 		hasPendingAsyncWork: session.hasPendingAsyncWork(),
 		isSettled: isRpcSessionSettled(session),
 		todoPhases: session.getTodoPhases(),
