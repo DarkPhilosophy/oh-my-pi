@@ -13,6 +13,8 @@
 ### Changed
 
 - `--no-ui` now also works with `--mode rpc-ui`: extensions run headless while tool UI such as the `ask` tool still reaches the host ([#13718](https://github.com/can1357/oh-my-pi/pull/13718) by [@alphastorm](https://github.com/alphastorm))
+- Applying advisor changes now restarts only the advisors whose configuration changed; unchanged advisors keep running with their notes and status. Changing the shared instructions still restarts all of them.
+- Editing `WATCHDOG.yml` on disk no longer reloads the running advisors on its own; changes take effect when you save from `/advisor config` or apply the roster.
 
 ### Fixed
 
