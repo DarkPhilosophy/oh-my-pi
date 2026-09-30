@@ -127,7 +127,9 @@ Core methods:
 - `registerFileWriteFallback`, `registerFileDeleteFallback`
 - `events` (shared event bus)
 
-`getServiceTiers()` returns a detached snapshot of the session's live per-family tier map. `setServiceTier(family, tier)` changes one family for subsequent requests; pass `undefined` to clear that session override. OpenAI accepts `auto`, `default`, `flex`, `scale`, or `priority`; Anthropic accepts `priority`; Google accepts `flex` or `priority`. Changes made while a response is streaming do not alter that in-flight request.
+`ExtensionAPI` methods retain their extension binding when destructured or passed as callbacks.
+
+`getServiceTiers()` returns a detached snapshot of the session's live per-family tier map. `setServiceTier(family, tier)` changes one family for subsequent requests; pass `undefined` to clear that session override. OpenAI accepts `auto`, `default`, `flex`, `scale`, `priority`, or `ultrafast`; Anthropic accepts `priority`; Google accepts `flex` or `priority`. Changes made while a response is streaming do not alter that in-flight request.
 
 ### Provider registration
 
@@ -180,6 +182,8 @@ or configured usage resolver.
 
 Extension-registered providers (`registerProvider`) can supply `fetchDynamicModels` for runtime model discovery; these fetches are hard-bounded to a 15-second timeout (`RUNTIME_DYNAMIC_MODEL_FETCH_TIMEOUT_MS` in `model-provider-discovery.ts`) so a hung endpoint cannot stall discovery.
 
+A provider's `apiKey` (a literal key or an environment variable name) normally overrides any stored OAuth or `/login` credential for that provider. When the registration also supplies `oauth`, `apiKey` becomes a fallback instead: the key the user saved with `/login` wins, and `apiKey` is used only when no stored login credential exists. This keeps an unset env-var name from being sent as the literal key. Registering a built-in provider id with both `oauth` and a gateway `apiKey` therefore lets a stored upstream credential take precedence over the gateway key.
+
 Provider login callbacks can request masked entry with
 `callbacks.onPrompt({ message: "Consumer key", secret: true })`. Native `/login`
 and first-run setup preserve the exact submitted value while hiding it in the
@@ -199,6 +203,27 @@ Also exposed:
 - `pi.zod` (Zod-compatible builder backed by omptype)
 - `pi.typebox` (legacy TypeBox-compatible shim)
 - `pi.pi` (package exports)
+
+### Runtime setting overrides
+
+Settings are addressed through typed registry handles (see "Definitions" in [config-usage.md](./config-usage.md#definitions-srcconfigregistryts)); the string-path `settings.get`/`set`/`override` methods were removed in 18.3. Extensions resolve a handle by id with `lookup(id)` (and enumerate them with `all()`) from the `@oh-my-pi/pi-coding-agent/config/registry` subpath, then pass `pi.pi.settings` as the scope:
+
+```ts
+import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { lookup } from "@oh-my-pi/pi-coding-agent/config/registry";
+
+export default function (pi: ExtensionAPI) {
+  const recap = lookup("recap.enabled");
+  // Defer to the user: pin a default only when no env var or settings layer configures it.
+  if (recap && !recap.isConfigured(pi.pi.settings)) recap.override(pi.pi.settings, false);
+}
+```
+
+- `override(scope, value)` writes the in-memory runtime layer; it is never persisted and outranks project, global, and `--config` layers (only the setting's environment variable beats it). A value the definition rejects throws, e.g. `Invalid value for recap.enabled: "nope" (expected a boolean)`.
+- `clearOverride(scope)` releases the override, restoring the persisted/default value.
+- `isConfigured(scope)` / `provenance(scope)` tell a user-configured value from the default (`"env" | "runtime" | "overlay" | "project" | "global" | "default"`).
+- `get(scope)` reads the effective value; `listen(scope, cb)` observes changes. Writes go through the settings store, so change listeners and live effects fire.
+- `lookup` returns `undefined` for an unknown id.
 
 ### Message delivery semantics
 
@@ -231,8 +256,38 @@ Handlers and tool `execute` receive `ctx` with:
 - `isIdle()`, `hasPendingMessages()`, `abort()`
 - `shutdown()`
 - `getSystemPrompt()`
+- `agent` — the agent this session runs: `{ kind: "main" | "sub", id, name, depth, parentId? }`. Factories are rebound to every subagent session (task tool, eval `agent()`, `/tan` clones), so a handler can check `ctx.agent.kind === "sub"` or the lowercased agent definition `name` (for example `"explore"`) to act only in subagents. Use `kind`, not `depth`: `depth` counts `task` nesting only, so `/tan` clones are subagents at depth 0 and report `name: "sub"`
+- `runEphemeralTurn(...)` (optional; see below)
 - `memory` (optional structured memory runtime — status/search/save across the configured backend)
 - `setInterval(fn, ms, ...args)` / `setTimeout(fn, ms, ...args)` / `clearTimer(timer)` — managed timers (see below)
+
+### Ephemeral side turns (`ctx.runEphemeralTurn`)
+
+Run the same side-turn pipeline as `/btw` using the current model and conversational context. The question and response are not appended to session history, and the request can run while the main turn is active. The snapshot may include in-flight assistant text.
+
+```ts
+if (!ctx.runEphemeralTurn) {
+  throw new Error("This host does not support ephemeral turns");
+}
+await requireConsultationConsent(remoteCaller);
+await auditConsultationRequest(remoteCaller, remoteQuestion);
+const { replyText } = await ctx.runEphemeralTurn({
+  promptText: remoteQuestion,
+  tools: false,
+  maxTokens: 4096,
+  maxContextBytes: 1_048_576,
+  onTextDelta: delta => sendRemoteChunk(delta),
+  signal: requestAbortController.signal,
+});
+```
+
+For example, a Synadia/NATS bridge can answer another agent's question from the local context and stream the response back without injecting a live user message. **A side turn sends the current conversation snapshot to the configured model provider and returns its answer to the calling extension.** Bridge extensions must obtain user consent where appropriate, authenticate and authorize callers, and audit every remote request before using this API. Agent-to-agent consultation extensions can set `maxTokens` and a serialized, post-transform `maxContextBytes` cap (measured after secret obfuscation) before inference. Transports that omit or overwrite caller output-token limits, including Codex Responses, Cursor, GitLab Duo Workflow, Ollama Cloud discovery models, and Antigravity, reject `maxTokens` before inference instead of silently starting an uncapped request. Antigravity rejects requested caps conservatively across its transport because effort routing can select wire profiles with fixed output limits. A requested cap disables optional budget thinking, since those transports may otherwise raise the wire limit to fit a thinking budget; models that require budget thinking reject the cap. `tools: false` also rejects before inference on Cursor, whose transport exposes native tools independently of the supplied tool catalog. Both caps must be positive safe integers. Omit `maxTokens` only when an uncapped turn is acceptable, or choose an API that supports output limits. The extension owns transport, access controls, request limits, and cancellation (including shutdown); this API adds no network dependency. `onTextDelta` may return a promise: delivery is awaited in order, including the final flush, and a delivery error rejects the side turn and aborts the provider request instead of leaving it streaming.
+
+Hooks may start a side turn, including from delayed callbacks. Only `context`, `before_provider_request`, and `after_provider_response` hooks reached *within* a running side turn reject a nested `runEphemeralTurn` call, which bounds recursion; the caller's `onTextDelta` runs outside that guard. Side turns inherit the active event-handler signal (only while that handler is still running) and, for registered tools, the tool invocation’s abort signal. An explicit `options.signal` is combined with those signals; it does not replace them. `maxContextBytes` is checked before `before_provider_request` hooks run; a hook that replaces the payload is not re-measured.
+
+Tool calls are always discarded rather than executed. Pass `tools: false` to remove tool definitions after context transforms and set `toolChoice: "none"` at the provider boundary. Omitting it preserves `/btw`'s tool catalog for prompt-cache reuse; disabling it may reduce cache hits. Existing context/provider hooks still run. It is not a sandbox or a guarantee that arbitrary extension hooks have no side effects. Model inference consumes the configured provider's resources. `dedupeReply` defaults to `true` and removes repeated reply text; set it to `false` to retain the provider's exact text. Callers should use `replyText` for the final result.
+
+Use `history` only for detached prior side-turn messages; it is cloned with `structuredClone`, so pass cloneable message data. A `conversationKey` keeps related side turns on one provider lineage. Rotate it after cancellation or failure before retrying. A side turn also rejects with a retryable error if its session or exact model instance changes before dispatch; callers should retry from a new current-context snapshot rather than reuse the old one.
 
 ### Background work (`ctx.setInterval` / `ctx.setTimeout`)
 
@@ -316,8 +371,18 @@ Cancelable pre-events:
 - `context`
 - `agent_start` / `agent_end` — agent loop lifecycle notification; `agent_end` remains notification-only
 - `session_stop` — main-session stop hook, awaited before settle. Advisory `{ continue: true, additionalContext }` requests are capped at 8 continuations. Explicit `{ decision: "block", reason }` refusals take precedence over advisory requests, do not consume that allowance, and remain blocking until the hook allows completion or the operator interrupts. A refusal without a reason receives a diagnostic continuation rather than permission to finish. This event never fires for task/subagent sessions and defers until agent-owned background jobs are fully idle (`#hasPendingAsyncWake` in `session/agent-session.ts`).
+- `cache_warming_decision` — fired before each prompt-cache warming refresh with the warmer's economics (`warmCost`, `missCost`, `continuationProbability`, `action`). Return `{ action: "warm" | "stop" }` to override; the last handler returning an action wins, handler failures or answers slower than 2 seconds leave the warmer's decision standing, and a `"stop"` override ends warming until the next real request. Only the main agent loop warms; task/subagent sessions never fire this. The refresh itself replays the real request through the same provider path, so `before_provider_request` and `after_provider_response` fire for it too; a replacement payload must stay byte-identical to the real one for the refresh to hit the cache.
 - `turn_start` / `turn_end`
-- `message_start` / `message_update` / `message_end` — lifecycle notifications; `message_end` receives a detached message snapshot, so use `tool_result` or `context` when an extension needs to change provider context
+- `assistant_message` — awaited once per finalized assistant message before agent context, persistence, `message_end`, or tool dispatch. Return `{ content }` to replace text for history, persistence, `message_end` consumers, and the next provider request; handlers chain. Text already delivered through streaming updates (`message_update`, ACP/RPC chunks) is not retracted, so clients that render from the stream may keep showing the original text. Text blocks must retain their count, order, and positions; only their text may change. All non-text blocks and other block metadata must remain unchanged. Unchanged text retains its original `textSignature` (even if the handler drops or changes it); edited text loses its signature so provider replay state is never reused for different text. Invalid replacements and handler errors are reported and skipped. If aborted while a handler is pending, completed rewrites so far are retained and remaining handlers are skipped.
+- `message_start` / `message_update` / `message_end` — lifecycle notifications; `message_end` receives a detached snapshot, so in-place changes cannot rewrite agent or provider context
+
+```ts
+pi.on("assistant_message", event => ({
+	content: event.message.content.map(block =>
+		block.type === "text" ? { ...block, text: block.text.replaceAll("teh", "the") } : block,
+	),
+}));
+```
 
 `before_agent_start` prepares policy for an ordinary prompt and for each steering or follow-up batch containing user work when that batch is actually dequeued. It is not an enqueue notification: a live batch can fire it without another `agent_start`. Queue peeks, provider retries, tool-only iterations, and synthetic-only queued continuations do not fire it. Explicit synthetic prompts retain their ordinary prompt lifecycle.
 
@@ -332,15 +397,49 @@ Handlers must tolerate re-entry: a source-base retry can call the entire `before
 If a later queue drain fails, earlier originals that have not reached the
 transcript are restored ahead of newer enqueues. Generated preparation context
 is not requeued, and explicitly cleared or replaced queues are not resurrected.
+#### External input interception
+
+`input` runs once at submission ingress, before command interpretation, skill or
+prompt-template expansion, and queue insertion:
+
+| Submission | `source` |
+|---|---|
+| Main-session Enter or Ctrl+Enter | `"interactive"` |
+
+Handlers run in extension/registration order. Returned `text` and `images`
+replacements feed subsequent handlers; omitted fields preserve the current value,
+and `images: []` removes attachments. Replacement text is trimmed before dispatch.
+`handled: true` stops the remaining handlers and normal dispatch. Empty text with
+no remaining images also stops normal dispatch. Work explicitly scheduled by a
+handler through `sendUserMessage` or `sendMessage` is not discarded.
+
+This is an ingress event, not a user-role message event. Queue delivery and replay
+do not emit it again. Programmatic `sendUserMessage`/`sendMessage` calls and
+synthetic continuations do not automatically emit `input`. Main-session Enter's
+`.`/`c` continuation shortcuts retain their synthetic path. Focused-subagent
+input retains its chat-only routing and does not invoke main-session input hooks.
+Print and ACP input are outside this interception contract.
+
+Ctrl+Enter detaches the submitted draft before awaiting native handlers, so
+another submission cannot reuse it and ordinary later typing remains a new draft.
+Handled/empty input consumes only the detached submission. Dispatch failures
+restore its text and attachments alongside any newer draft. This does not make
+the established interactive input-handler chain cancellable by Esc.
+Builtin submission cleanup also preserves the newer draft, including `/clear`
+and `/new`. Commands retain their explicit prefill and session-transition actions.
 
 ### Tool lifecycle
 
-- `tool_call` (pre-exec, may block, or revise the tool's execution `input`; for model-issued calls it fires at arg-prep time in the agent loop, so a revision is revalidated and seen by concurrency scheduling, execution events, the persisted assistant message, and the approval gate alike)
-- `tool_result` (post-exec, may patch content/details/isError)
+- `tool_call` (pre-exec, may block, revise the tool's execution `input`, or return passive `additionalContext`; for model-issued calls it fires at arg-prep time in the agent loop, so a revision is revalidated and seen by concurrency scheduling, execution events, the persisted assistant message, and the approval gate alike; passive context from non-blocking handlers is delivered after the batch's tool results in assistant call order, before the next provider request)
+- `tool_result` (post-exec, may patch content/details/isError or return passive `additionalContext`; result context is delivered outside the tool output even when `event.isError` is true, so a failure-specific handler can guide the next model step)
 - `tool_execution_start` / `tool_execution_update` / `tool_execution_end` (observability)
 - `tool_approval_requested` / `tool_approval_resolved` (observability; emitted by `wrapper.ts` only when a tool requires approval and an approval handler is registered)
 
-`tool_result` is middleware-style: handlers run in extension order and each sees prior modifications.
+`tool_result` is middleware-style: handlers run in extension order and each sees prior modifications. Distinct non-blank `additionalContext` from every handler is preserved in registration order (repeats, compared ignoring surrounding whitespace, are dropped) and delivered before that call's `tool_call` context.
+
+### Subagent lifecycle
+
+- `before_subagent_spawn` → `{ model?: string | string[]; block?: boolean; reason?: string; note?: string }`. Fires in the parent session exactly once per spawned child (`task`, eval `agent()`, workpool workers), at dispatch before the child resolves its model — never during a frontend's validation preflight, so stateful routers (round-robin, quota) advance once per child. The event carries `agent`, `invocationKind`, `modelRole` (the pre-expansion role alias, when any), the expanded `patterns` core would use, and an optional stable `spawnKey`. A returned `model` replaces the spawn's attempt-ordered patterns while keeping the role identity, so the remaining entries become the child's retry fallback chain; handlers run in extension order and the last returned `model` wins, along with its `note`, which the task UI shows as the spawn's routing reason on live, async, and settled rows. `block: true` refuses the spawn with `reason`. Cancelling the spawn releases an awaiting handler (its result is discarded and pending `ctx.ui` dialogs close) instead of holding the spawn until the handler timeout.
 
 ### Reliability/runtime signals
 
@@ -397,6 +496,38 @@ execute(
 ): Promise<AgentToolResult>
 ```
 
+### Adding passive context after a tool call
+
+A `tool_call` handler can return `additionalContext` without changing the tool result:
+
+```ts
+pi.on("tool_call", async event => {
+  if (event.toolName === "search") {
+    return { additionalContext: "Use this result before searching again." };
+  }
+});
+```
+
+`additionalContext` carries trusted handler-authored instructions for the next provider request. The
+host emits them after the tool results with developer/system priority where the selected transport
+supports it. Repeats (compared ignoring surrounding whitespace) are dropped at two levels: a handler value
+identical to an earlier handler's on the same call, and a call's joined context identical to an earlier
+call's in the same batch. Raw tool output and other untrusted data must stay in the ordinary tool result.
+
+Distinct non-empty context from every non-blocking handler is preserved in registration order. OMP waits
+until the tool batch settles, then emits the context after the corresponding tool results in
+assistant tool-call order and before the next provider request. Handler context is delivered only when
+the call actually runs and returns a non-error result: if the call is blocked by this or a later
+handler, denied at the approval prompt, skipped by an interrupt, or fails, its collected context is
+discarded.
+
+Registered tools can add context during execution through
+`ctx.addAdditionalContext?.("...")`. Context a tool adds itself is kept even when the tool then
+returns an error. Within one call, the tool's own context (including tools reached through nested
+`xd://` dispatch) comes before `tool_call` handler context.
+Calls Cursor executes on its exec channel deliver context after their buffered results, on the next
+provider request.
+
 ### Delegating to a native built-in (`ctx.invokeTool`)
 
 A tool that re-registers a built-in name (e.g. wrapping `write` to add logging or a policy check) can
@@ -448,6 +579,8 @@ pi.registerTool({
   },
 });
 ```
+
+`renderCall`'s `options` argument also answers the `Theme` API, so tool renderers ported from upstream pi — declared `renderCall(args, theme, context)` — style correctly without being rewritten.
 
 `tool_call`/`tool_result` intercept all tools once the registry is wrapped in `sdk.ts`, including built-ins and extension/custom tools. `ToolDefinition` also supports optional `hidden`, `defaultInactive`, `loadMode` (`"discoverable"` by default, or `"essential"`), `deferrable`, `approval` (`"exec"` by default), `strict`, `mcpServerName`, `mcpToolName`, `renderCall`, and `renderResult` fields.
 
@@ -624,7 +757,7 @@ Unsupported/no-op in RPC implementation:
 
 ### Print/headless/subagent paths
 
-When no UI context is supplied to runner init, `ctx.hasUI` is `false` and methods are no-op/default-returning.
+When no UI context is supplied to runner init, `ctx.hasUI` is `false` and methods are no-op/default-returning. Both `--mode rpc --no-ui` and `--mode rpc-ui --no-ui` take this path for extensions; `rpc-ui` tool dialogs remain enabled.
 
 ### ACP mode
 
@@ -837,7 +970,7 @@ Provide `renderCall` / `renderResult` on `registerTool` definitions for custom t
 Use the right surface:
 
 - **Extensions** (`src/extensibility/extensions/*`): unified system (events + tools + commands + renderers + provider registration).
-- **Hooks** (`src/extensibility/hooks/*`): separate legacy event API.
+- **Hooks** (`src/extensibility/hooks/*`): legacy `HookAPI` event API. Hook files load through the extension runner, so they run with extension semantics (see [hooks](./hooks.md)).
 - **Custom-tools** (`src/extensibility/custom-tools/*`): tool-focused modules; when loaded alongside extensions they are adapted and still pass through extension interception wrappers.
 
 If you need one package that owns policy, tools, command UX, and rendering together, use extensions.

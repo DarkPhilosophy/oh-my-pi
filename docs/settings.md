@@ -2,7 +2,7 @@
 
 `omp` resolves settings from built-in defaults, a persistent global config file, optional project-local config, one-shot CLI overlays, and in-memory runtime overrides. Reach for project settings when one repository needs a different provider set, model role, tool policy, memory backend, or UI behavior than your global defaults — without touching your machine-wide configuration.
 
-Settings are stored as plain YAML mappings. Every key, its type, default, and enum values come from the settings schema. `omp config` exposes the complete schema; the interactive `/settings` panel exposes the schema entries that have UI metadata.
+Settings are stored as plain YAML mappings. Every key, its type, default, and enum values come from its setting definition (declared with `register(...)` next to the owning feature, e.g. `packages/coding-agent/src/tools/settings.ts`). `omp config` exposes the complete schema; the interactive `/settings` panel exposes the schema entries that have UI metadata.
 
 - For model/provider credentials, `.env` files, and the env-var table that resolves API keys, see [Providers](./providers.md).
 - For custom model definitions in `models.yml`, see [Models](./models.md).
@@ -44,7 +44,7 @@ omp config get theme.dark       # one value
 omp config get theme.dark --json
 omp config set compaction.enabled false
 omp config set defaultThinkingLevel medium
-omp config reset steeringMode   # restore a key to its schema default
+omp config reset steeringMode   # remove a key from config.yml so its default applies
 omp config path                 # print the active agent directory
 ```
 
@@ -62,8 +62,8 @@ This only controls the startup splash animation. It does not rerun setup or chan
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `omp config list`              | Print every setting grouped by tab, with its current value and type. `--json` emits an object keyed by setting path with `{ value, type, description }`. Configured credential fields are masked as `********` in human output; in JSON their `value` is omitted and `redacted: true` is emitted. |
 | `omp config get <key>`         | Print the effective value of one key. Unknown keys exit non-zero. `--json` emits `{ key, value, type, description }`. This is an explicit single-key request, so credential values are returned unmasked.                                                                                         |
-| `omp config set <key> <value>` | Parse `<value>` against the key's schema type and write it to the global main YAML file.                                                                                                                                                                                                          |
-| `omp config reset <key>`       | Write the key's schema **default** back to the global config (this persists the default, it does not delete the key).                                                                                                                                                                             |
+| `omp config set <key> <value>` | Parse `<value>` against the key's schema type, write it to the global main YAML file, and print the value written. When another source still supplies the effective value, it says which instead (`--json`: `overriddenBy` is the env var name, or `project`, `overlay`, or `runtime`; `fallbackEnv` names a fallback env var used while the saved value is blank). |
+| `omp config reset <key>`       | Delete the key from the global config, so any other layer that configures it (such as project config) or else the schema default applies, and later default changes still reach you. Prints the resulting effective value.                                                                        |
 | `omp config path`              | Print the active agent directory (honors `PI_CODING_AGENT_DIR`).                                                                                                                                                                                                                                  |
 | `omp config init-xdg`          | On Linux and macOS, create the `omp` directories under the effective XDG data, state, and cache homes. It does not move existing files or set the XDG environment variables. Other platforms exit non-zero.                                                                                       |
 
@@ -88,27 +88,30 @@ Keys must match a real schema path exactly. There is no shorthand — set `theme
 
 `omp config set`, `omp config reset`, `/settings`, and ordinary runtime settings changes write the global main YAML file under the active agent directory. They do not write arbitrary keys to `<cwd>/.omp/config.yml`. The one supported project write path is a model-selector role assignment when `modelRoleStorage` is `project`; it updates only that role under `<cwd>/.omp/config.yml`, and missing project roles continue to fall back to global roles. To create any other project-local override, edit the project file directly (see [Project-local config](#project-local-config)). Saves are debounced and re-read the file under a lock, so external edits made while a session is open are preserved.
 
+Saves through a symlinked main config preserve the link and update its resolved target. Targets containing `.` or `..` follow the operating system's rules: Windows collapses those segments before following intermediate links, while POSIX traverses each component on disk. A target such as `alias/../config.yml` can therefore name different files on the two platforms.
+
 ## Precedence
 
 From lowest to highest priority, the effective value of a setting is built as:
 
 ```text
-built-in defaults  <-  global config  <-  project config  <-  CLI overlays  <-  runtime overrides
+built-in defaults  <-  global config  <-  project config  <-  CLI overlays  <-  runtime overrides  <-  setting env var
 ```
 
 From highest to lowest:
 
-1. **Runtime overrides** — dedicated CLI flags and feature env vars applied in memory for the current process: `--model`, `--smol`, `--slow`, `--plan`, `--approval-mode`, `--auto-approve`/`--yolo`, `--hide-thinking`, `--advisor`, `--no-pty`, `--api-key`, and protocol-mode defaults. Never persisted.
-2. **CLI config overlays** — each `--config <file>`; later overlay files override earlier ones.
-3. **Project settings** — `<cwd>/.omp/settings.json` then `<cwd>/.omp/config.yml` (and contributions from other discovery providers at project level).
-4. **Global settings** — `~/.omp/agent/config.yml`.
-5. **Built-in defaults** — from the settings schema.
+1. **Setting env var** — an environment variable declared on the setting's definition (for example `PI_PY` for `eval.py`, `OMP_AUTH_BROKER_URL` for `auth.broker.url`). Parsed by the setting's type; unparseable text (such as `PI_EDIT_VARIANT=auto`) counts as unset. Booleans follow the `parseFlag` convention: empty counts as unset, `1`/`y`/`true`/`yes`/`on` (all-lowercase or all-uppercase) mean true, and any other value means false. A few are declared as fallbacks instead (`SEARXNG_*`, `MNEMOPI_EMBEDDING_MODEL`): they only replace the built-in default, so any configured layer wins over them — except a configured `null`, which counts as unset. `SEARXNG_ENDPOINT`, `SEARXNG_TOKEN`, and `MNEMOPI_EMBEDDING_MODEL` also apply when the setting is a blank string.
+2. **Runtime overrides** — dedicated CLI flags and feature env vars applied in memory for the current process: `--model`, `--smol`, `--slow`, `--plan`, `--approval-mode`, `--auto-approve`/`--yolo`, `--hide-thinking`, `--advisor`, `--no-pty`, `--api-key`, and protocol-mode defaults. Never persisted. Protocol-mode defaults (RPC/ACP) hold only while nothing else configures the setting: a settings write or reset of it, a `config.yml` or project edit picked up by a reload, or an ACP session's own project config replaces them.
+3. **CLI config overlays** — each `--config <file>`; later overlay files override earlier ones.
+4. **Project settings** — `<cwd>/.omp/settings.json` then `<cwd>/.omp/config.yml` (and contributions from other discovery providers at project level).
+5. **Global settings** — `~/.omp/agent/config.yml`.
+6. **Built-in defaults** — from the setting definition.
 
-A key that is unset at every layer resolves to its schema default at read time.
+A key that is unset at every layer resolves to its default at read time.
 
 ### Environment overrides
 
-Environment variables are **not** a single settings layer. Each is read by the feature that owns the value, usually as a per-machine override or fallback, and is never written back to `config.yml`. The ones that map directly onto a setting:
+Environment variables are never written back to `config.yml`. Variables declared on a setting definition form the top layer described above; others are read directly by the feature that owns the value (`PI_NO_PTY`) or applied as runtime overrides (`PI_SMOL_MODEL` sets the `smol` model role for the process). The ones that map directly onto a setting:
 
 | Env var                 | Overrides setting           | Notes                                                                                             |
 | ----------------------- | --------------------------- | ------------------------------------------------------------------------------------------------- |
@@ -150,7 +153,7 @@ tools:
 
 ### Bash command approval patterns
 
-`tools.approval` is a record keyed by tool name; dotted forms such as `tools.approval.eval` and `tools.approval.computer` identify entries in that record, not separate settings-schema paths. Each entry sets that tool's default policy. For bash, you can add ordered command rules with `bash.patterns`; the first matching rule wins. Patterns support literal text plus `*` as a wildcard.
+`tools.approval` is a record keyed by tool name; dotted forms such as `tools.approval.eval` and `tools.approval.computer` identify entries in that record, not separate setting ids. Each entry sets that tool's default policy. For bash, you can add ordered command rules with `bash.patterns`; the first matching rule wins. Patterns support literal text plus `*` as a wildcard. Whitespace is the exception: before matching, every run of spaces, tabs, or newlines in both the pattern and the command collapses to a single space, and leading/trailing whitespace is trimmed. A newline in a pattern therefore matches any whitespace: `match: "*\n*"` behaves like `"* *"` and matches every command containing a space. A newline-specific rule is unnecessary to catch dangerous commands in a newline-separated list: `deny` and `prompt` rules check each segment (see below). `allow` rules reject unquoted newline command separators, but can approve commands containing quoted or escaped literal newlines when the full command matches.
 
 By default, an `allow` rule must match the entire command and cannot approve a compound line. Set `bash.allowCompoundCommands: true` to also evaluate conservative chains of two or more literal commands joined only by `&&`:
 
@@ -355,7 +358,7 @@ modelRoles:
   memory: local/lfm2-1.2b
 
   # Model-kind workloads
-  image: openai/gpt-image-1
+  image: openai/gpt-image-2
   web: web/duckduckgo
   speech: local/kokoro
   dictation: local/parakeet-tdt-0.6b-v3
@@ -431,6 +434,7 @@ See [Advisor and WATCHDOG.md](./advisor-watchdog.md) for runtime behavior, `WATC
 | `advisor.syncBacklog` | enum    | `off`   | Bounded advisor catch-up delay: `off`, `1`, `3`, or `5`. The primary waits up to 30 seconds only while advisor backlog is at or above the threshold. |
 | `advisor.immuneTurns` | number  | `3`     | After a `concern`/`blocker` interrupts, route further concerns/blockers as non-interrupting asides for this many completed primary turns.            |
 | `advisor.maxNotesPerUpdate` | number | `4` | Non-blocker notes accepted per advisor review, from 1–32. Higher-severity notes can replace only pending notes from the same review. `WATCHDOG.yml` top-level or per-advisor values override this default. |
+| `advisor.evictStaleResults` | boolean | `true` | Before each review, replace the advisor's `read`/`grep`/`glob` output from older reviews with a short placeholder. The latest review is kept. |
 
 ### Thinking
 
@@ -445,6 +449,8 @@ thinkingBudgets:
   xhigh: 32768
   max: 32768
 ```
+
+`thinkingBudgets.<level>` overrides the token budget for the selected thinking level on transports that accept a reasoning token budget (including Anthropic, Google/Gemini, Bedrock Claude, GitLab Duo's Anthropic path, the Anthropic shim, the auth gateway, and budget-mode `cline-pass`). It does not control effort-based OpenAI-compatible requests: `openai-completions` providers such as local llama.cpp and Ollama use their own thinking/effort controls instead, so changing these budgets has no effect on their request bodies. Use `defaultThinkingLevel` or `--thinking` to select an available effort level for those models.
 
 | Key                               | Type    | Default | Values                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | --------------------------------- | ------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -471,12 +477,12 @@ A value of `-1` means "use the provider/model default" — `omp` does not send t
 | `presencePenalty`   | number | `-1`      | Presence penalty.                                                                                                                                                                                                                                                              |
 | `repetitionPenalty` | number | `-1`      | Repetition penalty.                                                                                                                                                                                                                                                            |
 | `textVerbosity`     | enum   | `medium`  | `low`, `medium`, `high`. Sent as response verbosity by OpenAI Responses and Codex transports.                                                                                                                                                                                  |
-| `tier.openai`       | enum   | `none`    | `none`, `auto`, `default`, `flex`, `scale`, `priority`. Sent as `service_tier` for OpenAI / OpenAI-Codex and OpenAI-family OpenRouter models. Launch with `--service-tier <value>` for a one-session OpenAI override; the flag is not persisted (`none` omits `service_tier`). |
+| `tier.openai`       | enum   | `none`    | `none`, `auto`, `default`, `flex`, `scale`, `priority`, `ultrafast`. Sent as `service_tier` for OpenAI / OpenAI-Codex and OpenAI-family OpenRouter models. `ultrafast` is sent only to the OpenAI API and to Codex models whose discovery advertises it (`/fast ultra`). Launch with `--service-tier <value>` for a one-session OpenAI override; the flag is not persisted (`none` omits `service_tier`). |
 | `tier.anthropic`    | enum   | `none`    | `none`, `priority`. `priority` realizes fast mode on supported direct Claude models (ignored on Bedrock/Vertex and via OpenRouter).                                                                                                                                            |
 | `tier.google`       | enum   | `none`    | `none`, `flex`, `priority`. Gemini API sends it in the body; Vertex sends `priority` via header (`flex` is a no-op on Vertex).                                                                                                                                                 |
-| `tier.subagent`     | enum   | `inherit` | `inherit`, `none`, `auto`, `default`, `flex`, `scale`, `priority`. Applied to the spawned model's family; `inherit` tracks the main agent.                                                                                                                                     |
-| `task.agentServiceTierOverrides` | record | `{}` | Sparse exact-name overrides for agents spawned by task/eval dispatch (Vibe workers keep `tier.subagent`). Values: `inherit`, `none`, `auto`, `default`, `flex`, `scale`, `priority`. An entry overrides `tier.subagent`; concrete values apply only when supported by the resolved model's provider family. A non-mapping value fails settings load. |
-| `tier.advisor`      | enum   | `none`    | `inherit`, `none`, `auto`, `default`, `flex`, `scale`, `priority`. Applied to the advisor model's family.                                                                                                                                                                      |
+| `tier.subagent`     | enum   | `inherit` | `inherit`, `none`, `auto`, `default`, `flex`, `scale`, `priority`, `ultrafast`. Applied to the spawned model's family; `inherit` tracks the main agent.                                                                                                                                     |
+| `task.agentServiceTierOverrides` | record | `{}` | Sparse exact-name overrides for agents spawned by task/eval dispatch (Vibe workers keep `tier.subagent`). Values: `inherit`, `none`, `auto`, `default`, `flex`, `scale`, `priority`, `ultrafast`. An entry overrides `tier.subagent`; concrete values apply only when supported by the resolved model's provider family. A non-mapping value fails settings load. |
+| `tier.advisor`      | enum   | `none`    | `inherit`, `none`, `auto`, `default`, `flex`, `scale`, `priority`, `ultrafast`. Applied to the advisor model's family.                                                                                                                                                                      |
 | `personality`       | enum   | `default` | `default`, `friendly`, `pragmatic`, `none`. A user-level `<agent dir>/PERSONALITY.md` replaces the selected preset's text; `none` still omits the block. See [system-prompt-customization](./system-prompt-customization.md).                                                  |
 
 ### Retry and fallback
@@ -535,7 +541,7 @@ providers:
 | `providers.openai-codex.codeMode`           | enum    | `off`             | Codex Code Mode for `code_mode_only` models (GPT-5.6 Sol/Terra/Luna), mirroring codex-rs: the direct tool surface collapses to `eval`/`ask`/`todo` and every other session tool is invoked from `eval` cells via its `tool.<name>()` bridge, collapsing multi-step tool work into one model round trip. `auto` follows the model catalog's `tool_mode` flag; `on` forces it for any Codex model; `off` (default) leaves the full direct surface. The turn metadata carries codex-rs's `tool_namespaces_info` exposure snapshot while active. |
 | `providers.openai-codex.codeModeDirectTools` | array   | `[]`              | Extra tool names to keep directly callable alongside `eval`/`ask`/`todo` when Codex Code Mode is active; entries that are not enabled in the session are ignored. |
 
-When the active chat model keeps failing (429s, quota walls, provider outages) and `retry.modelFallback` is on, the session picks the chain that owns the failing model, by specificity: an exact `provider/model-id` key, then a `provider/*` wildcard, then the current role's chain, then `default`. If several roles assign the same model, yaml key order does not decide: the live session role wins, and `default` wins over other matching chat roles when the session is not on those roles. It skips chat candidates whose selectors are still cooling down and switches for the rest of the turn. Model-kind runners resolve their named role chain separately and never consume `default`. Subagents get their own per-spawn chains when their agent definition lists multiple model patterns — the first resolvable pattern is primary and the rest become its fallbacks; there is no `agent:<name>` key in `fallbackChains`.
+When the active chat model keeps failing (429s, quota walls, provider outages) and `retry.modelFallback` is on, the session picks the chain that owns the failing model, by specificity: an exact `provider/model-id` key, then a `provider/*` wildcard, then the current role's chain, then `default` — which also owns a live model that belongs to no role (`/model` switch, ephemeral hop). The effective chain is the owning role's primary followed by its configured entries, and a live selector that appears nowhere in it is offered the whole chain. If several roles assign the same model, yaml key order does not decide: the live session role wins, and `default` wins over other matching chat roles when the session is not on those roles. It skips chat candidates whose selectors are still cooling down and switches for the rest of the turn. Model-kind runners resolve their named role chain separately and never consume `default`. Subagents get their own per-spawn chains when their agent definition lists multiple model patterns — the first resolvable pattern is primary and the rest become its fallbacks; there is no `agent:<name>` key in `fallbackChains`.
 
 ### Tools and approvals
 
@@ -552,7 +558,7 @@ tools:
 
 | Key                            | Type    | Default | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ------------------------------ | ------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tools.format`                 | enum    | `auto`  | Tool wire format: `auto`, `native`, `glm`, `hermes`, `kimi`, `xml`, `anthropic`, `deepseek`, `harmony`, `qwen3`, `gemini`, `gemma`, or `minimax`. `native` always uses provider-native tool calls. `auto` also uses native calls unless the selected model explicitly has `supportsTools: false`; then it selects the model-family owned dialect, falling back to GLM when no specific family dialect is known. Other values force that owned in-band dialect. `xml` is the [generic XML format](./toolconv/xml.md); `minimax` is the [MiniMax format](./toolconv/minimax.md). Applies on session start. See [GLM](./toolconv/glm-4.5.md), [Qwen3/Hermes](./toolconv/qwen3.md), [Kimi](./toolconv/kimi-k2.md), [Anthropic](./toolconv/anthropic.md), [DeepSeek](./toolconv/deepseek.md), [Harmony](./toolconv/harmony.md), [Gemini](./toolconv/gemini.md), and [Gemma](./toolconv/gemma.md). |
+| `tools.format`                 | enum    | `auto`  | Tool wire format: `auto`, `native`, `glm`, `hermes`, `kimi`, `xml`, `anthropic`, `deepseek`, `harmony`, `qwen3`, `gemini`, `gemma`, or `minimax`. `native` always uses provider-native tool calls. `auto` also uses native calls unless the selected model explicitly has `supportsTools: false`; then it selects the model-family owned dialect, falling back to GLM when no specific family dialect is known. Other values force that owned in-band dialect. `xml` is the [generic XML format](./toolconv/xml.md); `minimax` is the [MiniMax format](./toolconv/minimax.md). See [GLM](./toolconv/glm-4.5.md), [Qwen3/Hermes](./toolconv/qwen3.md), [Kimi](./toolconv/kimi-k2.md), [Anthropic](./toolconv/anthropic.md), [DeepSeek](./toolconv/deepseek.md), [Harmony](./toolconv/harmony.md), [Gemini](./toolconv/gemini.md), and [Gemma](./toolconv/gemma.md). |
 | `tools.approvalMode`           | enum    | `yolo`  | `always-ask` (auto-approve read-only), `write` (auto-approve read + workspace-write), `yolo` (auto-approve all tiers). `--approval-mode` and `--auto-approve`/`--yolo` override per run.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `tools.approval`               | record  | `{}`    | Per-tool policy keyed by tool name; each value is `allow`, `deny`, or `prompt`. e.g. `omp config set tools.approval '{"bash":"prompt"}'`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `tools.maxTimeout`             | number  | `0`     | Max tool runtime in seconds; `0` = no cap.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -563,7 +569,7 @@ tools:
 | `tools.artifactTailBytes`      | number  | `20`    | KB of tail kept inline on spill.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `tools.artifactTailLines`      | number  | `500`   | Max tail lines kept inline on spill.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
-Individual built-in tools and Eval preludes are toggled by their own keys, e.g. `bash.enabled`, `launch.enabled`, `eval.py`, `eval.js`, `glob.enabled`, `grep.enabled`, `fetch.enabled`, `browser.enabled`, `computer.enabled`, `astEdit.enabled`, `astGrep.enabled`, `find.enabled`, and `web_search.enabled`. Image questions use `read <image>?q=<question>` and honor `images.questionTimeoutMs`.
+Individual built-in tools and Eval preludes are toggled by their own keys, e.g. `bash.enabled`, `launch.enabled`, `eval.py`, `eval.js`, `glob.enabled`, `grep.enabled`, `fetch.enabled`, `browser.enabled`, `computer.enabled`, `ratchet.enabled` (default `false`; the `ratchet(flow)` eval/hillclimb prelude, which `/ratchet` turns on for the current session only), `astEdit.enabled`, `astGrep.enabled`, `find.enabled` (`auto`/`on`/`off`; `auto` enables `find` only when the `judge` role resolves to a native TypeSafe jev model), and `web_search.enabled`. Image questions use `read <image>?q=<question>` and honor `images.questionTimeoutMs`.
 
 ### Window-scoped computer use
 
@@ -621,6 +627,7 @@ lsp:
 | `bash.autoBackground.thresholdMs` | number  | `60000`   | Threshold before auto-backgrounding.                                                                                                                        |
 | `eval.py`                         | boolean | `true`    | Python eval backend. `PI_PY=0` disables for the process.                                                                                                    |
 | `eval.js`                         | boolean | `true`    | JavaScript eval backend. `PI_JS=0` disables for the process.                                                                                                |
+| `eval.autoProvision`              | boolean | `true`    | Create the managed JavaScript eval package environment on first `%bun add`.                                                                                 |
 | `eval.tools.enabled`              | boolean | `true`    | Expose kernel-defined `@tool` / `tool(fn)` functions to `task`, `agent()`, and `workpool()` subagents.                                                      |
 | `eval.workpool.freshAgents`       | boolean | `false`   | Spawn a new workpool agent for every item instead of reusing idle workers or batching queued items.                                                        |
 | `python.kernelMode`               | enum    | `session` | `session` (persistent kernel) or `per-call`.                                                                                                                |
@@ -632,7 +639,7 @@ lsp:
 | `lsp.diagnosticsOnEdit`           | boolean | `false`   | Run diagnostics after an edit.                                                                                                                              |
 | `lsp.formatOnWrite`               | boolean | `false`   | Format files on write.                                                                                                                                      |
 | `lsp.diagnosticsDeduplicate`      | boolean | `true`    | Collapse duplicate diagnostics.                                                                                                                             |
-| `shellPath`                       | string  | _(unset)_ | Override the shell binary used by bash.                                                                                                                     |
+| `shellPath`                       | string  | _(unset)_ | External shell for services, terminals, and `!`; plain bash tool calls use embedded brush.                                                                  |
 
 ### Files: editing and reading
 
@@ -671,6 +678,12 @@ read:
 
 `/extended-context on` opts in to larger context windows; `/extended-context off` restores standard windows and premium-pricing caps. For `openai-codex/gpt-6-astra` and its `-wm` route, off uses 272,000 tokens and on uses the documented 922,000-token input window (1.05M total context with 128K output), or a higher discovered maximum. The curated maximum corrects stale lower discovery values. Explicit per-model `contextWindow` overrides in `models.yml` take precedence in both modes; remove an override if you want the toggle to control that model again. On `openai-codex`, an explicit override still clamps to the server-honored ceiling (`min(override, maximum)`, mirroring Codex's `model_context_window`), so it cannot widen past the documented maximum.
 
+Custom providers can opt into the same toggle by setting `contextWindow` (normal)
+and `maxContextWindow` (extended) on a model or `modelOverrides` entry in
+`models.yml`. A `contextWindow` override without `maxContextWindow` remains
+fixed in both modes. See [model configuration](models.md); these values control
+local budgeting, not the upstream endpoint's accepted request size.
+
 Compaction headroom is separate from this opt-in. With the default 15% reserve, Astra's documented extended window has an auto-compaction threshold of 783,700 tokens. A larger window can consume more usage even when there is no additional long-context pricing multiplier.
 
 ```yaml
@@ -695,10 +708,11 @@ memory:
 | `contextPromotion.enabled`    | boolean | `false`                                  | Promote to the active model's explicit `contextPromotionTarget` on context overflow.                                                                                                                                                      |
 | `compaction.enabled`          | boolean | `true`                                   | Automatic conversation compaction.                                                                                                                                                                                                        |
 | `compaction.asyncEnabled`     | boolean | `true`                                   | Speculatively summarize in the background as context nears the compaction threshold, then splice the ready result in when the threshold is crossed.                                                                                        |
-| `compaction.midTurnEnabled`   | boolean | `true`                                   | Check thresholds at safe mid-turn tool-loop boundaries before the next provider request.                                                                                                                                                  |
+| `compaction.midTurnEnabled`   | boolean | `true`                                   | Check thresholds at safe mid-turn tool-loop boundaries before the next provider request. Setting it to `false` affects only the session it is configured on; subagents always check, since their whole assignment is one turn.                |
 | `compaction.methodOrder`      | array   | `remote, snapcompact, handoff, shake, soft` | Ordered fallbacks. `remote` uses provider-native server compaction (OpenAI Responses compact, Anthropic compaction beta); unavailable or failed methods advance. |
 | `compaction.thresholdPercent` | number  | `-1`                                     | Percent-of-context trigger; `-1` = reserve-based default.                                                                                                                                                                                 |
 | `compaction.thresholdTokens`  | number  | `-1`                                     | Fixed token trigger when `> 0`.                                                                                                                                                                                                           |
+| `task.agentCompactionThresholdOverrides` | record | `{}` | Exact-name task/eval agent → compaction trigger: a positive token count (`90000`) or a percentage string (`"80%"`). See below. |
 | `compaction.reserveTokens`    | number  | _(unset)_                                | Absolute reserve floor. When unset, the effective reserve is the larger of `16384` and 15% of the context window; if that default would leave no practical small-window budget, it falls back to the 15% reserve.                         |
 | `compaction.keepRecentTokens` | number  | `20000`                                  | Recent tokens always preserved.                                                                                                                                                                                                           |
 | `compaction.autoContinue`     | boolean | `true`                                   | Continue automatically after compaction.                                                                                                                                                                                                  |
@@ -708,6 +722,24 @@ memory:
 | `autolearn.minToolCalls`      | number  | `5`           | Only nudge after a turn that used at least this many tools.                                                                                                                                                                               |
 
 `compaction` has additional tuning keys (idle compaction, supersede/drop heuristics) visible in `omp config list`. See [Compaction](./compaction.md) for the full strategy reference.
+
+Per-agent compaction triggers for task/eval subagents. This keeps the main session at 40,000 tokens while `scout` compacts at 80% of its window and `task` at 90,000 tokens:
+
+```yaml
+compaction:
+  thresholdTokens: 40000
+
+task:
+  agentCompactionThresholdOverrides:
+    scout: "80%"
+    task: 90000
+```
+
+- Keys are exact, case-sensitive agent names (`scout` does not match `Scout`).
+- A number is a fixed token trigger (positive integer); a `"N%"` string is a percentage of the context window, `0 < N ≤ 100`. An entry replaces both `compaction.thresholdTokens` and `compaction.thresholdPercent` for that agent.
+- `null` clears an entry set by a lower-priority settings layer. Any other value fails settings load.
+- Agents without an entry — including agents spawned by an overridden agent — use the main session's `compaction.*` thresholds. The main session and Vibe workers are unaffected.
+- The resolved trigger is stored with the subagent session and reused when it is revived.
 
 ### Appearance and terminal
 
@@ -733,33 +765,38 @@ tui:
   hyperlinks: auto # off, auto, always
 ```
 
-| Key                         | Type    | Default          | Values                                                                    |
-| --------------------------- | ------- | ---------------- | ------------------------------------------------------------------------- |
-| `theme.dark`                | string  | `titanium`       | Theme used on a dark terminal background.                                 |
-| `theme.light`               | string  | `light`          | Theme used on a light terminal background.                                |
-| `symbolPreset`              | enum    | `unicode`        | `unicode`, `nerd`, `ascii`.                                               |
-| `colorBlindMode`            | boolean | `false`          | Use blue instead of green for diff additions.                             |
-| `showHardwareCursor`        | boolean | `true`           | Show the terminal hardware cursor.                                        |
-| `statusLine.preset`         | enum    | `default`        | `default`, `minimal`, `compact`, `full`, `nerd`, `ascii`, `custom`.       |
-| `statusLine.separator`      | enum    | `powerline-thin` | `powerline`, `powerline-thin`, `slash`, `pipe`, `block`, `none`, `ascii`. |
-| `statusLine.sessionAccent`  | boolean | `true`           | Tint the editor border with the session color.                            |
-| `statusLine.transparent`    | boolean | `false`          | Use the terminal background for the status line.                          |
-| `statusLine.showHookStatus` | boolean | `true`           | Show hook status messages.                                                |
-| `terminal.showImages`       | boolean | `true`           | Render images inline (when the terminal supports it).                     |
-| `images.autoResize`         | boolean | `true`           | Resize large images for model compatibility.                              |
-| `images.blockImages`        | boolean | `false`          | Never send images to providers.                                           |
-| `tui.hyperlinks`            | enum    | `auto`           | `off`, `auto`, `always`.                                                  |
-| `tui.mouse`                 | boolean | `false`          | Capture mouse clicks in the main session so live subagent cards and HUD rows focus on click, with a hover highlight on the target. Native text selection becomes Shift+drag and wheel scroll becomes Shift+wheel while on. |
+| Key                           | Type    | Default          | Values                                                                    |
+| ----------------------------- | ------- | ---------------- | ------------------------------------------------------------------------- |
+| `theme.dark`                  | string  | `titanium`       | Theme used on a dark terminal background.                                 |
+| `theme.light`                 | string  | `light`          | Theme used on a light terminal background.                                |
+| `symbolPreset`                | enum    | `unicode`        | `unicode`, `nerd`, `ascii`.                                               |
+| `colorBlindMode`              | boolean | `false`          | Use blue instead of green for diff additions.                             |
+| `showHardwareCursor`          | boolean | `true`           | Show the terminal hardware cursor.                                        |
+| `statusLine.preset`           | enum    | `default`        | `default`, `minimal`, `compact`, `full`, `nerd`, `ascii`, `custom`.       |
+| `statusLine.separator`        | enum    | `powerline-thin` | `powerline`, `powerline-thin`, `slash`, `pipe`, `block`, `none`, `ascii`. |
+| `statusLine.sessionAccent`    | boolean | `true`           | Tint the editor border with the session color.                            |
+| `statusLine.transparent`      | boolean | `false`          | Use the terminal background for the status line.                          |
+| `statusLine.showHookStatus`   | boolean | `true`           | Show hook status messages.                                                |
+| `terminal.showImages`         | boolean | `true`           | Render images inline (when the terminal supports it).                     |
+| `images.autoResize`           | boolean | `true`           | Resize large images for model compatibility.                              |
+| `images.blockImages`          | boolean | `false`          | Never send images to providers.                                           |
+| `tui.hyperlinks`              | enum    | `auto`           | `off`, `auto`, `always`.                                                  |
+| `tui.mouse`                   | boolean | `false`          | Capture mouse clicks in the main session so live subagent cards and HUD rows focus on click, with a hover highlight on the target. Native text selection becomes Shift+drag and wheel scroll becomes Shift+wheel while on. |
+| `display.pinnedAgents`        | enum    | `collapsed`      | Pinned live-agent jump list above the editor: `off` hides it, `collapsed` shows a few rows with an expander, `full` lists all. |
+| `display.subagentLivePreview` | boolean | `false`          | Show each pinned subagent's current (or most recent) tool call beneath its jump-list row. |
+| `display.commandSuggestionsPopup` | boolean | `false` | Show slash-command and command-argument suggestions in a cursor-adjacent popup instead of below the editor. |
+| `display.autocompleteSuggestionsPopup` | boolean | `false` | Show `@` file/directory, `#` prompt-action/GitHub-reference, and `:` emoji suggestions in a cursor-adjacent popup instead of below the editor. |
+| `display.popupFill` | boolean | `false` | Fill suggestion popup backgrounds with the message surface color. |
 | `display.inlineModelPicker` | boolean | `false` | Search session models in the existing editor area using a bordered popup, preserving the statusline, draft and content below the input. Under Appearance → Display. |
-| `display.popupFill` | boolean | `false` | Opt in to the message-colored background fill for inline model popups. |
-| `display.pinnedAgents`      | enum    | `collapsed`      | Pinned live-agent jump list above the editor: `off` hides it, `collapsed` shows a few rows with an expander, `full` lists all. |
-| `tui.resizeScrollback`      | enum    | `rebuild`        | How a settled width resize refreshes transcript rows kept in terminal scrollback: `append` replays the transcript at the new width below retained history, `rebuild` erases pane scrollback then replays one current-width copy, `preserve` repaints only the viewport. |
+| `tui.resizeScrollback`        | enum    | `rebuild`        | How a settled width resize refreshes transcript rows kept in terminal scrollback: `append` replays the transcript at the new width below retained history, `rebuild` erases pane scrollback then replays one current-width copy, `preserve` repaints only the viewport. |
 
-Inline model picker interactions do not rebuild scrollback. After a resize, popup backing that remains addressable is restored in place. If covered rows have left the viewport or reflow has changed their physical extent, recovery rebuilds the application's complete history. This exceptional recovery also applies in `preserve`/`append` mode and can remove pre-existing shell or pane scrollback that the application does not own.
+Command popup interactions do not rebuild scrollback. After a resize, popup backing that remains addressable is restored in place. If covered rows have left the viewport or reflow has changed their physical extent, recovery rebuilds the application's complete history. This exceptional recovery also applies in `preserve`/`append` mode and can remove pre-existing shell or pane scrollback that the application does not own.
 
 Popup fill is intentionally opt-in. With fill disabled, Kitty images can remain visible through unfilled popup cells; enable `display.popupFill` when opaque image occlusion is needed. Popup interaction never deletes image placements, including through tmux: deleting a partially archived placement would also remove its scrollback cells. A terminal-default background reset alone does not hide Kitty images.
 
 For a custom status line, set `statusLine.preset: custom` and configure `statusLine.leftSegments`, `statusLine.rightSegments`, and `statusLine.segmentOptions`. Include `status` in either segment list to render extension statuses registered through `ctx.ui.setStatus()`, ordered by key and joined inline. Set `statusLine.showHookStatus: false` to suppress the same statuses in the footer.
+
+The `path` segment abbreviates the home directory to `~`. On Windows, shared path formatting recognizes both the long home name and its existing 8.3 aliases (such as `ADMINI~1`), including in tool labels and error text. Only the home prefix is abbreviated; remaining path components keep their spelling, and formatting does not change the working directory or environment. Set `statusLine.segmentOptions.path.abbreviate: false` to keep the full path in the status line.
 
 The `cost` segment shows recorded session costs. For an active provider/model with scheduled pricing, it appends `↑` during peak hours or `↓` off-peak, refreshing at boundaries even while idle. The arrow reflects the current tariff, not past spending; flat-price models and explicit cost overrides have no arrow. See [usage costs and time-based pricing](models.md#usage-costs-and-time-based-pricing) for the UTC schedule and estimation semantics.
 
@@ -788,6 +825,7 @@ providers:
   tinyModelDevice: default
   tinyModelDtype: default
   openaiWebsockets: auto
+  openaiLiveSteering: true
   openrouterVariant: default
   kimiApiFormat: auto
   cacheRetention: auto
@@ -831,9 +869,11 @@ searxng:
 | `stt.language`                      | string  | `en`      | Source language hint for speech-to-text.                                                                                                                                                                                                                                                                                                                                                                                               |
 | `stt.submitTrigger`                 | enum    | `never`   | When completed dictation auto-submits: `never`, `release`, `release-complete`, or `say-submit`.                                                                                                                                                                                                                                                                                                                                        |
 | `providers.openaiWebsockets`        | enum    | `auto`    | `auto`, `off`, `on`.                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `providers.openaiLiveSteering`      | boolean | `true`    | Deliver messages typed while a GPT-6 response streams into that response (`response.steer` over the Codex WebSocket) instead of waiting for the next tool boundary.                                                                                                                                                                                                                                                                    |
 | `providers.openrouterVariant`       | enum    | `default` | `default`, `nitro`, `floor`, `online`, `exacto`.                                                                                                                                                                                                                                                                                                                                                                                       |
 | `providers.kimiApiFormat`           | enum    | `auto`    | `auto`, `openai`, `anthropic`. `auto` follows live model metadata.                                                                                                                                                                                                                                                                                                                                                                     |
-| `providers.cacheRetention`          | enum    | `auto`    | `auto`, `short`, `long`, `none`. Prompt-cache retention forwarded to providers that support it. `auto` keeps provider defaults (Anthropic: 1h entries on OAuth subscriber sessions, 5m entries plus idle keep-alive refreshes on API keys) and honors `PI_CACHE_RETENTION`; `short` forces 5m; `long` uses 1h TTLs where supported and disables keep-alive refreshes; `none` disables prompt caching and cache-affinity routing.         |
+| `providers.cacheRetention`          | enum    | `auto`    | `auto`, `short`, `long`, `none`. Prompt-cache retention forwarded to providers that support it. `auto` keeps provider defaults (Anthropic: 1h entries on OAuth subscriber sessions, 5m entries on API keys) and honors `PI_CACHE_RETENTION`; `short` forces 5m; `long` uses 1h TTLs where supported; `none` disables prompt caching and cache-affinity routing.         |
+| `providers.cacheWarming`            | enum    | `idle`    | `off`, `streaming`, `idle`. Prompt-cache warming replays the last request shortly before its cache entry expires and cuts the replay off at its first generated token, but only when the expected avoided-miss cost clears the refresh cost by at least $0.05. A refresh that misses the cache or fails ends warming until the next real request. `off` disables warming; `streaming` protects prefixes during long tool executions and stops when the agent settles; `idle` also refreshes between runs (15% continuation probability) until 30 minutes after the last real request, so it only covers entries shorter than that window (Anthropic 5m entries, not 1h entries such as OAuth subscriber sessions). Models without a declared prompt-cache lifetime (see [Models](./models.md)) are never warmed. |
 | `provider.appendOnlyContext`        | enum    | `auto`    | `auto`, `on`, `off`.                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `exa.enabled`                       | boolean | `true`    | Enable the Exa web search provider.                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `exa.searchDelayMs`                 | number  | `1000`    | Minimum delay between Exa web search requests in milliseconds; set `0` to disable pacing.                                                                                                                                                                                                                                                                                                                                               |
@@ -909,10 +949,6 @@ Arrays replace; they do not append. If a project sets `disabledProviders`, `enab
 ### `omp config set` changed the wrong file
 
 `omp config set` and `omp config reset` always write the global `config.yml` under the active agent directory. Run `omp config path` to print it. For project-local settings, edit `<repo>/.omp/config.yml` directly.
-
-### `omp config reset` did not remove my key
-
-`reset` writes the schema **default** value into the global config — it persists the default rather than deleting the key. To stop overriding a project value from global config, delete the key from `~/.omp/agent/config.yml` by hand.
 
 ### A `--config` overlay fails at startup
 
