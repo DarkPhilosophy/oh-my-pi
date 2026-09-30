@@ -1013,6 +1013,39 @@ describe("AgentSession advisor toggle", () => {
 			expect(delivered.filter(card => card.includes("Guard the retry budget"))).toHaveLength(1);
 		});
 
+		it("holds nits for the coalescing window so parallel advisors can be curated together", async () => {
+			let judgeCalls = 0;
+			vi.spyOn(judgment, "resolveJudge").mockReturnValue({
+				judge: async () => {
+					judgeCalls++;
+					return { answers: {} };
+				},
+			} as unknown as judgment.ChainJudge);
+
+			enableAdvisor();
+			expect(session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing" }], undefined)).toBe(2);
+			session.agent.state.isStreaming = true;
+			try {
+				await adviseToolOf("Security").execute("w1", { note: "Window finding one.", severity: "nit" });
+				await adviseToolOf("Testing").execute("w2", { note: "Window finding two.", severity: "nit" });
+			} finally {
+				session.agent.state.isStreaming = false;
+			}
+
+			// Well inside the window: nothing is judged and nothing has reached the queue yet, which is
+			// what lets two advisors raising the same issue be collapsed into one note. Without the
+			// window each note is enqueued the moment it is raised, and curation never sees a pair.
+			await Bun.sleep(40);
+			expect(judgeCalls).toBe(0);
+			expect(session.yieldQueue.drainLazy()).toHaveLength(0);
+
+			// After the window the pair is judged together and both notes are delivered.
+			const delivered = (await waitForQueuedAdvisorNotes(2)).join("\n");
+			expect(judgeCalls).toBe(1);
+			expect(delivered).toContain("Window finding one");
+			expect(delivered).toContain("Window finding two");
+		});
+
 		it("delivers both groups when a second batch starts while the first is still being judged", async () => {
 			const first = Promise.withResolvers<{ answers: Record<string, unknown> }>();
 			let judgeCalls = 0;
