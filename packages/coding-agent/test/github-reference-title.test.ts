@@ -4,7 +4,7 @@
  * pins the credential environment that keys the cache, and clears the process-wide repository map that the lookup
  * depends on. Views are written through `getOrFetchView`, the path `pr://` and `issue://` reads use.
  */
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -14,7 +14,12 @@ import {
 	resetForTests as resetCacheForTests,
 	resolveGithubCacheAuthKey,
 } from "@oh-my-pi/pi-coding-agent/tools/github-cache";
-import { lookupCachedReferenceTitle } from "@oh-my-pi/pi-coding-agent/tools/github-reference-title";
+import {
+	lookupCachedReferenceTitle,
+	resetReferenceRepoAttempts,
+	warmReferenceRepo,
+} from "@oh-my-pi/pi-coding-agent/tools/github-reference-title";
+import { github } from "@oh-my-pi/pi-coding-agent/utils/github";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const ENV_KEYS = [
@@ -129,5 +134,45 @@ describe("lookupCachedReferenceTitle", () => {
 
 		delete process.env.GH_TOKEN;
 		expect(lookupCachedReferenceTitle(cwd, "pr", "12")).toBeUndefined();
+	});
+});
+
+describe("warmReferenceRepo", () => {
+	beforeEach(() => resetReferenceRepoAttempts());
+	afterEach(() => vi.restoreAllMocks());
+
+	it("makes a cached title appear in a session that has not run any GitHub tool yet", async () => {
+		await cache("pr", 12, "Fix the resize replay");
+		DEFAULT_REPO_RESOLVED.clear();
+		vi.spyOn(github, "text").mockResolvedValue("https://github.com/owner/example");
+		// The fresh-session state the card starts from: cached, but the checkout's repository is unknown.
+		expect(lookupCachedReferenceTitle(cwd, "pr", "12")).toBeUndefined();
+
+		const ready = Promise.withResolvers<void>();
+		warmReferenceRepo(cwd, () => ready.resolve());
+		await ready.promise;
+
+		expect(lookupCachedReferenceTitle(cwd, "pr", "12")).toBe("Fix the resize replay");
+	});
+
+	it("tries a checkout that cannot be resolved once, not on every frame the card is drawn", async () => {
+		DEFAULT_REPO_RESOLVED.clear();
+		const text = vi.spyOn(github, "text").mockRejectedValue(new Error("no remote"));
+		let ready = 0;
+		for (let frame = 0; frame < 20; frame++) {
+			warmReferenceRepo(cwd, () => ready++);
+			await Bun.sleep(1);
+		}
+		await Bun.sleep(20);
+
+		expect(text).toHaveBeenCalledTimes(1);
+		expect(ready).toBe(0);
+	});
+
+	it("does not ask at all once the repository is known", () => {
+		const text = vi.spyOn(github, "text").mockRejectedValue(new Error("must not run"));
+		warmReferenceRepo(cwd, () => {});
+
+		expect(text).not.toHaveBeenCalled();
 	});
 });

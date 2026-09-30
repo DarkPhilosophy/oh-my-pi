@@ -155,7 +155,7 @@ import { isMCPToolName } from "../tools/builtin-names";
 import type { LspStartupServerInfo } from "../tools";
 import { resolvePlanFilePath } from "../plan-mode/plan-files";
 import { resolveToCwd } from "../tools/path-utils";
-import { lookupCachedReferenceTitle } from "../tools/github-reference-title";
+import { lookupCachedReferenceTitle, warmReferenceRepo } from "../tools/github-reference-title";
 import { StreamPublisher } from "../stream/publisher";
 import { newRecordingPath, SessionRecorder } from "../stream/recording";
 import { StreamRedactor } from "../stream/redactor";
@@ -1511,6 +1511,16 @@ export class InteractiveMode implements InteractiveModeContext {
 	#queuedCommandOutputCount = 0;
 	#queuedCommandNoticeTimer: ReturnType<typeof setTimeout> | undefined;
 	#pendingSlashCommands: SlashCommand[] = [];
+	/**
+	 * Title source for the `#N` card. Starts resolving the checkout's repository the first time a card asks (nothing
+	 * else resolves it in a fresh session) and repaints once it is known, so cached titles appear without any
+	 * request being made while typing.
+	 */
+	#referenceTitleResolver = (kind: "pr" | "issue", number: string): string | undefined => {
+		const cwd = this.viewSession.sessionManager.getCwd();
+		warmReferenceRepo(cwd, () => this.ui.requestRender());
+		return lookupCachedReferenceTitle(cwd, kind, number);
+	};
 	/** Symbol preset the slash-command picker icons were resolved under. */
 	#slashIconPreset: string | undefined;
 	/** Built-in editor autocomplete provider, before extension wrapping. */
@@ -1876,8 +1886,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.popupFill = cfgDisplayPopupFill.get(this.settings);
 		this.editor.onAutocompleteRender = (render, offset, rows, anchor) =>
 			this.ui.setCursorOverlay(render, offset, rows, "auto", anchor);
-		this.editor.referenceTitle = (kind, number) =>
-			lookupCachedReferenceTitle(this.viewSession.sessionManager.getCwd(), kind, number);
+		this.editor.referenceTitle = this.#referenceTitleResolver;
 		this.editor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
 		};
@@ -7336,8 +7345,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		nextEditor.popupFill = cfgDisplayPopupFill.get(this.settings);
 		nextEditor.onAutocompleteRender = (render, offset, rows, anchor) =>
 			this.ui.setCursorOverlay(render, offset, rows, "auto", anchor);
-		nextEditor.referenceTitle = (kind, number) =>
-			lookupCachedReferenceTitle(this.viewSession.sessionManager.getCwd(), kind, number);
+		nextEditor.referenceTitle = this.#referenceTitleResolver;
 		nextEditor.magicKeywordsEnabled = () => cfgMagicKeywordsEnabled.get(this.settings);
 		nextEditor.placeholder = () => this.#composerHint();
 		nextEditor.composerState = () => this.#composerNativeState();

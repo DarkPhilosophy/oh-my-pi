@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { DEFAULT_REPO_RESOLVED } from "./gh-common";
+import { DEFAULT_REPO_RESOLVED, tryResolveCurrentRepo } from "./gh-common";
 import { getCached, resolveGithubCacheAuthKey } from "./github-cache";
 import type { GhIssueViewData } from "./gh-types";
 
@@ -26,4 +26,27 @@ export function lookupCachedReferenceTitle(cwd: string, kind: "pr" | "issue", nu
 		if (title) return title;
 	}
 	return undefined;
+}
+
+/** Checkouts whose repository lookup was already started, so a failure is not repeated on every frame. */
+const attemptedCwds = new Set<string>();
+
+/** Forget which checkouts were tried. Tests only. */
+export function resetReferenceRepoAttempts(): void {
+	attemptedCwds.clear();
+}
+
+/**
+ * Make titles available for `cwd`: resolve its `owner/repo` in the background and call `onReady` only when that
+ * newly made lookups possible. The card asks on every frame, so each checkout is tried once per process: the
+ * shared resolver remembers successes but not failures, and a checkout without a GitHub remote (or with `gh`
+ * signed out) would otherwise start a new `gh` process per frame. Never throws and never blocks the caller.
+ */
+export function warmReferenceRepo(cwd: string, onReady: () => void): void {
+	const key = path.resolve(cwd);
+	if (DEFAULT_REPO_RESOLVED.has(key) || attemptedCwds.has(key)) return;
+	attemptedCwds.add(key);
+	void tryResolveCurrentRepo(cwd, undefined).then(repo => {
+		if (repo !== undefined) onReady();
+	});
 }
