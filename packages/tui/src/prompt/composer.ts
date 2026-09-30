@@ -310,8 +310,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.ui.setResizeScrollback(this.#preferences.resizeScrollback);
 
 		this.#editor = new CustomEditor(getEditorTheme());
-		this.editor.onAutocompleteRender = (rows, cursorOffset, editorRows) =>
-			this.ui.setCursorOverlay(rows, cursorOffset, editorRows);
+		this.editor.onAutocompleteRender = (rows, cursorOffset, editorRows, anchorCol) =>
+			this.ui.setCursorOverlay(rows, cursorOffset, editorRows, "auto", anchorCol);
 		this.editor.disableSubmit = true;
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		this.editor.setImeSafeCursorLayout(this.#preferences.imeSafeCursor);

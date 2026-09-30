@@ -699,6 +699,19 @@ export const cfgDisplayCommandSuggestionsPopup = register({
 	},
 });
 
+export const cfgDisplayContextualTokenPopup = register({
+	id: "display.contextualTokenPopup",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Contextual Reference Popup",
+		description:
+			"Show #123 PR and issue suggestions as a popup anchored above the typed token, instead of a list below the editor. Requires Command Suggestions Popup",
+	},
+});
+
 export const cfgUsageLabelPlacement = register({
 	id: "usage.labelPlacement",
 	type: "enum",

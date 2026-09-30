@@ -1,0 +1,150 @@
+import { afterEach, expect, it } from "bun:test";
+import { KeybindingsManager as AppKeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { createPromptActionAutocompleteProvider } from "@oh-my-pi/pi-tui/prompt/prompt-action-autocomplete";
+import { VirtualTerminal } from "../../tui/test/virtual-terminal";
+
+let composer: Composer | undefined;
+afterEach(() => composer?.stop());
+
+const WIDTH = 120;
+/** Width of the anchored popup card; the terminal is wide enough that it fits right of a mid-row token. */
+const CARD = 44;
+
+async function openComposer(options: { contextual: boolean; width?: number }): Promise<{
+	terminal: VirtualTerminal;
+	editor: Composer["editor"];
+	paint: () => Promise<void>;
+}> {
+	const terminal = new VirtualTerminal(options.width ?? WIDTH, 16);
+	const active = new Composer({ preferences: { quiet: true }, terminal });
+	composer = active;
+	const transcript = new TranscriptContainer();
+	const block = {
+		render: () => Array.from({ length: 30 }, (_, i) => `CHAT_${i + 1}`),
+		isTranscriptBlockFinalized: () => true,
+	};
+	transcript.addChild(block);
+	active.setRuntimeChildren([transcript, active.editor]);
+	active.editor.commandSuggestionsPopup = true;
+	active.editor.contextualTokenPopup = options.contextual;
+	active.editor.onAutocompleteRender = (render, offset, rows, anchorCol) =>
+		active.ui.setCursorOverlay(render, offset, rows, "auto", anchorCol);
+	active.editor.setAutocompleteProvider(
+		createPromptActionAutocompleteProvider({
+			commands: [],
+			basePath: "/tmp",
+			keybindings: AppKeybindingsManager.inMemory({}),
+			copyCurrentLine: () => {},
+			copyPrompt: () => {},
+			undo: () => {},
+			moveCursorToMessageEnd: () => {},
+			moveCursorToMessageStart: () => {},
+			moveCursorToLineStart: () => {},
+			moveCursorToLineEnd: () => {},
+		}),
+	);
+	active.editor.onAutocompleteUpdate = () => active.ui.requestRender();
+	active.editor.onAutocompleteCancel = () => active.ui.requestRender();
+	active.start();
+	active.ui.setFocus(active.editor);
+	const paint = async () => {
+		// The composer settles on a real render timer; there is no event to await.
+		await Bun.sleep(40);
+		active.ui.requestRender();
+		await terminal.waitForRender();
+	};
+	await paint();
+	await paint();
+	return { terminal, editor: active.editor, paint };
+}
+
+/** First viewport row containing `needle`, with the 0-based visible column where it starts. */
+function locate(rows: readonly string[], needle: string): { row: number; col: number } | undefined {
+	for (let row = 0; row < rows.length; row++) {
+		const col = rows[row]!.indexOf(needle);
+		if (col !== -1) return { row, col };
+	}
+	return undefined;
+}
+
+/** Last viewport row containing `needle`: the composer input sits below any popup that repeats the token. */
+function locateLast(rows: readonly string[], needle: string): { row: number; col: number } | undefined {
+	for (let row = rows.length - 1; row >= 0; row--) {
+		const col = rows[row]!.lastIndexOf(needle);
+		if (col !== -1) return { row, col };
+	}
+	return undefined;
+}
+
+it("starts the #N popup box exactly at the token column and leaves the chat text beside it", async () => {
+	const { terminal, editor, paint } = await openComposer({ contextual: true });
+	const lead = "please review the pull request ";
+	editor.handleInput(lead);
+	for (const ch of "#12") editor.handleInput(ch);
+	await paint();
+
+	const rows = terminal.getViewport().map(Bun.stripANSI);
+	const input = locate(rows, `${lead}#12`);
+	const label = locate(rows, "PR #12");
+	expect(input).toBeDefined();
+	expect(label).toBeDefined();
+	const tokenCol = input!.col + lead.length;
+
+	// The box's left border sits on the token's column, above the input row.
+	const boxRow = rows[label!.row]!;
+	expect(label!.row).toBeLessThan(input!.row);
+	expect(boxRow.indexOf("│")).toBe(tokenCol);
+	// The chat text on that row is preserved to the left of the box.
+	expect(boxRow.slice(0, tokenCol)).toMatch(/^CHAT_\d+\s*$/);
+	// The card is compact, not a full-width band.
+	expect(boxRow.trimEnd().length).toBe(tokenCol + CARD);
+});
+
+it("follows the token when it moves right instead of staying at a fixed column", async () => {
+	const { terminal, editor, paint } = await openComposer({ contextual: true });
+	editor.handleInput("see #3");
+	await paint();
+	const early = locate(terminal.getViewport().map(Bun.stripANSI), "PR #3");
+	editor.setText("");
+	editor.handleInput(`${"words ".repeat(8)}#3`);
+	await paint();
+	const late = locate(terminal.getViewport().map(Bun.stripANSI), "PR #3");
+
+	expect(early).toBeDefined();
+	expect(late).toBeDefined();
+	// The anchor is derived from the typed token position, so a later token yields a later box.
+	expect(late!.col).toBeGreaterThan(early!.col);
+});
+
+it("pulls the box left of a token near the right edge so the whole card stays on screen", async () => {
+	const { terminal, editor, paint } = await openComposer({ contextual: true });
+	editor.handleInput(`${"x".repeat(WIDTH - 12)} #7`);
+	await paint();
+
+	const rows = terminal.getViewport().map(Bun.stripANSI);
+	const input = locateLast(rows, "#7");
+	const label = locate(rows, "PR #7");
+	expect(input).toBeDefined();
+	expect(label).toBeDefined();
+	const boxRow = rows[label!.row]!;
+	expect(label!.row).toBeLessThan(input!.row);
+	// Clamped to the last column that still fits the card: its right border is the terminal's last cell.
+	expect(boxRow.indexOf("│")).toBe(WIDTH - CARD);
+	expect(boxRow.trimEnd().length).toBe(WIDTH);
+});
+
+it("keeps the existing #N list under the editor when the setting is off", async () => {
+	const { terminal, editor, paint } = await openComposer({ contextual: false });
+	editor.handleInput("see ");
+	for (const ch of "#12") editor.handleInput(ch);
+	await paint();
+
+	const rows = terminal.getViewport().map(Bun.stripANSI);
+	const input = locate(rows, "see #12");
+	const label = locate(rows, "PR #12");
+	expect(input).toBeDefined();
+	expect(label).toBeDefined();
+	expect(label!.row).toBeGreaterThan(input!.row);
+});
