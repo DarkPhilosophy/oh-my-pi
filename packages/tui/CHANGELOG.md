@@ -2,12 +2,15 @@
 
 ## [Unreleased]
 
-## [18.4.5] - 2026-09-30
-
 ### Added
 
 - Usage account cards support temporary privacy and grouping controls in both terminal renderers, with account masking shared by detail and note views ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Usage overlays can hide organization names independently with the temporary `o` control or native button; organization aliases stay stable across views and refreshes ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
+## [18.4.5] - 2026-09-30
+
+### Added
+
 - Added Factory Droid base-credit badges; models without a dollar-price reference no longer appear free ([#8577](https://github.com/can1357/oh-my-pi/pull/8577) by [@will-bogusz](https://github.com/will-bogusz), continued in [#13276](https://github.com/can1357/oh-my-pi/pull/13276) by [@DusKing1](https://github.com/DusKing1)).
 
 ### Fixed
