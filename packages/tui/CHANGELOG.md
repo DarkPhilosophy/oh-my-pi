@@ -6,6 +6,11 @@
 
 - Added passive cursor-adjacent popup rendering for command suggestions without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Added opt-in cursor-adjacent popup placement for non-command autocomplete triggers without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Popups can be anchored to a column: `TUI.setCursorOverlay` takes an optional `anchorCol`, and the editor reports the start column of a `#123` reference being completed so the suggestions box opens above the token.
+
+### Fixed
+
+- Fixed a dismissed `#123`, `@` or `/` suggestion list reappearing over an empty editor after the draft was cleared (Ctrl+C, submit or history recall): replacing the whole text now closes any open suggestions.
 
 ## [18.4.4] - 2026-09-29
 

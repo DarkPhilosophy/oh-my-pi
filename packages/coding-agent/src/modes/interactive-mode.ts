@@ -322,6 +322,7 @@ import {
 	cfgAutocompleteMaxVisible,
 	cfgDisplayCommandSuggestionsPopup,
 	cfgDisplayAutocompleteSuggestionsPopup,
+	cfgDisplayContextualTokenPopup,
 	cfgDisplayPopupFill,
 	cfgComposerShape,
 	cfgComposerTokenRate,
@@ -400,6 +401,7 @@ const cfgLiveUiSettings = combine({
 	autocompleteMaxVisible: cfgAutocompleteMaxVisible,
 	"display.commandSuggestionsPopup": cfgDisplayCommandSuggestionsPopup,
 	"display.autocompleteSuggestionsPopup": cfgDisplayAutocompleteSuggestionsPopup,
+	"display.contextualTokenPopup": cfgDisplayContextualTokenPopup,
 	"display.popupFill": cfgDisplayPopupFill,
 	"spelling.typoDetection": cfgSpellingTypoDetection,
 	"spelling.autocomplete": cfgSpellingAutocomplete,
@@ -1813,8 +1815,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#applyVimMode(this.editor);
 		this.editor.commandSuggestionsPopup = cfgDisplayCommandSuggestionsPopup.get(this.settings);
 		this.editor.autocompleteSuggestionsPopup = cfgDisplayAutocompleteSuggestionsPopup.get(this.settings);
+		this.editor.contextualTokenPopup = cfgDisplayContextualTokenPopup.get(this.settings);
 		this.editor.popupFill = cfgDisplayPopupFill.get(this.settings);
-		this.editor.onAutocompleteRender = (render, offset, rows) => this.ui.setCursorOverlay(render, offset, rows);
+		this.editor.onAutocompleteRender = (render, offset, rows, anchorCol) =>
+			this.ui.setCursorOverlay(render, offset, rows, "auto", anchorCol);
 		this.editor.viewportRowsProvider = () => this.ui.terminal.rows;
 		this.editor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
@@ -3423,9 +3427,17 @@ export class InteractiveMode implements InteractiveModeContext {
 			// setPreferences re-themes the editor, which resets its mode-tinted border.
 			this.updateEditorBorderColor();
 		}
-		if (any("display.commandSuggestionsPopup", "display.autocompleteSuggestionsPopup", "display.popupFill")) {
+		if (
+			any(
+				"display.commandSuggestionsPopup",
+				"display.autocompleteSuggestionsPopup",
+				"display.contextualTokenPopup",
+				"display.popupFill",
+			)
+		) {
 			this.editor.commandSuggestionsPopup = cfgDisplayCommandSuggestionsPopup.get(this.settings);
 			this.editor.autocompleteSuggestionsPopup = cfgDisplayAutocompleteSuggestionsPopup.get(this.settings);
+			this.editor.contextualTokenPopup = cfgDisplayContextualTokenPopup.get(this.settings);
 			this.editor.popupFill = cfgDisplayPopupFill.get(this.settings);
 			this.ui.requestRender();
 		}
@@ -6954,8 +6966,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		nextEditor.setAutocompleteMaxVisible(cfgAutocompleteMaxVisible.get(this.settings));
 		nextEditor.commandSuggestionsPopup = cfgDisplayCommandSuggestionsPopup.get(this.settings);
 		nextEditor.autocompleteSuggestionsPopup = cfgDisplayAutocompleteSuggestionsPopup.get(this.settings);
+		nextEditor.contextualTokenPopup = cfgDisplayContextualTokenPopup.get(this.settings);
 		nextEditor.popupFill = cfgDisplayPopupFill.get(this.settings);
-		nextEditor.onAutocompleteRender = (render, offset, rows) => this.ui.setCursorOverlay(render, offset, rows);
+		nextEditor.onAutocompleteRender = (render, offset, rows, anchorCol) =>
+			this.ui.setCursorOverlay(render, offset, rows, "auto", anchorCol);
 		nextEditor.setSpellingFeatures({
 			typoDetection: cfgSpellingTypoDetection.get(this.settings),
 			autocomplete: cfgSpellingAutocomplete.get(this.settings),

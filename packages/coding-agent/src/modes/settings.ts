@@ -88,6 +88,19 @@ export const cfgDisplayAutocompleteSuggestionsPopup = register({
 	},
 });
 
+export const cfgDisplayContextualTokenPopup = register({
+	id: "display.contextualTokenPopup",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Contextual Reference Popup",
+		description:
+			"Open #123 PR and issue suggestions as a compact popup above the typed token instead of a full-width band. Requires Autocomplete Suggestions Popup",
+	},
+});
+
 // Appearance
 // ────────────────────────────────────────────────────────────────────────
 

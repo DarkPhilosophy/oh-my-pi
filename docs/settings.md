@@ -786,6 +786,7 @@ tui:
 | `display.subagentLivePreview` | boolean | `false`          | Show each pinned subagent's current (or most recent) tool call beneath its jump-list row. |
 | `display.commandSuggestionsPopup` | boolean | `false` | Show slash-command and command-argument suggestions in a cursor-adjacent popup instead of below the editor. |
 | `display.autocompleteSuggestionsPopup` | boolean | `false` | Show `@` file/directory, `#` prompt-action/GitHub-reference, and `:` emoji suggestions in a cursor-adjacent popup instead of below the editor. |
+| `display.contextualTokenPopup` | boolean | `false` | Open `#123` PR and issue suggestions as a compact popup above the typed token instead of a full-width band. Requires `display.autocompleteSuggestionsPopup`. |
 | `display.popupFill` | boolean | `false` | Fill suggestion popup backgrounds with the message surface color. |
 | `tui.resizeScrollback`        | enum    | `rebuild`        | How a settled width resize refreshes transcript rows kept in terminal scrollback: `append` replays the transcript at the new width below retained history, `rebuild` erases pane scrollback then replays one current-width copy, `preserve` repaints only the viewport. |
 

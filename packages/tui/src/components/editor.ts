@@ -14,6 +14,7 @@ import { BracketedPasteHandler, decodeReencodedPasteControls } from "../brackete
 import { canonicalKeyId, getKeybindings, type KeybindingsManager } from "../keybindings";
 import { extractPrintableText, matchesKey, parseKey } from "../keys";
 import { KillRing } from "../kill-ring";
+import { getGithubRefContext } from "../prompt/github-ref-autocomplete";
 import type { TspEditorDecoration, TspEditorProps, TspTone } from "@oh-my-pi/pi-wire";
 import { col, node } from "../native/describe";
 import { sameItems, sameProps } from "../native/memo";
@@ -693,9 +694,20 @@ export class Editor implements Component, Focusable {
 	commandSuggestionsPopup = false;
 	/** Opt in to file mentions, prompt actions/references, and emoji in the same popup. */
 	autocompleteSuggestionsPopup = false;
+	/** Anchor `#<number>` popup suggestions to the typed token instead of a full-width band. */
+	contextualTokenPopup = false;
 	popupFill = false;
-	/** A frame host may paint suggestions over existing cells instead of allocating layout rows. */
-	onAutocompleteRender?: (render: CursorOverlayRenderer | undefined, cursorOffset: number, editorRows: number) => void;
+	/**
+	 * A frame host may paint suggestions over existing cells instead of allocating layout rows.
+	 * `anchorCol` is the visible column where the suggestions box should start (the token being completed);
+	 * hosts that ignore it keep a full-width band.
+	 */
+	onAutocompleteRender?: (
+		render: CursorOverlayRenderer | undefined,
+		cursorOffset: number,
+		editorRows: number,
+		anchorCol?: number,
+	) => void;
 	/** Called after an async text-assist result mutates the document outside an input event, so hosts can schedule a repaint. */
 	onTextAssistApplied?: () => void;
 	/** Terminal height source for clamping the autocomplete dropdown. Hosts wire this to their Terminal's rows. */
@@ -1096,6 +1108,9 @@ export class Editor implements Component, Focusable {
 	/** Internal setText that doesn't reset history state - used by navigateHistory */
 	#setTextInternal(text: string, cursorAnchor: HistoryCursorAnchor = "end"): void {
 		this.#undoStack.length = 0;
+		// Replacing the whole buffer (clear, submit, history recall) makes any open suggestion list stale:
+		// it was computed for text that no longer exists, and would otherwise keep painting.
+		this.#cancelAutocomplete(true);
 		const lines = sanitizeLoadedText(text).split("\n");
 		this.#state.lines = lines.length === 0 ? [""] : lines;
 		// A single-row entry's top and bottom are the same row, so the directional
@@ -1645,13 +1660,23 @@ export class Editor implements Component, Focusable {
 				genericTrigger !== undefined &&
 				"@#:".includes(genericTrigger);
 			if ((commandPopup || genericPopup) && this.onAutocompleteRender) {
+				const cursorRow = result.findIndex(row => row.includes(CURSOR_MARKER));
+				// The caret ends the token being completed, so the token starts `tokenWidth` cells before it.
+				// `#12` is one word and never wraps mid-token, so it stays on the caret's visual row.
+				const contextualRef = genericPopup ? this.#contextualReferenceToken() : undefined;
+				const anchorCol =
+					contextualRef !== undefined && cursorRow >= 0
+						? Math.max(
+								0,
+								visibleWidth(result[cursorRow]!.slice(0, result[cursorRow]!.indexOf(CURSOR_MARKER))) -
+									visibleWidth(contextualRef),
+							)
+						: undefined;
 				this.onAutocompleteRender(
 					this.focused ? this.#renderAutocompleteOverlay : undefined,
-					Math.max(
-						0,
-						result.findIndex(row => row.includes(CURSOR_MARKER)),
-					),
+					Math.max(0, cursorRow),
 					result.length,
+					anchorCol,
 				);
 			} else {
 				this.onAutocompleteRender?.(undefined, 0, result.length);
@@ -4259,6 +4284,19 @@ export class Editor implements Component, Focusable {
 		const selected = this.#autocompleteList?.getSelectedItem();
 		if (!selected) return false;
 		return selected.value.startsWith("/") || selected.value.startsWith('"');
+	}
+
+	/**
+	 * The standalone `#<number>` token being completed, or undefined. Only when the contextual popup is
+	 * opted in and the visible list actually offers GitHub references. The bare token is returned, without
+	 * an optional `pr`/`issue` qualifier: it is a single word and never wraps mid-token, so its width is
+	 * a safe offset from the caret even when the qualifier wrapped onto the previous row.
+	 */
+	#contextualReferenceToken(): string | undefined {
+		if (!this.contextualTokenPopup || !this.#autocompleteList) return undefined;
+		const line = this.#state.lines[this.#state.cursorLine] ?? "";
+		const context = getGithubRefContext(line.slice(0, this.#state.cursorCol));
+		return context ? `#${context.number}` : undefined;
 	}
 	/**
 	 * Whether the current popup selection is the collapsed `/skill:` namespace
