@@ -1062,7 +1062,7 @@ const renderCache = new LRUCache<string, readonly string[]>({
 	max: RENDER_CACHE_MAX,
 	maxSize: RENDER_CACHE_MAX_SIZE,
 	maxEntrySize: RENDER_CACHE_MAX_ENTRY_SIZE,
-	sizeCalculation: (lines, key) => renderedLinesCacheSize(lines) + key.length,
+	sizeCalculation: (lines, key) => renderedLinesCacheSize(lines, key),
 });
 
 function renderedLinesCacheSize(lines: readonly string[], key: string): number {
