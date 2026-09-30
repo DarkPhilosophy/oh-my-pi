@@ -136,7 +136,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		cursorLine: number,
 		cursorCol: number,
 		signal?: AbortSignal,
-		onPartial?: (suggestions: { items: AutocompleteItem[]; prefix: string }) => void,
+		onPartial?: (suggestions: { items: AutocompleteItem[]; prefix: string; commandArgument?: boolean }) => void,
 	): Promise<{ items: AutocompleteItem[]; prefix: string; commandArgument?: boolean } | null> {
 		if (signal?.aborted) return null;
 		const currentLine = lines[cursorLine] || "";

@@ -330,6 +330,7 @@ import { UiHelpers } from "./utils/ui-helpers";
 
 import {
 	cfgAutocompleteMaxVisible,
+	cfgDisplayAutocompleteSuggestionsPopup,
 	cfgComposerShape,
 	cfgComposerTokenRate,
 	cfgDisplayCacheMissMarker,
@@ -409,6 +410,9 @@ const cfgLiveUiSettings = combine({
 	"tui.resizeScrollback": cfgTuiResizeScrollback,
 	"tui.imeSafeCursor": cfgTuiImeSafeCursor,
 	autocompleteMaxVisible: cfgAutocompleteMaxVisible,
+	"display.commandSuggestionsPopup": cfgDisplayCommandSuggestionsPopup,
+	"display.autocompleteSuggestionsPopup": cfgDisplayAutocompleteSuggestionsPopup,
+	"display.popupFill": cfgDisplayPopupFill,
 	"spelling.typoDetection": cfgSpellingTypoDetection,
 	"spelling.autocomplete": cfgSpellingAutocomplete,
 	"spelling.autocorrect": cfgSpellingAutocorrect,
@@ -1862,6 +1866,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 		}
 		this.#applyVimMode(this.editor);
+		this.editor.autocompleteSuggestionsPopup = cfgDisplayAutocompleteSuggestionsPopup.get(this.settings);
 		this.editor.viewportRowsProvider = () => this.ui.terminal.rows;
 		this.editor.commandSuggestionsPopup = cfgDisplayCommandSuggestionsPopup.get(this.settings);
 		this.editor.contextualTokenPopup = cfgDisplayContextualTokenPopup.get(this.settings);
@@ -3557,6 +3562,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.composer.setPreferences(this.#liveComposerPreferences());
 			// setPreferences re-themes the editor, which resets its mode-tinted border.
 			this.updateEditorBorderColor();
+		}
+		if (any("display.commandSuggestionsPopup", "display.autocompleteSuggestionsPopup", "display.popupFill")) {
+			this.editor.commandSuggestionsPopup = cfgDisplayCommandSuggestionsPopup.get(this.settings);
+			this.editor.autocompleteSuggestionsPopup = cfgDisplayAutocompleteSuggestionsPopup.get(this.settings);
+			this.editor.popupFill = cfgDisplayPopupFill.get(this.settings);
+			this.ui.requestRender();
 		}
 		if (any("composer.shape")) this.syncComposerShape();
 		if (any("tui.vimMode", "tui.vimModeDisplay")) this.#applyVimModeSetting();
@@ -7303,6 +7314,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		nextEditor.setImeSafeCursorLayout(cfgTuiImeSafeCursor.get(this.settings));
 		this.#applyVimMode(nextEditor);
 		nextEditor.setAutocompleteMaxVisible(cfgAutocompleteMaxVisible.get(this.settings));
+		nextEditor.autocompleteSuggestionsPopup = cfgDisplayAutocompleteSuggestionsPopup.get(this.settings);
 		nextEditor.setSpellingFeatures({
 			typoDetection: cfgSpellingTypoDetection.get(this.settings),
 			autocomplete: cfgSpellingAutocomplete.get(this.settings),

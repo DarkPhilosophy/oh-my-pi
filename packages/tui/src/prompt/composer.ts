@@ -248,6 +248,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		  }
 		| undefined;
 	#historyReplayRequested = false;
+	#allowEmptyHistoryReplay = false;
 	#headerReplayPending = false;
 	#historyFlush = false;
 	// The welcome header retires to terminal history exactly once, after the
@@ -697,7 +698,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	}
 
 	/** Replays committed presentation without changing logical retirement state. */
-	beginHistoryReplay(): "deferred" | undefined {
+	beginHistoryReplay(allowEmptyReplay = false): "deferred" | undefined {
+		this.#allowEmptyHistoryReplay ||= allowEmptyReplay;
 		if (this.#offeredHistory !== undefined) {
 			this.#historyReplayRequested = true;
 			return "deferred";
@@ -714,6 +716,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		// flush emits only genuinely un-retired rows. An already offered batch
 		// stays valid and is accepted by the flush loop.
 		this.#historyReplayRequested = false;
+		this.#allowEmptyHistoryReplay = false;
 		this.#headerReplayPending = false;
 		for (const child of this.#runtimeChildren) {
 			if (child instanceof TranscriptContainer) child.cancelReplay();
@@ -724,8 +727,9 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#headerReplayPending = this.#headerRetired && (this.#retiredHeaderRows?.length ?? 0) > 0;
 		this.#historyReplayRequested = false;
 		for (const child of this.#runtimeChildren) {
-			if (child instanceof TranscriptContainer) child.beginReplay();
+			if (child instanceof TranscriptContainer) child.beginReplay(this.#allowEmptyHistoryReplay);
 		}
+		this.#allowEmptyHistoryReplay = false;
 	}
 
 	/** Header retires first; replay coalesces it with the complete transcript ledger. */

@@ -179,6 +179,7 @@ export interface TUIOptions {
 	renderScheduler?: RenderScheduler;
 	onPaint?: PaintListener;
 }
+
 /** Physical terminal dimensions supplied to a frame provider. */
 export interface ViewportSize {
 	readonly columns: number;
@@ -246,7 +247,7 @@ export interface TerminalFrameProvider {
 	renderResizeFrame?(viewport: ViewportSize): readonly string[];
 	/** Re-offer finalized history after a display reset or resize replay. */
 	/** Returns "deferred" when an offered batch delays the replay past the next paint. */
-	beginHistoryReplay?(): "deferred" | undefined | void;
+	beginHistoryReplay?(allowEmptyReplay?: boolean): "deferred" | undefined | void;
 	/** Force every currently eligible finalized prefix to retire before stop. */
 	beginHistoryFlush?(): void;
 }
@@ -2707,7 +2708,7 @@ export class TUI extends Container {
 		}, delayMs);
 		return true;
 	}
-	#prepareForcedRender(clearScrollback: boolean): void {
+	#prepareForcedRender(clearScrollback: boolean, allowEmptyReplay = false): void {
 		this.#pendingLiveRender = false;
 		if (clearScrollback) {
 			this.#clearScrollbackWaitsForReplay = false;
@@ -2726,13 +2727,13 @@ export class TUI extends Container {
 				transientRows: this.#providerTransientRows.length,
 			});
 		}
-		if (clearScrollback && !this.#clearScrollbackOnNextRender) {
+		if (clearScrollback && (!this.#clearScrollbackOnNextRender || allowEmptyReplay)) {
 			// The clear must land in the same paint as its replay. A provider with
 			// an offered batch defers the replay one frame; a clear consumed by that
 			// batch wipes history, writes the stale screen back, and the replay then
 			// lands below it with no clear: a duplicated card whose seam shows as an
 			// unpainted row.
-			if (this.#frameProvider?.beginHistoryReplay?.() === "deferred") {
+			if (this.#frameProvider?.beginHistoryReplay?.(allowEmptyReplay) === "deferred") {
 				this.#clearScrollbackWaitsForReplay = true;
 				this.#clearScrollbackWaitFramesLeft = 2;
 			}
@@ -3641,7 +3642,7 @@ export class TUI extends Container {
 		}
 		if (this.#cursorOverlayHistoryDamaged) {
 			this.#cursorOverlayHistoryDamaged = false;
-			this.#prepareForcedRender(true);
+			this.#prepareForcedRender(true, true);
 			this.#clearScrollbackWaitsForReplay = true;
 			this.#clearScrollbackWaitFramesLeft = undefined;
 			return;

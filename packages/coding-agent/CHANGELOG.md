@@ -9,6 +9,7 @@
 - Fenced code blocks now expose a clickable `copy` link that copies their original source text ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Added opt-in `usage.maskOrganizationNames` and a temporary `/usage` organization-privacy control, independent of identifier masking, with stable organization aliases across cards, details, notes, and CLI/ACP reports ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Added connect-only Browser Relay support for Firefox-family browsers through local WebDriver BiDi endpoints ([#10295](https://github.com/can1357/oh-my-pi/pull/10295) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added an optional Autocomplete Suggestions Popup for `@` file mentions, `#` actions/references, and `:` emoji suggestions without moving the chat ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - RPC hosts can send `messageUpdates: "delta"` with `set_event_filter` to receive `message_update` frames without the accumulated message snapshots (`message` shrinks to `{ role }` and `assistantMessageEvent.partial` is omitted); the response echoes the active mode ([#13716](https://github.com/can1357/oh-my-pi/pull/13716) by [@alphastorm](https://github.com/alphastorm))
 - RPC hosts can follow each cache-warming refresh through `cache_warming_start` and `cache_warming_end` events (also written by `--mode json`), which report the outcome and the recorded usage, and can set the session's warming mode with `set_cache_warming` without changing `config.yml`; the Python client gains `set_cache_warming()` ([#13717](https://github.com/can1357/oh-my-pi/pull/13717) by [@alphastorm](https://github.com/alphastorm))
 - Pinned Subagents rows can show each agent's current (or most recent) tool call with a one-line detail and an elapsed marker; enable with `display.subagentLivePreview` (off by default) ([#3821](https://github.com/can1357/oh-my-pi/pull/3821) by [@abilliontokens](https://github.com/abilliontokens))
@@ -1172,6 +1173,14 @@
 - First-use Chromium installation and browser operations no longer consume Eval's runtime timeout or reset its kernel while waiting.
 - Browser startup reuses a successful system-Chrome fallback instead of retrying an unavailable download during the same open.
 - Browser clicks and other interactions no longer stall when OMP-owned tabs are in the background, including after worker timeout recovery.
+
+### Added
+
+- Added an opt-in Popup Background Fill setting; command popups keep their unfilled appearance by default ([#11946](https://github.com/can1357/oh-my-pi/pull/11946) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
+- Added an optional Command Suggestions Popup in Appearance → Display that keeps the chat stationary while suggestions open, filter, and close ([#11946](https://github.com/can1357/oh-my-pi/pull/11946) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
+### Changed
 
 ## [18.1.20] - 2026-09-13
 

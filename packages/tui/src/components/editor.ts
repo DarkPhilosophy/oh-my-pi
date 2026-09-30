@@ -684,6 +684,7 @@ export class Editor implements Component, Focusable {
 	#autocompletePrefix: string = "";
 	#autocompleteCommandArgument = false;
 	#autocompleteRenderAboveEditor = false;
+
 	#autocompleteRequestId: number = 0;
 	#autocompletePendingRequest: AutocompleteRequest | undefined;
 	#autocompleteRequestRunning = false;
@@ -692,6 +693,8 @@ export class Editor implements Component, Focusable {
 	#autocompleteMaxVisible: number = 10;
 	onAutocompleteUpdate?: () => void;
 	commandSuggestionsPopup = false;
+	/** Opt in to file mentions, prompt actions/references, and emoji in the same popup. */
+	autocompleteSuggestionsPopup = false;
 	/** Show `#<number>` GitHub reference suggestions as a popup anchored to the token instead of a list below the editor. */
 	contextualTokenPopup = false;
 	popupFill = false;
@@ -876,7 +879,7 @@ export class Editor implements Component, Focusable {
 	#autocompleteBox = new Box(0, 0).setIgnoreTight(true);
 
 	#renderAutocompleteOverlay: CursorOverlayRenderer = (width, maxRows) => {
-		if (!this.#autocompleteList || maxRows < 1) return [];
+		if (!this.#visibleAutocompleteList() || !this.#autocompleteList || maxRows < 1) return [];
 		const framed = maxRows >= 3 && width >= 3;
 		this.#autocompleteList.setMaxVisible(Math.min(this.#autocompleteMaxVisible, maxRows - (framed ? 2 : 0)), true);
 
@@ -1661,15 +1664,23 @@ export class Editor implements Component, Focusable {
 		const autocompleteList = this.#visibleAutocompleteList();
 		if (autocompleteList) {
 			const contextualRef = this.#contextualReferenceToken();
-			if (
+			const commandPopup =
 				this.commandSuggestionsPopup &&
 				(this.#autocompleteCommandArgument ||
-					(findLeadingSlashCommandStart(this.#autocompletePrefix) !== null && !this.#selectedCompletionIsPath()) ||
-					this.#autocompletePrefix.startsWith("@") ||
-					this.#autocompleteRenderAboveEditor ||
-					contextualRef !== undefined) &&
-				this.onAutocompleteRender
-			) {
+					(findLeadingSlashCommandStart(this.#autocompletePrefix) !== null && !this.#selectedCompletionIsPath()));
+			const genericTrigger = this.#autocompletePrefix.trimStart()[0];
+			const genericPopup =
+				this.autocompleteSuggestionsPopup &&
+				!this.#autocompleteCommandArgument &&
+				genericTrigger !== undefined &&
+				"@#:".includes(genericTrigger);
+			// Preserve the existing contextual reference opt-in for established user configurations.
+			const contextualPopup =
+				contextualRef !== undefined && (this.commandSuggestionsPopup || this.autocompleteSuggestionsPopup);
+			const legacyPopup =
+				this.commandSuggestionsPopup &&
+				(this.#autocompletePrefix.startsWith("@") || this.#autocompleteRenderAboveEditor);
+			if ((commandPopup || genericPopup || contextualPopup || legacyPopup) && this.onAutocompleteRender) {
 				const cursorRow = result.findIndex(row => row.includes(CURSOR_MARKER));
 				// The caret ends the token being completed, so the token starts `tokenWidth` cells before it.
 				// `#12` is one word and never wraps mid-token, so it stays on the caret's visual row.
@@ -1696,7 +1707,7 @@ export class Editor implements Component, Focusable {
 				result.push(...autocompleteList.render(width));
 			}
 		}
-		if (!this.#autocompleteState || !this.#autocompleteList) this.onAutocompleteRender?.(undefined, 0, result.length);
+		if (!autocompleteList) this.onAutocompleteRender?.(undefined, 0, result.length);
 
 		return result;
 	}
@@ -4481,6 +4492,7 @@ export class Editor implements Component, Focusable {
 		this.#autocompletePrefix = original;
 		this.#autocompleteCommandArgument = false;
 		this.#autocompleteRenderAboveEditor = false;
+
 		this.#autocompleteList = this.#createAutocompleteList(
 			original,
 			replacements.items.map(value => ({ value, label: value })),
@@ -4542,6 +4554,7 @@ export class Editor implements Component, Focusable {
 		this.#autocompletePrefix = "";
 		this.#autocompleteCommandArgument = false;
 		this.#autocompleteRenderAboveEditor = false;
+
 		if (notifyCancel && wasAutocompleting) {
 			this.onAutocompleteCancel?.();
 		}
@@ -4658,6 +4671,7 @@ export class Editor implements Component, Focusable {
 		this.#autocompletePrefix = suggestions.prefix;
 		this.#autocompleteCommandArgument = suggestions.commandArgument === true;
 		this.#autocompleteRenderAboveEditor = suggestions.items.some(item => item.renderAboveEditor === true);
+
 		this.#autocompleteList = this.#createAutocompleteList(suggestions.prefix, suggestions.items);
 		this.#autocompleteState = state;
 		this.onAutocompleteUpdate?.();

@@ -51,6 +51,18 @@ export const cfgGitEnabled = register({
 });
 
 // ────────────────────────────────────────────────────────────────────────
+export const cfgDisplayAutocompleteSuggestionsPopup = register({
+	id: "display.autocompleteSuggestionsPopup",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Autocomplete Suggestions Popup",
+		description: "Show @, #, and : autocomplete suggestions in the bordered popup",
+	},
+});
+
 // Appearance
 // ────────────────────────────────────────────────────────────────────────
 
@@ -708,7 +720,7 @@ export const cfgDisplayContextualTokenPopup = register({
 		group: "Display",
 		label: "Contextual Reference Popup",
 		description:
-			"Show #123 PR and issue suggestions as a popup anchored above the typed token, instead of a list below the editor. Requires Command Suggestions Popup",
+			"Show #123 PR and issue suggestions as a popup anchored above the typed token, instead of a list below the editor. Requires Autocomplete Suggestions Popup or Command Suggestions Popup",
 	},
 });
 

@@ -350,11 +350,28 @@ describe("TranscriptContainer", () => {
 		expect(transcript.emittedStableRows()).toEqual([0]);
 
 		transcript.beginReplay();
-		// The replay transaction still has to be offered and acknowledged (the TUI
-		// releases its destructive reset on completion), but it carries no rows:
-		// the reasoning that streamed into scrollback is never resurrected.
-		expect(transcript.peekReplayBatch(80)?.rows).toEqual([]);
+		const replay = transcript.peekReplayBatch(80);
+		expect(replay).toBeUndefined();
 		expect(transcript.renderViewport(80, 5, frame)).toEqual(["answer"]);
+	});
+
+	it("does not offer an empty replay for a plain-session width resize", () => {
+		const transcript = new TranscriptContainer();
+		transcript.renderViewport(80, 5, frame);
+		transcript.beginReplay();
+		expect(transcript.peekReplayBatch(60)).toBeUndefined();
+		expect(transcript.renderViewport(60, 5, frame)).toEqual([]);
+	});
+
+	it("offers an acknowledged empty replay when cursor-overlay repair requests it", () => {
+		const transcript = new TranscriptContainer();
+
+		transcript.beginReplay(true);
+		const replay = transcript.peekReplayBatch(80);
+
+		expect(replay).toEqual({ id: 1, rows: [], kind: "replay" });
+		transcript.acknowledgeFinalizedBatch(replay!.id);
+		expect(transcript.peekReplayBatch(80)).toBeUndefined();
 	});
 
 	beforeAll(async () => {
@@ -638,9 +655,9 @@ describe("TranscriptContainer", () => {
 		expect(transcript.children).toEqual([borrowed]);
 	});
 
-	it("offers an acknowledged empty replay when the committed ledger is empty", () => {
+	it("offers an acknowledged empty replay when explicitly requested for popup repair", () => {
 		const transcript = new TranscriptContainer();
-		transcript.beginReplay();
+		transcript.beginReplay(true);
 		const replay = transcript.peekReplayBatch(80);
 		expect(replay).toEqual({ id: 1, rows: [], kind: "replay" });
 		transcript.acknowledgeFinalizedBatch(replay!.id);

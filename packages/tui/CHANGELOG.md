@@ -5,6 +5,7 @@
 ### Fixed
 
 - Command suggestions appear in a bordered popup over screen cells without moving the live/history boundary; filtering and dismissal restore covered text without rebuilding scrollback.
+
 ### Added
 
 - Added passive cursor-adjacent popups and completion dismissal that preserves the editor draft and cursor ([#11958](https://github.com/can1357/oh-my-pi/pull/11958) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
@@ -28,10 +29,16 @@
 ### Fixed
 
 - Fixed narrow and nested framed Markdown code blocks so wide graphemes stay within the requested width and copy targets preserve raw source boundaries without cache collisions ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
 ### Added
 
 - Usage account cards support temporary privacy and grouping controls in both terminal renderers, with account masking shared by detail and note views ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Usage overlays can hide organization names independently with the temporary `o` control or native button; organization aliases stay stable across views and refreshes ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
+### Added
+
+- Added passive cursor-adjacent popup rendering for command suggestions without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added opt-in cursor-adjacent popup placement for non-command autocomplete triggers without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 
 ## [18.4.4] - 2026-09-29
 
@@ -364,6 +371,7 @@
 - Fixed unnecessary scrollback clears when finalized history batches are still being retired during tool completion.
 - Fixed the right-side widget panel disappearing once the transcript grew past one screen: panel placement now resolves segment rows against the visible viewport instead of the taller logical frame.
 - Fixed the viewport collapsing to a couple of rows (taking the right-side widgets with it) shortly after startup: a finalized history batch that merely re-offers rows already borrowed into native scrollback is now accepted in place instead of forcing a scrollback-clearing replay.
+
 ### Fixed
 
 - Fixed lost or duplicated transcript rows across live viewport overflow, repeated command suggestions, and session replacement.
