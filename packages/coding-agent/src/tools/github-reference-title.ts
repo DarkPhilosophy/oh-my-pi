@@ -24,7 +24,11 @@ export function lookupCachedReferenceTitle(cwd: string, kind: "pr" | "issue", nu
 	// A view fetched with comments sits in its own row; the title is the same in either.
 	for (const includeComments of [false, true]) {
 		const view = getCached<GhIssueViewData>(repo, kind, numeric, includeComments, authKey);
-		const title = view?.payload.title?.trim();
+		if (!view) continue;
+		// GitHub shares one number space and `gh issue view` also answers for a PR, so an issue row can hold a
+		// pull request. That number has no issue; showing the PR title under `Issue` would be wrong.
+		if (kind === "issue" && /\/pull\/\d+\/?$/.test(view.payload.url ?? "")) return undefined;
+		const title = view.payload.title?.trim();
 		if (title) return title;
 	}
 	return undefined;

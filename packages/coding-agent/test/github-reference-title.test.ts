@@ -64,7 +64,13 @@ afterEach(async () => {
 });
 
 /** Store a view the way a real read does: under the identity key of the active credentials. */
-async function cache(kind: "issue" | "pr", number: number, title: string, includeComments = false): Promise<void> {
+async function cache(
+	kind: "issue" | "pr",
+	number: number,
+	title: string,
+	includeComments = false,
+	url?: string,
+): Promise<void> {
 	const authKey = resolveGithubCacheAuthKey();
 	expect(authKey).toBeDefined();
 	await getOrFetchView({
@@ -73,7 +79,11 @@ async function cache(kind: "issue" | "pr", number: number, title: string, includ
 		number,
 		includeComments,
 		authKey,
-		fetchFresh: async () => ({ rendered: `${kind} ${number}`, sourceUrl: undefined, payload: { number, title } }),
+		fetchFresh: async () => ({
+			rendered: `${kind} ${number}`,
+			sourceUrl: undefined,
+			payload: { number, title, url },
+		}),
 	});
 }
 
@@ -83,6 +93,15 @@ describe("lookupCachedReferenceTitle", () => {
 		await cache("issue", 12, "Popup covers the input");
 
 		expect(lookupCachedReferenceTitle(cwd, "pr", "12")).toBe("Fix the resize replay");
+		expect(lookupCachedReferenceTitle(cwd, "issue", "12")).toBe("Popup covers the input");
+	});
+
+	it("shows no issue title for a number that is a pull request", async () => {
+		// `gh issue view` answers for a PR number, so the issue row can hold the PR.
+		await cache("issue", 11207, "Adds the advisor page", false, "https://github.com/owner/example/pull/11207");
+		await cache("issue", 12, "Popup covers the input", false, "https://github.com/owner/example/issues/12");
+
+		expect(lookupCachedReferenceTitle(cwd, "issue", "11207")).toBeUndefined();
 		expect(lookupCachedReferenceTitle(cwd, "issue", "12")).toBe("Popup covers the input");
 	});
 
