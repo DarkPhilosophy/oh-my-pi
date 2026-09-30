@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.4.5] - 2026-09-30
+
 ### Added
 
 - Usage account cards support temporary privacy and grouping controls in both terminal renderers, with account masking shared by detail and note views ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
