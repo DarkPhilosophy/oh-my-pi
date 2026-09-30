@@ -5,13 +5,12 @@ import { importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
 import { COLLAB_PROTO, type CollabFrame, parseCollabLink } from "@oh-my-pi/pi-coding-agent/collab/protocol";
 import * as registry from "@oh-my-pi/pi-coding-agent/collab/registry";
 import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
-import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings";
+import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { getDefault } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import * as pluginHelpers from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import { runRootCommand } from "@oh-my-pi/pi-coding-agent/main";
-import { COMPOSER_DEFAULTS, Composer, type ComposerPreferences } from "@oh-my-pi/pi-coding-agent/modes/composer";
+import { Composer, type ComposerPreferences } from "@oh-my-pi/pi-tui/prompt/composer";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import {
 	applyStartupComposerPreferences,
@@ -21,13 +20,33 @@ import {
 	stopPendingStartupComposer,
 	takeStartupComposerLease,
 } from "@oh-my-pi/pi-coding-agent/modes/startup-composer";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./collab/helpers/in-memory-relay";
 import { createTestSession } from "./utilities";
+
+import {
+	cfgAutocompleteMaxVisible,
+	cfgComposerShape,
+	cfgMarketplaceAutoUpdate,
+	cfgShowHardwareCursor,
+	cfgSpellingAutocomplete,
+	cfgSpellingAutocorrect,
+	cfgSpellingTypoDetection,
+	cfgStartupChangelogMode,
+	cfgStartupCheckUpdate,
+	cfgStartupQuiet,
+	cfgStartupSetupWizard,
+	cfgStartupShowSplash,
+	cfgTuiImeSafeCursor,
+	cfgTuiMaxInlineImages,
+	cfgTuiResizeScrollback,
+} from "@oh-my-pi/pi-coding-agent/modes/settings";
+
+const noRecentSessions = async () => [];
 
 class CountingTerminal extends VirtualTerminal {
 	starts = 0;
@@ -83,11 +102,11 @@ describe("outer startup collaboration gate", () => {
 		});
 		setProjectDir(testSession.tempDir);
 		const activeSettings = await Settings.init({ inMemory: true, cwd: testSession.tempDir });
-		activeSettings.override("startup.checkUpdate", false);
-		activeSettings.override("startup.changelogMode", "hidden");
-		activeSettings.override("startup.setupWizard", false);
-		activeSettings.override("startup.showSplash", false);
-		activeSettings.override("marketplace.autoUpdate", "off");
+		cfgStartupCheckUpdate.override(activeSettings, false);
+		cfgStartupChangelogMode.override(activeSettings, "hidden");
+		cfgStartupSetupWizard.override(activeSettings, false);
+		cfgStartupShowSplash.override(activeSettings, false);
+		cfgMarketplaceAutoUpdate.override(activeSettings, "off");
 		installInMemoryRelay();
 		const publish = registry.publishCollabHost;
 		vi.spyOn(registry, "publishCollabHost").mockImplementation((source, options) =>
@@ -132,7 +151,12 @@ describe("outer startup collaboration gate", () => {
 		});
 		Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
 		const authStorage = await AuthStorage.create(path.join(testSession.tempDir, "startup-auth.db"));
-		beginStartupComposer({ terminal: new VirtualTerminal(), version: "test", cache: false });
+		beginStartupComposer({
+			terminal: new VirtualTerminal(),
+			version: "test",
+			cache: false,
+			recentSessions: noRecentSessions,
+		});
 		const rawArgs = ["--no-session", "--no-extensions", "--no-skills", "--no-rules", "--no-tools", "--no-lsp"];
 		const running = runRootCommand(parseArgs(rawArgs), rawArgs, {
 			settings: activeSettings,
@@ -258,16 +282,16 @@ describe("Composer prepaint", () => {
 		await initTheme();
 		settings = await Settings.init({ inMemory: true });
 		config = {
-			quiet: settings.get("startup.quiet"),
-			composerShape: settings.get("composer.shape") ?? "box",
-			showHardwareCursor: settings.get("showHardwareCursor"),
-			maxInlineImages: settings.get("tui.maxInlineImages"),
-			resizeScrollback: settings.get("tui.resizeScrollback"),
-			imeSafeCursor: settings.get("tui.imeSafeCursor"),
-			autocompleteMaxVisible: settings.get("autocompleteMaxVisible"),
-			spellingTypoDetection: settings.get("spelling.typoDetection"),
-			spellingAutocomplete: settings.get("spelling.autocomplete"),
-			spellingAutocorrect: settings.get("spelling.autocorrect"),
+			quiet: cfgStartupQuiet.get(settings),
+			composerShape: cfgComposerShape.get(settings) ?? "box",
+			showHardwareCursor: cfgShowHardwareCursor.get(settings),
+			maxInlineImages: cfgTuiMaxInlineImages.get(settings),
+			resizeScrollback: cfgTuiResizeScrollback.get(settings),
+			imeSafeCursor: cfgTuiImeSafeCursor.get(settings),
+			autocompleteMaxVisible: cfgAutocompleteMaxVisible.get(settings),
+			spellingTypoDetection: cfgSpellingTypoDetection.get(settings),
+			spellingAutocomplete: cfgSpellingAutocomplete.get(settings),
+			spellingAutocorrect: cfgSpellingAutocorrect.get(settings),
 		};
 	});
 
@@ -323,7 +347,7 @@ describe("Composer prepaint", () => {
 
 		try {
 			await initTheme(false, "ascii");
-			settings.set("composer.shape", "box");
+			cfgComposerShape.set(settings, "box");
 			vi.spyOn(KeybindingsManager, "create").mockReturnValue(KeybindingsManager.inMemory({ "app.clear": "ctrl+x" }));
 			mode = new InteractiveMode(
 				testSession.session,
@@ -562,18 +586,27 @@ describe("Composer prepaint", () => {
 		expect(exit).toHaveBeenCalledWith(130);
 	});
 
-	it("uses standard emergency exit before interactive keybindings load", () => {
+	it("forward-deletes a startup draft before interactive keybindings load, exiting once it is empty", () => {
 		const terminal = new CountingTerminal();
 		const exit = vi.fn();
 		const composer = new Composer({ preferences: config, terminal, exit });
 		composer.start();
 
 		terminal.sendInput("draft");
+		terminal.sendInput("\x1b[D"); // Left, so Ctrl+D has a character ahead of the cursor
+		terminal.sendInput("\x04");
+		expect(composer.editor.getExpandedText()).toBe("draf");
+		expect(exit).not.toHaveBeenCalled();
+		expect(terminal.stops).toBe(0);
+
+		for (let i = 0; i < 4; i++) terminal.sendInput("\x7f"); // Backspace the rest of the draft
+		expect(composer.editor.getExpandedText()).toBe("");
 		terminal.sendInput("\x04");
 
 		expect(exit).toHaveBeenCalledWith(0);
 		expect(terminal.stops).toBe(1);
 	});
+
 	it("keeps emergency exit live after adoption until interactive handlers replace it", () => {
 		const terminal = new CountingTerminal();
 		const exit = vi.fn();
@@ -590,20 +623,6 @@ describe("Composer prepaint", () => {
 		expect(terminal.stops).toBe(1);
 	});
 
-	it("first frame mirrors the canonical settings-schema defaults", () => {
-		expect(COMPOSER_DEFAULTS).toEqual({
-			quiet: getDefault("startup.quiet"),
-			composerShape: getDefault("composer.shape") ?? "box",
-			showHardwareCursor: getDefault("showHardwareCursor"),
-			maxInlineImages: getDefault("tui.maxInlineImages"),
-			resizeScrollback: getDefault("tui.resizeScrollback"),
-			imeSafeCursor: getDefault("tui.imeSafeCursor"),
-			autocompleteMaxVisible: getDefault("autocompleteMaxVisible"),
-			spellingTypoDetection: getDefault("spelling.typoDetection"),
-			spellingAutocomplete: getDefault("spelling.autocomplete"),
-			spellingAutocorrect: getDefault("spelling.autocorrect"),
-		});
-	});
 	it("renders the complete interactive welcome scene on the first frame", async () => {
 		const terminal = new CountingTerminal(80, 32);
 		const composer = new Composer({
@@ -732,6 +751,7 @@ describe("Composer prepaint", () => {
 			terminal,
 			version: "9.9.9",
 			cache: false,
+			recentSessions: noRecentSessions,
 		});
 		await terminal.waitForRender(() =>
 			terminal.getViewport().some(row => Bun.stripANSI(row).includes("Welcome back!")),
@@ -751,9 +771,9 @@ describe("Composer prepaint", () => {
 			resizeScrollback: config.resizeScrollback,
 			imeSafeCursor: config.imeSafeCursor,
 			autocompleteMaxVisible: config.autocompleteMaxVisible,
-			spellingTypoDetection: settings.get("spelling.typoDetection"),
-			spellingAutocomplete: settings.get("spelling.autocomplete"),
-			spellingAutocorrect: settings.get("spelling.autocorrect"),
+			spellingTypoDetection: cfgSpellingTypoDetection.get(settings),
+			spellingAutocomplete: cfgSpellingAutocomplete.get(settings),
+			spellingAutocorrect: cfgSpellingAutocorrect.get(settings),
 			theme: {},
 		});
 		await terminal.waitForRender();
@@ -781,6 +801,7 @@ describe("Composer prepaint", () => {
 			terminal,
 			version: "9.9.9",
 			cache: false,
+			recentSessions: noRecentSessions,
 		});
 		await terminal.waitForRender(() =>
 			terminal.getViewport().some(row => Bun.stripANSI(row).includes("Welcome back!")),
@@ -797,30 +818,47 @@ describe("Composer prepaint", () => {
 			.join("\n");
 		expect(output).toContain("rust-analyzer");
 	});
-	it("transfers the in-flight recent-session load across composer ownership", async () => {
+	it("starts recent-session I/O only after the prepaint turn and transfers it across ownership", async () => {
 		const terminal = new CountingTerminal(80, 32);
 		const load = Promise.withResolvers<Array<{ name: string; timeAgo: string }>>();
+		let calls = 0;
 		beginStartupComposer({
 			preferences: config,
 			terminal,
 			version: "9.9.9",
 			cache: false,
-			recentSessions: () => load.promise,
+			recentSessions: () => {
+				calls++;
+				return load.promise;
+			},
 		});
 
+		expect(calls).toBe(0);
 		const lease = takeStartupComposerLease();
 		expect(lease).toBeDefined();
+		const updateWelcome = vi.spyOn(lease!.composer, "updateWelcome");
+		lease?.dispose();
 		const rows = [{ name: "already loading", timeAgo: "just now" }];
 		load.resolve(rows);
 		expect(await lease?.recentSessions).toEqual(rows);
-		lease?.dispose();
+		expect(calls).toBe(1);
+		expect(updateWelcome).not.toHaveBeenCalled();
 	});
 	it("defers raw input until resolved settings arrive, adoption as fallback", async () => {
 		// Regression contract: losing the deferral re-blinds typing during the
 		// startup module-load stall; losing the enable leaves the keyboard dead
 		// for the whole session.
 		const terminal = new InputTrackingTerminal(80, 32);
-		beginStartupComposer({ preferences: config, terminal, version: "9.9.9", cache: false });
+		beginStartupComposer({
+			preferences: config,
+			terminal,
+			version: "9.9.9",
+			cache: false,
+			recentSessions: noRecentSessions,
+		});
+		// The prepaint must be physically written before any async runtime import
+		// can monopolize the event loop; a merely queued render is still a blind gap.
+		expect(terminal.getViewport().some(row => Bun.stripANSI(row).includes("9.9.9"))).toBeTrue();
 		expect(terminal.startOptions?.deferInput).toBeTrue();
 		expect(terminal.inputEnables).toBe(0);
 
@@ -836,7 +874,13 @@ describe("Composer prepaint", () => {
 
 	it("adoption enables raw input when settings never resolved", () => {
 		const terminal = new InputTrackingTerminal(80, 32);
-		beginStartupComposer({ preferences: config, terminal, version: "9.9.9", cache: false });
+		beginStartupComposer({
+			preferences: config,
+			terminal,
+			version: "9.9.9",
+			cache: false,
+			recentSessions: noRecentSessions,
+		});
 		const lease = takeStartupComposerLease();
 		lease?.adopt();
 		expect(terminal.inputEnables).toBe(1);

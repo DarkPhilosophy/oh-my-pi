@@ -1,42 +1,17 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
+import { type BtwHistoryRecord, type BtwHistoryTurn, getBtwLatestTurn } from "@oh-my-pi/pi-tui/overlays/btw-history";
 import { acquireFileLock, type FileLockHandle, isEnoent, toError } from "@oh-my-pi/pi-utils";
 import { replaceFileAtomically } from "../utils/atomic-file";
 
-export interface BtwHistoryTurn {
-	question: string;
-	answer: string;
-	status: "running" | "complete" | "cancelled" | "error" | "interrupted";
-	createdAt: number;
-	updatedAt: number;
-	error?: string;
-}
-
-export interface BtwHistoryRecord extends BtwHistoryTurn {
-	id: string;
-	leafId: string | null;
-	followUps?: readonly BtwHistoryTurn[];
-}
-
-export function getBtwLatestTurn(record: BtwHistoryRecord): BtwHistoryTurn {
-	return record.followUps?.at(-1) ?? record;
-}
-
-export function getBtwTurns(record: BtwHistoryRecord): readonly BtwHistoryTurn[] {
-	return [record, ...(record.followUps ?? [])];
-}
-
-/** Copy the most recent nonblank answer, preserving its original whitespace. */
-export function getBtwCopyText(record: BtwHistoryRecord): string | undefined {
-	if (record.followUps) {
-		for (let index = record.followUps.length - 1; index >= 0; index--) {
-			const answer = record.followUps[index]!.answer;
-			if (answer.trim()) return answer;
-		}
-	}
-	return record.answer.trim() ? record.answer : undefined;
-}
+export {
+	type BtwHistoryRecord,
+	type BtwHistoryTurn,
+	getBtwCopyText,
+	getBtwLatestTurn,
+	getBtwTurns,
+} from "@oh-my-pi/pi-tui/overlays/btw-history";
 
 const turnFields = {
 	question: "string",
@@ -102,6 +77,14 @@ async function readRecord(filePath: string): Promise<StoredRecord | undefined> {
 	}
 }
 
+function historyDirectory(artifactsDir: string, scope: string | undefined): string {
+	const root = path.join(artifactsDir, "btw-history");
+	if (scope === undefined) return root;
+	// Session ids come from session headers; never let one escape the history root.
+	const segment = /^[\w-]+$/.test(scope) ? scope : new Bun.CryptoHasher("sha256").update(scope).digest("hex");
+	return path.join(root, "sessions", segment);
+}
+
 /** Session-local sidecar storage; never reads or writes the main session journal. */
 export class BtwHistoryStore {
 	readonly #directory: string | undefined;
@@ -116,10 +99,13 @@ export class BtwHistoryStore {
 		this.#directory = directory;
 	}
 
-	static async open(artifactsDir: string | undefined): Promise<BtwHistoryStore> {
-		const store = new BtwHistoryStore(
-			artifactsDir === undefined ? undefined : path.join(artifactsDir, "btw-history"),
-		);
+	/**
+	 * Open the BTW history for an artifacts directory. Subagents share their
+	 * parent's artifacts directory, so a `scope` (the owning session id) keeps
+	 * each focused agent's side conversations apart from main and its siblings.
+	 */
+	static async open(artifactsDir: string | undefined, scope?: string): Promise<BtwHistoryStore> {
+		const store = new BtwHistoryStore(artifactsDir === undefined ? undefined : historyDirectory(artifactsDir, scope));
 		if (store.#directory === undefined) return store;
 		let names: string[];
 		try {

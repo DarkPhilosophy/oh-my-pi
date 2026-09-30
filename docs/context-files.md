@@ -124,7 +124,7 @@ Starting in `repo/packages/api`:
 
 ## Injection behavior
 
-With the default prompt template, discovered context files are injected into the opening project prompt as one `<repo-rules>` block, with one `<file>` element per surviving file in the sort order above:
+Discovered context files are injected as one `<repo-rules>` block, with one `<file>` element per surviving file in the sort order above. The block lives in the trailing `<project-context>` system block, after the static system prompt, together with every other working-directory-derived section (`<dir-context>`, `<workspace-tree>`, `<workspace-roots>`), so sessions in different directories share the static prompt as a cached prefix:
 
 ```xml
 <repo-rules>
@@ -138,7 +138,7 @@ You MUST follow the context files below for all tasks:
 </repo-rules>
 ```
 
-When `SYSTEM.md` selects the bundled custom-prompt template, the same files are emitted in that template's `<project>` / `<instructions>` section instead. In either mode, the agent sees each file's absolute path and fully expanded Markdown content (with `@` imports already resolved).
+The same trailing block is emitted when `SYSTEM.md` selects the bundled custom-prompt template or a custom template. In every mode, the agent sees each file's absolute path and fully expanded Markdown content (with `@` imports already resolved).
 
 Loading is automatic — there is no need to instruct the agent to search for `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, or similar files during a session.
 
@@ -183,6 +183,7 @@ Do not edit generated files.
 
 - It is read **only** at native locations: the active user agent directory and the nearest non-empty project `.omp/` directory selected by the cwd-to-repository-root walk. If that project directory has no `RULES.md`, OMP does not fall back to a farther `.omp/RULES.md`.
 - It is loaded as an **always-apply rule**, not as a context file, so its full body is carried on every request — never demoted to an on-demand rulebook entry — and keeps its hold across long sessions. By default it rides in the system prompt; on vision models with `snapcompact.systemPrompt` imaging enabled the system prompt (this rule included) may instead ship as attached image frames, but the body travels with the request either way.
+- It is re-discovered from disk when a session starts and on session-scoped rebuilds such as `/clear` and `/new`, so creating or editing it while OMP is running takes effect at the next reset — no restart required.
 - It is **always sticky**: frontmatter cannot make it non-sticky. If you want conditional or opt-in behavior, write a normal rule file instead (see [Skills](./skills.md)).
 - Both top-level candidates are synthesized with the rule name `RULES`, and rule deduplication is name-based. In the usual case, a user `RULES.md` shadows the project `RULES.md`; they are not concatenated. Avoid naming a regular file under `.omp/rules/` or the user `rules/` directory `RULES.md`, because native regular rules load earlier and can shadow both sticky candidates.
 
