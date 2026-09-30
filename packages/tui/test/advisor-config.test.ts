@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -11,7 +11,7 @@ import {
 	type AdvisorConfigDeps,
 	type WatchdogConfigDoc,
 } from "../src/overlays/advisor-config";
-import { getThemeByName, setThemeInstance } from "../src/theme";
+import { getThemeByName, setSymbolPreset, setThemeInstance } from "../src/theme";
 
 const deps: AdvisorConfigDeps = {
 	getAvailableModels: () => [],
@@ -903,5 +903,50 @@ describe("advisor tools editor keyboard navigation", () => {
 		const done = rows.findIndex(row => row.includes("Done"));
 		expect(done).toBeGreaterThanOrEqual(0);
 		expect(rows.findIndex(row => row.includes("(end)"))).toBeGreaterThan(done);
+	});
+});
+
+describe("advisor config display text", () => {
+	const callbacks = {
+		loadDoc: async () => ({ advisors: [] }),
+		save: async () => {},
+		close: () => {},
+		requestRender: () => {},
+		notify: () => {},
+	};
+
+	beforeAll(async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("theme unavailable");
+		setThemeInstance(theme);
+	});
+
+	afterAll(async () => {
+		await setSymbolPreset("unicode");
+	});
+
+	it("draws no non-ASCII footer hint under the ascii symbol preset", async () => {
+		await setSymbolPreset("ascii");
+		const overlay = new AdvisorConfigOverlayComponent({} as TUI, deps, "project", { advisors: [{ name: "Reviewer" }] }, callbacks);
+		const footers: string[] = [];
+		footers.push(Bun.stripANSI(overlay.render(100).at(-2) ?? ""));
+		overlay.handleInput("\r"); // Advisor detail: a different footer.
+		footers.push(Bun.stripANSI(overlay.render(100).at(-2) ?? ""));
+
+		for (const footer of footers) {
+			expect(footer.trim().length).toBeGreaterThan(0);
+			expect(footer).not.toMatch(/[^\x20-\x7e]/);
+		}
+	});
+
+	it("renders an advisor name containing tabs and escape sequences as clean single-line text", async () => {
+		await setSymbolPreset("unicode");
+		const hostile = "Sec\turity\x1b[31m\nred";
+		const overlay = new AdvisorConfigOverlayComponent({} as TUI, deps, "project", { advisors: [{ name: hostile }] }, callbacks);
+		const frame = overlay.render(100).join("\n");
+
+		expect(frame).not.toContain("\x1b[31m");
+		expect(frame).not.toContain("\t");
+		expect(Bun.stripANSI(frame)).toContain("Sec urity red");
 	});
 });
