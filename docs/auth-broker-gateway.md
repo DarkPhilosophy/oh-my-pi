@@ -129,38 +129,39 @@ Capability-dependent responses include `Vary: OMP-Auth-Broker-Capabilities` so i
 ### CLI
 
 ```
-omp auth-gateway serve   [--bind=host:port] [--no-auth]
+omp auth-gateway serve   [--bind=host:port] [--no-auth] [--trust-proxy-headers]
 omp auth-gateway token   [--regenerate] [--json]
 omp auth-gateway status  [--json]
 omp auth-gateway check   [--strict] [--json]
 ```
 
 - `serve` requires `OMP_AUTH_BROKER_URL` (or `auth.broker.url` in `config.yml`) — the gateway is itself a broker client. It calls `AuthBrokerClient.fetchSnapshot()`, wraps it in `RemoteAuthCredentialStore`, and constructs an `AuthStorage` that resolves access tokens through the broker. Default bind is `127.0.0.1:4000`. The gateway token is stored at `<config-dir>/auth-gateway.token` (`0600`); `--no-auth` disables the bearer check entirely (loopback-only use).
+- Logs attribute requests to the socket peer address. Behind a trusted reverse proxy, pass `--trust-proxy-headers` to use `X-Forwarded-For` / `X-Real-IP` for authenticated requests; unauthorized requests are always logged with the socket peer. An authenticated request that also carries the gateway token in its URL or in a forwarded, logged, or identity header is rejected with `400` before any credential lookup.
 - `token` / `status` manage and inspect the gateway bearer token and upstream broker readiness.
 - `check` probes broker-backed credentials through the gateway store. Without `--strict` it uses provider usage probes; `--strict` also exercises each credential against its chat-completion endpoint and can consume a small amount of quota.
 
 ### Endpoints
 
-| Method | Path                    | Auth   | Purpose                                                      |
-| ------ | ----------------------- | ------ | ------------------------------------------------------------ |
-| `GET`  | `/healthz`              | none   | Liveness + version                                           |
-| `GET`  | `/v1/usage`             | bearer | Aggregate `UsageReport[]` (proxied through `AuthStorage`)    |
-| `GET`  | `/v1/models`            | bearer | Bundled-model catalog filtered to providers with credentials |
-| `GET`  | `/v1/credentials/check` | bearer | Per-credential auth health probe                             |
-| `POST` | `/v1/chat/completions`  | bearer | OpenAI Chat Completions wire format                          |
-| `POST` | `/v1/messages`          | bearer | Anthropic Messages wire format                               |
-| `POST` | `/v1/responses`         | bearer | OpenAI Responses wire format                                 |
-| `POST` | `/v1/pi/stream`         | bearer | Native `pi-ai` stream wire format                            |
-| `POST` | `/v1/systemone`         | bearer | TypeSafe System One judgments (`judge` models, e.g. `typesafe/jev-latest`); `/alpha/decisions` is the OpenRouter Decisions alias |
-| `POST` | `/v1/images/generations` | bearer | Image generation, OpenAI Images JSON wire; `/v1/images` is the OpenRouter alias (`image` models) |
-| `POST` | `/v1/images/edits`      | bearer | Image edits: OpenAI multipart or OpenRouter JSON input images |
-| `POST` | `/v1/audio/speech`      | bearer | Text-to-speech, OpenAI/OpenRouter JSON wire; answers raw audio bytes (`tts` models: `xai-tts`, `openai-speech`) |
-| `POST` | `/v1/audio/transcriptions` | bearer | Speech-to-text, OpenAI multipart `file` or OpenRouter JSON `input_audio` base64 (`stt` models on `openai-transcriptions`; 25 MiB cap) |
-| `POST` | `/v1/embeddings`        | bearer | Embeddings, OpenAI wire (`embedding` models on `openai-embeddings`; OpenAI + OpenRouter; 8 MiB cap) |
-| `POST` | `/v1/rerank`            | bearer | Rerank, OpenRouter wire (`rerank` models on `openrouter-rerank`) |
-| `POST` | `/v1/videos`            | bearer | Submit a video generation job, OpenRouter wire (`video` models on `openrouter-video`); answers `202` with gateway-rewritten polling/content URLs |
-| `GET`  | `/v1/videos/:id`        | bearer | Poll a video job. `:id` is gateway-issued and stateless: it encodes provider, model, and upstream job id |
-| `GET`  | `/v1/videos/:id/content` | bearer | Stream the finished video bytes with the upstream content type |
+| Method | Path                       | Auth   | Purpose                                                                                                                                          |
+| ------ | -------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET`  | `/healthz`                 | none   | Liveness + version                                                                                                                               |
+| `GET`  | `/v1/usage`                | bearer | Aggregate `UsageReport[]` (proxied through `AuthStorage`)                                                                                        |
+| `GET`  | `/v1/models`               | bearer | Bundled-model catalog filtered to providers with credentials                                                                                     |
+| `GET`  | `/v1/credentials/check`    | bearer | Per-credential auth health probe                                                                                                                 |
+| `POST` | `/v1/chat/completions`     | bearer | OpenAI Chat Completions wire format                                                                                                              |
+| `POST` | `/v1/messages`             | bearer | Anthropic Messages wire format                                                                                                                   |
+| `POST` | `/v1/responses`            | bearer | OpenAI Responses wire format                                                                                                                     |
+| `POST` | `/v1/pi/stream`            | bearer | Native `pi-ai` stream wire format                                                                                                                |
+| `POST` | `/v1/systemone`            | bearer | TypeSafe System One judgments (`judge` models, e.g. `typesafe/jev-latest`); `/alpha/decisions` is the OpenRouter Decisions alias                 |
+| `POST` | `/v1/images/generations`   | bearer | Image generation, OpenAI Images JSON wire; `/v1/images` is the OpenRouter alias (`image` models)                                                 |
+| `POST` | `/v1/images/edits`         | bearer | Image edits: OpenAI multipart or OpenRouter JSON input images                                                                                    |
+| `POST` | `/v1/audio/speech`         | bearer | Text-to-speech, OpenAI/OpenRouter JSON wire; answers raw audio bytes (`tts` models: `xai-tts`, `openai-speech`)                                  |
+| `POST` | `/v1/audio/transcriptions` | bearer | Speech-to-text, OpenAI multipart `file` or OpenRouter JSON `input_audio` base64 (`stt` models on `openai-transcriptions`; 25 MiB cap)            |
+| `POST` | `/v1/embeddings`           | bearer | Embeddings, OpenAI wire (`embedding` models on `openai-embeddings`; OpenAI + OpenRouter; 8 MiB cap)                                              |
+| `POST` | `/v1/rerank`               | bearer | Rerank, OpenRouter wire (`rerank` models on `openrouter-rerank`)                                                                                 |
+| `POST` | `/v1/videos`               | bearer | Submit a video generation job, OpenRouter wire (`video` models on `openrouter-video`); answers `202` with gateway-rewritten polling/content URLs |
+| `GET`  | `/v1/videos/:id`           | bearer | Poll a video job. `:id` is gateway-issued and stateless: it encodes provider, model, and upstream job id                                         |
+| `GET`  | `/v1/videos/:id/content`   | bearer | Stream the finished video bytes with the upstream content type                                                                                   |
 
 The model id is read from the top-level `model` field for foreign wire formats and from the pi-native request body for `/v1/pi/stream`. It may be provider-qualified (`typesafe/jev-latest`) or bare (`jev-latest`). The gateway resolves it against the served catalog — every registry model of a kind the gateway has a route for (`chat`, `judge`, `image`, `tts`, `stt`, `embedding`, `rerank`, `video`), scoped to providers the broker holds credentials for — parses the inbound wire format, resolves the provider credential from broker-backed `AuthStorage`, dispatches through the matching `pi-ai` client (`streamSimple()` for chat, `TypeSafeJudge` for judgments, `generateImage` / `synthesizeSpeech` / `transcribeAudio` / `embed` / `rerank` / `submitVideo` for the modality routes), and re-encodes the result to the inbound format (SSE for streamed chat responses).
 
@@ -210,8 +211,8 @@ Broker clients can restrict their visible OAuth accounts by setting `OMP_AUTH_BR
 
 ```json
 {
-  "anthropic": ["email:alice@example.com|org:org-team"],
-  "openai-codex": []
+	"anthropic": ["email:alice@example.com|org:org-team"],
+	"openai-codex": []
 }
 ```
 

@@ -565,27 +565,35 @@ export async function getOrFetchIssue(options: IssueViewLookupOptions): Promise<
 
 	const doFetch = () => fetchIssueViewFresh(options.cwd, repo, identifier, includeComments, options.signal);
 
+	let result: ViewLookupResult<GhIssueViewData>;
 	if (!repo || cacheNumber === undefined) {
 		const fresh = await doFetch();
-		return { ...fresh, status: "miss", fetchedAt: Date.now() };
+		result = { ...fresh, status: "miss", fetchedAt: Date.now() };
+	} else {
+		const lookup = await getOrFetchView<GhIssueViewData>({
+			repo,
+			kind: "issue",
+			number: cacheNumber,
+			includeComments,
+			settings: options.settings,
+			authKey,
+			fetchFresh: doFetch,
+		});
+		result = {
+			rendered: lookup.rendered,
+			sourceUrl: lookup.sourceUrl,
+			payload: lookup.payload,
+			status: lookup.status,
+			fetchedAt: lookup.fetchedAt,
+		};
 	}
-
-	const lookup = await getOrFetchView<GhIssueViewData>({
-		repo,
-		kind: "issue",
-		number: cacheNumber,
-		includeComments,
-		settings: options.settings,
-		authKey,
-		fetchFresh: doFetch,
-	});
-	return {
-		rendered: lookup.rendered,
-		sourceUrl: lookup.sourceUrl,
-		payload: lookup.payload,
-		status: lookup.status,
-		fetchedAt: lookup.fetchedAt,
-	};
+	// GitHub shares one number space and `gh issue view` also answers for a pull request. Checked after the
+	// cache so rows stored before this guard are caught too.
+	const pullNumber = /\/pull\/(\d+)\/?$/.exec(result.payload.url ?? "")?.[1];
+	if (pullNumber !== undefined) {
+		throw new ToolError(`#${pullNumber} is a pull request, not an issue. Use pr://${pullNumber}.`);
+	}
+	return result;
 }
 
 /**

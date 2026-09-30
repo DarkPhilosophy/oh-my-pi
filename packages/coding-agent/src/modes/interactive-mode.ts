@@ -1006,14 +1006,11 @@ function renderSubagentToolPreview(session: ObservableSession, width: number): s
 	const args = currentTool ? progress.currentToolArgs : recent?.args;
 	const argsKey = currentTool ? progress.currentToolArgsKey : recent?.argsKey;
 	// A model-written intent is prose, so home paths inside it are shortened as they stand. An argument is
-	// shortened by its key, so a literal search pattern that names a home path still shows what was
-	// searched; a producer that sends no key keeps the general shortening.
+	// shortened by its key, so a literal search pattern that names a home path still shows what was searched.
 	const detail = intent
 		? shortenEmbeddedPaths(replaceTabs(intent))
 		: args
-			? argsKey === undefined
-				? shortenEmbeddedPaths(replaceTabs(args))
-				: shortenToolArgumentPaths(replaceTabs(args), argsKey)
+			? shortenToolArgumentPaths(replaceTabs(args), argsKey)
 			: undefined;
 	const elapsed = currentTool && progress.currentToolStartMs ? Date.now() - progress.currentToolStartMs : 0;
 	const elapsedLabel =

@@ -6,6 +6,13 @@
 
 - `AuthStorage.keys.setConfig(provider, value, { fallback: true })` registers a key that is used only when no stored OAuth or `/login` credential exists, instead of overriding them; `removeConfig`/`clearConfig` also clear these fallbacks ([#13815](https://github.com/can1357/oh-my-pi/pull/13815) by [@H4vC](https://github.com/H4vC))
 
+### Fixed
+
+- Auth gateway checks for configured bearer tokens in URLs or forwarded/logged headers only after authentication; unauthorized requests use socket peers and redact unknown paths. Authenticated requests with misplaced tokens are rejected before provider dispatch ([#13827](https://github.com/can1357/oh-my-pi/pull/13827) by [@shawnkoh](https://github.com/shawnkoh)).
+- Codex sessions no longer keep spending an account's credits after its plan limit is reached while another logged-in account still has plan usage left; new and ongoing sessions switch to that account, and credits are used only when no account has plan usage left ([#13889](https://github.com/can1357/oh-my-pi/issues/13889)).
+- Runtime usage providers (`usage.setProvider`, extension `registerProvider({ usage })`) now key cached reports by their own `cacheVersion`, so reports written by processes without the override are no longer served to it ([#13814](https://github.com/can1357/oh-my-pi/issues/13814)).
+- xAI OAuth accounts with active weekly credits no longer switch away solely because an uncertain monthly counter exceeds its limit ([#13806](https://github.com/can1357/oh-my-pi/issues/13806)).
+
 ## [18.4.4] - 2026-09-29
 
 ### Added
@@ -596,6 +603,7 @@
 - Fixed a Codex denial for one model tier being treated as a denial of another (e.g. a `-codex-spark` or `-daybreak-*` denial applied to plain `gpt-5.2`); only deployment-suffixed rollout SKUs of the requested model now match, so a tier's block never leaks onto a different tier or meter.
 - Fixed advisors and other sessions staying stuck on an account that lacks a model (e.g. `gpt-daybreak-blue-latest`): a model entitlement denial raised before any credential selection was recorded now resolves and blocks the offending account, so the next attempt falls back to the account that has the model.
 - Fixed Codex model entitlement fallback looping on the unentitled account when the account that owns the model had a longer ordinary chat-quota block; exact `model-policy:<model>` blocks now rank behind unrelated usage-window blocks, and the unentitled account stays parked instead of winning all-blocked fallback by its earlier expiry.
+
 ### Changed
 
 - Broker-backed startup no longer blocks on a broker round trip when the encrypted snapshot cache is fresh: the credential store starts from the cached snapshot and the background snapshot stream revalidates immediately (stale-while-revalidate). First launches and expired caches still fail fast with the actionable broker error.
@@ -1408,6 +1416,7 @@
 
 - Changed the xAI Grok OAuth (`xai-oauth`) provider to use manual code-paste login by default. `/login` now accepts a pasted authorization code or full `http://127.0.0.1:56121/callback?code=...` redirect URL without starting a local callback listener ([#3277](https://github.com/can1357/oh-my-pi/pull/3277) by [@Jaaneek](https://github.com/Jaaneek)).
 - Renamed the xAI Grok OAuth provider in login and credential prompts to "xAI Grok OAuth (SuperGrok or X Premium+)" ([#3277](https://github.com/can1357/oh-my-pi/pull/3277) by [@Jaaneek](https://github.com/Jaaneek)).
+
 ### Fixed
 
 - Dropped `presence_penalty`, `frequency_penalty`, and `stop` on xAI Grok reasoning models (chat-completions and Responses) so a configured presencePenalty no longer 400s the default grok-4.5 request (xAI rejects those params on reasoning models).
@@ -2580,7 +2589,7 @@
 - Fixed `AnthropicMessagesClient` spreading `fetchOptions` after the core request fields, letting a caller-supplied `signal`/`method`/`body` silently disconnect the timeout controller or corrupt the request. Transport extras (TLS) still pass through; core fields now always win.
 - Fixed Foundry mTLS/CA material being cached for the process lifetime when the env vars point at files: the cache key now folds in the file mtime so on-disk certificate rotation takes effect.
 - Fixed the Claude Code fingerprint version drifting across surfaces: the usage endpoint (`claude-cli/2.1.160`) and OAuth bootstrap (`claude-code/2.1.160`) pinned a stale version while `/v1/messages` reported 2.1.165; both now derive from `claudeCodeVersion`.
-- Fixed a system prompt that merely *mentions* `x-anthropic-billing-header:` mid-text suppressing the entire Claude Code system-block injection (billing header, instruction, and cch attestation); the resumed-session guard now anchors with `startsWith`.
+- Fixed a system prompt that merely _mentions_ `x-anthropic-billing-header:` mid-text suppressing the entire Claude Code system-block injection (billing header, instruction, and cch attestation); the resumed-session guard now anchors with `startsWith`.
 - Fixed lone surrogates in cross-API tool-call arguments reaching Anthropic's strict UTF-8 validation: replayed OpenAI/Google-origin `tool_use.input` string leaves are now deep-sanitized with `toWellFormed()`, while same-API Anthropic arguments stay byte-identical to keep prompt-cache prefixes stable.
 - Bounded the many-image resize fan-out to 4 concurrent decodes (it previously decoded every oversized image at once, two encode pipelines each — multi-GB transient memory at the 20+-image threshold that activates the feature).
 - Fixed `mergeHeaders` merging case-sensitively on the Copilot/client-options path, where a miscased user-configured header (e.g. `authorization` next to the synthesized `Authorization`) survived as two keys that the `Headers` constructor joins comma-separated on the wire.
@@ -2613,7 +2622,7 @@
 ### Fixed
 
 - Fixed a degenerate OpenAI Codex stream (the model emits whitespace-only `function_call_arguments.delta` frames forever — commonly seen right after a `todo` tool call) terminating the turn with an error instead of recovering. The whitespace-loop circuit-breaker now (a) stops aborting the shared per-request `AbortController` — `requestSignal` is an `AbortSignal.any` over it, so aborting latched it and made every reopen on the reused `requestSetup` impossible — and (b) drops the half-built junk tool call and replays the request from scratch, bounded by `CODEX_WHITESPACE_LOOP_RETRY_LIMIT` (2). Sampling nondeterminism usually clears the loop on a fresh attempt; once the budget is exhausted the error is surfaced as before, but without the junk tool call polluting the message.
-- Capped requested output tokens at 64k (`OPENAI_MAX_OUTPUT_TOKENS`, mirroring Anthropic's `CLAUDE_CODE_MAX_OUTPUT_TOKENS`) on OpenAI-family wires with a known upstream output cap — the `openai-completions` request builder (non-OpenRouter) and the shared responses sampling helper (`openai-responses`, `azure-openai-responses`). A model's catalog `maxTokens` often tracks its context window rather than the upstream's per-request output cap, so requesting the full ceiling 400'd (e.g. `z-ai/glm-4.7` asking for 131072 output exceeded the upstream's 131072-token *total* context). Output is now `min(requested, model.maxTokens, 64000)`.
+- Capped requested output tokens at 64k (`OPENAI_MAX_OUTPUT_TOKENS`, mirroring Anthropic's `CLAUDE_CODE_MAX_OUTPUT_TOKENS`) on OpenAI-family wires with a known upstream output cap — the `openai-completions` request builder (non-OpenRouter) and the shared responses sampling helper (`openai-responses`, `azure-openai-responses`). A model's catalog `maxTokens` often tracks its context window rather than the upstream's per-request output cap, so requesting the full ceiling 400'd (e.g. `z-ai/glm-4.7` asking for 131072 output exceeded the upstream's 131072-token _total_ context). Output is now `min(requested, model.maxTokens, 64000)`.
 - Stopped sending `max_tokens`/`max_completion_tokens` on OpenRouter (`openrouter.ai`) completions requests. OpenRouter filters out any upstream whose advertised output cap is below the requested `max_tokens`, so a value derived from the catalog (which reflects the highest-cap provider) silently excluded lower-cap upstreams — `provider.order: ["cerebras"]` for `z-ai/glm-4.7` fell through to DeepInfra because Cerebras's ~40k output cap is below the request, while `only: ["cerebras"]` (no fallback target) bypassed the filter and worked. Omitting the field lets each upstream self-cap and keeps provider routing (`only`/`order`) honored. Kimi via OpenRouter stays exempt — it derives TPM rate limits from `max_tokens`.
 
 ## [15.10.7] - 2026-06-08
@@ -2811,7 +2820,7 @@
 - Reasoning models now append `effort-2025-11-24` to the per-request `Anthropic-Beta` header (matches Claude Code).
 - `buildAnthropicSystemBlocks` (CC-instruction mode) now emits the same 3-block layout as Claude Code: billing header (never cached), system instruction (cached), all user content merged into one block with `\n\n` (cached). Previously emitted one block per item with cache only on the last, which fingerprinted the caller by block count.
 - `applyPromptCaching` now matches Claude Code's breakpoint layout: 2 system (instruction + merged content) + 2 message, with no tool breakpoint. The tool breakpoint was redundant — tools follow system in the token sequence, so when system changes the tool cache prefix also changes. The instruction block (system[1]) is stable across every request and now gets its own guaranteed-hit breakpoint.
-- `applyPromptCaching` now caches the last two messages regardless of role instead of the last two *user* messages. The penultimate assistant message (tool calls + response from the previous turn) is larger and more recently created than the penultimate user message, making it the higher-value cache target.
+- `applyPromptCaching` now caches the last two messages regardless of role instead of the last two _user_ messages. The penultimate assistant message (tool calls + response from the previous turn) is larger and more recently created than the penultimate user message, making it the higher-value cache target.
 - OAuth scope set expanded: added `user:sessions:claude_code`, `user:mcp_servers`, `user:file_upload`. `AUTHORIZE_URL` stays at `claude.ai/oauth/authorize` and `TOKEN_URL` stays at `api.anthropic.com/v1/oauth/token` — the `platform.claude.com` equivalents are CC's console-credential flow and do not grant `user:inference`, which OMP requires for direct OAuth-token inference.
 - Token refresh POST now sends `anthropic-beta: oauth-2025-04-20` and `User-Agent: anthropic-sdk-typescript/0.94.0 userOAuthProvider` (CC sends these on refresh but not on the initial code exchange).
 
@@ -3498,8 +3507,8 @@
 ### Fixed
 
 - Fixed DeepSeek V4 tool-call follow-up 400 errors from three root causes:
-  - Mapped `reasoning_effort` "xhigh" to "max" for DeepSeek-family models on any provider (NVIDIA, OpenCode-Go, etc.), not just `deepseek`
-  - Recovered `reasoning_content` from thinking blocks with valid signatures that were filtered by the non-empty-text check
+   - Mapped `reasoning_effort` "xhigh" to "max" for DeepSeek-family models on any provider (NVIDIA, OpenCode-Go, etc.), not just `deepseek`
+   - Recovered `reasoning_content` from thinking blocks with valid signatures that were filtered by the non-empty-text check
 - Added empty-string fallback when `reasoning_content` is genuinely absent (e.g. proxy-stripped) but the provider requires the field
 
 ## [14.5.13] - 2026-05-01
@@ -3587,8 +3596,8 @@
 ### Added
 
 - Added support for Claude Opus 4.7 (`claude-opus-4-7`) model ([#726](https://github.com/can1357/oh-my-pi/issues/726))
-  - Suppresses sampling parameters (temperature/top_p/top_k) that Opus 4.7 rejects
-  - Enables `display: "summarized"` for adaptive thinking to restore visible thinking content
+   - Suppresses sampling parameters (temperature/top_p/top_k) that Opus 4.7 rejects
+   - Enables `display: "summarized"` for adaptive thinking to restore visible thinking content
 
 ### Fixed
 
@@ -5871,10 +5880,10 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 - **OpenAI Token Counting**: Fixed `usage.input` to exclude cached tokens for OpenAI providers. Previously, `input` included cached tokens, causing double-counting when calculating total context size via `input + cacheRead`. Now `input` represents non-cached input tokens across all providers, making `input + output + cacheRead + cacheWrite` the correct formula for total context size.
 - **Fixed Claude Opus 4.5 cache pricing** (was 3x too expensive)
-  - Corrected cache_read: $1.50 → $0.50 per MTok
-  - Corrected cache_write: $18.75 → $6.25 per MTok
-  - Added manual override in `scripts/generate-models.ts` until upstream fix is merged
-  - Submitted PR to models.dev: https://github.com/sst/models.dev/pull/439
+   - Corrected cache_read: $1.50 → $0.50 per MTok
+   - Corrected cache_write: $18.75 → $6.25 per MTok
+   - Added manual override in `scripts/generate-models.ts` until upstream fix is merged
+   - Submitted PR to models.dev: https://github.com/sst/models.dev/pull/439
 
 ## [0.9.4] - 2025-11-26
 

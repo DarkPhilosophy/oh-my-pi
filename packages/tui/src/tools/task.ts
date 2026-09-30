@@ -33,6 +33,7 @@ import {
 	previewLine,
 	previewWindowRows,
 	replaceTabs,
+	shortenEmbeddedPaths,
 	shortenPath,
 	shortenToolArgumentPaths,
 	type ToolUIStatus,
@@ -664,6 +665,11 @@ function renderRouteLine(route: string | undefined, continuePrefix: string, maxW
 	];
 }
 
+/** A tool call's own intent, else its argument, with home paths shortened as the subagent HUD does. */
+function toolCallDetail(intent: string | undefined, args: string | undefined, argsKey: string | undefined): string {
+	return intent ? shortenEmbeddedPaths(intent) : shortenToolArgumentPaths(args ?? "", argsKey);
+}
+
 /**
  * Render streaming progress for a single agent.
  */
@@ -724,9 +730,11 @@ function renderAgentProgress(
 	if (progress.status === "running") {
 		if (progress.currentTool) {
 			let toolLine = `${continuePrefix}${theme.tree.hook} ${theme.fg("muted", sanitizeText(progress.currentTool))}`;
-			const toolDetail =
-				progress.currentToolIntent ??
-				shortenToolArgumentPaths(progress.currentToolArgs ?? "", progress.currentToolArgsKey);
+			const toolDetail = toolCallDetail(
+				progress.currentToolIntent,
+				progress.currentToolArgs,
+				progress.currentToolArgsKey,
+			);
 			if (toolDetail) {
 				toolLine += `: ${theme.fg("dim", previewLine(sanitizeText(toolDetail), 40))}`;
 			}
@@ -741,7 +749,7 @@ function renderAgentProgress(
 			// Show most recent completed tool when idle between tools
 			const recent = progress.recentTools[0];
 			let toolLine = `${continuePrefix}${theme.tree.hook} ${theme.fg("dim", sanitizeText(recent.tool))}`;
-			const toolDetail = recent.intent ?? shortenToolArgumentPaths(recent.args, recent.argsKey);
+			const toolDetail = toolCallDetail(recent.intent, recent.args, recent.argsKey);
 			if (toolDetail) {
 				toolLine += `: ${theme.fg("dim", previewLine(sanitizeText(toolDetail), 40))}`;
 			}
@@ -1800,8 +1808,7 @@ function describeProgressAgent(progress: AgentProgress, state: AgentDescribeStat
 					name: plainText(progress.currentTool),
 					intent:
 						plainText(
-							progress.currentToolIntent ??
-								shortenToolArgumentPaths(progress.currentToolArgs ?? "", progress.currentToolArgsKey),
+							toolCallDetail(progress.currentToolIntent, progress.currentToolArgs, progress.currentToolArgsKey),
 						) || undefined,
 					age: progress.currentToolStartMs ? Math.max(0, nowMs - progress.currentToolStartMs) : undefined,
 				}

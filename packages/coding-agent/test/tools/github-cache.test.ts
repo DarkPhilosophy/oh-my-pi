@@ -537,6 +537,18 @@ describe("getOrFetchIssue (gh-wired wrapper)", () => {
 		expect(spy).toHaveBeenCalledTimes(1); // unchanged — cache hit
 	});
 
+	it("refuses a number that GitHub answers with a pull request", async () => {
+		// `gh issue view` also answers for a PR number; that number has no issue.
+		vi.spyOn(github, "json").mockResolvedValue({
+			...issuePayload(11207, "pr body"),
+			url: `https://github.com/${TEST_REPO}/pull/11207`,
+		} as never);
+
+		await expect(
+			getOrFetchIssue({ cwd: "/tmp/test", repo: TEST_REPO, issue: "11207", cacheAuthKey: TEST_AUTH_KEY }),
+		).rejects.toThrow("#11207 is a pull request, not an issue. Use pr://11207.");
+	});
+
 	it("derives (repo, number) from a full GitHub issue URL identifier", async () => {
 		const spy = vi.spyOn(github, "json").mockResolvedValue(issuePayload(7, "from-url") as never);
 		const url = `https://github.com/${TEST_REPO}/issues/7`;

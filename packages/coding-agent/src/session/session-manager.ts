@@ -42,6 +42,7 @@ import {
 	sanitizeRehydratedOpenAIResponsesAssistantMessage,
 	stripInternalDetailsFields,
 } from "./messages";
+import type { RetryFallbackRole } from "./retry-fallback-chains";
 import { type BuildSessionContextOptions, buildSessionContext, type SessionContext } from "./session-context";
 import {
 	type BranchSummaryEntry,
@@ -3034,6 +3035,7 @@ export class SessionManager {
 		agent?: string;
 		modelRole?: string;
 		resolvedModel?: string;
+		retryFallback?: RetryFallbackRole;
 		readOnly?: boolean;
 		outputSchema?: unknown;
 		outputSchemaMode?: StructuredSubagentSchemaMode;
@@ -3889,6 +3891,7 @@ export interface PersistedSessionInit {
 	agent?: string;
 	modelRole?: string;
 	resolvedModel?: string;
+	retryFallback?: RetryFallbackRole;
 	readOnly?: boolean;
 	outputSchema?: unknown;
 	outputSchemaMode?: StructuredSubagentSchemaMode;
@@ -3915,6 +3918,7 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 			agent: entry.agent,
 			modelRole: entry.modelRole,
 			resolvedModel: entry.resolvedModel,
+			retryFallback: entry.retryFallback,
 			readOnly: entry.readOnly,
 			outputSchema: entry.outputSchema,
 			outputSchemaMode: entry.outputSchemaMode,

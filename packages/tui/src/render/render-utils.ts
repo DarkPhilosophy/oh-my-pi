@@ -933,10 +933,16 @@ function homePatternFor(homeDir: string, windowsStyle: boolean): HomePattern {
 				})
 				.join("[\\\\/]");
 		}
+		// `*` and `_` are also identifier and glob characters (`/home/me_old`, `src/**/home/me/**`), so they
+		// bound the home directory only as Markdown emphasis: opened at start or after whitespace, and
+		// closed before end, whitespace, or punctuation.
+		const end = `[\\\\/\\s"'\\x60)\\]},;:<>&|]`;
 		pattern = {
 			leading: new RegExp(`^${escapedHome}(?=$|[\\\\/])`, windowsStyle ? "i" : ""),
 			embedded: new RegExp(
-				`[a-zA-Z][a-zA-Z0-9+.-]*://[^\\s"'<>]+|(^|[\\s"'\\x60([{=,:;<>&|*_])(${escapedHome})(?=$|[\\\\/\\s"'\\x60)\\]},;:<>&|*_])`,
+				`[a-zA-Z][a-zA-Z0-9+.-]*://[^\\s"'<>]+` +
+					`|(^|[\\s"'\\x60([{=,:<>&|])(${escapedHome})(?=$|${end})` +
+					`|((?:^|\\s)[*_]{1,3})(${escapedHome})(?=$|${end}|[*_]{1,3}(?=$|[\\s.,;:!?)\\]}"'\\x60]))`,
 				windowsStyle ? "gi" : "g",
 			),
 		};
@@ -969,8 +975,13 @@ export function shortenEmbeddedPaths(text: string, homeDir?: string, preserveSep
 	const homePattern = homePatternFor(resolvedHome, windowsStyle);
 	const textWithShortenedHome = text.replace(
 		homePattern.embedded,
-		(match, boundary: string | undefined, candidate: string | undefined) =>
-			candidate === undefined ? match : `${boundary}~`,
+		(
+			match,
+			boundary: string | undefined,
+			candidate: string | undefined,
+			emphasis: string | undefined,
+			emphasized: string | undefined,
+		) => (candidate !== undefined ? `${boundary}~` : emphasized !== undefined ? `${emphasis}~` : match),
 	);
 	if (preserveSeparators) return textWithShortenedHome;
 	return textWithShortenedHome
@@ -989,7 +1000,10 @@ export function shortenEmbeddedPaths(text: string, homeDir?: string, preserveSep
 		.join(" ");
 }
 
-/** Shorten filesystem and command arguments without rewriting literal search patterns. */
+/**
+ * Shorten filesystem and command arguments without rewriting literal search patterns. A producer that
+ * names no argument key gets the general embedded-path shortening.
+ */
 export function shortenToolArgumentPaths(text: string, key: string | undefined, homeDir?: string): string {
 	if (key === "url") {
 		try {
@@ -1013,7 +1027,12 @@ export function shortenToolArgumentPaths(text: string, key: string | undefined, 
 		}
 		return text;
 	}
-	return key === "path" || key === "file_path" || key === "command" || key === "task" || key === "prompt"
+	return key === undefined ||
+		key === "path" ||
+		key === "file_path" ||
+		key === "command" ||
+		key === "task" ||
+		key === "prompt"
 		? shortenEmbeddedPaths(text, homeDir)
 		: text;
 }

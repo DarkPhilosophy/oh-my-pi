@@ -15,6 +15,7 @@
  * flush. Snapshot arrays must also stay immutable after later refreshes.
  */
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as os from "node:os";
 import type { AssistantMessage, TextContent } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -23,7 +24,7 @@ import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
-import { shortenToolArgumentPaths, TRUNCATE_LENGTHS } from "@oh-my-pi/pi-tui/render/render-utils";
+import { TRUNCATE_LENGTHS } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { AgentProgress } from "@oh-my-pi/pi-tui/tools/task";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { createSessionDefaults } from "../helpers/session-defaults";
@@ -346,23 +347,23 @@ describe("tool argument preview semantics", () => {
 		expect(active?.currentToolArgs).toBe("src/aliased.ts");
 	});
 
-	it("keeps complete home path boundaries until the display sanitizer runs", async () => {
-		const home = process.env.HOME!;
-		const command = `echo ${"x".repeat(Math.max(0, 53 - home.length))} ${home}/private/file`;
+	it("shortens home paths before bounding the argument preview", async () => {
+		const home = os.homedir();
+		// Fits the preview bound only once the home directory is shortened; bounding the raw command first
+		// would cut the path inside the home directory or its descendant.
+		const filler = "x".repeat(TRUNCATE_LENGTHS.CONTENT - "echo  ~/private/file".length);
 		const result = await runScenario([], {
 			events: [
 				{
 					type: "tool_execution_start",
 					toolCallId: "bash-1",
 					toolName: "bash",
-					args: { command },
+					args: { command: `echo ${filler} ${home}/private/file` },
 				},
 			],
 		});
-		const args = result.toolSnapshots.find(p => p.currentTool === "bash")?.currentToolArgs ?? "";
-		const preview = shortenToolArgumentPaths(args, "command");
-		expect(preview).toContain("~/private/file");
-		expect(preview).not.toContain(home);
+		const active = result.toolSnapshots.find(p => p.currentTool === "bash");
+		expect(active?.currentToolArgs).toBe(`echo ${filler} ~/private/file`);
 	});
 
 	it("bounds large arguments in both active and completed progress snapshots", async () => {

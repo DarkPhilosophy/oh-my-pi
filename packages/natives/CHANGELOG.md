@@ -6,6 +6,14 @@
 
 - Added persistent clipboard-write support through the public `@oh-my-pi/pi-natives/clipboard` entry point ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Added a persistent clipboard-write API through the public `@oh-my-pi/pi-natives/clipboard` entry point ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
+### Fixed
+
+- Fixed `computer.windows()` on macOS marking every window of the frontmost app as focused. One window is marked now: the app's accessibility focused window, or its frontmost window when Accessibility permission is not granted. With the permission, `computer.focusedWindow()` no longer returns a floating panel such as TextEdit's Fonts panel in front of the document ([#13673](https://github.com/can1357/oh-my-pi/pull/13673) by [@will-bogusz](https://github.com/will-bogusz)).
+- Fixed non-Latin prompts that quote code in backticks or fences losing most of their prose score, which made the typing predictor's vocabulary refuse to learn them ([#13758](https://github.com/can1357/oh-my-pi/pull/13758) by [@jchanghong023](https://github.com/jchanghong023)).
+- Fixed `computer.window(...).ax()` leaving out everything inside an unnamed container. On macOS, Reminders, Contacts, Notes and Font Book windows showed only their toolbar and window buttons, and Calendar lost its month grid; Windows and Linux trees now also keep content under unnamed containers such as custom panes, lists and fillers ([#13822](https://github.com/can1357/oh-my-pi/pull/13822) by [@will-bogusz](https://github.com/will-bogusz)).
+- Fixed Wayland `computer.drag()` sending all waypoints in one burst, preventing HTML5 drag-and-drop targets from receiving `drop` ([#13860](https://github.com/can1357/oh-my-pi/issues/13860)).
+
 ## [18.4.4] - 2026-09-29
 
 ### Fixed
@@ -174,6 +182,7 @@
 ### Fixed
 
 - Fixed local Linux native builds failing to link vendored static Opus when CMake installs libraries under `lib64`.
+
 ### Added
 
 - Added persistent clipboard-write and clipboard-read APIs through the public `@oh-my-pi/pi-natives/clipboard` entry point.
@@ -585,7 +594,7 @@
 
 ### Fixed
 
-- Fixed the pi-natives version sentinel emitting "reinstall to re-sync" when a long-lived process survives an in-place upgrade: the loader now detects that the resident addon exposes a *prior* release's sentinel and reports "omp was upgraded while this session was running — restart to pick up the new version (disk is already consistent)" instead of misdiagnosing it as a stale on-disk file ([#4812](https://github.com/can1357/oh-my-pi/issues/4812)).
+- Fixed the pi-natives version sentinel emitting "reinstall to re-sync" when a long-lived process survives an in-place upgrade: the loader now detects that the resident addon exposes a _prior_ release's sentinel and reports "omp was upgraded while this session was running — restart to pick up the new version (disk is already consistent)" instead of misdiagnosing it as a stale on-disk file ([#4812](https://github.com/can1357/oh-my-pi/issues/4812)).
 
 ## [17.0.0] - 2026-07-15
 
@@ -744,7 +753,7 @@
 
 ### Fixed
 
-- Fixed native shell execution reporting `pi-natives:command: syntax error at end of input` for a valid `&&`/`;` chain whose later pipeline stage is a compound command, e.g. `echo x && git log | while read h; do …; done | head`. The output minimizer's segmented-chain runner rebuilds each chain segment from the brush-parser AST via `pipeline.to_string()` and re-executes that string, but `simple_segment` only validated the *first* pipeline stage — so a compound later stage (`while`/`for`/`if`/subshell) was re-serialized without its terminator (`Display` drops it) and re-run as broken shell. `simple_segment` now requires every stage to be a `Display`-safe simple command, and — closing the recurring class of brush `Display` round-trip divergences (here-doc close-tag quoting, multi-byte char/byte offsets) at its root — each reconstructed segment is re-parsed and must match the original pipeline shape before the chain runner executes it; any divergence runs the command whole via the unsegmented path instead of corrupting it.
+- Fixed native shell execution reporting `pi-natives:command: syntax error at end of input` for a valid `&&`/`;` chain whose later pipeline stage is a compound command, e.g. `echo x && git log | while read h; do …; done | head`. The output minimizer's segmented-chain runner rebuilds each chain segment from the brush-parser AST via `pipeline.to_string()` and re-executes that string, but `simple_segment` only validated the _first_ pipeline stage — so a compound later stage (`while`/`for`/`if`/subshell) was re-serialized without its terminator (`Display` drops it) and re-run as broken shell. `simple_segment` now requires every stage to be a `Display`-safe simple command, and — closing the recurring class of brush `Display` round-trip divergences (here-doc close-tag quoting, multi-byte char/byte offsets) at its root — each reconstructed segment is re-parsed and must match the original pipeline shape before the chain runner executes it; any divergence runs the command whole via the unsegmented path instead of corrupting it.
 
 ## [16.0.7] - 2026-06-18
 
@@ -784,7 +793,7 @@
 
 - Fixed `pi-natives` deadlocking at addon load (`dlopen` hang) on some Linux hosts. The load-time Tokio runtime install added in 15.12.6 ran inside `#[module_init]`, which executes while the dynamic-loader lock is held; building the multi-thread runtime there eagerly spawns worker threads, and a fresh worker blocking to acquire the loader lock the init thread still owns deadlocks the whole load (every native consumer hangs at startup). The runtime is now built from an exported `__ompInstallTokioRuntime` that the JS loader calls once, immediately after `dlopen` returns and before any async native runs; `#[module_init]` only installs the crash handler. napi-rs materializes its runtime lazily on first async use (`RT` is a `LazyLock`) and `create_custom_tokio_runtime` only records the runtime, so the post-load install is still adopted — preserving the Windows commit-limit thread probing/back-off from 15.12.6 without spawning under the loader lock.
 - Fixed `blockRangeAt` (and thus the edit tool's `replace block` / `delete block` / `insert after block` ops) returning no block for a construct whose opening line follows a blank line — most visibly in Swift, where `replace block` on a SwiftUI `var body: some View {` (or any statement/declaration after a blank line) failed with "could not resolve a syntactic block… (unsupported language, blank/closer line, or parse error)". tree-sitter-swift inserts a zero-width separator node at the start of a statement that follows a blank line; the resolver queried the first content column with a zero-width point range, which `ts_node_named_descendant_for_point_range` absorbs into that invisible node and bubbles back up to the enclosing body (or the file root), so no block was found. The query now spans the first content character (a one-column-wide range) so it skips zero-width nodes and descends into the node that actually begins on the line.
-- Fixed native shell execution reporting `unterminated here document sequence` for a multi-command line that contains a here-doc with a quoted or escaped delimiter (`<<'TAG'`, `<<"TAG"`, `<<\TAG`) followed by another command (e.g. a `sqlite3 … <<'SQL' … SQL` query followed by an `echo`/second command). The output minimizer's segmented-chain runner rebuilds each `&&`/`;`/newline segment from the brush-parser AST via `pipeline.to_string()`, and that `Display` impl re-emits a quoted/escaped here-doc's *closing* delimiter with its quotes intact (`'SQL'` instead of the required bare `SQL`) — an invalid close tag that the re-run segment never matches. Here-doc-bearing pipelines are now ineligible for segmentation, so the command runs whole via the unsegmented path (where the executor parses it correctly); a lone here-doc was unaffected because it was never segmented.
+- Fixed native shell execution reporting `unterminated here document sequence` for a multi-command line that contains a here-doc with a quoted or escaped delimiter (`<<'TAG'`, `<<"TAG"`, `<<\TAG`) followed by another command (e.g. a `sqlite3 … <<'SQL' … SQL` query followed by an `echo`/second command). The output minimizer's segmented-chain runner rebuilds each `&&`/`;`/newline segment from the brush-parser AST via `pipeline.to_string()`, and that `Display` impl re-emits a quoted/escaped here-doc's _closing_ delimiter with its quotes intact (`'SQL'` instead of the required bare `SQL`) — an invalid close tag that the re-run segment never matches. Here-doc-bearing pipelines are now ineligible for segmentation, so the command runs whole via the unsegmented path (where the executor parses it correctly); a lone here-doc was unaffected because it was never segmented.
 - Fixed native addon loading leaving stale `~/.omp/natives/<version>` cache directories behind after updates; successful loads now remove older version directories best-effort.
 - Fixed Linux source-built native addons hanging during package import by keeping the Windows-only Tokio worker probe out of non-Windows module initialization ([#2553](https://github.com/can1357/oh-my-pi/issues/2553)).
 - Fixed `pi-iso` Windows clippy failures in symlink placeholder metadata, block-clone path resolution, and readonly cleanup handling ([#2379](https://github.com/can1357/oh-my-pi/pull/2379) by [@oldschoola](https://github.com/oldschoola)).
@@ -793,7 +802,7 @@
 
 ### Fixed
 
-- Fixed `pi-natives` aborting the whole process at addon load on memory-constrained Windows hosts (`OS can't spawn worker thread`, typically OS error 1455 — pagefile/commit limit). napi-rs builds its own Tokio runtime with one eagerly-spawned worker per CPU, and that spawn *panics* rather than erroring, so under `panic = "abort"` the failure was uncatchable. The addon now installs its own runtime at load: it probes how many threads the OS will actually grant (starting from the Tokio default, clamped to a small ceiling since CPU-heavy native work runs on libuv/Rayon and Tokio's separate blocking pool, not the scheduler workers), sizes the multi-thread runtime to the probed count, and falls back to a current-thread runtime if not even one worker can be spawned — no panic on any path.
+- Fixed `pi-natives` aborting the whole process at addon load on memory-constrained Windows hosts (`OS can't spawn worker thread`, typically OS error 1455 — pagefile/commit limit). napi-rs builds its own Tokio runtime with one eagerly-spawned worker per CPU, and that spawn _panics_ rather than erroring, so under `panic = "abort"` the failure was uncatchable. The addon now installs its own runtime at load: it probes how many threads the OS will actually grant (starting from the Tokio default, clamped to a small ceiling since CPU-heavy native work runs on libuv/Rayon and Tokio's separate blocking pool, not the scheduler workers), sizes the multi-thread runtime to the probed count, and falls back to a current-thread runtime if not even one worker can be spawned — no panic on any path.
 
 ## [15.12.4] - 2026-06-13
 

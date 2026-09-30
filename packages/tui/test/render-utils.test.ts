@@ -61,6 +61,26 @@ describe("embedded home path normalization", () => {
 		expect(shortenEmbeddedPaths("Inspect _/home/alice_", "/home/alice")).toBe("Inspect _~_");
 	});
 
+	it("does not treat identifier or glob characters next to the home directory as emphasis", () => {
+		const home = "/home/alice";
+		for (const text of [
+			"/home/alice_old/notes.txt",
+			"cat /home/alice_backup/x",
+			"ls /home/alice*",
+			"/home/alice*",
+			"rg foo src/**/home/alice/**",
+			"x_/home/alice/y",
+		]) {
+			expect(shortenEmbeddedPaths(text, home)).toBe(text);
+		}
+		expect(shortenEmbeddedPaths(String.raw`type C:\Users\B_old\cfg.json`, String.raw`C:\Users\B`)).toBe(
+			String.raw`type C:\Users\B_old\cfg.json`,
+		);
+		expect(shortenEmbeddedPaths("**/home/alice/x**", home)).toBe("**~/x**");
+		expect(shortenEmbeddedPaths("_/home/alice/x_", home)).toBe("_~/x_");
+		expect(shortenEmbeddedPaths("See **/home/alice**, then _/home/alice_.", home)).toBe("See **~**, then _~_.");
+	});
+
 	it("recognizes compact shell control operators around home-directory tokens", () => {
 		expect(shortenEmbeddedPaths("cd /home/alice&& pwd", "/home/alice")).toBe("cd ~&& pwd");
 		expect(shortenEmbeddedPaths("cd /home/alice||/home/alice/bin/fallback", "/home/alice")).toBe(
@@ -621,6 +641,12 @@ describe("shortenToolArgumentPaths", () => {
 		const url = "https://example.com/private/encoded%20space.txt";
 
 		expect(shortenToolArgumentPaths(url, "url", home)).toBe(url);
+	});
+
+	it("shortens embedded home paths when the producer names no argument key", () => {
+		expect(shortenToolArgumentPaths("cat /home/alice/private.txt", undefined, "/home/alice")).toBe(
+			"cat ~/private.txt",
+		);
 	});
 });
 
