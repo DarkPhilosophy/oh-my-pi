@@ -32,6 +32,7 @@ import * as advisorModule from "../src/advisor";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 import {
+	cfgAdvisorCurator,
 	cfgAdvisorEnabled,
 	cfgAdvisorMaxNotesPerUpdate,
 	cfgAdvisorReviewInterval,
@@ -1034,29 +1035,36 @@ describe("AgentSession advisor toggle", () => {
 		expect(after.get("A-B")?.state.systemPrompt.join("\n")).toContain("second");
 		expect(after.get("A-B")?.state.systemPrompt.join("\n")).not.toContain("first");
 	});
-	it("keeps a single shared yield-queue registration across a partial restart", () => {
-		const register = vi.spyOn(session.yieldQueue, "register");
+	it("keeps a surviving advisor's queued note when another advisor restarts or is removed", async () => {
+		cfgAdvisorCurator.set(session.settings, "off");
+		enableAdvisor();
+		expect(session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing" }], undefined)).toBe(2);
+
+		const tool = session
+			.getAdvisorAgentsByName()
+			.get("Security")
+			?.state.tools.find(candidate => candidate.name === "advise");
+		if (!(tool instanceof advisorModule.AdviseTool)) throw new Error("Missing advise tool");
+		// While the primary streams, a nit is queued on the shared yield queue as an aside.
+		session.agent.state.isStreaming = true;
 		try {
-			enableAdvisor();
-			expect(session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing" }], undefined)).toBe(2);
-			const registrations = register.mock.calls.filter(call => call[0] === "advisor").length;
-
-			// Restarting one advisor while another survives must not register a second consumer: each
-			// registration builds a card from the same queued entries, so every note would be delivered twice.
-			expect(
-				session.applyAdvisorConfigs(
-					[{ name: "Security" }, { name: "Testing", instructions: "changed" }],
-					undefined,
-				),
-			).toBe(2);
-			expect(register.mock.calls.filter(call => call[0] === "advisor")).toHaveLength(registrations);
-
-			// Removing an advisor while another survives must keep the registration as well.
-			expect(session.applyAdvisorConfigs([{ name: "Security" }], undefined)).toBe(1);
-			expect(register.mock.calls.filter(call => call[0] === "advisor")).toHaveLength(registrations);
+			await tool.execute("kept-advisor", { note: "Check the retry budget before merging.", severity: "nit" });
 		} finally {
-			register.mockRestore();
+			session.agent.state.isStreaming = false;
 		}
+
+		// Unsubscribing the shared consumer rejects and drops every queued advisor entry, so a partial
+		// stop that tears it down would lose the note this still-running advisor already raised.
+		expect(
+			session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing", instructions: "changed" }], undefined),
+		).toBe(2);
+		expect(session.applyAdvisorConfigs([{ name: "Security" }], undefined)).toBe(1);
+
+		const cards = session.yieldQueue
+			.drainLazy()
+			.map(build => build())
+			.filter(message => message?.role === "custom" && message.customType === "advisor");
+		expect(cards.filter(card => JSON.stringify(card).includes("Check the retry budget"))).toHaveLength(1);
 	});
 	it("keeps a running advisor's own status through a roster apply that restarts another", () => {
 		enableAdvisor();
