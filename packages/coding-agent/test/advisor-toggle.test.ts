@@ -1128,10 +1128,12 @@ describe("AgentSession advisor toggle", () => {
 				await adviseToolOf("Security").execute("g1a", { note: "Alpha finding one.", severity: "nit" });
 				await adviseToolOf("Testing").execute("g1b", { note: "Alpha finding two.", severity: "nit" });
 				// Let the first group's window elapse so its judgment is in flight.
-				while (judgeCalls < 1) await Bun.sleep(25);
+				for (let attempt = 0; attempt < 200 && judgeCalls < 1; attempt++) await Bun.sleep(25);
+				expect(judgeCalls).toBe(1);
 				await adviseToolOf("Security").execute("g2a", { note: "Beta finding one.", severity: "nit" });
 				await adviseToolOf("Testing").execute("g2b", { note: "Beta finding two.", severity: "nit" });
-				while (judgeCalls < 2) await Bun.sleep(25);
+				for (let attempt = 0; attempt < 200 && judgeCalls < 2; attempt++) await Bun.sleep(25);
+				expect(judgeCalls).toBe(2);
 			} finally {
 				session.agent.state.isStreaming = false;
 			}
