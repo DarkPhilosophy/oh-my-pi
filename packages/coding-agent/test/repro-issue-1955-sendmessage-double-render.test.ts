@@ -114,6 +114,7 @@ function createHarness(): Harness {
 		pendingMessagesContainer: new Container(),
 		hookWidgetContainerAbove: new Container(),
 		hookWidgetContainerBelow: new Container(),
+		updatePendingMessagesDisplay: vi.fn(),
 		pendingBashComponents: [],
 		pendingPythonComponents: [],
 		transcriptMessageComponents: new WeakMap(),
