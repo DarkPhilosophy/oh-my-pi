@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import { LoopWatchdog } from "@oh-my-pi/pi-tui/loop-watchdog";
 import { currentLoopPhase, logger, popLoopPhase, pushLoopPhase, takeRecentLoopPhase } from "@oh-my-pi/pi-utils";
 
@@ -36,6 +36,13 @@ function harness(options: Partial<{ intervalMs: number; thresholdMs: number; sle
 		},
 	};
 }
+
+// Earlier files in the same process may leave accrued render time behind; the
+// attribution picks the largest accrued phase, so start each case from zero.
+beforeEach(() => {
+	while (currentLoopPhase() !== undefined) popLoopPhase();
+	takeRecentLoopPhase();
+});
 
 afterEach(() => {
 	vi.restoreAllMocks();
