@@ -36,6 +36,9 @@ import {
 import { bottomBorder, row, splitBodyWidth, splitRow, topBorderSplit } from "../chrome/overlay-box";
 import { fitLayoutLine } from "../components/layout/geometry";
 import { sanitizeDisplayWarnings } from "../render/render-utils";
+import type { TspPrefsProps, TspPrefsRow } from "@oh-my-pi/pi-wire";
+import { col, node } from "../native/describe";
+import type { DescribeContext, NativeChild, NativeNode, NativeUiEvent } from "../native/node";
 import { getSelectListTheme, theme } from "../theme";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import { HookEditorComponent } from "./hook-editor";
@@ -488,16 +491,20 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#editorWindowWidth = bodyWidth;
 		this.#editorWindowRows = rows;
 		const lines = this.#editorContent(bodyWidth);
-		const maxScroll = Math.max(0, lines.length - rows);
+		const overflow = lines.length > rows;
+		// When the content overflows, the last window row holds the "↓ more" / "(end)" marker, so one row
+		// fewer shows content; scrolling must be able to bring the final content row above the marker.
+		const visibleRows = overflow ? rows - 1 : rows;
+		const maxScroll = Math.max(0, lines.length - visibleRows);
 		this.#editorScroll = Math.min(this.#editorScroll, maxScroll);
-		const window = lines.slice(this.#editorScroll, this.#editorScroll + rows);
-		this.#editorHasOverflow = lines.length > rows;
-		if (this.#editorHasOverflow) {
-			const marker =
-				this.#editorScroll + rows < lines.length
-					? theme.fg("dim", `  ↓ ${lines.length - this.#editorScroll - rows} more`)
-					: theme.fg("dim", "  (end)");
-			window[rows - 1] = marker;
+		const window = lines.slice(this.#editorScroll, this.#editorScroll + visibleRows);
+		this.#editorHasOverflow = overflow;
+		if (overflow) {
+			window.push(
+				this.#editorScroll + visibleRows < lines.length
+					? theme.fg("dim", `  ↓ ${lines.length - this.#editorScroll - visibleRows} more`)
+					: theme.fg("dim", "  (end)"),
+			);
 		}
 		return this.#padTo(window, rows);
 	}
@@ -570,6 +577,372 @@ export class AdvisorConfigOverlayComponent implements Component {
 		return lines;
 	}
 
+	// ───────────────────────────── native (Tern Surface Protocol) ─────────────────────────────
+
+	/** Docks as a side sheet beside the transcript, like `/settings`, when the terminal draws `prefs` with `aside`. */
+	nativeSheet(cx: DescribeContext): boolean {
+		return cx.supports("prefs") && cx.feature("aside");
+	}
+
+	/**
+	 * The native settings page (`prefs`) when the terminal draws it: one page per advisor and one
+	 * for each scope's shared instructions, the advisor's fields as typed rows, the file actions,
+	 * and the classic editors (model, tools, instructions) over the page. Any other terminal keeps
+	 * the three-pane frame, drawn from `render()`.
+	 */
+	describe(cx: DescribeContext): NativeNode | null {
+		return cx.supports("prefs") ? this.#describePrefs() : null;
+	}
+
+	/** The page the roster selection shows: `<scope>:advisor:<n>`, else that scope's `<scope>:shared`. */
+	#pageKey(): string {
+		const scope = this.#focus === "editor" ? this.#lastRosterFocus : this.#focus;
+		const value = this.#scopes[scope].list.getSelectedItem()?.value ?? "";
+		return /^advisor:\d+$/.test(value) ? `${scope}:${value}` : `${scope}:shared`;
+	}
+
+	#parsePage(key: string): { scope: AdvisorConfigScope; index: number } | undefined {
+		const match = /^(project|user):(?:advisor:(\d+)|shared)$/.exec(key);
+		if (!match) return undefined;
+		return { scope: match[1] === "user" ? "user" : "project", index: match[2] === undefined ? -1 : Number(match[2]) };
+	}
+
+	/** Select a page's roster entry and rebuild the classic editor pane for it, keeping both views in step. */
+	#openPage(key: string): void {
+		const page = this.#parsePage(key);
+		if (!page) return;
+		const state = this.#scopes[page.scope];
+		if (state.loading || state.failed) return;
+		const value = page.index < 0 ? "shared" : `advisor:${page.index}`;
+		state.list.setSelectedValue(value);
+		state.cursor = value;
+		this.#focus = page.scope;
+		this.#lastRosterFocus = page.scope;
+		this.#showFields();
+		this.#cb.requestRender();
+	}
+
+	#describePrefs(): NativeNode {
+		const pageKey = this.#pageKey();
+		const page = this.#parsePage(pageKey) ?? { scope: this.#lastRosterFocus, index: -1 };
+		const state = this.#scopes[page.scope];
+		const advisor = page.index >= 0 ? state.doc.advisors[page.index] : undefined;
+		const dirty = this.#scopes.project.dirty || this.#scopes.user.dirty;
+
+		const pages: TspPrefsProps["pages"][number][] = [];
+		for (const scope of ["project", "user"] as const) {
+			const scopeState = this.#scopes[scope];
+			const group = this.#scopeLabel(scope);
+			const disabled = scopeState.loading
+				? "Loading…"
+				: scopeState.failed
+					? "Unable to load configuration"
+					: undefined;
+			for (const [index, entry] of scopeState.doc.advisors.entries()) {
+				pages.push({ id: `${scope}:advisor:${index}`, label: entry.name || "(unnamed)", icon: "advisor", group });
+			}
+			pages.push({
+				id: `${scope}:shared`,
+				label: "Shared instructions",
+				icon: "doc",
+				group,
+				...(disabled === undefined ? {} : { disabled }),
+			});
+		}
+
+		const sections: TspPrefsProps["sections"][number][] = [];
+		let lead: string;
+		if (state.loading || state.failed) {
+			lead = state.loading
+				? "Loading this file…"
+				: "Unable to load this file; it stays read-only until it loads successfully.";
+		} else {
+			lead = advisor
+				? "An advisor watches the session and leaves notes; set its model, tools and instructions here."
+				: `Instructions every advisor in ${this.#scopeLabel(page.scope)} gets before its own.`;
+			if (state.doc.warnings?.length) {
+				sections.push({
+					id: "warnings",
+					title: "Config problems",
+					rows: sanitizeDisplayWarnings(state.doc.warnings).map((warning, i) => ({
+						id: `warning:${i}`,
+						label: "Dropped while loading",
+						warning,
+						control: { k: "action", label: "Save to rewrite", act: "save" },
+					})),
+				});
+			}
+			if (advisor) {
+				const model = advisor.model?.trim();
+				const modelDefault = this.#defaultModelLabel ?? "advisor role default";
+				const globalBacklog = this.#deps.syncBacklog ?? "off";
+				const rows: TspPrefsRow[] = [
+					{
+						id: "toggleEnabled",
+						label: "Enabled",
+						hint: "Run this advisor alongside the session.",
+						control: { k: "switch", on: advisor.enabled !== false },
+					},
+					{ id: "name", label: "Name", control: { k: "text", value: advisor.name } },
+					{
+						id: "model",
+						label: "Model",
+						hint: model ? undefined : `Uses the advisor role default (${this.#defaultModelLabel ?? "unset"}).`,
+						changed: model ? true : undefined,
+						defaultLabel: model ? modelDefault : undefined,
+						control: { k: "action", label: model || modelDefault, act: "edit" },
+					},
+				];
+				if (model) {
+					rows.push({
+						id: "resetModel",
+						label: "Model default",
+						control: { k: "action", label: "Reset to advisor role default", act: "reset" },
+					});
+				}
+				rows.push(
+					{
+						id: "reviewMode",
+						label: "Review mode",
+						changed: advisor.reviewMode !== undefined,
+						defaultLabel: ADVISOR_REVIEW_MODES[0],
+						control: {
+							k: "choice",
+							value: advisor.reviewMode ?? ADVISOR_REVIEW_MODES[0],
+							style: "segmented",
+							options: ADVISOR_REVIEW_MODES.map(mode => ({
+								value: mode,
+								label: mode,
+								detail:
+									mode === "turn"
+										? "Review every primary turn (tool-call round)."
+										: "Review only at agent end (once per run).",
+							})),
+						},
+					},
+					{
+						id: "reviewInterval",
+						label: "Review interval",
+						changed: advisor.reviewInterval !== undefined,
+						defaultLabel: "1",
+						control: { k: "number", value: advisor.reviewInterval ?? 1, min: 1, step: 1 },
+					},
+					{
+						id: "syncBacklog",
+						label: "Sync backlog",
+						changed: advisor.syncBacklog !== undefined,
+						defaultLabel: `inherit (${globalBacklog})`,
+						control: {
+							k: "choice",
+							value: advisor.syncBacklog ?? "__inherit",
+							options: [
+								{
+									value: "__inherit",
+									label: "inherit",
+									detail: `Follow the global advisor.syncBacklog setting (currently "${globalBacklog}").`,
+								},
+								...ADVISOR_SYNC_BACKLOG_MODES.map(mode => ({
+									value: mode,
+									label: mode,
+									detail: describeSyncBacklogMode(mode),
+								})),
+							],
+						},
+					},
+					{
+						id: "tools",
+						label: "Tools",
+						hint: "None means no tools; read, grep and glob are the default.",
+						changed: advisor.tools !== undefined,
+						control: {
+							k: "multi",
+							values: advisor.tools ?? [...this.#deps.defaultToolNames],
+							options: this.#availableToolNames.map(name => ({ value: name, label: name })),
+						},
+					},
+					{
+						id: "instructions",
+						label: "Instructions",
+						hint: previewLine(advisor.instructions),
+						control: { k: "action", label: "Edit…", act: "edit" },
+					},
+					{
+						id: "delete",
+						label: "Delete this advisor",
+						control: { k: "action", label: "Delete", act: "delete" },
+					},
+				);
+				sections.push({ id: "advisor", title: advisor.name || "Advisor", rows });
+			} else {
+				sections.push({
+					id: "shared",
+					title: `Shared instructions · ${this.#scopeLabel(page.scope)}`,
+					rows: [
+						{
+							id: "instructions",
+							label: "Instructions",
+							hint: previewLine(state.doc.instructions),
+							control: { k: "action", label: "Edit…", act: "edit" },
+						},
+					],
+				});
+			}
+			sections.push({
+				id: "file",
+				title: `WATCHDOG.yml · ${this.#scopeLabel(page.scope)}`,
+				rows: [
+					{
+						id: "save",
+						label: "Save & apply",
+						hint: "Write this file and reload the live advisors without a restart.",
+						warning: state.dirty ? "Unsaved changes" : undefined,
+						control: { k: "action", label: "Save", act: "save" },
+					},
+					{
+						id: "add",
+						label: "Add advisor",
+						hint: "Create a new advisor entry, then set its model, tools and instructions.",
+						control: { k: "action", label: "Add", act: "add" },
+					},
+				],
+			});
+		}
+
+		// A classic picker or editor (model, tools, instructions) sits over the page while it is open.
+		const editor = this.#mode === "fields" ? undefined : this.#editor;
+		const props: TspPrefsProps = {
+			title: dirty ? "Advisors · unsaved" : "Advisors",
+			pages,
+			page: pageKey,
+			lead,
+			sections,
+			focus:
+				this.#mode === "fields" && this.#editor instanceof SelectList
+					? (this.#editor.getSelectedItem()?.value ?? null)
+					: null,
+			editing: null,
+		};
+		const signature = JSON.stringify(props);
+		const prev = this.#nativePrefs;
+		if (prev && prev.signature === signature && prev.editor === editor) return prev.node;
+		const children: NativeChild[] = editor ? [col([editor], { role: "omp.prefs.editor" })] : [];
+		const root = node("prefs", props, children);
+		this.#nativePrefs = { signature, editor, node: root };
+		return root;
+	}
+
+	/**
+	 * Native page events: a page opens that advisor (or the scope's shared instructions), a field
+	 * change writes through the same rules as the classic pickers, a field's action button runs its
+	 * editor, and closing an open editor cancels it like Esc.
+	 */
+	handleNativeEvent(event: NativeUiEvent): void {
+		if (event.key !== "") return;
+		const page = this.#parsePage(this.#pageKey());
+		if (!page) return;
+		switch (event.type) {
+			case "action": {
+				if (event.act === "page" && event.value) {
+					this.#openPage(event.value);
+					return;
+				}
+				if (event.act === "close") {
+					if (event.value !== undefined) this.handleInput("\x1b");
+					else this.#cb.close();
+					return;
+				}
+				if (event.act === "save" || event.act === "add") {
+					void this.#onRosterSelect(page.scope, event.act).catch(err => {
+						this.#cb.notify(`Advisor config: ${err instanceof Error ? err.message : String(err)}`);
+					});
+					return;
+				}
+				const field = event.value;
+				if (field === undefined) return;
+				const state = this.#scopes[page.scope];
+				if (state.loading || state.failed) return;
+				this.#focusEditor();
+				if (page.index < 0) {
+					if (field === "instructions") this.#showInstructionsEditor(page.scope, -1);
+					return;
+				}
+				this.#onFieldSelect(page.scope, page.index, field);
+				return;
+			}
+			case "change": {
+				if (page.index < 0) return;
+				const state = this.#scopes[page.scope];
+				if (state.loading || state.failed) return;
+				const advisor = state.doc.advisors[page.index];
+				if (!advisor || !this.#applyNativeChange(advisor, event.item, event.value)) return;
+				this.#markDirty(page.scope);
+				if (this.#mode === "fields") this.#showFields();
+				this.#cb.requestRender();
+				return;
+			}
+			default:
+				return;
+		}
+	}
+
+	/** Apply one typed row value to an advisor with the classic pickers' rules; `null` resets to the default. */
+	#applyNativeChange(
+		advisor: AdvisorConfig,
+		item: string,
+		value: Extract<NativeUiEvent, { type: "change" }>["value"],
+	): boolean {
+		switch (item) {
+			case "toggleEnabled":
+				if (value === null) advisor.enabled = undefined;
+				else if (typeof value === "boolean") advisor.enabled = value ? undefined : false;
+				else return false;
+				return true;
+			case "name": {
+				if (typeof value !== "string" || !value.trim()) return false;
+				advisor.name = value.trim();
+				return true;
+			}
+			case "reviewMode":
+				if (value === null || value === "turn") advisor.reviewMode = undefined;
+				else if (value === "agent-end") advisor.reviewMode = "agent-end";
+				else return false;
+				return true;
+			case "reviewInterval": {
+				if (value === null) {
+					advisor.reviewInterval = undefined;
+					return true;
+				}
+				if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+					this.#cb.notify("Review interval must be a positive integer.");
+					return false;
+				}
+				advisor.reviewInterval = value === 1 ? undefined : value;
+				return true;
+			}
+			case "syncBacklog": {
+				if (value === null || value === "__inherit") {
+					advisor.syncBacklog = undefined;
+					return true;
+				}
+				const mode = ADVISOR_SYNC_BACKLOG_MODES.find(candidate => candidate === value);
+				if (!mode) return false;
+				advisor.syncBacklog = mode;
+				return true;
+			}
+			case "tools": {
+				if (value === null) {
+					advisor.tools = undefined;
+					return true;
+				}
+				if (typeof value !== "object") return false;
+				advisor.tools = commitTools(new Set(value), this.#availableToolNames, this.#deps.defaultToolNames);
+				return true;
+			}
+			default:
+				return false;
+		}
+	}
+
 	// ───────────────────────────── input ─────────────────────────────
 
 	handleInput(data: string): void {
@@ -598,19 +971,29 @@ export class AdvisorConfigOverlayComponent implements Component {
 			if (data === "\x1b[D") {
 				return;
 			}
-			// ↓ past the project roster's end drops into the global roster; ↑ above the
-			// global roster's top climbs back. Each roster keeps its own cursor.
+			// The two rosters read as one ring, project above global. ↓ past a roster's end and ↑ above
+			// its top cross into the neighbouring roster, keeping that roster's own cursor; at the ends
+			// of the ring the move wraps across (↑ from the project's top lands on the global roster's
+			// last row, ↓ from the global's bottom on the project's first) rather than inside one roster.
 			const list = this.#scopes[this.#focus].list;
 			const at = list.getSelectedIndex();
-			if (data === "\x1b[B" && this.#focus === "project" && at >= list.getItemCount() - 1) {
-				this.#focus = "user";
-				this.#showFields();
-				return;
-			}
-			if (data === "\x1b[A" && this.#focus === "user" && at <= 0) {
-				this.#focus = "project";
-				this.#showFields();
-				return;
+			const down = data === "\x1b[B" && at >= list.getItemCount() - 1;
+			const up = data === "\x1b[A" && at <= 0;
+			if (down || up) {
+				const crossing = down ? this.#focus === "project" : this.#focus === "user";
+				const target: AdvisorConfigScope = this.#focus === "project" ? "user" : "project";
+				const targetState = this.#scopes[target];
+				// Wrapping across the ring's ends into a roster whose file is still loading would drop the
+				// cursor onto placeholder rows that cannot be acted on, so that case keeps the roster's own wrap.
+				if (crossing || !targetState.loading) {
+					if (!crossing) {
+						targetState.list.setSelectedIndex(down ? 0 : targetState.list.getItemCount() - 1);
+						targetState.cursor = targetState.list.getSelectedItem()?.value;
+					}
+					this.#focus = target;
+					this.#showFields();
+					return;
+				}
 			}
 			list.handleInput(data);
 			return;
@@ -629,6 +1012,20 @@ export class AdvisorConfigOverlayComponent implements Component {
 			return;
 		}
 		this.#editor.handleInput?.(data);
+		this.#revealEditorSelection();
+	}
+
+	/**
+	 * A key moved the nested list's cursor without touching the pane's scroll. Bring its row into the
+	 * visible window, so Enter never toggles a row that is clipped or hidden behind the overflow marker.
+	 * The wheel is not pulled back: this runs only after keyboard input.
+	 */
+	#revealEditorSelection(): void {
+		if (!(this.#editor instanceof SelectList) || this.#editorWindowRows === 0) return;
+		const visibleRows = this.#editorHasOverflow ? this.#editorWindowRows - 1 : this.#editorWindowRows;
+		const selectedLine = this.#editorContentOffset + this.#editor.getSelectedIndex();
+		if (selectedLine < this.#editorScroll) this.#editorScroll = selectedLine;
+		else if (selectedLine >= this.#editorScroll + visibleRows) this.#editorScroll = selectedLine - visibleRows + 1;
 	}
 
 	/** Forward enhanced-paste transports into a multiline instructions editor. */
@@ -637,6 +1034,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 	}
 
 	#lastRosterFocus: AdvisorConfigScope = "project";
+	/** The last native page built, reused while its data and open editor are unchanged. */
+	#nativePrefs: { signature: string; editor: Component | undefined; node: NativeNode } | undefined;
 
 	#focusEditor(): void {
 		if (this.#focus !== "editor") this.#lastRosterFocus = this.#focus;

@@ -3,7 +3,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
+import type { TspPrefsProps, TspPrefsRow } from "@oh-my-pi/pi-wire";
 import type { TUI } from "../src/index";
+import type { DescribeContext, NativeUiEvent } from "../src/native/node";
 import {
 	AdvisorConfigOverlayComponent,
 	type AdvisorConfigDeps,
@@ -597,5 +599,309 @@ describe("advisor sync backlog picker", () => {
 		const frame = overlay.render(100).join("\n");
 		expect(frame).toContain('advisor "Bad" dropped');
 		expect(warnings).toEqual([]);
+	});
+});
+
+describe("advisor config native page", () => {
+	beforeAll(async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("theme unavailable");
+		setThemeInstance(theme);
+	});
+
+	const nativeDeps: AdvisorConfigDeps = { ...deps, availableToolNames: ["read", "grep", "glob", "bash"] };
+	const cx: DescribeContext = {
+		cols: 120,
+		reduceMotion: false,
+		dark: true,
+		supports: () => true,
+		feature: () => true,
+	};
+
+	const change = (item: string, value: Extract<NativeUiEvent, { type: "change" }>["value"]): NativeUiEvent => ({
+		type: "change",
+		key: "",
+		item,
+		value,
+	});
+	const action = (act: string, value?: string): NativeUiEvent => ({ type: "action", key: "", act, value, mods: [] });
+
+	interface Harness {
+		overlay: AdvisorConfigOverlayComponent;
+		saves: { scope: string; doc: WatchdogConfigDoc }[];
+		notices: string[];
+	}
+
+	async function open(
+		userDoc: WatchdogConfigDoc = { advisors: [] },
+		pendingLoad?: Promise<WatchdogConfigDoc>,
+	): Promise<Harness> {
+		const saves: Harness["saves"] = [];
+		const notices: string[] = [];
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			nativeDeps,
+			"project",
+			{ advisors: [{ name: "Reviewer", model: "anthropic/claude", reviewMode: "agent-end", reviewInterval: 3 }] },
+			{
+				loadDoc: async () => pendingLoad ?? structuredClone(userDoc),
+				save: async (scope, doc) => {
+					saves.push({ scope, doc: structuredClone(doc) });
+				},
+				close: () => {},
+				requestRender: () => {},
+				notify: message => notices.push(message),
+			},
+		);
+		for (let i = 0; i < 4; i++) await Promise.resolve();
+		return { overlay, saves, notices };
+	}
+
+	function props(overlay: AdvisorConfigOverlayComponent): TspPrefsProps {
+		const tree = overlay.describe(cx);
+		if (!tree || tree.k !== "prefs" || !tree.p) throw new Error("expected a prefs page");
+		return tree.p;
+	}
+
+	function row(page: TspPrefsProps, id: string): TspPrefsRow {
+		for (const section of page.sections) {
+			const found = section.rows.find(candidate => candidate.id === id);
+			if (found) return found;
+		}
+		throw new Error(`missing row ${id}`);
+	}
+
+	it("docks as a side sheet only where the terminal draws prefs with aside", async () => {
+		const { overlay } = await open();
+		expect(overlay.nativeSheet(cx)).toBe(true);
+		expect(overlay.nativeSheet({ ...cx, feature: name => name !== "aside" })).toBe(false);
+		expect(overlay.nativeSheet({ ...cx, supports: kind => kind !== "prefs" })).toBe(false);
+	});
+
+	it("keeps the three-pane frame where the terminal does not draw prefs", async () => {
+		const { overlay } = await open();
+		expect(overlay.describe({ ...cx, supports: kind => kind !== "prefs" })).toBeNull();
+	});
+
+	it("describes a page per advisor in both scopes with the focused advisor's typed rows", async () => {
+		const { overlay } = await open({ advisors: [{ name: "Global watcher" }], instructions: "Be brief." });
+		const page = props(overlay);
+
+		expect(page.pages.map(entry => [entry.id, entry.group])).toEqual([
+			["project:advisor:0", "Project · project"],
+			["project:shared", "Project · project"],
+			["user:advisor:0", "Global"],
+			["user:shared", "Global"],
+		]);
+		expect(page.page).toBe("project:advisor:0");
+		expect(row(page, "toggleEnabled").control).toEqual({ k: "switch", on: true });
+		expect(row(page, "reviewMode").control).toMatchObject({ k: "choice", value: "agent-end" });
+		expect(row(page, "reviewInterval").control).toMatchObject({ k: "number", value: 3, min: 1 });
+		expect(row(page, "syncBacklog").control).toMatchObject({ k: "choice", value: "__inherit" });
+		expect(row(page, "tools").control).toMatchObject({ k: "multi", values: ["read", "grep", "glob"] });
+		expect(row(page, "model").control).toEqual({ k: "action", label: "anthropic/claude", act: "edit" });
+		expect(row(page, "resetModel")).toBeDefined();
+	});
+
+	it("marks a scope's pages disabled while its file is still loading", async () => {
+		const load = Promise.withResolvers<WatchdogConfigDoc>();
+		const { overlay } = await open({ advisors: [] }, load.promise);
+		expect(props(overlay).pages.find(entry => entry.id === "user:shared")?.disabled).toBe("Loading…");
+		overlay.handleNativeEvent(action("page", "user:shared"));
+		expect(props(overlay).page).toBe("project:advisor:0");
+
+		load.resolve({ advisors: [] });
+		for (let i = 0; i < 4; i++) await Promise.resolve();
+		expect(props(overlay).pages.find(entry => entry.id === "user:shared")?.disabled).toBeUndefined();
+	});
+
+	it("writes field changes through the classic rules and saves them to the right file", async () => {
+		const { overlay, saves } = await open();
+		overlay.handleNativeEvent(change("reviewMode", "turn"));
+		overlay.handleNativeEvent(change("reviewInterval", 1));
+		overlay.handleNativeEvent(change("syncBacklog", "strict"));
+		overlay.handleNativeEvent(change("tools", ["read", "bash"]));
+		overlay.handleNativeEvent(change("toggleEnabled", false));
+		overlay.handleNativeEvent(change("name", "  Renamed  "));
+
+		expect(props(overlay).title).toBe("Advisors · unsaved");
+		overlay.handleNativeEvent(action("save"));
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(saves).toHaveLength(1);
+		expect(saves[0]?.scope).toBe("project");
+		const saved = saves[0]?.doc.advisors[0];
+		expect(saved).toMatchObject({
+			name: "Renamed",
+			enabled: false,
+			syncBacklog: "strict",
+			model: "anthropic/claude",
+		});
+		// Defaults are stored as absence, exactly as the classic pickers do.
+		expect(saved?.reviewMode).toBeUndefined();
+		expect(saved?.reviewInterval).toBeUndefined();
+		expect([...(saved?.tools ?? [])].sort()).toEqual(["bash", "read"]);
+	});
+
+	it("rejects an invalid review interval without touching the advisor", async () => {
+		const { overlay, notices } = await open();
+		overlay.handleNativeEvent(change("reviewInterval", 0));
+		overlay.handleNativeEvent(change("reviewInterval", 2.5));
+		expect(notices).toEqual([
+			"Review interval must be a positive integer.",
+			"Review interval must be a positive integer.",
+		]);
+		expect(row(props(overlay), "reviewInterval").control).toMatchObject({ value: 3 });
+		expect(props(overlay).title).toBe("Advisors");
+	});
+
+	it("resets a row to its default when the terminal sends null", async () => {
+		const { overlay } = await open();
+		overlay.handleNativeEvent(change("reviewMode", null));
+		overlay.handleNativeEvent(change("reviewInterval", null));
+		const page = props(overlay);
+		expect(row(page, "reviewMode").control).toMatchObject({ value: "turn" });
+		expect(row(page, "reviewInterval").control).toMatchObject({ value: 1 });
+	});
+
+	it("keeps the classic frame in step with native edits", async () => {
+		const { overlay } = await open();
+		overlay.handleNativeEvent(change("syncBacklog", "strict"));
+		expect(overlay.render(100).map(Bun.stripANSI).join("\n")).toContain("strict");
+	});
+
+	it("opens the other scope's advisor and shared instructions from a page action", async () => {
+		const { overlay } = await open({ advisors: [{ name: "Global watcher" }], instructions: "Be brief." });
+		overlay.handleNativeEvent(action("page", "user:advisor:0"));
+		expect(props(overlay).page).toBe("user:advisor:0");
+		expect(props(overlay).sections.some(section => section.title === "Global watcher")).toBe(true);
+		expect(props(overlay).sections.find(section => section.id === "file")?.title).toBe("WATCHDOG.yml · Global");
+
+		overlay.handleNativeEvent(action("page", "user:shared"));
+		expect(props(overlay).page).toBe("user:shared");
+		expect(row(props(overlay), "instructions").hint).toBe("Be brief.");
+	});
+
+	it("shows a classic editor over the page and closes it like Esc", async () => {
+		const { overlay } = await open();
+		expect(overlay.describe(cx)?.c ?? []).toHaveLength(0);
+		overlay.handleNativeEvent(action("edit", "instructions"));
+		expect(overlay.describe(cx)?.c).toHaveLength(1);
+		overlay.handleNativeEvent(action("close", "editor"));
+		expect(overlay.describe(cx)?.c ?? []).toHaveLength(0);
+	});
+
+	it("deletes the advisor from its page and marks the file unsaved", async () => {
+		const { overlay } = await open();
+		overlay.handleNativeEvent(action("delete", "delete"));
+		const page = props(overlay);
+		expect(page.pages.some(entry => entry.id === "project:advisor:0")).toBe(false);
+		expect(page.title).toBe("Advisors · unsaved");
+	});
+
+	// The page key names the focused roster's selected row, so it doubles as a probe of where ↑/↓ landed:
+	// `<scope>:advisor:0` is a roster's first row, `<scope>:shared` any of its trailing rows (add/shared/save).
+	it("walks the project and global rosters as one ring, wrapping across at both ends", async () => {
+		const { overlay } = await open({ advisors: [{ name: "Global watcher" }] });
+		expect(props(overlay).page).toBe("project:advisor:0");
+
+		overlay.handleInput("\x1b[A"); // above the project roster's first row → the global roster's last row
+		expect(props(overlay).page).toBe("user:shared");
+
+		overlay.handleInput("\x1b[B"); // below the global roster's last row → the project roster's first row
+		expect(props(overlay).page).toBe("project:advisor:0");
+	});
+
+	it("still crosses between the rosters in the middle of the ring", async () => {
+		const { overlay } = await open({ advisors: [{ name: "Global watcher" }] });
+		for (let i = 0; i < 3; i++) overlay.handleInput("\x1b[B"); // add → shared → save
+		expect(props(overlay).page).toBe("project:shared");
+
+		overlay.handleInput("\x1b[B"); // past the project roster's end → the global roster's first row
+		expect(props(overlay).page).toBe("user:advisor:0");
+
+		overlay.handleInput("\x1b[A"); // above the global roster's first row → back where the project cursor was
+		expect(props(overlay).page).toBe("project:shared");
+	});
+
+	it("does not wrap into a global roster that has not loaded yet", async () => {
+		const load = Promise.withResolvers<WatchdogConfigDoc>();
+		const { overlay } = await open({ advisors: [] }, load.promise);
+		overlay.handleInput("\x1b[A");
+		expect(props(overlay).page.startsWith("project:")).toBe(true);
+	});
+});
+
+describe("advisor tools editor keyboard navigation", () => {
+	beforeAll(async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("theme unavailable");
+		setThemeInstance(theme);
+	});
+
+	const tools = Array.from({ length: 30 }, (_, i) => `tool${String(i).padStart(2, "0")}`);
+
+	// A 14-row terminal leaves a 6-row body, so the tools list (2 header rows + 31 rows) overflows the right pane.
+	function openToolsEditor(saves: WatchdogConfigDoc[]): AdvisorConfigOverlayComponent {
+		const overlay = new AdvisorConfigOverlayComponent(
+			{ terminal: { rows: 14 } } as TUI,
+			{ ...deps, availableToolNames: tools },
+			"project",
+			{ advisors: [{ name: "Reviewer", tools: [] }] },
+			{
+				loadDoc: async () => ({ advisors: [] }),
+				save: async (_scope, doc) => {
+					saves.push(structuredClone(doc));
+				},
+				close: () => {},
+				requestRender: () => {},
+				notify: () => {},
+			},
+		);
+		overlay.handleInput("\r"); // Advisor detail.
+		openField(overlay, "Tools");
+		return overlay;
+	}
+
+	const paneRows = (overlay: AdvisorConfigOverlayComponent): string[] =>
+		overlay.render(100).map(row => Bun.stripANSI(row).slice(38));
+
+	it("keeps the selected tool inside the visible pane, above the overflow marker", () => {
+		const overlay = openToolsEditor([]);
+		expect(paneRows(overlay).some(row => row.includes("↓"))).toBe(true); // The list really overflows.
+
+		for (let i = 1; i <= 20; i++) {
+			overlay.handleInput("\x1b[B");
+			const rows = paneRows(overlay);
+			const shown = rows.findIndex(row => row.includes(`[ ] ${tools[i]}`));
+			expect(shown).toBeGreaterThanOrEqual(0);
+			// The marker sits on the last pane row, never on top of the selection.
+			const marker = rows.findIndex(row => /↓ \d+ more|\(end\)/.test(row));
+			expect(marker).toBeGreaterThan(shown);
+		}
+	});
+
+	it("toggles the tool that is shown, and keeps it in view after the toggle", async () => {
+		const saves: WatchdogConfigDoc[] = [];
+		const overlay = openToolsEditor(saves);
+		for (let i = 1; i <= 20; i++) overlay.handleInput("\x1b[B");
+		overlay.handleInput("\r"); // Toggle the selected tool.
+		expect(paneRows(overlay).some(row => row.includes(`[x] ${tools[20]}`))).toBe(true);
+
+		overlay.handleInput("\x1b[D"); // Apply and return to the fields.
+		clickRosterRow(overlay, "Save & apply");
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(saves[0]?.advisors[0]?.tools).toEqual([tools[20]]);
+	});
+
+	it("brings the last row into view above the end marker when wrapping from the top", () => {
+		const overlay = openToolsEditor([]);
+		overlay.handleInput("\x1b[A"); // Wraps from the first row to "Done".
+		const rows = paneRows(overlay);
+		const done = rows.findIndex(row => row.includes("Done"));
+		expect(done).toBeGreaterThanOrEqual(0);
+		expect(rows.findIndex(row => row.includes("(end)"))).toBeGreaterThan(done);
 	});
 });
