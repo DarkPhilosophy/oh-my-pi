@@ -155,7 +155,7 @@ import { isMCPToolName } from "../tools/builtin-names";
 import type { LspStartupServerInfo } from "../tools";
 import { resolvePlanFilePath } from "../plan-mode/plan-files";
 import { resolveToCwd } from "../tools/path-utils";
-import { lookupCachedReferenceTitle, warmReferenceRepo } from "../tools/github-reference-title";
+import { fetchReferenceTitle, lookupCachedReferenceTitle, warmReferenceRepo } from "../tools/github-reference-title";
 import { StreamPublisher } from "../stream/publisher";
 import { newRecordingPath, SessionRecorder } from "../stream/recording";
 import { StreamRedactor } from "../stream/redactor";
@@ -1512,14 +1512,17 @@ export class InteractiveMode implements InteractiveModeContext {
 	#queuedCommandNoticeTimer: ReturnType<typeof setTimeout> | undefined;
 	#pendingSlashCommands: SlashCommand[] = [];
 	/**
-	 * Title source for the `#N` card. Starts resolving the checkout's repository the first time a card asks (nothing
-	 * else resolves it in a fresh session) and repaints once it is known, so cached titles appear without any
-	 * request being made while typing.
+	 * Title source for the `#N` card. A fresh session has not resolved the checkout's repository, so the first card
+	 * starts that; a number missing from the local cache is then fetched once, after typing settles, through the
+	 * shared view cache. Each step repaints when it lands, so nothing is requested while digits are still changing.
 	 */
 	#referenceTitleResolver = (kind: "pr" | "issue", number: string): string | undefined => {
 		const cwd = this.viewSession.sessionManager.getCwd();
-		warmReferenceRepo(cwd, () => this.ui.requestRender());
-		return lookupCachedReferenceTitle(cwd, kind, number);
+		const repaint = () => this.ui.requestRender();
+		warmReferenceRepo(cwd, repaint);
+		const cached = lookupCachedReferenceTitle(cwd, kind, number);
+		if (cached === undefined) fetchReferenceTitle(cwd, kind, number, repaint, this.settings);
+		return cached;
 	};
 	/** Symbol preset the slash-command picker icons were resolved under. */
 	#slashIconPreset: string | undefined;

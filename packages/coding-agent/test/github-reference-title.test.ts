@@ -15,12 +15,16 @@ import {
 	resolveGithubCacheAuthKey,
 } from "@oh-my-pi/pi-coding-agent/tools/github-cache";
 import {
+	fetchReferenceTitle,
 	lookupCachedReferenceTitle,
 	resetReferenceRepoAttempts,
+	resetReferenceTitleFetches,
 	warmReferenceRepo,
 } from "@oh-my-pi/pi-coding-agent/tools/github-reference-title";
+import * as ghView from "@oh-my-pi/pi-coding-agent/tools/gh-view";
 import { github } from "@oh-my-pi/pi-coding-agent/utils/github";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 
 const ENV_KEYS = [
 	"OMP_GITHUB_CACHE_DB",
@@ -174,5 +178,63 @@ describe("warmReferenceRepo", () => {
 		warmReferenceRepo(cwd, () => {});
 
 		expect(text).not.toHaveBeenCalled();
+	});
+});
+
+describe("fetchReferenceTitle", () => {
+	beforeEach(() => resetReferenceTitleFetches());
+	afterEach(() => {
+		resetReferenceTitleFetches();
+		vi.restoreAllMocks();
+	});
+
+	function stubView(kind: "pr" | "issue", title: string) {
+		const payload = { number: 0, title };
+		return vi
+			.spyOn(ghView, kind === "pr" ? "fetchPrViewFresh" : "fetchIssueViewFresh")
+			.mockImplementation(async () => ({ rendered: title, sourceUrl: undefined, payload }) as never);
+	}
+
+	it("fetches only the number the user settled on and makes its title readable afterwards", async () => {
+		const fetch = stubView("pr", "Adds the advisor page");
+		const ready = Promise.withResolvers<void>();
+		for (const typed of ["1", "12", "120", "1120", "11207"])
+			fetchReferenceTitle(cwd, "pr", typed, () => ready.resolve());
+		await ready.promise;
+
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(fetch.mock.calls[0]![2]).toBe(11207);
+		expect(lookupCachedReferenceTitle(cwd, "pr", "11207")).toBe("Adds the advisor page");
+		expect(lookupCachedReferenceTitle(cwd, "pr", "1120")).toBeUndefined();
+	});
+
+	it("does not ask again for a reference it already requested, even when it failed", async () => {
+		const fetch = vi.spyOn(ghView, "fetchPrViewFresh").mockRejectedValue(new Error("not found"));
+		for (let round = 0; round < 3; round++) {
+			fetchReferenceTitle(cwd, "pr", "999", () => {});
+			await Bun.sleep(550);
+		}
+
+		expect(fetch).toHaveBeenCalledTimes(1);
+	});
+
+	it("stays local when the repository is unknown or the GitHub cache is disabled", async () => {
+		const fetch = stubView("pr", "never fetched");
+		DEFAULT_REPO_RESOLVED.clear();
+		fetchReferenceTitle(cwd, "pr", "5", () => {});
+		DEFAULT_REPO_RESOLVED.set(path.resolve(cwd), "owner/example");
+		fetchReferenceTitle(cwd, "pr", "5", () => {}, Settings.isolated({ "github.cache.enabled": false }));
+		await Bun.sleep(550);
+
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	it("does not fetch what the cache already has", async () => {
+		await cache("pr", 12, "Already here");
+		const fetch = stubView("pr", "must not run");
+		fetchReferenceTitle(cwd, "pr", "12", () => {});
+		await Bun.sleep(550);
+
+		expect(fetch).not.toHaveBeenCalled();
 	});
 });

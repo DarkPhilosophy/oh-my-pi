@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added `display.contextualTokenPopupStyle` (`compact` or `stacked`) to choose how the `#123` popup lays out PR and Issue, and showed the selected item's title beneath the options when it is already cached locally.
+- Added `display.contextualTokenPopupStyle` (`compact` or `stacked`) to choose how the `#123` popup lays out PR and Issue. The selected item's title shows beneath the options: cached titles at once, a missing one is fetched once in the background after typing settles (skipped when `github.cache.enabled` is off).
 - Added `display.contextualTokenPopup` (off by default, needs `display.commandSuggestionsPopup`): `#123` PR and issue suggestions open as a popup anchored above the typed token instead of a list below the editor.
 - Added project/global `/advisor configure` editing with per-advisor enablement, compact per-advisor status glyphs, and ancestor-aware advisor inheritance for spawned sessions ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Fenced code blocks now expose a clickable `copy` link that copies their original source text ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).

@@ -734,7 +734,7 @@ export const cfgDisplayContextualTokenPopupStyle = register({
 		group: "Display",
 		label: "Contextual Reference Layout",
 		description:
-			"How the #123 popup lays out PR and Issue, with the selected one's title below when it is already cached. Applies when Contextual Reference Popup is on",
+			"How the #123 popup lays out PR and Issue, with the selected one's title below (cached, or fetched once after typing settles). Applies when Contextual Reference Popup is on",
 		options: [
 			{
 				value: "compact",
