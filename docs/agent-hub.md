@@ -74,6 +74,8 @@ While subagents run, a pinned `Subagents` block above the editor lists every liv
 
 The list stays short: it shows a few rows plus an expander (`display.pinnedAgents: collapsed`, the default), lists everything (`full`), or hides entirely (`off`). Clicking the expander toggles between the two while `tui.mouse` is on.
 
+Set `display.subagentLivePreview: true` to add a second line under each row showing what that agent is doing: its current tool call (or, between calls, the most recent one) with a one-line detail, plus the elapsed time once a call runs longer than five seconds. Off by default.
+
 Enable `tui.mouse` to click live subagent cards and jump-list rows directly in the main session, without opening the Hub first. A click focuses that card's most recent agent (a jump-list row focuses its exact agent); focusing a parked agent revives it. Hovering a live target lights it up first, so you can see what a click will open.
 
 Only rows currently in the live viewport are clickable — retired transcript rows live in terminal scrollback, where clicks cannot map back to content. Enabling capture changes terminal gestures while on: text selection becomes Shift+drag and wheel scroll becomes Shift+wheel. Off by default.
@@ -98,8 +100,9 @@ Agent Hub is the human-facing live session view. Adjacent commands and internal 
 - `/jobs` prints a snapshot of running and recently settled asynchronous tool jobs. It does not replace the per-agent transcript or control view.
 - `history://<id>` gives the coding agent a concise transcript for a live or parked subagent.
 - `agent://<id>` resolves a subagent's saved final output artifact; it is not the live transcript.
-- `hub` `list` exposes the peer roster to the coding agent, and `hub` `send` steers or follows up with a normal subagent programmatically. Messaging a parked subagent revives it.
+- `write agent://<id>` steers or follows up with a normal subagent; `agent://all` broadcasts to visible live peers. Messaging a parked subagent revives it. `read history://` discovers registered agent transcripts.
+- `read proc://` lists background jobs and project services; `read proc://<id>` inspects status/output without consuming delivery.
 
-Advisor rows are intentionally excluded from the agent-facing `hub`, `history://`, and `agent://` peer workflows.
+Advisor rows are intentionally excluded from the agent-facing peer roster, `history://` index, and `agent://` messaging workflows.
 
 See also [Task Agent Discovery and Selection](./task-agent-discovery.md), [Collaboration](./collab.md), and [Advisor, WATCHDOG.md, and WATCHDOG.yml](./advisor-watchdog.md).

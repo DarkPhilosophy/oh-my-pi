@@ -11,6 +11,7 @@ afterEach(() => vi.restoreAllMocks());
 class WorkerTransport implements Transport {
 	#receive?: (message: WorkerInbound | WorkerOutbound) => void;
 	readonly sent: WorkerOutbound[] = [];
+	readonly #waiters = new Set<(message: WorkerOutbound) => void>();
 
 	send(message: WorkerInbound | WorkerOutbound): void {
 		if (
@@ -25,6 +26,7 @@ class WorkerTransport implements Transport {
 			message.type === "closed"
 		) {
 			this.sent.push(message);
+			for (const waiter of this.#waiters) waiter(message);
 		}
 	}
 
@@ -44,17 +46,26 @@ class WorkerTransport implements Transport {
 	async waitFor<T extends WorkerOutbound>(predicate: (message: WorkerOutbound) => message is T): Promise<T> {
 		const existing = this.sent.find(predicate);
 		if (existing) return existing;
-		for (;;) {
-			await Bun.sleep(0);
-			const message = this.sent.find(predicate);
-			if (message) return message;
-		}
+		const { promise, resolve } = Promise.withResolvers<T>();
+		const waiter = (message: WorkerOutbound): void => {
+			if (!predicate(message)) return;
+			this.#waiters.delete(waiter);
+			resolve(message);
+		};
+		this.#waiters.add(waiter);
+		return promise;
 	}
 }
 
 class ControlledBiDiPage {
-	readonly frame: { _id: string; goto: () => Promise<void>; setContent: () => Promise<void> };
+	readonly frame: {
+		_id: string;
+		goto: () => Promise<void>;
+		setContent: () => Promise<void>;
+		mainRealm: () => { evaluate: () => Promise<void> };
+	};
 	readonly evaluations: unknown[][] = [];
+	readonly preloadSources: unknown[] = [];
 	readonly #listeners = new Map<string, Set<(value: unknown) => void>>();
 
 	constructor(
@@ -65,6 +76,7 @@ class ControlledBiDiPage {
 			_id: id,
 			goto: async () => {},
 			setContent: async () => {},
+			mainRealm: () => ({ evaluate: async () => {} }),
 		};
 	}
 
@@ -135,6 +147,11 @@ class ControlledBiDiPage {
 	async goForward(): Promise<void> {}
 	async setContent(): Promise<void> {}
 	async setRequestInterception(): Promise<void> {}
+	async evaluateOnNewDocument(source: unknown): Promise<{ identifier: string }> {
+		this.preloadSources.push(source);
+		return { identifier: `${this.id}-preload-${this.preloadSources.length}` };
+	}
+	async removeScriptToEvaluateOnNewDocument(): Promise<void> {}
 }
 
 function controlledDialog(): { dialog: Dialog; accepted: () => number; dismissed: () => number } {
@@ -181,10 +198,56 @@ async function initializeBiDiWorker(pages: ControlledBiDiPage[]): Promise<{ tran
 		},
 	});
 	await transport.waitFor(
-		(message): message is Extract<WorkerOutbound, { type: "ready" }> => message.type === "ready",
+		(message): message is Extract<WorkerOutbound, { type: "ready" | "init-failed" }> =>
+			message.type === "ready" || message.type === "init-failed",
 	);
+	const failure = transport.sent.find(message => message.type === "init-failed");
+	if (failure?.type === "init-failed") throw new Error(failure.error.message);
+	for (const page of pages) page.evaluations.length = 0;
 	return { transport };
 }
+
+it("installs scripts on the selected Firefox page and retains its helper state across alias switches", async () => {
+	const pageA = new ControlledBiDiPage("target-a", "page-a");
+	const pageB = new ControlledBiDiPage("target-b", "page-b");
+	const { transport } = await initializeBiDiWorker([pageA, pageB]);
+	const run = async (id: string, page: ControlledBiDiPage, code: string): Promise<unknown> => {
+		transport.inbound({
+			type: "run",
+			id,
+			name: page.label,
+			targetId: page.id,
+			code,
+			timeoutMs: 1_000,
+			session: { cwd: process.cwd() },
+		});
+		const result = await transport.waitFor(
+			(message): message is Extract<WorkerOutbound, { type: "result" }> =>
+				message.type === "result" && message.id === id,
+		);
+		if (!result.ok) throw new Error(result.error.message);
+		return result.payload.returnValue;
+	};
+	try {
+		await run("install-b", pageB, 'await tab.addInitScript("window.aliasB = true"); return tab.initScripts()');
+		await run("install-a", pageA, 'await tab.addInitScript("window.aliasA = true"); return tab.initScripts()');
+		expect(await run("read-b", pageB, "return tab.initScripts()")).toEqual([
+			{ id: expect.any(String), source: "window.aliasB = true" },
+		]);
+		expect(await run("read-a", pageA, "return tab.initScripts()")).toEqual([
+			{ id: expect.any(String), source: "window.aliasA = true" },
+		]);
+		expect(pageA.preloadSources).toContain("window.aliasA = true");
+		expect(pageA.preloadSources).not.toContain("window.aliasB = true");
+		expect(pageB.preloadSources).toContain("window.aliasB = true");
+		expect(pageB.preloadSources).not.toContain("window.aliasA = true");
+	} finally {
+		transport.inbound({ type: "close" });
+		await transport.waitFor(
+			(message): message is Extract<WorkerOutbound, { type: "closed" }> => message.type === "closed",
+		);
+	}
+});
 
 it("routes Firefox worker runs by targetId and keeps dialog policy per alias", async () => {
 	const pageA = new ControlledBiDiPage("target-a", "page-a");
@@ -228,6 +291,11 @@ it("routes Firefox worker runs by targetId and keeps dialog policy per alias", a
 				message.type === "selected" && message.id === "select-a",
 		);
 		expect(selected.info.targetId).toBe(pageA.id);
+		const inactiveDialog = controlledDialog();
+		pageB.emit("dialog", inactiveDialog.dialog);
+		await Promise.resolve();
+		expect(inactiveDialog.accepted()).toBe(0);
+		expect(inactiveDialog.dismissed()).toBe(0);
 		const dialogA = controlledDialog();
 		pageA.emit("dialog", dialogA.dialog);
 		await Promise.resolve();
