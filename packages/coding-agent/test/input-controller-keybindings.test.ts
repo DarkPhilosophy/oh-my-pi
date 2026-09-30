@@ -127,6 +127,7 @@ async function createContext() {
 	const handleBtwFollowUpKey = vi.fn(() => true);
 	const hasActiveBtw = vi.fn(() => false);
 	const handlesBtwBranchKey = vi.fn(() => false);
+	const isGuidedGoalInterviewActive = vi.fn(() => false);
 	const editor: FakeEditor = {
 		setText(text: string) {
 			editorText = text;
@@ -247,6 +248,7 @@ async function createContext() {
 		handleBtwFollowUpKey,
 		showError,
 		showStatus: vi.fn(),
+		isGuidedGoalInterviewActive,
 	} as unknown as InteractiveModeContext;
 
 	return {
@@ -286,6 +288,7 @@ async function createContext() {
 			canFollowUpBtw,
 			handleBtwFollowUpKey,
 			showError,
+			isGuidedGoalInterviewActive,
 		},
 	};
 }
@@ -698,6 +701,23 @@ describe("InputController keybinding setup", () => {
 				userInitiated: true,
 			});
 		}
+	});
+
+	it("sends a bare 'c' as a normal reply during a guided-goal interview", async () => {
+		const { InputController, ctx, editor, spies } = await createContext();
+		spies.isGuidedGoalInterviewActive.mockReturnValue(true);
+		// Streaming path: dispatches straight through session.prompt as a steer.
+		const session: { isStreaming: boolean } = ctx.session;
+		session.isStreaming = true;
+		const onInput = vi.fn();
+		ctx.onInputCallback = onInput;
+		const controller = new InputController(ctx);
+
+		controller.setupEditorSubmitHandler();
+		await editor.onSubmit?.("c");
+
+		expect(onInput).not.toHaveBeenCalled();
+		expect(spies.prompt).toHaveBeenCalledWith("c", { streamingBehavior: "steer", images: undefined });
 	});
 });
 

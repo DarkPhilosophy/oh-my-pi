@@ -276,6 +276,7 @@ import { resolveYieldReportText } from "./tools/yield";
 import { createBrowserPrelude } from "./tools/browser";
 import { isMCPToolName, normalizeToolNames } from "./tools/builtin-names";
 import { createComputerPrelude } from "./tools/computer";
+import { createRatchetPrelude } from "./ratchet/prelude";
 import { ToolContextStore } from "./tools/context";
 import { isIrcEnabled } from "./irc/messaging";
 import { imageGenTool } from "./tools/image-gen";
@@ -298,6 +299,7 @@ import { buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
 import {
 	cfgAsyncMaxJobs,
 	cfgComputerEnabled,
+	cfgRatchetEnabled,
 	cfgGenerateImageEnabled,
 	cfgSecurityEnabled,
 	cfgSpeechgenEnabled,
@@ -2322,6 +2324,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		};
 		let browserPrelude: EvalPreludeDefinition | undefined;
 		let computerPrelude: EvalPreludeDefinition | undefined;
+		let ratchetPrelude: EvalPreludeDefinition | undefined;
 		const getEvalPreludes = (): readonly EvalPreludeDefinition[] => {
 			if (restrictToolNames || !toolRegistry.has("eval") || !activeToolNames.has("eval")) return [];
 			const builtins: EvalPreludeDefinition[] = [];
@@ -2332,6 +2335,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (cfgComputerEnabled.get(settings)) {
 				computerPrelude ??= createComputerPrelude(toolSession);
 				builtins.push(computerPrelude);
+			}
+			if (cfgRatchetEnabled.get(settings)) {
+				ratchetPrelude ??= createRatchetPrelude(toolSession);
+				builtins.push(ratchetPrelude);
 			}
 			return getEnabledEvalPreludes(builtins);
 		};

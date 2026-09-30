@@ -1743,18 +1743,10 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				progress.currentToolArgs = preview?.value;
 				progress.currentToolArgsKey = preview?.key;
 				progress.currentToolStartMs = now;
-				activeTools.set(event.toolCallId, {
-					tool: event.toolName,
-					args: preview?.value,
-					argsKey: preview?.key,
-					intent: event.intent?.trim() || progress.lastIntent,
-					startMs: now,
-				});
-				visibleToolCallId = event.toolCallId;
-				// A fast tool may finish before the coalesced update fires.
-				// Publish both lifecycle edges rather than dropping its start.
-				flushProgress = true;
-				const intent = event.intent?.trim();
+				const intent = event.intent?.trim() || undefined;
+				// Per call: intent-optional tools (e.g. MCP) start without one, and
+				// `lastIntent` would otherwise label them with the previous call's.
+				progress.currentToolIntent = intent;
 				if (intent) {
 					progress.lastIntent = intent;
 				}
@@ -1774,10 +1766,9 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				activeTools.delete(event.toolCallId);
 				if (finished) {
 					progress.recentTools.unshift({
-						tool: finished.tool,
-						args: finished.args ?? "",
-						argsKey: finished.argsKey,
-						isError: event.isError,
+						tool: progress.currentTool,
+						args: progress.currentToolArgs || "",
+						intent: progress.currentToolIntent,
 						endMs: now,
 					});
 					// Keep only last 5
@@ -1785,16 +1776,10 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 						progress.recentTools.pop();
 					}
 				}
-				if (visibleToolCallId === event.toolCallId) {
-					const remaining = activeTools.entries().next().value;
-					visibleToolCallId = remaining?.[0];
-					const visible = remaining?.[1];
-					progress.currentTool = visible?.tool;
-					progress.currentToolArgs = visible?.args;
-					progress.currentToolArgsKey = visible?.argsKey;
-					progress.currentToolStartMs = visible?.startMs;
-					if (visible) progress.lastIntent = visible.intent;
-				}
+				progress.currentTool = undefined;
+				progress.currentToolArgs = undefined;
+				progress.currentToolIntent = undefined;
+				progress.currentToolStartMs = undefined;
 				// The finalized TaskToolDetails will be captured below into
 				// `extractedToolData.task`; drop the in-flight snapshot so the
 				// renderer doesn't double-count it against the final entry.
