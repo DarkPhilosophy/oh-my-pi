@@ -5,7 +5,7 @@
 ### Added
 
 - Added an optional heading in the top border of `Box` (`BoxBorder.topLabel`), centered and truncated to fit.
-- Contextual `#123` reference popup can draw its options on one row and the selected item's wrapped title beneath them, under a `GITHUB` heading; the card is sized by its content.
+- Contextual `#123` reference popup can draw its options on one row (switch with Left/Right or Up/Down; Tab or Enter accepts) and the selected item's wrapped title beneath them, under a `GITHUB` heading; the card is sized by its content.
 
 ### Fixed
 

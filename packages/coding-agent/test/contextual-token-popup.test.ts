@@ -334,3 +334,60 @@ it("shows only the options when no title is cached and keeps the same card width
 	expect(withoutTitle.join("\n")).not.toContain(">");
 	expect(withoutTitle[0]!.length).toBe(withTitle[0]!.length);
 });
+
+const RIGHT = "\x1b[C";
+const LEFT = "\x1b[D";
+
+it("moves between PR and Issue with Left/Right in the compact card, without wrapping or accepting", async () => {
+	const { terminal, editor, paint } = await openComposer({ contextual: true, style: "compact", titles: TITLES });
+	editor.handleInput("see #12");
+	await paint();
+	expect(cardRows(terminal)[1]).toMatch(/^│ {2}❯ PR #12 /);
+
+	editor.handleInput(RIGHT);
+	await paint();
+	let card = cardRows(terminal);
+	expect(card[1]).toMatch(/^│ {4}PR #12 \| ❯ Issue #12 *│$/);
+	expect(card.join("\n")).toContain(">Popup covers the input");
+
+	// Right on the last option neither wraps nor accepts: the draft stays exactly as typed.
+	editor.handleInput(RIGHT);
+	await paint();
+	expect(cardRows(terminal)[1]).toMatch(/❯ Issue #12/);
+	expect(editor.getText()).toBe("see #12");
+
+	editor.handleInput(LEFT);
+	await paint();
+	card = cardRows(terminal);
+	expect(card[1]).toMatch(/^│ {2}❯ PR #12 /);
+	expect(card.join("\n")).toContain(">Fix the resize");
+
+	editor.handleInput(LEFT);
+	await paint();
+	expect(cardRows(terminal)[1]).toMatch(/^│ {2}❯ PR #12 /);
+	expect(editor.getText()).toBe("see #12");
+});
+
+it("still accepts the option chosen with Left/Right by Tab in the compact card", async () => {
+	const { editor, paint } = await openComposer({ contextual: true, style: "compact", titles: TITLES });
+	editor.handleInput("see #12");
+	await paint();
+	editor.handleInput(RIGHT);
+	await paint();
+	editor.handleInput("\t");
+	await paint();
+
+	// Tab inserts the reference for the highlighted option, so the typed token is replaced by the issue URL form.
+	expect(editor.getText()).not.toBe("see #12");
+	expect(editor.getText()).toContain("issue");
+});
+
+it("keeps Right as accept in the stacked card, where the options are vertical", async () => {
+	const { editor, paint } = await openComposer({ contextual: true, style: "stacked", titles: TITLES });
+	editor.handleInput("see #12");
+	await paint();
+	editor.handleInput(RIGHT);
+	await paint();
+
+	expect(editor.getText()).not.toBe("see #12");
+});

@@ -739,7 +739,7 @@ export const cfgDisplayContextualTokenPopupStyle = register({
 			{
 				value: "compact",
 				label: "Compact",
-				description: "PR and Issue side by side on one row; switch with Up/Down",
+				description: "PR and Issue side by side on one row; switch with Left/Right or Up/Down",
 			},
 			{
 				value: "stacked",

@@ -2012,6 +2012,24 @@ export class Editor implements Component, Focusable {
 				this.#cancelAutocomplete(true);
 				if (visible) return;
 			}
+			// The compact card lays its options out side by side, so the horizontal keys are the natural way to
+			// move between them. Right would otherwise accept at the end of the token (it always is, there), so
+			// here it selects the next option; Tab and Enter still accept. The stacked card keeps the vertical keys.
+			if (
+				this.referenceCardStyle === "compact" &&
+				this.#contextualReferenceToken() !== undefined &&
+				this.isShowingAutocomplete() &&
+				(kb.matchesCanonical(canonical, "tui.editor.cursorLeft") ||
+					kb.matchesCanonical(canonical, "tui.editor.cursorRight"))
+			) {
+				const list = this.#autocompleteList;
+				const step = kb.matchesCanonical(canonical, "tui.editor.cursorRight") ? 1 : -1;
+				const next = list.getSelectedIndex() + step;
+				// Ends do not wrap and do not accept: a stray extra press must not insert a reference.
+				if (next >= 0 && next < list.pickerView().items.length) list.setSelectedIndex(next);
+				this.onAutocompleteUpdate?.();
+				return;
+			}
 			// Right arrow at end of line accepts the selection like Tab (fish-style).
 			// Mid-line, right arrow keeps its cursor-movement role and falls through.
 			const rightArrowAccepts =
