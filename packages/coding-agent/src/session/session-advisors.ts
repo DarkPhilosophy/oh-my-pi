@@ -795,11 +795,6 @@ export class SessionAdvisors {
 		return this.#buildAdvisorRuntime(seedToCurrent);
 	}
 
-	/** Stops every advisor runtime and starts recorder shutdown. */
-	stopRuntime(): void {
-		this.#stopAdvisorRuntime();
-	}
-
 	/**
 	 * Pause advisor work while old-session recorder feeds remain attached, then
 	 * detach only after any active prompt has settled.
