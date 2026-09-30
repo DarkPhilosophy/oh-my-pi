@@ -450,3 +450,43 @@ it("keeps same-name organizations distinct and their aliases stable after a refr
 		component.dispose();
 	}
 });
+
+it("keeps quota and window labels masked when switching into native details and toggling privacy", () => {
+	const email = "private@example.test";
+	const orgName = "Acme North";
+	const reports: UsageReport[] = [
+		{
+			...report("anthropic", email, [
+				{ ...limit("anthropic", "weekly", email, 0.5, "ok"), window: { id: "weekly", label: orgName } },
+			]),
+			metadata: { email, orgName, orgId: "org-one" },
+		},
+	];
+	const component = new UsageDashboardComponent({
+		reports,
+		maskAccountLabels: true,
+		maskOrganizationNames: true,
+		renderDetail: () => "",
+		loadActivity: async () => {},
+		requestRender: () => {},
+		onClose: () => {},
+	});
+	try {
+		expect(JSON.stringify(component.describe(cx))).not.toContain(email);
+		component.handleNativeEvent({ type: "select", key: "head/tabs", item: "detail" });
+		const masked = JSON.stringify(component.describe(cx));
+		expect(masked).not.toContain(email);
+		expect(masked).not.toContain(orgName);
+		component.handleInput("p");
+		expect(JSON.stringify(component.describe(cx))).toContain(email);
+		component.handleInput("o");
+		expect(JSON.stringify(component.describe(cx))).toContain(orgName);
+		component.handleInput("p");
+		component.handleInput("o");
+		const remasked = JSON.stringify(component.describe(cx));
+		expect(remasked).not.toContain(email);
+		expect(remasked).not.toContain(orgName);
+	} finally {
+		component.dispose();
+	}
+});

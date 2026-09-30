@@ -1592,7 +1592,10 @@ export class UsageDashboardComponent implements Component {
 					for (const [index, cells] of bucket.rows.entries()) {
 						const limitCell: TspSpan[] =
 							index === 0
-								? [span(bucket.label), ...(bucket.window ? [span(` ${bucket.window}`, "dim")] : [])]
+								? [
+										span(this.#textMask(bucket.label)),
+										...(bucket.window ? [span(` ${this.#textMask(bucket.window)}`, "dim")] : []),
+									]
 								: [];
 						rows.push({ id: `r${rows.length}`, cells: { limit: limitCell, ...cells } });
 					}
