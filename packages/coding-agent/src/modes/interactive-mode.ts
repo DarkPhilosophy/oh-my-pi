@@ -1871,8 +1871,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.commandSuggestionsPopup = cfgDisplayCommandSuggestionsPopup.get(this.settings);
 		this.editor.contextualTokenPopup = cfgDisplayContextualTokenPopup.get(this.settings);
 		this.editor.popupFill = cfgDisplayPopupFill.get(this.settings);
-		this.editor.onAutocompleteRender = (render, offset, rows, anchorCol) =>
-			this.ui.setCursorOverlay(render, offset, rows, "auto", anchorCol);
+		this.editor.onAutocompleteRender = (render, offset, rows, anchor) =>
+			this.ui.setCursorOverlay(render, offset, rows, "auto", anchor);
 		this.editor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
 		};
@@ -7324,8 +7324,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		nextEditor.commandSuggestionsPopup = cfgDisplayCommandSuggestionsPopup.get(this.settings);
 		nextEditor.contextualTokenPopup = cfgDisplayContextualTokenPopup.get(this.settings);
 		nextEditor.popupFill = cfgDisplayPopupFill.get(this.settings);
-		nextEditor.onAutocompleteRender = (render, offset, rows, anchorCol) =>
-			this.ui.setCursorOverlay(render, offset, rows, "auto", anchorCol);
+		nextEditor.onAutocompleteRender = (render, offset, rows, anchor) =>
+			this.ui.setCursorOverlay(render, offset, rows, "auto", anchor);
 		nextEditor.magicKeywordsEnabled = () => cfgMagicKeywordsEnabled.get(this.settings);
 		nextEditor.placeholder = () => this.#composerHint();
 		nextEditor.composerState = () => this.#composerNativeState();

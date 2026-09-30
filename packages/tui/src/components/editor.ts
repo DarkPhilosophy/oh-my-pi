@@ -97,6 +97,9 @@ const AUTOCOMPLETE_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 	overflowSearch: false,
 };
 
+/** Cursor cell (2) + frame (2) + the list's own safety margin (2) around the widest label of the contextual card. */
+const CONTEXTUAL_CARD_CHROME_WIDTH = 6;
+
 /**
  * `@` file lists are narrowed in place (`setFilter(liveToken)`) while a fresh
  * search runs, so a slow walk never leaves entries that contradict the typed
@@ -700,14 +703,14 @@ export class Editor implements Component, Focusable {
 	popupFill = false;
 	/**
 	 * A frame host may paint suggestions over existing cells instead of allocating layout rows.
-	 * `anchorCol` is the visible column where the suggestions box should start (the token being completed);
-	 * hosts that ignore it keep a full-width band.
+	 * `anchor` places the box at the token being completed: `col` is its visible start column and `width`
+	 * the width its content needs; hosts that ignore it keep a full-width band.
 	 */
 	onAutocompleteRender?: (
 		render: CursorOverlayRenderer | undefined,
 		cursorOffset: number,
 		editorRows: number,
-		anchorCol?: number,
+		anchor?: { col: number; width: number },
 	) => void;
 	/** Called after an async text-assist result mutates the document outside an input event, so hosts can schedule a repaint. */
 	onTextAssistApplied?: () => void;
@@ -1684,19 +1687,23 @@ export class Editor implements Component, Focusable {
 				const cursorRow = result.findIndex(row => row.includes(CURSOR_MARKER));
 				// The caret ends the token being completed, so the token starts `tokenWidth` cells before it.
 				// `#12` is one word and never wraps mid-token, so it stays on the caret's visual row.
-				const anchorCol =
+				const anchor =
 					contextualRef !== undefined && cursorRow >= 0
-						? Math.max(
-								0,
-								visibleWidth(result[cursorRow]!.slice(0, result[cursorRow]!.indexOf(CURSOR_MARKER))) -
-									visibleWidth(contextualRef),
-							)
+						? {
+								col: Math.max(
+									0,
+									visibleWidth(result[cursorRow]!.slice(0, result[cursorRow]!.indexOf(CURSOR_MARKER))) -
+										visibleWidth(contextualRef),
+								),
+								// Widest row is `Issue #N`: cursor cell + label, plus the frame and the list's own margin.
+								width: CONTEXTUAL_CARD_CHROME_WIDTH + visibleWidth(`Issue ${contextualRef}`),
+							}
 						: undefined;
 				this.onAutocompleteRender(
 					this.focused ? this.#renderAutocompleteOverlay : undefined,
 					Math.max(0, cursorRow),
 					result.length,
-					anchorCol,
+					anchor,
 				);
 			} else {
 				this.onAutocompleteRender?.(undefined, 0, result.length);

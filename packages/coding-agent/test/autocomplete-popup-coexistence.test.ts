@@ -79,7 +79,8 @@ it.each([
 				const row = rows[labelRow]!;
 				const tokenCol = rows[inputRow]!.indexOf(input) + 4;
 				expect(row.indexOf("│")).toBe(anchored ? tokenCol : 0);
-				expect(row.trimEnd().length).toBe(anchored ? tokenCol + 44 : 120);
+				// The anchored card is as wide as its widest label (`Issue #12`) plus cursor cell, frame and margin.
+				expect(row.trimEnd().length).toBe(anchored ? tokenCol + 6 + "Issue #12".length : 120);
 				if (anchored) expect(row.slice(0, tokenCol)).toMatch(/^CHAT/);
 			}
 		} finally {

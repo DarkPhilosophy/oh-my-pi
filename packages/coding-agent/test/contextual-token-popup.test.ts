@@ -9,8 +9,6 @@ let composer: Composer | undefined;
 afterEach(() => composer?.stop());
 
 const WIDTH = 120;
-/** Width of the anchored popup card; the terminal is wide enough that it fits right of a mid-row token. */
-const CARD = 44;
 
 async function openComposer(options: { contextual: boolean; width?: number }): Promise<{
 	terminal: VirtualTerminal;
@@ -29,8 +27,8 @@ async function openComposer(options: { contextual: boolean; width?: number }): P
 	active.setRuntimeChildren([transcript, active.editor]);
 	active.editor.commandSuggestionsPopup = true;
 	active.editor.contextualTokenPopup = options.contextual;
-	active.editor.onAutocompleteRender = (render, offset, rows, anchorCol) =>
-		active.ui.setCursorOverlay(render, offset, rows, "auto", anchorCol);
+	active.editor.onAutocompleteRender = (render, offset, rows, anchor) =>
+		active.ui.setCursorOverlay(render, offset, rows, "auto", anchor);
 	active.editor.setAutocompleteProvider(
 		createPromptActionAutocompleteProvider({
 			commands: [],
@@ -78,6 +76,11 @@ function locateLast(rows: readonly string[], needle: string): { row: number; col
 	return undefined;
 }
 
+/** Width of the contextual card for a `#N` token: cursor cell, frame and margin around the widest label. */
+function cardWidth(token: string): number {
+	return 6 + `Issue ${token}`.length;
+}
+
 it("starts the #N popup box exactly at the token column and leaves the chat text beside it", async () => {
 	const { terminal, editor, paint } = await openComposer({ contextual: true });
 	const lead = "please review the pull request ";
@@ -98,8 +101,8 @@ it("starts the #N popup box exactly at the token column and leaves the chat text
 	expect(boxRow.indexOf("│")).toBe(tokenCol);
 	// The chat text on that row is preserved to the left of the box.
 	expect(boxRow.slice(0, tokenCol)).toMatch(/^CHAT_\d+\s*$/);
-	// The card is compact, not a full-width band.
-	expect(boxRow.trimEnd().length).toBe(tokenCol + CARD);
+	// The card is as wide as its content, not a full-width band and not a fixed width.
+	expect(boxRow.trimEnd().length).toBe(tokenCol + cardWidth("#12"));
 });
 
 it("follows the token when it moves right instead of staying at a fixed column", async () => {
@@ -131,7 +134,7 @@ it("pulls the box left of a token near the right edge so the whole card stays on
 	const boxRow = rows[label!.row]!;
 	expect(label!.row).toBeLessThan(input!.row);
 	// Clamped to the last column that still fits the card: its right border is the terminal's last cell.
-	expect(boxRow.indexOf("│")).toBe(WIDTH - CARD);
+	expect(boxRow.indexOf("│")).toBe(WIDTH - cardWidth("#7"));
 	expect(boxRow.trimEnd().length).toBe(WIDTH);
 });
 
@@ -169,6 +172,27 @@ it("keeps the existing #N list under the editor when the setting is off", async 
 	expect(input).toBeDefined();
 	expect(label).toBeDefined();
 	expect(label!.row).toBeGreaterThan(input!.row);
+});
+
+it("sizes the card to its content: tiny for #1, wider only when the number is long", async () => {
+	const widthOf = async (typed: string, token: string): Promise<number> => {
+		const { terminal, editor, paint } = await openComposer({ contextual: true });
+		editor.handleInput(typed);
+		await paint();
+		const rows = terminal.getViewport().map(Bun.stripANSI);
+		const label = locate(rows, `PR ${token}`);
+		expect(label).toBeDefined();
+		const boxRow = rows[label!.row]!;
+		return boxRow.trimEnd().length - boxRow.indexOf("│");
+	};
+	const short = await widthOf("see #1", "#1");
+	const long = await widthOf("see #123456789012345", "#123456789012345");
+
+	// No blank padding for a short reference: the card is exactly as wide as its widest label.
+	expect(short).toBe(cardWidth("#1"));
+	// A long reference is a reason for a wider card, and it grows by exactly the extra digits.
+	expect(long).toBe(cardWidth("#123456789012345"));
+	expect(long - short).toBe("123456789012345".length - "1".length);
 });
 
 /** Rows of the viewport that still show a #12 suggestion. */
