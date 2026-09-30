@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Turning the advisor off for a session now also applies to its existing, newly spawned and restored subagents, while a subagent that opted out itself and unrelated sessions are left alone ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
+
+### Fixed
+
+- Applying advisor changes no longer restarts every advisor: only the advisors whose configuration changed restart and unchanged ones keep their context, queued notes and status; changing the shared instructions still restarts all of them ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
+
 ## [18.4.5] - 2026-09-30
 
 ### Added
