@@ -414,6 +414,8 @@ const cfgLiveUiSettings = combine({
 	autocompleteMaxVisible: cfgAutocompleteMaxVisible,
 	"display.commandSuggestionsPopup": cfgDisplayCommandSuggestionsPopup,
 	"display.autocompleteSuggestionsPopup": cfgDisplayAutocompleteSuggestionsPopup,
+	"display.contextualTokenPopup": cfgDisplayContextualTokenPopup,
+	"display.contextualTokenPopupStyle": cfgDisplayContextualTokenPopupStyle,
 	"display.popupFill": cfgDisplayPopupFill,
 	"spelling.typoDetection": cfgSpellingTypoDetection,
 	"spelling.autocomplete": cfgSpellingAutocomplete,
@@ -3585,9 +3587,19 @@ export class InteractiveMode implements InteractiveModeContext {
 			// setPreferences re-themes the editor, which resets its mode-tinted border.
 			this.updateEditorBorderColor();
 		}
-		if (any("display.commandSuggestionsPopup", "display.autocompleteSuggestionsPopup", "display.popupFill")) {
+		if (
+			any(
+				"display.commandSuggestionsPopup",
+				"display.autocompleteSuggestionsPopup",
+				"display.contextualTokenPopup",
+				"display.contextualTokenPopupStyle",
+				"display.popupFill",
+			)
+		) {
 			this.editor.commandSuggestionsPopup = cfgDisplayCommandSuggestionsPopup.get(this.settings);
 			this.editor.autocompleteSuggestionsPopup = cfgDisplayAutocompleteSuggestionsPopup.get(this.settings);
+			this.editor.contextualTokenPopup = cfgDisplayContextualTokenPopup.get(this.settings);
+			this.editor.referenceCardStyle = cfgDisplayContextualTokenPopupStyle.get(this.settings);
 			this.editor.popupFill = cfgDisplayPopupFill.get(this.settings);
 			this.ui.requestRender();
 		}

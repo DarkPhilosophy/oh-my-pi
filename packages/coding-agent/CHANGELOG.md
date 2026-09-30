@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `display.contextualTokenPopup` (off by default, needs `display.autocompleteSuggestionsPopup`): `#123` PR and issue suggestions open as a compact popup above the typed token instead of a full-width band ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added `display.contextualTokenPopupStyle` (`compact` or `stacked`) to choose how the `#123` popup lays out PR and Issue. The selected item's title shows beneath the options: cached titles at once, a missing one is fetched once in the background after typing settles (skipped when `github.cache.enabled` is off) ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
+### Fixed
+
+- Fixed a dismissed `#123`, `@` or `/` suggestion list reappearing over an empty editor after Ctrl+C cleared the draft: clearing the draft now closes any open suggestions ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
 ## [18.4.5] - 2026-09-30
 
 ### Added
