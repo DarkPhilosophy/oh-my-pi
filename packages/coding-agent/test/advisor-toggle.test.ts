@@ -29,7 +29,11 @@ function restoreEnv(key: string, value: string | undefined): void {
 import * as advisorModule from "../src/advisor";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
-import { cfgAdvisorEnabled, cfgAdvisorMaxNotesPerUpdate } from "@oh-my-pi/pi-coding-agent/advisor/settings";
+import {
+	cfgAdvisorCurator,
+	cfgAdvisorEnabled,
+	cfgAdvisorMaxNotesPerUpdate,
+} from "@oh-my-pi/pi-coding-agent/advisor/settings";
 import { TurnRecovery } from "@oh-my-pi/pi-coding-agent/session/turn-recovery";
 import { cfgCompactionKeepRecentTokens } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 
@@ -936,6 +940,7 @@ describe("AgentSession advisor toggle", () => {
 		expect(after.get("A-B")?.state.systemPrompt.join("\n")).not.toContain("first");
 	});
 	it("keeps a surviving advisor's queued note when another advisor restarts or is removed", async () => {
+		cfgAdvisorCurator.set(session.settings, "off");
 		enableAdvisor();
 		expect(session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing" }], undefined)).toBe(2);
 

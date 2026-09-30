@@ -43,12 +43,19 @@ const ADVISOR_GUIDANCE = "weigh, don't blindly obey";
  * non-interrupting YieldQueue dispatcher and the interrupting steer path so both
  * build byte-identical content.
  */
-export function formatAdvisorBatchContent(notes: readonly AdvisorNote[]): string {
+export function formatAdvisorBatchContent(notes: readonly AdvisorNote[], opts?: { currentTurn?: number }): string {
 	return notes
 		.map(n => {
 			const severity = n.severity ? ` severity="${n.severity}"` : "";
 			const who = n.advisor ? ` advisor="${escapeXmlAttribute(n.advisor)}"` : "";
-			return `<advisory${who}${severity} guidance="${ADVISOR_GUIDANCE}">\n${escapeXmlText(n.note)}\n</advisory>`;
+			const age =
+				opts?.currentTurn !== undefined && n.turn !== undefined && opts.currentTurn > n.turn
+					? ` turns_ago="${opts.currentTurn - n.turn}"`
+					: "";
+			// Marks a note that absorbed equivalent notes from other advisors, so
+			// consumers can tell a single observation from a corroborated one.
+			const curated = n.curated ? ` curated="true"` : "";
+			return `<advisory${who}${severity}${age}${curated} guidance="${ADVISOR_GUIDANCE}">\n${escapeXmlText(n.note)}\n</advisory>`;
 		})
 		.join("\n");
 }
