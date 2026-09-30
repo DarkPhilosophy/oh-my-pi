@@ -402,7 +402,7 @@ export class AdvisorScope {
 	#suppressed = false;
 	readonly #listeners = new Set<() => void>();
 
-	constructor(readonly parent?: AdvisorScope) {}
+	constructor(readonly parent?: AdvisorScope) { }
 
 	get suppressed(): boolean {
 		return this.#suppressed || (this.parent?.suppressed ?? false);
@@ -1012,7 +1012,7 @@ export class SessionAdvisors {
 	/** Tracks persistence of a visible advisor card emitted outside the primary loop. */
 	trackCardEvent(processing: Promise<void>): void {
 		this.#pendingAdvisorCardEvents.add(processing);
-		void processing.finally(() => this.#pendingAdvisorCardEvents.delete(processing)).catch(() => {});
+		void processing.finally(() => this.#pendingAdvisorCardEvents.delete(processing)).catch(() => { });
 	}
 
 	/** Waits for all advisor-card persistence handlers currently in flight. */
@@ -1145,15 +1145,15 @@ export class SessionAdvisors {
 		const legacy = !this.#advisorConfigs?.length;
 		const roster: AdvisorConfig[] = legacy
 			? [
-					{
-						name: "default",
-						reviewMode: cfgAdvisorReviewMode.get(this.#host.settings) === "agent-end" ? "agent-end" : "turn",
-						reviewInterval: (() => {
-							const v = cfgAdvisorReviewInterval.get(this.#host.settings) as number;
-							return Number.isFinite(v) && v >= 1 ? Math.trunc(v) : 1;
-						})(),
-					},
-				]
+				{
+					name: "default",
+					reviewMode: cfgAdvisorReviewMode.get(this.#host.settings) === "agent-end" ? "agent-end" : "turn",
+					reviewInterval: (() => {
+						const v = cfgAdvisorReviewInterval.get(this.#host.settings) as number;
+						return Number.isFinite(v) && v >= 1 ? Math.trunc(v) : 1;
+					})(),
+				},
+			]
 			: this.#advisorConfigs!;
 		const descriptors: AdvisorRuntimeDescriptor[] = [];
 		const usedSlugs = new Set<string>();
@@ -1176,8 +1176,8 @@ export class SessionAdvisors {
 			const configuredReviewInterval = config.reviewInterval;
 			const reviewInterval =
 				typeof configuredReviewInterval === "number" &&
-				Number.isSafeInteger(configuredReviewInterval) &&
-				configuredReviewInterval >= 1
+					Number.isSafeInteger(configuredReviewInterval) &&
+					configuredReviewInterval >= 1
 					? configuredReviewInterval
 					: 1;
 			// Catch-up override: schema-validated for WATCHDOG.yml entries, clamped
@@ -1186,7 +1186,7 @@ export class SessionAdvisors {
 			// "off" wins over a global strict/numeric policy.
 			const syncBacklog: AdvisorSyncBacklog | undefined =
 				config.syncBacklog !== undefined &&
-				(ADVISOR_SYNC_BACKLOG_MODES as readonly string[]).includes(config.syncBacklog)
+					(ADVISOR_SYNC_BACKLOG_MODES as readonly string[]).includes(config.syncBacklog)
 					? config.syncBacklog
 					: undefined;
 
@@ -1431,14 +1431,14 @@ export class SessionAdvisors {
 			// the UUIDv7 provider session id, not the local `-advisor` label.
 			const advisorTelemetry = this.#host.agent.telemetry
 				? {
-						...this.#host.agent.telemetry,
-						agent: {
-							id: advisorSessionLabel,
-							name: slug ? `${MODEL_ROLES.advisor.name}: ${advisorName}` : MODEL_ROLES.advisor.name,
-							description: formatModelString(advisorModel),
-						},
-						conversationId: undefined,
-					}
+					...this.#host.agent.telemetry,
+					agent: {
+						id: advisorSessionLabel,
+						name: slug ? `${MODEL_ROLES.advisor.name}: ${advisorName}` : MODEL_ROLES.advisor.name,
+						description: formatModelString(advisorModel),
+					},
+					conversationId: undefined,
+				}
 				: undefined;
 			// Mirror the SDK's provider-shaping options (streamFn/onPayload/...,
 			// providerSessionState, promptCacheKey, transformProviderContext) so each
@@ -1758,14 +1758,14 @@ export class SessionAdvisors {
 					entries.length === 0
 						? null
 						: ({
-								role: "custom",
-								customType: "advisor",
-								display: true,
-								attribution: "agent",
-								timestamp: Date.now(),
-								content: formatAdvisorBatchContent(entries),
-								details: { notes: entries } satisfies AdvisorMessageDetails,
-							} satisfies CustomMessage),
+							role: "custom",
+							customType: "advisor",
+							display: true,
+							attribution: "agent",
+							timestamp: Date.now(),
+							content: formatAdvisorBatchContent(entries),
+							details: { notes: entries } satisfies AdvisorMessageDetails,
+						} satisfies CustomMessage),
 				skipIdleFlush: true,
 			});
 		}
@@ -1880,7 +1880,9 @@ export class SessionAdvisors {
 			enqueue(pending);
 			return;
 		}
-		const generation = ++this.#advisorCuratorGeneration;
+		// Only a session reset or dispose bumps the generation. A batch that merely starts while
+		// another is still being judged must not discard it, or a slow judge would drop whole groups.
+		const generation = this.#advisorCuratorGeneration;
 		const timeoutMs = cfgAdvisorCuratorTimeoutMs.get(this.#host.settings);
 		try {
 			const result = await curateAdvisorCandidates({
@@ -2016,7 +2018,8 @@ export class SessionAdvisors {
 			return;
 		}
 		const registry = this.#host.modelRegistry;
-		const generation = ++this.#advisorCuratorGeneration;
+		// Same epoch rule as the live-aside route: only a reset or dispose invalidates a judgment.
+		const generation = this.#advisorCuratorGeneration;
 		const timeoutMs = cfgAdvisorCuratorTimeoutMs.get(this.#host.settings);
 		// Registered with the card events so `waitForAdvisorCatchup` (and a strict
 		// boundary) waits for the curated batch to reach the primary: delivery after
@@ -2041,8 +2044,9 @@ export class SessionAdvisors {
 			),
 		}).then(
 			result => {
-				// A newer boundary already superseded this batch: its own curation
-				// owns delivery, so dropping here would duplicate the notes.
+				// Only a session reset or dispose bumps the generation, so this drops a judgment that
+				// describes a conversation no longer on screen. Overlapping boundaries each own their own
+				// `notes`, so they never compete for delivery and nothing is duplicated.
 				if (generation !== this.#advisorCuratorGeneration) return;
 				const curated = applyAdvisorCuration(notes, curatable, result.decisions);
 				const merged = result.decisions.filter(decision => decision.action === "merge").length;
@@ -2178,8 +2182,8 @@ export class SessionAdvisors {
 			a.recorderClosed = a.recorder.close();
 			closes.push(a.recorderClosed);
 		}
-		const settled = Promise.all(closes).then(() => {});
-		this.#advisorRecorderClosed = only ? Promise.all([this.#advisorRecorderClosed, settled]).then(() => {}) : settled;
+		const settled = Promise.all(closes).then(() => { });
+		this.#advisorRecorderClosed = only ? Promise.all([this.#advisorRecorderClosed, settled]).then(() => { }) : settled;
 		this.#advisors = survivors;
 		if (survivors.length === 0) {
 			this.#advisorYieldQueueUnsubscribe?.();
@@ -2336,11 +2340,11 @@ export class SessionAdvisors {
 		const message = assistantFailure?.errorMessage ?? (error instanceof Error ? error.message : String(error));
 		const errorId = assistantFailure
 			? AIError.classifyMessage({
-					api: currentModel.api,
-					errorId: assistantFailure.errorId,
-					errorMessage: message,
-					errorStatus: assistantFailure.errorStatus,
-				})
+				api: currentModel.api,
+				errorId: assistantFailure.errorId,
+				errorMessage: message,
+				errorStatus: assistantFailure.errorStatus,
+			})
 			: AIError.classify(error, currentModel.api);
 		if (AIError.is(errorId, AIError.Flag.Abort) || AIError.is(errorId, AIError.Flag.UserInterrupt)) return false;
 		// Text-ambiguous overflows waive the veto; usage-backed do not — see AIError.isTextAmbiguousContextOverflow (#9235).
@@ -2413,19 +2417,19 @@ export class SessionAdvisors {
 		const declineUsageLimit = (): Promise<boolean> =>
 			usageLimit
 				? this.#waitOutAdvisorUsageLimit(
-						advisor,
-						retrySettings,
-						{
-							retryAtMs: usageRetryAtMs,
-							blockedUntilMs: usageBlockedUntilMs,
-							requestedBlockedUntilMs: usageRequestedBlockedUntilMs,
-							retryAfterMs,
-							reportResetAtMs: usageReportResetAtMs,
-							priorBlockedUntilMs: usagePriorBlockedUntilMs,
-							priorBlockedUntilTimed: usagePriorBlockedUntilTimed,
-						},
-						signal,
-					)
+					advisor,
+					retrySettings,
+					{
+						retryAtMs: usageRetryAtMs,
+						blockedUntilMs: usageBlockedUntilMs,
+						requestedBlockedUntilMs: usageRequestedBlockedUntilMs,
+						retryAfterMs,
+						reportResetAtMs: usageReportResetAtMs,
+						priorBlockedUntilMs: usagePriorBlockedUntilMs,
+						priorBlockedUntilTimed: usagePriorBlockedUntilTimed,
+					},
+					signal,
+				)
 				: Promise.resolve(false);
 		if (!retrySettings.enabled || !retrySettings.modelFallback) return declineUsageLimit();
 		// Same two-key walk the main loop uses: the chain that owns this advisor's
@@ -3354,12 +3358,12 @@ export class SessionAdvisors {
 			options?.compact
 				? formatSessionHistoryMarkdown(a.agent.state.messages)
 				: formatSessionDumpText({
-						messages: a.agent.state.messages,
-						systemPrompt: a.agent.state.systemPrompt,
-						model: a.agent.state.model,
-						thinkingLevel: a.agent.state.thinkingLevel,
-						tools: a.agent.state.tools,
-					});
+					messages: a.agent.state.messages,
+					systemPrompt: a.agent.state.systemPrompt,
+					model: a.agent.state.model,
+					thinkingLevel: a.agent.state.thinkingLevel,
+					tools: a.agent.state.tools,
+				});
 		if (this.#advisors.length === 1) return dump(this.#advisors[0]);
 		return this.#advisors
 			.map(a => `### Advisor: ${a.name} (${a.agent.state.model.provider}/${a.agent.state.model.id})\n\n${dump(a)}`)
