@@ -194,6 +194,7 @@ import { clampProviderContextImages, dropUnreadableContextImages } from "./sessi
 import {
 	expandDefaultRetryFallbackChains,
 	findRetryFallbackCandidates,
+	installRetryFallbackRole,
 	type RetryFallbackResolutionContext,
 	resolveRetryFallbackChainKey,
 } from "./session/retry-fallback-chains";
@@ -3004,26 +3005,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						}
 					}
 					if (fallbackSelectors.length > 0) {
-						const modelRoles: Record<string, string> = {};
-						const existingRoles = settings.getModelRoles();
-						for (const role in existingRoles) {
-							const selector = existingRoles[role];
-							if (selector) {
-								modelRoles[role] = selector;
-							}
-						}
-						modelRoles[options.modelPatternFallbackRole] = primarySelector;
-						cfgModelRoles.override(settings, modelRoles);
-						const fallbackChains: Record<string, string[]> = {
-							[options.modelPatternFallbackRole]: fallbackSelectors,
-						};
-						const existingFallbackChains = cfgRetryFallbackChains.get(settings);
-						for (const role in existingFallbackChains) {
-							if (role !== options.modelPatternFallbackRole) {
-								fallbackChains[role] = existingFallbackChains[role];
-							}
-						}
-						cfgRetryFallbackChains.override(settings, fallbackChains);
+						installRetryFallbackRole(settings, options.modelPatternFallbackRole, {
+							primary: primarySelector,
+							chain: fallbackSelectors,
+						});
 					}
 				}
 				model = selectedModel;
