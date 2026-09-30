@@ -14,10 +14,12 @@
 
 ### Added
 
+- Popups can be anchored to a column: `TUI.setCursorOverlay` takes an optional `anchorCol`, and the editor reports the start column of a `#123` reference being completed so the suggestions box opens above the token.
 - `/advisor configure` has a native settings page for the project and global rosters, with a page per advisor and per scope, typed rows for each field and per-scope save ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 
 ### Fixed
 
+- Fixed a dismissed `#123`, `@` or `/` suggestion list reappearing over an empty editor after the draft was cleared (Ctrl+C, submit or history recall): replacing the whole text now closes any open suggestions.
 - Fixed the `/advisor configure` tools editor letting arrow keys move onto rows clipped by the right pane, so Enter could toggle a tool that was not visible ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - `SelectList` now keeps keyboard focus on the intended item after a focus transition ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 ## [18.4.4] - 2026-09-29

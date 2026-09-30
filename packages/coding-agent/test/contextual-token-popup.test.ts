@@ -135,6 +135,28 @@ it("pulls the box left of a token near the right edge so the whole card stays on
 	expect(boxRow.trimEnd().length).toBe(WIDTH);
 });
 
+it("anchors to the token's own column when the text wrapped onto a second row", async () => {
+	const { terminal, editor, paint } = await openComposer({ contextual: true });
+	// Enough words to fill the first row so the sentence wraps; the short tail puts `#12` early on the
+	// wrapped row, left of the column where the right-edge clamp would take over.
+	const words = Array.from({ length: 22 }, (_, i) => `word${i}`).join(" ");
+	editor.handleInput(`${words} see #12`);
+	await paint();
+
+	const rows = terminal.getViewport().map(Bun.stripANSI);
+	const input = locateLast(rows, "#12");
+	const label = locate(rows, "PR #12");
+	expect(input).toBeDefined();
+	expect(label).toBeDefined();
+	// The token really is on a wrapped row, not on the row the sentence began on.
+	const firstRow = locate(rows, "word0");
+	expect(firstRow).toBeDefined();
+	expect(input!.row).toBeGreaterThan(firstRow!.row);
+	// The box opens above the input at the wrapped token's own column, not at the column-0 fallback.
+	expect(label!.row).toBeLessThan(input!.row);
+	expect(rows[label!.row]!.indexOf("│")).toBe(input!.col);
+});
+
 it("keeps the existing #N list under the editor when the setting is off", async () => {
 	const { terminal, editor, paint } = await openComposer({ contextual: false });
 	editor.handleInput("see ");
@@ -147,4 +169,42 @@ it("keeps the existing #N list under the editor when the setting is off", async 
 	expect(input).toBeDefined();
 	expect(label).toBeDefined();
 	expect(label!.row).toBeGreaterThan(input!.row);
+});
+
+/** Rows of the viewport that still show a #12 suggestion. */
+function suggestionRows(terminal: VirtualTerminal): string[] {
+	return terminal
+		.getViewport()
+		.map(Bun.stripANSI)
+		.filter(row => row.includes("PR #12") || row.includes("Issue #12"));
+}
+
+it("dismisses the #N suggestions when the draft is cleared, as Ctrl+C does", async () => {
+	const { terminal, editor, paint } = await openComposer({ contextual: true });
+	editor.handleInput("see ");
+	for (const ch of "#12") editor.handleInput(ch);
+	await paint();
+	expect(suggestionRows(terminal).length).toBeGreaterThan(0);
+
+	editor.clearDraft();
+	await paint();
+
+	// The buffer is empty, so no suggestion may survive on screen or in the editor's state.
+	expect(editor.getText()).toBe("");
+	expect(editor.isAutocompleteActive()).toBe(false);
+	expect(suggestionRows(terminal)).toEqual([]);
+});
+
+it("dismisses the #N list below the editor when the draft is cleared with the popup setting off", async () => {
+	const { terminal, editor, paint } = await openComposer({ contextual: false });
+	editor.handleInput("see ");
+	for (const ch of "#12") editor.handleInput(ch);
+	await paint();
+	expect(suggestionRows(terminal).length).toBeGreaterThan(0);
+
+	editor.setText("");
+	await paint();
+
+	expect(editor.isAutocompleteActive()).toBe(false);
+	expect(suggestionRows(terminal)).toEqual([]);
 });

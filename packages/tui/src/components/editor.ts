@@ -1119,6 +1119,9 @@ export class Editor implements Component, Focusable {
 	/** Internal setText that doesn't reset history state - used by navigateHistory */
 	#setTextInternal(text: string, cursorAnchor: HistoryCursorAnchor = "end"): void {
 		this.#undoStack.length = 0;
+		// Replacing the whole buffer (clear, submit, history recall) makes any open suggestion list stale:
+		// it was computed for text that no longer exists, and would otherwise keep painting.
+		this.#cancelAutocomplete(true);
 		const lines = sanitizeLoadedText(text).split("\n");
 		this.#state.lines = lines.length === 0 ? [""] : lines;
 		// A single-row entry's top and bottom are the same row, so the directional
