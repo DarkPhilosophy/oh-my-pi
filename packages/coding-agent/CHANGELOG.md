@@ -2,18 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `display.contextualTokenPopup` (off by default, needs `display.autocompleteSuggestionsPopup`): `#123` PR and issue suggestions open as a compact popup above the typed token instead of a full-width band ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added `display.contextualTokenPopupStyle` (`compact` or `stacked`) to choose how the `#123` popup lays out PR and Issue. The selected item's title shows beneath the options: cached titles at once, a missing one is fetched once in the background after typing settles (skipped when `github.cache.enabled` is off) ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
+### Fixed
+
+- Fixed a dismissed `#123`, `@` or `/` suggestion list reappearing over an empty editor after Ctrl+C cleared the draft: clearing the draft now closes any open suggestions ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
 ## [18.4.5] - 2026-09-30
 
 ### Added
 
-- Added `display.contextualTokenPopup` (off by default, needs `display.autocompleteSuggestionsPopup`): `#123` PR and issue suggestions open as a compact popup above the typed token instead of a full-width band ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Added `display.contextualTokenPopupStyle` (`compact` or `stacked`) to choose how the `#123` popup lays out PR and Issue. The selected item's title shows beneath the options: cached titles at once, a missing one is fetched once in the background after typing settles (skipped when `github.cache.enabled` is off).
-- Added `display.contextualTokenPopup` (off by default, needs `display.commandSuggestionsPopup`): `#123` PR and issue suggestions open as a popup anchored above the typed token instead of a list below the editor.
-- Added project/global `/advisor configure` editing with per-advisor enablement, compact per-advisor status glyphs, and ancestor-aware advisor inheritance for spawned sessions ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Fenced code blocks now expose a clickable `copy` link that copies their original source text ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Added opt-in `usage.maskOrganizationNames` and a temporary `/usage` organization-privacy control, independent of identifier masking, with stable organization aliases across cards, details, notes, and CLI/ACP reports ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Added connect-only Browser Relay support for Firefox-family browsers through local WebDriver BiDi endpoints ([#10295](https://github.com/can1357/oh-my-pi/pull/10295) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Added an optional Autocomplete Suggestions Popup for `@` file mentions, `#` actions/references, and `:` emoji suggestions without moving the chat ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Added Factory Droid login and model selection with base credit badges and account-matched regional discovery ([#8577](https://github.com/can1357/oh-my-pi/pull/8577) by [@will-bogusz](https://github.com/will-bogusz), continued in [#13276](https://github.com/can1357/oh-my-pi/pull/13276) by [@DusKing1](https://github.com/DusKing1)).
 - Added `HELMCODE_API_KEY` to the environment variables listed in `omp --help` ([#13630](https://github.com/can1357/oh-my-pi/pull/13630) by [@alexcerezo](https://github.com/alexcerezo)).
 - RPC hosts can send `messageUpdates: "delta"` with `set_event_filter` to receive `message_update` frames without the accumulated message snapshots (`message` shrinks to `{ role }` and `assistantMessageEvent.partial` is omitted); the response echoes the active mode ([#13716](https://github.com/can1357/oh-my-pi/pull/13716) by [@alphastorm](https://github.com/alphastorm))
@@ -25,31 +26,12 @@
 
 ### Changed
 
-- Added `HELMCODE_API_KEY` to the environment variables listed in `omp --help` ([#13630](https://github.com/can1357/oh-my-pi/pull/13630) by [@alexcerezo](https://github.com/alexcerezo)).
-- RPC hosts can send `messageUpdates: "delta"` with `set_event_filter` to receive `message_update` frames without the accumulated message snapshots (`message` shrinks to `{ role }` and `assistantMessageEvent.partial` is omitted); the response echoes the active mode ([#13716](https://github.com/can1357/oh-my-pi/pull/13716) by [@alphastorm](https://github.com/alphastorm))
-- RPC hosts can follow each cache-warming refresh through `cache_warming_start` and `cache_warming_end` events (also written by `--mode json`), which report the outcome and the recorded usage, and can set the session's warming mode with `set_cache_warming` without changing `config.yml`; the Python client gains `set_cache_warming()` ([#13717](https://github.com/can1357/oh-my-pi/pull/13717) by [@alphastorm](https://github.com/alphastorm))
-- Pinned Subagents rows can show each agent's current (or most recent) tool call with a one-line detail and an elapsed marker; enable with `display.subagentLivePreview` (off by default) ([#3821](https://github.com/can1357/oh-my-pi/pull/3821) by [@abilliontokens](https://github.com/abilliontokens))
-- Model presets: save every role assignment plus the default thinking level under a name and switch between them with `/modelpreset save|switch|delete|list`, pick one interactively with `/modelpreset`, or press `s` in the `/models` Roles view to save the current setup ([#5253](https://github.com/can1357/oh-my-pi/pull/5253) by [@abilliontokens](https://github.com/abilliontokens))
-- Subagent tool previews name the files a freeform edit (`apply_patch`, sloppy, hashline) touches ([#11210](https://github.com/can1357/oh-my-pi/pull/11210) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-
-### Changed
-
-- Improved `/usage` with provider/account cards, temporary privacy and grouping controls, and configurable quota-bar labels ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - `omp auth-gateway serve` now attributes peers to the socket address by default; deployments behind a trusted reverse proxy can restore forwarded peer headers with `--trust-proxy-headers` ([#13827](https://github.com/can1357/oh-my-pi/pull/13827) by [@shawnkoh](https://github.com/shawnkoh))
 - `--no-ui` now also works with `--mode rpc-ui`: extensions run headless while tool UI such as the `ask` tool still reaches the host ([#13718](https://github.com/can1357/oh-my-pi/pull/13718) by [@alphastorm](https://github.com/alphastorm))
 - `omp models --json` reports each model's `pricingStatus` (`fixed`, `free`, `included`, `variable`, or `unknown`) ([#11613](https://github.com/can1357/oh-my-pi/pull/11613) by [@will-bogusz](https://github.com/will-bogusz)).
 
 ### Fixed
 
-- Fixed a dismissed `#123`, `@` or `/` suggestion list reappearing over an empty editor after Ctrl+C cleared the draft: clearing the draft now closes any open suggestions ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Fixed a dismissed `#123`, `@` or `/` suggestion list reappearing over an empty editor after Ctrl+C cleared the draft: clearing the draft now closes any open suggestions.
-- Fixed the subagent live preview blanking or mislabelling a running call when a sibling call finishes: concurrent calls are tracked by call id and keep their own intent, and the row keeps the last completed call with its success or error mark until the next one starts ([#11210](https://github.com/can1357/oh-my-pi/pull/11210) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Fixed subagent tool previews rewriting a search pattern that names a home directory: path arguments are now shortened by argument key, so the pattern still shows what was searched ([#11210](https://github.com/can1357/oh-my-pi/pull/11210) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Fixed background task job progress dropping the current tool's arguments and start time ([#11210](https://github.com/can1357/oh-my-pi/pull/11210) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Fixed advisor-initiated turns starting after `/advisor off` (or an ancestor scope change) landed during the usage preflight: the preflight now sees the cancellation and the turn is rechecked before it prompts ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Fixed a session transcript that stopped being written for the rest of the session after the first rejected write on a remote or indexed session store; the next write now saves the full transcript, while a real conflict with another writer still stops rewrites.
-- Global usage-account masking now applies to native and text dashboards, notes, reset credits, and CLI usage output without persisting temporary overlay toggles ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Fixed rapid queued steering and follow-up submissions racing or losing attachments; added opt-in coalescing and expandable queued-message previews ([#4680](https://github.com/can1357/oh-my-pi/pull/4680) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
 - Fixed the subagent live preview blanking or mislabelling a running call when a sibling call finishes: concurrent calls are tracked by call id and keep their own intent, and the row keeps the last completed call with its success or error mark until the next one starts ([#11210](https://github.com/can1357/oh-my-pi/pull/11210) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Fixed subagent tool previews rewriting a search pattern that names a home directory: path arguments are now shortened by argument key, so the pattern still shows what was searched ([#11210](https://github.com/can1357/oh-my-pi/pull/11210) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Fixed background task job progress dropping the current tool's arguments and start time ([#11210](https://github.com/can1357/oh-my-pi/pull/11210) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
@@ -1192,13 +1174,6 @@
 - Browser startup reuses a successful system-Chrome fallback instead of retrying an unavailable download during the same open.
 - Browser clicks and other interactions no longer stall when OMP-owned tabs are in the background, including after worker timeout recovery.
 
-### Added
-
-- Added an opt-in Popup Background Fill setting; command popups keep their unfilled appearance by default ([#11946](https://github.com/can1357/oh-my-pi/pull/11946) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-
-- Added an optional Command Suggestions Popup in Appearance → Display that keeps the chat stationary while suggestions open, filter, and close ([#11946](https://github.com/can1357/oh-my-pi/pull/11946) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-
-### Changed
 ## [18.1.20] - 2026-09-13
 
 ### Added
