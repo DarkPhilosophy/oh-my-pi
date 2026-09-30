@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+### Added
+
+- `AuthStorage.keys.setConfig(provider, value, { fallback: true })` registers a key that is used only when no stored OAuth or `/login` credential exists, instead of overriding them; `removeConfig`/`clearConfig` also clear these fallbacks ([#13815](https://github.com/can1357/oh-my-pi/pull/13815) by [@H4vC](https://github.com/H4vC))
+
+## [18.4.4] - 2026-09-29
+
+### Added
+
+- Added the `ultrafast` service tier. It is sent to the OpenAI API as-is, and to Codex only for models that list it in their discovered service tiers; other providers never receive it. On Codex websockets, switching into or out of `ultrafast` starts a new response chain instead of reusing `previous_response_id`, matching the Codex CLI. Ultrafast turns are costed at standard rates because no Ultrafast price is published yet ([#13782](https://github.com/can1357/oh-my-pi/pull/13782) by [@H4vC](https://github.com/H4vC)).
+
+### Changed
+
+- Changed to fall back to adaptive thinking when between_tools is used with xhigh effort
+- xAI requests (`xai`, `xai-oauth` chat and image generation) honor `XAI_BASE_URL` again when the model uses the bundled `https://api.x.ai/v1` endpoint; a custom `baseUrl` from models.yml still wins, and `xai-oauth` OAuth access tokens always stay on the bundled endpoint.
+
+### Fixed
+
+- Fixed Claude on Amazon Bedrock's Anthropic Messages routes (`/anthropic` on bedrock-runtime and bedrock-mantle): runtime requests no longer fail with a request-metadata 400, and both routes use Anthropic's on-demand compaction ([#13311](https://github.com/can1357/oh-my-pi/pull/13311) by [@mustafaabidali](https://github.com/mustafaabidali)).
+- `/usage` no longer shows an always-empty `gpt-4 requests` row for Cursor accounts on usage-based plans; the Cursor Models and Other Models meters remain ([#13726](https://github.com/can1357/oh-my-pi/pull/13726) by [@will-bogusz](https://github.com/will-bogusz)).
+- Cursor turns routed through an HTTP proxy now finish instead of hanging after the response completes ([#13724](https://github.com/can1357/oh-my-pi/pull/13724) by [@will-bogusz](https://github.com/will-bogusz)).
+- Fixed Codex requests sending `priority` (and `scale`) to models whose discovered service tiers list other tiers but not that one, matching the Codex CLI; an empty or missing list is treated as not reported, so `priority` is still sent and `/fast` keeps working on accounts whose `/models` lists no tiers (`flex` is always allowed) ([#13782](https://github.com/can1357/oh-my-pi/pull/13782) by [@H4vC](https://github.com/H4vC)).
+- Fixed Codex priority cost: a turn the backend reports as served at `default` is no longer billed at the priority multiplier ([#13782](https://github.com/can1357/oh-my-pi/pull/13782) by [@H4vC](https://github.com/H4vC)).
+
+## [18.4.3] - 2026-09-28
+
+### Added
+
+- Added Command Code usage limits (5-hour, weekly, and credit balance) to /usage and the status line ([#13666](https://github.com/can1357/oh-my-pi/pull/13666) by [@riicodespretty](https://github.com/riicodespretty))
+
+### Changed
+
+- Reduced per-token CPU and allocations while streaming: the leaked-thinking scanner used for OpenAI-compatible and custom endpoints no longer allocates per character, chat-completions and Bedrock look up a delta's content block in constant time, Google, Gemini CLI, Codex, and chat-completions streams skip raw SSE line capture unless an `onSseEvent` listener is attached, and event streams drain backlogs without `Array#shift` ([#13650](https://github.com/can1357/oh-my-pi/pull/13650) by [@H4vC](https://github.com/H4vC)).
+
+## [18.4.2] - 2026-09-28
+
+### Fixed
+
+- Fixed successful Cursor agent turns being treated as context overflows, which ran overflow compaction and showed "Compaction freed too little context to make progress" while `/context` read well under the window; overflow detection now uses the reported context size instead of input totals summed across a turn's model calls ([#13608](https://github.com/can1357/oh-my-pi/pull/13608) by [@H4vC](https://github.com/H4vC))
+- Fixed Anthropic requests with thinking enabled failing on models whose output ceiling cannot fit the minimum thinking budget; thinking is now disabled for those requests instead ([#13359](https://github.com/can1357/oh-my-pi/pull/13359) by [@jchanghong023](https://github.com/jchanghong023))
+- Fixed Cursor native Grep/Glob results showing no matches or raw output, Write failing to create files, StrReplace missing edits beyond the read limit, and Read/Shell/Delete results misreporting content or metadata ([#13600](https://github.com/can1357/oh-my-pi/issues/13600)).
+
 ## [18.4.1] - 2026-09-28
 
 ### Fixed
@@ -2282,44 +2323,4 @@
 - Fixed the platform OpenAI Responses and Codex websocket stale-chain classifiers missing the "Unsupported parameter: previous_response_id" rejection phrasing (FastAPI-style `detail` body with no `error.code`), so a chained turn now falls back to a full-transcript replay instead of surfacing the 400
 - Fixed the HTTP-400 raw-request dump for Codex SSE to record the body actually sent on the wire instead of the pre-transport request body, which made chained-request failures look like the rejected parameter was never sent
 
-## [15.11.7] - 2026-06-12
-
-### Added
-
-- Added `requestModelId` and `thinking.suppress` options to `google-gemini-cli` so collapsed effort-tier variants serialize their per-effort upstream wire id, and thinking-off requests on models with `thinking.suppressWhenOff` send an explicit `thinkingConfig` (`includeThoughts: false` with `thinkingLevel: "MINIMAL"` or `thinkingBudget: 0`) — Cloud Code Assist re-applies the per-id baked server default when the config is omitted, silently thinking and billing the tokens
-- Added mandatory-reasoning clamping: models baked with `thinking.requiresEffort` floor omitted or disabled reasoning to the lowest supported effort in every api mapping, and `disableReasoning` no longer emits OpenRouter `reasoning: { enabled: false }` for them — fixes `omp bench` and utility requests 400ing with "Reasoning is mandatory for this endpoint and cannot be disabled" on OpenRouter Gemini 3.x
-
-### Changed
-
-- Changed `google-gemini-cli` request mapping to route per-request wire ids via `resolveWireModelId`: the session effort picks the backing variant id (collapsed `gemini-3.5-flash` at high → `gemini-3.5-flash-low`; claude pairs route off → bare id, efforts → `-thinking`) while `AssistantMessage.model` and usage attribution stay on the logical id. A thinking budget clamped to zero now falls through to the thinking-off path (off routing plus suppression) instead of only disabling thinking
-- Changed `openai-completions` and `anthropic-messages` to serialize per-request wire ids via `resolveWireModelId`, so collapsed `X`/`X-thinking` pairs on aggregators and custom providers switch to the thinking SKU when reasoning is enabled (previously only `google-gemini-cli` routed effort-tier variants)
-
-### Fixed
-
-- Fixed `google-gemini-cli` ignoring `Model.requestModelId` when serializing the request model id
-
-## [15.11.5] - 2026-06-12
-
-### Added
-
-- Added `AuthStorage.listUsageHistory` to retrieve historical usage snapshots with optional `provider` and `sinceMs` filtering
-- Added durable usage-history persistence in the sqlite auth store so successful usage reports are recorded as time-series snapshots of limit utilization for later trend inspection
-- Added `AuthStorage.redeemResetCredit` to redeem stored OpenAI Codex saved rate-limit reset credits for a target account by `credentialId`, `accountId`, or `email`
-- Added `listCodexResetCredits` and `consumeCodexResetCredit` exports for OpenAI Codex saved reset-credit listing and redemption
-- Added `resetCredits` with `availableCount` to `UsageReport` so OpenAI Codex usage data now exposes redeemable rate-limit resets
-- Added `openai-codex-reset` exports via package barrel for out-of-band tooling usage
-- Added a one-shot request-debug target that writes the next provider HTTP request JSON to an explicit path.
-
-### Changed
-
-- Changed `AuthStorage.redeemResetCredit` to invalidate cached usage data after a successful redemption so the next usage report reflects the reset immediately
-
-### Fixed
-
-- Fixed temporary credential block state so redeemed reset credits immediately make the affected account selectable again after `redeemResetCredit` succeeds
-- Fixed one-shot request-debug path handling so an explicit request log target is consumed after the next request and no longer affects subsequent calls
-- Fixed explicit request-debug path mode to create missing parent directories before writing request logs
-- Fixed explicit request-debug mode to overwrite existing `.res.log` files for the requested path instead of failing when they already exist
-- Fixed OpenAI Responses `previous_response_id` chaining on Zero Data Retention orgs: the in-provider retry classifier missed the ZDR-specific 400 ("Previous response cannot be used for this organization due to Zero Data Retention"), so chained turns kept failing every other request after a brief recovery — the chain was reset but not disabled, so the next successful full-replay turn re-armed it. The ZDR phrasing is now classified categorically: one strike disables chaining for the session (skipping the three-strike circuit breaker) and the in-call retry drops `store: true`/`previous_response_id` and replays the full transcript instead ([#2341](https://github.com/can1357/oh-my-pi/issues/2341)).
-
-Older entries are archived in [packages/ai/CHANGELOG.md@dfbf3cc34eeb](https://github.com/can1357/oh-my-pi/blob/dfbf3cc34eeb5653580f51bfbcae558a9840f697/packages/ai/CHANGELOG.md).
+Older entries are archived in [packages\ai\CHANGELOG.md@07e9197a3012](https://github.com/can1357/oh-my-pi/blob/07e9197a3012f58c459f1faabeb324decc21f41d/packages\ai\CHANGELOG.md).

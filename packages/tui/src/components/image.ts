@@ -8,6 +8,9 @@ import {
 	renderImage,
 	TERMINAL,
 } from "../terminal-capabilities";
+import { registerNativeBlob } from "../native/blobs";
+import { node } from "../native/describe";
+import type { DescribeContext, NativeNode } from "../native/node";
 import type { Component } from "../tui";
 
 export interface ImageTheme {
@@ -85,7 +88,7 @@ interface SurfaceSplit {
 	 * id so a partial pass reproduces the on-screen live/text split without a
 	 * full, correctly-ordered walk.
 	 */
-	suppressedIds: Set<number>;
+	readonly suppressedIds: Set<number>;
 }
 
 function newSurfaceSplit(): SurfaceSplit {
@@ -97,7 +100,7 @@ function resetSurfaceSplit(split: SurfaceSplit): void {
 	split.onTerminal = 0;
 	split.planned = 0;
 	split.lastTotal = 0;
-	split.suppressedIds = new Set();
+	if (split.suppressedIds.size > 0) split.suppressedIds.clear();
 }
 
 let nextImageBudgetSeed = Math.floor(Math.random() * 0xffffff);
@@ -284,8 +287,8 @@ export class ImageBudget {
 	 */
 	beginPass(stable = false, altScreen = false): void {
 		this.#passIds.length = 0;
-		this.#passSuppression.clear();
-		this.#passIndex.clear();
+		if (this.#passSuppression.size > 0) this.#passSuppression.clear();
+		if (this.#passIndex.size > 0) this.#passIndex.clear();
 		this.#stablePass = stable;
 		this.#surface = altScreen ? "alt" : "screen";
 		this.#split = altScreen ? this.#altSplit : this.#screenSplit;
@@ -296,7 +299,7 @@ export class ImageBudget {
 		// first. Note that leaving alt mode is not the same as unstacking a
 		// fullscreen overlay: the flush must exclude one that is still stacked
 		// from the pass itself, which is that caller's job, not this line's.
-		if (!altScreen) this.#liveIds.alt.clear();
+		if (!altScreen && this.#liveIds.alt.size > 0) this.#liveIds.alt.clear();
 		this.#applyingReset = !stable && this.#cap > 0 && this.#split.planned > this.#split.onTerminal;
 	}
 
@@ -349,7 +352,10 @@ export class ImageBudget {
 		// [0, onTerminal) is what this surface currently shows as text. Partial
 		// passes replay this per id (see #stablePass) instead of re-deriving it
 		// from a reversed, tail-only walk.
-		split.suppressedIds = new Set(this.#passIds.slice(0, split.onTerminal));
+		const suppressedIds = split.suppressedIds;
+		if (suppressedIds.size > 0) suppressedIds.clear();
+		const suppressedCount = Math.min(total, split.onTerminal);
+		for (let i = 0; i < suppressedCount; i++) suppressedIds.add(this.#passIds[i]);
 		return retry;
 	}
 
@@ -362,7 +368,12 @@ export class ImageBudget {
 	 * the next pass on the *other* surface knows what it may not destroy.
 	 */
 	limitResidentImages(): void {
-		this.#liveIds[this.#surface] = new Set(this.#passIds.filter(id => this.#passShowsLive(id)));
+		const liveIds = this.#liveIds[this.#surface];
+		if (liveIds.size > 0) liveIds.clear();
+		for (let i = 0; i < this.#passIds.length; i++) {
+			const id = this.#passIds[i];
+			if (this.#passShowsLive(id)) liveIds.add(id);
+		}
 		const transmitted = this.#transmitted[this.#surface];
 		if (this.#cap <= 0 || transmitted.size <= this.#cap) return;
 		for (const id of transmitted) {
@@ -723,6 +734,7 @@ export class Image implements Component {
 	// pads itself to this height so a budget demotion never shrinks the block
 	// (its rows may already be committed to native scrollback).
 	#renderedGraphicRows = 0;
+	#native?: NativeNode;
 
 	constructor(
 		base64Data: string,
@@ -754,6 +766,32 @@ export class Image implements Component {
 	invalidate(): void {
 		this.#cachedLines = undefined;
 		this.#cachedWidth = undefined;
+	}
+
+	/**
+	 * A native `image` backed by a content-addressed blob; the terminal fits
+	 * it. Cell caps become `ch`/`lines` bounds. The inline-image budget and
+	 * graphics protocols do not apply.
+	 */
+	describe(_cx: DescribeContext): NativeNode {
+		if (this.#native) return this.#native;
+		const blob = registerNativeBlob(Buffer.from(this.#base64Data, "base64"), this.#mimeType);
+		const maxW = this.#options.maxWidthCells;
+		const maxH = this.#options.maxHeightCells;
+		this.#native = node("image", {
+			blob,
+			alt: imageFallback(this.#mimeType, this.#dimensions, this.#options.filename),
+			w: this.#dimensions.widthPx,
+			h: this.#dimensions.heightPx,
+			max:
+				(maxW ?? 0) > 0 || (maxH ?? 0) > 0
+					? {
+							w: maxW && maxW > 0 ? `${maxW}ch` : undefined,
+							h: maxH && maxH > 0 ? `${maxH}lines` : undefined,
+						}
+					: undefined,
+		});
+		return this.#native;
 	}
 
 	render(width: number): readonly string[] {

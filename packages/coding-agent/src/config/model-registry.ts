@@ -288,7 +288,8 @@ export class ModelRegistry {
 	// Runtime extension model overlays — persist across refresh() cycles so that
 	// models registered by extensions survive the model selector's offline reload.
 	#runtimeModelOverlays: CustomModelOverlay[] = [];
-	#runtimeProviderApiKeys: Map<string, string> = new Map();
+	// `fallback` ranks the key below stored login credentials (see registerProvider).
+	#runtimeProviderApiKeys: Map<string, { keyConfig: string; fallback: boolean }> = new Map();
 	#runtimeProviderOverrides: Map<string, ProviderOverride> = new Map();
 	// Command-backed values from registerProvider (apiKey + provider/model
 	// headers). Separate from #commandConfigsByProvider because static reload
@@ -392,9 +393,9 @@ export class ModelRegistry {
 		this.#reloadStaticModels();
 	}
 
-	#installProviderApiKey(provider: string, keyConfig: string): void {
+	#installProviderApiKey(provider: string, keyConfig: string, options?: { fallback?: boolean }): void {
 		this.#customProviderApiKeys.set(provider, keyConfig);
-		this.authStorage.keys.setConfig(provider, keyConfig);
+		this.authStorage.keys.setConfig(provider, keyConfig, options);
 	}
 
 	/**
@@ -542,6 +543,27 @@ export class ModelRegistry {
 		if (this.#backgroundRefresh) {
 			await this.#backgroundRefresh;
 		}
+	}
+
+	/**
+	 * Catch the catalog up for a view that just read it, rebuilding only when it
+	 * is actually stale: waits out an in-flight background refresh, then runs an
+	 * offline {@link refresh} if models.yml changed on disk since the last load.
+	 * Resolves `true` when either may have changed the catalog (the view should
+	 * re-read it), `false` without any rebuild when the in-memory catalog is
+	 * already current. Rejects when the offline rebuild fails.
+	 */
+	async refreshIfStale(): Promise<boolean> {
+		let changed = false;
+		if (this.#backgroundRefresh) {
+			await this.#backgroundRefresh;
+			changed = true;
+		}
+		if (this.#modelsConfigFile.getMtimeMs() !== this.#lastStaticLoadMtime) {
+			await this.refresh("offline");
+			changed = true;
+		}
+		return changed;
 	}
 
 	/**
@@ -790,8 +812,8 @@ export class ModelRegistry {
 		this.authStorage.keys.clearConfig();
 		// Restore runtime API keys before #loadModels — survives because
 		// #loadModels only calls .set() on #customProviderApiKeys, never reassigns it.
-		for (const [k, v] of this.#runtimeProviderApiKeys) {
-			this.#installProviderApiKey(k, v);
+		for (const [provider, { keyConfig, fallback }] of this.#runtimeProviderApiKeys) {
+			this.#installProviderApiKey(provider, keyConfig, { fallback });
 		}
 		this.#providerOverrides.clear();
 		this.#modelOverrides.clear();
@@ -3064,9 +3086,15 @@ export class ModelRegistry {
 			this.authStorage.usage.setProvider(providerName, config.usage, config.apiKey);
 		}
 		if (config.apiKey) {
-			this.#installProviderApiKey(providerName, config.apiKey);
+			// A provider that owns a /login flow must not let its default key
+			// reference shadow the credential that login stores. Its apiKey is
+			// typically an env-var name; unset, it resolves to its literal text
+			// and would otherwise be sent (and passed to fetchDynamicModels)
+			// instead of the saved key.
+			const fallback = config.oauth !== undefined;
+			this.#installProviderApiKey(providerName, config.apiKey, { fallback });
 			// Persist runtime API keys so they survive #reloadStaticModels() cycles
-			this.#runtimeProviderApiKeys.set(providerName, config.apiKey);
+			this.#runtimeProviderApiKeys.set(providerName, { keyConfig: config.apiKey, fallback });
 		}
 		this.#recordRuntimeCommandConfigs(providerName, config);
 

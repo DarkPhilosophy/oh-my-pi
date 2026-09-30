@@ -96,6 +96,24 @@ describe("AgentSession queue coalescing", () => {
 	const steeringShapes = (target: AgentSession): string[] =>
 		target.agent.peekSteeringQueue().map(m => (m.role === "custom" ? m.customType : m.role));
 
+	for (const mode of ["steer", "followUp"] as const) {
+		it(`withdraws a coalesced ${mode} by its original submitted text after command expansion`, async () => {
+			const target = await createSession([{ content: ["ok"] }]);
+			target.setSlashCommands([{ name: "cmd", description: "Test", content: "Expanded $1", source: "(test)" }]);
+			const result = await duringStream(target, async () => {
+				await target.prompt("/cmd first", { streamingBehavior: mode });
+				await target.prompt("/cmd second", { streamingBehavior: mode });
+				const queue = mode === "steer" ? "steering" : "followUp";
+				const before = target.getQueuedMessages()[queue];
+				const removed = target.removeQueuedMessage("/cmd first\n/cmd second", queue);
+				return { before, removed, after: target.getQueuedMessages()[queue] };
+			});
+			expect(result.before).toEqual(["Expanded first\nExpanded second"]);
+			expect(result.removed).toBe(true);
+			expect(result.after).toEqual([]);
+		});
+	}
+
 	it("merges consecutive plain steers into one queued entry", async () => {
 		const target = await createSession([{ content: ["ok"] }]);
 		const steering = await duringStream(target, async () => {

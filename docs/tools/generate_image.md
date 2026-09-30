@@ -5,7 +5,7 @@
 ## Source
 - Entry: `packages/coding-agent/src/tools/image-gen.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/image-gen.md`
-- Session injection: `packages/coding-agent/src/sdk.ts` (`getImageGenTools()`)
+- Session injection: `packages/coding-agent/src/sdk.ts` (`imageGenTool`)
 
 The custom tool is registered only when `generate_image.enabled=true` (default `false`) and the session's explicit tool filter, if any, requests `generate_image`. Toggling the setting registers or removes it in the running session.
 
@@ -31,11 +31,11 @@ The custom tool is registered only when `generate_image.enabled=true` (default `
   - `content[0].type = "text"`
   - `content[0].text` summarizes provider/model and saved image paths, with each image's reported size/quality when the provider returns them.
   - `details = { provider, model, imageCount, imagePaths, images, responseText?, revisedPrompt?, promptFeedback?, usage? }`
-  - `model` is the image model the provider reports having run when it echoes one (hosted OpenAI transports), otherwise the selected catalog model id. When they differ, the text shows both, e.g. `Model: gpt-image-2-codex (catalog entry openai-codex/gpt-image-1)`. Each `images[]` entry may carry the provider-reported `size` and `quality`.
+  - `model` is the image model the provider reports having run when it echoes one (hosted OpenAI transports), otherwise the selected catalog model id. When they differ, the text shows both, e.g. `Model: gpt-image-2-codex (catalog entry openai-codex/gpt-image-2)`. Each `images[]` entry may carry the provider-reported `size` and `quality`.
 - Model responses with no image data return `imageCount: 0`, empty `imagePaths` / `images`, and any provider text/feedback available.
 
 ## Flow
-1. The SDK injects `generate_image` as a custom tool via `getImageGenTools()` only when the feature gate and tool filter allow it.
+1. The SDK injects `imageGenTool` as the `generate_image` custom tool only when the feature gate and tool filter allow it.
 2. A request with `model` resolves that selector against available catalog models of kind `image` and attempts only the selected model. Without `model`, the tool resolves `modelRoles.image` followed by `retry.fallbackChains.image`; when no fallback chain is configured, the built-in image defaults apply, while `retry.fallbackChains.image: []` disables fallbacks. The active session provider is hoisted only among non-explicit built-in candidates.
 3. The tool skips candidates with an unsupported API transport, unavailable credentials, or an unavailable hosted carrier. A provider HTTP failure advances to the next model in the resolved chain; validation, parsing, local I/O, cancellation, and timeout failures do not.
 4. Input images are resolved once, after the first usable model is found. A `path` is resolved relative to session cwd and content-sniffed. Inline `data` may be raw base64 (requiring `mime_type`) or a `data:<mime>;base64,...` URL.
