@@ -14,6 +14,15 @@
 
 - Fixed rapid queued steering and follow-up submissions racing or losing attachments; added opt-in coalescing and expandable queued-message previews ([#4680](https://github.com/can1357/oh-my-pi/pull/4680) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
 - Fenced code blocks now expose a clickable `copy` link that copies their original source text ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added opt-in `usage.maskOrganizationNames` and a temporary `/usage` organization-privacy control, independent of identifier masking, with stable organization aliases across cards, details, notes, and CLI/ACP reports ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
+### Changed
+
+- Improved `/usage` with provider/account cards, temporary privacy and grouping controls, and configurable quota-bar labels ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
+### Fixed
+
+- Global usage-account masking now applies to native and text dashboards, notes, reset credits, and CLI usage output without persisting temporary overlay toggles ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 
 ## [18.4.5] - 2026-09-30
 
@@ -40,7 +49,6 @@
 
 ### Changed
 
-- Improved `/usage` with provider/account cards, temporary privacy and grouping controls, and configurable quota-bar labels ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - `omp auth-gateway serve` now attributes peers to the socket address by default; deployments behind a trusted reverse proxy can restore forwarded peer headers with `--trust-proxy-headers` ([#13827](https://github.com/can1357/oh-my-pi/pull/13827) by [@shawnkoh](https://github.com/shawnkoh))
 - `--no-ui` now also works with `--mode rpc-ui`: extensions run headless while tool UI such as the `ask` tool still reaches the host ([#13718](https://github.com/can1357/oh-my-pi/pull/13718) by [@alphastorm](https://github.com/alphastorm))
 - Applying advisor changes now restarts only the advisors whose configuration changed; unchanged advisors keep running with their notes and status. Changing the shared instructions still restarts all of them.
