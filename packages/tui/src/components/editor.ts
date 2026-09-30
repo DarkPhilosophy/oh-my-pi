@@ -927,6 +927,8 @@ export class Editor implements Component, Focusable {
 		const title = scheme === "pr" || scheme === "issue" ? this.referenceTitle?.(scheme, ref.slice(1)) : undefined;
 		this.#referenceCaption.set(title);
 		if (this.referenceCardStyle === "compact") {
+			// The list is relabelled to the live token on every key (see `#relabelReferenceList`), so its labels
+			// already match the text; it also says which option is selected.
 			const options = list
 				.pickerView()
 				.items.map(item => ({ label: item.label, selected: item.value === selected?.value }));
@@ -4811,8 +4813,27 @@ export class Editor implements Component, Focusable {
 		for (const resolve of waiters) resolve();
 	}
 
+	/**
+	 * Keep the labels of an open `#N` list in step with the number now in the text until the debounced refresh
+	 * replaces it, like `#narrowAtFileList` does for `@`. The items are always `PR #N` / `Issue #N` for the token
+	 * being typed, so this only rewrites the number; values, descriptions and the selected item are kept.
+	 */
+	#relabelReferenceList(): void {
+		const list = this.#autocompleteList;
+		const ref = this.#contextualReferenceToken();
+		if (!list || ref === undefined) return;
+		const items = list.pickerView().items;
+		const relabeled = items.map(item => {
+			const scheme = item.value.split("://", 1)[0];
+			const label = scheme === "pr" ? `PR ${ref}` : scheme === "issue" ? `Issue ${ref}` : item.label;
+			return label === item.label ? item : { ...item, label };
+		});
+		if (relabeled.some((item, index) => item !== items[index])) list.setItems(relabeled);
+	}
+
 	#debouncedUpdateAutocomplete(): void {
 		if (this.#autocompleteState !== "assist") this.#narrowAtFileList();
+		this.#relabelReferenceList();
 		if (this.#autocompleteTimeout) {
 			clearTimeout(this.#autocompleteTimeout);
 		}

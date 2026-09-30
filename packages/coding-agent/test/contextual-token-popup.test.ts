@@ -391,3 +391,25 @@ it("keeps Right as accept in the stacked card, where the options are vertical", 
 
 	expect(editor.getText()).not.toBe("see #12");
 });
+
+for (const style of ["compact", "stacked"] as const) {
+	it(`keeps every ${style} option in step with the typed number in the frame drawn before the list refreshes`, async () => {
+		const { terminal, editor, paint } = await openComposer({ contextual: true, style, titles: TITLES });
+		editor.handleInput("see #1234");
+		await paint();
+		expect(cardRows(terminal).join("\n")).toContain("PR #1234");
+
+		// The suggestion list is rebuilt ~100ms after a key, so a frame drawn sooner still holds the previous number's
+		// items. Draw exactly such a frame (the key is processed, the refresh has not run): every option must already
+		// show the number now in the text. Waiting for the render alone returns the frame from before the key.
+		editor.handleInput("\x7f");
+		await Bun.sleep(10);
+		composer!.ui.requestRender();
+		await terminal.waitForRender();
+		await terminal.waitForRender();
+		const card = cardRows(terminal).join("\n");
+		expect(card).toMatch(/PR #123(?!\d)/);
+		expect(card).toMatch(/Issue #123(?!\d)/);
+		expect(card).not.toContain("#1234");
+	});
+}
