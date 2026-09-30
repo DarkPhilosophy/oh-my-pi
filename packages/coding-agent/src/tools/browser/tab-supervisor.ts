@@ -1323,7 +1323,7 @@ export async function releaseAllTabs(opts: ReleaseTabOptions = {}): Promise<numb
 		count += await operation;
 		if (performance.now() - startedAt >= timeoutMs) opts.signal?.throwIfAborted();
 	}
-	for (const name of [...tabs.keys()]) {
+	for (const name of tabs.keys()) {
 		if (await releaseTab(name, opts)) count++;
 	}
 	opts.signal?.throwIfAborted();

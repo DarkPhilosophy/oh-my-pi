@@ -339,9 +339,7 @@ export async function findReusableCdp(
 		requestedUserDataDir !== null && path.isAbsolute(requestedUserDataDir)
 			? normalizeUserDataDir(requestedUserDataDir)
 			: null;
-	// Process paths use the executable real path, not its launcher symlink. A distro
-	// wrapper script defeats realpath, so resolve through the wrapper exec target
-	// for Chromium-family browsers on Linux.
+	// Resolve distro wrappers before checking the running profile owner's identity.
 	const executablePath = await fs.realpath(exe).catch(() => exe);
 	const base = path.basename(exe).replace(/\.exe$/i, "");
 	const isChromium = CHROMIUM_BROWSER_BASENAME.test(base) || Object.hasOwn(CHROMIUM_FLATPAK_IDS, base);

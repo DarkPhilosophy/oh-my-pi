@@ -33,12 +33,11 @@ export interface AriaSnapshotPayload {
  * page CSP never applies. They run the generated Playwright ARIA-snapshot bundle
  * (CJS, see scripts/generate-aria-snapshot.ts) in a throwaway module scope.
  *
- * Our Puppeteer patch intentionally routes these unmarked functions through its
- * isolated world. Capture and ref resolution therefore share the same stealthier
- * `_ariaRef` expando namespace without exposing markers to page scripts. Nothing
- * is installed on `window`; the only footprint is the isolated-world `_ariaRef`
- * markers needed for actionable `[ref=eN]` ids. The cmux backend evaluates its
- * standalone script in the page world, so refs are backend-local.
+ * Capture, href collection and ref resolution share the same evaluator world
+ * and `_ariaRef` namespace. An owner marker ensures another alias's snapshot
+ * cannot silently redirect a previously returned ref to a different element.
+ * Chromium's Puppeteer patch routes unmarked evaluators through its isolated
+ * world; Firefox BiDi and standalone cmux evaluation use their backend world.
  */
 function buildEvaluator(params: string, call: string, setup = ""): (...args: unknown[]) => unknown {
 	return new Function(
@@ -49,8 +48,6 @@ function buildEvaluator(params: string, call: string, setup = ""): (...args: unk
 
 // Handles (root) must stay top-level args: Puppeteer only unwraps JSHandles
 // passed positionally to page.evaluate, never ones nested inside an object.
-// An owner marker rides along so a second alias snapshotting the same page
-// cannot silently redirect refs a previous alias already handed out.
 const SNAPSHOT_OWNER = 'Symbol.for("omp.browser.ariaSnapshotOwner")';
 const evaluateAriaSnapshot = buildEvaluator(
 	"root, request, owner",
@@ -60,7 +57,7 @@ const evaluateAriaSnapshot = buildEvaluator(
 const evaluateResolveRef = buildEvaluator(
 	"ref, owner",
 	"resolveAriaRef(ref)",
-	`if (owner !== undefined && globalThis[${SNAPSHOT_OWNER}] !== owner) throw new Error("ARIA refs were invalidated by another alias; run tab.ariaSnapshot() or tab.observe() again");`,
+	`if (globalThis[${SNAPSHOT_OWNER}] !== owner) throw new Error("ARIA refs were invalidated by another alias; run tab.ariaSnapshot() or tab.observe() again");`,
 );
 const evaluateAriaHrefs = new Function(
 	"refs",
@@ -180,7 +177,7 @@ export function parseAriaRefSelector(selector: string): string | null {
 export function buildAriaSnapshotScript(selector: string | undefined, options: AriaSnapshotOptions = {}): string {
 	const request = { depth: options.depth, boxes: options.boxes };
 	const sel = selector ? JSON.stringify(selector) : "null";
-	return `(function(){var module={exports:{}};\n${ariaBundle}\nvar __sel=${sel};var __root=__sel?document.querySelector(__sel):null;if(__sel&&!__root)throw new Error("tab.ariaSnapshot: selector "+__sel+" matched no element");return module.exports.ariaSnapshot(__root,${JSON.stringify(request)});})()`;
+	return `(function(){var module={exports:{}};\n${ariaBundle}\nvar __sel=${sel};var __root=__sel?document.querySelector(__sel):null;if(__sel&&!__root)throw new Error("tab.ariaSnapshot: selector "+__sel+" matched no element");globalThis[${SNAPSHOT_OWNER}]=undefined;return module.exports.ariaSnapshot(__root,${JSON.stringify(request)});})()`;
 }
 
 /** Build the cmux page-world expression returning snapshot text plus link destinations. */
