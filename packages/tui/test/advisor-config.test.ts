@@ -57,43 +57,7 @@ function clickRosterRow(overlay: AdvisorConfigOverlayComponent, label: string): 
 	overlay.handleInput(`\x1b[<0;5;${row + 1}M`);
 }
 
-describe("advisor review mode picker", () => {
-	beforeAll(async () => {
-		const theme = await getThemeByName("dark");
-		if (!theme) throw new Error("theme unavailable");
-		setThemeInstance(theme);
-	});
-
-	it("preserves configured mode when accepting current selection and saving", async () => {
-		let saved: WatchdogConfigDoc | undefined;
-		const overlay = new AdvisorConfigOverlayComponent(
-			{} as TUI,
-			deps,
-			"project",
-			{ advisors: [{ name: "Reviewer", reviewMode: "agent-end", reviewInterval: 3 }] },
-			{
-				loadDoc: async () => ({ advisors: [] }),
-				save: async (_scope, doc) => {
-					saved = structuredClone(doc);
-				},
-				close: () => {},
-				requestRender: () => {},
-				notify: () => {},
-			},
-		);
-
-		overlay.handleInput("\r"); // Advisor detail.
-		openField(overlay, "Review mode");
-		overlay.handleInput("\r"); // Accept current mode without navigating.
-		overlay.handleInput("\x1b"); // Back to roster.
-		clickRosterRow(overlay, "Save & apply");
-		await Promise.resolve();
-
-		expect(saved?.advisors).toEqual([{ name: "Reviewer", reviewMode: "agent-end", reviewInterval: 3 }]);
-	});
-});
-
-describe("advisor sync backlog picker", () => {
+describe("advisor config editor", () => {
 	beforeAll(async () => {
 		const theme = await getThemeByName("dark");
 		if (!theme) throw new Error("theme unavailable");
@@ -483,8 +447,8 @@ describe("advisor sync backlog picker", () => {
 		await Bun.sleep(0);
 		overlay.handleInput("\x1b[C");
 		// Warnings clip the field list here, so the Tools row is addressed by
-		// keyboard: Enabled, Name, Model, Review mode, Review interval, Sync backlog, Tools.
-		for (let i = 0; i < 6; i++) overlay.handleInput("\x1b[B");
+		// keyboard: Enabled, Name, Model, Tools.
+		for (let i = 0; i < 3; i++) overlay.handleInput("\x1b[B");
 		overlay.handleInput("\r");
 		const beforeWheel = Bun.stripANSI(overlay.render(100).join("\n"));
 		expect(beforeWheel).not.toContain("[ ] read");
@@ -642,7 +606,7 @@ describe("advisor config native page", () => {
 			{} as TUI,
 			nativeDeps,
 			"project",
-			{ advisors: [{ name: "Reviewer", model: "anthropic/claude", reviewMode: "agent-end", reviewInterval: 3 }] },
+			{ advisors: [{ name: "Reviewer", model: "anthropic/claude" }] },
 			{
 				loadDoc: async () => pendingLoad ?? structuredClone(userDoc),
 				save: async (scope, doc) => {
@@ -695,9 +659,6 @@ describe("advisor config native page", () => {
 		]);
 		expect(page.page).toBe("project:advisor:0");
 		expect(row(page, "toggleEnabled").control).toEqual({ k: "switch", on: true });
-		expect(row(page, "reviewMode").control).toMatchObject({ k: "choice", value: "agent-end" });
-		expect(row(page, "reviewInterval").control).toMatchObject({ k: "number", value: 3, min: 1 });
-		expect(row(page, "syncBacklog").control).toMatchObject({ k: "choice", value: "__inherit" });
 		expect(row(page, "tools").control).toMatchObject({ k: "multi", values: ["read", "grep", "glob"] });
 		expect(row(page, "model").control).toEqual({ k: "action", label: "anthropic/claude", act: "edit" });
 		expect(row(page, "resetModel")).toBeDefined();
@@ -717,9 +678,6 @@ describe("advisor config native page", () => {
 
 	it("writes field changes through the classic rules and saves them to the right file", async () => {
 		const { overlay, saves } = await open();
-		overlay.handleNativeEvent(change("reviewMode", "turn"));
-		overlay.handleNativeEvent(change("reviewInterval", 1));
-		overlay.handleNativeEvent(change("syncBacklog", "strict"));
 		overlay.handleNativeEvent(change("tools", ["read", "bash"]));
 		overlay.handleNativeEvent(change("toggleEnabled", false));
 		overlay.handleNativeEvent(change("name", "  Renamed  "));
@@ -735,40 +693,15 @@ describe("advisor config native page", () => {
 		expect(saved).toMatchObject({
 			name: "Renamed",
 			enabled: false,
-			syncBacklog: "strict",
 			model: "anthropic/claude",
 		});
-		// Defaults are stored as absence, exactly as the classic pickers do.
-		expect(saved?.reviewMode).toBeUndefined();
-		expect(saved?.reviewInterval).toBeUndefined();
 		expect([...(saved?.tools ?? [])].sort()).toEqual(["bash", "read"]);
-	});
-
-	it("rejects an invalid review interval without touching the advisor", async () => {
-		const { overlay, notices } = await open();
-		overlay.handleNativeEvent(change("reviewInterval", 0));
-		overlay.handleNativeEvent(change("reviewInterval", 2.5));
-		expect(notices).toEqual([
-			"Review interval must be a positive integer.",
-			"Review interval must be a positive integer.",
-		]);
-		expect(row(props(overlay), "reviewInterval").control).toMatchObject({ value: 3 });
-		expect(props(overlay).title).toBe("Advisors");
-	});
-
-	it("resets a row to its default when the terminal sends null", async () => {
-		const { overlay } = await open();
-		overlay.handleNativeEvent(change("reviewMode", null));
-		overlay.handleNativeEvent(change("reviewInterval", null));
-		const page = props(overlay);
-		expect(row(page, "reviewMode").control).toMatchObject({ value: "turn" });
-		expect(row(page, "reviewInterval").control).toMatchObject({ value: 1 });
 	});
 
 	it("keeps the classic frame in step with native edits", async () => {
 		const { overlay } = await open();
-		overlay.handleNativeEvent(change("syncBacklog", "strict"));
-		expect(overlay.render(100).map(Bun.stripANSI).join("\n")).toContain("strict");
+		overlay.handleNativeEvent(change("name", "Renamed"));
+		expect(overlay.render(100).map(Bun.stripANSI).join("\n")).toContain("Renamed");
 	});
 
 	it("opens the other scope's advisor and shared instructions from a page action", async () => {
@@ -882,6 +815,14 @@ describe("advisor tools editor keyboard navigation", () => {
 		}
 	});
 
+	it("keeps the wrapped-to row visible when keys arrive before the first frame of the editor", () => {
+		const overlay = openToolsEditor([]);
+		// openToolsEditor drew the field list only; the tools editor has not been drawn yet.
+		overlay.handleInput("\x1b[A"); // Wraps from the first row to "Done".
+		const rows = paneRows(overlay);
+		expect(rows.some(row => row.includes("Done"))).toBe(true);
+	});
+
 	it("toggles the tool that is shown, and keeps it in view after the toggle", async () => {
 		const saves: WatchdogConfigDoc[] = [];
 		const overlay = openToolsEditor(saves);
@@ -961,6 +902,26 @@ describe("advisor config display text", () => {
 		expect(frame).not.toContain("\t");
 		expect(Bun.stripANSI(frame)).toContain("Sec urity red");
 	});
+
+	it("renders the instructions editor title for a hostile advisor name on one clean line", async () => {
+		await setSymbolPreset("unicode");
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			deps,
+			"project",
+			{ advisors: [{ name: "Sec\turity\x1b[31m\nred" }] },
+			callbacks,
+		);
+		overlay.handleInput("\r"); // The advisor's fields.
+		openField(overlay, "Instructions");
+		const frame = overlay.render(100).join("\n");
+
+		expect(frame).not.toContain("\x1b[31m");
+		const titleLine = Bun.stripANSI(frame)
+			.split("\n")
+			.find(line => line.includes("Instructions"));
+		expect(titleLine).toContain("Sec urity red");
+	});
 });
 
 describe("advisor config keyboard navigation", () => {
@@ -975,7 +936,7 @@ describe("advisor config keyboard navigation", () => {
 			{} as TUI,
 			deps,
 			"project",
-			{ advisors: [{ name: "Alpha", reviewInterval: 3 }, { name: "Beta" }] },
+			{ advisors: [{ name: "Alpha" }, { name: "Beta" }] },
 			{
 				loadDoc: async () => ({ advisors: [] }),
 				save: async () => {},
@@ -987,8 +948,6 @@ describe("advisor config keyboard navigation", () => {
 			},
 		);
 	}
-	const text = (overlay: AdvisorConfigOverlayComponent) => overlay.render(110).map(Bun.stripANSI).join("\n");
-
 	it("keeps the overlay open when Esc is pressed on an advisor's field list", () => {
 		const closed = { n: 0 };
 		const overlay = mount(closed);
@@ -1000,23 +959,25 @@ describe("advisor config keyboard navigation", () => {
 		expect(closed.n).toBe(1);
 	});
 
-	it("keeps the review interval input open when the left arrow moves the caret", () => {
-		const overlay = mount({ n: 0 });
-		overlay.handleInput("\r");
-		openField(overlay, "Review interval");
-		expect(text(overlay)).toContain("Positive integer");
-
-		overlay.handleInput("\x1b[D");
-
-		expect(text(overlay)).toContain("Positive integer");
-	});
-
-	it("rebuilds the right pane for the newly selected advisor instead of keeping a picker bound to the previous one", () => {
+	it("shows the newly selected advisor's fields instead of a thinking picker bound to the previous advisor", () => {
+		const model = buildModel({
+			id: "thinking-model",
+			name: "Thinking model",
+			api: "openai-completions",
+			provider: "test",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			thinking: { efforts: [Effort.Low, Effort.High], mode: "effort" },
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 1024,
+		});
 		const overlay = new AdvisorConfigOverlayComponent(
 			{} as TUI,
-			deps,
+			{ ...deps, scopedModels: [{ model }] },
 			"project",
-			{ advisors: [{ name: "Alpha", reviewMode: "agent-end" }, { name: "Beta" }] },
+			{ advisors: [{ name: "Alpha" }, { name: "Beta" }] },
 			{
 				loadDoc: async () => ({ advisors: [] }),
 				save: async () => {},
@@ -1026,15 +987,19 @@ describe("advisor config keyboard navigation", () => {
 			},
 		);
 		overlay.handleInput("\r"); // Alpha's fields.
-		openField(overlay, "Review mode"); // Alpha's Review mode picker.
-		overlay.handleInput("\x1b[D"); // Back to the roster with the picker still open.
+		openField(overlay, "Model"); // The model picker.
+		overlay.handleInput("\r"); // Choose the model with thinking levels: the thinking picker opens.
+		const pane = () =>
+			overlay
+				.render(110)
+				.map(line => Bun.stripANSI(line).slice(38))
+				.join("\n");
+		expect(pane()).toContain("low");
+
+		overlay.handleInput("\x1b[D"); // Back to the rosters; the thinking picker is still mounted.
 		overlay.handleInput("\x1b[B"); // Select Beta.
 
-		const pane = overlay
-			.render(110)
-			.map(line => Bun.stripANSI(line).slice(38))
-			.join("\n");
-		expect(pane).toContain("Beta");
-		expect(pane).not.toContain("agent-end (current)");
+		expect(pane()).toContain("Beta");
+		expect(pane()).not.toContain("low");
 	});
 });

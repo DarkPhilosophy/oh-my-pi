@@ -4,7 +4,7 @@
 
 ### Added
 
-- `/advisor config` is a two-pane editor showing project and global advisors together, with a per-advisor status glyph in the list and status line; Review mode, Review interval and Sync backlog are editable and saved ([#13931](https://github.com/can1357/oh-my-pi/pull/13931) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
+- `/advisor config` shows the project and global advisors together, with the selected advisor's fields on the right, and the status line gets a compact glyph per advisor drawn from the active symbol preset ([#13931](https://github.com/can1357/oh-my-pi/pull/13931) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
 
 ## [18.4.5] - 2026-09-30
 

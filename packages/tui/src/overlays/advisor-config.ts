@@ -85,11 +85,6 @@ function resolveLiteralModelValue(
 		explicitThinkingLevel: parsed.thinkingLevel !== undefined,
 	};
 }
-export const ADVISOR_REVIEW_MODES = ["turn", "agent-end"] as const;
-export const ADVISOR_SYNC_BACKLOG_MODES = ["off", "1", "3", "5", "strict"] as const;
-
-export type AdvisorReviewMode = (typeof ADVISOR_REVIEW_MODES)[number];
-export type AdvisorSyncBacklog = (typeof ADVISOR_SYNC_BACKLOG_MODES)[number];
 
 /** One advisor declared in `WATCHDOG.yml`; its instructions specialize the shared baseline. */
 export interface AdvisorConfig {
@@ -103,9 +98,6 @@ export interface AdvisorConfig {
 	enabled?: boolean;
 	/** Maximum non-blocker notes per advisor prompt update (default 4); blockers are exempt. */
 	maxNotesPerUpdate?: number;
-	reviewMode?: AdvisorReviewMode;
-	reviewInterval?: number;
-	syncBacklog?: AdvisorSyncBacklog;
 }
 
 /** Which level a `WATCHDOG.yml` lives at: the project root or the user agent dir. */
@@ -170,7 +162,6 @@ export interface AdvisorConfigDeps {
 	externalEditor?: (text: string) => Promise<string | null>;
 	scopedModels: ReadonlyArray<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	availableToolNames: string[];
-	syncBacklog?: AdvisorSyncBacklog;
 	/** Formatted advisor-role model shown for advisors without an explicit model (e.g. "anthropic/claude-..."). */
 	defaultModelLabel?: string;
 	/** Project folder name, shown as the project pane title. */
@@ -250,18 +241,6 @@ function formatAdvisorTools(tools: readonly string[] | undefined, emptyLabel: st
 	return tools.length === 0 ? emptyLabel : tools.join(", ");
 }
 
-/** Picker description for one explicit catch-up policy value. */
-function describeSyncBacklogMode(mode: AdvisorSyncBacklog): string {
-	switch (mode) {
-		case "off":
-			return "Never wait for this advisor's backlog.";
-		case "strict":
-			return "Wait for all of this advisor's scheduled reviews; no wall-clock cap.";
-		default:
-			return `Wait until fewer than ${mode} scheduled reviews remain (30s cap).`;
-	}
-}
-
 /** Soft-wrap text to `width`, preserving embedded newlines. */
 function wrap(text: string | undefined, width: number): string[] {
 	if (!text) return [""];
@@ -270,16 +249,7 @@ function wrap(text: string | undefined, width: number): string[] {
 
 type Pane = "project" | "user" | "editor";
 /** What the right pane currently hosts. */
-type EditorMode =
-	| "fields"
-	| "name"
-	| "model"
-	| "thinking"
-	| "tools"
-	| "instructions"
-	| "review-mode"
-	| "review-interval"
-	| "sync-backlog";
+type EditorMode = "fields" | "name" | "model" | "thinking" | "tools" | "instructions";
 
 interface ScopeState {
 	doc: WatchdogConfigDoc;
@@ -484,12 +454,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 					return join("Type to search", `${enter} / click twice picks`, `${esc} back`);
 				case "thinking":
 					return join(`${enter} / click pick`, `${esc} back`);
-				case "review-mode":
-					return join(`${enter} / click choose review mode`, `${esc} back`);
-				case "review-interval":
-					return join("Positive integer", `${enter} save`, `${esc} cancel`);
-				case "sync-backlog":
-					return join(`${enter} / click choose catch-up policy`, `${esc} back`);
 				case "tools":
 					return join(`${enter} / click toggle`, `Done or ${esc} apply`, `${left} rosters`);
 				case "instructions":
@@ -694,7 +658,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 			if (advisor) {
 				const model = advisor.model?.trim();
 				const modelDefault = this.#defaultModelLabel ?? "advisor role default";
-				const globalBacklog = this.#deps.syncBacklog ?? "off";
 				const rows: TspPrefsRow[] = [
 					{
 						id: "toggleEnabled",
@@ -720,54 +683,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 					});
 				}
 				rows.push(
-					{
-						id: "reviewMode",
-						label: "Review mode",
-						changed: advisor.reviewMode !== undefined,
-						defaultLabel: ADVISOR_REVIEW_MODES[0],
-						control: {
-							k: "choice",
-							value: advisor.reviewMode ?? ADVISOR_REVIEW_MODES[0],
-							style: "segmented",
-							options: ADVISOR_REVIEW_MODES.map(mode => ({
-								value: mode,
-								label: mode,
-								detail:
-									mode === "turn"
-										? "Review every primary turn (tool-call round)."
-										: "Review only at agent end (once per run).",
-							})),
-						},
-					},
-					{
-						id: "reviewInterval",
-						label: "Review interval",
-						changed: advisor.reviewInterval !== undefined,
-						defaultLabel: "1",
-						control: { k: "number", value: advisor.reviewInterval ?? 1, min: 1, step: 1 },
-					},
-					{
-						id: "syncBacklog",
-						label: "Sync backlog",
-						changed: advisor.syncBacklog !== undefined,
-						defaultLabel: `inherit (${globalBacklog})`,
-						control: {
-							k: "choice",
-							value: advisor.syncBacklog ?? "__inherit",
-							options: [
-								{
-									value: "__inherit",
-									label: "inherit",
-									detail: `Follow the global advisor.syncBacklog setting (currently "${globalBacklog}").`,
-								},
-								...ADVISOR_SYNC_BACKLOG_MODES.map(mode => ({
-									value: mode,
-									label: mode,
-									detail: describeSyncBacklogMode(mode),
-								})),
-							],
-						},
-					},
 					{
 						id: "tools",
 						label: "Tools",
@@ -921,33 +836,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 				advisor.name = value.trim();
 				return true;
 			}
-			case "reviewMode":
-				if (value === null || value === "turn") advisor.reviewMode = undefined;
-				else if (value === "agent-end") advisor.reviewMode = "agent-end";
-				else return false;
-				return true;
-			case "reviewInterval": {
-				if (value === null) {
-					advisor.reviewInterval = undefined;
-					return true;
-				}
-				if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
-					this.#cb.notify("Review interval must be a positive integer.");
-					return false;
-				}
-				advisor.reviewInterval = value === 1 ? undefined : value;
-				return true;
-			}
-			case "syncBacklog": {
-				if (value === null || value === "__inherit") {
-					advisor.syncBacklog = undefined;
-					return true;
-				}
-				const mode = ADVISOR_SYNC_BACKLOG_MODES.find(candidate => candidate === value);
-				if (!mode) return false;
-				advisor.syncBacklog = mode;
-				return true;
-			}
 			case "tools": {
 				if (value === null) {
 					advisor.tools = undefined;
@@ -1025,13 +913,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 			this.#showFields();
 			return;
 		}
-		if (
-			data === "\x1b[D" &&
-			this.#mode !== "name" &&
-			this.#mode !== "instructions" &&
-			this.#mode !== "model" &&
-			this.#mode !== "review-interval"
-		) {
+		if (data === "\x1b[D" && this.#mode !== "name" && this.#mode !== "instructions" && this.#mode !== "model") {
 			this.#focus = this.#lastRosterFocus;
 			this.#cb.requestRender();
 			return;
@@ -1165,7 +1047,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		if (remembered >= 0) list.setSelectedIndex(remembered);
 		list.onSelectionChange = item => {
 			state.cursor = item.value;
-			// An editor left open (a picker) belongs to the advisor that was selected when it opened;
+			// An editor left open (the thinking picker) belongs to the advisor that was selected when it opened;
 			// the new selection gets its own field list instead of a picker for the previous one.
 			this.#showFields();
 			this.#cb.requestRender();
@@ -1188,9 +1070,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 			advisor?.name === "default" &&
 			!advisor.model?.trim() &&
 			advisor.tools === undefined &&
-			advisor.reviewMode === undefined &&
-			advisor.reviewInterval === undefined &&
-			advisor.syncBacklog === undefined &&
 			!advisor.instructions?.trim() &&
 			advisor.enabled !== false &&
 			advisor.maxNotesPerUpdate === undefined
@@ -1200,9 +1079,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 	#advisorSummary(advisor: AdvisorConfig): string {
 		const model = advisor.model?.trim() || this.#defaultModelLabel || "advisor role default";
 		const tools = formatAdvisorTools(advisor.tools, "no tools");
-		const reviewMode = advisor.reviewMode ?? "turn";
-		const reviewInterval = advisor.reviewInterval ?? 1;
-		return `${model} · ${tools} · review ${reviewMode}/${reviewInterval}`;
+		return `${model} · ${tools}`;
 	}
 
 	#markDirty(scope: AdvisorConfigScope): void {
@@ -1260,6 +1137,9 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#mode = mode;
 		this.#editor = component;
 		this.#editorScroll = 0;
+		// Overflow and content offset describe the editor drawn last; refresh them for this one so keys that
+		// arrive before the next frame still keep the selection inside the window.
+		if (this.#editorWindowRows > 0) this.#editorWindow(this.#editorWindowWidth, this.#editorWindowRows);
 		this.#cb.requestRender();
 	}
 
@@ -1282,8 +1162,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 		}
 		const { scope, index, advisor } = target;
 		const modelDescription = advisor.model?.trim() || this.#defaultModelLabel || "advisor role default";
-		const reviewMode = advisor.reviewMode ?? ADVISOR_REVIEW_MODES[0];
-		const reviewInterval = advisor.reviewInterval ?? 1;
 
 		const items: SelectItem[] = [
 			{
@@ -1296,13 +1174,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 			},
 			{ value: "name", label: "Name", description: displayText(advisor.name) },
 			{ value: "model", label: "Model", description: modelDescription },
-			{ value: "reviewMode", label: "Review mode", description: reviewMode },
-			{ value: "reviewInterval", label: "Review interval", description: String(reviewInterval) },
-			{
-				value: "syncBacklog",
-				label: "Sync backlog",
-				description: advisor.syncBacklog ?? `${this.#deps.syncBacklog ?? "off"} (inherited)`,
-			},
 		];
 		if (advisor.model?.trim()) items.push({ value: "resetModel", label: "Reset model to advisor-role default" });
 		items.push(
@@ -1344,15 +1215,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 				return;
 			case "model":
 				this.#showModelPicker(scope, index);
-				return;
-			case "reviewMode":
-				this.#showReviewModePicker(scope, index);
-				return;
-			case "reviewInterval":
-				this.#showReviewIntervalEditor(scope, index);
-				return;
-			case "syncBacklog":
-				this.#showSyncBacklogPicker(scope, index);
 				return;
 			case "tools":
 				this.#showToolsEditor(
@@ -1464,86 +1326,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#setEditor("thinking", list);
 	}
 
-	#showReviewModePicker(scope: AdvisorConfigScope, index: number): void {
-		const advisor = this.#scopes[scope].doc.advisors[index];
-		if (!advisor) {
-			this.#showFields();
-			return;
-		}
-		const current = advisor.reviewMode ?? ADVISOR_REVIEW_MODES[0];
-		const items: SelectItem[] = ADVISOR_REVIEW_MODES.map(mode => ({
-			value: mode,
-			label: mode === current ? `${mode} (current)` : mode,
-			description:
-				mode === "turn"
-					? "Review every primary turn (tool-call round)."
-					: "Review only at agent end (once per run).",
-		}));
-		const list = new SelectList(items, Math.max(1, items.length), getSelectListTheme());
-		list.setSelectedIndex(ADVISOR_REVIEW_MODES.indexOf(current));
-		list.onSelect = item => {
-			advisor.reviewMode = item.value === "turn" ? undefined : "agent-end";
-			this.#markDirty(scope);
-			this.#showFields();
-		};
-		list.onCancel = () => this.#showFields();
-		this.#setEditor("review-mode", list);
-	}
-
-	#showReviewIntervalEditor(scope: AdvisorConfigScope, index: number): void {
-		const advisor = this.#scopes[scope].doc.advisors[index];
-		if (!advisor) {
-			this.#showFields();
-			return;
-		}
-		const input = new Input();
-		input.setValue(String(advisor.reviewInterval ?? 1));
-		input.onSubmit = value => {
-			const interval = Number(value.trim());
-			if (!Number.isSafeInteger(interval) || interval < 1) {
-				this.#cb.notify("Review interval must be a positive integer.");
-				return;
-			}
-			advisor.reviewInterval = interval === 1 ? undefined : interval;
-			this.#markDirty(scope);
-			this.#showFields();
-		};
-		input.onEscape = () => this.#showFields();
-		this.#setEditor("review-interval", input);
-	}
-
-	#showSyncBacklogPicker(scope: AdvisorConfigScope, index: number): void {
-		const advisor = this.#scopes[scope].doc.advisors[index];
-		if (!advisor) {
-			this.#showFields();
-			return;
-		}
-		const global = this.#deps.syncBacklog ?? "off";
-		const current = advisor.syncBacklog;
-		const items: SelectItem[] = [
-			{
-				value: "__inherit",
-				label: current === undefined ? "inherit (current)" : "inherit",
-				description: `Follow the global advisor.syncBacklog setting (currently "${global}").`,
-			},
-			...ADVISOR_SYNC_BACKLOG_MODES.map(mode => ({
-				value: mode,
-				label: mode === current ? `${mode} (current)` : mode,
-				description: describeSyncBacklogMode(mode),
-			})),
-		];
-		const list = new SelectList(items, Math.max(1, items.length), getSelectListTheme());
-		list.setSelectedIndex(current === undefined ? 0 : ADVISOR_SYNC_BACKLOG_MODES.indexOf(current) + 1);
-		list.onSelect = item => {
-			// "__inherit" matches no mode, so `find` yields undefined — the override clears.
-			advisor.syncBacklog = ADVISOR_SYNC_BACKLOG_MODES.find(mode => mode === item.value);
-			this.#markDirty(scope);
-			this.#showFields();
-		};
-		list.onCancel = () => this.#showFields();
-		this.#setEditor("sync-backlog", list);
-	}
-
 	#showToolsEditor(scope: AdvisorConfigScope, index: number, selected: Set<string>, cursor: number): void {
 		const all = this.#availableToolNames;
 		const items: SelectItem[] = all.map(name => ({
@@ -1584,7 +1366,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const current = shared ? doc.instructions : doc.advisors[index].instructions;
 		const title = shared
 			? `Shared instructions · ${this.#scopeLabel(scope)}`
-			: `Instructions — ${doc.advisors[index].name}`;
+			: `Instructions — ${displayText(doc.advisors[index].name) || "(unnamed)"}`;
 		const editor = new HookEditorComponent(
 			this.#tui,
 			title,
