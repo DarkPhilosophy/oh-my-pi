@@ -950,3 +950,64 @@ describe("advisor config display text", () => {
 		expect(Bun.stripANSI(frame)).toContain("Sec urity red");
 	});
 });
+
+describe("advisor config keyboard navigation", () => {
+	beforeAll(async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("theme unavailable");
+		setThemeInstance(theme);
+	});
+
+	function mount(closed: { n: number }): AdvisorConfigOverlayComponent {
+		return new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			deps,
+			"project",
+			{ advisors: [{ name: "Alpha", reviewInterval: 3 }, { name: "Beta" }] },
+			{
+				loadDoc: async () => ({ advisors: [] }),
+				save: async () => {},
+				close: () => {
+					closed.n++;
+				},
+				requestRender: () => {},
+				notify: () => {},
+			},
+		);
+	}
+	const text = (overlay: AdvisorConfigOverlayComponent) => overlay.render(110).map(Bun.stripANSI).join("\n");
+
+	it("keeps the overlay open when Esc is pressed on an advisor's field list", () => {
+		const closed = { n: 0 };
+		const overlay = mount(closed);
+		overlay.handleInput("\r");
+		overlay.handleInput("\x1b");
+
+		expect(closed.n).toBe(0);
+		overlay.handleInput("\x1b");
+		expect(closed.n).toBe(1);
+	});
+
+	it("keeps the review interval input open when the left arrow moves the caret", () => {
+		const overlay = mount({ n: 0 });
+		overlay.handleInput("\r");
+		openField(overlay, "Review interval");
+		expect(text(overlay)).toContain("Positive integer");
+
+		overlay.handleInput("\x1b[D");
+
+		expect(text(overlay)).toContain("Positive integer");
+	});
+
+	it("shows the newly selected advisor's fields after returning to the roster and choosing another", () => {
+		const overlay = mount({ n: 0 });
+		overlay.handleInput("\r"); // Alpha's fields.
+		overlay.handleInput("\x1b[D"); // Back to the roster.
+		overlay.handleInput("\x1b[B"); // Select Beta.
+		overlay.handleInput("\x1b[C"); // Open Beta.
+
+		const frame = text(overlay);
+		expect(frame).toContain("Beta");
+		expect(frame).not.toMatch(/Review interval\s+3/);
+	});
+});

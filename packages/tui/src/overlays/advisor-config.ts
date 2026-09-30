@@ -1021,7 +1021,13 @@ export class AdvisorConfigOverlayComponent implements Component {
 			this.#showFields();
 			return;
 		}
-		if (data === "\x1b[D" && this.#mode !== "name" && this.#mode !== "instructions" && this.#mode !== "model") {
+		if (
+			data === "\x1b[D" &&
+			this.#mode !== "name" &&
+			this.#mode !== "instructions" &&
+			this.#mode !== "model" &&
+			this.#mode !== "review-interval"
+		) {
 			this.#focus = this.#lastRosterFocus;
 			this.#cb.requestRender();
 			return;
@@ -1308,7 +1314,12 @@ export class AdvisorConfigOverlayComponent implements Component {
 			this.#fieldCursor = item.value;
 			this.#onFieldSelect(scope, index, item.value);
 		};
-		list.onCancel = () => this.#cb.close();
+		// Esc steps back to the roster like ←; only the roster closes the overlay, so a stray
+		// Esc never discards unsaved edits.
+		list.onCancel = () => {
+			this.#focus = this.#lastRosterFocus;
+			this.#cb.requestRender();
+		};
 		this.#setEditor("fields", list);
 	}
 
