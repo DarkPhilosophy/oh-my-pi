@@ -1,10 +1,12 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { cfgPendingQueueCollapseLines } from "../settings";
 import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
 import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
 import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
+import { QueuedMessagesBand } from "@oh-my-pi/pi-tui/prompt/queued-messages";
 import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
@@ -29,7 +31,7 @@ import {
 	LateDiagnosticsMessageComponent,
 	routeLateDiagnostics,
 } from "@oh-my-pi/pi-tui/chat/late-diagnostics-message";
-import { QueuedMessageBox } from "../../modes/components/queued-message-box";
+
 import {
 	groupedReadUsageCallIds,
 	ReadToolGroupComponent,
@@ -48,6 +50,7 @@ import { materializeImageReferenceLinksSync } from "@oh-my-pi/pi-tui/prompt/imag
 import { imageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
 import { theme } from "@oh-my-pi/pi-tui/theme";
 import { warmHighlighter } from "@oh-my-pi/pi-tui/theme/tui-adapters";
+import { QueuedMessageBox } from "@oh-my-pi/pi-tui/queued-message-box";
 import type { CompactionQueuedMessage, InteractiveModeContext, RenderSessionContextOptions } from "../../modes/types";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
@@ -88,20 +91,6 @@ import {
 } from "../settings";
 import { cfgReadToolResultPreview } from "../../tools/settings";
 
-/** Rendered-row budget for the collapsed pending-message queue. */
-const PENDING_QUEUE_COLLAPSE_LINES = 5;
-
-function queuedMessageVisualRowCount(message: string, boxWidth: number): number {
-	const contentWidth = Math.max(0, boxWidth - 7);
-	return message
-		.split("\n")
-		.map(line => sanitizeText(line.replace(/\t/g, "    ")))
-		.reduce((rows, line) => {
-			if (contentWidth <= 0 || line.length === 0) return rows + 1;
-			return rows + Bun.wrapAnsi(line, contentWidth, { wordWrap: true, hard: true }).split("\n").length;
-		}, 0);
-}
-
 interface RenderInitialMessagesOptions {
 	preserveExistingChat?: boolean;
 	clearTerminalHistory?: boolean;
@@ -125,6 +114,17 @@ function waitForImmediate(): Promise<void> {
 	const { promise, resolve } = Promise.withResolvers<void>();
 	setImmediate(resolve);
 	return promise;
+}
+
+function queuedMessageVisualRowCount(message: string, boxWidth: number): number {
+	const contentWidth = Math.max(0, boxWidth - 7);
+	return message
+		.split("\n")
+		.map(line => sanitizeText(line.replace(/\t/g, "    ")))
+		.reduce((rows, line) => {
+			if (contentWidth <= 0 || line.length === 0) return rows + 1;
+			return rows + Bun.wrapAnsi(line, contentWidth, { wordWrap: true, hard: true }).split("\n").length;
+		}, 0);
 }
 
 type QueuedMessages = {
@@ -1149,9 +1149,26 @@ export class UiHelpers {
 
 		const allMessages = [...steeringMessages, ...followUpMessages];
 		if (allMessages.length === 0) return;
-		this.ctx.pendingMessagesContainer.addChild(new Spacer(1));
+
+		const queueBand = new QueuedMessagesBand(
+			[
+				{ label: "Steering", messages: steeringMessages.map(entry => entry.message) },
+				{ label: "After yield", messages: followUpMessages.map(entry => entry.message) },
+			].filter(group => group.messages.length > 0),
+			this.ctx.keybindings.getKeys("app.message.dequeue")[0] ?? "alt+up",
+			() => this.ctx.handleDequeue(),
+		);
+		// Retain native pills and edit actions with the expanded ANSI preview.
+		queueBand.disposeChildren();
+		queueBand.addChild(new Spacer(1));
+		this.ctx.pendingMessagesContainer.addChild(queueBand);
 		const expanded = this.ctx.pendingQueueExpanded;
-		const collapseLines = PENDING_QUEUE_COLLAPSE_LINES;
+		const collapseLines = Math.max(
+			1,
+			// Session-focus rebuilds run against a context whose settings may be
+			// absent (attached worker views); fall back to the registered default.
+			this.ctx.settings ? cfgPendingQueueCollapseLines.get(this.ctx.settings) : cfgPendingQueueCollapseLines.default,
+		);
 		const queueBoxWidth = Math.max(1, this.ctx.ui.terminal?.columns ?? 80);
 		const canExpandQueue = allMessages.some(
 			entry => queuedMessageVisualRowCount(entry.message, queueBoxWidth) + 2 > collapseLines,
@@ -1165,9 +1182,7 @@ export class UiHelpers {
 			const entry = allMessages[idx];
 			const safeAll = entry.message.split("\n").map(line => sanitizeText(line.replace(/\t/g, "    ")));
 			const footerText = idx === allMessages.length - 1 ? hint : undefined;
-			this.ctx.pendingMessagesContainer.addChild(
-				new QueuedMessageBox(entry.label, safeAll, { collapseLines, expanded, footerText }),
-			);
+			queueBand.addChild(new QueuedMessageBox(entry.label, safeAll, { collapseLines, expanded, footerText }));
 		}
 	}
 

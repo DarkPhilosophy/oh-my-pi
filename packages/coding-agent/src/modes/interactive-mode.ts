@@ -7043,6 +7043,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Clear the process-global consent handler so it doesn't outlive this
 		// InteractiveMode instance (e.g. test harnesses, headless re-init).
 		setAutoQaConsentHandler(null, null);
+		this.session.onLocalQueueCoalesced = undefined;
 		setCfgApprovalHost(null);
 		this.#hideSessionInfo();
 		if (this.#ownsStartedUi) {

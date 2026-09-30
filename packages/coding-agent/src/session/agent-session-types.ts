@@ -379,7 +379,6 @@ export interface PromptOptions {
 	 *  an in-flight tool batch, injecting at the next step boundary instead (see
 	 *  AgentSession.sendUserMessage's `deliverAs: "aside"`). */
 	streamingBehavior?: "steer" | "followUp" | "aside";
-	/** Called when a streaming prompt is queued or coalesced. */
 	/** Optional tool choice override for the next LLM call. */
 	toolChoice?: ToolChoice;
 	/** Send as a developer/system message instead of user. */
@@ -414,6 +413,8 @@ export interface FollowUpOptions {
 	expandPromptTemplates?: boolean;
 	/** Explicit billing/initiator attribution. */
 	attribution?: MessageAttribution;
+	/** Queue reconciliation callback used by local interactive submissions. */
+	onQueued?: QueuedUserMessageListener;
 }
 
 /** Options for AgentSession.steer(). */

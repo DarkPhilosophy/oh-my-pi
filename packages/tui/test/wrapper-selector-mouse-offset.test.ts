@@ -76,9 +76,24 @@ describe("inline-picker wrapper routeMouse offset", () => {
 		component.routeMouse(leftClick(0), 0, 0);
 		expect(selected).toBeUndefined();
 
-		// First SelectList row is "one-at-a-time" regardless of the preselected mode.
+		// Keep the first mode visible so this assertion isolates border routing.
 		component.routeMouse(leftClick(1), 1, 0);
 		expect(selected).toBe("one-at-a-time");
+	});
+
+	it("QueueModeSelectorComponent confirms each configured mode after preselection", () => {
+		for (const mode of ["all", "one-at-a-time", "coalescing"] as const) {
+			let selected: string | undefined;
+			const component = new QueueModeSelectorComponent(
+				mode,
+				value => {
+					selected = value;
+				},
+				() => {},
+			);
+			component.getSelectList().handleInput("\r");
+			expect(selected).toBe(mode);
+		}
 	});
 
 	it("PluginSelectorComponent ignores the border row and selects the first plugin below it", () => {

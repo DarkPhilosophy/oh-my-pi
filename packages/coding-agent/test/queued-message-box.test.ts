@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
-import { QueuedMessageBox } from "../src/modes/components/queued-message-box";
+import { QueuedMessageBox } from "@oh-my-pi/pi-tui/queued-message-box";
 
 const stripAnsi = (text: string): string => text.replace(/\u001b\[[0-9;]*m/g, "");
 const representativeBody = ["one", "two", "three", "four", "five", "six", "seven"];

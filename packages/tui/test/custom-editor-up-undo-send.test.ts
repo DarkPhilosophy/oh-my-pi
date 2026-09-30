@@ -5,21 +5,14 @@
  * input-history navigation. Up on a non-empty editor is never diverted, so
  * multi-line cursor movement and history recall keep working untouched.
  */
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { beforeAll, describe, expect, it } from "bun:test";
 import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import { getEditorTheme, initTheme } from "@oh-my-pi/pi-tui/theme";
 
 const UP = "\x1b[A";
 
 beforeAll(async () => {
-	resetSettingsForTest();
-	await Settings.init({ inMemory: true });
-	await initTheme(false);
-});
-
-afterAll(() => {
-	resetSettingsForTest();
+	await initTheme();
 });
 
 describe("CustomEditor Up-on-empty undo-send", () => {

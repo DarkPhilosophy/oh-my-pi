@@ -96,6 +96,24 @@ describe("AgentSession queue coalescing", () => {
 	const steeringShapes = (target: AgentSession): string[] =>
 		target.agent.peekSteeringQueue().map(m => (m.role === "custom" ? m.customType : m.role));
 
+	for (const mode of ["steer", "followUp"] as const) {
+		it(`withdraws a coalesced ${mode} by its original submitted text after command expansion`, async () => {
+			const target = await createSession([{ content: ["ok"] }]);
+			target.setSlashCommands([{ name: "cmd", description: "Test", content: "Expanded $1", source: "(test)" }]);
+			const result = await duringStream(target, async () => {
+				await target.prompt("/cmd first", { streamingBehavior: mode });
+				await target.prompt("/cmd second", { streamingBehavior: mode });
+				const queue = mode === "steer" ? "steering" : "followUp";
+				const before = target.getQueuedMessages()[queue];
+				const removed = target.removeQueuedMessage("/cmd first\n/cmd second", queue);
+				return { before, removed, after: target.getQueuedMessages()[queue] };
+			});
+			expect(result.before).toEqual(["Expanded first\nExpanded second"]);
+			expect(result.removed).toBe(true);
+			expect(result.after).toEqual([]);
+		});
+	}
+
 	it("merges consecutive plain steers into one queued entry", async () => {
 		const target = await createSession([{ content: ["ok"] }]);
 		const steering = await duringStream(target, async () => {
@@ -148,7 +166,6 @@ describe("AgentSession queue coalescing", () => {
 		expect(delivered.filter(t => t.includes("late"))).toHaveLength(1);
 		expect(target.getQueuedMessages().steering).toEqual([]);
 	});
-
 	it("merges a steer burst into one box across an advisor note queued between them", async () => {
 		const target = await createSession([{ content: ["ok"] }]);
 		const steering = await duringStream(target, async () => {
@@ -917,6 +934,39 @@ describe("AgentSession steering delivery contract", () => {
 			.find(m => Array.isArray(m.content) && m.content.some(part => part.type === "image"));
 		expect(deliveredImageTurn?.content).toContainEqual({ type: "image", data: "QUJD", mimeType: "image/png" });
 		expect(target.agent.peekSteeringQueue()).toEqual([]);
+		expect(target.getQueuedMessages().steering).toEqual([]);
+	});
+	it("does not coalesce a fresh steer into an asynchronously claimed delivery", async () => {
+		const target = await createSession([{ content: ["ok-1"] }, { content: ["ok-2"] }, { content: ["ok-3"] }]);
+		target.setSteeringMode("coalescing");
+		const claimed = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		target.agent.prepareQueuedMessages = async () => {
+			claimed.resolve();
+			await release.promise;
+			return { commit: () => [] };
+		};
+		let queued = false;
+		target.agent.setOnBeforeYield(async () => {
+			if (queued) return;
+			queued = true;
+			await target.steer("claimed steer");
+		});
+
+		const run = target.prompt("start");
+		await claimed.promise;
+		await target.steer("later steer");
+		release.resolve();
+		await run;
+
+		const delivered = target.agent.state.messages
+			.filter(message => message.role === "user")
+			.map(message =>
+				typeof message.content === "string"
+					? message.content
+					: message.content.map(block => (block.type === "text" ? block.text : "")).join(""),
+			);
+		expect(delivered).toEqual(["start", "claimed steer", "later steer"]);
 		expect(target.getQueuedMessages().steering).toEqual([]);
 	});
 });

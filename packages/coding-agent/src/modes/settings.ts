@@ -750,7 +750,7 @@ export const cfgSteeringMode = register({
 		tab: "interaction",
 		group: "Input",
 		label: "Steering Mode",
-		description: "How to process queued messages while agent is working",
+		description: "How to process queued steering messages while the agent is working",
 	},
 });
 
@@ -763,7 +763,7 @@ export const cfgFollowUpMode = register({
 		tab: "interaction",
 		group: "Input",
 		label: "Follow-Up Mode",
-		description: "How to drain follow-up messages after a turn completes",
+		description: "How to drain queued follow-up messages after a turn completes",
 	},
 });
 
@@ -777,6 +777,25 @@ export const cfgInterruptMode = register({
 		group: "Input",
 		label: "Interrupt Mode",
 		description: "When steering messages interrupt tool execution",
+	},
+});
+
+export const cfgPendingQueueCollapseLines = register({
+	id: "pendingQueueCollapseLines",
+	type: "number",
+	default: 5,
+	ui: {
+		tab: "interaction",
+		group: "Input",
+		label: "Queued Message Preview Lines",
+		description:
+			"How many leading lines of each queued steer/follow-up message the pending bar shows before collapsing the rest to `(+N)`. Alt+O expands every entry to its full text and toggles back to this collapsed preview.",
+		options: [
+			{ value: "1", label: "1 line" },
+			{ value: "3", label: "3 lines" },
+			{ value: "5", label: "5 lines" },
+			{ value: "10", label: "10 lines" },
+		],
 	},
 });
 

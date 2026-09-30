@@ -29,6 +29,7 @@
 - Fixed advisor-initiated turns starting after `/advisor off` (or an ancestor scope change) landed during the usage preflight: the preflight now sees the cancellation and the turn is rechecked before it prompts ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Fixed a session transcript that stopped being written for the rest of the session after the first rejected write on a remote or indexed session store; the next write now saves the full transcript, while a real conflict with another writer still stops rewrites.
 - Global usage-account masking now applies to native and text dashboards, notes, reset credits, and CLI usage output without persisting temporary overlay toggles ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Fixed rapid queued steering and follow-up submissions racing or losing attachments; added opt-in coalescing and expandable queued-message previews ([#4680](https://github.com/can1357/oh-my-pi/pull/4680) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
 - Replying `c` during a `/guided-goal` interview now sends `c` as your answer instead of triggering the continue shortcut ([#13819](https://github.com/can1357/oh-my-pi/pull/13819) by [@H4vC](https://github.com/H4vC))
 - Cache-warming refreshes cancelled or superseded after the provider accepted them now count toward session usage and cost instead of being dropped ([#13717](https://github.com/can1357/oh-my-pi/pull/13717))
 - `omp plugin upgrade <name>` now upgrades npm- and git-installed plugins (e.g. `ida-mcp` installed from `github:HexRaysSA/ida-mcp#latest`, which `hcli mcp install` relies on) and resolves a bare marketplace plugin name, instead of failing with "Invalid plugin ID"; the plugin's enabled state and feature selection are kept ([#13812](https://github.com/can1357/oh-my-pi/pull/13812) by [@H4vC](https://github.com/H4vC))
@@ -596,6 +597,7 @@
 - Fixed llama.cpp discovery and routing for PrismML Bonsai 2 27B GGUF models, including support for cached models and the Qwen 3.8 thinking-level ladder.
 
 ## [18.2.6] - 2026-09-18
+
 ### Added
 
 - Added global and per-advisor review cadence, including final-yield reviews and intervals that accumulate skipped transcript updates ([#12385](https://github.com/can1357/oh-my-pi/pull/12385) by [@olegpulatov](https://github.com/olegpulatov)).
@@ -1170,7 +1172,6 @@
 - Browser startup reuses a successful system-Chrome fallback instead of retrying an unavailable download during the same open.
 - Browser clicks and other interactions no longer stall when OMP-owned tabs are in the background, including after worker timeout recovery.
 
-
 ## [18.1.20] - 2026-09-13
 
 ### Added
@@ -1227,7 +1228,6 @@
 - Kept the last completed subagent tool visible with the configured success/error symbol until the next tool starts; edit previews include affected file paths.
 - Applied account masking consistently to text-mode and ACP `/usage` output, including reset-credit labels.
 
-
 ## [18.1.20] - 2026-09-13
 
 ### Added
@@ -1253,6 +1253,7 @@
 - Dismissing a completed TODO panel restores the chat at the bottom instead of leaving a blank gap.
 - Advisor acknowledgments distinguish acceptance, deferral, and suppression; higher-priority findings replace only pending notes from the same review ([#11881](https://github.com/can1357/oh-my-pi/pull/11881) by [@olegpulatov](https://github.com/olegpulatov)).
 - Read error and preview rendering now sanitizes tabs and Windows-style CRLF (e.g. ssh host-key failures, tab-indented fetched content) so raw output can no longer tear the result frame.
+
 ### Fixed
 
 - The hidden notice announcing a mid-session tool-availability change now states that it lists only what changed, so an additions-only notice no longer reads as the complete tool set and the model keeps using tools that are still callable ([#11824](https://github.com/can1357/oh-my-pi/issues/11824) by [@camjac251](https://github.com/camjac251)).
@@ -1370,6 +1371,7 @@
 ### Changed
 
 - Improved `/usage` with provider/account cards, temporary privacy and account-grouping controls, and configurable quota-bar labels.
+
 ### Fixed
 
 - Fixed ordinary status and editor height changes incorrectly leaving gaps in streamed transcript output.
@@ -1381,6 +1383,7 @@
 ### Changed
 
 - Subagents now show their current activity and a separate, width-bounded current-tool row; resolved model labels follow the model badge setting.
+
 ### Fixed
 
 - Fixed completed subagent jobs and IRC replies displaying internal XML/JSON wrappers instead of readable results.
@@ -1406,15 +1409,18 @@
 - Fixed the `providers.openai-codex.useReserve` setting being unreachable because its group was missing from the settings Providers tab.
 - Fixed Mermaid code-fence fallback headers showing an icon instead of the `[mermaid]` language label when rendering is disabled or fails.
 - Fixed tool-activity and tool-expansion toggles not repainting the transcript, and the terminal title staying busy after an agent turn ended.
+
 ### Fixed
 
 - GitHub Copilot model-policy 403s (plan, model policy, org restriction) no longer delete stored credentials, so the provider stays listed in `/model` after a per-model access denial instead of disappearing until the next `/login` ([#11280](https://github.com/can1357/oh-my-pi/pull/11280) by [@H4vC](https://github.com/H4vC)).
+
 ### Fixed
 
 - Fixed long responses being clipped at the history boundary and still-visible content retiring when command suggestions open.
 - Fixed replay omitting already-emitted rows from a partially settled response.
 - Fixed rapid queued steer/follow-up image submissions racing into split or dropped pending entries by serializing queue mutations; added opt-in `coalescing` queue mode to merge rapid consecutive queued user entries while preserving attachments, hidden magic-keyword companions, restore behavior, delivery, and `[Image #N]` marker numbering.
 - Read error and preview rendering now sanitizes tabs and Windows-style CRLF (e.g. ssh host-key failures, tab-indented fetched content) so raw output can no longer tear the result frame.
+
 ### Added
 
 - Added connect-only Browser Relay support for Firefox-family browsers through local WebDriver BiDi endpoints.
@@ -1563,6 +1569,7 @@
 - Restored lightweight terminal startup by keeping daemon session inventory rendering out of the first-paint module graph.
 - Fixed `todo` and other tools called through eval rejecting optional `None`/`null` arguments that direct tool calls accept.
 - Added Model Hub controls for editing thinking levels on concrete retry fallback rows.
+
 ### Fixed
 
 - The default `omp commit` agent now uses its displayed COMMIT model and honors `--model` instead of silently running on SMOL ([#10991](https://github.com/can1357/oh-my-pi/issues/10991)).

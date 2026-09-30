@@ -555,11 +555,6 @@ export class InputController {
 				if (this.ctx.cancelPendingSubmission()) {
 					return;
 				}
-				const queued = this.ctx.session.getQueuedMessages();
-				if (queued.steering.length > 0 || queued.followUp.length > 0) {
-					void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
-					return;
-				}
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			} else if (this.ctx.session.isBashRunning) {
 				this.ctx.session.abortBash();
@@ -2801,13 +2796,6 @@ export class InputController {
 		this.ctx.showStatus(`Thinking blocks: ${this.ctx.hideThinkingBlock ? "hidden" : "visible"}`);
 	}
 
-	/** Toggle expanded/collapsed queued-message preview. */
-	togglePendingQueueExpansion(): void {
-		this.ctx.pendingQueueExpanded = !this.ctx.pendingQueueExpanded;
-		this.ctx.updatePendingMessagesDisplay();
-		this.ctx.ui.requestRender();
-	}
-
 	async openExternalEditor(): Promise<void> {
 		const editorCmd = getEditorCommand();
 		if (!editorCmd) {
@@ -2855,5 +2843,11 @@ export class InputController {
 				}
 			});
 		}
+	}
+	/** Toggle expanded/collapsed queued-message preview. */
+	togglePendingQueueExpansion(): void {
+		this.ctx.pendingQueueExpanded = !this.ctx.pendingQueueExpanded;
+		this.ctx.updatePendingMessagesDisplay();
+		this.ctx.ui.requestRender();
 	}
 }

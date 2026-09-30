@@ -1,7 +1,7 @@
-import type { Component } from "@oh-my-pi/pi-tui";
-import { truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
-import { padToWidth as fit } from "@oh-my-pi/pi-tui/render/utils";
-import { theme } from "@oh-my-pi/pi-tui/theme";
+import type { Component } from "./tui";
+import { fitLayoutLine } from "./components/layout/geometry";
+import { theme } from "./theme/theme";
+import { truncateToWidth, visibleWidth } from "./utils";
 /**
  * A single queued steer / follow-up message rendered inside a bordered box.
  *
@@ -147,7 +147,7 @@ export class QueuedMessageBox implements Component {
 
 	#bodyRow(gutter: string, text: string, width: number, gp: (s: string) => string): string {
 		const contentW = Math.max(0, width - 7);
-		return `${theme.fg("border", VDASH)} ${gp(gutter)}${fit(text, contentW)} ${theme.fg("border", VDASH)}`;
+		return `${theme.fg("border", VDASH)} ${gp(gutter)}${fitLayoutLine(text, contentW)} ${theme.fg("border", VDASH)}`;
 	}
 
 	#bottomBorder(width: number, hiddenRows: number, hiddenChars: number, footerText: string | undefined): string {

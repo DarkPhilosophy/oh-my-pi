@@ -1,3 +1,4 @@
+import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
 /**
  * Skill/custom queued-message display contracts.
  *
@@ -826,11 +827,10 @@ function createStubInteractiveModeContextForUiHelpers(session: AgentSession, col
 		viewSession: session,
 		compactionQueuedMessages: [],
 		keybindings: {
-			getKeys: (action: string) => (action === "app.message.expandQueue" ? ["alt+o"] : ["alt+up"]),
+			getDisplayString: (action: string) => (action === "app.message.expandQueue" ? "Alt+O" : "Alt+Up"),
+			getKeys: (action: string) => [action === "app.message.expandQueue" ? "alt+o" : "alt+up"],
 		},
-		settings: {
-			get: (path: string) => (path === "pendingQueueCollapseLines" ? collapseLines : undefined),
-		},
+		settings: Settings.isolated({ pendingQueueCollapseLines: collapseLines }),
 		updatePendingMessagesDisplay,
 		locallySubmittedUserSignatures: new Set<string>(),
 	} as unknown as InteractiveModeContext;
@@ -869,7 +869,7 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		const rendered = stripAnsi(pendingMessagesContainer.render(120).join("\n"));
 		expect(rendered).toContain("Steer");
 		expect(rendered).toContain("└─ /skill:test-skill arg1 arg2");
-		expect(rendered).toContain("Alt+↑ (or Up) to edit");
+		expect(rendered).toContain(`${formatKeyHint("alt+up")} (or Up) to edit`);
 	});
 
 	it("renders a coalesced image/text queue entry as one compact box", async () => {
@@ -947,7 +947,7 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		uiHelpers.updatePendingMessagesDisplay();
 
 		const rendered = stripAnsi(pendingMessagesContainer.render(80).join("\n"));
-		expect(rendered).toContain("Alt+↑ (or Up) to edit, Alt+O to expand");
+		expect(rendered).toContain(`${formatKeyHint("alt+up")} (or Up) to edit, ${formatKeyHint("alt+o")} to expand`);
 	});
 
 	it("restores the compact slash form into the editor and clears the queue", async () => {

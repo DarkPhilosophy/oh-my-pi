@@ -59,7 +59,7 @@ export function isTerminalTextAssistantAnswer(message: AgentMessage | undefined)
 
 /** Whether a queued message is a user prompt: any user-role turn, or a visible user-attributed custom prompt. */
 export function isUserQueuedMessage(message: AgentMessage): boolean {
-	if (message.role === "user") return message.attribution !== "agent";
+	if (message.role === "user") return true;
 	return message.role === "custom" && message.attribution === "user" && message.display !== false;
 }
 

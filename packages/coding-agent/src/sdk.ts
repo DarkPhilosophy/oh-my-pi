@@ -337,9 +337,7 @@ import {
 	cfgTierGoogle,
 	cfgTierOpenai,
 } from "./session/settings";
-import { cfgInterruptMode } from "./modes/settings";
-import { cfgFollowUpMode } from "./modes/settings";
-import { cfgSteeringMode } from "./modes/settings";
+import { cfgFollowUpMode, cfgInterruptMode, cfgSteeringMode } from "./modes/settings";
 import {
 	cfgCommandsEnableClaudeProject,
 	cfgCommandsEnableClaudeUser,

@@ -582,6 +582,7 @@ const noOpUIContext: ExtensionUIContext = {
 // ============================================================================
 // AgentSession Class
 // ============================================================================
+
 export function coreQueueMode(mode: QueueMode): "all" | "one-at-a-time" {
 	return mode === "all" ? "all" : "one-at-a-time";
 }
@@ -787,6 +788,8 @@ export class AgentSession implements SettingsScope {
 	#scheduledHiddenNextTurnGeneration: number | undefined = undefined;
 	#queuedMessageDrainScheduled = false;
 	#queuedUserMessageTail: Promise<void> = Promise.resolve();
+	#steeringModeOverride: QueueMode | undefined;
+	#followUpModeOverride: QueueMode | undefined;
 	/** A single model-only notebook reminder queued for the current prompt generation. */
 	#experimentalContextNotesReminder: { prompt: string; generation: number } | undefined;
 	#planModeState: PlanModeState | undefined;
@@ -6482,9 +6485,6 @@ export class AgentSession implements SettingsScope {
 		return this.#providerBoundary.prepareSimpleStreamOptions(options, provider);
 	}
 
-	#steeringModeOverride: QueueMode | undefined;
-	#followUpModeOverride: QueueMode | undefined;
-
 	/** Current steering mode */
 	get steeringMode(): QueueMode {
 		return this.#steeringModeOverride ?? cfgSteeringMode.get(this.settings);
@@ -7992,6 +7992,7 @@ export class AgentSession implements SettingsScope {
 			await this.#queueUserMessage(expandedText, images, "followUp", {
 				timestamp: submittedAt,
 				attribution: options?.attribution,
+				onQueued: options?.onQueued,
 				rawText: text,
 			});
 			return;
@@ -8068,6 +8069,7 @@ export class AgentSession implements SettingsScope {
 		mode: "steer" | "followUp",
 		companionMessages: readonly CustomMessage[],
 		onQueued: QueuedUserMessageListener | undefined,
+		rawText: string,
 	): boolean {
 		// The peek views include batches already claimed for delivery. Merging
 		// into one would hand the model the original while the merged copy stays
@@ -8109,6 +8111,8 @@ export class AgentSession implements SettingsScope {
 		const mergedImages = [...(tailImages ?? []), ...(images ?? [])];
 		const mergedText = `${replacedText}\n${shiftedPerSendText}`;
 		const replacement = withQueuedUserContent(tail, mergedText, mergedImages.length > 0 ? mergedImages : undefined);
+		const previousRawText = this.#queuedMessageRawText.get(tail) ?? replacedText;
+		this.#queuedMessageRawText.set(replacement, `${previousRawText}\n${rawText}`);
 		const shiftedCompanions = companionMessages.map(companion => ({
 			...companion,
 			content:
@@ -8155,6 +8159,7 @@ export class AgentSession implements SettingsScope {
 		text: string,
 		images: ImageContent[] | undefined,
 		mode: "steer" | "followUp" | "aside",
+
 		options?: {
 			timestamp?: number;
 			attribution?: MessageAttribution;
@@ -8190,22 +8195,10 @@ export class AgentSession implements SettingsScope {
 			attribution?: MessageAttribution;
 			onQueued?: QueuedUserMessageListener;
 			prependMessages?: readonly CustomMessage[];
-			/** Text the caller originally submitted, before slash/custom-command
-			 *  rewriting, prompt-template expansion, or `^model` mention substitution.
-			 *  Recorded via `#queuedMessageRawText` so `removeQueuedMessage` can match
-			 *  it later. Defaults to `text` (the common case: no transformation ran,
-			 *  so raw and queued content are identical). */
+			/** Original submitted text, used to withdraw transformed queued prompts. */
 			rawText?: string;
-			/**
-			 * Set only when image normalization and the vision description already
-			 * ran for this prompt; its presence suppresses both here. Companions
-			 * travel in `prependMessages` so a notice-only caller cannot claim
-			 * attachments were prepared (they would be silently dropped).
-			 */
-			preprocessed?: {
-				images?: ImageContent[];
-				descriptionNotice?: CustomMessage;
-			};
+			/** Reuse attachment preparation already performed by prompt(). */
+			preprocessed?: { images?: ImageContent[]; descriptionNotice?: CustomMessage };
 		},
 	): Promise<void> {
 		const attribution = options?.attribution ?? "user";
@@ -8256,11 +8249,13 @@ export class AgentSession implements SettingsScope {
 			return;
 		}
 		this.#allowQueuedMessageDrainRetry();
-		const companionMessages = [...prependMessages, ...(imageDescriptionNotice ? [imageDescriptionNotice] : [])];
-		const queueMode = mode === "followUp" ? cfgFollowUpMode.get(this.settings) : cfgSteeringMode.get(this.settings);
+		const companionMessages = [...prependMessages, ...attachmentSourceNotices];
+		if (imageDescriptionNotice) companionMessages.push(imageDescriptionNotice);
+		const queueMode = mode === "followUp" ? this.followUpMode : this.steeringMode;
 		if (
+			attribution === "user" &&
 			queueMode === "coalescing" &&
-			this.#tryCoalesceQueuedUserMessage(text, normalizedImages, mode, companionMessages, onQueued)
+			this.#tryCoalesceQueuedUserMessage(text, normalizedImages, mode, companionMessages, onQueued, rawText)
 		) {
 			this.#scheduleIdleQueueDrain();
 			return;

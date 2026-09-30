@@ -22,8 +22,9 @@ export class QueueModeSelectorComponent extends OverlayPanel {
 			{
 				value: "one-at-a-time",
 				label: "one-at-a-time",
-				description: "Process queued messages one by one (default)",
+				description: "Process queued messages one by one (recommended)",
 			},
+			{ value: "all", label: "all", description: "Process all queued messages together" },
 			{
 				value: "coalescing",
 				label: "coalescing",
