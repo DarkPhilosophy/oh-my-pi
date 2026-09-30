@@ -3401,8 +3401,10 @@ export class TUI extends Container {
 				const row = overlayTop + index;
 				const under = this.#providerScreen[row] ?? "";
 				covered.push(under);
-				// A row backed by an image cannot take a partial splice; it keeps the full-width overlay row.
-				const splice = anchored && !TERMINAL.isImageLine(under);
+				// A row backed by an image cannot take a partial splice: `#compositeLineAt` leaves it untouched
+				// so the placement survives. An anchored card is only `overlayWidth` columns wide, so painting
+				// it as a full row would leave a stub with the rest of the row cleared.
+				const splice = anchored;
 				const paintedLine = splice
 					? this.#compositeLineAt(under, overlayRows[index]!, overlayStartCol, overlayWidth, width)
 					: overlayRows[index]!;

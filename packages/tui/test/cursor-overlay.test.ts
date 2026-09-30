@@ -1,5 +1,6 @@
 import { expect, it } from "bun:test";
 import { wrapTmuxPassthrough } from "../src/tmux";
+import { ImageProtocol, setTerminalImageProtocol, TERMINAL } from "../src/terminal-capabilities";
 import { CURSOR_MARKER, TUI, type TerminalFramePlan, type TerminalFrameProvider } from "../src/tui";
 import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 import { VirtualRenderScheduler } from "./virtual-render-scheduler";
@@ -543,6 +544,43 @@ it.each([false, true])("preserves image placement IDs when history scrolls under
 		expect(writes.join("")).not.toMatch(/\x1b_Ga=d,/);
 	} finally {
 		ui.stop();
+	}
+});
+
+it("keeps an image-backed row and its placement under an anchored popup instead of a partial stub", async () => {
+	const savedProtocol = TERMINAL.imageProtocol;
+	// Without an image protocol no row counts as image-backed and the branch under test never runs.
+	setTerminalImageProtocol(ImageProtocol.Kitty);
+	const terminal = new VirtualTerminal(100, 12);
+	const ui = new TUI(terminal);
+	const provider = new Provider();
+	const apc = "\x1b_Ga=p,q=2,C=1,i=714,p=714,c=100,r=8,z=-2147483648\x1b\\";
+	const placement = `\x1b7\x1b[7A${apc}\x1b8`;
+	provider.frame = { viewport: [...Array<string>(7).fill(""), placement, `${CURSOR_MARKER}input`] };
+	ui.setFrameProvider(provider);
+	const writes: string[] = [];
+	const write = terminal.write.bind(terminal);
+	terminal.write = data => {
+		writes.push(data);
+		write(data);
+	};
+	try {
+		ui.start();
+		await terminal.waitForRender();
+		expect(TERMINAL.isImageLine(placement)).toBe(true);
+		writes.length = 0;
+		// A 44-column card anchored at column 30 covers the image row. Painting it there would clear the
+		// rest of the row and drop the placement, so the row must be left exactly as it was.
+		ui.setCursorOverlay(width => [`MENU${" ".repeat(Math.max(0, Math.min(width, 44) - 4))}`], 0, 1, "auto", 30);
+		ui.requestRender();
+		await terminal.waitForRender();
+		const output = writes.join("");
+		expect(output).not.toContain("MENU");
+		expect(output).toContain("i=714");
+		expect(output).not.toMatch(/\x1b_Ga=d,/);
+	} finally {
+		ui.stop();
+		setTerminalImageProtocol(savedProtocol);
 	}
 });
 
