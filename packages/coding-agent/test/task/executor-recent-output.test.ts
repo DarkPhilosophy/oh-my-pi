@@ -23,8 +23,8 @@ import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
-import type { AgentProgress } from "@oh-my-pi/pi-tui/tools/task";
 import { shortenToolArgumentPaths, TRUNCATE_LENGTHS } from "@oh-my-pi/pi-tui/render/render-utils";
+import type { AgentProgress } from "@oh-my-pi/pi-tui/tools/task";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { createSessionDefaults } from "../helpers/session-defaults";
 
@@ -88,7 +88,9 @@ interface Observation {
 interface ScenarioResult {
 	observations: Observation[];
 	tools: Array<string | undefined>;
-	toolSnapshots: Array<Pick<AgentProgress, "currentTool" | "currentToolArgs" | "lastIntent" | "recentTools">>;
+	toolSnapshots: Array<
+		Pick<AgentProgress, "currentTool" | "currentToolArgs" | "currentToolIntent" | "lastIntent" | "recentTools">
+	>;
 	/** Snapshot arrays captured by reference + a deep copy taken at observation time. */
 	immutability: Array<{ live: string[]; copy: string[] }>;
 	exitCode: number;
@@ -271,6 +273,7 @@ async function runScenario(
 			toolSnapshots.push({
 				currentTool: progress.currentTool,
 				currentToolArgs: progress.currentToolArgs,
+				currentToolIntent: progress.currentToolIntent,
 				lastIntent: progress.lastIntent,
 				recentTools: progress.recentTools.slice(),
 			});
@@ -322,6 +325,25 @@ describe("tool argument preview semantics", () => {
 			],
 		});
 		expect(result.toolSnapshots.find(p => p.currentTool === "custom-search")?.currentToolArgs).toBe("real query");
+	});
+
+	it("extracts apply_patch wire-alias paths in executor progress", async () => {
+		const input = ["*** Begin Patch", "*** Update File: src/aliased.ts", "@@", "-old", "+new", "*** End Patch"].join(
+			"\n",
+		);
+		const result = await runScenario([], {
+			events: [
+				{
+					type: "tool_execution_start",
+					toolCallId: "apply-patch-1",
+					toolName: "apply_patch",
+					args: { input },
+				},
+			],
+		});
+
+		const active = result.toolSnapshots.find(snapshot => snapshot.currentTool === "apply_patch");
+		expect(active?.currentToolArgs).toBe("src/aliased.ts");
 	});
 
 	it("keeps complete home path boundaries until the display sanitizer runs", async () => {
@@ -421,10 +443,14 @@ describe("recentOutput event-sequence equivalence (deferred reconstruction)", ()
 			const afterFirst = result.toolSnapshots.find(snapshot => snapshot.recentTools[0]?.tool === finishedName);
 			expect(afterFirst?.currentTool).toBe(finishReadFirst ? "grep" : "read");
 			expect(afterFirst?.currentToolArgs).toBe(finishReadFirst ? "needle" : "src/one.ts");
-			expect(afterFirst?.lastIntent).toBe(finishReadFirst ? "Searching for the symbol" : "Reading the first file");
+			// The row shows the surviving call's own intent, not the other call's.
+			expect(afterFirst?.currentToolIntent).toBe(
+				finishReadFirst ? "Searching for the symbol" : "Reading the first file",
+			);
 			expect(afterFirst?.recentTools[0]).toMatchObject({
 				tool: finishedName,
 				args: finishReadFirst ? "src/one.ts" : "needle",
+				intent: finishReadFirst ? "Reading the first file" : "Searching for the symbol",
 				isError: !finishReadFirst,
 			});
 		}

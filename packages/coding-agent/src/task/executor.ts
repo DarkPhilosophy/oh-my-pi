@@ -883,13 +883,16 @@ function formatToolArgsPreview(value: string, key: string): { value: string; key
 }
 
 /**
- * Extract bounded display arguments after path and terminal sanitation.
+ * Extract bounded display arguments after path and terminal sanitation. The key names which argument
+ * was chosen so the renderer can shorten home paths in path-valued arguments without rewriting a
+ * literal search pattern.
  */
 function extractToolArgsPreview(
 	args: Record<string, unknown>,
 	toolName: string,
 	editMode?: EditMode,
 ): { value: string; key: string } | undefined {
+	// Priority order for preview
 	const previewKeys = ["command", "file_path", "path", "pattern", "query", "url", "task", "prompt"];
 	const isEdit = toolName === "edit" || toolName === "apply_patch";
 	if (isEdit && typeof args.input === "string") {
@@ -897,7 +900,7 @@ function extractToolArgsPreview(
 		if (paths.length > 0) return formatToolArgsPreview(paths.join(", "), "path");
 	}
 	const compoundEdits = args.edits;
-	if (toolName === "edit" && Array.isArray(compoundEdits)) {
+	if (isEdit && Array.isArray(compoundEdits)) {
 		const paths = new Set<string>();
 		if (typeof args.path === "string" && args.path) paths.add(args.path);
 		for (const edit of compoundEdits) {
@@ -909,8 +912,7 @@ function extractToolArgsPreview(
 	}
 	for (const key of previewKeys) {
 		if (typeof args[key] === "string" && args[key]) {
-			const value = args[key] as string;
-			return formatToolArgsPreview(value, key);
+			return formatToolArgsPreview(args[key] as string, key);
 		}
 	}
 	return undefined;
@@ -1662,11 +1664,16 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		}
 	};
 
+	/**
+	 * Tool calls in flight, by call id. Sibling calls run concurrently, so one call ending must not
+	 * blank or relabel another that is still running: the live row shows the oldest remaining call.
+	 */
 	const activeTools = new Map<
 		string,
 		{ tool: string; args?: string; argsKey?: string; intent?: string; startMs: number }
 	>();
 	let visibleToolCallId: string | undefined;
+
 	/**
 	 * Soft request budget: steer at the budget, stop the free-running turn at
 	 * 1.5x, and hard-abort {@link BUDGET_STOP_GRACE_REQUESTS} requests later if
@@ -1732,8 +1739,11 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				progress.toolCount++;
 				progress.currentTool = event.toolName;
 				let startArgs: Record<string, unknown> = {};
-				if ("toolArgs" in event && isRecord(event.toolArgs)) startArgs = event.toolArgs;
-				else if (isRecord(event.args)) startArgs = event.args;
+				if ("toolArgs" in event && isRecord(event.toolArgs)) {
+					startArgs = event.toolArgs;
+				} else if (isRecord(event.args)) {
+					startArgs = event.args;
+				}
 				const editMode =
 					event.toolName === "apply_patch"
 						? "apply_patch"
@@ -1747,6 +1757,17 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				// Per call: intent-optional tools (e.g. MCP) start without one, and
 				// `lastIntent` would otherwise label them with the previous call's.
 				progress.currentToolIntent = intent;
+				activeTools.set(event.toolCallId, {
+					tool: event.toolName,
+					args: preview?.value,
+					argsKey: preview?.key,
+					intent,
+					startMs: now,
+				});
+				visibleToolCallId = event.toolCallId;
+				// A fast tool may finish before the coalesced update fires.
+				// Publish both lifecycle edges rather than dropping its start.
+				flushProgress = true;
 				if (intent) {
 					progress.lastIntent = intent;
 				}
@@ -1766,9 +1787,11 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				activeTools.delete(event.toolCallId);
 				if (finished) {
 					progress.recentTools.unshift({
-						tool: progress.currentTool,
-						args: progress.currentToolArgs || "",
-						intent: progress.currentToolIntent,
+						tool: finished.tool,
+						args: finished.args ?? "",
+						argsKey: finished.argsKey,
+						intent: finished.intent,
+						isError: event.isError,
 						endMs: now,
 					});
 					// Keep only last 5
@@ -1776,10 +1799,16 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 						progress.recentTools.pop();
 					}
 				}
-				progress.currentTool = undefined;
-				progress.currentToolArgs = undefined;
-				progress.currentToolIntent = undefined;
-				progress.currentToolStartMs = undefined;
+				if (visibleToolCallId === event.toolCallId) {
+					const remaining = activeTools.entries().next().value;
+					visibleToolCallId = remaining?.[0];
+					const visible = remaining?.[1];
+					progress.currentTool = visible?.tool;
+					progress.currentToolArgs = visible?.args;
+					progress.currentToolArgsKey = visible?.argsKey;
+					progress.currentToolIntent = visible?.intent;
+					progress.currentToolStartMs = visible?.startMs;
+				}
 				// The finalized TaskToolDetails will be captured below into
 				// `extractedToolData.task`; drop the in-flight snapshot so the
 				// renderer doesn't double-count it against the final entry.

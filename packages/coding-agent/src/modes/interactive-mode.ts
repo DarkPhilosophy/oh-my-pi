@@ -997,9 +997,19 @@ function renderSubagentToolPreview(session: ObservableSession, width: number): s
 	const recent = progress.recentTools[0];
 	const tool = currentTool ?? recent?.tool;
 	if (!tool) return undefined;
-	const detail = currentTool
-		? (progress.currentToolIntent ?? progress.currentToolArgs)
-		: (recent?.intent ?? recent?.args);
+	const intent = currentTool ? progress.currentToolIntent : recent?.intent;
+	const args = currentTool ? progress.currentToolArgs : recent?.args;
+	const argsKey = currentTool ? progress.currentToolArgsKey : recent?.argsKey;
+	// A model-written intent is prose, so home paths inside it are shortened as they stand. An argument is
+	// shortened by its key, so a literal search pattern that names a home path still shows what was
+	// searched; a producer that sends no key keeps the general shortening.
+	const detail = intent
+		? shortenEmbeddedPaths(replaceTabs(intent))
+		: args
+			? argsKey === undefined
+				? shortenEmbeddedPaths(replaceTabs(args))
+				: shortenToolArgumentPaths(replaceTabs(args), argsKey)
+			: undefined;
 	const elapsed = currentTool && progress.currentToolStartMs ? Date.now() - progress.currentToolStartMs : 0;
 	const elapsedLabel =
 		elapsed > SUBAGENT_PREVIEW_ELAPSED_MIN_MS
@@ -1007,13 +1017,18 @@ function renderSubagentToolPreview(session: ObservableSession, width: number): s
 			: "";
 	const elapsedWidth = visibleWidth(elapsedLabel);
 	const hook = `${theme.fg("dim", theme.tree.hook)} `;
-	const hookWidth = visibleWidth(hook);
+	// Between calls the row keeps the last call, marked with how it ended.
+	const status =
+		!currentTool && recent
+			? `${theme.styledSymbol(recent.isError ? "status.error" : "status.success", recent.isError ? "error" : "success")} `
+			: "";
+	const prefixWidth = visibleWidth(hook) + visibleWidth(status);
 	// Reserve the elapsed marker first, then cap the tool name; the detail gets whatever is left.
-	const shortTool = truncateToWidth(replaceTabs(tool), Math.max(0, width - hookWidth - elapsedWidth), "");
-	let line = `${hook}${theme.fg(currentTool ? "muted" : "dim", shortTool)}`;
-	const detailBudget = width - hookWidth - visibleWidth(shortTool) - elapsedWidth - visibleWidth(": ");
+	const shortTool = truncateToWidth(replaceTabs(tool), Math.max(0, width - prefixWidth - elapsedWidth), "");
+	let line = `${hook}${status}${theme.fg(currentTool ? "muted" : "dim", shortTool)}`;
+	const detailBudget = width - prefixWidth - visibleWidth(shortTool) - elapsedWidth - visibleWidth(": ");
 	if (detail && detailBudget >= SUBAGENT_PREVIEW_MIN_DETAIL_WIDTH) {
-		line += `: ${theme.fg("dim", previewLine(shortenEmbeddedPaths(replaceTabs(detail)), Math.min(TRUNCATE_LENGTHS.SHORT, detailBudget)))}`;
+		line += `: ${theme.fg("dim", previewLine(detail, Math.min(TRUNCATE_LENGTHS.SHORT, detailBudget)))}`;
 	}
 	return truncateToWidth(`${line}${elapsedLabel}`, width, "");
 }
@@ -1036,6 +1051,7 @@ export function renderSubagentHudLines(
 	columns: number,
 	expanded = false,
 	livePreview = false,
+	showResolvedModelBadge = isFeedModelBadgeEnabled(),
 ): string[] {
 	const running = sessions.filter(isHudSubagent);
 	if (running.length === 0) return [];
@@ -1044,7 +1060,6 @@ export function renderSubagentHudLines(
 	const contentColumns = Math.max(0, columns - getPaddingX(1) * 2);
 	const layout = layoutPinnedHud(running.length, expanded);
 	const dot = theme.styledSymbol("status.done", "accent");
-	const layout = layoutPinnedHud(running.length, expanded);
 	const items = running.slice(0, layout.itemRows);
 	const showModelBadge = showResolvedModelBadge;
 	const outerIndent = " ";
@@ -1076,50 +1091,34 @@ export function renderSubagentHudLines(
 					: "";
 				const modelLead = modelBadge ? `${modelBadge} ` : "";
 				let line = `${dot} ${modelLead}${theme.fg("accent", theme.bold(displayId))}${badge}`;
-				let description = session.progress?.lastIntent?.trim();
-				if (!description || labelEchoesHandle(session.id, description))
-					description = session.progress?.description?.trim();
-				if (!description || labelEchoesHandle(session.id, description)) description = session.description?.trim();
-				if (!description || labelEchoesHandle(session.id, description))
-					description = session.progress?.assignment?.trim();
-				if (!description || labelEchoesHandle(session.id, description))
-					description = session.progress?.task?.trim();
-				if (description && labelEchoesHandle(session.id, description)) description = undefined;
+				// The row leads with the visible call's own intent, then falls back through the progress and
+				// spawn descriptions, the assignment and the task; a value that only echoes the agent's handle
+				// is skipped. `lastIntent` is the session's most recent intent, so it labels the row only while
+				// no call is visible: otherwise a call that carried no intent would inherit an earlier call's.
+				const progress = session.progress;
+				const liveIntent = progress?.currentTool?.trim()
+					? progress.currentToolIntent
+					: progress?.recentTools[0]
+						? progress.recentTools[0].intent
+						: progress?.lastIntent;
+				const description = [
+					liveIntent,
+					progress?.description,
+					session.description,
+					progress?.assignment,
+					progress?.task,
+				]
+					.map(candidate => candidate?.trim())
+					.find(candidate => candidate && !labelEchoesHandle(session.id, candidate));
 				if (description) {
 					const budget = Math.max(0, rowWidth - visibleWidth(line) - visibleWidth(": "));
 					const formatted = replaceTabs(shortenEmbeddedPaths(sanitizeText(description))).replace(
 						/\s*[\r\n]+\s*/g,
 						" ",
 					);
-					if (budget > 0)
+					if (budget > 0) {
 						line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(formatted, budget))}`;
-				}
-				const currentTool = session.progress?.currentTool?.trim();
-				const lastTool = currentTool ? undefined : session.progress?.recentTools[0];
-				const toolName = currentTool || lastTool?.tool;
-				if (toolName) {
-					const rawArgs = currentTool ? session.progress?.currentToolArgs?.trim() : lastTool?.args.trim();
-					const args =
-						rawArgs === undefined ? undefined : replaceTabs(sanitizeText(rawArgs)).replace(/\s*[\r\n]+\s*/g, " ");
-					const argsKey = currentTool ? session.progress?.currentToolArgsKey : lastTool?.argsKey;
-					const displayArgs = shortenToolArgumentPaths(args ?? "", argsKey);
-					const cleanName = replaceTabs(sanitizeText(toolName)).replace(/\s*[\r\n]+\s*/g, " ");
-					const startMs = currentTool ? session.progress?.currentToolStartMs : undefined;
-					const elapsed = startMs === undefined ? 0 : now - startMs;
-					const elapsedLabel =
-						elapsed > SUBAGENT_PREVIEW_ELAPSED_MIN_MS
-							? ` ${theme.sep.dot} ${theme.fg("warning", formatDuration(elapsed))}`
-							: "";
-					const lead = `${theme.tree.hook} `;
-					// Reserve the elapsed marker first so a long tool label can never truncate it away.
-					const labelBudget = Math.max(0, rowWidth - visibleWidth(lead) - visibleWidth(elapsedLabel));
-					const symbol = lastTool
-						? `${theme.styledSymbol(lastTool.isError ? "status.error" : "status.success", lastTool.isError ? "error" : "success")} `
-						: "";
-					const shownName = truncateToWidth(cleanName, Math.max(8, Math.floor(labelBudget / 2)), "");
-					const toolText = displayArgs ? `${shownName}(${displayArgs})` : shownName;
-					const toolLabel = truncateToWidth(`${symbol}${toolText}`, labelBudget, "");
-					return [truncateToWidth(line, rowWidth, ""), `${lead}${theme.fg("dim", toolLabel)}${elapsedLabel}`];
+					}
 				}
 				const head = truncateToWidth(line, rowWidth, "");
 				const preview = livePreview ? renderSubagentToolPreview(session, rowWidth) : undefined;
@@ -2307,7 +2306,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// the HUD); resuming repaints so elapsed markers catch up immediately.
 		this.#eventBusUnsubscribers.push(
 			agentPauseGate.onChange(paused => {
-				if (!cfgDisplaySubagentLivePreview.get(settings)) return;
+				if (!cfgDisplaySubagentLivePreview.get(this.settings)) return;
 				this.#renderSubagentList();
 				if (!paused) this.ui.requestRender();
 			}),
@@ -4710,12 +4709,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * appear and advance, so a repaint is armed for when the marker first shows
 	 * and then once a second while a listed agent stays mid-call.
 	 */
-	#cancelSubagentPreviewTick(): void {
-		if (!this.#subagentPreviewTickTimer) return;
-		clearTimeout(this.#subagentPreviewTickTimer);
-		this.#subagentPreviewTickTimer = undefined;
-	}
-
 	#renderSubagentList(): void {
 		this.#cancelSubagentPreviewTick();
 		this.subagentContainer.clear();
@@ -4740,13 +4733,19 @@ export class InteractiveMode implements InteractiveModeContext {
 				tickMs: number | undefined;
 		  }
 		| undefined {
-		const mode = cfgDisplayPinnedAgents.get(settings);
+		const mode = cfgDisplayPinnedAgents.get(this.settings);
 		if (mode === "off") return undefined;
 		const sessions = this.#observerRegistry.getSessions();
 		const running = sessions.filter(isHudSubagent);
 		const expanded = this.#pinnedHudOverride ?? mode === "full";
-		const livePreview = cfgDisplaySubagentLivePreview.get(settings);
-		const lines = renderSubagentHudLines(sessions, this.ui.terminal.columns, expanded, livePreview);
+		const livePreview = cfgDisplaySubagentLivePreview.get(this.settings);
+		const lines = renderSubagentHudLines(
+			sessions,
+			this.ui.terminal.columns,
+			expanded,
+			livePreview,
+			cfgTaskShowResolvedModelBadge.get(this.settings),
+		);
 		if (lines.length === 0) return undefined;
 		const layout = layoutPinnedHud(running.length, expanded);
 		const tickMs =

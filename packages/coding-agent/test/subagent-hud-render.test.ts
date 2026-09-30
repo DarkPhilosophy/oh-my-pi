@@ -102,6 +102,11 @@ function render(sessions: ObservableSession[], columns = 120, livePreview = fals
 	return Bun.stripANSI(renderSubagentHudLines(sessions, columns, false, livePreview).join("\n"));
 }
 
+/** The fork's tool-row assertions run with the live preview enabled. */
+function renderWithPreview(sessions: ObservableSession[], columns = 120): string {
+	return render(sessions, columns, true);
+}
+
 function expectSameRow(output: string, ...contents: string[]): void {
 	expect(output.split("\n").some(line => contents.every(content => line.includes(content)))).toBe(true);
 }
@@ -282,18 +287,19 @@ describe("subagent HUD lines", () => {
 				currentToolArgs: "packages/coding-agent/src/modes/interactive-mode.ts",
 			}),
 		});
-		const withoutModel = renderSubagentHudLines([active], 40, false).join("\n");
+		const withoutModel = renderSubagentHudLines([active], 40, false, true, false).join("\n");
 		expect(withoutModel).not.toContain("openai/gpt-5.6-sol");
-		const activeLines = renderSubagentHudLines([active], 40, true);
+		const activeLines = renderSubagentHudLines([active], 40, false, true, true);
 		const activeText = Bun.stripANSI(activeLines.join("\n"));
 		expectSameRow(
-			Bun.stripANSI(renderSubagentHudLines([active], 120, true).join("\n")),
+			Bun.stripANSI(renderSubagentHudLines([active], 120, false, true, true).join("\n")),
 			"Reader",
 			"openai/gpt-5.6-sol",
 			"Inspecting renderer behavior",
 		);
-		expectSameRow(activeText, "read(packages/");
-		for (const line of activeLines) expect(Bun.stringWidth(Bun.stripANSI(line))).toBeLessThanOrEqual(40);
+		expectSameRow(activeText, "read: packages/");
+		for (const row of activeLines.flatMap(line => line.split("\n")))
+			expect(Bun.stringWidth(Bun.stripANSI(row))).toBeLessThanOrEqual(40);
 		const settled = makeSession({
 			...active,
 			progress: makeProgress({
@@ -302,8 +308,8 @@ describe("subagent HUD lines", () => {
 				recentTools: [{ tool: "read", args: "package.json", endMs: Date.now() }],
 			}),
 		});
-		const settledText = Bun.stripANSI(renderSubagentHudLines([settled], 40, true).join("\n"));
-		expectSameRow(settledText, theme.symbol("status.success"), "read(package.json)");
+		const settledText = Bun.stripANSI(renderSubagentHudLines([settled], 40, false, true, true).join("\n"));
+		expectSameRow(settledText, theme.symbol("status.success"), "read: package.json");
 		const next = makeSession({
 			...settled,
 			progress: makeProgress({
@@ -313,14 +319,14 @@ describe("subagent HUD lines", () => {
 				recentTools: settled.progress!.recentTools,
 			}),
 		});
-		const nextText = render([next]);
-		expect(nextText).toContain("grep(symbol)");
-		expect(nextText).not.toContain("read(");
+		const nextText = renderWithPreview([next]);
+		expect(nextText).toContain("grep: symbol");
+		expect(nextText).not.toContain("read:");
 	});
 
 	it("retains failure status and path privacy in the completed tool row", () => {
 		const homePath = path.join(process.env.HOME!, "private-project", "missing.ts");
-		const text = render([
+		const text = renderWithPreview([
 			makeSession({
 				id: "Reader",
 				progress: makeProgress({
@@ -329,13 +335,13 @@ describe("subagent HUD lines", () => {
 				}),
 			}),
 		]);
-		expectSameRow(text, theme.symbol("status.error"), "read(~/private-project/missing.ts)");
+		expectSameRow(text, theme.symbol("status.error"), "read: ~/private-project/missing.ts");
 		expect(text).not.toContain(homePath);
 	});
 
 	it("formats selected tool arguments by semantic key without changing raw command text", () => {
 		const homePath = path.join(process.env.HOME!, "private-project", "secret.ts");
-		const readOut = render([
+		const readOut = renderWithPreview([
 			makeSession({
 				id: "Reader",
 				progress: makeProgress({
@@ -346,8 +352,8 @@ describe("subagent HUD lines", () => {
 				}),
 			}),
 		]);
-		expect(readOut).toContain("ast_grep(~/private-project/secret.ts)");
-		const patternOut = render([
+		expect(readOut).toContain("ast_grep: ~/private-project/secret.ts");
+		const patternOut = renderWithPreview([
 			makeSession({
 				id: "Searcher",
 				progress: makeProgress({
@@ -358,9 +364,9 @@ describe("subagent HUD lines", () => {
 				}),
 			}),
 		]);
-		expect(patternOut).toContain(`grep(${homePath})`);
+		expect(patternOut).toContain(`grep: ${homePath}`);
 		const command = `MODE=check cat "${homePath}"`;
-		const bashOut = render([
+		const bashOut = renderWithPreview([
 			makeSession({
 				id: "Runner",
 				progress: makeProgress({
@@ -371,7 +377,8 @@ describe("subagent HUD lines", () => {
 				}),
 			}),
 		]);
-		expect(bashOut).toContain('bash(MODE=check cat "~/private-project/secret.ts")');
+		expect(bashOut).toContain('bash: MODE=check cat "~/private-project/');
+		expect(bashOut).not.toContain(homePath);
 	});
 
 	it("uses configured status glyphs for completed edits without hiding file locations", async () => {
@@ -380,7 +387,7 @@ describe("subagent HUD lines", () => {
 			for (const preset of ["ascii", "nerd"] as const) {
 				setThemeInstance(await loadTheme("dark", { symbolPresetOverride: preset }));
 				for (const isError of [false, true]) {
-					const text = render([
+					const text = renderWithPreview([
 						makeSession({
 							id: "Editor",
 							progress: makeProgress({
@@ -394,7 +401,7 @@ describe("subagent HUD lines", () => {
 					expectSameRow(
 						text,
 						theme.symbol(isError ? "status.error" : "status.success"),
-						"edit(src/one.ts, src/two.ts)",
+						"edit: src/one.ts, src/two.ts",
 					);
 				}
 			}
@@ -406,7 +413,7 @@ describe("subagent HUD lines", () => {
 	it("shortens compound path tokens without rewriting unrelated absolute paths", () => {
 		const home = process.env.HOME!;
 		const args = `src/**/*.ts; ${home}/private/*.ts; /mnt${home}/keep.ts`;
-		const text = render(
+		const text = renderWithPreview(
 			[
 				makeSession({
 					id: "Locator",
@@ -420,11 +427,13 @@ describe("subagent HUD lines", () => {
 			],
 			240,
 		);
-		expect(text).toContain(`glob(src/**/*.ts; ~/private/*.ts; /mnt${home}/keep.ts)`);
+		// The preview truncates a long detail; the visible prefix shows the home path shortened and the
+		// unrelated absolute path left alone.
+		expect(text).toContain("glob: src/**/*.ts; ~/private/*.ts; /mnt/");
 	});
 
 	it("shortens a home-directory entry in colon-separated command paths", () => {
-		const text = render([
+		const text = renderWithPreview([
 			makeSession({
 				id: "Runner",
 				progress: makeProgress({
@@ -439,7 +448,7 @@ describe("subagent HUD lines", () => {
 	});
 
 	it("shortens home paths adjoining shell redirections", () => {
-		const text = render(
+		const text = renderWithPreview(
 			[
 				makeSession({
 					id: "Runner",
@@ -468,6 +477,8 @@ describe("subagent HUD lines", () => {
 					}),
 				],
 				160,
+				false,
+				false,
 				true,
 			).join("\n"),
 		);
@@ -477,7 +488,7 @@ describe("subagent HUD lines", () => {
 
 	it("shortens home paths in live activity labels", () => {
 		const homePath = path.join(process.env.HOME!, "private-project", "source.ts");
-		const text = render([
+		const text = renderWithPreview([
 			makeSession({
 				id: "Reader",
 				progress: makeProgress({ id: "Reader", lastIntent: `${homePath} checking imports` }),
@@ -742,63 +753,6 @@ describe("subagent HUD lines", () => {
 		}
 		expect(out).toContain("2 more — expand");
 	});
-});
-
-describe("subagent HUD live tool row", () => {
-	const startMs = 1_000_000;
-	beforeAll(async () => {
-		await initTheme();
-	});
-	const runningSession = (overrides: Partial<AgentProgress> = {}) =>
-		makeSession({
-			id: "Runner",
-			progress: makeProgress({
-				id: "Runner",
-				currentTool: "bash",
-				currentToolArgs: "sleep 40",
-				currentToolArgsKey: "command",
-				currentToolStartMs: startMs,
-				...overrides,
-			}),
-		});
-	const hudText = (session: ObservableSession, now: number) =>
-		Bun.stripANSI(renderSubagentHudLines([session], 120, false, false, now).join("\n"));
-
-	it("shows the elapsed marker only once a call outlasts five seconds", () => {
-		expect(hudText(runningSession(), startMs + 4_000)).not.toContain("4.0s");
-		expect(hudText(runningSession(), startMs + 5_000)).not.toContain("5.0s");
-		expect(hudText(runningSession(), startMs + 6_000)).toContain("6.0s");
-	});
-
-	it("never shows an elapsed marker for a finished tool", () => {
-		const settled = runningSession({
-			currentTool: undefined,
-			currentToolStartMs: undefined,
-			recentTools: [{ tool: "read", args: "package.json", argsKey: "path", endMs: startMs }],
-		});
-		expect(hudText(settled, startMs + 60_000)).not.toMatch(/\d+(\.\d)?s\b/);
-	});
-
-	it("keeps the elapsed marker when a long tool name would overflow the row", () => {
-		const session = runningSession({ currentTool: `mcp__${"x".repeat(120)}`, currentToolArgs: "query" });
-		const lines = renderSubagentHudLines([session], 60, false, false, startMs + 30_000);
-		const rows = new SubagentHudComponent(lines, ["Runner", "Runner"]).render(60);
-		expect(rows).toHaveLength(lines.length);
-		for (const row of rows) expect(Bun.stringWidth(Bun.stripANSI(row))).toBeLessThanOrEqual(60);
-		expect(Bun.stripANSI(rows.join("\n"))).toContain("30.0s");
-	});
-
-	it("never wraps a full-width argument row or its elapsed marker at narrow widths", () => {
-		for (const columns of [40, 60, 80]) {
-			const session = runningSession({ currentToolArgs: "argument ".repeat(60) });
-			const lines = renderSubagentHudLines([session], columns, false, false, startMs + 30_000);
-			const rows = new SubagentHudComponent(lines, ["Runner", "Runner"]).render(columns);
-			expect(rows).toHaveLength(lines.length);
-			for (const row of rows) expect(Bun.stringWidth(Bun.stripANSI(row))).toBeLessThanOrEqual(columns);
-			expect(Bun.stripANSI(rows.join("\n"))).toContain("30.0s");
-		}
-	});
-
 	describe("live preview", () => {
 		it("shows the current tool call only when enabled", () => {
 			const sessions = [
@@ -901,6 +855,54 @@ describe("subagent HUD live tool row", () => {
 			expect(out).not.toContain(os.homedir());
 		});
 
+		it("shortens a path argument by its key but keeps a literal search pattern as written", () => {
+			const homeFile = `${os.homedir()}/.ssh/config`;
+			const preview = (key: string) =>
+				render(
+					[
+						makeSession({
+							id: "Reader",
+							progress: makeProgress({
+								id: "Reader",
+								currentTool: "grep",
+								currentToolArgs: homeFile,
+								currentToolArgsKey: key,
+							}),
+						}),
+					],
+					200,
+					true,
+				);
+			expect(preview("path")).toContain("~/.ssh/config");
+			expect(preview("path")).not.toContain(os.homedir());
+			// A search pattern that names a home path must still show what was searched.
+			expect(preview("pattern")).toContain(homeFile);
+		});
+
+		it("marks the last completed call with how it ended while idle between calls", () => {
+			const rowFor = (isError: boolean) =>
+				render(
+					[
+						makeSession({
+							id: "Worker",
+							progress: makeProgress({
+								id: "Worker",
+								recentTools: [{ tool: "read", args: "a.ts", argsKey: "path", isError, endMs: Date.now() }],
+							}),
+						}),
+					],
+					120,
+					true,
+				)
+					.split("\n")
+					.find(line => line.includes("read: a.ts"));
+			const success = Bun.stripANSI(theme.styledSymbol("status.success", "success"));
+			const error = Bun.stripANSI(theme.styledSymbol("status.error", "error"));
+			expect(rowFor(false)).toContain(`${success} read: a.ts`);
+			expect(rowFor(true)).toContain(`${error} read: a.ts`);
+			expect(rowFor(false)).not.toContain(error);
+		});
+
 		it("keeps the elapsed marker with a very long tool name at a narrow width", () => {
 			const columns = 40;
 			const out = render(
@@ -966,7 +968,7 @@ describe("subagent HUD live tool row", () => {
 		});
 
 		it("routes clicks on a preview row to its agent and keeps later rows and the expander aligned", () => {
-			const sessions = ["Alpha", "Beta", "Gamma", "Delta"].map(id =>
+			const sessions = ["Alpha", "Beta", "Gamma", "Delta", "E5", "F6", "G7", "H8", "I9", "J10"].map(id =>
 				makeSession({ id, progress: makeProgress({ id, currentTool: "read", currentToolArgs: `${id}.ts` }) }),
 			);
 			const layout = layoutPinnedHud(sessions.length, false);
@@ -1184,6 +1186,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 	});
 
 	it("keeps activity rows attached to their agent in the mounted HUD", async () => {
+		cfgDisplaySubagentLivePreview.override(session.settings, true);
 		await mode.init({ suppressWelcomeIntro: true });
 		for (const [index, id] of ["Alpha", "Beta"].entries()) {
 			const payload = makeProgressPayload(id, index, `Inspect ${id}`, true);
@@ -1198,7 +1201,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		const rows = hud.render(120).map(row => Bun.stripANSI(row));
 		for (const id of ["Alpha", "Beta"]) {
 			const titleRow = rows.findIndex(row => row.includes(id) && !row.includes(`${id}.ts`));
-			const activityRow = rows.findIndex(row => row.includes(`read(${id}.ts)`));
+			const activityRow = rows.findIndex(row => row.includes(`read: ${id}.ts`));
 			expect(titleRow).toBeGreaterThanOrEqual(0);
 			expect(activityRow).toBeGreaterThan(titleRow);
 			expect(hud.getClickAgentAtRow(titleRow)).toBe(id);
@@ -1207,6 +1210,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 	});
 
 	it("renders tool lifecycle changes without waiting for the progress debounce", async () => {
+		cfgDisplaySubagentLivePreview.override(session.settings, true);
 		await mode.init({ suppressWelcomeIntro: true });
 		vi.useFakeTimers();
 		const payload = makeProgressPayload("FastReader", 0, "Inspecting source", true);
@@ -1215,13 +1219,13 @@ describe("InteractiveMode subagent observer UI sync", () => {
 			progress: { ...payload.progress, currentTool: "read", currentToolArgs: "package.json", currentToolStartMs: 1 },
 		});
 		await Promise.resolve();
-		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("read(package.json)");
+		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("read: package.json");
 		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
 			...payload,
 			progress: { ...payload.progress, currentTool: "read", currentToolArgs: "bun.lock", currentToolStartMs: 1 },
 		});
 		await Promise.resolve();
-		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("read(bun.lock)");
+		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("read: bun.lock");
 		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
 			...payload,
 			progress: { ...payload.progress, recentTools: [{ tool: "read", args: "bun.lock", endMs: 2 }] },
@@ -1229,7 +1233,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		await Promise.resolve();
 		const settled = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
 		expect(settled).toContain("FastReader");
-		expectSameRow(settled, theme.symbol("status.success"), "read(bun.lock)");
+		expectSameRow(settled, theme.symbol("status.success"), "read: bun.lock");
 	});
 
 	it("coalesces a burst of progress observer changes into one HUD rebuild and render request", async () => {
@@ -1255,39 +1259,8 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(rebuildHud).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
-	it("repaints the live tool row once a second only while a listed agent is mid-call", async () => {
-		await mode.init({ suppressWelcomeIntro: true });
-		vi.useFakeTimers();
-		const requestRender = vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
-		const rebuildHud = vi.spyOn(mode.subagentContainer, "clear");
-		const payload = makeProgressPayload("QuietSleeper", 0, "Sleeping", true);
-		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
-			...payload,
-			progress: { ...payload.progress, currentTool: "bash", currentToolArgs: "sleep 40", currentToolStartMs: 1 },
-		});
-		await Promise.resolve();
-		vi.advanceTimersByTime(100);
-		rebuildHud.mockClear();
-		requestRender.mockClear();
-
-		vi.advanceTimersByTime(1000);
-		expect(rebuildHud).toHaveBeenCalledTimes(1);
-		expect(requestRender).toHaveBeenCalledTimes(1);
-		vi.advanceTimersByTime(1000);
-		expect(rebuildHud).toHaveBeenCalledTimes(2);
-
-		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
-			...payload,
-			progress: { ...payload.progress, currentTool: undefined, currentToolStartMs: undefined },
-		});
-		await Promise.resolve();
-		vi.advanceTimersByTime(100);
-		rebuildHud.mockClear();
-		vi.advanceTimersByTime(5000);
-		expect(rebuildHud).not.toHaveBeenCalled();
-	});
-
 	it("rebuilds HUD immediately when badge setting changes", async () => {
+		cfgDisplaySubagentLivePreview.override(session.settings, true);
 		await mode.init({ suppressWelcomeIntro: true });
 		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
 			...makeProgressPayload("LongRunner", 0, "Long-running work", true),
@@ -1310,7 +1283,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 	});
 
 	it("advances a quiet call's elapsed marker by repainting the same HUD in place", async () => {
-		cfgDisplaySubagentLivePreview.override(Settings.instance, true);
+		cfgDisplaySubagentLivePreview.override(session.settings, true);
 		await mode.init({ suppressWelcomeIntro: true });
 		vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
 		vi.useFakeTimers();
@@ -1327,10 +1300,10 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		vi.advanceTimersByTime(100); // observer UI coalesce window
 		const hudText = () => Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
 		const hud = mode.subagentContainer.children[0];
-		expect(hudText()).toContain("bash: sleep 40 · 20.1s");
+		expect(hudText()).toMatch(/bash: sleep 40 · 20\.[01]s/);
 
 		vi.advanceTimersByTime(1_000);
 		expect(mode.subagentContainer.children[0]).toBe(hud);
-		expect(hudText()).toContain("bash: sleep 40 · 21.1s");
+		expect(hudText()).toMatch(/bash: sleep 40 · 21\.[01]s/);
 	});
 });

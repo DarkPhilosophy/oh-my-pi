@@ -103,6 +103,53 @@ describe("task progress rendering", () => {
 		}
 	});
 
+	it("shows each call's own intent on the card, never an earlier call's", async () => {
+		const theme = (await getThemeByName("dark"))!;
+		const file = `${process.env.HOME!}/private/file`;
+		const render = (progress: AgentProgress) =>
+			Bun.stripANSI(
+				taskToolRenderer
+					.renderResult(
+						{ content: [], details: detailsFor(progress) },
+						{ expanded: false, isPartial: true },
+						theme,
+					)
+					.render(180)
+					.join("\n"),
+			);
+		// `lastIntent` still holds the earlier search's intent, which this call did not carry.
+		const current = render(
+			runningProgress({
+				lastIntent: "Searching the workspace",
+				currentTool: "read",
+				currentToolArgs: file,
+				currentToolArgsKey: "path",
+			}),
+		);
+		expect(current).toContain("~/private/file");
+		expect(current).not.toContain("Searching the workspace");
+
+		const ownIntent = render(
+			runningProgress({
+				lastIntent: "Searching the workspace",
+				currentTool: "read",
+				currentToolArgs: file,
+				currentToolArgsKey: "path",
+				currentToolIntent: "Reading the private file",
+			}),
+		);
+		expect(ownIntent).toContain("Reading the private file");
+
+		const recent = render(
+			runningProgress({
+				lastIntent: "Searching the workspace",
+				recentTools: [{ tool: "read", args: file, argsKey: "path", endMs: 1 }],
+			}),
+		);
+		expect(recent).toContain("~/private/file");
+		expect(recent).not.toContain("Searching the workspace");
+	});
+
 	it("places the model and advisor before the live agent title without displacing stats", async () => {
 		setFeedModelBadgeEnabled(true);
 		const theme = (await getThemeByName("dark"))!;
