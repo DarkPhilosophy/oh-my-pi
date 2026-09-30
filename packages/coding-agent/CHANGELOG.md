@@ -2,11 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added an optional Autocomplete Suggestions Popup for `@` file mentions, `#` actions/references, and `:` emoji suggestions without moving the chat ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
 ## [18.4.5] - 2026-09-30
 
 ### Added
 
-- Added an optional Autocomplete Suggestions Popup for `@` file mentions, `#` actions/references, and `:` emoji suggestions without moving the chat ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Added Factory Droid login and model selection with base credit badges and account-matched regional discovery ([#8577](https://github.com/can1357/oh-my-pi/pull/8577) by [@will-bogusz](https://github.com/will-bogusz), continued in [#13276](https://github.com/can1357/oh-my-pi/pull/13276) by [@DusKing1](https://github.com/DusKing1)).
 - Added `HELMCODE_API_KEY` to the environment variables listed in `omp --help` ([#13630](https://github.com/can1357/oh-my-pi/pull/13630) by [@alexcerezo](https://github.com/alexcerezo)).
 - RPC hosts can send `messageUpdates: "delta"` with `set_event_filter` to receive `message_update` frames without the accumulated message snapshots (`message` shrinks to `{ role }` and `assistantMessageEvent.partial` is omitted); the response echoes the active mode ([#13716](https://github.com/can1357/oh-my-pi/pull/13716) by [@alphastorm](https://github.com/alphastorm))
@@ -1166,13 +1169,6 @@
 - Browser startup reuses a successful system-Chrome fallback instead of retrying an unavailable download during the same open.
 - Browser clicks and other interactions no longer stall when OMP-owned tabs are in the background, including after worker timeout recovery.
 
-### Added
-
-- Added an opt-in Popup Background Fill setting; command popups keep their unfilled appearance by default ([#11946](https://github.com/can1357/oh-my-pi/pull/11946) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-
-- Added an optional Command Suggestions Popup in Appearance → Display that keeps the chat stationary while suggestions open, filter, and close ([#11946](https://github.com/can1357/oh-my-pi/pull/11946) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-
-### Changed
 ## [18.1.20] - 2026-09-13
 
 ### Added
