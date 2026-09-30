@@ -5,7 +5,7 @@
  * `behavior.ts`, `resolve.ts`) exposes to consumers.
  */
 import type { Effort } from "../effort";
-import type { Api, ThinkingControlMode, TokenCost } from "../types";
+import type { Api, KindApiKind, ThinkingControlMode, TokenCost } from "../types";
 import type { RevisionOp } from "./revision";
 
 /** Class-membership matcher kinds, most to least specific. */
@@ -270,6 +270,8 @@ export interface CompiledCursorParameter {
 /** One provider quota-scope table. */
 export interface CompiledQuotaRule {
 	provider: string;
+	/** Tier used when no exact or fallback membership matches. */
+	defaultTier?: string;
 	tiers: { label: string; models: string[] }[];
 	fallbacks: { label: string; substring: string }[];
 }
@@ -375,8 +377,17 @@ export type CompiledAuthValidation =
 			maxTokensField?: "max_tokens" | "max_completion_tokens";
 			maxTokens?: number;
 			optional?: boolean;
+			/** With `optional`: a 403 also trusts the key; only a 401 rejects it. */
+			trustForbidden?: boolean;
 	  }
-	| { kind: "anthropic-messages"; label?: string; baseUrl: string; model: string; optional?: boolean }
+	| {
+			kind: "anthropic-messages";
+			label?: string;
+			baseUrl: string;
+			model: string;
+			optional?: boolean;
+			trustForbidden?: boolean;
+	  }
 	| {
 			kind: "models-endpoint";
 			label?: string;
@@ -386,6 +397,7 @@ export type CompiledAuthValidation =
 			/** Hook returning extra request headers (may throw a configuration error). */
 			headersHook?: string;
 			optional?: boolean;
+			trustForbidden?: boolean;
 	  };
 
 /** Paste-an-API-key login: optional browser hint, prompt, optional validation. */
@@ -552,6 +564,10 @@ export interface CompiledAuthProvider {
 	name: string;
 	env?: { vars: string[] } | { hook: string };
 	allowsMissingApiKey?: boolean;
+	/** Qualify credential and usage-report identity by org when an email may have multiple subscriptions. */
+	orgScopedIdentity?: boolean;
+	/** Environment variables carrying this provider's own OAuth bearer, excluding borrowed API-key aliases. */
+	oauthTokenEnv?: string[];
 	/** APIs whose provider transport resolves credentials without a stored account. */
 	nativeAuthApis?: string[];
 	available?: boolean;
@@ -648,7 +664,7 @@ export interface CompiledProvider {
 	/** Present only for providers enrolled in `generate-models.ts` discovery. */
 	discovery?: CompiledProviderDiscovery;
 	/** Non-chat model kinds mapped to their runtime transport APIs. */
-	kindApis?: Partial<Record<"image" | "tts" | "stt", Api>>;
+	kindApis?: Partial<Record<KindApiKind, Api>>;
 	/** Authored bundled rows, when the provider cannot be discovered at generation time. */
 	seed?: CompiledSeed;
 }

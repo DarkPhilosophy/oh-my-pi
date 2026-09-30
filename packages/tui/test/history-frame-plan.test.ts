@@ -7,6 +7,7 @@ import {
 	TUI,
 	type ViewportSize,
 } from "@oh-my-pi/pi-tui";
+import { TranscriptContainer } from "../src/chrome/transcript-container";
 import { VirtualRenderScheduler } from "./virtual-render-scheduler";
 import { VirtualTerminal } from "./virtual-terminal";
 
@@ -243,6 +244,30 @@ describe("terminal frame plans", () => {
 
 		expect(terminal.getBufferPosition().baseY).toBe(0);
 		expect(plainBuffer(terminal)).toEqual(["history one", "history two", "editor", "status 8............"]);
+		tui.stop();
+	});
+	it("places the cursor from a moved marker row and hides it once the marker is gone", () => {
+		const terminal = new CountingTerminal(20, 4);
+		const provider = new Provider({ viewport: ["alpha", `ed${CURSOR_MARKER}it`, "status"] });
+		const tui = new TUI(terminal, true, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+
+		// Every row moved, so each is reused by content rather than position.
+		terminal.writes.length = 0;
+		provider.plan = { viewport: [`ed${CURSOR_MARKER}it`, "status", "alpha"] };
+		tui.requestRender(true);
+		let written = terminal.writes.join("");
+		expect(written).not.toContain(CURSOR_MARKER);
+		expect(written).toContain("\x1b[1;3H\x1b[?25h");
+
+		// The marker-free row now matches the stripped row painted last frame.
+		terminal.writes.length = 0;
+		provider.plan = { viewport: ["status", "alpha", "edit"] };
+		tui.requestRender(true);
+		written = terminal.writes.join("");
+		expect(written).not.toContain("\x1b[?25h");
+		expect(written).toContain("\x1b[?25l");
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["status", "alpha", "edit", ""]);
 		tui.stop();
 	});
 	it("keeps live viewport rows out of tmux-style preserved-clear scrollback on a scrolling append", () => {
@@ -482,6 +507,46 @@ describe("terminal frame plans", () => {
 		expect(scrollback).toEqual(["real-todo-block", "real-read-block", "real-bash-block"]);
 		expect(provider.resetCount).toBe(1);
 		tui.stop();
+	});
+
+	it("does not acknowledge an empty ledger replay on a plain-session width resize", async () => {
+		const terminal = new VirtualTerminal(20, 5);
+		const transcript = new TranscriptContainer();
+		const renderScheduler = new VirtualRenderScheduler();
+		const acknowledged: number[] = [];
+		let replayRequests = 0;
+		const provider: TerminalFrameProvider = {
+			renderFrame: viewport => ({
+				history: transcript.peekReplayBatch(viewport.columns),
+				viewport: [
+					...transcript.renderViewport(viewport.columns, viewport.rows - 1, { tick: 0, now: 0 }),
+					`${CURSOR_MARKER}editor`,
+				],
+			}),
+			renderResizeFrame: () => [`${CURSOR_MARKER}editor`],
+			beginHistoryReplay: allowEmptyReplay => {
+				replayRequests++;
+				transcript.beginReplay(allowEmptyReplay);
+			},
+			acknowledgeHistory: id => {
+				acknowledged.push(id);
+				transcript.acknowledgeFinalizedBatch(id);
+			},
+		};
+		const tui = new TUI(terminal, undefined, { renderScheduler });
+		tui.setResizeScrollback("append");
+		tui.setFrameProvider(provider);
+		try {
+			tui.start();
+			await renderScheduler.settle(terminal);
+			terminal.resize(30, 5);
+			await renderScheduler.advance(terminal, 160);
+			expect(replayRequests).toBe(1);
+			expect(acknowledged).toEqual([]);
+			expect(plainBuffer(terminal).filter(row => row.trimEnd() === "editor")).toHaveLength(1);
+		} finally {
+			tui.stop();
+		}
 	});
 
 	it("appends a current-width replay after settled resize", async () => {
