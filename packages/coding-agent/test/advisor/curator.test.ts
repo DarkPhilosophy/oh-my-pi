@@ -32,7 +32,7 @@ function stubJudge(answers: Record<string, unknown>): void {
 	spyOn(judgment, "resolveJudge").mockReturnValue({
 		label: "stub",
 		judge: async () => ({ answers }),
-	} as unknown as ReturnType<typeof judgment.resolveJudge>);
+	} as unknown as judgment.ChainJudge);
 }
 
 afterEach(() => {
@@ -173,7 +173,7 @@ describe("advisor curator", () => {
 			judge: async () => {
 				throw new Error("no judgment backend");
 			},
-		} as unknown as ReturnType<typeof judgment.resolveJudge>);
+		} as unknown as judgment.ChainJudge);
 
 		const { decisions } = await curateAdvisorCandidates({ settings: settingsStub(), registry, candidates, context });
 
@@ -199,7 +199,7 @@ describe("advisor curator", () => {
 				options?.signal?.addEventListener("abort", () => reject(options.signal?.reason ?? new Error("aborted")));
 				return promise;
 			},
-		} as unknown as ReturnType<typeof judgment.resolveJudge>);
+		} as unknown as judgment.ChainJudge);
 
 		const { decisions } = await curateAdvisorCandidates({
 			settings: settingsStub(),

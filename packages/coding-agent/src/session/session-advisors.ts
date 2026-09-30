@@ -1558,11 +1558,12 @@ export class SessionAdvisors {
 	 * same observation within milliseconds of each other, so curating only the
 	 * terminal batch would leave the noisiest case untouched. The window is the
 	 * curator's own timeout, which is far below a model step, and it never
-	 * applies to a steer or a preserved card — only to notes that were already
-	 * going to wait for the primary's next step.
+	 * applies to a steer or a preserved card. A concern or blocker that was
+	 * demoted to an aside (interrupt-immune turn) is still time-critical, so it
+	 * skips the window: only nits wait to be curated.
 	 */
 	#queueLiveAside(note: AdvisorNote): void {
-		if (cfgAdvisorCurator.get(this.#host.settings) === "off") {
+		if (cfgAdvisorCurator.get(this.#host.settings) === "off" || isInterruptingSeverity(note.severity)) {
 			this.#host.yieldQueue.enqueue("advisor", note);
 			return;
 		}
@@ -1588,7 +1589,9 @@ export class SessionAdvisors {
 			enqueue(pending);
 			return;
 		}
-		const generation = ++this.#advisorCuratorGeneration;
+		// Only a session reset or dispose bumps the generation. A batch that merely starts while
+		// another is still being judged must not discard it, or a slow judge would drop whole groups.
+		const generation = this.#advisorCuratorGeneration;
 		const timeoutMs = cfgAdvisorCuratorTimeoutMs.get(this.#host.settings);
 		try {
 			const result = await curateAdvisorCandidates({
