@@ -2,9 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/advisor configure` has a native settings page for the project and global rosters, with a page per advisor and per scope, typed rows for each field and per-scope save ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
 ### Fixed
 
-- `SelectList` now keeps keyboard focus on the intended item after a focus transition.
+- Fixed the `/advisor configure` tools editor letting arrow keys move onto rows clipped by the right pane, so Enter could toggle a tool that was not visible ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- `SelectList` now keeps keyboard focus on the intended item after a focus transition ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 ## [18.4.4] - 2026-09-29
 
 ### Added
