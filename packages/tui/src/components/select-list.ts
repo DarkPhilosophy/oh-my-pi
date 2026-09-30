@@ -457,12 +457,14 @@ export class SelectList implements Component, MouseRoutable {
 		for (let i = startIndex; i < endIndex && rows.length < visualBudget; i++) {
 			const item = this.#selection.visibleItems[i];
 			if (!item) continue;
-			const isSelected = i === this.#selection.selectedIndex;
-			const hovered = this.theme.hovered !== undefined && i === this.#hoveredIndex && !isSelected;
+			// An unfocused list keeps its cursor row looking like any other row.
+			const isCursor = i === this.#selection.selectedIndex;
+			const isSelected = this.#focused && isCursor;
+			const hovered = i === this.#hoveredIndex && !isCursor;
 			const context = this.#renderContext(item, i, rowWidth);
 			const itemRows = this.layout.renderItem
 				? [...this.layout.renderItem(context)]
-				: this.#renderItem(item, this.#focused && isSelected, rowWidth, primaryColumnWidth, iconColumnWidth);
+				: this.#renderItem(item, isSelected, rowWidth, primaryColumnWidth, iconColumnWidth);
 			for (const row of itemRows) {
 				if (rows.length >= visualBudget) break;
 				this.#hitRows[rows.length] = i;
@@ -817,7 +819,7 @@ export class SelectList implements Component, MouseRoutable {
 			item,
 			index,
 			width,
-			selected: index === this.#selection.selectedIndex,
+			selected: this.#focused && index === this.#selection.selectedIndex,
 			hovered: index === this.#hoveredIndex,
 			pendingConfirmation: this.#selection.isPending(item),
 			theme: this.theme,

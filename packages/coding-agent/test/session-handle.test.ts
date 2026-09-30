@@ -633,6 +633,11 @@ describe("LocalSessionHandle", () => {
 				getFollowUpMode: () => "all",
 				getInterruptMode: () => "immediate",
 			},
+			steeringMode: "all",
+			followUpMode: "all",
+			interruptMode: "immediate",
+			hasAdmittedSubmission: false,
+			hasPendingAsyncWork: () => false,
 			model,
 			thinkingLevel: "medium",
 			isFastModeEnabled: () => false,
@@ -645,6 +650,7 @@ describe("LocalSessionHandle", () => {
 			autoCompactionEnabled: true,
 			state: { messages: [] },
 			queuedMessageCount: 0,
+			getQueuedMessages: () => ({ steering: [], followUp: [] }),
 			getTodoPhases: () => [],
 			getContextUsage: () => undefined,
 			prompt: async (text: string) => {
@@ -656,6 +662,15 @@ describe("LocalSessionHandle", () => {
 		const handle = new LocalSessionHandle(fake);
 		await expect(handle.prompt("hello")).resolves.toBe(true);
 		expect(calls).toEqual(["hello"]);
-		expect(handle.state.sessionId).toBe("local");
+		expect(handle.state).toMatchObject({
+			sessionId: "local",
+			steeringMode: "all",
+			followUpMode: "all",
+			interruptMode: "immediate",
+			queuedMessageCount: 0,
+			queuedMessages: { steering: [], followUp: [] },
+			hasPendingAsyncWork: false,
+			isSettled: true,
+		});
 	});
 });

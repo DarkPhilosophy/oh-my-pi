@@ -606,7 +606,9 @@ describe("advisor tool-call loop guard", () => {
 
 		// Both reviews were scheduled; only the strict one gated the boundary.
 		expect(parkedReviewStarted).toBe(true);
-		expect(finalMock.calls.length).toBeGreaterThanOrEqual(2);
+		// A review turn whose only tool call is `advise` ends there (no second "done" call),
+		// so the strict reviewer makes exactly one call before the boundary releases.
+		expect(finalMock.calls).toHaveLength(1);
 		const cards = session.agent.state.messages.filter(
 			message => message.role === "custom" && JSON.stringify(message).includes("stale fixture"),
 		);

@@ -2,7 +2,6 @@
  * Interactive mode for the coding agent.
  * Handles TUI rendering and user interaction, delegating business logic to AgentSession.
  */
-import { discoverAdvisorConfigs, watchAdvisorConfigs } from "../advisor/config";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
@@ -59,7 +58,6 @@ import {
 	adjustHsv,
 	formatDuration,
 	formatNumber,
-	getAgentDir,
 	getProjectDir,
 	isEnoent,
 	logger,
@@ -1164,7 +1162,6 @@ export function renderSubagentHudLines(
 const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
 
 export class InteractiveMode implements InteractiveModeContext {
-	#stopAdvisorConfigWatch: (() => void) | undefined;
 	#ownsStartedUi: boolean;
 	session: AgentSession;
 	sessionManager: SessionManager;
@@ -1732,29 +1729,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		subagentEventBus?: EventBus,
 	) {
 		this.session = session;
-		// WATCHDOG.yml edited elsewhere (another omp, an editor, an agent) must
-		// reach this session's advisors; discovery otherwise runs only at startup
-		// and on the in-app editor's save.
-		this.#stopAdvisorConfigWatch?.();
-		this.#stopAdvisorConfigWatch = watchAdvisorConfigs(
-			this.session.sessionManager.getCwd(),
-			getAgentDir() ?? getProjectDir(),
-			() => {
-				void (async () => {
-					const discovered = await discoverAdvisorConfigs(
-						this.session.sessionManager.getCwd(),
-						getAgentDir() ?? getProjectDir(),
-					);
-					this.session.applyAdvisorConfigs(
-						discovered.advisors,
-						discovered.sharedInstructions,
-						discovered.sharedMaxNotesPerUpdate,
-					);
-					this.statusLine.invalidate();
-					this.ui.requestRender();
-				})().catch(error => logger.warn("Advisor config reload failed", { error: String(error) }));
-			},
-		);
 		this.session.onLocalQueueCoalesced = (perSend, merged, replaced, perSendCount, mergedCount, replacedCount) => {
 			const droppedPerSend = this.locallySubmittedUserSignatures.delete(`${perSend}\u0000${perSendCount}`);
 			const droppedReplaced = this.locallySubmittedUserSignatures.delete(`${replaced}\u0000${replacedCount}`);
@@ -7004,8 +6978,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	stop(): void {
-		this.#stopAdvisorConfigWatch?.();
-		this.#stopAdvisorConfigWatch = undefined;
 		this.#appearanceRefreshRequest = undefined;
 		this.#streamPublisher?.dispose();
 		this.#streamPublisher = undefined;

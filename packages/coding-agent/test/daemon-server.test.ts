@@ -1580,8 +1580,16 @@ describe("daemon server and registry", () => {
 			);
 			const ping = await control.reader.next();
 			expect(ping.tag).toBe("response");
-			await slowClosed.promise;
+			// The server drops a saturated slow connection from a real 500 ms timer (`saturationTimer`
+			// in `#waitForDrain`) armed while the queue is still filling, so this observes real timer
+			// behavior; fake timers cannot advance the queue growth it depends on, and the release is
+			// not exposed as an awaitable signal. The client's own `pause()` (16 MiB undrained) also
+			// keeps its socket from emitting `close`, so wait on the server first, then resume.
+			const deadline = Date.now() + 5_000;
+			while (server.status().connectionCount > 1 && Date.now() < deadline) await Bun.sleep(25);
 			expect(server.status().connectionCount).toBe(1);
+			slow.socket.resume();
+			await slowClosed.promise;
 			await destroyAndWait(control.socket);
 		} finally {
 			await server.shutdown(true);

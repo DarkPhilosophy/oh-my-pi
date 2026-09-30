@@ -8475,11 +8475,13 @@ export class AgentSession implements SettingsScope {
 	 *  are expected) must not assume dispatch happened just because this was awaited. */
 	async #promptAgentInitiatedMessage(
 		message: CustomMessage,
-		options?: { acceptTerminalEmptyStop?: boolean },
+		options?: { acceptTerminalEmptyStop?: boolean; signal?: AbortSignal },
 	): Promise<boolean> {
 		this.#beginInFlight();
 		try {
-			if (!(await this.#runUsageAwarePreflightForNextModelCall())) return false;
+			if (!(await this.#runUsageAwarePreflightForNextModelCall(options?.signal))) return false;
+			// A suppression that landed during the provider/preflight await must still stop this turn.
+			if (options?.signal?.aborted) return false;
 			const acceptTerminalEmptyStop = options?.acceptTerminalEmptyStop === true;
 			if (acceptTerminalEmptyStop) {
 				this.#resetPromptMaintenanceState();
@@ -8603,6 +8605,7 @@ export class AgentSession implements SettingsScope {
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
 			queueChipText?: string;
 			acceptTerminalEmptyStop?: boolean;
+			signal?: AbortSignal;
 		},
 	): Promise<boolean> {
 		// An extension command parked on a manual compaction may fire this
@@ -8694,6 +8697,7 @@ export class AgentSession implements SettingsScope {
 				}
 				outcome.sessionClaimed = await this.#promptAgentInitiatedMessage(normalizedAppMessage, {
 					acceptTerminalEmptyStop: options.acceptTerminalEmptyStop === true,
+					signal: options.signal,
 				});
 				return outcome.sessionClaimed;
 			}
@@ -8734,6 +8738,7 @@ export class AgentSession implements SettingsScope {
 			}
 			outcome.sessionClaimed = await this.#promptAgentInitiatedMessage(normalizedAppMessage, {
 				acceptTerminalEmptyStop: options.acceptTerminalEmptyStop === true,
+				signal: options.signal,
 			});
 			return outcome.sessionClaimed;
 		}
@@ -8743,7 +8748,9 @@ export class AgentSession implements SettingsScope {
 				this.#queueHiddenNextTurnMessage(normalizedAppMessage, false);
 				return false;
 			}
-			outcome.sessionClaimed = await this.#promptAgentInitiatedMessage(normalizedAppMessage);
+			outcome.sessionClaimed = await this.#promptAgentInitiatedMessage(normalizedAppMessage, {
+				signal: options?.signal,
+			});
 			return outcome.sessionClaimed;
 		}
 

@@ -1994,7 +1994,10 @@ export class SessionAdvisors {
 		const registry = this.#host.modelRegistry;
 		const generation = ++this.#advisorCuratorGeneration;
 		const timeoutMs = cfgAdvisorCuratorTimeoutMs.get(this.#host.settings);
-		void curateAdvisorCandidates({
+		// Registered with the card events so `waitForAdvisorCatchup` (and a strict
+		// boundary) waits for the curated batch to reach the primary: delivery after
+		// the judge is otherwise invisible to a caller that believes catch-up is done.
+		const curation = curateAdvisorCandidates({
 			settings: this.#host.settings,
 			registry,
 			candidates: curatable.map((note, index) => ({
@@ -2032,6 +2035,7 @@ export class SessionAdvisors {
 				if (generation === this.#advisorCuratorGeneration) deliver(notes);
 			},
 		);
+		this.trackCardEvent(curation);
 	}
 
 	/**

@@ -403,6 +403,8 @@ describe("runSubprocess soft request budget", () => {
 		});
 		await parked.flush();
 		await parked.close();
+		liveParentScope = currentParentScope;
+		currentParentScope.setSuppressed(true);
 		frames.length = 0;
 		// Parking can rebuild an unadvised session; don't retain the prior turn's marker.
 		advisorActive.mockReturnValue(false);

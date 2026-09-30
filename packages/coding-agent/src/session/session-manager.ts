@@ -1248,8 +1248,15 @@ export class SessionManager {
 		// the whole transcript on the UI thread only to hit the same size check
 		// (seconds per append on a large session, a freeze on every frame).
 		// The conflict is already reported; stop retrying until the session is
-		// reopened instead of clobbering the other writer.
-		if (this.#diskFailure instanceof SessionWriteConflictError) return;
+		// reopened instead of clobbering the other writer. That only holds when a
+		// confirmed baseline size existed and then changed. A conflict raised while
+		// nothing was ever confirmed (`expectedSize` null) is our own queued publish
+		// racing or being rejected: nobody else wrote, and the next rewrite is the
+		// recovery, so latching there would drop the rest of the transcript. Trade-off: a
+		// foreign writer that creates the file before our first publish also has a null
+		// baseline, so it is not latched and the rewrite proceeds (the behavior before
+		// the latch existed).
+		if (this.#diskFailure instanceof SessionWriteConflictError && this.#diskFailure.expectedSize !== null) return;
 		const targetPath = this.#liveRelocationWritePath() ?? this.#sessionFile;
 		if (!targetPath) return;
 

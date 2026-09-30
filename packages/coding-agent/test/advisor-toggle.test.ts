@@ -35,6 +35,7 @@ import {
 	cfgAdvisorReviewInterval,
 	cfgAdvisorReviewMode,
 } from "@oh-my-pi/pi-coding-agent/advisor/settings";
+import { TurnRecovery } from "@oh-my-pi/pi-coding-agent/session/turn-recovery";
 import { cfgCompactionKeepRecentTokens } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 
 describe("AgentSession advisor toggle", () => {
@@ -607,6 +608,57 @@ describe("AgentSession advisor toggle", () => {
 			normalization.mockRestore();
 			sendSpy.mockRestore();
 			child.agent.state.isStreaming = false;
+			await child.dispose();
+		}
+	});
+	it("does not start an advisor turn when suppression lands during the usage preflight", async () => {
+		session.setAdvisorEnabled(true);
+		const child = new AgentSession({
+			agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({
+				"advisor.enabled": true,
+				modelRoles: { advisor: `${model.provider}/${model.id}` },
+			}),
+			modelRegistry,
+			advisorTools: [],
+			advisorScope: session.advisorScope,
+		});
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const preflight = vi
+			.spyOn(TurnRecovery.prototype, "maybeApplyUsageAwareFallback")
+			.mockImplementation(async () => {
+				entered.resolve();
+				await release.promise;
+				return false;
+			});
+		const prompt = vi.spyOn(child.agent, "prompt");
+		const send = child.sendCustomMessage.bind(child);
+		let delivery: Promise<boolean> | undefined;
+		const sendSpy = vi.spyOn(child, "sendCustomMessage").mockImplementation((message, options) => {
+			delivery = send(message, options);
+			return delivery;
+		});
+		try {
+			const tool = child.getAdvisorAgent()?.state.tools.find(tool => tool.name === "advise");
+			if (!(tool instanceof advisorModule.AdviseTool)) throw new Error("Missing advise tool");
+			await tool.execute("preflight-race", {
+				note: "A turn started after the preflight resurrects cancelled work.",
+				severity: "blocker",
+			});
+			await entered.promise;
+			session.setAdvisorEnabled(false);
+			session.setAdvisorEnabled(true);
+			release.resolve();
+			await delivery;
+			expect(prompt).not.toHaveBeenCalled();
+			expect(child.agent.state.messages).toEqual([]);
+		} finally {
+			release.resolve();
+			preflight.mockRestore();
+			prompt.mockRestore();
+			sendSpy.mockRestore();
 			await child.dispose();
 		}
 	});

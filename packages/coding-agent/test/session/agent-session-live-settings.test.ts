@@ -8,7 +8,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { type CreateAgentSessionOptions, createAgentSession, discoverAuthStorage } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import { __resetDirsFromEnvForTests, removeSyncWithRetries, setAgentDir, Snowflake } from "@oh-my-pi/pi-utils";
 
 import {
 	cfgIncludeWorkspaceTree,
@@ -28,17 +28,27 @@ describe("AgentSession live settings", () => {
 	let modelRegistry!: ModelRegistry;
 	let authDir: string;
 	let session: AgentSession | undefined;
+	// The system prompt reads a literal SYSTEM.md from the global agent directory, which
+	// would replace the default template these assertions depend on.
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 
 	beforeAll(async () => {
 		authDir = path.join(os.tmpdir(), `pi-live-settings-auth-${Snowflake.next()}`);
 		fs.mkdirSync(authDir, { recursive: true });
 		modelRegistry = new ModelRegistry(await discoverAuthStorage(authDir));
+		setAgentDir(path.join(authDir, "agent"));
 	});
 
 	afterEach(async () => {
 		await session?.dispose();
 		session = undefined;
 		for (const dir of tempDirs.splice(0)) removeSyncWithRetries(dir);
+	});
+
+	afterAll(() => {
+		if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+		__resetDirsFromEnvForTests();
 	});
 
 	afterAll(() => {
