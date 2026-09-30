@@ -2528,7 +2528,7 @@ export class TUI extends Container {
 	}
 	#prepareForcedRender(clearScrollback: boolean, allowEmptyReplay = false): void {
 		if (clearScrollback) this.#clearScrollbackWaitsForReplay = false;
-		if (clearScrollback && !this.#clearScrollbackOnNextRender) {
+		if (clearScrollback && (!this.#clearScrollbackOnNextRender || allowEmptyReplay)) {
 			this.#frameProvider?.beginHistoryReplay?.(allowEmptyReplay);
 		}
 		this.#clearScrollbackOnNextRender ||= clearScrollback;

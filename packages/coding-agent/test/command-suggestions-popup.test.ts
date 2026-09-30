@@ -14,52 +14,56 @@ import { VirtualRenderScheduler } from "../../tui/test/virtual-render-scheduler"
 let composer: Composer | undefined;
 afterEach(() => composer?.stop());
 
-it("repairs a popup resized into scrollback when the real composer ledger is empty", async () => {
-	const terminal = new VirtualTerminal(40, 12);
-	const renderScheduler = new VirtualRenderScheduler();
-	composer = new Composer({
-		terminal,
-		preferences: { quiet: true, resizeScrollback: "append" },
-		tuiOptions: { renderScheduler },
-	});
-	const transcript = new TranscriptContainer();
-	composer.setRuntimeChildren([
-		transcript,
-		{ render: () => Array.from({ length: 8 }, (_, i) => `LIVE_${i}`) },
-		composer.editor,
-	]);
-	composer.editor.commandSuggestionsPopup = true;
-	composer.editor.onAutocompleteRender = (render, offset, rows) =>
-		composer!.ui.setCursorOverlay(render, offset, rows, "above");
-	composer.editor.setAutocompleteProvider(
-		new CombinedAutocompleteProvider(Array.from({ length: 8 }, (_, i) => ({ name: `menu${i}` }))),
-	);
-	composer.editor.onAutocompleteUpdate = () => composer!.ui.requestRender();
-	const writes: string[] = [];
-	const write = terminal.write.bind(terminal);
-	terminal.write = data => {
-		writes.push(data);
-		write(data);
-	};
-	composer.start();
-	await renderScheduler.settle(terminal);
-	composer.ui.setFocus(composer.editor);
-	composer.editor.handleInput("/");
-	await Promise.resolve();
-	await Promise.resolve();
-	composer.ui.requestRender();
-	await renderScheduler.settle(terminal);
-	expect(terminal.getViewport().join("\n")).toContain("menu0");
-	writes.length = 0;
-	terminal.resize(40, 4);
-	await renderScheduler.advance(terminal, 160);
-	composer.editor.handleInput("\x1b");
-	composer.ui.requestRender();
-	await renderScheduler.settle(terminal);
-	expect(writes.join("")).toContain("\x1b[3J");
-	expect(terminal.getScrollBuffer().join("\n")).not.toContain("menu0");
-	expect(transcript.peekReplayBatch(40)).toBeUndefined();
-});
+it.each([false, true])(
+	"repairs a popup resized into scrollback with an empty ledger (queued clear: %s)",
+	async queuedClear => {
+		const terminal = new VirtualTerminal(40, 12);
+		const renderScheduler = new VirtualRenderScheduler();
+		composer = new Composer({
+			terminal,
+			preferences: { quiet: true, resizeScrollback: "append" },
+			tuiOptions: { renderScheduler },
+		});
+		const transcript = new TranscriptContainer();
+		composer.setRuntimeChildren([
+			transcript,
+			{ render: () => Array.from({ length: 8 }, (_, i) => `LIVE_${i}`) },
+			composer.editor,
+		]);
+		composer.editor.commandSuggestionsPopup = true;
+		composer.editor.onAutocompleteRender = (render, offset, rows) =>
+			composer!.ui.setCursorOverlay(render, offset, rows, "above");
+		composer.editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider(Array.from({ length: 8 }, (_, i) => ({ name: `menu${i}` }))),
+		);
+		composer.editor.onAutocompleteUpdate = () => composer!.ui.requestRender();
+		const writes: string[] = [];
+		const write = terminal.write.bind(terminal);
+		terminal.write = data => {
+			writes.push(data);
+			write(data);
+		};
+		composer.start();
+		await renderScheduler.settle(terminal);
+		composer.ui.setFocus(composer.editor);
+		composer.editor.handleInput("/");
+		await Promise.resolve();
+		await Promise.resolve();
+		composer.ui.requestRender();
+		await renderScheduler.settle(terminal);
+		expect(terminal.getViewport().join("\n")).toContain("menu0");
+		writes.length = 0;
+		terminal.resize(40, 4);
+		if (queuedClear) composer.ui.requestRender(true, { clearScrollback: true });
+		await renderScheduler.advance(terminal, 160);
+		composer.editor.handleInput("\x1b");
+		composer.ui.requestRender();
+		await renderScheduler.settle(terminal);
+		expect(writes.join("")).toContain("\x1b[3J");
+		expect(terminal.getScrollBuffer().join("\n")).not.toContain("menu0");
+		expect(transcript.peekReplayBatch(40)).toBeUndefined();
+	},
+);
 
 it.each(["", "  "])("restores chat and history through popup filtering with prefix %j", async prefix => {
 	const terminal = new VirtualTerminal(60, 12);
