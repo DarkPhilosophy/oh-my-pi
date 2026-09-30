@@ -11,6 +11,8 @@
 ### Fixed
 
 - Fixed a dismissed `#123`, `@` or `/` suggestion list reappearing over an empty editor after the draft was cleared (Ctrl+C, submit or history recall): replacing the whole text now closes any open suggestions ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added passive cursor-adjacent popup rendering for command suggestions without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added opt-in cursor-adjacent popup placement for non-command autocomplete triggers without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 
 ## [18.4.5] - 2026-09-30
 

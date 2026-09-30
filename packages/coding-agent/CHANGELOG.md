@@ -10,6 +10,7 @@
 ### Fixed
 
 - Fixed a dismissed `#123`, `@` or `/` suggestion list reappearing over an empty editor after Ctrl+C cleared the draft: clearing the draft now closes any open suggestions ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added an optional Autocomplete Suggestions Popup for `@` file mentions, `#` actions/references, and `:` emoji suggestions without moving the chat ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 
 ## [18.4.5] - 2026-09-30
 
