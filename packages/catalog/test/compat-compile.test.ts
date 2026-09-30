@@ -6,6 +6,7 @@ import { compileBehavior } from "../scripts/compat-compiler/compile-behavior";
 import { compileCascade } from "../scripts/compat-compiler/compile-cascade";
 import { compileProviders } from "../scripts/compat-compiler/compile-providers";
 import { compileTaxonomy } from "../scripts/compat-compiler/compile-taxonomy";
+import { cursorModelParameters } from "../src/compat/behavior";
 import committed from "../src/compat/rules.json";
 
 const AUTH_IDS_PATH = path.join(import.meta.dir, "../src/compat/auth-ids.ts");
@@ -24,6 +25,60 @@ describe("compat compiler grammar", () => {
 		expect(() =>
 			compileCascade([{ file: "classes/test.kdl", text: 'class "openai" {\n\tnot-an-axis #true\n}' }]),
 		).toThrow(/classes\/test\.kdl:2.*unknown directive `not-an-axis`/);
+	});
+
+	test("root on-api compiles into an api-scoped catalog rule", () => {
+		const compiled = compileCascade([
+			{ file: "providers/test.kdl", text: 'on-api "cursor-agent" {\n\trequires-native-tools #true\n}' },
+		]);
+		expect(compiled.rules).toHaveLength(1);
+		expect(compiled.rules[0]).toMatchObject({
+			apis: ["cursor-agent"],
+			catalog: { requiresNativeTools: true },
+		});
+	});
+
+	test("root on-api accepts class and models children", () => {
+		const compiled = compileCascade([
+			{
+				file: "providers/test.kdl",
+				text: [
+					'on-api "bedrock-converse-stream" {',
+					'\tclass "anthropic" {',
+					'\t\tmodels "claude-*" {',
+					"\t\t\trequires-tool-free-history-for-tool-opt-out #true",
+					"\t\t}",
+					"\t}",
+					"}",
+				].join("\n"),
+			},
+		]);
+		expect(compiled.rules[0]).toMatchObject({
+			apis: ["bedrock-converse-stream"],
+			class: "anthropic",
+			models: [{ kind: "glob", value: "claude-*" }],
+			catalog: { requiresToolFreeHistoryForToolOptOut: true },
+		});
+	});
+
+	test("root on-api rejects catalog-entry directives it does not own", () => {
+		expect(() =>
+			compileCascade([{ file: "providers/test.kdl", text: 'on-api "cursor-agent" {\n\tdefault-model "m"\n}' }]),
+		).toThrow(/providers\/test\.kdl:2.*unknown directive `default-model`/);
+	});
+
+	test("boolean-valued axes reject non-boolean scalars", () => {
+		// KDL rejects a bare `false` keyword already, but a quoted `"false"` is a
+		// string: `=== true` / `!== false` consumers would read it as the opposite
+		// intent, so the vocabulary has to reject it at compile time.
+		expect(() =>
+			compileCascade([
+				{
+					file: "providers/test.kdl",
+					text: 'on-api "cursor-agent" {\n\tpreserves-max-output-tokens "false"\n}',
+				},
+			]),
+		).toThrow(/providers\/test\.kdl:2.*axis `preserves-max-output-tokens` rejects value `false`/);
 	});
 
 	test("malformed scalar shape is rejected", () => {
@@ -88,6 +143,20 @@ describe("compat compiler grammar", () => {
 			text: 'behavior {\n\texclude-discovery-modes "embedding" "moderation" provider="litellm"\n}',
 		});
 		expect(compiled.excludeDiscoveryModes).toEqual([{ provider: "litellm", modes: ["embedding", "moderation"] }]);
+	});
+
+	test("cursor-model-parameter compiles a fixed requestedModel parameter", () => {
+		const compiled = compileBehavior({
+			file: "runtime/behavior.kdl",
+			text: 'behavior {\n\tcursor-model-parameter model="composer-2.5" id="fast" value="false"\n}',
+		});
+		expect(compiled.cursorParameters).toEqual([{ model: "composer-2.5", id: "fast", value: "false" }]);
+	});
+
+	test("shipped rules pin composer-2.5 to the Standard tier (#9012)", () => {
+		const parameters = cursorModelParameters("composer-2.5").map(({ id, value }) => ({ id, value }));
+		expect(parameters).toEqual([{ id: "fast", value: "false" }]);
+		expect(cursorModelParameters("composer-2.5-fast")).toEqual([]);
 	});
 
 	test("duplicate axis in one block is rejected", () => {
@@ -239,6 +308,21 @@ describe("auth grammar", () => {
 		expect(compiled.providers[0]?.nativeAuthApis).toEqual(["bedrock-converse-stream", "openai-responses"]);
 	});
 
+	test("auth identity and OAuth env policy preserve explicit false and reject empty token lists", () => {
+		const compiled = compileAuth([
+			{
+				file: "auth/x.kdl",
+				text: 'auth "x" {\n\tname "X"\n\torg-scoped-identity #false\n\toauth-token-env "X_OAUTH" "X_BACKUP"\n}',
+			},
+			order(),
+		]);
+		expect(compiled.providers[0]?.orgScopedIdentity).toBe(false);
+		expect(compiled.providers[0]?.oauthTokenEnv).toEqual(["X_OAUTH", "X_BACKUP"]);
+		expect(() => compileAuth([{ file: "auth/x.kdl", text: 'auth "x" {\n\tname "X"\n\toauth-token-env\n}' }])).toThrow(
+			/auth\/x\.kdl:3.*malformed value/,
+		);
+	});
+
 	test("oauth-code derives callback-port and paste-code; refresh inherits the login token request", () => {
 		const compiled = compileAuth([
 			{
@@ -368,7 +452,7 @@ describe("provider catalog grammar", () => {
 		expect(() => compileKindApis('\t\timage "openai-images"\n\t\timage "openai-responses"')).toThrow(
 			/directive `image` has a malformed value/,
 		);
-		expect(() => compileKindApis('\t\tvideo "openai-images"')).toThrow(/unexpected node `video` under `kind-apis`/);
+		expect(() => compileKindApis('\t\tjudge "openai-images"')).toThrow(/unexpected node `judge` under `kind-apis`/);
 		expect(() => compileKindApis('\t\timage "openai-images" "openai-responses"')).toThrow(
 			/directive `image` has a malformed value/,
 		);
