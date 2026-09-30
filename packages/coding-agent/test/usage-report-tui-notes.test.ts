@@ -380,3 +380,68 @@ describe("renderUsageReports terminal width", () => {
 		expect(rendered).not.toMatch(/\x1b\[(?:38|48);2;/);
 	});
 });
+it("masks identities in reset credits, unavailable accounts and deduplicated notes", () => {
+	const email = "private@example.test";
+	const reports: UsageReport[] = [
+		{
+			...report(
+				"anthropic",
+				email,
+				[limit("Weekly", "weekly", 7 * 24 * HOUR, 0.5, [`Quota for ${email}`])],
+				[`Account ${email}`],
+			),
+			resetCredits: { availableCount: 2 },
+		},
+	];
+	const output = Bun.stripANSI(
+		renderUsageReports(reports, theme, Date.now(), 140, () => ({ email }), {
+			maskAccountLabels: true,
+			unavailableAccounts: [{ provider: "anthropic", label: "unavailable@example.test" }],
+		}),
+	);
+	expect(output).not.toContain(email);
+	expect(output).not.toContain("unavailable@example.test");
+	expect(output).toContain("saved resets");
+	expect(output).toContain("Account pri***");
+	expect(output).toContain("Quota for pri***");
+});
+
+it("independently masks organizations in account headers, reset rows and deduplicated notes", () => {
+	const organizations = ["Acme North", "Acme South"];
+	const reports: UsageReport[] = organizations.map((orgName, index) => ({
+		...report(
+			"anthropic",
+			"visible@example.test",
+			[limit("Weekly", "weekly", HOUR, 0.5, [`Limit for ${orgName}`])],
+			[`Notes for ${orgName}`],
+		),
+		metadata: { email: "visible@example.test", orgId: `org-${index}`, orgName },
+		resetCredits: { availableCount: 1 },
+	}));
+	const masked = Bun.stripANSI(
+		renderUsageReports(reports, theme, 1, 180, undefined, { maskAccountLabels: false, maskOrganizationNames: true }),
+	);
+	for (const name of organizations) expect(masked).not.toContain(name);
+	expect(masked).toContain("visible@example.test");
+	const aliases = [...new Set(masked.match(/Org-[a-f0-9]{16}/g))];
+	expect(aliases).toHaveLength(2);
+	for (const alias of aliases) {
+		expect(masked).toContain(`Notes for ${alias}`);
+		expect(masked).toContain(`Limit for ${alias}`);
+		expect(masked).toContain(`(${alias}): 1 saved reset`);
+	}
+	const visible = Bun.stripANSI(
+		renderUsageReports(reports, theme, 1, 180, undefined, { maskAccountLabels: true, maskOrganizationNames: false }),
+	);
+	for (const name of organizations) expect(visible).toContain(name);
+	expect(visible).not.toContain("visible@example.test");
+	for (const maskAccountLabels of [false, true]) {
+		for (const maskOrganizationNames of [false, true]) {
+			const output = Bun.stripANSI(
+				renderUsageReports(reports, theme, 1, 180, undefined, { maskAccountLabels, maskOrganizationNames }),
+			);
+			expect(output.includes("visible@example.test")).toBe(!maskAccountLabels);
+			for (const name of organizations) expect(output.includes(name)).toBe(!maskOrganizationNames);
+		}
+	}
+});

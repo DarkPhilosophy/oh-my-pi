@@ -1,3 +1,5 @@
+import { cfgUsageMaskAccountLabels, cfgUsageMaskOrganizationNames } from "../commands/settings";
+import { createUsageTextMasker, formatUsageOrganizationAlias } from "@oh-my-pi/pi-tui/overlays/usage-mask";
 /**
  * Usage CLI command handler.
  *
@@ -9,8 +11,9 @@
  */
 import {
 	ANTHROPIC_OAUTH_GRANT_TTL_MS,
-	type AuthStorage,
+	type AuthAccountPolicy,
 	type DisabledCredentialSummary,
+	type OAuthAccountIdentity,
 	resolveUsedFraction,
 	type UsageHistoryEntry,
 	type UsageLimit,
@@ -20,12 +23,23 @@ import {
 import { AuthBrokerClient } from "@oh-my-pi/pi-ai/auth-broker";
 import type { ClientUsageClientSummary } from "@oh-my-pi/pi-ai/usage";
 import { formatProviderName } from "@oh-my-pi/pi-tui/chrome/format";
-import { formatDuration, formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatDuration, formatNumber, getProjectDir, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { ModelRegistry } from "../config/model-registry";
-import { discoverAuthStorage } from "../sdk";
+import { Settings } from "../config/settings";
+import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
 import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
-import { collapseSharedUsageReports } from "@oh-my-pi/pi-tui/overlays/usage-display";
+import { collapseSharedUsageReports, summarizeUsageResetCredits } from "@oh-my-pi/pi-tui/overlays/usage-display";
+import { formatCodexUsageReportLabel } from "../slash-commands/helpers/active-oauth-account";
+import {
+	accountIdentityLabel,
+	collectStoredAccounts,
+	collectUnreportedAccounts,
+	selectReportableAccounts,
+	type UsageAccountIdentity,
+} from "../slash-commands/helpers/usage-accounts";
+
+import { cfgRetryUsageReservePct } from "../session/settings";
 
 const BAR_WIDTH = 28;
 
@@ -38,21 +52,17 @@ export interface UsageCommandArgs {
 	history?: boolean;
 	/** History window in days (with `history` or the `clients` action). */
 	days?: number;
+	/** CLI `-e <path>` extension paths to load before fetching live reports. */
+	extensions?: string[];
+	/** Skip extension discovery; only load explicit `extensions`. */
+	noExtensions?: boolean;
 }
 
-/** Identity slice of a stored credential, for "every account" coverage. */
-export interface UsageAccountIdentity {
-	provider: string;
-	type: "api_key" | "oauth";
-	email?: string;
-	accountId?: string;
-	projectId?: string;
-	enterpriseUrl?: string;
-	/** Organization/workspace the credential is scoped to (Anthropic multi-subscription). */
-	orgId?: string;
-	orgName?: string;
-	/** Epoch ms of the interactive login that minted the OAuth grant (see `OAuthCredentials.authorizedAt`). */
-	authorizedAt?: number;
+export interface UsagePolicyDiagnosticsOptions {
+	/** Existing global fallback used when an account has no reserve override. */
+	globalReservePct: number;
+	/** Delegates selector matching to AuthStorage's authoritative policy matcher. */
+	getAccountPolicy: (provider: string, identity: OAuthAccountIdentity) => AuthAccountPolicy | undefined;
 }
 
 /**
@@ -139,6 +149,7 @@ function collectIdentityStrings(
 	reports: UsageReport[],
 	accounts: UsageAccountIdentity[],
 	disabled: DisabledCredentialSummary[] = [],
+	includeOrgNames = true,
 ): string[] {
 	const values: string[] = [];
 	const add = (value: unknown): void => {
@@ -148,9 +159,10 @@ function collectIdentityStrings(
 		const meta = report.metadata ?? {};
 		add(meta.email);
 		add(meta.accountId);
+		add(meta.account_id);
 		add(meta.projectId);
 		add(meta.orgId);
-		add(meta.orgName);
+		if (includeOrgNames) add(meta.orgName);
 		for (const limit of report.limits) {
 			add(limit.scope.accountId);
 			add(limit.scope.projectId);
@@ -162,14 +174,14 @@ function collectIdentityStrings(
 		add(account.accountId);
 		add(account.projectId);
 		add(account.orgId);
-		add(account.orgName);
+		if (includeOrgNames) add(account.orgName);
 		add(account.enterpriseUrl);
 	}
 	for (const summary of disabled) {
 		add(summary.email);
 		add(summary.accountId);
 		add(summary.orgId);
-		add(summary.orgName);
+		if (includeOrgNames) add(summary.orgName);
 	}
 	return values;
 }
@@ -281,149 +293,56 @@ function reportAccountLabel(report: UsageReport, index: number): string {
 	return `account ${index + 1}`;
 }
 
-/** Lowercased identity strings a report can be attributed to. */
-function reportIdentifiers(report: UsageReport): Set<string> {
-	const ids = new Set<string>();
-	const add = (value: unknown): void => {
-		if (typeof value === "string" && value) ids.add(value.toLowerCase());
-	};
-	const meta = report.metadata ?? {};
-	add(meta.email);
-	add(meta.accountId);
-	add(meta.projectId);
-	add(meta.orgId);
-	for (const limit of report.limits) {
-		add(limit.scope.accountId);
-		add(limit.scope.projectId);
-		add(limit.scope.orgId);
-	}
-	return ids;
-}
-
-/**
- * Stored credentials that no usage report could be attributed to.
- *
- * Conservative on purpose: when a provider's reports carry no identity at
- * all (or the credential is an API key alongside existing reports), we
- * can't attribute, so we don't claim the account is missing.
- */
-export function collectUnreportedAccounts(
-	reports: UsageReport[],
-	accounts: UsageAccountIdentity[],
-): UsageAccountIdentity[] {
-	const byProvider = new Map<string, UsageReport[]>();
-	for (const report of reports) {
-		const list = byProvider.get(report.provider) ?? [];
-		list.push(report);
-		byProvider.set(report.provider, list);
-	}
-	return accounts.filter(account => {
-		const providerReports = byProvider.get(account.provider) ?? [];
-		if (providerReports.length === 0) return true;
-		if (account.type === "api_key") return false;
-		// Org-decisive attribution when EITHER side carries an org (Anthropic
-		// multi-subscription): two orgs share every other identifier, so an
-		// org-scoped account is covered only by its own org's report, and an
-		// org-less legacy account is never covered by an org-attributed sibling
-		// report — its own fetch failing must surface as "no usage data". Its
-		// own ORG-LESS report still covers it, though: a mixed pool (fresh
-		// org-scoped logins beside pre-org-capture rows) must not duplicate
-		// every legacy account. The shared org is a GATE, not a match: two Team
-		// members share the org id while drawing on per-user pools, so coverage
-		// also requires the account's own base identity inside the same-org
-		// subset (an org-only account, with no base identifiers, is covered by
-		// any same-org report). The email/account fallback below applies only
-		// when both sides are org-less.
-		const accountOrg = account.orgId?.toLowerCase();
-		const ids = [account.email, account.accountId, account.projectId]
-			.filter((value): value is string => typeof value === "string" && value.length > 0)
-			.map(value => value.toLowerCase());
-		const sameOrgReports: UsageReport[] = [];
-		let sawReportOrg = false;
-		for (const report of providerReports) {
-			const metaOrg = report.metadata?.orgId;
-			if (typeof metaOrg === "string" && metaOrg) {
-				sawReportOrg = true;
-				if (accountOrg !== undefined && metaOrg.toLowerCase() === accountOrg) sameOrgReports.push(report);
-			}
-		}
-		if (accountOrg || sawReportOrg) {
-			const candidates = accountOrg
-				? sameOrgReports
-				: providerReports.filter(report => {
-						const metaOrg = report.metadata?.orgId;
-						return !(typeof metaOrg === "string" && metaOrg);
-					});
-			if (candidates.length === 0) return true;
-			if (ids.length === 0) return false;
-			return !candidates.some(report => {
-				const identifiers = reportIdentifiers(report);
-				return ids.some(id => identifiers.has(id));
-			});
-		}
-		if (ids.length === 0) return false;
-		const reported = new Set<string>();
-		let anyIdentified = false;
-		for (const report of providerReports) {
-			const identifiers = reportIdentifiers(report);
-			if (identifiers.size > 0) anyIdentified = true;
-			for (const id of identifiers) reported.add(id);
-		}
-		if (!anyIdentified) return false;
-		return !ids.some(id => reported.has(id));
-	});
-}
-
-/** Compose the account label from parts, masking each part individually so `--redact` cannot be bypassed by the composite string. */
-function accountIdentityLabel(account: UsageAccountIdentity, redaction?: Map<string, string>): string {
-	if (account.type === "api_key") return "API key";
-	const base = account.email ?? account.accountId ?? account.projectId ?? account.enterpriseUrl ?? "OAuth account";
-	const masked = redaction?.get(base) ?? base;
-	// orgId fallback: the uuid is the actual scoped identity; a token response
-	// can carry it without a display name, and two same-email rows must still
-	// be tellable apart.
-	const org = account.orgName ?? account.orgId;
-	if (!org || org === base) return masked;
-	return `${masked} · ${redaction?.get(org) ?? org}`;
-}
-
 function formatAccountHeader(
 	report: UsageReport,
+	peers: readonly UsageReport[],
 	index: number,
 	nowMs: number,
 	redaction?: Map<string, string>,
+	maskOrganizationNames = false,
 ): string {
 	const status = aggregateStatus(report.limits);
 	const icon = STATUS_COLOR[status]("●");
 	const label = reportAccountLabel(report, index);
 	let header = `${icon} ${chalk.bold(redaction?.get(label) ?? label)}`;
-	const metaOrgName = report.metadata?.orgName;
-	const metaOrgId = report.metadata?.orgId;
-	const org = typeof metaOrgName === "string" && metaOrgName ? metaOrgName : metaOrgId;
-	if (typeof org === "string" && org && org !== label) {
-		header += chalk.dim(` · ${redaction?.get(org) ?? org}`);
+	if (report.provider === "openai-codex") {
+		const identity = sanitizeText((redaction?.get(label) ?? label).replace(/[\r\n\t]+/g, " "));
+		const rendered = formatCodexUsageReportLabel(report, peers, label, redaction, true, "inline");
+		header = `${icon} ${chalk.bold(identity)}${chalk.dim(rendered.slice(identity.length))}`;
+	} else {
+		const metaOrgName = report.metadata?.orgName;
+		const metaOrgId = report.metadata?.orgId;
+		const org = typeof metaOrgName === "string" && metaOrgName ? metaOrgName : metaOrgId;
+		if (typeof org === "string" && org && org !== label) {
+			const displayOrg =
+				maskOrganizationNames && typeof metaOrgName === "string" && metaOrgName
+					? formatUsageOrganizationAlias(metaOrgName, metaOrgId, report.provider)
+					: (redaction?.get(org) ?? org);
+			header += chalk.dim(` · ${displayOrg}`);
+		}
+		const plan = report.metadata?.planType;
+		if (typeof plan === "string" && plan.trim()) header += chalk.dim(` · plan: ${plan.trim()}`);
 	}
-	const planType = report.metadata?.planType;
-	if (typeof planType === "string" && planType) header += chalk.dim(` · plan: ${planType}`);
-	const savedResets = report.resetCredits?.availableCount ?? 0;
-	if (savedResets > 0) {
-		header += chalk.cyan(` · ✦ ${savedResets} saved reset${savedResets === 1 ? "" : "s"}`);
-		const credits = report.resetCredits?.credits;
-		if (credits) {
-			const expiries = credits
-				.filter(c => c.expiresAt)
-				.map(c => ({ date: c.expiresAt!, ms: Date.parse(c.expiresAt!) }))
-				.filter(c => !Number.isNaN(c.ms))
-				.sort((a, b) => a.ms - b.ms);
-			const upcoming = expiries.find(c => c.ms > nowMs);
-			if (upcoming) {
+	if (report.metadata?.daybreak === true) header += chalk.cyan(" · daybreak");
+	const resets = summarizeUsageResetCredits(report.resetCredits, nowMs);
+	if (resets && resets.bankedCount > 0) {
+		header += chalk.cyan(` · ✦ ${resets.bankedCount} saved reset${resets.bankedCount === 1 ? "" : "s"}`);
+		if (resets.redeemableCount !== resets.bankedCount) {
+			header += chalk.dim(` · ${resets.redeemableCount} usable now`);
+		}
+		if (resets.soonestExpiry) {
+			const expiryMs = Date.parse(resets.soonestExpiry);
+			if (expiryMs > nowMs) {
 				header += chalk.dim(
-					` · soonest expires in ${formatDuration(upcoming.ms - nowMs)} (${upcoming.date.slice(0, 10)})`,
+					` · soonest expires in ${formatDuration(expiryMs - nowMs)} (${resets.soonestExpiry.slice(0, 10)})`,
 				);
 			} else {
-				const lastExpired = expiries.at(-1);
-				if (lastExpired) header += chalk.dim(` · expired (${lastExpired.date.slice(0, 10)})`);
+				header += chalk.dim(` · expired (${resets.soonestExpiry.slice(0, 10)})`);
 			}
+		}
+		if (resets.redeemableCount === 0 && resets.unavailableReason) {
+			const reason = sanitizeText(resets.unavailableReason.replace(/[\r\n\t]+/g, " "));
+			header += chalk.dim(` · unavailable: ${reason}`);
 		}
 	}
 	if (report.fetchedAt && nowMs - report.fetchedAt > 90_000) {
@@ -488,10 +407,20 @@ export interface ProviderWindowStat {
 	remainingAccounts: number;
 }
 
+/**
+ * Meter identity for a limit that holds its own quota pool inside a window. A model-scoped
+ * allowance is a separate pool from the umbrella window it caps - `claude.ts` marks the Fable
+ * weekly cap `tier` without `shared` precisely so it cannot gate Opus or Sonnet requests - and
+ * reporting it separately keeps a spent scoped cap visible next to the umbrella remainder.
+ * Only Anthropic and Codex use `tier` for such a pool; other providers (Copilot, Devin, Muse Code)
+ * put the subscription plan there, which must not split one window per plan. Codex meters that
+ * carry no tier fall back to the limit-id slug.
+ */
 function meterForLimit(report: UsageReport, limit: UsageLimit): string | undefined {
-	if (report.provider !== "openai-codex") return undefined;
+	if (report.provider !== "anthropic" && report.provider !== "openai-codex") return undefined;
 	const tier = limit.scope.tier?.trim().toLowerCase();
 	if (tier) return tier;
+	if (report.provider !== "openai-codex") return undefined;
 	const slug = limit.id.toLowerCase().split(":")[1];
 	return slug && slug !== "primary" && slug !== "secondary" ? slug : "chat";
 }
@@ -500,8 +429,9 @@ function meterForLimit(report: UsageReport, limit: UsageLimit): string | undefin
  * Aggregate one provider's reports into per-window quota capacity stats.
  *
  * Limits are bucketed by window duration (5h, 7d, ...). Within a bucket each
- * account contributes its single highest used fraction. Codex keeps each meter
- * in its own bucket because chat and Spark can share a window duration.
+ * account contributes its single highest used fraction. Limits that hold their
+ * own pool inside a window keep their own bucket: a model-scoped tier cap, and
+ * Codex chat versus Spark, which can share a window duration.
  */
 export function computeProviderWindowStats(reports: UsageReport[]): ProviderWindowStat[] {
 	const buckets = new Map<string, { window: string; durationMs?: number; meter?: string; fractions: number[] }>();
@@ -558,11 +488,12 @@ function formatReloginDeadline(
 	account: UsageAccountIdentity,
 	nowMs: number,
 	redaction?: Map<string, string>,
+	maskOrganizationNames = false,
 ): string | undefined {
 	if (account.provider !== "anthropic" || account.type !== "oauth" || !account.authorizedAt) return undefined;
 	const remaining = account.authorizedAt + ANTHROPIC_OAUTH_GRANT_TTL_MS - nowMs;
 	if (remaining > RELOGIN_WARN_WINDOW_MS) return undefined;
-	const label = accountIdentityLabel(account, redaction);
+	const label = accountIdentityLabel(account, redaction, maskOrganizationNames);
 	if (remaining <= 0) {
 		return `  ${chalk.red(`⚠ ${label} — grant is past Anthropic's ~30d lifetime; re-login now`)}`;
 	}
@@ -614,12 +545,96 @@ function shortDisableCause(cause: string): string {
 }
 
 /** Label for a disabled tombstone, masking each identity part under `--redact`. */
-function disabledIdentityLabel(summary: DisabledCredentialSummary, redaction?: Map<string, string>): string {
+function disabledIdentityLabel(
+	summary: DisabledCredentialSummary,
+	redaction?: Map<string, string>,
+	maskOrganizationNames = false,
+): string {
 	const base = summary.email ?? summary.accountId ?? "OAuth account";
 	const masked = redaction?.get(base) ?? base;
 	const org = summary.orgName ?? summary.orgId;
 	if (!org || org === base) return masked;
-	return `${masked} · ${redaction?.get(org) ?? org}`;
+	const displayOrg =
+		maskOrganizationNames && summary.orgName && summary.provider !== "openai-codex"
+			? formatUsageOrganizationAlias(summary.orgName, summary.orgId, summary.provider)
+			: (redaction?.get(org) ?? org);
+	return `${masked} · ${displayOrg}`;
+}
+
+function metadataIdentity(report: UsageReport): OAuthAccountIdentity {
+	const metadata = report.metadata ?? {};
+	const read = (key: keyof OAuthAccountIdentity): string | undefined => {
+		const value = metadata[key];
+		return typeof value === "string" && value.length > 0 ? value : undefined;
+	};
+	const firstScoped = (key: "accountId" | "projectId" | "orgId"): string | undefined => {
+		for (const limit of report.limits) {
+			const value = limit.scope[key];
+			if (value) return value;
+		}
+		return undefined;
+	};
+	return {
+		email: read("email"),
+		accountId: read("accountId") ?? firstScoped("accountId"),
+		projectId: read("projectId") ?? firstScoped("projectId"),
+		orgId: read("orgId") ?? firstScoped("orgId"),
+		orgName: read("orgName"),
+	};
+}
+
+function accountOAuthIdentity(account: UsageAccountIdentity): OAuthAccountIdentity {
+	return {
+		email: account.email,
+		accountId: account.accountId,
+		projectId: account.projectId,
+		orgId: account.orgId,
+		orgName: account.orgName,
+	};
+}
+
+function policyEnabledProviders(
+	reports: UsageReport[],
+	accounts: UsageAccountIdentity[],
+	options: UsagePolicyDiagnosticsOptions | undefined,
+): Set<string> {
+	const providers = new Set<string>();
+	if (!options) return providers;
+	for (const account of accounts) {
+		if (account.type === "oauth" && options.getAccountPolicy(account.provider, accountOAuthIdentity(account))) {
+			providers.add(account.provider);
+		}
+	}
+	for (const report of reports) {
+		if (options.getAccountPolicy(report.provider, metadataIdentity(report))) providers.add(report.provider);
+	}
+	return providers;
+}
+
+function formatPolicyLine(
+	provider: string,
+	identity: OAuthAccountIdentity,
+	limits: UsageLimit[] | undefined,
+	options: UsagePolicyDiagnosticsOptions,
+): string {
+	const policy = options.getAccountPolicy(provider, identity);
+	const priority = policy?.priority ?? 0;
+	const configuredReservePct = policy?.reservePct;
+	const inherited = configuredReservePct === undefined;
+	const reservePct = Math.max(0, Math.min(100, configuredReservePct ?? options.globalReservePct));
+	const reserveLabel = `${reservePct}% ${inherited ? "(global)" : "(override)"}`;
+	// `omp usage` has no model/session context, so report the conservative
+	// account-wide state from the most-consumed visible window. Actual routing
+	// still scopes limits and selection in AuthStorage.
+	const usedFractions = (limits ?? [])
+		.map(resolveUsedFraction)
+		.filter((fraction): fraction is number => fraction !== undefined && Number.isFinite(fraction));
+	if (usedFractions.length === 0) {
+		return `policy: priority ${priority} · reserve ${reserveLabel} · reserve unknown`;
+	}
+	const remainingPct = Math.max(0, 1 - Math.max(...usedFractions)) * 100;
+	const state = remainingPct <= reservePct ? "inside reserve" : "eligible";
+	return `policy: priority ${priority} · reserve ${reserveLabel} · ${state} · ${remainingPct.toFixed(1)}% left`;
 }
 
 /**
@@ -633,6 +648,8 @@ export function formatUsageBreakdown(
 	nowMs: number,
 	redaction?: Map<string, string>,
 	disabled: DisabledCredentialSummary[] = [],
+	policyOptions?: UsagePolicyDiagnosticsOptions,
+	privacy: { maskAccountLabels?: boolean; maskOrganizationNames?: boolean } = {},
 ): string {
 	const displayReports = collapseSharedUsageReports(reports);
 	const reportsByProvider = new Map<string, UsageReport[]>();
@@ -642,6 +659,7 @@ export function formatUsageBreakdown(
 		reportsByProvider.set(report.provider, list);
 	}
 	const unreported = collectUnreportedAccounts(displayReports, accounts);
+	const policyProviders = policyEnabledProviders(displayReports, accounts, policyOptions);
 	const unreportedByProvider = new Map<string, UsageAccountIdentity[]>();
 	for (const account of unreported) {
 		const list = unreportedByProvider.get(account.provider) ?? [];
@@ -682,7 +700,14 @@ export function formatUsageBreakdown(
 		const labelWidth = providerLimitTemplates.reduce((max, template) => Math.max(max, template.title.length), 0);
 
 		providerReports.forEach((report, index) => {
-			lines.push(`  ${formatAccountHeader(report, index, nowMs, redaction)}`);
+			lines.push(
+				`  ${formatAccountHeader(report, providerReports, index, nowMs, redaction, privacy.maskOrganizationNames)}`,
+			);
+			if (policyOptions && policyProviders.has(provider)) {
+				lines.push(
+					`      ${chalk.dim(formatPolicyLine(provider, metadataIdentity(report), report.limits, policyOptions))}`,
+				);
+			}
 			if (report.limits.length === 0) {
 				lines.push(`      ${chalk.dim("no limits reported")}`);
 				return;
@@ -700,12 +725,17 @@ export function formatUsageBreakdown(
 		});
 
 		for (const account of providerUnreported) {
-			const label = accountIdentityLabel(account, redaction);
+			const label = accountIdentityLabel(account, redaction, privacy.maskOrganizationNames);
 			lines.push(`  ${chalk.dim("○")} ${chalk.dim(`${label} — no usage data`)}`);
+			if (policyOptions && account.type === "oauth" && policyProviders.has(provider)) {
+				lines.push(
+					`      ${chalk.dim(formatPolicyLine(provider, accountOAuthIdentity(account), undefined, policyOptions))}`,
+				);
+			}
 		}
 
 		for (const summary of disabledByProvider.get(provider) ?? []) {
-			const label = disabledIdentityLabel(summary, redaction);
+			const label = disabledIdentityLabel(summary, redaction, privacy.maskOrganizationNames);
 			const ago = summary.disabledAtMs !== undefined ? ` ${formatDuration(nowMs - summary.disabledAtMs)} ago` : "";
 			lines.push(
 				`  ${chalk.red(`✗ ${label} — disabled${ago}: ${sanitizeText(shortDisableCause(summary.cause))}`)} ${chalk.dim("(re-login to restore)")}`,
@@ -714,7 +744,7 @@ export function formatUsageBreakdown(
 
 		for (const account of accounts) {
 			if (account.provider !== provider) continue;
-			const warning = formatReloginDeadline(account, nowMs, redaction);
+			const warning = formatReloginDeadline(account, nowMs, redaction, privacy.maskOrganizationNames);
 			if (warning) lines.push(warning);
 		}
 
@@ -728,7 +758,18 @@ export function formatUsageBreakdown(
 		}
 	}
 
-	return lines.join("\n");
+	return createUsageTextMasker(
+		reports,
+		privacy.maskAccountLabels ?? !!redaction,
+		[...(redaction?.keys() ?? [])],
+		redaction,
+		{
+			maskOrganizationNames: privacy.maskOrganizationNames,
+			organizations: [...accounts, ...disabled].flatMap(account =>
+				account.orgName ? [{ name: account.orgName, id: account.orgId, provider: account.provider }] : [],
+			),
+		},
+	)(lines.join("\n"));
 }
 
 const HISTORY_SPARK_WIDTH = 48;
@@ -870,70 +911,36 @@ export function formatUsageHistory(
 	return lines.join("\n");
 }
 
-function collectStoredAccounts(authStorage: AuthStorage): UsageAccountIdentity[] {
-	const accounts: UsageAccountIdentity[] = [];
-	const all = authStorage.getAll();
-	for (const provider in all) {
-		const entry = all[provider];
-		const credentials = Array.isArray(entry) ? entry : [entry];
-		for (const credential of credentials) {
-			if (credential.type === "oauth") {
-				accounts.push({
-					provider,
-					type: "oauth",
-					email: credential.email,
-					accountId: credential.accountId,
-					projectId: credential.projectId,
-					enterpriseUrl: credential.enterpriseUrl,
-					orgId: credential.orgId,
-					orgName: credential.orgName,
-					authorizedAt: credential.authorizedAt,
-				});
-			} else {
-				accounts.push({ provider, type: "api_key" });
-			}
-		}
-	}
-	return accounts;
-}
-
-/**
- * Keep only accounts worth a usage row: those whose provider has a usage
- * provider, so a missing report is a real gap rather than the absence of any
- * usage concept. Providers with no usage endpoint (web-search keys, local /
- * keyless servers, inference providers without a usage API) would only ever
- * render as noise, so they are dropped.
- *
- * `hasUsageProvider` is injected (in practice {@link AuthStorage.usageProviderFor})
- * so custom/broker resolvers stay authoritative — no provider list is duplicated
- * here. An explicit `--provider` request bypasses the cull, so
- * `omp usage --provider xai` can still confirm the stored credential has no
- * usage endpoint.
- */
-export function selectReportableAccounts(
-	accounts: UsageAccountIdentity[],
-	hasUsageProvider: (provider: string) => boolean,
-	explicitProvider?: string,
-): UsageAccountIdentity[] {
-	if (explicitProvider) return accounts;
-	return accounts.filter(account => hasUsageProvider(account.provider));
-}
-
 /** Apply a redaction mask to an optional identity field. */
 function maskIdentity(redaction: Map<string, string>, value: string | undefined): string | undefined {
 	return value === undefined ? undefined : (redaction.get(value) ?? value);
 }
 
-const IDENTITY_METADATA_KEYS = ["email", "accountId", "projectId", "orgId", "orgName"] as const;
+const IDENTITY_METADATA_KEYS = ["email", "accountId", "account_id", "projectId", "orgId", "orgName"] as const;
 
 /** Mask identity fields in a raw-stripped report for `--redact --json`. */
 function redactReportForJson(
 	report: Omit<UsageReport, "raw">,
 	redaction: Map<string, string>,
+	privacy: { maskAccountLabels?: boolean; maskOrganizationNames?: boolean } = {},
 ): Omit<UsageReport, "raw"> {
+	const maskText = createUsageTextMasker(
+		[report],
+		privacy.maskAccountLabels ?? true,
+		[...redaction.keys()],
+		redaction,
+		{ maskOrganizationNames: privacy.maskOrganizationNames },
+	);
 	let metadata = report.metadata;
 	if (metadata) {
 		metadata = { ...metadata };
+		if (
+			privacy.maskOrganizationNames &&
+			report.provider !== "openai-codex" &&
+			typeof metadata.orgName === "string" &&
+			metadata.orgName
+		)
+			metadata.orgName = formatUsageOrganizationAlias(metadata.orgName, metadata.orgId, report.provider);
 		for (const key of IDENTITY_METADATA_KEYS) {
 			const value = metadata[key];
 			if (typeof value === "string") metadata[key] = redaction.get(value) ?? value;
@@ -941,6 +948,9 @@ function redactReportForJson(
 	}
 	const limits = report.limits.map(limit => ({
 		...limit,
+		id: maskText(limit.id),
+		label: maskText(limit.label),
+		notes: limit.notes?.map(maskText),
 		scope: {
 			...limit.scope,
 			accountId: maskIdentity(redaction, limit.scope.accountId),
@@ -948,7 +958,7 @@ function redactReportForJson(
 			orgId: maskIdentity(redaction, limit.scope.orgId),
 		},
 	}));
-	return { ...report, metadata, limits };
+	return { ...report, metadata, limits, notes: report.notes?.map(maskText) };
 }
 
 /** Compact token count for burn tables: 1234 → "1.2k", 4_500_000_000 → "4.50B". */
@@ -1023,11 +1033,15 @@ export function formatClientUsage(clients: ClientUsageClientSummary[], sinceMs: 
 }
 
 export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
-	const authStorage = await discoverAuthStorage();
+	const settings = await Settings.loadReadOnly();
+	const redact = cmd.redact === true || cfgUsageMaskAccountLabels.get(settings);
+	const maskOrganizationNames = cfgUsageMaskOrganizationNames.get(settings);
+	const privacy = { maskAccountLabels: redact, maskOrganizationNames };
+	const authStorage = await discoverAuthStorage(undefined, { settings });
 	try {
 		if (cmd.action === "invalidate") {
 			const provider = cmd.provider?.toLowerCase();
-			await authStorage.invalidateUsageCache(provider);
+			await authStorage.usage.invalidate(provider);
 			if (provider) {
 				process.stdout.write(`Invalidated cached usage reports for provider "${provider}".\n`);
 			} else {
@@ -1047,7 +1061,7 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 				const client = new AuthBrokerClient({ url: brokerConfig.url, token: brokerConfig.token });
 				clients = (await client.fetchClientUsageSummary({ sinceMs })).clients;
 			} else {
-				clients = authStorage.getClientUsageSummary(sinceMs).clients;
+				clients = authStorage.usage.clientSummary(sinceMs).clients;
 			}
 			if (cmd.json) {
 				process.stdout.write(`${JSON.stringify({ generatedAt: nowMs, sinceMs, clients }, null, 2)}\n`);
@@ -1069,8 +1083,8 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			const days = cmd.days !== undefined && Number.isFinite(cmd.days) && cmd.days > 0 ? cmd.days : 7;
 			const nowMs = Date.now();
 			const sinceMs = nowMs - days * 86_400_000;
-			const entries = authStorage.listUsageHistory({ sinceMs, provider: cmd.provider?.toLowerCase() });
-			const redaction = cmd.redact ? buildRedactionMap(collectHistoryIdentityStrings(entries)) : undefined;
+			const entries = authStorage.usage.history({ sinceMs, provider: cmd.provider?.toLowerCase() });
+			const redaction = redact ? buildRedactionMap(collectHistoryIdentityStrings(entries)) : undefined;
 			if (cmd.json) {
 				const masked = redaction
 					? entries.map(entry => ({
@@ -1096,24 +1110,35 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			process.stdout.write(`${formatUsageHistory(entries, sinceMs, nowMs, redaction)}\n`);
 			return;
 		}
+		const policyOptions: UsagePolicyDiagnosticsOptions = {
+			globalReservePct: cfgRetryUsageReservePct.get(settings),
+			getAccountPolicy: (provider, identity) => authStorage.oauth.policy(provider, identity),
+		};
 		const modelRegistry = new ModelRegistry(authStorage);
-		const reports =
-			(await authStorage.fetchUsageReports({
-				baseUrlResolver: provider => modelRegistry.getProviderBaseUrl(provider),
-			})) ?? [];
-		// Reports are always fresh (broker-side fetch) but the account list can
-		// come from a disk-cached snapshot up to an hour old — revalidate so a
-		// just-logged-in (or just-rotated-identity) credential isn't rendered
-		// as a stale duplicate. Best-effort: offline broker keeps the cache.
+		// Extensions contribute usage providers via `registerProvider(name, { usage })`;
+		// without loading them their accounts land in `accountsWithoutUsage`.
+		await loadCliExtensionProviders(modelRegistry, settings, getProjectDir(), {
+			additionalExtensionPaths: cmd.extensions,
+			disableExtensionDiscovery: cmd.noExtensions,
+			includeAmbientHooks: false,
+			discoverModels: false,
+		});
+		// The broker may serve reports for credentials newer than the local
+		// snapshot. Refresh before probing extension providers with local keys
+		// and before labeling accounts; offline brokers keep the cached snapshot.
 		try {
-			await authStorage.revalidateCredentials();
+			await authStorage.credentials.revalidate();
 		} catch {
 			// Stale identities beat no output.
 		}
+		const reports =
+			(await authStorage.usage.reports({
+				baseUrlResolver: provider => modelRegistry.getProviderBaseUrl(provider),
+			})) ?? [];
 		const storedAccounts = collectStoredAccounts(authStorage);
 		let accounts = selectReportableAccounts(
 			storedAccounts,
-			provider => authStorage.usageProviderFor(provider) !== undefined,
+			provider => authStorage.usage.providerFor(provider) !== undefined,
 			cmd.provider,
 		);
 		// Tombstones ride alongside the live pool so an auto-disabled account
@@ -1121,7 +1146,7 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 		// missing. Best-effort: a broker predating the endpoint yields [].
 		let disabled: DisabledCredentialSummary[] = [];
 		try {
-			disabled = await authStorage.listDisabledCredentials();
+			disabled = await authStorage.credentials.listDisabled();
 		} catch {
 			// Usage output must not fail because tombstone listing did.
 		}
@@ -1133,9 +1158,11 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			disabled = disabled.filter(summary => summary.provider.toLowerCase() === wanted);
 		}
 
-		const redaction = cmd.redact
-			? buildRedactionMap(collectIdentityStrings(filteredReports, accounts, disabled))
-			: undefined;
+		const redaction = redact
+			? buildRedactionMap(collectIdentityStrings(filteredReports, accounts, disabled, cmd.redact === true))
+			: maskOrganizationNames
+				? new Map<string, string>()
+				: undefined;
 
 		if (cmd.json) {
 			// Drop the heavy provider-specific `raw` payload — same shape as the
@@ -1143,7 +1170,7 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			let trimmed = filteredReports.map(({ raw: _raw, ...rest }) => rest);
 			let unreportedAccounts = collectUnreportedAccounts(filteredReports, accounts);
 			if (redaction) {
-				trimmed = trimmed.map(report => redactReportForJson(report, redaction));
+				trimmed = trimmed.map(report => redactReportForJson(report, redaction, privacy));
 				unreportedAccounts = unreportedAccounts.map(account => ({
 					...account,
 					email: maskIdentity(redaction, account.email),
@@ -1151,7 +1178,10 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 					projectId: maskIdentity(redaction, account.projectId),
 					enterpriseUrl: maskIdentity(redaction, account.enterpriseUrl),
 					orgId: maskIdentity(redaction, account.orgId),
-					orgName: maskIdentity(redaction, account.orgName),
+					orgName:
+						maskOrganizationNames && account.orgName && account.provider !== "openai-codex"
+							? formatUsageOrganizationAlias(account.orgName, account.orgId, account.provider)
+							: maskIdentity(redaction, account.orgName),
 				}));
 			}
 			const capacity: Record<string, ProviderWindowStat[]> = {};
@@ -1167,7 +1197,10 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 					email: maskIdentity(redaction, summary.email),
 					accountId: maskIdentity(redaction, summary.accountId),
 					orgId: maskIdentity(redaction, summary.orgId),
-					orgName: maskIdentity(redaction, summary.orgName),
+					orgName:
+						maskOrganizationNames && summary.orgName && summary.provider !== "openai-codex"
+							? formatUsageOrganizationAlias(summary.orgName, summary.orgId, summary.provider)
+							: maskIdentity(redaction, summary.orgName),
 				}));
 			}
 			const payload = {
@@ -1177,7 +1210,17 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 				disabledCredentials: disabledForJson,
 				capacity,
 			};
-			process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+			const maskJsonText = redaction
+				? createUsageTextMasker(filteredReports, redact, [...redaction.keys()], redaction, {
+						maskOrganizationNames,
+						organizations: [...accounts, ...disabled].flatMap(account =>
+							account.orgName ? [{ name: account.orgName, id: account.orgId, provider: account.provider }] : [],
+						),
+					})
+				: undefined;
+			process.stdout.write(
+				`${JSON.stringify(payload, maskJsonText ? (_key: string, value: unknown) => (typeof value === "string" ? maskJsonText(value) : value) : undefined, 2)}\n`,
+			);
 			return;
 		}
 
@@ -1194,7 +1237,9 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			return;
 		}
 
-		process.stdout.write(`${formatUsageBreakdown(filteredReports, accounts, Date.now(), redaction, disabled)}\n`);
+		process.stdout.write(
+			`${formatUsageBreakdown(filteredReports, accounts, Date.now(), redaction, disabled, policyOptions, privacy)}\n`,
+		);
 	} finally {
 		authStorage.close();
 	}
