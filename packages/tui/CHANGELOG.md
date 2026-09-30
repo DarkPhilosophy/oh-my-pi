@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.4.5] - 2026-09-30
+
 ### Added
 
 - Added inline model-picker search chrome and completion dismissal that preserves the editor draft and cursor ([#11958](https://github.com/can1357/oh-my-pi/pull/11958) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
