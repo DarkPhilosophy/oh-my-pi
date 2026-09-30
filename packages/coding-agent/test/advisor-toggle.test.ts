@@ -857,6 +857,127 @@ describe("AgentSession advisor toggle", () => {
 		expect(advisorPrompt).toContain("Keep advice concrete.");
 		expect(advisorPrompt).toContain("Review module boundaries.");
 	});
+	it("restarts only the advisor whose configuration changed", () => {
+		enableAdvisor();
+		const roster = [{ name: "Security" }, { name: "Testing", instructions: "Require regression coverage." }];
+		expect(session.applyAdvisorConfigs(roster, undefined)).toBe(2);
+		const before = session.getAdvisorAgentsByName();
+
+		expect(
+			session.applyAdvisorConfigs(
+				[roster[0]!, { name: "Testing", instructions: "Require regression coverage and a failing test first." }],
+				undefined,
+			),
+		).toBe(2);
+		const after = session.getAdvisorAgentsByName();
+
+		expect(after.get("Security")).toBe(before.get("Security"));
+		expect(after.get("Testing")).not.toBe(before.get("Testing"));
+		expect(after.get("Testing")?.state.systemPrompt.join("\n")).toContain("a failing test first");
+	});
+	it("keeps every advisor when the roster is applied unchanged or only reordered", () => {
+		enableAdvisor();
+		expect(session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing" }], undefined)).toBe(2);
+		const before = session.getAdvisorAgentsByName();
+
+		expect(session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing" }], undefined)).toBe(2);
+		expect(session.getAdvisorAgentsByName().get("Security")).toBe(before.get("Security"));
+		expect(session.getAdvisorAgentsByName().get("Testing")).toBe(before.get("Testing"));
+
+		expect(session.applyAdvisorConfigs([{ name: "Testing" }, { name: "Security" }], undefined)).toBe(2);
+		expect(session.getAdvisorAgentsByName().get("Security")).toBe(before.get("Security"));
+		expect(session.getAdvisorAgentsByName().get("Testing")).toBe(before.get("Testing"));
+	});
+	it("restarts every advisor when the shared instructions change, since they feed each prompt", () => {
+		enableAdvisor();
+		expect(session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing" }], "Be brief.")).toBe(2);
+		const before = session.getAdvisorAgentsByName();
+
+		expect(session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing" }], "Be thorough.")).toBe(2);
+		const after = session.getAdvisorAgentsByName();
+
+		expect(after.get("Security")).not.toBe(before.get("Security"));
+		expect(after.get("Testing")).not.toBe(before.get("Testing"));
+		expect(after.get("Security")?.state.systemPrompt.join("\n")).toContain("Be thorough.");
+	});
+	it("stops only the advisor removed from the roster and keeps the rest running", () => {
+		enableAdvisor();
+		expect(session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing" }], undefined)).toBe(2);
+		const before = session.getAdvisorAgentsByName();
+
+		expect(session.applyAdvisorConfigs([{ name: "Testing" }], undefined)).toBe(1);
+		const after = session.getAdvisorAgentsByName();
+
+		expect([...after.keys()]).toEqual(["Testing"]);
+		expect(after.get("Testing")).toBe(before.get("Testing"));
+	});
+	it("does not hand a surviving slug to a different advisor when names collide", () => {
+		enableAdvisor();
+		// "A B" and "A-B" both slugify to "a-b"; the second is suffixed, so the slug follows roster order.
+		expect(
+			session.applyAdvisorConfigs(
+				[
+					{ name: "A B", instructions: "first" },
+					{ name: "A-B", instructions: "second" },
+				],
+				undefined,
+			),
+		).toBe(2);
+		const before = session.getAdvisorAgentsByName();
+
+		// Dropping the first moves "A-B" onto the slug "a-b" that "A B" held. It is a different
+		// advisor, so it must not inherit the old runtime just because the slug matches.
+		expect(session.applyAdvisorConfigs([{ name: "A-B", instructions: "second" }], undefined)).toBe(1);
+		const after = session.getAdvisorAgentsByName();
+
+		expect([...after.keys()]).toEqual(["A-B"]);
+		expect(after.get("A-B")).not.toBe(before.get("A B"));
+		expect(after.get("A-B")?.state.systemPrompt.join("\n")).toContain("second");
+		expect(after.get("A-B")?.state.systemPrompt.join("\n")).not.toContain("first");
+	});
+	it("keeps a surviving advisor's queued note when another advisor restarts or is removed", async () => {
+		enableAdvisor();
+		expect(session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing" }], undefined)).toBe(2);
+
+		const tool = session
+			.getAdvisorAgentsByName()
+			.get("Security")
+			?.state.tools.find(candidate => candidate.name === "advise");
+		if (!(tool instanceof advisorModule.AdviseTool)) throw new Error("Missing advise tool");
+		// While the primary streams, a nit is queued on the shared yield queue as an aside.
+		session.agent.state.isStreaming = true;
+		try {
+			await tool.execute("kept-advisor", { note: "Check the retry budget before merging.", severity: "nit" });
+		} finally {
+			session.agent.state.isStreaming = false;
+		}
+
+		// Unsubscribing the shared consumer rejects and drops every queued advisor entry, so a partial
+		// stop that tears it down would lose the note this still-running advisor already raised.
+		expect(
+			session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing", instructions: "changed" }], undefined),
+		).toBe(2);
+		expect(session.applyAdvisorConfigs([{ name: "Security" }], undefined)).toBe(1);
+
+		const cards = session.yieldQueue
+			.drainLazy()
+			.map(build => build())
+			.filter(message => message?.role === "custom" && message.customType === "advisor");
+		expect(cards.filter(card => JSON.stringify(card).includes("Check the retry budget"))).toHaveLength(1);
+	});
+	it("keeps a running advisor's own status through a roster apply that restarts another", () => {
+		enableAdvisor();
+		expect(session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing" }], undefined)).toBe(2);
+		expect(
+			session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing", instructions: "changed" }], undefined),
+		).toBe(2);
+
+		const overview = session.getAdvisorStatusOverview();
+		expect(overview.advisors.map(advisor => [advisor.name, advisor.status])).toEqual([
+			["Security", "running"],
+			["Testing", "running"],
+		]);
+	});
 	it("retains cumulative advisor cost after an in-session history rewrite", async () => {
 		const advisor = enableAdvisor();
 		appendAdvisorCost(advisor, 0.5, 1);

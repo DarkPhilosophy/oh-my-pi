@@ -15,6 +15,7 @@
 
 ### Fixed
 
+- Fixed applying advisor changes restarting every advisor: only the advisors whose configuration changed are restarted, so unchanged ones keep running with their notes and status; changing the shared instructions still restarts all of them ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Fixed advisor-initiated turns starting after `/advisor off` (or an ancestor scope change) landed during the usage preflight: the preflight now sees the cancellation and the turn is rechecked before it prompts ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Replying `c` during a `/guided-goal` interview now sends `c` as your answer instead of triggering the continue shortcut ([#13819](https://github.com/can1357/oh-my-pi/pull/13819) by [@H4vC](https://github.com/H4vC))
 - Cache-warming refreshes cancelled or superseded after the provider accepted them now count toward session usage and cost instead of being dropped ([#13717](https://github.com/can1357/oh-my-pi/pull/13717))
