@@ -1161,7 +1161,9 @@ export class AdvisorConfigOverlayComponent implements Component {
 		if (remembered >= 0) list.setSelectedIndex(remembered);
 		list.onSelectionChange = item => {
 			state.cursor = item.value;
-			if (this.#mode === "fields") this.#showFields();
+			// An editor left open (a picker) belongs to the advisor that was selected when it opened;
+			// the new selection gets its own field list instead of a picker for the previous one.
+			this.#showFields();
 			this.#cb.requestRender();
 		};
 		list.onSelect = item => {

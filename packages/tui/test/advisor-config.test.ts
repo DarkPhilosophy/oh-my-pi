@@ -999,15 +999,30 @@ describe("advisor config keyboard navigation", () => {
 		expect(text(overlay)).toContain("Positive integer");
 	});
 
-	it("shows the newly selected advisor's fields after returning to the roster and choosing another", () => {
-		const overlay = mount({ n: 0 });
+	it("rebuilds the right pane for the newly selected advisor instead of keeping a picker bound to the previous one", () => {
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			deps,
+			"project",
+			{ advisors: [{ name: "Alpha", reviewMode: "agent-end" }, { name: "Beta" }] },
+			{
+				loadDoc: async () => ({ advisors: [] }),
+				save: async () => {},
+				close: () => {},
+				requestRender: () => {},
+				notify: () => {},
+			},
+		);
 		overlay.handleInput("\r"); // Alpha's fields.
-		overlay.handleInput("\x1b[D"); // Back to the roster.
+		openField(overlay, "Review mode"); // Alpha's Review mode picker.
+		overlay.handleInput("\x1b[D"); // Back to the roster with the picker still open.
 		overlay.handleInput("\x1b[B"); // Select Beta.
-		overlay.handleInput("\x1b[C"); // Open Beta.
 
-		const frame = text(overlay);
-		expect(frame).toContain("Beta");
-		expect(frame).not.toMatch(/Review interval\s+3/);
+		const pane = overlay
+			.render(110)
+			.map(line => Bun.stripANSI(line).slice(38))
+			.join("\n");
+		expect(pane).toContain("Beta");
+		expect(pane).not.toContain("agent-end (current)");
 	});
 });
