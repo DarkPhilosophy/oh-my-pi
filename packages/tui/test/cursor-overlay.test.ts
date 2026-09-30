@@ -571,7 +571,10 @@ it("keeps an image-backed row and its placement under an anchored popup instead 
 		writes.length = 0;
 		// A 44-column card anchored at column 30 covers the image row. Painting it there would clear the
 		// rest of the row and drop the placement, so the row must be left exactly as it was.
-		ui.setCursorOverlay(width => [`MENU${" ".repeat(Math.max(0, Math.min(width, 44) - 4))}`], 0, 1, "auto", 30);
+		ui.setCursorOverlay(width => [`MENU${" ".repeat(Math.max(0, Math.min(width, 44) - 4))}`], 0, 1, "auto", {
+			col: 30,
+			width: 44,
+		});
 		ui.requestRender();
 		await terminal.waitForRender();
 		const output = writes.join("");

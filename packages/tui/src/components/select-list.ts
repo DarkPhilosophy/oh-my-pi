@@ -833,4 +833,7 @@ export class SelectList implements Component, MouseRoutable {
 	getSelectedItem(): SelectItem | null {
 		return this.#selection.selectedItem ?? null;
 	}
+	getSelectedIndex(): number {
+		return this.#selection.selectedIndex;
+	}
 }

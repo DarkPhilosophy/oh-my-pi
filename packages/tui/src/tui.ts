@@ -74,9 +74,6 @@ const ERASE_TO_END_OF_LINE = "\x1b[K";
 const LINE_FIT_MIN_SOURCE_CODE_UNITS = 4096;
 const LINE_FIT_MAX_SOURCE_CODE_UNITS = 65536;
 const LINE_FIT_SOURCE_WIDTH_MULTIPLIER = 64;
-// Width of a popup anchored to a token in the editor. The box is a compact card at the token, not
-// a full-width band; a narrower terminal shrinks it to the terminal width.
-const ANCHORED_OVERLAY_WIDTH = 44;
 // Hide the hardware cursor before each paint/move write. Ghostty-style bar
 // cursors can otherwise leave visual afterimages while the TUI repaints the
 // row under a visible cursor. Paint writes also disable terminal autowrap:
@@ -771,8 +768,8 @@ export class TUI extends Container {
 	#cursorOverlayOffset = 0;
 	#cursorOverlayEditorRows = 0;
 	#cursorOverlayPlacement: "auto" | "above" = "auto";
-	/** Visible column where the overlay box starts; undefined keeps the full-width overlay. */
-	#cursorOverlayAnchorCol: number | undefined;
+	/** Where the overlay box starts and how wide its content needs it; undefined keeps the full-width overlay. */
+	#cursorOverlayAnchor: { col: number; width: number } | undefined;
 	#cursorOverlayBacking:
 		| { top: number; rows: string[]; painted: readonly string[]; width?: number; height?: number }
 		| undefined;
@@ -1041,7 +1038,7 @@ export class TUI extends Container {
 		cursorOffset: number,
 		editorRows: number,
 		placement: "auto" | "above" = "auto",
-		anchorCol?: number,
+		anchor?: { col: number; width: number },
 	): void {
 		if (render && !this.#frameProvider?.beginHistoryReplay) {
 			throw new Error("Cursor overlays require a frame provider with beginHistoryReplay()");
@@ -1050,7 +1047,7 @@ export class TUI extends Container {
 		this.#cursorOverlayOffset = cursorOffset;
 		this.#cursorOverlayEditorRows = editorRows;
 		this.#cursorOverlayPlacement = placement;
-		this.#cursorOverlayAnchorCol = anchorCol;
+		this.#cursorOverlayAnchor = anchor;
 	}
 
 	/**
@@ -3268,13 +3265,13 @@ export class TUI extends Container {
 		const below = height - editorBottom;
 		const above = this.#cursorOverlayPlacement === "above" || safeAbove >= below;
 		const available = above ? safeAbove : below;
-		// An anchored overlay is a compact box at the token, not a full-width band: ask the renderer for a
-		// bounded width and clamp its start so the whole box stays inside the terminal.
-		const anchored = this.#cursorOverlayAnchorCol !== undefined;
-		const overlayWidth = anchored ? Math.min(width, ANCHORED_OVERLAY_WIDTH) : width;
-		const overlayStartCol = anchored
-			? Math.max(0, Math.min(this.#cursorOverlayAnchorCol ?? 0, width - overlayWidth))
-			: 0;
+		// An anchored overlay is a compact box at the token, not a full-width band: render it at the width
+		// its content asked for (never wider than the terminal) and clamp its start so the whole box stays
+		// inside the terminal.
+		const anchor = this.#cursorOverlayAnchor;
+		const anchored = anchor !== undefined;
+		const overlayWidth = anchored ? Math.max(1, Math.min(width, anchor.width)) : width;
+		const overlayStartCol = anchored ? Math.max(0, Math.min(anchor.col, width - overlayWidth)) : 0;
 		const overlayPrepared =
 			marker && !flushing && !this.hasOverlay() && available > 0
 				? this.#prepareLinesArray(this.#cursorOverlayRender?.(overlayWidth, available) ?? [], overlayWidth)

@@ -4,6 +4,15 @@
 
 ### Added
 
+- Added an optional heading in the top border of `Box` (`BoxBorder.topLabel`), centered and truncated to fit.
+- Contextual `#123` reference popup can draw its options on one row (switch with Left/Right or Up/Down; Tab or Enter accepts) and the selected item's wrapped title beneath them, under a `GITHUB` heading; the card is sized by its content.
+
+### Fixed
+
+- Command suggestions appear in a bordered popup over screen cells without moving the live/history boundary; filtering and dismissal restore covered text without rebuilding scrollback.
+
+### Added
+
 - Added passive cursor-adjacent popup rendering for command suggestions without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Added opt-in cursor-adjacent popup placement for non-command autocomplete triggers without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Popups can be anchored to a column: `TUI.setCursorOverlay` takes an optional `anchorCol`, and the editor reports the start column of a `#123` reference being completed so the suggestions box opens above the token ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
@@ -11,6 +20,12 @@
 ### Fixed
 
 - Fixed a dismissed `#123`, `@` or `/` suggestion list reappearing over an empty editor after the draft was cleared (Ctrl+C, submit or history recall): replacing the whole text now closes any open suggestions ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
+### Fixed
+
+- Fixed home directories next to shell redirections, control operators or Markdown emphasis (`<`, `>`, `&`, `|`, `*`, `_`) leaking the full path in display-only text ([#11210](https://github.com/can1357/oh-my-pi/pull/11210) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Fixed the subagent task card showing full home paths in tool intents and arguments, while keeping search patterns literal ([#11210](https://github.com/can1357/oh-my-pi/pull/11210) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Fixed Enter doing nothing on a fully typed slash-command argument while its completion popup was open (e.g. `/mcp list`): it now submits instead of re-accepting the identical completion; subcommands that still need a required argument (e.g. `/mcp test`) keep inserting the subcommand so you can type it ([#13885](https://github.com/can1357/oh-my-pi/pull/13885) by [@H4vC](https://github.com/H4vC)).
 
 ## [18.4.4] - 2026-09-29
 
