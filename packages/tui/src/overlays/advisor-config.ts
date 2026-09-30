@@ -347,8 +347,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#scopedModels = deps.scopedModels;
 		this.#availableToolNames = deps.availableToolNames;
 		this.#defaultModelLabel = deps.defaultModelLabel;
-		this.#projectName =
-			deps.projectName === undefined ? undefined : displayText(deps.projectName);
+		this.#projectName = deps.projectName === undefined ? undefined : displayText(deps.projectName);
 		this.#cb = callbacks;
 		this.#focus = initialScope;
 		const empty = (): WatchdogConfigDoc => ({ advisors: [] });
@@ -654,7 +653,12 @@ export class AdvisorConfigOverlayComponent implements Component {
 					? "Unable to load configuration"
 					: undefined;
 			for (const [index, entry] of scopeState.doc.advisors.entries()) {
-				pages.push({ id: `${scope}:advisor:${index}`, label: displayText(entry.name) || "(unnamed)", icon: "advisor", group });
+				pages.push({
+					id: `${scope}:advisor:${index}`,
+					label: displayText(entry.name) || "(unnamed)",
+					icon: "advisor",
+					group,
+				});
 			}
 			pages.push({
 				id: `${scope}:shared`,

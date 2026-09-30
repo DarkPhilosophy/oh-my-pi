@@ -927,7 +927,13 @@ describe("advisor config display text", () => {
 
 	it("draws no non-ASCII footer hint under the ascii symbol preset", async () => {
 		await setSymbolPreset("ascii");
-		const overlay = new AdvisorConfigOverlayComponent({} as TUI, deps, "project", { advisors: [{ name: "Reviewer" }] }, callbacks);
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			deps,
+			"project",
+			{ advisors: [{ name: "Reviewer" }] },
+			callbacks,
+		);
 		const footers: string[] = [];
 		footers.push(Bun.stripANSI(overlay.render(100).at(-2) ?? ""));
 		overlay.handleInput("\r"); // Advisor detail: a different footer.
@@ -942,7 +948,13 @@ describe("advisor config display text", () => {
 	it("renders an advisor name containing tabs and escape sequences as clean single-line text", async () => {
 		await setSymbolPreset("unicode");
 		const hostile = "Sec\turity\x1b[31m\nred";
-		const overlay = new AdvisorConfigOverlayComponent({} as TUI, deps, "project", { advisors: [{ name: hostile }] }, callbacks);
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			deps,
+			"project",
+			{ advisors: [{ name: hostile }] },
+			callbacks,
+		);
 		const frame = overlay.render(100).join("\n");
 
 		expect(frame).not.toContain("\x1b[31m");
