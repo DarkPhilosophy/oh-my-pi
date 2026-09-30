@@ -72,7 +72,7 @@ it.each([
 			getAvailable: () => models,
 			getAll: () => models,
 			getError: () => undefined,
-			refresh: async () => {},
+			refreshIfStale: async () => false,
 		} as unknown as ModelRegistry;
 		let selected: string | undefined;
 		const close = () => {
@@ -165,7 +165,7 @@ it.each(["box", "pi", "claude"])(
 					getAll: () => [],
 					getAvailable: () => [],
 					getError: () => undefined,
-					refresh: async () => {},
+					refreshIfStale: async () => false,
 				},
 				scopedModels: [],
 				getContextUsage: () => undefined,

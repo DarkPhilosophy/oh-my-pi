@@ -173,6 +173,8 @@ export class SelectList implements Component, MouseRoutable {
 	#hoveredIndex: number | null = null;
 	/** Per-render map of 0-based output line → filtered-item index. */
 	#hitRows: (number | undefined)[] = [];
+	/** When false, the cursor row renders like any other row. */
+	#focused = true;
 	#nativeList?: { props: TspProps<"list">; items: readonly NativeNode[]; node: NativeNode };
 	#nativeRoot?: { list: NativeNode; status: string; node: NativeNode };
 	/** Typed text marked at the start of native item labels (an autocomplete popup's query). */
@@ -199,6 +201,10 @@ export class SelectList implements Component, MouseRoutable {
 			filter: layout.filterItems,
 		});
 		this.#search.prompt = "";
+	}
+	/** Hide the cursor while another pane owns focus; selection is retained. */
+	setFocused(focused: boolean): void {
+		this.#focused = focused;
 	}
 	/** Return item, selection, and filter state for debug inspection. */
 	debugState(): Record<string, unknown> {
@@ -451,8 +457,10 @@ export class SelectList implements Component, MouseRoutable {
 		for (let i = startIndex; i < endIndex && rows.length < visualBudget; i++) {
 			const item = this.#selection.visibleItems[i];
 			if (!item) continue;
-			const isSelected = i === this.#selection.selectedIndex;
-			const hovered = i === this.#hoveredIndex && !isSelected;
+			// An unfocused list keeps its cursor row looking like any other row.
+			const isCursor = i === this.#selection.selectedIndex;
+			const isSelected = this.#focused && isCursor;
+			const hovered = i === this.#hoveredIndex && !isCursor;
 			const context = this.#renderContext(item, i, rowWidth);
 			const itemRows = this.layout.renderItem
 				? [...this.layout.renderItem(context)]
@@ -811,7 +819,7 @@ export class SelectList implements Component, MouseRoutable {
 			item,
 			index,
 			width,
-			selected: index === this.#selection.selectedIndex,
+			selected: this.#focused && index === this.#selection.selectedIndex,
 			hovered: index === this.#hoveredIndex,
 			pendingConfirmation: this.#selection.isPending(item),
 			theme: this.theme,
@@ -835,5 +843,10 @@ export class SelectList implements Component, MouseRoutable {
 	}
 	getSelectedIndex(): number {
 		return this.#selection.selectedIndex;
+	}
+
+	/** Number of rows after filtering. */
+	getItemCount(): number {
+		return this.#selection.visibleItems.length;
 	}
 }

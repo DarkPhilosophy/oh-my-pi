@@ -23,6 +23,8 @@
 ### Fixed
 
 - Global usage-account masking now applies to native and text dashboards, notes, reset credits, and CLI usage output without persisting temporary overlay toggles ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added an optional Inline Model Picker in Appearance → Display that keeps model search in the chat input area while preserving the statusline and extension content ([#11958](https://github.com/can1357/oh-my-pi/pull/11958) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added an optional Autocomplete Suggestions Popup for `@` file mentions, `#` actions/references, and `:` emoji suggestions without moving the chat ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 
 ## [18.4.5] - 2026-09-30
 
