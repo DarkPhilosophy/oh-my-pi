@@ -1,3 +1,14 @@
+import { formatUnavailableAccountLabel, fitAccountLabel } from "@oh-my-pi/pi-tui/overlays/usage-dashboard";
+import {
+	type AccountLabel,
+	type AccountMasker,
+	createAccountMasker,
+	createUsageTextMasker,
+	formatAccountQualifier,
+	MASK_STARS,
+	usageIdentityKey,
+} from "@oh-my-pi/pi-tui/overlays/usage-mask";
+import { renderFractionBar } from "@oh-my-pi/pi-tui/overlays/usage-bar";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -37,7 +48,6 @@ import { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
 import { MoveOverlay, type MoveOverlayResult } from "@oh-my-pi/pi-tui/overlays/move-overlay";
 import { moveDirectorySource } from "../move-directory-source";
 import { TranscriptBlock } from "@oh-my-pi/pi-tui/chrome/transcript-container";
-import { fitAccountLabel } from "@oh-my-pi/pi-tui/overlays/usage-dashboard";
 import { getMarkdownTheme, getSymbolTheme, theme, type Theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "../../modes/types";
 import { ContextUsageView } from "@oh-my-pi/pi-tui/status-line/context-usage";
@@ -81,14 +91,6 @@ import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { resumeCommand } from "../../utils/resume-command";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
-import {
-	type AccountLabel,
-	type AccountMasker,
-	createAccountMasker,
-	MASK_STARS,
-	usageIdentityKey,
-} from "@oh-my-pi/pi-tui/overlays/usage-mask";
-import { renderFractionBar } from "@oh-my-pi/pi-tui/overlays/usage-bar";
 import {
 	collapseSharedUsageReports,
 	formatLimitTitle,
@@ -1847,7 +1849,7 @@ function resolveProviderAuthMode(authStorage: AuthStorage, provider: string): st
 	return "unknown";
 }
 
-export function renderProviderSection(details: ProviderDetails, uiTheme: Pick<Theme, "fg">): string {
+export function renderProviderSection(details: ProviderDetails, uiTheme: Pick<typeof theme, "fg">): string {
 	const lines: string[] = [];
 	lines.push(`${uiTheme.fg("dim", "Name:")} ${details.provider}`);
 	for (const field of details.fields) {
@@ -1863,7 +1865,7 @@ function resolveProviderUsageTotal(reports: UsageReport[]): number {
 		.reduce((sum, value) => sum + value, 0);
 }
 
-function formatWindowSuffix(label: string, windowLabel: string, uiTheme: Theme): string {
+function formatWindowSuffix(label: string, windowLabel: string, uiTheme: typeof theme): string {
 	const normalizedLabel = label.toLowerCase();
 	const normalizedWindow = windowLabel.toLowerCase();
 	if (normalizedWindow === "quota window") return "";
@@ -1879,27 +1881,29 @@ function orgSuffix(report: UsageReport): string {
 	return org ? ` (${org})` : "";
 }
 
-function styleAccountMask(label: string, uiTheme: typeof theme): string {
-	return label.replace(MASK_STARS, uiTheme.fg("warning", MASK_STARS));
+function usageAccountQualifier(report: UsageReport | undefined, peers: readonly UsageReport[]): string {
+	if (!report) return "";
+	if (report.provider !== "openai-codex") return orgSuffix(report);
+	const identity =
+		typeof report.metadata?.email === "string"
+			? report.metadata.email
+			: typeof report.metadata?.accountId === "string"
+				? report.metadata.accountId
+				: "account";
+	const rendered = formatCodexUsageReportLabel(report, peers, identity, undefined, false);
+	const plan = codexUsagePlan(report);
+	return rendered.slice(identity.length) + (plan ? ` (${plan})` : "");
 }
 
-/**
- * Qualifier shown after an account identity. Codex's `orgName` is the
- * login-time plan, not a workspace, so Codex labels carry a disambiguator only
- * when two reports share an email, followed by the live usage plan.
- */
-function accountQualifier(report: UsageReport, peers: readonly UsageReport[]): string {
-	if (report.provider !== "openai-codex") return orgSuffix(report);
-	const collision = formatCodexUsageReportLabel(report, peers, "", undefined, false);
-	const plan = codexUsagePlan(report);
-	return `${collision}${plan ? ` (${plan})` : ""}`;
+function styleAccountMask(label: string, uiTheme: typeof theme): string {
+	return label.replace(MASK_STARS, uiTheme.fg("warning", MASK_STARS));
 }
 
 function formatAccountLabel(
 	limit: UsageLimit,
 	report: UsageReport,
-	peers: readonly UsageReport[],
 	index: number,
+	peers: readonly UsageReport[] = [],
 ): AccountLabel {
 	const accountKey = usageIdentityKey(
 		limit.scope.accountId || report.metadata?.accountId,
@@ -1907,42 +1911,89 @@ function formatAccountLabel(
 		limit.scope,
 		report.metadata?.orgId,
 	);
-	const qualifier = accountQualifier(report, peers);
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return { identity: email, qualifier, accountKey, provider: report.provider };
+	if (typeof email === "string" && email)
+		return {
+			identity: email,
+			qualifier: usageAccountQualifier(report, peers),
+			organizationName:
+				report.provider !== "openai-codex" && typeof report.metadata?.orgName === "string"
+					? report.metadata.orgName
+					: undefined,
+			organizationId: typeof report.metadata?.orgId === "string" ? report.metadata.orgId : undefined,
+			accountKey,
+			provider: report.provider,
+		};
 	const accountId =
-		typeof report.metadata?.accountId === "string" && report.metadata.accountId
+		limit.scope.accountId ||
+		(typeof report.metadata?.accountId === "string" && report.metadata.accountId
 			? report.metadata.accountId
-			: limit.scope.accountId || undefined;
-	if (accountId) return { identity: accountId, qualifier, accountKey, provider: report.provider };
+			: undefined);
+	if (accountId)
+		return {
+			identity: accountId,
+			qualifier: usageAccountQualifier(report, peers),
+			organizationName:
+				report.provider !== "openai-codex" && typeof report.metadata?.orgName === "string"
+					? report.metadata.orgName
+					: undefined,
+			organizationId: typeof report.metadata?.orgId === "string" ? report.metadata.orgId : undefined,
+			accountKey,
+			provider: report.provider,
+		};
 	const projectId =
-		typeof report.metadata?.projectId === "string" && report.metadata.projectId
+		limit.scope.projectId ||
+		(typeof report.metadata?.projectId === "string" && report.metadata.projectId
 			? report.metadata.projectId
-			: limit.scope.projectId || undefined;
+			: undefined);
 	if (projectId) return { identity: projectId, accountKey, provider: report.provider };
 	return { identity: `account ${index + 1}`, placeholder: true, provider: report.provider };
 }
 
-function formatUnlimitedReportLabel(report: UsageReport, peers: readonly UsageReport[], index: number): AccountLabel {
+function formatUnlimitedReportLabel(
+	report: UsageReport,
+	index: number,
+	peers: readonly UsageReport[] = [],
+): AccountLabel {
 	const accountKey = usageIdentityKey(
 		report.metadata?.accountId,
 		report.metadata?.projectId,
 		report.limits[0]?.scope,
 		report.metadata?.orgId,
 	);
-	const qualifier = accountQualifier(report, peers);
 	const email = report.metadata?.email;
-	if (typeof email === "string" && email) return { identity: email, qualifier, accountKey, provider: report.provider };
+	if (typeof email === "string" && email)
+		return {
+			identity: email,
+			qualifier: usageAccountQualifier(report, peers),
+			organizationName:
+				report.provider !== "openai-codex" && typeof report.metadata?.orgName === "string"
+					? report.metadata.orgName
+					: undefined,
+			organizationId: typeof report.metadata?.orgId === "string" ? report.metadata.orgId : undefined,
+			accountKey,
+			provider: report.provider,
+		};
 	const accountId = report.metadata?.accountId;
 	if (typeof accountId === "string" && accountId)
-		return { identity: accountId, qualifier, accountKey, provider: report.provider };
+		return {
+			identity: accountId,
+			qualifier: usageAccountQualifier(report, peers),
+			organizationName:
+				report.provider !== "openai-codex" && typeof report.metadata?.orgName === "string"
+					? report.metadata.orgName
+					: undefined,
+			organizationId: typeof report.metadata?.orgId === "string" ? report.metadata.orgId : undefined,
+			accountKey,
+			provider: report.provider,
+		};
 	const projectId = report.metadata?.projectId;
 	if (typeof projectId === "string" && projectId)
 		return { identity: projectId, accountKey, provider: report.provider };
 	return { identity: `account ${index + 1}`, placeholder: true, provider: report.provider };
 }
 
-function formatResetAccountLabel(report: UsageReport, peers: readonly UsageReport[]): AccountLabel {
+function formatResetAccountLabel(report: UsageReport, peers: readonly UsageReport[] = []): AccountLabel {
 	const accountKey = usageIdentityKey(
 		report.metadata?.accountId,
 		report.metadata?.projectId,
@@ -1954,7 +2005,17 @@ function formatResetAccountLabel(report: UsageReport, peers: readonly UsageRepor
 	const identity =
 		typeof email === "string" && email ? email : typeof accountId === "string" && accountId ? accountId : undefined;
 	return identity
-		? { identity, qualifier: accountQualifier(report, peers), accountKey, provider: report.provider }
+		? {
+				identity,
+				qualifier: usageAccountQualifier(report, peers),
+				organizationName:
+					report.provider !== "openai-codex" && typeof report.metadata?.orgName === "string"
+						? report.metadata.orgName
+						: undefined,
+				organizationId: typeof report.metadata?.orgId === "string" ? report.metadata.orgId : undefined,
+				accountKey,
+				provider: report.provider,
+			}
 		: { identity: "account", placeholder: true, provider: report.provider };
 }
 
@@ -1982,11 +2043,14 @@ function formatAccountHeaderRow(
 		const reset = formatResetShort(limit, nowMs);
 		const report = reports[index];
 		const active = report !== undefined && limitMatchesActiveAccount(report, limit, activeAccount);
-		const accountLabel = formatAccountLabel(limit, report, peers, index + startIndex);
+		const accountLabel = formatAccountLabel(limit, report, index + startIndex, peers);
 		const label = mask(accountLabel);
 		return {
 			label: active ? `● ${label}` : label,
-			qualifier: accountLabel.qualifier || label.match(/ \(\d+\)$/)?.[0] || "",
+			qualifier:
+				(accountLabel.qualifier ? mask({ ...accountLabel, identity: "", placeholder: true }) : undefined) ||
+				label.match(/ \(\d+\)$/)?.[0] ||
+				"",
 			suffix: reset ? `(${reset})` : "",
 			active,
 			daybreak: report?.metadata?.daybreak === true,
@@ -2034,7 +2098,7 @@ function resolveAccountHeaderWidth(
 	return limits.reduce((max, limit, index) => {
 		const report = reports[index];
 		const active = report !== undefined && limitMatchesActiveAccount(report, limit, activeAccount);
-		const label = `${active ? "● " : ""}${mask(formatAccountLabel(limit, report, peers, index + startIndex))}`;
+		const label = `${active ? "● " : ""}${mask(formatAccountLabel(limit, report, index + startIndex, peers))}`;
 		const reset = formatResetShort(limit, nowMs);
 		const width = visibleWidth(reset ? `${label} (${reset})` : label);
 		return Math.max(max, width);
@@ -2121,8 +2185,7 @@ function resolveResetRange(limits: UsageLimit[], nowMs: number): string | null {
 	}
 	return `${verb} in ${formatDuration(minReset)}`;
 }
-
-function resolveStatusIcon(status: AggregateDisplayStatus, uiTheme: Theme): string {
+function resolveStatusIcon(status: AggregateDisplayStatus, uiTheme: typeof theme): string {
 	if (status === "neutral") return uiTheme.fg("dim", uiTheme.status.info);
 	if (status === "exhausted") return uiTheme.fg("error", uiTheme.status.error);
 	if (status === "warning") return uiTheme.fg("warning", uiTheme.status.warning);
@@ -2174,12 +2237,13 @@ function resolveColumnsPerRow(count: number, available: number, trailing: number
 
 export function renderUsageReports(
 	reports: UsageReport[],
-	uiTheme: Theme,
+	uiTheme: typeof theme,
 	nowMs: number,
 	availableWidth: number,
 	resolveActiveAccount?: (provider: string) => OAuthAccountIdentity | undefined,
 	options: {
 		maskAccountLabels?: boolean;
+		maskOrganizationNames?: boolean;
 		usageModelSelectors?: readonly string[];
 		labelPlacement?: "moving" | "right";
 		unavailableAccounts?: readonly UnavailableUsageAccount[];
@@ -2187,17 +2251,50 @@ export function renderUsageReports(
 ): string {
 	const {
 		maskAccountLabels = false,
+		maskOrganizationNames = false,
 		usageModelSelectors = [],
 		labelPlacement = "moving",
 		unavailableAccounts = [],
 	} = options;
-	const displayReports = collapseSharedUsageReports(reports);
+	const activeAccounts = new Map(
+		[
+			...new Set([
+				...reports.map(report => report.provider),
+				...unavailableAccounts.map(account => account.provider),
+			]),
+		].map(provider => [provider, resolveActiveAccount?.(provider)] as const),
+	);
+	const organizations = [
+		...unavailableAccounts.flatMap(account =>
+			account.organizationName
+				? [{ name: account.organizationName, id: account.organizationId, provider: account.provider }]
+				: [],
+		),
+		...[...activeAccounts.entries()].flatMap(([provider, account]) =>
+			account?.orgName ? [{ name: account.orgName, id: account.orgId, provider }] : [],
+		),
+	];
+	const identifiers = [
+		...unavailableAccounts.map(account => account.label),
+		...[...activeAccounts.values()].flatMap(account =>
+			account
+				? [account.email, account.accountId, account.projectId, account.orgId].filter(
+						(value): value is string => !!value,
+					)
+				: [],
+		),
+	];
+	const identityMask = createUsageTextMasker(reports, maskAccountLabels, identifiers);
+	const maskText = createUsageTextMasker(reports, maskAccountLabels, identifiers, undefined, {
+		maskOrganizationNames,
+		organizations,
+	});
 	const lines: string[] = [];
 	const latestFetchedAt = Math.max(0, ...reports.map(report => report.fetchedAt ?? 0));
 	const headerSuffix = latestFetchedAt ? ` (${formatDuration(nowMs - latestFetchedAt)} ago)` : "";
 	lines.push(uiTheme.bold(uiTheme.fg("accent", `Usage${headerSuffix}`)));
 	const grouped = new Map<string, UsageReport[]>();
-	for (const report of displayReports) {
+	for (const report of collapseSharedUsageReports(reports)) {
 		const list = grouped.get(report.provider) ?? [];
 		list.push(report);
 		grouped.set(report.provider, list);
@@ -2219,7 +2316,7 @@ export function renderUsageReports(
 	for (const { provider, providerReports } of providerEntries) {
 		lines.push("");
 		const providerName = formatProviderName(provider);
-		const activeAccount = resolveActiveAccount?.(provider);
+		const activeAccount = activeAccounts.get(provider);
 
 		const limitGroups = new Map<
 			string,
@@ -2246,8 +2343,8 @@ export function renderUsageReports(
 		// One masker per provider so colliding masks (`mai1@` vs `mai2@`) get
 		// ordinals consistently across the header, reset lines and unlimited rows.
 		const maskInputs = providerReports.flatMap((report, index) => [
-			...report.limits.map(limit => formatAccountLabel(limit, report, providerReports, index)),
-			formatUnlimitedReportLabel(report, providerReports, index),
+			...report.limits.map(limit => formatAccountLabel(limit, report, index, providerReports)),
+			formatUnlimitedReportLabel(report, index, providerReports),
 			formatResetAccountLabel(report, providerReports),
 		]);
 		const activeLabelParts = getActiveAccountLabelParts(activeAccount);
@@ -2259,11 +2356,23 @@ export function renderUsageReports(
 			const report = providerReports[activeReportIndex]!;
 			const limit = report.limits.find(candidate => limitMatchesActiveAccount(report, candidate, activeAccount));
 			activeLabel = limit
-				? formatAccountLabel(limit, report, providerReports, activeReportIndex)
-				: formatUnlimitedReportLabel(report, providerReports, activeReportIndex);
+				? formatAccountLabel(limit, report, activeReportIndex, providerReports)
+				: formatUnlimitedReportLabel(report, activeReportIndex, providerReports);
 		}
 		if (activeLabel) maskInputs.push(activeLabel);
-		const mask = createAccountMasker(maskInputs, maskAccountLabels);
+		const normalize = (label: AccountLabel): AccountLabel => ({
+			...label,
+			qualifier: label.organizationName
+				? formatAccountQualifier(label, maskOrganizationNames)
+				: label.qualifier
+					? identityMask(label.qualifier)
+					: undefined,
+		});
+		maskInputs.push(
+			...unavailableAccounts.filter(account => account.provider === provider).map(formatUnavailableAccountLabel),
+		);
+		const maskAccount = createAccountMasker(maskInputs.map(normalize), maskAccountLabels, maskOrganizationNames);
+		const mask: AccountMasker = label => maskAccount(normalize(label));
 		const activeAccountLabel = activeLabel ? mask(activeLabel) : "";
 		if (activeAccountLabel) {
 			lines.push(
@@ -2279,7 +2388,7 @@ export function renderUsageReports(
 		}
 		for (const account of unavailableAccounts) {
 			if (account.provider !== provider) continue;
-			const label = replaceTabs(sanitizeText(account.label.replace(/[\r\n]+/g, " ")));
+			const label = replaceTabs(sanitizeText(mask(formatUnavailableAccountLabel(account)).replace(/[\r\n]+/g, " ")));
 			const status = " — usage unavailable";
 			const boundedLabel = truncateToWidth(label, Math.max(0, availableWidth - 2 - visibleWidth(status)));
 			lines.push(`  ${uiTheme.fg("dim", truncateToWidth(`${boundedLabel}${status}`, availableWidth - 2))}`);
@@ -2290,7 +2399,7 @@ export function renderUsageReports(
 		const providerNotes = [...new Set(providerReports.flatMap(report => report.notes ?? []))];
 		if (providerNotes.length > 0) {
 			lines.push(
-				`  ${uiTheme.fg("dim", replaceTabs(truncateToWidth(sanitizeText(providerNotes.map(n => n.replace(/[\r\n]+/g, " ")).join(" • ")), 110)))}`.trimEnd(),
+				`  ${uiTheme.fg("dim", replaceTabs(truncateToWidth(sanitizeText(maskText(providerNotes.map(n => n.replace(/[\r\n]+/g, " ")).join(" • "))), 110)))}`.trimEnd(),
 			);
 		}
 
@@ -2303,7 +2412,7 @@ export function renderUsageReports(
 			const availability =
 				resets.redeemableCount === resets.bankedCount ? "" : ` · ${resets.redeemableCount} usable now`;
 			const suffix = `: ${resets.bankedCount} saved reset${resets.bankedCount === 1 ? "" : "s"}${availability}${isActive ? " (active)" : ""}`;
-			const maskedLabel = mask(labelParts);
+			const maskedLabel = maskText(mask(labelParts));
 			const fixedWidth = visibleWidth(`    • ${suffix}`);
 			if (fixedWidth < availableWidth) {
 				const labelBudget = availableWidth - fixedWidth;
@@ -2338,6 +2447,10 @@ export function renderUsageReports(
 						? `        expires in ${formatDuration(remaining)} (${expiryDate})`
 						: `        expired (${expiryDate})`,
 				);
+			}
+			if (resets.redeemableCount === 0 && resets.unavailableReason) {
+				const reason = sanitizeText(maskText(resets.unavailableReason).replace(/[\r\n\t]+/g, " "));
+				resetAccountLines.push(`        unavailable: ${reason}`);
 			}
 		}
 		if (resetAccountLines.length > 0) {
@@ -2451,7 +2564,7 @@ export function renderUsageReports(
 			const notes = [...new Set(sortedLimits.flatMap(limit => limit.notes ?? []))];
 			if (notes.length > 0) {
 				lines.push(
-					`  ${uiTheme.fg("dim", replaceTabs(truncateToWidth(sanitizeText(notes.map(n => n.replace(/[\r\n]+/g, " ")).join(" • ")), availableWidth - 2)))}`.trimEnd(),
+					`  ${uiTheme.fg("dim", replaceTabs(truncateToWidth(sanitizeText(maskText(notes.map(n => n.replace(/[\r\n]+/g, " ")).join(" • "))), availableWidth - 2)))}`.trimEnd(),
 				);
 			}
 		}
@@ -2459,7 +2572,7 @@ export function renderUsageReports(
 		// Render accounts with no rate limits (e.g. business/enterprise plans).
 		const unlimitedReports = providerReports.filter(report => report.limits.length === 0);
 		for (const report of unlimitedReports) {
-			const label = styleAccountMask(mask(formatUnlimitedReportLabel(report, providerReports, 0)), uiTheme);
+			const label = styleAccountMask(mask(formatUnlimitedReportLabel(report, 0, providerReports)), uiTheme);
 			const tier = report.provider === "openai-codex" ? undefined : report.metadata?.planType;
 			const tierSuffix = typeof tier === "string" && tier ? ` ${uiTheme.fg("dim", `(${tier})`)}` : "";
 			const daybreakSuffix = report.metadata?.daybreak === true ? uiTheme.fg("success", " daybreak") : "";
@@ -2470,5 +2583,5 @@ export function renderUsageReports(
 		// No per-provider footer; global header shows last check.
 	}
 
-	return lines.join("\n");
+	return maskText(lines.join("\n"));
 }

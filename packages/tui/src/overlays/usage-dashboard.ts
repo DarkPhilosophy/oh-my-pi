@@ -4,17 +4,19 @@
  * matrix of equal-size boxed cards (one per provider, or one per account when
  * unmerged) that scrolls on overflow, above a GitHub-style daily activity
  * heatmap pinned to the bottom. Enter flips into the classic full per-account
- * report. `p` toggles account privacy and `m` toggles merge/split for the
- * lifetime of the overlay only; both seed from settings on every open.
+ * report. `p` toggles account privacy, `o` toggles organization privacy and `m` toggles merge/split for the
+ * lifetime of the overlay only; all seed from settings on every open.
  */
 import * as os from "node:os";
 import { resolveUsedFraction, type UsageLimit, type UsageReport } from "@oh-my-pi/pi-ai";
+
 import {
 	type Component,
 	matchesKey,
 	replaceTabs,
 	routeSgrMouseInput,
 	sliceByColumn,
+	sliceWithWidth,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
@@ -42,13 +44,17 @@ import {
 import {
 	type AccountLabel,
 	type AccountMasker,
-	createAccountMasker,
 	formatAccountLabelText,
+	formatAccountQualifier,
 	normalizeUsageAccountLabel,
+	createAccountMasker,
+	createUsageTextMasker,
 	usageIdentityKey,
 } from "./usage-mask";
 import { renderFractionBar } from "./usage-bar";
 import { bottomBorder, divider, row, topBorder } from "../chrome/overlay-box";
+import { formatKeyHint } from "../app-keybindings";
+import { editorKey, editorKeys } from "../chrome/keybinding-hints";
 import type { TspSpan, TspTableColumn, TspText, TspTone } from "@oh-my-pi/pi-wire";
 import { col, elapsed, node, span, text } from "../native/describe";
 import { type DescribeContext, leafKey, type NativeChild, type NativeNode, type NativeUiEvent } from "../native/node";
@@ -80,10 +86,27 @@ export interface CardWindowRow {
 	usedText?: string;
 }
 
-/** A connected account whose usage lookup produced no attributable report. */
 export interface UnavailableUsageAccount {
 	provider: string;
 	label: string;
+	identity?: string;
+	organizationName?: string;
+	organizationId?: string;
+	placeholder?: boolean;
+}
+export function formatUnavailableAccountLabel(account: UnavailableUsageAccount): AccountLabel {
+	const identity = account.identity ?? account.label;
+	return {
+		identity,
+		qualifier:
+			account.identity && account.label.startsWith(account.identity)
+				? account.label.slice(account.identity.length)
+				: undefined,
+		organizationName: account.organizationName,
+		organizationId: account.organizationId,
+		placeholder: account.placeholder,
+		provider: account.provider,
+	};
 }
 
 /** Compact per-provider (or per-account when unmerged) summary backing one card in the grid. */
@@ -170,6 +193,8 @@ export interface BuildCardsOptions {
 	mask?: AccountMasker;
 	/** Connected accounts whose usage lookup produced no report; counted on their provider's merged card. */
 	unavailableAccounts?: readonly UnavailableUsageAccount[];
+	maskOrganizationNames?: boolean;
+	textMask?: (text: string) => string;
 }
 
 function sanitizeAccountLabelPart(value: string): string {
@@ -201,6 +226,8 @@ export function formatReportAccountLabel(report: UsageReport, index: number): Ac
 	return {
 		identity: base,
 		qualifier: organization && organization !== base ? ` (${organization})` : undefined,
+		organizationName: typeof meta?.orgName === "string" && meta.orgName ? meta.orgName : undefined,
+		organizationId: typeof meta?.orgId === "string" ? meta.orgId : undefined,
 		accountKey: usageIdentityKey(meta?.accountId, meta?.projectId, report.limits[0]?.scope, meta?.orgId),
 		provider: report.provider,
 	};
@@ -266,11 +293,19 @@ export function buildProviderCards(
 	reports: UsageReport[],
 	nowMs: number,
 	options: BuildCardsOptions = {},
+	unavailableAccounts: readonly UnavailableUsageAccount[] = [],
 ): ProviderCard[] {
-	const { merge = true, mask = formatAccountLabelText, unavailableAccounts = [] } = options;
-	const grouped = new Map<string, { provider: string; account?: AccountLabel; reports: UsageReport[] }>();
-	// Merged cards fold provider-shared limit reports together first; split cards
-	// keep every account scope distinct, so they partition instead.
+	const { merge = true, mask = formatAccountLabelText, textMask = (text: string) => text } = options;
+	unavailableAccounts = options.unavailableAccounts ?? unavailableAccounts;
+	const grouped = new Map<
+		string,
+		{
+			provider: string;
+			account?: AccountLabel;
+			reports: UsageReport[];
+			unavailable?: readonly UnavailableUsageAccount[];
+		}
+	>();
 	(merge ? collapseSharedUsageReports(reports) : partitionAccountReports(reports)).forEach((report, index) => {
 		const account = merge ? undefined : formatReportAccountLabel(report, index);
 		const identity = merge ? undefined : formatReportAccountKey(report, index);
@@ -279,19 +314,23 @@ export function buildProviderCards(
 		entry.reports.push(report);
 		grouped.set(key, entry);
 	});
-	for (const account of unavailableAccounts) {
-		if (!grouped.has(account.provider)) grouped.set(account.provider, { provider: account.provider, reports: [] });
-	}
 
+	for (const [index, account] of unavailableAccounts.entries()) {
+		if (merge) {
+			const entry = grouped.get(account.provider) ?? { provider: account.provider, reports: [] };
+			grouped.set(account.provider, { ...entry, unavailable: [...(entry.unavailable ?? []), account] });
+		} else {
+			grouped.set(`${account.provider}\u0000unavailable-${index}`, {
+				provider: account.provider,
+				account: formatUnavailableAccountLabel(account),
+				reports: [],
+				unavailable: [account],
+			});
+		}
+	}
 	const cards: ProviderCard[] = [];
-	for (const { provider, account, reports: providerReports } of grouped.values()) {
-		// Split cards belong to one reporting account; unavailable lookups attach to the provider card.
-		const unavailable =
-			account === undefined
-				? unavailableAccounts
-						.filter(entry => entry.provider === provider)
-						.map(entry => mask({ identity: entry.label, provider }))
-				: [];
+	for (const { provider, account, reports: providerReports, unavailable: missing = [] } of grouped.values()) {
+		const unavailable = missing.map(entry => mask(formatUnavailableAccountLabel(entry)));
 		const buckets = new Map<string, { label: string; limits: UsageLimit[] }>();
 		for (const report of providerReports) {
 			for (const limit of report.limits) {
@@ -367,8 +406,14 @@ export function buildProviderCards(
 		cards.push({
 			provider,
 			name: formatProviderName(provider),
-			account: account === undefined ? undefined : mask(account),
-			accountQualifier: account?.qualifier,
+			...(account
+				? {
+						account: mask(account),
+						accountQualifier: account.qualifier
+							? textMask(formatAccountQualifier(account, options.maskOrganizationNames))
+							: undefined,
+					}
+				: {}),
 			accounts: providerReports.length + unavailable.length,
 			unavailableAccounts: unavailable,
 			windows,
@@ -514,10 +559,12 @@ function statusDot(status: UsageLimit["status"]): NativeNode {
  * Used-fraction bar of a quota window, toned by status: a `meter` where the
  * terminal draws one, else a `progress` bar.
  */
-function usageMeter(fraction: number, status: UsageLimit["status"], meter: boolean): NativeNode {
+function usageMeter(fraction: number, status: UsageLimit["status"], meter: boolean, label?: TspText): NativeNode {
 	const value = Math.min(Math.max(fraction, 0), 1);
 	const tone = statusTone(status);
-	return meter ? node("meter", { value, style: "bar", size: "md", tone }) : node("progress", { value, tone, grow: 1 });
+	return meter
+		? node("meter", { value, style: "bar", size: "md", tone, label })
+		: node("progress", { value, tone, grow: 1, label });
 }
 
 /** `62% left` for a used fraction (overage reads as 0%). */
@@ -559,20 +606,6 @@ function mutedText(content: string, wrap = false): NativeNode {
 	return text([span(content, "muted")], wrap ? { wrap: "word" } : { truncate: "end" });
 }
 
-/** Stable, human account name for a report in the detail view. */
-function reportAccountLabel(report: UsageReport, limit: UsageLimit | undefined, index: number): string {
-	const metadata = report.metadata;
-	const pick = (value: unknown): string | undefined => (typeof value === "string" && value ? value : undefined);
-	const identity =
-		pick(metadata?.email) ??
-		pick(metadata?.accountId) ??
-		pick(metadata?.projectId) ??
-		pick(limit?.scope.projectId) ??
-		`account ${index + 1}`;
-	const org = pick(metadata?.orgName);
-	return sanitizeDisplayLine(org && org !== identity ? `${identity} (${org})` : identity);
-}
-
 /** Window qualifier worth showing after a limit title (none when the title already names it). */
 function detailWindowLabel(label: string, limit: UsageLimit): string | undefined {
 	const windowLabel = limit.window?.label ?? limit.window?.id ?? limit.scope.windowId;
@@ -603,14 +636,19 @@ export interface UsageDashboardOptions {
 	reports: UsageReport[];
 	unavailableAccounts?: readonly UnavailableUsageAccount[];
 	/**
-	 * Full classic `/usage` report of `reports` (the latest refresh) for the expanded detail
-	 * view; re-invoked per terminal width and per privacy toggle.
+	 * Full classic `/usage` report for the expanded detail view; re-invoked per
+	 * terminal width and per privacy toggle.
 	 */
-	renderDetail: (width: number, reports: UsageReport[], view: { maskAccountLabels: boolean }) => string;
+	renderDetail: (
+		width: number,
+		reports: UsageReport[],
+		view: { maskAccountLabels: boolean; maskOrganizationNames: boolean },
+	) => string;
 	/** Privacy masker factory for the given toggle state (collision-aware ordinals). */
-	createMasker?: (labels: Iterable<AccountLabel>, enabled: boolean) => AccountMasker;
+	createMasker?: (labels: Iterable<AccountLabel>, enabled: boolean, maskOrganizationNames?: boolean) => AccountMasker;
 	/** Initial privacy state, read from settings on open; toggling never persists. */
 	maskAccountLabels?: boolean;
+	maskOrganizationNames?: boolean;
 	/** Initial merge state (one card per provider), read from settings on open; toggling never persists. */
 	mergeAccounts?: boolean;
 	/** Percentage label placement, read from settings on open. */
@@ -666,19 +704,27 @@ export function fitAccountLabel(label: string, width: number, qualifier = ""): s
 const CARD_MIN_WIDTH = 32;
 const CARD_GUTTER = 1;
 const CARD_MAX_WINDOWS = 4;
-/** Narrowest usage bar a card row keeps before its label column gives way. */
-const CARD_MIN_BAR_COLUMNS = 9;
 /** Heatmap block: title, blank, month row, 7 day rows. */
 const ACTIVITY_ROWS = 10;
 /** Cards keep at least this many rows even on short terminals; activity yields below it. */
 const CARDS_MIN_ROWS = 6;
+const CARD_MIN_BAR_WIDTH = 12;
+const CARD_MAX_LABEL_LINES = 2;
+
+interface CardRowLayout {
+	labelWidth: number;
+	resetWidth: number;
+	barWidth: number;
+	stacked: boolean;
+	labelHeights: number[];
+}
 
 export class UsageDashboardComponent implements Component {
 	/** The terminal draws the sheet: a large glass overlay titled Usage. */
 	readonly nativeOverlay = { role: "omp.overlay.usage", size: "lg", anchor: "center", head: "Usage" } as const;
 	#options: UsageDashboardOptions;
-	#reports: UsageReport[];
 	#cards: ProviderCard[] = [];
+	#reports: UsageReport[];
 	#nowMs: number;
 	#refreshing = false;
 	#refreshError: string | null = null;
@@ -689,13 +735,16 @@ export class UsageDashboardComponent implements Component {
 	#activity: DailyActivityPoint[] | null = null;
 	#activityError: string | null = null;
 	#syncing = true;
-	#detailCache: { width: number; masked: boolean; lines: string[] } | null = null;
+	#detailCache: { width: number; masked: boolean; organizations: boolean; lines: string[] } | null = null;
 	#lastViewportRows = 10;
 	#closed = false;
 	readonly #closeController = new AbortController();
 	/** Session-local toggles: seeded from settings on open, never written back. */
 	#mask: boolean;
+	#maskOrganizations: boolean;
 	#merge: boolean;
+	#textMask: (text: string) => string = text => text;
+	#accountMask: AccountMasker = formatAccountLabelText;
 	#nativeCache: { revision: number; meter: boolean; chart: boolean; node: NativeNode } | undefined;
 
 	constructor(options: UsageDashboardOptions) {
@@ -704,24 +753,80 @@ export class UsageDashboardComponent implements Component {
 		this.#reports = options.reports;
 		this.#nowMs = Date.now();
 		this.#mask = options.maskAccountLabels ?? false;
+		this.#maskOrganizations = options.maskOrganizationNames ?? false;
 		this.#merge = options.mergeAccounts ?? false;
 		this.#rebuildCards();
 		void this.#loadActivity();
 	}
 
 	#rebuildCards(): void {
-		const reports = this.#merge ? this.#reports : partitionAccountReports(this.#reports);
-		const labels = reports.map((report, index) => formatReportAccountLabel(report, index));
-		this.#cards = buildProviderCards(this.#reports, this.#nowMs, {
-			merge: this.#merge,
-			mask: (this.#options.createMasker ?? createAccountMasker)(labels, this.#mask),
-			unavailableAccounts: this.#options.unavailableAccounts,
+		const organizations = (this.#options.unavailableAccounts ?? []).flatMap(account =>
+			account.organizationName
+				? [{ name: account.organizationName, id: account.organizationId, provider: account.provider }]
+				: [],
+		);
+		const identifiers = this.#options.unavailableAccounts?.map(account => account.label);
+		const identityMask = createUsageTextMasker(this.#reports, this.#mask, identifiers);
+		this.#textMask = createUsageTextMasker(this.#reports, this.#mask, identifiers, undefined, {
+			maskOrganizationNames: this.#maskOrganizations,
+			organizations,
 		});
+		const reports = partitionAccountReports(this.#reports);
+		const normalize = (label: AccountLabel): AccountLabel => ({
+			...label,
+			qualifier: label.organizationName
+				? formatAccountQualifier(label, this.#maskOrganizations)
+				: label.qualifier
+					? identityMask(label.qualifier)
+					: undefined,
+		});
+		const labels = [
+			...reports.map((report, index) => formatReportAccountLabel(report, index)),
+			...(this.#options.unavailableAccounts ?? []).map(formatUnavailableAccountLabel),
+		].map(normalize);
+		const masker = (this.#options.createMasker ?? createAccountMasker)(labels, this.#mask, this.#maskOrganizations);
+		this.#accountMask = label => masker(normalize(label));
+		this.#cards = buildProviderCards(
+			this.#reports,
+			this.#nowMs,
+			{
+				merge: this.#merge,
+				maskOrganizationNames: this.#maskOrganizations,
+				textMask: this.#textMask,
+				mask: this.#accountMask,
+			},
+			this.#options.unavailableAccounts,
+		);
 	}
 
 	/** Current temporary view toggles (for tests and the hint row). */
-	get viewState(): { maskAccountLabels: boolean; mergeAccounts: boolean; view: "overview" | "detail" } {
-		return { maskAccountLabels: this.#mask, mergeAccounts: this.#merge, view: this.#view };
+	get viewState(): {
+		maskAccountLabels: boolean;
+		maskOrganizationNames: boolean;
+		mergeAccounts: boolean;
+		view: "overview" | "detail";
+	} {
+		return {
+			maskAccountLabels: this.#mask,
+			maskOrganizationNames: this.#maskOrganizations,
+			mergeAccounts: this.#merge,
+			view: this.#view,
+		};
+	}
+
+	#reportLabel(report: UsageReport, limit: UsageLimit | undefined, index: number): string {
+		const scoped = limit
+			? {
+					...report,
+					limits: [limit],
+					metadata: {
+						...report.metadata,
+						accountId: limit.scope.accountId || report.metadata?.accountId,
+						projectId: limit.scope.projectId || report.metadata?.projectId,
+					},
+				}
+			: report;
+		return this.#accountMask(formatReportAccountLabel(scoped, index));
 	}
 
 	async #loadActivity(): Promise<void> {
@@ -759,8 +864,7 @@ export class UsageDashboardComponent implements Component {
 		return theme.fg("dim", "·");
 	}
 
-	/** Inner (borderless) lines of one card; the grid pads every card to the tallest. */
-	#renderCardLines(card: ProviderCard, width: number): string[] {
+	#renderCardLines(card: ProviderCard, width: number, labels: string[][], layout: CardRowLayout): string[] {
 		const lines: string[] = [];
 		const cardStatus =
 			card.unavailableAccounts.length > 0
@@ -799,7 +903,9 @@ export class UsageDashboardComponent implements Component {
 				`  ${theme.fg(resets.redeemableCount > 0 ? "success" : "warning", truncateToWidth(resetText, width - 2))}`,
 			);
 			if (resets.redeemableCount === 0 && resets.unavailableReasons.length > 0) {
-				const reason = sanitizeText(resets.unavailableReasons.join(" • ").replace(/[\r\n\t]+/g, " "));
+				const reason = sanitizeText(
+					this.#textMask(resets.unavailableReasons.join(" • ").replace(/[\r\n\t]+/g, " ")),
+				);
 				lines.push(`  ${theme.fg("dim", truncateToWidth(`unavailable: ${reason}`, width - 2))}`);
 			}
 		}
@@ -810,54 +916,37 @@ export class UsageDashboardComponent implements Component {
 				lines.push(`  ${theme.fg("dim", line)}`);
 			}
 		}
-
 		if (card.unlimited) {
 			lines.push(`  ${theme.fg("dim", "no limits")}`);
 			return lines;
 		}
 
 		const hidden = card.windows.length - CARD_MAX_WINDOWS;
-		const visibleWindows = card.windows.slice(0, CARD_MAX_WINDOWS);
-		// Fixed columns across every row of the card so bars all start and end
-		// at the same x: label | bar | pct | reset. The reset column sizes to
-		// the card's widest countdown instead of flexing per row.
-		const resetWidth = visibleWindows.reduce(
-			(max, window) => Math.max(max, window.resetMs !== undefined ? formatDuration(window.resetMs).length : 0),
-			0,
-		);
-		// Provider-supplied quota labels and tags are untrusted display text:
-		// strip controls before measuring, then size the label column to the
-		// longest label that still leaves a usable bar, truncating in the middle
-		// so the suffix distinguishing model buckets (e.g. "(Fable)") survives.
-		const plainLabels = visibleWindows.map(window => sanitizeDisplayLine(window.label));
-		const plainTags = visibleWindows.map(window => (window.windowTag ? sanitizeDisplayLine(window.windowTag) : ""));
-		const resetColumns = resetWidth > 0 ? resetWidth + 1 : 0;
-		const longestLabel = plainLabels.reduce(
-			(max, label, index) =>
-				Math.max(max, visibleWidth(label) + (plainTags[index] ? visibleWidth(plainTags[index]) + 1 : 0)),
-			0,
-		);
-		const labelWidth = Math.max(6, Math.min(longestLabel, width - 2 - 1 - CARD_MIN_BAR_COLUMNS - resetColumns));
-		const barWidth = Math.max(CARD_MIN_BAR_COLUMNS, width - 2 - labelWidth - 1 - resetColumns);
-		for (const [index, window] of visibleWindows.entries()) {
-			const tagSource = plainTags[index];
-			const tagPlain = tagSource ? truncateToWidth(tagSource, Math.max(2, Math.floor(labelWidth / 2) - 1)) : "";
-			const baseWidth = tagPlain ? labelWidth - visibleWidth(tagPlain) - 1 : labelWidth;
-			const baseText = truncateMiddleToWidth(plainLabels[index], baseWidth);
-			const basePlain = baseText + " ".repeat(Math.max(0, baseWidth - visibleWidth(baseText)));
-			const label = tagPlain
-				? `${theme.fg("muted", basePlain)} ${theme.fg("dim", tagPlain)}`
-				: theme.fg("muted", basePlain);
+		const { labelWidth, resetWidth, barWidth, stacked, labelHeights } = layout;
+		const contentWidth = Math.max(1, width - 2);
+		for (let index = 0; index < Math.min(card.windows.length, CARD_MAX_WINDOWS); index++) {
+			const window = card.windows[index]!;
+			const labelLines = labels[index]!;
+			const label = labelLines[0] ?? "";
+			const prefix = stacked ? "" : `${label}${" ".repeat(labelWidth - visibleWidth(label))} `;
+			if (stacked) {
+				for (let line = 0; line < labelHeights[index]; line++) {
+					lines.push(`  ${labelLines[line] ?? ""}`);
+				}
+			}
 			if (window.fraction === undefined) {
-				const text = theme.fg("dim", window.usedText ?? "no data");
-				lines.push(truncateToWidth(`  ${label} ${text}`, width));
+				const text = theme.fg("dim", this.#textMask(window.usedText ?? "no data"));
+				for (const line of wrapTextWithAnsi(`${prefix}${text}`, contentWidth)) lines.push(`  ${line}`);
 				continue;
 			}
 			const resetPlain = window.resetMs !== undefined ? formatDuration(window.resetMs) : "";
 			const resetText = resetWidth > 0 ? ` ${theme.fg("dim", resetPlain.padStart(resetWidth))}` : "";
-			lines.push(
-				`  ${label} ${renderFractionBar(1 - window.fraction, barWidth, theme, this.#options.labelPlacement ?? "moving")}${resetText}`,
-			);
+			for (const line of wrapTextWithAnsi(
+				`${prefix}${renderFractionBar(1 - window.fraction, barWidth, theme, this.#options.labelPlacement ?? "moving")}${resetText}`,
+				contentWidth,
+			)) {
+				lines.push(`  ${line}`);
+			}
 		}
 		if (hidden > 0) lines.push(`  ${theme.fg("dim", `+${hidden} more`)}`);
 		return lines;
@@ -894,19 +983,73 @@ export class UsageDashboardComponent implements Component {
 			Math.min(this.#cards.length, Math.floor((innerWidth + CARD_GUTTER) / (CARD_MIN_WIDTH + CARD_GUTTER))),
 		);
 		const cardWidth = Math.floor((innerWidth - (columns - 1) * CARD_GUTTER) / columns);
-		const rendered = this.#cards.map(card => this.#renderCardLines(card, cardWidth - 2));
-		const height = Math.max(2, ...rendered.map(lines => lines.length));
-		const boxes = rendered.map(lines => this.#boxCard(lines, cardWidth, height));
 		const lines: string[] = [];
-		for (let start = 0; start < boxes.length; start += columns) {
-			const rowBoxes = boxes.slice(start, start + columns);
+		const active = this.#cards;
+		for (let start = 0; start < active.length; start += columns) {
+			const cards = active.slice(start, start + columns);
+			const windows = cards.map(card => card.windows.slice(0, CARD_MAX_WINDOWS));
+			const labels = windows.map(rows =>
+				rows.map(window => {
+					const label = theme.fg("muted", sanitizeDisplayLine(this.#textMask(window.label)));
+					const tag = window.windowTag ? sanitizeDisplayLine(this.#textMask(window.windowTag)) : "";
+					return tag ? `${label} ${theme.fg("dim", tag)}` : label;
+				}),
+			);
+			// One geometry per grid row: labels, bars, and resets share columns,
+			// and every card stacks together when inline bars would be too short.
+			const labelWidth = labels.reduce(
+				(max, rows) => rows.reduce((width, label) => Math.max(width, visibleWidth(label)), max),
+				0,
+			);
+			const resetWidth = windows.reduce(
+				(max, rows) =>
+					rows.reduce(
+						(width, window) =>
+							Math.max(width, window.resetMs !== undefined ? formatDuration(window.resetMs).length : 0),
+						max,
+					),
+				0,
+			);
+			const contentWidth = Math.max(1, cardWidth - 4);
+			const suffixWidth = resetWidth > 0 ? resetWidth + 1 : 0;
+			const inlineBarWidth = contentWidth - labelWidth - 1 - suffixWidth;
+			const stacked = inlineBarWidth < CARD_MIN_BAR_WIDTH + 5;
+			const labelLines = labels.map(rows =>
+				rows.map(label => {
+					if (!stacked) return [label];
+					// Bound wrapping work as well as height, keeping the suffix that
+					// distinguishes model-specific quota buckets.
+					const bounded = truncateMiddleToWidth(label, contentWidth * CARD_MAX_LABEL_LINES);
+					const lines = wrapTextWithAnsi(bounded, contentWidth);
+					if (lines.length <= CARD_MAX_LABEL_LINES) return lines;
+					// Word wrapping can waste enough cells to create a third line even
+					// when the label fits. Use a grapheme-safe column split in that case.
+					const first = sliceWithWidth(bounded, 0, contentWidth, true);
+					const rest = sliceWithWidth(bounded, first.width, visibleWidth(bounded) - first.width, true);
+					return [first.text, truncateMiddleToWidth(rest.text, contentWidth)];
+				}),
+			);
+			const labelHeights = Array.from({ length: CARD_MAX_WINDOWS }, (_, index) =>
+				Math.max(0, ...labelLines.map(rows => rows[index]?.length ?? 0)),
+			);
+			const layout: CardRowLayout = {
+				labelWidth,
+				resetWidth,
+				barWidth: Math.max(1, stacked ? contentWidth - suffixWidth : inlineBarWidth),
+				stacked,
+				labelHeights,
+			};
+			const rowCards = cards.map((card, index) =>
+				this.#renderCardLines(card, cardWidth - 2, labelLines[index]!, layout),
+			);
+			const height = Math.max(...rowCards.map(card => card.length));
+			const boxes = rowCards.map(card => this.#boxCard(card, cardWidth, height));
 			for (let lineIdx = 0; lineIdx < height + 2; lineIdx++) {
-				lines.push(
-					rowBoxes
-						.map(box => box[lineIdx] ?? "")
-						.join(" ".repeat(CARD_GUTTER))
-						.trimEnd(),
-				);
+				const segments = boxes.map(card => {
+					const line = card[lineIdx] ?? "";
+					return line + " ".repeat(Math.max(0, cardWidth - visibleWidth(line)));
+				});
+				lines.push(segments.join(" ".repeat(CARD_GUTTER)).trimEnd());
 			}
 		}
 		return lines;
@@ -940,7 +1083,7 @@ export class UsageDashboardComponent implements Component {
 	#renderHeatmap(innerWidth: number): string[] {
 		const summary: string[] = [];
 		if (this.#activityError) {
-			const detail = formatActivityErrorDetail(this.#activityError);
+			const detail = this.#textMask(formatActivityErrorDetail(this.#activityError));
 			return [theme.fg("dim", detail ? `Usage history unavailable (${detail}).` : "Usage history unavailable.")];
 		}
 		const points = this.#activity;
@@ -992,11 +1135,21 @@ export class UsageDashboardComponent implements Component {
 	// ---------------------------------------------------------------------------
 
 	#detailLines(innerWidth: number): string[] {
-		if (this.#detailCache?.width !== innerWidth || this.#detailCache.masked !== this.#mask) {
+		if (
+			this.#detailCache?.width !== innerWidth ||
+			this.#detailCache.masked !== this.#mask ||
+			this.#detailCache.organizations !== this.#maskOrganizations
+		) {
 			this.#detailCache = {
 				width: innerWidth,
 				masked: this.#mask,
-				lines: this.#options.renderDetail(innerWidth, this.#reports, { maskAccountLabels: this.#mask }).split("\n"),
+				organizations: this.#maskOrganizations,
+				lines: this.#options
+					.renderDetail(innerWidth, this.#reports, {
+						maskAccountLabels: this.#mask,
+						maskOrganizationNames: this.#maskOrganizations,
+					})
+					.split("\n"),
 			};
 		}
 		return this.#detailCache.lines;
@@ -1058,14 +1211,15 @@ export class UsageDashboardComponent implements Component {
 		}
 		for (const line of footer) out.push(row(line, width));
 		out.push(divider(width));
-		const scrollHint = maxScroll > 0 ? "↑/↓ scroll · " : "";
+		const scrollHint = maxScroll > 0 ? `${editorKeys("tui.select.up", "tui.select.down")} scroll · ` : "";
+		const cancel = editorKey("tui.select.cancel");
 		const refreshHint = this.#options.refresh ? "r refresh · " : "";
-		const privacy = `p ${this.#mask ? "show" : "hide"} accounts`;
+		const privacy = `p ${this.#mask ? "show" : "hide"} accounts · o ${this.#maskOrganizations ? "show" : "hide"} organizations`;
 		const merge = `m ${this.#merge ? "split" : "merge"} accounts`;
 		const hint =
 			this.#view === "detail"
-				? `${scrollHint}${refreshHint}${privacy} · Esc back`
-				: `${scrollHint}${refreshHint}↵ details · ${privacy} · ${merge} · Esc close`;
+				? `${scrollHint}${refreshHint}${privacy} · ${cancel} back`
+				: `${scrollHint}${refreshHint}${formatKeyHint("enter")} details · ${privacy} · ${merge} · ${cancel} close`;
 		out.push(row(theme.fg("dim", hint), width));
 		out.push(bottomBorder(width));
 		return out;
@@ -1100,6 +1254,9 @@ export class UsageDashboardComponent implements Component {
 	handleNativeEvent(event: NativeUiEvent): void {
 		if (event.type === "action") {
 			if (event.act === "refresh") void this.#refresh();
+			if (event.act === "privacy") this.handleInput("p");
+			if (event.act === "organization-privacy") this.handleInput("o");
+			if (event.act === "grouping") this.handleInput("m");
 			return;
 		}
 		if (event.type !== "select" && event.type !== "activate") return;
@@ -1116,7 +1273,7 @@ export class UsageDashboardComponent implements Component {
 			checked.push(node("spinner", { label: [span("Refreshing…", "dim")] }));
 		} else if (this.#refreshError) {
 			checked.push(
-				text([span(`Refresh failed: ${sanitizeDisplayLine(this.#refreshError)}`, "warning")], {
+				text([span(`Refresh failed: ${sanitizeDisplayLine(this.#textMask(this.#refreshError))}`, "warning")], {
 					truncate: "end",
 				}),
 			);
@@ -1143,6 +1300,14 @@ export class UsageDashboardComponent implements Component {
 				"tabs",
 			),
 		];
+		children.push(actionButton(this.#mask ? "Show accounts" : "Hide accounts", "privacy", { keys: "p" }));
+		children.push(
+			actionButton(this.#maskOrganizations ? "Show organizations" : "Hide organizations", "organization-privacy", {
+				keys: "o",
+			}),
+		);
+		if (this.#view === "overview")
+			children.push(actionButton(this.#merge ? "Split accounts" : "Merge accounts", "grouping", { keys: "m" }));
 		if (this.#options.refresh) children.push(actionButton("Refresh", "refresh", { keys: "r" }));
 		return node("row", { role: "omp.usage.head", gap: "sm", align: "center" }, children, "head");
 	}
@@ -1155,14 +1320,14 @@ export class UsageDashboardComponent implements Component {
 			);
 		} else {
 			// Unlimited providers keep a frame reading "No limits"; only untouched ones collapse.
-			const active = this.#cards.filter(entry => !entry.idle || entry.unlimited);
-			const idle = this.#cards.filter(entry => entry.idle && !entry.unlimited);
+			const active = this.#cards.filter(entry => !entry.idle || entry.unlimited || entry.account !== undefined);
+			const idle = this.#cards.filter(entry => entry.idle && !entry.unlimited && entry.account === undefined);
 			if (active.length > 0) {
 				children.push(
 					node(
 						"row",
 						{ wrap: true, gap: "md", role: "omp.usage.grid" },
-						active.map(entry => this.#describeCard(entry, meter)),
+						active.map((entry, index) => this.#describeCard(entry, meter, index)),
 						"providers",
 					),
 				);
@@ -1186,7 +1351,7 @@ export class UsageDashboardComponent implements Component {
 		return children;
 	}
 
-	#describeCard(entry: ProviderCard, meter: boolean): NativeNode {
+	#describeCard(entry: ProviderCard, meter: boolean, index: number): NativeNode {
 		const cardStatus =
 			entry.unavailableAccounts.length > 0
 				? statusWithUnavailableAccounts(entry.windows)
@@ -1194,6 +1359,7 @@ export class UsageDashboardComponent implements Component {
 					? "ok"
 					: aggregateStatus(entry.windows);
 		const head: NativeChild[] = [text([span(entry.name, "strong")], { truncate: "end" })];
+		if (entry.account) head.push(text([span(entry.account, "muted")], { truncate: "middle" }));
 		if (entry.accounts > 1) head.push(text([span(`${entry.accounts} accounts`, "muted")]));
 		head.push(node("spacer", { grow: 1 }), statusDot(cardStatus));
 		const children: NativeChild[] = [
@@ -1212,7 +1378,7 @@ export class UsageDashboardComponent implements Component {
 				);
 			}
 			if (resets.redeemableCount === 0 && resets.unavailableReasons.length > 0) {
-				details.push(`unavailable: ${sanitizeDisplayLine(resets.unavailableReasons.join(" • "))}`);
+				details.push(`unavailable: ${sanitizeDisplayLine(this.#textMask(resets.unavailableReasons.join(" • ")))}`);
 			}
 			const label = `${resets.bankedCount} reset${resets.bankedCount === 1 ? "" : "s"} banked`;
 			children.push(
@@ -1237,20 +1403,30 @@ export class UsageDashboardComponent implements Component {
 			children.push(mutedText("No limits"));
 		} else {
 			for (const [index, window] of entry.windows.slice(0, CARD_MAX_WINDOWS).entries()) {
-				const label: TspSpan[] = [span(sanitizeDisplayLine(window.label))];
-				if (window.windowTag) label.push(span(` ${sanitizeDisplayLine(window.windowTag)}`, "dim"));
+				const label: TspSpan[] = [span(sanitizeDisplayLine(this.#textMask(window.label)))];
+				if (window.windowTag) label.push(span(` ${sanitizeDisplayLine(this.#textMask(window.windowTag))}`, "dim"));
 				const cells: NativeChild[] = [
-					text(label, { role: "omp.usage.label", truncate: "middle", title: sanitizeDisplayLine(window.label) }),
+					text(label, {
+						role: "omp.usage.label",
+						truncate: "middle",
+						title: sanitizeDisplayLine(this.#textMask(window.label)),
+					}),
 				];
 				if (window.fraction === undefined) {
-					cells.push(text([span(window.usedText ?? "No data", "muted")], { truncate: "end" }));
+					cells.push(text([span(this.#textMask(window.usedText ?? "No data"), "muted")], { truncate: "end" }));
 				} else {
 					const token =
 						window.status === "exhausted" ? "error" : window.status === "warning" ? "warning" : undefined;
+					const embedded = (this.#options.labelPlacement ?? "moving") === "moving";
 					cells.push(
-						usageMeter(window.fraction, window.status, meter),
-						text([span(leftText(window.fraction), token)], { role: "omp.usage.pct" }),
+						usageMeter(
+							window.fraction,
+							window.status,
+							meter,
+							embedded ? [span(leftText(window.fraction), token)] : undefined,
+						),
 					);
+					if (!embedded) cells.push(text([span(leftText(window.fraction), token)], { role: "omp.usage.pct" }));
 					if (window.resetMs !== undefined) {
 						const reset = resetLabel(this.#nowMs, window.resetMs);
 						cells.push(text([span(reset.text, "dim")], { role: "omp.usage.reset", title: reset.title }));
@@ -1265,7 +1441,9 @@ export class UsageDashboardComponent implements Component {
 			"card",
 			{ role: "omp.usage.provider", grow: 1, min: { w: `${CARD_MIN_WIDTH}ch` } },
 			children,
-			entry.provider,
+			this.#cards.filter(card => card.provider === entry.provider).length > 1
+				? `${entry.provider}-${index}`
+				: entry.provider,
 		);
 	}
 
@@ -1275,7 +1453,7 @@ export class UsageDashboardComponent implements Component {
 		const children: NativeChild[] = [node("row", { gap: "sm", align: "center" }, head, "head")];
 		const points = this.#activity;
 		if (this.#activityError) {
-			const detail = formatActivityErrorDetail(this.#activityError);
+			const detail = this.#textMask(formatActivityErrorDetail(this.#activityError));
 			children.push(
 				mutedText(detail ? `Usage history unavailable (${detail}).` : "Usage history unavailable.", true),
 			);
@@ -1348,13 +1526,6 @@ export class UsageDashboardComponent implements Component {
 	#describeDetail(): NativeChild[] {
 		const nowMs = this.#nowMs;
 		const collapsed = collapseSharedUsageReports(this.#reports);
-		// Masking must cover this view too: the masker is built over exactly the reports walked here, so
-		// collision ordinals stay stable and the real email/account id never reaches the native page.
-		const labels = collapsed.map((report, index) => formatReportAccountLabel(report, index));
-		const masker = (this.#options.createMasker ?? createAccountMasker)(labels, this.#mask);
-		const labelOf = new Map<UsageReport, AccountLabel>(collapsed.map((report, index) => [report, labels[index]!]));
-		const accountLabel = (report: UsageReport, limit: UsageLimit | undefined, index: number): string =>
-			this.#mask ? sanitizeDisplayLine(masker(labelOf.get(report)!)) : reportAccountLabel(report, limit, index);
 		const grouped = new Map<string, UsageReport[]>();
 		for (const report of collapsed) {
 			const list = grouped.get(report.provider) ?? [];
@@ -1362,17 +1533,27 @@ export class UsageDashboardComponent implements Component {
 			grouped.set(report.provider, list);
 		}
 		const sections: NativeChild[] = [];
-		for (const entry of this.#cards) {
+		for (const entry of this.#cards.filter(
+			(card, index, cards) => cards.findIndex(peer => peer.provider === card.provider) === index,
+		)) {
 			const reports = grouped.get(entry.provider) ?? [];
 			const children: NativeChild[] = [];
-			// Card labels are already masked for the current privacy toggle.
-			for (const account of entry.unavailableAccounts) {
-				children.push(mutedText(`${sanitizeDisplayLine(account)}: usage unavailable`, true));
+			const unavailable = (this.#options.unavailableAccounts ?? []).filter(
+				account => account.provider === entry.provider,
+			);
+			for (const account of unavailable) {
+				children.push(
+					mutedText(
+						`${sanitizeDisplayLine(this.#accountMask(formatUnavailableAccountLabel(account)))}: usage unavailable`,
+						true,
+					),
+				);
 			}
 
 			const facts: { k: TspText; v: TspText }[] = [];
 			const notes = [...new Set(reports.flatMap(report => report.notes ?? []))];
-			if (notes.length > 0) facts.push({ k: [span("Notes", "muted")], v: sanitizeDisplayLine(notes.join(" • ")) });
+			if (notes.length > 0)
+				facts.push({ k: [span("Notes", "muted")], v: sanitizeDisplayLine(this.#textMask(notes.join(" • "))) });
 			for (const [index, report] of reports.entries()) {
 				const resets = summarizeUsageResetCredits(report.resetCredits, nowMs);
 				if (!resets || resets.bankedCount <= 0) continue;
@@ -1396,10 +1577,12 @@ export class UsageDashboardComponent implements Component {
 					);
 				}
 				if (resets.redeemableCount === 0 && resets.unavailableReason) {
-					value.push(span(` · unavailable: ${sanitizeDisplayLine(resets.unavailableReason)}`, "muted"));
+					value.push(
+						span(` · unavailable: ${sanitizeDisplayLine(this.#textMask(resets.unavailableReason))}`, "muted"),
+					);
 				}
 				facts.push({
-					k: [span(`Resets · ${accountLabel(report, report.limits[0], index)}`, "muted")],
+					k: [span(`Resets · ${this.#reportLabel(report, report.limits[0], index)}`, "muted")],
 					v: value,
 				});
 			}
@@ -1421,10 +1604,10 @@ export class UsageDashboardComponent implements Component {
 						limit.status === "exhausted" ? "error" : limit.status === "warning" ? "warning" : undefined;
 					const resetsAt = limit.window?.resetsAt;
 					bucket.rows.push({
-						account: [span(accountLabel(report, limit, index), "muted")],
+						account: [span(this.#reportLabel(report, limit, index), "muted")],
 						left:
 							fraction === undefined
-								? [span(formatAbsoluteOnlyAmount([limit]) ?? "No data", "muted")]
+								? [span(this.#textMask(formatAbsoluteOnlyAmount([limit]) ?? "No data"), "muted")]
 								: [span(leftText(fraction), token)],
 						reset:
 							resetsAt !== undefined && resetsAt > nowMs
@@ -1436,7 +1619,7 @@ export class UsageDashboardComponent implements Component {
 									]
 								: "",
 					});
-					for (const note of limit.notes ?? []) limitNotes.push(sanitizeDisplayLine(note));
+					for (const note of limit.notes ?? []) limitNotes.push(sanitizeDisplayLine(this.#textMask(note)));
 				}
 			}
 			if (buckets.size > 0) {
@@ -1445,7 +1628,10 @@ export class UsageDashboardComponent implements Component {
 					for (const [index, cells] of bucket.rows.entries()) {
 						const limitCell: TspSpan[] =
 							index === 0
-								? [span(bucket.label), ...(bucket.window ? [span(` ${bucket.window}`, "dim")] : [])]
+								? [
+										span(this.#textMask(bucket.label)),
+										...(bucket.window ? [span(` ${this.#textMask(bucket.window)}`, "dim")] : []),
+									]
 								: [];
 						rows.push({ id: `r${rows.length}`, cells: { limit: limitCell, ...cells } });
 					}
@@ -1458,7 +1644,7 @@ export class UsageDashboardComponent implements Component {
 				];
 				children.push(node("table", { cols, rows }, undefined, "limits"));
 				for (const note of new Set(limitNotes)) children.push(mutedText(note, true));
-			} else if (entry.unavailableAccounts.length === 0) {
+			} else if (unavailable.length === 0) {
 				children.push(mutedText("No limits"));
 			}
 			sections.push(
@@ -1544,6 +1730,12 @@ export class UsageDashboardComponent implements Component {
 		}
 		if (matchesKey(data, "r")) {
 			void this.#refresh();
+			return;
+		}
+		if (matchesKey(data, "o")) {
+			this.#maskOrganizations = !this.#maskOrganizations;
+			this.#rebuildCards();
+			this.#changed();
 			return;
 		}
 		if (matchesKey(data, "p")) {

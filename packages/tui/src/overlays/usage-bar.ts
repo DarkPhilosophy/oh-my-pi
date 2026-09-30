@@ -5,7 +5,7 @@
  * the empty part). Used by both the classic per-account report and the
  * dashboard cards so the two never disagree on colors.
  */
-import { visibleWidth } from "../index";
+import { visibleWidth } from "../utils";
 import { rgbToHex } from "@oh-my-pi/pi-utils/color";
 import { bgAnsi, colorToAnsi } from "../theme/color";
 import { theme } from "../theme/theme";

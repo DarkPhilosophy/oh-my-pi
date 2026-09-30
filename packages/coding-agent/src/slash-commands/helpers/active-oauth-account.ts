@@ -63,6 +63,8 @@ export function getActiveAccountLabelParts(identity: OAuthAccountIdentity | unde
 	return {
 		identity: base,
 		qualifier: org && org !== base ? ` (${org})` : undefined,
+		organizationName: identity.orgName,
+		organizationId: identity.orgId,
 		accountKey: usageIdentityKey(identity.accountId, identity.projectId, undefined, identity.orgId),
 	};
 }
@@ -97,7 +99,10 @@ function matchesActiveAccount(
 	const activeAccountId = normalizeIdentityValue(identity.accountId);
 	const activeEmail = normalizeIdentityValue(identity.email);
 	const activeProjectId = normalizeIdentityValue(identity.projectId);
-	const activeOrgId = normalizeIdentityValue(identity.orgId);
+	const codex = report.provider === "openai-codex";
+	const activeOrgId = normalizeIdentityValue(
+		identity.orgId ?? (codex && metadata.orgId ? identity.accountId : undefined),
+	);
 	const reportOrgId = normalizeIdentityValue(metadata.orgId);
 	// Org gate (see doc comment above): different/mismatched-presence orgs
 	// never match; a shared org falls through to the base checks unless the
@@ -105,7 +110,7 @@ function matchesActiveAccount(
 	if (activeOrgId || reportOrgId) {
 		if (activeOrgId !== reportOrgId) return false;
 		if (!activeAccountId && !activeEmail && !activeProjectId) return true;
-	} else {
+	} else if (!codex) {
 		// Names qualify the identity only when neither side provides an org ID.
 		const activeOrgName = normalizeIdentityValue(identity.orgName);
 		const reportOrgName = normalizeIdentityValue(metadata.orgName);

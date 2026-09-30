@@ -712,19 +712,6 @@ export const cfgDisplayContextualTokenPopup = register({
 	},
 });
 
-export const cfgUsageLabelPlacement = register({
-	id: "usage.labelPlacement",
-	type: "enum",
-	values: ["moving", "right"] as const,
-	default: "moving",
-	ui: {
-		tab: "appearance",
-		group: "Display",
-		label: "Usage Label Position",
-		description: "Move the percentage with the filled bar or anchor it at the right edge",
-	},
-});
-
 export const cfgShowHardwareCursor = register({
 	id: "showHardwareCursor",
 	type: "boolean",

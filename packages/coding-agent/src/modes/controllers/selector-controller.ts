@@ -1,3 +1,9 @@
+import {
+	cfgUsageLabelPlacement,
+	cfgUsageMaskAccountLabels,
+	cfgUsageMaskOrganizationNames,
+	cfgUsageMergeAccounts,
+} from "../../commands/settings";
 import { type AgentMessage, type AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Model, PASTE_CODE_LOGIN_PROVIDERS as PasteCodeLoginProviders, UsageReport } from "@oh-my-pi/pi-ai";
@@ -136,11 +142,9 @@ import {
 	cfgStatusLineShowHookStatus,
 	cfgStatusLineTransparent,
 	cfgTreeFilterMode,
-	cfgUsageLabelPlacement,
 } from "../settings";
 import { cfgTaskAgentModelOverrides } from "../../task/settings";
 import { cfgAdvisorSyncBacklog } from "../../advisor/settings";
-import { cfgUsageMaskAccountLabels, cfgUsageMergeAccounts } from "../../secrets/settings";
 
 interface ModelOverlayModules {
 	ModelHubComponent: typeof ModelHubComponentType;
@@ -362,6 +366,13 @@ export class SelectorController {
 		const unavailableAccounts = collectUnreportedAccounts(reports, accounts).map(account => ({
 			provider: account.provider,
 			label: accountIdentityLabel(account),
+			identity:
+				account.type === "api_key"
+					? "API key"
+					: (account.email ?? account.accountId ?? account.projectId ?? account.enterpriseUrl ?? "OAuth account"),
+			organizationName: account.orgName,
+			organizationId: account.orgId,
+			placeholder: account.type === "api_key",
 		}));
 		const currentProvider = this.ctx.session.model?.provider;
 		const activeAccount = currentProvider
@@ -385,14 +396,15 @@ export class SelectorController {
 					provider => (provider === currentProvider ? activeAccount : undefined),
 					{
 						usageModelSelectors,
-						maskAccountLabels: view.maskAccountLabels,
-						labelPlacement: cfgUsageLabelPlacement.get(this.ctx.settings),
 						unavailableAccounts,
+						maskAccountLabels: view.maskAccountLabels,
+						maskOrganizationNames: view.maskOrganizationNames,
+						labelPlacement: cfgUsageLabelPlacement.get(this.ctx.settings),
 					},
 				),
 			createMasker: createAccountMasker,
-			// Read on every open; the overlay's p/m toggles never write back.
 			maskAccountLabels: cfgUsageMaskAccountLabels.get(this.ctx.settings),
+			maskOrganizationNames: cfgUsageMaskOrganizationNames.get(this.ctx.settings),
 			mergeAccounts: cfgUsageMergeAccounts.get(this.ctx.settings),
 			labelPlacement: cfgUsageLabelPlacement.get(this.ctx.settings),
 			loadActivity: (push, signal) => loadDailyActivity(push, signal),

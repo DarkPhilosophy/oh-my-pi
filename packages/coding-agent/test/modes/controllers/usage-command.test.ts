@@ -1,3 +1,4 @@
+import { cfgUsageMaskAccountLabels } from "@oh-my-pi/pi-coding-agent/commands/settings";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { AuthStorage, type UsageReport } from "@oh-my-pi/pi-ai";
@@ -344,7 +345,7 @@ describe("renderUsageReports content", () => {
 
 	it("distinguishes masked saved reset labels whose qualified account labels differ", () => {
 		const reports: UsageReport[] = ["First org", "Second org"].map((orgName, index) => ({
-			provider: "openai-codex",
+			provider: "anthropic",
 			fetchedAt: 1_700_000_000_000,
 			limits: [],
 			metadata: {
@@ -365,7 +366,7 @@ describe("renderUsageReports content", () => {
 	it("normalizes CRLF account labels and masks short opaque identities", () => {
 		const reports: UsageReport[] = [
 			{
-				provider: "openai-codex",
+				provider: "anthropic",
 				fetchedAt: Date.now(),
 				limits: [],
 				metadata: { accountId: "ab\r\ncd", orgName: "Org\tName" },
@@ -682,6 +683,7 @@ describe("interactive /usage account visibility", () => {
 				warnings.push(message);
 			},
 		});
+		cfgUsageMaskAccountLabels.override(ctx.settings, false);
 		const selector = new SelectorController(ctx);
 		ctx.showUsageDashboard = reports => selector.showUsageDashboard(reports);
 		return new CommandController(ctx);

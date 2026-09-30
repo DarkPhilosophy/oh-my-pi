@@ -1,3 +1,4 @@
+import { cfgUsageMaskAccountLabels } from "@oh-my-pi/pi-coding-agent/commands/settings";
 import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -21,7 +22,6 @@ import { cfgBrowserEnabled, cfgBrowserHeadless } from "@oh-my-pi/pi-coding-agent
 import { cfgExtendedContext } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 import { cfgMemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/settings";
 import { cfgWorktreeCleanSource } from "@oh-my-pi/pi-coding-agent/task/settings";
-import { cfgUsageMaskAccountLabels } from "@oh-my-pi/pi-coding-agent/secrets/settings";
 
 interface FakeAcpBuiltinSession {
 	fastMode: boolean;
@@ -330,23 +330,23 @@ describe("ACP builtin slash commands", () => {
 	});
 	it("applies collision-aware account masking consistently in text usage output", async () => {
 		const { output, runtime } = createRuntime();
-		cfgUsageMaskAccountLabels.set(runtime.settings, true);
+		cfgUsageMaskAccountLabels.override(runtime.settings, true);
 		runtime.session.fetchUsageReports = async () => [
 			...["alice@example.com", "alice@example.com"].map((email, index) => ({
-				provider: "openai-codex",
+				provider: "anthropic",
 				fetchedAt: Date.now(),
 				limits: [
 					{
 						id: String(index),
 						label: "5 hours",
-						scope: { provider: "openai-codex", accountId: `account-${index}` },
+						scope: { provider: "anthropic", accountId: `account-${index}` },
 						amount: { used: 1, unit: "requests" as const },
 					},
 				],
 				metadata: { email, accountId: "stale-retained-account", orgName: "Team" },
 			})),
 			{
-				provider: "openai-codex",
+				provider: "anthropic",
 				fetchedAt: Date.now(),
 				limits: [],
 				metadata: { email: "alice@example.com", accountId: "account-2", orgName: "Team" },
@@ -363,7 +363,7 @@ describe("ACP builtin slash commands", () => {
 
 	it("does not suffix masked identities that only collide across providers", async () => {
 		const { output, runtime } = createRuntime();
-		cfgUsageMaskAccountLabels.set(runtime.settings, true);
+		cfgUsageMaskAccountLabels.override(runtime.settings, true);
 		runtime.session.fetchUsageReports = async () =>
 			["openai-codex", "anthropic"].map(provider => ({
 				provider,
@@ -379,17 +379,17 @@ describe("ACP builtin slash commands", () => {
 	});
 	it("masks opaque parenthesized identifiers without dropping real organization metadata", async () => {
 		const { output, runtime } = createRuntime();
-		cfgUsageMaskAccountLabels.set(runtime.settings, true);
+		cfgUsageMaskAccountLabels.override(runtime.settings, true);
 		runtime.session.fetchUsageReports = async () => [
 			{
-				provider: "openai-codex",
+				provider: "anthropic",
 				fetchedAt: 1,
 				limits: [],
 				metadata: { accountId: "Jane Doe (finance)" },
 				resetCredits: { availableCount: 1 },
 			},
 			{
-				provider: "openai-codex",
+				provider: "anthropic",
 				fetchedAt: 1,
 				limits: [],
 				metadata: { accountId: "Jane Doe", orgName: "finance" },
@@ -404,7 +404,7 @@ describe("ACP builtin slash commands", () => {
 
 	it("preserves the generated bare account placeholder when masking no-identity reports", async () => {
 		const { output, runtime } = createRuntime();
-		cfgUsageMaskAccountLabels.set(runtime.settings, true);
+		cfgUsageMaskAccountLabels.override(runtime.settings, true);
 		runtime.session.fetchUsageReports = async () => [
 			{
 				provider: "openai-codex",
