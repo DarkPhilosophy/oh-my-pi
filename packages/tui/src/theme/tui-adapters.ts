@@ -26,7 +26,6 @@ let copyUrlHandlerReady = false;
 /** Host-supplied OSC 8 copy-target builder; the block store lives in the agent package. */
 let copyUrlTarget: ((code: string, handlerReady: boolean) => string | undefined) | undefined;
 const readyCopyChipTarget = (code: string) => copyUrlTarget?.(code, true);
-
 let cachedHighlightColors: NativeHighlightColors | undefined;
 
 function getHighlightColors(t: Theme): NativeHighlightColors {
@@ -220,7 +219,6 @@ let cachedMarkdownTheme: MarkdownTheme | undefined;
 let cachedMarkdownThemeRef: Theme | undefined;
 let markdownMermaidRendering = true;
 let codeGuidanceTrail = true;
-
 export function setMarkdownMermaidRendering(enabled: boolean): void {
 	if (markdownMermaidRendering === enabled) return;
 	markdownMermaidRendering = enabled;

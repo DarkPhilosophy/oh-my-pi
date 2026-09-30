@@ -11,6 +11,7 @@
 - `SelectList` now keeps keyboard focus on the intended item after a focus transition.
 - Fixed home directories next to shell redirections, control operators or Markdown emphasis (`<`, `>`, `&`, `|`, `*`, `_`) leaking the full path in display-only text ([#11210](https://github.com/can1357/oh-my-pi/pull/11210) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Fixed the subagent task card showing full home paths in path arguments, while keeping search patterns literal ([#11210](https://github.com/can1357/oh-my-pi/pull/11210) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added compact framed rendering for completed fenced Markdown code blocks, with width-aware wrapping and language labels while preserving raw delimiters for still-streaming fences ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 
 ### Added
 
@@ -22,6 +23,11 @@
 - Fixed a dismissed `#123`, `@` or `/` suggestion list reappearing over an empty editor after the draft was cleared (Ctrl+C, submit or history recall): replacing the whole text now closes any open suggestions.
 - Fixed the `/advisor configure` tools editor letting arrow keys move onto rows clipped by the right pane, so Enter could toggle a tool that was not visible ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - `SelectList` now keeps keyboard focus on the intended item after a focus transition ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Improved incremental Markdown lexing to reuse append-only guard scans and stable block boundaries during streaming ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
+### Fixed
+
+- Fixed narrow and nested framed Markdown code blocks so wide graphemes stay within the requested width and copy targets preserve raw source boundaries without cache collisions ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 ## [18.4.4] - 2026-09-29
 
 ### Added
