@@ -23,6 +23,8 @@ import type { DescribeContext, NativeChild, NativeNode } from "../native/node";
 import type { SymbolTheme } from "../symbols";
 import { type Component, CURSOR_MARKER, type CursorOverlayRenderer, type Focusable } from "../tui";
 import { Box } from "./box";
+import { ReferenceCaption } from "./reference-caption";
+import { ReferenceOptionsRow } from "./reference-options-row";
 import {
 	applyBackgroundToLine,
 	getSegmenter,
@@ -99,6 +101,24 @@ const AUTOCOMPLETE_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 
 /** Cursor cell (2) + frame (2) + the list's own safety margin (2) around the widest label of the contextual card. */
 const CONTEXTUAL_CARD_CHROME_WIDTH = 6;
+/** Narrowest contextual card: wide enough to wrap a typical PR title onto two rows under its options. */
+const CONTEXTUAL_CARD_MIN_WIDTH = 46;
+
+/**
+ * Width of the contextual card for a `#N` token. The options set the floor: the wider of `Issue #N` (stacked) or
+ * both labels on one row (compact), plus cursor cell, frame and margin. A host that can supply titles raises it
+ * to a width where a typical title wraps onto two rows. It depends only on the token, the layout and whether
+ * titles are possible, never on whether one is cached, so the card does not change shape when the cache warms.
+ */
+function contextualCardWidth(token: string, style: "compact" | "stacked", hasTitles: boolean): number {
+	// Compact: frame (2) + inset (2) + a cursor cell on each of the two options (4) + the divider, around both labels.
+	// Stacked: the list's own cursor cell and safety margin plus the frame, around the widest label.
+	const floor =
+		style === "compact"
+			? 8 + visibleWidth(`PR ${token}`) + visibleWidth(" | ") + visibleWidth(`Issue ${token}`)
+			: CONTEXTUAL_CARD_CHROME_WIDTH + visibleWidth(`Issue ${token}`);
+	return hasTitles ? Math.max(CONTEXTUAL_CARD_MIN_WIDTH, floor) : floor;
+}
 
 /**
  * `@` file lists are narrowed in place (`setFilter(liveToken)`) while a fresh
@@ -700,6 +720,8 @@ export class Editor implements Component, Focusable {
 	autocompleteSuggestionsPopup = false;
 	/** Show `#<number>` GitHub reference suggestions as a popup anchored to the token instead of a list below the editor. */
 	contextualTokenPopup = false;
+	/** How the anchored `#N` card lays out its options: on one row (`compact`) or one per row (`stacked`). */
+	referenceCardStyle: "compact" | "stacked" = "compact";
 	popupFill = false;
 	/**
 	 * A frame host may paint suggestions over existing cells instead of allocating layout rows.
@@ -712,6 +734,12 @@ export class Editor implements Component, Focusable {
 		editorRows: number,
 		anchor?: { col: number; width: number },
 	) => void;
+	/**
+	 * Resolve the title of a GitHub reference for the contextual card's caption. Called on every frame the
+	 * card is drawn, so it MUST be synchronous and local (a cache read): never start a network request here.
+	 * Return `undefined` when the title is not known; the card then shows the token instead.
+	 */
+	referenceTitle?: (kind: "pr" | "issue", number: string) => string | undefined;
 	/** Called after an async text-assist result mutates the document outside an input event, so hosts can schedule a repaint. */
 	onTextAssistApplied?: () => void;
 	/** Terminal height source for clamping the autocomplete dropdown. Hosts wire this to their Terminal's rows. */
@@ -881,6 +909,39 @@ export class Editor implements Component, Focusable {
 
 	#autocompleteBox = new Box(0, 0).setIgnoreTight(true);
 
+	#referenceOptionsRow = new ReferenceOptionsRow();
+	#referenceCaption = new ReferenceCaption();
+
+	/**
+	 * Fill the contextual `#N` card for the reference being typed: the two options, then the title of the
+	 * selected one when the host already knows it. `compact` draws the options on one row, `stacked` one
+	 * per row; either way the list still owns the selection, so the keys behave the same. Read per frame, so
+	 * moving between `PR` and `Issue` changes the title without a new suggestion request. Returns false
+	 * when the popup is not the contextual card, which then keeps its plain list.
+	 */
+	#fillReferenceCard(box: Box, list: SelectList): boolean {
+		const ref = this.#contextualReferenceToken();
+		if (ref === undefined) return false;
+		const selected = list.getSelectedItem();
+		const scheme = selected?.value.split("://", 1)[0];
+		const title = scheme === "pr" || scheme === "issue" ? this.referenceTitle?.(scheme, ref.slice(1)) : undefined;
+		this.#referenceCaption.set(title);
+		if (this.referenceCardStyle === "compact") {
+			const options = list
+				.pickerView()
+				.items.map(item => ({ label: item.label, selected: item.value === selected?.value }));
+			this.#referenceOptionsRow.set(options, this.#theme.symbols.cursor, {
+				selected: text => this.#theme.selectList.selectedText(text),
+				plain: text => text,
+			});
+			box.addChild(this.#referenceOptionsRow);
+		} else {
+			box.addChild(list);
+		}
+		box.addChild(this.#referenceCaption);
+		return true;
+	}
+
 	#renderAutocompleteOverlay: CursorOverlayRenderer = (width, maxRows) => {
 		if (!this.#visibleAutocompleteList() || !this.#autocompleteList || maxRows < 1) return [];
 		const framed = maxRows >= 3 && width >= 3;
@@ -893,12 +954,16 @@ export class Editor implements Component, Focusable {
 						.map(line => applyBackgroundToLine(line, width, this.#theme.surfaceColor ?? PASSTHROUGH_COLOR))
 				: this.#autocompleteList.render(width);
 		}
+		const contextual = this.#contextualReferenceToken() !== undefined;
 		this.#autocompleteBox.setBorder({
 			chars: this.#theme.symbols.boxRound,
 			color: this.#theme.accentColor ?? this.borderColor,
+			topLabel: contextual ? "GITHUB" : undefined,
 		});
 		this.#autocompleteBox.clear();
-		this.#autocompleteBox.addChild(this.#autocompleteList);
+		if (!this.#fillReferenceCard(this.#autocompleteBox, this.#autocompleteList)) {
+			this.#autocompleteBox.addChild(this.#autocompleteList);
+		}
 		return this.popupFill
 			? this.#autocompleteBox
 					.render(width)
@@ -1695,8 +1760,11 @@ export class Editor implements Component, Focusable {
 									visibleWidth(result[cursorRow]!.slice(0, result[cursorRow]!.indexOf(CURSOR_MARKER))) -
 										visibleWidth(contextualRef),
 								),
-								// Widest row is `Issue #N`: cursor cell + label, plus the frame and the list's own margin.
-								width: CONTEXTUAL_CARD_CHROME_WIDTH + visibleWidth(`Issue ${contextualRef}`),
+								width: contextualCardWidth(
+									contextualRef,
+									this.referenceCardStyle,
+									this.referenceTitle !== undefined,
+								),
 							}
 						: undefined;
 				this.onAutocompleteRender(

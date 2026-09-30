@@ -155,6 +155,7 @@ import { isMCPToolName } from "../tools/builtin-names";
 import type { LspStartupServerInfo } from "../tools";
 import { resolvePlanFilePath } from "../plan-mode/plan-files";
 import { resolveToCwd } from "../tools/path-utils";
+import { lookupCachedReferenceTitle } from "../tools/github-reference-title";
 import { StreamPublisher } from "../stream/publisher";
 import { newRecordingPath, SessionRecorder } from "../stream/recording";
 import { StreamRedactor } from "../stream/redactor";
@@ -337,6 +338,7 @@ import {
 	cfgDisplayCollapseCompacted,
 	cfgDisplayCommandSuggestionsPopup,
 	cfgDisplayContextualTokenPopup,
+	cfgDisplayContextualTokenPopupStyle,
 	cfgDisplayHideToolActivity,
 	cfgDisplayPinnedAgents,
 	cfgDisplayPopupFill,
@@ -1870,9 +1872,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.viewportRowsProvider = () => this.ui.terminal.rows;
 		this.editor.commandSuggestionsPopup = cfgDisplayCommandSuggestionsPopup.get(this.settings);
 		this.editor.contextualTokenPopup = cfgDisplayContextualTokenPopup.get(this.settings);
+		this.editor.referenceCardStyle = cfgDisplayContextualTokenPopupStyle.get(this.settings);
 		this.editor.popupFill = cfgDisplayPopupFill.get(this.settings);
 		this.editor.onAutocompleteRender = (render, offset, rows, anchor) =>
 			this.ui.setCursorOverlay(render, offset, rows, "auto", anchor);
+		this.editor.referenceTitle = (kind, number) =>
+			lookupCachedReferenceTitle(this.viewSession.sessionManager.getCwd(), kind, number);
 		this.editor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
 		};
@@ -2523,6 +2528,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 			cfgDisplayContextualTokenPopup.listen(this.settings, contextual => {
 				this.editor.contextualTokenPopup = contextual;
+				this.ui.requestRender();
+			}),
+			cfgDisplayContextualTokenPopupStyle.listen(this.settings, style => {
+				this.editor.referenceCardStyle = style;
 				this.ui.requestRender();
 			}),
 		);
@@ -7323,9 +7332,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		nextEditor.viewportRowsProvider = () => this.ui.terminal.rows;
 		nextEditor.commandSuggestionsPopup = cfgDisplayCommandSuggestionsPopup.get(this.settings);
 		nextEditor.contextualTokenPopup = cfgDisplayContextualTokenPopup.get(this.settings);
+		nextEditor.referenceCardStyle = cfgDisplayContextualTokenPopupStyle.get(this.settings);
 		nextEditor.popupFill = cfgDisplayPopupFill.get(this.settings);
 		nextEditor.onAutocompleteRender = (render, offset, rows, anchor) =>
 			this.ui.setCursorOverlay(render, offset, rows, "auto", anchor);
+		nextEditor.referenceTitle = (kind, number) =>
+			lookupCachedReferenceTitle(this.viewSession.sessionManager.getCwd(), kind, number);
 		nextEditor.magicKeywordsEnabled = () => cfgMagicKeywordsEnabled.get(this.settings);
 		nextEditor.placeholder = () => this.#composerHint();
 		nextEditor.composerState = () => this.#composerNativeState();

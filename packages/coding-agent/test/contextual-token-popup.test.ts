@@ -10,7 +10,12 @@ afterEach(() => composer?.stop());
 
 const WIDTH = 120;
 
-async function openComposer(options: { contextual: boolean; width?: number }): Promise<{
+async function openComposer(options: {
+	contextual: boolean;
+	width?: number;
+	style?: "compact" | "stacked";
+	titles?: Record<string, string>;
+}): Promise<{
 	terminal: VirtualTerminal;
 	editor: Composer["editor"];
 	paint: () => Promise<void>;
@@ -27,6 +32,12 @@ async function openComposer(options: { contextual: boolean; width?: number }): P
 	active.setRuntimeChildren([transcript, active.editor]);
 	active.editor.commandSuggestionsPopup = true;
 	active.editor.contextualTokenPopup = options.contextual;
+	// Compact is the shipped default, so the anchoring tests exercise the width users actually get.
+	active.editor.referenceCardStyle = options.style ?? "compact";
+	if (options.titles) {
+		const titles = options.titles;
+		active.editor.referenceTitle = (kind, number) => titles[`${kind}:${number}`];
+	}
 	active.editor.onAutocompleteRender = (render, offset, rows, anchor) =>
 		active.ui.setCursorOverlay(render, offset, rows, "auto", anchor);
 	active.editor.setAutocompleteProvider(
@@ -76,9 +87,14 @@ function locateLast(rows: readonly string[], needle: string): { row: number; col
 	return undefined;
 }
 
-/** Width of the contextual card for a `#N` token: cursor cell, frame and margin around the widest label. */
-function cardWidth(token: string): number {
-	return 6 + `Issue ${token}`.length;
+/**
+ * Width of the contextual card for a `#N` token: compact is frame, inset, both cursor cells and the divider around
+ * both labels; stacked is the list's cursor cell and margin plus frame around the widest label. Hosts that supply
+ * titles raise either to the width a wrapped title needs.
+ */
+function cardWidth(token: string, style: "compact" | "stacked" = "compact", hasTitles = false): number {
+	const floor = style === "compact" ? 8 + `PR ${token} | Issue ${token}`.length : 6 + `Issue ${token}`.length;
+	return hasTitles ? Math.max(46, floor) : floor;
 }
 
 it("starts the #N popup box exactly at the token column and leaves the chat text beside it", async () => {
@@ -174,9 +190,9 @@ it("keeps the existing #N list under the editor when the setting is off", async 
 	expect(label!.row).toBeGreaterThan(input!.row);
 });
 
-it("sizes the card to its content: tiny for #1, wider only when the number is long", async () => {
-	const widthOf = async (typed: string, token: string): Promise<number> => {
-		const { terminal, editor, paint } = await openComposer({ contextual: true });
+it("keeps short references at one fixed width and only grows the card for a long number", async () => {
+	const widthOf = async (typed: string, token: string, style: "compact" | "stacked"): Promise<number> => {
+		const { terminal, editor, paint } = await openComposer({ contextual: true, style });
 		editor.handleInput(typed);
 		await paint();
 		const rows = terminal.getViewport().map(Bun.stripANSI);
@@ -185,14 +201,17 @@ it("sizes the card to its content: tiny for #1, wider only when the number is lo
 		const boxRow = rows[label!.row]!;
 		return boxRow.trimEnd().length - boxRow.indexOf("│");
 	};
-	const short = await widthOf("see #1", "#1");
-	const long = await widthOf("see #123456789012345", "#123456789012345");
+	for (const style of ["stacked", "compact"] as const) {
+		const one = await widthOf("see #1", "#1", style);
+		const twelve = await widthOf("see #12", "#12", style);
+		const long = await widthOf("see #12345678901234567890", "#12345678901234567890", style);
 
-	// No blank padding for a short reference: the card is exactly as wide as its widest label.
-	expect(short).toBe(cardWidth("#1"));
-	// A long reference is a reason for a wider card, and it grows by exactly the extra digits.
-	expect(long).toBe(cardWidth("#123456789012345"));
-	expect(long - short).toBe("123456789012345".length - "1".length);
+		// Without a title source the card is sized by its content: no wide padding for hosts that cannot show titles.
+		expect(one).toBe(cardWidth("#1", style));
+		expect(long).toBe(cardWidth("#12345678901234567890", style));
+		expect(long).toBeGreaterThan(twelve);
+		expect(twelve).toBeGreaterThan(one);
+	}
 });
 
 /** Rows of the viewport that still show a #12 suggestion. */
@@ -231,4 +250,87 @@ it("dismisses the #N list below the editor when the draft is cleared with the po
 
 	expect(editor.isAutocompleteActive()).toBe(false);
 	expect(suggestionRows(terminal)).toEqual([]);
+});
+
+/** Viewport rows from the card's top border to its bottom border, ANSI stripped. */
+function cardRows(terminal: VirtualTerminal): string[] {
+	const rows = terminal.getViewport().map(Bun.stripANSI);
+	const top = rows.findIndex(row => row.includes("╭") && row.includes("GITHUB"));
+	expect(top).toBeGreaterThanOrEqual(0);
+	const start = rows[top]!.indexOf("╭");
+	const bottom = rows.findIndex((row, i) => i > top && row.includes("╰"));
+	expect(bottom).toBeGreaterThan(top);
+	return rows.slice(top, bottom + 1).map(row => row.slice(start).trimEnd());
+}
+
+const TITLES = {
+	"pr:12": "Fix the resize replay when the popup covers the input",
+	"issue:12": "Popup covers the input",
+};
+
+it("stacks PR and Issue on separate rows with the wrapped title of the selection beneath, under a GITHUB heading", async () => {
+	const { terminal, editor, paint } = await openComposer({ contextual: true, style: "stacked", titles: TITLES });
+	editor.handleInput("see #12");
+	await paint();
+
+	const card = cardRows(terminal);
+	expect(card[0]).toMatch(/^╭─+ GITHUB ─+╮$/);
+	// Drawing: the list's cursor sits flush at the frame, the unselected row is indented under it.
+	expect(card[1]).toMatch(/^│❯ PR #12 *│$/);
+	expect(card[2]).toMatch(/^│ {2}Issue #12 *│$/);
+	// The 53-character PR title does not fit one row at the card width, so it wraps beneath the options.
+	const title = card.slice(3, -1).map(row => row.slice(1, -1));
+	expect(title[0]).toMatch(/^ {2}>Fix the resize/);
+	expect(title.length).toBeGreaterThanOrEqual(2);
+	expect(title.join(" ")).toContain("input");
+
+	editor.handleInput("\x1b[B");
+	await paint();
+	const after = cardRows(terminal);
+	expect(after[2]).toMatch(/^│❯ Issue #12 *│$/);
+	expect(after.join("\n")).toContain(">Popup covers the input");
+	expect(after.join("\n")).not.toContain("Fix the resize");
+});
+
+it("puts both options on one row in the compact layout and moves the selection with Up/Down", async () => {
+	const { terminal, editor, paint } = await openComposer({ contextual: true, style: "compact", titles: TITLES });
+	editor.handleInput("see #12");
+	await paint();
+
+	const card = cardRows(terminal);
+	expect(card[0]).toMatch(/^╭─+ GITHUB ─+╮$/);
+	// Drawing: `│  ❯ PR #12 |   Issue #12`, then `│  >title`, both two cells in from the frame.
+	expect(card[1]).toMatch(/^│ {2}❯ PR #12 \| {3}Issue #12 *│$/);
+	expect(card[2]).toMatch(/^│ {2}>Fix the resize/);
+
+	editor.handleInput("\x1b[B");
+	await paint();
+	const after = cardRows(terminal);
+	expect(after[1]).toMatch(/^│ {4}PR #12 \| ❯ Issue #12 *│$/);
+	expect(after.join("\n")).toContain(">Popup covers the input");
+	expect(after.join("\n")).not.toContain("Fix the resize");
+
+	// Sized by content alone, without a title source, the row must still show both options in full.
+	composer?.stop();
+	const bare = await openComposer({ contextual: true, style: "compact" });
+	bare.editor.handleInput("see #12");
+	await bare.paint();
+	expect(cardRows(bare.terminal)[1]).toMatch(/^│ {2}❯ PR #12 \| {3}Issue #12│$/);
+});
+
+it("shows only the options when no title is cached and keeps the same card width when one appears", async () => {
+	const titled = await openComposer({ contextual: true, style: "compact", titles: TITLES });
+	titled.editor.handleInput("see #12");
+	await titled.paint();
+	// Read from this terminal now: the next openComposer replaces the active composer.
+	const withTitle = cardRows(titled.terminal);
+
+	composer?.stop();
+	const cold = await openComposer({ contextual: true, style: "compact", titles: {} });
+	cold.editor.handleInput("see #12");
+	await cold.paint();
+	const withoutTitle = cardRows(cold.terminal);
+
+	expect(withoutTitle.join("\n")).not.toContain(">");
+	expect(withoutTitle[0]!.length).toBe(withTitle[0]!.length);
 });

@@ -724,6 +724,32 @@ export const cfgDisplayContextualTokenPopup = register({
 	},
 });
 
+export const cfgDisplayContextualTokenPopupStyle = register({
+	id: "display.contextualTokenPopupStyle",
+	type: "enum",
+	values: ["compact", "stacked"] as const,
+	default: "compact",
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Contextual Reference Layout",
+		description:
+			"How the #123 popup lays out PR and Issue, with the selected one's title below when it is already cached. Applies when Contextual Reference Popup is on",
+		options: [
+			{
+				value: "compact",
+				label: "Compact",
+				description: "PR and Issue side by side on one row; switch with Up/Down",
+			},
+			{
+				value: "stacked",
+				label: "Stacked",
+				description: "PR and Issue on separate rows; switch with Up/Down",
+			},
+		],
+	},
+});
+
 export const cfgShowHardwareCursor = register({
 	id: "showHardwareCursor",
 	type: "boolean",
