@@ -11,7 +11,6 @@ import { loadAdvisorTranscriptCosts } from "@oh-my-pi/pi-coding-agent/advisor/tr
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
-import * as judgment from "@oh-my-pi/pi-coding-agent/judgment";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
@@ -30,11 +29,7 @@ function restoreEnv(key: string, value: string | undefined): void {
 import * as advisorModule from "../src/advisor";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
-import {
-	cfgAdvisorCurator,
-	cfgAdvisorEnabled,
-	cfgAdvisorMaxNotesPerUpdate,
-} from "@oh-my-pi/pi-coding-agent/advisor/settings";
+import { cfgAdvisorEnabled, cfgAdvisorMaxNotesPerUpdate } from "@oh-my-pi/pi-coding-agent/advisor/settings";
 import { TurnRecovery } from "@oh-my-pi/pi-coding-agent/session/turn-recovery";
 import { cfgCompactionKeepRecentTokens } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 
@@ -941,7 +936,6 @@ describe("AgentSession advisor toggle", () => {
 		expect(after.get("A-B")?.state.systemPrompt.join("\n")).not.toContain("first");
 	});
 	it("keeps a surviving advisor's queued note when another advisor restarts or is removed", async () => {
-		cfgAdvisorCurator.set(session.settings, "off");
 		enableAdvisor();
 		expect(session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing" }], undefined)).toBe(2);
 
@@ -970,118 +964,6 @@ describe("AgentSession advisor toggle", () => {
 			.map(build => build())
 			.filter(message => message?.role === "custom" && message.customType === "advisor");
 		expect(cards.filter(card => JSON.stringify(card).includes("Check the retry budget"))).toHaveLength(1);
-	});
-	describe("live aside curation", () => {
-		afterEach(() => {
-			// Full-suite safety: never leave the judge resolver patched for later files.
-			vi.restoreAllMocks();
-		});
-
-		async function waitForQueuedAdvisorNotes(count: number): Promise<string[]> {
-			// The coalescing window is a real timer inside the session, so there is no event to await;
-			// poll the queue with a bounded budget (documented exception to the no-timers rule).
-			const seen: string[] = [];
-			for (let attempt = 0; attempt < 80 && seen.length < count; attempt++) {
-				await Bun.sleep(25);
-				for (const build of session.yieldQueue.drainLazy()) {
-					const card = build();
-					if (card?.role === "custom" && card.customType === "advisor") seen.push(JSON.stringify(card));
-				}
-			}
-			return seen;
-		}
-
-		function adviseToolOf(name: string): advisorModule.AdviseTool {
-			const tool = session
-				.getAdvisorAgentsByName()
-				.get(name)
-				?.state.tools.find(candidate => candidate.name === "advise");
-			if (!(tool instanceof advisorModule.AdviseTool)) throw new Error(`Missing advise tool for ${name}`);
-			return tool;
-		}
-
-		it("delivers a lone streaming note after the coalescing window with the curator at its default", async () => {
-			enableAdvisor();
-			expect(session.applyAdvisorConfigs([{ name: "Security" }], undefined)).toBe(1);
-			session.agent.state.isStreaming = true;
-			try {
-				await adviseToolOf("Security").execute("lone", { note: "Guard the retry budget.", severity: "nit" });
-			} finally {
-				session.agent.state.isStreaming = false;
-			}
-			const delivered = await waitForQueuedAdvisorNotes(1);
-			expect(delivered.filter(card => card.includes("Guard the retry budget"))).toHaveLength(1);
-		});
-
-		it("holds nits for the coalescing window so parallel advisors can be curated together", async () => {
-			let judgeCalls = 0;
-			vi.spyOn(judgment, "resolveJudge").mockReturnValue({
-				judge: async () => {
-					judgeCalls++;
-					return { answers: {} };
-				},
-			} as unknown as judgment.ChainJudge);
-
-			enableAdvisor();
-			expect(session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing" }], undefined)).toBe(2);
-			session.agent.state.isStreaming = true;
-			try {
-				await adviseToolOf("Security").execute("w1", { note: "Window finding one.", severity: "nit" });
-				await adviseToolOf("Testing").execute("w2", { note: "Window finding two.", severity: "nit" });
-			} finally {
-				session.agent.state.isStreaming = false;
-			}
-
-			// Well inside the window: nothing is judged and nothing has reached the queue yet, which is
-			// what lets two advisors raising the same issue be collapsed into one note. Without the
-			// window each note is enqueued the moment it is raised, and curation never sees a pair.
-			await Bun.sleep(40);
-			expect(judgeCalls).toBe(0);
-			expect(session.yieldQueue.drainLazy()).toHaveLength(0);
-
-			// After the window the pair is judged together and both notes are delivered.
-			const delivered = (await waitForQueuedAdvisorNotes(2)).join("\n");
-			expect(judgeCalls).toBe(1);
-			expect(delivered).toContain("Window finding one");
-			expect(delivered).toContain("Window finding two");
-		});
-
-		it("delivers both groups when a second batch starts while the first is still being judged", async () => {
-			const first = Promise.withResolvers<{ answers: Record<string, unknown> }>();
-			let judgeCalls = 0;
-			vi.spyOn(judgment, "resolveJudge").mockReturnValue({
-				judge: async () => {
-					judgeCalls++;
-					// The first group's judgment stays open until the test releases it, after the second
-					// group has already started; later groups resolve immediately.
-					return judgeCalls === 1 ? first.promise : { answers: {} };
-				},
-			} as unknown as judgment.ChainJudge);
-
-			enableAdvisor();
-			expect(session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing" }], undefined)).toBe(2);
-			session.agent.state.isStreaming = true;
-			try {
-				await adviseToolOf("Security").execute("g1a", { note: "Alpha finding one.", severity: "nit" });
-				await adviseToolOf("Testing").execute("g1b", { note: "Alpha finding two.", severity: "nit" });
-				// Let the first group's window elapse so its judgment is in flight.
-				for (let attempt = 0; attempt < 200 && judgeCalls < 1; attempt++) await Bun.sleep(25);
-				expect(judgeCalls).toBe(1);
-				await adviseToolOf("Security").execute("g2a", { note: "Beta finding one.", severity: "nit" });
-				await adviseToolOf("Testing").execute("g2b", { note: "Beta finding two.", severity: "nit" });
-				for (let attempt = 0; attempt < 200 && judgeCalls < 2; attempt++) await Bun.sleep(25);
-				expect(judgeCalls).toBe(2);
-			} finally {
-				session.agent.state.isStreaming = false;
-			}
-			first.resolve({ answers: {} });
-
-			const delivered = (await waitForQueuedAdvisorNotes(4)).join("\n");
-			expect(delivered).toContain("Alpha finding one");
-			expect(delivered).toContain("Alpha finding two");
-			expect(delivered).toContain("Beta finding one");
-			expect(delivered).toContain("Beta finding two");
-		});
 	});
 	it("keeps a running advisor's own status through a roster apply that restarts another", () => {
 		enableAdvisor();

@@ -294,10 +294,6 @@ export interface AdvisorNote {
 	severity?: AdvisorSeverity;
 	/** Which configured advisor produced this note (omitted for the default advisor). */
 	advisor?: string;
-	/** Primary turns completed when note was emitted. */
-	turn?: number;
-	/** Set when the curator folded equivalent notes from other advisors into this one. */
-	curated?: boolean;
 }
 
 /** Details payload on the batched `advisor` custom message rendered in the transcript. */

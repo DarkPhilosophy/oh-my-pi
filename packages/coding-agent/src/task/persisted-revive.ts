@@ -11,6 +11,7 @@ import type { PersistedSubagentReviverFactory } from "../registry/agent-lifecycl
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { createAgentSession } from "../sdk";
 import type { AgentSession } from "../session/agent-session";
+import { installRetryFallbackRole } from "../session/retry-fallback-chains";
 import type { AuthStorage } from "../session/auth-storage";
 import { extractSessionInit, hasConversationalHistory, SessionManager } from "../session/session-manager";
 import type { EventBus } from "../utils/event-bus";
@@ -19,6 +20,7 @@ import {
 	compactionThresholdSettings,
 	createMCPProxyTools,
 	createSubagentSettings,
+	subagentRetryFallbackRole,
 } from "./executor";
 import type { AgentDefinition } from "./types";
 
@@ -133,6 +135,12 @@ export function createPersistedSubagentReviverFactory(
 					: undefined),
 				...compactionThresholdSettings(init.compactionThreshold),
 			});
+			// Restore the `subagent:<id>` fallback chain the spawn installed; the
+			// transcript alone cannot rebuild it (multi-model agent patterns and
+			// inherited role chains are resolved only at spawn).
+			if (init.retryFallback) {
+				installRetryFallbackRole(subagentSettings, subagentRetryFallbackRole(ref.id), init.retryFallback);
+			}
 			const persistedModelPattern =
 				init.modelRole && init.modelRole !== "default"
 					? [formatModelRoleAlias(init.modelRole), ...(init.resolvedModel ? [init.resolvedModel] : [])]
@@ -151,18 +159,7 @@ export function createPersistedSubagentReviverFactory(
 			const restrictToolNames = init.restrictToolNames === true;
 			const mcpManager = restrictToolNames ? undefined : MCPManager.instance();
 			const mcpProxyTools = mcpManager ? createMCPProxyTools(mcpManager) : [];
-			let parentScope: AgentSession["advisorScope"] | undefined;
-			const seen = new Set<string>();
-			let parentId = ref.parentId;
-			while (parentId && !seen.has(parentId)) {
-				seen.add(parentId);
-				const parent = registry.get(parentId);
-				if (!parent) break;
-				parentScope = parent.session?.advisorScope;
-				if (parentScope) break;
-				parentId = parent.parentId;
-			}
-			const advisorScope = parentScope ?? ctx.session.advisorScope;
+			const advisorScope = registry.inheritedAdvisorScope(ref.parentId) ?? ctx.session.advisorScope;
 			const { session } = await createAgentSession({
 				advisorScope,
 				cwd: ctx.session.sessionManager.getCwd(),
