@@ -63,6 +63,45 @@ export const cfgDisplayAutocompleteSuggestionsPopup = register({
 	},
 });
 
+export const cfgDisplayContextualTokenPopup = register({
+	id: "display.contextualTokenPopup",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Contextual Reference Popup",
+		description:
+			"Open #123 PR and issue suggestions as a compact popup above the typed token instead of a full-width band. Requires Autocomplete Suggestions Popup",
+	},
+});
+
+export const cfgDisplayContextualTokenPopupStyle = register({
+	id: "display.contextualTokenPopupStyle",
+	type: "enum",
+	values: ["compact", "stacked"] as const,
+	default: "compact",
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Contextual Reference Layout",
+		description:
+			"How the #123 popup lays out PR and Issue, with the selected one's title below (cached, or fetched once after typing settles). Applies when Contextual Reference Popup is on",
+		options: [
+			{
+				value: "compact",
+				label: "Compact",
+				description: "PR and Issue side by side on one row; switch with Left/Right or Up/Down",
+			},
+			{
+				value: "stacked",
+				label: "Stacked",
+				description: "PR and Issue on separate rows; switch with Up/Down",
+			},
+		],
+	},
+});
+
 // Appearance
 // ────────────────────────────────────────────────────────────────────────
 
@@ -407,7 +446,8 @@ export const cfgTerminalShowProgress = register({
 		tab: "appearance",
 		group: "Display",
 		label: "Native Terminal Progress",
-		description: "Emit OSC 9;4 indeterminate progress while the agent or context maintenance is running",
+		description:
+			"Emit OSC 9;4 indeterminate progress while the agent or context maintenance is running (always on in Tern)",
 	},
 });
 
@@ -708,45 +748,6 @@ export const cfgDisplayCommandSuggestionsPopup = register({
 		label: "Command Suggestions Popup",
 		description:
 			"Show slash-command and argument suggestions in a bordered popup without moving the chat or changing native scrolling",
-	},
-});
-
-export const cfgDisplayContextualTokenPopup = register({
-	id: "display.contextualTokenPopup",
-	type: "boolean",
-	default: false,
-	ui: {
-		tab: "appearance",
-		group: "Display",
-		label: "Contextual Reference Popup",
-		description:
-			"Show #123 PR and issue suggestions as a popup anchored above the typed token, instead of a list below the editor. Requires Autocomplete Suggestions Popup or Command Suggestions Popup",
-	},
-});
-
-export const cfgDisplayContextualTokenPopupStyle = register({
-	id: "display.contextualTokenPopupStyle",
-	type: "enum",
-	values: ["compact", "stacked"] as const,
-	default: "compact",
-	ui: {
-		tab: "appearance",
-		group: "Display",
-		label: "Contextual Reference Layout",
-		description:
-			"How the #123 popup lays out PR and Issue, with the selected one's title below (cached, or fetched once after typing settles). Applies when Contextual Reference Popup is on",
-		options: [
-			{
-				value: "compact",
-				label: "Compact",
-				description: "PR and Issue side by side on one row; switch with Left/Right or Up/Down",
-			},
-			{
-				value: "stacked",
-				label: "Stacked",
-				description: "PR and Issue on separate rows; switch with Up/Down",
-			},
-		],
 	},
 });
 

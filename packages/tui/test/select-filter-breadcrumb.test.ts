@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { type SelectItem, SelectList, type SelectListTheme } from "@oh-my-pi/pi-tui";
 import { currentLoopPhase, popLoopPhase, takeRecentLoopPhase } from "@oh-my-pi/pi-utils";
 
@@ -16,6 +16,13 @@ import { currentLoopPhase, popLoopPhase, takeRecentLoopPhase } from "@oh-my-pi/p
  * The phase stack is a process-global; drain it (and the consume-on-read recent
  * slot) after each case so nothing leaks across tests.
  */
+// Earlier files in the same process may leave accrued render time behind; the
+// attribution picks the largest accrued phase, so start each case from zero.
+beforeEach(() => {
+	while (currentLoopPhase() !== undefined) popLoopPhase();
+	takeRecentLoopPhase();
+});
+
 afterEach(() => {
 	while (currentLoopPhase() !== undefined) popLoopPhase();
 	takeRecentLoopPhase();

@@ -39,6 +39,7 @@ import { sanitizeDisplayWarnings } from "../render/render-utils";
 import type { TspPrefsProps, TspPrefsRow } from "@oh-my-pi/pi-wire";
 import { col, node } from "../native/describe";
 import type { DescribeContext, NativeChild, NativeNode, NativeUiEvent } from "../native/node";
+import { formatKeyHints } from "../key-hint-format";
 import { getSelectListTheme, theme } from "../theme";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import { HookEditorComponent } from "./hook-editor";
@@ -296,6 +297,11 @@ interface ScopeState {
  * (rather than extending Container) so it owns the whole frame and the mouse
  * geometry needed to make every row clickable.
  */
+/** Display form of advisor text: no tabs, control or ANSI sequences, one line. */
+function displayText(value: string): string {
+	return replaceTabs(sanitizeText(value)).replace(/\s+/g, " ").trim();
+}
+
 export class AdvisorConfigOverlayComponent implements Component {
 	#tui: TUI;
 	#deps: AdvisorConfigDeps;
@@ -341,8 +347,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#scopedModels = deps.scopedModels;
 		this.#availableToolNames = deps.availableToolNames;
 		this.#defaultModelLabel = deps.defaultModelLabel;
-		this.#projectName =
-			deps.projectName === undefined ? undefined : replaceTabs(sanitizeText(deps.projectName)).replace(/\s+/g, " ");
+		this.#projectName = deps.projectName === undefined ? undefined : displayText(deps.projectName);
 		this.#cb = callbacks;
 		this.#focus = initialScope;
 		const empty = (): WatchdogConfigDoc => ({ advisors: [] });
@@ -462,29 +467,38 @@ export class AdvisorConfigOverlayComponent implements Component {
 	}
 
 	#footerHint(): string {
+		// Keys and separator come from the active symbol preset, so the ascii preset
+		// never shows arrow or middle-dot glyphs.
+		const k = formatKeyHints;
+		const join = (...parts: string[]): string => parts.filter(Boolean).join(` ${theme.sep.dot} `);
+		const move = k(["up", "down"]);
+		const enter = k("enter");
+		const esc = k("escape");
+		const left = k("left");
+		const right = k("right");
 		if (this.#focus === "editor") {
 			switch (this.#mode) {
 				case "name":
-					return "Type a name · Enter save · Esc cancel";
+					return join("Type a name", `${enter} save`, `${esc} cancel`);
 				case "model":
-					return "Type to search · Enter / click twice picks · Esc back";
+					return join("Type to search", `${enter} / click twice picks`, `${esc} back`);
 				case "thinking":
-					return "Enter / click pick · Esc back";
+					return join(`${enter} / click pick`, `${esc} back`);
 				case "review-mode":
-					return "Enter / click choose review mode · Esc back";
+					return join(`${enter} / click choose review mode`, `${esc} back`);
 				case "review-interval":
-					return "Positive integer · Enter save · Esc cancel";
+					return join("Positive integer", `${enter} save`, `${esc} cancel`);
 				case "sync-backlog":
-					return "Enter / click choose catch-up policy · Esc back";
+					return join(`${enter} / click choose catch-up policy`, `${esc} back`);
 				case "tools":
-					return "Enter / click toggle · Done or Esc apply · ← rosters";
+					return join(`${enter} / click toggle`, `Done or ${esc} apply`, `${left} rosters`);
 				case "instructions":
 					return "";
 				default:
-					return "↑↓ move · Enter / click edit · ← rosters · Esc close";
+					return join(`${move} move`, `${enter} / click edit`, `${left} rosters`, `${esc} close`);
 			}
 		}
-		return "↑↓ move · → / Enter edit · click select · Esc close";
+		return join(`${move} move`, `${right} / ${enter} edit`, "click select", `${esc} close`);
 	}
 
 	#editorWindow(bodyWidth: number, rows: number): string[] {
@@ -513,7 +527,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const target = this.#selected();
 		const header = target
 			? theme.bold(
-					`${target.advisor.name || "(unnamed)"}  ${theme.fg("dim", `· ${this.#scopeLabel(target.scope)}`)}`,
+					`${displayText(target.advisor.name) || "(unnamed)"}  ${theme.fg("dim", `· ${this.#scopeLabel(target.scope)}`)}`,
 				)
 			: theme.bold(this.#focus === "editor" ? "Advisor" : this.#scopeLabel(this.#focus));
 		const scope = target?.scope ?? (this.#focus === "editor" ? this.#lastRosterFocus : this.#focus);
@@ -639,7 +653,12 @@ export class AdvisorConfigOverlayComponent implements Component {
 					? "Unable to load configuration"
 					: undefined;
 			for (const [index, entry] of scopeState.doc.advisors.entries()) {
-				pages.push({ id: `${scope}:advisor:${index}`, label: entry.name || "(unnamed)", icon: "advisor", group });
+				pages.push({
+					id: `${scope}:advisor:${index}`,
+					label: displayText(entry.name) || "(unnamed)",
+					icon: "advisor",
+					group,
+				});
 			}
 			pages.push({
 				id: `${scope}:shared`,
@@ -772,7 +791,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 						control: { k: "action", label: "Delete", act: "delete" },
 					},
 				);
-				sections.push({ id: "advisor", title: advisor.name || "Advisor", rows });
+				sections.push({ id: "advisor", title: displayText(advisor.name) || "Advisor", rows });
 			} else {
 				sections.push({
 					id: "shared",
@@ -1006,7 +1025,13 @@ export class AdvisorConfigOverlayComponent implements Component {
 			this.#showFields();
 			return;
 		}
-		if (data === "\x1b[D" && this.#mode !== "name" && this.#mode !== "instructions" && this.#mode !== "model") {
+		if (
+			data === "\x1b[D" &&
+			this.#mode !== "name" &&
+			this.#mode !== "instructions" &&
+			this.#mode !== "model" &&
+			this.#mode !== "review-interval"
+		) {
 			this.#focus = this.#lastRosterFocus;
 			this.#cb.requestRender();
 			return;
@@ -1124,7 +1149,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		}
 		const items: SelectItem[] = state.doc.advisors.map((advisor, index) => ({
 			value: `advisor:${index}`,
-			label: `${theme.symbol(advisor.enabled === false ? "status.disabled" : "status.enabled")} ${advisor.name || "(unnamed)"}`,
+			label: `${theme.symbol(advisor.enabled === false ? "status.disabled" : "status.enabled")} ${displayText(advisor.name) || "(unnamed)"}`,
 			description: this.#advisorSummary(advisor),
 		}));
 		if (items.length === 0)
@@ -1140,7 +1165,9 @@ export class AdvisorConfigOverlayComponent implements Component {
 		if (remembered >= 0) list.setSelectedIndex(remembered);
 		list.onSelectionChange = item => {
 			state.cursor = item.value;
-			if (this.#mode === "fields") this.#showFields();
+			// An editor left open (the thinking picker) belongs to the advisor that was selected when it opened;
+			// the new selection gets its own field list instead of a picker for the previous one.
+			this.#showFields();
 			this.#cb.requestRender();
 		};
 		list.onSelect = item => {
@@ -1233,6 +1260,9 @@ export class AdvisorConfigOverlayComponent implements Component {
 		this.#mode = mode;
 		this.#editor = component;
 		this.#editorScroll = 0;
+		// Overflow and content offset describe the editor drawn last; refresh them for this one so keys that
+		// arrive before the next frame still keep the selection inside the window.
+		if (this.#editorWindowRows > 0) this.#editorWindow(this.#editorWindowWidth, this.#editorWindowRows);
 		this.#cb.requestRender();
 	}
 
@@ -1267,7 +1297,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 						? `${theme.symbol("status.disabled")} off`
 						: `${theme.symbol("status.enabled")} on`,
 			},
-			{ value: "name", label: "Name", description: advisor.name },
+			{ value: "name", label: "Name", description: displayText(advisor.name) },
 			{ value: "model", label: "Model", description: modelDescription },
 			{ value: "reviewMode", label: "Review mode", description: reviewMode },
 			{ value: "reviewInterval", label: "Review interval", description: String(reviewInterval) },
@@ -1293,7 +1323,12 @@ export class AdvisorConfigOverlayComponent implements Component {
 			this.#fieldCursor = item.value;
 			this.#onFieldSelect(scope, index, item.value);
 		};
-		list.onCancel = () => this.#cb.close();
+		// Esc steps back to the roster like ←; only the roster closes the overlay, so a stray
+		// Esc never discards unsaved edits.
+		list.onCancel = () => {
+			this.#focus = this.#lastRosterFocus;
+			this.#cb.requestRender();
+		};
 		this.#setEditor("fields", list);
 	}
 
@@ -1552,7 +1587,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const current = shared ? doc.instructions : doc.advisors[index].instructions;
 		const title = shared
 			? `Shared instructions · ${this.#scopeLabel(scope)}`
-			: `Instructions — ${doc.advisors[index].name}`;
+			: `Instructions — ${displayText(doc.advisors[index].name) || "(unnamed)"}`;
 		const editor = new HookEditorComponent(
 			this.#tui,
 			title,

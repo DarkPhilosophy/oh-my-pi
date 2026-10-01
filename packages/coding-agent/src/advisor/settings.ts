@@ -185,6 +185,7 @@ export const cfgAdvisorCuratorContextChars = register({
    { value: "12000", label: "12k chars", description: "Default." },
    { value: "24000", label: "24k chars" },
   ],
+  condition: "advisorEnabled",
  },
 });
 

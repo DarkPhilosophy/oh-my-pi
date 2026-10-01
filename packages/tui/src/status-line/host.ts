@@ -50,6 +50,8 @@ export interface StatusLineSession {
 			orchestrationCacheRead: number;
 			premiumRequests: number;
 			cost: number;
+			/** Portion of `cost` carried by completed subagent task results. */
+			subagentCost?: number;
 		};
 	};
 	modelRegistry: {

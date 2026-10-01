@@ -156,6 +156,8 @@ export class OAuthAccounts implements OAuthApi {
 			apiEndpoint: credential.apiEndpoint,
 			orgId: credential.orgId,
 			orgName: credential.orgName,
+			region: credential.region,
+			inferenceRegion: credential.inferenceRegion,
 		};
 	}
 
@@ -211,6 +213,8 @@ export class OAuthAccounts implements OAuthApi {
 				enterpriseUrl: credential.enterpriseUrl,
 				orgId: credential.orgId,
 				orgName: credential.orgName,
+				region: credential.region,
+				inferenceRegion: credential.inferenceRegion,
 			};
 		} catch (error) {
 			return {

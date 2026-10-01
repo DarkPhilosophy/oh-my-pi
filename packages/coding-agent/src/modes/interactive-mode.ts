@@ -121,6 +121,9 @@ import planModeApprovedPrompt from "../prompts/system/plan-mode-approved.md" wit
 import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compact-instructions.md" with { type: "text" };
 import type { AgentHubRegistry } from "@oh-my-pi/pi-tui/overlays/agent-hub-types";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { registerPersistedSubagents } from "../registry/persisted-agents";
+import type { AgentMetrics } from "@oh-my-pi/pi-tui/overlays/agent-hub-projection";
+import { sumSubagentTreeCost } from "./agent-hub-runtime";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -243,6 +246,7 @@ import { type PlanReviewAnnotationState, PlanReviewOverlay } from "@oh-my-pi/pi-
 import { PlanSaveOverlay, type PlanSaveOverlayResult } from "@oh-my-pi/pi-tui/overlays/plan-save-overlay";
 import { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
 import { SessionInfoOverlay } from "@oh-my-pi/pi-tui/overlays/session-info-overlay";
+import { JobsSheet } from "@oh-my-pi/pi-tui/overlays/jobs-panel";
 import { SkillMessageComponent } from "@oh-my-pi/pi-tui/chat/skill-message";
 import { advisorActivityLabel, StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "./status-line-host";
@@ -414,6 +418,8 @@ const cfgLiveUiSettings = combine({
 	autocompleteMaxVisible: cfgAutocompleteMaxVisible,
 	"display.commandSuggestionsPopup": cfgDisplayCommandSuggestionsPopup,
 	"display.autocompleteSuggestionsPopup": cfgDisplayAutocompleteSuggestionsPopup,
+	"display.contextualTokenPopup": cfgDisplayContextualTokenPopup,
+	"display.contextualTokenPopupStyle": cfgDisplayContextualTokenPopupStyle,
 	"display.popupFill": cfgDisplayPopupFill,
 	"spelling.typoDetection": cfgSpellingTypoDetection,
 	"spelling.autocomplete": cfgSpellingAutocomplete,
@@ -710,9 +716,9 @@ class HudPillsRow implements Component {
 		return this.mode.describeHudPills();
 	}
 
-	/** A click on the jobs pill opens `/jobs`. */
+	/** A click on the jobs pill opens the jobs sheet. */
 	handleNativeEvent(event: NativeUiEvent): void {
-		if (event.type === "action" && event.act === "jobs.open") void this.mode.handleJobsCommand();
+		if (event.type === "action" && event.act === "jobs.open") this.mode.showJobsSheet();
 	}
 }
 
@@ -797,9 +803,10 @@ function isHudSubagent(session: ObservableSession): boolean {
 export class SubagentHudComponent implements Component {
 	readonly #text: Text;
 	#lines: readonly string[];
-	readonly #order: readonly string[];
-	readonly #toggleLine: number | undefined;
-	readonly #native: SubagentHudNative | undefined;
+	#order: readonly string[];
+	#toggleLine: number | undefined;
+	#node: NativeNode;
+	readonly #onOpen: (() => void) | undefined;
 	#physicalOwner?: (string | undefined)[];
 	#renderedWidth?: number;
 	#renderedRows = 0;
@@ -809,28 +816,29 @@ export class SubagentHudComponent implements Component {
 		this.#lines = lines;
 		this.#order = order;
 		this.#toggleLine = toggleRow;
-		this.#native = native;
+		this.#node = native?.node ?? EMPTY_HUD;
+		this.#onOpen = native?.onOpen;
 	}
 
 	describe(): NativeNode {
-		return this.#native?.node ?? EMPTY_HUD;
+		return this.#node;
 	}
 
 	/** A click on the pill opens the agent hub, as the hub key does. */
 	handleNativeEvent(event: NativeUiEvent): void {
-		if (event.type === "action" && event.act === "agents.open") this.#native?.onOpen();
+		if (event.type === "action" && event.act === "agents.open") this.#onOpen?.();
 	}
-	/** Same agents and expander row as `order`/`toggleRow`, so `setLines` can repaint in place. */
-	hasLayout(order: readonly string[], toggleRow: number | undefined): boolean {
-		return (
-			this.#toggleLine === toggleRow &&
-			this.#order.length === order.length &&
-			this.#order.every((id, index) => id === order[index])
-		);
-	}
-	/** Repaint rows in place (keeps component identity for the HUD memo); the click map rebuilds lazily. */
-	setLines(lines: readonly string[]): void {
-		if (!this.#text.setText(lines.join("\n"))) return;
+	/**
+	 * Repaint in place with a new view. Keeping the instance keeps its native
+	 * wire id, so the dock pill stays mounted (a fresh component would be
+	 * removed and re-added, replaying its entrance) and the HUD memo holds.
+	 * The click map rebuilds lazily.
+	 */
+	update(lines: readonly string[], order: readonly string[], toggleRow: number | undefined, node: NativeNode): void {
+		this.#node = node;
+		this.#order = order;
+		this.#toggleLine = toggleRow;
+		this.#text.setText(lines.join("\n"));
 		this.#lines = lines;
 		this.#physicalOwner = undefined;
 	}
@@ -1570,6 +1578,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#planReviewOverlay: PlanReviewOverlay | undefined;
 	#planReviewOverlayHandle: OverlayHandle | undefined;
 	#sessionInfoOverlayHandle: OverlayHandle | undefined;
+	#jobsSheetHandle: OverlayHandle | undefined;
 	#planReviewCancel: (() => void) | undefined;
 	/** Serializable review annotations keyed by the resolved plan file path. */
 	#planReviewAnnotationState = new Map<string, PlanReviewAnnotationState>();
@@ -1715,6 +1724,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#runningSubagentCount = 0;
 	#agentRegistryUnsubscribe?: () => void;
 	#agentRegistrySubscriptionTarget?: AgentHubRegistry;
+	#subagentSessionMetrics = new WeakMap<object, { metrics: AgentMetrics | undefined }>();
+	#subagentCostHydratedRoot?: string;
 	#mcpStatusOrder: string[] = [];
 	#mcpPendingServers = new Set<string>();
 	#mcpConnectedServers = new Set<string>();
@@ -2577,12 +2588,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		// The preset may have switched before this listener existed.
 		this.#refreshSlashCommandIcons();
 		// A confirmed Glyph Protocol handshake means omp's own icons render in
-		// this terminal without a Nerd Font, so the default `unicode` preset is
-		// upgraded to `nerd` for this session. The persisted setting is left
+		// this terminal without a Nerd Font, so the unconfigured `unicode` preset
+		// is upgraded to `nerd` for this session. The persisted setting is left
 		// alone: it travels to terminals (ssh, tmux) where the upgrade would
-		// show tofu. Explicit `ascii`/`nerd` choices are never touched.
+		// show tofu. Explicit preset choices are never touched.
 		this.ui.terminal.onGlyphProtocolReport?.(supported => {
-			if (!supported || cfgSymbolPreset.get(this.settings) !== "unicode" || theme.getSymbolPreset() !== "unicode")
+			if (
+				!supported ||
+				cfgSymbolPreset.provenance(this.settings) !== "default" ||
+				theme.getSymbolPreset() !== "unicode"
+			)
 				return;
 			void setSymbolPreset("nerd").then(() => {
 				this.statusLine.invalidate();
@@ -3581,9 +3596,19 @@ export class InteractiveMode implements InteractiveModeContext {
 			// setPreferences re-themes the editor, which resets its mode-tinted border.
 			this.updateEditorBorderColor();
 		}
-		if (any("display.commandSuggestionsPopup", "display.autocompleteSuggestionsPopup", "display.popupFill")) {
+		if (
+			any(
+				"display.commandSuggestionsPopup",
+				"display.autocompleteSuggestionsPopup",
+				"display.contextualTokenPopup",
+				"display.contextualTokenPopupStyle",
+				"display.popupFill",
+			)
+		) {
 			this.editor.commandSuggestionsPopup = cfgDisplayCommandSuggestionsPopup.get(this.settings);
 			this.editor.autocompleteSuggestionsPopup = cfgDisplayAutocompleteSuggestionsPopup.get(this.settings);
+			this.editor.contextualTokenPopup = cfgDisplayContextualTokenPopup.get(this.settings);
+			this.editor.referenceCardStyle = cfgDisplayContextualTokenPopupStyle.get(this.settings);
 			this.editor.popupFill = cfgDisplayPopupFill.get(this.settings);
 			this.ui.requestRender();
 		}
@@ -3816,7 +3841,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 
-	/** Refresh the running-subagents status badge from the active local or collab registry. */
+	/**
+	 * Refresh the running-subagents status badge from the active local or collab
+	 * registry, and the cost segment's subagent-tree spend (local sessions only:
+	 * a collab guest's registry mirrors host transcripts outside this root).
+	 */
 	syncRunningSubagentBadge(options: { requestRender?: boolean } = {}): void {
 		const registry = getRunningSubagentBadgeRegistry(this.collabGuest, AgentRegistry.global());
 		if (this.#agentRegistrySubscriptionTarget !== registry) {
@@ -3829,7 +3858,37 @@ export class InteractiveMode implements InteractiveModeContext {
 		const agentIds = getRunningSubagentBadgeAgentIds(registry);
 		this.#runningSubagentCount = agentIds.length;
 		this.statusLine.setRunningSubagents(agentIds);
+		if (this.collabGuest) {
+			this.statusLine.setSubagentTreeCost(0);
+		} else {
+			const rootSessionFile = this.sessionManager.getSessionFile() ?? undefined;
+			this.#hydratePersistedSubagentCosts(rootSessionFile);
+			this.statusLine.setSubagentTreeCost(
+				sumSubagentTreeCost({
+					refs: AgentRegistry.global().list(),
+					observers: this.#observerRegistry,
+					rootSessionFile,
+					sessionMetrics: this.#subagentSessionMetrics,
+				}),
+			);
+		}
 		if (options.requestRender !== false) this.ui.requestRender();
+	}
+
+	/**
+	 * Register a resumed session's persisted subagent transcripts (with usage
+	 * history) so the status line's tree cost matches the Agent Hub without it
+	 * being opened first. Once per on-disk root; registry changes re-sync the cost.
+	 */
+	#hydratePersistedSubagentCosts(rootSessionFile: string | undefined): void {
+		if (!rootSessionFile || this.#subagentCostHydratedRoot === rootSessionFile) return;
+		if (!this.sessionManager.isSessionOnDisk()) return;
+		this.#subagentCostHydratedRoot = rootSessionFile;
+		registerPersistedSubagents(AgentRegistry.global(), rootSessionFile, {
+			shouldContinue: () => this.sessionManager.getSessionFile() === rootSessionFile,
+		}).catch(error => {
+			logger.warn("Persisted subagent cost hydration failed", { rootSessionFile, error: String(error) });
+		});
 	}
 
 	/** What the TSP composer shows: the draft's shell mode, the effort chip, and send vs Stop. */
@@ -3843,7 +3902,24 @@ export class InteractiveMode implements InteractiveModeContext {
 					: undefined,
 			thinking: thinkingLevelWord(this.session),
 			running: this.loadingAnimation !== undefined || this.session.isStreaming,
+			viewing: this.#viewingLineage(),
 		};
+	}
+
+	/** The focused subagent and its live ancestors below main, outermost first; undefined on the main session. */
+	#viewingLineage(): string[] | undefined {
+		const id = this.focusedAgentId;
+		if (!id) return undefined;
+		const registry = AgentRegistry.global();
+		const lineage = [id];
+		for (
+			let parent = registry.get(id)?.parentId;
+			parent && parent !== MAIN_AGENT_ID && !lineage.includes(parent) && registry.get(parent);
+			parent = registry.get(parent)?.parentId
+		) {
+			lineage.unshift(parent);
+		}
+		return lineage;
 	}
 
 	/** Placeholder for the empty composer; see `COMPOSER_HINTS` for the registered hints. */
@@ -4721,15 +4797,22 @@ export class InteractiveMode implements InteractiveModeContext {
 	 */
 	#renderSubagentList(): void {
 		this.#cancelSubagentPreviewTick();
-		this.subagentContainer.clear();
 		const view = this.#buildSubagentHudView();
-		if (!view) return;
-		this.subagentContainer.addChild(
-			new SubagentHudComponent(view.lines, view.order, view.toggleRow, {
-				node: describeSubagentHud(view.sessions),
-				onOpen: () => this.showAgentHub(),
-			}),
-		);
+		if (!view) {
+			this.subagentContainer.clear();
+			return;
+		}
+		const node = describeSubagentHud(view.sessions);
+		const hud = this.subagentContainer.children[0];
+		if (hud instanceof SubagentHudComponent) hud.update(view.lines, view.order, view.toggleRow, node);
+		else {
+			this.subagentContainer.addChild(
+				new SubagentHudComponent(view.lines, view.order, view.toggleRow, {
+					node,
+					onOpen: () => this.showAgentHub(),
+				}),
+			);
+		}
 		this.#armSubagentPreviewTick(view.tickMs);
 	}
 
@@ -4769,26 +4852,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (tickMs === undefined) return;
 		this.#subagentPreviewTickTimer = setTimeout(() => {
 			this.#subagentPreviewTickTimer = undefined;
-			this.#tickSubagentPreview();
+			this.#renderSubagentList();
+			this.ui.requestRender();
 		}, tickMs);
 		this.#subagentPreviewTickTimer.unref?.();
-	}
-
-	/**
-	 * Elapsed-marker tick: with the same agents listed, repaint the existing HUD
-	 * in place so the native HUD memo and component identity survive; any
-	 * layout change falls back to a full rebuild.
-	 */
-	#tickSubagentPreview(): void {
-		const hud = this.subagentContainer.children[0];
-		const view = this.#buildSubagentHudView();
-		if (view && hud instanceof SubagentHudComponent && hud.hasLayout(view.order, view.toggleRow)) {
-			hud.setLines(view.lines);
-			this.#armSubagentPreviewTick(view.tickMs);
-		} else {
-			this.#renderSubagentList();
-		}
-		this.ui.requestRender();
 	}
 
 	#cancelSubagentPreviewTick(): void {
@@ -7403,9 +7470,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * user actually typed it. A one-row notice appears only once the wait is long
 	 * enough for a human to notice it: most responses end in well under a second,
 	 * and a row that flashes by is noise rather than information.
+	 *
+	 * A Tern Surface Protocol surface has no append-only scrollback to
+	 * duplicate into, so there the panel mounts in the transcript at once.
 	 */
 	presentCommandOutput(content: Component | readonly Component[]): void {
-		if (!this.session.isStreaming) {
+		if (!this.session.isStreaming || this.ui.nativeRendering) {
 			this.present(content);
 			return;
 		}
@@ -7486,6 +7556,35 @@ export class InteractiveMode implements InteractiveModeContext {
 			margin: 0,
 		});
 		this.ui.setFocus(overlay);
+		this.ui.requestRender();
+	}
+
+	/**
+	 * The jobs pill's sheet: live background jobs in a dismissable overlay.
+	 * Unlike `/jobs` it adds nothing to the transcript, so a click mid-turn
+	 * leaves no deferred command preview above the editor.
+	 */
+	showJobsSheet(): void {
+		if (this.#jobsSheetHandle) return;
+		if (!this.session.getAsyncJobSnapshot()) {
+			this.showWarning("Async background jobs are unavailable in this session.");
+			return;
+		}
+		const sheet = new JobsSheet(
+			() => this.session.getAsyncJobSnapshot({ recentLimit: 5 }) ?? { running: [], recent: [] },
+			() => this.#hideJobsSheet(),
+		);
+		this.#jobsSheetHandle = this.ui.showOverlay(sheet, { anchor: "center", width: "90%", maxHeight: "90%" });
+		this.ui.setFocus(sheet);
+		this.ui.requestRender();
+	}
+
+	#hideJobsSheet(): void {
+		const handle = this.#jobsSheetHandle;
+		this.#jobsSheetHandle = undefined;
+		if (!handle) return;
+		handle.hide();
+		this.#selectorController.focusActiveEditorArea();
 		this.ui.requestRender();
 	}
 
@@ -7589,7 +7688,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	showPinnedError(message: string): void {
 		this.#dismissPlanReview();
 		this.errorBannerContainer.clear();
-		this.errorBannerContainer.addChild(new ErrorBannerComponent(message));
+		this.errorBannerContainer.addChild(new ErrorBannerComponent(message, () => this.clearPinnedError()));
 		this.ui.requestRender();
 	}
 

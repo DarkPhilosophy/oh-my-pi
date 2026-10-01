@@ -167,6 +167,22 @@ describe("InteractiveMode mid-turn command output", () => {
 		expect(anchoredText(mode)).not.toContain("command output");
 	});
 
+	it("mounts mid-turn output straight into the transcript on a Tern surface", async () => {
+		const { mode, setStreaming } = await createHarness();
+		setStreaming(true);
+		// A native surface reconciles a document instead of appending scrollback, so there is nothing to
+		// duplicate and no reason to hold the panel back until the message boundary.
+		Object.defineProperty(mode.ui, "nativeRendering", { configurable: true, get: () => true });
+		try {
+			mode.presentCommandOutput(new Text("Context 112K / 1m", 1, 0));
+		} finally {
+			Reflect.deleteProperty(mode.ui, "nativeRendering");
+		}
+
+		expect(queuedNoticeRows(mode)).toEqual([]);
+		expect(transcriptText(mode)).toContain("Context 112K / 1m");
+	});
+
 	it("drops queued output when the session is reset before the boundary", async () => {
 		const { mode, setStreaming } = await createHarness();
 		setStreaming(true);

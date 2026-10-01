@@ -7,3 +7,4 @@ export * from "./loop-guard";
 export * from "./runtime";
 export * from "./transcript-recorder";
 export * from "./watchdog";
+export * from "./curator";

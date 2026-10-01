@@ -10,6 +10,7 @@ import {
 	cfgModelRoleStorage,
 } from "../config/model-settings";
 import { cfgDefaultThinkingLevel, cfgRetryFallbackChains } from "../session/settings";
+import { cfgDisplayPopupFill } from "./settings";
 
 /** Supply live model-overlay preferences and runtime resolution from the host. */
 export function createModelBrowserSource(settings: Settings): ModelHubSource {
@@ -43,6 +44,9 @@ export function createModelBrowserSource(settings: Settings): ModelHubSource {
 		},
 		get cycleOrder() {
 			return cfgCycleOrder.get(settings);
+		},
+		get popupFill() {
+			return cfgDisplayPopupFill.get(settings);
 		},
 		getModelRole: role => settings.getModelRole(role),
 		getProjectModelRole: role => settings.getProjectModelRole(role),

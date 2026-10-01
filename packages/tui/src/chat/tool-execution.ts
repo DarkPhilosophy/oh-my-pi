@@ -99,6 +99,11 @@ function isEditLikeToolName(toolName: string): boolean {
 	return toolName === "edit" || toolName === "apply_patch";
 }
 
+/** Tools whose arguments stream a growing file body or diff into the card (edit, apply_patch, write). */
+function streamsBody(toolName: string): boolean {
+	return isEditLikeToolName(toolName) || toolName === "write";
+}
+
 function resolveEditModeForTool(toolName: string, tool: AgentTool | undefined): EditMode | undefined {
 	if (toolName === "apply_patch") return "apply_patch";
 	if (toolName !== "edit") return undefined;
@@ -803,7 +808,7 @@ export class ToolExecutionComponent extends Container {
 		// them. Todo snapshots and detached background tool progress are deliberate
 		// static exceptions because their rows can be superseded or committed to
 		// scrollback while later updates continue elsewhere.
-		const isStreamingArgs = !this.#argsComplete && (isEditLikeToolName(this.#toolName) || this.#toolName === "write");
+		const isStreamingArgs = !this.#argsComplete && streamsBody(this.#toolName);
 		const isBackgroundAsyncRunning =
 			(this.#result?.details as { async?: { state?: string } } | undefined)?.async?.state === "running";
 		const renderer = this.#renderer;
@@ -1211,6 +1216,17 @@ export class ToolExecutionComponent extends Container {
 		return Math.max(0, Math.round((ended ?? performance.now()) - started));
 	}
 
+	/**
+	 * The native `collapsed` prop: the transcript's expand state, except that a
+	 * call streaming its body (edit, write) stays open until it settles, then
+	 * folds like a finished thought. The user's own toggle still wins meanwhile:
+	 * the terminal keeps local collapse state until this prop changes.
+	 */
+	#nativeCollapsed(status: TspCardStatus): boolean {
+		const live = status === "pending" || status === "running";
+		return !this.#expanded && !(live && streamsBody(this.#toolName));
+	}
+
 	/** The late diagnostics section and head chip, when LSP reported after the result. */
 	#lateDiagnosticsParts(): { section?: NativeNode; chip?: { text: string; tone: TspTone } } {
 		const files = this.#lateDiagnostics;
@@ -1269,7 +1285,7 @@ export class ToolExecutionComponent extends Container {
 				intent: typeof intent === "string" && intent ? plainText(intent) : undefined,
 				frame: inline ? "inline" : "card",
 				collapsible: hasBody,
-				collapsed: hasBody ? !this.#expanded : undefined,
+				collapsed: hasBody ? this.#nativeCollapsed(status) : undefined,
 				preview: hasBody ? (preview === "auto" ? { lines: DEFAULT_TERMINAL_PREVIEW_LINES } : preview) : undefined,
 				tools: view.tools,
 				tone: view.tone,
@@ -1337,7 +1353,7 @@ export class ToolExecutionComponent extends Container {
 				tone: view.tone ?? NATIVE_STATUS_TONE[status],
 				status,
 				collapsible: hasBody,
-				collapsed: hasBody ? !this.#expanded : undefined,
+				collapsed: hasBody ? this.#nativeCollapsed(status) : undefined,
 				preview: hasBody ? cardPreview(view.preview) : undefined,
 			},
 			children,
