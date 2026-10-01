@@ -1,6 +1,7 @@
 import type { Component } from "../tui";
 import { Ellipsis, renderStatusLine, renderTreeList, truncateToWidth } from "../render";
 import {
+	formatEarlierLines,
 	cappedHeadLines,
 	formatBadge,
 	formatDuration,
@@ -232,7 +233,10 @@ export function renderProcRead(
 					line =>
 						`  ${styleTerminalRow(truncateToWidth(safe(line), TRUNCATE_LENGTHS.LINE, Ellipsis.Unicode), theme.fg("toolOutput", ""))}`,
 				);
-			if (output.length > limit) visible.unshift(theme.fg("dim", `  … ${output.length - limit} earlier lines`));
+			if (output.length > limit)
+				visible.unshift(
+					theme.fg("dim", `  ${formatEarlierLines({ hidden: output.length - limit, shown: limit })}`),
+				);
 			return [header, ...visible];
 		}
 		if (id && !details?.jobs && !details?.daemons && !details?.agents) {

@@ -7,12 +7,21 @@ import { styledSpans } from "../native/spans";
 import { code, md, span } from "../native/describe";
 import type { NativeNode } from "../native/node";
 import { getMarkdownTheme, highlightCode, type Theme } from "../theme/theme";
-import { formatDuration, formatExpandHint, formatMoreItems, formatStatusIcon, replaceTabs } from "./render-utils";
+import {
+	formatDuration,
+	formatEarlierLines,
+	formatExpandHint,
+	formatMoreItems,
+	formatStatusIcon,
+	replaceTabs,
+} from "./render-utils";
 import {
 	describeOutputBlock,
 	type NativeOutputBlockSection,
 	outputBlockContentWidth,
 	renderOutputBlock,
+	renderOutputBlockStaged,
+	type StagedOutputBlock,
 } from "./output-block";
 import {
 	describeOutputLines,
@@ -37,7 +46,7 @@ export interface CodeCellOptions {
 	codeMaxLines?: number;
 	/**
 	 * Show the LAST `codeMaxLines` rows (the live streaming edge) instead of the
-	 * first, with a "… N earlier lines" marker on top. Lets a pending preview
+	 * first, with a "… (N earlier lines, showing X of Y)" marker on top. Lets a pending preview
 	 * follow code as it is written while staying bounded. Ignored when `expanded`.
 	 */
 	codeTail?: boolean;
@@ -52,6 +61,15 @@ export interface CodeCellOptions {
 	width: number;
 	codeStartLine?: number;
 	codeLineNumbers?: Array<number | null>;
+	/**
+	 * Two-stage card: the head and code rows carry no run state or duration (their bytes never change, so they
+	 * can be written to history while the cell runs) and the `Output · <status> · <duration>` separator below
+	 * carries them. The separator is drawn whenever the cell is running or finished, even with no output yet.
+	 * Opt-in so read/write/browser code cells keep their one-box layout.
+	 */
+	stagedStatus?: boolean;
+	/** Narrowest the lower box may be (staged cells); its owner passes the widest it has drawn so it only grows. */
+	minLiveWidth?: number;
 }
 
 function getState(status?: CodeCellOptions["status"]): State | undefined {
@@ -64,7 +82,11 @@ function getState(status?: CodeCellOptions["status"]): State | undefined {
 }
 
 function formatHeader(options: CodeCellOptions, theme: Theme): { title: string; meta?: string } {
-	const { index, total, title, status, spinnerFrame, duration, language, showLanguage } = options;
+	const { index, total, title, language, showLanguage } = options;
+	// A staged head is final once the arguments are: no status icon and no duration, both live on the separator.
+	const status = options.stagedStatus ? undefined : options.status;
+	const { spinnerFrame } = options;
+	const duration = options.stagedStatus ? undefined : options.duration;
 	const parts: string[] = [];
 	if (showLanguage && language) {
 		const langIcon = theme.getLangIconStyled(language);
@@ -106,6 +128,28 @@ function formatHeader(options: CodeCellOptions, theme: Theme): { title: string; 
 	return { title: headerTitle, meta: metaParts.join(theme.fg("dim", theme.sep.dot)) };
 }
 
+/**
+ * The `Output · <status>[ · <duration>]` separator of a staged cell: static text, so the row changes only when the
+ * cell changes state, never per frame (no spinner glyph).
+ */
+function stagedOutputLabel(options: CodeCellOptions, theme: Theme): string {
+	const status = options.status;
+	const state =
+		status === "error"
+			? `${theme.styledSymbol("status.error", "error")} failed`
+			: status === "warning"
+				? `${theme.styledSymbol("status.warning", "warning")} warning`
+				: status === "complete"
+					? theme.styledSymbol("status.success", "success")
+					: // Only a running cell carries the loading glyph; finished states stay static text.
+						options.spinnerFrame !== undefined
+						? `${formatStatusIcon("running", theme, options.spinnerFrame)} Running`
+						: "Running";
+	const parts = [theme.fg("toolTitle", "Output"), state];
+	if (options.duration !== undefined) parts.push(theme.fg("dim", formatDuration(options.duration)));
+	return parts.join(theme.sep.dot);
+}
+
 function renderCellOutput(
 	output: string | undefined,
 	expanded: boolean,
@@ -128,6 +172,11 @@ function renderCellOutput(
 
 /** Render a syntax-highlighted code preview and its optional output block. */
 export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[] {
+	return renderCodeCellStaged(options, theme).lines;
+}
+
+/** {@link renderCodeCell} that also reports the staged block's top-stage row count and lower-box width. */
+export function renderCodeCellStaged(options: CodeCellOptions, theme: Theme): StagedOutputBlock {
 	const {
 		code,
 		language,
@@ -184,7 +233,7 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 		if (tail) {
 			// Earlier rows scrolled above the live tail window — mark them on top so
 			// the newest streamed line stays pinned to the bottom of the box.
-			const earlier = `… ${hiddenCodeLines} earlier line${hiddenCodeLines === 1 ? "" : "s"}`;
+			const earlier = formatEarlierLines({ hidden: hiddenCodeLines, shown: maxCodeLines });
 			codeLines.unshift(`${theme.fg("dim", gutterPad + earlier)}${hint ? ` ${hint}` : ""}`);
 		} else {
 			const moreLine = formatMoreItems(hiddenCodeLines, "line");
@@ -195,11 +244,33 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 	const outputLines = renderCellOutput(output, expanded, outputMaxLines, theme);
 
 	const sections: Array<{ label?: string; lines: readonly string[] }> = [{ lines: codeLines }];
-	if (outputLines.length > 0) {
+	const running =
+		options.status === "running" ||
+		options.status === "complete" ||
+		options.status === "error" ||
+		options.status === "warning";
+	if (options.stagedStatus) {
+		// The separator carries the state even when the cell has produced nothing yet, but only once it runs:
+		// a cell that has not started has no lower stage at all.
+		if (running) sections.push({ label: stagedOutputLabel(options, theme), lines: outputLines });
+	} else if (outputLines.length > 0) {
 		sections.push({ label: theme.fg("toolTitle", "Output"), lines: outputLines });
 	}
 
-	return renderOutputBlock({ header: title, headerMeta: meta, state, sections, width, fitToContent: true }, theme);
+	return renderOutputBlockStaged(
+		{
+			header: title,
+			headerMeta: meta,
+			// Staged: neutral top, state colour only on the output stage; the box widths come from the two stages.
+			state,
+			stageTone: options.stagedStatus ? "success" : undefined,
+			minLiveWidth: options.stagedStatus ? options.minLiveWidth : undefined,
+			sections,
+			width,
+			fitToContent: true,
+		},
+		theme,
+	);
 }
 
 type CellHeaderOptions = Pick<CodeCellOptions, "index" | "total" | "title" | "duration" | "language" | "showLanguage">;

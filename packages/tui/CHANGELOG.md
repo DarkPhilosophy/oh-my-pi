@@ -10,6 +10,12 @@
 ### Fixed
 
 - Command suggestions appear in a bordered popup over screen cells without moving the live/history boundary; filtering and dismissal restore covered text without rebuilding scrollback.
+- Fixed the whole interface being rewritten (scrollback cleared and replayed) when the terminal's scrollbar returned a few seconds after a fullscreen overlay such as `/advisor config` or `/usage` closed.
+- Fixed the chat staying parked high, with a blank gap below it, after an inline dialog such as an `ask` prompt was answered on a long transcript: the dialog now covers transcript rows instead of pushing them into scrollback, so the chat settles back at the bottom.
+- Fixed the chat staying parked high, with a blank gap below the editor, when a long `edit` preview collapsed into a short error: the running card now covers transcript rows instead of pushing them into scrollback.
+- Fixed the `write` preview changing height from chunk to chunk while long lines streamed in: its window is now measured in wrapped screen rows, the same for the streaming and the finished card.
+- Changed collapsed output, code and file previews to share one hidden-rows marker, `… (84 earlier lines, showing 10 of 94)`, instead of a shorter variant that left out the counts; the marker is clipped to one row on narrow terminals.
+- Changed the `bash` card so its command stays in one neutral frame and the run state (`Running`, success, `failed`, `timed out`) shows on the `Output` separator instead of the header, which keeps the header and command rows identical from the pending call to the finished result.
 
 ### Added
 

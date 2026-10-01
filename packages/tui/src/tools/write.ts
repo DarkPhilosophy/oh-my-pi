@@ -5,7 +5,9 @@ import { getLanguageFromPath } from "../lang-from-path";
 import { createHighlightStream, highlightCode, type Theme } from "../theme/theme";
 import { fileHyperlink, renderStatusLine } from "../render";
 import { framedToolCard } from "../render/tool-card";
+import { tailLinesWithinVisualRows } from "../render/visual-tail";
 import {
+	formatEarlierLines,
 	cachedRenderedString,
 	createRenderedStringCache,
 	Ellipsis,
@@ -88,7 +90,6 @@ interface WriteRenderArgs {
 
 /** Collapsed native write body: the first lines of the file (§7.3). */
 const NATIVE_WRITE_PREVIEW = { lines: 8 } as const;
-
 
 function countLines(text: string): number {
 	if (!text) return 0;
@@ -237,6 +238,24 @@ function updateStreamingPreview(
 	return state;
 }
 
+/**
+ * First logical line of the collapsed preview window. Sized in physical rows at the card's inner
+ * width (less the line-number gutter) so wrapping lines cannot make the window swing in height; with
+ * no known width, or no wrapping, it is the last `PREVIEW_LIMITS.EXPANDED_LINES` logical lines.
+ */
+/** Clip a marker row to the card's inner width so a narrow terminal cannot wrap it onto a second row. */
+function fitMarker(marker: string, contentWidth: number | undefined): string {
+	return contentWidth === undefined ? marker : truncateToWidth(marker, Math.max(1, contentWidth));
+}
+
+function previewWindowStart(lines: readonly string[], totalLines: number, contentWidth: number | undefined): number {
+	const logicalStart = Math.max(0, totalLines - PREVIEW_LIMITS.EXPANDED_LINES);
+	if (contentWidth === undefined) return logicalStart;
+	const gutter = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length) + 1;
+	const textWidth = Math.max(1, contentWidth - gutter);
+	return Math.max(logicalStart, tailLinesWithinVisualRows(lines, PREVIEW_LIMITS.EXPANDED_LINES, textWidth).start);
+}
+
 function formatStreamingContent(
 	content: string,
 	expanded: boolean,
@@ -246,43 +265,52 @@ function formatStreamingContent(
 	cache?: RenderedStringCache,
 	streamKey?: WriteStreamingPreviewStateCarrier,
 	argsComplete?: boolean,
+	contentWidth?: number,
 ): string {
 	if (!content) return "";
-	const bodyText = cachedRenderedString(cache, uiTheme, expanded, language ?? "", content, () => {
-		const state = updateStreamingPreview(streamKey, content, language, uiTheme, argsComplete === true);
-		let totalLines: number;
-		let startIndex: number;
-		let visibleLines: string[];
-		if (state) {
-			totalLines = state.lineCount;
-			startIndex = expanded ? 0 : Math.max(0, totalLines - PREVIEW_LIMITS.EXPANDED_LINES);
-			const flushed = argsComplete === true && state.finalFlushedLength === content.length;
-			const trailingLine = flushed ? state.finalTrailing : content.slice(state.completeLength).replace(/\r/g, "");
-			if (totalLines === 1 && trailingLine.length === 0) return "";
-			visibleLines = [...state.highlightedLines.slice(startIndex), trailingLine];
-		} else {
-			const normalized = normalizeDisplayText(content);
-			if (normalized.length === 0) return "";
-			const lines = normalized.split("\n");
-			totalLines = lines.length;
-			startIndex = expanded ? 0 : Math.max(0, totalLines - PREVIEW_LIMITS.EXPANDED_LINES);
-			visibleLines = highlightCode(lines.slice(startIndex).join("\n"), language);
-		}
-		const hidden = startIndex;
-		const lineNumberWidth = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length);
+	const bodyText = cachedRenderedString(
+		cache,
+		uiTheme,
+		expanded,
+		`${language ?? ""}:${contentWidth ?? 0}`,
+		content,
+		() => {
+			const state = updateStreamingPreview(streamKey, content, language, uiTheme, argsComplete === true);
+			let totalLines: number;
+			let startIndex: number;
+			let visibleLines: string[];
+			if (state) {
+				totalLines = state.lineCount;
+				const flushed = argsComplete === true && state.finalFlushedLength === content.length;
+				const trailingLine = flushed ? state.finalTrailing : content.slice(state.completeLength).replace(/\r/g, "");
+				if (totalLines === 1 && trailingLine.length === 0) return "";
+				const allLines = [...state.highlightedLines, trailingLine];
+				startIndex = expanded ? 0 : previewWindowStart(allLines, totalLines, contentWidth);
+				visibleLines = allLines.slice(startIndex);
+			} else {
+				const normalized = normalizeDisplayText(content);
+				if (normalized.length === 0) return "";
+				const lines = normalized.split("\n");
+				totalLines = lines.length;
+				startIndex = expanded ? 0 : previewWindowStart(lines, totalLines, contentWidth);
+				visibleLines = highlightCode(lines.slice(startIndex).join("\n"), language);
+			}
+			const hidden = startIndex;
+			const lineNumberWidth = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length);
 
-		let text = "\n\n";
-		if (hidden > 0) {
-			text += `${uiTheme.fg("dim", `… (${hidden} earlier line${hidden === 1 ? "" : "s"})`)}\n`;
-		}
-		for (let i = 0; i < visibleLines.length; i++) {
-			const lineNum = startIndex + i + 1;
-			const gutter = uiTheme.fg("dim", `${String(lineNum).padStart(lineNumberWidth, " ")} `);
-			const body = replaceTabs(visibleLines[i] ?? "");
-			text += `${gutter}${body}\n`;
-		}
-		return text;
-	});
+			let text = "\n\n";
+			if (hidden > 0) {
+				text += `${uiTheme.fg("dim", fitMarker(formatEarlierLines({ hidden, shown: visibleLines.length }), contentWidth))}\n`;
+			}
+			for (let i = 0; i < visibleLines.length; i++) {
+				const lineNum = startIndex + i + 1;
+				const gutter = uiTheme.fg("dim", `${String(lineNum).padStart(lineNumberWidth, " ")} `);
+				const body = replaceTabs(visibleLines[i] ?? "");
+				text += `${gutter}${body}\n`;
+			}
+			return text;
+		},
+	);
 	if (bodyText.length === 0) return "";
 	// The animated glyph lives on this trailing line — inside the transcript's
 	// volatile-tail holdback — never in the header: an animating head row pins
@@ -298,24 +326,25 @@ function renderContentPreview(
 	language: string | undefined,
 	uiTheme: Theme,
 	cache?: RenderedStringCache,
+	contentWidth?: number,
 ): string {
 	if (!content) return "";
-	return cachedRenderedString(cache, uiTheme, expanded, language ?? "", content, () => {
+	return cachedRenderedString(cache, uiTheme, expanded, `${language ?? ""}:${contentWidth ?? 0}`, content, () => {
 		const rawLines = normalizeDisplayText(content).split("\n");
 		const totalLines = rawLines.length;
 		// Collapsed, the finished card keeps the exact window the streaming
-		// preview ended on — `… (N earlier lines)` + the last rows, same gutter.
+		// preview ended on — `… (N earlier lines, showing X of Y)` + the last rows, same gutter.
 		// A different (shorter, top-anchored) frame shrinks the card the moment
 		// the write lands, and its rows no longer match the ones already lent to
 		// native scrollback, so the change surfaces as a cut card and a blank gap.
-		const startIndex = expanded ? 0 : Math.max(0, totalLines - PREVIEW_LIMITS.EXPANDED_LINES);
+		const startIndex = expanded ? 0 : previewWindowStart(rawLines, totalLines, contentWidth);
 		const highlighted = highlightCode(rawLines.slice(startIndex).join("\n"), language);
 		const lineNumberWidth = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length);
 
 		let text = "\n\n";
 		if (startIndex > 0) {
 			const hint = formatExpandHint(uiTheme, expanded, true);
-			text += `${uiTheme.fg("dim", `… (${startIndex} earlier line${startIndex === 1 ? "" : "s"})${hint ? ` ${hint}` : ""}`)}\n`;
+			text += `${uiTheme.fg("dim", fitMarker(`${formatEarlierLines({ hidden: startIndex, shown: highlighted.length })}${hint ? ` ${hint}` : ""}`, contentWidth))}\n`;
 		}
 		for (let i = 0; i < highlighted.length; i++) {
 			const lineNum = startIndex + i + 1;
@@ -543,7 +572,7 @@ export const writeToolRenderer = {
 		// back to the normalizing stringify.
 		const content = typeof args.content === "string" ? args.content : normalizeDisplayText(args.content);
 		const streamingCache = createRenderedStringCache();
-		return framedToolCard(uiTheme, () => {
+		return framedToolCard(uiTheme, ({ contentWidth }) => {
 			const body = content
 				? formatStreamingContent(
 						content,
@@ -558,6 +587,7 @@ export const writeToolRenderer = {
 						// flushes the trailing line through the highlighter once.
 						options,
 						options?.argsComplete,
+						contentWidth,
 					)
 				: "";
 			const bodyLines = body ? body.split("\n") : [];
@@ -638,9 +668,9 @@ export const writeToolRenderer = {
 		const diagnostics = result.details?.diagnostics;
 
 		const previewCache = createRenderedStringCache();
-		return framedToolCard(uiTheme, () => {
+		return framedToolCard(uiTheme, ({ contentWidth }) => {
 			const { expanded } = options;
-			let body = renderContentPreview(fileContent, expanded, lang, uiTheme, previewCache);
+			let body = renderContentPreview(fileContent, expanded, lang, uiTheme, previewCache, contentWidth);
 			if (isPartial && progressText) {
 				const safeProgressText = truncateToWidth(
 					replaceTabs(progressText),

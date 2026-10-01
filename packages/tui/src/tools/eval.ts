@@ -16,7 +16,12 @@ import { footnoteText, resultText } from "./native-view";
 import { renderAgentTreeRow } from "./agent-tree";
 import { truncateToVisualLines } from "../chrome/visual-truncate";
 import { getMarkdownTheme, type Theme } from "../theme/theme";
-import { markFramedBlockComponent, outputBlockContentWidth, renderCodeCell } from "../render/index";
+import {
+	markFramedBlockComponent,
+	outputBlockContentWidth,
+	renderCodeCell,
+	renderCodeCellStaged,
+} from "../render/index";
 import { formatOutputPaneLines } from "../render/output-pane";
 import { formatEvalCodeForDisplay } from "./eval-format/index";
 import {
@@ -42,7 +47,7 @@ import {
 } from "../render/render-utils";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type { OutputMeta } from "./output-meta";
-import { type ConfiguredThinkingLevel, expandKeyHint } from "../render/render-utils";
+import { type ConfiguredThinkingLevel, expandKeyHint, formatEarlierLines } from "../render/render-utils";
 
 /** Runtime backend that an eval cell dispatches to. */
 export type EvalLanguage = "python" | "js";
@@ -115,6 +120,10 @@ interface EvalRenderContext {
 	expanded?: boolean;
 	previewLines?: number;
 	timeout?: number;
+	/** Window the code stage is drawn with; frozen by the card once the stage is offered to history. */
+	stageWindow?: number;
+	/** Expand state the code stage is drawn with; frozen with the window. */
+	stageExpanded?: boolean;
 }
 
 interface EvalRenderCell {
@@ -720,7 +729,11 @@ function evalCellSection(cell: EvalCellSection, index: number, total: number): N
 export const evalToolRenderer = {
 	animatedPendingPreview: true,
 	animatedPartialResult: true,
-	renderCall(args: EvalRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
+	renderCall(
+		args: EvalRenderArgs,
+		options: RenderResultOptions & { renderContext?: EvalRenderContext },
+		uiTheme: Theme,
+	): Component {
 		const cells = getRenderCells(args);
 
 		if (cells.length === 0) {
@@ -729,23 +742,31 @@ export const evalToolRenderer = {
 			return new Text(text, 0, 0);
 		}
 
-		let cached: { key: string; width: number; result: string[] } | undefined;
+		let cached: { key: string; width: number; result: string[]; topStageRows: number; liveWidth: number } | undefined;
+		// The code stage's window is frozen by the card once the stage reaches history; until then it is live.
+		const stageWindow = (): number => options.renderContext?.stageWindow ?? previewWindowRows();
 
 		return markFramedBlockComponent({
+			// Stage geometry of the last render, read by the transcript to commit the frozen code stage early.
+			// Only a single-cell call is declared: with several cells the stacked boxes have no single seam.
+			topStageRows: (): number => (cells.length === 1 ? (cached?.topStageRows ?? 0) : 0),
+			liveWidth: (): number => (cells.length === 1 ? (cached?.liveWidth ?? 0) : 0),
 			render: (width: number): readonly string[] => {
-				const key = `${options.expanded ? 1 : 0}|${options.argsComplete === false ? 0 : 1}|${options.spinnerFrame ?? "-"}|${previewWindowRows()}|${cells.map(c => `${c.language}:${c.title ?? ""}:${c.code.length}`).join("|")}`;
+				const key = `${options.expanded ? 1 : 0}|${options.argsComplete === false ? 0 : 1}|${options.executionStarted === true ? 1 : 0}|${options.spinnerFrame ?? "-"}|${stageWindow()}|${options.renderContext?.stageExpanded ?? "-"}|${cells.map(c => `${c.language}:${c.title ?? ""}:${c.code.length}`).join("|")}`;
 				if (cached && cached.key === key && cached.width === width) {
 					return cached.result;
 				}
 
 				const lines: string[] = [];
+				let topStageRows = 0;
+				let liveWidth = 0;
 				for (let i = 0; i < cells.length; i++) {
 					const cell = cells[i];
 					const code =
 						options.argsComplete === false && /\n[\p{L}_$]$/u.test(cell.code)
 							? cell.code.slice(0, -1)
 							: cell.code;
-					const cellLines = renderCodeCell(
+					const staged = renderCodeCellStaged(
 						{
 							code,
 							language: languageForHighlighter(cell.language),
@@ -753,24 +774,32 @@ export const evalToolRenderer = {
 							index: i,
 							total: cells.length,
 							title: cell.title,
-							status: options.spinnerFrame !== undefined ? "running" : "pending",
+							// Staged: the head is final once the arguments are; running/finished state rides the Output
+							// separator, which exists only once the cell actually executes.
+							status: options.executionStarted === true ? "running" : "pending",
+							stagedStatus: true,
+							// Drives only the Output separator's loading glyph; a staged head ignores it.
 							spinnerFrame: options.spinnerFrame,
 							width,
 							// Viewport-sized tail window following the newest streamed code
 							// line; renderResult keeps the same cap so the cell never snaps
 							// open on completion. Only ctrl+o uncaps.
 							codeTail: true,
-							codeMaxLines: previewWindowRows(),
-							expanded: options.expanded,
+							codeMaxLines: stageWindow(),
+							expanded: options.renderContext?.stageExpanded ?? options.expanded,
 						},
 						uiTheme,
 					);
-					lines.push(...cellLines);
+					lines.push(...staged.lines);
+					if (i === 0) {
+						topStageRows = staged.topStageRows;
+						liveWidth = staged.liveWidth;
+					}
 					if (i < cells.length - 1) {
 						lines.push("");
 					}
 				}
-				cached = { key, width, result: lines };
+				cached = { key, width, result: lines, topStageRows, liveWidth };
 				return lines;
 			},
 			invalidate: () => {
@@ -826,21 +855,28 @@ export const evalToolRenderer = {
 				const language = cell.language ?? details?.language ?? "python";
 				return { cell, code: formatEvalCodeForDisplay(cell.code, language), language };
 			});
-			let cached: { key: string; width: number; result: string[] } | undefined;
+			let cached:
+				| { key: string; width: number; result: string[]; topStageRows: number; liveWidth: number }
+				| undefined;
 
 			return markFramedBlockComponent({
+				// See renderCall: the frozen code stage of a single-cell call, for the early history commit.
+				topStageRows: (): number => (displayCells.length === 1 ? (cached?.topStageRows ?? 0) : 0),
+				liveWidth: (): number => (displayCells.length === 1 ? (cached?.liveWidth ?? 0) : 0),
 				render: (width: number): readonly string[] => {
 					const expanded = options.renderContext?.expanded ?? options.expanded;
 					const previewLines = Math.min(
 						options.renderContext?.previewLines ?? EVAL_DEFAULT_PREVIEW_LINES,
 						previewWindowRows(),
 					);
-					const key = `${expanded}|${previewLines}|${options.spinnerFrame}|${previewWindowRows()}`;
+					const key = `${expanded}|${previewLines}|${options.spinnerFrame}|${previewWindowRows()}|${options.renderContext?.stageWindow ?? "-"}|${options.renderContext?.stageExpanded ?? "-"}`;
 					if (cached && cached.key === key && cached.width === width) {
 						return cached.result;
 					}
 
 					const lines: string[] = [];
+					let topStageRows = 0;
+					let liveWidth = 0;
 					for (let i = 0; i < displayCells.length; i++) {
 						const { cell, code, language } = displayCells[i];
 						const allEvents = cell.statusEvents ?? [];
@@ -864,7 +900,7 @@ export const evalToolRenderer = {
 							if (outputLines.length > 0) outputLines.push(uiTheme.fg("dim", "Display"));
 							outputLines.push(...jsonLines);
 						}
-						const cellLines = renderCodeCell(
+						const staged = renderCodeCellStaged(
 							{
 								code,
 								language: languageForHighlighter(language),
@@ -873,6 +909,7 @@ export const evalToolRenderer = {
 								total: cellResults.length,
 								title: cell.title,
 								status: cell.status,
+								stagedStatus: true,
 								spinnerFrame: options.spinnerFrame,
 								duration: cell.durationMs,
 								output: outputLines.length > 0 ? outputLines.join("\n") : undefined,
@@ -881,13 +918,19 @@ export const evalToolRenderer = {
 								// cell never snaps open on completion; only ctrl+o uncaps.
 								// `output` keeps its own preview cap from above.
 								codeTail: true,
-								codeMaxLines: previewWindowRows(),
-								expanded,
+								codeMaxLines: options.renderContext?.stageWindow ?? previewWindowRows(),
+								// The code stage may already be in history: it keeps the shape it was committed in. The
+								// output above was formatted with the live `expanded`, so this only governs the code rows.
+								expanded: options.renderContext?.stageExpanded ?? expanded,
 								width,
 							},
 							uiTheme,
 						);
-						lines.push(...cellLines);
+						lines.push(...staged.lines);
+						if (i === 0) {
+							topStageRows = staged.topStageRows;
+							liveWidth = staged.liveWidth;
+						}
 						if (agentEvents.length > 0) {
 							lines.push(...renderAgentProgressEvents(agentEvents, uiTheme, width, options.spinnerFrame));
 						}
@@ -907,7 +950,7 @@ export const evalToolRenderer = {
 					if (warningLine) {
 						lines.push(warningLine);
 					}
-					cached = { key, width, result: lines };
+					cached = { key, width, result: lines, topStageRows, liveWidth };
 					return lines;
 				},
 				invalidate: () => {
@@ -988,7 +1031,7 @@ export const evalToolRenderer = {
 					outputLines.push("");
 					const skippedLine = uiTheme.fg(
 						"dim",
-						`… (${cachedSkipped} earlier lines, showing ${cachedLines.length} of ${cachedSkipped + cachedLines.length}) (${expandKeyHint()} to expand)`,
+						`${formatEarlierLines({ hidden: cachedSkipped, shown: cachedLines.length })} (${expandKeyHint()} to expand)`,
 					);
 					outputLines.push(truncateToWidth(skippedLine, width));
 				}

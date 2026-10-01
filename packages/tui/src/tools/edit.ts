@@ -26,6 +26,7 @@ import { getLanguageFromPath } from "../lang-from-path";
 import type { Theme } from "../theme/theme";
 import type { OutputMeta } from "./output-meta";
 import {
+	formatEarlierLines,
 	cachedRenderedString,
 	cappedHeadLines,
 	createRenderedStringCache,
@@ -510,7 +511,8 @@ function sliceStreamingDiffTail(diff: string, innerWidth: number, budget: number
 	}
 
 	let hiddenLines = 0;
-	for (let index = diff.indexOf("\n"); index >= 0 && index < start; index = diff.indexOf("\n", index + 1)) hiddenLines++;
+	for (let index = diff.indexOf("\n"); index >= 0 && index < start; index = diff.indexOf("\n", index + 1))
+		hiddenLines++;
 	return { content: diff.slice(start, end), hiddenLines };
 }
 
@@ -549,7 +551,7 @@ function formatStreamingDiff(
 		// Same wording as the finished card's overflow marker, so the rows above
 		// the window read as what they are: diff lines, one ctrl+o away.
 		if (tail.hiddenLines > 0) {
-			rendered += `${uiTheme.fg("toolOutput", `… (${tail.hiddenLines} more line${tail.hiddenLines === 1 ? "" : "s"}) ${formatExpandHint(uiTheme)}`)}\n`;
+			rendered += `${uiTheme.fg("toolOutput", `${formatEarlierLines({ hidden: tail.hiddenLines, shown: tail.content.split("\n").length })} ${formatExpandHint(uiTheme)}`)}\n`;
 		}
 		rendered += renderDiffColored(tail.content, { filePath: rawPath, theme: uiTheme });
 		return rendered;
@@ -1090,6 +1092,7 @@ function sliceCollapsedDiffRows(
 
 /** Render edit previews and completed file diffs. */
 export const editToolRenderer = {
+	pendingPreviewContracts: true,
 	mergeCallAndResult: true,
 	/** Compact one-line activity: operation + target path instead of the payload's first line. */
 	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {

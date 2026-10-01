@@ -20,6 +20,19 @@ export interface OutputBlockOptions {
 	state?: State;
 	sections?: Array<{ label?: string; lines: readonly string[]; separator?: boolean }>;
 	width: number;
+	/**
+	 * State the top stage (the header and every section before the first labeled one) is drawn in,
+	 * independent of {@link state}. A card whose command is final while its output still runs sets this so
+	 * the final stage keeps the same bytes through every later state change; `state` then colours only
+	 * the live stage that starts at the first labeled section. It also keeps the block at the full row
+	 * width, overriding {@link fitToContent}, so no later row can move the top stage's bytes.
+	 */
+	stageTone?: State;
+	/**
+	 * Narrowest the lower box may be. A caller that re-renders the same card as output streams passes the
+	 * widest lower box it has drawn, so the box only ever grows and its right border never jumps back.
+	 */
+	minLiveWidth?: number;
 	applyBg?: boolean;
 	contentPaddingLeft?: number;
 	contentPaddingRight?: number;
@@ -51,11 +64,12 @@ export function isFramedBlockComponent(component: Component): boolean {
 	return (component as FramedBlockComponent)[FRAMED_BLOCK_COMPONENT] === true;
 }
 
-type BlockRow =
+type BlockRow = { live: boolean } & (
 	| { kind: "bar"; leftChar: string; rightChar: string; label?: string; meta?: string }
 	| { kind: "bottom"; leftChar: string; rightChar: string }
 	| { kind: "content"; inner: string }
-	| { kind: "sixel"; raw: string };
+	| { kind: "sixel"; raw: string }
+);
 
 function normalizeContentPaddingLeft(value: number | undefined): number {
 	if (value === undefined || !Number.isFinite(value)) return 1;
@@ -80,16 +94,36 @@ export function outputBlockContentWidth(
 
 /** Render a bordered output block with optional header and sections. */
 export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): string[] {
+	return renderOutputBlockStaged(options, theme).lines;
+}
+
+/** Rendered rows plus how many leading rows belong to the top stage (the rows before the first live row). */
+export interface StagedOutputBlock {
+	lines: string[];
+	/** Leading rows only the live stage's changes cannot alter; 0 when the block has no stage tone. */
+	topStageRows: number;
+	/** Width the lower box was drawn at; 0 when the block has no stage tone. */
+	liveWidth: number;
+}
+
+/** {@link renderOutputBlock} that also reports the top stage's row count. */
+export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Theme): StagedOutputBlock {
 	const { header, headerMeta, state, sections = [], width, applyBg = true } = options;
 	const h = theme.boxRound.horizontal;
 	const v = theme.boxRound.vertical;
 	const cap = h.repeat(3);
+	// Index of the first labeled section: it starts the live stage; everything before it is the top stage.
+	const labeled = sections.findIndex(section => section.label !== undefined);
+	const firstLiveSection = labeled < 0 ? sections.length : labeled;
 
 	// fitToContent: measure the natural width of header + body before wrapping.
 	// Wrap must happen against the *natural* content width or short lines would
 	// be measured post-wrap and the box could never narrow.
 	let lineWidth = Math.max(0, width);
-	if (options.fitToContent) {
+	// A staged block is two boxes, each as wide as its own content (see `stageWidths`): the top stage
+	// never depends on the live stage, so its bytes survive whatever the output does.
+	const staged = options.stageTone !== undefined;
+	if (options.fitToContent && !staged) {
 		const padL = normalizeContentPaddingLeft(options.contentPaddingLeft);
 		const padR = normalizeContentPaddingLeft(options.contentPaddingRight ?? options.contentPaddingLeft);
 		const overhead = visibleWidth(v) * 2 + padL + padR;
@@ -114,28 +148,36 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 		if (natural < lineWidth * 0.6) lineWidth = natural;
 	}
 	// Border colors: running/pending use accent, success uses dim (gray), error/warning keep their colors
-	const borderColor: ThemeColor =
-		options.borderColor ??
-		(state === "error"
-			? "error"
-			: state === "warning"
-				? "warning"
-				: state === "running" || state === "pending"
-					? "accent"
-					: "dim");
-	const border = (text: string) => theme.fg(borderColor, text);
-	const bgFn = (() => {
-		if (!state || !applyBg) return undefined;
-		const bgAnsi = theme.getBgAnsi(getStateBgColor(state));
-		// Keep block background stable even if inner content contains SGR resets (e.g. "\x1b[0m"),
-		// which would otherwise clear the outer background mid-line.
-		return (text: string) => {
-			const stabilized = text
-				.replace(/\x1b\[(?:0)?m/g, m => `${m}${bgAnsi}`)
-				.replace(/\x1b\[49m/g, m => `${m}${bgAnsi}`);
-			return `${bgAnsi}${stabilized}\x1b[49m`;
-		};
-	})();
+	const colorsFor = (frameState: State | undefined) => {
+		const borderColor: ThemeColor =
+			options.borderColor ??
+			(frameState === "error"
+				? "error"
+				: frameState === "warning"
+					? "warning"
+					: frameState === "running" || frameState === "pending"
+						? "accent"
+						: "dim");
+		const border = (text: string) => theme.fg(borderColor, text);
+		const bgFn = (() => {
+			if (!frameState || !applyBg) return undefined;
+			const bgAnsi = theme.getBgAnsi(getStateBgColor(frameState));
+			// Keep block background stable even if inner content contains SGR resets (e.g. "\x1b[0m"),
+			// which would otherwise clear the outer background mid-line.
+			return (text: string) => {
+				const stabilized = text
+					.replace(/\x1b\[(?:0)?m/g, m => `${m}${bgAnsi}`)
+					.replace(/\x1b\[49m/g, m => `${m}${bgAnsi}`);
+				return `${bgAnsi}${stabilized}\x1b[49m`;
+			};
+		})();
+		return { border, bgFn };
+	};
+	const topColors = colorsFor(options.stageTone ?? state);
+	const liveColors = colorsFor(state);
+	// Rows are painted in the colours of their stage; without a stage tone both are the same.
+	let border = topColors.border;
+	let bgFn = topColors.bgFn;
 
 	const contentPaddingLeft = normalizeContentPaddingLeft(options.contentPaddingLeft);
 	const contentPaddingRight = normalizeContentPaddingLeft(options.contentPaddingRight ?? contentPaddingLeft);
@@ -146,9 +188,61 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	const contentLeftPadding = contentPaddingLeft > 0 ? padding(contentPaddingLeft) : "";
 	const contentRightPadding = contentPaddingRight > 0 ? padding(contentPaddingRight) : "";
 
+	// Per-stage widths. Unstaged blocks have one width. A staged block's top box fits its header and code
+	// (never wider than the row, never narrower than what its own rows need); the live box fits its
+	// output, floored at the top box so the two always overlap, and capped at the row.
+	const frameOverhead = visibleWidth(v) * 2 + contentPaddingLeft + contentPaddingRight;
+	const stageWidth = (list: typeof sections, withHeader: boolean): number => {
+		let body = 0;
+		for (const section of list) {
+			for (const line of section.lines) {
+				for (const raw of line.split("\n")) body = Math.max(body, visibleWidth(raw.trimEnd()));
+			}
+		}
+		const head =
+			withHeader && (header || headerMeta)
+				? visibleWidth(` ${[header, headerMeta].filter(Boolean).join(theme.sep.dot)} `) +
+					visibleWidth(cap) +
+					visibleWidth(cap)
+				: 0;
+		return Math.min(Math.max(0, width), Math.max(head, body + frameOverhead));
+	};
+	const topNatural = staged ? stageWidth(sections.slice(0, firstLiveSection), true) : lineWidth;
+	// The top box is sized from its own header and code only: the separator label belongs to the live
+	// stage and changes with the run state, so it may never move the top box.
+	const topWidth = topNatural;
+	// The lower box must at least hold its own separator label (`├─── Output Running ───`) and its corners;
+	// below that the label would be cut mid-word.
+	const liveLabelWidth = staged
+		? Math.max(
+				0,
+				...sections
+					.slice(firstLiveSection)
+					.filter(section => section.label !== undefined)
+					// corner + cap + ` label ` + one fill + tee + closing corner
+					.map(section => 1 + visibleWidth(cap) + visibleWidth(` ${section.label} `) + 3),
+			)
+		: 0;
+	const liveWidth = staged
+		? Math.max(stageWidth(sections.slice(firstLiveSection), false), liveLabelWidth, options.minLiveWidth ?? 0)
+		: lineWidth;
+	const liveFitted = staged ? Math.min(Math.max(width, 0), Math.max(liveWidth, visibleWidth(cap) + 2)) : lineWidth;
+	// A one- or two-column step between the boxes reads as a rendering glitch rather than a deliberate
+	// join, so near-equal boxes share a width. Snap the lower box to the top one, but never below what
+	// its own content and label need.
+	const NEAR_EQUAL_COLUMNS = 2;
+	const liveSnapped = Math.max(
+		staged && liveFitted !== topWidth && Math.abs(liveFitted - topWidth) <= NEAR_EQUAL_COLUMNS
+			? Math.min(Math.max(width, 0), Math.max(topWidth, liveFitted))
+			: liveFitted,
+		staged ? Math.min(Math.max(width, 0), liveLabelWidth) : 0,
+	);
+	const rowWidth = (live: boolean): number => (staged ? (live ? liveSnapped : topWidth) : lineWidth);
+
 	// ── Layout pass: collect row descriptors before emitting the bordered lines. ──
 	const rows: BlockRow[] = [];
 	rows.push({
+		live: false,
 		kind: "bar",
 		leftChar: theme.boxRound.topLeft,
 		rightChar: theme.boxRound.topRight,
@@ -159,11 +253,13 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	const normalizedSections = sections.length > 0 ? sections : [{ lines: [] as string[] }];
 	for (let sectionIndex = 0; sectionIndex < normalizedSections.length; sectionIndex++) {
 		const section = normalizedSections[sectionIndex]!;
+		const live = sectionIndex >= firstLiveSection;
 		// A labeled section always draws its titled separator bar. A label-less
 		// section can still request a plain divider via `separator`, but only
 		// between sections — leading with one would just double the header bar.
 		if (section.label) {
 			rows.push({
+				live,
 				kind: "bar",
 				leftChar: theme.boxRound.teeRight,
 				rightChar: theme.boxRound.teeLeft,
@@ -171,6 +267,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 			});
 		} else if (section.separator && sectionIndex > 0) {
 			rows.push({
+				live,
 				kind: "bar",
 				leftChar: theme.boxRound.teeRight,
 				rightChar: theme.boxRound.teeLeft,
@@ -181,22 +278,34 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 		for (let lineIndex = 0; lineIndex < allLines.length; lineIndex++) {
 			const line = allLines[lineIndex]!;
 			if (sixelLineMask?.[lineIndex]) {
-				rows.push({ kind: "sixel", raw: line });
+				rows.push({ live, kind: "sixel", raw: line });
 				continue;
 			}
-			const wrappedLines = wrapTextWithAnsi(line.trimEnd(), contentWidth);
+			const stageContent = Math.max(0, rowWidth(live) - frameOverhead);
+			const wrapAt = staged ? stageContent : contentWidth;
+			const wrappedLines = wrapTextWithAnsi(line.trimEnd(), wrapAt);
 			for (const wrappedLine of wrappedLines) {
-				const innerPadding = padding(Math.max(0, contentWidth - visibleWidth(wrappedLine)));
-				rows.push({ kind: "content", inner: `${wrappedLine}${innerPadding}` });
+				const innerPadding = padding(Math.max(0, wrapAt - visibleWidth(wrappedLine)));
+				rows.push({ live, kind: "content", inner: `${wrappedLine}${innerPadding}` });
 			}
 		}
 	}
 
-	rows.push({ kind: "bottom", leftChar: theme.boxRound.bottomLeft, rightChar: theme.boxRound.bottomRight });
+	rows.push({
+		// The closing border belongs to the lower box only when there is one. Before execution starts the
+		// block is just the command box, and a bottom sized for an absent lower stage is a few columns wide.
+		live: staged && firstLiveSection < sections.length,
+		kind: "bottom",
+		leftChar: theme.boxRound.bottomLeft,
+		rightChar: theme.boxRound.bottomRight,
+	});
 
 	const H = rows.length;
 
-	const renderBar = (row: { leftChar: string; rightChar: string; label?: string; meta?: string }): string => {
+	const renderBar = (
+		row: { leftChar: string; rightChar: string; label?: string; meta?: string },
+		lineWidth: number,
+	): string => {
 		const leftGlyphs = `${row.leftChar}${cap}`;
 		const rightGlyph = row.rightChar;
 		if (lineWidth <= 0) return border(leftGlyphs) + border(rightGlyph);
@@ -217,7 +326,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 		return `${border(leftGlyphs)}${trimmedLabel}${border(fillGlyphs)}${border(rightGlyph)}`;
 	};
 
-	const renderBottom = (row: { leftChar: string; rightChar: string }): string => {
+	const renderBottom = (row: { leftChar: string; rightChar: string }, lineWidth: number): string => {
 		const leftGlyphs = `${row.leftChar}${cap}`;
 		const rightGlyph = row.rightChar;
 		const fillCount = Math.max(0, lineWidth - visibleWidth(leftGlyphs) - visibleWidth(rightGlyph));
@@ -229,19 +338,69 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 		`${border(v)}${contentLeftPadding}${inner}${contentRightPadding}${border(v)}`;
 
 	const clipFrame = lineWidth < Math.max(visibleWidth(cap) + 2, contentPaddingLeft + contentPaddingRight + 2);
+	// The connector is the first live bar. It spans the wider box and carries a tee where the narrower
+	// one ends: `┴` closes the top box inside a wider lower box, `┬` opens the lower box inside a wider
+	// top box. Equal widths draw the ordinary separator.
+	const connectorIndex = staged ? rows.findIndex(row => row.live && row.kind === "bar") : -1;
+	const renderConnector = (row: { label?: string; meta?: string }): string => {
+		const wide = Math.max(topWidth, liveSnapped);
+		const labelText = [row.label, row.meta].filter(Boolean).join(theme.sep.dot);
+		const leftGlyphs = `${theme.boxRound.teeRight}${cap}`;
+		const label = truncateToWidth(
+			labelText ? ` ${labelText} ` : "",
+			Math.max(0, wide - visibleWidth(leftGlyphs) - 1),
+		);
+		if (topWidth === liveSnapped) {
+			// Same width: an ordinary separator, no jog.
+			const fill = Math.max(0, wide - visibleWidth(leftGlyphs) - visibleWidth(label) - 1);
+			// The label brings its own foreground reset, so every border segment is coloured on its own
+			// (as renderBar does); one border() around the row would leave all text after the label uncoloured.
+			return `${border(leftGlyphs)}${label}${border(`${h.repeat(fill)}${theme.boxRound.teeLeft}`)}`;
+		}
+		const lowerIsWider = liveSnapped > topWidth;
+		// The tee marks where the top box ends (lower wider) or where the lower box ends (top wider). A label
+		// that runs past that column pushes the tee to the label's end; the row is live, so it may move.
+		const edge = Math.min(topWidth, liveSnapped) - 1;
+		const afterLabel = visibleWidth(leftGlyphs) + visibleWidth(label);
+		const teeColumn = Math.max(edge, afterLabel);
+		const tee = lowerIsWider ? "\u2534" : "\u252c";
+		const close = lowerIsWider ? theme.boxRound.topRight : theme.boxRound.bottomRight;
+		const beforeTee = Math.max(0, teeColumn - afterLabel);
+		const afterTee = Math.max(0, wide - 1 - teeColumn - 1);
+		return `${border(leftGlyphs)}${label}${border(`${h.repeat(beforeTee)}${tee}${h.repeat(afterTee)}${close}`)}`;
+	};
+
 	const lines: string[] = [];
 	for (let r = 0; r < H; r++) {
 		const row = rows[r]!;
+		const colors = row.live ? liveColors : topColors;
+		border = colors.border;
+		bgFn = colors.bgFn;
 		if (row.kind === "sixel") {
 			lines.push(row.raw);
 			continue;
 		}
+		const widthHere = r === connectorIndex ? Math.max(topWidth, liveSnapped) : rowWidth(row.live);
 		const line =
-			row.kind === "bar" ? renderBar(row) : row.kind === "bottom" ? renderBottom(row) : renderContent(row.inner);
-		lines.push(padToWidth(clipFrame ? truncateToWidth(line, lineWidth, Ellipsis.Omit) : line, lineWidth, bgFn));
+			r === connectorIndex && row.kind === "bar"
+				? renderConnector(row)
+				: row.kind === "bar"
+					? renderBar(row, widthHere)
+					: row.kind === "bottom"
+						? renderBottom(row, widthHere)
+						: renderContent(row.inner);
+		const clip = staged
+			? widthHere < Math.max(visibleWidth(cap) + 2, contentPaddingLeft + contentPaddingRight + 2)
+			: clipFrame;
+		lines.push(padToWidth(clip ? truncateToWidth(line, widthHere, Ellipsis.Omit) : line, widthHere, bgFn));
 	}
 
-	return lines;
+	const firstLive = rows.findIndex(row => row.live);
+	return {
+		lines,
+		topStageRows: options.stageTone === undefined ? 0 : firstLive < 0 ? rows.length : firstLive,
+		liveWidth: staged ? liveSnapped : 0,
+	};
 }
 
 /** Card tone for an output state. */
@@ -361,6 +520,18 @@ export function describeOutputBlock(options: NativeOutputBlockOptions): NativeNo
 export class CachedOutputBlock {
 	#cache?: RenderCache;
 	#lastOptions?: OutputBlockOptions;
+	#topStageRows = 0;
+	#liveWidth = 0;
+
+	/** Rows of the top stage in the most recent render (see {@link StagedOutputBlock}). */
+	get topStageRows(): number {
+		return this.#topStageRows;
+	}
+
+	/** Width of the lower box in the most recent render (see {@link StagedOutputBlock}). */
+	get liveWidth(): number {
+		return this.#liveWidth;
+	}
 
 	/** Render with caching. Returns the cached (shared, caller-immutable) lines if options haven't changed. */
 	render(options: OutputBlockOptions, theme: Theme): readonly string[] {
@@ -372,16 +543,19 @@ export class CachedOutputBlock {
 			this.#lastOptions = options;
 			return this.#cache.lines;
 		}
-		const lines = renderOutputBlock(options, theme);
-		this.#cache = { key, lines };
+		const staged = renderOutputBlockStaged(options, theme);
+		this.#cache = { key, lines: staged.lines };
+		this.#topStageRows = staged.topStageRows;
+		this.#liveWidth = staged.liveWidth;
 		this.#lastOptions = options;
-		return lines;
+		return staged.lines;
 	}
 
 	/** Invalidate the cache, forcing a rebuild on next render. */
 	invalidate(): void {
 		this.#cache = undefined;
 		this.#lastOptions = undefined;
+		this.#topStageRows = 0;
 	}
 
 	#buildKey(options: OutputBlockOptions): bigint {
@@ -396,6 +570,8 @@ export class CachedOutputBlock {
 		h.optional(options.header);
 		h.optional(options.headerMeta);
 		h.optional(options.state);
+		h.optional(options.stageTone);
+		h.u32(options.minLiveWidth ?? 0);
 		h.optional(options.borderColor);
 		h.bool(options.applyBg ?? true);
 		h.bool(options.fitToContent ?? false);

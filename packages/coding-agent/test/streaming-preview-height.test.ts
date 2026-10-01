@@ -437,7 +437,7 @@ describe("streaming tool call preview height (bounded across renderers)", () => 
 			expect(renderedLines, `${testCase.name} preview should elide line-0`).not.toContain("line-0");
 			expect(renderedLines, `${testCase.name} preview should elide ${lastHidden}`).not.toContain(lastHidden);
 			expect(text, `${testCase.name} preview should advertise the elided head`).toContain(
-				`… ${hidden} earlier lines`,
+				`… (${hidden} earlier lines, showing ${window - 1} of ${total})`,
 			);
 		}
 	}, 30_000);
@@ -465,6 +465,6 @@ describe("streaming tool call preview height (bounded across renderers)", () => 
 		expect(renderedLines).toContain(`const line_${hidden} = 1;`);
 		expect(renderedLines).not.toContain("const line_0 = 1;");
 		expect(renderedLines).not.toContain(`const line_${hidden - 1} = 1;`);
-		expect(text).toContain(`… ${hidden} earlier lines`);
+		expect(text).toContain(`… (${hidden} earlier lines, showing ${window} of ${total})`);
 	}, 30_000);
 });

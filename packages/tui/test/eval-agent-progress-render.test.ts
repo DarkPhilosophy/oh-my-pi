@@ -54,9 +54,13 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		return Bun.stripANSI(component.render(120).join("\n")).split("\n");
 	}
 
-	/** Index of the box's closing border (bottom-right corner glyph). */
+	/**
+	 * Index of the box's closing border. A staged cell is two boxes joined by a connector row whose last glyph is
+	 * also a bottom-right corner, so the closing row is the one that STARTS with the bottom-left corner (output text
+	 * inside the box starts with the vertical border, never with a corner).
+	 */
 	function boxBottomIndex(lines: readonly string[]): number {
-		return lines.findIndex(line => line.includes(theme.boxRound.bottomRight));
+		return lines.findIndex(line => Bun.stripANSI(line).startsWith(theme.boxRound.bottomLeft));
 	}
 
 	it("draws a running subagent below the box with its current tool and intent", () => {

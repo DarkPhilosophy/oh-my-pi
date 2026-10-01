@@ -51,6 +51,10 @@ export interface ToolCardSnapshot {
 	contentPaddingLeft?: number;
 	contentPaddingRight?: number;
 	borderColor?: ThemeColor;
+	/** State the header and every section above the first labeled one are frozen in; the card's own phase colours the rest. */
+	stageTone?: State;
+	/** Narrowest the lower box may be; the owner of the card passes the widest it has drawn so the box only grows. */
+	minLiveWidth?: number;
 }
 
 /** Width information supplied to a ToolCard's lazy snapshot builder. */
@@ -139,6 +143,20 @@ export class ToolCard implements Component {
 	#disposed = false;
 	#native: NativeCardMemo | undefined;
 
+	/**
+	 * Leading rows of the last framed render that no later state change can alter: the header and the
+	 * sections above the first labeled one, when the snapshot set a `stageTone`. Read from the render
+	 * already done; never renders. Zero for plain cards and cards without a stage.
+	 */
+	topStageRows(): number {
+		return this.#options.variant === "framed" ? this.#block.topStageRows : 0;
+	}
+
+	/** Width the lower box was drawn at in the last render; 0 for unstaged cards. */
+	liveWidth(): number {
+		return this.#options.variant === "framed" ? this.#block.liveWidth : 0;
+	}
+
 	constructor(theme: Theme, options: ToolCardOptions, build: (context: ToolCardBuildContext) => ToolCardSnapshot) {
 		this.#theme = theme;
 		this.#options = options;
@@ -215,6 +233,8 @@ export class ToolCard implements Component {
 				previousOptions.header === header &&
 				previousOptions.headerMeta === snapshot.headerMeta &&
 				previousOptions.state === state &&
+				previousOptions.stageTone === snapshot.stageTone &&
+				previousOptions.minLiveWidth === snapshot.minLiveWidth &&
 				previousOptions.applyBg === snapshot.applyBg &&
 				previousOptions.contentPaddingLeft === snapshot.contentPaddingLeft &&
 				previousOptions.contentPaddingRight === snapshot.contentPaddingRight &&
@@ -226,6 +246,8 @@ export class ToolCard implements Component {
 				header,
 				headerMeta: snapshot.headerMeta,
 				state,
+				stageTone: snapshot.stageTone,
+				minLiveWidth: snapshot.minLiveWidth,
 				sections,
 				width,
 				applyBg: snapshot.applyBg,

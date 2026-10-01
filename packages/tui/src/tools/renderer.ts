@@ -165,4 +165,6 @@ export interface ToolRenderer<TArgs = unknown, TDetails = unknown> {
 	 * frame topology at `options.isPartial: true -> false`.
 	 */
 	forceResultViewportRepaintOnSettle?: boolean;
+	/** Pending preview is taller than the final result (streamed diff -> short error); its height is reversible while it runs. */
+	pendingPreviewContracts?: boolean;
 }

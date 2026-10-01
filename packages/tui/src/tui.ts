@@ -230,6 +230,14 @@ export interface TerminalFramePlan {
 	readonly borrowableRows?: number;
 	/** Reversible producer growth that must not advance native history ownership. */
 	readonly viewportExpansionRows?: number;
+	/**
+	 * Part of the live viewport that is declared-transient chrome inserted above its smallest
+	 * height (an inline dialog, a tall draft). Retained-viewport providers keep these rows
+	 * off native history: they cover transcript rows rather than displace them.
+	 */
+	readonly chromeInsertionRows?: number;
+	/** Live rows of running cards whose pending preview will settle shorter; reversible like chrome. */
+	readonly contractingPreviewRows?: number;
 	/** Producer retains off-screen live rows; only explicit history batches may commit them. */
 	readonly retainedLiveViewport?: boolean;
 }
@@ -1022,6 +1030,15 @@ export class TUI extends Container {
 	static readonly #RESIZE_VIEWPORT_SETTLE_MS = 120;
 	/** Longest wait for a CPR reply before the settled repaint falls back. */
 	static readonly #RESIZE_PROBE_TIMEOUT_MS = 200;
+	/**
+	 * After a fullscreen overlay closes, the terminal may re-add its scrollbar a
+	 * few seconds later and narrow the grid by a few columns (the alternate
+	 * buffer had none). That narrowing is chrome, not a content reflow, so it must
+	 * not run the destructive rebuild replay. Window the exit baseline covers.
+	 */
+	static readonly #POST_ALT_EXIT_SCROLLBAR_MS = 5000;
+	/** Widest column-only delta after an overlay exit still treated as a scrollbar appearing. */
+	static readonly #SCROLLBAR_MAX_COLUMNS = 3;
 	#inputRenderGraceUntilMs = 0;
 	// A scale-`s` OSC 66 heading reserves `s - 1` rows, and the protocol
 	// caps `s` at 7. This bounds spacer lookups and supplies enough context
@@ -1088,6 +1105,9 @@ export class TUI extends Container {
 	#resizeAltActive = false;
 	#resizeSettleTimer: RenderTimer | undefined;
 	#suppressResizeUntil = 0;
+	// Normal-buffer geometry at the last fullscreen-overlay exit. Consumed (single-shot)
+	// by #prepareResizeReplay to recognise the scrollbar-sized narrowing that follows.
+	#altExitBaseline: { width: number; height: number; at: number } | undefined;
 	// Baseline geometry at the last alt-buffer toggle, plus whether its echo is
 	// still pending. A Warp-only echo is a height-only ±1 SIGWINCH against this
 	// baseline while the CPR probe is in flight. The expectation is single-shot:
@@ -1842,6 +1862,23 @@ export class TUI extends Container {
 		if (override !== null) return override;
 		if (isInsideTerminalMultiplexer() || this.terminal.hostOwnsGridOnResize === true) return false;
 		return Bun.env.TERM_PROGRAM?.toLowerCase() === "warpterminal";
+	}
+
+	/**
+	 * Whether the terminal's current geometry is the scrollbar re-appearing after a
+	 * fullscreen overlay closed: same height, a few columns narrower than at the exit,
+	 * inside the post-exit window. Consumes the exit baseline whenever the geometry
+	 * actually changed (or the window lapsed); frames repainting at the exit geometry
+	 * leave it armed, including the exit frame itself.
+	 */
+	#takeScrollbarNarrowing(width: number, height: number): boolean {
+		const baseline = this.#altExitBaseline;
+		if (baseline === undefined) return false;
+		const expired = this.#renderScheduler.now() - baseline.at > TUI.#POST_ALT_EXIT_SCROLLBAR_MS;
+		const geometryChanged = width !== baseline.width || height !== baseline.height;
+		if (expired || geometryChanged) this.#altExitBaseline = undefined;
+		const columnDelta = Math.abs(width - baseline.width);
+		return !expired && height === baseline.height && columnDelta > 0 && columnDelta <= TUI.#SCROLLBAR_MAX_COLUMNS;
 	}
 
 	#noteAltBufferToggle(): void {
@@ -3415,7 +3452,13 @@ export class TUI extends Container {
 		const logicalViewport = Array.from(plan.viewport);
 		const overflow = Math.max(0, logicalViewport.length - height);
 		const borrowOverflow = plan.retainedLiveViewport
-			? Math.min(overflow, Math.max(0, plan.borrowableRows ?? logicalViewport.length))
+			? Math.min(
+					Math.max(
+						0,
+						overflow - Math.max(0, plan.chromeInsertionRows ?? 0) - Math.max(0, plan.contractingPreviewRows ?? 0),
+					),
+					Math.max(0, plan.borrowableRows ?? logicalViewport.length),
+				)
 			: Math.min(
 					Math.max(0, overflow - Math.max(0, plan.viewportExpansionRows ?? 0)),
 					Math.max(0, plan.borrowableRows ?? logicalViewport.length),
@@ -3644,6 +3687,12 @@ export class TUI extends Container {
 			this.#clearScrollbackWaitFramesLeft = undefined;
 			return;
 		}
+		if (this.#takeScrollbarNarrowing(width, height)) {
+			// The terminal re-added its scrollbar after the overlay closed: chrome, not a
+			// content reflow. Repaint in place instead of replaying history.
+			this.#forceViewportRepaintOnNextRender = true;
+			return;
+		}
 		const size = `${width}x${height}`;
 		if (
 			!this.#hasEverRendered ||
@@ -3863,6 +3912,7 @@ export class TUI extends Container {
 						  historyRows.length === 0 &&
 						  rows > 0 &&
 						  this.#providerWindow.length > 0 &&
+						  releasedExpansionRows === 0 &&
 						  (rows <= this.#providerWindow.length || this.#providerVisibleHistory.length === 0) &&
 						  previousTop + this.#providerWindow.length === height
 						? // Growth from the bottom edge moves the origin up so the frame
@@ -4344,6 +4394,7 @@ export class TUI extends Container {
 			this.#forgetHardwareCursorState();
 			this.#altActive = false;
 			this.#mouseTracking = wantMouse;
+			this.#altExitBaseline = { width, height, at: this.#renderScheduler.now() };
 			this.#altPreviousLines = [];
 			this.#altPreparedRows = [];
 			// The alt-buffer restore put the pre-overlay normal screen back. If

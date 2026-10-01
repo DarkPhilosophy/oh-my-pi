@@ -148,12 +148,40 @@ describe("task live progress rendering", () => {
 		const chronological = Array.from({ length: 8 }, (_, index) => `line ${index + 1}`);
 		const text = renderProgressText(makeProgress([...chronological].reverse()), true, uiTheme);
 
-		expect(text).toContain("… 3 earlier lines");
+		expect(text).toContain("… (3 earlier lines, showing 5 of 8)");
 		expect(text).not.toContain("line 1");
 		expect(text).not.toContain("line 3");
 		expect(text).toContain("line 4");
 		expect(text).toContain("line 8");
 	});
+
+	for (const width of [30, 40, 120]) {
+		it(`width ${width}: the subagent output marker stays on one row and does not grow the card`, () => {
+			setViewportRows(24);
+			const render = (total: number): string[] => {
+				const chronological = Array.from({ length: total }, (_, index) => `line ${index + 1}`);
+				const details: TaskToolDetails = {
+					projectAgentsDir: null,
+					results: [],
+					totalDurationMs: 1,
+					progress: [makeProgress([...chronological].reverse())],
+				};
+				return renderResult(
+					{ content: [{ type: "text", text: "Running 1 agent..." }], details },
+					{ expanded: true, isPartial: true },
+					uiTheme,
+				)
+					.render(width)
+					.map(row => strip([row]).trimEnd());
+			};
+			const small = render(40);
+			const large = render(4000);
+			const markerRows = (rows: string[]): number => rows.filter(row => /earlier|showing \d+ of/.test(row)).length;
+			expect([markerRows(small), markerRows(large)]).toEqual([1, 1]);
+			// Counters gain digits between 40 and 4000 lines; the card must not gain a row.
+			expect(large.length).toBe(small.length);
+		});
+	}
 
 	it("shows the extension routing note on async progress rows after completion", () => {
 		setViewportRows(40);

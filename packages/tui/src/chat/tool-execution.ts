@@ -19,7 +19,7 @@ import {
 	type ToolRenderer,
 	toolRenderers,
 } from "../tools/index";
-import { formatExpandHint } from "../render/render-utils";
+import { formatEarlierLines, formatExpandHint } from "../render/render-utils";
 import { describeDefaultToolExecution, formatDefaultToolExecution } from "../tools/default-renderer";
 import { INTENT_FIELD, type TspCardStatus, type TspPreview, type TspText, type TspTone } from "@oh-my-pi/pi-wire";
 import { card, col, EMPTY_NODE, node, span, text, withHidden } from "../native/describe";
@@ -44,6 +44,7 @@ import {
 	DEFAULT_TERMINAL_PREVIEW_LINES,
 	formatStatusIcon,
 	replaceTabs,
+	previewWindowRows,
 	resolveImageOptions,
 } from "../render/render-utils";
 import type { XdevMountedState } from "../tools/xdev";
@@ -117,6 +118,11 @@ function cardPreview(preview: NativeToolView["preview"]): TspPreview | undefined
 /** The describe hooks of a registry renderer or of a custom tool object. */
 type ToolDescriber = Pick<ToolRenderer, "describeCall" | "describeResult" | "mergeCallAndResult">;
 
+/** A component that can report how many leading rows belong to its frozen top stage. */
+function hasTopStageRows(component: Component): component is Component & { topStageRows(): number } {
+	return "topStageRows" in component && typeof component.topStageRows === "function";
+}
+
 class SafeToolRendererComponent implements Component {
 	#toolName: string;
 	#stage: ToolRendererStage;
@@ -139,6 +145,17 @@ class SafeToolRendererComponent implements Component {
 		if (isFramedBlockComponent(component)) {
 			markFramedBlockComponent(this);
 		}
+	}
+
+	/** Top-stage rows of the wrapped card's last render, or 0 when it is not a staged card. */
+	topStageRows(): number {
+		return hasTopStageRows(this.#component) ? this.#component.topStageRows() : 0;
+	}
+
+	/** Width the wrapped card's lower box was drawn at, or 0 when it is not a staged card. */
+	liveWidth(): number {
+		const inner = this.#component;
+		return "liveWidth" in inner && typeof inner.liveWidth === "function" ? Number(inner.liveWidth()) : 0;
 	}
 
 	render(width: number): readonly string[] {
@@ -311,6 +328,12 @@ let toolExecutionInstanceSeq = 0;
  * Component that renders a tool call with its result (updateable)
  */
 export class ToolExecutionComponent extends Container {
+	/** A running call's command stage is final; the transcript may write it to history before the call ends. */
+	get commitsSettledStageEarly(): boolean {
+		// Only tools whose card keeps a frozen command stage above a live output stage declare one.
+		return this.#toolName === "bash" || this.#toolName === "eval";
+	}
+
 	/** Eval results become immutable transcript history as soon as they finalize. */
 	get commitToHistoryOnFinalize(): boolean {
 		return this.#toolName === "eval";
@@ -329,6 +352,18 @@ export class ToolExecutionComponent extends Container {
 	#args: unknown;
 	#expanded = false;
 	#allocation = Number.POSITIVE_INFINITY;
+	/** Stage boundary of the last unclipped render: the width it was measured at and the rows it covers. */
+	#stageMeasure: { width: number; rows: number; leadingBlanks: number; window: number } | undefined;
+	/** Widest lower box drawn at `width` with `expanded` as it was; only grows, restarts on a width or expand change. */
+	#liveWidthMax: { width: number; expanded: boolean; value: number } | undefined;
+	/**
+	 * Preview window the top stage was drawn with when it was first offered to history. Frozen from then on:
+	 * rows already written to scrollback cannot change, so a terminal that grows or shrinks mid-call must not
+	 * redraw the stage with a different window (the live output window keeps following the terminal).
+	 */
+	#stageWindow: number | undefined;
+	/** Expand state the top stage was drawn with at first offer; ctrl+O afterwards only affects the live stage. */
+	#stageExpanded: boolean | undefined;
 	#presentationFrame: AnimationFrame = { tick: 0, now: 0 };
 	#toolActivityVisible = true;
 	#showImages: boolean;
@@ -945,6 +980,54 @@ export class ToolExecutionComponent extends Container {
 		);
 	}
 
+	/**
+	 * Leading rows of the last render that no later chunk can change: the frame, head and command (the
+	 * stage above the `Output` separator, which is NOT included because its text follows the state).
+	 * Answers only for the width the card was last drawn at, so a resized terminal commits nothing until
+	 * it is drawn again; zero otherwise and for cards without a staged frame.
+	 */
+	getTranscriptBlockSettledRows(width?: number): number {
+		const measure = this.#stageMeasure;
+		if (measure === undefined || this.#sealed || !this.#executionStarted) return 0;
+		if (width !== undefined && width !== measure.width) return 0;
+		// The first offer commits the stage's shape: from here on it is drawn with this window.
+		if (this.commitsSettledStageEarly) {
+			this.#stageWindow ??= measure.window;
+			this.#stageExpanded ??= this.#expanded;
+		}
+		return measure.rows;
+	}
+
+	/**
+	 * Rows of the command stage a running call has committed, for the width it was last drawn at, taken
+	 * from the trimmed render (the leading blank rows are not part of what the transcript slices).
+	 */
+	#committedStageRows(width: number): number {
+		const measure = this.#stageMeasure;
+		if (measure === undefined || measure.width !== width || !this.commitsSettledStageEarly) return 0;
+		return measure.rows - measure.leadingBlanks;
+	}
+
+	/** Window the top stage is drawn with: live until the stage is first offered to history, then frozen. */
+	#topStageWindow(): number {
+		return this.#stageWindow ?? previewWindowRows();
+	}
+
+	/** Expand state the top stage is drawn with: live until first offered to history, then frozen. */
+	#topStageExpanded(): boolean {
+		return this.#stageExpanded ?? this.#expanded;
+	}
+
+	/** Running call whose pending preview will settle shorter: its rows are reversible, unlike a bash card that only grows. */
+	isTranscriptPreviewContracting(): boolean {
+		return (
+			!this.#sealed &&
+			this.#result === undefined &&
+			this.#executionStarted &&
+			this.#renderer?.pendingPreviewContracts === true
+		);
+	}
+
 	isTranscriptBlockTransient(): boolean {
 		if (this.#sealed || !this.#toolActivityVisible) return false;
 		return this.#parkedBackground || (this.#result !== undefined && this.#isPartial);
@@ -1468,11 +1551,15 @@ export class ToolExecutionComponent extends Container {
 				// The head row of a framed card is its border; the title that names the
 				// tool sits one row below. Keep both so a clipped card still says what
 				// is running.
-				const headRows = Bun.stripANSI(trimmed[0]!).replace(/[\s╭╮─┌┐━┏┓│]/g, "") === "" ? 2 : 1;
+				const framedHeadRows = Bun.stripANSI(trimmed[0]!).replace(/[\s╭╮─┌┐━┏┓│]/g, "") === "" ? 2 : 1;
+				// Rows already written to history are sliced off this render by the transcript afterwards.
+				// Keeping only the frame here would let that slice eat the elision marker instead of the
+				// committed command, so keep exactly what was committed (never fewer than the frame).
+				const headRows = Math.max(framedHeadRows, this.#committedStageRows(width));
 				if (this.#allocation < headRows + 3) return this.#renderCompact(width);
 				const hidden = trimmed.length - this.#allocation + 1;
 				const markerText = truncateToWidth(
-					`${theme.fg("dim", `│ … ${hidden} earlier line${hidden === 1 ? "" : "s"}`)} ${formatExpandHint(theme, false, true)}`,
+					`${theme.fg("dim", `│ ${formatEarlierLines({ hidden, shown: this.#allocation - headRows - 1 })}`)} ${formatExpandHint(theme, false, true)}`,
 					width,
 				);
 				const marker = applyBackgroundToLine(markerText, width, text => theme.bg("toolPendingBg", text));
@@ -1481,7 +1568,40 @@ export class ToolExecutionComponent extends Container {
 		}
 		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
 		this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
+		this.#stageMeasure = this.#measureStage(lines, width);
+		this.#recordLiveWidth(width);
 		return lines;
+	}
+
+	/** Keep the widest lower box drawn at this width, so the box only grows while output streams. */
+	#recordLiveWidth(width: number): void {
+		let drawn = 0;
+		for (const child of this.#contentBox.children) {
+			if ("liveWidth" in child && typeof child.liveWidth === "function")
+				drawn = Math.max(drawn, Number(child.liveWidth()));
+		}
+		const keep = this.#liveWidthMax;
+		const same = keep !== undefined && keep.width === width && keep.expanded === this.#expanded;
+		this.#liveWidthMax = { width, expanded: this.#expanded, value: Math.max(same ? keep.value : 0, drawn) };
+	}
+
+	/**
+	 * Rows of this render that precede the live stage, counted from the top of the UNTRIMMED render (the
+	 * container takes the leading blanks off itself). Read from the framed card just drawn; nothing is
+	 * rendered here.
+	 */
+	#measureStage(
+		lines: readonly string[],
+		width: number,
+	): { width: number; rows: number; leadingBlanks: number; window: number } | undefined {
+		let stage = 0;
+		for (const child of this.#contentBox.children) {
+			if (hasTopStageRows(child)) stage = Math.max(stage, child.topStageRows());
+		}
+		if (stage === 0) return undefined;
+		let leading = 0;
+		while (leading < lines.length && Bun.stripANSI(lines[leading]!).trim() === "") leading++;
+		return { width, rows: leading + stage, leadingBlanks: leading, window: this.#topStageWindow() };
 	}
 
 	#renderCompact(width: number): readonly string[] {
@@ -1935,11 +2055,24 @@ export class ToolExecutionComponent extends Container {
 			context.expanded = this.#expanded;
 			context.previewLines = DEFAULT_TERMINAL_PREVIEW_LINES;
 			context.timeout = normalizeTimeoutSeconds(isRecord(this.#args) ? this.#args.timeout : undefined, 3600);
-		} else if (this.#toolName === "eval" && this.#result) {
-			const output = this.#getTextOutput().trimEnd();
-			context.output = output;
-			context.expanded = this.#expanded;
-			context.previewLines = DEFAULT_TERMINAL_PREVIEW_LINES;
+			// A getter, not a copy: the card renders after this context was built and must see the widest lower
+			// box drawn so far, otherwise its right border would jump back when a wide line leaves the window.
+			Object.defineProperty(context, "minLiveWidth", {
+				enumerable: true,
+				get: () => this.#liveWidthMax?.value ?? 0,
+			});
+			Object.defineProperty(context, "stageWindow", { enumerable: true, get: () => this.#topStageWindow() });
+			Object.defineProperty(context, "stageExpanded", { enumerable: true, get: () => this.#topStageExpanded() });
+		} else if (this.#toolName === "eval") {
+			// Present before any result too: the pending call card draws the same frozen top stage.
+			Object.defineProperty(context, "stageWindow", { enumerable: true, get: () => this.#topStageWindow() });
+			Object.defineProperty(context, "stageExpanded", { enumerable: true, get: () => this.#topStageExpanded() });
+			if (this.#result) {
+				const output = this.#getTextOutput().trimEnd();
+				context.output = output;
+				context.expanded = this.#expanded;
+				context.previewLines = DEFAULT_TERMINAL_PREVIEW_LINES;
+			}
 		} else if (this.#toolName === "task") {
 			// Once a result snapshot exists the task renderer draws every agent,
 			// so the call renderer must drop its duplicate streaming preview.

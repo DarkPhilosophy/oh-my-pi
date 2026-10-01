@@ -7,6 +7,7 @@ import { formatOutputPaneLines } from "../render/output-pane";
 import {
 	capPreviewLines,
 	DEFAULT_TERMINAL_PREVIEW_LINES,
+	formatStatusIcon,
 	formatToolWorkingDirectory,
 	previewWindowRows,
 	replaceTabs,
@@ -28,6 +29,17 @@ import type {
 import { ansi, compact, keyed } from "../native/describe";
 import type { NativeChild } from "../native/node";
 import { footnoteText, resultText } from "./native-view";
+
+/** The `Output · <status>` separator label: static text, so the row only changes when the state does. */
+function bashOutputLabel(uiTheme: Theme, status: string, spinnerFrame?: number): string {
+	// Only a running call carries the loading glyph; every finished state is static text, so the row changes when
+	// the call changes state and animates only while it waits.
+	const state =
+		status === "Running" && spinnerFrame !== undefined
+			? `${formatStatusIcon("running", uiTheme, spinnerFrame)} ${status}`
+			: status;
+	return `${uiTheme.fg("toolTitle", "Output")}${uiTheme.sep.dot}${state}`;
+}
 
 /** Default collapsed shell output preview height. */
 export const BASH_DEFAULT_PREVIEW_LINES = DEFAULT_TERMINAL_PREVIEW_LINES;
@@ -212,6 +224,12 @@ export interface BashRenderArgs {
 
 /** Mutable transcript viewport state for shell output. */
 export interface BashRenderContext {
+	/** Widest lower box drawn so far at the current width; the box never gets narrower than this. */
+	minLiveWidth?: number;
+	/** Window the command stage is drawn with; frozen once the stage is offered to history. */
+	stageWindow?: number;
+	/** Expand state the command stage is drawn with; frozen with the window. */
+	stageExpanded?: boolean;
 	/** Raw output text */
 	output?: string;
 	/** Whether output came from artifact storage */
@@ -404,7 +422,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			// expensive part: defer it to the first paint, once per component,
 			// so a rebuild that is replaced before painting never pays for it.
 			let cmdLines: string[] | undefined;
-			return framedToolCard(uiTheme, () => {
+			return framedToolCard(uiTheme, ({ contentWidth }) => {
 				cmdLines ??= formatBashCommandLines(renderArgs, uiTheme);
 				const header =
 					config.showHeader === false
@@ -423,8 +441,22 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 				return {
 					header,
 					phase: options.spinnerFrame !== undefined ? "running" : "pending",
+					// The command is final once its arguments are complete: it keeps one neutral frame
+					// through every later state, so the same bytes can sit in native history.
+					stageTone: "success",
 					sections: [
-						{ content: capPreviewLines(cmdLines, uiTheme, { expanded: options.expanded, keepHead: true }) },
+						{
+							content: capPreviewLines(cmdLines, uiTheme, {
+								expanded: options.expanded,
+								keepHead: true,
+								width: contentWidth,
+							}),
+						},
+						// From execution start the live stage exists even with no output yet (a `sleep`), so
+						// the call reads as running; the label is the one `renderResult` draws for a partial.
+						...(options.executionStarted === true
+							? [{ label: bashOutputLabel(uiTheme, "Running", options.spinnerFrame), content: [] as string[] }]
+							: []),
 					],
 				};
 			});
@@ -447,19 +479,16 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const success = !isPartial && !isError;
 			const details = result.details;
 			const isTimeout = details?.timedOut === true;
+			// Same head as `renderCall` in every state: the status lives on the Output separator below,
+			// so the head row is byte-identical from the pending call to the finished result.
 			const header =
 				config.showHeader === false
 					? undefined
 					: renderStatusLine(
-							success
-								? {
-										iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
-										title: config.resolveTitle(args, options),
-									}
-								: {
-										icon: isPartial ? "pending" : isTimeout ? "warning" : "error",
-										title: config.resolveTitle(args, options),
-									},
+							{
+								iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
+								title: config.resolveTitle(args, options),
+							},
 							uiTheme,
 						);
 			// Per-instance cache for the expensive inner lines computation. Mirrors
@@ -479,6 +508,10 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			let cachedRawOutput: string | undefined;
 			let cachedIsPartial: boolean | undefined;
 			let cachedPreviewWindow: number | undefined;
+			let cachedMinLiveWidth: number | undefined;
+			let cachedStageWindow: number | undefined;
+			let cachedStageExpanded: boolean | undefined;
+			let cachedSpinnerFrame: number | undefined;
 			let cachedSnapshot: ToolCardSnapshot | undefined;
 
 			return framedToolCard(
@@ -504,7 +537,11 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						cachedExpanded === expanded &&
 						cachedRawOutput === rawOutput &&
 						cachedIsPartial === isPartial &&
-						cachedPreviewWindow === previewWindow
+						cachedPreviewWindow === previewWindow &&
+						cachedMinLiveWidth === (renderContext?.minLiveWidth ?? 0) &&
+						cachedStageWindow === (renderContext?.stageWindow ?? previewWindow) &&
+						cachedStageExpanded === (renderContext?.stageExpanded ?? expanded) &&
+						cachedSpinnerFrame === (isPartial ? options.spinnerFrame : undefined)
 					) {
 						return cachedSnapshot;
 					}
@@ -556,8 +593,20 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					if (timeoutLine) outputLines.push(timeoutLine);
 					if (warningLine) outputLines.push(warningLine);
 
+					// Execution status rides the Output separator, static text: the separator row changes only when
+					// the call changes state, never per frame.
+					const outputStatus = isPartial
+						? "Running"
+						: isError
+							? isTimeout
+								? `${uiTheme.styledSymbol("status.warning", "warning")} timed out`
+								: `${uiTheme.styledSymbol("status.error", "error")} failed`
+							: uiTheme.styledSymbol("status.success", "success");
+					const outputLabel = bashOutputLabel(uiTheme, outputStatus, isPartial ? options.spinnerFrame : undefined);
 					const snapshot: ToolCardSnapshot = {
 						header,
+						stageTone: "success",
+						minLiveWidth: renderContext?.minLiveWidth,
 						phase: isPartial ? "partial" : isError ? (isTimeout ? "warning" : "error") : "success",
 						sections: [
 							{
@@ -566,10 +615,16 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								content: capPreviewLines(
 									args ? (cmdLines ??= formatBashCommandLines(renderArgs, uiTheme)) : [],
 									uiTheme,
-									{ expanded, keepHead: true },
+									{
+										// The command stage may already be in history: it keeps the shape it was committed in.
+										expanded: renderContext?.stageExpanded ?? expanded,
+										keepHead: true,
+										width: contentWidth,
+										max: renderContext?.stageWindow ?? previewWindow,
+									},
 								),
 							},
-							{ label: uiTheme.fg("toolTitle", "Output"), content: outputLines },
+							{ label: outputLabel, content: outputLines },
 						],
 					};
 
@@ -579,6 +634,10 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					cachedRawOutput = rawOutput;
 					cachedIsPartial = isPartial;
 					cachedPreviewWindow = previewWindow;
+					cachedMinLiveWidth = renderContext?.minLiveWidth ?? 0;
+					cachedStageWindow = renderContext?.stageWindow ?? previewWindow;
+					cachedStageExpanded = renderContext?.stageExpanded ?? expanded;
+					cachedSpinnerFrame = isPartial ? options.spinnerFrame : undefined;
 					cachedSnapshot = snapshot;
 					return snapshot;
 				},
@@ -591,6 +650,10 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						cachedRawOutput = undefined;
 						cachedIsPartial = undefined;
 						cachedPreviewWindow = undefined;
+						cachedMinLiveWidth = undefined;
+						cachedStageWindow = undefined;
+						cachedStageExpanded = undefined;
+						cachedSpinnerFrame = undefined;
 					},
 				},
 			);
@@ -644,6 +707,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 		},
 		mergeCallAndResult: true,
 		inline: true,
+		// The Output separator shows a loading glyph while the call runs, before and after the first output.
+		animatedPendingPreview: true,
+		animatedPartialResult: true,
 	} satisfies ToolRenderer<TArgs, BashToolDetails>;
 }
 

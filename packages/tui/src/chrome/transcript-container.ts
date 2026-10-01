@@ -65,7 +65,14 @@ interface FinalizableBlock {
 	/** Render the row that must remain represented under emergency viewport pressure. */
 	renderTranscriptBlockEmergencyRow?(width: number): string | undefined;
 	/** Number of leading raw rows whose bytes are final while the block remains active. */
-	getTranscriptBlockSettledRows?(): number;
+	getTranscriptBlockSettledRows?(width?: number): number;
+	/**
+	 * Opt in to having the settled rows offered as soon as they exist instead of only when the live
+	 * region overflows. For a running tool whose command is final while its output streams: the card is
+	 * transient, so it never creates the pressure the default policy waits for, and it sits behind
+	 * settled blocks that must retire first for it to reach the head of the transcript.
+	 */
+	commitsSettledStageEarly?: boolean;
 }
 
 /**
@@ -548,6 +555,22 @@ export class TranscriptContainer extends Container {
 		}
 		return blocks;
 	}
+	/** Live rows of blocks whose pending preview will settle shorter (reversible height). */
+	contractingPreviewRows(width: number, allocation?: number, frame?: AnimationFrame): number {
+		this.#syncEntries();
+		let rows = 0;
+		for (const entry of this.#entries) {
+			if (entry.state === "committed" || entry.emitted > 0) continue;
+			if (
+				(
+					entry.component as Component & { isTranscriptPreviewContracting?(): boolean }
+				).isTranscriptPreviewContracting?.() !== true
+			)
+				continue;
+			rows += this.#holdPeakHeight(entry, width, this.#renderEntry(entry, width, frame), 0).length;
+		}
+		return rows;
+	}
 	/**
 	 * Insert a finalized block just above the live region — before the first
 	 * still-mutating block (mid-stream assistant reply, pending tool). Settled
@@ -856,7 +879,16 @@ export class TranscriptContainer extends Container {
 		let requiredEnd = this.#frontier;
 		for (let cursor = this.#frontier; cursor < this.#entries.length; cursor++) {
 			const entry = this.#entries[cursor]!;
-			if (entry.state !== "settled") break;
+			if (entry.state !== "settled") {
+				// An active block that commits its final stage early must reach the head: retire the
+				// settled blocks ahead of it so the next frame can offer its stage.
+				if (
+					entry.state === "active" &&
+					(entry.component as Component & FinalizableBlock).commitsSettledStageEarly === true
+				)
+					requiredEnd = cursor;
+				break;
+			}
 			if (isTransient(entry.component)) break;
 			// Rows the terminal borrowed into native scrollback are immutable. A
 			// settled card whose current render diverges from those rows would be
@@ -869,38 +901,31 @@ export class TranscriptContainer extends Container {
 				requiredEnd = cursor + 1;
 		}
 		const overflowing = total > room || this.#liveCount() >= MAX_LIVE_BLOCKS;
-		if (policy === "pressure" && !overflowing && requiredEnd === this.#frontier) {
-			this.#pinnedFrontier = undefined;
-			return undefined;
-		}
-
 		const head = this.#entries[this.#frontier];
 		const settledRows = Math.max(
 			0,
 			Math.trunc(
-				(head?.component as (Component & FinalizableBlock) | undefined)?.getTranscriptBlockSettledRows?.() ?? 0,
+				(head?.component as (Component & FinalizableBlock) | undefined)?.getTranscriptBlockSettledRows?.(width) ??
+					0,
 			),
 		);
+		if (
+			policy === "pressure" &&
+			head !== undefined &&
+			head.mode === "mutable" &&
+			(head.component as Component & FinalizableBlock).commitsSettledStageEarly === true &&
+			settledRows > head.emitted
+		) {
+			const batch = this.#offerSettledPrefix(head, settledRows, width, Number.POSITIVE_INFINITY);
+			if (batch !== undefined) return batch;
+		}
+		if (policy === "pressure" && !overflowing && requiredEnd === this.#frontier) {
+			this.#pinnedFrontier = undefined;
+			return undefined;
+		}
 		if (policy === "pressure" && total > room && head !== undefined && settledRows > head.emitted) {
-			const raw = head.component.render(width);
-			let leadingBlankRows = 0;
-			while (leadingBlankRows < raw.length && isPlainBlank(raw[leadingBlankRows]!)) leadingBlankRows++;
-			const renderedHead = this.#renderEntry(head, width);
-			const emittedEnd = Math.min(
-				renderedHead.length,
-				Math.max(0, settledRows - leadingBlankRows),
-				head.emitted + total - room,
-			);
-			if (emittedEnd > head.emitted) {
-				const batch: HistoryBatch = {
-					id: this.#nextBatchId++,
-					rows: renderedHead.slice(head.emitted, emittedEnd),
-					kind: "append",
-				};
-				this.#offered = { batch, kind: "append", entry: this.#frontier, emittedEnd };
-				this.#pinnedFrontier = undefined;
-				return batch;
-			}
+			const batch = this.#offerSettledPrefix(head, settledRows, width, head.emitted + total - room);
+			if (batch !== undefined) return batch;
 		}
 		if (
 			policy === "pressure" &&
@@ -980,6 +1005,33 @@ export class TranscriptContainer extends Container {
 			divergent: this.#hasDivergentBorrowedStream(this.#frontier, end, width),
 		};
 		this.#offered = { batch, end, kind: "commit" };
+		return batch;
+	}
+
+	/**
+	 * Offer the rows a block declared final as one append, up to `limit` rows in total. `settledRows`
+	 * counts from the top of the block's untrimmed render, so the leading blank rows the render is
+	 * trimmed of are taken off first. Returns undefined when there is nothing new to emit.
+	 */
+	#offerSettledPrefix(
+		head: TranscriptEntry,
+		settledRows: number,
+		width: number,
+		limit: number,
+	): HistoryBatch | undefined {
+		const raw = head.component.render(width);
+		let leadingBlankRows = 0;
+		while (leadingBlankRows < raw.length && isPlainBlank(raw[leadingBlankRows]!)) leadingBlankRows++;
+		const renderedHead = this.#renderEntry(head, width);
+		const emittedEnd = Math.min(renderedHead.length, Math.max(0, settledRows - leadingBlankRows), limit);
+		if (emittedEnd <= head.emitted) return undefined;
+		const batch: HistoryBatch = {
+			id: this.#nextBatchId++,
+			rows: renderedHead.slice(head.emitted, emittedEnd),
+			kind: "append",
+		};
+		this.#offered = { batch, kind: "append", entry: this.#frontier, emittedEnd };
+		this.#pinnedFrontier = undefined;
 		return batch;
 	}
 

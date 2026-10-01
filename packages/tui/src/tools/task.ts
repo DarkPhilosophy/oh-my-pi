@@ -871,6 +871,8 @@ function renderAgentProgress(
 			{
 				max: previewRows,
 				expandHint: false,
+				// The tree indent and section gutter sit left of the marker; leave room for them.
+				width: Number.isFinite(maxWidth) ? Math.max(1, maxWidth - visibleWidth(continuePrefix) - 4) : undefined,
 			},
 		).join("\n");
 		lines.push(...renderOutputSection(output, continuePrefix, expanded, theme, 2, previewRows));

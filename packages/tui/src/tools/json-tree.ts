@@ -360,7 +360,7 @@ export function renderJsonTreeLines(
 					if (sourceLines.length > displayedCount) {
 						scalarTruncated = true;
 						scalarLines.push(
-							`${indent}${theme.fg("dim", `…(${sourceLines.length - displayedCount} more lines)"`)}`,
+							`${indent}${theme.fg("dim", `…(${sourceLines.length - displayedCount} more lines)`)}`,
 						);
 					} else {
 						const lastIndex = scalarLines.length - 1;

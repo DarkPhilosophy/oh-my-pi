@@ -327,6 +327,28 @@ export function formatMoreItems(remaining: number, itemType: string): string {
 	return `… ${safeRemaining} more ${pluralize(itemType, safeRemaining)}`;
 }
 
+/** Options for {@link formatEarlierLines}. */
+export interface EarlierLinesOptions {
+	/**
+	 * Lines hidden above the visible window. Callers that cap in wrapped screen rows pass rows,
+	 * callers that cap in logical lines pass lines; the marker words both as "lines".
+	 */
+	hidden: number;
+	/** Lines still visible below the marker. */
+	shown: number;
+}
+
+/**
+ * Marker for the head of a tail-windowed block, always
+ * `… (5 earlier lines, showing 10 of 15)`. One form, so a block never reads as "short" in one
+ * tool and "long" in another; callers always know both counts, which is why neither is optional.
+ */
+export function formatEarlierLines({ hidden, shown }: EarlierLinesOptions): string {
+	const safeHidden = Number.isFinite(hidden) ? hidden : 0;
+	const safeShown = Number.isFinite(shown) ? shown : 0;
+	return `… (${safeHidden} earlier ${pluralize("line", safeHidden)}, showing ${safeShown} of ${safeHidden + safeShown})`;
+}
+
 /**
  * Collapsed command/code previews render a tail window sized from the live
  * viewport: terminal rows minus a reserve for the rest of the block (frame,
@@ -368,7 +390,7 @@ export function diffCollapsedRows(): number {
 /**
  * Cap a pre-rendered command preview to a viewport-sized tail window: the end
  * of the command stays visible (it is the live edge while args stream) behind
- * an "… N earlier lines" marker on top. The same window applies while
+ * an "… (N earlier lines, showing X of Y)" marker on top. The same window applies while
  * streaming and after completion so the block never jumps; only `expanded`
  * (ctrl+o) uncaps it.
  *
@@ -380,7 +402,15 @@ export function diffCollapsedRows(): number {
 export function capPreviewLines(
 	lines: string[],
 	theme: Theme,
-	options: { max?: number; expanded?: boolean; prefix?: string; expandHint?: boolean; keepHead?: boolean } = {},
+	options: {
+		max?: number;
+		expanded?: boolean;
+		prefix?: string;
+		expandHint?: boolean;
+		keepHead?: boolean;
+		/** Clip the marker row to this width so a narrow terminal cannot wrap it onto a second row. */
+		width?: number;
+	} = {},
 ): string[] {
 	if (options.expanded) return lines;
 	const max = options.max ?? previewWindowRows();
@@ -393,7 +423,8 @@ export function capPreviewLines(
 	const visible = tailCount === 0 ? [] : lines.slice(lines.length - tailCount);
 	const hidden = lines.length - visible.length - head.length;
 	const hint = options.expandHint === false ? "" : formatExpandHint(theme, false, true);
-	const marker = `… ${hidden} earlier ${pluralize("line", hidden)}${hint ? ` ${hint}` : ""}`;
+	const text = `${formatEarlierLines({ hidden, shown: visible.length + head.length })}${hint ? ` ${hint}` : ""}`;
+	const marker = options.width === undefined ? text : truncateToWidth(text, Math.max(1, options.width));
 	return [...head, `${options.prefix ?? ""}${theme.fg("dim", marker)}`, ...visible];
 }
 

@@ -499,6 +499,11 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			borrowableRows,
 			retainedLiveViewport: true,
 			viewportExpansionRows,
+			chromeInsertionRows,
+			contractingPreviewRows: Math.min(
+				transcript.contractingPreviewRows(width, liveRows, frame),
+				Math.max(0, rows - 1),
+			),
 			viewport: this.#paintHoverBand(plan.viewport, spans),
 			segments: plan.segments,
 			borrowedViewportRows: borrowedViewportRows > 0 ? before.length + borrowedViewportRows : 0,
