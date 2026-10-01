@@ -16,3 +16,8 @@ export function copyToClipboardPersistent(text) {
 export function readImageFromClipboard() {
 	return loadNative().readImageFromClipboard();
 }
+
+/** Read plain text from the clipboard, loading the native addon on first use. */
+export function readTextFromClipboard() {
+	return loadNative().readTextFromClipboard();
+}

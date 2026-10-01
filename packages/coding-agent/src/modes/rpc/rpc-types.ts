@@ -44,6 +44,7 @@ export type RpcCommand =
 	// State
 	| { id?: string; type: "get_state" }
 	| { id?: string; type: "set_fast_mode"; enabled: boolean }
+	| { id?: string; type: "set_ask_dialog"; enabled: boolean }
 	| { id?: string; type: "get_available_commands" }
 	| { id?: string; type: "execute_slash_command"; text: string }
 	| { id?: string; type: "get_entries"; since?: string }
@@ -61,6 +62,8 @@ export type RpcCommand =
 	| { id?: string; type: "terminal_appearance"; appearance: "dark" | "light" }
 	| { id?: string; type: "terminal_focus"; focused: boolean }
 	| { id?: string; type: "terminal_detach" }
+	| { id?: string; type: "cancel_subagent"; subagentId: string }
+	| { id?: string; type: "steer_subagent"; subagentId: string; message: string }
 
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
@@ -119,6 +122,16 @@ export type RpcCommand =
 			availableWidth: number;
 			visibleRows: number;
 			hiddenBlocks?: string[];
+		}
+	// Word prediction (composer ghost text); `cursor` is a UTF-16 offset into `text`
+	| { id?: string; type: "predict_word"; text: string; cursor: number }
+	| {
+			id?: string;
+			type: "predict_word_feedback";
+			text: string;
+			cursor: number;
+			suggestion: string;
+			accepted: boolean;
 	  };
 
 // ============================================================================
@@ -319,6 +332,7 @@ export type RpcResponse =
 			success: true;
 			data: { enabled: boolean; active: boolean };
 	  }
+	| { id?: string; type: "response"; command: "set_ask_dialog"; success: true; data: { enabled: boolean } }
 	| {
 			id?: string;
 			type: "response";
@@ -371,6 +385,14 @@ export type RpcResponse =
 			success: true;
 			data: RpcSubagentMessagesResult;
 	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "cancel_subagent";
+			success: true;
+			data: { cancelled: boolean };
+	  }
+	| { id?: string; type: "response"; command: "steer_subagent"; success: true }
 
 	// Model
 	| {
@@ -469,6 +491,10 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "login"; success: true; data: { providerId: string } }
 	| { id?: string; type: "response"; command: "widget_layout"; success: true }
 
+	// Word prediction
+	| { id?: string; type: "response"; command: "predict_word"; success: true; data: { suffix: string | null } }
+	| { id?: string; type: "response"; command: "predict_word_feedback"; success: true }
+
 	// Error response (any command can fail); `code` is an optional machine-readable reason.
 	| { id?: string; type: "response"; command: string; success: false; error: string; code?: string };
 
@@ -539,6 +565,17 @@ export interface RpcExtensionUISelectOptionDetail {
 	description?: string;
 }
 
+/** One question of an RPC `ask` dialog. Options never include "Other"; hosts always offer free text. */
+export interface RpcAskDialogQuestion {
+	id: string;
+	question: string;
+	header?: string;
+	options: Array<{ label: string; description?: string; preview?: string }>;
+	multi?: boolean;
+	/** Index of the recommended option. */
+	recommended?: number;
+}
+
 /** Emitted when an extension needs user input */
 export type RpcExtensionUIRequest =
 	| {
@@ -566,6 +603,14 @@ export type RpcExtensionUIRequest =
 			title: string;
 			prefill?: string;
 			promptStyle?: boolean;
+	  }
+	/** Emitted only after the host opts in with `set_ask_dialog`. */
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "ask";
+			questions: RpcAskDialogQuestion[];
+			timeout?: number;
 	  }
 	| { type: "extension_ui_request"; id: string; method: "cancel"; targetId: string }
 	| {
@@ -719,7 +764,13 @@ export interface RpcHostUriResult {
 export type RpcExtensionUIResponse =
 	| { type: "extension_ui_response"; id: string; value: string }
 	| { type: "extension_ui_response"; id: string; confirmed: boolean }
-	| { type: "extension_ui_response"; id: string; cancelled: true; timedOut?: boolean };
+	| { type: "extension_ui_response"; id: string; cancelled: true; timedOut?: boolean }
+	/** Answers to an `ask` request, one per question in request order. */
+	| {
+			type: "extension_ui_response";
+			id: string;
+			answers: Array<{ id: string; selectedOptions: string[]; customInput?: string }>;
+	  };
 
 // ============================================================================
 // Helper type for extracting command types
