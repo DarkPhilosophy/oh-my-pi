@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added passive cursor-adjacent popups and completion dismissal that preserves the editor draft and cursor ([#11958](https://github.com/can1357/oh-my-pi/pull/11958) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added compact framed rendering for completed fenced Markdown code blocks, with width-aware wrapping and language labels while preserving raw delimiters for still-streaming fences ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- `/advisor configure` has a native settings page for the project and global rosters, with a page per advisor and per scope, typed rows for each field and per-scope save ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Usage account cards support temporary privacy and grouping controls in both terminal renderers, with account masking shared by detail and note views ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Usage overlays can hide organization names independently with the temporary `o` control or native button; organization aliases stay stable across views and refreshes ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added passive cursor-adjacent popup rendering for command suggestions without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added opt-in cursor-adjacent popup placement for non-command autocomplete triggers without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Popups can be anchored to a column: `TUI.setCursorOverlay` takes an optional `anchor` (`{ col, width }`), and the editor reports where a `#123` reference being completed starts and how wide its card needs to be, so the suggestions box opens above the token at its content width ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added an optional heading in the top border of `Box` (`BoxBorder.topLabel`), centered and truncated to fit ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Contextual `#123` reference popup can draw its options on one row (switch with Left/Right or Up/Down; Tab or Enter accepts) and the selected item's wrapped title beneath them, under a `GITHUB` heading; the card is sized by its content ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+
+### Fixed
+
+- Fixed the `/advisor configure` tools editor letting arrow keys move onto rows clipped by the right pane, so Enter could toggle a tool that was not visible ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- `SelectList` now keeps keyboard focus on the intended item after a focus transition ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Improved incremental Markdown lexing to reuse append-only guard scans and stable block boundaries during streaming ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Fixed narrow and nested framed Markdown code blocks so wide graphemes stay within the requested width and copy targets preserve raw source boundaries without cache collisions ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Fixed a dismissed `#123`, `@` or `/` suggestion list reappearing over an empty editor after the draft was cleared (Ctrl+C, submit or history recall): replacing the whole text now closes any open suggestions ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added inline model-picker search chrome and completion dismissal that preserves the editor draft and cursor ([#11958](https://github.com/can1357/oh-my-pi/pull/11958) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added passive cursor-adjacent popup rendering for command suggestions without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added opt-in cursor-adjacent popup placement for non-command autocomplete triggers without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- `/advisor config` shows the project and global advisors together, with the selected advisor's fields on the right, and the status line gets a compact glyph per advisor drawn from the active symbol preset ([#13931](https://github.com/can1357/oh-my-pi/pull/13931) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
+- Added an optional `curated` flag to advisor notes so a note that absorbed equivalent reports from other advisors can be marked as such ([#13932](https://github.com/can1357/oh-my-pi/pull/13932) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
+
 ## [18.4.6] - 2026-10-01
 
 ### Added
@@ -15,47 +41,20 @@
 
 ### Added
 
-- Added passive cursor-adjacent popups and completion dismissal that preserves the editor draft and cursor ([#11958](https://github.com/can1357/oh-my-pi/pull/11958) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - `SelectList` now keeps keyboard focus on the intended item after a focus transition.
 - Fixed home directories next to shell redirections, control operators or Markdown emphasis (`<`, `>`, `&`, `|`, `*`, `_`) leaking the full path in display-only text ([#11210](https://github.com/can1357/oh-my-pi/pull/11210) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Fixed the subagent task card showing full home paths in path arguments, while keeping search patterns literal ([#11210](https://github.com/can1357/oh-my-pi/pull/11210) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Added compact framed rendering for completed fenced Markdown code blocks, with width-aware wrapping and language labels while preserving raw delimiters for still-streaming fences ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 
 ### Added
 
 - Popups can be anchored to a column: `TUI.setCursorOverlay` takes an optional `anchorCol`, and the editor reports the start column of a `#123` reference being completed so the suggestions box opens above the token.
-- `/advisor configure` has a native settings page for the project and global rosters, with a page per advisor and per scope, typed rows for each field and per-scope save ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 
 ### Fixed
 
 - Fixed a dismissed `#123`, `@` or `/` suggestion list reappearing over an empty editor after the draft was cleared (Ctrl+C, submit or history recall): replacing the whole text now closes any open suggestions.
-- Fixed the `/advisor configure` tools editor letting arrow keys move onto rows clipped by the right pane, so Enter could toggle a tool that was not visible ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- `SelectList` now keeps keyboard focus on the intended item after a focus transition ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Improved incremental Markdown lexing to reuse append-only guard scans and stable block boundaries during streaming ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 
 ### Fixed
 
-- Fixed narrow and nested framed Markdown code blocks so wide graphemes stay within the requested width and copy targets preserve raw source boundaries without cache collisions ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-
-### Added
-
-- Usage account cards support temporary privacy and grouping controls in both terminal renderers, with account masking shared by detail and note views ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Usage overlays can hide organization names independently with the temporary `o` control or native button; organization aliases stay stable across views and refreshes ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-
-### Added
-
-- Added passive cursor-adjacent popup rendering for command suggestions without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Added opt-in cursor-adjacent popup placement for non-command autocomplete triggers without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Popups can be anchored to a column: `TUI.setCursorOverlay` takes an optional `anchor` (`{ col, width }`), and the editor reports where a `#123` reference being completed starts and how wide its card needs to be, so the suggestions box opens above the token at its content width ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Added an optional heading in the top border of `Box` (`BoxBorder.topLabel`), centered and truncated to fit ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Contextual `#123` reference popup can draw its options on one row (switch with Left/Right or Up/Down; Tab or Enter accepts) and the selected item's wrapped title beneath them, under a `GITHUB` heading; the card is sized by its content ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-
-### Fixed
-
-- Fixed a dismissed `#123`, `@` or `/` suggestion list reappearing over an empty editor after the draft was cleared (Ctrl+C, submit or history recall): replacing the whole text now closes any open suggestions ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Added inline model-picker search chrome and completion dismissal that preserves the editor draft and cursor ([#11958](https://github.com/can1357/oh-my-pi/pull/11958) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Added passive cursor-adjacent popup rendering for command suggestions without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Added opt-in cursor-adjacent popup placement for non-command autocomplete triggers without allocating transcript rows ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Implemented a full-page transcript-replay surface for `Rewind` in native terminals, replacing the dotted-outline picker with a `pick`/`drop` marked page that allows branching navigation
 - Added agent lineage tracking, providing a navigation header when viewing subagents
 - Added JobsSheet overlay for viewing background jobs
@@ -86,8 +85,6 @@
 - Fixed search result rendering to correctly display gaps between non-adjacent context runs
 - Fixed the ask tool's Custom answer and note prompts in native terminals (Tern): the question now shows whole as markdown under a `Custom answer` / `Note for …` title, instead of being wrapped at the terminal's width, cut to three rows and split between the title and an accent-coloured block. `AskDialogCallbacks.onPrompt`/`onImagePrompt` take `{ title, question }`; `HookEditorOptions.question` carries the question and `boundPromptTitle` moved to `overlays/hook-editor`. A cut terminal title now ends in `…`.
 - Fixed text fields in native dialogs (the ask's custom answer and notes, plan review, annotations, the agent hub) being drawn as the prompt composer with a doubled `❯ >` prompt: a plain `Editor` now describes itself as `omp.field` (only the composer claims `omp.editor`) and no longer sends its terminal prompt gutter (`> `) as the native `prompt`.
-- `/advisor config` shows the project and global advisors together, with the selected advisor's fields on the right, and the status line gets a compact glyph per advisor drawn from the active symbol preset ([#13931](https://github.com/can1357/oh-my-pi/pull/13931) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
-- Added an optional `curated` flag to advisor notes so a note that absorbed equivalent reports from other advisors can be marked as such ([#13932](https://github.com/can1357/oh-my-pi/pull/13932) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
 - Fixed search results so gaps between non-adjacent context runs are displayed correctly.
 - Fixed custom-answer and note prompts in native terminals so questions are shown completely with the correct titles and are no longer truncated or incorrectly wrapped.
 - Fixed text fields in native dialogs to render without a duplicate prompt indicator.

@@ -2,21 +2,10 @@
 
 ## [Unreleased]
 
-## [18.4.6] - 2026-10-01
-
 ### Added
 
 - Added `display.contextualTokenPopup` (off by default, needs `display.autocompleteSuggestionsPopup`): `#123` PR and issue suggestions open as a compact popup above the typed token instead of a full-width band ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Added `display.contextualTokenPopupStyle` (`compact` or `stacked`) to choose how the `#123` popup lays out PR and Issue. The selected item's title shows beneath the options: cached titles at once, a missing one is fetched once in the background after typing settles (skipped when `github.cache.enabled` is off) ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-
-### Fixed
-
-- Fixed a dismissed `#123`, `@` or `/` suggestion list reappearing over an empty editor after Ctrl+C cleared the draft: clearing the draft now closes any open suggestions ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-### Fixed
-
-- Fixed rapid queued steering and follow-up submissions racing or losing attachments; added opt-in coalescing and expandable queued-message previews ([#4680](https://github.com/can1357/oh-my-pi/pull/4680) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
-- Fenced code blocks now expose a clickable `copy` link that copies their original source text ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Added opt-in `usage.maskOrganizationNames` and a temporary `/usage` organization-privacy control, independent of identifier masking, with stable organization aliases across cards, details, notes, and CLI/ACP reports ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 
 ### Changed
 
@@ -24,16 +13,26 @@
 
 ### Fixed
 
+- Fixed a dismissed `#123`, `@` or `/` suggestion list reappearing over an empty editor after Ctrl+C cleared the draft: clearing the draft now closes any open suggestions ([#13873](https://github.com/can1357/oh-my-pi/pull/13873) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Fixed rapid queued steering and follow-up submissions racing or losing attachments; added opt-in coalescing and expandable queued-message previews ([#4680](https://github.com/can1357/oh-my-pi/pull/4680) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
+- Fenced code blocks now expose a clickable `copy` link that copies their original source text ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
+- Added opt-in `usage.maskOrganizationNames` and a temporary `/usage` organization-privacy control, independent of identifier masking, with stable organization aliases across cards, details, notes, and CLI/ACP reports ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Global usage-account masking now applies to native and text dashboards, notes, reset credits, and CLI usage output without persisting temporary overlay toggles ([#11208](https://github.com/can1357/oh-my-pi/pull/11208) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Added an optional Inline Model Picker in Appearance → Display that keeps model search in the chat input area while preserving the statusline and extension content ([#11958](https://github.com/can1357/oh-my-pi/pull/11958) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Added an optional Autocomplete Suggestions Popup for `@` file mentions, `#` actions/references, and `:` emoji suggestions without moving the chat ([#12671](https://github.com/can1357/oh-my-pi/pull/12671) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
-- Added JobsSheet overlay for viewing live background jobs without transcript interruption
-- Added agent lineage tracking, enabling navigation between subagents and the main session via a native composer header
 - Turning the advisor off for a session now also applies to its existing, newly spawned and restored subagents, while a subagent that opted out itself and unrelated sessions are left alone ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
+- Applying advisor changes no longer restarts every advisor: only the advisors whose configuration changed restart and unchanged ones keep their context, queued notes and status; changing the shared instructions still restarts all of them ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
+- Added an advisor curator: live advisor nits are held for 250 ms and judged together, so the same issue raised by several advisors reaches the agent once and a note the agent already fixed is dropped; concerns and blockers are never held, a lone nit is delivered without a judge call, and any judge error or timeout delivers the notes unchanged. Controlled by `advisor.curator` ([#13932](https://github.com/can1357/oh-my-pi/pull/13932) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
+
+## [18.4.6] - 2026-10-01
 
 ### Fixed
 
-- Applying advisor changes no longer restarts every advisor: only the advisors whose configuration changed restart and unchanged ones keep their context, queued notes and status; changing the shared instructions still restarts all of them ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
+- Added JobsSheet overlay for viewing live background jobs without transcript interruption
+- Added agent lineage tracking, enabling navigation between subagents and the main session via a native composer header
+
+### Fixed
+
 - Added `promote_queued_message` to RPC, with `promoteQueuedMessage()` on the session and TypeScript RPC client and `promote_queued_message()` on the Python RPC client, so a queued follow-up can become a steering message without duplicating its text or losing attachments ([#11618](https://github.com/can1357/oh-my-pi/pull/11618) by [@andrebrait](https://github.com/andrebrait)).
 - The TypeScript RPC client's `prompt()` accepts a `streamingBehavior` (`"steer"` or `"followUp"`) for prompts sent while the agent is busy ([#11618](https://github.com/can1357/oh-my-pi/pull/11618) by [@andrebrait](https://github.com/andrebrait)).
 - Claude prompt caches can now stay warm on Amazon Bedrock and Bedrock Mantle, respecting configured per-model cache lifetimes as well as cache retention ([#13871](https://github.com/can1357/oh-my-pi/pull/13871) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
@@ -59,7 +58,6 @@
 - A path-pasted image or video sent as an aside while the agent is busy now reaches the model with its source path ([#11618](https://github.com/can1357/oh-my-pi/pull/11618) by [@andrebrait](https://github.com/andrebrait)).
 - Extension-registered model prompt-cache settings, including `{}` opt-outs, now take precedence over matching `models.yml` definitions ([#13871](https://github.com/can1357/oh-my-pi/pull/13871) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
 - Cache warming now follows `providers.cacheRetention`: `none` no longer replays uncached requests, and `long` warms on the 1-hour lifetime the request actually wrote ([#13871](https://github.com/can1357/oh-my-pi/pull/13871) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
-- Added an advisor curator: live advisor nits are held for 250 ms and judged together, so the same issue raised by several advisors reaches the agent once and a note the agent already fixed is dropped; concerns and blockers are never held, a lone nit is delivered without a judge call, and any judge error or timeout delivers the notes unchanged. Controlled by `advisor.curator` ([#13932](https://github.com/can1357/oh-my-pi/pull/13932) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
 - Fixed Tern commands issued while the agent is working so they appear immediately in the transcript instead of being clipped above the prompt.
 - Added a dismiss action for Tern's prompt-area error notifications.
 - Fixed dollar signs in prompts being mistaken for Python mode until a following space confirms the mode.
