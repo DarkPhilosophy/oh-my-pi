@@ -20,6 +20,10 @@ export type SymbolKey =
 	| "status.shadowed"
 	| "status.aborted"
 	| "status.done"
+	// Compact per-advisor status glyphs in the status line
+	| "advisor.running"
+	| "advisor.idle"
+	| "advisor.failed"
 	// Navigation
 	| "nav.cursor"
 	| "nav.selected"
@@ -400,6 +404,9 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"status.shadowed": "○",
 	"status.aborted": "⏹",
 	"status.done": "•",
+	"advisor.running": "●",
+	"advisor.idle": "○",
+	"advisor.failed": "✕",
 	// Navigation
 	"nav.cursor": "❯",
 	"nav.selected": "➤",
@@ -712,6 +719,9 @@ const NERD_SYMBOLS: SymbolMap = {
 	"status.aborted": "\uf04d",
 	// pick: • | alt: ● ·
 	"status.done": "•",
+	"advisor.running": "●",
+	"advisor.idle": "○",
+	"advisor.failed": "✕",
 	// Navigation
 	// pick:  | alt:  
 	"nav.cursor": "\uf054",
@@ -1185,6 +1195,9 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"status.shadowed": "[/]",
 	"status.aborted": "[-]",
 	"status.done": "*",
+	"advisor.running": "*",
+	"advisor.idle": "-",
+	"advisor.failed": "x",
 	// Navigation
 	"nav.cursor": ">",
 	"nav.selected": "->",

@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import {
 	cfgUsageLabelPlacement,
 	cfgUsageMaskAccountLabels,
@@ -460,6 +461,7 @@ export class SelectorController {
 				defaultModelLabel: defaultAdvisorModel
 					? `${defaultAdvisorModel.provider}/${defaultAdvisorModel.id}`
 					: undefined,
+				projectName: path.basename(projectDir),
 			};
 			const overlay = new AdvisorConfigOverlayComponent(this.ctx.ui, deps, initialScope, initialDoc, {
 				loadDoc: async scope => loadWatchdogConfigFile(await resolveAdvisorConfigEditPath(scope, dirs)),

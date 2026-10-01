@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -11,7 +11,7 @@ import {
 	type AdvisorConfigDeps,
 	type WatchdogConfigDoc,
 } from "../src/overlays/advisor-config";
-import { getThemeByName, setThemeInstance } from "../src/theme";
+import { getThemeByName, setSymbolPreset, setThemeInstance } from "../src/theme";
 
 const deps: AdvisorConfigDeps = {
 	getAvailableModels: () => [],
@@ -93,7 +93,7 @@ describe("advisor review mode picker", () => {
 	});
 });
 
-describe("advisor sync backlog picker", () => {
+describe("advisor config editor", () => {
 	beforeAll(async () => {
 		const theme = await getThemeByName("dark");
 		if (!theme) throw new Error("theme unavailable");
@@ -882,6 +882,14 @@ describe("advisor tools editor keyboard navigation", () => {
 		}
 	});
 
+	it("keeps the wrapped-to row visible when keys arrive before the first frame of the editor", () => {
+		const overlay = openToolsEditor([]);
+		// openToolsEditor drew the field list only; the tools editor has not been drawn yet.
+		overlay.handleInput("\x1b[A"); // Wraps from the first row to "Done".
+		const rows = paneRows(overlay);
+		expect(rows.some(row => row.includes("Done"))).toBe(true);
+	});
+
 	it("toggles the tool that is shown, and keeps it in view after the toggle", async () => {
 		const saves: WatchdogConfigDoc[] = [];
 		const overlay = openToolsEditor(saves);
@@ -903,5 +911,203 @@ describe("advisor tools editor keyboard navigation", () => {
 		const done = rows.findIndex(row => row.includes("Done"));
 		expect(done).toBeGreaterThanOrEqual(0);
 		expect(rows.findIndex(row => row.includes("(end)"))).toBeGreaterThan(done);
+	});
+});
+
+describe("advisor config display text", () => {
+	const callbacks = {
+		loadDoc: async () => ({ advisors: [] }),
+		save: async () => {},
+		close: () => {},
+		requestRender: () => {},
+		notify: () => {},
+	};
+
+	beforeAll(async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("theme unavailable");
+		setThemeInstance(theme);
+	});
+
+	afterAll(async () => {
+		await setSymbolPreset("unicode");
+	});
+
+	it("draws no non-ASCII footer hint under the ascii symbol preset", async () => {
+		await setSymbolPreset("ascii");
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			deps,
+			"project",
+			{ advisors: [{ name: "Reviewer" }] },
+			callbacks,
+		);
+		const footers: string[] = [];
+		footers.push(Bun.stripANSI(overlay.render(100).at(-2) ?? ""));
+		overlay.handleInput("\r"); // Advisor detail: a different footer.
+		footers.push(Bun.stripANSI(overlay.render(100).at(-2) ?? ""));
+
+		for (const footer of footers) {
+			expect(footer.trim().length).toBeGreaterThan(0);
+			expect(footer).not.toMatch(/[^\x20-\x7e]/);
+		}
+	});
+
+	it("renders an advisor name containing tabs and escape sequences as clean single-line text", async () => {
+		await setSymbolPreset("unicode");
+		const hostile = "Sec\turity\x1b[31m\nred";
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			deps,
+			"project",
+			{ advisors: [{ name: hostile }] },
+			callbacks,
+		);
+		const frame = overlay.render(100).join("\n");
+
+		expect(frame).not.toContain("\x1b[31m");
+		expect(frame).not.toContain("\t");
+		expect(Bun.stripANSI(frame)).toContain("Sec urity red");
+	});
+
+	it("renders the instructions editor title for a hostile advisor name on one clean line", async () => {
+		await setSymbolPreset("unicode");
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			deps,
+			"project",
+			{ advisors: [{ name: "Sec\turity\x1b[31m\nred" }] },
+			callbacks,
+		);
+		overlay.handleInput("\r"); // The advisor's fields.
+		openField(overlay, "Instructions");
+		const frame = overlay.render(100).join("\n");
+
+		expect(frame).not.toContain("\x1b[31m");
+		const titleLine = Bun.stripANSI(frame)
+			.split("\n")
+			.find(line => line.includes("Instructions"));
+		expect(titleLine).toContain("Sec urity red");
+	});
+});
+
+describe("advisor config keyboard navigation", () => {
+	beforeAll(async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("theme unavailable");
+		setThemeInstance(theme);
+	});
+
+	function mount(closed: { n: number }): AdvisorConfigOverlayComponent {
+		return new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			deps,
+			"project",
+			{ advisors: [{ name: "Alpha" }, { name: "Beta" }] },
+			{
+				loadDoc: async () => ({ advisors: [] }),
+				save: async () => {},
+				close: () => {
+					closed.n++;
+				},
+				requestRender: () => {},
+				notify: () => {},
+			},
+		);
+	}
+	it("keeps the overlay open when Esc is pressed on an advisor's field list", () => {
+		const closed = { n: 0 };
+		const overlay = mount(closed);
+		overlay.handleInput("\r");
+		overlay.handleInput("\x1b");
+
+		expect(closed.n).toBe(0);
+		overlay.handleInput("\x1b");
+		expect(closed.n).toBe(1);
+	});
+
+	it("shows the newly selected advisor's fields instead of a thinking picker bound to the previous advisor", () => {
+		const model = buildModel({
+			id: "thinking-model",
+			name: "Thinking model",
+			api: "openai-completions",
+			provider: "test",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			thinking: { efforts: [Effort.Low, Effort.High], mode: "effort" },
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 1024,
+		});
+		const overlay = new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			{ ...deps, scopedModels: [{ model }] },
+			"project",
+			{ advisors: [{ name: "Alpha" }, { name: "Beta" }] },
+			{
+				loadDoc: async () => ({ advisors: [] }),
+				save: async () => {},
+				close: () => {},
+				requestRender: () => {},
+				notify: () => {},
+			},
+		);
+		overlay.handleInput("\r"); // Alpha's fields.
+		openField(overlay, "Model"); // The model picker.
+		overlay.handleInput("\r"); // Choose the model with thinking levels: the thinking picker opens.
+		const pane = () =>
+			overlay
+				.render(110)
+				.map(line => Bun.stripANSI(line).slice(38))
+				.join("\n");
+		expect(pane()).toContain("low");
+
+		overlay.handleInput("\x1b[D"); // Back to the rosters; the thinking picker is still mounted.
+		overlay.handleInput("\x1b[B"); // Select Beta.
+
+		expect(pane()).toContain("Beta");
+		expect(pane()).not.toContain("low");
+	});
+
+	function mountWithCadence(): AdvisorConfigOverlayComponent {
+		return new AdvisorConfigOverlayComponent(
+			{} as TUI,
+			deps,
+			"project",
+			{ advisors: [{ name: "Alpha", reviewMode: "agent-end", reviewInterval: 7 }, { name: "Beta" }] },
+			{
+				loadDoc: async () => ({ advisors: [] }),
+				save: async () => {},
+				close: () => {},
+				requestRender: () => {},
+				notify: () => {},
+			},
+		);
+	}
+	const frame = (overlay: AdvisorConfigOverlayComponent): string => overlay.render(100).map(Bun.stripANSI).join("\n");
+
+	it("keeps the review interval input open when the left arrow moves the caret", () => {
+		const overlay = mountWithCadence();
+		overlay.handleInput("\r"); // Alpha's fields.
+		openField(overlay, "Review interval");
+		expect(frame(overlay)).toContain("Positive integer");
+
+		overlay.handleInput("\x1b[D");
+
+		expect(frame(overlay)).toContain("Positive integer");
+	});
+
+	it("does not keep an open cadence picker bound to the previous advisor after the roster selection changes", () => {
+		const overlay = mountWithCadence();
+		overlay.handleInput("\r"); // Alpha's fields.
+		openField(overlay, "Review mode"); // Alpha's picker, current value agent-end.
+		expect(frame(overlay)).toContain("agent-end (current)");
+
+		overlay.handleInput("\x1b[D"); // Back to the rosters with the picker still mounted.
+		overlay.handleInput("\x1b[B"); // Select Beta.
+
+		expect(frame(overlay)).toContain("Beta");
+		expect(frame(overlay)).not.toContain("agent-end (current)");
 	});
 });

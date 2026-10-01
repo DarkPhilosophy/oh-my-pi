@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { SegmentContext } from "../src/status-line/segments";
-import { renderSegment } from "../src/status-line/segments";
+import { describeSegment, renderSegment } from "../src/status-line/segments";
 import { initTheme, theme } from "../src/theme";
 
 beforeAll(async () => {
@@ -76,8 +76,8 @@ describe("status line stream segment", () => {
 	});
 });
 
-describe("status line model segment advisor badge", () => {
-	it("appends a success-colored advisor symbol when all advisors run", () => {
+describe("status line model segment advisor glyphs", () => {
+	it("renders one success dot per running advisor", () => {
 		const rendered = renderSegment("model", createModelContext(true));
 		expect(rendered.content).toContain("Test Model");
 		expect(rendered.content).toContain(theme.fg("success", "●"));
@@ -129,6 +129,36 @@ describe("status line model segment real symbol presets", () => {
 			expect(plain).toContain(expected);
 		}
 		await initTheme(false);
+	});
+});
+
+describe("status line model segment per-advisor glyph group", () => {
+	const roster = [
+		{ name: "a", status: "running" as const, yielded: false },
+		{ name: "b", status: "quota_exhausted" as const, yielded: false },
+		{ name: "c", status: "paused" as const, yielded: false },
+	];
+
+	it("gives native terminals the same glyph group as the text status line", async () => {
+		await initTheme(false, "unicode");
+		const ctx = createModelContext(true);
+		ctx.session.getAdvisorStatusOverview = () => ({ configured: true, advisors: roster });
+		const view = describeSegment("model", ctx);
+		const nativeText = (view?.spans ?? []).map(s => s.t).join("");
+		await initTheme(false);
+
+		expect(nativeText).toContain("(● ✕ ○)");
+	});
+
+	it("draws the glyphs from the active symbol preset, so ascii stays ascii", async () => {
+		await initTheme(false, "ascii");
+		const ctx = createModelContext(true);
+		ctx.session.getAdvisorStatusOverview = () => ({ configured: true, advisors: roster });
+		const plain = Bun.stripANSI(renderSegment("model", ctx).content);
+		await initTheme(false);
+
+		expect(plain).toContain("(* x -)");
+		expect(plain).not.toMatch(/[●○✕]/);
 	});
 });
 
