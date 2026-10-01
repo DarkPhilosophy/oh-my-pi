@@ -1239,7 +1239,8 @@ describe("InteractiveMode subagent observer UI sync", () => {
 	it("coalesces a burst of progress observer changes into one HUD rebuild and render request", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
 		const requestRender = vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
-		const rebuildHud = vi.spyOn(mode.subagentContainer, "clear");
+		const mountHud = vi.spyOn(mode.subagentContainer, "addChild");
+		const updateHud = vi.spyOn(SubagentHudComponent.prototype, "update");
 		vi.useFakeTimers();
 
 		for (let index = 0; index < 6; index++) {
@@ -1254,9 +1255,11 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		await Promise.resolve();
 
 		const hud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
+		// This branch shows up to eight agents before collapsing, so all six burst agents are visible.
 		expectSameRow(hud, "BurstAgent0", "Burst job 0");
 		expectSameRow(hud, "BurstAgent5", "Burst job 5");
-		expect(rebuildHud).toHaveBeenCalledTimes(1);
+		expect(hud).not.toContain("more — expand");
+		expect(mountHud.mock.calls.length + updateHud.mock.calls.length).toBe(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 	it("rebuilds HUD immediately when badge setting changes", async () => {

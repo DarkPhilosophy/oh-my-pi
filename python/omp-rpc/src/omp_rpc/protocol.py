@@ -971,6 +971,11 @@ class RemoveQueuedMessageResult:
 
 
 @dataclass(slots=True, frozen=True)
+class PromoteQueuedMessageResult:
+    promoted: bool
+
+
+@dataclass(slots=True, frozen=True)
 class BranchMessage:
     entry_id: str
     text: str
@@ -1686,6 +1691,10 @@ def parse_open_session_result(payload: JsonObject) -> OpenSessionResult:
 
 def parse_remove_queued_message_result(payload: JsonObject) -> RemoveQueuedMessageResult:
     return RemoveQueuedMessageResult(removed=_require_bool(payload, "removed"))
+
+
+def parse_promote_queued_message_result(payload: JsonObject) -> PromoteQueuedMessageResult:
+    return PromoteQueuedMessageResult(promoted=_require_bool(payload, "promoted"))
 
 
 def parse_branch_result(payload: JsonObject | None) -> BranchResult:

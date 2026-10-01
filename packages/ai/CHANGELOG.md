@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed forced tool calls (e.g. plan mode's required-tool retry) failing on Claude Opus 5.5 and Sonnet 5.5 via Amazon Bedrock with 400 `tool_choice: type "tool" and "any" are not supported for this model`; the request now falls back to `auto` and keeps thinking on ([#13948](https://github.com/can1357/oh-my-pi/pull/13948) by [@H4vC](https://github.com/H4vC)).
+
 ## [18.4.5] - 2026-09-30
 
 ### Added
