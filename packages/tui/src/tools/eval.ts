@@ -750,6 +750,7 @@ function evalCellSection(cell: EvalCellSection, index: number, total: number): N
 /** Render eval code cells, structured display output, and progress events. */
 export const evalToolRenderer = {
 	animatedPendingPreview: true,
+	pendingAnimationRequiresExecution: true,
 	animatedPartialResult: true,
 	renderCall(
 		args: EvalRenderArgs,

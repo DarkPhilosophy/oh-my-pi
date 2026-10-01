@@ -821,16 +821,14 @@ export class ToolExecutionComponent extends Container {
 					// a custom renderCall/renderResult pair routes through the custom
 					// branch whose pending label is a static tool-name Text.
 					!this.#tool?.renderCall && !this.#tool?.renderResult
-				: typeof pendingAnimation === "function"
-					? pendingAnimation(this.#args)
-					: pendingAnimation === true);
+				: (renderer.pendingAnimationRequiresExecution !== true || this.#executionStarted) &&
+					(typeof pendingAnimation === "function" ? pendingAnimation(this.#args) : pendingAnimation === true));
 		const partialResultConsumesSpinner =
 			this.#result !== undefined &&
 			(renderer === undefined
 				? !this.#tool?.renderCall && !this.#tool?.renderResult
-				: typeof partialAnimation === "function"
-					? partialAnimation(this.#args)
-					: partialAnimation === true);
+				: (renderer.pendingAnimationRequiresExecution !== true || this.#executionStarted) &&
+					(typeof partialAnimation === "function" ? partialAnimation(this.#args) : partialAnimation === true));
 		const isLivePartialTool =
 			this.#isPartial &&
 			this.#toolName !== "todo" &&

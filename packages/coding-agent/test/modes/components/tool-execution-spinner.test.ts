@@ -39,7 +39,9 @@ describe("ToolExecutionComponent live preview spinners", () => {
 		resetSettingsForTest();
 	});
 
-	it("animates the eval pending cell while the call is live", () => {
+	it("animates the eval Output separator once the call is executing", () => {
+		// The head and code rows are final once the arguments are; the live state rides the Output separator, which
+		// exists only after execution starts. Before that nothing in the card depends on the spinner frame.
 		vi.useFakeTimers();
 		const requestRender = vi.fn();
 		const requestComponentRender = vi.fn();
@@ -53,6 +55,8 @@ describe("ToolExecutionComponent live preview spinners", () => {
 		);
 
 		try {
+			component.setArgsComplete();
+			component.setExecutionStarted();
 			const firstFrame = stripVTControlCharacters(component.render(80).join("\n"));
 			vi.advanceTimersByTime(120);
 			const secondFrame = stripVTControlCharacters(component.render(80).join("\n"));
@@ -67,7 +71,8 @@ describe("ToolExecutionComponent live preview spinners", () => {
 		}
 	});
 
-	it("does not tick headerless bash pending previews", () => {
+	it("does not tick bash pending previews before execution starts", () => {
+		// Until the call executes there is no Output separator, so the card has nothing that follows the spinner.
 		vi.useFakeTimers();
 		const requestRender = vi.fn();
 		const requestComponentRender = vi.fn();
@@ -81,11 +86,40 @@ describe("ToolExecutionComponent live preview spinners", () => {
 		);
 
 		try {
+			component.setArgsComplete();
 			requestRender.mockClear();
 			requestComponentRender.mockClear();
 			vi.advanceTimersByTime(500);
 			expect(requestRender).not.toHaveBeenCalled();
 			expect(requestComponentRender).not.toHaveBeenCalled();
+		} finally {
+			component.stopAnimation();
+		}
+	});
+
+	it("animates the bash Output separator once the call is executing", () => {
+		vi.useFakeTimers();
+		const requestRender = vi.fn();
+		const requestComponentRender = vi.fn();
+		const component = new ToolExecutionComponent(
+			"bash",
+			{ command: "sleep 600" },
+			{},
+			undefined,
+			{ requestRender, requestComponentRender } as unknown as TUI,
+			process.cwd(),
+		);
+
+		try {
+			component.setArgsComplete();
+			component.setExecutionStarted();
+			const firstFrame = stripVTControlCharacters(component.render(80).join("\n"));
+			vi.advanceTimersByTime(120);
+			const secondFrame = stripVTControlCharacters(component.render(80).join("\n"));
+
+			expect(requestComponentRender).toHaveBeenCalledWith(component);
+			expect(firstFrame).toContain("sleep 600");
+			expect(secondFrame).not.toBe(firstFrame);
 		} finally {
 			component.stopAnimation();
 		}
@@ -183,17 +217,19 @@ describe("ToolExecutionComponent live preview spinners", () => {
 		vi.useFakeTimers();
 		const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
 		const renders = [vi.fn(), vi.fn(), vi.fn()];
-		const components = renders.map(
-			requestComponentRender =>
-				new ToolExecutionComponent(
-					"eval",
-					{ language: "py", code: "import time\ntime.sleep(10)" },
-					{},
-					undefined,
-					{ requestRender: vi.fn(), requestComponentRender } as unknown as TUI,
-					process.cwd(),
-				),
-		);
+		const components = renders.map(requestComponentRender => {
+			const component = new ToolExecutionComponent(
+				"eval",
+				{ language: "py", code: "import time\ntime.sleep(10)" },
+				{},
+				undefined,
+				{ requestRender: vi.fn(), requestComponentRender } as unknown as TUI,
+				process.cwd(),
+			);
+			component.setArgsComplete();
+			component.setExecutionStarted();
+			return component;
+		});
 
 		try {
 			const spinnerTimers = setIntervalSpy.mock.calls.filter(([, ms]) => ms === SPINNER_ADVANCE_MS).length;
@@ -357,6 +393,8 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
 				process.cwd(),
 			);
+			liveBlock.setArgsComplete();
+			liveBlock.setExecutionStarted();
 			chatContainer.addChild(liveBlock);
 			expect(vi.getTimerCount()).toBeGreaterThan(0);
 
@@ -722,6 +760,8 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
 				process.cwd(),
 			);
+			pendingBlock.setArgsComplete();
+			pendingBlock.setExecutionStarted();
 			chatContainer.addChild(pendingBlock);
 			const displaceableBlock = new ToolExecutionComponent(
 				"eval",
@@ -731,6 +771,8 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
 				process.cwd(),
 			);
+			displaceableBlock.setArgsComplete();
+			displaceableBlock.setExecutionStarted();
 			chatContainer.addChild(displaceableBlock);
 			expect(vi.getTimerCount()).toBeGreaterThan(0);
 

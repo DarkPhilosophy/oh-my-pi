@@ -709,6 +709,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 		inline: true,
 		// The Output separator shows a loading glyph while the call runs, before and after the first output.
 		animatedPendingPreview: true,
+		pendingAnimationRequiresExecution: true,
 		animatedPartialResult: true,
 	} satisfies ToolRenderer<TArgs, BashToolDetails>;
 }

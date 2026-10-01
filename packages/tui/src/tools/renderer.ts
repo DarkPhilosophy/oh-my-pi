@@ -149,6 +149,11 @@ export interface ToolRenderer<TArgs = unknown, TDetails = unknown> {
 	 */
 	animatedPendingPreview?: boolean | ((args: TArgs) => boolean);
 	/**
+	 * The pending-call spinner only changes bytes once execution has started (the glyph lives on a row that
+	 * exists only then, e.g. the Output separator), so the repaint ticker must not arm before that.
+	 */
+	pendingAnimationRequiresExecution?: boolean;
+	/**
 	 * Whether the renderer's partial-result path visibly consumes
 	 * `options.spinnerFrame`.
 	 */
