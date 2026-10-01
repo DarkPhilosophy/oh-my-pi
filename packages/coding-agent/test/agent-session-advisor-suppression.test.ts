@@ -651,25 +651,38 @@ describe("AgentSession advisor auto-resume suppression", () => {
 				{ content: ["must not run"], stopReason: "stop" },
 			],
 		});
-		const reviewWrapupStarted = Promise.withResolvers<void>();
+		const reviewParked = Promise.withResolvers<void>();
 		const releaseReview = Promise.withResolvers<void>();
+		// An advise-only advisor turn ends the review, so the review is held open
+		// by a sibling tool call in the same turn. `exclusive` runs it after the
+		// advise call settles: the blocker is already routed (buffered at the open
+		// boundary) while this tool parks the strict wait.
+		const parkTool: AgentTool = {
+			name: "read",
+			label: "Read",
+			description: "Parks until released",
+			parameters: type({ "path?": "string" }),
+			concurrency: "exclusive",
+			execute: async () => {
+				reviewParked.resolve();
+				await releaseReview.promise;
+				return { content: [{ type: "text" as const, text: "audit.sql" }] };
+			},
+		};
 		const advisorMock = createMockModel({
-			responses: (async function* (): AsyncGenerator<MockResponse> {
-				yield {
+			responses: [
+				{
 					content: [
 						{
 							type: "toolCall",
 							name: "advise",
 							arguments: { note: "shipped code deletes the audit table", severity: "blocker" },
 						},
+						{ type: "toolCall", name: "read", arguments: { path: "audit.sql" } },
 					],
-				};
-				// The blocker is already routed (buffered at the open boundary) while
-				// the review's wrap-up call parks here, holding the strict wait open.
-				reviewWrapupStarted.resolve();
-				await releaseReview.promise;
-				yield { content: [], stopReason: "stop" };
-			})(),
+				},
+				{ content: [], stopReason: "stop" },
+			],
 		});
 		const agent = new Agent({
 			getApiKey: () => "test-key",
@@ -692,15 +705,15 @@ describe("AgentSession advisor auto-resume suppression", () => {
 			sessionManager,
 			settings,
 			modelRegistry,
-			advisorTools: [],
+			advisorTools: [parkTool],
 			advisorStreamFn: advisorMock.stream,
 		});
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 
 		const running = session.prompt("finish the task");
 		// The primary answered; the strict boundary wait is now parked on the
-		// parked review. Without a release this would hang forever.
-		await reviewWrapupStarted.promise;
+		// review's sibling tool call. Without a release this would hang forever.
+		await reviewParked.promise;
 
 		await session.abort({ reason: USER_INTERRUPT_LABEL });
 		await session.waitForIdle();

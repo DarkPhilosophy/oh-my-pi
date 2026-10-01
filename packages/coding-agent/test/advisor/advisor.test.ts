@@ -6,7 +6,7 @@ import {
 	createCompactionSummaryMessage,
 	defaultConvertToLlm,
 } from "@oh-my-pi/pi-agent-core/compaction";
-import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Model, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import type {
 	ResponseFileSearchToolCall,
 	ResponseFunctionWebSearch,
@@ -1673,6 +1673,44 @@ describe("advisor", () => {
 				vi.useRealTimers();
 			}
 			await settleUntil(() => runtime.backlog === 0);
+		});
+
+		it("reviews a cadence-held tool result as the primary saw it after an in-place prune", async () => {
+			const promptInputs: Array<string | AgentMessage[]> = [];
+			const agent = makeAgent(promptInputs);
+			const readResult = {
+				role: "toolResult",
+				toolCallId: "read-1",
+				toolName: "read",
+				content: [{ type: "text", text: "export const retries = 3;" }],
+				isError: false,
+				timestamp: 2,
+			} as unknown as ToolResultMessage;
+			const messages: AgentMessage[] = [
+				{ role: "user", content: "inspect the retry config", timestamp: 1 } as AgentMessage,
+				readResult as AgentMessage,
+			];
+			const runtime = new AdvisorRuntime(agent, { snapshotMessages: () => messages });
+
+			runtime.onTurnEnd(messages, { willContinue: true, dispatch: false });
+			await Promise.resolve();
+			expect(promptInputs).toHaveLength(0);
+
+			// The primary's per-turn prune blanks the superseded result in place and
+			// realigns delivered prefixes before the scheduled review renders.
+			readResult.content = [{ type: "text", text: "[superseded by a newer read]" }];
+			readResult.prunedAt = Date.now();
+			runtime.rebaseDeliveredPrefix("prune-stale-tool-results");
+			messages.push({ role: "user", content: "now raise the limit", timestamp: 3 } as AgentMessage);
+			runtime.onTurnEnd(messages);
+			await runtime.waitForCatchup(1_000, 1);
+
+			expect(promptInputs).toHaveLength(1);
+			const review = promptText(promptInputs[0]);
+			expect(review).toContain("export const retries = 3;");
+			expect(review).not.toContain("superseded by a newer read");
+			expect(review).toContain("inspect the retry config");
+			expect(review).toContain("now raise the limit");
 		});
 
 		it("preserves the next user turn when an accepted empty stop is pruned", async () => {

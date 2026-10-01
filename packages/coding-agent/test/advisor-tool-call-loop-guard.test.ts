@@ -15,9 +15,11 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { finalizeSubagentLifecycle } from "@oh-my-pi/pi-coding-agent/task/executor";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import { AdvisorLoopGuard } from "../src/advisor/loop-guard";
+import { cfgAdvisorReviewInterval, cfgAdvisorReviewMode } from "../src/advisor/settings";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 const zeroUsage = {
@@ -279,7 +281,7 @@ describe("advisor tool-call loop guard", () => {
 		expect(cards).toHaveLength(1);
 	});
 
-	it("lets a terminal blocker steer once but schedules no reviews while asleep", async () => {
+	it("lets a terminal blocker steer one continuation that schedules no review of its own", async () => {
 		const { reviewStarts } = createAdvisor(
 			{ "advisor.syncBacklog": "1" },
 			0,
@@ -305,10 +307,42 @@ describe("advisor tool-call loop guard", () => {
 		expect(await session.waitForAdvisorCatchup(2_000)).toBe(true);
 		expect(reviewStarts).toHaveLength(2);
 		const delivered = JSON.stringify(reviewStarts[1]!.messages);
-		// The wake-up review receives the delta accumulated during the sleep:
-		// the blocker-triggered continuation turn and the fresh input.
+		// The next review receives the advisor continuation's captured delta and
+		// the fresh input.
 		expect(delivered).toContain("primary complete");
 		expect(delivered).toContain("second update");
+	});
+
+	it("reviews a todo-reminder continuation after a final review", async () => {
+		const { reviewStarts } = createAdvisor(
+			{
+				"advisor.syncBacklog": "1",
+				"todo.enabled": true,
+				"todo.reminders": true,
+				"todo.remindersMax": 1,
+			},
+			0,
+			{ name: "Final reviewer", reviewMode: "agent-end" },
+		);
+		if (!session) throw new Error("Expected live session");
+		const live = session;
+		live.setTodoPhases([{ name: "Work", tasks: [{ content: "Finish the migration", status: "in_progress" }] }]);
+		const reminderRunEnded = Promise.withResolvers<void>();
+		let reminded = false;
+		live.subscribe(event => {
+			if (event.type === "todo_reminder") reminded = true;
+			if (event.type === "agent_end" && reminded) reminderRunEnded.resolve();
+		});
+
+		await live.prompt("migrate the schema");
+		await reminderRunEnded.promise;
+		expect(await live.waitForAdvisorCatchup(2_000)).toBe(true);
+
+		// The first final yield was reviewed; the reminder resumed the run, and
+		// its own final yield is reviewed too rather than treated like an
+		// advisor-started continuation.
+		expect(reviewStarts).toHaveLength(2);
+		expect(JSON.stringify(reviewStarts[1]!.messages)).toContain("incomplete todo");
 	});
 
 	it("merges simultaneous terminal blockers into one continuation turn", async () => {
@@ -350,8 +384,8 @@ describe("advisor tool-call loop guard", () => {
 	it("steers one continuation turn when an agent-end advisor raises a concern at a terminal boundary", async () => {
 		// An agent-end advisor reviews the complete run at the final boundary.
 		// A concern means a material issue in finished work — it deserves one
-		// steering turn, not a silent preserved card. The sleep latch prevents
-		// cascade after that. A turn-mode concern at the same boundary preserves
+		// steering turn, not a silent preserved card; that continuation schedules
+		// no review of its own. A turn-mode concern at the same boundary preserves
 		// as a card instead (work was reviewed per-turn).
 		createAdvisor(
 			{ "advisor.syncBacklog": "1" },
@@ -373,6 +407,36 @@ describe("advisor tool-call loop guard", () => {
 		expect(completions).toHaveLength(2);
 	});
 
+	it("steers one continuation for an agent-end concern that lands after the boundary with catch-up off", async () => {
+		createAdvisor(
+			{ "advisor.syncBacklog": "off" },
+			0,
+			{ name: "Final reviewer", reviewMode: "agent-end" },
+			0,
+			"finished work has a null deref",
+			"concern",
+		);
+		if (!session) throw new Error("Expected live session");
+		const live = session;
+		const continuationEnded = Promise.withResolvers<void>();
+		let agentEnds = 0;
+		live.subscribe(event => {
+			if (event.type === "agent_end" && ++agentEnds === 2) continuationEnded.resolve();
+		});
+
+		// The boundary does not wait for the review, so its concern arrives
+		// after the primary already finished and the merge window closed.
+		await live.prompt("only update");
+		expect(await live.waitForAdvisorCatchup(2_000)).toBe(true);
+		// Without the steer the concern is preserved as a card and no second run starts.
+		await continuationEnded.promise;
+
+		const completions = live.agent.state.messages.filter(
+			message => message.role === "assistant" && JSON.stringify(message.content).includes("primary complete"),
+		);
+		expect(completions).toHaveLength(2);
+	});
+
 	it("accumulates skipped final reviews until cadence interval", async () => {
 		const { contexts } = createAdvisor({ "advisor.syncBacklog": "1" }, 0, {
 			name: "Final reviewer",
@@ -386,6 +450,70 @@ describe("advisor tool-call loop guard", () => {
 		expect(await session.waitForAdvisorCatchup(2_000)).toBe(true);
 		expect(contexts).toHaveLength(1);
 		const delivered = JSON.stringify(contexts[0]!.messages);
+		expect(delivered).toContain("first update");
+		expect(delivered).toContain("second update");
+	});
+
+	it("applies an advisor.reviewInterval edit to the running default advisor", async () => {
+		const { reviewStarts } = createAdvisor({ "advisor.syncBacklog": "1" }, 0);
+		if (!session) throw new Error("Expected live session");
+		cfgAdvisorReviewInterval.set(session.settings, 2);
+
+		await session.prompt("first update");
+		expect(await session.waitForAdvisorCatchup(2_000)).toBe(true);
+		expect(reviewStarts).toHaveLength(0);
+
+		await session.prompt("second update");
+		expect(await session.waitForAdvisorCatchup(2_000)).toBe(true);
+		expect(reviewStarts).toHaveLength(1);
+		const delivered = JSON.stringify(reviewStarts[0]!.messages);
+		expect(delivered).toContain("first update");
+		expect(delivered).toContain("second update");
+	});
+
+	it("applies an advisor.reviewMode edit to the running default advisor without rebuilding it", async () => {
+		const { reviewStarts } = createAdvisor({ "advisor.syncBacklog": "1" }, 0);
+		if (!session) throw new Error("Expected live session");
+		const advisor = session.getAdvisorAgent();
+		expect(advisor).toBeDefined();
+
+		// Turn mode (the default) reviews every update.
+		await session.prompt("first update");
+		expect(await session.waitForAdvisorCatchup(2_000)).toBe(true);
+		expect(reviewStarts).toHaveLength(1);
+
+		// The edit lands on the running advisor: same agent, and the next boundary follows the new mode.
+		cfgAdvisorReviewMode.set(session.settings, "agent-end");
+		expect(session.getAdvisorAgent()).toBe(advisor);
+
+		await session.prompt("second update");
+		expect(await session.waitForAdvisorCatchup(2_000)).toBe(true);
+		expect(session.getAdvisorAgent()).toBe(advisor);
+		// agent-end reviews only the final yield of a run; the one-prompt run reviews once more at its end,
+		// so exactly one further review exists and it carries the update made after the edit.
+		expect(reviewStarts).toHaveLength(2);
+		expect(JSON.stringify(reviewStarts[1]!.messages)).toContain("second update");
+	});
+
+	it("keeps a cadence-skipped update across an advisor roster rebuild", async () => {
+		const { reviewStarts } = createAdvisor({ "advisor.syncBacklog": "1" }, 0, {
+			name: "Interval reviewer",
+			reviewInterval: 2,
+		});
+		if (!session) throw new Error("Expected live session");
+
+		await session.prompt("first update");
+		expect(reviewStarts).toHaveLength(0);
+		// Saving an edited roster replaces every live runtime.
+		session.applyAdvisorConfigs(
+			[{ name: "Interval reviewer", reviewInterval: 2, instructions: "Check retry limits." }],
+			undefined,
+		);
+
+		await session.prompt("second update");
+		expect(await session.waitForAdvisorCatchup(2_000)).toBe(true);
+		expect(reviewStarts).toHaveLength(1);
+		const delivered = JSON.stringify(reviewStarts[0]!.messages);
 		expect(delivered).toContain("first update");
 		expect(delivered).toContain("second update");
 	});
@@ -606,8 +734,7 @@ describe("advisor tool-call loop guard", () => {
 
 		// Both reviews were scheduled; only the strict one gated the boundary.
 		expect(parkedReviewStarted).toBe(true);
-		// A review turn whose only tool call is `advise` ends there (no second "done" call),
-		// so the strict reviewer makes exactly one call before the boundary releases.
+		// An advise-only turn ends the review: one request, no wrap-up call.
 		expect(finalMock.calls).toHaveLength(1);
 		const cards = session.agent.state.messages.filter(
 			message => message.role === "custom" && JSON.stringify(message).includes("stale fixture"),
@@ -617,28 +744,80 @@ describe("advisor tool-call loop guard", () => {
 		expect(primaryMock.calls).toHaveLength(1);
 	});
 
-	it("wakes review scheduling on a user-attributed custom turn initiator, not only plain user messages", async () => {
-		const { reviewStarts } = createAdvisor({ "advisor.syncBacklog": "1" }, 0, undefined, 0, "looks fine");
-		if (!session) throw new Error("Expected live session");
-
-		await session.prompt("first update");
-		expect(await session.waitForAdvisorCatchup(2_000)).toBe(true);
-		expect(reviewStarts).toHaveLength(1);
-		// Review scheduling is asleep now: advisor/agent-attributed deliveries
-		// (like the continuation above's own cards) never wake it.
-
-		const started = await session.promptCustomMessage({
-			customType: "collab-prompt",
-			content: "peer asks for a review pass",
-			display: false,
-			attribution: "user",
+	/**
+	 * Session with one strict `agent-end` reviewer at interval 2 whose review
+	 * takes `reviewDelayMs`, after one primary prompt: its only final yield is
+	 * held, as in a one-prompt headless run.
+	 */
+	async function promptStrictFinalReviewer(
+		reviewDelayMs: number,
+	): Promise<{ live: AgentSession; reviews: Context[] }> {
+		const primaryMock = createMockModel({ provider: "anthropic", responses: [{ content: ["primary complete"] }] });
+		const advisorMock = createMockModel({
+			provider: "anthropic",
+			responses: [{ content: ["Reviewed."], delayMs: reviewDelayMs }],
 		});
-		expect(started).toBe(true);
-		expect(await session.waitForAdvisorCatchup(2_000)).toBe(true);
+		const reviews: Context[] = [];
+		const advisorStreamFn: StreamFn = (streamModel, context, options) => {
+			reviews.push(context);
+			return advisorMock.stream(streamModel, context, options);
+		};
+		const settings = Settings.isolated({
+			"advisor.syncBacklog": "strict",
+			"compaction.enabled": false,
+			"todo.enabled": false,
+		});
+		const live = new AgentSession({
+			agent: new Agent({
+				getApiKey: () => "test-key",
+				initialState: { model: primaryMock, systemPrompt: [], tools: [] },
+				streamFn: primaryMock.stream,
+			}),
+			sessionManager: SessionManager.inMemory(tempDir.path()),
+			settings,
+			modelRegistry: new ModelRegistry(authStorage, tempDir.join("models.yml")),
+			advisorTools: [],
+			advisorStreamFn,
+			advisorConfigs: [{ name: "Final reviewer", reviewMode: "agent-end", reviewInterval: 2 }],
+		});
+		session = live;
+		settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
+		expect(live.setAdvisorEnabled(true)).toBe(true);
+		await live.prompt("ship the retry change");
+		expect(reviews).toHaveLength(0);
+		return { live, reviews };
+	}
 
-		// A user-attributed custom turn initiator is genuine user input: the
-		// sleep latch wakes and the reviewer sees the accumulated delta.
-		expect(reviewStarts).toHaveLength(2);
+	it("reviews a cadence-skipped final yield in the print-mode drain, past the drain budget when strict", async () => {
+		const { live, reviews } = await promptStrictFinalReviewer(200);
+
+		live.prepareForHeadlessAdvisorDrain();
+		expect(await live.waitForAdvisorCatchup(50, { waitThroughRecovery: true, strictWithoutDeadline: true })).toBe(
+			true,
+		);
+		expect(reviews).toHaveLength(1);
+		expect(JSON.stringify(reviews[0]!.messages)).toContain("ship the retry change");
+	});
+
+	it("finishes subagent teardown within its cleanup deadline despite a strict reviewer", async () => {
+		const { live, reviews } = await promptStrictFinalReviewer(10_000);
+
+		const started = performance.now();
+		await finalizeSubagentLifecycle({
+			id: "strict-reviewer-subagent",
+			session: live,
+			aborted: false,
+			keepAlive: false,
+			isolated: false,
+			agentIdleTtlMs: 0,
+			reviveSession: null,
+			cleanupDeadlineAt: Date.now() + 200,
+		});
+		session = undefined;
+
+		// The held final yield was still sent for review before disposal.
+		expect(reviews).toHaveLength(1);
+		expect(performance.now() - started).toBeLessThan(2_000);
 	});
 
 	it("leaves the advisor unbounded when the shared loop guard is disabled", async () => {

@@ -43,28 +43,29 @@ import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { extractHttpStatusFromError, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import {
+	AdviseTool,
 	ADVISOR_DEFAULT_BUDGET_PER_UPDATE,
 	ADVISOR_DEFAULT_TOOL_NAMES,
 	ADVISOR_MAX_BUDGET_PER_UPDATE,
 	ADVISOR_SYNC_BACKLOG_MODES,
-	AdviseTool,
 	type AdvisorAgent,
-	type AdvisorReviewMode,
 	AdvisorEmissionGuard,
+	advisorEvidenceText,
+	type AdvisorHeldUpdates,
 	AdvisorLoopGuard,
 	type AdvisorMessageDetails,
 	type AdvisorNote,
 	AdvisorOutputQuarantinedError,
+	type AdvisorReviewMode,
 	AdvisorRuntime,
 	type AdvisorRuntimeStatus,
 	type AdvisorSeverity,
 	type AdvisorSyncBacklog,
-	AdvisorTranscriptRecorder,
-	advisorEvidenceText,
 	advisorTranscriptFilename,
+	AdvisorTranscriptRecorder,
 	applyAdvisorCuration,
-	buildAdvisorQuarantineSourceText,
 	boundAdvisorBatch,
+	buildAdvisorQuarantineSourceText,
 	compareAdvisorNotes,
 	curateAdvisorCandidates,
 	formatAdvisorBatchContent,
@@ -125,20 +126,15 @@ import {
 	cfgAdvisorCurator,
 	cfgAdvisorCuratorContextChars,
 	cfgAdvisorCuratorTimeoutMs,
+	cfgAdvisorEvictStaleResults,
 	cfgAdvisorImmuneTurns,
 	cfgAdvisorMaxNotesPerUpdate,
 	cfgAdvisorReviewInterval,
 	cfgAdvisorReviewMode,
-	cfgAdvisorEvictStaleResults,
 	cfgAdvisorSyncBacklog,
 } from "../advisor/settings";
 import { cfgCompaction, cfgContextPromotionEnabled } from "./context-settings";
 import { cfgRetry, cfgTierAdvisor } from "./settings";
-
-/** Window a live aside is held so notes from parallel advisors curate together. */
-const LIVE_ASIDE_COALESCE_MS = 250;
-/** Fallback judge budget when `advisor.curatorTimeoutMs` is unset or invalid. */
-const CURATOR_DEFAULT_TIMEOUT_MS = 1500;
 
 const ADVISOR_CODEX_SSE_MAX_ATTEMPTS = 1;
 
@@ -253,16 +249,22 @@ export function planAdvisorUsageLimitWait(args: {
 const ADVISOR_BOUNDARY_GUIDANCE = advisorBoundaryGuidance.trim();
 const ADVISOR_BOUNDARY_GUIDANCE_TURNS = 50;
 
+/** Window a live aside is held so notes from parallel advisors curate together. */
+const LIVE_ASIDE_COALESCE_MS = 250;
+
+/** Fallback judge budget when `advisor.curatorTimeoutMs` is unset or invalid. */
+const CURATOR_DEFAULT_TIMEOUT_MS = 1500;
+
 /**
  * Last genuine user-turn initiator in the transcript. Agent-attributed
- * injections (steers, asides, internal notices) never count: the advisor review
- * sleep latch wakes only on fresh user input, not on deliveries the advisor
- * system itself caused. Besides plain `user` messages, user-attributed custom
- * turn initiators count too — a directly invoked `/skill:` prompt or a writable
- * collab peer's prompt starts a genuine user turn without the `user` role.
- * Compared by object identity: transcript snapshots share message instances
- * across callbacks, while a new prompt or a rewind+resubmit always introduces a
- * new object — even within the same millisecond.
+ * injections (steers, asides, internal notices) never count, so an advisor
+ * continuation stays attributed to the advisor until fresh user input arrives.
+ * Besides plain `user` messages, user-attributed custom turn initiators count
+ * too — a directly invoked `/skill:` prompt or a writable collab peer's prompt
+ * starts a genuine user turn without the `user` role. Compared by object
+ * identity: transcript snapshots share message instances across callbacks,
+ * while a new prompt or a rewind+resubmit always introduces a new object —
+ * even within the same millisecond.
  */
 function lastPrimaryUserMessage(messages: readonly AgentMessage[]): AgentMessage | undefined {
 	for (let index = messages.length - 1; index >= 0; index--) {
@@ -335,13 +337,17 @@ interface ActiveAdvisor {
 	 */
 	autoThinking: boolean;
 	providerSessionId: string | undefined;
+	/** Cadence overrides resolved at each boundary; `undefined` (only the
+	 *  roster-less default advisor) follows `advisor.reviewMode` /
+	 *  `advisor.reviewInterval` live, so editing them needs no rebuild. */
 	/** Bearers this advisor's requests actually went out with, per provider. */
 	credentials: RequestCredentialTracker;
-	reviewMode: AdvisorReviewMode;
-	reviewInterval: number;
+	reviewMode: AdvisorReviewMode | undefined;
+	reviewInterval: number | undefined;
 	/** Per-advisor catch-up policy override; `undefined` inherits the global
 	 *  `advisor.syncBacklog` setting dynamically at each boundary. */
 	syncBacklog: AdvisorSyncBacklog | undefined;
+	/** Eligible updates since the last reset; a review is scheduled at each multiple of the interval. */
 	eligibleUpdates: number;
 	/** Primary-turn count when the latest review was scheduled; the update that
 	 *  runs from it covers work up to this turn. Notes stamped with it so merged
@@ -351,12 +357,6 @@ interface ActiveAdvisor {
 	retryFallbackPendingSuccess: boolean;
 	/** Count of consecutive usage-limit block waits, bounded by retry.maxRetries; reset on turn success. */
 	usageLimitRetries: number;
-	/**
-	 * Tokens this advisor's stale-tool-result eviction removed since the newest
-	 * provider usage anchor reported its context. That usage still counts the
-	 * evicted bytes, so the anchored estimate subtracts this; reset whenever a
-	 * fresh anchor lands or the message array is replaced.
-	 */
 	signature: string;
 }
 /** First index whose provider usage may anchor the advisor's context estimate. */
@@ -390,11 +390,25 @@ interface AdvisorRuntimeDescriptor {
 	slug: string;
 	model: Model;
 	thinkingLevel: ThinkingLevel;
-	reviewMode: AdvisorReviewMode;
-	reviewInterval: number;
+	reviewMode: AdvisorReviewMode | undefined;
+	reviewInterval: number | undefined;
 	syncBacklog: AdvisorSyncBacklog | undefined;
 	autoThinking: boolean;
 	signature: string;
+}
+
+/** What a rebuilt advisor inherits from the runtime it replaces (keyed by slug). */
+interface AdvisorCarry {
+	held: AdvisorHeldUpdates | undefined;
+	eligibleUpdates: number;
+}
+
+/** Options for the headless advisor drain ({@link SessionAdvisors.waitForAdvisorCatchup}). */
+export interface AdvisorCatchupOptions {
+	/** Keep waiting while a failed review retries or switches to its fallback model. */
+	waitThroughRecovery?: boolean;
+	/** Wait on `strict` advisors without the deadline (top-level headless runs only). */
+	strictWithoutDeadline?: boolean;
 }
 
 /** Runtime-only veto inherited by descendants, independent of persisted advisor opt-ins. */
@@ -431,8 +445,9 @@ export class AdvisorScope {
 
 /** Inputs that configure the advisor roster owned by a session. */
 export interface SessionAdvisorsOptions {
-	enabled: boolean;
+	/** Veto scope inherited from the parent session, if any. */
 	parentScope?: AdvisorScope;
+	enabled: boolean;
 	tools?: AgentTool[];
 	/**
 	 * Build a `grep` honoring a Cursor `pi_grep` frame's own context width and
@@ -467,8 +482,9 @@ export interface SessionAdvisorsOptions {
 	mcpResources?: CursorMcpResourceAdapter;
 	watchdogPrompt?: string;
 	sharedInstructions?: string;
-	contextPrompt?: string;
 	sharedMaxNotesPerUpdate?: number;
+	contextPrompt?: string;
+	/** Active memory backend's developer instructions, wrapped for advisors. */
 	memoryPrompt?: string;
 	configs?: AdvisorConfig[];
 	/** WATCHDOG.yml problems found during discovery; surfaced once as a warning. */
@@ -483,11 +499,14 @@ export interface AdvisorMessageDeliveryOptions {
 	deliverAs?: "steer" | "followUp" | "nextTurn";
 	queueChipText?: string;
 	acceptTerminalEmptyStop?: boolean;
+	/** Aborts a delivery still waiting to start, e.g. when the advisor is turned off. */
 	signal?: AbortSignal;
 }
 
 /** Session capabilities borrowed by the advisor controller. */
 export interface SessionAdvisorsHost {
+	/** False while the primary agent is disconnected (compaction reconnect), so queued advice is not preserved yet. */
+	isAgentConnected(): boolean;
 	agent: Agent;
 	sessionManager: SessionManager;
 	settings: Settings;
@@ -501,7 +520,6 @@ export interface SessionAdvisorsHost {
 	onResponse: SimpleStreamOptions["onResponse"] | undefined;
 	onSseEvent: SimpleStreamOptions["onSseEvent"] | undefined;
 	isDisposed(): boolean;
-	isAgentConnected(): boolean;
 	abortInProgress(): boolean;
 	allowAgentInitiatedTurns(): boolean;
 	planModeState(): PlanModeState | undefined;
@@ -555,8 +573,6 @@ export interface AdvisorStatusOverviewEntry {
 	name: string;
 	status: AdvisorRuntimeStatus;
 	yielded: boolean;
-	/** A review is queued or in flight right now; never masked by the primary's stream state. */
-	reviewing: boolean;
 }
 
 /** Owns advisor runtimes, delivery policy, context maintenance, and status reporting. */
@@ -569,7 +585,13 @@ export class SessionAdvisors {
 	}
 	readonly #unsubscribeScope: () => void;
 	#deliveryAbort = new AbortController();
-	#advisorTools: SessionAdvisorsOptions["tools"];
+	/** Live asides held for the coalescing window, awaiting curation. */
+	#liveAsidePending: { note: AdvisorNote; turn: number }[] = [];
+	#liveAsideTimer: NodeJS.Timeout | undefined;
+	#curatorAbort = new AbortController();
+	/** Bumped per curation request; a late result from a superseded batch is discarded. */
+	#advisorCuratorGeneration = 0;
+	#advisorTools: AgentTool[] | undefined;
 	#advisorCreateGrepTool: SessionAdvisorsOptions["createGrepTool"];
 	#advisorCreateEditTool: SessionAdvisorsOptions["createEditTool"];
 	#advisorGetToolContext: SessionAdvisorsOptions["getToolContext"];
@@ -605,19 +627,16 @@ export class SessionAdvisors {
 	#advisorPrimaryTurnsCompleted = 0;
 	#advisorPrimaryWillContinue = false;
 	/**
-	 * Sleep latch: after the first terminal boundary (`willContinue` not true)
-	 * following user input, stop SCHEDULING new reviews until a fresh
-	 * user-attributed message arrives. Advisor deliveries keep running — deferred
-	 * flushes, asides, and steers often extend the run with advisor-triggered
-	 * turns, and each such turn is again a terminal boundary; without the latch
-	 * every boundary re-schedules reviewers and the session cascades
-	 * advisor→primary→advisor until reviewers happen to fall silent. Skipped
-	 * callbacks never advance runtime cursors, so the first review after wake-up
-	 * receives the whole accumulated delta in one batch.
+	 * Set when an advisor delivery itself starts a continuation of a finished
+	 * run (a steer while idle or unwinding past a terminal boundary), stamped with
+	 * the last genuine user message at that moment. Every boundary of that
+	 * continuation, through its terminal one, captures without scheduling a
+	 * review or advancing cadence: otherwise each advisor-triggered turn
+	 * re-schedules reviewers and the session cascades advisor→primary→advisor.
+	 * Continuations started by anything else (todo reminders, async wakes, live
+	 * delegations) are reviewed normally. Fresh user input voids the mark.
 	 */
-	#advisorReviewSleeping = false;
-	/** Last user message seen when reviews went to sleep; identity change wakes. */
-	#advisorSleepingLastUserMessage: AgentMessage | undefined;
+	#advisorContinuation: { userMessage: AgentMessage | undefined } | undefined;
 	/**
 	 * True while a terminal-boundary {@link onPrimaryTurnEnd} callback runs
 	 * (deferred flush + catch-up wait). The agent loop still reports
@@ -638,12 +657,6 @@ export class SessionAdvisors {
 	 *  until the first merged delivery. Gates {@link ADVISOR_BOUNDARY_GUIDANCE}
 	 *  to at most once per {@link ADVISOR_BOUNDARY_GUIDANCE_TURNS} turns. */
 	#advisorBoundaryGuidanceLastTurn: number | undefined;
-	/** Live asides held for the coalescing window, awaiting curation. */
-	#liveAsidePending: { note: AdvisorNote; turn: number }[] = [];
-	#curatorAbort = new AbortController();
-	#liveAsideTimer: NodeJS.Timeout | undefined;
-	/** Bumped per curation request; a late result from a superseded batch is discarded. */
-	#advisorCuratorGeneration = 0;
 	#advisorInterruptImmuneTurnStart: number | undefined;
 	#pendingAdvisorCardEvents = new Set<Promise<void>>();
 	#advisorYieldQueueUnsubscribe: (() => void) | undefined;
@@ -690,35 +703,44 @@ export class SessionAdvisors {
 			this.#retuneAutoThinkingAdvisors();
 			if (!this.#advisorPrimaryWillContinue) {
 				// Flush notes deferred during tool-loop steps at every terminal boundary.
-				// Delivery never sleeps: advice already produced against work the
-				// reviewers saw still reaches the primary while review scheduling rests.
+				// Delivery never pauses: advice already produced against work the
+				// reviewers saw still reaches the primary during an advisor continuation.
 				for (const advisor of this.#advisors) advisor.adviseTool.flushDeferredNotes();
 			}
-			if (this.#advisorReviewSleeping && lastPrimaryUserMessage(messages) !== this.#advisorSleepingLastUserMessage) {
-				// Fresh user input ends the sleep: scheduling resumes under normal
-				// cadence rules, and the first scheduled review sees the whole delta
-				// accumulated while reviewers slept.
-				this.#advisorReviewSleeping = false;
-			}
+			// A boundary of a continuation the advisor itself started is captured but
+			// never schedules a review: the next genuinely started boundary reviews it.
+			const continuation = this.#advisorContinuation;
+			const advisorContinuation =
+				continuation !== undefined && lastPrimaryUserMessage(messages) === continuation.userMessage;
+			if (!advisorContinuation || !this.#advisorPrimaryWillContinue) this.#advisorContinuation = undefined;
+			// The roster-less default advisor follows the cadence settings live.
+			const defaultReviewMode = cfgAdvisorReviewMode.get(this.#host.settings);
+			const configuredInterval = cfgAdvisorReviewInterval.get(this.#host.settings);
+			const defaultReviewInterval =
+				Number.isFinite(configuredInterval) && configuredInterval >= 1 ? Math.trunc(configuredInterval) : 1;
 			let scheduledAdvisors: ActiveAdvisor[] | undefined;
-			if (!this.#advisorReviewSleeping) {
-				for (const advisor of this.#advisors) {
-					if (advisor.runtime.disposed || (advisor.reviewMode === "agent-end" && willContinue === true)) continue;
-					advisor.eligibleUpdates++;
-					if (advisor.eligibleUpdates % advisor.reviewInterval !== 0) continue;
+			for (const advisor of this.#advisors) {
+				if (advisor.runtime.disposed) continue;
+				// Every advisor captures this boundary's delta now, while it matches
+				// what the primary saw: the per-turn prune that runs right after this
+				// callback may elide its tool results before a later review renders
+				// them. Cadence only decides whether the capture is sent or held; an
+				// advisor continuation holds it without advancing cadence.
+				const reviewMode = advisor.reviewMode ?? defaultReviewMode;
+				const eligible = !advisorContinuation && !(reviewMode === "agent-end" && willContinue === true);
+				if (eligible) advisor.eligibleUpdates++;
+				const scheduled =
+					eligible && advisor.eligibleUpdates % (advisor.reviewInterval ?? defaultReviewInterval) === 0;
+				if (scheduled) {
 					scheduledAdvisors ??= [];
 					scheduledAdvisors.push(advisor);
 					advisor.pendingCoveredTurn = this.#advisorPrimaryTurnsCompleted;
-					try {
-						advisor.runtime.onTurnEnd(messages, { willContinue });
-					} catch (error) {
-						logger.warn("advisor onTurnEnd threw; delta dropped", { advisor: advisor.name, err: String(error) });
-					}
 				}
-			}
-			if (!this.#advisorPrimaryWillContinue) {
-				this.#advisorReviewSleeping = true;
-				this.#advisorSleepingLastUserMessage = lastPrimaryUserMessage(messages);
+				try {
+					advisor.runtime.onTurnEnd(messages, { willContinue, dispatch: scheduled });
+				} catch (error) {
+					logger.warn("advisor onTurnEnd threw; delta dropped", { advisor: advisor.name, err: String(error) });
+				}
 			}
 			if (!scheduledAdvisors) return;
 			// Catch-up policy resolves per advisor at each boundary: a roster
@@ -747,7 +769,12 @@ export class SessionAdvisors {
 			// Window closed: deliver everything buffered during flush + catch-up
 			// wait as one merged message (one steer at most, else one card).
 			this.#flushAdvisorBoundaryNotes();
-			// Keep terminal unwind active until the next real agent start.
+			// The merge window covers only this callback. With advisor.syncBacklog
+			// off the review drain can still emit after it returns; those late notes
+			// deliver individually through #routeAdvice, and `#terminalUnwindActive`
+			// (held until the next real agent start), not the merge window, is what
+			// keeps them from steering finished work — only a blocker or an
+			// agent-end reviewer's concern may still request a continuation.
 			if (!terminalBoundary) this.#terminalUnwindActive = false;
 		}
 	}
@@ -755,8 +782,8 @@ export class SessionAdvisors {
 	/** Rebuilds live advisors when role assignments alter their resolved runtime inputs. */
 	reconcileModelRoles(): void {
 		if (!this.#advisorEnabled || this.#host.isDisposed()) return;
-		if (this.#advisors.length > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) this.#stopAdvisorRuntime();
-		this.#buildAdvisorRuntime(true);
+		if (this.#advisors.length > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) this.#rebuildAdvisorRuntime();
+		else this.#buildAdvisorRuntime(true);
 	}
 
 	/**
@@ -786,8 +813,8 @@ export class SessionAdvisors {
 	retryAfterModelDiscovery(): boolean {
 		if (this.#host.isDisposed() || !this.hasInactiveNoModelAdvisor()) return false;
 		const before = this.#advisors.length;
-		if (before > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) this.#stopAdvisorRuntime();
-		this.#buildAdvisorRuntime(true, false);
+		if (before > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) this.#rebuildAdvisorRuntime(false);
+		else this.#buildAdvisorRuntime(true, false);
 		return this.#advisors.length > before;
 	}
 
@@ -823,13 +850,6 @@ export class SessionAdvisors {
 		}
 		await Promise.all(closes);
 	}
-	dispose(): void {
-		// The session yield queue is already cleared when this runs, so held notes have nowhere to go: drop them
-		// and abort any judgment still in flight.
-		this.#discardLiveAsides();
-		this.#unsubscribeScope();
-		if (this.#advisors.length > 0) this.#stopAdvisorRuntime();
-	}
 
 	/**
 	 * Preserve advisor asides the primary loop never polled before a lifecycle
@@ -852,6 +872,14 @@ export class SessionAdvisors {
 			content: formatAdvisorBatchContent(notes),
 			details: { notes } satisfies AdvisorMessageDetails,
 		} satisfies CustomMessage);
+	}
+
+	dispose(): void {
+		// The session yield queue is already cleared when this runs, so held notes have nowhere to go: drop them
+		// and abort any judgment still in flight.
+		this.#discardLiveAsides();
+		this.#unsubscribeScope();
+		if (this.#advisors.length > 0) this.#stopAdvisorRuntime();
 	}
 
 	/** Reattach recorder feeds and resume work after a rolled-back or preserving transition. */
@@ -1130,8 +1158,7 @@ export class SessionAdvisors {
 		}
 		this.#advisorPrimaryTurnsCompleted = 0;
 		this.#advisorPrimaryWillContinue = false;
-		this.#advisorReviewSleeping = false;
-		this.#advisorSleepingLastUserMessage = undefined;
+		this.#advisorContinuation = undefined;
 		this.#advisorInterruptImmuneTurnStart = undefined;
 		this.#advisorAutoResumeSuppressed = false;
 		this.#advisorBoundaryNotes = [];
@@ -1143,18 +1170,7 @@ export class SessionAdvisors {
 
 	#resolveAdvisorRuntimeDescriptors(emitWarnings: boolean): AdvisorRuntimeDescriptor[] {
 		const legacy = !this.#advisorConfigs?.length;
-		const roster: AdvisorConfig[] = legacy
-			? [
-					{
-						name: "default",
-						reviewMode: cfgAdvisorReviewMode.get(this.#host.settings) === "agent-end" ? "agent-end" : "turn",
-						reviewInterval: (() => {
-							const v = cfgAdvisorReviewInterval.get(this.#host.settings) as number;
-							return Number.isFinite(v) && v >= 1 ? Math.trunc(v) : 1;
-						})(),
-					},
-				]
-			: this.#advisorConfigs!;
+		const roster: AdvisorConfig[] = legacy ? [{ name: "default" }] : this.#advisorConfigs!;
 		const descriptors: AdvisorRuntimeDescriptor[] = [];
 		const usedSlugs = new Set<string>();
 		for (const config of roster) {
@@ -1172,12 +1188,19 @@ export class SessionAdvisors {
 				this.#advisorStatuses.set(slug, { name: config.name, status: "paused" });
 				continue;
 			}
-			const reviewMode: AdvisorReviewMode = config.reviewMode === "agent-end" ? "agent-end" : "turn";
+			// Roster entries default to every-turn review; the roster-less default
+			// advisor leaves both unset and follows the cadence settings live.
+			const reviewMode: AdvisorReviewMode | undefined = legacy
+				? undefined
+				: config.reviewMode === "agent-end"
+					? "agent-end"
+					: "turn";
 			const configuredReviewInterval = config.reviewInterval;
-			const reviewInterval =
-				typeof configuredReviewInterval === "number" &&
-				Number.isSafeInteger(configuredReviewInterval) &&
-				configuredReviewInterval >= 1
+			const reviewInterval = legacy
+				? undefined
+				: typeof configuredReviewInterval === "number" &&
+					  Number.isSafeInteger(configuredReviewInterval) &&
+					  configuredReviewInterval >= 1
 					? configuredReviewInterval
 					: 1;
 			// Catch-up override: schema-validated for WATCHDOG.yml entries, clamped
@@ -1262,14 +1285,13 @@ export class SessionAdvisors {
 				// An `auto` advisor's concrete level changes every turn; signing the
 				// resolved level would make each change look like a config edit and
 				// rebuild the advisor, losing its context. Sign the selector instead.
+				// Cadence and catch-up resolve at each boundary rather than at build
+				// time, so they stay out of the signature.
 				signature: this.#advisorRuntimeSignature(
 					config,
 					slug,
 					model,
 					autoThinking ? AUTO_THINKING : advisorThinkingLevel,
-					reviewMode,
-					reviewInterval,
-					syncBacklog,
 				),
 			});
 		}
@@ -1281,17 +1303,11 @@ export class SessionAdvisors {
 		slug: string,
 		model: Model,
 		thinkingLevel: ThinkingLevel | typeof AUTO_THINKING,
-		reviewMode: AdvisorReviewMode,
-		reviewInterval: number,
-		syncBacklog: AdvisorSyncBacklog | undefined,
 	): string {
 		const tools = config.tools?.length ? config.tools.join("\u001e") : "";
 		const instructions = config.instructions?.trim() ?? "";
 		const budget = this.#advisorMaxNotesPerUpdate(config);
-		// Only the per-advisor OVERRIDE enters the signature: the global
-		// `advisor.syncBacklog` setting resolves live at each boundary, so changing
-		// it must not tear down the runtime. The service tier is bound at build
-		// time, so a `tier.advisor` edit must rebuild.
+		// The service tier is bound at build time, so a `tier.advisor` edit must rebuild.
 		const tier = cfgTierAdvisor.get(this.#host.settings);
 		return [
 			config.name,
@@ -1300,9 +1316,6 @@ export class SessionAdvisors {
 			thinkingLevel,
 			tools,
 			instructions,
-			reviewMode,
-			reviewInterval,
-			syncBacklog ?? "",
 			budget,
 			tier,
 		].join("\u001f");
@@ -1318,15 +1331,31 @@ export class SessionAdvisors {
 	}
 
 	/**
+	 * Replace the live advisors in place. Each successor keeps its predecessor's
+	 * cadence phase and resumes at its cursor with the captured-but-unreviewed
+	 * updates, so a rebuild never drops turns the cadence skipped.
+	 */
+	#rebuildAdvisorRuntime(emitWarnings = true): boolean {
+		const carried = new Map<string, AdvisorCarry>();
+		for (const advisor of this.#advisors) {
+			carried.set(advisor.slug, { held: advisor.runtime.releaseHeld(), eligibleUpdates: advisor.eligibleUpdates });
+		}
+		this.#stopAdvisorRuntime();
+		return this.#buildAdvisorRuntime(true, emitWarnings, carried);
+	}
+
+	/**
 	 * Build advisor runtimes from the current roster. With `keep`, advisors already running whose slug
 	 * AND signature still match a descriptor are reused as they are (context, recorder, review state),
 	 * and only the missing ones are constructed; the roster order is preserved either way. Matching on
 	 * the slug alone would be wrong: a slug is derived from the name and suffixed on collision, so it can
-	 * move to a different advisor when the roster changes.
+	 * move to a different advisor when the roster changes. `carried` hands a replaced advisor's held
+	 * updates and eligible-update count to its replacement.
 	 */
 	#buildAdvisorRuntime(
 		seedToCurrent = false,
 		emitWarnings = true,
+		carried?: ReadonlyMap<string, AdvisorCarry>,
 		keep?: ReadonlyMap<string, ActiveAdvisor>,
 	): boolean {
 		if (this.#host.isDisposed()) return false;
@@ -1736,7 +1765,7 @@ export class SessionAdvisors {
 				reviewMode: descriptor.reviewMode,
 				reviewInterval: descriptor.reviewInterval,
 				syncBacklog: descriptor.syncBacklog,
-				eligibleUpdates: 0,
+				eligibleUpdates: carried?.get(slug)?.eligibleUpdates ?? 0,
 				pendingCoveredTurn: 0,
 				retryFallbackPendingSuccess: false,
 				usageLimitRetries: 0,
@@ -1744,7 +1773,9 @@ export class SessionAdvisors {
 			};
 			this.#refreshAdvisorProviderIdentity(advisorRef);
 			this.#attachAdvisorRecorderFeed(advisorRef);
-			if (seedToCurrent) runtime.seedTo(this.#host.agent.state.messages.length);
+			const held = carried?.get(slug)?.held;
+			if (held) runtime.adoptHeld(held);
+			else if (seedToCurrent) runtime.seedTo(this.#host.agent.state.messages.length);
 			this.#advisorStatuses.set(slug, { name: advisorName, status: "running" });
 			this.#advisors.push(advisorRef);
 		}
@@ -1942,7 +1973,15 @@ export class SessionAdvisors {
 		}
 		const interrupting = isInterruptingSeverity(severity);
 		const terminalAnswerNoQueuedWork = this.#hasTerminalTextAnswerWithoutQueuedWork();
-		const terminalUnwindPreserve = this.#terminalUnwindActive && severity !== "blocker" && terminalAnswerNoQueuedWork;
+		// A final-review concern that lands after the boundary window closed
+		// (catch-up off, or a review slower than its wait) keeps the one
+		// continuation the merged boundary flush would have granted it.
+		const finalReviewConcern =
+			severity === "concern" &&
+			this.#terminalUnwindActive &&
+			(advisor.reviewMode ?? cfgAdvisorReviewMode.get(this.#host.settings)) === "agent-end";
+		const terminalUnwindPreserve =
+			this.#terminalUnwindActive && severity !== "blocker" && !finalReviewConcern && terminalAnswerNoQueuedWork;
 		const channel = resolveAdvisorDeliveryChannel({
 			severity,
 			autoResumeSuppressed: this.#advisorAutoResumeSuppressed,
@@ -1953,13 +1992,14 @@ export class SessionAdvisors {
 			streaming: this.#host.agent.state.isStreaming && !this.#preserveTerminalYieldAdvice && !terminalUnwindPreserve,
 			aborting: this.#host.abortInProgress(),
 			terminalAnswerNoQueuedWork,
+			allowTerminalConcernSteering: finalReviewConcern,
 			interruptImmuneTurnActive: interrupting && this.#isAdvisorInterruptImmuneTurnActive(),
 		});
+		const notes: AdvisorNote[] = [{ note, severity, advisor: source }];
 		if (channel === "aside") {
 			this.#queueLiveAside({ note, severity, advisor: source, turn: turn ?? this.#advisorPrimaryTurnsCompleted });
 			return;
 		}
-		const notes: AdvisorNote[] = [{ note, severity, advisor: source }];
 		this.#deliverAdvisorBatch(notes, formatAdvisorBatchContent(notes), channel === "steer");
 	}
 
@@ -1984,12 +2024,8 @@ export class SessionAdvisors {
 		if (this.#advisorBoundaryNotes.length === 0) return;
 		// Newest turn first, then severity: the latest notes describe the current
 		// state of the work; older ones may already be resolved by it.
-		const merged = [...this.#advisorBoundaryNotes].sort(compareAdvisorNotes);
+		const notes = [...this.#advisorBoundaryNotes].sort(compareAdvisorNotes);
 		this.#advisorBoundaryNotes = [];
-		// A boundary merges several updates and turns, so the per-update budget
-		// does not bound it; apply the same number to the merged batch so the
-		// card stays readable instead of degenerating into "+17 more notes".
-		const notes: AdvisorNote[] = boundAdvisorBatch(merged, this.#advisorMaxNotesPerUpdate());
 		for (const n of notes) {
 			if (n.turn !== undefined && this.#advisorPrimaryTurnsCompleted > n.turn) {
 				n.turnsAgo = this.#advisorPrimaryTurnsCompleted - n.turn;
@@ -1999,6 +2035,8 @@ export class SessionAdvisors {
 			this.#advisorBoundaryGuidanceLastTurn === undefined ||
 			this.#advisorPrimaryTurnsCompleted - this.#advisorBoundaryGuidanceLastTurn >= ADVISOR_BOUNDARY_GUIDANCE_TURNS;
 		if (showGuidance) this.#advisorBoundaryGuidanceLastTurn = this.#advisorPrimaryTurnsCompleted;
+		const batch = formatAdvisorBatchContent(notes, { currentTurn: this.#advisorPrimaryTurnsCompleted });
+		const content = showGuidance ? `${ADVISOR_BOUNDARY_GUIDANCE}\n${batch}` : batch;
 		// Snapshot the shared policy inputs once: they cannot change while this
 		// synchronous flush runs. `streaming` is forced false — the primary's turn
 		// IS final even though the loop still reports streaming during the
@@ -2028,6 +2066,17 @@ export class SessionAdvisors {
 			);
 		});
 		this.#curateThenDeliver(notes, showGuidance, shouldSteer);
+	}
+
+	/** Whether the advisor that produced `sourceName` reviews only at agent end.
+	 *  For the default advisor (no name), falls back to the live `advisor.reviewMode`. */
+	#noteAdvisorIsAgentEnd(sourceName: string | undefined): boolean {
+		for (const a of this.#advisors) {
+			if (sourceName === undefined ? !a.slug : a.name === sourceName) {
+				return (a.reviewMode ?? cfgAdvisorReviewMode.get(this.#host.settings)) === "agent-end";
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -2101,15 +2150,6 @@ export class SessionAdvisors {
 		this.trackCardEvent(curation);
 	}
 
-	/** Whether the advisor that produced `sourceName` reviews only at agent end.
-	 *  For the default advisor (no name), falls back to its resolved reviewMode. */
-	#noteAdvisorIsAgentEnd(sourceName: string | undefined): boolean {
-		for (const a of this.#advisors) {
-			if (sourceName === undefined ? !a.slug : a.name === sourceName) return a.reviewMode === "agent-end";
-		}
-		return false;
-	}
-
 	/**
 	 * Deliver one advisor batch as a steer, or as a visible card when steering
 	 * is technically impossible. A steered batch only continues the run when the
@@ -2136,6 +2176,12 @@ export class SessionAdvisors {
 				// arming earlier would downgrade the next `advisor.immuneTurns` worth of
 				// real concerns/blockers to skip-idle-flush asides (#5628 review).
 				this.#recordAdvisorInterruptDelivered();
+				// A steer into a run still working only redirects it; one delivered
+				// while idle or past a terminal boundary starts the continuation
+				// that must not schedule another review.
+				if (!this.#host.agent.state.isStreaming || this.#terminalUnwindActive) {
+					this.#advisorContinuation = { userMessage: lastPrimaryUserMessage(this.#host.agent.state.messages) };
+				}
 				void this.#host
 					.sendCustomMessage(
 						{ customType: "advisor", content, display: true, attribution: "agent", details },
@@ -2216,11 +2262,7 @@ export class SessionAdvisors {
 	#attachAdvisorRecorderFeed(advisor: ActiveAdvisor): void {
 		advisor.agentUnsubscribe = advisor.agent.subscribe(event => {
 			if (event.type !== "message_end") return;
-			if (event.message.role === "assistant") {
-				this.#recordAdvisorCost(advisor, event.message);
-				// A fresh provider usage anchor reports the context as it stands
-				// now — post-eviction — so the correction it carried is spent.
-			}
+			if (event.message.role === "assistant") this.#recordAdvisorCost(advisor, event.message);
 			advisor.recorder.record(event.message);
 		});
 	}
@@ -2878,16 +2920,17 @@ export class SessionAdvisors {
 		} satisfies AdvisorCompactionSummaryMessage;
 
 		agent.replaceMessages([summaryMessage, ...recentMessages]);
-		// The retained tail's own anchors are gone with the replaced array; there
-		// is no stale provider usage left for the correction to offset.
 		return false;
 	}
 	/**
 	 * Prevent advisor notes from starting hidden primary turns while a headless
-	 * caller prints and drains the final primary response.
+	 * caller prints and drains the final primary response, and send each
+	 * advisor's cadence-held updates so the drain reviews a final yield the
+	 * review cadence skipped.
 	 */
 	prepareForHeadlessAdvisorDrain(): void {
 		this.#preserveAdvisorAdvice = true;
+		for (const advisor of this.#advisors) advisor.runtime.flushHeld();
 	}
 
 	/** Preserve advisor output for a terminal yield whose loop is unwinding. */
@@ -2931,13 +2974,24 @@ export class SessionAdvisors {
 	 * will abandon when the shared deadline expires or an advisor stops for good
 	 * (halt, quota pause). A failing advisor releases the drain at once unless
 	 * `waitThroughRecovery` is set: then its retry and fallback-chain recovery is
-	 * waited through instead of being abandoned mid-switch.
+	 * waited through instead of being abandoned mid-switch. With
+	 * `strictWithoutDeadline`, an advisor whose catch-up policy is `strict` is
+	 * waited on without the deadline, as at every primary boundary, and its card
+	 * events then get a full `timeoutMs` of their own. Callers bound by a hard
+	 * teardown deadline (subagent cleanup) leave it unset.
 	 */
-	async waitForAdvisorCatchup(timeoutMs: number, options?: { waitThroughRecovery?: boolean }): Promise<boolean> {
-		const deadline = Date.now() + timeoutMs;
-		const results = await Promise.all(
-			this.#advisors.map(advisor => advisor.runtime.waitForCatchup(timeoutMs, 1, undefined, options)),
+	async waitForAdvisorCatchup(timeoutMs: number, options?: AdvisorCatchupOptions): Promise<boolean> {
+		let deadline = Date.now() + timeoutMs;
+		const globalSyncBacklog = cfgAdvisorSyncBacklog.get(this.#host.settings);
+		const strict = this.#advisors.map(
+			advisor => options?.strictWithoutDeadline === true && (advisor.syncBacklog ?? globalSyncBacklog) === "strict",
 		);
+		const results = await Promise.all(
+			this.#advisors.map((advisor, index) =>
+				advisor.runtime.waitForCatchup(strict[index] ? undefined : timeoutMs, 1, undefined, options),
+			),
+		);
+		if (strict.includes(true)) deadline = Math.max(deadline, Date.now() + timeoutMs);
 		const cardEventsCaughtUp = await this.#waitForPendingAdvisorCardEvents(Math.max(0, deadline - Date.now()));
 		const abandoned = this.#advisors.filter(
 			(advisor, index) => results[index] === false && advisor.runtime.backlog > 0,
@@ -2953,7 +3007,10 @@ export class SessionAdvisors {
 		return true;
 	}
 	/**
-	 * Enable or disable the advisor for this session, subject to ancestor veto.
+	 * Enable or disable the advisor for this session. The setting is overridden for the session,
+	 * and the runtime is started or stopped to match.
+	 *
+	 * @returns true when the advisor is actively running after the call.
 	 */
 	setAdvisorEnabled(enabled: boolean): boolean {
 		this.#advisorRequested = enabled;
@@ -2961,17 +3018,24 @@ export class SessionAdvisors {
 		return this.#applyAdvisorEnabled();
 	}
 
+	/**
+	 * Reconcile the runtime with the derived enabled state (requested and not vetoed by a parent scope).
+	 * Enabling rebuilds through {@link SessionAdvisors.#rebuildAdvisorRuntime}, which carries each
+	 * advisor's held updates; disabling drops everything that belongs to the run being turned off.
+	 */
 	#applyAdvisorEnabled(): boolean {
 		if (this.#host.isDisposed()) return false;
 		if (this.#advisorEnabled) {
-			if (this.#advisors.length > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) this.#stopAdvisorRuntime();
+			if (this.#advisors.length > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) {
+				return this.#rebuildAdvisorRuntime();
+			}
 			return this.#buildAdvisorRuntime(true);
 		}
 		// Held notes and any judgment in flight belong to the run being turned off: drop them and abort the judge request.
 		this.#discardLiveAsides();
 		this.#deliveryAbort.abort();
 		this.#deliveryAbort = new AbortController();
-		if (this.#advisors.length > 0) this.#stopAdvisorRuntime();
+		this.#stopAdvisorRuntime();
 		for (const [slug, entry] of this.#advisorStatuses) {
 			if (entry.status === "running" || entry.status === "error" || entry.status === "quota_exhausted") {
 				this.#advisorStatuses.set(slug, { ...entry, status: "paused" });
@@ -3005,7 +3069,9 @@ export class SessionAdvisors {
 	 * Replace the live advisor roster from an edited `WATCHDOG.yml` (the `/advisor
 	 * configure` save path). Swaps the configs + shared baseline and applies them without a
 	 * restart: an advisor whose configuration is unchanged keeps running with its context and
-	 * review state, and only new, changed or removed advisors are restarted. The shared
+	 * review state, and only new, changed or removed advisors are restarted. A restarted
+	 * advisor hands the updates its cadence held and its eligible-update count to its
+	 * replacement, so nothing a skipped review was waiting on is lost. The shared
 	 * instructions and note budget are baked into every advisor's prompt but are not part of
 	 * the per-advisor signature, so changing either restarts all of them. When the advisor is
 	 * disabled the new configs are simply stored for the next enable.
@@ -3027,8 +3093,7 @@ export class SessionAdvisors {
 		this.#advisorSharedMaxNotesPerUpdate = sharedMaxNotesPerUpdate;
 		if (!this.#advisorEnabled) return 0;
 		if (sharedChanged || this.#advisors.length === 0) {
-			this.#stopAdvisorRuntime();
-			this.#buildAdvisorRuntime(true);
+			this.#rebuildAdvisorRuntime();
 			return this.#advisors.length;
 		}
 		// Match on slug AND signature: a slug is derived from the name and suffixed on collision,
@@ -3036,12 +3101,20 @@ export class SessionAdvisors {
 		const wanted = new Map(this.#resolveAdvisorRuntimeDescriptors(false).map(d => [d.slug, d.signature]));
 		const keep = new Map<string, ActiveAdvisor>();
 		const stop = new Set<string>();
+		const carried = new Map<string, AdvisorCarry>();
 		for (const advisor of this.#advisors) {
-			if (wanted.get(advisor.slug) === advisor.signature) keep.set(advisor.slug, advisor);
-			else stop.add(advisor.slug);
+			if (wanted.get(advisor.slug) === advisor.signature) {
+				keep.set(advisor.slug, advisor);
+			} else {
+				stop.add(advisor.slug);
+				carried.set(advisor.slug, {
+					held: advisor.runtime.releaseHeld(),
+					eligibleUpdates: advisor.eligibleUpdates,
+				});
+			}
 		}
 		if (stop.size > 0) this.#stopAdvisorRuntime(stop);
-		this.#buildAdvisorRuntime(true, true, keep);
+		this.#buildAdvisorRuntime(true, true, carried, keep);
 		return this.#advisors.length;
 	}
 
@@ -3055,8 +3128,7 @@ export class SessionAdvisors {
 		if (contextPrompt === this.#advisorContextPrompt) return;
 		this.#advisorContextPrompt = contextPrompt;
 		if (!this.#advisorEnabled || this.#advisors.length === 0) return;
-		this.#stopAdvisorRuntime();
-		this.#buildAdvisorRuntime(true);
+		this.#rebuildAdvisorRuntime();
 	}
 
 	/**
@@ -3071,16 +3143,21 @@ export class SessionAdvisors {
 		this.#advisorMemoryPrompt = memoryPrompt;
 	}
 
+	/** Whether an ancestor scope vetoes advisor activation. */
+	isAdvisorSuppressedByParent(): boolean {
+		return this.scope.suppressedByParent;
+	}
+
+	/** Live advisor `Agent`s by advisor name, for diagnostics and for verifying which advisors a roster change restarted. */
+	getAdvisorAgentsByName(): ReadonlyMap<string, Agent> {
+		return new Map(this.#advisors.map(advisor => [advisor.name, advisor.agent]));
+	}
+
 	/**
 	 * Whether the advisor setting is enabled for this session.
 	 */
 	isAdvisorEnabled(): boolean {
 		return this.#advisorEnabled;
-	}
-
-	/** Whether an ancestor scope vetoes advisor activation. */
-	isAdvisorSuppressedByParent(): boolean {
-		return this.scope.suppressedByParent;
 	}
 
 	/**
@@ -3115,11 +3192,6 @@ export class SessionAdvisors {
 		return this.#advisors[0]?.agent;
 	}
 
-	/** Live advisor `Agent`s by advisor name, for diagnostics and for verifying which advisors a roster change restarted. */
-	getAdvisorAgentsByName(): ReadonlyMap<string, Agent> {
-		return new Map(this.#advisors.map(advisor => [advisor.name, advisor.agent]));
-	}
-
 	/**
 	 * Lightweight advisor status for the status line: returns just the configured
 	 * flag and per-advisor name/status without computing token/cost breakdowns.
@@ -3130,13 +3202,12 @@ export class SessionAdvisors {
 		// clear on reset() but #advisorStatuses lags until the next build.
 		const liveStatusBySlug = new Map<
 			string,
-			{ status: AdvisorRuntimeStatus; yielded: boolean; reviewing: boolean; canReview: boolean }
+			{ status: AdvisorRuntimeStatus; yielded: boolean; canReview: boolean }
 		>();
 		for (const a of this.#advisors) {
 			liveStatusBySlug.set(a.slug, {
 				status: a.runtime.quotaExhausted ? "quota_exhausted" : a.runtime.failureNotified ? "error" : "running",
 				yielded: a.runtime.yielded,
-				reviewing: a.runtime.reviewing,
 				canReview: !a.runtime.quotaExhausted && !a.runtime.halted && !a.runtime.disposed,
 			});
 		}
@@ -3152,10 +3223,6 @@ export class SessionAdvisors {
 				// (paused/no-model) or a quota-exhausted/halted runtime — stay
 				// yielded regardless of the primary's stream state.
 				yielded: live?.canReview && this.#host.agent.state.isStreaming ? false : (live?.yielded ?? true),
-				// Unlike the eye, "reviewing" is not masked by the primary's stream
-				// state: it is true only while a review is actually queued or in
-				// flight, so a fresh session with idle advisors reports none.
-				reviewing: live?.reviewing ?? false,
 			};
 		});
 		return { configured: this.#advisorEnabled, advisors };
@@ -3322,7 +3389,7 @@ export class SessionAdvisors {
 			if (!s.model || s.status !== "running") return `Advisor "${s.name}" is ${s.status.replace("_", " ")}.`;
 			return `Advisor is enabled (${s.model.provider}/${s.model.id}). ${contextLine}. ${spendLine}.`;
 		}
-		const lines = [`Advisors ${stats.configured ? "enabled" : "disabled"} (${stats.advisors.length}):`];
+		const lines = [`Advisors enabled (${stats.advisors.length}):`];
 		for (const s of stats.advisors) {
 			const ctx =
 				s.contextWindow > 0

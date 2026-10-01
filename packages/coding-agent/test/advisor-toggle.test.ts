@@ -1266,33 +1266,22 @@ describe("AgentSession advisor toggle", () => {
 			["Testing", "running"],
 		]);
 	});
-	it("rebuilds the default advisor after advisor.reviewMode setting change", () => {
+	it("uses a roster saved while the advisor is disabled once it is enabled", () => {
 		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
-		cfgAdvisorReviewMode.set(session.settings, "turn");
-		expect(session.setAdvisorEnabled(true)).toBe(true);
-		const turnAgent = session.getAdvisorAgent();
-		expect(turnAgent).toBeDefined();
+		expect(session.isAdvisorEnabled()).toBe(false);
 
-		// Change reviewMode and re-enable — simulates selector-controller rebuild.
-		cfgAdvisorReviewMode.set(session.settings, "agent-end");
+		expect(
+			session.applyAdvisorConfigs(
+				[{ name: "Architecture", instructions: "Review module boundaries." }],
+				"Keep advice concrete.",
+			),
+		).toBe(0);
 		expect(session.setAdvisorEnabled(true)).toBe(true);
-		const agentEndAgent = session.getAdvisorAgent();
-		expect(agentEndAgent).toBeDefined();
-		expect(agentEndAgent).not.toBe(turnAgent);
-	});
-	it("rebuilds the default advisor after advisor.reviewInterval setting change", () => {
-		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
-		cfgAdvisorReviewInterval.set(session.settings, 1);
-		expect(session.setAdvisorEnabled(true)).toBe(true);
-		const interval1Agent = session.getAdvisorAgent();
-		expect(interval1Agent).toBeDefined();
 
-		// Change reviewInterval and re-enable.
-		cfgAdvisorReviewInterval.set(session.settings, 3);
-		expect(session.setAdvisorEnabled(true)).toBe(true);
-		const interval3Agent = session.getAdvisorAgent();
-		expect(interval3Agent).toBeDefined();
-		expect(interval3Agent).not.toBe(interval1Agent);
+		expect(session.getAdvisorStats().advisors.map(advisor => advisor.name)).toEqual(["Architecture"]);
+		const advisorPrompt = session.getAdvisorAgent()?.state.systemPrompt.join("\n");
+		expect(advisorPrompt).toContain("Keep advice concrete.");
+		expect(advisorPrompt).toContain("Review module boundaries.");
 	});
 	it("retains cumulative advisor cost after an in-session history rewrite", async () => {
 		const advisor = enableAdvisor();

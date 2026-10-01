@@ -71,11 +71,15 @@ This follows the same rules as the primary's fallback: `retry.enabled` and `retr
 When no `WATCHDOG.yml` roster is present, the default advisor uses these settings from the Model tab:
 
 - `advisor.reviewMode` — review cadence: `turn` (default) reviews every primary turn; `agent-end` reviews only final yields.
-- `advisor.reviewInterval` — review every Nth eligible update (default `1`). Skipped updates accumulate into the next scheduled review.
+- `advisor.reviewInterval` — review every Nth eligible update (default `1`). Skipped updates are captured as the primary saw them and sent with the next scheduled review.
 - `advisor.maxNotesPerUpdate` — maximum non-blocker advice notes accepted per advisor update (default `4`, range 1–32). Blockers are exempt.
 - `advisor.syncBacklog` — catch-up policy (default `off`); numeric thresholds are bounded, while `strict` waits without a wall-clock cap.
 
-Roster entries can override these settings with `reviewMode`, `reviewInterval`, `maxNotesPerUpdate`, and `syncBacklog`. Omitted cadence and catch-up fields inherit session settings; note budgets can also inherit a shared `WATCHDOG.yml` top-level value. An explicit `syncBacklog: off` overrides a global `strict`.
+Edits to these settings apply to the running advisor at its next primary boundary without rebuilding it.
+
+Roster entries set their own cadence: an omitted `reviewMode` means `turn` and an omitted `reviewInterval` means `1`, regardless of the settings above. An omitted `syncBacklog` inherits `advisor.syncBacklog`, and an omitted `maxNotesPerUpdate` inherits the shared `WATCHDOG.yml` top-level value, then `advisor.maxNotesPerUpdate`. An explicit `syncBacklog: off` overrides a global `strict`.
+
+Rebuilding advisors (saving `/advisor configure`, model-role or context changes) keeps updates the cadence skipped: each rebuilt advisor receives them with its next scheduled review.
 
 ### Headless runs
 
@@ -86,7 +90,7 @@ persisting `advisor.enabled`:
 omp -p --advisor "Review this task."
 ```
 
-While a primary prompt is running, eligible advisor notes can steer that run. After the final prompt settles, print mode preserves late advisor notes without starting hidden primary turns, then waits up to ten minutes for final reviews before disposing the session. That wait covers a failing advisor's retries and [backup reviewer](#backup-reviewer) switch, so a review that fails on the advisor's model finishes on its fallback instead of being abandoned. Error exits use a 30-second drain budget so failed automation can terminate. If either deadline expires, or the advisor stops for good (halted or quota-paused), OMP logs the reviews that disposal will abandon; completed reviews retain their transcript and token/cost usage.
+While a primary prompt is running, eligible advisor notes can steer that run. After the final prompt settles, print mode preserves late advisor notes without starting hidden primary turns, sends updates the review cadence skipped (so an `agent-end` or interval reviewer still reviews the final answer), then waits up to ten minutes for final reviews before disposing the session. That wait covers a failing advisor's retries and [backup reviewer](#backup-reviewer) switch, so a review that fails on the advisor's model finishes on its fallback instead of being abandoned. Error exits use a 30-second drain budget so failed automation can terminate. An advisor whose catch-up policy is `strict` is waited on without either budget; aborts, halts, and quota pauses still end its wait. If a budget expires, or the advisor stops for good (halted or quota-paused), OMP logs the reviews that disposal will abandon; completed reviews retain their transcript and token/cost usage.
 
 Slash commands:
 
@@ -168,9 +172,9 @@ Session/client constraints can preserve a note whose normal delivery path is ste
 - **Plan mode:** every would-be advisor steer is preserved as a visible card, even while the primary loop is streaming, because only user-driven turns converge on ask/resolve.
 - **ACP with deferred agent-initiated turns:** when `deferAgentInitiatedTurns` is enabled and the bridge has not allowed agent-initiated turns, an idle would-be steer is preserved because the client cannot represent the triggered turn as busy. Advice raised while the primary loop is already streaming can still steer into that live turn.
 
-So the advisor can steer and resume a run the agent ended on its own **while it is running or yielded mid-work and the current mode/client permits steering**. When steering is blocked instead, the note is either preserved as a card (the terminal-answer, plan-mode, and deferred-ACP cases above) or, for a concern, downgraded to a non-interrupting aside (the `advisor.immuneTurns` cooldown below); either way it waits for the next step boundary or resume rather than waking the agent.
+So the advisor can steer and resume a run the agent ended on its own **while it is running or yielded mid-work and the current mode/client permits steering**. When steering is blocked instead, the note is either preserved as a card (the terminal-answer, plan-mode, and deferred-ACP cases above) or, for a concern, downgraded to a non-interrupting aside during the `advisor.immuneTurns` cooldown; either way it waits for the next turn boundary or resume rather than waking the agent.
 
-`advisor.immuneTurns` limits concern interruption frequency independently of review cadence. After the advisor successfully delivers a `concern` or `blocker` through the steering channel, later concerns are routed as non-interrupting asides until the configured number of primary turns has completed. Tool-loop continuations count toward that cooldown even for an `agent-end` reviewer. The default is `3`. Blockers are exempt from this cooldown, but still obey preservation constraints such as deliberate interrupts and plan mode. `nit` notes are unchanged, and advice raised while user-interrupt auto-resume suppression is active is still preserved instead of restarting a stopped run.
+`advisor.immuneTurns` limits concern interruption frequency independently of review cadence. After the advisor successfully delivers a `concern` or `blocker` through the steering channel, later concerns are routed as non-interrupting asides until the configured number of primary turns has completed. Tool-loop continuations count toward that cooldown even for an `agent-end` reviewer. The default is `3`. Blockers are exempt from this cooldown, but still obey preservation constraints such as deliberate interrupts and plan mode. `nit` notes are unchanged.
 
 While an advisor update reviews work still in progress, `AdviseTool` defers `nit` and `concern` calls until a final boundary; only a `blocker` may interrupt partial work. Deferred notes pass the emission guard before reservation. A higher-severity note may displace a pending lower-severity note from the same review, but cannot displace notes from earlier reviews or retract routed advice. A final boundary flushes pending notes even when cadence skips a new review, without resetting the current review's budget.
 
@@ -201,7 +205,7 @@ Allowed values:
 
 On primary turn end:
 
-1. a scheduled primary delta is queued for the advisor
+1. every advisor captures the primary delta; an advisor whose review is scheduled queues it together with any updates its cadence held since its last review
 2. the advisor drain loop starts or continues in the background
 3. each scheduled advisor resolves its own override or the global policy; unless it is `off`, the primary waits while that advisor's backlog is at or above its threshold
 4. bounded values cap the wait at 30 seconds; `strict` waits without a wall-clock cap
@@ -216,7 +220,7 @@ Practical interpretation:
 
 `strict` with an `agent-end` advisor provides synchronous final review: the primary reaches its final boundary, the advisor reviews the accumulated run, then the primary can finish. Notes delivered at that boundary merge into one message, ordered newest turn first, then severity (`blocker` → `concern` → `nit`). Notes about earlier turns carry a `turns_ago` attribute and a dim `T-N` transcript marker between severity and advisor name. The first merged delivery, then at most once every 50 primary turns, includes guidance that findings may be outdated or wrong and may be ignored.
 
-A batch containing a blocker or an `agent-end` concern can request at most one permitted continuation, even when several advisors report findings together. Stop/abort suppression, concern cooldown, plan-mode policy, and client preservation constraints apply to both buffered and live delivery. Otherwise the notes remain visible without restarting the primary. Advisor-driven continuations do not schedule another review or advance cadence; genuine user input wakes scheduling and preserves accumulated primary deltas without feeding advisor notes back into them.
+A batch containing a blocker or an `agent-end` concern can request at most one permitted continuation, even when several advisors report findings together. Stop/abort suppression, concern cooldown, plan-mode policy, and client preservation constraints apply to both buffered and live delivery. Otherwise the notes remain visible without restarting the primary. A continuation an advisor delivery starts does not schedule another review or advance cadence; its updates are captured and sent with the next review, without feeding advisor notes back into them.
 
 Keep turn reviews asynchronous while waiting for final reviews:
 
@@ -363,7 +367,7 @@ Fields:
 - `maxNotesPerUpdate` (top level or per advisor): accepted non-blocker notes per prompt update, default `4`. A per-advisor value overrides the top-level value, which overrides the `advisor.maxNotesPerUpdate` setting.
 - `advisors[].instructions`: this advisor's specialization, appended after the shared baseline. Both instruction fields expand `@path` imports like `WATCHDOG.md`.
 
-After the primary's first final boundary for a user message, review scheduling sleeps until the next genuine user message. Advisor-triggered continuation turns neither schedule reviews nor advance interval counters, so advisor deliveries cannot re-wake reviewers into an advisor→primary→advisor cascade. Delivery itself never sleeps: advice already produced still steers, flushes, or rides asides to the primary. Sleeping advisors do not advance their transcript cursors, so the first review after wake-up covers everything that happened in between.
+A continuation an advisor delivery itself starts — a steer while the primary is idle or past its final boundary — neither schedules reviews nor advances interval counters through its own final boundary, so advisor deliveries cannot re-wake reviewers into an advisor→primary→advisor cascade. Its updates are still captured and reach the next scheduled review. Continuations started by anything else (todo reminders, async job wakes, live delegations, user input) are reviewed under the normal cadence, so an `agent-end` reviewer also reviews the run a todo reminder resumes. Delivery itself never pauses: advice already produced still steers, flushes, or rides asides to the primary.
 
 ### Discovery locations
 

@@ -610,7 +610,8 @@ export class CommandController {
 		this.ctx.presentCommandOutput([new Spacer(1), new Text(info, 1, 0)]);
 	}
 
-	async handleJobsCommand(): Promise<void> {
+	async handleJobsCommand(options?: { full?: boolean }): Promise<void> {
+		const full = options?.full === true;
 		const snapshot = this.ctx.session.getAsyncJobSnapshot({ recentLimit: 5 });
 		if (!snapshot) {
 			this.ctx.showWarning("Async background jobs are unavailable in this session.");
@@ -628,11 +629,22 @@ export class CommandController {
 			return;
 		}
 
+		// Full mode wraps here so every line, including heredoc lines and wrap
+		// continuations, keeps the two-column indent under its job row.
+		const commandWidth = Math.max(1, (this.ctx.ui.terminal.columns ?? 100) - 4);
+		const describe = (job: AsyncJobSnapshotItem): string => {
+			if (!full) return `  ${theme.fg("dim", truncateJobLabel(job.label, lineWidth))}`;
+			const command = replaceTabs(sanitizeText(job.command ?? job.label));
+			return wrapTextWithAnsi(command, commandWidth)
+				.map(line => `  ${theme.fg("dim", line)}`)
+				.join("\n");
+		};
+
 		if (snapshot.running.length > 0) {
 			info += `\n${theme.bold("Running Jobs")}\n`;
 			for (const job of snapshot.running) {
 				info += `${renderJobLine(job, now)}\n`;
-				info += `  ${theme.fg("dim", truncateJobLabel(job.label, lineWidth))}\n`;
+				info += `${describe(job)}\n`;
 			}
 		}
 
@@ -640,11 +652,13 @@ export class CommandController {
 			info += `\n${theme.bold("Recent Jobs")}\n`;
 			for (const job of snapshot.recent) {
 				info += `${renderJobLine(job, now)}\n`;
-				info += `  ${theme.fg("dim", truncateJobLabel(job.label, lineWidth))}\n`;
+				info += `${describe(job)}\n`;
 			}
 		}
 
-		this.ctx.presentCommandOutput(new JobsPanel(snapshot, now, [new Spacer(1), new Text(info.trimEnd(), 1, 0)]));
+		// The native jobs panel truncates labels, so full mode renders plain text only
+		const body = [new Spacer(1), new Text(info.trimEnd(), 1, 0)];
+		this.ctx.presentCommandOutput(full ? body : new JobsPanel(snapshot, now, body));
 	}
 
 	async handleUsageCommand(reports?: UsageReport[] | null): Promise<void> {

@@ -128,6 +128,7 @@ import { createAccountMasker } from "@oh-my-pi/pi-tui/overlays/usage-mask";
 import { renderUsageReports } from "./command-controller";
 import type { SessionObserverRegistry } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
 
+import { cfgAdvisorSyncBacklog } from "../../advisor/settings";
 import { cfgBranchSummaryEnabled } from "../../session/context-settings";
 import { cfgCycleOrder, cfgDisabledProviders, cfgModelRoleStorage } from "../../config/model-settings";
 import { cfgDefaultThinkingLevel, cfgRetryFallbackChains } from "../../session/settings";
@@ -146,7 +147,6 @@ import {
 	cfgTreeFilterMode,
 } from "../settings";
 import { cfgTaskAgentModelOverrides } from "../../task/settings";
-import { cfgAdvisorSyncBacklog } from "../../advisor/settings";
 
 interface ModelOverlayModules {
 	ModelHubComponent: typeof ModelHubComponentType;
