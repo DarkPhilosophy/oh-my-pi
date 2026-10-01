@@ -76,6 +76,7 @@
 - Fixed the ask tool's Custom answer and note prompts in native terminals (Tern): the question now shows whole as markdown under a `Custom answer` / `Note for …` title, instead of being wrapped at the terminal's width, cut to three rows and split between the title and an accent-coloured block. `AskDialogCallbacks.onPrompt`/`onImagePrompt` take `{ title, question }`; `HookEditorOptions.question` carries the question and `boundPromptTitle` moved to `overlays/hook-editor`. A cut terminal title now ends in `…`.
 - Fixed text fields in native dialogs (the ask's custom answer and notes, plan review, annotations, the agent hub) being drawn as the prompt composer with a doubled `❯ >` prompt: a plain `Editor` now describes itself as `omp.field` (only the composer claims `omp.editor`) and no longer sends its terminal prompt gutter (`> `) as the native `prompt`.
 - `/advisor config` shows the project and global advisors together, with the selected advisor's fields on the right, and the status line gets a compact glyph per advisor drawn from the active symbol preset ([#13931](https://github.com/can1357/oh-my-pi/pull/13931) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
+- Added an optional `curated` flag to advisor notes so a note that absorbed equivalent reports from other advisors can be marked as such ([#13932](https://github.com/can1357/oh-my-pi/pull/13932) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
 
 ## [18.4.5] - 2026-09-30
 

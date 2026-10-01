@@ -634,15 +634,16 @@ export class SessionAdvisors {
 	 * simultaneous notes never force N separate cards or continuation turns.
 	 */
 	#advisorBoundaryNotes: AdvisorNote[] = [];
-	/** Live asides held for the coalescing window, awaiting curation. */
-	#liveAsidePending: AdvisorNote[] = [];
-	#liveAsideTimer: ReturnType<typeof setTimeout> | undefined;
-	/** Bumped per curation request; a late result from a superseded batch is discarded. */
-	#advisorCuratorGeneration = 0;
 	/** Primary-turn count when the staleness header last shipped; `undefined`
 	 *  until the first merged delivery. Gates {@link ADVISOR_BOUNDARY_GUIDANCE}
 	 *  to at most once per {@link ADVISOR_BOUNDARY_GUIDANCE_TURNS} turns. */
 	#advisorBoundaryGuidanceLastTurn: number | undefined;
+	/** Live asides held for the coalescing window, awaiting curation. */
+	#liveAsidePending: { note: AdvisorNote; turn: number }[] = [];
+	#curatorAbort = new AbortController();
+	#liveAsideTimer: NodeJS.Timeout | undefined;
+	/** Bumped per curation request; a late result from a superseded batch is discarded. */
+	#advisorCuratorGeneration = 0;
 	#advisorInterruptImmuneTurnStart: number | undefined;
 	#pendingAdvisorCardEvents = new Set<Promise<void>>();
 	#advisorYieldQueueUnsubscribe: (() => void) | undefined;
@@ -797,6 +798,8 @@ export class SessionAdvisors {
 
 	/** Stops every advisor runtime and starts recorder shutdown. */
 	stopRuntime(): void {
+		// Held notes belong to the run being stopped: drop them and abandon any judgment in flight.
+		this.#discardLiveAsides();
 		this.#stopAdvisorRuntime();
 	}
 
@@ -821,9 +824,9 @@ export class SessionAdvisors {
 		await Promise.all(closes);
 	}
 	dispose(): void {
-		// Discard any in-flight curation and release what it was holding.
-		this.flushLiveAsidesImmediately();
-		this.#advisorCuratorGeneration++;
+		// The session yield queue is already cleared when this runs, so held notes have nowhere to go: drop them
+		// and abort any judgment still in flight.
+		this.#discardLiveAsides();
 		this.#unsubscribeScope();
 		if (this.#advisors.length > 0) this.#stopAdvisorRuntime();
 	}
@@ -861,12 +864,9 @@ export class SessionAdvisors {
 
 	/** Re-primes advisor transcript views across a conversation boundary. */
 	resetSessionState(options: { preserveCost?: boolean } = {}): void {
-		// A judgment still in flight describes the previous conversation. Bump the
-		// generation so its result is discarded rather than delivered into the new
-		// transcript, and release anything held in the coalescing window first so
-		// it is not lost with it.
-		this.flushLiveAsidesImmediately();
-		this.#advisorCuratorGeneration++;
+		// Held notes and any judgment in flight describe the previous conversation, and the advisor yield queue is
+		// cleared right below, so drop them instead of delivering them into the new transcript.
+		this.#discardLiveAsides();
 		this.#resetAdvisorSessionState(options.preserveCost === true);
 	}
 
@@ -1794,6 +1794,127 @@ export class SessionAdvisors {
 		return isTerminalTextAssistantAnswer(messages[tail]);
 	}
 
+	/**
+	 * Hold a live aside for a short coalescing window, curate the group, then
+	 * enqueue the survivors.
+	 *
+	 * Mid-stream is where several advisors reviewing the same deltas produce the
+	 * same observation within milliseconds of each other, so curating only the
+	 * terminal batch would leave the noisiest case untouched. The window is the
+	 * curator's own timeout, which is far below a model step, and it never
+	 * applies to a steer or a preserved card. A concern or blocker that was
+	 * demoted to an aside (interrupt-immune turn) is still time-critical, so it
+	 * skips the window: only nits wait to be curated.
+	 */
+	#queueLiveAside(note: AdvisorNote): void {
+		if (cfgAdvisorCurator.get(this.#host.settings) === "off" || isInterruptingSeverity(note.severity)) {
+			this.#host.yieldQueue.enqueue("advisor", note);
+			return;
+		}
+		this.#liveAsidePending.push({ note, turn: this.#advisorPrimaryTurnsCompleted });
+		if (this.#liveAsideTimer !== undefined) return;
+		this.#liveAsideTimer = setTimeout(() => {
+			this.#liveAsideTimer = undefined;
+			void this.#flushLiveAsides();
+		}, LIVE_ASIDE_COALESCE_MS);
+		this.#liveAsideTimer.unref?.();
+	}
+
+	/** Curate the held asides and enqueue what survives. Fail-open: anything the
+	 *  curator cannot decide is enqueued unchanged. */
+	async #flushLiveAsides(): Promise<void> {
+		const held = this.#liveAsidePending;
+		this.#liveAsidePending = [];
+		if (held.length === 0) return;
+		const pending = held.map(entry => entry.note);
+		const enqueue = (notes: readonly AdvisorNote[]): void => {
+			for (const note of notes) this.#host.yieldQueue.enqueue("advisor", note);
+		};
+		if (pending.length === 1) {
+			enqueue(pending);
+			return;
+		}
+		// Only a session reset or dispose bumps the generation. A batch that merely starts while
+		// another is still being judged must not discard it, or a slow judge would drop whole groups.
+		const generation = this.#advisorCuratorGeneration;
+		const abort = this.#curatorAbort.signal;
+		const timeoutMs = cfgAdvisorCuratorTimeoutMs.get(this.#host.settings);
+		try {
+			const result = await curateAdvisorCandidates({
+				settings: this.#host.settings,
+				registry: this.#host.modelRegistry,
+				candidates: held.map((entry, index) => ({
+					id: String(index),
+					note: entry.note.note,
+					severity: entry.note.severity,
+					advisor: entry.note.advisor,
+					coveredTurn: entry.turn,
+				})),
+				context: { recentPrimaryMessages: this.#recentPrimaryEvidence() },
+				signal: AbortSignal.any([
+					abort,
+					AbortSignal.timeout(
+						typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : CURATOR_DEFAULT_TIMEOUT_MS,
+					),
+				]),
+			});
+			// A session reset or switch happened while the judge ran: those notes
+			// describe work that is no longer on screen, so they are dropped
+			// rather than delivered into a transcript they do not belong to.
+			if (generation !== this.#advisorCuratorGeneration) return;
+			enqueue(applyAdvisorCuration(pending, result.decisions));
+		} catch (error) {
+			logger.debug("live advisor curation failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			if (generation === this.#advisorCuratorGeneration) enqueue(pending);
+		}
+	}
+
+	/**
+	 * Throw away anything held in the coalescing window and abandon a curation that is already running. Used when
+	 * the user turns the advisor off: those notes belong to a run they stopped, so they must not surface after a
+	 * later `on`; it is also used when the runtime stops or the session resets.
+	 */
+	#discardLiveAsides(): void {
+		if (this.#liveAsideTimer !== undefined) {
+			clearTimeout(this.#liveAsideTimer);
+			this.#liveAsideTimer = undefined;
+		}
+		this.#liveAsidePending = [];
+		// Abort the judge request itself (it is billed until it answers), and bump the generation so a result that
+		// still arrives is dropped.
+		this.#curatorAbort.abort();
+		this.#curatorAbort = new AbortController();
+		this.#advisorCuratorGeneration++;
+	}
+
+	/**
+	 * The primary's recent work, as the curator's evidence for whether a note is
+	 * already addressed. Bounded by `advisor.curatorContextChars` and taken from
+	 * the tail, because the latest turns are what could have resolved the note.
+	 */
+	#recentPrimaryEvidence(): string {
+		const limit = cfgAdvisorCuratorContextChars.get(this.#host.settings);
+		const budget = typeof limit === "number" && limit > 0 ? limit : 12_000;
+		const chunks: string[] = [];
+		let used = 0;
+		const messages = this.#host.agent.state.messages;
+		for (let index = messages.length - 1; index >= 0 && used < budget; index--) {
+			const message = messages[index];
+			if (message === undefined || isAdvisorCard(message)) continue;
+			const text = advisorEvidenceText(message);
+			if (text.length === 0) continue;
+			// Keep each message's tail: a long final message states what was done
+			// at its end, which is the part that can show a note resolved.
+			const slice = text.length > budget - used ? text.slice(text.length - (budget - used)) : text;
+			chunks.push(slice);
+			used += slice.length;
+		}
+		const evidence = chunks.reverse().join("\n");
+		return this.#host.obfuscator()?.obfuscate(evidence) ?? evidence;
+	}
+
 	/** Route an already-accepted advice note to the primary. Never re-runs
 	 *  admission — the note cleared the emission guard inside AdviseTool when it
 	 *  was emitted, so a deferred flush replays the backlog without
@@ -1834,100 +1955,14 @@ export class SessionAdvisors {
 			terminalAnswerNoQueuedWork,
 			interruptImmuneTurnActive: interrupting && this.#isAdvisorInterruptImmuneTurnActive(),
 		});
-		const notes: AdvisorNote[] = [{ note, severity, advisor: source }];
 		if (channel === "aside") {
 			this.#queueLiveAside({ note, severity, advisor: source, turn: turn ?? this.#advisorPrimaryTurnsCompleted });
 			return;
 		}
+		const notes: AdvisorNote[] = [{ note, severity, advisor: source }];
 		this.#deliverAdvisorBatch(notes, formatAdvisorBatchContent(notes), channel === "steer");
 	}
 
-	/**
-	 * Hold a live aside for a short coalescing window, curate the group, then
-	 * enqueue the survivors.
-	 *
-	 * Mid-stream is where several advisors reviewing the same deltas produce the
-	 * same observation within milliseconds of each other, so curating only the
-	 * terminal batch would leave the noisiest case untouched. The window is the
-	 * curator's own timeout, which is far below a model step, and it never
-	 * applies to a steer or a preserved card — only to notes that were already
-	 * going to wait for the primary's next step.
-	 */
-	#queueLiveAside(note: AdvisorNote): void {
-		if (cfgAdvisorCurator.get(this.#host.settings) === "off") {
-			this.#host.yieldQueue.enqueue("advisor", note);
-			return;
-		}
-		this.#liveAsidePending.push(note);
-		if (this.#liveAsideTimer !== undefined) return;
-		this.#liveAsideTimer = setTimeout(() => {
-			this.#liveAsideTimer = undefined;
-			void this.#flushLiveAsides();
-		}, LIVE_ASIDE_COALESCE_MS);
-		this.#liveAsideTimer.unref?.();
-	}
-
-	/** Curate the held asides and enqueue what survives. Fail-open: anything the
-	 *  curator cannot decide is enqueued unchanged. */
-	async #flushLiveAsides(): Promise<void> {
-		const pending = this.#liveAsidePending;
-		this.#liveAsidePending = [];
-		if (pending.length === 0) return;
-		const enqueue = (notes: readonly AdvisorNote[]): void => {
-			for (const note of notes) this.#host.yieldQueue.enqueue("advisor", note);
-		};
-		if (pending.length === 1) {
-			enqueue(pending);
-			return;
-		}
-		// Only a session reset or dispose bumps the generation. A batch that merely starts while
-		// another is still being judged must not discard it, or a slow judge would drop whole groups.
-		const generation = this.#advisorCuratorGeneration;
-		const timeoutMs = cfgAdvisorCuratorTimeoutMs.get(this.#host.settings);
-		try {
-			const result = await curateAdvisorCandidates({
-				settings: this.#host.settings,
-				registry: this.#host.modelRegistry,
-				candidates: pending.map((note, index) => ({
-					id: String(index),
-					note: note.note,
-					severity: note.severity,
-					advisor: note.advisor,
-					coveredTurn: note.turn ?? this.#advisorPrimaryTurnsCompleted,
-				})),
-				context: {
-					revision: generation,
-					currentTurn: this.#advisorPrimaryTurnsCompleted,
-					recentPrimaryMessages: this.#recentPrimaryEvidence(),
-				},
-				signal: AbortSignal.timeout(
-					typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : CURATOR_DEFAULT_TIMEOUT_MS,
-				),
-			});
-			// A session reset or switch happened while the judge ran: those notes
-			// describe work that is no longer on screen, so they are dropped
-			// rather than delivered into a transcript they do not belong to.
-			if (generation !== this.#advisorCuratorGeneration) return;
-			enqueue(applyAdvisorCuration(pending, pending, result.decisions));
-		} catch (error) {
-			logger.debug("live advisor curation failed", {
-				error: error instanceof Error ? error.message : String(error),
-			});
-			if (generation === this.#advisorCuratorGeneration) enqueue(pending);
-		}
-	}
-
-	/** Deliver anything held in the coalescing window right now, uncurated. Used
-	 *  by lifecycle transitions so a held note is never lost to a reset. */
-	flushLiveAsidesImmediately(): void {
-		if (this.#liveAsideTimer !== undefined) {
-			clearTimeout(this.#liveAsideTimer);
-			this.#liveAsideTimer = undefined;
-		}
-		const pending = this.#liveAsidePending;
-		this.#liveAsidePending = [];
-		for (const note of pending) this.#host.yieldQueue.enqueue("advisor", note);
-	}
 	/**
 	 * Merged delivery of everything routed during a terminal-boundary window.
 	 * One message per boundary, carrying every note with per-advisor and
@@ -2012,7 +2047,8 @@ export class SessionAdvisors {
 			const head = showGuidance ? `${ADVISOR_BOUNDARY_GUIDANCE}\n` : "";
 			this.#deliverAdvisorBatch(batch, `${head}${rendered}${curation ?? ""}`, steer);
 		};
-		const curatable = notes.filter(note => note.severity !== "blocker");
+		// Decisions are keyed by position in `notes`, so candidates keep their index there; blockers are never sent.
+		const curatable = notes.flatMap((note, index) => (note.severity === "blocker" ? [] : [{ note, index }]));
 		if (curatable.length < 2 || cfgAdvisorCurator.get(this.#host.settings) === "off") {
 			deliver(notes);
 			return;
@@ -2027,28 +2063,27 @@ export class SessionAdvisors {
 		const curation = curateAdvisorCandidates({
 			settings: this.#host.settings,
 			registry,
-			candidates: curatable.map((note, index) => ({
+			candidates: curatable.map(({ note, index }) => ({
 				id: String(index),
 				note: note.note,
 				severity: note.severity,
 				advisor: note.advisor,
 				coveredTurn: note.turn ?? this.#advisorPrimaryTurnsCompleted,
 			})),
-			context: {
-				revision: generation,
-				currentTurn: this.#advisorPrimaryTurnsCompleted,
-				recentPrimaryMessages: this.#recentPrimaryEvidence(),
-			},
-			signal: AbortSignal.timeout(
-				typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : CURATOR_DEFAULT_TIMEOUT_MS,
-			),
+			context: { recentPrimaryMessages: this.#recentPrimaryEvidence() },
+			signal: AbortSignal.any([
+				this.#curatorAbort.signal,
+				AbortSignal.timeout(
+					typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : CURATOR_DEFAULT_TIMEOUT_MS,
+				),
+			]),
 		}).then(
 			result => {
 				// Only a session reset or dispose bumps the generation, so this drops a judgment that
 				// describes a conversation no longer on screen. Overlapping boundaries each own their own
 				// `notes`, so they never compete for delivery and nothing is duplicated.
 				if (generation !== this.#advisorCuratorGeneration) return;
-				const curated = applyAdvisorCuration(notes, curatable, result.decisions);
+				const curated = applyAdvisorCuration(notes, result.decisions);
 				const merged = result.decisions.filter(decision => decision.action === "merge").length;
 				const dropped = result.decisions.filter(decision => decision.action === "drop").length;
 				logger.debug("advisor curation applied", { before: notes.length, after: curated.length, merged, dropped });
@@ -2064,32 +2099,6 @@ export class SessionAdvisors {
 			},
 		);
 		this.trackCardEvent(curation);
-	}
-
-	/**
-	 * The primary's recent work, as the curator's evidence for whether a note is
-	 * already addressed. Bounded by `advisor.curatorContextChars` and taken from
-	 * the tail, because the latest turns are what could have resolved the note.
-	 */
-	#recentPrimaryEvidence(): string {
-		const limit = cfgAdvisorCuratorContextChars.get(this.#host.settings);
-		const budget = typeof limit === "number" && limit > 0 ? limit : 12_000;
-		const chunks: string[] = [];
-		let used = 0;
-		const messages = this.#host.agent.state.messages;
-		for (let index = messages.length - 1; index >= 0 && used < budget; index--) {
-			const message = messages[index];
-			if (message === undefined || isAdvisorCard(message)) continue;
-			const text = advisorEvidenceText(message);
-			if (text.length === 0) continue;
-			// Keep each message's tail: a long final message states what was done
-			// at its end, which is the part that can show a note resolved.
-			const slice = text.length > budget - used ? text.slice(text.length - (budget - used)) : text;
-			chunks.push(slice);
-			used += slice.length;
-		}
-		const evidence = chunks.reverse().join("\n");
-		return this.#host.obfuscator()?.obfuscate(evidence) ?? evidence;
 	}
 
 	/** Whether the advisor that produced `sourceName` reviews only at agent end.
@@ -2958,6 +2967,8 @@ export class SessionAdvisors {
 			if (this.#advisors.length > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) this.#stopAdvisorRuntime();
 			return this.#buildAdvisorRuntime(true);
 		}
+		// Held notes and any judgment in flight belong to the run being turned off: drop them and abort the judge request.
+		this.#discardLiveAsides();
 		this.#deliveryAbort.abort();
 		this.#deliveryAbort = new AbortController();
 		if (this.#advisors.length > 0) this.#stopAdvisorRuntime();

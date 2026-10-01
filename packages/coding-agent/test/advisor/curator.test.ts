@@ -21,18 +21,18 @@ function candidate(
 	id: string,
 	note: string,
 	advisor: string,
-	severity: "nit" | "concern" = "concern",
+	severity: "nit" | "concern" = "nit",
 ): AdvisorCuratorCandidate {
 	return { id, note, advisor, severity, coveredTurn: 1 };
 }
 
-const context = { revision: 3, currentTurn: 4, recentPrimaryMessages: "the primary rewrote the parser" };
+const context = { recentPrimaryMessages: "the primary rewrote the parser" };
 
 function stubJudge(answers: Record<string, unknown>): void {
 	spyOn(judgment, "resolveJudge").mockReturnValue({
 		label: "stub",
 		judge: async () => ({ answers }),
-	} as unknown as ReturnType<typeof judgment.resolveJudge>);
+	} as unknown as judgment.ChainJudge);
 }
 
 afterEach(() => {
@@ -133,20 +133,19 @@ describe("advisor curator", () => {
 		expect(decisions.find(decision => decision.candidateId === "d")?.mergeInto).toBe("c");
 	});
 
-	it("needs stronger evidence to drop a concern than a nit", async () => {
+	it("never withholds a concern even when the judge says it was already fixed", async () => {
 		const candidates = [
 			candidate("a", "fetch has no timeout", "One", "concern"),
 			candidate("b", "rename the helper", "Two", "nit"),
 		];
 		stubJudge({
-			"addressed:a": { type: "noul", noul: 0.6 },
-			"addressed:b": { type: "noul", noul: 0.6 },
+			"addressed:a": { type: "noul", noul: 0.95 },
+			"addressed:b": { type: "noul", noul: 0.95 },
 		});
 
 		const { decisions } = await curateAdvisorCandidates({ settings: settingsStub(), registry, candidates, context });
 
-		// A false "already fixed" on a concern loses real advice, so the same
-		// middling signal withholds the nit but still delivers the concern.
+		// A false "already fixed" on a concern loses real advice, so only the nit is withheld.
 		expect(decisions.map(decision => decision.action)).toEqual(["keep", "drop"]);
 	});
 
@@ -173,7 +172,7 @@ describe("advisor curator", () => {
 			judge: async () => {
 				throw new Error("no judgment backend");
 			},
-		} as unknown as ReturnType<typeof judgment.resolveJudge>);
+		} as unknown as judgment.ChainJudge);
 
 		const { decisions } = await curateAdvisorCandidates({ settings: settingsStub(), registry, candidates, context });
 
@@ -199,7 +198,7 @@ describe("advisor curator", () => {
 				options?.signal?.addEventListener("abort", () => reject(options.signal?.reason ?? new Error("aborted")));
 				return promise;
 			},
-		} as unknown as ReturnType<typeof judgment.resolveJudge>);
+		} as unknown as judgment.ChainJudge);
 
 		const { decisions } = await curateAdvisorCandidates({
 			settings: settingsStub(),
@@ -216,23 +215,22 @@ describe("advisor curator", () => {
 
 	it("marks only the surviving note as curated and renders it for the agent", () => {
 		const notes: AdvisorNote[] = [
-			{ note: "blocking failure", severity: "blocker", advisor: "Safety" },
-			{ note: "the retry loop never backs off", severity: "concern", advisor: "Reliability" },
+			{ note: "the retry loop never backs off", severity: "nit", advisor: "Reliability" },
 			{ note: "retries hammer the endpoint", severity: "nit", advisor: "Performance" },
+			{ note: "rename the helper", severity: "nit", advisor: "Style" },
 		];
-		const curatable = notes.slice(1);
 
-		const applied = applyAdvisorCuration(notes, curatable, [
+		const applied = applyAdvisorCuration(notes, [
 			{ candidateId: "0", action: "keep" },
 			{ candidateId: "1", action: "merge", mergeInto: "0" },
+			{ candidateId: "2", action: "keep" },
 		]);
 
-		// The blocker passes through untouched and unmarked; only the note that
-		// absorbed another advisor's report is flagged.
-		expect(applied.map(note => note.curated)).toEqual([undefined, true]);
+		// Only the note that absorbed another advisor's report is flagged.
+		expect(applied.map(note => note.curated)).toEqual([true, undefined]);
 		const rendered = formatAdvisorBatchContent(applied);
-		expect(rendered).toContain('advisor="Reliability" severity="concern" curated="true"');
-		expect(rendered).not.toContain('advisor="Safety" severity="blocker" curated');
+		expect(rendered).toContain('advisor="Reliability" severity="nit" curated="true"');
+		expect(rendered).not.toContain('advisor="Style" severity="nit" curated');
 		// Attribution stays inside the note; the curator never signs it.
 		expect(rendered).not.toContain("Curator");
 		expect(rendered).toContain("Also raised by Performance.");

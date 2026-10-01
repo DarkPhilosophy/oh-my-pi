@@ -12991,7 +12991,7 @@ export class AgentSession implements SettingsScope {
 		return this.#advisors.getAdvisorAgent();
 	}
 
-	/** Live advisor `Agent`s by advisor name; lets diagnostics and tests see which advisors a roster change restarted. */
+	/** Every live advisor agent keyed by advisor name; lets diagnostics and tests see which advisors a roster change restarted. */
 	getAdvisorAgentsByName(): ReadonlyMap<string, Agent> {
 		return this.#advisors.getAdvisorAgentsByName();
 	}

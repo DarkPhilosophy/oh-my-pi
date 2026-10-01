@@ -5,6 +5,8 @@ import type { Settings } from "../config/settings";
 import { resolveJudge } from "../judgment";
 import curatorAddressedPrompt from "../prompts/advisor/curator-addressed.md" with { type: "text" };
 import curatorActionPrompt from "../prompts/advisor/curator-action.md" with { type: "text" };
+import curatorDuplicateNonePrompt from "../prompts/advisor/curator-duplicate-none.md" with { type: "text" };
+import curatorDuplicateOfPrompt from "../prompts/advisor/curator-duplicate-of.md" with { type: "text" };
 import type { AdvisorSeverity } from "@oh-my-pi/pi-tui/chat/messages";
 import { cfgAdvisorCurator } from "./settings";
 export interface AdvisorCuratorCandidate {
@@ -15,8 +17,6 @@ export interface AdvisorCuratorCandidate {
 	coveredTurn: number;
 }
 export interface AdvisorCuratorContext {
-	revision: number;
-	currentTurn: number;
 	recentPrimaryMessages: string;
 }
 export type AdvisorCuratorAction = "keep" | "drop" | "merge";
@@ -24,10 +24,8 @@ export interface AdvisorCuratorDecision {
 	candidateId: string;
 	action: AdvisorCuratorAction;
 	mergeInto?: string;
-	severity?: "nit" | "concern";
 }
 export interface AdvisorCuratorResult {
-	revision: number;
 	decisions: readonly AdvisorCuratorDecision[];
 }
 export interface CurateAdvisorCandidatesOptions {
@@ -42,12 +40,11 @@ export interface CurateAdvisorCandidatesOptions {
 /** Longest note text quoted into a question; notes are short, this only bounds outliers. */
 const MAX_QUOTED_NOTE_CHARS = 600;
 /**
- * `addressed` probability at or above which a note is withheld. A concern
- * dropped on a false positive silently loses real advice, so it needs a
- * stronger signal than a nit. Measured on labeled batches, true cases scored
- * >= 0.84 and false ones <= 0.13, so both bars sit inside that margin.
+ * `addressed` probability at or above which a nit is withheld. Only nits reach the curator (concerns and blockers
+ * are delivered without waiting). Measured on labeled batches, true cases scored >= 0.84 and false ones <= 0.13,
+ * so this bar sits inside that margin.
  */
-const DROP_THRESHOLD: Record<AdvisorSeverity, number> = { blocker: Number.POSITIVE_INFINITY, concern: 0.7, nit: 0.5 };
+const NIT_DROP_THRESHOLD = 0.5;
 
 function quote(note: string): string {
 	const flat = note.replace(/\s+/g, " ").trim();
@@ -69,12 +66,13 @@ function duplicateQuestion(
 	candidates: readonly AdvisorCuratorCandidate[],
 ): ChoiceQuestion<string> {
 	const criteria: Record<string, string> = {
-		none: `No other candidate raises the issue of candidate ${candidate.id}.`,
+		none: prompt.render(curatorDuplicateNonePrompt, { id: candidate.id }).trim(),
 	};
 	for (const other of candidates) {
 		if (other.id === candidate.id) continue;
-		criteria[`c${other.id}`] =
-			`Candidate ${other.id} ("${quote(other.note)}") raises the same underlying issue as candidate ${candidate.id}.`;
+		criteria[`c${other.id}`] = prompt
+			.render(curatorDuplicateOfPrompt, { id: candidate.id, other: other.id, note: quote(other.note) })
+			.trim();
 	}
 	return {
 		type: "choice",
@@ -94,7 +92,6 @@ function representative(a: AdvisorCuratorCandidate, b: AdvisorCuratorCandidate):
 export async function curateAdvisorCandidates(options: CurateAdvisorCandidatesOptions): Promise<AdvisorCuratorResult> {
 	const { candidates, context } = options;
 	const keep = (): AdvisorCuratorResult => ({
-		revision: context.revision,
 		decisions: candidates.map(candidate => ({ candidateId: candidate.id, action: "keep" })),
 	});
 	if (candidates.length === 0 || cfgAdvisorCurator.get(options.settings) === "off") return keep();
@@ -124,10 +121,14 @@ export async function curateAdvisorCandidates(options: CurateAdvisorCandidatesOp
 		const result = await judge.judge({ state, questions }, { signal: options.signal });
 		const decisions: AdvisorCuratorDecision[] = candidates.map(candidate => {
 			const answer = result.answers[`addressed:${candidate.id}`];
-			const threshold = DROP_THRESHOLD[candidate.severity ?? "nit"];
 			return {
 				candidateId: candidate.id,
-				action: answer?.type === "noul" && answer.noul >= threshold ? "drop" : "keep",
+				action:
+					candidate.severity === undefined || candidate.severity === "nit"
+						? answer?.type === "noul" && answer.noul >= NIT_DROP_THRESHOLD
+							? "drop"
+							: "keep"
+						: "keep",
 			};
 		});
 		// Duplicate links form groups by union-find over the notes still kept:
@@ -168,7 +169,7 @@ export async function curateAdvisorCandidates(options: CurateAdvisorCandidatesOp
 				decision.mergeInto = target.id;
 			}
 		}
-		return { revision: context.revision, decisions };
+		return { decisions };
 	} catch (error) {
 		logger.debug("advisor curator failed open", { error: error instanceof Error ? error.message : String(error) });
 		return keep();
@@ -208,15 +209,15 @@ function isTextBlock(value: unknown): value is { type: "text"; text: string } {
 /**
  * Apply curator decisions to the batch the primary will actually see.
  *
- * Notes the curator never saw (blockers) keep their place untouched. A merged
- * note contributes only its advisor name to the surviving original, so the
- * primary reads one issue with its corroboration instead of the same point
- * restated by every advisor that noticed it.
+ * `decisions` refer to `notes` by position. A merged note contributes only its
+ * advisor name to the surviving original, so the primary reads one issue with
+ * its corroboration instead of the same point restated by every advisor that
+ * noticed it.
  */
 export function applyAdvisorCuration<
 	T extends { note: string; severity?: AdvisorSeverity; advisor?: string; curated?: boolean },
->(notes: readonly T[], curated: readonly T[], decisions: readonly AdvisorCuratorDecision[]): T[] {
-	const byId = new Map(curated.map((note, index) => [String(index), note]));
+>(notes: readonly T[], decisions: readonly AdvisorCuratorDecision[]): T[] {
+	const byId = new Map(notes.map((note, index) => [String(index), note]));
 	const decisionFor = new Map(decisions.map(decision => [decision.candidateId, decision]));
 	const mergedSources = new Map<T, string[]>();
 	for (const [id, note] of byId) {
