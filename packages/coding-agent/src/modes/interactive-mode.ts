@@ -7470,9 +7470,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * user actually typed it. A one-row notice appears only once the wait is long
 	 * enough for a human to notice it: most responses end in well under a second,
 	 * and a row that flashes by is noise rather than information.
+	 *
+	 * A Tern Surface Protocol surface has no append-only scrollback to
+	 * duplicate into, so there the panel mounts in the transcript at once.
 	 */
 	presentCommandOutput(content: Component | readonly Component[]): void {
-		if (!this.session.isStreaming) {
+		if (!this.session.isStreaming || this.ui.nativeRendering) {
 			this.present(content);
 			return;
 		}
@@ -7685,7 +7688,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	showPinnedError(message: string): void {
 		this.#dismissPlanReview();
 		this.errorBannerContainer.clear();
-		this.errorBannerContainer.addChild(new ErrorBannerComponent(message));
+		this.errorBannerContainer.addChild(new ErrorBannerComponent(message, () => this.clearPinnedError()));
 		this.ui.requestRender();
 	}
 

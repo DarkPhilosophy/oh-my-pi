@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.4.6] - 2026-10-01
+
 ### Added
 
 - Added an optional heading in the top border of `Box` (`BoxBorder.topLabel`), centered and truncated to fit.
@@ -61,14 +63,23 @@
 - Added `Component.describeScreen` for customized native screen surface layouts
 - Added `reveal` property to native nodes to support programmatic scrolling
 - Added `edit` event protocol for native text manipulation
+- Added a full-page transcript replay experience for Rewind in native terminals, with branching navigation through the conversation.
+- Added agent lineage navigation, including headers and links for moving between a subagent and its ancestors or returning to the main session.
+- Added a Jobs overlay for viewing background jobs.
+- Added OSC 877 protocol support for native TUI surfaces in Windows ConPTY environments.
+- Added customizable native screen layouts through Component.describeScreen and programmatic scrolling for native nodes.
+- Added native-terminal text editing support for selections in the composer and single-line inputs, including undoable host edits and safe handling of stale or token-spanning ranges.
+- Added optional dismissal handling for error banners, including a Dismiss button in native terminal strips.
 
 ### Changed
 
-- Notebook evaluation cells now render with dedicated input/output gutters and improved status tone signaling
-- Streaming file operations now keep their output card expanded automatically until execution settles
-- Refactored effort chip to use terminal-native effort glyphs where supported, falling back to block meters
-- Status line brand ('pi') is now excluded from the composer's homed segment set
-- The status-line cost segment renders subagent spend after the session's own spend as `(+1.27)`, and billing summaries print the `$` or subscription mark once, so a later amount billed the same way (such as advisor spend) shows bare ([#13944](https://github.com/can1357/oh-my-pi/pull/13944) by [@H4vC](https://github.com/H4vC))
+- Notebook evaluation cells now use dedicated input and output gutters with clearer status indicators.
+- Streaming file operations now remain expanded while running and collapse after execution completes.
+- Improved native-terminal effort indicators, using terminal glyphs where available and block meters as a fallback.
+- Updated native composer navigation when viewing a subagent to show the agent lineage and provide a direct return to the main session.
+- Native `/resume` picker sheets drop the "Resume session" heading and the This folder / All projects tabs: the search placeholder names the scope ("Search sessions in app…", "Search all sessions…") and Tab (the footer's All projects / This folder action) switches it. Picker `title` is now optional on the wire.
+- Updated the native composer's context display to span the window and provide clearer context usage and session-cost information, with shortcuts to the context and usage views.
+- Updated status-line billing summaries to show subagent spend separately from session spend and avoid repeating the same currency or subscription marker for subsequent amounts.
 
 ### Fixed
 
@@ -77,23 +88,20 @@
 - Fixed text fields in native dialogs (the ask's custom answer and notes, plan review, annotations, the agent hub) being drawn as the prompt composer with a doubled `❯ >` prompt: a plain `Editor` now describes itself as `omp.field` (only the composer claims `omp.editor`) and no longer sends its terminal prompt gutter (`> `) as the native `prompt`.
 - `/advisor config` shows the project and global advisors together, with the selected advisor's fields on the right, and the status line gets a compact glyph per advisor drawn from the active symbol preset ([#13931](https://github.com/can1357/oh-my-pi/pull/13931) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
 - Added an optional `curated` flag to advisor notes so a note that absorbed equivalent reports from other advisors can be marked as such ([#13932](https://github.com/can1357/oh-my-pi/pull/13932) by [@DarkPhilosophy](https://github.com/DarkPhilosophy))
+- Fixed search results so gaps between non-adjacent context runs are displayed correctly.
+- Fixed custom-answer and note prompts in native terminals so questions are shown completely with the correct titles and are no longer truncated or incorrectly wrapped.
+- Fixed text fields in native dialogs to render without a duplicate prompt indicator.
+- Fixed native TUI surfaces falling back to plain text rendering in Tern on Windows by accepting OSC 877 messages received through ConPTY.
+- Fixed streaming edit, patch, and write operation cards so they remain fully visible while running and collapse only after completion.
 
 ## [18.4.5] - 2026-09-30
 
 ### Added
 
 - Added Factory Droid base-credit badges; models without a dollar-price reference no longer appear free ([#8577](https://github.com/can1357/oh-my-pi/pull/8577) by [@will-bogusz](https://github.com/will-bogusz), continued in [#13276](https://github.com/can1357/oh-my-pi/pull/13276) by [@DusKing1](https://github.com/DusKing1)).
-- Added a viewing header to the native composer (Tern) while a subagent is focused: `Viewing`, the agent's ancestors as links, the agent, and an `esc main` button back to the main session (`omp.composer.focus`, actions `focus:<id>`); it replaces the `pi` fact that used to name the agent among the bar's facts.
-- Added editing over a native terminal's (Tern) own text selection in the composer and single-line inputs: the TSP `edit` event (`from`/`to`/`text`/`cursor`/`len`, UTF-16 offsets) reaches `Editor.applyHostEdit`/`Input.applyHostEdit` as one undo unit; edits made against stale text are ignored, and ranges cutting into image/paste placeholders take the whole token.
-
-### Changed
-
-- `RewindSelectorComponent` describes itself as a page (`describeScreen`: a screen surface with role `omp.rewind` whose `main` is the replayed transcript's own blocks, marked with the new `mark` common prop, and whose dock is its bar) instead of a `picker` sheet; native nodes can ask to be revealed when added (`NativeNode.reveal`)
 
 ### Fixed
 
-- Fixed omp falling back to text rendering in Tern on Windows: TSP replies and events that arrive through a ConPTY as OSC 877 (`ESC ] 877 ; tsp;…`) are now accepted, so native surfaces open there.
-- Fixed streaming edit, apply_patch and write cards in native terminals (Tern) clamping the growing diff under a climbing "N more lines" count; they now stay fully open while they stream and run, then fold once settled, like thinking.
 - Fixed home directories next to shell redirections, control operators or Markdown emphasis (`<`, `>`, `&`, `|`, `*`, `_`) leaking the full path in display-only text ([#11210](https://github.com/can1357/oh-my-pi/pull/11210) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Fixed the subagent task card showing full home paths in tool intents and arguments, while keeping search patterns literal ([#11210](https://github.com/can1357/oh-my-pi/pull/11210) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Fixed Enter doing nothing on a fully typed slash-command argument while its completion popup was open (e.g. `/mcp list`): it now submits instead of re-accepting the identical completion; subcommands that still need a required argument (e.g. `/mcp test`) keep inserting the subcommand so you can type it ([#13885](https://github.com/can1357/oh-my-pi/pull/13885) by [@H4vC](https://github.com/H4vC)).

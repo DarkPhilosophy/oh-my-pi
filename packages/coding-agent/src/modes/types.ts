@@ -316,7 +316,7 @@ export interface InteractiveModeContext {
 	 */
 	present(content: Component | readonly Component[]): void;
 	/**
-	 * Mount command output immediately: appended while idle, or inserted above
+	 * Mount command output immediately: appended while idle or on a Tern surface, or inserted above
 	 * the live streaming region mid-turn so the panel commits to native
 	 * scrollback exactly once instead of repainting with every streaming frame.
 	 */

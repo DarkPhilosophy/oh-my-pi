@@ -2,14 +2,16 @@
 
 ## [Unreleased]
 
+## [18.4.6] - 2026-10-01
+
 ### Added
 
-- Added catalog cache-warming lifetimes for cache-capable Claude models on Amazon Bedrock Converse and supported Claude Messages families on Bedrock Runtime and Mantle: 5 minutes by default, with a 1-hour Converse tier only where the wire supports it ([#13871](https://github.com/can1357/oh-my-pi/pull/13871) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
+- Added configurable catalog cache-warming lifetimes for cache-capable Claude models on Amazon Bedrock Converse, Bedrock Runtime, and Mantle, with 5-minute defaults and a 1-hour Converse option where supported.
 
 ### Fixed
 
-- Fixed Claude Opus 5.5 and Sonnet 5.5 on Amazon Bedrock (Converse) failing forced tool calls with 400 `tool_choice: type "tool" and "any" are not supported for this model`: Bedrock models now resolve `compat.supportsForcedToolChoice`, so the existing Opus/Sonnet 5.5 rule applies on Bedrock too ([#13948](https://github.com/can1357/oh-my-pi/pull/13948) by [@H4vC](https://github.com/H4vC)).
-- Fixed thinking "off" still producing reasoning on Command Code models served on `/responses` (DeepSeek, GLM, Kimi, Gemini, MiniMax, Grok, StepFun, Muse Spark, and GPT-5.6) ([#13949](https://github.com/can1357/oh-my-pi/pull/13949) by [@H4vC](https://github.com/H4vC)).
+- Fixed forced tool calls for Claude Opus 5.5 and Sonnet 5.5 on Amazon Bedrock Converse.
+- Fixed the thinking-off setting for Command Code models served through the Responses API so they no longer produce reasoning when disabled.
 
 ## [18.4.5] - 2026-09-30
 

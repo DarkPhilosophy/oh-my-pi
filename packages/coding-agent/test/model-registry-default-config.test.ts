@@ -405,6 +405,7 @@ interface ModelSnapshot {
 		supportsLongPromptCacheRetention: boolean;
 		promptCacheMinimumTokens: number;
 		promptCacheMaximumCheckpoints: number;
+		supportsForcedToolChoice?: boolean;
 		streamIdleTimeoutMs?: number;
 		streamRevision?: "possible";
 	};
