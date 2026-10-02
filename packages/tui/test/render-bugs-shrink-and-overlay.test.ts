@@ -33,6 +33,11 @@ function strip(rows: readonly string[]): string[] {
 }
 
 /** Runs of blank rows BETWEEN non-blank rows that are at least `minRun` long. The transcript separates blocks with one blank row, so only a run of 3+ is the black band between history and the live frame. */
+/** Transcript rows present anywhere in the tape (scrollback plus screen). */
+function transcriptRowCount(rows: readonly string[]): number {
+	return rows.filter(row => row.startsWith(PREFIX)).length;
+}
+
 function bracketedBlankRuns(rows: readonly string[], minRun = 3): number {
 	let runs = 0;
 	for (let index = 0; index < rows.length; index++) {
@@ -173,63 +178,68 @@ describe("bug 1: slot shrink (ask answered) must return chat and editor to the b
 		}
 	});
 
-	// History length decides whether growing the slot forces transcript rows to retire
-	// (12 rows fit above the dialog; 30 and 60 do not). Two independent contracts follow,
-	// kept in separate tests so each can be satisfied (and fail) on its own:
-	//  1. grow:   transient chrome covers rows; it must not push transcript rows into scrollback.
-	//  2. return: when the chrome goes away the editor and chat tail are back where they were.
-	// Contract 2 reverses the "contraction keeps the frame origin" policy of #11007; contract 1 does not.
-	for (const history of [12, 30, 60]) {
-		for (const askRows of [6, 14]) {
-			it(`grow, history=${history}: a ${askRows}-row ask dialog pushes no transcript row into scrollback`, async () => {
-				const h = makeHarness(history);
-				try {
-					await h.scheduler.settle(h.terminal);
-					const scrollbackBefore = strip(h.terminal.getScrollBuffer()).length;
+	// History length decides whether growing the slot displaces transcript rows
+	// (12 rows fit above a small dialog; 30 and 60 do not). Two contracts follow,
+	// kept in separate tests so each can fail on its own:
+	//  1. grow:   rows a dialog displaces are committed to scrollback right away, so
+	//             none is hidden under the dialog and replayed after it closes.
+	//  2. return: when the dialog goes away nothing is lost, duplicated, or turned into
+	//             a blank band, and the editor settles in a single move.
+	// Distinct branches of the same contract, one row each:
+	//  fits:      the dialog fits above the existing rows, so it displaces nothing;
+	//  displaces: the dialog pushes transcript rows out of the viewport.
+	const branches = [
+		{ name: "fits above the history", history: 12, askRows: 6 },
+		{ name: "displaces rows", history: 30, askRows: 14 },
+	] as const;
+	for (const { name, history, askRows } of branches) {
+		it(`grow, ${name}: a ${askRows}-row ask dialog hides no transcript row under it`, async () => {
+			const h = makeHarness(history);
+			try {
+				await h.scheduler.settle(h.terminal);
+				const before = transcriptRowCount(tape(h.terminal));
 
-					h.slot.clear();
-					h.slot.addChild(new FixedRows(Array.from({ length: askRows }, (_, i) => `ask dialog row ${i}`)));
-					await framePositions(h);
+				h.slot.clear();
+				h.slot.addChild(new FixedRows(Array.from({ length: askRows }, (_, i) => `ask dialog row ${i}`)));
+				await framePositions(h);
 
-					expect({ phase: "grown", scrollbackRows: strip(h.terminal.getScrollBuffer()).length }).toEqual({
-						phase: "grown",
-						scrollbackRows: scrollbackBefore,
-					});
-				} finally {
-					h.composer.stop();
-				}
-			});
+				// A row hidden under the dialog is in neither the screen nor scrollback until the
+				// dialog closes, so the transcript rows the tape holds must not shrink while it is open.
+				const grown = tape(h.terminal);
+				expect(transcriptRowCount(grown)).toBeGreaterThanOrEqual(before);
+				expect(duplicatedTranscriptRows(grown)).toEqual([]);
+			} finally {
+				h.composer.stop();
+			}
+		});
 
-			it(`return, history=${history}: answering a ${askRows}-row ask dialog brings the editor and chat tail back`, async () => {
-				const h = makeHarness(history);
-				try {
-					await h.scheduler.settle(h.terminal);
-					const start = position(h);
+		it(`return, ${name}: answering a ${askRows}-row ask dialog loses, duplicates and blanks nothing`, async () => {
+			const h = makeHarness(history);
+			try {
+				await h.scheduler.settle(h.terminal);
+				const before = transcriptRowCount(tape(h.terminal));
 
-					h.slot.clear();
-					h.slot.addChild(new FixedRows(Array.from({ length: askRows }, (_, i) => `ask dialog row ${i}`)));
-					await framePositions(h);
-					h.slot.clear();
-					h.slot.addChild(h.editor);
-					const after = await framePositions(h);
-					const settled = after.at(-1)!;
+				h.slot.clear();
+				h.slot.addChild(new FixedRows(Array.from({ length: askRows }, (_, i) => `ask dialog row ${i}`)));
+				await framePositions(h);
+				const open = transcriptRowCount(tape(h.terminal));
+				h.slot.clear();
+				h.slot.addChild(h.editor);
+				const after = await framePositions(h);
 
-					// Anchoring contract: the editor is back on the bottom row.
-					expect(settled.editorRow).toBe(start.editorRow);
-					// Tail contract: the same transcript row sits right above it.
-					expect(settled.lastTranscriptRow).toBe(start.lastTranscriptRow);
-					// And the return is a single move, not a hop through intermediate positions.
-					expect(new Set(after.slice(1).map(p => p.editorRow)).size).toBe(1);
-					expect(missingTranscriptRows(tape(h.terminal), history)).toEqual([]);
-					expect(duplicatedTranscriptRows(tape(h.terminal))).toEqual([]);
-					// A band already committed to scrollback is permanent: distinguishes "frame parked high"
-					// (recoverable) from "blank rows scrolled into history" (needs a different fix).
-					expect(bracketedBlankRuns(tape(h.terminal))).toBe(0);
-				} finally {
-					h.composer.stop();
-				}
-			});
-		}
+				// The return is a single move, not a hop through intermediate positions.
+				expect(new Set(after.slice(1).map(p => p.editorRow)).size).toBe(1);
+				// Nothing that was readable while the dialog was open disappears when it closes.
+				const closed = tape(h.terminal);
+				expect(transcriptRowCount(closed)).toBeGreaterThanOrEqual(Math.max(before, open));
+				expect(missingTranscriptRows(closed, history)).toEqual([]);
+				expect(duplicatedTranscriptRows(closed)).toEqual([]);
+				// A band already committed to scrollback is permanent.
+				expect(bracketedBlankRuns(closed)).toBe(0);
+			} finally {
+				h.composer.stop();
+			}
+		});
 	}
 
 	// Safety net for the grow contract. While transient chrome is up, the transcript rows it covers

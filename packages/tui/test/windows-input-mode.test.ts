@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { matchesAppFollowUp } from "@oh-my-pi/pi-tui/keybinding-matchers";
@@ -98,12 +98,23 @@ class InputRecorder implements Component {
 	}
 }
 
+const SSH_ENV_KEYS = ["SSH_CONNECTION", "SSH_TTY", "SSH_CLIENT"] as const;
+const originalSshEnv = SSH_ENV_KEYS.map(key => [key, Bun.env[key]] as const);
+
 describe("ProcessTerminal win32-input-mode fallback", () => {
 	let harness: ProcessTerminalRenderHarness | undefined;
+
+	beforeEach(() => {
+		for (const key of SSH_ENV_KEYS) delete Bun.env[key];
+	});
 
 	afterEach(() => {
 		harness?.dispose();
 		harness = undefined;
+		for (const [key, value] of originalSshEnv) {
+			if (value === undefined) delete Bun.env[key];
+			else Bun.env[key] = value;
+		}
 	});
 
 	it("enables win32-input-mode on a native console without kitty and decodes key records", async () => {
@@ -140,6 +151,19 @@ describe("ProcessTerminal win32-input-mode fallback", () => {
 		expect(harness.terminal.kittyProtocolActive).toBe(true);
 		expect(out.indexOf("\x1b[?9001l")).toBeGreaterThan(out.indexOf("\x1b[?9001h"));
 		expect(out).toContain("\x1b[>1u");
+	});
+
+	it("does not request win32-input-mode when the console is served by sshd (#14034)", async () => {
+		// Over Windows OpenSSH the console host's input comes from the remote
+		// terminal's VT stream; win32-input-mode re-encodes `ESC [ A` as three
+		// separate key records (Escape, `[`, `A`), so arrow keys act as Escape.
+		Bun.env.SSH_CONNECTION = "192.0.2.10 54321 192.0.2.20 22";
+		harness = createProcessTerminalRenderHarness(100, 30, { conpty: true, nativeWindowsConsole: true });
+		await harness.settle();
+		harness.writes.length = 0;
+
+		await harness.feed("\x1b[?1;2c");
+		expect(harness.writes.join("")).not.toContain("\x1b[?9001h");
 	});
 });
 

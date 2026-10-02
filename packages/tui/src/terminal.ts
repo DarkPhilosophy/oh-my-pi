@@ -19,6 +19,7 @@ import { encodeTspHelloQuery, parseTspMessage, TSP_PREFIX, type TspHello } from 
 import { StdinBuffer } from "./stdin-buffer";
 import {
 	isInsideTerminalMultiplexer,
+	isSshSession,
 	NotifyProtocol,
 	setCellDimensions,
 	setOsc99Supported,
@@ -52,11 +53,6 @@ function completeTspInput(buffered: string): string | undefined {
 	const terminator = buffered.endsWith("\x1b\\") ? 2 : buffered.endsWith("\x07") ? 1 : 0;
 	if (terminator === 0) return undefined;
 	return `${TSP_PREFIX}${buffered.slice(TSP_OSC_PREFIX.length, -terminator)}\x1b\\`;
-}
-
-function shouldEnableModifyOtherKeysFallback(env: NodeJS.ProcessEnv = Bun.env): boolean {
-	if (!env.SSH_CONNECTION && !env.SSH_TTY && !env.SSH_CLIENT) return true;
-	return TERMINAL.id !== "base" && TERMINAL.id !== "trueColor";
 }
 
 function shouldPollWindowsTerminalAppearance(env: NodeJS.ProcessEnv = Bun.env): boolean {
@@ -1887,15 +1883,19 @@ export class ProcessTerminal implements Terminal {
 
 	#enableModifyOtherKeysFallback(): void {
 		if (this.#kittyProtocolActive || this.#modifyOtherKeysActive || this.#win32InputDecoder) return;
-		if (this.#conpty && this.#nativeWindowsConsole) {
+		const ssh = isSshSession();
+		if (this.#conpty && this.#nativeWindowsConsole && !ssh) {
 			// The Windows console host ignores modifyOtherKeys and folds Shift+Enter
 			// into a bare CR. win32-input-mode is answered by the console host
-			// serving this process, so it works under every ConPTY terminal.
+			// serving this process, so it works under every local ConPTY terminal.
+			// Under sshd the console host is fed the remote terminal's VT stream,
+			// and the mode splits arrow keys into Escape plus literal text (#14034).
 			this.#safeWrite("\x1b[?9001h");
 			this.#win32InputDecoder = new Win32InputModeDecoder();
 			return;
 		}
-		if (!shouldEnableModifyOtherKeysFallback()) return;
+		// A remote terminal with no identifying env may not understand the request.
+		if (ssh && (TERMINAL.id === "base" || TERMINAL.id === "trueColor")) return;
 		this.#safeWrite("\x1b[>4;2m");
 		this.#modifyOtherKeysActive = true;
 	}
