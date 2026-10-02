@@ -3951,6 +3951,8 @@ export class TUI extends Container {
 		}
 		const restoredTop = expansionRows === 0 ? this.#providerUnexpandedTop : undefined;
 		if (expansionRows === 0) this.#providerUnexpandedTop = undefined;
+		// Retained producers shrink their live suffix in place. Adding released rows
+		// to its origin would leave a blank band above a collapsed Ask result.
 		const startTopBase =
 			destructiveReset || retainedHistory !== undefined
 				? 0
@@ -3972,7 +3974,10 @@ export class TUI extends Container {
 							// instead, where subsequent growth reclaims them.
 							Math.min(previousTop, Math.max(0, height - rows))
 						: geometryStable && (expansionRows > 0 || releasedExpansionRows > 0)
-							? Math.min(previousTop + releasedExpansionRows, Math.max(0, height - rows))
+							? Math.min(
+									previousTop + (retainedLiveViewport ? 0 : releasedExpansionRows),
+									Math.max(0, height - rows),
+								)
 							: Math.min(previousTop, Math.max(0, height - 1));
 		// A prior contraction erased its old cells in place and re-anchored the
 		// shorter frame at the bottom, so the rows it vacated are blank and still

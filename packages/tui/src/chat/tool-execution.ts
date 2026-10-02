@@ -1006,6 +1006,9 @@ export class ToolExecutionComponent extends Container {
 	 * from the trimmed render (the leading blank rows are not part of what the transcript slices).
 	 */
 	#committedStageRows(width: number): number {
+		// A measurement taken while arguments stream is not a committed prefix.
+		// Protecting it as history forces an oversized preview into an empty compact card.
+		if (!this.#executionStarted || this.#sealed) return 0;
 		const measure = this.#stageMeasure;
 		if (measure === undefined || measure.width !== width || !this.commitsSettledStageEarly) return 0;
 		return measure.rows - measure.leadingBlanks;

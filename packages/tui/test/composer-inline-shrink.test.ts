@@ -261,7 +261,10 @@ describe("composer inline shrink (#11007)", () => {
 		await h.scheduler.settle(h.terminal);
 		expect(submitted).toBe(true);
 		expect(visibleRows()).toEqual(Array.from({ length: TRANSCRIPT_ROWS }, (_, i) => i));
-		expect(h.terminal.getViewport().findIndex(row => row.includes("EDITOR"))).toBe(53);
+		const viewport = normalizedScrollBuffer(h.terminal).slice(-54);
+		const editorRow = viewport.findIndex(row => row.includes("EDITOR"));
+		expect(viewport[editorRow - 1]).toBe(`${TRANSCRIPT_PREFIX}${TRANSCRIPT_ROWS - 1}`);
+		expect(hasBracketedBlankRun(normalizedScrollBuffer(h.terminal))).toBe(false);
 		dialog.dispose();
 		h.composer.stop();
 	});
@@ -309,7 +312,10 @@ describe("composer inline shrink (#11007)", () => {
 		expect(
 			after.filter(row => row.startsWith(TRANSCRIPT_PREFIX)).map(row => Number(row.slice(TRANSCRIPT_PREFIX.length))),
 		).toEqual(Array.from({ length: TRANSCRIPT_ROWS }, (_, i) => i));
-		expect(h.terminal.getViewport().findIndex(row => row.includes("EDITOR"))).toBe(ROWS - 1);
+		const viewport = h.terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+		const editorRow = viewport.findIndex(row => row.includes("EDITOR"));
+		expect(viewport[editorRow - 1]).toBe(`${TRANSCRIPT_PREFIX}${TRANSCRIPT_ROWS - 1}`);
+		expect(hasBracketedBlankRun(after)).toBe(false);
 		h.composer.stop();
 	});
 

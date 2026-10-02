@@ -1,20 +1,26 @@
 import { afterEach, beforeEach, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import { setStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { TempDir, parseStreamingJson } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { ModelRegistry } from "../src/config/model-registry";
 import { resetSettingsForTest, Settings } from "../src/config/settings";
 import { ExtensionRuntime, loadExtensionFromFactory } from "../src/extensibility/extensions/loader";
 import { ExtensionRunner } from "../src/extensibility/extensions/runner";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { AskDialogComponent } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
+import { Text } from "@oh-my-pi/pi-tui";
 import { setIrcMessageVisibleTtlForTest } from "../src/modes/controllers/event-controller";
 import { InteractiveMode } from "../src/modes/interactive-mode";
 import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
 import { SessionManager } from "../src/session/session-manager";
 import { EventBus } from "../src/utils/event-bus";
+import * as renderWorkflow from "../src/session/render-workflow";
 import { cfgTasksTodoClearDelay } from "@oh-my-pi/pi-coding-agent/tools/settings";
 
 let directory: TempDir;
@@ -63,7 +69,7 @@ beforeEach(async () => {
 	session = new AgentSession({
 		agent,
 		sessionManager,
-		builtInToolNames: ["read", "edit", "todo", "ask", "bash", "hub"],
+		builtInToolNames: ["read", "edit", "todo", "ask", "bash", "hub", "eval"],
 		settings: Settings.isolated({
 			"startup.quiet": true,
 			"compaction.enabled": false,
@@ -74,8 +80,8 @@ beforeEach(async () => {
 	});
 	terminal = new VirtualTerminal(110, 20, 10_000);
 	const composer = new Composer({ terminal, preferences: { quiet: true } });
-	mode = new InteractiveMode(session, "test", undefined, () => { }, undefined, undefined, undefined, composer);
-	vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => { });
+	mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+	vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 	await mode.init({ suppressWelcomeIntro: true });
 });
 
@@ -107,6 +113,278 @@ it("restores bottom-anchored chat after the TODO scenario dismisses its complete
 	expect(credentialCalls).toBe(0);
 }, 30_000);
 
+it.each([
+	{ name: "answer", key: "\r", steps: ["STEP_1", "STEP_2"] },
+	{ name: "cancel", key: "\x1b", steps: ["STEP_1"] },
+])(
+	"closing the ask by $name does not leave dialog-sized blank rows in history",
+	async ({ key, steps }) => {
+		const question = Promise.withResolvers<void>();
+		const unsubscribe = session.subscribe(event => {
+			if (event.type === "tool_execution_start" && event.toolName === "ask") question.resolve();
+		});
+		try {
+			const running = session.runRenderTest({ repeat: 1, delayMs: 1, scenario: "ask" }, mode.getToolUIContext());
+			await question.promise;
+			await terminal.waitForRender(() => mode.ui.getFocused() instanceof AskDialogComponent);
+			expect(mode.ui.getFocused()).toBeInstanceOf(AskDialogComponent);
+			expect(terminal.getViewport().some(row => row.includes("select") && row.includes("cancel"))).toBeTrue();
+			terminal.sendInput(key);
+			await running;
+			await session.waitForIdle();
+			for (let frame = 0; frame < 3; frame++) {
+				mode.ui.renderNow();
+				await terminal.waitForRender();
+				const tape = terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
+				let blankBands = 0;
+				for (let index = 1; index < tape.length; index++) {
+					if (tape[index] !== "") continue;
+					let end = index;
+					while (end < tape.length && tape[end] === "") end++;
+					if (end - index >= 3 && end < tape.length) blankBands++;
+					index = end;
+				}
+				expect(blankBands).toBe(0);
+				expect(Array.from(tape.join("\n").matchAll(/STEP_\d+/g), match => match[0])).toEqual([...steps]);
+			}
+		} finally {
+			unsubscribe();
+		}
+	},
+	60_000,
+);
+
+it("keeps a very long ask clipped and uncommitted until every answer is submitted", async () => {
+	terminal.resize(110, 40);
+	const questions = [1, 2].map(index => ({
+		id: `long-${index}`,
+		question: Array.from({ length: 120 }, (_, row) => `LONG_Q${index}_${String(row).padStart(3, "0")}`).join("\n\n"),
+		options: [{ label: "Continue" }, { label: "Revise" }],
+		recommended: 0,
+	}));
+	const createWorkflow = renderWorkflow.createRenderWorkflow;
+	vi.spyOn(renderWorkflow, "createRenderWorkflow").mockImplementation((...args) => {
+		const workflow = createWorkflow(...args);
+		const next = workflow.next.bind(workflow);
+		workflow.next = async context => {
+			const step = await next(context);
+			for (const call of step?.calls ?? []) {
+				if (call.name === "ask") call.arguments = { questions };
+			}
+			return step;
+		};
+		return workflow;
+	});
+	let assistantEnded = false;
+	let askResults = 0;
+	const questionReady = Promise.withResolvers<void>();
+	const unsubscribe = session.subscribe(event => {
+		if (event.type === "message_end" && event.message.role === "assistant") assistantEnded = true;
+		if (event.type === "tool_execution_start" && event.toolName === "ask") questionReady.resolve();
+		if (event.type === "tool_execution_end" && event.toolName === "ask") askResults++;
+	});
+	const checkPending = async () => {
+		mode.ui.renderNow();
+		await terminal.waitForRender();
+		expect(mode.ui.getFocused()).toBeInstanceOf(AskDialogComponent);
+		expect(assistantEnded).toBeTrue();
+		expect(askResults).toBe(0);
+		const viewport = terminal.getViewport().map(row => Bun.stripANSI(row));
+		expect(viewport.some(row => row.includes("earlier lines"))).toBeTrue();
+		const history = terminal
+			.getScrollBuffer()
+			.slice(0, -terminal.rows)
+			.map(row => Bun.stripANSI(row))
+			.join("\n");
+		expect(Array.from(history.matchAll(/LONG_Q[12]_\d{3}/g))).toEqual([]);
+	};
+	try {
+		const running = session.runRenderTest({ repeat: 1, delayMs: 1, scenario: "ask" }, mode.getToolUIContext());
+		await questionReady.promise;
+		await terminal.waitForRender(() => mode.ui.getFocused() instanceof AskDialogComponent);
+		await checkPending();
+		terminal.sendInput("\r");
+		await checkPending();
+		expect(
+			terminal
+				.getViewport()
+				.map(row => Bun.stripANSI(row))
+				.join("\n"),
+		).toContain("LONG_Q2_000");
+		terminal.sendInput("\r");
+		await checkPending();
+		terminal.sendInput("\r");
+		await running;
+		await session.waitForIdle();
+		mode.ui.renderNow();
+		await terminal.waitForRender();
+		expect(askResults).toBe(1);
+		const tape = terminal
+			.getScrollBuffer()
+			.map(row => Bun.stripANSI(row))
+			.join("\n");
+		expect(Array.from(tape.matchAll(/LONG_Q[12]_\d{3}/g), match => match[0])).toEqual(
+			[1, 2].flatMap(index =>
+				Array.from({ length: 120 }, (_, row) => `LONG_Q${index}_${String(row).padStart(3, "0")}`),
+			),
+		);
+		expect(terminal.getViewport().some(row => row.includes("earlier lines"))).toBeFalse();
+	} finally {
+		unsubscribe();
+	}
+}, 60_000);
+
+it.each([
+	{ toolName: "bash", preview: "collapsed", expanded: false, overlay: false },
+	{ toolName: "eval", preview: "collapsed", expanded: false, overlay: false },
+	{ toolName: "bash", preview: "expanded", expanded: true, overlay: false },
+	{ toolName: "eval", preview: "expanded", expanded: true, overlay: false },
+	{ toolName: "bash", preview: "collapsed", expanded: false, overlay: true },
+	{ toolName: "eval", preview: "collapsed", expanded: false, overlay: true },
+	{ toolName: "bash", preview: "expanded", expanded: true, overlay: true },
+	{ toolName: "eval", preview: "expanded", expanded: true, overlay: true },
+] as const)(
+	"large $toolName argument streams retain the overflow marker in $preview preview (overlay=$overlay)",
+	async ({ toolName, expanded, overlay }) => {
+		terminal.resize(110, 40);
+		if (expanded) terminal.sendInput("\x0f");
+		const source = Array.from(
+			{ length: 1200 },
+			(_, row) => `${toolName === "eval" ? "//" : "#"} SOURCE_${row + 1}`,
+		).join("\n");
+		const createWorkflow = renderWorkflow.createRenderWorkflow;
+		vi.spyOn(renderWorkflow, "createRenderWorkflow").mockImplementation((...args) => {
+			const workflow = createWorkflow(...args);
+			const next = workflow.next.bind(workflow);
+			workflow.next = async context => {
+				const step = await next(context);
+				for (const call of step?.calls ?? []) {
+					if (call.name !== "eval") continue;
+					call.name = toolName;
+					call.arguments =
+						toolName === "eval"
+							? { language: "js", title: "large preview", code: source + "\ndisplay(1)", timeout: 30 }
+							: { command: source + "\nprintf done", timeout: 30 };
+				}
+				return step;
+			};
+			return workflow;
+		});
+		// Model the provider raw-JSON carrier, not a complete argument object
+		// advertised from the first scripted delta.
+		const partialInputs = new Map<string, string>();
+		const emit = session.agent.emitExternalEvent.bind(session.agent);
+		vi.spyOn(session.agent, "emitExternalEvent").mockImplementation(event => {
+			if (event.type === "message_update") {
+				const update = event.assistantMessageEvent;
+				if (update.type === "toolcall_start" || update.type === "toolcall_delta") {
+					const block = update.partial.content[update.contentIndex];
+					if (block?.type === "toolCall") {
+						if (update.type === "toolcall_start") {
+							const preview = { ...block, arguments: {} };
+							setStreamingPartialJson(preview, "");
+							update.partial.content[update.contentIndex] = preview;
+						} else {
+							const json = (partialInputs.get(block.id) ?? "") + update.delta;
+							partialInputs.set(block.id, json);
+							block.arguments = parseStreamingJson(json);
+							setStreamingPartialJson(block, json);
+						}
+					}
+				}
+			}
+			emit(event);
+		});
+		let sourceProgress = 0;
+		let pending = true;
+		let hideOverlay: (() => void) | undefined;
+		let overlayClosed = !overlay;
+		let observedCard: ToolExecutionComponent | undefined;
+		let allocation: number | undefined;
+		let renderedRows = 0;
+		let decodedRows = 0;
+		// Measure the snapshot used to build the current card, not newer args
+		// still waiting in the stream-rebuild debounce.
+		const renderer = toolRenderers[toolName];
+		const renderCall = renderer.renderCall.bind(renderer);
+		vi.spyOn(renderer, "renderCall").mockImplementation((args, options, theme) => {
+			if (args && typeof args === "object") {
+				const code = (args as Record<string, unknown>)[toolName === "eval" ? "code" : "command"];
+				decodedRows = typeof code === "string" ? code.split("\n").length : 0;
+			}
+			return renderCall(args, options, theme);
+		});
+		const paints: Array<{
+			progress: number;
+			decodedRows: number;
+			allocation: number | undefined;
+			renderedRows: number;
+			codeRows: number;
+			marker: boolean;
+		}> = [];
+		const unsubscribe = session.subscribe(event => {
+			if (event.type === "tool_execution_start" && event.toolName === toolName) pending = false;
+			if (event.type !== "message_update" || event.assistantMessageEvent.type !== "toolcall_delta") return;
+			for (const match of event.assistantMessageEvent.delta.matchAll(/SOURCE_(\d+)/g)) {
+				sourceProgress = Math.max(sourceProgress, Number(match[1]));
+			}
+			if (!observedCard) {
+				const component = [...mode.pendingTools.values()].find(value => value instanceof ToolExecutionComponent);
+				if (component instanceof ToolExecutionComponent) {
+					observedCard = component;
+					const allocate = component.setTranscriptAllocation.bind(component);
+					const render = component.render.bind(component);
+					vi.spyOn(component, "setTranscriptAllocation").mockImplementation((rows, frame) => {
+						allocation = rows;
+						allocate(rows, frame);
+					});
+					vi.spyOn(component, "render").mockImplementation(width => {
+						const rows = render(width);
+						renderedRows = rows.length;
+						return rows;
+					});
+				}
+			}
+			if (sourceProgress > 64 && !hideOverlay && !overlayClosed) {
+				const handle = mode.ui.showOverlay(new Text("Fullscreen rendering fixture", 0, 0), {
+					fullscreen: true,
+					width: "100%",
+					maxHeight: "100%",
+				});
+				hideOverlay = () => handle.hide();
+			}
+			if (sourceProgress > 500 && hideOverlay) {
+				hideOverlay();
+				hideOverlay = undefined;
+				overlayClosed = true;
+			}
+		});
+		const stopPaints = mode.ui.addPaintListener(paint => {
+			if (!pending || decodedRows <= terminal.rows || !overlayClosed || paint.alt || mode.ui.hasOverlay()) return;
+			const viewport = terminal.getViewport().map(row => Bun.stripANSI(row));
+			paints.push({
+				progress: sourceProgress,
+				decodedRows,
+				allocation,
+				renderedRows,
+				codeRows: viewport.filter(row => row.includes("SOURCE_")).length,
+				marker: viewport.some(row => row.includes("earlier lines")),
+			});
+		});
+		try {
+			await session.runRenderTest({ repeat: 1, delayMs: 20, scenario: "eval", segment: 2 }, mode.getToolUIContext());
+			await session.waitForIdle();
+			expect(paints.length).toBeGreaterThan(0);
+			expect(paints.filter(paint => paint.codeRows === 0 || !paint.marker)).toEqual([]);
+		} finally {
+			unsubscribe();
+			stopPaints();
+			hideOverlay?.();
+		}
+	},
+	60_000,
+);
+
 it.each(["ask", "job", "markdown", "eval"] as const)(
 	"runs the isolated %s scenario without unrelated tools",
 	async scenario => {
@@ -126,8 +404,8 @@ it.each(["ask", "job", "markdown", "eval"] as const)(
 			const running = session.runRenderTest({ repeat: 1, delayMs: 1, scenario }, mode.getToolUIContext());
 			if (scenario === "ask") {
 				await question.promise;
-				await terminal.waitForRender(() => terminal.getViewport().some(row => row.includes("Enter select")));
-				expect(terminal.getViewport().some(row => row.includes("Enter select"))).toBeTrue();
+				await terminal.waitForRender(() => mode.ui.getFocused() instanceof AskDialogComponent);
+				expect(mode.ui.getFocused()).toBeInstanceOf(AskDialogComponent);
 				terminal.sendInput("\r");
 			}
 			await running;
@@ -348,8 +626,8 @@ it.each([20, 40, 100])(
 				expect(terminal.getViewport().some(row => row.includes("Finish or clear the current prompt"))).toBeTrue();
 				terminal.sendInput("\r");
 			}
-			await terminal.waitForRender(() => terminal.getViewport().some(row => row.includes("Enter select")));
-			expect(terminal.getViewport().some(row => row.includes("Enter select"))).toBeTrue();
+			await terminal.waitForRender(() => mode.ui.getFocused() instanceof AskDialogComponent);
+			expect(mode.ui.getFocused()).toBeInstanceOf(AskDialogComponent);
 			const count = assistantStarts;
 			await Bun.sleep(100);
 			expect(assistantStarts).toBe(count);

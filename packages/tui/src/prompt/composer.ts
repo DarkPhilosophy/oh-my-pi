@@ -286,9 +286,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#transientChromeFloor: number | undefined;
 	#viewportTranscript?: TranscriptContainer;
 	#viewportTranscriptStart = 0;
-	#anchorAfterInlineRetirement = false;
-	/** Leading rows of the last frame already owned by native history, reported by the terminal after paint. */
-	#nativeOwnedRows = 0;
 	#lastInterruptAt = 0;
 	/** Last described surface; its arrays are reused while their children are unchanged. */
 	#nativeSurface: NativeSurface = { main: [], dock: [] };
@@ -392,9 +389,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		const after: string[] = [];
 		const afterSpans: ViewportClickSpan[] = [];
 		let displacingRows = 0;
-		let decisionPanelOpen = false;
 		for (const root of afterRoots) {
-			const chrome: Component = root;
 			const start = after.length;
 			this.#renderBelowRoot(root, width, after, afterSpans);
 			afterChunks.push({ component: root, rows: after.slice(start) });
@@ -403,14 +398,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			// are committed to native history right away instead of being held back as
 			// a reversible insertion, so nothing is hidden and then replayed later.
 			if (this.#transientChrome.has(root)) displacingRows += after.length - start;
-			// A decision panel (ask) additionally pins the input to the bottom once
-			// it closes over the rows it retired.
-			if (
-				chrome.retireDisplacedTranscript ||
-				(root instanceof Container && root.children.some(child => child.retireDisplacedTranscript))
-			) {
-				decisionPanelOpen = true;
-			}
 		}
 		// Offer history under capacity pressure only: blocks stay live (and keep
 		// reflowing to the current width) while the screen has room. A batch
@@ -433,16 +420,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			history = this.#offerHistory(transcript, width, rows, chromeRows);
 		} finally {
 			popLoopPhase();
-		}
-		// A decision panel opened over a transcript that already fills the screen
-		// pushes chat rows toward native history, and those rows cannot be pulled
-		// back when it closes. The input then stays pinned to the bottom instead
-		// of floating up under the vacated rows. Armed while the panel is open;
-		// released once live rows refill the screen (below).
-		if (decisionPanelOpen) {
-			const coversTranscript =
-				after.length + preRoots.length >= rows || (history?.rows.length ?? 0) > 0 || this.#nativeOwnedRows > 0;
-			if (coversTranscript) this.#anchorAfterInlineRetirement = true;
 		}
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
@@ -480,18 +457,9 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			if (!ids || ids.length === 0) continue;
 			activeSpans.push({ start: span.start, end: span.end, candidates: () => ids });
 		}
-		// Rows already owned by native history are not painted again, so the
-		// screen only shows what follows them. Once that fills the screen again,
-		// the retired gap is gone.
-		const nativeOwned = Math.min(this.#nativeOwnedRows, composed.length);
-		const emittedRows = composed.length - nativeOwned;
-		if (!decisionPanelOpen && emittedRows >= rows) this.#anchorAfterInlineRetirement = false;
-		// Rows retired during a decision panel cannot be pulled back from native
-		// history when it closes. Keep the input pinned to the bottom with blank
-		// rows between the natively owned prefix and the live rows, without
-		// replaying those rows (which would duplicate them) or clearing history.
-		const topPadding = this.#anchorAfterInlineRetirement ? Math.max(0, rows - emittedRows) : 0;
-		const viewportLength = topPadding + composed.length;
+		// A closed dialog removes rows from the live frame. Never replace its
+		// footprint with blank content: those rows would later scroll into history.
+		const viewportLength = composed.length;
 		const spans: ViewportClickSpan[] = [];
 		const shift = (span: ViewportClickSpan, base: number): void => {
 			const start = span.start + base;
@@ -505,7 +473,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			}
 		};
 		for (const span of activeSpans) shift(span, before.length);
-		for (const span of afterSpans) shift(span, topPadding + before.length + active.length);
+		for (const span of afterSpans) shift(span, before.length + active.length);
 		this.#lastClickSpans = spans;
 		if (history !== undefined && this.#offeredHistory?.source === "header") {
 			const visibleHeaderRows = Math.max(0, rows - composed.length);
@@ -515,7 +483,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			{ component: this.#header, rows: headerRows },
 			...preChunks,
 			{ component: transcript, rows: active },
-			...(topPadding > 0 ? [{ component: this.#bootstrapInputGap, rows: Array<string>(topPadding).fill("") }] : []),
 			...afterChunks,
 		]);
 		const borrowableRows = headerVisible
@@ -683,7 +650,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	}
 
 	onViewportBorrowed(rows: number): void {
-		this.#nativeOwnedRows = rows;
 		this.#viewportTranscript?.setBorrowedViewportRows(Math.max(0, rows - this.#viewportTranscriptStart));
 		this.#viewportClickOffset = Math.max(rows, this.#lastClickFrameRows - this.#lastNormalRows, 0);
 	}
@@ -1049,7 +1015,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		if (this.#stopped) return;
 		this.#transientChrome = new Set(options.transient);
 		this.#transientChromeFloor = undefined;
-		this.#anchorAfterInlineRetirement = false;
 		this.#nativeDock = options.nativeDock;
 		this.ui.removeChild(this.#statusHost);
 		if (this.#runtimeMounted) {
