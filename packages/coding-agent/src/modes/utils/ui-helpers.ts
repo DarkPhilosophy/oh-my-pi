@@ -89,7 +89,7 @@ import {
 	cfgDisplayShowTurnTime,
 	cfgTerminalShowImages,
 } from "../settings";
-import { cfgReadToolResultPreview } from "../../tools/settings";
+import { cfgReadGroupAcrossStreams, cfgReadToolResultPreview } from "../../tools/settings";
 
 interface RenderInitialMessagesOptions {
 	preserveExistingChat?: boolean;
@@ -423,6 +423,17 @@ export class UiHelpers {
 		let pendingReadUsageCallIds: string[] | undefined;
 		let pendingUsageTurnElapsed: number | undefined;
 		let turnStartedAt: number | undefined;
+		const getReadGroup = (): ReadToolGroupComponent => {
+			if (!readGroup) {
+				const group = new ReadToolGroupComponent({
+					showContentPreview: cfgReadToolResultPreview.get(this.ctx.settings),
+				});
+				group.setExpanded(this.ctx.toolOutputExpanded);
+				this.ctx.chatContainer.addChild(group);
+				return group;
+			}
+			return readGroup;
+		};
 		const flushPendingUsage = () => {
 			if (!pendingUsage) return;
 			const usageAttached =
@@ -437,7 +448,8 @@ export class UiHelpers {
 				) ??
 					false);
 			if (!usageAttached) {
-				readGroup?.seal();
+				if (this.ctx.viewSession.isStreaming) readGroup?.finalize();
+				else readGroup?.seal();
 				readGroup = null;
 				this.ctx.chatContainer.addChild(
 					createUsageRowBlock(
@@ -521,6 +533,11 @@ export class UiHelpers {
 			if (message.role !== "toolResult") flushPendingUsage();
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
+				if (!cfgReadGroupAcrossStreams.get(this.ctx.settings)) {
+					if (this.ctx.viewSession.isStreaming) readGroup?.finalize();
+					else readGroup?.seal();
+					readGroup = null;
+				}
 				const timeline = splitAssistantMessageToolTimeline(message);
 				this.ctx.addMessageToChat(message, { reuseSettledComponent: options.reuseSettledComponents });
 				const lastChild = this.ctx.chatContainer.children[this.ctx.chatContainer.children.length - 1];
@@ -539,9 +556,9 @@ export class UiHelpers {
 				}
 				const hasVisibleAssistantContent = assistantHasVisibleContent(message);
 				if (hasVisibleAssistantContent) {
-					// Rebuild reconstructs immutable history; seal (not finalize) because
-					// a pending entry otherwise keeps the group active indefinitely.
-					readGroup?.seal();
+					// Close the run without cancelling results still arriving during a live rebuild.
+					if (this.ctx.viewSession.isStreaming) readGroup?.finalize();
+					else readGroup?.seal();
 					readGroup = null;
 				}
 				const errorPresentation = resolveAssistantErrorPresentation(message, this.ctx.viewSession.retryAttempt);
@@ -573,13 +590,7 @@ export class UiHelpers {
 
 					if (renderToolName === "read" && readArgsCollapseIntoGroup(content.arguments)) {
 						if (hasErrorStop && errorMessage) {
-							if (!readGroup) {
-								readGroup = new ReadToolGroupComponent({
-									showContentPreview: cfgReadToolResultPreview.get(this.ctx.settings),
-								});
-								readGroup.setExpanded(this.ctx.toolOutputExpanded);
-								this.ctx.chatContainer.addChild(readGroup);
-							}
+							readGroup = getReadGroup();
 							readGroup.updateArgs(content.arguments, content.id);
 							readGroup.updateResult(
 								{ content: [{ type: "text", text: errorMessage }], isError: true },
@@ -587,14 +598,8 @@ export class UiHelpers {
 								content.id,
 							);
 							options.captureToolCallComponent?.(content.id, readGroup);
-						} else if (afterToolSegment) {
-							if (!readGroup) {
-								readGroup = new ReadToolGroupComponent({
-									showContentPreview: cfgReadToolResultPreview.get(this.ctx.settings),
-								});
-								readGroup.setExpanded(this.ctx.toolOutputExpanded);
-								this.ctx.chatContainer.addChild(readGroup);
-							}
+						} else {
+							readGroup = getReadGroup();
 							readGroup.updateArgs(content.arguments, content.id);
 							this.ctx.pendingTools.set(content.id, readGroup);
 							if (assistantComponent) {
@@ -604,18 +609,12 @@ export class UiHelpers {
 								}
 							}
 							options.captureToolCallComponent?.(content.id, readGroup);
-						} else {
-							const normalizedArgs = normalizeToolArgs(content.arguments);
-							readToolCallArgs.set(content.id, normalizedArgs);
-							if (assistantComponent) {
-								readToolCallAssistantComponents.set(content.id, assistantComponent);
-							}
 						}
 						appendAssistantSegment(afterToolSegment);
 						continue;
 					}
 
-					readGroup?.seal();
+					readGroup?.finalize();
 					readGroup = null;
 					const partialJson = getStreamingPartialJson(content);
 					// Mid-stream rebuild (theme change, settings, focus replay): decode
@@ -681,6 +680,7 @@ export class UiHelpers {
 				pendingUsageTurnElapsed = cfgDisplayShowTurnTime.get(this.ctx.settings)
 					? turnElapsedMs(turnStartedAt, message)
 					: undefined;
+				if (!cfgReadGroupAcrossStreams.get(this.ctx.settings)) readGroup?.finalize();
 			} else if (message.role === "toolResult") {
 				if (options.preservedLiveToolCallIds?.has(message.toolCallId)) continue;
 				const pendingReadComponent = this.ctx.pendingTools.get(message.toolCallId);
@@ -710,13 +710,7 @@ export class UiHelpers {
 					}
 					let component = this.ctx.pendingTools.get(message.toolCallId);
 					if (!component) {
-						if (!readGroup) {
-							readGroup = new ReadToolGroupComponent({
-								showContentPreview: cfgReadToolResultPreview.get(this.ctx.settings),
-							});
-							readGroup.setExpanded(this.ctx.toolOutputExpanded);
-							this.ctx.chatContainer.addChild(readGroup);
-						}
+						readGroup = getReadGroup();
 						const args = readToolCallArgs.get(message.toolCallId);
 						if (args) {
 							readGroup.updateArgs(args, message.toolCallId);
@@ -772,7 +766,8 @@ export class UiHelpers {
 					}
 				}
 			} else {
-				readGroup?.seal();
+				if (this.ctx.viewSession.isStreaming) readGroup?.finalize();
+				else readGroup?.seal();
 				readGroup = null;
 				// A user prompt closes the displacement window, same as the live path.
 				if (message.role === "user") resolveWaitingPoll();
@@ -802,7 +797,8 @@ export class UiHelpers {
 
 		// The trailing read run has no following break to close it; seal so the
 		// rebuilt group can retire as history even with a never-persisted result.
-		readGroup?.seal();
+		if (this.ctx.viewSession.isStreaming) readGroup?.finalize();
+		else readGroup?.seal();
 		// A trailing waiting poll is final history on rebuild; seal it and stop
 		// its spinner timer.
 		resolveWaitingPoll();

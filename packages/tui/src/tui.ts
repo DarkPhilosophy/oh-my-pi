@@ -238,6 +238,8 @@ export interface TerminalFramePlan {
 	readonly chromeInsertionRows?: number;
 	/** Live rows of running cards whose pending preview will settle shorter; reversible like chrome. */
 	readonly contractingPreviewRows?: number;
+	/** No live transcript rows remain; the history suffix touches anchored chrome directly. */
+	readonly historyTouchesChrome?: boolean;
 	/** Producer retains off-screen live rows; only explicit history batches may commit them. */
 	readonly retainedLiveViewport?: boolean;
 }
@@ -3530,10 +3532,9 @@ export class TUI extends Container {
 		const borrowed = this.#providerTransientRows;
 		if (
 			!flushing &&
+			!contractedIntoHistory &&
 			plan.retainedLiveViewport &&
 			plan.history === undefined &&
-			(plan.viewportExpansionRows ?? 0) === 0 &&
-			this.#providerViewportExpansionRows === 0 &&
 			logicalViewport.length >= this.#providerLogicalCommitted &&
 			!this.#clearScrollbackOnNextRender &&
 			provider.beginHistoryReplay !== undefined
@@ -3689,6 +3690,7 @@ export class TUI extends Container {
 				Math.max(0, logicalViewport.length - (plan.viewportExpansionRows ?? 0)),
 				flushing,
 				plan.retainedLiveViewport ?? false,
+				plan.historyTouchesChrome ?? false,
 			);
 		} finally {
 			popLoopPhase();
@@ -3827,6 +3829,7 @@ export class TUI extends Container {
 		unexpandedViewportRows = viewportRows.length,
 		flushing = false,
 		retainedLiveViewport = false,
+		historyTouchesChrome = false,
 	): void {
 		if (
 			(this.#previousWidth !== width || this.#previousHeight !== height) &&
@@ -3865,7 +3868,8 @@ export class TUI extends Container {
 		let retainedHistory: string[] | undefined;
 		if (
 			(flushing && this.#providerVisibleHistory.length > 0) ||
-			(history !== undefined && (viewportExpansionRows > 0 || this.#providerViewportExpansionRows > 0)) ||
+			(history !== undefined &&
+				(retainedLiveViewport || viewportExpansionRows > 0 || this.#providerViewportExpansionRows > 0)) ||
 			(viewportExpansionRows === 0 &&
 				this.#providerViewportExpansionRows > 0 &&
 				this.#providerVisibleHistory.length > 0)
@@ -3881,6 +3885,15 @@ export class TUI extends Container {
 					);
 			retainedHistory = retainedCount > 0 ? combined.slice(-retainedCount) : [];
 			historyRows = combined.slice(0, combined.length - retainedCount);
+			// The ledger separator belongs between transcript blocks, not between
+			// the last retained card and the editor-only live suffix.
+			if (retainedLiveViewport && historyTouchesChrome) {
+				while (retainedHistory.length > 0 && !/\S/.test(retainedHistory.at(-1)!)) {
+					retainedHistory.pop();
+					const previousRow = historyRows.pop();
+					if (previousRow !== undefined) retainedHistory.unshift(previousRow);
+				}
+			}
 			replayViewportRows = retainedLiveViewport
 				? Math.min(retainedHistory.length, Math.max(0, height - viewport.length))
 				: Math.max(0, height - viewport.length);

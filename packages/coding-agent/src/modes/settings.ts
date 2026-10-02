@@ -1,6 +1,6 @@
 import { combine, effect, register, type Setting } from "../config/registry";
 import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-tui/app-keybindings";
-import { cfgReadToolResultPreview } from "../tools/settings";
+import { cfgReadGroupAcrossStreams, cfgReadToolResultPreview } from "../tools/settings";
 import { MAGIC_KEYWORDS, type MagicKeywordId } from "./magic-keywords";
 import { TREE_FILTER_MODES } from "@oh-my-pi/pi-tui/overlays/tree-selector";
 import {
@@ -692,6 +692,7 @@ effect(
 	combine({
 		hideToolActivity: cfgDisplayHideToolActivity,
 		readToolResultPreview: cfgReadToolResultPreview,
+		readGroupAcrossStreams: cfgReadGroupAcrossStreams,
 		showImages: cfgTerminalShowImages,
 		cacheMissMarker: cfgDisplayCacheMissMarker,
 		showTokenUsage: cfgDisplayShowTokenUsage,

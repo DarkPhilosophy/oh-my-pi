@@ -286,6 +286,19 @@ export const cfgReadToolResultPreview = register({
 	},
 });
 
+export const cfgReadGroupAcrossStreams = register({
+	id: "read.groupAcrossStreams",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "files",
+		group: "Reading",
+		label: "Group Reads Across Streams",
+		description:
+			"Keep consecutive read calls in one group across assistant responses. Disable to group only within each response.",
+	},
+});
+
 // ────────────────────────────────────────────────────────────────────────
 // Tools
 // ────────────────────────────────────────────────────────────────────────

@@ -233,11 +233,12 @@ export class ChatTranscriptBuilder {
 
 	#ensureReadGroup(): ReadToolGroupComponent {
 		if (!this.#readGroup) {
-			this.#readGroup = new ReadToolGroupComponent({
+			const group = new ReadToolGroupComponent({
 				showContentPreview: displayPreferences.readToolResultPreview,
 			});
-			this.#trackExpandable(this.#readGroup);
-			this.container.addChild(this.#readGroup);
+			this.#trackExpandable(group);
+			this.container.addChild(group);
+			this.#readGroup = group;
 		}
 		return this.#readGroup;
 	}
@@ -259,7 +260,7 @@ export class ChatTranscriptBuilder {
 			) ??
 				false);
 		if (!usageAttached) {
-			this.#readGroup?.seal();
+			this.#readGroup?.finalize();
 			this.#readGroup = null;
 			this.container.addChild(
 				createUsageRowBlock(
@@ -282,7 +283,7 @@ export class ChatTranscriptBuilder {
 	#appendChatMessage(message: AgentMessage): void {
 		if (message.role !== "toolResult") this.#flushPendingUsage();
 		if (message.role !== "assistant" && message.role !== "toolResult") {
-			this.#readGroup?.seal();
+			this.#readGroup?.finalize();
 			this.#readGroup = null;
 		}
 		switch (message.role) {
@@ -402,6 +403,10 @@ export class ChatTranscriptBuilder {
 	}
 
 	#appendAssistantMessage(message: Extract<AgentMessage, { role: "assistant" }>): void {
+		if (!displayPreferences.readGroupAcrossStreams) {
+			this.#readGroup?.finalize();
+			this.#readGroup = null;
+		}
 		const hideThinkingBlock = this.#deps.hideThinkingBlock?.() ?? false;
 		const proseOnlyThinking = this.#deps.proseOnlyThinking ? this.#deps.proseOnlyThinking() : true;
 		const timeline = splitAssistantMessageToolTimeline(message);
@@ -433,7 +438,7 @@ export class ChatTranscriptBuilder {
 		const hasVisibleAssistantContent = assistantHasVisibleContent(message);
 		if (hasVisibleAssistantContent) {
 			// New visible turn content closes the current read run (mirrors rebuild).
-			this.#readGroup?.seal();
+			this.#readGroup?.finalize();
 			this.#readGroup = null;
 		}
 
@@ -472,19 +477,16 @@ export class ChatTranscriptBuilder {
 						false,
 						content.id,
 					);
-				} else if (afterToolSegment) {
+				} else {
 					const group = this.#ensureReadGroup();
 					group.updateArgs(content.arguments, content.id);
 					this.#pendingTools.set(content.id, group);
-				} else {
-					const normalizedArgs = normalizeToolArgs(content.arguments);
-					this.#readArgs.set(content.id, normalizedArgs);
 				}
 				appendAssistantSegment(afterToolSegment);
 				continue;
 			}
 
-			this.#readGroup?.seal();
+			this.#readGroup?.finalize();
 			this.#readGroup = null;
 			const component = new ToolExecutionComponent(
 				content.name,
@@ -526,6 +528,7 @@ export class ChatTranscriptBuilder {
 		this.#pendingReadUsageCallIds = this.#pendingUsage ? groupedReadUsageCallIds(message) : undefined;
 		this.#pendingUsageElapsedMs =
 			this.#pendingUsage && displayPreferences.showTurnTime ? this.#turnElapsedMs(message) : undefined;
+		if (!displayPreferences.readGroupAcrossStreams) this.#readGroup?.finalize();
 	}
 
 	#appendToolResult(message: Extract<AgentMessage, { role: "toolResult" }>): void {

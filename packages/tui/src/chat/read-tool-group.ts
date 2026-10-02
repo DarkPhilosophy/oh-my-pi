@@ -2,6 +2,7 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
 import { type Component } from "../tui";
+import type { TranscriptStableRow } from "../chrome/transcript-container";
 import { Container } from "../tui";
 import { Text } from "../components/text";
 import { Spacer } from "../components/spacer";
@@ -28,7 +29,7 @@ import { formatUsageRow } from "../overlays/usage-row";
 import { formatCount } from "@oh-my-pi/pi-utils";
 import type { TspCardStatus, TspSpan, TspText } from "@oh-my-pi/pi-wire";
 import type { NativeToolHead } from "../tools/renderer";
-import { card, code, keyed, node, span, text, withHidden } from "../native/describe";
+import { card, code, col, keyed, node, span, text, withHidden } from "../native/describe";
 import {
 	type DescribeContext,
 	type NativeChild,
@@ -371,11 +372,10 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#expanded = false;
 	#toolActivityVisible = true;
 	#showContentPreview: boolean;
-	// A read group accretes entries across multiple assistant completions for as
-	// long as the run of reads is uninterrupted. It remains active while its
-	// header can change from `Read <path>` to `Read (N)` plus a tree. The
-	// controller calls `finalize()` once the run breaks; TranscriptContainer
-	// retires the finalized block as an immutable history batch.
+	// A read group accretes consecutive calls within an assistant response.
+	// Hosts may keep it open across responses when cross-stream grouping is
+	// enabled. The controller finalizes it at the configured boundary, while
+	// already completed previews can publish before pending siblings finish.
 	#finalized = false;
 	// Forced terminal even with a still-pending entry: the turn ended (abort or
 	// completion) so no late result is coming. Set via `seal()`.
@@ -389,6 +389,9 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	readonly #native = new Memo();
 	/** Content previews toggled in the terminal, by tool call id. */
 	#previewCollapsed = new Map<string, boolean>();
+	#stablePreviews: Array<TranscriptStableRow & { callId: string; children: readonly Component[] }> = [];
+	#allocation = Number.POSITIVE_INFINITY;
+	#publishedPreviews = new Set<string>();
 
 	constructor(options: ReadToolGroupOptions = {}) {
 		super();
@@ -398,9 +401,49 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		this.#updateDisplay();
 	}
 
+	readonly transcriptBlockMode = "appendOnly";
+	readonly commitsSettledStageEarly = true;
+	readonly commitToHistoryOnFinalize = true;
+
+	getTranscriptStableRows(): readonly TranscriptStableRow[] {
+		for (const preview of this.#stablePreviews) this.#publishedPreviews.add(preview.key);
+		return this.#stablePreviews;
+	}
+
+	renderTranscriptStableRows(count: number, width: number): readonly string[] {
+		if (!this.#toolActivityVisible) return [];
+		const rows: string[] = [];
+		for (const preview of this.#stablePreviews.slice(0, count)) {
+			for (const child of preview.children) rows.push(...child.render(width));
+		}
+		return rows;
+	}
+
+	resetTranscriptStableRows(): void {
+		this.#stablePreviews = [];
+		this.#publishedPreviews.clear();
+		this.#updateDisplay();
+	}
+
+	setTranscriptAllocation(rows: number): void {
+		this.#allocation = Math.max(1, rows);
+	}
+
 	override render(width: number): readonly string[] {
 		if (!this.#toolActivityVisible) return [];
-		return super.render(width);
+		const rendered = super.render(width);
+		if (this.#entries.size <= 1) return rendered;
+		const summary = this.#text.render(width);
+		const capacity = Math.max(1, Math.floor(this.#allocation));
+		if (summary.length <= capacity) return rendered;
+		const head = summary[0]!;
+		const tail = capacity > 2 ? summary.slice(-(capacity - 2)) : [];
+		return [
+			...rendered.slice(0, rendered.length - summary.length),
+			head,
+			...(capacity > 1 ? [theme.fg("dim", `… ${summary.length - tail.length - 1} more lines`)] : []),
+			...tail,
+		];
 	}
 	isTranscriptBlockFinalized(): boolean {
 		if (this.#sealed) return true;
@@ -453,6 +496,10 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		this.#updateDisplay();
 	}
 
+	hasToolCall(toolCallId: string): boolean {
+		return this.#entries.has(toolCallId);
+	}
+
 	/**
 	 * Re-key an entry whose streamed tool-call id changed mid-stream (a provider
 	 * rewriting the id across deltas; see EventController's
@@ -470,10 +517,15 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		]);
 		this.#entries.clear();
 		for (const [key, value] of reordered) this.#entries.set(key, value);
+		const preview = this.#stablePreviews.find(preview => preview.callId === oldId);
+		if (preview) preview.callId = newId;
 		this.#updateDisplay();
 	}
 	/** Remove one call without discarding successful siblings in the shared group. */
 	removeEntry(toolCallId: string): boolean {
+		const preview = this.#stablePreviews.find(preview => preview.callId === toolCallId);
+		if (preview && this.#publishedPreviews.has(preview.key)) return false;
+		this.#stablePreviews = this.#stablePreviews.filter(preview => preview.callId !== toolCallId);
 		if (!this.#entries.delete(toolCallId)) return this.#entries.size === 0;
 		this.#updateDisplay();
 		return this.#entries.size === 0;
@@ -561,6 +613,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	}
 
 	setExpanded(expanded: boolean): void {
+		this.#stablePreviews = this.#stablePreviews.filter(preview => this.#publishedPreviews.has(preview.key));
 		if (this.#expanded !== expanded) this.#blockVersion++;
 		this.#expanded = expanded;
 		this.#previewCollapsed.clear();
@@ -649,12 +702,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 				this.#displayTargetsForEntries(entries.filter(entry => !previews.includes(entry))),
 			);
 			const usageByRow = this.#usageRowsBySummaryRow(summaryRows);
-			for (const [index, row] of summaryRows.entries()) {
-				body.push(this.#nativeFileRow(row));
-				for (const [i, usage] of (usageByRow.get(index) ?? []).entries()) {
-					body.push(this.#nativeUsage(usage, `u${index}.${i}`));
-				}
-			}
 			for (const entry of previews) {
 				const split = splitPathAndSel(entry.path);
 				const name = shortenPath(split.path);
@@ -663,6 +710,12 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 				body.push(node("section", { head: sectionHead }, this.#nativePreview(entry), `p${entry.toolCallId}`));
 				const usage = this.#usageRows.get(entry.toolCallId);
 				if (usage) body.push(this.#nativeUsage(usage, `u${entry.toolCallId}`));
+			}
+			for (const [index, row] of summaryRows.entries()) {
+				body.push(this.#nativeFileRow(row));
+				for (const [i, usage] of (usageByRow.get(index) ?? []).entries()) {
+					body.push(this.#nativeUsage(usage, `u${index}.${i}`));
+				}
 			}
 		}
 		return node(
@@ -763,6 +816,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const status = this.#groupStatus(entries);
 		const title = span("Read", "toolTitle");
 		const children: NativeChild[] = [];
+		const previewsAbove: NativeChild[] = [];
 		let head: TspSpan[] = [title];
 		if (rows.length === 1) {
 			head = [title, span(" "), ...this.#nativePathSpans(rows[0]!)];
@@ -804,7 +858,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		for (const entry of previews) {
 			const split = splitPathAndSel(entry.path);
 			const pathValue = shortenPath(entry.path);
-			children.push(
+			previewsAbove.push(
 				node(
 					"card",
 					{
@@ -828,7 +882,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			const usage = this.#usageRows.get(entry.toolCallId);
 			if (usage) children.push(this.#nativeUsage(usage, `u${entry.toolCallId}`));
 		}
-		return card(
+		const summary = card(
 			{
 				role: "omp.tool.read",
 				// A group is plain rows: the per-file previews are the only frames.
@@ -839,6 +893,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			},
 			children,
 		);
+		return previewsAbove.length > 0 ? col([...previewsAbove, summary]) : summary;
 	}
 
 	#groupStatus(entries: readonly ReadEntry[]): TspCardStatus {
@@ -890,7 +945,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			return;
 		}
 
-		if (displayRows.length === 1) {
+		if (displayRows.length === 1 && entries.length === 1) {
 			const row = displayRows[0]!;
 			if (!this.#shouldRenderPreviewRow(row)) {
 				const statusSymbol = this.#formatStatus(this.#statusForTargets(row.targets));
@@ -902,19 +957,21 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 				this.addChild(this.#text);
 			}
 			const rowPreviews = this.#previewEntriesForRow(row);
-			for (const entry of rowPreviews) {
-				this.#addContentPreview(entry, rowPreviews.length);
-				this.#addPreviewUsage(entry);
-			}
+			for (const entry of rowPreviews) this.#appendStablePreview(entry, true);
+			for (const entry of rowPreviews)
+				if (!this.#usageRows.get(entry.toolCallId)?.toolCallIds.some(id => id !== entry.toolCallId))
+					this.#addPreviewUsage(entry);
 			return;
 		}
 
-		const entriesWithoutPreview = entries.filter(entry => !this.#shouldRenderPreview(entry));
 		const previewEntries = entries.filter(entry => this.#shouldRenderPreview(entry));
-		const summaryTargets = this.#displayTargetsForEntries(entriesWithoutPreview);
+		const prefix = new Set<string>();
+		for (const entry of entries) {
+			if (entry.status === "pending" || !this.#shouldRenderPreview(entry)) break;
+			prefix.add(entry.toolCallId);
+		}
+		const summaryTargets = this.#displayTargetsForEntries(entries.filter(entry => !this.#shouldRenderPreview(entry)));
 		const rows = this.#buildSummaryRows(summaryTargets);
-		// The count names what the reader can see: one line per summary row plus
-		// one card per previewed read. Merged summary rows must not hide a card.
 		const shownCount = rows.length + previewEntries.length;
 		const header = `${theme.fg("toolTitle", theme.bold("Read"))}${theme.fg("dim", ` (${shownCount})`)}`;
 		const lines = [` ${theme.format.bullet} ${header}`];
@@ -923,13 +980,31 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			this.#appendSummaryRow(lines, row, index, rows.length, usageRowsBySummaryRow.get(index) ?? []);
 		}
 
+		for (const entry of previewEntries) this.#appendStablePreview(entry, prefix.has(entry.toolCallId));
+		for (const entry of previewEntries) {
+			const usage = this.#usageRows.get(entry.toolCallId);
+			if (!usage) continue;
+			lines.push("");
+			this.#appendUsageRows(lines, [usage], "   ");
+		}
 		this.#text.setText(lines.join("\n"));
 		this.addChild(this.#text);
+	}
 
-		for (const entry of previewEntries) {
-			this.#addContentPreview(entry, previewEntries.length);
-			this.#addPreviewUsage(entry);
+	#appendStablePreview(entry: ReadEntry, publish: boolean): void {
+		const existing = this.#stablePreviews.find(preview => preview.callId === entry.toolCallId);
+		if (existing) {
+			for (const child of existing.children) this.addChild(child);
+			return;
 		}
+		const start = this.children.length;
+		this.#addContentPreview(entry, 1);
+		if (publish)
+			this.#stablePreviews.push({
+				key: entry.toolCallId,
+				callId: entry.toolCallId,
+				children: this.children.slice(start),
+			});
 	}
 
 	#displayTargetsForEntries(entries: ReadEntry[]): ReadDisplayTarget[] {
@@ -1167,11 +1242,14 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		let cachedWidth: number | undefined;
 		let cachedBudget: number | undefined;
 		let cachedLines: string[] | undefined;
+		let publishedBudget: { value: number | undefined } | undefined;
 		const expanded = this.#expanded;
 		const component: Component = {
 			render: (width: number) => {
-				// The budget follows terminal height, so a height-only resize must re-render.
-				const budget = expanded ? undefined : groupPreviewLines(siblings);
+				// Unpublished previews follow height; published bytes retain their original budget.
+				const requestedBudget = expanded ? undefined : groupPreviewLines(siblings);
+				if (this.#publishedPreviews.has(entry.toolCallId)) publishedBudget ??= { value: requestedBudget };
+				const budget = publishedBudget ? publishedBudget.value : requestedBudget;
 				if (cachedLines && cachedWidth === width && cachedBudget === budget) return cachedLines;
 				cachedBudget = budget;
 				cachedLines = renderCodeCell(

@@ -56,6 +56,7 @@ export interface AppendOnlyTranscriptBlock {
 
 interface FinalizableBlock {
 	isTranscriptBlockFinalized?(): boolean;
+	/** Completed immutable results can retire independently of the assistant stream. */
 	commitToHistoryOnFinalize?: boolean;
 	/**
 	 * Whether the block's height is still reversible: it grows while it runs and
@@ -363,9 +364,9 @@ export class TranscriptContainer extends Container {
 			if (block.length === 0) continue;
 			const start = cursor > 0 ? cursor + 1 : 0;
 			if (cursor > 0 && rows[cursor] !== "") break;
-			if (start + block.length > rows.length) break;
 			let matched = 0;
-			while (matched < block.length && rows[start + matched] === block[matched]) matched++;
+			while (matched < block.length && start + matched < rows.length && rows[start + matched] === block[matched])
+				matched++;
 			if (matched < block.length) {
 				// The head may have been emitted only partway; keep that prefix.
 				if (matched > 0) this.#adoptEmittedPrefix(entry, block, matched, width);
@@ -737,7 +738,9 @@ export class TranscriptContainer extends Container {
 			// a card that fits the viewport.
 			const projected = this.#projectedEmittedRowCount(entry, index, width);
 			const offset =
-				projected > 0 && !this.#borrowedPrefixMatches(entry, this.#renderEntry(entry, width, frame))
+				entry.mode === "mutable" &&
+				projected > 0 &&
+				!this.#borrowedPrefixMatches(entry, this.#renderEntry(entry, width, frame))
 					? 0
 					: projected;
 			const rendered = this.#holdPeakHeight(entry, width, this.#renderEntry(entry, width, frame), offset);
@@ -903,15 +906,17 @@ export class TranscriptContainer extends Container {
 				break;
 			}
 			if (isTransient(entry.component)) break;
-			// Rows the terminal borrowed into native scrollback are immutable. A
-			// settled card whose current render diverges from those rows would be
-			// re-emitted from the first changed row (the documented stale seam),
-			// which under first-frame retirement shows up as a duplicated card the
-			// moment a tool finishes. Leave such a block to the ordinary pressure
-			// policy, which only retires once its borrowed prefix reconciles.
-			if (entry.borrowed && !this.#borrowedPrefixMatches(entry, rendered[cursor - this.#frontier])) break;
-			if ((entry.component as Component & FinalizableBlock).commitToHistoryOnFinalize === true)
-				requiredEnd = cursor + 1;
+			// A result opting into completion-time publication reconciles changed
+			// borrowed bytes through a divergent batch before it becomes history.
+			// Other mutable snapshots keep the existing pressure-only policy.
+			const commitOnFinalize = (entry.component as Component & FinalizableBlock).commitToHistoryOnFinalize;
+			if (
+				entry.borrowed &&
+				!this.#borrowedPrefixMatches(entry, rendered[cursor - this.#frontier]) &&
+				!commitOnFinalize
+			)
+				break;
+			if (commitOnFinalize === true) requiredEnd = cursor + 1;
 		}
 		const overflowing = total > room || this.#liveCount() >= MAX_LIVE_BLOCKS;
 		const head = this.#entries[this.#frontier];
@@ -932,7 +937,17 @@ export class TranscriptContainer extends Container {
 			const batch = this.#offerSettledPrefix(head, settledRows, width, Number.POSITIVE_INFINITY);
 			if (batch !== undefined) return batch;
 		}
-		if (policy === "pressure" && !overflowing && requiredEnd === this.#frontier) {
+		if (
+			policy === "pressure" &&
+			!overflowing &&
+			requiredEnd === this.#frontier &&
+			!(
+				head?.mode === "appendOnly" &&
+				!head.stableFrozen &&
+				head.emitted < head.stableRows.length &&
+				(head.component as Component & FinalizableBlock).commitsSettledStageEarly === true
+			)
+		) {
 			this.#pinnedFrontier = undefined;
 			return undefined;
 		}
@@ -942,7 +957,8 @@ export class TranscriptContainer extends Container {
 		}
 		if (
 			policy === "pressure" &&
-			total > room &&
+			(total > room ||
+				(head?.component as (Component & FinalizableBlock) | undefined)?.commitsSettledStageEarly === true) &&
 			head?.mode === "appendOnly" &&
 			!head.stableFrozen &&
 			head.state !== "committed" &&
@@ -952,7 +968,10 @@ export class TranscriptContainer extends Container {
 			// fast stream adds finished rows quicker than one per pressure cycle,
 			// and the live region has to fall back under `room` to stay readable:
 			// rows left behind here are rows dropped from the top of the viewport.
-			const overflow = total - room;
+			const overflow =
+				(head.component as Component & FinalizableBlock).commitsSettledStageEarly === true
+					? Number.POSITIVE_INFINITY
+					: total - room;
 			const before = this.#renderStablePrefix(head, head.emitted, width);
 			let emittedEnd = head.emitted;
 			let rows: readonly string[] = EMPTY_ROWS;
@@ -972,7 +991,9 @@ export class TranscriptContainer extends Container {
 					id: this.#nextBatchId++,
 					rows,
 					kind: "append",
-					divergent: head.historyDirty === true,
+					divergent:
+						head.historyDirty === true ||
+						(head.borrowed && !this.#borrowedPrefixMatches(head, this.#renderEntry(head, width))),
 				};
 				this.#offered = { batch, kind: "append", entry: this.#frontier, emittedEnd };
 				this.#pinnedFrontier = undefined;
@@ -1351,16 +1372,18 @@ export class TranscriptContainer extends Container {
 	}
 
 	/**
-	 * Whether a streamed (append-only) block in `[start, end)` lent rows to
-	 * native history that its finalized render no longer reproduces: either an
-	 * earlier frame re-rendered them (`historyDirty`), or the block settles in
-	 * this very frame (a markdown fence closing as the reply ends). Mutable tool
-	 * cards keep their stale borrowed copy by design and never qualify.
+	 * Whether published rows or an independently completed result differ from
+	 * their borrowed snapshot. Reconcile that snapshot before committing the
+	 * final block so an old pending header cannot truncate its result.
 	 */
 	#hasDivergentBorrowedStream(start: number, end: number, width: number): boolean {
 		for (let index = start; index < end; index++) {
 			const entry = this.#entries[index]!;
-			if (entry.mode !== "appendOnly") continue;
+			if (
+				entry.mode !== "appendOnly" &&
+				!(entry.component as Component & FinalizableBlock).commitToHistoryOnFinalize
+			)
+				continue;
 			if (entry.historyDirty === true) return true;
 			if (entry.borrowed && !this.#borrowedPrefixMatches(entry, this.#renderEntry(entry, width))) return true;
 		}

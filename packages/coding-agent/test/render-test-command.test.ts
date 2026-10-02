@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "bun:test";
+import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { setStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
@@ -12,6 +13,7 @@ import { ExtensionRunner } from "../src/extensibility/extensions/runner";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { AskDialogComponent } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
 import { Text } from "@oh-my-pi/pi-tui";
 import { setIrcMessageVisibleTtlForTest } from "../src/modes/controllers/event-controller";
@@ -21,7 +23,7 @@ import { AuthStorage } from "../src/session/auth-storage";
 import { SessionManager } from "../src/session/session-manager";
 import { EventBus } from "../src/utils/event-bus";
 import * as renderWorkflow from "../src/session/render-workflow";
-import { cfgTasksTodoClearDelay } from "@oh-my-pi/pi-coding-agent/tools/settings";
+import { cfgReadGroupAcrossStreams, cfgTasksTodoClearDelay } from "@oh-my-pi/pi-coding-agent/tools/settings";
 
 let directory: TempDir;
 let auth: AuthStorage;
@@ -94,6 +96,497 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 	resetSettingsForTest();
 });
+
+it.each([8, 12, 20, 40])(
+	"preserves completed read output during a pending batch at %s terminal rows",
+	async rows => {
+		terminal.resize(110, rows);
+		mode.setToolsExpanded(true);
+		const files = [0, 1, 2, 3].map(i => path.resolve(directory.join("stream-read-" + i + ".txt")));
+		const expected = files.map((_, i) =>
+			Array.from({ length: 120 }, (_, row) => "READ_" + i + "_ROW_" + String(row).padStart(3, "0")),
+		);
+		await Promise.all(files.map((file, i) => Bun.write(file, expected[i]!.join("\n"))));
+		const entered = files.map(() => Promise.withResolvers<void>());
+		const release = files.map(() => Promise.withResolvers<void>());
+		const completed = files.map(() => Promise.withResolvers<void>());
+		const calls = files.map((file, i) => ({
+			type: "toolCall" as const,
+			id: "stable-read-" + i,
+			name: "read",
+			arguments: { path: file + ":1-120" },
+		}));
+		let resets = 0;
+		const stopPaints = mode.ui.addPaintListener(paint => {
+			if (paint.reset) resets++;
+		});
+		const results = new Map<string, { isError: boolean; markers: string[] }>();
+		const markers = (text: string) => Array.from(text.matchAll(/READ_[0-3]_ROW_\d{3}/g), m => m[0]);
+		const tape = () =>
+			terminal
+				.getScrollBuffer()
+				.map(row => Bun.stripANSI(row))
+				.join("\n");
+		const history = () =>
+			terminal
+				.getScrollBuffer()
+				.slice(0, -terminal.rows)
+				.map(row => Bun.stripANSI(row))
+				.join("\n");
+		const factory = renderWorkflow.createRenderWorkflow;
+		vi.spyOn(renderWorkflow, "createRenderWorkflow").mockImplementation((...args) => {
+			const workflow = factory(...args);
+			let sent = false;
+			workflow.next = async () => {
+				if (sent) return undefined;
+				sent = true;
+				return { calls, introduction: false, repetition: 1 };
+			};
+			const read = workflow.tools.find(tool => tool.name === "read")!;
+			const execute = read.execute.bind(read);
+			vi.spyOn(read, "execute").mockImplementation(async (...args) => {
+				const i = calls.findIndex(call => call.id === args[0]);
+				entered[i]!.resolve();
+				await release[i]!.promise;
+				return execute(...args);
+			});
+			return workflow;
+		});
+		const unsubscribe = session.subscribe(event => {
+			if (event.type !== "tool_execution_end") return;
+			const i = calls.findIndex(call => call.id === event.toolCallId);
+			if (i < 0) return;
+			results.set(event.toolCallId, {
+				isError: event.isError === true,
+				markers: markers(
+					(event.result.content as ToolResultMessage["content"])
+						.flatMap(block => (block.type === "text" ? [block.text] : []))
+						.join("\n"),
+				),
+			});
+			completed[i]!.resolve();
+		});
+		const running = session.runRenderTest({ repeat: 1, delayMs: 1 }, mode.getToolUIContext());
+		try {
+			await Promise.all(entered.map(barrier => barrier.promise));
+			await terminal.waitForRender(() => terminal.getViewport().join("\n").includes("Read (4)"));
+			expect(terminal.getViewport().join("\n")).toContain("Read (4)");
+			for (let i = 0; i < calls.length; i++) {
+				release[i]!.resolve();
+				await completed[i]!.promise;
+				await terminal.waitForRender(
+					() => !mode.pendingTools.has(calls[i]!.id) && markers(tape()).includes(expected[i]![119]!),
+				);
+				mode.ui.renderNow();
+				await terminal.waitForRender();
+				expect(results.get(calls[i]!.id)).toEqual({ isError: false, markers: expected[i] });
+				expect(markers(tape())).toEqual(expected.slice(0, i + 1).flat());
+				const viewport = terminal
+					.getViewport()
+					.map(row => Bun.stripANSI(row))
+					.join("\n");
+				expect(viewport).toContain("Read (4)");
+				if (i < calls.length - 1) expect(viewport).toContain("stream-read-3.txt");
+				if (i < calls.length - 1) {
+					const resetCheckpoint = resets;
+					for (let paint = 0; paint < 3; paint++) {
+						mode.ui.requestRender();
+						await terminal.waitForRender();
+					}
+					expect(resets).toBe(resetCheckpoint);
+				}
+				expect(markers(tape())).toEqual(expected.slice(0, i + 1).flat());
+				if (i < calls.length - 1) {
+					expect(session.isStreaming).toBeTrue();
+					expect(markers(history())).toContain(expected[i]![0]!);
+					for (let later = i + 1; later < calls.length; later++)
+						expect(mode.pendingTools.has(calls[later]!.id)).toBeTrue();
+				}
+			}
+			await running;
+			await session.waitForIdle();
+			await terminal.waitForRender();
+			expect(markers(tape())).toEqual(expected.flat());
+			expect(providerCalls).toBe(0);
+			expect(credentialCalls).toBe(0);
+		} finally {
+			for (const barrier of release) barrier.resolve();
+			try {
+				await running;
+			} finally {
+				unsubscribe();
+				stopPaints();
+			}
+		}
+	},
+	30000,
+);
+
+it.each([true, false])(
+	"publishes completed collapsed reads with cross-stream grouping %s before another response",
+	async crossStream => {
+		cfgReadGroupAcrossStreams.override(session.settings, crossStream);
+		terminal.resize(110, 100);
+		mode.setToolsExpanded(false);
+		const files = [0, 1].map(index => path.resolve(directory.join("collapsed-" + index + ".txt")));
+		await Promise.all(
+			files.map((file, index) =>
+				Bun.write(file, Array.from({ length: 90 }, (_, row) => "COLLAPSED_" + index + "_" + row).join("\n")),
+			),
+		);
+		const entered = files.map(() => Promise.withResolvers<void>());
+		const release = files.map(() => Promise.withResolvers<void>());
+		const completed = files.map(() => Promise.withResolvers<void>());
+		const allResults = Promise.withResolvers<void>();
+		const nextResponse = Promise.withResolvers<void>();
+		const errors: string[] = [];
+		const factory = renderWorkflow.createRenderWorkflow;
+		vi.spyOn(renderWorkflow, "createRenderWorkflow").mockImplementation((...args) => {
+			const workflow = factory(...args);
+			let sent = false;
+			workflow.next = async () => {
+				if (sent) {
+					allResults.resolve();
+					await nextResponse.promise;
+					return undefined;
+				}
+				sent = true;
+				return {
+					calls: files.map((file, index) => ({
+						type: "toolCall" as const,
+						id: "collapsed-call-" + index,
+						name: "read",
+						arguments: { path: file + ":1-90" },
+					})),
+					introduction: false,
+					repetition: 1,
+				};
+			};
+			const read = workflow.tools.find(tool => tool.name === "read")!;
+			const execute = read.execute.bind(read);
+			vi.spyOn(read, "execute").mockImplementation(async (...executeArgs) => {
+				const index = Number(executeArgs[0].at(-1));
+				entered[index]!.resolve();
+				await release[index]!.promise;
+				return execute(...executeArgs);
+			});
+			return workflow;
+		});
+		const stop = session.subscribe(event => {
+			if (event.type !== "tool_execution_end" || !event.toolCallId.startsWith("collapsed-call-")) return;
+			if (event.isError) errors.push(event.toolCallId);
+			completed[Number(event.toolCallId.at(-1))]!.resolve();
+		});
+		const running = session.runRenderTest({ repeat: 1, delayMs: 1 }, mode.getToolUIContext());
+		try {
+			await Promise.all(entered.map(barrier => barrier.promise));
+			const group = mode.pendingTools.get("collapsed-call-0");
+			expect(group).toBeInstanceOf(ReadToolGroupComponent);
+			if (!(group instanceof ReadToolGroupComponent)) throw Error("Expected shared read group");
+			expect(mode.pendingTools.get("collapsed-call-1")).toBe(group);
+			const groupIndex = mode.chatContainer.children.indexOf(group);
+			release[0]!.resolve();
+			await completed[0]!.promise;
+			await terminal.waitForRender(() => mode.chatContainer.emittedStableRows()[groupIndex] === 1);
+			expect(mode.chatContainer.emittedStableRows()[groupIndex]).toBe(1);
+			expect(group.isTranscriptBlockFinalized()).toBeFalse();
+			expect(session.isStreaming).toBeTrue();
+			release[1]!.resolve();
+			await Promise.all([completed[1]!.promise, allResults.promise]);
+			await terminal.waitForRender(() =>
+				crossStream
+					? mode.chatContainer.emittedStableRows()[groupIndex] === 2
+					: mode.chatContainer.blockStates()[groupIndex] === "committed",
+			);
+			if (crossStream) expect(mode.chatContainer.emittedStableRows()[groupIndex]).toBe(2);
+			else expect(mode.chatContainer.blockStates()[groupIndex]).toBe("committed");
+			expect(errors).toEqual([]);
+			const tape = terminal
+				.getScrollBuffer()
+				.map(row => Bun.stripANSI(row))
+				.join("\n");
+			expect(tape.match(/COLLAPSED_0_0\b/g)).toHaveLength(1);
+			expect(tape.match(/COLLAPSED_1_0\b/g)).toHaveLength(1);
+			expect(tape).toContain("Read (2)");
+			nextResponse.resolve();
+			await running;
+			await session.waitForIdle();
+			await terminal.waitForRender(() => mode.chatContainer.blockStates()[groupIndex] === "committed");
+			expect(mode.chatContainer.blockStates()[groupIndex]).toBe("committed");
+			const finishedTape = terminal
+				.getScrollBuffer()
+				.map(row => Bun.stripANSI(row))
+				.join("\n");
+			expect(finishedTape.match(/COLLAPSED_0_0\b/g)).toHaveLength(1);
+			expect(finishedTape.match(/COLLAPSED_1_0\b/g)).toHaveLength(1);
+			expect(finishedTape.match(/Read \(2\)/g)).toHaveLength(1);
+		} finally {
+			for (const barrier of release) barrier.resolve();
+			nextResponse.resolve();
+			try {
+				await running;
+			} finally {
+				stop();
+			}
+		}
+	},
+	30000,
+);
+
+it.each([12, 30])(
+	"commits each large write before later writes finish at %s rows",
+	async rows => {
+		terminal.resize(110, rows);
+		mode.setToolsExpanded(true);
+		const content = Array.from({ length: 4 }, (_, index) =>
+			Array.from({ length: 100 }, (_, row) => "WRITE_" + index + "_ROW_" + String(row).padStart(3, "0")).join("\n"),
+		);
+		const calls = content.map((text, index) => ({
+			type: "toolCall" as const,
+			id: "write-sequence-" + index,
+			name: "write",
+			arguments: { path: path.resolve(directory.join("sequence-" + index + ".txt")), content: text },
+		}));
+		const entered = calls.map(() => Promise.withResolvers<void>());
+		const release = calls.map(() => Promise.withResolvers<void>());
+		const completed = calls.map(() => Promise.withResolvers<void>());
+		const errors: string[] = [];
+		const factory = renderWorkflow.createRenderWorkflow;
+		vi.spyOn(renderWorkflow, "createRenderWorkflow").mockImplementation((...args) => {
+			const workflow = factory(...args);
+			let sent = false;
+			workflow.next = async () => {
+				if (sent) return undefined;
+				sent = true;
+				return { calls, introduction: false, repetition: 1 };
+			};
+			const write = workflow.tools.find(tool => tool.name === "write")!;
+			const execute = write.execute.bind(write);
+			vi.spyOn(write, "execute").mockImplementation(async (...args) => {
+				const index = calls.findIndex(call => call.id === args[0]);
+				entered[index]!.resolve();
+				await release[index]!.promise;
+				return execute(...args);
+			});
+			return workflow;
+		});
+		const unsubscribe = session.subscribe(event => {
+			if (event.type !== "tool_execution_end") return;
+			const index = calls.findIndex(call => call.id === event.toolCallId);
+			if (index < 0) return;
+			if (event.isError) errors.push(event.toolCallId);
+			completed[index]!.resolve();
+		});
+		const markerRows = (text: string) => Array.from(text.matchAll(/WRITE_[0-3]_ROW_\d{3}/g), match => match[0]);
+		const tape = () => terminal.getScrollBuffer().join("\n");
+		const history = () => terminal.getScrollBuffer().slice(0, -terminal.rows).join("\n");
+		const running = session.runRenderTest({ repeat: 1, delayMs: 1 }, mode.getToolUIContext());
+		try {
+			for (let index = 0; index < calls.length; index++) {
+				await entered[index]!.promise;
+				release[index]!.resolve();
+				await completed[index]!.promise;
+				mode.ui.renderNow();
+				await terminal.waitForRender(
+					() =>
+						!mode.pendingTools.has(calls[index]!.id) &&
+						(index < calls.length - 1 ? history() : tape()).includes("WRITE_" + index + "_ROW_099"),
+				);
+				expect(errors).toEqual([]);
+				expect(
+					markerRows(index < calls.length - 1 ? history() : tape()).filter(marker =>
+						marker.startsWith("WRITE_" + index + "_"),
+					),
+				).toEqual(markerRows(content[index]!));
+				expect(await Bun.file(calls[index]!.arguments.path).text()).toBe(content[index]!);
+				if (index < calls.length - 1) {
+					expect(session.isStreaming).toBeTrue();
+					expect(mode.pendingTools.has(calls[index + 1]!.id)).toBeTrue();
+				}
+			}
+			await running;
+			await session.waitForIdle();
+			await terminal.waitForRender();
+			expect(markerRows(tape())).toEqual(content.flatMap(markerRows));
+		} finally {
+			for (const barrier of release) barrier.resolve();
+			try {
+				await running;
+			} finally {
+				unsubscribe();
+			}
+		}
+	},
+	30000,
+);
+
+it("retires finished results in a real mixed batch while later calls remain pending", async () => {
+	terminal.resize(110, 12);
+	mode.setToolsExpanded(true);
+	const file = path.resolve(directory.join("mixed-input.txt"));
+	const readRows = Array.from({ length: 80 }, (_, row) => "REAL_READ_" + String(row).padStart(3, "0"));
+	await Bun.write(file, readRows.join("\n"));
+	const calls = [
+		{
+			type: "toolCall" as const,
+			id: "real-bash",
+			name: "bash",
+			arguments: { command: "printf 'REAL_BASH_DONE\\n'" },
+		},
+		{ type: "toolCall" as const, id: "real-read", name: "read", arguments: { path: file + ":1-80" } },
+		{ type: "toolCall" as const, id: "later-read", name: "read", arguments: { path: file + ":1-80" } },
+		{
+			type: "toolCall" as const,
+			id: "later-eval",
+			name: "eval",
+			arguments: { language: "js", code: 'display("REAL_EVAL_DONE")', timeout: 30 },
+		},
+	];
+	const release = Promise.withResolvers<void>();
+	const done = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+	const errors: string[] = [];
+	const factory = renderWorkflow.createRenderWorkflow;
+	vi.spyOn(renderWorkflow, "createRenderWorkflow").mockImplementation((...args) => {
+		const workflow = factory(...args);
+		let sent = false;
+		workflow.next = async () => {
+			if (sent) return undefined;
+			sent = true;
+			return { calls, introduction: false, repetition: 1 };
+		};
+		const read = workflow.tools.find(tool => tool.name === "read")!;
+		const executeRead = read.execute.bind(read);
+		vi.spyOn(read, "execute").mockImplementation(async (...executeArgs) => {
+			if (executeArgs[0] === "later-read") await release.promise;
+			return executeRead(...executeArgs);
+		});
+		const evalTool = workflow.tools.find(tool => tool.name === "eval")!;
+		const executeEval = evalTool.execute.bind(evalTool);
+		vi.spyOn(evalTool, "execute").mockImplementation(async (...executeArgs) => {
+			await release.promise;
+			return executeEval(...executeArgs);
+		});
+		return workflow;
+	});
+	const stop = session.subscribe(event => {
+		if (event.type !== "tool_execution_end") return;
+		const index = calls.findIndex(call => call.id === event.toolCallId);
+		if (event.isError) errors.push(event.toolCallId);
+		if (index < 2) done[index]?.resolve();
+	});
+	const running = session.runRenderTest({ repeat: 1, delayMs: 1 }, mode.getToolUIContext());
+	try {
+		await Promise.all(done.map(barrier => barrier.promise));
+		await terminal.waitForRender(
+			() =>
+				!mode.pendingTools.has("real-read") &&
+				terminal.getScrollBuffer().slice(0, -terminal.rows).join("\n").includes("REAL_READ_079"),
+		);
+		expect(errors).toEqual([]);
+		expect(session.isStreaming).toBeTrue();
+		const history = terminal
+			.getScrollBuffer()
+			.slice(0, -terminal.rows)
+			.map(row => Bun.stripANSI(row))
+			.join("\n");
+		expect(Array.from(history.matchAll(/REAL_READ_\d{3}/g), match => match[0])).toEqual(readRows);
+		expect(history).toContain("REAL_BASH_DONE");
+		expect(history.indexOf("REAL_BASH_DONE")).toBeLessThan(history.indexOf("REAL_READ_000"));
+		expect(mode.pendingTools.has("later-read")).toBeTrue();
+		expect(mode.pendingTools.has("later-eval")).toBeTrue();
+		mode.rebuildChatFromMessages();
+		mode.ui.renderNow();
+		await terminal.waitForRender();
+		expect(
+			Array.from(
+				terminal
+					.getScrollBuffer()
+					.join("\n")
+					.matchAll(/REAL_READ_\d{3}/g),
+				match => match[0],
+			),
+		).toEqual(readRows);
+		expect(mode.pendingTools.has("later-read")).toBeTrue();
+		expect(mode.pendingTools.has("later-eval")).toBeTrue();
+	} finally {
+		release.resolve();
+		try {
+			await running;
+		} finally {
+			stop();
+		}
+	}
+}, 60000);
+
+it("preserves the failed edit and prior rows when the next assistant message begins", async () => {
+	terminal.resize(110, 20);
+	mode.setToolsExpanded(true);
+	const afterError = Promise.withResolvers<void>();
+	const continueStream = Promise.withResolvers<void>();
+	const failed = Promise.withResolvers<void>();
+	let errorText = "";
+	const factory = renderWorkflow.createRenderWorkflow;
+	vi.spyOn(renderWorkflow, "createRenderWorkflow").mockImplementation((...args) => {
+		const workflow = factory(...args);
+		const next = workflow.next.bind(workflow);
+		workflow.next = async context => {
+			const step = await next(context);
+			if (!step) {
+				afterError.resolve();
+				await continueStream.promise;
+			}
+			return step;
+		};
+		return workflow;
+	});
+	const stop = session.subscribe(event => {
+		if (event.type === "tool_execution_end" && event.toolName === "edit" && event.isError) {
+			errorText = (event.result.content as ToolResultMessage["content"])
+				.flatMap(block => (block.type === "text" ? [block.text] : []))
+				.join("\n");
+			failed.resolve();
+		}
+	});
+	const running = session.runRenderTest({ repeat: 1, delayMs: 1, scenario: "edit-error" }, mode.getToolUIContext());
+	const sourceRows = () =>
+		Array.from(
+			terminal
+				.getScrollBuffer()
+				.join("\n")
+				.matchAll(/Fixture 2, row \d+:/g),
+			match => match[0],
+		);
+	try {
+		await Promise.all([afterError.promise, failed.promise]);
+		await terminal.waitForRender();
+		const before = sourceRows();
+		expect(errorText).toContain("lines");
+		expect(before).toEqual(Array.from({ length: 64 }, (_, row) => "Fixture 2, row " + (row + 1) + ":"));
+		continueStream.resolve();
+		await running;
+		await session.waitForIdle();
+		await terminal.waitForRender();
+		expect(sourceRows()).toEqual(before);
+		expect(terminal.getScrollBuffer().join("\n")).toContain("Streaming 3");
+		const rows = terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
+		let bands = 0;
+		for (let index = 1; index < rows.length; index++) {
+			if (rows[index] !== "") continue;
+			let end = index;
+			while (end < rows.length && rows[end] === "") end++;
+			if (end - index >= 3 && end < rows.length) bands++;
+			index = end;
+		}
+		expect(bands).toBe(0);
+	} finally {
+		continueStream.resolve();
+		try {
+			await running;
+		} finally {
+			stop();
+		}
+	}
+}, 60000);
 
 it("restores bottom-anchored chat after the TODO scenario dismisses its completed panel", async () => {
 	cfgTasksTodoClearDelay.override(session.settings, 4);

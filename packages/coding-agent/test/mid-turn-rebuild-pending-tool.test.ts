@@ -17,6 +17,8 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import { cfgReadGroupAcrossStreams } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -185,6 +187,49 @@ describe("mid-turn transcript rebuild keeps in-flight tool calls", () => {
 			}
 		});
 	}
+
+	it("seals a dangling read at an idle response boundary when cross-stream grouping is disabled", () => {
+		const { ctx, helpers, chatContainer } = createFixture({ isStreaming: false });
+		const previous = cfgReadGroupAcrossStreams.get(ctx.settings);
+		cfgReadGroupAcrossStreams.override(ctx.settings, false);
+		try {
+			const first: AssistantMessage = {
+				role: "assistant",
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "test-model",
+				stopReason: "toolUse",
+				usage,
+				timestamp: 1,
+				content: [{ type: "toolCall", id: "dangling-read", name: "read", arguments: { path: "first.txt" } }],
+			};
+			const second: AssistantMessage = {
+				...first,
+				timestamp: 2,
+				content: [{ type: "toolCall", id: "completed-read", name: "read", arguments: { path: "second.txt" } }],
+			};
+			const result: ToolResultMessage = {
+				role: "toolResult",
+				toolCallId: "completed-read",
+				toolName: "read",
+				content: [{ type: "text", text: "SECOND_RESULT" }],
+				isError: false,
+				timestamp: 3,
+			};
+			helpers.renderSessionContext({ messages: [first, second, result] } as SessionContext);
+			const groups = chatContainer.children.filter(
+				(child): child is ReadToolGroupComponent => child instanceof ReadToolGroupComponent,
+			);
+			expect(groups).toHaveLength(2);
+			expect(groups[0]!.isTranscriptBlockFinalized()).toBeTrue();
+			expect(groups[1]!.isTranscriptBlockFinalized()).toBeTrue();
+			expect(ctx.pendingTools.size).toBe(0);
+			const firstRows = Bun.stripANSI(groups[0]!.render(120).join("\n"));
+			expect(firstRows).not.toContain("second.txt");
+		} finally {
+			cfgReadGroupAcrossStreams.override(ctx.settings, previous);
+		}
+	});
 
 	it("seals dangling toolCalls on idle rebuilds instead of leaving a live spinner", () => {
 		const { ctx, helpers, chatContainer } = createFixture({ isStreaming: false });

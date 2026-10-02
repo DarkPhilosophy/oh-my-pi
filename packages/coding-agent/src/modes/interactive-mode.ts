@@ -4014,8 +4014,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// their own mode.
 		const context = this.viewSession.buildTranscriptSessionContext({
 			collapseCompactedHistory: cfgDisplayCollapseCompacted.get(this.settings),
+			keepDanglingToolCalls: this.viewSession.isStreaming,
 		});
-		const preservedLiveToolCallIds = new Set<string>();
+		const preservedLiveToolCallIds = new Set(livePendingTools.keys());
 		const replayedLiveToolResultIndices = new Map<string, number>();
 		// A preserved pending-tool component whose result has already landed in
 		// the replayed transcript is re-rendered by `renderSessionContext` itself
@@ -4031,6 +4032,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		// preserving.
 		for (const [messageIndex, message] of context.messages.entries()) {
 			if (message.role !== "toolResult") continue;
+			if (
+				message.toolName === "read" &&
+				liveComponents.some(
+					component => component instanceof ReadToolGroupComponent && component.hasToolCall(message.toolCallId),
+				)
+			) {
+				preservedLiveToolCallIds.add(message.toolCallId);
+				continue;
+			}
 			const resolved = livePendingTools.get(message.toolCallId);
 			if (!resolved) continue;
 			// A background task's initial `async.state === "running"` result is
@@ -4068,6 +4078,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				preservedLiveToolCallIds.add(message.toolCallId);
 				continue;
 			}
+			preservedLiveToolCallIds.delete(message.toolCallId);
 			const index = liveComponents.indexOf(resolved as unknown as Component);
 			if (index >= 0) liveComponents.splice(index, 1);
 		}

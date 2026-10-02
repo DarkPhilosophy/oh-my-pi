@@ -496,6 +496,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			history,
 			borrowableRows,
 			retainedLiveViewport: true,
+			historyTouchesChrome: active.length === 0 && after.length > 0,
 			viewportExpansionRows,
 			contractingPreviewRows: Math.min(
 				transcript.contractingPreviewRows(width, liveRows, frame),
@@ -775,6 +776,11 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			};
 		}
 		const replay = transcript.peekReplayBatch(width);
+		const batch =
+			replay ??
+			(this.#historyFlush
+				? transcript.peekFlushBatch(width)
+				: transcript.peekFinalizedBatch(width, Math.max(0, rows * 2 - chromeRows)));
 		if (!this.#headerRetired && replay === undefined) {
 			const welcome = this.#welcome;
 			let renderedHeader = this.#header.render(width);
@@ -782,7 +788,11 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			// budget instead of rendering every replayed block of a resumed session.
 			const liveRows = transcript.liveRowCount(width, Math.max(0, rows - renderedHeader.length - chromeRows));
 			// Editor-only growth is reversible chrome, not transcript progression.
-			if (!this.#historyFlush && (liveRows === 0 || renderedHeader.length + chromeRows + liveRows <= rows)) {
+			if (
+				!this.#historyFlush &&
+				batch === undefined &&
+				(liveRows === 0 || renderedHeader.length + chromeRows + liveRows <= rows)
+			) {
 				return undefined;
 			}
 			if (welcome !== undefined && !welcome.isTranscriptBlockFinalized()) {
@@ -808,11 +818,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			this.#headerRetired = true;
 			this.#retiredHeaderRows = [];
 		}
-		const batch =
-			replay ??
-			(this.#historyFlush
-				? transcript.peekFlushBatch(width)
-				: transcript.peekFinalizedBatch(width, Math.max(0, rows * 2 - chromeRows)));
 		if (batch === undefined) return undefined;
 		this.#offeredHistory = {
 			id: this.#nextHistoryId++,

@@ -726,6 +726,7 @@ read:
 | `read.summarize.enabled`  | boolean | `true`     | Structural summaries for code reads.              |
 | `read.summarize.prose`    | boolean | `false`    | Summarize prose files too.                        |
 | `read.toolResultPreview`  | boolean | `false`    | Inline preview of tool results.                   |
+| `read.groupAcrossStreams` | boolean | `true` | Group consecutive read calls across assistant responses. Disable to keep each response's reads in a separate group; completed results still publish during streaming. |
 | `read.renderMarkdown` | boolean | `false` | Render Markdown document reads in the TUI. |
 | `readLineNumbers`         | boolean | `false`    | Show plain line numbers.                          |
 

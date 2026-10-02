@@ -672,6 +672,14 @@ describe("bug 3: an edit card that is tall while pending and collapses to a shor
 				expect(bracketedBlankRuns(rows)).toBe(0);
 				expect(missingTranscriptRows(rows, history)).toEqual([]);
 				expect(duplicatedTranscriptRows(rows)).toEqual([]);
+				const continuation = Array.from({ length: 50 }, (_, index) => `POST_EDIT_${index}`);
+				h.transcript.addChild(new FixedRows(continuation));
+				await frames(h, 6);
+				const continuedTape = tape(h.terminal);
+				expect(missingTranscriptRows(continuedTape, history)).toEqual([]);
+				expect(duplicatedTranscriptRows(continuedTape)).toEqual([]);
+				expect(continuedTape.flatMap(row => row.match(/POST_EDIT_\d+/g) ?? [])).toEqual(continuation);
+				expect(bracketedBlankRuns(continuedTape)).toBe(0);
 			} finally {
 				h.composer.stop();
 			}

@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a Files → Reading setting to toggle cross-stream read grouping, enabled by default; disabling it preserves grouping within each assistant response.
+
+### Fixed
+
+- Fixed completed tool results being kept pending or blocked from scrollback during streamed tool-call ID updates.
+- Completed calls can publish during an ongoing stream without waiting for viewport overflow or a subsequent response.
+
 ## [18.4.10] - 2026-10-02
 
 ### Added

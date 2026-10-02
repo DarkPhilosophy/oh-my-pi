@@ -79,6 +79,33 @@ describe("ReadToolGroupComponent transcript freezing", () => {
 		expect(group.isTranscriptBlockFinalized()).toBe(true);
 	});
 
+	it("keeps finished previews above the grouped pending footer while publishing only the completed prefix", () => {
+		const group = new ReadToolGroupComponent({ showContentPreview: true });
+		group.setExpanded(true);
+		for (const id of ["a", "b", "c", "d"]) group.updateArgs({ path: id + ".txt" }, id);
+		group.updateResult({ content: [{ type: "text", text: "LATER_RESULT" }] }, false, "b");
+		let rendered = Bun.stripANSI(group.render(120).join("\n"));
+		expect(rendered).toContain("Read (4)");
+		expect(rendered.indexOf("LATER_RESULT")).toBeLessThan(rendered.indexOf("Read (4)"));
+		expect(group.renderTranscriptStableRows(group.getTranscriptStableRows().length, 120)).toEqual([]);
+		group.updateResult({ content: [{ type: "text", text: "EARLIER_RESULT" }] }, false, "a");
+		const stable = group.renderTranscriptStableRows(group.getTranscriptStableRows().length, 120);
+		expect(Bun.stripANSI(stable.join("\n"))).toContain("EARLIER_RESULT");
+		expect(Bun.stripANSI(stable.join("\n"))).toContain("LATER_RESULT");
+		expect(stable).toEqual(group.render(120).slice(0, stable.length));
+		expect(Bun.stripANSI(stable.join("\n"))).not.toContain("Read (4)");
+		group.renameEntry("a", "renamed-a");
+		group.updateArgs({ path: "renamed-a.txt" }, "renamed-a");
+		expect(group.renderTranscriptStableRows(group.getTranscriptStableRows().length, 120)).toEqual(stable);
+		group.updateArgs({ path: "e.txt" }, "e");
+		rendered = Bun.stripANSI(group.render(120).join("\n"));
+		expect(rendered).toContain("Read (5)");
+		expect(group.renderTranscriptStableRows(2, 120)).toEqual(stable);
+		group.setToolActivityVisible(false);
+		expect(group.render(120)).toEqual([]);
+		expect(group.renderTranscriptStableRows(2, 120)).toEqual([]);
+	});
+
 	// Turn-end safety: a read that never delivers a result (aborted turn) must not
 	// pin the live region forever. seal() forces it terminal.
 	it("seals a never-resolved pending read so it can freeze", () => {

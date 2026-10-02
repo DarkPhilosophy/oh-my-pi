@@ -77,7 +77,12 @@ import {
 	cfgTerminalShowProgress,
 } from "../settings";
 import { cfgCompaction } from "../../session/context-settings";
-import { cfgReadToolResultPreview, cfgToolsApproval, cfgToolsApprovalMode } from "../../tools/settings";
+import {
+	cfgReadGroupAcrossStreams,
+	cfgReadToolResultPreview,
+	cfgToolsApproval,
+	cfgToolsApprovalMode,
+} from "../../tools/settings";
 import { cfgSpeechEnabled, cfgSpeechMode } from "../../tts/settings";
 
 type AgentSessionEventKind = AgentSessionEvent["type"];
@@ -591,6 +596,16 @@ export class EventController {
 		if (timeline && !this.#toolTimelineComponents.has(newId)) {
 			this.#toolTimelineComponents.delete(oldId);
 			this.#toolTimelineComponents.set(newId, timeline);
+		}
+		const postToolSegment = this.#postToolAssistantComponents.get(oldId);
+		if (postToolSegment && !this.#postToolAssistantComponents.has(newId)) {
+			this.#postToolAssistantComponents.delete(oldId);
+			this.#postToolAssistantComponents.set(newId, postToolSegment);
+		}
+		const completion = this.#orphanedToolCompletions.get(oldId);
+		if (completion && !this.#orphanedToolCompletions.has(newId)) {
+			this.#orphanedToolCompletions.delete(oldId);
+			this.#orphanedToolCompletions.set(newId, { ...completion, toolCallId: newId });
 		}
 		// The reveal controller is id-keyed; drop the stale target so the loop's
 		// setTarget/bind under the new id owns the paced reveal.
@@ -1162,6 +1177,7 @@ export class EventController {
 			this.ctx.addMessageToChat(event.message);
 			this.ctx.ui.requestRender();
 		} else if (event.message.role === "assistant") {
+			if (!cfgReadGroupAcrossStreams.get(this.ctx.settings)) this.#resetReadGroup();
 			// A streaming component left over from an attempt that never saw its
 			// message_end (a mid-stream throw the loop could not pair) must not stay
 			// live: one unfinalized block at the transcript frontier blocks history
@@ -1784,6 +1800,7 @@ export class EventController {
 					);
 				}
 			}
+			if (!cfgReadGroupAcrossStreams.get(this.ctx.settings)) this.#resetReadGroup();
 			if (displayMessage === event.message) {
 				this.ctx.transcriptMessageComponents.set(event.message, this.ctx.streamingComponent);
 			}

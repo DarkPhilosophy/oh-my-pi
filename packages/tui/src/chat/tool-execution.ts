@@ -339,9 +339,9 @@ export class ToolExecutionComponent extends Container {
 		return this.#toolName === "bash" || this.#toolName === "eval";
 	}
 
-	/** Eval results become immutable transcript history as soon as they finalize. */
+	/** Completed foreground results may retire while other calls or the assistant still stream. */
 	get commitToHistoryOnFinalize(): boolean {
-		return this.#toolName === "eval";
+		return !this.isTranscriptBlockTransient() && !this.isDisplaceableBlock();
 	}
 	#contentBox: Box; // Used for custom tools and bash visual truncation
 	#contentText: WidthAwareText; // Generic fallback (no custom/built-in renderer)

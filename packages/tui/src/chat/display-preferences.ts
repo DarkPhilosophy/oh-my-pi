@@ -2,6 +2,7 @@
 export interface ChatTranscriptDisplayPreferences {
 	hideToolActivity: boolean;
 	readToolResultPreview: boolean;
+	readGroupAcrossStreams: boolean;
 	showImages: boolean;
 	cacheMissMarker: boolean;
 	showTokenUsage: boolean;
@@ -12,6 +13,7 @@ export interface ChatTranscriptDisplayPreferences {
 export const chatTranscriptDisplayPreferences: ChatTranscriptDisplayPreferences = {
 	hideToolActivity: false,
 	readToolResultPreview: false,
+	readGroupAcrossStreams: true,
 	showImages: true,
 	cacheMissMarker: false,
 	showTokenUsage: false,

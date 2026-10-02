@@ -19,6 +19,9 @@
 
 - Fixed blank bands left in chat and scrollback after answering or cancelling an inline Ask dialog.
 - Fixed oversized expanded Bash and Eval code previews losing their overflow marker while arguments were still streaming.
+- Fixed completed tool output losing rows from scrollback while later tools in the same batch were still running.
+- Completed foreground results, including custom extension tools, enter transcript history as soon as they finish, without requiring overflow or a later response.
+- Grouped read previews keep their pending summary below completed results and show request usage below the group footer.
 - Fixed the `/advisor configure` tools editor letting arrow keys move onto rows clipped by the right pane, so Enter could toggle a tool that was not visible ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - `SelectList` now keeps keyboard focus on the intended item after a focus transition ([#11207](https://github.com/can1357/oh-my-pi/pull/11207) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Improved incremental Markdown lexing to reuse append-only guard scans and stable block boundaries during streaming ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
