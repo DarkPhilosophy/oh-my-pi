@@ -18,7 +18,10 @@
 ### Fixed
 
 - Fixed blank bands left in chat and scrollback after answering or cancelling an inline Ask dialog.
+- Fixed answered Ask cards developing a temporary blank band above live output while later calls change state.
 - Fixed oversized expanded Bash and Eval code previews losing their overflow marker while arguments were still streaming.
+- Fixed live Bash output disappearing after a long command had already been published to scrollback.
+- Fixed staged output frames narrowing underneath the completed command frame.
 - Fixed completed tool output losing rows from scrollback while later tools in the same batch were still running.
 - Completed foreground results, including custom extension tools, enter transcript history as soon as they finish, without requiring overflow or a later response.
 - Grouped read previews keep their pending summary below completed results and show request usage below the group footer.

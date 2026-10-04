@@ -227,14 +227,11 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 		? Math.max(stageWidth(sections.slice(firstLiveSection), false), liveLabelWidth, options.minLiveWidth ?? 0)
 		: lineWidth;
 	const liveFitted = staged ? Math.min(Math.max(width, 0), Math.max(liveWidth, visibleWidth(cap) + 2)) : lineWidth;
-	// A one- or two-column step between the boxes reads as a rendering glitch rather than a deliberate
-	// join, so near-equal boxes share a width. Snap the lower box to the top one, but never below what
-	// its own content and label need.
-	const NEAR_EQUAL_COLUMNS = 2;
+	// The live result continues the command frame. It may widen for output,
+	// but must not collapse into a separate narrow box below the frozen head.
 	const liveSnapped = Math.max(
-		staged && liveFitted !== topWidth && Math.abs(liveFitted - topWidth) <= NEAR_EQUAL_COLUMNS
-			? Math.min(Math.max(width, 0), Math.max(topWidth, liveFitted))
-			: liveFitted,
+		liveFitted,
+		staged ? topWidth : 0,
 		staged ? Math.min(Math.max(width, 0), liveLabelWidth) : 0,
 	);
 	const rowWidth = (live: boolean): number => (staged ? (live ? liveSnapped : topWidth) : lineWidth);

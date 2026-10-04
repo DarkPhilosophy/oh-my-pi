@@ -125,6 +125,104 @@ afterEach(() => {
 });
 
 describe("bug 1: slot shrink (ask answered) must return chat and editor to the bottom without jumping", () => {
+	it.each([30, 50, 70])("keeps a real completed Ask contiguous while Eval is partial at %s rows", async rows => {
+		const h = makeHarness(0, rows);
+		const ask = new ToolExecutionComponent(
+			"ask",
+			{ questions: [{ id: "q", question: "ASK_REAL_QUESTION", options: [{ label: "Choice" }] }] },
+			{},
+			undefined,
+			h.composer.ui,
+		);
+		const live = new ToolExecutionComponent(
+			"eval",
+			{ language: "js", title: "LIVE_REAL_EVAL", code: "display(1)" },
+			{},
+			undefined,
+			h.composer.ui,
+		);
+		cards.push(ask, live);
+		try {
+			await h.scheduler.settle(h.terminal);
+			h.transcript.addChild(ask);
+			ask.updateResult(
+				{
+					content: [{ type: "text", text: "Choice" }],
+					details: {
+						results: [
+							{ id: "q", question: "ASK_REAL_QUESTION", options: ["Choice"], selectedOptions: ["Choice"] },
+						],
+					},
+				},
+				false,
+			);
+			h.composer.ui.requestRender();
+			await h.scheduler.settle(h.terminal);
+			h.transcript.addChild(live);
+			live.setArgsComplete();
+			live.setExecutionStarted();
+			for (let step = 1; step <= 4; step++) {
+				live.updateResult({ content: [{ type: "text", text: "LIVE_REAL_OUTPUT_" + step }] }, true);
+				h.composer.ui.requestRender();
+				await h.scheduler.settle(h.terminal);
+				const all = tape(h.terminal);
+				expect(bracketedBlankRuns(all)).toBe(0);
+				expect(all.filter(row => row.includes("ASK_REAL_QUESTION"))).toHaveLength(1);
+				expect(all.filter(row => row.includes("LIVE_REAL_OUTPUT_" + step))).toHaveLength(1);
+			}
+			live.updateResult({ content: [{ type: "text", text: "LIVE_REAL_FINAL" }] }, false);
+			h.composer.ui.requestRender();
+			await h.scheduler.settle(h.terminal);
+			expect(bracketedBlankRuns(tape(h.terminal))).toBe(0);
+			expect(tape(h.terminal).filter(row => row.includes("LIVE_REAL_FINAL"))).toHaveLength(1);
+		} finally {
+			h.composer.stop();
+		}
+	});
+
+	it.each([30, 50, 70])(
+		"keeps completed Ask adjacent to a live suffix across transient result changes at %s rows",
+		async rows => {
+			const h = makeHarness(0, rows);
+			const frames = async (target: Harness, count: number) => {
+				for (let index = 0; index < count; index++) {
+					target.composer.ui.requestRender();
+					await target.scheduler.settle(target.terminal);
+				}
+			};
+			let transient = true;
+			let suffix = ["PENDING_RECEIPT", "MESSAGE_BODY"];
+			const pending: Component & { isTranscriptBlockTransient(): boolean; isTranscriptBlockFinalized(): boolean } = {
+				render: () => suffix,
+				isTranscriptBlockTransient: () => transient,
+				isTranscriptBlockFinalized: () => !transient,
+			};
+			const ask: Component & { commitToHistoryOnFinalize: boolean; isTranscriptBlockFinalized(): boolean } = {
+				render: () => ["ASK_TOP", "ASK_QUESTION", "ASK_CHOICE", "ASK_BOTTOM"],
+				commitToHistoryOnFinalize: true,
+				isTranscriptBlockFinalized: () => true,
+			};
+			try {
+				await h.scheduler.settle(h.terminal);
+				h.transcript.addChild(ask);
+				await frames(h, 3);
+				h.transcript.addChild(pending);
+				for (let frame = 0; frame < 3; frame++) {
+					await frames(h, 1);
+					expect(bracketedBlankRuns(tape(h.terminal))).toBe(0);
+					expect(tape(h.terminal).filter(row => row === "ASK_TOP")).toHaveLength(1);
+				}
+				transient = false;
+				suffix = ["INJECTED_RECEIPT", "MESSAGE_BODY"];
+				await frames(h, 3);
+				expect(bracketedBlankRuns(tape(h.terminal))).toBe(0);
+				expect(tape(h.terminal).filter(row => row === "ASK_TOP")).toHaveLength(1);
+			} finally {
+				h.composer.stop();
+			}
+		},
+	);
+
 	interface Pos {
 		editorRow: number;
 		lastTranscriptRow: number;
@@ -412,6 +510,68 @@ describe("bug 2: finalized output of a running bash call must reach history with
 			},
 		};
 	}
+
+	it.each([
+		{ rows: 12, expanded: true },
+		{ rows: 30, expanded: true },
+		{ rows: 12, expanded: false },
+		{ rows: 30, expanded: false },
+	])(
+		"keeps output live after a long Bash command enters history at $rows rows (expanded=$expanded)",
+		async ({ rows, expanded }) => {
+			const h = makeHarness(40, rows);
+			const command = Array.from(
+				{ length: 80 },
+				(_, row) =>
+					"echo COMMAND_STAGE_" + String(row).padStart(3, "0") + " alpha beta gamma delta epsilon zeta eta theta",
+			).join("\n");
+			const card = new ToolExecutionComponent("bash", { command, timeout: 900 }, {}, undefined, h.composer.ui);
+			cards.push(card);
+			try {
+				await h.scheduler.settle(h.terminal);
+				h.transcript.addChild(card);
+				card.setExpanded(expanded);
+				card.setArgsComplete();
+				card.setExecutionStarted();
+				h.composer.ui.requestRender();
+				await h.scheduler.settle(h.terminal);
+				expect(h.transcript.emittedStableRows().at(-1)).toBeGreaterThan(0);
+				expect(strip(h.terminal.getViewport()).join("\n")).toMatch(/Output.*Running/);
+				for (let step = 0; step < 3; step++) {
+					card.updateResult({ content: [{ type: "text", text: "LIVE_STAGE_OUTPUT_" + step }] }, true);
+					h.composer.ui.requestRender();
+					await h.scheduler.settle(h.terminal);
+					const history = strip(h.terminal.getScrollBuffer().slice(0, -h.terminal.rows)).join("\n");
+					const view = strip(h.terminal.getViewport()).join("\n");
+					if (expanded) expect(history).toContain("COMMAND_STAGE_000");
+					expect(h.transcript.emittedStableRows().at(-1)).toBeGreaterThan(0);
+					expect(card.isTranscriptBlockFinalized()).toBeFalse();
+					expect(view).toContain("LIVE_STAGE_OUTPUT_" + step);
+					expect(view).toMatch(/Output.*Running/);
+				}
+				card.updateResult(
+					{
+						content: [{ type: "text", text: "LIVE_STAGE_FINAL" }],
+						isError: rows === 30,
+						details: { exitCode: rows === 30 ? 1 : 0 },
+					},
+					false,
+				);
+				h.composer.ui.requestRender();
+				await h.scheduler.settle(h.terminal);
+				const all = tape(h.terminal).join("\n");
+				expect(all.match(/COMMAND_STAGE_000/g)).toHaveLength(1);
+				expect(all.match(/LIVE_STAGE_FINAL/g)).toHaveLength(1);
+				if (expanded)
+					expect(Array.from(all.matchAll(/COMMAND_STAGE_\d{3}/g), match => match[0])).toEqual(
+						Array.from({ length: 80 }, (_, row) => `COMMAND_STAGE_${String(row).padStart(3, "0")}`),
+					);
+				expect(missingTranscriptRows(tape(h.terminal), 40)).toEqual([]);
+			} finally {
+				h.composer.stop();
+			}
+		},
+	);
 
 	for (const tool of ["bash", "eval"] as const) {
 		it(`${tool}: the finalized command is committed to history while its output still streams`, async () => {

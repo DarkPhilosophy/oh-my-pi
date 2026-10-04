@@ -2,17 +2,8 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { renderOutputBlock } from "@oh-my-pi/pi-tui/render/output-block";
 import { getThemeByName, initTheme, type Theme } from "@oh-my-pi/pi-tui/theme";
 
-// A staged block draws two boxes, each as wide as its own content, joined by one connector row:
-//
-//   short top, long bottom         long top, short bottom
-//   ╭──Eval ───────╮               ╭──Eval ──────────────────╮
-//   │ short code   │               │ a very long line of code│
-//   ├── Output ────┴──────────╮    ├── Output ───┬───────────╯
-//   │ a long output line here │    │ short out   │
-//   ╰─────────────────────────╯    ╰─────────────╯
-//
-// The top stage never changes width once its content is known, so its rows can be committed to
-// history; only the connector row and the lower box follow the output.
+// The completed command keeps its width and bytes. Its result continues at
+// least that width, and can widen for longer output without rewriting history.
 
 let theme: Theme;
 
@@ -49,15 +40,31 @@ describe("two-width staged box", () => {
 		expect(rows[connector]!.trimEnd().endsWith("╮")).toBe(true);
 	});
 
-	it("long code over short output: the lower box is narrower and the connector closes with ┬ and ╯", () => {
+	it("long code over short output: the result continues the completed command frame", () => {
 		const rows = render("a very long line of code that is much wider than the output below", "ok");
 		const top = rows.findIndex(row => row.startsWith("╭"));
 		const connector = rows.findIndex(row => row.startsWith("├"));
 		expect(widthOf(rows[connector]!)).toBe(widthOf(rows[top]!));
-		expect(rows[connector]).toContain("┬");
-		expect(rows[connector]!.trimEnd().endsWith("╯")).toBe(true);
+		expect(rows[connector]).not.toContain("┬");
+		expect(rows[connector]!.trimEnd().endsWith("┤")).toBe(true);
 		const bottom = rows.findLast(row => row.startsWith("╰"))!;
-		expect(widthOf(bottom)).toBeLessThan(widthOf(rows[top]!));
+		expect(widthOf(bottom)).toBe(widthOf(rows[top]!));
+	});
+
+	it.each([1, 2, 8, 30])("bounds both staged frames to a %s-column terminal", width => {
+		const rows = renderOutputBlock(
+			{
+				header: "Bash",
+				state: "running",
+				stageTone: "success",
+				width,
+				fitToContent: true,
+				minLiveWidth: 200,
+				sections: [{ lines: ["x".repeat(200)] }, { label: "Output Running", lines: ["short"] }],
+			},
+			theme,
+		);
+		expect(rows.every(row => widthOf(Bun.stripANSI(row)) <= width)).toBeTrue();
 	});
 
 	it("the top box never changes width or bytes when the output changes", () => {

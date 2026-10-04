@@ -418,6 +418,7 @@ describe("EventController mixed assistant text/tool rendering", () => {
 			result: { content: [{ type: "text", text: TOOL_RESULT_B_MARKER }] },
 			isError: false,
 		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+
 		await controller.handleEvent({ type: "message_end", message: completed } as Extract<
 			AgentSessionEvent,
 			{ type: "message_end" }
@@ -436,6 +437,76 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		expect(middleLine).toBeLessThan(toolResultBLine);
 		expect(toolResultBLine).toBeLessThan(finalLine);
 	});
+	it.each(["aborted", "error"] as const)(
+		"preserves a delivered Eval result after a %s streaming cutoff",
+		async stopReason => {
+			const terminal = new VirtualTerminal(100, 30);
+			const scheduler = new VirtualRenderScheduler();
+			const composer = new Composer({
+				terminal,
+				preferences: { quiet: true },
+				tuiOptions: { renderScheduler: scheduler },
+			});
+			const { controller, ctx, chatContainer } = createFixture(false, () => undefined, true, composer.ui);
+			composer.setRuntimeChildren([chatContainer, new Text("EDITOR", 0, 0)]);
+			composer.start({ playWelcomeIntro: false });
+			const call: ToolCall = {
+				type: "toolCall",
+				id: "cutoff-eval",
+				name: "eval",
+				arguments: {
+					language: "js",
+					title: "CUTOFF_EVAL",
+					code: Array.from({ length: 80 }, (_, row) => "// CODE_ROW_" + row).join("\n"),
+				},
+			};
+			try {
+				await scheduler.settle(terminal);
+				await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+				const partial = assistantMessage([call]);
+				await controller.handleEvent({
+					type: "message_update",
+					message: partial,
+					assistantMessageEvent: { type: "toolcall_end", contentIndex: 0, toolCall: call, partial },
+				});
+				await controller.handleEvent({
+					type: "tool_execution_start",
+					toolCallId: call.id,
+					toolName: call.name,
+					args: call.arguments,
+				});
+				await controller.handleEvent({
+					type: "tool_execution_update",
+					toolCallId: call.id,
+					toolName: call.name,
+					args: call.arguments,
+					partialResult: { content: [{ type: "text", text: "EVAL_BEFORE_CUTOFF" }] },
+				});
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+				const failed = { ...partial, stopReason, errorMessage: "TRANSPORT_CUTOFF" };
+				await controller.handleEvent({ type: "message_end", message: failed });
+				await controller.handleEvent({
+					type: "tool_execution_end",
+					toolCallId: call.id,
+					toolName: call.name,
+					result: { content: [{ type: "text", text: "EVAL_DELIVERED_FINAL_RESULT" }] },
+					isError: true,
+				});
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+				const tape = terminal
+					.getScrollBuffer()
+					.map(row => Bun.stripANSI(row))
+					.join("\n");
+				expect(tape.match(/EVAL_DELIVERED_FINAL_RESULT/g)).toHaveLength(1);
+				expect(ctx.pendingTools.has(call.id)).toBeFalse();
+			} finally {
+				for (const card of ctx.pendingTools.values()) card.seal();
+				composer.stop();
+			}
+		},
+	);
 
 	it("commits finished calls from a mixed batch before the assistant stream and later calls finish", async () => {
 		const terminal = new VirtualTerminal(120, 14);

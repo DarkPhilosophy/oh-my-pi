@@ -4079,9 +4079,12 @@ export class TUI extends Container {
 		// out, and it runs once per emitted frame instead of once per retry.
 		let viewport = viewportRows;
 		this.#imageBudget.limitResidentImages();
+		// Retained producers restore only actual history below. Padding their
+		// short history to screen height would insert a gap before the live suffix.
 		let restoredPrefixRows = 0;
 		if (
 			!flushing &&
+			!retainedLiveViewport &&
 			offered === undefined &&
 			inferredHistory.length === 0 &&
 			viewport.length < height &&
@@ -4107,6 +4110,12 @@ export class TUI extends Container {
 			(flushing && this.#providerVisibleHistory.length > 0) ||
 			(history !== undefined &&
 				(retainedLiveViewport || viewportExpansionRows > 0 || this.#providerViewportExpansionRows > 0)) ||
+			(retainedLiveViewport &&
+				offered === undefined &&
+				inferredHistory.length === 0 &&
+				viewport.length < height &&
+				viewportExpansionRows > 0 &&
+				this.#providerVisibleHistory.length > 0) ||
 			(viewportExpansionRows === 0 &&
 				this.#providerViewportExpansionRows > 0 &&
 				this.#providerVisibleHistory.length > 0)

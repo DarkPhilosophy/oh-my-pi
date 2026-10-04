@@ -731,12 +731,20 @@ export class TranscriptContainer extends Container {
 			const mutableTool =
 				entry.state === "active" &&
 				(entry.component as TranscriptPresentationTarget).setTranscriptAllocation !== undefined;
-			this.#setAllocation(entry, mutableTool ? rows : Number.MAX_SAFE_INTEGER, frame);
+			const projected = this.#projectedEmittedRowCount(entry, index, width);
+			// Staged mutable cards still render their published prefix; it is sliced
+			// below, so reserve the live budget in addition to that hidden prefix.
+			this.#setAllocation(
+				entry,
+				mutableTool
+					? Math.min(Number.MAX_SAFE_INTEGER, rows + (entry.mode === "mutable" ? projected : 0))
+					: Number.MAX_SAFE_INTEGER,
+				frame,
+			);
 			// Only hide rows the terminal still owns verbatim. A card that reshaped
 			// after lending its head (status, spinner, partial result, width change)
 			// no longer matches those bytes, and slicing them would bite rows out of
 			// a card that fits the viewport.
-			const projected = this.#projectedEmittedRowCount(entry, index, width);
 			const offset =
 				entry.mode === "mutable" &&
 				projected > 0 &&
@@ -1053,20 +1061,27 @@ export class TranscriptContainer extends Container {
 		width: number,
 		limit: number,
 	): HistoryBatch | undefined {
-		const raw = head.component.render(width);
-		let leadingBlankRows = 0;
-		while (leadingBlankRows < raw.length && isPlainBlank(raw[leadingBlankRows]!)) leadingBlankRows++;
-		const renderedHead = this.#renderEntry(head, width);
-		const emittedEnd = Math.min(renderedHead.length, Math.max(0, settledRows - leadingBlankRows), limit);
-		if (emittedEnd <= head.emitted) return undefined;
-		const batch: HistoryBatch = {
-			id: this.#nextBatchId++,
-			rows: renderedHead.slice(head.emitted, emittedEnd),
-			kind: "append",
-		};
-		this.#offered = { batch, kind: "append", entry: this.#frontier, emittedEnd };
-		this.#pinnedFrontier = undefined;
-		return batch;
+		const previousAllocation = head.allocation ?? Number.MAX_SAFE_INTEGER;
+		// Settled counts describe the unclipped card, not its viewport fallback.
+		this.#setAllocation(head, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+		try {
+			const raw = head.component.render(width);
+			let leadingBlankRows = 0;
+			while (leadingBlankRows < raw.length && isPlainBlank(raw[leadingBlankRows]!)) leadingBlankRows++;
+			const renderedHead = this.#renderEntry(head, width);
+			const emittedEnd = Math.min(renderedHead.length, Math.max(0, settledRows - leadingBlankRows), limit);
+			if (emittedEnd <= head.emitted) return undefined;
+			const batch: HistoryBatch = {
+				id: this.#nextBatchId++,
+				rows: renderedHead.slice(head.emitted, emittedEnd),
+				kind: "append",
+			};
+			this.#offered = { batch, kind: "append", entry: this.#frontier, emittedEnd };
+			this.#pinnedFrontier = undefined;
+			return batch;
+		} finally {
+			this.#setAllocation(head, previousAllocation, this.#lastFrame);
+		}
 	}
 
 	/** Acknowledges exactly the most recently offered append, commit, or replay transaction. */
@@ -1316,6 +1331,9 @@ export class TranscriptContainer extends Container {
 		const offered = this.#offered;
 		const count = offered?.kind === "append" && offered.entry === index ? offered.emittedEnd : entry.emitted;
 		if (count === 0) return 0;
+		// Mutable staged publications already count physical rows; an allocated
+		// compact snapshot must not shrink the prefix the terminal owns.
+		if (entry.mode === "mutable") return count;
 		const perCount = entry.stableRowCountByWidth.get(width);
 		const memo = perCount?.get(Math.min(count, entry.stableRows.length));
 		if (memo !== undefined) return memo;
