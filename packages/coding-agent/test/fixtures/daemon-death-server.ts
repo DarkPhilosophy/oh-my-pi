@@ -62,6 +62,7 @@ const runtimeFactory = async ({
 				queuedMessages: { steering: [], followUp: [] },
 				hasPendingAsyncWork: false,
 				isSettled: true,
+				goal: null,
 				todoPhases: [],
 			},
 			cwd,

@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, spyOn, vi } from "bun:test";
+import * as fsp from "node:fs/promises";
 import { stripVTControlCharacters } from "node:util";
 import { generateRoomKey, importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
 import { CollabGuestLink } from "@oh-my-pi/pi-coding-agent/collab/guest";
@@ -381,6 +382,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 	it("unregisters a live tool block from the shared ticker via the guest resync teardown", async () => {
 		installInMemoryRelay();
 		const writeSpy = spyOn(Bun, "write").mockResolvedValue(0);
+		const renameSpy = spyOn(fsp, "rename").mockResolvedValue(undefined);
 		try {
 			vi.useFakeTimers();
 
@@ -524,6 +526,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 			}
 		} finally {
 			writeSpy.mockRestore();
+			renameSpy.mockRestore();
 			uninstallInMemoryRelay();
 			stopSharedSpinnerTicker();
 		}
@@ -548,6 +551,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 	it("folds a displaceable poll/todo block into orphan cleanup when guest resync staging fails", async () => {
 		installInMemoryRelay();
 		const writeSpy = spyOn(Bun, "write").mockResolvedValue(0);
+		const renameSpy = spyOn(fsp, "rename").mockResolvedValue(undefined);
 		try {
 			vi.useFakeTimers();
 
@@ -732,6 +736,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 			}
 		} finally {
 			writeSpy.mockRestore();
+			renameSpy.mockRestore();
 			uninstallInMemoryRelay();
 			stopSharedSpinnerTicker();
 		}
@@ -748,6 +753,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 	it("seals rather than disposes orphaned blocks when guest resync staging fails", async () => {
 		installInMemoryRelay();
 		const writeSpy = spyOn(Bun, "write").mockResolvedValue(0);
+		const renameSpy = spyOn(fsp, "rename").mockResolvedValue(undefined);
 		try {
 			vi.useFakeTimers();
 
@@ -910,6 +916,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 			}
 		} finally {
 			writeSpy.mockRestore();
+			renameSpy.mockRestore();
 			uninstallInMemoryRelay();
 			stopSharedSpinnerTicker();
 		}

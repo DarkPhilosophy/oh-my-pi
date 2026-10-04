@@ -4,9 +4,8 @@ import type { TspSpan } from "@oh-my-pi/pi-wire";
 import { formatDoubleTap, formatKeyHint, formatKeyHints, type KeyName } from "../app-keybindings";
 import { editorKey } from "../chrome/keybinding-hints";
 import { getKeybindings, type Keybinding } from "../keybindings";
-import { card, col, kbd, keyed, node, row, span, text } from "../native/describe";
-import type { DescribeContext, NativeChild, NativeNode, NativeUiEvent } from "../native/node";
-import { runTranscriptAction } from "../chat/transcript-actions";
+import { card, col, keyed, node, row, span, text } from "../native/describe";
+import type { DescribeContext, NativeChild, NativeNode } from "../native/node";
 import { plainLine } from "../native/spans";
 import { isNativeRendering } from "../native/state";
 import { TERMINAL } from "../terminal-capabilities";
@@ -21,18 +20,6 @@ const TIPS: readonly string[] = tipsText
 	.split("\n")
 	.map(line => line.trim())
 	.filter(line => line.length > 0);
-
-/**
- * Fixed number of session rows in the welcome box so its height stays stable
- * across recent-session updates.
- */
-export const WELCOME_SESSION_SLOTS = 4;
-
-/**
- * Fixed number of LSP-server rows, for the same reason. Overflow is sliced so
- * the box height is constant regardless of how many servers a project has.
- */
-export const WELCOME_LSP_SLOTS = 4;
 
 /** Trailing marker that flags a tip as a "what's new" callout. Stripped before
  *  wrapping (with any preceding whitespace) and replaced by {@link NEW_TAG_TEXT}
@@ -121,48 +108,58 @@ function expandTipKeys(tip: string): string {
 	});
 }
 
-export function renderWelcomeTip(tip: string, boxWidth: number, phase = 0): string[] {
+/**
+ * The welcome tip as lines of at most `width` columns: `Tip:` and the body
+ * wrapped together, with no indent, so the banner can center each line.
+ * `[]` when `width` leaves no room for a useful line.
+ */
+export function renderWelcomeTip(tip: string, width: number, phase = 0): string[] {
 	const label = "Tip: ";
-	const labelWidth = visibleWidth(label);
-	const bodyBudget = boxWidth - 1 - labelWidth; // 1 = leading indent
-	if (bodyBudget < 8) return [];
+	if (width - visibleWidth(label) < 8) return [];
 
 	const isNew = NEW_TIP_MARKER.test(tip);
 	const body = expandTipKeys(isNew ? tip.replace(NEW_TIP_MARKER, "") : tip);
 
-	const wrappedBody = wrapTextWithAnsi(replaceTabs(body), bodyBudget);
-	if (wrappedBody.length === 0) return [];
+	// Trailing spaces left by the wrap would count toward the width the banner centers.
+	const wrapped = wrapTextWithAnsi(replaceTabs(`${label}${body}`), width).map(line => line.trimEnd());
+	if (wrapped.length === 0) return [];
 
 	// Pull both colors from the active theme so the line stays readable on light
 	// themes; the previous hardcoded `#b48cff` / `#9ccfff` pastels (plus a manual
 	// `\x1b[2m` dim on the body) dropped to ~1.5:1 contrast on a white background.
-	const continuationIndent = padding(labelWidth);
 	const styledLabel = theme.fg("customMessageLabel", label);
-
-	const lines = wrappedBody.map((line, index) => {
-		const styledBody = theme.fg("muted", line);
-		const content = index === 0 ? `${styledLabel}${styledBody}` : `${continuationIndent}${styledBody}`;
-		return ` ${theme.italic(content)}`;
-	});
+	const lines = wrapped.map((line, index) =>
+		theme.italic(
+			index === 0 && line.startsWith(label)
+				? `${styledLabel}${theme.fg("muted", line.slice(label.length))}`
+				: theme.fg("muted", line),
+		),
+	);
 
 	if (isNew) {
-		// Append the rainbow tag to the final body line when it fits within the
-		// box; otherwise drop it onto its own indented continuation line so the
-		// styled glyphs never overflow or reflow the wrapped body.
+		// Append the rainbow tag to the final line when it fits; otherwise give it
+		// a line of its own so the styled glyphs never overflow the width.
 		const encoding: ColorEncoding = TERMINAL.trueColor ? "ansi-16m" : "ansi-256";
 		const tag = renderNewTag(phase, encoding);
 		const tagWidth = 1 + visibleWidth(NEW_TAG_TEXT); // 1 = space separator
 		const lastLine = lines[lines.length - 1];
-		if (lastLine !== undefined && visibleWidth(lastLine) + tagWidth <= boxWidth) {
+		if (lastLine !== undefined && visibleWidth(lastLine) + tagWidth <= width) {
 			lines[lines.length - 1] = `${lastLine} ${tag}`;
 		} else {
-			lines.push(` ${continuationIndent}${tag}`);
+			lines.push(tag);
 		}
 	}
 
 	return lines;
 }
 
+/**
+ * The session's welcome banner. In a terminal: the gradient logo beside the
+ * `omp` wordmark with the version under it (the logo alone when the lockup does
+ * not fit) and the tip of the session (dropped below {@link TIP_MIN_COLUMNS}
+ * columns). Natively: a card with the same logo, wordmark, version and tip
+ * ({@link WelcomeComponent.describe}).
+ */
 export interface RecentSession {
 	name: string;
 	timeAgo: string;
@@ -176,10 +173,8 @@ export interface LspServerInfo {
 	fileTypes: string[];
 }
 
-/**
- * Premium welcome screen with block-based OMP logo and two-column layout.
- */
 export class WelcomeComponent implements Component {
+	readonly #enrichedLayout: boolean;
 	#animStart: number | null = null;
 	#animTimer: Timer | null = null;
 	#requestRender: (() => void) | null = null;
@@ -199,12 +194,15 @@ export class WelcomeComponent implements Component {
 
 	constructor(
 		private version: string,
-		private modelName: string,
-		private providerName: string,
+		private modelName: string = "",
+		private providerName: string = "",
 		private recentSessions: RecentSession[] = [],
 		/** Detected project servers; `null` means LSP is disabled and hides the section. */
 		private lspServers: LspServerInfo[] | null = [],
-	) {}
+	) {
+		this.#enrichedLayout = arguments.length > 1;
+	}
+
 	get tip(): string | undefined {
 		this.#nagRoll ??= Math.random();
 		this.#tipRoll ??= Math.random();
@@ -221,25 +219,21 @@ export class WelcomeComponent implements Component {
 	}
 
 	/**
-	 * A `card` (`omp.welcome`) titled with the app version. The brand column
-	 * (`omp.welcome.brand`: greeting and the terminal's builtin `omp` mark, which
-	 * it animates) sits beside the info column (`omp.welcome.info`: prompt-sigil
-	 * keycaps, LSP servers, recent sessions); the tip of the session closes the card. Roles
-	 * carry the look (gradient logo, type scale, column hairline); a "[NEW]" tip
+	 * A `card` (`omp.welcome`) mirroring the terminal banner: the lockup
+	 * (`omp.welcome.lockup`: the terminal's builtin `omp` mark, which it animates,
+	 * beside the wordmark with the version under it) and the tip of the session.
+	 * Roles carry the look (gradient logo, type scale); a "[NEW]" tip
 	 * carries a terminal-clocked shimmering tag.
 	 */
 	describe(_cx: DescribeContext): NativeNode {
 		const tip = this.tip;
 		if (this.#native && this.#native.tip === tip) return this.#native.node;
-		const line = (spans: readonly TspSpan[], role?: string, key?: string): NativeNode =>
-			keyed(text(spans, { wrap: "none", truncate: "end", role }), key ?? role ?? "");
-		// Centered brand lines are short and fixed; the logo is multi-line art that must never truncate.
+		// Brand lines are short and fixed; never wrap or truncate them.
 		const art = (spans: readonly TspSpan[], role: string): NativeNode =>
 			keyed(text(spans, { wrap: "none", role }), role);
-		const brand = keyed(
-			col(
+		const lockupRow = keyed(
+			row(
 				[
-					art([span("Welcome back!", "strong")], "omp.welcome.greeting"),
 					node(
 						"image",
 						{
@@ -251,93 +245,22 @@ export class WelcomeComponent implements Component {
 						undefined,
 						"logo",
 					),
-				],
-				{ align: "center", role: "omp.welcome.brand" },
-			),
-			"brand",
-		);
-		const section = (key: string, label: string, rows: readonly NativeChild[]): NativeNode =>
-			keyed(
-				col([line([span(label, "dim")], "omp.welcome.heading"), ...rows], {
-					gap: "xs",
-					role: `omp.welcome.${key}`,
-				}),
-				key,
-			);
-		const shortcut = (key: string, label: string): NativeNode =>
-			keyed(row([kbd(key), line([span(label, "muted")])], { gap: "sm" }), label);
-		const info: NativeChild[] = [
-			line([span(this.version, "dim mono")], "omp.welcome.version"),
-			section("tips", "Tips", [
-				shortcut("#", "prompt actions"),
-				shortcut("/", "commands"),
-				shortcut("!", "run bash"),
-				shortcut("$", "run python"),
-			]),
-		];
-		if (this.lspServers !== null) {
-			const lsp: NativeChild[] = [];
-			if (this.lspServers.length === 0) lsp.push(line([span("No LSP servers", "dim")], undefined, "none"));
-			for (const server of this.lspServers.slice(0, WELCOME_LSP_SLOTS)) {
-				const [symbol, token] =
-					server.status === "ready"
-						? (["status.enabled", "success"] as const)
-						: server.status === "available"
-							? (["status.enabled", "dim"] as const)
-							: server.status === "connecting"
-								? (["status.pending", "muted"] as const)
-								: (["status.error", "error"] as const);
-				lsp.push(
 					keyed(
-						row(
+						col(
 							[
-								text([span("●", token)], { role: "omp.welcome.lsp-dot", title: server.status, aria: symbol }),
-								line([span(server.name)]),
-								...server.fileTypes
-									.slice(0, 3)
-									.map(type => node("badge", { text: type, role: "omp.welcome.lsp-type" }, undefined, type)),
+								art([span(APP_NAME, "strong")], "omp.welcome.wordmark"),
+								art([span(`v${this.version}`, "dim mono")], "omp.welcome.version"),
 							],
-							{ gap: "sm", role: "omp.welcome.lsp-row" },
+							{ role: "omp.welcome.mark" },
 						),
-						server.name,
+						"mark",
 					),
-				);
-			}
-			info.push(section("lsp", "LSP servers", lsp));
-		}
-		const recents: NativeChild[] = [];
-		if (this.recentSessions.length === 0) recents.push(line([span("No recent sessions", "dim")], undefined, "none"));
-		for (const [index, session] of this.recentSessions.slice(0, WELCOME_SESSION_SLOTS).entries()) {
-			recents.push(
-				keyed(
-					row(
-						[
-							line([span(plainLine(session.name))], "omp.welcome.session"),
-							line([span(session.timeAgo, "dim")], "omp.welcome.age"),
-						],
-						{
-							gap: "md",
-							justify: "between",
-							role: "omp.welcome.recent",
-							actions: session.path ? { click: "resume" } : undefined,
-							title: session.path ? `Resume ${plainLine(session.name)}` : undefined,
-						},
-					),
-					`s${index}`,
-				),
-			);
-		}
-		info.push(section("recents", "Recent sessions", recents));
-		const body: NativeChild[] = [
-			keyed(
-				row([brand, keyed(col(info, { gap: "md", role: "omp.welcome.info" }), "info")], {
-					align: "start",
-					wrap: true,
-					role: "omp.welcome.grid",
-				}),
-				"grid",
+				],
+				{ align: "center", gap: "md", role: "omp.welcome.lockup" },
 			),
-		];
+			"lockup",
+		);
+		const body: NativeChild[] = [lockupRow];
 		if (tip) {
 			const isNew = NEW_TIP_MARKER.test(tip);
 			const tipText = plainLine(expandTipKeys(isNew ? tip.replace(NEW_TIP_MARKER, "") : tip));
@@ -348,17 +271,10 @@ export class WelcomeComponent implements Component {
 			if (isNew) tipRow.push(node("shimmer", { text: "New", role: "omp.welcome.new" }));
 			body.push(node("row", { gap: "sm", align: "start", role: "omp.welcome.tip" }, tipRow, "tip"));
 		}
-		// No head row or chevron: the card is the hero; the version sits in the info column.
+		// No head row or chevron: the card is the hero; the version sits under the wordmark.
 		const described = card({ role: "omp.welcome" }, body);
 		this.#native = { tip, node: described };
 		return described;
-	}
-	/** A click on a recent session resumes it. */
-	handleNativeEvent(event: NativeUiEvent): void {
-		if (event.type !== "action" || event.act !== "resume") return;
-		const index = Number(/\/s(\d+)$/.exec(event.key)?.[1]);
-		const path = this.recentSessions[index]?.path;
-		if (path) runTranscriptAction({ act: "resume", path });
 	}
 
 	/** The intro keeps the welcome block mutable; settling lets it retire to history. */
@@ -464,6 +380,20 @@ export class WelcomeComponent implements Component {
 	}
 
 	#renderLines(termWidth: number): string[] {
+		if (!this.#enrichedLayout) {
+			// Content keeps a column clear on each side; everything centers in the full width.
+			const room = termWidth - 2;
+			if (room < 4) return [];
+			const logo = this.#currentLogoFrame();
+			const version = theme.fg("dim", `v${this.version}`);
+			const lockupWidth = LOGO_WIDTH + LOCKUP_GAP + Math.max(WORDMARK_WIDTH, visibleWidth(version));
+			const art = room >= lockupWidth ? lockup(logo, version) : room >= LOGO_WIDTH ? logo : [];
+			const lines = centerBlock(art, termWidth);
+			const tip = termWidth >= TIP_MIN_COLUMNS ? this.#renderTip(room) : [];
+			if (tip.length > 0) lines.push("", ...tip.flatMap(line => centerBlock([line], termWidth)));
+			return lines;
+		}
+
 		// Box dimensions - responsive with max width and small-terminal support
 		const maxWidth = 100;
 		const boxWidth = Math.min(maxWidth, Math.max(0, termWidth - 2));
@@ -598,7 +528,10 @@ export class WelcomeComponent implements Component {
 		return lines;
 	}
 
-	/** Right-column LSP rows padded to a fixed height; empty when LSP is disabled. */
+	/**
+	 * The tip of the session wrapped to {@link TIP_MEASURE} columns (fewer when
+	 * `room` is narrower); `[]` when there is none or no room for it.
+	 */
 	#renderLspSection(separator: string): string[] {
 		if (this.lspServers === null) return [];
 		const lspLines: string[] = [];
@@ -625,20 +558,15 @@ export class WelcomeComponent implements Component {
 		return [separator, ` ${theme.bold(theme.fg("accent", "LSP Servers"))}`, ...lspLines];
 	}
 
-	/**
-	 * Render the per-instance tip line: the `customMessageLabel`-themed `Tip:`
-	 * label followed by a `muted` body, the whole line italicized. Returns `[]`
-	 * when no tip is available or the box is too narrow to be useful.
-	 */
-	#renderTip(boxWidth: number): string[] {
+	#renderTip(room: number): string[] {
 		const tip = this.tip;
 		if (!tip) return [];
 		// A trailing "[NEW]" marker paints an animated rainbow "NEW!" tag. Derive
 		// its hue phase from wall-clock time so it shimmers across the welcome
-		// intro's re-render frames, then settles into a still rainbow once the box
-		// caches its resting frame. Non-"[NEW]" tips ignore the phase entirely.
+		// intro's re-render frames, then settles into a still rainbow once the
+		// banner caches its resting frame. Non-"[NEW]" tips ignore the phase entirely.
 		const phase = NEW_TIP_MARKER.test(tip) ? performance.now() / NEW_GLOW_PERIOD_MS : 0;
-		return renderWelcomeTip(tip, boxWidth, phase);
+		return renderWelcomeTip(tip, Math.min(room, TIP_MEASURE), phase);
 	}
 
 	/** Center text within a given width */
@@ -688,6 +616,43 @@ export class WelcomeComponent implements Component {
 
 /** Block-grid brand mark shared by the welcome and setup surfaces. */
 export const PI_LOGO = ["████████████", "   ██  ██   ", "   ██  ██   ", "   ▒▒  ██   ", "       ██   "];
+
+/** Columns of {@link PI_LOGO}. */
+const LOGO_WIDTH = Math.max(...PI_LOGO.map(row => row.length));
+
+/**
+ * The `omp` wordmark in half-blocks, set beside {@link PI_LOGO} from its second
+ * row: the `p` descends into the fourth, the version takes the fifth.
+ */
+const WORDMARK = ["▄▀▀▄ █▀▄▀▄ █▀▀▄", "▀▄▄▀ █ █ █ █▄▄▀", "           █"];
+
+/** Columns of {@link WORDMARK}. */
+const WORDMARK_WIDTH = Math.max(...WORDMARK.map(row => row.length));
+
+/** Columns between the logo and the wordmark. */
+const LOCKUP_GAP = 4;
+
+/** Widest a welcome tip wraps, so a long one stays a centered paragraph. */
+const TIP_MEASURE = 72;
+
+/** Narrowest terminal that still shows the tip; below it the banner is the logo alone. */
+const TIP_MIN_COLUMNS = 50;
+
+/** Logo frame `logo` with the wordmark beside it and `version` (styled) under the wordmark. */
+function lockup(logo: readonly string[], version: string): string[] {
+	const beside = ["", ...WORDMARK.map(row => theme.bold(theme.fg("text", row))), version];
+	return logo.map((row, index) => `${row}${padding(LOCKUP_GAP)}${beside[index] ?? ""}`);
+}
+
+/**
+ * `lines` indented as one block whose widest line is centered in `width`
+ * columns; pass a single line to center it on its own.
+ */
+function centerBlock(lines: readonly string[], width: number): string[] {
+	const widest = lines.reduce((max, line) => Math.max(max, visibleWidth(line)), 0);
+	const indent = padding(Math.max(0, Math.floor((width - widest) / 2)));
+	return lines.map(line => indent + line);
+}
 
 /** The block-grid brand mark as accent lines; `shimmer` declares the terminal-clocked shine sweep. */
 export function logoNode(lines: readonly string[], shimmer: boolean): NativeNode {
@@ -827,3 +792,6 @@ function introLogoFrame(progress: number): string[] {
 
 /** Resting gradient frame, cached for re-renders outside of the intro. */
 const REST_FRAME = gradientLogo(PI_LOGO, 0);
+
+const WELCOME_SESSION_SLOTS = 4;
+const WELCOME_LSP_SLOTS = 4;

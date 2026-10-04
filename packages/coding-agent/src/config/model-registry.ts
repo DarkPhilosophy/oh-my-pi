@@ -7,6 +7,7 @@ import { registerOAuthProvider, unregisterOAuthProvider, unregisterOAuthProvider
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
 import { setCodexAttestationProvider } from "@oh-my-pi/pi-ai/providers/openai-codex-attestation";
 import { getProviderDefinition } from "@oh-my-pi/pi-ai/registry";
+import { getEnvApiKey, isOfficialCodexApiUrl } from "@oh-my-pi/pi-ai/stream";
 import type {
 	Api,
 	Context,
@@ -2251,16 +2252,32 @@ export class ModelRegistry {
 				authoritative: true,
 				resolveKey: value => value,
 				allowStoredOAuthAdmission: true,
-				createOptions: (accessToken, _raw, getOAuthAccess) =>
-					openaiCodexModelManagerOptions({
-						resolveAccounts: async () => {
-							const resolvedAccessToken = accessToken ?? (await getOAuthAccess?.())?.accessToken;
-							return resolvedAccessToken
-								? resolveCodexDiscoveryAccounts(this.authStorage, resolvedAccessToken)
-								: null;
-						},
+				createOptions: (accessToken, _raw, getOAuthAccess) => {
+					const configuredBaseUrl = this.#descriptorBaseUrl("openai-codex");
+					const officialCredential =
+						accessToken === undefined ||
+						accessToken === getEnvApiKey("openai-codex") ||
+						getOAuthCredentialsForProvider(this.authStorage, "openai-codex").some(
+							credential => credential.access === accessToken,
+						);
+					if (officialCredential || isOfficialCodexApiUrl(configuredBaseUrl)) {
+						return openaiCodexModelManagerOptions({
+							baseUrl: officialCredential ? undefined : configuredBaseUrl,
+							resolveAccounts: async () => {
+								const resolvedAccessToken = accessToken ?? (await getOAuthAccess?.())?.accessToken;
+								return resolvedAccessToken
+									? resolveCodexDiscoveryAccounts(this.authStorage, resolvedAccessToken)
+									: null;
+							},
+							fetch: this.#fetch,
+						});
+					}
+					return openaiCodexModelManagerOptions({
+						baseUrl: configuredBaseUrl,
+						resolveAccounts: async () => [{ accessToken }],
 						fetch: this.#fetch,
-					}),
+					});
+				},
 			},
 		];
 		const disabledProviders = getDisabledProviderIdsFromSettings(this.#settings);

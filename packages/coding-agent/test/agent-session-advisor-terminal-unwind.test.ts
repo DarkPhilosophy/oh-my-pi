@@ -10,7 +10,8 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
-type BoundaryTool = AgentTool<any, any, any>;
+const boundaryToolSchema = type({});
+type BoundaryTool = AgentTool<typeof boundaryToolSchema, undefined>;
 
 function textResponse(text: string): MockResponse {
 	return { content: [text], stopReason: "stop" };
@@ -37,7 +38,7 @@ function makeTool(name: string, execute: BoundaryTool["execute"]): BoundaryTool 
 		name,
 		label: name,
 		description: `${name} test tool`,
-		parameters: type({}),
+		parameters: boundaryToolSchema,
 		execute,
 	};
 }

@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+## [18.6.0] - 2026-10-03
+
+### Fixed
+
+- Fixed Antigravity chat and image requests sending an outdated client version when the model list came from cache, which could make newer models such as Claude Opus 5.5 unavailable.
+- When a DeepSeek model writes a broken DSML tool call (for example with the opening `<｜DSML｜tool_calls>` and `<｜DSML｜invoke>` tags missing), its closing tags are now kept in the streamed text instead of being dropped. This lets the agent remove exactly the broken call while keeping any text after it ([#14202](https://github.com/can1357/oh-my-pi/pull/14202) by [@H4vC](https://github.com/H4vC)).
+
+## [18.5.1] - 2026-10-03
+
+### Fixed
+
+- Fixed DeepSeek and OpenAI Responses requests failing or entering retry loops when replayed tool calls contained repaired arguments, orphaned tool results, or missing reasoning context.
+- Fixed requests to models that do not support sampling parameters from failing with HTTP 400 errors when accessed through non-native providers. Sampling parameters are now omitted for incompatible models, including requests made by chat judging, title generation, skill descriptions, and memory extraction.
+- Fixed OpenRouter BYOK usage being reported as free; provider inference costs and applicable credits charges are now included in session and status-line cost reporting.
+- Fixed Claude background and long-running bash commands losing their requested timeout and being terminated at the default deadline.
+- Fixed cleared credential cooldowns being incorrectly restored by another concurrently running session.
+- Fixed retryable Cursor provider errors, such as “Unable to reach the model provider,” from prematurely ending a turn.
+- Fixed resumed OpenAI Responses sessions losing earlier plaintext reasoning, which could cause self-hosted Responses servers to reprocess the entire context after a restart.
+- Fixed non-retryable HTTP 4xx responses being retried when their error messages contained transient-error terms such as “server_error,” “timeout,” or “overloaded.”
+- Fixed Cursor models receiving earlier multi-step tool calls as if they occurred simultaneously instead of in their original execution order.
+
+## [18.5.0] - 2026-10-03
+
+### Fixed
+
+- Fixed AWS `credential_process` on Windows stripping backslashes from unquoted paths such as `C:\Users\me\helper.exe`; commands are now split with Windows command-line rules there, matching the AWS CLI.
+
+## [18.4.12] - 2026-10-02
+
+### Added
+
+- Added `createAuthGatewayRouter`, the auth-gateway's routes without the HTTP listener, and `serveAuthGatewayStdio`, which serves them as JSON lines (`{"id", "path", "body"}` in, `{"id", "status", "body"}` out) for a parent process.
+
+## [18.4.11] - 2026-10-02
+
+### Fixed
+
+- Fixed Cursor cached prompt token accounting to prevent duplicate input-token and cost reporting on cached turns.
+- Fixed auth-broker credential handling so late token-refresh responses cannot restore logged-out credentials or overwrite a newer login.
+
 ## [18.4.10] - 2026-10-02
 
 ### Fixed
@@ -5925,3 +5965,4 @@ Older entries are archived in [packages/ai/CHANGELOG.md@689a3418cb45](https://gi
 Older entries are archived in [packages\ai\CHANGELOG.md@07e9197a3012](https://github.com/can1357/oh-my-pi/blob/07e9197a3012f58c459f1faabeb324decc21f41d/packages\ai\CHANGELOG.md).
 Older entries are archived in [packages\ai\CHANGELOG.md@cd762117522c](https://github.com/can1357/oh-my-pi/blob/cd762117522cc4122cd45b8d2d14de5f7be5133b/packages\ai\CHANGELOG.md).
 Older entries are archived in [packages/ai/CHANGELOG.md@edb740cbad49](https://github.com/can1357/oh-my-pi/blob/edb740cbad499dbc96f8b5b46ebf78f70d6af4d0/packages/ai/CHANGELOG.md).
+Older entries are archived in [packages/ai/CHANGELOG.md@bac7e83b5b0e](https://github.com/can1357/oh-my-pi/blob/bac7e83b5b0eb86c909c17830a6666efc359578b/packages/ai/CHANGELOG.md).

@@ -46,6 +46,8 @@ describe("AgentSession live settings", () => {
 	});
 
 	afterAll(() => {
+		// The discovered auth DB lives in authDir; Windows cannot delete it while open.
+		modelRegistry.authStorage.close();
 		if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
 		__resetDirsFromEnvForTests();

@@ -163,6 +163,7 @@ function freezeSnapshot(
 
 function defaultState(sessionId: string): RpcSessionState {
 	return {
+		goal: null,
 		sessionId,
 		thinkingLevel: undefined,
 		fastModeEnabled: false,
@@ -186,6 +187,7 @@ function defaultState(sessionId: string): RpcSessionState {
 function stateFromLocal(session: AgentSession): RpcSessionState {
 	const queued = session.getQueuedMessages();
 	return freezeState({
+		goal: session.getGoalModeState() ?? null,
 		model: session.model,
 		fastModeEnabled: session.isFastModeEnabled(),
 		fastModeActive: session.isFastModeActive(),

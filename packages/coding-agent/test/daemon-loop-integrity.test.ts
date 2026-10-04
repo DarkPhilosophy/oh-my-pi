@@ -93,6 +93,7 @@ async function startHarness(): Promise<Harness> {
 					queuedMessages: { steering: [], followUp: [] },
 					hasPendingAsyncWork: false,
 					isSettled: true,
+					goal: null,
 					todoPhases: [],
 				},
 				cwd: sessionCwd,

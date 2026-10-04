@@ -18,7 +18,7 @@ import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
 
 import { cfgStartupQuiet, cfgTuiTitleState } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
-describe("InteractiveMode LSP startup welcome banner", () => {
+describe("InteractiveMode LSP startup events", () => {
 	let authStorage: AuthStorage;
 	let eventBus: EventBus;
 	let lspServers: LspStartupServerInfo[];
@@ -102,18 +102,13 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 	});
 
 	it("updates the welcome banner when startup warmup completes", async () => {
-		await mode.init();
-
 		const findServerLine = () =>
 			Bun.stripANSI(mode.ui.render(120).join("\n"))
 				.split("\n")
 				.find(line => line.includes("rust-analyzer")) ?? "";
+		await mode.init();
 
-		expect(findServerLine()).toContain(theme.status.pending);
-
-		const requestRenderSpy = vi.spyOn(mode.ui, "requestRender");
 		const showStatusSpy = vi.spyOn(mode, "showStatus");
-		requestRenderSpy.mockClear();
 		showStatusSpy.mockClear();
 
 		lspServers[0].status = "ready";
@@ -130,7 +125,6 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 
 		eventBus.emit(LSP_STARTUP_EVENT_CHANNEL, event);
 
-		expect(requestRenderSpy).toHaveBeenCalled();
 		expect(showStatusSpy).not.toHaveBeenCalled();
 		expect(findServerLine()).toContain(theme.status.enabled);
 		expect(findServerLine()).not.toContain(theme.status.pending);

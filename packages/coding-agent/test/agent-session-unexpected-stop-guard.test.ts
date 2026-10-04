@@ -57,6 +57,13 @@ function unexpectedStop(text: string): MockResponse {
 	};
 }
 
+function thinkingOnlyStop(thinking: string): MockResponse {
+	return {
+		content: [{ type: "thinking", thinking, thinkingSignature: "reasoning_content" }],
+		stopReason: "stop",
+	};
+}
+
 async function createHarness(
 	responses: MockResponse[],
 	settingsOverrides: SettingsOverrides = {},
@@ -164,6 +171,37 @@ describe("AgentSession unexpected stop guard", () => {
 		expect(spy).not.toHaveBeenCalled();
 		expect(mock.calls).toHaveLength(1);
 		expect(reminderMessages(session.agent.state.messages)).toHaveLength(0);
+	});
+
+	it("defaults to mechanical mode and retries on thinking-only stops without classification", async () => {
+		const spy = vi.spyOn(unexpectedStopClassifier, "classifyUnexpectedStop").mockResolvedValue(false);
+		const { session, mock } = await createHarness([
+			thinkingOnlyStop("思考中..."),
+			{ content: ["done now"], stopReason: "stop" },
+		]);
+
+		await session.prompt("do the thing");
+		await session.waitForIdle();
+
+		expect(spy).not.toHaveBeenCalled();
+		expect(mock.calls).toHaveLength(2);
+		expect(assistantText(session.agent.state.messages)).toContain("done now");
+		expect(reminderMessages(session.agent.state.messages)).toHaveLength(1);
+	});
+
+	it("delivers retries scheduled by consecutive thinking-only stops before going idle", async () => {
+		const { session, mock } = await createHarness([
+			thinkingOnlyStop("first thought"),
+			thinkingOnlyStop("second thought"),
+			thinkingOnlyStop("third thought"),
+			{ content: ["finished after retries"], stopReason: "stop" },
+		]);
+
+		await session.prompt("do the thing");
+		await session.waitForIdle();
+
+		expect(mock.calls).toHaveLength(4);
+		expect(assistantText(session.agent.state.messages)).toContain("finished after retries");
 	});
 
 	it("does not retry in mechanical mode when text message was delivered", async () => {

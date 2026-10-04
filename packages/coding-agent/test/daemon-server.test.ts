@@ -113,6 +113,7 @@ function fakeFactory(protectedJobCount = 0) {
 					queuedMessages: { steering: [], followUp: [] },
 					hasPendingAsyncWork: false,
 					isSettled: true,
+					goal: null,
 					todoPhases: [],
 				},
 				cwd,
@@ -1716,6 +1717,7 @@ describe("daemon server and registry", () => {
 								queuedMessages: { steering: [], followUp: [] },
 								hasPendingAsyncWork: false,
 								isSettled: true,
+								goal: null,
 								todoPhases: [],
 							},
 							cwd,
@@ -1833,6 +1835,7 @@ describe("daemon server and registry", () => {
 				},
 			} as DaemonSessionRuntime["session"];
 			const state = (): DaemonSessionSnapshot["state"] => ({
+				goal: null,
 				model,
 				thinkingLevel: current.thinkingLevel as never,
 				isStreaming: false,

@@ -41,15 +41,10 @@ describe("composer startup cache", () => {
 		const other = path.join(root, "other");
 		const preferences = { ...COMPOSER_DEFAULTS, composerShape: "rail", autocompleteMaxVisible: 7 };
 		const theme = { symbolPreset: "ascii" as const, colorBlindMode: true, darkTheme: "dark", lightTheme: "light" };
-		const sessions = ["a", "b", "c", "d", "e"].map(name => ({ name, timeAgo: "3m ago" }));
-		const lspServers = [{ name: "rust-analyzer", status: "connecting" as const, fileTypes: [".rs"] }];
 		const status = statusFor(ThinkingLevel.High);
 
 		const writer = ComposerCache.open(dbPath);
 		writer.writeUi(project, preferences, theme);
-		writer.writeWelcome(project, { modelName: "Claude Fable 5", providerName: "anthropic" });
-		writer.writeRecentSessions(project, sessions);
-		writer.writeLspServers(project, lspServers);
 		writer.writeStatus(project, status);
 		writer.close();
 
@@ -58,24 +53,20 @@ describe("composer startup cache", () => {
 		expect(reader.read(project)).toEqual({
 			preferences,
 			theme,
-			welcome: { modelName: "Claude Fable 5", providerName: "anthropic" },
-			recentSessions: sessions.slice(0, 4),
-			lspServers,
-			status,
+			status: { ...status, statusLine: { ...status.statusLine, model: undefined } },
+			welcome: undefined,
+			recentSessions: [],
+			lspServers: [],
 		});
-		// Theme, model labels, and status follow the user; sessions and LSP rows are project facts.
+		// Theme and status follow the user.
 		expect(reader.read(other)).toEqual({
 			preferences,
 			theme,
-			welcome: { modelName: "Claude Fable 5", providerName: "anthropic" },
+			status: { ...status, statusLine: { ...status.statusLine, model: undefined } },
+			welcome: undefined,
 			recentSessions: [],
 			lspServers: [],
-			status,
 		});
-
-		// Disabling LSP must replace the cached rows so the next prepaint hides the section.
-		reader.writeLspServers(project, null);
-		expect(reader.read(project).lspServers).toBeNull();
 		reader.close();
 	});
 
@@ -91,7 +82,6 @@ describe("composer startup cache", () => {
 
 	it("skips write transactions for identical payloads", () => {
 		const project = path.join(root, "project");
-		const sessions = [{ name: "a", timeAgo: "1m ago" }];
 		const cache = ComposerCache.open(dbPath);
 		const observer = new Database(dbPath, { readonly: true });
 		// data_version moves only when another connection commits a change.
@@ -100,26 +90,22 @@ describe("composer startup cache", () => {
 		const transactions = vi.spyOn(Database.prototype, "transaction");
 		try {
 			cache.writeStatus(project, statusFor(ThinkingLevel.High));
-			cache.writeRecentSessions(project, sessions);
 			const written = dataVersion();
 			statementRuns.mockClear();
 			transactions.mockClear();
 
 			// Same connection: nothing reaches SQLite.
 			cache.writeStatus(project, statusFor(ThinkingLevel.High));
-			cache.writeRecentSessions(project, sessions);
 			// Next launch: values learned by read() are not written back either.
 			const next = ComposerCache.open(dbPath);
 			next.read(project);
 			next.writeStatus(project, statusFor(ThinkingLevel.High));
-			next.writeRecentSessions(project, sessions);
 			expect(statementRuns).not.toHaveBeenCalled();
 			expect(transactions).not.toHaveBeenCalled();
 
 			// Without a prior read, the upsert guard still leaves identical rows untouched.
 			const blind = ComposerCache.open(dbPath);
 			blind.writeStatus(project, statusFor(ThinkingLevel.High));
-			blind.writeRecentSessions(project, sessions);
 			expect(dataVersion()).toBe(written);
 
 			next.writeStatus(project, statusFor(ThinkingLevel.Low));
@@ -144,13 +130,13 @@ describe("composer startup cache", () => {
 		);
 		legacy.run("INSERT INTO entries VALUES (?, ?, ?)", [
 			project,
-			"welcome",
-			JSON.stringify({ modelName: "Stale", providerName: "stale" }),
+			"status",
+			JSON.stringify(statusFor(ThinkingLevel.High)),
 		]);
 		legacy.close();
 
 		const cache = ComposerCache.open(dbPath);
-		expect(cache.read(project).welcome).toBeUndefined();
+		expect(cache.read(project).status).toBeUndefined();
 		cache.close();
 	});
 
@@ -171,7 +157,7 @@ describe("composer startup cache", () => {
 			'import * as path from "node:path";',
 			`import { ComposerCache } from ${JSON.stringify(composerCacheModule)};`,
 			"const cache = ComposerCache.open();",
-			`cache.writeWelcome(${JSON.stringify(project)}, { modelName: "model", providerName: "provider" });`,
+			`cache.writeUi(${JSON.stringify(project)}, {}, {});`,
 			"cache.close();",
 			`const expected = path.join(${JSON.stringify(xdgCache)}, "omp", "cache", "composer.db");`,
 			"process.stdout.write(String(await Bun.file(expected).exists()));",

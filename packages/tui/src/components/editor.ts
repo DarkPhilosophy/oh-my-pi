@@ -808,6 +808,11 @@ export class Editor implements Component, Focusable {
 	onLargePaste?: (text: string, lineCount: number, options: PasteOptions) => boolean;
 	onAutocompleteCancel?: () => void;
 	disableSubmit: boolean = false;
+	/** Base editors accept native edits, not atomic sends. Implementations that
+	 *  handle `send` override this readiness check for their submission path. */
+	protected get nativeSendable(): boolean {
+		return false;
+	}
 	/** Placeholder painted right-aligned on the cursor row while the editor is empty and no
 	 *  autocomplete is open; hidden when it can't keep {@link PLACEHOLDER_MIN_GAP} cells from the
 	 *  cursor. The host styles it (ANSI allowed). Re-evaluated on every render, so hosts can derive
@@ -1866,6 +1871,7 @@ export class Editor implements Component, Focusable {
 		const props: TspEditorProps = {
 			text,
 			cursor,
+			sendable: this.nativeSendable,
 			anchor: anchor ?? undefined,
 			decor: decor.decor,
 			ghost: ghost ? plainText(ghost) : undefined,
@@ -3059,9 +3065,10 @@ export class Editor implements Component, Focusable {
 		this.#insertTextAtCursor(text);
 	}
 
-	/** Terminal-side selection edits on the `editor` node (see {@link applyHostEdit}). */
+	/** Terminal-side selection edits and undo on the `editor` node (see {@link applyHostEdit}). */
 	handleNativeEvent(event: NativeUiEvent): void {
 		if (event.type === "edit") this.applyHostEdit(event);
+		else if (event.type === "undo") this.#applyUndo();
 	}
 
 	/**

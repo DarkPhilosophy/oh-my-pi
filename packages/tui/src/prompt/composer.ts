@@ -23,7 +23,7 @@ import { popLoopPhase, postmortem, pushLoopPhase } from "@oh-my-pi/pi-utils";
 import { CustomEditor } from "./custom-editor";
 import type { WordCompletionMethod } from "./word-completion";
 import { type AnimationFrame, TranscriptContainer } from "../chrome/transcript-container";
-import { type LspServerInfo, type RecentSession, WelcomeComponent } from "./welcome";
+import { WelcomeComponent, type RecentSession, type LspServerInfo } from "./welcome";
 import { ensureThemeSync, getEditorTheme, theme } from "../theme/theme";
 
 const DOUBLE_INTERRUPT_MS = 500;
@@ -222,6 +222,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#providerName = "";
 	#recentSessions: RecentSession[] = [];
 	#lspServers: LspServerInfo[] | null = [];
+
 	#headerBefore: readonly Component[] = [];
 	#headerAfter: readonly Component[] = [];
 	#runtimeChildren: readonly Component[] = [];
@@ -286,6 +287,9 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#transientChromeFloor: number | undefined;
 	#viewportTranscript?: TranscriptContainer;
 	#viewportTranscriptStart = 0;
+	#anchorAfterInlineRetirement = false;
+	/** Rows the chrome below each below-transcript root took in the last frame (see {@link rowsBelow}). */
+	#rowsBelow = new Map<Component, number>();
 	#lastInterruptAt = 0;
 	/** Last described surface; its arrays are reused while their children are unchanged. */
 	#nativeSurface: NativeSurface = { main: [], dock: [] };
@@ -356,6 +360,27 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.ui.addChild(this.#statusHost);
 		this.ui.setFocus(this.editor);
 	}
+	/**
+	 * Rows the below-transcript chrome under `root` (editor, status line, …)
+	 * took in the last frame, so a root that grows upward can cap itself to
+	 * the screen rows left above them; `undefined` before `root` was laid out.
+	 */
+	rowsBelow(root: Component): number | undefined {
+		return this.#rowsBelow.get(root);
+	}
+
+	/**
+	 * Keep the input on the bottom row while the live rows cannot fill the
+	 * screen, as after an inline decision panel closes. A tall block that just
+	 * left the chrome above the editor (a command report) may have scrolled
+	 * rows into native history that cannot be pulled back; without the pin the
+	 * editor would jump up to where the shorter frame now ends. The pin lifts
+	 * once live rows fill the screen again.
+	 */
+	pinInputToBottom(): void {
+		this.#anchorAfterInlineRetirement = true;
+	}
+
 	/** Compose the complete logical viewport and the next ordered history append. */
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {
 		if (!this.#started || this.#stopped) return { viewport: [] };
@@ -388,7 +413,9 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		const afterChunks: { component: Component; rows: string[] }[] = [];
 		const after: string[] = [];
 		const afterSpans: ViewportClickSpan[] = [];
-		let displacingRows = 0;
+		let reversibleRows = 0;
+		let decisionPanelOpen = false;
+		const ends: { root: Component; end: number }[] = [];
 		for (const root of afterRoots) {
 			const start = after.length;
 			this.#renderBelowRoot(root, width, after, afterSpans);
@@ -397,16 +424,37 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			// multi-line draft) displaces transcript rows while it is open. Those rows
 			// are committed to native history right away instead of being held back as
 			// a reversible insertion, so nothing is hidden and then replayed later.
-			if (this.#transientChrome.has(root)) displacingRows += after.length - start;
+			if (this.#transientChrome.has(root)) {
+				const owners = root instanceof Container ? root.children : [root];
+				if (
+					owners.some(
+						owner =>
+							(
+								owner as Component & { isTranscriptBlockTransient?: () => boolean }
+							).isTranscriptBlockTransient?.() === true,
+					)
+				)
+					reversibleRows += after.length - start;
+			}
+			ends.push({ root, end: after.length });
+			if (
+				(root as Component).retireDisplacedTranscript ||
+				(root instanceof Container && root.children.some(child => child.retireDisplacedTranscript))
+			) {
+				decisionPanelOpen = true;
+			}
 		}
+		this.#rowsBelow = new Map(ends.map(({ root, end }) => [root, after.length - end]));
 		// Offer history under capacity pressure only: blocks stay live (and keep
 		// reflowing to the current width) while the screen has room. A batch
 		// leaves the mutable viewport in the same frame it is appended, so its
 		// rows are never painted twice.
-		const chromeRows = preRoots.length + after.length;
+		const temporaryChromeRows = Math.max(0, reversibleRows - (this.#transientChromeFloor ?? reversibleRows));
+		const belowFloor = after.length - temporaryChromeRows;
+		const chromeRows = preRoots.length + belowFloor;
 		// The smallest height transient chrome has rendered at is its resting
 		// footprint; rows above it are what it displaces.
-		this.#transientChromeFloor = Math.min(this.#transientChromeFloor ?? displacingRows, displacingRows);
+		this.#transientChromeFloor = Math.min(this.#transientChromeFloor ?? reversibleRows, reversibleRows);
 		// One paint, one render per block: the history offer, transient
 		// measurement and live viewport below all walk the live entries, and the
 		// transcript memoizes each entry for this frame between beginPaint and
@@ -426,7 +474,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		const before = [...headerRows, ...preRoots];
 		this.#viewportTranscript = transcript;
 		this.#viewportTranscriptStart = before.length;
-		const liveRows = Math.max(0, rows - before.length - after.length);
+		const liveRows = Math.max(0, rows - before.length - belowFloor);
 		pushLoopPhase("ui:render:compose:transient");
 		let transientRows = 0;
 		try {
@@ -437,7 +485,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		}
 		// An insertion taller than the screen cannot be held back: the
 		// transcript must keep retiring rows or the tail stops advancing.
-		const viewportExpansionRows = Math.min(transientRows, Math.max(0, rows - 1));
+		const viewportExpansionRows = Math.min(transientRows + temporaryChromeRows, Math.max(0, rows - 1));
 		pushLoopPhase("ui:render:compose:live");
 		let liveViewport: { rows: readonly string[]; borrowableRows?: number };
 		try {
@@ -492,10 +540,13 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 					Math.max(0, composed.length - rows),
 				);
 		const borrowedViewportRows = transcript.borrowedViewportRowCount();
+		if (!decisionPanelOpen && composed.length >= rows) this.#anchorAfterInlineRetirement = false;
 		return {
 			history,
 			borrowableRows,
 			retainedLiveViewport: true,
+			anchorToBottom: this.#anchorAfterInlineRetirement,
+			chromeInsertionRows: temporaryChromeRows,
 			historyTouchesChrome: active.length === 0 && after.length > 0,
 			viewportExpansionRows,
 			contractingPreviewRows: Math.min(
@@ -673,9 +724,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		}
 		this.#offeredHistory = undefined;
 		if (this.#historyReplayRequested) this.#startHistoryReplay();
-		if (offered.kind === "replay") {
-			this.ui.requestRender();
-		}
+		// A completed prefix can expose another eligible stage in the same live turn.
+		this.ui.requestRender(true);
 	}
 
 	/** Render the semantic transcript tail while the terminal borrows its resize buffer. */
@@ -966,7 +1016,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.ui.requestRender();
 	}
 
-	/** Patch welcome data in place as model, session, and project discovery complete. */
+	/** Patch welcome data in place as version, session, and project discovery complete. */
 	updateWelcome(update: ComposerWelcomeUpdate): void {
 		if (this.#stopped) return;
 		this.#applyWelcomeUpdate(update);
@@ -1020,6 +1070,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		if (this.#stopped) return;
 		this.#transientChrome = new Set(options.transient);
 		this.#transientChromeFloor = undefined;
+		this.#anchorAfterInlineRetirement = false;
 		this.#nativeDock = options.nativeDock;
 		this.ui.removeChild(this.#statusHost);
 		if (this.#runtimeMounted) {

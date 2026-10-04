@@ -67,6 +67,7 @@ import { cfgImagesAutoResize } from "../modes/settings";
 
 /** Narrow session surface owned by the daemon registry. */
 export type DaemonSession = {
+	readonly getGoalModeState?: AgentSession["getGoalModeState"];
 	readonly prompt: AgentSession["prompt"];
 	readonly steer?: AgentSession["steer"];
 	readonly followUp?: AgentSession["followUp"];
@@ -233,6 +234,7 @@ function sessionState(
 	);
 	const mcpManager = result?.mcpManager;
 	return {
+		goal: session.getGoalModeState?.() ?? null,
 		model: session.model,
 		thinkingLevel: session.thinkingLevel,
 		isStreaming: session.isStreaming ?? false,

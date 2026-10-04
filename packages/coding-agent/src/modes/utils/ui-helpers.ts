@@ -10,7 +10,6 @@ import { QueuedMessagesBand } from "@oh-my-pi/pi-tui/prompt/queued-messages";
 import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
-import { settings } from "../../config/settings";
 import { createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { createBackgroundTanDispatchBlock } from "@oh-my-pi/pi-tui/chat/background-tan-message";
@@ -52,6 +51,7 @@ import { theme } from "@oh-my-pi/pi-tui/theme";
 import { warmHighlighter } from "@oh-my-pi/pi-tui/theme/tui-adapters";
 import { QueuedMessageBox } from "@oh-my-pi/pi-tui/queued-message-box";
 import type { CompactionQueuedMessage, InteractiveModeContext, RenderSessionContextOptions } from "../../modes/types";
+import { extractVisibleAssistantText } from "../rpc/rpc-live";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
 	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
@@ -62,7 +62,8 @@ import {
 	type SkillPromptDetails,
 } from "../../session/messages";
 import type { SessionContext, StrippedToolCallsMarker } from "../../session/session-context";
-
+import { executeBuiltinSlashCommand, lookupBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
+import { parseSlashCommand } from "../../slash-commands/helpers/parse";
 import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
 import {
 	createAssistantMessageComponent,
@@ -184,7 +185,7 @@ export class UiHelpers {
 					truncation: message.meta?.truncation,
 					artifactError: message.meta?.artifactError,
 					images: message.images,
-					showImages: cfgTerminalShowImages.get(settings),
+					showImages: cfgTerminalShowImages.get(this.ctx.settings),
 				});
 				this.ctx.chatContainer.addChild(component);
 				break;
@@ -635,7 +636,7 @@ export class UiHelpers {
 						renderArgs,
 						{
 							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(renderToolName),
-							showImages: cfgTerminalShowImages.get(settings),
+							showImages: cfgTerminalShowImages.get(this.ctx.settings),
 							liveRegion: this.ctx.chatContainer,
 						},
 						tool,
@@ -698,7 +699,7 @@ export class UiHelpers {
 					if (images.length > 0 && assistantComponent) {
 						assistantComponent.setToolResultImages(message.toolCallId, images);
 						const hasText = message.content.some(c => c.type === "text");
-						if (!hasText && cfgTerminalShowImages.get(settings)) {
+						if (!hasText && cfgTerminalShowImages.get(this.ctx.settings)) {
 							if (pendingReadComponent) {
 								pendingReadComponent.updateResult(message, false, message.toolCallId);
 								this.ctx.pendingTools.delete(message.toolCallId);
@@ -908,7 +909,7 @@ export class UiHelpers {
 		// means the session was not actually rewound past it — bail before
 		// mutating anything.
 		const context = this.ctx.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: cfgDisplayCollapseCompacted.get(settings),
+			collapseCompactedHistory: cfgDisplayCollapseCompacted.get(this.ctx.settings),
 		});
 		for (const remaining of context.messages) {
 			if (remaining === message) return false;
@@ -951,7 +952,7 @@ export class UiHelpers {
 	async renderInitialMessages(options: RenderInitialMessagesOptions = {}): Promise<void> {
 		// Collapsed replay keeps in-flight calls so pending tools remain routable during mid-turn rebuilds.
 		let context = this.ctx.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: cfgDisplayCollapseCompacted.get(settings),
+			collapseCompactedHistory: cfgDisplayCollapseCompacted.get(this.ctx.settings),
 			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 		});
 		let replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
@@ -1025,7 +1026,7 @@ export class UiHelpers {
 				// discard the stale partial tree and replay the current session once
 				// more instead of letting a reentrant synchronous rebuild interleave.
 				context = this.ctx.viewSession.buildTranscriptSessionContext({
-					collapseCompactedHistory: cfgDisplayCollapseCompacted.get(settings),
+					collapseCompactedHistory: cfgDisplayCollapseCompacted.get(this.ctx.settings),
 					keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 				});
 				replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
@@ -1211,6 +1212,22 @@ export class UiHelpers {
 	}
 
 	async #deliverQueuedMessage(message: CompactionQueuedMessage): Promise<void> {
+		const builtin = await executeBuiltinSlashCommand(message.text, {
+			ctx: this.ctx,
+			input: message.images ? { images: message.images } : undefined,
+		});
+		if (builtin === true) {
+			this.#parkLoopOnLocalConsume(message.text, false);
+			return;
+		}
+		if (typeof builtin === "string") {
+			const forwarded = await this.ctx.session.prompt(builtin, {
+				streamingBehavior: message.mode,
+				images: message.images,
+			});
+			this.#parkLoopOnLocalConsume(message.text, forwarded);
+			return;
+		}
 		if (
 			await invokeSkillCommandFromText(this.ctx, message.text, message.mode, {
 				propagateErrors: true,
@@ -1237,6 +1254,9 @@ export class UiHelpers {
 
 	isKnownSlashCommand(text: string): boolean {
 		if (!text.startsWith("/")) return false;
+		const parsed = parseSlashCommand(text);
+		const builtin = parsed && lookupBuiltinSlashCommand(parsed.name);
+		if (builtin && (builtin.allowArgs || !parsed.args)) return true;
 		const spaceIndex = text.indexOf(" ");
 		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
 		if (!commandName) return false;
@@ -1292,8 +1312,7 @@ export class UiHelpers {
 			}
 			if (firstPromptIndex === -1) {
 				for (const message of queuedMessages) {
-					const forwarded = await this.ctx.session.prompt(message.text);
-					this.#parkLoopOnLocalConsume(message.text, forwarded);
+					await this.#deliverQueuedMessage(message);
 				}
 				return;
 			}
@@ -1379,12 +1398,6 @@ export class UiHelpers {
 	}
 
 	extractAssistantText(message: AssistantMessage): string {
-		let text = "";
-		for (const content of message.content) {
-			if (content.type === "text") {
-				text += content.text;
-			}
-		}
-		return text.trim();
+		return extractVisibleAssistantText(message);
 	}
 }

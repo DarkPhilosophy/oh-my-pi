@@ -13,7 +13,6 @@ import {
 } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { extractTextContent } from "../../commit/utils";
-import { settings } from "../../config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { detectCacheInvalidation } from "@oh-my-pi/pi-tui/chat/cache-invalidation-marker";
 import {
@@ -607,6 +606,14 @@ export class EventController {
 			this.#orphanedToolCompletions.delete(oldId);
 			this.#orphanedToolCompletions.set(newId, { ...completion, toolCallId: newId });
 		}
+		// A held stream preview is id-keyed and consumed under the card's final id
+		// (message_update creation / tool_execution_start); move it with the card
+		// or the lookup under `newId` misses and the preview is lost.
+		const preview = this.#pendingStreamPreviews.get(oldId);
+		if (preview !== undefined && !this.#pendingStreamPreviews.has(newId)) {
+			this.#pendingStreamPreviews.delete(oldId);
+			this.#pendingStreamPreviews.set(newId, preview);
+		}
 		// The reveal controller is id-keyed; drop the stale target so the loop's
 		// setTarget/bind under the new id owns the paced reveal.
 		this.#toolArgsReveal.finish(oldId);
@@ -640,6 +647,63 @@ export class EventController {
 		}
 	}
 
+	/**
+	 * Reconcile every tool-call block's live card key with the id its content
+	 * block currently carries (see {@link #streamedToolCallIdByIndex}), moving
+	 * the id-keyed card state via {@link #migrateStreamedToolCallId}. A streamed
+	 * id can change across cumulative `message_update`s (#6879), and the final
+	 * snapshot can carry a per-index id change no delta ever showed — agent-loop
+	 * mints and re-keys tool-call ids at `done`, after the last
+	 * `message_update` — so the `message_end` path replays the same
+	 * reconciliation the delta path runs. Without it the pre-mint card is never
+	 * re-keyed: `tool_execution_start` mounts a second card under the minted id
+	 * and the streamed one ghosts until sealed.
+	 *
+	 * Several indices can share one streamed id (a reused provider id, or
+	 * siblings that all streamed before their ids materialized) and then split
+	 * into distinct ids. The shared card migrates only when the old id is no
+	 * longer referenced by any content index — the last referencer keeps the
+	 * card; the other indices pick up their own card at `tool_execution_start`.
+	 * Migrating unconditionally would move the one shared card to the first
+	 * re-keyed sibling and leave the index that kept the old id with no streamed
+	 * card (a reverse ghost).
+	 */
+	#reconcileStreamedToolCallIds(content: AssistantMessage["content"]): void {
+		const finalIdByIndex = new Map<number, string>();
+		for (let contentIndex = 0; contentIndex < content.length; contentIndex++) {
+			const block = content[contentIndex]!;
+			if (block.type === "toolCall") finalIdByIndex.set(contentIndex, block.id);
+		}
+		for (const [contentIndex, id] of finalIdByIndex) {
+			const priorId = this.#streamedToolCallIdByIndex.get(contentIndex);
+			if (priorId === undefined || priorId === id) {
+				this.#streamedToolCallIdByIndex.set(contentIndex, id);
+				continue;
+			}
+			const oldIdStaysOwned = [...finalIdByIndex].some(([otherIndex, otherId]) => {
+				if (otherIndex === contentIndex) return false;
+				// The other index either already resolved to the old id or still
+				// streams under it and has not been re-keyed yet.
+				return otherId === priorId || this.#streamedToolCallIdByIndex.get(otherIndex) === priorId;
+			});
+			if (oldIdStaysOwned) {
+				// The shared card stays under `priorId` for its remaining
+				// referencer; make it show THAT call's arguments, not the last
+				// cumulative update's (every sibling updated the one shared card
+				// while the id was still shared).
+				const card = this.ctx.pendingTools.get(priorId);
+				for (const [keeperIndex, keeperId] of finalIdByIndex) {
+					if (keeperId !== priorId || keeperIndex === contentIndex) continue;
+					const keeper = content[keeperIndex];
+					if (card && keeper?.type === "toolCall") card.updateArgs(keeper.arguments, priorId);
+				}
+			} else {
+				this.#migrateStreamedToolCallId(priorId, id);
+			}
+			this.#streamedToolCallIdByIndex.set(contentIndex, id);
+		}
+	}
+
 	#inlineReadToolImages(
 		toolCallId: string,
 		result: { content: Array<{ type: string; data?: string; mimeType?: string }> },
@@ -654,7 +718,7 @@ export class EventController {
 			.map(content => ({ type: "image", data: content.data, mimeType: content.mimeType }));
 		if (images.length === 0) return false;
 		assistantComponent.setToolResultImages(toolCallId, images);
-		return cfgTerminalShowImages.get(settings);
+		return cfgTerminalShowImages.get(this.ctx.settings);
 	}
 
 	#insertAfterTranscriptComponent(anchor: Component | undefined, component: Component): boolean {
@@ -1381,8 +1445,8 @@ export class EventController {
 	 * live (the final message is spoken at turn end).
 	 */
 	#vocalizeDelta(event: Extract<AgentSessionEvent, { type: "message_update" }>): void {
-		if (!cfgSpeechEnabled.get(settings)) return;
-		const mode = cfgSpeechMode.get(settings);
+		if (!cfgSpeechEnabled.get(this.ctx.settings)) return;
+		const mode = cfgSpeechMode.get(this.ctx.settings);
 		const delta = event.assistantMessageEvent;
 		if (delta.type === "text_delta" && (mode === "assistant" || mode === "all")) {
 			vocalizer.pushDelta(delta.delta);
@@ -1397,8 +1461,8 @@ export class EventController {
 	 * sure the live buffer's trailing partial gets flushed.
 	 */
 	#handleTurnEnd(event: Extract<AgentSessionEvent, { type: "turn_end" }>): void {
-		if (!cfgSpeechEnabled.get(settings)) return;
-		if (cfgSpeechMode.get(settings) !== "yield") {
+		if (!cfgSpeechEnabled.get(this.ctx.settings)) return;
+		if (cfgSpeechMode.get(this.ctx.settings) !== "yield") {
 			vocalizer.flush();
 			return;
 		}
@@ -1469,17 +1533,13 @@ export class EventController {
 				this.ctx.streamingComponent.setLinkTargets(assistantMessageLinkTargets(timeline.beforeTools, linkTargets));
 				this.ctx.streamingComponent.markTranscriptBlockFinalized();
 			}
+			// Re-key live cards when a provider rewrites a block's id across
+			// deltas, so the changed id reuses the existing card instead of
+			// spawning a duplicate (#6879).
+			this.#reconcileStreamedToolCallIds(this.ctx.streamingMessage.content);
 			for (let contentIndex = 0; contentIndex < this.ctx.streamingMessage.content.length; contentIndex++) {
 				const content = this.ctx.streamingMessage.content[contentIndex]!;
 				if (content.type !== "toolCall") continue;
-				// Re-key the live card when a provider rewrites this block's id
-				// across deltas, so the changed id reuses the existing card
-				// instead of spawning a duplicate (#6879).
-				const priorId = this.#streamedToolCallIdByIndex.get(contentIndex);
-				if (priorId !== undefined && priorId !== content.id) {
-					this.#migrateStreamedToolCallId(priorId, content.id);
-				}
-				this.#streamedToolCallIdByIndex.set(contentIndex, content.id);
 				const tool = this.ctx.viewSession.getToolByName(content.name);
 				const renderToolName = toolRenderName(content.name, tool);
 				if (renderToolName === "read") {
@@ -1543,7 +1603,7 @@ export class EventController {
 						renderArgs,
 						{
 							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(renderToolName),
-							showImages: cfgTerminalShowImages.get(settings),
+							showImages: cfgTerminalShowImages.get(this.ctx.settings),
 							liveRegion: this.ctx.chatContainer,
 						},
 						tool,
@@ -1656,12 +1716,12 @@ export class EventController {
 			this.ctx.streamingComponent.setHideThinkingBlock(this.ctx.effectiveHideThinkingBlock);
 			this.#streamingReveal.resyncVisibility();
 		}
-		if (event.message.role === "assistant" && cfgSpeechEnabled.get(settings)) {
+		if (event.message.role === "assistant" && cfgSpeechEnabled.get(this.ctx.settings)) {
 			if (event.message.stopReason === "aborted") {
 				// Esc / Ctrl+C / interrupt: stop speaking now and drop the trailing partial.
 				vocalizer.clear();
 			} else {
-				const mode = cfgSpeechMode.get(settings);
+				const mode = cfgSpeechMode.get(this.ctx.settings);
 				// Speak the last partial sentence of a completed message; yield mode
 				// instead speaks the whole final message at turn end.
 				if (mode === "assistant" || mode === "all") vocalizer.flush();
@@ -1702,6 +1762,13 @@ export class EventController {
 					assistantMessageLinkTargets(displayTimeline.beforeTools, linkTargets),
 				);
 			}
+			// The final snapshot can carry a per-index id change no delta ever
+			// showed — agent-loop mints and re-keys tool-call ids at `done`, after
+			// the last `message_update` — so replay the same reconciliation
+			// `#handleMessageUpdate` runs per delta. Without it the pre-mint card
+			// is never re-keyed: tool_execution_start mounts a second card under
+			// the minted id and the streamed one ghosts until sealed.
+			this.#reconcileStreamedToolCallIds(this.ctx.streamingMessage.content);
 			this.ctx.streamingComponent.updateContent(displayTimeline.beforeTools);
 
 			if (this.ctx.streamingMessage.stopReason !== "aborted" && this.ctx.streamingMessage.stopReason !== "error") {
@@ -1750,7 +1817,7 @@ export class EventController {
 			// meaningful prefix and this request read none of it back, flag the turn.
 			const usage = event.message.usage;
 			if (usage.cacheRead + usage.cacheWrite + usage.input > 0) {
-				if (cfgDisplayCacheMissMarker.get(settings)) {
+				if (cfgDisplayCacheMissMarker.get(this.ctx.settings)) {
 					const invalidation = detectCacheInvalidation(this.ctx.lastAssistantUsage, usage);
 					if (invalidation) this.ctx.streamingComponent.setCacheInvalidation(invalidation);
 				}
@@ -1771,9 +1838,9 @@ export class EventController {
 			this.#lastAssistantComponent = lastPostToolAssistantComponent ?? this.ctx.streamingComponent;
 			const turnUsage = this.#turnUsage.add(event.message, this.#turnStartedAt);
 			if (turnUsage) this.#lastAssistantComponent.setTurnUsage(turnUsage);
-			if (cfgDisplayShowTokenUsage.get(settings) && assistantUsageIsBilled(event.message.usage)) {
+			if (cfgDisplayShowTokenUsage.get(this.ctx.settings) && assistantUsageIsBilled(event.message.usage)) {
 				const readCallIds = groupedReadUsageCallIds(event.message);
-				const turnElapsed = cfgDisplayShowTurnTime.get(settings)
+				const turnElapsed = cfgDisplayShowTurnTime.get(this.ctx.settings)
 					? turnElapsedMs(this.#turnStartedAt, event.message)
 					: undefined;
 				const usageAttached =
@@ -1871,7 +1938,7 @@ export class EventController {
 				event.args,
 				{
 					useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(renderToolName),
-					showImages: cfgTerminalShowImages.get(settings),
+					showImages: cfgTerminalShowImages.get(this.ctx.settings),
 					liveRegion: this.ctx.chatContainer,
 				},
 				tool,
@@ -1933,8 +2000,8 @@ export class EventController {
 	#toolWillPromptForApproval(toolName: string, args: unknown): boolean {
 		const tool = this.ctx.viewSession.getToolByName(toolName);
 		if (!tool) return false;
-		const mode = cfgToolsApprovalMode.get(settings);
-		const userPolicies: Record<string, unknown> = cfgToolsApproval.get(settings);
+		const mode = cfgToolsApprovalMode.get(this.ctx.settings);
+		const userPolicies: Record<string, unknown> = cfgToolsApproval.get(this.ctx.settings);
 		return resolveApproval(tool, args, mode, userPolicies).policy === "prompt";
 	}
 
@@ -2804,7 +2871,7 @@ export class EventController {
 		// protocol is negotiated — avoid a second legacy desktop/OSC-9 toast.
 		if (isWarpCliAgentProtocolActive()) return;
 
-		const notify = cfgErrorNotify.get(settings);
+		const notify = cfgErrorNotify.get(this.ctx.settings);
 		if (notify === "off") return;
 
 		// Read the turn's own outcome from `agent_end.messages`, not the mutable
@@ -2826,7 +2893,7 @@ export class EventController {
 	}
 
 	sendCompletionNotification(event: Extract<AgentSessionEvent, { type: "agent_end" }>): void {
-		const notify = cfgCompletionNotify.get(settings);
+		const notify = cfgCompletionNotify.get(this.ctx.settings);
 		if (notify === "off") return;
 
 		// Warp structured OSC 777 already drives native completion UX when the
