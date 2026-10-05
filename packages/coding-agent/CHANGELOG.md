@@ -10,6 +10,7 @@
 
 - Fixed completed tool results being kept pending or blocked from scrollback during streamed tool-call ID updates.
 - Completed calls can publish during an ongoing stream without waiting for viewport overflow or a subsequent response.
+- Experimental context windows now reject repeated model-requested rollovers until substantial new conversation content accumulates, including after resuming a session.
 ## [18.6.0] - 2026-10-03
 
 ### Added
