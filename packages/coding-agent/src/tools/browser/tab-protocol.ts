@@ -63,9 +63,6 @@ export type WorkerInitPayload =
 			userAgent?: string;
 			/** Ignore invalid HTTPS certificates for this page. */
 			ignoreHttpsErrors?: boolean;
-			url?: string;
-			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
-			timeoutMs: number;
 	  }
 	| {
 			mode: "attach";
@@ -88,9 +85,6 @@ export type WorkerInitPayload =
 			userAgent?: string;
 			/** Ignore invalid HTTPS certificates for this page. */
 			ignoreHttpsErrors?: boolean;
-			url?: string;
-			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
-			timeoutMs: number;
 			/**
 			 * Post-timeout recycle: before adopting the page, dismiss any open JS dialog and
 			 * stop a pending navigation so a blocked target cannot stall worker init (which
@@ -151,7 +145,10 @@ export interface RunResultOk {
 	displays: Array<TextContent | ImageContent>;
 	returnValue: unknown;
 	screenshots: ScreenshotResult[];
-	/** The run caught a cleanup failure; the backend must discard or recover its worker before reuse. */
+	/**
+	 * The run finished (or caught a cleanup failure) but tab-scoped browser state was not restored;
+	 * the backend must discard or recover its worker before reuse.
+	 */
 	recoverTab?: boolean;
 }
 
@@ -163,14 +160,15 @@ export interface RunErrorPayload {
 	isAbort: boolean;
 	/** The worker could not restore tab-scoped browser state and must be recycled. */
 	recoverTab?: boolean;
+	/** `tab.goto` outlasted its budget; the page stays on what loaded. */
+	navigationTimeout?: boolean;
 }
 
 export type WorkerOutbound =
 	| {
 			/**
 			 * Puppeteer loaded, browser connected. Sent before page acquisition so the supervisor's cold-start budget
-			 * bounds only the realm setup (cold import + connect); page creation and the first navigation run under the
-			 * ready wait.
+			 * bounds only the realm setup (cold import + connect); page creation runs under the ready wait.
 			 */
 			type: "setup";
 	  }

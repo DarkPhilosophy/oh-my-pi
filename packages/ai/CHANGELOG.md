@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+## [18.7.0] - 2026-10-06
+
+### Added
+
+- Added `getOAuthCredentialProvider()` to resolve login aliases, such as `openai-codex-device`, to the provider where their credentials are stored.
+
+### Fixed
+
+- Fixed Ultrafast service-tier billing and usage accounting: GPT-6 Astra now applies its published premium rates—6× on the OpenAI API and 8× included usage on Codex—and is counted toward the premium-request limit.
+- Fixed Vertex AI authentication on Windows when credentials are created with `gcloud auth application-default login`.
+- Fixed selecting Cursor accounts by email through `auth.accountPolicies` and `/session pin`; newly refreshed and existing accounts now retain the account email.
+
+## [18.6.3] - 2026-10-06
+
+### Added
+
+- Added per-model `compat.statefulResponses` to enable or disable stored Responses chaining (`previous_response_id` with `store: true`) for one endpoint without the official-only request fields that `compat.officialEndpoint` implies ([#13686](https://github.com/can1357/oh-my-pi/pull/13686) by [@alphastorm](https://github.com/alphastorm)).
+- Added Snowflake Cortex with browser OAuth, token refresh, PAT environment authentication, and streaming Claude/OpenAI models with local tool execution ([#14507](https://github.com/can1357/oh-my-pi/pull/14507) by [@jorgoose](https://github.com/jorgoose)).
+- `AuthStorage.health.check()` accepts `excludeProviders` to skip credentials of providers the caller does not serve ([#14234](https://github.com/can1357/oh-my-pi/pull/14234) by [@will-bogusz](https://github.com/will-bogusz))
+
+### Changed
+
+- Reduced CPU spent on thinking-loop detection while streaming long reasoning ([#14284](https://github.com/can1357/oh-my-pi/pull/14284) by [@abilliontokens](https://github.com/abilliontokens)).
+- Added `recordAffinity: false` to credential resolution options, selecting as the session would without pinning the choice to that session ([#14512](https://github.com/can1357/oh-my-pi/pull/14512) by [@will-bogusz](https://github.com/will-bogusz))
+
+### Fixed
+
+- Codex native-lane steering rejections (`unsupported_native_inflight_message`) now classify as retryable from their error text alone, matching the provider's own classification, and `AIError.isCodexSteerRejection()` identifies them so the agent retry can stay on the same model ([#14242](https://github.com/can1357/oh-my-pi/pull/14242) by [@alphastorm](https://github.com/alphastorm))
+- Fixed replayed Responses and Codex history, including persisted Codex user/developer and assistant items, sending `detail: "original"` images to endpoints whose `supportsImageDetailOriginal` is off ([#13687](https://github.com/can1357/oh-my-pi/pull/13687) by [@alphastorm](https://github.com/alphastorm)).
+- Fixed thinking in turns kept after Anthropic native compaction being rejected or dropped on the next request ([#14251](https://github.com/can1357/oh-my-pi/pull/14251) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed Claude usage being re-polled every 10 seconds while Anthropic rate-limits the account; a failed refresh now waits a minute before trying again ([#14515](https://github.com/can1357/oh-my-pi/pull/14515) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed Devin requests skipping the `onPayload` hook, so payload capture now sees each Devin chat request and a returned replacement is what gets sent ([#14506](https://github.com/can1357/oh-my-pi/pull/14506) by [@will-bogusz](https://github.com/will-bogusz))
+- An OpenAI Responses turn whose connection drops mid-stream can now recover the finished answer from the provider (on hosts that store results, such as Muse Code) instead of re-running the whole turn and discarding the reasoning already done. Storage is opt-in: pass `storeResponses: true`, set `PI_MUSE_STORE_RESPONSES=1`, or set a process-wide default with `configureProviderStoreResponses` ([#14293](https://github.com/can1357/oh-my-pi/pull/14293) and [#14534](https://github.com/can1357/oh-my-pi/pull/14534) by [@abilliontokens](https://github.com/abilliontokens)).
+- Fixed the auth broker exiting when a background OAuth refresh sweep cannot read the credential store; the failure is now logged and the next sweep retries ([#14538](https://github.com/can1357/oh-my-pi/issues/14538))
+- Fixed Anthropic OAuth billing headers changing during developer-first sessions and side turns, preserving the prompt-cache prefix ([#14495](https://github.com/can1357/oh-my-pi/issues/14495)).
+- Fixed OpenAI-compatible chat-completions gateways recording completed turns as client-cancelled because the connection closed before their `[DONE]` sentinel arrived ([#14481](https://github.com/can1357/oh-my-pi/issues/14481)).
+
+## [18.6.1] - 2026-10-04
+
+### Fixed
+
+- Fixed compatibility with Command Code DeepSeek and other DeepSeek-family models by preserving the reasoning context required for warm OpenAI Responses sessions and correctly handling incomplete DSML tool-call wrappers in visible output.
+
 ## [18.6.0] - 2026-10-03
 
 ### Fixed
@@ -5966,3 +6009,4 @@ Older entries are archived in [packages\ai\CHANGELOG.md@07e9197a3012](https://gi
 Older entries are archived in [packages\ai\CHANGELOG.md@cd762117522c](https://github.com/can1357/oh-my-pi/blob/cd762117522cc4122cd45b8d2d14de5f7be5133b/packages\ai\CHANGELOG.md).
 Older entries are archived in [packages/ai/CHANGELOG.md@edb740cbad49](https://github.com/can1357/oh-my-pi/blob/edb740cbad499dbc96f8b5b46ebf78f70d6af4d0/packages/ai/CHANGELOG.md).
 Older entries are archived in [packages/ai/CHANGELOG.md@bac7e83b5b0e](https://github.com/can1357/oh-my-pi/blob/bac7e83b5b0eb86c909c17830a6666efc359578b/packages/ai/CHANGELOG.md).
+Older entries are archived in [packages/ai/CHANGELOG.md@a20cc0d04b64](https://github.com/can1357/oh-my-pi/blob/a20cc0d04b64f4a68fcc559cbd258743d984c50e/packages/ai/CHANGELOG.md).

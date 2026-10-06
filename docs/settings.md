@@ -103,7 +103,11 @@ Saves through a symlinked main config preserve the link and update its resolved 
 
 Interactive sessions and RPC/RPC-UI hosts watch the main global file, project settings sources, and config overlays. Changes are reloaded after a short debounce, preserving runtime overrides. A layer that fails to parse or validate keeps its last good values and logs a warning; other valid layers can still refresh. Live reload does not move the invalid file to a `.broken-*` backup.
 
+Symlinked configs follow edits to their target and replacement of any intermediate file or directory symlink, including profile links. After a link switches targets, subsequent edits to the new target are watched too.
+
 Reloading changes the settings values available to consumers; startup-only work is not rerun. Provider-source switches take effect on the next discovery pass. Task/eval dispatch also reloads persisted settings before resolving a subagent's policy.
+
+Routing changes to `modelRoles`, `retry.fallbackChains`, and `task.agentModelOverrides` apply to subsequent subagent launches and fallback decisions without restarting the host. `auth.accountPolicies` and `retry.usageReservePct` also update the long-lived account router for subsequent credential selection and quota checks. Reloading does not restart running subagents or switch a healthy active session's model; explicit runtime overrides still take precedence.
 
 ## Precedence
 
@@ -297,7 +301,7 @@ omp --config ./local/ci-settings.yml "check this failure"
 omp --config ./base.yml --config ./experiment.yml "try this model"
 ```
 
-`--config` is accepted by the default launch command, `acp`, and `models`.
+`--config` is accepted by the default launch command, `acp`, `models`, and `dry-balance`. For `models` and `dry-balance`, put it after the command name (`omp dry-balance --config ./policy.yml`); placed before the command name, it is dropped.
 
 Wrappers may instead set `PI_CONFIG_FILES` to a platform-delimited path list (`:` on Unix, `;` on Windows). Environment overlays load in listed order before explicit `--config` overlays.
 
@@ -840,6 +844,7 @@ tui:
 | `images.autoResize`           | boolean | `true`           | Resize large images for model compatibility.                              |
 | `images.blockImages`          | boolean | `false`          | Never send images to providers.                                           |
 | `tui.hyperlinks`              | enum    | `auto`           | `off`, `auto`, `always`.                                                  |
+| `tui.autoGraph`               | enum    | `always`         | Chart numeric tables in the agent's answers, in the theme's colors, on terminals that show graphics: `always` uses the built-in best guess, `smart` lets the judge model pick the chart kind and columns for tables with several numeric columns, `off` leaves tables alone. Tern receives the chart as SVG. Applies to the main session in the TUI only: subagent transcripts, print, RPC, and ACP output stay plain, and their system prompts omit the diagram and chart guidance. |
 | `tui.mouse`                   | boolean | `false`          | Capture mouse clicks in the main session so live subagent cards and HUD rows focus on click, with a hover highlight on the target. Native text selection becomes Shift+drag and wheel scroll becomes Shift+wheel while on. |
 | `display.inlineModelPicker`   | boolean | `false`          | Search session models in the existing editor area using a bordered popup, preserving the statusline, draft and content below the input. Under Appearance → Display. |
 | `display.commandSuggestionsPopup` | boolean | `false`          | Show slash-command and argument suggestions in a bordered popup without adding conversation rows. Under Appearance → Display. Native selection and scrolling remain unchanged. |
@@ -972,6 +977,14 @@ The privacy options apply to `/usage` cards, details, notes, saved-reset rows, A
 
 Every newly opened dashboard reads the saved settings. Inside that overlay, `p` toggles identifier masking, `o` toggles organization-name masking, and `m` toggles account grouping; native buttons perform the same actions. These changes affect all views of that overlay only and are never written to configuration. Closing and reopening starts from the saved settings again. Display masking does not modify stored credentials or provider data.
 
+
+#### Saved reset auto-consumption
+
+`codexResets.autoRedeem` and `claudeResets.autoRedeem` independently control saved-reset consumption: `yes` enables automatic spending, `no` disables it, and `unset` requires consent before the first spend. Headless sessions never spend while consent is unset.
+
+When a usage refresh detects an eligible banked reset expiring within the next **5 minutes**, auto-consumption attempts it even with little or no usage, a credit reserve, or `salvageHorizonHours: 0`. Provider eligibility, covered-limit requirements, cooldowns, and duplicate-spend protections still apply.
+
+`salvageHorizonHours` controls earlier, usage-based salvage; setting it to `0` leaves the five-minute last-chance rule active. Set the provider's `autoRedeem` to `no` to disable all automatic spending.
 
 ### Other groups
 

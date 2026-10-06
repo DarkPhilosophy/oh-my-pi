@@ -788,7 +788,10 @@ describe("AgentSession derived queued custom display", () => {
 	});
 });
 
-function createStubInteractiveModeContextForUiHelpers(session: AgentSession, collapseLines = 3) {
+function createStubInteractiveModeContextForUiHelpers(
+	session: AgentSession,
+	options?: { focusedAgentId?: string; compactionQueuedMessages?: CompactionQueuedMessage[]; collapseLines?: number },
+) {
 	let editorText = "";
 	const editor: StubEditor = {
 		setText(text) {
@@ -825,12 +828,13 @@ function createStubInteractiveModeContextForUiHelpers(session: AgentSession, col
 		pendingMessagesContainer,
 		session,
 		viewSession: session,
-		compactionQueuedMessages: [],
+		focusedAgentId: options?.focusedAgentId,
+		compactionQueuedMessages: options?.compactionQueuedMessages ?? [],
 		keybindings: {
 			getDisplayString: (action: string) => (action === "app.message.expandQueue" ? "Alt+O" : "Alt+Up"),
 			getKeys: (action: string) => [action === "app.message.expandQueue" ? "alt+o" : "alt+up"],
 		},
-		settings: Settings.isolated({ pendingQueueCollapseLines: collapseLines }),
+		settings: Settings.isolated({ pendingQueueCollapseLines: options?.collapseLines ?? 3 }),
 		updatePendingMessagesDisplay,
 		locallySubmittedUserSignatures: new Set<string>(),
 	} as unknown as InteractiveModeContext;
@@ -897,6 +901,45 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		expect(rendered).toContain("Alt+↑ (or Up) to edit");
 	});
 
+	it("does not advertise main compaction messages in a focused subagent view", async () => {
+		fixture = await createRealSession();
+		const compactionQueuedMessages: CompactionQueuedMessage[] = [{ text: "main compaction", mode: "steer" }];
+		const focused = createStubInteractiveModeContextForUiHelpers(fixture.session, {
+			focusedAgentId: "Worker",
+			compactionQueuedMessages,
+		});
+		new UiHelpers(focused.ctx).updatePendingMessagesDisplay();
+		expect(focused.pendingMessagesContainer.children).toHaveLength(0);
+
+		const main = createStubInteractiveModeContextForUiHelpers(fixture.session, { compactionQueuedMessages });
+		new UiHelpers(main.ctx).updatePendingMessagesDisplay();
+		expect(Bun.stripANSI(main.pendingMessagesContainer.render(120).join("\n"))).toContain("main compaction");
+	});
+
+	it("lists yield follow-ups in submission order", async () => {
+		fixture = await createRealSession();
+		const { session } = fixture;
+		for (const text of ["inspect types", "run tests", "summarize"]) {
+			session.agent.followUp({
+				role: "user",
+				content: text,
+				attribution: "user",
+				timestamp: Date.now(),
+			});
+		}
+
+		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session);
+		new UiHelpers(ctx).updatePendingMessagesDisplay();
+
+		const rendered = Bun.stripANSI(pendingMessagesContainer.render(120).join("\n"));
+		// Each queued message sits in its own labelled box, in submission order.
+		expect(rendered.match(/ Follow-up /g)?.length).toBe(3);
+		const order = ["inspect types", "run tests", "summarize"].map(text => rendered.indexOf(`└─ ${text}`));
+		expect(order.every(index => index > -1)).toBe(true);
+		expect(order).toEqual([...order].sort((a, b) => a - b));
+		expect(rendered).not.toContain("Follow-up:");
+	});
+
 	it("collapses queued steering text with a row and character footer", async () => {
 		fixture = await createRealSession();
 		const { session } = fixture;
@@ -920,7 +963,9 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		const { session } = fixture;
 		queueCustomSteer(session, "one\ntwo\nthree\nfour");
 
-		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session, 5);
+		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session, {
+			collapseLines: 5,
+		});
 		const uiHelpers = new UiHelpers(ctx);
 		uiHelpers.updatePendingMessagesDisplay();
 

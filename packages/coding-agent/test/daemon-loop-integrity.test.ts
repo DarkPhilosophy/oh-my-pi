@@ -88,6 +88,8 @@ async function startHarness(): Promise<Harness> {
 					followUpMode: "one-at-a-time",
 					interruptMode: "immediate",
 					autoCompactionEnabled: true,
+					slowModeSupported: false,
+					slowModeEnabled: false,
 					messageCount: commandCount,
 					queuedMessageCount: 0,
 					queuedMessages: { steering: [], followUp: [] },

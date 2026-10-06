@@ -193,7 +193,6 @@ async function initializeBiDiWorker(pages: ControlledBiDiPage[]): Promise<{ tran
 			targetId: pages[0]?.id ?? "",
 			browserWSEndpoint: "ws://127.0.0.1:1/session",
 			safeDir: getPuppeteerDir(),
-			timeoutMs: 1_000,
 			dialogs: "accept",
 		},
 	});
@@ -378,7 +377,6 @@ it("does not acknowledge inline close until a late browser connection has discon
 				targetId: "",
 				browserWSEndpoint: "ws://127.0.0.1:1/session",
 				safeDir: getPuppeteerDir(),
-				timeoutMs: 1000,
 			},
 		});
 		await connecting.promise;
@@ -422,7 +420,6 @@ it("bounds supervisor termination while retaining cleanup of a late connection",
 				targetId: "",
 				browserWSEndpoint: "ws://127.0.0.1:1/session",
 				safeDir: getPuppeteerDir(),
-				timeoutMs: 1000,
 			},
 		});
 		await connecting.promise;

@@ -6,6 +6,7 @@ import type {
 	Component,
 	Container,
 	EditorTheme,
+	KeyId,
 	Loader,
 	PanelLayoutResult,
 	RightPanelBlockInput,
@@ -112,6 +113,14 @@ export interface RenderSessionContextOptions {
 	/** Tool calls whose existing live component remains the sole render owner across a rebuild. */
 	preservedLiveToolCallIds?: ReadonlySet<string>;
 	captureToolCallComponent?: (toolCallId: string, component: Component) => void;
+}
+
+/** How {@link InteractiveModeContext.showStatus} shows a notice. */
+export interface ShowStatusOptions {
+	/** Dims the ANSI line (default true). */
+	dim?: boolean;
+	/** Toasts it on a native terminal (default true); false keeps it to the ANSI transcript. */
+	toast?: boolean;
 }
 
 export interface AgentHubOpenOptions {
@@ -230,12 +239,15 @@ export interface InteractiveModeContext {
 	 */
 	readonly effectiveHideThinkingBlock: boolean;
 	readonly assistantImagesVisible: boolean;
+	/** Whether the viewed session's tables get charts: the main session's do, a focused subagent's do not. */
+	readonly tableChartsVisible: boolean;
 	resolveAssistantMessageLinks(texts: readonly string[]): Promise<ReadonlyMap<string, string>>;
 	/** Whether this visible session has produced thinking content the user can reveal. */
 	readonly hasDisplayableThinkingContent: boolean;
 	/** Record a message whose thinking content makes Ctrl+T meaningful even at thinking level "off"; returns true on first observation. */
 	noteDisplayableThinkingContent(message: AgentMessage): boolean;
 	proseOnlyThinking: boolean;
+	expandThinkingBlocks: boolean;
 	compactionQueuedMessages: CompactionQueuedMessage[];
 	/** Settled user/assistant components reusable across post-compaction transcript rebuilds. */
 	transcriptMessageComponents: WeakMap<AgentMessage, Component>;
@@ -336,7 +348,7 @@ export interface InteractiveModeContext {
 	 * leak.
 	 */
 	resetTranscript(): void;
-	showStatus(message: string, options?: { dim?: boolean }): void;
+	showStatus(message: string, options?: ShowStatusOptions): void;
 	/** Show the ctrl+p role chip track above the editor, `activeIndex` filled. */
 	showModelCycleTrack(segments: readonly TrackSegment[], activeIndex: number): void;
 	showError(message: string): void;
@@ -359,7 +371,7 @@ export interface InteractiveModeContext {
 	applyPendingWorkingMessage(): void;
 	ensureLoadingAnimation(): void;
 	/** Interrupt key id for a maintenance working row's stop control; undefined while Esc would not cancel it. */
-	maintenanceInterruptKey(): string | undefined;
+	maintenanceInterruptKey(): KeyId | undefined;
 	/** A click on a working row's stop control: the interrupt key's handler. */
 	interruptFromPointer(): void;
 	/** Reconcile the idle "F5 to Retry" status row with the transcript tail. */

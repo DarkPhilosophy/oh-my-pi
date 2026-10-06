@@ -247,6 +247,7 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		get assistantImagesVisible() {
 			return cfgTerminalShowImages.get(contextSettings);
 		},
+		tableChartsVisible: true,
 		hasDisplayableThinkingContent: false,
 		noteDisplayableThinkingContent: vi.fn(() => false),
 		proseOnlyThinking: true,

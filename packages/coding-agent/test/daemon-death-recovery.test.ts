@@ -62,6 +62,8 @@ function localFactory() {
 					followUpMode: "one-at-a-time",
 					interruptMode: "immediate",
 					autoCompactionEnabled: true,
+					slowModeSupported: false,
+					slowModeEnabled: false,
 					messageCount: recorded.length,
 					queuedMessageCount: 0,
 					queuedMessages: { steering: [], followUp: [] },

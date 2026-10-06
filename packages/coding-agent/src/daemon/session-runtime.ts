@@ -78,6 +78,8 @@ export type DaemonSession = {
 	readonly messages?: AgentSession["messages"];
 	readonly isFastModeEnabled?: () => boolean;
 	readonly isFastModeActive?: () => boolean;
+	readonly isSlowModeSupported?: () => boolean;
+	readonly isSlowModeEnabled?: () => boolean;
 	readonly agent?: {
 		state?: {
 			messages?: readonly unknown[];
@@ -254,6 +256,8 @@ function sessionState(
 		sessionId: session.sessionId ?? sessionId,
 		sessionName: session.sessionName,
 		autoCompactionEnabled: session.autoCompactionEnabled ?? true,
+		slowModeSupported: session.isSlowModeSupported?.() ?? false,
+		slowModeEnabled: session.isSlowModeEnabled?.() ?? false,
 		messageCount: messages?.length ?? 0,
 		queuedMessageCount: session.queuedMessageCount ?? 0,
 		queuedMessages: {

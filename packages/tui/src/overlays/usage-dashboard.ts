@@ -58,7 +58,7 @@ import { editorKey, editorKeys } from "../chrome/keybinding-hints";
 import type { TspSpan, TspTableColumn, TspText, TspTone } from "@oh-my-pi/pi-wire";
 import { col, elapsed, node, span, text } from "../native/describe";
 import { type DescribeContext, leafKey, type NativeChild, type NativeNode, type NativeUiEvent } from "../native/node";
-import { actionButton } from "../native/overlay";
+import { actionBar, actionButton } from "../native/overlay";
 
 /** Local calendar-day activity consumed by the usage heatmap. */
 export interface DailyActivityPoint {
@@ -1233,9 +1233,9 @@ export class UsageDashboardComponent implements Component {
 	 * The sheet body (the terminal's `lg` overlay is the frame): a head row
 	 * (checked ago, Overview/Details tabs, Refresh), then either the provider
 	 * grid of frames with window meters and the activity heatmap, or the
-	 * per-provider detail tables. `meter`/`chart` fall back to
-	 * `progress`/`table` on terminals without them. Rebuilt only when its
-	 * inputs change.
+	 * per-provider detail tables, then Close like the other report sheets.
+	 * `meter`/`chart` fall back to `progress`/`table` on terminals without
+	 * them. Rebuilt only when its inputs change.
 	 */
 	describe(cx: DescribeContext): NativeNode {
 		const meter = cx.supports("meter");
@@ -1245,18 +1245,23 @@ export class UsageDashboardComponent implements Component {
 			return cache.node;
 		}
 		const body = this.#view === "detail" ? this.#describeDetail() : this.#describeOverview(meter, chart);
-		const root = col([this.#describeHead(), node("col", { gap: "lg" }, body, this.#view)], { gap: "lg" });
+		// Esc leaves Details for Overview first, so only Overview's Close wears its keycap.
+		const close = actionButton("Close", "close", this.#view === "overview" ? { keys: "escape" } : {});
+		const root = col([this.#describeHead(), node("col", { gap: "lg" }, body, this.#view), actionBar([null, close])], {
+			gap: "lg",
+		});
 		this.#nativeCache = { revision: this.#revision, meter, chart, node: root };
 		return root;
 	}
 
-	/** Tab clicks switch views like Enter/Esc; the Refresh button runs `r`. */
+	/** Tab clicks switch views like Enter/Esc; the Refresh button runs `r`; Close closes from either view. */
 	handleNativeEvent(event: NativeUiEvent): void {
 		if (event.type === "action") {
 			if (event.act === "refresh") void this.#refresh();
-			if (event.act === "privacy") this.handleInput("p");
-			if (event.act === "organization-privacy") this.handleInput("o");
-			if (event.act === "grouping") this.handleInput("m");
+			else if (event.act === "privacy") this.handleInput("p");
+			else if (event.act === "organization-privacy") this.handleInput("o");
+			else if (event.act === "grouping") this.handleInput("m");
+			else if (event.act === "close") this.#close();
 			return;
 		}
 		if (event.type !== "select" && event.type !== "activate") return;
@@ -1724,8 +1729,7 @@ export class UsageDashboardComponent implements Component {
 				this.#setView("overview");
 				return;
 			}
-			this.dispose();
-			this.#options.onClose();
+			this.#close();
 			return;
 		}
 		if (matchesKey(data, "r")) {
@@ -1766,5 +1770,10 @@ export class UsageDashboardComponent implements Component {
 			this.#scroll = 0;
 			this.#options.requestRender();
 		} else if (matchesKey(data, "end")) this.#scrollBy(Number.MAX_SAFE_INTEGER);
+	}
+
+	#close(): void {
+		this.dispose();
+		this.#options.onClose();
 	}
 }

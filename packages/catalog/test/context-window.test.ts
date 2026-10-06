@@ -13,10 +13,17 @@ function bundledAstra() {
 	return astra;
 }
 
-function bundledLegacy() {
-	const legacy = getBundledModels("openai-codex").find(model => model.id === "gpt-5.5");
-	if (!legacy) throw new Error("Expected bundled legacy Codex model");
-	return legacy;
+/**
+ * A Codex SKU no `max-context-window` rule curates. Synthetic on purpose: the
+ * bundled roster rotates with upstream metadata, the clamp policy does not.
+ */
+function uncuratedCodexModel() {
+	return buildModel({
+		...bundledAstra(),
+		id: "gpt-uncurated-test",
+		name: "Uncurated test",
+		maxContextWindow: undefined,
+	});
 }
 
 test("corrects a stale live maximum up to the curated window", () => {
@@ -58,7 +65,7 @@ test("corrects GPT-6.1 Sol's stale 872K Codex maximum to the documented 922K inp
 });
 
 test("leaves models without a curated maximum to the live value or undefined", () => {
-	const legacy = bundledLegacy();
+	const legacy = uncuratedCodexModel();
 	// No `max-context-window` rule owns this SKU, so extended-context widening
 	// sees exactly what discovery reported — nothing curated is injected.
 	expect(resolveMaxContextWindow({ ...legacy, maxContextWindow: 640_000 })).toBe(640_000);
@@ -83,7 +90,7 @@ test("clamps Codex overrides to the stale-aware ceiling", () => {
 });
 
 test("never clamps below the working window on a stale-low maximum", () => {
-	const legacy = bundledLegacy();
+	const legacy = uncuratedCodexModel();
 	// 128K base with a 64K advertised maximum: the ceiling is discredited,
 	// so an explicit override falls back to the working window.
 	const stale = { ...legacy, contextWindow: 128_000, maxContextWindow: 64_000 };
@@ -93,18 +100,18 @@ test("never clamps below the working window on a stale-low maximum", () => {
 });
 
 test("leaves models without a ceiling unclamped", () => {
-	const legacy = bundledLegacy();
+	const legacy = uncuratedCodexModel();
 	expect(codexOverrideCeiling({ ...legacy, maxContextWindow: undefined })).toBeUndefined();
 	expect(clampCodexContextWindow({ ...legacy, maxContextWindow: undefined }, 2_000_000)).toBe(2_000_000);
 });
 
 test("reads the override-clamp contract from KDL policy, not provider ids", () => {
 	const astra = bundledAstra();
-	const legacy = bundledLegacy();
+	const legacy = uncuratedCodexModel();
 	// Provider-wide Codex semantics: every Codex SKU clamps, on any route.
 	expect(clampsContextOverride(astra)).toBe(true);
 	expect(clampsContextOverride({ ...legacy, maxContextWindow: 640_000 })).toBe(true);
-	expect(clampsContextOverride({ ...legacy, id: "gpt-5.5-wm" })).toBe(true);
+	expect(clampsContextOverride({ ...legacy, id: "gpt-uncurated-test-wm" })).toBe(true);
 	// Other providers never clamp, even with a live maximum present.
 	expect(clampsContextOverride({ ...legacy, provider: "openai" })).toBe(false);
 	expect(clampsContextOverride({ ...legacy, provider: "openrouter", maxContextWindow: 640_000 })).toBe(false);

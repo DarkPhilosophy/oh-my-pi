@@ -276,6 +276,7 @@ export class MCPManager {
 	#notificationListeners = new Set<(serverName: string, method: string, params: unknown) => void>();
 	#connectionStatusListeners = new Set<(event: McpConnectionStatusEvent) => void>();
 	#catalogChangeListeners = new Set<(event: McpCatalogChangeEvent) => void>();
+	#toolsChangedListeners = new Set<() => void>();
 	/**
 	 * Notifications received before any listener attached, to be drained on
 	 * the first {@link addNotificationListener} call. Bounded by
@@ -376,6 +377,24 @@ export class MCPManager {
 				logger.debug("MCP catalog change listener threw", { error });
 			}
 		}
+	}
+
+	/**
+	 * Register a listener fired whenever the manager's tool set changes: a
+	 * server's tools are (re)placed, a server is disconnected, or every server
+	 * is dropped (`/mcp reload`). Read the new set from {@link getTools}.
+	 *
+	 * Unlike the single-slot {@link setOnToolsChanged} (owned by the session
+	 * that created this manager), any number of sessions sharing the manager
+	 * can subscribe — subagents use it to keep their MCP tools current.
+	 *
+	 * Returns an unsubscribe function. Listener failures are isolated.
+	 */
+	addToolsChangedListener(listener: () => void): () => void {
+		this.#toolsChangedListeners.add(listener);
+		return () => {
+			this.#toolsChangedListeners.delete(listener);
+		};
 	}
 
 	/**
@@ -486,6 +505,13 @@ export class MCPManager {
 	 * not resolve before the registry is rebound await this.
 	 */
 	async #emitToolsChanged(): Promise<void> {
+		for (const listener of this.#toolsChangedListeners) {
+			try {
+				listener();
+			} catch (error) {
+				logger.debug("MCP tools changed listener threw", { error });
+			}
+		}
 		await this.#onToolsChanged?.(this.#tools);
 		for (const handler of this.#toolsChangedSubscribers) handler(this.#tools);
 	}
@@ -989,6 +1015,7 @@ export class MCPManager {
 		// Stable sort by name so reconnect order does not perturb the array.
 		// See `sortMCPToolsByName` for the cache-stability rationale.
 		sortMCPToolsByName(this.#tools);
+		void this.#emitToolsChanged();
 	}
 
 	#triggerNotificationRefresh(serverName: string, kind: "tools" | "resources" | "prompts"): Promise<void> {
@@ -1339,7 +1366,9 @@ export class MCPManager {
 		this.#pendingResourceRefresh.clear();
 		this.#sources.clear();
 		this.#serverConfigs.clear();
+		const hadTools = this.#tools.length > 0;
 		this.#tools = [];
+		if (hadTools) void this.#emitToolsChanged();
 		this.#subscribedResources.clear();
 		this.#reconnectHistory.clear();
 	}

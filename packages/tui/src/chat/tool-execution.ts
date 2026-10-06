@@ -2020,6 +2020,7 @@ export class ToolExecutionComponent extends Container {
 							...resolveImageOptions(),
 							budget: this.#ui.imageBudget,
 							imageKey: `te${this.#instanceId}:${i}`,
+							requestRender: () => this.#ui.requestRender(),
 						},
 					);
 					this.#imageComponents.push(imageComponent);

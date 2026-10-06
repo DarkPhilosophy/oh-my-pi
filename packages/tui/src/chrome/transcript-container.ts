@@ -1,6 +1,7 @@
 import { type Component, Container, type HistoryBatch } from "../tui";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils";
+import { renderForScrollback } from "../components/image";
 import { col } from "../native/describe";
 import type { NativeNode } from "../native/node";
 import { isNativeSettled, settleNative } from "../native/settle";
@@ -64,6 +65,12 @@ interface FinalizableBlock {
 	 * viewport budget instead of retiring transcript rows they will hand back.
 	 */
 	isTranscriptBlockTransient?(): boolean;
+	/**
+	 * A finalized block whose rows still wait on async work (an SVG figure's
+	 * raster). Retirement holds until it lands: committed rows can never be
+	 * repainted, so retiring early would freeze a placeholder into scrollback.
+	 */
+	isTranscriptBlockPending?(): boolean;
 	/** Render the row that must remain represented under emergency viewport pressure. */
 	renderTranscriptBlockEmergencyRow?(width: number): string | undefined;
 	/** Number of leading raw rows whose bytes are final while the block remains active. */
@@ -155,7 +162,7 @@ const EMPTY_STABLE_ROWS: readonly TranscriptStableRow[] = [];
 
 function isFinalized(component: Component): boolean {
 	const block = component as Component & FinalizableBlock;
-	return block.isTranscriptBlockFinalized?.() ?? true;
+	return (block.isTranscriptBlockFinalized?.() ?? true) && block.isTranscriptBlockPending?.() !== true;
 }
 
 function isTransient(component: Component): boolean {
@@ -1422,9 +1429,11 @@ export class TranscriptContainer extends Container {
 			// Only the range head is sliced by its emitted stable prefix; every other
 			// entry renders whole, so the append-only verification pass (a second
 			// full render of the block's stable prefix) is skipped for them. This
-			// keeps a complete-ledger replay at one render per block.
-			const rendered =
-				index === start ? this.#renderEntry(entry, width) : trimBlankEdges(entry.component.render(width));
+			// keeps a complete-ledger replay at one render per block. These rows go
+			// to native scrollback, where nothing can repaint them.
+			const rendered = renderForScrollback(() =>
+				index === start ? this.#renderEntry(entry, width) : trimBlankEdges(entry.component.render(width)),
+			);
 			let skip = index === start ? this.#renderStablePrefix(entry, entry.emitted, width).length : 0;
 			let separatorBorrowed = false;
 			// Rows the terminal already borrowed into native scrollback are immutable
