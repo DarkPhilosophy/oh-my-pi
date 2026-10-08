@@ -96,4 +96,20 @@ describe("eval renderer: viewport tail window for cell code", () => {
 		expect(previewRow).toBeGreaterThan(0);
 		expect(previewRow).toBeLessThan(bottomBorder);
 	});
+
+	it("renders every cell of a streamed call while a later cell's code has not arrived", () => {
+		const component = evalToolRenderer.renderCall(
+			{
+				cells: [
+					{ language: "js", title: "first cell", code: "const ready = 1;" },
+					{ language: "js", title: "second cell" },
+				],
+			},
+			{ expanded: false, isPartial: true, spinnerFrame: 0 },
+			theme,
+		);
+		const rendered = Bun.stripANSI(component.render(120).join("\n"));
+		expect(rendered).toContain("const ready = 1;");
+		expect(rendered).toContain("second cell");
+	});
 });

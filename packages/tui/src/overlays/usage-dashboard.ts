@@ -615,16 +615,14 @@ function detailWindowLabel(label: string, limit: UsageLimit): string | undefined
 	return sanitizeDisplayLine(windowLabel);
 }
 
+const WHOLE_DOLLARS = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+const COMPACT_COUNT = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
+
 /** `$1,234 · 5.6K requests` totals for the activity summary. */
 function formatActivityTotals(layout: HeatmapLayout): string {
 	const cost =
-		layout.totalCost >= 1
-			? `$${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(layout.totalCost)}`
-			: `$${layout.totalCost.toFixed(2)}`;
-	const requests = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(
-		layout.totalRequests,
-	);
-	return `${cost} · ${requests} requests`;
+		layout.totalCost >= 1 ? `$${WHOLE_DOLLARS.format(layout.totalCost)}` : `$${layout.totalCost.toFixed(2)}`;
+	return `${cost} · ${COMPACT_COUNT.format(layout.totalRequests)} requests`;
 }
 
 // =============================================================================
@@ -1095,15 +1093,8 @@ export class UsageDashboardComponent implements Component {
 		const ramp = this.#heatRamp();
 		const reset = "\x1b[39m";
 
-		const cost =
-			layout.totalCost >= 1
-				? `$${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(layout.totalCost)}`
-				: `$${layout.totalCost.toFixed(2)}`;
-		const requests = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(
-			layout.totalRequests,
-		);
 		summary.push(
-			`${theme.bold(theme.fg("accent", "Activity"))} ${theme.fg("dim", `${cost} · ${requests} requests · last ${weeks} weeks`)}${this.#syncing ? theme.fg("dim", " · syncing…") : ""}`,
+			`${theme.bold(theme.fg("accent", "Activity"))} ${theme.fg("dim", `${formatActivityTotals(layout)} · last ${weeks} weeks`)}${this.#syncing ? theme.fg("dim", " · syncing…") : ""}`,
 		);
 		summary.push("");
 
