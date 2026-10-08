@@ -27,6 +27,7 @@ import {
 	setTerminalGlyphProtocol,
 	TERMINAL,
 } from "./terminal-capabilities";
+import { canQueryHerdrNativeTransport } from "./terminal-multiplexer";
 import { isInsideTmux, wrapTmuxPassthrough } from "./tmux";
 import { setHangulCompatibilityJamoWidth } from "./utils";
 import { translateWindowsAltGrSequence } from "./windows-altgr";
@@ -1779,6 +1780,7 @@ export class ProcessTerminal implements Terminal {
 		const override = $env.PI_TUI_NATIVE;
 		if (override === "0") return false;
 		if (override === "1") return true;
+		if (canQueryHerdrNativeTransport($env)) return true;
 		// Multiplexers swallow APC, so the reply could never arrive.
 		if (isInsideTerminalMultiplexer($env)) return false;
 		return !isBunTestRuntime();

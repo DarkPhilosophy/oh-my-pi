@@ -133,6 +133,39 @@ describe("TSP hello probe", () => {
 		}
 	});
 
+	it.each([
+		["native Herdr", { HERDR_NATIVE_TRANSPORT: "1" }, true],
+		["Herdr without transport", {}, false],
+		["Herdr with transport disabled", { HERDR_NATIVE_TRANSPORT: "0" }, false],
+		...["TMUX", "STY", "ZELLIJ", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID", "CMUX_REMOTE_TRANSPORT", "CMUX_SOCKET_PATH", "WMUX", "WMUX_SURFACE_ID"].map(key =>
+			[
+				"native Herdr inside " + key,
+				{ HERDR_NATIVE_TRANSPORT: "1", [key]: "1" }, false,
+			] as const),
+		["native Herdr with tmux TERM", { HERDR_NATIVE_TRANSPORT: "1", TERM: "tmux-256color" }, false],
+		["native Herdr with screen TERM", { HERDR_NATIVE_TRANSPORT: "1", TERM: "screen-256color" }, false],
+		["native Herdr opted out", { HERDR_NATIVE_TRANSPORT: "1", PI_TUI_NATIVE: "0" }, false],
+	] as const)("automatic probe: %s", (_name, env, probes) => {
+		const saved = { ...Bun.env };
+		let terminal: ProcessTerminal | undefined;
+		try {
+			for (const key of Object.keys(Bun.env)) {
+				if (/^(TMUX|STY|ZELLIJ|HERDR_|CMUX_|WMUX|PI_TUI_NATIVE$)/.test(key)) delete Bun.env[key];
+			}
+			Object.assign(Bun.env, { HERDR_ENV: "1", TERM: "xterm-256color", TERM_PROGRAM: "herdr" }, env);
+			const result = setup();
+			terminal = result.terminal;
+			expect(result.writes.join("").includes("\x1b_tsp;")).toBe(probes);
+			if (probes) {
+				process.stdin.emit("data", HELLO_REPLY);
+				expect(result.hellos[0]?.term).toBe("tern");
+			} else expect(result.hellos).toEqual([null]);
+		} finally {
+			terminal?.stop();
+			for (const key of Object.keys(Bun.env)) if (!(key in saved)) delete Bun.env[key];
+			Object.assign(Bun.env, saved);
+		}
+	});
 	it("never probes with PI_TUI_NATIVE=0", () => {
 		Bun.env.PI_TUI_NATIVE = "0";
 		const { terminal, writes, hellos } = setup();

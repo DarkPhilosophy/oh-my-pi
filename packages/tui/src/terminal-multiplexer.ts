@@ -43,3 +43,12 @@ export function classifyTerminalMultiplexer(env: NodeJS.ProcessEnv = Bun.env): T
 export function isInsideTerminalMultiplexer(env: NodeJS.ProcessEnv = Bun.env): boolean {
 	return classifyTerminalMultiplexer(env) !== null;
 }
+
+/** Herdr forwards native APC only when no nested multiplexer can consume it. */
+export function canQueryHerdrNativeTransport(env: NodeJS.ProcessEnv = Bun.env): boolean {
+	if (classifyTerminalMultiplexer(env) !== "herdr" || env.HERDR_NATIVE_TRANSPORT !== "1") return false;
+	if (["TMUX", "STY", "ZELLIJ", "WMUX", "WMUX_SURFACE_ID"].some(key => env[key] !== undefined)) return false;
+	if (Object.keys(env).some(key => key.startsWith("CMUX_") && env[key] !== undefined)) return false;
+	const term = env.TERM?.toLowerCase() ?? "";
+	return !term.startsWith("tmux") && !term.startsWith("screen");
+}
